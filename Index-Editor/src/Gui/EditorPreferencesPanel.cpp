@@ -474,20 +474,11 @@ namespace Index {
 	}
 
 	void EditorPreferencesPanel::RenderBehaviorTab() {
-		const bool showApplication = PreferenceSectionVisible("Application", "behavior run in background window focus pause editor");
 		const bool showAssetBrowser = PreferenceSectionVisible("Asset Browser", "behavior asset browser file extensions extension rename");
 		const bool showAutoSave = PreferenceSectionVisible("Auto-Save", "behavior auto save autosave scene prefab interval");
 		const bool showEditing = PreferenceSectionVisible("Editing", "behavior editing delete deletion confirm confirmation prompt ask dialog warn entity asset safety");
 		const bool showViewport = PreferenceSectionVisible("Viewport", "behavior viewport ui alignment guides guide smart snap snapping align rect transform");
-		if (!showApplication && !showAssetBrowser && !showAutoSave && !showEditing && !showViewport) return;
-
-		if (showApplication && EditorUI::SectionHeader("Application")) {
-			bool runInBackground = EditorPreferences::GetRunInBackground();
-			if (ImGuiUtils::Switch("Run in background", &runInBackground)) {
-				EditorPreferences::SetRunInBackground(runInBackground);
-			}
-			ImGui::Spacing();
-		}
+		if (!showAssetBrowser && !showAutoSave && !showEditing && !showViewport) return;
 
 		if (showEditing && EditorUI::SectionHeader("Editing")) {
 			bool confirmOnDeleteEntity = EditorPreferences::GetConfirmOnDeleteEntity();

@@ -107,16 +107,68 @@ internal unsafe struct ManagedCallbacksStruct
     public delegate* unmanaged<int, int, ulong, ulong, ulong, ulong, void> InvokeTrigger2D;
 }
 
+/// <summary>Guards the native/managed function-pointer tables against layout drift before either is touched.</summary>
+internal static class InteropHandshake
+{
+    // Bump together with k_ScriptInteropLayoutVersion (ScriptGlue.hpp) on any add/remove/reorder in either table.
+    internal const int LayoutVersion = 1;
+
+    // Codes are mirrored in ScriptEngine::LoadCoreAssembly.
+    internal const int Ok = 0;
+    internal const int VersionMismatch = -2;
+    internal const int NativeBindingsSizeMismatch = -3;
+    internal const int ManagedCallbacksSizeMismatch = -4;
+
+    internal static unsafe int Validate(int nativeBindingsSize, int managedCallbacksSize, int layoutVersion, out string? error)
+        => Validate(nativeBindingsSize, managedCallbacksSize, layoutVersion,
+            sizeof(NativeBindingsStruct), sizeof(ManagedCallbacksStruct), LayoutVersion, out error);
+
+    internal static int Validate(
+        int nativeBindingsSize, int managedCallbacksSize, int layoutVersion,
+        int expectedNativeBindingsSize, int expectedManagedCallbacksSize, int expectedLayoutVersion,
+        out string? error)
+    {
+        if (layoutVersion != expectedLayoutVersion)
+        {
+            error = $"interop layout version mismatch: native {layoutVersion}, managed {expectedLayoutVersion}";
+            return VersionMismatch;
+        }
+        if (nativeBindingsSize != expectedNativeBindingsSize)
+        {
+            error = $"NativeBindings size mismatch: native {nativeBindingsSize} bytes, managed {expectedNativeBindingsSize} bytes";
+            return NativeBindingsSizeMismatch;
+        }
+        if (managedCallbacksSize != expectedManagedCallbacksSize)
+        {
+            error = $"ManagedCallbacks size mismatch: native {managedCallbacksSize} bytes, managed {expectedManagedCallbacksSize} bytes";
+            return ManagedCallbacksSizeMismatch;
+        }
+        error = null;
+        return Ok;
+    }
+}
+
 /// <summary>Entry point called from C++ via hostfxr; exchanges native/managed function pointers.</summary>
 internal static class ScriptHostBridge
 {
     [UnmanagedCallersOnly]
     internal static unsafe int Initialize(
         NativeBindingsStruct* nativeBindings,
-        ManagedCallbacksStruct* managedCallbacks)
+        ManagedCallbacksStruct* managedCallbacks,
+        int nativeBindingsSize,
+        int managedCallbacksSize,
+        int layoutVersion)
     {
         try
         {
+            // Native logging is unusable until the table is trusted, so mismatches go to stderr; native logs the details too.
+            int handshake = InteropHandshake.Validate(nativeBindingsSize, managedCallbacksSize, layoutVersion, out string? handshakeError);
+            if (handshake != InteropHandshake.Ok)
+            {
+                Console.Error.WriteLine($"ScriptHostBridge.Initialize refused: {handshakeError}. Rebuild Index-Engine and Index-ScriptCore together.");
+                return handshake;
+            }
+
             NativeCallbacks.SetFrom(nativeBindings);
 
             managedCallbacks->CreateScriptInstance = &ScriptInstanceManager.CreateScriptInstance;

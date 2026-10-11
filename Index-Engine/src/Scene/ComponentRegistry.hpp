@@ -65,6 +65,10 @@ namespace Index {
                 if (!info.defaultEmplace) info.defaultEmplace = existing->second.defaultEmplace;
             }
 
+            // Ownership is fixed at first registration so a package re-registering a built-in can't take it down on unload.
+            if (existing != m_map.end()) info.ownerId = existing->second.ownerId;
+            else if (info.ownerId == 0) info.ownerId = m_registrationOwner;
+
             info.typeId = id;
             info.storageHash = entt::type_hash<T>::value();
             info.has = [](Entity e) { return e.HasComponent<T>(); };
@@ -460,6 +464,53 @@ namespace Index {
             m_dynamicStorages.clear();
         }
 
+        // Register<T> tags new entries with this owner while non-zero.
+        void SetRegistrationOwner(uint32_t owner) noexcept { m_registrationOwner = owner; }
+        uint32_t GetRegistrationOwner() const noexcept { return m_registrationOwner; }
+
+        // MUST be called before the owner's module unloads: entries hold function pointers into it. Typed IDs are not reused.
+        size_t UnregisterOwner(uint32_t owner) {
+            if (owner == 0) return 0;
+
+            std::vector<std::type_index> removed;
+            for (auto it = m_map.begin(); it != m_map.end();) {
+                ComponentInfo& info = it->second;
+                if (info.ownerId != owner) {
+                    ++it;
+                    continue;
+                }
+                if (info.serializedNameHash != 0) {
+                    const auto hashIt = m_hashIndex.find(info.serializedNameHash);
+                    if (hashIt != m_hashIndex.end() && hashIt->second == &info) {
+                        m_hashIndex.erase(hashIt);
+                    }
+                }
+                if (info.typeIdU32 < m_byTypeId.size() && m_byTypeId[info.typeIdU32] == &info) {
+                    m_byTypeId[info.typeIdU32] = nullptr;
+                }
+                removed.push_back(it->first);
+                it = m_map.erase(it);
+            }
+            if (removed.empty()) return 0;
+
+            const auto isRemoved = [&removed](const std::type_index& type) {
+                return std::find(removed.begin(), removed.end(), type) != removed.end();
+            };
+            const auto scrub = [&isRemoved](ComponentInfo& info) {
+                std::erase_if(info.conflictsWith, isRemoved);
+                std::erase_if(info.dependsOn, isRemoved);
+            };
+            for (auto& [id, info] : m_map) {
+                (void)id;
+                scrub(info);
+            }
+            for (auto& [tid, info] : m_dynamicMap) {
+                (void)tid;
+                scrub(info);
+            }
+            return removed.size();
+        }
+
         void CopyComponents(Entity src, Entity dst) const {
             for (const auto& [id, info] : m_map) {
                 (void)id;
@@ -573,6 +624,7 @@ namespace Index {
         std::vector<const ComponentInfo*> m_byTypeId; // 1-indexed; slot 0 = null sentinel
         std::unordered_map<uint32_t, ComponentInfo> m_dynamicMap;
         std::unordered_map<uint32_t, std::unique_ptr<DynamicComponentStorage>> m_dynamicStorages;
+        uint32_t m_registrationOwner = 0;
         // Dynamics share typeid(void) — std::type_index can't be synthesized; callers that key by
         // type_index implicitly skip dynamic entries.
         static inline const std::type_index s_VoidTypeIndex{ typeid(void) };

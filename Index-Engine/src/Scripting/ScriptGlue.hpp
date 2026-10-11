@@ -3,6 +3,9 @@
 
 namespace Index {
 
+	// Bump together with InteropHandshake.LayoutVersion (ScriptHostBridge.cs) on any add/remove/reorder in NativeBindings or ManagedCallbacks.
+	inline constexpr int32_t k_ScriptInteropLayoutVersion = 1;
+
 	/// Layout must match C# NativeBindingsStruct exactly (Sequential, blittable).
 	struct NativeBindings
 	{

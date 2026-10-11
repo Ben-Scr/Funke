@@ -146,8 +146,12 @@ namespace Index {
 		s_Workers.clear();
 		s_WorkerCount.store(0, std::memory_order_release);
 
-		std::function<void()> sink;
-		while (s_Queue.try_dequeue(sink)) { /* discard */ }
+		// Run (not discard) anything that slipped in after the workers drained: a dropped job never signals its handle, so Job::Wait would spin forever.
+		// Jobs enqueued from here on see ShuttingDown and run inline.
+		std::function<void()> leftover;
+		while (s_Queue.try_dequeue(leftover)) {
+			ExecuteJob(std::move(leftover));
+		}
 
 		s_State.store(PoolState::Uninit, std::memory_order_release);
 		IDX_CORE_INFO_TAG("JobSystem", "Stopped");

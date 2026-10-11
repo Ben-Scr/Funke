@@ -8,6 +8,7 @@
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
+#include <atomic>
 #include <filesystem>
 
 #ifdef IDX_PLATFORM_WINDOWS
@@ -67,6 +68,11 @@ namespace Index {
 				return {};
 			}
 		}
+
+		// Lock-free mirror of Log::s_Initialized for the per-message fast path.
+		std::atomic<bool> s_InitializedFast{ false };
+
+		thread_local bool t_DispatchingOnLog = false;
 	}
 
 	// Single-DLL definitions for the static state previously declared as
@@ -102,8 +108,10 @@ namespace Index {
 			}
 		}
 
-		sinks.emplace_back(std::make_shared<spdlog::sinks::callback_sink_mt>([](const spdlog::details::log_msg& msg) {
-			if (!OnLog.HasListeners()) {
+		// _st: the _mt sink holds its mutex across the callback, so a listener that logs re-locks it and deadlocks. Event and the listeners are thread-safe on their own.
+		sinks.emplace_back(std::make_shared<spdlog::sinks::callback_sink_st>([](const spdlog::details::log_msg& msg) {
+			// Logs emitted by a listener still reach stdout/file but are not re-dispatched, which would recurse without bound.
+			if (t_DispatchingOnLog || !OnLog.HasListeners()) {
 				return;
 			}
 
@@ -122,6 +130,11 @@ namespace Index {
 			if (name == "APP") entry.Source = Type::Client;
 			else if (name == "EDITOR") entry.Source = Type::EditorConsole;
 			else entry.Source = Type::Core;
+
+			t_DispatchingOnLog = true;
+			struct DispatchGuard {
+				~DispatchGuard() { t_DispatchingOnLog = false; }
+			} guard;
 			OnLog.Invoke(entry);
 			}));
 
@@ -142,6 +155,7 @@ namespace Index {
 
 		spdlog::set_default_logger(s_CoreLogger);
 		s_Initialized = true;
+		s_InitializedFast.store(true, std::memory_order_release);
 	}
 
 	void Log::Shutdown() {
@@ -150,6 +164,7 @@ namespace Index {
 			return;
 		}
 
+		s_InitializedFast.store(false, std::memory_order_release);
 		OnLog.Clear();
 		s_CoreLogger.reset();
 		s_ClientLogger.reset();
@@ -215,6 +230,10 @@ namespace Index {
 	}
 
 	bool Log::EnsureInitialized() {
+		if (s_InitializedFast.load(std::memory_order_acquire)) {
+			return true;
+		}
+
 		{
 			std::scoped_lock lock(s_StateMutex);
 			if (s_Initialized) {

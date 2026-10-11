@@ -45,7 +45,9 @@ namespace Index {
 
 	void Time::SetTimeScale(float scale) {
 		Time* time = TryGetCurrent();
-		if (time) time->m_TimeScale = std::max(0.0f, scale);
+		// Upper bound keeps the fixed-step accumulator from demanding hundreds of substeps per frame. max-then-min also maps NaN to 0.
+		constexpr float k_MaxTimeScale = 100.0f;
+		if (time) time->m_TimeScale = std::min(std::max(0.0f, scale), k_MaxTimeScale);
 	}
 
 	void Time::SetFixedDeltaTime(float step) {

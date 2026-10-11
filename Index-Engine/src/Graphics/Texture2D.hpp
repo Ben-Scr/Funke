@@ -30,10 +30,23 @@ namespace Index {
 
 		void Destroy();
 
+		// generateMipmaps builds the full chain on the GPU (alpha-weighted 2x2 box downsample).
+		// Point-filtered samplers still read only level 0 so pixel art stays crisp.
 		bool Load(const char* path,
 			bool generateMipmaps = true,
 			bool srgb = false,
 			bool flipVertical = true);
+
+		// floor(log2(max(w,h))) + 1; 0 for an empty extent.
+		static constexpr uint32_t ComputeMipLevelCount(uint32_t width, uint32_t height) noexcept {
+			uint32_t largest = width > height ? width : height;
+			uint32_t levels = 0;
+			while (largest > 0) {
+				++levels;
+				largest >>= 1;
+			}
+			return levels;
+		}
 
 		// Create a GPU texture from raw RGBA8 bytes (w*h*4). Used by the
 		// runtime/procedural texture path (script-created textures). The
@@ -44,7 +57,8 @@ namespace Index {
 
 		// Re-upload the full image to the existing GPU texture. byteCount must
 		// equal width*height*4. No-op (returns false) if the texture wasn't
-		// created with CreateFromPixels / a CopyDst-capable path.
+		// created with CreateFromPixels / a CopyDst-capable path. Regenerates
+		// the mip chain when the texture has one.
 		bool UploadPixels(const uint8_t* rgba, size_t byteCount);
 
 		void Submit(uint8_t unit) const;
@@ -64,6 +78,8 @@ namespace Index {
 
 		static std::unique_ptr<ImageData> DecodeFileToCpu(const char* path,
 			bool flipVertical = false);
+		// Drops the cached mip-generation pipelines (and their device ref); called from RenderApi::Shutdown.
+		static void ReleaseMipGenResources();
 		// Returns the raw WGPUTextureView pointer cast to uint64_t — ImGui reinterpret-casts ImTextureID directly to WGPUTextureView, so this must not be a pool index.
 		uint64_t GetHandle() const { return m_Tex; }
 		Vec2 Size() const { return Vec2{ float(m_Width), float(m_Height) }; }

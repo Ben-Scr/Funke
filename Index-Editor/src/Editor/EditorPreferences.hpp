@@ -83,8 +83,6 @@ namespace Index {
 		static void SetInspectorComponentView(InspectorComponentView value);
 
 		// ── Behavior (migrated from IndexProject) ─────────────────
-		static bool GetRunInBackground();
-		static void SetRunInBackground(bool value);
 
 		static bool GetShowFileExtensions();
 		static void SetShowFileExtensions(bool value);

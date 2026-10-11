@@ -64,6 +64,7 @@ namespace Index {
 			std::string Label;
 			std::string DefaultName;
 			std::function<Entity(Scene&)> Create;
+			uint32_t OwnerId = 0;
 		};
 
 		SceneManager() = default;
@@ -77,6 +78,10 @@ namespace Index {
 		static ComponentRegistry& GetComponentRegistry();
 		static void RegisterEntityPreset(EntityPresetInfo preset);
 		static const std::vector<EntityPresetInfo>& GetEntityPresets();
+		// Tags component/preset registrations with a native package owner until reset to 0. No-op without a SceneManager.
+		static void SetRegistrationOwner(uint32_t owner) noexcept;
+		// Drops the owner's components and presets; call before its module unloads. Returns false without a SceneManager.
+		static bool UnregisterOwner(uint32_t owner);
 		static SceneDefinition& RegisterScene(const std::string& name);
 
 		// Failed non-additive loads preserve the previously loaded scene set.

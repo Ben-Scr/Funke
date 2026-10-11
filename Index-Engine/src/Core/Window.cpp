@@ -140,14 +140,42 @@ namespace Index {
 			glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 		}
 
+		int width = props.Width, height = props.Height;
+		int minWidth = props.MinWidth, minHeight = props.MinHeight;
+		if (props.MonitorFraction > 0.0f || props.MinMonitorFraction > 0.0f) {
+			int areaX = 0, areaY = 0, areaW = 0, areaH = 0;
+			if (GLFWmonitor* monitor = GetMainMonitor()) {
+				glfwGetMonitorWorkarea(monitor, &areaX, &areaY, &areaW, &areaH);
+			}
+			if (areaW > 0 && areaH > 0) {
+				const float aspect = (props.Width > 0 && props.Height > 0)
+					? static_cast<float>(props.Width) / static_cast<float>(props.Height) : 0.0f;
+				// Largest rect of the spec's aspect that fits in fraction * work area.
+				auto fit = [&](float fraction, int& outW, int& outH) {
+					float w = areaW * fraction;
+					float h = areaH * fraction;
+					if (aspect > 0.0f) {
+						if (w / aspect > h) w = h * aspect;
+						else h = w / aspect;
+					}
+					outW = static_cast<int>(w);
+					outH = static_cast<int>(h);
+				};
+				if (props.MinMonitorFraction > 0.0f) fit(props.MinMonitorFraction, minWidth, minHeight);
+				if (props.MonitorFraction > 0.0f) fit(props.MonitorFraction, width, height);
+				width  = std::clamp(width,  std::min(minWidth,  areaW), areaW);
+				height = std::clamp(height, std::min(minHeight, areaH), areaH);
+			}
+		}
+
 		s_MainViewport = std::make_unique<Viewport>(
-			props.Fullscreen ? k_Videomode->width : props.Width,
-			props.Fullscreen ? k_Videomode->height : props.Height
+			props.Fullscreen ? k_Videomode->width : width,
+			props.Fullscreen ? k_Videomode->height : height
 		);
 
 		IDX_INFO_TAG("Window",
 			"Create: spec={}x{}, fullscreen={}, videomode={}x{} -> viewport={}x{}",
-			props.Width, props.Height, props.Fullscreen,
+			width, height, props.Fullscreen,
 			k_Videomode ? k_Videomode->width : 0,
 			k_Videomode ? k_Videomode->height : 0,
 			s_MainViewport->GetWidth(), s_MainViewport->GetHeight());
@@ -155,11 +183,11 @@ namespace Index {
 		m_GLFWwindow = glfwCreateWindow(s_MainViewport->GetWidth(), s_MainViewport->GetHeight(), props.Title.c_str(), nullptr, nullptr);
 		IDX_ASSERT(m_GLFWwindow, IndexErrorCode::Undefined, "Failed to create window!");
 
-		m_MinSize = { props.MinWidth, props.MinHeight };
+		m_MinSize = { minWidth, minHeight };
 		m_MaxSize = { props.MaxWidth, props.MaxHeight };
 		glfwSetWindowSizeLimits(m_GLFWwindow,
-			props.MinWidth  > 0 ? props.MinWidth  : GLFW_DONT_CARE,
-			props.MinHeight > 0 ? props.MinHeight : GLFW_DONT_CARE,
+			minWidth  > 0 ? minWidth  : GLFW_DONT_CARE,
+			minHeight > 0 ? minHeight : GLFW_DONT_CARE,
 			props.MaxWidth  > 0 ? props.MaxWidth  : GLFW_DONT_CARE,
 			props.MaxHeight > 0 ? props.MaxHeight : GLFW_DONT_CARE);
 

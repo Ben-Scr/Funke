@@ -25,6 +25,9 @@ internal static class JobExceptionRegistry
         }
     }
 
+    // Stashed exceptions reference user code; drop before the user ALC unloads.
+    internal static void Clear() => s_Stash.Clear();
+
     // Called from the release callback. Logs and clears any stashed
     // exception that nobody consumed via Complete().
     internal static void DrainOrLog(ulong nativeHandle)

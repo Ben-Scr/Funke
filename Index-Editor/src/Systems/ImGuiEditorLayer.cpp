@@ -993,7 +993,6 @@ namespace Index {
 				}
 			}
 		}
-		Application::SetRunInBackground(EditorPreferences::GetRunInBackground());
 		ScriptSystem::SetAutoRecompileEnabled(EditorPreferences::GetAutoRecompileScripts());
 
 		ClearLogEntries();
@@ -1495,9 +1494,35 @@ namespace Index {
 		ImGui::Begin("EditorDockspace", nullptr, flags);
 		ImGui::PopStyleVar(3);
 
+		// Toolbar row under the menu bar: scene info (left), play controls (centre), search + layout (right).
+		{
+			const float padY = 6.0f;
+			ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetStyleColorVec4(ImGuiCol_MenuBarBg));
+			ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, padY));
+			ImGui::BeginChild("##EditorToolbar", ImVec2(0.0f, ImGui::GetFrameHeight() + padY * 2.0f),
+				ImGuiChildFlags_AlwaysUseWindowPadding,
+				ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav);
+			ImGui::PopStyleVar(2);
+			ImGui::PopStyleColor();
+			const ImVec2 wp = ImGui::GetWindowPos();
+			const ImVec2 ws = ImGui::GetWindowSize();
+			ImGui::GetWindowDrawList()->AddLine(ImVec2(wp.x, wp.y + ws.y - 1.0f), ImVec2(wp.x + ws.x, wp.y + ws.y - 1.0f),
+				ImGui::GetColorU32(ImGuiCol_Border));
+
+			ImGui::BeginDisabled(m_BuildState > 0 || m_ReserializeState > 0);
+			RenderToolbarLeft();
+			RenderToolbar();
+			RenderTopBarRight();
+			ImGui::EndDisabled();
+			ImGui::EndChild();
+		}
+
 		const float statusBarH = std::round(ImGui::GetFrameHeight() + 6.0f);
 		ImGuiID dockspaceId = ImGui::GetID("IndexEditorDockspace");
-		ImGui::DockSpace(dockspaceId, ImVec2(0.0f, -statusBarH), ImGuiDockNodeFlags_PassthruCentralNode);
+		// The spacing before the status bar child counts too, or the bar is pushed below the window.
+		ImGui::DockSpace(dockspaceId, ImVec2(0.0f, -(statusBarH + ImGui::GetStyle().ItemSpacing.y)),
+			ImGuiDockNodeFlags_PassthruCentralNode);
 		RenderStatusBar(statusBarH);
 		// End() is in OnPreRender after RenderMainMenu — must stay open for the menubar.
 	}
@@ -1582,9 +1607,6 @@ namespace Index {
 			ImGui::EndMenu();
 		}
 
-		RenderToolbar();
-		RenderTopBarRight();
-
 		ImGui::EndMenuBar();
 	}
 
@@ -1621,26 +1643,46 @@ namespace Index {
 		}
 	}
 
+	void ImGuiEditorLayer::RenderToolbarLeft() {
+		ImGui::AlignTextToFramePadding();
+		const IndexProject* project = ProjectManager::GetCurrentProject();
+		Scene* scene = GetContextScene();
+		if (project) {
+			ImGui::TextDisabled("%s", project->Name.c_str());
+			if (scene) {
+				ImGui::SameLine(0.0f, 6.0f);
+				ImGui::TextDisabled("/");
+				ImGui::SameLine(0.0f, 6.0f);
+			}
+		}
+		if (scene) {
+			const bool dirty = scene->IsDirty();
+			ImGui::TextUnformatted(scene->GetName().c_str());
+			if (dirty) {
+				ImGui::SameLine(0.0f, 4.0f);
+				ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::Colors::Highlight());
+				ImGui::TextUnformatted("*");
+				ImGui::PopStyleColor();
+				EditorUI::Tooltip("Unsaved changes");
+			}
+		}
+	}
+
 	void ImGuiEditorLayer::RenderTopBarRight() {
-		// Positioned against the real menu-bar rect so the controls stay centred whatever the padding.
-		const ImRect bar = ImGui::GetCurrentWindow()->MenuBarRect();
-		const float itemH = std::round(bar.GetHeight() - 4.0f);
-		const float itemY = bar.Min.y + 2.0f;
-		const float searchW = std::round(ImGui::GetFontSize() * 13.0f);
-		const float layoutW = std::round(ImGui::GetFontSize() * 7.0f);
-		const float rightX = ImGui::GetWindowWidth() - searchW - layoutW - ImGui::GetStyle().ItemSpacing.x - 10.0f;
+		const float searchW = std::round(ImGui::GetFontSize() * 15.0f);
+		const float layoutW = std::round(ImGui::GetFontSize() * 7.5f);
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float rightX = ImGui::GetWindowWidth() - style.WindowPadding.x - searchW - layoutW - style.ItemSpacing.x;
+		ImGui::SameLine();
 		if (rightX <= ImGui::GetCursorPosX()) return;
 
-		ImGui::SameLine(rightX);
-		ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, itemY));
-		if (EditorUI::SearchLauncher("##CommandSearch", "Search commands", "Ctrl+K", ImVec2(searchW, itemH))) {
+		ImGui::SetCursorPosX(rightX);
+		if (EditorUI::SearchLauncher("##CommandSearch", "Search commands", "Ctrl+K", ImVec2(searchW, ImGui::GetFrameHeight()))) {
 			m_OpenCommandPalette = true;
 		}
 
 		ImGui::SameLine();
-		ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, itemY));
-		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-			ImVec2(ImGui::GetStyle().FramePadding.x, std::max(0.0f, (itemH - ImGui::GetFontSize()) * 0.5f)));
+		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, style.FramePadding);
 		ImGui::SetNextItemWidth(layoutW);
 		if (ImGui::BeginCombo("##LayoutPreset", "Layout")) {
 			if (ImGui::Selectable("Default")) {
@@ -2077,28 +2119,34 @@ namespace Index {
 	}
 
 	void ImGuiEditorLayer::RenderToolbar() {
-		const ImRect bar = ImGui::GetCurrentWindow()->MenuBarRect();
-		const float iconSize = std::round(std::min(ImGui::GetFontSize() * 0.9f, bar.GetHeight() - 10.0f));
+		const float frameH = ImGui::GetFrameHeight();
+		const float iconSize = std::round(ImGui::GetFontSize() * 0.9f);
 		const ImVec2 btnSize(iconSize, iconSize);
 		const bool isPlaying = Application::GetIsPlaying();
 		const bool isPaused = ApplicationEditorAccess::IsPlaymodePaused();
 
-		// Center the button group in the menu bar: edit mode shows Play + Standalone, play mode four buttons.
-		const ImVec2 framePad(10.0f, 3.0f);
+		// Frame-height buttons centred in the toolbar row: edit mode shows Play + Standalone, play mode four.
+		const ImVec2 framePad(12.0f, std::max(0.0f, (frameH - iconSize) * 0.5f));
 		const float buttonW = iconSize + framePad.x * 2.0f;
+		const float gap = 2.0f;
 		const int buttonCount = isPlaying ? 4 : 2;
-		const float groupW = buttonW * buttonCount + ImGui::GetStyle().ItemSpacing.x * (buttonCount - 1);
+		const float groupW = buttonW * buttonCount + gap * (buttonCount - 1);
+		ImGui::SameLine();
 		const float centeredX = (ImGui::GetWindowWidth() - groupW) * 0.5f;
 		if (centeredX > ImGui::GetCursorPosX()) {
 			ImGui::SetCursorPosX(centeredX);
 		}
 
-		// Vertically centred on the real menu-bar rect; later buttons follow via SameLine.
-		const float buttonH = iconSize + framePad.y * 2.0f;
-		ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, std::round(bar.Min.y + (bar.GetHeight() - buttonH) * 0.5f)));
+		// One rounded well behind the group; buttons inside are flat until hovered.
+		const ImVec2 groupMin = ImGui::GetCursorScreenPos();
+		ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(groupMin.x - 3.0f, groupMin.y - 2.0f),
+			ImVec2(groupMin.x + groupW + 3.0f, groupMin.y + frameH + 2.0f),
+			ImGui::GetColorU32(ImGuiCol_FrameBg), ImGui::GetStyle().FrameRounding + 2.0f);
 
 		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, framePad);
-		ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f);
+		ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ImGui::GetStyle().FrameRounding);
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, ImGui::GetStyle().ItemSpacing.y));
+		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
 
 		if (!isPlaying) {
 			const bool playButtonDisabled = m_PlayModeRecompilePending;
@@ -2185,7 +2233,8 @@ namespace Index {
 		}
 		if (standaloneDisabled) ImGui::EndDisabled();
 
-		ImGui::PopStyleVar(2);
+		ImGui::PopStyleColor();
+		ImGui::PopStyleVar(3);
 		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
 			if (m_BuildState > 0)
 				ImGui::SetTooltip("Launch Standalone (disabled — build in progress)");
@@ -2200,15 +2249,15 @@ namespace Index {
 		}
 		// Status text sits beside the buttons, nudged down to their vertical center.
 		if (isPlaying) {
-			ImGui::SameLine();
-			ImGui::SetCursorPosY(ImGui::GetCursorPosY() + framePad.y);
+			ImGui::SameLine(0.0f, 10.0f);
+			ImGui::AlignTextToFramePadding();
 			ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::Colors::Highlight());
 			ImGui::TextUnformatted(isPaused ? "Paused" : "Playing");
 			ImGui::PopStyleColor();
 		}
 		if (m_PlayModeRecompilePending) {
-			ImGui::SameLine();
-			ImGui::SetCursorPosY(ImGui::GetCursorPosY() + framePad.y);
+			ImGui::SameLine(0.0f, 10.0f);
+			ImGui::AlignTextToFramePadding();
 			ImGui::TextDisabled("Waiting for script compilation...");
 		}
 

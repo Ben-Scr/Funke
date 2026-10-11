@@ -192,7 +192,7 @@ float throttle = Input.GetGamepadTrigger(GamepadAxis.RightTrigger); // 0..1
 ```csharp
 Time.DeltaTime;        // seconds since last frame (scaled)
 Time.FixedDeltaTime;   // physics step length
-Time.TimeScale = 0.5f; // slow motion (or 0 to pause game time)
+Time.TimeScale = 0.5f; // slow motion (or 0 to pause game time); clamped to [0, 100]
 ```
 
 **Physics 2D** — raycasts and overlap checks:

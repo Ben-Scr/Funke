@@ -54,6 +54,8 @@ Generate the project files:
 scripts\Setup.bat
 ```
 
+Setup checks every prerequisite and asks `[Y/n]` before installing a missing one via winget: Python, Git, the .NET 10 SDK, CMake, Premake, and (default *no*, several GB) the Visual Studio 2022 Build Tools with the C++ workload. Pass `-y` to accept all, or `--no-install` to only report what is missing.
+
 Build managed projects with the .NET 10 SDK and native projects with the Visual Studio 2022 toolchain:
 
 ```powershell
@@ -81,6 +83,8 @@ Generate the makefiles:
 chmod +x scripts/Setup.sh
 ./scripts/Setup.sh
 ```
+
+Setup asks `[Y/n]` before installing anything missing through apt, dnf, pacman or zypper: Python, Git, the .NET 10 SDK, CMake, and the C++ toolchain with the X11/GL development headers.
 
 Build:
 

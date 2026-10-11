@@ -167,9 +167,29 @@ namespace Index {
 		Get().RegisterEntityPresetImpl(std::move(preset));
 	}
 
+	void SceneManager::SetRegistrationOwner(uint32_t owner) noexcept {
+		if (SceneManager* manager = TryGet()) {
+			manager->m_ComponentRegistry.SetRegistrationOwner(owner);
+		}
+	}
+
+	bool SceneManager::UnregisterOwner(uint32_t owner) {
+		SceneManager* manager = TryGet();
+		if (!manager) return false;
+		if (owner == 0) return true;
+		manager->m_ComponentRegistry.UnregisterOwner(owner);
+		std::erase_if(manager->m_EntityPresets, [owner](const EntityPresetInfo& preset) {
+			return preset.OwnerId == owner;
+		});
+		return true;
+	}
+
 	void SceneManager::RegisterEntityPresetImpl(EntityPresetInfo preset) {
 		if (preset.MenuPath.empty() || preset.Label.empty() || !preset.Create) {
 			return;
+		}
+		if (preset.OwnerId == 0) {
+			preset.OwnerId = m_ComponentRegistry.GetRegistrationOwner();
 		}
 
 		for (EntityPresetInfo& existing : m_EntityPresets) {

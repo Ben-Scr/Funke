@@ -466,6 +466,7 @@ namespace Index {
 
 		// Top bar / status bar / command palette (ImGuiEditorLayer.cpp).
 		void SaveScenesFromMenu(Scene& scene);
+		void RenderToolbarLeft();
 		void RenderTopBarRight();
 		void RenderCommandPalette(Scene& scene);
 		void RenderStatusBar(float height);

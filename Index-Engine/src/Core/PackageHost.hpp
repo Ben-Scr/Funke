@@ -2,6 +2,7 @@
 
 #include "Core/Export.hpp"
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -14,6 +15,7 @@ namespace Index {
 		std::string Name;          // Without the "Pkg." prefix or ".Native" suffix, e.g. "Index.Hello".
 		std::string ModulePath;    // Absolute path to the loaded shared library.
 		void*       ModuleHandle = nullptr; // HMODULE on Windows; void* dlopen handle on POSIX.
+		uint32_t    OwnerId = 0;            // Tags this package's ComponentRegistry / entity-preset entries.
 	};
 
 	class INDEX_API PackageHost {

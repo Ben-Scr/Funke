@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <limits>
 #include <stdexcept>
 
 using namespace Index;
@@ -86,6 +87,21 @@ TEST_CASE("PhysicsTickRate maps to the fixed timestep Time actually uses") {
 	// Endpoints sit on Time's clamp bounds, so they pass through unchanged.
 	CHECK(fixedStepFor(IndexProject::k_MaxPhysicsHz) == doctest::Approx(1.0f / 240.0f));
 	CHECK(fixedStepFor(IndexProject::k_MinPhysicsHz) == doctest::Approx(1.0f));
+}
+
+TEST_CASE("Time::SetTimeScale clamps to [0, 100]") {
+	TimeTestApplication application;
+
+	Time::SetTimeScale(2.5f);
+	CHECK(Time::GetTimeScale() == doctest::Approx(2.5f));
+	Time::SetTimeScale(-3.0f);
+	CHECK(Time::GetTimeScale() == 0.0f);
+	Time::SetTimeScale(1.0e9f);
+	CHECK(Time::GetTimeScale() == doctest::Approx(100.0f));
+	Time::SetTimeScale(std::numeric_limits<float>::infinity());
+	CHECK(Time::GetTimeScale() == doctest::Approx(100.0f));
+	Time::SetTimeScale(std::numeric_limits<float>::quiet_NaN());
+	CHECK(Time::GetTimeScale() == 0.0f);
 }
 
 TEST_CASE("IndexProject round-trips a non-default build resolution through project.json") {

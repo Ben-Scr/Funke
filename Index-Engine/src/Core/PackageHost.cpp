@@ -4,6 +4,7 @@
 #include "Core/Log.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
+#include "Scene/SceneManager.hpp"
 #include "Serialization/Path.hpp"
 #include "Utils/Hash.hpp"
 
@@ -29,6 +30,7 @@ namespace Index {
 	namespace {
 		std::vector<LoadedPackage> s_LoadedPackages;
 		bool s_LoadAllRan = false;
+		uint32_t s_NextOwnerId = 1;
 		constexpr std::string_view k_NativeAbiSchema = "1";
 		constexpr std::string_view k_EngineCppBoundary = "engine_cpp";
 		constexpr std::string_view k_StandaloneCBoundary = "standalone_c";
@@ -437,14 +439,23 @@ namespace Index {
 					continue;
 				}
 
+				const uint32_t ownerId = s_NextOwnerId++;
 				bool onLoadCrashed = false;
 				bool onLoadHadExport = false;
-				const int onLoadResult = InvokeOnLoadGuarded(module, &onLoadCrashed, &onLoadHadExport);
+				int onLoadResult = 0;
+				{
+					struct OwnerScope {
+						explicit OwnerScope(uint32_t owner) { SceneManager::SetRegistrationOwner(owner); }
+						~OwnerScope() { SceneManager::SetRegistrationOwner(0); }
+					} ownerScope(ownerId);
+					onLoadResult = InvokeOnLoadGuarded(module, &onLoadCrashed, &onLoadHadExport);
+				}
 				if (onLoadCrashed) {
 					IDX_CORE_ERROR_TAG("PackageHost",
 						"Package '{}' crashed during IndexPackage_OnLoad (likely binary incompatibility "
 						"with the running engine — try uninstalling and reinstalling). Unloaded; editor continues.",
 						packageName);
+					SceneManager::UnregisterOwner(ownerId);
 					PlatformUnload(module);
 					continue;
 				}
@@ -461,6 +472,7 @@ namespace Index {
 				loaded.Name = packageName;
 				loaded.ModulePath = pathStr;
 				loaded.ModuleHandle = module;
+				loaded.OwnerId = ownerId;
 				s_LoadedPackages.push_back(std::move(loaded));
 				alreadyLoadedByName.insert(packageName);
 				alreadyLoadedByPath.insert(pathStr);
@@ -496,7 +508,14 @@ namespace Index {
 		return loaded;
 	}
 
+	// Safe order (Application::Shutdown): SceneManager is destroyed first, taking scenes, EnTT pools and the registry with it.
+	// If it is still alive, registry entries are dropped here, but live entities of package types keep EnTT storage whose code is in the module.
 	void PackageHost::UnloadAll() {
+		if (!s_LoadedPackages.empty() && SceneManager::GetLoadedSceneCount() > 0) {
+			IDX_CORE_WARN_TAG("PackageHost",
+				"Unloading {} package(s) while {} scene(s) are loaded; unload scenes first so package component storage is released.",
+				s_LoadedPackages.size(), SceneManager::GetLoadedSceneCount());
+		}
 		for (auto it = s_LoadedPackages.rbegin(); it != s_LoadedPackages.rend(); ++it) {
 			bool onUnloadCrashed = false;
 			InvokeOnUnloadGuarded(it->ModuleHandle, &onUnloadCrashed);
@@ -505,6 +524,7 @@ namespace Index {
 					"Package '{}' crashed during IndexPackage_OnUnload; continuing teardown.",
 					it->Name);
 			}
+			SceneManager::UnregisterOwner(it->OwnerId);
 			PlatformUnload(it->ModuleHandle);
 		}
 		s_LoadedPackages.clear();

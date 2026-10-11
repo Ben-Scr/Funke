@@ -45,7 +45,9 @@ namespace Index {
 			m_end[id].push_back(std::move(cb));
 		}
 
+		// Hit events are opt-in per shape in Box2D; enable on demand so unlistened shapes skip the hit scan.
 		void RegisterHit(b2ShapeId id, ContactHitCallback cb) {
+			if (b2Shape_IsValid(id)) b2Shape_EnableHitEvents(id, true);
 			m_hit[id].push_back(std::move(cb));
 		}
 
@@ -86,6 +88,7 @@ namespace Index {
 					std::make_move_iterator(snapshot.End.end()));
 			}
 			if (!snapshot.Hit.empty()) {
+				if (b2Shape_IsValid(id)) b2Shape_EnableHitEvents(id, true);
 				auto& dest = m_hit[id];
 				dest.insert(dest.end(),
 					std::make_move_iterator(snapshot.Hit.begin()),
@@ -120,7 +123,10 @@ namespace Index {
 			for (int i = 0; i < ev.beginCount; ++i) {
 				auto& e = ev.beginEvents[i];
 				if (!b2Shape_IsValid(e.shapeIdA) || !b2Shape_IsValid(e.shapeIdB)) continue;
-				Collision2D collision2D = MakeCollision(e.shapeIdA, e.shapeIdB, resolveShape);
+				const std::optional<ContactGeometry> geometry = GetManifoldGeometry(e.contactId);
+				Collision2D collision2D = MakeCollision(e.shapeIdA, e.shapeIdB, resolveShape,
+					geometry ? std::optional<Vec2>(geometry->Point) : std::nullopt);
+				if (geometry) collision2D.normal = geometry->Normal;
 				m_activeContacts[MakeContactKey(e.shapeIdA, e.shapeIdB)] = { e.shapeIdA, e.shapeIdB, collision2D };
 				m_pendingBegin.push_back({ e.shapeIdA, e.shapeIdB, collision2D });
 			}
@@ -148,9 +154,11 @@ namespace Index {
 				auto& e = ev.hitEvents[i];
 				if (!b2Shape_IsValid(e.shapeIdA) || !b2Shape_IsValid(e.shapeIdB)) continue;
 				Collision2D collision2D = MakeCollision(e.shapeIdA, e.shapeIdB, resolveShape, Vec2{ e.point.x, e.point.y });
+				collision2D.normal = Vec2{ e.normal.x, e.normal.y };
 				const ContactKey key = MakeContactKey(e.shapeIdA, e.shapeIdB);
 				if (auto active = m_activeContacts.find(key); active != m_activeContacts.end()) {
 					active->second.Collision.contactPoint = collision2D.contactPoint;
+					active->second.Collision.normal = collision2D.normal;
 				}
 				m_pendingHit.push_back({ e.shapeIdA, e.shapeIdB, collision2D });
 			}
@@ -282,6 +290,30 @@ namespace Index {
 			return {
 				(transformA.p.x + transformB.p.x) * 0.5f,
 				(transformA.p.y + transformB.p.y) * 0.5f
+			};
+		}
+
+		struct ContactGeometry {
+			Vec2 Point;
+			Vec2 Normal;
+		};
+
+		static std::optional<ContactGeometry> GetManifoldGeometry(b2ContactId contactId) {
+			if (!b2Contact_IsValid(contactId)) return std::nullopt;
+			const b2ContactData data = b2Contact_GetData(contactId);
+			const b2Manifold& manifold = data.manifold;
+			if (manifold.pointCount <= 0 || !b2Shape_IsValid(data.shapeIdA)) return std::nullopt;
+
+			// Anchors are relative to body A's origin.
+			const b2Vec2 originA = b2Body_GetPosition(b2Shape_GetBody(data.shapeIdA));
+			b2Vec2 sum{ 0.0f, 0.0f };
+			for (int i = 0; i < manifold.pointCount; ++i) {
+				sum = b2Add(sum, manifold.points[i].anchorA);
+			}
+			const float inv = 1.0f / static_cast<float>(manifold.pointCount);
+			return ContactGeometry{
+				.Point = Vec2{ originA.x + sum.x * inv, originA.y + sum.y * inv },
+				.Normal = Vec2{ manifold.normal.x, manifold.normal.y }
 			};
 		}
 

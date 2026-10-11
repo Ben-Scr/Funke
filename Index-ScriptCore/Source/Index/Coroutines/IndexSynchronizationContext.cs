@@ -30,6 +30,12 @@ internal sealed class IndexSynchronizationContext : SynchronizationContext
         d(state);
     }
 
+    // Pending continuations capture user state machines; drop before the user ALC unloads.
+    public void Clear()
+    {
+        lock (m_Lock) { m_Queue = new Queue<Continuation>(); }
+    }
+
     /// <summary>Drain queued continuations on the engine main thread; OperationCanceledException is swallowed (expected from cancelled async void).</summary>
     public void Pump()
     {

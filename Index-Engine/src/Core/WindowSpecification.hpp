@@ -24,6 +24,11 @@ namespace Index {
 		// "no constraint" (translated to GLFW_DONT_CARE at create time).
 		int MinWidth{ 0 }, MinHeight{ 0 };
 		int MaxWidth{ 0 }, MaxHeight{ 0 };
+		// >0: start size is this fraction of the primary monitor's work area, so the window
+		// scales from 1080p to 8K. Width:Height then only sets the aspect (and the fallback size).
+		float MonitorFraction{ 0.0f };
+		// >0: min size as a fraction of the work area at the same aspect; overrides MinWidth/MinHeight.
+		float MinMonitorFraction{ 0.0f };
 		std::string Title{ "GLFW Window" };
 		bool Resizeable{ true };
 		bool Decorated{ true };

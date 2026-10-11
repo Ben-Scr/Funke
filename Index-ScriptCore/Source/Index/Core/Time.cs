@@ -34,6 +34,7 @@ public static class Time
     /// TimeScale and pause. In editor preview, resets to zero on each play-mode entry.</summary>
     public static float RealtimeSinceStartup => InternalCalls.Time_GetRealtimeSinceStartup();
 
+    /// <summary>Game-time multiplier. Clamped to [0, 100]; 0 pauses scaled time.</summary>
     public static float TimeScale
     {
         get => InternalCalls.Application_GetTimeScale();

@@ -14,7 +14,10 @@ public:
 	ApplicationConfig GetConfiguration() const override {
 		ApplicationConfig config;
 		config.AutoCreateDefaultCamera2D = false;
-		config.WindowSpecification = WindowSpecification(900, 600, "Index Launcher " + std::string(IDX_VERSION), true, true, false);
+		config.WindowSpecification = WindowSpecification(1080, 720,"Index Launcher " + std::string(IDX_VERSION), true, true, false);
+		// 1080x720 only sets the 3:2 aspect (and the no-monitor fallback); the real size tracks the work area.
+		config.WindowSpecification.MonitorFraction = 0.7f;
+		config.WindowSpecification.MinMonitorFraction = 0.45f;
 		config.WindowSpecification.MinWidth  = 720;
 		config.WindowSpecification.MinHeight = 480;
 		// Keep native OS chrome; theme code updates its caption colors.

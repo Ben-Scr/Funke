@@ -67,13 +67,36 @@ def check_tool(name: str, cmd: str | None = None) -> bool:
 WINGET_PACKAGE_IDS = {
     "git": "Git.Git",
     "dotnet": "Microsoft.DotNet.SDK.10",
+    "cmake": "Kitware.CMake",
 }
 # Linux package names per tool, with per-manager overrides keyed by the manager
 # executable (see detect_linux_package_manager); "default" covers apt/dnf/zypper.
 LINUX_PACKAGES = {
     "git": {"default": ["git"]},
     "dotnet": {"default": ["dotnet-sdk-10.0"], "pacman": ["dotnet-sdk"]},
+    "cmake": {"default": ["cmake"]},
 }
+# MSVC v143 for the engine, native scripts and native packages. The C++ workload
+# alone is several GB, so it gets its own prompt that defaults to "no".
+VS_BUILD_TOOLS_PACKAGE = "Microsoft.VisualStudio.2022.BuildTools"
+VS_BUILD_TOOLS_OVERRIDE = (
+    "--wait --passive --norestart "
+    "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+)
+MSVC_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+# Linux C++ toolchain plus the GLFW/X11 headers; mirrors the CI dependency list.
+# Clang is required because Dawn does not compile with GCC 13.
+LINUX_BUILD_PACKAGES = {
+    "apt-get": ["build-essential", "clang", "lld", "pkg-config", "xorg-dev", "libglu1-mesa-dev", "libx11-xcb-dev"],
+    "dnf": ["gcc", "gcc-c++", "make", "clang", "lld", "pkgconf-pkg-config", "libX11-devel", "libXrandr-devel",
+            "libXinerama-devel", "libXcursor-devel", "libXi-devel", "mesa-libGLU-devel"],
+    "pacman": ["base-devel", "clang", "lld", "pkgconf", "libx11", "libxrandr", "libxinerama", "libxcursor",
+               "libxi", "glu"],
+    "zypper": ["gcc", "gcc-c++", "make", "clang", "lld", "pkg-config", "libX11-devel", "libXrandr-devel",
+               "libXinerama-devel", "libXcursor-devel", "libXi-devel", "glu-devel"],
+}
+LINUX_BUILD_TOOLS = ("c++", "make", "clang", "clang++", "pkg-config")
+LINUX_PKGCONFIG_MODULES = ("x11", "xrandr", "xinerama", "xcursor", "xi", "x11-xcb", "glu")
 # Fallback premake build, downloaded only when vendor/bin/premake5 is absent AND
 # premake5 is not on PATH. Bump if the vendored toolchain moves on.
 PREMAKE_FALLBACK_VERSION = "5.0.0-beta2"
@@ -83,19 +106,22 @@ def is_interactive() -> bool:
     return bool(sys.stdin) and sys.stdin.isatty()
 
 
-def prompt_yes_no(question: str, assume_yes: bool) -> bool:
-    """Ask a [Y/n] question (default yes). Returns False non-interactively
-    unless *assume_yes* short-circuits the prompt."""
+def prompt_yes_no(question: str, assume_yes: bool, default_yes: bool = True) -> bool:
+    """Ask a yes/no question. Returns False non-interactively unless *assume_yes*
+    short-circuits the prompt; an empty answer picks *default_yes*."""
+    choices = "[Y/n]" if default_yes else "[y/N]"
     if assume_yes:
-        print(f"{question} [Y/n] y")
+        print(f"{question} {choices} y")
         return True
     if not is_interactive():
         return False
     try:
-        answer = input(f"{question} [Y/n] ").strip().lower()
+        answer = input(f"{question} {choices} ").strip().lower()
     except EOFError:
         return False
-    return answer in ("", "y", "yes")
+    if not answer:
+        return default_yes
+    return answer in ("y", "yes")
 
 
 def refresh_windows_path() -> None:
@@ -142,7 +168,7 @@ def detect_linux_package_manager() -> tuple[str, list[str]] | None:
     return None
 
 
-def winget_install(package_id: str) -> bool:
+def winget_install(package_id: str, override: str | None = None) -> bool:
     if not shutil.which("winget"):
         print("  [!!] winget (App Installer) was not found, so auto-install is unavailable.")
         print("       Install 'App Installer' from the Microsoft Store, then re-run setup.")
@@ -152,6 +178,8 @@ def winget_install(package_id: str) -> bool:
         "--accept-package-agreements", "--accept-source-agreements",
         "--disable-interactivity",
     ]
+    if override:
+        cmd += ["--override", override]
     print(f"  [..] winget install {package_id}")
     return subprocess.run(cmd).returncode == 0
 
@@ -167,6 +195,10 @@ def linux_package_install(tool: str) -> bool:
     if not packages:
         print(f"  [!!] No known {name} package for {tool}.")
         return False
+    return linux_install_packages(name, install_cmd, packages)
+
+
+def linux_install_packages(name: str, install_cmd: list[str], packages: list[str]) -> bool:
     cmd = list(install_cmd) + packages
     if hasattr(os, "geteuid") and os.geteuid() != 0:
         if shutil.which("sudo"):
@@ -252,6 +284,93 @@ def offer_install(tool: str, install_enabled: bool, assume_yes: bool) -> bool:
         return True
     print(f"  [!!] {tool} installed but not yet visible on PATH; please re-run setup.")
     return False
+
+
+def find_msvc() -> str | None:
+    """Return the installation path of a Visual Studio with the MSVC x64 toolset."""
+    program_files_x86 = os.environ.get("ProgramFiles(x86)") or r"C:\Program Files (x86)"
+    vswhere = Path(program_files_x86) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
+    if not vswhere.is_file():
+        return None
+    try:
+        result = subprocess.run(
+            [str(vswhere), "-latest", "-products", "*", "-requires", MSVC_COMPONENT,
+             "-property", "installationPath"],
+            capture_output=True, text=True,
+        )
+    except OSError:
+        return None
+    paths = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return paths[0] if result.returncode == 0 and paths else None
+
+
+def ensure_msvc(install_enabled: bool, assume_yes: bool) -> bool:
+    """Check for the MSVC toolset and offer the VS 2022 Build Tools when missing."""
+    found = find_msvc()
+    if found:
+        print(f"  [OK] MSVC C++ toolset found: {found}")
+        return True
+    print("  [!!] MSVC C++ toolset NOT found (needed to build the engine, native scripts and packages)")
+    if not install_enabled or not (assume_yes or is_interactive()):
+        return False
+    question = (
+        "[Index Setup] Install Visual Studio 2022 Build Tools with the C++ workload? "
+        "This is a download of several GB and can take a while"
+    )
+    if not prompt_yes_no(question, assume_yes, default_yes=False):
+        print("       Install it later from https://visualstudio.microsoft.com/visual-cpp-build-tools/")
+        return False
+    if not winget_install(VS_BUILD_TOOLS_PACKAGE, VS_BUILD_TOOLS_OVERRIDE):
+        print("  [!!] Could not install the Build Tools automatically; please install them manually.")
+        return False
+    found = find_msvc()
+    if found:
+        print(f"  [OK] MSVC C++ toolset ready: {found}")
+        return True
+    print("  [!!] Build Tools installed but the C++ toolset was not detected; re-run setup after a restart.")
+    return False
+
+
+def missing_linux_build_deps() -> list[str]:
+    """List missing Linux build tools and pkg-config modules (empty when complete)."""
+    missing = [tool for tool in LINUX_BUILD_TOOLS if not shutil.which(tool)]
+    if shutil.which("pkg-config"):
+        missing += [
+            module for module in LINUX_PKGCONFIG_MODULES
+            if subprocess.run(["pkg-config", "--exists", module]).returncode != 0
+        ]
+    else:
+        missing += [f"{module} (dev headers)" for module in LINUX_PKGCONFIG_MODULES]
+    return missing
+
+
+def ensure_linux_build_deps(install_enabled: bool, assume_yes: bool) -> bool:
+    """Check the C++ toolchain and GLFW/X11 headers; offer to install them."""
+    missing = missing_linux_build_deps()
+    if not missing:
+        print("  [OK] C++ toolchain and X11/GL development headers found")
+        return True
+    print(f"  [!!] Missing build dependencies: {', '.join(missing)}")
+    manager = detect_linux_package_manager()
+    if not manager or not install_enabled or not (assume_yes or is_interactive()):
+        if not manager:
+            print("  [!!] No supported package manager (apt/dnf/pacman/zypper) was found.")
+        return False
+    name, install_cmd = manager
+    packages = LINUX_BUILD_PACKAGES[name]
+    if not prompt_yes_no(
+        f"[Index Setup] Install the C++ build dependencies ({' '.join(packages)})?", assume_yes
+    ):
+        return False
+    if not linux_install_packages(name, install_cmd, packages):
+        print("  [!!] Could not install the build dependencies; please install them manually.")
+        return False
+    still_missing = missing_linux_build_deps()
+    if still_missing:
+        print(f"  [!!] Still missing after install: {', '.join(still_missing)}")
+        return False
+    print("  [OK] C++ toolchain and X11/GL development headers ready")
+    return True
 
 
 def submodules_need_update(repo_root: Path) -> bool:
@@ -674,6 +793,19 @@ def main() -> int:
                     dotnet_exe = shutil.which("dotnet")
                 else:
                     required_missing.append("dotnet")
+
+    # Build toolchain: Setup itself only generates project files, so these are soft
+    # (warn and continue); building the engine, Dawn or native scripts needs them.
+    if not check_tool("cmake"):
+        if not offer_install("cmake", install_enabled, assume_yes):
+            soft_missing.append("cmake")
+
+    if is_windows:
+        if not ensure_msvc(install_enabled, assume_yes):
+            soft_missing.append("msvc-build-tools")
+    elif platform.system() == "Linux":
+        if not ensure_linux_build_deps(install_enabled, assume_yes):
+            soft_missing.append("linux-build-deps")
 
     # E12: detect MSBuild via vswhere on Windows (non-fatal). Writes
     # scripts/index-build-env.bat with MSBUILD_PATH for downstream tools.

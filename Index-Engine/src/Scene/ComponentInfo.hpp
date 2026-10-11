@@ -110,6 +110,9 @@ namespace Index {
 
 		// True for RegisterDynamic components (C# user assemblies); UnregisterAllDynamic drops all flagged entries on unload.
 		bool isDynamic = false;
+
+		// Non-zero for native package registrations; ComponentRegistry::UnregisterOwner drops them before the package module unloads.
+		uint32_t ownerId = 0;
 	};
 
 } // namespace Index

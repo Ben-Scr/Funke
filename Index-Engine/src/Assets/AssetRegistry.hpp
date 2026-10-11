@@ -2,6 +2,7 @@
 
 #include "Assets/AssetKind.hpp"
 #include "Assets/TextureMeta.hpp"
+#include "Core/Export.hpp"
 #include "Core/UUID.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
@@ -45,20 +46,20 @@ namespace Index {
 		}
 
 		static void MarkDirty() {
-			s_Dirty = true;
-			++s_ChangeVersion;
+			State().Dirty = true;
+			++State().ChangeVersion;
 			// Clear the known-missing cache: a FileWatcher event (or any
 			// other dirtying signal) means the on-disk layout might have
 			// changed and previously-missing assets could now exist.
-			s_KnownMissingIds.clear();
+			State().KnownMissingIds.clear();
 		}
 
 		static bool IsDirty() {
-			return s_Dirty;
+			return State().Dirty;
 		}
 
 		static uint64_t GetChangeVersion() {
-			return s_ChangeVersion;
+			return State().ChangeVersion;
 		}
 
 		// Top-byte convention: 0xAB = hand-picked stable GUID (safe in defaults), 0xAA = path-hash GUID (changes on rename/move within IndexAssets/).
@@ -70,8 +71,8 @@ namespace Index {
 			record.Id = guid;
 			record.Path = absolutePath;
 			record.Kind = kind;
-			s_BuiltInById[guid] = record;
-			s_BuiltInPathToId[absolutePath] = guid;
+			State().BuiltInById[guid] = record;
+			State().BuiltInPathToId[absolutePath] = guid;
 		}
 
 		// FNV-1a 64 of the path relative to IndexAssets root, lowercased + forward-slashed for cross-platform stability.
@@ -112,7 +113,7 @@ namespace Index {
 				if (absPath.empty() || IsMetaFilePath(absPath)) {
 					continue;
 				}
-				if (s_BuiltInPathToId.find(absPath) != s_BuiltInPathToId.end()) {
+				if (State().BuiltInPathToId.find(absPath) != State().BuiltInPathToId.end()) {
 					continue;  // hand-picked or earlier scan already owns this path
 				}
 
@@ -126,7 +127,7 @@ namespace Index {
 					Path::FromUtf8(absPath), nativeRoot, relEc);
 				const uint64_t guid = ComputeBuiltInPathGuid(relEc ? absPath : Path::ToGenericUtf8(relPath));
 
-				if (s_BuiltInById.find(guid) != s_BuiltInById.end()) {
+				if (State().BuiltInById.find(guid) != State().BuiltInById.end()) {
 					IDX_CORE_WARN_TAG("AssetRegistry",
 						"Built-in path-hash collision: '{}' hashed to GUID {} which is already registered — skipping",
 						absPath, guid);
@@ -137,8 +138,8 @@ namespace Index {
 				record.Id = guid;
 				record.Path = absPath;
 				record.Kind = kind;
-				s_BuiltInById[guid] = record;
-				s_BuiltInPathToId[absPath] = guid;
+				State().BuiltInById[guid] = record;
+				State().BuiltInPathToId[absPath] = guid;
 			}
 		}
 
@@ -150,7 +151,7 @@ namespace Index {
 		// trusts a shipped manifest (skips the directory walk) and never re-scans on a resolve miss.
 		// Editors leave it false so on-disk edits are detected. Set BEFORE the first Sync.
 		static void SetAssetsImmutable(bool immutable) {
-			s_AssetsImmutable = immutable;
+			State().AssetsImmutable = immutable;
 		}
 
 		static uint64_t GetOrCreateAssetUUID(const std::string& path) {
@@ -162,7 +163,7 @@ namespace Index {
 			// Built-in (engine-shipped) assets bypass the project-tracked
 			// path check — they live under <exeDir>/IndexAssets/ and have
 			// pre-assigned stable GUIDs.
-			if (auto it = s_BuiltInPathToId.find(normalizedPath); it != s_BuiltInPathToId.end()) {
+			if (auto it = State().BuiltInPathToId.find(normalizedPath); it != State().BuiltInPathToId.end()) {
 				return it->second;
 			}
 
@@ -171,7 +172,7 @@ namespace Index {
 				return 0;
 			}
 
-			if (const auto it = s_PathToId.find(normalizedPath); it != s_PathToId.end()) {
+			if (const auto it = State().PathToId.find(normalizedPath); it != State().PathToId.end()) {
 				return it->second;
 			}
 
@@ -179,8 +180,8 @@ namespace Index {
 			if (id == 0) {
 				do {
 					id = static_cast<uint64_t>(UUID());
-				} while (id != 0 && s_IdToRecord.find(id) != s_IdToRecord.end());
-			} else if (auto existing = s_IdToRecord.find(id); existing != s_IdToRecord.end()) {
+				} while (id != 0 && State().IdToRecord.find(id) != State().IdToRecord.end());
+			} else if (auto existing = State().IdToRecord.find(id); existing != State().IdToRecord.end()) {
 				// GUID collision: a different asset already owns this GUID.
 				// Regenerate so we don't break the existing reference, but
 				// surface the collision — silent overwrite breaks references
@@ -190,13 +191,13 @@ namespace Index {
 					normalizedPath, id, existing->second.Path, normalizedPath);
 				do {
 					id = static_cast<uint64_t>(UUID());
-				} while (id != 0 && s_IdToRecord.find(id) != s_IdToRecord.end());
+				} while (id != 0 && State().IdToRecord.find(id) != State().IdToRecord.end());
 			}
 
 			WriteMeta(normalizedPath, id, Classify(normalizedPath));
 			Register(normalizedPath, id, Classify(normalizedPath));
-			s_KnownMissingIds.erase(id);
-			++s_ChangeVersion;
+			State().KnownMissingIds.erase(id);
+			++State().ChangeVersion;
 			return id;
 		}
 
@@ -209,24 +210,24 @@ namespace Index {
 				return 0;
 			}
 
-			if (auto it = s_BuiltInPathToId.find(normalizedPath); it != s_BuiltInPathToId.end()) {
+			if (auto it = State().BuiltInPathToId.find(normalizedPath); it != State().BuiltInPathToId.end()) {
 				return it->second;
 			}
 
 			const std::string root = GetAssetsRoot();
-			if (root != s_TrackedRoot) {
-				s_TrackedRoot = root;
-				s_IdToRecord.clear();
-				s_PathToId.clear();
-				s_KnownMissingIds.clear();
-				s_Dirty = false;
+			if (root != State().TrackedRoot) {
+				State().TrackedRoot = root;
+				State().IdToRecord.clear();
+				State().PathToId.clear();
+				State().KnownMissingIds.clear();
+				State().Dirty = false;
 			}
 
 			if (!IsTrackedAsset(normalizedPath)) {
 				return 0;
 			}
 
-			if (const auto it = s_PathToId.find(normalizedPath); it != s_PathToId.end()) {
+			if (const auto it = State().PathToId.find(normalizedPath); it != State().PathToId.end()) {
 				return it->second;
 			}
 
@@ -234,23 +235,23 @@ namespace Index {
 			if (id == 0) {
 				do {
 					id = static_cast<uint64_t>(UUID());
-				} while (id != 0 && s_IdToRecord.find(id) != s_IdToRecord.end());
+				} while (id != 0 && State().IdToRecord.find(id) != State().IdToRecord.end());
 			}
-			else if (auto existing = s_IdToRecord.find(id);
-				existing != s_IdToRecord.end() && existing->second.Path != normalizedPath) {
+			else if (auto existing = State().IdToRecord.find(id);
+				existing != State().IdToRecord.end() && existing->second.Path != normalizedPath) {
 				IDX_CORE_WARN_TAG("AssetRegistry",
 					"GUID collision while indexing '{}': id {} already owned by '{}' - regenerating new GUID for '{}'",
 					normalizedPath, id, existing->second.Path, normalizedPath);
 				do {
 					id = static_cast<uint64_t>(UUID());
-				} while (id != 0 && s_IdToRecord.find(id) != s_IdToRecord.end());
+				} while (id != 0 && State().IdToRecord.find(id) != State().IdToRecord.end());
 			}
 
 			const AssetKind kind = Classify(normalizedPath);
 			WriteMeta(normalizedPath, id, kind);
 			Register(normalizedPath, id, kind);
-			s_KnownMissingIds.erase(id);
-			++s_ChangeVersion;
+			State().KnownMissingIds.erase(id);
+			++State().ChangeVersion;
 			return id;
 		}
 
@@ -260,19 +261,19 @@ namespace Index {
 				return;
 			}
 
-			auto pathIt = s_PathToId.find(normalizedPath);
-			if (pathIt == s_PathToId.end()) {
+			auto pathIt = State().PathToId.find(normalizedPath);
+			if (pathIt == State().PathToId.end()) {
 				return;
 			}
 
 			const uint64_t id = pathIt->second;
-			s_PathToId.erase(pathIt);
-			if (auto recordIt = s_IdToRecord.find(id);
-				recordIt != s_IdToRecord.end() && recordIt->second.Path == normalizedPath) {
-				s_IdToRecord.erase(recordIt);
+			State().PathToId.erase(pathIt);
+			if (auto recordIt = State().IdToRecord.find(id);
+				recordIt != State().IdToRecord.end() && recordIt->second.Path == normalizedPath) {
+				State().IdToRecord.erase(recordIt);
 			}
-			s_KnownMissingIds.erase(id);
-			++s_ChangeVersion;
+			State().KnownMissingIds.erase(id);
+			++State().ChangeVersion;
 		}
 
 		static uint64_t MoveAssetPathIncremental(const std::string& from, const std::string& to) {
@@ -283,18 +284,18 @@ namespace Index {
 				return 0;
 			}
 
-			auto pathIt = s_PathToId.find(normalizedFrom);
-			if (pathIt == s_PathToId.end()) {
+			auto pathIt = State().PathToId.find(normalizedFrom);
+			if (pathIt == State().PathToId.end()) {
 				return ImportAssetPathIncremental(normalizedTo);
 			}
 
 			const uint64_t id = pathIt->second;
-			s_PathToId.erase(pathIt);
+			State().PathToId.erase(pathIt);
 			const AssetKind kind = Classify(normalizedTo);
 			WriteMeta(normalizedTo, id, kind);
 			Register(normalizedTo, id, kind);
-			s_KnownMissingIds.erase(id);
-			++s_ChangeVersion;
+			State().KnownMissingIds.erase(id);
+			++State().ChangeVersion;
 			return id;
 		}
 
@@ -304,7 +305,7 @@ namespace Index {
 
 		static std::string ResolvePath(uint64_t assetId) {
 			// Built-ins skip dirty/rebuild — their paths don't change at runtime.
-			if (auto it = s_BuiltInById.find(assetId); it != s_BuiltInById.end()) {
+			if (auto it = State().BuiltInById.find(assetId); it != State().BuiltInById.end()) {
 				if (std::filesystem::exists(Path::FromUtf8(it->second.Path))) {
 					return it->second.Path;
 				}
@@ -312,20 +313,20 @@ namespace Index {
 			}
 
 			EnsureUpToDate();
-			auto it = s_IdToRecord.find(assetId);
-			if (it == s_IdToRecord.end()) {
-				// Another editor/runtime module may have created the asset and
-				// its .meta file after this registry copy last synced. Force one
+			auto it = State().IdToRecord.find(assetId);
+			if (it == State().IdToRecord.end()) {
+				// The asset and its .meta may have been written to disk (scripts, external
+				// tools, a not-yet-delivered FileWatcher event) after the last sync. Force one
 				// recovery scan before treating the GUID as missing.
-				if (s_KnownMissingIds.contains(assetId)) {
+				if (State().KnownMissingIds.contains(assetId)) {
 					return {};
 				}
 
-				s_Dirty = true;
+				State().Dirty = true;
 				EnsureUpToDate();
-				it = s_IdToRecord.find(assetId);
-				if (it == s_IdToRecord.end()) {
-					s_KnownMissingIds.insert(assetId);
+				it = State().IdToRecord.find(assetId);
+				if (it == State().IdToRecord.end()) {
+					State().KnownMissingIds.insert(assetId);
 					return {};
 				}
 			}
@@ -335,15 +336,15 @@ namespace Index {
 			}
 
 			// Cache miss so a permanently-moved asset doesn't trigger an O(N) rescan every frame; cleared by MarkDirty().
-			if (s_KnownMissingIds.contains(assetId)) {
+			if (State().KnownMissingIds.contains(assetId)) {
 				return {};
 			}
 
-			s_Dirty = true;
+			State().Dirty = true;
 			EnsureUpToDate();
-			it = s_IdToRecord.find(assetId);
-			if (it == s_IdToRecord.end() || !std::filesystem::exists(Path::FromUtf8(it->second.Path))) {
-				s_KnownMissingIds.insert(assetId);
+			it = State().IdToRecord.find(assetId);
+			if (it == State().IdToRecord.end() || !std::filesystem::exists(Path::FromUtf8(it->second.Path))) {
+				State().KnownMissingIds.insert(assetId);
 				return {};
 			}
 
@@ -351,21 +352,21 @@ namespace Index {
 		}
 
 		static AssetKind GetKind(uint64_t assetId) {
-			if (auto it = s_BuiltInById.find(assetId); it != s_BuiltInById.end()) {
+			if (auto it = State().BuiltInById.find(assetId); it != State().BuiltInById.end()) {
 				return it->second.Kind;
 			}
 			EnsureUpToDate();
-			auto it = s_IdToRecord.find(assetId);
-			if (it == s_IdToRecord.end() && !s_KnownMissingIds.contains(assetId)) {
+			auto it = State().IdToRecord.find(assetId);
+			if (it == State().IdToRecord.end() && !State().KnownMissingIds.contains(assetId)) {
 				// Match ResolvePath's recovery scan for late-created assets.
-				s_Dirty = true;
+				State().Dirty = true;
 				EnsureUpToDate();
-				it = s_IdToRecord.find(assetId);
-				if (it == s_IdToRecord.end()) {
-					s_KnownMissingIds.insert(assetId);
+				it = State().IdToRecord.find(assetId);
+				if (it == State().IdToRecord.end()) {
+					State().KnownMissingIds.insert(assetId);
 				}
 			}
-			return it != s_IdToRecord.end() ? it->second.Kind : AssetKind::Unknown;
+			return it != State().IdToRecord.end() ? it->second.Kind : AssetKind::Unknown;
 		}
 
 		static bool Exists(uint64_t assetId) {
@@ -373,11 +374,11 @@ namespace Index {
 		}
 
 		static bool IsBuiltIn(uint64_t assetId) {
-			return s_BuiltInById.find(assetId) != s_BuiltInById.end();
+			return State().BuiltInById.find(assetId) != State().BuiltInById.end();
 		}
 
 		static size_t GetBuiltInCount() {
-			return s_BuiltInById.size();
+			return State().BuiltInById.size();
 		}
 
 		static bool IsTexture(uint64_t assetId) {
@@ -396,9 +397,9 @@ namespace Index {
 			EnsureUpToDate();
 
 			std::vector<Record> records;
-			records.reserve(s_IdToRecord.size() + s_BuiltInById.size());
+			records.reserve(State().IdToRecord.size() + State().BuiltInById.size());
 
-			for (const auto& [id, record] : s_IdToRecord) {
+			for (const auto& [id, record] : State().IdToRecord) {
 				if (kind != AssetKind::Unknown && record.Kind != kind) {
 					continue;
 				}
@@ -406,7 +407,7 @@ namespace Index {
 			}
 			// Built-ins surface alongside project assets so the picker
 			// shows the engine's default font/etc. as selectable entries.
-			for (const auto& [id, record] : s_BuiltInById) {
+			for (const auto& [id, record] : State().BuiltInById) {
 				if (kind != AssetKind::Unknown && record.Kind != kind) {
 					continue;
 				}
@@ -442,7 +443,7 @@ namespace Index {
 			}
 
 			std::vector<Record> records;
-			for (const auto& [id, record] : s_IdToRecord) {
+			for (const auto& [id, record] : State().IdToRecord) {
 				(void)id;
 				if (kind != AssetKind::Unknown && record.Kind != kind) {
 					continue;
@@ -541,21 +542,21 @@ namespace Index {
 
 		static void EnsureUpToDate() {
 			const std::string root = GetAssetsRoot();
-			if (root != s_TrackedRoot) {
-				s_TrackedRoot = root;
-				s_Dirty = true;
-				s_ImmutableTrustedLoaded = false;
-				s_ImmutableFullScanned = false;
+			if (root != State().TrackedRoot) {
+				State().TrackedRoot = root;
+				State().Dirty = true;
+				State().ImmutableTrustedLoaded = false;
+				State().ImmutableFullScanned = false;
 			}
 
-			if (!s_Dirty) {
+			if (!State().Dirty) {
 				return;
 			}
 
 			// Immutable assets can't change on disk, so once a full authoritative walk has run a
-			// per-miss recovery (ResolvePath/GetKind set s_Dirty) is pointless — short-circuit it.
-			if (s_AssetsImmutable && s_ImmutableFullScanned) {
-				s_Dirty = false;
+			// per-miss recovery (ResolvePath/GetKind set State().Dirty) is pointless — short-circuit it.
+			if (State().AssetsImmutable && State().ImmutableFullScanned) {
+				State().Dirty = false;
 				return;
 			}
 
@@ -563,15 +564,15 @@ namespace Index {
 		}
 
 		static void Rebuild() {
-			s_IdToRecord.clear();
-			s_PathToId.clear();
+			State().IdToRecord.clear();
+			State().PathToId.clear();
 			// New scan: previously-missing GUIDs may exist again.
-			s_KnownMissingIds.clear();
-			s_ColdMetaReads = 0;
+			State().KnownMissingIds.clear();
+			State().ColdMetaReads = 0;
 			const auto rebuildStart = std::chrono::steady_clock::now();
 
-			if (s_TrackedRoot.empty() || !std::filesystem::exists(Path::FromUtf8(s_TrackedRoot))) {
-				s_Dirty = false;
+			if (State().TrackedRoot.empty() || !std::filesystem::exists(Path::FromUtf8(State().TrackedRoot))) {
+				State().Dirty = false;
 				return;
 			}
 
@@ -579,13 +580,13 @@ namespace Index {
 			// directory walk + per-.meta JSON parse on the first build. ResolvePath still existence-
 			// checks each hit; if a referenced GUID is missing from a stale manifest, that miss forces
 			// one real walk below (which then rewrites an accurate manifest and self-heals).
-			if (s_AssetsImmutable && !s_ImmutableTrustedLoaded && !s_ImmutableFullScanned
+			if (State().AssetsImmutable && !State().ImmutableTrustedLoaded && !State().ImmutableFullScanned
 				&& LoadSnapshotTrusted()) {
-				s_Dirty = false;
-				s_ImmutableTrustedLoaded = true;
+				State().Dirty = false;
+				State().ImmutableTrustedLoaded = true;
 				const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rebuildStart).count();
 				IDX_CORE_INFO_TAG("AssetRegistry", "Project registry: trusted manifest, {} assets, no walk, in {} ms",
-					s_IdToRecord.size(), static_cast<long long>(ms));
+					State().IdToRecord.size(), static_cast<long long>(ms));
 				return;
 			}
 
@@ -596,7 +597,7 @@ namespace Index {
 
 			std::error_code ec;
 			for (std::filesystem::recursive_directory_iterator it(
-				 Path::FromUtf8(s_TrackedRoot),
+				 Path::FromUtf8(State().TrackedRoot),
 				 std::filesystem::directory_options::skip_permission_denied,
 				 ec), end;
 				 it != end;
@@ -627,16 +628,16 @@ namespace Index {
 				IndexAsset(assetPath);
 			}
 
-			s_Dirty = false;
-			if (s_AssetsImmutable) {
-				s_ImmutableFullScanned = true;  // authoritative on-disk scan done; manifest now accurate
+			State().Dirty = false;
+			if (State().AssetsImmutable) {
+				State().ImmutableFullScanned = true;  // authoritative on-disk scan done; manifest now accurate
 			}
 			SaveSnapshot();
 			const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rebuildStart).count();
 			IDX_CORE_INFO_TAG("AssetRegistry",
 				"Project registry: walked + indexed {} assets in {} ms ({} cold .meta reads, {} cache hits)",
-				s_IdToRecord.size(), static_cast<long long>(ms), s_ColdMetaReads,
-				s_IdToRecord.size() >= s_ColdMetaReads ? s_IdToRecord.size() - s_ColdMetaReads : 0);
+				State().IdToRecord.size(), static_cast<long long>(ms), State().ColdMetaReads,
+				State().IdToRecord.size() >= State().ColdMetaReads ? State().IdToRecord.size() - State().ColdMetaReads : 0);
 		}
 
 		// ---- Persisted registry snapshot ------------------------------------------------
@@ -654,25 +655,25 @@ namespace Index {
 		};
 
 		static std::string GetSnapshotPath() {
-			if (s_TrackedRoot.empty()) {
+			if (State().TrackedRoot.empty()) {
 				return {};
 			}
-			std::filesystem::path dir = Path::FromUtf8(s_TrackedRoot).parent_path() / ".index";
+			std::filesystem::path dir = Path::FromUtf8(State().TrackedRoot).parent_path() / ".index";
 			return Path::ToUtf8((dir / "asset-registry.cache").make_preferred());
 		}
 
-		// assetPath is under s_TrackedRoot (verified by caller); strip the root + separator, force '/'.
+		// assetPath is under State().TrackedRoot (verified by caller); strip the root + separator, force '/'.
 		static std::string MakeRelativeGeneric(const std::string& assetPath) {
-			if (assetPath.size() <= s_TrackedRoot.size() + 1) {
+			if (assetPath.size() <= State().TrackedRoot.size() + 1) {
 				return {};
 			}
-			std::string rel = assetPath.substr(s_TrackedRoot.size() + 1);
+			std::string rel = assetPath.substr(State().TrackedRoot.size() + 1);
 			std::replace(rel.begin(), rel.end(), '\\', '/');
 			return rel;
 		}
 
 		static std::string ReconstructAbsolute(const std::string& relGeneric) {
-			return Path::ToUtf8((Path::FromUtf8(s_TrackedRoot) / Path::FromUtf8(relGeneric)).make_preferred());
+			return Path::ToUtf8((Path::FromUtf8(State().TrackedRoot) / Path::FromUtf8(relGeneric)).make_preferred());
 		}
 
 		static uint64_t SnapshotU64(std::string_view s) {
@@ -760,7 +761,7 @@ namespace Index {
 				}
 				Register(abs, rec.Guid, static_cast<AssetKind>(rec.Kind));
 			}
-			return !s_IdToRecord.empty();
+			return !State().IdToRecord.empty();
 		}
 
 		static void WarmMetaCacheFromSnapshot() {
@@ -780,13 +781,13 @@ namespace Index {
 				entry.Mtime = std::filesystem::file_time_type(std::filesystem::file_time_type::duration(rec.MetaMtime));
 				entry.Size = rec.MetaSize;
 				entry.AssetGuid = rec.Guid;
-				s_MetaIdCache[GetMetaPath(abs)] = entry;
+				State().MetaIdCache[GetMetaPath(abs)] = entry;
 			}
 		}
 
 		static void SaveSnapshot() {
 			const std::string snapshotPath = GetSnapshotPath();
-			if (snapshotPath.empty() || s_IdToRecord.empty()) {
+			if (snapshotPath.empty() || State().IdToRecord.empty()) {
 				return;
 			}
 
@@ -794,16 +795,16 @@ namespace Index {
 			std::filesystem::create_directories(Path::FromUtf8(snapshotPath).parent_path(), ec);
 
 			std::string out;
-			out.reserve(s_IdToRecord.size() * 48 + 8);
+			out.reserve(State().IdToRecord.size() * 48 + 8);
 			out += "IDXAR1\n";
-			for (const auto& [id, rec] : s_IdToRecord) {
+			for (const auto& [id, rec] : State().IdToRecord) {
 				const std::string rel = MakeRelativeGeneric(rec.Path);
 				if (rel.empty()) {
 					continue;
 				}
 				long long mtime = 0;
 				std::uintmax_t size = 0;
-				if (const auto it = s_MetaIdCache.find(GetMetaPath(rec.Path)); it != s_MetaIdCache.end()) {
+				if (const auto it = State().MetaIdCache.find(GetMetaPath(rec.Path)); it != State().MetaIdCache.end()) {
 					mtime = static_cast<long long>(it->second.Mtime.time_since_epoch().count());
 					size = it->second.Size;
 				}
@@ -834,7 +835,7 @@ namespace Index {
 				// Brand-new asset: mint an id and write its meta.
 				id = static_cast<uint64_t>(UUID());
 				WriteMeta(assetPath, id, kind);
-			} else if (auto existing = s_IdToRecord.find(id); existing != s_IdToRecord.end()) {
+			} else if (auto existing = State().IdToRecord.find(id); existing != State().IdToRecord.end()) {
 				// Two assets claim the same GUID. Surface the collision so
 				// the user knows references to one of them will silently
 				// drift; the later-indexed asset gets a fresh GUID.
@@ -853,8 +854,8 @@ namespace Index {
 			record.Path = assetPath;
 			record.Kind = kind;
 
-			s_PathToId[assetPath] = id;
-			s_IdToRecord[id] = std::move(record);
+			State().PathToId[assetPath] = id;
+			State().IdToRecord[id] = std::move(record);
 		}
 
 		static std::string NormalizePath(const std::string& path) {
@@ -896,19 +897,19 @@ namespace Index {
 		// Prefix/containment check only — no filesystem stat. Use when the caller already
 		// confirmed the file exists (e.g. Rebuild's directory iterator).
 		static bool IsTrackedPath(const std::string& assetPath) {
-			if (assetPath.empty() || s_TrackedRoot.empty()) {
+			if (assetPath.empty() || State().TrackedRoot.empty()) {
 				return false;
 			}
 
-			if (assetPath.size() < s_TrackedRoot.size() || assetPath.compare(0, s_TrackedRoot.size(), s_TrackedRoot) != 0) {
+			if (assetPath.size() < State().TrackedRoot.size() || assetPath.compare(0, State().TrackedRoot.size(), State().TrackedRoot) != 0) {
 				return false;
 			}
 
-			if (assetPath.size() == s_TrackedRoot.size()) {
+			if (assetPath.size() == State().TrackedRoot.size()) {
 				return false;
 			}
 
-			const char separator = assetPath[s_TrackedRoot.size()];
+			const char separator = assetPath[State().TrackedRoot.size()];
 			return separator == '\\' || separator == '/';
 		}
 
@@ -973,8 +974,8 @@ namespace Index {
 			if (!fingerprintOk) {
 			}
 			else {
-				const auto cacheIt = s_MetaIdCache.find(metaPath);
-				if (cacheIt != s_MetaIdCache.end()
+				const auto cacheIt = State().MetaIdCache.find(metaPath);
+				if (cacheIt != State().MetaIdCache.end()
 					&& cacheIt->second.Mtime == mtime
 					&& cacheIt->second.Size == size)
 				{
@@ -984,14 +985,14 @@ namespace Index {
 
 			if (!File::Exists(metaPath)) {
 				if (fingerprintOk) {
-					s_MetaIdCache.erase(metaPath);
+					State().MetaIdCache.erase(metaPath);
 				}
 				return 0;
 			}
 
 			// A real file open+read+parse (Defender-scans the open) rather than a cache hit — counted
 			// so Rebuild can report how many of these the cold path actually paid.
-			++s_ColdMetaReads;
+			++State().ColdMetaReads;
 			Json::Value meta;
 			std::string parseError;
 			if (!Json::TryParse(File::ReadAllText(metaPath), meta, &parseError) || !meta.IsObject()) {
@@ -1020,7 +1021,7 @@ namespace Index {
 			}
 
 			if (fingerprintOk && parsed != 0) {
-				s_MetaIdCache[metaPath] = MetaIdCacheEntry{ mtime, size, parsed };
+				State().MetaIdCache[metaPath] = MetaIdCacheEntry{ mtime, size, parsed };
 			}
 			return parsed;
 		}
@@ -1061,7 +1062,7 @@ namespace Index {
 				// Invalidate the (mtime,size) fingerprint cache — same-size/same-tick
 				// rewrites (e.g. a GUID-collision regen) would otherwise let ReadMetaId
 				// return the STALE pre-write id. Mirrors WriteTextureMeta.
-				s_MetaIdCache.erase(metaPath);
+				State().MetaIdCache.erase(metaPath);
 			}
 		}
 
@@ -1171,7 +1172,7 @@ namespace Index {
 
 			const bool wrote = File::WriteAllText(metaPath, Json::Stringify(root, true));
 			if (wrote) {
-				s_MetaIdCache.erase(metaPath);
+				State().MetaIdCache.erase(metaPath);
 			}
 			return wrote;
 		}
@@ -1202,31 +1203,37 @@ namespace Index {
 		}
 
 	private:
-		inline static bool s_Dirty = true;
-		// Set once by a standalone runtime (assets are read-only): trust the shipped manifest.
-		// TrustedLoaded latches after the manifest is loaded (so a later miss forces one real walk
-		// instead of re-loading the manifest); FullScanned latches after that authoritative walk, so
-		// further per-miss recoveries short-circuit.
-		inline static bool s_AssetsImmutable = false;
-		inline static bool s_ImmutableTrustedLoaded = false;
-		inline static bool s_ImmutableFullScanned = false;
-		// Diagnostic: cold .meta reads (file open+parse) during the current Rebuild; reset at its start.
-		inline static uint64_t s_ColdMetaReads = 0;
-		inline static uint64_t s_ChangeVersion = 1;
-		inline static std::string s_TrackedRoot;
-		inline static std::unordered_map<uint64_t, Record> s_IdToRecord;
-		inline static std::unordered_map<std::string, uint64_t> s_PathToId;
-
 		struct MetaIdCacheEntry {
 			std::filesystem::file_time_type Mtime{};
 			std::uintmax_t Size = 0;
 			uint64_t AssetGuid = 0;
 		};
-		inline static std::unordered_map<std::string, MetaIdCacheEntry> s_MetaIdCache;
-		// Cleared on MarkDirty()/Rebuild() so FileWatcher events let recovered assets re-resolve.
-		inline static std::unordered_set<uint64_t> s_KnownMissingIds;
-		inline static std::unordered_map<uint64_t, Record> s_BuiltInById;
-		inline static std::unordered_map<std::string, uint64_t> s_BuiltInPathToId;
+
+		// Single instance owned by Index-Engine.dll (see AssetRegistry.cpp) so every module that
+		// inlines these methods shares one registry instead of a per-binary copy.
+		struct StateData {
+			bool Dirty = true;
+			// Set once by a standalone runtime (assets are read-only): trust the shipped manifest.
+			// TrustedLoaded latches after the manifest is loaded (so a later miss forces one real walk
+			// instead of re-loading the manifest); FullScanned latches after that authoritative walk, so
+			// further per-miss recoveries short-circuit.
+			bool AssetsImmutable = false;
+			bool ImmutableTrustedLoaded = false;
+			bool ImmutableFullScanned = false;
+			// Diagnostic: cold .meta reads (file open+parse) during the current Rebuild; reset at its start.
+			uint64_t ColdMetaReads = 0;
+			uint64_t ChangeVersion = 1;
+			std::string TrackedRoot;
+			std::unordered_map<uint64_t, Record> IdToRecord;
+			std::unordered_map<std::string, uint64_t> PathToId;
+			std::unordered_map<std::string, MetaIdCacheEntry> MetaIdCache;
+			// Cleared on MarkDirty()/Rebuild() so FileWatcher events let recovered assets re-resolve.
+			std::unordered_set<uint64_t> KnownMissingIds;
+			std::unordered_map<uint64_t, Record> BuiltInById;
+			std::unordered_map<std::string, uint64_t> BuiltInPathToId;
+		};
+
+		INDEX_API static StateData& State();
 	};
 
 }

@@ -462,6 +462,11 @@ internal static class ScriptInstanceManager
         // the AssemblyLoadContext and would prevent it from unloading on hot reload.
         Entity.ClearManagedComponentStore();
 
+        // Static caches keyed by / holding user types root the ALC just like the component store.
+        Index.Jobs.Internal.JobLayoutCache.Clear();
+        Index.Jobs.Internal.JobExceptionRegistry.Clear();
+        Index.Coroutines.IndexSynchronizationContext.Instance.Clear();
+
         var weakContext = new WeakReference(s_UserLoadContext, trackResurrection: false);
         s_UserLoadContext.Unload();
         s_UserLoadContext = null;

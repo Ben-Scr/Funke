@@ -236,6 +236,14 @@ namespace Index {
 						// FixedUpdate dispatch this frame.
 						m_FixedUpdateAccumulator = 0.0;
 					} else {
+						// Cap catch-up so a slow frame or high TimeScale can't spiral; excess simulated time is dropped.
+						// The time floor keeps high tick rates (240 Hz) from slowing down at ordinary low frame rates.
+						constexpr double k_MaxFixedStepsPerFrame = 8.0;
+						constexpr double k_MinCatchUpSeconds = 0.1;
+						const double maxAccumulated = std::max(fixedDt * k_MaxFixedStepsPerFrame, k_MinCatchUpSeconds);
+						if (m_FixedUpdateAccumulator > maxAccumulated) {
+							m_FixedUpdateAccumulator = maxAccumulated;
+						}
 						while (m_FixedUpdateAccumulator >= fixedDt) {
 							if (!enginePausedForFrame && !m_IsGameplayPaused) {
 								BeginFixedFrame();

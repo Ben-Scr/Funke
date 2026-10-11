@@ -20,6 +20,9 @@ internal static class JobLayoutCache
         s_Validated.TryAdd(t, 1);
     }
 
+    // Keys are user job types; must be dropped before the user ALC unloads.
+    internal static void Clear() => s_Validated.Clear();
+
     private static void ValidateLayoutOnce(Type jobType)
     {
         FieldInfo[] fields = jobType.GetFields(BindingFlags.Public | BindingFlags.Instance);

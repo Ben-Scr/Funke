@@ -106,7 +106,9 @@ namespace Index {
 			}
 		}
 
-		using InitializeFn = int(*)(void* nativeBindings, void* managedCallbacks);
+		// Trailing handshake args: an older 2-arg managed entry ignores them; a newer one rejects garbage from an older caller.
+		using InitializeFn = int(*)(void* nativeBindings, void* managedCallbacks,
+			int32_t nativeBindingsSize, int32_t managedCallbacksSize, int32_t layoutVersion);
 		InitializeFn initFn = nullptr;
 
 		bool ok = s_Host.LoadAssemblyAndGetFunction(
@@ -126,7 +128,22 @@ namespace Index {
 		ScriptBindings::PopulateNativeBindings(nativeBindings);
 
 		ManagedCallbacks managedCallbacks{};
-		int result = initFn(&nativeBindings, &managedCallbacks);
+		int result = initFn(&nativeBindings, &managedCallbacks,
+			static_cast<int32_t>(sizeof(NativeBindings)),
+			static_cast<int32_t>(sizeof(ManagedCallbacks)),
+			k_ScriptInteropLayoutVersion);
+
+		// -2..-4 mirror InteropHandshake result codes in ScriptHostBridge.cs.
+		if (result <= -2 && result >= -4)
+		{
+			const char* what = result == -2 ? "layout version"
+				: result == -3 ? "NativeBindings size" : "ManagedCallbacks size";
+			IDX_CORE_ERROR_TAG("ScriptEngine",
+				"Index-ScriptCore interop mismatch ({}): engine has NativeBindings={} bytes, ManagedCallbacks={} bytes, layout version {}. "
+				"Rebuild Index-Engine and Index-ScriptCore together. Scripting is disabled.",
+				what, sizeof(NativeBindings), sizeof(ManagedCallbacks), k_ScriptInteropLayoutVersion);
+			return;
+		}
 
 		if (result != 0)
 		{

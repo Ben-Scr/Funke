@@ -11,6 +11,7 @@
 #include "Core/KeyCode.hpp"
 #include "Core/MouseButton.hpp"
 #include "Core/Window.hpp"
+#include "Gui/UIDrawOrder.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Scene/Scene.hpp"
 
@@ -133,7 +134,7 @@ namespace Index {
 				EntityHandle hitFocusable = entt::null;
 				for (EntityHandle e : focusables) {
 					const auto& rect = registry.get<RectTransform2DComponent>(e);
-					if (rect.ContainsPoint(mouseUi)) {
+					if (UIDrawOrder::HitTest(registry, e, rect, mouseUi)) {
 						// Last hit wins — same precedence as UIEventSystem's
 						// hit-test (later-iterated entities draw on top, so
 						// they should also receive focus first).

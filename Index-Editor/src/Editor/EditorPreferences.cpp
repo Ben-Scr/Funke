@@ -42,7 +42,6 @@ namespace Index {
 
 			InspectorComponentView InspectorView = InspectorComponentView::Normal;
 
-			bool RunInBackground = true;
 			bool ShowFileExtensions = false;
 			bool AutoRecompileScripts = true;
 			bool RecompileScriptsOnPlay = false;
@@ -225,7 +224,6 @@ namespace Index {
 		if (!std::filesystem::is_regular_file(path, ec)) {
 			s.FreshlyCreated = true;
 			Save();
-			Application::SetRunInBackground(s.RunInBackground);
 			ScriptSystem::SetAutoRecompileEnabled(s.AutoRecompileScripts);
 			return;
 		}
@@ -275,9 +273,6 @@ namespace Index {
 		}
 		if (const Json::Value* v = root.FindMember("ShowFileExtensions")) {
 			s.ShowFileExtensions = v->AsBoolOr(false);
-		}
-		if (const Json::Value* v = root.FindMember("RunInBackground")) {
-			s.RunInBackground = v->AsBoolOr(true);
 		}
 		if (const Json::Value* v = root.FindMember("AutoRecompileScripts")) {
 			s.AutoRecompileScripts = v->AsBoolOr(true);
@@ -366,7 +361,6 @@ namespace Index {
 		}
 
 		ImGuiContextLayer::ApplyEditorFontSize();
-		Application::SetRunInBackground(s.RunInBackground);
 		ScriptSystem::SetAutoRecompileEnabled(s.AutoRecompileScripts);
 	}
 
@@ -386,7 +380,6 @@ namespace Index {
 		root.AddMember("EditorFontZoomPercent", Json::Value(s.EditorFontZoomPercent));
 		root.AddMember("HierarchyRowScale", Json::Value(static_cast<double>(s.HierarchyRowScale)));
 		root.AddMember("InspectorComponentView", Json::Value(std::string(InspectorViewToString(s.InspectorView))));
-		root.AddMember("RunInBackground", Json::Value(s.RunInBackground));
 		root.AddMember("ShowFileExtensions", Json::Value(s.ShowFileExtensions));
 		root.AddMember("AutoRecompileScripts", Json::Value(s.AutoRecompileScripts));
 		root.AddMember("RecompileScriptsOnPlay", Json::Value(s.RecompileScriptsOnPlay));
@@ -564,17 +557,6 @@ namespace Index {
 	void EditorPreferences::SetInspectorComponentView(InspectorComponentView value) {
 		if (S().InspectorView == value) return;
 		S().InspectorView = value;
-		Save();
-	}
-
-	bool EditorPreferences::GetRunInBackground() {
-		return S().RunInBackground;
-	}
-
-	void EditorPreferences::SetRunInBackground(bool value) {
-		if (S().RunInBackground == value) return;
-		S().RunInBackground = value;
-		Application::SetRunInBackground(value);
 		Save();
 	}
 

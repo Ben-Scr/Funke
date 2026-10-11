@@ -32,6 +32,7 @@ namespace Index {
 			wgpu::Sampler     Sampler;
 			uint32_t          Width  = 0;
 			uint32_t          Height = 0;
+			uint32_t          MipLevelCount = 1;
 			Filter            CachedFilter = Filter::Point;
 			Wrap              CachedWrapU  = Wrap::Clamp;
 			Wrap              CachedWrapV  = Wrap::Clamp;
@@ -54,6 +55,194 @@ namespace Index {
 			if (id == 0) return nullptr;
 			auto it = g_Textures.find(id);
 			return (it == g_Textures.end()) ? nullptr : &it->second;
+		}
+
+		// ── Mip generation ──────────────────────────────────────────────────
+		// Alpha-weighted 2x2 box filter: transparent texels don't darken the
+		// colour of their opaque neighbours in lower levels (straight alpha).
+		constexpr const char* k_MipDownsampleWGSL = R"WGSL(
+@group(0) @binding(0) var t_src: texture_2d<f32>;
+
+@vertex
+fn vs_main(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4<f32> {
+	var pos = array<vec2<f32>, 3>(
+		vec2<f32>(-1.0, -1.0),
+		vec2<f32>( 3.0, -1.0),
+		vec2<f32>(-1.0,  3.0),
+	);
+	return vec4<f32>(pos[idx], 0.0, 1.0);
+}
+
+@fragment
+fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+	let maxCoord = vec2<i32>(textureDimensions(t_src, 0)) - vec2<i32>(1, 1);
+	let base = vec2<i32>(floor(frag.xy)) * 2;
+	var weighted = vec3<f32>(0.0);
+	var plain = vec3<f32>(0.0);
+	var alpha = 0.0;
+	for (var y = 0; y < 2; y++) {
+		for (var x = 0; x < 2; x++) {
+			let c = textureLoad(t_src, min(base + vec2<i32>(x, y), maxCoord), 0);
+			weighted += c.rgb * c.a;
+			plain += c.rgb;
+			alpha += c.a;
+		}
+	}
+	if (alpha <= 0.0) {
+		return vec4<f32>(plain * 0.25, 0.0);
+	}
+	return vec4<f32>(weighted / alpha, alpha * 0.25);
+}
+)WGSL";
+
+		struct MipGenCache {
+			wgpu::Device       Device;
+			wgpu::ShaderModule Module;
+			std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> Pipelines;
+		};
+		MipGenCache g_MipGen;
+
+		bool IsMipRenderableFormat(wgpu::TextureFormat format) noexcept {
+			switch (format) {
+				case wgpu::TextureFormat::R8Unorm:
+				case wgpu::TextureFormat::RG8Unorm:
+				case wgpu::TextureFormat::RGBA8Unorm:
+				case wgpu::TextureFormat::RGBA8UnormSrgb:
+				case wgpu::TextureFormat::BGRA8Unorm:
+				case wgpu::TextureFormat::BGRA8UnormSrgb:
+				case wgpu::TextureFormat::RGBA16Float:
+					return true;
+				default:
+					return false;
+			}
+		}
+
+		// Null when the format can't be a render target or pipeline creation failed (cached either way).
+		wgpu::RenderPipeline GetMipPipeline(wgpu::TextureFormat format) {
+			if (!IsMipRenderableFormat(format)) return nullptr;
+			wgpu::Device device = WebGPUBackend::GetDevice();
+			if (!device) return nullptr;
+
+			if (g_MipGen.Device.Get() != device.Get()) {
+				g_MipGen = MipGenCache{};
+				g_MipGen.Device = device;
+			}
+
+			if (auto it = g_MipGen.Pipelines.find(format); it != g_MipGen.Pipelines.end()) {
+				return it->second;
+			}
+
+			if (!g_MipGen.Module) {
+				wgpu::ShaderSourceWGSL src{};
+				src.code = k_MipDownsampleWGSL;
+				wgpu::ShaderModuleDescriptor moduleDesc{};
+				moduleDesc.nextInChain = &src;
+				moduleDesc.label = "texture2d-mipgen";
+				g_MipGen.Module = device.CreateShaderModule(&moduleDesc);
+				if (!g_MipGen.Module) {
+					IDX_CORE_ERROR_TAG("Texture2D", "Mip downsample shader module creation failed");
+					g_MipGen.Pipelines.emplace(format, nullptr);
+					return nullptr;
+				}
+			}
+
+			wgpu::VertexState vertexState{};
+			vertexState.module     = g_MipGen.Module;
+			vertexState.entryPoint = "vs_main";
+
+			wgpu::ColorTargetState colorTarget{};
+			colorTarget.format    = format;
+			colorTarget.writeMask = wgpu::ColorWriteMask::All;
+
+			wgpu::FragmentState fragmentState{};
+			fragmentState.module      = g_MipGen.Module;
+			fragmentState.entryPoint  = "fs_main";
+			fragmentState.targetCount = 1;
+			fragmentState.targets     = &colorTarget;
+
+			wgpu::RenderPipelineDescriptor pipelineDesc{};
+			pipelineDesc.label                  = "texture2d-mipgen-pipeline";
+			pipelineDesc.layout                 = nullptr;  // auto layout; bind group built from GetBindGroupLayout(0)
+			pipelineDesc.vertex                 = vertexState;
+			pipelineDesc.fragment               = &fragmentState;
+			pipelineDesc.primitive.topology     = wgpu::PrimitiveTopology::TriangleList;
+			pipelineDesc.primitive.cullMode     = wgpu::CullMode::None;
+			pipelineDesc.multisample.count      = 1;
+			pipelineDesc.multisample.mask       = 0xFFFFFFFFu;
+
+			wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&pipelineDesc);
+			if (!pipeline) {
+				IDX_CORE_ERROR_TAG("Texture2D",
+					"Mip downsample pipeline creation failed for format={}", static_cast<int>(format));
+			}
+			g_MipGen.Pipelines.emplace(format, pipeline);
+			return pipeline;
+		}
+
+		// Levels 1..mipLevelCount-1 from level 0. Submitted on its own command buffer;
+		// queue ordering places it after any preceding WriteTexture to level 0.
+		bool GenerateMipChain(const wgpu::Texture& texture, wgpu::TextureFormat format, uint32_t mipLevelCount) {
+			if (!texture || mipLevelCount <= 1) return true;
+			wgpu::RenderPipeline pipeline = GetMipPipeline(format);
+			if (!pipeline) return false;
+
+			wgpu::Device device = WebGPUBackend::GetDevice();
+			wgpu::Queue  queue  = WebGPUBackend::GetQueue();
+			if (!device || !queue) return false;
+
+			wgpu::BindGroupLayout layout = pipeline.GetBindGroupLayout(0);
+
+			wgpu::CommandEncoderDescriptor encoderDesc{};
+			encoderDesc.label = "texture2d-mipgen";
+			wgpu::CommandEncoder encoder = device.CreateCommandEncoder(&encoderDesc);
+
+			wgpu::TextureViewDescriptor levelDesc{};
+			levelDesc.format          = format;
+			levelDesc.dimension       = wgpu::TextureViewDimension::e2D;
+			levelDesc.mipLevelCount   = 1;
+			levelDesc.baseArrayLayer  = 0;
+			levelDesc.arrayLayerCount = 1;
+			levelDesc.aspect          = wgpu::TextureAspect::All;
+
+			for (uint32_t level = 1; level < mipLevelCount; ++level) {
+				levelDesc.baseMipLevel = level - 1;
+				wgpu::TextureView srcView = texture.CreateView(&levelDesc);
+				levelDesc.baseMipLevel = level;
+				wgpu::TextureView dstView = texture.CreateView(&levelDesc);
+
+				wgpu::BindGroupEntry entry{};
+				entry.binding     = 0;
+				entry.textureView = srcView;
+
+				wgpu::BindGroupDescriptor bgDesc{};
+				bgDesc.label      = "texture2d-mipgen-bg";
+				bgDesc.layout     = layout;
+				bgDesc.entryCount = 1;
+				bgDesc.entries    = &entry;
+				wgpu::BindGroup bindGroup = device.CreateBindGroup(&bgDesc);
+
+				wgpu::RenderPassColorAttachment colorAtt{};
+				colorAtt.view       = dstView;
+				colorAtt.loadOp     = wgpu::LoadOp::Clear;
+				colorAtt.storeOp    = wgpu::StoreOp::Store;
+				colorAtt.clearValue = wgpu::Color{ 0.0, 0.0, 0.0, 0.0 };
+				colorAtt.depthSlice = wgpu::kDepthSliceUndefined;
+
+				wgpu::RenderPassDescriptor passDesc{};
+				passDesc.label                = "texture2d-mipgen-pass";
+				passDesc.colorAttachmentCount = 1;
+				passDesc.colorAttachments     = &colorAtt;
+
+				wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
+				pass.SetPipeline(pipeline);
+				pass.SetBindGroup(0, bindGroup);
+				pass.Draw(3, 1, 0, 0);
+				pass.End();
+			}
+
+			wgpu::CommandBuffer commands = encoder.Finish();
+			queue.Submit(1, &commands);
+			return true;
 		}
 
 		// ── Enum mapping ────────────────────────────────────────────────────
@@ -125,6 +314,7 @@ namespace Index {
 					desc.magFilter    = wgpu::FilterMode::Nearest;
 					desc.minFilter    = wgpu::FilterMode::Nearest;
 					desc.mipmapFilter = wgpu::MipmapFilterMode::Nearest;
+					desc.lodMaxClamp  = 0.0f;  // base level only: minified pixel art stays crisp
 					desc.maxAnisotropy = 1;
 					break;
 				case FilterMode::Bilinear:
@@ -156,6 +346,10 @@ namespace Index {
 	}  // namespace WebGPUBackend
 
 	// ── Texture2D ───────────────────────────────────────────────────────────
+
+	void Texture2D::ReleaseMipGenResources() {
+		g_MipGen = MipGenCache{};
+	}
 
 	Texture2D::Texture2D(const char* path,
 		Filter filter, Wrap wrapU, Wrap wrapV,
@@ -245,12 +439,21 @@ namespace Index {
 		wgpu::Device device = WebGPUBackend::GetDevice();
 		wgpu::Queue  queue  = WebGPUBackend::GetQueue();
 
+		constexpr wgpu::TextureFormat format = wgpu::TextureFormat::RGBA8Unorm;
+		uint32_t mipLevelCount = 1;
+		if (generateMipmaps && GetMipPipeline(format)) {
+			mipLevelCount = ComputeMipLevelCount(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
+		}
+
 		wgpu::TextureDescriptor texDesc{};
 		texDesc.dimension       = wgpu::TextureDimension::e2D;
 		texDesc.size            = { static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1 };
-		texDesc.format          = wgpu::TextureFormat::RGBA8Unorm;
+		texDesc.format          = format;
 		texDesc.usage           = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
-		texDesc.mipLevelCount   = 1;  // see "What this does NOT do yet" header note
+		if (mipLevelCount > 1) {
+			texDesc.usage |= wgpu::TextureUsage::RenderAttachment;
+		}
+		texDesc.mipLevelCount   = mipLevelCount;
 		texDesc.sampleCount     = 1;
 		texDesc.viewFormatCount = 0;
 
@@ -279,11 +482,15 @@ namespace Index {
 		queue.WriteTexture(&dst, pixels, byteCount, &layout, &writeSize);
 		stbi_image_free(pixels);
 
-		// Default 2D view spanning all (one) mip levels.
+		if (!GenerateMipChain(texture, format, mipLevelCount)) {
+			IDX_CORE_WARN_TAG("Texture2D", "Mip generation failed, sampling level 0 only: {}", path);
+			mipLevelCount = 1;  // the view below hides the never-written levels
+		}
+
 		wgpu::TextureViewDescriptor viewDesc{};
-		viewDesc.format          = wgpu::TextureFormat::RGBA8Unorm;
+		viewDesc.format          = format;
 		viewDesc.dimension       = wgpu::TextureViewDimension::e2D;
-		viewDesc.mipLevelCount   = 1;
+		viewDesc.mipLevelCount   = mipLevelCount;
 		viewDesc.arrayLayerCount = 1;
 		viewDesc.aspect          = wgpu::TextureAspect::All;
 		wgpu::TextureView view = texture.CreateView(&viewDesc);
@@ -294,6 +501,7 @@ namespace Index {
 		slot.Sampler      = MakeSamplerFor(m_Filter, m_WrapU, m_WrapV);
 		slot.Width        = static_cast<uint32_t>(w);
 		slot.Height       = static_cast<uint32_t>(h);
+		slot.MipLevelCount = mipLevelCount;
 		slot.CachedFilter = m_Filter;
 		slot.CachedWrapU  = m_WrapU;
 		slot.CachedWrapV  = m_WrapV;
@@ -302,7 +510,7 @@ namespace Index {
 		m_Width    = w;
 		m_Height   = h;
 		m_Channels = n;
-		m_HasMips  = generateMipmaps;
+		m_HasMips  = mipLevelCount > 1;
 		m_SourcePath = path ? path : "";
 		return true;
 	}
@@ -409,6 +617,9 @@ namespace Index {
 
 		wgpu::Extent3D writeSize{ static_cast<uint32_t>(m_Width), static_cast<uint32_t>(m_Height), 1 };
 		queue.WriteTexture(&dst, rgba, byteCount, &layout, &writeSize);
+		if (slot->MipLevelCount > 1) {
+			GenerateMipChain(slot->Texture, slot->Texture.GetFormat(), slot->MipLevelCount);
+		}
 		return true;
 	}
 

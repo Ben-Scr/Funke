@@ -17,6 +17,7 @@ First public beta. Windows x64 only; see `Github-Docs/Documentation/Known-Limita
 - **Undo/redo for structural edits:** create, delete, duplicate, paste, cut, reparent, reorder, add/remove component or script, rename, enable/disable, Static and prefab unpack. The selection survives undo/redo.
 - **Crash recovery:** unsaved scenes are copied to `.index/Recovery` every 30 seconds and on an unexpected error; the next start offers Restore or Discard.
 - **Starter project:** new projects contain a small playable example (Player, Coin, `PlayerController.cs`, `Coin.cs`).
+- **Setup offers missing build tools:** `Setup.bat` / `Setup.sh` now also detect CMake, the MSVC toolset (Visual Studio 2022 Build Tools, default *no*) and the Linux C++ toolchain with X11/GL headers, and ask `[Y/n]` before installing them.
 - **Launcher prerequisite check:** missing .NET 10 SDK or MSVC Build Tools are shown with a download button.
 - Documentation: *Your First Game* walkthrough and *Known Limitations* page.
 

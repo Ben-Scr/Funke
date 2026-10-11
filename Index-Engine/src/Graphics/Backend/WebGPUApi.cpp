@@ -8,6 +8,7 @@
 #include "Graphics/Backend/WebGPUBackend.hpp"
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/GLInitSpecifications.hpp"
+#include "Graphics/Texture2D.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
 
@@ -963,6 +964,7 @@ namespace Index {
 
 		g_Frame = FrameState{};
 		Framebuffer::ReleaseAllBackendResources();
+		Texture2D::ReleaseMipGenResources();
 		if (g_Surface) g_Surface.Unconfigure();
 		g_CurrentTarget = TargetState{};
 		g_Queue   = nullptr;

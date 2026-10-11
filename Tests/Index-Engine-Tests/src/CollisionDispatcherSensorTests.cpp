@@ -4,6 +4,7 @@
 
 #include <box2d/box2d.h>
 
+#include <cmath>
 #include <vector>
 
 using namespace Index;
@@ -151,6 +152,75 @@ TEST_CASE("Solid contacts are not flagged as triggers") {
 
 	REQUIRE(begins.size() == 1);
 	CHECK_FALSE(begins[0].isTrigger);
+
+	b2DestroyWorld(world);
+}
+
+TEST_CASE("Begin contact point comes from the manifold, not the body centres") {
+	b2WorldDef worldDef = b2DefaultWorldDef();
+	worldDef.gravity = { 0.0f, 0.0f };
+	b2WorldId world = b2CreateWorld(&worldDef);
+
+	b2ShapeDef shapeDef = b2DefaultShapeDef();
+	shapeDef.enableContactEvents = true;
+
+	b2BodyDef groundDef = b2DefaultBodyDef();
+	const b2Polygon ground = b2MakeBox(1.0f, 1.0f);
+	b2CreatePolygonShape(b2CreateBody(world, &groundDef), &shapeDef, &ground);
+
+	// Resting on the ground's top face (y = 1), offset so the centres midpoint (0.375, 0.62) is well inside the ground.
+	b2BodyDef dynamicDef = b2DefaultBodyDef();
+	dynamicDef.type = b2_dynamicBody;
+	dynamicDef.position = { 0.75f, 1.24f };
+	const b2Polygon small = b2MakeBox(0.25f, 0.25f);
+	b2CreatePolygonShape(b2CreateBody(world, &dynamicDef), &shapeDef, &small);
+
+	b2World_Step(world, 1.0f / 60.0f, 4);
+
+	CollisionDispatcher dispatcher;
+	std::vector<Collision2D> begins;
+	dispatcher.Process(world, [](b2ShapeId) { return CollisionBodyRef{}; },
+		[&](const Collision2D& c) { begins.push_back(c); });
+
+	REQUIRE(begins.size() == 1);
+	CHECK(begins[0].contactPoint.x == doctest::Approx(0.75f).epsilon(0.05));
+	CHECK(begins[0].contactPoint.y == doctest::Approx(1.0f).epsilon(0.05));
+	CHECK(std::abs(begins[0].normal.y) > 0.9f);
+
+	b2DestroyWorld(world);
+}
+
+TEST_CASE("Registering a hit callback enables hit events and dispatches them") {
+	b2WorldDef worldDef = b2DefaultWorldDef();
+	worldDef.gravity = { 0.0f, 0.0f };
+	b2WorldId world = b2CreateWorld(&worldDef);
+
+	b2ShapeDef shapeDef = b2DefaultShapeDef();
+
+	b2BodyDef groundDef = b2DefaultBodyDef();
+	const b2Polygon ground = b2MakeBox(1.0f, 1.0f);
+	b2CreatePolygonShape(b2CreateBody(world, &groundDef), &shapeDef, &ground);
+
+	b2BodyDef dynamicDef = b2DefaultBodyDef();
+	dynamicDef.type = b2_dynamicBody;
+	dynamicDef.position = { 0.0f, 2.0f };
+	dynamicDef.linearVelocity = { 0.0f, -10.0f };
+	const b2Polygon small = b2MakeBox(0.25f, 0.25f);
+	const b2ShapeId fallingShape = b2CreatePolygonShape(b2CreateBody(world, &dynamicDef), &shapeDef, &small);
+
+	CollisionDispatcher dispatcher;
+	std::vector<Collision2D> hits;
+	dispatcher.RegisterHit(fallingShape, [&](const Collision2D& c) { hits.push_back(c); });
+	CHECK(b2Shape_AreHitEventsEnabled(fallingShape));
+
+	for (int i = 0; i < 60 && hits.empty(); ++i) {
+		b2World_Step(world, 1.0f / 60.0f, 4);
+		dispatcher.Process(world, [](b2ShapeId) { return CollisionBodyRef{}; });
+	}
+
+	REQUIRE_FALSE(hits.empty());
+	CHECK(hits[0].contactPoint.y == doctest::Approx(1.0f).epsilon(0.1));
+	CHECK(std::abs(hits[0].normal.y) > 0.9f);
 
 	b2DestroyWorld(world);
 }

@@ -2,6 +2,7 @@
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/Tags.hpp"
+#include "Components/UI/MaskComponent.hpp"
 #include "Scene/EntityHandle.hpp"
 
 #include <entt/entity/registry.hpp>
@@ -73,6 +74,27 @@ namespace Index::UIDrawOrder {
 		for (EntityHandle entity : roots) {
 			Collect(registry, entity, outOrder, counter);
 		}
+	}
+
+	// Mirrors GuiRenderer's ResolveClipForEntity: a point only hits if it lies inside every ancestor Mask rect. Texture-alpha masks are approximated by their rect.
+	inline bool PassesAncestorMasks(entt::registry& registry, EntityHandle entity, const Vec2& point)
+	{
+		EntityHandle current = entity;
+		for (int hop = 0; hop < 4096; ++hop) {
+			const HierarchyComponent* hc = registry.try_get<HierarchyComponent>(current);
+			if (!hc || hc->Parent == entt::null || !registry.valid(hc->Parent)) return true;
+			current = hc->Parent;
+			if (!registry.all_of<MaskComponent>(current)) continue;
+			const auto* rect = registry.try_get<RectTransform2DComponent>(current);
+			if (rect && !rect->ContainsPoint(point)) return false;
+		}
+		return true;
+	}
+
+	inline bool HitTest(entt::registry& registry, EntityHandle entity,
+		const RectTransform2DComponent& rect, const Vec2& point)
+	{
+		return rect.ContainsPoint(point) && PassesAncestorMasks(registry, entity, point);
 	}
 
 }

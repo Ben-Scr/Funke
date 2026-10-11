@@ -124,8 +124,7 @@ extern "C" INDEX_PACKAGE_API int IndexPackage_OnLoad() {
 }
 
 // Optional — runs when the package unloads:
-extern "C" INDEX_PACKAGE_API int IndexPackage_OnUnload() {
-    return 0;
+extern "C" INDEX_PACKAGE_API void IndexPackage_OnUnload() {
 }
 ```
 

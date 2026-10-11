@@ -214,6 +214,8 @@ namespace Index {
 
 	static void Index_Application_SetRunInBackground(int enabled)
 	{
+		// The editor must keep ticking while unfocused; only builds honor this.
+		if (Application::IsEditor()) return;
 		Application::SetRunInBackground(enabled != 0);
 	}
 

@@ -1386,7 +1386,7 @@ namespace Index {
 			bool haveHit = false;
 			for (auto&& [entity, rect, interact] : hitView.each()) {
 				if (!interact.Interactable) continue;
-				if (!rect.ContainsPoint(mouseUi)) continue;
+				if (!UIDrawOrder::HitTest(registry, entity, rect, mouseUi)) continue;
 
 				// CircularSlider: reject bounding-rect hits outside the ring annulus (donut hole and outer edge).
 				if (const auto* cs = registry.try_get<CircularSliderComponent>(entity)) {
@@ -1503,7 +1503,7 @@ namespace Index {
 			// selection). This matches OS-typical combo-box behaviour.
 			if (!popupConsumes) {
 				for (auto&& [entity, rect, dd] : dropdownView.each()) {
-					if (dd.IsOpen && !rect.ContainsPoint(mouseUi)) {
+					if (dd.IsOpen && !UIDrawOrder::HitTest(registry, entity, rect, mouseUi)) {
 						dd.IsOpen = false;
 					}
 				}

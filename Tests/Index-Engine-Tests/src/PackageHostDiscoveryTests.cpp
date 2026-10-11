@@ -2,6 +2,7 @@
 
 #include "Core/PackageHost.hpp"
 #include "Project/IndexProject.hpp"
+#include "Scene/ComponentRegistry.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -176,3 +177,68 @@ TEST_CASE("PackageHost loads native modules from Unicode paths") {
 	Index::PackageHostDetail::UnloadNativeModule(module);
 }
 #endif
+
+namespace {
+	struct PackageOwnedTestComponent { int Value = 0; };
+	struct PackageDependentTestComponent { int Value = 0; };
+	struct EngineOwnedTestComponent { int Value = 0; };
+}
+
+TEST_CASE("ComponentRegistry UnregisterOwner drops package registrations and scrubs the conflict graph") {
+	using namespace Index;
+	constexpr uint32_t k_Owner = 7;
+	ComponentRegistry registry;
+
+	ComponentInfo engineInfo("Engine Owned", ComponentCategory::Component);
+	engineInfo.serializedName = "EngineOwnedTest";
+	registry.Register<EngineOwnedTestComponent>(engineInfo);
+
+	registry.SetRegistrationOwner(k_Owner);
+	ComponentInfo packageInfo("Package Owned", ComponentCategory::Component);
+	packageInfo.serializedName = "PackageOwnedTest";
+	packageInfo.conflictsWith.push_back(typeid(EngineOwnedTestComponent));
+	registry.Register<PackageOwnedTestComponent>(packageInfo);
+	ComponentInfo dependentInfo("Package Dependent", ComponentCategory::Component);
+	dependentInfo.serializedName = "PackageDependentTest";
+	dependentInfo.dependsOn.push_back(typeid(PackageOwnedTestComponent));
+	registry.Register<PackageDependentTestComponent>(dependentInfo);
+	// Re-registering an engine type under a package owner must not transfer ownership.
+	registry.Register<EngineOwnedTestComponent>(ComponentInfo("Engine Owned", ComponentCategory::Component));
+	registry.SetRegistrationOwner(0);
+
+	registry.ForEachComponentInfo([](const std::type_index& id, ComponentInfo& info) {
+		if (id == typeid(EngineOwnedTestComponent)) {
+			info.conflictsWith.push_back(typeid(PackageOwnedTestComponent));
+			info.dependsOn.push_back(typeid(PackageOwnedTestComponent));
+		}
+	});
+
+	const ComponentInfo* packageBefore = registry.GetInfo<PackageOwnedTestComponent>();
+	REQUIRE(packageBefore != nullptr);
+	CHECK(packageBefore->ownerId == k_Owner);
+	const uint32_t packageTypeId = packageBefore->typeIdU32;
+	const uint32_t dependentTypeId = registry.GetInfo<PackageDependentTestComponent>()->typeIdU32;
+	REQUIRE(registry.GetByTypeId(packageTypeId) == packageBefore);
+	CHECK(registry.GetInfo<EngineOwnedTestComponent>()->ownerId == 0);
+	CHECK(registry.TypesConflict(typeid(EngineOwnedTestComponent), typeid(PackageOwnedTestComponent)));
+
+	CHECK(registry.UnregisterOwner(k_Owner) == 2);
+
+	CHECK(registry.GetInfo<PackageOwnedTestComponent>() == nullptr);
+	CHECK(registry.GetInfo<PackageDependentTestComponent>() == nullptr);
+	CHECK(registry.FindBySerializedName("PackageOwnedTest") == nullptr);
+	CHECK(registry.FindBySerializedName("PackageDependentTest") == nullptr);
+	CHECK(registry.GetByTypeId(packageTypeId) == nullptr);
+	CHECK(registry.GetByTypeId(dependentTypeId) == nullptr);
+	CHECK_FALSE(registry.TypesConflict(typeid(EngineOwnedTestComponent), typeid(PackageOwnedTestComponent)));
+
+	const ComponentInfo* engineAfter = registry.GetInfo<EngineOwnedTestComponent>();
+	REQUIRE(engineAfter != nullptr);
+	CHECK(engineAfter->conflictsWith.empty());
+	CHECK(engineAfter->dependsOn.empty());
+	CHECK(registry.FindBySerializedName("EngineOwnedTest") == engineAfter);
+	CHECK(registry.GetByTypeId(engineAfter->typeIdU32) == engineAfter);
+	CHECK(registry.UnregisterOwner(k_Owner) == 0);
+	CHECK(registry.UnregisterOwner(0) == 0);
+	CHECK(registry.All().size() == 1);
+}

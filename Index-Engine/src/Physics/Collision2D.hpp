@@ -11,6 +11,8 @@ namespace Index {
 		Scene* sceneA = nullptr;
 		Scene* sceneB = nullptr;
 		Vec2 contactPoint{ 0.0f, 0.0f };
+		// Points from A to B; zero when unknown.
+		Vec2 normal{ 0.0f, 0.0f };
 		// Sensor overlap: routed to OnTrigger* instead of OnCollision*.
 		bool isTrigger = false;
 
