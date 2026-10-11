@@ -1,6 +1,6 @@
 #pragma once
 #include "Scene/Entity.hpp"
-#include "Scene/ISystem.hpp"
+#include "Scene/SceneSystem.hpp"
 #include "Scripting/NativeScriptHost.hpp"
 #include "Serialization/FileWatcher.hpp"
 #include "Core/Export.hpp"
@@ -15,7 +15,7 @@ namespace Index {
 	struct ScriptSystemProcessTaskState;
 	struct Collision2D;
 
-	class INDEX_API ScriptSystem : public ISystem {
+	class INDEX_API ScriptSystem : public SceneSystem {
 	public:
 		void Awake(Scene& scene) override;
 		void Update(Scene& scene) override;
@@ -28,9 +28,9 @@ namespace Index {
 		static bool RemoveScript(Entity entity, size_t index);
 		static void RemoveAllScripts(Entity entity);
 		static void SetScriptsEnabled(Entity entity, bool enabled);
-		static void DispatchCollisionEnter2D(Scene& scene, const Collision2D& collision);
-		static void DispatchCollisionStay2D(Scene& scene, const Collision2D& collision);
-		static void DispatchCollisionExit2D(Scene& scene, const Collision2D& collision);
+		static void DispatchCollisionEnter2D(const Collision2D& collision);
+		static void DispatchCollisionStay2D(const Collision2D& collision);
+		static void DispatchCollisionExit2D(const Collision2D& collision);
 
 		void SetCoreAssemblyPath(const std::string& path) { m_CoreAssemblyPath = path; }
 		void SetUserAssemblyPath(const std::string& path) { m_UserAssemblyPath = path; }
@@ -42,6 +42,11 @@ namespace Index {
 		static bool IsAutoRecompileEnabled() { return m_AutoRecompileEnabled; }
 
 		bool RequestRebuildAndReloadAll();
+
+		// Reloads the user assembly in place (e.g. after a package install) with the
+		// full teardown/re-init sequence: live managed instances are torn down first so
+		// they get recreated against the new assembly, and global systems are restarted.
+		static bool ReloadManagedAssemblies();
 		bool IsRebuilding() const;
 		bool DidLastRebuildSucceed() const { return !m_LastRebuildFailed; }
 
@@ -56,7 +61,7 @@ namespace Index {
 	private:
 		void RebuildAndReloadScripts();
 		void RebuildAndReloadNativeScripts();
-		void TeardownManagedScripts(Scene& scene);
+		static void TeardownManagedScripts(Scene& scene);
 		void TeardownNativeScripts(Scene& scene);
 
 		static inline bool m_SuppressRecompile = false;
@@ -65,6 +70,7 @@ namespace Index {
 		static inline std::string m_CoreAssemblyPath;
 		static inline std::string m_UserAssemblyPath;
 		static inline std::string m_SandboxProjectPath;
+		static inline std::string m_ManagedBuildOutputPath;
 		static inline std::string m_NativeProjectDirectory;
 		static inline Scene* m_LastScene = nullptr;
 		static inline ScriptSystem* m_PollingOwner = nullptr;

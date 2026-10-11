@@ -83,7 +83,7 @@ internal class ScriptAssemblyLoadContext : AssemblyLoadContext
 
             if (System.IO.Directory.Exists(packageDir))
             {
-                string[] tfms = { "net9.0", "net8.0", "net7.0", "net6.0", "netstandard2.1", "netstandard2.0" };
+                string[] tfms = { "net10.0", "net9.0", "net8.0", "net7.0", "net6.0", "netstandard2.1", "netstandard2.0" };
                 foreach (string tfm in tfms)
                 {
                     string dllPath = System.IO.Path.Combine(packageDir, "lib", tfm, name.Name + ".dll");
@@ -250,7 +250,7 @@ internal static class ScriptInstanceManager
         foreach (var data in SnapshotInstances())
         {
             try { invoke(data.Instance); }
-            catch (Exception ex) { Console.Error.WriteLine($"Exception in {eventName}: {ex}"); }
+            catch (Exception ex) { Log.Error($"Exception in {eventName}: {ex}"); }
         }
     }
 
@@ -259,7 +259,7 @@ internal static class ScriptInstanceManager
         foreach (var system in new List<SceneSystem>(s_SceneSystems.Values))
         {
             try { invoke(system); }
-            catch (Exception ex) { Console.Error.WriteLine($"Exception in {eventName}: {ex}"); }
+            catch (Exception ex) { Log.Error($"Exception in {eventName}: {ex}"); }
         }
     }
 
@@ -268,7 +268,7 @@ internal static class ScriptInstanceManager
         foreach (var system in new List<GlobalSystem>(s_GlobalSystems.Values))
         {
             try { invoke(system); }
-            catch (Exception ex) { Console.Error.WriteLine($"Exception in {eventName}: {ex}"); }
+            catch (Exception ex) { Log.Error($"Exception in {eventName}: {ex}"); }
         }
     }
 
@@ -326,6 +326,9 @@ internal static class ScriptInstanceManager
             DispatchToGlobalSystems(system => system.OnApplicationQuit(), nameof(GlobalSystem.OnApplicationQuit));
         }
         catch (Exception ex) { Log.Error($"Exception in Application.OnQuit handler: {ex}"); }
+
+        // After the quit handlers so values they set are persisted too.
+        PlayerPrefs.SaveQuietly();
     }
 
     [UnmanagedCallersOnly]
@@ -432,7 +435,14 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static void RaiseUiEventDispatch()
     {
-        Index.UI.UIEventDispatcher.Tick();
+        try
+        {
+            Index.UI.UIEventDispatcher.Tick();
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"RaiseUiEventDispatch failed: {ex}");
+        }
     }
 
     private static void UnloadCurrentUserAssemblyContext()
@@ -470,23 +480,32 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static void OnPlayModeExited()
     {
-        int strayHandlers = SweepUserStaticEventHandlers(SweepScope.PlayModeExit);
-        if (strayHandlers > 0)
+        try
         {
-            Log.Warn($"{strayHandlers} registered event(s) still active. Register and unregister events using OnEnable() and OnDisable().");
-        }
+            PlayerPrefs.SaveQuietly();
 
-        // Drop cached managed Component wrappers (Slot, Button, ...) so they don't carry
-        // runtime-mutated field values into the next play session. s_ManagedComponentStore is
-        // keyed by the stable entity UUID, which the scene reload restores identically — without
-        // this, a plain Stop (no assembly reload) leaves the previous session's wrappers cached,
-        // and GetComponent<T>() returns them WITHOUT re-applying the authored PendingFieldValues
-        // (those are only applied on first wrapper creation). The native reload already destroyed
-        // the entities and re-seeded authored values, so the next fetch rebuilds wrappers cleanly.
-        // (EntityScript instances revert correctly because they ARE torn down each session.)
-        // invalidate:false — the reloaded edit-scene instances already hold freshly-resolved wrappers
-        // for live entities; invalidating them here would orphan restored component refs (shows "(None)").
-        Entity.ClearManagedComponentStore(invalidate: false);
+            int strayHandlers = SweepUserStaticEventHandlers(SweepScope.PlayModeExit);
+            if (strayHandlers > 0)
+            {
+                Log.Warn($"{strayHandlers} registered event(s) still active. Register and unregister events using OnEnable() and OnDisable().");
+            }
+
+            // Drop cached managed Component wrappers (Slot, Button, ...) so they don't carry
+            // runtime-mutated field values into the next play session. s_ManagedComponentStore is
+            // keyed by the stable entity UUID, which the scene reload restores identically — without
+            // this, a plain Stop (no assembly reload) leaves the previous session's wrappers cached,
+            // and GetComponent<T>() returns them WITHOUT re-applying the authored PendingFieldValues
+            // (those are only applied on first wrapper creation). The native reload already destroyed
+            // the entities and re-seeded authored values, so the next fetch rebuilds wrappers cleanly.
+            // (EntityScript instances revert correctly because they ARE torn down each session.)
+            // invalidate:false — the reloaded edit-scene instances already hold freshly-resolved wrappers
+            // for live entities; invalidating them here would orphan restored component refs (shows "(None)").
+            Entity.ClearManagedComponentStore(invalidate: false);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"OnPlayModeExited failed: {ex}");
+        }
     }
 
     // Native→managed: the engine destroyed an entity outside any C# path
@@ -681,13 +700,20 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static void DestroyScriptInstance(int handle)
     {
-        if (!s_Instances.TryRemove(handle, out ScriptInstanceData data))
-            return;
-        ulong entityID = data.Instance.Entity != null ? data.Instance.Entity.ID : 0;
-        if (entityID != 0)
+        try
         {
-            Type type = data.Instance.GetType();
-            s_InstancesByType.TryRemove((entityID, type), out _);
+            if (!s_Instances.TryRemove(handle, out ScriptInstanceData data))
+                return;
+            ulong entityID = data.Instance.Entity != null ? data.Instance.Entity.ID : 0;
+            if (entityID != 0)
+            {
+                Type type = data.Instance.GetType();
+                s_InstancesByType.TryRemove((entityID, type), out _);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"DestroyScriptInstance failed: {ex}");
         }
     }
 
@@ -796,6 +822,35 @@ internal static class ScriptInstanceManager
 
     private enum CollisionPhase { Enter, Stay, Exit }
 
+    // phase matches the native CollisionDispatchPhase: 0 = Enter, 1 = Stay, 2 = Exit.
+    [UnmanagedCallersOnly]
+    public static void InvokeTrigger2D(int handle, int phase, ulong selfEntityId, ulong otherEntityId, ulong entityAId, ulong entityBId)
+    {
+        if (!s_Instances.TryGetValue(handle, out var data)) return;
+
+        var collisionPhase = (CollisionPhase)phase;
+        try
+        {
+            var collision = new Collision2D(selfEntityId, otherEntityId, entityAId, entityBId, Vector2.Zero, isTrigger: true);
+            if (collisionPhase == CollisionPhase.Enter)
+                data.Instance.OnTriggerEnter2D(collision);
+            else if (collisionPhase == CollisionPhase.Stay)
+                data.Instance.OnTriggerStay2D(collision);
+            else
+                data.Instance.OnTriggerExit2D(collision);
+        }
+        catch (Exception ex)
+        {
+            string callbackName = collisionPhase switch
+            {
+                CollisionPhase.Enter => nameof(EntityScript.OnTriggerEnter2D),
+                CollisionPhase.Stay => nameof(EntityScript.OnTriggerStay2D),
+                _ => nameof(EntityScript.OnTriggerExit2D)
+            };
+            Log.Error($"Exception in {callbackName}: {ex}");
+        }
+    }
+
     private static void InvokeCollision2D(int handle, ulong selfEntityId, ulong otherEntityId, ulong entityAId, ulong entityBId, Vector2 contactPoint, CollisionPhase phase)
     {
         if (!s_Instances.TryGetValue(handle, out var data)) return;
@@ -825,8 +880,16 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static unsafe int ClassExists(byte* classNamePtr)
     {
-        string className = Marshal.PtrToStringUTF8((IntPtr)classNamePtr)!;
-        return GetOrCacheClass(className)?.IsScript == true ? 1 : 0;
+        try
+        {
+            string className = Marshal.PtrToStringUTF8((IntPtr)classNamePtr)!;
+            return GetOrCacheClass(className)?.IsScript == true ? 1 : 0;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"ClassExists failed: {ex}");
+            return 0;
+        }
     }
 
     [UnmanagedCallersOnly]
@@ -856,8 +919,15 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static void DestroySceneSystemInstance(int handle)
     {
-        s_SceneSystems.TryRemove(handle, out _);
-        s_SceneSystemAwoken.TryRemove(handle, out _);
+        try
+        {
+            s_SceneSystems.TryRemove(handle, out _);
+            s_SceneSystemAwoken.TryRemove(handle, out _);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"DestroySceneSystemInstance failed: {ex}");
+        }
     }
 
     [UnmanagedCallersOnly]
@@ -922,8 +992,16 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static unsafe int SceneSystemClassExists(byte* classNamePtr)
     {
-        string className = PtrToString(classNamePtr);
-        return GetOrCacheClass(className)?.IsSceneSystem == true ? 1 : 0;
+        try
+        {
+            string className = PtrToString(classNamePtr);
+            return GetOrCacheClass(className)?.IsSceneSystem == true ? 1 : 0;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"SceneSystemClassExists failed: {ex}");
+            return 0;
+        }
     }
 
     [UnmanagedCallersOnly]
@@ -994,8 +1072,16 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static unsafe int GlobalSystemClassExists(byte* classNamePtr)
     {
-        string className = PtrToString(classNamePtr);
-        return GetOrCacheClass(className)?.IsGlobalSystem == true ? 1 : 0;
+        try
+        {
+            string className = PtrToString(classNamePtr);
+            return GetOrCacheClass(className)?.IsGlobalSystem == true ? 1 : 0;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"GlobalSystemClassExists failed: {ex}");
+            return 0;
+        }
     }
 
     // ── DataAsset (appended for binary compat) ──
@@ -1063,8 +1149,16 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static unsafe int DataAssetClassExists(byte* typeNamePtr)
     {
-        string typeName = PtrToString(typeNamePtr);
-        return GetOrCacheClass(typeName)?.IsDataAsset == true ? 1 : 0;
+        try
+        {
+            string typeName = PtrToString(typeNamePtr);
+            return GetOrCacheClass(typeName)?.IsDataAsset == true ? 1 : 0;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"DataAssetClassExists failed: {ex}");
+            return 0;
+        }
     }
 
     // Returns JSON [{"type","menu"}] of every DataAsset subclass in the user assembly, for the editor's Create menu.
@@ -1184,34 +1278,55 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static void UnloadUserAssembly()
     {
-        // Drop dynamic component registrations BEFORE the ALC unloads so
-        // captured DynamicComponentStorage pointers in native callbacks
-        // don't outlive the storage that owns them.
-        DynamicComponentRegistrar.UnregisterAll();
+        try
+        {
+            // Drop dynamic component registrations BEFORE the ALC unloads so
+            // captured DynamicComponentStorage pointers in native callbacks
+            // don't outlive the storage that owns them.
+            DynamicComponentRegistrar.UnregisterAll();
 
-        CancelAllInstanceCoroutines();
-        s_Instances.Clear();
-        s_InstancesByType.Clear();
-        s_SceneSystems.Clear();
-        s_SceneSystemAwoken.Clear();
-        s_GlobalSystems.Clear();
-        s_DataAssets.Clear();
-        s_ClassCache.Clear();
-        ReleaseFieldJsonBuffer();
+            CancelAllInstanceCoroutines();
+            s_Instances.Clear();
+            s_InstancesByType.Clear();
+            s_SceneSystems.Clear();
+            s_SceneSystemAwoken.Clear();
+            s_GlobalSystems.Clear();
+            s_DataAssets.Clear();
+            s_ClassCache.Clear();
+            ReleaseFieldJsonBuffer();
 
-        UnloadCurrentUserAssemblyContext();
+            UnloadCurrentUserAssemblyContext();
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"UnloadUserAssembly failed: {ex}");
+        }
     }
 
     [UnmanagedCallersOnly]
     public static void PumpCoroutinesUpdate(float deltaTime)
     {
-        CoroutineScheduler.PumpUpdate(deltaTime);
+        try
+        {
+            CoroutineScheduler.PumpUpdate(deltaTime);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"PumpCoroutinesUpdate failed: {ex}");
+        }
     }
 
     [UnmanagedCallersOnly]
     public static void PumpCoroutinesFixedUpdate()
     {
-        CoroutineScheduler.PumpFixedUpdate();
+        try
+        {
+            CoroutineScheduler.PumpFixedUpdate();
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"PumpCoroutinesFixedUpdate failed: {ex}");
+        }
     }
 
     // Cancel all coroutines before unload so captured user-ALC types are released for the GC dance in UnloadCurrentUserAssemblyContext.
@@ -1998,7 +2113,44 @@ internal static class ScriptInstanceManager
 
     private static string EscapeJson(string s)
     {
-        return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
+        if (s.Length == 0) return s;
+
+        var escaped = new System.Text.StringBuilder(s.Length);
+        foreach (char character in s)
+        {
+            switch (character)
+            {
+                case '"':
+                    escaped.Append("\\\"");
+                    break;
+                case '\\':
+                    escaped.Append("\\\\");
+                    break;
+                case '\b':
+                    escaped.Append("\\b");
+                    break;
+                case '\f':
+                    escaped.Append("\\f");
+                    break;
+                case '\n':
+                    escaped.Append("\\n");
+                    break;
+                case '\r':
+                    escaped.Append("\\r");
+                    break;
+                case '\t':
+                    escaped.Append("\\t");
+                    break;
+                default:
+                    if (character < ' ' || char.IsSurrogate(character))
+                        escaped.Append("\\u").Append(((int)character).ToString("x4"));
+                    else
+                        escaped.Append(character);
+                    break;
+            }
+        }
+
+        return escaped.ToString();
     }
 
     private static bool IsFieldEditorVisible(FieldInfo field)

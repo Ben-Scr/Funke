@@ -47,6 +47,7 @@
 #include <filesystem>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -61,17 +62,208 @@ namespace Index {
 		static constexpr int SCENE_FORMAT_VERSION = 1;
 		static constexpr float k_MinScaleAxis = 0.0001f;
 
+		// BoxCollider2D size: prefer the exact local size written since localSizeX/Y were
+		// added. Legacy files only carry world-scaled scaleX/Y, which must be divided by the
+		// entity's world scale — but during a full scene load parenting isn't wired yet, so
+		// transform.Scale is still the *local* scale and a child of a scaled parent used to
+		// grow by the parent's scale on every save/load cycle.
+		Vec2 ReadBoxColliderLocalSize(const Value& colliderValue, const Transform2DComponent& transform) {
+			if (colliderValue.FindMember("localSizeX") && colliderValue.FindMember("localSizeY")) {
+				return {
+					GetFloatMember(colliderValue, "localSizeX", 1.0f),
+					GetFloatMember(colliderValue, "localSizeY", 1.0f)
+				};
+			}
+
+			const Vec2 savedScale{
+				GetFloatMember(colliderValue, "scaleX", transform.Scale.x),
+				GetFloatMember(colliderValue, "scaleY", transform.Scale.y)
+			};
+			Vec2 localScale{ 1.0f, 1.0f };
+			if (std::fabs(transform.Scale.x) > k_MinScaleAxis) {
+				localScale.x = savedScale.x / transform.Scale.x;
+			}
+			if (std::fabs(transform.Scale.y) > k_MinScaleAxis) {
+				localScale.y = savedScale.y / transform.Scale.y;
+			}
+			return localScale;
+		}
+
+		bool IsUnsignedIntegerValue(const Value& value) {
+			if (value.IsString()) {
+				const std::string text = value.AsStringOr();
+				if (text.empty() || !std::all_of(text.begin(), text.end(), [](unsigned char c) {
+					return std::isdigit(c) != 0;
+				})) return false;
+				try {
+					std::size_t end = 0;
+					(void)std::stoull(text, &end);
+					return end == text.size();
+				}
+				catch (...) {
+					return false;
+				}
+			}
+			if (!value.IsNumber()) return false;
+			if (value.GetNumberKind() == Value::NumberKind::UInt64) return true;
+			if (value.GetNumberKind() == Value::NumberKind::Int64) return value.AsInt64Or(-1) >= 0;
+			const double numeric = value.AsDoubleOr(-1.0);
+			return std::isfinite(numeric) && numeric >= 0.0 && std::floor(numeric) == numeric;
+		}
+
+		bool ValidateSceneRoot(const Value& root, std::string_view source, bool requireEntities) {
+			const std::string sourceLabel = source.empty() ? std::string("scene data") : std::string(source);
+			if (!root.IsObject()) {
+				IDX_CORE_ERROR_TAG("SceneSerializer", "{} root must be an object", sourceLabel);
+				return false;
+			}
+			if (const Value* version = root.FindMember("version")) {
+				if (!version->IsNumber()) {
+					IDX_CORE_ERROR_TAG("SceneSerializer", "{} has a non-numeric scene version", sourceLabel);
+					return false;
+				}
+				const int value = version->AsIntOr(-1);
+				if (value < 0 || version->AsDoubleOr(-1.0) != static_cast<double>(value)) {
+					IDX_CORE_ERROR_TAG("SceneSerializer", "{} has an invalid scene version", sourceLabel);
+					return false;
+				}
+				if (value > SCENE_FORMAT_VERSION) {
+					IDX_CORE_ERROR_TAG("SceneSerializer", "{} uses newer scene version {} (supported: {})",
+						sourceLabel, value, SCENE_FORMAT_VERSION);
+					return false;
+				}
+			}
+			if (const Value* name = root.FindMember("name"); name && !name->IsString()) {
+				IDX_CORE_ERROR_TAG("SceneSerializer", "{} has a non-string name", sourceLabel);
+				return false;
+			}
+			if (const Value* sceneId = root.FindMember("sceneId"); sceneId && !IsUnsignedIntegerValue(*sceneId)) {
+				IDX_CORE_ERROR_TAG("SceneSerializer", "{} has an invalid scene id", sourceLabel);
+				return false;
+			}
+			if (const Value* systems = root.FindMember("systems")) {
+				if (!systems->IsArray()) {
+					IDX_CORE_ERROR_TAG("SceneSerializer", "{} has a non-array systems member", sourceLabel);
+					return false;
+				}
+				for (const Value& system : systems->GetArray()) {
+					if (system.IsString()) {
+						if (!system.AsStringOr().empty()) continue;
+						IDX_CORE_ERROR_TAG("SceneSerializer", "{} has an empty system name", sourceLabel);
+						return false;
+					}
+					if (!system.IsObject()) {
+						IDX_CORE_ERROR_TAG("SceneSerializer", "{} has an invalid system entry", sourceLabel);
+						return false;
+					}
+					const Value* className = system.FindMember("className");
+					const Value* enabled = system.FindMember("enabled");
+					const Value* fields = system.FindMember("fields");
+					if (!className || !className->IsString() || className->AsStringOr().empty()
+						|| (enabled && !enabled->IsBool()) || (fields && !fields->IsObject())) {
+						IDX_CORE_ERROR_TAG("SceneSerializer", "{} has an invalid system object", sourceLabel);
+						return false;
+					}
+					if (fields) {
+						for (const auto& [fieldName, fieldValue] : fields->GetObject()) {
+							(void)fieldName;
+							if (!fieldValue.IsString()) {
+								IDX_CORE_ERROR_TAG("SceneSerializer", "{} has a non-string system field value", sourceLabel);
+								return false;
+							}
+						}
+					}
+				}
+			}
+			const Value* entities = root.FindMember("entities");
+			if ((entities && !entities->IsArray()) || (requireEntities && !entities)) {
+				IDX_CORE_ERROR_TAG("SceneSerializer", "{} requires an entities array", sourceLabel);
+				return false;
+			}
+			return true;
+		}
+
+		class SceneLoadStage {
+		public:
+			explicit SceneLoadStage(Scene& target)
+				: m_Scene(Scene::CreateDetachedScene(target.GetName())) {
+				m_Scene->SetSceneId(target.GetSceneId());
+			}
+
+			~SceneLoadStage() {
+				for (EntityHandle entity : m_Scene->GetRegistry().view<UUIDComponent>()) {
+					m_Scene->GetRegistry().get<UUIDComponent>(entity).Id = UUID(0);
+				}
+			}
+
+			Scene& Get() { return *m_Scene; }
+
+			SceneLoadStage(const SceneLoadStage&) = delete;
+			SceneLoadStage& operator=(const SceneLoadStage&) = delete;
+
+		private:
+			std::unique_ptr<Scene> m_Scene;
+		};
+
+		bool ValidateStagedEntityIdentities(Scene& scene, std::string_view source) {
+			struct IdentityOwner {
+				EntityHandle Entity = entt::null;
+				const char* Domain = nullptr;
+			};
+			std::unordered_map<uint64_t, IdentityOwner> owners;
+			owners.reserve(scene.GetEntityCount() * 2);
+			const std::string sourceLabel = source.empty() ? std::string("scene data") : std::string(source);
+			const auto registerIdentity = [&](uint64_t id, EntityHandle entity, const char* domain) {
+				if (id == 0) {
+					IDX_CORE_ERROR_TAG("SceneSerializer", "{} contains a zero {}", sourceLabel, domain);
+					return false;
+				}
+				const auto [it, inserted] = owners.emplace(id, IdentityOwner{ entity, domain });
+				if (inserted) return true;
+				IDX_CORE_ERROR_TAG("SceneSerializer", "{} reuses entity identity {} across {} and {}",
+					sourceLabel, id, it->second.Domain, domain);
+				return false;
+			};
+
+			for (EntityHandle entity : scene.GetRegistry().view<EntityMetaDataComponent>()) {
+				const EntityMetaData& metadata = scene.GetRegistry().get<EntityMetaDataComponent>(entity).MetaData;
+				if (!registerIdentity(metadata.RuntimeID, entity, "RuntimeID")) return false;
+				uint64_t persistentId = metadata.RuntimeID;
+				if (metadata.Origin == EntityOrigin::Scene) {
+					persistentId = static_cast<uint64_t>(metadata.SceneGUID);
+					if (!registerIdentity(persistentId, entity, "SceneGUID")) return false;
+				}
+				if (!scene.HasComponent<UUIDComponent>(entity)
+					|| static_cast<uint64_t>(scene.GetComponent<UUIDComponent>(entity).Id) != persistentId) {
+					IDX_CORE_ERROR_TAG("SceneSerializer", "{} contains inconsistent entity identity metadata", sourceLabel);
+					return false;
+				}
+			}
+			return true;
+		}
+
 		// Destroys the in-progress entity if construction throws before Commit(); prevents half-baked orphans.
 		class EntityRollbackGuard {
 		public:
-			EntityRollbackGuard(Scene& scene, EntityHandle entity)
-				: m_Scene(&scene), m_Entity(entity) {}
-			~EntityRollbackGuard() {
+			EntityRollbackGuard(Scene& scene, EntityHandle entity, bool wasDirty, bool wasUiDirty)
+				: m_Scene(&scene), m_Entity(entity),
+				m_FixupStart(scene.GetPendingEntityRefFixupCount()),
+				m_WasDirty(wasDirty), m_WasUiDirty(wasUiDirty) {}
+			~EntityRollbackGuard() noexcept {
 				if (m_Committed) return;
 				if (m_Entity == entt::null) return;
-				if (m_Scene && m_Scene->GetRegistry().valid(m_Entity)) {
-					m_Scene->DestroyEntity(m_Entity);
+				try {
+					m_Scene->DiscardPendingEntityRefFixupsFrom(m_FixupStart);
+					if (m_Scene && m_Scene->GetRegistry().valid(m_Entity)) {
+						if (m_Scene->GetRegistry().all_of<UUIDComponent>(m_Entity)) {
+							m_Scene->GetRegistry().get<UUIDComponent>(m_Entity).Id = UUID(0);
+						}
+						m_Scene->DestroyEntity(m_Entity);
+					}
 				}
+				catch (...) {}
+				if (m_WasDirty) m_Scene->MarkDirty(); else m_Scene->ClearDirty();
+				if (m_WasUiDirty) m_Scene->MarkUIDirty(); else m_Scene->ClearUIDirty();
 			}
 			EntityRollbackGuard(const EntityRollbackGuard&) = delete;
 			EntityRollbackGuard& operator=(const EntityRollbackGuard&) = delete;
@@ -79,7 +271,86 @@ namespace Index {
 		private:
 			Scene*       m_Scene = nullptr;
 			EntityHandle m_Entity = entt::null;
+			std::size_t  m_FixupStart = 0;
+			bool         m_WasDirty = false;
+			bool         m_WasUiDirty = false;
 			bool         m_Committed = false;
+		};
+
+		class EntityTreeRollbackGuard {
+		public:
+			EntityTreeRollbackGuard(Scene& scene, bool enabled, std::size_t fixupStart)
+				: m_Scene(&scene), m_FixupStart(fixupStart), m_Enabled(enabled),
+				m_WasDirty(scene.IsDirty()), m_WasUiDirty(scene.IsUIDirty()) {}
+			~EntityTreeRollbackGuard() noexcept {
+				if (!m_Enabled || m_Committed || !m_Scene) return;
+				try { m_Scene->DiscardPendingEntityRefFixupsFrom(m_FixupStart); }
+				catch (...) {}
+				for (auto it = m_Entities.rbegin(); it != m_Entities.rend(); ++it) {
+					if (m_Scene->IsValid(*it)) {
+						try { m_Scene->DestroyEntity(*it); }
+						catch (...) {}
+					}
+				}
+				if (m_WasDirty) m_Scene->MarkDirty(); else m_Scene->ClearDirty();
+				if (m_WasUiDirty) m_Scene->MarkUIDirty(); else m_Scene->ClearUIDirty();
+			}
+			EntityTreeRollbackGuard(const EntityTreeRollbackGuard&) = delete;
+			EntityTreeRollbackGuard& operator=(const EntityTreeRollbackGuard&) = delete;
+			void Reserve(std::size_t count) { m_Entities.reserve(count); }
+			void Track(EntityHandle entity) { m_Entities.push_back(entity); }
+			void Commit() { m_Committed = true; }
+		private:
+			Scene* m_Scene = nullptr;
+			std::vector<EntityHandle> m_Entities;
+			std::size_t m_FixupStart = 0;
+			bool m_Enabled = false;
+			bool m_WasDirty = false;
+			bool m_WasUiDirty = false;
+			bool m_Committed = false;
+		};
+
+		class PrefabRefreshRollbackGuard {
+		public:
+			PrefabRefreshRollbackGuard(Scene& scene, EntityHandle existing, EntityHandle replacement,
+				uint64_t preservedId, std::size_t fixupStart, bool wasDirty, bool wasUiDirty)
+				: m_Scene(&scene), m_Existing(existing), m_Replacement(replacement),
+				m_PreservedId(preservedId), m_FixupStart(fixupStart),
+				m_WasDirty(wasDirty), m_WasUiDirty(wasUiDirty) {}
+			~PrefabRefreshRollbackGuard() noexcept {
+				if (m_Committed || !m_Scene) return;
+				try { m_Scene->DiscardPendingEntityRefFixupsFrom(m_FixupStart); }
+				catch (...) {}
+				if (m_Scene->IsValid(m_Replacement)) {
+					try {
+						if (m_IdentityTransferred && m_Scene->HasComponent<UUIDComponent>(m_Replacement)) {
+							m_Scene->GetComponent<UUIDComponent>(m_Replacement).Id = UUID(0);
+						}
+						m_Scene->DestroyEntity(m_Replacement);
+					}
+					catch (...) {}
+				}
+				if (m_IdentityTransferred && m_PreservedId != 0 && m_Scene->IsValid(m_Existing)) {
+					try { m_Scene->SetEntityPersistentID(m_Existing, m_PreservedId); }
+					catch (...) {}
+				}
+				if (m_WasDirty) m_Scene->MarkDirty(); else m_Scene->ClearDirty();
+				if (m_WasUiDirty) m_Scene->MarkUIDirty(); else m_Scene->ClearUIDirty();
+			}
+			PrefabRefreshRollbackGuard(const PrefabRefreshRollbackGuard&) = delete;
+			PrefabRefreshRollbackGuard& operator=(const PrefabRefreshRollbackGuard&) = delete;
+			void MarkIdentityTransferred() { m_IdentityTransferred = true; }
+			void Commit() { m_Committed = true; }
+		private:
+			Scene* m_Scene = nullptr;
+			EntityHandle m_Existing = entt::null;
+			EntityHandle m_Replacement = entt::null;
+			uint64_t m_PreservedId = 0;
+			std::size_t m_FixupStart = 0;
+			bool m_WasDirty = false;
+			bool m_WasUiDirty = false;
+			bool m_IdentityTransferred = false;
+			bool m_Committed = false;
 		};
 
 		Value SerializeScriptFields(const ScriptComponent& scriptComponent) {
@@ -402,6 +673,58 @@ namespace Index {
 			return GetUInt64Member(entityValue, "uuid", 0);
 		}
 
+		EntityOrigin GetEntityTreeOrigin(const Value& entityValue, EntityOrigin defaultOrigin) {
+			if (defaultOrigin != EntityOrigin::Scene) return defaultOrigin;
+			const std::string origin = GetStringMember(entityValue, "Origin", "");
+			if (!origin.empty() && EntityOriginFromString(origin) == EntityOrigin::Prefab
+				&& GetUInt64Member(entityValue, "PrefabGUID", 0) != 0) {
+				return EntityOrigin::Prefab;
+			}
+			return defaultOrigin;
+		}
+
+		bool ValidateEntityTreeSourceIds(
+			const std::vector<Value>& entityValues,
+			EntityOrigin origin,
+			bool validateRefRemap) {
+			std::unordered_set<uint64_t> hierarchyIds;
+			std::unordered_set<uint64_t> refIds;
+			hierarchyIds.reserve(entityValues.size());
+			refIds.reserve(entityValues.size());
+
+			for (const Value& entityValue : entityValues) {
+				if (!entityValue.IsObject()) return false;
+				const uint64_t sourceId = GetPrefabSourceId(entityValue);
+				if (sourceId != 0 && !hierarchyIds.insert(sourceId).second) {
+					IDX_CORE_ERROR_TAG("SceneSerializer", "Entity tree reuses source identity {}", sourceId);
+					return false;
+				}
+
+				if (!validateRefRemap) continue;
+				uint64_t refId = GetUInt64Member(entityValue, "sourceUuid", 0);
+				if (refId == 0 && GetEntityTreeOrigin(entityValue, origin) == EntityOrigin::Prefab) {
+					refId = sourceId;
+				}
+				if (refId != 0 && !refIds.insert(refId).second) {
+					IDX_CORE_ERROR_TAG("SceneSerializer", "Entity tree reuses reference-remap identity {}", refId);
+					return false;
+				}
+			}
+
+			if (entityValues.size() > 1 && hierarchyIds.size() != entityValues.size()) {
+				IDX_CORE_ERROR_TAG("SceneSerializer", "Multi-entity tree contains a missing source identity");
+				return false;
+			}
+			for (const Value& entityValue : entityValues) {
+				const uint64_t parentId = GetUInt64Member(entityValue, "parentUuid", 0);
+				if (parentId != 0 && !hierarchyIds.contains(parentId)) {
+					IDX_CORE_ERROR_TAG("SceneSerializer", "Entity tree references missing parent identity {}", parentId);
+					return false;
+				}
+			}
+			return true;
+		}
+
 		bool ReadPrefabDefinitionFromRoot(const Value& root, PrefabDefinition& outDefinition) {
 			outDefinition.Entities.clear();
 			if (!root.IsObject()) {
@@ -438,17 +761,19 @@ namespace Index {
 
 		bool LoadPrefabDefinition(uint64_t prefabGuid, PrefabDefinition& outDefinition);
 
-		void ApplyEntityOverrides(PrefabDefinition& definition, const Value& instanceValue) {
+		bool ApplyEntityOverrides(PrefabDefinition& definition, const Value& instanceValue) {
 			if (definition.Entities.empty()) {
-				return;
+				return true;
 			}
+			if (!ValidateEntityTreeSourceIds(definition.Entities, EntityOrigin::Prefab, false)) return false;
 
 			// Backwards-compatible root override payload.
 			ApplyOverrides(definition.Entities.front(), instanceValue);
+			if (!ValidateEntityTreeSourceIds(definition.Entities, EntityOrigin::Prefab, false)) return false;
 
 			const Value* entityOverrides = GetObjectMember(instanceValue, "EntityOverrides");
 			if (!entityOverrides) {
-				return;
+				return true;
 			}
 
 			std::unordered_map<uint64_t, Value*> entitiesBySourceId;
@@ -482,6 +807,7 @@ namespace Index {
 				wrapper.AddMember("Overrides", overrides);
 				ApplyOverrides(*targetIt->second, wrapper);
 			}
+			return ValidateEntityTreeSourceIds(definition.Entities, EntityOrigin::Prefab, false);
 		}
 
 		std::unordered_map<uint64_t, const Value*> BuildSourceEntityMap(const PrefabDefinition& definition) {
@@ -609,6 +935,7 @@ namespace Index {
 			Value sourceRoot = sourceDefinition.Entities.front();
 			RemoveEntityComparisonIdentityMembers(currentRoot);
 			RemoveEntityComparisonIdentityMembers(sourceRoot);
+			NormalizeLegacyColliderKeysForDiff(sourceRoot, currentRoot);
 			BuildOverridePatch(sourceRoot, currentRoot, {}, outRootOverrides);
 
 			const auto sourceById = BuildSourceEntityMap(sourceDefinition);
@@ -629,6 +956,7 @@ namespace Index {
 				RemoveEntityComparisonIdentityMembers(sourceValue);
 
 				Value entityOverrides = Value::MakeObject();
+				NormalizeLegacyColliderKeysForDiff(sourceValue, currentValue);
 				BuildOverridePatch(sourceValue, currentValue, {}, entityOverrides);
 				if (!entityOverrides.GetObject().empty()) {
 					outEntityOverrides.AddMember(std::to_string(sourceId), std::move(entityOverrides));
@@ -674,8 +1002,9 @@ namespace Index {
 			}
 
 			if (ReadPrefabDefinitionFromRoot(root, outDefinition)) {
+				const bool valid = ValidateEntityTreeSourceIds(outDefinition.Entities, EntityOrigin::Prefab, true);
 				inProgress.erase(prefabGuid);
-				return true;
+				return valid;
 			}
 
 			if (const Value* prefabRefValue = root.FindMember("PrefabRef")) {
@@ -694,7 +1023,10 @@ namespace Index {
 				}
 
 				if (basePrefabGuid != 0 && LoadPrefabDefinitionRecursive(basePrefabGuid, outDefinition, inProgress)) {
-					ApplyEntityOverrides(outDefinition, root);
+					if (!ApplyEntityOverrides(outDefinition, root)) {
+						inProgress.erase(prefabGuid);
+						return false;
+					}
 					inProgress.erase(prefabGuid);
 					return true;
 				}
@@ -791,20 +1123,22 @@ namespace Index {
 			IDX_CORE_ERROR_TAG("SceneSerializer", "Load failed: {}", exception.what());
 			return false;
 		}
+		catch (...) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Load failed with an unknown exception");
+			return false;
+		}
 	}
 
-	bool SceneSerializer::ProcessSceneHeader(Scene& scene, const Json::Value& header, std::string_view source) {
-		const int version = GetIntMember(header, "version", 1);
-		if (version > SCENE_FORMAT_VERSION) {
-			IDX_CORE_WARN_TAG(
-				"SceneSerializer",
-				"Scene version {} is newer than supported ({})",
-				version,
-				SCENE_FORMAT_VERSION);
-		}
-
+	bool SceneSerializer::ProcessSceneHeader(
+		Scene& scene,
+		const Json::Value& header,
+		std::string_view source,
+		bool& restartLifecycle) {
 		const std::string sourcePath(source);
 		const std::string serializedName = GetStringMember(header, "name");
+		if (!scene.BeginContentReplacement(restartLifecycle)) {
+			return false;
+		}
 		// Prefer the serialized name when present â€” file-stem fallback is only for
 		// legacy scenes that never wrote a "name" field. Previously the file stem
 		// always won, making the serialized "name" a write-only field.
@@ -812,15 +1146,13 @@ namespace Index {
 			scene.SetName(serializedName);
 		}
 		else if (!sourcePath.empty()) {
-			scene.SetName(std::filesystem::path(sourcePath).stem().string());
+			scene.SetName(Path::ToUtf8(Path::FromUtf8(sourcePath).stem()));
 		}
 
 		const uint64_t sceneId = GetUInt64Member(header, "sceneId", 0);
 		if (sceneId != 0) {
 			scene.SetSceneId(UUID(sceneId));
 		}
-
-		const bool restartLifecycle = scene.BeginContentReplacement();
 
 		if (const Value* systemsValue = GetArrayMember(header, "systems")) {
 			for (const Value& systemValue : systemsValue->GetArray()) {
@@ -857,15 +1189,15 @@ namespace Index {
 			}
 		}
 
-		return restartLifecycle;
+		return true;
 	}
 
-	void SceneSerializer::ProcessLoadedEntity(Scene& scene, const Json::Value& entityValue, SceneLoadState& state) {
+	bool SceneSerializer::ProcessLoadedEntity(Scene& scene, const Json::Value& entityValue, SceneLoadState& state) {
 		if (!entityValue.IsObject()) {
-			return;
+			return false;
 		}
 		EntityHandle handle = DeserializeEntity(scene, entityValue);
-		if (handle == entt::null) return;
+		if (handle == entt::null) return false;
 
 		const std::string parentUuidStr = GetStringMember(entityValue, "parentUuid", std::string{});
 		if (!parentUuidStr.empty()) {
@@ -881,6 +1213,7 @@ namespace Index {
 		if (childIdx >= 0) {
 			state.childIndexByEntity[static_cast<uint32_t>(handle)] = childIdx;
 		}
+		return true;
 	}
 
 	void SceneSerializer::FinalizeSceneLoad(Scene& scene, const SceneLoadState& state, bool restartLifecycle) {
@@ -937,20 +1270,123 @@ namespace Index {
 
 		scene.ClearDirty();
 		scene.EndContentReplacement(restartLifecycle);
-		IDX_CORE_INFO_TAG("SceneSerializer", "Loaded scene: {}", scene.GetName());
 	}
 
-	bool SceneSerializer::DeserializeScene(Scene& scene, const Json::Value& root, std::string_view source) {
-		INDEX_PROFILE_SCOPE("SceneSerializer::DeserializeScene");
-		if (!root.IsObject()) {
-			IDX_CORE_ERROR_TAG("SceneSerializer", "DeserializeScene requires an object root");
+	bool SceneSerializer::CommitStagedScene(Scene& scene, Scene& stagedScene, std::string_view source) {
+		if (scene.IsLoaded() && !scene.IsLifecycleSuspended()) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Loaded scene replacement requires an owner-level staged swap");
+			return false;
+		}
+		Json::Value previousState;
+		Json::Value canonicalPreviousState;
+		Json::Value nextState;
+		try {
+			previousState = SerializeScene(scene);
+			nextState = SerializeScene(stagedScene);
+			SceneLoadStage previousStage(scene);
+			if (!DeserializeSceneInPlace(previousStage.Get(), previousState, {}, false)
+				|| !ValidateStagedEntityIdentities(previousStage.Get(), {})) {
+				IDX_CORE_ERROR_TAG("SceneSerializer", "Current scene cannot be staged for a safe transaction");
+				return false;
+			}
+			canonicalPreviousState = SerializeScene(previousStage.Get());
+		}
+		catch (const std::exception& exception) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Could not snapshot scene transaction: {}", exception.what());
+			return false;
+		}
+		catch (...) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Could not snapshot scene transaction due to an unknown exception");
 			return false;
 		}
 
-		const bool restartLifecycle = ProcessSceneHeader(scene, root, source);
+		const bool wasLoaded = scene.IsLoaded();
+		const bool wasLifecycleSuspended = scene.IsLifecycleSuspended();
+		const bool wasDirty = scene.IsDirty();
+		const bool wasUiDirty = scene.IsUIDirty();
+		const std::string previousName = scene.GetName();
+		const UUID previousSceneId = scene.GetSceneId();
+		auto restorePreviousState = [&]() {
+			bool restored = false;
+			try {
+				restored = DeserializeSceneInPlace(scene, canonicalPreviousState, {}, false)
+					&& ValidateStagedEntityIdentities(scene, {});
+			}
+			catch (const std::exception& exception) {
+				IDX_CORE_ERROR_TAG("SceneSerializer", "Scene transaction rollback failed: {}", exception.what());
+			}
+			catch (...) {
+				IDX_CORE_ERROR_TAG("SceneSerializer", "Scene transaction rollback failed with an unknown exception");
+			}
+			scene.m_IsLoaded = wasLoaded;
+			scene.m_LifecycleSuspended = wasLifecycleSuspended;
+			try {
+				scene.SetName(previousName);
+			}
+			catch (...) {
+				restored = false;
+			}
+			scene.SetSceneId(previousSceneId);
+			scene.m_Dirty = wasDirty;
+			scene.m_UIDirty = wasUiDirty;
+			return restored;
+		};
+
+		try {
+			if (DeserializeSceneInPlace(scene, nextState, source, true)
+				&& ValidateStagedEntityIdentities(scene, source)) {
+				return true;
+			}
+		}
+		catch (const std::exception& exception) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Scene transaction commit failed: {}", exception.what());
+		}
+		catch (...) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Scene transaction commit failed with an unknown exception");
+		}
+
+		if (!restorePreviousState()) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Scene transaction could not restore its previous state");
+		}
+		return false;
+	}
+
+	bool SceneSerializer::DeserializeScene(Scene& scene, const Json::Value& root, std::string_view source) {
+		if (scene.IsLoaded() && !scene.IsLifecycleSuspended()) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Loaded scene replacement requires an owner-level staged swap");
+			return false;
+		}
+		if (!ValidateSceneRoot(root, source, true)) return false;
+		try {
+			SceneLoadStage stagedScene(scene);
+			if (!DeserializeSceneInPlace(stagedScene.Get(), root, source, false)) return false;
+			if (!ValidateStagedEntityIdentities(stagedScene.Get(), source)) return false;
+			return CommitStagedScene(scene, stagedScene.Get(), source);
+		}
+		catch (const std::exception& exception) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Scene validation failed: {}", exception.what());
+			return false;
+		}
+		catch (...) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Scene validation failed with an unknown exception");
+			return false;
+		}
+	}
+
+	bool SceneSerializer::DeserializeSceneInPlace(
+		Scene& scene,
+		const Json::Value& root,
+		std::string_view source,
+		bool logSuccess) {
+		INDEX_PROFILE_SCOPE("SceneSerializer::DeserializeScene");
+		if (!ValidateSceneRoot(root, source, true)) return false;
+
+		bool restartLifecycle = false;
+		if (!ProcessSceneHeader(scene, root, source, restartLifecycle)) return false;
 
 		// Two-pass load: pass 1 creates all entities, passes 2-3 (in FinalizeSceneLoad) wire parents / child order.
 		SceneLoadState state;
+		bool entitiesComplete = true;
 		if (const Value* entitiesValue = GetArrayMember(root, "entities")) {
 			INDEX_PROFILE_SCOPE("SceneSerializer::DeserializeEntities");
 			// Pre-size storages and identity maps to the known entity count so the create loop
@@ -964,7 +1400,7 @@ namespace Index {
 			state.pendingParents.reserve(entityCount);
 			state.childIndexByEntity.reserve(entityCount);
 			for (const Value& entityValue : entitiesValue->GetArray()) {
-				ProcessLoadedEntity(scene, entityValue, state);
+				entitiesComplete = ProcessLoadedEntity(scene, entityValue, state) && entitiesComplete;
 			}
 		}
 		else {
@@ -977,10 +1413,37 @@ namespace Index {
 		}
 
 		FinalizeSceneLoad(scene, state, restartLifecycle);
-		return true;
+		if (entitiesComplete && logSuccess) {
+			IDX_CORE_INFO_TAG("SceneSerializer", "Loaded scene: {}", scene.GetName());
+		}
+		return entitiesComplete;
 	}
 
 	bool SceneSerializer::DeserializeSceneStreamingBinary(
+		Scene& scene,
+		const std::vector<std::uint8_t>& bytes,
+		std::string_view source) {
+		if (scene.IsLoaded() && !scene.IsLifecycleSuspended()) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Loaded scene replacement requires an owner-level staged swap");
+			return false;
+		}
+		try {
+			SceneLoadStage stagedScene(scene);
+			if (!DeserializeSceneStreamingBinaryInPlace(stagedScene.Get(), bytes, source)) return false;
+			if (!ValidateStagedEntityIdentities(stagedScene.Get(), source)) return false;
+			return CommitStagedScene(scene, stagedScene.Get(), source);
+		}
+		catch (const std::exception& exception) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Binary scene validation failed: {}", exception.what());
+			return false;
+		}
+		catch (...) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Binary scene validation failed with an unknown exception");
+			return false;
+		}
+	}
+
+	bool SceneSerializer::DeserializeSceneStreamingBinaryInPlace(
 		Scene& scene,
 		const std::vector<std::uint8_t>& bytes,
 		std::string_view source) {
@@ -997,10 +1460,17 @@ namespace Index {
 				return false;
 			}
 		}
+		if (!ValidateSceneRoot(header, source, false)) return false;
+		if (!cursor.bytes) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Binary scene {} is missing its entities array", std::string(source));
+			return false;
+		}
 
-		const bool restartLifecycle = ProcessSceneHeader(scene, header, source);
+		bool restartLifecycle = false;
+		if (!ProcessSceneHeader(scene, header, source, restartLifecycle)) return false;
 
 		SceneLoadState state;
+		bool streamComplete = true;
 		if (cursor.remaining > 0) {
 			INDEX_PROFILE_SCOPE("SceneSerializer::DeserializeEntities");
 			const std::size_t entityCount = cursor.remaining;
@@ -1017,11 +1487,12 @@ namespace Index {
 			Value entityValue;
 			std::string entityError;
 			while (SceneSerializerStorage::ReadNextBinaryEntity(cursor, entityValue, &entityError)) {
-				ProcessLoadedEntity(scene, entityValue, state);
+				streamComplete = ProcessLoadedEntity(scene, entityValue, state) && streamComplete;
 			}
 			if (!entityError.empty()) {
 				IDX_CORE_ERROR_TAG("SceneSerializer", "Binary scene {} entity stream aborted: {}",
 					std::string(source), entityError);
+				streamComplete = false;
 			}
 		}
 		else {
@@ -1029,7 +1500,7 @@ namespace Index {
 		}
 
 		FinalizeSceneLoad(scene, state, restartLifecycle);
-		return true;
+		return streamComplete;
 	}
 
 	EntityHandle SceneSerializer::DeserializeEntity(Scene& scene, const Json::Value& entityValue) {
@@ -1071,8 +1542,10 @@ namespace Index {
 		}
 
 		const std::string name = GetStringMember(entityValue, "name", "");
+		const bool wasDirty = scene.IsDirty();
+		const bool wasUiDirty = scene.IsUIDirty();
 		const EntityHandle entity = scene.CreateEntity(name).GetHandle();
-		EntityRollbackGuard rollback(scene, entity);
+		EntityRollbackGuard rollback(scene, entity, wasDirty, wasUiDirty);
 
 		// Drop the auto-seeded Transform2D if the snapshot omits it — UI entities must not sprout one on reload.
 		if (!entityValue.FindMember("Transform2D")) {
@@ -1212,21 +1685,11 @@ namespace Index {
 			boxCollider.SetCenter(savedCenter, scene);
 
 			const auto& transform = scene.GetComponent<Transform2DComponent>(entity);
-			const Vec2 savedScale{
-				GetFloatMember(*colliderValue, "scaleX", transform.Scale.x),
-				GetFloatMember(*colliderValue, "scaleY", transform.Scale.y)
-			};
-			Vec2 localScale{ 1.0f, 1.0f };
-			if (std::fabs(transform.Scale.x) > k_MinScaleAxis) {
-				localScale.x = savedScale.x / transform.Scale.x;
-			}
-			if (std::fabs(transform.Scale.y) > k_MinScaleAxis) {
-				localScale.y = savedScale.y / transform.Scale.y;
-			}
-			boxCollider.SetScale(localScale, scene);
+			boxCollider.SetScale(ReadBoxColliderLocalSize(*colliderValue, transform), scene);
 			boxCollider.SetSensor(GetBoolMember(*colliderValue, "sensor", false), scene);
 			boxCollider.SetFriction(GetFloatMember(*colliderValue, "friction", boxCollider.GetFriction()));
 			boxCollider.SetBounciness(GetFloatMember(*colliderValue, "bounciness", boxCollider.GetBounciness()));
+			boxCollider.SetCollisionMask(GetUInt64Member(*colliderValue, "collisionMask", boxCollider.GetCollisionMask()));
 			boxCollider.SetLayer(GetUInt64Member(*colliderValue, "layer", boxCollider.GetLayer()));
 			boxCollider.SetRegisterContacts(GetBoolMember(*colliderValue, "registerContacts", boxCollider.CanRegisterContacts()));
 		}
@@ -1242,6 +1705,7 @@ namespace Index {
 			circleCollider.SetSensor(GetBoolMember(*colliderValue, "sensor", false), scene);
 			circleCollider.SetFriction(GetFloatMember(*colliderValue, "friction", circleCollider.GetFriction()));
 			circleCollider.SetBounciness(GetFloatMember(*colliderValue, "bounciness", circleCollider.GetBounciness()));
+			circleCollider.SetCollisionMask(GetUInt64Member(*colliderValue, "collisionMask", circleCollider.GetCollisionMask()));
 			circleCollider.SetLayer(GetUInt64Member(*colliderValue, "layer", circleCollider.GetLayer()));
 			circleCollider.SetRegisterContacts(GetBoolMember(*colliderValue, "registerContacts", circleCollider.CanRegisterContacts()));
 		}
@@ -1287,6 +1751,7 @@ namespace Index {
 			polygonCollider.SetSensor(GetBoolMember(*colliderValue, "sensor", false), scene);
 			polygonCollider.SetFriction(GetFloatMember(*colliderValue, "friction", polygonCollider.GetFriction()));
 			polygonCollider.SetBounciness(GetFloatMember(*colliderValue, "bounciness", polygonCollider.GetBounciness()));
+			polygonCollider.SetCollisionMask(GetUInt64Member(*colliderValue, "collisionMask", polygonCollider.GetCollisionMask()));
 			polygonCollider.SetLayer(GetUInt64Member(*colliderValue, "layer", polygonCollider.GetLayer()));
 			polygonCollider.SetRegisterContacts(GetBoolMember(*colliderValue, "registerContacts", polygonCollider.CanRegisterContacts()));
 		}
@@ -1300,6 +1765,7 @@ namespace Index {
 
 			UUID audioAssetId = UUID(0);
 			const AudioHandle handle = LoadAudioFromValue(*audioValue, "clipAsset", "clip", &audioAssetId);
+			audioSource.SetAudioAssetId(audioAssetId);
 			if (handle.IsValid()) {
 				audioSource.SetAudioHandle(handle, audioAssetId);
 			}
@@ -1465,9 +1931,7 @@ namespace Index {
 				Wrap::Clamp,
 				Wrap::Clamp,
 				&textureAssetId);
-			if (textureHandle.IsValid()) {
-				particleSystem.SetTexture(textureHandle, textureAssetId);
-			}
+			particleSystem.SetTexture(textureHandle, textureAssetId);
 
 			particleSystem.ClearBursts();
 			if (const Value* burstsValue = GetArrayMember(*particleValue, "bursts")) {
@@ -1692,7 +2156,7 @@ namespace Index {
 		if (scriptComponent || scene.HasComponent<ScriptComponent>(entity)) {
 			const ComponentRegistry* componentRegistry = nullptr;
 			if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
-				componentRegistry = &app->GetSceneManager()->GetComponentRegistry();
+				componentRegistry = &SceneManager::GetComponentRegistry();
 			}
 
 			auto& dynamicValuesComponent = getOrCreateScriptComponent();
@@ -1723,7 +2187,7 @@ namespace Index {
 		if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
 			Entity entityWrapper = scene.GetEntity(entity);
 			const ComponentRegistry& componentRegistryRef =
-				app->GetSceneManager()->GetComponentRegistry();
+				SceneManager::GetComponentRegistry();
 			for (const auto& [memberName, memberValue] : entityValue.GetObject()) {
 				const ComponentInfo* info = componentRegistryRef.FindBySerializedName(memberName);
 				if (!info || !info->deserialize || !info->has || !info->add) continue;
@@ -1756,14 +2220,10 @@ namespace Index {
 		// at scene-start/assembly-reload — never on a runtime Instantiate — so without
 		// this the component is silently absent on spawned prefabs and Scene.Query<T>()
 		// / GetComponent<T> miss it. Adds a default-initialized row when missing.
-		// Skip detached scenes (prefab inspector): they edit via the ScriptComponent list,
-		// not live dynamic rows, and materializing into the GLOBAL storage at their low
-		// handles leaks rows that later ghost onto unrelated entities (those rows are never
-		// scrubbed — ~Scene clears the registry without ScrubEntity).
 		if (Application* app = Application::GetInstance();
-			app && app->GetSceneManager() && !scene.IsDetached() && scene.HasComponent<ScriptComponent>(entity)) {
+			app && app->GetSceneManager() && scene.HasComponent<ScriptComponent>(entity)) {
 			Entity entityWrapper = scene.GetEntity(entity);
-			const ComponentRegistry& registry = app->GetSceneManager()->GetComponentRegistry();
+			const ComponentRegistry& registry = SceneManager::GetComponentRegistry();
 			const ScriptComponent& sc = scene.GetComponent<ScriptComponent>(entity);
 			auto materializeDynamic = [&](const std::string& className) {
 				if (className.empty()) return;
@@ -1786,19 +2246,33 @@ namespace Index {
 		const std::vector<Json::Value>& entityValues,
 		EntityOrigin origin,
 		uint64_t prefabGuid,
-		bool preserveSerializedIdentity) {
+		bool preserveSerializedIdentity,
+		bool* outComplete) {
 		if (entityValues.empty()) {
+			if (outComplete) *outComplete = false;
 			return entt::null;
 		}
+		if (outComplete) *outComplete = false;
+		if (!ValidateEntityTreeSourceIds(entityValues, origin, scene.IsEntityRefRemapActive())) {
+			return entt::null;
+		}
+		EntityTreeRollbackGuard rollback(scene, true, scene.GetPendingEntityRefFixupCount());
+		rollback.Reserve(entityValues.size());
+		bool complete = true;
 
 		std::vector<std::pair<EntityHandle, uint64_t>> pendingParents;
+		std::vector<std::pair<uint64_t, uint64_t>> pendingRemaps;
 		std::unordered_map<uint64_t, EntityHandle> entitiesBySourceId;
+		std::unordered_set<uint64_t> remappedSourceIds;
 		pendingParents.reserve(entityValues.size());
+		pendingRemaps.reserve(entityValues.size());
 		entitiesBySourceId.reserve(entityValues.size());
+		remappedSourceIds.reserve(entityValues.size());
 
 		EntityHandle root = entt::null;
 		for (const Value& sourceEntityValue : entityValues) {
 			if (!sourceEntityValue.IsObject()) {
+				complete = false;
 				continue;
 			}
 
@@ -1828,8 +2302,10 @@ namespace Index {
 
 			EntityHandle handle = DeserializeFullEntity(scene, entityValue, entityOrigin, entityPrefabGuid);
 			if (handle == entt::null) {
+				complete = false;
 				continue;
 			}
+			rollback.Track(handle);
 
 			// Map a serialized source id to the freshly-built copy's persistent id so in-component refs into
 			// the subtree retarget to THIS copy's children instead of the originals/template. Clone/paste
@@ -1842,7 +2318,10 @@ namespace Index {
 					sourceRefId = GetUInt64Member(sourceEntityValue, "uuid", 0);
 				}
 				if (sourceRefId != 0) {
-					scene.RegisterEntityRefRemap(sourceRefId, scene.GetEntityPersistentID(handle));
+					if (!remappedSourceIds.insert(sourceRefId).second) {
+						complete = false;
+					}
+					else pendingRemaps.emplace_back(sourceRefId, scene.GetEntityPersistentID(handle));
 				}
 			}
 
@@ -1859,7 +2338,9 @@ namespace Index {
 			}
 
 			if (sourceId != 0) {
-				entitiesBySourceId[sourceId] = handle;
+				if (!entitiesBySourceId.emplace(sourceId, handle).second) {
+					complete = false;
+				}
 			}
 
 			if (parentId != 0) {
@@ -1870,9 +2351,11 @@ namespace Index {
 		for (const auto& [childHandle, parentId] : pendingParents) {
 			auto parentIt = entitiesBySourceId.find(parentId);
 			if (parentIt == entitiesBySourceId.end()) {
+				complete = false;
 				continue;
 			}
 			if (!scene.IsValid(childHandle) || !scene.IsValid(parentIt->second)) {
+				complete = false;
 				continue;
 			}
 
@@ -1880,10 +2363,24 @@ namespace Index {
 		}
 
 		// Fixup queue is NOT drained here — outermost callers drain after the full batch to avoid resolving refs too early.
+		const bool treeComplete = complete && root != entt::null;
+		if (outComplete) *outComplete = treeComplete;
+		if (!treeComplete) return entt::null;
+		for (const auto& [sourceId, persistentId] : pendingRemaps) {
+			scene.RegisterEntityRefRemap(sourceId, persistentId);
+		}
+		rollback.Commit();
 		return root;
 	}
 
-	EntityHandle SceneSerializer::DeserializeEntityFromValue(Scene& scene, const Json::Value& entityValue) {
+	EntityHandle SceneSerializer::RestoreEntityTree(Scene& scene, const std::vector<Json::Value>& entityValues) {
+		return DeserializeEntityTree(scene, entityValues, EntityOrigin::Scene, 0, /*preserveSerializedIdentity=*/true);
+	}
+
+	EntityHandle SceneSerializer::DeserializeEntityFromValue(
+		Scene& scene,
+		const Json::Value& entityValue,
+		EntityOrigin origin) {
 		if (!entityValue.IsObject()) {
 			return entt::null;
 		}
@@ -1898,12 +2395,17 @@ namespace Index {
 			&& (entityValue.FindMember("Entity") || entityValue.FindMember("prefab") || entityValue.FindMember("Entities"))) {
 			const bool isClipboardEntity = GetBoolMember(entityValue, "ClipboardEntity", false)
 				|| GetBoolMember(entityValue, "Clipboard", false);
-			root = DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Scene, 0, !isClipboardEntity);
+			root = DeserializeEntityTree(scene, definition.Entities, origin, 0, !isClipboardEntity);
 		}
 		else {
+			uint64_t sourceRefId = GetUInt64Member(entityValue, "sourceUuid", 0);
+			if (sourceRefId == 0) sourceRefId = GetUInt64Member(entityValue, "uuid", 0);
 			Value entityCopy = entityValue;
 			RemoveEntityIdentityMembers(entityCopy);
-			root = DeserializeFullEntity(scene, entityCopy, EntityOrigin::Scene);
+			root = DeserializeFullEntity(scene, entityCopy, origin);
+			if (root != entt::null && sourceRefId != 0) {
+				scene.RegisterEntityRefRemap(sourceRefId, scene.GetEntityPersistentID(root));
+			}
 		}
 
 		scene.RunPendingEntityRefFixups();
@@ -2026,21 +2528,11 @@ namespace Index {
 			boxCollider.SetCenter(savedCenter, scene);
 
 			const auto& transform = scene.GetComponent<Transform2DComponent>(entity);
-			const Vec2 savedScale{
-				GetFloatMember(componentValue, "scaleX", transform.Scale.x),
-				GetFloatMember(componentValue, "scaleY", transform.Scale.y)
-			};
-			Vec2 localScale{ 1.0f, 1.0f };
-			if (std::fabs(transform.Scale.x) > k_MinScaleAxis) {
-				localScale.x = savedScale.x / transform.Scale.x;
-			}
-			if (std::fabs(transform.Scale.y) > k_MinScaleAxis) {
-				localScale.y = savedScale.y / transform.Scale.y;
-			}
-			boxCollider.SetScale(localScale, scene);
+			boxCollider.SetScale(ReadBoxColliderLocalSize(componentValue, transform), scene);
 			boxCollider.SetSensor(GetBoolMember(componentValue, "sensor", false), scene);
 			boxCollider.SetFriction(GetFloatMember(componentValue, "friction", boxCollider.GetFriction()));
 			boxCollider.SetBounciness(GetFloatMember(componentValue, "bounciness", boxCollider.GetBounciness()));
+			boxCollider.SetCollisionMask(GetUInt64Member(componentValue, "collisionMask", boxCollider.GetCollisionMask()));
 			boxCollider.SetLayer(GetUInt64Member(componentValue, "layer", boxCollider.GetLayer()));
 			boxCollider.SetRegisterContacts(GetBoolMember(componentValue, "registerContacts", boxCollider.CanRegisterContacts()));
 			return true;
@@ -2058,6 +2550,7 @@ namespace Index {
 			circleCollider.SetSensor(GetBoolMember(componentValue, "sensor", false), scene);
 			circleCollider.SetFriction(GetFloatMember(componentValue, "friction", circleCollider.GetFriction()));
 			circleCollider.SetBounciness(GetFloatMember(componentValue, "bounciness", circleCollider.GetBounciness()));
+			circleCollider.SetCollisionMask(GetUInt64Member(componentValue, "collisionMask", circleCollider.GetCollisionMask()));
 			circleCollider.SetLayer(GetUInt64Member(componentValue, "layer", circleCollider.GetLayer()));
 			circleCollider.SetRegisterContacts(GetBoolMember(componentValue, "registerContacts", circleCollider.CanRegisterContacts()));
 			return true;
@@ -2100,6 +2593,7 @@ namespace Index {
 			polygonCollider.SetSensor(GetBoolMember(componentValue, "sensor", false), scene);
 			polygonCollider.SetFriction(GetFloatMember(componentValue, "friction", polygonCollider.GetFriction()));
 			polygonCollider.SetBounciness(GetFloatMember(componentValue, "bounciness", polygonCollider.GetBounciness()));
+			polygonCollider.SetCollisionMask(GetUInt64Member(componentValue, "collisionMask", polygonCollider.GetCollisionMask()));
 			polygonCollider.SetLayer(GetUInt64Member(componentValue, "layer", polygonCollider.GetLayer()));
 			polygonCollider.SetRegisterContacts(GetBoolMember(componentValue, "registerContacts", polygonCollider.CanRegisterContacts()));
 			return true;
@@ -2369,7 +2863,7 @@ namespace Index {
 		if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
 			Entity entityWrapper = scene.GetEntity(entity);
 			bool handled = false;
-			app->GetSceneManager()->GetComponentRegistry().ForEachComponentInfo(
+			SceneManager::GetComponentRegistry().ForEachComponentInfo(
 				[&](const std::type_index&, const ComponentInfo& info) {
 					if (handled) return;
 					if (!info.deserialize || !info.has || !info.add) return;
@@ -2407,6 +2901,14 @@ namespace Index {
 			IDX_CORE_WARN_TAG("SceneSerializer", "Prefab instance missing PrefabGUID");
 			return entt::null;
 		}
+		const uint64_t instanceUuid = GetUInt64Member(entityValue, "uuid", 0);
+		if (instanceUuid != 0) {
+			EntityHandle existingOwner = entt::null;
+			if (scene.TryResolveEntityRef(instanceUuid, existingOwner)) {
+				IDX_CORE_ERROR_TAG("SceneSerializer", "Prefab instance identity {} is already in use", instanceUuid);
+				return entt::null;
+			}
+		}
 
 		PrefabDefinition definition;
 		if (!LoadPrefabDefinition(prefabGuid, definition)) {
@@ -2414,25 +2916,31 @@ namespace Index {
 			return entt::null;
 		}
 
-		ApplyEntityOverrides(definition, entityValue);
+		if (!ApplyEntityOverrides(definition, entityValue)) return entt::null;
 
 		// Retarget the template's internal entity refs (child-to-child, child-to-root) onto this instance's
 		// own freshly-built entities. Drain ONLY the fixups this instance queued — scene load defers other
 		// entities' refs to the same queue and resolves them in the final pass, so a full drain here would
 		// resolve a sibling's forward ref before its target exists.
+		const bool wasDirty = scene.IsDirty();
+		const bool wasUiDirty = scene.IsUIDirty();
 		const std::size_t fixupStart = scene.GetPendingEntityRefFixupCount();
 		EntityHandle root = entt::null;
 		{
 			Scene::EntityRefRemapScope remapScope(scene);
 			root = DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
+			if (root == entt::null) return entt::null;
+			PrefabRefreshRollbackGuard rollback(scene, entt::null, root, 0,
+				fixupStart, wasDirty, wasUiDirty);
+			if (root != entt::null && instanceUuid != 0) {
+				if (!scene.SetEntityPersistentID(root, instanceUuid)) {
+					return entt::null;
+				}
+				const uint64_t templateRootId = GetUInt64Member(definition.Entities.front(), "uuid", 0);
+				scene.RegisterEntityRefRemap(templateRootId, instanceUuid);
+			}
 			scene.RunPendingEntityRefFixupsFrom(fixupStart);
-		}
-
-		// Restamp AFTER resolution: this only rewrites the root's UUIDComponent.Id, leaving the already-
-		// resolved EntityHandles in child components valid (handles are stable, not derived from the id).
-		const uint64_t instanceUuid = GetUInt64Member(entityValue, "uuid", 0);
-		if (root != entt::null && instanceUuid != 0 && scene.HasComponent<UUIDComponent>(root)) {
-			scene.GetComponent<UUIDComponent>(root).Id = UUID(instanceUuid);
+			rollback.Commit();
 		}
 		return root;
 	}
@@ -2443,7 +2951,7 @@ namespace Index {
 		}
 
 		PrefabTemplateCache& cache = PrefabTemplateCache::Get();
-		if (const PrefabTemplate* baked = cache.Find(prefabGuid); baked != nullptr) {
+		if (const auto baked = cache.Find(prefabGuid); baked) {
 			if (baked->bakeable) {
 				EntityHandle root = cache.Hydrate(prefabGuid, scene);
 				if (root != entt::null) {
@@ -2528,7 +3036,7 @@ namespace Index {
 			return entt::null;
 		}
 
-		// Empty path = full revert: destroy + rebuild the whole prefab subtree from the root, then restore UUID and parent.
+		// Empty path rebuilds before destroying the live subtree so malformed sources cannot erase it.
 		if (overridePath.empty()) {
 			EntityHandle root = GetPrefabInstanceRoot(scene, entity);
 			if (root == entt::null) {
@@ -2550,25 +3058,52 @@ namespace Index {
 				preservedParent = registry.get<HierarchyComponent>(root).Parent;
 			}
 
-			scene.DestroyEntity(root);
+			const bool wasDirty = scene.IsDirty();
+			const bool wasUiDirty = scene.IsUIDirty();
+			auto restoreDirtyState = [&]() {
+				if (wasDirty) scene.MarkDirty(); else scene.ClearDirty();
+				if (wasUiDirty) scene.MarkUIDirty(); else scene.ClearUIDirty();
+			};
 			const std::size_t fixupStart = scene.GetPendingEntityRefFixupCount();
 			EntityHandle freshRoot = entt::null;
-			{
+			try {
 				// Rebuild resolves the template's internal refs against the fresh subtree; drain only this
 				// rebuild's fixups so we don't disturb anything else still pending.
 				Scene::EntityRefRemapScope remapScope(scene);
 				freshRoot = DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
+				if (freshRoot == entt::null) {
+					restoreDirtyState();
+					return entt::null;
+				}
+				PrefabRefreshRollbackGuard rollback(scene, root, freshRoot, preservedInstanceUuid,
+					fixupStart, wasDirty, wasUiDirty);
+				if (preservedParent != entt::null && registry.valid(preservedParent)) {
+					scene.GetEntity(freshRoot).SetParent(scene.GetEntity(preservedParent));
+				}
+				if (preservedInstanceUuid != 0) {
+					if (!scene.SetEntityPersistentID(freshRoot, preservedInstanceUuid, root)) {
+						return entt::null;
+					}
+					rollback.MarkIdentityTransferred();
+					const uint64_t templateRootId = GetUInt64Member(definition.Entities.front(), "uuid", 0);
+					scene.RegisterEntityRefRemap(templateRootId, preservedInstanceUuid);
+				}
 				scene.RunPendingEntityRefFixupsFrom(fixupStart);
+				if (registry.all_of<UUIDComponent>(root)) {
+					registry.get<UUIDComponent>(root).Id = UUID(0);
+				}
+				scene.DestroyEntity(root);
+				rollback.Commit();
 			}
-			if (freshRoot == entt::null) {
+			catch (const std::exception& exception) {
+				restoreDirtyState();
+				IDX_CORE_ERROR_TAG("SceneSerializer", "Prefab revert build failed: {}", exception.what());
 				return entt::null;
 			}
-
-			if (preservedInstanceUuid != 0 && registry.all_of<UUIDComponent>(freshRoot)) {
-				registry.get<UUIDComponent>(freshRoot).Id = UUID(preservedInstanceUuid);
-			}
-			if (preservedParent != entt::null && registry.valid(preservedParent)) {
-				scene.GetEntity(freshRoot).SetParent(scene.GetEntity(preservedParent));
+			catch (...) {
+				restoreDirtyState();
+				IDX_CORE_ERROR_TAG("SceneSerializer", "Prefab revert build failed with an unknown exception");
+				return entt::null;
 			}
 
 			scene.MarkDirty();
@@ -2589,12 +3124,42 @@ namespace Index {
 		}
 
 		RemoveEntityIdentityMembers(replacementValue);
-		EntityHandle replacement = DeserializeFullEntity(scene, replacementValue, EntityOrigin::Prefab, prefabGuid);
-		if (replacement == entt::null) {
+		const bool wasDirty = scene.IsDirty();
+		const bool wasUiDirty = scene.IsUIDirty();
+		const uint64_t preservedId = scene.GetEntityPersistentID(entity);
+		EntityHandle preservedParent = entt::null;
+		if (scene.HasComponent<HierarchyComponent>(entity)) {
+			preservedParent = scene.GetComponent<HierarchyComponent>(entity).Parent;
+		}
+		const std::size_t fixupStart = scene.GetPendingEntityRefFixupCount();
+		EntityHandle replacement = entt::null;
+		try {
+			replacement = DeserializeFullEntity(scene, replacementValue, EntityOrigin::Prefab, prefabGuid);
+			if (replacement == entt::null) return entt::null;
+			PrefabRefreshRollbackGuard rollback(scene, entity, replacement, preservedId,
+				fixupStart, wasDirty, wasUiDirty);
+			if (preservedParent != entt::null && scene.IsValid(preservedParent)) {
+				scene.GetEntity(replacement).SetParent(scene.GetEntity(preservedParent));
+			}
+			if (preservedId != 0) {
+				if (!scene.SetEntityPersistentID(replacement, preservedId, entity)) return entt::null;
+				rollback.MarkIdentityTransferred();
+			}
+			scene.RunPendingEntityRefFixupsFrom(fixupStart);
+			if (scene.HasComponent<UUIDComponent>(entity)) {
+				scene.GetComponent<UUIDComponent>(entity).Id = UUID(0);
+			}
+			scene.DestroyEntity(entity);
+			rollback.Commit();
+		}
+		catch (const std::exception& exception) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Prefab override revert failed: {}", exception.what());
 			return entt::null;
 		}
-
-		scene.DestroyEntity(entity);
+		catch (...) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Prefab override revert failed with an unknown exception");
+			return entt::null;
+		}
 		scene.MarkDirty();
 		return replacement;
 	}
@@ -2693,7 +3258,7 @@ namespace Index {
 		if (!entityOverrides.GetObject().empty()) {
 			overridesWrapper.AddMember("EntityOverrides", std::move(entityOverrides));
 		}
-		ApplyEntityOverrides(newSource, overridesWrapper);
+		if (!ApplyEntityOverrides(newSource, overridesWrapper)) return existing;
 
 		auto& registry = scene.GetRegistry();
 		uint64_t preservedInstanceUuid = 0;
@@ -2704,26 +3269,57 @@ namespace Index {
 		if (registry.all_of<HierarchyComponent>(existing)) {
 			preservedParent = registry.get<HierarchyComponent>(existing).Parent;
 		}
+		const bool wasDirty = scene.IsDirty();
+		const bool wasUiDirty = scene.IsUIDirty();
+		auto restoreDirtyState = [&]() {
+			if (wasDirty) scene.MarkDirty(); else scene.ClearDirty();
+			if (wasUiDirty) scene.MarkUIDirty(); else scene.ClearUIDirty();
+		};
 
-		// DeserializeEntityTree preserves Origin and PrefabGUID via the explicit args.
-		scene.DestroyEntity(existing);
+		// Build first so a malformed replacement never destroys the live instance.
 		const std::size_t fixupStart = scene.GetPendingEntityRefFixupCount();
 		EntityHandle freshRoot = entt::null;
-		{
+		bool treeComplete = false;
+		try {
 			// Retarget the refreshed template's internal entity refs onto the rebuilt subtree; drain only
 			// this rebuild's fixups while the remap is active.
 			Scene::EntityRefRemapScope remapScope(scene);
-			freshRoot = DeserializeEntityTree(scene, newSource.Entities, EntityOrigin::Prefab, prefabGuid);
-			scene.RunPendingEntityRefFixupsFrom(fixupStart);
-		}
-		if (freshRoot == entt::null) return entt::null;
+			freshRoot = DeserializeEntityTree(scene, newSource.Entities, EntityOrigin::Prefab,
+				prefabGuid, true, &treeComplete);
+			if (freshRoot == entt::null || !treeComplete) {
+				restoreDirtyState();
+				return entt::null;
+			}
 
-		// Restore identity / parent on the freshly-built root.
-		if (preservedInstanceUuid != 0 && registry.all_of<UUIDComponent>(freshRoot)) {
-			registry.get<UUIDComponent>(freshRoot).Id = UUID(preservedInstanceUuid);
+			PrefabRefreshRollbackGuard rollback(scene, existing, freshRoot, preservedInstanceUuid,
+				fixupStart, wasDirty, wasUiDirty);
+			if (preservedParent != entt::null && registry.valid(preservedParent)) {
+				scene.GetEntity(freshRoot).SetParent(scene.GetEntity(preservedParent));
+			}
+			if (preservedInstanceUuid != 0) {
+				if (!scene.SetEntityPersistentID(freshRoot, preservedInstanceUuid, existing)) {
+					return entt::null;
+				}
+				rollback.MarkIdentityTransferred();
+				const uint64_t templateRootId = GetUInt64Member(newSource.Entities.front(), "uuid", 0);
+				scene.RegisterEntityRefRemap(templateRootId, preservedInstanceUuid);
+			}
+			scene.RunPendingEntityRefFixupsFrom(fixupStart);
+			if (registry.all_of<UUIDComponent>(existing)) {
+				registry.get<UUIDComponent>(existing).Id = UUID(0);
+			}
+			scene.DestroyEntity(existing);
+			rollback.Commit();
 		}
-		if (preservedParent != entt::null && registry.valid(preservedParent)) {
-			scene.GetEntity(freshRoot).SetParent(scene.GetEntity(preservedParent));
+		catch (const std::exception& exception) {
+			restoreDirtyState();
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Prefab refresh build failed: {}", exception.what());
+			return entt::null;
+		}
+		catch (...) {
+			restoreDirtyState();
+			IDX_CORE_ERROR_TAG("SceneSerializer", "Prefab refresh build failed with an unknown exception");
+			return entt::null;
 		}
 
 		// The destroy+create above swapped the instance onto a NEW entity handle. For a
@@ -2770,6 +3366,7 @@ namespace Index {
 		RemoveEntityComparisonIdentityMembers(sourceComparable);
 		RemoveEntityComparisonIdentityMembers(currentInstance);
 
+		NormalizeLegacyColliderKeysForDiff(sourceComparable, currentInstance);
 		BuildOverridePatch(sourceComparable, currentInstance, {}, outOverrides);
 		return true;
 	}

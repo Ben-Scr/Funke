@@ -2,7 +2,7 @@
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Configurations>Debug;Release;Dist</Configurations>
     <Platforms>x64</Platforms>
@@ -22,6 +22,8 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <EnableDynamicLoading>true</EnableDynamicLoading>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
@@ -38,13 +40,15 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <EnableDynamicLoading>true</EnableDynamicLoading>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Dist|x64' ">
     <PlatformTarget>x64</PlatformTarget>
-    <DebugType>none</DebugType>
-    <DebugSymbols>false</DebugSymbols>
+    <DebugType>pdbonly</DebugType>
+    <DebugSymbols>true</DebugSymbols>
     <Optimize>true</Optimize>
     <OutputPath>..\bin\Dist-windows-x86_64\Index-ScriptCore\</OutputPath>
     <IntermediateOutputPath>..\bin-int\Dist-windows-x86_64\Index-ScriptCore\</IntermediateOutputPath>
@@ -54,6 +58,8 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <EnableDynamicLoading>true</EnableDynamicLoading>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
@@ -106,6 +112,8 @@
     <Compile Include="Source\Index\Core\InternalCalls.cs" />
     <Compile Include="Source\Index\Core\KeyCodes.cs" />
     <Compile Include="Source\Index\Core\Log.cs" />
+    <Compile Include="Source\Index\Core\PlayerPrefs.cs" />
+    <Compile Include="Source\Index\Core\SaveData.cs" />
     <Compile Include="Source\Index\Core\Time.cs" />
     <Compile Include="Source\Index\Core\Window.cs" />
     <Compile Include="Source\Index\Coroutines\Awaiters.cs" />
@@ -114,6 +122,7 @@
     <Compile Include="Source\Index\Graphics\Font.cs" />
     <Compile Include="Source\Index\Graphics\Gizmo.cs" />
     <Compile Include="Source\Index\Graphics\Png.cs" />
+    <Compile Include="Source\Index\Graphics\RenderSettings.cs" />
     <Compile Include="Source\Index\Graphics\Renderer2D.cs" />
     <Compile Include="Source\Index\Graphics\Texture.cs" />
     <Compile Include="Source\Index\Interop\DynamicComponentRegistrar.cs" />
@@ -159,6 +168,7 @@
     <Compile Include="Source\Index\Physics\Collision2D.cs" />
     <Compile Include="Source\Index\Physics\FastPhysics2D.cs" />
     <Compile Include="Source\Index\Physics\Physics2D.cs" />
+    <Compile Include="Source\Index\Physics\PhysicsLayers.cs" />
     <Compile Include="Source\Index\Physics\PhysicsShared.cs" />
     <Compile Include="Source\Index\Scene\AssetRef.cs" />
     <Compile Include="Source\Index\Scene\Component.cs" />

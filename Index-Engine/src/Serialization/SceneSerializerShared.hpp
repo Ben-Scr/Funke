@@ -8,6 +8,7 @@
 #include "Graphics/TextureManager.hpp"
 #include "Scene/EntityHandle.hpp"
 #include "Serialization/Json.hpp"
+#include "Serialization/SceneSerializerStorage.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -20,37 +21,12 @@
 
 namespace Index {
 	class Scene;
-	enum class SceneSerializationFormat : std::uint8_t;
 	struct ScriptComponent;
 }
 
 namespace Index::SceneSerializerInternal {
 	inline constexpr int k_SceneFormatVersion = 1;
 	inline constexpr float k_MinScaleAxis = 0.0001f;
-}
-
-namespace Index::SceneSerializerStorage {
-	INDEX_API bool ReadRootFromFile(const std::string& path, Json::Value& outRoot, std::string* outError = nullptr);
-	INDEX_API bool WriteRootToFile(const std::string& path, const Json::Value& root, SceneSerializationFormat format);
-	INDEX_API bool IsBinaryData(const std::vector<std::uint8_t>& bytes);
-
-	// Cursor into a binary scene's "entities" array. `bytes` must outlive the cursor.
-	struct BinarySceneEntityCursor {
-		const std::vector<std::uint8_t>* bytes = nullptr;
-		std::size_t offset = 0;        // byte offset of the next entity element
-		std::uint32_t remaining = 0;   // entities not yet streamed
-	};
-
-	// Decode a binary scene's header (root minus the "entities" array) into outHeader and
-	// position outCursor at the first entity. Pull entities with ReadNextBinaryEntity. This
-	// avoids materializing the whole-file DOM; binary scenes only. Returns false on error.
-	INDEX_API bool BeginBinaryScene(const std::vector<std::uint8_t>& bytes, Json::Value& outHeader,
-		BinarySceneEntityCursor& outCursor, std::string* outError = nullptr);
-
-	// Decode the next entity into outEntity, advancing the cursor. Returns false when the
-	// array is exhausted (outError stays empty) or on a decode error (outError is set).
-	INDEX_API bool ReadNextBinaryEntity(BinarySceneEntityCursor& cursor, Json::Value& outEntity,
-		std::string* outError = nullptr);
 }
 
 namespace Index::Detail {
@@ -73,6 +49,23 @@ namespace Index::Detail {
 
 namespace Index::SceneSerializerShared {
 	using Json::Value;
+
+	// BoxCollider2D gained exact localSizeX/Y keys after some prefab assets were authored.
+	// Prefab override diffs compare a live instance against the raw .prefab file, so when
+	// the prefab source predates those keys, exclude them from the comparison — otherwise
+	// every instance of an older prefab with a box collider would report as overridden.
+	inline void NormalizeLegacyColliderKeysForDiff(const Value& source, Value& current) {
+		const Value* sourceCollider = source.FindMember("BoxCollider2D");
+		Value* currentCollider = current.FindMember("BoxCollider2D");
+		if (!sourceCollider || !sourceCollider->IsObject() || !currentCollider || !currentCollider->IsObject()) {
+			return;
+		}
+		if (sourceCollider->FindMember("localSizeX")) {
+			return;
+		}
+		Detail::RemoveObjectMember(*currentCollider, "localSizeX");
+		Detail::RemoveObjectMember(*currentCollider, "localSizeY");
+	}
 
 	inline float GetFloatMember(const Value& object, std::string_view key, float fallback = 0.0f) {
 		const Value* value = object.FindMember(key);
@@ -204,18 +197,18 @@ namespace Index::SceneSerializerShared {
 	inline AudioHandle LoadAudioFromValue(const Value& object, std::string_view assetKey, std::string_view pathKey, UUID* outAssetId = nullptr) {
 		uint64_t assetId = GetUInt64Member(object, assetKey, 0);
 		if (assetId != 0) {
+			if (outAssetId) {
+				*outAssetId = UUID(assetId);
+			}
 			AudioHandle handle = AudioManager::LoadAudioByUUID(assetId);
 			if (handle.IsValid()) {
-				if (outAssetId) {
-					*outAssetId = UUID(assetId);
-				}
 				return handle;
 			}
 		}
 
 		const std::string path = GetStringMember(object, pathKey);
 		if (path.empty()) {
-			if (outAssetId) {
+			if (outAssetId && assetId == 0) {
 				*outAssetId = UUID(0);
 			}
 			return AudioHandle();
@@ -228,7 +221,7 @@ namespace Index::SceneSerializerShared {
 				*outAssetId = UUID(assetId);
 			}
 		}
-		else if (outAssetId) {
+		else if (outAssetId && assetId == 0) {
 			*outAssetId = UUID(0);
 		}
 

@@ -2,24 +2,18 @@
 #include "Camera2DComponent.hpp"
 #include "Collections/Viewport.hpp"
 #include "Components/General/HierarchyComponent.hpp"
-#include "Core/Application.hpp"
 #include "Core/Window.hpp"
 #include "Scene/Scene.hpp"
-#include "Scene/SceneManager.hpp"
+#include "Scene/SceneExecutionContext.hpp"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
 namespace Index {
-	Camera2DComponent* Camera2DComponent::Main() {
-		Application* app = Application::GetInstance();
-		if (!app || !app->GetSceneManager()) {
-			return nullptr;
-		}
-
-		Scene* activeScene = app->GetSceneManager()->GetActiveScene();
-		return activeScene ? activeScene->GetMainCamera() : nullptr;
+	Camera2DComponent* Camera2DComponent::GetMain() {
+		Scene* scene = ResolveImplicitScene();
+		return scene ? scene->GetMainCamera() : nullptr;
 	}
 
 	Transform2DComponent* Camera2DComponent::TryGetTransform() {
@@ -162,9 +156,7 @@ namespace Index {
 	Vec2 Camera2DComponent::WorldViewPort() const {
 		if (!m_Viewport) return { 0.0f, 0.0f };
 
-		// Editor restores m_Viewport to the OS-window size after the Game View renders,
-		// overstating the horizontal view; UIRegion pins the real game-view render rect
-		// (mirrors ScreenToWorld). Runtime leaves UIRegion unset → fall back to m_Viewport.
+		// UIRegion preserves the editor Game View aspect after its shared viewport is restored.
 		float aspect = m_Viewport->GetAspect();
 		const Window::UIRegion uiRegion = Window::GetUIRegion();
 		if (uiRegion.IsActive() && uiRegion.Height > 0) {
@@ -180,7 +172,7 @@ namespace Index {
 	{
 		if (!m_Viewport) return { 0.0f, 0.0f };
 
-		// Editor: m_Viewport is restored to OS-window size after RenderGameView's RAII guard, so read panel size from UIRegion. Runtime: UIRegion unset, m_Viewport is the target.
+		// Input is already viewport-local; UIRegion supplies the effective game-surface dimensions.
 		const Window::UIRegion uiRegion = Window::GetUIRegion();
 		float vpW = 0.0f;
 		float vpH = 0.0f;

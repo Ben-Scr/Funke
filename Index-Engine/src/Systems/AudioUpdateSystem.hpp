@@ -1,8 +1,8 @@
 #pragma once
-#include "Scene/ISystem.hpp"
+#include "Scene/SceneSystem.hpp"
 
 namespace Index {
-	class AudioUpdateSystem : public ISystem {
+	class AudioUpdateSystem : public SceneSystem {
 	public:
 		void Start(Scene& scene) override;
 

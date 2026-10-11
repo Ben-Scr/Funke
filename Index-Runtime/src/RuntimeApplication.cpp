@@ -19,6 +19,8 @@
 #include <Core/Version.hpp>
 #include <Core/Window.hpp>
 
+#include <stdexcept>
+
 using namespace Index;
   
 static std::string s_ProjectPath;
@@ -28,6 +30,7 @@ class RuntimeApplication : public Index::Application {
 public:
 	ApplicationConfig GetConfiguration() const override {
 		ApplicationConfig config;
+		config.AutoCreateDefaultCamera2D = false;
 		IndexProject* project = ProjectManager::GetCurrentProject();
 
 		const char* buildConfig =
@@ -44,6 +47,7 @@ public:
 			: "Index Runtime Application " + std::string(IDX_VERSION);
 
 		if (project) {
+			config.Graphics = project->Graphics;
 			config.WindowSpecification = WindowSpecification(
 				project->BuildWidth, project->BuildHeight, title,
 				project->BuildResizable, true, project->BuildFullscreen);
@@ -58,10 +62,9 @@ public:
 			// aspect. "Free Aspect" / unknown labels resolve to 0.0f
 			// which the Window treats as "no lock".
 			config.WindowSpecification.AspectLock = AspectRatioFromLabel(project->BuildAspect);
-			SetRunInBackground(project->BuildRunInBackground);
+			config.RunInBackground = project->BuildRunInBackground;
 		} else {
 			config.WindowSpecification = WindowSpecification(800, 800, title, true, true, false);
-			SetRunInBackground(false);
 		}
 		config.EnableAudio = true;
 		config.EnablePhysics2D = true;
@@ -81,24 +84,24 @@ public:
 		}
 
 		auto registerScene = [&](const std::string& sceneName) -> SceneDefinition& {
-			auto& def = GetSceneManager()->RegisterScene(sceneName);
+			auto& def = SceneManager::RegisterScene(sceneName);
 
 			if (project) {
 				std::string scenePath = project->GetSceneFilePath(sceneName);
-				def.OnLoad([scenePath](Scene& scene) {
-					if (File::Exists(scenePath))
-						SceneSerializer::LoadFromFile(scene, scenePath);
+				def.OnLoadChecked([scenePath](Scene& scene) {
+					return File::Exists(scenePath) && SceneSerializer::LoadFromFile(scene, scenePath);
 				});
 			}
 			return def;
 		};
 
-		if (project && !project->BuildSceneList.empty()) {
-			for (const auto& sceneName : project->BuildSceneList) {
+		const std::vector<std::string> buildScenes = project ? project->GetEnabledBuildScenes() : std::vector<std::string>{};
+		if (!buildScenes.empty()) {
+			for (const auto& sceneName : buildScenes) {
 				auto& def = registerScene(sceneName);
 				if (sceneName == startupScene) def.SetAsStartupScene();
 			}
-			if (!GetSceneManager()->HasSceneDefinition(startupScene)) {
+			if (!SceneManager::HasSceneDefinition(startupScene)) {
 				registerScene(startupScene).SetAsStartupScene();
 			}
 		} else {
@@ -167,13 +170,21 @@ Index::Application* Index::CreateApplication() {
 
 	// Auto-detect project: look for project.json next to the executable
 	const std::string projectRoot = s_ProjectPath.empty() ? Path::ExecutableDir() : s_ProjectPath;
-	if (IndexProject::Validate(projectRoot)) {
-		auto project = std::make_unique<IndexProject>(IndexProject::Load(projectRoot));
+	const std::string projectFile = Path::Combine(projectRoot, "project.json");
+	if (File::Exists(projectFile)) {
+		auto project = std::make_unique<IndexProject>();
+		std::string loadError;
+		if (!IndexProject::TryLoad(projectRoot, *project, &loadError, false)) {
+			throw std::runtime_error("Project load rejected: " + loadError);
+		}
 		IDX_CORE_INFO_TAG("Runtime", "Loaded project: {} ({})", project->Name, project->RootDirectory);
 		// assetsImmutable=true: a shipped game's Assets/ is read-only, so the registry trusts the
 		// shipped manifest and skips the directory walk (set inside SetCurrentProject/engine.dll so it
 		// reaches the registry copy that actually runs the rebuild; ResolvePath still existence-checks).
 		ProjectManager::SetCurrentProject(std::move(project), /*assetsImmutable=*/true);
+	}
+	else if (!s_ProjectPath.empty()) {
+		throw std::runtime_error("Project file not found: " + projectFile);
 	}
 	else {
 		// E30: no project file next to the executable — surface the fallback so

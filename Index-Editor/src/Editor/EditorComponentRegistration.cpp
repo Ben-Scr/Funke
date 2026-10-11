@@ -45,9 +45,9 @@ namespace Index {
 			return InspectorBinding{ std::type_index(typeid(T)), inspector };
 		}
 
-		void AttachInspector(SceneManager& sceneManager, std::type_index type, InspectorFn inspector) {
+		void AttachInspector(ComponentRegistry& registry, std::type_index type, InspectorFn inspector) {
 			bool attached = false;
-			sceneManager.GetComponentRegistry().ForEachComponentInfo([&](const std::type_index& id, ComponentInfo& info) {
+			registry.ForEachComponentInfo([&](const std::type_index& id, ComponentInfo& info) {
 				if (id == type) {
 					info.drawInspector = inspector;
 					attached = true;
@@ -68,7 +68,7 @@ namespace Index {
 		}
 	}
 
-	void RegisterEditorComponentInspectors(SceneManager& sceneManager) {
+	void RegisterEditorComponentInspectors(ComponentRegistry& registry) {
 		const InspectorBinding bindings[] = {
 			// Hybrid: properties + extras (texture preview, runtime read-outs).
 			Bind<SpriteRendererComponent>(DrawSpriteRendererInspector),
@@ -93,6 +93,6 @@ namespace Index {
 		};
 
 		for (const auto& b : bindings)
-			AttachInspector(sceneManager, b.type, b.inspector);
+			AttachInspector(registry, b.type, b.inspector);
 	}
 }

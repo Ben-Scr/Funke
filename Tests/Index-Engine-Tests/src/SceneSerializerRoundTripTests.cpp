@@ -5,6 +5,8 @@
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#include "Components/Physics/BoxCollider2DComponent.hpp"
+#include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Core/UUID.hpp"
 #include "Graphics/Filter.hpp"
@@ -12,6 +14,7 @@
 #include "Scene/Scene.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/SceneSerializer.hpp"
+#include "Serialization/SceneSerializerShared.hpp"
 
 #include <filesystem>
 #include <system_error>
@@ -164,6 +167,31 @@ TEST_CASE("Component-level serialize round-trip preserves Rigidbody2D mass overr
 	CHECK(r.GetMass() == doctest::Approx(57.5f));
 }
 
+TEST_CASE("Collider layer and collision mask survive both serialize ladders")
+{
+	auto scene = Scene::CreateDetachedScene("RoundTrip Collider Layers");
+
+	Entity src = scene->CreateEntity("Src");
+	auto& box = src.AddComponent<BoxCollider2DComponent>();
+	box.SetLayer(1ull << 4);
+	box.SetCollisionMask(0b1010);
+	src.AddComponent<CircleCollider2DComponent>(); // untouched: default mask must stay "all layers"
+
+	const Json::Value full = SceneSerializer::SerializeEntityFull(*scene, src.GetHandle());
+	const EntityHandle clone = SceneSerializer::DeserializeEntityFromValue(*scene, full);
+	REQUIRE(clone != entt::null);
+	CHECK(scene->GetComponent<BoxCollider2DComponent>(clone).GetLayer() == (1ull << 4));
+	CHECK(scene->GetComponent<BoxCollider2DComponent>(clone).GetCollisionMask() == 0b1010);
+	CHECK(scene->GetComponent<CircleCollider2DComponent>(clone).GetCollisionMask() == UINT64_MAX);
+
+	const Json::Value comp = SceneSerializer::SerializeComponent(*scene, src.GetHandle(), "BoxCollider2D");
+	Entity dst = scene->CreateEntity("Dst");
+	dst.AddComponent<BoxCollider2DComponent>();
+	REQUIRE(SceneSerializer::DeserializeComponent(*scene, dst.GetHandle(), "BoxCollider2D", comp));
+	CHECK(dst.GetComponent<BoxCollider2DComponent>().GetCollisionMask() == 0b1010);
+	CHECK(dst.GetComponent<BoxCollider2DComponent>().GetLayer() == (1ull << 4));
+}
+
 TEST_CASE("Component-level serialize round-trip preserves SpriteRenderer fields")
 {
 	auto scene = Scene::CreateDetachedScene("RoundTrip Component");
@@ -286,6 +314,166 @@ TEST_CASE("Scene file round-trip (binary streaming) preserves entities, hierarch
 
 	std::error_code ec;
 	std::filesystem::remove(path, ec);
+}
+
+TEST_CASE("Truncated binary scene reports load failure")
+{
+	const std::filesystem::path path =
+		std::filesystem::temp_directory_path() / "index_test_scene_binary_truncated.scene";
+
+	{
+		auto saveScene = Scene::CreateDetachedScene("TruncatedBinarySource");
+		BuildHierarchyScene(*saveScene);
+		REQUIRE(SceneSerializer::SaveToFile(*saveScene, path.string(), SceneSerializationFormat::Binary));
+	}
+
+	const std::uintmax_t fileSize = std::filesystem::file_size(path);
+	REQUIRE(fileSize > 1);
+	std::filesystem::resize_file(path, fileSize - 1);
+
+	auto loadScene = Scene::CreateDetachedScene("TruncatedBinaryTarget");
+	const EntityHandle existing = loadScene->CreateEntity("Existing").GetHandle();
+	REQUIRE(loadScene->IsDirty());
+	CHECK_FALSE(SceneSerializer::LoadFromFile(*loadScene, path.string()));
+	CHECK(loadScene->GetEntityCount() == 1);
+	REQUIRE(loadScene->IsValid(existing));
+	CHECK(loadScene->GetEntity(existing).GetName() == "Existing");
+	CHECK(loadScene->GetName() == "TruncatedBinaryTarget");
+	CHECK(loadScene->IsDirty());
+
+	std::error_code ec;
+	std::filesystem::remove(path, ec);
+}
+
+TEST_CASE("Malformed scene entity reports deserialization failure")
+{
+	Json::Value root = Json::Value::MakeObject();
+	root.AddMember("name", Json::Value("Malformed Entity Scene"));
+	Json::Value entities = Json::Value::MakeArray();
+	Json::Value validEntity = Json::Value::MakeObject();
+	validEntity.AddMember("name", "Incoming");
+	entities.Append(std::move(validEntity));
+	entities.Append(Json::Value("not an entity object"));
+	root.AddMember("entities", std::move(entities));
+
+	auto scene = Scene::CreateDetachedScene("MalformedEntityTarget");
+	const EntityHandle existing = scene->CreateEntity("Existing").GetHandle();
+	REQUIRE(scene->IsDirty());
+	CHECK_FALSE(SceneSerializer::DeserializeScene(*scene, root));
+	CHECK(scene->GetEntityCount() == 1);
+	REQUIRE(scene->IsValid(existing));
+	CHECK(scene->GetEntity(existing).GetName() == "Existing");
+	CHECK(scene->GetName() == "MalformedEntityTarget");
+	CHECK(scene->IsDirty());
+}
+
+TEST_CASE("Malformed scene header is rejected without replacing current content")
+{
+	Json::Value root = Json::Value::MakeObject();
+	root.AddMember("name", "MalformedHeaderScene");
+	root.AddMember("sceneId", true);
+	root.AddMember("entities", Json::Value::MakeArray());
+
+	auto scene = Scene::CreateDetachedScene("MalformedHeaderTarget");
+	const EntityHandle existing = scene->CreateEntity("Existing").GetHandle();
+	REQUIRE(scene->IsDirty());
+	CHECK_FALSE(SceneSerializer::DeserializeScene(*scene, root));
+	CHECK(scene->GetEntityCount() == 1);
+	REQUIRE(scene->IsValid(existing));
+	CHECK(scene->GetEntity(existing).GetName() == "Existing");
+	CHECK(scene->GetName() == "MalformedHeaderTarget");
+	CHECK(scene->IsDirty());
+	CHECK(scene->IsUIDirty());
+}
+
+TEST_CASE("Colliding staged entity identities are rejected without replacing current content")
+{
+	auto incoming = Scene::CreateDetachedScene("IncomingIdentityScene");
+	incoming->CreateEntity("First");
+	incoming->CreateEntity("Second");
+	Json::Value root = SceneSerializer::SerializeScene(*incoming);
+	Json::Value* entities = root.FindMember("entities");
+	REQUIRE(entities != nullptr);
+	REQUIRE(entities->IsArray());
+	REQUIRE(entities->GetArray().size() == 2);
+
+	// The serializer never writes "RuntimeID" (it is a runtime-only id), so collisions are
+	// exercised through the persistent identity fields: give the second entity the first
+	// entity's SceneGUID and uuid.
+	Json::Value& first = entities->GetArray()[0];
+	const Json::Value* firstSceneGuid = first.FindMember("SceneGUID");
+	REQUIRE(firstSceneGuid != nullptr);
+	Json::Value duplicatePersistentRoot = SceneSerializer::SerializeScene(*incoming);
+	Json::Value* duplicateEntities = duplicatePersistentRoot.FindMember("entities");
+	REQUIRE(duplicateEntities != nullptr);
+	Json::Value* duplicateSceneGuid = duplicateEntities->GetArray()[1].FindMember("SceneGUID");
+	Json::Value* duplicateUuid = duplicateEntities->GetArray()[1].FindMember("uuid");
+	REQUIRE(duplicateSceneGuid != nullptr);
+	REQUIRE(duplicateUuid != nullptr);
+	*duplicateSceneGuid = *firstSceneGuid;
+	*duplicateUuid = *firstSceneGuid;
+
+	auto target = Scene::CreateDetachedScene("IdentityTarget");
+	const EntityHandle sentinel = target->CreateEntity("Sentinel").GetHandle();
+	target->ClearDirty();
+	target->ClearUIDirty();
+	CHECK_FALSE(SceneSerializer::DeserializeScene(*target, duplicatePersistentRoot));
+	CHECK(target->GetName() == "IdentityTarget");
+	CHECK(target->GetEntityCount() == 1);
+	REQUIRE(target->IsValid(sentinel));
+	CHECK(target->GetEntity(sentinel).GetName() == "Sentinel");
+	CHECK_FALSE(target->IsDirty());
+	CHECK_FALSE(target->IsUIDirty());
+}
+
+TEST_CASE("Newer scene format is rejected without replacing current content")
+{
+	const std::filesystem::path path =
+		std::filesystem::temp_directory_path() / "index_test_scene_future_json.scene";
+	Json::Value root = Json::Value::MakeObject();
+	root.AddMember("version", 2);
+	root.AddMember("name", "FutureScene");
+	root.AddMember("entities", Json::Value::MakeArray());
+	REQUIRE(SceneSerializerStorage::WriteRootToFile(path.string(), root, SceneSerializationFormat::Json));
+
+	auto scene = Scene::CreateDetachedScene("CurrentScene");
+	const EntityHandle existing = scene->CreateEntity("Existing").GetHandle();
+	REQUIRE(scene->IsDirty());
+	CHECK_FALSE(SceneSerializer::LoadFromFile(*scene, path.string()));
+	CHECK(scene->GetEntityCount() == 1);
+	REQUIRE(scene->IsValid(existing));
+	CHECK(scene->GetEntity(existing).GetName() == "Existing");
+	CHECK(scene->GetName() == "CurrentScene");
+	CHECK(scene->IsDirty());
+	CHECK(scene->IsUIDirty());
+
+	std::error_code error;
+	std::filesystem::remove(path, error);
+}
+
+TEST_CASE("Newer binary scene format is rejected without replacing current content")
+{
+	const std::filesystem::path path =
+		std::filesystem::temp_directory_path() / "index_test_scene_future_binary.scene";
+	Json::Value root = Json::Value::MakeObject();
+	root.AddMember("version", 2);
+	root.AddMember("name", "FutureBinaryScene");
+	root.AddMember("entities", Json::Value::MakeArray());
+	REQUIRE(SceneSerializerStorage::WriteRootToFile(path.string(), root, SceneSerializationFormat::Binary));
+
+	auto scene = Scene::CreateDetachedScene("CurrentBinaryScene");
+	const EntityHandle existing = scene->CreateEntity("Existing").GetHandle();
+	REQUIRE(scene->IsDirty());
+	CHECK_FALSE(SceneSerializer::LoadFromFile(*scene, path.string()));
+	CHECK(scene->GetEntityCount() == 1);
+	REQUIRE(scene->IsValid(existing));
+	CHECK(scene->GetEntity(existing).GetName() == "Existing");
+	CHECK(scene->GetName() == "CurrentBinaryScene");
+	CHECK(scene->IsDirty());
+	CHECK(scene->IsUIDirty());
+
+	std::error_code error;
+	std::filesystem::remove(path, error);
 }
 
 TEST_CASE("Scene file round-trip (JSON) preserves entities, hierarchy, components")

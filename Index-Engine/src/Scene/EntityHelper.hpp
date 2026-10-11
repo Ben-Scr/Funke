@@ -2,6 +2,7 @@
 
 #include "Scene/EntityHandle.hpp"
 #include "Scene/Entity.hpp"
+#include "Scene/SceneExecutionContext.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/Scene.hpp"
 #include "Components/ComponentUtils.hpp"
@@ -23,13 +24,13 @@ namespace Index {
         // Info: Creates an entity with the entered Components
         template<typename... Components>
         static Entity CreateWith() {
-            Scene* activeScene = SceneManager::Get().GetActiveScene();
-            if (!activeScene || !activeScene->IsLoaded()) {
-                IDX_ERROR_TAG("EntityHelper", "Cannot create entity because there is no active scene loaded");
+            Scene* targetScene = ResolveImplicitScene();
+            if (!targetScene) {
+                IDX_ERROR_TAG("EntityHelper", "Cannot create entity because there is no current or active scene");
                 return Entity::Null;
             }
 
-            Entity entity = activeScene->GetEntity(activeScene->CreateEntityHandle());
+            Entity entity = targetScene->GetEntity(targetScene->CreateEntityHandle());
 
             (entity.AddComponent<Components>(), ...);
 
@@ -46,15 +47,15 @@ namespace Index {
 
         template<typename... Components>
         static EntityHandle CreateHandleWith() {
-            Scene* activeScene = SceneManager::Get().GetActiveScene();
-            if (!activeScene || !activeScene->IsLoaded()) {
-                IDX_ERROR_TAG("EntityHelper", "Cannot create entity handle because there is no active scene loaded");
+            Scene* targetScene = ResolveImplicitScene();
+            if (!targetScene) {
+                IDX_ERROR_TAG("EntityHelper", "Cannot create entity handle because there is no current or active scene");
                 return entt::null;
             }
 
-            EntityHandle entity = activeScene->CreateEntityHandle();
+            EntityHandle entity = targetScene->CreateEntityHandle();
 
-            (activeScene->AddComponent<Components>(entity), ...);
+            (targetScene->AddComponent<Components>(entity), ...);
             return entity;
         }
 
@@ -75,18 +76,31 @@ namespace Index {
         static Entity CreateImageEntity();
 
         static Entity CreateUIPanel(Scene& scene);
+        static Entity CreateUIPanel();
         static Entity CreateUIButton(Scene& scene);
+        static Entity CreateUIButton();
         static Entity CreateUISlider(Scene& scene);
+        static Entity CreateUISlider();
         static Entity CreateUIProgressBar(Scene& scene);
+        static Entity CreateUIProgressBar();
         static Entity CreateUICircularSlider(Scene& scene);
+        static Entity CreateUICircularSlider();
         static Entity CreateUIInputField(Scene& scene);
+        static Entity CreateUIInputField();
         static Entity CreateUIDropdown(Scene& scene);
+        static Entity CreateUIDropdown();
         static Entity CreateUIToggle(Scene& scene);
+        static Entity CreateUIToggle();
         static Entity CreateUIScrollbar(Scene& scene);
+        static Entity CreateUIScrollbar();
         static Entity CreateUIScrollRect(Scene& scene);
+        static Entity CreateUIScrollRect();
         static Entity CreateUIHorizontalLayout(Scene& scene);
+        static Entity CreateUIHorizontalLayout();
         static Entity CreateUIVerticalLayout(Scene& scene);
+        static Entity CreateUIVerticalLayout();
         static Entity CreateUIGridLayout(Scene& scene);
+        static Entity CreateUIGridLayout();
     };
 
 }

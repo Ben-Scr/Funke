@@ -1,7 +1,7 @@
 #include <pch.hpp>
 #include "Gui/AddComponentPopup.hpp"
 
-#include "Gui/Icons.hpp"
+#include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Scene.hpp"
@@ -52,7 +52,7 @@ namespace Index {
 			// Entity.HasNativeComponent<T>()/GetRef<T>() sees nothing in the ECS pool.
 			bool storageAdded = false;
 			if (scriptEntry.IsNativeComponent) {
-				auto& componentRegistry = SceneManager::Get().GetComponentRegistry();
+				auto& componentRegistry = SceneManager::GetComponentRegistry();
 				if (const ComponentInfo* info = componentRegistry.FindBySerializedName(scriptEntry.ClassName)) {
 					if (info->isDynamic && info->add && (!info->has || !info->has(entity))) {
 						info->add(entity);
@@ -102,7 +102,8 @@ namespace Index {
 		std::span<const Entity> entities,
 		char* searchBuffer,
 		std::size_t searchBufferSize,
-		bool* outChanged)
+		bool* outChanged,
+		const std::function<void()>& onBeforeChange)
 	{
 		// Local helper: set the caller's "did we change anything" flag.
 		// Cheaper than threading the pointer through every add site.
@@ -124,17 +125,14 @@ namespace Index {
 		// check vacuously true and offer the entire registry. The caller
 		// shouldn't open the popup in that case, but be lenient.
 		if (entities.empty()) {
-			ImGui::TextDisabled("No entity selected.");
+			EditorUI::EmptyState("No entity selected.", "Select an entity to add components to it.");
 			ImGui::EndPopup();
 			return;
 		}
 
-		const ComponentRegistry& registry = SceneManager::Get().GetComponentRegistry();
+		const ComponentRegistry& registry = SceneManager::GetComponentRegistry();
 
-		Icons::TextIcon(Icons::Type::Search);
-		ImGui::SetNextItemWidth(-1);
-		ImGui::InputTextWithHint("##CompSearch", "Search components...",
-			searchBuffer, searchBufferSize);
+		EditorUI::SearchField("##CompSearch", searchBuffer, searchBufferSize, "Search components...");
 		ImGui::Separator();
 
 		ImGui::BeginChild("##AddComponentScroll", ImVec2(0, 0), false,
@@ -145,11 +143,7 @@ namespace Index {
 
 		const bool hasFilter = !filter.empty();
 
-		// Correct "does entity e have this component" check. For dynamic (C# IComponent)
-		// types, info.has() reads the GLOBAL DynamicComponentStorage keyed by the raw
-		// per-scene entity handle, which can GHOST (a cross-scene / recycled-handle
-		// collision makes it true for an entity that never had the component). Use the
-		// entity's ScriptComponent list instead — the same source of truth as the inspector.
+		// The ScriptComponent list is the authored source of truth for managed components.
 		auto entityHasComponent = [&](const ComponentInfo& info, const Entity& e) -> bool {
 			if (info.isDynamic) {
 				if (!e.HasComponent<ScriptComponent>()) return false;
@@ -193,6 +187,7 @@ namespace Index {
 		}
 
 		auto addComponentToAll = [&](const ComponentInfo& info) {
+			if (onBeforeChange) onBeforeChange();
 			bool added = false;
 			if (info.isDynamic) {
 				auto scriptIt = nativeScriptByClassName.find(info.displayName);
@@ -262,12 +257,13 @@ namespace Index {
 					ImGui::CloseCurrentPopup();
 				}
 			}
-			if (!enabled && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+			if (!enabled) {
 				if (alreadyAdded) {
-					ImGui::SetTooltip("Already added");
+					EditorUI::Tooltip("Already added");
 				}
 				else {
-					ImGui::SetTooltip("Conflicts with %s", conflictName.c_str());
+					const std::string conflictTooltip = "Conflicts with " + conflictName;
+					EditorUI::Tooltip(conflictTooltip.c_str());
 				}
 			}
 		};
@@ -423,8 +419,8 @@ namespace Index {
 								ImGui::CloseCurrentPopup();
 							}
 						}
-						if (presentOnAll && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-							ImGui::SetTooltip("Already added");
+						if (presentOnAll) {
+							EditorUI::Tooltip("Already added");
 						}
 					}
 					ImGui::TreePop();

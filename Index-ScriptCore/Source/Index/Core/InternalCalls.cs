@@ -14,6 +14,7 @@ internal static unsafe class InternalCalls
     internal static void Application_SetTargetFrameRate(float fps) => NativeCallbacks.Bindings.Application_SetTargetFrameRate(fps);
     internal static void Application_Quit() => NativeCallbacks.Bindings.Application_Quit();
     internal static void Application_Reload() => NativeCallbacks.Bindings.Application_Reload();
+    internal static void Application_Restart() => NativeCallbacks.Bindings.Application_Restart();
     internal static float Application_GetFixedDeltaTime() => NativeCallbacks.Bindings.Application_GetFixedDeltaTime();
     internal static void Application_SetFixedDeltaTime(float step) => NativeCallbacks.Bindings.Application_SetFixedDeltaTime(step);
     internal static float Application_GetUnscaledDeltaTime() => NativeCallbacks.Bindings.Application_GetUnscaledDeltaTime();
@@ -45,6 +46,32 @@ internal static unsafe class InternalCalls
     internal static string Application_GetCompany()
         => ReadNativeString(NativeCallbacks.Bindings.Application_GetCompanyBuffer);
     internal static int JobSystem_Reconfigure(int workerCount) => NativeCallbacks.Bindings.JobSystem_Reconfigure(workerCount);
+
+    internal static GraphicsSettings RenderSettings_Get()
+    {
+        float renderScale;
+        int upscaleFilter, postProcessingEnabled, postProcessingQuality, particleQuality;
+        NativeCallbacks.Bindings.RenderSettings_Get(
+            &renderScale, &upscaleFilter, &postProcessingEnabled,
+            &postProcessingQuality, &particleQuality);
+        return new GraphicsSettings(
+            renderScale,
+            (UpscaleFilterMode)upscaleFilter,
+            postProcessingEnabled != 0,
+            (PostProcessingQualityLevel)postProcessingQuality,
+            (ParticleQualityLevel)particleQuality);
+    }
+
+    internal static GraphicsApplyStatus RenderSettings_Apply(GraphicsSettings settings)
+        => (GraphicsApplyStatus)NativeCallbacks.Bindings.RenderSettings_Apply(
+            settings.RenderScale,
+            (int)settings.UpscaleFilter,
+            settings.PostProcessingEnabled ? 1 : 0,
+            (int)settings.PostProcessingQuality,
+            (int)settings.ParticleQuality);
+
+    internal static GraphicsApplyStatus RenderSettings_ResetToDefaults()
+        => (GraphicsApplyStatus)NativeCallbacks.Bindings.RenderSettings_ResetToDefaults();
 
     // ── Window ──────────────────────────────────────────────────────
 
@@ -223,6 +250,30 @@ internal static unsafe class InternalCalls
     internal static void Input_GetAxis(out float x, out float y) { float ox, oy; NativeCallbacks.Bindings.Input_GetAxis(&ox, &oy); x = ox; y = oy; }
     internal static void Input_GetMouseDelta(out float x, out float y) { float ox, oy; NativeCallbacks.Bindings.Input_GetMouseDelta(&ox, &oy); x = ox; y = oy; }
     internal static float Input_GetScrollWheelDelta() => NativeCallbacks.Bindings.Input_GetScrollWheelDelta();
+    internal static bool Input_IsGamepadConnected(int gamepad) => NativeCallbacks.Bindings.Input_IsGamepadConnected(gamepad) != 0;
+    internal static bool Input_GetGamepadButton(int button, int gamepad) => NativeCallbacks.Bindings.Input_GetGamepadButton(button, gamepad) != 0;
+    internal static bool Input_GetGamepadButtonDown(int button, int gamepad) => NativeCallbacks.Bindings.Input_GetGamepadButtonDown(button, gamepad) != 0;
+    internal static bool Input_GetGamepadButtonUp(int button, int gamepad) => NativeCallbacks.Bindings.Input_GetGamepadButtonUp(button, gamepad) != 0;
+    internal static float Input_GetGamepadAxis(int axis, int gamepad) => NativeCallbacks.Bindings.Input_GetGamepadAxis(axis, gamepad);
+
+    internal static void Physics2D_SetQueryLayerMask(ulong mask) => NativeCallbacks.Bindings.Physics2D_SetQueryLayerMask(mask);
+    internal static bool Collider2D_GetSensor(ulong id, int type) => NativeCallbacks.Bindings.Collider2D_GetSensor(id, type) != 0;
+    internal static void Collider2D_SetSensor(ulong id, int type, bool sensor) => NativeCallbacks.Bindings.Collider2D_SetSensor(id, type, sensor ? 1 : 0);
+    internal static ulong Collider2D_GetLayer(ulong id, int type) => NativeCallbacks.Bindings.Collider2D_GetLayer(id, type);
+    internal static void Collider2D_SetLayer(ulong id, int type, ulong layer) => NativeCallbacks.Bindings.Collider2D_SetLayer(id, type, layer);
+    internal static ulong Collider2D_GetCollisionMask(ulong id, int type) => NativeCallbacks.Bindings.Collider2D_GetCollisionMask(id, type);
+    internal static void Collider2D_SetCollisionMask(ulong id, int type, ulong mask) => NativeCallbacks.Bindings.Collider2D_SetCollisionMask(id, type, mask);
+    internal static float Collider2D_GetFriction(ulong id, int type) => NativeCallbacks.Bindings.Collider2D_GetFriction(id, type);
+    internal static void Collider2D_SetFriction(ulong id, int type, float v) => NativeCallbacks.Bindings.Collider2D_SetFriction(id, type, v);
+    internal static float Collider2D_GetBounciness(ulong id, int type) => NativeCallbacks.Bindings.Collider2D_GetBounciness(id, type);
+    internal static void Collider2D_SetBounciness(ulong id, int type, float v) => NativeCallbacks.Bindings.Collider2D_SetBounciness(id, type, v);
+
+    internal static void SpriteAnimator2D_Command(ulong id, int command) => NativeCallbacks.Bindings.SpriteAnimator2D_Command(id, command);
+    internal static bool SpriteAnimator2D_IsPlaying(ulong id) => NativeCallbacks.Bindings.SpriteAnimator2D_IsPlaying(id) != 0;
+    internal static int SpriteAnimator2D_GetFrame(ulong id) => NativeCallbacks.Bindings.SpriteAnimator2D_GetFrame(id);
+    internal static void SpriteAnimator2D_SetFrame(ulong id, int frame) => NativeCallbacks.Bindings.SpriteAnimator2D_SetFrame(id, frame);
+    internal static float SpriteAnimator2D_GetFramesPerSecond(ulong id) => NativeCallbacks.Bindings.SpriteAnimator2D_GetFramesPerSecond(id);
+    internal static void SpriteAnimator2D_SetFramesPerSecond(ulong id, float fps) => NativeCallbacks.Bindings.SpriteAnimator2D_SetFramesPerSecond(id, fps);
 
     // ── Scene ───────────────────────────────────────────────────
 

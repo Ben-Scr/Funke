@@ -803,6 +803,7 @@ namespace Index {
 			RemoveEntityComparisonIdentityMembers(sourceRoot);
 			Value currentRootComparable = currentRoot;
 			RemoveEntityComparisonIdentityMembers(currentRootComparable);
+			NormalizeLegacyColliderKeysForDiff(sourceRoot, currentRootComparable);
 			BuildOverridePatch(sourceRoot, currentRootComparable, {}, outRootOverrides);
 
 			const auto sourceById = BuildSourceEntityMap(sourceEntities);
@@ -827,6 +828,7 @@ namespace Index {
 				RemoveEntityComparisonIdentityMembers(currentComparable);
 
 				Value entityOverrides = Value::MakeObject();
+				NormalizeLegacyColliderKeysForDiff(sourceComparable, currentComparable);
 				BuildOverridePatch(sourceComparable, currentComparable, {}, entityOverrides);
 				if (!entityOverrides.GetObject().empty()) {
 					outEntityOverrides.AddMember(std::to_string(sourceId), std::move(entityOverrides));
@@ -1272,11 +1274,17 @@ namespace Index {
 				Value colliderValue = Value::MakeObject();
 				colliderValue.AddMember("scaleX", Value(scale.x));
 				colliderValue.AddMember("scaleY", Value(scale.y));
+				// Exact local size, independent of the parent chain. scaleX/Y above are
+				// world-scaled and kept for older readers; loaders prefer these keys because
+				// world scale isn't known yet when an entity is loaded before its parent is wired.
+				colliderValue.AddMember("localSizeX", Value(localSize.x));
+				colliderValue.AddMember("localSizeY", Value(localSize.y));
 				colliderValue.AddMember("centerX", Value(center.x));
 				colliderValue.AddMember("centerY", Value(center.y));
 				colliderValue.AddMember("friction", Value(collider.GetFriction()));
 				colliderValue.AddMember("bounciness", Value(collider.GetBounciness()));
 				colliderValue.AddMember("layer", Value(collider.GetLayer()));
+				colliderValue.AddMember("collisionMask", Value(collider.GetCollisionMask()));
 				colliderValue.AddMember("registerContacts", Value(collider.CanRegisterContacts()));
 				colliderValue.AddMember("sensor", Value(collider.IsSensor()));
 				entityValue.AddMember("BoxCollider2D", std::move(colliderValue));
@@ -1292,6 +1300,7 @@ namespace Index {
 				colliderValue.AddMember("friction", Value(collider.GetFriction()));
 				colliderValue.AddMember("bounciness", Value(collider.GetBounciness()));
 				colliderValue.AddMember("layer", Value(collider.GetLayer()));
+				colliderValue.AddMember("collisionMask", Value(collider.GetCollisionMask()));
 				colliderValue.AddMember("registerContacts", Value(collider.CanRegisterContacts()));
 				colliderValue.AddMember("sensor", Value(collider.IsSensor()));
 				entityValue.AddMember("CircleCollider2D", std::move(colliderValue));
@@ -1318,6 +1327,7 @@ namespace Index {
 				colliderValue.AddMember("friction", Value(collider.GetFriction()));
 				colliderValue.AddMember("bounciness", Value(collider.GetBounciness()));
 				colliderValue.AddMember("layer", Value(collider.GetLayer()));
+				colliderValue.AddMember("collisionMask", Value(collider.GetCollisionMask()));
 				colliderValue.AddMember("registerContacts", Value(collider.CanRegisterContacts()));
 				colliderValue.AddMember("sensor", Value(collider.IsSensor()));
 				entityValue.AddMember("PolygonCollider2D", std::move(colliderValue));
@@ -1592,16 +1602,11 @@ namespace Index {
 			// Registry-driven serialize for package components (mirror of deserialize sweep).
 			if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
 				Entity entityWrapper = scene.GetEntity(entity);
-				app->GetSceneManager()->GetComponentRegistry().ForEachComponentInfo(
+				SceneManager::GetComponentRegistry().ForEachComponentInfo(
 					[&](const std::type_index&, const ComponentInfo& info) {
 						if (!info.serialize || !info.has || info.serializedName.empty()) return;
 						if (!info.has(entityWrapper)) return;
-						// Dynamic (C# IComponent) rows live in the GLOBAL storage keyed by the
-						// raw per-scene entity handle, so a cross-scene / recycled-handle
-						// collision can make info.has() true for an entity that never had the
-						// component (a ghost row). Use the same source of truth the inspector
-						// uses — the entity's ScriptComponent list — so serialize and the
-						// inspector can never disagree.
+						// The ScriptComponent list is the authored source of truth for managed component rows.
 						if (info.isDynamic) {
 							if (!scene.HasComponent<ScriptComponent>(entity)) return;
 							const ScriptComponent& sc = scene.GetComponent<ScriptComponent>(entity);
@@ -1733,7 +1738,7 @@ namespace Index {
 
 	bool SceneSerializer::SaveToFile(Scene& scene, const std::string& path, SceneSerializationFormat format, bool logSuccess) {
 		try {
-			const std::filesystem::path parentDir = std::filesystem::path(path).parent_path();
+			const std::filesystem::path parentDir = Path::FromUtf8(path).parent_path();
 			if (!parentDir.empty() && !std::filesystem::exists(parentDir)) {
 				std::filesystem::create_directories(parentDir);
 			}
@@ -1784,6 +1789,30 @@ namespace Index {
 		return clipboardEntity;
 	}
 
+	Json::Value SceneSerializer::SerializePrefabSource(
+		Scene& scene,
+		EntityHandle entity,
+		uint64_t prefabGuid) {
+		Value root = Value::MakeObject();
+		if (entity == entt::null || !scene.IsValid(entity)) return root;
+
+		Value prefabEntity;
+		Value prefabEntities;
+		SerializePrefabSourceTree(scene, entity, prefabEntity, prefabEntities);
+		if (!prefabEntity.IsObject() || !prefabEntities.IsArray()
+			|| prefabEntities.GetArray().empty()) return root;
+
+		root.AddMember("version", Value(SCENE_FORMAT_VERSION));
+		root.AddMember("type", Value("Prefab"));
+		if (prefabGuid != 0) {
+			root.AddMember("AssetGUID", Value(std::to_string(prefabGuid)));
+		}
+		root.AddMember("Entity", prefabEntity);
+		root.AddMember("prefab", prefabEntity);
+		root.AddMember("Entities", std::move(prefabEntities));
+		return root;
+	}
+
 	Json::Value SceneSerializer::SerializeComponent(Scene& scene, EntityHandle entity, std::string_view componentName) {
 		if (entity == entt::null || !scene.IsValid(entity) || componentName.empty()) {
 			return Value();
@@ -1803,29 +1832,18 @@ namespace Index {
 
 	bool SceneSerializer::SaveEntityToFile(Scene& scene, EntityHandle entity, const std::string& path, SceneSerializationFormat format) {
 		try {
-			const std::filesystem::path parentDir = std::filesystem::path(path).parent_path();
+			const std::filesystem::path parentDir = Path::FromUtf8(path).parent_path();
 			if (!parentDir.empty() && !std::filesystem::exists(parentDir)) {
 				std::filesystem::create_directories(parentDir);
 			}
 
-			Value prefabEntity;
-			Value prefabEntities;
-			SerializePrefabSourceTree(scene, entity, prefabEntity, prefabEntities);
-
 			// GUID derived from path (not content), so we can register before writing — avoids the previous double-write per prefab save.
 			const uint64_t prefabGuid = AssetRegistry::GetOrCreateAssetUUID(path);
-
-			Value root = Value::MakeObject();
-			root.AddMember("version", Value(SCENE_FORMAT_VERSION));
-			root.AddMember("type", Value("Prefab"));
-			if (prefabGuid != 0) {
-				root.AddMember("AssetGUID", Value(std::to_string(prefabGuid)));
+			Value root = SerializePrefabSource(scene, entity, prefabGuid);
+			if (!root.FindMember("Entity")) {
+				IDX_CORE_ERROR_TAG("SceneSerializer", "Save prefab failed (invalid entity): {}", path);
+				return false;
 			}
-			// Both "Entity" and "prefab" — the legacy key stays in for backwards
-			// compatibility with existing prefab files; the deserializer accepts either.
-			root.AddMember("Entity", prefabEntity);
-			root.AddMember("prefab", prefabEntity);
-			root.AddMember("Entities", std::move(prefabEntities));
 			if (!SceneSerializerStorage::WriteRootToFile(path, root, format)) {
 				IDX_CORE_ERROR_TAG("SceneSerializer", "Save prefab failed (write error): {}", path);
 				return false;

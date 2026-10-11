@@ -1,12 +1,10 @@
 #pragma once
 #include "Scene/EntityHandle.hpp"
-#include "Scene/ISystem.hpp"
-
-#include <entt/entt.hpp>
+#include "Scene/SceneSystem.hpp"
 
 namespace Index {
 
-	class UIEventSystem : public ISystem {
+	class UIEventSystem : public SceneSystem {
 	public:
 		void Update(Scene& scene) override;
 		// OnPreRender keeps slider visuals in sync with inspector edits in edit mode (Update doesn't run outside play).

@@ -58,8 +58,13 @@ public static class Gizmo
     public static void DrawLine(Vector2 start, Vector2 end)
         => InternalCalls.Gizmo_DrawLine(start.X, start.Y, end.X, end.Y);
 
+    /// <summary>Draws <paramref name="distance"/> units from <paramref name="start"/> along <paramref name="direction"/> (need not be normalized). A zero direction draws nothing.</summary>
     public static void DrawLine(Vector2 start, Vector2 direction, float distance)
-        => throw new NotImplementedException();
+    {
+        float length = direction.Length();
+        if (length <= 0f || float.IsNaN(length)) return;
+        DrawLine(start, start + direction * (distance / length));
+    }
 
     /// <summary>Outline-only square. <paramref name="degrees"/> rotates about the center.</summary>
     public static void DrawWireSquare(Vector2 center, Vector2 size, float degrees = 0.0f)

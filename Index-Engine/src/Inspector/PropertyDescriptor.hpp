@@ -4,9 +4,9 @@
 #include "Inspector/PropertyType.hpp"
 #include "Inspector/PropertyValue.hpp"
 #include "Scene/Entity.hpp"
+#include "Utils/InlineFunction.hpp"
 
 #include <cstdint>
-#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -26,8 +26,10 @@ namespace Index {
 		PropertyType Type = PropertyType::None;
 		PropertyMetadata Metadata;
 
-		std::function<PropertyValue(const Entity&)> Get;
-		std::function<void(Entity&, const PropertyValue&)> Set;
+		// InlineFunction, not std::function: every registered field instantiates its own lambda pair,
+		// and std::function's per-type vtable + RTTI added ~0.35 MB to the engine DLL.
+		InlineFunction<PropertyValue(const Entity&)> Get;
+		InlineFunction<void(Entity&, const PropertyValue&)> Set;
 
 		// Optional. When non-empty, this descriptor renders its own widget
 		// AND the matching branch's nested descriptors below it.

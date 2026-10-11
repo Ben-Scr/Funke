@@ -18,7 +18,7 @@ Index separates a scene into two things:
 You **register** a definition once, then the engine **instantiates** it into a live `Scene` whenever it's loaded. Registering looks like this (conceptually):
 
 ```cpp
-auto& def = sceneManager.RegisterScene("Level1");
+auto& def = SceneManager::RegisterScene("Level1");
 def.AddSystem<MyEnemySpawnerSystem>();
 def.OnLoad([](Scene& scene) { /* set the scene up */ });
 def.SetAsStartupScene();   // this is the scene the game starts on
@@ -26,11 +26,21 @@ def.SetAsStartupScene();   // this is the scene the game starts on
 
 In practice, when you make scenes in the editor, the runtime wires all of this up for you from your project's scene list — you don't usually write registration code by hand.
 
+Use `OnLoad` for setup that cannot fail. File-backed or validated setup should use `OnLoadChecked` and return whether the scene is usable:
+
+```cpp
+def.OnLoadChecked([](Scene& scene) {
+    return LoadLevelData(scene);
+});
+```
+
+Returning `false` rejects the staged scene with `SceneLoadStatus::LoadCallbackFailed`.
+
 ---
 
 ## Systems
 
-A **system** is a piece of C++ code that lives in a scene and runs over its entities. Systems implement the `ISystem` interface and override the lifecycle hooks they need:
+A **system** is a piece of C++ code that lives in a scene and runs over its entities. Systems derive from `SceneSystem` and override the lifecycle hooks they need:
 
 | Hook | When it runs |
 |------|-------------|
@@ -93,6 +103,23 @@ The **Scene Manager** controls which scenes are loaded. There's always **one act
 
 A scene definition can be marked **persistent**, meaning it survives `LoadScene` calls that would otherwise unload it — useful for managers or HUDs you want to keep across level changes.
 
+Raw C++ callers that need failure details should use `TryLoadScene`, `TryLoadSceneAdditive`, or `TryReloadScene`:
+
+```cpp
+const SceneLoadResult result = SceneManager::TryLoadScene("Level2");
+if (!result) {
+    IDX_CORE_ERROR("Scene load failed: {}", result.Message);
+}
+```
+
+`Succeeded()` is true for `Success` and `AlreadyLoaded`. Failure statuses are `ReentrantLoad`, `NotInitialized`, `NotRegistered`, `NotLoaded`, `InstantiationFailed`, `LoadCallbackFailed`, `SetupFailed`, `BeforeStartFailed`, `AwakeFailed`, `StartFailed`, `CommitFailed`, `AfterStartFailed`, `SnapshotFailed`, and `WrongThread`. `Message` carries the error context, while `LoadedScene` is expired when no usable scene was produced. A failed `TryReloadScene` can return the preserved original scene there, so always check the result before treating it as reload success. The legacy `LoadScene`, `LoadSceneAdditive`, and `ReloadScene` methods remain available and return an expired pointer on failure.
+
+Raw C++ `SceneManager` APIs are main-thread-only. Off the main thread, the structured load methods return `WrongThread`; legacy loads and queries return empty, null, false, or zero results; and unload-style void methods do nothing. Registration and mutable-reference APIs throw a catchable `IndexException` instead of asserting or touching live scene state. Marshal scene work back to the application thread before retrying it.
+
+A non-additive load stages and validates its replacement through load callbacks and system startup before unloading the current non-persistent scenes. If any staged phase fails, the previous loaded scene set and active scene are preserved.
+
+`TryReloadScene` replaces the scene atomically but keeps the same logical scene identity, so it does not emit scene loaded/unloaded events for the internal instance swap.
+
 From a C# script you typically switch scenes through the scripting `SceneManager` API; see [Scripting](../Scripting/Scripting.md).
 
 ---
@@ -126,11 +153,10 @@ Editing the prefab asset updates every instance (except the parts an instance ha
 
 While you're editing, scene **scripts don't run** — your game logic only ticks when you press **Play**. When you do:
 
-1. The editor saves your scenes to disk.
-2. It (re)loads them from disk, so the game sees the authored state, not your in-progress edits.
-3. Scripts and systems begin their `Awake` → `Start` → `Update` lifecycle.
+1. The editor snapshots every loaded scene. Scenes with unsaved edits are written to a private snapshot in `.index/PlayMode`; your `.scene` files are not modified.
+2. Scripts and systems begin their `Awake` → `Start` → `Update` lifecycle on the scenes as you left them.
 
-When you press **Stop**, the scenes are reloaded from disk again, discarding anything that happened during play. That's why changes you make to entities *while playing* don't stick — it's a safety net. (In a shipped [runtime](Startup-Processes.md), there's no editor, so the game is simply always "playing.")
+When you press **Stop**, the scenes are reloaded from those snapshots, discarding anything that happened during play; scenes that were unsaved before Play stay marked unsaved. That's why changes you make to entities *while playing* don't stick — it's a safety net. (In a shipped [runtime](Startup-Processes.md), there's no editor, so the game is simply always "playing.")
 
 ---
 
@@ -146,7 +172,7 @@ At startup the engine loads the **startup scene**. A scene definition is marked 
 - **Systems** (C++) and **SceneSystems** (C#) run a scene's logic with `Awake` → `Start` → `Update`.
 - The Scene Manager keeps **one active scene** but can hold several loaded at once; scenes can be **persistent**.
 - Scenes save to **`.scene` files** that round-trip entities, components, and hierarchy; **prefabs** are reusable saved entities.
-- In the editor, scripts run only in **Play mode**, and stopping restores the scene from disk.
+- In the editor, scripts run only in **Play mode**, and stopping restores the pre-Play snapshot.
 
 ## Related pages
 

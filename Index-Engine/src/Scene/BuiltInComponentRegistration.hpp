@@ -1,7 +1,7 @@
 #pragma once
 
 namespace Index {
-	class SceneManager;
+	class ComponentRegistry;
 
-	void RegisterBuiltInComponents(SceneManager& sceneManager);
+	void RegisterBuiltInComponents(ComponentRegistry& registry);
 }

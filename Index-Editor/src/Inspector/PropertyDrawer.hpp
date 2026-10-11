@@ -18,6 +18,9 @@ namespace Index::PropertyDrawer {
 	bool DrawWithPrefix(std::span<const Entity> entities,
 		const PropertyDescriptor& descriptor, const std::string& fieldKeyPrefix);
 
+	bool AcceptTextureReferenceDropOnLastItem(std::span<const Entity> entities,
+		const PropertyDescriptor& descriptor);
+
 	void DrawAll(std::span<const Entity> entities,
 		std::span<const PropertyDescriptor> descriptors,
 		const std::string& fieldKeyPrefix);

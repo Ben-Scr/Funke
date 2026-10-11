@@ -54,10 +54,14 @@ namespace Index {
         }
         // Setters write Local* only; writing world Position directly would cause a one-frame jump on child entities.
         void SetPosition(const Vec2& position) { LocalPosition = position; MarkDirty(); }
-        void SetRotation(float rotation) { LocalRotation = rotation; MarkDirty(); }
+        void SetRotation(float rotationDegrees) { LocalRotation = rotationDegrees; MarkDirty(); }
         void SetScale(const Vec2& scale) { LocalScale = scale; MarkDirty(); }
 
         float GetRotationDegrees() const;
+        Vec2 Up() const;
+        Vec2 Down() const;
+        Vec2 Right() const;
+        Vec2 Left() const;
         glm::mat3 GetModelMatrix() const;
         Vec2 GetForwardDirection() const;
 
@@ -89,10 +93,4 @@ namespace Index {
         Scene* m_OwnerScene = nullptr;
         EntityHandle m_OwnerEntity = entt::null;
 	};
-
-    static inline float LookAt2D(const Transform2DComponent& from, const Vec2& to) {
-        Vec2 lookDir = to - from.Position;
-        float lookAtZ = atan2(lookDir.x, lookDir.y);
-        return std::remainder(lookAtZ - from.Rotation, TwoPi<float>());
-    }
 }

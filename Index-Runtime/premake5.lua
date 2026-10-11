@@ -27,8 +27,15 @@ project "Index-Runtime"
     -- (rather than splitting it into a third project) and add the editor's
     -- src as an include dir so the panel header resolves. Stays out of the
     -- runtime entirely when --no-profiler strips the macro.
+    -- The panel is built from the editor UI kit (EditorUI -> ImGuiUtils ->
+    -- EditorIcons; EditorTheme is header-only), so those come along too.
     if IndexProfiler.Enabled then
-        files { path.join(ROOT_DIR, "Index-Editor/src/Gui/ProfilerPanel.cpp") }
+        files {
+            path.join(ROOT_DIR, "Index-Editor/src/Gui/ProfilerPanel.cpp"),
+            path.join(ROOT_DIR, "Index-Editor/src/Gui/EditorUI.cpp"),
+            path.join(ROOT_DIR, "Index-Editor/src/Gui/ImGuiUtils.cpp"),
+            path.join(ROOT_DIR, "Index-Editor/src/Gui/EditorIcons.cpp")
+        }
         includedirs { path.join(ROOT_DIR, "Index-Editor/src") }
     end
 
@@ -45,6 +52,7 @@ project "Index-Runtime"
     -- and links the INDEX_API exports.
 
     UseDependencySet(Dependency.EditorRuntimeCommon)
+    UseIndexProfilerDependencies(true)
     defines(GetIndexModuleDefines())
     ApplyIndexEditorModuleDefine()
     defines { "IDX_IMPORT_DLL" }
@@ -64,8 +72,8 @@ project "Index-Runtime"
         CopyGladDll
     }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
-    if os.target() == "windows" then postbuildcommands { CopyScriptCoreDll } end
-    if IndexProfiler.Enabled then postbuildcommands { CopyTracyDll } end
+    if os.target() == "windows" then postbuildcommands(CopyScriptCoreArtifacts) end
+    ApplyIndexProfilerRuntime()
 
     filter "system:windows"
         -- See Index-Engine/premake5.lua for the rationale on
@@ -97,11 +105,14 @@ project "Index-Runtime"
     filter "configurations:Dist"
         runtime "Release"
         optimize "Full"
-        symbols "Off"
+        symbols "On"
         defines { "IDX_DIST", "NDEBUG" }
 
-    filter { "system:windows", "configurations:Dist" }
+    filter { "system:windows", "configurations:Release or Dist" }
         kind "WindowedApp"
+        defines { "IDX_WINDOWED_APP=1" }
+        buildoptions { "/guard:cf" }
+        linkoptions { "/DYNAMICBASE", "/NXCOMPAT", "/HIGHENTROPYVA", "/guard:cf" }
 
     filter {}
 

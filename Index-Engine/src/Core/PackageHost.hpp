@@ -2,10 +2,13 @@
 
 #include "Core/Export.hpp"
 
+#include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Index {
+	struct IndexProject;
 
 	struct LoadedPackage {
 		std::string Name;          // Without the "Pkg." prefix or ".Native" suffix, e.g. "Index.Hello".
@@ -28,5 +31,19 @@ namespace Index {
 
 		static bool IsPackageLoaded(const std::string& packageName);
 	};
+
+	namespace PackageHostDetail {
+		INDEX_API void* LoadNativeModule(const std::filesystem::path& path);
+		INDEX_API void UnloadNativeModule(void* module);
+		INDEX_API std::filesystem::path GetNativePackageAbiMetadataPath(
+			const std::filesystem::path& packageLibrary);
+		INDEX_API bool ValidateNativePackageCompatibility(
+			const std::filesystem::path& packageLibrary,
+			std::string_view runningEngineSha256,
+			std::string& outReason);
+		INDEX_API void AppendProjectNativeCandidates(const IndexProject& project,
+			std::string_view configuration,
+			std::vector<std::filesystem::path>& outCandidates);
+	}
 
 }

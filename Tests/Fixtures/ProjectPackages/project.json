@@ -1,0 +1,6 @@
+{
+  "name": "ProjectPackageFixture",
+  "packages": [
+    "Game.TestPackage"
+  ]
+}

@@ -50,45 +50,56 @@ namespace Index {
         friend class Application;
         friend class Window;
 
-        Input() = default;
-
         // Keyboard
-        bool GetKey(KeyCode keycode) const;
-        bool GetKeyDown(KeyCode keycode) const;
-        bool GetKeyUp(KeyCode keycode) const;
-        bool GetAnyKey() const;
+        static bool GetKey(KeyCode keycode);
+        static bool GetKeyDown(KeyCode keycode);
+        static bool GetKeyUp(KeyCode keycode);
+        static bool GetAnyKey();
 
         // Mouse
-        bool GetMouse(MouseButton keycode) const;
-        bool GetMouseDown(MouseButton keycode) const;
-        bool GetMouseUp(MouseButton keycode) const;
+        static bool GetMouse(MouseButton keycode);
+        static bool GetMouseDown(MouseButton keycode);
+        static bool GetMouseUp(MouseButton keycode);
 
         static constexpr int k_MaxGamepads = 4;
-        bool IsGamepadConnected(int gamepadIndex = 0) const;
-        bool GetGamepadButton(GamepadButton button, int gamepadIndex = 0) const;
-        bool GetGamepadButtonDown(GamepadButton button, int gamepadIndex = 0) const;
-        bool GetGamepadButtonUp(GamepadButton button, int gamepadIndex = 0) const;
+        static bool IsGamepadConnected(int gamepadIndex = 0);
+        static bool GetGamepadButton(GamepadButton button, int gamepadIndex = 0);
+        static bool GetGamepadButtonDown(GamepadButton button, int gamepadIndex = 0);
+        static bool GetGamepadButtonUp(GamepadButton button, int gamepadIndex = 0);
         // Returns the raw axis value in [-1, 1] (triggers in [0, 1]).
         // Apply your own deadzone — Input does no shaping here so the
         // raw values stay available for analog gameplay use.
-        float GetGamepadAxis(GamepadAxis axis, int gamepadIndex = 0) const;
+        static float GetGamepadAxis(GamepadAxis axis, int gamepadIndex = 0);
 
-        Vec2 GetAxis() const { return m_Axis; }
-        Vec2 GetMousePosition() const { return m_MousePosition; }
-        Vec2 GetMouseDelta() const { return m_MouseDelta; }
-        float ScrollValue() const { return m_ScrollValue; }
+		// WASD/arrows; falls back to the first connected gamepad's D-pad or left stick (deadzoned).
+		static Vec2 GetAxis();
+		// Scales the stick so output starts at 0 at the deadzone edge instead of jumping to its radius.
+		static Vec2 ApplyRadialDeadzone(float x, float y, float deadzone);
+		static constexpr float k_GamepadAxisDeadzone = 0.2f;
+		// Viewport-local pixels; raw GLFW coordinates stay stored so resize remapping remains current.
+		static Vec2 GetMousePosition();
+        static Vec2 GetMouseDelta();
+        static float ScrollValue();
 
         // Unicode codepoints typed this frame, in the order they arrived
         // from GLFW's char callback. Cleared at the start of every Update.
         // UI input fields read this each frame to append typed characters.
-        const std::vector<uint32_t>& GetCharsThisFrame() const { return m_CharsThisFrame; }
+        static const std::vector<uint32_t>& GetCharsThisFrame();
 
         // Convenience: UTF-8 encoded version of GetCharsThisFrame, ready
         // to append to a std::string. Returns empty when nothing was
         // typed this frame.
-        std::string GetTypedTextUtf8() const;
+        static std::string GetTypedTextUtf8();
 
     private:
+        Input() = default;
+        Input(const Input&) = delete;
+        Input& operator=(const Input&) = delete;
+
+        static Input* TryGetCurrent();
+        static void SetCurrent(Input* input);
+
+        void Reset();
         void Update();
         // Recompute frame-derived state (e.g. m_Axis) after glfwPollEvents.
         // Called by Application::Run AFTER polling so reads reflect *this*
@@ -125,8 +136,11 @@ namespace Index {
         float m_ScrollValue = 0.f;
         Vec2 m_MousePosition = { 0, 0 };
         Vec2 m_MouseDelta = { 0, 0 };
+        bool m_HasMousePosition = false;
         Vec2 m_Axis = { 0, 0 };
 
         std::vector<uint32_t> m_CharsThisFrame;
+
+        static Input* s_Current;
     };
 }

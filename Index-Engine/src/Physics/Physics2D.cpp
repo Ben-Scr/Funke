@@ -15,6 +15,14 @@
 
 namespace Index {
 	namespace {
+		uint64_t s_QueryLayerMask = UINT64_MAX;
+
+		b2QueryFilter MakeQueryFilter() {
+			b2QueryFilter filter = b2DefaultQueryFilter();
+			filter.maskBits = s_QueryLayerMask;
+			return filter;
+		}
+
 		bool IsValidRef(const PhysicsBodyRef2D& ref) {
 			return ref.scene && ref.entity != entt::null && ref.scene->IsValid(ref.entity);
 		}
@@ -60,7 +68,7 @@ namespace Index {
 
 			auto& phys = PhysicsSystem2D::GetMainPhysicsWorld();
 			b2WorldId world = phys.GetWorldID();
-			b2QueryFilter filter = b2DefaultQueryFilter();
+			b2QueryFilter filter = MakeQueryFilter();
 
 			struct QueryContext {
 				Vec2 center;
@@ -107,7 +115,7 @@ namespace Index {
 
 			auto& phys = PhysicsSystem2D::GetMainPhysicsWorld();
 			b2WorldId world = phys.GetWorldID();
-			b2QueryFilter filter = b2DefaultQueryFilter();
+			b2QueryFilter filter = MakeQueryFilter();
 
 			struct QueryContext {
 				Box2DWorld* phys = nullptr;
@@ -133,7 +141,7 @@ namespace Index {
 
 			auto& phys = PhysicsSystem2D::GetMainPhysicsWorld();
 			b2WorldId world = phys.GetWorldID();
-			b2QueryFilter filter = b2DefaultQueryFilter();
+			b2QueryFilter filter = MakeQueryFilter();
 			constexpr float epsilon = 0.001f;
 			b2AABB aabb{
 				.lowerBound = { point.x - epsilon, point.y - epsilon },
@@ -188,7 +196,7 @@ namespace Index {
 
 			auto& phys = PhysicsSystem2D::GetMainPhysicsWorld();
 			b2WorldId world = phys.GetWorldID();
-			b2QueryFilter filter = b2DefaultQueryFilter();
+			b2QueryFilter filter = MakeQueryFilter();
 			constexpr float epsilon = 0.001f;
 			b2AABB aabb{
 				.lowerBound = { point.x - epsilon, point.y - epsilon },
@@ -216,6 +224,9 @@ namespace Index {
 			return results;
 		}
 	}
+
+	void Physics2D::SetQueryLayerMask(uint64_t layerMask) { s_QueryLayerMask = layerMask; }
+	uint64_t Physics2D::GetQueryLayerMask() { return s_QueryLayerMask; }
 
 	std::optional<EntityHandle> Physics2D::OverlapCircle(const Vec2& center, float radius, OverlapMode mode) {
 		return ToEntityHandle(OverlapCircleRef(center, radius, mode));
@@ -297,10 +308,10 @@ namespace Index {
 		b2WorldId world = phys.GetWorldID();
 
 		b2Vec2 o{ origin.x, origin.y };
-		Vec2 nd = Normalized(direction);
+		Vec2 nd = Vector::Normalized(direction);
 		b2Vec2 t{ nd.x * maxDistance, nd.y * maxDistance };
 
-		b2QueryFilter filter = b2DefaultQueryFilter();
+		b2QueryFilter filter = MakeQueryFilter();
 
 		b2RayResult r = b2World_CastRayClosest(world, o, t, filter);
 

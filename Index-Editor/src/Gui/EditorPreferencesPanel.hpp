@@ -13,6 +13,7 @@ namespace Index {
 		// other panels. The close-X button on the window's title bar
 		// flips it false; the caller suppresses the call next frame.
 		void Render(bool* pOpen);
+		bool ConsumeRestartRequest();
 
 	private:
 		void RenderAppearanceTab();
@@ -34,6 +35,7 @@ namespace Index {
 		// Raised after the editor font asset changes. The typeface is
 		// loaded during ImGui setup, so the user chooses when to reload.
 		bool m_OpenFontRestartRequest = false;
+		bool m_RestartRequested = false;
 		char m_SearchBuffer[256]{};
 
 		// True the frame the panel becomes visible. Used to refresh

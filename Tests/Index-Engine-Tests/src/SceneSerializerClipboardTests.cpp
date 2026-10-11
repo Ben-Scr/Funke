@@ -286,3 +286,41 @@ TEST_CASE("Duplicate remaps script entity-ref fields to the cloned child")
 	CHECK(sc.PendingFieldValues["TestScript.External"] == std::to_string(outsideId));
 	CHECK(sc.PendingFieldValues["TestScript.PrefabRef"] == "prefab:9999");
 }
+
+TEST_CASE("Duplicate clipboard source identities roll back the whole entity tree")
+{
+	auto source = Scene::CreateDetachedScene("Duplicate Source IDs");
+	Entity root = source->CreateEntity("Root");
+	Entity child = source->CreateEntity("Child");
+	child.SetParent(root);
+	Json::Value clipboard = SceneSerializer::SerializeEntityForClipboard(*source, root.GetHandle());
+	Json::Value* entities = clipboard.FindMember("Entities");
+	REQUIRE(entities != nullptr);
+	REQUIRE(entities->IsArray());
+	REQUIRE(entities->GetArray().size() == 2);
+	Json::Value duplicateHierarchy = clipboard;
+	Json::Value* hierarchyEntities = duplicateHierarchy.FindMember("Entities");
+	REQUIRE(hierarchyEntities != nullptr);
+	Json::Value* firstHierarchyId = hierarchyEntities->GetArray()[0].FindMember("uuid");
+	Json::Value* secondHierarchyId = hierarchyEntities->GetArray()[1].FindMember("uuid");
+	REQUIRE(firstHierarchyId != nullptr);
+	REQUIRE(secondHierarchyId != nullptr);
+	*secondHierarchyId = *firstHierarchyId;
+
+	Json::Value* firstSourceId = entities->GetArray()[0].FindMember("sourceUuid");
+	Json::Value* secondSourceId = entities->GetArray()[1].FindMember("sourceUuid");
+	REQUIRE(firstSourceId != nullptr);
+	REQUIRE(secondSourceId != nullptr);
+	*secondSourceId = *firstSourceId;
+
+	auto target = Scene::CreateDetachedScene("Duplicate Source Target");
+	const EntityHandle sentinel = target->CreateEntity("Sentinel").GetHandle();
+	target->ClearDirty();
+	target->ClearUIDirty();
+	CHECK(SceneSerializer::DeserializeEntityFromValue(*target, duplicateHierarchy) == entt::null);
+	CHECK(SceneSerializer::DeserializeEntityFromValue(*target, clipboard) == entt::null);
+	CHECK(target->GetEntityCount() == 1);
+	CHECK(target->IsValid(sentinel));
+	CHECK_FALSE(target->IsDirty());
+	CHECK_FALSE(target->IsUIDirty());
+}

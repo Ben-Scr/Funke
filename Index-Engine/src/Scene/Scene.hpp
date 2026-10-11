@@ -1,10 +1,13 @@
 #pragma once
 #include "Scene/Entity.hpp"
-#include "Scene/ISystem.hpp"
+#include "Scene/SceneSystem.hpp"
 #include "Collections/Ids.hpp"
 #include "Components/General/EntityMetaDataComponent.hpp"
 #include "Core/Export.hpp"
 #include "Core/UUID.hpp"
+// Scene stores an entt::registry by value and its template members call
+// view()/get(), so the complete type is required here.
+#include <entt/entity/registry.hpp>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -23,6 +26,7 @@ namespace Index {
 	class Renderer2D;
 	class Transform2DComponent;
 	class TransformHierarchySystem;
+	class SceneSerializer;
 	class INDEX_API Scene {
 		friend class SceneManager;
 		friend class SceneDefinition;
@@ -31,6 +35,7 @@ namespace Index {
 		friend class Entity;
 		friend class Transform2DComponent;
 		friend class TransformHierarchySystem;
+		friend class SceneSerializer;
 
 	public:
 		Scene(const Scene&) = delete;
@@ -63,14 +68,16 @@ namespace Index {
 			EntityID runtimeId = 0);
 
 		Entity GetEntity(EntityHandle nativeEntity) {
-			IDX_CORE_ASSERT(IsValid(nativeEntity), IndexErrorCode::InvalidValue,
-				"Scene::GetEntity called with an invalid/destroyed EntityHandle");
+			if (!IsValid(nativeEntity)) {
+				IDX_THROW(IndexErrorCode::InvalidHandle, "Scene::GetEntity called with an invalid or destroyed handle");
+			}
 			return Entity(nativeEntity, *this);
 		}
 		[[deprecated("Returns a writable Entity from a const Scene; prefer Scene::GetComponent<T>(handle) const for read-only access")]]
 		Entity GetEntity(EntityHandle nativeEntity) const {
-			IDX_CORE_ASSERT(IsValid(nativeEntity), IndexErrorCode::InvalidValue,
-				"Scene::GetEntity called with an invalid/destroyed EntityHandle");
+			if (!IsValid(nativeEntity)) {
+				IDX_THROW(IndexErrorCode::InvalidHandle, "Scene::GetEntity called with an invalid or destroyed handle");
+			}
 			return Entity(nativeEntity, const_cast<Scene&>(*this));
 		}
 
@@ -78,7 +85,7 @@ namespace Index {
 		void DestroyEntity(EntityHandle nativeEntity);
 		void DestroyEntity(EntityHandle nativeEntity, float delay);
 		void ClearEntities();
-		bool BeginContentReplacement();
+		bool BeginContentReplacement(bool& restartLifecycle);
 		void EndContentReplacement(bool restartLifecycle);
 
 		template <typename... TComponent>
@@ -209,7 +216,7 @@ namespace Index {
 
 		template<typename T>
 		T* GetSystem() {
-			static_assert(std::is_base_of<ISystem, T>::value, "T must derive from ISystem");
+			static_assert(std::is_base_of<SceneSystem, T>::value, "T must derive from SceneSystem");
 
 			for (auto& sysPtr : m_Systems) {
 				if (auto ptr = dynamic_cast<T*>(sysPtr.get())) {
@@ -227,7 +234,7 @@ namespace Index {
 
 		template<typename T>
 		bool HasSystem() const {
-			static_assert(std::is_base_of<ISystem, T>::value, "T must derive from ISystem");
+			static_assert(std::is_base_of<SceneSystem, T>::value, "T must derive from SceneSystem");
 
 			for (const auto& sysPtr : m_Systems) {
 				if (dynamic_cast<T*>(sysPtr.get())) {
@@ -238,8 +245,20 @@ namespace Index {
 		}
 
 		template<typename T>
+		bool IsSystemEnabled() const {
+			static_assert(std::is_base_of<SceneSystem, T>::value, "T must derive from SceneSystem");
+
+			for (const auto& sysPtr : m_Systems) {
+				if (const auto* ptr = dynamic_cast<const T*>(sysPtr.get())) {
+					return ptr->IsEnabled();
+				}
+			}
+			return false;
+		}
+
+		template<typename T>
 		void DisableSystem() {
-			static_assert(std::is_base_of<ISystem, T>::value, "T must derive from ISystem");
+			static_assert(std::is_base_of<SceneSystem, T>::value, "T must derive from SceneSystem");
 
 			for (auto& sysPtr : m_Systems) {
 				if (auto ptr = dynamic_cast<T*>(sysPtr.get())) {
@@ -252,7 +271,7 @@ namespace Index {
 
 		template<typename T>
 		void EnableSystem() {
-			static_assert(std::is_base_of<ISystem, T>::value, "T must derive from ISystem");
+			static_assert(std::is_base_of<SceneSystem, T>::value, "T must derive from SceneSystem");
 
 			for (auto& sysPtr : m_Systems) {
 				if (auto ptr = dynamic_cast<T*>(sysPtr.get())) {
@@ -269,6 +288,7 @@ namespace Index {
 		const std::string& GetName() const { return m_Name; }
 		void SetName(const std::string& name) { m_Name = name; }
 		bool IsLoaded() const { return m_IsLoaded; }
+		bool IsLifecycleSuspended() const { return m_LifecycleSuspended; }
 		bool IsPersistent() const { return m_Persistent; }
 		const SceneDefinition* GetDefinition() const { return m_Definition; }
 		Camera2DComponent* GetMainCamera();
@@ -287,6 +307,9 @@ namespace Index {
 		void MarkTransformDirty(EntityHandle entity);
 		std::vector<EntityHandle> ConsumeDirtyTransformEntities();
 		bool HasDirtyTransforms() const { return m_TransformHierarchyDirty; }
+		// True when a blanket (non-entity-specific) dirty mark is pending: every root
+		// transform must be re-derived, not just the entities in the dirty list.
+		bool IsTransformDirtyAll() const { return m_TransformDirtyAll; }
 		void MarkStaticRenderDataDirty();
 		uint64_t GetStaticRenderDataVersion() const { return m_StaticRenderDataVersion; }
 
@@ -335,11 +358,16 @@ namespace Index {
 
 		// MUST use this for persistent refs — RuntimeID is reallocated on reload.
 		uint64_t GetEntityPersistentID(EntityHandle entity) const;
+		bool SetEntityPersistentID(
+			EntityHandle entity,
+			uint64_t persistentId,
+			EntityHandle expectedPreviousOwner = entt::null);
 
 		bool TryResolveEntityRef(uint64_t entityId, EntityHandle& outHandle) const;
 
 		void DeferEntityRefFixup(std::function<void()> fixup);
 		void RunPendingEntityRefFixups();
+		void DiscardPendingEntityRefFixupsFrom(std::size_t startIndex);
 
 		// Drain only the fixups queued at/after startIndex (those added since GetPendingEntityRefFixupCount()
 		// was last sampled), leaving earlier entries for an outer drain. Lets one prefab instantiation resolve
@@ -418,21 +446,23 @@ namespace Index {
 		void ApplyEntityEnabledState(entt::registry& registry, EntityHandle entity, bool enabled);
 		void RefreshMainCameraSelection(entt::registry& registry, EntityHandle preferred = entt::null, EntityHandle excluded = entt::null);
 
-		void RunLifecycleSystems(const std::function<void(ISystem&)>& func, size_t* enteredSystemCount = nullptr);
+		void RunLifecycleSystems(const std::function<void(SceneSystem&)>& func, size_t* enteredSystemCount = nullptr);
 		void AwakeSystems(size_t* enteredSystemCount = nullptr);
 		void StartSystems(size_t* enteredSystemCount = nullptr);
+		void InitializeRuntimeComponentState();
 		void UpdateSystems();
 		void FixedUpdateSystems();
 		void OnPreRenderSystems();
 		void DestroyScene();
-		void DestroyScene(size_t enabledSystemCount);
-		void ForeachEnabledSystem(std::string_view phase, const std::function<void(ISystem&)>& func);
+		void DestroyScene(size_t awakenedSystemCount);
+		void ForeachEnabledSystem(std::string_view phase, const std::function<void(SceneSystem&)>& func);
 
 		entt::registry m_Registry;
-		std::vector<std::unique_ptr<ISystem>> m_Systems;
+		std::shared_ptr<Entity::LifetimeToken> m_EntityLifetime = std::make_shared<Entity::LifetimeToken>();
+		std::vector<std::unique_ptr<SceneSystem>> m_Systems;
 		std::vector<std::string> m_SceneSystemClassNames;
 		std::unordered_map<std::string, std::unordered_map<std::string, std::string>> m_SceneSystemFieldOverrides;
-		std::vector<ISystem*> m_AwakenedSystems; // in awakening order; DestroyScene walks in reverse for rollback
+		std::vector<SceneSystem*> m_AwakenedSystems; // in awakening order; DestroyScene walks in reverse for rollback
 
 
 		std::string m_Name;
@@ -443,6 +473,7 @@ namespace Index {
 		mutable EntityHandle m_MainCameraEntity = entt::null;
 
 		bool m_IsLoaded = false;
+		bool m_LifecycleSuspended = false;
 		bool m_Persistent = false;
 		bool m_Dirty = false;
 
@@ -450,6 +481,7 @@ namespace Index {
 		// Guards ClearEntities — prevents RefreshMainCameraSelection from scanning a mutating registry.
 		bool m_TearingDown = false;
 		bool m_TransformHierarchyDirty = true;
+		bool m_TransformDirtyAll = true;
 		std::vector<EntityHandle> m_DirtyTransformEntities;
 		std::unordered_set<EntityHandle> m_DirtyTransformEntitySet;
 		uint64_t m_StaticRenderDataVersion = 1;
@@ -462,7 +494,7 @@ namespace Index {
 		int m_EntityRefRemapDepth = 0;
 		bool m_UIDirty = true;
 		bool m_IsDetached = false;
-		EntityID m_NextRuntimeEntityID = 1;
+		bool m_SuppressEntityDestructionCallbacks = false;
 		std::unordered_map<EntityID, EntityHandle> m_RuntimeIdToEntity;
 		std::unordered_map<uint64_t, EntityHandle> m_SceneGuidToEntity;
 		std::unordered_set<uint32_t> m_EntitiesBeingDestroyed;

@@ -9,6 +9,7 @@
 #include "Gui/CustomTitlebar.hpp"
 #include "Gui/Icons.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
+#include "Gui/ImGuiFonts.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Localization/Localization.hpp"
 #include "Serialization/Path.hpp"
@@ -85,6 +86,48 @@ namespace Index {
 		IDX_CORE_INFO_TAG("Launcher", "Relaunching '{}'.", exePath);
 		Application::Quit();
 	}
+
+#ifdef IDX_PLATFORM_WINDOWS
+	// Native folder dialog; returns an empty string when cancelled.
+	static std::string PickFolder(const wchar_t* title) {
+		std::string picked;
+		CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+		IFileOpenDialog* dialog = nullptr;
+		if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL,
+			IID_IFileOpenDialog, reinterpret_cast<void**>(&dialog))))
+		{
+			DWORD options;
+			dialog->GetOptions(&options);
+			dialog->SetOptions(options | FOS_PICKFOLDERS);
+			dialog->SetTitle(title);
+			if (SUCCEEDED(dialog->Show(nullptr))) {
+				IShellItem* result = nullptr;
+				dialog->GetResult(&result);
+				if (result) {
+					PWSTR widePath = nullptr;
+					result->GetDisplayName(SIGDN_FILESYSPATH, &widePath);
+					if (widePath) {
+						const int len = WideCharToMultiByte(CP_UTF8, 0, widePath, -1, nullptr, 0, nullptr, nullptr);
+						if (len > 1) {
+							picked.resize(static_cast<size_t>(len), '\0');
+							if (WideCharToMultiByte(CP_UTF8, 0, widePath, -1, picked.data(), len, nullptr, nullptr) == len) {
+								picked.pop_back();
+							}
+							else {
+								picked.clear();
+							}
+						}
+						CoTaskMemFree(widePath);
+					}
+					result->Release();
+				}
+			}
+			dialog->Release();
+		}
+		CoUninitialize();
+		return picked;
+	}
+#endif
 
 	// ── Relative Time Formatting ────────────────────────────────────
 
@@ -179,6 +222,16 @@ namespace Index {
 		return std::error_code(static_cast<int>(errorCode), std::system_category()).message();
 	}
 #endif
+
+	static void OpenUrlInBrowser(const char* url) {
+#ifdef IDX_PLATFORM_WINDOWS
+		ShellExecuteW(nullptr, L"open", Utf8ToWide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#elif defined(IDX_PLATFORM_LINUX)
+		Process::LaunchDetached({ "xdg-open", url });
+#else
+		(void)url;
+#endif
+	}
 
 	static void AddSaturating(std::uintmax_t& total, std::uintmax_t value) {
 		const std::uintmax_t maxValue = std::numeric_limits<std::uintmax_t>::max();
@@ -438,9 +491,6 @@ artifacts/
 		(void)app;
 		Application::SetIsPlaying(false);
 
-		// MUST be true: background polling drives open/create progress; without it the progress overlay freezes while the launcher is unfocused.
-		Application::SetRunInBackground(true);
-
 		// Settings drive the splash theme + UI defaults, so load them now; the
 		// heavier registry scan is deferred to OnUpdate (runs behind the splash).
 		LoadLauncherSettings();
@@ -457,6 +507,35 @@ artifacts/
 			defaultLocation.c_str());
 
 		m_Splash.Begin();
+		m_PrerequisiteProbe = std::async(std::launch::async, &ProbePrerequisites);
+	}
+
+	void LauncherLayer::RenderPrerequisiteBanner() {
+		if (!m_Prerequisites.Checked && m_PrerequisiteProbe.valid()
+			&& m_PrerequisiteProbe.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+			m_Prerequisites = m_PrerequisiteProbe.get();
+		}
+		if (!m_Prerequisites.Checked || (m_Prerequisites.DotNetSdk && m_Prerequisites.MsvcBuildTools)) return;
+
+		const ImVec4 warning(0.96f, 0.68f, 0.26f, 1.0f);
+		auto row = [&](const char* id, const std::string& text, const char* url) {
+			ImGui::PushID(id);
+			ImGui::PushStyleColor(ImGuiCol_Text, warning);
+			ImGui::TextUnformatted(text.c_str());
+			ImGui::PopStyleColor();
+			ImGui::SameLine();
+			if (ImGui::SmallButton(IDX_TR("launcher.prereq.download").c_str())) {
+				OpenUrlInBrowser(url);
+			}
+			ImGui::PopID();
+		};
+		if (!m_Prerequisites.DotNetSdk) {
+			row("dotnet", IDX_TR("launcher.prereq.dotnet_missing"), k_DotNetSdkDownloadUrl);
+		}
+		if (!m_Prerequisites.MsvcBuildTools) {
+			row("msvc", IDX_TR("launcher.prereq.msvc_missing"), k_MsvcBuildToolsDownloadUrl);
+		}
+		ImGui::Spacing();
 	}
 
 	void LauncherLayer::OnUpdate(Application& app, float dt) {
@@ -578,6 +657,8 @@ artifacts/
 
 		// MUST precede renderer teardown: Texture2D destructors access the WebGPU device.
 		m_Splash.Shutdown();
+		m_LogoTexture.Destroy();
+		m_ProjectThumbnails.clear();
 		Icons::Shutdown();
 	}
 
@@ -636,13 +717,11 @@ artifacts/
 				updateProgress(0.05f, "Creating project...");
 				IndexProject project = IndexProject::Create(name, location, directoryName, updateProgress);
 
-				// Project-local packages affect the engine solution, so we regenerate. If
-				// the project has no packages, regen is still cheap and keeps the solution
-				// in sync with the latest engine package set — no rebuild follows.
-				updateProgress(0.55f, "Regenerating engine solution...");
-				IndexProject::RegenerateResult regen = IndexProject::RegenerateSolutionForProject(project.RootDirectory);
+				// Keep the isolated package workspace ready for source packages.
+				updateProgress(0.55f, "Preparing package workspace...");
+				IndexProject::RegenerateResult regen = IndexProject::RegeneratePackageWorkspaceForProject(project.RootDirectory);
 				if (!regen.Succeeded && regen.ExitCode != -1) {
-					IDX_WARN_TAG("Launcher", "Solution regeneration returned non-zero ({}); continuing anyway.", regen.ExitCode);
+					IDX_WARN_TAG("Launcher", "Package workspace generation returned non-zero ({}); continuing anyway.", regen.ExitCode);
 				}
 
 				// Package MSBuild step removed: Index.sln is engine-only; cloud-installed packages arrive as prebuilt DLLs via IndexPackageInstaller.
@@ -746,6 +825,364 @@ artifacts/
 		ResetCreateProjectTask(false);
 	}
 
+	// ── Visual Helpers ──────────────────────────────────────────────
+
+	namespace {
+		struct LauncherPalette {
+			ImU32 Sidebar;
+			ImU32 SidebarBorder;
+			ImU32 NavHover;
+			ImU32 Card;
+			ImU32 CardHover;
+			ImU32 CardSelected;
+			ImU32 CardBorder;
+			ImU32 Chip;
+			ImU32 Accent;
+			ImU32 AccentHover;
+			ImU32 AccentSoft;
+			ImU32 AccentText;
+			ImU32 TextDim;
+		};
+
+		bool IsLauncherStyleDark() {
+			const ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+			return (0.2126f * bg.x + 0.7152f * bg.y + 0.0722f * bg.z) < 0.5f;
+		}
+
+		LauncherPalette GetLauncherPalette() {
+			const bool dark = IsLauncherStyleDark();
+			const ImVec4 accent = dark ? ImVec4(0.357f, 0.553f, 0.937f, 1.0f) : ImVec4(0.184f, 0.420f, 0.859f, 1.0f);
+			LauncherPalette p{};
+			p.Sidebar       = dark ? IM_COL32(22, 23, 26, 255)   : IM_COL32(236, 238, 242, 255);
+			p.SidebarBorder = dark ? IM_COL32(255, 255, 255, 14) : IM_COL32(0, 0, 0, 20);
+			p.NavHover      = dark ? IM_COL32(255, 255, 255, 12) : IM_COL32(0, 0, 0, 12);
+			p.Card          = dark ? IM_COL32(34, 36, 41, 255)   : IM_COL32(255, 255, 255, 255);
+			p.CardHover     = dark ? IM_COL32(41, 43, 49, 255)   : IM_COL32(248, 249, 252, 255);
+			p.CardSelected  = dark ? IM_COL32(36, 44, 62, 255)   : IM_COL32(234, 240, 253, 255);
+			p.CardBorder    = dark ? IM_COL32(255, 255, 255, 16) : IM_COL32(0, 0, 0, 22);
+			p.Chip          = dark ? IM_COL32(255, 255, 255, 16) : IM_COL32(0, 0, 0, 13);
+			p.Accent        = ImGui::GetColorU32(accent);
+			p.AccentHover   = ImGui::GetColorU32(ImVec4(
+				std::min(accent.x + 0.08f, 1.0f), std::min(accent.y + 0.08f, 1.0f), std::min(accent.z + 0.06f, 1.0f), 1.0f));
+			p.AccentSoft    = ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, dark ? 0.16f : 0.12f));
+			p.AccentText    = dark ? IM_COL32(157, 188, 247, 255) : ImGui::GetColorU32(accent);
+			p.TextDim       = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+			return p;
+		}
+
+		// Unscaled base size: PushFont(nullptr, size) applies global scale itself, so GetFontSize() would double-scale.
+		float BaseFontSize() {
+			const float base = ImGui::GetStyle().FontSizeBase;
+			return base > 0.0f ? base : k_IndexImGuiFontSize;
+		}
+
+		float IconButtonWidth(const std::string& label) {
+			const ImGuiStyle& style = ImGui::GetStyle();
+			return ImGui::GetFontSize() + style.ItemInnerSpacing.x
+				+ ImGui::CalcTextSize(label.c_str()).x + style.FramePadding.x * 2.0f
+				+ ImGui::GetFontSize() * 0.6f;
+		}
+
+		bool AccentButtonWithIcon(Icons::Type icon, const std::string& label, ImVec2 size) {
+			const LauncherPalette pal = GetLauncherPalette();
+			ImGui::PushStyleColor(ImGuiCol_Button, pal.Accent);
+			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, pal.AccentHover);
+			ImGui::PushStyleColor(ImGuiCol_ButtonActive, pal.Accent);
+			ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32_WHITE);
+			const bool clicked = Icons::ButtonWithIcon(icon, label.c_str(), size, true);
+			ImGui::PopStyleColor(4);
+			return clicked;
+		}
+
+		// Square button with a "⋯" glyph; there is no bundled dots icon.
+		bool MoreButton(const char* id, float size) {
+			const ImVec2 p0 = ImGui::GetCursorScreenPos();
+			const bool clicked = ImGui::Button(id, ImVec2(size, size));
+			const ImVec2 c(p0.x + size * 0.5f, p0.y + size * 0.5f);
+			const float r = std::max(1.5f, size * 0.06f);
+			const ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			for (int k = -1; k <= 1; ++k) {
+				dl->AddCircleFilled(ImVec2(c.x + k * size * 0.22f, c.y), r, col);
+			}
+			return clicked;
+		}
+
+		ImU32 ProjectThumbColor(std::string_view name) {
+			static constexpr ImU32 k_Colors[] = {
+				IM_COL32(127, 119, 221, 255), IM_COL32(29, 158, 117, 255), IM_COL32(216, 90, 48, 255),
+				IM_COL32(212, 83, 126, 255),  IM_COL32(55, 138, 221, 255), IM_COL32(99, 153, 34, 255),
+				IM_COL32(186, 117, 23, 255),  IM_COL32(83, 74, 183, 255),
+			};
+			const size_t h = std::hash<std::string_view>{}(name);
+			return k_Colors[h % (sizeof(k_Colors) / sizeof(k_Colors[0]))];
+		}
+
+		// "DungeonSwiper" -> "DS", "Test Game" -> "TG", "Test54" -> "T5".
+		std::string ProjectInitials(std::string_view name) {
+			std::string out;
+			auto pushChar = [&](size_t i) -> size_t {
+				const unsigned char c = static_cast<unsigned char>(name[i]);
+				size_t len = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : 4;
+				len = std::min(len, name.size() - i);
+				if (len == 1) out += static_cast<char>(std::toupper(c));
+				else out.append(name.substr(i, len));
+				return len;
+			};
+
+			size_t i = 0;
+			while (i < name.size() && static_cast<unsigned char>(name[i]) < 0x80
+				&& !std::isalnum(static_cast<unsigned char>(name[i]))) {
+				++i;
+			}
+			if (i >= name.size()) return "?";
+
+			const size_t firstLen = pushChar(i);
+			for (size_t j = i + firstLen; j < name.size(); ++j) {
+				const unsigned char c = static_cast<unsigned char>(name[j]);
+				const unsigned char prev = static_cast<unsigned char>(name[j - 1]);
+				if (c >= 0x80 || prev >= 0x80) continue;
+				const bool wordStart = !std::isalnum(prev) && std::isalnum(c);
+				const bool camel = std::isupper(c) != 0;
+				const bool digitRun = std::isdigit(c) && !std::isdigit(prev);
+				if (wordStart || camel || digitRun) {
+					pushChar(j);
+					break;
+				}
+			}
+			return out;
+		}
+
+		// Pill anchored at its right edge; returns its left x.
+		float DrawChipRightAligned(ImDrawList* dl, float right, float centerY, const char* text, const LauncherPalette& pal) {
+			const float em = ImGui::GetFontSize();
+			const ImVec2 ts = ImGui::CalcTextSize(text);
+			const float h = ts.y + em * 0.4f;
+			const float w = ts.x + em * 1.1f;
+			const ImVec2 a(right - w, centerY - h * 0.5f);
+			const ImVec2 b(right, centerY + h * 0.5f);
+			dl->AddRectFilled(a, b, pal.Chip, h * 0.5f);
+			dl->AddText(ImVec2(a.x + (w - ts.x) * 0.5f, a.y + (h - ts.y) * 0.5f), pal.TextDim, text);
+			return a.x;
+		}
+
+		bool SidebarNavItem(const char* id, Icons::Type icon, const std::string& label, bool active, const LauncherPalette& pal) {
+			const float em = ImGui::GetFontSize();
+			const float h = std::round(em * 2.3f);
+			const ImVec2 p0 = ImGui::GetCursorScreenPos();
+			const float w = ImGui::GetContentRegionAvail().x;
+			const bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
+			const bool hovered = ImGui::IsItemHovered();
+			const ImVec2 p1(p0.x + w, p0.y + h);
+
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			const float rounding = em * 0.45f;
+			if (active) {
+				dl->AddRectFilled(p0, p1, pal.AccentSoft, rounding);
+				dl->AddRectFilled(ImVec2(p0.x, p0.y + h * 0.28f), ImVec2(p0.x + 3.0f, p1.y - h * 0.28f), pal.Accent, 1.5f);
+			}
+			else if (hovered) {
+				dl->AddRectFilled(p0, p1, pal.NavHover, rounding);
+			}
+
+			const ImU32 col = active ? pal.AccentText
+				: ImGui::GetColorU32(ImGuiCol_Text, hovered ? 1.0f : 0.72f);
+			const float iconSize = em * 1.05f;
+			const float iconX = p0.x + em * 0.8f;
+			Icons::Draw(dl, icon, ImVec2(iconX, p0.y + (h - iconSize) * 0.5f), iconSize, col);
+			dl->AddText(ImVec2(iconX + iconSize + em * 0.7f, p0.y + (h - em) * 0.5f), col, label.c_str());
+			return clicked;
+		}
+
+		// Segmented toggle glyphs: three rows for list, a 2x2 grid for grid.
+		bool ViewModeButton(const char* id, bool grid, bool active, const LauncherPalette& pal) {
+			const float size = ImGui::GetFrameHeight();
+			if (active) {
+				ImGui::PushStyleColor(ImGuiCol_Button, pal.AccentSoft);
+				ImGui::PushStyleColor(ImGuiCol_ButtonHovered, pal.AccentSoft);
+			}
+			const ImVec2 p0 = ImGui::GetCursorScreenPos();
+			const bool clicked = ImGui::Button(id, ImVec2(size, size));
+			if (active) ImGui::PopStyleColor(2);
+
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			const ImU32 col = active ? pal.AccentText : ImGui::GetColorU32(ImGuiCol_Text);
+			const float inset = std::round(size * 0.3f);
+			const ImVec2 a(p0.x + inset, p0.y + inset);
+			const ImVec2 b(p0.x + size - inset, p0.y + size - inset);
+			if (grid) {
+				const float gap = std::max(1.0f, std::round(size * 0.08f));
+				const float cx = std::round((a.x + b.x) * 0.5f);
+				const float cy = std::round((a.y + b.y) * 0.5f);
+				dl->AddRectFilled(a, ImVec2(cx - gap * 0.5f, cy - gap * 0.5f), col, 1.0f);
+				dl->AddRectFilled(ImVec2(cx + gap * 0.5f, a.y), ImVec2(b.x, cy - gap * 0.5f), col, 1.0f);
+				dl->AddRectFilled(ImVec2(a.x, cy + gap * 0.5f), ImVec2(cx - gap * 0.5f, b.y), col, 1.0f);
+				dl->AddRectFilled(ImVec2(cx + gap * 0.5f, cy + gap * 0.5f), b, col, 1.0f);
+			}
+			else {
+				const float h = b.y - a.y;
+				for (int r = 0; r < 3; ++r) {
+					const float y = std::round(a.y + h * (0.1f + 0.4f * r));
+					dl->AddRectFilled(ImVec2(a.x, y), ImVec2(b.x, y + std::max(1.5f, h * 0.16f)), col, 1.0f);
+				}
+			}
+			return clicked;
+		}
+
+		// ── Dialog form kit: Settings and Create Project are built from these ──
+
+		// Large dialog title (the OS caption already names the window; this is the in-content heading).
+		void DialogTitle(const std::string& title, const std::string& subtitle = {}) {
+			ImGui::PushFont(nullptr, BaseFontSize() * 1.35f);
+			ImGui::TextUnformatted(title.c_str());
+			ImGui::PopFont();
+			if (!subtitle.empty()) {
+				ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImGuiCol_TextDisabled));
+				ImGui::TextWrapped("%s", subtitle.c_str());
+				ImGui::PopStyleColor();
+			}
+			ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.4f));
+		}
+
+		// Small muted group heading with a hairline underneath.
+		void FormSection(const std::string& title) {
+			ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.5f));
+			ImGui::PushFont(nullptr, BaseFontSize() * 0.92f);
+			ImGui::PushStyleColor(ImGuiCol_Text, GetLauncherPalette().AccentText);
+			ImGui::TextUnformatted(title.c_str());
+			ImGui::PopStyleColor();
+			ImGui::PopFont();
+			const ImVec2 p = ImGui::GetCursorScreenPos();
+			ImGui::GetWindowDrawList()->AddLine(p, ImVec2(p.x + ImGui::GetContentRegionAvail().x, p.y),
+				ImGui::GetColorU32(ImGuiCol_Border));
+			ImGui::Dummy(ImVec2(0.0f, 4.0f));
+		}
+
+		struct FormRowState { float StartX = 0.0f; float LabelBottom = 0.0f; };
+		FormRowState s_FormRow;
+
+		// Label (+ optional muted description) in the left column; leaves the cursor in the right column
+		// with the item width set to fill it. Close with EndFormRow().
+		void BeginFormRow(const std::string& label, const std::string& description = {}) {
+			const float avail = ImGui::GetContentRegionAvail().x;
+			const float labelW = std::round(avail * 0.40f);
+			const float startY = ImGui::GetCursorPosY();
+			s_FormRow.StartX = ImGui::GetCursorPosX();
+
+			ImGui::BeginGroup();
+			ImGui::AlignTextToFramePadding();
+			ImGui::TextUnformatted(label.c_str());
+			if (!description.empty()) {
+				ImGui::PushStyleColor(ImGuiCol_Text, GetLauncherPalette().TextDim);
+				ImGui::PushTextWrapPos(s_FormRow.StartX + labelW - ImGui::GetFontSize());
+				ImGui::TextWrapped("%s", description.c_str());
+				ImGui::PopTextWrapPos();
+				ImGui::PopStyleColor();
+			}
+			ImGui::EndGroup();
+			s_FormRow.LabelBottom = ImGui::GetCursorPosY();
+
+			ImGui::SetCursorPos(ImVec2(s_FormRow.StartX + labelW, startY));
+			ImGui::SetNextItemWidth(avail - labelW);
+		}
+
+		void EndFormRow() {
+			const float y = std::max(ImGui::GetCursorPosY(), s_FormRow.LabelBottom);
+			ImGui::SetCursorPos(ImVec2(s_FormRow.StartX, y));
+			ImGui::Dummy(ImVec2(0.0f, 2.0f));
+		}
+
+		// Animated on/off switch in the launcher accent.
+		bool ToggleSwitch(const char* id, bool* value, const LauncherPalette& pal) {
+			const float frameH = ImGui::GetFrameHeight();
+			const float h = std::round(frameH * 0.62f);
+			const float w = std::round(h * 1.8f);
+			const ImVec2 p = ImGui::GetCursorScreenPos();
+			const bool clicked = ImGui::InvisibleButton(id, ImVec2(w, frameH));
+			if (clicked) *value = !*value;
+
+			ImGuiStorage* storage = ImGui::GetStateStorage();
+			const ImGuiID animId = ImGui::GetItemID();
+			const float target = *value ? 1.0f : 0.0f;
+			float t = storage->GetFloat(animId, target);
+			t += (target - t) * std::min(1.0f, ImGui::GetIO().DeltaTime * 18.0f);
+			if (std::abs(target - t) < 0.01f) t = target;
+			storage->SetFloat(animId, t);
+
+			const ImVec4 off = ImGui::GetStyleColorVec4(ImGuiCol_FrameBgActive);
+			const ImVec4 on = ImGui::ColorConvertU32ToFloat4(pal.Accent);
+			const ImVec4 track(off.x + (on.x - off.x) * t, off.y + (on.y - off.y) * t, off.z + (on.z - off.z) * t, 1.0f);
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			const ImVec2 a(p.x, p.y + (frameH - h) * 0.5f);
+			dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), ImGui::GetColorU32(track), h * 0.5f);
+			dl->AddCircleFilled(ImVec2(a.x + h * 0.5f + t * (w - h), a.y + h * 0.5f), h * 0.5f - 2.0f, IM_COL32_WHITE);
+			return clicked;
+		}
+
+		// Right-aligned equal-width footer buttons; `primary` gets the accent fill. Returns the clicked index or -1.
+		int DialogFooter(std::initializer_list<std::string> labels, int primary, bool primaryEnabled = true) {
+			const ImGuiStyle& style = ImGui::GetStyle();
+			float buttonW = ImGui::GetFontSize() * 6.5f;
+			for (const std::string& label : labels) {
+				buttonW = std::max(buttonW, IconButtonWidth(label));
+			}
+			const int count = static_cast<int>(labels.size());
+			const float total = buttonW * count + style.ItemSpacing.x * (count - 1);
+			const float buttonH = std::round(ImGui::GetFrameHeight() + ImGui::GetFontSize() * 0.3f);
+
+			ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.4f));
+			const ImVec2 p = ImGui::GetCursorScreenPos();
+			ImGui::GetWindowDrawList()->AddLine(p, ImVec2(p.x + ImGui::GetContentRegionAvail().x, p.y),
+				ImGui::GetColorU32(ImGuiCol_Border));
+			ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.4f));
+			const float avail = ImGui::GetContentRegionAvail().x;
+			if (avail > total) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - total);
+
+			const LauncherPalette pal = GetLauncherPalette();
+			int clicked = -1;
+			int index = 0;
+			for (const std::string& label : labels) {
+				if (index > 0) ImGui::SameLine();
+				const bool isPrimary = index == primary;
+				if (isPrimary) {
+					ImGui::PushStyleColor(ImGuiCol_Button, pal.Accent);
+					ImGui::PushStyleColor(ImGuiCol_ButtonHovered, pal.AccentHover);
+					ImGui::PushStyleColor(ImGuiCol_ButtonActive, pal.Accent);
+					ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32_WHITE);
+					if (!primaryEnabled) ImGui::BeginDisabled();
+				}
+				if (ImGui::Button(label.c_str(), ImVec2(buttonW, buttonH))) clicked = index;
+				if (isPrimary) {
+					if (!primaryEnabled) ImGui::EndDisabled();
+					ImGui::PopStyleColor(4);
+				}
+				++index;
+			}
+			return clicked;
+		}
+
+		void CenteredText(const char* text, ImU32 color) {
+			const float avail = ImGui::GetContentRegionAvail().x;
+			const float textW = ImGui::CalcTextSize(text).x;
+			ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (avail - textW) * 0.5f));
+			ImGui::PushStyleColor(ImGuiCol_Text, color);
+			ImGui::TextUnformatted(text);
+			ImGui::PopStyleColor();
+		}
+
+		// Big title + dim subtitle on the left; returns the header height for aligning right-side buttons.
+		float PageHeader(const std::string& title, const std::string& subtitle) {
+			const float top = ImGui::GetCursorPosY();
+			ImGui::PushFont(nullptr, BaseFontSize() * 1.6f);
+			ImGui::TextUnformatted(title.c_str());
+			ImGui::PopFont();
+			ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImGuiCol_TextDisabled));
+			ImGui::TextUnformatted(subtitle.c_str());
+			ImGui::PopStyleColor();
+			return ImGui::GetCursorPosY() - top - ImGui::GetStyle().ItemSpacing.y;
+		}
+	}
+
 	// ── Main Panel ──────────────────────────────────────────────────
 
 	void LauncherLayer::RenderLauncherPanel() {
@@ -754,27 +1191,20 @@ artifacts/
 
 		const ImGuiViewport* viewport = ImGui::GetMainViewport();
 		// Offset the panel below the custom titlebar (0 when disabled).
-		// The titlebar window pinned at viewport->Pos owns the top rows;
-		// the panel takes the remaining client area.
 		const float titlebarH = EditorRuntime::GetTitlebarRowHeight();
 		ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x, viewport->Pos.y + titlebarH));
 		ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, viewport->Size.y - titlebarH));
 
-		// NoBringToFrontOnFocus: keeps panel pinned to back so the floating gear overlay stays on top.
 		ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
 			| ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking
-			| ImGuiWindowFlags_NoBringToFrontOnFocus;
+			| ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar
+			| ImGuiWindowFlags_NoScrollWithMouse;
 
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
 		ImGui::Begin("##Launcher", nullptr, flags);
-
-		// Title text moved into the custom titlebar when it's active.
-		if (titlebarH <= 0.0f) {
-			ImGui::TextUnformatted(IDX_TR("launcher.title").c_str());
-			ImGui::SameLine();
-			ImGui::TextDisabled("%s", IDX_VERSION);
-			ImGui::Separator();
-			ImGui::Spacing();
-		}
+		ImGui::PopStyleVar(3);
 
 		// m_IsOpening holds for 1.5s after the worker reports success so LastOpened is committed after the editor window appears.
 		bool taskRunning = false;
@@ -797,27 +1227,32 @@ artifacts/
 
 		PollAssetLibraryTask();
 
-		if (ImGui::BeginTabBar("##LauncherTabs", ImGuiTabBarFlags_None)) {
-			if (ImGui::BeginTabItem(IDX_TR("launcher.tab.my_projects").c_str())) {
+		RenderSidebar();
+		ImGui::SameLine(0.0f, 0.0f);
+
+		const float em = ImGui::GetFontSize();
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(std::round(em * 1.6f), std::round(em * 1.3f)));
+		ImGui::BeginChild("##LauncherContent", ImVec2(0.0f, 0.0f), ImGuiChildFlags_AlwaysUseWindowPadding,
+			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+		ImGui::PopStyleVar();
+
+		switch (m_ActivePage) {
+			case LauncherPage::Projects:
 				RenderMyProjectsTab();
-				ImGui::EndTabItem();
-			}
-			if (ImGui::BeginTabItem(IDX_TR("launcher.tab.asset_library").c_str())) {
-				// Kick off the initial fetch the first time the user opens
-				// this tab. Subsequent visits hit the cache. Re-fetch is
-				// triggered explicitly via the Refresh button.
+				break;
+			case LauncherPage::AssetLibrary:
+				// First visit fetches; later visits hit the cache (Refresh re-fetches explicitly).
 				if (!m_AssetLibraryAutoFetchAttempted && !m_AssetLibrary.Loaded && !m_AssetLibrary.FetchInFlight) {
 					m_AssetLibraryAutoFetchAttempted = true;
 					StartFetchAssetLibraryIndex();
 				}
 				RenderAssetLibraryTab();
-				ImGui::EndTabItem();
-			}
-			ImGui::EndTabBar();
+				break;
 		}
 
-		// Modals live at panel scope, after the tab bar — they're independent
-		// of which tab is active and need to be reachable from both.
+		ImGui::EndChild();
+
+		// Modals live at panel scope — independent of the active page.
 		RenderCreateProjectPopup();
 		RenderDeleteProjectPopups();
 		RenderSettingsPopup();
@@ -831,76 +1266,179 @@ artifacts/
 		RenderLanguageRestartModal();
 
 		ImGui::End();
-
-		// Standalone overlay window: SetCursorScreenPos inside the panel left the hit rect shadowed by child windows, so the button wouldn't click.
-		{
-			const ImGuiViewport* vp = ImGui::GetMainViewport();
-			constexpr float k_GearSize = 36.0f;
-			constexpr float k_GearIcon = 28.0f;
-			constexpr float k_Margin   = 12.0f;
-			ImGui::SetNextWindowPos(ImVec2(
-				vp->Pos.x + vp->Size.x - k_GearSize - k_Margin,
-				vp->Pos.y + vp->Size.y - k_GearSize - k_Margin));
-			ImGui::SetNextWindowSize(ImVec2(k_GearSize, k_GearSize));
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-			// Intentionally no NoBringToFrontOnFocus: this overlay must reach the front over the back-pinned panel.
-			constexpr ImGuiWindowFlags k_GearFlags =
-				ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-				ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking |
-				ImGuiWindowFlags_NoFocusOnAppearing |
-				ImGuiWindowFlags_NoBackground;
-			if (ImGui::Begin("##LauncherGearOverlay", nullptr, k_GearFlags)) {
-				if (Icons::IconButtonBorderless("##LauncherSettingsGear",
-					Icons::Type::Settings,
-					ImVec2(k_GearSize, k_GearSize), k_GearIcon))
-				{
-					m_OpenSettingsPopup = true;
-				}
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip("%s",
-						IDX_TR("launcher.action.settings").c_str());
-				}
-			}
-			ImGui::End();
-			ImGui::PopStyleVar(2);
-		}
 	}
 
-	// ── My Projects Tab ──────────────────────────────────────────────
+	void LauncherLayer::RenderSidebar() {
+		const LauncherPalette pal = GetLauncherPalette();
+		const float em = ImGui::GetFontSize();
+		const float width = std::round(em * 12.5f);
+
+		ImGui::PushStyleColor(ImGuiCol_ChildBg, pal.Sidebar);
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(std::round(em * 0.75f), std::round(em * 1.1f)));
+		ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
+		ImGui::BeginChild("##LauncherSidebar", ImVec2(width, 0.0f), ImGuiChildFlags_AlwaysUseWindowPadding,
+			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+		ImGui::PopStyleVar(2);
+		ImGui::PopStyleColor();
+
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+		const ImVec2 winPos = ImGui::GetWindowPos();
+		const ImVec2 winSize = ImGui::GetWindowSize();
+		dl->AddLine(ImVec2(winPos.x + winSize.x - 1.0f, winPos.y),
+			ImVec2(winPos.x + winSize.x - 1.0f, winPos.y + winSize.y), pal.SidebarBorder);
+
+		// Brand block: logo + name + version.
+		if (!m_LogoLoadAttempted) {
+			m_LogoLoadAttempted = true;
+			const std::string logoPath = Path::Combine(Path::ResolveIndexAssets("Textures"), "Icon.png");
+			if (!logoPath.empty() && std::filesystem::exists(logoPath)) {
+				m_LogoTexture = Texture2D(logoPath.c_str(), Filter::Bilinear, Wrap::Clamp, Wrap::Clamp);
+			}
+		}
+
+		const float logoSize = std::round(em * 2.2f);
+		const ImVec2 brandPos = ImGui::GetCursorScreenPos();
+		const ImVec2 logoPos(brandPos.x + em * 0.4f, brandPos.y);
+		if (m_LogoTexture.GetHandle() != 0) {
+			dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(m_LogoTexture.GetHandle())),
+				logoPos, ImVec2(logoPos.x + logoSize, logoPos.y + logoSize),
+				ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+		}
+		else {
+			const ImVec2 c(logoPos.x + logoSize * 0.5f, logoPos.y + logoSize * 0.5f);
+			const float r = logoSize * 0.5f;
+			dl->AddQuadFilled(ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y), ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y), pal.Accent);
+		}
+
+		const float textX = logoPos.x + logoSize + em * 0.65f;
+		ImGui::PushFont(nullptr, BaseFontSize() * 1.35f);
+		const float nameH = ImGui::GetTextLineHeight();
+		ImGui::PopFont();
+		const float versionH = ImGui::GetTextLineHeight();
+		const float textTop = brandPos.y + (logoSize - nameH - versionH) * 0.5f;
+
+		ImGui::SetCursorScreenPos(ImVec2(textX, textTop));
+		ImGui::PushFont(nullptr, BaseFontSize() * 1.35f);
+		ImGui::TextUnformatted("Index");
+		ImGui::PopFont();
+		ImGui::SetCursorScreenPos(ImVec2(textX, textTop + nameH));
+		ImGui::TextDisabled("%s", IDX_VERSION);
+
+		ImGui::SetCursorScreenPos(ImVec2(brandPos.x, brandPos.y + logoSize + em * 1.4f));
+
+		if (SidebarNavItem("##NavProjects", Icons::Type::FileManager, IDX_TR("launcher.nav.projects"),
+			m_ActivePage == LauncherPage::Projects, pal)) {
+			m_ActivePage = LauncherPage::Projects;
+		}
+		if (SidebarNavItem("##NavAssetLibrary", Icons::Type::Download, IDX_TR("launcher.nav.asset_library"),
+			m_ActivePage == LauncherPage::AssetLibrary, pal)) {
+			m_ActivePage = LauncherPage::AssetLibrary;
+		}
+
+		// Settings pinned to the bottom of the sidebar.
+		const float navH = std::round(em * 2.3f);
+		const float bottomY = ImGui::GetWindowHeight() - ImGui::GetStyle().WindowPadding.y - navH;
+		if (ImGui::GetCursorPosY() < bottomY) {
+			ImGui::SetCursorPosY(bottomY);
+		}
+		if (SidebarNavItem("##NavSettings", Icons::Type::Settings, IDX_TR("launcher.nav.settings"), false, pal)) {
+			m_OpenSettingsPopup = true;
+		}
+
+		ImGui::EndChild();
+	}
+
+	void LauncherLayer::BeginCreateProject() {
+		m_OpenCreatePopup = true;
+		m_CreateError.clear();
+		m_IsCreating = false;
+		// Pre-fill the name so a one-click "Create" works — matches Unity Hub / Godot defaults.
+		std::snprintf(m_NewProjectName, sizeof(m_NewProjectName), "%s",
+			IDX_TR("launcher.create.default_project_name").c_str());
+		// Re-snap the location: the user may have changed the default in settings since OnAttach.
+		const std::string defaultLocation = m_DefaultProjectsLocation.empty()
+			? IndexProject::GetDefaultProjectsDir()
+			: m_DefaultProjectsLocation;
+		std::snprintf(m_NewProjectLocation, sizeof(m_NewProjectLocation), "%s",
+			defaultLocation.c_str());
+	}
+
+	// ── My Projects Page ─────────────────────────────────────────────
 
 	void LauncherLayer::RenderMyProjectsTab() {
-		float panelWidth = ImGui::GetContentRegionAvail().x;
-		float rightColWidth = 200.0f;
+		const LauncherPalette pal = GetLauncherPalette();
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float em = ImGui::GetFontSize();
+		const float startX = ImGui::GetCursorPosX();
+		const float availW = ImGui::GetContentRegionAvail().x;
 
+		// Header: title + count, primary actions right-aligned.
+		const size_t projectCount = m_Registry.GetProjects().size();
+		const std::string countText = projectCount == 1
+			? IDX_TR("launcher.projects.count_one")
+			: Localization::Format("launcher.projects.count", std::to_string(projectCount));
+		const float headerTop = ImGui::GetCursorPosY();
+		const float headerH = PageHeader(IDX_TR("launcher.nav.projects"), countText);
+		const float headerBottom = ImGui::GetCursorPosY();
+
+		const std::string newLabel = IDX_TR("launcher.action.new_blank");
+		const std::string openLabel = IDX_TR("launcher.action.open_existing");
+		const float buttonH = std::round(ImGui::GetFrameHeight() + em * 0.35f);
+		const float newW = IconButtonWidth(newLabel);
+		const float openW = IconButtonWidth(openLabel);
+		ImGui::SetCursorPos(ImVec2(startX + availW - newW - openW - style.ItemSpacing.x,
+			headerTop + std::max(0.0f, (headerH - buttonH) * 0.5f)));
+		if (Icons::ButtonWithIcon(Icons::Type::OpenFolder, openLabel.c_str(), ImVec2(openW, buttonH), true)) {
+			BrowseForExistingProject();
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("%s", IDX_TR("launcher.action.open_existing_tooltip").c_str());
+		}
+		ImGui::SameLine();
+		if (AccentButtonWithIcon(Icons::Type::Plus, newLabel, ImVec2(newW, buttonH))) {
+			BeginCreateProject();
+		}
+
+		ImGui::SetCursorPos(ImVec2(startX, headerBottom + em * 0.6f));
+		RenderPrerequisiteBanner();
+		ImGui::SetCursorPosX(startX);
+
+		// Toolbar: search field with inline icon, sort combo, direction + refresh.
+		const float frameH = ImGui::GetFrameHeight();
+		const float sortW = std::round(em * 10.0f);
+		const float searchW = std::max(em * 8.0f, availW - sortW - frameH * 4.0f - style.ItemSpacing.x * 5.0f);
 		{
-			Icons::TextIcon(Icons::Type::Search);
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			const ImVec2 sp = ImGui::GetCursorScreenPos();
+			dl->AddRectFilled(sp, ImVec2(sp.x + searchW, sp.y + frameH),
+				ImGui::GetColorU32(ImGuiCol_FrameBg), style.FrameRounding);
+			const float iconSize = em * 0.9f;
+			Icons::Draw(dl, Icons::Type::Search,
+				ImVec2(sp.x + em * 0.7f, sp.y + (frameH - iconSize) * 0.5f), iconSize, pal.TextDim);
+
+			const float inset = em * 1.9f;
+			ImGui::SetCursorScreenPos(ImVec2(sp.x + inset, sp.y));
+			ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0, 0, 0, 0));
+			ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(0, 0, 0, 0));
+			ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(0, 0, 0, 0));
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, style.FramePadding.y));
 			char searchBuf[256];
 			std::snprintf(searchBuf, sizeof(searchBuf), "%s", m_LauncherSearch.c_str());
-			ImGui::SetNextItemWidth(-1.0f);
+			ImGui::SetNextItemWidth(searchW - inset - em * 0.5f);
 			if (ImGui::InputTextWithHint("##LauncherSearch",
-				IDX_TR("launcher.search.placeholder").c_str(),
+				IDX_TR("launcher.search.projects_placeholder").c_str(),
 				searchBuf, sizeof(searchBuf)))
 			{
 				m_LauncherSearch = searchBuf;
 			}
-			ImGui::Spacing();
+			ImGui::PopStyleVar();
+			ImGui::PopStyleColor(3);
+			ImGui::SetCursorScreenPos(ImVec2(sp.x + searchW, sp.y));
+			ImGui::Dummy(ImVec2(0.0f, frameH));
 		}
 
-		const float strip_h = ImGui::GetFrameHeight();
-		const float refreshW = strip_h;
-		const float reverseW = strip_h;
-		const float listColW = panelWidth - rightColWidth - 10.0f;
-
-		ImGui::BeginGroup();
-		const std::string sortLabelText = IDX_TR("launcher.sort.label");
-		const float comboW = listColW - refreshW - reverseW
-			- ImGui::GetStyle().ItemSpacing.x * 2.0f
-			- ImGui::CalcTextSize(sortLabelText.c_str()).x - ImGui::GetStyle().ItemSpacing.x;
-		ImGui::TextUnformatted(sortLabelText.c_str());
 		ImGui::SameLine();
-		ImGui::SetNextItemWidth(comboW);
+		ImGui::SetNextItemWidth(sortW);
 		const std::string sortLastOpened = IDX_TR("launcher.sort.mode.last_opened");
 		const std::string sortName = IDX_TR("launcher.sort.mode.name");
 		const std::string sortCreated = IDX_TR("launcher.sort.mode.created");
@@ -910,9 +1448,12 @@ artifacts/
 			m_SortMode = static_cast<SortMode>(sortMode);
 			SaveLauncherSettings();
 		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("%s", IDX_TR("launcher.sort.label").c_str());
+		}
 		ImGui::SameLine();
 		const Icons::Type sortArrow = m_SortReverse ? Icons::Type::ArrowUp : Icons::Type::ArrowDown;
-		if (Icons::IconButton("##SortReverse", sortArrow, ImVec2(reverseW, strip_h))) {
+		if (Icons::IconButton("##SortReverse", sortArrow, ImVec2(frameH, frameH))) {
 			m_SortReverse = !m_SortReverse;
 			SaveLauncherSettings();
 		}
@@ -922,104 +1463,190 @@ artifacts/
 				: IDX_TR("launcher.sort.tooltip.descending").c_str());
 		}
 		ImGui::SameLine();
-		if (Icons::IconButton("##LauncherRefresh", Icons::Type::Refresh,
-			ImVec2(refreshW, strip_h)))
-		{
+		if (Icons::IconButton("##LauncherRefresh", Icons::Type::Refresh, ImVec2(frameH, frameH))) {
 			RefreshProjectsList();
 		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("%s", IDX_TR("launcher.sort.tooltip.refresh").c_str());
 		}
-		ImGui::EndGroup();
+		ImGui::SameLine();
+		if (ViewModeButton("##ViewList", /*grid=*/false, m_ProjectViewMode == ProjectViewMode::List, pal)) {
+			m_ProjectViewMode = ProjectViewMode::List;
+			SaveLauncherSettings();
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("%s", IDX_TR("launcher.view.list").c_str());
+		}
+		ImGui::SameLine();
+		if (ViewModeButton("##ViewGrid", /*grid=*/true, m_ProjectViewMode == ProjectViewMode::Grid, pal)) {
+			m_ProjectViewMode = ProjectViewMode::Grid;
+			SaveLauncherSettings();
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("%s", IDX_TR("launcher.view.grid").c_str());
+		}
 
-		// Left column: project list
-		ImGui::BeginChild("##ProjectList", ImVec2(listColW, 0), true);
+		ImGui::Dummy(ImVec2(0.0f, em * 0.2f));
+
+		ImGui::BeginChild("##ProjectList", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
 		RenderProjectList();
 		ImGui::EndChild();
 
-		ImGui::SameLine();
-
-		// Right column: actions (L4: removed selection-dependent buttons)
-		ImGui::BeginChild("##Actions", ImVec2(rightColWidth, 0));
-
-		if (Icons::IconButton("##LauncherAddProject", Icons::Type::Plus)) {
-			ImGui::OpenPopup("##LauncherAddProjectPopup");
-		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("%s", IDX_TR("launcher.action.add_project").c_str());
-		}
-		if (ImGui::BeginPopup("##LauncherAddProjectPopup")) {
-			if (Icons::MenuItemWithIcon(Icons::Type::Plus,
-				IDX_TR("launcher.action.new_blank").c_str()))
-			{
-				m_OpenCreatePopup = true;
-				m_CreateError.clear();
-				m_IsCreating = false;
-				// Pre-fill the name field so a one-click "Create" works without
-				// the user typing — matches Unity Hub / Godot defaults.
-				std::snprintf(m_NewProjectName, sizeof(m_NewProjectName), "%s",
-					IDX_TR("launcher.create.default_project_name").c_str());
-				// Re-snap the location to whatever the user has set in
-				// settings — they may have changed it since OnAttach.
-				const std::string defaultLocation = m_DefaultProjectsLocation.empty()
-					? IndexProject::GetDefaultProjectsDir()
-					: m_DefaultProjectsLocation;
-				std::snprintf(m_NewProjectLocation, sizeof(m_NewProjectLocation), "%s",
-					defaultLocation.c_str());
-			}
-			if (Icons::MenuItemWithIcon(Icons::Type::FileManager,
-				IDX_TR("launcher.action.new_from_disk").c_str()))
-			{
-				BrowseForExistingProject();
-			}
-			ImGui::EndPopup();
-		}
-
-		ImGui::Spacing();
-		ImGui::Separator();
-		ImGui::Spacing();
-
+		// Enter opens the selected project when nothing else wants the key.
 		const LauncherProjectEntry* selected = GetSelectedProject();
-		const bool hasSelection = (selected != nullptr);
-		if (!hasSelection) ImGui::BeginDisabled();
-
-		if (Icons::ButtonWithIcon(Icons::Type::Pen,
-			IDX_TR("launcher.action.open_selected").c_str(), ImVec2(-1, 0)) && hasSelection)
+		if (selected && !ImGui::IsAnyItemActive()
+			&& !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)
+			&& ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
+			&& (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)))
 		{
 			OpenProject(*selected);
 		}
-		ImGui::Spacing();
-		if (Icons::ButtonWithIcon(Icons::Type::Play,
-			IDX_TR("launcher.action.execute_selected").c_str(), ImVec2(-1, 0)) && hasSelection)
+	}
+
+	namespace {
+		// Fills [min,max] with the project's preview image (cropped to cover) or, without one, a colored tile with initials.
+		void DrawProjectThumbnail(ImDrawList* dl, ImVec2 min, ImVec2 max, const LauncherProjectEntry& entry,
+			const Texture2D* thumbnail, float rounding, float initialsScale, ImDrawFlags corners = ImDrawFlags_RoundCornersAll)
 		{
-			ExecuteProject(*selected);
-		}
-		ImGui::Spacing();
-		if (Icons::ButtonWithIcon(Icons::Type::Caret,
-			IDX_TR("launcher.action.rename_selected").c_str(), ImVec2(-1, 0)) && hasSelection)
-		{
-			RequestProjectRename(*selected);
-		}
-		ImGui::Spacing();
-		if (Icons::ButtonWithIcon(Icons::Type::Delete,
-			IDX_TR("launcher.action.delete_selected").c_str(), ImVec2(-1, 0)) && hasSelection)
-		{
-			RequestProjectDelete(*selected);
+			const float boxW = max.x - min.x;
+			const float boxH = max.y - min.y;
+			if (thumbnail && thumbnail->IsValid() && thumbnail->GetHeight() > 0.0f && boxH > 0.0f) {
+				const float imageAspect = thumbnail->GetWidth() / thumbnail->GetHeight();
+				const float boxAspect = boxW / boxH;
+				float u0 = 0.0f, u1 = 1.0f, v0 = 0.0f, v1 = 1.0f;
+				if (boxAspect > imageAspect) {
+					const float visible = imageAspect / boxAspect;
+					v0 = (1.0f - visible) * 0.5f;
+					v1 = 1.0f - v0;
+				}
+				else {
+					const float visible = boxAspect / imageAspect;
+					u0 = (1.0f - visible) * 0.5f;
+					u1 = 1.0f - u0;
+				}
+				// Texture2D loads flipped (GL convention), so V runs bottom-up.
+				dl->AddImageRounded(static_cast<ImTextureID>(static_cast<intptr_t>(thumbnail->GetHandle())),
+					min, max, ImVec2(u0, 1.0f - v0), ImVec2(u1, 1.0f - v1), IM_COL32_WHITE, rounding, corners);
+				return;
+			}
+
+			dl->AddRectFilled(min, max, ProjectThumbColor(entry.Name), rounding, corners);
+			const std::string initials = ProjectInitials(entry.Name);
+			ImGui::PushFont(nullptr, BaseFontSize() * initialsScale);
+			const ImVec2 isz = ImGui::CalcTextSize(initials.c_str());
+			dl->AddText(ImVec2(min.x + (boxW - isz.x) * 0.5f, min.y + (boxH - isz.y) * 0.5f),
+				IM_COL32_WHITE, initials.c_str());
+			ImGui::PopFont();
 		}
 
-		if (!hasSelection) ImGui::EndDisabled();
+	}
 
-		ImGui::EndChild();
+	const Texture2D* LauncherLayer::GetProjectThumbnail(const std::string& projectPath) {
+		ProjectThumbnail& slot = m_ProjectThumbnails[projectPath];
+		const auto now = std::chrono::steady_clock::now();
+		// The editor rewrites the file on save; re-stat at most every 2s instead of every frame.
+		if (slot.CheckedAt != std::chrono::steady_clock::time_point{} && now - slot.CheckedAt < std::chrono::seconds(2)) {
+			return slot.Texture.IsValid() ? &slot.Texture : nullptr;
+		}
+		slot.CheckedAt = now;
+
+		const std::filesystem::path file = Path::FromUtf8(projectPath) / ".index" / "thumbnail.png";
+		std::error_code ec;
+		const auto stamp = std::filesystem::last_write_time(file, ec);
+		if (ec) {
+			slot.Texture = Texture2D();
+			return nullptr;
+		}
+		if (!slot.Texture.IsValid() || stamp != slot.Stamp) {
+			slot.Stamp = stamp;
+			const std::string utf8 = Path::Combine(projectPath, ".index", "thumbnail.png");
+			slot.Texture = Texture2D(utf8.c_str(), Filter::Bilinear, Wrap::Clamp, Wrap::Clamp);
+		}
+		return slot.Texture.IsValid() ? &slot.Texture : nullptr;
+	}
+
+	void LauncherLayer::RenderProjectContextMenu(const LauncherProjectEntry& entry, std::string& removePath) {
+		if (Icons::MenuItemWithIcon(Icons::Type::Pen,
+			IDX_TR("launcher.context.open_in_editor").c_str()))
+		{
+			OpenProject(entry);
+		}
+
+		if (Icons::MenuItemWithIcon(Icons::Type::Play,
+			IDX_TR("launcher.context.execute_project").c_str()))
+		{
+			ExecuteProject(entry);
+		}
+
+		ImGui::Separator();
+
+		if (Icons::MenuItemWithIcon(Icons::Type::FileManager,
+			IDX_TR("launcher.context.open_in_explorer").c_str()))
+		{
+			OpenProjectInExplorer(entry);
+		}
+
+		if (Icons::MenuItemWithIcon(Icons::Type::Copy,
+			IDX_TR("launcher.context.copy_path").c_str()))
+		{
+			ImGui::SetClipboardText(entry.Path.c_str());
+		}
+
+		ImGui::Separator();
+
+		if (Icons::MenuItemWithIcon(Icons::Type::Caret,
+			IDX_TR("launcher.context.rename").c_str()))
+		{
+			RequestProjectRename(entry);
+		}
+
+		if (Icons::MenuItemWithIcon(Icons::Type::Copy,
+			IDX_TR("launcher.context.duplicate").c_str()))
+		{
+			RequestProjectDuplicate(entry);
+		}
+
+		if (Icons::MenuItemWithIcon(Icons::Type::Info,
+			IDX_TR("launcher.context.info").c_str()))
+		{
+			m_PendingInfoProject = entry;
+			m_OpenInfoPopup = true;
+		}
+
+		if (Icons::MenuItemWithIcon(Icons::Type::Minus,
+			IDX_TR("launcher.context.remove_from_list").c_str()))
+		{
+			removePath = entry.Path;
+		}
+
+		if (Icons::MenuItemWithIcon(Icons::Type::Delete,
+			IDX_TR("launcher.context.delete_project").c_str()))
+		{
+			RequestProjectDelete(entry);
+		}
 	}
 
 	// ── Project List ────────────────────────────────────────────────
 
 	void LauncherLayer::RenderProjectList() {
 		const auto sortedProjects = GetSortedProjectsView();
+		const LauncherPalette pal = GetLauncherPalette();
+		const float em = ImGui::GetFontSize();
 
 		if (sortedProjects.empty()) {
-			ImGui::TextDisabled("%s", IDX_TR("launcher.list.empty.title").c_str());
-			ImGui::TextDisabled("%s", IDX_TR("launcher.list.empty.subtitle").c_str());
+			ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetContentRegionAvail().y * 0.28f);
+			ImGui::PushFont(nullptr, BaseFontSize() * 1.25f);
+			CenteredText(IDX_TR("launcher.list.empty.title").c_str(), ImGui::GetColorU32(ImGuiCol_Text));
+			ImGui::PopFont();
+			CenteredText(IDX_TR("launcher.list.empty.subtitle").c_str(), pal.TextDim);
+			ImGui::Dummy(ImVec2(0.0f, em * 0.6f));
+			const std::string newLabel = IDX_TR("launcher.action.new_blank");
+			const float w = IconButtonWidth(newLabel);
+			ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - w) * 0.5f));
+			if (AccentButtonWithIcon(Icons::Type::Plus, newLabel,
+				ImVec2(w, std::round(ImGui::GetFrameHeight() + em * 0.35f)))) {
+				BeginCreateProject();
+			}
 			return;
 		}
 
@@ -1040,192 +1667,26 @@ artifacts/
 			return containsCI(e.Name) || containsCI(e.Path);
 		};
 
+		std::vector<const LauncherProjectEntry*> shown;
+		shown.reserve(sortedProjects.size());
+		for (const LauncherProjectEntry* entry : sortedProjects) {
+			if (matchesSearch(*entry)) shown.push_back(entry);
+		}
+
 		std::string removePath;
-		int shownCount = 0;
-
-		for (int i = 0; i < static_cast<int>(sortedProjects.size()); i++) {
-			const auto& entry = *sortedProjects[i];
-			if (!matchesSearch(entry)) continue;
-			++shownCount;
-
-			ImGui::PushID(i);
-
-			std::string timeStr = FormatRelativeTime(entry.LastOpened);
-			std::string sizeStr = GetProjectSizeDisplayText(entry);
-
-			ImVec2 cursorPos = ImGui::GetCursorScreenPos();
-			float rowWidth = ImGui::GetContentRegionAvail().x;
-			float buttonWidth = 60.0f;
-			float rowHeight = 68.0f;
-
-			ImGui::InvisibleButton("##Row", ImVec2(rowWidth - buttonWidth - 8, rowHeight));
-			const bool rowClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
-			const bool rowRightClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
-			const bool rowDoubleClicked = ImGui::IsItemHovered()
-				&& ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
-			if (rowClicked) {
-				m_SelectedProjectPath = (m_SelectedProjectPath == entry.Path) ? std::string{} : entry.Path;
-			}
-			if (rowRightClicked) {
-				m_SelectedProjectPath = entry.Path;
-			}
-			// Runs after the single-click toggle so that the second click of a
-			// double-click (which would otherwise deselect) ends up leaving the
-			// project selected before we hand off to OpenProject.
-			if (rowDoubleClicked) {
-				m_SelectedProjectPath = entry.Path;
-				OpenProject(entry);
-			}
-
-			// Right-click context menu per item
-			if (ImGui::BeginPopupContextItem("##RowCtx")) {
-				if (Icons::MenuItemWithIcon(Icons::Type::Pen,
-					IDX_TR("launcher.context.open_in_editor").c_str()))
-				{
-					OpenProject(entry);
-				}
-
-				if (Icons::MenuItemWithIcon(Icons::Type::Play,
-					IDX_TR("launcher.context.execute_project").c_str()))
-				{
-					ExecuteProject(entry);
-				}
-
-				ImGui::Separator();
-
-				if (Icons::MenuItemWithIcon(Icons::Type::FileManager,
-					IDX_TR("launcher.context.open_in_explorer").c_str()))
-				{
-					OpenProjectInExplorer(entry);
-				}
-
-				if (Icons::MenuItemWithIcon(Icons::Type::Copy,
-					IDX_TR("launcher.context.copy_path").c_str()))
-				{
-					ImGui::SetClipboardText(entry.Path.c_str());
-				}
-
-				ImGui::Separator();
-
-				if (Icons::MenuItemWithIcon(Icons::Type::Caret,
-					IDX_TR("launcher.context.rename").c_str()))
-				{
-					RequestProjectRename(entry);
-				}
-
-				if (Icons::MenuItemWithIcon(Icons::Type::Copy,
-					IDX_TR("launcher.context.duplicate").c_str()))
-				{
-					RequestProjectDuplicate(entry);
-				}
-
-				if (Icons::MenuItemWithIcon(Icons::Type::Info,
-					IDX_TR("launcher.context.info").c_str()))
-				{
-					m_PendingInfoProject = entry;
-					m_OpenInfoPopup = true;
-				}
-
-				if (Icons::MenuItemWithIcon(Icons::Type::Minus,
-					IDX_TR("launcher.context.remove_from_list").c_str()))
-				{
-					removePath = entry.Path;
-				}
-
-				if (Icons::MenuItemWithIcon(Icons::Type::Delete,
-					IDX_TR("launcher.context.delete_project").c_str()))
-				{
-					RequestProjectDelete(entry);
-				}
-				ImGui::EndPopup();
-			}
-
-			// Zebra striping: alternate visible rows get a subtly lighter /
-			// darker fill (symmetric around ChildBg, so it works in both the
-			// dark and light themes without a theme check). Keyed on the
-			// visible index (shownCount) so search-filtered rows don't break
-			// the alternation. Drawn square + flush so the stripes tile into a
-			// continuous band; the rounded selected/hover highlight overlays it.
-			{
-				const ImVec4 base = ImGui::GetStyleColorVec4(ImGuiCol_ChildBg);
-				const float d = (shownCount % 2 == 1) ? 0.02f : -0.02f;
-				const ImU32 zebra = ImGui::GetColorU32(ImVec4(
-					std::clamp(base.x + d, 0.0f, 1.0f),
-					std::clamp(base.y + d, 0.0f, 1.0f),
-					std::clamp(base.z + d, 0.0f, 1.0f),
-					1.0f));
-				ImGui::GetWindowDrawList()->AddRectFilled(
-					cursorPos,
-					ImVec2(cursorPos.x + rowWidth, cursorPos.y + rowHeight),
-					zebra);
-			}
-
-			// Draw hover/selected highlight. Selected rows use the active
-			// header colour so they stay visible even when the cursor moves
-			// off the row; hover stacks on top with the standard tint.
-			const bool selected = (m_SelectedProjectPath == entry.Path);
-			const bool hovered = ImGui::IsItemHovered();
-			constexpr float k_RowRounding = 6.0f;
-			if (selected) {
-				ImGui::GetWindowDrawList()->AddRectFilled(
-					cursorPos,
-					ImVec2(cursorPos.x + rowWidth, cursorPos.y + rowHeight),
-					ImGui::GetColorU32(ImGuiCol_HeaderActive),
-					k_RowRounding);
-			}
-			else if (hovered) {
-				ImGui::GetWindowDrawList()->AddRectFilled(
-					cursorPos,
-					ImVec2(cursorPos.x + rowWidth, cursorPos.y + rowHeight),
-					ImGui::GetColorU32(ImGuiCol_HeaderHovered),
-					k_RowRounding);
-			}
-
-			// Draw name
-			ImGui::SetCursorScreenPos(ImVec2(cursorPos.x + 8, cursorPos.y + 4));
-			ImGui::TextUnformatted(entry.Name.c_str());
-
-			// Draw path
-			ImGui::SetCursorScreenPos(ImVec2(cursorPos.x + 8, cursorPos.y + 24));
-			ImGui::TextDisabled("%s", entry.Path.c_str());
-
-			// Draw size with a placeholder while the background scan is running.
-			ImGui::SetCursorScreenPos(ImVec2(cursorPos.x + 8, cursorPos.y + 44));
-			const std::string sizeRowText = Localization::Format("launcher.list.size_prefix", sizeStr);
-			ImGui::TextDisabled("%s", sizeRowText.c_str());
-
-			// Draw relative time in upper-right (offset left to leave room for button)
-			if (!timeStr.empty()) {
-				float timeWidth = ImGui::CalcTextSize(timeStr.c_str()).x;
-				ImGui::SetCursorScreenPos(ImVec2(
-					cursorPos.x + rowWidth - buttonWidth - timeWidth - 20,
-					cursorPos.y + 4));
-				ImGui::TextDisabled("%s", timeStr.c_str());
-			}
-
-			// Per-item Open button on the right side
-			ImGui::SetCursorScreenPos(ImVec2(
-				cursorPos.x + rowWidth - buttonWidth - 4,
-				cursorPos.y + (rowHeight - ImGui::GetFrameHeight()) * 0.5f));
-			/*if (ImGui::Button(IDX_TR("launcher.list.open").c_str(), ImVec2(buttonWidth, 0))) {
-				Timer timer;
-				OpenProject(entry);
-				IDX_INFO_TAG("Project", "Opening Took: " + StringHelper::ToString(timer));
-			}*/
-
-			// Advance cursor past the row
-			ImGui::SetCursorScreenPos(ImVec2(cursorPos.x, cursorPos.y + rowHeight));
-
-			ImGui::PopID();
+		if (m_ProjectViewMode == ProjectViewMode::Grid) {
+			RenderProjectGrid(shown, removePath);
+		}
+		else {
+			RenderProjectRows(shown, removePath);
 		}
 
-		// Search produced no matches — surface the same "empty" copy the
-		// asset library tab uses so the UX stays consistent across tabs.
-		if (shownCount == 0 && !lowerSearch.empty()) {
-			ImGui::TextDisabled("%s", IDX_TR("launcher.asset_library.empty").c_str());
+		if (shown.empty() && !lowerSearch.empty()) {
+			ImGui::SetCursorPosY(ImGui::GetCursorPosY() + em * 2.0f);
+			CenteredText(IDX_TR("launcher.asset_library.empty").c_str(), pal.TextDim);
 		}
 
-		// Deferred: keyed by path because sortedProjects is a view and its indices don't map to registry storage.
+		// Deferred: keyed by path because the view's indices don't map to registry storage.
 		if (!removePath.empty()) {
 			for (const auto& e : m_Registry.GetProjects()) {
 				if (e.Path == removePath) {
@@ -1234,6 +1695,232 @@ artifacts/
 				}
 			}
 		}
+	}
+
+	void LauncherLayer::RenderProjectRows(const std::vector<const LauncherProjectEntry*>& projects, std::string& removePath) {
+		const LauncherPalette pal = GetLauncherPalette();
+		const float em = ImGui::GetFontSize();
+		const float cardH = std::round(em * 4.0f);
+		const float pad = std::round(em * 0.7f);
+		const float thumbH = cardH - pad * 2.0f;
+		const float thumbW = std::round(thumbH * 16.0f / 9.0f);
+		const float gap = std::round(em * 0.5f);
+		const float rounding = std::round(em * 0.6f);
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+
+		for (const LauncherProjectEntry* entryPtr : projects) {
+			const LauncherProjectEntry& entry = *entryPtr;
+			ImGui::PushID(entry.Path.c_str());
+
+			const std::string timeStr = FormatRelativeTime(entry.LastOpened);
+			const std::string sizeStr = GetProjectSizeDisplayText(entry);
+
+			const ImVec2 p0 = ImGui::GetCursorScreenPos();
+			const float rowWidth = ImGui::GetContentRegionAvail().x;
+			const ImVec2 p1(p0.x + rowWidth, p0.y + cardH);
+
+			// Overlap allowed so the per-card Open / Run / More buttons can sit on top of the row.
+			ImGui::SetNextItemAllowOverlap();
+			ImGui::InvisibleButton("##Row", ImVec2(rowWidth, cardH));
+			const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem);
+			if (ImGui::IsItemClicked(ImGuiMouseButton_Left) || ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+				m_SelectedProjectPath = entry.Path;
+			}
+			if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+				m_SelectedProjectPath = entry.Path;
+				OpenProject(entry);
+			}
+			if (ImGui::BeginPopupContextItem("##RowCtx")) {
+				RenderProjectContextMenu(entry, removePath);
+				ImGui::EndPopup();
+			}
+
+			const bool selected = (m_SelectedProjectPath == entry.Path);
+			dl->AddRectFilled(p0, p1, selected ? pal.CardSelected : hovered ? pal.CardHover : pal.Card, rounding);
+			dl->AddRect(p0, p1, selected ? pal.Accent : pal.CardBorder, rounding, 0, selected ? 1.5f : 1.0f);
+
+			const ImVec2 t0(p0.x + pad, p0.y + pad);
+			DrawProjectThumbnail(dl, t0, ImVec2(t0.x + thumbW, t0.y + thumbH), entry,
+				GetProjectThumbnail(entry.Path), rounding * 0.8f, 1.2f);
+
+			// Right side: actions on hover/selection, then metadata chips.
+			const float centerY = p0.y + cardH * 0.5f;
+			float right = p1.x - pad;
+			if (hovered || selected) {
+				const float bh = ImGui::GetFrameHeight();
+				const float by = p0.y + (cardH - bh) * 0.5f;
+
+				right -= bh;
+				ImGui::SetCursorScreenPos(ImVec2(right, by));
+				if (MoreButton("##More", bh)) {
+					m_SelectedProjectPath = entry.Path;
+					ImGui::OpenPopup("##RowCtx");
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("%s", IDX_TR("launcher.list.more").c_str());
+				}
+
+				right -= bh + em * 0.4f;
+				ImGui::SetCursorScreenPos(ImVec2(right, by));
+				if (Icons::IconButton("##Run", Icons::Type::Play, ImVec2(bh, bh))) {
+					ExecuteProject(entry);
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("%s", IDX_TR("launcher.context.execute_project").c_str());
+				}
+
+				const std::string openLabel = IDX_TR("launcher.list.open");
+				const float openW = IconButtonWidth(openLabel);
+				right -= openW + em * 0.4f;
+				ImGui::SetCursorScreenPos(ImVec2(right, by));
+				if (AccentButtonWithIcon(Icons::Type::Pen, openLabel, ImVec2(openW, bh))) {
+					m_SelectedProjectPath = entry.Path;
+					OpenProject(entry);
+				}
+				right -= em * 0.8f;
+			}
+
+			// Chips only when the name/path keep enough room; the actions take priority on narrow windows.
+			const float textX = t0.x + thumbW + em * 0.9f;
+			ImGui::PushFont(nullptr, BaseFontSize() * 0.9f);
+			{
+				const float chipEm = ImGui::GetFontSize();
+				float chipsW = ImGui::CalcTextSize(sizeStr.c_str()).x + chipEm * 1.1f + em * 0.8f;
+				if (!timeStr.empty()) chipsW += ImGui::CalcTextSize(timeStr.c_str()).x + chipEm * 1.1f + em * 0.4f;
+				if (right - chipsW - textX >= em * 12.0f) {
+					if (!timeStr.empty()) {
+						right = DrawChipRightAligned(dl, right, centerY, timeStr.c_str(), pal) - em * 0.4f;
+					}
+					right = DrawChipRightAligned(dl, right, centerY, sizeStr.c_str(), pal) - em * 0.8f;
+				}
+			}
+			ImGui::PopFont();
+
+			// Name + path, clipped before the chips.
+			dl->PushClipRect(ImVec2(textX, p0.y), ImVec2(std::max(textX, right), p1.y), true);
+			ImGui::PushFont(nullptr, BaseFontSize() * 1.1f);
+			const float nameH = ImGui::GetTextLineHeight();
+			ImGui::PopFont();
+			const float pathH = ImGui::GetTextLineHeight();
+			const float textTop = centerY - (nameH + pathH + em * 0.15f) * 0.5f;
+			ImGui::PushFont(nullptr, BaseFontSize() * 1.1f);
+			dl->AddText(ImVec2(textX, textTop), ImGui::GetColorU32(ImGuiCol_Text), entry.Name.c_str());
+			ImGui::PopFont();
+			dl->AddText(ImVec2(textX, textTop + nameH + em * 0.15f), pal.TextDim, entry.Path.c_str());
+			dl->PopClipRect();
+
+			ImGui::SetCursorScreenPos(ImVec2(p0.x, p1.y + gap));
+			ImGui::PopID();
+		}
+		ImGui::Dummy(ImVec2(0.0f, 0.0f));
+	}
+
+	void LauncherLayer::RenderProjectGrid(const std::vector<const LauncherProjectEntry*>& projects, std::string& removePath) {
+		const LauncherPalette pal = GetLauncherPalette();
+		const float em = ImGui::GetFontSize();
+		const float gap = std::round(em * 0.8f);
+		const float listW = ImGui::GetContentRegionAvail().x;
+		const int columns = std::max(1, static_cast<int>((listW + gap) / (em * 14.0f + gap)));
+		const float tileW = std::floor((listW - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns));
+		const float previewH = std::round(tileW * 9.0f / 16.0f);
+		const float pad = std::round(em * 0.75f);
+		const float tileH = previewH + std::round(em * 4.6f);
+		const float rounding = std::round(em * 0.6f);
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+
+		// Tiles are placed explicitly: the hover buttons drawn on top would otherwise become SameLine's anchor.
+		const ImVec2 origin = ImGui::GetCursorScreenPos();
+		for (size_t i = 0; i < projects.size(); ++i) {
+			const LauncherProjectEntry& entry = *projects[i];
+			const size_t col = i % static_cast<size_t>(columns);
+			const size_t row = i / static_cast<size_t>(columns);
+			ImGui::PushID(entry.Path.c_str());
+
+			const ImVec2 p0(origin.x + col * (tileW + gap), origin.y + row * (tileH + gap));
+			const ImVec2 p1(p0.x + tileW, p0.y + tileH);
+			ImGui::SetCursorScreenPos(p0);
+			ImGui::SetNextItemAllowOverlap();
+			ImGui::InvisibleButton("##Tile", ImVec2(tileW, tileH));
+			const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem);
+			if (ImGui::IsItemClicked(ImGuiMouseButton_Left) || ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+				m_SelectedProjectPath = entry.Path;
+			}
+			if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+				m_SelectedProjectPath = entry.Path;
+				OpenProject(entry);
+			}
+			if (ImGui::BeginPopupContextItem("##TileCtx")) {
+				RenderProjectContextMenu(entry, removePath);
+				ImGui::EndPopup();
+			}
+
+			const bool selected = (m_SelectedProjectPath == entry.Path);
+			dl->AddRectFilled(p0, p1, selected ? pal.CardSelected : hovered ? pal.CardHover : pal.Card, rounding);
+			DrawProjectThumbnail(dl, p0, ImVec2(p1.x, p0.y + previewH), entry,
+				GetProjectThumbnail(entry.Path), rounding, 2.0f, ImDrawFlags_RoundCornersTop);
+			dl->AddRect(p0, p1, selected ? pal.Accent : pal.CardBorder, rounding, 0, selected ? 1.5f : 1.0f);
+
+			// Name, path and metadata under the preview.
+			dl->PushClipRect(ImVec2(p0.x + pad, p0.y + previewH), ImVec2(p1.x - pad, p1.y), true);
+			float y = p0.y + previewH + pad * 0.7f;
+			ImGui::PushFont(nullptr, BaseFontSize() * 1.1f);
+			dl->AddText(ImVec2(p0.x + pad, y), ImGui::GetColorU32(ImGuiCol_Text), entry.Name.c_str());
+			y += ImGui::GetTextLineHeight();
+			ImGui::PopFont();
+			dl->AddText(ImVec2(p0.x + pad, y), pal.TextDim, entry.Path.c_str());
+			dl->PopClipRect();
+
+			const std::string timeStr = FormatRelativeTime(entry.LastOpened);
+			const std::string sizeStr = GetProjectSizeDisplayText(entry);
+			ImGui::PushFont(nullptr, BaseFontSize() * 0.9f);
+			{
+				const float chipY = p1.y - pad * 0.6f - ImGui::GetFontSize() * 0.75f;
+				float right = p1.x - pad;
+				if (!timeStr.empty()) {
+					right = DrawChipRightAligned(dl, right, chipY, timeStr.c_str(), pal) - em * 0.4f;
+				}
+				if (right - (p0.x + pad) > ImGui::CalcTextSize(sizeStr.c_str()).x + em * 1.2f) {
+					DrawChipRightAligned(dl, right, chipY, sizeStr.c_str(), pal);
+				}
+			}
+			ImGui::PopFont();
+
+			// Actions float over the preview's bottom-right corner on hover / selection.
+			if (hovered || selected) {
+				const float bh = ImGui::GetFrameHeight();
+				const float by = p0.y + previewH - bh - pad * 0.6f;
+				float right = p1.x - pad * 0.6f - bh;
+				ImGui::SetCursorScreenPos(ImVec2(right, by));
+				if (MoreButton("##More", bh)) {
+					m_SelectedProjectPath = entry.Path;
+					ImGui::OpenPopup("##TileCtx");
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("%s", IDX_TR("launcher.list.more").c_str());
+				}
+				right -= bh + em * 0.35f;
+				ImGui::SetCursorScreenPos(ImVec2(right, by));
+				if (Icons::IconButton("##Run", Icons::Type::Play, ImVec2(bh, bh))) {
+					ExecuteProject(entry);
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("%s", IDX_TR("launcher.context.execute_project").c_str());
+				}
+				const std::string openLabel = IDX_TR("launcher.list.open");
+				const float openW = IconButtonWidth(openLabel);
+				right -= openW + em * 0.35f;
+				ImGui::SetCursorScreenPos(ImVec2(right, by));
+				if (AccentButtonWithIcon(Icons::Type::Pen, openLabel, ImVec2(openW, bh))) {
+					m_SelectedProjectPath = entry.Path;
+					OpenProject(entry);
+				}
+			}
+
+			ImGui::PopID();
+		}
+		const size_t rows = (projects.size() + columns - 1) / static_cast<size_t>(columns);
+		ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + rows * (tileH + gap)));
+		ImGui::Dummy(ImVec2(0.0f, 0.0f));
 	}
 
 	std::shared_ptr<LauncherLayer::ProjectSizeTaskState> LauncherLayer::GetOrStartProjectSizeTask(const LauncherProjectEntry& entry) {
@@ -1703,88 +2390,127 @@ artifacts/
 
 		ImVec2 center = ImGui::GetMainViewport()->GetCenter();
 		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-		ImGui::SetNextWindowSize(ImVec2(450, 0), ImGuiCond_Appearing);
+		ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 34.0f, 0), ImGuiCond_Appearing);
 
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 
 		const std::string createTitle = IDX_TR("launcher.create.title") + k_CreateId;
-		if (ImGui::BeginPopupModal(createTitle.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
-			if (m_CloseCreatePopup) {
-				m_CloseCreatePopup = false;
-				ImGui::CloseCurrentPopup();
-				ImGui::EndPopup();
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ImGui::GetFontSize() * 1.3f, ImGui::GetFontSize() * 1.1f));
+		const bool open = ImGui::BeginPopupModal(createTitle.c_str(), nullptr,
+			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize);
+		ImGui::PopStyleVar();
+		if (!open) return;
 
-				if (m_PendingCreatedProjectOpen.has_value()) {
-					OpenProject(*m_PendingCreatedProjectOpen);
-					m_PendingCreatedProjectOpen.reset();
-				}
-				return;
-			}
-
-			ImGui::TextUnformatted(IDX_TR("launcher.create.project_name").c_str());
-			ImGui::SetNextItemWidth(-1);
-			ImGui::InputText("##ProjName", m_NewProjectName, sizeof(m_NewProjectName));
-
-			ImGui::Spacing();
-			ImGui::TextUnformatted(IDX_TR("launcher.create.location").c_str());
-			ImGui::SetNextItemWidth(-1);
-			ImGui::InputText("##ProjLocation", m_NewProjectLocation, sizeof(m_NewProjectLocation));
-
-			ImGui::Spacing();
-			const std::string directoryName = ApplyDirectoryNameConvention(m_NewProjectName, m_DirectoryNameConvention);
-			std::string preview = Path::Combine(m_NewProjectLocation, directoryName);
-			const std::string previewText = Localization::Format("launcher.create.path_preview", preview);
-			ImGui::TextDisabled("%s", previewText.c_str());
-
-			ImGui::Spacing();
-			ImGui::Checkbox(IDX_TR("launcher.create.init_git").c_str(), &m_NewProjectInitializeGit);
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("%s", IDX_TR("launcher.create.init_git.tooltip").c_str());
-			}
-
-			if (!m_CreateError.empty()) {
-				ImGui::Spacing();
-				ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "%s", m_CreateError.c_str());
-			}
-
-			// Create-project progress is surfaced via the shared OS-level
-			// popup (Win32BuildProgressWindow), driven from UpdateProgressPopup.
-
-			ImGui::Spacing();
-			ImGui::Separator();
-			ImGui::Spacing();
-
-			bool canCreate = IndexProject::IsValidProjectName(m_NewProjectName)
-				&& IndexProject::IsValidProjectName(directoryName)
-				&& !m_IsCreating;
-			if (!canCreate) ImGui::BeginDisabled();
-
-			if (ImGui::Button(IDX_TR("launcher.create.create_button").c_str(), ImVec2(120, 0))) {
-				Timer timer;
-				StartCreateProjectAsync(std::string(m_NewProjectName),
-					std::string(m_NewProjectLocation),
-					directoryName,
-					m_NewProjectInitializeGit);
-				IDX_INFO_TAG("Project", "Queued async project creation in {}", StringHelper::ToString(timer));
-			}
-
-			if (!canCreate) ImGui::EndDisabled();
-
-			ImGui::SameLine();
-			if (m_IsCreating) {
-				ImGui::BeginDisabled();
-			}
-			if (ImGui::Button(m_IsCreating
-				? IDX_TR("launcher.create.working").c_str()
-				: IDX_TR("launcher.create.cancel").c_str(), ImVec2(120, 0))) {
-				ImGui::CloseCurrentPopup();
-			}
-			if (m_IsCreating) {
-				ImGui::EndDisabled();
-			}
-
+		if (m_CloseCreatePopup) {
+			m_CloseCreatePopup = false;
+			ImGui::CloseCurrentPopup();
 			ImGui::EndPopup();
+
+			if (m_PendingCreatedProjectOpen.has_value()) {
+				OpenProject(*m_PendingCreatedProjectOpen);
+				m_PendingCreatedProjectOpen.reset();
+			}
+			return;
 		}
+
+		const LauncherPalette pal = GetLauncherPalette();
+		const float em = ImGui::GetFontSize();
+		const float contentW = em * 31.0f;
+		const std::string directoryName = ApplyDirectoryNameConvention(m_NewProjectName, m_DirectoryNameConvention);
+		const std::string preview = Path::Combine(m_NewProjectLocation, directoryName);
+
+		DialogTitle(IDX_TR("launcher.create.title"));
+
+		// Live preview card: the project tile, name and resulting folder update as you type.
+		{
+			const float cardH = std::round(em * 4.2f);
+			const float pad = std::round(em * 0.7f);
+			const float thumb = cardH - pad * 2.0f;
+			const ImVec2 p0 = ImGui::GetCursorScreenPos();
+			const ImVec2 p1(p0.x + contentW, p0.y + cardH);
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			dl->AddRectFilled(p0, p1, pal.Card, em * 0.6f);
+			dl->AddRect(p0, p1, pal.CardBorder, em * 0.6f);
+			LauncherProjectEntry previewEntry{ m_NewProjectName[0] ? std::string(m_NewProjectName) : std::string("?"), preview };
+			DrawProjectThumbnail(dl, ImVec2(p0.x + pad, p0.y + pad), ImVec2(p0.x + pad + thumb, p0.y + pad + thumb),
+				previewEntry, nullptr, em * 0.5f, 1.2f);
+
+			const float textX = p0.x + pad * 2.0f + thumb;
+			dl->PushClipRect(ImVec2(textX, p0.y), ImVec2(p1.x - pad, p1.y), true);
+			ImGui::PushFont(nullptr, BaseFontSize() * 1.15f);
+			const float nameH = ImGui::GetTextLineHeight();
+			const float textTop = p0.y + (cardH - nameH - ImGui::GetFontSize() / 1.15f) * 0.5f - 2.0f;
+			dl->AddText(ImVec2(textX, textTop), ImGui::GetColorU32(ImGuiCol_Text), previewEntry.Name.c_str());
+			ImGui::PopFont();
+			dl->AddText(ImVec2(textX, textTop + nameH + 2.0f), pal.TextDim, preview.c_str());
+			dl->PopClipRect();
+			ImGui::Dummy(ImVec2(contentW, cardH));
+		}
+
+		FormSection(IDX_TR("launcher.create.section.project"));
+
+		BeginFormRow(IDX_TR("launcher.create.project_name"));
+		if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+		ImGui::InputText("##ProjName", m_NewProjectName, sizeof(m_NewProjectName));
+		EndFormRow();
+
+		BeginFormRow(IDX_TR("launcher.create.location"));
+		{
+			const float folderW = ImGui::GetFrameHeight();
+			ImGui::SetNextItemWidth(ImGui::CalcItemWidth() - folderW - ImGui::GetStyle().ItemInnerSpacing.x);
+			ImGui::InputText("##ProjLocation", m_NewProjectLocation, sizeof(m_NewProjectLocation));
+			ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+#ifdef IDX_PLATFORM_WINDOWS
+			if (Icons::IconButton("##BrowseLocation", Icons::Type::OpenFolder, ImVec2(folderW, folderW))) {
+				if (const std::string picked = PickFolder(L"Project location"); !picked.empty()) {
+					std::snprintf(m_NewProjectLocation, sizeof(m_NewProjectLocation), "%s", picked.c_str());
+				}
+			}
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", IDX_TR("launcher.settings.browse").c_str());
+#endif
+		}
+		EndFormRow();
+
+		FormSection(IDX_TR("launcher.create.section.options"));
+
+		BeginFormRow(IDX_TR("launcher.create.init_git"), IDX_TR("launcher.create.init_git.tooltip"));
+		ToggleSwitch("##InitGit", &m_NewProjectInitializeGit, pal);
+		EndFormRow();
+
+		if (!m_CreateError.empty()) {
+			ImGui::Spacing();
+			ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(240, 107, 102, 255));
+			ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + contentW);
+			ImGui::TextWrapped("%s", m_CreateError.c_str());
+			ImGui::PopTextWrapPos();
+			ImGui::PopStyleColor();
+		}
+
+		// Create-project progress is surfaced via the shared OS-level popup (Win32BuildProgressWindow).
+		const bool canCreate = IndexProject::IsValidProjectName(m_NewProjectName)
+			&& IndexProject::IsValidProjectName(directoryName)
+			&& !m_IsCreating;
+		const std::string cancelLabel = m_IsCreating ? IDX_TR("launcher.create.working") : IDX_TR("launcher.create.cancel");
+		if (m_IsCreating) ImGui::BeginDisabled();
+		const int clicked = DialogFooter({ cancelLabel, IDX_TR("launcher.create.create_button") }, 1, canCreate);
+		if (m_IsCreating) ImGui::EndDisabled();
+		if (clicked == 0) {
+			ImGui::CloseCurrentPopup();
+		}
+		else if (clicked == 1 && canCreate) {
+			Timer timer;
+			StartCreateProjectAsync(std::string(m_NewProjectName),
+				std::string(m_NewProjectLocation),
+				directoryName,
+				m_NewProjectInitializeGit);
+			IDX_INFO_TAG("Project", "Queued async project creation in {}", StringHelper::ToString(timer));
+		}
+		if (ImGui::IsKeyPressed(ImGuiKey_Enter) && canCreate && !ImGui::IsAnyItemActive()) {
+			StartCreateProjectAsync(std::string(m_NewProjectName), std::string(m_NewProjectLocation),
+				directoryName, m_NewProjectInitializeGit);
+		}
+
+		ImGui::EndPopup();
 	}
 
 	// ── Open Project ────────────────────────────────────────────────
@@ -1879,14 +2605,34 @@ artifacts/
 			m_OpenTask.Success = false;
 		};
 
-		setStage("Regenerating engine solution...", 0.10f);
-		IndexProject::RegenerateResult regen = IndexProject::RegenerateSolutionForProject(entry.Path);
-		if (!regen.Succeeded && regen.ExitCode != -1) {
-			fail("Solution regen failed (premake exit code " + std::to_string(regen.ExitCode) + ").");
+		IndexProject project;
+		std::string projectLoadError;
+		if (!IndexProject::TryLoad(entry.Path, project, &projectLoadError)) {
+			fail("Project load failed: " + projectLoadError);
 			return;
 		}
 
-		// Package MSBuild step removed: Index.sln is engine-only; cloud-installed packages arrive as prebuilt DLLs.
+		setStage("Preparing package workspace...", 0.10f);
+		IndexProject::RegenerateResult regen = IndexProject::RegeneratePackageWorkspaceForProject(entry.Path);
+		if (!regen.Succeeded && regen.ExitCode != -1) {
+			fail("Package workspace generation failed (premake exit code " + std::to_string(regen.ExitCode) + ").");
+			return;
+		}
+
+		if (IndexProject::Validate(entry.Path)) {
+			if (!project.Packages.empty()) {
+				setStage("Compiling project packages...", 0.45f);
+				const IndexProject::BuildResult packageBuild =
+					IndexProject::BuildProjectPackages(
+						entry.Path, IndexProject::GetActiveBuildConfiguration(), "x64");
+				if (!packageBuild.Succeeded) {
+					fail("Project package build failed (exit code "
+						+ std::to_string(packageBuild.ExitCode) + ").\n" + packageBuild.Output);
+					return;
+				}
+			}
+		}
+
 		if (launchRuntime) {
 			setStage("Compiling runtime scripts...", 0.70f);
 			if (!IndexProject::Validate(entry.Path)) {
@@ -1894,7 +2640,6 @@ artifacts/
 				return;
 			}
 
-			IndexProject project = IndexProject::Load(entry.Path);
 			if (std::filesystem::exists(project.CsprojPath)) {
 				const std::string buildConfiguration = IndexProject::GetActiveBuildConfiguration();
 				Process::Result buildResult = Process::Run({
@@ -2206,47 +2951,21 @@ artifacts/
 
 	void LauncherLayer::BrowseForExistingProject() {
 #ifdef IDX_PLATFORM_WINDOWS
-		CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-
-		IFileOpenDialog* dialog = nullptr;
-		HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL,
-			IID_IFileOpenDialog, reinterpret_cast<void**>(&dialog));
-
-		if (SUCCEEDED(hr)) {
-			DWORD options;
-			dialog->GetOptions(&options);
-			dialog->SetOptions(options | FOS_PICKFOLDERS);
-			dialog->SetTitle(L"Select Index Project Folder");
-
-			hr = dialog->Show(nullptr);
-			if (SUCCEEDED(hr)) {
-				IShellItem* result = nullptr;
-				dialog->GetResult(&result);
-				if (result) {
-					PWSTR widePath = nullptr;
-					result->GetDisplayName(SIGDN_FILESYSPATH, &widePath);
-					if (widePath) {
-						int len = WideCharToMultiByte(CP_UTF8, 0, widePath, -1, nullptr, 0, nullptr, nullptr);
-						std::string path(len - 1, '\0');
-						WideCharToMultiByte(CP_UTF8, 0, widePath, -1, path.data(), len, nullptr, nullptr);
-						CoTaskMemFree(widePath);
-
-						if (IndexProject::Validate(path)) {
-							auto project = IndexProject::Load(path);
-							m_Registry.AddProject(project.Name, project.RootDirectory);
-							m_Registry.Save();
-						}
-						else {
-							ShowError("Not a valid Index project (missing project.json or Assets/)");
-						}
-					}
-					result->Release();
-				}
-			}
-			dialog->Release();
+		const std::string path = PickFolder(L"Select Index Project Folder");
+		if (path.empty()) return;
+		if (!IndexProject::Validate(path)) {
+			ShowError("Not a valid Index project (missing project.json or Assets/)");
+			return;
 		}
-
-		CoUninitialize();
+		IndexProject project;
+		std::string loadError;
+		if (IndexProject::TryLoad(path, project, &loadError, false)) {
+			m_Registry.AddProject(project.Name, project.RootDirectory);
+			m_Registry.Save();
+		}
+		else {
+			ShowError(loadError);
+		}
 #endif
 	}
 
@@ -2457,6 +3176,9 @@ artifacts/
 		if (const Json::Value* v = root.FindMember("sortReverse")) {
 			m_SortReverse = v->AsBoolOr(false);
 		}
+		if (const Json::Value* v = root.FindMember("projectView")) {
+			m_ProjectViewMode = v->AsIntOr(0) == 1 ? ProjectViewMode::Grid : ProjectViewMode::List;
+		}
 		if (const Json::Value* v = root.FindMember("fontScale")) {
 			int scale = v->AsIntOr(static_cast<int>(FontScale::Auto));
 			if (scale >= 0 && scale <= static_cast<int>(FontScale::P200)) {
@@ -2495,6 +3217,7 @@ artifacts/
 		root.AddMember("defaultProjectsLocation", m_DefaultProjectsLocation);
 		root.AddMember("sortMode", Json::Value(static_cast<int>(m_SortMode)));
 		root.AddMember("sortReverse", Json::Value(m_SortReverse));
+		root.AddMember("projectView", Json::Value(static_cast<int>(m_ProjectViewMode)));
 		root.AddMember("fontScale", Json::Value(static_cast<int>(m_FontScale)));
 		root.AddMember("themeSetting", Json::Value(static_cast<int>(m_ThemeSetting)));
 		root.AddMember("directoryNameConvention", Json::Value(static_cast<int>(m_DirectoryNameConvention)));
@@ -2599,43 +3322,50 @@ artifacts/
 			const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
 			ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 		}
-		ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Appearing);
+		ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 38.0f, 0), ImGuiCond_Appearing);
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		const std::string settingsTitle = IDX_TR("launcher.settings.title") + k_SettingsId;
-		if (!ImGui::BeginPopupModal(settingsTitle.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ImGui::GetFontSize() * 1.3f, ImGui::GetFontSize() * 1.1f));
+		const bool open = ImGui::BeginPopupModal(settingsTitle.c_str(), nullptr,
+			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
+		ImGui::PopStyleVar();
+		if (!open) {
 			return;
 		}
 		const std::string effectiveDefault = m_DefaultProjectsLocation.empty()
 			? IndexProject::GetDefaultProjectsDir()
 			: m_DefaultProjectsLocation;
 
-		ImGui::TextUnformatted(IDX_TR("launcher.settings.default_location").c_str());
-		ImGui::TextDisabled("%s", IDX_TR("launcher.settings.default_location_subtitle").c_str());
-
-		const std::string currentLine = Localization::Format("launcher.settings.current", effectiveDefault)
-			+ (m_DefaultProjectsLocation.empty() ? IDX_TR("launcher.settings.engine_default_suffix") : std::string{});
-		ImGui::TextDisabled("%s", currentLine.c_str());
-		ImGui::Spacing();
+		DialogTitle(IDX_TR("launcher.settings.title"));
 
 		static char s_LocationBuffer[1024]{};
 		if (ImGui::IsWindowAppearing()) {
 			std::snprintf(s_LocationBuffer, sizeof(s_LocationBuffer), "%s",
 				effectiveDefault.c_str());
 		}
-		ImGui::SetNextItemWidth(-110.0f);
-		ImGui::InputText("##DefaultLocation", s_LocationBuffer, sizeof(s_LocationBuffer));
-		ImGui::SameLine();
-		if (ImGui::Button(IDX_TR("launcher.settings.browse").c_str(), ImVec2(100, 0))) {
-			BrowseForDefaultProjectsLocation();
-			std::snprintf(s_LocationBuffer, sizeof(s_LocationBuffer), "%s",
-				m_DefaultProjectsLocation.c_str());
+
+		FormSection(IDX_TR("launcher.settings.section.projects"));
+
+		const std::string currentLine = Localization::Format("launcher.settings.current", effectiveDefault)
+			+ (m_DefaultProjectsLocation.empty() ? IDX_TR("launcher.settings.engine_default_suffix") : std::string{});
+		BeginFormRow(IDX_TR("launcher.settings.default_location"),
+			IDX_TR("launcher.settings.default_location_subtitle"));
+		{
+			const float folderW = ImGui::GetFrameHeight();
+			ImGui::SetNextItemWidth(ImGui::CalcItemWidth() - folderW - ImGui::GetStyle().ItemInnerSpacing.x);
+			ImGui::InputText("##DefaultLocation", s_LocationBuffer, sizeof(s_LocationBuffer));
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", currentLine.c_str());
+			ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+			if (Icons::IconButton("##BrowseDefaultLocation", Icons::Type::OpenFolder, ImVec2(folderW, folderW))) {
+				BrowseForDefaultProjectsLocation();
+				std::snprintf(s_LocationBuffer, sizeof(s_LocationBuffer), "%s",
+					m_DefaultProjectsLocation.c_str());
+			}
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", IDX_TR("launcher.settings.browse").c_str());
 		}
+		EndFormRow();
 
-		ImGui::Spacing();
-		ImGui::Separator();
-		ImGui::Spacing();
-
-		ImGui::TextUnformatted(IDX_TR("launcher.settings.directory_name_convention").c_str());
+		BeginFormRow(IDX_TR("launcher.settings.directory_name_convention"));
 		{
 			static constexpr DirectoryNameConvention k_Entries[] = {
 				DirectoryNameConvention::None,
@@ -2661,12 +3391,109 @@ artifacts/
 				ImGui::EndCombo();
 			}
 		}
+		EndFormRow();
 
-		ImGui::Spacing();
-		ImGui::Separator();
-		ImGui::Spacing();
+		FormSection(IDX_TR("launcher.settings.section.appearance"));
 
-		ImGui::TextUnformatted(IDX_TR("launcher.settings.language").c_str());
+		BeginFormRow(IDX_TR("launcher.settings.theme"));
+		{
+			struct ThemeEntry {
+				ThemeSetting Value;
+				const char* LabelKey;
+			};
+			static constexpr ThemeEntry k_Entries[] = {
+				{ ThemeSetting::Auto,  nullptr },
+				{ ThemeSetting::Dark,  "launcher.settings.theme.dark" },
+				{ ThemeSetting::Light, "launcher.settings.theme.light" },
+			};
+
+			const std::string effectiveThemeName = IsEffectiveThemeDark()
+				? IDX_TR("launcher.settings.theme.dark")
+				: IDX_TR("launcher.settings.theme.light");
+
+			auto labelFor = [&](const ThemeEntry& e) -> std::string {
+				if (e.Value == ThemeSetting::Auto) {
+					return Localization::Format("launcher.settings.theme.auto_format", effectiveThemeName);
+				}
+				return IDX_TR(e.LabelKey);
+			};
+
+			std::string preview;
+			for (const auto& e : k_Entries) {
+				if (e.Value == m_ThemeSetting) {
+					preview = labelFor(e);
+					break;
+				}
+			}
+
+			ImGui::SetNextItemWidth(-1.0f);
+			if (ImGui::BeginCombo("##LauncherThemeCombo", preview.c_str())) {
+				for (const auto& e : k_Entries) {
+					const bool selected = (e.Value == m_ThemeSetting);
+					const std::string label = labelFor(e);
+					if (ImGui::Selectable(label.c_str(), selected)) {
+						m_ThemeSetting = e.Value;
+						m_LastAppliedDarkTheme.reset();
+						SaveLauncherSettings();
+					}
+					if (selected) ImGui::SetItemDefaultFocus();
+				}
+				ImGui::EndCombo();
+			}
+		}
+		EndFormRow();
+
+		BeginFormRow(IDX_TR("launcher.settings.font_scale"));
+		{
+			struct FontScaleEntry {
+				FontScale Value;
+				const char* Label;  // nullptr → use translated "Auto (xxx%)"
+			};
+			static constexpr FontScaleEntry k_Entries[] = {
+				{ FontScale::Auto, nullptr },
+				{ FontScale::P75,  "75%"   },
+				{ FontScale::P100, "100%"  },
+				{ FontScale::P125, "125%"  },
+				{ FontScale::P150, "150%"  },
+				{ FontScale::P175, "175%"  },
+				{ FontScale::P200, "200%"  },
+			};
+
+			// Auto always resolves to 100% today; format the {0} so future
+			// DPI-aware behaviour can change the displayed percentage without
+			// touching the translation files.
+			auto labelFor = [](const FontScaleEntry& e) -> std::string {
+				if (e.Value == FontScale::Auto) {
+					return Localization::Format("launcher.settings.font_scale.auto_format", 100);
+				}
+				return std::string(e.Label);
+			};
+
+			std::string preview;
+			for (const auto& e : k_Entries) {
+				if (e.Value == m_FontScale) {
+					preview = labelFor(e);
+					break;
+				}
+			}
+
+			ImGui::SetNextItemWidth(-1.0f);
+			if (ImGui::BeginCombo("##LauncherFontScaleCombo", preview.c_str())) {
+				for (const auto& e : k_Entries) {
+					const bool selected = (e.Value == m_FontScale);
+					const std::string label = labelFor(e);
+					if (ImGui::Selectable(label.c_str(), selected)) {
+						m_FontScale = e.Value;
+						SaveLauncherSettings();
+					}
+					if (selected) ImGui::SetItemDefaultFocus();
+				}
+				ImGui::EndCombo();
+			}
+		}
+		EndFormRow();
+
+		BeginFormRow(IDX_TR("launcher.settings.language"));
 		const auto& languages = Localization::GetAvailableLanguages();
 		const std::string& currentCode = Localization::GetCurrentLanguage();
 		const std::string notInstalledSuffix = IDX_TR("launcher.settings.language.not_installed_suffix");
@@ -2717,116 +3544,10 @@ artifacts/
 			}
 			ImGui::EndCombo();
 		}
+		EndFormRow();
 
-		ImGui::Spacing();
-		ImGui::Separator();
-		ImGui::Spacing();
-
-		ImGui::TextUnformatted(IDX_TR("launcher.settings.theme").c_str());
-		{
-			struct ThemeEntry {
-				ThemeSetting Value;
-				const char* LabelKey;
-			};
-			static constexpr ThemeEntry k_Entries[] = {
-				{ ThemeSetting::Auto,  nullptr },
-				{ ThemeSetting::Dark,  "launcher.settings.theme.dark" },
-				{ ThemeSetting::Light, "launcher.settings.theme.light" },
-			};
-
-			const std::string effectiveThemeName = IsEffectiveThemeDark()
-				? IDX_TR("launcher.settings.theme.dark")
-				: IDX_TR("launcher.settings.theme.light");
-
-			auto labelFor = [&](const ThemeEntry& e) -> std::string {
-				if (e.Value == ThemeSetting::Auto) {
-					return Localization::Format("launcher.settings.theme.auto_format", effectiveThemeName);
-				}
-				return IDX_TR(e.LabelKey);
-			};
-
-			std::string preview;
-			for (const auto& e : k_Entries) {
-				if (e.Value == m_ThemeSetting) {
-					preview = labelFor(e);
-					break;
-				}
-			}
-
-			ImGui::SetNextItemWidth(-1.0f);
-			if (ImGui::BeginCombo("##LauncherThemeCombo", preview.c_str())) {
-				for (const auto& e : k_Entries) {
-					const bool selected = (e.Value == m_ThemeSetting);
-					const std::string label = labelFor(e);
-					if (ImGui::Selectable(label.c_str(), selected)) {
-						m_ThemeSetting = e.Value;
-						m_LastAppliedDarkTheme.reset();
-						SaveLauncherSettings();
-					}
-					if (selected) ImGui::SetItemDefaultFocus();
-				}
-				ImGui::EndCombo();
-			}
-		}
-
-		ImGui::Spacing();
-		ImGui::Separator();
-		ImGui::Spacing();
-
-		ImGui::TextUnformatted(IDX_TR("launcher.settings.font_scale").c_str());
-		{
-			struct FontScaleEntry {
-				FontScale Value;
-				const char* Label;  // nullptr → use translated "Auto (xxx%)"
-			};
-			static constexpr FontScaleEntry k_Entries[] = {
-				{ FontScale::Auto, nullptr },
-				{ FontScale::P75,  "75%"   },
-				{ FontScale::P100, "100%"  },
-				{ FontScale::P125, "125%"  },
-				{ FontScale::P150, "150%"  },
-				{ FontScale::P175, "175%"  },
-				{ FontScale::P200, "200%"  },
-			};
-
-			// Auto always resolves to 100% today; format the {0} so future
-			// DPI-aware behaviour can change the displayed percentage without
-			// touching the translation files.
-			auto labelFor = [](const FontScaleEntry& e) -> std::string {
-				if (e.Value == FontScale::Auto) {
-					return Localization::Format("launcher.settings.font_scale.auto_format", 100);
-				}
-				return std::string(e.Label);
-			};
-
-			std::string preview;
-			for (const auto& e : k_Entries) {
-				if (e.Value == m_FontScale) {
-					preview = labelFor(e);
-					break;
-				}
-			}
-
-			ImGui::SetNextItemWidth(-1.0f);
-			if (ImGui::BeginCombo("##LauncherFontScaleCombo", preview.c_str())) {
-				for (const auto& e : k_Entries) {
-					const bool selected = (e.Value == m_FontScale);
-					const std::string label = labelFor(e);
-					if (ImGui::Selectable(label.c_str(), selected)) {
-						m_FontScale = e.Value;
-						SaveLauncherSettings();
-					}
-					if (selected) ImGui::SetItemDefaultFocus();
-				}
-				ImGui::EndCombo();
-			}
-		}
-
-		ImGui::Spacing();
-		ImGui::Separator();
-		ImGui::Spacing();
-
-		if (ImGui::Button(IDX_TR("launcher.settings.save").c_str(), ImVec2(100, 0))) {
+		const int clicked = DialogFooter({ IDX_TR("launcher.settings.cancel"), IDX_TR("launcher.settings.save") }, 1);
+		if (clicked == 1) {
 			// Empty string = "follow engine default"; don't persist verbatim engine default as an override.
 			const std::string typed(s_LocationBuffer);
 			if (typed == IndexProject::GetDefaultProjectsDir()) {
@@ -2838,8 +3559,7 @@ artifacts/
 			SaveLauncherSettings();
 			ImGui::CloseCurrentPopup();
 		}
-		ImGui::SameLine();
-		if (ImGui::Button(IDX_TR("launcher.settings.cancel").c_str(), ImVec2(100, 0))) {
+		else if (clicked == 0) {
 			ImGui::CloseCurrentPopup();
 		}
 
@@ -2892,8 +3612,10 @@ artifacts/
 		if (versionIt == m_EngineVersionCache.end()) {
 			std::string version;
 			if (IndexProject::Validate(entry.Path)) {
-				auto project = IndexProject::Load(entry.Path);
-				version = project.EngineVersion;
+				IndexProject project;
+				if (IndexProject::TryLoad(entry.Path, project, nullptr, false)) {
+					version = project.EngineVersion;
+				}
 			}
 			// Cache an empty sentinel rather than the translated "unknown"
 			// string — that way hot-reloading the language picks up the new
@@ -2998,40 +3720,9 @@ artifacts/
 
 	void LauncherLayer::BrowseForDefaultProjectsLocation() {
 #ifdef IDX_PLATFORM_WINDOWS
-		CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-
-		IFileOpenDialog* dialog = nullptr;
-		HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL,
-			IID_IFileOpenDialog, reinterpret_cast<void**>(&dialog));
-
-		if (SUCCEEDED(hr)) {
-			DWORD options;
-			dialog->GetOptions(&options);
-			dialog->SetOptions(options | FOS_PICKFOLDERS);
-			dialog->SetTitle(L"Default projects location");
-
-			if (SUCCEEDED(dialog->Show(nullptr))) {
-				IShellItem* result = nullptr;
-				dialog->GetResult(&result);
-				if (result) {
-					PWSTR widePath = nullptr;
-					result->GetDisplayName(SIGDN_FILESYSPATH, &widePath);
-					if (widePath) {
-						const int len = WideCharToMultiByte(CP_UTF8, 0, widePath, -1, nullptr, 0, nullptr, nullptr);
-						if (len > 1) {
-							std::string path(static_cast<size_t>(len - 1), '\0');
-							WideCharToMultiByte(CP_UTF8, 0, widePath, -1, path.data(), len, nullptr, nullptr);
-							m_DefaultProjectsLocation = std::move(path);
-						}
-						CoTaskMemFree(widePath);
-					}
-					result->Release();
-				}
-			}
-			dialog->Release();
+		if (std::string path = PickFolder(L"Default projects location"); !path.empty()) {
+			m_DefaultProjectsLocation = std::move(path);
 		}
-
-		CoUninitialize();
 #endif
 	}
 
@@ -3483,12 +4174,10 @@ artifacts/
 		std::filesystem::remove_all(stagingDir, ec);
 		std::filesystem::remove(tempZip, ec);
 
-		// Validate the project by re-loading it. Load returns by value and
-		// silently populates partial data on a malformed file — we check
-		// the Name field to detect the "manifest missing / unparseable" case.
-		IndexProject loaded = IndexProject::Load(finalDir.string());
-		if (loaded.Name.empty()) {
-			fail("Project failed to load: project.json is missing or invalid");
+		IndexProject loaded;
+		std::string loadError;
+		if (!IndexProject::TryLoad(finalDir.string(), loaded, &loadError)) {
+			fail("Project failed to load: " + loadError);
 			return;
 		}
 
@@ -3568,97 +4257,125 @@ artifacts/
 	}
 
 	void LauncherLayer::RenderAssetLibraryTab() {
-		// Status / refresh strip.
 		bool fetchInFlight = false;
 		bool indexLoaded = false;
-		size_t entryCount = 0;
+		std::vector<AssetLibraryEntry> snapshot;
 		{
 			std::scoped_lock lock(m_AssetLibraryTask.Mutex);
 			fetchInFlight = m_AssetLibrary.FetchInFlight;
 			indexLoaded = m_AssetLibrary.Loaded;
-			entryCount = m_AssetLibrary.Entries.size();
-		}
-
-		const float strip_h = ImGui::GetFrameHeight();
-		ImGui::BeginGroup();
-
-		// Refresh button (right-aligned). Free-text search lives on the
-		// My Projects tab only; the Asset Library uses its tag filter
-		// instead, so the only thing in this strip is the refresh action.
-		const float refreshW = 90.0f;
-		const float availW = ImGui::GetContentRegionAvail().x;
-		if (availW > refreshW) {
-			ImGui::Dummy(ImVec2(availW - refreshW, 0.0f));
-			ImGui::SameLine();
-		}
-		if (fetchInFlight) ImGui::BeginDisabled();
-		if (ImGui::Button(IDX_TR("launcher.asset_library.refresh").c_str(),
-			ImVec2(refreshW, strip_h)))
-		{
-			StartFetchAssetLibraryIndex();
-		}
-		if (fetchInFlight) ImGui::EndDisabled();
-		ImGui::EndGroup();
-
-		// Status line — loading indicator only; fetch failures surface in a
-		// secondary error window (PollAssetLibraryTask), not inline.
-		if (fetchInFlight) {
-			ImGui::TextDisabled("%s", IDX_TR("launcher.asset_library.progress.fetching_manifest").c_str());
-		}
-
-		// Card list. Each "card" is a Selectable spanning the full row with
-		// a darker frame around it. v1 is text-only — no thumbnails yet
-		// (that's task #8). The Selectable opens the detail modal.
-		ImGui::BeginChild("##AssetLibraryList", ImVec2(0, 0), true);
-
-		std::vector<AssetLibraryEntry> snapshot;
-		{
-			std::scoped_lock lock(m_AssetLibraryTask.Mutex);
 			snapshot = m_AssetLibrary.Entries;
 		}
 
-		size_t shown = 0;
-		for (const auto& entry : snapshot) {
-			++shown;
+		const LauncherPalette pal = GetLauncherPalette();
+		const float em = ImGui::GetFontSize();
+		const float startX = ImGui::GetCursorPosX();
+		const float availW = ImGui::GetContentRegionAvail().x;
+
+		// Header: title + subtitle, Refresh right-aligned. Fetch failures surface in the error window, not inline.
+		const float headerTop = ImGui::GetCursorPosY();
+		const float headerH = PageHeader(IDX_TR("launcher.asset_library.title"),
+			fetchInFlight ? IDX_TR("launcher.asset_library.progress.fetching_manifest")
+				: IDX_TR("launcher.asset_library.subtitle"));
+		const float headerBottom = ImGui::GetCursorPosY();
+
+		const std::string refreshLabel = IDX_TR("launcher.asset_library.refresh");
+		const float buttonH = std::round(ImGui::GetFrameHeight() + em * 0.35f);
+		const float refreshW = IconButtonWidth(refreshLabel);
+		ImGui::SetCursorPos(ImVec2(startX + availW - refreshW,
+			headerTop + std::max(0.0f, (headerH - buttonH) * 0.5f)));
+		if (fetchInFlight) ImGui::BeginDisabled();
+		if (Icons::ButtonWithIcon(Icons::Type::Refresh, refreshLabel.c_str(), ImVec2(refreshW, buttonH), true)) {
+			StartFetchAssetLibraryIndex();
+		}
+		if (fetchInFlight) ImGui::EndDisabled();
+
+		ImGui::SetCursorPos(ImVec2(startX, headerBottom + em * 0.6f));
+
+		ImGui::BeginChild("##AssetLibraryList", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
+
+		if (snapshot.empty()) {
+			if (indexLoaded && !fetchInFlight) {
+				ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetContentRegionAvail().y * 0.3f);
+				CenteredText(IDX_TR("launcher.asset_library.coming_soon").c_str(), pal.TextDim);
+			}
+			ImGui::EndChild();
+			return;
+		}
+
+		const float gap = std::round(em * 0.8f);
+		const float listW = ImGui::GetContentRegionAvail().x;
+		const int columns = std::max(1, static_cast<int>((listW + gap) / (em * 15.0f + gap)));
+		const float tileW = std::floor((listW - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns));
+		const float previewH = std::round(tileW * 0.45f);
+		const float tileH = previewH + std::round(em * 5.6f);
+		const float pad = std::round(em * 0.8f);
+		const float rounding = std::round(em * 0.6f);
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, gap));
+		for (size_t i = 0; i < snapshot.size(); ++i) {
+			const AssetLibraryEntry& entry = snapshot[i];
+			if (i % static_cast<size_t>(columns) != 0) {
+				ImGui::SameLine(0.0f, gap);
+			}
 
 			ImGui::PushID(entry.Id.c_str());
-			ImGui::Separator();
-			ImGui::Spacing();
-			if (ImGui::Selectable("##card", false, ImGuiSelectableFlags_AllowOverlap,
-				ImVec2(0, 70.0f)))
-			{
+			const ImVec2 p0 = ImGui::GetCursorScreenPos();
+			if (ImGui::InvisibleButton("##tile", ImVec2(tileW, tileH))) {
 				m_AssetLibraryDetailEntryId = entry.Id;
 				m_AssetLibraryDetailScreenshot = 0;
 				m_OpenAssetLibraryDetailPopup = true;
 			}
-			ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 66.0f);
-			ImGui::Indent();
-			ImGui::TextUnformatted(entry.Name.c_str());
-			ImGui::SameLine();
+			const bool hovered = ImGui::IsItemHovered();
+			const ImVec2 p1(p0.x + tileW, p0.y + tileH);
+
+			dl->AddRectFilled(p0, p1, hovered ? pal.CardHover : pal.Card, rounding);
+
+			// Preview band (no thumbnail download yet): name-hashed color + initials.
+			dl->AddRectFilled(p0, ImVec2(p1.x, p0.y + previewH), ProjectThumbColor(entry.Name),
+				rounding, ImDrawFlags_RoundCornersTop);
+			dl->AddRect(p0, p1, hovered ? pal.Accent : pal.CardBorder, rounding, 0, hovered ? 1.5f : 1.0f);
+			{
+				const std::string initials = ProjectInitials(entry.Name);
+				ImGui::PushFont(nullptr, BaseFontSize() * 2.0f);
+				const ImVec2 isz = ImGui::CalcTextSize(initials.c_str());
+				dl->AddText(ImVec2(p0.x + (tileW - isz.x) * 0.5f, p0.y + (previewH - isz.y) * 0.5f),
+					IM_COL32(255, 255, 255, 230), initials.c_str());
+				ImGui::PopFont();
+			}
+
+			dl->PushClipRect(ImVec2(p0.x + pad, p0.y + previewH), ImVec2(p1.x - pad, p1.y - pad * 0.5f), true);
+			float y = p0.y + previewH + pad * 0.8f;
+			ImGui::PushFont(nullptr, BaseFontSize() * 1.1f);
+			dl->AddText(ImVec2(p0.x + pad, y), ImGui::GetColorU32(ImGuiCol_Text), entry.Name.c_str());
+			y += ImGui::GetTextLineHeight();
+			ImGui::PopFont();
+
+			std::string meta;
+			if (!entry.Author.empty()) meta = Localization::Format("launcher.asset_library.author_prefix", entry.Author);
 			if (!entry.Version.empty()) {
-				ImGui::TextDisabled("v%s", entry.Version.c_str());
+				if (!meta.empty()) meta += "  ·  ";
+				meta += "v" + entry.Version;
 			}
-			if (!entry.Author.empty()) {
-				ImGui::TextDisabled("by %s", entry.Author.c_str());
+			if (!meta.empty()) {
+				dl->AddText(ImVec2(p0.x + pad, y), pal.TextDim, meta.c_str());
+				y += ImGui::GetTextLineHeight();
 			}
+
 			if (!entry.ShortDescription.empty()) {
-				ImGui::TextWrapped("%s", entry.ShortDescription.c_str());
+				y += em * 0.35f;
+				dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(p0.x + pad, y),
+					ImGui::GetColorU32(ImGuiCol_Text, 0.85f), entry.ShortDescription.c_str(), nullptr,
+					tileW - pad * 2.0f);
 			}
-			ImGui::Unindent();
-			ImGui::Spacing();
+			dl->PopClipRect();
+
 			ImGui::PopID();
 		}
-
-		if (shown == 0 && indexLoaded && !fetchInFlight) {
-			ImGui::Spacing();
-			ImGui::TextDisabled("%s",
-				entryCount == 0
-					? IDX_TR("launcher.asset_library.coming_soon").c_str()
-					: IDX_TR("launcher.asset_library.empty").c_str());
-		}
+		ImGui::PopStyleVar();
 
 		ImGui::EndChild();
-
 	}
 
 	void LauncherLayer::RenderAssetLibraryDetailModal() {

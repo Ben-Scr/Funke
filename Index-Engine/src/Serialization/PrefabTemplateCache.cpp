@@ -52,8 +52,11 @@ namespace Index {
 			return {};
 		}
 
-		uint64_t CapturePersistentId(Scene& scene, EntityHandle handle) {
-			return scene.GetEntityPersistentID(handle);
+		uint64_t CapturePrefabSourceEntityId(Scene& scene, EntityHandle handle) {
+			if (const auto* instance = scene.GetRegistry().try_get<PrefabInstanceComponent>(handle)) {
+				return instance->SourceEntityId;
+			}
+			return 0;
 		}
 
 		// Returns null when no Application/SceneManager exists (headless tools, doctest); callers fall back to the slow path.
@@ -62,7 +65,7 @@ namespace Index {
 			if (!app || !app->GetSceneManager()) {
 				return nullptr;
 			}
-			return &app->GetSceneManager()->GetComponentRegistry();
+			return &SceneManager::GetComponentRegistry();
 		}
 
 		// A ScriptComponent is bakeable only when it is purely the inspector wrapper for C#
@@ -109,12 +112,12 @@ namespace Index {
 #endif
 	}
 
-	const PrefabTemplate* PrefabTemplateCache::Find(uint64_t prefabGuid) const
+	PrefabTemplateCache::TemplateSnapshot PrefabTemplateCache::Find(uint64_t prefabGuid) const
 	{
-		if (prefabGuid == 0) return nullptr;
+		if (prefabGuid == 0) return {};
 		std::shared_lock lock(m_Mutex);
 		auto it = m_Templates.find(prefabGuid);
-		return (it != m_Templates.end()) ? it->second.get() : nullptr;
+		return (it != m_Templates.end()) ? it->second : TemplateSnapshot{};
 	}
 
 	void PrefabTemplateCache::CaptureFromLive(uint64_t prefabGuid, Scene& scene,
@@ -128,7 +131,7 @@ namespace Index {
 			return;
 		}
 
-		auto tmpl = std::make_unique<PrefabTemplate>();
+		auto tmpl = std::make_shared<PrefabTemplate>();
 
 		// Internal entity refs (deferred fixups) can't be represented in v1 templates; mark unbakeable so spawns fall back to the slow path.
 		if (fixupsAddedDuringDeserialize > 0) {
@@ -163,7 +166,7 @@ namespace Index {
 			PrefabTemplate::EntitySlot& slot = tmpl->entities[i];
 			slot.parentIndex = ordered[i].second;
 			slot.name = CaptureEntityName(scene, h);
-			slot.sourceUuid = CapturePersistentId(scene, h);
+			slot.sourceEntityId = CapturePrefabSourceEntityId(scene, h);
 			slot.componentRecordBegin = static_cast<uint32_t>(tmpl->components.size());
 
 			// Identity components must never be copied from the source entity. Hydrate stamps
@@ -215,7 +218,7 @@ namespace Index {
 						// RegisterDynamic refuses size 0, so ElementSize() is always >= 1; the guard
 						// is belt-and-suspenders (Get on a 0-size storage would be ill-defined).
 						if (byteSize > 0) {
-							const void* raw = info.dynamicStorage->Get(h);
+							const void* raw = info.dynamicStorage->Get(scene.GetRegistry(), h);
 							if (raw == nullptr) return; // has() true but no row = storage drift; skip
 							const uint8_t* bytes = static_cast<const uint8_t*>(raw);
 							tmpl->payloadBlob.insert(tmpl->payloadBlob.end(), bytes, bytes + byteSize);
@@ -265,15 +268,8 @@ namespace Index {
 
 	EntityHandle PrefabTemplateCache::Hydrate(uint64_t prefabGuid, Scene& scene)
 	{
-		// Read lock held only across the pointer snapshot, not the entire hydrate.
-		const PrefabTemplate* tmpl = nullptr;
-		{
-			std::shared_lock lock(m_Mutex);
-			auto it = m_Templates.find(prefabGuid);
-			if (it == m_Templates.end()) return entt::null;
-			tmpl = it->second.get();
-		}
-		if (tmpl == nullptr || !tmpl->bakeable) return entt::null;
+		const TemplateSnapshot tmpl = Find(prefabGuid);
+		if (!tmpl || !tmpl->bakeable) return entt::null;
 
 		const uint32_t entityCount = tmpl->EntityCount();
 		if (entityCount == 0) return entt::null;
@@ -285,23 +281,18 @@ namespace Index {
 		scene.CreateEntitiesBulk(entityCount, std::span<EntityHandle>(handles));
 
 		Scene::LoadGuard guard(scene);
-		EntityHandle root = HydrateInto(prefabGuid, scene,
+		EntityHandle root = HydrateInto(prefabGuid, tmpl, scene,
 			std::span<const EntityHandle>(handles));
 		scene.MarkAllDirtyOnce();
 		return root;
 	}
 
-	EntityHandle PrefabTemplateCache::HydrateInto(uint64_t prefabGuid, Scene& scene,
+	EntityHandle PrefabTemplateCache::HydrateInto(uint64_t prefabGuid,
+		const TemplateSnapshot& tmpl,
+		Scene& scene,
 		std::span<const EntityHandle> preAllocated)
 	{
-		const PrefabTemplate* tmpl = nullptr;
-		{
-			std::shared_lock lock(m_Mutex);
-			auto it = m_Templates.find(prefabGuid);
-			if (it == m_Templates.end()) return entt::null;
-			tmpl = it->second.get();
-		}
-		if (tmpl == nullptr || !tmpl->bakeable) return entt::null;
+		if (!tmpl || !tmpl->bakeable) return entt::null;
 
 		const uint32_t entityCount = tmpl->EntityCount();
 		if (entityCount == 0) return entt::null;
@@ -326,6 +317,8 @@ namespace Index {
 		const AssetGUID prefabAssetGuid{ prefabGuid };
 		for (uint32_t i = 0; i < entityCount; ++i) {
 			scene.SetEntityMetaDataNoFlags(preAllocated[i], EntityOrigin::Prefab, prefabAssetGuid);
+			registry.get<PrefabInstanceComponent>(preAllocated[i]).SourceEntityId =
+				tmpl->entities[i].sourceEntityId;
 			registry.emplace_or_replace<NameComponent>(preAllocated[i], tmpl->entities[i].name);
 		}
 
@@ -374,18 +367,6 @@ namespace Index {
 		for (uint32_t i = 0; i < entityCount; ++i) {
 			if (Rigidbody2DComponent* rb = registry.try_get<Rigidbody2DComponent>(preAllocated[i])) {
 				rb->RestoreBodyFromState();
-				// TEMP DIAGNOSTIC: a rigidbody and its sibling collider MUST share one b2 body.
-				// If shared==false the ECB hydrate adoption failed (shape on one body, rigidbody on
-				// another) — exactly the symptom where a spawned asteroid's collider sits at the origin
-				// while its rigidbody/transform are at spawnPos. Remove once root-caused.
-				uint64_t rbBody = b2StoreBodyId(rb->GetBodyHandle());
-				uint64_t colBody = 0;
-				if (auto* cc = registry.try_get<CircleCollider2DComponent>(preAllocated[i])) colBody = b2StoreBodyId(cc->m_BodyId);
-				else if (auto* bc = registry.try_get<BoxCollider2DComponent>(preAllocated[i])) colBody = b2StoreBodyId(bc->m_BodyId);
-				if (colBody != 0) {
-					IDX_CORE_INFO_TAG("HydrateDbg", "ent={} rbBody={} colBody={} shared={} rbValid={}",
-						static_cast<uint32_t>(preAllocated[i]), rbBody, colBody, (rbBody == colBody) ? 1 : 0, rb->IsValid() ? 1 : 0);
-				}
 			}
 		}
 

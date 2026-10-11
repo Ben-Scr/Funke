@@ -1,6 +1,7 @@
 #pragma once
 #include "Scene/Entity.hpp"
 #include <cstddef>
+#include <functional>
 #include <span>
 
 namespace Index {
@@ -16,6 +17,8 @@ namespace Index {
 		std::span<const Entity> entities,
 		char* searchBuffer,
 		std::size_t searchBufferSize,
-		bool* outChanged = nullptr);
+		bool* outChanged = nullptr,
+		// Runs right before a component is added, e.g. to snapshot the entities for undo.
+		const std::function<void()>& onBeforeChange = {});
 
 }

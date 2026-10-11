@@ -126,22 +126,22 @@ namespace Index {
 		style = ImGuiStyle();
 
 		// ── Sizing & Rounding ───────────────────────────────────────
-		style.WindowPadding     = ImVec2(10, 10);
-		style.FramePadding      = ImVec2(6, 4);
-		style.CellPadding       = ImVec2(4, 3);
-		style.ItemSpacing       = ImVec2(8, 5);
-		style.ItemInnerSpacing  = ImVec2(5, 4);
+		style.WindowPadding     = ImVec2(14, 14);
+		style.FramePadding      = ImVec2(10, 6);
+		style.CellPadding       = ImVec2(6, 4);
+		style.ItemSpacing       = ImVec2(8, 7);
+		style.ItemInnerSpacing  = ImVec2(6, 4);
 		style.IndentSpacing     = 16.0f;
-		style.ScrollbarSize     = 13.0f;
+		style.ScrollbarSize     = 10.0f;
 		style.GrabMinSize       = 8.0f;
 
-		style.WindowRounding    = 4.0f;
-		style.ChildRounding     = 3.0f;
-		style.FrameRounding     = 3.0f;
-		style.PopupRounding     = 3.0f;
-		style.ScrollbarRounding = 6.0f;
-		style.GrabRounding      = 2.0f;
-		style.TabRounding       = 3.0f;
+		style.WindowRounding    = 8.0f;
+		style.ChildRounding     = 8.0f;
+		style.FrameRounding     = 6.0f;
+		style.PopupRounding     = 8.0f;
+		style.ScrollbarRounding = 8.0f;
+		style.GrabRounding      = 4.0f;
+		style.TabRounding       = 6.0f;
 
 		style.WindowBorderSize  = 1.0f;
 		style.FrameBorderSize   = 0.0f;
@@ -154,16 +154,16 @@ namespace Index {
 		// ── Colors ──────────────────────────────────────────────────
 		ImVec4* c = style.Colors;
 
-		const ImVec4 bg        = dark ? ImVec4(0.12f, 0.12f, 0.14f, 1.00f) : ImVec4(0.94f, 0.95f, 0.97f, 1.00f);
-		const ImVec4 bgChild   = dark ? ImVec4(0.13f, 0.13f, 0.15f, 1.00f) : ImVec4(0.98f, 0.98f, 0.99f, 1.00f);
-		const ImVec4 bgPopup   = dark ? ImVec4(0.15f, 0.15f, 0.18f, 1.00f) : ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
-		const ImVec4 surface   = dark ? ImVec4(0.18f, 0.18f, 0.21f, 1.00f) : ImVec4(0.88f, 0.90f, 0.93f, 1.00f);
-		const ImVec4 surfaceHi = dark ? ImVec4(0.24f, 0.24f, 0.28f, 1.00f) : ImVec4(0.82f, 0.85f, 0.89f, 1.00f);
-		const ImVec4 surfaceAct= dark ? ImVec4(0.28f, 0.28f, 0.33f, 1.00f) : ImVec4(0.74f, 0.79f, 0.86f, 1.00f);
-		const ImVec4 border    = dark ? ImVec4(0.24f, 0.24f, 0.28f, 0.65f) : ImVec4(0.60f, 0.64f, 0.70f, 0.65f);
-		const ImVec4 accent    = dark ? ImVec4(0.33f, 0.53f, 0.84f, 1.00f) : ImVec4(0.18f, 0.39f, 0.72f, 1.00f);
-		const ImVec4 text      = dark ? ImVec4(0.88f, 0.88f, 0.90f, 1.00f) : ImVec4(0.10f, 0.11f, 0.13f, 1.00f);
-		const ImVec4 textDim   = dark ? ImVec4(0.50f, 0.50f, 0.54f, 1.00f) : ImVec4(0.42f, 0.45f, 0.50f, 1.00f);
+		const ImVec4 bg        = dark ? ImVec4(0.110f, 0.114f, 0.125f, 1.00f) : ImVec4(0.949f, 0.953f, 0.961f, 1.00f);
+		const ImVec4 bgChild   = ImVec4(0, 0, 0, 0);
+		const ImVec4 bgPopup   = dark ? ImVec4(0.145f, 0.149f, 0.165f, 1.00f) : ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
+		const ImVec4 surface   = dark ? ImVec4(0.165f, 0.171f, 0.188f, 1.00f) : ImVec4(0.890f, 0.898f, 0.914f, 1.00f);
+		const ImVec4 surfaceHi = dark ? ImVec4(0.212f, 0.220f, 0.243f, 1.00f) : ImVec4(0.843f, 0.855f, 0.878f, 1.00f);
+		const ImVec4 surfaceAct= dark ? ImVec4(0.255f, 0.265f, 0.294f, 1.00f) : ImVec4(0.788f, 0.804f, 0.835f, 1.00f);
+		const ImVec4 border    = dark ? ImVec4(0.85f, 0.90f, 1.00f, 0.09f) : ImVec4(0.10f, 0.14f, 0.22f, 0.14f);
+		const ImVec4 accent    = dark ? ImVec4(0.357f, 0.553f, 0.937f, 1.00f) : ImVec4(0.184f, 0.420f, 0.859f, 1.00f);
+		const ImVec4 text      = dark ? ImVec4(0.922f, 0.925f, 0.937f, 1.00f) : ImVec4(0.118f, 0.125f, 0.145f, 1.00f);
+		const ImVec4 textDim   = dark ? ImVec4(0.545f, 0.557f, 0.592f, 1.00f) : ImVec4(0.447f, 0.463f, 0.502f, 1.00f);
 
 		c[ImGuiCol_WindowBg]             = bg;
 		c[ImGuiCol_ChildBg]              = bgChild;
@@ -186,7 +186,7 @@ namespace Index {
 
 		c[ImGuiCol_MenuBarBg]            = dark ? ImVec4(0.14f, 0.14f, 0.16f, 1.00f) : ImVec4(0.90f, 0.92f, 0.95f, 1.00f);
 
-		c[ImGuiCol_ScrollbarBg]          = dark ? ImVec4(0.10f, 0.10f, 0.12f, 0.53f) : ImVec4(0.84f, 0.86f, 0.90f, 0.53f);
+		c[ImGuiCol_ScrollbarBg]          = ImVec4(0, 0, 0, 0);
 		c[ImGuiCol_ScrollbarGrab]        = dark ? ImVec4(0.28f, 0.28f, 0.32f, 1.00f) : ImVec4(0.66f, 0.70f, 0.76f, 1.00f);
 		c[ImGuiCol_ScrollbarGrabHovered] = dark ? ImVec4(0.35f, 0.35f, 0.40f, 1.00f) : ImVec4(0.56f, 0.61f, 0.68f, 1.00f);
 		c[ImGuiCol_ScrollbarGrabActive]  = dark ? ImVec4(0.42f, 0.42f, 0.48f, 1.00f) : ImVec4(0.48f, 0.54f, 0.62f, 1.00f);
@@ -195,9 +195,9 @@ namespace Index {
 		c[ImGuiCol_ButtonHovered]        = surfaceHi;
 		c[ImGuiCol_ButtonActive]         = surfaceAct;
 
-		c[ImGuiCol_Header]               = dark ? ImVec4(0.20f, 0.20f, 0.24f, 1.00f) : ImVec4(0.82f, 0.86f, 0.92f, 1.00f);
+		c[ImGuiCol_Header]               = ImVec4(accent.x, accent.y, accent.z, 0.22f);
 		c[ImGuiCol_HeaderHovered]        = surfaceHi;
-		c[ImGuiCol_HeaderActive]         = surfaceAct;
+		c[ImGuiCol_HeaderActive]         = ImVec4(accent.x, accent.y, accent.z, 0.30f);
 
 		c[ImGuiCol_Separator]            = border;
 		c[ImGuiCol_SeparatorHovered]     = dark ? ImVec4(0.36f, 0.36f, 0.42f, 1.00f) : ImVec4(0.54f, 0.60f, 0.68f, 1.00f);

@@ -19,6 +19,7 @@ project "Index-Engine-Tests"
     -- Link the engine SharedLib so we can call into Index:: functions directly
     -- (e.g. ParseInstalledPackagesFromXml).
     UseDependencySet(Dependency.EditorRuntimeCommon)
+    UseIndexProfilerDependencies(true)
     defines(GetIndexModuleDefines())
     ApplyIndexEditorModuleDefine()
     defines { "IDX_IMPORT_DLL" }
@@ -36,7 +37,7 @@ project "Index-Engine-Tests"
         CopyGladDll
     }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
-    if IndexProfiler.Enabled then postbuildcommands { CopyTracyDll } end
+    ApplyIndexProfilerRuntime()
 
     filter "system:windows"
         -- See Index-Engine/premake5.lua for the rationale on

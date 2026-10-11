@@ -15,6 +15,8 @@
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Graphics/GizmoRenderer.hpp"
+#include "Gui/EditorTheme.hpp"
+#include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Graphics/Gizmo.hpp"
@@ -47,7 +49,319 @@
 
 namespace Index {
 	namespace {
-		constexpr const char* k_QuitSavePopupName = "Unsaved Scene";
+		constexpr const char* k_UnsavedWorkPopupName = "Unsaved Work";
+	}
+
+	std::string ImGuiEditorLayer::MakeEditorSceneDefinitionName() {
+		std::string name;
+		do {
+			name = "$EditorAssetScene." + std::to_string(++m_EditorSceneDefinitionSerial);
+		} while (SceneManager::HasSceneDefinition(name));
+		return name;
+	}
+
+	bool ImGuiEditorLayer::LoadEditorScene(const std::string& path, bool additive,
+		std::shared_ptr<Scene>& loadedScene, std::string& definitionName,
+		bool allowDuplicateSceneName, bool suspendLifecycle) {
+		loadedScene.reset();
+		definitionName.clear();
+		if (suspendLifecycle && !additive) {
+			IDX_ERROR_TAG("Editor", "Suspended editor scene loads must be additive.");
+			return false;
+		}
+		if (path.empty() || !File::Exists(path)) {
+			IDX_ERROR_TAG("Editor", "Scene file is missing: {}", path);
+			return false;
+		}
+
+		definitionName = MakeEditorSceneDefinitionName();
+		SceneManager::RegisterScene(definitionName).OnLoadChecked(
+			[this, path, additive, allowDuplicateSceneName, suspendLifecycle](Scene& scene) {
+				if (!SceneSerializer::LoadFromFile(scene, path)) {
+					return false;
+				}
+				if (additive && !allowDuplicateSceneName && SceneManager::IsSceneLoaded(scene.GetName())) {
+					IDX_ERROR_TAG("Editor", "Scene '{}' is already loaded.", scene.GetName());
+					return false;
+				}
+				if (!suspendLifecycle) {
+					std::vector<Scene*> scenes;
+					for (const std::weak_ptr<Scene>& weakScene : SceneManager::GetLoadedScenes()) {
+						if (const std::shared_ptr<Scene> loaded = weakScene.lock()) {
+							if (additive || loaded->IsPersistent()) {
+								scenes.push_back(loaded.get());
+							}
+						}
+					}
+					scenes.push_back(&scene);
+					if (!ValidateUniquePersistentEntityIds(scenes, "Scene open")) {
+						return false;
+					}
+				}
+				return true;
+			});
+
+		SceneLoadResult result = suspendLifecycle
+			? SceneManager::TryLoadSceneAdditiveSuspended(definitionName)
+			: additive
+				? SceneManager::TryLoadSceneAdditive(definitionName)
+				: SceneManager::TryLoadScene(definitionName);
+		if (!result || !(loadedScene = result.LoadedScene.lock())) {
+			IDX_ERROR_TAG("Editor", "Failed to open scene '{}': {}", path,
+				result.Message.empty() ? "scene load failed" : result.Message);
+			SceneManager::UnregisterScene(definitionName);
+			definitionName.clear();
+			return false;
+		}
+		return true;
+	}
+
+	bool ImGuiEditorLayer::OpenSceneExclusive(const std::string& path) {
+		const std::unordered_set<std::string> previousDefinitions = m_EditorOwnedSceneDefinitions;
+		std::shared_ptr<Scene> loadedScene;
+		std::string definitionName;
+		if (!LoadEditorScene(path, false, loadedScene, definitionName)) {
+			return false;
+		}
+
+		for (const std::string& previousDefinition : previousDefinitions) {
+			if (previousDefinition != definitionName) {
+				SceneManager::UnregisterScene(previousDefinition);
+			}
+		}
+		m_EditorOwnedSceneDefinitions.clear();
+		m_EditorOwnedSceneDefinitions.insert(definitionName);
+		m_EditorSceneDefinitionsBySceneName.clear();
+		m_EditorSceneDefinitionsBySceneName[loadedScene->GetName()] = definitionName;
+
+		ClearEntitySelection();
+		m_EntityOrder.clear();
+		m_EntityOrderDirty = true;
+		m_LastInteractedSceneName = loadedScene->GetName();
+		m_CutEntities.clear();
+
+		if (IndexProject* project = ProjectManager::GetCurrentProject()) {
+			const std::string previousLastOpenedScene = project->LastOpenedScene;
+			project->LastOpenedScene = loadedScene->GetName();
+			if (!project->Save()) {
+				project->LastOpenedScene = previousLastOpenedScene;
+				IDX_ERROR_TAG("Editor", "Opened scene '{}', but failed to update project metadata.", loadedScene->GetName());
+			}
+		}
+		return true;
+	}
+
+	void ImGuiEditorLayer::RemoveEditorScene(const std::string& sceneName) {
+		if (sceneName.empty() || !SceneManager::IsSceneLoaded(sceneName)) {
+			return;
+		}
+
+		ClearEntitySelection();
+		if (m_LastInteractedSceneName == sceneName) {
+			m_LastInteractedSceneName.clear();
+		}
+		m_CutEntities.clear();
+
+		std::string definitionName;
+		if (auto it = m_EditorSceneDefinitionsBySceneName.find(sceneName);
+			it != m_EditorSceneDefinitionsBySceneName.end()) {
+			definitionName = it->second;
+		}
+		SceneManager::UnloadScene(sceneName);
+		if (!definitionName.empty() && !SceneManager::IsSceneLoaded(sceneName)) {
+			SceneManager::UnregisterScene(definitionName);
+			m_EditorOwnedSceneDefinitions.erase(definitionName);
+			m_EditorSceneDefinitionsBySceneName.erase(sceneName);
+		}
+
+		if (IndexProject* project = ProjectManager::GetCurrentProject()) {
+			if (Scene* active = SceneManager::GetActiveScene()) {
+				const std::string previousLastOpenedScene = project->LastOpenedScene;
+				project->LastOpenedScene = active->GetName();
+				if (!project->Save()) {
+					project->LastOpenedScene = previousLastOpenedScene;
+					IDX_ERROR_TAG("Editor", "Removed scene '{}', but failed to update project metadata.", sceneName);
+				}
+			}
+		}
+	}
+
+	std::vector<std::shared_ptr<Scene>> ImGuiEditorLayer::GetDirtyScenesForPendingAction() const {
+		std::vector<std::shared_ptr<Scene>> dirtyScenes;
+		for (const std::weak_ptr<Scene>& weakScene : SceneManager::GetLoadedScenes()) {
+			std::shared_ptr<Scene> scene = weakScene.lock();
+			if (!scene || !scene->IsDirty()) {
+				continue;
+			}
+			if (m_PendingEditorAction == PendingEditorAction::RemoveScene
+				&& scene->GetName() != m_PendingEditorActionPayload) {
+				continue;
+			}
+			dirtyScenes.push_back(std::move(scene));
+		}
+		return dirtyScenes;
+	}
+
+	bool ImGuiEditorLayer::HasUnsavedWorkForPendingAction() const {
+		if (!GetDirtyScenesForPendingAction().empty()) {
+			return true;
+		}
+		const bool closesApplication = m_PendingEditorAction == PendingEditorAction::Quit
+			|| m_PendingEditorAction == PendingEditorAction::Reload
+			|| m_PendingEditorAction == PendingEditorAction::Restart
+			|| m_PendingEditorAction == PendingEditorAction::RebuildEngine;
+		return closesApplication && ((m_PrefabEditScene && m_PrefabEditScene->IsDirty())
+			|| m_PrefabEditDirty
+			|| (m_PrefabInspector.IsOpen() && m_PrefabInspector.HasUnsavedChanges()));
+	}
+
+	bool ImGuiEditorLayer::SaveUnsavedWorkForPendingAction() {
+		const bool closesApplication = m_PendingEditorAction == PendingEditorAction::Quit
+			|| m_PendingEditorAction == PendingEditorAction::Reload
+			|| m_PendingEditorAction == PendingEditorAction::Restart
+			|| m_PendingEditorAction == PendingEditorAction::RebuildEngine;
+		if (closesApplication) {
+			if (m_PrefabEditScene && (m_PrefabEditScene->IsDirty() || m_PrefabEditDirty)
+				&& !SavePrefabEditChanges()) {
+				return false;
+			}
+			if (m_PrefabInspector.IsOpen() && m_PrefabInspector.HasUnsavedChanges()
+				&& !SavePrefabInspectorChanges()) {
+				return false;
+			}
+		}
+
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		const std::vector<std::shared_ptr<Scene>> dirtyScenes = GetDirtyScenesForPendingAction();
+		if (!dirtyScenes.empty() && !project) {
+			IDX_ERROR_TAG("Editor", "Cannot save scenes: no active project.");
+			return false;
+		}
+
+		for (const std::shared_ptr<Scene>& scene : dirtyScenes) {
+			const std::string path = project->GetSceneFilePath(scene->GetName());
+			if (path.empty() || !SceneSerializer::SaveToFile(*scene, path)) {
+				IDX_ERROR_TAG("Editor", "Failed to save scene '{}'.", scene->GetName());
+				return false;
+			}
+		}
+
+		return SaveCurrentProjectMetadata();
+	}
+
+	bool ImGuiEditorLayer::SaveCurrentProjectMetadata() {
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project) {
+			return true;
+		}
+
+		const std::string previousLastOpenedScene = project->LastOpenedScene;
+		if (Scene* active = SceneManager::GetActiveScene()) {
+			project->LastOpenedScene = active->GetName();
+		}
+		if (!project->Save()) {
+			project->LastOpenedScene = previousLastOpenedScene;
+			IDX_ERROR_TAG("Editor", "Failed to save project metadata.");
+			return false;
+		}
+		return true;
+	}
+
+	void ImGuiEditorLayer::RequestEditorAction(PendingEditorAction action, std::string payload) {
+		if (action == PendingEditorAction::None || m_PendingEditorAction != PendingEditorAction::None) {
+			return;
+		}
+		m_PendingEditorAction = action;
+		m_PendingEditorActionPayload = std::move(payload);
+		m_PendingEditorActionProjectSaveCompleted = false;
+		m_PendingEditorActionDiscardUnsavedWork = false;
+		m_PendingEditorActionApproved = !HasUnsavedWorkForPendingAction();
+		if (!m_PendingEditorActionApproved) {
+			m_ShowUnsavedWorkDialog = true;
+		}
+	}
+
+	void ImGuiEditorLayer::ClearPendingEditorAction() {
+		m_PendingEditorAction = PendingEditorAction::None;
+		m_PendingEditorActionPayload.clear();
+		m_PendingEditorActionApproved = false;
+		m_PendingEditorActionProjectSaveCompleted = false;
+		m_PendingEditorActionDiscardUnsavedWork = false;
+		m_ShowUnsavedWorkDialog = false;
+		m_PendingEngineRebuildWorkingDirectory.clear();
+	}
+
+	bool ImGuiEditorLayer::ProcessPendingEditorAction() {
+		if (!m_PendingEditorActionApproved || m_PendingEditorAction == PendingEditorAction::None) {
+			return false;
+		}
+
+		const PendingEditorAction action = m_PendingEditorAction;
+		const bool fileWorkerActive = m_BuildState != 0 || m_ReserializeState != 0;
+		const bool quitWithoutSaving = action == PendingEditorAction::Quit
+			&& m_PendingEditorActionDiscardUnsavedWork;
+		if (fileWorkerActive && !quitWithoutSaving) {
+			return false;
+		}
+		const bool closesApplication = action == PendingEditorAction::Quit
+			|| action == PendingEditorAction::Reload
+			|| action == PendingEditorAction::Restart
+			|| action == PendingEditorAction::RebuildEngine;
+		if (!m_PendingEditorActionProjectSaveCompleted
+			&& !m_PendingEditorActionDiscardUnsavedWork && HasUnsavedWorkForPendingAction()) {
+			m_PendingEditorActionApproved = false;
+			m_ShowUnsavedWorkDialog = true;
+			return false;
+		}
+		if (closesApplication && !m_PendingEditorActionProjectSaveCompleted
+			&& !m_PendingEditorActionDiscardUnsavedWork) {
+			if (!SaveCurrentProjectMetadata()) {
+				if (action == PendingEditorAction::Quit) Process::ResetCancellation();
+				ClearPendingEditorAction();
+				return false;
+			}
+			m_PendingEditorActionProjectSaveCompleted = true;
+		}
+
+		bool succeeded = false;
+		switch (action) {
+			case PendingEditorAction::OpenScene:
+				succeeded = OpenSceneExclusive(m_PendingEditorActionPayload);
+				break;
+			case PendingEditorAction::RemoveScene:
+				RemoveEditorScene(m_PendingEditorActionPayload);
+				succeeded = true;
+				break;
+			case PendingEditorAction::Quit:
+				Application::ConfirmQuit();
+				succeeded = true;
+				break;
+			case PendingEditorAction::Reload:
+				Application::Reload();
+				succeeded = true;
+				break;
+			case PendingEditorAction::Restart:
+				Application::Restart();
+				succeeded = true;
+				break;
+			case PendingEditorAction::RebuildEngine:
+				succeeded = Process::LaunchDetached(
+					{ "cmd.exe", "/c", m_PendingEditorActionPayload },
+					m_PendingEngineRebuildWorkingDirectory);
+				if (succeeded) {
+					Application::Quit();
+				}
+				else {
+					IDX_ERROR_TAG("Editor", "Failed to launch engine rebuild script '{}'.", m_PendingEditorActionPayload);
+				}
+				break;
+			case PendingEditorAction::None:
+				break;
+		}
+
+		const bool stopsRendering = succeeded && closesApplication;
+		ClearPendingEditorAction();
+		return stopsRendering;
 	}
 
 	void ImGuiEditorLayer::EnsureViewportFramebuffer(int width, int height) {
@@ -77,6 +391,37 @@ namespace Index {
 			}
 		}
 
+		if (Application::IsQuitRequested()) {
+			Application::CancelQuit();
+			if (m_PendingEditorAction != PendingEditorAction::Quit) {
+				m_DeferredQuitRequested = true;
+			}
+		}
+
+		const bool fileWorkerActive = m_BuildState != 0 || m_ReserializeState != 0;
+		if (m_DeferredQuitRequested || m_PendingEditorAction == PendingEditorAction::Quit) {
+			Process::CancelAll();
+		}
+		if (m_DeferredQuitRequested && m_PendingEditorAction == PendingEditorAction::None
+			&& (!Application::GetIsPlaying() || !fileWorkerActive)) {
+			if (!Application::GetIsPlaying()) {
+				m_DeferredQuitRequested = false;
+				RequestEditorAction(PendingEditorAction::Quit);
+			}
+			else if (RestoreEditorSceneAfterPlaymode()) {
+				m_DeferredQuitRequested = false;
+				RequestEditorAction(PendingEditorAction::Quit);
+			}
+			else {
+				m_DeferredQuitRequested = false;
+				Process::ResetCancellation();
+			}
+		}
+
+		if (ProcessPendingEditorAction()) {
+			return;
+		}
+
 		// MUST drain before the active-scene early-return: prefab-edit is valid with no active scene; gating it on the scene check silently no-ops double-click/right-click→Open in that case.
 		if (!Application::GetIsPlaying() && m_AssetBrowserInitialized && m_BuildState == 0 && m_ReserializeState == 0) {
 			std::string earlyPendingPrefabEdit = m_AssetBrowser.TakePendingPrefabEdit();
@@ -86,14 +431,150 @@ namespace Index {
 			}
 		}
 
-		Scene* activeScene = SceneManager::Get().GetActiveScene();
-		if (!activeScene) {
+		if (m_ShowUnsavedWorkDialog) {
+			ImGui::OpenPopup(k_UnsavedWorkPopupName);
+			m_UnsavedWorkDialogOpen = true;
+			m_ShowUnsavedWorkDialog = false;
+		}
+		ImGuiUtils::CenterNextModal();
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		bool unsavedWorkDialogOpen = true;
+		if (ImGui::BeginPopupModal(k_UnsavedWorkPopupName, &unsavedWorkDialogOpen,
+			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking)) {
+			m_UnsavedWorkDialogOpen = true;
+			const char* actionText = "continuing";
+			switch (m_PendingEditorAction) {
+				case PendingEditorAction::OpenScene: actionText = "opening another scene"; break;
+				case PendingEditorAction::RemoveScene: actionText = "removing this scene"; break;
+				case PendingEditorAction::Quit: actionText = "closing the editor"; break;
+				case PendingEditorAction::Reload: actionText = "reloading the editor"; break;
+				case PendingEditorAction::Restart: actionText = "restarting the editor"; break;
+				case PendingEditorAction::RebuildEngine: actionText = "closing for the engine rebuild"; break;
+				case PendingEditorAction::None: break;
+			}
+			const bool closesApplication = m_PendingEditorAction == PendingEditorAction::Quit
+				|| m_PendingEditorAction == PendingEditorAction::Reload
+				|| m_PendingEditorAction == PendingEditorAction::Restart
+				|| m_PendingEditorAction == PendingEditorAction::RebuildEngine;
+			ImGui::TextWrapped("Save unsaved work before %s?", actionText);
+			const std::vector<std::shared_ptr<Scene>> dirtyScenes = GetDirtyScenesForPendingAction();
+			for (const std::shared_ptr<Scene>& dirtyScene : dirtyScenes) {
+				ImGui::BulletText("Scene: %s", dirtyScene->GetName().c_str());
+			}
+			if (closesApplication && m_PrefabEditScene
+				&& (m_PrefabEditScene->IsDirty() || m_PrefabEditDirty)) {
+				const std::string prefabName = Path::ToUtf8(Path::FromUtf8(m_PrefabEditPath).filename());
+				ImGui::BulletText("Prefab: %s", prefabName.c_str());
+			}
+			if (closesApplication && m_PrefabInspector.IsOpen() && m_PrefabInspector.HasUnsavedChanges()) {
+				const std::string prefabName = Path::ToUtf8(
+					Path::FromUtf8(m_PrefabInspector.GetCurrentPath()).filename());
+				ImGui::BulletText("Prefab: %s", prefabName.c_str());
+			}
+			ImGui::Spacing();
+
+			auto closeUnsavedWorkDialog = [&]() {
+				m_UnsavedWorkDialogOpen = false;
+				ImGui::CloseCurrentPopup();
+			};
+			const bool saveBlockedByFileWorker = m_BuildState != 0 || m_ReserializeState != 0;
+			if (saveBlockedByFileWorker) {
+				EditorUI::StatusText(EditorUI::Tone::Warning, "Wait for active file work to stop before saving.");
+			}
+			const int choice = EditorUI::DialogFooter({ "Save All", "Don't Save", "Cancel" }, 0, 1);
+			if (choice == 0 && !saveBlockedByFileWorker) {
+				if (SaveUnsavedWorkForPendingAction()) {
+					m_PendingEditorActionProjectSaveCompleted = true;
+					m_PendingEditorActionApproved = true;
+					closeUnsavedWorkDialog();
+				}
+			}
+			if (choice == 1) {
+				m_PendingEditorActionDiscardUnsavedWork = true;
+				m_PendingEditorActionApproved = true;
+				closeUnsavedWorkDialog();
+			}
+			if (choice == 2 || !unsavedWorkDialogOpen) {
+				closeUnsavedWorkDialog();
+				if (m_PendingEditorAction == PendingEditorAction::Quit) Process::ResetCancellation();
+				ClearPendingEditorAction();
+			}
+			ImGui::EndPopup();
+		}
+		else if (m_UnsavedWorkDialogOpen && !ImGui::IsPopupOpen(k_UnsavedWorkPopupName)) {
+			m_UnsavedWorkDialogOpen = false;
+			if (m_PendingEditorAction == PendingEditorAction::Quit) Process::ResetCancellation();
+			ClearPendingEditorAction();
+		}
+		if (ProcessPendingEditorAction()) {
 			return;
 		}
-		Scene& scene = *activeScene;
+
+		if (m_ShowPlayModeRestoreError) {
+			ImGui::OpenPopup("Play Mode Restore Failed");
+			m_ShowPlayModeRestoreError = false;
+		}
+		ImGuiUtils::CenterNextModal();
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		if (ImGui::BeginPopupModal("Play Mode Restore Failed", nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking)) {
+			ImGui::TextWrapped("%s", m_PlayModeRestoreError.c_str());
+			if (EditorUI::DialogFooter({ "OK" }, 0) == 0) {
+				m_PlayModeRestoreError.clear();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+
+		if (!m_RecoveryChecked && ProjectManager::HasProject() && Application::IsStartupLoadComplete()) {
+			m_RecoveryChecked = true;
+			m_PendingRecovery = SceneRecovery::FindPending();
+			if (!m_PendingRecovery.empty()) ImGui::OpenPopup("Recover Unsaved Changes");
+		}
+		ImGuiUtils::CenterNextModal();
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		if (ImGui::BeginPopupModal("Recover Unsaved Changes", nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking)) {
+			ImGui::TextUnformatted("Index did not shut down cleanly last time.");
+			ImGui::TextUnformatted("Unsaved changes were found for:");
+			for (const SceneRecovery::PendingScene& pending : m_PendingRecovery) {
+				ImGui::BulletText("%s", pending.SceneName.c_str());
+			}
+			ImGui::Spacing();
+			ImGui::TextDisabled("Restoring keeps the current file as <scene>.bak.");
+			if (!m_RecoveryError.empty()) {
+				ImGui::TextColored(EditorTheme::Colors::Error(), "%s", m_RecoveryError.c_str());
+			}
+			const int choice = EditorUI::DialogFooter({ "Restore", "Discard" }, 0);
+			if (choice == 0) {
+				const std::string reopenPath = m_PendingRecovery.front().ScenePath;
+				if (SceneRecovery::RestoreAll(m_PendingRecovery, &m_RecoveryError)) {
+					m_PendingRecovery.clear();
+					m_RecoveryError.clear();
+					if (!OpenSceneExclusive(reopenPath)) {
+						IDX_ERROR_TAG("Editor", "Recovered scene was written to {} but could not be opened.", reopenPath);
+					}
+					ImGui::CloseCurrentPopup();
+				}
+			}
+			else if (choice == 1) {
+				SceneRecovery::DiscardAll();
+				m_PendingRecovery.clear();
+				m_RecoveryError.clear();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+
+		Scene* activeScene = SceneManager::GetActiveScene();
+		const bool quitInProgress = m_DeferredQuitRequested
+			|| m_PendingEditorAction == PendingEditorAction::Quit;
 
 		// 1-frame delay (1→2→3): lets the progress overlay paint before the worker launches; without it the overlay wouldn't appear before dotnet build's first stage.
-		if (m_BuildState == 1) {
+		if (quitInProgress && (m_BuildState == 1 || m_BuildState == 2)) {
+			m_BuildState = 0;
+			m_BuildAndPlay = false;
+		} else if (m_BuildState == 1) {
 			m_BuildState = 2;
 		} else if (m_BuildState == 2) {
 			ExecuteBuildAsync();
@@ -115,29 +596,24 @@ namespace Index {
 			}
 			m_BuildState = 0;
 
-			// ShellExecuteA must run on the UI thread: it can pop modal dialogs on its calling thread.
+			// ShellExecute must run on the UI thread: it can pop modal dialogs on its calling thread.
 #ifdef IDX_PLATFORM_WINDOWS
-			if (m_BuildSucceeded.load(std::memory_order_relaxed) && !m_BuildOutputDir.empty()) {
-				ShellExecuteA(nullptr, "open", m_BuildOutputDir.c_str(),
+			if (!quitInProgress && m_BuildSucceeded.load(std::memory_order_relaxed) && !m_BuildOutputDir.empty()) {
+				const std::wstring outputDirectory = Path::FromUtf8(m_BuildOutputDir).wstring();
+				ShellExecuteW(nullptr, L"open", outputDirectory.c_str(),
 					nullptr, nullptr, SW_SHOWNORMAL);
 			}
 #endif
 
 			// Launch the built game if "Build and Play" was clicked
-			if (m_BuildAndPlay && m_BuildSucceeded.load(std::memory_order_relaxed)) {
+			if (!quitInProgress && m_BuildAndPlay && m_BuildSucceeded.load(std::memory_order_relaxed)) {
 				m_BuildAndPlay = false;
 				IndexProject* project = ProjectManager::GetCurrentProject();
-				if (project) {
-					std::string outputDir = m_BuildOutputDirBuffer;
-					if (outputDir.empty())
-						outputDir = Path::Combine(project->RootDirectory, "Builds");
+				if (project && !m_BuiltExecutablePath.empty()) {
 #ifdef IDX_PLATFORM_WINDOWS
-					// ExecutableName overrides the exe stem; ExecuteBuild uses the same rule, so read both off the project to stay in lockstep.
-					const std::string exeStem = project->ExecutableName.empty()
-						? project->Name : project->ExecutableName;
-					auto exePath = std::filesystem::path(outputDir) / (exeStem + ".exe");
+					const std::filesystem::path exePath = Path::FromUtf8(m_BuiltExecutablePath);
 					if (std::filesystem::exists(exePath)) {
-						std::string cmd = "\"" + std::filesystem::canonical(exePath).string() + "\"";
+						std::string cmd = "\"" + Path::ToUtf8(std::filesystem::canonical(exePath)) + "\"";
 						// Proper UTF-8 → wide conversion; byte-wise iterator construction corrupts non-ASCII paths (Unicode folders, accented names).
 						std::wstring wcmd;
 						{
@@ -158,15 +634,15 @@ namespace Index {
 							const DWORD errorCode = GetLastError();
 							IDX_ERROR_TAG("Editor",
 								"Failed to launch built game '{}': error {}",
-								exePath.string(), errorCode);
+								Path::ToUtf8(exePath), errorCode);
 						}
 						else {
 							CloseHandle(pi.hProcess);
 							CloseHandle(pi.hThread);
-							IDX_INFO_TAG("Build", "Launched: {}", exePath.string());
+							IDX_INFO_TAG("Build", "Launched: {}", Path::ToUtf8(exePath));
 						}
 					} else {
-						IDX_CORE_ERROR_TAG("Build", "Built executable not found: {}", exePath.string());
+						IDX_CORE_ERROR_TAG("Build", "Built executable not found: {}", Path::ToUtf8(exePath));
 					}
 #endif
 				}
@@ -180,7 +656,9 @@ namespace Index {
 		// Asset format reserialization (Project Settings → Serialization) runs the same 3-step async
 		// dance as the build: a 1-frame delay lets the progress window paint, then the worker rewrites
 		// every .scene/.prefab off-thread while the editor keeps rendering.
-		if (m_ReserializeState == 1) {
+		if (quitInProgress && (m_ReserializeState == 1 || m_ReserializeState == 2)) {
+			m_ReserializeState = 0;
+		} else if (m_ReserializeState == 1) {
 			m_ReserializeState = 2;
 		} else if (m_ReserializeState == 2) {
 			ExecuteReserializeAsync();
@@ -210,6 +688,15 @@ namespace Index {
 			}
 		}
 
+		if (!activeScene) {
+			return;
+		}
+		if (m_EditorSceneDefinitionsBySceneName.empty()
+			&& m_EditorOwnedSceneDefinitions.contains("$EditorWorkingScene")) {
+			m_EditorSceneDefinitionsBySceneName[activeScene->GetName()] = "$EditorWorkingScene";
+		}
+		Scene& scene = *activeScene;
+
 		// Process OS file drops — forward to AssetBrowser
 		{
 			auto* app = Application::GetInstance();
@@ -226,39 +713,14 @@ namespace Index {
 			std::string dropPath = m_PendingSceneFileDrop;
 			m_PendingSceneFileDrop.clear();
 
-			std::string sceneName = std::filesystem::path(dropPath).stem().string();
-			auto& sm = SceneManager::Get();
-			if (!sm.HasSceneDefinition(sceneName))
-				sm.RegisterScene(sceneName);
-			if (!sm.IsSceneLoaded(sceneName)) {
-				auto weakScene = sm.LoadSceneAdditive(sceneName);
-				if (auto loaded = weakScene.lock()) {
-					SceneSerializer::LoadFromFile(*loaded, dropPath);
+			const std::string sceneName = std::filesystem::path(dropPath).stem().string();
+			if (!SceneManager::IsSceneLoaded(sceneName)) {
+				std::shared_ptr<Scene> loadedScene;
+				std::string definitionName;
+				if (LoadEditorScene(dropPath, true, loadedScene, definitionName)) {
+					m_EditorOwnedSceneDefinitions.insert(definitionName);
+					m_EditorSceneDefinitionsBySceneName[loadedScene->GetName()] = definitionName;
 					m_EntityOrder.clear(); m_EntityOrderDirty = true;
-				}
-			}
-		}
-
-		// Process deferred scene switch (blocked during Play Mode and active build)
-		if (!m_PendingSceneSwitch.empty() && !Application::GetIsPlaying() && m_BuildState == 0 && m_ReserializeState == 0) {
-			std::string switchPath = m_PendingSceneSwitch;
-			m_PendingSceneSwitch.clear();
-
-			auto& sm = SceneManager::Get();
-			Scene* active = sm.GetActiveScene();
-			if (active) {
-				// Exclusive switch: unload every scene except the active one (iterated by snapshot so UnloadScene doesn't invalidate the loop).
-				const std::string activeName = active->GetName();
-				for (const std::string& name : sm.GetLoadedSceneNames()) {
-					if (name != activeName) sm.UnloadScene(name);
-				}
-
-				SceneSerializer::LoadFromFile(*active, switchPath);
-				m_EntityOrder.clear(); m_EntityOrderDirty = true;
-				IndexProject* project = ProjectManager::GetCurrentProject();
-				if (project) {
-					project->LastOpenedScene = std::filesystem::path(switchPath).stem().string();
-					project->Save();
 				}
 			}
 		}
@@ -272,17 +734,12 @@ namespace Index {
 			std::string pendingLoad = m_AssetBrowser.TakePendingSceneLoad();
 			if (!pendingLoad.empty()) {
 				if (Application::GetIsPlaying()) {
-					RestoreEditorSceneAfterPlaymode();
-					m_PendingSceneSwitch = pendingLoad;
+					if (RestoreEditorSceneAfterPlaymode()) {
+						RequestEditorAction(PendingEditorAction::OpenScene, std::move(pendingLoad));
+					}
 				}
 				else {
-					Scene* active = SceneManager::Get().GetActiveScene();
-					if (active && active->IsDirty()) {
-						m_ConfirmDialogPendingPath = pendingLoad;
-						m_ShowSaveConfirmDialog = true;
-					} else {
-						m_PendingSceneSwitch = pendingLoad;
-					}
+					RequestEditorAction(PendingEditorAction::OpenScene, std::move(pendingLoad));
 				}
 			}
 		}
@@ -301,60 +758,36 @@ namespace Index {
 				SavePrefabEditChanges();
 			}
 			else if (m_PrefabInspector.IsOpen() && m_PrefabInspector.HasUnsavedChanges()) {
-				m_PrefabInspector.Save();
+				SavePrefabInspectorChanges();
 			}
 			else if (!Application::GetIsPlaying()) {
 				IndexProject* project = ProjectManager::GetCurrentProject();
 				if (project) {
 					bool savedAny = false;
-					for (auto& weakScene : SceneManager::Get().GetLoadedScenes()) {
+					bool allSaved = true;
+					for (auto& weakScene : SceneManager::GetLoadedScenes()) {
 						auto scene = weakScene.lock();
 						if (!scene || !scene->IsDirty()) continue;
 						std::string scenePath = project->GetSceneFilePath(scene->GetName());
-						if (SceneSerializer::SaveToFile(*scene, scenePath)) {
+						if (!scenePath.empty() && SceneSerializer::SaveToFile(*scene, scenePath)) {
 							savedAny = true;
 						}
+						else {
+							allSaved = false;
+							IDX_ERROR_TAG("Editor", "Failed to save scene '{}'.", scene->GetName());
+						}
 					}
-					if (savedAny) {
-						Scene* active = SceneManager::Get().GetActiveScene();
+					if (savedAny && allSaved) {
+						Scene* active = SceneManager::GetActiveScene();
+						const std::string previousLastOpenedScene = project->LastOpenedScene;
 						if (active) {
 							project->LastOpenedScene = active->GetName();
 						}
-						project->Save();
+						if (!project->Save()) {
+							project->LastOpenedScene = previousLastOpenedScene;
+							IDX_ERROR_TAG("Editor", "Scenes were saved, but project metadata could not be updated.");
+						}
 					}
-				}
-			}
-		}
-
-		// Intercept quit request: exit playmode first, then check for unsaved changes
-		if (Application::IsQuitRequested()) {
-			// Refuse to quit mid-build or mid-reserialization — would kill/race the worker thread (the
-			// quit path below saves scenes/prefabs the reserialization worker is rewriting) and leave
-			// partial artifacts on disk. Both are short-lived; the user can quit again once idle.
-			if (m_BuildState != 0 || m_ReserializeState != 0) {
-				Application::CancelQuit();
-			}
-			else {
-				// Exit playmode and restore scene first
-				if (Application::GetIsPlaying()) {
-					RestoreEditorSceneAfterPlaymode();
-				}
-
-				// Auto-save dirty prefab edits on quit — adding another modal on top of the scene quit dialog is too noisy.
-				if (m_PrefabEditScene && m_PrefabEditScene->IsDirty()) {
-					SavePrefabEditChanges();
-				}
-				// Always close prefab edit so destructors run before SceneManager cleanup.
-				if (m_PrefabEditScene) {
-					ClosePrefabEditing(false);
-				}
-
-				Scene* active = SceneManager::Get().GetActiveScene();
-				if (active && active->IsDirty()) {
-					if (!m_QuitSaveDialogOpen) {
-						m_ShowQuitSaveDialog = true;
-					}
-					Application::CancelQuit();
 				}
 			}
 		}
@@ -374,46 +807,6 @@ namespace Index {
 		RenderMainMenu(scene);
 		ImGui::EndDisabled();
 
-		// Save confirmation modal dialog (scene switch)
-		if (m_ShowSaveConfirmDialog) {
-			ImGui::OpenPopup("Save Changes?");
-			m_ShowSaveConfirmDialog = false;
-		}
-		ImGuiUtils::CenterNextModal();
-		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("Save Changes?", nullptr,
-			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
-			Scene* active = SceneManager::Get().GetActiveScene();
-			std::string activeName = active ? active->GetName() : "Scene";
-			ImGui::Text("Save changes to %s before opening?", activeName.c_str());
-			ImGui::Spacing();
-
-			if (ImGui::Button("Save", ImVec2(100, 0))) {
-				if (active) {
-					IndexProject* project = ProjectManager::GetCurrentProject();
-					if (project) {
-						std::string savePath = project->GetSceneFilePath(active->GetName());
-						SceneSerializer::SaveToFile(*active, savePath);
-					}
-				}
-				m_PendingSceneSwitch = m_ConfirmDialogPendingPath;
-				m_ConfirmDialogPendingPath.clear();
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Don't Save", ImVec2(100, 0))) {
-				m_PendingSceneSwitch = m_ConfirmDialogPendingPath;
-				m_ConfirmDialogPendingPath.clear();
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(100, 0))) {
-				m_ConfirmDialogPendingPath.clear();
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::EndPopup();
-		}
-
 		// Prefab-edit discard modal (back button with unsaved changes) — distinct from the prefab-inspector save prompt below (fired on asset selection change).
 		if (m_ShowPrefabEditDiscardPrompt) {
 			ImGui::OpenPopup("Unsaved Prefab Changes");
@@ -429,19 +822,18 @@ namespace Index {
 			std::string editPrefabName = std::filesystem::path(m_PrefabEditPath).stem().string();
 			if (editPrefabName.empty()) editPrefabName = "the prefab";
 			ImGui::Text("Save unsaved changes to %s?", editPrefabName.c_str());
-			ImGui::Spacing();
 
-			if (ImGui::Button("Save", ImVec2(100, 0))) {
-				ClosePrefabEditing(true);
-				ImGui::CloseCurrentPopup();
+			const int choice = EditorUI::DialogFooter({ "Save", "Don't Save", "Cancel" }, 0, 1);
+			if (choice == 0) {
+				if (ClosePrefabEditing(true)) {
+					ImGui::CloseCurrentPopup();
+				}
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Don't Save", ImVec2(100, 0))) {
+			if (choice == 1) {
 				ClosePrefabEditing(false);
 				ImGui::CloseCurrentPopup();
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+			if (choice == 2) {
 				// Stay in edit mode; modal closes without altering state.
 				ImGui::CloseCurrentPopup();
 			}
@@ -464,15 +856,14 @@ namespace Index {
 			else {
 				ImGui::Text("Delete %zu selected entities?", m_PendingEntityDeleteCount);
 			}
-			ImGui::Spacing();
 			ImGui::TextDisabled("This cannot be undone.");
-			ImGui::Spacing();
 
-			if (ImGui::Button("Delete", ImVec2(100, 0))) {
+			const int choice = EditorUI::DialogFooter({ "Delete", "Cancel" }, -1, 0);
+			if (choice == 0) {
 				// Re-resolve by id: the scene could have unloaded since the
 				// request (matches the AssetBrowser prefab-drop resolution).
 				Scene* target = nullptr;
-				SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
+				SceneManager::ForeachLoadedScene([&](Scene& s) {
 					if (!target && static_cast<uint64_t>(s.GetSceneId()) == m_PendingEntityDeleteSceneId) {
 						target = &s;
 					}
@@ -482,8 +873,7 @@ namespace Index {
 				}
 				ImGui::CloseCurrentPopup();
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(100, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+			if (choice == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
 				ImGui::CloseCurrentPopup();
 			}
 			ImGui::EndPopup();
@@ -502,99 +892,47 @@ namespace Index {
 			std::string prefabName = std::filesystem::path(m_PrefabInspector.GetCurrentPath()).filename().string();
 			if (prefabName.empty()) prefabName = "the prefab";
 			ImGui::Text("Save changes to %s before switching?", prefabName.c_str());
-			ImGui::Spacing();
 
-			if (ImGui::Button("Save", ImVec2(100, 0))) {
-				m_PrefabInspector.Save();
+			const int choice = EditorUI::DialogFooter({ "Save", "Don't Save", "Cancel" }, 0, 1);
+			if (choice == 0) {
+				if (SavePrefabInspectorChanges()) {
+					bool switchCompleted = true;
+					if (!m_PendingPrefabSwitchPath.empty()) {
+						switchCompleted = m_PrefabInspector.Open(m_PendingPrefabSwitchPath);
+						if (switchCompleted) {
+							m_PrefabInspectorPath = std::exchange(m_PendingPrefabSwitchPath, {});
+						}
+					}
+					else {
+						m_PrefabInspector.Close();
+						m_PrefabInspectorPath.clear();
+					}
+					if (switchCompleted) {
+						ImGui::CloseCurrentPopup();
+					}
+				}
+			}
+			if (choice == 1) {
+				bool switchCompleted = true;
 				if (!m_PendingPrefabSwitchPath.empty()) {
-					m_PrefabInspector.Open(m_PendingPrefabSwitchPath);
-					m_PrefabInspectorPath = m_PendingPrefabSwitchPath;
-					m_PendingPrefabSwitchPath.clear();
+					switchCompleted = m_PrefabInspector.Open(m_PendingPrefabSwitchPath);
+					if (switchCompleted) {
+						m_PrefabInspectorPath = std::exchange(m_PendingPrefabSwitchPath, {});
+					}
 				}
 				else {
 					m_PrefabInspector.Close();
 					m_PrefabInspectorPath.clear();
 				}
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Don't Save", ImVec2(100, 0))) {
-				if (!m_PendingPrefabSwitchPath.empty()) {
-					m_PrefabInspector.Open(m_PendingPrefabSwitchPath);
-					m_PrefabInspectorPath = m_PendingPrefabSwitchPath;
-					m_PendingPrefabSwitchPath.clear();
+				if (switchCompleted) {
+					ImGui::CloseCurrentPopup();
 				}
-				else {
-					m_PrefabInspector.Close();
-					m_PrefabInspectorPath.clear();
-				}
-				ImGui::CloseCurrentPopup();
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+			if (choice == 2) {
 				m_PendingPrefabSwitchPath.clear();
 				ImGui::CloseCurrentPopup();
 			}
 			ImGui::EndPopup();
-		}
-
-		// Quit confirmation modal dialog
-		if (m_ShowQuitSaveDialog) {
-			ImGui::OpenPopup(k_QuitSavePopupName);
-			m_QuitSaveDialogOpen = true;
-			m_ShowQuitSaveDialog = false;
-		}
-		ImGuiUtils::CenterNextModal();
-		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		bool quitDialogOpen = true;
-		if (ImGui::BeginPopupModal(k_QuitSavePopupName, &quitDialogOpen,
-			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking)) {
-			m_QuitSaveDialogOpen = true;
-			Scene* active = SceneManager::Get().GetActiveScene();
-			std::string activeName = active ? active->GetName() : "Scene";
-			ImGui::Text("Save changes to %s before closing the editor?", activeName.c_str());
-			ImGui::Spacing();
-
-			auto closeQuitDialog = [&]() {
-				m_QuitSaveDialogOpen = false;
-				ImGui::CloseCurrentPopup();
-			};
-
-			if (ImGui::Button("Save", ImVec2(100, 0))) {
-				bool canQuit = true;
-				if (active) {
-					IndexProject* project = ProjectManager::GetCurrentProject();
-					if (project) {
-						std::string savePath = project->GetSceneFilePath(active->GetName());
-						canQuit = SceneSerializer::SaveToFile(*active, savePath);
-						if (canQuit) {
-							project->LastOpenedScene = active->GetName();
-							project->Save();
-						}
-					}
-					else {
-						canQuit = false;
-						IDX_ERROR_TAG("Editor", "Cannot save scene before quit: no active project.");
-					}
-				}
-				if (canQuit) {
-					closeQuitDialog();
-					Application::ConfirmQuit();
-				}
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Don't Save", ImVec2(100, 0))) {
-				closeQuitDialog();
-				Application::ConfirmQuit();
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(100, 0)) || !quitDialogOpen) {
-				closeQuitDialog();
-			}
-			ImGui::EndPopup();
-		}
-		else if (m_QuitSaveDialogOpen && !ImGui::IsPopupOpen(k_QuitSavePopupName)) {
-			m_QuitSaveDialogOpen = false;
 		}
 
 		// Suppress script recompilation while a script is being created/renamed
@@ -615,20 +953,19 @@ namespace Index {
 			}
 		}
 
-		PollPendingPlayModeRequest(scene);
+		PollPendingPlayModeRequest();
 
 		// Reset every frame so a hidden/closed Game View falls back to the OS viewport.
 		Window::ClearUIRegion();
 
 		ImGui::BeginDisabled(m_BuildState > 0 || m_ReserializeState > 0);
 
-		RenderToolbar();
 		RenderEntitiesPanel();
 		// Inspector/editor view target the prefab-edit scene when active; Game View always uses the real active scene.
 		Scene* contextScene = GetContextScene();
 		RenderInspectorPanel(contextScene ? *contextScene : scene);
 		// Also propagate the detached prefab scene — ForeachLoadedScene skips it since it isn't in SceneManager.
-		SceneManager::Get().ForeachLoadedScene([](Scene& s) {
+		SceneManager::ForeachLoadedScene([](Scene& s) {
 			TransformHierarchySystem::Propagate(s);
 			});
 		if (IsInPrefabEditMode() && m_PrefabEditScene) {
@@ -638,6 +975,7 @@ namespace Index {
 		TickParticlePreview(contextScene ? *contextScene : scene);
 		RenderEditorView(contextScene ? *contextScene : scene);
 		RenderGameView(scene);
+		UpdateProjectThumbnail(scene);
 		RenderProjectPanel();
 		RenderLogPanel();
 		RenderBuildPanel();
@@ -645,6 +983,9 @@ namespace Index {
 		RenderProjectSettingsPanel();
 		RenderPackageManagerPanel();
 		m_EditorPreferencesPanel.Render(&m_ShowEditorPreferences);
+		if (m_EditorPreferencesPanel.ConsumeRestartRequest()) {
+			RequestEditorAction(PendingEditorAction::Restart);
+		}
 
 		ImGui::EndDisabled();
 

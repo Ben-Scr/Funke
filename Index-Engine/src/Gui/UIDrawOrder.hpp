@@ -4,7 +4,7 @@
 #include "Components/Tags.hpp"
 #include "Scene/EntityHandle.hpp"
 
-#include <entt/entt.hpp>
+#include <entt/entity/registry.hpp>
 #include <algorithm>
 #include <unordered_set>
 #include <utility>

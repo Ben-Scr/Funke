@@ -25,6 +25,34 @@ namespace Index {
 	Color Gizmo::s_Color = { 0.f, 1.f, 0.f, 1.f };
 
 	namespace {
+		struct RefreshBase {
+			size_t Squares = 0;
+			size_t Circles = 0;
+			size_t Lines = 0;
+			size_t ThickLines = 0;
+			size_t FilledSquares = 0;
+			size_t FilledCircles = 0;
+			size_t Texts = 0;
+			size_t RegisteredVertices = 0;
+		};
+
+		RefreshBase s_RefreshBase;
+
+		template<typename T>
+		void DropRefreshBase(std::vector<T>& commands, size_t count) {
+			count = Min(count, commands.size());
+			if (count == commands.size()) {
+				commands.clear();
+				return;
+			}
+			commands.erase(commands.begin(), commands.begin() + count);
+		}
+
+		template<typename T>
+		void KeepRefreshBase(std::vector<T>& commands, size_t count) {
+			commands.resize(Min(count, commands.size()));
+		}
+
 		// Hard per-frame accumulation guard (OOM protection only — NOT the render budget,
 		// which is applied per-view at build time). Reachable only by a pathological script
 		// drawing an extreme number of gizmos in a single frame.
@@ -102,6 +130,42 @@ namespace Index {
 		s_ThickLines.emplace_back(ThickLine{ start, end, Max(0.0001f, width * 0.5f), s_Color, s_Layer });
 	}
 
+	void Gizmo::BeginCommandFrame() {
+		DropRefreshBase(s_Squares, s_RefreshBase.Squares);
+		DropRefreshBase(s_Circles, s_RefreshBase.Circles);
+		DropRefreshBase(s_Lines, s_RefreshBase.Lines);
+		DropRefreshBase(s_ThickLines, s_RefreshBase.ThickLines);
+		DropRefreshBase(s_FilledSquares, s_RefreshBase.FilledSquares);
+		DropRefreshBase(s_FilledCircles, s_RefreshBase.FilledCircles);
+		DropRefreshBase(s_Texts, s_RefreshBase.Texts);
+		s_RegisteredVertices = s_RegisteredVertices >= s_RefreshBase.RegisteredVertices
+			? s_RegisteredVertices - s_RefreshBase.RegisteredVertices
+			: 0;
+		s_RefreshBase = {};
+	}
+
+	void Gizmo::CaptureRefreshBase() {
+		s_RefreshBase.Squares = s_Squares.size();
+		s_RefreshBase.Circles = s_Circles.size();
+		s_RefreshBase.Lines = s_Lines.size();
+		s_RefreshBase.ThickLines = s_ThickLines.size();
+		s_RefreshBase.FilledSquares = s_FilledSquares.size();
+		s_RefreshBase.FilledCircles = s_FilledCircles.size();
+		s_RefreshBase.Texts = s_Texts.size();
+		s_RefreshBase.RegisteredVertices = s_RegisteredVertices;
+	}
+
+	void Gizmo::EndCommandFrame() {
+		KeepRefreshBase(s_Squares, s_RefreshBase.Squares);
+		KeepRefreshBase(s_Circles, s_RefreshBase.Circles);
+		KeepRefreshBase(s_Lines, s_RefreshBase.Lines);
+		KeepRefreshBase(s_ThickLines, s_RefreshBase.ThickLines);
+		KeepRefreshBase(s_FilledSquares, s_RefreshBase.FilledSquares);
+		KeepRefreshBase(s_FilledCircles, s_RefreshBase.FilledCircles);
+		KeepRefreshBase(s_Texts, s_RefreshBase.Texts);
+		s_RegisteredVertices = Min(s_RegisteredVertices, s_RefreshBase.RegisteredVertices);
+	}
+
 	void Gizmo::Clear() {
 		s_Squares.clear();
 		s_Lines.clear();
@@ -111,5 +175,6 @@ namespace Index {
 		s_FilledCircles.clear();
 		s_Texts.clear();
 		s_RegisteredVertices = 0;
+		s_RefreshBase = {};
 	}
 }

@@ -70,6 +70,16 @@ namespace Index {
 				(point.y >= a.Min.y && point.y <= a.Max.y);
 		}
 
+		bool Intersects(const AABB& other) {
+			return (Min.x <= other.Max.x && Max.x >= other.Min.x) &&
+				(Min.y <= other.Max.y && Max.y >= other.Min.y);
+		}
+
+		bool Contains(const Vec2& point) {
+			return (point.x >= Min.x && point.x <= Max.x) &&
+				(point.y >= Min.y && point.y <= Max.y);
+		}
+
 		Vec2 Scale() const {
 			float x = Max.x - Min.x;
 			float y = Max.y - Min.y;

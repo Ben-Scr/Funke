@@ -1,13 +1,11 @@
 #pragma once
 #include "Scene/EntityHandle.hpp"
-#include "Scene/ISystem.hpp"
-
-#include <entt/entt.hpp>
+#include "Scene/SceneSystem.hpp"
 
 namespace Index {
 
 	// MUST run before UIEventSystem: writes ActivatedThisFrame and IsFocused so UIEventSystem's hit-test sees them; when an InputField owns focus it surrenders arrow keys to UIEventSystem's caret handler.
-	class UIFocusSystem : public ISystem {
+	class UIFocusSystem : public SceneSystem {
 	public:
 		void Update(Scene& scene) override;
 		void OnDestroy(Scene&) override {

@@ -90,16 +90,26 @@ There are also display toggles (wireframe vs. filled, post-processing on/off) to
 
 The toolbar controls let you test the game inside the editor:
 
-- **Play** — saves your scenes, (re)loads them from disk, and starts the game. Scripts and systems begin running. The **Game View** shows the result.
+- **Play** — snapshots your scenes and starts the game. Unsaved edits go into a private snapshot (`.index/PlayMode`), so pressing Play never writes your `.scene` files. Scripts and systems begin running. The **Game View** shows the result.
 - **Pause** — freezes the game so you can inspect it; the editor stays responsive.
 - **Step** — while paused, advance a single frame (great for debugging).
-- **Stop** — ends play and **reloads the scene from disk**, discarding anything that changed during play.
+- **Stop** — ends play and **restores the snapshot**, discarding anything that changed during play. Scenes that had unsaved edits before Play are still marked unsaved afterwards.
 
 That last point is important: changes you make to entities *while playing* are intentionally thrown away when you stop. See [Scenes › Play mode](../Engine-Core/Scenes.md#play-mode-in-the-editor).
 
 ### Saving
 
 Save the current scene from the menu (or with the usual save shortcut). Scenes are written to `.scene` files in your project. The editor can also **auto-save** at an interval you set in preferences.
+
+### Undo and redo
+
+**Ctrl+Z** / **Ctrl+Y** (or **Edit › Undo/Redo**) cover inspector field edits, gizmo moves/rotations/scales, creating, deleting, duplicating, pasting and cutting entities, reparenting and reordering in the Hierarchy, adding/removing components and scripts, renaming, enabling/disabling, the Static flag and unpacking prefabs. The history belongs to the scene you are editing: it is cleared when you switch scenes, enter or leave prefab editing, and at Play/Stop. Changes made while playing are not recorded.
+
+### Crash recovery
+
+Every 30 seconds the editor keeps a private copy of scenes with unsaved changes in `<project>/.index/Recovery`. If the editor closes unexpectedly, the next time you open the project it offers to **Restore** those changes (the current file is kept as `<scene>.scene.bak`) or **Discard** them. Your scene files are only touched when you choose Restore. If the last opened scene can't be read, the editor opens an empty unsaved scene instead and leaves the broken file alone.
+
+Logs are written to `%LOCALAPPDATA%\Index\Logs\<application>.log` and crash dumps to `%LOCALAPPDATA%\Index\CrashDumps\`. Please attach both when reporting a bug.
 
 ---
 
@@ -120,12 +130,14 @@ Saving changes to a prefab updates every instance (except the parts an instance 
 When you're ready to ship, open the **Build** panel:
 
 1. Choose a **build profile** (target platform and render backend).
-2. Set the **scene list** — which scenes ship, and which one is the **startup** scene.
+2. Check the **scene list**. Every scene in your project is listed automatically and included by default; untick a scene to leave it out of the build. The first ticked scene is the **startup** scene. Drag rows to reorder them, or right-click a row to use **Set as startup scene** / **Move up** / **Move down**. **Add Open Scene** adds the scene you have open, or ticks it again.
 3. Pick an **output folder** and click **Build** (or **Build & Run**).
 
 The editor compiles your C# scripts, copies the **runtime executable**, copies your **assets**, and writes the configuration the game needs to start. The result is a folder you can run or distribute. Because Index ships [assets as loose files](../Assets/Assets.md#assets-at-runtime-vs-in-the-editor), the output contains your `Assets` alongside the executable.
 
 Build profiles can be managed separately (create/duplicate/delete) so you can keep, say, a Windows debug profile and a release profile side by side.
+
+For release prerequisites and the clean-machine checklist, see [Building and Shipping](Building-and-Shipping.md).
 
 ---
 
@@ -144,3 +156,4 @@ Build profiles can be managed separately (create/duplicate/delete) so you can ke
 - [Assets](../Assets/Assets.md) — the Asset Browser and how assets are stored.
 - [Scripting](../Scripting/Scripting.md) — the code behind your entities.
 - [Writing Packages](../Packages/Writing-Packages.md) — extend the editor with new components.
+- [Building and Shipping](Building-and-Shipping.md) — produce and validate a distributable build.

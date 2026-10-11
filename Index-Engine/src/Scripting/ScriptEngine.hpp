@@ -19,9 +19,12 @@ namespace Index {
 		static bool IsInitialized();
 
 		static void LoadCoreAssembly(const std::string& path);
-		static void LoadUserAssembly(const std::string& path);
+		static bool LoadUserAssembly(const std::string& path);
 		static bool HasUserAssembly();
-		static void ReloadAssemblies();
+		// Low-level unload + reload of the user assembly only. Does NOT tear down live
+		// script instances or restart global systems — callers that have scenes with
+		// running scripts must use ScriptSystem::ReloadManagedAssemblies() instead.
+		static bool ReloadAssemblies();
 		static std::size_t RestoreDynamicComponentsForScene(Scene& scene);
 
 		static void SetScene(Scene* scene);
@@ -38,6 +41,7 @@ namespace Index {
 		static void InvokeCollisionEnter2D(uint32_t handle, uint64_t selfEntityID, uint64_t otherEntityID, uint64_t entityAID, uint64_t entityBID, float contactPointX, float contactPointY);
 		static void InvokeCollisionStay2D(uint32_t handle, uint64_t selfEntityID, uint64_t otherEntityID, uint64_t entityAID, uint64_t entityBID, float contactPointX, float contactPointY);
 		static void InvokeCollisionExit2D(uint32_t handle, uint64_t selfEntityID, uint64_t otherEntityID, uint64_t entityAID, uint64_t entityBID, float contactPointX, float contactPointY);
+		static void InvokeTrigger2D(uint32_t handle, int32_t phase, uint64_t selfEntityID, uint64_t otherEntityID, uint64_t entityAID, uint64_t entityBID);
 		static bool ClassExists(const std::string& className);
 
 		static void RaiseApplicationStart();

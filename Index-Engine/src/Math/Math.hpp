@@ -54,6 +54,6 @@ namespace Index {
     }
 
     inline float Distance(float a, float b) {
-        return std::abs(b - a);
+        return Abs<float>(b - a);
     }
 }

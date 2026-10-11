@@ -2,169 +2,239 @@
 
 #include "Scene/EntityHandle.hpp"
 
-#include <algorithm>
+#include <entt/entity/registry.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace Index {
 
-	// Type-erased paged-sparse-array storage for runtime-registered C# components. ~8x faster than unordered_map for IJobQuery hot path.
-	// No EnTT view/group support; no on_construct/on_destroy signals. Freed via ComponentRegistry::ScrubEntity on entity destroy.
+	// Type-erased paged-sparse-array storage for runtime-registered C# components.
 	class DynamicComponentStorage {
 		using traits_type = entt::entt_traits<EntityHandle>;
 		static constexpr std::size_t kPageSize = traits_type::page_size;
 
+		struct SceneStorage {
+			std::vector<EntityHandle> Entities;
+			std::vector<uint8_t> Data;
+			std::vector<std::vector<EntityHandle>> Sparse;
+		};
+
 	public:
-		// Preconditions (enforced by the sole creator, ComponentRegistry::RegisterDynamic):
-		// alignment is a power of two and <= alignof(max_align_t), and elementSize is a
-		// multiple of alignment. Together these keep the std::vector<uint8_t> backing
-		// (max_align-aligned) and every denseIdx*elementSize offset correctly aligned.
+		class SceneView {
+		public:
+			SceneView() = default;
+
+			bool Contains(EntityHandle entity) const noexcept {
+				return m_Owner && m_Storage && m_Owner->Contains(*m_Storage, entity);
+			}
+
+			void* Get(EntityHandle entity) const noexcept {
+				return m_Owner && m_Storage ? m_Owner->Get(*m_Storage, entity) : nullptr;
+			}
+
+			std::size_t Size() const noexcept {
+				return m_Storage ? m_Storage->Entities.size() : 0;
+			}
+
+			const std::vector<EntityHandle>& Entities() const noexcept {
+				return m_Storage ? m_Storage->Entities : s_EmptyEntities;
+			}
+
+		private:
+			friend class DynamicComponentStorage;
+			SceneView(DynamicComponentStorage* owner, std::shared_ptr<SceneStorage> storage)
+				: m_Owner(owner), m_Storage(std::move(storage)) {}
+
+			DynamicComponentStorage* m_Owner = nullptr;
+			std::shared_ptr<SceneStorage> m_Storage;
+		};
+
 		explicit DynamicComponentStorage(uint32_t elementSize, uint32_t alignment)
 			: m_ElementSize(elementSize), m_Alignment(alignment) {}
 
-		bool Contains(EntityHandle e) const noexcept {
-			const EntityHandle* slot = SparsePtr(e);
-			// XOR-version check mirrors EnTT basic_sparse_set::contains (sparse_set.hpp:691): result < cap proves slot occupied AND version matches.
-			constexpr auto cap = traits_type::entity_mask;
-			constexpr auto mask = traits_type::to_integral(entt::null) & ~cap;
-			return slot && (((mask & traits_type::to_integral(e)) ^ traits_type::to_integral(*slot)) < cap);
+		SceneView GetSceneView(const entt::registry& registry) noexcept {
+			auto it = m_SceneStorages.find(&registry);
+			return SceneView(this, it != m_SceneStorages.end() ? it->second : nullptr);
 		}
 
-		void* Get(EntityHandle e) noexcept {
-			const EntityHandle* slot = SparsePtr(e);
+		bool Contains(const entt::registry& registry, EntityHandle entity) const noexcept {
+			const SceneStorage* sceneStorage = FindSceneStorage(registry);
+			return sceneStorage && Contains(*sceneStorage, entity);
+		}
+
+		void* Get(const entt::registry& registry, EntityHandle entity) noexcept {
+			SceneStorage* sceneStorage = FindSceneStorage(registry);
+			return sceneStorage ? Get(*sceneStorage, entity) : nullptr;
+		}
+
+		const void* Get(const entt::registry& registry, EntityHandle entity) const noexcept {
+			const SceneStorage* sceneStorage = FindSceneStorage(registry);
+			if (!sceneStorage) return nullptr;
+
+			const EntityHandle* slot = SparsePtr(*sceneStorage, entity);
 			constexpr auto cap = traits_type::entity_mask;
 			constexpr auto mask = traits_type::to_integral(entt::null) & ~cap;
 			if (!slot) return nullptr;
-			const auto xored = (mask & traits_type::to_integral(e)) ^ traits_type::to_integral(*slot);
+			const auto xored = (mask & traits_type::to_integral(entity)) ^ traits_type::to_integral(*slot);
 			if (xored >= cap) return nullptr;
-			const auto denseIdx = static_cast<std::size_t>(traits_type::to_entity(*slot));
-			return &m_Data[denseIdx * m_ElementSize];
+			const auto denseIndex = static_cast<std::size_t>(traits_type::to_entity(*slot));
+			return &sceneStorage->Data[denseIndex * m_ElementSize];
 		}
 
-		const void* Get(EntityHandle e) const noexcept {
-			const EntityHandle* slot = SparsePtr(e);
-			constexpr auto cap = traits_type::entity_mask;
-			constexpr auto mask = traits_type::to_integral(entt::null) & ~cap;
-			if (!slot) return nullptr;
-			const auto xored = (mask & traits_type::to_integral(e)) ^ traits_type::to_integral(*slot);
-			if (xored >= cap) return nullptr;
-			const auto denseIdx = static_cast<std::size_t>(traits_type::to_entity(*slot));
-			return &m_Data[denseIdx * m_ElementSize];
+		void Add(entt::registry& registry, EntityHandle entity) {
+			AddInternal(registry, entity, nullptr);
 		}
 
-		// Zero-initialized add. Idempotent — already-present entity is a no-op.
-		void Add(EntityHandle e) {
-			AddInternal(e, nullptr);
+		void AddWithBytes(entt::registry& registry, EntityHandle entity, const void* bytes) {
+			AddInternal(registry, entity, bytes);
 		}
 
-		// Add with payload (memcpy from `bytes`, which must point to at least
-		// ElementSize bytes). Idempotent on the entity-already-present path.
-		void AddWithBytes(EntityHandle e, const void* bytes) {
-			AddInternal(e, bytes);
-		}
-
-		// Replace-or-insert. Used by the ECB emplaceFromBytes callback.
-		void EmplaceOrReplace(EntityHandle e, const void* bytes) {
-			if (void* existing = Get(e)) {
+		void EmplaceOrReplace(entt::registry& registry, EntityHandle entity, const void* bytes) {
+			if (void* existing = Get(registry, entity)) {
 				std::memcpy(existing, bytes, m_ElementSize);
 				return;
 			}
-			AddInternal(e, bytes);
+			AddInternal(registry, entity, bytes);
 		}
 
-		void Remove(EntityHandle e) {
-			if (!Contains(e)) return;
-
-			EntityHandle& slot = AssureSlot(e);
-			const auto denseIdx = static_cast<uint32_t>(traits_type::to_entity(slot));
-			const auto lastIdx = static_cast<uint32_t>(m_Entities.size() - 1);
-			if (denseIdx != lastIdx) {
-				const EntityHandle lastEntity = m_Entities[lastIdx];
-				std::memcpy(&m_Data[static_cast<std::size_t>(denseIdx) * m_ElementSize],
-					&m_Data[static_cast<std::size_t>(lastIdx) * m_ElementSize],
-					m_ElementSize);
-				m_Entities[denseIdx] = lastEntity;
-				// Re-point the moved entity's sparse slot at its new dense index,
-				// preserving its version (mirror swap_and_pop in EnTT's sparse_set
-				// at sparse_set.hpp:244-256).
-				AssureSlot(lastEntity) = traits_type::combine(
-					static_cast<traits_type::entity_type>(denseIdx),
-					traits_type::to_integral(lastEntity));
+		void Remove(const entt::registry& registry, EntityHandle entity) {
+			SceneStorage* sceneStorage = FindSceneStorage(registry);
+			if (!sceneStorage || !Contains(registry, entity)) return;
+			RemoveInternal(*sceneStorage, entity);
+			if (sceneStorage->Entities.empty()) {
+				m_SceneStorages.erase(&registry);
 			}
-			m_Entities.pop_back();
-			m_Data.resize(m_Data.size() - m_ElementSize);
-			slot = entt::null;
+		}
+
+		void Clear(const entt::registry& registry) {
+			m_SceneStorages.erase(&registry);
 		}
 
 		void Clear() {
-			for (auto& page : m_Sparse) {
-				if (!page.empty()) {
-					std::fill(page.begin(), page.end(), entt::null);
-				}
-			}
-			m_Entities.clear();
-			m_Data.clear();
+			m_SceneStorages.clear();
 		}
 
-		std::size_t Size() const noexcept { return m_Entities.size(); }
+		std::size_t Size(const entt::registry& registry) const noexcept {
+			const SceneStorage* sceneStorage = FindSceneStorage(registry);
+			return sceneStorage ? sceneStorage->Entities.size() : 0;
+		}
+
 		uint32_t ElementSize() const noexcept { return m_ElementSize; }
 		uint32_t Alignment() const noexcept { return m_Alignment; }
-		const std::vector<EntityHandle>& Entities() const noexcept { return m_Entities; }
+
+		const std::vector<EntityHandle>& Entities(const entt::registry& registry) const noexcept {
+			const SceneStorage* sceneStorage = FindSceneStorage(registry);
+			return sceneStorage ? sceneStorage->Entities : s_EmptyEntities;
+		}
 
 	private:
-		// Returns a pointer to the sparse slot for `e`, or nullptr if the
-		// page hasn't been allocated yet. Read-only — does not allocate.
-		const EntityHandle* SparsePtr(EntityHandle e) const noexcept {
-			const auto pos = static_cast<std::size_t>(traits_type::to_entity(e));
-			const auto page = pos / kPageSize;
-			if (page >= m_Sparse.size() || m_Sparse[page].empty()) return nullptr;
-			return &m_Sparse[page][pos % kPageSize];
+		bool Contains(const SceneStorage& sceneStorage, EntityHandle entity) const noexcept {
+			const EntityHandle* slot = SparsePtr(sceneStorage, entity);
+			constexpr auto cap = traits_type::entity_mask;
+			constexpr auto mask = traits_type::to_integral(entt::null) & ~cap;
+			return slot && (((mask & traits_type::to_integral(entity)) ^ traits_type::to_integral(*slot)) < cap);
 		}
 
-		// Returns a reference to the sparse slot for `e`, allocating the
-		// page (initialized to entt::null) if it doesn't exist.
-		EntityHandle& AssureSlot(EntityHandle e) {
-			const auto pos = static_cast<std::size_t>(traits_type::to_entity(e));
-			const auto page = pos / kPageSize;
-			if (page >= m_Sparse.size()) {
-				m_Sparse.resize(page + 1);
-			}
-			if (m_Sparse[page].empty()) {
-				m_Sparse[page].assign(kPageSize, entt::null);
-			}
-			return m_Sparse[page][pos % kPageSize];
+		void* Get(SceneStorage& sceneStorage, EntityHandle entity) noexcept {
+			const EntityHandle* slot = SparsePtr(sceneStorage, entity);
+			constexpr auto cap = traits_type::entity_mask;
+			constexpr auto mask = traits_type::to_integral(entt::null) & ~cap;
+			if (!slot) return nullptr;
+			const auto xored = (mask & traits_type::to_integral(entity)) ^ traits_type::to_integral(*slot);
+			if (xored >= cap) return nullptr;
+			const auto denseIndex = static_cast<std::size_t>(traits_type::to_entity(*slot));
+			return &sceneStorage.Data[denseIndex * m_ElementSize];
 		}
 
-		void AddInternal(EntityHandle e, const void* bytes) {
-			if (Contains(e)) return;
-			const uint32_t denseIdx = static_cast<uint32_t>(m_Entities.size());
-			m_Entities.push_back(e);
-			m_Data.resize(m_Data.size() + m_ElementSize);
+		SceneStorage* FindSceneStorage(const entt::registry& registry) noexcept {
+			auto it = m_SceneStorages.find(&registry);
+			return it != m_SceneStorages.end() ? it->second.get() : nullptr;
+		}
+
+		const SceneStorage* FindSceneStorage(const entt::registry& registry) const noexcept {
+			auto it = m_SceneStorages.find(&registry);
+			return it != m_SceneStorages.end() ? it->second.get() : nullptr;
+		}
+
+		const EntityHandle* SparsePtr(const SceneStorage& sceneStorage, EntityHandle entity) const noexcept {
+			const auto position = static_cast<std::size_t>(traits_type::to_entity(entity));
+			const auto page = position / kPageSize;
+			if (page >= sceneStorage.Sparse.size() || sceneStorage.Sparse[page].empty()) return nullptr;
+			return &sceneStorage.Sparse[page][position % kPageSize];
+		}
+
+		EntityHandle& AssureSlot(SceneStorage& sceneStorage, EntityHandle entity) {
+			const auto position = static_cast<std::size_t>(traits_type::to_entity(entity));
+			const auto page = position / kPageSize;
+			if (page >= sceneStorage.Sparse.size()) {
+				sceneStorage.Sparse.resize(page + 1);
+			}
+			if (sceneStorage.Sparse[page].empty()) {
+				sceneStorage.Sparse[page].assign(kPageSize, entt::null);
+			}
+			return sceneStorage.Sparse[page][position % kPageSize];
+		}
+
+		void AddInternal(entt::registry& registry, EntityHandle entity, const void* bytes) {
+			if (Contains(registry, entity)) return;
+
+			auto& sceneStoragePtr = m_SceneStorages[&registry];
+			if (!sceneStoragePtr) sceneStoragePtr = std::make_shared<SceneStorage>();
+			SceneStorage& sceneStorage = *sceneStoragePtr;
+			if (const EntityHandle* slot = SparsePtr(sceneStorage, entity);
+				slot && *slot != entt::null)
+			{
+				const auto denseIndex = static_cast<std::size_t>(traits_type::to_entity(*slot));
+				if (denseIndex < sceneStorage.Entities.size()) {
+					RemoveInternal(sceneStorage, sceneStorage.Entities[denseIndex]);
+				}
+			}
+			const uint32_t denseIndex = static_cast<uint32_t>(sceneStorage.Entities.size());
+			sceneStorage.Entities.push_back(entity);
+			sceneStorage.Data.resize(sceneStorage.Data.size() + m_ElementSize);
 			std::byte* slot = reinterpret_cast<std::byte*>(
-				&m_Data[static_cast<std::size_t>(denseIdx) * m_ElementSize]);
+				&sceneStorage.Data[static_cast<std::size_t>(denseIndex) * m_ElementSize]);
 			if (bytes) {
 				std::memcpy(slot, bytes, m_ElementSize);
 			}
 			else {
 				std::memset(slot, 0, m_ElementSize);
 			}
-			// Encode dense index in the entity-mask bits, e's version in the
-			// version-mask bits. Contains() then verifies version match.
-			AssureSlot(e) = traits_type::combine(
-				static_cast<traits_type::entity_type>(denseIdx),
-				traits_type::to_integral(e));
+			AssureSlot(sceneStorage, entity) = traits_type::combine(
+				static_cast<traits_type::entity_type>(denseIndex),
+				traits_type::to_integral(entity));
+		}
+
+		void RemoveInternal(SceneStorage& sceneStorage, EntityHandle entity) {
+			EntityHandle& slot = AssureSlot(sceneStorage, entity);
+			const auto denseIndex = static_cast<uint32_t>(traits_type::to_entity(slot));
+			const auto lastIndex = static_cast<uint32_t>(sceneStorage.Entities.size() - 1);
+			if (denseIndex != lastIndex) {
+				const EntityHandle lastEntity = sceneStorage.Entities[lastIndex];
+				std::memcpy(
+					&sceneStorage.Data[static_cast<std::size_t>(denseIndex) * m_ElementSize],
+					&sceneStorage.Data[static_cast<std::size_t>(lastIndex) * m_ElementSize],
+					m_ElementSize);
+				sceneStorage.Entities[denseIndex] = lastEntity;
+				AssureSlot(sceneStorage, lastEntity) = traits_type::combine(
+					static_cast<traits_type::entity_type>(denseIndex),
+					traits_type::to_integral(lastEntity));
+			}
+
+			sceneStorage.Entities.pop_back();
+			sceneStorage.Data.resize(sceneStorage.Data.size() - m_ElementSize);
+			slot = entt::null;
 		}
 
 		uint32_t m_ElementSize;
 		uint32_t m_Alignment;
-		std::vector<EntityHandle> m_Entities;
-		std::vector<uint8_t> m_Data;
-		// Paged sparse array. Outer vector indexed by page = (entity_id /
-		// page_size); each inner vector is either empty (page never
-		// allocated) or sized to page_size with entt::null defaults.
-		std::vector<std::vector<EntityHandle>> m_Sparse;
+		std::unordered_map<const entt::registry*, std::shared_ptr<SceneStorage>> m_SceneStorages;
+		static inline const std::vector<EntityHandle> s_EmptyEntities;
 	};
 
 }

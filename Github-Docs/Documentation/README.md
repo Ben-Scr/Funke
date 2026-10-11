@@ -2,7 +2,7 @@
 
 Welcome to the documentation for **Index**, a 2D game engine. These pages explain how the engine works and how to build games with it, from launching a game to writing your own packages.
 
-New here? A good reading order is **Editor → ECS → Scenes → Scripting**, then the rest as you need it.
+New here? Start with **[Your First Game](Getting-Started.md)**, a 15-minute walkthrough from install to a Windows build. After that, a good reading order is **Editor → ECS → Scenes → Scripting**, then the rest as you need it. **[Known Limitations](Known-Limitations.md)** lists what the beta does not do yet.
 
 ---
 
@@ -35,6 +35,7 @@ Index's extensibility model — add anything the core doesn't ship.
 ## Editor
 
 - **[Editor](Editor/Editor.md)** — the visual tool for building scenes, testing in Play mode, and producing a finished game.
+- **[Building and Shipping](Editor/Building-and-Shipping.md)** — verified Windows game exports and standalone engine release bundles.
 
 ## Reference
 

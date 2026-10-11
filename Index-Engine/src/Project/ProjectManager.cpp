@@ -2,9 +2,11 @@
 #include "Project/ProjectManager.hpp"
 #include "Project/IndexProject.hpp"
 #include "Assets/AssetRegistry.hpp"
+#if INDEX_WITH_APPLICATION
 #include "Serialization/PrefabTemplateCache.hpp"
 #include "Core/Application.hpp"
 #include "Graphics/Text/FontManager.hpp"
+#endif
 
 namespace Index {
 
@@ -13,11 +15,13 @@ namespace Index {
 	void ProjectManager::SetCurrentProject(std::unique_ptr<IndexProject> project, bool assetsImmutable) {
 		s_CurrentProject = std::move(project);
 
+#if INDEX_WITH_APPLICATION
 		// Apply font baking knobs (pure static setters — safe even before FontManager::Initialize).
 		if (s_CurrentProject) {
 			FontManager::SetBakeStep(s_CurrentProject->FontBakeStep);
 			FontManager::SetAtlasMemoryBudgetMB(s_CurrentProject->FontAtlasBudgetMB);
 		}
+#endif
 
 		// Set immutability before anything triggers a rebuild (see header). Standalone runtimes then
 		// trust the shipped manifest; the editor stays mutable so on-disk edits are detected.
@@ -29,6 +33,7 @@ namespace Index {
 		// splash — trigger the single rebuild, off the pre-window critical path.
 		AssetRegistry::MarkDirty();
 
+#if INDEX_WITH_APPLICATION
 		// Invalidate stale prefab templates and re-point the file watcher at the new project root.
 		PrefabTemplateCache& cache = PrefabTemplateCache::Get();
 		cache.InvalidateAll();
@@ -44,6 +49,7 @@ namespace Index {
 		else {
 			cache.Shutdown();
 		}
+#endif
 #endif
 	}
 

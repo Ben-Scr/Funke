@@ -38,7 +38,14 @@ namespace Index {
 		// Prefab support: save/load single entities
 		static Json::Value SerializeEntityFull(Scene& scene, EntityHandle entity);
 		static Json::Value SerializeEntityForClipboard(Scene& scene, EntityHandle entity);
-		static EntityHandle DeserializeEntityFromValue(Scene& scene, const Json::Value& entityValue);
+		static Json::Value SerializePrefabSource(Scene& scene, EntityHandle entity, uint64_t prefabGuid = 0);
+		static EntityHandle DeserializeEntityFromValue(
+			Scene& scene,
+			const Json::Value& entityValue,
+			EntityOrigin origin = EntityOrigin::Scene);
+		// Rebuilds SerializeEntityFull output (root first, children linked by parentUuid) with the
+		// serialized persistent ids kept, e.g. for editor undo. Returns the root or null on failure.
+		static EntityHandle RestoreEntityTree(Scene& scene, const std::vector<Json::Value>& entityValues);
 		static Json::Value SerializeComponent(Scene& scene, EntityHandle entity, std::string_view componentName);
 		static bool DeserializeComponent(Scene& scene, EntityHandle entity, std::string_view componentName, const Json::Value& componentValue);
 		static bool ResetComponent(Scene& scene, EntityHandle entity, std::string_view componentName);
@@ -53,7 +60,7 @@ namespace Index {
 		static bool ApplyPrefabInstanceOverrides(Scene& scene, EntityHandle entity);
 		static EntityHandle RevertPrefabInstanceOverride(Scene& scene, EntityHandle entity, const std::string& overridePath);
 
-		// `previousSourceEntityValue` is the prefab "Entity" block BEFORE the source was saved; used as override baseline so per-field overrides survive a source edit.
+		// Accepts the prior prefab root or Entity block as the override baseline.
 		static EntityHandle RefreshPrefabInstance(Scene& scene, EntityHandle existing,
 			const Json::Value& previousSourceEntityValue);
 
@@ -74,15 +81,20 @@ namespace Index {
 			std::unordered_map<uint32_t, int> childIndexByEntity;
 		};
 
-		// Applies version/name/sceneId/systems from a scene root (or streamed header) and
-		// begins content replacement; returns whether the lifecycle should restart.
-		static bool ProcessSceneHeader(Scene& scene, const Json::Value& header, std::string_view source);
+		static bool ProcessSceneHeader(
+			Scene& scene,
+			const Json::Value& header,
+			std::string_view source,
+			bool& restartLifecycle);
 		// Pass-1 body: create one entity and record its deferred parent/child-order links.
-		static void ProcessLoadedEntity(Scene& scene, const Json::Value& entityValue, SceneLoadState& state);
+		static bool ProcessLoadedEntity(Scene& scene, const Json::Value& entityValue, SceneLoadState& state);
 		// Passes 2-3 + entity-ref fixups + finish content replacement.
 		static void FinalizeSceneLoad(Scene& scene, const SceneLoadState& state, bool restartLifecycle);
-		// Binary file load that streams entities one at a time instead of building a whole-file DOM.
+		static bool DeserializeSceneInPlace(
+			Scene& scene, const Json::Value& root, std::string_view source, bool logSuccess);
 		static bool DeserializeSceneStreamingBinary(Scene& scene, const std::vector<std::uint8_t>& bytes, std::string_view source);
+		static bool DeserializeSceneStreamingBinaryInPlace(Scene& scene, const std::vector<std::uint8_t>& bytes, std::string_view source);
+		static bool CommitStagedScene(Scene& scene, Scene& stagedScene, std::string_view source);
 
 		static EntityHandle DeserializeEntity(Scene& scene, const Json::Value& entityValue);
 		static EntityHandle DeserializeFullEntity(
@@ -95,7 +107,8 @@ namespace Index {
 			const std::vector<Json::Value>& entityValues,
 			EntityOrigin origin,
 			uint64_t prefabGuid = 0,
-			bool preserveSerializedIdentity = true);
+			bool preserveSerializedIdentity = true,
+			bool* outComplete = nullptr);
 		static EntityHandle DeserializePrefabInstance(Scene& scene, const Json::Value& entityValue);
 	};
 

@@ -1,6 +1,7 @@
 #pragma once
 #include "Core/Export.hpp"
 #include "Core/Log.hpp"
+#include "Serialization/Path.hpp"
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -21,7 +22,7 @@ namespace Index {
 
 		template<size_t Size>
 		static void WriteAllLines(const std::string& path, const std::array<std::string, Size> lines) {
-			std::ofstream file(path);
+			std::ofstream file(Path::FromUtf8(path));
 			if (!file.is_open()) {
 				IDX_CORE_ERROR("File couldn't be opened for writing: {}", path);
 				return;
@@ -37,7 +38,7 @@ namespace Index {
 
 		template<size_t Size>
 		static void WriteAllBytes(const std::string& path, const std::array<std::uint8_t, Size> bytes) {
-			std::ofstream file(path, std::ios::binary);
+			std::ofstream file(Path::FromUtf8(path), std::ios::binary);
 			if (!file.is_open()) {
 				IDX_CORE_ERROR("File couldn't be opened for writing: {}", path);
 				return;
@@ -49,7 +50,7 @@ namespace Index {
 
 		template<typename T>
 		static void WriteObject(const std::string& path, const T& obj) {
-			std::ofstream file(path, std::ios::out | std::ios::binary);
+			std::ofstream file(Path::FromUtf8(path), std::ios::out | std::ios::binary);
 			if (!file.is_open()) {
 				IDX_CORE_ERROR("File couldn't be opened for writing: {}", path);
 				return;
@@ -60,7 +61,7 @@ namespace Index {
 
 		template<typename T>
 		static T ReadObject(const std::string& path) {
-			std::ifstream file(path, std::ios::binary);
+			std::ifstream file(Path::FromUtf8(path), std::ios::binary);
 			if (!file.is_open()) {
 				IDX_CORE_ERROR("File couldn't be opened for reading: {}", path);
 				return T{};

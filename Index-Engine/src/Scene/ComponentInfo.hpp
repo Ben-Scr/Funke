@@ -4,9 +4,12 @@
 #include "Scene/ComponentCategory.hpp"
 #include "Scene/Entity.hpp"
 #include "Serialization/Json.hpp"
+#include "Utils/InlineFunction.hpp"
+
+#include <entt/core/type_info.hpp>
+#include <entt/entity/registry.hpp>
 
 #include <cstdint>
-#include <functional>
 #include <span>
 #include <string>
 #include <typeindex>
@@ -38,17 +41,17 @@ namespace Index {
 		// FNV-1a 64-bit hash of serializedName; stable across builds so it can be embedded in binary assets. Zero = not yet hashed.
 		uint64_t serializedNameHash = 0;
 
-		// std::function (not raw ptr) so dynamic registrations can capture their DynamicComponentStorage; non-capturing lambdas from Register<T> avoid heap allocation via SBO.
-		std::function<bool(Entity)> has;
-		std::function<void(Entity)> add;
-		std::function<void(Entity)> remove;
-		std::function<void(Entity src, Entity dst)> copyTo;
+		// InlineFunction (not raw ptr) so dynamic registrations can capture their DynamicComponentStorage; non-capturing lambdas from Register<T> stay inline with no vtable/RTTI per lambda.
+		InlineFunction<bool(Entity)> has;
+		InlineFunction<void(Entity)> add;
+		InlineFunction<void(Entity)> remove;
+		InlineFunction<void(Entity src, Entity dst)> copyTo;
 
 		// Raw component pointer for the ScriptCore ref API (C# reads/writes fields via void* with no P/Invoke). Invalidated by the next add/remove on the pool — do not cache across frames.
-		std::function<void*(Entity)> getRaw;
+		InlineFunction<void*(Entity)> getRaw;
 
 		// Bulk pointer fill for IJobQuery; returns total count so the managed caller can retry with a larger buffer if count > maxRows.
-		std::function<int(entt::registry& registry, void** outPointers, int maxRows, int enableFilter)> fillRawPointers;
+		InlineFunction<int(entt::registry& registry, void** outPointers, int maxRows, int enableFilter)> fillRawPointers;
 
 		// sizeof(T); mismatching the C# struct mirror hard-fails assembly load to prevent silent memory corruption.
 		size_t rawSize = 0;
@@ -63,17 +66,17 @@ namespace Index {
 		DynamicComponentStorage* dynamicStorage = nullptr;
 
 		// ECB playback writes the raw payload in one call. Components with scene-bound runtime state (e.g. ParticleSystem2DComponent) must override to rebind, same as copyTo.
-		std::function<void(entt::registry& registry, EntityHandle entity,
+		InlineFunction<void(entt::registry& registry, EntityHandle entity,
 			const void* bytes, size_t size)> emplaceFromBytes;
 
 		// Default-constructs via registry.emplace<T>, firing C++ default-initializers (e.g. Scale={1,1}). MUST NOT route through emplaceFromBytes — managed default(T) is all-zero and would clobber those defaults.
-		std::function<void(entt::registry& registry, EntityHandle entity)> defaultEmplace;
+		InlineFunction<void(entt::registry& registry, EntityHandle entity)> defaultEmplace;
 
 		// Appends bytes to `out`; used by PrefabTemplateCache to bake a memcpy-ready blob.
-		// std::function (not a raw pointer) so helpers like RegisterPrefixByteEmplacer can capture a
+		// InlineFunction (not a raw pointer) so helpers like RegisterPrefixByteEmplacer can capture a
 		// prefix size. Components owning non-trivial heap state (std::vector, non-SSO std::string) MUST
 		// override — the default memcpy aliases freed memory after the source entity is destroyed.
-		std::function<bool(const entt::registry& registry, EntityHandle entity,
+		InlineFunction<bool(const entt::registry& registry, EntityHandle entity,
 			std::vector<uint8_t>& out)> writeBytes;
 
 		// Fired by AddWithDependencies AFTER add; not called from raw add/deserialize/scene-load (those don't want smart defaults).
@@ -98,8 +101,8 @@ namespace Index {
 
 		// Legacy JSON-tree path. SCHEDULED FOR REMOVAL — new components must use serializeArchive instead.
 		// Package components must set both to round-trip in .scene/.prefab files.
-		std::function<Json::Value(Entity)> serialize;
-		std::function<void(Entity, const Json::Value&)> deserialize;
+		InlineFunction<Json::Value(Entity)> serialize;
+		InlineFunction<void(Entity, const Json::Value&)> deserialize;
 
 		// Unified binary+JSON path; wins over the legacy pair when both are set. Bump serializationVersion only for non-additive schema changes.
 		void (*serializeArchive)(Entity, Index::Serialization::IArchive&) = nullptr;

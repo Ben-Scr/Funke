@@ -6,6 +6,7 @@
 #include "Editor/ExternalEditor.hpp"
 #include "Editor/ExternalEditorInfo.hpp"
 #include "Graphics/Text/FontHandle.hpp"
+#include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Gui/ImGuiFonts.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
@@ -77,6 +78,12 @@ namespace Index {
 		// No persistent allocations to drop.
 	}
 
+	bool EditorPreferencesPanel::ConsumeRestartRequest() {
+		const bool requested = m_RestartRequested;
+		m_RestartRequested = false;
+		return requested;
+	}
+
 	void EditorPreferencesPanel::Render(bool* pOpen) {
 		if (!pOpen || !*pOpen) {
 			m_WasOpenLastFrame = false;
@@ -91,16 +98,14 @@ namespace Index {
 		}
 		m_WasOpenLastFrame = true;
 
-		ImGui::SetNextWindowSize(ImVec2(640.0f, 520.0f), ImGuiCond_FirstUseEver);
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		EditorUI::NextWindowDefaultSize();
 		if (!ImGui::Begin("Editor Preferences", pOpen)) {
 			ImGui::End();
 			return;
 		}
 
-		ImGui::SetNextItemWidth(-1.0f);
-		ImGui::InputTextWithHint("##EditorPrefsSearch", "Search preferences...",
-			m_SearchBuffer, sizeof(m_SearchBuffer));
+		EditorUI::SearchField("##EditorPrefsSearch", m_SearchBuffer, sizeof(m_SearchBuffer), "Search preferences...");
 		ImGui::Spacing();
 
 		if (IsPreferenceSearchActive()) {
@@ -175,174 +180,158 @@ namespace Index {
 			"appearance entities hierarchy outliner row size scale height bigger larger smaller");
 		if (!showTheme && !showFont && !showHierarchy) return;
 
-		// ── Theme ───────────────────────────────────────────────────
 		if (showTheme) {
-		ImGui::TextUnformatted("Theme");
-		ImGui::Separator();
-
-		EditorThemeMode currentMode = EditorPreferences::GetThemeMode();
-		ImGui::SetNextItemWidth(220.0f);
-		if (ImGui::BeginCombo("##EditorThemeCombo", ThemeModeLabel(currentMode))) {
-			constexpr EditorThemeMode kModes[] = {
-				EditorThemeMode::SystemDefault,
-				EditorThemeMode::Dark,
-				EditorThemeMode::Light,
-				EditorThemeMode::Custom,
-			};
-			for (EditorThemeMode mode : kModes) {
-				const bool selected = (mode == currentMode);
-				if (ImGui::Selectable(ThemeModeLabel(mode), selected)) {
-					EditorPreferences::SetThemeMode(mode);
-					currentMode = mode;
+			EditorThemeMode currentMode = EditorPreferences::GetThemeMode();
+			if (EditorUI::SectionHeader("Theme")) {
+				ImGui::SetNextItemWidth(220.0f);
+				if (ImGui::BeginCombo("##EditorThemeCombo", ThemeModeLabel(currentMode))) {
+					constexpr EditorThemeMode kModes[] = {
+						EditorThemeMode::SystemDefault,
+						EditorThemeMode::Dark,
+						EditorThemeMode::Light,
+						EditorThemeMode::Custom,
+					};
+					for (EditorThemeMode mode : kModes) {
+						const bool selected = (mode == currentMode);
+						if (ImGui::Selectable(ThemeModeLabel(mode), selected)) {
+							EditorPreferences::SetThemeMode(mode);
+							currentMode = mode;
+						}
+						if (selected) ImGui::SetItemDefaultFocus();
+					}
+					ImGui::EndCombo();
 				}
-				if (selected) ImGui::SetItemDefaultFocus();
+				EditorUI::Tooltip("The theme of the editor ui");
+				ImGui::Spacing();
 			}
-			ImGui::EndCombo();
-		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("The theme of the editor ui");
-		}
 
-		ImGui::Spacing();
+			const bool customActive = (currentMode == EditorThemeMode::Custom);
+			if (EditorUI::SectionHeader("Custom Colors")) {
+				ImGui::BeginDisabled(!customActive);
 
-		// ── Custom Colors ──────────────────────────────────────────
-		const bool customActive = (currentMode == EditorThemeMode::Custom);
-		ImGui::BeginDisabled(!customActive);
-
-		ImGui::TextUnformatted("Custom Colors");
-		ImGui::SameLine();
-		if (ImGui::Button("Reset to Default##ResetCustomColors")) {
-			EditorPreferences::ResetCustomColorsToDefault();
-			// Re-apply so the swatches snap back to the just-seeded values.
-			EditorPreferences::ApplyTheme();
-		}
-		if (ImGui::IsItemHovered() && customActive) {
-			ImGui::SetTooltip(
-				"Resets the custom theme back to it's default");
-		}
-
-		// Scrollable region so the long ImGuiCol_ list doesn't push the
-		// rest of the tab off-screen on smaller windows.
-		ImGui::BeginChild("##CustomColorsScroll",
-			ImVec2(0, 280.0f),
-			ImGuiChildFlags_Borders,
-			ImGuiWindowFlags_None);
-
-		for (int i = 0; i < ImGuiCol_COUNT; i++) {
-			const char* name = ImGui::GetStyleColorName(i);
-			if (!name) continue;
-			ImVec4& color = EditorPreferences::CustomColor(i);
-			ImGui::PushID(i);
-			if (ImGui::ColorEdit4(name, &color.x,
-					ImGuiColorEditFlags_AlphaBar |
-					ImGuiColorEditFlags_NoInputs)) {
+				if (ImGui::Button("Reset to Default##ResetCustomColors")) {
+					EditorPreferences::ResetCustomColorsToDefault();
+					// Re-apply so the swatches snap back to the just-seeded values.
+					EditorPreferences::ApplyTheme();
+				}
 				if (customActive) {
-					// Push directly into the live style so the change is
-					// visible mid-frame, and persist so it survives restart.
-					ImGui::GetStyle().Colors[i] = color;
-					EditorPreferences::Save();
+					EditorUI::Tooltip("Resets the custom theme back to it's default");
 				}
+
+				// Scrollable region so the long ImGuiCol_ list doesn't push the
+				// rest of the tab off-screen on smaller windows.
+				ImGui::BeginChild("##CustomColorsScroll",
+					ImVec2(0, 280.0f),
+					ImGuiChildFlags_Borders,
+					ImGuiWindowFlags_None);
+
+				for (int i = 0; i < ImGuiCol_COUNT; i++) {
+					const char* name = ImGui::GetStyleColorName(i);
+					if (!name) continue;
+					ImVec4& color = EditorPreferences::CustomColor(i);
+					ImGui::PushID(i);
+					if (ImGui::ColorEdit4(name, &color.x,
+							ImGuiColorEditFlags_AlphaBar |
+							ImGuiColorEditFlags_NoInputs)) {
+						if (customActive) {
+							// Push directly into the live style so the change is
+							// visible mid-frame, and persist so it survives restart.
+							ImGui::GetStyle().Colors[i] = color;
+							EditorPreferences::Save();
+						}
+					}
+					ImGui::PopID();
+				}
+
+				ImGui::EndChild();
+				ImGui::EndDisabled();
+				ImGui::Spacing();
 			}
-			ImGui::PopID();
-		}
-
-		ImGui::EndChild();
-		ImGui::EndDisabled();
-
-		ImGui::Spacing();
-
-		// ── Editor Font ────────────────────────────────────────────
 		}
 
 		if (showFont) {
-		ImGui::TextUnformatted("Editor Font");
-		ImGui::Separator();
-
-		// Consume any selection raised on the previous frame.
-		if (auto pending = ReferencePicker::ConsumeSelection(k_FontPickerKey); pending) {
-			const uint64_t picked = ParseUInt64String(*pending);
-			const uint64_t before = EditorPreferences::GetEditorFontAssetId();
-			EditorPreferences::SetEditorFontAssetId(picked != 0 ? picked : k_DefaultFontAssetId);
-			if (EditorPreferences::GetEditorFontAssetId() != before) {
-				m_OpenFontRestartRequest = true;
-			}
-		}
-
-		bool fontMissing = false;
-		std::string fontSecondary;
-		const uint64_t fontId = EditorPreferences::GetEditorFontAssetId();
-		const std::string fontDisplay = ReferencePicker::ResolveAssetDisplay(
-			fontId, AssetKind::Font, fontMissing, &fontSecondary);
-
-		ImGui::PushID("EditorFontPicker");
-		if (ImGui::Button(fontDisplay.c_str(), ImVec2(280.0f, 0.0f))) {
-			ReferencePicker::OpenForFieldKey(k_FontPickerKey, "Select Editor Font",
-				ReferencePicker::CollectAssetsByKind(AssetKind::Font),
-				ReferencePicker::Style::Plain);
-		}
-		if (ImGui::IsItemHovered() && !fontSecondary.empty()) {
-			ImGui::SetTooltip("%s", fontSecondary.c_str());
-		}
-		ImGui::SameLine();
-		if (ImGui::Button("Reset##EditorFontReset")) {
-			const uint64_t before = EditorPreferences::GetEditorFontAssetId();
-			EditorPreferences::SetEditorFontAssetId(k_DefaultFontAssetId);
-			if (EditorPreferences::GetEditorFontAssetId() != before) {
-				m_OpenFontRestartRequest = true;
-			}
-		}
-		ImGui::PopID();
-		ImGui::Spacing();
-
-		ImGui::PushID("EditorFontZoom");
-		int fontZoom = EditorPreferences::GetEditorFontZoomPercent();
-		ImGui::SetNextItemWidth(280.0f);
-		if (ImGui::BeginCombo("Font Size", FontZoomLabel(fontZoom))) {
-			for (int percent = EditorPreferences::k_MinEditorFontZoomPercent;
-				percent <= EditorPreferences::k_MaxEditorFontZoomPercent;
-				percent += EditorPreferences::k_EditorFontZoomStepPercent)
-			{
-				const bool selected = (fontZoom == percent);
-				if (ImGui::Selectable(FontZoomLabel(percent), selected)) {
-					EditorPreferences::SetEditorFontZoomPercent(percent);
-					fontZoom = percent;
+			// Consume any selection raised on the previous frame, even while the section is collapsed.
+			if (auto pending = ReferencePicker::ConsumeSelection(k_FontPickerKey); pending) {
+				const uint64_t picked = ParseUInt64String(*pending);
+				const uint64_t before = EditorPreferences::GetEditorFontAssetId();
+				EditorPreferences::SetEditorFontAssetId(picked != 0 ? picked : k_DefaultFontAssetId);
+				if (EditorPreferences::GetEditorFontAssetId() != before) {
+					m_OpenFontRestartRequest = true;
 				}
-				if (selected) ImGui::SetItemDefaultFocus();
 			}
-			ImGui::EndCombo();
-		}
-		ImGui::SameLine();
-		if (ImGui::Button("Reset##EditorFontZoomReset")) {
-			EditorPreferences::SetEditorFontZoomPercent(
-				EditorPreferences::k_DefaultEditorFontZoomPercent);
-		}
-		ImGui::PopID();
+
+			if (EditorUI::SectionHeader("Editor Font")) {
+				bool fontMissing = false;
+				std::string fontSecondary;
+				const uint64_t fontId = EditorPreferences::GetEditorFontAssetId();
+				const std::string fontDisplay = ReferencePicker::ResolveAssetDisplay(
+					fontId, AssetKind::Font, fontMissing, &fontSecondary);
+
+				ImGui::PushID("EditorFontPicker");
+				if (ImGui::Button(fontDisplay.c_str(), ImVec2(280.0f, 0.0f))) {
+					ReferencePicker::OpenForFieldKey(k_FontPickerKey, "Select Editor Font",
+						ReferencePicker::CollectAssetsByKind(AssetKind::Font),
+						ReferencePicker::Style::Plain);
+				}
+				if (!fontSecondary.empty()) {
+					EditorUI::Tooltip(fontSecondary.c_str());
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Reset##EditorFontReset")) {
+					const uint64_t before = EditorPreferences::GetEditorFontAssetId();
+					EditorPreferences::SetEditorFontAssetId(k_DefaultFontAssetId);
+					if (EditorPreferences::GetEditorFontAssetId() != before) {
+						m_OpenFontRestartRequest = true;
+					}
+				}
+				ImGui::PopID();
+				ImGui::Spacing();
+
+				ImGui::PushID("EditorFontZoom");
+				int fontZoom = EditorPreferences::GetEditorFontZoomPercent();
+				ImGui::SetNextItemWidth(280.0f);
+				if (ImGui::BeginCombo("Font Size", FontZoomLabel(fontZoom))) {
+					for (int percent = EditorPreferences::k_MinEditorFontZoomPercent;
+						percent <= EditorPreferences::k_MaxEditorFontZoomPercent;
+						percent += EditorPreferences::k_EditorFontZoomStepPercent)
+					{
+						const bool selected = (fontZoom == percent);
+						if (ImGui::Selectable(FontZoomLabel(percent), selected)) {
+							EditorPreferences::SetEditorFontZoomPercent(percent);
+							fontZoom = percent;
+						}
+						if (selected) ImGui::SetItemDefaultFocus();
+					}
+					ImGui::EndCombo();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Reset##EditorFontZoomReset")) {
+					EditorPreferences::SetEditorFontZoomPercent(
+						EditorPreferences::k_DefaultEditorFontZoomPercent);
+				}
+				ImGui::PopID();
+				ImGui::Spacing();
+			}
 		}
 
-		// ── Entities Hierarchy ─────────────────────────────────────
-		if (showHierarchy) {
-		ImGui::Spacing();
-		ImGui::TextUnformatted("Entities Hierarchy");
-		ImGui::Separator();
-
-		ImGui::PushID("HierarchyRowScale");
-		float rowScale = EditorPreferences::GetHierarchyRowScale();
-		ImGui::SetNextItemWidth(280.0f);
-		if (ImGui::SliderFloat("Row Size", &rowScale,
-				EditorPreferences::k_MinHierarchyRowScale,
-				EditorPreferences::k_MaxHierarchyRowScale,
-				"%.2fx", ImGuiSliderFlags_AlwaysClamp)) {
-			EditorPreferences::SetHierarchyRowScale(rowScale);
-		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("Scales the entity rows in the Entities panel.");
-		}
-		ImGui::SameLine();
-		if (ImGui::Button("Reset##HierarchyRowScaleReset")) {
-			EditorPreferences::SetHierarchyRowScale(
-				EditorPreferences::k_DefaultHierarchyRowScale);
-		}
-		ImGui::PopID();
+		if (showHierarchy && EditorUI::SectionHeader("Entities Hierarchy")) {
+			ImGui::PushID("HierarchyRowScale");
+			float rowScale = EditorPreferences::GetHierarchyRowScale();
+			ImGui::SetNextItemWidth(280.0f);
+			if (ImGui::SliderFloat("Row Size", &rowScale,
+					EditorPreferences::k_MinHierarchyRowScale,
+					EditorPreferences::k_MaxHierarchyRowScale,
+					"%.2fx", ImGuiSliderFlags_AlwaysClamp)) {
+				EditorPreferences::SetHierarchyRowScale(rowScale);
+			}
+			EditorUI::Tooltip("Scales the entity rows in the Entities panel.");
+			ImGui::SameLine();
+			if (ImGui::Button("Reset##HierarchyRowScaleReset")) {
+				EditorPreferences::SetHierarchyRowScale(
+					EditorPreferences::k_DefaultHierarchyRowScale);
+			}
+			ImGui::PopID();
+			ImGui::Spacing();
 		}
 	}
 
@@ -359,13 +348,12 @@ namespace Index {
 			ImGui::TextWrapped(
 				"The editor font will change after restarting the editor.\n\n"
 				"Restart now?");
-			ImGui::Spacing();
-			if (ImGui::Button("Restart Now", ImVec2(120.0f, 0.0f))) {
+			const int clicked = EditorUI::DialogFooter({ "Restart Now", "Later" }, 0);
+			if (clicked == 0) {
 				ImGui::CloseCurrentPopup();
-				Application::Reload();
+				m_RestartRequested = true;
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Later", ImVec2(90.0f, 0.0f))) {
+			else if (clicked == 1) {
 				ImGui::CloseCurrentPopup();
 			}
 			ImGui::EndPopup();
@@ -377,70 +365,65 @@ namespace Index {
 		const bool showCompilation = PreferenceSectionVisible("Script Compilation", "scripting recompile recompilation auto file changes play mode exit compile");
 		if (!showExternalEditor && !showCompilation) return;
 
-		if (showExternalEditor) {
-		ImGui::TextUnformatted("External Script Editor");
-		ImGui::Separator();
-
-		const auto& editors = ExternalEditor::GetAvailableEditors();
-		if (editors.empty()) {
-			ImGui::TextDisabled("No supported editors detected on this system.");
-			if (ImGui::Button("Re-detect")) {
-				ExternalEditor::DetectEditors();
-			}
-		}
-		else {
-
-		const int selected = ExternalEditor::GetSelectedIndex();
-		const char* preview = (selected >= 0 && selected < static_cast<int>(editors.size()))
-			? editors[selected].DisplayName.c_str()
-			: "(none)";
-
-		ImGui::SetNextItemWidth(320.0f);
-		if (ImGui::BeginCombo("##ExternalEditorCombo", preview)) {
-			for (int i = 0; i < static_cast<int>(editors.size()); i++) {
-				const bool isSelected = (i == selected);
-				if (ImGui::Selectable(editors[i].DisplayName.c_str(), isSelected)) {
-					ExternalEditor::SetSelectedIndex(i);
+		if (showExternalEditor && EditorUI::SectionHeader("External Script Editor")) {
+			const auto& editors = ExternalEditor::GetAvailableEditors();
+			if (editors.empty()) {
+				EditorUI::EmptyState("No supported editors detected on this system.");
+				// Centred under the empty-state text.
+				const float buttonWidth = ImGui::CalcTextSize("Re-detect").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+				ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - buttonWidth) * 0.5f));
+				if (ImGui::Button("Re-detect")) {
+					ExternalEditor::RefreshEditors();
 				}
-				if (isSelected) ImGui::SetItemDefaultFocus();
 			}
-			ImGui::EndCombo();
-		}
-		ImGui::SameLine();
-		if (ImGui::Button("Re-detect##ScriptEditorRedetect")) {
-			ExternalEditor::DetectEditors();
-		}
-		ImGui::TextDisabled("The editor used when opening script files.");
-		}
+			else {
+				const int selected = ExternalEditor::GetSelectedIndex();
+				const char* preview = (selected >= 0 && selected < static_cast<int>(editors.size()))
+					? editors[selected].DisplayName.c_str()
+					: "(none)";
+
+				ImGui::SetNextItemWidth(320.0f);
+				if (ImGui::BeginCombo("##ExternalEditorCombo", preview)) {
+					for (int i = 0; i < static_cast<int>(editors.size()); i++) {
+						const bool isSelected = (i == selected);
+						if (ImGui::Selectable(editors[i].DisplayName.c_str(), isSelected)) {
+							ExternalEditor::SetSelectedIndex(i);
+						}
+						if (isSelected) ImGui::SetItemDefaultFocus();
+					}
+					ImGui::EndCombo();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Re-detect##ScriptEditorRedetect")) {
+					ExternalEditor::RefreshEditors();
+				}
+				ImGui::TextDisabled("The editor used when opening script files.");
+			}
+			ImGui::Spacing();
 		}
 
-		if (showCompilation) {
-			if (showExternalEditor) ImGui::Spacing();
-			ImGui::TextUnformatted("Script Compilation");
-			ImGui::Separator();
-
+		if (showCompilation && EditorUI::SectionHeader("Script Compilation")) {
 			bool autoRecompile = EditorPreferences::GetAutoRecompileScripts();
-			if (ImGui::Checkbox("Auto-recompile on file changes", &autoRecompile)) {
+			if (ImGuiUtils::Switch("Auto-recompile on file changes", &autoRecompile)) {
 				EditorPreferences::SetAutoRecompileScripts(autoRecompile);
 			}
 
 			bool recompileOnPlay = EditorPreferences::GetRecompileScriptsOnPlay();
-			if (ImGui::Checkbox("Recompile before Play Mode", &recompileOnPlay)) {
+			if (ImGuiUtils::Switch("Recompile before Play Mode", &recompileOnPlay)) {
 				EditorPreferences::SetRecompileScriptsOnPlay(recompileOnPlay);
 			}
 
 			bool exitOnRecompile = EditorPreferences::GetExitPlayModeOnRecompilation();
-			if (ImGui::Checkbox("Exit Play Mode on Recompilation", &exitOnRecompile)) {
+			if (ImGuiUtils::Switch("Exit Play Mode on Recompilation", &exitOnRecompile)) {
 				EditorPreferences::SetExitPlayModeOnRecompilation(exitOnRecompile);
 			}
+			ImGui::Spacing();
 		}
 	}
 
 	void EditorPreferencesPanel::RenderLayoutsTab() {
 		if (!PreferenceSectionVisible("Layout Presets", "layout layouts preset save load reset delete")) return;
-
-		ImGui::TextUnformatted("Layout Presets");
-		ImGui::Separator();
+		if (!EditorUI::SectionHeader("Layout Presets")) return;
 
 		if (ImGui::Button("Save Current Layout As...")) {
 			m_SaveLayoutBuffer[0] = '\0';
@@ -457,7 +440,7 @@ namespace Index {
 		const std::vector<std::string> presets =
 			ImGuiContextLayer::ListLayoutPresets();
 		if (presets.empty()) {
-			ImGui::TextDisabled("No saved layout presets.");
+			EditorUI::EmptyState("No saved layout presets.", "Use \"Save Current Layout As...\" to create one.");
 			return;
 		}
 
@@ -480,7 +463,7 @@ namespace Index {
 				}
 
 				ImGui::TableSetColumnIndex(2);
-				if (ImGui::Button("Delete", ImVec2(-FLT_MIN, 0))) {
+				if (EditorUI::Button("Delete", EditorUI::ButtonVariant::Danger, ImVec2(-FLT_MIN, 0))) {
 					m_PendingDeleteLayoutName = name;
 					m_OpenDeleteLayoutRequest = true;
 				}
@@ -498,63 +481,44 @@ namespace Index {
 		const bool showViewport = PreferenceSectionVisible("Viewport", "behavior viewport ui alignment guides guide smart snap snapping align rect transform");
 		if (!showApplication && !showAssetBrowser && !showAutoSave && !showEditing && !showViewport) return;
 
-		if (showApplication) {
-			ImGui::TextUnformatted("Application");
-			ImGui::Separator();
-
+		if (showApplication && EditorUI::SectionHeader("Application")) {
 			bool runInBackground = EditorPreferences::GetRunInBackground();
-			if (ImGui::Checkbox("Run in background", &runInBackground)) {
+			if (ImGuiUtils::Switch("Run in background", &runInBackground)) {
 				EditorPreferences::SetRunInBackground(runInBackground);
 			}
-
 			ImGui::Spacing();
 		}
 
-		// ── Editing ───────────────────────────────────────────────
-		if (showEditing) {
-			ImGui::TextUnformatted("Editing");
-			ImGui::Separator();
-
+		if (showEditing && EditorUI::SectionHeader("Editing")) {
 			bool confirmOnDeleteEntity = EditorPreferences::GetConfirmOnDeleteEntity();
-			if (ImGui::Checkbox("Confirm before deleting entity", &confirmOnDeleteEntity)) {
+			if (ImGuiUtils::Switch("Confirm before deleting entity", &confirmOnDeleteEntity)) {
 				EditorPreferences::SetConfirmOnDeleteEntity(confirmOnDeleteEntity);
 			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip(
-					"Ask for confirmation before deleting an entity in the\n"
-					"Entities hierarchy. Turn off to delete immediately\n"
-					"without a prompt.");
-			}
+			EditorUI::Tooltip(
+				"Ask for confirmation before deleting an entity in the\n"
+				"Entities hierarchy. Turn off to delete immediately\n"
+				"without a prompt.");
 
 			bool confirmOnDeleteAsset = EditorPreferences::GetConfirmOnDeleteAsset();
-			if (ImGui::Checkbox("Confirm before deleting asset", &confirmOnDeleteAsset)) {
+			if (ImGuiUtils::Switch("Confirm before deleting asset", &confirmOnDeleteAsset)) {
 				EditorPreferences::SetConfirmOnDeleteAsset(confirmOnDeleteAsset);
 			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip(
-					"Ask for confirmation before deleting an asset in the\n"
-					"Project panel. Turn off to delete immediately\n"
-					"without a prompt.");
-			}
-
+			EditorUI::Tooltip(
+				"Ask for confirmation before deleting an asset in the\n"
+				"Project panel. Turn off to delete immediately\n"
+				"without a prompt.");
 			ImGui::Spacing();
 		}
 
-		// ── Viewport ──────────────────────────────────────────────
-		if (showViewport) {
-			ImGui::TextUnformatted("Viewport");
-			ImGui::Separator();
-
+		if (showViewport && EditorUI::SectionHeader("Viewport")) {
 			bool alignGuides = EditorPreferences::GetAlignmentGuidesEnabled();
-			if (ImGui::Checkbox("UI alignment guides", &alignGuides)) {
+			if (ImGuiUtils::Switch("UI alignment guides", &alignGuides)) {
 				EditorPreferences::SetAlignmentGuidesEnabled(alignGuides);
 			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip(
-					"When dragging a UI (RectTransform) element in the viewport,\n"
-					"show alignment guide lines against other UI elements and\n"
-					"snap to them. Hold Ctrl while dragging to place freely.");
-			}
+			EditorUI::Tooltip(
+				"When dragging a UI (RectTransform) element in the viewport,\n"
+				"show alignment guide lines against other UI elements and\n"
+				"snap to them. Hold Ctrl while dragging to place freely.");
 
 			if (alignGuides) {
 				float threshold = EditorPreferences::GetAlignmentSnapThreshold();
@@ -562,71 +526,54 @@ namespace Index {
 				if (ImGui::InputFloat("Snap distance (pixels)", &threshold, 1.0f, 4.0f, "%.0f")) {
 					EditorPreferences::SetAlignmentSnapThreshold(threshold);
 				}
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip(
-						"How close (in screen pixels) a dragged edge must be to\n"
-						"another element's edge before it snaps.");
+				EditorUI::Tooltip(
+					"How close (in screen pixels) a dragged edge must be to\n"
+					"another element's edge before it snaps.");
+			}
+			ImGui::Spacing();
+		}
+
+		if (showAssetBrowser && EditorUI::SectionHeader("Asset Browser")) {
+			bool showExt = EditorPreferences::GetShowFileExtensions();
+			if (ImGuiUtils::Switch("Show file extensions", &showExt)) {
+				EditorPreferences::SetShowFileExtensions(showExt);
+			}
+			EditorUI::Tooltip(
+				"When off, asset names render\n"
+				"without their extension.");
+			ImGui::Spacing();
+		}
+
+		if (showAutoSave && EditorUI::SectionHeader("Auto-Save")) {
+			bool autoSave = EditorPreferences::GetAutoSaveScenes();
+			if (ImGuiUtils::Switch("Auto-save scenes", &autoSave)) {
+				EditorPreferences::SetAutoSaveScenes(autoSave);
+			}
+			EditorUI::Tooltip(
+				"Periodically save the active scene while editing.\n"
+				"Skipped during Play mode (Play-mode edits are discarded\n"
+				"on Stop, so saving them would clobber the pre-Play snapshot).");
+
+			if (autoSave) {
+				float interval = EditorPreferences::GetAutoSaveIntervalSeconds();
+				ImGui::SetNextItemWidth(160.0f);
+				if (ImGui::InputFloat("Interval (seconds)", &interval, 5.0f, 30.0f, "%.0f")) {
+					EditorPreferences::SetAutoSaveIntervalSeconds(interval);
 				}
 			}
 
 			ImGui::Spacing();
-		}
 
-		// ── Asset Browser ─────────────────────────────────────────
-		if (showAssetBrowser) {
-		ImGui::TextUnformatted("Asset Browser");
-		ImGui::Separator();
-
-		bool showExt = EditorPreferences::GetShowFileExtensions();
-		if (ImGui::Checkbox("Show file extensions", &showExt)) {
-			EditorPreferences::SetShowFileExtensions(showExt);
-		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip(
-				"When off, asset names render\n"
-				"without their extension.");
-		}
-
-		ImGui::Spacing();
-
-		// ── Auto-Save ──────────────────────────────────────────────
-		}
-		if (showAutoSave) {
-		ImGui::TextUnformatted("Auto-Save");
-		ImGui::Separator();
-
-		bool autoSave = EditorPreferences::GetAutoSaveScenes();
-		if (ImGui::Checkbox("Auto-save scenes", &autoSave)) {
-			EditorPreferences::SetAutoSaveScenes(autoSave);
-		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip(
-				"Periodically save the active scene while editing.\n"
-				"Skipped during Play mode (Play-mode edits are discarded\n"
-				"on Stop, so saving them would clobber the pre-Play snapshot).");
-		}
-
-		if (autoSave) {
-			float interval = EditorPreferences::GetAutoSaveIntervalSeconds();
-			ImGui::SetNextItemWidth(160.0f);
-			if (ImGui::InputFloat("Interval (seconds)", &interval, 5.0f, 30.0f, "%.0f")) {
-				EditorPreferences::SetAutoSaveIntervalSeconds(interval);
+			bool autoSavePrefabs = EditorPreferences::GetAutoSavePrefabs();
+			if (ImGuiUtils::Switch("Auto-save prefabs", &autoSavePrefabs)) {
+				EditorPreferences::SetAutoSavePrefabs(autoSavePrefabs);
 			}
-		}
-
-		ImGui::Spacing();
-
-		bool autoSavePrefabs = EditorPreferences::GetAutoSavePrefabs();
-		if (ImGui::Checkbox("Auto-save prefabs", &autoSavePrefabs)) {
-			EditorPreferences::SetAutoSavePrefabs(autoSavePrefabs);
-		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip(
+			EditorUI::Tooltip(
 				"In prefab edit mode, save the prefab as soon as you release\n"
 				"the active inspector / hierarchy widget — no Ctrl+S needed.\n"
 				"Drags and text-input debounce naturally; the save fires once\n"
 				"per edit on release. Skipped during Play mode.");
-		}
+			ImGui::Spacing();
 		}
 	}
 
@@ -659,24 +606,19 @@ namespace Index {
 			const std::string nameStr(m_SaveLayoutBuffer);
 			const bool nameValid = ImGuiContextLayer::IsValidLayoutPresetName(nameStr);
 			if (!nameStr.empty() && !nameValid) {
-				ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+				EditorUI::StatusText(EditorUI::Tone::Error,
 					"Invalid name (no / \\ : * ? \" < > |, no trailing dot/space, max 64 chars).");
 			} else {
 				ImGui::TextDisabled("Stored under %%LOCALAPPDATA%%\\Index\\Editor\\Layouts.");
 			}
 
-			ImGui::Spacing();
-			ImGui::BeginDisabled(!nameValid);
-			const bool saveClicked = ImGui::Button("Save", ImVec2(100, 0));
-			ImGui::EndDisabled();
-			if ((saveClicked || enterPressed) && nameValid) {
+			const int clicked = EditorUI::DialogFooter({ "Save", "Cancel" }, 0, -1, nameValid ? 0u : 1u);
+			if ((clicked == 0 || enterPressed) && nameValid) {
 				ImGuiContextLayer::SaveLayoutPreset(nameStr);
 				m_SaveLayoutBuffer[0] = '\0';
 				ImGui::CloseCurrentPopup();
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(100, 0)) ||
-				ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+			else if (clicked == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
 				m_SaveLayoutBuffer[0] = '\0';
 				ImGui::CloseCurrentPopup();
 			}
@@ -689,15 +631,13 @@ namespace Index {
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			ImGui::Text("Delete layout preset '%s'?", m_PendingDeleteLayoutName.c_str());
 			ImGui::TextDisabled("This cannot be undone.");
-			ImGui::Spacing();
-			if (ImGui::Button("Delete", ImVec2(100, 0))) {
+			const int clicked = EditorUI::DialogFooter({ "Delete", "Cancel" }, -1, 0);
+			if (clicked == 0) {
 				ImGuiContextLayer::DeleteLayoutPreset(m_PendingDeleteLayoutName);
 				m_PendingDeleteLayoutName.clear();
 				ImGui::CloseCurrentPopup();
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(100, 0)) ||
-				ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+			else if (clicked == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
 				m_PendingDeleteLayoutName.clear();
 				ImGui::CloseCurrentPopup();
 			}

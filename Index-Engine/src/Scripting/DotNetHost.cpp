@@ -10,6 +10,8 @@
 
 #ifdef IDX_PLATFORM_WINDOWS
 #include <windows.h>
+#include <shellapi.h>
+#include <cstdlib>
 #define STR(s) L ## s
 #else
 #include <dlfcn.h>
@@ -21,12 +23,42 @@ namespace Index {
 	static void HOSTFXR_CALLTYPE HostFxrErrorWriter(const char_t* message)
 	{
 #ifdef IDX_PLATFORM_WINDOWS
-		int size = WideCharToMultiByte(CP_UTF8, 0, message, -1, nullptr, 0, nullptr, nullptr);
-		std::string utf8(size - 1, 0);
-		WideCharToMultiByte(CP_UTF8, 0, message, -1, &utf8[0], size, nullptr, nullptr);
+		const int size = WideCharToMultiByte(CP_UTF8, 0, message, -1, nullptr, 0, nullptr, nullptr);
+		std::string utf8;
+		if (size > 1) {
+			utf8.resize(static_cast<size_t>(size), '\0');
+			if (WideCharToMultiByte(CP_UTF8, 0, message, -1, utf8.data(), size, nullptr, nullptr) == size) {
+				utf8.pop_back();
+			}
+			else {
+				utf8.clear();
+			}
+		}
 		IDX_CORE_ERROR_TAG("DotNetHost", "{}", utf8);
 #else
 		IDX_CORE_ERROR_TAG("DotNetHost", "{}", message);
+#endif
+	}
+
+	// hostfxr: "The specified framework was not found" (the required .NET version is not installed).
+	constexpr int k_FrameworkMissingFailure = static_cast<int>(0x80008096);
+
+	// Players usually only see this: without it a missing runtime is just a line in a log file.
+	static void ReportMissingDotNetRuntime()
+	{
+		IDX_CORE_ERROR_TAG("DotNetHost",
+			"The .NET 10 Runtime (x64) is not installed. Download it from https://dotnet.microsoft.com/download/dotnet/10.0");
+#ifdef IDX_PLATFORM_WINDOWS
+		static bool s_Shown = false;
+		if (s_Shown || std::getenv("CI") != nullptr) return;
+		s_Shown = true;
+		const int choice = MessageBoxW(nullptr,
+			L"This application needs the Microsoft .NET 10 Runtime (x64), which is not installed on this computer.\n\n"
+			L"Open the download page now? Install \".NET Runtime 10.x (x64)\" and start the application again.",
+			L".NET Runtime required", MB_YESNO | MB_ICONERROR | MB_TASKMODAL);
+		if (choice == IDYES) {
+			ShellExecuteW(nullptr, L"open", L"https://dotnet.microsoft.com/download/dotnet/10.0", nullptr, nullptr, SW_SHOWNORMAL);
+		}
 #endif
 	}
 
@@ -85,6 +117,7 @@ namespace Index {
 		if (rc != 0)
 		{
 			IDX_CORE_ERROR_TAG("DotNetHost", "Failed to find hostfxr: error 0x{:x}", static_cast<unsigned>(rc));
+			ReportMissingDotNetRuntime();
 			return false;
 		}
 
@@ -135,6 +168,7 @@ namespace Index {
 		if (rc < 0 || !m_HostContext)
 		{
 			IDX_CORE_ERROR_TAG("DotNetHost", "Failed to initialize .NET runtime: 0x{:x}", static_cast<unsigned>(rc));
+			if (rc == k_FrameworkMissingFailure) ReportMissingDotNetRuntime();
 			Close();
 			return false;
 		}

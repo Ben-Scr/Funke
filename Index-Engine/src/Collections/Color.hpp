@@ -27,6 +27,15 @@ namespace Index {
 
 		Color& SetAlpha(float alpha) { this->a = alpha; return *this; }
 		Color WithAlpha(float alpha) const { Color c = *this; c.a = alpha; return c; }
+		static Color OppositeColor(const Color& col)
+		{
+			return {
+				1.0f - col.r,
+				1.0f - col.g,
+				1.0f - col.b,
+				col.a
+			};
+		}
 
 		static const Color Red() { return Color(1.0f, 0.0f, 0.0f); }
 		static const Color Green() { return Color(0.0f, 1.0f, 0.0f); }
@@ -37,8 +46,29 @@ namespace Index {
 		static const Color White() { return Color(1.0f, 1.0f, 1.0f); }
 		static const Color Black() { return Color(0.0f, 0.0f, 0.0f); }
 		static const Color Gray() { return Color(0.5f, 0.5f, 0.5f); }
+
+		static const Color LightRed() { return Color(1.0f, 0.5f, 0.5f); }
+		static const Color LightGreen() { return Color(0.5f, 1.0f, 0.5f); }
+		static const Color LightBlue() { return Color(0.5f, 0.5f, 1.0f); }
+		static const Color LightYellow() { return Color(1.0f, 1.0f, 0.5f); }
+		static const Color LightMagenta() { return Color(1.0f, 0.5f, 1.0f); }
+		static const Color LightCyan() { return Color(0.5f, 1.0f, 1.0f); }
+		static const Color LightWhite() { return Color(1.0f, 1.0f, 1.0f); }
+		static const Color LightBlack() { return Color(0.25f, 0.25f, 0.25f); }
+		static const Color LightGray() { return Color(0.75f, 0.75f, 0.75f); }
+
+		static const Color DarkRed() { return Color(0.5f, 0.0f, 0.0f); }
+		static const Color DarkGreen() { return Color(0.0f, 0.5f, 0.0f); }
+		static const Color DarkBlue() { return Color(0.0f, 0.0f, 0.5f); }
+		static const Color DarkYellow() { return Color(0.5f, 0.5f, 0.0f); }
+		static const Color DarkMagenta() { return Color(0.5f, 0.0f, 0.5f); }
+		static const Color DarkCyan() { return Color(0.0f, 0.5f, 0.5f); }
+		static const Color DarkWhite() { return Color(0.75f, 0.75f, 0.75f); }
+		static const Color DarkBlack() { return Color(0.0f, 0.0f, 0.0f); }
+		static const Color DarkGray() { return Color(0.25f, 0.25f, 0.25f); }
+
 		static const Color Background() { return Color(0.35f, 0.35f, 0.35f); }
-		static const Color Transparent() { return Color(0.0f, 0.0f, 0.0f, 0.0f); }
+		static const Color Clear() { return Color(0.0f, 0.0f, 0.0f, 0.0f); }
 
 		inline uint32_t RGBA32() const {
 			const uint32_t R = ToU8(r), G = ToU8(g), B = ToU8(b), A = ToU8(a);

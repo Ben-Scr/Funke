@@ -348,6 +348,7 @@ namespace Index {
 
 	bool GizmoRenderer2D::Initialize() {
 		if (m_IsInitialized) return true;
+		Gizmo::Clear();
 		if (!WebGPUBackend::IsInitialized()) {
 			IDX_CORE_ERROR_TAG("GizmoRenderer",
 				"Initialize called before WebGPU backend initialized");
@@ -402,6 +403,7 @@ namespace Index {
 	}
 
 	void GizmoRenderer2D::Shutdown() {
+		Gizmo::Clear();
 		if (!m_IsInitialized) return;
 		if (m_TextRenderer) {
 			m_TextRenderer->Shutdown();
@@ -428,6 +430,14 @@ namespace Index {
 
 	void GizmoRenderer2D::OnResize(int /*w*/, int /*h*/) {}
 
+	void GizmoRenderer2D::BeginCommandFrame() {
+		Gizmo::BeginCommandFrame();
+	}
+
+	void GizmoRenderer2D::CaptureRefreshBase() {
+		Gizmo::CaptureRefreshBase();
+	}
+
 	void GizmoRenderer2D::BeginFrame(uint16_t viewId) {
 		// viewId is unused under WebGPU — the active framebuffer is set
 		// by RenderApi::BindFramebuffer before this call. Stored for ABI
@@ -436,17 +446,8 @@ namespace Index {
 	}
 
 	void GizmoRenderer2D::EndFrame() {
-		// Single per-frame clear point. RenderWithVP only READS the gizmo
-		// buffer now — it must NOT clear, because a single frame can flush
-		// the same buffer into multiple targets (editor Editor View FBO,
-		// Game View FBO, and the main-window pass). If each flush cleared,
-		// only the first target would ever show gizmos and every later one
-		// (e.g. the Game View, or any script `Gizmo.DrawLine` in play mode)
-		// would draw from an empty buffer. EndFrame is called exactly once
-		// after all RenderWithVP calls in both render paths
-		// (RenderPipelineOnly + RenderOnceForRefresh), so this is the correct
-		// place to reset for the next frame.
-		Gizmo::Clear();
+		// Keep update commands available while GLFW services resize repaints without running Update.
+		Gizmo::EndCommandFrame();
 	}
 
 	// Decide which gizmos survive the per-view render budget, by distance to the view centre.

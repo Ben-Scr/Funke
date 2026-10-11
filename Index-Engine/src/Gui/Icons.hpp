@@ -41,6 +41,7 @@ namespace Index::Icons {
 		FileManager,
 		Copy,
 		Info,
+		Download,
 	};
 
 	namespace Detail {
@@ -68,6 +69,7 @@ namespace Index::Icons {
 			case Type::FileManager: return "file_manager";
 			case Type::Copy:        return "copy";
 			case Type::Info:        return "info";
+			case Type::Download:    return "download";
 			}
 			return "";
 		}

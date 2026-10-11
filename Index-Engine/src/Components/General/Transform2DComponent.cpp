@@ -21,6 +21,20 @@ namespace Index {
 
 	float Transform2DComponent::GetRotationDegrees() const { return Degrees(Rotation); }
 
+	Vec2 Transform2DComponent::Up() const {
+		return Rotate(Vec2{ 0.0f, 1.0f }, Rotation);
+	}
+	Vec2 Transform2DComponent::Down() const {
+		return -Up();
+	}
+
+	Vec2 Transform2DComponent::Right() const {
+		return Rotate(Vec2{ 1.0f, 0.0f }, Rotation);
+	}
+	Vec2 Transform2DComponent::Left() const {
+		return -Right();
+	}
+
 	void Transform2DComponent::MarkDirty() {
 		m_Dirty = true;
 		if (m_OwnerScene && m_OwnerEntity != entt::null) {
@@ -30,8 +44,7 @@ namespace Index {
 
 	Vec2 Transform2DComponent::GetForwardDirection() const
 	{
-		const float a = Rotation;
-		return Vec2(std::sin(a), std::cos(a));
+		return Up();
 	}
 
 	glm::mat3 Transform2DComponent::GetModelMatrix() const {

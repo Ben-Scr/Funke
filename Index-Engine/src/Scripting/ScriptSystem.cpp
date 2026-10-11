@@ -1,15 +1,18 @@
 #include "pch.hpp"
 #include "Scripting/ScriptSystem.hpp"
 #include "Scripting/ScriptEngine.hpp"
+#include "Scripting/ScriptCoreArtifact.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/NativeScript.hpp"
 #include "Scene/Scene.hpp"
+#include "Scene/SceneExecutionContext.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Components/Tags.hpp"
 #include "Physics/Collision2D.hpp"
 #include "Core/Log.hpp"
 #include "Core/Application.hpp"
+#include "Core/Time.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/PrefabTemplateCache.hpp"
@@ -23,8 +26,6 @@
 #include <exception>
 #include <filesystem>
 #include <optional>
-#include <regex>
-#include <sstream>
 #include <string>
 
 #if defined(IDX_PLATFORM_WINDOWS)
@@ -88,7 +89,7 @@ namespace Index {
 
 		std::filesystem::path ResolveProjectNativeDLLPath(const IndexProject& project)
 		{
-			return NormalizeNativePath(std::filesystem::path(project.GetNativeDllPath()));
+			return NormalizeNativePath(Path::FromUtf8(project.GetNativeDllPath()));
 		}
 
 		std::filesystem::path ResolveStandaloneNativeDLLPath(const std::filesystem::path& executableDirectory)
@@ -237,18 +238,18 @@ namespace Index {
 
 			for (const char* variableName : { "INDEX_CMAKE_PATH", "CMAKE_COMMAND", "CMAKE_EXE" }) {
 				if (auto path = GetEnvironmentExecutablePath(variableName, "cmake.exe")) {
-					cachedCMakeExecutable = path->string();
+					cachedCMakeExecutable = Path::ToUtf8(*path);
 					return cachedCMakeExecutable;
 				}
 			}
 
 			if (auto path = SearchExecutableOnPath("cmake.exe")) {
-				cachedCMakeExecutable = path->string();
+				cachedCMakeExecutable = Path::ToUtf8(*path);
 				return cachedCMakeExecutable;
 			}
 
 			if (auto path = ResolveVisualStudioCMakeWithVswhere()) {
-				cachedCMakeExecutable = path->string();
+				cachedCMakeExecutable = Path::ToUtf8(*path);
 				return cachedCMakeExecutable;
 			}
 
@@ -269,7 +270,7 @@ namespace Index {
 
 			for (const std::filesystem::path& candidate : candidates) {
 				if (auto path = NormalizeExecutablePath(candidate, "cmake.exe")) {
-					cachedCMakeExecutable = path->string();
+					cachedCMakeExecutable = Path::ToUtf8(*path);
 					return cachedCMakeExecutable;
 				}
 			}
@@ -302,7 +303,7 @@ namespace Index {
 			std::vector<std::string> targets;
 			auto appendTarget = [&targets](const std::filesystem::path& path) {
 				if (!path.empty()) {
-					targets.push_back(path.string());
+					targets.push_back(Path::ToUtf8(path));
 				}
 			};
 
@@ -337,12 +338,12 @@ namespace Index {
 
 		bool IsNativeScriptBootstrapFile(const std::filesystem::path& path)
 		{
-			return path.filename().string() == "NativeScriptExports.cpp";
+			return Path::ToUtf8(path.filename()) == "NativeScriptExports.cpp";
 		}
 
 		bool IsNativeScriptSourceExtension(const std::filesystem::path& path)
 		{
-			std::string extension = path.extension().string();
+			std::string extension = Path::ToUtf8(path.extension());
 			std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) {
 				return static_cast<char>(std::tolower(ch));
 			});
@@ -390,7 +391,7 @@ namespace Index {
 			std::vector<std::string> targets;
 			auto appendTarget = [&targets](const std::filesystem::path& path) {
 				if (!path.empty()) {
-					targets.push_back(path.string());
+					targets.push_back(Path::ToUtf8(path));
 				}
 			};
 
@@ -406,7 +407,7 @@ namespace Index {
 
 		bool ShouldIgnoreBuildInputDirectory(const std::filesystem::path& directoryPath)
 		{
-			const std::string name = ToLowerCopy(directoryPath.filename().string());
+			const std::string name = ToLowerCopy(Path::ToUtf8(directoryPath.filename()));
 			return name == ".git"
 				|| name == ".vs"
 				|| name == ".idea"
@@ -423,8 +424,8 @@ namespace Index {
 				return true;
 			}
 
-			const std::string fileName = ToLowerCopy(filePath.filename().string());
-			const std::string extension = ToLowerCopy(filePath.extension().string());
+			const std::string fileName = ToLowerCopy(Path::ToUtf8(filePath.filename()));
+			const std::string extension = ToLowerCopy(Path::ToUtf8(filePath.extension()));
 
 			for (const std::string& pattern : patterns) {
 				const std::string normalized = ToLowerCopy(pattern);
@@ -546,7 +547,7 @@ namespace Index {
 				return;
 			}
 
-			app->GetSceneManager()->ForeachLoadedScene(std::forward<TFunc>(func));
+			SceneManager::ForeachLoadedScene(std::forward<TFunc>(func));
 		}
 
 		void RemovePendingFieldValuesForClass(ScriptComponent& scriptComp, const std::string& className)
@@ -596,7 +597,8 @@ namespace Index {
 
 		struct ScriptSceneScope {
 			explicit ScriptSceneScope(Scene& scene)
-				: Previous(ScriptEngine::GetScene())
+				: ExecutionScope(scene)
+				, Previous(ScriptEngine::GetScene())
 			{
 				ScriptEngine::SetScene(&scene);
 			}
@@ -606,6 +608,7 @@ namespace Index {
 				ScriptEngine::SetScene(Previous);
 			}
 
+			SceneExecutionScope ExecutionScope;
 			Scene* Previous = nullptr;
 		};
 
@@ -795,12 +798,6 @@ namespace Index {
 			}
 
 			return cmakeWriteTime > cacheWriteTime;
-		}
-
-		bool NativeBuildCacheExists(const std::filesystem::path& buildDirectory)
-		{
-			std::error_code ec;
-			return std::filesystem::exists(buildDirectory / "CMakeCache.txt", ec) && !ec;
 		}
 
 		void AbandonTask(std::shared_ptr<ProcessTaskState>& task, std::string_view description)
@@ -998,7 +995,7 @@ namespace Index {
 			return;
 		}
 
-		auto exeDir = std::filesystem::path(Path::ExecutableDir());
+		auto exeDir = Path::FromUtf8(Path::ExecutableDir());
 		IndexProject* project = ProjectManager::GetCurrentProject();
 
 		const bool engineWasFreshlyInitialized = !ScriptEngine::IsInitialized();
@@ -1008,33 +1005,30 @@ namespace Index {
 
 		if (m_CoreAssemblyPath.empty())
 		{
-			std::vector<std::filesystem::path> candidates = {
-				exeDir / ".." / "Index-ScriptCore" / "Index-ScriptCore.dll",  // dev layout
-				exeDir / "Index-ScriptCore.dll",                              // packaged build
-			};
-			for (const auto& candidate : candidates) {
-				if (std::filesystem::exists(candidate)) {
-					m_CoreAssemblyPath = std::filesystem::canonical(candidate).string();
-					break;
-				}
+			const std::filesystem::path coreAssembly = ScriptCoreArtifact::FindFirstCompleteDll({
+				exeDir,
+				exeDir / ".." / "Index-ScriptCore",
+			});
+			if (!coreAssembly.empty()) {
+				m_CoreAssemblyPath = Path::ToUtf8(coreAssembly);
 			}
 		}
 
-		if (!ScriptEngine::IsInitialized() && std::filesystem::exists(m_CoreAssemblyPath))
+		if (!ScriptEngine::IsInitialized() && std::filesystem::exists(Path::FromUtf8(m_CoreAssemblyPath)))
 			ScriptEngine::LoadCoreAssembly(m_CoreAssemblyPath);
 
 		if (m_UserAssemblyPath.empty())
 		{
 			if (project)
 			{
-				auto userDll = std::filesystem::path(project->GetUserAssemblyOutputPath());
-				m_UserAssemblyPath = userDll.string();
+				auto userDll = Path::FromUtf8(project->GetUserAssemblyOutputPath());
+				m_UserAssemblyPath = Path::ToUtf8(userDll);
 				if (std::filesystem::exists(userDll)) {
-					m_UserAssemblyPath = std::filesystem::canonical(userDll).string();
+					m_UserAssemblyPath = Path::ToUtf8(std::filesystem::canonical(userDll));
 				}
 				else {
 					// Scan bin/<config>/ subdirs: editor and runtime may be built with different configs, so the configured path may miss.
-					std::filesystem::path binRoot = std::filesystem::path(project->RootDirectory) / "bin";
+					std::filesystem::path binRoot = Path::FromUtf8(project->RootDirectory) / "bin";
 					std::error_code binEc;
 					if (std::filesystem::exists(binRoot, binEc) && !binEc) {
 						const std::string targetFile = project->Name + ".dll";
@@ -1044,10 +1038,10 @@ namespace Index {
 							if (!entry.is_directory(itEc) || itEc) continue;
 							const std::filesystem::path candidate = entry.path() / targetFile;
 							if (std::filesystem::exists(candidate, itEc) && !itEc) {
-								m_UserAssemblyPath = std::filesystem::canonical(candidate).string();
+								m_UserAssemblyPath = Path::ToUtf8(std::filesystem::canonical(candidate));
 								IDX_INFO_TAG("ScriptSystem",
 									"User assembly resolved via bin/ scan: {} (configured path '{}' did not exist)",
-									m_UserAssemblyPath, userDll.string());
+									m_UserAssemblyPath, Path::ToUtf8(userDll));
 								break;
 							}
 						}
@@ -1057,45 +1051,35 @@ namespace Index {
 			else
 			{
 				auto sandboxPath = exeDir / ".." / "Index-Sandbox" / "Index-Sandbox.dll";
-				m_UserAssemblyPath = sandboxPath.string();
+				m_UserAssemblyPath = Path::ToUtf8(sandboxPath);
 				if (std::filesystem::exists(sandboxPath))
-					m_UserAssemblyPath = std::filesystem::canonical(sandboxPath).string();
+					m_UserAssemblyPath = Path::ToUtf8(std::filesystem::canonical(sandboxPath));
 			}
 		}
 
-		if (!ScriptEngine::HasUserAssembly() && !m_UserAssemblyPath.empty() && std::filesystem::exists(m_UserAssemblyPath)) {
+		if (!ScriptEngine::HasUserAssembly() && !m_UserAssemblyPath.empty()
+			&& std::filesystem::exists(Path::FromUtf8(m_UserAssemblyPath))) {
 			ScriptEngine::LoadUserAssembly(m_UserAssemblyPath);
 		}
 		InitializeRegisteredGlobalSystems();
 
-		// Script/native hot-reload (filesystem watch + auto-rebuild on edit) is an
-		// editor-only convenience that needs the dotnet/cmake toolchain. It runs only
-		// in the editor host (Application::IsEditor(), checked in each branch below);
-		// every standalone runtime loads the prebuilt assemblies/DLLs as-is and never
-		// watches or rebuilds. Development builds skip it at runtime; shipped Dist
-		// builds (INDEX_WITH_EDITOR=0) compile the watch/rebuild paths out entirely.
-		// Assembly and native-DLL loading below are unaffected either way.
-#if INDEX_WITH_EDITOR
-		constexpr bool kEnableHotReload = true;
-#else
-		constexpr bool kEnableHotReload = false;
-#endif
+		// Host identity owns editor tooling because Dist also ships an Editor.
 
 		if (project)
 		{
-			auto scriptsDir = std::filesystem::path(project->AssetsDirectory);
-			auto csproj = std::filesystem::path(project->CsprojPath);
-			if (kEnableHotReload && Application::IsEditor() && std::filesystem::exists(csproj))
+			auto scriptsDir = Path::FromUtf8(project->AssetsDirectory);
+			auto csproj = Path::FromUtf8(project->CsprojPath);
+			if (Application::IsEditor() && std::filesystem::exists(csproj))
 			{
 				std::vector<std::string> managedWatchTargets =
-					BuildManagedWatchTargets(scriptsDir, csproj, std::filesystem::path(project->SlnPath));
-				m_SandboxProjectPath = std::filesystem::canonical(csproj).string();
+					BuildManagedWatchTargets(scriptsDir, csproj, Path::FromUtf8(project->SlnPath));
+				m_SandboxProjectPath = Path::ToUtf8(std::filesystem::canonical(csproj));
 				m_ScriptWatcher.Watch(
 					managedWatchTargets,
 					GetManagedWatchPatterns(),
 					[this]() { RebuildAndReloadScripts(); });
 
-				if (BuildArtifactIsStale(managedWatchTargets, GetManagedWatchPatterns(), std::filesystem::path(m_UserAssemblyPath))) {
+				if (BuildArtifactIsStale(managedWatchTargets, GetManagedWatchPatterns(), Path::FromUtf8(m_UserAssemblyPath))) {
 					RebuildAndReloadScripts();
 				}
 			}
@@ -1105,17 +1089,17 @@ namespace Index {
 			auto sandboxProjectDir = exeDir / ".." / ".." / ".." / "Index-Sandbox";
 			auto sandboxSourceDir = sandboxProjectDir / "Source";
 			auto sandboxCsproj = sandboxProjectDir / "Index-Sandbox.csproj";
-			if (kEnableHotReload && Application::IsEditor() && std::filesystem::exists(sandboxCsproj))
+			if (Application::IsEditor() && std::filesystem::exists(sandboxCsproj))
 			{
 				std::vector<std::string> managedWatchTargets =
 					BuildManagedWatchTargets(sandboxSourceDir, sandboxCsproj);
-				m_SandboxProjectPath = std::filesystem::canonical(sandboxCsproj).string();
+				m_SandboxProjectPath = Path::ToUtf8(std::filesystem::canonical(sandboxCsproj));
 				m_ScriptWatcher.Watch(
 					managedWatchTargets,
 					GetManagedWatchPatterns(),
 					[this]() { RebuildAndReloadScripts(); });
 
-				if (BuildArtifactIsStale(managedWatchTargets, GetManagedWatchPatterns(), std::filesystem::path(m_UserAssemblyPath))) {
+				if (BuildArtifactIsStale(managedWatchTargets, GetManagedWatchPatterns(), Path::FromUtf8(m_UserAssemblyPath))) {
 					RebuildAndReloadScripts();
 				}
 			}
@@ -1128,25 +1112,25 @@ namespace Index {
 				project->EnsureNativeScriptProjectFiles();
 			}
 
-			m_NativeProjectDirectory = NormalizeNativePath(project->NativeScriptsDir).string();
-			m_NativeSourceDirectory = NormalizeNativePath(project->NativeSourceDir).string();
+			m_NativeProjectDirectory = Path::ToUtf8(NormalizeNativePath(Path::FromUtf8(project->NativeScriptsDir)));
+			m_NativeSourceDirectory = Path::ToUtf8(NormalizeNativePath(Path::FromUtf8(project->NativeSourceDir)));
 			const std::filesystem::path nativeDll = ResolveProjectNativeDLLPath(*project);
-			m_NativeDLLPath = nativeDll.string();
+			m_NativeDLLPath = Path::ToUtf8(nativeDll);
 			m_NativeTargetName = project->Name + "-NativeScripts";
 			if (hasNativeScriptSources && std::filesystem::exists(nativeDll))
 			{
 				m_NativeHost.LoadDLL(m_NativeDLLPath);
 			}
-			if (kEnableHotReload && Application::IsEditor() && !m_NativeProjectDirectory.empty())
+			if (Application::IsEditor() && !m_NativeProjectDirectory.empty())
 			{
 				std::vector<std::string> nativeWatchTargets =
-					BuildNativeWatchTargets(std::filesystem::path(m_NativeProjectDirectory), std::filesystem::path(m_NativeSourceDirectory));
+					BuildNativeWatchTargets(Path::FromUtf8(m_NativeProjectDirectory), Path::FromUtf8(m_NativeSourceDirectory));
 				m_NativeWatcher.Watch(
 					nativeWatchTargets,
 					GetNativeWatchPatterns(),
 					[this]() { RebuildAndReloadNativeScripts(); });
 
-				if (hasNativeScriptSources && BuildArtifactIsStale(nativeWatchTargets, GetNativeWatchPatterns(), std::filesystem::path(m_NativeDLLPath))) {
+				if (hasNativeScriptSources && BuildArtifactIsStale(nativeWatchTargets, GetNativeWatchPatterns(), Path::FromUtf8(m_NativeDLLPath))) {
 					RebuildAndReloadNativeScripts();
 				}
 			}
@@ -1156,26 +1140,26 @@ namespace Index {
 			auto nativeProjectDir = exeDir / ".." / ".." / ".." / "Index-NativeScripts";
 			auto nativeSourceDir = nativeProjectDir / "Source";
 			const bool hasNativeScriptSources = HasNativeScriptSourceFiles(nativeSourceDir);
-			m_NativeProjectDirectory = NormalizeNativePath(nativeProjectDir).string();
-			m_NativeSourceDirectory = NormalizeNativePath(nativeSourceDir).string();
+			m_NativeProjectDirectory = Path::ToUtf8(NormalizeNativePath(nativeProjectDir));
+			m_NativeSourceDirectory = Path::ToUtf8(NormalizeNativePath(nativeSourceDir));
 
 			const std::filesystem::path nativeDll = ResolveStandaloneNativeDLLPath(exeDir);
-			m_NativeDLLPath = nativeDll.string();
+			m_NativeDLLPath = Path::ToUtf8(nativeDll);
 			m_NativeTargetName = "Index-NativeScripts";
 			if (hasNativeScriptSources && std::filesystem::exists(nativeDll))
 			{
 				m_NativeHost.LoadDLL(m_NativeDLLPath);
 			}
-			if (kEnableHotReload && Application::IsEditor() && !m_NativeProjectDirectory.empty())
+			if (Application::IsEditor() && !m_NativeProjectDirectory.empty())
 			{
 				std::vector<std::string> nativeWatchTargets =
-					BuildNativeWatchTargets(std::filesystem::path(m_NativeProjectDirectory), std::filesystem::path(m_NativeSourceDirectory));
+					BuildNativeWatchTargets(Path::FromUtf8(m_NativeProjectDirectory), Path::FromUtf8(m_NativeSourceDirectory));
 				m_NativeWatcher.Watch(
 					nativeWatchTargets,
 					GetNativeWatchPatterns(),
 					[this]() { RebuildAndReloadNativeScripts(); });
 
-				if (hasNativeScriptSources && BuildArtifactIsStale(nativeWatchTargets, GetNativeWatchPatterns(), std::filesystem::path(m_NativeDLLPath))) {
+				if (hasNativeScriptSources && BuildArtifactIsStale(nativeWatchTargets, GetNativeWatchPatterns(), Path::FromUtf8(m_NativeDLLPath))) {
 					RebuildAndReloadNativeScripts();
 				}
 			}
@@ -1239,6 +1223,8 @@ namespace Index {
 		}
 		if (m_SandboxProjectPath.empty()) {
 			m_RebuildQueued = false;
+			m_LastRebuildFailed = true;
+			IDX_ERROR_TAG("ScriptSystem", "Cannot rebuild C# scripts: managed project path is not configured.");
 			return;
 		}
 
@@ -1248,6 +1234,12 @@ namespace Index {
 		// Snapshot IndexProject statics on the main thread so the worker
 		// can't race with a project reload that mutates them mid-build (M9).
 		const std::string buildConfig = IndexProject::GetActiveBuildConfiguration();
+		if (IndexProject* project = ProjectManager::GetCurrentProject()) {
+			m_ManagedBuildOutputPath = project->GetUserAssemblyOutputPath(buildConfig);
+		}
+		else {
+			m_ManagedBuildOutputPath = m_UserAssemblyPath;
+		}
 		const char* primarySymbol = Application::IsEditor() ? "INDEX_EDITOR" : "INDEX_BUILD";
 		const std::string defineConstantsArg =
 			"-p:DefineConstants=" + IndexProject::BuildManagedDefineConstants(primarySymbol);
@@ -1287,7 +1279,7 @@ namespace Index {
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		const bool hasNativeScriptSources = project
 			? project->HasNativeScriptSources()
-			: HasNativeScriptSourceFiles(std::filesystem::path(m_NativeSourceDirectory));
+			: HasNativeScriptSourceFiles(Path::FromUtf8(m_NativeSourceDirectory));
 
 		if (!hasNativeScriptSources) {
 			m_LastRebuildFailed = false;
@@ -1301,8 +1293,8 @@ namespace Index {
 
 		if (project) {
 			project->EnsureNativeScriptProjectFiles();
-			m_NativeProjectDirectory = NormalizeNativePath(project->NativeScriptsDir).string();
-			m_NativeSourceDirectory = NormalizeNativePath(project->NativeSourceDir).string();
+			m_NativeProjectDirectory = Path::ToUtf8(NormalizeNativePath(Path::FromUtf8(project->NativeScriptsDir)));
+			m_NativeSourceDirectory = Path::ToUtf8(NormalizeNativePath(Path::FromUtf8(project->NativeSourceDir)));
 			m_NativeTargetName = project->Name + "-NativeScripts";
 		}
 
@@ -1312,7 +1304,7 @@ namespace Index {
 		const std::string buildConfig = GetActiveNativeBuildConfig();
 		const std::string nativeTargetName = m_NativeTargetName;
 		m_NativeRebuildTask = LaunchTask([nativeProjectDirectory, buildConfig, nativeTargetName]() {
-			const std::filesystem::path buildDirectory = std::filesystem::path(nativeProjectDirectory) / "build";
+			const std::filesystem::path buildDirectory = Path::FromUtf8(nativeProjectDirectory) / "build";
 			const std::optional<std::string> cmakeExecutable = ResolveCMakeExecutable();
 			if (!cmakeExecutable) {
 				Process::Result result{};
@@ -1326,21 +1318,12 @@ namespace Index {
 			if (NativeBuildNeedsConfigure(nativeProjectDirectory, buildDirectory)) {
 				std::vector<std::string> configureCommand = {
 					*cmakeExecutable,
-					"-B", buildDirectory.string(),
+					"-B", Path::ToUtf8(buildDirectory),
 					"-S", nativeProjectDirectory,
 					"-DCMAKE_BUILD_TYPE=" + buildConfig,
 					// Editor hot-reload always uses DEVELOPMENT; Build panel overrides for ship builds.
 					"-DINDEX_BUILD_PROFILE=DEVELOPMENT"
 				};
-
-#if defined(IDX_PLATFORM_WINDOWS)
-				if (!NativeBuildCacheExists(buildDirectory)) {
-					configureCommand.push_back("-G");
-					configureCommand.push_back("Visual Studio 17 2022");
-					configureCommand.push_back("-A");
-					configureCommand.push_back("x64");
-				}
-#endif
 
 				configureResult = Process::Run(configureCommand, nativeProjectDirectory);
 				if (!configureResult.Succeeded()) {
@@ -1350,7 +1333,7 @@ namespace Index {
 
 			std::vector<std::string> buildCommand = {
 				*cmakeExecutable,
-				"--build", buildDirectory.string(),
+				"--build", Path::ToUtf8(buildDirectory),
 				"--config", buildConfig
 			};
 			if (!nativeTargetName.empty()) {
@@ -1372,6 +1355,9 @@ namespace Index {
 		m_LastRebuildFailed = false;
 
 		RebuildAndReloadScripts();
+		if (m_LastRebuildFailed) {
+			return false;
+		}
 		RebuildAndReloadNativeScripts();
 
 		return IsRebuilding() || wasRebuilding;
@@ -1380,6 +1366,27 @@ namespace Index {
 	bool ScriptSystem::IsRebuilding() const
 	{
 		return m_RebuildTask != nullptr || m_NativeRebuildTask != nullptr;
+	}
+
+	bool ScriptSystem::ReloadManagedAssemblies()
+	{
+		if (!ScriptEngine::IsInitialized()) {
+			return false;
+		}
+
+		// Same order as the hot-reload path in OnPreRender: without the teardown,
+		// every ScriptInstance keeps a stale non-zero GC handle after the unload, so
+		// Update() never recreates it and all managed scripts silently stop running.
+		ForEachLoadedScene([](Scene& loadedScene) { TeardownManagedScripts(loadedScene); });
+		if (!ScriptEngine::ReloadAssemblies()) {
+			IDX_ERROR_TAG("ScriptSystem", "User assembly could not be reloaded; managed scripts are unavailable until the next successful build.");
+			return false;
+		}
+
+		InitializeRegisteredGlobalSystems();
+		PrefabTemplateCache::Get().InvalidateAll();
+		IDX_INFO_TAG("ScriptSystem", "User assembly reloaded");
+		return true;
 	}
 
 	void ScriptSystem::TeardownManagedScripts(Scene& scene)
@@ -1501,7 +1508,7 @@ namespace Index {
 		RemovePendingFieldValuesForClass(scriptComp, removedClassName);
 
 		// Also remove the paired DynamicComponentStorage row for IComponent C# structs; Scripts-only removal would leave it dangling.
-		auto& componentRegistry = SceneManager::Get().GetComponentRegistry();
+		auto& componentRegistry = SceneManager::GetComponentRegistry();
 		if (const ComponentInfo* info = componentRegistry.FindBySerializedName(removedClassName)) {
 			if (info->isDynamic && info->remove) {
 				info->remove(entity);
@@ -1564,22 +1571,28 @@ namespace Index {
 			Exit
 		};
 
-		void DispatchCollision2D(Scene& scene, const Collision2D& collision, CollisionDispatchPhase phase)
+		void DispatchCollision2D(const Collision2D& collision, CollisionDispatchPhase phase)
 		{
 			if (!ScriptEngine::IsInitialized()) {
 				return;
 			}
 
-			const auto dispatchToEntity = [&](EntityHandle self, EntityHandle other) {
-				if (!scene.IsValid(self) || !scene.HasComponent<ScriptComponent>(self) || scene.HasComponent<DisabledTag>(self)) {
+			const auto dispatchToEntity = [&](Scene* selfScene, EntityHandle self, Scene* otherScene, EntityHandle other) {
+				if (!selfScene || !selfScene->IsValid(self)
+					|| !selfScene->HasComponent<ScriptComponent>(self)
+					|| selfScene->HasComponent<DisabledTag>(self)) {
 					return;
 				}
 
+				Scene& scene = *selfScene;
 				ScriptSceneScope sceneScope(scene);
 				const uint64_t selfID = ToManagedEntityID(scene, self);
-				const uint64_t otherID = scene.IsValid(other) ? ToManagedEntityID(scene, other) : 0;
-				const uint64_t entityAID = scene.IsValid(collision.entityA) ? ToManagedEntityID(scene, collision.entityA) : 0;
-				const uint64_t entityBID = scene.IsValid(collision.entityB) ? ToManagedEntityID(scene, collision.entityB) : 0;
+				const uint64_t otherID = otherScene && otherScene->IsValid(other)
+					? ToManagedEntityID(*otherScene, other) : 0;
+				const uint64_t entityAID = collision.sceneA && collision.sceneA->IsValid(collision.entityA)
+					? ToManagedEntityID(*collision.sceneA, collision.entityA) : 0;
+				const uint64_t entityBID = collision.sceneB && collision.sceneB->IsValid(collision.entityB)
+					? ToManagedEntityID(*collision.sceneB, collision.entityB) : 0;
 
 				// Index-based walk with re-fetch — collision callbacks are
 				// user code that can AddScript (vector reallocation),
@@ -1587,6 +1600,11 @@ namespace Index {
 				ForEachScriptOnEntitySafe(scene, self,
 					[&, phase](ScriptComponent&, ScriptInstance& instance, size_t) -> bool {
 						if (!instance.HasManagedInstance() || !instance.HasEnabled()) {
+							return true;
+						}
+
+						if (collision.isTrigger) {
+							ScriptEngine::InvokeTrigger2D(instance.GetGCHandle(), static_cast<int32_t>(phase), selfID, otherID, entityAID, entityBID);
 							return true;
 						}
 
@@ -1605,26 +1623,23 @@ namespace Index {
 					});
 			};
 
-			dispatchToEntity(collision.entityA, collision.entityB);
-			if (collision.entityB != collision.entityA) {
-				dispatchToEntity(collision.entityB, collision.entityA);
-			}
+			collision.ForEachParticipant(dispatchToEntity);
 		}
 	}
 
-	void ScriptSystem::DispatchCollisionEnter2D(Scene& scene, const Collision2D& collision)
+	void ScriptSystem::DispatchCollisionEnter2D(const Collision2D& collision)
 	{
-		DispatchCollision2D(scene, collision, CollisionDispatchPhase::Enter);
+		DispatchCollision2D(collision, CollisionDispatchPhase::Enter);
 	}
 
-	void ScriptSystem::DispatchCollisionStay2D(Scene& scene, const Collision2D& collision)
+	void ScriptSystem::DispatchCollisionStay2D(const Collision2D& collision)
 	{
-		DispatchCollision2D(scene, collision, CollisionDispatchPhase::Stay);
+		DispatchCollision2D(collision, CollisionDispatchPhase::Stay);
 	}
 
-	void ScriptSystem::DispatchCollisionExit2D(Scene& scene, const Collision2D& collision)
+	void ScriptSystem::DispatchCollisionExit2D(const Collision2D& collision)
 	{
-		DispatchCollision2D(scene, collision, CollisionDispatchPhase::Exit);
+		DispatchCollision2D(collision, CollisionDispatchPhase::Exit);
 	}
 
 	void ScriptSystem::OnPreRender(Scene& scene)
@@ -1650,52 +1665,38 @@ namespace Index {
 		{
 			if (result.Succeeded())
 			{
-				ForEachLoadedScene([this](Scene& loadedScene) { TeardownManagedScripts(loadedScene); });
-				if (!m_UserAssemblyPath.empty() && std::filesystem::exists(m_UserAssemblyPath)) {
-					ScriptEngine::LoadUserAssembly(m_UserAssemblyPath);
+				const std::filesystem::path outputPath = Path::FromUtf8(m_ManagedBuildOutputPath);
+				std::error_code outputEc;
+				if (m_ManagedBuildOutputPath.empty()
+					|| !std::filesystem::is_regular_file(outputPath, outputEc)
+					|| outputEc)
+				{
+					m_LastRebuildFailed = true;
+					IDX_ERROR_TAG("ScriptSystem", "C# build succeeded, but assembly was not found at '{}'.", m_ManagedBuildOutputPath);
 				}
-				else {
-					ScriptEngine::ReloadAssemblies();
+				else
+				{
+					const std::filesystem::path canonicalOutput = std::filesystem::canonical(outputPath, outputEc);
+					m_UserAssemblyPath = Path::ToUtf8(outputEc ? outputPath : canonicalOutput);
+					ForEachLoadedScene([this](Scene& loadedScene) { TeardownManagedScripts(loadedScene); });
+					if (ScriptEngine::LoadUserAssembly(m_UserAssemblyPath)) {
+						InitializeRegisteredGlobalSystems();
+						// Managed reload can invalidate cached component layouts.
+						PrefabTemplateCache::Get().InvalidateAll();
+						IDX_INFO_TAG("ScriptSystem", "C# scripts rebuilt and reloaded from '{}'", m_UserAssemblyPath);
+					}
+					else {
+						m_LastRebuildFailed = true;
+						IDX_ERROR_TAG("ScriptSystem", "C# build succeeded, but the rebuilt assembly could not be loaded.");
+					}
 				}
-				InitializeRegisteredGlobalSystems();
-				// Invalidate baked prefab templates: managed reload can shift component layouts (sizeof changes) that would corrupt cached emplaceFromBytes payloads.
-				PrefabTemplateCache::Get().InvalidateAll();
-				IDX_INFO_TAG("ScriptSystem", "C# scripts rebuilt and reloaded");
 			}
 			else
 			{
 				m_LastRebuildFailed = true;
 				IDX_ERROR_TAG("ScriptSystem", "C# build failed (exit code {})", result.ExitCode);
 				if (!result.Output.empty()) {
-					static const std::regex s_ErrorPattern(R"(error CS\d+:)");
-					static const std::regex s_WarningPattern(R"(warning CS\d+:)");
-
-					std::istringstream stream(result.Output);
-					std::string line;
-					std::string otherLines;
-					while (std::getline(stream, line)) {
-						if (!line.empty() && line.back() == '\r') {
-							line.pop_back();
-						}
-						if (line.empty()) {
-							continue;
-						}
-						if (std::regex_search(line, s_ErrorPattern)) {
-							IDX_ERROR_TAG("ScriptSystem", "{}", line);
-						}
-						else if (std::regex_search(line, s_WarningPattern)) {
-							IDX_WARN_TAG("ScriptSystem", "{}", line);
-						}
-						else {
-							if (!otherLines.empty()) {
-								otherLines.push_back('\n');
-							}
-							otherLines.append(line);
-						}
-					}
-					if (!otherLines.empty()) {
-						IDX_TRACE_TAG("ScriptSystem", "dotnet build output:\n{}", otherLines);
-					}
+					IDX_ERROR_TAG("ScriptSystem", "dotnet build output:\n{}", result.Output);
 				}
 			}
 
@@ -1711,15 +1712,15 @@ namespace Index {
 		{
 			if (result.Succeeded())
 			{
-				const std::filesystem::path exeDir = std::filesystem::path(Path::ExecutableDir());
+				const std::filesystem::path exeDir = Path::FromUtf8(Path::ExecutableDir());
 				if (IndexProject* project = ProjectManager::GetCurrentProject()) {
-					m_NativeDLLPath = ResolveProjectNativeDLLPath(*project).string();
+					m_NativeDLLPath = Path::ToUtf8(ResolveProjectNativeDLLPath(*project));
 				}
 				else {
-					m_NativeDLLPath = ResolveStandaloneNativeDLLPath(exeDir).string();
+					m_NativeDLLPath = Path::ToUtf8(ResolveStandaloneNativeDLLPath(exeDir));
 				}
 
-				if (!std::filesystem::exists(m_NativeDLLPath)) {
+				if (!std::filesystem::exists(Path::FromUtf8(m_NativeDLLPath))) {
 					m_LastRebuildFailed = true;
 					IDX_ERROR_TAG("ScriptSystem", "Native scripts built, but DLL was not found at '{}'", m_NativeDLLPath);
 				}
@@ -1788,7 +1789,7 @@ namespace Index {
 		ScriptSceneScope sceneScope(scene);
 		const bool managedRuntimeReady = ScriptEngine::IsInitialized();
 
-		float dt = Application::GetInstance() ? Application::GetInstance()->GetTime().GetDeltaTime() : 0.0f;
+		const float dt = Time::GetDeltaTime();
 
 		// Drain pending coroutine continuations BEFORE user OnUpdate runs.
 		// An `await WaitForSeconds(0.1f)` whose timer expired last frame
@@ -1926,7 +1927,7 @@ namespace Index {
 		// ScriptSceneScope required: GetScene() is read by every NativeBindings call; wrong scene with additive scenes would silently no-op or null-deref.
 		ScriptSceneScope sceneScope(scene);
 		const bool managedRuntimeReady = ScriptEngine::IsInitialized();
-		const float fixedDt = Application::GetInstance() ? Application::GetInstance()->GetTime().GetFixedDeltaTime() : 0.0f;
+		const float fixedDt = Application::GetInstance() ? Time::GetFixedDeltaTime() : 0.0f;
 
 		// Drain WaitForFixedUpdate continuations before user OnFixedUpdate.
 		if (managedRuntimeReady) {
@@ -1999,6 +2000,7 @@ namespace Index {
 		m_CoreAssemblyPath.clear();
 		m_UserAssemblyPath.clear();
 		m_SandboxProjectPath.clear();
+		m_ManagedBuildOutputPath.clear();
 		m_NativeProjectDirectory.clear();
 		m_NativeSourceDirectory.clear();
 		m_NativeDLLPath.clear();

@@ -28,6 +28,8 @@ namespace Index {
         static bool Initialize();
         static void Shutdown();
         static void OnResize(int w, int h);
+        static void BeginCommandFrame();
+        static void CaptureRefreshBase();
         static void BeginFrame(uint16_t viewId = 1);
         static void EndFrame();
 

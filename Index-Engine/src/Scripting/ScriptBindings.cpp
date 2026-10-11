@@ -14,6 +14,7 @@
 #include "Core/Log.hpp"
 #include "Scene/EntityPicker.hpp"
 #include "Scene/Scene.hpp"
+#include "Scene/SceneExecutionContext.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/SceneDefinition.hpp"
 #include "Systems/UIEventSystem.hpp"
@@ -42,6 +43,7 @@
 #include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #include "Components/Audio/AudioSourceComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
+#include "Components/Graphics/SpriteAnimator2DComponent.hpp"
 #include "Components/UI/ButtonComponent.hpp"
 #include "Components/UI/CircularSliderComponent.hpp"
 #include "Components/UI/ContentSizeFitterComponent.hpp"
@@ -118,7 +120,10 @@ namespace Index {
 		}
 
 		// Never fall back to ToEntityHandle(entityID) — UUIDs would truncate and silently alias entt handles.
-		Scene* currentScene = ScriptEngine::GetScene();
+		Scene* currentScene = GetCurrentExecutionScene();
+		if (!currentScene) {
+			currentScene = ScriptEngine::GetScene();
+		}
 		if (currentScene) {
 			if (TryResolveEntityByUUID(*currentScene, entityID, outHandle)) {
 				outScene = currentScene;
@@ -126,7 +131,7 @@ namespace Index {
 			}
 		}
 
-		SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
+		SceneManager::ForeachLoadedScene([&](const Scene& scene) {
 			if (outScene || &scene == currentScene) {
 				return;
 			}
@@ -143,16 +148,16 @@ namespace Index {
 
 	Scene* GetScene()
 	{
-		Scene* scene = ScriptEngine::GetScene();
-		if (scene && scene->IsLoaded()) {
+		if (Scene* scene = GetCurrentExecutionScene()) {
 			return scene;
 		}
 
-		auto* app = Application::GetInstance();
-		if (app && app->GetSceneManager()) {
-			return app->GetSceneManager()->GetActiveScene();
+		Scene* scene = ScriptEngine::GetScene();
+		if (scene) {
+			return scene;
 		}
-		return nullptr;
+
+		return ResolveImplicitScene();
 	}
 
 	// HAZARD: never return this pointer to managed code — it is per-thread scratch for the two-call size/copy pattern only; thread-local re-entrant races caused all unbuffered thunks to be removed.
@@ -215,7 +220,7 @@ namespace Index {
 
 	static const ComponentInfo* FindComponentByName(std::string_view name) {
 		if (name.empty()) return nullptr;
-		const auto& registry = SceneManager::Get().GetComponentRegistry();
+		const auto& registry = SceneManager::GetComponentRegistry();
 
 		// Hash fast path 1: name matches a registered serializedName directly.
 		if (const ComponentInfo* hit = registry.FindBySerializedName(name)) {
@@ -452,7 +457,7 @@ namespace Index {
 				return 1;
 			}
 
-			SceneManager::Get().GetComponentRegistry().AddWithDependencies(entity, info->typeId);
+			SceneManager::GetComponentRegistry().AddWithDependencies(entity, info->typeId);
 			return 1;
 		} IDX_BINDING_CATCH(0)
 	}
@@ -547,19 +552,29 @@ namespace Index {
 		if (!className || !*className) return 0;
 		if (!scene->HasComponent<ScriptComponent>(handle)) return 0;
 
+		// Detach the matching slots first, then run teardown. Teardown invokes user code
+		// (OnDisable/OnDestroy) that may add or remove scripts on this entity, which would
+		// invalidate an iterator into Scripts if it ran mid-loop.
+		struct PendingTeardown {
+			uint32_t ManagedHandle = 0;
+			bool WasEnabled = false;
+			NativeScript* NativeInstance = nullptr;
+		};
+		std::vector<PendingTeardown> teardowns;
+
 		auto& scriptComponent = scene->GetComponent<ScriptComponent>(handle);
 		bool removedAny = false;
 		for (auto it = scriptComponent.Scripts.begin(); it != scriptComponent.Scripts.end(); ) {
 			if (it->GetClassName() == className) {
-				// Tear down any bound runtime instance before removing
-				// the slot — leaks otherwise, since ScriptSystem only
-				// destroys instances during teardown / hot-reload.
+				PendingTeardown teardown;
 				if (it->GetType() == ScriptType::Native && it->HasNativeInstance()) {
-					ScriptSystem::GetNativeHost().DestroyInstance(it->GetNativePtr());
+					teardown.NativeInstance = it->GetNativePtr();
 				}
 				if (it->GetType() == ScriptType::Managed && it->HasManagedInstance()) {
-					ScriptEngine::InvokeOnDestroy(it->GetGCHandle());
+					teardown.ManagedHandle = it->GetGCHandle();
+					teardown.WasEnabled = it->HasEnabled();
 				}
+				teardowns.push_back(teardown);
 				it = scriptComponent.Scripts.erase(it);
 				removedAny = true;
 			}
@@ -567,6 +582,23 @@ namespace Index {
 				++it;
 			}
 		}
+
+		// Full teardown, matching ScriptSystem's: OnDisable -> OnDestroy -> DestroyScriptInstance.
+		// Without DestroyScriptInstance the managed object stayed registered — it kept receiving
+		// lifecycle fan-out after being destroyed and was still returned by GetComponent<T>().
+		for (const PendingTeardown& teardown : teardowns) {
+			if (teardown.NativeInstance) {
+				ScriptSystem::GetNativeHost().DestroyInstance(teardown.NativeInstance);
+			}
+			if (teardown.ManagedHandle != 0) {
+				if (teardown.WasEnabled) {
+					ScriptEngine::InvokeOnDisable(teardown.ManagedHandle);
+				}
+				ScriptEngine::InvokeOnDestroy(teardown.ManagedHandle);
+				ScriptEngine::DestroyScriptInstance(teardown.ManagedHandle);
+			}
+		}
+
 		if (removedAny) scene->MarkDirty();
 		return removedAny ? 1 : 0;
 	}
@@ -695,7 +727,7 @@ namespace Index {
 
 	static int Index_Scene_GetEntityCountByName(const char* sceneName) {
 		if (!sceneName || sceneName[0] == '\0') return 0;
-		auto scene = SceneManager::Get().GetLoadedScene(sceneName).lock();
+		auto scene = SceneManager::GetLoadedScene(sceneName).lock();
 		if (!scene || !scene->IsLoaded()) return 0;
 		return CountSceneEntities(*scene);
 	}
@@ -723,16 +755,15 @@ namespace Index {
 	}
 
 	static int LoadSceneByName(const char* sceneName, bool additive) {
-		// Validate before any side effects: in non-additive path, LoadScene calls UnloadAllScenes before OnLoad, so an empty name would destroy the current scene and crash in Scene::GetEntity.
+		// Reject empty names before project lookup or registration.
 		if (!sceneName || sceneName[0] == '\0') {
 			IDX_CORE_ERROR_TAG("ScriptBindings", "LoadScene called with an empty name");
 			return 0;
 		}
 
-		auto& sm = SceneManager::Get();
 		std::string name(sceneName);
 		IndexProject* project = ProjectManager::GetCurrentProject();
-		const bool hasDefinition = sm.HasSceneDefinition(name);
+		const bool hasDefinition = SceneManager::HasSceneDefinition(name);
 
 		// GetSceneFilePath also rejects traversal/control-byte names via IsValidSceneName.
 		std::string scenePath;
@@ -748,24 +779,27 @@ namespace Index {
 		}
 
 		if (!hasDefinition) {
-			auto& definition = sm.RegisterScene(name);
-			definition.OnLoad([scenePath, name](Scene& scene) {
+			auto& definition = SceneManager::RegisterScene(name);
+			definition.OnLoadChecked([scenePath, name](Scene& scene) {
 				if (File::Exists(scenePath)) {
-					SceneSerializer::LoadFromFile(scene, scenePath);
+					return SceneSerializer::LoadFromFile(scene, scenePath);
 				}
 				else {
-					// File deleted/renamed between LoadScene calls; committed to empty scene — warn so entities vanishing isn't silent.
-					IDX_CORE_WARN_TAG("ScriptBindings",
-						"LoadScene: '{}' was loaded as an empty scene because '{}' is no longer on disk.",
+					IDX_CORE_ERROR_TAG("ScriptBindings",
+						"LoadScene: '{}' no longer exists at '{}'.",
 						name, scenePath);
+					return false;
 				}
 			});
 		}
 
-		auto sceneWeak = additive ? sm.LoadSceneAdditive(name) : sm.LoadScene(name);
-		auto scenePtr = sceneWeak.lock();
-		if (!scenePtr) {
-			IDX_CORE_ERROR_TAG("ScriptBindings", "Failed to load scene{}: {}", additive ? " additively" : "", name);
+		const SceneLoadResult loadResult = additive
+			? SceneManager::TryLoadSceneAdditive(name)
+			: SceneManager::TryLoadScene(name);
+		auto scenePtr = loadResult.LoadedScene.lock();
+		if (!loadResult || !scenePtr) {
+			IDX_CORE_ERROR_TAG("ScriptBindings", "Failed to load scene{} '{}': {}",
+				additive ? " additively" : "", name, loadResult.Message);
 			return 0;
 		}
 
@@ -784,27 +818,27 @@ namespace Index {
 	}
 
 	static void Index_Scene_Unload(const char* sceneName) {
-		SceneManager::Get().UnloadScene(sceneName);
+		SceneManager::UnloadScene(sceneName);
 	}
 
 	static int Index_Scene_SetActive(const char* sceneName) {
-		return SceneManager::Get().SetActiveScene(sceneName) ? 1 : 0;
+		return SceneManager::SetActiveScene(sceneName) ? 1 : 0;
 	}
 
 	static int Index_Scene_Reload(const char* sceneName) {
-		auto result = SceneManager::Get().ReloadScene(sceneName);
+		auto result = SceneManager::ReloadScene(sceneName);
 		return result.lock() ? 1 : 0;
 	}
 
 	static int Index_Scene_SetSceneSystemEnabled(const char* sceneName, const char* className, int enabled) {
 		if (!sceneName || !className || sceneName[0] == '\0' || className[0] == '\0') return 0;
-		auto scene = SceneManager::Get().GetLoadedScene(sceneName).lock();
+		auto scene = SceneManager::GetLoadedScene(sceneName).lock();
 		return scene && scene->SetSceneSystemEnabled(className, enabled != 0) ? 1 : 0;
 	}
 
 	static int Index_Scene_IsSceneSystemEnabled(const char* sceneName, const char* className) {
 		if (!sceneName || !className || sceneName[0] == '\0' || className[0] == '\0') return 0;
-		auto scene = SceneManager::Get().GetLoadedScene(sceneName).lock();
+		auto scene = SceneManager::GetLoadedScene(sceneName).lock();
 		return scene && scene->IsSceneSystemEnabled(className) ? 1 : 0;
 	}
 
@@ -814,11 +848,11 @@ namespace Index {
 
 	static int Index_Scene_DoesSceneExist(const char* sceneName) {
 		if (!sceneName || sceneName[0] == '\0') return 0;
-		return SceneManager::Get().HasSceneDefinition(sceneName) ? 1 : 0;
+		return SceneManager::HasSceneDefinition(sceneName) ? 1 : 0;
 	}
 
 	static int Index_Scene_GetLoadedCount() {
-		return static_cast<int>(SceneManager::Get().GetLoadedSceneCount());
+		return static_cast<int>(SceneManager::GetLoadedSceneCount());
 	}
 
 	static int Index_Scene_GetLoadedSceneNameAtBuffer(int index, char* outBuffer, int capacity)
@@ -827,7 +861,7 @@ namespace Index {
 			return CopyCStringToBuffer("", outBuffer, capacity);
 		}
 
-		const Scene* scene = SceneManager::Get().GetLoadedSceneAt(static_cast<size_t>(index));
+		const Scene* scene = SceneManager::GetLoadedSceneAt(static_cast<size_t>(index));
 		return CopyCStringToBuffer(scene ? scene->GetName().c_str() : "", outBuffer, capacity);
 	}
 
@@ -870,19 +904,19 @@ namespace Index {
 				"Scene_UnloadByGuid: no Scene asset registered for GUID {}.", sceneGuid);
 			return;
 		}
-		SceneManager::Get().UnloadScene(sceneName);
+		SceneManager::UnloadScene(sceneName);
 	}
 
 	static int Index_Scene_SetActiveByGuid(uint64_t sceneGuid) {
 		const std::string sceneName = ResolveSceneNameForGuid(sceneGuid);
 		if (sceneName.empty()) return 0;
-		return SceneManager::Get().SetActiveScene(sceneName) ? 1 : 0;
+		return SceneManager::SetActiveScene(sceneName) ? 1 : 0;
 	}
 
 	static int Index_Scene_ReloadByGuid(uint64_t sceneGuid) {
 		const std::string sceneName = ResolveSceneNameForGuid(sceneGuid);
 		if (sceneName.empty()) return 0;
-		auto result = SceneManager::Get().ReloadScene(sceneName);
+		auto result = SceneManager::ReloadScene(sceneName);
 		return result.lock() ? 1 : 0;
 	}
 
@@ -907,7 +941,7 @@ namespace Index {
 			return GetScene();
 		}
 
-		auto scene = SceneManager::Get().GetLoadedScene(sceneName).lock();
+		auto scene = SceneManager::GetLoadedScene(sceneName).lock();
 		return scene && scene->IsLoaded() ? scene.get() : nullptr;
 	}
 
@@ -1204,6 +1238,7 @@ namespace Index {
 		const ComponentInfo*     Info = nullptr;
 		entt::sparse_set*        Storage = nullptr;     // EnTT-backed (built-in components)
 		DynamicComponentStorage* DynStorage = nullptr;  // dynamic (user-authored C# components)
+		DynamicComponentStorage::SceneView DynView;
 		bool RequiresValue = true;  // write/readonly pools must yield pointers
 	};
 
@@ -1233,7 +1268,10 @@ namespace Index {
 					info->storageHash != 0 ? registry.storage(info->storageHash) : nullptr;
 				DynamicComponentStorage* dynStorage =
 					(storage == nullptr) ? info->dynamicStorage : nullptr;
-				out.push_back({ info, storage, dynStorage, requireValue });
+				const auto dynView = dynStorage
+					? dynStorage->GetSceneView(registry)
+					: DynamicComponentStorage::SceneView{};
+				out.push_back({ info, storage, dynStorage, dynView, requireValue });
 			}
 			if (end == str.size()) break;
 			start = end + 1;
@@ -1289,7 +1327,7 @@ namespace Index {
 
 			auto poolSize = [](const ResolvedQueryPool& p) -> size_t {
 				if (p.Storage)    return p.Storage->size();
-				if (p.DynStorage) return p.DynStorage->Size();
+				if (p.DynStorage) return p.DynView.Size();
 				return 0;
 			};
 
@@ -1327,27 +1365,27 @@ namespace Index {
 			// Stack arrays capped at 8 per category (IJobQuery limit); avoids heap allocation in the hot snapshot path.
 			struct OtherPool {
 				entt::sparse_set*        ss = nullptr;
-				DynamicComponentStorage* ds = nullptr;
+				DynamicComponentStorage::SceneView dv;
 			};
 			constexpr size_t kMaxPoolsPerCategory = 8;
 			OtherPool otherWrite[kMaxPoolsPerCategory];   size_t otherWriteCount = 0;
 			OtherPool otherRo[kMaxPoolsPerCategory];      size_t otherRoCount = 0;
 			OtherPool otherWith[kMaxPoolsPerCategory];    size_t otherWithCount = 0;
 			OtherPool withoutP[kMaxPoolsPerCategory];     size_t withoutCountResolved = 0;
-			for (const auto& p : writePools) { if (&p != driver) otherWrite[otherWriteCount++] = { p.Storage, p.DynStorage }; }
-			for (const auto& p : roPools)    { if (&p != driver) otherRo[otherRoCount++]       = { p.Storage, p.DynStorage }; }
-			for (const auto& p : withPools)  { if (&p != driver) otherWith[otherWithCount++]   = { p.Storage, p.DynStorage }; }
+			for (const auto& p : writePools) { if (&p != driver) otherWrite[otherWriteCount++] = { p.Storage, p.DynView }; }
+			for (const auto& p : roPools)    { if (&p != driver) otherRo[otherRoCount++]       = { p.Storage, p.DynView }; }
+			for (const auto& p : withPools)  { if (&p != driver) otherWith[otherWithCount++]   = { p.Storage, p.DynView }; }
 			for (const auto& p : withoutPools) {
 				// Both null = component pool never created = nobody has it →
 				// the without-filter is trivially satisfied for every entity.
 				// Drop the entry so the inner loop's contains() doesn't branch.
 				if (p.Storage || p.DynStorage) {
-					withoutP[withoutCountResolved++] = { p.Storage, p.DynStorage };
+					withoutP[withoutCountResolved++] = { p.Storage, p.DynView };
 				}
 			}
 
 			auto poolContains = [](const OtherPool& op, EntityHandle h) -> bool {
-				return op.ss ? op.ss->contains(h) : op.ds->Contains(h);
+				return op.ss ? op.ss->contains(h) : op.dv.Contains(h);
 			};
 
 			auto matchesAllFilters = [&](EntityHandle h) -> bool {
@@ -1368,12 +1406,12 @@ namespace Index {
 				for (size_t j = 0; j < writeCount; ++j) {
 					rowBase[j] = writePools[j].Storage
 						? writePools[j].Storage->value(h)
-						: writePools[j].DynStorage->Get(h);
+						: writePools[j].DynView.Get(h);
 				}
 				for (size_t j = 0; j < roCount; ++j) {
 					rowBase[writeCount + j] = roPools[j].Storage
 						? roPools[j].Storage->value(h)
-						: roPools[j].DynStorage->Get(h);
+						: roPools[j].DynView.Get(h);
 				}
 			};
 
@@ -1382,7 +1420,7 @@ namespace Index {
 			// pointers into the dense entity list.
 			const EntityHandle* drivePacked = driver->Storage
 				? driver->Storage->data()
-				: driver->DynStorage->Entities().data();
+				: driver->DynView.Entities().data();
 
 			// Path A (bitmap): one matchesAllFilters call per entity, result recorded in stack bitmap, then fill pass — faster when chunks fit in kMaxStackBitmap.
 			// Path B (chunked-claim): two sweeps per chunk (count then fill) — fallback when chunks exceed bitmap budget.
@@ -1941,13 +1979,13 @@ namespace Index {
 		const ComponentCategory cat = (category == 1)
 			? ComponentCategory::Tag
 			: ComponentCategory::Component;
-		auto& registry = SceneManager::Get().GetComponentRegistry();
+		auto& registry = SceneManager::GetComponentRegistry();
 		return registry.RegisterDynamic(display, serial, sub, cat, size, alignment);
 	}
 
 	static void Index_Component_UnregisterAllDynamic()
 	{
-		auto& registry = SceneManager::Get().GetComponentRegistry();
+		auto& registry = SceneManager::GetComponentRegistry();
 		registry.UnregisterAllDynamic();
 	}
 
@@ -2309,6 +2347,128 @@ namespace Index {
 	{
 		GET_COMPONENT(BoxCollider2DComponent, entityID, );
 		comp.SetEnabled(enabled != 0);
+	}
+
+	// ── Collider2D (shared by Box/Circle/Polygon) ──────────────────────
+	// colliderType: 0 = Box, 1 = Circle, 2 = Polygon (matches C# ColliderKind).
+
+	static Collider2D* FindCollider(uint64_t entityID, int colliderType, Scene*& outScene)
+	{
+		EntityHandle handle = entt::null;
+		if (!ResolveEntityReference(entityID, outScene, handle) || !outScene->IsValid(handle)) return nullptr;
+		switch (colliderType) {
+		case 0: return outScene->HasComponent<BoxCollider2DComponent>(handle) ? &outScene->GetComponent<BoxCollider2DComponent>(handle) : nullptr;
+		case 1: return outScene->HasComponent<CircleCollider2DComponent>(handle) ? &outScene->GetComponent<CircleCollider2DComponent>(handle) : nullptr;
+		case 2: return outScene->HasComponent<PolygonCollider2DComponent>(handle) ? &outScene->GetComponent<PolygonCollider2DComponent>(handle) : nullptr;
+		default: return nullptr;
+		}
+	}
+
+	static int Index_Collider2D_GetSensor(uint64_t entityID, int colliderType)
+	{
+		Scene* scene = nullptr;
+		Collider2D* collider = FindCollider(entityID, colliderType, scene);
+		return collider && collider->IsSensor() ? 1 : 0;
+	}
+	static void Index_Collider2D_SetSensor(uint64_t entityID, int colliderType, int sensor)
+	{
+		Scene* scene = nullptr;
+		Collider2D* collider = FindCollider(entityID, colliderType, scene);
+		if (!collider) return;
+		// SetSensor recreates the shape and is not virtual on Collider2D.
+		switch (colliderType) {
+		case 0: static_cast<BoxCollider2DComponent*>(collider)->SetSensor(sensor != 0, *scene); break;
+		case 1: static_cast<CircleCollider2DComponent*>(collider)->SetSensor(sensor != 0, *scene); break;
+		case 2: static_cast<PolygonCollider2DComponent*>(collider)->SetSensor(sensor != 0, *scene); break;
+		}
+	}
+	static uint64_t Index_Collider2D_GetLayer(uint64_t entityID, int colliderType)
+	{
+		Scene* scene = nullptr;
+		Collider2D* collider = FindCollider(entityID, colliderType, scene);
+		return collider ? collider->GetLayer() : 0;
+	}
+	static void Index_Collider2D_SetLayer(uint64_t entityID, int colliderType, uint64_t layer)
+	{
+		Scene* scene = nullptr;
+		if (Collider2D* collider = FindCollider(entityID, colliderType, scene)) collider->SetLayer(layer);
+	}
+	static uint64_t Index_Collider2D_GetCollisionMask(uint64_t entityID, int colliderType)
+	{
+		Scene* scene = nullptr;
+		Collider2D* collider = FindCollider(entityID, colliderType, scene);
+		return collider ? collider->GetCollisionMask() : 0;
+	}
+	static void Index_Collider2D_SetCollisionMask(uint64_t entityID, int colliderType, uint64_t mask)
+	{
+		Scene* scene = nullptr;
+		if (Collider2D* collider = FindCollider(entityID, colliderType, scene)) collider->SetCollisionMask(mask);
+	}
+	static float Index_Collider2D_GetFriction(uint64_t entityID, int colliderType)
+	{
+		Scene* scene = nullptr;
+		Collider2D* collider = FindCollider(entityID, colliderType, scene);
+		return collider ? collider->GetFriction() : 0.0f;
+	}
+	static void Index_Collider2D_SetFriction(uint64_t entityID, int colliderType, float friction)
+	{
+		Scene* scene = nullptr;
+		if (Collider2D* collider = FindCollider(entityID, colliderType, scene)) collider->SetFriction(friction);
+	}
+	static float Index_Collider2D_GetBounciness(uint64_t entityID, int colliderType)
+	{
+		Scene* scene = nullptr;
+		Collider2D* collider = FindCollider(entityID, colliderType, scene);
+		return collider ? collider->GetBounciness() : 0.0f;
+	}
+	static void Index_Collider2D_SetBounciness(uint64_t entityID, int colliderType, float bounciness)
+	{
+		Scene* scene = nullptr;
+		if (Collider2D* collider = FindCollider(entityID, colliderType, scene)) collider->SetBounciness(bounciness);
+	}
+	static void Index_Physics2D_SetQueryLayerMask(uint64_t layerMask)
+	{
+		Physics2D::SetQueryLayerMask(layerMask);
+	}
+
+	// ── SpriteAnimator2D ────────────────────────────────────────────────
+
+	static void Index_SpriteAnimator2D_Command(uint64_t entityID, int command)
+	{
+		GET_COMPONENT(SpriteAnimator2DComponent, entityID, );
+		switch (command) {
+		case 0: comp.Play(); break;
+		case 1: comp.Pause(); break;
+		case 2: comp.Stop(); break;
+		default: break;
+		}
+	}
+	static int Index_SpriteAnimator2D_IsPlaying(uint64_t entityID)
+	{
+		GET_COMPONENT(SpriteAnimator2DComponent, entityID, 0);
+		return comp.Playing ? 1 : 0;
+	}
+	static int Index_SpriteAnimator2D_GetFrame(uint64_t entityID)
+	{
+		GET_COMPONENT(SpriteAnimator2DComponent, entityID, 0);
+		return comp.CurrentFrame;
+	}
+	static void Index_SpriteAnimator2D_SetFrame(uint64_t entityID, int frame)
+	{
+		GET_COMPONENT(SpriteAnimator2DComponent, entityID, );
+		const int last = std::max(0, static_cast<int>(comp.Frames.size()) - 1);
+		comp.CurrentFrame = std::clamp(frame, 0, last);
+		comp.FrameTime = 0.0f;
+	}
+	static float Index_SpriteAnimator2D_GetFramesPerSecond(uint64_t entityID)
+	{
+		GET_COMPONENT(SpriteAnimator2DComponent, entityID, 0.0f);
+		return comp.FramesPerSecond;
+	}
+	static void Index_SpriteAnimator2D_SetFramesPerSecond(uint64_t entityID, float fps)
+	{
+		GET_COMPONENT(SpriteAnimator2DComponent, entityID, );
+		comp.FramesPerSecond = std::max(0.0f, fps);
 	}
 
 	// ── CircleCollider2D ────────────────────────────────────────────────
@@ -4160,6 +4320,23 @@ namespace Index {
 		b.Gizmo_SetEnabled = &Index_Gizmo_SetEnabled;
 
 		b.Physics2D_Raycast = &Index_Physics2D_Raycast;
+		b.Physics2D_SetQueryLayerMask = &Index_Physics2D_SetQueryLayerMask;
+		b.Collider2D_GetSensor = &Index_Collider2D_GetSensor;
+		b.Collider2D_SetSensor = &Index_Collider2D_SetSensor;
+		b.Collider2D_GetLayer = &Index_Collider2D_GetLayer;
+		b.Collider2D_SetLayer = &Index_Collider2D_SetLayer;
+		b.Collider2D_GetCollisionMask = &Index_Collider2D_GetCollisionMask;
+		b.Collider2D_SetCollisionMask = &Index_Collider2D_SetCollisionMask;
+		b.Collider2D_GetFriction = &Index_Collider2D_GetFriction;
+		b.Collider2D_SetFriction = &Index_Collider2D_SetFriction;
+		b.Collider2D_GetBounciness = &Index_Collider2D_GetBounciness;
+		b.Collider2D_SetBounciness = &Index_Collider2D_SetBounciness;
+		b.SpriteAnimator2D_Command = &Index_SpriteAnimator2D_Command;
+		b.SpriteAnimator2D_IsPlaying = &Index_SpriteAnimator2D_IsPlaying;
+		b.SpriteAnimator2D_GetFrame = &Index_SpriteAnimator2D_GetFrame;
+		b.SpriteAnimator2D_SetFrame = &Index_SpriteAnimator2D_SetFrame;
+		b.SpriteAnimator2D_GetFramesPerSecond = &Index_SpriteAnimator2D_GetFramesPerSecond;
+		b.SpriteAnimator2D_SetFramesPerSecond = &Index_SpriteAnimator2D_SetFramesPerSecond;
 		b.Physics2D_OverlapCircle = &Index_Physics2D_OverlapCircle;
 		b.Physics2D_OverlapBox = &Index_Physics2D_OverlapBox;
 		b.Physics2D_OverlapPolygon = &Index_Physics2D_OverlapPolygon;

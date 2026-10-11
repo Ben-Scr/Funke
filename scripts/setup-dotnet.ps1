@@ -4,6 +4,8 @@ param(
     [string]$DotNetArch = $env:INDEX_DOTNET_ARCH
 )
 
+$ErrorActionPreference = "Stop"
+
 function Resolve-HostArchitecture([string]$Architecture) {
     if (-not $Architecture) {
         $Architecture = $env:PROCESSOR_ARCHITECTURE
@@ -41,21 +43,27 @@ $HostPackBase = Join-Path $DotNetRoot ("packs\Microsoft.NETCore.App.Host.win-{0}
 if (-not $DotNetVersion) {
     if (-not (Test-Path $HostPackBase)) {
         Write-Error "No .NET host packs found at: $HostPackBase"
-        Write-Error "Install the .NET runtime first."
+        Write-Error "Install the .NET 10 runtime first."
         exit 1
     }
 
     $Latest = Get-ChildItem $HostPackBase -Directory |
+              Where-Object { $_.Name -match '^10\.\d+\.\d+$' } |
               Sort-Object { [version]$_.Name } -Descending |
               Select-Object -First 1
 
     if (-not $Latest) {
-        Write-Error "No .NET host pack versions found."
+        Write-Error "No stable .NET 10 host pack found."
         exit 1
     }
 
     $DotNetVersion = $Latest.Name
     Write-Host "[setup-dotnet] Auto-detected .NET version: $DotNetVersion"
+}
+
+if ($DotNetVersion -notmatch '^10\.') {
+    Write-Error "Index targets .NET 10; requested host pack version was $DotNetVersion."
+    exit 1
 }
 
 # ── Validate host pack path ─────────────────────────────────────────────────
@@ -82,6 +90,13 @@ $RequiredFiles = @(
     (Join-Path $LibDir  "nethost.lib"),
     (Join-Path $LibDir  "nethost.dll")
 )
+$SourceFiles = @(
+    (Join-Path $HostPackPath "nethost.h"),
+    (Join-Path $HostPackPath "hostfxr.h"),
+    (Join-Path $HostPackPath "coreclr_delegates.h"),
+    (Join-Path $HostPackPath "nethost.lib"),
+    (Join-Path $HostPackPath "nethost.dll")
+)
 
 $AllPresent = $true
 foreach ($f in $RequiredFiles) {
@@ -92,11 +107,17 @@ foreach ($f in $RequiredFiles) {
 }
 
 if ($AllPresent) {
-    # Compare timestamps — skip if destination is newer than source
-    $SrcDll  = Join-Path $HostPackPath "nethost.dll"
-    $DestDll = Join-Path $LibDir "nethost.dll"
-    if ((Get-Item $DestDll).LastWriteTime -ge (Get-Item $SrcDll).LastWriteTime) {
-        Write-Host "[setup-dotnet] .NET hosting files already up-to-date — skipping."
+    $AllCurrent = $true
+    for ($i = 0; $i -lt $RequiredFiles.Count; $i++) {
+        $sourceHash = (Get-FileHash -LiteralPath $SourceFiles[$i] -Algorithm SHA256).Hash
+        $destinationHash = (Get-FileHash -LiteralPath $RequiredFiles[$i] -Algorithm SHA256).Hash
+        if ($sourceHash -ne $destinationHash) {
+            $AllCurrent = $false
+            break
+        }
+    }
+    if ($AllCurrent) {
+        Write-Host "[setup-dotnet] .NET hosting files already up-to-date; skipping."
         exit 0
     }
 }
@@ -112,6 +133,14 @@ Copy-Item "$HostPackPath\coreclr_delegates.h"    -Destination $DestDir -Force
 # Libraries
 Copy-Item "$HostPackPath\nethost.lib" -Destination $LibDir -Force
 Copy-Item "$HostPackPath\nethost.dll" -Destination $LibDir -Force
+
+for ($i = 0; $i -lt $RequiredFiles.Count; $i++) {
+    $sourceHash = (Get-FileHash -LiteralPath $SourceFiles[$i] -Algorithm SHA256).Hash
+    $destinationHash = (Get-FileHash -LiteralPath $RequiredFiles[$i] -Algorithm SHA256).Hash
+    if ($sourceHash -ne $destinationHash) {
+        throw "Copied .NET host file failed verification: $($RequiredFiles[$i])"
+    }
+}
 
 Write-Host "[setup-dotnet] Copied .NET $DotNetVersion ($DotNetArch) hosting files to External/dotnet/"
 Write-Host "  Headers: nethost.h, hostfxr.h, coreclr_delegates.h"

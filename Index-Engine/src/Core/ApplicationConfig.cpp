@@ -29,6 +29,7 @@ namespace Index {
 		config.EnableRenderer2D = false;
 		config.EnableTextureManager = false;
 		config.EnableShaderManager = false;
+		config.AutoCreateDefaultCamera2D = false;
 		config.SetWindowIcon = false;
 		config.Vsync = false;
 		config.UseTargetFrameRateForMainLoop = false;
@@ -46,9 +47,9 @@ namespace Index {
 	}
 
 	ApplicationConfig ApplicationConfig::Editor() {
-		// Editor host has no extra flags today, but the factory exists so that
-		// flipping editor-only defaults later is a one-line change.
-		return Game();
+		ApplicationConfig config = Game();
+		config.AutoCreateDefaultCamera2D = false;
+		return config;
 	}
 
 } // namespace Index

@@ -26,6 +26,7 @@
 #include "Scene/Scene.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Serialization/Path.hpp"
+#include "Utils/Process.hpp"
 
 #ifdef IDX_PLATFORM_WINDOWS
 // winmm: timeBeginPeriod for 1ms timer resolution (frame-cap accuracy).
@@ -46,6 +47,7 @@
 #include <GLFW/glfw3.h>
 
 namespace Index {
+
 	const float Application::k_PausedTargetFrameRate = 10;
 
 	Application* Application::s_Instance = nullptr;
@@ -62,27 +64,72 @@ namespace Index {
 			"only one Application is permitted per process.");
 		m_MainThreadId = std::this_thread::get_id();
 		Application::s_Instance = this;
+		Input::SetCurrent(&m_Input);
+		Time::SetCurrent(&m_Time);
 	}
 
 	Renderer2D* Application::GetRenderer2D() {
 		return static_cast<Renderer2D*>(m_Renderer2D.get());
 	}
 
+	GraphicsApplyStatus Application::ApplyGraphicsSettings(const GraphicsSettings& settings) {
+		if (!IsMainThread()) return GraphicsApplyStatus::WrongThread;
+		if (!m_HasInitialized) return GraphicsApplyStatus::NotInitialized;
+		if (m_IsShuttingDown) return GraphicsApplyStatus::ShuttingDown;
+		const GraphicsSettings clamped = ClampGraphicsSettings(settings);
+		if (clamped == m_RequestedGraphicsSettings) return GraphicsApplyStatus::Unchanged;
+
+		m_RequestedGraphicsSettings = clamped;
+		m_GraphicsSettingsPending = true;
+		return GraphicsApplyStatus::Applied;
+	}
+
+	GraphicsApplyStatus Application::ResetGraphicsSettingsToDefaults() {
+		if (!IsMainThread()) return GraphicsApplyStatus::WrongThread;
+		return ApplyGraphicsSettings(m_DefaultGraphicsSettings);
+	}
+
+	void Application::CommitGraphicsSettings() {
+		if (!m_GraphicsSettingsPending) return;
+		m_EffectiveGraphicsSettings = m_RequestedGraphicsSettings;
+		m_GraphicsSettingsPending = false;
+		if (Renderer2D* renderer = GetRenderer2D()) {
+			renderer->SetGraphicsSettings(m_EffectiveGraphicsSettings);
+		}
+	}
+
+	Scene* Application::GetActiveScene() {
+		return m_SceneManager ? m_SceneManager->GetActiveSceneImpl() : nullptr;
+	}
+
 	Application::~Application()
 	{
 		// Guard for hosts that never call Run() (unit tests, init-time exceptions); Run()'s normal path already calls Shutdown which resets m_IsShuttingDown.
 		if (!m_IsShuttingDown && m_Window) {
-			Shutdown(false);
+			Shutdown(false, true);
 		}
 
 		if (s_Instance == this) {
+			Time::SetCurrent(nullptr);
+			Input::SetCurrent(nullptr);
 			s_Instance = nullptr;
 		}
 	}
 
-	void Application::Run()
+	int Application::Run()
 	{
 		m_MainThreadId = std::this_thread::get_id();
+		bool ciSmokeTest = false;
+		for (int i = 1; i < s_CommandLineArgs.Count; ++i) {
+			const char* value = s_CommandLineArgs[i];
+			if (value && std::string_view(value) == "--ci-smoke-test") {
+				ciSmokeTest = true;
+				break;
+			}
+		}
+		int exitCode = 0;
+		int smokeFramesRemaining = 3;
+		bool smokeQuitRequested = false;
 
 		if (m_ForceSingleInstance) {
 			static SingleInstance instance(m_Name);
@@ -97,13 +144,13 @@ namespace Index {
 			}
 			catch (const std::exception& e) {
 				IDX_ERROR_TAG("Application", std::string("Initialization failed: ") + e.what());
-				Shutdown(false);
-				return;
+				Shutdown(false, true);
+				return 1;
 			}
 			catch (...) {
 				IDX_ERROR_TAG("Application", "Initialization failed with unknown exception");
-				Shutdown(false);
-				return;
+				Shutdown(false, true);
+				return 1;
 			}
 			IDX_INFO_TAG("Application", "Full Initialization took " + StringHelper::ToString(timer));
 
@@ -112,13 +159,13 @@ namespace Index {
 			}
 			catch (const std::exception& e) {
 				IDX_ERROR_TAG("Application", std::string("Start failed: ") + e.what());
-				Shutdown();
-				return;
+				Shutdown(true, true);
+				return 1;
 			}
 			catch (...) {
 				IDX_ERROR_TAG("Application", "Start failed with unknown exception");
-				Shutdown();
-				return;
+				Shutdown(true, true);
+				return 1;
 			}
 			m_LastFrameTime = Clock::now();
 
@@ -171,11 +218,18 @@ namespace Index {
 						// frame's keys, not last frame's.
 						m_Input.PostPoll();
 					}
+					m_IsRenderingFrame = true;
+					CoreInput();
+
+					// Pause changes from callbacks apply next loop so fixed, update, and render stay paired.
+					const bool enginePausedForFrame = IsEnginePaused();
+					// Poll-time refreshes need the previous Gizmo base until an active frame starts.
+					if (m_GizmoRenderer2D && !enginePausedForFrame) m_GizmoRenderer2D->BeginCommandFrame();
 					// MUST NOT TryCompleteQuitRequest here — must run AFTER OnPreRender so layers (save-before-quit dialog) can call CancelQuit before the request auto-completes.
 
 					// TimeScale controls step frequency via the accumulator; the step quantum stays unscaled so Box2D's solver gets a constant dt.
-					m_FixedUpdateAccumulator += m_Time.GetDeltaTime();
-					const double fixedDt = m_Time.GetUnscaledFixedDeltaTime();
+					m_FixedUpdateAccumulator += Time::GetDeltaTime();
+					const double fixedDt = Time::GetUnscaledFixedDeltaTime();
 					if (fixedDt <= 0.0) {
 						// Misconfigured fixed-step: a zero/negative step would make the
 						// accumulator loop infinite. Drop accumulated time and skip the
@@ -183,14 +237,14 @@ namespace Index {
 						m_FixedUpdateAccumulator = 0.0;
 					} else {
 						while (m_FixedUpdateAccumulator >= fixedDt) {
-							if (!IsEnginePaused() && !m_IsGameplayPaused) {
+							if (!enginePausedForFrame && !m_IsGameplayPaused) {
 								BeginFixedFrame();
 								// Dispatch guard defers any PopLayer/PopOverlay to the end of
 								// the snapshot so a popped sibling's memory stays alive while
 								// we're still iterating raw pointers into it.
 								LayerDispatchGuard dispatchGuard(m_LayerStack);
 								for (Layer* layer : SnapshotLayerOrder()) {
-									layer->OnFixedUpdate(*this, m_Time.GetUnscaledFixedDeltaTime());
+									layer->OnFixedUpdate(*this, Time::GetUnscaledFixedDeltaTime());
 								}
 								EndFixedFrame();
 							}
@@ -199,12 +253,17 @@ namespace Index {
 						}
 					}
 
-					BeginFrame();
-					EndFrame();
+					BeginFrame(enginePausedForFrame);
+					EndFrame(enginePausedForFrame);
 					TryCompleteQuitRequest();
 
 					m_LastFrameTime = frameStart;
 					m_Time.AdvanceFrameCount();
+					if (ciSmokeTest && !smokeQuitRequested && m_StartupLoadComplete && --smokeFramesRemaining <= 0) {
+						IDX_INFO_TAG("Application", "CI smoke test reached a stable frame; requesting graceful shutdown.");
+						RequestQuit();
+						smokeQuitRequested = true;
+					}
 
 #ifdef INDEX_PROFILER_ENABLED
 					INDEX_PROFILE_VALUE("VSync", vsyncMs);
@@ -213,7 +272,9 @@ namespace Index {
 					{
 						PROCESS_MEMORY_COUNTERS pmc{};
 						if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
-							INDEX_PROFILE_VALUE("Total Memory", float(pmc.WorkingSetSize / (1024 * 1024)));
+							const float workingSetMb = static_cast<float>(pmc.WorkingSetSize) / (1024.0f * 1024.0f);
+							TracyPlot("Working Set", double(workingSetMb));
+							Profiler::PushValue("Total Memory", workingSetMb);
 						}
 					}
 #  endif
@@ -225,7 +286,7 @@ namespace Index {
 					{
 						std::size_t totalEntities = 0;
 						if (m_SceneManager) {
-							m_SceneManager->ForeachLoadedScene([&totalEntities](Scene& scene) {
+							m_SceneManager->ForeachLoadedSceneImpl([&totalEntities](Scene& scene) {
 								totalEntities += scene.GetEntityCount();
 							});
 						}
@@ -253,12 +314,16 @@ namespace Index {
 				catch (const std::exception& e) {
 					m_IsRenderingFrame = false;
 					IDX_ERROR_TAG("Application", "Unhandled frame exception: {}", e.what());
+					exitCode = 1;
 					m_ShouldQuit = true;
+					NotifyUnhandledFrameException(e.what());
 				}
 				catch (...) {
 					m_IsRenderingFrame = false;
 					IDX_ERROR_TAG("Application", "Unhandled frame exception: unknown exception");
+					exitCode = 1;
 					m_ShouldQuit = true;
+					NotifyUnhandledFrameException("unknown exception");
 				}
 			}
 
@@ -266,18 +331,25 @@ namespace Index {
 
 			if (!m_CanReload) break;
 			m_CanReload = false;
-
-			// Rebuild SceneManager so reload doesn't reuse a shut-down instance.
-			m_SceneManager.reset();
-			m_SceneManager = std::make_unique<SceneManager>();
+			m_RestartWindow = false;
 		}
+		return exitCode;
 	}
 
 	void Application::Initialize() {
+		Process::ResetCancellation();
 #ifdef IDX_PLATFORM_WINDOWS
 		// 1ms timer res for accurate sleep_until in the frame-cap path. Paired with timeEndPeriod in Shutdown.
 		timeBeginPeriod(1);
 #endif
+		m_DeferredStartupScenes = false;
+		m_SplashLayerActive = false;
+		m_StartupLoadRequested = false;
+		m_StartupLoadComplete = false;
+		if (!m_SceneManager) {
+			m_SceneManager = std::make_unique<SceneManager>();
+		}
+
 		{
 			using EntityTraits = entt::entt_traits<EntityHandle>;
 			constexpr uint64_t kEntityCap = static_cast<uint64_t>(EntityTraits::entity_mask);
@@ -288,13 +360,23 @@ namespace Index {
 		}
 
 		m_Configuration = GetConfiguration();
+		m_Configuration.Graphics = ClampGraphicsSettings(m_Configuration.Graphics);
+		m_DefaultGraphicsSettings = m_Configuration.Graphics;
+		if (!m_HasInitializedOnce) {
+			m_RequestedGraphicsSettings = m_DefaultGraphicsSettings;
+		}
+		m_EffectiveGraphicsSettings = m_RequestedGraphicsSettings;
+		m_GraphicsSettingsPending = false;
+		Time::SetTargetFramerate(m_Configuration.TargetFrameRate);
+		m_RunInBackground = m_Configuration.RunInBackground;
+		RefreshBackgroundPauseState();
 		SetName(m_Configuration.WindowSpecification.Title);
 
 		// Seed the fixed timestep from the project's default physics-world Hz (see
 		// IndexProject::PhysicsTickRate). Runs for every host, headless included, since
 		// it only touches Time; scripts may override later via Time.fixedDeltaTime.
 		if (const IndexProject* project = ProjectManager::GetCurrentProject()) {
-			m_Time.SetFixedDeltaTime(project->GetFixedDeltaTimeSeconds());
+			Time::SetFixedDeltaTime(project->GetFixedDeltaTimeSeconds());
 		}
 
 		// Profiler first — no GL/window deps, lets later subsystems emit profile marks during init.
@@ -313,10 +395,20 @@ namespace Index {
 		});
 		IDX_INFO_TAG("FrameArenas", "Initialization took " + StringHelper::ToString(timer));
 
+		if (m_Window && !m_Configuration.EnableWindow) {
+			IDX_WARN_TAG("Application", "EnableWindow=false requires Restart(); preserving the current window for this reload.");
+			m_Configuration.EnableWindow = true;
+		}
+
 		if (m_Configuration.EnableWindow) {
 			timer.Reset();
-			Window::Initialize();
-			m_Window = std::make_unique<Window>(m_Configuration.WindowSpecification);
+			if (!m_Window) {
+				Window::Initialize();
+				m_Window = std::make_unique<Window>(m_Configuration.WindowSpecification);
+			}
+			else {
+				IDX_VERIFY(Window::IsInitialized(), "Application: preserved window requires initialized GLFW");
+			}
 			m_Window->SetVsync(m_Configuration.Vsync);
 			m_Window->SetEventCallback([this](IndexEvent& e) { DispatchEvent(e); });
 			IDX_INFO_TAG("Window", "Initialization took " + StringHelper::ToString(timer));
@@ -361,9 +453,10 @@ namespace Index {
 			timer.Reset();
 			auto renderer = std::make_unique<Renderer2D>();
 			renderer->Initialize();
+			renderer->SetGraphicsSettings(m_EffectiveGraphicsSettings);
 			renderer->SetSceneProvider([this](const std::function<void(Scene&)>& fn) {
 				if (m_SceneManager) {
-					m_SceneManager->ForeachLoadedScene(fn);
+					m_SceneManager->ForeachLoadedSceneImpl(fn);
 				}
 				});
 			m_Renderer2D = std::move(renderer);
@@ -487,6 +580,9 @@ namespace Index {
 			PackageHost::LoadAll();
 		}
 
+		m_HasInitialized = true;
+		m_HasInitializedOnce = true;
+
 		if (m_SplashLayerActive) {
 			m_DeferredStartupScenes = true;
 			IDX_INFO_TAG("Application", "Startup scene load deferred behind splash.");
@@ -520,13 +616,9 @@ namespace Index {
 		m_StartupLoadComplete = true;
 	}
 
-	void Application::BeginFrame() {
+	void Application::BeginFrame(bool enginePaused) {
 		INDEX_PROFILE_SCOPE("Application::BeginFrame");
-		m_IsRenderingFrame = true;
-
-		CoreInput();
-
-		const bool enginePaused = IsEnginePaused();
+		CommitGraphicsSettings();
 		if (enginePaused != m_WasEnginePaused) {
 			// Suspend the audio device while the engine is paused (background-pause/minimize) so playback
 			// freezes in place instead of droning on a frozen sim; refocus resumes it from the same cursor.
@@ -557,7 +649,7 @@ namespace Index {
 				// siblings stay live for the rest of this iteration.
 				LayerDispatchGuard updateGuard(m_LayerStack);
 				for (Layer* layer : SnapshotLayerOrder()) {
-					layer->OnUpdate(*this, m_Time.GetDeltaTime());
+					layer->OnUpdate(*this, Time::GetDeltaTime());
 				}
 			}
 
@@ -571,6 +663,9 @@ namespace Index {
 
 			// Sync Transform2D into physics every frame (editor + play).
 			if (m_PhysicsSystem2D) m_PhysicsSystem2D->Update();
+
+			// Refresh renders rerun PreRender but not Update, so preserve only the completed update prefix.
+			if (m_GizmoRenderer2D) m_GizmoRenderer2D->CaptureRefreshBase();
 
 			if (m_SceneManager) {
 				INDEX_PROFILE_SCOPE("OnPreRenderScenes");
@@ -591,7 +686,7 @@ namespace Index {
 
 			if (m_GuiRenderer) {
 				INDEX_PROFILE_SCOPE("GuiRenderer.Begin");
-				INDEX_TRY_CATCH_LOG(m_GuiRenderer->BeginFrame(*m_SceneManager));
+				INDEX_TRY_CATCH_LOG(m_GuiRenderer->BeginFrame());
 			}
 
 			if (m_GizmoRenderer2D) {
@@ -604,10 +699,14 @@ namespace Index {
 		}
 	}
 
-	void Application::EndFrame() {
+	void Application::EndFrame(bool enginePaused) {
 		INDEX_PROFILE_SCOPE("Application::EndFrame");
-		if (!IsEnginePaused()) {
+		if (!enginePaused) {
 			RenderPipelineOnly();
+		}
+		else if (m_GizmoRenderer2D) {
+			// OnPaused cannot accumulate commands behind the frozen refresh base.
+			INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->EndFrame());
 		}
 
 		m_IsRenderingFrame = false;
@@ -629,7 +728,7 @@ namespace Index {
 			if (!m_IsMinimized) {
 				// Update camera projections: m_ProjMat is cached and not rebuilt automatically; without this sprites stretch on resize.
 				if (m_SceneManager) {
-					m_SceneManager->ForeachLoadedScene([](Scene& scene) {
+					m_SceneManager->ForeachLoadedSceneImpl([](Scene& scene) {
 						auto view = scene.GetRegistry().view<Camera2DComponent>();
 						for (EntityHandle entity : view) {
 							view.get<Camera2DComponent>(entity).UpdateViewport();
@@ -680,7 +779,7 @@ namespace Index {
 		}
 
 		s_Instance->m_QuitRequested = true;
-		s_Instance->m_QuitRequestFrame = s_Instance->m_Time.GetFrameCount();
+		s_Instance->m_QuitRequestFrame = Time::GetFrameCount();
 	}
 	bool Application::IsQuitRequested() {
 		return s_Instance ? s_Instance->m_QuitRequested : false;
@@ -701,7 +800,7 @@ namespace Index {
 			return;
 		}
 
-		if (m_Time.GetFrameCount() <= m_QuitRequestFrame) {
+		if (Time::GetFrameCount() <= m_QuitRequestFrame) {
 			return;
 		}
 
@@ -716,7 +815,7 @@ namespace Index {
 		if (m_SceneManager) m_SceneManager->FixedUpdateScenes();
 		// Step quantum is unscaled and constant. TimeScale already affected how many
 		// times this fires per real second via the accumulator above.
-		if (m_PhysicsSystem2D) m_PhysicsSystem2D->FixedUpdate(m_Time.GetUnscaledFixedDeltaTime());
+		if (m_PhysicsSystem2D) m_PhysicsSystem2D->FixedUpdate(Time::GetUnscaledFixedDeltaTime());
 		// Runs after physics so global systems observe transforms synced from the physics step.
 		ScriptEngine::FixedUpdateGlobalSystems();
 	}
@@ -746,7 +845,7 @@ namespace Index {
 			// Explicit gizmo pass — used to be a hidden draw inside EndFrame.
 			// Now declared as its own step in the render pipeline.
 			if (Gizmo::GetShowInRuntime()) {
-				if (Camera2DComponent* cam = Camera2DComponent::Main()) {
+				if (Camera2DComponent* cam = Camera2DComponent::GetMain()) {
 					INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->RenderWithVP(cam->GetViewProjectionMatrix(), GizmoLayerMask::Shared));
 				}
 			}
@@ -793,6 +892,7 @@ namespace Index {
 		}
 
 		if (m_Renderer2D) {
+			CommitGraphicsSettings();
 			INDEX_TRY_CATCH_LOG(m_Renderer2D->BeginFrame());
 			INDEX_TRY_CATCH_LOG(m_Renderer2D->EndFrame());
 		}
@@ -802,14 +902,14 @@ namespace Index {
 		}
 
 		if (m_GuiRenderer && m_SceneManager) {
-			INDEX_TRY_CATCH_LOG(m_GuiRenderer->BeginFrame(*m_SceneManager));
+			INDEX_TRY_CATCH_LOG(m_GuiRenderer->BeginFrame());
 			INDEX_TRY_CATCH_LOG(m_GuiRenderer->EndFrame());
 		}
 
 		if (m_GizmoRenderer2D) {
 			INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->BeginFrame());
 			if (Gizmo::GetShowInRuntime()) {
-				if (Camera2DComponent* cam = Camera2DComponent::Main()) {
+				if (Camera2DComponent* cam = Camera2DComponent::GetMain()) {
 					INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->RenderWithVP(cam->GetViewProjectionMatrix(), GizmoLayerMask::Shared));
 				}
 			}
@@ -840,7 +940,19 @@ namespace Index {
 		m_IsBackgroundPaused = !m_RunInBackground && !m_WindowHasFocus;
 	}
 
-	void Application::Shutdown(bool invokeOnQuit) {
+	void Application::NotifyUnhandledFrameException(const std::string& message) {
+		try {
+			OnUnhandledFrameException(message);
+		}
+		catch (const std::exception& e) {
+			IDX_ERROR_TAG("Application", "OnUnhandledFrameException failed: {}", e.what());
+		}
+		catch (...) {
+			IDX_ERROR_TAG("Application", "OnUnhandledFrameException failed with an unknown exception");
+		}
+	}
+
+	void Application::Shutdown(bool invokeOnQuit, bool forceWindowShutdown) {
 		m_IsShuttingDown = true;
 
 		if (invokeOnQuit) {
@@ -854,6 +966,10 @@ namespace Index {
 			catch (...) {
 				IDX_ERROR_TAG("Application", "OnQuit failed with unknown exception");
 			}
+		}
+		Process::CancelAll();
+		if (m_Window) {
+			m_Window->SetEventCallback({});
 		}
 
 		{
@@ -910,15 +1026,22 @@ namespace Index {
 
 		if (m_Configuration.EnablePackageHost) guardedShutdownStatic("PackageHost", []{ PackageHost::UnloadAll(); });
 
-		if (m_Window) {
+		const bool preserveWindow = m_Window && !forceWindowShutdown && m_CanReload && !m_RestartWindow;
+		if (preserveWindow) {
+			m_Window->SetCursorMode(0);
+			m_Window->SetCursorOverUI(false);
+			m_Window->SetGameCursorEnabled(!IsEditor());
+			m_Window->SetCursorImage(nullptr);
+			m_Window->SetUICursorImage(nullptr);
+		}
+		if (m_Window && !preserveWindow) {
 			guardedShutdownStatic("Window::Destroy", [&]{
-				m_Window->SetEventCallback({});
 				m_Window->Destroy();
 			});
 		}
-		if (Window::IsInitialized()) guardedShutdownStatic("Window::Shutdown", []{ Window::Shutdown(); });
+		if (!preserveWindow && Window::IsInitialized()) guardedShutdownStatic("Window::Shutdown", []{ Window::Shutdown(); });
 
-		m_Window.reset();
+		if (!preserveWindow) m_Window.reset();
 
 		// Drain the job system BEFORE freeing the frame arenas: JobSystem::Shutdown
 		// runs any still-queued/in-flight jobs, and a fire-and-forget job may write
@@ -942,11 +1065,16 @@ namespace Index {
 		m_QuitRequested = false;
 		m_QuitRequestFrame = -1;
 		m_IsPaused = false;
-		m_IsBackgroundPaused = false;
-		m_IsMinimized = false;
-		m_WindowHasFocus = true;
+		if (!preserveWindow) {
+			m_IsBackgroundPaused = false;
+			m_IsMinimized = false;
+			m_WindowHasFocus = true;
+			m_Input.Reset();
+		}
 		m_IsGameplayPaused = false;
 		m_IsScriptInputEnabled = true;
+		m_HasInitialized = false;
+		m_GraphicsSettingsPending = false;
 		m_IsShuttingDown = false;
 		m_WasEnginePaused = false;
 		m_FixedUpdateAccumulator = 0.0;

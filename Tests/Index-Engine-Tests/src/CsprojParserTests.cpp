@@ -27,7 +27,7 @@ namespace {
 TEST_CASE("ParseInstalledPackagesFromXml — well-formed PackageReference is detected") {
 	const std::string xml = R"(<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="RandomCS" Version="1.0.1" />
@@ -172,7 +172,7 @@ TEST_CASE("ParseInstalledPackagesFromXml — real Index-generated .csproj layout
 	const std::string xml = R"xml(<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Library</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Configurations>Debug;Release;Dist</Configurations>
   </PropertyGroup>
 

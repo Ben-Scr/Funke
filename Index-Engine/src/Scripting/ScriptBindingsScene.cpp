@@ -3,6 +3,7 @@
 #include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Core/Application.hpp"
+#include "Core/Engine.hpp"
 #include "Core/Input.hpp"
 #include "Core/Time.hpp"
 #include "Core/Window.hpp"
@@ -36,8 +37,11 @@
 #include "Graphics/TextureManager.hpp"
 #include "Graphics/Gizmo.hpp"
 #include "Graphics/RenderApi.hpp"
+#include "Graphics/RenderSettings.hpp"
 #include "Physics/Physics2D.hpp"
 #include "Core/Version.hpp"
+
+#include <algorithm>
 
 namespace Index {
 	EntityHandle ToEntityHandle(uint64_t id);
@@ -53,14 +57,12 @@ namespace Index {
 
 	static float Index_Application_GetDeltaTime()
 	{
-		auto* app = Application::GetInstance();
-		return app ? app->GetTime().GetDeltaTime() : 0.0f;
+		return Time::GetDeltaTime();
 	}
 
 	static float Index_Application_GetTime()
 	{
-		auto* app = Application::GetInstance();
-		return app ? app->GetTime().GetElapsedTime() : 0.0f;
+		return Time::GetElapsedTime();
 	}
 
 	static int Index_Application_GetScreenWidth()
@@ -100,6 +102,43 @@ namespace Index {
 		Application::Reload();
 	}
 
+	static void Index_Application_Restart() {
+		Application* app = Application::GetInstance();
+		if (!app) return;
+		if (Application::IsEditor()) {
+			Application::RequestEditorStopPlay();
+			return;
+		}
+		Application::Restart();
+	}
+
+	static void Index_RenderSettings_Get(float* renderScale, int* upscaleFilter,
+		int* postProcessingEnabled, int* postProcessingQuality, int* particleQuality) {
+		const GraphicsSettings settings = RenderSettings::Get();
+		if (renderScale) *renderScale = settings.RenderScale;
+		if (upscaleFilter) *upscaleFilter = static_cast<int>(settings.UpscaleFilter);
+		if (postProcessingEnabled) *postProcessingEnabled = settings.PostProcessingEnabled ? 1 : 0;
+		if (postProcessingQuality) *postProcessingQuality = static_cast<int>(settings.PostProcessingQuality);
+		if (particleQuality) *particleQuality = static_cast<int>(settings.ParticleQuality);
+	}
+
+	static int Index_RenderSettings_Apply(float renderScale, int upscaleFilter,
+		int postProcessingEnabled, int postProcessingQuality, int particleQuality) {
+		GraphicsSettings settings;
+		settings.RenderScale = renderScale;
+		settings.UpscaleFilter = static_cast<UpscaleFilterMode>(std::clamp(upscaleFilter, 0, 1));
+		settings.PostProcessingEnabled = std::clamp(postProcessingEnabled, 0, 1) != 0;
+		settings.PostProcessingQuality = static_cast<PostProcessingQualityLevel>(
+			std::clamp(postProcessingQuality, 0, 2));
+		settings.ParticleQuality = static_cast<ParticleQualityLevel>(
+			std::clamp(particleQuality, 0, 3));
+		return static_cast<int>(RenderSettings::Apply(settings));
+	}
+
+	static int Index_RenderSettings_ResetToDefaults() {
+		return static_cast<int>(RenderSettings::ResetToDefaults());
+	}
+
 	static int Index_Application_IsEditor() {
 		return Application::IsEditor() ? 1 : 0;
 	}
@@ -110,30 +149,24 @@ namespace Index {
 	}
 
 	static float Index_Application_GetFixedDeltaTime() {
-		auto* app = Application::GetInstance();
-		return app ? app->GetTime().GetFixedDeltaTime() : (1.0f / 50.0f);
+		return Time::GetFixedDeltaTime();
 	}
 	static void Index_Application_SetFixedDeltaTime(float step) {
-		auto* app = Application::GetInstance();
 		// Time::SetFixedDeltaTime clamps to [1/240, 1] and warns on a
 		// non-positive step (which would otherwise disable FixedUpdate).
-		if (app) app->GetTime().SetFixedDeltaTime(step);
+		Time::SetFixedDeltaTime(step);
 	}
 	static float Index_Application_GetUnscaledDeltaTime() {
-		auto* app = Application::GetInstance();
-		return app ? app->GetTime().GetDeltaTimeUnscaled() : 0.0f;
+		return Time::GetDeltaTimeUnscaled();
 	}
 	static float Index_Application_GetFixedUnscaledDeltaTime() {
-		auto* app = Application::GetInstance();
-		return app ? app->GetTime().GetUnscaledFixedDeltaTime() : (1.0f / 50.0f);
+		return Time::GetUnscaledFixedDeltaTime();
 	}
 	static float Index_Application_GetTimeScale() {
-		auto* app = Application::GetInstance();
-		return app ? app->GetTime().GetTimeScale() : 1.0f;
+		return Time::GetTimeScale();
 	}
 	static void Index_Application_SetTimeScale(float scale) {
-		auto* app = Application::GetInstance();
-		if (app) app->GetTime().SetTimeScale(scale);
+		Time::SetTimeScale(scale);
 	}
 
 	// Two-call buffer pattern: C# calls once with outBuffer=null/capacity=0 to learn the
@@ -383,7 +416,7 @@ namespace Index {
 
 	static int Index_Engine_GetVersionLongBuffer(char* outBuffer, int capacity)
 	{
-		return CopyToManagedBuffer(IDX_VERSION_LONG, outBuffer, capacity);
+		return CopyToManagedBuffer(Engine::GetVersionLong(), outBuffer, capacity);
 	}
 
 	static int Index_Engine_GetBuildConfiguration()
@@ -426,20 +459,17 @@ namespace Index {
 
 	static int Index_Time_GetFrameCount()
 	{
-		auto* app = Application::GetInstance();
-		return app ? app->GetTime().GetFrameCount() : 0;
+		return Time::GetFrameCount();
 	}
 
 	static float Index_Time_GetTimeSinceStartup()
 	{
-		auto* app = Application::GetInstance();
-		return app ? app->GetTime().GetTimeSinceStartup() : 0.0f;
+		return Time::GetTimeSinceStartup();
 	}
 
 	static float Index_Time_GetRealtimeSinceStartup()
 	{
-		auto* app = Application::GetInstance();
-		return app ? app->GetTime().GetRealtimeSinceStartup() : 0.0f;
+		return Time::GetRealtimeSinceStartup();
 	}
 
 	// ── Log Bindings ────────────────────────────────────────────────────
@@ -508,13 +538,7 @@ namespace Index {
 		auto* app = Application::GetInstance();
 		if (!CanReadScriptInput()) { *outX = 0.0f; *outY = 0.0f; return; }
 
-		// Rebases cursor coords to viewport origin via Window::UIRegion (editor Game View panel rect, or aspect-lock sub-rect); falls through to raw OS coords when inactive.
-		Vec2 pos = app->GetInput().GetMousePosition();
-		const Window::UIRegion uiRegion = Window::GetUIRegion();
-		if (uiRegion.IsActive()) {
-			pos.x -= static_cast<float>(uiRegion.OffsetX);
-			pos.y -= static_cast<float>(uiRegion.OffsetY);
-		}
+		const Vec2 pos = app->GetInput().GetMousePosition();
 		*outX = pos.x; *outY = pos.y;
 	}
 
@@ -531,6 +555,22 @@ namespace Index {
 	static float Index_Input_GetScrollWheelDelta() {
 		auto* app = Application::GetInstance();
 		return CanReadScriptInput() ? app->GetInput().ScrollValue() : 0.0f;
+	}
+
+	static int Index_Input_IsGamepadConnected(int gamepadIndex) {
+		return Input::IsGamepadConnected(gamepadIndex) ? 1 : 0;
+	}
+	static int Index_Input_GetGamepadButton(int button, int gamepadIndex) {
+		return CanReadScriptInput() && Input::GetGamepadButton(static_cast<GamepadButton>(button), gamepadIndex) ? 1 : 0;
+	}
+	static int Index_Input_GetGamepadButtonDown(int button, int gamepadIndex) {
+		return CanReadScriptInput() && Input::GetGamepadButtonDown(static_cast<GamepadButton>(button), gamepadIndex) ? 1 : 0;
+	}
+	static int Index_Input_GetGamepadButtonUp(int button, int gamepadIndex) {
+		return CanReadScriptInput() && Input::GetGamepadButtonUp(static_cast<GamepadButton>(button), gamepadIndex) ? 1 : 0;
+	}
+	static float Index_Input_GetGamepadAxis(int axis, int gamepadIndex) {
+		return CanReadScriptInput() ? Input::GetGamepadAxis(static_cast<GamepadAxis>(axis), gamepadIndex) : 0.0f;
 	}
 
 	// ── Entity Bindings ─────────────────────────────────────────────────
@@ -590,6 +630,10 @@ namespace Index {
 		b.Application_SetTargetFrameRate = &Index_Application_SetTargetFrameRate;
 		b.Application_Quit = &Index_Application_Quit;
 		b.Application_Reload = &Index_Application_Reload;
+		b.Application_Restart = &Index_Application_Restart;
+		b.RenderSettings_Get = &Index_RenderSettings_Get;
+		b.RenderSettings_Apply = &Index_RenderSettings_Apply;
+		b.RenderSettings_ResetToDefaults = &Index_RenderSettings_ResetToDefaults;
 		b.Application_GetFixedDeltaTime = &Index_Application_GetFixedDeltaTime;
 		b.Application_SetFixedDeltaTime = &Index_Application_SetFixedDeltaTime;
 		b.Application_GetUnscaledDeltaTime = &Index_Application_GetUnscaledDeltaTime;
@@ -654,6 +698,11 @@ namespace Index {
 		b.Input_GetAxis = &Index_Input_GetAxis;
 		b.Input_GetMouseDelta = &Index_Input_GetMouseDelta;
 		b.Input_GetScrollWheelDelta = &Index_Input_GetScrollWheelDelta;
+		b.Input_IsGamepadConnected = &Index_Input_IsGamepadConnected;
+		b.Input_GetGamepadButton = &Index_Input_GetGamepadButton;
+		b.Input_GetGamepadButtonDown = &Index_Input_GetGamepadButtonDown;
+		b.Input_GetGamepadButtonUp = &Index_Input_GetGamepadButtonUp;
+		b.Input_GetGamepadAxis = &Index_Input_GetGamepadAxis;
 
 		b.Entity_IsValid = &Index_Entity_IsValid;
 		b.Entity_FindByName = &Index_Entity_FindByName;

@@ -2,6 +2,7 @@
 #include "Graphics/RenderApi.hpp"
 
 #include "Core/Application.hpp"
+#include "Core/Engine.hpp"
 #include "Core/Log.hpp"
 #include "Core/Window.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
@@ -42,6 +43,8 @@ namespace Index {
 		std::string g_VersionString;
 		std::string g_VendorString;
 		std::string g_RendererString;
+		GraphicsApi g_GraphicsApi = GraphicsApi::Unknown;
+		GpuVendor   g_GpuVendor = GpuVendor::Unknown;
 
 		Color    g_ClearColor{ 0.0f, 0.0f, 0.0f, 1.0f };
 		uint32_t g_BackbufferWidth = 0;
@@ -102,6 +105,7 @@ namespace Index {
 
 		const char* BackendTypeName(wgpu::BackendType t) {
 			switch (t) {
+				case wgpu::BackendType::WebGPU:  return "WebGPU";
 				case wgpu::BackendType::D3D11:   return "Direct3D11";
 				case wgpu::BackendType::D3D12:   return "Direct3D12";
 				case wgpu::BackendType::Vulkan:  return "Vulkan";
@@ -111,6 +115,77 @@ namespace Index {
 				case wgpu::BackendType::Null:    return "Null";
 				default:                         return "Unknown";
 			}
+		}
+
+		GraphicsApi MapGraphicsApi(wgpu::BackendType type) noexcept {
+			switch (type) {
+				case wgpu::BackendType::WebGPU:  return GraphicsApi::WebGPU;
+				case wgpu::BackendType::D3D11:   return GraphicsApi::Direct3D11;
+				case wgpu::BackendType::D3D12:   return GraphicsApi::Direct3D12;
+				case wgpu::BackendType::Vulkan:  return GraphicsApi::Vulkan;
+				case wgpu::BackendType::Metal:   return GraphicsApi::Metal;
+				case wgpu::BackendType::OpenGL:  return GraphicsApi::OpenGL;
+				case wgpu::BackendType::OpenGLES:return GraphicsApi::OpenGLES;
+				default:                         return GraphicsApi::Unknown;
+			}
+		}
+
+		constexpr char ToAsciiLower(char value) noexcept {
+			return value >= 'A' && value <= 'Z'
+				? static_cast<char>(value + ('a' - 'A'))
+				: value;
+		}
+
+		bool ContainsAsciiCaseInsensitive(std::string_view value, std::string_view token) noexcept {
+			if (token.empty()) return true;
+			if (token.size() > value.size()) return false;
+
+			for (size_t start = 0; start <= value.size() - token.size(); ++start) {
+				bool matches = true;
+				for (size_t offset = 0; offset < token.size(); ++offset) {
+					if (ToAsciiLower(value[start + offset]) != ToAsciiLower(token[offset])) {
+						matches = false;
+						break;
+					}
+				}
+				if (matches) return true;
+			}
+
+			return false;
+		}
+
+		GpuVendor MapGpuVendor(
+			uint32_t vendorId,
+			std::string_view vendorName,
+			std::string_view deviceName) noexcept
+		{
+			switch (vendorId) {
+				case 0x10DEu: return GpuVendor::NVIDIA;
+				case 0x1002u: return GpuVendor::AMD;
+				case 0x8086u: return GpuVendor::Intel;
+				case 0x106Bu: return GpuVendor::Apple;
+				case 0x13B5u: return GpuVendor::ARM;
+				case 0x1414u: return GpuVendor::Microsoft;
+				case 0x17CBu:
+				case 0x5143u:
+				case 0x4D4F4351u: return GpuVendor::Qualcomm;
+				default: break;
+			}
+
+			auto contains = [vendorName, deviceName](std::string_view token) noexcept {
+				return ContainsAsciiCaseInsensitive(vendorName, token)
+					|| ContainsAsciiCaseInsensitive(deviceName, token);
+			};
+
+			if (contains("NVIDIA")) return GpuVendor::NVIDIA;
+			if (contains("Intel")) return GpuVendor::Intel;
+			if (contains("AMD") || contains("Advanced Micro Devices") || contains("Radeon")) return GpuVendor::AMD;
+			if (vendorName == "ATI" || ContainsAsciiCaseInsensitive(deviceName, "ATI Technologies")) return GpuVendor::AMD;
+			if (contains("Apple")) return GpuVendor::Apple;
+			if (contains("Qualcomm") || contains("Adreno")) return GpuVendor::Qualcomm;
+			if (contains("ARM") || contains("Mali")) return GpuVendor::ARM;
+			if (contains("Microsoft") || contains("WARP")) return GpuVendor::Microsoft;
+			return GpuVendor::Unknown;
 		}
 
 		bool SupportsPresentMode(const wgpu::SurfaceCapabilities& caps, wgpu::PresentMode mode) {
@@ -179,7 +254,6 @@ namespace Index {
 			return true;
 		}
 
-		// Returns Undefined (let Dawn pick) for Auto or when no project is loaded yet.
 		wgpu::BackendType PreferredBackendType() {
 			IndexProject* project = ProjectManager::GetCurrentProject();
 			if (!project) return wgpu::BackendType::Undefined;
@@ -193,6 +267,58 @@ namespace Index {
 				case IndexProject::RenderBackend::OpenGLES:   return wgpu::BackendType::OpenGLES;
 			}
 			return wgpu::BackendType::Undefined;
+		}
+
+		void AppendBackend(std::vector<wgpu::BackendType>& candidates, wgpu::BackendType type) {
+			if (type == wgpu::BackendType::Undefined) return;
+			if (std::find(candidates.begin(), candidates.end(), type) == candidates.end()) {
+				candidates.push_back(type);
+			}
+		}
+
+		std::vector<wgpu::BackendType> BackendCandidates() {
+			std::vector<wgpu::BackendType> candidates;
+			AppendBackend(candidates, PreferredBackendType());
+
+#if defined(IDX_PLATFORM_WINDOWS)
+			AppendBackend(candidates, wgpu::BackendType::D3D12);
+			AppendBackend(candidates, wgpu::BackendType::Vulkan);
+			AppendBackend(candidates, wgpu::BackendType::D3D11);
+			AppendBackend(candidates, wgpu::BackendType::OpenGL);
+#elif defined(IDX_PLATFORM_MACOS)
+			AppendBackend(candidates, wgpu::BackendType::Metal);
+#else
+			AppendBackend(candidates, wgpu::BackendType::Vulkan);
+			AppendBackend(candidates, wgpu::BackendType::OpenGL);
+#endif
+
+			return candidates;
+		}
+
+		void PrepareBackendRuntime(wgpu::BackendType type) {
+#if defined(IDX_PLATFORM_WINDOWS)
+			static bool d3dAttempted = false;
+			static bool vulkanAttempted = false;
+			static HMODULE d3dCompiler = nullptr;
+			static HMODULE vulkan = nullptr;
+
+			if ((type == wgpu::BackendType::D3D11 || type == wgpu::BackendType::D3D12)
+				&& !d3dAttempted) {
+				d3dAttempted = true;
+				d3dCompiler = ::LoadLibraryW(L"d3dcompiler_47.dll");
+				IDX_CORE_INFO_TAG("WebGPUApi", "D3D compiler preload: {}",
+					d3dCompiler ? "ok" : "missing");
+			}
+
+			if (type == wgpu::BackendType::Vulkan && !vulkanAttempted) {
+				vulkanAttempted = true;
+				vulkan = ::LoadLibraryW(L"vulkan-1.dll");
+				IDX_CORE_INFO_TAG("WebGPUApi", "Vulkan loader preload: {}",
+					vulkan ? "ok" : "missing");
+			}
+#else
+			(void)type;
+#endif
 		}
 
 		bool TryRequestAdapter(wgpu::BackendType backendType,
@@ -229,25 +355,20 @@ namespace Index {
 		}
 
 		bool RequestAdapterSync() {
-			const wgpu::BackendType preferred = PreferredBackendType();
-
 			wgpu::Adapter adapter;
-			std::string   error;
+			std::string error;
 
-			if (preferred != wgpu::BackendType::Undefined) {
-				if (TryRequestAdapter(preferred, adapter, error)) {
+			for (wgpu::BackendType backend : BackendCandidates()) {
+				PrepareBackendRuntime(backend);
+				if (TryRequestAdapter(backend, adapter, error)) {
 					g_Adapter = std::move(adapter);
 					return true;
 				}
-				IDX_CORE_WARN_TAG("WebGPUApi",
-					"Requested {} backend not available on this host ({}); falling back to Auto.",
-					BackendTypeName(preferred),
-					error.empty() ? "no compatible GPU" : error);
-			}
 
-			if (TryRequestAdapter(wgpu::BackendType::Undefined, adapter, error)) {
-				g_Adapter = std::move(adapter);
-				return true;
+				IDX_CORE_WARN_TAG("WebGPUApi",
+					"{} backend unavailable ({}); trying the next backend.",
+					BackendTypeName(backend),
+					error.empty() ? "no compatible GPU" : error);
 			}
 
 			IDX_CORE_ERROR_TAG("WebGPUApi", "RequestAdapter failed: {}",
@@ -416,6 +537,68 @@ namespace Index {
 	}  // anonymous namespace
 
 	namespace WebGPUBackend {
+		bool ReadTextureRGBA8(const wgpu::Texture& texture, wgpu::TextureFormat format,
+			uint32_t width, uint32_t height, std::vector<uint8_t>& outRgba)
+		{
+			const bool bgra = format == wgpu::TextureFormat::BGRA8Unorm || format == wgpu::TextureFormat::BGRA8UnormSrgb;
+			const bool rgba = format == wgpu::TextureFormat::RGBA8Unorm || format == wgpu::TextureFormat::RGBA8UnormSrgb;
+			if (!g_Initialized || !texture || width == 0 || height == 0 || (!bgra && !rgba)) {
+				return false;
+			}
+
+			FlushFrameCommands();
+
+			// Buffer rows must be 256-byte aligned for CopyTextureToBuffer.
+			const uint32_t tightRow = width * 4;
+			const uint32_t paddedRow = (tightRow + 255u) & ~255u;
+
+			wgpu::BufferDescriptor bufDesc{};
+			bufDesc.size  = static_cast<uint64_t>(paddedRow) * height;
+			bufDesc.usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead;
+			wgpu::Buffer buffer = g_Device.CreateBuffer(&bufDesc);
+			if (!buffer) return false;
+
+			wgpu::TexelCopyTextureInfo src{};
+			src.texture = texture;
+			wgpu::TexelCopyBufferInfo dst{};
+			dst.buffer              = buffer;
+			dst.layout.bytesPerRow  = paddedRow;
+			dst.layout.rowsPerImage = height;
+			wgpu::Extent3D extent{ width, height, 1 };
+
+			wgpu::CommandEncoder encoder = g_Device.CreateCommandEncoder();
+			encoder.CopyTextureToBuffer(&src, &dst, &extent);
+			wgpu::CommandBuffer cmd = encoder.Finish();
+			g_Queue.Submit(1, &cmd);
+
+			bool mapped = false;
+			wgpu::Future future = buffer.MapAsync(wgpu::MapMode::Read, 0, bufDesc.size,
+				wgpu::CallbackMode::WaitAnyOnly,
+				[&mapped](wgpu::MapAsyncStatus status, wgpu::StringView) {
+					mapped = (status == wgpu::MapAsyncStatus::Success);
+				});
+			wgpu::FutureWaitInfo wait{ future };
+			g_Instance.WaitAny(1, &wait, UINT64_MAX);
+			if (!mapped) return false;
+
+			const auto* data = static_cast<const uint8_t*>(buffer.GetConstMappedRange(0, bufDesc.size));
+			if (!data) {
+				buffer.Unmap();
+				return false;
+			}
+			outRgba.resize(static_cast<size_t>(tightRow) * height);
+			for (uint32_t y = 0; y < height; ++y) {
+				const uint8_t* row = data + static_cast<size_t>(y) * paddedRow;
+				uint8_t* out = outRgba.data() + static_cast<size_t>(y) * tightRow;
+				std::memcpy(out, row, tightRow);
+				if (bgra) {
+					for (uint32_t x = 0; x < width; ++x) std::swap(out[x * 4 + 0], out[x * 4 + 2]);
+				}
+			}
+			buffer.Unmap();
+			return true;
+		}
+
 		void Present() {
 			if (!g_Initialized) return;
 
@@ -715,16 +898,11 @@ namespace Index {
 		if (g_Initialized) return false;
 
 #if defined(IDX_PLATFORM_WINDOWS)
-		// Win11 24H2: Dawn's LoadLibraryExA fails (error 87) on bare names without SetDefaultDllDirectories first; preloading short-circuits Dawn's own calls.
+		// Dawn's bare-name LoadLibraryEx calls need default search directories on Windows 11 24H2.
 		const BOOL didSetDirs = ::SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-		const HMODULE d3dCompiler = ::LoadLibraryW(L"d3dcompiler_47.dll");
-		const HMODULE vulkan      = ::LoadLibraryW(L"vulkan-1.dll");
-		IDX_CORE_INFO_TAG("WebGPUApi",
-			"DLL preload: SetDefaultDllDirectories={} (last-error={}), d3dcompiler_47={}, vulkan-1={}",
+		IDX_CORE_INFO_TAG("WebGPUApi", "Default DLL search directories: {} (last-error={})",
 			didSetDirs ? "ok" : "FAIL",
-			didSetDirs ? 0u : static_cast<uint32_t>(::GetLastError()),
-			d3dCompiler ? "ok" : "FAIL",
-			vulkan ? "ok" : "missing (Vulkan SDK not installed; D3D will be used)");
+			didSetDirs ? 0u : static_cast<uint32_t>(::GetLastError()));
 #endif
 
 		g_ClearColor = spec.ClearColor;
@@ -760,6 +938,8 @@ namespace Index {
 		g_Adapter.GetInfo(&info);
 		g_VendorString   = FromStringView(info.vendor);
 		g_RendererString = FromStringView(info.device);
+		g_GraphicsApi    = MapGraphicsApi(info.backendType);
+		g_GpuVendor      = MapGpuVendor(info.vendorID, g_VendorString, g_RendererString);
 		g_VersionString  = std::string("WebGPU (Dawn) / ") + BackendTypeName(info.backendType)
 			+ " / " + AdapterTypeName(info.adapterType);
 
@@ -782,6 +962,7 @@ namespace Index {
 		if (!g_Initialized && !g_Instance) return;
 
 		g_Frame = FrameState{};
+		Framebuffer::ReleaseAllBackendResources();
 		if (g_Surface) g_Surface.Unconfigure();
 		g_CurrentTarget = TargetState{};
 		g_Queue   = nullptr;
@@ -793,6 +974,8 @@ namespace Index {
 		g_VersionString.clear();
 		g_VendorString.clear();
 		g_RendererString.clear();
+		g_GraphicsApi = GraphicsApi::Unknown;
+		g_GpuVendor = GpuVendor::Unknown;
 		g_SurfaceFormat = wgpu::TextureFormat::Undefined;
 
 		g_Initialized = false;
@@ -806,9 +989,11 @@ namespace Index {
 		return "webgpu";
 	}
 
-	const std::string& RenderApi::GetVersionString()  { return g_VersionString; }
-	const std::string& RenderApi::GetVendorString()   { return g_VendorString; }
-	const std::string& RenderApi::GetRendererString() { return g_RendererString; }
+	GraphicsApi RenderApi::GetGraphicsApi() noexcept { return g_GraphicsApi; }
+	GpuVendor RenderApi::GetGpuVendor() noexcept { return g_GpuVendor; }
+	const std::string& RenderApi::GetVersionString() noexcept  { return g_VersionString; }
+	const std::string& RenderApi::GetVendorString() noexcept   { return g_VendorString; }
+	const std::string& RenderApi::GetRendererString() noexcept { return g_RendererString; }
 
 	// ── Per-frame state ─────────────────────────────────────────────────────
 

@@ -4,6 +4,7 @@
 #include "Core/Application.hpp"
 #include "Editor/EditorPreferences.hpp"
 #include "Editor/ExternalEditor.hpp"
+#include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Inspector/PropertyDescriptor.hpp"
@@ -103,11 +104,9 @@ namespace Index {
 			ImGuiUtils::DrawInspectorValue("Script", [&buttonText, &scriptPath](const char* id) {
 				ImGui::Button((buttonText + id).c_str(),
 					ImVec2(ImGui::GetContentRegionAvail().x, 0.0f));
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip("Double-click to open script");
-					if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !scriptPath.empty()) {
-						ExternalEditor::OpenFile(scriptPath.string());
-					}
+				EditorUI::Tooltip("Double-click to open script");
+				if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !scriptPath.empty()) {
+					ExternalEditor::OpenFile(scriptPath.string());
 				}
 			});
 		}
@@ -977,10 +976,9 @@ namespace Index {
 
 			const float closeButtonSize = ImGui::GetFrameHeight();
 			const float searchWidth = std::max(ImGui::GetContentRegionAvail().x - closeButtonSize - ImGui::GetStyle().ItemSpacing.x, 1.0f);
-			ImGui::SetNextItemWidth(searchWidth);
-			ImGui::InputTextWithHint("##ScriptSearch", "Search...", s_PickerState.Search, sizeof(s_PickerState.Search));
+			EditorUI::SearchField("##ScriptSearch", s_PickerState.Search, sizeof(s_PickerState.Search), "Search...", searchWidth);
 			ImGui::SameLine();
-			if (ImGui::Button("X##ScriptPickerClose", ImVec2(closeButtonSize, closeButtonSize))) {
+			if (EditorUI::IconButton("##ScriptPickerClose", "clear", "Close")) {
 				s_PickerState.Open = false;
 			}
 			ImGui::Separator();
@@ -1004,7 +1002,7 @@ namespace Index {
 				std::string label = displayLabel + "##" + entry.Path.string();
 				if (ImGui::Selectable(label.c_str(), false)) {
 					Scene* scene = ScriptEngine::GetScene();
-					if (!scene) scene = SceneManager::Get().GetActiveScene();
+					if (!scene) scene = SceneManager::GetActiveScene();
 					if (scene && scene->IsValid(s_PickerState.TargetEntity)
 						&& scene->HasComponent<ScriptComponent>(s_PickerState.TargetEntity)) {
 						auto& sc = scene->GetComponent<ScriptComponent>(s_PickerState.TargetEntity);
@@ -1110,7 +1108,7 @@ namespace Index {
 				label = "Script";
 			}
 			else {
-				const ComponentInfo* dynamicInfo = SceneManager::Get().GetComponentRegistry()
+				const ComponentInfo* dynamicInfo = SceneManager::GetComponentRegistry()
 					.FindBySerializedName(instance.GetClassName());
 				const bool isNativeComponent = dynamicInfo && dynamicInfo->isDynamic;
 				label = instance.GetClassName()
@@ -1246,15 +1244,18 @@ namespace Index {
 		}
 
 		if (!json || !*json || (json[0] == '[' && json[1] == ']')) {
-			ImGui::TextDisabled(typeName.empty()
-				? "Data asset type not found (is the script assembly built?)"
-				: "No editable fields");
+			if (typeName.empty()) {
+				EditorUI::EmptyState("Data asset type not found", "Is the script assembly built?");
+			}
+			else {
+				EditorUI::EmptyState("No editable fields");
+			}
 			return;
 		}
 
 		auto records = ParseEditorFields(json);
 		if (records.empty()) {
-			ImGui::TextDisabled("No editable fields");
+			EditorUI::EmptyState("No editable fields");
 			return;
 		}
 

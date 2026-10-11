@@ -3,7 +3,7 @@
 #include "Inspector/PropertyDescriptor.hpp"
 #include "Scene/ComponentCategory.hpp"
 #include "Scene/ComponentInfo.hpp"
-#include "Scene/SceneManager.hpp"
+#include "Scene/ComponentRegistry.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -15,7 +15,7 @@
 namespace Index::Codegen {
 
     template <typename T>
-    void RegisterComponent(SceneManager& sceneManager,
+    void RegisterComponent(ComponentRegistry& registry,
                            const std::string& displayName,
                            ComponentCategory category = ComponentCategory::Component,
                            const std::string& subcategory = "",
@@ -24,7 +24,7 @@ namespace Index::Codegen {
         ComponentInfo info{ displayName, subcategory, category };
         info.serializedName = serializedName;
         info.properties = std::move(properties);
-        sceneManager.RegisterComponentType<T>(info);
+        registry.Register<T>(std::move(info));
     }
 
     // Registers a byte-emplacer for a component whose C# native mirror is a
@@ -42,9 +42,9 @@ namespace Index::Codegen {
     // `prefixSize` is offsetof(T, firstNonMirrorMember) so a future field
     // added past the mirror can't be clobbered.
     template <typename T>
-    void RegisterPrefixByteEmplacer(SceneManager& sceneManager, std::size_t prefixSize) {
+    void RegisterPrefixByteEmplacer(ComponentRegistry& registry, std::size_t prefixSize) {
         const std::type_index targetId(typeid(T));
-        sceneManager.GetComponentRegistry().ForEachComponentInfo(
+        registry.ForEachComponentInfo(
             [targetId, prefixSize](const std::type_index& id, ComponentInfo& info) {
                 if (id != targetId) return;
                 info.emplaceFromBytes = [prefixSize](entt::registry& registry, EntityHandle entity,
@@ -70,10 +70,10 @@ namespace Index::Codegen {
 
     // Adds both A→B and B→A to conflictsWith; ValidateConflictSymmetry asserts symmetry in debug.
     template <typename A, typename B>
-    void DeclareConflict(SceneManager& sceneManager) {
+    void DeclareConflict(ComponentRegistry& registry) {
         const std::type_index aId(typeid(A));
         const std::type_index bId(typeid(B));
-        sceneManager.GetComponentRegistry().ForEachComponentInfo(
+        registry.ForEachComponentInfo(
             [&](const std::type_index& id, ComponentInfo& info) {
                 if (id == aId) {
                     bool present = false;
@@ -91,10 +91,10 @@ namespace Index::Codegen {
     // the inverse declaration would mean "TDependency pulls in TDependent
     // on add," which is virtually never what we want.
     template <typename TDependent, typename TDependency>
-    void DeclareDependency(SceneManager& sceneManager) {
+    void DeclareDependency(ComponentRegistry& registry) {
         const std::type_index dependentId(typeid(TDependent));
         const std::type_index dependencyId(typeid(TDependency));
-        sceneManager.GetComponentRegistry().ForEachComponentInfo(
+        registry.ForEachComponentInfo(
             [&](const std::type_index& id, ComponentInfo& info) {
                 if (id != dependentId) return;
                 for (const auto& c : info.dependsOn) if (c == dependencyId) return;

@@ -455,8 +455,52 @@ public class Rigidbody2D : Component
 
 // ── BoxCollider2D ───────────────────────────────────────────────────
 
-public class BoxCollider2D : Component
+/// <summary>Settings shared by <see cref="BoxCollider2D"/>, <see cref="CircleCollider2D"/> and <see cref="PolygonCollider2D"/>.</summary>
+public abstract class Collider2D : Component
 {
+    // Matches the colliderType argument of the native Collider2D_* bindings.
+    private protected abstract int ColliderType { get; }
+    private protected abstract ulong RequireSelf();
+
+    /// <summary>Sensors don't block movement; overlaps raise OnTriggerEnter2D/Stay2D/Exit2D instead of collisions.</summary>
+    public bool IsSensor
+    {
+        get => InternalCalls.Collider2D_GetSensor(RequireSelf(), ColliderType);
+        set => InternalCalls.Collider2D_SetSensor(RequireSelf(), ColliderType, value);
+    }
+
+    /// <summary>Layer bits this collider belongs to. Build values with <see cref="PhysicsLayers.Mask"/>.</summary>
+    public ulong Layer
+    {
+        get => InternalCalls.Collider2D_GetLayer(RequireSelf(), ColliderType);
+        set => InternalCalls.Collider2D_SetLayer(RequireSelf(), ColliderType, value);
+    }
+
+    /// <summary>Layer bits this collider collides with. Both colliders must include each other's layer to touch.</summary>
+    public ulong CollisionMask
+    {
+        get => InternalCalls.Collider2D_GetCollisionMask(RequireSelf(), ColliderType);
+        set => InternalCalls.Collider2D_SetCollisionMask(RequireSelf(), ColliderType, value);
+    }
+
+    public float Friction
+    {
+        get => InternalCalls.Collider2D_GetFriction(RequireSelf(), ColliderType);
+        set => InternalCalls.Collider2D_SetFriction(RequireSelf(), ColliderType, value);
+    }
+
+    public float Bounciness
+    {
+        get => InternalCalls.Collider2D_GetBounciness(RequireSelf(), ColliderType);
+        set => InternalCalls.Collider2D_SetBounciness(RequireSelf(), ColliderType, value);
+    }
+}
+
+public class BoxCollider2D : Collider2D
+{
+    private protected override int ColliderType => 0;
+    private protected override ulong RequireSelf() => RequireComponent<BoxCollider2D>();
+
     public Vector2 Scale
     {
         get
@@ -485,8 +529,11 @@ public class BoxCollider2D : Component
 
 // ── CircleCollider2D ────────────────────────────────────────────────
 
-public class CircleCollider2D : Component
+public class CircleCollider2D : Collider2D
 {
+    private protected override int ColliderType => 1;
+    private protected override ulong RequireSelf() => RequireComponent<CircleCollider2D>();
+
     // Local-space radius — the world radius is this multiplied by the larger
     // axis of the entity's transform scale (Unity's CircleCollider2D contract).
     public float Radius
@@ -514,8 +561,11 @@ public class CircleCollider2D : Component
 
 // ── PolygonCollider2D ───────────────────────────────────────────────
 
-public class PolygonCollider2D : Component
+public class PolygonCollider2D : Collider2D
 {
+    private protected override int ColliderType => 2;
+    private protected override ulong RequireSelf() => RequireComponent<PolygonCollider2D>();
+
     // Box2D's hard cap on convex-polygon vertex count.
     public const int MaxVertices = 8;
     public const int MinVertices = 3;
@@ -629,6 +679,30 @@ public class AudioSource : Component
 }
 
 // ── ParticleSystem2D ──────────────────────────────────────────────────
+
+/// <summary>Flip-book animation over sprite-sheet slices; frames, rate and looping are set in the Inspector.</summary>
+public class SpriteAnimator2D : Component
+{
+    public bool IsPlaying => InternalCalls.SpriteAnimator2D_IsPlaying(RequireComponent<SpriteAnimator2D>());
+
+    /// <summary>Index into the Frames list. Setting it restarts the timer of that frame.</summary>
+    public int Frame
+    {
+        get => InternalCalls.SpriteAnimator2D_GetFrame(RequireComponent<SpriteAnimator2D>());
+        set => InternalCalls.SpriteAnimator2D_SetFrame(RequireComponent<SpriteAnimator2D>(), value);
+    }
+
+    public float FramesPerSecond
+    {
+        get => InternalCalls.SpriteAnimator2D_GetFramesPerSecond(RequireComponent<SpriteAnimator2D>());
+        set => InternalCalls.SpriteAnimator2D_SetFramesPerSecond(RequireComponent<SpriteAnimator2D>(), value);
+    }
+
+    public void Play() => InternalCalls.SpriteAnimator2D_Command(RequireComponent<SpriteAnimator2D>(), 0);
+    public void Pause() => InternalCalls.SpriteAnimator2D_Command(RequireComponent<SpriteAnimator2D>(), 1);
+    /// <summary>Stops and rewinds to the first frame.</summary>
+    public void Stop() => InternalCalls.SpriteAnimator2D_Command(RequireComponent<SpriteAnimator2D>(), 2);
+}
 
 public class ParticleSystem2D : Component
 {

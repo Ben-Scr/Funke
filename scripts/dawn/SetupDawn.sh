@@ -68,6 +68,9 @@ CMAKE_ARGS=(
     -DDAWN_BUILD_SAMPLES=OFF
     -DTINT_BUILD_TESTS=OFF
     -DTINT_BUILD_CMD_TOOLS=OFF
+    # Index only feeds WGSL to Dawn; skip the SPIR-V reader and SPIRV-Tools validation.
+    -DTINT_BUILD_SPV_READER=OFF
+    -DDAWN_ENABLE_SPIRV_VALIDATION=OFF
 )
 if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
     echo "      Compiler: Clang ($(command -v clang++))"

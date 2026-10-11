@@ -998,6 +998,45 @@ namespace Index {
 		// Gizmo enable toggle (appended for binary compat; keep in lock-step with C# NativeBindings).
 		int  (*Gizmo_GetEnabled)();
 		void (*Gizmo_SetEnabled)(int enabled);
+
+		// Application restart (appended for binary compat; keep in lock-step with C# NativeBindings).
+		void (*Application_Restart)();
+
+		void (*RenderSettings_Get)(float* renderScale, int* upscaleFilter,
+			int* postProcessingEnabled, int* postProcessingQuality, int* particleQuality);
+		int (*RenderSettings_Apply)(float renderScale, int upscaleFilter,
+			int postProcessingEnabled, int postProcessingQuality, int particleQuality);
+		int (*RenderSettings_ResetToDefaults)();
+
+		// ── Gamepad (appended for binary compat) ──
+		int   (*Input_IsGamepadConnected)(int gamepadIndex);
+		int   (*Input_GetGamepadButton)(int button, int gamepadIndex);
+		int   (*Input_GetGamepadButtonDown)(int button, int gamepadIndex);
+		int   (*Input_GetGamepadButtonUp)(int button, int gamepadIndex);
+		float (*Input_GetGamepadAxis)(int axis, int gamepadIndex);
+
+		// ── Collider settings + query layer mask (appended for binary compat) ──
+		// colliderType: 0 = Box, 1 = Circle, 2 = Polygon.
+		void     (*Physics2D_SetQueryLayerMask)(uint64_t layerMask);
+		int      (*Collider2D_GetSensor)(uint64_t entityID, int colliderType);
+		void     (*Collider2D_SetSensor)(uint64_t entityID, int colliderType, int sensor);
+		uint64_t (*Collider2D_GetLayer)(uint64_t entityID, int colliderType);
+		void     (*Collider2D_SetLayer)(uint64_t entityID, int colliderType, uint64_t layer);
+		uint64_t (*Collider2D_GetCollisionMask)(uint64_t entityID, int colliderType);
+		void     (*Collider2D_SetCollisionMask)(uint64_t entityID, int colliderType, uint64_t mask);
+		float    (*Collider2D_GetFriction)(uint64_t entityID, int colliderType);
+		void     (*Collider2D_SetFriction)(uint64_t entityID, int colliderType, float friction);
+		float    (*Collider2D_GetBounciness)(uint64_t entityID, int colliderType);
+		void     (*Collider2D_SetBounciness)(uint64_t entityID, int colliderType, float bounciness);
+
+		// ── SpriteAnimator2D (appended for binary compat) ──
+		// command: 0 = Play, 1 = Pause, 2 = Stop.
+		void  (*SpriteAnimator2D_Command)(uint64_t entityID, int command);
+		int   (*SpriteAnimator2D_IsPlaying)(uint64_t entityID);
+		int   (*SpriteAnimator2D_GetFrame)(uint64_t entityID);
+		void  (*SpriteAnimator2D_SetFrame)(uint64_t entityID, int frame);
+		float (*SpriteAnimator2D_GetFramesPerSecond)(uint64_t entityID);
+		void  (*SpriteAnimator2D_SetFramesPerSecond)(uint64_t entityID, float fps);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.
@@ -1095,6 +1134,10 @@ namespace Index {
 		// unload) calls this so the C# component store drops cached wrappers for the
 		// dead UUID instead of leaking them until the next assembly unload.
 		void        (*NotifyEntityDestroyed)(uint64_t entityID);
+
+		// ── Sensor overlaps (appended for binary compat) ──
+		// phase: 0 = Enter, 1 = Stay, 2 = Exit.
+		void        (*InvokeTrigger2D)(int32_t handle, int32_t phase, uint64_t selfEntityID, uint64_t otherEntityID, uint64_t entityAID, uint64_t entityBID);
 	};
 
 } // namespace Index

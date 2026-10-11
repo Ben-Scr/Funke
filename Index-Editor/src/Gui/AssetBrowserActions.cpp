@@ -7,6 +7,7 @@
 #include "Core/Platform/Win32BuildProgressWindow.hpp"
 #include "Editor/EditorPreferences.hpp"
 #include "Editor/ExternalEditor.hpp"
+#include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
@@ -40,6 +41,72 @@
 #endif
 
 namespace Index {
+
+	namespace {
+		bool IsCppIdentifierChar(char c) {
+			return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+		}
+
+		// Renames a C++ identifier in source text: replaces only whole-identifier matches in
+		// code, leaving comments, string literals and char literals untouched. A plain
+		// substring replace would also rewrite EnemySpawner, m_EnemyCount and "Enemy died"
+		// when renaming Enemy -> Foe.
+		std::string RenameCppIdentifier(const std::string& source, const std::string& oldName, const std::string& newName) {
+			if (oldName.empty() || oldName == newName) {
+				return source;
+			}
+
+			std::string out;
+			out.reserve(source.size());
+			const std::size_t n = source.size();
+			std::size_t i = 0;
+			while (i < n) {
+				const char c = source[i];
+				const char next = i + 1 < n ? source[i + 1] : '\0';
+
+				if (c == '/' && next == '/') {
+					const std::size_t end = source.find('\n', i);
+					const std::size_t stop = end == std::string::npos ? n : end;
+					out.append(source, i, stop - i);
+					i = stop;
+					continue;
+				}
+				if (c == '/' && next == '*') {
+					const std::size_t end = source.find("*/", i + 2);
+					const std::size_t stop = end == std::string::npos ? n : end + 2;
+					out.append(source, i, stop - i);
+					i = stop;
+					continue;
+				}
+				if (c == '"' || c == '\'') {
+					std::size_t j = i + 1;
+					while (j < n && source[j] != c && source[j] != '\n') {
+						j += (source[j] == '\\' && j + 1 < n) ? 2 : 1;
+					}
+					const std::size_t stop = j < n ? j + 1 : n;
+					out.append(source, i, stop - i);
+					i = stop;
+					continue;
+				}
+				if (IsCppIdentifierChar(c) && (i == 0 || !IsCppIdentifierChar(source[i - 1]))) {
+					std::size_t j = i;
+					while (j < n && IsCppIdentifierChar(source[j])) ++j;
+					if (j - i == oldName.size() && source.compare(i, j - i, oldName) == 0) {
+						out += newName;
+					}
+					else {
+						out.append(source, i, j - i);
+					}
+					i = j;
+					continue;
+				}
+
+				out += c;
+				++i;
+			}
+			return out;
+		}
+	}
 
 #ifdef IDX_PLATFORM_WINDOWS
 	namespace {
@@ -140,6 +207,74 @@ namespace Index {
 			}
 		}
 
+		std::string NormalizeSceneStem(std::string stem) {
+			std::transform(stem.begin(), stem.end(), stem.begin(), [](unsigned char c) {
+				return static_cast<char>(std::tolower(c));
+			});
+			return stem;
+		}
+
+		bool SceneStemExists(
+			const std::string& stem,
+			const std::filesystem::path& excludedPath = {},
+			bool* outScanFailed = nullptr) {
+			if (outScanFailed) *outScanFailed = false;
+			IndexProject* project = ProjectManager::GetCurrentProject();
+			if (!project || project->AssetsDirectory.empty()) return false;
+
+			const std::string normalizedStem = NormalizeSceneStem(stem);
+			const std::filesystem::path normalizedExcluded = excludedPath.lexically_normal();
+			std::error_code ec;
+			if (!std::filesystem::exists(project->AssetsDirectory, ec) || ec) {
+				if (outScanFailed) *outScanFailed = true;
+				return true;
+			}
+			for (std::filesystem::recursive_directory_iterator it(
+					 project->AssetsDirectory,
+					 std::filesystem::directory_options::none,
+					 ec), end;
+				 it != end;
+				 it.increment(ec)) {
+				if (ec) {
+					if (outScanFailed) *outScanFailed = true;
+					return true;
+				}
+				std::error_code fileEc;
+				const bool isRegularFile = it->is_regular_file(fileEc);
+				if (fileEc) {
+					if (outScanFailed) *outScanFailed = true;
+					return true;
+				}
+				if (!isRegularFile) continue;
+				if (NormalizeSceneStem(it->path().extension().string()) != ".scene") continue;
+				if (!normalizedExcluded.empty() && it->path().lexically_normal() == normalizedExcluded) continue;
+				if (NormalizeSceneStem(it->path().stem().string()) == normalizedStem) return true;
+			}
+			if (ec) {
+				if (outScanFailed) *outScanFailed = true;
+				return true;
+			}
+			return false;
+		}
+
+		std::filesystem::path MakeGloballyUniqueScenePath(const std::filesystem::path& preferredPath) {
+			std::filesystem::path candidate = preferredPath;
+			const std::string baseStem = preferredPath.stem().string();
+			std::error_code ec;
+			for (int index = 1; index < 10000; ++index) {
+				bool scanFailed = false;
+				const bool stemExists = SceneStemExists(candidate.stem().string(), {}, &scanFailed);
+				if (scanFailed) return {};
+				const bool pathExists = std::filesystem::exists(candidate, ec);
+				if (ec) return {};
+				if (!stemExists && !pathExists) return candidate;
+				candidate = preferredPath.parent_path()
+					/ (FormatDuplicateAssetName(baseStem, index) + preferredPath.extension().string());
+				ec.clear();
+			}
+			return {};
+		}
+
 		// .scene files embed "name"; if not synced after rename, the hierarchy still shows the old stem. Handles both JSON and Binary formats.
 		void SyncSceneEmbeddedNameToFilename(const std::string& scenePath, const std::string& newStem) {
 			Json::Value root;
@@ -177,7 +312,7 @@ namespace Index {
 		}
 
 		void UpdateLoadedSceneNameAfterRename(const std::string& oldStem, const std::string& newStem) {
-			SceneManager::Get().ForeachLoadedScene([&](Scene& scene) {
+			SceneManager::ForeachLoadedScene([&](Scene& scene) {
 				if (scene.GetName() == oldStem) {
 					scene.SetName(newStem);
 				}
@@ -198,9 +333,9 @@ namespace Index {
 					project->StartupScene = newStem;
 					dirty = true;
 				}
-				for (std::string& sceneName : project->BuildSceneList) {
-					if (sceneName == oldStem) {
-						sceneName = newStem;
+				for (IndexProject::BuildSceneEntry& entry : project->BuildSceneList) {
+					if (entry.Name == oldStem) {
+						entry.Name = newStem;
 						dirty = true;
 					}
 				}
@@ -251,6 +386,9 @@ namespace Index {
 			const std::filesystem::path& destinationDirectory)
 		{
 			std::filesystem::path dest = destinationDirectory / source.filename();
+			if (NormalizeSceneStem(dest.extension().string()) == ".scene") {
+				return MakeGloballyUniqueScenePath(dest);
+			}
 			std::error_code ec;
 			if (!std::filesystem::exists(dest, ec)) {
 				return dest;
@@ -495,6 +633,25 @@ namespace Index {
 
 			std::string finalFileName = className + ext;
 			std::string finalPath = (std::filesystem::path(m_PendingScriptDir) / finalFileName).string();
+
+			// Never overwrite an existing script with boilerplate. The collision prompt only
+			// guards the placeholder name, not the name typed here. A target that resolves to
+			// the placeholder itself (same name, or a case-only change) is fine.
+			{
+				std::error_code existsEc;
+				if (std::filesystem::exists(finalPath, existsEc)) {
+					std::error_code eqEc;
+					const bool isPlaceholder = std::filesystem::exists(m_RenamePath, eqEc)
+						&& std::filesystem::equivalent(finalPath, m_RenamePath, eqEc) && !eqEc;
+					if (!isPlaceholder) {
+						IDX_ERROR_TAG("AssetBrowser",
+							"Can't create '{}': a file with that name already exists. Choose a different name.",
+							finalFileName);
+						CancelRename();
+						return;
+					}
+				}
+			}
 
 			if (std::filesystem::exists(m_RenamePath)) {
 				std::error_code ec;
@@ -742,12 +899,21 @@ namespace Index {
 			// deleted name can't resurrect an empty Scene from the registered
 			// definition.
 			if (wasSceneFile && !sceneStem.empty()) {
-				SceneManager::Get().UnregisterScene(sceneStem);
+				SceneManager::UnregisterScene(sceneStem);
 			}
 		}
 	}
 
 	void AssetBrowser::RenameEntry(const std::string& path, const std::string& newName) {
+		const std::filesystem::path oldPath(path);
+		const std::filesystem::path requestedPath = oldPath.parent_path() / newName;
+		if (NormalizeSceneStem(requestedPath.extension().string()) == ".scene"
+			&& SceneStemExists(requestedPath.stem().string(), oldPath)) {
+			IDX_WARN_TAG("AssetBrowser", "Cannot rename scene '{}': another scene already uses that name",
+				requestedPath.stem().string());
+			return;
+		}
+
 		// Same dangling-WGPUTextureView risk as DeleteEntry: ImGui may have
 		// already recorded a draw command for the old-key thumbnail this
 		// frame. Queue the invalidate for next frame instead.
@@ -827,15 +993,17 @@ namespace Index {
 							std::istreambuf_iterator<char>());
 						in.close();
 
-						size_t pos = 0;
-						while ((pos = content.find(oldStem, pos)) != std::string::npos)
-						{
-							content.replace(pos, oldStem.size(), newStem);
-							pos += newStem.size();
+						const std::string renamed = RenameCppIdentifier(content, oldStem, newStem);
+						if (renamed != content) {
+							std::ofstream out(newProjectFile, std::ios::binary | std::ios::trunc);
+							out << renamed;
+							out.flush();
+							if (!out) {
+								IDX_ERROR_TAG("AssetBrowser",
+									"Failed to update class name in '{}'; rename '{}' to '{}' there manually.",
+									Path::ToUtf8(newProjectFile), oldStem, newStem);
+							}
 						}
-
-						std::ofstream out(newProjectFile);
-						out << content;
 					}
 				}
 			}
@@ -855,7 +1023,7 @@ namespace Index {
 	}
 
 	void AssetBrowser::SyncSceneEmbeddedNameIfNeeded(const std::filesystem::path& copiedPath) {
-		if (copiedPath.extension() != ".scene") return;
+		if (NormalizeSceneStem(copiedPath.extension().string()) != ".scene") return;
 		SyncSceneEmbeddedNameToFilename(copiedPath.string(), copiedPath.stem().string());
 	}
 
@@ -904,10 +1072,11 @@ namespace Index {
 			ImGui::TextWrapped("An asset named \"%s\" already exists in this folder.",
 				m_PendingCreationPrompt->DisplayName.c_str());
 			ImGui::Spacing();
-			ImGui::TextDisabled("What would you like to do?");
-			ImGui::Spacing();
-			ImGui::Separator();
-			ImGui::Spacing();
+			// The footer has no per-button tooltips, so the choices are explained inline.
+			ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+			ImGui::TextWrapped("Overwrite replaces the existing file; the previous one is permanently removed. "
+				"Make Copy keeps it and creates the new one with a numbered suffix.");
+			ImGui::PopStyleColor();
 
 			bool decided = false;
 			// Move the prompt out before invoking DoCreate so the callback can
@@ -928,15 +1097,11 @@ namespace Index {
 				decided = true;
 			};
 
-			if (ImGui::Button("Overwrite", ImVec2(120, 0))) {
+			const int choice = EditorUI::DialogFooter({ "Overwrite", "Make Copy", "Cancel" }, /*primary=*/1, /*danger=*/0);
+			if (choice == 0) {
 				finishWith(m_PendingCreationPrompt->PreferredPath, /*deleteExisting=*/true);
 			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("Replace the existing file. The previous one is permanently removed.");
-			}
-
-			ImGui::SameLine();
-			if (ImGui::Button("Make Copy", ImVec2(120, 0))) {
+			else if (choice == 1) {
 				const std::filesystem::path parent = m_PendingCreationPrompt->PreferredPath.parent_path();
 				const std::string stem = m_PendingCreationPrompt->PreferredPath.stem().string();
 				const std::string ext = m_PendingCreationPrompt->PreferredPath.extension().string();
@@ -948,12 +1113,7 @@ namespace Index {
 				}
 				finishWith(candidate, /*deleteExisting=*/false);
 			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("Keep the existing file; create the new one with a numbered suffix.");
-			}
-
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+			else if (choice == 2) {
 				m_PendingCreationPrompt.reset();
 				decided = true;
 			}
@@ -1013,17 +1173,15 @@ namespace Index {
 			}
 			ImGui::Spacing();
 			ImGui::TextDisabled("This cannot be undone.");
-			ImGui::Spacing();
-			ImGui::Separator();
-			ImGui::Spacing();
 
 			bool decided = false;
-			if (ImGui::Button("Delete", ImVec2(120, 0))) {
+			// Cancel is the accent default so the safe choice reads first; Delete keeps the destructive style.
+			const int choice = EditorUI::DialogFooter({ "Delete", "Cancel" }, /*primary=*/1, /*danger=*/0);
+			if (choice == 0) {
 				StartAssetDeletion(m_PendingDeletePaths);
 				decided = true;
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(120, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+			else if (choice == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
 				decided = true;
 			}
 
@@ -1193,14 +1351,19 @@ namespace Index {
 	}
 
 	void AssetBrowser::CreateScene(const std::string& parentDir) {
-		const std::filesystem::path preferred =
-			std::filesystem::path(parentDir) / "NewScene.scene";
+		const std::filesystem::path preferred = MakeGloballyUniqueScenePath(
+			std::filesystem::path(parentDir) / "NewScene.scene");
+		if (preferred.empty()) {
+			IDX_WARN_TAG("AssetBrowser", "Could not choose a globally unique scene name");
+			return;
+		}
 
 		CreateAssetWithCollisionCheck(preferred,
 			[this](const std::filesystem::path& finalPath) {
 				const std::string sceneName = finalPath.stem().string();
 				const std::string content =
 					"{\n"
+					"  \"version\": 1,\n"
 					"  \"name\": \"" + sceneName + "\",\n"
 					"  \"systems\": [],\n"
 					"  \"entities\": [\n"
@@ -1213,10 +1376,9 @@ namespace Index {
 					"}\n";
 
 				const std::string finalPathStr = finalPath.string();
-				std::ofstream file(finalPathStr);
-				if (file.is_open()) {
-					file << content;
-					file.close();
+				if (!File::WriteAllText(finalPathStr, content)) {
+					IDX_WARN_TAG("AssetBrowser", "Failed to create scene '{}'", finalPathStr);
+					return;
 				}
 
 				AssetRegistry::ImportAssetPathIncremental(finalPathStr);
@@ -1283,7 +1445,7 @@ namespace Index {
 				const std::string finalPathStr = finalPath.string();
 
 				if (sourceEntity != entt::null) {
-					Scene* activeScene = SceneManager::Get().GetActiveScene();
+					Scene* activeScene = SceneManager::GetActiveScene();
 					if (activeScene && activeScene->IsValid(sourceEntity)) {
 						SceneSerializer::SaveEntityToFile(*activeScene, sourceEntity, finalPathStr);
 					}
@@ -1523,7 +1685,7 @@ namespace Index {
 						continue;
 					}
 
-					const fs::path dest = destRoot / rel;
+					fs::path dest = destRoot / rel;
 					std::error_code entryEc;
 					if (it->is_directory(entryEc) && !entryEc) {
 						fs::create_directories(dest, entryEc);
@@ -1536,6 +1698,13 @@ namespace Index {
 					entryEc.clear();
 					if (!it->is_regular_file(entryEc) || entryEc) {
 						continue;
+					}
+					if (NormalizeSceneStem(dest.extension().string()) == ".scene") {
+						dest = MakeGloballyUniqueScenePath(dest);
+						if (dest.empty()) {
+							appendError(it->path(), "could not choose a globally unique scene name");
+							continue;
+						}
 					}
 
 					if (fs::exists(dest, entryEc) && !entryEc) {
@@ -1553,6 +1722,11 @@ namespace Index {
 			}
 			else if (fs::is_regular_file(src, ec) && !ec) {
 				const fs::path dest = MakeUniqueImportFilePath(src, destDir);
+				if (dest.empty()) {
+					appendError(src, "could not choose a globally unique scene name");
+					publishProcessedRoot(i + 1);
+					continue;
+				}
 				if (CopyFileChunked(src, dest, false, m_ImportActive, publishCopiedBytes)) {
 					importedThisRoot = true;
 					importedRootPath = dest;
@@ -1652,6 +1826,7 @@ namespace Index {
 
 		while (m_PendingImportedAssetRegistrationIndex < m_PendingImportedAssetRegistrations.size()) {
 			const std::string& path = m_PendingImportedAssetRegistrations[m_PendingImportedAssetRegistrationIndex];
+			SyncSceneEmbeddedNameIfNeeded(path);
 			AssetRegistry::ImportAssetPathIncremental(path);
 			m_Thumbnails.Invalidate(path);
 			++m_PendingImportedAssetRegistrationIndex;
@@ -2048,7 +2223,7 @@ namespace Index {
 			// Drop the SceneDefinition so a script-side LoadScene of the deleted name
 			// can't resurrect an empty Scene from the stale definition.
 			if (!info.SceneStem.empty()) {
-				SceneManager::Get().UnregisterScene(info.SceneStem);
+				SceneManager::UnregisterScene(info.SceneStem);
 			}
 
 			if (m_SelectedPath == info.Path) {

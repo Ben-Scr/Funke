@@ -1,0 +1,97 @@
+diff --git a/backends/imgui_impl_glfw.cpp b/backends/imgui_impl_glfw.cpp
+index 967c0d4ed3725cb362930219b83842d013139b48..c23e33db721f6796e5340a6eb45236da0e178e32 100644
+--- a/backends/imgui_impl_glfw.cpp
++++ b/backends/imgui_impl_glfw.cpp
+@@ -1392,6 +1392,11 @@ static void ImGui_ImplGlfw_CreateWindow(ImGuiViewport* viewport)
+ #endif
+     GLFWwindow* share_window = (bd->ClientApi == GlfwClientApi_OpenGL) ? bd->Window : nullptr;
+     vd->Window = glfwCreateWindow((int)viewport->Size.x, (int)viewport->Size.y, "No Title Yet", nullptr, share_window);
++    if (vd->Window == nullptr)
++    {
++        viewport->PlatformRequestClose = true;
++        return;
++    }
+     vd->WindowOwned = true;
+     ImGui_ImplGlfw_ContextMap_Add(vd->Window, bd->Context);
+     viewport->PlatformHandle = (void*)vd->Window;
+diff --git a/imgui.cpp b/imgui.cpp
+index cb73b8dcbbfa4f7dfcc91108561e3c84af08ce2f..1160dcb24d7ac83289af67113cd0ce2cffdc5023 100644
+--- a/imgui.cpp
++++ b/imgui.cpp
+@@ -17464,8 +17464,22 @@ void ImGui::UpdatePlatformWindows()
+         {
+             IMGUI_DEBUG_LOG_VIEWPORT("[viewport] Create Platform Window %08X '%s'\n", viewport->ID, viewport->Window ? viewport->Window->Name : "n/a");
+             g.PlatformIO.Platform_CreateWindow(viewport);
++            if (viewport->PlatformRequestClose || viewport->PlatformHandle == NULL)
++            {
++                g.IO.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
++                viewport->PlatformWindowCreated = true;
++                DestroyPlatformWindow(viewport);
++                continue;
++            }
+             if (g.PlatformIO.Renderer_CreateWindow != NULL)
+                 g.PlatformIO.Renderer_CreateWindow(viewport);
++            if (viewport->PlatformRequestClose)
++            {
++                g.IO.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
++                viewport->PlatformWindowCreated = true;
++                DestroyPlatformWindow(viewport);
++                continue;
++            }
+             g.PlatformWindowsCreatedCount++;
+             viewport->LastNameHash = 0;
+             viewport->LastPlatformPos = viewport->LastPlatformSize = ImVec2(FLT_MAX, FLT_MAX); // By clearing those we'll enforce a call to Platform_SetWindowPos/Size below, before Platform_ShowWindow (FIXME: Is that necessary?)
+diff --git a/imgui.h b/imgui.h
+index c32a6baf15dea7332cffda09721d272a4a23f673..67ede794aaa1654de73d7afd4664908859dd9d0b 100644
+--- a/imgui.h
++++ b/imgui.h
+@@ -292,6 +292,7 @@ typedef int     (*ImGuiInputTextCallback)(ImGuiInputTextCallbackData* data);
+ typedef void    (*ImGuiSizeCallback)(ImGuiSizeCallbackData* data);              // Callback function for ImGui::SetNextWindowSizeConstraints()
+ typedef void*   (*ImGuiMemAllocFunc)(size_t sz, void* user_data);               // Function signature for ImGui::SetAllocatorFunctions()
+ typedef void    (*ImGuiMemFreeFunc)(void* ptr, void* user_data);                // Function signature for ImGui::SetAllocatorFunctions()
++typedef bool    (*ImGuiScalarExpressionFn)(const char* buf, ImGuiDataType data_type, void* p_data); // [Index patch] Signature for ImGui::SetScalarExpressionHook()
+ 
+ // ImVec2: 2D vector used to store positions, sizes etc. [Compile-time configurable type]
+ // - This is a frequently used type in the API. Consider using IM_VEC2_CLASS_EXTRA to create implicit cast from/to our preferred type.
+@@ -1081,6 +1082,12 @@ namespace ImGui
+     IMGUI_API void          SetStateStorage(ImGuiStorage* storage);                             // replace current window storage with our own (if you want to manipulate it yourself, typically clear subsection of it)
+     IMGUI_API ImGuiStorage* GetStateStorage();
+ 
++    // [Index patch] Scalar expression hook - see DataTypeApplyFromText() in imgui_widgets.cpp.
++    // If set, it is called with the typed text + current value (in *p_data) before the default
++    // numeric parsing; return true (and write *p_data) to override parsing, false to fall back.
++    // ImGuiScalarExpressionFn is declared at global scope alongside ImGuiMemAllocFunc.
++    IMGUI_API void          SetScalarExpressionHook(ImGuiScalarExpressionFn fn);
++
+     // Text Utilities
+     IMGUI_API ImVec2        CalcTextSize(const char* text, const char* text_end = NULL, bool hide_text_after_double_hash = false, float wrap_width = -1.0f);
+ 
+diff --git a/imgui_widgets.cpp b/imgui_widgets.cpp
+index abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9..5dedab76b480602fee7be032fe9a4f9fda2a356b 100644
+--- a/imgui_widgets.cpp
++++ b/imgui_widgets.cpp
+@@ -2359,6 +2359,11 @@ void ImGui::DataTypeApplyOp(ImGuiDataType data_type, int op, void* output, const
+     IM_ASSERT(0);
+ }
+ 
++// [Index patch] Optional hook installed by the host (see ImGui::SetScalarExpressionHook).
++// Lets the engine route numeric text through a full expression evaluator.
++static ImGuiScalarExpressionFn GScalarExpressionHook = NULL;
++void ImGui::SetScalarExpressionHook(ImGuiScalarExpressionFn fn) { GScalarExpressionHook = fn; }
++
+ // User can input math operators (e.g. +100) to edit a numerical values.
+ // NB: This is _not_ a full expression evaluator. We should probably add one and replace this dumb mess..
+ bool ImGui::DataTypeApplyFromText(const char* buf, ImGuiDataType data_type, void* p_data, const char* format, void* p_data_when_empty)
+@@ -2368,6 +2373,12 @@ bool ImGui::DataTypeApplyFromText(const char* buf, ImGuiDataType data_type, void
+     ImGuiDataTypeStorage data_backup;
+     memcpy(&data_backup, p_data, type_info->Size);
+ 
++    // [Index patch] Give the host expression evaluator first crack at the text; it trims
++    // blanks and rejects empty/invalid input, so the default parsing below still runs for
++    // non-expressions. p_data holds the current value here (used for "/2"-style edits).
++    if (GScalarExpressionHook && GScalarExpressionHook(buf, data_type, p_data))
++        return memcmp(&data_backup, p_data, type_info->Size) != 0;
++
+     while (ImCharIsBlankA(*buf))
+         buf++;
+     if (!buf[0])

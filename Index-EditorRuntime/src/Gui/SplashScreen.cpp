@@ -44,7 +44,7 @@ namespace Index::EditorRuntime {
 		}
 	}
 
-	void SplashScreen::Render(Application& app, bool loadingComplete) {
+	void SplashScreen::Render(Application&, bool loadingComplete) {
 		if (m_Phase == Phase::Idle || m_Phase == Phase::Done) {
 			return;
 		}
@@ -62,7 +62,7 @@ namespace Index::EditorRuntime {
 		}
 
 		// FadeOut — unscaled dt so Time.timeScale can't affect the splash.
-		m_FadeTimer += app.GetTime().GetDeltaTimeUnscaled();
+		m_FadeTimer += Time::GetDeltaTimeUnscaled();
 		const float alpha = 1.0f - (k_FadeSeconds > 0.0f ? m_FadeTimer / k_FadeSeconds : 1.0f);
 		if (alpha <= 0.0f) {
 			m_Phase = Phase::Done;

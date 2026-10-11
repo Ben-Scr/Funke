@@ -195,6 +195,7 @@ public class Entity : IEquatable<Entity>
         { typeof(FastBoxCollider2D),     "Fast Box Collider 2D" },
         { typeof(FastCircleCollider2D),  "Fast Circle Collider 2D" },
         { typeof(ParticleSystem2D),      "Particle System 2D" },
+        { typeof(SpriteAnimator2D),      "Sprite Animator 2D" },
 
         // Strings must match native display names in BuiltInComponentRegistration.cpp; class names alone lack the "2D" suffix that RectTransform2DComponent uses on the C++ side.
         { typeof(Index.UI.RectTransform),  "Rect Transform 2D" },

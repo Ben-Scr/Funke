@@ -13,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 
 namespace Index { class Texture2D; struct Curve; struct Gradient; }
@@ -69,7 +70,22 @@ namespace Index::ImGuiUtils {
 	{
 		static_assert(std::is_enum_v<TEnum>, "DrawEnumCombo requires an enum type.");
 
-		auto previewView = magic_enum::enum_name(currentValue);
+		// An enum can opt out of magic_enum reflection by providing ADL
+		// ToString(TEnum) + EnumValues(std::type_identity<TEnum>). Graphics/Wrap.hpp
+		// does: its values are sparse GL constants, so reflecting them needed a
+		// 23,152-wide magic_enum range that exhausted the compiler heap (C1060).
+		const auto nameOf = [](TEnum value) -> std::string_view {
+			if constexpr (requires { ToString(value); }) { return ToString(value); }
+			else { return magic_enum::enum_name(value); }
+		};
+		const auto valuesOf = [] {
+			if constexpr (requires { EnumValues(std::type_identity<TEnum>{}); }) {
+				return EnumValues(std::type_identity<TEnum>{});
+			}
+			else { return magic_enum::enum_values<TEnum>(); }
+		};
+
+		const std::string_view previewView = nameOf(currentValue);
 		const char* preview = previewView.empty() ? "Unknown" : previewView.data();
 
 		bool changed = false;
@@ -77,10 +93,10 @@ namespace Index::ImGuiUtils {
 		ImGui::PushID(label);
 		BeginInspectorFieldRow(label);
 		if (ImGui::BeginCombo("##Value", preview)) {
-			for (TEnum value : magic_enum::enum_values<TEnum>()) {
+			for (TEnum value : valuesOf()) {
 				const bool isSelected = (currentValue == value);
 
-				auto name = magic_enum::enum_name(value);
+				const std::string_view name = nameOf(value);
 				if (name.empty()) {
 					continue;
 				}
@@ -202,6 +218,18 @@ namespace Index::ImGuiUtils {
 
 	bool BeginComponentSection(const char* label, bool& removeRequested, const std::function<void()>& contextMenu = {});
 
+	// X/Y/Z/W tint used for axis letters inside vector fields.
+	ImU32 AxisColor(int axis);
+	// DragFloat with a coloured axis letter drawn inside the frame (no separate label item).
+	bool AxisDragFloat(const char* id, int axis, const char* axisLabel, float* value, float width,
+		float speed, const char* format, float vmin = 0.0f, float vmax = 0.0f);
+	// Single-control ranged float: drag or double-click to type; the frame shows the value as a fill bar.
+	bool FillDragFloat(const char* id, float* value, float vmin, float vmax, const char* format);
+	// Animated on/off switch, one frame-height tall. Returns true when clicked (value already toggled).
+	bool ToggleSwitch(const char* id, bool* value, bool mixed = false);
+	// Drop-in for ImGui::Checkbox: a ToggleSwitch followed by the visible part of `label` (also clickable).
+	bool Switch(const char* label, bool* value, bool mixed = false);
+
 	void EndComponentSection();
 
 	namespace MultiEdit {
@@ -295,7 +323,7 @@ namespace Index::ImGuiUtils {
 		const bool uniform = MultiEdit::SampleUniform<float>(entities, get, v);
 		ImGui::PushID(label);
 		BeginInspectorFieldRow(label);
-		const bool changed = ImGui::SliderFloat("##Value", &v, vmin, vmax, uniform ? format : "-");
+		const bool changed = FillDragFloat("##Value", &v, vmin, vmax, uniform ? format : "-");
 		if (changed) {
 			for (const Entity& e : entities) set(e, v);
 			MarkSelectionDirty(entities);
@@ -447,7 +475,7 @@ namespace Index::ImGuiUtils {
 			ImGui::PushItemFlag(static_cast<ImGuiItemFlags>(kMixedValueFlag), true);
 		}
 		bool tmp = v;
-		const bool changed = ImGui::Checkbox("##Value", &tmp);
+		const bool changed = ImGuiUtils::Switch("##Value", &tmp);
 		if (!uniform) {
 			ImGui::PopItemFlag();
 		}

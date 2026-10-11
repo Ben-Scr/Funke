@@ -94,6 +94,17 @@ namespace Index {
 		void StartSearchWorker(std::string query);
 		void RunSearchWorker(std::string rootDirectory, std::string query);
 
+		struct FolderTreeEntry {
+			std::string Path;
+			std::string Name;
+			std::string Key; // normalized Path, compared against the current directory
+		};
+
+		void RenderFolderTree();
+		void RenderFolderTreeNode(const std::string& path, const std::string& label, const std::string& key, bool isRoot);
+		void RenderFolderTreeSplitter();
+		const std::vector<FolderTreeEntry>& GetFolderTreeChildren(const std::string& path);
+
 		void RenderBreadcrumb();
 		void RenderSearchBar();
 		void RebuildSearchResults();
@@ -217,8 +228,19 @@ namespace Index {
 		std::string m_QueuedSearchQuery;
 		std::vector<DirectoryEntry> m_SearchWorkerResults;
 
+		static constexpr float k_MinTileSize = 48.0f;
+		static constexpr float k_MaxTileSize = 128.0f;
 		float m_TileSize = 80.0f;
 		float m_TilePadding = 8.0f;
+
+		// Left folder tree. Subdirectory listings are cached per path and dropped on Refresh(),
+		// so the tree only touches the filesystem when the grid does.
+		float m_FolderTreeWidth = 180.0f;
+		std::unordered_map<std::string, std::vector<FolderTreeEntry>> m_FolderTreeChildren;
+		bool m_FolderTreeDirty = true;
+		std::string m_FolderTreeCurrentKey;       // normalized m_CurrentDirectory, cached per frame
+		std::string m_FolderTreeRevealedDirectory; // last directory the tree expanded/scrolled to
+		bool m_FolderTreeRevealPending = false;
 
 		bool m_ItemRightClicked = false;
 		std::string m_PendingSceneLoad;

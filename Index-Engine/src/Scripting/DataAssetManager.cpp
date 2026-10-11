@@ -3,11 +3,12 @@
 #include "Scripting/ScriptEngine.hpp"
 #include "Assets/AssetRegistry.hpp"
 #include "Serialization/Json.hpp"
-#include "Serialization/SceneSerializer.hpp"
-#include "Serialization/SceneSerializerShared.hpp"
+#include "Serialization/SceneSerializerStorage.hpp"
+#if INDEX_WITH_APPLICATION
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Core/Application.hpp"
+#endif
 #include "Core/Log.hpp"
 
 #include <mutex>
@@ -28,6 +29,9 @@ namespace Index {
 		// The editor writes in the project's "Asset format" setting; a standalone
 		// runtime always writes binary. Reads auto-detect either way.
 		SceneSerializationFormat ResolveFormat() {
+#if !INDEX_WITH_APPLICATION
+			return SceneSerializationFormat::Binary;
+#else
 			if (!Application::IsEditor())
 				return SceneSerializationFormat::Binary;
 			if (IndexProject* project = ProjectManager::GetCurrentProject())
@@ -35,6 +39,7 @@ namespace Index {
 					? SceneSerializationFormat::Binary
 					: SceneSerializationFormat::Json;
 			return SceneSerializationFormat::Json;
+#endif
 		}
 
 		// Read + parse a .dataasset file into its C# type and name->value field map

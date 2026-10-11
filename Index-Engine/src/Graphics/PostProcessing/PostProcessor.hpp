@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/Export.hpp"
+#include "Core/GraphicsSettings.hpp"
 #include "Graphics/Shader.hpp"
 
 #include <webgpu/webgpu_cpp.h>
@@ -33,7 +34,8 @@ namespace Index {
 			wgpu::TextureView dstView,
 			wgpu::TextureFormat dstFormat,
 			uint32_t dstWidth,
-			uint32_t dstHeight);
+			uint32_t dstHeight,
+			UpscaleFilterMode filter = UpscaleFilterMode::Linear);
 
 		// Dispatches to the enabled effect pass or falls through to Blit. settings == nullptr (no PostProcessing2DComponent on camera) is a valid passthrough case.
 		void Run(const Framebuffer& src,
@@ -41,7 +43,9 @@ namespace Index {
 			wgpu::TextureFormat dstFormat,
 			uint32_t dstWidth,
 			uint32_t dstHeight,
-			const PostProcessing2DComponent* settings);
+			const PostProcessing2DComponent* settings,
+			PostProcessingQualityLevel quality = PostProcessingQualityLevel::High,
+			bool clearDestination = false);
 
 		// Public only so anonymous-namespace pipeline-cache builders in PostProcessor.cpp can take Impl& params.
 		struct Impl;

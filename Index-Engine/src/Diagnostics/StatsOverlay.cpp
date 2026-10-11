@@ -36,7 +36,7 @@ namespace Index::Diagnostics {
 
 		std::size_t CountLoadedEntities() {
 			std::size_t count = 0;
-			SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
+			SceneManager::ForeachLoadedScene([&](const Scene& scene) {
 				count += scene.GetEntityCount();
 			});
 			return count;
@@ -60,7 +60,7 @@ namespace Index::Diagnostics {
 		auto* app = Application::GetInstance();
 		// Stats reflect real wall-clock performance — use unscaled dt so TimeScale
 		// doesn't distort the FPS / CPU readouts.
-		const float dt = app ? app->GetTime().GetUnscaledDeltaTime() : 0.0f;
+		const float dt = Time::GetUnscaledDeltaTime();
 		m_Cached.Fps       = (dt > 0.0f) ? (1.0f / dt) : 0.0f;
 		m_Cached.CpuMainMs = dt * 1000.0f;
 
@@ -87,12 +87,12 @@ namespace Index::Diagnostics {
 			GetCurrentProcess(),
 			reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
 			sizeof(pmc))) {
-			m_Cached.MemAllocBytes    = static_cast<std::size_t>(pmc.WorkingSetSize);
-			m_Cached.MemReservedBytes = static_cast<std::size_t>(pmc.PrivateUsage);
+			m_Cached.ProcessWorkingSetBytes    = static_cast<std::size_t>(pmc.WorkingSetSize);
+			m_Cached.ProcessPrivateCommitBytes = static_cast<std::size_t>(pmc.PrivateUsage);
 		}
 #else
-		m_Cached.MemAllocBytes    = 0;
-		m_Cached.MemReservedBytes = 0;
+		m_Cached.ProcessWorkingSetBytes    = 0;
+		m_Cached.ProcessPrivateCommitBytes = 0;
 #endif
 
 		m_Cached.AudioPlaying = AudioManager::IsInitialized()
@@ -114,8 +114,8 @@ namespace Index::Diagnostics {
 		ImGui::Separator();
 		ImGui::Text("Screen:          %d x %d", s.ScreenWidth, s.ScreenHeight);
 		ImGui::Separator();
-		ImGui::Text("Allocated:       %s", FormatBytesAsMb(s.MemAllocBytes).c_str());
-		ImGui::Text("Reserved:        %s", FormatBytesAsMb(s.MemReservedBytes).c_str());
+		ImGui::Text("Working set:     %s", FormatBytesAsMb(s.ProcessWorkingSetBytes).c_str());
+		ImGui::Text("Private commit:  %s", FormatBytesAsMb(s.ProcessPrivateCommitBytes).c_str());
 		ImGui::Separator();
 		ImGui::Text("Audio Playing:   %u", s.AudioPlaying);
 		ImGui::Text("Entities:        %zu", s.Entities);

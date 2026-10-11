@@ -2,7 +2,6 @@
 #include "Graphics/PostProcessing/PostProcessor.hpp"
 
 #include "Components/Graphics/PostProcessing2DComponent.hpp"
-#include "Core/Application.hpp"
 #include "Core/Log.hpp"
 #include "Core/Time.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
@@ -20,6 +19,9 @@ namespace Index {
 		wgpu::BindGroupLayout BindGroupLayout;
 		wgpu::PipelineLayout  PipelineLayout;
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> BlitPipelines;
+		wgpu::BindGroupLayout PointBindGroupLayout;
+		wgpu::PipelineLayout  PointPipelineLayout;
+		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> PointBlitPipelines;
 
 		wgpu::BindGroupLayout EffectBindGroupLayout;
 		wgpu::PipelineLayout  EffectPipelineLayout;
@@ -66,6 +68,7 @@ namespace Index {
 
 		// Shared.
 		wgpu::Sampler         LinearSampler;
+		wgpu::Sampler         PointSampler;
 		bool                  Initialized = false;
 	};
 
@@ -133,6 +136,20 @@ namespace Index {
 			IDX_CORE_ERROR_TAG("PostProcessor", "CreatePipelineLayout failed");
 			return false;
 		}
+		bglEntries[1].sampler.type = wgpu::SamplerBindingType::NonFiltering;
+		bglDesc.label = "postprocess-point-blit-bgl";
+		m_Impl->PointBindGroupLayout = device.CreateBindGroupLayout(&bglDesc);
+		if (!m_Impl->PointBindGroupLayout) {
+			IDX_CORE_ERROR_TAG("PostProcessor", "Create point bind group layout failed");
+			return false;
+		}
+		plDesc.label = "postprocess-point-blit-pipeline-layout";
+		plDesc.bindGroupLayouts = &m_Impl->PointBindGroupLayout;
+		m_Impl->PointPipelineLayout = device.CreatePipelineLayout(&plDesc);
+		if (!m_Impl->PointPipelineLayout) {
+			IDX_CORE_ERROR_TAG("PostProcessor", "Create point pipeline layout failed");
+			return false;
+		}
 
 		wgpu::SamplerDescriptor samplerDesc{};
 		samplerDesc.label = "postprocess-linear-sampler";
@@ -148,6 +165,14 @@ namespace Index {
 		m_Impl->LinearSampler = device.CreateSampler(&samplerDesc);
 		if (!m_Impl->LinearSampler) {
 			IDX_CORE_ERROR_TAG("PostProcessor", "CreateSampler failed");
+			return false;
+		}
+		samplerDesc.label = "postprocess-point-sampler";
+		samplerDesc.magFilter = wgpu::FilterMode::Nearest;
+		samplerDesc.minFilter = wgpu::FilterMode::Nearest;
+		m_Impl->PointSampler = device.CreateSampler(&samplerDesc);
+		if (!m_Impl->PointSampler) {
+			IDX_CORE_ERROR_TAG("PostProcessor", "Create point sampler failed");
 			return false;
 		}
 
@@ -349,7 +374,11 @@ namespace Index {
 		m_Impl->EffectPipelineLayout = nullptr;
 		m_Impl->EffectBindGroupLayout = nullptr;
 		m_Impl->BlitPipelines.clear();
+		m_Impl->PointBlitPipelines.clear();
 		m_Impl->LinearSampler = nullptr;
+		m_Impl->PointSampler = nullptr;
+		m_Impl->PointPipelineLayout = nullptr;
+		m_Impl->PointBindGroupLayout = nullptr;
 		m_Impl->PipelineLayout = nullptr;
 		m_Impl->BindGroupLayout = nullptr;
 		m_Impl->Initialized = false;
@@ -370,10 +399,12 @@ namespace Index {
 		wgpu::RenderPipeline GetOrCreateBlitPipeline(
 			PostProcessor::Impl& impl,
 			const Shader& blitShader,
-			wgpu::TextureFormat dstFormat)
+			wgpu::TextureFormat dstFormat,
+			bool pointFiltered)
 		{
-			auto it = impl.BlitPipelines.find(dstFormat);
-			if (it != impl.BlitPipelines.end()) return it->second;
+			auto& pipelines = pointFiltered ? impl.PointBlitPipelines : impl.BlitPipelines;
+			auto it = pipelines.find(dstFormat);
+			if (it != pipelines.end()) return it->second;
 
 			wgpu::Device device = WebGPUBackend::GetDevice();
 			if (!device) return nullptr;
@@ -392,7 +423,7 @@ namespace Index {
 			vertexState.buffers = nullptr;
 
 			wgpu::BlendState blend{};
-			blend.color.srcFactor = wgpu::BlendFactor::SrcAlpha;
+			blend.color.srcFactor = wgpu::BlendFactor::One;
 			blend.color.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
 			blend.color.operation = wgpu::BlendOperation::Add;
 			blend.alpha.srcFactor = wgpu::BlendFactor::One;
@@ -412,7 +443,7 @@ namespace Index {
 
 			wgpu::RenderPipelineDescriptor pipelineDesc{};
 			pipelineDesc.label = "postprocess-blit-pipeline";
-			pipelineDesc.layout = impl.PipelineLayout;
+			pipelineDesc.layout = pointFiltered ? impl.PointPipelineLayout : impl.PipelineLayout;
 			pipelineDesc.vertex = vertexState;
 			pipelineDesc.fragment = &fragmentState;
 			pipelineDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
@@ -431,7 +462,7 @@ namespace Index {
 				return nullptr;
 			}
 
-			impl.BlitPipelines.emplace(dstFormat, pipeline);
+			pipelines.emplace(dstFormat, pipeline);
 			return pipeline;
 		}
 
@@ -851,7 +882,8 @@ namespace Index {
 			wgpu::TextureView dstView,
 			wgpu::TextureFormat dstFormat,
 			uint32_t dstWidth, uint32_t dstHeight,
-			const PostProcessing2DComponent::BloomSettings& b)
+			const PostProcessing2DComponent::BloomSettings& b,
+			int maximumTaps)
 		{
 			const int fullW = std::max(1, static_cast<int>(dstWidth));
 			const int fullH = std::max(1, static_cast<int>(dstHeight));
@@ -866,7 +898,7 @@ namespace Index {
 
 			const wgpu::TextureFormat tempFormat = wgpu::TextureFormat::RGBA16Float;
 
-			const int tapsClamped = std::max(3, std::min(500, b.Taps));
+			const int tapsClamped = std::max(3, std::min(maximumTaps, b.Taps));
 			const float halfKernel = static_cast<float>(std::max(1, (tapsClamped - 1) / 2));
 
 			// ── Pass 1: Threshold extract (srcView -> BloomTempA) ──
@@ -934,7 +966,8 @@ namespace Index {
 			wgpu::TextureView dstView,
 			wgpu::TextureFormat dstFormat,
 			uint32_t dstWidth, uint32_t dstHeight,
-			const PostProcessing2DComponent::GaussianBlurSettings& g)
+			const PostProcessing2DComponent::GaussianBlurSettings& g,
+			int maximumTaps)
 		{
 			const int fullW = std::max(1, static_cast<int>(dstWidth));
 			const int fullH = std::max(1, static_cast<int>(dstHeight));
@@ -953,7 +986,7 @@ namespace Index {
 				"postprocess-gaussianblur-pipeline-dst");
 			if (!pipelineToTemp || !pipelineToDst) return;
 
-			const int tapsClamped = std::max(3, std::min(500, g.Taps));
+			const int tapsClamped = std::max(3, std::min(maximumTaps, g.Taps));
 			const float halfKernel = static_cast<float>(std::max(1, (tapsClamped - 1) / 2));
 
 			const float radiusMul = 0.5f + 6.0f * g.Radius;
@@ -1008,7 +1041,8 @@ namespace Index {
 		wgpu::TextureView dstView,
 		wgpu::TextureFormat dstFormat,
 		uint32_t dstWidth,
-		uint32_t dstHeight)
+		uint32_t dstHeight,
+		UpscaleFilterMode filter)
 	{
 		if (!IsInitialized()) {
 			IDX_CORE_WARN_TAG("PostProcessor", "Blit called before Initialize()");
@@ -1035,18 +1069,22 @@ namespace Index {
 			return;
 		}
 
-		wgpu::RenderPipeline pipeline = GetOrCreateBlitPipeline(*m_Impl, *m_BlitShader, dstFormat);
+		const bool pointFiltered = filter == UpscaleFilterMode::Point;
+		wgpu::RenderPipeline pipeline = GetOrCreateBlitPipeline(
+			*m_Impl, *m_BlitShader, dstFormat, pointFiltered);
 		if (!pipeline) return;
 
 		wgpu::BindGroupEntry bgEntries[2]{};
 		bgEntries[0].binding = 0;
 		bgEntries[0].textureView = srcLook.ColorView;
 		bgEntries[1].binding = 1;
-		bgEntries[1].sampler = m_Impl->LinearSampler;
+		bgEntries[1].sampler = filter == UpscaleFilterMode::Point
+			? m_Impl->PointSampler
+			: m_Impl->LinearSampler;
 
 		wgpu::BindGroupDescriptor bgDesc{};
 		bgDesc.label = "postprocess-blit-bg";
-		bgDesc.layout = m_Impl->BindGroupLayout;
+		bgDesc.layout = pointFiltered ? m_Impl->PointBindGroupLayout : m_Impl->BindGroupLayout;
 		bgDesc.entryCount = 2;
 		bgDesc.entries = bgEntries;
 		wgpu::BindGroup bindGroup = device.CreateBindGroup(&bgDesc);
@@ -1085,7 +1123,9 @@ namespace Index {
 		wgpu::TextureFormat dstFormat,
 		uint32_t dstWidth,
 		uint32_t dstHeight,
-		const PostProcessing2DComponent* settings)
+		const PostProcessing2DComponent* settings,
+		PostProcessingQualityLevel quality,
+		bool clearDestination)
 	{
 		if (!IsInitialized()) {
 			IDX_CORE_WARN_TAG("PostProcessor", "Run called before Initialize()");
@@ -1100,6 +1140,7 @@ namespace Index {
 			Blit(src, dstView, dstFormat, dstWidth, dstHeight);
 			return;
 		}
+		if (clearDestination) ClearViewTransparent(dstView);
 
 		// Effect order: Bloom (needs HDR signal) → ColorGrading → GaussianBlur → Lens → CA → Vignette → Grain → Pixelated.
 		enum class EffectKind : uint8_t {
@@ -1137,10 +1178,10 @@ namespace Index {
 			ClearViewTransparent(ViewOf(m_Impl->PingPongB));
 		}
 
-		float currentTime = 0.0f;
-		if (Application* app = Application::GetInstance()) {
-			currentTime = app->GetTime().GetRealtimeSinceStartup();
-		}
+		const float currentTime = Time::GetRealtimeSinceStartup();
+		const int maximumTaps = quality == PostProcessingQualityLevel::Low
+			? 11
+			: quality == PostProcessingQualityLevel::Medium ? 33 : 500;
 
 		const wgpu::TextureFormat ppFormat = wgpu::TextureFormat::RGBA16Float;
 
@@ -1160,7 +1201,7 @@ namespace Index {
 				case EffectKind::Bloom:
 					RunBloomPass(*m_Impl,
 						*m_BloomThresholdShader, *m_BloomBlurShader, *m_BloomCompositeShader,
-						passSrc, passDst, passFmt, passW, passH, settings->Bloom);
+						passSrc, passDst, passFmt, passW, passH, settings->Bloom, maximumTaps);
 					break;
 				case EffectKind::ColorGrading:
 					RunColorGradingPass(*m_Impl, *m_ColorGradingShader,
@@ -1188,7 +1229,7 @@ namespace Index {
 					break;
 				case EffectKind::GaussianBlur:
 					RunGaussianBlurPass(*m_Impl, *m_BloomBlurShader,
-						passSrc, passDst, passFmt, passW, passH, settings->GaussianBlur);
+						passSrc, passDst, passFmt, passW, passH, settings->GaussianBlur, maximumTaps);
 					break;
 			}
 		};

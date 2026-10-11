@@ -24,6 +24,16 @@
 #include "Graphics/TextureManager.hpp"
 
 namespace Index {
+	namespace {
+		Scene* ResolveEntityCreationScene() {
+			Scene* scene = ResolveImplicitScene();
+			if (!scene) {
+				IDX_ERROR_TAG("EntityHelper", "Cannot create entity because there is no current or active scene");
+			}
+			return scene;
+		}
+	}
+
 	void EntityHelper::SetEnabled(Entity entity, bool enabled) {
 		entity.SetEnabled(enabled);
 	}
@@ -34,7 +44,7 @@ namespace Index {
 	std::size_t EntityHelper::EntitiesCount() {
 		std::size_t count = 0;
 
-		SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
+		SceneManager::ForeachLoadedScene([&](const Scene& scene) {
 			count += scene.GetRegistry().view<EntityHandle>().size();
 			});
 
@@ -48,9 +58,8 @@ namespace Index {
 	}
 
 	Entity EntityHelper::CreateCamera2DEntity() {
-		Entity entity = CreateWith<Transform2DComponent, Camera2DComponent>();
-		entity.AddComponent<NameComponent>(NameComponent("Camera 2D"));
-		return entity;
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateCamera2DEntity(*scene) : Entity::Null;
 	}
 
 	Entity EntityHelper::CreateSpriteEntity(Scene& scene) {
@@ -58,7 +67,8 @@ namespace Index {
 	}
 
 	Entity EntityHelper::CreateSpriteEntity() {
-		return CreateWith<Transform2DComponent, SpriteRendererComponent >();
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateSpriteEntity(*scene) : Entity::Null;
 	}
 
 	Entity EntityHelper::CreateImageEntity(Scene& scene) {
@@ -70,11 +80,8 @@ namespace Index {
 	}
 
 	Entity EntityHelper::CreateImageEntity() {
-		Entity e = CreateWith<RectTransform2DComponent, ImageComponent>();
-		e.AddComponent<NameComponent>(NameComponent("Image"));
-		auto& rect = e.GetComponent<RectTransform2DComponent>();
-		rect.SizeDelta = Vec2{ 100.0f, 100.0f };
-		return e;
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateImageEntity(*scene) : Entity::Null;
 	}
 
 	Entity EntityHelper::CreateUIPanel(Scene& scene) {
@@ -440,5 +447,70 @@ namespace Index {
 		lg.Spacing = Vec2{ 8.0f, 8.0f };
 		lg.PaddingLeft = lg.PaddingRight = lg.PaddingTop = lg.PaddingBottom = 8.0f;
 		return entity;
+	}
+
+	Entity EntityHelper::CreateUIPanel() {
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateUIPanel(*scene) : Entity::Null;
+	}
+
+	Entity EntityHelper::CreateUIButton() {
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateUIButton(*scene) : Entity::Null;
+	}
+
+	Entity EntityHelper::CreateUISlider() {
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateUISlider(*scene) : Entity::Null;
+	}
+
+	Entity EntityHelper::CreateUIProgressBar() {
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateUIProgressBar(*scene) : Entity::Null;
+	}
+
+	Entity EntityHelper::CreateUICircularSlider() {
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateUICircularSlider(*scene) : Entity::Null;
+	}
+
+	Entity EntityHelper::CreateUIInputField() {
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateUIInputField(*scene) : Entity::Null;
+	}
+
+	Entity EntityHelper::CreateUIDropdown() {
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateUIDropdown(*scene) : Entity::Null;
+	}
+
+	Entity EntityHelper::CreateUIToggle() {
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateUIToggle(*scene) : Entity::Null;
+	}
+
+	Entity EntityHelper::CreateUIScrollbar() {
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateUIScrollbar(*scene) : Entity::Null;
+	}
+
+	Entity EntityHelper::CreateUIScrollRect() {
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateUIScrollRect(*scene) : Entity::Null;
+	}
+
+	Entity EntityHelper::CreateUIHorizontalLayout() {
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateUIHorizontalLayout(*scene) : Entity::Null;
+	}
+
+	Entity EntityHelper::CreateUIVerticalLayout() {
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateUIVerticalLayout(*scene) : Entity::Null;
+	}
+
+	Entity EntityHelper::CreateUIGridLayout() {
+		Scene* scene = ResolveEntityCreationScene();
+		return scene ? CreateUIGridLayout(*scene) : Entity::Null;
 	}
 }

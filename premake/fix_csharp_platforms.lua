@@ -9,7 +9,7 @@
 --
 --   2. `dotnet build -c Release` (without -p:Platform=x64) defaults to
 --      AnyCPU, so the per-config OutputPath conditions never match and
---      the DLL lands in bin/Release/net9.0/ instead of the engine's
+--      the DLL lands in bin/Release/net10.0/ instead of the engine's
 --      expected bin/Release-windows-x86_64/ path.
 --
 -- Fix: inject both <Platforms>x64</Platforms> and a default Platform

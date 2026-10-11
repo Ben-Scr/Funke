@@ -936,6 +936,41 @@ internal unsafe struct NativeBindingsStruct
     // Gizmo enable toggle (appended for binary compat; keep in lock-step with C++ NativeBindings).
     public delegate* unmanaged<int> Gizmo_GetEnabled;
     public delegate* unmanaged<int, void> Gizmo_SetEnabled;
+
+    // Application restart (appended for binary compat; keep in lock-step with C++ NativeBindings).
+    public delegate* unmanaged<void> Application_Restart;
+
+    public delegate* unmanaged<float*, int*, int*, int*, int*, void> RenderSettings_Get;
+    public delegate* unmanaged<float, int, int, int, int, int> RenderSettings_Apply;
+    public delegate* unmanaged<int> RenderSettings_ResetToDefaults;
+
+    // ── Gamepad (appended for binary compat) ──
+    public delegate* unmanaged<int, int> Input_IsGamepadConnected;
+    public delegate* unmanaged<int, int, int> Input_GetGamepadButton;
+    public delegate* unmanaged<int, int, int> Input_GetGamepadButtonDown;
+    public delegate* unmanaged<int, int, int> Input_GetGamepadButtonUp;
+    public delegate* unmanaged<int, int, float> Input_GetGamepadAxis;
+
+    // ── Collider settings + query layer mask (appended for binary compat) ──
+    public delegate* unmanaged<ulong, void> Physics2D_SetQueryLayerMask;
+    public delegate* unmanaged<ulong, int, int> Collider2D_GetSensor;
+    public delegate* unmanaged<ulong, int, int, void> Collider2D_SetSensor;
+    public delegate* unmanaged<ulong, int, ulong> Collider2D_GetLayer;
+    public delegate* unmanaged<ulong, int, ulong, void> Collider2D_SetLayer;
+    public delegate* unmanaged<ulong, int, ulong> Collider2D_GetCollisionMask;
+    public delegate* unmanaged<ulong, int, ulong, void> Collider2D_SetCollisionMask;
+    public delegate* unmanaged<ulong, int, float> Collider2D_GetFriction;
+    public delegate* unmanaged<ulong, int, float, void> Collider2D_SetFriction;
+    public delegate* unmanaged<ulong, int, float> Collider2D_GetBounciness;
+    public delegate* unmanaged<ulong, int, float, void> Collider2D_SetBounciness;
+
+    // ── SpriteAnimator2D (appended for binary compat) ──
+    public delegate* unmanaged<ulong, int, void> SpriteAnimator2D_Command;
+    public delegate* unmanaged<ulong, int> SpriteAnimator2D_IsPlaying;
+    public delegate* unmanaged<ulong, int> SpriteAnimator2D_GetFrame;
+    public delegate* unmanaged<ulong, int, void> SpriteAnimator2D_SetFrame;
+    public delegate* unmanaged<ulong, float> SpriteAnimator2D_GetFramesPerSecond;
+    public delegate* unmanaged<ulong, float, void> SpriteAnimator2D_SetFramesPerSecond;
 }
 
 internal static unsafe class NativeCallbacks

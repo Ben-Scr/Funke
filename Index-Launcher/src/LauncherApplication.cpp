@@ -13,6 +13,7 @@ class LauncherApplication : public Application {
 public:
 	ApplicationConfig GetConfiguration() const override {
 		ApplicationConfig config;
+		config.AutoCreateDefaultCamera2D = false;
 		config.WindowSpecification = WindowSpecification(900, 600, "Index Launcher " + std::string(IDX_VERSION), true, true, false);
 		config.WindowSpecification.MinWidth  = 720;
 		config.WindowSpecification.MinHeight = 480;
@@ -29,17 +30,17 @@ public:
 		config.EnablePackageHost = false;
 		config.SetWindowIcon = true;
 		config.Vsync = false;
+		config.TargetFrameRate = 144.0f;
+		// Background polling drives open/create progress while the launcher is unfocused.
+		config.RunInBackground = true;
 		// No F11 exclusive fullscreen: it takes over the display and breaks the
 		// launcher's secondary dialog windows (Settings, Create / Rename).
 		config.EnableFullscreenToggle = false;
-
-		SetTargetFramerate(144.f);
-
 		return config;
 	}
 
 	void ConfigureScenes() override {
-		SceneDefinition& launcherScene = GetSceneManager()->RegisterScene("Launcher");
+		SceneDefinition& launcherScene = SceneManager::RegisterScene("Launcher");
 		launcherScene.SetAsStartupScene();
 	}
 

@@ -84,7 +84,7 @@ namespace Index {
 	void RuntimeSplashLayer::OnUpdate(Application& app, float /*dt*/) {
 		if (m_RequestPop) return;
 		// Use unscaled dt — splash timing should not respond to Time.timeScale.
-		m_Elapsed += app.GetTime().GetDeltaTimeUnscaled();
+		m_Elapsed += Time::GetDeltaTimeUnscaled();
 
 		const float total = m_FadeIn + m_Hold + m_FadeOut;
 		if (m_Elapsed >= total) {

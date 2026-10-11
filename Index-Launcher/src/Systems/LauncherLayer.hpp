@@ -4,7 +4,11 @@
 #include "Project/IndexProject.hpp"
 #include "Core/Export.hpp"
 #include "Gui/SplashScreen.hpp"
+#include "Graphics/Texture2D.hpp"
+#include "Systems/Prerequisites.hpp"
 #include <chrono>
+#include <filesystem>
+#include <future>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -182,13 +186,25 @@ namespace Index {
 			TitleKebabCase,
 		};
 
+		enum class LauncherPage : uint8_t {
+			Projects = 0,
+			AssetLibrary = 1,
+		};
+
 		void RenderLauncherPanel();
+		void RenderSidebar();
 		void RenderMyProjectsTab();
+		void RenderPrerequisiteBanner();
 		void RenderAssetLibraryTab();
 		void RenderAssetLibraryDetailModal();
 		void RenderAssetLibraryTrustModal();
 		void RenderAssetLibraryDoneModal();
 		void RenderProjectList();
+		void RenderProjectRows(const std::vector<const LauncherProjectEntry*>& projects, std::string& removePath);
+		void RenderProjectGrid(const std::vector<const LauncherProjectEntry*>& projects, std::string& removePath);
+		void RenderProjectContextMenu(const LauncherProjectEntry& entry, std::string& removePath);
+		// Scene preview written by the editor to <project>/.index/thumbnail.png; nullptr when absent.
+		const Texture2D* GetProjectThumbnail(const std::string& projectPath);
 		void RenderCreateProjectPopup();
 		void RenderDeleteProjectPopups();
 		void RenderSettingsPopup();
@@ -204,6 +220,7 @@ namespace Index {
 		void PollDuplicateProjectTask();
 		void ResetDuplicateProjectTask(bool clearWorker = true);
 		void RemoveProjectFromList(const LauncherProjectEntry& entry);
+		void BeginCreateProject();
 		const LauncherProjectEntry* GetSelectedProject() const;
 
 		// Deferred via m_OpenErrorPopup so it's safe to call inside an ImGui::Begin*-scope.
@@ -279,6 +296,8 @@ namespace Index {
 		bool m_CloseCreatePopup = false;
 		std::string m_DeferredUpdatePath;
 		CreateProjectTaskState m_CreateTask;
+		std::future<PrerequisiteStatus> m_PrerequisiteProbe;
+		PrerequisiteStatus m_Prerequisites;
 		std::optional<LauncherProjectEntry> m_PendingCreatedProjectOpen;
 
 		bool m_IsOpening = false;
@@ -331,6 +350,20 @@ namespace Index {
 		DuplicateProjectTaskState m_DuplicateTask;
 
 		std::string m_SelectedProjectPath;
+
+		LauncherPage m_ActivePage = LauncherPage::Projects;
+
+		enum class ProjectViewMode : uint8_t { List = 0, Grid = 1 };
+		ProjectViewMode m_ProjectViewMode = ProjectViewMode::List;
+
+		struct ProjectThumbnail {
+			Texture2D Texture;
+			std::filesystem::file_time_type Stamp{};
+			std::chrono::steady_clock::time_point CheckedAt{};
+		};
+		std::unordered_map<std::string, ProjectThumbnail> m_ProjectThumbnails;
+		Texture2D m_LogoTexture;
+		bool m_LogoLoadAttempted = false;
 
 #ifdef IDX_PLATFORM_WINDOWS
 		// Two slots so launching the runtime via "Execute" doesn't make "Open In Editor" think the project is already open.

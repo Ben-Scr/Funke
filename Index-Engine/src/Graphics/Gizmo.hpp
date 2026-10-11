@@ -6,6 +6,10 @@
 #include <string>
 #include <vector>
 
+#ifdef DrawText
+#undef DrawText
+#endif
+
 namespace Index {
 	enum class GizmoLayer : uint8_t {
 		EditorOnly = 1 << 0,
@@ -58,8 +62,8 @@ namespace Index {
 		static void DrawSquare(const Vec2& center, const Vec2& scale, float degrees = 0.0f);
 		static void DrawCircle(const Vec2& center, float radius, int segments = 32);
 
-		// World-space text. rotation is in degrees; size is in pixels (matches TextRendererComponent::FontSize).
-		static void DrawText(const std::string& text, const Vec2& position, float rotation = 0.0f, float size = 11.0f);
+		// World-space text. size is in pixels (matches TextRendererComponent::FontSize).
+		static void DrawText(const std::string& text, const Vec2& position, float rotationDegrees = 0.0f, float size = 28.0f);
 
 		// 3D
 		/*
@@ -102,6 +106,10 @@ namespace Index {
 		static void Clear();
 		static AABB s_CamViewportAABB;
 	private:
+		static void BeginCommandFrame();
+		static void CaptureRefreshBase();
+		static void EndCommandFrame();
+
 		static bool s_HasViewportOverride;
 		static bool s_IsEnabled;
 		static bool s_ShowInRuntime;

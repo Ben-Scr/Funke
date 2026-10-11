@@ -1,0 +1,40 @@
+#pragma once
+
+#include "Core/Export.hpp"
+#include "Core/GraphicsSettings.hpp"
+
+#if !INDEX_WITH_APPLICATION || !INDEX_WITH_RENDER
+#error "Index::RenderSettings requires the application and render modules."
+#endif
+
+namespace Index {
+
+	class INDEX_RENDER_API RenderSettings final {
+	public:
+		RenderSettings() = delete;
+
+		// Main-thread snapshots: requested includes queued changes; effective is the current frame state.
+		static GraphicsSettings Get();
+		static GraphicsSettings GetEffective();
+		// Main-thread only; clamps the full snapshot and commits it at the next frame boundary.
+		static GraphicsApplyStatus Apply(const GraphicsSettings& settings);
+		static GraphicsApplyStatus ResetToDefaults();
+
+		static float GetRenderScale();
+		// Values are clamped to [0.25, 1.0].
+		static GraphicsApplyStatus SetRenderScale(float scale);
+
+		static UpscaleFilterMode GetUpscaleFilter();
+		static GraphicsApplyStatus SetUpscaleFilter(UpscaleFilterMode filter);
+
+		static bool IsPostProcessingEnabled();
+		static GraphicsApplyStatus SetPostProcessingEnabled(bool enabled);
+
+		static PostProcessingQualityLevel GetPostProcessingQuality();
+		static GraphicsApplyStatus SetPostProcessingQuality(PostProcessingQualityLevel quality);
+
+		static ParticleQualityLevel GetParticleQuality();
+		static GraphicsApplyStatus SetParticleQuality(ParticleQualityLevel quality);
+	};
+
+} // namespace Index

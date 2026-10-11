@@ -9,6 +9,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -22,14 +23,41 @@ TERMINATE_GRACE_SECONDS = 5.0
 REQUIRED_MARKERS = (
     "Loaded project:",
     "Loaded scene: SampleScene",
+    "CI smoke test reached a stable frame; requesting graceful shutdown.",
 )
 FORBIDDEN_MARKERS = (
+    "Unhandled exception at app boundary",
+    "CI smoke test failed",
+    "CrashReporter wrote minidump",
     "Failed to load default texture",
     "IndexAssets/Textures not found",
     "Texture 'Default/",
     "Failed to start scene 'SampleScene'",
     "Scene destroy failed for 'SampleScene'",
 )
+
+
+def log_snapshot(binary: Path) -> tuple[Path | None, int]:
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME")
+        if not base:
+            home = os.environ.get("HOME")
+            base = str(Path(home) / ".config") if home else None
+    if not base:
+        return None, 0
+    path = Path(base) / "Index" / "Logs" / f"{binary.stem}.log"
+    return path, path.stat().st_size if path.is_file() else 0
+
+
+def read_log_tail(path: Path | None, offset: int) -> str:
+    if not path or not path.is_file():
+        return ""
+    size = path.stat().st_size
+    with path.open("rb") as stream:
+        stream.seek(offset if size >= offset else 0)
+        return stream.read().decode("utf-8", errors="replace")
 
 
 def fail(message: str, log: str | None = None) -> int:
@@ -53,6 +81,11 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_TIMEOUT_SECONDS,
         help=f"Seconds to wait for the smoke-test markers (default: {DEFAULT_TIMEOUT_SECONDS:g}).",
+    )
+    parser.add_argument(
+        "--require-scripting",
+        action="store_true",
+        help="Also require successful CoreCLR and Index-ScriptCore initialization.",
     )
     return parser.parse_args()
 
@@ -88,22 +121,19 @@ def find_runtime_binary() -> Path:
 
 
 def stage_smoke_project(runtime_dir: Path) -> None:
-    shutil.rmtree(runtime_dir / "Assets", ignore_errors=True)
-    project_file = runtime_dir / "project.json"
-    if project_file.exists():
-        project_file.unlink()
-
     scenes_dir = runtime_dir / "Assets" / "Scenes"
     scenes_dir.mkdir(parents=True, exist_ok=True)
 
     (runtime_dir / "project.json").write_text(
         json.dumps(
             {
+                "projectFormatVersion": 1,
                 "name": "SmokeProject",
                 "engineVersion": "ci",
                 "startupScene": "SampleScene",
                 "lastOpenedScene": "SampleScene",
                 "buildScenes": ["SampleScene"],
+                "assetSerializationFormat": "Json",
             },
             indent=2,
         ),
@@ -186,13 +216,20 @@ def stage_smoke_project(runtime_dir: Path) -> None:
     )
 
 
+def stage_runtime_copy(runtime_binary: Path, staging_root: Path) -> Path:
+    staged_runtime_dir = staging_root / runtime_binary.parent.name
+    shutil.copytree(runtime_binary.parent, staged_runtime_dir)
+    stage_smoke_project(staged_runtime_dir)
+    return staged_runtime_dir / runtime_binary.name
+
+
 def build_command(runtime_binary: Path) -> list[str]:
     if os.name != "nt":
         xvfb_run = shutil.which("xvfb-run")
         if xvfb_run:
-            return [xvfb_run, "-a", str(runtime_binary)]
+            return [xvfb_run, "-a", str(runtime_binary), "--ci-smoke-test"]
 
-    return [str(runtime_binary)]
+    return [str(runtime_binary), "--ci-smoke-test"]
 
 
 def terminate_process(process: subprocess.Popen[str]) -> None:
@@ -228,7 +265,11 @@ def enqueue_output(stream, output_queue: queue.Queue[str | None]) -> None:
         output_queue.put(None)
 
 
-def run_runtime(runtime_binary: Path, timeout_seconds: float) -> tuple[int, str]:
+def run_runtime(
+    runtime_binary: Path,
+    timeout_seconds: float,
+    required_markers: tuple[str, ...],
+) -> tuple[int, str]:
     command = build_command(runtime_binary)
     creation_flags = 0
     if os.name == "nt":
@@ -280,19 +321,17 @@ def run_runtime(runtime_binary: Path, timeout_seconds: float) -> tuple[int, str]
             continue
 
         log_lines.append(item)
-        for marker in REQUIRED_MARKERS:
+        for marker in required_markers:
             if marker in item:
                 seen_markers.add(marker)
 
-        if all(marker in seen_markers for marker in REQUIRED_MARKERS):
-            terminate_process(process)
-            while not output_queue.empty():
-                extra = output_queue.get_nowait()
-                if extra is not None:
-                    log_lines.append(extra)
-            return 0, "".join(log_lines)
-
-    return process.returncode or 0, "".join(log_lines)
+    remaining = deadline - time.monotonic()
+    try:
+        exit_code = process.wait(timeout=max(remaining, 0.001))
+    except subprocess.TimeoutExpired:
+        terminate_process(process)
+        return 124, "".join(log_lines)
+    return exit_code, "".join(log_lines)
 
 
 def main() -> int:
@@ -312,19 +351,32 @@ def main() -> int:
     if not index_assets_dir.is_dir():
         return fail(f"Expected IndexAssets next to the runtime binary at {index_assets_dir}")
 
-    stage_smoke_project(runtime_dir)
-    exit_code, log_output = run_runtime(runtime_binary, args.timeout)
+    try:
+        with tempfile.TemporaryDirectory(prefix="Index Runtime Smoke Prüfung ") as temp_dir:
+            staged_binary = stage_runtime_copy(runtime_binary, Path(temp_dir))
 
-    if exit_code not in (0, 124):
-        return fail(f"Smoke test process exited with status {exit_code}", log_output)
+            required_markers = REQUIRED_MARKERS
+            if args.require_scripting:
+                required_markers += ("Core assembly loaded:",)
+            log_path, log_offset = log_snapshot(staged_binary)
+            exit_code, log_output = run_runtime(staged_binary, args.timeout, required_markers)
+            log_output += read_log_tail(log_path, log_offset)
 
-    for marker in REQUIRED_MARKERS:
-        if marker not in log_output:
-            return fail(f"Runtime did not emit expected marker: {marker}", log_output)
+            if exit_code != 0:
+                return fail(
+                    f"Smoke test process did not exit gracefully (status {exit_code})",
+                    log_output,
+                )
 
-    for marker in FORBIDDEN_MARKERS:
-        if marker in log_output:
-            return fail(f"Runtime log contained failure marker: {marker}", log_output)
+            for marker in required_markers:
+                if marker not in log_output:
+                    return fail(f"Runtime did not emit expected marker: {marker}", log_output)
+
+            for marker in FORBIDDEN_MARKERS:
+                if marker in log_output:
+                    return fail(f"Runtime log contained failure marker: {marker}", log_output)
+    except OSError as error:
+        return fail(f"Could not stage the runtime smoke-test copy: {error}")
 
     print(f"Runtime smoke test passed with binary: {runtime_binary}")
     return 0

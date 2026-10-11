@@ -13,6 +13,7 @@
 #include "Graphics/Backend/WebGPUBackend.hpp"
 #include "Graphics/DynamicRenderData.hpp"
 #include "Graphics/RenderApi.hpp"
+#include "Graphics/ParticleQualityPolicy.hpp"
 #include "Graphics/StaticRenderData.hpp"
 #include "Graphics/SpriteResources.hpp"
 #include "Graphics/SpriteUVResolver.hpp"
@@ -20,8 +21,6 @@
 #include "Graphics/TextureManager.hpp"
 #include "Graphics/Text/TextRenderer.hpp"
 #include "Math/Trigonometry.hpp"
-#include "Project/IndexProject.hpp"
-#include "Project/ProjectManager.hpp"
 #include "Scene/Scene.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Jobs/JobSystem.hpp"
@@ -430,7 +429,8 @@ namespace Index {
 		size_t CollectSpriteInstances(Scene& scene,
 			const AABB& viewportAABB,
 			std::vector<Instance44>& outInstances,
-			std::vector<TextureHandle>& outTextures)
+			std::vector<TextureHandle>& outTextures,
+			ParticleQualityLevel particleQuality)
 		{
 			INDEX_PROFILE_SCOPE("Renderer2D.Collect");
 			outInstances.clear();
@@ -551,9 +551,16 @@ namespace Index {
 
 			auto particleView = scene.GetRegistry().view<ParticleSystem2DComponent>(entt::exclude<DisabledTag>);
 			for (auto entity : particleView) {
+				if (particleQuality == ParticleQualityLevel::Off) break;
 				const auto& particleSystem = particleView.get<ParticleSystem2DComponent>(entity);
 				const TextureHandle texture = particleSystem.GetTextureHandle();
-				for (const auto& particle : particleSystem.GetParticles()) {
+				const auto particles = particleSystem.GetParticles();
+				const size_t renderCount = std::min<size_t>(particles.size(),
+					ParticleQualityPolicy::EffectiveLimit(
+						particleSystem.RenderingSettings.MaxParticles, particleQuality));
+				const size_t firstParticle = particles.size() - renderCount;
+				for (size_t particleIndex = firstParticle; particleIndex < particles.size(); ++particleIndex) {
+					const auto& particle = particles[particleIndex];
 					Vec2 position = particle.Transform.Position;
 					Vec2 scale = particle.Transform.Scale;
 					float rotation = particle.Transform.Rotation;
@@ -844,8 +851,9 @@ namespace Index {
 #endif
 
 		// MUST precede WebGPUApi::Shutdown — FBO and pipelines hold Dawn handles.
-		m_PostProcessor.Shutdown();
 		m_SceneFbo.Destroy();
+		m_PostProcessOutputFbo.Destroy();
+		m_PostProcessor.Shutdown();
 
 		g_BindGroupCache.clear();
 		g_StaticSpriteGrids.clear();
@@ -871,13 +879,16 @@ namespace Index {
 
 	void Renderer2D::BeginFrame() {
 		m_DrawCallsCount = 0;
-		// NOT reset: editor throttles Game View so RenderSceneWithVP runs on a subset of frames; resetting here flickers the overlay to 0.
+		// Preserve while enabled: the throttled Game View would otherwise flicker the overlay to 0 between renders.
 		m_RenderLoopDuration = 0.0f;
+		if (!m_IsInitialized || !m_IsEnabled) {
+			m_RenderedInstancesCount = 0;
+		}
 		// GpuTimer::OnFrameStart (deferred MapAsync) MUST NOT run here — Layer.OnPreRender calls RenderSceneWithVP before BeginFrame; MapAsync here would race the same-frame Submit.
 		if (m_SkipBeginFrameRender) return;
 		if (!m_SceneProvider) return;
 
-		Camera2DComponent* cam = Camera2DComponent::Main();
+		Camera2DComponent* cam = Camera2DComponent::GetMain();
 		if (!cam || !cam->IsValid()) return;
 
 		RenderApi::BindDefaultFramebuffer();
@@ -895,6 +906,8 @@ namespace Index {
 			RenderApi::SetClearColor(cam->GetClearColor());
 			RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
 		}
+
+		if (!m_IsInitialized || !m_IsEnabled) return;
 
 		cam->UpdateViewport();
 
@@ -931,7 +944,7 @@ namespace Index {
 	void Renderer2D::RenderSceneWithVP(Scene& scene,
 		const glm::mat4& vp, const AABB& viewportAABB)
 	{
-		if (!m_IsInitialized) return;
+		if (!m_IsInitialized || !m_IsEnabled) return;
 		if (!WebGPUSpriteResources::IsReady()) return;
 
 		const auto renderStart = std::chrono::steady_clock::now();
@@ -941,7 +954,8 @@ namespace Index {
 			Profiler::PushSample("Rendering", m_RenderLoopDuration);
 			};
 
-		const size_t n = CollectSpriteInstances(scene, viewportAABB, g_InstancesScratch, g_TexturesScratch);
+		const size_t n = CollectSpriteInstances(scene, viewportAABB, g_InstancesScratch, g_TexturesScratch,
+			m_GraphicsSettings.ParticleQuality);
 		m_RenderedInstancesCount = n;
 		if (n > 0) {
 			SortInstancesInPlace(n);
@@ -954,34 +968,31 @@ namespace Index {
 			return;
 		}
 
-		// runEffects: execute effect passes. usePostProcess: route through intermediate FBO (needed for effects OR aspect-locked letterbox).
-		// These MUST stay separate: collapsing to one flag silently ignores "disable PP on camera" in aspect-locked standalone builds.
-		bool runEffects = m_PostProcessor.IsInitialized() && m_PostProcessingEnabled;
+		bool runEffects = m_PostProcessor.IsInitialized()
+			&& m_PostProcessingEnabled
+			&& m_GraphicsSettings.PostProcessingEnabled;
 		if (runEffects) {
-			if (IndexProject* proj = ProjectManager::GetCurrentProject()) {
-				runEffects = proj->EnablePostProcessing;
-			}
-		}
-		if (runEffects) {
-			if (Camera2DComponent* mainCam = Camera2DComponent::Main()) {
+			if (Camera2DComponent* mainCam = Camera2DComponent::GetMain()) {
 				runEffects = mainCam->IsPostProcessingEnabled();
 			}
 		}
-		bool usePostProcess = runEffects;
-
 		Viewport* mvp = Window::GetMainViewport();
 		const bool aspectLocked = callerInfo.IsSwapChain && mvp && mvp->HasLetterbox()
 			&& m_PostProcessor.IsInitialized();
-		if (aspectLocked) {
-			usePostProcess = true;
-		}
-
-		const int fboWidth  = aspectLocked
+		const int targetWidth = aspectLocked
 			? mvp->GetWidth()
 			: static_cast<int>(callerInfo.Width);
-		const int fboHeight = aspectLocked
+		const int targetHeight = aspectLocked
 			? mvp->GetHeight()
 			: static_cast<int>(callerInfo.Height);
+		const bool scaled = m_PostProcessor.IsInitialized() && m_GraphicsSettings.RenderScale < 1.0f;
+		const int fboWidth = scaled
+			? std::max(1, static_cast<int>(std::lround(targetWidth * m_GraphicsSettings.RenderScale)))
+			: targetWidth;
+		const int fboHeight = scaled
+			? std::max(1, static_cast<int>(std::lround(targetHeight * m_GraphicsSettings.RenderScale)))
+			: targetHeight;
+		bool usePostProcess = runEffects || aspectLocked || scaled;
 
 		if (usePostProcess) {
 			if (!m_SceneFbo.Recreate(fboWidth, fboHeight, TextureFormat::RGBA16F)) {
@@ -1017,11 +1028,15 @@ namespace Index {
 				finishTiming();
 				return;
 			}
+			auto abortSpritePass = [&]() {
+				if (usePostProcess) WebGPUBackend::RestoreBoundTarget(callerSnap);
+				finishTiming();
+			};
 
 			wgpu::Device device = WebGPUBackend::GetDevice();
 			wgpu::Queue  queue  = WebGPUBackend::GetQueue();
 			if (!device || !queue) {
-				finishTiming();
+				abortSpritePass();
 				return;
 			}
 
@@ -1035,20 +1050,20 @@ namespace Index {
 				IDX_CORE_WARN_TAG("Renderer2D",
 					"No pipeline for color-format {} (hasDepth={}) — skipping submit",
 					static_cast<int>(target.ColorFormat), target.HasDepth);
-				finishTiming();
+				abortSpritePass();
 				return;
 			}
 
 			{
 				INDEX_PROFILE_SCOPE("Renderer2D.Upload");
 				if (!EnsureUniformBuffer(device)) {
-					finishTiming();
+					abortSpritePass();
 					return;
 				}
 				queue.WriteBuffer(g_UniformBuffer, 0, glm::value_ptr(vp), 64);
 
 				if (!EnsureInstanceBuffer(device, static_cast<uint32_t>(n))) {
-					finishTiming();
+					abortSpritePass();
 					return;
 				}
 				g_GpuInstanceScratch.resize(n);
@@ -1062,7 +1077,7 @@ namespace Index {
 
 			wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
 			if (!encoder) {
-				finishTiming();
+				abortSpritePass();
 				return;
 			}
 
@@ -1173,7 +1188,7 @@ namespace Index {
 			// ppSettings=nullptr forces passthrough Blit (no effects) — needed when usePostProcess is on for letterbox but runEffects is off.
 			const PostProcessing2DComponent* ppSettings = nullptr;
 			if (runEffects) {
-				if (Camera2DComponent* mainCam = Camera2DComponent::Main()) {
+				if (Camera2DComponent* mainCam = Camera2DComponent::GetMain()) {
 					if (Scene* camScene = mainCam->GetOwnerScene()) {
 						const EntityHandle camEnt = mainCam->GetOwnerEntity();
 						if (camEnt != entt::null
@@ -1185,14 +1200,15 @@ namespace Index {
 				}
 			}
 			// MUST set viewport to sub-rect BEFORE Run so Blit clips to the letterbox sub-rect and leaves the surrounding bars black.
-			uint32_t dstW = callerInfo.Width;
-			uint32_t dstH = callerInfo.Height;
+			uint32_t dstW = static_cast<uint32_t>(targetWidth);
+			uint32_t dstH = static_cast<uint32_t>(targetHeight);
 			if (aspectLocked) {
 				RenderApi::SetViewport(
 					mvp->GetOffsetX(), mvp->GetOffsetY(),
 					mvp->GetWidth(),   mvp->GetHeight());
-				dstW = static_cast<uint32_t>(mvp->GetWidth());
-				dstH = static_cast<uint32_t>(mvp->GetHeight());
+			}
+			else {
+				RenderApi::SetViewport(0, 0, targetWidth, targetHeight);
 			}
 
 			// Aspect-locked + effects: RunEffectPass does NOT apply the cached viewport, so route through a sub-rect FBO then Blit (which does).
@@ -1208,45 +1224,60 @@ namespace Index {
 					|| s->Grain.Enabled
 					|| s->Pixelated.Enabled;
 			};
-			const bool routeThroughLetterboxFbo = aspectLocked
-				&& HasEnabledEffect(ppSettings)
-				&& m_LetterboxOutputFbo.Recreate(
-					static_cast<int>(dstW), static_cast<int>(dstH),
+			const bool hasEnabledEffect = HasEnabledEffect(ppSettings);
+			const bool needsEffectFbo = (aspectLocked || scaled) && hasEnabledEffect;
+			const bool routeThroughEffectFbo = needsEffectFbo
+				&& m_PostProcessOutputFbo.Recreate(
+					fboWidth, fboHeight,
 					TextureFormat::RGBA16F);
 
-			if (routeThroughLetterboxFbo) {
+			if (routeThroughEffectFbo) {
 				const auto outLook = WebGPUBackend::LookupFramebufferByFboId(
-					m_LetterboxOutputFbo.GetBackendId());
+					m_PostProcessOutputFbo.GetBackendId());
 				if (outLook.Valid) {
-					// 1) Full effect chain into the sub-rect intermediate.
 					m_PostProcessor.Run(m_SceneFbo,
 						outLook.ColorView,
 						outLook.ColorFormat,
-						dstW, dstH,
-						ppSettings);
-					// 2) Composite intermediate -> swap chain. Blit honours
-					//    the cached viewport (sub-rect of swap chain) so
-					//    the surround stays black.
-					m_PostProcessor.Blit(m_LetterboxOutputFbo,
+						static_cast<uint32_t>(fboWidth), static_cast<uint32_t>(fboHeight),
+						ppSettings,
+						m_GraphicsSettings.PostProcessingQuality,
+						true);
+					m_PostProcessor.Blit(m_PostProcessOutputFbo,
 						callerInfo.ColorView,
 						callerInfo.ColorFormat,
 						callerInfo.Width,
-						callerInfo.Height);
+						callerInfo.Height,
+						m_GraphicsSettings.UpscaleFilter);
 				}
 				else {
-					m_PostProcessor.Run(m_SceneFbo,
+					m_PostProcessor.Blit(m_SceneFbo,
 						callerInfo.ColorView,
 						callerInfo.ColorFormat,
-						dstW, dstH,
-						ppSettings);
+						callerInfo.Width, callerInfo.Height,
+						m_GraphicsSettings.UpscaleFilter);
 				}
 			}
-			else {
+			else if (needsEffectFbo) {
+				m_PostProcessor.Blit(m_SceneFbo,
+					callerInfo.ColorView,
+					callerInfo.ColorFormat,
+					callerInfo.Width, callerInfo.Height,
+					m_GraphicsSettings.UpscaleFilter);
+			}
+			else if (hasEnabledEffect) {
 				m_PostProcessor.Run(m_SceneFbo,
 					callerInfo.ColorView,
 					callerInfo.ColorFormat,
 					dstW, dstH,
-					ppSettings);
+					ppSettings,
+					m_GraphicsSettings.PostProcessingQuality);
+			}
+			else {
+				m_PostProcessor.Blit(m_SceneFbo,
+					callerInfo.ColorView,
+					callerInfo.ColorFormat,
+					callerInfo.Width, callerInfo.Height,
+					m_GraphicsSettings.UpscaleFilter);
 			}
 			WebGPUBackend::RestoreBoundTarget(callerSnap);
 		}

@@ -1,0 +1,9 @@
+<Project>
+  <PropertyGroup>
+    <IndexVersion>2026.1.0-beta.1</IndexVersion>
+    <Version>$(IndexVersion)</Version>
+    <AssemblyVersion>2026.1.0.0</AssemblyVersion>
+    <FileVersion>2026.1.0.0</FileVersion>
+    <Product>Index</Product>
+  </PropertyGroup>
+</Project>

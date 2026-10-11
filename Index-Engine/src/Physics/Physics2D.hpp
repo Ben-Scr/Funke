@@ -21,6 +21,10 @@ namespace Index {
 
 	class Physics2D {
 	public:
+		// Collider layers (categoryBits) every query below may hit; UINT64_MAX = all.
+		static void SetQueryLayerMask(uint64_t layerMask);
+		static uint64_t GetQueryLayerMask();
+	public:
 		[[deprecated("Use OverlapCircleRef for scene-aware results.")]]
 		static std::optional<EntityHandle> OverlapCircle(const Vec2& center, float radius, OverlapMode mode);
 		[[deprecated("Use OverlapBoxRef for scene-aware results.")]]

@@ -1148,26 +1148,17 @@ namespace Index {
 		if (!app) return;
 		Input& input = app->GetInput();
 
-		// Use editor UI panel region when active (panel-relative pixels); fall back to OS window viewport for standalone.
 		const Window::UIRegion uiRegion = Window::GetUIRegion();
-		Vec2 mouseRaw = input.GetMousePosition();
+		const Vec2 mousePosition = input.GetMousePosition();
 		int vpW = 0;
 		int vpH = 0;
-		// True when the cursor sits over the surface that owns UI input —
-		// the Game View panel in the editor or the OS window in standalone.
-		// Any other ImGui panel (Editor View, Hierarchy, Inspector, …)
-		// still pumps `Input::GetMousePosition`, so without this guard
-		// the mapped UI-space coords would happen to hover/click whatever
-		// element sits under the leaked coordinate.
+		// Editor input stays confined to the Game View instead of leaking through other panels.
 		bool cursorOverUiSurface = true;
 		if (uiRegion.IsActive()) {
 			cursorOverUiSurface =
-				mouseRaw.x >= static_cast<float>(uiRegion.OffsetX) &&
-				mouseRaw.y >= static_cast<float>(uiRegion.OffsetY) &&
-				mouseRaw.x <  static_cast<float>(uiRegion.OffsetX + uiRegion.Width) &&
-				mouseRaw.y <  static_cast<float>(uiRegion.OffsetY + uiRegion.Height);
-			mouseRaw.x -= static_cast<float>(uiRegion.OffsetX);
-			mouseRaw.y -= static_cast<float>(uiRegion.OffsetY);
+				mousePosition.x >= 0.0f && mousePosition.y >= 0.0f &&
+				mousePosition.x < static_cast<float>(uiRegion.Width) &&
+				mousePosition.y < static_cast<float>(uiRegion.Height);
 			vpW = uiRegion.Width;
 			vpH = uiRegion.Height;
 		}
@@ -1176,27 +1167,19 @@ namespace Index {
 			if (!viewport || viewport->GetWidth() <= 0 || viewport->GetHeight() <= 0) return;
 			vpW = viewport->GetWidth();
 			vpH = viewport->GetHeight();
-			// Editor host with no Game View visible this frame: the OS
-			// viewport spans the whole editor window, so suppress UI
-			// input entirely instead of pretending the editor chrome IS
-			// the game surface. Standalone keeps the legacy behaviour.
+			// Without a Game View region, the editor window is not a game input surface.
 			if (Application::IsEditor()) {
 				cursorOverUiSurface = false;
 			}
 		}
 
-		// Far-off sentinel keeps every RectTransform::ContainsPoint check
-		// false without each hit-test site having to branch on the gate.
+		// A sentinel avoids repeating the viewport gate at every hit-test site.
 		const Vec2 mouseUi = cursorOverUiSurface
-			? ScreenPixelToUiSpace(mouseRaw, vpW, vpH)
+			? ScreenPixelToUiSpace(mousePosition, vpW, vpH)
 			: Vec2{ std::numeric_limits<float>::lowest(),
 			        std::numeric_limits<float>::lowest() };
 
-		// Edges (down / up) come from polling; gating them keeps a click on
-		// the editor chrome from registering as a Press on whatever element
-		// the sentinel happens to overlap. Held is left untouched so a drag
-		// that starts inside and crosses out still releases cleanly when
-		// the user lets go anywhere.
+		// Held and release stay ungated so drags leaving the viewport can finish cleanly.
 		const bool mouseDownThisFrame = cursorOverUiSurface && input.GetMouseDown(MouseButton::Left);
 		const bool mouseUpThisFrame   = input.GetMouseUp(MouseButton::Left);
 		const bool mouseHeld          = input.GetMouse(MouseButton::Left);
@@ -2000,17 +1983,17 @@ namespace Index {
 					const float pixels = wheel * 60.0f * (sr.ScrollSensitivity * 0.01f);
 					if (sr.Vertical && maxScrollY > 0.0f) {
 						contentRect.AnchoredPosition.y -= pixels;
-						sr.Velocity.y = -pixels / std::max(0.0001f, app->GetTime().GetUnscaledDeltaTime());
+						sr.Velocity.y = -pixels / std::max(0.0001f, Time::GetUnscaledDeltaTime());
 					}
 					else if (sr.Horizontal && maxScrollX > 0.0f) {
 						contentRect.AnchoredPosition.x += pixels;
-						sr.Velocity.x = pixels / std::max(0.0001f, app->GetTime().GetUnscaledDeltaTime());
+						sr.Velocity.x = pixels / std::max(0.0001f, Time::GetUnscaledDeltaTime());
 					}
 				}
 			}
 
 			// Track velocity from drag for inertia + elastic rebound.
-			const float dtScroll = app->GetTime().GetUnscaledDeltaTime();
+			const float dtScroll = Time::GetUnscaledDeltaTime();
 			if (sr.IsDragging && dtScroll > 0.0f) {
 				const Vec2 dragV{
 					(contentRect.AnchoredPosition.x - sr.PreviousContentPosition.x) / dtScroll,
@@ -2178,7 +2161,7 @@ namespace Index {
 
 		// ── 8. Input fields ──────────────────────────────────────────
 		auto inputView = registry.view<InteractableComponent, InputFieldComponent>(entt::exclude<DisabledTag>);
-		const float dt = app->GetTime().GetUnscaledDeltaTime();
+		const float dt = Time::GetUnscaledDeltaTime();
 		const bool ctrlDown = input.GetKey(KeyCode::LeftControl) || input.GetKey(KeyCode::RightControl);
 		const bool shiftDown = input.GetKey(KeyCode::LeftShift) || input.GetKey(KeyCode::RightShift);
 

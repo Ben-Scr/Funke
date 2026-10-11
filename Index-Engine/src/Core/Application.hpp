@@ -29,6 +29,7 @@ namespace Index {
 	class IRenderer;
 	class PhysicsSystem2D;
 	class Renderer2D;
+	class Scene;
 	class SceneManager;
 	class Window;
 
@@ -59,22 +60,24 @@ namespace Index {
 		virtual ~Application();
 
 
-		void Run();
+		int Run();
 
 		virtual ApplicationConfig GetConfiguration() const { return {}; }
 		virtual void ConfigureScenes() {}
 		virtual void ConfigureLayers() {}
-		virtual void Start() = 0;
-		virtual void Update() = 0;
-		virtual void FixedUpdate() = 0;
-		virtual void OnPaused() = 0;
-		virtual void OnQuit() = 0;
+		virtual void Start() {}
+		virtual void Update() {}
+		virtual void FixedUpdate() {}
+		virtual void OnPaused() {}
+		virtual void OnQuit() {}
+		// The main loop caught an exception and is about to shut down; last chance to preserve user data.
+		virtual void OnUnhandledFrameException(const std::string& message) { (void)message; }
 
 		static void SetIsPlaying(bool enabled) { if (s_Instance) s_Instance->m_IsPlaying = enabled; }
 		static bool GetIsPlaying() { if (s_Instance) return s_Instance->m_IsPlaying; return false; }
 
 		void SetName(const std::string& s) { m_Name = s; }
-		static void SetTargetFramerate(float framerate) { if (s_Instance) s_Instance->m_TargetFramerate = framerate; }
+		static void SetTargetFramerate(float framerate) { Time::SetTargetFramerate(framerate); }
 		static void SetForceSingleInstance(bool value) { if (s_Instance) s_Instance->m_ForceSingleInstance = value; }
 		static void SetRunInBackground(bool value) {
 			if (s_Instance) {
@@ -84,7 +87,7 @@ namespace Index {
 		}
 
 		const std::string& GetName() { return m_Name; }
-		static float GetTargetFramerate() { return s_Instance ? (s_Instance->IsEnginePaused() ? k_PausedTargetFrameRate : s_Instance->m_TargetFramerate) : 0.0f; }
+		static float GetTargetFramerate() { return s_Instance ? (s_Instance->IsEnginePaused() ? k_PausedTargetFrameRate : Time::GetTargetFramerate()) : 0.0f; }
 		static bool GetForceSingleInstance() { return s_Instance ? s_Instance->m_ForceSingleInstance : false; }
 		static bool GetRunInBackground() { return s_Instance ? s_Instance->m_RunInBackground : false; }
 		static Window* GetWindow() { return s_Instance ? s_Instance->m_Window.get() : nullptr; }
@@ -101,6 +104,12 @@ namespace Index {
 
 		static Application* GetInstance() { return s_Instance; }
 
+		GraphicsSettings GetRequestedGraphicsSettings() const noexcept { return m_RequestedGraphicsSettings; }
+		GraphicsSettings GetEffectiveGraphicsSettings() const noexcept { return m_EffectiveGraphicsSettings; }
+		GraphicsApplyStatus ApplyGraphicsSettings(const GraphicsSettings& settings);
+		GraphicsApplyStatus ResetGraphicsSettingsToDefaults();
+
+		Scene* GetActiveScene();
 		SceneManager* GetSceneManager() { return m_SceneManager.get(); }
 		const SceneManager* GetSceneManager() const { return m_SceneManager.get(); }
 
@@ -129,7 +138,19 @@ namespace Index {
 			return s_Instance ? s_Instance->m_StartupLoadComplete : true;
 		}
 		static void Pause(bool paused) { if (s_Instance) s_Instance->m_IsPaused = paused; }
-		static void Reload() { if (s_Instance) { s_Instance->m_ShouldQuit = true; s_Instance->m_CanReload = true; } };
+		static void Reload() {
+			if (s_Instance) {
+				s_Instance->m_ShouldQuit = true;
+				s_Instance->m_CanReload = true;
+			}
+		}
+		static void Restart() {
+			if (s_Instance) {
+				s_Instance->m_ShouldQuit = true;
+				s_Instance->m_CanReload = true;
+				s_Instance->m_RestartWindow = true;
+			}
+		}
 		static bool IsPaused() { return s_Instance ? s_Instance->IsEnginePaused() : false; }
 		static bool IsShuttingDown() { return s_Instance ? s_Instance->m_IsShuttingDown : false; }
 		static bool IsMainThread() { return !s_Instance || s_Instance->m_MainThreadId == std::this_thread::get_id(); }
@@ -244,6 +265,12 @@ namespace Index {
 		Input m_Input;
 		Time m_Time;
 		ApplicationConfig m_Configuration;
+		GraphicsSettings m_DefaultGraphicsSettings{};
+		GraphicsSettings m_RequestedGraphicsSettings{};
+		GraphicsSettings m_EffectiveGraphicsSettings{};
+		bool m_GraphicsSettingsPending = false;
+		bool m_HasInitialized = false;
+		bool m_HasInitializedOnce = false;
 
 	    std::string m_Name;
 
@@ -251,6 +278,7 @@ namespace Index {
 		bool m_RunInBackground = false;
 		bool m_ShouldQuit = false;
 		bool m_CanReload = false;
+		bool m_RestartWindow = false;
 		bool m_IsEditorHost = false;
 		bool m_IsPaused = false;
 		std::atomic<bool> m_IsBackgroundPaused{ false };
@@ -273,7 +301,6 @@ namespace Index {
 		bool m_QuitRequested = false;
 		int m_QuitRequestFrame = -1;
 
-		float m_TargetFramerate = 144.0f;
 		static const float k_PausedTargetFrameRate;
 
 		static Application* s_Instance;
@@ -292,7 +319,8 @@ namespace Index {
 		std::thread::id m_MainThreadId;
 
 		void Initialize();
-		void Shutdown(bool invokeOnQuit = true);
+		void Shutdown(bool invokeOnQuit = true, bool forceWindowShutdown = false);
+		void NotifyUnhandledFrameException(const std::string& message);
 		void DispatchEvent(IndexEvent& event);
 		void RefreshBackgroundPauseState();
 		// Never report paused before the startup scene load has finished. That load
@@ -308,11 +336,12 @@ namespace Index {
 		// Called from the main loop right after the layer OnUpdate
 		// dispatch (which is where the splash actually detaches itself).
 		void TickDeferredStartupScenes();
-		void BeginFrame();
+		void BeginFrame(bool enginePaused);
 		void BeginFixedFrame();
 		void EndFixedFrame();
-		void EndFrame();
+		void EndFrame(bool enginePaused);
 		void RenderPipelineOnly();
+		void CommitGraphicsSettings();
 		static void SetWindowFocused(bool focused) {
 			if (s_Instance) {
 				s_Instance->m_WindowHasFocus = focused;
@@ -327,6 +356,12 @@ namespace Index {
 			}
 		}
 	};
+
+	inline Window* GetWindow() {
+		auto* app = Application::GetInstance();
+		if (!app) return nullptr;
+		return app->GetWindow();
+	}
 
 	// To be defined in client
 	Application* CreateApplication();

@@ -8,8 +8,7 @@
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Gui/AssetType.hpp"
-#include "Gui/EditorIcons.hpp"
-#include "Gui/Icons.hpp"
+#include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Gui/ThumbnailCache.hpp"
@@ -184,7 +183,7 @@ namespace Index::ReferencePicker {
 
 		const ComponentInfo* FindComponentByDisplayName(const std::string& displayName) {
 			const ComponentInfo* found = nullptr;
-			SceneManager::Get().GetComponentRegistry().ForEachComponentInfo(
+			SceneManager::GetComponentRegistry().ForEachComponentInfo(
 				[&](const std::type_index&, const ComponentInfo& info) {
 					if (!found && info.category == ComponentCategory::Component && info.displayName == displayName) {
 						found = &info;
@@ -276,7 +275,7 @@ namespace Index::ReferencePicker {
 		std::vector<Entry> sceneEntries;
 		std::vector<Entry> assetEntries;
 
-		SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
+		SceneManager::ForeachLoadedScene([&](const Scene& scene) {
 			const std::string scenePrefix =
 				std::to_string(static_cast<uint64_t>(scene.GetSceneId())) + ":";
 			auto view = scene.GetRegistry().view<entt::entity>();
@@ -327,7 +326,7 @@ namespace Index::ReferencePicker {
 		const ComponentInfo* info = FindComponentByDisplayName(componentDisplayName);
 		if (!info || !info->has) return entries;
 
-		SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
+		SceneManager::ForeachLoadedScene([&](const Scene& scene) {
 			const std::string scenePrefix =
 				std::to_string(static_cast<uint64_t>(scene.GetSceneId())) + ":";
 			auto view = scene.GetRegistry().view<entt::entity>();
@@ -440,47 +439,22 @@ namespace Index::ReferencePicker {
 
 		const ImGuiStyle& style = ImGui::GetStyle();
 		const bool showingBuiltIns = s_State.IncludeBuiltIns;
-		const uint64_t eyeIcon = EditorIcons::Get(
-			showingBuiltIns ? "eye_open" : "eye_closed", 16);
-		const ImVec2 eyeIconSize(16.0f, 16.0f);
-		const float toggleWidth = (eyeIcon != 0)
-			? eyeIconSize.x + style.FramePadding.x * 2.0f
-			: ImGui::CalcTextSize("(o)").x + style.FramePadding.x * 2.0f;
-		Icons::TextIcon(Icons::Type::Search);
+		const float toggleWidth = ImGui::GetFrameHeight();
 		const float searchWidth = std::max(60.0f,
 			ImGui::GetContentRegionAvail().x - toggleWidth - style.ItemSpacing.x);
-		ImGui::SetNextItemWidth(searchWidth);
-		if (ImGui::InputTextWithHint("##ReferenceSearch", "Search...", s_State.Search, sizeof(s_State.Search))) {
+		if (EditorUI::SearchField("##ReferenceSearch", s_State.Search, sizeof(s_State.Search), "Search...", searchWidth)) {
 			s_State.VisibleEntriesDirty = true;
 		}
 		ImGui::SameLine();
-		bool toggleClicked = false;
-		if (eyeIcon != 0) {
-			// Full-white tint in both states — the open/closed glyph swap
-			// is what communicates the state, not the brightness.
-			constexpr ImVec4 k_Tint(1.0f, 1.0f, 1.0f, 1.0f);
-			toggleClicked = ImGui::ImageButton("##BuiltInToggle",
-				static_cast<ImTextureID>(static_cast<intptr_t>(eyeIcon)),
-				eyeIconSize, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f),
-				ImVec4(0.0f, 0.0f, 0.0f, 0.0f), k_Tint);
-		}
-		else {
-			if (showingBuiltIns) {
-				ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-			}
-			toggleClicked = ImGui::Button(showingBuiltIns ? "(o)##BuiltInToggle" : "(-)##BuiltInToggle");
-			if (showingBuiltIns) {
-				ImGui::PopStyleColor();
-			}
-		}
+		const bool toggleClicked = EditorUI::IconButton("##BuiltInToggle",
+			showingBuiltIns ? "eye_open" : "eye_closed",
+			showingBuiltIns
+				? "Built-in (engine-shipped) assets are visible.\nClick to hide them."
+				: "Built-in (engine-shipped) assets are hidden.\nClick to show them.",
+			showingBuiltIns);
 		if (toggleClicked) {
 			s_State.IncludeBuiltIns = !s_State.IncludeBuiltIns;
 			s_State.VisibleEntriesDirty = true;
-		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip(showingBuiltIns
-				? "Built-in (engine-shipped) assets are visible.\nClick to hide them."
-				: "Built-in (engine-shipped) assets are hidden.\nClick to show them.");
 		}
 		ImGui::Separator();
 		if (s_State.UseEntityTabs) {
@@ -544,7 +518,7 @@ namespace Index::ReferencePicker {
 					const bool clicked = ImGui::InvisibleButton("##Row", ImVec2(rowWidth, rowHeight));
 					const bool hovered = ImGui::IsItemHovered();
 					if (hovered) {
-						drawList->AddRectFilled(rowMin, rowMax, IM_COL32(70, 78, 92, 120), 4.0f);
+						drawList->AddRectFilled(rowMin, rowMax, ImGui::GetColorU32(ImGuiCol_HeaderHovered), 4.0f);
 					}
 					if (clicked) {
 						applySelection(&entry);
@@ -553,7 +527,7 @@ namespace Index::ReferencePicker {
 					const ImVec2 thumbMin(rowMin.x + rowPadding, rowMin.y + rowPadding);
 					if (hasThumbnail) {
 						const ImVec2 thumbMax(thumbMin.x + thumbnailSize, thumbMin.y + thumbnailSize);
-						drawList->AddRectFilled(thumbMin, thumbMax, IM_COL32(35, 35, 35, 255), 4.0f);
+						drawList->AddRectFilled(thumbMin, thumbMax, ImGui::GetColorU32(ImGuiCol_FrameBg), 4.0f);
 
 						const uint64_t thumbnail = s_State.Thumbnails.GetThumbnail(entry.Secondary);
 						Texture2D* texture = s_State.Thumbnails.GetCacheEntry(entry.Secondary);
@@ -671,7 +645,9 @@ namespace Index::ReferencePicker {
 			}
 		}
 
-		if (s_State.VisibleEntryIndices.empty()) ImGui::TextDisabled("No matching items");
+		if (s_State.VisibleEntryIndices.empty()) {
+			EditorUI::EmptyState("No matching items", s_State.Search[0] != '\0' ? "Try a different search term." : nullptr);
+		}
 		ImGui::EndChild();
 		ImGui::End();
 
@@ -694,27 +670,23 @@ namespace Index::ReferencePicker {
 			buttonWidth = std::max(buttonWidth, 120.0f);
 		}
 
-		if (missing) {
-			ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.30f, 0.12f, 0.12f, 1.0f));
-			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.38f, 0.16f, 0.16f, 1.0f));
-			ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.26f, 0.10f, 0.10f, 1.0f));
-		}
-		else if (mixed) {
-			ImGui::PushStyleColor(ImGuiCol_Button,        ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
-			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_FrameBgHovered));
-			ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImGui::GetStyleColorVec4(ImGuiCol_FrameBgActive));
-		}
-		else {
-			ImGui::PushStyleColor(ImGuiCol_Button,        ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
-			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_FrameBgHovered));
-			ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImGui::GetStyleColorVec4(ImGuiCol_FrameBgActive));
-		}
-
 		const std::string buttonLabel = mixed ? std::string("\xe2\x80\x94") : displayValue;  // em-dash
 		bool truncated = false;
 		const float textMaxWidth = std::max(1.0f, buttonWidth - style.FramePadding.x * 2.0f);
 		const std::string buttonText = ImGuiUtils::Ellipsize(buttonLabel, textMaxWidth, &truncated);
-		const bool clicked = ImGui::Button((buttonText + "##ReferenceValue").c_str(), ImVec2(buttonWidth, 0.0f));
+		const std::string buttonId = buttonText + "##ReferenceValue";
+		bool clicked = false;
+		if (missing) {
+			clicked = EditorUI::Button(buttonId.c_str(), EditorUI::ButtonVariant::Danger, ImVec2(buttonWidth, 0.0f));
+		}
+		else {
+			// Styled as a frame so the value reads as a field, not an action.
+			ImGui::PushStyleColor(ImGuiCol_Button,        ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
+			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_FrameBgHovered));
+			ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImGui::GetStyleColorVec4(ImGuiCol_FrameBgActive));
+			clicked = ImGui::Button(buttonId.c_str(), ImVec2(buttonWidth, 0.0f));
+			ImGui::PopStyleColor(3);
+		}
 		outHovered = ImGui::IsItemHovered();
 		if (outHovered && !mixed && (truncated || !secondary.empty())) {
 			ImGui::BeginTooltip();
@@ -725,7 +697,6 @@ namespace Index::ReferencePicker {
 			}
 			ImGui::EndTooltip();
 		}
-		ImGui::PopStyleColor(3);
 		ImGui::PopID();
 		return clicked;
 	}
@@ -786,7 +757,7 @@ namespace Index::ReferencePicker {
 		std::string display;
 		std::string secondary;
 		bool resolved = false;
-		SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
+		SceneManager::ForeachLoadedScene([&](const Scene& scene) {
 			if (resolved) return;
 			EntityHandle handle = entt::null;
 			if (scene.TryResolveEntityRef(entityId, handle)) {
@@ -813,7 +784,7 @@ namespace Index::ReferencePicker {
 
 		std::string entityName;
 		bool resolved = false;
-		SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
+		SceneManager::ForeachLoadedScene([&](const Scene& scene) {
 			if (resolved) return;
 			EntityHandle handle = entt::null;
 			// UUID-aware: see ResolveEntityDisplay — same reload story.

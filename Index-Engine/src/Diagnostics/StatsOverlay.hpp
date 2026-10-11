@@ -19,8 +19,9 @@ namespace Index::Diagnostics {
 			std::size_t Verts      = 0;
 			int   ScreenWidth      = 0;
 			int   ScreenHeight     = 0;
-			std::size_t MemAllocBytes    = 0; // process working set (resident)
-			std::size_t MemReservedBytes = 0; // committed virtual memory
+			// Whole-process OS totals include DLLs and drivers, not just engine allocations.
+			std::size_t ProcessWorkingSetBytes    = 0;
+			std::size_t ProcessPrivateCommitBytes = 0;
 			std::uint32_t AudioPlaying   = 0;
 			std::size_t Entities         = 0;
 		};

@@ -531,9 +531,9 @@ namespace Index {
 		m_IsInitialized = false;
 	}
 
-	void GuiRenderer::BeginFrame(const SceneManager& sceneManager) {
+	void GuiRenderer::BeginFrame() {
 		if (!m_IsInitialized || m_SkipBeginFrameRender) return;
-		sceneManager.ForeachLoadedScene([&](const Scene& scene) { RenderScene(scene); });
+		SceneManager::ForeachLoadedScene([&](const Scene& scene) { RenderScene(scene); });
 	}
 	void GuiRenderer::EndFrame() {
 		// No-op — Present() flushes from Window::SwapBuffers.
@@ -543,7 +543,7 @@ namespace Index {
 		int canvasW = 0;
 		int canvasH = 0;
 		if (!ResolveUICanvasSize(canvasW, canvasH)) return 0.01f;
-		if (Camera2DComponent* cam = Camera2DComponent::Main()) {
+		if (Camera2DComponent* cam = Camera2DComponent::GetMain()) {
 			const float worldHeight = 2.0f * cam->GetOrthographicSize() * cam->GetZoom();
 			if (worldHeight > 0.0f) return worldHeight / static_cast<float>(canvasH);
 		}
@@ -864,16 +864,8 @@ namespace Index {
 
 		// ── 4. Dropdown popups ───────────────────────────────────────
 		Application* app = Application::GetInstance();
-		Vec2 mouseRaw = app ? app->GetInput().GetMousePosition() : Vec2{ 0, 0 };
-		// Remap to panel-local coords: editor UIRegion is inside an ImGui panel but Input reports OS-window-space.
-		{
-			const Window::UIRegion uiRegion = Window::GetUIRegion();
-			if (uiRegion.IsActive()) {
-				mouseRaw.x -= static_cast<float>(uiRegion.OffsetX);
-				mouseRaw.y -= static_cast<float>(uiRegion.OffsetY);
-			}
-		}
-		const Vec2 mouseUi{ mouseRaw.x - halfW, halfH - mouseRaw.y };
+		const Vec2 mousePosition = app ? app->GetInput().GetMousePosition() : Vec2{ 0, 0 };
+		const Vec2 mouseUi{ mousePosition.x - halfW, halfH - mousePosition.y };
 		const bool mouseHeld = app && app->GetInput().GetMouse(MouseButton::Left);
 
 		auto resolveOptionColor = [](const DropdownComponent& dd, bool hovered, bool pressed, bool selected) -> Color {
@@ -961,7 +953,7 @@ namespace Index {
 		}
 
 		// ── 4.5 Input field overlays (selection + caret) ────────────
-		const float elapsedSeconds = app ? app->GetTime().GetElapsedTime() : 0.0f;
+		const float elapsedSeconds = Time::GetElapsedTime();
 
 		m_DrawIndexByEntity.clear();
 		m_DrawIndexByEntity.reserve(m_DrawOrder.size());
@@ -1215,7 +1207,7 @@ namespace Index {
 		// ── WebGPU submit setup ──────────────────────────────────────
 		auto& state = GetState(this);
 		// Clear per-frame, not per-call: the editor calls RenderScene multiple times per frame and per-call clearing forced CreateBindGroup for every texture on every call.
-		const uint64_t currentFrame = app ? app->GetTime().GetFrameCount() : state.LastClearFrameCount;
+		const uint64_t currentFrame = app ? Time::GetFrameCount() : state.LastClearFrameCount;
 		if (state.LastClearFrameCount != currentFrame) {
 			state.BindGroupsThisFrame.clear();
 			state.LastClearFrameCount = currentFrame;
@@ -1414,6 +1406,15 @@ namespace Index {
 				anyTextPhaseSubmitted = true;
 				txtPos = txtEnd;
 			}
+		}
+
+		// Submit this scene's UI as its own unit. BeginFrame/editor views call this once per
+		// loaded scene, all writing the same instance buffer and TextRenderer VBO; Dawn
+		// coalesces every WriteBuffer in a submit ahead of any pass, so without this flush the
+		// next additive scene's uploads overwrite this scene's data before its passes execute.
+		// Same fix as Renderer2D's per-scene sprite flush.
+		if (n > 0 || nTxt > 0) {
+			WebGPUBackend::FlushCommands();
 		}
 	}
 

@@ -51,6 +51,33 @@ public static class Physics2D
         return Raycast(origin, direction, maxDistance).Hit;
     }
 
+    // ── Layer-filtered queries: only colliders whose Layer intersects layerMask are considered ──
+
+    public static RaycastHit2D Raycast(Vector2 origin, Vector2 direction, float maxDistance, ulong layerMask)
+        => WithLayerMask(layerMask, () => Raycast(origin, direction, maxDistance));
+
+    public static Entity? OverlapCircle(Vector2 origin, float radius, ulong layerMask)
+        => WithLayerMask(layerMask, () => OverlapCircle(origin, radius));
+
+    public static Entity? OverlapBox(Vector2 origin, Vector2 size, float rotation, ulong layerMask)
+        => WithLayerMask(layerMask, () => OverlapBox(origin, size, rotation));
+
+    public static Entity[] OverlapCircleAll(Vector2 origin, float radius, ulong layerMask)
+        => WithLayerMask(layerMask, () => OverlapCircleAll(origin, radius));
+
+    public static Entity[] OverlapBoxAll(Vector2 origin, Vector2 size, float rotation, ulong layerMask)
+        => WithLayerMask(layerMask, () => OverlapBoxAll(origin, size, rotation));
+
+    public static Entity? ContainsPoint(Vector2 origin, ulong layerMask)
+        => WithLayerMask(layerMask, () => ContainsPoint(origin));
+
+    private static T WithLayerMask<T>(ulong layerMask, Func<T> query)
+    {
+        InternalCalls.Physics2D_SetQueryLayerMask(layerMask);
+        try { return query(); }
+        finally { InternalCalls.Physics2D_SetQueryLayerMask(PhysicsLayers.All); }
+    }
+
     public static Entity? OverlapCircle(Vector2 origin, float radius)
     {
         if (radius <= 0.0f || float.IsNaN(radius))

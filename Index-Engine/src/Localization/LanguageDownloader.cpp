@@ -121,7 +121,7 @@ namespace Index::Localization {
 		command.push_back(item.Url);
 		command.push_back(tempPath.string());
 
-		const Process::Result result = Process::Run(command, {}, std::chrono::milliseconds(0));
+		const Process::Result result = Process::Run(command, {}, std::chrono::minutes(2));
 		if (!result.Succeeded()) {
 			std::filesystem::remove(tempPath, ec);
 			outError = "PackageTool exited with code " + std::to_string(result.ExitCode);

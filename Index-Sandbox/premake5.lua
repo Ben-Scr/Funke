@@ -3,7 +3,7 @@ project "Index-Sandbox"
     location "."
     kind "SharedLib"
     language "C#"
-    dotnetframework "net9.0"
+    dotnetframework "net10.0"
     clr "Unsafe"
 
     targetdir ("../bin/" .. outputdir .. "/%{prj.name}")

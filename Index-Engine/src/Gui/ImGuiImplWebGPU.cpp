@@ -263,10 +263,16 @@ namespace Index::ImGuiImplWebGPU {
 		void MultiViewport_CreateWindow(ImGuiViewport* viewport) {
 			void* hwnd = viewport->PlatformHandleRaw;
 			if (!hwnd) {
+				const char* glfwDescription = nullptr;
+				const int glfwError = glfwGetError(&glfwDescription);
 				IDX_CORE_ERROR_TAG("ImGuiImplWebGPU",
-					"Renderer_CreateWindow: viewport has no PlatformHandleRaw (HWND); "
-					"imgui_impl_glfw didn't populate it. Skipping.");
+					"Secondary viewport creation failed: missing HWND (GLFW {}: {}). "
+					"Disabling secondary viewports.",
+					glfwError,
+					glfwDescription ? glfwDescription : "no error detail");
 				viewport->RendererUserData = nullptr;
+				viewport->PlatformRequestClose = true;
+				ImGui::GetIO().BackendFlags &= ~ImGuiBackendFlags_RendererHasViewports;
 				return;
 			}
 
@@ -277,6 +283,13 @@ namespace Index::ImGuiImplWebGPU {
 				hwnd, /*hinstance*/ nullptr,
 				w > 0 ? w : 1, h > 0 ? h : 1);
 			viewport->RendererUserData = vs;
+			if (!vs) {
+				IDX_CORE_ERROR_TAG("ImGuiImplWebGPU",
+					"Secondary viewport surface creation failed. Disabling secondary viewports.");
+				viewport->PlatformRequestClose = true;
+				ImGui::GetIO().BackendFlags &= ~ImGuiBackendFlags_RendererHasViewports;
+				return;
+			}
 
 #if defined(IDX_PLATFORM_WINDOWS)
 			HWND viewportHwnd = static_cast<HWND>(hwnd);
@@ -342,7 +355,9 @@ namespace Index::ImGuiImplWebGPU {
 		void MultiViewport_DestroyWindow(ImGuiViewport* viewport) {
 			auto* vs = static_cast<WebGPUBackend::ViewportSurface*>(
 				viewport->RendererUserData);
-			WebGPUBackend::DestroyViewportSurface(vs);
+			if (vs) {
+				WebGPUBackend::DestroyViewportSurface(vs);
+			}
 			viewport->RendererUserData = nullptr;
 		}
 
@@ -407,6 +422,7 @@ namespace Index::ImGuiImplWebGPU {
 		void MultiViewport_SwapBuffers(ImGuiViewport* viewport, void* /*render_arg*/) {
 			auto* vs = static_cast<WebGPUBackend::ViewportSurface*>(
 				viewport->RendererUserData);
+			if (!vs) return;
 			WebGPUBackend::PresentViewportSurface(vs);
 		}
 
@@ -458,6 +474,13 @@ namespace Index::ImGuiImplWebGPU {
 			return;
 		}
 		ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+		if (pio.Platform_CreateWindow == nullptr || pio.Platform_DestroyWindow == nullptr) {
+			IDX_CORE_ERROR_TAG("ImGuiImplWebGPU",
+				"GLFW multi-viewport handlers are unavailable. Secondary viewports remain disabled.");
+			ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+			ImGui::GetIO().BackendFlags &= ~ImGuiBackendFlags_RendererHasViewports;
+			return;
+		}
 		pio.Renderer_CreateWindow  = MultiViewport_CreateWindow;
 		pio.Renderer_DestroyWindow = MultiViewport_DestroyWindow;
 		pio.Renderer_SetWindowSize = MultiViewport_SetWindowSize;
@@ -509,11 +532,7 @@ namespace Index::ImGuiImplWebGPU {
 
 	void UnregisterMultiViewportHandlers() {
 		if (!g_MultiViewportRegistered) return;
-		// ImGui drains its secondary viewports (calling Renderer_DestroyWindow
-		// on each) during ImGui::DestroyContext, so by the time anyone calls
-		// Shutdown() we shouldn't have surviving ViewportSurfaces. Just
-		// null the function pointers so any stray PlatformIO::WindowsList
-		// traversal during teardown becomes a clean no-op.
+		// ShutdownBackends drains secondary viewports before removing these callbacks.
 		ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
 		pio.Renderer_CreateWindow  = nullptr;
 		pio.Renderer_DestroyWindow = nullptr;

@@ -3,12 +3,17 @@
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
+#include "Utils/Process.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Project/IndexProject.hpp"
 
+#include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <filesystem>
 #include <mutex>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #ifdef IDX_PLATFORM_WINDOWS
@@ -25,6 +30,108 @@ namespace Index {
 		// Tracked (not detached) so editor shutdown can join them; join may block ~4s on the cold-start VS thread.
 		std::mutex s_LaunchMutex;
 		std::vector<std::thread> s_LaunchThreads;
+
+		struct VisualStudioCandidate {
+			std::string DisplayName;
+			std::string ExecutablePath;
+			std::vector<int> Version;
+		};
+
+		std::vector<int> ParseVersion(std::string_view text) {
+			std::vector<int> parts;
+			size_t start = 0;
+			while (start < text.size()) {
+				size_t end = text.find('.', start);
+				if (end == std::string_view::npos) end = text.size();
+				int value = 0;
+				for (size_t i = start; i < end && std::isdigit(static_cast<unsigned char>(text[i])); ++i)
+					value = value * 10 + (text[i] - '0');
+				parts.push_back(value);
+				start = end + 1;
+			}
+			return parts;
+		}
+
+		bool SamePath(const std::string& lhs, const std::string& rhs) {
+			if (lhs.empty() || rhs.empty()) return false;
+			std::error_code lhsError;
+			std::error_code rhsError;
+			const auto lhsPath = std::filesystem::weakly_canonical(Path::FromUtf8(lhs), lhsError);
+			const auto rhsPath = std::filesystem::weakly_canonical(Path::FromUtf8(rhs), rhsError);
+			const std::wstring lhsValue = (lhsError ? Path::FromUtf8(lhs).lexically_normal() : lhsPath).wstring();
+			const std::wstring rhsValue = (rhsError ? Path::FromUtf8(rhs).lexically_normal() : rhsPath).wstring();
+			return _wcsicmp(lhsValue.c_str(), rhsValue.c_str()) == 0;
+		}
+
+		void AppendVisualStudioCandidate(std::vector<VisualStudioCandidate>& candidates,
+			std::string displayName, const std::filesystem::path& executablePath,
+			std::string_view version)
+		{
+			std::error_code error;
+			if (!std::filesystem::is_regular_file(executablePath, error) || error) return;
+			const std::string executable = Path::ToUtf8(executablePath);
+			if (std::any_of(candidates.begin(), candidates.end(), [&](const auto& candidate) {
+				return SamePath(candidate.ExecutablePath, executable);
+			})) return;
+			if (displayName.empty()) displayName = "Visual Studio";
+			candidates.push_back({ std::move(displayName), executable, ParseVersion(version) });
+		}
+
+		std::vector<VisualStudioCandidate> DetectVisualStudioInstallations() {
+			std::vector<VisualStudioCandidate> candidates;
+			const std::filesystem::path vswhere =
+				Path::FromUtf8("C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe");
+			std::error_code error;
+			if (std::filesystem::is_regular_file(vswhere, error) && !error) {
+				const Process::Result result = Process::Run({
+					Path::ToUtf8(vswhere), "-all", "-products", "*",
+					"-requires", "Microsoft.Component.MSBuild", "-format", "json", "-utf8"
+				}, {}, std::chrono::seconds(15));
+				std::string json = result.Output;
+				if (json.size() >= 3 && static_cast<unsigned char>(json[0]) == 0xEF
+					&& static_cast<unsigned char>(json[1]) == 0xBB
+					&& static_cast<unsigned char>(json[2]) == 0xBF)
+					json.erase(0, 3);
+				Json::Value installations;
+				if (result.Succeeded() && Json::TryParse(json, installations)
+					&& installations.IsArray())
+				{
+					for (const Json::Value& installation : installations.GetArray()) {
+						if (!installation.IsObject()) continue;
+						const Json::Value* installPathValue = installation.FindMember("installationPath");
+						if (!installPathValue) continue;
+						const std::string installPath = installPathValue->AsStringOr();
+						const std::filesystem::path executable = Path::FromUtf8(installPath)
+							/ "Common7" / "IDE" / "devenv.exe";
+						const Json::Value* displayNameValue = installation.FindMember("displayName");
+						const Json::Value* versionValue = installation.FindMember("installationVersion");
+						const std::string version = versionValue ? versionValue->AsStringOr() : std::string{};
+						std::string displayName = displayNameValue
+							? displayNameValue->AsStringOr() : "Visual Studio";
+						if (!version.empty()) displayName += " (" + version + ")";
+						AppendVisualStudioCandidate(candidates,
+							std::move(displayName), executable, version);
+					}
+				}
+			}
+
+			for (const auto& [folder, label, version] : {
+				std::tuple{ "18", "Visual Studio 2026", "18" },
+				std::tuple{ "2026", "Visual Studio 2026", "18" },
+				std::tuple{ "2022", "Visual Studio 2022", "17" } })
+			{
+				for (const char* edition : { "Community", "Professional", "Enterprise" }) {
+					AppendVisualStudioCandidate(candidates, std::string(label) + " " + edition,
+						std::filesystem::path("C:/Program Files/Microsoft Visual Studio") / folder
+							/ edition / "Common7" / "IDE" / "devenv.exe", version);
+				}
+			}
+
+			std::stable_sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
+				return lhs.Version > rhs.Version;
+			});
+			return candidates;
+		}
 	}
 
 	static void TrackLaunchThread(std::thread t) {
@@ -36,6 +143,20 @@ namespace Index {
 				[](std::thread& th) { return !th.joinable(); }),
 			s_LaunchThreads.end());
 		s_LaunchThreads.push_back(std::move(t));
+	}
+#endif
+
+#ifndef IDX_PLATFORM_WINDOWS
+	namespace {
+		bool SamePath(const std::string& lhs, const std::string& rhs) {
+			if (lhs.empty() || rhs.empty()) return false;
+			std::error_code lhsError;
+			std::error_code rhsError;
+			const auto lhsPath = std::filesystem::weakly_canonical(Path::FromUtf8(lhs), lhsError);
+			const auto rhsPath = std::filesystem::weakly_canonical(Path::FromUtf8(rhs), rhsError);
+			return (lhsError ? Path::FromUtf8(lhs).lexically_normal() : lhsPath)
+				== (rhsError ? Path::FromUtf8(rhs).lexically_normal() : rhsPath);
+		}
 	}
 #endif
 
@@ -97,14 +218,13 @@ namespace Index {
 		if (s_Detected) return;
 		s_Detected = true;
 		s_Editors.clear();
+		s_SelectedIndex = 0;
 
 #ifdef IDX_PLATFORM_WINDOWS
-		// Visual Studio 2022 (all editions)
-		TryDetect(ExternalEditorType::VisualStudio, "Visual Studio 2022", {
-			"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\devenv.exe",
-			"C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\Common7\\IDE\\devenv.exe",
-			"C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\Common7\\IDE\\devenv.exe",
-		});
+		for (auto& candidate : DetectVisualStudioInstallations()) {
+			s_Editors.push_back({ ExternalEditorType::VisualStudio,
+				std::move(candidate.DisplayName), std::move(candidate.ExecutablePath), true });
+		}
 
 		// VS Code
 		{
@@ -172,6 +292,21 @@ namespace Index {
 		LoadPreferences();
 	}
 
+	void ExternalEditor::RefreshEditors() {
+		std::string selectedPath;
+		if (s_SelectedIndex >= 0 && s_SelectedIndex < static_cast<int>(s_Editors.size()))
+			selectedPath = s_Editors[s_SelectedIndex].ExecutablePath;
+		s_Detected = false;
+		DetectEditors();
+		if (selectedPath.empty()) return;
+		for (int i = 0; i < static_cast<int>(s_Editors.size()); ++i) {
+			if (SamePath(s_Editors[i].ExecutablePath, selectedPath)) {
+				s_SelectedIndex = i;
+				return;
+			}
+		}
+	}
+
 	static std::string GetPreferencesPath() {
 		return Path::Combine(Path::GetSpecialFolderPath(SpecialFolder::LocalAppData), "Index", "editor-preferences.json");
 	}
@@ -187,6 +322,8 @@ namespace Index {
 
 		Json::Value root = Json::Value::MakeObject();
 		root.AddMember("selectedEditor", selected);
+		if (s_SelectedIndex >= 0 && s_SelectedIndex < static_cast<int>(s_Editors.size()))
+			root.AddMember("selectedEditorPath", s_Editors[s_SelectedIndex].ExecutablePath);
 		(void)File::WriteAllText(path, Json::Stringify(root, true));
 	}
 
@@ -201,16 +338,32 @@ namespace Index {
 			return;
 		}
 
-		const Json::Value* selectedEditorValue = root.FindMember("selectedEditor");
-		if (!selectedEditorValue) {
-			return;
+		if (const Json::Value* selectedPathValue = root.FindMember("selectedEditorPath")) {
+			const std::string selectedPath = selectedPathValue->AsStringOr();
+			for (int i = 0; i < static_cast<int>(s_Editors.size()); ++i) {
+				if (SamePath(s_Editors[i].ExecutablePath, selectedPath)) {
+					s_SelectedIndex = i;
+					return;
+				}
+			}
 		}
+
+		const Json::Value* selectedEditorValue = root.FindMember("selectedEditor");
+		if (!selectedEditorValue) return;
 		std::string savedName = selectedEditorValue->AsStringOr();
 
 		for (int i = 0; i < static_cast<int>(s_Editors.size()); i++) {
 			if (s_Editors[i].DisplayName == savedName) {
 				s_SelectedIndex = i;
 				return;
+			}
+		}
+		if (savedName.rfind("Visual Studio", 0) == 0) {
+			for (int i = 0; i < static_cast<int>(s_Editors.size()); ++i) {
+				if (s_Editors[i].Type == ExternalEditorType::VisualStudio) {
+					s_SelectedIndex = i;
+					return;
+				}
 			}
 		}
 	}

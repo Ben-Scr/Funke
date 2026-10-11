@@ -21,6 +21,7 @@ public static class Input
     public static int KeyCount => 349;
     public static int MouseCount => 8;
 
+    /// <summary>Viewport-local pixels with the origin at the visible game viewport's top-left.</summary>
     public static Vector2 MousePosition
     {
         get
@@ -39,8 +40,8 @@ public static class Input
     internal static void RaiseMouseMove(Vector2 position) => MouseMove?.Invoke(position);
 
     /// <summary>
-    /// Returns a smoothed axis vector based on WASD/Arrow key input.
-    /// X = horizontal (-1 to 1), Y = vertical (-1 to 1).
+    /// Movement axis from WASD/arrow keys, falling back to the first gamepad's left stick or D-pad
+    /// when no key is held. X = horizontal (-1 to 1), Y = vertical (-1 to 1, up is positive).
     /// </summary>
     public static Vector2 GetAxis()
     {
@@ -49,8 +50,7 @@ public static class Input
     }
 
     /// <summary>
-    /// Returns a raw (unsmoothed) axis vector based on key input.
-    /// Values are -1, 0, or 1 per axis.
+    /// Like <see cref="GetAxis"/> but snapped to -1, 0 or 1 per axis.
     /// </summary>
     public static Vector2 GetAxisRaw()
     {
@@ -59,7 +59,64 @@ public static class Input
         if (GetKey(KeyCode.A) || GetKey(KeyCode.Left))  x -= 1f;
         if (GetKey(KeyCode.W) || GetKey(KeyCode.Up))    y += 1f;
         if (GetKey(KeyCode.S) || GetKey(KeyCode.Down))  y -= 1f;
+        if (x == 0f && y == 0f)
+        {
+            Vector2 axis = GetAxis();
+            x = MathF.Sign(axis.X);
+            y = MathF.Sign(axis.Y);
+        }
         return new Vector2(x, y);
+    }
+
+    // ── Gamepad ─────────────────────────────────────────────────────
+
+    /// <summary>Number of gamepad slots polled by the engine (indices 0..MaxGamepads-1).</summary>
+    public const int MaxGamepads = 4;
+
+    /// <summary>Radial deadzone applied by <see cref="GetLeftStick"/> and <see cref="GetRightStick"/>.</summary>
+    public static float GamepadDeadzone { get; set; } = 0.2f;
+
+    public static bool IsGamepadConnected(int gamepad = 0) => InternalCalls.Input_IsGamepadConnected(gamepad);
+
+    /// <summary>Returns true every frame the gamepad button is held down.</summary>
+    public static bool GetGamepadButton(GamepadButton button, int gamepad = 0)
+        => InternalCalls.Input_GetGamepadButton((int)button, gamepad);
+
+    /// <summary>Returns true only on the frame the gamepad button was first pressed.</summary>
+    public static bool GetGamepadButtonDown(GamepadButton button, int gamepad = 0)
+        => InternalCalls.Input_GetGamepadButtonDown((int)button, gamepad);
+
+    /// <summary>Returns true only on the frame the gamepad button was released.</summary>
+    public static bool GetGamepadButtonUp(GamepadButton button, int gamepad = 0)
+        => InternalCalls.Input_GetGamepadButtonUp((int)button, gamepad);
+
+    /// <summary>Raw axis value without deadzone: sticks in [-1, 1] (Y is down-positive), triggers in [-1, 1] as reported by GLFW.</summary>
+    public static float GetGamepadAxis(GamepadAxis axis, int gamepad = 0)
+        => InternalCalls.Input_GetGamepadAxis((int)axis, gamepad);
+
+    /// <summary>Left stick with deadzone applied, up is positive Y.</summary>
+    public static Vector2 GetLeftStick(int gamepad = 0)
+        => ApplyDeadzone(GetGamepadAxis(GamepadAxis.LeftX, gamepad), -GetGamepadAxis(GamepadAxis.LeftY, gamepad), GamepadDeadzone);
+
+    /// <summary>Right stick with deadzone applied, up is positive Y.</summary>
+    public static Vector2 GetRightStick(int gamepad = 0)
+        => ApplyDeadzone(GetGamepadAxis(GamepadAxis.RightX, gamepad), -GetGamepadAxis(GamepadAxis.RightY, gamepad), GamepadDeadzone);
+
+    /// <summary>Trigger pressure remapped to [0, 1].</summary>
+    public static float GetGamepadTrigger(GamepadAxis trigger, int gamepad = 0)
+    {
+        if (trigger != GamepadAxis.LeftTrigger && trigger != GamepadAxis.RightTrigger)
+            throw new ArgumentOutOfRangeException(nameof(trigger), "Expected LeftTrigger or RightTrigger.");
+        return Math.Clamp((GetGamepadAxis(trigger, gamepad) + 1f) * 0.5f, 0f, 1f);
+    }
+
+    // Rescales so output starts at 0 just outside the deadzone instead of jumping to its radius.
+    internal static Vector2 ApplyDeadzone(float x, float y, float deadzone)
+    {
+        float length = MathF.Sqrt(x * x + y * y);
+        if (length <= deadzone || length == 0f) return Vector2.Zero;
+        float scaled = Math.Min(1f, (length - deadzone) / (1f - deadzone));
+        return new Vector2(x / length * scaled, y / length * scaled);
     }
 
     /// <summary>
@@ -110,4 +167,34 @@ public static class Input
     /// Returns true only on the frame the mouse button was released.
     /// </summary>
     public static bool GetMouseButtonUp(MouseButton button) => InternalCalls.Input_GetMouseButtonUp((int)button);
+}
+
+/// <summary>Xbox-style button names; other controllers are mapped to the same layout by GLFW's controller database.</summary>
+public enum GamepadButton
+{
+    A = 0,
+    B = 1,
+    X = 2,
+    Y = 3,
+    LeftBumper = 4,
+    RightBumper = 5,
+    Back = 6,
+    Start = 7,
+    Guide = 8,
+    LeftThumb = 9,
+    RightThumb = 10,
+    DPadUp = 11,
+    DPadRight = 12,
+    DPadDown = 13,
+    DPadLeft = 14,
+}
+
+public enum GamepadAxis
+{
+    LeftX = 0,
+    LeftY = 1,
+    RightX = 2,
+    RightY = 3,
+    LeftTrigger = 4,
+    RightTrigger = 5,
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Collections/Color.hpp"
+#include "Core/EngineTypes.hpp"
 #include "Core/Export.hpp"
 #include "Graphics/RenderApiTypes.hpp"
 
@@ -33,9 +34,11 @@ namespace Index {
 
 		// Cached GPU info (filled in by Init). Empty strings if Init never
 		// succeeded. The build / about UI surfaces these.
-		static const std::string& GetVersionString();
-		static const std::string& GetVendorString();
-		static const std::string& GetRendererString();
+		static GraphicsApi GetGraphicsApi() noexcept;
+		static GpuVendor GetGpuVendor() noexcept;
+		static const std::string& GetVersionString() noexcept;
+		static const std::string& GetVendorString() noexcept;
+		static const std::string& GetRendererString() noexcept;
 
 
 		static void Clear(ClearFlags flags);

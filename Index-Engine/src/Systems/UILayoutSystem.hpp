@@ -1,6 +1,6 @@
 #pragma once
 #include "Core/Export.hpp"
-#include "Scene/ISystem.hpp"
+#include "Scene/SceneSystem.hpp"
 
 namespace Index {
 
@@ -8,7 +8,7 @@ namespace Index {
 	INDEX_API void ComputeUILayout(Scene& scene);
 
 	// MUST run before UIEventSystem so hit-tests use up-to-date resolved rects.
-	class UILayoutSystem : public ISystem {
+	class UILayoutSystem : public SceneSystem {
 	public:
 		void Update(Scene& scene) override;
 	};

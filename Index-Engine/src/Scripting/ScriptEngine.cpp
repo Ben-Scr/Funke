@@ -10,6 +10,7 @@
 #include "Core/Application.hpp"
 #include "Core/Log.hpp"
 #include "Serialization/Json.hpp"
+#include "Serialization/Path.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -138,22 +139,29 @@ namespace Index {
 		IDX_CORE_INFO_TAG("ScriptEngine", "Core assembly loaded: {}", path);
 	}
 
-	void ScriptEngine::LoadUserAssembly(const std::string& path)
+	bool ScriptEngine::LoadUserAssembly(const std::string& path)
 	{
 		if (!s_Initialized)
 		{
 			IDX_CORE_ERROR_TAG("ScriptEngine", "Cannot load user assembly: engine not initialized");
-			return;
+			return false;
 		}
 
-		if (!std::filesystem::exists(path))
+		const std::filesystem::path assemblyPath = Path::FromUtf8(path);
+		std::error_code ec;
+		if (!std::filesystem::is_regular_file(assemblyPath, ec) || ec)
 		{
 			IDX_CORE_WARN_TAG("ScriptEngine", "User assembly not found: {}", path);
-			return;
+			return false;
 		}
 
-		auto canonPath = std::filesystem::canonical(std::filesystem::path(path));
-		s_UserAssemblyPath = canonPath.string();
+		const std::filesystem::path canonPath = std::filesystem::canonical(assemblyPath, ec);
+		if (ec)
+		{
+			IDX_CORE_ERROR_TAG("ScriptEngine", "Could not resolve user assembly '{}': {}", path, ec.message());
+			return false;
+		}
+		s_UserAssemblyPath = Path::ToUtf8(canonPath);
 		IDX_CORE_INFO_TAG("ScriptEngine", "Loading user assembly: {}", s_UserAssemblyPath);
 
 		if (s_Callbacks.LoadUserAssembly)
@@ -172,9 +180,9 @@ namespace Index {
 
 				// Restore dynamic component rows from ScriptComponent.Scripts; new storage instances are empty after reload.
 				if (auto* app = Application::GetInstance()) {
-					if (auto* sceneManager = app->GetSceneManager()) {
+					if (app->GetSceneManager()) {
 						std::size_t restoredCount = 0;
-						sceneManager->ForeachLoadedScene([&](Scene& scene) {
+						SceneManager::ForeachLoadedScene([&](Scene& scene) {
 							restoredCount += RestoreDynamicComponentsForScene(scene);
 						});
 						if (restoredCount > 0) {
@@ -187,7 +195,12 @@ namespace Index {
 			}
 			else
 				IDX_CORE_ERROR_TAG("ScriptEngine", "Failed to load user assembly: {}", path);
+
+			return s_HasUserAssembly;
 		}
+
+		IDX_CORE_ERROR_TAG("ScriptEngine", "Cannot load user assembly: callback unavailable");
+		return false;
 	}
 
 	bool ScriptEngine::HasUserAssembly()
@@ -195,7 +208,7 @@ namespace Index {
 		return s_HasUserAssembly;
 	}
 
-	void ScriptEngine::ReloadAssemblies()
+	bool ScriptEngine::ReloadAssemblies()
 	{
 		IDX_CORE_INFO_TAG("ScriptEngine", "Reloading assemblies...");
 
@@ -206,8 +219,9 @@ namespace Index {
 
 		s_HasUserAssembly = false;
 
-		if (!s_UserAssemblyPath.empty())
-			LoadUserAssembly(s_UserAssemblyPath);
+		if (s_UserAssemblyPath.empty())
+			return false;
+		return LoadUserAssembly(s_UserAssemblyPath);
 	}
 
 	std::size_t ScriptEngine::RestoreDynamicComponentsForScene(Scene& scene)
@@ -217,7 +231,7 @@ namespace Index {
 			return 0;
 		}
 
-		ComponentRegistry& registry = app->GetSceneManager()->GetComponentRegistry();
+		ComponentRegistry& registry = SceneManager::GetComponentRegistry();
 		std::size_t restoredCount = 0;
 
 		auto& enttRegistry = scene.GetRegistry();
@@ -359,6 +373,12 @@ namespace Index {
 	{
 		if (handle == 0 || !s_Callbacks.InvokeCollisionExit2D) return;
 		s_Callbacks.InvokeCollisionExit2D(static_cast<int32_t>(handle), selfEntityID, otherEntityID, entityAID, entityBID, contactPointX, contactPointY);
+	}
+
+	void ScriptEngine::InvokeTrigger2D(uint32_t handle, int32_t phase, uint64_t selfEntityID, uint64_t otherEntityID, uint64_t entityAID, uint64_t entityBID)
+	{
+		if (handle == 0 || !s_Callbacks.InvokeTrigger2D) return;
+		s_Callbacks.InvokeTrigger2D(static_cast<int32_t>(handle), phase, selfEntityID, otherEntityID, entityAID, entityBID);
 	}
 
 	bool ScriptEngine::ClassExists(const std::string& className)

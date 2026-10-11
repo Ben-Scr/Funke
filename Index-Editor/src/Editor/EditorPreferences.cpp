@@ -431,7 +431,7 @@ namespace Index {
 
 		switch (resolved) {
 			case EditorThemeMode::Light:
-				ImGui::StyleColorsLight();
+				ImGuiContextLayer::ApplyIndexThemeColors(/*dark=*/false);
 				MarkThemeApplied(resolved);
 				ApplyNativeTitlebarFromStyle();
 				return;
@@ -511,7 +511,7 @@ namespace Index {
 		std::memcpy(saved, style.Colors, sizeof(saved));
 
 		if (ResolveTheme(EditorThemeMode::SystemDefault) == EditorThemeMode::Light) {
-			ImGui::StyleColorsLight();
+			ImGuiContextLayer::ApplyIndexThemeColors(/*dark=*/false);
 		}
 		else {
 			ImGuiContextLayer::ApplyIndexThemeColors();

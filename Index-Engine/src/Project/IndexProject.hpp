@@ -1,6 +1,7 @@
 #pragma once
 #include "Core/Export.hpp"
 #include "Core/WindowSpecification.hpp"
+#include "Core/GraphicsSettings.hpp"
 #include "Graphics/Text/FontHandle.hpp"
 #include <cstdint>
 #include <string>
@@ -10,6 +11,7 @@
 #include <vector>
 
 namespace Index {
+	namespace Json { class Value; }
 
 	struct INDEX_API IndexProject {
 		using CreateProgressCallback = std::function<void(float progress, std::string_view stage)>;
@@ -17,6 +19,12 @@ namespace Index {
 		struct GlobalSystemRegistration {
 			std::string ClassName;
 			bool Active = true;
+		};
+
+		// Disabled entries stay listed so the editor remembers their order and the opt-out.
+		struct BuildSceneEntry {
+			std::string Name;
+			bool Enabled = true;
 		};
 
 		std::string Name;
@@ -32,6 +40,9 @@ namespace Index {
 		std::string SlnPath;
 		std::string ProjectFilePath;
 		std::string EngineVersion;
+		static constexpr int k_CurrentProjectFormatVersion = 1;
+		int ProjectFormatVersion = k_CurrentProjectFormatVersion;
+		std::string PreservedProjectJson;
 
 		// Persistence
 		std::string StartupScene = "SampleScene";
@@ -67,8 +78,16 @@ namespace Index {
 		int UIReferenceHeight = 1080;
 		float UIScaleMatch = 0.5f;
 		std::string AppIconPath;
-		std::vector<std::string> BuildSceneList;
+		std::vector<BuildSceneEntry> BuildSceneList;
 		std::vector<GlobalSystemRegistration> GlobalSystems;
+
+		std::vector<std::string> GetEnabledBuildScenes() const {
+			std::vector<std::string> scenes;
+			for (const BuildSceneEntry& entry : BuildSceneList) {
+				if (entry.Enabled) scenes.push_back(entry.Name);
+			}
+			return scenes;
+		}
 
 		// Empty == legacy "scan everything" mode.
 		std::vector<std::string> Packages;
@@ -83,14 +102,10 @@ namespace Index {
 
 		bool ShowRuntimeStats = true;
 		bool ShowRuntimeLogs = true;
-		bool EnablePostProcessing = true;
+		GraphicsSettings Graphics{};
 
-		// Default physics-world / fixed-timestep rate in Hz: how many times per second
-		// the physics world steps and FixedUpdate runs (fixed timestep = 1/Hz seconds).
-		// Applied to Time at app startup and on each editor play-entry; scripts may still
-		// override it at runtime via Time.fixedDeltaTime. 50 matches the engine default
-		// (Time::m_FixedDeltaTime = 1/50). Bounds mirror Time::SetFixedDeltaTime's
-		// [1/240, 1]s clamp — keep k_Max/k_Min in sync if that range ever changes.
+		// FixedUpdate frequency; bounds mirror Time::SetFixedDeltaTime's clamp.
+		// Applied at startup and each editor play entry; scripts may override it per run.
 		static constexpr int k_MinPhysicsHz = 1;
 		static constexpr int k_MaxPhysicsHz = 240;
 		int PhysicsTickRate = 50;
@@ -207,14 +222,14 @@ namespace Index {
 		static const char* FullscreenModeToString(FullscreenMode mode);
 		static FullscreenMode FullscreenModeFromString(std::string_view value);
 
-		std::string GetNativeDllPath() const;
+		std::string GetNativeDllPath(std::string_view configuration = {}) const;
 		std::string GetSceneFilePath(const std::string& sceneName) const;
 		void EnsureNativeScriptBootstrapFiles() const;
 		void EnsureNativeScriptProjectFiles() const;
 		bool HasNativeScriptSources() const;
 
 		// Returns true on a confirmed atomic write. Callers clearing dirty state MUST check the return value.
-		bool Save() const;
+		bool Save();
 
 		// Writes Packages/IndexDefines.props so VS IntelliSense sees CustomDefines + build profile as active.
 		// `outAddedImport` is set true if the .csproj was patched (older projects lack the Import line).
@@ -225,6 +240,8 @@ namespace Index {
 		static std::string GetManagedPlatformDefine();
 		static std::string BuildManagedDefineConstants(std::string_view primarySymbol);
 
+		// Scene JSON written as the startup scene of a new project (camera plus a small playable example).
+		static Json::Value BuildStarterScene(const std::string& sceneName);
 		static IndexProject Create(const std::string& name, const std::string& parentDir,
 			const CreateProgressCallback& progressCallback = {});
 		static IndexProject Create(const std::string& name, const std::string& parentDir,
@@ -236,6 +253,8 @@ namespace Index {
 		static IndexProject Duplicate(const std::string& sourceRootDir, const std::string& newName,
 			const std::string& parentDir, const std::string& directoryName,
 			const CreateProgressCallback& progressCallback = {});
+		static bool TryLoad(const std::string& rootDir, IndexProject& outProject,
+			std::string* outError = nullptr, bool performMigrations = true);
 		static IndexProject Load(const std::string& rootDir);
 		static bool Validate(const std::string& rootDir);
 		static bool IsValidProjectName(const std::string& name);
@@ -265,6 +284,14 @@ namespace Index {
 		static BuildResult BuildSolutionTargets(const std::vector<std::string>& targets,
 			const std::string& configuration = "Debug",
 			const std::string& platform = "x64");
+		static RegenerateResult RegeneratePackageWorkspaceForProject(const std::string& projectRootDir);
+		static BuildResult BuildProjectPackages(const std::string& projectRootDir,
+			const std::string& configuration = "Debug",
+			const std::string& platform = "x64");
+		static std::string GetProjectPackageOutputDirectory(const std::string& projectRootDir,
+			const std::string& packageTarget, const std::string& configuration = "Debug");
+		static std::string GetProjectNativePackageLibraryPath(const std::string& projectRootDir,
+			const std::string& packageName, const std::string& configuration = "Debug");
 
 		static std::vector<std::string> EnumerateProjectLocalPackages(const std::string& projectRoot);
 

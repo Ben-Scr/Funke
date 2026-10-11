@@ -8,12 +8,37 @@
 #include "Utils/Process.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <fstream>
 #include <filesystem>
 
 namespace Index {
 
 	namespace {
+		// github-download streams newline-delimited JSON: progress events followed by a
+		// final {"event":"complete",...} (or an error object). Json::TryParse rejects
+		// trailing content, so parse the last non-empty line, which carries the result.
+		bool TryParseFinalToolEvent(const std::string& output, Json::Value& outValue, std::string* outError) {
+			auto isSpace = [](char c) { return c == '\n' || c == '\r' || c == ' ' || c == '\t'; };
+			std::size_t end = output.size();
+			while (end > 0) {
+				std::size_t lineEnd = end;
+				while (lineEnd > 0 && isSpace(output[lineEnd - 1])) {
+					--lineEnd;
+				}
+				if (lineEnd == 0) break;
+				const std::size_t newline = output.rfind('\n', lineEnd - 1);
+				const std::size_t lineStart = newline == std::string::npos ? 0 : newline + 1;
+				if (Json::TryParse(output.substr(lineStart, lineEnd - lineStart), outValue, outError)
+					&& outValue.IsObject()) {
+					return true;
+				}
+				end = lineStart;
+			}
+			if (outError && outError->empty()) *outError = "no JSON result in tool output";
+			return false;
+		}
+
 		std::string XmlEscape(std::string_view value) {
 			std::string out;
 			out.reserve(value.size());
@@ -184,7 +209,7 @@ namespace Index {
 		command.push_back(m_ToolExePath);
 		command.insert(command.end(), args.begin(), args.end());
 
-		Process::Result result = Process::Run(command);
+		Process::Result result = Process::Run(command, {}, std::chrono::seconds(30));
 		if (!result.Succeeded()) {
 			IDX_CORE_ERROR_TAG("GitHubSource", "Failed to run tool (exit code {})", result.ExitCode);
 		}
@@ -329,7 +354,7 @@ namespace Index {
 
 			// MUST run from .csproj's dir: dotnet resolves the project relative to CWD, not the path arg, so running from bin/ produces "no project found".
 			std::filesystem::path projectDir = std::filesystem::path(csprojPath).parent_path();
-			Process::Result addResult = Process::Run(command, projectDir);
+			Process::Result addResult = Process::Run(command, projectDir, std::chrono::minutes(5));
 			if (!addResult.Succeeded())
 				return { false, "dotnet add package failed (exit code " + std::to_string(addResult.ExitCode) + ")" };
 
@@ -368,7 +393,7 @@ namespace Index {
 
 			Json::Value downloadResult;
 			std::string downloadParseError;
-			if (!Json::TryParse(dlOutput, downloadResult, &downloadParseError) || !downloadResult.IsObject()) {
+			if (!TryParseFinalToolEvent(dlOutput, downloadResult, &downloadParseError)) {
 				return { false, "Download failed for " + packageId };
 			}
 
@@ -400,7 +425,7 @@ namespace Index {
 			csprojPath,
 			"package",
 			packageId
-		});
+		}, {}, std::chrono::minutes(5));
 
 		if (removeResult.Succeeded())
 			return { true, packageId + " removed" };

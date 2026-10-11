@@ -67,7 +67,8 @@ namespace Index {
 		shapeDef.material.friction = 0.3f;
 		shapeDef.material.restitution = 0.f;
 		shapeDef.isSensor = isSensor;
-		shapeDef.enableSensorEvents = isSensor;
+		// Box2D only reports a sensor overlap when BOTH shapes opt in, so every shape must be visible to sensors.
+		shapeDef.enableSensorEvents = true;
 
 		if (shapeType == ShapeType::Square) {
 			// Never build a zero-area box: a degenerate polygon makes Box2D's

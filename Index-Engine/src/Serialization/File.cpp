@@ -8,24 +8,24 @@
 
 namespace Index {
 	bool File::Exists(const std::string& path) {
-		return std::filesystem::exists(path);
+		return std::filesystem::exists(Path::FromUtf8(path));
 	}
 
 	bool File::WriteAllText(const std::string& path, const std::string& text) {
-		const std::filesystem::path target(path);
+		const std::filesystem::path target = Path::FromUtf8(path);
 		std::filesystem::path tmp = target;
 		tmp += ".tmp";
 
 		{
 			std::ofstream file(tmp, std::ios::binary | std::ios::trunc);
 			if (!file.is_open()) {
-				IDX_CORE_ERROR("File couldn't be opened for writing: {}", tmp.string());
+				IDX_CORE_ERROR("File couldn't be opened for writing: {}", Path::ToUtf8(tmp));
 				return false;
 			}
 
 			file.write(text.c_str(), text.size());
 			if (!file.good()) {
-				IDX_CORE_ERROR("Write failed (disk full / IO error): {}", tmp.string());
+				IDX_CORE_ERROR("Write failed (disk full / IO error): {}", Path::ToUtf8(tmp));
 				file.close();
 				std::error_code ec;
 				std::filesystem::remove(tmp, ec);
@@ -33,7 +33,7 @@ namespace Index {
 			}
 			file.close();
 			if (file.fail()) {
-				IDX_CORE_ERROR("Close failed for: {}", tmp.string());
+				IDX_CORE_ERROR("Close failed for: {}", Path::ToUtf8(tmp));
 				std::error_code ec;
 				std::filesystem::remove(tmp, ec);
 				return false;
@@ -47,7 +47,7 @@ namespace Index {
 		if (!MoveFileExW(tmpW.c_str(), targetW.c_str(),
 				MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
 			const DWORD err = GetLastError();
-			IDX_CORE_ERROR("MoveFileEx failed: {} -> {} (Win32 error {})", tmp.string(), target.string(), static_cast<unsigned long>(err));
+			IDX_CORE_ERROR("MoveFileEx failed: {} -> {} (Win32 error {})", Path::ToUtf8(tmp), Path::ToUtf8(target), static_cast<unsigned long>(err));
 			std::error_code cleanup;
 			std::filesystem::remove(tmp, cleanup);
 			return false;
@@ -57,7 +57,7 @@ namespace Index {
 		std::error_code ec;
 		std::filesystem::rename(tmp, target, ec);
 		if (ec) {
-			IDX_CORE_ERROR("Rename failed: {} -> {} ({})", tmp.string(), target.string(), ec.message());
+			IDX_CORE_ERROR("Rename failed: {} -> {} ({})", Path::ToUtf8(tmp), Path::ToUtf8(target), ec.message());
 			std::error_code cleanup;
 			std::filesystem::remove(tmp, cleanup);
 			return false;
@@ -68,14 +68,14 @@ namespace Index {
 	}
 
 	bool File::WriteAllBytes(const std::string& path, const std::vector<std::uint8_t>& bytes) {
-		const std::filesystem::path target(path);
+		const std::filesystem::path target = Path::FromUtf8(path);
 		std::filesystem::path tmp = target;
 		tmp += ".tmp";
 
 		{
 			std::ofstream file(tmp, std::ios::binary | std::ios::trunc);
 			if (!file.is_open()) {
-				IDX_CORE_ERROR("File couldn't be opened for writing: {}", tmp.string());
+				IDX_CORE_ERROR("File couldn't be opened for writing: {}", Path::ToUtf8(tmp));
 				return false;
 			}
 
@@ -83,7 +83,7 @@ namespace Index {
 				file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 			}
 			if (!file.good()) {
-				IDX_CORE_ERROR("Write failed (disk full / IO error): {}", tmp.string());
+				IDX_CORE_ERROR("Write failed (disk full / IO error): {}", Path::ToUtf8(tmp));
 				file.close();
 				std::error_code ec;
 				std::filesystem::remove(tmp, ec);
@@ -91,7 +91,7 @@ namespace Index {
 			}
 			file.close();
 			if (file.fail()) {
-				IDX_CORE_ERROR("Close failed for: {}", tmp.string());
+				IDX_CORE_ERROR("Close failed for: {}", Path::ToUtf8(tmp));
 				std::error_code ec;
 				std::filesystem::remove(tmp, ec);
 				return false;
@@ -104,7 +104,7 @@ namespace Index {
 		if (!MoveFileExW(tmpW.c_str(), targetW.c_str(),
 				MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
 			const DWORD err = GetLastError();
-			IDX_CORE_ERROR("MoveFileEx failed: {} -> {} (Win32 error {})", tmp.string(), target.string(), static_cast<unsigned long>(err));
+			IDX_CORE_ERROR("MoveFileEx failed: {} -> {} (Win32 error {})", Path::ToUtf8(tmp), Path::ToUtf8(target), static_cast<unsigned long>(err));
 			std::error_code cleanup;
 			std::filesystem::remove(tmp, cleanup);
 			return false;
@@ -113,7 +113,7 @@ namespace Index {
 		std::error_code ec;
 		std::filesystem::rename(tmp, target, ec);
 		if (ec) {
-			IDX_CORE_ERROR("Rename failed: {} -> {} ({})", tmp.string(), target.string(), ec.message());
+			IDX_CORE_ERROR("Rename failed: {} -> {} ({})", Path::ToUtf8(tmp), Path::ToUtf8(target), ec.message());
 			std::error_code cleanup;
 			std::filesystem::remove(tmp, cleanup);
 			return false;
@@ -124,7 +124,7 @@ namespace Index {
 	}
 
 	std::string File::ReadAllText(const std::string& path) {
-		std::ifstream file(path, std::ios::binary);
+		std::ifstream file(Path::FromUtf8(path), std::ios::binary);
 		if (!file.is_open()) {
 			IDX_CORE_ERROR("File couldn't be opened for reading: {}", path);
 			return {};
@@ -134,7 +134,7 @@ namespace Index {
 	}
 
 	std::vector<std::uint8_t> File::ReadAllBytes(const std::string& path) {
-		std::ifstream file(path, std::ios::binary | std::ios::ate);
+		std::ifstream file(Path::FromUtf8(path), std::ios::binary | std::ios::ate);
 		if (!file.is_open()) {
 			IDX_CORE_ERROR("File couldn't be opened for reading: {}", path);
 			return {};

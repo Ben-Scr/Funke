@@ -102,6 +102,9 @@ internal unsafe struct ManagedCallbacksStruct
 
     // ── Native→managed entity invalidation (appended for binary compat) ──
     public delegate* unmanaged<ulong, void> NotifyEntityDestroyed;
+
+    // ── Sensor overlaps (appended for binary compat) ──
+    public delegate* unmanaged<int, int, ulong, ulong, ulong, ulong, void> InvokeTrigger2D;
 }
 
 /// <summary>Entry point called from C++ via hostfxr; exchanges native/managed function pointers.</summary>
@@ -201,6 +204,7 @@ internal static class ScriptHostBridge
 
             // ── Native→managed entity invalidation (appended for binary compat) ──
             managedCallbacks->NotifyEntityDestroyed = &ScriptInstanceManager.NotifyEntityDestroyed;
+            managedCallbacks->InvokeTrigger2D = &ScriptInstanceManager.InvokeTrigger2D;
 
             ScriptInstanceManager.SetCoreAssembly(typeof(ScriptHostBridge).Assembly);
 
@@ -211,7 +215,9 @@ internal static class ScriptHostBridge
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"ScriptHostBridge.Initialize failed: {ex}");
+            // Native logging is bound first thing above, so it usually works here; the console is the fallback.
+            try { Log.Error($"ScriptHostBridge.Initialize failed: {ex}"); }
+            catch { Console.Error.WriteLine($"ScriptHostBridge.Initialize failed: {ex}"); }
             return -1;
         }
     }

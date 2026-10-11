@@ -53,14 +53,8 @@ namespace Index {
 			m_begin.erase(id);
 			m_end.erase(id);
 			m_hit.erase(id);
-			for (auto it = m_activeContacts.begin(); it != m_activeContacts.end(); ) {
-				if (ShapeIdEqual{}(it->second.ShapeA, id) || ShapeIdEqual{}(it->second.ShapeB, id)) {
-					it = m_activeContacts.erase(it);
-				}
-				else {
-					++it;
-				}
-			}
+			EraseShapeFrom(m_activeContacts, id);
+			EraseShapeFrom(m_activeSensors, id);
 		}
 
 		// Used by SetSensor to survive shape recreation (id changes): snapshot old shape, destroy/create, restore on new shape.
@@ -104,6 +98,7 @@ namespace Index {
 			m_end.clear();
 			m_hit.clear();
 			m_activeContacts.clear();
+			m_activeSensors.clear();
 		}
 
 		void Process(
@@ -160,11 +155,34 @@ namespace Index {
 				m_pendingHit.push_back({ e.shapeIdA, e.shapeIdB, collision2D });
 			}
 
+			// Sensor overlaps travel through the same begin/end/stay path with isTrigger set.
+			b2SensorEvents sensorEv = b2World_GetSensorEvents(world);
+			for (int i = 0; i < sensorEv.beginCount; ++i) {
+				auto& e = sensorEv.beginEvents[i];
+				if (!b2Shape_IsValid(e.sensorShapeId) || !b2Shape_IsValid(e.visitorShapeId)) continue;
+				Collision2D collision2D = MakeCollision(e.sensorShapeId, e.visitorShapeId, resolveShape);
+				collision2D.isTrigger = true;
+				m_activeSensors[MakeContactKey(e.sensorShapeId, e.visitorShapeId)] = { e.sensorShapeId, e.visitorShapeId, collision2D };
+				m_pendingBegin.push_back({ e.sensorShapeId, e.visitorShapeId, collision2D });
+			}
+
+			for (int i = 0; i < sensorEv.endCount; ++i) {
+				auto& e = sensorEv.endEvents[i];
+				auto active = m_activeSensors.find(MakeContactKey(e.sensorShapeId, e.visitorShapeId));
+				// End events also fire for destroyed shapes; without a cached begin there is nothing safe to report.
+				if (active == m_activeSensors.end()) continue;
+				m_pendingEnd.push_back({ e.sensorShapeId, e.visitorShapeId, active->second.Collision });
+				m_activeSensors.erase(active);
+			}
+
 			// Snapshot stay events before dispatch — Begin/End callbacks may re-enter UnregisterShape and mutate m_activeContacts.
 			m_pendingStay.clear();
 			if (onStay) {
-				m_pendingStay.reserve(m_activeContacts.size());
+				m_pendingStay.reserve(m_activeContacts.size() + m_activeSensors.size());
 				for (const auto& [_, active] : m_activeContacts) {
+					m_pendingStay.push_back(active.Collision);
+				}
+				for (const auto& [_, active] : m_activeSensors) {
 					m_pendingStay.push_back(active.Collision);
 				}
 			}
@@ -198,12 +216,14 @@ namespace Index {
 		// when a scene is torn down (a Step/Process boundary issue).
 		void PurgeContactsForScene(Scene* scene) {
 			if (!scene) return;
-			for (auto it = m_activeContacts.begin(); it != m_activeContacts.end(); ) {
-				if (it->second.Collision.sceneA == scene || it->second.Collision.sceneB == scene) {
-					it = m_activeContacts.erase(it);
-				}
-				else {
-					++it;
+			for (auto* contacts : { &m_activeContacts, &m_activeSensors }) {
+				for (auto it = contacts->begin(); it != contacts->end(); ) {
+					if (it->second.Collision.sceneA == scene || it->second.Collision.sceneB == scene) {
+						it = contacts->erase(it);
+					}
+					else {
+						++it;
+					}
 				}
 			}
 		}
@@ -231,6 +251,19 @@ namespace Index {
 				return hashA ^ (hashB + 0x9e3779b97f4a7c15ull + (hashA << 6) + (hashA >> 2));
 			}
 		};
+
+		using ActiveContactMap = std::unordered_map<ContactKey, ActiveContact, ContactKeyHash>;
+
+		static void EraseShapeFrom(ActiveContactMap& contacts, b2ShapeId id) {
+			for (auto it = contacts.begin(); it != contacts.end(); ) {
+				if (ShapeIdEqual{}(it->second.ShapeA, id) || ShapeIdEqual{}(it->second.ShapeB, id)) {
+					it = contacts.erase(it);
+				}
+				else {
+					++it;
+				}
+			}
+		}
 
 		static ContactKey MakeContactKey(b2ShapeId a, b2ShapeId b) {
 			uint64_t ia = b2StoreShapeId(a);
@@ -297,7 +330,8 @@ namespace Index {
 			ShapeIdEqual> m_begin;
 		std::unordered_map<b2ShapeId, std::vector<ContactEndCallback>, ShapeIdHash, ShapeIdEqual> m_end;
 		std::unordered_map<b2ShapeId, std::vector<ContactHitCallback>, ShapeIdHash, ShapeIdEqual> m_hit;
-		std::unordered_map<ContactKey, ActiveContact, ContactKeyHash> m_activeContacts;
+		ActiveContactMap m_activeContacts;
+		ActiveContactMap m_activeSensors;
 
 		// Snapshot buffers reused across Process() calls to avoid per-frame allocs.
 		std::vector<PendingDispatch> m_pendingBegin;

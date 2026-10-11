@@ -3,7 +3,6 @@
 #include "Scripting/NativeScript.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Core/Log.hpp"
-#include "Core/Application.hpp"
 #include "Core/Time.hpp"
 #include "Scene/Scene.hpp"
 #include "Components/General/Transform2DComponent.hpp"
@@ -32,8 +31,7 @@ namespace Index {
 		Log::PrintMessageTag(Log::Type::Client, Log::Level::Error, "NativeScript", msg);
 	}
 	static float API_GetDeltaTime() {
-		auto* app = Application::GetInstance();
-		return app ? app->GetTime().GetDeltaTime() : 0.0f;
+		return Time::GetDeltaTime();
 	}
 	static void API_GetPosition(uint32_t entityID, float* x, float* y) {
 		Scene* scene = ScriptEngine::GetScene();

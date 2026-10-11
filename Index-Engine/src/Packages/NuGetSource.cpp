@@ -3,6 +3,7 @@
 #include "Serialization/Json.hpp"
 #include "Utils/Process.hpp"
 
+#include <chrono>
 #include <filesystem>
 
 namespace Index {
@@ -20,7 +21,7 @@ namespace Index {
 		command.push_back(m_ToolExePath);
 		command.insert(command.end(), args.begin(), args.end());
 
-		Process::Result result = Process::Run(command);
+		Process::Result result = Process::Run(command, {}, std::chrono::seconds(30));
 		if (!result.Succeeded()) {
 			IDX_CORE_ERROR_TAG("NuGetSource", "Failed to run tool (exit code {})", result.ExitCode);
 		}
@@ -85,7 +86,7 @@ namespace Index {
 			command.push_back("--version");
 			command.push_back(version);
 		}
-		Process::Result result = Process::Run(command, projectDir);
+		Process::Result result = Process::Run(command, projectDir, std::chrono::minutes(5));
 
 		if (!result.Succeeded()) {
 			IDX_CORE_ERROR_TAG("NuGetSource", "dotnet add package failed (exit code {})", result.ExitCode);
@@ -109,7 +110,7 @@ namespace Index {
 			"remove",
 			"package",
 			packageId
-		}, projectDir);
+		}, projectDir, std::chrono::minutes(5));
 
 		if (!result.Succeeded()) {
 			IDX_CORE_ERROR_TAG("NuGetSource", "dotnet remove package failed (exit code {})", result.ExitCode);

@@ -83,6 +83,22 @@
     "launcher.list.empty.subtitle": "Create a new project or add an existing one.",
     "launcher.list.size_prefix": "Size: {0}",
     "launcher.list.open": "Open",
+    "launcher.settings.section.projects": "Projects",
+    "launcher.settings.section.appearance": "Appearance",
+    "launcher.create.section.project": "Project",
+    "launcher.create.section.options": "Options",
+    "launcher.view.list": "List view",
+    "launcher.view.grid": "Grid view",
+    "launcher.nav.projects": "Projects",
+    "launcher.nav.asset_library": "Asset Library",
+    "launcher.nav.settings": "Settings",
+    "launcher.projects.count": "{0} projects",
+    "launcher.projects.count_one": "1 project",
+    "launcher.action.open_existing": "Open",
+    "launcher.action.open_existing_tooltip": "Add an existing project from disk",
+    "launcher.list.more": "More actions",
+    "launcher.search.projects_placeholder": "Search projects",
+    "launcher.asset_library.subtitle": "Community projects to start from",
 
     "launcher.context.open_in_editor": "Open In Editor",
     "launcher.context.execute_project": "Execute Project",
@@ -167,6 +183,9 @@
     "launcher.info.never": "never",
     "launcher.info.unknown": "unknown",
     "launcher.info.open": "Open",
-    "launcher.info.close": "Close"
+    "launcher.info.close": "Close",
+    "launcher.prereq.download": "Download",
+    "launcher.prereq.dotnet_missing": ".NET 10 SDK not found - C# scripts cannot be compiled until it is installed.",
+    "launcher.prereq.msvc_missing": "MSVC Build Tools not found - only needed for native C++ scripts and packages."
   }
 }

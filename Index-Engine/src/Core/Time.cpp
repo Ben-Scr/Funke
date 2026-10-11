@@ -3,26 +3,55 @@
 #include <Math/Common.hpp>
 
 namespace Index {
-	void Time::SetTargetFramerate(float framerate) {
-		if (framerate <= 0.0f) {
-			m_TargetFPS = 0.0f;
-			m_UpdateDeltaTime = std::numeric_limits<float>::infinity();
-			m_FrameDuration = std::chrono::steady_clock::duration::max();
-			return;
-		}
+	Time* Time::s_Current = nullptr;
 
-		m_TargetFPS = framerate;
-		m_UpdateDeltaTime = 1.0f / m_TargetFPS;
-		m_FrameDuration = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-			std::chrono::duration<float>(m_UpdateDeltaTime)
-		);
+	Time* Time::TryGetCurrent() {
+		return s_Current;
+	}
+
+	void Time::SetCurrent(Time* time) {
+		s_Current = time;
+	}
+
+	float Time::GetDeltaTime() {
+		const Time* time = TryGetCurrent();
+		return time ? time->m_DeltaTime * time->m_TimeScale : 0.0f;
+	}
+
+	float Time::GetFrameRate() {
+		const Time* time = TryGetCurrent();
+		return time && time->m_DeltaTime > 0.0f ? 1.0f / time->m_DeltaTime : 0.0f;
+	}
+
+	float Time::GetDeltaTimeUnscaled() {
+		const Time* time = TryGetCurrent();
+		return time ? time->m_DeltaTime : 0.0f;
+	}
+
+	float Time::GetUnscaledDeltaTime() {
+		return GetDeltaTimeUnscaled();
+	}
+
+	float Time::GetTargetFramerate() {
+		const Time* time = TryGetCurrent();
+		return time ? time->m_TargetFPS : 0.0f;
+	}
+
+	void Time::SetTargetFramerate(float framerate) {
+		Time* time = TryGetCurrent();
+		if (!time) return;
+		time->m_TargetFPS = std::max(0.0f, framerate);
 	}
 
 	void Time::SetTimeScale(float scale) {
-		m_TimeScale = std::max(0.0f, scale);
+		Time* time = TryGetCurrent();
+		if (time) time->m_TimeScale = std::max(0.0f, scale);
 	}
 
 	void Time::SetFixedDeltaTime(float step) {
+		Time* time = TryGetCurrent();
+		if (!time) return;
+
 		// 0 silently disables FixedUpdate (Application::Run zeroes the accumulator
 		// and skips dispatch when fixedDt <= 0). Clamp to a sane minimum and warn
 		// so misconfigured callers don't get mysteriously dead physics + scripts.
@@ -32,20 +61,50 @@ namespace Index {
 			step = k_MinFixedStep;
 		}
 		step = Clamp(step, k_MinFixedStep, 1.f);
-		m_FixedDeltaTime = step;
+		time->m_FixedDeltaTime = step;
 	}
 
-	float Time::GetElapsedTime() const {
-		std::chrono::duration<float> elapsed = Clock::now() - m_StartTime;
+	float Time::GetFixedDeltaTime() {
+		const Time* time = TryGetCurrent();
+		return time ? time->m_FixedDeltaTime : 1.0f / 50.0f;
+	}
+
+	float Time::GetUnscaledFixedDeltaTime() {
+		return GetFixedDeltaTime();
+	}
+
+	float Time::GetTimeScale() {
+		const Time* time = TryGetCurrent();
+		return time ? time->m_TimeScale : 1.0f;
+	}
+
+	float Time::GetElapsedTime() {
+		const Time* time = TryGetCurrent();
+		if (!time) return 0.0f;
+		std::chrono::duration<float> elapsed = Clock::now() - time->m_StartTime;
 		return elapsed.count();
 	}
 
-	float Time::GetSimulatedElapsedTime() const { return m_SimulatedElapsedTime; }
+	float Time::GetSimulatedElapsedTime() {
+		const Time* time = TryGetCurrent();
+		return time ? time->m_SimulatedElapsedTime : 0.0f;
+	}
 
-	float Time::GetRealtimeSinceStartup() const {
-		if (!m_GameStarted) return 0.0f;
-		std::chrono::duration<float> elapsed = Clock::now() - m_GameStartTime;
+	float Time::GetTimeSinceStartup() {
+		const Time* time = TryGetCurrent();
+		return time ? time->m_GameSimulatedElapsedTime : 0.0f;
+	}
+
+	float Time::GetRealtimeSinceStartup() {
+		const Time* time = TryGetCurrent();
+		if (!time || !time->m_GameStarted) return 0.0f;
+		std::chrono::duration<float> elapsed = Clock::now() - time->m_GameStartTime;
 		return elapsed.count();
+	}
+
+	int Time::GetFrameCount() {
+		const Time* time = TryGetCurrent();
+		return time ? time->m_FrameCount : 0;
 	}
 
 	void Time::MarkGameStart() {

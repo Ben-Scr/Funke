@@ -1,14 +1,15 @@
 <Project>
+  <Import Project="$(MSBuildThisFileDirectory)Version.props" />
+  <Import Project="$(MSBuildThisFileDirectory)build\BuildMetadata.props"
+          Condition="Exists('$(MSBuildThisFileDirectory)build\BuildMetadata.props')" />
   <!--
-    Pin the MSVC toolset to a version that fully implements the C++20 features
-    used by EnTT (CWG2074 typename deduction, consteval). MSVC 14.38 (VS 17.8)
-    miscompiles entt/core/hashed_string.hpp and related headers; 14.44 (VS 17.14)
-    builds cleanly. PlatformToolset stays v143 — only the VCTools sub-version is
-    pinned so the build is reproducible across machines that have multiple
-    toolsets side-by-side installed.
+    MSVC 14.38 miscompiles C++20 constructs used by EnTT. Release builders must
+    provide v143 14.44 or newer; selecting the installed v143 toolset keeps newer
+    Visual Studio runners usable instead of requiring a VS 2022 installation.
   -->
   <PropertyGroup>
-    <VCToolsVersion>14.44.35207</VCToolsVersion>
+    <!-- Index vendors its native dependencies; classic vcpkg auto-link can inject duplicate runtimes. -->
+    <VcpkgEnabled>false</VcpkgEnabled>
     <!--
       Force the 64-bit hosted cl.exe. The 32-bit compiler is limited to a
       ~2 GB process heap and runs out during template-heavy translation
@@ -17,5 +18,39 @@
       The 64-bit host raises that ceiling to the machine's physical memory.
     -->
     <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+    <!--
+      Cap per-compiler parallelism. Projects set flags{"MultiProcessorCompile"}
+      (/MP), which without a count spawns one cl.exe child per logical core —
+      24 on a typical dev box here. Each child is an independent heap, and the
+      editor additionally passes /Zm2000 (max heap reservation), so the product
+      of /MP width and per-TU peak memory is what historically produced
+      `fatal error C1060: out of heap space` and, under -m, `C2471` from
+      concurrent PDB writes. Those failures were nondeterministic: whichever
+      heavy TUs happened to land in the same batch tipped the machine over.
+
+      MSBuild's VC targets map CL_MPCount onto ClCompile/ProcessorNumber
+      (Microsoft.Cl.Common.props), so setting it here bounds /MP for every
+      project without touching the premake files. A command-line
+      -p:CL_MPCount=N is a global property and still overrides this.
+
+      Min(12, cores) leaves headroom for the OS, an open Visual Studio and a
+      browser while still using a 24-core box properly. Lower it if you build
+      with a lot else resident; raise it on a dedicated machine.
+    -->
+    <CL_MPCount Condition="'$(CL_MPCount)' == ''">$([System.Math]::Min(12, $([System.Environment]::ProcessorCount)))</CL_MPCount>
+    <!--
+      Without MultiToolTask, every distinct per-file option set (NoPCH, /bigobj,
+      per-file includedirs) becomes its own sequential cl.exe /MP batch, so the
+      slowest TUs ended up compiling almost alone at the end of the build.
+      MultiToolTask schedules each file individually across all option sets.
+      EnforceProcessCountAcrossBuilds makes MultiProcMaxCount a machine-wide cap
+      shared by every project in a -m build, which keeps the C1060 heap
+      headroom described above.
+    -->
+    <UseMultiToolTask Condition="'$(UseMultiToolTask)' == ''">true</UseMultiToolTask>
+    <EnforceProcessCountAcrossBuilds Condition="'$(EnforceProcessCountAcrossBuilds)' == ''">true</EnforceProcessCountAcrossBuilds>
+    <MultiProcMaxCount Condition="'$(MultiProcMaxCount)' == ''">$(CL_MPCount)</MultiProcMaxCount>
+    <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(IndexVersion)+unknown</InformationalVersion>
+    <Win32Resource Condition="'$(OS)' == 'Windows_NT' and Exists('$(MSBuildThisFileDirectory)build\ManagedVersion.res')">$(MSBuildThisFileDirectory)build\ManagedVersion.res</Win32Resource>
   </PropertyGroup>
 </Project>

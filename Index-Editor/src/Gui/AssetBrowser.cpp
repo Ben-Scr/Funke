@@ -15,6 +15,7 @@
 #include "Editor/EditorPreferences.hpp"
 #include "Editor/ExternalEditor.hpp"
 #include "Gui/EditorTheme.hpp"
+#include "Gui/EditorUI.hpp"
 #include "Gui/HierarchyDragData.hpp"
 #include "Gui/SpriteSliceDragPayload.hpp"
 #include "Gui/ThumbnailCache.hpp"
@@ -26,6 +27,7 @@
 #include "Gui/EditorIcons.hpp"
 #include "Gui/Icons.hpp"
 #include <cctype>
+#include <cmath>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -663,29 +665,6 @@ namespace Index {
 			return dropped;
 		}
 
-		bool DoNativeFileDragOnStaThread(std::vector<std::wstring> paths)
-		{
-			bool dropped = false;
-			HRESULT oleResult = E_UNEXPECTED;
-
-			std::thread dragThread([paths = std::move(paths), &dropped, &oleResult]() mutable {
-				oleResult = OleInitialize(nullptr);
-				if (FAILED(oleResult)) {
-					return;
-				}
-
-				dropped = DoNativeFileDrag(std::move(paths));
-				OleUninitialize();
-			});
-			dragThread.join();
-
-			if (FAILED(oleResult)) {
-				IDX_CORE_WARN_TAG("AssetBrowser", "OleInitialize failed on native file drag STA thread: HRESULT 0x{:08X}",
-					static_cast<unsigned int>(oleResult));
-			}
-			return dropped;
-		}
-
 		bool StartNativeFileDrag(const std::vector<std::string>& paths)
 		{
 			std::vector<std::wstring> widePaths;
@@ -722,8 +701,10 @@ namespace Index {
 
 			const HRESULT oleResult = OleInitialize(nullptr);
 			if (oleResult == RPC_E_CHANGED_MODE) {
-				// Shell drag/drop requires STA; fall back if this thread is already MTA.
-				return DoNativeFileDragOnStaThread(std::move(widePaths));
+				// No worker-thread fallback: a DoDragDrop off the input thread never sees the button
+				// release while the main thread is parked, so the editor hangs until Windows kills it.
+				IDX_CORE_WARN_TAG("AssetBrowser", "Native file drag skipped: main thread is in a COM multithreaded apartment.");
+				return false;
 			}
 
 			if (FAILED(oleResult)) {
@@ -795,6 +776,25 @@ namespace Index {
 		return true;
 	}
 
+	// Purely lexical (no filesystem hit) so the folder tree can compare paths every frame.
+	static std::string MakeFolderTreeKey(const std::string& path) {
+		std::string key = Path::ToUtf8(Path::FromUtf8(path).lexically_normal().make_preferred());
+		while (key.size() > 1 && (key.back() == '\\' || key.back() == '/')) {
+			key.pop_back();
+		}
+		return key;
+	}
+
+	static constexpr float k_FolderTreeSplitterWidth = 6.0f;
+
+	static bool IsFolderTreeAncestor(const std::string& ancestorKey, const std::string& key) {
+		if (key.size() <= ancestorKey.size() || key.compare(0, ancestorKey.size(), ancestorKey) != 0) {
+			return false;
+		}
+		const char next = key[ancestorKey.size()];
+		return next == '\\' || next == '/';
+	}
+
 	void AssetBrowser::Initialize(const std::string& rootDirectory) {
 		m_RootDirectory = rootDirectory;
 		m_CurrentDirectory = rootDirectory;
@@ -858,6 +858,7 @@ namespace Index {
 			m_SkipRegistrySyncOnNextRefresh = false;
 		}
 		m_Entries = Directory::GetEntries(m_CurrentDirectory);
+		m_FolderTreeDirty = true; // cleared at the next tree render, never mid-traversal
 		RebuildSliceCache();
 		if (m_SearchBuffer[0] != '\0')
 			RebuildSearchResults(); // the tree may have changed under an active search
@@ -1091,13 +1092,13 @@ namespace Index {
 		// Resolve via SourceSceneId so cross-scene drags find the right registry; falls back to the active scene for older producers.
 		Scene* scene = nullptr;
 		if (dragData->SourceSceneId != 0) {
-			SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
+			SceneManager::ForeachLoadedScene([&](Scene& s) {
 				if (!scene && static_cast<uint64_t>(s.GetSceneId()) == dragData->SourceSceneId) {
 					scene = &s;
 				}
 			});
 		}
-		if (!scene) scene = SceneManager::Get().GetActiveScene();
+		if (!scene) scene = SceneManager::GetActiveScene();
 		if (!scene || !scene->IsValid(entityHandle)) {
 			return false;
 		}
@@ -1451,27 +1452,6 @@ namespace Index {
 			m_PendingThumbnailInvalidates.clear();
 		}
 
-		// Load pending scene on main thread (before ImGui frame)
-		if (!m_PendingSceneLoad.empty())
-		{
-			std::string scenePath = m_PendingSceneLoad;
-			m_PendingSceneLoad.clear();
-
-			Scene* active = SceneManager::Get().GetActiveScene();
-			if (active)
-			{
-				SceneSerializer::LoadFromFile(*active, scenePath);
-
-				IndexProject* project = ProjectManager::GetCurrentProject();
-				if (project)
-				{
-					std::string sceneName = std::filesystem::path(scenePath).stem().string();
-					project->LastOpenedScene = sceneName;
-					project->Save();
-				}
-			}
-		}
-
 		ImGui::Begin("Project");
 
 		if (!s_PendingRevealAssetPath.empty()) {
@@ -1486,9 +1466,32 @@ namespace Index {
 			Refresh();
 		}
 
+		// Two panes: folder tree | splitter | toolbar + grid. Clamp keeps both panes usable when the panel shrinks.
+		constexpr float kMinTreeWidth = 80.0f;
+		constexpr float kMinContentWidth = 160.0f;
+		const float availableWidth = ImGui::GetContentRegionAvail().x;
+		const float maxTreeWidth = std::max(kMinTreeWidth, availableWidth - k_FolderTreeSplitterWidth - kMinContentWidth);
+		m_FolderTreeWidth = std::clamp(m_FolderTreeWidth, kMinTreeWidth, maxTreeWidth);
+
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4.0f, 4.0f));
+		ImGui::BeginChild("##AssetFolderTree", ImVec2(m_FolderTreeWidth, 0.0f), ImGuiChildFlags_AlwaysUseWindowPadding);
+		ImGui::PopStyleVar();
+		RenderFolderTree();
+		ImGui::EndChild();
+
+		ImGui::SameLine(0.0f, 0.0f);
+		RenderFolderTreeSplitter();
+		ImGui::SameLine(0.0f, 0.0f);
+
+		// A tree click / drop only flags a refresh; apply it now so the grid never shows the old folder for a frame.
+		if (m_NeedsRefresh) {
+			Refresh();
+		}
+
+		ImGui::BeginChild("##AssetContentPane", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
+			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 		RenderSearchBar();
 		RenderBreadcrumb();
-		ImGui::Separator();
 		if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
 			&& ImGui::IsKeyPressed(ImGuiKey_F2)
 			&& !ImGui::GetIO().WantTextInput
@@ -1499,6 +1502,7 @@ namespace Index {
 			HandleAssetShortcuts();
 		}
 		RenderGrid();
+		ImGui::EndChild();
 
 		RenderCreationCollisionPrompt();
 		RenderDeleteConfirmationPrompt();
@@ -1506,13 +1510,9 @@ namespace Index {
 		ImGui::End();
 	}
 
-	// Full-width row above the breadcrumb/refresh row. The leading magnifier
-	// sits inline (TextIcon ends with SameLine); the input fills the rest.
+	// Full-width row above the breadcrumb/refresh row.
 	void AssetBrowser::RenderSearchBar() {
-		Icons::TextIcon(Icons::Type::Search);
-		ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-		if (ImGui::InputTextWithHint("##AssetBrowserSearch", "Search assets...",
-			m_SearchBuffer, sizeof(m_SearchBuffer))) {
+		if (EditorUI::SearchField("##AssetBrowserSearch", m_SearchBuffer, sizeof(m_SearchBuffer), "Search assets...")) {
 			// A changed query reshuffles the visible list; drop the range-select
 			// anchor so a later shift-click doesn't span stale indices, then
 			// rebuild the recursive match set from the whole Assets/ tree.
@@ -1544,159 +1544,309 @@ namespace Index {
 			}
 		}
 
-		// Back button: push FramePadding.y=0 so it advertises baseline_y=0, matching SmallButton's AlignTextBaseLine flag; otherwise the arrow renders ~3px above the breadcrumb text.
-		if (m_CurrentDirectory != m_RootDirectory) {
-			const ImGuiStyle& s = ImGui::GetStyle();
-			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(s.FramePadding.x, 0.0f));
-			const float h = ImGui::GetFontSize();
-			const bool clicked = Icons::IconButton(
-				"##AssetBrowserBack", Icons::Type::ArrowLeft, ImVec2(h, h));
-			ImGui::PopStyleVar();
-			if (clicked) {
-				NavigateUp();
-				return;
-			}
-			ImGui::SameLine();
-		}
-
-		// Width budget. Measured fresh every frame so resizing the panel
-		// re-computes which segments fit.
-		const ImGuiStyle& style = ImGui::GetStyle();
-		const float refreshButtonReserved = 30.0f + style.ItemSpacing.x;
-		const float available = std::max(0.0f,
-			ImGui::GetContentRegionAvail().x - refreshButtonReserved);
-
-		auto buttonWidth = [&style](const std::string& label) -> float {
-			return ImGui::CalcTextSize(label.c_str()).x + style.FramePadding.x * 2.0f;
-		};
-		const float separatorWidth = style.ItemSpacing.x + ImGui::CalcTextSize("/").x + style.ItemSpacing.x;
-		const float truncationButtonWidth = buttonWidth("...");
-
-		// Decide which segments are visible. Always show first (root) and
-		// last (current); fill intermediates from the deepest end backward
-		// while they still fit alongside the truncation marker.
-		std::vector<bool> visible(segments.size(), false);
-		bool showTruncation = false;
-
-		if (segments.size() == 1) {
-			visible[0] = true;
-		}
-		else {
-			// First try: do all segments fit without any truncation marker?
-			float total = buttonWidth(segments[0].Label);
-			for (std::size_t i = 1; i < segments.size(); ++i) {
-				total += separatorWidth + buttonWidth(segments[i].Label);
+		// The toolbar is a child window, so the row body runs in a lambda: its early returns must still reach EndToolbar.
+		EditorUI::BeginToolbar("##AssetBreadcrumb");
+		// Frame-padding baseline so SmallButton crumbs and text centre against the frame-height icon buttons.
+		ImGui::AlignTextToFramePadding();
+		[&] {
+			if (m_CurrentDirectory != m_RootDirectory) {
+				if (EditorUI::IconButton("##AssetBrowserBack", "arrow_left", "Back")) {
+					NavigateUp();
+					return;
+				}
+				ImGui::SameLine();
 			}
 
-			if (total <= available) {
-				std::fill(visible.begin(), visible.end(), true);
+			// Width budget. Measured fresh every frame so resizing the panel
+			// re-computes which segments fit.
+			const ImGuiStyle& style = ImGui::GetStyle();
+			const float refreshButtonWidth = ImGui::GetFrameHeight();
+			const float tileSliderWidth = 90.0f;
+			const float rightGroupReserved = tileSliderWidth + style.ItemSpacing.x
+				+ refreshButtonWidth + style.ItemSpacing.x;
+			const float available = std::max(0.0f,
+				ImGui::GetContentRegionAvail().x - rightGroupReserved);
+
+			auto buttonWidth = [&style](const std::string& label) -> float {
+				return ImGui::CalcTextSize(label.c_str()).x + style.FramePadding.x * 2.0f;
+			};
+			const float separatorWidth = style.ItemSpacing.x + ImGui::CalcTextSize("/").x + style.ItemSpacing.x;
+			const float truncationButtonWidth = buttonWidth("...");
+
+			// Decide which segments are visible. Always show first (root) and
+			// last (current); fill intermediates from the deepest end backward
+			// while they still fit alongside the truncation marker.
+			std::vector<bool> visible(segments.size(), false);
+			bool showTruncation = false;
+
+			if (segments.size() == 1) {
+				visible[0] = true;
 			}
 			else {
-				visible.front() = true;
-				visible.back() = true;
+				// First try: do all segments fit without any truncation marker?
+				float total = buttonWidth(segments[0].Label);
+				for (std::size_t i = 1; i < segments.size(); ++i) {
+					total += separatorWidth + buttonWidth(segments[i].Label);
+				}
 
-				// Fixed budget cost: Assets / ... / Current.
-				const float fixedCost = buttonWidth(segments.front().Label)
-					+ separatorWidth + truncationButtonWidth
-					+ separatorWidth + buttonWidth(segments.back().Label);
+				if (total <= available) {
+					std::fill(visible.begin(), visible.end(), true);
+				}
+				else {
+					visible.front() = true;
+					visible.back() = true;
 
-				float remaining = available - fixedCost;
+					// Fixed budget cost: Assets / ... / Current.
+					const float fixedCost = buttonWidth(segments.front().Label)
+						+ separatorWidth + truncationButtonWidth
+						+ separatorWidth + buttonWidth(segments.back().Label);
 
-				if (remaining > 0.0f) {
-					for (std::size_t k = segments.size() - 1; k-- > 1; ) {
-						const float extra = separatorWidth + buttonWidth(segments[k].Label);
-						if (extra <= remaining) {
-							visible[k] = true;
-							remaining -= extra;
-						}
-						else {
-							break;
+					float remaining = available - fixedCost;
+
+					if (remaining > 0.0f) {
+						for (std::size_t k = segments.size() - 1; k-- > 1; ) {
+							const float extra = separatorWidth + buttonWidth(segments[k].Label);
+							if (extra <= remaining) {
+								visible[k] = true;
+								remaining -= extra;
+							}
+							else {
+								break;
+							}
 						}
 					}
+
+					// At least one intermediate had to be hidden — show the marker.
+					for (std::size_t i = 1; i + 1 < segments.size(); ++i) {
+						if (!visible[i]) { showTruncation = true; break; }
+					}
 				}
+			}
 
-				// At least one intermediate had to be hidden — show the marker.
-				for (std::size_t i = 1; i + 1 < segments.size(); ++i) {
-					if (!visible[i]) { showTruncation = true; break; }
+			// ── Render ───────────────────────────────────────────────────
+
+			auto isCurrent = [this](const BreadcrumbSegment& s) {
+				return s.FullPath == m_CurrentDirectory;
+			};
+
+			// Root.
+			if (isCurrent(segments[0])) {
+				ImGui::TextUnformatted(segments[0].Label.c_str());
+			}
+			else if (ImGui::SmallButton(segments[0].Label.c_str())) {
+				NavigateTo(segments[0].FullPath);
+				return;
+			}
+
+			if (showTruncation) {
+				ImGui::SameLine();
+				ImGui::TextUnformatted("/");
+				ImGui::SameLine();
+				if (ImGui::SmallButton("...##BreadcrumbTrunc")) {
+					ImGui::OpenPopup("BreadcrumbHidden");
+				}
+				EditorUI::Tooltip("Hidden directories");
+				if (ImGui::BeginPopup("BreadcrumbHidden")) {
+					for (std::size_t i = 1; i + 1 < segments.size(); ++i) {
+						if (visible[i]) continue;
+						// Append the full path as the ID suffix so duplicate folder
+						// names (e.g. multiple "New Folder" ancestors) don't collide.
+						const std::string itemId = segments[i].Label + "##" + segments[i].FullPath;
+						if (ImGui::MenuItem(itemId.c_str())) {
+							NavigateTo(segments[i].FullPath);
+							ImGui::EndPopup();
+							return;
+						}
+					}
+					ImGui::EndPopup();
 				}
 			}
-		}
 
-		// ── Render ───────────────────────────────────────────────────
-
-		auto isCurrent = [this](const BreadcrumbSegment& s) {
-			return s.FullPath == m_CurrentDirectory;
-		};
-
-		// Root.
-		if (isCurrent(segments[0])) {
-			ImGui::TextUnformatted(segments[0].Label.c_str());
-		}
-		else if (ImGui::SmallButton(segments[0].Label.c_str())) {
-			NavigateTo(segments[0].FullPath);
-			return;
-		}
-
-		if (showTruncation) {
-			ImGui::SameLine();
-			ImGui::TextUnformatted("/");
-			ImGui::SameLine();
-			if (ImGui::SmallButton("...##BreadcrumbTrunc")) {
-				ImGui::OpenPopup("BreadcrumbHidden");
-			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("Hidden directories");
-			}
-			if (ImGui::BeginPopup("BreadcrumbHidden")) {
-				for (std::size_t i = 1; i + 1 < segments.size(); ++i) {
-					if (visible[i]) continue;
-					// Append the full path as the ID suffix so duplicate folder
-					// names (e.g. multiple "New Folder" ancestors) don't collide.
-					const std::string itemId = segments[i].Label + "##" + segments[i].FullPath;
-					if (ImGui::MenuItem(itemId.c_str())) {
+			// Visible intermediates and current — same separator pattern as
+			// before so the layout is unchanged when nothing's hidden.
+			for (std::size_t i = 1; i < segments.size(); ++i) {
+				if (!visible[i]) continue;
+				ImGui::SameLine();
+				ImGui::TextUnformatted("/");
+				ImGui::SameLine();
+				if (isCurrent(segments[i])) {
+					ImGui::TextUnformatted(segments[i].Label.c_str());
+				}
+				else {
+					const std::string id = segments[i].Label + "##" + segments[i].FullPath;
+					if (ImGui::SmallButton(id.c_str())) {
 						NavigateTo(segments[i].FullPath);
-						ImGui::EndPopup();
 						return;
 					}
 				}
-				ImGui::EndPopup();
 			}
+
+			// Tile-size slider + refresh button, right-aligned on the breadcrumb row.
+			const float rightEdge = ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX();
+			ImGui::SameLine(std::max(0.0f, rightEdge - refreshButtonWidth - style.ItemSpacing.x - tileSliderWidth));
+			ImGui::SetNextItemWidth(tileSliderWidth);
+			if (ImGui::SliderFloat("##AssetTileSize", &m_TileSize, k_MinTileSize, k_MaxTileSize, "%.0f",
+				ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput)) {
+				m_TileSize = std::round(m_TileSize); // integer sizes keep tile/selection rects pixel-aligned
+			}
+			EditorUI::Tooltip("Tile size");
+			ImGui::SameLine(std::max(0.0f, rightEdge - refreshButtonWidth));
+			if (EditorUI::IconButton("##Refresh", "reset", "Refresh")) {
+				m_NeedsRefresh = true;
+			}
+		}();
+		EditorUI::EndToolbar();
+	}
+
+	const std::vector<AssetBrowser::FolderTreeEntry>& AssetBrowser::GetFolderTreeChildren(const std::string& path) {
+		// unordered_map references survive rehashing, so callers may hold the result while recursing.
+		auto it = m_FolderTreeChildren.find(path);
+		if (it != m_FolderTreeChildren.end()) {
+			return it->second;
 		}
 
-		// Visible intermediates and current — same separator pattern as
-		// before so the layout is unchanged when nothing's hidden.
-		for (std::size_t i = 1; i < segments.size(); ++i) {
-			if (!visible[i]) continue;
-			ImGui::SameLine();
-			ImGui::TextUnformatted("/");
-			ImGui::SameLine();
-			if (isCurrent(segments[i])) {
-				ImGui::TextUnformatted(segments[i].Label.c_str());
+		std::vector<FolderTreeEntry> children;
+		std::error_code ec;
+		const std::filesystem::path base = Path::FromUtf8(path);
+		for (std::filesystem::directory_iterator dirIt(base, std::filesystem::directory_options::skip_permission_denied, ec), end;
+			dirIt != end && !ec; dirIt.increment(ec)) {
+			std::error_code entryEc;
+			if (!dirIt->is_directory(entryEc) || entryEc) {
+				continue;
 			}
-			else {
-				const std::string id = segments[i].Label + "##" + segments[i].FullPath;
-				if (ImGui::SmallButton(id.c_str())) {
-					NavigateTo(segments[i].FullPath);
-					return;
-				}
-			}
+			FolderTreeEntry child;
+			child.Path = Path::ToUtf8(dirIt->path());
+			child.Name = Path::ToUtf8(dirIt->path().filename());
+			child.Key = MakeFolderTreeKey(child.Path);
+			children.push_back(std::move(child));
+		}
+		// Same ordering as Directory::GetEntries so the tree matches the grid.
+		std::sort(children.begin(), children.end(),
+			[](const FolderTreeEntry& a, const FolderTreeEntry& b) { return a.Name < b.Name; });
+
+		return m_FolderTreeChildren.emplace(path, std::move(children)).first->second;
+	}
+
+	void AssetBrowser::RenderFolderTree() {
+		if (m_FolderTreeDirty) {
+			m_FolderTreeChildren.clear();
+			m_FolderTreeDirty = false;
+		}
+		if (m_RootDirectory.empty()) {
+			return;
 		}
 
-		// Refresh button (right-aligned on the breadcrumb row).
-		ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - 30.0f);
-		{
-			uint64_t refreshIcon = EditorIcons::Get("reset", 16);
-			bool clicked = false;
-			if (refreshIcon) {
-				clicked = ImGui::ImageButton("##Refresh",
-					static_cast<ImTextureID>(static_cast<intptr_t>(refreshIcon)),
-					ImVec2(14, 14), ImVec2(0, 1), ImVec2(1, 0));
-			} else {
-				clicked = ImGui::SmallButton("R");
-			}
-			if (clicked) m_NeedsRefresh = true;
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Refresh");
+		m_FolderTreeCurrentKey = MakeFolderTreeKey(m_CurrentDirectory);
+		// Expand + scroll to the current folder whenever it changes from outside the tree (grid, breadcrumb, reveal).
+		if (m_FolderTreeRevealedDirectory != m_CurrentDirectory) {
+			m_FolderTreeRevealedDirectory = m_CurrentDirectory;
+			m_FolderTreeRevealPending = true;
 		}
+
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 2.0f));
+		RenderFolderTreeNode(m_RootDirectory, "Assets", MakeFolderTreeKey(m_RootDirectory), true);
+		ImGui::PopStyleVar();
+
+		m_FolderTreeRevealPending = false;
+	}
+
+	void AssetBrowser::RenderFolderTreeNode(const std::string& path, const std::string& label, const std::string& key, bool isRoot) {
+		const std::vector<FolderTreeEntry>& children = GetFolderTreeChildren(path);
+		const bool isCurrent = key == m_FolderTreeCurrentKey;
+
+		ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow
+			| ImGuiTreeNodeFlags_OpenOnDoubleClick
+			| ImGuiTreeNodeFlags_SpanAvailWidth;
+		if (children.empty()) {
+			flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+		}
+		if (isCurrent) {
+			flags |= ImGuiTreeNodeFlags_Selected;
+		}
+		if (isRoot) {
+			flags |= ImGuiTreeNodeFlags_DefaultOpen;
+		}
+		if (m_FolderTreeRevealPending && !children.empty() && IsFolderTreeAncestor(key, m_FolderTreeCurrentKey)) {
+			ImGui::SetNextItemOpen(true);
+		}
+
+		// Empty label: the icon + name are drawn manually so the icon sits between arrow and text.
+		const bool open = ImGui::TreeNodeEx(path.c_str(), flags, "%s", "");
+		const ImVec2 itemMin = ImGui::GetItemRectMin();
+		const ImVec2 itemMax = ImGui::GetItemRectMax();
+
+		if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen() && !isCurrent) {
+			NavigateTo(path); // same path the breadcrumb uses; applied before the grid renders
+		}
+
+		// Unlike grid tiles, the tree exposes the source's own parent and descendants; refuse those
+		// drops up front so they neither highlight nor run a no-op/failing Move.
+		bool acceptDrop = true;
+		if (const ImGuiPayload* dragged = ImGui::GetDragDropPayload();
+			dragged && dragged->Data && dragged->IsDataType("ASSET_BROWSER_ITEM")) {
+			const std::string sourceKey = MakeFolderTreeKey(static_cast<const char*>(dragged->Data));
+			const std::string sourceParentKey = MakeFolderTreeKey(
+				Path::ToUtf8(Path::FromUtf8(sourceKey).parent_path()));
+			acceptDrop = key != sourceKey && key != sourceParentKey && !IsFolderTreeAncestor(sourceKey, key);
+		}
+		if (acceptDrop) {
+			DirectoryEntry dropEntry;
+			dropEntry.Path = path;
+			dropEntry.Name = label;
+			dropEntry.IsDirectory = true;
+			HandleDropTarget(dropEntry);
+		}
+
+		if (isCurrent && m_FolderTreeRevealPending && !ImGui::IsItemVisible()) {
+			ImGui::SetScrollHereY(0.5f);
+		}
+
+		ImDrawList* drawList = ImGui::GetWindowDrawList();
+		const float lineHeight = ImGui::GetTextLineHeight();
+		const float iconSize = lineHeight;
+		const ImVec2 iconPos(
+			itemMin.x + ImGui::GetTreeNodeToLabelSpacing(),
+			std::floor(itemMin.y + (itemMax.y - itemMin.y - iconSize) * 0.5f));
+		const uint64_t icon = EditorIcons::Get("open_folder", static_cast<int>(iconSize));
+		if (icon != 0) {
+			drawList->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(icon)),
+				iconPos, ImVec2(iconPos.x + iconSize, iconPos.y + iconSize),
+				ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+		}
+		else {
+			ThumbnailCache::DrawAssetIcon(AssetType::Folder, iconPos, iconSize);
+		}
+		drawList->AddText(
+			ImVec2(iconPos.x + iconSize + 4.0f, itemMin.y + (itemMax.y - itemMin.y - lineHeight) * 0.5f),
+			ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
+
+		if (open && !children.empty()) {
+			for (const FolderTreeEntry& child : children) {
+				RenderFolderTreeNode(child.Path, child.Name, child.Key, false);
+			}
+			ImGui::TreePop();
+		}
+	}
+
+	void AssetBrowser::RenderFolderTreeSplitter() {
+		const float height = std::max(1.0f, ImGui::GetContentRegionAvail().y);
+		ImGui::InvisibleButton("##AssetFolderTreeSplitter", ImVec2(k_FolderTreeSplitterWidth, height));
+		const bool hovered = ImGui::IsItemHovered();
+		const bool active = ImGui::IsItemActive();
+		if (hovered || active) {
+			ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+		}
+		if (active) {
+			m_FolderTreeWidth += ImGui::GetIO().MouseDelta.x; // clamped next frame in Render()
+		}
+
+		const ImVec2 min = ImGui::GetItemRectMin();
+		const ImVec2 max = ImGui::GetItemRectMax();
+		const float x = std::floor((min.x + max.x) * 0.5f) + 0.5f;
+		const ImU32 color = (hovered || active)
+			? ImGui::GetColorU32(EditorTheme::Colors::Accent())
+			: ImGui::GetColorU32(ImGuiCol_Border);
+		ImGui::GetWindowDrawList()->AddLine(ImVec2(x, min.y), ImVec2(x, max.y), color, (hovered || active) ? 2.0f : 1.0f);
 	}
 
 	void AssetBrowser::RenderGrid() {
@@ -1823,13 +1973,16 @@ namespace Index {
 		}
 
 		if (visibleEntries.empty()) {
-			if (m_SearchBuffer[0] != '\0')
-				ImGui::TextDisabled("No assets match \"%s\"", m_SearchBuffer);
-			else
-				ImGui::TextDisabled("Empty folder");
+			if (m_SearchBuffer[0] != '\0') {
+				const std::string title = std::string("No assets match \"") + m_SearchBuffer + "\"";
+				EditorUI::EmptyState(title.c_str(), "Try a different search term.");
+			}
+			else {
+				EditorUI::EmptyState("Empty folder", "Drop files here or right-click to create an asset.");
+			}
 		}
 		else if (m_SearchBuffer[0] != '\0' && m_SearchTruncated) {
-			ImGui::TextDisabled("Too many matches - showing a subset. Refine your search.");
+			EditorUI::StatusText(EditorUI::Tone::Neutral, "Too many matches - showing a subset. Refine your search.");
 		}
 
 		RenderGridContextMenu();
@@ -1886,8 +2039,8 @@ namespace Index {
 			const float rounding = 2.0f;
 			const float thickness = 1.0f;
 
-			ImU32 fillColor = ImGui::GetColorU32(EditorTheme::Colors::AssetTileSelection);
-			ImU32 borderColor = ImGui::GetColorU32(EditorTheme::Colors::AssetTileSelectionBorder);
+			ImU32 fillColor = ImGui::GetColorU32(EditorTheme::Colors::AssetTileSelection());
+			ImU32 borderColor = ImGui::GetColorU32(EditorTheme::Colors::AssetTileSelectionBorder());
 
 			drawList->AddRectFilled(min, max, fillColor, rounding);
 			drawList->AddRect(min, max, borderColor, rounding,
@@ -2063,15 +2216,14 @@ namespace Index {
 
 				ImDrawList* dl = ImGui::GetWindowDrawList();
 				const bool isExpanded = m_ExpandedTextures.find(entry.Path) != m_ExpandedTextures.end();
-				// Background pill so the glyph stays readable on light textures.
-				dl->AddRectFilled(triMin, triMax,
-					IM_COL32(0, 0, 0, expanderHovered ? 160 : 110), 4.0f);
+				// Background pill so the glyph stays readable on any texture; window bg + text colour keeps contrast in both themes.
+				ImVec4 pillColor = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+				pillColor.w = expanderHovered ? 0.85f : 0.65f;
+				dl->AddRectFilled(triMin, triMax, ImGui::GetColorU32(pillColor), 4.0f);
 								const uint64_t arrowIcon = EditorIcons::Get(
 					isExpanded ? "arrow_left" : "arrow_right", 16);
 				if (arrowIcon != 0) {
-					const ImU32 tint = expanderHovered
-						? IM_COL32(255, 255, 255, 255)
-						: IM_COL32(220, 220, 220, 200);
+					const ImU32 tint = ImGui::GetColorU32(ImGuiCol_Text, expanderHovered ? 1.0f : 0.8f);
 					dl->AddImage(
 						static_cast<ImTextureID>(static_cast<intptr_t>(arrowIcon)),
 						triMin, triMax,
@@ -2495,8 +2647,8 @@ namespace Index {
 		ImDrawList* dl = ImGui::GetWindowDrawList();
 		const ImVec2 bgMin = cursorPos;
 		const ImVec2 bgMax(cursorPos.x + m_TileSize, cursorPos.y + m_TileSize);
-		dl->AddRectFilled(bgMin, bgMax, IM_COL32(35, 38, 46, 200), 3.0f);
-		dl->AddRect(bgMin, bgMax, IM_COL32(70, 80, 100, 180), 3.0f);
+		dl->AddRectFilled(bgMin, bgMax, ImGui::GetColorU32(ImGuiCol_FrameBg), 3.0f);
+		dl->AddRect(bgMin, bgMax, ImGui::GetColorU32(ImGuiCol_Border), 3.0f);
 
 		// Y-flipped UVs: thumbnails are uploaded bottom-up (same convention as the regular tile path).
 		const uint64_t parentThumb = m_Thumbnails.GetThumbnail(parentEntry.Path);
@@ -2542,7 +2694,7 @@ namespace Index {
 			m_Thumbnails.GetThumbnail(parentEntry.Path);
 			const ImVec2 phMin(cursorPos.x + 12.0f, cursorPos.y + 12.0f);
 			const ImVec2 phMax(cursorPos.x + m_TileSize - 12.0f, cursorPos.y + m_TileSize - 12.0f);
-			dl->AddRectFilled(phMin, phMax, IM_COL32(60, 60, 60, 200), 4.0f);
+			dl->AddRectFilled(phMin, phMax, ImGui::GetColorU32(ImGuiCol_FrameBgHovered), 4.0f);
 		}
 
 		ImGui::SetCursorScreenPos(ImVec2(cursorPos.x, cursorPos.y + m_TileSize));

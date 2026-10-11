@@ -24,8 +24,12 @@ namespace Index {
 		float GetFriction() const;
 		void SetBounciness(float bounciness);
 		float GetBounciness() const;
+		// Layers this collider belongs to (Box2D categoryBits).
 		void SetLayer(uint64_t layer);
 		uint64_t GetLayer() const;
+		// Layers this collider collides with (maskBits). Two colliders touch only if each one's mask contains the other's layer.
+		void SetCollisionMask(uint64_t mask);
+		uint64_t GetCollisionMask() const;
 		bool IsEnabled() const;
 		bool IsSensor() const;
 
@@ -88,6 +92,7 @@ namespace Index {
 		float m_Friction{ 0.3f };
 		float m_Bounciness{ 0.0f };
 		uint64_t m_Layer{ 1 };
+		uint64_t m_CollisionMask{ UINT64_MAX };
 		bool m_Sensor{ false };
 		bool m_RegisterContacts{ false };
 	private:

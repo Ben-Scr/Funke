@@ -98,11 +98,20 @@ namespace Index {
 			// Non-zero profiler reading here means something marks transforms dirty every frame.
 			INDEX_PROFILE_SCOPE("TransformHierarchy");
 
+			const bool dirtyAll = scene.IsTransformDirtyAll();
 			std::vector<EntityHandle> dirtyTransforms = scene.ConsumeDirtyTransformEntities();
 
 			if (!hasHierarchy) {
-				for (EntityHandle entity : dirtyTransforms) {
-					ProcessRootTransform(registry, entity);
+				if (dirtyAll) {
+					auto all = registry.view<Transform2DComponent>();
+					for (auto entity : all) {
+						ProcessRootTransform(registry, entity);
+					}
+				}
+				else {
+					for (EntityHandle entity : dirtyTransforms) {
+						ProcessRootTransform(registry, entity);
+					}
 				}
 				return;
 			}

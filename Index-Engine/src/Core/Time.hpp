@@ -8,41 +8,49 @@ namespace Index {
 
 	class INDEX_API Time {
 	public:
-		float GetDeltaTime() const { return m_DeltaTime * m_TimeScale; }
-		float GetFrameRate() const { return m_DeltaTime > 0.0f ? 1.0f / m_DeltaTime : 0.0f; }
-		float GetDeltaTimeUnscaled() const { return m_DeltaTime; }
-		float GetUnscaledDeltaTime() const { return m_DeltaTime; }
-		void SetTargetFramerate(float fps);
+		static float GetDeltaTime();
+		static float GetFrameRate();
+		static float GetDeltaTimeUnscaled();
+		static float GetUnscaledDeltaTime();
+		static float GetTargetFramerate();
+		static void SetTargetFramerate(float fps);
 
 		// Always returns the unscaled fixed step. TimeScale changes step *frequency*
 		// (more/fewer FixedUpdate calls per real second), not the per-call dt — so
 		// integration done in FixedUpdate scales correctly without compounding.
-		float GetFixedDeltaTime() const { return m_FixedDeltaTime; }
-		void SetFixedDeltaTime(float step);
+		static float GetFixedDeltaTime();
+		static void SetFixedDeltaTime(float step);
 
-		float GetUnscaledFixedDeltaTime() const { return m_FixedDeltaTime; }
+		static float GetUnscaledFixedDeltaTime();
 
-		float GetTimeScale() const { return m_TimeScale; }
-		void SetTimeScale(float scale);
+		static float GetTimeScale();
+		static void SetTimeScale(float scale);
 
 		// Note: Realtime elapsed time
-		float GetElapsedTime() const;
+		static float GetElapsedTime();
 		// Note: Elapsed time based on timescale
-		float GetSimulatedElapsedTime() const;
+		static float GetSimulatedElapsedTime();
 
 		// Time since the game started (engine init excluded). Scales with TimeScale —
 		// at 2x scale the value advances twice as fast as wallclock. Reset by
 		// MarkGameStart(); zero before the first call.
-		float GetTimeSinceStartup() const { return m_GameSimulatedElapsedTime; }
+		static float GetTimeSinceStartup();
 
 		// Time since the game started (engine init excluded). Wallclock — ignores
 		// TimeScale and pause. Reset by MarkGameStart(); zero before the first call.
-		float GetRealtimeSinceStartup() const;
+		static float GetRealtimeSinceStartup();
 
-		int GetFrameCount() const { return m_FrameCount; }
+		static int GetFrameCount();
 
 	private:
 		using Clock = std::chrono::steady_clock;
+
+		Time() = default;
+		Time(const Time&) = delete;
+		Time& operator=(const Time&) = delete;
+
+		static Time* TryGetCurrent();
+		static void SetCurrent(Time* time);
 
 		void Update(float deltaTime);
 		void AdvanceFrameCount() { m_FrameCount++; }
@@ -53,18 +61,16 @@ namespace Index {
 		float m_DeltaTime = 0.0f;
 		float m_TargetFPS = 144.f;
 		float m_TimeScale = 1.f;
-		float m_UpdateDeltaTime = 1.0f / m_TargetFPS;
 		float m_FixedDeltaTime = 1.0f / 50.f;
 		float m_SimulatedElapsedTime = 0.0f;
 		float m_GameSimulatedElapsedTime = 0.0f;
 		bool  m_GameStarted = false;
 		int m_FrameCount = 0;
 
-		Clock::duration m_FrameDuration = std::chrono::duration_cast<Clock::duration>(
-			std::chrono::duration<float>(1.0f / m_TargetFPS)
-		);
 		Clock::time_point m_StartTime = Clock::now();
 		Clock::time_point m_GameStartTime = Clock::now();
+
+		static Time* s_Current;
 
 		friend class Application;
 		friend class ApplicationEditorAccess;

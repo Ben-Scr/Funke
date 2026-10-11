@@ -65,7 +65,7 @@ TEST_CASE("IndexProject round-trips font baking settings through project.json") 
 	namespace fs = std::filesystem;
 	const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
 	const fs::path root = fs::temp_directory_path() / ("IndexFontBakeRT_" + std::to_string(suffix));
-	fs::create_directories(root);
+	fs::create_directories(root / "Assets");
 	struct Cleanup {
 		fs::path Root;
 		~Cleanup() { std::error_code ec; fs::remove_all(Root, ec); }

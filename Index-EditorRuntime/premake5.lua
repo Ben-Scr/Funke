@@ -32,6 +32,7 @@ project "Index-EditorRuntime"
     -- merged wholesale into Index-EditorRuntime.lib. We need only the
     -- includes / defines / build-order from the dep set.
     UseDependencySetNoLink(Dependency.EngineSelectedModules)
+    UseIndexProfilerDependencies(false)
     defines(GetIndexModuleDefines())
     ApplyIndexEditorModuleDefine()
 

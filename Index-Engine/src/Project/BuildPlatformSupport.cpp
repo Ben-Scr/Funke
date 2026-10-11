@@ -5,7 +5,12 @@ namespace Index {
 
 	bool BuildPlatformSupport::IsAvailable(BuildPlatform platform) {
 		switch (platform) {
-			case BuildPlatform::Windows: return true;
+			case BuildPlatform::Windows:
+#if defined(IDX_PLATFORM_WINDOWS)
+				return true;
+#else
+				return false;
+#endif
 			// All non-Windows platforms disabled until editor platform-packages exist.
 			case BuildPlatform::Linux:
 			case BuildPlatform::MacOS:
@@ -25,7 +30,12 @@ namespace Index {
 				" platform packages are available.";
 		};
 		switch (platform) {
-			case BuildPlatform::Windows:  return {};
+			case BuildPlatform::Windows:
+#if defined(IDX_PLATFORM_WINDOWS)
+				return {};
+#else
+				return "Windows cross-compilation is not available on this host.";
+#endif
 			case BuildPlatform::Linux:    return notInstalled("Linux");
 			case BuildPlatform::MacOS:    return notInstalled("macOS");
 			case BuildPlatform::Android:  return notInstalled("Android");

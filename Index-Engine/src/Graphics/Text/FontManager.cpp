@@ -2,8 +2,8 @@
 #include "Graphics/Text/FontManager.hpp"
 
 #include "Assets/AssetRegistry.hpp"
-#include "Core/Application.hpp"
 #include "Core/Log.hpp"
+#include "Core/Time.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Path.hpp"
 
@@ -17,11 +17,9 @@
 namespace Index {
 
 	namespace {
-		// Engine frame counter; 0 when no Application (headless/tests — eviction
-		// never runs there anyway). Used to protect the current frame's working set.
+		// Protects the current frame's working set; zero before an Application is active.
 		int CurrentFrame() {
-			const Application* app = Application::GetInstance();
-			return app ? app->GetTime().GetFrameCount() : 0;
+			return Time::GetFrameCount();
 		}
 	}
 

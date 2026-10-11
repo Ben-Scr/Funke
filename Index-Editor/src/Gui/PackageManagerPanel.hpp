@@ -61,8 +61,7 @@ namespace Index {
 		// True if `name` is in the active project's Packages allow-list.
 		bool IsPackageInstalled(const std::string& name) const;
 
-		// If justInstalledPackageName is non-empty, verifies the package actually loaded after rescan;
-		// on SEH-trapped load failure it auto-rolls-back via UninstallFromProject.
+		// Native installs roll back when the built library cannot load; managed-only installs do not enter PackageHost.
 		void StartPostInstallAutomation(const std::string& justInstalledPackageName = {});
 
 		// Per-frame poll for the async automate worker; pulls completed results.
@@ -79,6 +78,7 @@ namespace Index {
 			bool Finished = false;
 			bool Success = false;
 			std::string Error;
+			std::string ProjectRoot;
 		};
 		std::shared_ptr<AutomationTaskState> m_AutomationTask;
 		std::thread m_AutomationWorker;

@@ -1,8 +1,8 @@
 #pragma once
-#include "Scene/ISystem.hpp"
+#include "Scene/SceneSystem.hpp"
 
 namespace Index {
-	class ParticleUpdateSystem : public ISystem {
+	class ParticleUpdateSystem : public SceneSystem {
 	public:
 		virtual void Awake(Scene& scene);
 		virtual void Update(Scene& scene);

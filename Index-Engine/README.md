@@ -9,22 +9,23 @@ A minimal Index game is one translation unit: a subclass of `Index::Application`
 ```cpp
 // MyGame.cpp — the single TU that owns the process entry point.
 
-#include <Index/App.hpp>          // Application + standalone-core surface.
+#include <Index.hpp>              // Public game API.
 #include <EntryPoint.hpp>         // Defines main()/WinMain(). See warning below.
 
-class MyGame : public Index::Application {
+using namespace Index;
+
+class MyGame : public Application {
 public:
-    Index::ApplicationConfig GetConfiguration() const override {
+    ApplicationConfig GetConfiguration() const override {
         // Pick a runtime profile; see "Configuring what the engine starts up" below.
-        Index::ApplicationConfig config = Index::ApplicationConfig::Game();
-        config.WindowSpecification = Index::WindowSpecification(
+        ApplicationConfig config = ApplicationConfig::Game();
+        config.WindowSpecification = WindowSpecification(
             1280, 720, "My Game", /*resizable*/ true, /*decorated*/ true, /*fullscreen*/ false);
         return config;
     }
 
     void ConfigureScenes() override {
-        // Register scenes here; the SceneManager instantiates them after Start().
-        // GetSceneManager()->RegisterScene("MainMenu").SetAsStartupScene();
+        SceneManager::RegisterScene("Main").SetAsStartupScene();
     }
 
     void Start() override      {} // Called once after subsystems are up.
@@ -39,9 +40,51 @@ Index::Application* Index::CreateApplication() {
 }
 ```
 
-> **Warning (audit E29):** `EntryPoint.hpp` defines `main()` (or `WinMain()` in Dist Windows builds) at file scope. Including it in two translation units triggers a duplicate-symbol linker error — and the header guards against this with a sentinel that produces a `#error` if the header is re-included after the symbol has been emitted. **Include it in exactly one `.cpp`.** Every other TU should use `<Index/App.hpp>` (or `<Index/Core.hpp>`) only.
+With the 2D renderer enabled, a raw native app automatically gives its active
+scene a runtime `Camera2D` after `OnLoad` and before systems start. A camera
+created by the scene, including a disabled one, suppresses that fallback. Use
+`WithoutDefaultCamera2D()` for intentionally camera-free definitions:
+
+```cpp
+SceneManager::RegisterScene("ServerState")
+    .WithoutDefaultCamera2D()
+    .SetAsStartupScene();
+```
+
+> **Warning (audit E29):** `EntryPoint.hpp` defines `main()` (or `WinMain()` in Dist Windows builds) at file scope. Including it in two translation units triggers a duplicate-symbol linker error — and the header guards against this with a sentinel that produces a `#error` if the header is re-included after the symbol has been emitted. **Include it in exactly one `.cpp`.** Every other TU should use `<Index.hpp>` (or `<Index/Core.hpp>` for core-only utilities).
 
 The canonical end-to-end example lives in [`Index-Runtime/src/RuntimeApplication.cpp`](../Index-Runtime/src/RuntimeApplication.cpp): it loads `project.json` next to the executable, registers project scenes, and falls back to a built-in sample if no project is found.
+
+## Native SDK for external Visual Studio projects
+
+Build a self-contained Dist SDK from the current engine binaries:
+
+```bat
+scripts\BuildNativeSdk.bat -Verify
+```
+
+The output is `bin\IndexSDK-Dist-windows-x86_64`. In an empty Visual Studio
+2022 C++ project, open **Property Manager** and add its `IndexSDK.props` to the
+`Dist | x64` configuration. That one property sheet provides the single public
+include root, ABI defines, `Index-Engine.lib`, required Windows libraries, and
+post-build deployment of the runtime DLLs and `IndexAssets`.
+
+The SDK layout is deliberately independent of the repository layout:
+
+```text
+IndexSDK-Dist-windows-x86_64/
+|-- include/              # the only consumer include directory
+|-- lib/Index-Engine.lib  # the only engine import library without Tracy
+|-- runtime/              # DLLs and IndexAssets, copied by IndexSDK.props
+|-- IndexSDK.props        # import this in Visual Studio
+|-- IndexSDK.targets      # applies ABI/link settings after project defaults
+`-- examples/MinimalApp/  # buildable raw C++ reference project
+```
+
+`BuildNativeSdk.bat` inspects the actual `Index-Engine.dll` and emits matching
+Tracy headers, defines, import library, and runtime DLL only when that binary
+uses the profiler ABI. The `-Verify` option builds and runs the included
+120-frame smoke test entirely through the packaged SDK surface.
 
 ## Picking an umbrella header
 
@@ -49,9 +92,9 @@ Three umbrella headers ship today. Pick one based on what your TU actually uses:
 
 | Include | Use when |
 |---|---|
-| `<Index/App.hpp>` | Building an app that derives from `Application` (game runtime, editor host, custom tool that drives the engine loop). Pulls Core + `Application.hpp`. Requires `INDEX_WITH_APPLICATION=1` (set automatically by the `full` module profile or any custom profile that enables every module). |
+| `<Index.hpp>` | Recommended game-facing umbrella. Exposes the application loop, scenes, entities, systems, concrete components, input, math, rendering, audio, physics, and native scripting enabled by the current module profile. It deliberately does not define `main()` or import the `Index` namespace globally. |
+| `<Index/App.hpp>` | Smaller application umbrella for hosts that want `Application` plus Core without the complete game-facing surface. Requires `INDEX_WITH_APPLICATION=1`. |
 | `<Index/Core.hpp>` | Linking the engine for utility code only — no `Application` loop. Gives you `Collections/` (Vec2/Vec4/Color/Mat2/Viewport), `Core/Time`, `Core/Log`, `Core/Assert`, `Core/Version`, `Core/Base`, `Core/Exceptions`, `Core/Export`, and `ApplicationConfig` (the type — not the runtime). Safe in any module profile, including `core`. |
-| `<Index.hpp>` | Legacy compatibility header. By itself it is identical to `<Index/Core.hpp>`. **Define `INDEX_ALL_MODULES` before including it** to restore the legacy wide-surface include set (Components, Graphics, Physics, Audio, Scene, Events, Math, Utils). New code should prefer `<Index/App.hpp>` for app TUs and per-subsystem includes elsewhere. |
 
 `EntryPoint.hpp` is a fourth header but **not an umbrella**: it exists solely to define `main()`/`WinMain()` and call your `CreateApplication()` factory. Include it in one TU only.
 
@@ -72,8 +115,8 @@ ApplicationConfig::Game();     // Today's default: full rendering, audio,
                                // physics, scripting, package host. Equivalent
                                // to a default-constructed ApplicationConfig.
 
-ApplicationConfig::Editor();   // Editor-host defaults. Identical to Game()
-                               // today; reserved as a future hook.
+ApplicationConfig::Editor();   // Editor-host defaults; scene content remains
+                               // responsible for its cameras.
 ```
 
 Per-subsystem flags on `ApplicationConfig` (override individually after a factory call):
@@ -86,11 +129,15 @@ Per-subsystem flags on `ApplicationConfig` (override individually after a factor
 | `EnableAudio` | Skips miniaudio device init; `AudioSource` components are inert. |
 | `EnableScripting` | Skips CoreCLR + ScriptCore + user-assembly load. `ScriptSystem` still attaches but bails in `Awake`. |
 | `EnableRenderer2D` | Skips `Renderer2D` construction; `BeginFrame`/`EndFrame` null-check it. |
+| `AutoCreateDefaultCamera2D` | Disables the fallback; active camera-free scenes remain unchanged. |
 | `EnableTextureManager` | Skips `TextureManager::Initialize`/`Shutdown`. Window-icon falls back to Win32 resource. |
 | `EnablePackageHost` | Skips `PackageHost::LoadAll`. Native packages next to the exe are not discovered. |
 | `SetWindowIcon` | Suppresses the icon load entirely. |
-| `Vsync` | Disables swap-interval vsync; framerate is governed by `SetTargetFramerate`. |
-| `UseTargetFrameRateForMainLoop` | When false, the loop runs uncapped and ignores `m_TargetFramerate`. |
+| `Vsync` | Disables swap-interval vsync; framerate is governed by `TargetFrameRate`. |
+| `RunInBackground` | Pauses application updates while the window is unfocused. |
+| `UseTargetFrameRateForMainLoop` | When false, the loop runs uncapped and ignores `TargetFrameRate`. |
+
+The `TargetFrameRate` field sets the initial main-loop cap in frames per second; `0` disables the cap. Runtime calls may change it later.
 
 The `WindowSpecification WindowSpecification` field controls the GLFW window — width, height, title, resizable, decorated, fullscreen. See [`Core/WindowSpecification.hpp`](src/Core/WindowSpecification.hpp).
 
@@ -103,7 +150,7 @@ The Premake build supports module-level slicing. Pass these to `premake5`:
 ```bat
 vendor\bin\premake5.exe vs2022 --module-profile=full
 vendor\bin\premake5.exe vs2022 --module-profile=core
-vendor\bin\premake5.exe vs2022 --module-profile=custom --with-render --with-audio
+vendor\bin\premake5.exe vs2022 --module-profile=custom --with-editor
 ```
 
 Profiles (defined in [`premake5.lua`](../premake5.lua)):
@@ -112,21 +159,27 @@ Profiles (defined in [`premake5.lua`](../premake5.lua)):
 |---|---|---|
 | `full` *(default for compatibility)* | Render, Audio, Physics, Scripting, Editor | All `INDEX_WITH_*=1` plus `INDEX_ALL_MODULES=1` plus `INDEX_WITH_APPLICATION=1`. Includes `Index-Launcher` and `Index-Runtime` projects in the solution. |
 | `core` | (none) | All `INDEX_WITH_*=0`, `INDEX_CORE_ONLY=1`. No third-party module dependencies pulled in. `<Index/App.hpp>` will fail to compile in this profile (Application requires the full surface). |
-| `custom` | Whatever `--with-*` flags select | Per-module `INDEX_WITH_*` defines. `INDEX_WITH_APPLICATION=1` only when render+audio+physics+scripting+editor are all on. |
+| `custom` | No modules, or the complete application surface with `--with-editor` | With no module flags this is core-equivalent. `--with-editor` enables render, audio, physics, and scripting, but does not define the legacy `INDEX_ALL_MODULES`. Partial custom combinations fail during project generation. |
 
 Per-module flags (only meaningful with `--module-profile=custom`, or implicitly enable `custom` when used without `--module-profile`):
 
-- `--with-render` — GLFW, Glad, OpenGL, `Graphics/`, `Gui/GuiRenderer`, particle/gizmo systems.
-- `--with-audio` — miniaudio, `Audio/`, `Components/Audio/`, `AudioUpdateSystem`.
-- `--with-physics` — Box2D, Index-Physics, `Physics/`, `Components/Physics/`.
-- `--with-scripting` — .NET host, `Scripting/`, `Index-ScriptCore` and `Index-Sandbox` projects.
+- `--with-render` — Selects GLFW, Dawn/WebGPU, `Graphics/`, `Gui/GuiRenderer`, and particle/gizmo systems. Partial custom profiles are not currently supported, so this must be combined with `--with-editor`.
+- `--with-audio` — Selects miniaudio, `Audio/`, `Components/Audio/`, and `AudioUpdateSystem`. Partial custom profiles are not currently supported, so this must be combined with `--with-editor`.
+- `--with-physics` — Selects Box2D, Index-Physics, `Physics/`, and `Components/Physics/`. Partial custom profiles are not currently supported, so this must be combined with `--with-editor`.
+- `--with-scripting` — Selects the .NET host, `Scripting/`, `Index-ScriptCore`, and `Index-Sandbox` projects. Custom profiles must also pass `--with-editor`.
 - `--with-editor` — ImGui static lib. Implicitly turns on render, audio, physics, and scripting (the editor depends on all of them).
 
 Other build-shaping flags:
 
 - `--no-profiler` — Strip Tracy and the `Profiling/` folder entirely. `INDEX_PROFILER_ENABLED` is undefined; the in-engine ProfilerPanel is excluded.
 - `--with-imgui-demo` — Compile `imgui_demo.cpp` into the ImGui static lib (editor only).
-- `--index-project=PATH` — Add `<PATH>/Packages/<Name>/index-package.lua` manifests to the package loader so project-local packages get built into the solution.
+- `--index-project=PATH` — Read the project's `entityBits` setting when generating the engine workspace. Project-local packages are generated into their own workspace:
+
+```powershell
+vendor/bin/premake5.exe --file=premake/project-packages.lua --index-project="<project>" vs2022
+```
+
+The editor and Launcher run that project-package command automatically.
 
 The exact wiring lives in [`premake5.lua`](../premake5.lua) (see `ResolveIndexModules`, `GetIndexModuleDefines`) and per-module dependency sets in [`Dependencies.lua`](../Dependencies.lua).
 
@@ -139,7 +192,6 @@ Always required:
 - `<YourGame>.exe` — your game binary.
 - `Index-Engine.dll` — the engine shared lib. Built as a `SharedLib` from `Index-Engine/premake5.lua`. Consumers define `IDX_IMPORT_DLL`; the engine builds with `IDX_BUILD_DLL`.
 - `GLFW.dll` — windowing/input. Shipped as a `SharedLib` so engine+exe share its global state.
-- `Glad.dll` — OpenGL loader. Same shared-state reason as GLFW.
 - `IndexAssets/` directory — engine default assets (`Audio/`, `Fonts/`, `Shader/`, `Textures/`). Source of truth is [`Index-Runtime/IndexAssets/`](../Index-Runtime/IndexAssets); the post-build copies it next to the exe.
 
 Conditional:

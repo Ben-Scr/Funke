@@ -3,8 +3,10 @@
 #include "Math/VectorMath.hpp"
 
 #include <glm/glm.hpp>
+#include <limits>
 
 using namespace Index;
+using namespace Index::Vector;
 
 TEST_CASE("Dot, Length and LengthSquared agree with hand-computed values")
 {
@@ -117,8 +119,8 @@ TEST_CASE("Named constant directions return the expected unit axes")
 	CHECK(Up().x == doctest::Approx(0.0f));
 	CHECK(Up().y == doctest::Approx(1.0f));
 
-	CHECK(Bottom().x == doctest::Approx(0.0f));
-	CHECK(Bottom().y == doctest::Approx(-1.0f));
+	CHECK(Down().x == doctest::Approx(0.0f));
+	CHECK(Down().y == doctest::Approx(-1.0f));
 
 	CHECK(Left().x == doctest::Approx(-1.0f));
 	CHECK(Left().y == doctest::Approx(0.0f));
@@ -136,4 +138,15 @@ TEST_CASE("RandomInCircle and RandomOnCircle respect the requested radius")
 		CHECK(Length(RandomInCircle(radius)) <= doctest::Approx(radius));
 		CHECK(Length(RandomOnCircle(radius)) == doctest::Approx(radius));
 	}
+}
+
+TEST_CASE("Random circle helpers reject non-finite radii")
+{
+	const Vec2 infiniteInCircle = RandomInCircle(std::numeric_limits<float>::infinity());
+	const Vec2 nanOnCircle = RandomOnCircle(std::numeric_limits<float>::quiet_NaN());
+
+	CHECK(infiniteInCircle.x == 0.0f);
+	CHECK(infiniteInCircle.y == 0.0f);
+	CHECK(nanOnCircle.x == 0.0f);
+	CHECK(nanOnCircle.y == 0.0f);
 }

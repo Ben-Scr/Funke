@@ -7,16 +7,18 @@
 #include "Serialization/Directory.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
-#include "Serialization/SceneSerializer.hpp"
-#include "Serialization/SceneSerializerShared.hpp"
+#include "Serialization/SceneSerializerStorage.hpp"
 #include "Utils/Process.hpp"
 #include "Core/Log.hpp"
 #include "Core/Version.hpp"
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <ctime>
 #include <sstream>
 #include <iomanip>
@@ -25,6 +27,46 @@
 
 namespace Index {
 	namespace {
+		const char* UpscaleFilterToString(UpscaleFilterMode value) {
+			return value == UpscaleFilterMode::Point ? "Point" : "Linear";
+		}
+
+		UpscaleFilterMode UpscaleFilterFromString(std::string_view value) {
+			return value == "Point" ? UpscaleFilterMode::Point : UpscaleFilterMode::Linear;
+		}
+
+		const char* PostProcessingQualityToString(PostProcessingQualityLevel value) {
+			switch (value) {
+				case PostProcessingQualityLevel::Low: return "Low";
+				case PostProcessingQualityLevel::Medium: return "Medium";
+				case PostProcessingQualityLevel::High: return "High";
+			}
+			return "High";
+		}
+
+		PostProcessingQualityLevel PostProcessingQualityFromString(std::string_view value) {
+			if (value == "Low") return PostProcessingQualityLevel::Low;
+			if (value == "Medium") return PostProcessingQualityLevel::Medium;
+			return PostProcessingQualityLevel::High;
+		}
+
+		const char* ParticleQualityToString(ParticleQualityLevel value) {
+			switch (value) {
+				case ParticleQualityLevel::Off: return "Off";
+				case ParticleQualityLevel::Low: return "Low";
+				case ParticleQualityLevel::Medium: return "Medium";
+				case ParticleQualityLevel::High: return "High";
+			}
+			return "High";
+		}
+
+		ParticleQualityLevel ParticleQualityFromString(std::string_view value) {
+			if (value == "Off") return ParticleQualityLevel::Off;
+			if (value == "Low") return ParticleQualityLevel::Low;
+			if (value == "Medium") return ParticleQualityLevel::Medium;
+			return ParticleQualityLevel::High;
+		}
+
 		// Reject scene/icon strings that try to escape the project tree or carry
 		// shell/OS-control characters. Defense-in-depth: GetSceneFilePath also
 		// guards, but rejecting at load means a tampered project.json
@@ -104,11 +146,11 @@ namespace Index {
 				return {};
 			}
 
-			return relative.generic_string();
+			return Path::ToGenericUtf8(relative);
 		}
 
 		std::filesystem::path ResolveEngineRoot() {
-			const auto exeDir = std::filesystem::path(Path::ExecutableDir());
+			const auto exeDir = Path::FromUtf8(Path::ExecutableDir());
 		// Dev layout (bin/<cfg>-<plat>/Index-Launcher/) probed first; EngineSDK/ fallback for packaged distributions.
 		const std::vector<std::filesystem::path> candidates = {
 				exeDir / ".." / ".." / "..",
@@ -132,155 +174,6 @@ namespace Index {
 			return {};
 		}
 
-		constexpr uint64_t k_Fnv1aSeed   = 0xcbf29ce484222325ull;
-		constexpr uint64_t k_Fnv1aPrime  = 0x100000001b3ull;
-
-		uint64_t HashBytesInto(uint64_t seed, const void* data, size_t len) {
-			const auto* bytes = static_cast<const unsigned char*>(data);
-			uint64_t h = seed;
-			for (size_t i = 0; i < len; ++i) {
-				h ^= bytes[i];
-				h *= k_Fnv1aPrime;
-			}
-			return h;
-		}
-
-		uint64_t HashStringInto(uint64_t seed, std::string_view s) {
-			// Mix a separator byte so adjacent strings can't collide by
-			// concatenation (e.g. {"ab","c"} vs {"a","bc"}).
-			seed = HashBytesInto(seed, s.data(), s.size());
-			const unsigned char sep = 0x1f;
-			return HashBytesInto(seed, &sep, 1);
-		}
-
-		uint64_t HashFileContentsInto(uint64_t seed, const std::filesystem::path& path) {
-			std::ifstream in(path, std::ios::binary);
-			if (!in) {
-				// Distinguish "missing" from "empty" so adding/removing a file
-				// actually changes the hash.
-				return HashStringInto(seed, "<missing>");
-			}
-			std::stringstream buf;
-			buf << in.rdbuf();
-			const std::string contents = buf.str();
-			return HashStringInto(seed, contents);
-		}
-
-		uint64_t HashPackageManifestsInto(uint64_t seed, const std::filesystem::path& packagesDir) {
-			std::error_code ec;
-			if (!std::filesystem::exists(packagesDir, ec) || ec) {
-				return HashStringInto(seed, "<no-packages-dir>");
-			}
-			// Sort by directory name so iteration order doesn't depend on the
-			// underlying filesystem.
-			std::vector<std::filesystem::path> manifests;
-			for (const auto& entry : std::filesystem::directory_iterator(packagesDir, ec)) {
-				if (ec) break;
-				if (!entry.is_directory(ec) || ec) continue;
-				const auto manifest = entry.path() / "index-package.lua";
-				if (std::filesystem::exists(manifest, ec) && !ec) {
-					manifests.push_back(manifest);
-				}
-			}
-			std::sort(manifests.begin(), manifests.end());
-			for (const auto& manifest : manifests) {
-				seed = HashStringInto(seed, manifest.parent_path().filename().generic_string());
-				seed = HashFileContentsInto(seed, manifest);
-			}
-			return seed;
-		}
-
-		uint64_t HashEngineSubprojectPremakesInto(uint64_t seed, const std::filesystem::path& parentDir) {
-			std::error_code ec;
-			if (!std::filesystem::exists(parentDir, ec) || ec) return seed;
-			std::vector<std::filesystem::path> hits;
-			for (const auto& entry : std::filesystem::directory_iterator(parentDir, ec)) {
-				if (ec) break;
-				if (!entry.is_directory(ec) || ec) continue;
-				const auto premake = entry.path() / "premake5.lua";
-				if (std::filesystem::exists(premake, ec) && !ec) {
-					hits.push_back(premake);
-				}
-			}
-			std::sort(hits.begin(), hits.end());
-			for (const auto& premake : hits) {
-				seed = HashStringInto(seed, premake.parent_path().filename().generic_string());
-				seed = HashFileContentsInto(seed, premake);
-			}
-			return seed;
-		}
-
-		uint64_t HashLuaTreeInto(uint64_t seed, const std::filesystem::path& root) {
-			std::error_code ec;
-			if (!std::filesystem::exists(root, ec) || ec) return seed;
-			std::vector<std::filesystem::path> luaFiles;
-			for (const auto& entry : std::filesystem::recursive_directory_iterator(root, ec)) {
-				if (ec) break;
-				if (!entry.is_regular_file(ec) || ec) continue;
-				if (entry.path().extension() == ".lua") {
-					luaFiles.push_back(entry.path());
-				}
-			}
-			std::sort(luaFiles.begin(), luaFiles.end());
-			for (const auto& lua : luaFiles) {
-				const auto rel = std::filesystem::relative(lua, root, ec);
-				seed = HashStringInto(seed, ec ? lua.generic_string() : rel.generic_string());
-				seed = HashFileContentsInto(seed, lua);
-			}
-			return seed;
-		}
-
-		// Digest of every input that affects premake output; matching hash means premake can be skipped,
-		// avoiding unconditional .vcxproj timestamp rewrites that force a full VS recompile on every open.
-		uint64_t ComputeRegenInputHash(const std::filesystem::path& engineRoot,
-		                                const std::filesystem::path& projectRoot) {
-			uint64_t h = k_Fnv1aSeed;
-			h = HashStringInto(h, "regen-v1");
-			h = HashStringInto(h, projectRoot.generic_string());
-			h = HashFileContentsInto(h, projectRoot / "project.json");
-			h = HashPackageManifestsInto(h, projectRoot / "Packages");
-			h = HashPackageManifestsInto(h, engineRoot / "packages");
-			h = HashFileContentsInto(h, engineRoot / "premake5.lua");
-			h = HashFileContentsInto(h, engineRoot / "Dependencies.lua");
-			h = HashLuaTreeInto(h, engineRoot / "premake");
-			h = HashEngineSubprojectPremakesInto(h, engineRoot);
-			h = HashEngineSubprojectPremakesInto(h, engineRoot / "Tests");
-			return h;
-		}
-
-		std::filesystem::path RegenStampPath(const std::filesystem::path& engineRoot) {
-			// bin-int/ is git-ignored; switching projects forces a regen because projectRoot is part of the hash.
-			return engineRoot / "bin-int" / ".index-regen-stamp";
-		}
-
-		std::string ReadRegenStamp(const std::filesystem::path& stampPath) {
-			std::ifstream in(stampPath, std::ios::binary);
-			if (!in) return {};
-			std::string contents;
-			std::getline(in, contents);
-			// Trim trailing whitespace (CR from a Windows line ending, stray spaces).
-			while (!contents.empty() && (contents.back() == '\r' || contents.back() == '\n'
-				|| contents.back() == ' ' || contents.back() == '\t')) {
-				contents.pop_back();
-			}
-			return contents;
-		}
-
-		bool WriteRegenStamp(const std::filesystem::path& stampPath, uint64_t hash) {
-			std::error_code ec;
-			std::filesystem::create_directories(stampPath.parent_path(), ec);
-			std::ofstream out(stampPath, std::ios::binary | std::ios::trunc);
-			if (!out) return false;
-			out << std::hex << std::setw(16) << std::setfill('0') << hash << '\n';
-			return out.good();
-		}
-
-		std::string FormatHashHex(uint64_t hash) {
-			std::ostringstream oss;
-			oss << std::hex << std::setw(16) << std::setfill('0') << hash;
-			return oss.str();
-		}
-
 		std::string GetNativeLibraryFilename(const std::string& projectName) {
 #if defined(_WIN32)
 			return projectName + "-NativeScripts.dll";
@@ -289,6 +182,25 @@ namespace Index {
 #else
 			return "lib" + projectName + "-NativeScripts.so";
 #endif
+		}
+
+		std::string GetSharedLibraryFilename(const std::string& targetName) {
+#if defined(_WIN32)
+			return targetName + ".dll";
+#elif defined(__APPLE__)
+			return "lib" + targetName + ".dylib";
+#else
+			return "lib" + targetName + ".so";
+#endif
+		}
+
+		bool IsSafeBuildPathToken(std::string_view value, bool allowDot) {
+			if (value.empty() || value == "." || value == "..") return false;
+			if (allowDot && (value.front() == '.' || value.back() == '.'
+				|| value.find("..") != std::string_view::npos)) return false;
+			return std::all_of(value.begin(), value.end(), [allowDot](unsigned char c) {
+				return std::isalnum(c) || c == '-' || c == '_' || (allowDot && c == '.');
+			});
 		}
 
 		std::string GetNativeBuildArchitectureDirectory() {
@@ -427,7 +339,7 @@ INDEX_NATIVE_SCRIPT_EXPORT void IndexDestroyScript(Index::NativeScript* script) 
 				return;
 			}
 
-			const std::filesystem::path sourceDirectory = project.NativeSourceDir;
+			const std::filesystem::path sourceDirectory = Path::FromUtf8(project.NativeSourceDir);
 			std::error_code ec;
 			std::filesystem::create_directories(sourceDirectory, ec);
 
@@ -436,15 +348,15 @@ INDEX_NATIVE_SCRIPT_EXPORT void IndexDestroyScript(Index::NativeScript* script) 
 				return;
 			}
 
-			(void)File::WriteAllText(exportsPath.string(), BuildNativeScriptExportsSource());
+			(void)File::WriteAllText(Path::ToUtf8(exportsPath), BuildNativeScriptExportsSource());
 		}
 
 		bool IsNativeScriptBootstrapFile(const std::filesystem::path& path) {
-			return path.filename().string() == "NativeScriptExports.cpp";
+			return Path::ToUtf8(path.filename()) == "NativeScriptExports.cpp";
 		}
 
 		bool IsNativeScriptSourceExtension(const std::filesystem::path& path) {
-			std::string extension = path.extension().string();
+			std::string extension = Path::ToUtf8(path.extension());
 			std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) {
 				return static_cast<char>(std::tolower(ch));
 			});
@@ -488,7 +400,7 @@ INDEX_NATIVE_SCRIPT_EXPORT void IndexDestroyScript(Index::NativeScript* script) 
 			const std::filesystem::path engineRoot = ResolveEngineRoot();
 			const std::string nativeIndexRootFallback = engineRoot.empty()
 				? std::string()
-				: MakeRelativePathOrEmpty(std::filesystem::path(project.NativeScriptsDir), engineRoot);
+				: MakeRelativePathOrEmpty(Path::FromUtf8(project.NativeScriptsDir), engineRoot);
 
 			// Empty when no custom defines — the placeholder substitution drops the line entirely.
 			std::string customDefinesBlock;
@@ -631,14 +543,14 @@ endforeach()
 			}
 
 			std::error_code ec;
-			std::filesystem::create_directories(project.NativeScriptsDir, ec);
+			std::filesystem::create_directories(Path::FromUtf8(project.NativeScriptsDir), ec);
 
-			const std::filesystem::path cmakeListsPath = std::filesystem::path(project.NativeScriptsDir) / "CMakeLists.txt";
+			const std::filesystem::path cmakeListsPath = Path::FromUtf8(project.NativeScriptsDir) / "CMakeLists.txt";
 			if (std::filesystem::exists(cmakeListsPath, ec)) {
 				return;
 			}
 
-			(void)File::WriteAllText(cmakeListsPath.string(), BuildNativeScriptCMakeLists(project));
+			(void)File::WriteAllText(Path::ToUtf8(cmakeListsPath), BuildNativeScriptCMakeLists(project));
 		}
 	}
 
@@ -682,8 +594,347 @@ endforeach()
 		p.ProjectFilePath = Path::Combine(p.RootDirectory, "project.json");
 	}
 
+	static bool ConfigurePackages(const IndexProject& project, std::string* outError);
+
+	static bool EnsureManagedSdkGlobalJson(const IndexProject& project, std::string* outError) {
+		const std::filesystem::path globalJsonPath = Path::FromUtf8(project.RootDirectory) / "global.json";
+		const std::string globalJsonPathUtf8 = Path::ToUtf8(globalJsonPath);
+		const bool existed = File::Exists(globalJsonPathUtf8);
+		const std::string original = existed ? File::ReadAllText(globalJsonPathUtf8) : std::string{};
+
+		Json::Value root = Json::Value::MakeObject();
+		if (existed) {
+			std::string parseError;
+			if (!Json::TryParse(original, root, &parseError) || !root.IsObject()) {
+				if (outError) *outError = "Could not migrate global.json: " + parseError;
+				return false;
+			}
+		}
+
+		Json::Value* sdk = root.FindMember("sdk");
+		if (sdk && !sdk->IsObject()) {
+			if (outError) *outError = "Could not migrate global.json: 'sdk' must be an object";
+			return false;
+		}
+		if (!sdk) sdk = &root.AddMember("sdk", Json::Value::MakeObject());
+		sdk->AddMember("version", "10.0.100");
+		sdk->AddMember("rollForward", "latestFeature");
+		sdk->AddMember("allowPrerelease", false);
+
+		const std::string updated = Json::Stringify(root, true);
+		if (existed && updated == original) return true;
+		if (existed) {
+			const std::filesystem::path backupPath = globalJsonPath.parent_path()
+				/ "global.json.pre-index-net10.bak";
+			const std::string backupPathUtf8 = Path::ToUtf8(backupPath);
+			if (!File::Exists(backupPathUtf8) && !File::WriteAllText(backupPathUtf8, original)) {
+				if (outError) *outError = "Could not back up global.json before migration";
+				return false;
+			}
+		}
+		if (!File::WriteAllText(globalJsonPathUtf8, updated)) {
+			if (outError) *outError = "Could not write global.json";
+			return false;
+		}
+		return true;
+	}
+
+	static bool EnsureManagedSolutionHeader(const IndexProject& project, std::string* outError) {
+		if (!File::Exists(project.CsprojPath) || !File::Exists(project.SlnPath)) return true;
+		const std::string csproj = File::ReadAllText(project.CsprojPath);
+		if (csproj.find("<TargetFramework>net10.0</TargetFramework>") == std::string::npos) return true;
+
+		std::string solution = File::ReadAllText(project.SlnPath);
+		constexpr std::string_view requiredHeader = "# Visual Studio Version 18";
+		const size_t headerStart = solution.find("# Visual Studio Version ");
+		if (headerStart != std::string::npos) {
+			const size_t headerEnd = solution.find_first_of("\r\n", headerStart);
+			const size_t headerLength = (headerEnd == std::string::npos ? solution.size() : headerEnd) - headerStart;
+			if (solution.compare(headerStart, headerLength, requiredHeader) == 0) return true;
+			solution.replace(headerStart, headerLength, requiredHeader);
+		}
+		else {
+			const size_t formatLine = solution.find("Microsoft Visual Studio Solution File, Format Version 12.00");
+			if (formatLine == std::string::npos) {
+				if (outError) *outError = "Could not migrate solution: unrecognized .sln header";
+				return false;
+			}
+			const size_t lineEnd = solution.find('\n', formatLine);
+			if (lineEnd == std::string::npos) solution += "\n" + std::string(requiredHeader) + "\n";
+			else solution.insert(lineEnd + 1, std::string(requiredHeader) + "\n");
+		}
+
+		if (!File::WriteAllText(project.SlnPath, solution)) {
+			if (outError) *outError = "Could not update the Visual Studio solution header";
+			return false;
+		}
+		return true;
+	}
+
+	static bool IsKnownProjectMember(std::string_view name) {
+		static constexpr std::array<std::string_view, 54> knownMembers = {
+			"projectFormatVersion", "name", "engineVersion", "startupScene", "lastOpenedScene",
+			"gameViewAspect", "gameViewVsync", "buildWidth", "buildHeight", "buildMinWidth",
+			"buildMinHeight", "buildMaxWidth", "buildMaxHeight", "buildFullscreen",
+			"buildFullscreenMode", "buildResizable", "buildRunInBackground", "buildAspect",
+			"uiReferenceWidth", "uiReferenceHeight", "uiScaleMatch", "appIcon", "executableName",
+			"buildVersion", "buildCompany", "splashScreen", "buildScenes", "globalSystems",
+			"packages", "profiler", "showRuntimeStats", "showRuntimeLogs", "graphics",
+			"enablePostProcessing", "physicsTickRate", "autoSaveScenes", "autoSaveIntervalSeconds",
+			"autoRecompileScripts", "recompileScriptsOnPlay", "assetSerializationFormat",
+			"showFileExtensions", "editorEnsureUniqueEntityNames", "editorEntityNameSuffix",
+			"editorAssetDuplicateSuffix", "cursorImagePath", "uiInteractableCursorImagePath",
+			"buildProfile", "renderBackend", "activeBuildProfile", "defaultFontAsset", "fontBakeStep",
+			"fontAtlasBudgetMb", "customDefines", "entityBits"
+		};
+		return std::find(knownMembers.begin(), knownMembers.end(), name) != knownMembers.end();
+	}
+
+	static bool IsKnownNestedProjectMember(std::string_view parent, std::string_view name) {
+		if (parent == "splashScreen") {
+			static constexpr std::array<std::string_view, 14> members = {
+				"enabled", "durationSeconds", "fadeInSeconds", "fadeOutSeconds", "imagePath",
+				"backgroundImagePath", "customText", "backgroundR", "backgroundG", "backgroundB",
+				"fontColorR", "fontColorG", "fontColorB", "fontSize"
+			};
+			return std::find(members.begin(), members.end(), name) != members.end();
+		}
+		if (parent == "profiler") {
+			static constexpr std::array<std::string_view, 5> members = {
+				"enableInRuntime", "trackInBackground", "samplingHz", "trackingSpan", "modules"
+			};
+			return std::find(members.begin(), members.end(), name) != members.end();
+		}
+		if (parent == "graphics") {
+			static constexpr std::array<std::string_view, 5> members = {
+				"renderScale", "upscaleFilter", "postProcessingEnabled", "postProcessingQuality",
+				"particleQuality"
+			};
+			return std::find(members.begin(), members.end(), name) != members.end();
+		}
+		return true;
+	}
+
+	static void PreserveUnknownProjectMembers(const IndexProject& project, Json::Value& root) {
+		if (project.PreservedProjectJson.empty()) return;
+
+		Json::Value preserved;
+		if (!Json::TryParse(project.PreservedProjectJson, preserved) || !preserved.IsObject()) return;
+		for (const auto& [name, value] : preserved.GetObject()) {
+			if (!IsKnownProjectMember(name) && !root.FindMember(name)) {
+				root.AddMember(name, value);
+				continue;
+			}
+			if (!value.IsObject()) continue;
+
+			Json::Value* target = root.FindMember(name);
+			Json::Value missingObject = Json::Value::MakeObject();
+			Json::Value* destination = target && target->IsObject() ? target : &missingObject;
+			for (const auto& [childName, childValue] : value.GetObject()) {
+				if (!IsKnownNestedProjectMember(name, childName) && !destination->FindMember(childName)) {
+					destination->AddMember(childName, childValue);
+				}
+			}
+			if (!target && !missingObject.GetObject().empty()) {
+				root.AddMember(name, std::move(missingObject));
+			}
+		}
+	}
+
+	static bool ReadProjectFormatVersion(const Json::Value& root, int& outVersion, std::string& outError) {
+		const Json::Value* version = root.FindMember("projectFormatVersion");
+		if (!version) {
+			outVersion = 0;
+			return true;
+		}
+		if (!version->IsNumber()) {
+			outError = "'projectFormatVersion' must be an integer";
+			return false;
+		}
+		const double numericVersion = version->AsDoubleOr(-1.0);
+		const int integerVersion = version->AsIntOr(-1);
+		if (numericVersion < 0.0 || numericVersion != static_cast<double>(integerVersion)) {
+			outError = "'projectFormatVersion' must be a non-negative integer";
+			return false;
+		}
+		outVersion = integerVersion;
+		return true;
+	}
+
+	static bool ValidateProjectJsonStructure(const Json::Value& root, int formatVersion, std::string& outError) {
+		auto require = [&](std::string_view name, auto predicate, std::string_view expected) {
+			const Json::Value* value = root.FindMember(name);
+			if (!value || predicate(*value)) return true;
+			outError = "'" + std::string(name) + "' must be " + std::string(expected);
+			return false;
+		};
+		auto requireNested = [&](const Json::Value& parent, std::string_view parentName,
+			std::string_view name, auto predicate, std::string_view expected) {
+			const Json::Value* value = parent.FindMember(name);
+			if (!value || predicate(*value)) return true;
+			outError = "'" + std::string(parentName) + "." + std::string(name)
+				+ "' must be " + std::string(expected);
+			return false;
+		};
+
+		for (std::string_view name : {
+			"name", "engineVersion", "startupScene", "lastOpenedScene", "gameViewAspect",
+			"buildFullscreenMode", "buildAspect", "appIcon", "executableName", "buildVersion",
+			"buildCompany", "assetSerializationFormat", "editorEntityNameSuffix",
+			"editorAssetDuplicateSuffix", "cursorImagePath", "uiInteractableCursorImagePath",
+			"buildProfile", "renderBackend", "activeBuildProfile" }) {
+			if (!require(name, [](const Json::Value& value) { return value.IsString(); }, "a string")) return false;
+		}
+		for (std::string_view name : {
+			"gameViewVsync", "buildFullscreen", "buildResizable", "buildRunInBackground",
+			"showRuntimeStats", "showRuntimeLogs", "enablePostProcessing", "autoSaveScenes",
+			"autoRecompileScripts", "recompileScriptsOnPlay", "showFileExtensions",
+			"editorEnsureUniqueEntityNames" }) {
+			if (!require(name, [](const Json::Value& value) { return value.IsBool(); }, "a boolean")) return false;
+		}
+		for (std::string_view name : {
+			"buildWidth", "buildHeight", "buildMinWidth", "buildMinHeight", "buildMaxWidth",
+			"buildMaxHeight", "uiReferenceWidth", "uiReferenceHeight", "uiScaleMatch",
+			"physicsTickRate", "autoSaveIntervalSeconds", "fontBakeStep", "fontAtlasBudgetMb",
+			"entityBits" }) {
+			if (!require(name, [](const Json::Value& value) { return value.IsNumber(); }, "a number")) return false;
+		}
+		for (std::string_view name : { "buildScenes", "globalSystems", "packages", "customDefines" }) {
+			if (!require(name, [](const Json::Value& value) { return value.IsArray(); }, "an array")) return false;
+		}
+		for (std::string_view name : { "splashScreen", "profiler", "graphics" }) {
+			if (!require(name, [](const Json::Value& value) { return value.IsObject(); }, "an object")) return false;
+		}
+		if (const Json::Value* defaultFont = root.FindMember("defaultFontAsset");
+			defaultFont && !defaultFont->IsString() && !defaultFont->IsNumber()) {
+			outError = "'defaultFontAsset' must be a string or number";
+			return false;
+		}
+		const Json::Value* name = root.FindMember("name");
+		if (formatVersion > 0 && (!name || name->AsStringOr().empty())) {
+			outError = "versioned projects require a non-empty 'name'";
+			return false;
+		}
+		const Json::Value* engineVersion = root.FindMember("engineVersion");
+		if (formatVersion > 0 && (!engineVersion || engineVersion->AsStringOr().empty())) {
+			outError = "versioned projects require a non-empty 'engineVersion'";
+			return false;
+		}
+
+		if (const Json::Value* splash = root.FindMember("splashScreen")) {
+			if (!requireNested(*splash, "splashScreen", "enabled",
+				[](const Json::Value& value) { return value.IsBool(); }, "a boolean")) return false;
+			for (std::string_view member : {
+				"durationSeconds", "fadeInSeconds", "fadeOutSeconds", "backgroundR", "backgroundG",
+				"backgroundB", "fontColorR", "fontColorG", "fontColorB", "fontSize" }) {
+				if (!requireNested(*splash, "splashScreen", member,
+					[](const Json::Value& value) { return value.IsNumber(); }, "a number")) return false;
+			}
+			for (std::string_view member : { "imagePath", "backgroundImagePath", "customText" }) {
+				if (!requireNested(*splash, "splashScreen", member,
+					[](const Json::Value& value) { return value.IsString(); }, "a string")) return false;
+			}
+		}
+
+		if (const Json::Value* profiler = root.FindMember("profiler")) {
+			for (std::string_view member : { "enableInRuntime", "trackInBackground" }) {
+				if (!requireNested(*profiler, "profiler", member,
+					[](const Json::Value& value) { return value.IsBool(); }, "a boolean")) return false;
+			}
+			for (std::string_view member : { "samplingHz", "trackingSpan" }) {
+				if (!requireNested(*profiler, "profiler", member,
+					[](const Json::Value& value) { return value.IsNumber(); }, "a number")) return false;
+			}
+			if (const Json::Value* modules = profiler->FindMember("modules")) {
+				if (!modules->IsObject()) {
+					outError = "'profiler.modules' must be an object";
+					return false;
+				}
+				for (const auto& [moduleName, enabled] : modules->GetObject()) {
+					if (!enabled.IsBool()) {
+						outError = "'profiler.modules." + moduleName + "' must be a boolean";
+						return false;
+					}
+				}
+			}
+		}
+
+		if (const Json::Value* graphics = root.FindMember("graphics")) {
+			if (!requireNested(*graphics, "graphics", "renderScale",
+				[](const Json::Value& value) { return value.IsNumber(); }, "a number")) return false;
+			if (!requireNested(*graphics, "graphics", "postProcessingEnabled",
+				[](const Json::Value& value) { return value.IsBool(); }, "a boolean")) return false;
+			for (std::string_view member : { "upscaleFilter", "postProcessingQuality", "particleQuality" }) {
+				if (!requireNested(*graphics, "graphics", member,
+					[](const Json::Value& value) { return value.IsString(); }, "a string")) return false;
+			}
+		}
+
+		if (const Json::Value* scenes = root.FindMember("buildScenes")) {
+			for (const Json::Value& scene : scenes->GetArray()) {
+				if (scene.IsString()) continue;
+				if (!scene.IsObject()) {
+					outError = "'buildScenes' entries must be strings or objects";
+					return false;
+				}
+				const Json::Value* sceneName = scene.FindMember("name");
+				const Json::Value* enabled = scene.FindMember("enabled");
+				if (!sceneName || !sceneName->IsString() || (enabled && !enabled->IsBool())) {
+					outError = "'buildScenes' objects require a string name and optional boolean enabled";
+					return false;
+				}
+			}
+		}
+
+		for (std::string_view arrayName : { "packages", "customDefines" }) {
+			if (const Json::Value* values = root.FindMember(arrayName)) {
+				for (const Json::Value& value : values->GetArray()) {
+					if (!value.IsString()) {
+						outError = "'" + std::string(arrayName) + "' entries must be strings";
+						return false;
+					}
+				}
+			}
+		}
+
+		if (const Json::Value* systems = root.FindMember("globalSystems")) {
+			for (const Json::Value& system : systems->GetArray()) {
+				if (system.IsString()) continue;
+				if (!system.IsObject()) {
+					outError = "'globalSystems' entries must be strings or objects";
+					return false;
+				}
+				const Json::Value* className = system.FindMember("className");
+				const Json::Value* active = system.FindMember("active");
+				if (!className || !className->IsString() || (active && !active->IsBool())) {
+					outError = "'globalSystems' objects require a string className and optional boolean active";
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	static std::filesystem::path GetMigrationBackupPath(
+		const std::filesystem::path& projectFile,
+		int sourceVersion) {
+		const std::string suffix = ".pre-v" + std::to_string(sourceVersion);
+		std::filesystem::path candidate = projectFile;
+		candidate += suffix + ".bak";
+		for (int index = 1; index < 10000; ++index) {
+			std::error_code ec;
+			const bool exists = std::filesystem::exists(candidate, ec);
+			if (ec) return {};
+			if (!exists) return candidate;
+			candidate = projectFile;
+			candidate += suffix + "." + std::to_string(index) + ".bak";
+		}
+		return {};
+	}
+
 	static Json::Value BuildProjectJson(const IndexProject& project) {
 		Json::Value root = Json::Value::MakeObject();
+		root.AddMember("projectFormatVersion", IndexProject::k_CurrentProjectFormatVersion);
 		root.AddMember("name", project.Name);
 		root.AddMember("engineVersion", project.EngineVersion);
 		root.AddMember("startupScene", project.StartupScene);
@@ -740,8 +991,17 @@ endforeach()
 		}
 
 		Json::Value buildScenes = Json::Value::MakeArray();
-		for (const std::string& sceneName : project.BuildSceneList) {
-			buildScenes.Append(sceneName);
+		for (const IndexProject::BuildSceneEntry& entry : project.BuildSceneList) {
+			if (entry.Name.empty()) continue;
+			// Enabled entries stay plain strings so older readers keep working.
+			if (entry.Enabled) {
+				buildScenes.Append(entry.Name);
+				continue;
+			}
+			Json::Value sceneValue = Json::Value::MakeObject();
+			sceneValue.AddMember("name", entry.Name);
+			sceneValue.AddMember("enabled", false);
+			buildScenes.Append(std::move(sceneValue));
 		}
 		root.AddMember("buildScenes", std::move(buildScenes));
 
@@ -799,8 +1059,14 @@ endforeach()
 		if (!project.ShowRuntimeLogs) {
 			root.AddMember("showRuntimeLogs", false);
 		}
-		if (!project.EnablePostProcessing) {
-			root.AddMember("enablePostProcessing", false);
+		if (project.Graphics != GraphicsSettings{}) {
+			Json::Value graphics = Json::Value::MakeObject();
+			graphics.AddMember("renderScale", project.Graphics.RenderScale);
+			graphics.AddMember("upscaleFilter", std::string(UpscaleFilterToString(project.Graphics.UpscaleFilter)));
+			graphics.AddMember("postProcessingEnabled", project.Graphics.PostProcessingEnabled);
+			graphics.AddMember("postProcessingQuality", std::string(PostProcessingQualityToString(project.Graphics.PostProcessingQuality)));
+			graphics.AddMember("particleQuality", std::string(ParticleQualityToString(project.Graphics.ParticleQuality)));
+			root.AddMember("graphics", std::move(graphics));
 		}
 		if (project.PhysicsTickRate != 50) {
 			root.AddMember("physicsTickRate", project.PhysicsTickRate);
@@ -862,6 +1128,7 @@ endforeach()
 			root.AddMember("entityBits", project.EntityBits);
 		}
 
+		PreserveUnknownProjectMembers(project, root);
 		return root;
 	}
 
@@ -1051,32 +1318,36 @@ endforeach()
 		return Path::Combine(RootDirectory, "BuildProfiles");
 	}
 
-	std::string IndexProject::GetNativeDllPath() const {
+	std::string IndexProject::GetNativeDllPath(std::string_view configuration) const {
 		const std::string libraryFilename = GetNativeLibraryFilename(Name);
-		const std::string buildConfig = IDX_BUILD_CONFIG_NAME;
+		const std::string buildConfig = configuration.empty()
+			? std::string(IDX_BUILD_CONFIG_NAME)
+			: std::string(configuration);
 		const std::string targetName = Name + "-NativeScripts";
 		const std::string platformDirectory = GetNativeBuildPlatformDirectory();
 
 		std::vector<std::filesystem::path> candidates;
 		if (!platformDirectory.empty()) {
-			candidates.emplace_back(std::filesystem::path(RootDirectory) / "bin" / (buildConfig + "-" + platformDirectory) / targetName / libraryFilename);
+			candidates.emplace_back(Path::FromUtf8(RootDirectory) / "bin" / (buildConfig + "-" + platformDirectory) / targetName / libraryFilename);
 		}
 
-		candidates.emplace_back(std::filesystem::path(NativeScriptsDir) / "build" / buildConfig / libraryFilename);
-		candidates.emplace_back(std::filesystem::path(NativeScriptsDir) / "build" / libraryFilename);
-		candidates.emplace_back(std::filesystem::path(NativeScriptsDir) / "build" / "Release" / libraryFilename);
-		candidates.emplace_back(std::filesystem::path(NativeScriptsDir) / "build" / "Debug" / libraryFilename);
-		candidates.emplace_back(std::filesystem::path(NativeScriptsDir) / "build" / "Dist" / libraryFilename);
+		candidates.emplace_back(Path::FromUtf8(NativeScriptsDir) / "build" / buildConfig / libraryFilename);
+		candidates.emplace_back(Path::FromUtf8(NativeScriptsDir) / "build" / libraryFilename);
+		if (configuration.empty()) {
+			candidates.emplace_back(Path::FromUtf8(NativeScriptsDir) / "build" / "Release" / libraryFilename);
+			candidates.emplace_back(Path::FromUtf8(NativeScriptsDir) / "build" / "Debug" / libraryFilename);
+			candidates.emplace_back(Path::FromUtf8(NativeScriptsDir) / "build" / "Dist" / libraryFilename);
+		}
 
 		for (const auto& candidate : candidates) {
 			if (std::filesystem::exists(candidate)) {
 				auto normalizedCandidate = candidate;
-				return normalizedCandidate.make_preferred().string();
+				return Path::ToUtf8(normalizedCandidate.make_preferred());
 			}
 		}
 
 		auto fallbackCandidate = candidates.front();
-		return fallbackCandidate.make_preferred().string();
+		return Path::ToUtf8(fallbackCandidate.make_preferred());
 	}
 
 	std::string IndexProject::GetSceneFilePath(const std::string& sceneName) const {
@@ -1086,27 +1357,56 @@ endforeach()
 				"Refusing to resolve scene path for unsafe name '{}'", sceneName);
 			return {};
 		}
-		const std::filesystem::path assetsRoot(AssetsDirectory);
+		const std::filesystem::path assetsRoot = Path::FromUtf8(AssetsDirectory);
 		const std::string sceneFileName = sceneName + ".scene";
+		auto sameSceneFileName = [&sceneFileName](std::string candidate) {
+			std::string expected = sceneFileName;
+			std::transform(candidate.begin(), candidate.end(), candidate.begin(), [](unsigned char c) {
+				return static_cast<char>(std::tolower(c));
+			});
+			std::transform(expected.begin(), expected.end(), expected.begin(), [](unsigned char c) {
+				return static_cast<char>(std::tolower(c));
+			});
+			return candidate == expected;
+		};
+		std::filesystem::path resolvedPath;
+		bool scanFailed = false;
 		std::error_code ec;
-		if (std::filesystem::exists(assetsRoot, ec) && !ec) {
-			for (std::filesystem::recursive_directory_iterator it(
-					 assetsRoot,
-					 std::filesystem::directory_options::skip_permission_denied,
-					 ec),
-				 end;
-				 it != end;
-				 it.increment(ec)) {
-				if (ec) {
-					ec.clear();
-					continue;
-				}
-
-				if (it->is_regular_file(ec) && !ec && it->path().filename().string() == sceneFileName) {
-					auto path = it->path();
-					return path.make_preferred().string();
-				}
+		if (!std::filesystem::is_directory(assetsRoot, ec) || ec) {
+			IDX_CORE_ERROR_TAG("IndexProject", "Scene lookup for '{}' has no readable Assets directory", sceneName);
+			return {};
+		}
+		for (std::filesystem::recursive_directory_iterator it(
+				 assetsRoot,
+				 std::filesystem::directory_options::none,
+				 ec),
+			 end;
+			 it != end;
+			 it.increment(ec)) {
+			if (ec) {
+				scanFailed = true;
+				break;
 			}
+
+			std::error_code fileError;
+			if (it->is_regular_file(fileError) && !fileError && sameSceneFileName(Path::ToUtf8(it->path().filename()))) {
+				if (!resolvedPath.empty()) {
+					IDX_CORE_ERROR_TAG("IndexProject",
+						"Scene name '{}' is ambiguous: '{}' and '{}' share the same basename",
+						sceneName, Path::ToUtf8(resolvedPath), Path::ToUtf8(it->path()));
+					return {};
+				}
+				resolvedPath = it->path();
+			}
+			if (fileError) scanFailed = true;
+		}
+		if (ec) scanFailed = true;
+		if (scanFailed) {
+			IDX_CORE_ERROR_TAG("IndexProject", "Scene lookup for '{}' could not scan the full Assets tree", sceneName);
+			return {};
+		}
+		if (!resolvedPath.empty()) {
+			return Path::ToUtf8(resolvedPath.make_preferred());
 		}
 
 		return Path::Combine(ScenesDirectory, sceneFileName);
@@ -1122,13 +1422,58 @@ endforeach()
 	}
 
 	bool IndexProject::HasNativeScriptSources() const {
-		return HasNativeScriptSourceFiles(std::filesystem::path(NativeSourceDir));
+		return HasNativeScriptSourceFiles(Path::FromUtf8(NativeSourceDir));
 	}
 
-	bool IndexProject::Save() const {
-		const bool ok = File::WriteAllText(ProjectFilePath, Json::Stringify(BuildProjectJson(*this), true));
+	bool IndexProject::Save() {
+		if (ProjectFormatVersion != k_CurrentProjectFormatVersion || ProjectFilePath.empty()) {
+			IDX_CORE_ERROR_TAG("IndexProject", "Refusing to save unsupported project format version {}", ProjectFormatVersion);
+			return false;
+		}
+
+		IndexProject projectForWrite = *this;
+		projectForWrite.EngineVersion = IDX_VERSION;
+		if (File::Exists(ProjectFilePath)) {
+			const std::string currentText = File::ReadAllText(ProjectFilePath);
+			Json::Value currentRoot;
+			std::string parseError;
+			int diskVersion = 0;
+			if (currentText.empty()
+				|| !Json::TryParse(currentText, currentRoot, &parseError)
+				|| !currentRoot.IsObject()
+				|| !ReadProjectFormatVersion(currentRoot, diskVersion, parseError)) {
+				IDX_CORE_ERROR_TAG("IndexProject", "Refusing to overwrite unreadable project file '{}': {}",
+					ProjectFilePath, parseError.empty() ? "empty or non-object JSON" : parseError);
+				return false;
+			}
+			if (diskVersion > k_CurrentProjectFormatVersion) {
+				IDX_CORE_ERROR_TAG("IndexProject",
+					"Refusing to overwrite project format {} with older supported format {}",
+					diskVersion, k_CurrentProjectFormatVersion);
+				return false;
+			}
+			if (!ValidateProjectJsonStructure(currentRoot, diskVersion, parseError)) {
+				IDX_CORE_ERROR_TAG("IndexProject", "Refusing to overwrite invalid project file '{}': {}",
+					ProjectFilePath, parseError);
+				return false;
+			}
+			projectForWrite.PreservedProjectJson = currentText;
+		}
+
+		Json::Value projectJson = BuildProjectJson(projectForWrite);
+		std::string validationError;
+		if (!ValidateProjectJsonStructure(projectJson, k_CurrentProjectFormatVersion, validationError)) {
+			IDX_CORE_ERROR_TAG("IndexProject", "Refusing to save invalid project data: {}", validationError);
+			return false;
+		}
+		const std::string serializedProject = Json::Stringify(projectJson, true);
+		if (!File::WriteAllText(ProjectFilePath, serializedProject)) {
+			return false;
+		}
+		EngineVersion = IDX_VERSION;
+		PreservedProjectJson = serializedProject;
 		(void)WriteManagedDefinesProps();
-		return ok;
+		return true;
 	}
 
 	bool IndexProject::WriteManagedDefinesProps(bool* outAddedImport) const {
@@ -1158,7 +1503,7 @@ endforeach()
 		// import pattern works. Don't fail the save if the Packages dir
 		// doesn't exist yet (project might be mid-create) — try to create it.
 		const std::filesystem::path csprojDir =
-			std::filesystem::path(CsprojPath).parent_path();
+			Path::FromUtf8(CsprojPath).parent_path();
 		const std::filesystem::path packagesDir = csprojDir / "Packages";
 		std::error_code ec;
 		std::filesystem::create_directories(packagesDir, ec);
@@ -1175,11 +1520,12 @@ endforeach()
 			"  </PropertyGroup>\n"
 			"</Project>\n";
 
-		const bool wrote = File::WriteAllText(propsPath.string(), contents);
+		const std::string propsPathUtf8 = Path::ToUtf8(propsPath);
+		const bool wrote = File::WriteAllText(propsPathUtf8, contents);
 		if (!wrote) {
 			IDX_CORE_WARN_TAG("IndexProject",
 				"Failed to write {} — IntelliSense will not see custom defines.",
-				propsPath.string());
+				propsPathUtf8);
 			return false;
 		}
 
@@ -1232,25 +1578,88 @@ endforeach()
 
 	bool IndexProject::IsValidProjectName(const std::string& name) {
 		if (name.empty() || name.size() > 64) return false;
-		if (name[0] == '.') return false;
-		for (char c : name)
+		if (name.front() == '.' || name.back() == '.' || name.back() == ' ') return false;
+		for (char c : name) {
+			if (static_cast<unsigned char>(c) < 32) return false;
 			if (c == '<' || c == '>' || c == ':' || c == '"' || c == '/' || c == '\\' || c == '|' || c == '?' || c == '*')
 				return false;
+		}
+
+		std::string deviceName = name.substr(0, name.find('.'));
+		std::transform(deviceName.begin(), deviceName.end(), deviceName.begin(), [](unsigned char c) {
+			return static_cast<char>(std::toupper(c));
+		});
+		static constexpr std::array<std::string_view, 4> reservedNames = { "CON", "PRN", "AUX", "NUL" };
+		if (std::find(reservedNames.begin(), reservedNames.end(), deviceName) != reservedNames.end()) return false;
+		if (deviceName.size() == 4
+			&& (deviceName.starts_with("COM") || deviceName.starts_with("LPT"))
+			&& deviceName[3] >= '1' && deviceName[3] <= '9') return false;
 		return true;
 	}
 
 	bool IndexProject::Validate(const std::string& rootDir) {
-		return std::filesystem::exists(Path::Combine(rootDir, "project.json"))
-			&& std::filesystem::exists(Path::Combine(rootDir, "Assets"));
+		std::error_code error;
+		const bool projectFileExists = std::filesystem::exists(
+			Path::FromUtf8(Path::Combine(rootDir, "project.json")), error);
+		if (error || !projectFileExists) return false;
+		const bool assetsExist = std::filesystem::exists(
+			Path::FromUtf8(Path::Combine(rootDir, "Assets")), error);
+		return !error && assetsExist;
 	}
 
-	IndexProject IndexProject::Load(const std::string& rootDir) {
+	static bool TryLoadProjectImpl(
+		const std::string& rootDir,
+		IndexProject& outProject,
+		std::string* outError,
+		bool performMigrations) {
+		auto fail = [&](std::string message) {
+			if (outError) *outError = std::move(message);
+			return false;
+		};
+
 		IndexProject project;
 		project.RootDirectory = rootDir;
 
 		std::string configPath = Path::Combine(rootDir, "project.json");
-		if (File::Exists(configPath)) {
-			std::string jsonText = File::ReadAllText(configPath);
+		if (!File::Exists(configPath)) {
+			return fail("Project file not found: " + configPath);
+		}
+		std::error_code assetsError;
+		const std::filesystem::path assetsPath = Path::FromUtf8(rootDir) / "Assets";
+		if (!std::filesystem::is_directory(assetsPath, assetsError) || assetsError) {
+			return fail("Project Assets directory not found: " + Path::ToUtf8(assetsPath));
+		}
+
+		const std::string sourceJson = File::ReadAllText(configPath);
+		if (sourceJson.empty()) {
+			return fail("Project file is empty or unreadable: " + configPath);
+		}
+
+		Json::Value validatedRoot;
+		std::string validationError;
+		if (!Json::TryParse(sourceJson, validatedRoot, &validationError)) {
+			return fail("Failed to parse '" + configPath + "': " + validationError);
+		}
+		if (!validatedRoot.IsObject()) {
+			return fail("Project file root must be a JSON object: " + configPath);
+		}
+
+		int sourceFormatVersion = 0;
+		if (!ReadProjectFormatVersion(validatedRoot, sourceFormatVersion, validationError)) {
+			return fail("Invalid project format in '" + configPath + "': " + validationError);
+		}
+		if (sourceFormatVersion > IndexProject::k_CurrentProjectFormatVersion) {
+			return fail("Project format " + std::to_string(sourceFormatVersion)
+				+ " is newer than this Editor supports (" + std::to_string(IndexProject::k_CurrentProjectFormatVersion) + ")");
+		}
+		if (!ValidateProjectJsonStructure(validatedRoot, sourceFormatVersion, validationError)) {
+			return fail("Invalid project data in '" + configPath + "': " + validationError);
+		}
+		project.ProjectFormatVersion = sourceFormatVersion;
+		project.PreservedProjectJson = sourceJson;
+
+		{
+			const std::string& jsonText = sourceJson;
 			Json::Value root;
 			std::string parseError;
 			if (!jsonText.empty() && Json::TryParse(jsonText, root, &parseError) && root.IsObject()) {
@@ -1419,14 +1828,27 @@ endforeach()
 							"Project '{}': 'buildScenes' field is not a JSON array; ignoring.", configPath);
 					}
 					else for (const Json::Value& sceneValue : buildScenesValue->GetArray()) {
-						const std::string sceneName = sceneValue.AsStringOr();
+						std::string sceneName;
+						bool enabled = true;
+						if (sceneValue.IsObject()) {
+							const Json::Value* nameValue = sceneValue.FindMember("name");
+							sceneName = nameValue ? nameValue->AsStringOr() : "";
+							const Json::Value* enabledValue = sceneValue.FindMember("enabled");
+							enabled = enabledValue ? enabledValue->AsBoolOr(true) : true;
+						}
+						else {
+							sceneName = sceneValue.AsStringOr();
+						}
 						if (sceneName.empty()) continue;
 						if (!IsValidSceneName(sceneName)) {
 							IDX_CORE_WARN_TAG("IndexProject",
 								"Project '{}': skipping invalid buildScenes entry '{}'", configPath, sceneName);
 							continue;
 						}
-						project.BuildSceneList.push_back(sceneName);
+						const bool duplicate = std::any_of(project.BuildSceneList.begin(), project.BuildSceneList.end(),
+							[&](const IndexProject::BuildSceneEntry& entry) { return entry.Name == sceneName; });
+						if (duplicate) continue;
+						project.BuildSceneList.push_back({ sceneName, enabled });
 					}
 				}
 				if (const Json::Value* globalSystemsValue = root.FindMember("globalSystems")) {
@@ -1499,8 +1921,28 @@ endforeach()
 					project.ShowRuntimeStats = v->AsBoolOr(true);
 				if (const Json::Value* v = root.FindMember("showRuntimeLogs"))
 					project.ShowRuntimeLogs = v->AsBoolOr(true);
-				if (const Json::Value* v = root.FindMember("enablePostProcessing"))
-					project.EnablePostProcessing = v->AsBoolOr(true);
+				bool hasNestedPostProcessingEnabled = false;
+				if (const Json::Value* graphics = root.FindMember("graphics"); graphics && graphics->IsObject()) {
+					if (const Json::Value* v = graphics->FindMember("renderScale"))
+						project.Graphics.RenderScale = std::clamp(
+							static_cast<float>(v->AsDoubleOr(1.0)),
+							GraphicsSettings::MinRenderScale,
+							GraphicsSettings::MaxRenderScale);
+					if (const Json::Value* v = graphics->FindMember("upscaleFilter"))
+						project.Graphics.UpscaleFilter = UpscaleFilterFromString(v->AsStringOr("Linear"));
+					if (const Json::Value* v = graphics->FindMember("postProcessingEnabled")) {
+						project.Graphics.PostProcessingEnabled = v->AsBoolOr(true);
+						hasNestedPostProcessingEnabled = true;
+					}
+					if (const Json::Value* v = graphics->FindMember("postProcessingQuality"))
+						project.Graphics.PostProcessingQuality = PostProcessingQualityFromString(v->AsStringOr("High"));
+					if (const Json::Value* v = graphics->FindMember("particleQuality"))
+						project.Graphics.ParticleQuality = ParticleQualityFromString(v->AsStringOr("High"));
+				}
+				if (!hasNestedPostProcessingEnabled) {
+					if (const Json::Value* v = root.FindMember("enablePostProcessing"))
+						project.Graphics.PostProcessingEnabled = v->AsBoolOr(true);
+				}
 				if (const Json::Value* v = root.FindMember("physicsTickRate"))
 					project.PhysicsTickRate = std::clamp(v->AsIntOr(50),
 						IndexProject::k_MinPhysicsHz, IndexProject::k_MaxPhysicsHz);
@@ -1589,14 +2031,31 @@ endforeach()
 		}
 
 		if (project.Name.empty())
-			project.Name = std::filesystem::path(rootDir).filename().string();
+			project.Name = Path::ToUtf8(Path::FromUtf8(rootDir).filename());
+		if (!IndexProject::IsValidProjectName(project.Name)) {
+			return fail("Invalid project name in '" + configPath + "': " + project.Name);
+		}
 		if (project.EngineVersion.empty())
 			project.EngineVersion = IDX_VERSION;
 
 		ResolvePaths(project);
 
+		if (performMigrations && sourceFormatVersion < IndexProject::k_CurrentProjectFormatVersion) {
+			const std::filesystem::path backupPath = GetMigrationBackupPath(Path::FromUtf8(configPath), sourceFormatVersion);
+			const std::string backupPathUtf8 = Path::ToUtf8(backupPath);
+			if (backupPath.empty() || !File::WriteAllText(backupPathUtf8, sourceJson)) {
+				return fail("Could not create project migration backup: " + backupPathUtf8);
+			}
+			project.ProjectFormatVersion = IndexProject::k_CurrentProjectFormatVersion;
+			if (!project.Save()) {
+				return fail("Could not migrate project file; original backup is at: " + backupPathUtf8);
+			}
+			IDX_CORE_INFO_TAG("IndexProject", "Migrated project format {} to {} (backup: '{}')",
+				sourceFormatVersion, IndexProject::k_CurrentProjectFormatVersion, backupPathUtf8);
+		}
+
 		// One-shot migration: widen Assets\Scripts\**\*.cs glob to Assets\**\*.cs so scripts outside Scripts/ compile.
-		if (File::Exists(project.CsprojPath)) {
+		if (performMigrations && File::Exists(project.CsprojPath)) {
 			std::string csproj = File::ReadAllText(project.CsprojPath);
 			constexpr std::string_view oldGlob = "<Compile Include=\"Assets\\Scripts\\**\\*.cs\" />";
 			constexpr std::string_view newGlob = "<Compile Include=\"Assets\\**\\*.cs\" />";
@@ -1609,9 +2068,50 @@ endforeach()
 			}
 		}
 
-		// Keep IndexDefines.props in sync on open (not just on Save) so VS shows correct active branches immediately.
-		(void)project.WriteManagedDefinesProps();
+		if (performMigrations) {
+			std::string toolingError;
+			if (!EnsureManagedSdkGlobalJson(project, &toolingError)) return fail(toolingError);
+			if (!EnsureManagedSolutionHeader(project, &toolingError)) return fail(toolingError);
+			if (!project.WriteManagedDefinesProps()) {
+				return fail("Could not write managed IntelliSense definitions");
+			}
+			if (File::Exists(project.CsprojPath)
+				&& File::ReadAllText(project.CsprojPath).find("Index-ScriptCore") != std::string::npos
+				&& !ConfigurePackages(project, &toolingError))
+			{
+				return fail(toolingError);
+			}
+		}
 
+		outProject = std::move(project);
+		if (outError) outError->clear();
+		return true;
+	}
+
+	bool IndexProject::TryLoad(
+		const std::string& rootDir,
+		IndexProject& outProject,
+		std::string* outError,
+		bool performMigrations) {
+		try {
+			return TryLoadProjectImpl(rootDir, outProject, outError, performMigrations);
+		}
+		catch (const std::exception& exception) {
+			if (outError) *outError = "Project load failed: " + std::string(exception.what());
+			return false;
+		}
+		catch (...) {
+			if (outError) *outError = "Project load failed with an unknown error";
+			return false;
+		}
+	}
+
+	IndexProject IndexProject::Load(const std::string& rootDir) {
+		IndexProject project;
+		std::string error;
+		if (!TryLoad(rootDir, project, &error)) {
+			throw std::runtime_error(error);
+		}
 		return project;
 	}
 
@@ -1629,31 +2129,175 @@ endforeach()
 		Directory::Create(Path::Combine(project.RootDirectory, ".vscode"));
 	}
 
-	void ConfigurePackages(const IndexProject& project) {
-
+	bool ConfigurePackages(const IndexProject& project, std::string* outError) {
 		const std::filesystem::path engineRoot = ResolveEngineRoot();
 		const std::filesystem::path scriptCoreOutput = FindScriptCoreArtifact(engineRoot, "Index-ScriptCore.dll");
-		const std::filesystem::path scriptCorePdb = FindScriptCoreArtifact(engineRoot, "Index-ScriptCore.pdb");
-
-		std::filesystem::path packageDir = std::filesystem::path(project.PackagesDirectory) / "Index-ScriptCore";
-		std::filesystem::create_directories(packageDir);
-
-		// Wrap both copies so a partial failure (DLL ok, PDB failed) leaves no half-installed package.
-		try {
-			if (std::filesystem::exists(scriptCoreOutput))
-				std::filesystem::copy_file(scriptCoreOutput, packageDir / "Index-ScriptCore.dll", std::filesystem::copy_options::overwrite_existing);
-
-			if (std::filesystem::exists(scriptCorePdb))
-				std::filesystem::copy_file(scriptCorePdb, packageDir / "Index-ScriptCore.pdb", std::filesystem::copy_options::overwrite_existing);
+		if (scriptCoreOutput.empty()) {
+			if (outError) *outError = "Index-ScriptCore.dll was not found in the engine installation";
+			return false;
 		}
-		catch (const std::filesystem::filesystem_error& ex) {
-			IDX_CORE_ERROR_TAG("IndexProject",
-				"ConfigurePackages: copy failed ({}). Rolling back partial install at '{}'.",
-				ex.what(), packageDir.string());
-			std::error_code ec;
-			std::filesystem::remove_all(packageDir, ec);
-			throw;
+		const std::filesystem::path scriptCorePdb = scriptCoreOutput.parent_path() / "Index-ScriptCore.pdb";
+		const std::vector<std::uint8_t> sourceDll = File::ReadAllBytes(Path::ToUtf8(scriptCoreOutput));
+		if (sourceDll.empty()) {
+			if (outError) *outError = "Index-ScriptCore.dll could not be read";
+			return false;
 		}
+
+		std::error_code error;
+		const bool sourcePdbExists = std::filesystem::is_regular_file(scriptCorePdb, error) && !error;
+		const std::vector<std::uint8_t> sourcePdb = sourcePdbExists
+			? File::ReadAllBytes(Path::ToUtf8(scriptCorePdb)) : std::vector<std::uint8_t>{};
+		if (sourcePdbExists && sourcePdb.empty()) {
+			if (outError) *outError = "Index-ScriptCore.pdb could not be read";
+			return false;
+		}
+
+		const std::filesystem::path packageDir = Path::FromUtf8(project.PackagesDirectory) / "Index-ScriptCore";
+		std::filesystem::create_directories(packageDir, error);
+		if (error) {
+			if (outError) *outError = "Could not create the Index-ScriptCore package directory: " + error.message();
+			return false;
+		}
+		const std::filesystem::path destinationDll = packageDir / "Index-ScriptCore.dll";
+		const std::filesystem::path destinationPdb = packageDir / "Index-ScriptCore.pdb";
+		const bool destinationDllExists = std::filesystem::is_regular_file(destinationDll, error) && !error;
+		error.clear();
+		const bool destinationPdbExists = std::filesystem::is_regular_file(destinationPdb, error) && !error;
+		const std::vector<std::uint8_t> oldDll = destinationDllExists
+			? File::ReadAllBytes(Path::ToUtf8(destinationDll)) : std::vector<std::uint8_t>{};
+		const std::vector<std::uint8_t> oldPdb = destinationPdbExists
+			? File::ReadAllBytes(Path::ToUtf8(destinationPdb)) : std::vector<std::uint8_t>{};
+		if ((destinationDllExists && oldDll.empty()) || (destinationPdbExists && oldPdb.empty())) {
+			if (outError) *outError = "The existing Index-ScriptCore package could not be read safely";
+			return false;
+		}
+
+		const bool dllChanged = oldDll != sourceDll;
+		if (dllChanged && !File::WriteAllBytes(Path::ToUtf8(destinationDll), sourceDll)) {
+			if (outError) *outError = "Could not refresh Packages/Index-ScriptCore/Index-ScriptCore.dll";
+			return false;
+		}
+		auto restoreDll = [&]() {
+			if (!dllChanged) return;
+			if (destinationDllExists) (void)File::WriteAllBytes(Path::ToUtf8(destinationDll), oldDll);
+			else { std::error_code cleanup; std::filesystem::remove(destinationDll, cleanup); }
+		};
+
+		if (sourcePdbExists) {
+			if (oldPdb != sourcePdb && !File::WriteAllBytes(Path::ToUtf8(destinationPdb), sourcePdb)) {
+				restoreDll();
+				if (outError) *outError = "Could not refresh Packages/Index-ScriptCore/Index-ScriptCore.pdb";
+				return false;
+			}
+		}
+		else if (destinationPdbExists) {
+			std::filesystem::remove(destinationPdb, error);
+			if (error) {
+				restoreDll();
+				if (outError) *outError = "Could not remove a stale Index-ScriptCore.pdb: " + error.message();
+				return false;
+			}
+		}
+
+		// API docs for IntelliSense. Optional: a missing or unreadable file only costs tooltips.
+		const std::filesystem::path scriptCoreXml = scriptCoreOutput.parent_path() / "Index-ScriptCore.xml";
+		if (std::filesystem::is_regular_file(scriptCoreXml, error) && !error) {
+			const std::vector<std::uint8_t> sourceXml = File::ReadAllBytes(Path::ToUtf8(scriptCoreXml));
+			const std::filesystem::path destinationXml = packageDir / "Index-ScriptCore.xml";
+			const bool upToDate = std::filesystem::is_regular_file(destinationXml, error)
+				&& File::ReadAllBytes(Path::ToUtf8(destinationXml)) == sourceXml;
+			if (!sourceXml.empty() && !upToDate && !File::WriteAllBytes(Path::ToUtf8(destinationXml), sourceXml)) {
+				IDX_CORE_WARN_TAG("Project", "Could not copy Index-ScriptCore.xml; script API tooltips will be missing.");
+			}
+		}
+		return true;
+	}
+
+	Json::Value IndexProject::BuildStarterScene(const std::string& sceneName) {
+		// Pre-seeds a Camera2D entity so a fresh project renders something — the deserializer
+		// no longer auto-injects a camera, so the template has to carry one explicitly.
+		Json::Value sceneRoot = Json::Value::MakeObject();
+		sceneRoot.AddMember("version", 1);
+		sceneRoot.AddMember("name", sceneName);
+		sceneRoot.AddMember("systems", Json::Value::MakeArray());
+
+		Json::Value transform2D = Json::Value::MakeObject();
+		transform2D.AddMember("posX", 0.0);
+		transform2D.AddMember("posY", 0.0);
+		transform2D.AddMember("rotation", 0.0);
+		transform2D.AddMember("scaleX", 1.0);
+		transform2D.AddMember("scaleY", 1.0);
+
+		Json::Value camera2D = Json::Value::MakeObject();
+		camera2D.AddMember("orthoSize", 5.0);
+		camera2D.AddMember("zoom", 1.0);
+
+		Json::Value cameraEntity = Json::Value::MakeObject();
+		cameraEntity.AddMember("name", std::string("Camera"));
+		cameraEntity.AddMember("Transform2D", std::move(transform2D));
+		cameraEntity.AddMember("Camera2D", std::move(camera2D));
+
+		// A tiny playable example: move the Player into the Coin. Shows input, physics,
+		// a trigger and saved data; everything is plain scene content the user can delete.
+		auto makeTransform = [](double x, double y, double scale) {
+			Json::Value transform = Json::Value::MakeObject();
+			transform.AddMember("posX", x);
+			transform.AddMember("posY", y);
+			transform.AddMember("rotation", 0.0);
+			transform.AddMember("scaleX", scale);
+			transform.AddMember("scaleY", scale);
+			return transform;
+		};
+		auto makeSprite = [](double r, double g, double b) {
+			Json::Value sprite = Json::Value::MakeObject();
+			sprite.AddMember("r", r);
+			sprite.AddMember("g", g);
+			sprite.AddMember("b", b);
+			sprite.AddMember("a", 1.0);
+			return sprite;
+		};
+		auto makeScripts = [](const char* className) {
+			Json::Value script = Json::Value::MakeObject();
+			script.AddMember("className", std::string(className));
+			script.AddMember("type", std::string("Managed"));
+			Json::Value scripts = Json::Value::MakeArray();
+			scripts.Append(std::move(script));
+			return scripts;
+		};
+
+		Json::Value playerBody = Json::Value::MakeObject();
+		playerBody.AddMember("bodyType", 2); // Dynamic
+		playerBody.AddMember("gravityScale", 0.0);
+		playerBody.AddMember("freezeRotation", true);
+		Json::Value playerCollider = Json::Value::MakeObject();
+		playerCollider.AddMember("localSizeX", 1.0);
+		playerCollider.AddMember("localSizeY", 1.0);
+
+		Json::Value playerEntity = Json::Value::MakeObject();
+		playerEntity.AddMember("name", std::string("Player"));
+		playerEntity.AddMember("Transform2D", makeTransform(-2.0, 0.0, 1.0));
+		playerEntity.AddMember("SpriteRenderer", makeSprite(0.30, 0.62, 1.0));
+		playerEntity.AddMember("Rigidbody2D", std::move(playerBody));
+		playerEntity.AddMember("BoxCollider2D", std::move(playerCollider));
+		playerEntity.AddMember("Scripts", makeScripts("PlayerController"));
+
+		Json::Value coinCollider = Json::Value::MakeObject();
+		coinCollider.AddMember("radius", 0.5);
+		coinCollider.AddMember("sensor", true);
+
+		Json::Value coinEntity = Json::Value::MakeObject();
+		coinEntity.AddMember("name", std::string("Coin"));
+		coinEntity.AddMember("Transform2D", makeTransform(2.0, 0.0, 0.5));
+		coinEntity.AddMember("SpriteRenderer", makeSprite(1.0, 0.82, 0.25));
+		coinEntity.AddMember("CircleCollider2D", std::move(coinCollider));
+		coinEntity.AddMember("Scripts", makeScripts("Coin"));
+
+		Json::Value entities = Json::Value::MakeArray();
+		entities.Append(std::move(cameraEntity));
+		entities.Append(std::move(playerEntity));
+		entities.Append(std::move(coinEntity));
+		sceneRoot.AddMember("entities", std::move(entities));
+		return sceneRoot;
 	}
 
 	IndexProject IndexProject::Create(const std::string& name, const std::string& parentDir,
@@ -1672,7 +2316,10 @@ endforeach()
 		ReportCreateProgress(progressCallback, 0.08f, "Creating project folders...");
 		CreateDirectoryTree(project);
 		ReportCreateProgress(progressCallback, 0.18f, "Configuring engine packages...");
-		ConfigurePackages(project);
+		std::string packageError;
+		if (!ConfigurePackages(project, &packageError)) {
+			throw std::runtime_error(packageError);
+		}
 		ReportCreateProgress(progressCallback, 0.20f, "Creating default build profiles...");
 		IndexBuildProfile::WriteDefaultProfiles(project.GetBuildProfilesDirectory());
 
@@ -1680,7 +2327,7 @@ endforeach()
 		if (!engineAssets.empty() && Directory::Exists(engineAssets)) {
 			ReportCreateProgress(progressCallback, 0.34f, "Copying Index assets...");
 			try {
-				std::filesystem::copy(engineAssets, project.IndexAssetsDirectory,
+				std::filesystem::copy(Path::FromUtf8(engineAssets), Path::FromUtf8(project.IndexAssetsDirectory),
 					std::filesystem::copy_options::recursive | std::filesystem::copy_options::skip_existing);
 			}
 			catch (const std::exception& ex) {
@@ -1694,57 +2341,31 @@ endforeach()
 		}
 
 		if (project.BuildSceneList.empty()) {
-			project.BuildSceneList.push_back(project.StartupScene);
+			project.BuildSceneList.push_back({ project.StartupScene, true });
 		}
 
 		// Write project.json
 		{
 			ReportCreateProgress(progressCallback, 0.48f, "Writing project configuration...");
 			Json::Value root = BuildProjectJson(project);
-			// Note: 'createdAt' is intentionally not written. Load() never reads it back, and
-			// BuildProjectJson never re-emits it, so writing it here would be silently dropped
-			// on the first Save() and create the illusion of persistent provenance metadata.
-			(void)File::WriteAllText(project.ProjectFilePath, Json::Stringify(root, true));
+			if (!File::WriteAllText(project.ProjectFilePath, Json::Stringify(root, true))) {
+				throw std::runtime_error("Could not write project configuration: " + project.ProjectFilePath);
+			}
 		}
 
-		// Generate starter scene. Pre-seeds a Camera2D entity so a fresh
-		// project renders something — the deserializer no longer auto-injects
-		// a camera, so the template has to carry one explicitly.
 		{
 			ReportCreateProgress(progressCallback, 0.56f, "Generating starter scene...");
-			Json::Value sceneRoot = Json::Value::MakeObject();
-			sceneRoot.AddMember("version", 1);
-			sceneRoot.AddMember("name", project.StartupScene);
-			sceneRoot.AddMember("systems", Json::Value::MakeArray());
-
-			Json::Value transform2D = Json::Value::MakeObject();
-			transform2D.AddMember("posX", 0.0);
-			transform2D.AddMember("posY", 0.0);
-			transform2D.AddMember("rotation", 0.0);
-			transform2D.AddMember("scaleX", 1.0);
-			transform2D.AddMember("scaleY", 1.0);
-
-			Json::Value camera2D = Json::Value::MakeObject();
-			camera2D.AddMember("orthoSize", 5.0);
-			camera2D.AddMember("zoom", 1.0);
-
-			Json::Value cameraEntity = Json::Value::MakeObject();
-			cameraEntity.AddMember("name", std::string("Camera"));
-			cameraEntity.AddMember("Transform2D", std::move(transform2D));
-			cameraEntity.AddMember("Camera2D", std::move(camera2D));
-
-			Json::Value entities = Json::Value::MakeArray();
-			entities.Append(std::move(cameraEntity));
-			sceneRoot.AddMember("entities", std::move(entities));
+			const Json::Value sceneRoot = BuildStarterScene(project.StartupScene);
 
 			const SceneSerializationFormat starterFormat =
 				project.AssetSerializationFormat == IndexProject::ProjectAssetSerializationFormat::Binary
 					? SceneSerializationFormat::Binary
 					: SceneSerializationFormat::Json;
-			(void)SceneSerializerStorage::WriteRootToFile(
-				project.GetSceneFilePath(project.StartupScene),
-				sceneRoot,
-				starterFormat);
+			const std::string starterScenePath = project.GetSceneFilePath(project.StartupScene);
+			if (starterScenePath.empty()
+				|| !SceneSerializerStorage::WriteRootToFile(starterScenePath, sceneRoot, starterFormat)) {
+				throw std::runtime_error("Could not write starter scene: " + starterScenePath);
+			}
 		}
 
 		// Preserve existing NuGet PackageReference entries if .csproj already exists
@@ -1778,7 +2399,7 @@ endforeach()
 		std::string csproj = R"CS(<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Library</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Configurations>Debug;Release;Dist</Configurations>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <EnableDynamicLoading>true</EnableDynamicLoading>
@@ -1821,7 +2442,16 @@ endforeach()
 )CS" + existingPackageRefs + R"CS(
 </Project>
 )CS";
-		(void)File::WriteAllText(project.CsprojPath, csproj);
+		if (!File::WriteAllText(project.CsprojPath, csproj)) {
+			throw std::runtime_error("Could not write C# project: " + project.CsprojPath);
+		}
+		std::string toolingError;
+		if (!EnsureManagedSdkGlobalJson(project, &toolingError)) {
+			throw std::runtime_error(toolingError);
+		}
+		if (!project.WriteManagedDefinesProps()) {
+			throw std::runtime_error("Could not write managed IntelliSense definitions");
+		}
 
 		// Index-ScriptCore is linked via DLL reference in the .csproj — no project entry needed.
 		ReportCreateProgress(progressCallback, 0.72f, "Generating solution and starter scripts...");
@@ -1829,7 +2459,7 @@ endforeach()
 
 		std::string sln = R"(
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
+# Visual Studio Version 18
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = ")" + name + R"(", ")" + name + R"(.csproj", "{)" + projGuid + R"(}"
 EndProject
 Global
@@ -1851,7 +2481,9 @@ Global
 	EndGlobalSection
 EndGlobal
 )";
-		(void)File::WriteAllText(project.SlnPath, sln);
+		if (!File::WriteAllText(project.SlnPath, sln)) {
+			throw std::runtime_error("Could not write Visual Studio solution: " + project.SlnPath);
+		}
 
 		// Generate starter script
 		std::string starterScript = R"(using Index;
@@ -1869,6 +2501,50 @@ public class GameScript : EntityScript
 }
 )";
 		(void)File::WriteAllText(Path::Combine(project.ScriptsDirectory, "GameScript.cs"), starterScript);
+
+		const std::string playerControllerScript = R"CS(using Index;
+
+// Moves the Player with WASD / arrow keys or a gamepad's left stick.
+public class PlayerController : EntityScript
+{
+    public float Speed = 5.0f;
+
+    private Rigidbody2D? m_Body;
+
+    public override void OnStart()
+    {
+        m_Body = GetComponent<Rigidbody2D>();
+    }
+
+    public override void OnFixedUpdate()
+    {
+        if (m_Body != null)
+            m_Body.LinearVelocity = Input.GetAxis() * Speed;
+    }
+}
+)CS";
+		(void)File::WriteAllText(Path::Combine(project.ScriptsDirectory, "PlayerController.cs"), playerControllerScript);
+
+		const std::string coinScript = R"CS(using Index;
+
+// The Coin's collider is a Sensor, so touching it raises OnTriggerEnter2D instead of a collision.
+public class Coin : EntityScript
+{
+    public override void OnTriggerEnter2D(Collision2D other)
+    {
+        if (other.Other.Name != "Player")
+            return;
+
+        // PlayerPrefs survives restarts; it is stored per game in Application.PersistentDataPath.
+        int collected = PlayerPrefs.GetInt("CoinsCollected") + 1;
+        PlayerPrefs.SetInt("CoinsCollected", collected);
+        Log.Info($"Coin collected! Total across all sessions: {collected}");
+
+        Entity.Destroy();
+    }
+}
+)CS";
+		(void)File::WriteAllText(Path::Combine(project.ScriptsDirectory, "Coin.cs"), coinScript);
 
 		// Generate .vscode/settings.json
 		std::string vsCodeSettings = R"({
@@ -1903,7 +2579,7 @@ public class GameScript : EntityScript
 
 		const std::string targetDirName = directoryName.empty() ? newName : directoryName;
 		const std::string targetRoot = Path::Combine(parentDir, targetDirName);
-		if (std::filesystem::exists(targetRoot)) {
+		if (std::filesystem::exists(Path::FromUtf8(targetRoot))) {
 			throw std::runtime_error("Target directory already exists: " + targetRoot);
 		}
 
@@ -1925,8 +2601,8 @@ public class GameScript : EntityScript
 			return rel.extension() == ".user";
 		};
 
-		const std::filesystem::path src(sourceRootDir);
-		const std::filesystem::path dst(targetRoot);
+		const std::filesystem::path src = Path::FromUtf8(sourceRootDir);
+		const std::filesystem::path dst = Path::FromUtf8(targetRoot);
 		std::error_code ec;
 		std::filesystem::create_directories(dst, ec);
 		if (ec) {
@@ -1956,7 +2632,7 @@ public class GameScript : EntityScript
 					std::filesystem::copy_options::overwrite_existing, ec);
 				if (ec) {
 					IDX_CORE_WARN_TAG("IndexProject",
-						"Duplicate: failed to copy '{}': {}", it->path().string(), ec.message());
+						"Duplicate: failed to copy '{}': {}", Path::ToUtf8(it->path()), ec.message());
 					ec.clear();
 				}
 			}
@@ -1967,6 +2643,7 @@ public class GameScript : EntityScript
 		// New project view: inherit settings, retarget name + paths.
 		IndexProject target = source;
 		target.Name = newName;
+		target.EngineVersion = IDX_VERSION;
 		target.RootDirectory = targetRoot;
 		ResolvePaths(target);
 
@@ -1985,12 +2662,12 @@ public class GameScript : EntityScript
 		if (oldName != newName) {
 			const std::filesystem::path oldCsproj = dst / (oldName + ".csproj");
 			if (std::filesystem::exists(oldCsproj)) {
-				std::filesystem::rename(oldCsproj, std::filesystem::path(target.CsprojPath), ec);
+				std::filesystem::rename(oldCsproj, Path::FromUtf8(target.CsprojPath), ec);
 				if (ec) ec.clear();
 			}
 			const std::filesystem::path oldSln = dst / (oldName + ".sln");
 			if (std::filesystem::exists(oldSln)) {
-				std::filesystem::rename(oldSln, std::filesystem::path(target.SlnPath), ec);
+				std::filesystem::rename(oldSln, Path::FromUtf8(target.SlnPath), ec);
 				if (ec) ec.clear();
 			}
 		}
@@ -2014,7 +2691,9 @@ public class GameScript : EntityScript
 		// Persist project.json with the new name (all other settings inherited).
 		{
 			Json::Value root = BuildProjectJson(target);
-			(void)File::WriteAllText(target.ProjectFilePath, Json::Stringify(root, true));
+			if (!File::WriteAllText(target.ProjectFilePath, Json::Stringify(root, true))) {
+				throw std::runtime_error("Could not write duplicated project configuration: " + target.ProjectFilePath);
+			}
 		}
 
 		// Native script project files (CMakeLists) embed the target name; regenerate.
@@ -2027,7 +2706,7 @@ public class GameScript : EntityScript
 
 	std::string IndexProject::GetEngineRootDir() {
 		const std::filesystem::path root = ResolveEngineRoot();
-		return root.empty() ? std::string{} : root.generic_string();
+		return root.empty() ? std::string{} : Path::ToGenericUtf8(root);
 	}
 
 	std::string IndexProject::GetPremakePath() {
@@ -2052,141 +2731,68 @@ public class GameScript : EntityScript
 		for (const auto& candidate : candidates) {
 			std::error_code ec;
 			if (std::filesystem::exists(candidate, ec) && !ec) {
-				return candidate.generic_string();
+				return Path::ToGenericUtf8(candidate);
 			}
 		}
 		return {};
 	}
 
 	IndexProject::RegenerateResult IndexProject::RegenerateSolutionForProject(const std::string& projectRootDir) {
-		RegenerateResult result;
-
-		const std::string engineRoot = GetEngineRootDir();
-		if (engineRoot.empty()) {
-			result.Output = "Could not resolve engine root directory; skipping solution regeneration.";
-			IDX_WARN_TAG("IndexProject", "{}", result.Output);
-			return result;
-		}
-
-		// Packaged SDK ships without premake5.lua; skip regen silently — project still builds via CMakeLists.txt.
-		std::error_code premakeLuaEc;
-		const std::filesystem::path premakeLua = std::filesystem::path(engineRoot) / "premake5.lua";
-		if (!std::filesystem::exists(premakeLua, premakeLuaEc) || premakeLuaEc) {
-			result.Succeeded = true;
-			result.Output = "Engine solution regeneration skipped: running against a packaged SDK (no premake5.lua at engine root).";
-			IDX_INFO_TAG("IndexProject", "{}", result.Output);
-			return result;
-		}
-
-		const std::string premakePath = GetPremakePath();
-		if (premakePath.empty()) {
-			result.Output = "premake5 binary not found under <engine-root>/vendor/bin/. The engine solution cannot be regenerated automatically; the existing one will be used as-is.";
-			IDX_WARN_TAG("IndexProject", "{}", result.Output);
-			return result;
-		}
-
-		// Skip premake when inputs unchanged: premake always rewrites .vcxproj timestamps, tripping VS FastUpToDateCheck.
-		const std::filesystem::path engineRootPath(engineRoot);
-		const std::filesystem::path projectRootPath(projectRootDir);
-		const std::filesystem::path solutionPath = engineRootPath / "Index.sln";
-		const std::filesystem::path stampPath = RegenStampPath(engineRootPath);
-
-		const uint64_t inputHash = ComputeRegenInputHash(engineRootPath, projectRootPath);
-		const std::string cachedHash = ReadRegenStamp(stampPath);
-		const std::string currentHash = FormatHashHex(inputHash);
-
-		std::error_code slnEc;
-		const bool solutionPresent = std::filesystem::exists(solutionPath, slnEc) && !slnEc;
-
-		if (solutionPresent && !cachedHash.empty() && cachedHash == currentHash) {
-			result.Succeeded = true;
-			result.ExitCode = 0;
-			result.Output = "Engine solution regeneration skipped: inputs unchanged (hash=" + currentHash + ").";
-			IDX_INFO_TAG("IndexProject", "{}", result.Output);
-			return result;
-		}
-
-		IDX_INFO_TAG("IndexProject", "Regenerating engine solution for project: {} (input hash {} -> {})",
-			projectRootDir,
-			cachedHash.empty() ? std::string("<none>") : cachedHash,
-			currentHash);
-
-		Process::Result processResult = Process::Run({
-			premakePath,
-			"vs2022",
-			"--index-project=" + projectRootDir,
-		}, engineRoot);
-
-		result.ExitCode = processResult.ExitCode;
-		result.Succeeded = processResult.Succeeded();
-		result.Output = std::move(processResult.Output);
-
-		if (!result.Succeeded) {
-			IDX_ERROR_TAG("IndexProject", "premake regeneration failed (exit code {}): {}", result.ExitCode, result.Output);
-			return result;
-		}
-
-		if (!WriteRegenStamp(stampPath, inputHash)) {
-			// Non-fatal: missing the stamp just means the next open will do
-			// one extra (redundant) regen. The user-visible behaviour is
-			// still correct.
-			IDX_WARN_TAG("IndexProject", "Could not write regen stamp at {}; next open will re-run premake unnecessarily.",
-				stampPath.generic_string());
-		}
-		return result;
+		return RegeneratePackageWorkspaceForProject(projectRootDir);
 	}
 
 	std::string IndexProject::GetMSBuildPath() {
 #if defined(_WIN32)
-		const std::vector<std::string> programFilesRoots = {
-			"C:\\Program Files\\Microsoft Visual Studio\\2022",
-			"C:\\Program Files (x86)\\Microsoft Visual Studio\\2022"
-		};
-		const std::vector<std::string> editions = { "Community", "Professional", "Enterprise", "BuildTools" };
-
-		for (const auto& root : programFilesRoots) {
-			for (const auto& edition : editions) {
-				std::filesystem::path candidate(root);
-				candidate /= edition;
-				candidate /= "MSBuild";
-				candidate /= "Current";
-				candidate /= "Bin";
-				candidate /= "MSBuild.exe";
-
-				std::error_code ec;
-				if (std::filesystem::exists(candidate, ec) && !ec) {
-					return candidate.generic_string();
-				}
-			}
-		}
-
-		// vswhere fallback for non-default install layouts.
 		const std::filesystem::path vswhere = "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe";
 		std::error_code vswhereEc;
 		if (std::filesystem::exists(vswhere, vswhereEc) && !vswhereEc) {
 			Process::Result vswhereResult = Process::Run({
-				vswhere.string(),
+				Path::ToUtf8(vswhere),
 				"-latest",
+				"-products", "*",
+				"-version", "[18.0,)",
 				"-requires", "Microsoft.Component.MSBuild",
 				"-find", "MSBuild\\**\\Bin\\MSBuild.exe",
 				"-nologo"
-			});
+			}, {}, std::chrono::seconds(30));
 			if (vswhereResult.Succeeded()) {
 				const std::string& out = vswhereResult.Output;
 				const auto newline = out.find_first_of("\r\n");
 				std::string firstLine = (newline == std::string::npos) ? out : out.substr(0, newline);
+				if (firstLine.size() >= 3 && static_cast<unsigned char>(firstLine[0]) == 0xEF
+					&& static_cast<unsigned char>(firstLine[1]) == 0xBB
+					&& static_cast<unsigned char>(firstLine[2]) == 0xBF)
+					firstLine.erase(0, 3);
+				while (!firstLine.empty() && (firstLine.front() == ' ' || firstLine.front() == '\t')) {
+					firstLine.erase(firstLine.begin());
+				}
 				while (!firstLine.empty() && (firstLine.back() == ' ' || firstLine.back() == '\t')) {
 					firstLine.pop_back();
 				}
 				std::error_code existEc;
-				if (!firstLine.empty() && std::filesystem::exists(firstLine, existEc) && !existEc) {
+				if (!firstLine.empty() && std::filesystem::exists(Path::FromUtf8(firstLine), existEc) && !existEc) {
 					return firstLine;
 				}
 			}
 		}
+
+		const std::vector<std::string> programFilesRoots = {
+			"C:\\Program Files\\Microsoft Visual Studio\\18",
+			"C:\\Program Files\\Microsoft Visual Studio\\2026",
+			"C:\\Program Files (x86)\\Microsoft Visual Studio\\18",
+			"C:\\Program Files (x86)\\Microsoft Visual Studio\\2026"
+		};
+		for (const auto& root : programFilesRoots) {
+			for (const auto& edition : { "Community", "Professional", "Enterprise", "BuildTools" }) {
+				const std::filesystem::path candidate = std::filesystem::path(root) / edition
+					/ "MSBuild" / "Current" / "Bin" / "MSBuild.exe";
+				std::error_code error;
+				if (std::filesystem::is_regular_file(candidate, error) && !error)
+					return Path::ToGenericUtf8(candidate);
+			}
+		}
 #endif
-		// Last resort: rely on PATH (returns empty string is also valid; caller can decide).
-		return "MSBuild.exe";
+		return {};
 	}
 
 	IndexProject::BuildResult IndexProject::BuildSolution(const std::string& configuration,
@@ -2200,28 +2806,32 @@ public class GameScript : EntityScript
 			return result;
 		}
 
-		const std::filesystem::path solutionPath = std::filesystem::path(engineRoot) / "Index.sln";
+		const std::filesystem::path solutionPath = Path::FromUtf8(engineRoot) / "Index.sln";
 		std::error_code ec;
 		if (!std::filesystem::exists(solutionPath, ec) || ec) {
-			result.Output = "Index.sln not found at " + solutionPath.generic_string();
+			result.Output = "Index.sln not found at " + Path::ToGenericUtf8(solutionPath);
 			IDX_WARN_TAG("IndexProject", "{}", result.Output);
 			return result;
 		}
 
 		const std::string msbuild = GetMSBuildPath();
+		if (msbuild.empty()) {
+			result.Output = "Visual Studio 2026 MSBuild was not found.";
+			return result;
+		}
 
 		IDX_INFO_TAG("IndexProject", "Building Index.sln (Configuration={}, Platform={}) via {}...",
 			configuration, platform, msbuild);
 
 		Process::Result processResult = Process::Run({
 			msbuild,
-			solutionPath.generic_string(),
+			Path::ToGenericUtf8(solutionPath),
 			"-p:Configuration=" + configuration,
 			"-p:Platform=" + platform,
 			"-m",
 			"-verbosity:minimal",
 			"-nologo"
-		}, engineRoot);
+		}, Path::FromUtf8(engineRoot), std::chrono::minutes(30));
 
 		result.ExitCode = processResult.ExitCode;
 		result.Succeeded = processResult.Succeeded();
@@ -2255,10 +2865,10 @@ public class GameScript : EntityScript
 			return result;
 		}
 
-		const std::filesystem::path solutionPath = std::filesystem::path(engineRoot) / "Index.sln";
+		const std::filesystem::path solutionPath = Path::FromUtf8(engineRoot) / "Index.sln";
 		std::error_code ec;
 		if (!std::filesystem::exists(solutionPath, ec) || ec) {
-			result.Output = "Index.sln not found at " + solutionPath.generic_string();
+			result.Output = "Index.sln not found at " + Path::ToGenericUtf8(solutionPath);
 			IDX_WARN_TAG("IndexProject", "{}", result.Output);
 			return result;
 		}
@@ -2277,21 +2887,27 @@ public class GameScript : EntityScript
 		}
 
 		const std::string msbuild = GetMSBuildPath();
+		if (msbuild.empty()) {
+			result.Output = "Visual Studio 2026 MSBuild was not found.";
+			return result;
+		}
 
 		IDX_INFO_TAG("IndexProject", "Building {} target(s) in Index.sln (Configuration={}, Platform={}): {}",
 			targets.size(), configuration, platform, targetsArg);
 
 		Process::Result processResult = Process::Run({
 			msbuild,
-			solutionPath.generic_string(),
+			Path::ToGenericUtf8(solutionPath),
 			"-p:Configuration=" + configuration,
 			"-p:Platform=" + platform,
 			targetsArg,
-			"-m",
-			"-restore", // freshly generated csproj fails with NETSDK1004 without restore
+			"-m:1",
+			"-nr:false",
+			"-p:CL_MPCount=1",
+			"-p:UseMultiToolTask=false",
 			"-verbosity:minimal",
 			"-nologo"
-		}, engineRoot);
+		}, Path::FromUtf8(engineRoot), std::chrono::minutes(30));
 
 		result.ExitCode = processResult.ExitCode;
 		result.Succeeded = processResult.Succeeded();
@@ -2306,12 +2922,178 @@ public class GameScript : EntityScript
 		return result;
 	}
 
+	IndexProject::RegenerateResult IndexProject::RegeneratePackageWorkspaceForProject(
+		const std::string& projectRootDir) {
+		RegenerateResult result;
+		if (projectRootDir.empty()) {
+			result.Output = "Project root is empty; package workspace cannot be generated.";
+			return result;
+		}
+
+		const std::string engineRoot = GetEngineRootDir();
+		if (engineRoot.empty()) {
+			result.Output = "Could not resolve the engine SDK root.";
+			return result;
+		}
+
+		const std::filesystem::path generator =
+			Path::FromUtf8(engineRoot) / "premake" / "project-packages.lua";
+		std::error_code ec;
+		if (!std::filesystem::is_regular_file(generator, ec) || ec) {
+			result.Output = "Project package generator not found at " + Path::ToGenericUtf8(generator);
+			return result;
+		}
+
+		const std::string premakePath = GetPremakePath();
+		if (premakePath.empty()) {
+			result.Output = "premake5 is required to generate project-local package builds.";
+			return result;
+		}
+
+		const std::filesystem::path projectFile =
+			Path::FromUtf8(projectRootDir) / "project.json";
+		if (!std::filesystem::is_regular_file(projectFile, ec) || ec) {
+			result.Output = "Project package generation requires " + Path::ToGenericUtf8(projectFile);
+			return result;
+		}
+
+		Process::Result processResult = Process::Run({
+			premakePath,
+			"--file=" + Path::ToGenericUtf8(generator),
+			"vs2022",
+			"--index-project=" + Path::ToGenericUtf8(std::filesystem::absolute(Path::FromUtf8(projectRootDir))),
+		}, Path::FromUtf8(engineRoot), std::chrono::minutes(2));
+
+		result.ExitCode = processResult.ExitCode;
+		result.Succeeded = processResult.Succeeded();
+		result.Output = std::move(processResult.Output);
+		if (!result.Succeeded) {
+			IDX_ERROR_TAG("IndexProject", "Project package generation failed (exit code {}): {}",
+				result.ExitCode, result.Output);
+		}
+		return result;
+	}
+
+	IndexProject::BuildResult IndexProject::BuildProjectPackages(const std::string& projectRootDir,
+		const std::string& configuration, const std::string& platform) {
+		BuildResult result;
+		if (!IsSafeBuildPathToken(configuration, false) || !IsSafeBuildPathToken(platform, false)) {
+			result.Output = "Invalid package build configuration or platform.";
+			return result;
+		}
+
+		const std::filesystem::path workspaceRoot =
+			Path::FromUtf8(projectRootDir) / ".index" / "build" / "packages";
+		const std::filesystem::path generatedRoot = workspaceRoot / "generated";
+		std::error_code ec;
+		if (!std::filesystem::is_directory(generatedRoot, ec) || ec) {
+			result.Output = "Generated project package directory not found at " + Path::ToGenericUtf8(generatedRoot);
+			return result;
+		}
+
+		std::vector<std::filesystem::path> nativeProjects;
+		std::vector<std::filesystem::path> managedProjects;
+		for (std::filesystem::recursive_directory_iterator it(
+				generatedRoot, std::filesystem::directory_options::skip_permission_denied, ec), end;
+			it != end; it.increment(ec)) {
+			if (ec) {
+				result.Output = "Could not enumerate generated package projects: " + ec.message();
+				return result;
+			}
+			if (!it->is_regular_file(ec) || ec) {
+				ec.clear();
+				continue;
+			}
+			if (it->path().extension() == ".vcxproj") nativeProjects.push_back(it->path());
+			else if (it->path().extension() == ".csproj") managedProjects.push_back(it->path());
+		}
+		std::sort(nativeProjects.begin(), nativeProjects.end());
+		std::sort(managedProjects.begin(), managedProjects.end());
+
+		const auto appendOutput = [&](const std::filesystem::path& projectPath,
+			const Process::Result& processResult) {
+			if (!result.Output.empty()) result.Output += "\n";
+			result.Output += "[" + Path::ToUtf8(projectPath.filename()) + "]\n" + processResult.Output;
+		};
+
+		if (!nativeProjects.empty()) {
+			const std::string msbuild = GetMSBuildPath();
+			if (msbuild.empty()) {
+				result.Output = "MSBuild was not found.";
+				return result;
+			}
+			for (const auto& projectPath : nativeProjects) {
+				const Process::Result processResult = Process::Run({
+					msbuild, Path::ToGenericUtf8(projectPath),
+					"-p:Configuration=" + configuration,
+					"-p:Platform=" + platform,
+					"-p:PreferredToolArchitecture=x64",
+					"-m:1", "-nr:false",
+					"-p:CL_MPCount=1", "-p:UseMultiToolTask=false",
+					"-verbosity:minimal", "-nologo"
+				}, workspaceRoot, std::chrono::minutes(10));
+				appendOutput(projectPath, processResult);
+				if (!processResult.Succeeded()) {
+					result.ExitCode = processResult.ExitCode;
+					IDX_ERROR_TAG("IndexProject", "Native project package build failed: {}", result.Output);
+					return result;
+				}
+			}
+		}
+
+		for (const auto& projectPath : managedProjects) {
+			const Process::Result processResult = Process::Run({
+				"dotnet", "build", Path::ToGenericUtf8(projectPath),
+				"-c", configuration,
+				"-p:Platform=" + platform,
+				"--nologo", "-v", "minimal",
+				"-nodeReuse:false", "-p:UseSharedCompilation=false"
+			}, workspaceRoot, std::chrono::minutes(10));
+			appendOutput(projectPath, processResult);
+			if (!processResult.Succeeded()) {
+				result.ExitCode = processResult.ExitCode;
+				IDX_ERROR_TAG("IndexProject", "Managed project package build failed: {}", result.Output);
+				return result;
+			}
+		}
+
+		result.ExitCode = 0;
+		result.Succeeded = true;
+		return result;
+	}
+
+	std::string IndexProject::GetProjectPackageOutputDirectory(const std::string& projectRootDir,
+		const std::string& packageTarget, const std::string& configuration) {
+		const std::string platformDirectory = GetNativeBuildPlatformDirectory();
+		if (projectRootDir.empty() || platformDirectory.empty()
+			|| !IsSafeBuildPathToken(packageTarget, true)
+			|| !IsSafeBuildPathToken(configuration, false)) {
+			return {};
+		}
+
+		return Path::ToGenericUtf8(Path::FromUtf8(projectRootDir)
+			/ ".index" / "build" / "packages" / "bin"
+			/ (configuration + "-" + platformDirectory)
+			/ packageTarget);
+	}
+
+	std::string IndexProject::GetProjectNativePackageLibraryPath(const std::string& projectRootDir,
+		const std::string& packageName, const std::string& configuration) {
+		if (!IsSafeBuildPathToken(packageName, true)) return {};
+		const std::string targetName = "Pkg." + packageName + ".Native";
+		const std::string outputDirectory =
+			GetProjectPackageOutputDirectory(projectRootDir, targetName, configuration);
+		if (outputDirectory.empty()) return {};
+		return Path::ToGenericUtf8(Path::FromUtf8(outputDirectory)
+			/ GetSharedLibraryFilename(targetName));
+	}
+
 	std::vector<std::string> IndexProject::EnumerateProjectLocalPackages(const std::string& projectRoot) {
 		// Returns directory names under <projectRoot>/Packages containing an index-package.lua.
 		std::vector<std::string> names;
 		if (projectRoot.empty()) return names;
 
-		const std::filesystem::path packagesDir = std::filesystem::path(projectRoot) / "Packages";
+		const std::filesystem::path packagesDir = Path::FromUtf8(projectRoot) / "Packages";
 		std::error_code ec;
 		if (!std::filesystem::exists(packagesDir, ec) || ec) return names;
 		if (!std::filesystem::is_directory(packagesDir, ec) || ec) return names;
@@ -2321,7 +3103,7 @@ public class GameScript : EntityScript
 			if (!entry.is_directory(ec) || ec) continue;
 			const std::filesystem::path manifest = entry.path() / "index-package.lua";
 			if (std::filesystem::exists(manifest, ec) && !ec) {
-				names.push_back(entry.path().filename().string());
+				names.push_back(Path::ToUtf8(entry.path().filename()));
 			}
 		}
 
@@ -2331,85 +3113,11 @@ public class GameScript : EntityScript
 	IndexProject::AutomateResult IndexProject::AutomateForProject(const std::string& projectRootDir,
 		const std::string& configuration, const std::string& platform) {
 		AutomateResult result;
-		result.Regenerate = RegenerateSolutionForProject(projectRootDir);
+		result.Regenerate = RegeneratePackageWorkspaceForProject(projectRootDir);
 
-		// ExitCode == -1 means premake was missing — the existing solution is still valid, proceed.
-		const bool premakeRanAndFailed = !result.Regenerate.Succeeded && result.Regenerate.ExitCode != -1;
-		if (premakeRanAndFailed) {
-			IDX_ERROR_TAG("IndexProject", "Skipping build because premake regeneration failed.");
-			return result;
-		}
+		if (!result.Regenerate.Succeeded) return result;
 
-		// Build each project file directly (not via solution -t: targets) because MSBuild's flag parser
-		// splits on the first ':' and defeats the project:target escape, causing MSB4057 on all projects.
-		const std::filesystem::path generatedRoot =
-			std::filesystem::path(GetEngineRootDir()) / "premake" / "generated";
-
-		std::vector<std::filesystem::path> projectFiles;
-		for (const std::string& packageName : EnumerateProjectLocalPackages(projectRootDir)) {
-			std::error_code ec;
-			const std::filesystem::path nativeProj = generatedRoot
-				/ ("Pkg." + packageName + ".Native")
-				/ ("Pkg." + packageName + ".Native.vcxproj");
-			const std::filesystem::path csharpProj = generatedRoot
-				/ ("Pkg." + packageName)
-				/ ("Pkg." + packageName + ".csproj");
-
-			if (std::filesystem::exists(nativeProj, ec) && !ec) projectFiles.push_back(nativeProj);
-			if (std::filesystem::exists(csharpProj, ec) && !ec) projectFiles.push_back(csharpProj);
-		}
-
-		if (projectFiles.empty()) {
-			result.Build.Succeeded = true;
-			result.Build.ExitCode = 0;
-			result.Build.Output = "No project-local package projects to build.";
-			result.RanBuild = false;
-			return result;
-		}
-
-		const std::string msbuild = GetMSBuildPath();
-		if (msbuild.empty()) {
-			result.Build.Succeeded = false;
-			result.Build.ExitCode = -1;
-			result.Build.Output = "MSBuild not found on PATH or via vswhere.";
-			result.RanBuild = false;
-			IDX_ERROR_TAG("IndexProject", "{}", result.Build.Output);
-			return result;
-		}
-
-		std::string combinedOutput;
-		bool allSucceeded = true;
-		int lastExitCode = 0;
-		for (const auto& projFile : projectFiles) {
-			IDX_INFO_TAG("IndexProject", "Building {} (Configuration={}, Platform={})",
-				projFile.generic_string(), configuration, platform);
-
-			Process::Result pr = Process::Run({
-				msbuild,
-				projFile.generic_string(),
-				"-p:Configuration=" + configuration,
-				"-p:Platform=" + platform,
-				"-m",
-				"-restore",
-				"-verbosity:minimal",
-				"-nologo"
-			});
-
-			if (!combinedOutput.empty()) combinedOutput += "\n";
-			combinedOutput += "=== " + projFile.filename().generic_string() + " ===\n" + pr.Output;
-
-			if (!pr.Succeeded()) {
-				allSucceeded = false;
-				lastExitCode = pr.ExitCode;
-				IDX_ERROR_TAG("IndexProject", "Build of {} failed (exit {}).",
-					projFile.generic_string(), pr.ExitCode);
-				break;
-			}
-		}
-
-		result.Build.Succeeded = allSucceeded;
-		result.Build.ExitCode = allSucceeded ? 0 : lastExitCode;
-		result.Build.Output = std::move(combinedOutput);
+		result.Build = BuildProjectPackages(projectRootDir, configuration, platform);
 		result.RanBuild = true;
 		return result;
 	}

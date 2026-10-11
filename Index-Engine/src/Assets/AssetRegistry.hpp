@@ -74,19 +74,32 @@ namespace Index {
 			s_BuiltInPathToId[absolutePath] = guid;
 		}
 
+		// FNV-1a 64 of the path relative to IndexAssets root, lowercased + forward-slashed for cross-platform stability.
+		static uint64_t ComputeBuiltInPathGuid(std::string relativeGenericPath) {
+			std::transform(relativeGenericPath.begin(), relativeGenericPath.end(), relativeGenericPath.begin(),
+				[](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+			uint64_t hash = 0xcbf29ce484222325ULL;
+			for (char ch : relativeGenericPath) {
+				hash ^= static_cast<uint8_t>(ch);
+				hash *= 0x100000001b3ULL;
+			}
+			return (hash & 0x00FFFFFFFFFFFFFFULL) | 0xAA00000000000000ULL;
+		}
+
 		// Call AFTER RegisterBuiltInAsset so hand-picked GUIDs win over path-hash auto-registration.
 		static void RegisterBuiltInDirectory(const std::string& absoluteRoot) {
 			if (absoluteRoot.empty()) {
 				return;
 			}
+			const std::filesystem::path nativeRoot = Path::FromUtf8(absoluteRoot);
 			std::error_code rootEc;
-			if (!std::filesystem::is_directory(absoluteRoot, rootEc) || rootEc) {
+			if (!std::filesystem::is_directory(nativeRoot, rootEc) || rootEc) {
 				return;
 			}
 
 			std::error_code ec;
 			for (std::filesystem::recursive_directory_iterator it(
-				 absoluteRoot,
+				 nativeRoot,
 				 std::filesystem::directory_options::skip_permission_denied,
 				 ec), end;
 				 it != end;
@@ -95,7 +108,7 @@ namespace Index {
 				if (ec) { ec.clear(); continue; }
 				if (!it->is_regular_file(ec) || ec) { ec.clear(); continue; }
 
-				const std::string absPath = NormalizePath(it->path().string());
+				const std::string absPath = NormalizePath(Path::ToUtf8(it->path()));
 				if (absPath.empty() || IsMetaFilePath(absPath)) {
 					continue;
 				}
@@ -108,21 +121,10 @@ namespace Index {
 					continue;
 				}
 
-				// FNV-1a 64 of the path relative to IndexAssets root, lowercased + forward-slashed for cross-platform stability.
 				std::error_code relEc;
 				std::filesystem::path relPath = std::filesystem::relative(
-					std::filesystem::path(absPath),
-					std::filesystem::path(absoluteRoot), relEc);
-				std::string relStr = relEc ? absPath : relPath.generic_string();
-				std::transform(relStr.begin(), relStr.end(), relStr.begin(),
-					[](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-
-				uint64_t hash = 0xcbf29ce484222325ULL;
-				for (char ch : relStr) {
-					hash ^= static_cast<uint8_t>(ch);
-					hash *= 0x100000001b3ULL;
-				}
-				uint64_t guid = (hash & 0x00FFFFFFFFFFFFFFULL) | 0xAA00000000000000ULL;
+					Path::FromUtf8(absPath), nativeRoot, relEc);
+				const uint64_t guid = ComputeBuiltInPathGuid(relEc ? absPath : Path::ToGenericUtf8(relPath));
 
 				if (s_BuiltInById.find(guid) != s_BuiltInById.end()) {
 					IDX_CORE_WARN_TAG("AssetRegistry",
@@ -303,7 +305,7 @@ namespace Index {
 		static std::string ResolvePath(uint64_t assetId) {
 			// Built-ins skip dirty/rebuild — their paths don't change at runtime.
 			if (auto it = s_BuiltInById.find(assetId); it != s_BuiltInById.end()) {
-				if (std::filesystem::exists(it->second.Path)) {
+				if (std::filesystem::exists(Path::FromUtf8(it->second.Path))) {
 					return it->second.Path;
 				}
 				return {};
@@ -328,7 +330,7 @@ namespace Index {
 				}
 			}
 
-			if (std::filesystem::exists(it->second.Path)) {
+			if (std::filesystem::exists(Path::FromUtf8(it->second.Path))) {
 				return it->second.Path;
 			}
 
@@ -340,7 +342,7 @@ namespace Index {
 			s_Dirty = true;
 			EnsureUpToDate();
 			it = s_IdToRecord.find(assetId);
-			if (it == s_IdToRecord.end() || !std::filesystem::exists(it->second.Path)) {
+			if (it == s_IdToRecord.end() || !std::filesystem::exists(Path::FromUtf8(it->second.Path))) {
 				s_KnownMissingIds.insert(assetId);
 				return {};
 			}
@@ -412,8 +414,8 @@ namespace Index {
 			}
 
 			std::sort(records.begin(), records.end(), [](const Record& a, const Record& b) {
-				const std::string aName = std::filesystem::path(a.Path).filename().string();
-				const std::string bName = std::filesystem::path(b.Path).filename().string();
+				const std::string aName = Path::ToUtf8(Path::FromUtf8(a.Path).filename());
+				const std::string bName = Path::ToUtf8(Path::FromUtf8(b.Path).filename());
 				if (aName == bName) {
 					return a.Path < b.Path;
 				}
@@ -429,14 +431,14 @@ namespace Index {
 
 			std::string normalizedPrefix;
 			if (!pathPrefix.empty()) {
-				std::filesystem::path prefixPath(pathPrefix);
+				std::filesystem::path prefixPath = Path::FromUtf8(pathPrefix);
 				if (!prefixPath.is_absolute()) {
 					const std::string root = GetAssetsRoot();
 					if (!root.empty()) {
-						prefixPath = std::filesystem::path(root) / prefixPath;
+						prefixPath = Path::FromUtf8(root) / prefixPath;
 					}
 				}
-				normalizedPrefix = NormalizePath(prefixPath.string());
+				normalizedPrefix = NormalizePath(Path::ToUtf8(prefixPath));
 			}
 
 			std::vector<Record> records;
@@ -465,7 +467,7 @@ namespace Index {
 				return {};
 			}
 
-			return std::filesystem::path(path).filename().string();
+			return Path::ToUtf8(Path::FromUtf8(path).filename());
 		}
 
 		static std::string GetMetaPath(const std::string& assetPath) {
@@ -484,7 +486,7 @@ namespace Index {
 
 			const std::string metaPath = GetMetaPath(normalizedPath);
 			std::error_code ec;
-			std::filesystem::remove(metaPath, ec);
+			std::filesystem::remove(Path::FromUtf8(metaPath), ec);
 			ForgetAssetPathIncremental(normalizedPath);
 		}
 
@@ -503,19 +505,20 @@ namespace Index {
 
 			const std::string metaTo = GetMetaPath(normalizedTo);
 			std::error_code ec;
-			const std::filesystem::path target(metaTo);
+			const std::filesystem::path source = Path::FromUtf8(metaFrom);
+			const std::filesystem::path target = Path::FromUtf8(metaTo);
 			if (target.has_parent_path()) {
 				std::filesystem::create_directories(target.parent_path(), ec);
 				ec.clear();
 			}
 
-			std::filesystem::rename(metaFrom, metaTo, ec);
+			std::filesystem::rename(source, target, ec);
 			if (ec) {
 				ec.clear();
-				std::filesystem::copy_file(metaFrom, metaTo, std::filesystem::copy_options::overwrite_existing, ec);
+				std::filesystem::copy_file(source, target, std::filesystem::copy_options::overwrite_existing, ec);
 				if (!ec) {
 					ec.clear();
-					std::filesystem::remove(metaFrom, ec);
+					std::filesystem::remove(source, ec);
 				}
 			}
 
@@ -529,7 +532,7 @@ namespace Index {
 			}
 
 			const std::string fallback = Path::Combine(Path::ExecutableDir(), "Assets");
-			if (!std::filesystem::exists(fallback)) {
+			if (!std::filesystem::exists(Path::FromUtf8(fallback))) {
 				return {};
 			}
 
@@ -567,7 +570,7 @@ namespace Index {
 			s_ColdMetaReads = 0;
 			const auto rebuildStart = std::chrono::steady_clock::now();
 
-			if (s_TrackedRoot.empty() || !std::filesystem::exists(s_TrackedRoot)) {
+			if (s_TrackedRoot.empty() || !std::filesystem::exists(Path::FromUtf8(s_TrackedRoot))) {
 				s_Dirty = false;
 				return;
 			}
@@ -593,7 +596,7 @@ namespace Index {
 
 			std::error_code ec;
 			for (std::filesystem::recursive_directory_iterator it(
-				 s_TrackedRoot,
+				 Path::FromUtf8(s_TrackedRoot),
 				 std::filesystem::directory_options::skip_permission_denied,
 				 ec), end;
 				 it != end;
@@ -611,7 +614,7 @@ namespace Index {
 				// Skip .meta sidecars BEFORE NormalizePath's weakly_canonical — there are ~as
 				// many .meta files as assets, and each would pay multi-syscall path resolution
 				// only to be discarded here.
-				const std::string rawPath = it->path().string();
+				const std::string rawPath = Path::ToUtf8(it->path());
 				if (IsMetaFilePath(rawPath)) {
 					continue;
 				}
@@ -654,8 +657,8 @@ namespace Index {
 			if (s_TrackedRoot.empty()) {
 				return {};
 			}
-			std::filesystem::path dir = std::filesystem::path(s_TrackedRoot).parent_path() / ".index";
-			return (dir / "asset-registry.cache").make_preferred().string();
+			std::filesystem::path dir = Path::FromUtf8(s_TrackedRoot).parent_path() / ".index";
+			return Path::ToUtf8((dir / "asset-registry.cache").make_preferred());
 		}
 
 		// assetPath is under s_TrackedRoot (verified by caller); strip the root + separator, force '/'.
@@ -669,7 +672,7 @@ namespace Index {
 		}
 
 		static std::string ReconstructAbsolute(const std::string& relGeneric) {
-			return (std::filesystem::path(s_TrackedRoot) / relGeneric).make_preferred().string();
+			return Path::ToUtf8((Path::FromUtf8(s_TrackedRoot) / Path::FromUtf8(relGeneric)).make_preferred());
 		}
 
 		static uint64_t SnapshotU64(std::string_view s) {
@@ -788,7 +791,7 @@ namespace Index {
 			}
 
 			std::error_code ec;
-			std::filesystem::create_directories(std::filesystem::path(snapshotPath).parent_path(), ec);
+			std::filesystem::create_directories(Path::FromUtf8(snapshotPath).parent_path(), ec);
 
 			std::string out;
 			out.reserve(s_IdToRecord.size() * 48 + 8);
@@ -859,10 +862,10 @@ namespace Index {
 				return {};
 			}
 
-			std::filesystem::path fsPath(path);
+			std::filesystem::path fsPath = Path::FromUtf8(path);
 			if (!fsPath.is_absolute()) {
 				if (IndexProject* project = ProjectManager::GetCurrentProject()) {
-					const std::filesystem::path candidate = std::filesystem::path(project->AssetsDirectory) / fsPath;
+					const std::filesystem::path candidate = Path::FromUtf8(project->AssetsDirectory) / fsPath;
 					if (std::filesystem::exists(candidate)) {
 						fsPath = candidate;
 					}
@@ -871,7 +874,7 @@ namespace Index {
 					}
 				}
 				else {
-					const std::filesystem::path fallback = std::filesystem::path(Path::ExecutableDir()) / "Assets" / fsPath;
+					const std::filesystem::path fallback = Path::FromUtf8(Path::ExecutableDir()) / "Assets" / fsPath;
 					if (std::filesystem::exists(fallback)) {
 						fsPath = fallback;
 					}
@@ -887,7 +890,7 @@ namespace Index {
 				normalized = fsPath.lexically_normal();
 			}
 
-			return normalized.make_preferred().string();
+			return Path::ToUtf8(normalized.make_preferred());
 		}
 
 		// Prefix/containment check only — no filesystem stat. Use when the caller already
@@ -914,11 +917,12 @@ namespace Index {
 				return false;
 			}
 
-			return std::filesystem::exists(assetPath) && std::filesystem::is_regular_file(assetPath);
+			const std::filesystem::path nativePath = Path::FromUtf8(assetPath);
+			return std::filesystem::exists(nativePath) && std::filesystem::is_regular_file(nativePath);
 		}
 
 		static AssetKind Classify(const std::string& assetPath) {
-			const std::string extension = ToLowerCopy(std::filesystem::path(assetPath).extension().string());
+			const std::string extension = ToLowerCopy(Path::ToUtf8(Path::FromUtf8(assetPath).extension()));
 			if (extension == ".png" || extension == ".jpg" || extension == ".jpeg" || extension == ".bmp" || extension == ".tga") {
 				return AssetKind::Texture;
 			}
@@ -958,10 +962,11 @@ namespace Index {
 			std::filesystem::file_time_type mtime{};
 			std::uintmax_t size = 0;
 			bool fingerprintOk = false;
-			if (std::filesystem::exists(metaPath, ec) && !ec) {
-				mtime = std::filesystem::last_write_time(metaPath, ec);
+			const std::filesystem::path nativeMetaPath = Path::FromUtf8(metaPath);
+			if (std::filesystem::exists(nativeMetaPath, ec) && !ec) {
+				mtime = std::filesystem::last_write_time(nativeMetaPath, ec);
 				if (!ec) {
-					size = std::filesystem::file_size(metaPath, ec);
+					size = std::filesystem::file_size(nativeMetaPath, ec);
 					fingerprintOk = !ec;
 				}
 			}
@@ -1088,9 +1093,8 @@ namespace Index {
 				auto readWrap = [&](const char* key, Wrap& outWrap) {
 					if (const Json::Value* node = importNode->FindMember(key)) {
 						if (node->IsString()) {
-							if (auto parsed = magic_enum::enum_cast<Wrap>(node->AsStringOr()); parsed.has_value()) {
-								outWrap = parsed.value();
-							}
+							// Index::TryParse, not magic_enum::enum_cast - see Graphics/Wrap.hpp.
+							Index::TryParse(node->AsStringOr(), outWrap);
 						}
 						else if (node->IsNumber()) {
 							outWrap = static_cast<Wrap>(node->AsInt64Or(static_cast<int64_t>(outWrap)));
@@ -1140,8 +1144,10 @@ namespace Index {
 			if (meta.HasImportBlock) {
 				Json::Value importValue = Json::Value::MakeObject();
 				importValue.AddMember("filter", Json::Value(std::string(magic_enum::enum_name(meta.Import.FilterMode))));
-				importValue.AddMember("wrapU",  Json::Value(std::string(magic_enum::enum_name(meta.Import.WrapU))));
-				importValue.AddMember("wrapV",  Json::Value(std::string(magic_enum::enum_name(meta.Import.WrapV))));
+				// Index:: qualified: the member ToString(AssetKind) below would
+				// otherwise hide the namespace-scope ToString(Wrap) by name lookup.
+				importValue.AddMember("wrapU",  Json::Value(std::string(Index::ToString(meta.Import.WrapU))));
+				importValue.AddMember("wrapV",  Json::Value(std::string(Index::ToString(meta.Import.WrapV))));
 				SetOrAddMember(root, "import", std::move(importValue));
 			}
 

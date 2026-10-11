@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Serialization/FileWatcher.hpp"
+#include "Serialization/Path.hpp"
 #include "Core/Log.hpp"
 #include "Profiling/Profiler.hpp"
 
@@ -86,7 +87,7 @@ namespace Index {
 				continue;
 			}
 
-			const std::filesystem::path path(pathString);
+			const std::filesystem::path path = Path::FromUtf8(pathString);
 			std::error_code ec;
 			const bool exists = std::filesystem::exists(path, ec);
 			const bool isDirectory = exists ? std::filesystem::is_directory(path, ec) : LooksLikeDirectory(path);
@@ -103,7 +104,7 @@ namespace Index {
 		m_PendingChanges.store(false);
 		m_Watching.store(true);
 		m_WatchDescription = m_Targets.size() == 1
-			? m_Targets.front().Path.string()
+			? Path::ToUtf8(m_Targets.front().Path)
 			: std::to_string(m_Targets.size()) + " targets";
 
 #ifdef IDX_PLATFORM_WINDOWS
@@ -268,7 +269,7 @@ namespace Index {
 				FILE_NOTIFY_CHANGE_SIZE);
 
 			if (handle == INVALID_HANDLE_VALUE) {
-				IDX_CORE_WARN_TAG("FileWatcher", "Failed to create a native watch for {}; falling back to polling", root.Path.string());
+				IDX_CORE_WARN_TAG("FileWatcher", "Failed to create a native watch for {}; falling back to polling", Path::ToUtf8(root.Path));
 				for (HANDLE openHandle : handles) {
 					FindCloseChangeNotification(openHandle);
 				}
@@ -364,8 +365,8 @@ namespace Index {
 			if (resolveEc) {
 				resolvedRoot = watchRoot;
 			}
-			const std::string resolvedStr = resolved.string();
-			std::string rootStr = resolvedRoot.string();
+			const std::string resolvedStr = Path::ToUtf8(resolved);
+			std::string rootStr = Path::ToUtf8(resolvedRoot);
 			// Ensure trailing separator so "/proj/Assets" doesn't falsely match "/proj/Assets-Backup/foo.png".
 			if (!rootStr.empty() && rootStr.back() != std::filesystem::path::preferred_separator) {
 				rootStr.push_back(std::filesystem::path::preferred_separator);
@@ -473,17 +474,17 @@ namespace Index {
 			return true;
 		}
 
-		const std::string fileName = ToLowerCopy(filePath.filename().string());
+		const std::string fileName = ToLowerCopy(Path::ToUtf8(filePath.filename()));
 		if (m_Filenames.contains(fileName)) {
 			return true;
 		}
 
-		const std::string extension = ToLowerCopy(filePath.extension().string());
+		const std::string extension = ToLowerCopy(Path::ToUtf8(filePath.extension()));
 		return !extension.empty() && m_Extensions.contains(extension);
 	}
 
 	bool FileWatcher::ShouldIgnoreDirectory(const std::filesystem::path& directoryPath) const {
-		return kIgnoredDirectoryNames.contains(ToLowerCopy(directoryPath.filename().string()));
+		return kIgnoredDirectoryNames.contains(ToLowerCopy(Path::ToUtf8(directoryPath.filename())));
 	}
 
 	std::string FileWatcher::NormalizeKey(const std::filesystem::path& path) {
@@ -496,7 +497,7 @@ namespace Index {
 			normalized = normalized.lexically_normal();
 		}
 
-		return normalized.make_preferred().string();
+		return Path::ToUtf8(normalized.make_preferred());
 	}
 
 	std::string FileWatcher::ToLowerCopy(std::string value) {
@@ -507,7 +508,7 @@ namespace Index {
 	}
 
 	bool FileWatcher::LooksLikeDirectory(const std::filesystem::path& path) {
-		const std::string native = path.lexically_normal().make_preferred().string();
+		const std::string native = Path::ToUtf8(path.lexically_normal().make_preferred());
 		if (!native.empty()) {
 			const char lastCharacter = native.back();
 			if (lastCharacter == '/' || lastCharacter == '\\') {

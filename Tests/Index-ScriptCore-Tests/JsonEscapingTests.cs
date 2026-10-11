@@ -43,18 +43,16 @@ public class JsonEscapingTests
         Assert.Equal("a\\\\b", Escape("a\\b"));
         Assert.Equal("a\\nb", Escape("a\nb"));
         Assert.Equal("a\\rb", Escape("a\rb"));
+        Assert.Equal("a\\tb", Escape("a\tb"));
+        Assert.Equal("a\\bb", Escape("a\bb"));
+        Assert.Equal("a\\fb", Escape("a\fb"));
     }
 
-    // CHARACTERIZATION OF A KNOWN BUG (audit finding):
-    // EscapeJson does not escape tab or other control characters (< 0x20), so a
-    // script field value containing them produces invalid JSON. The asserts below
-    // pin the CURRENT (incorrect) behavior. When EscapeJson is fixed to emit \t and
-    // \uXXXX, this test will fail — that is the signal to update it to assert the
-    // corrected output (e.g. "a\\tb" and "a\\u0000b").
     [Fact]
-    public void DoesNotEscapeTabOrControlChars_KnownBug()
+    public void EscapesControlCharsAndUnpairedSurrogates()
     {
-        Assert.Equal("a\tb", Escape("a\tb")); // raw tab survives; should become "a\\tb"
-        Assert.Equal("a\0b", Escape("a\0b")); // raw NUL survives; should become "a\\u0000b"
+        Assert.Equal("a\\u0000b", Escape("a\0b"));
+        Assert.Equal("a\\u001fb", Escape("a\u001fb"));
+        Assert.Equal("a\\ud800b", Escape("a\ud800b"));
     }
 }

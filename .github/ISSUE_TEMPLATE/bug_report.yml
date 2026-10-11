@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in the editor, launcher, runtime or a built game does not work.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Logs live in `%LOCALAPPDATA%\Index\Logs\` and crash dumps in `%LOCALAPPDATA%\Index\CrashDumps\`.
+        Please check [Known Limitations](https://github.com/Ben-Scr/Index/blob/master/Github-Docs/Documentation/Known-Limitations.md) first.
+  - type: input
+    id: version
+    attributes:
+      label: Index version
+      description: Shown in the editor title bar and in BuildMetadata.json next to the executables.
+      placeholder: 2026.1.0-beta.1
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Where does it happen?
+      options:
+        - Editor
+        - Launcher
+        - Built game (runtime)
+        - C# scripting API
+        - Packages
+        - Build / export
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Create a new project
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log excerpt
+      description: The end of the matching .log file, or drag the whole file here. Crash dumps can be attached as a .zip.
+      render: text
+  - type: input
+    id: system
+    attributes:
+      label: System
+      placeholder: Windows 11 23H2, RTX 3060, driver 560.94, .NET SDK 10.0.100

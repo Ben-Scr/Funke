@@ -8,6 +8,7 @@
 #include "Events/IndexEvent.hpp"
 #include "Graphics/Text/FontHandle.hpp"
 #include "Gui/ImGuiContextSetup.hpp"
+#include "Gui/EditorTheme.hpp"
 #include "Gui/ImGuiFonts.hpp"
 #include "Serialization/Path.hpp"
 #include "Utils/ExpressionEvaluator.hpp"
@@ -539,27 +540,29 @@ namespace Index {
 
 		// ── Sizing & Rounding ───────────────────────────────────────
 		style.WindowPadding     = ImVec2(10, 10);
-		style.FramePadding      = ImVec2(6, 4);
-		style.CellPadding       = ImVec2(4, 3);
+		style.FramePadding      = ImVec2(7, 4);
+		style.CellPadding       = ImVec2(5, 3);
 		style.ItemSpacing       = ImVec2(8, 5);
 		style.ItemInnerSpacing  = ImVec2(5, 4);
 		style.IndentSpacing     = 16.0f;
-		style.ScrollbarSize     = 13.0f;
+		style.ScrollbarSize     = 11.0f;
 		style.GrabMinSize       = 8.0f;
 
-		style.WindowRounding    = 4.0f;
-		style.ChildRounding     = 3.0f;
-		style.FrameRounding     = 3.0f;
-		style.PopupRounding     = 3.0f;
-		style.ScrollbarRounding = 6.0f;
-		style.GrabRounding      = 2.0f;
-		style.TabRounding       = 3.0f;
+		style.WindowRounding    = 6.0f;
+		style.ChildRounding     = 4.0f;
+		style.FrameRounding     = 4.0f;
+		style.PopupRounding     = 6.0f;
+		style.ScrollbarRounding = 8.0f;
+		style.GrabRounding      = 3.0f;
+		style.TabRounding       = 4.0f;
 		style.DragDropTargetRounding = 4.0f;
 
 		style.WindowBorderSize  = 1.0f;
 		style.FrameBorderSize   = 0.0f;
 		style.PopupBorderSize   = 1.0f;
 		style.TabBorderSize     = 0.0f;
+		style.TabBarBorderSize  = 1.0f;
+		style.TabBarOverlineSize = 2.0f;
 
 		style.WindowMenuButtonPosition = ImGuiDir_None;
 		style.SeparatorTextBorderSize  = 2.0f;
@@ -568,21 +571,26 @@ namespace Index {
 		ApplyIndexThemeColors();
 	}
 
-	void ImGuiContextLayer::ApplyIndexThemeColors() {
+	// Neutral graphite with the blue interactive accent from EditorTheme (the only accent source).
+	void ImGuiContextLayer::ApplyIndexThemeColors(bool dark) {
 		ImGuiStyle& style = ImGui::GetStyle();
 		ImVec4* c = style.Colors;
 
-		const ImVec4 bg        = ImVec4(0.12f, 0.12f, 0.14f, 1.00f);
-		const ImVec4 bgChild   = ImVec4(0.13f, 0.13f, 0.15f, 1.00f);
-		const ImVec4 bgPopup   = ImVec4(0.15f, 0.15f, 0.18f, 1.00f);
-		const ImVec4 surface   = ImVec4(0.18f, 0.18f, 0.21f, 1.00f);
-		const ImVec4 surfaceHi = ImVec4(0.24f, 0.24f, 0.28f, 1.00f);
-		const ImVec4 surfaceAct= ImVec4(0.28f, 0.28f, 0.33f, 1.00f);
-		const ImVec4 border    = ImVec4(0.24f, 0.24f, 0.28f, 0.65f);
-		const ImVec4 accent    = ImVec4(0.33f, 0.53f, 0.84f, 1.00f);
-		const ImVec4 neutralMark = ImVec4(0.725f, 0.725f, 0.725f, 1.00f);
-		const ImVec4 text      = ImVec4(0.88f, 0.88f, 0.90f, 1.00f);
-		const ImVec4 textDim   = ImVec4(0.50f, 0.50f, 0.54f, 1.00f);
+		auto pick = [dark](ImVec4 d, ImVec4 l) { return dark ? d : l; };
+		auto withAlpha = [](ImVec4 v, float a) { return ImVec4(v.x, v.y, v.z, a); };
+
+		const ImVec4 bg        = pick(ImVec4(0.110f, 0.114f, 0.125f, 1.00f), ImVec4(0.949f, 0.953f, 0.961f, 1.00f));
+		const ImVec4 bgChild   = pick(ImVec4(0.118f, 0.122f, 0.133f, 1.00f), ImVec4(0.965f, 0.969f, 0.976f, 1.00f));
+		const ImVec4 bgPopup   = pick(ImVec4(0.145f, 0.149f, 0.165f, 1.00f), ImVec4(1.000f, 1.000f, 1.000f, 1.00f));
+		const ImVec4 chrome    = pick(ImVec4(0.086f, 0.090f, 0.098f, 1.00f), ImVec4(0.890f, 0.898f, 0.914f, 1.00f));
+		const ImVec4 surface   = pick(ImVec4(0.165f, 0.171f, 0.188f, 1.00f), ImVec4(0.890f, 0.898f, 0.914f, 1.00f));
+		const ImVec4 surfaceHi = pick(ImVec4(0.212f, 0.220f, 0.243f, 1.00f), ImVec4(0.843f, 0.855f, 0.878f, 1.00f));
+		const ImVec4 surfaceAct= pick(ImVec4(0.255f, 0.265f, 0.294f, 1.00f), ImVec4(0.788f, 0.804f, 0.835f, 1.00f));
+		const ImVec4 border    = pick(ImVec4(0.85f, 0.90f, 1.00f, 0.09f),    ImVec4(0.10f, 0.14f, 0.22f, 0.14f));
+		const ImVec4 accent    = EditorTheme::Colors::AccentFor(dark);
+		const ImVec4 highlight = EditorTheme::Colors::HighlightFor(dark);
+		const ImVec4 text      = pick(ImVec4(0.922f, 0.925f, 0.937f, 1.00f), ImVec4(0.118f, 0.125f, 0.145f, 1.00f));
+		const ImVec4 textDim   = pick(ImVec4(0.545f, 0.557f, 0.592f, 1.00f), ImVec4(0.447f, 0.463f, 0.502f, 1.00f));
 
 		c[ImGuiCol_WindowBg]             = bg;
 		c[ImGuiCol_ChildBg]              = bgChild;
@@ -593,65 +601,79 @@ namespace Index {
 
 		c[ImGuiCol_Text]                 = text;
 		c[ImGuiCol_TextDisabled]         = textDim;
-		c[ImGuiCol_TextSelectedBg]       = ImVec4(accent.x, accent.y, accent.z, 0.35f);
+		c[ImGuiCol_TextSelectedBg]       = withAlpha(accent, 0.35f);
+		c[ImGuiCol_TextLink]             = accent;
 
 		c[ImGuiCol_FrameBg]              = surface;
 		c[ImGuiCol_FrameBgHovered]       = surfaceHi;
-		c[ImGuiCol_FrameBgActive]        = ImVec4(0.25f, 0.25f, 0.30f, 1.00f);
+		c[ImGuiCol_FrameBgActive]        = surfaceAct;
 
-		c[ImGuiCol_TitleBg]              = ImVec4(0.10f, 0.10f, 0.12f, 1.00f);
-		c[ImGuiCol_TitleBgActive]        = ImVec4(0.14f, 0.14f, 0.17f, 1.00f);
-		c[ImGuiCol_TitleBgCollapsed]     = ImVec4(0.10f, 0.10f, 0.12f, 0.75f);
+		c[ImGuiCol_TitleBg]              = chrome;
+		c[ImGuiCol_TitleBgActive]        = chrome;
+		c[ImGuiCol_TitleBgCollapsed]     = withAlpha(chrome, 0.75f);
 
-		c[ImGuiCol_MenuBarBg]            = ImVec4(0.14f, 0.14f, 0.16f, 1.00f);
+		c[ImGuiCol_MenuBarBg]            = chrome;
 
-		c[ImGuiCol_ScrollbarBg]          = ImVec4(0.10f, 0.10f, 0.12f, 0.53f);
-		c[ImGuiCol_ScrollbarGrab]        = ImVec4(0.28f, 0.28f, 0.32f, 1.00f);
-		c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.35f, 0.35f, 0.40f, 1.00f);
-		c[ImGuiCol_ScrollbarGrabActive]  = ImVec4(0.42f, 0.42f, 0.48f, 1.00f);
+		c[ImGuiCol_ScrollbarBg]          = ImVec4(0, 0, 0, 0);
+		c[ImGuiCol_ScrollbarGrab]        = pick(ImVec4(0.255f, 0.271f, 0.306f, 1.00f), ImVec4(0.722f, 0.745f, 0.784f, 1.00f));
+		c[ImGuiCol_ScrollbarGrabHovered] = pick(ImVec4(0.322f, 0.341f, 0.384f, 1.00f), ImVec4(0.631f, 0.659f, 0.710f, 1.00f));
+		c[ImGuiCol_ScrollbarGrabActive]  = pick(ImVec4(0.400f, 0.424f, 0.475f, 1.00f), ImVec4(0.545f, 0.576f, 0.635f, 1.00f));
 
 		c[ImGuiCol_Button]               = surface;
 		c[ImGuiCol_ButtonHovered]        = surfaceHi;
 		c[ImGuiCol_ButtonActive]         = surfaceAct;
 
-		c[ImGuiCol_Header]               = ImVec4(0.20f, 0.20f, 0.24f, 1.00f);
+		// Neutral: Header also fills collapsing headers. Hierarchy selection applies the accent explicitly.
+		c[ImGuiCol_Header]               = surface;
 		c[ImGuiCol_HeaderHovered]        = surfaceHi;
 		c[ImGuiCol_HeaderActive]         = surfaceAct;
 
 		c[ImGuiCol_Separator]            = border;
-		c[ImGuiCol_SeparatorHovered]     = ImVec4(0.36f, 0.36f, 0.42f, 1.00f);
-		c[ImGuiCol_SeparatorActive]      = ImVec4(0.44f, 0.44f, 0.50f, 1.00f);
+		c[ImGuiCol_SeparatorHovered]     = withAlpha(accent, 0.60f);
+		c[ImGuiCol_SeparatorActive]      = accent;
 
 		c[ImGuiCol_ResizeGrip]           = ImVec4(0, 0, 0, 0);
 		c[ImGuiCol_ResizeGripHovered]    = ImVec4(0, 0, 0, 0);
 		c[ImGuiCol_ResizeGripActive]     = ImVec4(0, 0, 0, 0);
 
-		c[ImGuiCol_Tab]                  = ImVec4(0.15f, 0.15f, 0.18f, 1.00f);
+		c[ImGuiCol_InputTextCursor]      = text;
+
+		// Tabs sit on the chrome color; the selected one merges with its panel and gets an amber overline.
+		// Selected tab is a lighter rounded "folder tab" on the darker tab strip.
+		c[ImGuiCol_Tab]                  = chrome;
 		c[ImGuiCol_TabHovered]           = surfaceHi;
-		c[ImGuiCol_TabSelected]          = ImVec4(0.20f, 0.20f, 0.24f, 1.00f);
-		c[ImGuiCol_TabSelectedOverline]  = neutralMark;
-		c[ImGuiCol_TabDimmed]            = ImVec4(0.12f, 0.12f, 0.14f, 1.00f);
-		c[ImGuiCol_TabDimmedSelected]    = ImVec4(0.17f, 0.17f, 0.20f, 1.00f);
+		c[ImGuiCol_TabSelected]          = surface;
+		c[ImGuiCol_TabSelectedOverline]  = highlight;
+		c[ImGuiCol_TabDimmed]            = chrome;
+		c[ImGuiCol_TabDimmedSelected]    = ImVec4((bg.x + surface.x) * 0.5f, (bg.y + surface.y) * 0.5f, (bg.z + surface.z) * 0.5f, 1.0f);
+		c[ImGuiCol_TabDimmedSelectedOverline] = withAlpha(highlight, 0.0f);
 
-		c[ImGuiCol_DockingPreview]       = ImVec4(accent.x, accent.y, accent.z, 0.40f);
-		c[ImGuiCol_DockingEmptyBg]       = ImVec4(0.10f, 0.10f, 0.10f, 1.00f);
+		c[ImGuiCol_DockingPreview]       = withAlpha(accent, 0.40f);
+		c[ImGuiCol_DockingEmptyBg]       = pick(ImVec4(0.070f, 0.075f, 0.086f, 1.00f), ImVec4(0.850f, 0.863f, 0.886f, 1.00f));
 
-		c[ImGuiCol_CheckMark]            = neutralMark;
-		c[ImGuiCol_SliderGrab]           = ImVec4(0.40f, 0.40f, 0.46f, 1.00f);
-		c[ImGuiCol_SliderGrabActive]     = ImVec4(0.50f, 0.50f, 0.56f, 1.00f);
+		c[ImGuiCol_PlotLines]            = accent;
+		c[ImGuiCol_PlotLinesHovered]     = highlight;
+		c[ImGuiCol_PlotHistogram]        = accent;
+		c[ImGuiCol_PlotHistogramHovered] = highlight;
 
-		c[ImGuiCol_DragDropTarget]       = ImVec4(accent.x, accent.y, accent.z, 1.00f);
-		c[ImGuiCol_DragDropTargetBg]     = ImVec4(accent.x, accent.y, accent.z, 0.12f);
+		c[ImGuiCol_CheckMark]            = highlight;
+		c[ImGuiCol_SliderGrab]           = withAlpha(accent, 0.80f);
+		c[ImGuiCol_SliderGrabActive]     = accent;
+
+		c[ImGuiCol_DragDropTarget]       = accent;
+		c[ImGuiCol_DragDropTargetBg]     = withAlpha(accent, 0.12f);
 
 		c[ImGuiCol_NavCursor]            = accent;
+		c[ImGuiCol_NavWindowingHighlight] = withAlpha(highlight, 0.70f);
+		c[ImGuiCol_NavWindowingDimBg]    = pick(ImVec4(0, 0, 0, 0.40f), ImVec4(0.12f, 0.15f, 0.20f, 0.20f));
 
-		c[ImGuiCol_TableHeaderBg]        = ImVec4(0.15f, 0.15f, 0.18f, 1.00f);
+		c[ImGuiCol_TableHeaderBg]        = chrome;
 		c[ImGuiCol_TableBorderStrong]    = border;
-		c[ImGuiCol_TableBorderLight]     = ImVec4(border.x, border.y, border.z, 0.40f);
+		c[ImGuiCol_TableBorderLight]     = withAlpha(border, border.w * 0.6f);
 		c[ImGuiCol_TableRowBg]           = ImVec4(0, 0, 0, 0);
-		c[ImGuiCol_TableRowBgAlt]        = ImVec4(1, 1, 1, 0.03f);
+		c[ImGuiCol_TableRowBgAlt]        = pick(ImVec4(1, 1, 1, 0.025f), ImVec4(0, 0, 0, 0.030f));
 
-		c[ImGuiCol_ModalWindowDimBg]     = ImVec4(0, 0, 0, 0.55f);
+		c[ImGuiCol_ModalWindowDimBg]     = pick(ImVec4(0, 0, 0, 0.55f), ImVec4(0.12f, 0.15f, 0.20f, 0.30f));
 	}
 
 }

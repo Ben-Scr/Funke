@@ -23,14 +23,14 @@ namespace Index {
 		// Returns the running executable's stem ("Index-Editor",
 		// "Index-Runtime", etc.) for use in log/crashdump filenames.
 		// Falls back to "Index" if the OS query fails.
-		std::string ResolveExecutableStem() {
+		spdlog::filename_t ResolveExecutableStem() {
 #ifdef IDX_PLATFORM_WINDOWS
 			wchar_t buffer[MAX_PATH];
 			DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
 			if (length == 0 || length == MAX_PATH) {
-				return "Index";
+				return SPDLOG_FILENAME_T("Index");
 			}
-			return std::filesystem::path(buffer).stem().string();
+			return std::filesystem::path(buffer).stem().wstring();
 #else
 			char buffer[PATH_MAX];
 			ssize_t length = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
@@ -45,19 +45,23 @@ namespace Index {
 		// Builds the "{LocalAppData}/Index/Logs/{exeName}.log" path and
 		// ensures the parent directory exists. Returns empty string on
 		// failure — Log::Initialize then proceeds without the file sink.
-		std::string ResolveLogFilePath() {
+		spdlog::filename_t ResolveLogFilePath() {
 			try {
 				const std::string base = Path::GetSpecialFolderPath(SpecialFolder::LocalAppData);
 				if (base.empty()) {
 					return {};
 				}
+#ifdef IDX_PLATFORM_WINDOWS
+				std::filesystem::path dir = std::filesystem::u8path(base) / L"Index" / L"Logs";
+#else
 				std::filesystem::path dir = std::filesystem::path(base) / "Index" / "Logs";
+#endif
 				std::error_code ec;
 				std::filesystem::create_directories(dir, ec);
 				if (ec) {
 					return {};
 				}
-				return (dir / (ResolveExecutableStem() + ".log")).string();
+				return (dir / (ResolveExecutableStem() + SPDLOG_FILENAME_T(".log"))).native();
 			}
 			catch (...) {
 				return {};
@@ -85,7 +89,7 @@ namespace Index {
 		std::vector<spdlog::sink_ptr> sinks;
 		sinks.emplace_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
 
-		if (const std::string logPath = ResolveLogFilePath(); !logPath.empty()) {
+		if (const spdlog::filename_t logPath = ResolveLogFilePath(); !logPath.empty()) {
 			try {
 				constexpr std::size_t k_MaxFileSize = 10 * 1024 * 1024;
 				constexpr std::size_t k_MaxFiles = 3;

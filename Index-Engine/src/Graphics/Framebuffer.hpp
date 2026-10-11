@@ -5,6 +5,7 @@
 #include "Graphics/RenderApiTypes.hpp"
 
 #include <cstdint>
+#include <vector>
 
 // Framebuffer: RAII offscreen render target used by editor panel viewports. GetColorTextureBackendId() returns the raw WGPUTextureView pointer as uint64_t for ImGui::Image.
 
@@ -34,6 +35,8 @@ namespace Index {
 		void Destroy();
 
 		static void ProcessFrameEndDeferredDestroy();
+		// Drops every Dawn resource (live + deferred) before the device goes away; otherwise the last refs die in DLL-unload statics and the D3D12 driver aborts.
+		static void ReleaseAllBackendResources();
 
 		bool IsValid() const { return m_BackendId != 0; }
 
@@ -44,6 +47,9 @@ namespace Index {
 
 		// Returns raw WGPUTextureView pointer as uint64_t — imgui_impl_wgpu casts ImTextureID back to WGPUTextureView and dereferences it directly.
 		uint64_t GetColorTextureBackendId() const { return m_ColorTextureId; }
+
+		// Blocking readback of the colour attachment as tight RGBA8 (top row first). RGBA8 framebuffers only.
+		bool ReadPixelsRGBA8(std::vector<uint8_t>& outRgba) const;
 
 		int GetWidth() const { return m_Viewport.GetWidth(); }
 		int GetHeight() const { return m_Viewport.GetHeight(); }

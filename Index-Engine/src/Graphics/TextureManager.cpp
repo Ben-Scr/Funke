@@ -478,7 +478,7 @@ namespace Index {
 			emit(handle);
 		}
 
-		SceneManager::Get().ForeachLoadedScene([&emit](Scene& scene) {
+		SceneManager::ForeachLoadedScene([&emit](Scene& scene) {
 			entt::registry& registry = scene.GetRegistry();
 
 			auto sprites = registry.view<SpriteRendererComponent>();

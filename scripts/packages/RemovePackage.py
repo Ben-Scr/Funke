@@ -3,8 +3,7 @@
 Index package remover — inverse of `scripts/packages/NewPackage.py`.
 
 Deletes a package directory, removes it from a project's `project.json`
-allow-list (when `--project` is given), and re-runs premake so the project
-disappears from the IDE solution on next reload.
+allow-list (when `--project` is given), and regenerates the appropriate workspace.
 
 Usage examples
 --------------
@@ -30,12 +29,24 @@ import json
 import re
 import shutil
 import subprocess
+import os
 import sys
 from pathlib import Path
 from typing import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PREMAKE_EXE = REPO_ROOT / "vendor" / "bin" / "premake5.exe"
+PREMAKE_NAME = "premake5.exe" if os.name == "nt" else "premake5"
+
+
+def resolve_premake_executable() -> Path:
+    candidates = (
+        REPO_ROOT / "vendor" / "bin" / PREMAKE_NAME,
+        REPO_ROOT / PREMAKE_NAME,
+    )
+    return next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
+
+
+PREMAKE_EXE = resolve_premake_executable()
 
 PACKAGE_NAME_PATTERN = re.compile(r"^[A-Z][A-Za-z0-9]+(\.[A-Z][A-Za-z0-9]+)+$")
 
@@ -103,6 +114,15 @@ def delete_package_dir(pkg_dir: Path, force: bool) -> bool:
     return True
 
 
+def remove_generated_projects(project_root: Path, name: str) -> None:
+    generated_root = project_root / ".index" / "build" / "packages" / "generated"
+    for target in (f"Pkg.{name}", f"Pkg.{name}.Native"):
+        target_dir = generated_root / target
+        if target_dir.is_dir():
+            shutil.rmtree(target_dir)
+            print(f"  removed generated project {target_dir.relative_to(project_root)}")
+
+
 def run_premake(project_path: Path | None) -> None:
     if not PREMAKE_EXE.is_file():
         print(
@@ -110,9 +130,20 @@ def run_premake(project_path: Path | None) -> None:
             "Run scripts/Setup.py first or pass --no-premake."
         )
         return
-    cmd = [str(PREMAKE_EXE), "vs2022"]
-    if project_path is not None:
-        cmd.append(f"--index-project={project_path}")
+    if project_path is None:
+        cmd = [str(PREMAKE_EXE), "vs2022"]
+    else:
+        generator = REPO_ROOT / "premake" / "project-packages.lua"
+        if not generator.is_file():
+            raise SystemExit(
+                f"[RemovePackage] project package generator not found: {generator}"
+            )
+        cmd = [
+            str(PREMAKE_EXE),
+            f"--file={generator}",
+            f"--index-project={project_path}",
+            "vs2022",
+        ]
     print(f"[RemovePackage] regenerating projects: {' '.join(cmd)}")
     result = subprocess.run(cmd, cwd=str(REPO_ROOT))
     if result.returncode != 0:
@@ -172,6 +203,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     #    visible even if the directory delete is declined.
     if project_root is not None:
         remove_from_project_allow_list(project_root, name)
+    if project_root is not None:
+        remove_generated_projects(project_root, name)
+
 
     # 2. Files. Skipped when --keep-files is set.
     if args.keep_files:
@@ -185,7 +219,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         run_premake(project_root)
 
     print()
-    print("[RemovePackage] done. Restart Visual Studio so the removed project disappears from Index.sln.")
+    if project_root is None:
+        print("[RemovePackage] done. Restart Visual Studio so the removed project disappears from Index.sln.")
+    else:
+        print("[RemovePackage] done. The project-local package workspace has been refreshed.")
     return 0
 
 

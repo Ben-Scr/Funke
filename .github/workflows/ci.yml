@@ -6,7 +6,9 @@ on:
 
 jobs:
   windows-build:
-    runs-on: windows-latest
+    runs-on: windows-2022
+    outputs:
+      version: ${{ steps.build_metadata.outputs.version }}
 
     steps:
       - name: Checkout
@@ -22,15 +24,44 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "9.0.x"
+          dotnet-version: "10.0.x"
 
-      # The `--module-profile core` validation step was removed: the core
-      # profile is not currently a clean build. Several Index-Engine .cpp
-      # files transitively include Application.hpp (→ Input.hpp → GLFW) or
-      # SceneSerializerShared.hpp (→ AudioManager.hpp) without an
-      # `#if INDEX_WITH_*` guard, so compilation fails with C1083 missing-
-      # header errors when the optional-module headers are off the include
-      # path. Re-enable once the source is made truly core-clean.
+      - name: Generate and Validate Build Identity
+        id: build_metadata
+        shell: pwsh
+        run: |
+          $arguments = @('--require-clean', '--github-output', $env:GITHUB_OUTPUT)
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $arguments += @('--tag', $env:GITHUB_REF_NAME)
+          }
+          python scripts/generate_build_metadata.py @arguments
+
+      - name: Validate Tag Signing Configuration
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          INDEX_SIGNING_CERTIFICATE_BASE64: ${{ secrets.INDEX_SIGNING_CERTIFICATE_BASE64 }}
+          INDEX_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.INDEX_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:INDEX_SIGNING_CERTIFICATE_BASE64)) {
+            throw 'Tagged releases require the INDEX_SIGNING_CERTIFICATE_BASE64 secret.'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:INDEX_SIGNING_CERTIFICATE_PASSWORD)) {
+            throw 'Tagged releases require the INDEX_SIGNING_CERTIFICATE_PASSWORD secret.'
+          }
+          try {
+            [Convert]::FromBase64String($env:INDEX_SIGNING_CERTIFICATE_BASE64) | Out-Null
+          }
+          catch {
+            throw 'INDEX_SIGNING_CERTIFICATE_BASE64 is not valid base64.'
+          }
+
+      - name: Release Script Tests
+        run: python -m unittest scripts.ci.test_release_scripts
+
+      - name: Verify Vendor Patch Inputs
+        shell: pwsh
+        run: python scripts/vendor_patches.py verify
 
       # WebGPU/Dawn is the engine's only graphics backend. External/dawn/ is
       # git-ignored and built out-of-band by scripts/dawn/SetupDawn.bat, so CI
@@ -46,14 +77,20 @@ jobs:
           path: |
             External/dawn/include
             External/dawn/build/gen/include
+            External/dawn/build/src/dawn/native/Debug/webgpu_dawn.lib
             External/dawn/build/src/dawn/native/Release/webgpu_dawn.lib
-          key: dawn-v1-${{ runner.os }}-${{ hashFiles('scripts/dawn/dawn-revision.txt', 'scripts/dawn/SetupDawn.bat', 'scripts/dawn/FetchDawnDepsMinimal.py') }}
+            External/dawn/LICENSE
+            External/dawn/third_party/**/LICENSE*
+            External/dawn/third_party/**/NOTICE*
+            External/dawn/third_party/**/COPYING*
+            External/dawn/third_party/**/ThirdPartyNotices.txt
+          key: dawn-v2-${{ runner.os }}-${{ hashFiles('scripts/dawn/dawn-revision.txt', 'scripts/dawn/SetupDawn.bat', 'scripts/dawn/FetchDawnDepsMinimal.py') }}
 
       - name: Build Dawn (cache miss only)
         if: steps.cache-dawn.outputs.cache-hit != 'true'
         shell: cmd
         env:
-          DAWN_BUILD_CONFIGS: Release
+          DAWN_BUILD_CONFIGS: Debug Release
           DAWN_SKIP_PREMAKE: "1"
         run: scripts\dawn\SetupDawn.bat
 
@@ -64,67 +101,142 @@ jobs:
           path: |
             External/dawn/include
             External/dawn/build/gen/include
+            External/dawn/build/src/dawn/native/Debug/webgpu_dawn.lib
             External/dawn/build/src/dawn/native/Release/webgpu_dawn.lib
+            External/dawn/LICENSE
+            External/dawn/third_party/**/LICENSE*
+            External/dawn/third_party/**/NOTICE*
+            External/dawn/third_party/**/COPYING*
+            External/dawn/third_party/**/ThirdPartyNotices.txt
           key: ${{ steps.cache-dawn.outputs.cache-primary-key }}
 
       - name: Generate Project Files
         shell: pwsh
         run: python scripts/Setup.py
 
-      - name: Restore .NET dependencies
+      - name: Verify Vendor Patches Applied
         shell: pwsh
-        run: dotnet restore Index.sln
-
-      - name: Build Package Tool
-        shell: pwsh
-        run: |
-          dotnet restore Index-PackageTool/Index-PackageTool.csproj
-          dotnet build Index-PackageTool/Index-PackageTool.csproj --configuration Release --no-restore
-
-      - name: Build Solution
-        shell: pwsh
-        run: |
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
-          if (-not $msbuild) {
-            throw 'MSBuild.exe not found via vswhere.'
-          }
-          $pathValue = $env:PATH
-
-          @"
-          set "PATH=$pathValue"
-          "$msbuild" "Index.sln" /m /p:Configuration=Release /p:Platform=x64
-          if errorlevel 1 exit /b %errorlevel%
-          "@ | cmd /Q
+        run: python scripts/vendor_patches.py verify --require-applied
 
       - name: Windows Engine + Editor Tests
         shell: pwsh
         run: scripts/RunTests.bat --release
 
+      - name: Windows Debug Engine + Editor Tests
+        shell: pwsh
+        run: scripts/RunTests.bat
+
       - name: C# ScriptCore Tests
         shell: pwsh
         run: dotnet test Tests/Index-ScriptCore-Tests/Index-ScriptCore-Tests.csproj -c Release --nologo
+
+      - name: Project-local Package Smoke Test
+        shell: pwsh
+        run: scripts/ci/project_package_smoke_test.ps1 -Configuration Release
+
+      - name: Windows Core-only Engine Validation
+        shell: pwsh
+        run: scripts/ci/core_module_build.ps1
+
+      - name: Build Release + Dist Publish Bundle
+        shell: pwsh
+        env:
+          INDEX_SIGNING_CERTIFICATE_BASE64: ${{ secrets.INDEX_SIGNING_CERTIFICATE_BASE64 }}
+          INDEX_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.INDEX_SIGNING_CERTIFICATE_PASSWORD }}
+          INDEX_SIGNING_TIMESTAMP_URL: ${{ vars.INDEX_SIGNING_TIMESTAMP_URL }}
+        run: |
+          $certificatePath = $null
+          try {
+            $arguments = @('-PublishBundle')
+            if ($env:GITHUB_REF_TYPE -eq 'tag') {
+              $arguments += @('-ReleaseTag', $env:GITHUB_REF_NAME, '-RequireSigning')
+            }
+            if ($env:INDEX_SIGNING_CERTIFICATE_BASE64) {
+              $certificatePath = Join-Path $env:RUNNER_TEMP 'index-code-signing.pfx'
+              [IO.File]::WriteAllBytes(
+                $certificatePath,
+                [Convert]::FromBase64String($env:INDEX_SIGNING_CERTIFICATE_BASE64)
+              )
+              $arguments += @('-SigningCertificatePath', $certificatePath)
+              if ($env:INDEX_SIGNING_TIMESTAMP_URL) {
+                $arguments += @('-SigningTimestampUrl', $env:INDEX_SIGNING_TIMESTAMP_URL)
+              }
+            }
+            .\scripts\BuildWindows.ps1 @arguments
+          }
+          finally {
+            if ($certificatePath -and (Test-Path -LiteralPath $certificatePath)) {
+              Remove-Item -LiteralPath $certificatePath -Force
+            }
+          }
+
+      - name: Bundled SDK Package Authoring Smoke Test
+        shell: pwsh
+        run: scripts/ci/project_package_smoke_test.ps1 -Configuration Release -EngineRoot bin/Release-windows-x86_64/Index-Launcher/EngineSDK
+
+      - name: Bundled SDK Dist Package Authoring Smoke Test
+        shell: pwsh
+        run: scripts/ci/project_package_smoke_test.ps1 -Configuration Dist -EngineRoot bin/Release-windows-x86_64/Index-Launcher/EngineSDK
 
       - name: Windows Runtime Smoke Test
         shell: pwsh
         run: python scripts/ci/runtime_smoke_test.py --binary bin/Release-windows-x86_64/Index-Runtime/Index-Runtime.exe
 
-      - name: Verify Stripped Profiler Runtime Build
+      - name: Packaged Launcher + Editor Smoke Tests
         shell: pwsh
         run: |
-          .\vendor\bin\premake5.exe --no-profiler vs2022
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
-          if (-not $msbuild) {
-            throw 'MSBuild.exe not found via vswhere.'
+          $bundle = 'bin/Release-windows-x86_64/Index-Launcher'
+          python scripts/ci/application_smoke_test.py --binary "$bundle/Index-Launcher.exe"
+          python scripts/ci/application_smoke_test.py --binary "$bundle/Index-Editor.exe" --editor-project
+
+      - name: Archived Launcher + Editor + Dist Runtime Smoke Tests
+        shell: pwsh
+        run: |
+          $stageLeaf = 'Index Dist Pr{0}fung' -f [char]0x00FC
+          $stage = Join-Path $env:RUNNER_TEMP $stageLeaf
+          if (Test-Path -LiteralPath $stage) {
+            Remove-Item -LiteralPath $stage -Recurse -Force
           }
-          & $msbuild Index-Runtime\Index-Runtime.vcxproj /m /p:Configuration=Release /p:Platform=x64
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
+          $archive = Join-Path 'bin/Release-windows-x86_64' '${{ steps.build_metadata.outputs.archive_name }}'
+          Expand-Archive -LiteralPath $archive -DestinationPath $stage
+          $launcher = Join-Path $stage 'Index-Launcher.exe'
+          $editor = Join-Path $stage 'Index-Editor.exe'
+          python scripts/ci/application_smoke_test.py --binary $launcher
+          python scripts/ci/application_smoke_test.py --binary $editor --editor-project
+          $runtime = Join-Path $stage 'EngineSDK/Runtime-Dist/Index-Runtime.exe'
+          python scripts/ci/runtime_smoke_test.py --binary $runtime --require-scripting
+
+      - name: Verify Release Checksum and Signature
+        shell: pwsh
+        run: |
+          $archive = Join-Path 'bin/Release-windows-x86_64' '${{ steps.build_metadata.outputs.archive_name }}'
+          $arguments = @('-ArchivePath', $archive, '-ChecksumPath', "$archive.sha256")
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $arguments += '-RequireSignature'
           }
+          scripts/VerifyRelease.ps1 @arguments
+
+      - name: Upload Verified Windows Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Index-Editor-${{ steps.build_metadata.outputs.version }}-Windows-x64
+          path: |
+            bin/Release-windows-x86_64/${{ steps.build_metadata.outputs.archive_name }}
+            bin/Release-windows-x86_64/${{ steps.build_metadata.outputs.archive_name }}.sha256
+            bin/Release-windows-x86_64/${{ steps.build_metadata.outputs.archive_name }}.sha256.p7s
+          if-no-files-found: error
+
+      - name: Upload Private Windows Symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: Index-Private-Symbols-${{ steps.build_metadata.outputs.build_id }}
+          path: bin/Release-windows-x86_64/PrivateSymbols/${{ steps.build_metadata.outputs.symbols_archive_name }}
+          if-no-files-found: error
+          retention-days: 90
+
 
   linux-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
@@ -140,7 +252,10 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "9.0.x"
+          dotnet-version: "10.0.x"
+
+      - name: Verify Vendor Patch Inputs
+        run: python3 scripts/vendor_patches.py verify
 
       - name: Install Native Dependencies
         run: |
@@ -151,7 +266,7 @@ jobs:
           # lld: GNU ld is memory-hungry when linking the engine .so against
           # Dawn's large monolithic static archive; lld keeps the CI link stable.
           # libx11-xcb-dev: Dawn's X11 backend needs X11/Xlib-xcb.h (not in xorg-dev).
-          sudo apt-get install -y xorg-dev libglu1-mesa-dev xvfb pkg-config clang lld libx11-xcb-dev
+          sudo apt-get install -y xorg-dev libglu1-mesa-dev xvfb pkg-config clang lld libx11-xcb-dev lcov
 
       - name: Install Premake
         run: |
@@ -164,9 +279,6 @@ jobs:
           curl -fsSL "$URL" | tar -xz -C vendor/bin premake5
           chmod +x vendor/bin/premake5
           vendor/bin/premake5 --version
-
-      # The `--module-profile core` validation step was removed: see the
-      # equivalent comment in the windows-build job for the C1083 root cause.
 
       # See the windows-build job for why CI builds Dawn. On Linux SetupDawn.sh
       # is single-config: the shared lib lands at .../native/libwebgpu_dawn.so
@@ -204,6 +316,9 @@ jobs:
           chmod +x vendor/bin/premake5 || true
           ./scripts/Setup.sh
 
+      - name: Verify Vendor Patches Applied
+        run: python3 scripts/vendor_patches.py verify --require-applied
+
       - name: Build Linux Targets
         run: make config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Engine Index-Runtime Index-Editor
 
@@ -221,3 +336,76 @@ jobs:
 
       - name: Linux Debug Runtime Smoke Test
         run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Debug-linux-x86_64/Index-Runtime/Index-Runtime
+
+      - name: Linux Debug Engine + Editor Tests
+        run: |
+          make config=debug verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Engine-Tests Index-Editor-Tests
+          ./bin/Debug-linux-x86_64/Index-Engine-Tests/Index-Engine-Tests
+          ./bin/Debug-linux-x86_64/Index-Editor-Tests/Index-Editor-Tests
+
+      - name: Linux ASan + UBSan Engine Tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          vendor/bin/premake5 --sanitize --no-profiler gmake2
+          make config=debug verbose=1 LDFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fuse-ld=lld" -j"$(nproc)" Index-Engine-Tests
+          ./bin/Debug-linux-x86_64-sanitized/Index-Engine-Tests/Index-Engine-Tests
+
+      - name: Linux Debug Engine Coverage
+        run: |
+          vendor/bin/premake5 --coverage --no-profiler gmake2
+          make config=debug verbose=1 LDFLAGS="--coverage -fuse-ld=lld" -j"$(nproc)" Index-Engine-Tests
+          ./bin/Debug-linux-x86_64-coverage/Index-Engine-Tests/Index-Engine-Tests
+          lcov --capture --directory bin-int/Debug-linux-x86_64-coverage --output-file coverage-raw.info --ignore-errors mismatch
+          lcov --remove coverage-raw.info '*/External/*' '*/vendor/*' '*/Tests/*' '/usr/*' --output-file coverage.info --ignore-errors unused
+          genhtml coverage.info --output-directory coverage-html
+
+      - name: Upload Linux Debug Coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: Index-Linux-Debug-Coverage
+          path: |
+            coverage.info
+            coverage-html
+          if-no-files-found: error
+
+      - name: Linux Core-only Engine Validation
+        run: |
+          vendor/bin/premake5 --core-validation --module-profile=core gmake2
+          make -C premake/generated/core config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Engine
+
+  # Tags only: turn the verified, signed bundle into a DRAFT GitHub Release. Review and publish it by hand
+  # after the clean-machine checks in Building-and-Shipping.md.
+  publish-release:
+    if: github.ref_type == 'tag'
+    needs: [windows-build, linux-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Verified Windows Bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: Index-Editor-${{ needs.windows-build.outputs.version }}-Windows-x64
+          path: release
+
+      - name: Create Draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.windows-build.outputs.version }}
+        run: |
+          awk -v heading="## [$VERSION]" 'index($0, heading) == 1 { found = 1; next } /^## \[/ { found = 0 } found' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "CHANGELOG.md has no notes for $VERSION" >&2
+            exit 1
+          fi
+          flags=(--draft --verify-tag --title "Index $VERSION" --notes-file release-notes.md)
+          if [[ "$VERSION" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" release/* "${flags[@]}"

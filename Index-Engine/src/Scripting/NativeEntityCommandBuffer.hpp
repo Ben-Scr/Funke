@@ -14,8 +14,6 @@
 #include <utility>
 #include <vector>
 
-#include <entt/entt.hpp>
-
 namespace Index {
 
 	class Scene;

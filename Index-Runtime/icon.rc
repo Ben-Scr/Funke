@@ -1,1 +1,6 @@
 1 ICON "icon.ico"
+
+#define IDX_FILE_DESCRIPTION "Index Runtime"
+#define IDX_INTERNAL_NAME "Index-Runtime"
+#define IDX_ORIGINAL_FILENAME "Index-Runtime.exe"
+#include "../Index-Engine/src/Core/VersionResource.rcinc"

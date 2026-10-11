@@ -50,7 +50,7 @@ public readonly struct JobContext
     }
 }
 
-/// <summary>Deterministic per-worker xorshift32 RNG. Construct via <see cref="JobContext.GetRng"/>; outside jobs use <see cref="Index.Math.ParallelRandom"/> instead.</summary>
+/// <summary>Deterministic per-worker xorshift32 RNG. Construct via <see cref="JobContext.GetRng"/>; outside jobs use <see cref="Index.ParallelRandom"/> instead.</summary>
 public struct JobRandom
 {
     private uint m_State;

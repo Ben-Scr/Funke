@@ -5,10 +5,14 @@
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Serialization/Path.hpp"
+#include "Utils/Hash.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <unordered_map>
 #include <unordered_set>
 
 #ifdef IDX_PLATFORM_WINDOWS
@@ -25,14 +29,62 @@ namespace Index {
 	namespace {
 		std::vector<LoadedPackage> s_LoadedPackages;
 		bool s_LoadAllRan = false;
+		constexpr std::string_view k_NativeAbiSchema = "1";
+		constexpr std::string_view k_EngineCppBoundary = "engine_cpp";
+		constexpr std::string_view k_StandaloneCBoundary = "standalone_c";
 
-		void* PlatformLoad(const std::string& path) {
-#ifdef IDX_PLATFORM_WINDOWS
-			return reinterpret_cast<void*>(LoadLibraryA(path.c_str()));
-#else
-			return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
-#endif
+		std::string TrimAscii(std::string_view value) {
+			auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
+			while (!value.empty() && isSpace(static_cast<unsigned char>(value.front()))) {
+				value.remove_prefix(1);
+			}
+			while (!value.empty() && isSpace(static_cast<unsigned char>(value.back()))) {
+				value.remove_suffix(1);
+			}
+			return std::string(value);
 		}
+
+		bool IsSha256(std::string_view value) {
+			if (value.size() != 64) return false;
+			return std::all_of(value.begin(), value.end(), [](unsigned char c) {
+				return std::isxdigit(c) != 0;
+			});
+		}
+
+#ifdef IDX_PLATFORM_WINDOWS
+		bool GetRunningEngineSha256(std::string& outSha256, std::string& outError) {
+			struct CachedFingerprint {
+				std::string Sha256;
+				std::string Error;
+			};
+
+			static const CachedFingerprint fingerprint = [] {
+				CachedFingerprint result;
+				const HMODULE engineModule = ::GetModuleHandleW(L"Index-Engine.dll");
+				if (!engineModule) {
+					result.Error = "running Index-Engine.dll module was not found";
+					return result;
+				}
+
+				std::vector<wchar_t> pathBuffer(32768);
+				const DWORD pathLength = ::GetModuleFileNameW(
+					engineModule, pathBuffer.data(), static_cast<DWORD>(pathBuffer.size()));
+				if (pathLength == 0 || pathLength >= pathBuffer.size()) {
+					result.Error = "running Index-Engine.dll path could not be resolved";
+					return result;
+				}
+
+				Hash::Sha256OfFile(
+					std::filesystem::path(pathBuffer.data(), pathBuffer.data() + pathLength),
+					result.Sha256, result.Error);
+				return result;
+			}();
+
+			outSha256 = fingerprint.Sha256;
+			outError = fingerprint.Error;
+			return !outSha256.empty();
+		}
+#endif
 
 		void* PlatformResolve(void* module, const char* symbol) {
 #ifdef IDX_PLATFORM_WINDOWS
@@ -50,18 +102,25 @@ namespace Index {
 #endif
 		}
 
-		// SEH guard: stale-ABI package crashing in DllMain/static-init would kill the editor without this. __try/__except requires no local C++ destructors, hence the bare-pointer signature.
-		void* LoadLibraryGuarded(const char* path) {
 #ifdef IDX_PLATFORM_WINDOWS
+		// A bare native path keeps SEH valid while containing stale-ABI faults from DllMain/static initialization.
+		void* LoadLibraryGuarded(const wchar_t* path) {
 			__try {
-				return reinterpret_cast<void*>(::LoadLibraryA(path));
+				return reinterpret_cast<void*>(::LoadLibraryW(path));
 			}
 			__except (EXCEPTION_EXECUTE_HANDLER) {
 				return nullptr;
 			}
+		}
 #else
+		void* LoadLibraryGuarded(const char* path) {
 			return dlopen(path, RTLD_NOW | RTLD_LOCAL);
+		}
 #endif
+
+		std::string PathToUtf8(const std::filesystem::path& path) {
+			const auto encoded = path.u8string();
+			return std::string(reinterpret_cast<const char*>(encoded.data()), encoded.size());
 		}
 
 		// Same SEH rationale as LoadLibraryGuarded: OnLoad calls back into the engine and a stale ABI would crash the editor on every launch. *outCrashed distinguishes a trapped fault from a clean OnLoad return of 0.
@@ -127,8 +186,8 @@ namespace Index {
 			return stem;
 		}
 
-		// Skips Pkg.<Name>/ (managed-only) folders: LoadLibrary-ing a .NET assembly pins it against C# hot-reload and produces false "no OnLoad export" warnings.
-				bool LooksLikeNativePackageFolder(const std::string& folderName) {
+		// Loading managed assemblies here would pin them against C# hot reload.
+		bool LooksLikeNativePackageFolder(const std::string& folderName) {
 			if (folderName.rfind("Pkg.", 0) != 0) return false;
 			constexpr std::string_view k_NativeSuffix = ".Native";
 			return folderName.size() > k_NativeSuffix.size()
@@ -164,9 +223,120 @@ namespace Index {
 		}
 	}
 
+	namespace PackageHostDetail {
+		void* LoadNativeModule(const std::filesystem::path& path) {
+#ifdef IDX_PLATFORM_WINDOWS
+			return LoadLibraryGuarded(path.c_str());
+#else
+			const std::string nativePath = path.string();
+			return LoadLibraryGuarded(nativePath.c_str());
+#endif
+		}
+
+		void UnloadNativeModule(void* module) {
+			if (module) PlatformUnload(module);
+		}
+
+		std::filesystem::path GetNativePackageAbiMetadataPath(
+			const std::filesystem::path& packageLibrary) {
+			std::filesystem::path metadataPath = packageLibrary;
+			metadataPath += ".indexabi";
+			return metadataPath;
+		}
+
+		bool ValidateNativePackageCompatibility(
+			const std::filesystem::path& packageLibrary,
+			std::string_view runningEngineSha256,
+			std::string& outReason) {
+			outReason.clear();
+			const std::filesystem::path metadataPath =
+				GetNativePackageAbiMetadataPath(packageLibrary);
+			std::ifstream metadata(metadataPath, std::ios::binary);
+			if (!metadata.is_open()) {
+				outReason = "missing " + PathToUtf8(metadataPath.filename());
+				return false;
+			}
+
+			std::unordered_map<std::string, std::string> values;
+			std::string line;
+			while (std::getline(metadata, line)) {
+				if (line.empty()) continue;
+				const size_t separator = line.find('=');
+				if (separator == std::string::npos) {
+					outReason = "malformed ABI metadata line";
+					return false;
+				}
+				const std::string key = TrimAscii(std::string_view(line).substr(0, separator));
+				const std::string value = TrimAscii(std::string_view(line).substr(separator + 1));
+				if (key.empty() || !values.emplace(key, value).second) {
+					outReason = "malformed or duplicate ABI metadata key";
+					return false;
+				}
+			}
+
+			if (values["schema"] != k_NativeAbiSchema) {
+				outReason = "unsupported native package ABI metadata schema";
+				return false;
+			}
+
+			const std::string& boundary = values["boundary"];
+			if (boundary == k_StandaloneCBoundary) return true;
+			if (boundary != k_EngineCppBoundary) {
+				outReason = "unknown native package ABI boundary";
+				return false;
+			}
+
+			const std::string packageEngineSha256 = Hash::ToLowerHex(values["engine_sha256"]);
+			if (!IsSha256(packageEngineSha256)) {
+				outReason = "missing or invalid engine_sha256";
+				return false;
+			}
+			if (!IsSha256(runningEngineSha256)) {
+				outReason = "running engine fingerprint is unavailable";
+				return false;
+			}
+			if (packageEngineSha256 != Hash::ToLowerHex(runningEngineSha256)) {
+				outReason = "package was built against a different Index-Engine binary";
+				return false;
+			}
+			return true;
+		}
+
+		void AppendProjectNativeCandidates(const IndexProject& project,
+			std::string_view configuration,
+			std::vector<std::filesystem::path>& outCandidates) {
+			const std::filesystem::path projectPackages(project.PackagesDirectory);
+			for (const std::string& packageName : project.Packages) {
+				const std::filesystem::path workspaceCandidate =
+					IndexProject::GetProjectNativePackageLibraryPath(
+						project.RootDirectory, packageName, std::string(configuration));
+				std::error_code ec;
+				if (!workspaceCandidate.empty()
+					&& std::filesystem::exists(workspaceCandidate, ec) && !ec) {
+					outCandidates.push_back(workspaceCandidate);
+				}
+
+				const std::filesystem::path prebuiltCandidate = projectPackages
+					/ packageName
+					/ "Bin" / "Windows-x64"
+					/ ("Pkg." + packageName + ".Native.dll");
+				ec.clear();
+				if (std::filesystem::exists(prebuiltCandidate, ec) && !ec) {
+					outCandidates.push_back(prebuiltCandidate);
+				}
+			}
+		}
+	}
+
 	namespace {
 		size_t LoadInternal(bool isInitialLoadAll) {
 			std::vector<std::filesystem::path> candidates;
+
+			const IndexProject* projectForScan = ProjectManager::GetCurrentProject();
+			if (projectForScan && !projectForScan->PackagesDirectory.empty()) {
+				PackageHostDetail::AppendProjectNativeCandidates(
+					*projectForScan, IndexProject::GetActiveBuildConfiguration(), candidates);
+			}
 
 			const std::filesystem::path exeDir(Path::ExecutableDir());
 			// Dev / build layout: bin/<config>/<Consumer>/<exe>; package DLLs are siblings in
@@ -177,23 +347,8 @@ namespace Index {
 			// Distribution layout (future): packages alongside the exe in a Packages/ folder.
 			DiscoverIn(exeDir / "Packages", candidates);
 
-			const IndexProject* projectForScan = ProjectManager::GetCurrentProject();
-			if (projectForScan && !projectForScan->PackagesDirectory.empty()) {
-				const std::filesystem::path projectPackages(projectForScan->PackagesDirectory);
-				for (const std::string& packageName : projectForScan->Packages) {
-					const std::filesystem::path candidate = projectPackages
-						/ packageName
-						/ "Bin" / "Windows-x64"
-						/ ("Pkg." + packageName + ".Native.dll");
-					std::error_code ec;
-					if (std::filesystem::exists(candidate, ec) && !ec) {
-						candidates.push_back(candidate);
-					}
-				}
-			}
-
-			// Only packages listed in the project's packages array are loaded; INDEX_LOAD_ALL_PACKAGES=1 overrides this for engine-dev smoke testing.
-						const IndexProject* activeProject = ProjectManager::GetCurrentProject();
+			// INDEX_LOAD_ALL_PACKAGES is an engine-development escape hatch for the project allow-list.
+			const IndexProject* activeProject = ProjectManager::GetCurrentProject();
 			std::unordered_set<std::string> allowList;
 			if (activeProject) {
 				allowList.insert(activeProject->Packages.begin(), activeProject->Packages.end());
@@ -226,6 +381,12 @@ namespace Index {
 				return 0;
 			}
 
+#ifdef IDX_PLATFORM_WINDOWS
+			std::string runningEngineSha256;
+			std::string engineFingerprintError;
+			GetRunningEngineSha256(runningEngineSha256, engineFingerprintError);
+#endif
+
 			std::unordered_set<std::string> alreadyLoadedByName;
 			std::unordered_set<std::string> alreadyLoadedByPath;
 			for (const LoadedPackage& existing : s_LoadedPackages) {
@@ -235,7 +396,7 @@ namespace Index {
 
 			size_t newlyLoaded = 0;
 			for (const auto& candidate : candidates) {
-				const std::string pathStr = candidate.string();
+				const std::string pathStr = PathToUtf8(candidate);
 				const std::string fileName = candidate.filename().string();
 				const std::string packageName = PackageNameFromFilename(fileName);
 
@@ -252,7 +413,22 @@ namespace Index {
 					continue;
 				}
 
-				void* module = LoadLibraryGuarded(pathStr.c_str());
+#ifdef IDX_PLATFORM_WINDOWS
+				std::string compatibilityReason;
+				if (!PackageHostDetail::ValidateNativePackageCompatibility(
+					candidate, runningEngineSha256, compatibilityReason)) {
+					if (compatibilityReason == "running engine fingerprint is unavailable"
+						&& !engineFingerprintError.empty()) {
+						compatibilityReason += ": " + engineFingerprintError;
+					}
+					IDX_CORE_WARN_TAG("PackageHost",
+						"Skipping native package '{}' from '{}': {}. Rebuild the package against "
+						"this engine version.", packageName, pathStr, compatibilityReason);
+					continue;
+				}
+#endif
+
+				void* module = PackageHostDetail::LoadNativeModule(candidate);
 				if (!module) {
 					IDX_CORE_WARN_TAG("PackageHost",
 						"Failed to load package '{}' from '{}' (LoadLibrary returned null — likely binary "
@@ -286,6 +462,8 @@ namespace Index {
 				loaded.ModulePath = pathStr;
 				loaded.ModuleHandle = module;
 				s_LoadedPackages.push_back(std::move(loaded));
+				alreadyLoadedByName.insert(packageName);
+				alreadyLoadedByPath.insert(pathStr);
 				++newlyLoaded;
 			}
 

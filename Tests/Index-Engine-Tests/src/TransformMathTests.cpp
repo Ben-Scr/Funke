@@ -111,14 +111,22 @@ TEST_CASE("GetRotationDegrees round-trips radians")
 	CHECK(t.GetRotationDegrees() == doctest::Approx(135.0f));
 }
 
-TEST_CASE("GetForwardDirection points along +Y at zero rotation")
+TEST_CASE("Transform direction axes follow world rotation")
 {
 	Transform2DComponent t;
+	CHECK(t.Up().x == doctest::Approx(0.0f));
+	CHECK(t.Up().y == doctest::Approx(1.0f));
+	CHECK(t.Right().x == doctest::Approx(1.0f));
+	CHECK(t.Right().y == doctest::Approx(0.0f));
 	CHECK(t.GetForwardDirection().x == doctest::Approx(0.0f));
 	CHECK(t.GetForwardDirection().y == doctest::Approx(1.0f));
 
 	t.Rotation = Radians(90.0f);
-	CHECK(t.GetForwardDirection().x == doctest::Approx(1.0f));
+	CHECK(t.Up().x == doctest::Approx(-1.0f));
+	CHECK(t.Up().y == doctest::Approx(0.0f).epsilon(0.000001f));
+	CHECK(t.Right().x == doctest::Approx(0.0f).epsilon(0.000001f));
+	CHECK(t.Right().y == doctest::Approx(1.0f));
+	CHECK(t.GetForwardDirection().x == doctest::Approx(-1.0f));
 	CHECK(t.GetForwardDirection().y == doctest::Approx(0.0f));
 }
 

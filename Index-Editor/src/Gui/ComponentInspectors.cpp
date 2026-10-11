@@ -24,6 +24,7 @@
 #include "Editor/EditorComponentRegistration.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Graphics/Texture2D.hpp"
+#include "Gui/EditorUI.hpp"
 #include "Gui/HierarchyDragData.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Inspector/PropertyDrawer.hpp"
@@ -50,9 +51,25 @@ namespace Index {
 
 		template <typename TComponent>
 		void DrawPropertiesFor(std::span<const Entity> entities) {
-			const auto* info = SceneManager::Get().GetComponentRegistry().GetInfo<TComponent>();
+			const auto* info = SceneManager::GetComponentRegistry().GetInfo<TComponent>();
 			if (!info || info->properties.empty()) return;
 			PropertyDrawer::DrawAll(entities, info->properties, info->displayName);
+		}
+
+		template <typename TComponent>
+		void AcceptTexturePreviewDrop(std::span<const Entity> entities)
+		{
+			const auto* info = SceneManager::GetComponentRegistry().GetInfo<TComponent>();
+			if (!info) return;
+
+			const auto it = std::find_if(info->properties.begin(), info->properties.end(),
+				[](const PropertyDescriptor& descriptor) {
+					return descriptor.Type == PropertyType::TextureRef
+						&& descriptor.Name == "Texture";
+				});
+			if (it != info->properties.end()) {
+				PropertyDrawer::AcceptTextureReferenceDropOnLastItem(entities, *it);
+			}
 		}
 
 		template <int N, typename ChannelGet>
@@ -139,29 +156,16 @@ namespace Index {
 			const ImGuiStyle& style = ImGui::GetStyle();
 			const float fullWidth = ImGui::GetContentRegionAvail().x;
 			const float spacing = style.ItemInnerSpacing.x;
-
-			float labelWidths[N];
-			float totalLabelWidth = 0.0f;
-			for (int c = 0; c < N; ++c) {
-				labelWidths[c] = ImGui::CalcTextSize(axisLabels[c]).x;
-				totalLabelWidth += labelWidths[c];
-			}
-			// (label + spacing + field) per cell, plus spacing between cells.
-			const float remaining = fullWidth - totalLabelWidth
-				- spacing * static_cast<float>(2 * N - 1);
-			const float fieldWidth = std::max(1.0f, std::floor(remaining / static_cast<float>(N)));
+			const float fieldWidth = std::max(1.0f,
+				std::floor((fullWidth - spacing * static_cast<float>(N - 1)) / static_cast<float>(N)));
 
 			bool anyChanged = false;
 			for (int c = 0; c < N; ++c) {
 				if (c > 0) ImGui::SameLine(0.0f, spacing);
-				ImGui::AlignTextToFramePadding();
-				ImGui::TextUnformatted(axisLabels[c]);
-				ImGui::SameLine(0.0f, spacing);
 				ImGui::PushID(c);
-				ImGui::SetNextItemWidth(fieldWidth);
 				float channelValue = values[c];
 				const char* fmt = mixed[c] ? "-" : format;
-				if (ImGui::DragFloat("##c", &channelValue, speed, 0.0f, 0.0f, fmt)) {
+				if (ImGuiUtils::AxisDragFloat("##c", c, axisLabels[c], &channelValue, fieldWidth, speed, fmt)) {
 					for (const Entity& e : entities) setChan(e, c, channelValue);
 					ImGuiUtils::MarkSelectionDirty(entities);
 					anyChanged = true;
@@ -186,18 +190,10 @@ namespace Index {
 			ImGui::PushID(rowLabel);
 			ImGuiUtils::BeginInspectorFieldRow(rowLabel);
 
-			const ImGuiStyle& style = ImGui::GetStyle();
-			const float axisWidth = ImGui::CalcTextSize(axisLabel).x;
-			const float fieldWidth = std::max(1.0f,
-				ImGui::GetContentRegionAvail().x - axisWidth - style.ItemInnerSpacing.x);
-
-			ImGui::AlignTextToFramePadding();
-			ImGui::TextUnformatted(axisLabel);
-			ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
-			ImGui::SetNextItemWidth(fieldWidth);
-
-			const bool changed = ImGui::DragFloat("##Value", &value, speed, 0.0f, 0.0f,
-				uniform ? format : "-");
+			// Single-axis rows (e.g. rotation Z) reuse the vector field's axis colour: X=0, Y=1, Z=2.
+			const int axisIndex = axisLabel && axisLabel[0] == 'Y' ? 1 : (axisLabel && axisLabel[0] == 'Z' ? 2 : 0);
+			const bool changed = ImGuiUtils::AxisDragFloat("##Value", axisIndex, axisLabel, &value,
+				ImGui::GetContentRegionAvail().x, speed, uniform ? format : "-");
 			if (changed) {
 				for (const Entity& e : entities) set(e, value);
 				ImGuiUtils::MarkSelectionDirty(entities);
@@ -233,10 +229,12 @@ namespace Index {
 			const float texWidth = texture->GetWidth();
 			const float texHeight = texture->GetHeight();
 			ImGuiUtils::DrawTexturePreview(texture->GetHandle(), texWidth, texHeight, 96.0f, texture->GetFilter());
+			AcceptTexturePreviewDrop<SpriteRendererComponent>(entities);
 			ImGui::Text("%.0f x %.0f", texWidth, texHeight);
 		}
 		else {
 			ImGuiUtils::DrawTexturePlaceholder();
+			AcceptTexturePreviewDrop<SpriteRendererComponent>(entities);
 		}
 	}
 
@@ -320,6 +318,7 @@ namespace Index {
 			else {
 				ImGuiUtils::DrawTexturePlaceholder();
 			}
+			AcceptTexturePreviewDrop<ParticleSystem2DComponent>(entities);
 
 			ImGui::Spacing();
 			ImGui::TextUnformatted("Bursts");
@@ -363,37 +362,32 @@ namespace Index {
 				ImGuiUtils::MarkSelectionDirty(entities);
 			}
 
-			ImGui::Spacing();
-			// "Scale over Lifetime" as a collapsible tab with an inline on/off toggle;
-			// the curve editor shows inside when expanded and enabled.
+			// Scale over Lifetime: the section's switch toggles the module; a switched-off section stays collapsed.
 			auto& sol = ps.ParticleSettings.ScaleOverLifetime;
 			bool solEnabled = sol.Enabled;
-			if (ImGui::Checkbox("##ScaleOverLifetimeEnabled", &solEnabled)) {
+			bool solChanged = false;
+			const bool solOpen = EditorUI::SectionHeader("Scale over Lifetime", false, &solEnabled, &solChanged);
+			if (solChanged) {
 				sol.Enabled = solEnabled;
 				ImGuiUtils::MarkSelectionDirty(entities);
 			}
-			ImGui::SameLine();
-			if (ImGui::CollapsingHeader("Scale over Lifetime")) {
-				// Always show the graph when expanded; pass the toggle through so it
-				// renders greyed-out + non-interactive (instead of vanishing) when off.
+			if (solOpen) {
 				if (ImGuiUtils::DrawCurveEditor("ScaleOverLifetimeCurve", sol.Curve, sol.Enabled)) {
 					ImGuiUtils::MarkSelectionDirty(entities);
 				}
 			}
 
-			ImGui::Spacing();
-			// "Color over Lifetime" as a collapsible tab with an inline on/off toggle; when
-			// enabled, each particle's emit colour is multiplied by this gradient sampled over
+			// Color over Lifetime: each particle's emit colour is multiplied by this gradient sampled over
 			// its normalized lifetime (colour stops sit below the bar, alpha stops above).
 			auto& col = ps.ParticleSettings.ColorOverLifetime;
 			bool colEnabled = col.Enabled;
-			if (ImGui::Checkbox("##ColorOverLifetimeEnabled", &colEnabled)) {
+			bool colChanged = false;
+			const bool colOpen = EditorUI::SectionHeader("Color over Lifetime", false, &colEnabled, &colChanged);
+			if (colChanged) {
 				col.Enabled = colEnabled;
 				ImGuiUtils::MarkSelectionDirty(entities);
 			}
-			ImGui::SameLine();
-			if (ImGui::CollapsingHeader("Color over Lifetime")) {
-				// Greyed-out + non-interactive (instead of vanishing) when the toggle is off.
+			if (colOpen) {
 				if (ImGuiUtils::DrawGradientEditor("ColorOverLifetimeGradient", col.Gradient, col.Enabled)) {
 					ImGuiUtils::MarkSelectionDirty(entities);
 				}
@@ -482,7 +476,7 @@ namespace Index {
 		// AnchoredPosition + SizeDelta around the pivot in their head. Both
 		// AnchoredPosition and SizeDelta update so the authored representation
 		// stays self-consistent with whatever Position / Size shows above.
-		if (ImGui::CollapsingHeader("Edges")) {
+		if (EditorUI::SectionHeader("Edges", false)) {
 			ImGui::PushID("Edges");
 			ImGui::Indent(8.0f);
 
@@ -552,7 +546,7 @@ namespace Index {
 
 		const char* xyLabels[] = { "X", "Y" };
 
-		if (ImGui::CollapsingHeader("Anchors", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (EditorUI::SectionHeader("Anchors", true)) {
 			ImGui::PushID("Anchors");
 			ImGui::Indent(8.0f);
 
@@ -723,13 +717,13 @@ namespace Index {
 			const Scene* resolved = nullptr;
 			const uint64_t sourceSceneId = data.SourceSceneId;
 			if (sourceSceneId != 0) {
-				SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
+				SceneManager::ForeachLoadedScene([&](const Scene& scene) {
 					if (!resolved && static_cast<uint64_t>(scene.GetSceneId()) == sourceSceneId) {
 						resolved = &scene;
 					}
 				});
 			}
-			return resolved ? resolved : SceneManager::Get().GetActiveScene();
+			return resolved ? resolved : SceneManager::GetActiveScene();
 		}
 
 		std::optional<uint64_t> AcceptEntityDrop() {
@@ -850,7 +844,7 @@ namespace Index {
 					break;
 				case InspectorEventArgKind::Bool: {
 					bool v = row.ArgumentValue == "1";
-					if (ImGui::Checkbox("##ArgBool", &v)) setValue(v ? "1" : "0");
+					if (ImGuiUtils::Switch("##ArgBool", &v)) setValue(v ? "1" : "0");
 					break;
 				}
 				case InspectorEventArgKind::Int: {
@@ -923,7 +917,7 @@ namespace Index {
 		GetList&& getList, MutateAll&& mutate)
 	{
 		const std::string foldoutId = std::string(label) + "##" + idSuffix;
-		if (!ImGui::CollapsingHeader(foldoutId.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (!EditorUI::SectionHeader(foldoutId.c_str(), true)) {
 			return;
 		}
 		if (entities.empty()) return;
@@ -976,7 +970,7 @@ namespace Index {
 				const float fieldWidth = std::floor(fieldsWidth / 4.0f);
 
 				bool enabled = row.Enabled;
-				if (ImGui::Checkbox("##Enabled", &enabled)) {
+				if (ImGuiUtils::Switch("##Enabled", &enabled)) {
 					mutate([i, enabled](InspectorEventList& list) {
 						if (i < list.Bindings.size()) list.Bindings[i].Enabled = enabled;
 					});

@@ -22,7 +22,7 @@ namespace Index {
 		void Initialize();
 		void Shutdown();
 
-		void BeginFrame(const SceneManager& sceneManager);
+		void BeginFrame();
 		void EndFrame();
 
 		void RenderScene(const Scene& scene);

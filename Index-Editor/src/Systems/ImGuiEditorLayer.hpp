@@ -26,6 +26,8 @@
 #include "Serialization/FileWatcher.hpp"
 #include "Undo/UndoStack.hpp"
 #include "Undo/TransformEditCommand.hpp"
+#include "Undo/StructureEditCommand.hpp"
+#include "Editor/SceneRecovery.hpp"
 
 
 #include <atomic>
@@ -44,7 +46,7 @@
 
 namespace Index {
 
-	class IndexProject;
+	struct IndexProject;
 
 	enum class EditorViewDrawMode : uint8_t {
 		Default = 0,
@@ -73,6 +75,16 @@ namespace Index {
 		void OnUpdate(Application& app, float dt) override;
 		void OnEvent(Application& app, IndexEvent& event) override;
 	private:
+		enum class PendingEditorAction : uint8_t {
+			None = 0,
+			OpenScene,
+			RemoveScene,
+			Quit,
+			Reload,
+			Restart,
+			RebuildEngine,
+		};
+
 		struct LogEntry {
 			std::string Message;
 			Log::Level Level;
@@ -129,24 +141,41 @@ namespace Index {
 		void RenderSettings_Physics(IndexProject& project, bool& changed, const std::string& filterLower);
 		void TickSplashPreview();
 		void RenderSceneSystemsInspector(Scene& scene);
-		void ExecuteBuild();
+		void ExecuteBuild(IndexProject project, std::string outputDirectory);
 		void ExecuteBuildAsync();
 		void ReportBuildProgress(float progress, std::string_view stage);
 		void ExecuteReserializeAsync();
 		void ReportReserializeProgress(float progress, std::string_view stage);
 		void RenderPackageManagerPanel();
 		void RenderAssetInspector();
+		void RequestEditorAction(PendingEditorAction action, std::string payload = {});
+		bool ProcessPendingEditorAction();
+		bool HasUnsavedWorkForPendingAction() const;
+		bool SaveUnsavedWorkForPendingAction();
+		bool SaveCurrentProjectMetadata();
+		void ClearPendingEditorAction();
+		std::vector<std::shared_ptr<Scene>> GetDirtyScenesForPendingAction() const;
+		bool OpenSceneExclusive(const std::string& path);
+		bool LoadEditorScene(const std::string& path, bool additive,
+			std::shared_ptr<Scene>& loadedScene, std::string& definitionName,
+			bool allowDuplicateSceneName = false, bool suspendLifecycle = false);
+		void RemoveEditorScene(const std::string& sceneName);
+		std::string MakeEditorSceneDefinitionName();
 		void BeginPlayModeRequest(Scene& scene);
+		bool SaveDirtyPrefabsBeforeRun(std::string_view actionName);
+		bool ValidateUniquePersistentEntityIds(const std::vector<Scene*>& scenes,
+			std::string_view actionName) const;
+		bool PreparePlayModeSnapshot(Scene& scene);
 		void CompletePlayModeEntry(Scene& scene);
-		void PollPendingPlayModeRequest(Scene& scene);
-		void RestoreEditorSceneAfterPlaymode();
+		void PollPendingPlayModeRequest();
+		bool RestoreEditorSceneAfterPlaymode();
 		// Snapshot inspector-authored script field overrides for the play/stop round-trip
 		// so component references survive even when the scene-file round-trip drops them.
 		// merge=false (play-entry) captures the edit-mode baseline; merge=true (play-exit,
 		// pre-reload) overlays values edited in the inspector during play. See m_PlayModeScriptFields.
 		void CaptureScriptFieldOverrides(bool merge);
 		// Re-apply the captured overrides onto the reloaded entities (play-exit, post-reload).
-		void ReapplyScriptFieldOverrides();
+		void ReapplyScriptFieldOverrides(const std::vector<std::shared_ptr<Scene>>& scenes);
 		void SelectSceneNode();
 		void SelectEntity(EntityHandle entity);
 		void ClearEntitySelection();
@@ -171,6 +200,10 @@ namespace Index {
 		bool TryBuildEntityAABB(Scene& scene, EntityHandle entity, bool includeChildren, AABB& outAABB);
 		void FocusSelectedEntity(Scene& scene);
 		void DuplicateSelectedEntity(Scene& scene);
+		// Structural undo: only the context scene owns history, edits elsewhere stay unrecorded.
+		void PushStructureUndo(Scene& scene, std::unique_ptr<EditCommand> command);
+		void PerformUndoRedo(Scene& scene, bool redo);
+		void RecordCreatedEntities(Scene& scene, std::span<const EntityHandle> created, std::string label);
 		// User-facing delete entry point: opens the confirmation dialog when
 		// enabled in preferences, otherwise deletes immediately.
 		void RequestDeleteSelectedEntity(Scene& scene);
@@ -201,8 +234,23 @@ namespace Index {
 
 		// ── Prefab edit mode ──────────────────────────────────────────
 		bool OpenPrefabForEditing(const std::string& path);
-		void ClosePrefabEditing(bool save);
+		bool ClosePrefabEditing(bool save);
 		bool SavePrefabEditChanges();
+		bool SavePrefabInspectorChanges();
+		bool ApplyPrefabInstanceToSource(Scene& scene, EntityHandle entity);
+		struct LoadedSceneSelectionEntity {
+			uint64_t PersistentId = 0;
+			uint64_t PrefabRootPersistentId = 0;
+			uint64_t PrefabSourceEntityId = 0;
+		};
+		struct LoadedSceneSelectionSnapshot {
+			std::string SceneName;
+			std::vector<LoadedSceneSelectionEntity> Entities;
+			size_t PrimaryIndex = static_cast<size_t>(-1);
+			bool SceneNodeSelected = false;
+		};
+		LoadedSceneSelectionSnapshot CaptureLoadedSceneSelection() const;
+		void RestoreLoadedSceneSelection(const LoadedSceneSelectionSnapshot& snapshot);
 		bool IsInPrefabEditMode() const { return m_PrefabEditScene != nullptr; }
 		Scene* GetContextScene() const;
 
@@ -340,6 +388,12 @@ namespace Index {
 		// and at play-mode boundaries — its commands reference the prior scene.
 		UndoStack m_UndoStack;
 		const Scene* m_UndoStackSceneId = nullptr;
+
+		// Crash recovery: periodic copies of dirty scenes, offered back after an abnormal exit.
+		std::vector<SceneRecovery::PendingScene> m_PendingRecovery;
+		bool m_RecoveryChecked = false;
+		float m_RecoveryAccumulator = 0.0f;
+		std::string m_RecoveryError;
 		// Transforms captured on the gizmo-drag rising edge; one undo step covering
 		// the whole drag is committed on the falling edge.
 		bool m_GizmoDragActive = false;
@@ -409,6 +463,22 @@ namespace Index {
 		bool m_GameViewVsync = true;
 		bool m_GameViewVsyncLoaded = false;
 		bool m_GameViewHasRendered = false;
+
+		// Top bar / status bar / command palette (ImGuiEditorLayer.cpp).
+		void SaveScenesFromMenu(Scene& scene);
+		void RenderTopBarRight();
+		void RenderCommandPalette(Scene& scene);
+		void RenderStatusBar(float height);
+		bool m_OpenCommandPalette = false;
+		char m_CommandPaletteBuffer[128]{};
+		int m_CommandPaletteSelection = 0;
+
+		// Launcher preview image (<project>/.index/thumbnail.png): captured once after open, then on every save.
+		void UpdateProjectThumbnail(Scene& scene);
+		bool CaptureProjectThumbnail(Scene& scene);
+		bool m_ThumbnailSceneWasDirty = false;
+		bool m_ThumbnailInitialCaptureDone = false;
+		int m_ThumbnailFrameCounter = 0;
 		int m_LastGameViewFbW = 0;
 		int m_LastGameViewFbH = 0;
 		std::chrono::steady_clock::time_point m_LastGameViewRenderTime{};
@@ -442,9 +512,18 @@ namespace Index {
 		SpriteEditorPanel m_SpriteEditorPanel;
 
 		std::string m_PendingSceneFileDrop;
-		std::string m_PendingSceneSwitch;
-		std::string m_ConfirmDialogPendingPath;
-		bool m_ShowSaveConfirmDialog = false;
+		PendingEditorAction m_PendingEditorAction = PendingEditorAction::None;
+		std::string m_PendingEditorActionPayload;
+		bool m_PendingEditorActionApproved = false;
+		bool m_PendingEditorActionProjectSaveCompleted = false;
+		bool m_PendingEditorActionDiscardUnsavedWork = false;
+		bool m_ShowUnsavedWorkDialog = false;
+		bool m_UnsavedWorkDialogOpen = false;
+		bool m_DeferredQuitRequested = false;
+		std::string m_PendingEngineRebuildWorkingDirectory;
+		uint64_t m_EditorSceneDefinitionSerial = 0;
+		std::unordered_map<std::string, std::string> m_EditorSceneDefinitionsBySceneName;
+		std::unordered_set<std::string> m_EditorOwnedSceneDefinitions{ "$EditorWorkingScene" };
 
 		// Entity-deletion confirmation (see RequestDeleteSelectedEntity and the
 		// modal in ImGuiEditorLayerChrome). Scene is re-resolved by id at
@@ -462,9 +541,12 @@ namespace Index {
 		std::string m_EntityClipboardJson;
 
 		std::vector<std::pair<std::string, std::string>> m_PlayModeScenes;
+		// Scenes that had unsaved edits when Play started; they are snapshotted privately and marked dirty again on Stop.
+		std::unordered_set<std::string> m_PlayModeDirtyScenes;
 		// Name of the active scene at play-mode entry. Restored after exit so
 		// a script-side LoadScene during play doesn't leak its choice into edit mode.
 		std::string m_PlayModeActiveScene;
+		LoadedSceneSelectionSnapshot m_PlayModeSelection;
 		// Inspector-authored script field values (ScriptComponent::PendingFieldValues)
 		// captured per entity at play-entry and forced back onto the reloaded entities
 		// after the play-exit restore. The play snapshot round-trips through the scene
@@ -475,14 +557,15 @@ namespace Index {
 		std::unordered_map<std::string,
 			std::unordered_map<uint64_t, std::unordered_map<std::string, std::string>>>
 			m_PlayModeScriptFields;
+		std::weak_ptr<Scene> m_PlayModeRecompileScene;
 		bool m_PlayModeRecompilePending = false;
+		bool m_ShowPlayModeRestoreError = false;
+		std::string m_PlayModeRestoreError;
 		int m_StepFrames = 0;
 
 		float m_AutoSaveAccumulator = 0.0f;
 		std::string m_AutoSaveLastScenePath;
 
-		bool m_ShowQuitSaveDialog = false;
-		bool m_QuitSaveDialogOpen = false;
 		bool m_ShowBuildPanel = false;
 		bool m_ShowBuildProfilesPanel = false;
 		BuildProfilesPanel m_BuildProfilesPanel;
@@ -491,7 +574,6 @@ namespace Index {
 		bool m_ShowProfiler = false;
 		ProfilerPanel m_ProfilerPanel;
 
-		std::vector<std::string> m_BuildSceneList;
 		// AssetRegistry::GetChangeVersion() the build scene list was last reconciled against; gates the
 		// O(assets) FindAll so opening the Build panel doesn't force a registry rebuild every frame.
 		uint64_t m_BuildSceneListVersion = 0;
@@ -525,6 +607,7 @@ namespace Index {
 		PackageManager m_PackageManager;
 		PackageManagerPanel m_PackageManagerPanel;
 		std::string m_BuildOutputDir;
+		std::string m_BuiltExecutablePath;
 		char m_BuildOutputDirBuffer[512]{};
 		char m_CustomDefineEntryBuffer[128]{}; // Build panel custom-define text input
 		int m_BuildState = 0; // 0=idle, 1=pending, 2=launch worker, 3=running

@@ -1,6 +1,8 @@
 #include "Gui/ProfilerPanel.hpp"
 
+#include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
+#include "Gui/ImGuiUtils.hpp"
 
 #include <imgui.h>
 
@@ -70,9 +72,7 @@ namespace Index {
 	}
 
 	namespace {
-		// Per-module display label — name shown in the panel may differ from
-		// the internal registration name (e.g. "Total Memory" registered ->
-		// "Total Used Memory" displayed). Map captures both.
+		// Display labels can differ from persisted profiler module keys.
 		struct ModuleDisplay {
 			const char* RegisteredName;
 			const char* DisplayLabel;
@@ -109,7 +109,7 @@ namespace Index {
 				{
 					"Memory",
 					{
-						{ "Total Memory",   "Total Used Memory", "MB" },
+						{ "Total Memory",   "Working Set",       "MB" },
 						{ "Texture Memory", "Texture Memory",    "MB" },
 						{ "Entity Count",   "Entity Count",      "" },
 					}
@@ -185,11 +185,12 @@ namespace Index {
 		ImGui::PushID(registeredName);
 
 		bool enabled = m->Enabled;
-		if (ImGui::Checkbox("##enable", &enabled)) {
+		if (ImGuiUtils::ToggleSwitch("##enable", &enabled)) {
 			Profiler::SetModuleEnabled(registeredName, enabled);
 			SaveSettingsToProject();
 		}
 		ImGui::SameLine();
+		ImGui::AlignTextToFramePadding();
 
 		// One-line label: "Display Label    Cur X UNIT    Avg Y    Min Z    Max W"
 		// Counts (no unit) format as integers; ms/MB format with one decimal.
@@ -236,8 +237,8 @@ namespace Index {
 			return;
 		}
 
-		ImGui::SetNextWindowSize(ImVec2(600, 600), ImGuiCond_FirstUseEver);
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		EditorUI::NextWindowDefaultSize();
 		const bool windowOpen = ImGui::Begin("Profiler", pOpen);
 		// `windowOpen == false` means the window is collapsed (still the
 		// chrome is being drawn, but the body is skipped). Either case
@@ -255,35 +256,34 @@ namespace Index {
 			m_SettingsLoaded = true;
 		}
 
-		// Header — controls that apply to all modules.
+		// Toolbar — controls that apply to all modules.
 		bool dirty = false;
-		if (ImGui::Checkbox("Track in Background", &m_TrackInBackground)) {
+		EditorUI::BeginToolbar("##ProfilerToolbar");
+		if (ImGuiUtils::Switch("Track in Background", &m_TrackInBackground)) {
 			Profiler::SetBackgroundTracking(m_TrackInBackground);
 			dirty = true;
 		}
-		ImGui::SameLine();
+		EditorUI::ToolbarSeparator();
 		ImGui::SetNextItemWidth(80.0f);
 		if (ImGui::InputInt("Sampling Hz", &m_SamplingHz, 0, 0)) {
 			m_SamplingHz = std::max(1, m_SamplingHz);
 			Profiler::SetSamplingHz(m_SamplingHz);
 			dirty = true;
 		}
-		ImGui::SameLine();
+		EditorUI::ToolbarSeparator();
 		ImGui::SetNextItemWidth(100.0f);
 		if (ImGui::InputInt("Tracking Span", &m_TrackingSpan, 0, 0)) {
 			m_TrackingSpan = std::max(8, m_TrackingSpan);
 			Profiler::SetTrackingSpan(m_TrackingSpan);
 			dirty = true;
 		}
+		EditorUI::EndToolbar();
 		if (dirty) {
 			SaveSettingsToProject();
 		}
 
-		ImGui::Separator();
-
 		for (const auto& category : GetCategoryLayout()) {
-			ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
-			if (ImGui::CollapsingHeader(category.Header)) {
+			if (EditorUI::SectionHeader(category.Header, true)) {
 				ImGui::Indent();
 				for (const auto& mod : category.Modules) {
 					RenderModuleRowImpl(mod.RegisteredName, mod.DisplayLabel, mod.Unit);
@@ -308,8 +308,7 @@ namespace Index {
 		ImGui::SetNextWindowSize(ImVec2(360, 90), ImGuiCond_FirstUseEver);
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::Begin("Profiler", pOpen)) {
-			ImGui::TextDisabled("Profiler is disabled in this build.");
-			ImGui::TextDisabled("Rebuild without --no-profiler to enable.");
+			EditorUI::EmptyState("Profiler is disabled in this build.", "Rebuild without --no-profiler to enable.");
 		}
 		ImGui::End();
 	}

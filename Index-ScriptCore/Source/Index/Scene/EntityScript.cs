@@ -103,4 +103,11 @@ public abstract class EntityScript : Component
     public virtual void OnCollisionEnter2D(Collision2D collision) { }
     public virtual void OnCollisionStay2D(Collision2D collision) { }
     public virtual void OnCollisionExit2D(Collision2D collision) { }
+
+    /// <summary>Called when another collider starts overlapping a sensor ("Sensor" enabled) on this entity, or this entity's collider enters another entity's sensor.</summary>
+    public virtual void OnTriggerEnter2D(Collision2D other) { }
+    /// <summary>Called every physics step while a sensor overlap persists.</summary>
+    public virtual void OnTriggerStay2D(Collision2D other) { }
+    /// <summary>Called when a sensor overlap ends, including when either collider is destroyed or disabled.</summary>
+    public virtual void OnTriggerExit2D(Collision2D other) { }
 }

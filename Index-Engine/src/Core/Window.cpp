@@ -22,6 +22,7 @@ namespace Index {
 	bool Window::s_IsVsync = true;
 	std::unique_ptr<Viewport> Window::s_MainViewport = nullptr;
 	Window::UIRegion Window::s_UIRegion{};
+	Vec2 Window::s_WindowToFramebufferScale{ 1.0f, 1.0f };
 	bool Window::s_IsInitialized = false;
 	const GLFWvidmode* Window::k_Videomode = nullptr;
 
@@ -74,8 +75,10 @@ namespace Index {
 
 		s_MainViewport.reset();
 		s_ActiveWindow = nullptr;
+		ClearUIRegion();
+		s_WindowToFramebufferScale = { 1.0f, 1.0f };
 		k_Videomode = nullptr;
-		// Reset across reloads — last user-set vsync state would otherwise leak.
+		// Avoid carrying the previous window's VSync state into a later recreation.
 		s_IsVsync = true;
 		s_IsInitialized = false;
 		glfwTerminate();
@@ -99,6 +102,7 @@ namespace Index {
 		if (win) {
 			win->ApplyTitlebarAppearance();
 		}
+		if (Application::IsShuttingDown()) return;
 
 		if ((bool)focused) {
 			ScriptEngine::RaiseFocusChanged(true);
@@ -268,6 +272,8 @@ namespace Index {
 		m_GLFWwindow = nullptr;
 		if (s_ActiveWindow == this) {
 			s_ActiveWindow = nullptr;
+			ClearUIRegion();
+			s_WindowToFramebufferScale = { 1.0f, 1.0f };
 		}
 	}
 
@@ -386,11 +392,12 @@ namespace Index {
 		Application* app = Application::GetInstance();
 		if (!app) return;
 		app->m_Input.OnMouseMove(xPos, yPos);
-		ScriptEngine::RaiseMouseMove(static_cast<float>(xPos), static_cast<float>(yPos));
+		const Vec2 viewportPosition = ToViewportLocalPosition({ static_cast<float>(xPos), static_cast<float>(yPos) });
+		ScriptEngine::RaiseMouseMove(viewportPosition.x, viewportPosition.y);
 
 		Window* win = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
 		if (win && win->m_EventCallback) {
-			MouseMovedEvent e(static_cast<float>(xPos), static_cast<float>(yPos));
+			MouseMovedEvent e(viewportPosition.x, viewportPosition.y);
 			win->m_EventCallback(e);
 		}
 	}
@@ -723,6 +730,11 @@ namespace Index {
 		glfwGetCursorPos(m_GLFWwindow, &x, &y);
 		return Vec2(x, y);
 	}
+
+	Vec2 Window::ToViewportLocalPosition(Vec2 windowPosition) {
+		return MapToViewportLocalPosition(windowPosition, s_UIRegion, s_WindowToFramebufferScale);
+	}
+
 	std::string Window::GetClipboardString() const {
 		const char* clipboard = glfwGetClipboardString(m_GLFWwindow);
 		return clipboard ? std::string(clipboard) : std::string{};
@@ -794,6 +806,11 @@ namespace Index {
 		int fbW = 0;
 		int fbH = 0;
 		glfwGetFramebufferSize(m_GLFWwindow, &fbW, &fbH);
+		int windowW = 0;
+		int windowH = 0;
+		glfwGetWindowSize(m_GLFWwindow, &windowW, &windowH);
+		s_WindowToFramebufferScale = CalculateWindowToFramebufferScale(
+			{ windowW, windowH }, { fbW, fbH });
 
 		int subW = fbW > 0 ? fbW : 1;
 		int subH = fbH > 0 ? fbH : 1;
@@ -821,14 +838,13 @@ namespace Index {
 		}
 		s_MainViewport->SetLetterboxedSubRect(fbW, fbH, offsetX, offsetY, subW, subH);
 
-		// Publish UIRegion only when locked: the editor's Game View panel owns it otherwise; unlocked runtime already uses raw OS-window coords.
-		if (m_AspectLock > 0.0f) {
-			SetUIRegion(offsetX, offsetY, subW, subH);
-		}
+		PublishAspectLockUIRegion(m_AspectLock,
+			UIRegion{ offsetX, offsetY, subW, subH, s_WindowToFramebufferScale });
 	}
 
 	void Window::SetAspectLock(float aspect) {
 		m_AspectLock = aspect > 0.0f ? aspect : 0.0f;
+		PublishAspectLockUIRegion(m_AspectLock, s_UIRegion);
 		SyncViewportFromFramebuffer();
 		UpdateViewport();
 	}

@@ -6,19 +6,25 @@
 #include "Assets/AssetRegistry.hpp"
 #include "Collections/AspectRatio.hpp"
 #include "Core/Application.hpp"
+#include "Core/Time.hpp"
 #include "Core/Window.hpp"
+#include "Editor/BuildAssetPruning.hpp"
 #include "Editor/ExternalEditor.hpp"
+#include "Editor/IndexPackageInstaller.hpp"
 #include "Graphics/ImageData.hpp"
+#include "Graphics/RenderSettings.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Graphics/Text/FontManager.hpp"
 #include "Gui/EditorIcons.hpp"
+#include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Inspector/ReferencePicker.hpp"
 #include "Packages/GitHubSource.hpp"
 #include "Packages/NuGetSource.hpp"
 #include "Project/BuildPlatformSupport.hpp"
+#include "Project/BuildOutputSafety.hpp"
 #include "Project/IndexBuildProfile.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
@@ -37,9 +43,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cfloat>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -56,6 +64,20 @@
 
 namespace Index {
 	namespace {
+		std::vector<IndexProject::BuildSceneEntry>::iterator FindBuildScene(
+			std::vector<IndexProject::BuildSceneEntry>& sceneList, const std::string& sceneName)
+		{
+			return std::find_if(sceneList.begin(), sceneList.end(),
+				[&](const IndexProject::BuildSceneEntry& entry) { return entry.Name == sceneName; });
+		}
+
+		std::string FirstEnabledBuildScene(const std::vector<IndexProject::BuildSceneEntry>& sceneList) {
+			for (const IndexProject::BuildSceneEntry& entry : sceneList) {
+				if (entry.Enabled) return entry.Name;
+			}
+			return {};
+		}
+
 		bool BrowseAcceptImageDrop(std::span<const std::string_view> extWhitelist,
 			const std::function<void(const std::string&)>& onDrop)
 		{
@@ -183,26 +205,49 @@ namespace Index {
 			}
 		}
 
-		int CopyDirIncremental(const std::filesystem::path& srcDir, const std::filesystem::path& destDir) {
-			int copied = 0;
-			std::filesystem::create_directories(destDir);
-			for (auto& entry : std::filesystem::recursive_directory_iterator(srcDir)) {
-				auto rel = std::filesystem::relative(entry.path(), srcDir);
-				auto dest = destDir / rel;
-				try {
-					if (entry.is_directory()) {
+		struct DirectoryCopyResult {
+			int Copied = 0;
+			std::string Error;
+
+			bool Succeeded() const { return Error.empty(); }
+		};
+
+		DirectoryCopyResult CopyDirIncremental(const std::filesystem::path& srcDir,
+			const std::filesystem::path& destDir)
+		{
+			DirectoryCopyResult result;
+			try {
+				std::filesystem::create_directories(destDir);
+				for (auto& entry : std::filesystem::recursive_directory_iterator(srcDir)) {
+					const auto status = entry.symlink_status();
+					if (std::filesystem::is_symlink(status)) {
+						result.Error = "symbolic links are not supported in build inputs: " + entry.path().string();
+						return result;
+					}
+					auto rel = entry.path().lexically_relative(srcDir);
+					if (!BuildOutputSafety::IsSafeRelativePath(rel)) {
+						result.Error = "unsafe relative build-input path: " + entry.path().string();
+						return result;
+					}
+					auto dest = destDir / rel;
+					if (std::filesystem::is_directory(status)) {
 						std::filesystem::create_directories(dest);
 					}
-					else if (NeedsCopy(entry.path(), dest)) {
+					else if (std::filesystem::is_regular_file(status) && NeedsCopy(entry.path(), dest)) {
 						std::filesystem::create_directories(dest.parent_path());
 						std::filesystem::copy_file(entry.path(), dest, std::filesystem::copy_options::overwrite_existing);
-						copied++;
+						result.Copied++;
+					}
+					else if (!std::filesystem::is_regular_file(status)) {
+						result.Error = "unsupported build-input entry: " + entry.path().string();
+						return result;
 					}
 				}
-				catch (...) {
-				}
 			}
-			return copied;
+			catch (const std::exception& e) {
+				result.Error = e.what();
+			}
+			return result;
 		}
 
 		bool IsSerializedAssetPath(const std::filesystem::path& path) {
@@ -216,9 +261,11 @@ namespace Index {
 		// already finished) and once more at the end with done == total. Pass {} for no reporting.
 		int ConvertSerializedAssetsInDirectory(const std::filesystem::path& rootDir,
 			SceneSerializationFormat format,
-			const std::function<void(int, int, const std::string&)>& onProgress = {})
+			const std::function<void(int, int, const std::string&)>& onProgress = {},
+			std::string* failureMessage = nullptr)
 		{
 			if (!std::filesystem::exists(rootDir)) {
+				if (failureMessage) *failureMessage = "asset directory does not exist";
 				return 0;
 			}
 
@@ -233,6 +280,9 @@ namespace Index {
 				it.increment(ec))
 			{
 				if (ec) {
+					if (failureMessage && failureMessage->empty()) {
+						*failureMessage = "failed to enumerate assets: " + ec.message();
+					}
 					ec.clear();
 					continue;
 				}
@@ -252,6 +302,9 @@ namespace Index {
 				if (SceneSerializer::ConvertFileFormat(targets[i].string(), format)) {
 					++converted;
 				}
+				else if (failureMessage && failureMessage->empty()) {
+					*failureMessage = "failed to convert " + targets[i].string();
+				}
 			}
 			if (onProgress) {
 				onProgress(total, total, {});
@@ -268,69 +321,197 @@ namespace Index {
 		}
 
 		// Match is case-insensitive on Windows so "Editor" excludes regardless of the user's disk casing.
-		int CopyDirIncrementalExcluding(const std::filesystem::path& srcDir,
+		DirectoryCopyResult CopyDirIncrementalExcluding(const std::filesystem::path& srcDir,
 			const std::filesystem::path& destDir,
 			const std::vector<std::filesystem::path>& excludedRelativePaths)
 		{
-			int copied = 0;
-			std::filesystem::create_directories(destDir);
+			DirectoryCopyResult result;
+			try {
+				std::filesystem::create_directories(destDir);
 
-			auto isExcluded = [&](const std::filesystem::path& rel) {
-				const std::string relStr = rel.generic_string();
-				for (const auto& excluded : excludedRelativePaths) {
-					const std::string excStr = excluded.generic_string();
-					// Match the excluded path itself or anything underneath it.
+					auto isExcluded = [&](const std::filesystem::path& rel) {
+					const std::string relStr = rel.generic_string();
+					for (const auto& excluded : excludedRelativePaths) {
+						const std::string excStr = excluded.generic_string();
+						// Match the excluded path itself or anything underneath it.
 #ifdef IDX_PLATFORM_WINDOWS
-					if (relStr.size() >= excStr.size()
-						&& _strnicmp(relStr.c_str(), excStr.c_str(), excStr.size()) == 0
-						&& (relStr.size() == excStr.size() || relStr[excStr.size()] == '/'))
-					{
-						return true;
-					}
+						if (relStr.size() >= excStr.size()
+							&& _strnicmp(relStr.c_str(), excStr.c_str(), excStr.size()) == 0
+							&& (relStr.size() == excStr.size() || relStr[excStr.size()] == '/'))
+						{
+							return true;
+						}
 #else
-					if (relStr.size() >= excStr.size()
-						&& relStr.compare(0, excStr.size(), excStr) == 0
-						&& (relStr.size() == excStr.size() || relStr[excStr.size()] == '/'))
-					{
-						return true;
-					}
+						if (relStr.size() >= excStr.size()
+							&& relStr.compare(0, excStr.size(), excStr) == 0
+							&& (relStr.size() == excStr.size() || relStr[excStr.size()] == '/'))
+						{
+							return true;
+						}
 #endif
-				}
-				return false;
-			};
-
-			for (auto it = std::filesystem::recursive_directory_iterator(srcDir);
-				it != std::filesystem::recursive_directory_iterator(); ++it)
-			{
-				auto rel = std::filesystem::relative(it->path(), srcDir);
-				if (isExcluded(rel)) {
-					if (it->is_directory()) {
-						it.disable_recursion_pending();
 					}
-					continue;
-				}
-				auto dest = destDir / rel;
-				try {
-					if (it->is_directory()) {
+					return false;
+				};
+
+				for (auto it = std::filesystem::recursive_directory_iterator(srcDir);
+					it != std::filesystem::recursive_directory_iterator(); ++it)
+				{
+					const auto status = it->symlink_status();
+					if (std::filesystem::is_symlink(status)) {
+						result.Error = "symbolic links are not supported in build inputs: " + it->path().string();
+						return result;
+					}
+					auto rel = it->path().lexically_relative(srcDir);
+					if (!BuildOutputSafety::IsSafeRelativePath(rel)) {
+						result.Error = "unsafe relative build-input path: " + it->path().string();
+						return result;
+					}
+					if (isExcluded(rel)) {
+						if (std::filesystem::is_directory(status)) {
+							it.disable_recursion_pending();
+						}
+						continue;
+					}
+					auto dest = destDir / rel;
+					if (std::filesystem::is_directory(status)) {
 						std::filesystem::create_directories(dest);
 					}
-					else if (NeedsCopy(it->path(), dest)) {
+					else if (std::filesystem::is_regular_file(status) && NeedsCopy(it->path(), dest)) {
 						std::filesystem::create_directories(dest.parent_path());
 						std::filesystem::copy_file(it->path(), dest, std::filesystem::copy_options::overwrite_existing);
-						copied++;
+						result.Copied++;
+					}
+					else if (!std::filesystem::is_regular_file(status)) {
+						result.Error = "unsupported build-input entry: " + it->path().string();
+						return result;
 					}
 				}
-				catch (...) {
-				}
 			}
-			return copied;
+			catch (const std::exception& e) {
+				result.Error = e.what();
+			}
+			return result;
 		}
+
+		class BuildStagingDirectory {
+		public:
+			explicit BuildStagingDirectory(std::filesystem::path finalPath)
+				: m_FinalPath(std::move(finalPath)) {}
+
+			~BuildStagingDirectory() {
+				if (m_StagingPath.empty()) return;
+				std::error_code error;
+				std::filesystem::remove_all(m_StagingPath, error);
+			}
+
+			bool Prepare(std::string& errorMessage) {
+				std::error_code error;
+				std::filesystem::create_directories(m_FinalPath.parent_path(), error);
+				if (error) {
+					errorMessage = error.message();
+					return false;
+				}
+
+				m_StagingPath = MakeUniqueSibling("staging");
+				std::filesystem::create_directories(m_StagingPath, error);
+				if (error) {
+					errorMessage = error.message();
+					return false;
+				}
+				std::ofstream marker(m_StagingPath /
+					std::string(BuildOutputSafety::OwnershipMarkerFilename), std::ios::trunc);
+				marker << "Index build output\n";
+				if (!marker) {
+					errorMessage = "failed to create the build ownership marker";
+					return false;
+				}
+				return true;
+			}
+
+			bool Publish(std::string& errorMessage) {
+				const BuildOutputSafety::OutputPathError ownershipError =
+					BuildOutputSafety::ValidateExistingOutput(m_FinalPath);
+				if (ownershipError != BuildOutputSafety::OutputPathError::None
+					&& !(ownershipError == BuildOutputSafety::OutputPathError::UnownedExistingDirectory
+						&& BuildOutputSafety::LooksLikeLegacyIndexBuildOutput(m_FinalPath))) {
+					errorMessage = BuildOutputSafety::GetErrorMessage(ownershipError);
+					return false;
+				}
+
+				std::error_code error;
+				std::filesystem::path backupPath;
+				const bool hadExistingOutput = std::filesystem::exists(m_FinalPath, error);
+				if (error) {
+					errorMessage = error.message();
+					return false;
+				}
+
+				if (hadExistingOutput) {
+					backupPath = MakeUniqueSibling("backup");
+					std::filesystem::rename(m_FinalPath, backupPath, error);
+					if (error) {
+						errorMessage = error.message();
+						return false;
+					}
+				}
+
+				std::filesystem::rename(m_StagingPath, m_FinalPath, error);
+				if (error) {
+					errorMessage = error.message();
+					if (!backupPath.empty()) {
+						std::error_code restoreError;
+						std::filesystem::rename(backupPath, m_FinalPath, restoreError);
+						if (restoreError) {
+							errorMessage += "; previous output remains at " + backupPath.string();
+						}
+					}
+					return false;
+				}
+
+				m_StagingPath.clear();
+				if (!backupPath.empty()) {
+					std::filesystem::remove_all(backupPath, error);
+					if (error) {
+						IDX_WARN_TAG("Build", "Could not remove previous build backup '{}': {}",
+							backupPath.string(), error.message());
+					}
+				}
+				return true;
+			}
+
+			const std::filesystem::path& GetPath() const { return m_StagingPath; }
+
+		private:
+			std::filesystem::path MakeUniqueSibling(std::string_view role) const {
+				const auto token = std::chrono::steady_clock::now().time_since_epoch().count();
+				const std::string prefix = "." + m_FinalPath.filename().string() + "." + std::string(role)
+					+ "-" + std::to_string(token);
+				std::filesystem::path candidate = m_FinalPath.parent_path() / prefix;
+				for (int suffix = 1; std::filesystem::exists(candidate); ++suffix) {
+					candidate = m_FinalPath.parent_path() / (prefix + "-" + std::to_string(suffix));
+				}
+				return candidate;
+			}
+
+			std::filesystem::path m_FinalPath;
+			std::filesystem::path m_StagingPath;
+		};
 
 		std::string GetRuntimeExecutableFilename() {
 #if defined(IDX_PLATFORM_WINDOWS)
 			return "Index-Runtime.exe";
 #else
 			return "Index-Runtime";
+#endif
+		}
+
+		std::string GetRuntimeOutputFolderName(std::string_view configuration) {
+#if defined(IDX_PLATFORM_WINDOWS)
+			return std::string(configuration) + "-windows-x86_64";
+#elif defined(__APPLE__)
+			return std::string(configuration) + "-macosx-x86_64";
+#else
+			return std::string(configuration) + "-linux-x86_64";
 #endif
 		}
 
@@ -683,13 +864,11 @@ namespace Index {
 #endif
 		}
 
-		std::string GetNetHostRuntimeFilename() {
 #if defined(IDX_PLATFORM_WINDOWS)
+		std::string GetNetHostRuntimeFilename() {
 			return "nethost.dll";
-#else
-			return "libnethost.so";
-#endif
 		}
+#endif
 
 		// Filename of a premake `kind "SharedLib"` target on the current platform.
 		// Windows: <Name>.dll, Linux: lib<Name>.so, macOS: lib<Name>.dylib.
@@ -701,6 +880,26 @@ namespace Index {
 #else
 			return "lib" + std::string(projectName) + ".so";
 #endif
+		}
+
+		std::string BuildManagedDefinesForSnapshot(
+			const IndexProject& project,
+			std::string_view primarySymbol,
+			std::string_view configuration)
+		{
+			std::string defines(primarySymbol);
+			const auto append = [&](std::string_view value) {
+				if (value.empty()) return;
+				if (!defines.empty()) defines += "%3B";
+				defines.append(value);
+			};
+			if (configuration == "Debug") append("IDX_DEBUG");
+			else if (configuration == "Release") append("IDX_RELEASE");
+			else if (configuration == "Dist") append("IDX_DIST");
+			append(project.GetActiveBuildProfileDefine());
+			append(IndexProject::GetManagedPlatformDefine());
+			for (const std::string& customDefine : project.CustomDefines) append(customDefine);
+			return defines;
 		}
 
 		std::string NormalizePreviewTexturePath(const std::filesystem::path& path) {
@@ -736,32 +935,67 @@ namespace Index {
 			return "error";
 		}
 
+		// Info lines stay body-text coloured (the row icon carries the level); only warnings/errors are tinted.
 		ImVec4 GetLogLevelColor(Log::Level level) {
-			if (level <= Log::Level::Info) {
-				const ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
-				const float luminance = 0.2126f * bg.x + 0.7152f * bg.y + 0.0722f * bg.z;
-				return luminance > 0.5f
-					? ImVec4(0.20f, 0.25f, 0.32f, 1.0f)
-					: ImVec4(0.86f, 0.88f, 0.92f, 1.0f);
-			}
-			if (level == Log::Level::Warn) return ImVec4(1.0f, 0.78f, 0.22f, 1.0f);
-			return ImVec4(1.0f, 0.32f, 0.32f, 1.0f);
+			if (level <= Log::Level::Info) return ImGui::GetStyleColorVec4(ImGuiCol_Text);
+			if (level == Log::Level::Warn) return EditorUI::ToneColor(EditorUI::Tone::Warning);
+			return EditorUI::ToneColor(EditorUI::Tone::Error);
 		}
 
-		// EVERY ImGui::CollapsingHeader inside a RenderSettings_* helper MUST have a matching k_SettingsIndex entry — SectionVisible() fails closed for unlisted (category, section) pairs.
 		ImVec4 GetLogLinkColor() {
-			const ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
-			const float luminance = 0.2126f * bg.x + 0.7152f * bg.y + 0.0722f * bg.z;
-			return luminance > 0.5f
-				? ImVec4(0.05f, 0.32f, 0.68f, 1.0f)
-				: ImVec4(0.45f, 0.68f, 1.00f, 1.0f);
+			return EditorUI::ToneColor(EditorUI::Tone::Info);
+		}
+
+		// Log console view state. File-static so the panel's look can evolve without touching the layer header.
+		std::string s_LogFilter;
+		bool s_LogCollapse = false;
+
+		// `needleLower` must already be lowercase; empty needle matches everything.
+		bool ContainsCaseInsensitive(std::string_view haystack, std::string_view needleLower) {
+			if (needleLower.empty()) return true;
+			if (needleLower.size() > haystack.size()) return false;
+			const auto it = std::search(haystack.begin(), haystack.end(), needleLower.begin(), needleLower.end(),
+				[](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == b; });
+			return it != haystack.end();
+		}
+
+		std::string ToLowerAscii(std::string_view text) {
+			std::string out(text);
+			for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			return out;
+		}
+
+		EditorUI::Tone GetLogLevelTone(Log::Level level) {
+			if (level <= Log::Level::Info) return EditorUI::Tone::Neutral;
+			if (level == Log::Level::Warn) return EditorUI::Tone::Warning;
+			return EditorUI::Tone::Error;
+		}
+
+		// Level filter toggle followed by its entry count; the count is clickable too so the hit target isn't just the icon.
+		void LogLevelToggle(const char* id, const char* iconName, const char* label, int count, bool& shown, Log::Level level) {
+			char tooltip[64];
+			std::snprintf(tooltip, sizeof(tooltip), "%s %s (%d)", shown ? "Hide" : "Show", label, count);
+			if (EditorUI::IconButton(id, iconName, tooltip, shown, true)) {
+				shown = !shown;
+			}
+			ImGui::SameLine(0.0f, 3.0f);
+			ImGui::AlignTextToFramePadding();
+			// Info counts stay body-coloured like info rows; a hidden or empty level reads as disabled.
+			const ImVec4 countColor = (!shown || count == 0) ? ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled)
+				: (level <= Log::Level::Info ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : EditorUI::ToneColor(GetLogLevelTone(level)));
+			if (count > 999) ImGui::TextColored(countColor, "999+");
+			else ImGui::TextColored(countColor, "%d", count);
+			if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+				shown = !shown;
+			}
+			EditorUI::Tooltip(tooltip);
 		}
 
 		// Word-wraps `text` to `wrapWidth` px. When `draw`, renders it via the window draw list at
 		// the current cursor: bytes in [linkStart, linkEnd) become an underlined, double-click-to-open
-		// link in `linkColor`, the rest in `textColor`. Honors embedded '\n'. Returns the wrapped
-		// block's pixel height. Measure (draw=false) and draw share one path, so a row's Selectable
-		// height always matches what is drawn beneath it.
+		// link in `linkColor`, bytes in [0, dimEnd) (the timestamp) in `dimColor`, the rest in `textColor`.
+		// Honors embedded '\n'. Returns the wrapped block's pixel height. Measure (draw=false) and draw
+		// share one path, so a row's Selectable height always matches what is drawn beneath it.
 		float DrawWrappedLogMessage(
 			std::string_view text,
 			size_t linkStart,
@@ -771,7 +1005,9 @@ namespace Index {
 			const ImVec4& textColor,
 			const ImVec4& linkColor,
 			float wrapWidth,
-			bool draw)
+			bool draw,
+			size_t dimEnd = 0,
+			const ImVec4& dimColor = ImVec4(0, 0, 0, 0))
 		{
 			ImFont* font = ImGui::GetFont();
 			const float fontSize = ImGui::GetFontSize();
@@ -782,6 +1018,7 @@ namespace Index {
 			const ImVec2 origin = draw ? ImGui::GetCursorScreenPos() : ImVec2(0.0f, 0.0f);
 			const ImU32 textCol = draw ? ImGui::GetColorU32(textColor) : 0u;
 			const ImU32 linkCol = draw ? ImGui::GetColorU32(linkColor) : 0u;
+			const ImU32 dimCol = draw ? ImGui::GetColorU32(dimColor) : 0u;
 			const bool hasLink = draw && !filePath.empty()
 				&& linkEnd > linkStart && linkEnd <= text.size();
 			// AllowWhenBlockedByActiveItem: the full-row Selectable grabs ActiveId on the second mouse-down,
@@ -793,25 +1030,28 @@ namespace Index {
 			const char* const textEnd = base + text.size();
 			float y = 0.0f;
 
+			// 0 = body, 1 = link, 2 = dimmed prefix.
+			auto spanKind = [&](size_t idx) -> int {
+				if (hasLink && idx >= linkStart && idx < linkEnd) return 1;
+				return idx < dimEnd ? 2 : 0;
+			};
+
 			// Draws one visual (already-wrapped) line [lineBegin, lineEnd), splitting runs at the
-			// link boundary so the link bytes get their own color, underline and hover/click rect.
+			// link/prefix boundaries so those bytes get their own color (and the link its underline + hover rect).
 			auto drawVisualLine = [&](const char* lineBegin, const char* lineEnd) {
 				if (!draw || lineBegin >= lineEnd) return;
 				float penX = 0.0f;
 				const char* p = lineBegin;
 				while (p < lineEnd) {
-					const size_t idx = static_cast<size_t>(p - base);
-					const bool inLink = hasLink && idx >= linkStart && idx < linkEnd;
+					const int kind = spanKind(static_cast<size_t>(p - base));
+					const bool inLink = kind == 1;
 					const char* runEnd = p;
-					while (runEnd < lineEnd) {
-						const size_t ridx = static_cast<size_t>(runEnd - base);
-						const bool rInLink = hasLink && ridx >= linkStart && ridx < linkEnd;
-						if (rInLink != inLink) break;
+					while (runEnd < lineEnd && spanKind(static_cast<size_t>(runEnd - base)) == kind) {
 						++runEnd;
 					}
 
 					const ImVec2 pos(origin.x + penX, origin.y + y);
-					drawList->AddText(pos, inLink ? linkCol : textCol, p, runEnd);
+					drawList->AddText(pos, inLink ? linkCol : (kind == 2 ? dimCol : textCol), p, runEnd);
 					const float advance = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, p, runEnd).x;
 
 					if (inLink) {
@@ -868,9 +1108,10 @@ namespace Index {
 			return y < lineHeight ? lineHeight : y;
 		}
 
+		// EVERY EditorUI::SectionHeader inside a RenderSettings_* helper MUST have a matching k_SettingsIndex entry — SectionVisible() fails closed for unlisted (category, section) pairs.
 		struct SettingsIndexEntry {
 			ImGuiEditorLayer::SettingsCategory Category;
-			const char* Section;   // EXACTLY as passed to ImGui::CollapsingHeader.
+			const char* Section;   // EXACTLY as passed to EditorUI::SectionHeader.
 			const char* Keywords;  // Space-separated extra terms (lowercase).
 		};
 
@@ -881,7 +1122,7 @@ namespace Index {
 
 			// Graphics (RenderSettings_Graphics)
 			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Render Backend",  "render backend rendering api dawn webgpu vulkan d3d11 d3d12 opengl metal auto" },
-			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Post-Processing", "post processing post-processing pp bloom postfx effects pipeline kill switch" },
+			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Runtime Quality", "render scale upscale filter post processing post-processing particles quality performance" },
 			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Default Font",    "default font typeface text font asset" },
 			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Font Baking",     "font baking atlas memory budget step granularity bake size lru cache vram ram" },
 
@@ -968,15 +1209,18 @@ namespace Index {
 			// Section not in k_SettingsIndex: fail closed so unlisted sections disappear under any filter (loudly visible).
 			return false;
 		}
+
+		// Sections are forced open while a search filter is active. SectionHeader's leading spacer consumes
+		// SetNextItemOpen, so write the tree-node open state (same ID TreeNodeEx uses) directly instead.
+		bool SettingsSectionHeader(const char* section, const std::string& filterLower) {
+			if (!filterLower.empty()) ImGui::GetStateStorage()->SetInt(ImGui::GetID(section), 1);
+			return EditorUI::SectionHeader(section, true);
+		}
 	}
 
 	void ImGuiEditorLayer::RenderLogPanel() {
 		DrainPendingLogEntries();
 		ImGui::Begin("Log");
-
-		if (ImGui::Button("Clear")) {
-			ClearLogEntries();
-		}
 
 		int infoCount = 0, warnCount = 0, errorCount = 0;
 		for (const auto& entry : m_LogEntries) {
@@ -985,71 +1229,31 @@ namespace Index {
 			else errorCount++;
 		}
 
-		ImGui::SameLine();
-		ImGui::TextDisabled("|");
-		ImGui::SameLine();
-
-		{
-			uint64_t infoIcon = EditorIcons::Get("info", 16);
-			if (infoIcon) {
-				ImVec4 tint = m_ShowLogInfo ? ImVec4(1, 1, 1, 1) : ImVec4(0.4f, 0.4f, 0.4f, 0.5f);
-				if (ImGui::ImageButton("##FilterInfo",
-					static_cast<ImTextureID>(static_cast<intptr_t>(infoIcon)),
-					ImVec2(14, 14), ImVec2(0, 1), ImVec2(1, 0), ImVec4(0, 0, 0, 0), tint)) {
-					m_ShowLogInfo = !m_ShowLogInfo;
-				}
-			}
-			else if (ImGui::SmallButton(m_ShowLogInfo ? "[I]" : "( )")) {
-				m_ShowLogInfo = !m_ShowLogInfo;
-			}
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Info (%d)", infoCount);
+		EditorUI::BeginToolbar("##LogToolbar");
+		if (EditorUI::Button("Clear")) {
+			ClearLogEntries();
 		}
+		EditorUI::ToolbarSeparator();
 
-		ImGui::SameLine();
+		LogLevelToggle("##FilterInfo", "info", "Info", infoCount, m_ShowLogInfo, Log::Level::Info);
+		ImGui::SameLine(0.0f, 8.0f);
+		LogLevelToggle("##FilterWarn", "warning", "Warnings", warnCount, m_ShowLogWarn, Log::Level::Warn);
+		ImGui::SameLine(0.0f, 8.0f);
+		LogLevelToggle("##FilterError", "error", "Errors", errorCount, m_ShowLogError, Log::Level::Error);
+		EditorUI::ToolbarSeparator();
 
-		{
-			uint64_t warnIcon = EditorIcons::Get("warning", 16);
-			ImVec4 tint = m_ShowLogWarn ? ImVec4(1, 1, 1, 1) : ImVec4(0.4f, 0.4f, 0.4f, 0.5f);
-			if (warnIcon) {
-				if (ImGui::ImageButton("##FilterWarn",
-					static_cast<ImTextureID>(static_cast<intptr_t>(warnIcon)),
-					ImVec2(14, 14), ImVec2(0, 1), ImVec2(1, 0), ImVec4(0, 0, 0, 0), tint)) {
-					m_ShowLogWarn = !m_ShowLogWarn;
-				}
-			}
-			else {
-				ImGui::PushStyleColor(ImGuiCol_Text, tint);
-				if (ImGui::SmallButton(m_ShowLogWarn ? "W" : "(W)")) {
-					m_ShowLogWarn = !m_ShowLogWarn;
-				}
-				ImGui::PopStyleColor();
-			}
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Warnings (%d)", warnCount);
+		if (EditorUI::ToggleButton("Collapse", s_LogCollapse, "Merge consecutive identical messages")) {
+			s_LogCollapse = !s_LogCollapse;
 		}
-
 		ImGui::SameLine();
+		EditorUI::SearchField("##LogFilter", s_LogFilter, "Filter messages...");
+		EditorUI::EndToolbar();
 
-		{
-			uint64_t errIcon = EditorIcons::Get("error", 16);
-			ImVec4 tint = m_ShowLogError ? ImVec4(1, 1, 1, 1) : ImVec4(0.4f, 0.4f, 0.4f, 0.5f);
-			if (errIcon) {
-				if (ImGui::ImageButton("##FilterError",
-					static_cast<ImTextureID>(static_cast<intptr_t>(errIcon)),
-					ImVec2(14, 14), ImVec2(0, 1), ImVec2(1, 0), ImVec4(0, 0, 0, 0), tint)) {
-					m_ShowLogError = !m_ShowLogError;
-				}
-			}
-			else {
-				ImGui::PushStyleColor(ImGuiCol_Text, tint);
-				if (ImGui::SmallButton(m_ShowLogError ? "E" : "(E)")) {
-					m_ShowLogError = !m_ShowLogError;
-				}
-				ImGui::PopStyleColor();
-			}
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Errors (%d)", errorCount);
-		}
-
-		ImGui::Separator();
+		const std::string filterLower = ToLowerAscii(s_LogFilter);
+		auto passesFilters = [&](const LogEntry& e) {
+			return IsLogEntryVisible(e.Level, m_ShowLogInfo, m_ShowLogWarn, m_ShowLogError)
+				&& ContainsCaseInsensitive(e.Message, filterLower);
+		};
 
 		ImGui::BeginChild("##LogEntries", ImVec2(-1.0f, -1.0f), true);
 
@@ -1057,18 +1261,37 @@ namespace Index {
 		constexpr float kLogIconSize = 14.0f;
 		constexpr float kIconAdvance = kLogIconSize + 5.0f; // icon width + the SameLine spacing below
 		const ImVec4 linkColor = GetLogLinkColor();
+		const ImVec4 timestampColor = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
 		// Wrap the message to the panel width minus the icon gutter. Captured once from the child's
 		// inner width so every row — and the measure/draw passes within a row — wrap identically.
-		const float wrapWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x - kIconAdvance);
+		const float contentWidth = ImGui::GetContentRegionAvail().x;
+		const float wrapWidth = std::max(1.0f, contentWidth - kIconAdvance);
+		const ImVec2 itemSpacing = ImGui::GetStyle().ItemSpacing;
+		const ImU32 altRowColor = ImGui::GetColorU32(ImGuiCol_Text, 0.035f);
+		int visibleRows = 0;
 
 		for (size_t i = 0; i < m_LogEntries.size(); ++i) {
 			const LogEntry& entry = m_LogEntries[i];
-			if (!IsLogEntryVisible(entry.Level, m_ShowLogInfo, m_ShowLogWarn, m_ShowLogError)) {
+			if (!passesFilters(entry)) {
 				continue;
 			}
 
+			// Collapse absorbs the following visible duplicates. The row is addressed by the run's first
+			// entry, so its index (selection, ID) stays stable while new repeats append to the run.
+			size_t runEnd = i;
+			int repeatCount = 1;
+			if (s_LogCollapse) {
+				for (size_t j = i + 1; j < m_LogEntries.size(); ++j) {
+					const LogEntry& next = m_LogEntries[j];
+					if (!passesFilters(next)) continue;
+					if (next.Level != entry.Level || next.Message != entry.Message) break;
+					runEnd = j;
+					++repeatCount;
+				}
+			}
+
 			// "[HH:MM:SS] " precedes the message (level is conveyed by the row icon + color); the source-link byte span shifts by its length.
-			const std::string displayPrefix = "[" + entry.Timestamp + "] ";
+			const std::string displayPrefix = entry.Timestamp.empty() ? std::string() : "[" + entry.Timestamp + "] ";
 			const ImVec4 levelColor = GetLogLevelColor(entry.Level);
 			const std::string fullText = displayPrefix + entry.Message;
 
@@ -1078,11 +1301,29 @@ namespace Index {
 			const size_t linkStart = hasInlineLink ? entry.SourceLinkStart + displayPrefix.size() : 0;
 			const size_t linkEnd = hasInlineLink ? entry.SourceLinkEnd + displayPrefix.size() : 0;
 
+			char repeatText[16] = {};
+			float badgeWidth = 0.0f;
+			if (repeatCount > 1) {
+				std::snprintf(repeatText, sizeof(repeatText), "%d", repeatCount);
+				badgeWidth = ImGui::CalcTextSize(repeatText).x + 12.0f; // Badge's 6px side padding
+			}
+			// The repeat badge sits at the right edge; text wraps short of it.
+			const float rowWrapWidth = badgeWidth > 0.0f ? std::max(1.0f, wrapWidth - badgeWidth - itemSpacing.x) : wrapWidth;
+
 			// Row height = the wrapped text height (measure pass; matches the draw pass exactly),
 			// never shorter than the severity icon.
 			const float textHeight = DrawWrappedLogMessage(fullText, linkStart, linkEnd,
-				entry.SourceFilePath, entry.SourceLine, levelColor, linkColor, wrapWidth, /*draw=*/false);
+				entry.SourceFilePath, entry.SourceLine, levelColor, linkColor, rowWrapWidth, /*draw=*/false);
 			const float rowHeight = std::max(textHeight, kLogIconSize);
+
+			// Zebra stripe over the same rect the Selectable highlights (it extends by half the item spacing).
+			if (visibleRows++ % 2 == 1) {
+				const ImVec2 s = ImGui::GetCursorScreenPos();
+				ImGui::GetWindowDrawList()->AddRectFilled(
+					ImVec2(s.x - itemSpacing.x * 0.5f, s.y - itemSpacing.y * 0.5f),
+					ImVec2(s.x + contentWidth + itemSpacing.x * 0.5f, s.y + rowHeight + itemSpacing.y * 0.5f),
+					altRowColor);
+			}
 
 			ImGui::PushID(static_cast<int>(i));
 
@@ -1090,7 +1331,9 @@ namespace Index {
 			// that spans the entire wrapped block; the icon and message draw on top. AllowOverlap
 			// keeps the inline source link's hover/click working through the selectable.
 			const ImVec2 rowStart = ImGui::GetCursorPos();
-			if (ImGui::Selectable("##logrow", m_SelectedLogIndex == static_cast<int>(i),
+			const bool rowSelected = m_SelectedLogIndex >= static_cast<int>(i)
+				&& m_SelectedLogIndex <= static_cast<int>(runEnd);
+			if (ImGui::Selectable("##logrow", rowSelected,
 				ImGuiSelectableFlags_AllowOverlap, ImVec2(0.0f, rowHeight))) {
 				m_SelectedLogIndex = static_cast<int>(i);
 			}
@@ -1098,6 +1341,13 @@ namespace Index {
 				m_SelectedLogIndex = static_cast<int>(i);
 			}
 			const ImVec2 rowEnd = ImGui::GetCursorPos();
+
+			if (repeatCount > 1) {
+				// Badge centres itself in a frame-height line; lift it so it centres on the first text line.
+				const float lift = (ImGui::GetFrameHeight() - ImGui::GetTextLineHeight()) * 0.5f;
+				ImGui::SetCursorPos(ImVec2(rowStart.x + contentWidth - badgeWidth, rowStart.y - lift));
+				EditorUI::Badge(repeatText, GetLogLevelTone(entry.Level));
+			}
 
 			// Overlay the severity icon then the wrapped message, starting back at the row's origin.
 			ImGui::SetCursorPos(rowStart);
@@ -1114,16 +1364,23 @@ namespace Index {
 			ImGui::SameLine(0.0f, 5.0f);
 
 			DrawWrappedLogMessage(fullText, linkStart, linkEnd, entry.SourceFilePath,
-				entry.SourceLine, levelColor, linkColor, wrapWidth, /*draw=*/true);
+				entry.SourceLine, levelColor, linkColor, rowWrapWidth, /*draw=*/true,
+				displayPrefix.size(), timestampColor);
 
 			// Resume below the row regardless of how tall the overlaid content turned out.
 			ImGui::SetCursorPos(rowEnd);
 			ImGui::PopID();
+
+			i = runEnd;
 		}
 
 		// The last row's SetCursorPos() isn't followed by an item, so ImGui won't grow the
 		// child's content/scroll region to it — submit a zero-size item to claim the extent.
 		ImGui::Dummy(ImVec2(0.0f, 0.0f));
+
+		if (visibleRows == 0) {
+			EditorUI::EmptyState(m_LogEntries.empty() ? "No messages" : "No messages match the filter");
+		}
 
 		if (wasAtBottom) {
 			ImGui::SetScrollHereY(1.0f);
@@ -1142,7 +1399,7 @@ namespace Index {
 			if (ImGui::MenuItem("Copy All Visible")) {
 				std::string all;
 				for (const auto& visibleEntry : m_LogEntries) {
-					if (!IsLogEntryVisible(visibleEntry.Level, m_ShowLogInfo, m_ShowLogWarn, m_ShowLogError)) {
+					if (!passesFilters(visibleEntry)) {
 						continue;
 					}
 					if (!visibleEntry.Timestamp.empty()) all += "[" + visibleEntry.Timestamp + "] ";
@@ -1194,26 +1451,133 @@ namespace Index {
 		ReportBuildProgress(0.0f, "Starting build");
 
 		IndexProject* project = ProjectManager::GetCurrentProject();
+		auto completeWithoutWorker = [this]() {
+			m_BuildFuture = std::async(std::launch::async, []() {});
+		};
 		if (!project) {
 			IDX_ERROR_TAG("Build", "No project loaded.");
 			m_BuildSucceeded.store(false, std::memory_order_relaxed);
 			ReportBuildProgress(1.0f, "No project loaded");
+			completeWithoutWorker();
 			return;
 		}
 
-		// Save here on the UI thread — SceneSerializer/project::Save aren't thread-safe to call from the build worker.
-		Scene* active = SceneManager::Get().GetActiveScene();
-		if (active && active->IsDirty()) {
-			std::string scenePath = project->GetSceneFilePath(active->GetName());
-			SceneSerializer::SaveToFile(*active, scenePath);
-			project->LastOpenedScene = active->GetName();
-			project->Save();
-			IDX_INFO_TAG("Build", "Saved current scene.");
+		// Freeze authored disk state before the worker starts copying it.
+		if (m_PrefabEditScene && (m_PrefabEditScene->IsDirty() || m_PrefabEditDirty)
+			&& !SavePrefabEditChanges()) {
+			IDX_ERROR_TAG("Build", "Failed to save the open prefab edit before building.");
+			m_BuildSucceeded.store(false, std::memory_order_relaxed);
+			ReportBuildProgress(1.0f, "Prefab save failed");
+			completeWithoutWorker();
+			return;
+		}
+		if (m_PrefabInspector.IsOpen() && m_PrefabInspector.HasUnsavedChanges()
+			&& !SavePrefabInspectorChanges()) {
+			IDX_ERROR_TAG("Build", "Failed to save the open prefab inspector before building.");
+			m_BuildSucceeded.store(false, std::memory_order_relaxed);
+			ReportBuildProgress(1.0f, "Prefab save failed");
+			completeWithoutWorker();
+			return;
 		}
 
-		m_BuildFuture = std::async(std::launch::async, [this]() {
-			ExecuteBuild();
+		bool sceneSaveFailed = false;
+		SceneManager::ForeachLoadedScene([&](Scene& scene) {
+			if (sceneSaveFailed || !scene.IsDirty()) return;
+			if (!SceneSerializer::SaveToFile(scene, project->GetSceneFilePath(scene.GetName()))) {
+				IDX_ERROR_TAG("Build", "Failed to save scene '{}' before building.", scene.GetName());
+				sceneSaveFailed = true;
+				return;
+			}
+			scene.ClearDirty();
 		});
+		if (sceneSaveFailed) {
+			m_BuildSucceeded.store(false, std::memory_order_relaxed);
+			ReportBuildProgress(1.0f, "Scene save failed");
+			completeWithoutWorker();
+			return;
+		}
+
+		Scene* active = SceneManager::GetActiveScene();
+		if (active) project->LastOpenedScene = active->GetName();
+		const std::filesystem::path activeProfilePath =
+			std::filesystem::path(project->GetBuildProfilesDirectory()) /
+			(project->ActiveBuildProfileName + std::string(IndexBuildProfile::FileExtension));
+		if (project->ActiveBuildProfileName.empty() || !std::filesystem::exists(activeProfilePath)) {
+			IDX_ERROR_TAG("Build", "The active build profile is missing.");
+			m_BuildSucceeded.store(false, std::memory_order_relaxed);
+			ReportBuildProgress(1.0f, "Build profile missing");
+			completeWithoutWorker();
+			return;
+		}
+		const IndexBuildProfile activeProfile = IndexBuildProfile::Load(activeProfilePath.string());
+		if (!BuildPlatformSupport::IsAvailable(activeProfile.Platform)) {
+			IDX_ERROR_TAG("Build", "Target platform is unavailable: {}",
+				BuildPlatformSupport::UnavailableReason(activeProfile.Platform));
+			m_BuildSucceeded.store(false, std::memory_order_relaxed);
+			ReportBuildProgress(1.0f, "Target platform unavailable");
+			completeWithoutWorker();
+			return;
+		}
+		project->ActiveRenderBackend = activeProfile.RenderBackend;
+		const std::vector<std::string> buildScenes = project->GetEnabledBuildScenes();
+		if (buildScenes.empty()) {
+			IDX_ERROR_TAG("Build", "No scenes are selected for the build.");
+			m_BuildSucceeded.store(false, std::memory_order_relaxed);
+			ReportBuildProgress(1.0f, "Build scene list is empty");
+			completeWithoutWorker();
+			return;
+		}
+		{
+			std::unordered_set<std::string> uniqueSceneNames;
+			for (const std::string& sceneName : buildScenes) {
+				if (!BuildOutputSafety::IsSafePathSegment(sceneName)) {
+					IDX_ERROR_TAG("Build", "Build scene '{}' is not a safe scene name.", sceneName);
+					m_BuildSucceeded.store(false, std::memory_order_relaxed);
+					ReportBuildProgress(1.0f, "Build scene validation failed");
+					completeWithoutWorker();
+					return;
+				}
+				std::string uniquenessKey = sceneName;
+#ifdef IDX_PLATFORM_WINDOWS
+				std::transform(uniquenessKey.begin(), uniquenessKey.end(), uniquenessKey.begin(),
+					[](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+#endif
+				if (!uniqueSceneNames.insert(std::move(uniquenessKey)).second) {
+					IDX_ERROR_TAG("Build", "Build scene '{}' is listed more than once.", sceneName);
+					m_BuildSucceeded.store(false, std::memory_order_relaxed);
+					ReportBuildProgress(1.0f, "Build scene validation failed");
+					completeWithoutWorker();
+					return;
+				}
+				const std::filesystem::path scenePath = project->GetSceneFilePath(sceneName);
+				std::error_code sceneError;
+				std::ifstream sceneInput(scenePath, std::ios::binary);
+				if (!std::filesystem::is_regular_file(scenePath, sceneError)
+					|| sceneError || !sceneInput.good()) {
+					IDX_ERROR_TAG("Build", "Build scene '{}' is missing or unreadable at {}.",
+						sceneName, scenePath.string());
+					m_BuildSucceeded.store(false, std::memory_order_relaxed);
+					ReportBuildProgress(1.0f, "Build scene validation failed");
+					completeWithoutWorker();
+					return;
+				}
+			}
+		}
+		project->StartupScene = buildScenes.front();
+		if (!project->Save()) {
+			IDX_ERROR_TAG("Build", "Failed to save project.json before building.");
+			m_BuildSucceeded.store(false, std::memory_order_relaxed);
+			ReportBuildProgress(1.0f, "Project save failed");
+			completeWithoutWorker();
+			return;
+		}
+
+		IndexProject projectSnapshot = *project;
+		std::string outputDirectory(m_BuildOutputDirBuffer);
+		m_BuildFuture = std::async(std::launch::async,
+			[this, project = std::move(projectSnapshot), output = std::move(outputDirectory)]() mutable {
+				ExecuteBuild(std::move(project), std::move(output));
+			});
 	}
 
 	void ImGuiEditorLayer::ReportReserializeProgress(float progress, std::string_view stage) {
@@ -1235,12 +1599,31 @@ namespace Index {
 		const SceneSerializationFormat format = ToSceneSerializationFormat(project->AssetSerializationFormat);
 		const std::string assetsDir = project->AssetsDirectory;
 
-		// Flush the dirty active scene on the UI thread (SceneSerializer isn't thread-safe) before the
-		// worker owns the tree; ClearDirty so auto-save can't race a second write to the same file.
-		if (Scene* active = SceneManager::Get().GetActiveScene(); active && active->IsDirty()) {
-			if (SceneSerializer::SaveToFile(*active, project->GetSceneFilePath(active->GetName()), format)) {
-				active->ClearDirty();
+		if (m_PrefabEditScene && (m_PrefabEditScene->IsDirty() || m_PrefabEditDirty)
+			&& !SavePrefabEditChanges()) {
+			IDX_ERROR_TAG("ProjectSettings", "Failed to save the open prefab before reserialization.");
+			ReportReserializeProgress(1.0f, "Prefab save failed");
+			return;
+		}
+		if (m_PrefabInspector.IsOpen() && m_PrefabInspector.HasUnsavedChanges()
+			&& !SavePrefabInspectorChanges()) {
+			IDX_ERROR_TAG("ProjectSettings", "Failed to save the prefab inspector before reserialization.");
+			ReportReserializeProgress(1.0f, "Prefab save failed");
+			return;
+		}
+
+		bool sceneSaveFailed = false;
+		SceneManager::ForeachLoadedScene([&](Scene& scene) {
+			if (sceneSaveFailed || !scene.IsDirty()) return;
+			const std::string scenePath = project->GetSceneFilePath(scene.GetName());
+			if (scenePath.empty() || !SceneSerializer::SaveToFile(scene, scenePath, format)) {
+				sceneSaveFailed = true;
+				IDX_ERROR_TAG("ProjectSettings", "Failed to save scene '{}' before reserialization.", scene.GetName());
 			}
+		});
+		if (sceneSaveFailed) {
+			ReportReserializeProgress(1.0f, "Scene save failed");
+			return;
 		}
 
 		m_ReserializeFuture = std::async(std::launch::async, [this, assetsDir, format]() {
@@ -1264,32 +1647,191 @@ namespace Index {
 		});
 	}
 
-	void ImGuiEditorLayer::ExecuteBuild() {
+	void ImGuiEditorLayer::ExecuteBuild(IndexProject projectSnapshot, std::string outputDirectory) {
 		m_BuildStartTime = std::chrono::steady_clock::now();
-
-		IndexProject* project = ProjectManager::GetCurrentProject();
-		if (!project) {
-			IDX_ERROR_TAG("Build", "No project loaded.");
+		m_BuiltExecutablePath.clear();
+		auto failBuild = [this](std::string_view stage) {
 			m_BuildSucceeded.store(false, std::memory_order_relaxed);
+			ReportBuildProgress(1.0f, stage);
+		};
+
+		IndexProject* project = &projectSnapshot;
+
+		m_BuildOutputDir = std::move(outputDirectory);
+		if (m_BuildOutputDir.empty()) {
+			IDX_ERROR_TAG("Build", "No output directory specified.");
+			failBuild("No output directory");
 			return;
 		}
 
-		m_BuildOutputDir = std::string(m_BuildOutputDirBuffer);
-		if (m_BuildOutputDir.empty()) {
-			IDX_ERROR_TAG("Build", "No output directory specified.");
-			m_BuildSucceeded.store(false, std::memory_order_relaxed);
-			ReportBuildProgress(1.0f, "No output directory");
+		const BuildOutputSafety::OutputPathValidation outputValidation =
+			BuildOutputSafety::ValidateOutputPath(
+				project->RootDirectory, project->AssetsDirectory, m_BuildOutputDir);
+		if (!outputValidation.IsValid()) {
+			IDX_ERROR_TAG("Build", "Unsafe output directory '{}': {}",
+				m_BuildOutputDir, BuildOutputSafety::GetErrorMessage(outputValidation.Error));
+			failBuild("Unsafe output directory");
+			return;
+		}
+
+		const std::filesystem::path finalOutDir = outputValidation.CanonicalOutput;
+		m_BuildOutputDir = finalOutDir.string();
+		BuildStagingDirectory stagedOutput(finalOutDir);
+		std::string stagingError;
+		if (!stagedOutput.Prepare(stagingError)) {
+			IDX_ERROR_TAG("Build", "Failed to prepare build staging directory: {}", stagingError);
+			failBuild("Output staging failed");
+			return;
+		}
+		const std::filesystem::path& outDir = stagedOutput.GetPath();
+		if (!std::filesystem::exists(project->AssetsDirectory)) {
+			IDX_ERROR_TAG("Build", "Project Assets directory not found at {}", project->AssetsDirectory);
+			failBuild("Project Assets missing");
+			return;
+		}
+		const BuildOutputSafety::DirectoryFingerprint assetInputFingerprint =
+			BuildOutputSafety::CaptureDirectoryFingerprint(project->AssetsDirectory);
+		if (!assetInputFingerprint.Succeeded()) {
+			IDX_ERROR_TAG("Build", "Failed to snapshot project Assets: {}", assetInputFingerprint.Error);
+			failBuild("Project asset snapshot failed");
+			return;
+		}
+		try {
+			std::filesystem::copy_file(project->ProjectFilePath, outDir / "project.json",
+				std::filesystem::copy_options::overwrite_existing);
+		}
+		catch (const std::exception& error) {
+			IDX_ERROR_TAG("Build", "Failed to snapshot project.json: {}", error.what());
+			failBuild("Project snapshot failed");
+			return;
+		}
+		const DirectoryCopyResult initialAssetsCopy =
+			CopyDirIncremental(project->AssetsDirectory, outDir / "Assets");
+		if (!initialAssetsCopy.Succeeded()) {
+			IDX_ERROR_TAG("Build", "Failed to snapshot project Assets: {}", initialAssetsCopy.Error);
+			failBuild("Project asset snapshot failed");
+			return;
+		}
+		const BuildOutputSafety::DirectoryFingerprint postCopyFingerprint =
+			BuildOutputSafety::CaptureDirectoryFingerprint(project->AssetsDirectory);
+		if (!(assetInputFingerprint == postCopyFingerprint)) {
+			IDX_ERROR_TAG("Build", "Project Assets changed while the build snapshot was being captured.");
+			failBuild("Project assets changed during snapshot");
 			return;
 		}
 
 		IDX_INFO_TAG("Build", "Starting build for '{}'...", project->Name);
 		ReportBuildProgress(0.05f, "Preparing build");
 
-		auto exeDir = std::filesystem::path(Path::ExecutableDir());
-		auto outDir = std::filesystem::path(m_BuildOutputDir);
-		const std::string buildConfiguration = IndexProject::GetActiveBuildConfiguration();
+		const std::filesystem::path exeDir(Path::ExecutableDir());
+		const std::string buildConfiguration =
+			project->ActiveBuildProfile == IndexProject::BuildProfile::Release
+			? "Dist"
+			: IndexProject::GetActiveBuildConfiguration();
+		const std::string runtimeOutputFolder = GetRuntimeOutputFolderName(buildConfiguration);
+		const std::string resolvedEngineRoot = IndexProject::GetEngineRootDir();
+		const std::filesystem::path engineRoot(resolvedEngineRoot);
+		const std::vector<IndexPackageManifest> packageManifests =
+			IndexPackageInstaller::EnumerateAll(project->RootDirectory);
+		std::vector<std::string> engineNativePackageTargets;
+		std::vector<const IndexPackageManifest*> projectLocalPackageManifests;
+		for (const std::string& packageName : project->Packages) {
+			if (!BuildOutputSafety::IsSafePathSegment(packageName)) {
+				IDX_ERROR_TAG("Build", "Unsafe package identifier '{}'.", packageName);
+				failBuild("Invalid package identifier");
+				return;
+			}
 
-		if (std::filesystem::exists(project->CsprojPath)) {
+			const auto manifest = std::find_if(packageManifests.begin(), packageManifests.end(),
+				[&](const IndexPackageManifest& candidate) { return candidate.Name == packageName; });
+			if (manifest == packageManifests.end()) {
+				IDX_ERROR_TAG("Build", "Package '{}' has no readable index-package.lua.", packageName);
+				failBuild("Package manifest missing");
+				return;
+			}
+			if (!manifest->IsEngine) {
+				projectLocalPackageManifests.push_back(&*manifest);
+			}
+			if (manifest->IsEngine && (manifest->HasNativeLayer || manifest->HasNativeStandaloneLayer)) {
+				engineNativePackageTargets.push_back("Pkg." + packageName + ".Native");
+			}
+		}
+
+#if INDEX_WITH_SCRIPTING && defined(IDX_PLATFORM_WINDOWS)
+		if (!engineRoot.empty()) {
+			const std::filesystem::path scriptCoreProject =
+				engineRoot / "Index-ScriptCore" / "Index-ScriptCore.csproj";
+			const std::filesystem::path scriptCoreSources = engineRoot / "Index-ScriptCore" / "Source";
+			if (std::filesystem::is_regular_file(scriptCoreProject)
+				&& std::filesystem::is_directory(scriptCoreSources)) {
+				ReportBuildProgress(0.08f, "Building scripting runtime");
+				const Process::Result scriptCoreBuild = Process::Run({
+					"dotnet", "build", scriptCoreProject.string(),
+					"-c", buildConfiguration,
+					"--nologo", "-v", "q", "-nodeReuse:false",
+					"-p:UseSharedCompilation=false"
+				}, engineRoot.string(), std::chrono::minutes(5));
+				if (!scriptCoreBuild.Succeeded()) {
+					IDX_ERROR_TAG("Build", "Index-ScriptCore build failed (exit code {}).",
+						scriptCoreBuild.ExitCode);
+					if (!scriptCoreBuild.Output.empty()) IDX_ERROR_TAG("Build", "{}", scriptCoreBuild.Output);
+					failBuild("Scripting runtime build failed");
+					return;
+				}
+			}
+		}
+#endif
+
+		if (!projectLocalPackageManifests.empty()) {
+			ReportBuildProgress(0.09f, "Compiling project packages");
+			const IndexProject::RegenerateResult packageGeneration =
+				IndexProject::RegeneratePackageWorkspaceForProject(project->RootDirectory);
+			if (!packageGeneration.Succeeded) {
+				IDX_ERROR_TAG("Build", "Project package generation failed: {}", packageGeneration.Output);
+				failBuild("Project package generation failed");
+				return;
+			}
+
+			const IndexProject::BuildResult packageBuild =
+				IndexProject::BuildProjectPackages(project->RootDirectory, buildConfiguration, "x64");
+			if (!packageBuild.Succeeded) {
+				IDX_ERROR_TAG("Build", "Project package compilation failed: {}", packageBuild.Output);
+				failBuild("Project package compilation failed");
+				return;
+			}
+
+			for (const IndexPackageManifest* manifest : projectLocalPackageManifests) {
+				if (!manifest->HasCSharpLayer) continue;
+
+				const std::string targetName = "Pkg." + manifest->Name;
+				const std::filesystem::path sourceDirectory =
+					IndexProject::GetProjectPackageOutputDirectory(
+						project->RootDirectory, targetName, buildConfiguration);
+				const std::filesystem::path assemblyPath = sourceDirectory / (targetName + ".dll");
+				std::error_code assemblyError;
+				if (!std::filesystem::is_regular_file(assemblyPath, assemblyError) || assemblyError) {
+					IDX_ERROR_TAG("Build", "Managed project package artifact is missing: {}",
+						assemblyPath.string());
+					failBuild("Project package artifact missing");
+					return;
+				}
+
+				const std::filesystem::path destinationDirectory =
+					std::filesystem::path(manifest->PackageDir) / "Bin" / "Windows-x64";
+				const DirectoryCopyResult packageCopy =
+					CopyDirIncremental(sourceDirectory, destinationDirectory);
+				if (!packageCopy.Succeeded()) {
+					IDX_ERROR_TAG("Build", "Failed to stage managed project package '{}': {}",
+						manifest->Name, packageCopy.Error);
+					failBuild("Project package staging failed");
+					return;
+				}
+			}
+			IndexPackageInstaller::RegeneratePackageReferences(*project);
+		}
+
+		const bool hasManagedProject = std::filesystem::exists(project->CsprojPath);
+		if (hasManagedProject) {
 			ReportBuildProgress(0.10f, "Compiling C# scripts");
 			IDX_INFO_TAG("Build", "Compiling C# scripts...");
 			Process::Result buildResult = Process::Run({
@@ -1301,120 +1843,110 @@ namespace Index {
 				"-v", "q",
 				"-nodeReuse:false",
 				"-p:UseSharedCompilation=false",
-				"-p:DefineConstants=" + IndexProject::BuildManagedDefineConstants("INDEX_BUILD")
+				"-p:DefineConstants=" + BuildManagedDefinesForSnapshot(
+					*project, "INDEX_BUILD", buildConfiguration)
 			}, {}, std::chrono::minutes(5));
 			if (!buildResult.Succeeded()) {
 				IDX_ERROR_TAG("Build", "C# script compilation failed (exit code {}).", buildResult.ExitCode);
 				if (!buildResult.Output.empty()) {
 					IDX_ERROR_TAG("Build", "{}", buildResult.Output);
 				}
-				m_BuildSucceeded.store(false, std::memory_order_relaxed);
-				ReportBuildProgress(1.0f, "C# compilation failed");
+				failBuild("C# compilation failed");
 				return;
 			}
 			IDX_INFO_TAG("Build", "C# scripts compiled.");
 			ReportBuildProgress(0.30f, "C# scripts compiled");
 		}
 
-		const std::filesystem::path nativeProjectDir(project->NativeScriptsDir);
-		const std::filesystem::path nativeCMakeLists = nativeProjectDir / "CMakeLists.txt";
-		if (std::filesystem::exists(nativeCMakeLists)) {
-			ReportBuildProgress(0.35f, "Compiling native scripts");
-			IDX_INFO_TAG("Build", "Compiling native scripts ({} profile)...",
-				IndexProject::BuildProfileToString(project->ActiveBuildProfile));
-			const std::string profileCmakeArg = std::string("-DINDEX_BUILD_PROFILE=")
-				+ ((project->ActiveBuildProfile == IndexProject::BuildProfile::Release) ? "RELEASE" : "DEVELOPMENT");
-			const std::filesystem::path nativeBuildDir = nativeProjectDir / "build";
-			// Configure (overrides editor's cached INDEX_BUILD_PROFILE so the
-			// next-frame editor hot-reload also picks up the explicit value).
-			Process::Result cfg = Process::Run({
-				"cmake",
-				"-B", nativeBuildDir.string(),
-				"-S", nativeProjectDir.string(),
-				"-DCMAKE_BUILD_TYPE=" + buildConfiguration,
-				profileCmakeArg
-			}, nativeProjectDir.string());
-			if (!cfg.Succeeded()) {
-				IDX_WARN_TAG("Build",
-					"Native script CMake configure failed (exit code {}); shipping the editor's last-built native DLL.",
-					cfg.ExitCode);
-			} else {
-				Process::Result bld = Process::Run({
-					"cmake", "--build", nativeBuildDir.string(),
-					"--config", buildConfiguration
-				}, nativeProjectDir.string());
-				if (!bld.Succeeded()) {
-					IDX_WARN_TAG("Build",
-						"Native script build failed (exit code {}); shipping the editor's last-built native DLL.",
-						bld.ExitCode);
-					if (!bld.Output.empty()) IDX_WARN_TAG("Build", "{}", bld.Output);
-				} else {
-					IDX_INFO_TAG("Build", "Native scripts compiled.");
+		if (!engineNativePackageTargets.empty()) {
+			const std::filesystem::path solutionPath =
+				std::filesystem::path(IndexProject::GetEngineRootDir()) / "Index.sln";
+			if (!IndexProject::GetMSBuildPath().empty() && std::filesystem::exists(solutionPath)) {
+				ReportBuildProgress(0.40f, "Compiling native packages");
+				const IndexProject::BuildResult packageBuild = IndexProject::BuildSolutionTargets(
+					engineNativePackageTargets, buildConfiguration, "x64");
+				if (!packageBuild.Succeeded) {
+					IDX_ERROR_TAG("Build", "Native package compilation failed: {}", packageBuild.Output);
+					failBuild("Native package compilation failed");
+					return;
 				}
+			}
+			else {
+				IDX_WARN_TAG("Build", "MSBuild is unavailable; staging existing native package binaries.");
 			}
 		}
 
-		try {
-			std::filesystem::create_directories(outDir);
-		}
-		catch (const std::exception& e) {
-			IDX_ERROR_TAG("Build", "Failed to create output directory: {}", e.what());
-			m_BuildSucceeded.store(false, std::memory_order_relaxed);
-			ReportBuildProgress(1.0f, "Output directory creation failed");
-			return;
-		}
-		// Build the runtime in the SAME configuration the running editor was built in
-		// (IDX_BUILD_CONFIG_NAME, via GetActiveBuildConfiguration()), regardless of the
-		// selected build profile, so the standalone always matches the editor's config and
-		// never ships a stale runtime DLL. This mirrors the C# and native-script steps
-		// above, which already compile against `buildConfiguration`.
-		//
-		// INDEX_WITH_EDITOR is config-gated (premake ApplyIndexEditorModuleDefine): only a
-		// Dist editor produces an editor-free runtime; a Debug/Release editor produces a
-		// Debug/Release standalone that still carries the editor-only systems. Run the
-		// editor in Dist to ship a clean, editor-free build.
-		//
-		// Recompile when the engine repo + MSBuild are present (dev layout); when they are
-		// not (a shipped, repo-less editor) stage the existing adjacent runtime binaries.
-		std::filesystem::path runtimeOutputDirectory = exeDir / ".." / "Index-Runtime";
+		const std::filesystem::path developmentRuntimeDirectory = engineRoot.empty()
+			? std::filesystem::path{}
+			: engineRoot / "bin" / runtimeOutputFolder / "Index-Runtime";
+		std::filesystem::path runtimeOutputDirectory;
 		{
-			const std::filesystem::path engineRoot =
-				exeDir.parent_path().parent_path().parent_path();
-			const std::filesystem::path runtimeProject =
-				engineRoot / "Index-Runtime" / "Index-Runtime.vcxproj";
+			const std::filesystem::path runtimeProject = engineRoot.empty()
+				? std::filesystem::path{}
+				: engineRoot / "Index-Runtime" / "Index-Runtime.vcxproj";
 			const std::string msbuildPath = IndexProject::GetMSBuildPath();
-			if (!msbuildPath.empty() && std::filesystem::exists(runtimeProject)) {
+#if defined(IDX_PLATFORM_WINDOWS)
+			if (!runtimeProject.empty() && std::filesystem::exists(runtimeProject)) {
+				if (msbuildPath.empty()) {
+					IDX_ERROR_TAG("Build", "MSBuild is required to produce a fresh runtime artifact.");
+					failBuild("MSBuild unavailable");
+					return;
+				}
 				ReportBuildProgress(0.45f, "Building runtime (" + buildConfiguration + ")");
-				IDX_INFO_TAG("Build", "Building Index-Runtime ({}) to match the editor's configuration...", buildConfiguration);
+				IDX_INFO_TAG("Build", "Building Index-Runtime ({})...", buildConfiguration);
 				const Process::Result runtimeBuild = Process::Run({
 					msbuildPath, runtimeProject.string(),
 					"/p:Configuration=" + buildConfiguration, "/p:Platform=x64",
-					"/m", "/v:minimal", "/nologo"
-				}, engineRoot.string());
+					"/p:CL_MPCount=1", "/p:UseMultiToolTask=false",
+					"/m:1", "/nr:false", "/v:minimal", "/nologo"
+				}, engineRoot.string(), std::chrono::minutes(15));
 				if (!runtimeBuild.Succeeded()) {
 					IDX_ERROR_TAG("Build", "Runtime build ({}) failed (exit code {}).", buildConfiguration, runtimeBuild.ExitCode);
 					if (!runtimeBuild.Output.empty()) IDX_ERROR_TAG("Build", "{}", runtimeBuild.Output);
-					m_BuildSucceeded.store(false, std::memory_order_relaxed);
-					ReportBuildProgress(1.0f, "Runtime build failed");
+					failBuild("Runtime build failed");
 					return;
 				}
-				IDX_INFO_TAG("Build", "Runtime ({}) ready; staging from {}", buildConfiguration, runtimeOutputDirectory.string());
+				runtimeOutputDirectory = developmentRuntimeDirectory;
+				IDX_INFO_TAG("Build", "Runtime ({}) ready; staging from {}", buildConfiguration,
+					runtimeOutputDirectory.string());
 			}
-			else {
-				IDX_WARN_TAG("Build",
-					"MSBuild or the runtime project is unavailable (msbuild='{}', project='{}'); "
-					"staging the existing adjacent runtime binaries without rebuilding.",
-					msbuildPath, runtimeProject.string());
+#endif
+			if (runtimeOutputDirectory.empty()) {
+				const std::string runtimeExecutable = GetRuntimeExecutableFilename();
+				const std::string engineLibrary = GetEngineRuntimeFilename();
+				const std::string bundledRuntimeName =
+					project->ActiveBuildProfile == IndexProject::BuildProfile::Release
+					? "Runtime-Dist" : "Runtime-Development";
+				runtimeOutputDirectory = BuildOutputSafety::FindFirstCompleteArtifactDirectory({
+					developmentRuntimeDirectory,
+					engineRoot.empty() ? std::filesystem::path{} : engineRoot / bundledRuntimeName,
+					engineRoot.empty() ? std::filesystem::path{} : engineRoot / "Runtime-Dist",
+					exeDir / bundledRuntimeName,
+					exeDir / "Runtime-Dist",
+					exeDir,
+					exeDir.parent_path() / "Index-Runtime",
+				}, { runtimeExecutable, engineLibrary });
+				if (runtimeOutputDirectory.empty()) {
+					IDX_ERROR_TAG("Build", "No complete runtime artifact set is available for {}.",
+						buildConfiguration);
+					failBuild("Runtime artifacts unavailable");
+					return;
+				}
+				IDX_INFO_TAG("Build", "Using prebuilt runtime artifacts from {}",
+					runtimeOutputDirectory.string());
 			}
 		}
 
 		ReportBuildProgress(0.55f, "Copying runtime binaries");
 
-		auto copyFile = [&](const std::filesystem::path& src, const std::filesystem::path& dest, const std::string& name) {
+		auto copyFile = [&](const std::filesystem::path& src, const std::filesystem::path& dest,
+			const std::string& name, bool required)
+		{
 			try {
 				if (!std::filesystem::exists(src)) {
-					IDX_WARN_TAG("Build", "{} not found at {}", name, src.string());
-					return;
+					if (required) IDX_ERROR_TAG("Build", "Required {} not found at {}", name, src.string());
+					else IDX_WARN_TAG("Build", "{} not found at {}", name, src.string());
+					return false;
 				}
 				auto canonical = std::filesystem::canonical(src);
 				if (NeedsCopy(canonical, dest)) {
@@ -1422,60 +1954,130 @@ namespace Index {
 					std::filesystem::copy_file(canonical, dest, std::filesystem::copy_options::overwrite_existing);
 					IDX_INFO_TAG("Build", "Copied {}", name);
 				}
+				return true;
 			}
 			catch (const std::exception& e) {
-				IDX_WARN_TAG("Build", "Failed to copy {}: {}", name, e.what());
+				if (required) IDX_ERROR_TAG("Build", "Failed to copy {}: {}", name, e.what());
+				else IDX_WARN_TAG("Build", "Failed to copy {}: {}", name, e.what());
+				return false;
 			}
+		};
+		auto copyRequiredFile = [&](const std::filesystem::path& src,
+			const std::filesystem::path& dest, const std::string& name)
+		{
+			if (copyFile(src, dest, name, true)) return true;
+			failBuild("Required artifact staging failed");
+			return false;
 		};
 
 		const std::string runtimeExecutableFilename = GetRuntimeExecutableFilename();
 		const std::string outputExecutableStem = project->ExecutableName.empty()
 			? project->Name : project->ExecutableName;
-		copyFile(runtimeOutputDirectory / runtimeExecutableFilename,
-			outDir / (outputExecutableStem + std::filesystem::path(runtimeExecutableFilename).extension().string()),
-			"runtime executable");
-		copyFile(runtimeOutputDirectory / GetEngineRuntimeFilename(),
-			outDir / GetEngineRuntimeFilename(),
-			GetEngineRuntimeFilename());
-
-		for (std::string_view depName : { std::string_view{"GLFW"}, std::string_view{"Glad"} }) {
-			const std::string filename = SharedLibraryFilename(depName);
-			copyFile(runtimeOutputDirectory / filename, outDir / filename, filename);
+		if (!BuildOutputSafety::IsSafePathSegment(outputExecutableStem)) {
+			IDX_ERROR_TAG("Build", "Unsafe executable name '{}'.", outputExecutableStem);
+			failBuild("Invalid executable name");
+			return;
 		}
+		m_BuiltExecutablePath = (finalOutDir /
+			(outputExecutableStem + std::filesystem::path(runtimeExecutableFilename).extension().string())).string();
+		if (!copyRequiredFile(runtimeOutputDirectory / runtimeExecutableFilename,
+			outDir / (outputExecutableStem + std::filesystem::path(runtimeExecutableFilename).extension().string()),
+			"runtime executable")) return;
+		if (!copyRequiredFile(runtimeOutputDirectory / GetEngineRuntimeFilename(),
+			outDir / GetEngineRuntimeFilename(),
+			GetEngineRuntimeFilename())) return;
+
 		{
+			const std::string glfwFilename = SharedLibraryFilename("GLFW");
+			if (!copyRequiredFile(runtimeOutputDirectory / glfwFilename,
+				outDir / glfwFilename, glfwFilename)) return;
+		}
+		if (buildConfiguration != "Dist") {
 			const std::string tracyFilename = SharedLibraryFilename("Tracy");
 			const std::filesystem::path tracySource = runtimeOutputDirectory / tracyFilename;
+#if INDEX_PROFILER_ENABLED
+			if (!copyRequiredFile(tracySource, outDir / tracyFilename, tracyFilename)) return;
+#else
 			if (std::filesystem::exists(tracySource)) {
-				copyFile(tracySource, outDir / tracyFilename, tracyFilename);
+				copyFile(tracySource, outDir / tracyFilename, tracyFilename, false);
 			}
+#endif
 		}
 
-		auto scriptCoreDir = exeDir / ".." / "Index-ScriptCore";
-		copyFile(scriptCoreDir / "Index-ScriptCore.dll", outDir / "Index-ScriptCore.dll", "Index-ScriptCore.dll");
-		copyFile(scriptCoreDir / "Index-ScriptCore.runtimeconfig.json", outDir / "Index-ScriptCore.runtimeconfig.json", "ScriptCore config");
-		copyFile(scriptCoreDir / "Index-ScriptCore.deps.json", outDir / "Index-ScriptCore.deps.json", "ScriptCore deps");
+#if INDEX_WITH_RENDER && !defined(IDX_PLATFORM_WINDOWS)
+		{
+			const std::string dawnFilename = SharedLibraryFilename("webgpu_dawn");
+			if (!copyRequiredFile(runtimeOutputDirectory / dawnFilename,
+				outDir / dawnFilename, dawnFilename)) return;
+		}
+#endif
+
+#if INDEX_WITH_SCRIPTING
+		const std::filesystem::path scriptCoreDir =
+			BuildOutputSafety::FindFirstCompleteArtifactDirectory({
+				runtimeOutputDirectory,
+				runtimeOutputDirectory.parent_path() / "Index-ScriptCore",
+				engineRoot.empty() ? std::filesystem::path{} : engineRoot / "Index-ScriptCore",
+			}, {
+				"Index-ScriptCore.dll",
+				"Index-ScriptCore.runtimeconfig.json",
+				"Index-ScriptCore.deps.json",
+			});
+		if (scriptCoreDir.empty()) {
+			IDX_ERROR_TAG("Build", "No complete Index-ScriptCore artifact set is available.");
+			failBuild("Scripting runtime artifacts unavailable");
+			return;
+		}
+		if (!copyRequiredFile(scriptCoreDir / "Index-ScriptCore.dll",
+			outDir / "Index-ScriptCore.dll", "Index-ScriptCore.dll")) return;
+		if (!copyRequiredFile(scriptCoreDir / "Index-ScriptCore.runtimeconfig.json",
+			outDir / "Index-ScriptCore.runtimeconfig.json", "ScriptCore config")) return;
+		if (!copyRequiredFile(scriptCoreDir / "Index-ScriptCore.deps.json",
+			outDir / "Index-ScriptCore.deps.json", "ScriptCore deps")) return;
+#if defined(IDX_PLATFORM_WINDOWS)
 		{
 			const std::string netHostFilename = GetNetHostRuntimeFilename();
-			const std::filesystem::path netHostSource = exeDir / netHostFilename;
-			if (std::filesystem::exists(netHostSource)) {
-				copyFile(netHostSource, outDir / netHostFilename, netHostFilename);
-			}
+			const std::filesystem::path netHostSource = runtimeOutputDirectory / netHostFilename;
+			if (!copyRequiredFile(netHostSource, outDir / netHostFilename, netHostFilename)) return;
+		}
+#endif
+#endif
+
+		const std::filesystem::path licenseSource =
+			BuildOutputSafety::FindFirstCompleteArtifactDirectory({
+				runtimeOutputDirectory / "Licenses",
+				engineRoot.empty() ? std::filesystem::path{} : engineRoot / "Licenses",
+				exeDir / "EngineSDK" / "Licenses",
+				exeDir.parent_path() / "Index-Launcher" / "EngineSDK" / "Licenses",
+			}, {
+				std::filesystem::path("Index") / "LICENSE.txt",
+				std::filesystem::path("Index") / "THIRD_PARTY_LICENSES.md",
+				std::filesystem::path("DotNet") / "ThirdPartyNotices.txt",
+			});
+		if (licenseSource.empty()) {
+			IDX_ERROR_TAG("Build", "A complete redistribution license payload is unavailable.");
+			failBuild("Redistribution licenses unavailable");
+			return;
+		}
+		const DirectoryCopyResult licenseCopy = CopyDirIncremental(licenseSource, outDir / "Licenses");
+		if (!licenseCopy.Succeeded()) {
+			IDX_ERROR_TAG("Build", "Failed to stage redistribution licenses: {}", licenseCopy.Error);
+			failBuild("License staging failed");
+			return;
 		}
 
-		try {
-			std::filesystem::copy_file(project->ProjectFilePath, outDir / "project.json",
-				std::filesystem::copy_options::overwrite_existing);
-		}
-		catch (const std::exception& e) {
-			IDX_WARN_TAG("Build", "Failed to copy project.json: {}", e.what());
-		}
-
-		ReportBuildProgress(0.75f, "Copying project assets");
-		if (std::filesystem::exists(project->AssetsDirectory)) {
-			int updatedFiles = CopyDirIncremental(project->AssetsDirectory, outDir / "Assets");
-			IDX_INFO_TAG("Build", "Assets: {} file(s) updated", updatedFiles);
+		ReportBuildProgress(0.75f, "Optimizing project assets");
+		{
+			IDX_INFO_TAG("Build", "Assets: {} file(s) snapshotted", initialAssetsCopy.Copied);
 			ReportBuildProgress(0.78f, "Optimizing scene assets");
-			int convertedFiles = ConvertSerializedAssetsInDirectory(outDir / "Assets", SceneSerializationFormat::Binary);
+			std::string conversionError;
+			const int convertedFiles = ConvertSerializedAssetsInDirectory(
+				outDir / "Assets", SceneSerializationFormat::Binary, {}, &conversionError);
+			if (!conversionError.empty()) {
+				IDX_ERROR_TAG("Build", "Failed to optimize serialized assets: {}", conversionError);
+				failBuild("Scene asset optimization failed");
+				return;
+			}
 			IDX_INFO_TAG("Build", "Serialized assets optimized to binary: {} file(s)", convertedFiles);
 		}
 
@@ -1512,79 +2114,117 @@ namespace Index {
 			}
 
 			if (!indexAssetsSrc.empty() && std::filesystem::exists(indexAssetsSrc)) {
-				const std::vector<std::filesystem::path> excluded{
+				std::vector<std::filesystem::path> excluded{
 					std::filesystem::path("Textures") / "Editor",
 				};
-				int updatedFiles = CopyDirIncrementalExcluding(
+				const std::vector<std::filesystem::path> unusedFonts = BuildAssetPruning::FindUnreferencedBuiltInFonts(
+					Path::FromUtf8(indexAssetsSrc), Path::FromUtf8(project->RootDirectory), { outDir, finalOutDir });
+				for (const auto& font : unusedFonts) {
+					IDX_INFO_TAG("Build", "Skipping unreferenced built-in font: IndexAssets/{}", font.generic_string());
+					excluded.push_back(font);
+				}
+				const DirectoryCopyResult indexAssetsCopy = CopyDirIncrementalExcluding(
 					indexAssetsSrc, outDir / "IndexAssets", excluded);
-				IDX_INFO_TAG("Build", "IndexAssets: {} file(s) updated", updatedFiles);
+				if (!indexAssetsCopy.Succeeded()) {
+					IDX_ERROR_TAG("Build", "Failed to copy IndexAssets: {}", indexAssetsCopy.Error);
+					failBuild("IndexAssets staging failed");
+					return;
+				}
+				IDX_INFO_TAG("Build", "IndexAssets: {} file(s) copied", indexAssetsCopy.Copied);
 			}
 			else {
-				IDX_WARN_TAG("Build", "IndexAssets not found - build may be incomplete");
+				IDX_ERROR_TAG("Build", "IndexAssets not found; build cannot be completed");
+				failBuild("IndexAssets missing");
+				return;
 			}
 		}
 
-		{
-			auto userBinDir = std::filesystem::path(project->GetUserAssemblyOutputPath()).parent_path();
-			if (std::filesystem::exists(userBinDir)) {
-				auto destBinDir = outDir / "bin" / buildConfiguration;
-				int copied = 0;
+		if (hasManagedProject) {
+			auto userBinDir = std::filesystem::path(
+				project->GetUserAssemblyOutputPath(buildConfiguration)).parent_path();
+			const std::filesystem::path userAssemblyPath =
+				project->GetUserAssemblyOutputPath(buildConfiguration);
+			if (!std::filesystem::exists(userAssemblyPath)) {
+				IDX_ERROR_TAG("Build", "Compiled user assembly not found at {}", userAssemblyPath.string());
+				failBuild("User assembly missing");
+				return;
+			}
+			auto destBinDir = outDir / "bin" / buildConfiguration;
+			int copied = 0;
+			try {
 				for (const auto& entry : std::filesystem::directory_iterator(userBinDir)) {
 					if (!entry.is_regular_file()) continue;
 					auto ext = entry.path().extension().string();
 					if (ext == ".dll" || ext == ".json") {
-						copyFile(entry.path(), destBinDir / entry.path().filename(), entry.path().filename().string());
+						if (!copyRequiredFile(entry.path(), destBinDir / entry.path().filename(),
+							entry.path().filename().string())) return;
 						copied++;
 					}
 				}
-				IDX_INFO_TAG("Build", "User assemblies: {} file(s) copied", copied);
 			}
+			catch (const std::exception& e) {
+				IDX_ERROR_TAG("Build", "Failed to enumerate user assemblies: {}", e.what());
+				failBuild("User assembly staging failed");
+				return;
+			}
+			IDX_INFO_TAG("Build", "User assemblies: {} file(s) copied", copied);
 		}
 
+		// Native siblings must be staged explicitly for managed P/Invoke package bridges.
 		{
-			std::string nativeDll = project->GetNativeDllPath();
-			if (std::filesystem::exists(nativeDll)) {
-				const std::filesystem::path nativeLibraryPath(nativeDll);
-				copyFile(nativeDll,
-					outDir / "NativeScripts" / "build" / buildConfiguration / nativeLibraryPath.filename(),
-					"native script DLL");
-			}
-		}
-
-		// Native package DLLs: MSBuild copies the C# Pkg.*.dll but not the native sibling; without this
-		// block DllImport resolves into a process with no native module and components never register.
-		{
-			const std::filesystem::path packageSearchRoot = exeDir / "..";
 			int copiedPackages = 0;
 			for (const std::string& packageName : project->Packages) {
 				if (packageName.empty()) continue;
-				const std::string nativeFolderName = "Pkg." + packageName + ".Native";
-				const std::string nativeFileName = nativeFolderName + ".dll";
-				const std::filesystem::path src = packageSearchRoot / nativeFolderName / nativeFileName;
-				const std::filesystem::path dst = outDir / "Packages" / nativeFolderName / nativeFileName;
-				if (!std::filesystem::exists(src)) {
-					// Package may be managed-only (csharp layer with no
-					// engine_core/standalone_cpp). That's a valid manifest, so
-					// surface as INFO rather than WARN.
-					IDX_INFO_TAG("Build",
-						"Package '{}' has no native DLL at '{}' — skipping (managed-only?).",
-						packageName, src.string());
+				if (!BuildOutputSafety::IsSafePathSegment(packageName)) {
+					IDX_ERROR_TAG("Build", "Unsafe package identifier '{}'.", packageName);
+					failBuild("Invalid package identifier");
+					return;
+				}
+				const auto manifest = std::find_if(packageManifests.begin(), packageManifests.end(),
+					[&](const IndexPackageManifest& candidate) { return candidate.Name == packageName; });
+				if (manifest == packageManifests.end()) {
+					IDX_ERROR_TAG("Build", "Package '{}' has no readable index-package.lua.", packageName);
+					failBuild("Package manifest missing");
+					return;
+				}
+				if (!manifest->HasNativeLayer && !manifest->HasNativeStandaloneLayer) {
+					IDX_INFO_TAG("Build", "Package '{}' is managed-only.", packageName);
 					continue;
 				}
-				copyFile(src, dst, nativeFileName);
+				const std::string nativeFolderName = "Pkg." + packageName + ".Native";
+				const std::string nativeFileName = SharedLibraryFilename(nativeFolderName);
+				const std::string nativeAbiFileName = nativeFileName + ".indexabi";
+				std::vector<std::filesystem::path> candidateDirectories;
+				if (!manifest->IsEngine) {
+					candidateDirectories.emplace_back(
+						IndexProject::GetProjectPackageOutputDirectory(
+							project->RootDirectory, nativeFolderName, buildConfiguration));
+				}
+				else {
+					candidateDirectories.emplace_back(
+						runtimeOutputDirectory.parent_path() / nativeFolderName);
+				}
+				candidateDirectories.emplace_back(
+					std::filesystem::path(manifest->PackageDir) / "Bin" / "Windows-x64");
+				const std::filesystem::path sourceDirectory =
+					BuildOutputSafety::FindFirstCompleteArtifactDirectory(
+						candidateDirectories, { nativeFileName, nativeAbiFileName });
+				const std::filesystem::path src = sourceDirectory / nativeFileName;
+				const std::filesystem::path dst = outDir / "Packages" / nativeFolderName / nativeFileName;
+				if (!copyRequiredFile(src, dst, nativeFileName)) return;
+				if (!copyRequiredFile(sourceDirectory / nativeAbiFileName,
+					dst.parent_path() / nativeAbiFileName, nativeAbiFileName)) return;
 				copiedPackages++;
 
-				// Best-effort PDB copy so a native crash inside a shipped
-				// package surfaces with line numbers when the user keeps
-				// debug symbols around.
-				const std::filesystem::path pdbSrc = packageSearchRoot / nativeFolderName /
-					(nativeFolderName + ".pdb");
+#if defined(IDX_PLATFORM_WINDOWS)
+				const std::filesystem::path pdbSrc = sourceDirectory / (nativeFolderName + ".pdb");
 				if (std::filesystem::exists(pdbSrc)) {
-					copyFile(pdbSrc, dst.parent_path() / pdbSrc.filename(), pdbSrc.filename().string());
+					copyFile(pdbSrc, dst.parent_path() / pdbSrc.filename(), pdbSrc.filename().string(), false);
 				}
+#endif
 			}
 			if (copiedPackages > 0) {
-				IDX_INFO_TAG("Build", "Native packages: {} DLL(s) staged under Packages/.", copiedPackages);
+				IDX_INFO_TAG("Build", "Native packages: {} library file(s) staged under Packages/.", copiedPackages);
 			}
 		}
 
@@ -1635,7 +2275,21 @@ namespace Index {
 		}
 #endif
 
+		const BuildOutputSafety::DirectoryFingerprint finalAssetFingerprint =
+			BuildOutputSafety::CaptureDirectoryFingerprint(project->AssetsDirectory);
+		if (!(assetInputFingerprint == finalAssetFingerprint)) {
+			IDX_ERROR_TAG("Build", "Project Assets changed during the build; discarding mixed-version output.");
+			failBuild("Project assets changed during build");
+			return;
+		}
+
 		ReportBuildProgress(0.95f, "Finalizing");
+		std::string publishError;
+		if (!stagedOutput.Publish(publishError)) {
+			IDX_ERROR_TAG("Build", "Failed to publish staged output: {}", publishError);
+			failBuild("Build publish failed");
+			return;
+		}
 		float elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() - m_BuildStartTime).count();
 		IDX_INFO_TAG("Build", "Build completed in {:.2f}s -> {}", elapsed, m_BuildOutputDir);
 		ReportBuildProgress(1.0f, "Build complete");
@@ -1649,316 +2303,494 @@ namespace Index {
 		if (!m_ShowBuildPanel) return;
 
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		ImGui::Begin("Build", &m_ShowBuildPanel);
+		EditorUI::NextWindowDefaultSize();
+		// Panes and footer are sized to the window, so the window itself never scrolls.
+		ImGui::Begin("Build", &m_ShowBuildPanel, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
 		IndexProject* project = ProjectManager::GetCurrentProject();
+		std::vector<IndexBuildProfile> diskProfiles;
 		if (project) {
 			// Reconcile the build scene list against on-disk scenes only when the registry actually
 			// changed AND is already clean. NEVER force a rebuild here: the old AssetRegistry::Sync()
 			// ran the full ~9k-.meta directory walk on the UI thread — that was the ~1s freeze when
 			// this panel opened. While the registry is mid-edit (dirty) we keep the cached list; the
 			// next consumer rebuilds it and bumps the change version, and we pick it up then.
+			// Until then the list persisted in project.json is shown as-is, so it is never blank.
+			std::vector<IndexProject::BuildSceneEntry>& sceneList = project->BuildSceneList;
+			bool sceneListChanged = false;
 			const uint64_t registryVersion = AssetRegistry::GetChangeVersion();
 			if (registryVersion != m_BuildSceneListVersion && !AssetRegistry::IsDirty()) {
 				m_BuildSceneListVersion = registryVersion;
 
 				std::vector<std::string> diskScenes;
-				diskScenes.reserve(m_BuildSceneList.size() + 4);
+				diskScenes.reserve(sceneList.size() + 4);
 				for (const AssetRegistry::Record& record : AssetRegistry::FindAll(AssetKind::Scene)) {
 					diskScenes.push_back(std::filesystem::path(record.Path).stem().string());
 				}
 
 				// Drop entries whose .scene file no longer exists.
-				m_BuildSceneList.erase(
-					std::remove_if(m_BuildSceneList.begin(), m_BuildSceneList.end(),
-						[&](const std::string& s) {
-							return std::find(diskScenes.begin(), diskScenes.end(), s) == diskScenes.end();
+				const size_t sizeBefore = sceneList.size();
+				sceneList.erase(
+					std::remove_if(sceneList.begin(), sceneList.end(),
+						[&](const IndexProject::BuildSceneEntry& entry) {
+							return std::find(diskScenes.begin(), diskScenes.end(), entry.Name) == diskScenes.end();
 						}),
-					m_BuildSceneList.end());
+					sceneList.end());
+				sceneListChanged |= sceneList.size() != sizeBefore;
 
-				// Append entries the user has not seen yet (new on disk).
+				// New scenes on disk join the build by default; opting out is a checkbox.
 				for (const std::string& stem : diskScenes) {
-					if (std::find(m_BuildSceneList.begin(), m_BuildSceneList.end(), stem) == m_BuildSceneList.end()) {
-						m_BuildSceneList.push_back(stem);
+					if (FindBuildScene(sceneList, stem) == sceneList.end()) {
+						sceneList.push_back({ stem, true });
+						sceneListChanged = true;
 					}
 				}
 			}
 
-			// Pin StartupScene to position [0] so the [Startup] tag and
-			// the runtime's first-loaded scene stay in sync with the
-			// project file's StartupScene field.
-			if (!project->StartupScene.empty()) {
-				auto it = std::find(m_BuildSceneList.begin(), m_BuildSceneList.end(), project->StartupScene);
-				if (it != m_BuildSceneList.end()) {
-					if (it != m_BuildSceneList.begin()) {
-						std::string startupScene = *it;
-						m_BuildSceneList.erase(it);
-						m_BuildSceneList.insert(m_BuildSceneList.begin(), startupScene);
-					}
+			// StartupScene is always the first enabled entry, so the [Startup] badge and the
+			// runtime's first-loaded scene agree with project.json.
+			auto startupIt = FindBuildScene(sceneList, project->StartupScene);
+			if (startupIt != sceneList.end() && startupIt->Enabled) {
+				const auto firstEnabledIt = std::find_if(sceneList.begin(), sceneList.end(),
+					[](const IndexProject::BuildSceneEntry& entry) { return entry.Enabled; });
+				if (startupIt != firstEnabledIt) {
+					const auto insertAt = std::distance(sceneList.begin(), firstEnabledIt);
+					IndexProject::BuildSceneEntry startupEntry = std::move(*startupIt);
+					sceneList.erase(startupIt);
+					sceneList.insert(sceneList.begin() + insertAt, std::move(startupEntry));
+					sceneListChanged = true;
 				}
-				else if (!m_BuildSceneList.empty()) {
-					// StartupScene's .scene no longer exists on disk (renamed or
-					// deleted) — repair it to the first available scene so the build
-					// doesn't ship a dangling startup reference that loads blank.
-					// Self-limiting: once repaired, StartupScene is in the list and
-					// this branch won't run again.
-					project->StartupScene = m_BuildSceneList.front();
+			}
+			// A missing StartupScene is only trusted as "gone" once the list was reconciled with disk.
+			else if (startupIt != sceneList.end() || m_BuildSceneListVersion != 0) {
+				const std::string firstEnabled = FirstEnabledBuildScene(sceneList);
+				if (!firstEnabled.empty() && firstEnabled != project->StartupScene) {
+					project->StartupScene = firstEnabled;
+					sceneListChanged = true;
+				}
+			}
+
+			if (sceneListChanged) {
+				project->Save();
+			}
+
+			if (!project->GetBuildProfilesDirectory().empty()) {
+				std::error_code ec;
+				const std::string dir = project->GetBuildProfilesDirectory();
+				if (std::filesystem::exists(dir)) {
+					const std::string ext(IndexBuildProfile::FileExtension);
+					for (const auto& entry : std::filesystem::directory_iterator(
+							 dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
+						if (ec) { ec.clear(); continue; }
+						if (!entry.is_regular_file(ec) || ec) { ec.clear(); continue; }
+						if (entry.path().extension().string() != ext) continue;
+						diskProfiles.push_back(IndexBuildProfile::Load(entry.path().string()));
+					}
+					std::sort(diskProfiles.begin(), diskProfiles.end(),
+						[](const IndexBuildProfile& a, const IndexBuildProfile& b) {
+							return a.Name < b.Name;
+						});
+				}
+			}
+
+			// Clear stale ActiveBuildProfileName if the file was deleted
+			// externally — keeps the UI honest after a manual delete.
+			if (!project->ActiveBuildProfileName.empty()) {
+				bool stillExists = false;
+				for (const auto& p : diskProfiles) {
+					if (p.Name == project->ActiveBuildProfileName) { stillExists = true; break; }
+				}
+				if (!stillExists) {
+					project->ActiveBuildProfileName.clear();
 					project->Save();
 				}
 			}
 
-			if (ImGui::CollapsingHeader("Target Platform", ImGuiTreeNodeFlags_DefaultOpen)) {
-				ImGui::Indent(8);
-
-				std::vector<IndexBuildProfile> diskProfiles;
-				if (!project->GetBuildProfilesDirectory().empty()) {
-					std::error_code ec;
-					const std::string dir = project->GetBuildProfilesDirectory();
-					if (std::filesystem::exists(dir)) {
-						const std::string ext(IndexBuildProfile::FileExtension);
-						for (const auto& entry : std::filesystem::directory_iterator(
-								 dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
-							if (ec) { ec.clear(); continue; }
-							if (!entry.is_regular_file(ec) || ec) { ec.clear(); continue; }
-							if (entry.path().extension().string() != ext) continue;
-							diskProfiles.push_back(IndexBuildProfile::Load(entry.path().string()));
-						}
-						std::sort(diskProfiles.begin(), diskProfiles.end(),
-							[](const IndexBuildProfile& a, const IndexBuildProfile& b) {
-								return a.Name < b.Name;
-							});
+			// Default to first Windows profile; leave empty if none exists (don't silently target Linux).
+			if (project->ActiveBuildProfileName.empty()) {
+				for (const auto& p : diskProfiles) {
+					if (p.Platform == BuildPlatform::Windows) {
+						project->ActiveBuildProfileName = p.Name;
+						project->Save();
+						break;
 					}
 				}
+			}
+		}
 
-				// Clear stale ActiveBuildProfileName if the file was deleted
-				// externally — keeps the UI honest after a manual delete.
-				if (!project->ActiveBuildProfileName.empty()) {
-					bool stillExists = false;
-					for (const auto& p : diskProfiles) {
-						if (p.Name == project->ActiveBuildProfileName) { stillExists = true; break; }
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float frameH = ImGui::GetFrameHeight();
+		constexpr float k_CardPad = 8.0f;
+		// Footer = separator + spacing + one button row; the body takes the rest.
+		const float footerH = std::ceil(frameH + style.ItemSpacing.y * 3.0f + 1.0f);
+		const float bodyH = std::max(frameH * 4.0f, ImGui::GetContentRegionAvail().y - footerH);
+
+		auto sectionTitle = [](const char* label) {
+			ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+			ImGui::SeparatorText(label);
+			ImGui::PopStyleColor();
+		};
+		// BeginCard draws no inner padding, so pad the content here.
+		const float cardPadY = std::max(0.0f, k_CardPad - style.ItemSpacing.y);
+		auto beginCard = [&](const char* id) {
+			EditorUI::BeginCard(id);
+			ImGui::Dummy(ImVec2(0.0f, cardPadY));
+			ImGui::Indent(k_CardPad);
+		};
+		auto endCard = [&]() {
+			ImGui::Unindent(k_CardPad);
+			ImGui::Dummy(ImVec2(0.0f, cardPadY));
+			EditorUI::EndCard();
+		};
+		float labelW = 0.0f;
+		for (const char* label : { "Active profile", "Platform", "Rendering API", "Build profile", "Output directory", "Defines", "Project" }) {
+			labelW = std::max(labelW, ImGui::CalcTextSize(label).x);
+		}
+		labelW += style.ItemSpacing.x * 2.0f;
+		auto rowLabel = [&](const char* label) {
+			const float x = ImGui::GetCursorPosX();
+			ImGui::AlignTextToFramePadding();
+			ImGui::TextDisabled("%s", label);
+			ImGui::SameLine(x + labelW);
+		};
+
+		if (!project) {
+			ImGui::BeginChild("##BuildBody", ImVec2(0.0f, bodyH));
+			EditorUI::EmptyState("No project loaded");
+			ImGui::EndChild();
+		}
+		else {
+			const float leftW = std::floor((ImGui::GetContentRegionAvail().x - style.ItemSpacing.x) * 0.45f);
+
+			// ── Left: scenes in build ──
+			ImGui::BeginChild("##BuildScenesPane", ImVec2(leftW, bodyH), ImGuiChildFlags_None,
+				ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+			sectionTitle("Scenes in build");
+			const float footerRowH = frameH + style.ItemSpacing.y;
+			const float listH = std::max(frameH * 2.0f, ImGui::GetContentRegionAvail().y - footerRowH);
+			std::vector<IndexProject::BuildSceneEntry>& sceneList = project->BuildSceneList;
+			// Row edits are applied after the loop so the list isn't mutated mid-iteration.
+			int moveFrom = -1;
+			int moveTo = -1;
+			bool sceneListEdited = false;
+
+			EditorUI::BeginCard("##BuildSceneCard");
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(k_CardPad, k_CardPad));
+			ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+			ImGui::BeginChild("##BuildSceneList", ImVec2(0.0f, listH), ImGuiChildFlags_AlwaysUseWindowPadding);
+			ImGui::PopStyleColor();
+			ImGui::PopStyleVar();
+
+			if (sceneList.empty()) {
+				EditorUI::EmptyState("No scenes", "Create a scene, or drag a .scene asset here.");
+			}
+			else {
+				const float indexW = ImGui::CalcTextSize("00").x + style.ItemSpacing.x;
+				const float startupBadgeW = ImGui::CalcTextSize("Startup").x + 12.0f; // Badge pads 6px per side
+				const int sceneCount = static_cast<int>(sceneList.size());
+				int startupIndex = -1;
+				for (int i = 0; i < sceneCount; i++) {
+					if (sceneList[i].Enabled) { startupIndex = i; break; }
+				}
+				// Shown index is the runtime build index, so excluded rows don't consume one.
+				int buildIndex = 0;
+				for (int i = 0; i < sceneCount; i++) {
+					IndexProject::BuildSceneEntry& entry = sceneList[i];
+					ImGui::PushID(i);
+					const bool isStartup = (i == startupIndex);
+
+					const float rowX = ImGui::GetCursorPosX();
+					ImGui::AlignTextToFramePadding();
+					if (entry.Enabled) ImGui::TextDisabled("%d", buildIndex++);
+					else ImGui::TextDisabled(" ");
+					ImGui::SameLine(rowX + indexW);
+
+					if (ImGui::Checkbox("##IncludeInBuild", &entry.Enabled)) {
+						sceneListEdited = true;
 					}
-					if (!stillExists) {
+					EditorUI::Tooltip(entry.Enabled ? "Included in the build" : "Excluded from the build");
+					ImGui::SameLine();
+
+					const float nameW = ImGui::GetContentRegionAvail().x
+						- (isStartup ? startupBadgeW + style.ItemSpacing.x : 0.0f);
+					const std::string sceneItemId = std::to_string(i);
+					if (!entry.Enabled) {
+						ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+					}
+					ImGuiUtils::SelectableEllipsis(entry.Name, sceneItemId.c_str(), false, 0,
+						ImVec2(std::max(1.0f, nameW), 0.0f));
+					if (!entry.Enabled) {
+						ImGui::PopStyleColor();
+					}
+
+					if (ImGui::BeginPopupContextItem("##BuildSceneRowMenu")) {
+						if (ImGui::MenuItem(entry.Enabled ? "Exclude from build" : "Include in build")) {
+							entry.Enabled = !entry.Enabled;
+							sceneListEdited = true;
+						}
+						if (ImGui::MenuItem("Set as startup scene", nullptr, false, !isStartup)) {
+							entry.Enabled = true;
+							moveFrom = i;
+							moveTo = 0;
+							sceneListEdited = true;
+						}
+						ImGui::Separator();
+						if (ImGui::MenuItem("Move up", nullptr, false, i > 0)) {
+							moveFrom = i;
+							moveTo = i - 1;
+						}
+						if (ImGui::MenuItem("Move down", nullptr, false, i + 1 < sceneCount)) {
+							moveFrom = i;
+							moveTo = i + 1;
+						}
+						ImGui::EndPopup();
+					}
+
+					if (ImGui::BeginDragDropSource()) {
+						ImGui::SetDragDropPayload("SCENE_LIST_ITEM", &i, sizeof(int));
+						ImGui::Text("Move: %s", entry.Name.c_str());
+						ImGui::EndDragDropSource();
+					}
+					if (ImGui::BeginDragDropTarget()) {
+						if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCENE_LIST_ITEM")) {
+							moveFrom = *static_cast<const int*>(payload->Data);
+							moveTo = i;
+						}
+						ImGui::EndDragDropTarget();
+					}
+
+					if (isStartup) {
+						ImGui::SameLine();
+						EditorUI::Badge("Startup", EditorUI::Tone::Success);
+						EditorUI::Tooltip("Loaded first when the built game starts.");
+					}
+
+					ImGui::PopID();
+				}
+			}
+			ImGui::EndChild();
+
+			// The whole list area takes asset drops; rows inside take reorder drops.
+			if (ImGui::BeginDragDropTarget()) {
+				if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
+					// Use 1-arg ctor: payload includes trailing '\0' in DataSize, so (data,DataSize) embeds it and breaks extension comparison.
+					std::string droppedPath(static_cast<const char*>(payload->Data));
+					if (std::filesystem::path(droppedPath).extension() == ".scene") {
+						const std::string sceneName = std::filesystem::path(droppedPath).stem().string();
+						auto it = FindBuildScene(sceneList, sceneName);
+						if (it == sceneList.end()) {
+							sceneList.push_back({ sceneName, true });
+						}
+						else {
+							it->Enabled = true;
+						}
+						sceneListEdited = true;
+					}
+				}
+				ImGui::EndDragDropTarget();
+			}
+			EditorUI::EndCard();
+
+			Scene* openScene = SceneManager::GetActiveScene();
+			const std::string openSceneName = openScene ? openScene->GetName() : std::string();
+			const auto openSceneIt = FindBuildScene(sceneList, openSceneName);
+			const bool canAddOpenScene = !openSceneName.empty()
+				&& (openSceneIt == sceneList.end() || !openSceneIt->Enabled);
+			ImGui::BeginDisabled(!canAddOpenScene);
+			if (ImGui::Button("Add Open Scene")) {
+				if (openSceneIt != sceneList.end()) {
+					openSceneIt->Enabled = true;
+					sceneListEdited = true;
+				}
+				else if (const std::string scenePath = project->GetSceneFilePath(openSceneName);
+					!scenePath.empty() && File::Exists(scenePath)) {
+					sceneList.push_back({ openSceneName, true });
+					sceneListEdited = true;
+				}
+				else {
+					IDX_WARN_TAG("Build", "Scene '{}' has no .scene file yet; save it before adding it to the build.",
+						openSceneName);
+				}
+			}
+			ImGui::EndDisabled();
+			ImGui::SameLine();
+			ImGui::AlignTextToFramePadding();
+			ImGuiUtils::TextDisabledEllipsis("Drag to reorder, right-click for options.");
+
+			const int sceneCount = static_cast<int>(sceneList.size());
+			if (moveFrom >= 0 && moveFrom < sceneCount && moveTo >= 0 && moveTo < sceneCount && moveFrom != moveTo) {
+				IndexProject::BuildSceneEntry moved = std::move(sceneList[moveFrom]);
+				sceneList.erase(sceneList.begin() + moveFrom);
+				sceneList.insert(sceneList.begin() + moveTo, std::move(moved));
+				sceneListEdited = true;
+			}
+			if (sceneListEdited) {
+				if (std::string firstEnabled = FirstEnabledBuildScene(sceneList); !firstEnabled.empty()) {
+					project->StartupScene = std::move(firstEnabled);
+				}
+				project->Save();
+			}
+			ImGui::EndChild();
+
+			// ── Right: target + settings ──
+			ImGui::SameLine();
+			ImGui::BeginChild("##BuildTargetPane", ImVec2(0.0f, bodyH));
+
+			sectionTitle("Target");
+			beginCard("##BuildTargetCard");
+
+			rowLabel("Active profile");
+			const float manageW = ImGui::CalcTextSize("Manage…").x + style.FramePadding.x * 2.0f;
+			ImGui::SetNextItemWidth(std::max(1.0f,
+				ImGui::GetContentRegionAvail().x - manageW - style.ItemInnerSpacing.x - k_CardPad));
+			const char* previewLabel = project->ActiveBuildProfileName.empty()
+				? "<none>" : project->ActiveBuildProfileName.c_str();
+			if (ImGui::BeginCombo("##ActiveBuildProfile", previewLabel)) {
+				if (ImGui::Selectable("<none>", project->ActiveBuildProfileName.empty())) {
+					if (!project->ActiveBuildProfileName.empty()) {
 						project->ActiveBuildProfileName.clear();
 						project->Save();
 					}
 				}
-
-				// Default to first Windows profile; leave empty if none exists (don't silently target Linux).
-				if (project->ActiveBuildProfileName.empty()) {
-					for (const auto& p : diskProfiles) {
-						if (p.Platform == BuildPlatform::Windows) {
+				for (const auto& p : diskProfiles) {
+					const bool selected = (project->ActiveBuildProfileName == p.Name);
+					if (ImGui::Selectable(p.Name.c_str(), selected)) {
+						if (project->ActiveBuildProfileName != p.Name) {
 							project->ActiveBuildProfileName = p.Name;
 							project->Save();
-							break;
 						}
 					}
 				}
-
-				ImGui::TextUnformatted("Active Profile:");
-				ImGui::SetNextItemWidth(-1);
-				const char* previewLabel = project->ActiveBuildProfileName.empty()
-					? "<none>" : project->ActiveBuildProfileName.c_str();
-				if (ImGui::BeginCombo("##ActiveBuildProfile", previewLabel)) {
-					if (ImGui::Selectable("<none>", project->ActiveBuildProfileName.empty())) {
-						if (!project->ActiveBuildProfileName.empty()) {
-							project->ActiveBuildProfileName.clear();
-							project->Save();
-						}
-					}
-					for (const auto& p : diskProfiles) {
-						const bool selected = (project->ActiveBuildProfileName == p.Name);
-						if (ImGui::Selectable(p.Name.c_str(), selected)) {
-							if (project->ActiveBuildProfileName != p.Name) {
-								project->ActiveBuildProfileName = p.Name;
-								project->Save();
-							}
-						}
-					}
-					ImGui::EndCombo();
-				}
-
-				ImGui::SameLine();
-				if (ImGui::SmallButton("Manage Profiles…")) {
-					m_ShowBuildProfilesPanel = true;
-				}
-
-				// Echo the active profile's platform + render backend below
-				// the combo so the user sees what Build will actually target
-				// without flipping over to the Build Profiles window.
-				if (!project->ActiveBuildProfileName.empty()) {
-					const IndexBuildProfile* active = nullptr;
-					for (const auto& p : diskProfiles) {
-						if (p.Name == project->ActiveBuildProfileName) { active = &p; break; }
-					}
-					if (active) {
-						ImGui::Text("Platform: %s",
-							IndexBuildProfile::PlatformDisplayName(active->Platform));
-						ImGui::Text("Rendering API: %s",
-							IndexProject::RenderBackendToString(active->RenderBackend));
-						if (!BuildPlatformSupport::IsAvailable(active->Platform)) {
-							ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.2f, 1.0f));
-							ImGui::TextWrapped("[!] %s",
-								BuildPlatformSupport::UnavailableReason(active->Platform).c_str());
-							ImGui::PopStyleColor();
-						}
-					}
-				}
-				else {
-					ImGui::TextDisabled("No active profile — pick one above or click 'Manage Profiles…'.");
-				}
-
-				ImGui::Unindent(8);
+				ImGui::EndCombo();
 			}
+			ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+			if (ImGui::Button("Manage…")) {
+				m_ShowBuildProfilesPanel = true;
+			}
+			EditorUI::Tooltip("Open the Build Profiles window.");
+
+			// Echo what Build will actually target without flipping over to the Build Profiles window.
+			if (!project->ActiveBuildProfileName.empty()) {
+				const IndexBuildProfile* active = nullptr;
+				for (const auto& p : diskProfiles) {
+					if (p.Name == project->ActiveBuildProfileName) { active = &p; break; }
+				}
+				if (active) {
+					rowLabel("Platform");
+					ImGui::Text("%s", IndexBuildProfile::PlatformDisplayName(active->Platform));
+					rowLabel("Rendering API");
+					ImGui::Text("%s", IndexProject::RenderBackendToString(active->RenderBackend));
+					if (!BuildPlatformSupport::IsAvailable(active->Platform)) {
+						const std::string reason = "[!] " + BuildPlatformSupport::UnavailableReason(active->Platform);
+						ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - k_CardPad);
+						EditorUI::StatusText(EditorUI::Tone::Warning, reason.c_str());
+						ImGui::PopTextWrapPos();
+					}
+				}
+			}
+			else {
+				EditorUI::EmptyState("No active profile", "Pick one above or click 'Manage…'.");
+			}
+			endCard();
 
 			ImGui::Spacing();
+			sectionTitle("Settings");
+			beginCard("##BuildSettingsCard");
+			const float valueX = ImGui::GetCursorPosX() + labelW;
 
-			if (ImGui::CollapsingHeader("Scene List", ImGuiTreeNodeFlags_DefaultOpen)) {
-				ImGui::Indent(8);
-				if (m_BuildSceneList.empty()) {
-					ImGui::TextDisabled("No scenes found in Assets/");
+			rowLabel("Build profile");
+			ImGui::SetNextItemWidth(-k_CardPad);
+			const char* profileItems[] = { "Development", "Release" };
+			int profileIdx = (project->ActiveBuildProfile == IndexProject::BuildProfile::Release) ? 1 : 0;
+			if (ImGui::Combo("##BuildProfile", &profileIdx, profileItems, IM_ARRAYSIZE(profileItems))) {
+				const auto newProfile = (profileIdx == 1)
+					? IndexProject::BuildProfile::Release
+					: IndexProject::BuildProfile::Development;
+				if (newProfile != project->ActiveBuildProfile) {
+					project->ActiveBuildProfile = newProfile;
+					// Auto-flip overlay defaults to match the new profile.
+					// Release = both off (ship-clean). Development = both on.
+					const bool isDev = (newProfile == IndexProject::BuildProfile::Development);
+					project->ShowRuntimeStats = isDev;
+					project->ShowRuntimeLogs  = isDev;
+					project->Save();
 				}
-				else {
-					for (int i = 0; i < static_cast<int>(m_BuildSceneList.size()); i++) {
-						ImGui::PushID(i);
-						bool isStartup = (i == 0);
-
-						if (isStartup) ImGui::TextColored(ImVec4(0.3f, 0.8f, 0.3f, 1.0f), "[Startup]");
-						else ImGui::TextDisabled("[%d]", i);
-
-						ImGui::SameLine();
-						const std::string sceneItemId = std::to_string(i);
-						ImGuiUtils::SelectableEllipsis(m_BuildSceneList[i], sceneItemId.c_str());
-
-						if (ImGui::BeginDragDropSource()) {
-							ImGui::SetDragDropPayload("SCENE_LIST_ITEM", &i, sizeof(int));
-							ImGui::Text("Move: %s", m_BuildSceneList[i].c_str());
-							ImGui::EndDragDropSource();
-						}
-						if (ImGui::BeginDragDropTarget()) {
-							if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCENE_LIST_ITEM")) {
-								int srcIndex = *static_cast<const int*>(payload->Data);
-								if (srcIndex != i) {
-									std::string moved = m_BuildSceneList[srcIndex];
-									m_BuildSceneList.erase(m_BuildSceneList.begin() + srcIndex);
-									int insertAt = (srcIndex < i) ? i - 1 : i;
-									m_BuildSceneList.insert(m_BuildSceneList.begin() + insertAt, moved);
-									if (!m_BuildSceneList.empty()) {
-										project->StartupScene = m_BuildSceneList[0];
-										project->Save();
-									}
-								}
-							}
-							ImGui::EndDragDropTarget();
-						}
-
-						ImGui::PopID();
-					}
-				}
-
-				if (ImGui::BeginDragDropTarget()) {
-					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
-						// Use 1-arg ctor: payload includes trailing '\0' in DataSize, so (data,DataSize) embeds it and breaks extension comparison.
-						std::string droppedPath(static_cast<const char*>(payload->Data));
-						if (std::filesystem::path(droppedPath).extension() == ".scene") {
-							std::string sceneName = std::filesystem::path(droppedPath).stem().string();
-							auto it = std::find(m_BuildSceneList.begin(), m_BuildSceneList.end(), sceneName);
-							if (it == m_BuildSceneList.end()) {
-								m_BuildSceneList.push_back(sceneName);
-							}
-						}
-					}
-					ImGui::EndDragDropTarget();
-				}
-
-				ImGui::Unindent(8);
 			}
 
-			ImGui::Spacing();
+			rowLabel("Output directory");
+			ImGui::SetNextItemWidth(-k_CardPad);
+			ImGui::InputText("##BuildOutputDir", m_BuildOutputDirBuffer, sizeof(m_BuildOutputDirBuffer));
 
-			if (ImGui::CollapsingHeader("Build Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
-				ImGui::Indent(8);
-				if (ImGui::Button("Open Project Settings")) {
-					m_ShowProjectSettings = true;
+			rowLabel("Defines");
+			const float addBtnWidth = ImGui::CalcTextSize("Add").x
+				+ style.FramePadding.x * 2.0f;
+			ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x
+				- addBtnWidth - style.ItemInnerSpacing.x - k_CardPad));
+			const bool entryEnter = ImGui::InputTextWithHint("##NewCustomDefine",
+				"Add a symbol (e.g. STEAM_BUILD)…",
+				m_CustomDefineEntryBuffer, sizeof(m_CustomDefineEntryBuffer),
+				ImGuiInputTextFlags_EnterReturnsTrue);
+			ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+			bool addClicked = ImGui::Button("Add##CustomDefine") || entryEnter;
+			const bool entryReady = m_CustomDefineEntryBuffer[0] != '\0';
+			if (addClicked && entryReady) {
+				std::string newDef(m_CustomDefineEntryBuffer);
+				// Trim whitespace + reject duplicates / empty strings.
+				while (!newDef.empty() && std::isspace(static_cast<unsigned char>(newDef.back()))) newDef.pop_back();
+				std::size_t firstNonSpace = 0;
+				while (firstNonSpace < newDef.size()
+					&& std::isspace(static_cast<unsigned char>(newDef[firstNonSpace]))) ++firstNonSpace;
+				newDef.erase(0, firstNonSpace);
+				if (!newDef.empty()
+					&& std::find(project->CustomDefines.begin(), project->CustomDefines.end(), newDef) == project->CustomDefines.end()) {
+					project->CustomDefines.push_back(std::move(newDef));
+					project->Save();
 				}
-
-				ImGui::Spacing();
-
-				ImGui::TextUnformatted("Build Profile:");
-				ImGui::SetNextItemWidth(-1);
-				const char* profileItems[] = { "Development", "Release" };
-				int profileIdx = (project->ActiveBuildProfile == IndexProject::BuildProfile::Release) ? 1 : 0;
-				if (ImGui::Combo("##BuildProfile", &profileIdx, profileItems, IM_ARRAYSIZE(profileItems))) {
-					const auto newProfile = (profileIdx == 1)
-						? IndexProject::BuildProfile::Release
-						: IndexProject::BuildProfile::Development;
-					if (newProfile != project->ActiveBuildProfile) {
-						project->ActiveBuildProfile = newProfile;
-						// Auto-flip overlay defaults to match the new profile.
-						// Release = both off (ship-clean). Development = both on.
-						const bool isDev = (newProfile == IndexProject::BuildProfile::Development);
-						project->ShowRuntimeStats = isDev;
-						project->ShowRuntimeLogs  = isDev;
-						project->Save();
-					}
-				}
-
-				ImGui::Spacing();
-
-				ImGui::TextUnformatted("Custom Defines:");
-				const float addBtnWidth = ImGui::CalcTextSize("Add").x
-					+ ImGui::GetStyle().FramePadding.x * 2.0f;
-				const float availForInput = ImGui::GetContentRegionAvail().x
-					- addBtnWidth - ImGui::GetStyle().ItemInnerSpacing.x;
-				ImGui::SetNextItemWidth(availForInput);
-				const bool entryEnter = ImGui::InputTextWithHint("##NewCustomDefine",
-					"Add a symbol (e.g. STEAM_BUILD)…",
-					m_CustomDefineEntryBuffer, sizeof(m_CustomDefineEntryBuffer),
-					ImGuiInputTextFlags_EnterReturnsTrue);
-				ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-				bool addClicked = ImGui::Button("Add##CustomDefine") || entryEnter;
-				const bool entryReady = m_CustomDefineEntryBuffer[0] != '\0';
-				if (addClicked && entryReady) {
-					std::string newDef(m_CustomDefineEntryBuffer);
-					// Trim whitespace + reject duplicates / empty strings.
-					while (!newDef.empty() && std::isspace(static_cast<unsigned char>(newDef.back()))) newDef.pop_back();
-					std::size_t firstNonSpace = 0;
-					while (firstNonSpace < newDef.size()
-						&& std::isspace(static_cast<unsigned char>(newDef[firstNonSpace]))) ++firstNonSpace;
-					newDef.erase(0, firstNonSpace);
-					if (!newDef.empty()
-						&& std::find(project->CustomDefines.begin(), project->CustomDefines.end(), newDef) == project->CustomDefines.end()) {
-						project->CustomDefines.push_back(std::move(newDef));
-						project->Save();
-					}
-					m_CustomDefineEntryBuffer[0] = '\0';
-				}
-
-				if (project->CustomDefines.empty()) {
-					ImGui::TextDisabled("(no custom defines)");
-				} else {
-					int removeIdx = -1;
-					for (int i = 0; i < static_cast<int>(project->CustomDefines.size()); ++i) {
-						ImGui::PushID(i);
-						ImGui::Bullet();
-						ImGui::TextUnformatted(project->CustomDefines[i].c_str());
-						ImGui::SameLine();
-						if (ImGui::SmallButton("x")) removeIdx = i;
-						ImGui::PopID();
-					}
-					if (removeIdx >= 0) {
-						project->CustomDefines.erase(project->CustomDefines.begin() + removeIdx);
-						project->Save();
-					}
-				}
-
-				ImGui::Spacing();
-				ImGui::Text("Output Directory:");
-				ImGui::SetNextItemWidth(-1);
-				ImGui::InputText("##BuildOutputDir", m_BuildOutputDirBuffer, sizeof(m_BuildOutputDirBuffer));
-				ImGui::Unindent(8);
+				m_CustomDefineEntryBuffer[0] = '\0';
 			}
+
+			if (project->CustomDefines.empty()) {
+				ImGui::SetCursorPosX(valueX);
+				ImGui::TextDisabled("No custom defines.");
+			}
+			else {
+				// Defines flow as chips under the input, wrapping at the card edge.
+				const float rightEdge = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x - k_CardPad;
+				int removeIdx = -1;
+				for (int i = 0; i < static_cast<int>(project->CustomDefines.size()); ++i) {
+					ImGui::PushID(i);
+					const std::string& define = project->CustomDefines[i];
+					const float chipW = ImGui::CalcTextSize(define.c_str()).x + 12.0f + style.ItemInnerSpacing.x + frameH;
+					if (i > 0 && ImGui::GetItemRectMax().x + style.ItemSpacing.x + chipW <= rightEdge) {
+						ImGui::SameLine();
+					}
+					else {
+						ImGui::SetCursorPosX(valueX);
+					}
+					EditorUI::Badge(define.c_str());
+					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+					if (EditorUI::IconButton("##RemoveDefine", "clear", "Remove define", false, false, 0.0f, "x")) {
+						removeIdx = i;
+					}
+					ImGui::PopID();
+				}
+				if (removeIdx >= 0) {
+					project->CustomDefines.erase(project->CustomDefines.begin() + removeIdx);
+					project->Save();
+				}
+			}
+
+			rowLabel("Project");
+			if (EditorUI::Button("Open Project Settings")) {
+				m_ShowProjectSettings = true;
+			}
+			endCard();
+
+			ImGui::EndChild();
 		}
 
+		// ── Footer: status on the left, actions on the right ──
+		ImGui::Separator();
 		ImGui::Spacing();
 
 		IndexBuildProfile activeProfile;
@@ -1976,22 +2808,67 @@ namespace Index {
 		const bool platformAvailable = activeProfileResolved
 			&& BuildPlatformSupport::IsAvailable(activeProfile.Platform);
 
+		const float buttonW = std::max(110.0f, ImGui::CalcTextSize("Build and Play").x + style.FramePadding.x * 4.0f);
+		const float buttonsW = buttonW * 2.0f + style.ItemSpacing.x;
+		const float footerAvail = ImGui::GetContentRegionAvail().x;
+		const float buttonsX = ImGui::GetCursorPosX() + std::max(0.0f, footerAvail - buttonsW);
+		const float statusW = std::max(1.0f, footerAvail - buttonsW - style.ItemSpacing.x * 2.0f);
+
+		if (m_BuildState > 0) {
+			float progress = 0.0f;
+			std::string stage;
+			{
+				std::lock_guard<std::mutex> lk(m_BuildProgressMutex);
+				progress = m_BuildProgress;
+				stage = m_BuildStage;
+			}
+			ImGui::ProgressBar(progress, ImVec2(statusW, 0.0f), stage.empty() ? "Building..." : stage.c_str());
+		}
+		else {
+			auto statusLine = [&](EditorUI::Tone tone, const std::string& text) {
+				ImGui::AlignTextToFramePadding();
+				ImGui::PushStyleColor(ImGuiCol_Text, EditorUI::ToneColor(tone));
+				ImGuiUtils::TextEllipsis(text, statusW);
+				ImGui::PopStyleColor();
+			};
+			// Explain a disabled Build first (disabled buttons have no tooltip); otherwise echo the last result.
+			if (!project) {
+				statusLine(EditorUI::Tone::Neutral, "No project loaded.");
+			}
+			else if (Application::GetIsPlaying()) {
+				statusLine(EditorUI::Tone::Neutral, "Exit play mode to build.");
+			}
+			else if (!activeProfileResolved) {
+				statusLine(EditorUI::Tone::Neutral, "Select an active build profile to enable Build.");
+			}
+			else if (!platformAvailable) {
+				statusLine(EditorUI::Tone::Warning,
+					"[!] Cannot build: " + BuildPlatformSupport::UnavailableReason(activeProfile.Platform));
+			}
+			else {
+				std::string lastStage;
+				{
+					std::lock_guard<std::mutex> lk(m_BuildProgressMutex);
+					lastStage = m_BuildStage;
+				}
+				if (lastStage.empty()) {
+					statusLine(EditorUI::Tone::Neutral, "Ready to build.");
+				}
+				else if (m_BuildSucceeded.load(std::memory_order_relaxed)) {
+					statusLine(EditorUI::Tone::Success, "Last build complete: " + m_BuildOutputDir);
+				}
+				else {
+					statusLine(EditorUI::Tone::Error, "Last build failed: " + lastStage);
+				}
+			}
+		}
+		ImGui::SameLine(buttonsX);
+
 		bool canBuild = project && !Application::GetIsPlaying() && m_BuildState == 0
 			&& activeProfileResolved && platformAvailable;
 		if (!canBuild) ImGui::BeginDisabled();
 
-		float halfWidth = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-		if (ImGui::Button("Build", ImVec2(halfWidth, 0))) {
-			if (activeProfileResolved && project) {
-				project->ActiveRenderBackend = activeProfile.RenderBackend;
-				project->Save();
-			}
-			m_BuildState = 1;
-			m_BuildAndPlay = false;
-			m_BuildStartTime = std::chrono::steady_clock::now();
-		}
-		ImGui::SameLine();
-		if (ImGui::Button("Build and Play", ImVec2(-1, 0))) {
+		if (EditorUI::Button("Build and Play", EditorUI::ButtonVariant::Default, ImVec2(buttonW, 0.0f))) {
 			if (activeProfileResolved && project) {
 				project->ActiveRenderBackend = activeProfile.RenderBackend;
 				project->Save();
@@ -2000,23 +2877,18 @@ namespace Index {
 			m_BuildAndPlay = true;
 			m_BuildStartTime = std::chrono::steady_clock::now();
 		}
+		ImGui::SameLine();
+		if (EditorUI::Button("Build", EditorUI::ButtonVariant::Primary, ImVec2(buttonW, 0.0f))) {
+			if (activeProfileResolved && project) {
+				project->ActiveRenderBackend = activeProfile.RenderBackend;
+				project->Save();
+			}
+			m_BuildState = 1;
+			m_BuildAndPlay = false;
+			m_BuildStartTime = std::chrono::steady_clock::now();
+		}
 
 		if (!canBuild) ImGui::EndDisabled();
-
-		// Explain why the button is disabled — the editor's existing
-		// disabled-button convention has no tooltip, so a one-liner below
-		// keeps users from guessing.
-		if (project && !Application::GetIsPlaying() && m_BuildState == 0) {
-			if (!activeProfileResolved) {
-				ImGui::TextDisabled("Select an active build profile to enable Build.");
-			}
-			else if (!platformAvailable) {
-				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.2f, 1.0f));
-				ImGui::TextWrapped("[!] Cannot build: %s",
-					BuildPlatformSupport::UnavailableReason(activeProfile.Platform).c_str());
-				ImGui::PopStyleColor();
-			}
-		}
 		ImGui::End();
 	}
 
@@ -2032,8 +2904,8 @@ namespace Index {
 	void ImGuiEditorLayer::RenderProjectSettingsPanel() {
 		if (!m_ShowProjectSettings) return;
 
-		ImGui::SetNextWindowSize(ImVec2(760.0f, 520.0f), ImGuiCond_FirstUseEver);
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		EditorUI::NextWindowDefaultSize();
 		if (!ImGui::Begin("Project Settings", &m_ShowProjectSettings)) {
 			ImGui::End();
 			return;
@@ -2041,7 +2913,7 @@ namespace Index {
 
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (!project) {
-			ImGui::TextDisabled("No project loaded");
+			EditorUI::EmptyState("No project loaded");
 			ImGui::End();
 			return;
 		}
@@ -2059,9 +2931,8 @@ namespace Index {
 			== static_cast<int>(SettingsCategory::Physics) + 1,
 			"k_CategoryLabels out of sync with SettingsCategory enum");
 
-		ImGui::SetNextItemWidth(-1);
-		ImGui::InputTextWithHint("##SettingsSearch", "Search settings...",
-			m_ProjectSettingsSearchBuffer, sizeof(m_ProjectSettingsSearchBuffer));
+		EditorUI::SearchField("##SettingsSearch", m_ProjectSettingsSearchBuffer,
+			sizeof(m_ProjectSettingsSearchBuffer), "Search settings...");
 
 		std::string filterLower(m_ProjectSettingsSearchBuffer);
 		std::transform(filterLower.begin(), filterLower.end(), filterLower.begin(),
@@ -2095,7 +2966,7 @@ namespace Index {
 			}
 		}
 		if (filterActive && !anyVisible) {
-			ImGui::TextDisabled("No matches");
+			EditorUI::EmptyState("No matches");
 		}
 		ImGui::EndChild();
 
@@ -2106,7 +2977,8 @@ namespace Index {
 
 		ImGui::BeginChild("##SettingsContent", ImVec2(0, 0));
 		if (filterActive && !anyVisible) {
-			ImGui::TextDisabled("No settings match \"%s\"", m_ProjectSettingsSearchBuffer);
+			const std::string noMatch = std::string("No settings match \"") + m_ProjectSettingsSearchBuffer + "\"";
+			EditorUI::EmptyState(noMatch.c_str(), "Try a different search term.");
 		}
 		else {
 			switch (m_SelectedSettingsCategory) {
@@ -2146,8 +3018,7 @@ namespace Index {
 		const std::string& filterLower)
 	{
 		if (SectionVisible(SettingsCategory::Display, "Window", filterLower)) {
-			if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-			if (ImGui::CollapsingHeader("Window", ImGuiTreeNodeFlags_DefaultOpen)) {
+			if (SettingsSectionHeader("Window", filterLower)) {
 				ImGui::Indent(8);
 
 				ImGui::TextDisabled("Startup");
@@ -2158,7 +3029,7 @@ namespace Index {
 				if (project.BuildWidth < 320) project.BuildWidth = 320;
 				if (project.BuildHeight < 240) project.BuildHeight = 240;
 
-				changed |= ImGui::Checkbox("Fullscreen", &project.BuildFullscreen);
+				changed |= ImGuiUtils::Switch("Fullscreen", &project.BuildFullscreen);
 
 				struct FullscreenModeOption {
 					const char* Label;
@@ -2191,24 +3062,22 @@ namespace Index {
 					ImGui::EndCombo();
 				}
 				if (!fullscreenEnabled) ImGui::EndDisabled();
-				if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-					ImGui::SetTooltip(
-						"How the runtime realises fullscreen at launch:\n"
-						"  Exclusive — true fullscreen, takes over the display.\n"
-						"  Borderless Windowed — undecorated window sized to the\n"
-						"      monitor; Alt-Tab is instant.\n"
-						"  Maximized — decorated, maximised window.\n"
-						"\n"
-						"Disabled when 'Fullscreen' is off — the value is\n"
-						"ignored in windowed launches.");
-				}
+				EditorUI::Tooltip(
+					"How the runtime realises fullscreen at launch:\n"
+					"  Exclusive — true fullscreen, takes over the display.\n"
+					"  Borderless Windowed — undecorated window sized to the\n"
+					"      monitor; Alt-Tab is instant.\n"
+					"  Maximized — decorated, maximised window.\n"
+					"\n"
+					"Disabled when 'Fullscreen' is off — the value is\n"
+					"ignored in windowed launches.");
 
 				ImGui::Spacing();
 				ImGui::TextDisabled("Runtime");
 				ImGui::Separator();
 
-				changed |= ImGui::Checkbox("Resizable", &project.BuildResizable);
-				changed |= ImGui::Checkbox("Run in background", &project.BuildRunInBackground);
+				changed |= ImGuiUtils::Switch("Resizable", &project.BuildResizable);
+				changed |= ImGuiUtils::Switch("Run in background", &project.BuildRunInBackground);
 
 				ImGui::Spacing();
 				ImGui::TextDisabled("Resize Limits (0 = unbounded)");
@@ -2221,9 +3090,9 @@ namespace Index {
 				if (project.BuildMaxWidth  < 0) project.BuildMaxWidth  = 0;
 				if (project.BuildMaxHeight < 0) project.BuildMaxHeight = 0;
 				if (project.BuildMaxWidth  > 0 && project.BuildMinWidth  > project.BuildMaxWidth)
-					ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Min Width > Max Width");
+					EditorUI::StatusText(EditorUI::Tone::Warning, "Min Width > Max Width");
 				if (project.BuildMaxHeight > 0 && project.BuildMinHeight > project.BuildMaxHeight)
-					ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Min Height > Max Height");
+					EditorUI::StatusText(EditorUI::Tone::Warning, "Min Height > Max Height");
 
 				ImGui::Spacing();
 				int aspectIndex = AspectRatioPresetIndexFromLabel(project.BuildAspect);
@@ -2239,38 +3108,33 @@ namespace Index {
 					}
 					ImGui::EndCombo();
 				}
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip(
-						"Locks the shipped game to this aspect ratio.\n"
-						"When the window's aspect doesn't match, the renderer\n"
-						"adds black bars (letterbox/pillarbox) so the game\n"
-						"always appears at the chosen aspect.\n"
-						"\n"
-						"Independent of the editor's Game View aspect.\n"
-						"Select 'Free Aspect' to disable and fill the full window.");
-				}
+				EditorUI::Tooltip(
+					"Locks the shipped game to this aspect ratio.\n"
+					"When the window's aspect doesn't match, the renderer\n"
+					"adds black bars (letterbox/pillarbox) so the game\n"
+					"always appears at the chosen aspect.\n"
+					"\n"
+					"Independent of the editor's Game View aspect.\n"
+					"Select 'Free Aspect' to disable and fill the full window.");
 				ImGui::Unindent(8);
 			}
 		}
 
 		if (SectionVisible(SettingsCategory::Display, "UI Scaling", filterLower)) {
-			if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-			if (ImGui::CollapsingHeader("UI Scaling", ImGuiTreeNodeFlags_DefaultOpen)) {
+			if (SettingsSectionHeader("UI Scaling", filterLower)) {
 				ImGui::Indent(8);
 				changed |= ImGui::InputInt("Reference Width##UIRef", &project.UIReferenceWidth, 0, 0);
 				changed |= ImGui::InputInt("Reference Height##UIRef", &project.UIReferenceHeight, 0, 0);
 				if (project.UIReferenceWidth  < 1) project.UIReferenceWidth  = 1;
 				if (project.UIReferenceHeight < 1) project.UIReferenceHeight = 1;
 				changed |= ImGui::SliderFloat("Match Width / Height", &project.UIScaleMatch, 0.0f, 1.0f, "%.2f");
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip(
-						"0 = scale UI by window WIDTH only.\n"
-						"1 = scale UI by window HEIGHT only.\n"
-						"0.5 = balanced (geometric mean).\n"
-						"\n"
-						"Move toward 1 if your UI hugs the top/bottom edges,\n"
-						"toward 0 if it hugs the left/right edges.");
-				}
+				EditorUI::Tooltip(
+					"0 = scale UI by window WIDTH only.\n"
+					"1 = scale UI by window HEIGHT only.\n"
+					"0.5 = balanced (geometric mean).\n"
+					"\n"
+					"Move toward 1 if your UI hugs the top/bottom edges,\n"
+					"toward 0 if it hugs the left/right edges.");
 				ImGui::Unindent(8);
 			}
 		}
@@ -2285,8 +3149,7 @@ namespace Index {
 		static IndexProject::RenderBackend s_PendingRenderBackend = IndexProject::RenderBackend::Auto;
 
 		if (SectionVisible(SettingsCategory::Graphics, "Render Backend", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("Render Backend", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SettingsSectionHeader("Render Backend", filterLower)) {
 			ImGui::Indent(8);
 
 			ImGui::SetNextItemWidth(220.0f);
@@ -2302,56 +3165,79 @@ namespace Index {
 						}
 					}
 					if (!supported) ImGui::EndDisabled();
-					if (!supported && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-						ImGui::SetTooltip("%s", RenderBackendUnsupportedReason(option.Backend));
-					}
+					if (!supported) EditorUI::Tooltip(RenderBackendUnsupportedReason(option.Backend));
 					if (selected) {
 						ImGui::SetItemDefaultFocus();
 					}
 				}
 				ImGui::EndCombo();
 			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip(
-					"Which native API Dawn (WebGPU) uses at runtime. The\n"
-					"choice is applied when the engine requests its GPU\n"
-					"adapter at startup, so the change only takes effect\n"
-					"after restarting the editor / built game.\n"
-					"\n"
-					"  • Auto: Dawn picks the most capable backend for\n"
-					"    the host platform (D3D12 on Windows, Metal on\n"
-					"    macOS, Vulkan on Linux).\n"
-					"  • Vulkan / D3D11 / D3D12 / OpenGL: explicit backend.\n"
-					"    Selecting one not supported by the host platform\n"
-					"    (e.g. D3D12 on Linux) makes adapter-request fail\n"
-					"    at startup; the log line says exactly which\n"
-					"    backend was requested.");
-			}
+			EditorUI::Tooltip(
+				"Which native API Dawn (WebGPU) uses at runtime. The\n"
+				"choice is applied when the engine requests its GPU\n"
+				"adapter at startup, so the change only takes effect\n"
+				"after restarting the editor / built game.\n"
+				"\n"
+				"  • Auto: Dawn picks the most capable backend for\n"
+				"    the host platform (D3D12 on Windows, Metal on\n"
+				"    macOS, Vulkan on Linux).\n"
+				"  • Vulkan / D3D11 / D3D12 / OpenGL: explicit backend.\n"
+				"    Selecting one not supported by the host platform\n"
+				"    (e.g. D3D12 on Linux) makes adapter-request fail\n"
+				"    at startup; the log line says exactly which\n"
+				"    backend was requested.");
 
 			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Render Backend")
 
-		if (SectionVisible(SettingsCategory::Graphics, "Post-Processing", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("Post-Processing", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SectionVisible(SettingsCategory::Graphics, "Runtime Quality", filterLower)) {
+		if (SettingsSectionHeader("Runtime Quality", filterLower)) {
 			ImGui::Indent(8);
-			changed |= ImGui::Checkbox("Enable Post-Processing", &project.EnablePostProcessing);
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip(
-					"Global kill switch for the post-processing pipeline.\n"
-					"When off, the renderer skips the PP pass entirely and\n"
-					"writes the scene straight to the final target.\n"
-					"Per-effect toggles still live on the camera's\n"
-					"PostProcessing2DComponent.");
+			bool graphicsChanged = false;
+			graphicsChanged |= ImGui::SliderFloat(
+				"Render Scale", &project.Graphics.RenderScale,
+				GraphicsSettings::MinRenderScale, GraphicsSettings::MaxRenderScale, "%.2f",
+				ImGuiSliderFlags_AlwaysClamp);
+			EditorUI::Tooltip("Resolution used for the 2D scene; UI and gizmos stay at native resolution.");
+
+			const char* upscaleLabels[] = { "Point", "Linear" };
+			int upscale = static_cast<int>(project.Graphics.UpscaleFilter);
+			if (ImGui::Combo("Upscale Filter", &upscale, upscaleLabels, IM_ARRAYSIZE(upscaleLabels))) {
+				project.Graphics.UpscaleFilter = static_cast<UpscaleFilterMode>(upscale);
+				graphicsChanged = true;
+			}
+
+			graphicsChanged |= ImGuiUtils::Switch(
+				"Enable Post-Processing", &project.Graphics.PostProcessingEnabled);
+
+			const char* postQualityLabels[] = { "Low", "Medium", "High" };
+			int postQuality = static_cast<int>(project.Graphics.PostProcessingQuality);
+			if (ImGui::Combo("Post-Processing Quality", &postQuality,
+				postQualityLabels, IM_ARRAYSIZE(postQualityLabels))) {
+				project.Graphics.PostProcessingQuality =
+					static_cast<PostProcessingQualityLevel>(postQuality);
+				graphicsChanged = true;
+			}
+
+			const char* particleQualityLabels[] = { "Off", "Low", "Medium", "High" };
+			int particleQuality = static_cast<int>(project.Graphics.ParticleQuality);
+			if (ImGui::Combo("Particle Quality", &particleQuality,
+				particleQualityLabels, IM_ARRAYSIZE(particleQualityLabels))) {
+				project.Graphics.ParticleQuality = static_cast<ParticleQualityLevel>(particleQuality);
+				graphicsChanged = true;
+			}
+
+			if (graphicsChanged) {
+				changed = true;
+				RenderSettings::Apply(project.Graphics);
 			}
 			ImGui::Unindent(8);
 		}
-		}  // end SectionVisible("Post-Processing")
+		}  // end SectionVisible("Runtime Quality")
 
 		if (SectionVisible(SettingsCategory::Graphics, "Default Font", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("Default Font", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SettingsSectionHeader("Default Font", filterLower)) {
 			ImGui::Indent(8);
 			constexpr const char* k_DefaultFontPickerKey = "ProjectSettings.DefaultFont";
 			if (auto pending = ReferencePicker::ConsumeSelection(k_DefaultFontPickerKey); pending) {
@@ -2372,9 +3258,7 @@ namespace Index {
 					ReferencePicker::CollectAssetsByKind(AssetKind::Font),
 					ReferencePicker::Style::Plain);
 			}
-			if (ImGui::IsItemHovered() && !fontSecondary.empty()) {
-				ImGui::SetTooltip("%s", fontSecondary.c_str());
-			}
+			if (!fontSecondary.empty()) EditorUI::Tooltip(fontSecondary.c_str());
 			ImGui::PopID();
 			ImGui::SameLine();
 			if (ImGui::Button("Reset##ProjectDefaultFont")) {
@@ -2387,8 +3271,7 @@ namespace Index {
 		}  // end SectionVisible("Default Font")
 
 		if (SectionVisible(SettingsCategory::Graphics, "Font Baking", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("Font Baking", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SettingsSectionHeader("Font Baking", filterLower)) {
 			ImGui::Indent(8);
 
 			// Bake-step: 0 = adaptive ladder, N = snap every N px. Applied live so
@@ -2401,13 +3284,11 @@ namespace Index {
 				FontManager::SetBakeStep(bakeStep);
 				changed = true;
 			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip(
-					"Pixel sizes the font auto-bakes at.\n"
-					"0 = Adaptive: fine steps for small text, coarse for large.\n"
-					"N = bake only at multiples of N px. Higher N = fewer atlases = less memory,\n"
-					"but in-between sizes are scaled from the nearest baked size.");
-			}
+			EditorUI::Tooltip(
+				"Pixel sizes the font auto-bakes at.\n"
+				"0 = Adaptive: fine steps for small text, coarse for large.\n"
+				"N = bake only at multiples of N px. Higher N = fewer atlases = less memory,\n"
+				"but in-between sizes are scaled from the nearest baked size.");
 
 			int budgetMB = project.FontAtlasBudgetMB;
 			ImGui::SetNextItemWidth(220.0f);
@@ -2417,12 +3298,10 @@ namespace Index {
 				FontManager::SetAtlasMemoryBudgetMB(budgetMB);
 				changed = true;
 			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip(
-					"Cap on resident font-atlas memory. When exceeded, the\n"
-					"least-recently-used baked sizes are evicted (and re-baked on demand).\n"
-					"0 = unlimited (atlases accumulate until the scene reloads).");
-			}
+			EditorUI::Tooltip(
+				"Cap on resident font-atlas memory. When exceeded, the\n"
+				"least-recently-used baked sizes are evicted (and re-baked on demand).\n"
+				"0 = unlimited (atlases accumulate until the scene reloads).");
 
 			ImGui::Unindent(8);
 		}
@@ -2441,21 +3320,25 @@ namespace Index {
 				"Changing the rendering API from %s to %s requires the editor to restart.",
 				RenderBackendLabel(project.ActiveRenderBackend),
 				RenderBackendLabel(s_PendingRenderBackend));
-			ImGui::Spacing();
-			if (ImGui::Button("Restart Now", ImVec2(120.0f, 0.0f))) {
+			const int clicked = EditorUI::DialogFooter({ "Restart Now", "Save For Later", "Cancel" }, 0);
+			if (clicked == 0) {
+				const IndexProject::RenderBackend previousBackend = project.ActiveRenderBackend;
 				project.ActiveRenderBackend = s_PendingRenderBackend;
-				project.Save();
-				ImGui::CloseCurrentPopup();
-				Application::Reload();
+				if (project.Save()) {
+					ImGui::CloseCurrentPopup();
+					RequestEditorAction(PendingEditorAction::Restart);
+				}
+				else {
+					project.ActiveRenderBackend = previousBackend;
+					IDX_ERROR_TAG("Editor", "Failed to save the render backend change.");
+				}
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Save For Later", ImVec2(120.0f, 0.0f))) {
+			else if (clicked == 1) {
 				project.ActiveRenderBackend = s_PendingRenderBackend;
 				changed = true;
 				ImGui::CloseCurrentPopup();
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(90.0f, 0.0f))) {
+			else if (clicked == 2) {
 				ImGui::CloseCurrentPopup();
 			}
 			ImGui::EndPopup();
@@ -2466,35 +3349,27 @@ namespace Index {
 		const std::string& filterLower)
 	{
 		if (SectionVisible(SettingsCategory::Physics, "Physics World", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("Physics World", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SettingsSectionHeader("Physics World", filterLower)) {
 			ImGui::Indent(8);
 
-			// Live-applied to the running Time so it takes effect on the next Play without a
-			// restart, and persisted as the per-run default (see IndexProject::PhysicsTickRate).
-			// AlwaysClamp + the shared k_Min/k_MaxPhysicsHz bounds keep both the slider and
-			// ctrl+click type-in inside Time::SetFixedDeltaTime's valid range.
+			// Apply immediately while persisting the per-run default; shared bounds match Time's clamp.
 			int hz = project.PhysicsTickRate;
 			ImGui::SetNextItemWidth(220.0f);
 			if (ImGui::SliderInt("Tick rate", &hz,
 				IndexProject::k_MinPhysicsHz, IndexProject::k_MaxPhysicsHz,
 				"%d Hz", ImGuiSliderFlags_AlwaysClamp)) {
 				project.PhysicsTickRate = hz;
-				if (Application* app = Application::GetInstance()) {
-					app->GetTime().SetFixedDeltaTime(project.GetFixedDeltaTimeSeconds());
-				}
+				Time::SetFixedDeltaTime(project.GetFixedDeltaTimeSeconds());
 				changed = true;
 			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip(
-					"How many times per second the physics world steps and\n"
-					"FixedUpdate runs (fixed timestep = 1 / Hz).\n"
-					"Higher = more accurate simulation, more CPU. Default 50.\n"
-					"\n"
-					"This is the per-run default applied at startup and on each\n"
-					"Play; scripts can still override it at runtime via\n"
-					"Time.fixedDeltaTime.");
-			}
+			EditorUI::Tooltip(
+				"How many times per second the physics world steps and\n"
+				"FixedUpdate runs (fixed timestep = 1 / Hz).\n"
+				"Higher = more accurate simulation, more CPU. Default 50.\n"
+				"\n"
+				"This is the per-run default applied at startup and on each\n"
+				"Play; scripts can still override it at runtime via\n"
+				"Time.fixedDeltaTime.");
 
 			ImGui::Unindent(8);
 		}
@@ -2505,8 +3380,7 @@ namespace Index {
 		const std::string& filterLower)
 	{
 		if (SectionVisible(SettingsCategory::Branding, "Splash Screen", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("Splash Screen", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SettingsSectionHeader("Splash Screen", filterLower)) {
 			ImGui::Indent(8);
 			constexpr const char* k_SplashPickerKey = "ProjectSettings.SplashImage";
 
@@ -2528,10 +3402,8 @@ namespace Index {
 				}
 			}
 
-			changed |= ImGui::Checkbox("Enabled##Splash", &project.SplashScreen.Enabled);
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("When off, the runtime loads the startup scene immediately with no splash.");
-			}
+			changed |= ImGuiUtils::Switch("Enabled##Splash", &project.SplashScreen.Enabled);
+			EditorUI::Tooltip("When off, the runtime loads the startup scene immediately with no splash.");
 
 			if (project.SplashScreen.Enabled) {
 				ImGui::Spacing();
@@ -2676,20 +3548,17 @@ namespace Index {
 				if (ImGui::Button("Show Preview")) {
 					m_SplashPreviewRequest = true;
 				}
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip(
-						"Replay the splash screen using the current\n"
-						"settings, drawn on top of the editor for the\n"
-						"FadeIn + Duration + FadeOut window.");
-				}
+				EditorUI::Tooltip(
+					"Replay the splash screen using the current\n"
+					"settings, drawn on top of the editor for the\n"
+					"FadeIn + Duration + FadeOut window.");
 			}
 			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Splash Screen")
 
 		if (SectionVisible(SettingsCategory::Branding, "App Icon", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("App Icon", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SettingsSectionHeader("App Icon", filterLower)) {
 			ImGui::Indent(8);
 
 			constexpr const char* k_AppIconPickerKey = "ProjectSettings.AppIcon";
@@ -2724,7 +3593,7 @@ namespace Index {
 					ImGui::SameLine();
 				}
 				else {
-					ImGui::TextDisabled("Failed to load:");
+					EditorUI::StatusText(EditorUI::Tone::Error, "Failed to load:");
 					ImGuiUtils::TextDisabledEllipsis(project.AppIconPath);
 				}
 
@@ -2790,8 +3659,7 @@ namespace Index {
 		}  // end SectionVisible("App Icon")
 
 		if (SectionVisible(SettingsCategory::Branding, "Cursors", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("Cursors", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SettingsSectionHeader("Cursors", filterLower)) {
 			ImGui::Indent(8);
 
 			auto resolveProjectRelativeCursor = [&](const std::string& rel) -> std::string {
@@ -2888,12 +3756,10 @@ namespace Index {
 			ImGui::Spacing();
 			renderCursorSlot("UI hover cursor", "ProjectSettings.UICursor",
 				project.UIInteractableCursorImagePath, &Window::SetUICursorImage);
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip(
-					"Shown while the cursor sits over an Index UI element\n"
-					"with an Interactable component (Button / Slider / etc.).\n"
-					"Falls back to the default cursor when unset.");
-			}
+			EditorUI::Tooltip(
+				"Shown while the cursor sits over an Index UI element\n"
+				"with an Interactable component (Button / Slider / etc.).\n"
+				"Falls back to the default cursor when unset.");
 
 			ImGui::Unindent(8);
 		}
@@ -2904,8 +3770,7 @@ namespace Index {
 		const std::string& filterLower)
 	{
 		if (SectionVisible(SettingsCategory::Build, "Executable", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("Executable", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SettingsSectionHeader("Executable", filterLower)) {
 			ImGui::Indent(8);
 			ImGui::TextUnformatted("Output Name:");
 			char exeBuf[256];
@@ -2946,18 +3811,16 @@ namespace Index {
 		}  // end SectionVisible("Executable")
 
 		if (SectionVisible(SettingsCategory::Build, "Diagnostics", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("Diagnostics", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SettingsSectionHeader("Diagnostics", filterLower)) {
 			ImGui::Indent(8);
-			changed |= ImGui::Checkbox("Show runtime stats overlay (F6)", &project.ShowRuntimeStats);
-			changed |= ImGui::Checkbox("Show runtime log overlay (F7)", &project.ShowRuntimeLogs);
+			changed |= ImGuiUtils::Switch("Show runtime stats overlay (F6)", &project.ShowRuntimeStats);
+			changed |= ImGuiUtils::Switch("Show runtime log overlay (F7)", &project.ShowRuntimeLogs);
 			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Diagnostics")
 
 		if (SectionVisible(SettingsCategory::Build, "ECS Entity Bits", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("ECS Entity Bits", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SettingsSectionHeader("ECS Entity Bits", filterLower)) {
 			ImGui::Indent(8);
 			ImGui::TextUnformatted("Entity ID bits:");
 			const char* entityBitsLabels[] = {
@@ -2983,35 +3846,32 @@ namespace Index {
 					changed = true;
 				}
 			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip(
-					"Maximum number of live entities the scene can hold.\n"
-					"Trades against the per-slot version count EnTT uses\n"
-					"to detect stale handles to recycled IDs.\n"
-					"\n"
-					"Compile-time setting — the engine must be rebuilt for\n"
-					"the change to take effect. Click \"Rebuild Engine\" below\n"
-					"to do that automatically.");
-			}
+			EditorUI::Tooltip(
+				"Maximum number of live entities the scene can hold.\n"
+				"Trades against the per-slot version count EnTT uses\n"
+				"to detect stale handles to recycled IDs.\n"
+				"\n"
+				"Compile-time setting — the engine must be rebuilt for\n"
+				"the change to take effect. Click \"Rebuild Engine\" below\n"
+				"to do that automatically.");
 
 			const int compiledBits = Index::GetCompiledEntityBits();
 			ImGui::Spacing();
 			if (compiledBits != project.EntityBits) {
-				ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.20f, 1.0f),
-					"Compiled: %d bits   Pending: %d bits",
+				char bitsStatus[64];
+				std::snprintf(bitsStatus, sizeof(bitsStatus), "Compiled: %d bits   Pending: %d bits",
 					compiledBits, project.EntityBits);
+				EditorUI::StatusText(EditorUI::Tone::Warning, bitsStatus);
 				ImGui::Spacing();
 				if (ImGui::Button("Rebuild Engine")) {
 					ImGui::OpenPopup("Rebuild Engine?");
 				}
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip(
-						"Closes the editor and reopens it after the engine has\n"
-						"been rebuilt with the new entityBits setting.\n"
-						"\n"
-						"A separate \"Rebuilding Engine\" window will appear\n"
-						"with progress. Don't close it.");
-				}
+				EditorUI::Tooltip(
+					"Closes the editor and reopens it after the engine has\n"
+					"been rebuilt with the new entityBits setting.\n"
+					"\n"
+					"A separate \"Rebuilding Engine\" window will appear\n"
+					"with progress. Don't close it.");
 			}
 			else {
 				ImGui::TextDisabled("Engine matches the selected width. Choose a different size to enable rebuild.");
@@ -3029,9 +3889,12 @@ namespace Index {
 					"progress. The editor reopens automatically when the build finishes. "
 					"Don't close the console window.",
 					project.EntityBits);
-				ImGui::Spacing();
-				if (ImGui::Button("Rebuild", ImVec2(120.0f, 0.0f))) {
-					project.Save();
+				const int clicked = EditorUI::DialogFooter({ "Rebuild", "Cancel" }, 0);
+				if (clicked == 0) {
+					if (!project.Save()) {
+						IDX_ERROR_TAG("Editor", "Failed to save project settings; engine rebuild aborted.");
+					}
+					else {
 
 					const std::filesystem::path editorExeDir = Path::ExecutableDir();
 					const std::filesystem::path engineRoot =
@@ -3042,6 +3905,8 @@ namespace Index {
 					const std::string config = IndexProject::GetActiveBuildConfiguration();
 					const std::string projectRootDir = project.RootDirectory;
 					const std::string userCsprojPath = project.CsprojPath;
+					const std::filesystem::path packageBuildScript = engineRoot
+						/ "scripts" / "BuildProjectPackages.ps1";
 					const int newEntityBits = project.EntityBits;
 
 				#ifdef IDX_PLATFORM_WINDOWS
@@ -3104,7 +3969,7 @@ namespace Index {
 							"goto wait_loop\r\n"
 							":wait_done\r\n"
 							"echo.\r\n"
-							"echo [1/2] Building user scripts (dotnet build)...\r\n"
+							"echo [1/3] Building user scripts (dotnet build)...\r\n"
 							"echo.\r\n"
 							"dotnet build \"" << userCsprojPath << "\""
 							" -c " << config <<
@@ -3117,7 +3982,7 @@ namespace Index {
 							"  exit /b 1\r\n"
 							")\r\n"
 							"echo.\r\n"
-							"echo [2/2] Building solution (this is the long step)...\r\n"
+							"echo [2/3] Building solution (this is the long step)...\r\n"
 							"echo.\r\n"
 							"pushd \"" << engineRoot.string() << "\"\r\n"
 							"\"" << msbuildPath << "\" \"" << slnPath.string() << "\""
@@ -3132,6 +3997,22 @@ namespace Index {
 							")\r\n"
 							"popd\r\n"
 							"echo.\r\n"
+							"echo [3/3] Rebuilding enabled project packages...\r\n"
+							"echo.\r\n"
+							"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"" << packageBuildScript.string() << "\""
+							" -EngineRoot \"" << engineRoot.string() << "\""
+							" -ProjectRoot \"" << projectRootDir << "\""
+							" -Configuration \"" << config << "\""
+							" -Platform \"x64\""
+							" -MSBuildPath \"" << msbuildPath << "\"\r\n"
+							"if errorlevel 1 (\r\n"
+							"  echo.\r\n"
+							"  echo *** Project package build FAILED. Scroll up for errors. ***\r\n"
+							"  echo.\r\n"
+							"  pause\r\n"
+							"  exit /b 1\r\n"
+							")\r\n"
+							"echo.\r\n"
 							"echo [Relaunching editor...]\r\n"
 							"echo.\r\n"
 							"start \"\" \"" << editorExe.string() << "\" --project=\"" << projectRootDir << "\"\r\n"
@@ -3144,26 +4025,23 @@ namespace Index {
 						const std::filesystem::path batPath = batDir / "engine-rebuild.bat";
 						std::ofstream batFile(batPath, std::ios::binary | std::ios::trunc);
 						batFile << bat.str();
+						const bool scriptWritten = static_cast<bool>(batFile);
 						batFile.close();
 
-						const bool spawned = Process::LaunchDetached(
-							{ "cmd.exe", "/c", batPath.string() }, engineRoot);
-						ImGui::CloseCurrentPopup();
-						if (spawned) {
-							// MUST Quit() cleanly to release the engine DLL file lock before MSBuild overwrites it.
-							Application::GetInstance()->Quit();
+						if (scriptWritten) {
+							m_PendingEngineRebuildWorkingDirectory = engineRoot.string();
+							RequestEditorAction(PendingEditorAction::RebuildEngine, batPath.string());
+							ImGui::CloseCurrentPopup();
 						}
 						else {
 							IDX_ERROR_TAG("Editor",
-								"Failed to spawn cmd.exe for engine rebuild (script at {})",
+								"Failed to write engine rebuild script at {}",
 								batPath.string());
 						}
 					}
-					else {
 					}
 				}
-				ImGui::SameLine();
-				if (ImGui::Button("Cancel", ImVec2(90.0f, 0.0f))) {
+				else if (clicked == 1) {
 					ImGui::CloseCurrentPopup();
 				}
 				ImGui::EndPopup();
@@ -3178,8 +4056,7 @@ namespace Index {
 		const std::string& filterLower)
 	{
 		if (SectionVisible(SettingsCategory::Editor, "Asset Browser", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("Asset Browser", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SettingsSectionHeader("Asset Browser", filterLower)) {
 			ImGui::Indent(8);
 			constexpr const char* k_AssetSuffixLabels[] = {
 				"Asset 1",
@@ -3202,17 +4079,14 @@ namespace Index {
 		}  // end SectionVisible("Asset Browser")
 
 		if (SectionVisible(SettingsCategory::Editor, "Entities", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("Entities", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SettingsSectionHeader("Entities", filterLower)) {
 			ImGui::Indent(8);
-			changed |= ImGui::Checkbox("Ensure unique editor-created names", &project.EditorEnsureUniqueEntityNames);
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip(
-					"When on, entities created through editor UI actions,\n"
-					"shortcuts, paste, duplicate, and asset drops get a\n"
-					"non-conflicting name. Runtime/script-created entities\n"
-					"skip this editor-only pass.");
-			}
+			changed |= ImGuiUtils::Switch("Ensure unique editor-created names", &project.EditorEnsureUniqueEntityNames);
+			EditorUI::Tooltip(
+				"When on, entities created through editor UI actions,\n"
+				"shortcuts, paste, duplicate, and asset drops get a\n"
+				"non-conflicting name. Runtime/script-created entities\n"
+				"skip this editor-only pass.");
 
 			constexpr const char* k_StyleLabels[] = {
 				"Entity 1",
@@ -3235,8 +4109,7 @@ namespace Index {
 		}  // end SectionVisible("Entities")
 
 		if (SectionVisible(SettingsCategory::Editor, "Serialization", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("Serialization", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SettingsSectionHeader("Serialization", filterLower)) {
 			ImGui::Indent(8);
 			constexpr const char* k_FormatLabels[] = { "JSON", "Binary" };
 			int formatIndex = project.AssetSerializationFormat == IndexProject::ProjectAssetSerializationFormat::Binary ? 1 : 0;
@@ -3257,21 +4130,18 @@ namespace Index {
 				}
 			}
 			ImGui::EndDisabled();
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip(
-					"Controls how scene and prefab assets are written on disk.\n"
-					"Changing this rewrites existing .scene and .prefab files\n"
-					"only when the selected format actually changes.");
-			}
+			EditorUI::Tooltip(
+				"Controls how scene and prefab assets are written on disk.\n"
+				"Changing this rewrites existing .scene and .prefab files\n"
+				"only when the selected format actually changes.");
 			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Serialization")
 
 		if (SectionVisible(SettingsCategory::Editor, "Scripting", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("Scripting", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SettingsSectionHeader("Scripting", filterLower)) {
 			ImGui::Indent(8);
-			Scene* activeScene = SceneManager::Get().GetActiveScene();
+			Scene* activeScene = SceneManager::GetActiveScene();
 			ScriptSystem* scriptSys = (activeScene && activeScene->HasSystem<ScriptSystem>())
 				? activeScene->GetSystem<ScriptSystem>()
 				: nullptr;
@@ -3298,12 +4168,10 @@ namespace Index {
 		bool& outGlobalSystemsChanged, const std::string& filterLower)
 	{
 		if (SectionVisible(SettingsCategory::Systems, "Global Systems", filterLower)) {
-		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("Global Systems", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (SettingsSectionHeader("Global Systems", filterLower)) {
 			ImGui::Indent(8);
-			ImGui::SetNextItemWidth(-1);
-			ImGui::InputTextWithHint("##GlobalSystemSearch", "Search global systems...",
-				m_GlobalSystemSearchBuffer, sizeof(m_GlobalSystemSearchBuffer));
+			EditorUI::SearchField("##GlobalSystemSearch", m_GlobalSystemSearchBuffer,
+				sizeof(m_GlobalSystemSearchBuffer), "Search global systems...");
 
 			std::string filter(m_GlobalSystemSearchBuffer);
 			std::transform(filter.begin(), filter.end(), filter.begin(), ::tolower);
@@ -3332,7 +4200,7 @@ namespace Index {
 						return registration.ClassName == scriptEntry.ClassName;
 					});
 				bool active = it != project.GlobalSystems.end() ? it->Active : false;
-				if (ImGui::Checkbox(scriptEntry.ClassName.c_str(), &active)) {
+				if (ImGuiUtils::Switch(scriptEntry.ClassName.c_str(), &active)) {
 					if (it == project.GlobalSystems.end()) {
 						project.GlobalSystems.push_back({ scriptEntry.ClassName, active });
 					}
@@ -3350,7 +4218,7 @@ namespace Index {
 				}
 				bool active = registration.Active;
 				std::string label = registration.ClassName + " (missing)";
-				if (ImGui::Checkbox(label.c_str(), &active)) {
+				if (ImGuiUtils::Switch(label.c_str(), &active)) {
 					registration.Active = active;
 					changed = true;
 					outGlobalSystemsChanged = true;
@@ -3405,8 +4273,7 @@ namespace Index {
 
 		if (!m_SplashPreviewActive) return;
 
-		auto* app = Application::GetInstance();
-		const float dt = app ? app->GetTime().GetDeltaTimeUnscaled() : 0.0f;
+		const float dt = Time::GetDeltaTimeUnscaled();
 		m_SplashPreviewElapsed += dt;
 
 		const float fadeIn = std::max(0.0f, project->SplashScreen.FadeInSeconds);
@@ -3526,13 +4393,13 @@ namespace Index {
 				m_PrefabInspector.Close();
 				m_PrefabInspectorPath.clear();
 			}
-			ImGui::TextDisabled("No entity or asset selected");
+			EditorUI::EmptyState("No entity or asset selected", "Select an entity in the Hierarchy or an asset in the Project panel.");
 			return;
 		}
 
 		std::filesystem::path path(selectedPath);
 		if (!std::filesystem::exists(path)) {
-			ImGui::TextDisabled("No entity or asset selected");
+			EditorUI::EmptyState("No entity or asset selected", "Select an entity in the Hierarchy or an asset in the Project panel.");
 			return;
 		}
 
@@ -3550,15 +4417,19 @@ namespace Index {
 					m_ShowPrefabSavePrompt = true;
 				}
 				else {
-					m_PrefabInspector.Open(selectedPath);
-					m_PrefabInspectorPath = selectedPath;
+					if (m_PrefabInspector.Open(selectedPath)) {
+						m_PrefabInspectorPath = selectedPath;
+					}
 				}
 			}
 			else if (!m_PrefabInspector.IsOpen()) {
-				m_PrefabInspector.Open(selectedPath);
-				m_PrefabInspectorPath = selectedPath;
+				if (m_PrefabInspector.Open(selectedPath)) {
+					m_PrefabInspectorPath = selectedPath;
+				}
 			}
-			m_PrefabInspector.Render();
+			if (m_PrefabInspector.Render()) {
+				SavePrefabInspectorChanges();
+			}
 			return;
 		}
 
@@ -3740,9 +4611,9 @@ namespace Index {
 			m_PackageManagerInitialized = true;
 		}
 
-		ImGui::SetNextWindowSize(ImVec2(880, 540), ImGuiCond_FirstUseEver);
 		ImGui::SetNextWindowSizeConstraints(ImVec2(420, 320), ImVec2(FLT_MAX, FLT_MAX));
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		EditorUI::NextWindowDefaultSize();
 		ImGui::Begin("Package Manager", &m_ShowPackageManager);
 		m_PackageManagerPanel.Render();
 		ImGui::End();

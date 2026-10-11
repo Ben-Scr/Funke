@@ -5,7 +5,6 @@
 #include "Core/Export.hpp"
 
 #include <atomic>
-#include <magic_enum/magic_enum.hpp>
 
 #include <functional>
 #include  <memory>
@@ -111,7 +110,14 @@ namespace Index {
 	struct Flags
 	{
 		using EnumType = TEnum;
-		using UnderlyingType = magic_enum::underlying_type_t<EnumType>;
+		// Deliberately std::underlying_type_t and not magic_enum's alias. This
+		// header is reached from pch.hpp, so including <magic_enum/magic_enum.hpp>
+		// here put the whole reflection library into the precompiled closure of
+		// every engine and editor TU — ~150 of them, for one type alias that the
+		// standard library already provides. TEnum is constrained to an enum
+		// above, so the two spellings are equivalent. The handful of files that
+		// genuinely reflect over enums include magic_enum themselves.
+		using UnderlyingType = std::underlying_type_t<EnumType>;
 
 		constexpr Flags() = default;
 		constexpr Flags(UnderlyingType value) : m_Flags(value) {}

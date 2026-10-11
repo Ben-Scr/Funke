@@ -9,6 +9,8 @@
 # Force LF everywhere. SetupDawn.sh runs under bash, so keep it LF too.
 scripts/dawn/dawn-revision.txt text eol=lf
 scripts/dawn/SetupDawn.sh text eol=lf
+premake/patches/vendor/*.patch text eol=lf whitespace=-blank-at-eol
+scripts/vendor_patches.py text eol=lf
 
 External/** linguist-vendored
 Documentation/** linguist-documentation

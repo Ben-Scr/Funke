@@ -35,6 +35,7 @@ project "Index-Editor"
     -- the engine include path and links the INDEX_API exports.
 
     UseDependencySet(Dependency.EditorRuntimeCommon)
+    UseIndexProfilerDependencies(true)
     defines(GetIndexModuleDefines())
     ApplyIndexEditorModuleDefine()
     defines { "IDX_IMPORT_DLL" }
@@ -49,18 +50,27 @@ project "Index-Editor"
     -- WriteIndexEntityBitsConfigHeader() in the root premake5.lua.
     includedirs { IndexEntityBitsConfigIncludeDir }
 
-    -- Precompile the engine's pch.hpp once per editor build instead of
-    -- re-parsing it in every TU. EditorPch.cpp is a one-line stub that just
-    -- includes pch.hpp; the file lives in src/ so it's picked up by the
-    -- "src/**.cpp" files glob above. /FI pch.hpp (forceincludes) auto-prepends
-    -- the PCH header to TUs that don't already include it (e.g. the engine's
-    -- Diagnostics .cpp files added below, and a handful of editor .cpp files
-    -- that include their own header first instead of pch.hpp). Without this
-    -- PCH setup ComponentInspectors.cpp exhausts the compiler heap with C1060
-    -- even with /Zm2000 + 64-bit hosted cl.exe.
-    pchheader "pch.hpp"
+    -- Precompile src/EditorPch.hpp once per editor build instead of re-parsing
+    -- it in every TU. EditorPch.cpp is a one-line stub that includes it; both
+    -- files live in src/ so they're picked up by the "src/**.cpp" glob above.
+    -- /FI EditorPch.hpp (forceincludes) auto-prepends the PCH header to TUs
+    -- that don't already include it (e.g. the engine's Diagnostics .cpp files
+    -- added below, and the editor .cpp files that include their own header
+    -- first). Without this PCH setup ComponentInspectors.cpp exhausts the
+    -- compiler heap with C1060 even with /Zm2000 + 64-bit hosted cl.exe.
+    --
+    -- This used to precompile Index-Engine's pch.hpp directly. That PCH is
+    -- shared with the engine DLL, so it deliberately stops at the STL + Core/
+    -- boundary and carries neither ImGui nor the ECS surface — the engine must
+    -- not pull ImGui into every TU. The editor has the opposite profile (23 of
+    -- its 32 TUs include <imgui.h>, 18 reach Scene.hpp and through it
+    -- entt::registry), so it now layers its own PCH on top of the engine's.
+    -- Measured over the transitive closure of all 32 editor TUs that takes a
+    -- full editor build from ~1,056k lines parsed to ~422k (-60%). See
+    -- src/EditorPch.hpp for the contents and the rule for adding to them.
+    pchheader "EditorPch.hpp"
     pchsource "src/EditorPch.cpp"
-    forceincludes { "pch.hpp" }
+    forceincludes { "EditorPch.hpp" }
     -- ScriptSystem loads Index-ScriptCore.dll at runtime. The packaged-layout
     -- branch (ScriptSystem.cpp:194) finds it next to the editor exe; the
     -- copy lets a zipped Editor folder work standalone. The managed C# project
@@ -68,23 +78,35 @@ project "Index-Editor"
     if os.target() == "windows" then dependson { "Index-ScriptCore" } end
     postbuildcommands { CopyIndexAssets, CopyIndexEngineDll, CopyGlfwDll, CopyGladDll }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
-    if os.target() == "windows" then postbuildcommands { CopyScriptCoreDll } end
-    if IndexProfiler.Enabled then postbuildcommands { CopyTracyDll } end
+    if os.target() == "windows" then postbuildcommands(CopyScriptCoreArtifacts) end
+    ApplyIndexProfilerRuntime()
 
     filter "system:windows"
         -- See Index-Engine/premake5.lua for the rationale on
         -- MultiProcessorCompile + /Zc:preprocessor.
         --
-        -- /Zm2000 raises the MSVC compiler's heap reservation to the maximum.
-        -- Required for ComponentInspectors.cpp's Properties::Make<EnumType>/
-        -- MakeWith<T> template forest. Even after tightening
-        -- MAGIC_ENUM_RANGE_MIN/MAX in the workspace defines and switching
-        -- to the 64-bit hosted cl.exe (Directory.Build.props sets
-        -- PreferredToolArchitecture=x64), the editor's lack of a real PCH
-        -- means every TU reparses Index-Engine/src/pch.hpp's full STL +
-        -- magic_enum + ImGui surface area, exhausting compiler heap (C1060).
+        -- /Zm2000 (max compiler heap reservation) used to be required here:
+        -- ComponentInspectors.cpp's Properties::Make<EnumType>/MakeWith<T>
+        -- template forest hit `fatal error C1060: out of heap space` without
+        -- it, even with MAGIC_ENUM_RANGE_MIN/MAX tightened and the 64-bit
+        -- hosted cl.exe (Directory.Build.props: PreferredToolArchitecture).
+        --
+        -- It is gone because the actual heap hog was found and removed: a
+        -- magic_enum::customize::enum_range<Index::Wrap> specialisation spanning
+        -- 0x2901..0x8370, i.e. 23,152 constexpr instantiations to reflect four
+        -- sparse GL constants. Graphics/Wrap.hpp now maps those names by hand,
+        -- and <magic_enum/magic_enum.hpp> no longer reaches the PCH via
+        -- Core/Base.hpp. Peak per-cl.exe memory roughly halved (1.96 -> 1.07 GB)
+        -- and a full editor rebuild dropped to ~19s, so the default heap is
+        -- ample. ComponentInspectors.cpp never used enum reflection at all --
+        -- the old comment here blaming magic_enum for its cost was wrong; its
+        -- weight is plain template instantiation, which /bigobj below covers.
+        --
+        -- Do not reintroduce /Zm: it is a per-cl.exe *reservation*, so it
+        -- multiplies with MultiProcessorCompile. See Directory.Build.props for
+        -- the CL_MPCount cap that bounds that product.
         flags { "MultiProcessorCompile" }
-        buildoptions { "/utf-8", "/FS", "/Zm2000", "/Zc:preprocessor" }
+        buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
         systemversion "latest"
         defines { "IDX_PLATFORM_WINDOWS" }
         links { "Ole32" }
@@ -113,8 +135,11 @@ project "Index-Editor"
         symbols "Off"
         defines { "IDX_DIST", "NDEBUG" }
 
-    filter { "system:windows", "configurations:Dist" }
+    filter { "system:windows", "configurations:Release or Dist" }
         kind "WindowedApp"
+        defines { "IDX_WINDOWED_APP=1" }
+        buildoptions { "/guard:cf" }
+        linkoptions { "/DYNAMICBASE", "/NXCOMPAT", "/HIGHENTROPYVA", "/guard:cf" }
 
     filter {}
 
@@ -123,13 +148,12 @@ project "Index-Editor"
     -- the runtime-mismatch (LNK2038) rationale.
     ApplyDawnLibDirs("../")
 
-    -- ComponentInspectors.cpp and EditorComponentRegistration.cpp instantiate
-    -- the same kind of heavy Properties::Make<EnumType>/MakeWith<T>/MakeVariant
-    -- template tree per registered component as Index-Engine's
-    -- BuiltInComponentRegistration.cpp (which already has /bigobj — see
-    -- Index-Engine/premake5.lua's "files:**/BuiltInComponentRegistration.cpp"
-    -- filter). Without /bigobj these TUs hit the 64K COFF section limit
-    -- (C1128) once a handful more components are added.
+    -- ComponentInspectors.cpp and EditorComponentRegistration.cpp are large
+    -- per-component ImGui inspector TUs whose section count grows with every
+    -- component they cover, so /bigobj keeps them clear of the 64K COFF
+    -- section limit (C1128). They contain no Properties::Make* calls; that
+    -- template forest lives only in Index-Engine's
+    -- BuiltInComponentRegistration<Category>.cpp slices.
     filter { "files:**/ComponentInspectors.cpp", "system:windows" }
         buildoptions { "/bigobj" }
 

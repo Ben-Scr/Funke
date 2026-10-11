@@ -26,7 +26,7 @@ namespace Index {
 		struct EntitySlot {
 			uint32_t parentIndex = UINT32_MAX;   // UINT32_MAX = root
 			std::string name;                     // captured separately from byte blob
-			uint64_t sourceUuid = 0;              // diagnostics only
+			uint64_t sourceEntityId = 0;
 			uint32_t componentRecordBegin = 0;    // index into `components`
 			uint32_t componentRecordEnd = 0;      // exclusive
 		};
@@ -51,7 +51,8 @@ namespace Index {
 	public:
 		static PrefabTemplateCache& Get();
 
-		const PrefabTemplate* Find(uint64_t prefabGuid) const;
+		using TemplateSnapshot = std::shared_ptr<const PrefabTemplate>;
+		TemplateSnapshot Find(uint64_t prefabGuid) const;
 
 		// Non-zero fixupsAddedDuringDeserialize marks the template unbakeable (internal entity refs).
 		void CaptureFromLive(uint64_t prefabGuid, Scene& scene,
@@ -61,7 +62,8 @@ namespace Index {
 		EntityHandle Hydrate(uint64_t prefabGuid, Scene& scene);
 
 		// preAllocated[0] is the root, rest are DFS children; caller owns LoadGuard/dirty-pulse (ECB playback already brackets these).
-		EntityHandle HydrateInto(uint64_t prefabGuid, Scene& scene,
+		EntityHandle HydrateInto(uint64_t prefabGuid, const TemplateSnapshot& prefabTemplate,
+			Scene& scene,
 			std::span<const EntityHandle> preAllocated);
 
 		void Invalidate(uint64_t prefabGuid);
@@ -82,7 +84,7 @@ namespace Index {
 		PrefabTemplateCache& operator=(const PrefabTemplateCache&) = delete;
 
 		mutable std::shared_mutex m_Mutex;
-		std::unordered_map<uint64_t, std::unique_ptr<PrefabTemplate>> m_Templates;
+		std::unordered_map<uint64_t, std::shared_ptr<PrefabTemplate>> m_Templates;
 
 #if INDEX_WITH_EDITOR
 		std::unique_ptr<FileWatcher> m_Watcher;

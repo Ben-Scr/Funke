@@ -7,14 +7,27 @@
 #include "Scene/Scene.hpp"
 
 #include <Core/Time.hpp>
-#include <Core/Application.hpp>
+#include "Graphics/ParticleQualityPolicy.hpp"
+
+#if INDEX_WITH_APPLICATION
+#include "Core/Application.hpp"
+#endif
 
 #include <cmath>
 
 namespace Index {
 	namespace {
 		Vec2 DirectionOrUp(const Vec2& direction) {
-			return LengthSquared(direction) > 0.0001f ? Normalized(direction) : Up();
+			return Vector::LengthSquared(direction) > 0.0001f ? Vector::Normalized(direction) : Vector::Up();
+		}
+
+		ParticleQualityLevel GetActiveParticleQuality() {
+#if INDEX_WITH_APPLICATION
+			if (const Application* application = Application::GetInstance()) {
+				return application->GetEffectiveGraphicsSettings().ParticleQuality;
+			}
+#endif
+			return ParticleQualityLevel::High;
 		}
 	}
 
@@ -52,27 +65,37 @@ namespace Index {
 	}
 
 	void ParticleSystem2DComponent::Update() {
-		// E20: fallback path — global time lookup retained for callers that
-		// don't have a dt handy (none in the engine after this fix, but keep
-		// for binary compatibility with packages/scripts).
-		Update(Application::GetInstance()->GetTime().GetDeltaTime());
+		Update(Time::GetDeltaTime(), GetActiveParticleQuality());
 	}
 
-	void ParticleSystem2DComponent::Update(float deltaTime) {
+	void ParticleSystem2DComponent::Update(float deltaTime, ParticleQualityLevel quality) {
+		if (quality == ParticleQualityLevel::Off) {
+			m_Particles.clear();
+			m_EmitAccumulator = 0.0f;
+			return;
+		}
+
+		const uint32_t maxParticles = ParticleQualityPolicy::EffectiveLimit(
+			RenderingSettings.MaxParticles, quality);
+		if (m_Particles.size() > maxParticles) {
+			m_Particles.erase(m_Particles.begin(),
+				m_Particles.begin() + static_cast<std::ptrdiff_t>(m_Particles.size() - maxParticles));
+		}
 		if (deltaTime == 0.f) return;
 
 		if (m_IsEmitting) {
-			float toEmit = EmissionSettings.EmitOverTime * deltaTime + m_EmitAccumulator;
+			float toEmit = EmissionSettings.EmitOverTime
+				* ParticleQualityPolicy::Density(quality) * deltaTime + m_EmitAccumulator;
 			int emitCount = static_cast<int>(toEmit);
 			m_EmitAccumulator = toEmit - emitCount;
-			Emit(emitCount);
+			Emit(static_cast<size_t>(emitCount), quality);
 
 			for (auto& burst : m_Bursts) {
 				// Counts down from 0, so the burst fires on the first update after Play (instant
 				// on spawn), then every Interval — instead of waiting one full Interval first.
 				burst.TimeUntilNext -= deltaTime;
 				if (burst.TimeUntilNext <= 0.f) {
-					Emit(burst.Count);
+					Emit(ParticleQualityPolicy::ScaleCount(burst.Count, quality), quality);
 					burst.TimeUntilNext = burst.Interval;
 				}
 			}
@@ -108,10 +131,16 @@ namespace Index {
 	}
 
 	void ParticleSystem2DComponent::Emit(size_t count) {
+		const ParticleQualityLevel quality = GetActiveParticleQuality();
+		Emit(ParticleQualityPolicy::ScaleCount(count, quality), quality);
+	}
+
+	void ParticleSystem2DComponent::Emit(size_t count, ParticleQualityLevel quality) {
 		if(!m_IsEmitting || count == 0)
 			return;
 
-		const uint32_t maxParticles = RenderingSettings.MaxParticles;
+		const uint32_t maxParticles = ParticleQualityPolicy::EffectiveLimit(
+			RenderingSettings.MaxParticles, quality);
 
 		if (m_Particles.size() >= maxParticles)
 			return;
@@ -137,21 +166,25 @@ namespace Index {
 					// Arc-restricted emission: angle in [0, Arc) degrees; Arc==360 reproduces
 					// the full-circle distribution. In-circle uses r=R*sqrt(u) for uniform area.
 					const float arcRad = std::clamp(s.Arc, 0.0f, 360.0f) * 0.01745329252f;
-					const float theta = Random::NextFloat(0.0f, arcRad);
+					const float theta = arcRad > 0.0f ? Random::NextFloat(arcRad) : 0.0f;
 					// Safety net: a zero radius spawns everything at the centre (all particles
 					// would then emit straight up). The editor clamps this too.
 					const float safeRadius = std::max(s.Radius, 0.0001f);
 					const float r = s.IsOnCircle ? safeRadius : safeRadius * std::sqrt(Random::NextFloat(0.0f, 1.0f));
-					position = FromAngle(theta) * r;
+					position = Vector::FromAngle(theta) * r;
 					velocityDirection = DirectionOrUp(position);
 					velocity = velocityDirection * ParticleSettings.Speed;
 				}
 				else if constexpr (std::is_same_v<T, SquareParams>) {
-					position = Vec2(Random::NextFloat(-s.HalfExtends.x, s.HalfExtends.x), Random::NextFloat(-s.HalfExtends.y, s.HalfExtends.y));
+					const float halfWidth = std::abs(s.HalfExtends.x);
+					const float halfHeight = std::abs(s.HalfExtends.y);
+					position = Vec2(
+						halfWidth > 0.0f ? Random::NextFloat(-halfWidth, halfWidth) : 0.0f,
+						halfHeight > 0.0f ? Random::NextFloat(-halfHeight, halfHeight) : 0.0f);
 				}
 				else if constexpr (std::is_same_v<T, EdgeParams>) {
-					const float halfLength = s.Length * 0.5f;
-					position = Vec2(Random::NextFloat(-halfLength, halfLength), 0.0f);
+					const float halfLength = std::abs(s.Length) * 0.5f;
+					position = Vec2(halfLength > 0.0f ? Random::NextFloat(-halfLength, halfLength) : 0.0f, 0.0f);
 					velocityDirection = DirectionOrUp(ParticleSettings.MoveDirection);
 					velocity = velocityDirection * ParticleSettings.Speed;
 				}
@@ -164,7 +197,7 @@ namespace Index {
 						velocityDirection = DirectionOrUp(worldPosition - emitterTransform->Position);
 					}
 					else {
-						velocityDirection = DirectionOrUp(Rotated(velocityDirection, emitterTransform->Rotation));
+						velocityDirection = DirectionOrUp(Vector::Rotated(velocityDirection, emitterTransform->Rotation));
 					}
 					position = worldPosition;
 					velocity = velocityDirection * ParticleSettings.Speed;
@@ -176,7 +209,7 @@ namespace Index {
 			particle.Transform.Rotation = rot;
 			particle.Transform.Scale = scale;
 			particle.StartScale = scale;
-			particle.Color = ParticleSettings.UseRandomColors ? Index::Color(Random::NextFloat(0.f, 1.f), Random::NextFloat(0.f, 1.f), Random::NextFloat(0.f, 1.f)) : RenderingSettings.Color;
+			particle.Color = ParticleSettings.UseRandomColors ? Random::NextColor() : RenderingSettings.Color;
 			particle.StartColor = particle.Color;
 			m_Particles.push_back(particle);
 

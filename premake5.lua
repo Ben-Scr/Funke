@@ -1,6 +1,21 @@
+newoption
+{
+    trigger = "core-validation",
+    description = "Generate an isolated core-only Engine workspace for CI validation."
+}
+
+ROOT_DIR = os.realpath(_MAIN_SCRIPT_DIR)
+IndexCoreValidationRoot = _OPTIONS["core-validation"]
+    and path.join(ROOT_DIR, "premake/generated/core")
+    or nil
+
 workspace "Index"
     architecture "x64"
-    startproject "Index-Launcher"
+    startproject (IndexCoreValidationRoot and "Index-Engine" or "Index-Launcher")
+
+    if IndexCoreValidationRoot then
+        location(IndexCoreValidationRoot)
+    end
 
     configurations
     {
@@ -11,6 +26,26 @@ workspace "Index"
 
     filter { "system:windows", "language:C++" }
         toolset "v143"
+        defines { "SPDLOG_WCHAR_FILENAMES" }
+
+    filter { "system:windows", "language:C++", "configurations:not Dist" }
+        -- /Z7 (DebugInformationFormat=OldStyle) instead of premake's defaults:
+        -- /ZI (Edit & Continue) for Debug and /Zi for Release.
+        --
+        -- /ZI is the most memory-hungry debug-info format and nothing in this
+        -- repo uses Edit & Continue. More importantly, both /ZI and /Zi funnel
+        -- every cl.exe through mspdbsrv.exe to serialise writes into a single
+        -- vc143.pdb per project. That is a parallelism bottleneck and the
+        -- source of `error C2471: cannot update program database` whenever
+        -- several projects compiled at once -- the reason whole-solution
+        -- builds had to run serially.
+        --
+        -- /Z7 embeds debug info directly in each .obj, so compilers never
+        -- contend for a PDB. The linker still emits a complete PDB for the
+        -- final binary, so breakpoints and stack traces are unchanged.
+        -- Trade-off: .obj files grow, so bin-int/ gets bigger. Dist is
+        -- excluded because it builds with symbols "Off" anyway.
+        debugformat "c7"
 
     filter { "system:linux", "language:C++" }
         -- GCC rejects a member named identically to its type (e.g. the
@@ -29,8 +64,54 @@ workspace "Index"
 
     filter {}
 
-outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
-ROOT_DIR = os.realpath(_MAIN_SCRIPT_DIR)
+newoption
+{
+    trigger = "sanitize",
+    description = "Instrument Linux Debug native targets with AddressSanitizer and UndefinedBehaviorSanitizer."
+}
+
+newoption
+{
+    trigger = "coverage",
+    description = "Instrument an isolated Linux Debug native build for gcov/lcov coverage."
+}
+
+if _OPTIONS["core-validation"] and _OPTIONS["module-profile"] ~= "core" then
+    error("--core-validation requires --module-profile=core")
+end
+if _OPTIONS["core-validation"] and (_OPTIONS["sanitize"] or _OPTIONS["coverage"]) then
+    error("--core-validation cannot be combined with instrumentation variants")
+end
+if _OPTIONS["sanitize"] and _OPTIONS["coverage"] then
+    error("--sanitize and --coverage use separate isolated build variants")
+end
+
+local outputVariant = _OPTIONS["sanitize"] and "-sanitized"
+    or (_OPTIONS["coverage"] and "-coverage")
+    or (_OPTIONS["core-validation"] and "-core" or "")
+outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}" .. outputVariant
+
+if (_OPTIONS["sanitize"] or _OPTIONS["coverage"]) and os.target() ~= "linux" then
+    error("--sanitize and --coverage are supported only for Linux targets")
+end
+
+if _OPTIONS["sanitize"] then
+    filter { "system:linux", "language:C++", "configurations:Debug" }
+        buildoptions {
+            "-fsanitize=address,undefined",
+            "-fno-omit-frame-pointer",
+            "-fno-sanitize-recover=all"
+        }
+        linkoptions { "-fsanitize=address,undefined", "-fno-sanitize-recover=all" }
+    filter {}
+end
+
+if _OPTIONS["coverage"] then
+    filter { "system:linux", "language:C++", "configurations:Debug" }
+        buildoptions { "--coverage", "-fno-omit-frame-pointer" }
+        linkoptions { "--coverage" }
+    filter {}
+end
 
 newoption
 {
@@ -47,41 +128,36 @@ newoption
     {
         { "full", "Compatibility profile: render, audio, physics, scripting, editor, and INDEX_ALL_MODULES." },
         { "core", "Core-only profile: no optional module defines or third-party module dependencies." },
-        { "custom", "Enable only the optional modules requested with --with-render/--with-audio/--with-physics/--with-scripting/--with-editor." }
+        { "custom", "Core-equivalent with no module flags, or the complete application surface with --with-editor." }
     }
 }
 
-newoption { trigger = "with-render", description = "Enable the Index render module dependencies and INDEX_WITH_RENDER." }
-newoption { trigger = "with-audio", description = "Enable the Index audio module dependencies and INDEX_WITH_AUDIO." }
-newoption { trigger = "with-physics", description = "Enable the Index physics module dependencies and INDEX_WITH_PHYSICS." }
-newoption { trigger = "with-scripting", description = "Enable the Index scripting module dependencies and INDEX_WITH_SCRIPTING." }
-newoption { trigger = "with-editor", description = "Enable the Index editor module dependencies and INDEX_WITH_EDITOR. This also enables render dependencies." }
+newoption { trigger = "with-render", description = "Select render in a custom profile; currently requires --with-editor." }
+newoption { trigger = "with-audio", description = "Select audio in a custom profile; currently requires --with-editor." }
+newoption { trigger = "with-physics", description = "Select physics in a custom profile; currently requires --with-editor." }
+newoption { trigger = "with-scripting", description = "Enable scripting; custom profiles also require --with-editor." }
+newoption { trigger = "with-editor", description = "Enable the editor and implicitly enable render, audio, physics, and scripting." }
 
 newoption
 {
     trigger = "index-project",
     value = "PATH",
-    description = "Absolute path to an Index project. Adds <PATH>/Packages/<Name>/index-package.lua manifests to the package loader so project-local packages get built into the same solution."
+    description = "Absolute path to an Index project whose entityBits setting should configure the engine build. Project-local packages use premake/project-packages.lua."
 }
 
 newoption
 {
     trigger = "no-profiler",
-    description = "Strip the Index profiler entirely from the build. Without this flag, Tracy is compiled into the engine, INDEX_PROFILER_ENABLED is defined for engine/editor/runtime, and the in-engine ImGui Profiler panel is available. Pass --no-profiler for shipped runtime builds with strict size budgets."
+    description = "Strip the Index profiler from every configuration. By default, Tracy and the profiler panel are available in Debug/Release; Dist is always profiler-free."
 }
 
 -- The engine has exactly one graphics backend (WebGPU via Dawn); the
 -- runtime D3D12/Vulkan/Metal choice underneath Dawn is selected by Dawn
 -- itself based on the adapter request in WebGPUApi.cpp::RequestAdapterSync.
 
--- Resolved early so subsequent dep-set wiring can branch on it. Default ON;
--- explicit --no-profiler turns it off. The single boolean drives:
---   - whether INDEX_PROFILER_ENABLED is defined
---   - whether the Tracy project is included in the build
---   - whether the engine compiles src/Profiling/**
---   - whether the editor compiles src/Gui/ProfilerPanel.*
+-- Controls whether development configurations offer profiler support; Dist is always stripped.
 IndexProfiler = {}
-IndexProfiler.Enabled = not _OPTIONS["no-profiler"]
+IndexProfiler.Enabled = not _OPTIONS["no-profiler"] and not IndexCoreValidationRoot
 
 require("premake/fix_csharp_platforms")
 
@@ -140,6 +216,16 @@ local function ResolveIndexModules()
         modules.Scripting = true
     end
 
+    if profile == "custom" and modules.Scripting and not modules.Editor then
+        error("--with-scripting requires --with-editor in a custom module profile.")
+    end
+
+    if profile == "custom"
+        and (modules.Render or modules.Audio or modules.Physics or modules.Scripting)
+        and not modules.Editor then
+        error("Partial custom module profiles are not supported; use --module-profile=core or add --with-editor (which enables the complete application surface).")
+    end
+
     return modules
 end
 
@@ -158,12 +244,11 @@ IndexModules = ResolveIndexModules()
 -- already use).
 Dependency.EngineSelectedModules = MergeDependencySets(
     Dependency.EngineCore,
+    IndexModules.Render and Dependency.EngineCoreEditor or nil,
     IndexModules.Render and Dependency.EngineCoreRender or nil,
     IndexModules.Audio and Dependency.EngineCoreAudio or nil,
     IndexModules.Physics and Dependency.EngineCorePhysics or nil,
     IndexModules.Scripting and Dependency.EngineCoreScripting or nil,
-    IndexProfiler.Enabled and Dependency.Profiler or nil,
-    Dependency.EngineCoreEditor,  -- engine.dll always hosts the ImGui backend
     Dependency.EngineCoreLinuxSystem
 )
 
@@ -301,85 +386,10 @@ end
 -- from C++ when only the bit count changes (avoiding the premake regen).
 WriteIndexEntityBitsConfigHeader()
 
--- ── ImGui scalar-expression hook patch ───────────────────────────────────────
--- The numeric-field expression feature ("5/2", "/2") needs a small hook inside
--- ImGui's DataTypeApplyFromText(). External/imgui is a pinned upstream submodule,
--- so the edit can't be committed there without a fork; instead it is re-applied
--- here on every premake run. premake always runs before a build (incl. CI's
--- Setup.py / Setup.sh), so fresh checkouts and CI get patched before ImGui is
--- compiled. Idempotent (skips when the marker is already present). If an anchor
--- stops matching after an ImGui bump this errors out — re-sync the text with the
--- new source. See memory note: imgui-scalar-expression-patch.
-function EnsureImGuiScalarExpressionPatch()
-    local function readAll(p)
-        local f = io.open(p, "rb"); if not f then return nil end
-        local c = f:read("*all"); f:close(); return c
-    end
-    local function writeAll(p, c)
-        local f, err = io.open(p, "wb")
-        if not f then error("[imgui-patch] cannot write " .. p .. " (" .. tostring(err) .. ")") end
-        f:write(c); f:close()
-    end
-    local function insertAfter(content, anchor, text, file)
-        local s = content:find(anchor, 1, true)
-        if not s then
-            error("[imgui-patch] anchor not found in " .. file .. " -> '" .. anchor
-                .. "'. Re-sync the ImGui hook patch after the submodule bump.")
-        end
-        local nl = content:find("\n", s, true) or #content
-        return content:sub(1, nl) .. text .. content:sub(nl + 1)
-    end
-    local function insertBefore(content, anchor, text, file)
-        local s = content:find(anchor, 1, true)
-        if not s then
-            error("[imgui-patch] anchor not found in " .. file .. " -> '" .. anchor
-                .. "'. Re-sync the ImGui hook patch after the submodule bump.")
-        end
-        local ls = s
-        while ls > 1 and content:sub(ls - 1, ls - 1) ~= "\n" do ls = ls - 1 end
-        return content:sub(1, ls - 1) .. text .. content:sub(ls)
-    end
-
-    local headerPath = path.join(ROOT_DIR, "External/imgui/imgui.h")
-    local header = readAll(headerPath)
-    if header and not header:find("SetScalarExpressionHook", 1, true) then
-        header = insertAfter(header, "(*ImGuiMemFreeFunc)(void* ptr, void* user_data);",
-            "typedef bool    (*ImGuiScalarExpressionFn)(const char* buf, ImGuiDataType data_type, void* p_data); // [Index patch] Signature for ImGui::SetScalarExpressionHook()\n",
-            "imgui.h")
-        header = insertAfter(header, "IMGUI_API ImGuiStorage* GetStateStorage();",
-            "\n"
-            .. "    // [Index patch] Scalar expression hook - see DataTypeApplyFromText() in imgui_widgets.cpp.\n"
-            .. "    // If set, it is called with the typed text + current value (in *p_data) before the default\n"
-            .. "    // numeric parsing; return true (and write *p_data) to override parsing, false to fall back.\n"
-            .. "    // ImGuiScalarExpressionFn is declared at global scope alongside ImGuiMemAllocFunc.\n"
-            .. "    IMGUI_API void          SetScalarExpressionHook(ImGuiScalarExpressionFn fn);\n",
-            "imgui.h")
-        writeAll(headerPath, header)
-        print("[imgui-patch] applied scalar-expression hook to imgui.h")
-    end
-
-    local widgetsPath = path.join(ROOT_DIR, "External/imgui/imgui_widgets.cpp")
-    local widgets = readAll(widgetsPath)
-    if widgets and not widgets:find("GScalarExpressionHook", 1, true) then
-        widgets = insertBefore(widgets, "// User can input math operators",
-            "// [Index patch] Optional hook installed by the host (see ImGui::SetScalarExpressionHook).\n"
-            .. "// Lets the engine route numeric text through a full expression evaluator.\n"
-            .. "static ImGuiScalarExpressionFn GScalarExpressionHook = NULL;\n"
-            .. "void ImGui::SetScalarExpressionHook(ImGuiScalarExpressionFn fn) { GScalarExpressionHook = fn; }\n\n",
-            "imgui_widgets.cpp")
-        widgets = insertAfter(widgets, "memcpy(&data_backup, p_data, type_info->Size);",
-            "\n"
-            .. "    // [Index patch] Give the host expression evaluator first crack at the text; it trims\n"
-            .. "    // blanks and rejects empty/invalid input, so the default parsing below still runs for\n"
-            .. "    // non-expressions. p_data holds the current value here (used for \"/2\"-style edits).\n"
-            .. "    if (GScalarExpressionHook && GScalarExpressionHook(buf, data_type, p_data))\n"
-            .. "        return memcmp(&data_backup, p_data, type_info->Size) != 0;\n",
-            "imgui_widgets.cpp")
-        writeAll(widgetsPath, widgets)
-        print("[imgui-patch] applied scalar-expression hook to imgui_widgets.cpp")
-    end
-end
-EnsureImGuiScalarExpressionPatch()
+-- Reproduce the engine-owned changes in pinned upstream submodules.
+-- Hash and path verification prevents dependency bumps from accepting stale patches.
+require("premake/vendor-patches")
+ApplyIndexVendorPatches()
 
 function GetIndexModuleDefines()
     local hasApplication = IndexModules.Render
@@ -451,6 +461,7 @@ end
 
 function UseIndexEngineModuleDependencies()
     UseDependencySet(Dependency.EngineSelectedModules)
+    UseIndexProfilerDependencies(true)
 end
 
 -- Shared postbuild command: copy IndexAssets into each target output
@@ -473,6 +484,14 @@ local function CopySharedLib(projectName)
     return '{COPYFILE} "' ..
         path.join(ROOT_DIR, "bin/" .. outputdir, projectName, fileName) ..
         '" "%{cfg.targetdir}/' .. fileName .. '"'
+end
+
+local function RemoveSharedLib(projectName)
+    local target = "%{cfg.targetdir}/" .. SharedLibFileName(projectName)
+    if os.target() == "windows" then
+        return 'if exist "' .. target .. '" del /F /Q "' .. target .. '"'
+    end
+    return 'rm -f "' .. target .. '"'
 end
 
 -- Shared postbuild command: copy the engine SharedLib next to each consumer executable
@@ -499,15 +518,18 @@ end
 -- No per-project codegen artifact gets shipped alongside consumer exes.
 CopyIndexGameComponentsDll = "" -- retained as a no-op so any leftover postbuild reference stays harmless
 
--- Copy Index-ScriptCore.dll next to consumer exes that load it at runtime
--- (Editor + Runtime). ScriptSystem.cpp:188-194 first checks
--- <exe-dir>/Index-ScriptCore.dll (packaged layout) and falls back to
--- <exe-dir>/../Index-ScriptCore/Index-ScriptCore.dll (dev layout). Without
--- this copy a zipped Editor or Runtime folder breaks scripting because the
--- sibling Index-ScriptCore/ folder is no longer present.
-CopyScriptCoreDll = '{COPYFILE} "' ..
-    path.join(ROOT_DIR, "bin/" .. outputdir, "Index-ScriptCore", "Index-ScriptCore.dll") ..
-    '" "%{cfg.targetdir}/Index-ScriptCore.dll"'
+-- Consumers load private ScriptCore copies so its shared build output remains replaceable while they run.
+local function CopyScriptCoreArtifact(filename)
+    return '{COPYFILE} "' ..
+        path.join(ROOT_DIR, "bin/" .. outputdir, "Index-ScriptCore", filename) ..
+        '" "%{cfg.targetdir}/' .. filename .. '"'
+end
+
+CopyScriptCoreArtifacts = {
+    CopyScriptCoreArtifact("Index-ScriptCore.dll"),
+    CopyScriptCoreArtifact("Index-ScriptCore.runtimeconfig.json"),
+    CopyScriptCoreArtifact("Index-ScriptCore.deps.json"),
+}
 
 -- Materialize a self-contained EngineSDK/ folder next to the Launcher exe
 -- so the zipped Launcher can build new projects' NativeScripts (which
@@ -535,13 +557,24 @@ CopyGlfwDll = CopySharedLib("GLFW")
 -- lockstep.
 CopyGladDll = ""
 
--- Tracy is a SharedLib too (one client per process). Consumers ship the DLL.
--- When --no-profiler is set this expands to a no-op string the postbuild
--- list can still reference safely.
+-- Tracy is process-wide and ships only beside profiler-enabled development binaries.
 if IndexProfiler and IndexProfiler.Enabled then
     CopyTracyDll = CopySharedLib("Tracy")
 else
-    CopyTracyDll = "" -- no-op; consumer postbuild lists keep their structure
+    CopyTracyDll = ""
+end
+RemoveTracyDll = RemoveSharedLib("Tracy")
+
+function ApplyIndexProfilerRuntime()
+    if IndexProfiler and IndexProfiler.Enabled then
+        filter "configurations:not Dist"
+            postbuildcommands { CopyTracyDll }
+        filter "configurations:Dist"
+            postbuildcommands { RemoveTracyDll }
+    else
+        postbuildcommands { RemoveTracyDll }
+    end
+    filter {}
 end
 
 local function NormalizeRootPath(pathValue)
@@ -657,8 +690,22 @@ function UseDependencySetNoLink(dep)
     end
 end
 
+function UseIndexProfilerDependencies(linkTracy)
+    if not (IndexProfiler and IndexProfiler.Enabled) then
+        return
+    end
+
+    filter "configurations:not Dist"
+        if linkTracy then
+            UseDependencySet(Dependency.Profiler)
+        else
+            UseDependencySetNoLink(Dependency.Profiler)
+        end
+    filter {}
+end
+
 group "Dependencies"
-if IndexModules.Editor then
+if IndexModules.Render then
     project "ImGui"
         location (path.join(ROOT_DIR, "premake/generated/ImGui"))
         kind "StaticLib"
@@ -836,13 +883,13 @@ end
 
 include "Index-Engine"
 
--- The managed (C#) projects build on Windows only (vs2022 + MSBuild). premake's
--- gmake2 generator builds C# via Mono csc, which cannot build these net9.0
--- SDK-style projects, so they are excluded from the Linux build for now. The
--- native scripting layer (DotNetHost + libnethost) still builds cross-platform.
-if IndexModules.Scripting and os.target() == "windows" then
-    include "Index-ScriptCore"
-    include "Index-Sandbox"
+-- Managed projects build on Windows only; gmake2 cannot build SDK-style .NET 10 projects.
+if os.target() == "windows" and not IndexCoreValidationRoot then
+    include "Index-PackageTool"
+    if IndexModules.Scripting then
+        include "Index-ScriptCore"
+        include "Index-Sandbox"
+    end
 end
 
 -- Shared StaticLib between the editor and launcher; must be defined
@@ -865,11 +912,15 @@ group ""
 
 -- Tests live in their own group so they're easy to spot in the IDE solution
 -- explorer and trivial to disable by commenting out this block.
-group "Tests"
-    include "Tests/Index-Engine-Tests"
-    include "Tests/Index-Editor-Tests"
-group ""
+if not IndexCoreValidationRoot then
+    group "Tests"
+        include "Tests/Index-Engine-Tests"
+        include "Tests/Index-Editor-Tests"
+    group ""
+end
 
 -- Load any index-package.lua manifests under packages/ and register their projects.
-local IndexPackageLoader = dofile(path.join(ROOT_DIR, "premake/package-loader.lua"))
-IndexPackageLoader.LoadAll()
+if not IndexCoreValidationRoot then
+    local IndexPackageLoader = dofile(path.join(ROOT_DIR, "premake/package-loader.lua"))
+    IndexPackageLoader.LoadAll()
+end

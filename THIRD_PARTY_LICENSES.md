@@ -17,6 +17,7 @@ The font bundle has its own attribution file:
 | EnTT | MIT | Copyright (c) 2017-2026 Michele Caini | [External/entt/LICENSE](External/entt/LICENSE) |
 | GLM | MIT / "Happy Bunny" | Copyright (c) 2005 G-Truc Creation | [External/glm/copying.txt](External/glm/copying.txt) |
 | Dear ImGui | MIT | Copyright (c) 2014-2026 Omar Cornut | [External/imgui/LICENSE.txt](External/imgui/LICENSE.txt) |
+| ImGuizmo | MIT | Copyright (c) 2016 Cedric Guillemet | [External/ImGuizmo/LICENSE](External/ImGuizmo/LICENSE) |
 | magic_enum | MIT | Copyright (c) 2019-2024 Daniil Goncharov | [External/magic_enum/LICENSE](External/magic_enum/LICENSE) |
 | miniaudio | Public Domain / MIT-0 (choose) | David Reid | [External/miniaudio/LICENSE](External/miniaudio/LICENSE) |
 | spdlog | MIT | Copyright (c) 2016-present Gabi Melman and spdlog contributors | [External/spdlog/LICENSE](External/spdlog/LICENSE) |
@@ -69,4 +70,4 @@ for the full per-font attribution.
 
 ## Engine
 
-Index itself is licensed under the terms in [`LICENSE.txt`](LICENSE.txt).
+Index itself is licensed under the MIT License; see [`LICENSE.txt`](LICENSE.txt).

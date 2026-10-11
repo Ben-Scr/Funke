@@ -6,6 +6,7 @@
 // glad include retired with the legacy GL backend (2026-05); the editor
 // no longer makes raw GL calls, all drawing routes through engine renderers.
 
+#include <algorithm>
 #include <cstdio>
 
 #include "Components/Forward.hpp"
@@ -27,11 +28,13 @@
 #include "Components/Physics/FastBoxCollider2DComponent.hpp"
 #include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #include "Core/Application.hpp"
+#include "Core/Time.hpp"
 #include "Core/Window.hpp"
 #include "Events/EventDispatcher.hpp"
 #include "Events/SceneEvents.hpp"
 #include "Events/WindowFocusEvent.hpp"
 #include "Graphics/Renderer2D.hpp"
+#include "Graphics/RenderSettings.hpp"
 #include "Graphics/GizmoRenderer.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Graphics/Gizmo.hpp"
@@ -62,6 +65,7 @@
 #include "Gui/EditorIcons.hpp"
 #include "Gui/Icons.hpp"
 #include "Gui/EditorTheme.hpp"
+#include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Gui/HierarchyDragData.hpp"
 #include "Assets/AssetRegistry.hpp"
@@ -239,7 +243,7 @@ namespace Index {
 			// Also populate DynamicComponentStorage so HasNativeComponent<T>()/GetRef<T>() in scripts can find it; done unconditionally so re-attach after failed registration also seeds the storage.
 			bool storageAdded = false;
 			if (scriptEntry.IsNativeComponent) {
-				auto& componentRegistry = SceneManager::Get().GetComponentRegistry();
+				auto& componentRegistry = SceneManager::GetComponentRegistry();
 				if (const ComponentInfo* info = componentRegistry.FindBySerializedName(scriptEntry.ClassName)) {
 					if (info->isDynamic && info->add && (!info->has || !info->has(entity))) {
 						info->add(entity);
@@ -844,6 +848,35 @@ namespace Index {
 		}
 	}
 
+	void ImGuiEditorLayer::PerformUndoRedo(Scene& scene, bool redo) {
+		std::vector<uint64_t> selectedIds;
+		for (EntityHandle h : GetSelectedEntities(scene)) selectedIds.push_back(scene.GetEntityPersistentID(h));
+		const uint64_t primaryId = (m_SelectedEntity != entt::null && scene.IsValid(m_SelectedEntity))
+			? scene.GetEntityPersistentID(m_SelectedEntity) : 0;
+
+		const std::string action = redo ? m_UndoStack.Redo(scene) : m_UndoStack.Undo(scene);
+		if (action.empty()) return;
+
+		// Structural steps rebuild entities with new handles; re-resolve the selection by persistent id.
+		m_SelectedEntities.clear();
+		for (uint64_t id : selectedIds) {
+			EntityHandle h = entt::null;
+			if (scene.TryResolveEntityRef(id, h) && scene.IsValid(h)) m_SelectedEntities.push_back(h);
+		}
+		EntityHandle primary = entt::null;
+		if (primaryId != 0 && scene.TryResolveEntityRef(primaryId, primary) && scene.IsValid(primary)) {
+			m_SelectedEntity = primary;
+		}
+		else {
+			m_SelectedEntity = m_SelectedEntities.empty() ? entt::null : m_SelectedEntities.back();
+		}
+		RebuildSelectionSet();
+		m_PressedEntity = entt::null;
+		m_EntityOrderDirty = true;
+		++m_SelectionVersion;
+		ShowUndoToast(action, redo);
+	}
+
 	void ImGuiEditorLayer::ShowUndoToast(const std::string& action, bool redo) {
 		if (action.empty()) return;
 		m_UndoToastText = (redo ? "Redo: " : "Undo: ") + action;
@@ -877,9 +910,9 @@ namespace Index {
 		const float boxY = m_EditorViewImageY + 18.0f;
 
 		const int a = static_cast<int>(255.0f * alpha);
-		const ImU32 bg = IM_COL32(26, 27, 31, static_cast<int>(230.0f * alpha));
-		const ImU32 border = IM_COL32(85, 87, 96, static_cast<int>(170.0f * alpha));
-		const ImU32 textCol = IM_COL32(236, 237, 240, a);
+		const ImU32 bg = ImGui::GetColorU32(ImGuiCol_PopupBg, 0.92f * alpha);
+		const ImU32 border = ImGui::GetColorU32(ImGuiCol_Border, alpha);
+		const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text, alpha);
 		const ImU32 tint = IM_COL32(255, 255, 255, a);
 
 		dl->AddRectFilled(ImVec2(boxX, boxY), ImVec2(boxX + boxW, boxY + boxH), bg, 6.0f);
@@ -1000,12 +1033,16 @@ namespace Index {
 		// Drain the async workers first — their lambdas write member state (the progress mutexes) that
 		// the imminent destructor would otherwise free out from under a still-running thread. The future
 		// destructors already block for the same duration; this just joins while the members are alive.
-		if (m_ReserializeFuture.valid()) {
-			try { m_ReserializeFuture.get(); } catch (...) {}
-		}
-		if (m_BuildFuture.valid()) {
-			try { m_BuildFuture.get(); } catch (...) {}
-		}
+		Process::CancelAll();
+		auto joinWorker = [](std::future<void>& worker) {
+			if (!worker.valid()) return;
+			while (worker.wait_for(std::chrono::milliseconds(25)) != std::future_status::ready) {
+				Process::CancelAll();
+			}
+			try { worker.get(); } catch (...) {}
+		};
+		joinWorker(m_ReserializeFuture);
+		joinWorker(m_BuildFuture);
 		// MUST precede WebGPU teardown: Texture2D destructor touches the device.
 		m_Splash.Shutdown();
 		m_ProfilerPanel.Shutdown();
@@ -1095,6 +1132,15 @@ namespace Index {
 
 		DrainPendingLogEntries();
 		RunAutoSaveTick(app, dt);
+		// Held back until the startup prompt is answered so it can't overwrite copies awaiting recovery.
+		if (m_RecoveryChecked && m_PendingRecovery.empty()) {
+			constexpr float k_RecoveryIntervalSeconds = 30.0f;
+			m_RecoveryAccumulator += dt;
+			if (m_RecoveryAccumulator >= k_RecoveryIntervalSeconds) {
+				m_RecoveryAccumulator = 0.0f;
+				SceneRecovery::SnapshotDirtyScenes();
+			}
+		}
 		// MUST precede RunPrefabAutoSaveTick: if the prefab file was deleted, exit edit mode first so auto-save doesn't recreate it at a stale path.
 		if (m_PrefabEditScene && !m_PrefabEditPath.empty() && !File::Exists(m_PrefabEditPath)) {
 			ClosePrefabEditing(false);
@@ -1137,7 +1183,7 @@ namespace Index {
 
 		// Script-driven Application.Quit() in editor routes through the same stop path as the Stop button.
 		if (Application::GetIsPlaying() && ApplicationEditorAccess::ConsumeQuitStopPlayRequest()) {
-			Scene* act = SceneManager::Get().GetActiveScene();
+			Scene* act = SceneManager::GetActiveScene();
 			if (act) {
 				for (auto [ent, audio] : act->GetRegistry().view<AudioSourceComponent>().each()) {
 					if (audio.IsPlaying() || audio.IsPaused()) audio.Stop();
@@ -1147,7 +1193,7 @@ namespace Index {
 		}
 
 		Input& input = app.GetInput();
-		Scene* activeScene = app.GetSceneManager() ? app.GetSceneManager()->GetActiveScene() : nullptr;
+		Scene* activeScene = app.GetSceneManager() ? SceneManager::GetActiveScene() : nullptr;
 		if (!activeScene) {
 			return;
 		}
@@ -1220,11 +1266,11 @@ namespace Index {
 			const bool redo = ImGui::IsKeyPressed(ImGuiKey_Y, false)
 				|| (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z, false));
 			if (redo) {
-				ShowUndoToast(m_UndoStack.Redo(shortcutScene), true);
+				PerformUndoRedo(shortcutScene, true);
 				return;
 			}
 			if (!io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
-				ShowUndoToast(m_UndoStack.Undo(shortcutScene), false);
+				PerformUndoRedo(shortcutScene, false);
 				return;
 			}
 		}
@@ -1367,10 +1413,10 @@ namespace Index {
 		}
 
 		// Reset accumulator on scene change so the new scene gets a full interval before its first auto-save.
-		Scene* active = app.GetSceneManager() ? app.GetSceneManager()->GetActiveScene() : nullptr;
-		if (!active) {
+		Scene* active = app.GetSceneManager() ? SceneManager::GetActiveScene() : nullptr;
+		if (!active || active->IsLifecycleSuspended()) {
 			m_AutoSaveAccumulator = 0.0f;
-			m_AutoSaveLastScenePath.clear();
+			if (!active) m_AutoSaveLastScenePath.clear();
 			return;
 		}
 		const std::string scenePath = project->GetSceneFilePath(active->GetName());
@@ -1423,6 +1469,14 @@ namespace Index {
 	//  Dockspace & Menu
 	// ──────────────────────────────────────────────
 
+	// Icon for an entity's dominant type; shared by the hierarchy rows and the inspector header.
+	static const char* EntityTypeIconName(Scene& scene, EntityHandle handle) {
+		if (scene.HasComponent<Camera2DComponent>(handle)) return "camera";
+		if (scene.HasComponent<ParticleSystem2DComponent>(handle)) return "light_sun";
+		if (scene.HasComponent<RectTransform2DComponent>(handle)) return "bounding_box";
+		return "entity";
+	}
+
 	void ImGuiEditorLayer::RenderDockspaceRoot() {
 		const ImGuiViewport* viewport = ImGui::GetMainViewport();
 		// MUST precede dockspace Begin: SetSize above mutates MainViewport that UI systems fall back to.
@@ -1438,16 +1492,22 @@ namespace Index {
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-
 		ImGui::Begin("EditorDockspace", nullptr, flags);
 		ImGui::PopStyleVar(3);
 
+		const float statusBarH = std::round(ImGui::GetFrameHeight() + 6.0f);
 		ImGuiID dockspaceId = ImGui::GetID("IndexEditorDockspace");
-		ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
+		ImGui::DockSpace(dockspaceId, ImVec2(0.0f, -statusBarH), ImGuiDockNodeFlags_PassthruCentralNode);
+		RenderStatusBar(statusBarH);
 		// End() is in OnPreRender after RenderMainMenu — must stay open for the menubar.
 	}
 
 	void ImGuiEditorLayer::RenderMainMenu(Scene& scene) {
+		if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_K)) {
+			m_OpenCommandPalette = true;
+		}
+		RenderCommandPalette(scene);
+
 		if (!ImGui::BeginMenuBar()) {
 			return;
 		}
@@ -1455,32 +1515,14 @@ namespace Index {
 
 		if (ImGui::BeginMenu("Application")) {
 			if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, !Application::GetIsPlaying())) {
-				// Save all dirty loaded scenes; fall back to active scene so the menu acts as a force-save even when nothing is dirty.
-				IndexProject* project = ProjectManager::GetCurrentProject();
-				if (project) {
-					bool savedAny = false;
-					for (auto& weakScene : SceneManager::Get().GetLoadedScenes()) {
-						auto loadedScene = weakScene.lock();
-						if (!loadedScene || !loadedScene->IsDirty()) continue;
-						std::string scenePath = project->GetSceneFilePath(loadedScene->GetName());
-						if (SceneSerializer::SaveToFile(*loadedScene, scenePath)) {
-							savedAny = true;
-						}
-					}
-					if (!savedAny) {
-						std::string scenePath = project->GetSceneFilePath(scene.GetName());
-						SceneSerializer::SaveToFile(scene, scenePath);
-					}
-					project->LastOpenedScene = scene.GetName();
-					project->Save();
-				}
+				SaveScenesFromMenu(scene);
 			}
 
 			if (ImGui::MenuItem("Quit")) {
 				Application::RequestQuit();
 			}
 			if (ImGui::MenuItem("Reload App")) {
-				Application::Reload();
+				RequestEditorAction(PendingEditorAction::Reload);
 			}
 			ImGui::EndMenu();
 		}
@@ -1523,10 +1565,10 @@ namespace Index {
 			Scene* undoScene = GetContextScene();
 			const bool canEditHistory = undoScene && !Application::GetIsPlaying();
 			if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canEditHistory && m_UndoStack.CanUndo())) {
-				ShowUndoToast(m_UndoStack.Undo(*undoScene), false);
+				PerformUndoRedo(*undoScene, false);
 			}
 			if (ImGui::MenuItem("Redo", "Ctrl+Y", false, canEditHistory && m_UndoStack.CanRedo())) {
-				ShowUndoToast(m_UndoStack.Redo(*undoScene), true);
+				PerformUndoRedo(*undoScene, true);
 			}
 			ImGui::Separator();
 			if (ImGui::MenuItem("Preferences...")) {
@@ -1540,44 +1582,398 @@ namespace Index {
 			ImGui::EndMenu();
 		}
 
+		RenderToolbar();
+		RenderTopBarRight();
+
 		ImGui::EndMenuBar();
 	}
 
-	static bool IconButton(const char* id, const char* iconName, float iconSize, const ImVec2& btnSize) {
+	void ImGuiEditorLayer::SaveScenesFromMenu(Scene& scene) {
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		if (project) {
+			bool hadDirtyScene = false;
+			bool allSaved = true;
+			for (auto& weakScene : SceneManager::GetLoadedScenes()) {
+				auto loadedScene = weakScene.lock();
+				if (!loadedScene || !loadedScene->IsDirty()) continue;
+				hadDirtyScene = true;
+				std::string scenePath = project->GetSceneFilePath(loadedScene->GetName());
+				if (scenePath.empty() || !SceneSerializer::SaveToFile(*loadedScene, scenePath)) {
+					allSaved = false;
+					IDX_ERROR_TAG("Editor", "Failed to save scene '{}'.", loadedScene->GetName());
+				}
+			}
+			if (!hadDirtyScene) {
+				std::string scenePath = project->GetSceneFilePath(scene.GetName());
+				allSaved = !scenePath.empty() && SceneSerializer::SaveToFile(scene, scenePath);
+				if (!allSaved) {
+					IDX_ERROR_TAG("Editor", "Failed to save scene '{}'.", scene.GetName());
+				}
+			}
+			if (allSaved) {
+				const std::string previousLastOpenedScene = project->LastOpenedScene;
+				project->LastOpenedScene = scene.GetName();
+				if (!project->Save()) {
+					project->LastOpenedScene = previousLastOpenedScene;
+					IDX_ERROR_TAG("Editor", "Scenes were saved, but project metadata could not be updated.");
+				}
+			}
+		}
+	}
+
+	void ImGuiEditorLayer::RenderTopBarRight() {
+		// Positioned against the real menu-bar rect so the controls stay centred whatever the padding.
+		const ImRect bar = ImGui::GetCurrentWindow()->MenuBarRect();
+		const float itemH = std::round(bar.GetHeight() - 4.0f);
+		const float itemY = bar.Min.y + 2.0f;
+		const float searchW = std::round(ImGui::GetFontSize() * 13.0f);
+		const float layoutW = std::round(ImGui::GetFontSize() * 7.0f);
+		const float rightX = ImGui::GetWindowWidth() - searchW - layoutW - ImGui::GetStyle().ItemSpacing.x - 10.0f;
+		if (rightX <= ImGui::GetCursorPosX()) return;
+
+		ImGui::SameLine(rightX);
+		ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, itemY));
+		if (EditorUI::SearchLauncher("##CommandSearch", "Search commands", "Ctrl+K", ImVec2(searchW, itemH))) {
+			m_OpenCommandPalette = true;
+		}
+
+		ImGui::SameLine();
+		ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, itemY));
+		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+			ImVec2(ImGui::GetStyle().FramePadding.x, std::max(0.0f, (itemH - ImGui::GetFontSize()) * 0.5f)));
+		ImGui::SetNextItemWidth(layoutW);
+		if (ImGui::BeginCombo("##LayoutPreset", "Layout")) {
+			if (ImGui::Selectable("Default")) {
+				ImGuiContextLayer::ResetLayoutToBundledDefault();
+			}
+			const std::vector<std::string> presets = ImGuiContextLayer::ListLayoutPresets();
+			if (!presets.empty()) ImGui::Separator();
+			for (const std::string& preset : presets) {
+				if (ImGui::Selectable(preset.c_str())) {
+					ImGuiContextLayer::LoadLayoutPreset(preset);
+				}
+			}
+			ImGui::Separator();
+			if (ImGui::Selectable("Manage layouts...")) {
+				m_ShowEditorPreferences = true;
+			}
+			ImGui::EndCombo();
+		}
+		ImGui::PopStyleVar();
+		EditorUI::Tooltip("Editor layout");
+	}
+
+	void ImGuiEditorLayer::RenderCommandPalette(Scene& scene) {
+		constexpr const char* k_PaletteId = "##CommandPalette";
+		const bool justOpened = m_OpenCommandPalette;
+		if (m_OpenCommandPalette) {
+			ImGui::OpenPopup(k_PaletteId);
+			m_OpenCommandPalette = false;
+			m_CommandPaletteBuffer[0] = '\0';
+			m_CommandPaletteSelection = 0;
+		}
+
+		const ImGuiViewport* viewport = ImGui::GetMainViewport();
+		const float width = std::round(ImGui::GetFontSize() * 34.0f);
+		ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + viewport->Size.x * 0.5f, viewport->Pos.y + ImGui::GetFontSize() * 5.0f),
+			ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+		ImGui::SetNextWindowSize(ImVec2(width, 0.0f));
+		if (!ImGui::BeginPopup(k_PaletteId)) return;
+
+		struct Command {
+			const char* Label;
+			const char* Shortcut;
+			bool Enabled;
+			std::function<void()> Run;
+		};
+		const bool playing = Application::GetIsPlaying();
+		const bool hasProject = ProjectManager::HasProject();
+		Scene* undoScene = GetContextScene();
+		const bool canEditHistory = undoScene && !playing;
+		const Command commands[] = {
+			{ "Save Scene", "Ctrl+S", !playing, [&]() { SaveScenesFromMenu(scene); } },
+			{ "Enter Play Mode", nullptr, !playing && !m_PlayModeRecompilePending, [&]() {
+				if (Scene* active = SceneManager::GetActiveScene()) BeginPlayModeRequest(*active);
+			} },
+			{ "Undo", "Ctrl+Z", canEditHistory && m_UndoStack.CanUndo(), [&]() { PerformUndoRedo(*undoScene, false); } },
+			{ "Redo", "Ctrl+Y", canEditHistory && m_UndoStack.CanRedo(), [&]() { PerformUndoRedo(*undoScene, true); } },
+			{ "Build...", nullptr, hasProject && !playing, [&]() { m_ShowBuildPanel = true; } },
+			{ "Build Profiles", nullptr, hasProject, [&]() { m_ShowBuildProfilesPanel = true; } },
+			{ "Project Settings", nullptr, hasProject, [&]() { m_ShowProjectSettings = true; } },
+			{ "Package Manager", nullptr, hasProject, [&]() { m_ShowPackageManager = true; } },
+			{ "Preferences", nullptr, true, [&]() { m_ShowEditorPreferences = true; } },
+			{ "Toggle Profiler", "Ctrl+F6", true, [&]() { m_ShowProfiler = !m_ShowProfiler; } },
+			{ "Reset Layout", nullptr, true, [&]() { ImGuiContextLayer::ResetLayoutToBundledDefault(); } },
+			{ "Reload Editor", nullptr, true, [&]() { RequestEditorAction(PendingEditorAction::Reload); } },
+			{ "Quit", nullptr, true, [&]() { Application::RequestQuit(); } },
+		};
+
+		if (justOpened) ImGui::SetKeyboardFocusHere();
+		if (EditorUI::SearchField("##CommandFilter", m_CommandPaletteBuffer, sizeof(m_CommandPaletteBuffer), "Type a command...")) {
+			m_CommandPaletteSelection = 0;
+		}
+		ImGui::Spacing();
+
+		const std::string filter = EditorScriptDiscovery::ToLowerCopy(m_CommandPaletteBuffer);
+		std::vector<const Command*> matches;
+		for (const Command& command : commands) {
+			if (filter.empty() || EditorScriptDiscovery::ToLowerCopy(command.Label).find(filter) != std::string::npos) {
+				matches.push_back(&command);
+			}
+		}
+
+		if (matches.empty()) {
+			EditorUI::EmptyState("No matching commands");
+		}
+		else {
+			const int count = static_cast<int>(matches.size());
+			if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) m_CommandPaletteSelection = (m_CommandPaletteSelection + 1) % count;
+			if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) m_CommandPaletteSelection = (m_CommandPaletteSelection + count - 1) % count;
+			m_CommandPaletteSelection = std::clamp(m_CommandPaletteSelection, 0, count - 1);
+
+			const Command* run = nullptr;
+			for (int i = 0; i < count; ++i) {
+				const Command& command = *matches[static_cast<std::size_t>(i)];
+				ImGui::PushID(i);
+				ImGui::BeginDisabled(!command.Enabled);
+				const bool highlighted = i == m_CommandPaletteSelection;
+				if (highlighted) ImGui::PushStyleColor(ImGuiCol_Header, EditorTheme::Colors::RowSelection());
+				if (ImGui::Selectable(command.Label, highlighted, ImGuiSelectableFlags_None)) run = &command;
+				if (highlighted) ImGui::PopStyleColor();
+				if (command.Shortcut) {
+					ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(command.Shortcut).x);
+					ImGui::TextDisabled("%s", command.Shortcut);
+				}
+				ImGui::EndDisabled();
+				ImGui::PopID();
+			}
+			if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
+				run = matches[static_cast<std::size_t>(m_CommandPaletteSelection)];
+			}
+			if (run && run->Enabled) {
+				ImGui::CloseCurrentPopup();
+				run->Run();
+			}
+		}
+		if (ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+		ImGui::EndPopup();
+	}
+
+	void ImGuiEditorLayer::RenderStatusBar(float height) {
+		ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetStyleColorVec4(ImGuiCol_MenuBarBg));
+		ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 3.0f));
+		ImGui::BeginChild("##StatusBar", ImVec2(0.0f, height), ImGuiChildFlags_AlwaysUseWindowPadding,
+			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav);
+		ImGui::PopStyleVar(2);
+		ImGui::PopStyleColor();
+
+		const ImVec2 wp = ImGui::GetWindowPos();
+		ImGui::GetWindowDrawList()->AddLine(wp, ImVec2(wp.x + ImGui::GetWindowWidth(), wp.y), ImGui::GetColorU32(ImGuiCol_Border));
+
+		auto statusIcon = [](const char* iconName, const ImVec4& tint) {
+			const float size = std::round(ImGui::GetFontSize() * 0.9f);
+			if (const uint64_t icon = EditorIcons::Get(iconName, static_cast<int>(size))) {
+				ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (ImGui::GetFrameHeight() - size) * 0.5f);
+				ImGui::ImageWithBg(static_cast<ImTextureID>(static_cast<intptr_t>(icon)), ImVec2(size, size),
+					ImVec2(0, 1), ImVec2(1, 0), ImVec4(0, 0, 0, 0), tint);
+				ImGui::SameLine(0.0f, 4.0f);
+			}
+		};
+		auto separator = []() {
+			ImGui::SameLine(0.0f, 14.0f);
+		};
+
+		Scene* scene = SceneManager::GetActiveScene();
+		if (scene) {
+			const bool dirty = scene->IsDirty() || (IsInPrefabEditMode() && m_PrefabEditDirty);
+			statusIcon(dirty ? "warning" : "success", ImVec4(1, 1, 1, 1));
+			ImGui::AlignTextToFramePadding();
+			if (dirty) EditorUI::StatusText(EditorUI::Tone::Warning, "Unsaved changes");
+			else ImGui::TextDisabled("Saved");
+			separator();
+			ImGui::AlignTextToFramePadding();
+			ImGui::TextDisabled("%s  -  %zu entities", scene->GetName().c_str(), scene->GetEntityCount());
+			if (!m_SelectedEntities.empty()) {
+				separator();
+				ImGui::AlignTextToFramePadding();
+				ImGui::TextDisabled("%zu selected", m_SelectedEntities.size());
+			}
+		}
+
+		// Right side: script state, play state, frame rate.
+		const ScriptSystem* scripts = scene && scene->HasSystem<ScriptSystem>() ? scene->GetSystem<ScriptSystem>() : nullptr;
+		const bool compiling = (scripts && scripts->IsRebuilding()) || m_PlayModeRecompilePending;
+		char right[128];
+		std::snprintf(right, sizeof(right), "%s     %.0f FPS",
+			compiling ? "Compiling scripts..." : (Application::GetIsPlaying() ? "Playing" : "Scripts ready"),
+			ImGui::GetIO().Framerate);
+		const float rightW = ImGui::CalcTextSize(right).x;
+		ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 20.0f, ImGui::GetWindowWidth() - rightW - 12.0f));
+		ImGui::AlignTextToFramePadding();
+		if (compiling) EditorUI::StatusText(EditorUI::Tone::Info, right);
+		else ImGui::TextDisabled("%s", right);
+
+		ImGui::EndChild();
+	}
+
+	static bool IconButton(const char* id, const char* iconName, float iconSize, const ImVec2& btnSize, bool accent = false) {
+		if (accent) {
+			const ImVec4 a = EditorTheme::Colors::Accent();
+			ImGui::PushStyleColor(ImGuiCol_Button, a);
+			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(std::min(a.x + 0.06f, 1.0f), std::min(a.y + 0.06f, 1.0f), std::min(a.z + 0.06f, 1.0f), 1.0f));
+			ImGui::PushStyleColor(ImGuiCol_ButtonActive, a);
+		}
+		const ImVec4 tint = accent ? ImVec4(1, 1, 1, 1) : ImGui::GetStyleColorVec4(ImGuiCol_Text);
 		uint64_t tex = EditorIcons::Get(iconName, (int)iconSize);
-		if (tex)
-			return ImGui::ImageButton(id, (ImTextureID)(intptr_t)tex, btnSize, ImVec2(0, 1), ImVec2(1, 0));
-		return ImGui::Button(id + 2);
+		const bool clicked = tex
+			? ImGui::ImageButton(id, (ImTextureID)(intptr_t)tex, btnSize, ImVec2(0, 1), ImVec2(1, 0), ImVec4(0, 0, 0, 0), tint)
+			: ImGui::Button(id + 2);
+		if (accent) ImGui::PopStyleColor(3);
+		return clicked;
+	}
+
+	bool ImGuiEditorLayer::SaveDirtyPrefabsBeforeRun(std::string_view actionName) {
+		if (m_PrefabEditScene && (m_PrefabEditScene->IsDirty() || m_PrefabEditDirty)
+			&& !SavePrefabEditChanges()) {
+			IDX_ERROR_TAG("Editor", "{} aborted because the prefab edit could not be saved.", actionName);
+			return false;
+		}
+		if (m_PrefabInspector.IsOpen() && m_PrefabInspector.HasUnsavedChanges()
+			&& !SavePrefabInspectorChanges()) {
+			IDX_ERROR_TAG("Editor", "{} aborted because the prefab inspector could not be saved.", actionName);
+			return false;
+		}
+		return true;
+	}
+
+	bool ImGuiEditorLayer::ValidateUniquePersistentEntityIds(
+		const std::vector<Scene*>& scenes,
+		std::string_view actionName) const {
+		std::unordered_map<uint64_t, std::string> owners;
+		for (const Scene* scene : scenes) {
+			if (!scene) continue;
+			const auto view = scene->GetRegistry().view<UUIDComponent>();
+			for (const EntityHandle entity : view) {
+				const uint64_t persistentId = scene->GetEntityPersistentID(entity);
+				if (persistentId == 0) {
+					IDX_ERROR_TAG("Editor",
+						"{} aborted: scene '{}' contains an entity without a persistent ID.",
+						actionName, scene->GetName());
+					return false;
+				}
+				const auto [owner, inserted] = owners.emplace(persistentId, scene->GetName());
+				if (!inserted) {
+					IDX_ERROR_TAG("Editor",
+						"{} aborted: persistent entity ID {} is shared by scenes '{}' and '{}'.",
+						actionName, persistentId, owner->second, scene->GetName());
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	bool ImGuiEditorLayer::PreparePlayModeSnapshot(Scene& scene) {
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project) {
+			IDX_ERROR_TAG("PlayMode", "Play Mode requires an active project.");
+			return false;
+		}
+		std::vector<Scene*> loadedScenes;
+		for (const std::weak_ptr<Scene>& weakScene : SceneManager::GetLoadedScenes()) {
+			const std::shared_ptr<Scene> loadedScene = weakScene.lock();
+			if (!loadedScene) continue;
+			if (loadedScene->IsPersistent()) {
+				IDX_ERROR_TAG("PlayMode", "Play Mode cannot snapshot persistent scene '{}'.", loadedScene->GetName());
+				return false;
+			}
+			if (loadedScene->IsLifecycleSuspended()) {
+				IDX_ERROR_TAG("PlayMode", "Play Mode cannot snapshot suspended recovery scene '{}'.", loadedScene->GetName());
+				return false;
+			}
+			loadedScenes.push_back(loadedScene.get());
+		}
+		if (!ValidateUniquePersistentEntityIds(loadedScenes, "Play Mode")) {
+			return false;
+		}
+		if (!SaveDirtyPrefabsBeforeRun("Play Mode")) {
+			return false;
+		}
+		if (!ValidateUniquePersistentEntityIds(loadedScenes, "Play Mode")) {
+			return false;
+		}
+
+		std::vector<std::pair<std::string, std::string>> playModeScenes;
+		std::unordered_set<std::string> playModeSceneNames;
+		std::unordered_set<std::string> playModeScenePaths;
+		std::unordered_set<std::string> dirtySceneNames;
+		bool sceneSnapshotFailed = false;
+		SceneManager::ForeachLoadedScene([&](Scene& loadedScene) {
+			if (sceneSnapshotFailed) return;
+			if (!playModeSceneNames.insert(loadedScene.GetName()).second) {
+				sceneSnapshotFailed = true;
+				IDX_ERROR_TAG("PlayMode", "Loaded scenes must have unique names; '{}' is duplicated.", loadedScene.GetName());
+				return;
+			}
+			const std::string scenePath = project->GetSceneFilePath(loadedScene.GetName());
+			if (scenePath.empty()) {
+				sceneSnapshotFailed = true;
+				IDX_ERROR_TAG("PlayMode", "Scene '{}' has no writable project path.", loadedScene.GetName());
+				return;
+			}
+			if (!playModeScenePaths.insert(scenePath).second) {
+				sceneSnapshotFailed = true;
+				IDX_ERROR_TAG("PlayMode", "Multiple loaded scenes resolve to snapshot path '{}'.", scenePath);
+				return;
+			}
+			// Unsaved edits go to a private snapshot: pressing Play must not write the user's scene file.
+			std::string snapshotPath = scenePath;
+			if (loadedScene.IsDirty()) {
+				const std::filesystem::path snapshotDir = Path::FromUtf8(project->RootDirectory) / ".index" / "PlayMode";
+				std::error_code dirError;
+				std::filesystem::create_directories(snapshotDir, dirError);
+				snapshotPath = Path::ToUtf8(snapshotDir / Path::FromUtf8(loadedScene.GetName() + ".scene"));
+				if (!SceneSerializer::SaveToFile(loadedScene, snapshotPath, false)) {
+					sceneSnapshotFailed = true;
+					IDX_ERROR_TAG("PlayMode", "Failed to snapshot scene '{}'. Play Mode was not started.", loadedScene.GetName());
+					return;
+				}
+				dirtySceneNames.insert(loadedScene.GetName());
+			}
+			if (!File::Exists(snapshotPath)) {
+				sceneSnapshotFailed = true;
+				IDX_ERROR_TAG("PlayMode", "Scene snapshot is missing: {}", snapshotPath);
+				return;
+			}
+			playModeScenes.push_back({ loadedScene.GetName(), snapshotPath });
+		});
+		if (sceneSnapshotFailed || playModeScenes.empty()) {
+			return false;
+		}
+		const std::string previousLastOpenedScene = project->LastOpenedScene;
+		project->LastOpenedScene = scene.GetName();
+		if (!project->Save()) {
+			project->LastOpenedScene = previousLastOpenedScene;
+			IDX_ERROR_TAG("PlayMode", "Failed to save project metadata. Play Mode was not started.");
+			return false;
+		}
+
+		m_PlayModeScenes = std::move(playModeScenes);
+		m_PlayModeDirtyScenes = std::move(dirtySceneNames);
+		m_PlayModeActiveScene = scene.GetName();
+		return true;
 	}
 
 	void ImGuiEditorLayer::BeginPlayModeRequest(Scene& scene) {
-		// Play-mode entry recycles entity handles in place; edit-mode undo entries
-		// would resolve onto play entities, so reset the history here.
-		m_UndoStack.Clear();
-		InspectorUndoRecorder::Reset();
-		IndexProject* project = ProjectManager::GetCurrentProject();
-		if (project) {
-			// Snapshot every loaded scene (not just active): restore reloads each from disk, so all must be current at play-entry.
+		if (!PreparePlayModeSnapshot(scene)) {
+			m_PlayModeRecompileScene.reset();
 			m_PlayModeScenes.clear();
-			m_PlayModeActiveScene = scene.GetName();
-			bool savedAny = false;
-			SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
-				std::string scenePath = project->GetSceneFilePath(s.GetName());
-				if (s.IsDirty()) {
-					SceneSerializer::SaveToFile(s, scenePath);
-					savedAny = true;
-				}
-				m_PlayModeScenes.push_back({ s.GetName(), scenePath });
-			});
-			if (savedAny) {
-				project->LastOpenedScene = scene.GetName();
-				project->Save();
-			}
-			// Capture the edit-mode baseline of inspector-authored script fields now,
-			// before play-start consumes (and erases) PendingFieldValues — the play-exit
-			// restore re-applies these so component/UI references survive the round-trip.
-			CaptureScriptFieldOverrides(/*merge=*/false);
+			m_PlayModeActiveScene.clear();
+			m_PlayModeScriptFields.clear();
+			return;
 		}
+		CaptureScriptFieldOverrides(/*merge=*/false);
 
 		m_LogEntries.clear();
 		ApplicationEditorAccess::SetPlaymodePaused(false);
@@ -1586,15 +1982,21 @@ namespace Index {
 		if (scriptSys && EditorPreferences::GetRecompileScriptsOnPlay()) {
 			const bool rebuildStarted = scriptSys->RequestRebuildAndReloadAll();
 			if (rebuildStarted || scriptSys->IsRebuilding()) {
+				m_PlayModeRecompileScene = SceneManager::GetLoadedScene(scene.GetName());
 				m_PlayModeRecompilePending = true;
 				return;
 			}
 		}
 		if (scriptSys && scriptSys->IsRebuilding()) {
+			m_PlayModeRecompileScene = SceneManager::GetLoadedScene(scene.GetName());
 			m_PlayModeRecompilePending = true;
 			return;
 		}
 		if (scriptSys && !scriptSys->DidLastRebuildSucceed()) {
+			m_PlayModeRecompileScene.reset();
+			m_PlayModeScenes.clear();
+			m_PlayModeActiveScene.clear();
+			m_PlayModeScriptFields.clear();
 			IDX_ERROR_TAG("PlayMode", "Script compilation failed. Play Mode was not started.");
 			return;
 		}
@@ -1604,6 +2006,10 @@ namespace Index {
 
 	void ImGuiEditorLayer::CompletePlayModeEntry(Scene& scene) {
 		m_PlayModeRecompilePending = false;
+		m_PlayModeRecompileScene.reset();
+		m_PlayModeSelection = CaptureLoadedSceneSelection();
+		m_UndoStack.Clear();
+		InspectorUndoRecorder::Reset();
 		// Step counter is panel-frame state, not playmode state — without a reset
 		// here a Step that didn't finish draining before the previous Stop would
 		// trip the bottom-of-RenderToolbar auto-pause on this fresh session's first
@@ -1618,9 +2024,8 @@ namespace Index {
 		// so a prior session's scripted Time.fixedDeltaTime override doesn't leak across
 		// Stop/Play. Built games get this for free at Application::Initialize.
 		if (const IndexProject* project = ProjectManager::GetCurrentProject()) {
-			if (Application* app = Application::GetInstance()) {
-				app->GetTime().SetFixedDeltaTime(project->GetFixedDeltaTimeSeconds());
-			}
+			Time::SetFixedDeltaTime(project->GetFixedDeltaTimeSeconds());
+			RenderSettings::Apply(project->Graphics);
 		}
 		scene.StartManagedSceneSystemsForPlayMode();
 		// Reset Box2D sleep timers so bodies that sat through editor
@@ -1631,40 +2036,77 @@ namespace Index {
 		StartPlayOnAwakeComponents(scene);
 	}
 
-	void ImGuiEditorLayer::PollPendingPlayModeRequest(Scene& scene) {
+	void ImGuiEditorLayer::PollPendingPlayModeRequest() {
 		if (!m_PlayModeRecompilePending || Application::GetIsPlaying()) {
 			return;
 		}
 
-		ScriptSystem* scriptSys = scene.HasSystem<ScriptSystem>() ? scene.GetSystem<ScriptSystem>() : nullptr;
-		if (!scriptSys || !scriptSys->IsRebuilding()) {
-			if (!scriptSys || scriptSys->DidLastRebuildSucceed()) {
-				CompletePlayModeEntry(scene);
-			}
-			else {
-				m_PlayModeRecompilePending = false;
+		const std::shared_ptr<Scene> rebuildScene = m_PlayModeRecompileScene.lock();
+		ScriptSystem* scriptSys = rebuildScene && rebuildScene->HasSystem<ScriptSystem>()
+			? rebuildScene->GetSystem<ScriptSystem>() : nullptr;
+		if (scriptSys && scriptSys->IsRebuilding()) {
+			return;
+		}
+
+		if (!scriptSys || !scriptSys->DidLastRebuildSucceed()) {
+			m_PlayModeRecompilePending = false;
+			m_PlayModeRecompileScene.reset();
+			m_PlayModeScenes.clear();
+			m_PlayModeActiveScene.clear();
+			m_PlayModeScriptFields.clear();
+			if (scriptSys) {
 				IDX_ERROR_TAG("PlayMode", "Script compilation failed. Play Mode was not started.");
 			}
+			else {
+				IDX_ERROR_TAG("PlayMode", "The scene that requested script compilation is no longer loaded. Play Mode was not started.");
+			}
+			return;
 		}
+
+		Scene* activeScene = SceneManager::GetActiveScene();
+		if (!activeScene || !PreparePlayModeSnapshot(*activeScene)) {
+			m_PlayModeRecompilePending = false;
+			m_PlayModeRecompileScene.reset();
+			m_PlayModeScenes.clear();
+			m_PlayModeActiveScene.clear();
+			m_PlayModeScriptFields.clear();
+			return;
+		}
+		CaptureScriptFieldOverrides(/*merge=*/true);
+		CompletePlayModeEntry(*activeScene);
 	}
 
 	void ImGuiEditorLayer::RenderToolbar() {
-		ImGui::Begin("Toolbar");
-
-		const float iconSize = ImGui::GetTextLineHeight();
+		const ImRect bar = ImGui::GetCurrentWindow()->MenuBarRect();
+		const float iconSize = std::round(std::min(ImGui::GetFontSize() * 0.9f, bar.GetHeight() - 10.0f));
 		const ImVec2 btnSize(iconSize, iconSize);
 		const bool isPlaying = Application::GetIsPlaying();
 		const bool isPaused = ApplicationEditorAccess::IsPlaymodePaused();
 
-		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, 2));
+		// Center the button group in the menu bar: edit mode shows Play + Standalone, play mode four buttons.
+		const ImVec2 framePad(10.0f, 3.0f);
+		const float buttonW = iconSize + framePad.x * 2.0f;
+		const int buttonCount = isPlaying ? 4 : 2;
+		const float groupW = buttonW * buttonCount + ImGui::GetStyle().ItemSpacing.x * (buttonCount - 1);
+		const float centeredX = (ImGui::GetWindowWidth() - groupW) * 0.5f;
+		if (centeredX > ImGui::GetCursorPosX()) {
+			ImGui::SetCursorPosX(centeredX);
+		}
+
+		// Vertically centred on the real menu-bar rect; later buttons follow via SameLine.
+		const float buttonH = iconSize + framePad.y * 2.0f;
+		ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, std::round(bar.Min.y + (bar.GetHeight() - buttonH) * 0.5f)));
+
+		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, framePad);
+		ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f);
 
 		if (!isPlaying) {
 			const bool playButtonDisabled = m_PlayModeRecompilePending;
 			if (playButtonDisabled) {
 				ImGui::BeginDisabled();
 			}
-			if (IconButton("##Play", "play", iconSize, btnSize)) {
-				Scene* active = SceneManager::Get().GetActiveScene();
+			if (IconButton("##Play", "play", iconSize, btnSize, /*accent=*/true)) {
+				Scene* active = SceneManager::GetActiveScene();
 				if (active) {
 					BeginPlayModeRequest(*active);
 				}
@@ -1680,7 +2122,7 @@ namespace Index {
 			if (isPaused) {
 				if (IconButton("##Continue", "play", iconSize, btnSize)) {
 					ApplicationEditorAccess::SetPlaymodePaused(false);
-					Scene* active = SceneManager::Get().GetActiveScene();
+					Scene* active = SceneManager::GetActiveScene();
 					if (active) {
 						for (auto ent : m_EditorPausedAudioEntities) {
 							if (active->IsValid(ent) && active->HasComponent<AudioSourceComponent>(ent)) {
@@ -1697,7 +2139,7 @@ namespace Index {
 				if (IconButton("##Pause", "pause", iconSize, btnSize)) {
 					ApplicationEditorAccess::SetPlaymodePaused(true);
 					m_EditorPausedAudioEntities.clear();
-					Scene* active = SceneManager::Get().GetActiveScene();
+					Scene* active = SceneManager::GetActiveScene();
 					if (active) {
 						for (auto [ent, audio] : active->GetRegistry().view<AudioSourceComponent>().each()) {
 							if (audio.IsPlaying()) {
@@ -1718,9 +2160,9 @@ namespace Index {
 			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Step (advance one frame)");
 
 			ImGui::SameLine();
-			if (IconButton("##Stop", "stop", iconSize, btnSize)) {
+			if (IconButton("##Stop", "stop", iconSize, btnSize, /*accent=*/true)) {
 				{
-					Scene* act = SceneManager::Get().GetActiveScene();
+					Scene* act = SceneManager::GetActiveScene();
 					if (act) {
 						for (auto [ent, audio] : act->GetRegistry().view<AudioSourceComponent>().each()) {
 							if (audio.IsPlaying() || audio.IsPaused()) audio.Stop();
@@ -1735,7 +2177,7 @@ namespace Index {
 
 		// Disabled mid-build to avoid racing the file-copy step that touches the runtime binary.
 		ImGui::SameLine();
-		const bool standaloneDisabled = (m_BuildState > 0)
+		const bool standaloneDisabled = (m_BuildState > 0) || (m_ReserializeState > 0)
 			|| !ProjectManager::GetCurrentProject();
 		if (standaloneDisabled) ImGui::BeginDisabled();
 		if (IconButton("##LaunchStandalone", "launch_standalone", iconSize, btnSize)) {
@@ -1743,10 +2185,12 @@ namespace Index {
 		}
 		if (standaloneDisabled) ImGui::EndDisabled();
 
-		ImGui::PopStyleVar();
+		ImGui::PopStyleVar(2);
 		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
 			if (m_BuildState > 0)
 				ImGui::SetTooltip("Launch Standalone (disabled — build in progress)");
+			else if (m_ReserializeState > 0)
+				ImGui::SetTooltip("Launch Standalone (disabled — asset reserialization in progress)");
 			else if (!ProjectManager::GetCurrentProject())
 				ImGui::SetTooltip("Launch Standalone (disabled — no project loaded)");
 			else
@@ -1754,15 +2198,19 @@ namespace Index {
 					"Launches the game in\n"
 					"a separate window.");
 		}
-		ImGui::SameLine();
-		const char* statusText = !isPlaying ? "Editor" : (isPaused ? "Paused" : "Playing");
-		ImGui::TextUnformatted(statusText);
+		// Status text sits beside the buttons, nudged down to their vertical center.
+		if (isPlaying) {
+			ImGui::SameLine();
+			ImGui::SetCursorPosY(ImGui::GetCursorPosY() + framePad.y);
+			ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::Colors::Highlight());
+			ImGui::TextUnformatted(isPaused ? "Paused" : "Playing");
+			ImGui::PopStyleColor();
+		}
 		if (m_PlayModeRecompilePending) {
 			ImGui::SameLine();
+			ImGui::SetCursorPosY(ImGui::GetCursorPosY() + framePad.y);
 			ImGui::TextDisabled("Waiting for script compilation...");
 		}
-
-		ImGui::End();
 
 		// Live playing flag (not the top-of-function snapshot): a Stop click
 		// earlier in this frame already cleared m_IsPlaying via
@@ -1774,7 +2222,7 @@ namespace Index {
 			if (m_StepFrames == 0) {
 				ApplicationEditorAccess::SetPlaymodePaused(true);
 				// Audio runs on its own thread; mirror the Pause button's manual capture so Continue can resume it.
-				Scene* active = SceneManager::Get().GetActiveScene();
+				Scene* active = SceneManager::GetActiveScene();
 				if (active) {
 					for (auto [ent, audio] : active->GetRegistry().view<AudioSourceComponent>().each()) {
 						if (audio.IsPlaying()) {
@@ -1794,9 +2242,26 @@ namespace Index {
 				"LaunchStandalone: no project loaded — nothing to launch.");
 			return;
 		}
+		if (m_ReserializeState != 0) {
+			IDX_CORE_WARN_TAG("Editor", "LaunchStandalone: asset reserialization is still in progress.");
+			return;
+		}
+		std::vector<Scene*> loadedScenes;
+		for (const std::weak_ptr<Scene>& weakScene : SceneManager::GetLoadedScenes()) {
+			const std::shared_ptr<Scene> loadedScene = weakScene.lock();
+			if (!loadedScene) continue;
+			if (loadedScene->IsLifecycleSuspended()) {
+				IDX_ERROR_TAG("Editor", "Launch Standalone aborted: scene '{}' is suspended for recovery.", loadedScene->GetName());
+				return;
+			}
+			loadedScenes.push_back(loadedScene.get());
+		}
+		if (!ValidateUniquePersistentEntityIds(loadedScenes, "Launch Standalone")) {
+			return;
+		}
 
 		// Tries two layouts: dev-tree sibling dir, then same dir as editor exe.
-		const std::filesystem::path exeDir(Path::ExecutableDir());
+		const std::filesystem::path exeDir = Path::FromUtf8(Path::ExecutableDir());
 #ifdef IDX_PLATFORM_WINDOWS
 		constexpr const char* k_RuntimeExe = "Index-Runtime.exe";
 #else
@@ -1810,29 +2275,60 @@ namespace Index {
 			IDX_CORE_ERROR_TAG("Editor",
 				"LaunchStandalone: Index-Runtime executable not found near editor "
 				"(tried '{}' and '{}'). Build the engine's Runtime project first.",
-				(exeDir.parent_path() / "Index-Runtime" / k_RuntimeExe).string(),
-				(exeDir / k_RuntimeExe).string());
+				Path::ToUtf8(exeDir.parent_path() / "Index-Runtime" / k_RuntimeExe),
+				Path::ToUtf8(exeDir / k_RuntimeExe));
+			return;
+		}
+		if (!SaveDirtyPrefabsBeforeRun("Launch Standalone")) {
+			return;
+		}
+		if (!ValidateUniquePersistentEntityIds(loadedScenes, "Launch Standalone")) {
 			return;
 		}
 
-		// Persist the active scene so the standalone runtime (which loads scene
-		// files from disk) reflects the current edits. Skip in Play mode or during
-		// a reserialize: saving transient play-mode state would clobber the authored
-		// scene, and the reserialize worker owns the .scene tree.
-		if (!Application::GetIsPlaying() && m_ReserializeState == 0) {
-			if (Scene* active = SceneManager::Get().GetActiveScene(); active && active->IsDirty()) {
-				const std::string scenePath = project->GetSceneFilePath(active->GetName());
-				if (!scenePath.empty() && SceneSerializer::SaveToFile(*active, scenePath)) {
-					active->ClearDirty();
-					project->LastOpenedScene = active->GetName();
+		const std::string previousLastOpenedScene = project->LastOpenedScene;
+		if (!Application::GetIsPlaying()) {
+			bool saveFailed = false;
+			bool sawLoadedScene = false;
+			SceneManager::ForeachLoadedScene([&](Scene& loadedScene) {
+				if (saveFailed) return;
+				sawLoadedScene = true;
+				const std::string scenePath = project->GetSceneFilePath(loadedScene.GetName());
+				if (scenePath.empty()) {
+					saveFailed = true;
+					IDX_ERROR_TAG("Editor", "LaunchStandalone: scene '{}' has no writable project path.", loadedScene.GetName());
+					return;
 				}
+				if (loadedScene.IsDirty() && !SceneSerializer::SaveToFile(loadedScene, scenePath)) {
+					saveFailed = true;
+					IDX_ERROR_TAG("Editor", "LaunchStandalone: failed to save scene '{}'.", loadedScene.GetName());
+					return;
+				}
+				if (!File::Exists(scenePath)) {
+					saveFailed = true;
+					IDX_ERROR_TAG("Editor", "LaunchStandalone: scene snapshot is missing: {}", scenePath);
+				}
+			});
+			if (saveFailed || !sawLoadedScene) {
+				if (!sawLoadedScene) {
+					IDX_ERROR_TAG("Editor", "LaunchStandalone: no loaded scene is available.");
+				}
+				return;
 			}
 		}
 
-		// Flush project settings (LastOpenedScene + prefs) to disk.
-		project->Save();
+		if (!Application::GetIsPlaying()) {
+			if (Scene* active = SceneManager::GetActiveScene()) {
+				project->LastOpenedScene = active->GetName();
+			}
+		}
+		if (!project->Save()) {
+			project->LastOpenedScene = previousLastOpenedScene;
+			IDX_ERROR_TAG("Editor", "LaunchStandalone: failed to save project metadata.");
+			return;
+		}
 
-		const std::string runtimeStr = runtimePath.string();
+		const std::string runtimeStr = Path::ToUtf8(runtimePath);
 		const std::string projectArg = "--project=" + project->RootDirectory;
 		IDX_CORE_INFO_TAG("Editor",
 			"LaunchStandalone: spawning '{}' for project '{}'",
@@ -1853,7 +2349,7 @@ namespace Index {
 			m_PlayModeScriptFields.clear();
 		}
 		int captured = 0;
-		SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
+		SceneManager::ForeachLoadedScene([&](Scene& s) {
 			auto view = s.GetRegistry().view<ScriptComponent>();
 			for (EntityHandle entity : view) {
 				const ScriptComponent& sc = view.get<ScriptComponent>(entity);
@@ -1876,14 +2372,16 @@ namespace Index {
 		IDX_CORE_INFO_TAG("PlayFix", "CaptureScriptFieldOverrides(merge={}) captured {} field(s)", merge, captured);
 	}
 
-	void ImGuiEditorLayer::ReapplyScriptFieldOverrides() {
+	void ImGuiEditorLayer::ReapplyScriptFieldOverrides(const std::vector<std::shared_ptr<Scene>>& scenes) {
 		IDX_CORE_INFO_TAG("PlayFix", "ReapplyScriptFieldOverrides: {} scene(s) in snapshot", m_PlayModeScriptFields.size());
-		for (const auto& [sceneName, entities] : m_PlayModeScriptFields) {
-			auto loaded = SceneManager::Get().GetLoadedScene(sceneName).lock();
+		for (const std::shared_ptr<Scene>& loaded : scenes) {
 			if (!loaded) {
-				IDX_CORE_WARN_TAG("PlayFix", "reapply: scene '{}' NOT loaded — skipping {} entity override(s)", sceneName, entities.size());
 				continue;
 			}
+			const std::string& sceneName = loaded->GetName();
+			const auto sceneFields = m_PlayModeScriptFields.find(sceneName);
+			if (sceneFields == m_PlayModeScriptFields.end()) continue;
+			const auto& entities = sceneFields->second;
 			for (const auto& [uuid, fields] : entities) {
 				EntityHandle handle = entt::null;
 				if (!loaded->TryResolveEntityRef(uuid, handle)) {
@@ -1904,175 +2402,359 @@ namespace Index {
 				}
 			}
 		}
-		m_PlayModeScriptFields.clear();
 	}
 
-	void ImGuiEditorLayer::RestoreEditorSceneAfterPlaymode() {
-		m_UndoStack.Clear();
-		InspectorUndoRecorder::Reset();
-		// Reset before reload: m_PressedEntity holds a play-mode handle that entt may recycle, causing a stale click on the restored entity.
-		m_PressedEntity = entt::null;
-
-		// Prefab-edit mode: selection lives in the detached scene which play doesn't touch; skip the clear/restore dance.
-		const bool inPrefabEdit = IsInPrefabEditMode();
-
-		const bool wasSceneNodeSelected = m_IsSceneNodeSelected;
-		uint64_t selectedUUID = 0;
-		Scene* active = SceneManager::Get().GetActiveScene();
-		if (!inPrefabEdit
-			&& active && m_SelectedEntity != entt::null && active->IsValid(m_SelectedEntity)
-			&& active->HasComponent<UUIDComponent>(m_SelectedEntity)) {
-			selectedUUID = static_cast<uint64_t>(active->GetComponent<UUIDComponent>(m_SelectedEntity).Id);
+	bool ImGuiEditorLayer::RestoreEditorSceneAfterPlaymode() {
+		if (m_PlayModeScenes.empty()) {
+			IDX_ERROR_TAG("PlayMode", "No edit-mode scene snapshot is available.");
+			return false;
 		}
+
+		const bool inPrefabEdit = IsInPrefabEditMode();
+		const LoadedSceneSelectionSnapshot interruptedPlaySelection = CaptureLoadedSceneSelection();
+		std::vector<std::shared_ptr<Scene>> playScenes;
+		for (const std::weak_ptr<Scene>& weakScene : SceneManager::GetLoadedScenes()) {
+			if (std::shared_ptr<Scene> scene = weakScene.lock()) {
+				playScenes.push_back(std::move(scene));
+			}
+		}
+
+		CaptureScriptFieldOverrides(/*merge=*/true);
+		struct StagedScene {
+			std::string Name;
+			std::string DefinitionName;
+			std::shared_ptr<Scene> SceneInstance;
+		};
+		std::vector<StagedScene> stagedScenes;
+		stagedScenes.reserve(m_PlayModeScenes.size());
+		struct StagedSceneCleanupGuard {
+			std::vector<StagedScene>& Scenes;
+			bool Armed = true;
+			~StagedSceneCleanupGuard() {
+				if (!Armed) return;
+				for (const StagedScene& staged : Scenes) {
+					try { SceneManager::UnregisterScene(staged.DefinitionName); }
+					catch (...) {}
+				}
+			}
+		};
+		StagedSceneCleanupGuard stagedSceneCleanup{ stagedScenes };
+		struct PlayModeRestoreGuard {
+			bool PreviousState;
+			bool Armed = true;
+			~PlayModeRestoreGuard() {
+				if (Armed) Application::SetIsPlaying(PreviousState);
+			}
+		};
+		PlayModeRestoreGuard playModeRestore{ Application::GetIsPlaying() };
+		Application::SetIsPlaying(false);
+		auto discardStagedScenes = [&]() {
+			for (const StagedScene& staged : stagedScenes) {
+				SceneManager::UnregisterScene(staged.DefinitionName);
+			}
+			stagedScenes.clear();
+		};
+		for (const auto& [sceneName, scenePath] : m_PlayModeScenes) {
+			std::shared_ptr<Scene> stagedScene;
+			std::string definitionName;
+			if (!LoadEditorScene(scenePath, true, stagedScene, definitionName, true, true)) {
+				discardStagedScenes();
+				IDX_ERROR_TAG("PlayMode", "Failed to restore scene '{}'. Play Mode remains active.", sceneName);
+				return false;
+			}
+			if (stagedScene->GetName() != sceneName) {
+				const std::string serializedName = stagedScene->GetName();
+				SceneManager::UnregisterScene(definitionName);
+				discardStagedScenes();
+				IDX_ERROR_TAG("PlayMode",
+					"Scene snapshot '{}' identifies itself as '{}'. Play Mode remains active.",
+					sceneName, serializedName);
+				return false;
+			}
+			try {
+				stagedScenes.push_back({ sceneName, definitionName, stagedScene });
+			}
+			catch (...) {
+				SceneManager::UnregisterScene(definitionName);
+				throw;
+			}
+		}
+
+		std::vector<Scene*> stagedScenePointers;
+		std::vector<std::shared_ptr<Scene>> restoredScenes;
+		std::unordered_set<std::string> restoredNames;
+		std::unordered_set<std::string> restoredDefinitions;
+		std::unordered_map<std::string, std::string> restoredDefinitionsByName;
+		stagedScenePointers.reserve(stagedScenes.size());
+		restoredScenes.reserve(stagedScenes.size());
+		restoredNames.reserve(stagedScenes.size());
+		restoredDefinitions.reserve(stagedScenes.size());
+		restoredDefinitionsByName.reserve(stagedScenes.size());
+		std::shared_ptr<Scene> restoredActiveScene;
+		for (const StagedScene& staged : stagedScenes) {
+			if (!restoredNames.insert(staged.SceneInstance->GetName()).second) {
+				discardStagedScenes();
+				IDX_ERROR_TAG("PlayMode", "Restored scene name '{}' is duplicated. Play Mode remains active.", staged.Name);
+				return false;
+			}
+			stagedScenePointers.push_back(staged.SceneInstance.get());
+			restoredScenes.push_back(staged.SceneInstance);
+			restoredDefinitions.insert(staged.DefinitionName);
+			restoredDefinitionsByName.emplace(staged.SceneInstance->GetName(), staged.DefinitionName);
+			if (staged.Name == m_PlayModeActiveScene) {
+				restoredActiveScene = staged.SceneInstance;
+			}
+		}
+		if (!ValidateUniquePersistentEntityIds(stagedScenePointers, "Play Mode restore")) {
+			discardStagedScenes();
+			return false;
+		}
+		if (!restoredActiveScene && !restoredScenes.empty()) {
+			restoredActiveScene = restoredScenes.front();
+		}
+		if (!restoredActiveScene) {
+			discardStagedScenes();
+			IDX_ERROR_TAG("PlayMode", "Restored scene set has no active-scene candidate. Play Mode remains active.");
+			return false;
+		}
+
+		const std::unordered_set<std::string> previousDefinitions = m_EditorOwnedSceneDefinitions;
+		std::vector<std::shared_ptr<Scene>> activatedScenes;
+		activatedScenes.reserve(restoredScenes.size());
+		Application::SetIsPlaying(playModeRestore.PreviousState);
+		for (const std::shared_ptr<Scene>& playScene : playScenes) {
+			if (SceneManager::BeginLoadedSceneRecovery(playScene)) continue;
+
+			discardStagedScenes();
+			Application::SetIsPlaying(playModeRestore.PreviousState);
+			bool playScenesRecovered = true;
+			std::vector<std::shared_ptr<Scene>> recoveredPlayScenes;
+			recoveredPlayScenes.reserve(playScenes.size());
+			for (const std::shared_ptr<Scene>& recoveryScene : playScenes) {
+				if (!recoveryScene->IsLifecycleSuspended()) continue;
+				if (!SceneManager::RollbackLoadedSceneRecovery(recoveryScene)) {
+					playScenesRecovered = false;
+					continue;
+				}
+				recoveredPlayScenes.push_back(recoveryScene);
+			}
+			std::vector<std::shared_ptr<Scene>> reactivatedPlayScenes;
+			if (playScenesRecovered) {
+				reactivatedPlayScenes.reserve(recoveredPlayScenes.size());
+				for (const std::shared_ptr<Scene>& recoveryScene : recoveredPlayScenes) {
+					if (!SceneManager::ActivateSuspendedScene(recoveryScene)) {
+						playScenesRecovered = false;
+						break;
+					}
+					reactivatedPlayScenes.push_back(recoveryScene);
+				}
+			}
+			if (playScenesRecovered) {
+				for (const std::shared_ptr<Scene>& recoveryScene : reactivatedPlayScenes) {
+					if (!SceneManager::CommitSuspendedSceneActivation(recoveryScene)) {
+						playScenesRecovered = false;
+					}
+				}
+			}
+			if (!playScenesRecovered) {
+				for (auto it = reactivatedPlayScenes.rbegin(); it != reactivatedPlayScenes.rend(); ++it) {
+					if (!(*it)->IsLifecycleSuspended()) {
+						SceneManager::ResuspendSceneForRecovery(*it);
+					}
+				}
+				Application::SetIsPlaying(false);
+				std::shared_ptr<Scene> recoveryActiveScene;
+				for (const std::shared_ptr<Scene>& recoveryScene : playScenes) {
+					if (recoveryScene->IsLifecycleSuspended()) {
+						recoveryActiveScene = recoveryScene;
+						break;
+					}
+				}
+				if (recoveryActiveScene) {
+					SceneManager::SetActiveSuspendedSceneForRecovery(recoveryActiveScene);
+				}
+			}
+			RestoreLoadedSceneSelection(interruptedPlaySelection);
+			if (!playScenesRecovered) {
+				playModeRestore.Armed = false;
+				m_PlayModeRestoreError = "Play Mode could not stop because scene lifecycle teardown failed, and the live Play scenes could not be fully resumed. Inspect the loaded scenes before saving.";
+				m_ShowPlayModeRestoreError = true;
+				IDX_ERROR_TAG("PlayMode", "{}", m_PlayModeRestoreError);
+			}
+			else {
+				IDX_ERROR_TAG("PlayMode", "Play Mode could not stop because scene '{}' could not suspend safely.", playScene->GetName());
+			}
+			return false;
+		}
+		Application::SetIsPlaying(false);
+		stagedSceneCleanup.Armed = false;
+		playModeRestore.Armed = false;
+		bool restoreSucceeded = true;
+		std::string restoreFailure;
+		for (const std::shared_ptr<Scene>& playScene : playScenes) {
+			if (!SceneManager::ReleaseLoadedSceneInstance(playScene, false, false) && playScene->IsLoaded()) {
+				restoreSucceeded = false;
+				restoreFailure = "A Play Mode scene could not be released safely.";
+				IDX_ERROR_TAG("PlayMode", "Failed to release Play Mode scene instance '{}'.", playScene->GetName());
+			}
+		}
+		for (const std::string& definitionName : previousDefinitions) {
+			SceneManager::UnregisterScene(definitionName);
+		}
+
+		try {
+			ScriptEngine::OnPlayModeExited();
+		}
+		catch (const std::exception& exception) {
+			restoreSucceeded = false;
+			restoreFailure = "Play Mode script cleanup failed: " + std::string(exception.what());
+			IDX_ERROR_TAG("PlayMode", "{}", restoreFailure);
+		}
+		catch (...) {
+			restoreSucceeded = false;
+			restoreFailure = "Play Mode script cleanup failed.";
+			IDX_ERROR_TAG("PlayMode", "{}", restoreFailure);
+		}
+
+		if (restoreSucceeded) {
+			try {
+				Time::SetTimeScale(1.0f);
+				if (const IndexProject* project = ProjectManager::GetCurrentProject()) {
+					Time::SetFixedDeltaTime(project->GetFixedDeltaTimeSeconds());
+					RenderSettings::Apply(project->Graphics);
+				}
+				ReapplyScriptFieldOverrides(restoredScenes);
+			}
+			catch (const std::exception& exception) {
+				restoreSucceeded = false;
+				restoreFailure = "Could not restore inspector-authored script fields: " + std::string(exception.what());
+				IDX_ERROR_TAG("PlayMode", "{}", restoreFailure);
+			}
+			catch (...) {
+				restoreSucceeded = false;
+				restoreFailure = "Could not restore inspector-authored script fields.";
+				IDX_ERROR_TAG("PlayMode", "{}", restoreFailure);
+			}
+		}
+
+		if (restoreSucceeded) {
+			for (const std::shared_ptr<Scene>& restoredScene : restoredScenes) {
+				if (!SceneManager::ActivateSuspendedScene(restoredScene)) {
+					restoreSucceeded = false;
+					restoreFailure = "Restored scene '" + restoredScene->GetName() + "' could not be activated.";
+					break;
+				}
+				activatedScenes.push_back(restoredScene);
+			}
+		}
+		if (restoreSucceeded) {
+			try {
+				restoreSucceeded = SceneManager::SetActiveScene(*restoredActiveScene);
+			}
+			catch (...) {
+				restoreSucceeded = false;
+			}
+			if (!restoreSucceeded) {
+				restoreFailure = "The restored active scene could not be selected.";
+			}
+		}
+
+		bool recoveryExact = true;
+		if (!restoreSucceeded) {
+			for (auto it = activatedScenes.rbegin(); it != activatedScenes.rend(); ++it) {
+				if (!SceneManager::ResuspendSceneForRecovery(*it)) {
+					recoveryExact = false;
+					IDX_ERROR_TAG("PlayMode", "Failed to restore suspended recovery state for scene '{}'.", (*it)->GetName());
+				}
+			}
+			std::shared_ptr<Scene> recoveryActiveScene = restoredActiveScene;
+			if (!recoveryActiveScene->IsLifecycleSuspended()) {
+				recoveryActiveScene.reset();
+				for (const std::shared_ptr<Scene>& restoredScene : restoredScenes) {
+					if (restoredScene->IsLifecycleSuspended()) {
+						recoveryActiveScene = restoredScene;
+						break;
+					}
+				}
+			}
+			if (!recoveryActiveScene
+				|| !SceneManager::SetActiveSuspendedSceneForRecovery(recoveryActiveScene)) {
+				recoveryExact = false;
+				IDX_ERROR_TAG("PlayMode", "Recovered edit scenes could not be selected for inspection.");
+			}
+			else {
+				restoredActiveScene = std::move(recoveryActiveScene);
+			}
+		}
+		else {
+			for (const std::shared_ptr<Scene>& restoredScene : restoredScenes) {
+				if (!SceneManager::CommitSuspendedSceneActivation(restoredScene)) {
+					restoreSucceeded = false;
+					recoveryExact = false;
+					restoreFailure = "A restored scene activation could not be finalized.";
+					IDX_ERROR_TAG("PlayMode", "Failed to finalize restored scene activation for '{}'.", restoredScene->GetName());
+				}
+			}
+		}
+
+		m_EditorOwnedSceneDefinitions.swap(restoredDefinitions);
+		m_EditorSceneDefinitionsBySceneName.swap(restoredDefinitionsByName);
+		m_UndoStack.Clear();
+		m_UndoStackSceneId = nullptr;
+		InspectorUndoRecorder::Reset();
+		m_GizmoDragActive = false;
+		m_GizmoDragBefore.clear();
+		m_EditorPausedAudioEntities.clear();
+		m_PlayModeRecompilePending = false;
+		m_PlayModeRecompileScene.reset();
+		m_StepFrames = 0;
+		ApplicationEditorAccess::SetPlaymodePaused(false);
 
 		if (!inPrefabEdit) {
-			m_SelectedEntity = entt::null;
-			m_SelectedEntities.clear();
-			m_SelectedEntitySet.clear();
-			++m_SelectionVersion;
-			m_LastEntitySelectionIndex = -1;
-			m_IsSceneNodeSelected = false;
-			m_RenamingEntity = entt::null;
-			m_EntityOrder.clear(); m_EntityOrderDirty = true;
-		}
-		m_PlayModeRecompilePending = false;
-		// Drop the pending Step so a click-Step→click-Stop in adjacent frames
-		// doesn't leave a stale counter that auto-pauses the next session.
-		m_StepFrames = 0;
+			ClearEntitySelection();
+			m_CutEntities.clear();
+			m_CollapsedHierarchyEntities.clear();
+			m_EntityOrder.clear();
+			m_EntityOrderSceneId = nullptr;
+			m_LastHierarchyVersion = 0;
+			m_EntityOrderDirty = true;
+			m_ShowEntityDeleteConfirm = false;
+			m_PendingEntityDeleteSceneId = 0;
+			m_PendingEntityDeleteCount = 0;
+			m_PendingEntityDeleteLabel.clear();
 
-		ApplicationEditorAccess::SetPlaymodePaused(false);
-		Application::SetIsPlaying(false);
-
-		// Overlay any references (re)assigned in the inspector during play onto the
-		// captured baseline, while the live entities still exist — the reload below
-		// destroys them. Runtime gameplay mutations don't touch PendingFieldValues, so
-		// only inspector edits are carried across; everything else reverts as designed.
-		CaptureScriptFieldOverrides(/*merge=*/true);
-
-		if (!m_PlayModeScenes.empty()) {
-			// Snapshot-set restore. The legacy version only iterated currently-
-			// loaded scenes and reloaded ones whose names matched the snapshot —
-			// that left scripts' `LoadScene` results sitting in the editor and
-			// dropped any pre-play scene the script had replaced. We instead:
-			//   1. unload everything currently loaded that's not in the snapshot
-			//      (those were brought in by play-mode scripts),
-			//   2. for each snapshot entry, reload in place if still loaded,
-			//      otherwise load it back via SceneManager + LoadFromFile,
-			//   3. restore the active scene to whatever was active before play.
-			std::vector<std::string> currentlyLoaded;
-			SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
-				currentlyLoaded.push_back(s.GetName());
-			});
-
-			std::unordered_set<std::string> expected;
-			expected.reserve(m_PlayModeScenes.size());
-			for (const auto& [name, _path] : m_PlayModeScenes) {
-				expected.insert(name);
+			if (!m_PlayModeSelection.SceneName.empty()
+				&& SceneManager::GetLoadedScene(m_PlayModeSelection.SceneName).lock()) {
+				RestoreLoadedSceneSelection(m_PlayModeSelection);
 			}
-
-			for (const std::string& name : currentlyLoaded) {
-				if (expected.find(name) == expected.end()) {
-					SceneManager::Get().UnloadScene(name);
-				}
-			}
-
-			std::unordered_set<std::string> stillLoaded;
-			SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
-				stillLoaded.insert(s.GetName());
-			});
-
-			for (const auto& [sceneName, scenePath] : m_PlayModeScenes) {
-				// Reloading a scene here runs content replacement (BeginContentReplacement →
-				// re-awake), which tears down and re-awakes systems incl. ScriptSystem. A
-				// failure in that re-awake re-throws (Scene::EndContentReplacement); left
-				// unguarded it propagates out of play-exit and HARD-CRASHES the editor — most
-				// visibly on the 2nd play session of a scene round-trip. Restore is editor-only
-				// cleanup: log a per-scene failure and keep going rather than die.
-				try {
-				if (stillLoaded.count(sceneName) > 0) {
-					if (auto loaded = SceneManager::Get().GetLoadedScene(sceneName).lock()) {
-						SceneSerializer::LoadFromFile(*loaded, scenePath);
-					}
-				}
-				else {
-					// A play-mode script may have Single-unloaded the editor's working
-					// scene. Its name isn't a registered definition (the editor loads
-					// scene content into the one internal "$EditorWorkingScene" definition), so reloading
-					// by name would fail and leave the editor with no active scene —
-					// blanking the viewport and crashing on close. Register the
-					// definition from the snapshot path so the reload succeeds.
-					//
-					// Crucially, give it a file-loading OnLoad rather than a bare definition.
-					// A bare def (no OnLoad) persists in the SceneManager and poisons later
-					// in-play LoadScene(name) calls: ScriptBindings sees the name is "already
-					// defined", skips attaching its own file loader, and instantiates this empty
-					// def — so the scene silently comes back empty on the next play session.
-					// Loading via OnLoad also populates entities before systems awake, matching
-					// the normal load pipeline (and how the standalone build always behaves).
-					if (!SceneManager::Get().HasSceneDefinition(sceneName)) {
-						const std::string path = scenePath;
-						SceneManager::Get().RegisterScene(sceneName).OnLoad([path](Scene& s) {
-							if (File::Exists(path)) {
-								SceneSerializer::LoadFromFile(s, path);
-							}
-						});
-					}
-					SceneManager::Get().LoadSceneAdditive(sceneName);
-				}
-				}
-				catch (const std::exception& e) {
-					IDX_ERROR_TAG("PlayMode", "Failed to restore scene '{}' after play mode: {}", sceneName, e.what());
-				}
-				catch (...) {
-					IDX_ERROR_TAG("PlayMode", "Failed to restore scene '{}' after play mode (unknown error)", sceneName);
-				}
-			}
-
-			// Guarantee a valid active scene even if a snapshot scene failed to reload:
-			// otherwise SetActiveScene leaves the prior (now-unloaded) pointer and the editor
-			// renders against nothing. Fall back to any still-loaded scene.
-			if (!m_PlayModeActiveScene.empty() && !SceneManager::Get().SetActiveScene(m_PlayModeActiveScene)) {
-				const std::vector<std::string> loadedNames = SceneManager::Get().GetLoadedSceneNames();
-				if (!loadedNames.empty()) {
-					SceneManager::Get().SetActiveScene(loadedNames.front());
-				}
-			}
-
-			m_PlayModeScenes.clear();
-			m_PlayModeActiveScene.clear();
-		}
-
-		// Force inspector-authored script field values back onto the reloaded entities
-		// (matched by persistent UUID). This bypasses the serialize round-trip that can
-		// drop a pending component/UI reference, so such references survive play/stop.
-		ReapplyScriptFieldOverrides();
-
-		// MUST run after scene reload so OnDisable thunks fire first; well-behaved scripts that pair +=/-= leave nothing for this sweep.
-		ScriptEngine::OnPlayModeExited();
-
-		if (inPrefabEdit) {
-			return;
-		}
-
-		if (selectedUUID == 0) {
-			if (wasSceneNodeSelected) {
-				SelectSceneNode();
-			}
-			return;
-		}
-
-		active = SceneManager::Get().GetActiveScene();
-		if (!active) {
-			return;
-		}
-
-		auto view = active->GetRegistry().view<UUIDComponent>();
-		for (auto [ent, uuid] : view.each()) {
-			if (static_cast<uint64_t>(uuid.Id) == selectedUUID) {
-				SelectEntity(ent);
-				break;
+			else {
+				m_LastInteractedSceneName = restoredActiveScene->GetName();
 			}
 		}
+
+		// Scenes restored from a private snapshot still differ from their file on disk.
+		for (const std::string& dirtyName : m_PlayModeDirtyScenes) {
+			if (std::shared_ptr<Scene> restored = SceneManager::GetLoadedScene(dirtyName).lock()) {
+				restored->MarkDirty();
+			}
+		}
+		m_PlayModeDirtyScenes.clear();
+		m_PlayModeScenes.clear();
+		m_PlayModeActiveScene.clear();
+		m_PlayModeSelection = {};
+		m_PlayModeScriptFields.clear();
+
+		if (!restoreSucceeded) {
+			if (restoreFailure.empty()) restoreFailure = "The edit-scene restore did not complete.";
+			m_PlayModeRestoreError = restoreFailure
+				+ (recoveryExact
+					? " Play Mode stopped and the recovered edit scenes remain loaded for inspection."
+					: " Play Mode stopped, but recovery was incomplete. Inspect the loaded scenes before saving.");
+			m_ShowPlayModeRestoreError = true;
+			IDX_ERROR_TAG("PlayMode", "{}", m_PlayModeRestoreError);
+			return false;
+		}
+		return true;
 	}
 
 	void ImGuiEditorLayer::SelectSceneNode() {
@@ -2152,6 +2834,7 @@ namespace Index {
 			m_EntityOrder.clear();
 			m_EntityOrderDirty = true;
 			++m_SelectionVersion;
+			RecordCreatedEntities(scene, std::span(&created, 1), ext == ".prefab" ? "Instantiate Prefab" : "Create Sprite");
 		}
 		return created;
 	}
@@ -2375,7 +3058,7 @@ namespace Index {
 			}
 		}
 
-		const auto& registry = SceneManager::Get().GetComponentRegistry();
+		const auto& registry = SceneManager::GetComponentRegistry();
 		registry.ForEachComponentInfo([&](const std::type_index& typeId, const ComponentInfo& info) {
 			if (info.category != ComponentCategory::Component) return;
 			if (info.displayName == "Name") return;
@@ -2412,7 +3095,7 @@ namespace Index {
 		const float t = Min(1.0f, m_EditorCameraFocusElapsed / k_FocusDuration);
 		const float eased = t * t * (3.0f - 2.0f * t);
 
-		const Vec2 nextPosition = Lerp(m_EditorCameraFocusStartPosition, m_EditorCameraFocusTarget, eased);
+		const Vec2 nextPosition = Vector::Lerp(m_EditorCameraFocusStartPosition, m_EditorCameraFocusTarget, eased);
 		const float nextSize = m_EditorCameraFocusStartOrthoSize
 			+ (m_EditorCameraFocusOrthoSize - m_EditorCameraFocusStartOrthoSize) * eased;
 
@@ -2480,7 +3163,7 @@ namespace Index {
 				if (rect->Rotation != 0.0f) {
 					const Vec2 worldPivot{ pivot.x * worldScale, pivot.y * worldScale };
 					for (Vec2& corner : corners) {
-						corner = worldPivot + Rotated(corner - worldPivot, rect->Rotation);
+						corner = worldPivot + Vector::Rotated(corner - worldPivot, rect->Rotation);
 					}
 				}
 
@@ -2542,6 +3225,17 @@ namespace Index {
 		m_FocusNextPressTight = !tightFocus;
 	}
 
+	void ImGuiEditorLayer::PushStructureUndo(Scene& scene, std::unique_ptr<EditCommand> command) {
+		if (!command || &scene != GetContextScene()) return;
+		m_UndoStack.Push(std::move(command));
+	}
+
+	void ImGuiEditorLayer::RecordCreatedEntities(Scene& scene, std::span<const EntityHandle> created, std::string label) {
+		if (created.empty()) return;
+		StructureEditRecorder recorder(scene, {}, std::move(label));
+		PushStructureUndo(scene, recorder.Finish(scene, created));
+	}
+
 	void ImGuiEditorLayer::DuplicateSelectedEntity(Scene& scene) {
 		const std::vector<EntityHandle> selectedEntities = FilterSelectedHierarchyRoots(scene, GetSelectedEntities(scene));
 		if (selectedEntities.empty()) {
@@ -2578,6 +3272,7 @@ namespace Index {
 			m_IsSceneNodeSelected = false;
 			scene.MarkDirty();
 			m_EntityOrder.clear(); m_EntityOrderDirty = true;
+			RecordCreatedEntities(scene, createdEntities, "Duplicate");
 		}
 	}
 
@@ -2589,11 +3284,13 @@ namespace Index {
 
 		m_PressedEntity = entt::null;
 
+		StructureEditRecorder recorder(scene, selectedEntities, selectedEntities.size() == 1 ? "Delete Entity" : "Delete Entities");
 		for (EntityHandle entity : selectedEntities) {
 			if (scene.IsValid(entity)) {
 				scene.DestroyEntity(entity);
 			}
 		}
+		PushStructureUndo(scene, recorder.Finish(scene, {}));
 		ClearEntitySelection();
 		m_EntityOrder.clear(); m_EntityOrderDirty = true;
 	}
@@ -2652,6 +3349,14 @@ namespace Index {
 			return;
 		}
 
+		std::vector<EntityHandle> instanceRoots;
+		for (EntityHandle selected : selectedEntities) {
+			if (!scene.IsValid(selected) || !scene.HasComponent<PrefabInstanceComponent>(selected)) continue;
+			const EntityHandle root = SceneSerializer::GetPrefabInstanceRoot(scene, selected);
+			instanceRoots.push_back(root != entt::null ? root : selected);
+		}
+		StructureEditRecorder recorder(scene, instanceRoots, "Unpack Prefab");
+
 		bool anyUnpacked = false;
 		for (EntityHandle selected : selectedEntities) {
 			if (!scene.IsValid(selected)) continue;
@@ -2686,6 +3391,7 @@ namespace Index {
 		}
 		if (anyUnpacked) {
 			scene.MarkDirty();
+			PushStructureUndo(scene, recorder.Finish(scene, instanceRoots));
 		}
 	}
 
@@ -2764,6 +3470,13 @@ namespace Index {
 			pasteParent = m_PrefabEditRootEntity;
 		}
 
+		std::vector<EntityHandle> cutEntities;
+		for (uint32_t raw : m_CutEntities) {
+			const EntityHandle h = static_cast<EntityHandle>(raw);
+			if (scene.IsValid(h)) cutEntities.push_back(h);
+		}
+		StructureEditRecorder recorder(scene, cutEntities, cutEntities.empty() ? "Paste" : "Cut & Paste");
+
 		std::vector<EntityHandle> createdEntities;
 		for (const Json::Value& entityValue : entitiesValue->GetArray()) {
 			EntityHandle entity = SceneSerializer::DeserializeEntityFromValue(scene, entityValue);
@@ -2798,6 +3511,7 @@ namespace Index {
 				m_CutEntities.clear();
 				m_EntityOrderDirty = true;
 			}
+			PushStructureUndo(scene, recorder.Finish(scene, createdEntities));
 		}
 	}
 
@@ -2908,6 +3622,7 @@ namespace Index {
 		scene.MarkDirty();
 		m_EntityOrder.clear();
 		m_EntityOrderDirty = true;
+		RecordCreatedEntities(scene, std::span(&createdHandle, 1), "Create " + created.GetName());
 		return createdHandle;
 	}
 
@@ -2929,7 +3644,7 @@ namespace Index {
 
 		auto renderPackagePresets = [&](std::string_view menuPath) {
 			bool renderedAny = false;
-			for (const SceneManager::EntityPresetInfo& preset : SceneManager::Get().GetEntityPresets()) {
+			for (const SceneManager::EntityPresetInfo& preset : SceneManager::GetEntityPresets()) {
 				if (preset.MenuPath != menuPath) {
 					continue;
 				}
@@ -3096,7 +3811,7 @@ namespace Index {
 		}
 
 		std::vector<std::string> packageMenuPaths;
-		for (const SceneManager::EntityPresetInfo& preset : SceneManager::Get().GetEntityPresets()) {
+		for (const SceneManager::EntityPresetInfo& preset : SceneManager::GetEntityPresets()) {
 			if (preset.MenuPath.empty() || preset.MenuPath == "2D Entity" || preset.MenuPath == "UI") {
 				continue;
 			}
@@ -3106,7 +3821,7 @@ namespace Index {
 		}
 		for (const std::string& menuPath : packageMenuPaths) {
 			if (ImGui::BeginMenu(menuPath.c_str())) {
-				for (const SceneManager::EntityPresetInfo& preset : SceneManager::Get().GetEntityPresets()) {
+				for (const SceneManager::EntityPresetInfo& preset : SceneManager::GetEntityPresets()) {
 					if (preset.MenuPath == menuPath && ImGui::MenuItem(preset.Label.c_str())) {
 						finishCreated(preset.Create(scene));
 					}
@@ -3325,16 +4040,10 @@ namespace Index {
 			IDX_CORE_WARN_TAG("PrefabEdit", "Prefab file not found: {}", path);
 			return false;
 		}
-
-		// Auto-save before swapping: a modal would be invasive; SavePrefabEditChanges is a no-op when nothing changed.
-		if (m_PrefabEditScene) {
-			if (m_PrefabEditScene->IsDirty()) {
-				SavePrefabEditChanges();
-			}
-			ClosePrefabEditing(false);
+		if (m_PrefabEditScene && m_PrefabEditPath == path) {
+			return true;
 		}
 
-		// Use ReadRootFromFile (not raw JSON parse): project may use binary serialization format.
 		Json::Value root;
 		std::string parseError;
 		if (!SceneSerializerStorage::ReadRootFromFile(path, root, &parseError) || !root.IsObject()) {
@@ -3348,6 +4057,21 @@ namespace Index {
 			IDX_CORE_WARN_TAG("PrefabEdit", "No Entity/prefab block in {}", path);
 			return false;
 		}
+		auto detached = Scene::CreateDetachedScene("##PrefabEdit");
+		const EntityHandle rootEntity = SceneSerializer::DeserializeEntityFromValue(*detached, root);
+		if (rootEntity == entt::null || !detached->IsValid(rootEntity)) {
+			IDX_CORE_ERROR_TAG("PrefabEdit", "Failed to deserialize prefab root from {}", path);
+			return false;
+		}
+		detached->ClearDirty();
+		TransformHierarchySystem::Propagate(*detached);
+
+		if (m_PrefabEditScene) {
+			if ((m_PrefabEditScene->IsDirty() || m_PrefabEditDirty) && !SavePrefabEditChanges()) {
+				return false;
+			}
+			ClosePrefabEditing(false);
+		}
 
 		ClearEntitySelection();
 		m_EntityOrder.clear(); m_EntityOrderDirty = true;
@@ -3359,15 +4083,6 @@ namespace Index {
 		m_PrefabEditSavedCameraOrthoSize = m_EditorCamera.GetOrthographicSize();
 		m_PrefabEditSavedCameraZoom = m_EditorCamera.GetZoom();
 		m_PrefabEditHasSavedCameraState = true;
-
-		auto detached = Scene::CreateDetachedScene("##PrefabEdit");
-		const EntityHandle rootEntity = SceneSerializer::DeserializeEntityFromValue(*detached, root);
-		// DeserializeEntityFromValue marks the scene dirty as a side
-		// effect; clear so our flag only flips on actual user edits.
-		detached->ClearDirty();
-
-		// Run one-shot propagation so world transforms are valid before we read the root position for camera focus.
-		TransformHierarchySystem::Propagate(*detached);
 
 		m_PrefabEditScene = std::move(detached);
 		m_PrefabEditPath = path;
@@ -3393,6 +4108,108 @@ namespace Index {
 		return true;
 	}
 
+	ImGuiEditorLayer::LoadedSceneSelectionSnapshot ImGuiEditorLayer::CaptureLoadedSceneSelection() const {
+		LoadedSceneSelectionSnapshot snapshot;
+		if (IsInPrefabEditMode()) return snapshot;
+		Scene* scene = GetContextScene();
+		if (!scene) return snapshot;
+
+		snapshot.SceneName = scene->GetName();
+		snapshot.SceneNodeSelected = m_IsSceneNodeSelected;
+		for (const EntityHandle entity : GetSelectedEntities(*scene)) {
+			LoadedSceneSelectionEntity selected;
+			selected.PersistentId = scene->GetEntityPersistentID(entity);
+			if (scene->GetEntityOrigin(entity) == EntityOrigin::Prefab
+				&& scene->HasComponent<PrefabInstanceComponent>(entity)) {
+				const EntityHandle root = SceneSerializer::GetPrefabInstanceRoot(*scene, entity);
+				if (root != entt::null) {
+					selected.PrefabRootPersistentId = scene->GetEntityPersistentID(root);
+				}
+				selected.PrefabSourceEntityId = scene->GetComponent<PrefabInstanceComponent>(entity).SourceEntityId;
+			}
+			if (entity == m_SelectedEntity) snapshot.PrimaryIndex = snapshot.Entities.size();
+			snapshot.Entities.push_back(selected);
+		}
+		return snapshot;
+	}
+
+	void ImGuiEditorLayer::RestoreLoadedSceneSelection(const LoadedSceneSelectionSnapshot& snapshot) {
+		if (snapshot.SceneName.empty()) return;
+		const std::shared_ptr<Scene> scene = SceneManager::GetLoadedScene(snapshot.SceneName).lock();
+		if (!scene) return;
+
+		ClearEntitySelection();
+		m_CutEntities.clear();
+		m_LastInteractedSceneName = scene->GetName();
+		m_EntityOrder.clear();
+		m_EntityOrderSceneId = nullptr;
+		m_EntityOrderDirty = true;
+		if (snapshot.SceneNodeSelected) {
+			SelectSceneNode();
+			return;
+		}
+
+		std::vector<EntityHandle> resolved;
+		resolved.reserve(snapshot.Entities.size());
+		for (const LoadedSceneSelectionEntity& selected : snapshot.Entities) {
+			EntityHandle entity = entt::null;
+			if (selected.PersistentId != 0) {
+				scene->TryResolveEntityRef(selected.PersistentId, entity);
+			}
+			if (entity == entt::null && selected.PrefabRootPersistentId != 0
+				&& selected.PrefabSourceEntityId != 0) {
+				EntityHandle root = entt::null;
+				if (scene->TryResolveEntityRef(selected.PrefabRootPersistentId, root)) {
+					for (const EntityHandle candidate : scene->GetRegistry().view<PrefabInstanceComponent>()) {
+						const auto& instance = scene->GetComponent<PrefabInstanceComponent>(candidate);
+						if (instance.SourceEntityId == selected.PrefabSourceEntityId
+							&& SceneSerializer::GetPrefabInstanceRoot(*scene, candidate) == root) {
+							entity = candidate;
+							break;
+						}
+					}
+				}
+			}
+			resolved.push_back(entity);
+			if (entity != entt::null) m_SelectedEntities.push_back(entity);
+		}
+		RebuildSelectionSet();
+		if (snapshot.PrimaryIndex < resolved.size()) {
+			m_SelectedEntity = resolved[snapshot.PrimaryIndex];
+		}
+		if (m_SelectedEntity == entt::null && !m_SelectedEntities.empty()) {
+			m_SelectedEntity = m_SelectedEntities.back();
+		}
+		if (m_SelectedEntity != entt::null) m_AssetBrowser.ClearSelection();
+	}
+
+	bool ImGuiEditorLayer::SavePrefabInspectorChanges() {
+		const LoadedSceneSelectionSnapshot selection = CaptureLoadedSceneSelection();
+		const bool saved = m_PrefabInspector.Save();
+		RestoreLoadedSceneSelection(selection);
+		return saved;
+	}
+
+	bool ImGuiEditorLayer::ApplyPrefabInstanceToSource(Scene& scene, EntityHandle entity) {
+		const EntityHandle root = SceneSerializer::GetPrefabInstanceRoot(scene, entity);
+		if (root == entt::null) return false;
+
+		const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(root));
+		const std::string prefabPath = AssetRegistry::ResolvePath(prefabGuid);
+		if (prefabGuid == 0 || prefabPath.empty()) return false;
+
+		Json::Value source = SceneSerializer::SerializePrefabSource(scene, root, prefabGuid);
+		auto stagedScene = Scene::CreateDetachedScene("##PrefabApply");
+		const EntityHandle stagedRoot = SceneSerializer::DeserializeEntityFromValue(*stagedScene, source);
+		if (stagedRoot == entt::null || !stagedScene->IsValid(stagedRoot)) return false;
+
+		const LoadedSceneSelectionSnapshot selection = CaptureLoadedSceneSelection();
+		const bool saved = SavePrefabSourceTransactionally(
+			*stagedScene, stagedRoot, prefabPath, "PrefabApply");
+		RestoreLoadedSceneSelection(selection);
+		return saved;
+	}
+
 	bool ImGuiEditorLayer::SavePrefabEditChanges() {
 		if (!m_PrefabEditScene) return false;
 		if (m_PrefabEditRootEntity == entt::null
@@ -3401,57 +4218,13 @@ namespace Index {
 			return false;
 		}
 
-		// Capture OLD source before overwriting: propagation diffs overrides against it; diffing against the new source loses per-instance overrides.
-		Json::Value previousSourceRoot;
-		bool havePreviousSource = false;
-		if (File::Exists(m_PrefabEditPath)) {
-			Json::Value previousRoot;
-			std::string readError;
-			if (SceneSerializerStorage::ReadRootFromFile(m_PrefabEditPath, previousRoot, &readError) && previousRoot.IsObject()) {
-				previousSourceRoot = previousRoot;
-				havePreviousSource = true;
-			}
-			else {
-				// File unreadable: bail and leave dirty so the next auto-save tick retries.
-				IDX_CORE_WARN_TAG("PrefabEdit",
-					"Pre-save read of '{}' failed ({}); leaving prefab dirty for retry.",
-					m_PrefabEditPath, readError);
-				return false;
-			}
-		}
-
-		if (!SceneSerializer::SaveEntityToFile(*m_PrefabEditScene, m_PrefabEditRootEntity, m_PrefabEditPath)) {
-			IDX_CORE_ERROR_TAG("PrefabEdit", "Failed to save {}", m_PrefabEditPath);
+		const LoadedSceneSelectionSnapshot selection = CaptureLoadedSceneSelection();
+		if (!SavePrefabSourceTransactionally(*m_PrefabEditScene, m_PrefabEditRootEntity,
+			m_PrefabEditPath, "PrefabEdit")) {
+			RestoreLoadedSceneSelection(selection);
 			return false;
 		}
-
-		// Propagation BEFORE clearing dirty flag: if it fails mid-loop the prefab stays dirty and auto-save retries.
-		// Edit-mode only: a play-time refresh destroys+recreates running instances; they rebuild from the saved prefab on Stop.
-		if (havePreviousSource && !Application::GetIsPlaying()) {
-			const uint64_t prefabGuid = AssetRegistry::GetOrCreateAssetUUID(m_PrefabEditPath);
-			if (prefabGuid != 0) {
-				SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
-					if (&s == m_PrefabEditScene.get()) return;
-					std::vector<EntityHandle> targets;
-					auto view = s.GetRegistry().view<EntityMetaDataComponent>();
-					for (entt::entity ent : view) {
-						const auto& meta = view.get<EntityMetaDataComponent>(ent).MetaData;
-						if (meta.Origin != EntityOrigin::Prefab) continue;
-						if (static_cast<uint64_t>(meta.PrefabGUID) != prefabGuid) continue;
-						targets.push_back(ent);
-					}
-					bool anyRefreshed = false;
-					for (EntityHandle t : targets) {
-						if (!s.IsValid(t)) continue;
-						EntityHandle replacement = SceneSerializer::RefreshPrefabInstance(s, t, previousSourceRoot);
-						if (replacement != entt::null && replacement != t) { // orphaned source returns original t (nothing refreshed)
-							anyRefreshed = true;
-						}
-					}
-					if (anyRefreshed) s.MarkDirty();
-				});
-			}
-		}
+		RestoreLoadedSceneSelection(selection);
 
 		// Mark the detached scene clean so the toolbar no longer shows the
 		// "*" suffix and the per-frame auto-save tick doesn't loop on the
@@ -3461,11 +4234,11 @@ namespace Index {
 		return true;
 	}
 
-	void ImGuiEditorLayer::ClosePrefabEditing(bool save) {
-		if (!m_PrefabEditScene) return;
+	bool ImGuiEditorLayer::ClosePrefabEditing(bool save) {
+		if (!m_PrefabEditScene) return true;
 
-		if (save) {
-			SavePrefabEditChanges();
+		if (save && !SavePrefabEditChanges()) {
+			return false;
 		}
 
 		ClearEntitySelection();
@@ -3490,18 +4263,19 @@ namespace Index {
 			m_EditorCamera.SetPosition(m_PrefabEditSavedCameraPosition);
 			m_PrefabEditHasSavedCameraState = false;
 		}
+		return true;
 	}
 
 	Scene* ImGuiEditorLayer::GetContextScene() const {
 		if (m_PrefabEditScene) return m_PrefabEditScene.get();
 		// Last-interacted scene wins so Create Entity lands where expected with multi-scene.
 		if (!m_LastInteractedSceneName.empty()) {
-			if (auto weak = SceneManager::Get().GetLoadedScene(m_LastInteractedSceneName);
+			if (auto weak = SceneManager::GetLoadedScene(m_LastInteractedSceneName);
 				auto shared = weak.lock()) {
 				return shared.get();
 			}
 		}
-		return SceneManager::Get().GetActiveScene();
+		return SceneManager::GetActiveScene();
 	}
 
 	bool ImGuiEditorLayer::HasEntityShortcutFocus() const {
@@ -3539,7 +4313,7 @@ namespace Index {
 			const std::string title = showDirtyMark ? (prefabName + " *") : prefabName;
 
 			const float backButtonStartX = ImGui::GetCursorPosX();
-			if (ImGui::SmallButton("<")) {
+			if (EditorUI::IconButton("##PrefabBack", "arrow_left", "Back to scene")) {
 				if (m_PrefabEditDirty) {
 					m_ShowPrefabEditDiscardPrompt = true;
 				}
@@ -3556,16 +4330,16 @@ namespace Index {
 			// overlap the centered text; fall back to a normal SameLine gap.
 			const float minCenterX = ImGui::GetCursorPosX();
 			ImGui::SetCursorPosX(centerX > minCenterX ? centerX : minCenterX);
+			ImGui::AlignTextToFramePadding();
 			ImGui::TextUnformatted(title.c_str());
 			ImGui::Separator();
 		}
 
 		// Hierarchy search bar: a non-empty query filters the entity rows below
 		// to name matches (applied by the per-scene filter pass before rendering).
-		Icons::TextIcon(Icons::Type::Search);
-		ImGui::SetNextItemWidth(-1);
-		if (ImGui::InputTextWithHint("##HierarchySearch", "Search entities...",
-			m_HierarchySearchBuffer, sizeof(m_HierarchySearchBuffer))) {
+		const float addButtonW = ImGui::GetFrameHeight();
+		if (EditorUI::SearchField("##HierarchySearch", m_HierarchySearchBuffer, sizeof(m_HierarchySearchBuffer),
+			"Search entities...", ImGui::GetContentRegionAvail().x - addButtonW - ImGui::GetStyle().ItemSpacing.x)) {
 			// Clearing the query must restore the unfiltered (collapse-pruned)
 			// list, which only the rebuild produces — so force one this frame.
 			m_EntityOrderDirty = true;
@@ -3573,6 +4347,18 @@ namespace Index {
 			// range-select anchor (an index into it) is now meaningless — drop
 			// it so the next shift-click re-derives the anchor from m_SelectedEntity.
 			m_LastEntitySelectionIndex = -1;
+		}
+		ImGui::SameLine();
+		if (EditorUI::IconButton("##HierarchyAdd", "plus", "Create entity")) {
+			ImGui::OpenPopup("##HierarchyAddMenu");
+		}
+		if (ImGui::BeginPopup("##HierarchyAddMenu")) {
+			if (scaleHierarchyFont) ImGui::PushFont(nullptr, hierarchyBaseFontSize);
+			if (Scene* target = GetContextScene()) {
+				RenderCreateEntityMenu(*target, Entity::Null);
+			}
+			if (scaleHierarchyFont) ImGui::PopFont();
+			ImGui::EndPopup();
 		}
 		ImGui::Separator();
 
@@ -3602,7 +4388,7 @@ namespace Index {
 			scenesToShow.push_back(m_PrefabEditScene.get());
 		}
 		else {
-			auto loadedScenes = SceneManager::Get().GetLoadedScenes();
+			auto loadedScenes = SceneManager::GetLoadedScenes();
 			scenesToShow.reserve(loadedScenes.size());
 			for (auto& weakScene : loadedScenes) {
 				if (auto scenePtr = weakScene.lock()) {
@@ -3639,7 +4425,12 @@ namespace Index {
 				const std::string sceneLabel = ImGuiUtils::Ellipsize(fullSceneLabel, ImGui::GetContentRegionAvail().x, &sceneLabelTruncated);
 				// Use stable str_id (not the label) so the fold state survives the
 				// dirty-asterisk toggle that flips on save. Label is supplied via fmt.
+				// Neutral frame: the accent Header color is reserved for entity selection.
+				ImGui::PushStyleColor(ImGuiCol_Header, ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
+				ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImGui::GetStyleColorVec4(ImGuiCol_FrameBgHovered));
+				ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImGui::GetStyleColorVec4(ImGuiCol_FrameBgActive));
 				sceneOpen = ImGui::TreeNodeEx("##scene_node", sceneFlags, "%s", sceneLabel.c_str());
+				ImGui::PopStyleColor(3);
 				if (sceneLabelTruncated && ImGui::IsItemHovered()) {
 					ImGui::SetTooltip("%s", fullSceneLabel.c_str());
 				}
@@ -3708,6 +4499,7 @@ namespace Index {
 						const bool sameScene = dragData->SourceSceneId == sceneIdValue;
 						if (sameScene) {
 							std::vector<EntityHandle> draggedHandles = ResolveDraggedHierarchyEntities(scene, primaryDraggedHandle);
+							StructureEditRecorder recorder(scene, draggedHandles, "Reparent");
 							bool didMove = false;
 							for (EntityHandle h : draggedHandles) {
 								Entity draggedEntity = scene.GetEntity(h);
@@ -3722,6 +4514,7 @@ namespace Index {
 								// fallback won't trigger.
 								m_EntityOrderDirty = true;
 								scene.MarkDirty();
+								PushStructureUndo(scene, recorder.Finish(scene, draggedHandles));
 							}
 						}
 						else {
@@ -3916,12 +4709,30 @@ namespace Index {
 					m_VisibleEntityDepths = std::move(filteredDepths);
 
 					if (m_VisibleEntityOrder.empty()) {
-						ImGui::TextDisabled("No matching entities");
+						EditorUI::EmptyState("No matching entities");
 					}
 				}
 
 				const ImVec2 defaultItemSpacing = ImGui::GetStyle().ItemSpacing;
 				ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(defaultItemSpacing.x, 1.0f));
+
+				// Tree guides, precomputed with one reverse pass: whether each row is the last child of its
+				// parent, and which ancestor levels still have siblings further down (their line continues).
+				std::vector<uint64_t> guideContinueMask(m_VisibleEntityDepths.size(), 0);
+				std::vector<bool> guideIsLastChild(m_VisibleEntityDepths.size(), true);
+				{
+					std::vector<bool> siblingBelow;
+					for (std::size_t i = m_VisibleEntityDepths.size(); i-- > 0;) {
+						const int d = std::clamp(m_VisibleEntityDepths[i], 0, 63);
+						if (siblingBelow.size() <= static_cast<std::size_t>(d)) siblingBelow.resize(d + 1, false);
+						guideIsLastChild[i] = !siblingBelow[d];
+						for (int k = 1; k < d; ++k) {
+							if (siblingBelow[k]) guideContinueMask[i] |= (1ull << k);
+						}
+						siblingBelow[d] = true;
+						std::fill(siblingBelow.begin() + d + 1, siblingBelow.end(), false);
+					}
+				}
 
 				ImGuiListClipper clipper;
 				clipper.Begin(static_cast<int>(m_VisibleEntityOrder.size()));
@@ -3940,6 +4751,55 @@ namespace Index {
 					const int visibleIndex = entityIdx;
 
 					const float rowIndent = static_cast<float>(targetDepth) * 14.0f;
+
+					// Row highlight is painted before the guides, fold arrow and icon so it always sits behind them.
+					{
+						const ImVec2 rowPos = ImGui::GetCursorScreenPos();
+						const ImVec2 rMin(ImGui::GetWindowPos().x + ImGui::GetStyle().WindowPadding.x * 0.5f, rowPos.y);
+						const ImVec2 rMax(rowPos.x + ImGui::GetContentRegionAvail().x, rowPos.y + ImGui::GetTextLineHeight());
+						const bool rowHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)
+							&& ImGui::IsMouseHoveringRect(rMin, rMax);
+						if (selected || rowHovered) {
+							const bool pressed = rowHovered && ImGui::IsMouseDown(ImGuiMouseButton_Left);
+							const ImU32 col = (selected || pressed)
+								? ImGui::GetColorU32(EditorTheme::Colors::RowSelection(pressed))
+								: ImGui::GetColorU32(ImGuiCol_HeaderHovered);
+							ImDrawList* rowDraw = ImGui::GetWindowDrawList();
+							rowDraw->AddRectFilled(rMin, rMax, col, ImGui::GetStyle().FrameRounding);
+							if (selected) {
+								const float inset = (rMax.y - rMin.y) * 0.2f;
+								rowDraw->AddRectFilled(ImVec2(rMin.x, rMin.y + inset), ImVec2(rMin.x + 3.0f, rMax.y - inset),
+									ImGui::GetColorU32(EditorTheme::Colors::Accent()), 1.5f);
+							}
+						}
+					}
+
+					if (targetDepth > 0 && entityIdx < static_cast<int>(guideContinueMask.size())) {
+						const ImVec2 rowPos = ImGui::GetCursorScreenPos();
+						const float lineH = ImGui::GetTextLineHeight();
+						const float half = lineH * 0.5f;
+						const float top = rowPos.y - ImGui::GetStyle().ItemSpacing.y;
+						const float midY = std::floor(rowPos.y + half) + 0.5f;
+						const ImU32 guideCol = ImGui::GetColorU32(ImGuiCol_Text, 0.35f);
+						ImDrawList* guideDraw = ImGui::GetWindowDrawList();
+						// Line sits under the parent's fold arrow at each level.
+						auto levelX = [&](int level) { return std::floor(rowPos.x + (level - 1) * 14.0f + half) + 0.5f; };
+
+						const uint64_t mask = guideContinueMask[static_cast<std::size_t>(entityIdx)];
+						for (int k = 1; k < targetDepth && k < 64; ++k) {
+							if (mask & (1ull << k)) {
+								guideDraw->AddLine(ImVec2(levelX(k), top), ImVec2(levelX(k), rowPos.y + lineH), guideCol);
+							}
+						}
+						const float x = levelX(targetDepth);
+						const bool isLast = guideIsLastChild[static_cast<std::size_t>(entityIdx)];
+						guideDraw->AddLine(ImVec2(x, top), ImVec2(x, isLast ? midY : rowPos.y + lineH), guideCol);
+						const bool rowHasChildren = scene.HasComponent<HierarchyComponent>(entityHandle)
+							&& !scene.GetComponent<HierarchyComponent>(entityHandle).Children.empty();
+						const float elbowEnd = rowPos.x + rowIndent + (rowHasChildren ? 1.0f : lineH * 0.8f);
+						guideDraw->AddLine(ImVec2(x, midY), ImVec2(elbowEnd, midY), guideCol);
+					}
+
 					if (rowIndent > 0.0f) ImGui::Indent(rowIndent);
 
 					ImGui::PushID(static_cast<int>(static_cast<uint32_t>(entityHandle)));
@@ -3965,7 +4825,7 @@ namespace Index {
 								m_EntityOrderDirty = true;
 							}
 							const ImU32 arrowColor = ImGui::GetColorU32(
-								ImGui::IsItemHovered() ? ImGuiCol_HeaderHovered : ImGuiCol_Text);
+								ImGui::IsItemHovered() ? EditorTheme::Colors::Highlight() : ImGui::GetStyleColorVec4(ImGuiCol_Text));
 							ImGui::RenderArrow(ImGui::GetWindowDrawList(), arrowTopLeft,
 								arrowColor,
 								isCollapsed ? ImGuiDir_Right : ImGuiDir_Down,
@@ -3979,7 +4839,7 @@ namespace Index {
 
 					bool entityIsDisabled = scene.HasComponent<DisabledTag>(entityHandle);
 					if (entityIsDisabled)
-						ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 0.5f));
+						ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
 
 					// Prefab origin drives both the type icon and the row tint below.
 					const bool entityIsPrefab = !Application::GetIsPlaying() && scene.GetEntityOrigin(entityHandle) == EntityOrigin::Prefab;
@@ -3992,25 +4852,29 @@ namespace Index {
 					bool entityIsPrefabTinted = false;
 					if (!entityIsDisabled && entityIsPrefab) {
 						ImGui::PushStyleColor(ImGuiCol_Text,
-							entityPrefabResolvable ? EditorTheme::Colors::PrefabInstance : EditorTheme::Colors::PrefabOrphan);
+							entityPrefabResolvable ? EditorTheme::Colors::PrefabInstance() : EditorTheme::Colors::PrefabOrphan());
 						entityIsPrefabTinted = true;
 					}
 
 					bool entityIsCutMarked = m_CutEntities.contains(static_cast<uint32_t>(entityHandle));
 					if (entityIsCutMarked)
-						ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 0.5f));
+						ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
 
 					// Type icon at the left of every row: prefab / prefab_missing for prefab instances
 					// (by whether the source asset resolves), otherwise the generic entity icon.
 					{
 						const char* entityIconName = entityIsPrefab
 							? (entityPrefabResolvable ? "prefab" : "prefab_missing")
-							: "entity";
+							: EntityTypeIconName(scene, entityHandle);
 						const float entityIconSize = ImGui::GetTextLineHeight();
 						const uint64_t entityIcon = EditorIcons::Get(entityIconName, static_cast<int>(entityIconSize));
 						if (entityIcon) {
-							ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(entityIcon)),
-								ImVec2(entityIconSize, entityIconSize), ImVec2(0, 1), ImVec2(1, 0));
+							// Prefab glyphs carry their own color; the plain entity glyph follows the theme text color.
+							const ImVec4 entityIconTint = entityIsPrefab
+								? ImVec4(1, 1, 1, 1) : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+							ImGui::ImageWithBg(static_cast<ImTextureID>(static_cast<intptr_t>(entityIcon)),
+								ImVec2(entityIconSize, entityIconSize), ImVec2(0, 1), ImVec2(1, 0),
+								ImVec4(0, 0, 0, 0), entityIconTint);
 							ImGui::SameLine(0.0f, 4.0f);
 						}
 					}
@@ -4023,8 +4887,25 @@ namespace Index {
 							ImGui::SetKeyboardFocusHere();
 						}
 
+						// Inline edit: row-height field with an accent outline so it sits inside the highlighted row.
+						const ImVec4 renameBg = ImGui::GetStyleColorVec4(ImGuiCol_PopupBg);
+						ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x * 0.5f, 0.0f));
+						ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+						ImGui::PushStyleColor(ImGuiCol_FrameBg, renameBg);
+						ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, renameBg);
+						ImGui::PushStyleColor(ImGuiCol_FrameBgActive, renameBg);
+						ImGui::PushStyleColor(ImGuiCol_Border, EditorTheme::Colors::Accent());
 						bool committed = ImGui::InputText("##EntityRename", m_EntityRenameBuffer, sizeof(m_EntityRenameBuffer),
 							ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+						ImGui::PopStyleColor(4);
+						ImGui::PopStyleVar(2);
+
+						const bool renameFinished = committed
+							|| (!ImGui::IsKeyPressed(ImGuiKey_Escape) && m_EntityRenameFrameCounter > 2 && !ImGui::IsItemActive());
+						std::optional<StructureEditRecorder> renameRecorder;
+						if (renameFinished && entity.GetName() != std::string_view(m_EntityRenameBuffer)) {
+							renameRecorder.emplace(scene, std::span(&entityHandle, 1), "Rename");
+						}
 
 						if (committed) {
 							std::string newName(m_EntityRenameBuffer);
@@ -4071,36 +4952,19 @@ namespace Index {
 							// Same cache-invalidation reason as the committed branch above.
 							++m_SelectionVersion;
 						}
+						if (renameRecorder) PushStructureUndo(scene, renameRecorder->Finish(scene, std::span(&entityHandle, 1)));
 
 						ImGui::PopItemWidth();
 					}
 					else {
 						bool entityLabelTruncated = false;
 						const std::string entityLabel = ImGuiUtils::Ellipsize(entity.GetName(), ImGui::GetContentRegionAvail().x, &entityLabelTruncated);
-						// Rounded highlight: suppress Selectable's square fill (transparent colors) and repaint a rounded rect on channel 0, behind the text on channel 1.
-						ImDrawList* rowDraw = ImGui::GetWindowDrawList();
-						rowDraw->ChannelsSplit(2);
-						rowDraw->ChannelsSetCurrent(1);
+						// Selectable's own fill is suppressed; the full-row highlight was painted at the start of the row.
 						ImGui::PushStyleColor(ImGuiCol_Header,        IM_COL32(0, 0, 0, 0));
 						ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(0, 0, 0, 0));
 						ImGui::PushStyleColor(ImGuiCol_HeaderActive,  IM_COL32(0, 0, 0, 0));
 						ImGui::Selectable(entityLabel.c_str(), selected);
 						ImGui::PopStyleColor(3);
-						const bool rowHovered = ImGui::IsItemHovered();
-						const bool rowActive  = ImGui::IsItemActive();
-						rowDraw->ChannelsSetCurrent(0);
-						if (selected || rowHovered) {
-							const ImU32 col = ImGui::GetColorU32(
-								(rowActive && rowHovered) ? ImGuiCol_HeaderActive :
-								rowHovered                ? ImGuiCol_HeaderHovered :
-								                            ImGuiCol_Header);
-							rowDraw->AddRectFilled(
-								ImGui::GetItemRectMin(),
-								ImGui::GetItemRectMax(),
-								col,
-								ImGui::GetStyle().FrameRounding);
-						}
-						rowDraw->ChannelsMerge();
 						if (entityLabelTruncated && ImGui::IsItemHovered()) {
 							ImGui::SetTooltip("%s", entity.GetName().c_str());
 						}
@@ -4238,6 +5102,12 @@ namespace Index {
 							}
 							else {
 							std::vector<EntityHandle> draggedHandles = ResolveDraggedHierarchyEntities(scene, primaryDraggedHandle);
+							// Root-only reorders live in m_EntityOrder; replaying them through a snapshot would push roots to the end.
+							const bool targetIsRoot = !entity.HasParent();
+							bool recordMove = !(inTopZone || inBottomZone) || !targetIsRoot;
+							for (EntityHandle h : draggedHandles) recordMove |= scene.GetEntity(h).HasParent();
+							std::optional<StructureEditRecorder> moveRecorder;
+							if (recordMove) moveRecorder.emplace(scene, draggedHandles, (inTopZone || inBottomZone) ? "Reorder" : "Reparent");
 							bool didMove = false;
 							if (inTopZone || inBottomZone) {
 								// Multi-drop: advance anchor so each entity lands next to the previous one in selection order.
@@ -4279,6 +5149,7 @@ namespace Index {
 							}
 							if (didMove) {
 								scene.MarkDirty();
+								if (moveRecorder) PushStructureUndo(scene, moveRecorder->Finish(scene, draggedHandles));
 							}
 							}
 						}
@@ -4299,6 +5170,7 @@ namespace Index {
 										m_CollapsedHierarchyEntities.erase(static_cast<uint32_t>(entityHandle));
 										SelectEntity(loaded);
 										scene.MarkDirty();
+										RecordCreatedEntities(scene, std::span(&loaded, 1), "Instantiate Prefab");
 									}
 									m_EntityOrder.clear(); m_EntityOrderDirty = true;
 								}
@@ -4306,6 +5178,7 @@ namespace Index {
 							else {
 								std::vector<EditorScriptDiscovery::ScriptEntry> droppedScripts;
 								EditorScriptDiscovery::CollectScriptFile(std::filesystem::path(droppedPath), droppedScripts);
+								StructureEditRecorder scriptRecorder(scene, std::span(&entityHandle, 1), "Add Script");
 								bool scriptAttached = false;
 								for (const auto& scriptEntry : droppedScripts) {
 									if (scriptEntry.IsSceneSystem || scriptEntry.IsGlobalSystem) {
@@ -4321,7 +5194,10 @@ namespace Index {
 								// Invalidate the inspector cache so the new
 								// component shows up immediately if the dropped-on
 								// entity happens to be selected.
-								if (scriptAttached) ++m_SelectionVersion;
+								if (scriptAttached) {
+									++m_SelectionVersion;
+									PushStructureUndo(scene, scriptRecorder.Finish(scene, std::span(&entityHandle, 1)));
+								}
 							}
 						}
 						ImGui::EndDragDropTarget();
@@ -4410,22 +5286,11 @@ namespace Index {
 
 		// Deferred scene removal (after iteration)
 		if (!sceneToRemove.empty()) {
-			ClearEntitySelection();
-			// Drop the last-interacted reference if it points at the
-			// scene about to disappear, so GetContextScene falls back
-			// to SceneManager's active scene next frame.
-			if (m_LastInteractedSceneName == sceneToRemove) {
-				m_LastInteractedSceneName.clear();
-			}
-			// Drop cut markers — without per-scene partitioning we can't
-			// tell which cut entities belonged to the removed scene, so
-			// clear the lot. Cheap and safe; the user can re-cut.
-			m_CutEntities.clear();
-			SceneManager::Get().UnloadScene(sceneToRemove);
+			RequestEditorAction(PendingEditorAction::RemoveScene, std::move(sceneToRemove));
 		}
 
 		if (pendingSceneReorder) {
-			SceneManager::Get().MoveLoadedScene(pendingSceneReorder->SourceName, pendingSceneReorder->TargetIndex);
+			SceneManager::MoveLoadedScene(pendingSceneReorder->SourceName, pendingSceneReorder->TargetIndex);
 			m_EntityOrderDirty = true;
 		}
 
@@ -4446,7 +5311,7 @@ namespace Index {
 							const bool sameScene = dragData->SourceSceneId == dropSceneIdValue;
 							if (!sameScene) {
 								Scene* sourceScene = nullptr;
-								auto loadedScenes = SceneManager::Get().GetLoadedScenes();
+								auto loadedScenes = SceneManager::GetLoadedScenes();
 								for (auto& weakScene : loadedScenes) {
 									if (auto scenePtr = weakScene.lock();
 										scenePtr && static_cast<uint64_t>(scenePtr->GetSceneId()) == dragData->SourceSceneId) {
@@ -4469,6 +5334,7 @@ namespace Index {
 							}
 							else {
 							std::vector<EntityHandle> draggedHandles = ResolveDraggedHierarchyEntities(*dropScene, primaryDraggedHandle);
+							StructureEditRecorder recorder(*dropScene, draggedHandles, "Reparent");
 							bool didMove = false;
 							for (EntityHandle h : draggedHandles) {
 								Entity draggedEntity = dropScene->GetEntity(h);
@@ -4487,6 +5353,7 @@ namespace Index {
 							if (didMove) {
 								m_EntityOrderDirty = true;
 								dropScene->MarkDirty();
+								PushStructureUndo(*dropScene, recorder.Finish(*dropScene, draggedHandles));
 							}
 							}
 						}
@@ -4508,6 +5375,7 @@ namespace Index {
 								EntityHandle loaded = SceneSerializer::LoadEntityFromFile(*dropScene, droppedPath);
 								if (loaded != entt::null) {
 									EnsureEditorUniqueEntityNames(*dropScene, { loaded });
+									RecordCreatedEntities(*dropScene, std::span(&loaded, 1), "Instantiate Prefab");
 								}
 								m_EntityOrder.clear(); m_EntityOrderDirty = true;
 							}
@@ -4530,6 +5398,8 @@ namespace Index {
 								EnsureEditorUniqueEntityNames(*dropScene, { newEntity.GetHandle() });
 								SelectEntity(newEntity.GetHandle());
 								dropScene->MarkDirty();
+								const EntityHandle createdHandle = newEntity.GetHandle();
+								RecordCreatedEntities(*dropScene, std::span(&createdHandle, 1), "Create Sprite");
 							}
 						}
 						else {
@@ -4564,6 +5434,8 @@ namespace Index {
 									m_EntityOrder.clear();
 									m_EntityOrderDirty = true;
 									++m_SelectionVersion;
+									const EntityHandle createdHandle = newEntity.GetHandle();
+									RecordCreatedEntities(*dropScene, std::span(&createdHandle, 1), "Create Entity");
 								}
 							}
 						}
@@ -4624,7 +5496,7 @@ namespace Index {
 			ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - stripW);
 
 			bool enabled = scene.IsSceneSystemEnabled(className);
-			if (ImGui::Checkbox("##enabled", &enabled)) {
+			if (ImGuiUtils::Switch("##enabled", &enabled)) {
 				scene.SetSceneSystemEnabled(className, enabled);
 			}
 			if (ImGui::IsItemHovered()) {
@@ -4632,20 +5504,17 @@ namespace Index {
 			}
 
 			ImGui::SameLine(0, spacing);
-			if (ImGui::ArrowButton("##move_up", ImGuiDir_Up) && i > 0) {
+			if (EditorUI::IconButton("##move_up", "arrow_up", "Move up", false, false, btnW) && i > 0) {
 				scene.MoveSceneSystem(i, i - 1);
 			}
 
 			ImGui::SameLine(0, spacing);
-			if (ImGui::ArrowButton("##move_down", ImGuiDir_Down) && i + 1 < systems.size()) {
+			if (EditorUI::IconButton("##move_down", "arrow_down", "Move down", false, false, btnW) && i + 1 < systems.size()) {
 				scene.MoveSceneSystem(i, i + 1);
 			}
 
 			ImGui::SameLine(0, spacing);
-			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.35f, 0.35f, 1.0f));
-			const bool remove = ImGui::Button("X", ImVec2(btnW, btnW));
-			ImGui::PopStyleColor();
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove SceneSystem");
+			const bool remove = EditorUI::IconButton("##remove", "delete", "Remove SceneSystem", false, false, btnW);
 			if (remove) {
 				scene.RemoveSceneSystem(i);
 				ImGui::PopID();
@@ -4695,10 +5564,8 @@ namespace Index {
 		}
 
 		if (ImGui::BeginPopup("AddSystemPopup")) {
-			Icons::TextIcon(Icons::Type::Search);
-			ImGui::SetNextItemWidth(-1);
-			ImGui::InputTextWithHint("##SystemSearch", "Search systems...",
-				m_SystemSearchBuffer, sizeof(m_SystemSearchBuffer));
+			EditorUI::SearchField("##SystemSearch", m_SystemSearchBuffer, sizeof(m_SystemSearchBuffer),
+				"Search systems...", ImGui::GetFontSize() * 18.0f);
 			ImGui::Separator();
 
 			std::string filter(m_SystemSearchBuffer);
@@ -4767,114 +5634,129 @@ namespace Index {
 			m_SelectedEntity = entity.GetHandle();
 		}
 
-		// ── Entity Header: Name + Toggles ──────────────────
-
-		if (selectedEntities.size() > 1) {
-			ImGui::TextDisabled("(%zu)", selectedEntities.size());
-		}
-
-		// Empty buffer + hint avoids the bug where Enter on a nameless entity (buffer pre-filled with "Entity") created a real NameComponent.
-		const bool nameUniform = m_InspectorCache.NameUniform;
-		char nameBuf[256]{};
-		if (nameUniform && !m_InspectorCache.FirstName.empty()) {
-			std::snprintf(nameBuf, sizeof(nameBuf), "%s", m_InspectorCache.FirstName.c_str());
-		}
-		const char* nameHint = nameUniform ? "Entity" : "-";
-		// Reserve a square button on the right of the name field for the
-		// component-view selector (Normal / Detailed).
-		const float viewButtonWidth = ImGui::GetFrameHeight();
-		const float viewButtonSpacing = ImGui::GetStyle().ItemInnerSpacing.x;
-		ImGui::SetNextItemWidth(-(viewButtonWidth + viewButtonSpacing));
-		const bool nameSubmitted = ImGui::InputTextWithHint(
-			"##EntityName", nameHint, nameBuf, sizeof(nameBuf),
-			ImGuiInputTextFlags_EnterReturnsTrue);
-
-		ImGui::SameLine(0.0f, viewButtonSpacing);
-		if (Icons::IconButton("##ComponentViewMode", Icons::Type::ArrowDown,
-			ImVec2(viewButtonWidth, viewButtonWidth))) {
-			ImGui::OpenPopup("ComponentViewModePopup");
-		}
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip("Component view: %s",
-				EditorPreferences::GetInspectorComponentView() == InspectorComponentView::Detailed
-					? "Detailed" : "Normal");
-		}
-		if (ImGui::BeginPopup("ComponentViewModePopup")) {
-			ImGui::TextDisabled("Component View");
-			ImGui::Separator();
-			const InspectorComponentView currentView = EditorPreferences::GetInspectorComponentView();
-			if (ImGui::MenuItem("Normal", nullptr, currentView == InspectorComponentView::Normal)) {
-				EditorPreferences::SetInspectorComponentView(InspectorComponentView::Normal);
+		// ── Entity Header: type icon, name + summary, enabled switch, options menu ──
+		{
+			const ImGuiStyle& style = ImGui::GetStyle();
+			const float frameH = ImGui::GetFrameHeight();
+			const float iconBox = std::round(frameH * 1.9f);
+			const ImVec2 boxMin = ImGui::GetCursorScreenPos();
+			const ImVec4 accent = EditorTheme::Colors::Accent();
+			ImDrawList* headerDraw = ImGui::GetWindowDrawList();
+			headerDraw->AddRectFilled(boxMin, ImVec2(boxMin.x + iconBox, boxMin.y + iconBox),
+				ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.18f)), style.FrameRounding * 1.5f);
+			const float glyph = std::round(iconBox * 0.55f);
+			if (const uint64_t icon = EditorIcons::Get(EntityTypeIconName(scene, entity.GetHandle()), static_cast<int>(glyph))) {
+				const ImVec2 g0(boxMin.x + (iconBox - glyph) * 0.5f, boxMin.y + (iconBox - glyph) * 0.5f);
+				headerDraw->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(icon)), g0, ImVec2(g0.x + glyph, g0.y + glyph),
+					ImVec2(0, 1), ImVec2(1, 0), ImGui::GetColorU32(EditorTheme::Colors::Highlight()));
 			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("Show editable component fields only.");
-			}
-			if (ImGui::MenuItem("Detailed", nullptr, currentView == InspectorComponentView::Detailed)) {
-				EditorPreferences::SetInspectorComponentView(InspectorComponentView::Detailed);
-			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("Also show read-only / computed script values\n"
-					"(get-only properties, const and readonly fields).");
-			}
-			ImGui::EndPopup();
-		}
+			ImGui::Dummy(ImVec2(iconBox, iconBox));
+			ImGui::SameLine();
+			ImGui::BeginGroup();
 
-		if (nameSubmitted) {
-			std::string newName(nameBuf);
-			for (Entity& e : selectedEntities) {
-				if (newName.empty()) {
-					if (e.HasComponent<NameComponent>()) {
-						e.RemoveComponent<NameComponent>();
+			// Empty buffer + hint avoids the bug where Enter on a nameless entity (buffer pre-filled with "Entity") created a real NameComponent.
+			const bool nameUniform = m_InspectorCache.NameUniform;
+			char nameBuf[256]{};
+			if (nameUniform && !m_InspectorCache.FirstName.empty()) {
+				std::snprintf(nameBuf, sizeof(nameBuf), "%s", m_InspectorCache.FirstName.c_str());
+			}
+			const char* nameHint = nameUniform ? "Entity" : "-";
+			const float switchW = std::round(std::round(frameH * 0.62f) * 1.8f);
+			ImGui::SetNextItemWidth(std::max(40.0f, ImGui::GetContentRegionAvail().x - switchW - frameH - style.ItemSpacing.x * 2.0f));
+			const bool nameSubmitted = ImGui::InputTextWithHint(
+				"##EntityName", nameHint, nameBuf, sizeof(nameBuf),
+				ImGuiInputTextFlags_EnterReturnsTrue);
+
+			// Shows authored state, not effective in-hierarchy: InheritedDisabledTag doesn't flip the switch.
+			ImGui::SameLine();
+			bool isEnabled = m_InspectorCache.EnabledFirst;
+			const bool enabledChanged = ImGuiUtils::ToggleSwitch("##EntityEnabled", &isEnabled, !m_InspectorCache.EnabledUniform);
+			EditorUI::Tooltip("Enabled");
+
+			ImGui::SameLine();
+			if (EditorUI::IconButton("##EntityOptions", "settings", "Entity options")) {
+				ImGui::OpenPopup("EntityHeaderMenu");
+			}
+
+			const bool isStaticNow = m_InspectorCache.StaticFirst;
+			std::string summary = selectedEntities.size() > 1
+				? std::to_string(selectedEntities.size()) + " entities selected"
+				: std::string("Entity");
+			if (m_InspectorCache.StaticUniform && isStaticNow) summary += "  -  Static";
+			if (m_InspectorCache.EnabledUniform && !m_InspectorCache.EnabledFirst) summary += "  -  Disabled";
+			ImGui::TextDisabled("%s", summary.c_str());
+			ImGui::EndGroup();
+
+			bool staticChanged = false;
+			bool isStatic = isStaticNow;
+			if (ImGui::BeginPopup("EntityHeaderMenu")) {
+				if (ImGui::MenuItem("Static", nullptr, m_InspectorCache.StaticUniform && isStaticNow)) {
+					isStatic = !(m_InspectorCache.StaticUniform && isStaticNow);
+					staticChanged = true;
+				}
+				EditorUI::Tooltip("Static entities are excluded from per-frame transform updates.");
+				ImGui::Separator();
+				ImGui::TextDisabled("Component View");
+				const InspectorComponentView currentView = EditorPreferences::GetInspectorComponentView();
+				if (ImGui::MenuItem("Normal", nullptr, currentView == InspectorComponentView::Normal)) {
+					EditorPreferences::SetInspectorComponentView(InspectorComponentView::Normal);
+				}
+				EditorUI::Tooltip("Show editable component fields only.");
+				if (ImGui::MenuItem("Detailed", nullptr, currentView == InspectorComponentView::Detailed)) {
+					EditorPreferences::SetInspectorComponentView(InspectorComponentView::Detailed);
+				}
+				EditorUI::Tooltip("Also show read-only / computed script values\n(get-only properties, const and readonly fields).");
+				ImGui::EndPopup();
+			}
+
+			std::vector<EntityHandle> headerHandles;
+			std::optional<StructureEditRecorder> headerRecorder;
+			const bool nameChanged = nameSubmitted
+				&& (!m_InspectorCache.NameUniform || m_InspectorCache.FirstName != std::string_view(nameBuf));
+			if (nameChanged || enabledChanged || staticChanged) {
+				for (Entity& e : selectedEntities) headerHandles.push_back(e.GetHandle());
+				headerRecorder.emplace(scene, headerHandles,
+					nameChanged ? "Rename" : enabledChanged ? (isEnabled ? "Enable" : "Disable") : "Toggle Static");
+			}
+
+			if (nameSubmitted) {
+				std::string newName(nameBuf);
+				for (Entity& e : selectedEntities) {
+					if (newName.empty()) {
+						if (e.HasComponent<NameComponent>()) {
+							e.RemoveComponent<NameComponent>();
+						}
+					}
+					else if (e.HasComponent<NameComponent>()) {
+						e.GetComponent<NameComponent>().Name = newName;
+					}
+					else {
+						scene.AddComponent<NameComponent>(e.GetHandle(), newName);
 					}
 				}
-				else if (e.HasComponent<NameComponent>()) {
-					e.GetComponent<NameComponent>().Name = newName;
-				}
-				else {
-					scene.AddComponent<NameComponent>(e.GetHandle(), newName);
-				}
+				scene.MarkDirty();
+				// NameComponent can be added/removed and FirstName changes; the
+				// next inspector frame must rebuild its cached header strings.
+				++m_SelectionVersion;
 			}
-			scene.MarkDirty();
-			// NameComponent can be added/removed and FirstName changes; the
-			// next inspector frame must rebuild its cached header strings.
-			++m_SelectionVersion;
-		}
-
-		// Tri-state checkboxes when values differ across selection; edits apply to all.
-		{
-			constexpr int kMixedValueFlag = 1 << 12;
-
-			// Shows authored state, not effective in-hierarchy: InheritedDisabledTag doesn't flip the checkbox.
-			bool isEnabled = m_InspectorCache.EnabledFirst;
-			if (!m_InspectorCache.EnabledUniform) ImGui::PushItemFlag(static_cast<ImGuiItemFlags>(kMixedValueFlag), true);
-			const bool enabledChanged = ImGui::Checkbox("Enabled", &isEnabled);
-			if (!m_InspectorCache.EnabledUniform) ImGui::PopItemFlag();
 			if (enabledChanged) {
 				for (Entity& e : selectedEntities) {
 					e.SetEnabled(isEnabled);
 				}
 				scene.MarkDirty();
-				// DisabledTag/InheritedDisabledTag presence changes — cached
-				// EnabledFirst/EnabledUniform are now stale.
+				// DisabledTag/InheritedDisabledTag presence changes — cached EnabledFirst/EnabledUniform are stale.
 				++m_SelectionVersion;
 			}
-
-			ImGui::SameLine();
-
-			bool isStatic = m_InspectorCache.StaticFirst;
-			if (!m_InspectorCache.StaticUniform) ImGui::PushItemFlag(static_cast<ImGuiItemFlags>(kMixedValueFlag), true);
-			const bool staticChanged = ImGui::Checkbox("Static", &isStatic);
-			if (!m_InspectorCache.StaticUniform) ImGui::PopItemFlag();
 			if (staticChanged) {
 				for (Entity& e : selectedEntities) {
 					if (isStatic && !e.HasComponent<StaticTag>()) e.AddComponent<StaticTag>();
 					else if (!isStatic && e.HasComponent<StaticTag>()) e.RemoveComponent<StaticTag>();
 				}
 				scene.MarkDirty();
-				// StaticTag presence changes — cached StaticFirst/StaticUniform
-				// are now stale.
+				// StaticTag presence changes — cached StaticFirst/StaticUniform are stale.
 				++m_SelectionVersion;
 			}
+			if (headerRecorder) PushStructureUndo(scene, headerRecorder->Finish(scene, headerHandles));
 		}
 
 		/* INFO(Ben-Scr): MetaData Doesn't need to be displayed
@@ -4920,7 +5802,7 @@ namespace Index {
 
 		ImGui::Separator();
 
-		const auto& registry = SceneManager::Get().GetComponentRegistry();
+		const auto& registry = SceneManager::GetComponentRegistry();
 
 		std::type_index pendingRemoval = typeid(void);
 
@@ -4944,47 +5826,18 @@ namespace Index {
 
 		if (isSinglePrefabInstance && prefabSourceResolvable && prefabInstanceRoot != entt::null) {
 			// Disable Apply/Revert when there are no overrides: Apply would still trigger disk write + live-instance refresh for no semantic change.
-			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.42f, 0.66f, 0.95f, 1.0f));
+			ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::Colors::PrefabInstance());
 			ImGui::TextUnformatted(entity.GetHandle() == prefabInstanceRoot
 				? "Prefab Instance"
 				: "Prefab Instance (child)");
 			ImGui::PopStyleColor();
 			ImGui::BeginDisabled(!hasSubtreeOverrides || Application::GetIsPlaying()); // play mode: Apply would bake runtime state, Revert would destroy the running instance
 			if (ImGui::SmallButton("Apply All")) {
-				// Always act on prefab root (not selected entity); capture OLD source before overwriting so live-instance propagation can diff overrides.
-				const std::string prefabPath = AssetRegistry::ResolvePath(
-					static_cast<uint64_t>(scene.GetPrefabGUID(prefabInstanceRoot)));
-				Json::Value previousSourceEntity;
-				bool havePrev = false;
-				if (!prefabPath.empty() && File::Exists(prefabPath)) {
-					Json::Value previousRoot;
-					std::string readError;
-					if (SceneSerializerStorage::ReadRootFromFile(prefabPath, previousRoot, &readError) && previousRoot.IsObject()) {
-						if (const Json::Value* eb = previousRoot.FindMember("Entity")) { previousSourceEntity = *eb; havePrev = true; }
-						else if (const Json::Value* lb = previousRoot.FindMember("prefab")) { previousSourceEntity = *lb; havePrev = true; }
-					}
-				}
-				if (SceneSerializer::ApplyPrefabInstanceOverrides(scene, prefabInstanceRoot) && havePrev) {
-					const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(prefabInstanceRoot));
-					SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
-						std::vector<EntityHandle> targets;
-						auto view = s.GetRegistry().view<EntityMetaDataComponent, PrefabInstanceComponent>();
-						for (entt::entity e2 : view) {
-							const auto& meta = view.get<EntityMetaDataComponent>(e2).MetaData;
-							if (meta.Origin != EntityOrigin::Prefab) continue;
-							if (static_cast<uint64_t>(meta.PrefabGUID) != prefabGuid) continue;
-							if (e2 == prefabInstanceRoot && &s == &scene) continue; // skip the just-applied root
-							targets.push_back(e2);
-						}
-						bool anyRefreshed = false;
-						for (EntityHandle t : targets) {
-							if (SceneSerializer::RefreshPrefabInstance(s, t, previousSourceEntity) != entt::null) {
-								anyRefreshed = true;
-							}
-						}
-						if (anyRefreshed) s.MarkDirty();
-					});
-				}
+				ApplyPrefabInstanceToSource(scene, prefabInstanceRoot);
+				ImGui::EndDisabled();
+				ImGui::Separator();
+				ImGui::End();
+				return;
 			}
 			ImGui::SameLine();
 			if (ImGui::SmallButton("Revert All")) {
@@ -5007,7 +5860,7 @@ namespace Index {
 			ImGui::Separator();
 		}
 		else if (isSinglePrefabInstance) {
-			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.70f, 0.30f, 1.0f));
+			ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::Colors::PrefabOrphan());
 			ImGui::TextUnformatted("Prefab Instance (orphaned — source missing)");
 			ImGui::PopStyleColor();
 			ImGui::Separator();
@@ -5117,7 +5970,7 @@ namespace Index {
 
 			if (thisComponentOverridden) {
 				ImGui::SameLine();
-				ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::Colors::OverrideMarker);
+				ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::Colors::OverrideMarker());
 				ImGui::TextUnformatted(" *");
 				ImGui::PopStyleColor();
 				if (ImGui::IsItemHovered()) {
@@ -5192,6 +6045,7 @@ namespace Index {
 					// Entity was recreated — `entity`/`entitySpan` are now stale.
 					// Stop iterating components this frame (see latch above).
 					selectionInvalidatedByRevert = true;
+					if (open) ImGuiUtils::EndComponentSection();
 					return;
 				}
 			}
@@ -5213,42 +6067,14 @@ namespace Index {
 				// Entity may have been recreated by the reverts above — `entity`/
 				// `entitySpan` are now stale. Stop iterating components this frame.
 				selectionInvalidatedByRevert = true;
+				if (open) ImGuiUtils::EndComponentSection();
 				return;
 			}
 			if (applyComponentRequested) {
-				const std::string prefabPath = AssetRegistry::ResolvePath(
-					static_cast<uint64_t>(scene.GetPrefabGUID(entity.GetHandle())));
-				Json::Value previousSourceEntity;
-				bool havePrev = false;
-				if (!prefabPath.empty() && File::Exists(prefabPath)) {
-					Json::Value previousRoot;
-					std::string readError;
-					if (SceneSerializerStorage::ReadRootFromFile(prefabPath, previousRoot, &readError) && previousRoot.IsObject()) {
-						if (const Json::Value* eb = previousRoot.FindMember("Entity")) { previousSourceEntity = *eb; havePrev = true; }
-						else if (const Json::Value* lb = previousRoot.FindMember("prefab")) { previousSourceEntity = *lb; havePrev = true; }
-					}
-				}
-				if (SceneSerializer::ApplyPrefabInstanceOverrides(scene, entity.GetHandle()) && havePrev) {
-					const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(entity.GetHandle()));
-					SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
-						std::vector<EntityHandle> targets;
-						auto view = s.GetRegistry().view<EntityMetaDataComponent>();
-						for (entt::entity e2 : view) {
-							const auto& meta = view.get<EntityMetaDataComponent>(e2).MetaData;
-							if (meta.Origin != EntityOrigin::Prefab) continue;
-							if (static_cast<uint64_t>(meta.PrefabGUID) != prefabGuid) continue;
-							if (e2 == entity.GetHandle() && &s == &scene) continue;
-							targets.push_back(e2);
-						}
-						bool anyRefreshed = false;
-						for (EntityHandle t : targets) {
-							if (SceneSerializer::RefreshPrefabInstance(s, t, previousSourceEntity) != entt::null) {
-								anyRefreshed = true;
-							}
-						}
-						if (anyRefreshed) s.MarkDirty();
-					});
-				}
+				ApplyPrefabInstanceToSource(scene, entity.GetHandle());
+				selectionInvalidatedByRevert = true;
+				if (open) ImGuiUtils::EndComponentSection();
+				return;
 			}
 
 			if (open) {
@@ -5256,8 +6082,16 @@ namespace Index {
 				ImGuiUtils::EndComponentSection();
 			}
 		});
+		if (selectionInvalidatedByRevert) {
+			ImGui::End();
+			return;
+		}
+
+		// Copy: the inspector cache behind selectedHandles is rebuilt when components change.
+		const std::vector<EntityHandle> undoHandles = selectedHandles;
 
 		if (pendingRemoval != typeid(void)) {
+			StructureEditRecorder recorder(scene, undoHandles, "Remove Component");
 			// Remove from EVERY selected entity that has it.
 			registry.ForEachComponentInfo([&](const std::type_index& typeId, const ComponentInfo& info) {
 				if (typeId != pendingRemoval || !info.remove) return;
@@ -5266,6 +6100,7 @@ namespace Index {
 				}
 			});
 			scene.MarkDirty();
+			PushStructureUndo(scene, recorder.Finish(scene, undoHandles));
 			// Component-presence map changed — the cached
 			// CommonComponentTypes / PartialComponents must rebuild.
 			++m_SelectionVersion;
@@ -5297,6 +6132,7 @@ namespace Index {
 		bool scriptDroppedSomething = false;
 		if (ImGui::BeginDragDropTarget()) {
 			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
+				StructureEditRecorder scriptRecorder(scene, undoHandles, "Add Script");
 				// 1-arg form: see entity-row drop comment above.
 				std::string droppedPath(static_cast<const char*>(payload->Data));
 				std::vector<EditorScriptDiscovery::ScriptEntry> droppedScripts;
@@ -5314,14 +6150,20 @@ namespace Index {
 						}
 					}
 				}
+				if (scriptDroppedSomething) PushStructureUndo(scene, scriptRecorder.Finish(scene, undoHandles));
 			}
 			ImGui::EndDragDropTarget();
 		}
 
 		bool addComponentChanged = false;
+		std::optional<StructureEditRecorder> addRecorder;
 		RenderAddComponentPopup("AddComponentPopup", scene, entitySpan,
 			m_ComponentSearchBuffer, sizeof(m_ComponentSearchBuffer),
-			&addComponentChanged);
+			&addComponentChanged,
+			[&]() { addRecorder.emplace(scene, undoHandles, "Add Component"); });
+		if (addComponentChanged && addRecorder) {
+			PushStructureUndo(scene, addRecorder->Finish(scene, undoHandles));
+		}
 		if (addComponentChanged || scriptDroppedSomething) {
 			++m_SelectionVersion;
 		}

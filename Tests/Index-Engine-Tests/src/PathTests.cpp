@@ -2,7 +2,7 @@
 //
 // Path.hpp's only platform-stable, inline (always-linkable) function is the
 // Combine(...) variadic template, which joins fragments with std::filesystem's
-// '/=' operator and returns make_preferred().string(). The other members
+// '/=' operator and returns a UTF-8 string. The other members
 // (GetSpecialFolderPath, ExecutableDir, ResolveIndexAssets,
 // ToProjectRelativeDisplay, Current) query the real filesystem / environment,
 // so they are intentionally skipped here.
@@ -30,17 +30,17 @@ namespace {
 	// using the exact same std::filesystem operations the production code uses.
 	std::string ExpectedCombine(const std::string& a, const std::string& b) {
 		fs::path p;
-		p /= fs::path(a);
-		p /= fs::path(b);
-		return p.make_preferred().string();
+		p /= Path::FromUtf8(a);
+		p /= Path::FromUtf8(b);
+		return Path::ToUtf8(p.make_preferred());
 	}
 
 	std::string ExpectedCombine(const std::string& a, const std::string& b, const std::string& c) {
 		fs::path p;
-		p /= fs::path(a);
-		p /= fs::path(b);
-		p /= fs::path(c);
-		return p.make_preferred().string();
+		p /= Path::FromUtf8(a);
+		p /= Path::FromUtf8(b);
+		p /= Path::FromUtf8(c);
+		return Path::ToUtf8(p.make_preferred());
 	}
 } // namespace
 
@@ -109,4 +109,10 @@ TEST_CASE("Path::Combine with an empty leading fragment yields the second fragme
 	// p /= path("") is a no-op; appending "leaf" then gives just "leaf".
 	CHECK(Path::Combine(std::string(""), std::string("leaf")) == ExpectedCombine("", "leaf"));
 	CHECK(Path::Combine(std::string(""), std::string("leaf")) == "leaf");
+}
+
+TEST_CASE("Path filesystem conversion preserves Unicode UTF-8") {
+	const std::string unicode = "Pr\xC3\xBC" "fung";
+	CHECK(Path::ToUtf8(Path::FromUtf8(unicode)) == unicode);
+	CHECK(Path::Combine(unicode, "Assets") == unicode + kSep + "Assets");
 }

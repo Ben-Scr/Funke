@@ -7,6 +7,8 @@
 #include "Gui/EditorIcons.hpp"
 #include "Gui/HierarchyDragData.hpp"
 #include "Gui/ImGuiFonts.hpp"
+#include "Gui/EditorTheme.hpp"
+#include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Gui/SpriteSliceDragPayload.hpp"
 #include "Inspector/PropertyType.hpp"
@@ -113,13 +115,13 @@ namespace Index::PropertyDrawer {
 			const Scene* resolved = nullptr;
 			const uint64_t sourceSceneId = data.SourceSceneId;
 			if (sourceSceneId != 0) {
-				SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
+				SceneManager::ForeachLoadedScene([&](const Scene& scene) {
 					if (!resolved && static_cast<uint64_t>(scene.GetSceneId()) == sourceSceneId) {
 						resolved = &scene;
 					}
 				});
 			}
-			return resolved ? resolved : SceneManager::Get().GetActiveScene();
+			return resolved ? resolved : SceneManager::GetActiveScene();
 		}
 
 		// Write a value to every entity in the span via the descriptor.
@@ -330,6 +332,42 @@ namespace Index::PropertyDrawer {
 			return AssetRegistry::GetOrCreateAssetUUID(droppedPath);
 		}
 
+		bool AcceptAssetReferencePayload(AssetKind kind, PropertyValue& outValue)
+		{
+			// Slice payloads must win over the parent texture payload so the slice name survives.
+			if (kind == AssetKind::Texture) {
+				if (const ImGuiPayload* slicePayload =
+					ImGui::AcceptDragDropPayload(k_SpriteSliceDragPayloadType))
+				{
+					if (slicePayload->DataSize == sizeof(SpriteSliceDragPayload)) {
+						const auto* p = static_cast<const SpriteSliceDragPayload*>(slicePayload->Data);
+						const std::string texturePath(p->TexturePath);
+						const std::string sliceName(p->SliceName);
+						if (!texturePath.empty()) {
+							const uint64_t assetId = AssetRegistry::GetOrCreateAssetUUID(texturePath);
+							if (assetId != 0 && AssetRegistry::GetKind(assetId) == AssetKind::Texture) {
+								outValue.UIntValue = assetId;
+								outValue.StringValue = sliceName;
+								return true;
+							}
+						}
+					}
+				}
+			}
+
+			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
+				const uint64_t assetId = ResolveDroppedAssetId(payload);
+				if (assetId != 0 && AssetRegistry::GetKind(assetId) == kind) {
+					outValue.UIntValue = assetId;
+					// Plain texture drops must clear stale slice UVs from the previous reference.
+					outValue.StringValue.clear();
+					return true;
+				}
+			}
+
+			return false;
+		}
+
 		// ── Per-type drawers ─────────────────────────────────────────
 
 		bool DrawBool(std::span<const Entity> entities, const PropertyDescriptor& d) {
@@ -339,7 +377,7 @@ namespace Index::PropertyDrawer {
 			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
 			if (!uniform) ImGui::PushItemFlag(static_cast<ImGuiItemFlags>(kMixedValueFlag), true);
 			bool tmp = v.BoolValue;
-			const bool changed = ImGui::Checkbox("##Value", &tmp);
+			const bool changed = ImGuiUtils::Switch("##Value", &tmp, !uniform);
 			if (!uniform) ImGui::PopItemFlag();
 			ImGui::PopID();
 			if (changed) {
@@ -505,20 +543,8 @@ namespace Index::PropertyDrawer {
 			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
 			bool changed = false;
 			if (d.Metadata.HasClamp && clampMax > clampMin) {
-				// SliderFloat + InputFloat combo for [ClampValue] fields; DragFloat path stays for unbounded fields.
-				const float fullW = ImGui::CalcItemWidth();
-				const float style = ImGui::GetStyle().ItemInnerSpacing.x;
-				const float inputW = std::min(80.0f, fullW * 0.30f);
-				const float sliderW = std::max(40.0f, fullW - inputW - style);
-				ImGui::SetNextItemWidth(sliderW);
-				changed |= ImGui::SliderFloat("##Slider", &tmp, clampMin, clampMax,
-					uniform ? "%.3f" : "-");
-				ImGui::SameLine(0.0f, style);
-				ImGui::SetNextItemWidth(inputW);
-				changed |= ImGui::InputFloat("##Value", &tmp, 0.0f, 0.0f, "%.3f",
-					ImGuiInputTextFlags_CharsDecimal);
-				if (tmp < clampMin) tmp = clampMin;
-				if (tmp > clampMax) tmp = clampMax;
+				// [ClampValue] fields: one fill-bar drag (double-click to type); unbounded fields keep plain DragFloat.
+				changed = ImGuiUtils::FillDragFloat("##Value", &tmp, clampMin, clampMax, uniform ? "%.3f" : "-");
 			}
 			else {
 				const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 0.1f;
@@ -621,22 +647,17 @@ namespace Index::PropertyDrawer {
 			const float componentSpacing = style.ItemInnerSpacing.x;
 			const float componentWidth = std::max(1.0f,
 				(fullWidth - componentSpacing * static_cast<float>(N - 1)) / static_cast<float>(N));
-			// Each channel is prefixed with its axis name (Transform-style); no +/- steppers.
+			// Axis letter is drawn inside each channel field (Transform-style); no +/- steppers.
 			static constexpr const char* axisLabels[4] = { "X", "Y", "Z", "W" };
 			bool any = false;
 			for (int c = 0; c < static_cast<int>(N); ++c) {
 				if (c > 0) ImGui::SameLine(0.0f, componentSpacing);
 				ImGui::PushID(c);
-				ImGui::AlignTextToFramePadding();
-				ImGui::TextUnformatted(axisLabels[c]);
-				ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
-				const float channelWidth = std::max(1.0f, componentWidth
-					- ImGui::CalcTextSize(axisLabels[c]).x - style.ItemInnerSpacing.x);
 				const float pre = values[c];
 				float channel = pre;
 				const char* fmt = mixed[c] ? "-" : "%.3f";
-				ImGui::SetNextItemWidth(channelWidth);
-				const bool channelChanged = ImGui::DragFloat("##c", &channel, speed, 0.0f, 0.0f, fmt);
+				const bool channelChanged = ImGuiUtils::AxisDragFloat("##c", c, axisLabels[c], &channel,
+					componentWidth, speed, fmt);
 				if (channelChanged && channel != pre) {
 					WriteFloatChannel(entities, d, static_cast<std::size_t>(c), channel);
 					any = true;
@@ -1080,38 +1101,7 @@ namespace Index::PropertyDrawer {
 						ReferencePicker::CollectAssetsByKind(kind, includeSlices), style);
 				},
 				[kind](PropertyValue& outValue) {
-					// Check sprite-slice payload before ASSET_BROWSER_ITEM so a slice drag sets both UUID and slice name rather than falling into the texture-only branch.
-					if (kind == AssetKind::Texture) {
-						if (const ImGuiPayload* slicePayload =
-							ImGui::AcceptDragDropPayload(k_SpriteSliceDragPayloadType))
-						{
-							if (slicePayload->DataSize == sizeof(SpriteSliceDragPayload)) {
-								const auto* p = static_cast<const SpriteSliceDragPayload*>(slicePayload->Data);
-								const std::string texturePath(p->TexturePath);
-								const std::string sliceName(p->SliceName);
-								if (!texturePath.empty()) {
-									const uint64_t assetId = AssetRegistry::GetOrCreateAssetUUID(texturePath);
-									if (assetId != 0 && AssetRegistry::GetKind(assetId) == AssetKind::Texture) {
-										outValue.UIntValue = assetId;
-										outValue.StringValue = sliceName;
-										return true;
-									}
-								}
-							}
-						}
-					}
-					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
-						const uint64_t assetId = ResolveDroppedAssetId(payload);
-						if (assetId != 0 && AssetRegistry::GetKind(assetId) == kind) {
-							outValue.UIntValue = assetId;
-							// Clear any stale slice from a previous drop on the
-							// same field so the slice-aware setter reverts the
-							// entity to "full texture" rendering.
-							outValue.StringValue.clear();
-							return true;
-						}
-					}
-					return false;
+					return AcceptAssetReferencePayload(kind, outValue);
 				},
 				/*showLocateButton=*/true,
 				[kind](const PropertyValue& v) {
@@ -1204,7 +1194,7 @@ namespace Index::PropertyDrawer {
 							const Scene* scene = ResolveHierarchyPayloadScene(*data);
 							if (scene && scene->IsValid(handle)) {
 								const ComponentInfo* info = nullptr;
-								SceneManager::Get().GetComponentRegistry().ForEachComponentInfo(
+								SceneManager::GetComponentRegistry().ForEachComponentInfo(
 									[&](const std::type_index&, const ComponentInfo& candidate) {
 										if (info) return;
 										if (candidate.displayName == componentTypeName) info = &candidate;
@@ -1261,10 +1251,10 @@ namespace Index::PropertyDrawer {
 			}
 
 			const ImGuiStyle& style = ImGui::GetStyle();
+			// Danger colours push 4 (incl. text); keep the count at 3 like the FrameBg branch.
 			if (missing) {
-				ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.30f, 0.12f, 0.12f, 1.0f));
-				ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.38f, 0.16f, 0.16f, 1.0f));
-				ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.26f, 0.10f, 0.10f, 1.0f));
+				EditorUI::PushButtonColors(EditorUI::ButtonVariant::Danger);
+				ImGui::PopStyleColor();
 			}
 			else {
 				ImGui::PushStyleColor(ImGuiCol_Button,        ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
@@ -1384,7 +1374,7 @@ namespace Index::PropertyDrawer {
 				const float img = ImGui::GetFontSize();
 				clicked = ImGui::ImageButton(id,
 					static_cast<ImTextureID>(static_cast<intptr_t>(icon)),
-					ImVec2(img, img), ImVec2(0, 1), ImVec2(1, 0));
+					ImVec2(img, img), ImVec2(0, 1), ImVec2(1, 0), ImVec4(0, 0, 0, 0), ImGui::GetStyleColorVec4(ImGuiCol_Text));
 			}
 			else {
 				clicked = ImGui::Button(id, ImVec2(size, size));
@@ -1461,7 +1451,7 @@ namespace Index::PropertyDrawer {
 			switch (itemType) {
 			case PropertyType::Bool: {
 				bool b = item.BoolValue;
-				if (ImGui::Checkbox("##v", &b)) { item.BoolValue = b; changed = true; }
+				if (ImGuiUtils::Switch("##v", &b)) { item.BoolValue = b; changed = true; }
 				break;
 			}
 			case PropertyType::Int8:
@@ -1682,9 +1672,9 @@ namespace Index::PropertyDrawer {
 				headerLabel += d.Name;
 				// Framed = an always-visible rounded header bar (clearer than a bare tree
 				// node); dark-gray colors keep it on-theme rather than the accent Header.
-				ImGui::PushStyleColor(ImGuiCol_Header,        IM_COL32(58, 58, 64, 255));
-				ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(70, 70, 78, 255));
-				ImGui::PushStyleColor(ImGuiCol_HeaderActive,  IM_COL32(66, 66, 74, 255));
+				ImGui::PushStyleColor(ImGuiCol_Header,        ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
+				ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImGui::GetStyleColorVec4(ImGuiCol_FrameBgHovered));
+				ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImGui::GetStyleColorVec4(ImGuiCol_FrameBgActive));
 				const bool fieldOpen = ImGui::TreeNodeEx(headerLabel.c_str(),
 					ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen);
 				ImGui::PopStyleColor(3);
@@ -1725,9 +1715,9 @@ namespace Index::PropertyDrawer {
 			};
 			const ImU32 colNormal    = scaleRGB(frameBgCol, 0.78f);
 			const ImU32 colHovered   = scaleRGB(frameBgCol, 0.90f);
-			// Light-gray selection (the theme's accent Header color doesn't fit the dark theme).
-			const ImU32 colSelected   = IM_COL32(108, 108, 114, 115);
-			const ImU32 colSelBorder  = IM_COL32(165, 165, 172, 220);
+			// Selected list rows use the same accent tint as hierarchy selection.
+			const ImU32 colSelected   = ImGui::GetColorU32(EditorTheme::Colors::RowSelection());
+			const ImU32 colSelBorder  = ImGui::GetColorU32(EditorTheme::Colors::AssetTileSelectionBorder());
 			const ImU32 colCardBorder = ImGui::GetColorU32(ImGuiCol_Border);   // crisp card edge vs the child bg
 			const float rounding = std::max(style.FrameRounding, 3.0f);
 			const float rowH = ImGui::GetFrameHeight();
@@ -2010,6 +2000,29 @@ namespace Index::PropertyDrawer {
 
 	} // namespace
 
+	bool AcceptTextureReferenceDropOnLastItem(std::span<const Entity> entities,
+		const PropertyDescriptor& descriptor)
+	{
+		if (entities.empty() || descriptor.Type != PropertyType::TextureRef
+			|| descriptor.Metadata.ReadOnly
+			|| !EvaluateEnabledIf(entities, descriptor))
+		{
+			return false;
+		}
+		if (!ImGui::BeginDragDropTarget()) {
+			return false;
+		}
+
+		PropertyValue dropped;
+		dropped.Type = descriptor.Type;
+		const bool changed = AcceptAssetReferencePayload(AssetKind::Texture, dropped);
+		if (changed) {
+			WriteAll(entities, descriptor, dropped);
+		}
+		ImGui::EndDragDropTarget();
+		return changed;
+	}
+
 	bool Draw(std::span<const Entity> entities, const PropertyDescriptor& d,
 		const std::string& fieldKey)
 	{
@@ -2145,16 +2158,32 @@ namespace Index::PropertyDrawer {
 		bool sectionVisible = false;
 		for (const PropertyDescriptor& desc : descriptors) {
 			const bool startsSection = !desc.Metadata.HeaderContent.empty();
+			// A section whose first field is a bool "Enabled" folds that field into a header switch.
+			const bool sectionHasToggle = startsSection && desc.Type == PropertyType::Bool
+				&& (desc.DisplayName == "Enabled" || desc.Name == "Enabled" || desc.Name == "enabled");
 			if (startsSection) {
 				if (sectionOpen) {
 					sectionOpen = false;
 				}
-				ImGui::Spacing();
 				const std::string headerLabel = desc.Metadata.HeaderContent
 					+ "##" + fieldKeyPrefix + "_" + desc.Metadata.HeaderContent;
-				sectionVisible = ImGui::CollapsingHeader(
-					headerLabel.c_str(),
-					ImGuiTreeNodeFlags_DefaultOpen);
+
+				bool enabled = true;
+				bool enabledMixed = false;
+				if (sectionHasToggle) {
+					PropertyValue v;
+					enabledMixed = !SampleUniform(entities, desc, v);
+					enabled = v.BoolValue;
+				}
+				bool enabledChanged = false;
+				sectionVisible = EditorUI::SectionHeader(headerLabel.c_str(), true,
+					sectionHasToggle ? &enabled : nullptr, &enabledChanged, enabledMixed);
+				if (enabledChanged) {
+					PropertyValue out;
+					out.Type = PropertyType::Bool;
+					out.BoolValue = enabled;
+					WriteAll(entities, desc, out);
+				}
 
 				if (desc.Metadata.ResetSectionFn) {
 					const std::string popupId = "##ctx_" + headerLabel;
@@ -2178,6 +2207,11 @@ namespace Index::PropertyDrawer {
 			}
 
 			if (sectionOpen && !sectionVisible) {
+				continue;
+			}
+
+			// The section switch replaces the "Enabled" row.
+			if (sectionHasToggle) {
 				continue;
 			}
 

@@ -39,13 +39,17 @@ namespace Index {
 
 			const std::filesystem::path projectDirectory = executableDirectory / ".." / ".." / ".." / "Index-PackageTool";
 			for (const std::string& configuration : GetPreferredPackageToolConfigurations()) {
-				const std::filesystem::path outputDirectory = projectDirectory / "bin" / configuration / "net9.0";
+				const std::filesystem::path outputDirectory = projectDirectory / "bin" / configuration / "net10.0";
 				candidates.push_back(outputDirectory / GetPackageToolExecutableName());
 				candidates.push_back(outputDirectory / "Index-PackageTool.dll");
 			}
 
 			candidates.push_back(executableDirectory / GetPackageToolExecutableName());
 			candidates.push_back(executableDirectory / "Index-PackageTool.dll");
+			const std::filesystem::path siblingOutput =
+				executableDirectory.parent_path() / "Index-PackageTool";
+			candidates.push_back(siblingOutput / GetPackageToolExecutableName());
+			candidates.push_back(siblingOutput / "Index-PackageTool.dll");
 			return candidates;
 		}
 
@@ -123,7 +127,6 @@ namespace Index {
 		}
 		else {
 			// Try building the tool
-			auto exeDir = std::filesystem::path(Path::ExecutableDir());
 			auto projectDir = exeDir / ".." / ".." / ".." / "Index-PackageTool";
 			if (std::filesystem::exists(projectDir / "Index-PackageTool.csproj")) {
 				IDX_CORE_INFO_TAG("PackageManager", "Building package tool...");

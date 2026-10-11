@@ -12,6 +12,7 @@ namespace Index {
 	public:
 		/// Detect all available editors on the system.
 		static void DetectEditors();
+		static void RefreshEditors();
 
 		/// Get the list of detected editors.
 		static const std::vector<ExternalEditorInfo>& GetAvailableEditors() { return s_Editors; }

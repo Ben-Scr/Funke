@@ -2,6 +2,7 @@
 
 #include "Core/CrashReporter.hpp"
 #include "Core/Log.hpp"
+#include "Core/BuildIdentity.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/SpecialFolder.hpp"
 
@@ -14,6 +15,10 @@
 #ifdef IDX_PLATFORM_WINDOWS
 #  include <windows.h>
 #  include <dbghelp.h>
+#  include <intrin.h>
+#  include <csignal>
+#  include <cstdlib>
+#  include <exception>
 #  pragma comment(lib, "dbghelp.lib")
 #else
 #  include <csignal>
@@ -32,12 +37,28 @@ namespace Index {
 
 #ifdef IDX_PLATFORM_WINDOWS
 		LPTOP_LEVEL_EXCEPTION_FILTER g_PreviousFilter = nullptr;
+		std::terminate_handler g_PreviousTerminate = nullptr;
+		_purecall_handler g_PreviousPurecall = nullptr;
+		_invalid_parameter_handler g_PreviousInvalidParameter = nullptr;
+		using SignalFn = void(__cdecl*)(int);
+		SignalFn g_PreviousAbortSignal = SIG_DFL;
+
+		// Synthetic exception codes so dumps from CRT failure paths are recognisable in a debugger.
+		constexpr DWORD k_TerminateCode = 0xE0000101;
+		constexpr DWORD k_PurecallCode = 0xE0000102;
+		constexpr DWORD k_InvalidParameterCode = 0xE0000103;
+		constexpr DWORD k_AbortCode = 0xE0000104;
 #endif
 
 		// Reentry guard. A crash inside the crash handler must not
 		// recursively re-enter — we'd corrupt the dump and likely
 		// deadlock on whatever invariant tripped originally.
 		std::atomic<bool> g_HandlerEntered{ false };
+
+		std::string PathToUtf8(const std::filesystem::path& path) {
+			const auto value = path.u8string();
+			return std::string(reinterpret_cast<const char*>(value.data()), value.size());
+		}
 
 		std::string ResolveExecutableStem() {
 #ifdef IDX_PLATFORM_WINDOWS
@@ -46,7 +67,7 @@ namespace Index {
 			if (length == 0 || length == MAX_PATH) {
 				return "Index";
 			}
-			return std::filesystem::path(buffer).stem().string();
+			return PathToUtf8(std::filesystem::path(buffer).stem());
 #else
 			char buffer[4096];
 			ssize_t length = ::readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
@@ -78,13 +99,17 @@ namespace Index {
 				if (base.empty()) {
 					return {};
 				}
+#ifdef IDX_PLATFORM_WINDOWS
+				std::filesystem::path dir = std::filesystem::u8path(base) / L"Index" / L"CrashDumps";
+#else
 				std::filesystem::path dir = std::filesystem::path(base) / "Index" / "CrashDumps";
+#endif
 				std::error_code ec;
 				std::filesystem::create_directories(dir, ec);
 				if (ec) {
 					return {};
 				}
-				return dir.string();
+				return PathToUtf8(dir);
 			}
 			catch (...) {
 				return {};
@@ -110,11 +135,12 @@ namespace Index {
 					g_DumpDirectory = ResolveDumpDirectory();
 				}
 				if (!g_DumpDirectory.empty()) {
-					dumpPath = (std::filesystem::path(g_DumpDirectory)
-						/ (g_AppStem + "_" + FormatTimestamp() + ".dmp")).string();
+					const std::filesystem::path nativeDumpPath = std::filesystem::u8path(g_DumpDirectory)
+						/ std::filesystem::u8path(g_AppStem + "_" + IDX_BUILD_ID + "_" + FormatTimestamp() + ".dmp");
+					dumpPath = PathToUtf8(nativeDumpPath);
 
-					file = CreateFileA(
-						dumpPath.c_str(), GENERIC_WRITE, 0, nullptr,
+					file = CreateFileW(
+						nativeDumpPath.c_str(), GENERIC_WRITE, 0, nullptr,
 						CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 
 					if (file != INVALID_HANDLE_VALUE) {
@@ -167,6 +193,28 @@ namespace Index {
 			// if WER is configured, and the process dies normally.
 			return g_PreviousFilter ? g_PreviousFilter(exceptionInfo) : EXCEPTION_CONTINUE_SEARCH;
 		}
+
+		// std::terminate, pure virtual calls, CRT parameter checks and abort() end the process
+		// without a structured exception, so the filter above would never see them.
+		[[noreturn]] void DumpAndTerminate(DWORD code) {
+			CONTEXT context{};
+			RtlCaptureContext(&context);
+			EXCEPTION_RECORD record{};
+			record.ExceptionCode = code;
+			record.ExceptionFlags = EXCEPTION_NONCONTINUABLE;
+			record.ExceptionAddress = _ReturnAddress();
+			EXCEPTION_POINTERS pointers{ &record, &context };
+			ExceptionFilter(&pointers);
+			TerminateProcess(GetCurrentProcess(), code);
+			std::abort();
+		}
+
+		void OnTerminate() { DumpAndTerminate(k_TerminateCode); }
+		void __cdecl OnPurecall() { DumpAndTerminate(k_PurecallCode); }
+		void __cdecl OnInvalidParameter(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, uintptr_t) {
+			DumpAndTerminate(k_InvalidParameterCode);
+		}
+		void __cdecl OnAbortSignal(int) { DumpAndTerminate(k_AbortCode); }
 #else
 		void SignalHandler(int signal) {
 			bool expected = false;
@@ -220,6 +268,10 @@ namespace Index {
 
 #ifdef IDX_PLATFORM_WINDOWS
 		g_PreviousFilter = SetUnhandledExceptionFilter(&ExceptionFilter);
+		g_PreviousTerminate = std::set_terminate(&OnTerminate);
+		g_PreviousPurecall = _set_purecall_handler(&OnPurecall);
+		g_PreviousInvalidParameter = _set_invalid_parameter_handler(&OnInvalidParameter);
+		g_PreviousAbortSignal = std::signal(SIGABRT, &OnAbortSignal);
 #else
 		std::signal(SIGSEGV, &SignalHandler);
 		std::signal(SIGABRT, &SignalHandler);
@@ -248,6 +300,10 @@ namespace Index {
 #ifdef IDX_PLATFORM_WINDOWS
 		SetUnhandledExceptionFilter(g_PreviousFilter);
 		g_PreviousFilter = nullptr;
+		std::set_terminate(g_PreviousTerminate);
+		_set_purecall_handler(g_PreviousPurecall);
+		_set_invalid_parameter_handler(g_PreviousInvalidParameter);
+		std::signal(SIGABRT, g_PreviousAbortSignal == SIG_ERR ? SIG_DFL : g_PreviousAbortSignal);
 #else
 		std::signal(SIGSEGV, SIG_DFL);
 		std::signal(SIGABRT, SIG_DFL);

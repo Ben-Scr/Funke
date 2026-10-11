@@ -3,6 +3,9 @@
 #include "Components/ComponentUtils.hpp"
 #include "Components/General/EntityMetaDataComponent.hpp"
 #include "Core/Export.hpp"
+// Only entt::registry* is named below, so the forward declarations suffice.
+#include <entt/entity/fwd.hpp>
+#include <memory>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -40,6 +43,7 @@ namespace Index {
 	class INDEX_API Entity {
 		friend class Scene;
 		friend class EntityHelper;
+		friend bool operator==(const Entity& a, const Entity& b);
 
 	public:
 		static Entity Create();
@@ -71,6 +75,7 @@ namespace Index {
 		// to dispatch scene-scoped logic through an Entity API but have no real handle.
 		static Entity MakeScenePlaceholder(Scene& scene);
 
+		// Component references are borrowed and may be invalidated by structural registry changes or Scene destruction.
 
 		// ── Component branch (ECS data — Transform2D, SpriteRenderer, …) ───
 		template<typename TComponent, typename... Args>
@@ -174,9 +179,11 @@ namespace Index {
 		bool IsRuntime() const;
 
 		EntityHandle GetHandle() const;
-		Scene* GetScene() { return m_Scene; }
-		const Scene* GetScene() const { return m_Scene; }
-		bool IsValid() const { return m_Registry && m_EntityHandle != entt::null && m_Registry->valid(m_EntityHandle); }
+		Scene* GetScene() { return IsSceneAlive() ? m_Scene : nullptr; }
+		const Scene* GetScene() const { return IsSceneAlive() ? m_Scene : nullptr; }
+		entt::registry* GetRegistry() { return IsSceneAlive() ? m_Registry : nullptr; }
+		const entt::registry* GetRegistry() const { return IsSceneAlive() ? m_Registry : nullptr; }
+		bool IsValid() const;
 
 		void SetStatic(bool isStatic);
 		void SetEnabled(bool enabled);
@@ -194,6 +201,13 @@ namespace Index {
 		bool IsAncestorOf(Entity other) const;
 
 	private:
+		struct LifetimeToken {};
+
+		bool IsSceneAlive() const { return m_Scene != nullptr && !m_SceneLifetime.expired(); }
+		bool HasSameSceneLifetime(const Entity& other) const {
+			return !m_SceneLifetime.owner_before(other.m_SceneLifetime)
+				&& !other.m_SceneLifetime.owner_before(m_SceneLifetime);
+		}
 		void EnsureValid(const char* message) const;
 
 		explicit Entity(EntityHandle e, Scene& scene);
@@ -201,9 +215,12 @@ namespace Index {
 		EntityHandle    m_EntityHandle;
 		entt::registry* m_Registry;
 		Scene*          m_Scene;
+		std::weak_ptr<LifetimeToken> m_SceneLifetime;
 	};
 
-	inline bool operator==(const Entity& a, const Entity& b) { return a.GetHandle() == b.GetHandle(); }
+	inline bool operator==(const Entity& a, const Entity& b) {
+		return a.HasSameSceneLifetime(b) && a.m_EntityHandle == b.m_EntityHandle;
+	}
 	inline bool operator!=(const Entity& a, const Entity& b) { return !(a == b); }
 }
 

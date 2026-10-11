@@ -96,6 +96,7 @@ namespace Index {
 		}
 
 		std::string GetClipboardString() const;
+		// Raw GLFW window coordinates; gameplay uses Input::GetMousePosition().
 		Vec2 GetCursorPosition() const;
 
 
@@ -137,20 +138,66 @@ namespace Index {
 		static Window* GetActiveWindow() { return s_ActiveWindow; }
 		static Viewport* GetMainViewport() { return s_MainViewport.get(); }
 
-		// Panel pixel rect (OS-window space) published by the editor each frame so UI hit-tests use game-panel coords instead of OS-window coords. Inactive in standalone builds.
+		// Ownership prevents runtime aspect resyncs from erasing the editor Game View region.
+		enum class UIRegionSource : uint8_t {
+			None,
+			Editor,
+			AspectLock
+		};
+
 		struct UIRegion {
 			int OffsetX = 0;
 			int OffsetY = 0;
 			int Width = 0;
 			int Height = 0;
+			Vec2 WindowToRegionScale{ 1.0f, 1.0f };
+			UIRegionSource Source = UIRegionSource::None;
 			bool IsActive() const { return Width > 0 && Height > 0; }
+			Vec2 ToLocalPosition(Vec2 windowPosition) const {
+				return {
+					windowPosition.x * WindowToRegionScale.x - static_cast<float>(OffsetX),
+					windowPosition.y * WindowToRegionScale.y - static_cast<float>(OffsetY)
+				};
+			}
 		};
 
 		static UIRegion GetUIRegion() { return s_UIRegion; }
-		static void SetUIRegion(int x, int y, int w, int h) {
-			s_UIRegion = UIRegion{ x, y, w, h };
+		static void SetUIRegion(int x, int y, int w, int h, Vec2 windowToRegionScale = { 1.0f, 1.0f }) {
+			s_UIRegion = UIRegion{ x, y, w, h, windowToRegionScale, UIRegionSource::Editor };
 		}
 		static void ClearUIRegion() { s_UIRegion = UIRegion{}; }
+		static UIRegion ResolveAspectLockUIRegion(float aspect, UIRegion current, UIRegion candidate) {
+			if (aspect > 0.0f) {
+				candidate.Source = UIRegionSource::AspectLock;
+				return candidate;
+			}
+			if (current.Source == UIRegionSource::AspectLock) {
+				return {};
+			}
+			return current;
+		}
+		static void PublishAspectLockUIRegion(float aspect, UIRegion region) {
+			s_UIRegion = ResolveAspectLockUIRegion(aspect, s_UIRegion, region);
+		}
+		static Vec2 CalculateWindowToFramebufferScale(Vec2Int windowSize, Vec2Int framebufferSize) {
+			return {
+				windowSize.x > 0 && framebufferSize.x > 0
+					? static_cast<float>(framebufferSize.x) / static_cast<float>(windowSize.x) : 1.0f,
+				windowSize.y > 0 && framebufferSize.y > 0
+					? static_cast<float>(framebufferSize.y) / static_cast<float>(windowSize.y) : 1.0f
+			};
+		}
+		static Vec2 MapToViewportLocalPosition(Vec2 windowPosition, const UIRegion& region,
+			Vec2 windowToFramebufferScale) {
+			if (region.IsActive()) {
+				return region.ToLocalPosition(windowPosition);
+			}
+			return {
+				windowPosition.x * windowToFramebufferScale.x,
+				windowPosition.y * windowToFramebufferScale.y
+			};
+		}
+		static Vec2 ToViewportLocalPosition(Vec2 windowPosition);
 
 		static void SetTitlebarCaptionRect(int x, int y, int w, int h);
 		static void AddTitlebarNonClientRect(int x, int y, int w, int h);
@@ -208,6 +255,7 @@ namespace Index {
 
 		static std::unique_ptr<Viewport> s_MainViewport;
 		static UIRegion s_UIRegion;
+		static Vec2 s_WindowToFramebufferScale;
 		static bool s_IsVsync;
 		static bool s_IsInitialized;
 

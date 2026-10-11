@@ -6,6 +6,10 @@
 #include "Scene/ComponentInfo.hpp"
 #include "Scene/DynamicComponentStorage.hpp"
 
+#include <entt/core/type_info.hpp>
+#include <entt/entity/registry.hpp>
+
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -296,44 +300,43 @@ namespace Index {
             info.rawSize           = size;
             info.dynamicStorage    = storagePtr;
             info.has = [storagePtr](Entity e) -> bool {
-                return e.IsValid() && storagePtr->Contains(e.GetHandle());
+                return e.IsValid() && storagePtr->Contains(*e.GetRegistry(), e.GetHandle());
             };
             info.add = [storagePtr](Entity e) {
-                if (e.IsValid()) storagePtr->Add(e.GetHandle());
+                if (e.IsValid()) storagePtr->Add(*e.GetRegistry(), e.GetHandle());
             };
             info.remove = [storagePtr](Entity e) {
-                if (e.IsValid()) storagePtr->Remove(e.GetHandle());
+                if (e.IsValid()) storagePtr->Remove(*e.GetRegistry(), e.GetHandle());
             };
             info.getRaw = [storagePtr](Entity e) -> void* {
                 if (!e.IsValid()) return nullptr;
-                return storagePtr->Get(e.GetHandle());
+                return storagePtr->Get(*e.GetRegistry(), e.GetHandle());
             };
-            info.emplaceFromBytes = [storagePtr](entt::registry&, EntityHandle e,
+            info.emplaceFromBytes = [storagePtr](entt::registry& registry, EntityHandle e,
                 const void* bytes, size_t byteSize) {
                 IDX_CORE_ASSERT(byteSize == storagePtr->ElementSize(),
                     IndexErrorCode::InvalidValue,
                     "Dynamic component emplaceFromBytes size mismatch");
-                storagePtr->EmplaceOrReplace(e, bytes);
+                storagePtr->EmplaceOrReplace(registry, e, bytes);
             };
-            info.defaultEmplace = [storagePtr](entt::registry&, EntityHandle e) {
-                storagePtr->Add(e);
+            info.defaultEmplace = [storagePtr](entt::registry& registry, EntityHandle e) {
+                storagePtr->Add(registry, e);
             };
             info.copyTo = [storagePtr](Entity src, Entity dst) {
                 if (!src.IsValid() || !dst.IsValid()) return;
-                const void* srcBytes = storagePtr->Get(src.GetHandle());
+                const void* srcBytes = storagePtr->Get(*src.GetRegistry(), src.GetHandle());
                 if (!srcBytes) return;
-                storagePtr->EmplaceOrReplace(dst.GetHandle(), srcBytes);
+                storagePtr->EmplaceOrReplace(*dst.GetRegistry(), dst.GetHandle(), srcBytes);
             };
             info.fillRawPointers = [storagePtr](entt::registry& reg, void** outPointers,
                 int maxRows, int enableFilter) -> int {
-                // Snapshot before iterating: filter checks can fire on_construct/on_destroy hooks that mutate storage.
-                std::vector<EntityHandle> entitiesSnapshot = storagePtr->Entities();
-                int count = 0;
-                for (EntityHandle e : entitiesSnapshot) {
+				auto view = storagePtr->GetSceneView(reg);
+				int count = 0;
+				for (EntityHandle e : view.Entities()) {
                     if (enableFilter == 1 && reg.all_of<DisabledTag>(e)) continue;
                     if (enableFilter == 2 && !reg.all_of<DisabledTag>(e)) continue;
                     if (outPointers && count < maxRows) {
-                        outPointers[count] = storagePtr->Get(e);
+                        outPointers[count] = view.Get(e);
                     }
                     ++count;
                 }
@@ -342,7 +345,7 @@ namespace Index {
 
             info.serialize = [storagePtr](Entity e) -> Json::Value {
                 if (!e.IsValid() || !storagePtr) return Json::Value::MakeObject();
-                const void* bytes = storagePtr->Get(e.GetHandle());
+                const void* bytes = storagePtr->Get(*e.GetRegistry(), e.GetHandle());
                 if (!bytes || storagePtr->ElementSize() == 0) {
                     return Json::Value::MakeObject();
                 }
@@ -360,28 +363,45 @@ namespace Index {
                 return out;
             };
 
-            info.deserialize = [storagePtr](Entity e, const Json::Value& v) {
+            info.deserialize = [storagePtr, componentName = std::string(serializedName)](Entity e, const Json::Value& v) {
                 if (!e.IsValid() || !storagePtr) return;
                 if (!v.IsObject()) return;
                 const Json::Value* dataNode = v.FindMember("data");
                 if (!dataNode || !dataNode->IsString()) return;
                 const std::string hex = dataNode->AsStringOr();
                 const std::size_t byteCount = hex.size() / 2;
-                if (byteCount == 0 || byteCount != storagePtr->ElementSize()) return;
-                std::vector<std::uint8_t> bytes(byteCount);
+                const std::size_t elementSize = storagePtr->ElementSize();
+                if (byteCount == 0 || elementSize == 0) return;
+                if (byteCount != elementSize) {
+                    // The C# struct layout changed since this value was saved. Previously this
+                    // returned silently, leaving the component zeroed — and the next save made
+                    // the loss permanent. Keep the overlapping prefix instead: with sequential
+                    // layout, fields appended to the end (the common edit) keep their offsets,
+                    // so existing values survive and new fields start at their default (zero).
+                    static std::unordered_set<std::string> s_WarnedLayoutChanges;
+                    if (s_WarnedLayoutChanges.insert(componentName).second) {
+                        IDX_CORE_WARN_TAG("ComponentRegistry",
+                            "Component '{}' was saved with {} bytes but is now {} bytes. Kept the first {} bytes; "
+                            "fields that were reordered, removed or inserted before existing fields may hold wrong values "
+                            "— review this component's values before saving.",
+                            componentName, byteCount, elementSize, (std::min)(byteCount, elementSize));
+                    }
+                }
+                std::vector<std::uint8_t> bytes(elementSize, 0);
                 auto fromHex = [](char c) -> int {
                     if (c >= '0' && c <= '9') return c - '0';
                     if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
                     if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
                     return -1;
                 };
-                for (std::size_t i = 0; i < byteCount; ++i) {
+                const std::size_t copyCount = (std::min)(byteCount, elementSize);
+                for (std::size_t i = 0; i < copyCount; ++i) {
                     const int hi = fromHex(hex[i * 2 + 0]);
                     const int lo = fromHex(hex[i * 2 + 1]);
                     if (hi < 0 || lo < 0) return; // malformed hex — leave zero-init
                     bytes[i] = static_cast<std::uint8_t>((hi << 4) | lo);
                 }
-                storagePtr->EmplaceOrReplace(e.GetHandle(), bytes.data());
+                storagePtr->EmplaceOrReplace(*e.GetRegistry(), e.GetHandle(), bytes.data());
             };
 
             if (m_byTypeId.empty()) m_byTypeId.push_back(nullptr);
@@ -405,11 +425,20 @@ namespace Index {
         }
 
         // Dynamics live outside EnTT pools so on_destroy won't fire; call before m_Registry.destroy().
-        void ScrubEntity(EntityHandle e) {
+        void ScrubEntity(const entt::registry& registry, EntityHandle e) {
             for (auto& [typeIdU32, storage] : m_dynamicStorages) {
                 (void)typeIdU32;
                 if (storage) {
-                    storage->Remove(e);
+                    storage->Remove(registry, e);
+                }
+            }
+        }
+
+        void ScrubRegistry(const entt::registry& registry) {
+            for (auto& [typeIdU32, storage] : m_dynamicStorages) {
+                (void)typeIdU32;
+                if (storage) {
+                    storage->Clear(registry);
                 }
             }
         }

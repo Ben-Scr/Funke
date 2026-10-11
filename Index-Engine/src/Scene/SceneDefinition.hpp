@@ -9,11 +9,12 @@
 #include <tuple>
 #include <type_traits>
 #include "Core/Export.hpp"
+#include "Core/Exceptions.hpp"
 #include "Core/Log.hpp"
 
 namespace Index {
     class Scene;
-    class ISystem;
+    class SceneSystem;
 
     class INDEX_API SceneDefinition {
         friend class Scene;
@@ -27,8 +28,8 @@ namespace Index {
 
         template<typename TSystem, typename... Args>
         SceneDefinition& AddSystem(Args&&... args) {
-            static_assert(std::is_base_of<ISystem, TSystem>::value,
-                "TSystem must derive from ISystem");
+            static_assert(std::is_base_of<SceneSystem, TSystem>::value,
+                "TSystem must derive from SceneSystem");
 
             const std::type_index systemType = typeid(TSystem);
             if (std::find(m_SystemTypes.begin(), m_SystemTypes.end(), systemType) != m_SystemTypes.end()) {
@@ -62,7 +63,16 @@ namespace Index {
 
 
         SceneDefinition& OnLoad(std::function<void(Scene&)> callback) {
-            m_LoadCallbacks.push_back(callback);
+            m_LoadCallbacks.push_back(std::move(callback));
+            return *this;
+        }
+
+        SceneDefinition& OnLoadChecked(std::function<bool(Scene&)> callback) {
+            m_LoadCallbacks.emplace_back([callback = std::move(callback)](Scene& scene) {
+                if (!callback(scene)) {
+                    IDX_THROW(IndexErrorCode::LoadFailed, "Scene load callback rejected the scene");
+                }
+            });
             return *this;
         }
 
@@ -83,13 +93,18 @@ namespace Index {
             return *this;
         }
 
+        SceneDefinition& WithoutDefaultCamera2D() {
+            m_AutoCreateDefaultCamera2D = false;
+            return *this;
+        }
+
         const std::string& GetName() const { return m_Name; }
         bool IsStartupScene() const { return m_IsStartupScene; }
         bool IsPersistent() const { return m_IsPersistent; }
 
     private:
         std::string m_Name;
-        std::vector<std::function<std::unique_ptr<ISystem>()>> m_SystemFactories;
+        std::vector<std::function<std::unique_ptr<SceneSystem>()>> m_SystemFactories;
         std::vector<std::type_index> m_SystemTypes;
 
         std::vector<std::function<void(Scene&)>> m_InitializeCallbacks;
@@ -98,6 +113,7 @@ namespace Index {
 
         bool m_IsStartupScene = false;
         bool m_IsPersistent = false;
+        bool m_AutoCreateDefaultCamera2D = true;
 
         std::shared_ptr<Scene> Instantiate() const;
     };

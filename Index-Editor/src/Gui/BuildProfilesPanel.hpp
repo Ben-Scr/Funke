@@ -17,11 +17,20 @@ namespace Index {
 		void RefreshProfilesIfDirty();
 		void RescanFromDisk();
 		void RenderProfileList();
+		void RenderProfileRow(int index);
+		void RenderProfilePopups();
 		void RenderInspector();
+		void RenderPlatformTiles(IndexBuildProfile& profile);
+
+		bool HasSelection() const;
+		bool IsActiveProfile(const std::string& name) const;
+		void SetSelectedActive();
+		void RequestRenameSelected();
+		void RequestDeleteSelected();
 
 		bool CreateProfile(const std::string& name);
 		bool DuplicateSelected();
-		bool DeleteSelected();
+		bool DeletePendingProfile();
 		bool RenameSelected(const std::string& newName);
 		void SaveSelected();
 
@@ -32,12 +41,20 @@ namespace Index {
 		int  m_SelectedIndex = -1;
 		bool m_Dirty = true;
 
-		// Name-entry buffer for the "New Profile" inline form.
+		// Name-entry buffer for the "+" new-profile popup.
 		char m_NewProfileNameBuffer[128]{};
+		bool m_FocusNewProfileInput = false;
+		bool m_NewProfileFailed = false;
+		// Selected after the next rescan (new/duplicated profiles only exist on disk until then).
+		std::string m_PendingSelectName;
 		// Rename buffer — populated from the selected profile each frame
 		// the user opens the rename popup.
 		char m_RenameBuffer[128]{};
+		// Deferred opens: requests come from rows/context menus in other ID scopes than the modals.
 		bool m_OpenRenamePopup = false;
+		bool m_OpenDeletePopup = false;
+		std::string m_PendingDeleteName;
+		std::string m_PendingDeleteProjectFilePath;
 
 		// Status strip at the bottom of the panel.
 		std::string m_StatusMessage;

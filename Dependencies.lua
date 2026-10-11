@@ -113,7 +113,10 @@ Dependency["ImGui"] =
         { "%{IncludeDir.ImGui}", "%{IncludeDir.ImGui}/backends", "%{IncludeDir.GLFW}" },
         DawnLayout and DawnLayout.IncludeDirs or {}
     ),
-    Defines = DawnLayout and DawnLayout.Defines or {},
+    Defines = MergeListsForDep(
+        { "GLFW_DLL" },
+        DawnLayout and DawnLayout.Defines or {}
+    ),
     BuildProject = true
 }
 
@@ -285,8 +288,8 @@ Dependency["EngineCoreEditor"] =
     }
 }
 
--- Tracy client — populated only when IndexProfiler.Enabled. Engine.dll +
--- editor.exe + runtime.exe all attach the same Tracy client SharedLib so
+-- Tracy client — available to development configurations when IndexProfiler.Enabled.
+-- Engine.dll + editor.exe + runtime.exe attach the same Tracy client SharedLib so
 -- there's exactly one client instance per process. Header `Tracy.hpp`
 -- sees TRACY_IMPORTS on consumer side -> dllimport, matching the
 -- TRACY_EXPORTS in the Tracy project itself.

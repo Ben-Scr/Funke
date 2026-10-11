@@ -1,0 +1,125 @@
+diff --git a/src/ImGuizmo.cpp b/src/ImGuizmo.cpp
+index 60bd8d0eb269d1d8b083967d3d340e25fab61c4d..f14ed60cd899d7751a1479cd737ba46f38b563b1 100755
+--- a/src/ImGuizmo.cpp
++++ b/src/ImGuizmo.cpp
+@@ -1285,6 +1285,31 @@ namespace IMGUIZMO_NAMESPACE
+       return angle;
+    }
+ 
++   // Index patch: dark halo behind gizmo handles so they stay visible when the
++   // entity under them shares the handle's color (e.g. a blue UI panel hiding the
++   // blue/white handles). Each helper draws a slightly larger/thicker black shape
++   // that the colored primitive is then painted over — the same outline trick the
++   // bound anchors already use. This whole submodule is kept dirty, never committed.
++   static const ImU32 k_GizmoOutlineColor = IM_COL32(0, 0, 0, 200);
++   static const float k_GizmoOutlineExtra = 2.0f; // extra px added to thickness / diameter
++
++   static void GizmoOutlineLine(ImDrawList* dl, const ImVec2& a, const ImVec2& b, float thickness)
++   {
++      dl->AddLine(a, b, k_GizmoOutlineColor, thickness + k_GizmoOutlineExtra);
++   }
++   static void GizmoOutlineCircleFilled(ImDrawList* dl, const ImVec2& c, float radius, int segments)
++   {
++      dl->AddCircleFilled(c, radius + k_GizmoOutlineExtra * 0.5f, k_GizmoOutlineColor, segments);
++   }
++   static void GizmoOutlineCircle(ImDrawList* dl, const ImVec2& c, float radius, int segments, float thickness)
++   {
++      dl->AddCircle(c, radius, k_GizmoOutlineColor, segments, thickness + k_GizmoOutlineExtra);
++   }
++   static void GizmoOutlinePolyline(ImDrawList* dl, const ImVec2* pts, int count, ImDrawFlags flags, float thickness)
++   {
++      dl->AddPolyline(pts, count, k_GizmoOutlineColor, flags, thickness + k_GizmoOutlineExtra);
++   }
++
+    static void DrawRotationGizmo(OPERATION op, MOVETYPE type)
+    {
+       if(!Intersects(op, ROTATE))
+@@ -1351,7 +1376,8 @@ namespace IMGUIZMO_NAMESPACE
+          }
+          if (!gContext.mbUsing || usingAxis)
+          {
+-            drawList->AddPolyline(circlePos, circleMul* halfCircleSegmentCount + 1, colors[3 - axis], gContext.mStyle.RotationLineThickness, 0);
++            GizmoOutlinePolyline(drawList, circlePos, circleMul * halfCircleSegmentCount + 1, 0, gContext.mStyle.RotationLineThickness);
++            drawList->AddPolyline(circlePos, circleMul* halfCircleSegmentCount + 1, colors[3 - axis], 0, gContext.mStyle.RotationLineThickness);
+          }
+ 
+          float radiusAxis = sqrtf((ImLengthSqr(worldToPos(gContext.mModel.v.position, gContext.mViewProjection) - circlePos[0])));
+@@ -1362,7 +1388,9 @@ namespace IMGUIZMO_NAMESPACE
+       }
+       if(hasRSC && (!gContext.mbUsing || type == MT_ROTATE_SCREEN) && (!isMultipleAxesMasked && isNoAxesMasked))
+       {
+-         drawList->AddCircle(worldToPos(gContext.mModel.v.position, gContext.mViewProjection), gContext.mRadiusSquareCenter, colors[0], 64, gContext.mStyle.RotationOuterLineThickness);
++         const ImVec2 rscCenter = worldToPos(gContext.mModel.v.position, gContext.mViewProjection);
++         GizmoOutlineCircle(drawList, rscCenter, gContext.mRadiusSquareCenter, 64, gContext.mStyle.RotationOuterLineThickness);
++         drawList->AddCircle(rscCenter, gContext.mRadiusSquareCenter, colors[0], 64, gContext.mStyle.RotationOuterLineThickness);
+       }
+ 
+       if (gContext.mbUsing && (gContext.GetCurrentID() == gContext.mEditingID) && IsRotateType(type))
+@@ -1381,7 +1409,7 @@ namespace IMGUIZMO_NAMESPACE
+             circlePos[i] = worldToPos(pos + gContext.mModel.v.position, gContext.mViewProjection);
+          }
+          drawList->AddConvexPolyFilled(circlePos, halfCircleSegmentCount + 1, GetColorU32(ROTATION_USING_FILL));
+-         drawList->AddPolyline(circlePos, halfCircleSegmentCount + 1, GetColorU32(ROTATION_USING_BORDER), gContext.mStyle.RotationLineThickness, ImDrawFlags_Closed);
++         drawList->AddPolyline(circlePos, halfCircleSegmentCount + 1, GetColorU32(ROTATION_USING_BORDER), ImDrawFlags_Closed, gContext.mStyle.RotationLineThickness);
+ 
+          ImVec2 destinationPosOnScreen = circlePos[1];
+          char tmps[512];
+@@ -1452,14 +1480,18 @@ namespace IMGUIZMO_NAMESPACE
+                if (gContext.mbUsing && (gContext.GetCurrentID() == gContext.mEditingID))
+                {
+                   ImU32 scaleLineColor = GetColorU32(SCALE_LINE);
++                  GizmoOutlineLine(drawList, baseSSpace, worldDirSSpaceNoScale, gContext.mStyle.ScaleLineThickness);
+                   drawList->AddLine(baseSSpace, worldDirSSpaceNoScale, scaleLineColor, gContext.mStyle.ScaleLineThickness);
++                  GizmoOutlineCircleFilled(drawList, worldDirSSpaceNoScale, gContext.mStyle.ScaleLineCircleSize, 0);
+                   drawList->AddCircleFilled(worldDirSSpaceNoScale, gContext.mStyle.ScaleLineCircleSize, scaleLineColor);
+                }
+ 
+                if (!hasTranslateOnAxis || gContext.mbUsing)
+                {
++                  GizmoOutlineLine(drawList, baseSSpace, worldDirSSpace, gContext.mStyle.ScaleLineThickness);
+                   drawList->AddLine(baseSSpace, worldDirSSpace, colors[i + 1], gContext.mStyle.ScaleLineThickness);
+                }
++               GizmoOutlineCircleFilled(drawList, worldDirSSpace, gContext.mStyle.ScaleLineCircleSize, 0);
+                drawList->AddCircleFilled(worldDirSSpace, gContext.mStyle.ScaleLineCircleSize, colors[i + 1]);
+ 
+                if (gContext.mAxisFactor[i] < 0.f)
+@@ -1471,6 +1503,7 @@ namespace IMGUIZMO_NAMESPACE
+       }
+ 
+       // draw screen cirle
++      GizmoOutlineCircleFilled(drawList, gContext.mScreenSquareCenter, gContext.mStyle.CenterCircleSize, 32);
+       drawList->AddCircleFilled(gContext.mScreenSquareCenter, gContext.mStyle.CenterCircleSize, colors[0], 32);
+ 
+       if (gContext.mbUsing && (gContext.GetCurrentID() == gContext.mEditingID) && IsScaleType(type))
+@@ -1613,6 +1646,7 @@ namespace IMGUIZMO_NAMESPACE
+                ImVec2 baseSSpace = worldToPos(dirAxis * 0.1f * gContext.mScreenFactor, gContext.mMVP);
+                ImVec2 worldDirSSpace = worldToPos(dirAxis * gContext.mScreenFactor, gContext.mMVP);
+ 
++               GizmoOutlineLine(drawList, baseSSpace, worldDirSSpace, gContext.mStyle.TranslationLineThickness);
+                drawList->AddLine(baseSSpace, worldDirSSpace, colors[i + 1], gContext.mStyle.TranslationLineThickness);
+ 
+                // Arrow head begin
+@@ -1625,6 +1659,7 @@ namespace IMGUIZMO_NAMESPACE
+                ImVec2 ortogonalDir(dir.y, -dir.x); // Perpendicular vector
+                ImVec2 a(worldDirSSpace + dir);
+                drawList->AddTriangleFilled(worldDirSSpace - dir, a + ortogonalDir, a - ortogonalDir, colors[i + 1]);
++               drawList->AddTriangle(worldDirSSpace - dir, a + ortogonalDir, a - ortogonalDir, k_GizmoOutlineColor, k_GizmoOutlineExtra);
+                // Arrow head end
+ 
+                if (gContext.mAxisFactor[i] < 0.f)
+@@ -1644,12 +1679,14 @@ namespace IMGUIZMO_NAMESPACE
+                   vec_t cornerWorldPos = (dirPlaneX * quadUV[j * 2] + dirPlaneY * quadUV[j * 2 + 1]) * gContext.mScreenFactor;
+                   screenQuadPts[j] = worldToPos(cornerWorldPos, gContext.mMVP);
+                }
+-               drawList->AddPolyline(screenQuadPts, 4, GetColorU32(DIRECTION_X + i), 1.0f, ImDrawFlags_Closed);
+                drawList->AddConvexPolyFilled(screenQuadPts, 4, colors[i + 4]);
++               drawList->AddPolyline(screenQuadPts, 4, k_GizmoOutlineColor, ImDrawFlags_Closed, 1.5f);
++               drawList->AddPolyline(screenQuadPts, 4, GetColorU32(DIRECTION_X + i), ImDrawFlags_Closed, 1.0f);
+             }
+          }
+       }
+ 
++      GizmoOutlineCircleFilled(drawList, gContext.mScreenSquareCenter, gContext.mStyle.CenterCircleSize, 32);
+       drawList->AddCircleFilled(gContext.mScreenSquareCenter, gContext.mStyle.CenterCircleSize, colors[0], 32);
+ 
+       if (gContext.mbUsing && (gContext.GetCurrentID() == gContext.mEditingID) && IsTranslateType(type))

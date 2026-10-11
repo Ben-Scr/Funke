@@ -1,13 +1,15 @@
 #include "pch.hpp"
 #include "Utils/Process.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <cstdint>
 #include <sstream>
 
 #ifdef IDX_PLATFORM_WINDOWS
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
-#include <algorithm>
 #else
 #include <errno.h>
 #include <fcntl.h>
@@ -20,6 +22,16 @@
 namespace Index::Process {
 
 	namespace {
+		std::atomic<bool> g_CancellationActive{ false };
+		std::atomic<std::uint64_t> g_CancelGeneration{ 0 };
+		constexpr std::size_t kMaxCapturedOutput = 16 * 1024 * 1024;
+
+		void AppendCapturedOutput(std::string& output, const char* data, std::size_t size) {
+			if (output.size() >= kMaxCapturedOutput) return;
+			const std::size_t remaining = kMaxCapturedOutput - output.size();
+			output.append(data, std::min(size, remaining));
+		}
+
 		std::string QuoteForShell(const std::string& arg) {
 			if (arg.empty()) {
 				return "\"\"";
@@ -94,8 +106,10 @@ namespace Index::Process {
 
 		bool DrainAvailablePipe(HANDLE readPipe, std::string& output) {
 			char buffer[4096];
+			std::size_t drained = 0;
+			constexpr std::size_t kDrainBudget = 256 * 1024;
 
-			while (true) {
+			while (drained < kDrainBudget) {
 				DWORD available = 0;
 				if (!PeekNamedPipe(readPipe, nullptr, 0, nullptr, &available, nullptr)) {
 					return false;
@@ -109,8 +123,10 @@ namespace Index::Process {
 				if (!ReadFile(readPipe, buffer, bytesToRead, &bytesRead, nullptr) || bytesRead == 0) {
 					return false;
 				}
-				output.append(buffer, buffer + bytesRead);
+				AppendCapturedOutput(output, buffer, bytesRead);
+				drained += bytesRead;
 			}
+			return true;
 		}
 #endif
 	} // namespace
@@ -119,6 +135,16 @@ namespace Index::Process {
 		Result result;
 		if (command.empty()) {
 			result.Output = "No command specified";
+			return result;
+		}
+		const std::uint64_t cancelGeneration = g_CancelGeneration.load(std::memory_order_acquire);
+		const auto cancellationRequested = [&]() {
+			return g_CancellationActive.load(std::memory_order_acquire)
+				|| g_CancelGeneration.load(std::memory_order_acquire) != cancelGeneration;
+		};
+		if (cancellationRequested()) {
+			result.Cancelled = true;
+			result.Output = "Process launch cancelled";
 			return result;
 		}
 
@@ -137,6 +163,23 @@ namespace Index::Process {
 		}
 
 		SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+		HANDLE job = CreateJobObjectW(nullptr, nullptr);
+		if (!job) {
+			CloseHandle(readPipe);
+			CloseHandle(writePipe);
+			result.Output = "Failed to create process job object";
+			return result;
+		}
+		JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobLimits{};
+		jobLimits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+		if (!SetInformationJobObject(
+			job, JobObjectExtendedLimitInformation, &jobLimits, sizeof(jobLimits))) {
+			CloseHandle(job);
+			CloseHandle(readPipe);
+			CloseHandle(writePipe);
+			result.Output = "Failed to configure process job object";
+			return result;
+		}
 
 		const std::string commandLineUtf8 = BuildCommandLine(command);
 		std::wstring commandLine = ToWide(commandLineUtf8);
@@ -145,7 +188,7 @@ namespace Index::Process {
 
 		std::wstring workingDirectoryWide = workingDirectory.empty()
 			? std::wstring()
-			: ToWide(workingDirectory.string());
+			: workingDirectory.wstring();
 
 		STARTUPINFOW startupInfo{};
 		startupInfo.cb = sizeof(startupInfo);
@@ -161,7 +204,7 @@ namespace Index::Process {
 			nullptr,
 			nullptr,
 			TRUE,
-			CREATE_NO_WINDOW,
+			CREATE_NO_WINDOW | CREATE_SUSPENDED,
 			nullptr,
 			workingDirectoryWide.empty() ? nullptr : workingDirectoryWide.c_str(),
 			&startupInfo,
@@ -171,9 +214,36 @@ namespace Index::Process {
 
 		if (!created) {
 			const DWORD error = GetLastError();
+			CloseHandle(job);
 			CloseHandle(readPipe);
 			std::ostringstream stream;
 			stream << "CreateProcessW failed (" << error << ") for command: " << commandLineUtf8;
+			result.Output = stream.str();
+			return result;
+		}
+		if (!AssignProcessToJobObject(job, processInfo.hProcess)) {
+			const DWORD error = GetLastError();
+			TerminateProcess(processInfo.hProcess, static_cast<UINT>(-1));
+			WaitForSingleObject(processInfo.hProcess, 5000);
+			CloseHandle(processInfo.hProcess);
+			CloseHandle(processInfo.hThread);
+			CloseHandle(job);
+			CloseHandle(readPipe);
+			std::ostringstream stream;
+			stream << "AssignProcessToJobObject failed (" << error << ") for command: " << commandLineUtf8;
+			result.Output = stream.str();
+			return result;
+		}
+		if (ResumeThread(processInfo.hThread) == static_cast<DWORD>(-1)) {
+			const DWORD error = GetLastError();
+			TerminateJobObject(job, static_cast<UINT>(-1));
+			WaitForSingleObject(processInfo.hProcess, 5000);
+			CloseHandle(processInfo.hProcess);
+			CloseHandle(processInfo.hThread);
+			CloseHandle(job);
+			CloseHandle(readPipe);
+			std::ostringstream stream;
+			stream << "ResumeThread failed (" << error << ") for command: " << commandLineUtf8;
 			result.Output = stream.str();
 			return result;
 		}
@@ -184,9 +254,14 @@ namespace Index::Process {
 		const auto deadline = hasTimeout ? std::chrono::steady_clock::now() + timeout
 		                                  : std::chrono::steady_clock::time_point::max();
 		while (true) {
+			if (cancellationRequested()) {
+				result.Cancelled = true;
+				TerminateJobObject(job, static_cast<UINT>(-1));
+				break;
+			}
 			if (hasTimeout && std::chrono::steady_clock::now() >= deadline) {
 				result.TimedOut = true;
-				TerminateProcess(processInfo.hProcess, static_cast<UINT>(-1));
+				TerminateJobObject(job, static_cast<UINT>(-1));
 				break;
 			}
 
@@ -224,23 +299,26 @@ namespace Index::Process {
 		}
 		CloseHandle(readPipe);
 
-		// Not INFINITE: PeekNamedPipe failure (broken pipe) can exit the read loop while the child still runs; cap to avoid hanging.
-		DWORD finalWaitMs = INFINITE;
-		if (result.TimedOut) {
-			finalWaitMs = 5000;
-		}
-		else if (hasTimeout) {
-			const auto remaining = deadline - std::chrono::steady_clock::now();
-			const long long remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(remaining).count();
-			finalWaitMs = remainingMs > 0 ? static_cast<DWORD>(std::min<long long>(remainingMs, 0x7FFFFFFF)) : 0;
-		}
-		const DWORD finalWaitResult = WaitForSingleObject(processInfo.hProcess, finalWaitMs);
-		if (finalWaitResult != WAIT_OBJECT_0 && hasTimeout) {
-			// Remaining timeout elapsed before the process exited — terminate so
-			// we don't leak a zombie child handle past the caller's deadline.
-			result.TimedOut = true;
-			TerminateProcess(processInfo.hProcess, static_cast<UINT>(-1));
+		if (result.TimedOut || result.Cancelled) {
 			WaitForSingleObject(processInfo.hProcess, 5000);
+		}
+		else {
+			while (true) {
+				const DWORD waitResult = WaitForSingleObject(processInfo.hProcess, 50);
+				if (waitResult == WAIT_OBJECT_0 || waitResult == WAIT_FAILED) break;
+				if (cancellationRequested()) {
+					result.Cancelled = true;
+					TerminateJobObject(job, static_cast<UINT>(-1));
+					WaitForSingleObject(processInfo.hProcess, 5000);
+					break;
+				}
+				if (hasTimeout && std::chrono::steady_clock::now() >= deadline) {
+					result.TimedOut = true;
+					TerminateJobObject(job, static_cast<UINT>(-1));
+					WaitForSingleObject(processInfo.hProcess, 5000);
+					break;
+				}
+			}
 		}
 		DWORD exitCode = static_cast<DWORD>(-1);
 		GetExitCodeProcess(processInfo.hProcess, &exitCode);
@@ -248,6 +326,7 @@ namespace Index::Process {
 
 		CloseHandle(processInfo.hProcess);
 		CloseHandle(processInfo.hThread);
+		CloseHandle(job);
 		return result;
 #else
 		// Build argv before fork(): post-fork code must be async-signal-safe; malloc is not safe in a multithreaded process.
@@ -276,6 +355,9 @@ namespace Index::Process {
 		}
 
 		if (pid == 0) {
+			if (setpgid(0, 0) != 0) {
+				_exit(125);
+			}
 			if (workingDirectoryCStr) {
 				if (chdir(workingDirectoryCStr) != 0) {
 					_exit(126); // distinct from execvp's 127
@@ -292,63 +374,113 @@ namespace Index::Process {
 		}
 
 		close(pipeFd[1]);
+		(void)setpgid(pid, pid);
+		const int pipeFlags = fcntl(pipeFd[0], F_GETFL, 0);
+		if (pipeFlags >= 0) {
+			(void)fcntl(pipeFd[0], F_SETFL, pipeFlags | O_NONBLOCK);
+		}
 
 		const auto deadline = hasTimeout ? std::chrono::steady_clock::now() + timeout
 		                                  : std::chrono::steady_clock::time_point::max();
 		char buffer[4096];
-		for (;;) {
-			int waitMs = -1; // -1 = block forever
-			if (hasTimeout) {
-				const auto now = std::chrono::steady_clock::now();
-				if (now >= deadline) {
-					result.TimedOut = true;
-					kill(pid, SIGKILL);
-					break;
+		int status = 0;
+		bool childReaped = false;
+		bool pipeOpen = true;
+		auto terminateTree = [&]() {
+			if (kill(-pid, SIGKILL) != 0 && errno == ESRCH && !childReaped) {
+				(void)kill(pid, SIGKILL);
+			}
+		};
+		auto drainPipe = [&]() {
+			std::size_t drained = 0;
+			constexpr std::size_t kDrainBudget = 256 * 1024;
+			while (pipeOpen && drained < kDrainBudget) {
+				const ssize_t bytesRead = read(pipeFd[0], buffer, sizeof(buffer));
+				if (bytesRead > 0) {
+					AppendCapturedOutput(result.Output, buffer, static_cast<std::size_t>(bytesRead));
+					drained += static_cast<std::size_t>(bytesRead);
+					continue;
 				}
-				waitMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+				if (bytesRead == 0) {
+					pipeOpen = false;
+					return;
+				}
+				if (errno == EINTR) continue;
+				if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+				pipeOpen = false;
+			}
+		};
+		for (;;) {
+			const pid_t waitResult = waitpid(pid, &status, WNOHANG);
+			if (waitResult == pid) {
+				childReaped = true;
+				drainPipe();
+				break;
+			}
+			if (waitResult < 0 && errno != EINTR) {
+				break;
+			}
+			if (cancellationRequested()) {
+				result.Cancelled = true;
+				terminateTree();
+				break;
 			}
 
-			pollfd pfd{ pipeFd[0], POLLIN, 0 };
-			const int pollResult = poll(&pfd, 1, waitMs);
+			const auto now = std::chrono::steady_clock::now();
+			if (hasTimeout && now >= deadline) {
+				result.TimedOut = true;
+				terminateTree();
+				break;
+			}
+
+			const int waitMs = hasTimeout
+				? static_cast<int>(std::clamp<long long>(
+					std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count(), 1, 50))
+				: 50;
+			pollfd pfd{ pipeFd[0], static_cast<short>(POLLIN | POLLHUP | POLLERR), 0 };
+			const int pollResult = poll(pipeOpen ? &pfd : nullptr, pipeOpen ? 1 : 0, waitMs);
 			if (pollResult < 0) {
 				if (errno == EINTR) continue;
 				break;
 			}
-			if (pollResult == 0) {
-				// poll timed out — by construction this only happens when we
-				// hit the deadline.
-				result.TimedOut = true;
-				kill(pid, SIGKILL);
-				break;
-			}
-
-			ssize_t bytesRead = read(pipeFd[0], buffer, sizeof(buffer));
-			if (bytesRead > 0) {
-				result.Output.append(buffer, buffer + bytesRead);
-				continue;
-			}
-			if (bytesRead == 0) {
-				break; // EOF (child closed write end)
-			}
-			if (errno == EINTR) continue;
-			break;
+			if (pollResult > 0) drainPipe();
 		}
+
+		terminateTree();
+		if (!childReaped) {
+			for (int attempt = 0; attempt < 500; ++attempt) {
+				const pid_t waitResult = waitpid(pid, &status, WNOHANG);
+				if (waitResult == pid) {
+					childReaped = true;
+					break;
+				}
+				if (waitResult < 0 && errno == EINTR) continue;
+				if (waitResult < 0) break;
+				(void)poll(nullptr, 0, 10);
+			}
+		}
+		drainPipe();
 		close(pipeFd[0]);
 
-		int status = 0;
-		while (waitpid(pid, &status, 0) < 0) {
-			if (errno == EINTR) continue;
-			break;
-		}
-		if (WIFEXITED(status)) {
+		if (childReaped && WIFEXITED(status)) {
 			result.ExitCode = WEXITSTATUS(status);
-		} else if (WIFSIGNALED(status)) {
+		} else if (childReaped && WIFSIGNALED(status)) {
 			result.ExitCode = 128 + WTERMSIG(status); // shell convention
 		} else {
 			result.ExitCode = -1;
 		}
 		return result;
 #endif
+	}
+
+	void CancelAll() {
+		g_CancellationActive.store(true, std::memory_order_release);
+		g_CancelGeneration.fetch_add(1, std::memory_order_acq_rel);
+	}
+
+	void ResetCancellation() {
+		g_CancellationActive.store(false, std::memory_order_release);
+		g_CancelGeneration.fetch_add(1, std::memory_order_acq_rel);
 	}
 
 	bool LaunchDetached(const std::vector<std::string>& command, const std::filesystem::path& workingDirectory) {
@@ -364,7 +496,7 @@ namespace Index::Process {
 
 		std::wstring workingDirectoryWide = workingDirectory.empty()
 			? std::wstring()
-			: ToWide(workingDirectory.string());
+			: workingDirectory.wstring();
 
 		STARTUPINFOW startupInfo{};
 		startupInfo.cb = sizeof(startupInfo);
@@ -390,29 +522,37 @@ namespace Index::Process {
 		CloseHandle(processInfo.hThread);
 		return true;
 #else
+		std::vector<char*> argv;
+		argv.reserve(command.size() + 1);
+		for (const std::string& arg : command) {
+			argv.push_back(const_cast<char*>(arg.c_str()));
+		}
+		argv.push_back(nullptr);
+		char* const* argvData = argv.data();
+		const std::string workingDirectoryStr = workingDirectory.empty() ? std::string() : workingDirectory.string();
+		const char* workingDirectoryCStr = workingDirectoryStr.empty() ? nullptr : workingDirectoryStr.c_str();
+
 		pid_t pid = fork();
 		if (pid < 0) {
 			return false;
 		}
 
 		if (pid == 0) {
-			if (!workingDirectory.empty()) {
-				chdir(workingDirectory.c_str());
-			}
-
-			std::vector<char*> argv;
-			argv.reserve(command.size() + 1);
-			for (const std::string& arg : command) {
-				argv.push_back(const_cast<char*>(arg.c_str()));
-			}
-			argv.push_back(nullptr);
-
-			setsid();
-			execvp(command[0].c_str(), argv.data());
+			if (setsid() < 0) _exit(126);
+			const pid_t detachedPid = fork();
+			if (detachedPid < 0) _exit(126);
+			if (detachedPid > 0) _exit(0);
+			if (workingDirectoryCStr && chdir(workingDirectoryCStr) != 0) _exit(126);
+			execvp(argvData[0], argvData);
 			_exit(127);
 		}
 
-		return true;
+		int status = 0;
+		pid_t waitResult = -1;
+		do {
+			waitResult = waitpid(pid, &status, 0);
+		} while (waitResult < 0 && errno == EINTR);
+		return waitResult == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 #endif
 	}
 

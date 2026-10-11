@@ -3,10 +3,14 @@
 
 #include "Core/Log.hpp"
 #include "Core/PackageHost.hpp"
+#include "Gui/EditorTheme.hpp"
+#include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
+#include "Gui/ImGuiUtils.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Scripting/ScriptEngine.hpp"
+#include "Scripting/ScriptSystem.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
 #include "Utils/PackageToolPath.hpp"
@@ -65,6 +69,29 @@ namespace Index {
 				&& std::all_of(value.begin(), value.end(), [](unsigned char c) {
 					return std::isxdigit(c) != 0;
 				});
+		}
+
+		constexpr float k_CardPadding = 8.0f;
+
+		// Package rows sit in cards; callers must pair these inside the row's PushID scope.
+		void BeginPackageCard() {
+			EditorUI::BeginCard("##pkg");
+			ImGui::Dummy(ImVec2(0.0f, k_CardPadding * 0.5f));
+			ImGui::Indent(k_CardPadding);
+			ImGui::PushTextWrapPos(ImGui::GetContentRegionMax().x - k_CardPadding);
+		}
+
+		void EndPackageCard() {
+			ImGui::PopTextWrapPos();
+			ImGui::Unindent(k_CardPadding);
+			ImGui::Dummy(ImVec2(0.0f, k_CardPadding * 0.5f));
+			EditorUI::EndCard();
+			ImGui::Spacing();
+		}
+
+		// X for a right-aligned row button inside a package card.
+		float CardButtonX(float buttonWidth) {
+			return ImGui::GetContentRegionMax().x - buttonWidth - k_CardPadding;
 		}
 
 	} // namespace
@@ -158,7 +185,7 @@ namespace Index {
 
 				if (m_Manager && m_Manager->NeedsReload()) {
 					if (ScriptEngine::IsInitialized())
-						ScriptEngine::ReloadAssemblies();
+						ScriptSystem::ReloadManagedAssemblies();
 					m_Manager->ClearReloadFlag();
 				}
 			}
@@ -190,13 +217,13 @@ namespace Index {
 
 		// Status strip — pinned to the bottom of the panel.
 		if (m_IsOperating) {
-			ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "%s", m_StatusMessage.c_str());
+			EditorUI::StatusText(EditorUI::Tone::Warning, m_StatusMessage.c_str());
 		}
 		else if (m_StatusIsError) {
-			ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", m_StatusMessage.c_str());
+			EditorUI::StatusText(EditorUI::Tone::Error, m_StatusMessage.c_str());
 		}
 		else if (!m_StatusMessage.empty()) {
-			ImGui::TextDisabled("%s", m_StatusMessage.c_str());
+			EditorUI::StatusText(EditorUI::Tone::Neutral, m_StatusMessage.c_str());
 		}
 
 		// Floating install-windows opened from the "+" menu.
@@ -240,24 +267,16 @@ namespace Index {
 		if (ImGui::BeginPopupModal("Package install failed", nullptr,
 				ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x);
-			ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "Installation could not complete.");
+			EditorUI::StatusText(EditorUI::Tone::Error, "Installation could not complete.");
 			ImGui::Spacing();
 			ImGui::TextUnformatted(m_InstallErrorMessage.c_str());
 			ImGui::PopTextWrapPos();
 
-			ImGui::Spacing();
-			ImGui::Separator();
-			ImGui::Spacing();
-
-			const float buttonWidth = 110.0f;
-			const float spacing = ImGui::GetStyle().ItemSpacing.x;
-			ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x - 2 * buttonWidth - spacing + ImGui::GetCursorPosX());
-
-			if (ImGui::Button("Copy details", ImVec2(buttonWidth, 0))) {
+			const int clicked = EditorUI::DialogFooter({ "Copy details", "Close" }, 1);
+			if (clicked == 0) {
 				ImGui::SetClipboardText(m_InstallErrorMessage.c_str());
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Close", ImVec2(buttonWidth, 0)) ||
+			if (clicked == 1 ||
 				ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
 				ImGui::IsKeyPressed(ImGuiKey_Enter, false)) {
 				m_InstallErrorMessage.clear();
@@ -278,12 +297,14 @@ namespace Index {
 	// ── Search Packages tab ────────────────────────────────────────────────────────
 
 	void PackageManagerPanel::RenderSearchPackagesTab() {
-		// Filter row: input fills the row width minus the "+" button.
+		EditorUI::BeginToolbar("##PackageSearchToolbar");
+
+		// Filter fills the row minus the "+" button and the separator slot (two gaps + 7px hairline).
 		const float plusWidth = ImGui::GetFrameHeight();
-		ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - plusWidth - ImGui::GetStyle().ItemInnerSpacing.x);
-		ImGui::InputTextWithHint("##IndexFilter", "Filter packages...",
-			m_IndexSearchFilterBuffer, sizeof(m_IndexSearchFilterBuffer));
-		ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+		const float trailingWidth = plusWidth + ImGui::GetStyle().ItemSpacing.x * 2.0f + 7.0f;
+		EditorUI::SearchField("##IndexFilter", m_IndexSearchFilterBuffer, sizeof(m_IndexSearchFilterBuffer),
+			"Filter packages...", std::max(1.0f, ImGui::GetContentRegionAvail().x - trailingWidth));
+		EditorUI::ToolbarSeparator();
 
 		const bool automating = m_AutomationTask && m_AutomationTask->Running.load(std::memory_order_acquire);
 		// "Create new package" works without a project (engine-developer flow targeting
@@ -292,14 +313,13 @@ namespace Index {
 		const bool canOpenMenu = !m_IsOperating && !automating;
 		const bool canInstallToProject = ProjectManager::GetCurrentProject() && canOpenMenu;
 		if (!canOpenMenu) ImGui::BeginDisabled();
-		if (ImGui::Button("+", ImVec2(plusWidth, plusWidth))) {
+		if (EditorUI::IconButton("##AddPackage", "plus", nullptr, false, false, plusWidth)) {
 			ImGui::OpenPopup("##AddPackageMenu");
 		}
 		if (!canOpenMenu) ImGui::EndDisabled();
-		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip(canOpenMenu ? "Add a package" : "Wait for current operation to finish");
-		}
+		EditorUI::Tooltip(canOpenMenu ? "Add a package" : "Wait for current operation to finish");
 
+		// Must stay inside the toolbar child: OpenPopup above resolves against its ID stack.
 		if (ImGui::BeginPopup("##AddPackageMenu")) {
 			if (ImGui::MenuItem("Create new package...")) {
 				m_NewPackageNameBuffer[0] = '\0';
@@ -327,18 +347,14 @@ namespace Index {
 			ImGui::EndPopup();
 		}
 
-		ImGui::Spacing();
+		EditorUI::EndToolbar();
 
-		ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
-		ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
-		if (ImGui::CollapsingHeader("Index Registry")) {
+		if (EditorUI::SectionHeader("Index Registry", true)) {
 			RenderIndexRegistrySection();
 		}
 	}
 
 	void PackageManagerPanel::RenderIndexRegistrySection() {
-		ImGui::Indent();
-
 		// Refresh row — manual re-fetch + status line. The fetch worker runs
 		// off the main thread (kicked by RefreshRegistryIfDirty), so the
 		// button just sets the dirty flag.
@@ -350,15 +366,15 @@ namespace Index {
 		}
 		if (fetching) ImGui::EndDisabled();
 		ImGui::SameLine();
+		ImGui::AlignTextToFramePadding();
 		if (fetching) {
-			ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Fetching...");
+			EditorUI::StatusText(EditorUI::Tone::Warning, "Fetching...");
 		}
 		else if (m_RegistryStatusIsError) {
-			ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s",
-				m_RegistryStatusMessage.c_str());
+			EditorUI::StatusText(EditorUI::Tone::Error, m_RegistryStatusMessage.c_str());
 		}
 		else if (!m_RegistryStatusMessage.empty()) {
-			ImGui::TextDisabled("%s", m_RegistryStatusMessage.c_str());
+			EditorUI::StatusText(EditorUI::Tone::Neutral, m_RegistryStatusMessage.c_str());
 		}
 		ImGui::Spacing();
 
@@ -402,19 +418,19 @@ namespace Index {
 			if (!MatchesFilter(entry.Name, m_IndexSearchFilterBuffer)) continue;
 
 			ImGui::PushID(("registry:" + entry.Name).c_str());
+			BeginPackageCard();
 
-			ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "%s", entry.Name.c_str());
+			ImGui::AlignTextToFramePadding();
+			ImGui::TextColored(EditorTheme::Colors::Info(), "%s", entry.Name.c_str());
 			ImGui::SameLine();
 			ImGui::TextDisabled("v%s", entry.Version.c_str());
 
 			const float buttonWidth = 90.0f;
-			ImGui::SameLine(ImGui::GetContentRegionMax().x - buttonWidth);
+			ImGui::SameLine(CardButtonX(buttonWidth));
 			if (!canInstall) ImGui::BeginDisabled();
-			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.2f, 1.0f));
-			if (ImGui::Button("Install", ImVec2(buttonWidth, 0))) {
+			if (EditorUI::Button("Install", EditorUI::ButtonVariant::Primary, ImVec2(buttonWidth, 0))) {
 				HandleCloudInstall(entry);
 			}
-			ImGui::PopStyleColor();
 			if (!canInstall) ImGui::EndDisabled();
 
 			// Layer badges. We don't have an on-disk manifest yet, so synthesize
@@ -438,28 +454,25 @@ namespace Index {
 				for (const auto& dep : entry.Dependencies) {
 					if (!first) { ImGui::SameLine(); ImGui::TextDisabled(","); ImGui::SameLine(); }
 					const bool depInstalled = IsPackageInstalled(dep);
-					ImVec4 color = depInstalled ? ImVec4(0.5f, 0.85f, 0.5f, 1.0f)
-												: ImVec4(1.0f, 0.65f, 0.35f, 1.0f);
+					const ImVec4 color = depInstalled ? EditorTheme::Colors::Success() : EditorTheme::Colors::Error();
 					ImGui::TextColored(color, "%s%s", dep.c_str(),
 						depInstalled ? "" : " (missing)");
 					first = false;
 				}
 			}
-			ImGui::Separator();
+			EndPackageCard();
 			ImGui::PopID();
 			++shown;
 		}
 
 		if (shown == 0) {
 			if (m_RegistryEntries.empty() && m_AllManifests.empty()) {
-				ImGui::TextDisabled("No packages available yet.");
+				EditorUI::EmptyState("No packages available yet.", "Use Refresh registry to fetch the package list.");
 			}
 			else {
-				ImGui::TextDisabled("No packages match the filter.");
+				EditorUI::EmptyState("No packages match the filter.");
 			}
 		}
-
-		ImGui::Unindent();
 	}
 
 	void PackageManagerPanel::HandleDiskInstall() {
@@ -514,9 +527,11 @@ namespace Index {
 						if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &widePath)) && widePath) {
 							const int len = WideCharToMultiByte(CP_UTF8, 0, widePath, -1, nullptr, 0, nullptr, nullptr);
 							if (len > 1) {
-								std::string utf8(static_cast<size_t>(len - 1), '\0');
-								WideCharToMultiByte(CP_UTF8, 0, widePath, -1, utf8.data(), len, nullptr, nullptr);
-								picked = std::move(utf8);
+								std::string utf8(static_cast<size_t>(len), '\0');
+								if (WideCharToMultiByte(CP_UTF8, 0, widePath, -1, utf8.data(), len, nullptr, nullptr) == len) {
+									utf8.pop_back();
+									picked = std::move(utf8);
+								}
 							}
 							CoTaskMemFree(widePath);
 						}
@@ -618,34 +633,39 @@ namespace Index {
 			ImGui::Spacing();
 			ImGui::TextUnformatted("Layers");
 			ImGui::Indent();
-			ImGui::Checkbox("Native (engine_core)##NewPkgNative", &m_NewPackageLayerNative);
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("C++ that links Index-Engine and can use IDX_*_TAG, ECS, etc.");
-			}
-			ImGui::Checkbox("Standalone C++ (no engine link)##NewPkgStandalone",
+			ImGuiUtils::Switch("Native (engine_core)##NewPkgNative", &m_NewPackageLayerNative);
+			EditorUI::Tooltip("C++ that links Index-Engine and can use IDX_*_TAG, ECS, etc.");
+			ImGuiUtils::Switch("Standalone C++ (no engine link)##NewPkgStandalone",
 				&m_NewPackageLayerStandalone);
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("C++ that does NOT link Index-Engine. Mutually exclusive with Native.");
-			}
-			ImGui::Checkbox("C# (.NET 9.0)##NewPkgCsharp", &m_NewPackageLayerCsharp);
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("Managed assembly (Pkg.<Name>.dll). Auto-bridges to the native sibling "
-					"if Native or Standalone is also checked.");
-			}
+			EditorUI::Tooltip("C++ that does NOT link Index-Engine. Mutually exclusive with Native.");
+			ImGuiUtils::Switch("C# (.NET 10.0)##NewPkgCsharp", &m_NewPackageLayerCsharp);
+			EditorUI::Tooltip("Managed assembly (Pkg.<Name>.dll). Auto-bridges to the native sibling "
+				"if Native or Standalone is also checked.");
 			ImGui::Unindent();
 
 			// Mutual exclusion guardrail mirrors the CLI's parse_layers() check.
 			if (m_NewPackageLayerNative && m_NewPackageLayerStandalone) {
-				ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.20f, 1.0f),
-					"Native and Standalone are mutually exclusive.");
+				EditorUI::StatusText(EditorUI::Tone::Warning, "Native and Standalone are mutually exclusive.");
 			}
 
 			ImGui::Spacing();
 			ImGui::TextUnformatted("Target");
 			ImGui::Indent();
 			IndexProject* project = ProjectManager::GetCurrentProject();
+			const std::filesystem::path engineRoot = IndexProject::GetEngineRootDir();
+			std::error_code sourceCheckoutError;
+			const bool sourceCheckout = std::filesystem::is_regular_file(
+				engineRoot / "premake5.lua", sourceCheckoutError) && !sourceCheckoutError;
+			if (!sourceCheckout && project && m_NewPackageTarget == 0) {
+				m_NewPackageTarget = 1;
+			}
+			if (!sourceCheckout) ImGui::BeginDisabled();
 			ImGui::RadioButton("Engine packages (<repo>/packages/)##NewPkgEngine",
 				&m_NewPackageTarget, 0);
+			if (!sourceCheckout) {
+				ImGui::EndDisabled();
+				EditorUI::Tooltip("Engine packages require a source checkout.");
+			}
 			if (!project) ImGui::BeginDisabled();
 			ImGui::RadioButton(project
 				? "This project (<project>/Packages/)##NewPkgProject"
@@ -656,30 +676,24 @@ namespace Index {
 
 			if (!m_NewPackageError.empty()) {
 				ImGui::Spacing();
-				ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", m_NewPackageError.c_str());
+				EditorUI::StatusText(EditorUI::Tone::Error, m_NewPackageError.c_str());
 			}
-
-			ImGui::Spacing();
-			ImGui::Separator();
-			ImGui::Spacing();
 
 			const bool automating = m_AutomationTask && m_AutomationTask->Running.load(std::memory_order_acquire);
 			const bool layerOk =
 				(m_NewPackageLayerNative || m_NewPackageLayerStandalone || m_NewPackageLayerCsharp)
 				&& !(m_NewPackageLayerNative && m_NewPackageLayerStandalone);
 			const bool nameOk = std::strlen(m_NewPackageNameBuffer) > 0;
-			const bool canCreate = layerOk && nameOk && !m_NewPackageIsCreating
+			const bool targetOk = m_NewPackageTarget == 0 ? sourceCheckout : project != nullptr;
+			const bool canCreate = layerOk && nameOk && targetOk && !m_NewPackageIsCreating
 				&& !m_IsOperating && !automating
 				&& !(m_GitInstallTask && m_GitInstallTask->Running.load(std::memory_order_acquire));
 
-			if (!canCreate) ImGui::BeginDisabled();
-			if (ImGui::Button("Create", ImVec2(120, 0))) {
+			const int clicked = EditorUI::DialogFooter({ "Create", "Cancel" }, 0, -1, canCreate ? 0u : 1u);
+			if (clicked == 0 && canCreate) {
 				HandleNewPackageCreate();
 			}
-			if (!canCreate) ImGui::EndDisabled();
-
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+			else if (clicked == 1) {
 				m_ShowNewPackageWindow = false;
 				m_NewPackageError.clear();
 			}
@@ -701,6 +715,15 @@ namespace Index {
 		if (!std::filesystem::exists(scriptPath)) {
 			m_NewPackageError = "scripts/packages/NewPackage.py not found at: " + scriptPath.generic_string();
 			return;
+		}
+		if (m_NewPackageTarget == 0) {
+			std::error_code sourceCheckoutError;
+			if (!std::filesystem::is_regular_file(
+					std::filesystem::path(engineRoot) / "premake5.lua", sourceCheckoutError)
+				|| sourceCheckoutError) {
+				m_NewPackageError = "Engine packages require an Index source checkout.";
+				return;
+			}
 		}
 
 		// Comma separator — host shells don't re-parse it on either platform.
@@ -760,12 +783,15 @@ namespace Index {
 		auto state = m_NewPackageTask;
 		const auto engineRootCopy = engineRoot;
 		m_NewPackageWorker = std::thread([state, command, engineRootCopy]() {
-			Process::Result result = Process::Run(command, std::filesystem::path(engineRootCopy));
+			Process::Result result = Process::Run(command, std::filesystem::path(engineRootCopy),
+				std::chrono::minutes(3));
 			{
 				std::scoped_lock lock(state->Mutex);
 				state->Success = result.Succeeded();
 				if (result.Succeeded()) {
 					state->Output.clear();
+				} else if (result.TimedOut) {
+					state->Output = "Scaffolder timed out after 3 minutes. Output:\n" + result.Output;
 				} else {
 					state->Output = "Scaffolder failed (exit " + std::to_string(result.ExitCode) +
 						"). Output:\n" + result.Output;
@@ -788,15 +814,14 @@ namespace Index {
 			ImGui::InputTextWithHint("##GitUrl", "https://github.com/owner/repo.git",
 				m_GitHubUrlBuffer, sizeof(m_GitHubUrlBuffer));
 			ImGui::TextDisabled("The repository's root must contain index-package.lua.");
-			ImGui::Spacing();
 
 			IndexProject* project = ProjectManager::GetCurrentProject();
 			const bool automating = m_AutomationTask && m_AutomationTask->Running.load(std::memory_order_acquire);
 			const bool cloning = m_GitInstallTask && m_GitInstallTask->Running.load(std::memory_order_acquire);
 			const bool canInstall = project && std::strlen(m_GitHubUrlBuffer) > 0 && !m_IsOperating && !automating && !cloning;
 
-			if (!canInstall) ImGui::BeginDisabled();
-			if (ImGui::Button("Install", ImVec2(120, 0))) {
+			const int clicked = EditorUI::DialogFooter({ "Install", "Cancel" }, 0, -1, canInstall ? 0u : 1u);
+			if (clicked == 0 && canInstall) {
 				const std::string url = m_GitHubUrlBuffer;
 				const std::string packagesDir = project->PackagesDirectory;
 				if (m_GitInstallTask && !m_GitInstallTask->Running.load(std::memory_order_acquire)) {
@@ -825,10 +850,7 @@ namespace Index {
 					});
 				}
 			}
-			if (!canInstall) ImGui::EndDisabled();
-
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+			else if (clicked == 1) {
 				m_ShowGitInstallWindow = false;
 			}
 		}
@@ -844,16 +866,19 @@ namespace Index {
 			ImGuiWindowFlags_NoDocking)) {
 
 			if (!m_Manager || !m_Manager->IsReady()) {
-				ImGui::TextDisabled("NuGet source unavailable.");
+				EditorUI::EmptyState("NuGet source unavailable.");
 				ImGui::End();
 				return;
 			}
 
 			m_SelectedSource = 0;
 
-			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70.0f);
-			bool enterPressed = ImGui::InputText("##NuGetSearch", m_NuGetSearchBuffer, sizeof(m_NuGetSearchBuffer),
-				ImGuiInputTextFlags_EnterReturnsTrue);
+			// SearchField has no EnterReturnsTrue: Enter while an item in this window is active
+			// (the field deactivates on Enter this frame) submits the query.
+			const bool enterPressed = ImGui::IsWindowFocused() && ImGui::IsAnyItemActive()
+				&& (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false));
+			EditorUI::SearchField("##NuGetSearch", m_NuGetSearchBuffer, sizeof(m_NuGetSearchBuffer),
+				"Search NuGet...", ImGui::GetContentRegionAvail().x - 70.0f);
 			ImGui::SameLine();
 
 			const bool automating = m_AutomationTask && m_AutomationTask->Running.load(std::memory_order_acquire);
@@ -865,12 +890,14 @@ namespace Index {
 			if (!canSearch) ImGui::EndDisabled();
 
 			ImGui::Separator();
-			ImGui::BeginChild("##NuGetResults", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()));
+			// Leave room for DialogFooter: spacing, separator, spacing, button row.
+			const float footerHeight = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 3.0f + 1.0f;
+			ImGui::BeginChild("##NuGetResults", ImVec2(0, -footerHeight));
 			if (m_IsSearching) {
-				ImGui::TextDisabled("Searching...");
+				EditorUI::EmptyState("Searching...");
 			}
 			else if (m_SearchResults.empty() && !m_LastNuGetQuery.empty()) {
-				ImGui::TextDisabled("No results found.");
+				EditorUI::EmptyState("No results found.", "Try a different package ID or keyword.");
 			}
 			else {
 				for (int i = 0; i < static_cast<int>(m_SearchResults.size()); i++) {
@@ -879,7 +906,7 @@ namespace Index {
 			}
 			ImGui::EndChild();
 
-			if (ImGui::Button("Close", ImVec2(120, 0))) {
+			if (EditorUI::DialogFooter({ "Close" }, -1) == 0) {
 				m_ShowNuGetInstallWindow = false;
 			}
 		}
@@ -889,39 +916,28 @@ namespace Index {
 	// ── Installed Packages tab ─────────────────────────────────────────────────────
 
 	void PackageManagerPanel::RenderInstalledPackagesTab() {
-		ImGui::SetNextItemWidth(-1.0f);
-		ImGui::InputTextWithHint("##InstalledFilter", "Filter installed packages...",
-			m_InstalledFilterBuffer, sizeof(m_InstalledFilterBuffer));
+		EditorUI::BeginToolbar("##InstalledPackagesToolbar");
+		EditorUI::SearchField("##InstalledFilter", m_InstalledFilterBuffer, sizeof(m_InstalledFilterBuffer),
+			"Filter installed packages...");
+		EditorUI::EndToolbar();
 
-		ImGui::Spacing();
-
-		ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
-		if (ImGui::CollapsingHeader("Index Packages##installed")) {
+		if (EditorUI::SectionHeader("Index Packages##installed", true)) {
 			RenderInstalledIndexPackagesSection();
 		}
 
-		ImGui::Spacing();
-
-		ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
-		if (ImGui::CollapsingHeader("User Packages##installed")) {
+		if (EditorUI::SectionHeader("User Packages##installed", true)) {
 			RenderInstalledUserPackagesSection();
 		}
 
-		ImGui::Spacing();
-
-		ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
-		if (ImGui::CollapsingHeader("NuGet Packages##installed")) {
+		if (EditorUI::SectionHeader("NuGet Packages##installed", true)) {
 			RenderInstalledNuGetPackagesSection();
 		}
 	}
 
 	void PackageManagerPanel::RenderInstalledIndexPackagesSection() {
-		ImGui::Indent();
-
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (!project) {
-			ImGui::TextDisabled("Open a project to see its installed Index packages.");
-			ImGui::Unindent();
+			EditorUI::EmptyState("No project open.", "Open a project to see its installed Index packages.");
 			return;
 		}
 
@@ -940,19 +956,14 @@ namespace Index {
 			++shown;
 		}
 		if (shown == 0) {
-			ImGui::TextDisabled("No Index packages installed. Use the Search tab to install one.");
+			EditorUI::EmptyState("No Index packages installed.", "Use the Search tab to install one.");
 		}
-
-		ImGui::Unindent();
 	}
 
 	void PackageManagerPanel::RenderInstalledUserPackagesSection() {
-		ImGui::Indent();
-
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (!project) {
-			ImGui::TextDisabled("Open a project to see its installed user packages.");
-			ImGui::Unindent();
+			EditorUI::EmptyState("No project open.", "Open a project to see its installed user packages.");
 			return;
 		}
 
@@ -970,25 +981,19 @@ namespace Index {
 			++shown;
 		}
 		if (shown == 0) {
-			ImGui::TextDisabled("No user packages installed. Add a package via the Search tab.");
+			EditorUI::EmptyState("No user packages installed.", "Add a package via the Search tab.");
 		}
-
-		ImGui::Unindent();
 	}
 
 	void PackageManagerPanel::RenderInstalledNuGetPackagesSection() {
-		ImGui::Indent();
-
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (!project) {
-			ImGui::TextDisabled("Open a project to see its installed NuGet packages.");
-			ImGui::Unindent();
+			EditorUI::EmptyState("No project open.", "Open a project to see its installed NuGet packages.");
 			return;
 		}
 
 		if (!m_Manager || !m_Manager->IsReady()) {
-			ImGui::TextDisabled("NuGet source unavailable.");
-			ImGui::Unindent();
+			EditorUI::EmptyState("NuGet source unavailable.");
 			return;
 		}
 
@@ -1005,10 +1010,8 @@ namespace Index {
 			++shown;
 		}
 		if (shown == 0) {
-			ImGui::TextDisabled("No NuGet packages installed. Use the Search tab's '+' menu to install one.");
+			EditorUI::EmptyState("No NuGet packages installed.", "Use the Search tab's '+' menu to install one.");
 		}
-
-		ImGui::Unindent();
 	}
 
 	// ── Shared helpers ─────────────────────────────────────────────────────────────
@@ -1020,31 +1023,19 @@ namespace Index {
 	}
 
 	void PackageManagerPanel::RenderLayerBadges(const IndexPackageManifest& manifest) {
-		// engine_core = green, standalone_cpp = blue, csharp = purple.
-		auto chip = [](const char* label, ImVec4 color) {
-			ImGui::PushStyleColor(ImGuiCol_Button, color);
-			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, color);
-			ImGui::PushStyleColor(ImGuiCol_ButtonActive, color);
-			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 1));
-			ImGui::SmallButton(label);
-			ImGui::PopStyleVar();
-			ImGui::PopStyleColor(3);
-		};
-
 		bool any = false;
 		if (manifest.HasNativeLayer) {
-			if (any) ImGui::SameLine();
-			chip("native", ImVec4(0.20f, 0.55f, 0.30f, 1.0f));
+			EditorUI::Badge("native", EditorUI::Tone::Success);
 			any = true;
 		}
 		if (manifest.HasNativeStandaloneLayer) {
 			if (any) ImGui::SameLine();
-			chip("native_standalone", ImVec4(0.20f, 0.40f, 0.65f, 1.0f));
+			EditorUI::Badge("native_standalone");
 			any = true;
 		}
 		if (manifest.HasCSharpLayer) {
 			if (any) ImGui::SameLine();
-			chip("csharp", ImVec4(0.45f, 0.30f, 0.65f, 1.0f));
+			EditorUI::Badge("csharp", EditorUI::Tone::Info);
 			any = true;
 		}
 		if (!any) {
@@ -1059,8 +1050,10 @@ namespace Index {
 		}
 
 		ImGui::PushID((std::string(idHint) + ":" + manifest.Name).c_str());
+		BeginPackageCard();
 
-		ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "%s", manifest.Name.c_str());
+		ImGui::AlignTextToFramePadding();
+		ImGui::TextColored(EditorTheme::Colors::Info(), "%s", manifest.Name.c_str());
 		ImGui::SameLine();
 		ImGui::TextDisabled("v%s", manifest.Version.c_str());
 
@@ -1070,10 +1063,9 @@ namespace Index {
 		const bool canMutate = (project != nullptr) && !m_IsOperating && !automating;
 
 		if (installed) {
-			ImGui::SameLine(ImGui::GetContentRegionMax().x - buttonWidth);
+			ImGui::SameLine(CardButtonX(buttonWidth));
 			if (!canMutate) ImGui::BeginDisabled();
-			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.2f, 0.2f, 1.0f));
-			if (ImGui::Button("Uninstall", ImVec2(buttonWidth, 0))) {
+			if (EditorUI::Button("Uninstall", EditorUI::ButtonVariant::Danger, ImVec2(buttonWidth, 0))) {
 				auto result = IndexPackageInstaller::UninstallFromProject(*project, manifest.Name);
 				m_StatusMessage = result.Message;
 				m_StatusIsError = !result.Success;
@@ -1083,14 +1075,12 @@ namespace Index {
 					StartPostInstallAutomation();
 				}
 			}
-			ImGui::PopStyleColor();
 			if (!canMutate) ImGui::EndDisabled();
 		}
 		else if (project) {
-			ImGui::SameLine(ImGui::GetContentRegionMax().x - buttonWidth);
+			ImGui::SameLine(CardButtonX(buttonWidth));
 			if (!canMutate) ImGui::BeginDisabled();
-			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.2f, 1.0f));
-			if (ImGui::Button("Install", ImVec2(buttonWidth, 0))) {
+			if (EditorUI::Button("Install", EditorUI::ButtonVariant::Primary, ImVec2(buttonWidth, 0))) {
 				auto result = IndexPackageInstaller::InstallToProject(*project, manifest.Name);
 				m_StatusMessage = result.Message;
 				m_StatusIsError = !result.Success;
@@ -1099,7 +1089,6 @@ namespace Index {
 					StartPostInstallAutomation(manifest.Name);
 				}
 			}
-			ImGui::PopStyleColor();
 			if (!canMutate) ImGui::EndDisabled();
 		}
 
@@ -1107,15 +1096,17 @@ namespace Index {
 		if (!manifest.Description.empty()) {
 			ImGui::TextWrapped("%s", manifest.Description.c_str());
 		}
-		ImGui::Separator();
+		EndPackageCard();
 		ImGui::PopID();
 	}
 
 	void PackageManagerPanel::RenderNugetPackageRow(const PackageInfo& pkg, int index) {
 		ImGui::PushID(index);
+		BeginPackageCard();
 
+		ImGui::AlignTextToFramePadding();
 		if (pkg.Verified) {
-			ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s", pkg.Id.c_str());
+			ImGui::TextColored(EditorTheme::Colors::Info(), "%s", pkg.Id.c_str());
 		}
 		else {
 			ImGui::TextUnformatted(pkg.Id.c_str());
@@ -1124,14 +1115,13 @@ namespace Index {
 		ImGui::TextDisabled("v%s", pkg.Version.c_str());
 
 		const float buttonWidth = 80.0f;
-		ImGui::SameLine(ImGui::GetContentRegionMax().x - buttonWidth);
+		ImGui::SameLine(CardButtonX(buttonWidth));
 
 		bool disabled = m_IsOperating;
 		if (disabled) ImGui::BeginDisabled();
 
 		if (pkg.IsInstalled) {
-			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.2f, 0.2f, 1.0f));
-			if (ImGui::Button("Remove", ImVec2(buttonWidth, 0))) {
+			if (EditorUI::Button("Remove", EditorUI::ButtonVariant::Danger, ImVec2(buttonWidth, 0))) {
 				m_IsOperating = true;
 				m_OperationWasInstall = false;
 				m_OperationTarget = pkg.Id;
@@ -1140,11 +1130,9 @@ namespace Index {
 				m_StatusIsError = false;
 				m_OperationFuture = m_Manager->RemoveAsync(m_SelectedSource, pkg.Id);
 			}
-			ImGui::PopStyleColor();
 		}
 		else {
-			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.2f, 1.0f));
-			if (ImGui::Button("Install", ImVec2(buttonWidth, 0))) {
+			if (EditorUI::Button("Install", EditorUI::ButtonVariant::Primary, ImVec2(buttonWidth, 0))) {
 				m_IsOperating = true;
 				m_OperationWasInstall = true;
 				m_OperationTarget = pkg.Id;
@@ -1153,7 +1141,6 @@ namespace Index {
 				m_StatusIsError = false;
 				m_OperationFuture = m_Manager->InstallAsync(m_SelectedSource, pkg.Id, pkg.Version);
 			}
-			ImGui::PopStyleColor();
 		}
 		if (disabled) ImGui::EndDisabled();
 
@@ -1172,7 +1159,7 @@ namespace Index {
 					ImGui::TextDisabled("| %lld downloads", pkg.TotalDownloads);
 			}
 		}
-		ImGui::Separator();
+		EndPackageCard();
 		ImGui::PopID();
 	}
 
@@ -1206,10 +1193,12 @@ namespace Index {
 					if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &widePath)) && widePath) {
 						const int len = WideCharToMultiByte(CP_UTF8, 0, widePath, -1, nullptr, 0, nullptr, nullptr);
 						if (len > 1) {
-							std::string utf8(static_cast<size_t>(len - 1), '\0');
-							WideCharToMultiByte(CP_UTF8, 0, widePath, -1, utf8.data(), len, nullptr, nullptr);
-							outPath = std::move(utf8);
-							picked = true;
+							std::string utf8(static_cast<size_t>(len), '\0');
+							if (WideCharToMultiByte(CP_UTF8, 0, widePath, -1, utf8.data(), len, nullptr, nullptr) == len) {
+								utf8.pop_back();
+								outPath = std::move(utf8);
+								picked = true;
+							}
 						}
 						CoTaskMemFree(widePath);
 					}
@@ -1235,6 +1224,7 @@ namespace Index {
 
 		// Track the package name so PollAutomationTask can roll back on load failure; empty = no rollback.
 		m_PendingPostInstallPackageName = justInstalledPackageName;
+		const std::string projectRoot = project->RootDirectory;
 
 		{
 			std::scoped_lock lock(m_AutomationTask->Mutex);
@@ -1246,6 +1236,7 @@ namespace Index {
 			m_AutomationTask->Finished = false;
 			m_AutomationTask->Success = false;
 			m_AutomationTask->Error.clear();
+			m_AutomationTask->ProjectRoot = projectRoot;
 		}
 		m_AutomationTask->Running.store(true, std::memory_order_release);
 
@@ -1254,25 +1245,48 @@ namespace Index {
 			m_AutomationWorker.join();
 		}
 
-		// Capture state by value so the worker is independent of the project
-		// lifetime (user may close/switch projects mid-flight).
-
-		// shared_ptr keeps task state alive if panel shuts down mid-flight.
+		const std::string buildConfiguration = IndexProject::GetActiveBuildConfiguration();
 		auto state = m_AutomationTask;
-		m_AutomationWorker = std::thread([state]() {
+		m_AutomationWorker = std::thread([state, projectRoot, buildConfiguration]() {
 			{
 				std::scoped_lock lock(state->Mutex);
-				state->Stage = "Refreshing package host...";
-				state->Progress = 0.5f;
+				state->Stage = "Generating package workspace...";
+				state->Progress = 0.15f;
 			}
 
-			std::this_thread::sleep_for(std::chrono::milliseconds(80)); // ensure spinner is visible for at least one frame.
+			IndexProject::AutomateResult automation;
+			try {
+				automation = IndexProject::AutomateForProject(
+					projectRoot, buildConfiguration, "x64");
+			}
+			catch (const std::exception& exception) {
+				std::scoped_lock lock(state->Mutex);
+				state->Error = std::string("Package automation failed: ") + exception.what();
+				state->Progress = 1.0f;
+				state->Finished = true;
+				state->Running.store(false, std::memory_order_release);
+				return;
+			}
 
 			{
 				std::scoped_lock lock(state->Mutex);
+				if (!automation.Regenerate.Succeeded) {
+					state->Error = "Package workspace generation failed.";
+					if (!automation.Regenerate.Output.empty()) {
+						state->Error += "\n\n" + automation.Regenerate.Output;
+					}
+				}
+				else if (!automation.Build.Succeeded) {
+					state->Error = "Package build failed.";
+					if (!automation.Build.Output.empty()) {
+						state->Error += "\n\n" + automation.Build.Output;
+					}
+				}
+				else {
+					state->Success = true;
+					state->Stage = "Package build complete";
+				}
 				state->Progress = 1.0f;
-				state->Success = true;
-				state->Stage = "Done";
 				state->Finished = true;
 			}
 			state->Running.store(false, std::memory_order_release);
@@ -1285,11 +1299,13 @@ namespace Index {
 		bool finished = false;
 		bool success = false;
 		std::string error;
+		std::string projectRoot;
 		{
 			std::scoped_lock lock(m_AutomationTask->Mutex);
 			finished = m_AutomationTask->Finished;
 			success = m_AutomationTask->Success;
 			error = m_AutomationTask->Error;
+			projectRoot = m_AutomationTask->ProjectRoot;
 		}
 
 		if (!finished) return;
@@ -1307,19 +1323,37 @@ namespace Index {
 		// Clear up-front so a fault in LoadInstalled doesn't leave the name and cause a phantom rollback later.
 		const std::string pendingInstall = std::move(m_PendingPostInstallPackageName);
 		m_PendingPostInstallPackageName.clear();
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		const bool originalProjectIsActive = project && project->RootDirectory == projectRoot;
 
 		if (success) {
-			const size_t newlyLoaded = PackageHost::LoadInstalled();
+			if (!originalProjectIsActive) {
+				m_StatusMessage = "Package build complete for the original project. The active project changed, "
+					"so no package was loaded or modified; it will load when that project opens again.";
+				m_StatusIsError = false;
+				m_ManifestsDirty = true;
+				return;
+			}
 
-			// SEH rollback: if the DLL failed to load it stays in project.json causing repeated crash-on-open;
-			// remove it from the allow-list immediately so the project stays usable.
+			const size_t newlyLoaded = PackageHost::LoadInstalled();
+			bool shouldRollback = false;
+			if (!pendingInstall.empty()) {
+				const std::vector<IndexPackageManifest> manifests =
+					IndexPackageInstaller::EnumerateAll(project->RootDirectory);
+				const auto manifest = std::find_if(manifests.begin(), manifests.end(),
+					[&](const IndexPackageManifest& candidate) {
+						return candidate.Name == pendingInstall;
+					});
+				shouldRollback = manifest == manifests.end()
+					|| IndexPackageInstaller::ShouldRollbackAfterLoad(
+						*manifest, PackageHost::IsPackageLoaded(pendingInstall));
+			}
+
+			// A failed native load would otherwise fail again on every project open.
 			bool didRollback = false;
-			if (!pendingInstall.empty() && !PackageHost::IsPackageLoaded(pendingInstall)) {
-				IndexProject* project = ProjectManager::GetCurrentProject();
-				if (project) {
-					IndexPackageInstaller::UninstallFromProject(*project, pendingInstall);
-					didRollback = true;
-				}
+			if (shouldRollback) {
+				IndexPackageInstaller::UninstallFromProject(*project, pendingInstall);
+				didRollback = true;
 			}
 
 			if (didRollback) {
@@ -1348,6 +1382,18 @@ namespace Index {
 			}
 		}
 		else {
+			if (!pendingInstall.empty()) {
+				if (originalProjectIsActive) {
+					IndexPackageInstaller::UninstallFromProject(*project, pendingInstall);
+					if (!error.empty()) {
+						error += "\n\nThe package was removed from this project's allow-list.";
+					}
+				}
+				else {
+					if (!error.empty()) error += "\n\n";
+					error += "The active project changed; no project allow-list was modified.";
+				}
+			}
 			// Premake/MSBuild output can be hundreds of lines — surface the full
 			// text in the modal popup. Don't echo a redundant one-liner in the
 			// bottom strip; the popup is the canonical channel for errors.

@@ -12,6 +12,8 @@ namespace Index {
 		: m_World(settings) {
 	}
 
+	IndexPhysicsWorld2D::~IndexPhysicsWorld2D() = default;
+
 	void IndexPhysicsWorld2D::Step(float dt) {
 		m_World.Step(dt);
 		DispatchContacts();
@@ -38,7 +40,7 @@ namespace Index {
 	}
 
 	IndexPhys::Body* IndexPhysicsWorld2D::CreateBody(EntityHandle entity, IndexPhys::BodyType type, Scene* scene) {
-		uint32_t key = static_cast<uint32_t>(entity);
+		const BodyKey key{ scene, static_cast<uint32_t>(entity) };
 		if (m_Bodies.count(key)) {
 			IDX_CORE_WARN_TAG("IndexPhysics", "Entity already has a Index-Physics body");
 			return m_Bodies[key].get();
@@ -53,22 +55,20 @@ namespace Index {
 		return ptr;
 	}
 
-	void IndexPhysicsWorld2D::DestroyBody(EntityHandle entity) {
-		uint32_t key = static_cast<uint32_t>(entity);
+	void IndexPhysicsWorld2D::DestroyBody(EntityHandle entity, Scene* scene) {
+		const BodyKey key{ scene, static_cast<uint32_t>(entity) };
 
 		auto it = m_Bodies.find(key);
-		if (it == m_Bodies.end()) return;
-
-		IndexPhys::Body* ptr = it->second.get();
-
-		// Detach but do NOT destroy: collider components own their lifetime; destroying here would dangle the raw m_Collider pointer in the still-alive component.
-		m_World.DetachCollider(*ptr);
+		if (it != m_Bodies.end()) {
+			IndexPhys::Body* ptr = it->second.get();
+			// Collider components own their allocations, so only detach them here.
+			m_World.DetachCollider(*ptr);
+			m_World.UnregisterBody(*ptr);
+			m_BodyToEntity.erase(ptr);
+			m_BodyToScene.erase(ptr);
+			m_Bodies.erase(it);
+		}
 		m_AttachedColliderKind.erase(key);
-
-		m_World.UnregisterBody(*ptr);
-		m_BodyToEntity.erase(ptr);
-		m_BodyToScene.erase(ptr);
-		m_Bodies.erase(it);
 		m_ContactCallbacks.erase(key);
 
 		// Drop any cached contact pair referencing this entity so the next
@@ -83,8 +83,8 @@ namespace Index {
 		}
 	}
 
-	IndexPhys::Body* IndexPhysicsWorld2D::GetBody(EntityHandle entity) {
-		uint32_t key = static_cast<uint32_t>(entity);
+	IndexPhys::Body* IndexPhysicsWorld2D::GetBody(EntityHandle entity, Scene* scene) {
+		const BodyKey key{ scene, static_cast<uint32_t>(entity) };
 		auto it = m_Bodies.find(key);
 		return it != m_Bodies.end() ? it->second.get() : nullptr;
 	}
@@ -108,11 +108,11 @@ namespace Index {
 		return true;
 	}
 
-	IndexPhys::BoxCollider* IndexPhysicsWorld2D::CreateBoxCollider(EntityHandle entity, const Vec2& halfExtents) {
-		uint32_t key = static_cast<uint32_t>(entity);
+	IndexPhys::BoxCollider* IndexPhysicsWorld2D::CreateBoxCollider(EntityHandle entity, const Vec2& halfExtents, Scene* scene) {
+		const BodyKey key{ scene, static_cast<uint32_t>(entity) };
 
 		// Replace only the BOX collider — keeps a coexisting circle collider's pointer valid.
-		DestroyCollider(entity, FastColliderKind::Box);
+		DestroyCollider(entity, FastColliderKind::Box, scene);
 
 		auto collider = std::make_unique<IndexPhys::BoxCollider>(IndexPhys::Vec2(halfExtents.x, halfExtents.y));
 		IndexPhys::BoxCollider* ptr = collider.get();
@@ -130,10 +130,10 @@ namespace Index {
 		return ptr;
 	}
 
-	IndexPhys::CircleCollider* IndexPhysicsWorld2D::CreateCircleCollider(EntityHandle entity, float radius) {
-		uint32_t key = static_cast<uint32_t>(entity);
+	IndexPhys::CircleCollider* IndexPhysicsWorld2D::CreateCircleCollider(EntityHandle entity, float radius, Scene* scene) {
+		const BodyKey key{ scene, static_cast<uint32_t>(entity) };
 
-		DestroyCollider(entity, FastColliderKind::Circle);
+		DestroyCollider(entity, FastColliderKind::Circle, scene);
 
 		auto collider = std::make_unique<IndexPhys::CircleCollider>(radius);
 		IndexPhys::CircleCollider* ptr = collider.get();
@@ -150,8 +150,8 @@ namespace Index {
 		return ptr;
 	}
 
-	void IndexPhysicsWorld2D::DestroyCollider(EntityHandle entity, FastColliderKind kind) {
-		const uint32_t key = static_cast<uint32_t>(entity);
+	void IndexPhysicsWorld2D::DestroyCollider(EntityHandle entity, FastColliderKind kind, Scene* scene) {
+		const BodyKey key{ scene, static_cast<uint32_t>(entity) };
 		auto it = m_Colliders.find(ColliderKey{ key, kind });
 		if (it == m_Colliders.end()) return;
 
@@ -191,46 +191,68 @@ namespace Index {
 	void IndexPhysicsWorld2D::PurgeBodiesForScene(Scene* scene) {
 		if (!scene) return;
 
-		// Collect first — DestroyBody mutates m_BodyToScene / m_BodyToEntity, so
-		// we must not iterate those maps while destroying their entries.
-		std::vector<EntityHandle> entities;
-		for (const auto& [body, ownerScene] : m_BodyToScene) {
-			if (ownerScene == scene) {
-				auto it = m_BodyToEntity.find(body);
-				if (it != m_BodyToEntity.end()) entities.push_back(it->second);
-			}
+		std::vector<BodyKey> bodies;
+		for (const auto& [key, body] : m_Bodies) {
+			(void)body;
+			if (key.scene == scene) bodies.push_back(key);
 		}
 
-		// DestroyBody FIRST: it detaches the body's collider; DestroyAllCollidersOnEntity then finds no body entry and skips DetachCollider — preventing a double-detach.
-		for (EntityHandle e : entities) {
-			DestroyBody(e);
-			DestroyAllCollidersOnEntity(e);
+		for (const BodyKey& key : bodies) {
+			const EntityHandle entity = static_cast<EntityHandle>(static_cast<entt::entity>(key.entity));
+			DestroyBody(entity, key.scene);
 		}
-	}
 
-	void IndexPhysicsWorld2D::DestroyAllCollidersOnEntity(EntityHandle entity) {
-		const uint32_t key = static_cast<uint32_t>(entity);
-		auto bodyIt = m_Bodies.find(key);
-		if (bodyIt != m_Bodies.end()) {
-			m_World.DetachCollider(*bodyIt->second);
-		}
-		m_AttachedColliderKind.erase(key);
-		for (auto it = m_Colliders.begin(); it != m_Colliders.end(); ) {
-			if (it->first.entity == key) {
+		for (auto it = m_Colliders.begin(); it != m_Colliders.end();) {
+			if (it->first.owner.scene == scene) {
 				m_World.UnregisterCollider(*it->second);
 				it = m_Colliders.erase(it);
-			} else {
+			}
+			else {
+				++it;
+			}
+		}
+		for (auto it = m_AttachedColliderKind.begin(); it != m_AttachedColliderKind.end();) {
+			if (it->first.scene == scene) it = m_AttachedColliderKind.erase(it);
+			else ++it;
+		}
+		for (auto it = m_ContactCallbacks.begin(); it != m_ContactCallbacks.end();) {
+			if (it->first.scene == scene) it = m_ContactCallbacks.erase(it);
+			else ++it;
+		}
+		for (auto it = m_PreviousContacts.begin(); it != m_PreviousContacts.end();) {
+			if (it->entityA.scene == scene || it->entityB.scene == scene) {
+				it = m_PreviousContacts.erase(it);
+			}
+			else {
 				++it;
 			}
 		}
 	}
 
-	void IndexPhysicsWorld2D::RegisterContactCallback(EntityHandle entity, IndexContactCallback callback) {
-		m_ContactCallbacks[static_cast<uint32_t>(entity)] = std::move(callback);
+	void IndexPhysicsWorld2D::DestroyAllCollidersOnEntity(EntityHandle entity, Scene* scene) {
+		const BodyKey key{ scene, static_cast<uint32_t>(entity) };
+		auto bodyIt = m_Bodies.find(key);
+		if (bodyIt != m_Bodies.end()) {
+			m_World.DetachCollider(*bodyIt->second);
+		}
+		m_AttachedColliderKind.erase(key);
+		for (auto it = m_Colliders.begin(); it != m_Colliders.end();) {
+			if (it->first.owner == key) {
+				m_World.UnregisterCollider(*it->second);
+				it = m_Colliders.erase(it);
+			}
+			else {
+				++it;
+			}
+		}
 	}
 
-	void IndexPhysicsWorld2D::UnregisterContactCallback(EntityHandle entity) {
-		m_ContactCallbacks.erase(static_cast<uint32_t>(entity));
+	void IndexPhysicsWorld2D::RegisterContactCallback(EntityHandle entity, Scene* scene, IndexContactCallback callback) {
+		m_ContactCallbacks[BodyKey{ scene, static_cast<uint32_t>(entity) }] = std::move(callback);
+	}
+
+	void IndexPhysicsWorld2D::UnregisterContactCallback(EntityHandle entity, Scene* scene) {
+		m_ContactCallbacks.erase(BodyKey{ scene, static_cast<uint32_t>(entity) });
 	}
 
 	void IndexPhysicsWorld2D::DispatchScriptContacts(
@@ -248,6 +270,10 @@ namespace Index {
 		const auto& contacts = m_World.GetContacts();
 		currentContacts.reserve(contacts.size());
 		currentResolved.reserve(contacts.size());
+		const auto bodyKeyLess = [](const BodyKey& lhs, const BodyKey& rhs) {
+			if (lhs.scene != rhs.scene) return std::less<Scene*>{}(lhs.scene, rhs.scene);
+			return lhs.entity < rhs.entity;
+		};
 
 		for (const auto& contact : contacts) {
 			auto itA = m_BodyToEntity.find(contact.bodyA);
@@ -259,11 +285,10 @@ namespace Index {
 			if (auto sit = m_BodyToScene.find(contact.bodyA); sit != m_BodyToScene.end()) sceneA = sit->second;
 			if (auto sit = m_BodyToScene.find(contact.bodyB); sit != m_BodyToScene.end()) sceneB = sit->second;
 
-			uint32_t a = static_cast<uint32_t>(itA->second);
-			uint32_t b = static_cast<uint32_t>(itB->second);
-			if (a > b) {
+			BodyKey a{ sceneA, static_cast<uint32_t>(itA->second) };
+			BodyKey b{ sceneB, static_cast<uint32_t>(itB->second) };
+			if (bodyKeyLess(b, a)) {
 				std::swap(a, b);
-				std::swap(sceneA, sceneB);
 			}
 			ContactPair pair{ a, b };
 			if (!currentContacts.insert(pair).second) {
@@ -279,10 +304,10 @@ namespace Index {
 			}
 
 			Collision2D collision{};
-			collision.entityA = static_cast<EntityHandle>(static_cast<entt::entity>(pair.entityA));
-			collision.entityB = static_cast<EntityHandle>(static_cast<entt::entity>(pair.entityB));
-			collision.sceneA = sceneA;
-			collision.sceneB = sceneB;
+			collision.entityA = static_cast<EntityHandle>(static_cast<entt::entity>(pair.entityA.entity));
+			collision.entityB = static_cast<EntityHandle>(static_cast<entt::entity>(pair.entityB.entity));
+			collision.sceneA = pair.entityA.scene;
+			collision.sceneB = pair.entityB.scene;
 			collision.contactPoint = midpoint;
 
 			currentResolved.push_back({ pair, collision });
@@ -302,20 +327,10 @@ namespace Index {
 			for (const ContactPair& pair : m_PreviousContacts) {
 				if (currentContacts.count(pair)) continue;
 				Collision2D collision{};
-				collision.entityA = static_cast<EntityHandle>(static_cast<entt::entity>(pair.entityA));
-				collision.entityB = static_cast<EntityHandle>(static_cast<entt::entity>(pair.entityB));
-				// Scene context is best-effort — the bodies may already be torn
-				// down. Look up via the still-live m_BodyToScene map by entity.
-				for (const auto& [body, ent] : m_BodyToEntity) {
-					if (static_cast<uint32_t>(ent) == pair.entityA) {
-						auto sit = m_BodyToScene.find(body);
-						if (sit != m_BodyToScene.end()) collision.sceneA = sit->second;
-					}
-					else if (static_cast<uint32_t>(ent) == pair.entityB) {
-						auto sit = m_BodyToScene.find(body);
-						if (sit != m_BodyToScene.end()) collision.sceneB = sit->second;
-					}
-				}
+				collision.entityA = static_cast<EntityHandle>(static_cast<entt::entity>(pair.entityA.entity));
+				collision.entityB = static_cast<EntityHandle>(static_cast<entt::entity>(pair.entityB.entity));
+				collision.sceneA = pair.entityA.scene;
+				collision.sceneB = pair.entityB.scene;
 				onExit(collision);
 			}
 		}
@@ -344,11 +359,19 @@ namespace Index {
 			IndexContactCallback cbA;
 			IndexContactCallback cbB;
 			if (entityA != entt::null) {
-				auto cbIt = m_ContactCallbacks.find(static_cast<uint32_t>(entityA));
+				Scene* sceneA = nullptr;
+				if (auto sceneIt = m_BodyToScene.find(contact.bodyA); sceneIt != m_BodyToScene.end()) {
+					sceneA = sceneIt->second;
+				}
+				auto cbIt = m_ContactCallbacks.find(BodyKey{ sceneA, static_cast<uint32_t>(entityA) });
 				if (cbIt != m_ContactCallbacks.end()) cbA = cbIt->second;
 			}
 			if (entityB != entt::null) {
-				auto cbIt = m_ContactCallbacks.find(static_cast<uint32_t>(entityB));
+				Scene* sceneB = nullptr;
+				if (auto sceneIt = m_BodyToScene.find(contact.bodyB); sceneIt != m_BodyToScene.end()) {
+					sceneB = sceneIt->second;
+				}
+				auto cbIt = m_ContactCallbacks.find(BodyKey{ sceneB, static_cast<uint32_t>(entityB) });
 				if (cbIt != m_ContactCallbacks.end()) cbB = cbIt->second;
 			}
 

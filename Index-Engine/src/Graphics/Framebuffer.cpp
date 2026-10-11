@@ -125,6 +125,12 @@ namespace Index {
 		Destroy();
 	}
 
+	bool Framebuffer::ReadPixelsRGBA8(std::vector<uint8_t>& outRgba) const {
+		const GpuFramebuffer* fb = TryLookupFb(m_BackendId);
+		if (!fb || !fb->ColorTexture) return false;
+		return WebGPUBackend::ReadTextureRGBA8(fb->ColorTexture, fb->ColorFormat, fb->Width, fb->Height, outRgba);
+	}
+
 	bool Framebuffer::Recreate(int width, int height,
 		TextureFormat colorFormat, TextureFilter /*filter*/)
 	{
@@ -153,7 +159,8 @@ namespace Index {
 		colorDesc.dimension       = wgpu::TextureDimension::e2D;
 		colorDesc.size            = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
 		colorDesc.format          = colorWgpuFormat;
-		colorDesc.usage           = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+		colorDesc.usage           = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding
+			| wgpu::TextureUsage::CopySrc;
 		colorDesc.mipLevelCount   = 1;
 		colorDesc.sampleCount     = 1;
 		colorDesc.viewFormatCount = 0;
@@ -247,6 +254,13 @@ namespace Index {
 	void Framebuffer::ProcessFrameEndDeferredDestroy() {
 		g_PendingDestroyLastFrame.clear();
 		g_PendingDestroyLastFrame.swap(g_PendingDestroyThisFrame);
+	}
+
+	void Framebuffer::ReleaseAllBackendResources() {
+		g_PendingDestroyThisFrame.clear();
+		g_PendingDestroyLastFrame.clear();
+		g_ColorViewToFbo.clear();
+		g_Framebuffers.clear();
 	}
 
 }  // namespace Index

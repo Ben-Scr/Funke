@@ -276,6 +276,43 @@ local function AppendAll(dst, src)
     end
 end
 
+local function PackageProjectLocation(projectName)
+    local root = IndexPackageProjectLocationRoot or path.join(ROOT_DIR, "premake/generated")
+    return path.join(root, projectName)
+end
+
+local function PackageTargetDirectory()
+    local root = IndexPackageTargetRoot or path.join(ROOT_DIR, "bin")
+    return path.join(root, outputdir, "%{prj.name}")
+end
+
+local function PackageObjectDirectory()
+    local root = IndexPackageObjectRoot or path.join(ROOT_DIR, "bin-int")
+    return path.join(root, outputdir, "%{prj.name}")
+end
+
+local function PowerShellLiteral(value)
+    return "'" .. value:gsub("'", "''") .. "'"
+end
+
+local function NativeAbiMetadataCommand(hasEngineLinked)
+    local sidecar = PowerShellLiteral("%{cfg.buildtarget.abspath}.indexabi")
+    local boundary = hasEngineLinked and "engine_cpp" or "standalone_c"
+    local lines = "$lines=@('schema=1','boundary=" .. boundary .. "')"
+
+    if hasEngineLinked then
+        local engineDll = PowerShellLiteral(path.join(
+            ROOT_DIR, "bin", outputdir, "Index-Engine", "Index-Engine.dll"))
+        lines = "$engine=" .. engineDll ..
+            ";if(!(Test-Path -LiteralPath $engine)){throw 'Matching Index-Engine.dll was not built'}" ..
+            ";$hash=(Get-FileHash -LiteralPath $engine -Algorithm SHA256).Hash.ToLowerInvariant()" ..
+            ";$lines=@('schema=1','boundary=engine_cpp',('engine_sha256='+$hash))"
+    end
+
+    return "powershell -NoProfile -ExecutionPolicy Bypass -Command \"" .. lines ..
+        ";[IO.File]::WriteAllLines(" .. sidecar .. ",$lines,[Text.Encoding]::ASCII)\""
+end
+
 local function RegisterNativeProject(manifest)
     local layers = manifest.layers
     local hasEngineLinked   = layers.native ~= nil
@@ -300,7 +337,7 @@ local function RegisterNativeProject(manifest)
     if hasEngineUnlinked then AbsorbLayer(layers.native_standalone) end
 
     project(nativeName)
-        location(path.join(ROOT_DIR, "premake/generated", nativeName))
+        location(PackageProjectLocation(nativeName))
         kind "SharedLib"
         language "C++"
         cppdialect "C++20"
@@ -308,8 +345,8 @@ local function RegisterNativeProject(manifest)
         staticruntime "off"
         warnings "Extra"
 
-        targetdir(path.join(ROOT_DIR, "bin/" .. outputdir .. "/%{prj.name}"))
-        objdir(path.join(ROOT_DIR, "bin-int/" .. outputdir .. "/%{prj.name}"))
+        targetdir(PackageTargetDirectory())
+        objdir(PackageObjectDirectory())
 
         files(sources)
         includedirs(includes)
@@ -319,6 +356,9 @@ local function RegisterNativeProject(manifest)
             -- include set transitively. `native_standalone` skips this — it's
             -- the explicit "no engine link" path.
             UseDependencySet(Dependency.EditorRuntimeCommon)
+            if UseIndexProfilerDependencies then
+                UseIndexProfilerDependencies(true)
+            end
             -- Engine is a SharedLib; consumers must declare the import side of INDEX_API.
             defines { "IDX_IMPORT_DLL" }
             -- Match the engine's EnTT entity-bit split so transitively-included
@@ -332,23 +372,17 @@ local function RegisterNativeProject(manifest)
             -- must have the folder on their include path so that override path
             -- stays consistent with the main engine binaries.
             includedirs { IndexEntityBitsConfigIncludeDir }
-            -- EditorRuntimeCommon pulls in EngineCoreRender, which links
-            -- webgpu_dawn.lib. The lib lives under per-config Debug/Release
-            -- folders so libdirs MUST be set per-config (LNK2038 otherwise).
-            -- ApplyDawnLibDirs accepts a script-relative prefix, but this
-            -- script is loaded via dofile from the repo-root premake5.lua,
-            -- and the project location here is an absolute path under
-            -- premake/generated/Pkg.<Name>.Native/ — that mix doesn't resolve
-            -- through ApplyDawnLibDirs's relative-prefix scheme. Use absolute
-            -- paths (rooted at ROOT_DIR) so premake can compute the correct
-            -- vcxproj-relative output on its own.
-            filter "configurations:Debug"
-                libdirs { path.join(ROOT_DIR, "External/dawn/build/src/dawn/native/Debug") }
-            filter "configurations:Release"
-                libdirs { path.join(ROOT_DIR, "External/dawn/build/src/dawn/native/Release") }
-            filter "configurations:Dist"
-                libdirs { path.join(ROOT_DIR, "External/dawn/build/src/dawn/native/Release") }
-            filter {}
+            if IndexPackageUseDawnLibDirs ~= false then
+                -- Engine-workspace packages link Dawn directly; isolated
+                -- project packages only consume the engine import library.
+                filter "configurations:Debug"
+                    libdirs { path.join(ROOT_DIR, "External/dawn/build/src/dawn/native/Debug") }
+                filter "configurations:Release"
+                    libdirs { path.join(ROOT_DIR, "External/dawn/build/src/dawn/native/Release") }
+                filter "configurations:Dist"
+                    libdirs { path.join(ROOT_DIR, "External/dawn/build/src/dawn/native/Release") }
+                filter {}
+            end
         end
 
         if manifest.dependencies then
@@ -366,6 +400,7 @@ local function RegisterNativeProject(manifest)
             flags { "MultiProcessorCompile" }
             buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
             defines { "IDX_PLATFORM_WINDOWS" }
+            postbuildcommands { NativeAbiMetadataCommand(hasEngineLinked) }
 
         filter "system:linux"
             pic "On"
@@ -400,21 +435,21 @@ local function RegisterCSharpProject(manifest)
     local csharpName = "Pkg." .. manifest.name
 
     project(csharpName)
-        location(path.join(ROOT_DIR, "premake/generated", csharpName))
+        location(PackageProjectLocation(csharpName))
         kind "SharedLib"
         language "C#"
-        dotnetframework "net9.0"
+        dotnetframework "net10.0"
 
         if layer.allow_unsafe then
             clr "Unsafe"
         end
 
-        targetdir(path.join(ROOT_DIR, "bin/" .. outputdir .. "/%{prj.name}"))
-        objdir(path.join(ROOT_DIR, "bin-int/" .. outputdir .. "/%{prj.name}"))
+        targetdir(PackageTargetDirectory())
+        objdir(PackageObjectDirectory())
 
         -- Sensible defaults for Index packages: nullable annotations enabled, dynamic
         -- loading allowed (so the runtime can Assembly.LoadFrom them), output sits
-        -- directly under bin/<config>/<Pkg.Name>/ without a net9.0/ sub-folder.
+        -- directly under bin/<config>/<Pkg.Name>/ without a net10.0/ sub-folder.
         vsprops {
             AppendTargetFrameworkToOutputPath = "false",
             Nullable = "enable",
@@ -440,8 +475,16 @@ local function RegisterCSharpProject(manifest)
         -- packages that don't touch scene state (e.g. Pkg.Index.Serialization)
         -- pay nothing for the unused reference. Keeping this implicit means
         -- package authors don't have to plumb the dependency themselves.
-        links { "Index-ScriptCore" }
-        dependson { "Index-ScriptCore" }
+        if IndexPackageScriptCoreAssemblies then
+            for configuration, assemblyPath in pairs(IndexPackageScriptCoreAssemblies) do
+                filter("configurations:" .. configuration)
+                    links { assemblyPath }
+            end
+            filter {}
+        else
+            links { "Index-ScriptCore" }
+            dependson { "Index-ScriptCore" }
+        end
 
         -- If this package bridges to its own native sibling via P/Invoke, make
         -- the C# project build-depend on Pkg.<Name>.Native so the native DLL the
@@ -597,8 +640,8 @@ end
 --     build project-local packages — they only need the SDK-side premake
 --     script and the bundled EngineSDK.
 --
--- The engine premake intentionally ignores `--index-project` now; that flag
--- is for the project-packages premake script.
+-- The engine workspace no longer loads project-local packages from `--index-project`;
+-- that option only selects entityBits there. This script owns package generation.
 function PackageSystem.LoadEnginePackages()
     local manifests = {}
     local byName = {}
@@ -623,6 +666,40 @@ function PackageSystem.LoadEnginePackages()
         table.insert(names, m.name)
     end
     print("[Index Packages] Registered " .. tostring(#sorted) .. " engine package(s): " .. table.concat(names, ", "))
+end
+
+function PackageSystem.LoadProjectPackages(projectRootDir)
+    if not projectRootDir or projectRootDir == "" then
+        PackageError("LoadProjectPackages requires an absolute project root.")
+    end
+
+    local manifests = {}
+    local byName = {}
+    LoadManifestsFromRoot(path.join(ROOT_DIR, "packages"), manifests, byName)
+    LoadManifestsFromRoot(path.join(projectRootDir, "Packages"), manifests, byName)
+
+    local allowList = ReadProjectPackagesAllowList(projectRootDir)
+    manifests, byName = FilterManifestsByAllowList(manifests, byName, allowList or {})
+    if #manifests == 0 then
+        print("[Index Packages] No enabled packages to register for " .. projectRootDir)
+        return 0
+    end
+
+    local sorted = TopoSort(manifests, byName)
+    group "Packages"
+    for _, manifest in ipairs(sorted) do
+        RegisterNativeProject(manifest)
+        RegisterCSharpProject(manifest)
+    end
+    group ""
+
+    local names = {}
+    for _, manifest in ipairs(sorted) do
+        table.insert(names, manifest.name)
+    end
+    print("[Index Packages] Registered " .. tostring(#sorted) ..
+        " project package(s): " .. table.concat(names, ", "))
+    return #sorted
 end
 
 -- Backwards-compat alias. Old callers still work — there's a separate

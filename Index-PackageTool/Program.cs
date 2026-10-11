@@ -319,7 +319,7 @@ int Zip(string[] args)
 // Extracts <archive> into <outDir>. <outDir> is created if missing.
 // Refuses to overwrite existing files (the asset-library worker stages
 // into a fresh dir per download, so overwrite would mask a bug rather
-// than be useful). System.IO.Compression is in-box on .NET 9.
+// than be useful). System.IO.Compression is in-box on .NET 10.
 
 int Unzip(string[] args)
 {

@@ -6,6 +6,7 @@
 #include <webgpu/webgpu_cpp.h>
 
 #include <cstdint>
+#include <vector>
 
 namespace Index::WebGPUBackend {
 
@@ -24,6 +25,11 @@ namespace Index::WebGPUBackend {
 
 	// Currently always false — baseline WebGPU has no stable bindless feature; hook exists for future enablement.
 	bool                HasBindlessTextures();
+
+	// Blocking GPU→CPU copy of an 8-bit RGBA/BGRA texture (needs CopySrc usage). Submits pending frame
+	// commands first so earlier draws into the texture are included. Output: tight RGBA8, top row first.
+	bool ReadTextureRGBA8(const wgpu::Texture& texture, wgpu::TextureFormat format,
+		uint32_t width, uint32_t height, std::vector<uint8_t>& outRgba);
 
 	// ── Texture2D pool (defined in Graphics/Texture2D_WebGPU.cpp) ────────────
 

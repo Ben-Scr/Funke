@@ -28,7 +28,7 @@ namespace Index::Package {
             info.serializedName = serializedName;
         }
         info.drawInspector = drawInspector;
-        SceneManager::Get().RegisterComponentType<TComponent>(info);
+        SceneManager::RegisterComponentType<TComponent>(info);
     }
 
     template <typename TComponent>
@@ -67,7 +67,7 @@ namespace Index::Package {
         info.serialize = serialize ? &Trampoline::SerializeAdapter : nullptr;
         info.deserialize = deserialize ? &Trampoline::DeserializeAdapter : nullptr;
 
-        SceneManager::Get().RegisterComponentType<TComponent>(info);
+        SceneManager::RegisterComponentType<TComponent>(info);
     }
 
     // Call AFTER RegisterComponent; asserts if TComponent isn't registered yet (avoids silently dropping the gizmo).
@@ -75,7 +75,7 @@ namespace Index::Package {
     void SetEditorGizmo(void (*drawEditorGizmo)(Entity), bool always = false) {
         const std::type_index typeId(typeid(TComponent));
         bool patched = false;
-        SceneManager::Get().GetComponentRegistry().ForEachComponentInfo(
+        SceneManager::GetComponentRegistry().ForEachComponentInfo(
             [&](const std::type_index& id, ComponentInfo& info) {
                 if (id == typeId) {
                     info.drawEditorGizmo = drawEditorGizmo;
@@ -94,7 +94,7 @@ namespace Index::Package {
         const char* defaultName,
         std::function<Entity(Scene&)> create) {
 
-        SceneManager::Get().RegisterEntityPreset({
+        SceneManager::RegisterEntityPreset({
             menuPath ? menuPath : "",
             label ? label : "",
             defaultName ? defaultName : (label ? label : "Entity"),
@@ -112,7 +112,7 @@ namespace Index::Package {
         RegisterEntityPreset(menuPath, label, baseName.c_str(),
             [baseName](Scene& scene) {
                 Entity entity = scene.CreateEntity(baseName);
-                SceneManager::Get().GetComponentRegistry().AddWithDependencies(entity, typeid(TComponent));
+                SceneManager::GetComponentRegistry().AddWithDependencies(entity, typeid(TComponent));
                 return entity;
             });
     }
@@ -121,7 +121,7 @@ namespace Index::Package {
     void DeclareComponentConflict() {
         const std::type_index aId(typeid(A));
         const std::type_index bId(typeid(B));
-        SceneManager::Get().GetComponentRegistry().ForEachComponentInfo(
+        SceneManager::GetComponentRegistry().ForEachComponentInfo(
             [&](const std::type_index& id, ComponentInfo& info) {
                 if (id == aId) {
                     bool present = false;

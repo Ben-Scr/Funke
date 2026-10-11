@@ -10,6 +10,25 @@ import sys
 from pathlib import Path
 
 MINIMUM_PYTHON = (3, 10)
+TARGET_DOTNET_MAJOR = 10
+
+
+def find_latest_dotnet_host_pack_version(host_pack_base: Path) -> str | None:
+    if not host_pack_base.is_dir():
+        return None
+
+    candidates: list[tuple[tuple[int, ...], str]] = []
+    for directory in host_pack_base.iterdir():
+        parts = directory.name.split(".")
+        if (not directory.is_dir() or len(parts) < 3
+                or not all(part.isdigit() for part in parts)
+                or int(parts[0]) != TARGET_DOTNET_MAJOR):
+            continue
+        candidates.append((tuple(int(part) for part in parts), directory.name))
+
+    return max(candidates)[1] if candidates else None
+
+
 
 
 def ensure_supported_python() -> None:
@@ -47,13 +66,13 @@ def check_tool(name: str, cmd: str | None = None) -> bool:
 # installed by the shell wrapper before Setup.py runs.
 WINGET_PACKAGE_IDS = {
     "git": "Git.Git",
-    "dotnet": "Microsoft.DotNet.SDK.9",
+    "dotnet": "Microsoft.DotNet.SDK.10",
 }
 # Linux package names per tool, with per-manager overrides keyed by the manager
 # executable (see detect_linux_package_manager); "default" covers apt/dnf/zypper.
 LINUX_PACKAGES = {
     "git": {"default": ["git"]},
-    "dotnet": {"default": ["dotnet-sdk-9.0"], "pacman": ["dotnet-sdk"]},
+    "dotnet": {"default": ["dotnet-sdk-10.0"], "pacman": ["dotnet-sdk"]},
 }
 # Fallback premake build, downloaded only when vendor/bin/premake5 is absent AND
 # premake5 is not on PATH. Bump if the vendored toolchain moves on.
@@ -308,11 +327,11 @@ def setup_dotnet_unix(repo_root: Path) -> bool:
         print(f"  [!!] .NET host pack not found at '{host_pack_base}'.")
         return False
 
-    versions = sorted((d.name for d in host_pack_base.iterdir() if d.is_dir()), reverse=True)
-    if not versions:
-        print(f"  [!!] No host-pack versions under '{host_pack_base}'.")
+    version = find_latest_dotnet_host_pack_version(host_pack_base)
+    if not version:
+        print(f"  [!!] No stable .NET 10 host pack under '{host_pack_base}'.")
         return False
-    native = host_pack_base / versions[0] / "runtimes" / rid / "native"
+    native = host_pack_base / version / "runtimes" / rid / "native"
 
     dest = repo_root / "External" / "dotnet"
     lib_dest = dest / "lib"
@@ -382,15 +401,8 @@ def normalize_host_architecture(raw_arch: str | None) -> str:
 
 
 def detect_dotnet_version(dotnet_root: Path, host_arch: str) -> str | None:
-    """Find the latest installed .NET host pack version."""
     host_packs = dotnet_root / "packs" / f"Microsoft.NETCore.App.Host.win-{host_arch}"
-    if not host_packs.is_dir():
-        return None
-    versions = sorted(
-        [d.name for d in host_packs.iterdir() if d.is_dir()],
-        reverse=True,
-    )
-    return versions[0] if versions else None
+    return find_latest_dotnet_host_pack_version(host_packs)
 
 
 def detect_msbuild(script_dir: Path) -> str | None:
@@ -477,27 +489,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--module-profile",
         choices=("full", "core", "custom"),
-        help="Premake Index module profile to generate.",
+        help=(
+            "Premake Index module profile to generate. Custom accepts no module flags "
+            "(core-equivalent) or --with-editor for the complete application surface."
+        ),
     )
     parser.add_argument(
         "--with-render",
         action="store_true",
-        help="Forward --with-render to Premake when using a custom module profile.",
+        help="Forward --with-render to Premake; custom profiles must also pass --with-editor.",
     )
     parser.add_argument(
         "--with-audio",
         action="store_true",
-        help="Forward --with-audio to Premake when using a custom module profile.",
+        help="Forward --with-audio to Premake; custom profiles must also pass --with-editor.",
     )
     parser.add_argument(
         "--with-physics",
         action="store_true",
-        help="Forward --with-physics to Premake when using a custom module profile.",
+        help="Forward --with-physics to Premake; custom profiles must also pass --with-editor.",
     )
     parser.add_argument(
         "--with-scripting",
         action="store_true",
-        help="Forward --with-scripting to Premake when using a custom module profile.",
+        help=(
+            "Forward --with-scripting to Premake. Custom profiles also require --with-editor; "
+            "the editor enables render, audio, and physics."
+        ),
     )
     parser.add_argument(
         "--with-editor",
@@ -738,23 +756,34 @@ def main() -> int:
     if not premake_path:
         raise RuntimeError(describe_premake_expectation(repo_root))
 
+    run_step(
+        [sys.executable, str(script_dir / "generate_build_metadata.py")],
+        repo_root,
+        "Generating build identity metadata",
+    )
+
     action = args.generator or ("vs2022" if is_windows else "gmake2")
     premake_args = build_premake_args(args)
     run_step([premake_path, *premake_args, action], repo_root, f"Generating {action} files via Premake")
 
-    # E13: when scripting is on the table and dotnet is reachable, restore the
-    # generated solution so the .NET projects are ready to build immediately.
+    # .NET 10 projects must be restored by the dotnet SDK. The native solution
+    # is intentionally not passed to dotnet because it also contains vcxproj
+    # projects, which the SDK-only MSBuild cannot evaluate.
     if scripting_wanted and dotnet_exe:
-        sln = repo_root / "Index.sln"
-        if sln.is_file():
+        managed_projects = [
+            repo_root / "Index-ScriptCore" / "Index-ScriptCore.csproj",
+            repo_root / "Index-Sandbox" / "Index-Sandbox.csproj",
+            repo_root / "Index-PackageTool" / "Index-PackageTool.csproj",
+        ]
+        for managed_project in managed_projects:
+            if not managed_project.is_file():
+                continue
             run_step(
-                [dotnet_exe, "restore", str(sln)],
+                [dotnet_exe, "restore", str(managed_project)],
                 repo_root,
-                "Restoring .NET dependencies (dotnet restore Index.sln)",
+                f"Restoring .NET dependencies ({managed_project.name})",
                 allow_failure=True,
             )
-        else:
-            print("[Index Setup] Index.sln not produced by Premake; skipping dotnet restore.")
     elif scripting_wanted and not dotnet_exe:
         print("[Index Setup] Skipping dotnet restore - dotnet not on PATH.")
 

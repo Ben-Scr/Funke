@@ -4,6 +4,9 @@
 #include "Scene/Scene.hpp"
 #include "Collections/Curve.hpp"
 #include "Collections/Gradient.hpp"
+#include "Gui/EditorIcons.hpp"
+#include "Gui/EditorTheme.hpp"
+#include "Gui/EditorUI.hpp"
 #include <imgui.h>
 #include <cmath>
 
@@ -893,19 +896,47 @@ namespace Index::ImGuiUtils {
 		const ImVec2 previewMin = ImGui::GetCursorScreenPos();
 		const ImVec2 previewMax = ImVec2(previewMin.x + previewSize, previewMin.y + previewSize);
 
+		// Empty slot: rounded well with a dashed outline and a muted picture glyph + "No texture".
 		ImDrawList* drawList = ImGui::GetWindowDrawList();
-		DrawPreviewBackground(drawList, previewMin, previewMax);
-		DrawPreviewBorder(drawList, previewMin, previewMax);
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float rounding = style.FrameRounding * 1.5f;
+		drawList->AddRectFilled(previewMin, previewMax, ImGui::GetColorU32(ImGuiCol_FrameBg), rounding);
 
-		const char* label = "No Texture";
+		const ImU32 dashCol = ImGui::GetColorU32(ImGuiCol_TextDisabled, 0.45f);
+		const float inset = 3.0f;
+		const float dash = 5.0f, gap = 4.0f;
+		auto dashedLine = [&](ImVec2 a, ImVec2 b) {
+			const float len = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+			if (len <= 0.0f) return;
+			const ImVec2 dir((b.x - a.x) / len, (b.y - a.y) / len);
+			for (float t = 0.0f; t < len; t += dash + gap) {
+				const float e = std::min(t + dash, len);
+				drawList->AddLine(ImVec2(a.x + dir.x * t, a.y + dir.y * t), ImVec2(a.x + dir.x * e, a.y + dir.y * e), dashCol, 1.0f);
+			}
+		};
+		const ImVec2 d0(previewMin.x + inset, previewMin.y + inset);
+		const ImVec2 d1(previewMax.x - inset, previewMax.y - inset);
+		dashedLine(d0, ImVec2(d1.x, d0.y));
+		dashedLine(ImVec2(d1.x, d0.y), d1);
+		dashedLine(d1, ImVec2(d0.x, d1.y));
+		dashedLine(ImVec2(d0.x, d1.y), d0);
+
+		const char* label = "No texture";
 		const ImVec2 textSize = ImGui::CalcTextSize(label);
-		const ImVec2 textPos(
-			previewMin.x + (previewSize - textSize.x) * 0.5f,
-			previewMin.y + (previewSize - textSize.y) * 0.5f
-		);
-		// Shadow first so the label stays legible over the checker pattern.
-		drawList->AddText(ImVec2(textPos.x + 1.0f, textPos.y + 1.0f), IM_COL32(0, 0, 0, 200), label);
-		drawList->AddText(textPos, IM_COL32(225, 225, 225, 255), label);
+		const float glyph = std::round(previewSize * 0.30f);
+		const float blockH = glyph + style.ItemInnerSpacing.y + textSize.y;
+		const ImVec2 g0(previewMin.x + (previewSize - glyph) * 0.5f, previewMin.y + (previewSize - blockH) * 0.5f);
+		const ImVec2 g1(g0.x + glyph, g0.y + glyph * 0.8f);
+		const ImU32 glyphCol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+		drawList->AddRect(g0, g1, glyphCol, 3.0f, 0, 1.5f);
+		drawList->AddCircleFilled(ImVec2(g0.x + glyph * 0.70f, g0.y + glyph * 0.24f), glyph * 0.09f, glyphCol);
+		drawList->AddTriangleFilled(ImVec2(g0.x + glyph * 0.12f, g1.y - 2.0f), ImVec2(g0.x + glyph * 0.40f, g0.y + glyph * 0.36f),
+			ImVec2(g0.x + glyph * 0.66f, g1.y - 2.0f), glyphCol);
+		drawList->AddTriangleFilled(ImVec2(g0.x + glyph * 0.50f, g1.y - 2.0f), ImVec2(g0.x + glyph * 0.70f, g0.y + glyph * 0.50f),
+			ImVec2(g1.x - glyph * 0.10f, g1.y - 2.0f), glyphCol);
+
+		drawList->AddText(ImVec2(previewMin.x + (previewSize - textSize.x) * 0.5f, g0.y + glyph + style.ItemInnerSpacing.y),
+			glyphCol, label);
 
 		ImGui::Dummy(ImVec2(previewSize, previewSize));
 	}
@@ -918,17 +949,165 @@ namespace Index::ImGuiUtils {
 		ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
 	}
 
+	ImU32 AxisColor(int axis)
+	{
+		const bool dark = EditorTheme::IsDark();
+		switch (axis) {
+			case 0: return dark ? IM_COL32(229, 96, 79, 255)  : IM_COL32(196, 52, 38, 255);
+			case 1: return dark ? IM_COL32(123, 201, 111, 255) : IM_COL32(58, 140, 46, 255);
+			case 2: return dark ? IM_COL32(111, 168, 229, 255) : IM_COL32(40, 104, 186, 255);
+			default: return ImGui::GetColorU32(ImGuiCol_TextDisabled);
+		}
+	}
+
+	bool AxisDragFloat(const char* id, int axis, const char* axisLabel, float* value, float width,
+		float speed, const char* format, float vmin, float vmax)
+	{
+		// Left padding covers the axis letter so typed text (left-aligned in input mode) never overlaps it.
+		const ImVec2 basePad = ImGui::GetStyle().FramePadding;
+		const float letterW = ImGui::CalcTextSize(axisLabel).x;
+		ImGui::SetNextItemWidth(width);
+		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(basePad.x * 2.0f + letterW, basePad.y));
+		const bool changed = ImGui::DragFloat(id, value, speed, vmin, vmax, format);
+		ImGui::PopStyleVar();
+		const ImVec2 min = ImGui::GetItemRectMin();
+		ImGui::GetWindowDrawList()->AddText(ImVec2(min.x + basePad.x, min.y + basePad.y),
+			AxisColor(axis), axisLabel);
+		return changed;
+	}
+
+	bool FillDragFloat(const char* id, float* value, float vmin, float vmax, const char* format)
+	{
+		const float range = vmax - vmin;
+		const float speed = range > 0.0f ? range / 200.0f : 0.01f;
+		const bool changed = ImGui::DragFloat(id, value, speed, vmin, vmax, format, ImGuiSliderFlags_AlwaysClamp);
+		if (range > 0.0f) {
+			const float t = std::clamp((*value - vmin) / range, 0.0f, 1.0f);
+			const ImVec2 min = ImGui::GetItemRectMin();
+			const ImVec2 max = ImGui::GetItemRectMax();
+			if (t > 0.0f) {
+				const ImVec4 a = EditorTheme::Colors::Accent();
+				ImGui::GetWindowDrawList()->AddRectFilled(min, ImVec2(min.x + (max.x - min.x) * t, max.y),
+					ImGui::GetColorU32(ImVec4(a.x, a.y, a.z, 0.28f)), ImGui::GetStyle().FrameRounding,
+					t >= 0.99f ? ImDrawFlags_RoundCornersAll : ImDrawFlags_RoundCornersLeft);
+			}
+		}
+		return changed;
+	}
+
+	bool ToggleSwitch(const char* id, bool* value, bool mixed)
+	{
+		const float frameH = ImGui::GetFrameHeight();
+		const float h = std::round(frameH * 0.62f);
+		const float w = std::round(h * 1.8f);
+		const ImVec2 p = ImGui::GetCursorScreenPos();
+		const bool clicked = ImGui::InvisibleButton(id, ImVec2(w, frameH));
+		if (clicked) *value = !*value;
+
+		// Knob slides over ~80 ms; the eased position lives in window storage keyed by the item id.
+		ImGuiStorage* storage = ImGui::GetStateStorage();
+		const ImGuiID animId = ImGui::GetItemID();
+		const float target = *value ? 1.0f : 0.0f;
+		float t = storage->GetFloat(animId, target);
+		t += (target - t) * std::min(1.0f, ImGui::GetIO().DeltaTime * 18.0f);
+		if (std::abs(target - t) < 0.01f) t = target;
+		storage->SetFloat(animId, t);
+
+		const ImVec4 off = ImGui::GetStyleColorVec4(ImGuiCol_FrameBgActive);
+		const ImVec4 on = EditorTheme::Colors::Accent();
+		const float mix = mixed ? 0.5f : t;
+		ImVec4 track(off.x + (on.x - off.x) * mix, off.y + (on.y - off.y) * mix, off.z + (on.z - off.z) * mix, 1.0f);
+		if (ImGui::IsItemHovered()) {
+			track.x = std::min(1.0f, track.x + 0.05f);
+			track.y = std::min(1.0f, track.y + 0.05f);
+			track.z = std::min(1.0f, track.z + 0.05f);
+		}
+
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+		const ImVec2 a(p.x, p.y + (frameH - h) * 0.5f);
+		const ImVec2 b(p.x + w, a.y + h);
+		dl->AddRectFilled(a, b, ImGui::GetColorU32(track), h * 0.5f);
+		const float r = h * 0.5f - 2.0f;
+		const float knobX = a.x + h * 0.5f + (mixed ? 0.5f : t) * (w - h);
+		dl->AddCircleFilled(ImVec2(knobX, a.y + h * 0.5f), r, IM_COL32(255, 255, 255, 255));
+		return clicked;
+	}
+
+	bool Switch(const char* label, bool* value, bool mixed)
+	{
+		ImGui::PushID(label);
+		// Grouped so a following tooltip / IsItemHovered covers both the switch and its label.
+		ImGui::BeginGroup();
+		bool clicked = ToggleSwitch("##switch", value, mixed);
+		const char* hidden = std::strstr(label, "##");
+		const std::string_view visible(label, hidden ? static_cast<size_t>(hidden - label) : std::strlen(label));
+		if (!visible.empty()) {
+			ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+			ImGui::AlignTextToFramePadding();
+			ImGui::TextUnformatted(visible.data(), visible.data() + visible.size());
+			if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+				*value = !*value;
+				clicked = true;
+			}
+		}
+		ImGui::EndGroup();
+		ImGui::PopID();
+		return clicked;
+	}
+
+	namespace {
+		const char* ComponentIconName(std::string_view label) {
+			auto has = [&](std::string_view s) { return label.find(s) != std::string_view::npos; };
+			if (has("Rect Transform")) return "bounding_box";
+			if (has("Transform")) return "move";
+			if (has("Camera")) return "camera";
+			if (has("Post Processing")) return "post_processing";
+			if (has("Particle")) return "light_sun";
+			if (has("Circle Collider")) return "circle_dot";
+			if (has("Collider")) return "bounding_box";
+			if (has("Rigidbody")) return "circle_dot";
+			if (has("Sprite") || has("Image")) return "eye_open";
+			if (has("Tilemap") || has("Layout")) return "grid";
+			if (has("Text") || has("Label") || has("Input")) return "caret";
+			if (has("Audio")) return "play";
+			if (has("Script")) return "link";
+			return "entity";
+		}
+	}
+
 	bool BeginComponentSection(const char* label, bool& removeRequested, const std::function<void()>& contextMenu)
 	{
 		removeRequested = false;
 
 		ImGui::PushID(label);
 
+		EditorUI::BeginCard("##card");
+
+		// Header: a slightly raised strip at the top of the card.
+		const ImGuiStyle& style = ImGui::GetStyle();
+		ImGui::PushStyleColor(ImGuiCol_Header, style.Colors[ImGuiCol_FrameBg]);
+		ImGui::PushStyleColor(ImGuiCol_HeaderHovered, style.Colors[ImGuiCol_FrameBgHovered]);
+		ImGui::PushStyleColor(ImGuiCol_HeaderActive, style.Colors[ImGuiCol_FrameBgActive]);
+		ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, style.WindowRounding);
+		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(style.FramePadding.x + 2.0f, style.FramePadding.y + 2.0f));
+
+		// Leading spaces reserve room for the type icon painted between the fold arrow and the label.
+		const float iconSize = std::round(ImGui::GetFontSize() * 0.95f);
+		const float spaceW = std::max(1.0f, ImGui::CalcTextSize(" ").x);
+		const int iconSpaces = static_cast<int>(std::ceil((iconSize + 6.0f) / spaceW));
+		const float moreW = ImGui::GetFrameHeight();
+
 		bool truncated = false;
-		const float headerWidth = ImGui::GetContentRegionAvail().x - ImGui::GetStyle().FramePadding.x * 2.0f;
+		const float headerWidth = ImGui::GetContentRegionAvail().x - ImGui::GetStyle().FramePadding.x * 2.0f
+			- iconSpaces * spaceW - moreW - ImGui::GetFontSize();
 		const std::string displayLabel = Ellipsize(label, headerWidth, &truncated);
-		const std::string headerLabel = displayLabel + "##" + label;
+		const std::string headerLabel = std::string(static_cast<size_t>(iconSpaces), ' ') + displayLabel + "##" + label;
 		bool open = ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap);
+		const float headerPadX = ImGui::GetStyle().FramePadding.x;
+		const ImVec2 headerMin = ImGui::GetItemRectMin();
+		const ImVec2 headerMax = ImGui::GetItemRectMax();
+		ImGui::PopStyleVar(2);
+		ImGui::PopStyleColor(3);
 		if (truncated && ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("%s", label);
 		}
@@ -944,10 +1123,47 @@ namespace Index::ImGuiUtils {
 			ImGui::EndPopup();
 		}
 
+		ImDrawList* headerDraw = ImGui::GetWindowDrawList();
+		const float headerH = headerMax.y - headerMin.y;
+		// Same offset ImGui uses for a framed tree node's label (arrow + 3x frame padding).
+		const float textOffsetX = ImGui::GetFontSize() + headerPadX * 3.0f;
+		if (const uint64_t icon = EditorIcons::Get(ComponentIconName(label), static_cast<int>(iconSize))) {
+			const ImVec2 iconPos(headerMin.x + textOffsetX, headerMin.y + (headerH - iconSize) * 0.5f);
+			headerDraw->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(icon)), iconPos,
+				ImVec2(iconPos.x + iconSize, iconPos.y + iconSize), ImVec2(0, 1), ImVec2(1, 0),
+				ImGui::GetColorU32(EditorTheme::Colors::Highlight()));
+		}
+
+		// "..." opens the same context menu as right-clicking the header.
+		{
+			const ImVec2 resume = ImGui::GetCursorScreenPos();
+			const float btn = std::min(moreW, headerH - 4.0f);
+			const ImVec2 bMin(headerMax.x - btn - 4.0f, headerMin.y + (headerH - btn) * 0.5f);
+			ImGui::SetCursorScreenPos(bMin);
+			if (ImGui::InvisibleButton("##ComponentMore", ImVec2(btn, btn))) {
+				ImGui::OpenPopup("ComponentContext");
+			}
+			const bool moreHovered = ImGui::IsItemHovered();
+			if (moreHovered) {
+				headerDraw->AddRectFilled(bMin, ImVec2(bMin.x + btn, bMin.y + btn),
+					ImGui::GetColorU32(ImGuiCol_ButtonHovered), ImGui::GetStyle().FrameRounding);
+				ImGui::SetTooltip("Component options");
+			}
+			const ImU32 dotCol = ImGui::GetColorU32(moreHovered ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+			const ImVec2 c(bMin.x + btn * 0.5f, bMin.y + btn * 0.5f);
+			for (int k = -1; k <= 1; ++k) {
+				headerDraw->AddCircleFilled(ImVec2(c.x + k * btn * 0.2f, c.y), std::max(1.5f, btn * 0.06f), dotCol);
+			}
+			ImGui::SetCursorScreenPos(resume);
+		}
+
 		if (open) {
+			ImGui::Dummy(ImVec2(0.0f, 2.0f));
 			ImGui::Indent(8.0f);
 		}
 		else {
+			EditorUI::EndCard(headerMax.y);
+			ImGui::Dummy(ImVec2(0.0f, 2.0f));
 			ImGui::PopID();
 		}
 
@@ -957,6 +1173,8 @@ namespace Index::ImGuiUtils {
 	void EndComponentSection()
 	{
 		ImGui::Unindent(8.0f);
+		ImGui::Dummy(ImVec2(0.0f, 2.0f));
+		EditorUI::EndCard();
 		ImGui::Spacing();
 		ImGui::PopID();
 	}

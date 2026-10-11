@@ -9,7 +9,7 @@ REM the pre-built webgpu_dawn.lib.
 REM
 REM Prerequisites:
 REM   * Git (with HTTPS access to dawn.googlesource.com)
-REM   * Visual Studio 2022 (any edition with C++ workload)
+REM   * Visual Studio with the MSVC v143 C++ workload
 REM   * Python 3 (Dawn's CMake invokes Python for code generation)
 REM   * CMake -- either at vendor\cmake\bin\cmake.exe (vendored portable;
 REM     run scripts\dawn\BootstrapCMake.bat to fetch it) or on PATH.
@@ -127,7 +127,9 @@ if errorlevel 1 (
 REM --- Configure --------------------------------------------------------------
 :configure
 echo [3/5] Configuring Dawn via CMake...
-"!CMAKE_EXE!" -S "%DAWN_DIR%" -B "%DAWN_BUILD_DIR%" -G "Visual Studio 17 2022" -A x64 -DDAWN_BUILD_MONOLITHIC_LIBRARY=STATIC -DDAWN_ENABLE_INSTALL=OFF -DDAWN_BUILD_SAMPLES=OFF -DDAWN_BUILD_TESTS=OFF -DDAWN_USE_GLFW=OFF -DTINT_BUILD_TESTS=OFF -DTINT_BUILD_CMD_TOOLS=OFF
+REM Index only feeds WGSL to Dawn, so the SPIR-V input reader and SPIRV-Tools
+REM validation are dead weight (~1.6 MB of SPIRV-Tools in Index-Engine.dll).
+"!CMAKE_EXE!" -S "%DAWN_DIR%" -B "%DAWN_BUILD_DIR%" -A x64 -T v143 -DDAWN_BUILD_MONOLITHIC_LIBRARY=STATIC -DDAWN_ENABLE_INSTALL=OFF -DDAWN_BUILD_SAMPLES=OFF -DDAWN_BUILD_TESTS=OFF -DDAWN_USE_GLFW=OFF -DTINT_BUILD_TESTS=OFF -DTINT_BUILD_CMD_TOOLS=OFF -DTINT_BUILD_SPV_READER=OFF -DDAWN_ENABLE_SPIRV_VALIDATION=OFF
 if errorlevel 1 (
     echo [ERROR] CMake configure failed.
     goto :error
@@ -135,9 +137,7 @@ if errorlevel 1 (
 
 REM --- Build ------------------------------------------------------------------
 REM DAWN_BUILD_CONFIGS (env) selects which configs to build; defaults to both
-REM for local dev (the editor's Debug build links the Debug lib). CI sets it to
-REM "Release" only -- the Windows CI job builds the solution in Release, so the
-REM Debug lib (~1.36 GB, slow to build) is dead weight there.
+REM for local dev and CI because the Windows job validates both configurations.
 if not defined DAWN_BUILD_CONFIGS set "DAWN_BUILD_CONFIGS=Debug Release"
 echo [4/5] Building webgpu_dawn ^(configs: !DAWN_BUILD_CONFIGS!^)...
 for %%C in (!DAWN_BUILD_CONFIGS!) do (
@@ -175,7 +175,7 @@ echo Headers : %DAWN_BUILD_DIR%\gen\include
 echo Lib(D)  : %DAWN_BUILD_DIR%\src\dawn\native\Debug\webgpu_dawn.lib
 echo Lib(R)  : %DAWN_BUILD_DIR%\src\dawn\native\Release\webgpu_dawn.lib
 echo.
-echo Open Index.sln in Visual Studio 2022 and build.
+echo Open Index.sln in Visual Studio and build.
 echo.
 
 popd

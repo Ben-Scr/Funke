@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest something Index should be able to do.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to make?
+      description: Describe the game or workflow, not only the feature; it helps find the best solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help?
+  - type: textarea
+    id: workaround
+    attributes:
+      label: How do you work around it today?

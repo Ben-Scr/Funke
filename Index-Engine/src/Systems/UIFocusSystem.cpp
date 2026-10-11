@@ -22,12 +22,11 @@
 namespace Index {
 
 	namespace {
-		// Same conversion UIEventSystem uses so mouse-focus hit-tests
-		// agree on coordinate space (centred origin, +Y up).
-		Vec2 ScreenPixelToUiSpace(const Vec2& mouseRaw, int viewportWidth, int viewportHeight) {
+		// Keep mouse-focus hit-tests in the same centered, Y-up space as UI events.
+		Vec2 ScreenPixelToUiSpace(const Vec2& mousePosition, int viewportWidth, int viewportHeight) {
 			return Vec2{
-				mouseRaw.x - static_cast<float>(viewportWidth) * 0.5f,
-				static_cast<float>(viewportHeight) * 0.5f - mouseRaw.y
+				mousePosition.x - static_cast<float>(viewportWidth) * 0.5f,
+				static_cast<float>(viewportHeight) * 0.5f - mousePosition.y
 			};
 		}
 
@@ -114,11 +113,9 @@ namespace Index {
 		const bool mouseDownThisFrame = input.GetMouseDown(MouseButton::Left);
 		if (mouseDownThisFrame) {
 			const Window::UIRegion uiRegion = Window::GetUIRegion();
-			Vec2 mouseRaw = input.GetMousePosition();
+			const Vec2 mousePosition = input.GetMousePosition();
 			int vpW = 0, vpH = 0;
 			if (uiRegion.IsActive()) {
-				mouseRaw.x -= static_cast<float>(uiRegion.OffsetX);
-				mouseRaw.y -= static_cast<float>(uiRegion.OffsetY);
 				vpW = uiRegion.Width;
 				vpH = uiRegion.Height;
 			}
@@ -126,8 +123,13 @@ namespace Index {
 				vpW = viewport->GetWidth();
 				vpH = viewport->GetHeight();
 			}
-			if (vpW > 0 && vpH > 0) {
-				const Vec2 mouseUi = ScreenPixelToUiSpace(mouseRaw, vpW, vpH);
+			const bool cursorOverUiSurface = vpW > 0 && vpH > 0
+				&& (!Application::IsEditor() || uiRegion.IsActive())
+				&& mousePosition.x >= 0.0f && mousePosition.y >= 0.0f
+				&& mousePosition.x < static_cast<float>(vpW)
+				&& mousePosition.y < static_cast<float>(vpH);
+			if (cursorOverUiSurface) {
+				const Vec2 mouseUi = ScreenPixelToUiSpace(mousePosition, vpW, vpH);
 				EntityHandle hitFocusable = entt::null;
 				for (EntityHandle e : focusables) {
 					const auto& rect = registry.get<RectTransform2DComponent>(e);

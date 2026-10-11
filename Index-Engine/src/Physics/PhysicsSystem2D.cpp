@@ -79,7 +79,7 @@ namespace Index {
 
 	void PhysicsSystem2D::SyncTransformsToPhysics() {
 		// Collider shape rebuild FIRST: body loops clear the dirty flag, so shape sync must read it before they do.
-		SceneManager::Get().ForeachLoadedScene([](Scene& scene) {
+		SceneManager::ForeachLoadedScene([](Scene& scene) {
 			auto& registry = scene.GetRegistry();
 
 			for (auto [ent, tf] : registry.view<Transform2DComponent>(entt::exclude<DisabledTag>).each()) {
@@ -178,7 +178,7 @@ namespace Index {
 	}
 
 	/* static */ void PhysicsSystem2D::WakeAllBodies() {
-		SceneManager::Get().ForeachLoadedScene([](Scene& scene) {
+		SceneManager::ForeachLoadedScene([](Scene& scene) {
 			auto& registry = scene.GetRegistry();
 			for (auto [ent, rb] : registry.view<Rigidbody2DComponent>(entt::exclude<DisabledTag>).each()) {
 				if (rb.IsValid()) {
@@ -198,7 +198,7 @@ namespace Index {
 		s_MainWorld->Step(dt);
 		s_IndexWorld->Step(dt);
 
-		SceneManager::Get().ForeachLoadedScene([](Scene& scene) {
+		SceneManager::ForeachLoadedScene([](Scene& scene) {
 			auto& registry = scene.GetRegistry();
 
 			for (auto [ent, rb, tf] : registry.view<Rigidbody2DComponent, Transform2DComponent>(entt::exclude<DisabledTag>).each()) {
@@ -219,49 +219,28 @@ namespace Index {
 			}
 		});
 
-		auto dispatchToCollisionScenes = [](const Collision2D& collision, const auto& dispatch) {
-			if (collision.sceneA && collision.sceneA->IsValid(collision.entityA)) {
-				dispatch(*collision.sceneA, collision);
-			}
-			if (collision.sceneB && collision.sceneB != collision.sceneA && collision.sceneB->IsValid(collision.entityB)) {
-				dispatch(*collision.sceneB, collision);
-			}
-		};
-
 		s_MainWorld->GetDispatcher().Process(
 			s_MainWorld->GetWorldID(),
 			[world = &*s_MainWorld](b2ShapeId shapeId) { return world->ResolveShape(shapeId); },
-			[&dispatchToCollisionScenes](const Collision2D& collision) {
-				dispatchToCollisionScenes(collision, [](Scene& scene, const Collision2D& c) {
-					ScriptSystem::DispatchCollisionEnter2D(scene, c);
-				});
+			[](const Collision2D& collision) {
+				ScriptSystem::DispatchCollisionEnter2D(collision);
 			},
-			[&dispatchToCollisionScenes](const Collision2D& collision) {
-				dispatchToCollisionScenes(collision, [](Scene& scene, const Collision2D& c) {
-					ScriptSystem::DispatchCollisionExit2D(scene, c);
-				});
+			[](const Collision2D& collision) {
+				ScriptSystem::DispatchCollisionExit2D(collision);
 			},
-			[&dispatchToCollisionScenes](const Collision2D& collision) {
-				dispatchToCollisionScenes(collision, [](Scene& scene, const Collision2D& c) {
-					ScriptSystem::DispatchCollisionStay2D(scene, c);
-				});
+			[](const Collision2D& collision) {
+				ScriptSystem::DispatchCollisionStay2D(collision);
 			});
 
 		s_IndexWorld->DispatchScriptContacts(
-			[&dispatchToCollisionScenes](const Collision2D& collision) {
-				dispatchToCollisionScenes(collision, [](Scene& scene, const Collision2D& c) {
-					ScriptSystem::DispatchCollisionEnter2D(scene, c);
-				});
+			[](const Collision2D& collision) {
+				ScriptSystem::DispatchCollisionEnter2D(collision);
 			},
-			[&dispatchToCollisionScenes](const Collision2D& collision) {
-				dispatchToCollisionScenes(collision, [](Scene& scene, const Collision2D& c) {
-					ScriptSystem::DispatchCollisionStay2D(scene, c);
-				});
+			[](const Collision2D& collision) {
+				ScriptSystem::DispatchCollisionStay2D(collision);
 			},
-			[&dispatchToCollisionScenes](const Collision2D& collision) {
-				dispatchToCollisionScenes(collision, [](Scene& scene, const Collision2D& c) {
-					ScriptSystem::DispatchCollisionExit2D(scene, c);
-				});
+			[](const Collision2D& collision) {
+				ScriptSystem::DispatchCollisionExit2D(collision);
 			});
 	}
 

@@ -102,6 +102,8 @@ namespace Index::EditorRuntime::ImGuiContextSetup {
 	}
 
 	void ShutdownBackends() {
+		// Secondary viewports must release their WebGPU surfaces before the renderer callback is removed.
+		ImGui::DestroyPlatformWindows();
 		ImGuiImplWebGPU::Shutdown();
 		ImGui_ImplGlfw_Shutdown();
 		PackageImGuiBridge::Clear();

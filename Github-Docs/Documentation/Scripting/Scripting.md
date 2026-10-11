@@ -1,6 +1,8 @@
 # Scripting
 
-Index uses **C#** as its primary scripting language (running on **.NET 9**). You write scripts to give your game behavior — move the player, spawn enemies, handle UI, manage game state. Index also supports **native C++ scripts** for performance-critical code.
+Index uses **C#** as its primary scripting language (running on **.NET 10 LTS**). You write scripts to give your game behavior — move the player, spawn enemies, handle UI, manage game state. Index also supports **native C++ scripts** for performance-critical code.
+
+Visual Studio IntelliSense for Index game projects requires Visual Studio 2026 (18.0+) because Visual Studio 2022 cannot evaluate `net10.0` projects. VS Code or Rider can use the installed .NET 10 SDK instead.
 
 If you just want the short version: make a class that inherits from `EntityScript`, override `OnUpdate`, attach it to an entity in the editor, and press Play.
 
@@ -83,7 +85,14 @@ public override void OnDisable() { }         // disabled
 public override void OnCollisionEnter2D(Collision2D c) { }
 public override void OnCollisionStay2D(Collision2D c) { }
 public override void OnCollisionExit2D(Collision2D c) { }
+
+// Trigger overlaps (one collider has "Sensor" enabled; sensors don't block movement):
+public override void OnTriggerEnter2D(Collision2D other) { }
+public override void OnTriggerStay2D(Collision2D other) { }
+public override void OnTriggerExit2D(Collision2D other) { }
 ```
+
+Triggers fire on both entities involved, so a pickup can react in its own script (`other.Other` is the entity that touched it). At least one of the two needs a Rigidbody2D, as with collisions.
 
 **SceneSystem** (per scene) has the same `OnAwake` / `OnStart` / `OnUpdate` / `OnFixedUpdate` / `OnDestroy` / `OnEnable` / `OnDisable`, plus a `Scene` property for querying entities — but no collision callbacks.
 
@@ -168,8 +177,14 @@ Entity.SetParent(null);           // detach to the scene root
 ```csharp
 Input.GetKey(KeyCode.Space);        // held
 Input.GetKeyDown(KeyCode.Space);    // pressed this frame
-Input.GetAxis();                    // smoothed WASD/arrows, -1..1
+Input.GetAxis();                    // WASD/arrows, else first gamepad's stick/D-pad, -1..1
 Input.MousePosition;
+
+// Gamepads (Xbox layout; other pads are mapped automatically). Index 0-3, default 0.
+Input.IsGamepadConnected();
+Input.GetGamepadButtonDown(GamepadButton.A);
+Vector2 move = Input.GetLeftStick();              // deadzone applied (Input.GamepadDeadzone)
+float throttle = Input.GetGamepadTrigger(GamepadAxis.RightTrigger); // 0..1
 ```
 
 **Time**:
@@ -185,7 +200,32 @@ Time.TimeScale = 0.5f; // slow motion (or 0 to pause game time)
 ```csharp
 RaycastHit2D hit = Physics2D.Raycast(origin, direction, maxDistance);
 Entity? hitEntity = Physics2D.OverlapCircle(center, radius);
+
+// Only hit colliders on layers 0 and 3:
+RaycastHit2D ground = Physics2D.Raycast(origin, Vector2.Down, 2f, PhysicsLayers.Mask(0, 3));
 ```
+
+Each collider has a **Layer** (what it is) and **Collides With** (what it touches), both set in the Inspector or from code via `GetComponent<BoxCollider2D>().Layer` / `.CollisionMask`. Two colliders interact only when each one's Collides With includes the other's Layer. `IsSensor`, `Friction` and `Bounciness` are available on every collider the same way.
+
+**Sprite animation** — add **Sprite Animator 2D** next to a Sprite Renderer, slice the texture in the Sprite Editor, and list the slice names under **Frames**:
+
+```csharp
+var anim = GetComponent<SpriteAnimator2D>();
+anim.FramesPerSecond = 16f;
+if (!anim.IsPlaying) anim.Play();   // Pause() keeps the frame, Stop() rewinds
+```
+
+**Saving data** — per game, stored under `Application.PersistentDataPath` (`%LOCALAPPDATA%/<Company>/<Name>`, from Project Settings):
+
+```csharp
+PlayerPrefs.SetInt("HighScore", 1200);          // small settings and progress values
+int best = PlayerPrefs.GetInt("HighScore");     // saved automatically on quit / when Play stops; PlayerPrefs.Save() to force
+
+SaveData.Save("slot1", myInventory);            // any class or struct, written as JSON
+if (SaveData.TryLoad("slot1", out Inventory? inv)) { ... }
+```
+
+Writes are atomic: a crash while saving leaves the previous file intact.
 
 **Audio**:
 

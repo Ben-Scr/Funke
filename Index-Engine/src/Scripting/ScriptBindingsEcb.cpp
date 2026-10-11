@@ -5,6 +5,7 @@
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Scene/Scene.hpp"
+#include "Scene/SceneExecutionContext.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Components/General/EntityMetaDataComponent.hpp"
@@ -24,15 +25,13 @@ namespace Index {
 
 	static Scene* EcbResolveScene()
 	{
-		Scene* scene = ScriptEngine::GetScene();
-		if (scene && scene->IsLoaded()) {
+		if (Scene* scene = GetCurrentExecutionScene()) {
 			return scene;
 		}
-		auto* app = Application::GetInstance();
-		if (app && app->GetSceneManager()) {
-			return app->GetSceneManager()->GetActiveScene();
+		if (Scene* scene = ScriptEngine::GetScene()) {
+			return scene;
 		}
-		return nullptr;
+		return ResolveImplicitScene();
 	}
 
 	// memcpy to dodge unaligned-load UB: ECB stream is byte-packed, fields land on odd boundaries; compiler folds to a single load on x86/x64.
@@ -48,7 +47,7 @@ namespace Index {
 		if (componentName == nullptr || componentName[0] == '\0') {
 			return 0u;
 		}
-		const auto& registry = SceneManager::Get().GetComponentRegistry();
+		const auto& registry = SceneManager::GetComponentRegistry();
 		if (const ComponentInfo* hit = registry.FindBySerializedName(componentName)) {
 			return hit->typeIdU32;
 		}
@@ -123,7 +122,7 @@ namespace Index {
 			uint32_t rootEntityIndex;        // ECB-local root slot
 			uint64_t prefabGuid;
 			uint32_t childBaseIndex;         // filled in after bulk-create sizing
-			const PrefabTemplate* templ;
+			PrefabTemplateCache::TemplateSnapshot templ;
 		};
 		std::vector<PrefabSpawn> prefabSpawns;
 		uint64_t totalExtraChildren = 0;
@@ -150,8 +149,8 @@ namespace Index {
 						return kEcbErrorTruncated;
 					}
 					const uint64_t guid = EcbReadLE<uint64_t>(payload);
-					const PrefabTemplate* templ = prefabCache.Find(guid);
-					if (templ == nullptr) {
+					auto templ = prefabCache.Find(guid);
+					if (!templ) {
 						// Bake-on-demand: instantiate + destroy a throwaway tree to populate the cache; cost paid once per GUID per process.
 						EntityHandle scratchRoot = SceneSerializer::InstantiatePrefab(*scene, guid);
 						if (scratchRoot != entt::null) {
@@ -159,7 +158,7 @@ namespace Index {
 						}
 						templ = prefabCache.Find(guid);
 					}
-					if (templ == nullptr) {
+					if (!templ) {
 						// Distinct from the unbakeable case: the GUID never resolved to a loadable
 						// Prefab asset (SceneSerializer::InstantiatePrefab returned null), so no
 						// template was baked. Entity.Instantiate(guid) would fail identically.
@@ -259,7 +258,7 @@ namespace Index {
 			}
 		}
 
-		const ComponentRegistry& componentRegistry = SceneManager::Get().GetComponentRegistry();
+		const ComponentRegistry& componentRegistry = SceneManager::GetComponentRegistry();
 
 		std::vector<EntityHandle> prefabSlotScratch;
 		std::size_t nextPrefabSpawn = 0;
@@ -359,7 +358,7 @@ namespace Index {
 					prefabSlotScratch[k] = handles[spawn.childBaseIndex + k - 1u];
 				}
 
-				prefabCache.HydrateInto(spawn.prefabGuid, *scene,
+				prefabCache.HydrateInto(spawn.prefabGuid, spawn.templ, *scene,
 					std::span<const EntityHandle>(prefabSlotScratch));
 			}
 			else if (opcode == Ecb_DestroyEntity) {
@@ -423,17 +422,9 @@ namespace Index {
 				const HierarchyComponent* hc = reg.try_get<HierarchyComponent>(h);
 				const bool isRoot = (hc == nullptr) || hc->Parent == entt::null;
 				if (Rigidbody2DComponent* rb = reg.try_get<Rigidbody2DComponent>(h); rb != nullptr) {
-					const Vec2 bodyBefore = rb->GetPosition();
-					const bool moved = isRoot && rb->IsValid();
-					if (moved) {
+					if (isRoot && rb->IsValid()) {
 						rb->SetTransform(*tr);
 					}
-					// TEMP DIAGNOSTIC: confirm the override landed (trPos==spawnPos) and the body actually
-					// moved (bodyAfter==spawnPos). Remove once the ECB physics-spawn position is verified.
-					IDX_CORE_INFO_TAG("EcbFixDbg",
-						"ent={} isRoot={} rbValid={} moved={} trPos=({:.1f},{:.1f}) bodyBefore=({:.1f},{:.1f}) bodyAfter=({:.1f},{:.1f})",
-						static_cast<uint32_t>(h), isRoot ? 1 : 0, rb->IsValid() ? 1 : 0, moved ? 1 : 0,
-						tr->Position.x, tr->Position.y, bodyBefore.x, bodyBefore.y, rb->GetPosition().x, rb->GetPosition().y);
 				}
 			}
 		}

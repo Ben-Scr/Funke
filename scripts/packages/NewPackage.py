@@ -4,7 +4,7 @@ Index package scaffolder.
 
 Creates a new `index-package.lua`-based package directory with the right
 sources, manifest, and (optionally) project allow-list entry, then re-runs
-premake so the new project lands in the IDE solution on next reload.
+premake so the new project lands in the appropriate build workspace.
 
 Usage examples
 --------------
@@ -35,7 +35,7 @@ Layer flags
 -----------
     native      -> `native` layer (links Index-Engine; IDX_* logging available)
     standalone  -> `native_standalone` layer (no engine link)
-    csharp      -> `csharp` layer (.NET 9.0 SharedLib; auto-links Index-ScriptCore)
+    csharp      -> `csharp` layer (.NET 10.0 SharedLib; auto-links Index-ScriptCore)
 
 You can pass them comma- or plus-separated: `--layers native,csharp` or
 `--layers native+csharp`.
@@ -58,7 +58,18 @@ from pathlib import Path
 from typing import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PREMAKE_EXE = REPO_ROOT / "vendor" / "bin" / "premake5.exe"
+PREMAKE_NAME = "premake5.exe" if os.name == "nt" else "premake5"
+
+
+def resolve_premake_executable() -> Path:
+    candidates = (
+        REPO_ROOT / "vendor" / "bin" / PREMAKE_NAME,
+        REPO_ROOT / PREMAKE_NAME,
+    )
+    return next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
+
+
+PREMAKE_EXE = resolve_premake_executable()
 
 PACKAGE_NAME_PATTERN = re.compile(r"^[A-Z][A-Za-z0-9]+(\.[A-Z][A-Za-z0-9]+)+$")
 ALLOWED_LAYERS = {"native", "standalone", "csharp"}
@@ -474,10 +485,7 @@ live under `<project>/Packages/` and must appear in the project's
 
 After editing `project.json`, regenerate project files:
 
-```sh
-./vendor/bin/premake5.exe vs2022     # Windows
-./vendor/bin/premake5    gmake2      # Linux
-```
+{regenInstructions}
 
 The build emits:
 
@@ -700,14 +708,26 @@ def pkg_namespace_from_name(name: str) -> str:
 
 
 def emit_readme(pkg_dir: Path, name: str, description: str, layers: set[str],
-                component: str | None) -> None:
+                component: str | None, project_local: bool) -> None:
+    output_root = "<project>/.index/build/packages/bin" if project_local else "<engine>/bin"
     rows: list[str] = []
     if "native" in layers or "standalone" in layers:
-        rows.append(f"| C++ | `Pkg.{name}.Native` | `bin/<config>/Pkg.{name}.Native/Pkg.{name}.Native.dll` |")
+        rows.append(f"| C++ | `Pkg.{name}.Native` | `{output_root}/<config>-<platform>-<arch>/Pkg.{name}.Native/Pkg.{name}.Native.dll` |")
     if "csharp" in layers:
-        rows.append(f"| C# | `Pkg.{name}` | `bin/<config>/Pkg.{name}/Pkg.{name}.dll` |")
+        rows.append(f"| C# | `Pkg.{name}` | `{output_root}/<config>-<platform>-<arch>/Pkg.{name}/Pkg.{name}.dll` |")
     layers_table = "\n".join(rows) if rows else "| _no build outputs declared_ |  |  |"
 
+    if project_local:
+        regen_instructions = """The editor regenerates the project-local package workspace automatically.
+To regenerate it manually from an engine checkout:
+
+```powershell
+<engine>/vendor/bin/premake5.exe --file=<engine>/premake/project-packages.lua --index-project="<project>" vs2022
+```"""
+    else:
+        regen_instructions = """```powershell
+<engine>/vendor/bin/premake5.exe vs2022
+```"""
     if component:
         namespace = pkg_namespace_from_name(name)
         usage_block = (
@@ -734,6 +754,7 @@ def emit_readme(pkg_dir: Path, name: str, description: str, layers: set[str],
             description=description,
             layersTable=layers_table,
             usageBlock=usage_block,
+            regenInstructions=regen_instructions,
         ),
     )
 
@@ -793,39 +814,63 @@ def run_premake(project_path: Path | None) -> None:
             "Run scripts/Setup.py first or pass --no-premake."
         )
         return
-    cmd = [str(PREMAKE_EXE), "vs2022"]
-    if project_path is not None:
-        cmd.append(f"--index-project={project_path}")
+    if project_path is None:
+        cmd = [str(PREMAKE_EXE), "vs2022"]
+    else:
+        generator = REPO_ROOT / "premake" / "project-packages.lua"
+        if not generator.is_file():
+            raise SystemExit(
+                f"[NewPackage] project package generator not found: {generator}"
+            )
+        cmd = [
+            str(PREMAKE_EXE),
+            f"--file={generator}",
+            f"--index-project={project_path}",
+            "vs2022",
+        ]
     print(f"[NewPackage] regenerating projects: {' '.join(cmd)}")
     result = subprocess.run(cmd, cwd=str(REPO_ROOT))
     if result.returncode != 0:
         raise SystemExit(f"[NewPackage] premake regen failed (exit code {result.returncode}).")
 
 
-def run_dotnet_restore() -> None:
-    """Restore NuGet/SDK assets for the solution.
+def run_dotnet_restore(name: str, project_path: Path | None) -> None:
+    """Restore NuGet/SDK assets for the generated managed package project.
 
     Freshly generated `.csproj` files have no `obj/project.assets.json` until
-    `dotnet restore` runs once. Without it, the first `MSBuild.exe Index.sln`
-    fails the new C# package with NETSDK1004. The restore is a few seconds and
-    safe to run unconditionally — `dotnet restore` is incremental.
+    `dotnet restore` runs once. Restoring the mixed C++/C# engine solution is
+    unsupported by the .NET CLI, so restore the exact generated project.
     """
-    print("[NewPackage] running dotnet restore Index.sln")
+    target = f"Pkg.{name}"
+    generated_root = (
+        project_path / ".index" / "build" / "packages" / "generated"
+        if project_path is not None
+        else REPO_ROOT / "premake" / "generated"
+    )
+    project_file = generated_root / target / f"{target}.csproj"
+    if not project_file.is_file():
+        print(
+            f"[NewPackage] generated managed project not found at {project_file}; "
+            "skipping restore."
+        )
+        return
+
+    print(f"[NewPackage] running dotnet restore {project_file}")
     try:
         result = subprocess.run(
-            ["dotnet", "restore", "Index.sln", "--nologo", "-v", "q"],
-            cwd=str(REPO_ROOT),
+            ["dotnet", "restore", str(project_file), "--nologo", "-v", "q"],
+            cwd=str(project_file.parent),
         )
     except FileNotFoundError:
         print(
             "[NewPackage] dotnet not found on PATH; skipping restore. "
-            "Run `dotnet restore Index.sln` manually before the first build."
+            f"Run `dotnet restore \"{project_file}\"` manually before the first build."
         )
         return
     if result.returncode != 0:
         print(
             f"[NewPackage] dotnet restore failed (exit code {result.returncode}). "
-            "First build may fail with NETSDK1004; re-run restore manually."
+            f"Re-run `dotnet restore \"{project_file}\"` manually."
         )
 
 
@@ -1012,33 +1057,37 @@ def main(argv: Iterable[str] | None = None) -> int:
     # 3. README — single per-package landing doc that explains install +
     #    expected next steps. Tilemap2D's hand-written README is the format
     #    target; the auto-generated version is shorter but covers the basics.
-    emit_readme(pkg_dir, name, description, layers, component)
+    emit_readme(pkg_dir, name, description, layers, component, project_root is not None)
 
     # 4. Project allow-list (project-local only)
     if project_root is not None:
         add_to_project_allow_list(project_root, name)
 
-    # 5. Premake regen (unless suppressed). When the new package has a csharp
-    # layer, also run `dotnet restore` so the first MSBuild against the new
-    # csproj doesn't blow up on a missing project.assets.json.
+    # 5. Generate the appropriate workspace and restore the managed project.
     if not args.no_premake:
         run_premake(project_root)
         if "csharp" in layers:
-            run_dotnet_restore()
+            run_dotnet_restore(name, project_root)
 
     # 6. Next-steps banner.
     print()
     print("[NewPackage] done.")
     print()
     print("Next steps:")
-    print(f"  1. Restart Visual Studio so the new Pkg.{name}{' / Pkg.' + name + '.Native' if 'native' in layers or 'standalone' in layers else ''} project(s) appear in the solution.")
+    if project_root is None:
+        print(f"  1. Restart Visual Studio so the new Pkg.{name} project(s) appear in Index.sln.")
+    else:
+        print("  1. The project-local package workspace is ready under .index/build/packages.")
     if component:
         print(f"  2. Open include/{component}Component.hpp and add real fields next to Value/TintColor.")
         print("     Mirror each field with one Properties::Make(...) line in src/PackageEntry.cpp.")
     else:
         print("  2. Edit src/PackageEntry.cpp — the commented block at the top shows the canonical")
         print("     RegisterSerializableComponent + DeclareComponentConflict pattern.")
-    print(f"  3. Build. Outputs land in bin/<config>/Pkg.{name}/.")
+    if project_root is None:
+        print(f"  3. Build. Outputs land under <engine>/bin/<config>-<platform>-<arch>/Pkg.{name}/.")
+    else:
+        print(f"  3. Build or Play in the editor. Outputs land under .index/build/packages/bin/.../Pkg.{name}/.")
     if "csharp" in layers and ("native" in layers or "standalone" in layers):
         print()
         print("  P/Invoke note:")

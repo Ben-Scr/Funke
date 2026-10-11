@@ -1,14 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
+    <Platforms>x64</Platforms>
+    <Platform>x64</Platform>
+    <PlatformTarget>x64</PlatformTarget>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>disable</ImplicitUsings>
+	<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <IsPackable>false</IsPackable>
-    <!-- Index-ScriptCore is x64-only; let the SDK negotiate the reference
-         platform so this test project can stay platform-neutral. -->
-    <EnableDynamicPlatformResolution>true</EnableDynamicPlatformResolution>
   </PropertyGroup>
 
   <ItemGroup>

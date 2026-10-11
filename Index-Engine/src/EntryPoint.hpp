@@ -12,6 +12,8 @@
 #include "Core/Application.hpp"
 #include "Localization/Localization.hpp"
 
+#include <cstdio>
+#include <exception>
 #include <memory>
 #include <string>
 #include <vector>
@@ -108,44 +110,58 @@ namespace Index {
 #endif
 
 	inline int Main(int argc, char** argv) {
-		InitializeCore();
 		struct CoreShutdownGuard {
-			~CoreShutdownGuard() {
-				ShutdownCore();
+			bool Initialized = false;
+			~CoreShutdownGuard() noexcept {
+				if (!Initialized) return;
+				try { ShutdownCore(); }
+				catch (...) {}
 			}
 		} shutdownGuard;
 
-		Localization::Initialize();
+		try {
+			InitializeCore();
+			shutdownGuard.Initialized = true;
+
+			Localization::Initialize();
 
 #ifdef IDX_PLATFORM_WINDOWS
-		Detail::CommandLineStorage& commandLineStorage = Detail::GetCommandLineStorage();
-		if (!commandLineStorage.SetFromWindowsCommandLine()) {
-			commandLineStorage.SetFromNarrowArgs(argc, argv);
-		}
-		Application::SetCommandLineArgs(commandLineStorage.Count(), commandLineStorage.Data());
+			Detail::CommandLineStorage& commandLineStorage = Detail::GetCommandLineStorage();
+			if (!commandLineStorage.SetFromWindowsCommandLine()) {
+				commandLineStorage.SetFromNarrowArgs(argc, argv);
+			}
+			Application::SetCommandLineArgs(commandLineStorage.Count(), commandLineStorage.Data());
 #else
-		Application::SetCommandLineArgs(argc, argv);
+			Application::SetCommandLineArgs(argc, argv);
 #endif
 
-		try {
 			std::unique_ptr<Application> app(Index::CreateApplication());
 			IDX_CORE_ASSERT(app, "Client app is null!");
 
-			app->Run();
-			return 0;
+			return app->Run();
 		}
 		catch (const std::exception& ex) {
-			IDX_CORE_ERROR("Unhandled exception at app boundary: {}", ex.what());
+			if (shutdownGuard.Initialized) {
+				IDX_CORE_ERROR("Unhandled exception at app boundary: {}", ex.what());
+			}
+			else {
+				std::fprintf(stderr, "Index startup failed: %s\n", ex.what());
+			}
 			return -1;
 		}
 		catch (...) {
-			IDX_CORE_ERROR("Unhandled non-std exception at app boundary");
+			if (shutdownGuard.Initialized) {
+				IDX_CORE_ERROR("Unhandled non-std exception at app boundary");
+			}
+			else {
+				std::fputs("Index startup failed with an unknown error.\n", stderr);
+			}
 			return -1;
 		}
 	}
 }
 
-#if IDX_DIST && IDX_PLATFORM_WINDOWS
+#if defined(IDX_WINDOWED_APP) && defined(IDX_PLATFORM_WINDOWS)
 
 int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmdshow)
 {

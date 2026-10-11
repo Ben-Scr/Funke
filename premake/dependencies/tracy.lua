@@ -1,8 +1,7 @@
 -- Tracy profiler client library.
 --
--- Built only when the profiler is enabled (root premake5.lua sets
--- IndexProfiler.Enabled = true unless --no-profiler was passed). Compiled
--- as a SharedLib so the engine.dll, editor.exe, and runtime.exe all share
+-- Available only to Debug/Release unless --no-profiler removes it entirely.
+-- Compiled as a SharedLib so the engine.dll, editor.exe, and runtime.exe all share
 -- one Tracy client (Tracy is meant to have exactly one client per process,
 -- and our three-binary split would otherwise risk duplicate registration).
 --
@@ -37,8 +36,8 @@ project "Tracy"
     -- actually connects over TCP. Without this, Tracy starts buffering
     -- zone events from process startup — even when no viewer is running —
     -- and the buffer grows indefinitely (we observed multi-GB RAM growth
-    -- in long editor sessions). On-demand mode means: zero memory cost
-    -- when no viewer is attached; full fidelity once one connects.
+    -- in long editor sessions). On-demand mode limits event buffering, but Tracy
+    -- still preallocates client queues and symbol state; Dist excludes it entirely.
     -- IMPORTANT: this define must also be set on consumers (engine,
     -- editor, runtime, tests) so the Tracy headers compile the same
     -- code-paths on both sides — see Dependency.Profiler in
@@ -80,6 +79,9 @@ project "Tracy"
         symbols "On"
 
     filter "configurations:Dist"
+        kind "Utility"
         runtime "Release"
         optimize "Full"
         symbols "Off"
+
+    filter {}

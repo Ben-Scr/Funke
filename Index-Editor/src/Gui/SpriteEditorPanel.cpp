@@ -5,6 +5,7 @@
 #include "Core/Log.hpp"
 #include "Graphics/SpriteUVResolver.hpp"
 #include "Graphics/Texture2D.hpp"
+#include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Graphics/TextureManager.hpp"
 
@@ -90,14 +91,14 @@ namespace Index {
 	void SpriteEditorPanel::Render(bool* pOpen) {
 		// Auto-grow the first time the user opens this panel so the
 		// canvas is comfortable on a 1080p display.
-		ImGui::SetNextWindowSize(ImVec2(900.0f, 640.0f), ImGuiCond_FirstUseEver);
+		EditorUI::NextWindowDefaultSize();
 		if (!ImGui::Begin("Sprite Editor", pOpen, ImGuiWindowFlags_NoCollapse)) {
 			ImGui::End();
 			return;
 		}
 
 		if (m_AssetPath.empty() || m_TexWidth <= 0 || m_TexHeight <= 0) {
-			ImGui::TextDisabled("Select a texture asset and click \"Open Sprite Editor\".");
+			EditorUI::EmptyState("No texture open", "Select a texture asset and click \"Open Sprite Editor\".");
 			ImGui::End();
 			return;
 		}
@@ -110,7 +111,6 @@ namespace Index {
 		ImGui::TextDisabled("Slices: %zu%s", m_Slices.size(), m_Dirty ? " *" : "");
 
 		RenderToolbar();
-		ImGui::Separator();
 
 		const float panelHeight    = ImGui::GetContentRegionAvail().y;
 		const float sliceListWidth = 260.0f;
@@ -149,13 +149,14 @@ namespace Index {
 	// ─────────────────────────────────────────────────────────────────────
 
 	void SpriteEditorPanel::RenderToolbar() {
+		EditorUI::BeginToolbar("##SpriteEditorToolbar");
 		if (ImGui::Button("Slice")) {
 			m_OpenSlicePopup = true;
 		}
-		ImGui::SameLine();
+		EditorUI::ToolbarSeparator();
 		const bool canApply = m_Dirty;
 		if (!canApply) ImGui::BeginDisabled();
-		if (ImGui::Button("Apply")) {
+		if (EditorUI::Button("Apply", EditorUI::ButtonVariant::Primary)) {
 			Apply();
 		}
 		if (!canApply) ImGui::EndDisabled();
@@ -186,6 +187,7 @@ namespace Index {
 		if (ImGui::Button("Fit")) {
 			ZoomToFitTexture();
 		}
+		EditorUI::EndToolbar();
 	}
 
 	void SpriteEditorPanel::RenderSliceModePopup() {
@@ -244,7 +246,7 @@ namespace Index {
 
 		const bool canSlice = (m_SliceMode != SliceMode::Manual);
 		if (!canSlice) ImGui::BeginDisabled();
-		if (ImGui::Button("Slice", ImVec2(-FLT_MIN, 0.0f))) {
+		if (EditorUI::Button("Slice", EditorUI::ButtonVariant::Primary, ImVec2(-FLT_MIN, 0.0f))) {
 			switch (m_SliceMode) {
 			case SliceMode::Manual:        break; // unreachable (disabled)
 			case SliceMode::GridBySize:
@@ -287,11 +289,15 @@ namespace Index {
 		}
 
 		ImGui::TextWrapped("This texture has unsaved slice edits. Save them before switching?");
-		ImGui::Spacing();
 
-		const float buttonWidth = 90.0f;
-		if (ImGui::Button("Save", ImVec2(buttonWidth, 0.0f))) {
-			Apply();
+		const int choice = EditorUI::DialogFooter({ "Save", "Discard", "Cancel" }, 0, 1);
+		if (choice == 0 || choice == 1) {
+			if (choice == 0) {
+				Apply();
+			}
+			else {
+				m_Dirty = false; // drop staged edits — Revert would re-read .meta which we're about to do anyway
+			}
 			const std::string newPath = m_PendingAssetPath;
 			const uint64_t    newId   = m_PendingAssetId;
 			m_PendingAssetPath.clear();
@@ -301,20 +307,7 @@ namespace Index {
 			OpenTexture(newPath, newId);
 			return;
 		}
-		ImGui::SameLine();
-		if (ImGui::Button("Discard", ImVec2(buttonWidth, 0.0f))) {
-			m_Dirty = false; // drop staged edits — Revert would re-read .meta which we're about to do anyway
-			const std::string newPath = m_PendingAssetPath;
-			const uint64_t    newId   = m_PendingAssetId;
-			m_PendingAssetPath.clear();
-			m_PendingAssetId = 0;
-			ImGui::CloseCurrentPopup();
-			ImGui::EndPopup();
-			OpenTexture(newPath, newId);
-			return;
-		}
-		ImGui::SameLine();
-		if (ImGui::Button("Cancel", ImVec2(buttonWidth, 0.0f))) {
+		if (choice == 2) {
 			m_PendingAssetPath.clear();
 			m_PendingAssetId = 0;
 			ImGui::CloseCurrentPopup();
@@ -634,6 +627,9 @@ namespace Index {
 		ImGui::Separator();
 
 		ImGui::BeginChild("##SpriteEditorListScroll", ImVec2(0.0f, -ImGui::GetFrameHeightWithSpacing() - 4.0f));
+		if (m_Slices.empty()) {
+			EditorUI::EmptyState("No slices", "Use Slice, or drag on the canvas in Manual mode.");
+		}
 		for (int i = 0; i < static_cast<int>(m_Slices.size()); ++i) {
 			SpriteSlice& slice = m_Slices[i];
 			ImGui::PushID(i);
@@ -699,7 +695,7 @@ namespace Index {
 
 		const bool canDelete = !m_Selection.empty();
 		if (!canDelete) ImGui::BeginDisabled();
-		if (ImGui::Button("Delete Selected", ImVec2(-FLT_MIN, 0.0f))) {
+		if (EditorUI::Button("Delete Selected", EditorUI::ButtonVariant::Danger, ImVec2(-FLT_MIN, 0.0f))) {
 			DeleteSelected();
 		}
 		if (!canDelete) ImGui::EndDisabled();

@@ -1,7 +1,6 @@
 #pragma once
 
-#include "Index.hpp"
-
+#include "Components/ComponentUtils.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Scene/Scene.hpp"
 #include "Scripting/NativeEngineAPI.hpp"
@@ -30,68 +29,74 @@ namespace Index {
 		template<typename TComponent, typename... Args>
 			requires (!std::is_empty_v<TComponent>)
 		TComponent& AddComponent(Args&&... args) {
-			entt::registry* registry = GetRegistry();
-			if (registry->all_of<TComponent>(m_Entity)) {
-				return registry->get<TComponent>(m_Entity);
-			}
-
-			if constexpr (std::is_constructible_v<TComponent, EntityHandle, Args...>) {
-				return registry->emplace<TComponent>(m_Entity, m_Entity, std::forward<Args>(args)...);
-			}
-			else if constexpr (sizeof...(Args) == 0 && std::is_default_constructible_v<TComponent>) {
-				return registry->emplace<TComponent>(m_Entity);
-			}
-			else {
-				return registry->emplace<TComponent>(m_Entity, std::forward<Args>(args)...);
-			}
+			entt::registry& registry = RequireValidRegistry("Cannot add component to invalid entity");
+			return ComponentUtils::AddComponent<TComponent>(registry, m_Entity, std::forward<Args>(args)...);
 		}
 
 		template<typename TTag>
 			requires std::is_empty_v<TTag>
 		void AddComponent() {
-			entt::registry* registry = GetRegistry();
-			if (registry && !registry->all_of<TTag>(m_Entity)) {
-				registry->emplace<TTag>(m_Entity);
-			}
+			entt::registry& registry = RequireValidRegistry("Cannot add tag component to invalid entity");
+			ComponentUtils::AddComponent<TTag>(registry, m_Entity);
 		}
 
 		template<typename TComponent>
 		bool HasComponent() const {
 			entt::registry* registry = GetRegistry();
-			return registry && registry->valid(m_Entity) && registry->all_of<TComponent>(m_Entity);
+			return registry && m_Entity != entt::null && registry->valid(m_Entity)
+				&& ComponentUtils::HasComponent<TComponent>(*registry, m_Entity);
 		}
 
 		template<typename TComponent>
 		TComponent& GetComponent() {
-			return GetRegistry()->get<TComponent>(m_Entity);
+			entt::registry& registry = RequireValidRegistry("Cannot get component from invalid entity");
+			return ComponentUtils::GetComponent<TComponent>(registry, m_Entity);
 		}
 
 		template<typename TComponent>
 		const TComponent& GetComponent() const {
-			return GetRegistry()->get<TComponent>(m_Entity);
+			const entt::registry& registry = RequireValidRegistry("Cannot get component from invalid entity");
+			return ComponentUtils::GetComponent<TComponent>(registry, m_Entity);
 		}
 
 		template<typename TComponent>
 		bool TryGetComponent(TComponent*& out) {
 			entt::registry* registry = GetRegistry();
-			if (!registry || m_Entity == entt::null) {
+			if (!registry || m_Entity == entt::null || !registry->valid(m_Entity)) {
 				out = nullptr;
 				return false;
 			}
 
-			out = registry->try_get<TComponent>(m_Entity);
+			out = ComponentUtils::TryGetComponent<TComponent>(*registry, m_Entity);
 			return out != nullptr;
 		}
 
 		template<typename TComponent>
 		void RemoveComponent() {
 			entt::registry* registry = GetRegistry();
-			if (registry && registry->all_of<TComponent>(m_Entity)) {
-				registry->remove<TComponent>(m_Entity);
+			if (!registry || m_Entity == entt::null || !registry->valid(m_Entity)) {
+				return;
 			}
+			ComponentUtils::RemoveComponent<TComponent>(*registry, m_Entity);
 		}
 
 	private:
+		entt::registry& RequireValidRegistry(const char* message) {
+			entt::registry* registry = GetRegistry();
+			if (!registry || m_Entity == entt::null || !registry->valid(m_Entity)) {
+				IDX_THROW(IndexErrorCode::InvalidHandle, message);
+			}
+			return *registry;
+		}
+
+		const entt::registry& RequireValidRegistry(const char* message) const {
+			entt::registry* registry = GetRegistry();
+			if (!registry || m_Entity == entt::null || !registry->valid(m_Entity)) {
+				IDX_THROW(IndexErrorCode::InvalidHandle, message);
+			}
+			return *registry;
+		}
+
 		friend class NativeScriptHost;
 		uint32_t m_EntityID = 0;
 		EntityHandle m_Entity = entt::null;

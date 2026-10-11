@@ -48,7 +48,7 @@ namespace Index {
 						: Vec2{ (bl.x + tr.x) * 0.5f, (bl.y + tr.y) * 0.5f };
 					const Vec2 worldPivot{ pivot.x * worldUIScale, pivot.y * worldUIScale };
 					for (Vec2& c : corners) {
-						c = worldPivot + Rotated(c - worldPivot, rect->Rotation);
+						c = worldPivot + Vector::Rotated(c - worldPivot, rect->Rotation);
 					}
 				}
 
@@ -189,7 +189,7 @@ namespace Index {
 		bool WorldToQuadLocal(const Transform2DComponent& tx, const Vec2& worldPoint, Vec2& outLocal) {
 			if (std::abs(tx.Scale.x) < 1e-8f || std::abs(tx.Scale.y) < 1e-8f) return false;
 			const Vec2 rel{ worldPoint.x - tx.Position.x, worldPoint.y - tx.Position.y };
-			const Vec2 unrot = Rotated(rel, -tx.Rotation);
+			const Vec2 unrot = Vector::Rotated(rel, -tx.Rotation);
 			outLocal = Vec2{ unrot.x / tx.Scale.x, unrot.y / tx.Scale.y };
 			return true;
 		}
@@ -228,7 +228,7 @@ namespace Index {
 				const Vec2 pivot = rect->ResolvedValid ? rect->ResolvedPivot
 					: Vec2{ (bl.x + tr.x) * 0.5f, (bl.y + tr.y) * 0.5f };
 				const Vec2 worldPivot{ pivot.x * worldUIScale, pivot.y * worldUIScale };
-				p = worldPivot + Rotated(p - worldPivot, -rect->Rotation);
+				p = worldPivot + Vector::Rotated(p - worldPivot, -rect->Rotation);
 			}
 
 			const float minX = std::min(bl.x, tr.x) * worldUIScale;

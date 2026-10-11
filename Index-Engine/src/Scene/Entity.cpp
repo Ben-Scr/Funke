@@ -1,6 +1,6 @@
 #include "pch.hpp"
 #include "Scene/Entity.hpp"
-#include "Scene/SceneManager.hpp"
+#include "Scene/SceneExecutionContext.hpp"
 #include "Scene/Scene.hpp"
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/NameComponent.hpp"
@@ -22,11 +22,21 @@ namespace Index {
 		: Entity(e, &scene) {}
 
 	Entity::Entity(EntityHandle e, Scene* scene)
-		: m_EntityHandle(e), m_Registry(scene ? &scene->GetRegistry() : nullptr), m_Scene(scene) {}
+		: m_EntityHandle(e)
+		, m_Registry(scene ? &scene->GetRegistry() : nullptr)
+		, m_Scene(scene)
+		, m_SceneLifetime(scene ? scene->m_EntityLifetime : std::weak_ptr<LifetimeToken>{}) {}
 
 	Entity Entity::MakeScenePlaceholder(Scene& scene) {
 		// entt::null + real scene pointer: IsValid()=false for safety, but GetScene() still works for dirty-mark callbacks.
 		return Entity(EntityHandle{ entt::null }, scene);
+	}
+
+	bool Entity::IsValid() const {
+		return IsSceneAlive()
+			&& m_Registry != nullptr
+			&& m_EntityHandle != entt::null
+			&& m_Registry->valid(m_EntityHandle);
 	}
 
 	void Entity::EnsureValid(const char* message) const {
@@ -36,32 +46,32 @@ namespace Index {
 	}
 
 	Entity Entity::Create() {
-		Scene* activeScene = SceneManager::Get().GetActiveScene();
-		if (!activeScene || !activeScene->IsLoaded()) {
-			IDX_ERROR_TAG("Entity", "Cannot create entity: no active scene loaded");
+		Scene* targetScene = ResolveImplicitScene();
+		if (!targetScene) {
+			IDX_ERROR_TAG("Entity", "Cannot create entity: no current or active scene");
 			return Entity::Null;
 		}
 
-		return activeScene->CreateRuntimeEntity();
+		return targetScene->CreateRuntimeEntity();
 	}
 
 	Entity Entity::Create(const std::string& name) {
-		Scene* activeScene = SceneManager::Get().GetActiveScene();
-		if (!activeScene || !activeScene->IsLoaded()) {
-			IDX_ERROR_TAG("Entity", "Cannot create entity: no active scene loaded");
+		Scene* targetScene = ResolveImplicitScene();
+		if (!targetScene) {
+			IDX_ERROR_TAG("Entity", "Cannot create entity: no current or active scene");
 			return Entity::Null;
 		}
 
 		return name.empty()
-			? activeScene->CreateRuntimeEntity()
-			: activeScene->CreateRuntimeEntity(name);
+			? targetScene->CreateRuntimeEntity()
+			: targetScene->CreateRuntimeEntity(name);
 	}
 
 	Entity Entity::Instantiate(Entity source) {
 		if (!source.IsValid()) return Entity::Null;
-		Scene* targetScene = SceneManager::Get().GetActiveScene();
-		if (!targetScene || !targetScene->IsLoaded()) {
-			IDX_ERROR_TAG("Entity", "Cannot instantiate entity: no active scene loaded");
+		Scene* targetScene = ResolveImplicitScene();
+		if (!targetScene) {
+			IDX_ERROR_TAG("Entity", "Cannot instantiate entity: no current or active scene");
 			return Entity::Null;
 		}
 
@@ -83,12 +93,12 @@ namespace Index {
 	}
 
 	void Entity::Destroy(Entity entity, float delay) {
-		if (!entity.m_Scene || entity.m_EntityHandle == entt::null) return;
+		if (!entity.IsValid()) return;
 		entity.m_Scene->DestroyEntity(entity.m_EntityHandle, delay);
 	}
 
 	void Entity::Destroy() {
-		if (!m_Registry || !m_Scene || m_EntityHandle == entt::null) {
+		if (!IsValid()) {
 			return;
 		}
 
@@ -98,6 +108,7 @@ namespace Index {
 		m_EntityHandle = entt::null;
 		m_Registry = nullptr;
 		m_Scene = nullptr;
+		m_SceneLifetime.reset();
 
 		if (owningScene->IsValid(entityHandle)) {
 			owningScene->DestroyEntity(entityHandle);
@@ -114,23 +125,23 @@ namespace Index {
 	}
 
 	const EntityMetaData* Entity::GetMetaData() const {
-		return m_Scene ? m_Scene->GetEntityMetaData(m_EntityHandle) : nullptr;
+		return IsValid() ? m_Scene->GetEntityMetaData(m_EntityHandle) : nullptr;
 	}
 
 	EntityOrigin Entity::GetOrigin() const {
-		return m_Scene ? m_Scene->GetEntityOrigin(m_EntityHandle) : EntityOrigin::Runtime;
+		return IsValid() ? m_Scene->GetEntityOrigin(m_EntityHandle) : EntityOrigin::Runtime;
 	}
 
 	EntityID Entity::GetRuntimeID() const {
-		return m_Scene ? m_Scene->GetRuntimeID(m_EntityHandle) : 0;
+		return IsValid() ? m_Scene->GetRuntimeID(m_EntityHandle) : 0;
 	}
 
 	AssetGUID Entity::GetSceneGUID() const {
-		return m_Scene ? m_Scene->GetSceneEntityGUID(m_EntityHandle) : AssetGUID(0);
+		return IsValid() ? m_Scene->GetSceneEntityGUID(m_EntityHandle) : AssetGUID(0);
 	}
 
 	AssetGUID Entity::GetPrefabGUID() const {
-		return m_Scene ? m_Scene->GetPrefabGUID(m_EntityHandle) : AssetGUID(0);
+		return IsValid() ? m_Scene->GetPrefabGUID(m_EntityHandle) : AssetGUID(0);
 	}
 
 	bool Entity::IsSceneEntity() const {
@@ -151,7 +162,7 @@ namespace Index {
 	}
 
 	void Entity::SetEnabled(bool enabled) {
-		if (!m_Registry || m_EntityHandle == entt::null) return;
+		if (!IsValid()) return;
 
 		const bool parentDisabled = HasParent() && GetParent().HasComponent<DisabledTag>();
 		if (enabled) {
@@ -226,9 +237,10 @@ namespace Index {
 	}
 
 	void Entity::SetParent(Entity parent) {
-		if (!m_Registry || m_EntityHandle == entt::null) return;
+		if (!IsValid()) return;
 
 		const EntityHandle parentHandle = parent.m_EntityHandle;
+		if (parentHandle != entt::null && (!parent.IsValid() || !HasSameSceneLifetime(parent))) return;
 		if (parentHandle == m_EntityHandle) return; // can't parent to self
 
 		// Cycle check: refuse if `parent` is a descendant of `this`.
@@ -277,7 +289,7 @@ namespace Index {
 	}
 
 	Entity Entity::GetParent() const {
-		if (!m_Registry || m_EntityHandle == entt::null) return Entity::Null;
+		if (!IsValid()) return Entity::Null;
 		if (!HasComponent<HierarchyComponent>()) return Entity::Null;
 		const EntityHandle p = GetComponent<HierarchyComponent>().Parent;
 		if (p == entt::null || !m_Registry->valid(p)) return Entity::Null;
@@ -285,7 +297,7 @@ namespace Index {
 	}
 
 	std::span<const EntityHandle> Entity::GetChildren() const {
-		if (!m_Registry || m_EntityHandle == entt::null) return {};
+		if (!IsValid()) return {};
 		if (!HasComponent<HierarchyComponent>()) return {};
 		const std::vector<EntityHandle>& children = GetComponent<HierarchyComponent>().Children;
 		return std::span<const EntityHandle>(children);
@@ -297,7 +309,7 @@ namespace Index {
 	}
 
 	bool Entity::IsAncestorOf(Entity other) const {
-		if (!m_Registry || m_EntityHandle == entt::null) return false;
+		if (!IsValid() || !other.IsValid() || !HasSameSceneLifetime(other)) return false;
 		return HierarchyContains(*m_Registry, m_EntityHandle, other.m_EntityHandle);
 	}
 }

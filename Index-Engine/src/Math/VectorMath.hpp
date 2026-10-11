@@ -2,11 +2,12 @@
 #include "Collections/Vec2.hpp"
 #include "Random.hpp"
 #include "Trigonometry.hpp"
+#include "Math.hpp"
 
 #include <cmath>
 #include <glm/glm.hpp>
 
-namespace Index {
+namespace Index::Vector {
 	inline float Dot(const Vec2& a, const Vec2& b) noexcept {
 		return glm::dot(a, b);
 	}
@@ -31,7 +32,9 @@ namespace Index {
 	inline float DistanceSquared(const Vec2& a, const Vec2& b) noexcept {
 		return LengthSquared(a - b);
 	}
-
+	inline float Magnitude(const Vec2& a) noexcept {
+		return Sqrt<float>(a.x * a.x + a.y * a.y);
+	}
 
 	inline Vec2 Rotated(const Vec2& v, float radians) noexcept {
 		float c = Cos(radians);
@@ -48,29 +51,36 @@ namespace Index {
 		return std::atan2(a.y, a.x);
 	}
 
-
 	inline Vec2 Zero() noexcept { return Vec2(0.0f, 0.0f); }
 	inline Vec2 One() noexcept { return Vec2(1.0f, 1.0f); }
 	inline Vec2 Up() noexcept { return Vec2(0.0f, 1.0f); }
-	inline Vec2 Bottom() noexcept { return Vec2(0.0f, -1.0f); }
+	inline Vec2 Down() noexcept { return Vec2(0.0f, -1.0f); }
 	inline Vec2 Left() noexcept { return Vec2(-1.0f, 0.0f); }
 	inline Vec2 Right() noexcept { return Vec2(1.0f, 0.0f); }
-
 
 	inline Vec2 FromAngle(float radians) noexcept {
 		return Vec2(std::cos(radians), std::sin(radians));
 	}
 
-	inline Vec2 RandomInCircle(float radius) noexcept {
-		const float twoPi = 6.28318530717958647692f;
-		float theta = Random::NextFloat(0.0f, twoPi);
-		float u = Random::NextFloat(0.0f, 1.0f);
+	inline Vec2 RandomInCircle(float radius) {
+		if (!std::isfinite(radius))
+			return Zero();
+
+		float theta = Random::NextFloat(TwoPi<float>());
+		float u = Random::NextFloat(1.0f);
 		float r = radius * std::sqrt(u);
 		return FromAngle(theta) * r;
 	}
-	inline Vec2 RandomOnCircle(float radius) noexcept {
-		const float twoPi = 6.28318530717958647692f;
-		float theta = Random::NextFloat(0.0f, twoPi);
+	inline Vec2 RandomOnCircle(float radius) {
+		if (!std::isfinite(radius))
+			return Zero();
+
+		float theta = Random::NextFloat(TwoPi<float>());
 		return FromAngle(theta) * radius;
+	}
+
+	inline float LookAt2D(const Vec2& from, const Vec2& to) {
+		Vec2 lookDir = to - from;
+		return std::atan2(lookDir.y, lookDir.x) - HalfPi<float>();
 	}
 }

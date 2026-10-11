@@ -15,6 +15,11 @@
 #include "Scene/SceneManager.hpp"
 
 #define MINIAUDIO_IMPLEMENTATION
+// Playback only: no encoders, no waveform/noise generators.
+#define MA_NO_ENCODING
+#define MA_NO_GENERATION
+// miniaudio CoInitializes the calling (main) thread; its MTA default makes OleInitialize fail there, which breaks DoDragDrop. 0x2 = COINIT_APARTMENTTHREADED.
+#define MA_COINIT_VALUE 0x2
 #include <miniaudio.h>
 
 #include <filesystem>
@@ -417,7 +422,7 @@ namespace Index {
 		std::unordered_set<AudioHandle::HandleType> referenced;
 		referenced.reserve(s_audioMap.size());
 
-		SceneManager::Get().ForeachLoadedScene([&referenced](Scene& scene) {
+		SceneManager::ForeachLoadedScene([&referenced](Scene& scene) {
 			entt::registry& registry = scene.GetRegistry();
 
 			auto sources = registry.view<AudioSourceComponent>();

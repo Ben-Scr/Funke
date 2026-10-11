@@ -13,6 +13,7 @@ Index's philosophy is to keep mandatory dependencies few and focused — each li
 | [WebGPU via Dawn](https://dawn.googlesource.com/dawn) | The graphics backend. Dawn implements the WebGPU API and **picks the right native backend at runtime** — Direct3D 12, Vulkan, or Metal — depending on the platform. |
 | [GLFW](https://github.com/glfw/glfw) | Opens the OS window and handles keyboard/mouse input. |
 | [Dear ImGui](https://github.com/ocornut/imgui) | The immediate-mode UI used to build the editor's panels and the runtime's on-screen overlays. |
+| [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo) | The editor's move/rotate/scale gizmos in the Viewport. |
 
 ---
 
@@ -39,13 +40,13 @@ Index's philosophy is to keep mandatory dependencies few and focused — each li
 
 | Library | Role in Index |
 |---------|---------------|
-| [.NET 9 / hostfxr](https://dotnet.microsoft.com/) | Hosts the C# scripting runtime. The engine boots .NET through hostfxr and loads the scripting assemblies. See [Scripting](../Scripting/Scripting.md). |
+| [.NET 10 LTS / hostfxr](https://dotnet.microsoft.com/) | Hosts the C# scripting runtime. The engine boots .NET through hostfxr and loads the scripting assemblies. See [Scripting](../Scripting/Scripting.md). |
 
 ---
 
 ## A note on supported frameworks
 
-For C# scripting, Index targets **.NET 9.0**. Scripts and C# packages build against that runtime.
+For C# scripting, Index targets **.NET 10.0 LTS**. Scripts and C# packages build against that runtime.
 
 ## Related pages
 

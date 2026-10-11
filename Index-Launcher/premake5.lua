@@ -24,6 +24,7 @@ project "Index-Launcher"
     filter {}
 
     UseDependencySet(Dependency.EditorRuntimeCommon)
+    UseIndexProfilerDependencies(true)
     defines(GetIndexModuleDefines())
     ApplyIndexEditorModuleDefine()
     defines { "IDX_IMPORT_DLL" }
@@ -41,11 +42,13 @@ project "Index-Launcher"
     -- bundles Index-ScriptCore.dll, so we depend on the C# project to
     -- ensure it exists before our postbuild runs. Managed C# builds on
     -- Windows only (see root premake5.lua), so gate the dependency.
-    if os.target() == "windows" then dependson { "Index-ScriptCore" } end
+    if os.target() == "windows" then
+        dependson { "Index-Editor", "Index-Runtime", "Index-ScriptCore", "Index-PackageTool" }
+    end
 
     postbuildcommands { CopyIndexAssets, CopyIndexEngineDll, CopyGlfwDll, CopyGladDll, CopyEngineSdk }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
-    if IndexProfiler.Enabled then postbuildcommands { CopyTracyDll } end
+    ApplyIndexProfilerRuntime()
 
     filter "system:windows"
         -- See Index-Engine/premake5.lua for the rationale on
@@ -80,8 +83,11 @@ project "Index-Launcher"
         symbols "Off"
         defines { "IDX_DIST", "NDEBUG" }
 
-    filter { "system:windows", "configurations:Dist" }
+    filter { "system:windows", "configurations:Release or Dist" }
         kind "WindowedApp"
+        defines { "IDX_WINDOWED_APP=1" }
+        buildoptions { "/guard:cf" }
+        linkoptions { "/DYNAMICBASE", "/NXCOMPAT", "/HIGHENTROPYVA", "/guard:cf" }
 
     filter {}
 

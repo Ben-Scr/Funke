@@ -2,8 +2,9 @@ namespace Index;
 
 public readonly struct Collision2D
 {
-    internal Collision2D(ulong selfEntityId, ulong otherEntityId, ulong entityAId, ulong entityBId, Vector2 contactPoint)
+    internal Collision2D(ulong selfEntityId, ulong otherEntityId, ulong entityAId, ulong entityBId, Vector2 contactPoint, bool isTrigger = false)
     {
+        IsTrigger = isTrigger;
         Self = new Entity(selfEntityId);
         Other = new Entity(otherEntityId);
         EntityA = new Entity(entityAId);
@@ -16,4 +17,6 @@ public readonly struct Collision2D
     public Entity EntityA { get; }
     public Entity EntityB { get; }
     public Vector2 ContactPoint { get; }
+    /// <summary>True when this event comes from a sensor overlap; <see cref="ContactPoint"/> is zero then.</summary>
+    public bool IsTrigger { get; }
 }

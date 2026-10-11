@@ -1,10 +1,10 @@
 #pragma once
 #include "Core/Export.hpp"
-#include "Scene/ISystem.hpp"
+#include "Scene/SceneSystem.hpp"
 
 namespace Index {
 	// Physics body transforms are left alone (engine-written), but their children are still recursed into.
-	class TransformHierarchySystem : public ISystem {
+	class TransformHierarchySystem : public SceneSystem {
 	public:
 		void Awake(Scene& scene) override;
 		void Update(Scene& scene) override;

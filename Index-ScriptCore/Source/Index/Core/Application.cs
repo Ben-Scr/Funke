@@ -25,9 +25,12 @@ public static class Application
         set => InternalCalls.Application_SetVsyncEnabled(value);
     }
 
-    /// <summary>Writable persistent data directory (save files, settings). Guaranteed to exist.</summary>
+    /// <summary>
+    /// Writable per-game data directory for save files and settings: <c>%LOCALAPPDATA%/&lt;Company&gt;/&lt;Name&gt;</c>.
+    /// Editor play mode and the built game share it. Guaranteed to exist.
+    /// </summary>
     public static string PersistentDataPath => EnsureDirectory(
-        Path.Combine(GetLocalApplicationDataPath(), "Index"));
+        BuildGameDataPath(GetLocalApplicationDataPath(), Company, Name));
 
     /// <summary>Absolute path to the current project's <c>Assets</c> folder (e.g. <c>…/MyGame/Assets</c>); empty if no project is loaded.</summary>
     public static string DataPath => InternalCalls.Application_GetDataPath();
@@ -45,7 +48,7 @@ public static class Application
     /// The temporary cache directory. Data here may be cleared by the OS.
     /// </summary>
     public static string TemporaryCachePath => EnsureDirectory(
-        Path.Combine(Path.GetTempPath(), "Index"));
+        BuildGameDataPath(Path.GetTempPath(), Company, Name));
 
     public static int ScreenWidth => InternalCalls.Application_GetScreenWidth();
     public static int ScreenHeight => InternalCalls.Application_GetScreenHeight();
@@ -75,11 +78,38 @@ public static class Application
     /// </summary>
     public static void Quit() => InternalCalls.Application_Quit();
     public static void Reload() => InternalCalls.Application_Reload();
+    public static void Restart() => InternalCalls.Application_Restart();
 
     private static string GetLocalApplicationDataPath()
     {
         string path = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         return string.IsNullOrEmpty(path) ? AppContext.BaseDirectory : path;
+    }
+
+    internal const string DefaultCompanyFolder = "DefaultCompany";
+    internal const string DefaultProductFolder = "UntitledGame";
+
+    // Keyed by company + product so two games never share save data.
+    internal static string BuildGameDataPath(string root, string? company, string? product)
+        => Path.Combine(root,
+            ToPathSegment(company, DefaultCompanyFolder),
+            ToPathSegment(product, DefaultProductFolder));
+
+    internal static string ToPathSegment(string? value, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return fallback;
+
+        char[] invalid = Path.GetInvalidFileNameChars();
+        var chars = value.Trim().ToCharArray();
+        for (int i = 0; i < chars.Length; i++)
+        {
+            if (Array.IndexOf(invalid, chars[i]) >= 0 || chars[i] == '/' || chars[i] == '\\' || chars[i] == ':')
+                chars[i] = '_';
+        }
+
+        // Windows rejects trailing dots/spaces and "." / ".." would escape the root.
+        string segment = new string(chars).TrimEnd('.', ' ');
+        return segment.Length == 0 || segment == "." || segment == ".." ? fallback : segment;
     }
 
     private static string EnsureDirectory(string path)

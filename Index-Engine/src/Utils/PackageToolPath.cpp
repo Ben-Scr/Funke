@@ -22,10 +22,13 @@ namespace Index::PackageTool {
 		std::vector<std::filesystem::path> candidates;
 		candidates.push_back(exeDir / ExecutableName());
 		candidates.push_back(exeDir / "Index-PackageTool.dll");
+		const std::filesystem::path siblingOutput = exeDir.parent_path() / "Index-PackageTool";
+		candidates.push_back(siblingOutput / ExecutableName());
+		candidates.push_back(siblingOutput / "Index-PackageTool.dll");
 
 		const std::filesystem::path projectDir = exeDir / ".." / ".." / ".." / "Index-PackageTool";
 		for (const char* configuration : { "Debug", "Release", "Dist" }) {
-			const std::filesystem::path outputDirectory = projectDir / "bin" / configuration / "net9.0";
+			const std::filesystem::path outputDirectory = projectDir / "bin" / configuration / "net10.0";
 			candidates.push_back(outputDirectory / ExecutableName());
 			candidates.push_back(outputDirectory / "Index-PackageTool.dll");
 		}

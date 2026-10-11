@@ -2,6 +2,7 @@
 #include "Components/General/Transform2DComponent.hpp"
 #include "Core/Export.hpp"
 #include "Core/UUID.hpp"
+#include "Core/GraphicsSettings.hpp"
 #include "Graphics/TextureHandle.hpp"
 #include "Collections/Color.hpp"
 #include "Collections/Curve.hpp"
@@ -76,7 +77,7 @@ namespace Index {
 			Vec2 Gravity{ 0.0f, -9.7f };
 			bool UseGravity{ false };
 			bool UseRandomColors{ false };
-			Vec2 Scale{ 1.f, 1.f };
+			Vec2 Scale{ 0.1f, 0.1f };
 			Vec2 MoveDirection{ 0.f, 0.f };
 			ScaleOverLifetimeSettings ScaleOverLifetime;
 			ColorOverLifetimeSettings ColorOverLifetime;
@@ -165,7 +166,8 @@ namespace Index {
 		// once per frame. Original parameterless Update() forwards to it using the
 		// global Application time as a fallback.
 		void Update();
-		void Update(float deltaTime);
+		void Update(float deltaTime, ParticleQualityLevel quality = ParticleQualityLevel::High);
+		void Emit(size_t count, ParticleQualityLevel quality);
 		const Transform2DComponent* TryGetEmitterTransform() const;
 		void ResetSimulation();
 		std::vector<Particle> m_Particles;

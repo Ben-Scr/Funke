@@ -5,6 +5,7 @@
 #include "Instance44.hpp"
 #include "Collections/AABB.hpp"
 #include "Core/Export.hpp"
+#include "Core/GraphicsSettings.hpp"
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/IRenderer.hpp"
 #include "Graphics/PostProcessing/PostProcessor.hpp"
@@ -47,6 +48,10 @@ namespace Index {
 		void SetPostProcessingEnabled(bool enabled) { m_PostProcessingEnabled = enabled; }
 		bool IsPostProcessingEnabled() const { return m_PostProcessingEnabled; }
 		bool IsInitialized() const override { return m_IsInitialized; }
+		void SetGraphicsSettings(const GraphicsSettings& settings) {
+			m_GraphicsSettings = ClampGraphicsSettings(settings);
+		}
+		const GraphicsSettings& GetGraphicsSettings() const { return m_GraphicsSettings; }
 
 		void SetOutputTarget(unsigned int fboId, int width, int height) {
 			m_OutputFboId = fboId;
@@ -83,6 +88,7 @@ namespace Index {
 		bool m_IsEnabled = true;
 		bool m_PostProcessingEnabled = true;
 		bool m_SkipBeginFrameRender = false;
+		GraphicsSettings m_GraphicsSettings{};
 
 		std::vector<Instance44> m_Instances;
 
@@ -99,8 +105,7 @@ namespace Index {
 		std::unique_ptr<TextRenderer> m_TextRenderer;
 
 		Framebuffer    m_SceneFbo;
-		// Letterbox target: when aspect-lock is active, routes post-effects here then Blits with the sub-rect viewport so bars stay black.
-		Framebuffer    m_LetterboxOutputFbo;
+		Framebuffer    m_PostProcessOutputFbo;
 		PostProcessor  m_PostProcessor;
 
 		SceneProvider m_SceneProvider;

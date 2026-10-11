@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/Export.hpp"
+#include "Core/GraphicsSettings.hpp"
 #include "Core/WindowSpecification.hpp"
 
 #include <cstddef>
@@ -77,8 +78,11 @@ namespace Index {
 		bool EnableTextureManager = INDEX_DEFAULT_ENABLE_TEXTURE_MANAGER != 0;
 		bool EnableShaderManager = INDEX_DEFAULT_ENABLE_SHADER_MANAGER != 0;
 		bool EnablePackageHost = INDEX_DEFAULT_ENABLE_PACKAGE_HOST != 0;
+		bool AutoCreateDefaultCamera2D = true;
 		bool SetWindowIcon = INDEX_DEFAULT_SET_WINDOW_ICON != 0;
 		bool Vsync = INDEX_DEFAULT_ENABLE_VSYNC != 0;
+		bool RunInBackground = false;
+		float TargetFrameRate = 144.0f;
 		bool UseTargetFrameRateForMainLoop = true;
 
 		// F11 toggles true exclusive fullscreen (glfwSetWindowMonitor). Games
@@ -92,6 +96,7 @@ namespace Index {
 
 		// -1 = auto (hw_concurrency-1, capped to cores-2 under INDEX_WITH_SCRIPTING, clamped [2,16]); positive values clamped to [1,32].
 		int JobSystemWorkerCount = -1;
+		GraphicsSettings Graphics{};
 
 		// Window only — no rendering/audio/physics/scripting/packages. EnableTextureManager stays on so the window icon path works.
 		INDEX_API static ApplicationConfig Minimal();

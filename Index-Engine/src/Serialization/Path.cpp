@@ -45,8 +45,12 @@ namespace Index {
             CoTaskMemFree(path);
             return {};
         }
-        std::string result(size - 1, 0);
-        WideCharToMultiByte(CP_UTF8, 0, path, -1, &result[0], size, nullptr, nullptr);
+        std::string result(static_cast<size_t>(size), '\0');
+        if (WideCharToMultiByte(CP_UTF8, 0, path, -1, result.data(), size, nullptr, nullptr) != size) {
+            CoTaskMemFree(path);
+            return {};
+        }
+        result.pop_back();
 
         CoTaskMemFree(path);
         return result;
@@ -95,7 +99,8 @@ namespace Index {
                 IDX_THROW(IndexErrorCode::Undefined, "Executable path > 64KB; refusing");
             }
         }
-        return std::filesystem::path(buf.data()).parent_path().string();
+        const auto utf8 = std::filesystem::path(buf.data()).parent_path().u8string();
+        return std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size());
 #else
         char buf[PATH_MAX]{};
         ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
@@ -111,13 +116,13 @@ namespace Index {
 
         // 1. Packaged build: IndexAssets next to the executable
         std::string packed = Combine(exeDir, "IndexAssets", subdirectory);
-        if (std::filesystem::exists(packed))
+        if (std::filesystem::exists(FromUtf8(packed)))
             return packed;
 
         // 2. Dev layout: shared IndexAssets one level up (bin/<config>/IndexAssets/)
         std::string dev = Combine(exeDir, "..", "IndexAssets", subdirectory);
-        if (std::filesystem::exists(dev))
-            return std::filesystem::canonical(dev).string();
+        if (std::filesystem::exists(FromUtf8(dev)))
+            return ToUtf8(std::filesystem::canonical(FromUtf8(dev)));
 
         return {};
     }
@@ -126,7 +131,7 @@ namespace Index {
         if (absolutePath.empty()) return {};
 
         std::error_code ec;
-        std::filesystem::path input(absolutePath);
+        std::filesystem::path input = FromUtf8(absolutePath);
         std::filesystem::path canonInput = std::filesystem::weakly_canonical(input, ec);
         if (ec || canonInput.empty()) canonInput = input;
 
@@ -135,11 +140,11 @@ namespace Index {
             if (rootStr.empty()) return std::nullopt;
             std::error_code rec;
             std::filesystem::path canonRoot = std::filesystem::weakly_canonical(
-                std::filesystem::path(rootStr), rec);
-            if (rec || canonRoot.empty()) canonRoot = std::filesystem::path(rootStr);
+                FromUtf8(rootStr), rec);
+            if (rec || canonRoot.empty()) canonRoot = FromUtf8(rootStr);
 
             std::filesystem::path rel = canonInput.lexically_relative(canonRoot);
-            const std::string relString = rel.generic_string();
+			const std::string relString = ToGenericUtf8(rel);
             // lexically_relative returns "." for equality, "" when the roots
             // differ (e.g. C: vs D:), and a "..-prefix" when the input is
             // outside the root. None of those are valid display strings.
@@ -166,6 +171,6 @@ namespace Index {
 
         // Last-resort fallback: surface just the filename so we never leak the
         // full machine-local path even for unexpected inputs.
-        return std::filesystem::path(absolutePath).filename().string();
+        return ToUtf8(FromUtf8(absolutePath).filename());
     }
 }

@@ -1,31 +1,34 @@
 #include <pch.hpp>
 #include "Assets/AssetRegistry.hpp"
 #include "Directory.hpp"
+#include "Path.hpp"
 #include <filesystem>
 
 namespace Index {
 
 	void Directory::Create(const std::string& dir, bool recursive) {
 		if (recursive)
-			std::filesystem::create_directories(dir);
+			std::filesystem::create_directories(Path::FromUtf8(dir));
 		else
-			std::filesystem::create_directory(dir);
+			std::filesystem::create_directory(Path::FromUtf8(dir));
 	}
 
 	bool Directory::Exists(const std::string& dir) {
 		std::error_code ec;
-		return std::filesystem::exists(dir, ec) && std::filesystem::is_directory(dir, ec);
+		const std::filesystem::path nativeDir = Path::FromUtf8(dir);
+		return std::filesystem::exists(nativeDir, ec) && std::filesystem::is_directory(nativeDir, ec);
 	}
 
 	bool Directory::Delete(const std::string& path) {
 		std::error_code ec;
-		if (!std::filesystem::exists(path, ec) || ec)
+		const std::filesystem::path nativePath = Path::FromUtf8(path);
+		if (!std::filesystem::exists(nativePath, ec) || ec)
 			return false;
 
-		if (std::filesystem::is_directory(path, ec))
-			return std::filesystem::remove_all(path, ec) > 0 && !ec;
+		if (std::filesystem::is_directory(nativePath, ec))
+			return std::filesystem::remove_all(nativePath, ec) > 0 && !ec;
 
-		const bool removed = std::filesystem::remove(path, ec) && !ec;
+		const bool removed = std::filesystem::remove(nativePath, ec) && !ec;
 		if (removed) {
 			AssetRegistry::DeleteCompanionMetadata(path);
 		}
@@ -34,31 +37,32 @@ namespace Index {
 
 	bool Directory::Move(const std::string& from, const std::string& to) {
 		std::error_code ec;
-		if (!std::filesystem::exists(from, ec) || ec)
+		const std::filesystem::path source = Path::FromUtf8(from);
+		if (!std::filesystem::exists(source, ec) || ec)
 			return false;
 
-		std::filesystem::path dest(to);
+		std::filesystem::path dest = Path::FromUtf8(to);
 		if (std::filesystem::is_directory(dest, ec)) {
-			dest /= std::filesystem::path(from).filename();
+			dest /= source.filename();
 		}
 
-		std::filesystem::rename(from, dest, ec);
+		std::filesystem::rename(source, dest, ec);
 		if (!ec && std::filesystem::is_regular_file(dest, ec)) {
-			AssetRegistry::MoveCompanionMetadata(from, dest.string());
+			AssetRegistry::MoveCompanionMetadata(from, Path::ToUtf8(dest));
 		}
 		return !ec;
 	}
 
 	bool Directory::Rename(const std::string& path, const std::string& newName) {
 		std::error_code ec;
-		if (!std::filesystem::exists(path, ec) || ec)
+		const std::filesystem::path nativePath = Path::FromUtf8(path);
+		if (!std::filesystem::exists(nativePath, ec) || ec)
 			return false;
 
-		std::filesystem::path p(path);
-		std::filesystem::path target = p.parent_path() / newName;
-		std::filesystem::rename(p, target, ec);
+		std::filesystem::path target = nativePath.parent_path() / Path::FromUtf8(newName);
+		std::filesystem::rename(nativePath, target, ec);
 		if (!ec && std::filesystem::is_regular_file(target, ec)) {
-			AssetRegistry::MoveCompanionMetadata(path, target.string());
+			AssetRegistry::MoveCompanionMetadata(path, Path::ToUtf8(target));
 		}
 		return !ec;
 	}
@@ -67,7 +71,7 @@ namespace Index {
 		std::vector<std::string> files;
 		std::error_code ec;
 
-		const std::filesystem::path base = std::filesystem::path(dir);
+		const std::filesystem::path base = Path::FromUtf8(dir);
 		if (!std::filesystem::exists(base, ec) || ec) return {};
 		if (!std::filesystem::is_directory(base, ec) || ec) return {};
 
@@ -75,10 +79,11 @@ namespace Index {
 			const std::filesystem::directory_entry& entry = *it;
 			std::error_code ec2;
 			if (entry.is_regular_file(ec2) && !ec2) {
-				if (AssetRegistry::IsMetaFilePath(entry.path().string())) {
+				const std::string entryPath = Path::ToUtf8(entry.path());
+				if (AssetRegistry::IsMetaFilePath(entryPath)) {
 					continue;
 				}
-				files.push_back(entry.path().string());
+				files.push_back(entryPath);
 			}
 		}
 
@@ -90,7 +95,7 @@ namespace Index {
 		std::vector<DirectoryEntry> entries;
 		std::error_code ec;
 
-		const std::filesystem::path base(dir);
+		const std::filesystem::path base = Path::FromUtf8(dir);
 		if (!std::filesystem::exists(base, ec) || ec) return {};
 		if (!std::filesystem::is_directory(base, ec) || ec) return {};
 
@@ -99,8 +104,8 @@ namespace Index {
 			std::error_code ec2;
 
 			DirectoryEntry e;
-			e.Path = entry.path().string();
-			e.Name = entry.path().filename().string();
+			e.Path = Path::ToUtf8(entry.path());
+			e.Name = Path::ToUtf8(entry.path().filename());
 			e.IsDirectory = entry.is_directory(ec2) && !ec2;
 			if (!e.IsDirectory && AssetRegistry::IsMetaFilePath(e.Path)) {
 				continue;

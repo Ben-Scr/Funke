@@ -36,6 +36,22 @@
     "launcher.list.empty.subtitle": "Erstellen Sie ein neues Projekt oder fügen Sie ein bestehendes hinzu.",
     "launcher.list.size_prefix": "Größe: {0}",
     "launcher.list.open": "Öffnen",
+    "launcher.settings.section.projects": "Projekte",
+    "launcher.settings.section.appearance": "Darstellung",
+    "launcher.create.section.project": "Projekt",
+    "launcher.create.section.options": "Optionen",
+    "launcher.view.list": "Listenansicht",
+    "launcher.view.grid": "Rasteransicht",
+    "launcher.nav.projects": "Projekte",
+    "launcher.nav.asset_library": "Asset Library",
+    "launcher.nav.settings": "Einstellungen",
+    "launcher.projects.count": "{0} Projekte",
+    "launcher.projects.count_one": "1 Projekt",
+    "launcher.action.open_existing": "Öffnen",
+    "launcher.action.open_existing_tooltip": "Bestehendes Projekt vom Datenträger hinzufügen",
+    "launcher.list.more": "Weitere Aktionen",
+    "launcher.search.projects_placeholder": "Projekte durchsuchen",
+    "launcher.asset_library.subtitle": "Community-Projekte als Ausgangspunkt",
 
     "launcher.context.info": "Info",
     "launcher.context.open_in_explorer": "Im Explorer öffnen",
@@ -117,6 +133,9 @@
     "launcher.info.never": "nie",
     "launcher.info.unknown": "unbekannt",
     "launcher.info.open": "Öffnen",
-    "launcher.info.close": "Schließen"
+    "launcher.info.close": "Schließen",
+    "launcher.prereq.download": "Herunterladen",
+    "launcher.prereq.dotnet_missing": ".NET 10 SDK nicht gefunden - C#-Skripte können erst nach der Installation kompiliert werden.",
+    "launcher.prereq.msvc_missing": "MSVC Build Tools nicht gefunden - nur für native C++-Skripte und Pakete nötig."
   }
 }

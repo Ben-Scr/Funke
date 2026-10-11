@@ -24,10 +24,13 @@ project "Index-Editor-Tests"
     -- resolves through the engine include dir below.
     files
     {
+        path.join(ROOT_DIR, "Index-Editor/src/Editor/BuildAssetPruning.cpp"),
         path.join(ROOT_DIR, "Index-Editor/src/Editor/EditorCamera.cpp"),
+        path.join(ROOT_DIR, "Index-Editor/src/Editor/IndexPackageInstaller.cpp"),
         path.join(ROOT_DIR, "Index-Editor/src/Undo/UndoStack.cpp"),
         path.join(ROOT_DIR, "Index-Editor/src/Undo/TransformEditCommand.cpp"),
-        path.join(ROOT_DIR, "Index-Editor/src/Undo/InspectorEditCommand.cpp")
+        path.join(ROOT_DIR, "Index-Editor/src/Undo/InspectorEditCommand.cpp"),
+        path.join(ROOT_DIR, "Index-Editor/src/Undo/StructureEditCommand.cpp")
     }
 
     -- Link the engine SharedLib (same set the editor uses) so calls into
@@ -35,6 +38,7 @@ project "Index-Editor-Tests"
     -- like "Editor/EditorCamera.hpp" and "Scripting/ScriptDiscovery.hpp"
     -- (header-only) include cleanly.
     UseDependencySet(Dependency.EditorRuntimeCommon)
+    UseIndexProfilerDependencies(true)
     defines(GetIndexModuleDefines())
     ApplyIndexEditorModuleDefine()
     defines { "IDX_IMPORT_DLL" }
@@ -52,7 +56,7 @@ project "Index-Editor-Tests"
         CopyGladDll
     }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
-    if IndexProfiler.Enabled then postbuildcommands { CopyTracyDll } end
+    ApplyIndexProfilerRuntime()
 
     filter "system:windows"
         flags { "MultiProcessorCompile" }

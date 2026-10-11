@@ -1,9 +1,18 @@
 #include <pch.hpp>
+#include "Gui/EditorTheme.hpp"
+#include "Gui/EditorUI.hpp"
+#include "Gui/ImGuiUtils.hpp"
 #include "Systems/ImGuiEditorLayer.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <ImGuizmo.h>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
+
+#include <filesystem>
+#include <fstream>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -25,6 +34,7 @@
 #include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #include "Collections/AspectRatio.hpp"
 #include "Core/Application.hpp"
+#include "Core/Time.hpp"
 #include "Core/Window.hpp"
 #include "Diagnostics/StatsOverlay.hpp"
 #include "Editor/ApplicationEditorAccess.hpp"
@@ -41,6 +51,7 @@
 #include "Math/Trigonometry.hpp"
 #include "Math/VectorMath.hpp"
 #include "Project/ProjectManager.hpp"
+#include "Serialization/Path.hpp"
 #include "Scene/ComponentInfo.hpp"
 #include "Editor/EditorPreferences.hpp"
 #include "Scene/EntityPicker.hpp"
@@ -62,6 +73,42 @@
 namespace Index {
 
 	namespace {
+		// ── Editor View overlay pills ───────────────────────────────────────
+		// Floating toolbars drawn as child windows over the viewport image. Being child windows, they
+		// already shadow the parent's IsWindowHovered/item hover (box-select, bounds handles, ImGuizmo);
+		// the camera reads raw engine input, so it checks these flags explicitly.
+		constexpr float k_ViewportPillMargin = 8.0f;
+		bool s_EditorViewOverlayHovered = false;
+		// Set when a middle-press starts on a pill; holds until release so that drag never pans.
+		bool s_EditorViewPanBlocked = false;
+		// Auto-resized pills only know their size after a frame; the right pill is placed from last frame's.
+		ImVec2 s_EditorViewRightPillSize{ 0.0f, 0.0f };
+
+		void BeginViewportPill(const char* id, const ImVec2& screenPos) {
+			ImGui::SetCursorScreenPos(screenPos);
+			ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_PopupBg);
+			bg.w *= 0.9f;
+			ImGui::PushStyleColor(ImGuiCol_ChildBg, bg);
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4.0f, 4.0f));
+			ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
+			ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+			ImGui::BeginChild(id, ImVec2(0.0f, 0.0f),
+				ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding,
+				ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav);
+			ImGui::PopStyleVar(3);
+			ImGui::PopStyleColor();
+		}
+
+		// Returns the pill's size (for placement next frame).
+		ImVec2 EndViewportPill() {
+			if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+				s_EditorViewOverlayHovered = true;
+			}
+			const ImVec2 size = ImGui::GetWindowSize();
+			ImGui::EndChild();
+			return size;
+		}
+
 		// ── UI alignment guides ─────────────────────────────────────────────
 		// While a single UI (RectTransform) element is dragged, snap its edges and
 		// centers to other UI elements' edges/centers and draw the connecting guide
@@ -494,6 +541,64 @@ namespace Index {
 		}
 	}
 
+	void ImGuiEditorLayer::UpdateProjectThumbnail(Scene& scene) {
+		const bool dirty = scene.IsDirty();
+		if (Application::GetIsPlaying() || IsInPrefabEditMode()) {
+			m_ThumbnailSceneWasDirty = dirty;
+			return;
+		}
+
+		const bool justSaved = m_ThumbnailSceneWasDirty && !dirty;
+		m_ThumbnailSceneWasDirty = dirty;
+		// Initial capture waits ~1.5s so textures and scripts have settled after the project opens.
+		const bool initial = !m_ThumbnailInitialCaptureDone && ++m_ThumbnailFrameCounter > 90;
+		if (!justSaved && !initial) return;
+
+		m_ThumbnailInitialCaptureDone = true;
+		CaptureProjectThumbnail(scene);
+	}
+
+	bool ImGuiEditorLayer::CaptureProjectThumbnail(Scene& scene) {
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		Camera2DComponent* camera = Camera2DComponent::GetMain();
+		if (!project || !camera || !camera->IsValid()) return false;
+		Viewport* cameraViewport = camera->GetViewport();
+		if (!cameraViewport) return false;
+
+		constexpr int k_ThumbWidth = 480;
+		constexpr int k_ThumbHeight = 270;
+		Framebuffer fbo(k_ThumbWidth, k_ThumbHeight);
+		if (!fbo.IsValid()) return false;
+
+		const int savedW = cameraViewport->GetWidth();
+		const int savedH = cameraViewport->GetHeight();
+		cameraViewport->SetSize(k_ThumbWidth, k_ThumbHeight);
+		camera->UpdateViewport();
+		RenderSceneIntoFBO(fbo, scene, camera->GetViewProjectionMatrix(), camera->GetViewportAABB(),
+			/*withGizmos=*/false, /*sharedGizmosOnly=*/true, camera->GetClearColor());
+		cameraViewport->SetSize(savedW, savedH);
+		camera->UpdateViewport();
+
+		std::vector<uint8_t> pixels;
+		if (!fbo.ReadPixelsRGBA8(pixels)) {
+			IDX_CORE_WARN_TAG("Editor", "Project thumbnail: framebuffer readback failed.");
+			return false;
+		}
+		for (size_t i = 3; i < pixels.size(); i += 4) pixels[i] = 255;
+
+		const std::filesystem::path dir = Path::FromUtf8(project->RootDirectory) / ".index";
+		std::error_code ec;
+		std::filesystem::create_directories(dir, ec);
+		std::ofstream file(dir / "thumbnail.png", std::ios::binary | std::ios::trunc);
+		if (!file) return false;
+		const int ok = stbi_write_png_to_func(
+			[](void* ctx, void* data, int size) {
+				static_cast<std::ofstream*>(ctx)->write(static_cast<const char*>(data), size);
+			},
+			&file, k_ThumbWidth, k_ThumbHeight, 4, pixels.data(), k_ThumbWidth * 4);
+		return ok != 0 && file.good();
+	}
+
 	void ImGuiEditorLayer::RenderSceneIntoFBO(Framebuffer& fbo, Scene& scene,
 		const glm::mat4& vp, const AABB& viewportAABB,
 		bool withGizmos, bool sharedGizmosOnly, const Color& clearColor,
@@ -538,7 +643,7 @@ namespace Index {
 				renderer->RenderSceneWithVP(scene, vp, viewportAABB);
 			}
 			else {
-				SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
+				SceneManager::ForeachLoadedScene([&](Scene& s) {
 					renderer->RenderSceneWithVP(s, vp, viewportAABB);
 					});
 			}
@@ -561,7 +666,7 @@ namespace Index {
 					renderOne(scene);
 				}
 				else {
-					SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
+					SceneManager::ForeachLoadedScene([&](Scene& s) {
 						renderOne(s);
 						});
 				}
@@ -732,10 +837,9 @@ namespace Index {
 		// Package/registry components opted into always-draw via SetEditorGizmo(fn, true):
 		// run their gizmo for every entity that has the component.
 		auto* app = Application::GetInstance();
-		auto* sm = app ? app->GetSceneManager() : nullptr;
-		if (!sm) return;
+		if (!app || !app->GetSceneManager()) return;
 		auto allEntities = scene.GetRegistry().view<entt::entity>();
-		sm->GetComponentRegistry().ForEachComponentInfo(
+		SceneManager::GetComponentRegistry().ForEachComponentInfo(
 			[&](const std::type_index&, const ComponentInfo& info) {
 				if (!info.drawEditorGizmo || !info.drawEditorGizmoAlways || !info.has) return;
 				for (auto handle : allEntities) {
@@ -837,7 +941,7 @@ namespace Index {
 					? collider.GetScale()
 					: Vec2{ transform.Scale.x * localScale.x, transform.Scale.y * localScale.y };
 				if (worldSize.x != 0.0f && worldSize.y != 0.0f) {
-					const Vec2 center = transform.Position + Rotated(collider.GetCenter(), transform.Rotation);
+					const Vec2 center = transform.Position + Vector::Rotated(collider.GetCenter(), transform.Rotation);
 					Gizmo::SetColor(Color(0.20f, 1.0f, 0.35f, 1.0f));
 					Gizmo::SetLineWidth(2.0f);
 					Gizmo::DrawWireSquare(center, worldSize, rotationDegrees);
@@ -853,7 +957,7 @@ namespace Index {
 					? collider.GetRadius()
 					: collider.GetLocalRadius(scene) * std::max(std::abs(transform.Scale.x), std::abs(transform.Scale.y));
 				if (worldRadius > 0.0f) {
-					const Vec2 center = transform.Position + Rotated(collider.GetCenter(), transform.Rotation);
+					const Vec2 center = transform.Position + Vector::Rotated(collider.GetCenter(), transform.Rotation);
 					Gizmo::SetColor(Color(0.20f, 1.0f, 0.35f, 1.0f));
 					Gizmo::SetLineWidth(2.0f);
 					Gizmo::DrawWireCircle(center, worldRadius);
@@ -883,8 +987,8 @@ namespace Index {
 					Gizmo::SetLineWidth(2.0f);
 					const float rot = transform.Rotation;
 					for (size_t i = 0; i < worldPoints.size(); ++i) {
-						const Vec2 a = transform.Position + Rotated(worldPoints[i], rot);
-						const Vec2 b = transform.Position + Rotated(worldPoints[(i + 1) % worldPoints.size()], rot);
+						const Vec2 a = transform.Position + Vector::Rotated(worldPoints[i], rot);
+						const Vec2 b = transform.Position + Vector::Rotated(worldPoints[(i + 1) % worldPoints.size()], rot);
 						Gizmo::DrawLine(a, b);
 					}
 				}
@@ -940,11 +1044,11 @@ namespace Index {
 							const float base = transform.Rotation;
 							const float sweep = arc * 0.01745329252f;
 							const int segments = std::max(2, static_cast<int>(arc / 6.0f) + 1);
-							Vec2 prev = center + FromAngle(base) * radius;
+							Vec2 prev = center + Vector::FromAngle(base) * radius;
 							Gizmo::DrawLine(center, prev);
 							for (int seg = 1; seg <= segments; ++seg) {
 								const float a = base + sweep * (static_cast<float>(seg) / static_cast<float>(segments));
-								const Vec2 cur = center + FromAngle(a) * radius;
+								const Vec2 cur = center + Vector::FromAngle(a) * radius;
 								Gizmo::DrawLine(prev, cur);
 								prev = cur;
 							}
@@ -966,10 +1070,10 @@ namespace Index {
 				}, particleSystem.Shape);
 	
 				Vec2 moveDirection = particleSystem.ParticleSettings.MoveDirection;
-				if (LengthSquared(moveDirection) < 0.0001f) {
-					moveDirection = Up();
+				if (Vector::LengthSquared(moveDirection) < 0.0001f) {
+					moveDirection = Vector::Up();
 				}
-				moveDirection = Normalized(Rotated(moveDirection, transform.Rotation));
+				moveDirection = Vector::Normalized(Vector::Rotated(moveDirection, transform.Rotation));
 				const float indicatorLength = std::max(0.75f, std::max(std::abs(transform.Scale.x), std::abs(transform.Scale.y)));
 				Gizmo::DrawLine(transform.Position, transform.Position + moveDirection * indicatorLength);
 			}
@@ -1000,7 +1104,7 @@ namespace Index {
 			if (rect.Rotation != 0.0f) {
 				const Vec2 worldPivot{ pivot.x * worldScale, pivot.y * worldScale };
 				for (int i = 0; i < 4; ++i) {
-					corners[i] = worldPivot + Rotated(corners[i] - worldPivot, rect.Rotation);
+					corners[i] = worldPivot + Vector::Rotated(corners[i] - worldPivot, rect.Rotation);
 				}
 			}
 
@@ -1034,7 +1138,7 @@ namespace Index {
 				if (rect.Rotation != 0.0f) {
 					const Vec2 worldPivot{ pivot.x * worldScale, pivot.y * worldScale };
 					for (int i = 0; i < 4; ++i) {
-						inner[i] = worldPivot + Rotated(inner[i] - worldPivot, rect.Rotation);
+						inner[i] = worldPivot + Vector::Rotated(inner[i] - worldPivot, rect.Rotation);
 					}
 				}
 
@@ -1064,9 +1168,9 @@ namespace Index {
 
 		if (componentGizmosEnabled) {
 			if (auto* app = Application::GetInstance()) {
-				if (auto* sm = app->GetSceneManager()) {
+				if (app->GetSceneManager()) {
 					Entity selected = scene.GetEntity(m_SelectedEntity);
-					sm->GetComponentRegistry().ForEachComponentInfo(
+					SceneManager::GetComponentRegistry().ForEachComponentInfo(
 						[&](const std::type_index&, const ComponentInfo& info) {
 							// Always-draw components are handled in DrawAlwaysVisibleComponentGizmos.
 							if (info.drawEditorGizmo && !info.drawEditorGizmoAlways
@@ -1141,36 +1245,76 @@ namespace Index {
 
 		// Unscaled dt: editor preview ignores TimeScale so designers see
 		// the effect at its authored cadence regardless of debug slow-mo.
-		auto* app = Application::GetInstance();
-		const float dt = app ? app->GetTime().GetDeltaTimeUnscaled() : 0.0f;
+		const float dt = Time::GetDeltaTimeUnscaled();
 		particleSystem.PreviewUpdate(dt);
 	}
 
 	void ImGuiEditorLayer::RenderEditorView(Scene& scene) {
 		// NoScrollbar/NoScrollWithMouse: InvisibleButton overlays set off-panel cursor positions that extend CursorMaxPos and trigger a spurious scrollbar.
+		// Zero padding: the viewport image fills the panel edge to edge; the toolbars float over it as pills.
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 		m_IsEditorViewActive = ImGui::Begin("Editor View", nullptr,
 			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+		ImGui::PopStyleVar();
+
+		// Last frame's pill hover (same latency as m_IsEditorViewHovered); re-measured when the pills draw.
+		const bool overlayHovered = s_EditorViewOverlayHovered;
+		s_EditorViewOverlayHovered = false;
 
 		if (!m_IsEditorViewActive) {
 			m_IsEditorViewHovered = false;
 			m_IsEditorViewFocused = false;
+			s_EditorViewPanBlocked = false;
 			ImGui::End();
 			return;
 		}
 
-		{
-			// Vertical separator between toolbar button groups, to set them apart.
-			auto vsep = []() {
-				ImGui::SameLine();
-				ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-			};
+		// Top-left pill: transform tools.
+		auto drawToolsPill = [&](const ImVec2& pos) -> ImVec2 {
+			BeginViewportPill("##EditorViewToolsPill", pos);
+			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f, ImGui::GetStyle().ItemSpacing.y));
+			// Gizmo mode: None / Move / Rotate / Scale / Rect. "None" has no icon, so it stays a text toggle.
+			{
+				struct GizmoModeButton { const char* Label; const char* Icon; const char* Tooltip; EditorGizmoMode Mode; };
+				const GizmoModeButton modeButtons[] = {
+					{ "None##GizmoMode",   nullptr,    "No gizmo",          EditorGizmoMode::None },
+					{ "Move##GizmoMode",   "move",     "Move (translate)",  EditorGizmoMode::Translate },
+					{ "Rotate##GizmoMode", "rotation", "Rotate",            EditorGizmoMode::Rotate },
+					{ "Scale##GizmoMode",  "scale",    "Scale",             EditorGizmoMode::Scale },
+					{ "Rect##GizmoMode",   "bounding_box","Resize bounds (width/height) — edges resize one axis, corners both", EditorGizmoMode::Bounds },
+				};
+				bool first = true;
+				for (const GizmoModeButton& b : modeButtons) {
+					if (!first) {
+						ImGui::SameLine();
+					}
+					first = false;
+					const bool active = (m_GizmoMode == b.Mode);
+					bool clicked;
+					if (b.Icon) {
+						clicked = EditorUI::IconButton(b.Label, b.Icon, b.Tooltip, active);
+					} else {
+						clicked = EditorUI::ToggleButton(b.Label, active);
+						EditorUI::Tooltip(b.Tooltip);
+					}
+					if (clicked) {
+						m_GizmoMode = b.Mode;
+					}
+				}
+			}
+			ImGui::PopStyleVar();
+			return EndViewportPill();
+		};
+
+		// Top-right pill: view options.
+		auto drawOptionsPill = [&](const ImVec2& pos) -> ImVec2 {
+			BeginViewportPill("##EditorViewOptionsPill", pos);
+			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, ImGui::GetStyle().ItemSpacing.y));
 
 			constexpr const char* k_DrawModeLabels[] = { "Default", "Triangle", "Mixed" };
 			const int currentIndex = static_cast<int>(m_EditorViewDrawMode);
-			ImGui::AlignTextToFramePadding();
-			ImGui::TextUnformatted("Drawmode:");
-			ImGui::SameLine();
-			ImGui::SetNextItemWidth(120.0f);
+			// Fits the longest label ("Triangle") plus the arrow.
+			ImGui::SetNextItemWidth(ImGui::CalcTextSize("Triangle").x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetFrameHeight());
 			if (ImGui::BeginCombo("##EditorViewDrawMode", k_DrawModeLabels[currentIndex])) {
 				for (int i = 0; i < IM_ARRAYSIZE(k_DrawModeLabels); ++i) {
 					const bool selected = (i == currentIndex);
@@ -1183,135 +1327,41 @@ namespace Index {
 				}
 				ImGui::EndCombo();
 			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("Editor View draw mode (Default / Triangle wireframe / Mixed overlay)");
+			EditorUI::Tooltip("Editor View draw mode (Default / Triangle wireframe / Mixed overlay)");
+
+			EditorUI::ToolbarSeparator();
+			if (EditorUI::ToggleButton("Gizmos##EditorView", m_ShowGizmos)) {
+				m_ShowGizmos = !m_ShowGizmos;
+			}
+			EditorUI::Tooltip("Toggle gizmos in the Editor View");
+
+			EditorUI::ToolbarSeparator();
+			if (EditorUI::IconButton("##PostProcessingEditorView", "post_processing",
+					"Toggle post-processing effects (bloom, vignette, ...) in the Editor View", m_ShowPostProcessing,
+					false, 0.0f, "Post Processing")) {
+				m_ShowPostProcessing = !m_ShowPostProcessing;
 			}
 
-			vsep();
-			ImGui::SameLine();
-			{
-				const bool active = m_ShowGizmos;
-				if (active) {
-					ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-				}
-				if (ImGui::Button("Gizmos##EditorView")) {
-					m_ShowGizmos = !m_ShowGizmos;
-				}
-				if (active) {
-					ImGui::PopStyleColor();
-				}
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip("Toggle gizmos in the Editor View");
-				}
-			}
-
-			vsep();
-			// Gizmo mode: None / Move / Rotate / Scale (icon buttons, text fallback).
-			{
-				struct GizmoModeButton { const char* Label; const char* Icon; const char* Tooltip; EditorGizmoMode Mode; };
-				const GizmoModeButton modeButtons[] = {
-					{ "None##GizmoMode",   nullptr,    "No gizmo",          EditorGizmoMode::None },
-					{ "Move##GizmoMode",   "move",     "Move (translate)",  EditorGizmoMode::Translate },
-					{ "Rotate##GizmoMode", "rotation", "Rotate",            EditorGizmoMode::Rotate },
-					{ "Scale##GizmoMode",  "scale",    "Scale",             EditorGizmoMode::Scale },
-					{ "Rect##GizmoMode",   "bounding_box","Resize bounds (width/height) — edges resize one axis, corners both", EditorGizmoMode::Bounds },
-				};
-				for (const GizmoModeButton& b : modeButtons) {
-					ImGui::SameLine();
-					const bool active = (m_GizmoMode == b.Mode);
-					if (active) {
-						ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-					}
-					const uint64_t icon = b.Icon ? EditorIcons::Get(b.Icon, 16) : 0;
-					bool clicked;
-					if (icon) {
-						const float side = ImGui::GetFontSize();
-						clicked = ImGui::ImageButton(b.Label,
-							static_cast<ImTextureID>(static_cast<intptr_t>(icon)),
-							ImVec2(side, side), ImVec2(0, 1), ImVec2(1, 0));
-					} else {
-						clicked = ImGui::Button(b.Label);
-					}
-					if (clicked) {
-						m_GizmoMode = b.Mode;
-					}
-					if (active) {
-						ImGui::PopStyleColor();
-					}
-					if (ImGui::IsItemHovered()) {
-						ImGui::SetTooltip("%s", b.Tooltip);
-					}
-				}
-			}
-
-			vsep();
-			ImGui::SameLine();
-			{
-				const bool active = m_ShowPostProcessing;
-				if (active) {
-					ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-				}
-				// Icon button; falls back to text if the asset can't be loaded. Image side == font size so the button matches the adjacent combo/Gizmos frame height.
-				const uint64_t ppIcon = EditorIcons::Get("post_processing", 16);
-				bool toggled;
-				if (ppIcon) {
-					const float side = ImGui::GetFontSize();
-					toggled = ImGui::ImageButton("##PostProcessingEditorView",
-						static_cast<ImTextureID>(static_cast<intptr_t>(ppIcon)),
-						ImVec2(side, side), ImVec2(0, 1), ImVec2(1, 0));
-				} else {
-					toggled = ImGui::Button("Post Processing Effects##EditorView");
-				}
-				if (toggled) {
-					m_ShowPostProcessing = !m_ShowPostProcessing;
-				}
-				if (active) {
-					ImGui::PopStyleColor();
-				}
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip("Toggle post-processing effects (bloom, vignette, ...) in the Editor View");
-				}
-			}
-
-			vsep();
+			EditorUI::ToolbarSeparator();
 			// Grid-snapping toggle + grid-size settings popup.
-			ImGui::SameLine();
 			{
-				const bool snapActive = EditorPreferences::GetGridSnapEnabled();
-				if (snapActive) {
-					ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-				}
-				const uint64_t gridIcon = EditorIcons::Get("grid", 16);
-				bool snapToggled;
-				if (gridIcon) {
-					const float side = ImGui::GetFontSize();
-					snapToggled = ImGui::ImageButton("##GridSnapEditorView",
-						static_cast<ImTextureID>(static_cast<intptr_t>(gridIcon)),
-						ImVec2(side, side), ImVec2(0, 1), ImVec2(1, 0));
-				} else {
-					snapToggled = ImGui::Button("Snap##EditorView");
-				}
-				if (snapToggled) {
+				if (EditorUI::IconButton("##GridSnapEditorView", "grid",
+						"Toggle grid snapping for entities dragged in the Editor View", EditorPreferences::GetGridSnapEnabled(),
+						false, 0.0f, "Snap")) {
 					EditorPreferences::SetGridSnapEnabled(!EditorPreferences::GetGridSnapEnabled());
-				}
-				if (snapActive) {
-					ImGui::PopStyleColor();
-				}
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip("Toggle grid snapping for entities dragged in the Editor View");
 				}
 
 				ImGui::SameLine(0.0f, 2.0f);
 				if (ImGui::ArrowButton("##GridSnapSettings", ImGuiDir_Down)) {
 					ImGui::OpenPopup("##GridSnapPopup");
 				}
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip("Grid snapping settings");
-				}
+				EditorUI::Tooltip("Grid snapping settings");
+				// Popup contents keep the default spacing; it must still be begun inside this child (same ID stack as OpenPopup).
+				ImGui::PopStyleVar();
 
 				if (ImGui::BeginPopup("##GridSnapPopup")) {
 					bool enabled = EditorPreferences::GetGridSnapEnabled();
-					if (ImGui::Checkbox("Snap to grid", &enabled)) {
+					if (ImGuiUtils::Switch("Snap to grid", &enabled)) {
 						EditorPreferences::SetGridSnapEnabled(enabled);
 					}
 
@@ -1321,26 +1371,8 @@ namespace Index {
 
 					ImGui::TextUnformatted("Grid Size");
 
-					// Link toggle: chain icon if present, else a labelled button.
-					if (linked) {
-						ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-					}
-					const uint64_t linkIcon = EditorIcons::Get("link", 16);
-					bool linkToggled;
-					if (linkIcon) {
-						const float side = ImGui::GetFontSize();
-						linkToggled = ImGui::ImageButton("##GridSnapLink",
-							static_cast<ImTextureID>(static_cast<intptr_t>(linkIcon)),
-							ImVec2(side, side), ImVec2(0, 1), ImVec2(1, 0));
-					} else {
-						linkToggled = ImGui::Button(linked ? "Linked##GridSnapLink" : "Unlinked##GridSnapLink");
-					}
-					if (linked) {
-						ImGui::PopStyleColor();
-					}
-					if (ImGui::IsItemHovered()) {
-						ImGui::SetTooltip("Link X and Y so they share one grid size");
-					}
+					const bool linkToggled = EditorUI::IconButton("##GridSnapLink", "link",
+						"Link X and Y so they share one grid size", linked, false, 0.0f, linked ? "Linked" : "Unlinked");
 					if (linkToggled) {
 						linked = !linked;
 						EditorPreferences::SetGridSnapLinkXY(linked);
@@ -1404,9 +1436,7 @@ namespace Index {
 					if (ImGui::Checkbox("UI alignment guides", &alignGuides)) {
 						EditorPreferences::SetAlignmentGuidesEnabled(alignGuides);
 					}
-					if (ImGui::IsItemHovered()) {
-						ImGui::SetTooltip("Show alignment guides and snap when dragging UI (RectTransform) elements");
-					}
+					EditorUI::Tooltip("Show alignment guides and snap when dragging UI (RectTransform) elements");
 					ImGui::SameLine();
 					float alignThresh = EditorPreferences::GetAlignmentSnapThreshold();
 					ImGui::SetNextItemWidth(70.0f);
@@ -1418,7 +1448,9 @@ namespace Index {
 					ImGui::EndPopup();
 				}
 			}
-		}
+
+			return EndViewportPill();
+		};
 
 		Scene* renderScene = IsInPrefabEditMode() ? m_PrefabEditScene.get() : &scene;
 
@@ -1436,13 +1468,21 @@ namespace Index {
 				auto* app = Application::GetInstance();
 				if (app) {
 					auto& input = app->GetInput();
-					float dt = app->GetTime().GetDeltaTimeUnscaled();
+					float dt = Time::GetDeltaTimeUnscaled();
+
+					// Wheel/middle-press over a pill must not drive the camera; a pan begun in the view may still cross one.
+					if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) {
+						s_EditorViewPanBlocked = overlayHovered;
+					}
+					else if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+						s_EditorViewPanBlocked = false;
+					}
 
 					Vec2 mouseDelta = { 0.0f, 0.0f };
-					if (m_IsEditorViewHovered && input.GetMouse(MouseButton::Middle)) {
+					if (m_IsEditorViewHovered && !s_EditorViewPanBlocked && input.GetMouse(MouseButton::Middle)) {
 						mouseDelta = input.GetMouseDelta();
 					}
-					float scroll = m_IsEditorViewHovered ? input.ScrollValue() : 0.0f;
+					float scroll = (m_IsEditorViewHovered && !overlayHovered) ? input.ScrollValue() : 0.0f;
 
 					// Any user-initiated camera input cancels an in-flight focus
 					// lerp; otherwise next frame's UpdateEditorCameraFocus would
@@ -1551,6 +1591,19 @@ namespace Index {
 						}
 						ImGui::EndDragDropTarget();
 					}
+				}
+
+				// Floating toolbars over the image's top corners. Child windows render above this window's
+				// draw list, so gizmos/guides/marquee drawn below stay underneath them.
+				{
+					const ImVec2 toolsPos(imageTopLeft.x + k_ViewportPillMargin, imageTopLeft.y + k_ViewportPillMargin);
+					const ImVec2 toolsSize = drawToolsPill(toolsPos);
+					ImVec2 optionsPos(imageTopLeft.x + viewportSize.x - k_ViewportPillMargin - s_EditorViewRightPillSize.x, toolsPos.y);
+					if (optionsPos.x < toolsPos.x + toolsSize.x + k_ViewportPillMargin) {
+						// Too narrow for one row: stack under the tools pill.
+						optionsPos = ImVec2(toolsPos.x, toolsPos.y + toolsSize.y + 4.0f);
+					}
+					s_EditorViewRightPillSize = drawOptionsPill(optionsPos);
 				}
 
 				if (m_SelectedEntity != entt::null
@@ -1674,7 +1727,7 @@ namespace Index {
 								h.ye < 0 ? blWorld.y : (h.ye > 0 ? trWorld.y : (blWorld.y + trWorld.y) * 0.5f)
 							};
 							if (boxRot != 0.0f) {
-								hp = pivotWorld + Rotated(hp - pivotWorld, boxRot);
+								hp = pivotWorld + Vector::Rotated(hp - pivotWorld, boxRot);
 							}
 							ImVec2 screen;
 							if (!worldToScreen(hp, screen)) continue;
@@ -1876,7 +1929,7 @@ namespace Index {
 					if (rect.Rotation != 0.0f) {
 						const Vec2 worldPivot{ pivot.x * worldScale, pivot.y * worldScale };
 						for (int i = 0; i < 4; ++i) {
-							handles[i] = worldPivot + Rotated(handles[i] - worldPivot, rect.Rotation);
+							handles[i] = worldPivot + Vector::Rotated(handles[i] - worldPivot, rect.Rotation);
 						}
 					}
 
@@ -2500,6 +2553,7 @@ namespace Index {
 			m_GameViewVsyncLoaded = true;
 		}
 
+		EditorUI::BeginToolbar("##GameViewToolbar");
 		ImGui::SetNextItemWidth(140.0f);
 		if (ImGui::BeginCombo("##GameViewAspect", k_AspectRatioPresets[m_GameViewAspectPresetIndex].Label)) {
 			for (int i = 0; i < static_cast<int>(k_AspectRatioPresets.size()); ++i) {
@@ -2527,37 +2581,17 @@ namespace Index {
 			}
 		}
 
-		ImGui::SameLine();
-		{
-			const bool active = m_ShowGameViewStats;
-			if (active) {
-				ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-			}
-			if (ImGui::Button("Stats##GameView")) {
-				m_ShowGameViewStats = !m_ShowGameViewStats;
-			}
-			if (active) {
-				ImGui::PopStyleColor();
-			}
+		EditorUI::ToolbarSeparator();
+		if (EditorUI::ToggleButton("Stats##GameView", m_ShowGameViewStats)) {
+			m_ShowGameViewStats = !m_ShowGameViewStats;
 		}
 
-		// "Logs" toggle. Sibling to Stats; the log overlay stacks below
-		// the stats overlay when both are visible.
+		// The log overlay stacks below the stats overlay when both are visible.
 		ImGui::SameLine();
-		{
-			const bool active = m_ShowGameViewLogs;
-			if (active) {
-				ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-			}
-			if (ImGui::Button("Logs##GameView")) {
-				m_ShowGameViewLogs = !m_ShowGameViewLogs;
-			}
-			if (active) {
-				ImGui::PopStyleColor();
-			}
+		if (EditorUI::ToggleButton("Logs##GameView", m_ShowGameViewLogs)) {
+			m_ShowGameViewLogs = !m_ShowGameViewLogs;
 		}
-
-		ImGui::Separator();
+		EditorUI::EndToolbar();
 
 		const ImVec2 viewportSize = ImGui::GetContentRegionAvail();
 		const float targetAspect = k_AspectRatioPresets[m_GameViewAspectPresetIndex].Aspect;
@@ -2577,7 +2611,7 @@ namespace Index {
 		const int fbH = std::max(1, static_cast<int>(std::round(renderSize.y)));
 
 		if (viewportSize.x > 0.0f && viewportSize.y > 0.0f) {
-			Camera2DComponent* gameCam = Camera2DComponent::Main();
+			Camera2DComponent* gameCam = Camera2DComponent::GetMain();
 			if ((gameCam && gameCam->IsValid()) || !m_GameViewFBO.IsValid()) {
 				m_GameViewFBO.Recreate(fbW, fbH);
 			}

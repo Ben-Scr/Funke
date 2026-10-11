@@ -5,6 +5,7 @@
 #include <vector>
 
 namespace Index {
+	struct IndexProject;
 
 	// Lightweight projection of index-package.lua's top-level fields.
 	// Used to populate the package-manager UI lists; not the full premake-loader manifest.
@@ -38,6 +39,8 @@ namespace Index {
 		// fields. Returns nullopt if the file is missing or required fields (name, version)
 		// are absent. Manifest parsing is pattern-based; not a full Lua interpreter.
 		static std::optional<IndexPackageManifest> ReadManifest(const std::string& packageDir);
+		static bool RequiresNativeRuntimeLoad(const IndexPackageManifest& manifest);
+		static bool ShouldRollbackAfterLoad(const IndexPackageManifest& manifest, bool isLoaded);
 
 		// Convenience: returns true if `<packageDir>/index-package.lua` exists and parses.
 		// If invalid, fills outError with a human-readable reason.
@@ -50,7 +53,6 @@ namespace Index {
 		// Convenience that scans both engine + project roots in one call.
 		// projectRootDir may be empty (no project loaded).
 		static std::vector<IndexPackageManifest> EnumerateAll(const std::string& projectRootDir = {});
-
 		// Clone a GitHub repo into <projectPackagesDir>/<repoName>/. Validates the clone
 		// has index-package.lua at root; on failure, removes the partial clone.
 		static InstallResult InstallFromGitHub(const std::string& url, const std::string& projectPackagesDir);
@@ -67,13 +69,13 @@ namespace Index {
 		// <project>/Packages/. After mutating the project, regenerates the
 		// IndexPackages.props that the .csproj imports.
 		// Caller is responsible for running premake regen + msbuild afterwards.
-		static InstallResult InstallToProject(class IndexProject& project, const std::string& packageName);
+		static InstallResult InstallToProject(IndexProject& project, const std::string& packageName);
 
 		// Remove a package name from project.Packages, persist, and regenerate
 		// IndexPackages.props. Does NOT delete the package's files on disk.
-		static InstallResult UninstallFromProject(class IndexProject& project, const std::string& packageName);
+		static InstallResult UninstallFromProject(IndexProject& project, const std::string& packageName);
 
-		static void RegeneratePackageReferences(const class IndexProject& project);
+		static void RegeneratePackageReferences(const IndexProject& project);
 	};
 
 }

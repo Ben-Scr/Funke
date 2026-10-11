@@ -26,9 +26,11 @@
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/PrefabInstanceComponent.hpp"
 #include "Core/Application.hpp"
+#include "Core/Time.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Scene/SceneManager.hpp"
+#include "Scene/SceneExecutionContext.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/ComponentInfo.hpp"
 #include "Scripting/ScriptComponent.hpp"
@@ -45,10 +47,23 @@
 
 namespace Index {
 	namespace {
-		class ManagedSceneSystem final : public ISystem {
+		class ManagedSceneSystem final : public SceneSystem {
 		public:
 			explicit ManagedSceneSystem(std::string className)
 				: m_ClassName(std::move(className)) {}
+
+			~ManagedSceneSystem() noexcept override
+			{
+				const uint32_t handle = std::exchange(m_Handle, 0);
+				if (handle == 0) return;
+
+				// A failed Awake owns an instance but must not receive lifecycle callbacks.
+				try {
+					ScriptEngine::DestroySceneSystemInstance(handle);
+				}
+				catch (...) {
+				}
+			}
 
 			const std::string& GetClassName() const { return m_ClassName; }
 			uint32_t GetHandle() const { return m_Handle; }
@@ -210,7 +225,7 @@ namespace Index {
 			bool m_StartInvoked = false;
 		};
 
-		bool IsManagedSceneSystem(const std::unique_ptr<ISystem>& system)
+		bool IsManagedSceneSystem(const std::unique_ptr<SceneSystem>& system)
 		{
 			return dynamic_cast<ManagedSceneSystem*>(system.get()) != nullptr;
 		}
@@ -361,11 +376,14 @@ namespace Index {
 	}
 
 	EntityID Scene::AllocateRuntimeEntityID() {
-		while (m_NextRuntimeEntityID == 0 || m_RuntimeIdToEntity.contains(m_NextRuntimeEntityID)) {
-			++m_NextRuntimeEntityID;
-		}
+		EntityID runtimeId = 0;
+		do {
+			runtimeId = static_cast<uint64_t>(UUID());
+		} while (runtimeId == 0
+			|| m_RuntimeIdToEntity.contains(runtimeId)
+			|| m_SceneGuidToEntity.contains(runtimeId));
 
-		return m_NextRuntimeEntityID++;
+		return runtimeId;
 	}
 
 	void Scene::RegisterEntityIdentity(EntityHandle entity) {
@@ -505,6 +523,53 @@ namespace Index {
 		return static_cast<uint64_t>(m_Registry.get<UUIDComponent>(entity).Id);
 	}
 
+	bool Scene::SetEntityPersistentID(
+		EntityHandle entity,
+		uint64_t persistentId,
+		EntityHandle expectedPreviousOwner) {
+		if (entity == entt::null || persistentId == 0 || !m_Registry.valid(entity)
+			|| !m_Registry.all_of<EntityMetaDataComponent, UUIDComponent>(entity)) {
+			return false;
+		}
+		const auto conflicts = [entity, expectedPreviousOwner, persistentId](const auto& identities) {
+			const auto it = identities.find(persistentId);
+			return it != identities.end() && it->second != entity && it->second != expectedPreviousOwner;
+		};
+		if (conflicts(m_RuntimeIdToEntity) || conflicts(m_SceneGuidToEntity)) {
+			return false;
+		}
+
+		EntityMetaData& metaData = m_Registry.get<EntityMetaDataComponent>(entity).MetaData;
+		if (metaData.Origin == EntityOrigin::Scene && metaData.RuntimeID == persistentId) return false;
+		auto& identities = metaData.Origin == EntityOrigin::Scene
+			? m_SceneGuidToEntity
+			: m_RuntimeIdToEntity;
+		const uint64_t previousId = metaData.Origin == EntityOrigin::Scene
+			? static_cast<uint64_t>(metaData.SceneGUID)
+			: metaData.RuntimeID;
+		if (previousId == persistentId) {
+			identities[persistentId] = entity;
+			m_Registry.get<UUIDComponent>(entity).Id = UUID(persistentId);
+			return true;
+		}
+
+		auto target = identities.find(persistentId);
+		if (target == identities.end()) {
+			target = identities.emplace(persistentId, entity).first;
+		}
+		else {
+			target->second = entity;
+		}
+		if (previousId != 0) {
+			const auto previous = identities.find(previousId);
+			if (previous != identities.end() && previous->second == entity) identities.erase(previous);
+		}
+		if (metaData.Origin == EntityOrigin::Scene) metaData.SceneGUID = AssetGUID(persistentId);
+		else metaData.RuntimeID = persistentId;
+		m_Registry.get<UUIDComponent>(entity).Id = UUID(persistentId);
+		return true;
+	}
+
 	void Scene::PushEntityRefRemap() { ++m_EntityRefRemapDepth; }
 
 	void Scene::PopEntityRefRemap() {
@@ -542,15 +607,7 @@ namespace Index {
 			return true;
 		}
 
-		// Fallback: scan UUIDComponent — SceneGUID isn't in m_RuntimeIdToEntity after reload but UUID preserves it.
-		auto view = m_Registry.view<UUIDComponent>();
-		for (EntityHandle handle : view) {
-			if (static_cast<uint64_t>(view.get<UUIDComponent>(handle).Id) == entityId) {
-				outHandle = handle;
-				return true;
-			}
-		}
-		return false;
+		return TryResolveSceneGUID(AssetGUID(entityId), outHandle);
 	}
 
 	void Scene::DeferEntityRefFixup(std::function<void()> fixup) {
@@ -586,6 +643,12 @@ namespace Index {
 			for (auto& fn : batch) {
 				if (fn) fn();
 			}
+		}
+	}
+
+	void Scene::DiscardPendingEntityRefFixupsFrom(std::size_t startIndex) {
+		if (startIndex < m_PendingEntityRefFixups.size()) {
+			m_PendingEntityRefFixups.resize(startIndex);
 		}
 	}
 
@@ -626,16 +689,37 @@ namespace Index {
 
 	Entity Scene::CloneEntity(Entity source) {
 		if (!source.IsValid()) return Entity::Null;
-		const std::string name = source.GetName();
-		Entity clone = CreateRuntimeEntity(name + " (Clone)");
-		const auto& registry = SceneManager::Get().GetComponentRegistry();
-		registry.ForEachComponentInfo([&](const std::type_index&, const ComponentInfo& info) {
-			if (info.category != ComponentCategory::Component) return;
-			if (!info.has || !info.has(source)) return;
-			if (info.copyTo) {
-				info.copyTo(source, clone);
+		const std::string cloneName = source.GetName() + " (Clone)";
+		// Tree-aware snapshot (same path as the editor's Duplicate): clones the whole
+		// child subtree and remaps entity references that point inside it.
+		// SerializeEntityFull serializes only the root, which silently dropped children.
+		const Json::Value snapshot = SceneSerializer::SerializeEntityForClipboard(*source.GetScene(), source.GetHandle());
+		const EntityHandle cloneHandle = SceneSerializer::DeserializeEntityFromValue(
+			*this, snapshot, EntityOrigin::Runtime);
+		if (cloneHandle == entt::null || !IsValid(cloneHandle)) return Entity::Null;
+		Entity clone(cloneHandle, *this);
+
+		if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
+			const auto& componentRegistry = SceneManager::GetComponentRegistry();
+			componentRegistry.ForEachComponentInfo([&](const std::type_index&, const ComponentInfo& info) {
+				if (info.category != ComponentCategory::Component || !info.has || !info.copyTo) return;
+				if (info.has(source) && !info.has(clone)) info.copyTo(source, clone);
+			});
+		}
+
+		if (source.HasComponent<ScriptComponent>() && HasComponent<ScriptComponent>(cloneHandle)) {
+			const auto& sourceScripts = source.GetComponent<ScriptComponent>();
+			auto& cloneScripts = GetComponent<ScriptComponent>(cloneHandle);
+			for (const auto& [key, value] : sourceScripts.PendingFieldValues) {
+				cloneScripts.PendingFieldValues.try_emplace(key, value);
 			}
-		});
+			for (const auto& [key, value] : sourceScripts.PendingDynamicComponentValues) {
+				cloneScripts.PendingDynamicComponentValues.try_emplace(key, value);
+			}
+		}
+		if (clone.HasComponent<NameComponent>()) clone.GetComponent<NameComponent>().Name = cloneName;
+		else clone.AddComponent<NameComponent>(cloneName);
+		if (Application::GetIsPlaying()) PlayOnAwakeSubtree(cloneHandle);
 		return clone;
 	}
 
@@ -667,23 +751,32 @@ namespace Index {
 		// Gate m_TearingDown so Camera2D destroy hooks don't re-enter RefreshMainCameraSelection mid-iteration.
 		m_MainCameraEntity = entt::null;
 		m_TearingDown = true;
+		try {
+			auto view = m_Registry.view<entt::entity>();
+			std::vector<EntityHandle> entities;
+			entities.reserve(view.size());
 
-		auto view = m_Registry.view<entt::entity>();
-		std::vector<EntityHandle> entities;
-		entities.reserve(view.size());
-
-		for (EntityHandle entity : view) {
-			entities.push_back(entity);
-		}
-
-		for (EntityHandle entity : entities) {
-			if (m_Registry.valid(entity)) {
-				DestroyEntityInternal(entity, false);
+			for (EntityHandle entity : view) {
+				entities.push_back(entity);
 			}
+
+			for (EntityHandle entity : entities) {
+				if (m_Registry.valid(entity)) {
+					DestroyEntityInternal(entity, false);
+				}
+			}
+			if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
+				SceneManager::GetComponentRegistry().ScrubRegistry(m_Registry);
+			}
+		}
+		catch (...) {
+			m_TearingDown = false;
+			throw;
 		}
 
 		m_TearingDown = false;
 		m_TransformHierarchyDirty = true;
+		m_TransformDirtyAll = true;
 		m_DirtyTransformEntities.clear();
 		m_DirtyTransformEntitySet.clear();
 		m_PendingDestroys.clear();
@@ -691,24 +784,27 @@ namespace Index {
 		Renderer2D::ClearSceneCache(this);
 	}
 
-	bool Scene::BeginContentReplacement() {
-		const bool restartLifecycle = m_IsLoaded;
-		if (restartLifecycle) {
+	bool Scene::BeginContentReplacement(bool& restartLifecycle) {
+		const bool restoreSuspendedLoadedState = m_IsLoaded && m_LifecycleSuspended;
+		restartLifecycle = false;
+		if (m_IsLoaded && !m_LifecycleSuspended) {
+			IDX_CORE_ERROR_TAG("Scene", "Active loaded content requires an owner-level staged swap");
+			return false;
+		}
+		if (restoreSuspendedLoadedState) {
 			m_IsLoaded = false;
-			try {
-				DestroyScene();
-			}
-			catch (const std::exception& e) {
-				IDX_CORE_ERROR_TAG("Scene", "System teardown failed during content replacement: {}", e.what());
-			}
-			catch (...) {
-				IDX_CORE_ERROR_TAG("Scene", "Unknown system teardown failure during content replacement");
-			}
 		}
 
-		ClearEntities();
-		ClearSceneSystems();
-		return restartLifecycle;
+		try {
+			ClearEntities();
+			ClearSceneSystems();
+		}
+		catch (...) {
+			if (restoreSuspendedLoadedState) m_IsLoaded = true;
+			throw;
+		}
+		if (restoreSuspendedLoadedState) m_IsLoaded = true;
+		return true;
 	}
 
 	void Scene::EndContentReplacement(bool restartLifecycle) {
@@ -719,6 +815,7 @@ namespace Index {
 			AwakeSystems(&awakenedSystemCount);
 			StartSystems();
 			m_IsLoaded = true;
+			m_LifecycleSuspended = false;
 		}
 		catch (...) {
 			try {
@@ -754,11 +851,13 @@ namespace Index {
 		}
 
 		auto managedSystem = std::make_unique<ManagedSceneSystem>(className);
-		ISystem* system = managedSystem.get();
+		SceneSystem* system = managedSystem.get();
 		m_SceneSystemClassNames.push_back(className);
 		m_Systems.push_back(std::move(managedSystem));
 
-		if (m_IsLoaded && (!Application::IsEditor() || Application::GetIsPlaying())) {
+		if (m_IsLoaded && !m_LifecycleSuspended
+			&& (!Application::IsEditor() || Application::GetIsPlaying())) {
+			SceneExecutionScope executionScope(*this);
 			system->Awake(*this);
 			system->Start(*this);
 			if (auto* gameSystem = dynamic_cast<ManagedSceneSystem*>(system);
@@ -782,7 +881,8 @@ namespace Index {
 		for (auto it = m_Systems.begin(); it != m_Systems.end(); ++it) {
 			if (auto* managedSystem = dynamic_cast<ManagedSceneSystem*>(it->get());
 				managedSystem && managedSystem->GetClassName() == className) {
-				if (m_IsLoaded) {
+				if (m_IsLoaded && !m_LifecycleSuspended) {
+					SceneExecutionScope executionScope(*this);
 					managedSystem->OnDisable(*this);
 					managedSystem->OnDestroy(*this);
 				}
@@ -810,7 +910,7 @@ namespace Index {
 		m_SceneSystemClassNames.insert(m_SceneSystemClassNames.begin() + static_cast<std::ptrdiff_t>(toIndex), movedClassName);
 
 		// Reorder managed systems to match new name order WITHOUT firing OnDisable/OnDestroy — drag-reorder must not trigger lifecycle callbacks.
-		std::vector<std::unique_ptr<ISystem>> managedExtracted;
+		std::vector<std::unique_ptr<SceneSystem>> managedExtracted;
 		std::vector<size_t> managedSlots;
 		managedExtracted.reserve(m_SceneSystemClassNames.size());
 		managedSlots.reserve(m_SceneSystemClassNames.size());
@@ -822,7 +922,7 @@ namespace Index {
 			}
 		}
 
-		std::vector<std::unique_ptr<ISystem>> managedReordered;
+		std::vector<std::unique_ptr<SceneSystem>> managedReordered;
 		managedReordered.reserve(m_SceneSystemClassNames.size());
 		for (const std::string& className : m_SceneSystemClassNames) {
 			bool placed = false;
@@ -848,7 +948,7 @@ namespace Index {
 		}
 
 		// Purge m_AwakenedSystems raw pointers that match leftover managedExtracted entries before they dangle.
-		std::erase_if(m_AwakenedSystems, [&](ISystem* awakened) {
+		std::erase_if(m_AwakenedSystems, [&](SceneSystem* awakened) {
 			for (const auto& leftover : managedExtracted) {
 				if (leftover && leftover.get() == awakened) {
 					return true;
@@ -865,8 +965,9 @@ namespace Index {
 	{
 		for (auto it = m_Systems.begin(); it != m_Systems.end(); ) {
 			if (IsManagedSceneSystem(*it)) {
-				ISystem* system = it->get();
-				if (m_IsLoaded) {
+				SceneSystem* system = it->get();
+				if (m_IsLoaded && !m_LifecycleSuspended) {
+					SceneExecutionScope executionScope(*this);
 					system->OnDisable(*this);
 					system->OnDestroy(*this);
 				}
@@ -942,7 +1043,7 @@ namespace Index {
 			}
 
 			managedSystem->SetEnabled(enabled, *this);
-			ISystem* systemBase = managedSystem;
+			SceneSystem* systemBase = managedSystem;
 			if (enabled && managedSystem->HasEnteredLifecycle()
 				&& std::find(m_AwakenedSystems.begin(), m_AwakenedSystems.end(), systemBase) == m_AwakenedSystems.end()) {
 				m_AwakenedSystems.push_back(systemBase);
@@ -957,12 +1058,14 @@ namespace Index {
 
 	void Scene::StartManagedSceneSystemsForPlayMode()
 	{
+		if (m_LifecycleSuspended) return;
+		SceneExecutionScope executionScope(*this);
 		for (const auto& systemPointer : m_Systems) {
 			if (!systemPointer || !systemPointer->IsEnabled() || !IsManagedSceneSystem(systemPointer)) {
 				continue;
 			}
 
-			ISystem* system = systemPointer.get();
+			SceneSystem* system = systemPointer.get();
 			system->Awake(*this);
 			system->Start(*this);
 			if (std::find(m_AwakenedSystems.begin(), m_AwakenedSystems.end(), system) == m_AwakenedSystems.end()) {
@@ -1079,15 +1182,23 @@ namespace Index {
 		// wrappers. DestroyEntityInternal is the choke point for single, cascade-
 		// child, ClearEntities, and scene-unload destroys, so covering it here covers
 		// all of them. Read the UUID while the entity is still alive.
-		ScriptEngine::NotifyEntityDestroyed(GetEntityPersistentID(nativeEntity));
+		if (!m_LifecycleSuspended && !m_SuppressEntityDestructionCallbacks) {
+			ScriptEngine::NotifyEntityDestroyed(GetEntityPersistentID(nativeEntity));
+		}
 
 		UnregisterEntityIdentity(nativeEntity);
 		// Dynamic components don't get on_destroy hooks; scrub via Application path so detached/headless scenes don't assert.
 		if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
-			app->GetSceneManager()->GetComponentRegistry().ScrubEntity(nativeEntity);
+			SceneManager::GetComponentRegistry().ScrubEntity(m_Registry, nativeEntity);
 		}
 		TrackEntityDestruction(nativeEntity);
-		m_Registry.destroy(nativeEntity);
+		try {
+			m_Registry.destroy(nativeEntity);
+		}
+		catch (...) {
+			UntrackEntityDestruction(nativeEntity);
+			throw;
+		}
 		UntrackEntityDestruction(nativeEntity);
 		if (m_EntityCount > 0) {
 			--m_EntityCount;
@@ -1106,9 +1217,9 @@ namespace Index {
 		return m_EntitiesBeingDestroyed.contains(static_cast<uint32_t>(entity));
 	}
 
-	void Scene::RunLifecycleSystems(const std::function<void(ISystem&)>& func, size_t* enteredSystemCount) {
+	void Scene::RunLifecycleSystems(const std::function<void(SceneSystem&)>& func, size_t* enteredSystemCount) {
 		for (const auto& systemPointer : m_Systems) {
-			ISystem& system = *systemPointer;
+			SceneSystem& system = *systemPointer;
 			if (!system.IsEnabled()) {
 				continue;
 			}
@@ -1122,31 +1233,69 @@ namespace Index {
 	}
 
 	void Scene::AwakeSystems(size_t* enteredSystemCount) {
+		SceneExecutionScope executionScope(*this);
 		m_AwakenedSystems.clear();
+		m_AwakenedSystems.reserve(m_Systems.size());
 		for (const auto& systemPointer : m_Systems) {
-			ISystem& system = *systemPointer;
+			SceneSystem& system = *systemPointer;
 			if (!system.IsEnabled()) {
 				continue;
 			}
 
-			system.Awake(*this);
 			m_AwakenedSystems.push_back(&system);
 			if (enteredSystemCount) {
 				++(*enteredSystemCount);
 			}
+			system.Awake(*this);
 		}
 	}
 
 	void Scene::StartSystems(size_t* enteredSystemCount) {
-		RunLifecycleSystems([this](ISystem& s) { s.Start(*this); }, enteredSystemCount);
+		SceneExecutionScope executionScope(*this);
+		RunLifecycleSystems([this](SceneSystem& s) { s.Start(*this); }, enteredSystemCount);
+	}
+
+	void Scene::InitializeRuntimeComponentState() {
+		if (PhysicsSystem2D::IsInitialized()) {
+			for (EntityHandle entity : m_Registry.view<Rigidbody2DComponent>()) {
+				OnRigidBody2DComponentConstruct(m_Registry, entity);
+			}
+			for (EntityHandle entity : m_Registry.view<BoxCollider2DComponent>()) {
+				OnBoxCollider2DComponentConstruct(m_Registry, entity);
+			}
+			for (EntityHandle entity : m_Registry.view<CircleCollider2DComponent>()) {
+				OnCircleCollider2DComponentConstruct(m_Registry, entity);
+			}
+			for (EntityHandle entity : m_Registry.view<PolygonCollider2DComponent>()) {
+				OnPolygonCollider2DComponentConstruct(m_Registry, entity);
+			}
+			for (auto&& [entity, rigidbody] : m_Registry.view<Rigidbody2DComponent>().each()) {
+				(void)entity;
+				rigidbody.RestoreBodyFromState();
+			}
+			for (EntityHandle entity : m_Registry.view<FastBody2DComponent>()) {
+				OnFastBody2DConstruct(m_Registry, entity);
+			}
+			for (EntityHandle entity : m_Registry.view<FastBoxCollider2DComponent>()) {
+				OnFastBoxCollider2DConstruct(m_Registry, entity);
+			}
+			for (EntityHandle entity : m_Registry.view<FastCircleCollider2DComponent>()) {
+				OnFastCircleCollider2DConstruct(m_Registry, entity);
+			}
+		}
+		for (EntityHandle entity : m_Registry.view<Camera2DComponent>()) {
+			OnCamera2DComponentConstruct(m_Registry, entity);
+		}
+		for (EntityHandle entity : m_Registry.view<ParticleSystem2DComponent>()) {
+			OnParticleSystem2DComponentConstruct(m_Registry, entity);
+		}
 	}
 
 	void Scene::UpdateSystems() {
+		SceneExecutionScope executionScope(*this);
 		// Drain delayed destroys BEFORE system updates so elapsed entities are gone when views are iterated.
 		if (!m_PendingDestroys.empty()) {
-			const float dt = Application::GetInstance()
-				? static_cast<float>(Application::GetInstance()->GetTime().GetDeltaTime())
-				: 0.0f;
+			const float dt = Time::GetDeltaTime();
 			for (size_t i = 0; i < m_PendingDestroys.size();) {
 				auto& [h, remaining] = m_PendingDestroys[i];
 				remaining -= dt;
@@ -1165,20 +1314,21 @@ namespace Index {
 			}
 		}
 
-		ForeachEnabledSystem("Update", [this](ISystem& s) { s.Update(*this); });
+		ForeachEnabledSystem("Update", [this](SceneSystem& s) { s.Update(*this); });
 	}
 
 	void Scene::FixedUpdateSystems() {
-		ForeachEnabledSystem("FixedUpdate", [this](ISystem& s) { s.FixedUpdate(*this); });
+		ForeachEnabledSystem("FixedUpdate", [this](SceneSystem& s) { s.FixedUpdate(*this); });
 	}
 
 	void Scene::OnPreRenderSystems() {
-		ForeachEnabledSystem("OnPreRender", [this](ISystem& s) { s.OnPreRender(*this); });
+		ForeachEnabledSystem("OnPreRender", [this](SceneSystem& s) { s.OnPreRender(*this); });
 	}
 
-	void Scene::ForeachEnabledSystem(std::string_view phase, const std::function<void(ISystem&)>& func) {
+	void Scene::ForeachEnabledSystem(std::string_view phase, const std::function<void(SceneSystem&)>& func) {
+		SceneExecutionScope executionScope(*this);
 		for (size_t i = 0; i < m_Systems.size(); ++i) {
-			ISystem& system = *m_Systems[i];
+			SceneSystem& system = *m_Systems[i];
 			if (!system.IsEnabled()) {
 				continue;
 			}
@@ -1201,34 +1351,40 @@ namespace Index {
 		DestroyScene(std::numeric_limits<size_t>::max());
 	}
 
-	void Scene::DestroyScene(size_t enabledSystemCount) {
-		std::vector<ISystem*> systemsToDestroy;
+	void Scene::DestroyScene(size_t awakenedSystemCount) {
+		SceneExecutionScope executionScope(*this);
+		std::vector<SceneSystem*> systemsToDestroy;
 		systemsToDestroy.reserve(m_Systems.size());
+		const bool fullTeardown = awakenedSystemCount == std::numeric_limits<size_t>::max();
 
-		// Walk m_Systems (superset): systems added after AwakeSystems (AddSceneSystem mid-play) are in m_Systems but not m_AwakenedSystems.
-		std::unordered_set<ISystem*> alreadyQueued;
+		std::unordered_set<SceneSystem*> alreadyQueued;
 		alreadyQueued.reserve(m_AwakenedSystems.size());
 
 		if (!m_AwakenedSystems.empty()) {
-			const size_t count = std::min(enabledSystemCount, m_AwakenedSystems.size());
+			const size_t count = fullTeardown
+				? m_AwakenedSystems.size()
+				: std::min(awakenedSystemCount, m_AwakenedSystems.size());
 			for (size_t i = 0; i < count; ++i) {
-				ISystem* sys = m_AwakenedSystems[i];
+				SceneSystem* sys = m_AwakenedSystems[i];
 				systemsToDestroy.push_back(sys);
 				alreadyQueued.insert(sys);
 			}
 		}
 
-		for (const auto& systemPointer : m_Systems) {
-			ISystem* system = systemPointer.get();
-			if (alreadyQueued.contains(system)) {
-				continue;
-			}
-			const auto* managedSystem = dynamic_cast<const ManagedSceneSystem*>(system);
-			if (!system->IsEnabled() && (!managedSystem || managedSystem->GetHandle() == 0)) {
-				continue;
-			}
+		if (fullTeardown) {
+			// Normal unload also destroys systems added after Awake.
+			for (const auto& systemPointer : m_Systems) {
+				SceneSystem* system = systemPointer.get();
+				if (alreadyQueued.contains(system)) {
+					continue;
+				}
+				const auto* managedSystem = dynamic_cast<const ManagedSceneSystem*>(system);
+				if (!system->IsEnabled() && (!managedSystem || managedSystem->GetHandle() == 0)) {
+					continue;
+				}
 
-			systemsToDestroy.push_back(system);
+				systemsToDestroy.push_back(system);
+			}
 		}
 
 		std::exception_ptr firstFailure;
@@ -1260,6 +1416,7 @@ namespace Index {
 	std::unique_ptr<Scene> Scene::CreateDetachedScene(const std::string& name) {
 		auto scene = std::unique_ptr<Scene>(new Scene(name, nullptr, false));
 		scene->m_IsDetached = true;
+		scene->m_SuppressEntityDestructionCallbacks = true;
 		return scene;
 	}
 
@@ -1313,18 +1470,25 @@ namespace Index {
 		m_TearingDown = true;
 		m_MainCameraEntity = entt::null;
 		try {
-			// Detached scenes (prefab inspector) reach here with live entities that never
-			// went through DestroyEntityInternal; drop their managed wrappers so the C#
-			// component store doesn't retain them until the next assembly unload.
-			m_Registry.view<UUIDComponent>().each([](const UUIDComponent& uuid) {
-				ScriptEngine::NotifyEntityDestroyed(static_cast<uint64_t>(uuid.Id));
-			});
+			if (!m_LifecycleSuspended && !m_SuppressEntityDestructionCallbacks) {
+				m_Registry.view<UUIDComponent>().each([](const UUIDComponent& uuid) {
+					ScriptEngine::NotifyEntityDestroyed(static_cast<uint64_t>(uuid.Id));
+				});
+			}
 			m_Registry.clear();
 		}
 		catch (...) {
 			// A destructor must not throw; destroy hooks are individually guarded,
 			// but swallow defensively so teardown always completes.
 		}
+		try {
+			if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
+				SceneManager::GetComponentRegistry().ScrubRegistry(m_Registry);
+			}
+		}
+		catch (...) {
+		}
+		m_EntityLifetime.reset();
 	}
 
 	void Scene::MarkTransformDirty(EntityHandle entity)
@@ -1332,6 +1496,9 @@ namespace Index {
 		m_TransformHierarchyDirty = true;
 
 		if (entity == entt::null || !m_Registry.valid(entity)) {
+			// No specific entity (e.g. a raw component pointer handed to C#): the
+			// propagation pass must reprocess every root, including in flat scenes.
+			m_TransformDirtyAll = true;
 			return;
 		}
 
@@ -1347,6 +1514,7 @@ namespace Index {
 	std::vector<EntityHandle> Scene::ConsumeDirtyTransformEntities()
 	{
 		m_TransformHierarchyDirty = false;
+		m_TransformDirtyAll = false;
 		m_DirtyTransformEntitySet.clear();
 
 		std::vector<EntityHandle> dirty;
@@ -1405,7 +1573,7 @@ namespace Index {
 	void Scene::OnRigidBody2DComponentConstruct(entt::registry& registry, EntityHandle entity)
 	{
 		// Body adoption invariant: rigidbody adopts an existing collider's b2BodyId; the destroyer that calls b2DestroyBody MUST zero the sibling's m_BodyId to prevent aliasing on ID recycle.
-		if (m_IsDetached) return;
+		if (m_IsDetached || m_LifecycleSuspended) return;
 
 		if (!registry.all_of<Transform2DComponent>(entity)) {
 			IDX_CORE_WARN_TAG("Scene", "Adding missing Transform2DComponent before creating Rigidbody2D for entity {}", static_cast<uint32_t>(entity));
@@ -1419,15 +1587,18 @@ namespace Index {
 		// rigidbody m_BodyType defaults to Dynamic, so editor/runtime/slow-load behavior is
 		// unchanged; only an ECB fast-spawn (which byte-restores m_BodyType before the body
 		// exists) differs — a prefab authored Static now spawns Static instead of Dynamic.
-		if (HasAnyComponent<BoxCollider2DComponent>(entity)) {
+		if (HasAnyComponent<BoxCollider2DComponent>(entity)
+			&& b2Body_IsValid(GetComponent<BoxCollider2DComponent>(entity).m_BodyId)) {
 			rb2D.m_BodyId = GetComponent<BoxCollider2DComponent>(entity).m_BodyId;
 			rb2D.SetBodyType(rb2D.m_BodyType);
 		}
-		else if (HasAnyComponent<CircleCollider2DComponent>(entity)) {
+		else if (HasAnyComponent<CircleCollider2DComponent>(entity)
+			&& b2Body_IsValid(GetComponent<CircleCollider2DComponent>(entity).m_BodyId)) {
 			rb2D.m_BodyId = GetComponent<CircleCollider2DComponent>(entity).m_BodyId;
 			rb2D.SetBodyType(rb2D.m_BodyType);
 		}
-		else if (HasAnyComponent<PolygonCollider2DComponent>(entity)) {
+		else if (HasAnyComponent<PolygonCollider2DComponent>(entity)
+			&& b2Body_IsValid(GetComponent<PolygonCollider2DComponent>(entity).m_BodyId)) {
 			rb2D.m_BodyId = GetComponent<PolygonCollider2DComponent>(entity).m_BodyId;
 			rb2D.SetBodyType(rb2D.m_BodyType);
 		}
@@ -1479,7 +1650,7 @@ namespace Index {
 	}
 
 	void Scene::OnBoxCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached) return;
+		if (m_IsDetached || m_LifecycleSuspended) return;
 		if (!registry.all_of<Transform2DComponent>(entity)) {
 			IDX_CORE_WARN_TAG("Scene", "Adding missing Transform2DComponent before creating BoxCollider2D for entity {}", static_cast<uint32_t>(entity));
 			registry.emplace<Transform2DComponent>(entity);
@@ -1527,7 +1698,7 @@ namespace Index {
 	}
 
 	void Scene::OnCircleCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached) return;
+		if (m_IsDetached || m_LifecycleSuspended) return;
 		if (!registry.all_of<Transform2DComponent>(entity)) {
 			IDX_CORE_WARN_TAG("Scene", "Adding missing Transform2DComponent before creating CircleCollider2D for entity {}", static_cast<uint32_t>(entity));
 			registry.emplace<Transform2DComponent>(entity);
@@ -1575,7 +1746,7 @@ namespace Index {
 	}
 
 	void Scene::OnPolygonCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached) return;
+		if (m_IsDetached || m_LifecycleSuspended) return;
 		if (!registry.all_of<Transform2DComponent>(entity)) {
 			IDX_CORE_WARN_TAG("Scene", "Adding missing Transform2DComponent before creating PolygonCollider2D for entity {}", static_cast<uint32_t>(entity));
 			registry.emplace<Transform2DComponent>(entity);
@@ -1628,14 +1799,14 @@ namespace Index {
 
 	void Scene::OnScriptComponentDestroy(entt::registry& registry, EntityHandle entity)
 	{
-		if (m_IsDetached) return; // No script lifecycle ran in this scene.
+		if (m_IsDetached || m_LifecycleSuspended || m_SuppressEntityDestructionCallbacks) return;
 		(void)registry;
 		ScriptSystem::RemoveAllScripts(Entity(entity, *this));
 	}
 
 	void Scene::OnCamera2DComponentConstruct(entt::registry& registry, EntityHandle entity)
 	{
-		if (m_IsDetached) return;
+		if (m_IsDetached || m_LifecycleSuspended) return;
 
 		if (!registry.all_of<Transform2DComponent>(entity)) {
 			IDX_CORE_WARN_TAG("Scene", "Adding missing Transform2DComponent before creating Camera2D for entity {}", static_cast<uint32_t>(entity));
@@ -1734,6 +1905,7 @@ namespace Index {
 	}
 
 	void Scene::OnParticleSystem2DComponentConstruct(entt::registry& registry, EntityHandle entity) {
+		if (m_LifecycleSuspended) return;
 		if (m_SuppressConstructHooks) {
 			m_DeferredConstructHooks.push_back({ &Scene::OnParticleSystem2DComponentConstruct, entity });
 			return;
@@ -1750,7 +1922,7 @@ namespace Index {
 	}
 
 	void Scene::OnFastBody2DConstruct(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached) return;
+		if (m_IsDetached || m_LifecycleSuspended) return;
 		auto& comp = registry.get<FastBody2DComponent>(entity);
 		auto& indexWorld = PhysicsSystem2D::GetIndexPhysicsWorld();
 
@@ -1770,11 +1942,11 @@ namespace Index {
 
 	void Scene::OnFastBody2DDestroy(entt::registry& registry, EntityHandle entity) {
 		if (m_IsDetached) return;
-		PhysicsSystem2D::GetIndexPhysicsWorld().DestroyBody(entity);
+		PhysicsSystem2D::GetIndexPhysicsWorld().DestroyBody(entity, this);
 	}
 
 	void Scene::OnFastBoxCollider2DConstruct(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached) return;
+		if (m_IsDetached || m_LifecycleSuspended) return;
 		auto& comp = registry.get<FastBoxCollider2DComponent>(entity);
 		auto& indexWorld = PhysicsSystem2D::GetIndexPhysicsWorld();
 		// Compose initial half-extents with the entity's Transform2D.Scale so
@@ -1787,16 +1959,17 @@ namespace Index {
 		const Vec2 scaledHalfExtents{ comp.HalfExtents.x * scale.x, comp.HalfExtents.y * scale.y };
 		comp.m_EntityHandle = entity;
 		comp.m_LastAppliedScale = scale;
-		comp.m_Collider = indexWorld.CreateBoxCollider(entity, scaledHalfExtents);
+		comp.m_Collider = indexWorld.CreateBoxCollider(entity, scaledHalfExtents, this);
 	}
 
 	void Scene::OnFastBoxCollider2DDestroy(entt::registry& registry, EntityHandle entity) {
 		if (m_IsDetached) return;
-		PhysicsSystem2D::GetIndexPhysicsWorld().DestroyCollider(entity, IndexPhysicsWorld2D::FastColliderKind::Box);
+		PhysicsSystem2D::GetIndexPhysicsWorld().DestroyCollider(
+			entity, IndexPhysicsWorld2D::FastColliderKind::Box, this);
 	}
 
 	void Scene::OnFastCircleCollider2DConstruct(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached) return;
+		if (m_IsDetached || m_LifecycleSuspended) return;
 		auto& comp = registry.get<FastCircleCollider2DComponent>(entity);
 		auto& indexWorld = PhysicsSystem2D::GetIndexPhysicsWorld();
 		float scale = 1.0f;
@@ -1806,17 +1979,18 @@ namespace Index {
 		}
 		comp.m_EntityHandle = entity;
 		comp.m_LastAppliedScale = scale;
-		comp.m_Collider = indexWorld.CreateCircleCollider(entity, comp.Radius * scale);
+		comp.m_Collider = indexWorld.CreateCircleCollider(entity, comp.Radius * scale, this);
 	}
 
 	void Scene::OnFastCircleCollider2DDestroy(entt::registry& registry, EntityHandle entity) {
 		if (m_IsDetached) return;
-		PhysicsSystem2D::GetIndexPhysicsWorld().DestroyCollider(entity, IndexPhysicsWorld2D::FastColliderKind::Circle);
+		PhysicsSystem2D::GetIndexPhysicsWorld().DestroyCollider(
+			entity, IndexPhysicsWorld2D::FastColliderKind::Circle, this);
 	}
 
 	void Scene::ApplyEntityEnabledState(entt::registry& registry, EntityHandle entity, bool enabled)
 	{
-		if (!registry.valid(entity)) {
+		if (m_IsDetached || m_LifecycleSuspended || !registry.valid(entity)) {
 			return;
 		}
 

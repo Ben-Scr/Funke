@@ -34,7 +34,7 @@ namespace Index {
 
 		static void ApplyIndexTheme();
 		// Colors-only variant: leaves DPI-scaled sizing intact when called from theme switch.
-		static void ApplyIndexThemeColors();
+		static void ApplyIndexThemeColors(bool dark = true);
 
 		static void ApplyEditorFontSize();
 

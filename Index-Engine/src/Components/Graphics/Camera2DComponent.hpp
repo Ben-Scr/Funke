@@ -15,7 +15,7 @@ namespace Index {
 	public:
 		Camera2DComponent() = default;
 
-		static Camera2DComponent* Main();
+		static Camera2DComponent* GetMain();
 
 		void UpdateViewport();
 

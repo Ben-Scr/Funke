@@ -1,6 +1,6 @@
 group "Core"
 project "Index-Engine"
-    location "."
+    location (IndexCoreValidationRoot and path.join(IndexCoreValidationRoot, "Index-Engine") or ".")
     kind "SharedLib"
     language "C++"
     cppdialect "C++20"
@@ -26,6 +26,10 @@ project "Index-Engine"
         "src/**.cpp"
     }
 
+    filter "system:windows"
+        files { "version.rc" }
+    filter {}
+
     local function RemoveFilesIfModuleDisabled(moduleEnabled, filePatterns)
         if not moduleEnabled then
             removefiles(filePatterns)
@@ -44,7 +48,9 @@ project "Index-Engine"
     -- These integration units still aggregate multiple optional modules.
     RemoveFilesUnlessModulesEnabled({ "Render", "Audio", "Physics", "Scripting", "Editor" },
         {
-            "src/Core/Application.*"
+            "src/Core/Application.*",
+            "src/Graphics/RenderSettings.cpp",
+            "src/Serialization/PrefabTemplateCache.*"
         }
     )
 
@@ -63,11 +69,13 @@ project "Index-Engine"
 
     RemoveFilesUnlessModulesEnabled({ "Render", "Audio", "Physics", "Scripting" },
         {
-            "src/Scene/BuiltInComponentRegistration.cpp",
+            -- Glob: covers the per-category slices as well as the orchestrator.
+            "src/Scene/BuiltInComponentRegistration*.cpp",
             "src/Scene/Entity.cpp",
             "src/Scene/EntityHelper.cpp",
             "src/Scene/Scene.cpp",
             "src/Scene/SceneDefinition.cpp",
+            "src/Scene/SceneExecutionContext.cpp",
             "src/Scene/SceneManager.cpp",
             "src/Serialization/SceneSerializer.cpp",
             "src/Serialization/SceneSerializerDeserialize.cpp"
@@ -76,11 +84,18 @@ project "Index-Engine"
 
     RemoveFilesIfModuleDisabled(IndexModules.Render,
         {
+            "src/Core/Platform/**",
             "src/Components/Graphics/**",
             "src/Graphics/**",
-            "src/Gui/GuiRenderer.*",
+            "src/Gui/**",
+            "src/Packages/PackageImGuiBridge.*",
+            "src/Profiling/GpuTimer.*",
+            "src/Scene/EntityPicker.*",
             "src/Systems/GizmosDebugSystem.*",
-            "src/Systems/ParticleUpdateSystem.*"
+            "src/Systems/ParticleUpdateSystem.*",
+            "src/Systems/UIEventSystem.*",
+            "src/Systems/UIFocusSystem.*",
+            "src/Systems/UILayoutSystem.*"
         }
     )
 
@@ -91,7 +106,9 @@ project "Index-Engine"
     --
     -- IDX_RHI_WEBGPU is defined for compatibility with TUs that still
     -- check the macro.
-    defines { "IDX_RHI_WEBGPU" }
+    if IndexModules.Render then
+        defines { "IDX_RHI_WEBGPU" }
+    end
 
     RemoveFilesIfModuleDisabled(IndexModules.Audio,
         {
@@ -104,7 +121,8 @@ project "Index-Engine"
     RemoveFilesIfModuleDisabled(IndexModules.Physics,
         {
             "src/Components/Physics/**",
-            "src/Physics/**"
+            "src/Physics/**",
+            "src/Systems/TransformHierarchySystem.*"
         }
     )
 
@@ -233,7 +251,7 @@ project "Index-Engine"
     if IndexModules.Scripting then
         AddPrivateIncludes(
             {
-                "src/Scene/BuiltInComponentRegistration.cpp",
+                "src/Scene/BuiltInComponentRegistration*.cpp",
                 "src/Scene/Scene.cpp",
                 "src/Scene/SceneManager.cpp",
                 "src/Scripting/**",
@@ -271,6 +289,12 @@ project "Index-Engine"
 
     filter {}
 
+    if IndexCoreValidationRoot then
+        filter "system:linux"
+            linkoptions { "-Wl,--no-undefined" }
+        filter {}
+    end
+
     -- (RapidXML include is provided globally via Dependency.EngineCore — the
     -- per-file scoping attempt didn't reliably propagate to vcxproj; see
     -- the commentary in Dependencies.lua next to %{IncludeDir.RapidXml}.)
@@ -278,22 +302,13 @@ project "Index-Engine"
     filter "files:**/glad.c"
         flags { "NoPCH" }
 
-    filter "files:**/ImGuiEditorSystem.cpp"
-        flags { "NoPCH" }
-
-    filter "files:**/ScriptEngine.cpp"
-        flags { "NoPCH" }
-
-    filter "files:**/ScriptBindings.cpp"
-        flags { "NoPCH" }
-
-    filter "files:**/DotNetHost.cpp"
-        flags { "NoPCH" }
-
-    -- BuiltInComponentRegistration.cpp pulls heavy template instantiations from every
-    -- registered component's Properties::Make / inspector descriptors, blowing past
-    -- the COFF section limit on MSVC without /bigobj.
-    filter { "files:**/BuiltInComponentRegistration.cpp", "system:windows" }
+    -- Built-in component registration is split one TU per category
+    -- (BuiltInComponentRegistration<Category>.cpp); each Register<T> instantiates
+    -- EnTT storage for its component and each Properties::Make* two std::function
+    -- erasures. As one file that blew past the COFF section limit (C1128). The
+    -- slices are far smaller, but /Z7 embeds debug info in the .obj, so /bigobj
+    -- stays on the whole set as cheap insurance.
+    filter { "files:**/BuiltInComponentRegistration*.cpp", "system:windows" }
         buildoptions { "/bigobj" }
 
     -- ScriptBindings.cpp hosts every Index_<Component>_<Member> binding for the
@@ -317,10 +332,16 @@ project "Index-Engine"
         symbols "On"
         defines { "IDX_RELEASE", "NDEBUG" }
 
+    filter { "system:windows", "configurations:Release or Dist" }
+        buildoptions { "/guard:cf" }
+        linkoptions { "/DYNAMICBASE", "/NXCOMPAT", "/HIGHENTROPYVA", "/guard:cf" }
+
     filter "configurations:Dist"
         runtime "Release"
         optimize "Full"
-        symbols "Off"
+        symbols "On"
+        -- LTCG lets the linker drop and fold engine code across TUs; this DLL ships in every game.
+        linktimeoptimization "On"
         defines { "IDX_DIST", "NDEBUG" }
 
     -- Per-config libdirs for webgpu_dawn.lib. See ApplyDawnLibDirs in

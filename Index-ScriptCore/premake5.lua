@@ -3,7 +3,7 @@ project "Index-ScriptCore"
     location "."
     kind "SharedLib"
     language "C#"
-    dotnetframework "net9.0"
+    dotnetframework "net10.0"
     clr "Unsafe"
 
     targetdir ("../bin/" .. outputdir .. "/%{prj.name}")
@@ -15,6 +15,9 @@ project "Index-ScriptCore"
         AllowUnsafeBlocks = "true",
         EnableDynamicLoading = "true",
         TreatWarningsAsErrors = "true",
+        -- Ships Index-ScriptCore.xml next to the DLL so game projects get API docs in IntelliSense.
+        GenerateDocumentationFile = "true",
+        NoWarn = "$(NoWarn);CS1591",
     }
 
     files {
@@ -36,5 +39,5 @@ project "Index-ScriptCore"
 
     filter "configurations:Dist"
         optimize "Full"
-        symbols "Off"
+        symbols "On"
         defines { "IDX_DIST" }

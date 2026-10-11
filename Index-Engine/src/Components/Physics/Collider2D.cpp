@@ -33,9 +33,22 @@ namespace Index {
 	void Collider2D::SetLayer(uint64_t layer) {
 		m_Layer = layer;
 		IDX_COLLIDER_SHAPE_GUARD();
+		// Writes the mask too: shape recreation (SetSensor) restores only via SetLayer.
 		b2Filter filter = b2Shape_GetFilter(m_ShapeId);
 		filter.categoryBits = layer;
+		filter.maskBits = m_CollisionMask;
 		b2Shape_SetFilter(m_ShapeId, filter);
+	}
+	void Collider2D::SetCollisionMask(uint64_t mask) {
+		m_CollisionMask = mask;
+		IDX_COLLIDER_SHAPE_GUARD();
+		b2Filter filter = b2Shape_GetFilter(m_ShapeId);
+		filter.maskBits = mask;
+		b2Shape_SetFilter(m_ShapeId, filter);
+	}
+	uint64_t Collider2D::GetCollisionMask() const {
+		if (!b2Shape_IsValid(m_ShapeId)) return m_CollisionMask;
+		return b2Shape_GetFilter(m_ShapeId).maskBits;
 	}
 	uint64_t Collider2D::GetLayer() const {
 		if (!b2Shape_IsValid(m_ShapeId)) return m_Layer;
