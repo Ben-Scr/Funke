@@ -4,6 +4,7 @@
 #include "Core/Application.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -17,7 +18,12 @@ namespace Index {
 	namespace {
 		// unique_ptr: pointer stability across push_back (caching path holds raw pointers).
 		std::vector<std::unique_ptr<ProfilerModule>> g_Modules;
-		std::unordered_map<std::string, size_t> g_Index;
+		struct ModuleNameHash {
+			using is_transparent = void;
+			size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
+		};
+		// Transparent so the per-scope string_view lookup doesn't allocate a std::string.
+		std::unordered_map<std::string, size_t, ModuleNameHash, std::equal_to<>> g_Index;
 
 		// Brief per-call lock; held to allow future worker-thread pushes without a rewrite.
 		std::mutex g_Mutex;
@@ -25,6 +31,12 @@ namespace Index {
 		// Gates: (PanelVisible || BackgroundTracking) && IsPlaying && !IsPaused.
 		bool g_PanelVisible = false;
 		bool g_BackgroundTracking = false;
+		// Mirrors (g_PanelVisible || g_BackgroundTracking); written under g_Mutex, read lock-free.
+		std::atomic<bool> g_Armed{ false };
+
+		void UpdateArmedLocked() {
+			g_Armed.store(g_PanelVisible || g_BackgroundTracking, std::memory_order_relaxed);
+		}
 
 		int g_SamplingHz = 60;
 		int g_TrackingSpan = 200;
@@ -188,6 +200,7 @@ namespace Index {
 		g_Index.clear();
 		g_PanelVisible = false;
 		g_BackgroundTracking = false;
+		UpdateArmedLocked();
 	}
 
 	ProfilerModule* Profiler::Register(const std::string& name) {
@@ -233,14 +246,15 @@ namespace Index {
 		}
 	}
 
-	float Profiler::GetCurrentValue(const std::string& name) {
+	float Profiler::GetCurrentValue(std::string_view name) {
 		std::scoped_lock lock(g_Mutex);
 		auto it = g_Index.find(name);
 		if (it == g_Index.end()) return 0.0f;
 		return g_Modules[it->second]->CurrentValue;
 	}
 
-	void Profiler::PushValue(const std::string& name, float value) {
+	void Profiler::PushValue(std::string_view name, float value) {
+		if (!g_Armed.load(std::memory_order_relaxed)) return;
 		std::scoped_lock lock(g_Mutex);
 		auto it = g_Index.find(name);
 		if (it == g_Index.end()) return;
@@ -250,19 +264,20 @@ namespace Index {
 		RecordSample(m, value);
 	}
 
-	void Profiler::PushSample(const std::string& name, float milliseconds) {
+	void Profiler::PushSample(std::string_view name, float milliseconds) {
 		PushValue(name, milliseconds);
 	}
 
-	void Profiler::OnFrameMark(const std::string& /*name*/) {
+	void Profiler::OnFrameMark(std::string_view /*name*/) {
 		// Reserved hook — no per-frame work today, but a single chokepoint for future per-frame logic.
 	}
 
 	void Profiler::PushFrameDelta(float deltaSeconds) {
+		if (!g_Armed.load(std::memory_order_relaxed)) return;
 		const float frameMs = deltaSeconds * 1000.0f;
 
 		std::scoped_lock lock(g_Mutex);
-		if (auto it = g_Index.find("Frame Time"); it != g_Index.end()) {
+		if (auto it = g_Index.find(std::string_view("Frame Time")); it != g_Index.end()) {
 			ProfilerModule& m = *g_Modules[it->second];
 			if (m.Enabled && ShouldAcceptModuleSample(m)) RecordSample(m, frameMs);
 		}
@@ -271,11 +286,17 @@ namespace Index {
 	void Profiler::SetPanelVisible(bool visible) {
 		std::scoped_lock lock(g_Mutex);
 		g_PanelVisible = visible;
+		UpdateArmedLocked();
 	}
 
 	void Profiler::SetBackgroundTracking(bool enabled) {
 		std::scoped_lock lock(g_Mutex);
 		g_BackgroundTracking = enabled;
+		UpdateArmedLocked();
+	}
+
+	bool Profiler::IsArmed() noexcept {
+		return g_Armed.load(std::memory_order_relaxed);
 	}
 
 	bool Profiler::IsCollecting() {

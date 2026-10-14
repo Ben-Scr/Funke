@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Index {
@@ -24,6 +25,9 @@ namespace Index {
 		std::string Name;
 		BuildPlatform Platform = BuildPlatform::Windows;
 		IndexProject::RenderBackend RenderBackend = IndexProject::RenderBackend::Auto;
+		// "platformOptions" in the .build file, handed verbatim to the platform package's builder
+		// (signing keystore, SDK paths, ...). Keys are defined by each builder's `describe`.
+		std::vector<std::pair<std::string, std::string>> PlatformOptions;
 
 		static const char* PlatformToString(BuildPlatform platform);
 		static BuildPlatform PlatformFromString(std::string_view value);

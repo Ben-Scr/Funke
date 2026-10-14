@@ -8,10 +8,13 @@
 
 namespace Index::Hash {
 
-	// Windows uses BCrypt; non-Windows returns false/"not implemented" — OpenSSL/libsodium deferred until the Linux launcher has a live downloader.
+	// Portable SHA-256 on every platform. Returns false (with outError) only when the file can't be read.
 	INDEX_API bool Sha256OfFile(const std::filesystem::path& filePath,
 		std::string& outHexLower,
 		std::string& outError);
+
+	// Lowercase hex SHA-256 of an in-memory buffer.
+	INDEX_API std::string Sha256OfBytes(const void* data, size_t size);
 
 	// Returns `s` with ASCII letters lowered. Used to normalize user-supplied
 	// expected-hash strings before equality compare.

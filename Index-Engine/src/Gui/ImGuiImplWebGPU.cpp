@@ -13,11 +13,10 @@
 #include <imgui_internal.h>
 #include <backends/imgui_impl_wgpu.h>
 
+#include <SDL3/SDL_video.h>
+
 #if defined(IDX_PLATFORM_WINDOWS)
-    // Needed for HWND owner-wiring and DWM dark-mode; dwmapi.lib linked via Win32Titlebar.cpp.
-    #define GLFW_EXPOSE_NATIVE_WIN32
-    #include <GLFW/glfw3.h>
-    #include <GLFW/glfw3native.h>
+    // Needed for viewport chrome and DWM dark-mode; dwmapi.lib linked via Win32Titlebar.cpp.
     #ifndef NOMINMAX
     #define NOMINMAX
     #endif
@@ -41,14 +40,14 @@ namespace Index::ImGuiImplWebGPU {
 		// hot-reloads its ImGuiContext.
 		unsigned long long g_LastSyncedGen = 0;
 
-		// imgui_impl_glfw's original Platform_ShowWindow, saved so our
+		// imgui_impl_sdl3's original Platform_ShowWindow, saved so our
 		// hook can chain to it. See RegisterMultiViewportHandlers and
 		// MultiViewport_ShowWindow below for why we wrap it.
 		void (*g_OriginalPlatformShowWindow)(ImGuiViewport*) = nullptr;
 
 #if defined(IDX_PLATFORM_WINDOWS)
 		// Strip WS_EX_TOOLWINDOW + WS_EX_APPWINDOW (APPWINDOW overrides owner-hiding), apply popup/dialog/panel chrome per flags, dark titlebar.
-		// Re-applied in ShowWindow: imgui_impl_glfw's Platform_ShowWindow re-adds WS_EX_TOOLWINDOW and DWM resets dark-mode on first visibility.
+		// Re-applied in ShowWindow: imgui_impl_sdl3's Platform_ShowWindow adds WS_EX_APPWINDOW (a taskbar button per panel) and DWM resets dark-mode on first visibility.
 		void ApplyViewportChrome(HWND hwnd, ImGuiViewport* viewport) {
 			if (!hwnd) return;
 
@@ -250,26 +249,18 @@ namespace Index::ImGuiImplWebGPU {
 		g_Initialized = false;
 	}
 
-	// imgui_impl_glfw stores GLFWwindow* in PlatformHandle and HWND in PlatformHandleRaw on Win32.
+	// imgui_impl_sdl3 stores the SDL_WindowID in PlatformHandle and the HWND / NSWindow in PlatformHandleRaw.
+	// Live-resize repaints of secondary windows come from Window's SDL event watch, like the main window.
 
 	namespace {
 
-		// Forward declaration so MultiViewport_CreateWindow below can wire
-		// up the refresh callback (defined further down).
-#if defined(IDX_PLATFORM_WINDOWS)
-		void MultiViewport_RefreshCallback(GLFWwindow* glfwWindow);
-#endif
-
 		void MultiViewport_CreateWindow(ImGuiViewport* viewport) {
-			void* hwnd = viewport->PlatformHandleRaw;
-			if (!hwnd) {
-				const char* glfwDescription = nullptr;
-				const int glfwError = glfwGetError(&glfwDescription);
+			SDL_Window* sdlWindow = SDL_GetWindowFromID(
+				static_cast<SDL_WindowID>(reinterpret_cast<intptr_t>(viewport->PlatformHandle)));
+			if (!sdlWindow) {
 				IDX_CORE_ERROR_TAG("ImGuiImplWebGPU",
-					"Secondary viewport creation failed: missing HWND (GLFW {}: {}). "
-					"Disabling secondary viewports.",
-					glfwError,
-					glfwDescription ? glfwDescription : "no error detail");
+					"Secondary viewport creation failed: no SDL window ({}). "
+					"Disabling secondary viewports.", SDL_GetError());
 				viewport->RendererUserData = nullptr;
 				viewport->PlatformRequestClose = true;
 				ImGui::GetIO().BackendFlags &= ~ImGuiBackendFlags_RendererHasViewports;
@@ -279,9 +270,12 @@ namespace Index::ImGuiImplWebGPU {
 			const uint32_t w = static_cast<uint32_t>(viewport->Size.x);
 			const uint32_t h = static_cast<uint32_t>(viewport->Size.y);
 
-			auto* vs = WebGPUBackend::CreateViewportSurface(
-				hwnd, /*hinstance*/ nullptr,
-				w > 0 ? w : 1, h > 0 ? h : 1);
+			// Surface size is in pixels; viewport->Size is in window coordinates (points on Retina).
+			int pixelW = 0, pixelH = 0;
+			SDL_GetWindowSizeInPixels(sdlWindow, &pixelW, &pixelH);
+			auto* vs = WebGPUBackend::CreateViewportSurface(sdlWindow,
+				pixelW > 0 ? static_cast<uint32_t>(pixelW) : (w > 0 ? w : 1),
+				pixelH > 0 ? static_cast<uint32_t>(pixelH) : (h > 0 ? h : 1));
 			viewport->RendererUserData = vs;
 			if (!vs) {
 				IDX_CORE_ERROR_TAG("ImGuiImplWebGPU",
@@ -292,63 +286,8 @@ namespace Index::ImGuiImplWebGPU {
 			}
 
 #if defined(IDX_PLATFORM_WINDOWS)
-			HWND viewportHwnd = static_cast<HWND>(hwnd);
-
-			// Set GWLP_HWNDPARENT (misnamed — sets *owner*, not parent) to tie z-order and taskbar hiding to the main HWND without needing WS_EX_TOOLWINDOW.
-			HWND ownerHwnd = nullptr;
-			Window* mainWindow = Application::GetWindow();
-			GLFWwindow* mainGlfw = mainWindow ? mainWindow->GetGLFWWindow() : nullptr;
-			if (mainGlfw) {
-				ownerHwnd = glfwGetWin32Window(mainGlfw);
-				if (ownerHwnd) {
-					SetWindowLongPtrW(
-						viewportHwnd,
-						GWLP_HWNDPARENT,
-						reinterpret_cast<LONG_PTR>(ownerHwnd));
-				}
-			}
-
-			ApplyViewportChrome(viewportHwnd, viewport);
-
-			// Owned windows don't inherit the owner's icon — push via WM_SETICON; fall back to the window-class icon (manifest puts it there on some builds).
-			if (ownerHwnd) {
-				HICON smallIcon = reinterpret_cast<HICON>(
-					SendMessageW(ownerHwnd, WM_GETICON, ICON_SMALL, 0));
-				if (!smallIcon) {
-					smallIcon = reinterpret_cast<HICON>(
-						GetClassLongPtrW(ownerHwnd, GCLP_HICONSM));
-				}
-				if (smallIcon) {
-					SendMessageW(viewportHwnd, WM_SETICON, ICON_SMALL,
-						reinterpret_cast<LPARAM>(smallIcon));
-				}
-
-				HICON bigIcon = reinterpret_cast<HICON>(
-					SendMessageW(ownerHwnd, WM_GETICON, ICON_BIG, 0));
-				if (!bigIcon) {
-					bigIcon = reinterpret_cast<HICON>(
-						GetClassLongPtrW(ownerHwnd, GCLP_HICON));
-				}
-				if (bigIcon) {
-					SendMessageW(viewportHwnd, WM_SETICON, ICON_BIG,
-						reinterpret_cast<LPARAM>(bigIcon));
-				}
-			}
-
-			BOOL useDarkMode = TRUE;
-			DwmSetWindowAttribute(
-				viewportHwnd,
-				DWMWA_USE_IMMERSIVE_DARK_MODE,
-				&useDarkMode,
-				sizeof(useDarkMode));
-
-			// Refresh callback re-renders during Win32's modal sizing loop (main thread blocked in DefWindowProc); prevents the "stretched framebuffer" artifact on resize.
-			GLFWwindow* viewportGlfw =
-				static_cast<GLFWwindow*>(viewport->PlatformHandle);
-			if (viewportGlfw) {
-				glfwSetWindowRefreshCallback(viewportGlfw,
-					MultiViewport_RefreshCallback);
-			}
+			// The owner HWND and the class icon come from SDL (SDL_SetWindowParent + the exe's RT_GROUP_ICON).
+			ApplyViewportChrome(static_cast<HWND>(viewport->PlatformHandleRaw), viewport);
 #endif
 		}
 
@@ -365,8 +304,15 @@ namespace Index::ImGuiImplWebGPU {
 			auto* vs = static_cast<WebGPUBackend::ViewportSurface*>(
 				viewport->RendererUserData);
 			if (!vs) return;
-			const uint32_t w = static_cast<uint32_t>(size.x);
-			const uint32_t h = static_cast<uint32_t>(size.y);
+			uint32_t w = static_cast<uint32_t>(size.x);
+			uint32_t h = static_cast<uint32_t>(size.y);
+			int pixelW = 0, pixelH = 0;
+			if (SDL_Window* sdlWindow = SDL_GetWindowFromID(
+					static_cast<SDL_WindowID>(reinterpret_cast<intptr_t>(viewport->PlatformHandle)));
+				sdlWindow && SDL_GetWindowSizeInPixels(sdlWindow, &pixelW, &pixelH) && pixelW > 0 && pixelH > 0) {
+				w = static_cast<uint32_t>(pixelW);
+				h = static_cast<uint32_t>(pixelH);
+			}
 			if (w == 0 || h == 0) return;
 			WebGPUBackend::ResizeViewportSurface(vs, w, h);
 		}
@@ -426,19 +372,10 @@ namespace Index::ImGuiImplWebGPU {
 			WebGPUBackend::PresentViewportSurface(vs);
 		}
 
-#if defined(IDX_PLATFORM_WINDOWS)
-		// Fires on WM_PAINT during Win32's modal sizing loop (main thread blocked in DefWindowProc); runs a full re-layout pass so the viewport isn't just stretched stale framebuffer.
-		void MultiViewport_RefreshCallback(GLFWwindow* /*glfwWindow*/) {
-			Application* app = Application::GetInstance();
-			if (!app) return;
-			app->RenderOnceForRefresh();
-		}
-#endif
-
-		// Hooks Platform_ShowWindow: re-strips WS_EX_TOOLWINDOW (upstream re-adds it for NoTaskBarIcon) and gives keyboard focus to dialogs (GLFW defaults to FOCUSED=false).
+		// Hooks Platform_ShowWindow: re-strips WS_EX_APPWINDOW / WS_EX_TOOLWINDOW (upstream adds them) and gives keyboard focus to dialogs.
 		void MultiViewport_ShowWindow(ImGuiViewport* viewport) {
-			// Chain to imgui_impl_glfw first — it actually shows the GLFW
-			// window (and re-applies WS_EX_TOOLWINDOW we're about to undo).
+			// Chain to imgui_impl_sdl3 first — it actually shows the SDL
+			// window (and re-applies the ex-styles we're about to undo).
 			if (g_OriginalPlatformShowWindow) {
 				g_OriginalPlatformShowWindow(viewport);
 			}
@@ -447,8 +384,8 @@ namespace Index::ImGuiImplWebGPU {
 			HWND hwnd = static_cast<HWND>(viewport->PlatformHandleRaw);
 			if (!hwnd) return;
 
-			// Re-apply our chrome after imgui_impl_glfw's Platform_ShowWindow
-			// (it re-added WS_EX_TOOLWINDOW for NoTaskBarIcon viewports, and
+			// Re-apply our chrome after imgui_impl_sdl3's Platform_ShowWindow
+			// (it adds WS_EX_APPWINDOW for taskbar viewports, and
 			// on some Windows builds DWM resets the dark-mode attribute when
 			// the window first becomes visible).
 			ApplyViewportChrome(hwnd, viewport);
@@ -476,7 +413,7 @@ namespace Index::ImGuiImplWebGPU {
 		ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
 		if (pio.Platform_CreateWindow == nullptr || pio.Platform_DestroyWindow == nullptr) {
 			IDX_CORE_ERROR_TAG("ImGuiImplWebGPU",
-				"GLFW multi-viewport handlers are unavailable. Secondary viewports remain disabled.");
+				"SDL3 multi-viewport handlers are unavailable. Secondary viewports remain disabled.");
 			ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
 			ImGui::GetIO().BackendFlags &= ~ImGuiBackendFlags_RendererHasViewports;
 			return;
@@ -487,7 +424,7 @@ namespace Index::ImGuiImplWebGPU {
 		pio.Renderer_RenderWindow  = MultiViewport_RenderWindow;
 		pio.Renderer_SwapBuffers   = MultiViewport_SwapBuffers;
 
-		// Must run AFTER ImGui_ImplGlfw_InitForOther, which sets Platform_ShowWindow; consumer calls this from OnAttach right after Init so the ordering is guaranteed.
+		// Must run AFTER ImGui_ImplSDL3_InitForOther, which sets Platform_ShowWindow; consumer calls this from OnAttach right after Init so the ordering is guaranteed.
 		g_OriginalPlatformShowWindow = pio.Platform_ShowWindow;
 		pio.Platform_ShowWindow = MultiViewport_ShowWindow;
 
@@ -505,7 +442,7 @@ namespace Index::ImGuiImplWebGPU {
 		ImGuiWindowClass wc{};
 		// NoAutoMerge — always its own OS window.
 		wc.ViewportFlagsOverrideSet = ImGuiViewportFlags_NoAutoMerge;
-		// Clear these or ImGui popup logic re-applies them: NoDecoration strips titlebar; TopMost strips WS_THICKFRAME; NoTaskBarIcon trips imgui_impl_glfw into re-adding WS_EX_TOOLWINDOW.
+		// Clear these or ImGui popup logic re-applies them: NoDecoration strips titlebar; TopMost strips WS_THICKFRAME; NoTaskBarIcon makes imgui_impl_sdl3 create a utility (tool) window.
 		wc.ViewportFlagsOverrideClear =
 			ImGuiViewportFlags_NoDecoration |
 			ImGuiViewportFlags_TopMost |
@@ -540,7 +477,7 @@ namespace Index::ImGuiImplWebGPU {
 		pio.Renderer_RenderWindow  = nullptr;
 		pio.Renderer_SwapBuffers   = nullptr;
 
-		// Restore imgui_impl_glfw's original Platform_ShowWindow so its
+		// Restore imgui_impl_sdl3's original Platform_ShowWindow so its
 		// Shutdown can run normally (it doesn't expect our wrapper to be
 		// in place).
 		if (g_OriginalPlatformShowWindow) {

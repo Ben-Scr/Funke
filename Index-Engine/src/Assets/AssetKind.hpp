@@ -12,7 +12,10 @@ namespace Index {
 		Font,
 		Shader,
 		DataAsset,
-		Other
+		Other,
+		// Appended after Other: C# AssetManager mirrors these values.
+		Material,
+		Mesh
 	};
 
 }

@@ -4,6 +4,11 @@
 
 #include "Components/General/General.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
+#include "Components/Tags.hpp"
+#include "Components/UI/UI.hpp"
+#include "Scripting/ScriptComponent.hpp"
+
+#if INDEX_WITH_2D
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
@@ -13,9 +18,19 @@
 #include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
-#include "Components/Tags.hpp"
-#include "Components/UI/UI.hpp"
-#include "Scripting/ScriptComponent.hpp"
+#endif
+
+#if INDEX_WITH_3D
+#include "Components/General/Transform3DComponent.hpp"
+#include "Components/Graphics/Camera3DComponent.hpp"
+#include "Components/Graphics/DirectionalLightComponent.hpp"
+#include "Components/Graphics/MeshRendererComponent.hpp"
+#include "Components/Graphics/ParticleSystem3DComponent.hpp"
+#include "Components/Graphics/PointLightComponent.hpp"
+#include "Components/Graphics/SpotLightComponent.hpp"
+#include "Components/Physics3D/Collider3DComponents.hpp"
+#include "Components/Physics3D/Rigidbody3DComponent.hpp"
+#endif
 
 // Single source of truth for built-in components — names, categories, properties.
 //
@@ -28,12 +43,14 @@
 // registration rebuilt all of it. Split, the slices compile in parallel and an edit
 // only recompiles its own category. Add a new built-in to the slice for its category.
 //
-// THE CALL ORDER BELOW IS LOAD-BEARING. ComponentRegistry assigns
-// ComponentInfo::typeIdU32 sequentially in registration order, and that id is what the
-// ECB wire format and baked PrefabTemplateCache records use to name a component. The
-// sequence replays the original single-function order exactly, including Hierarchy and
-// Scripts after the UI layout groups and the Tags after the conflict and dependency
-// declarations, so splitting the file changed no ids.
+// ComponentRegistry assigns ComponentInfo::typeIdU32 sequentially in registration order;
+// the ECB wire format and the in-memory PrefabTemplateCache name components by it, and the
+// managed side asks for it at runtime. Ids are per process, never persisted, so a build
+// without an engine module (whose components simply aren't registered) is consistent; the
+// order is still kept stable for full builds.
+//
+// Engine feature modules (Index.2D, Index.3D) register inside a ModuleRegistrationScope so
+// the editor can hide their components while the project leaves the module out.
 //
 // Conflicts and dependencies stay here because they span categories and must run after
 // every component they mention has been registered.
@@ -46,10 +63,18 @@ namespace Index {
 
 		Internal::RegisterGeneral(registry);
 		Internal::RegisterRendering(registry);
-		Internal::RegisterPhysics(registry);
+#if INDEX_WITH_2D
+		{
+			Internal::ModuleRegistrationScope module2D(registry, EngineModule::TwoD);
+			Internal::RegisterPhysics(registry);
+		}
+#endif
 		Internal::RegisterAudio(registry);
 		Internal::RegisterUIWidgets(registry);
 		Internal::RegisterUILayout(registry);
+#if INDEX_WITH_2D
+		Internal::Attach2DSerialization(registry);
+#endif
 
 		// HierarchyComponent is real but managed via Entity::SetParent;
 		// users don't add it from the Add Component popup. Tagged so the
@@ -61,6 +86,7 @@ namespace Index {
 			ComponentCategory::Component, "Scripting", "Scripts");
 
 		// ── Conflicts ───────────────────────────────────────────────
+#if INDEX_WITH_2D
 		// One renderer per entity (Tilemap2D adds its own conflicts in its package init).
 		DeclareConflict<SpriteRendererComponent, ParticleSystem2DComponent>(registry);
 		DeclareConflict<SpriteRendererComponent, ImageComponent>(registry);
@@ -88,6 +114,7 @@ namespace Index {
 
 		// Within Index-Physics, only one shape per body is supported.
 		DeclareConflict<FastBoxCollider2DComponent, FastCircleCollider2DComponent>(registry);
+#endif
 
 		// Only one layout group per entity — they all rewrite the same
 		// children's RectTransforms, so layering would produce frame-by-
@@ -115,6 +142,64 @@ namespace Index {
 		RegisterComponent<DisabledTag>(registry, "Disabled", ComponentCategory::Tag);
 		RegisterComponent<InheritedDisabledTag>(registry, "Inherited Disabled", ComponentCategory::Tag);
 		RegisterComponent<DeadlyTag>(registry, "Deadly", ComponentCategory::Tag);
+
+#if INDEX_WITH_3D
+		// ── 3D ──────────────────────────────────────────────────────
+		// Appended after the Tags so no older typeIdU32 shifts; a build without the module simply ends here.
+		Internal::ModuleRegistrationScope module3D(registry, EngineModule::ThreeD);
+		Internal::Register3D(registry);
+#if INDEX_WITH_2D
+		DeclareConflict<Transform3DComponent, Transform2DComponent>(registry);
+#endif
+		DeclareConflict<Transform3DComponent, RectTransform2DComponent>(registry);
+		DeclareDependency<Camera3DComponent,         Transform3DComponent>(registry);
+		DeclareDependency<MeshRendererComponent,     Transform3DComponent>(registry);
+		DeclareDependency<DirectionalLightComponent, Transform3DComponent>(registry);
+		DeclareDependency<PointLightComponent,       Transform3DComponent>(registry);
+		DeclareDependency<SpotLightComponent,        Transform3DComponent>(registry);
+		DeclareConflict<DirectionalLightComponent, PointLightComponent>(registry);
+		DeclareConflict<DirectionalLightComponent, SpotLightComponent>(registry);
+		DeclareConflict<PointLightComponent, SpotLightComponent>(registry);
+
+		// ── Physics 3D (Jolt) ───────────────────────────────────────
+		// After the 3D slice for the same typeIdU32 reason. Transform3D already conflicts with
+		// Transform2D, so these dependencies also keep the 2D and 3D physics stacks apart.
+		Internal::RegisterPhysics3D(registry);
+		DeclareDependency<Rigidbody3DComponent,       Transform3DComponent>(registry);
+		DeclareDependency<BoxCollider3DComponent,     Transform3DComponent>(registry);
+		DeclareDependency<SphereCollider3DComponent,  Transform3DComponent>(registry);
+		DeclareDependency<CapsuleCollider3DComponent, Transform3DComponent>(registry);
+		DeclareDependency<MeshCollider3DComponent,    Transform3DComponent>(registry);
+
+		// ── Particles 3D ────────────────────────────────────────────
+		// After Physics3D for the same typeIdU32 reason.
+		Internal::RegisterParticles3D(registry);
+		DeclareDependency<ParticleSystem3DComponent, Transform3DComponent>(registry);
+#if INDEX_WITH_2D
+		DeclareConflict<ParticleSystem3DComponent, ParticleSystem2DComponent>(registry);
+#endif
+#endif
+
+		// ── Module conflicts ────────────────────────────────────────
+		// 2D and 3D components describe different worlds (Transform2D vs Transform3D, Box2D vs Jolt): one entity
+		// carrying both would have half its components silently ignored. Neither belongs on a UI rect either.
+		// Derived from the module tags so new module components inherit the rule.
+		{
+			std::vector<std::type_index> twoD;
+			std::vector<std::type_index> threeD;
+			registry.ForEachComponentInfo([&](const std::type_index& id, const ComponentInfo& info) {
+				if (!info.engineModule || info.category != ComponentCategory::Component) return;
+				(*info.engineModule == EngineModule::TwoD ? twoD : threeD).push_back(id);
+			});
+			for (const std::type_index& a : twoD) {
+				for (const std::type_index& b : threeD) {
+					registry.DeclareConflict(a, b);
+				}
+			}
+			const std::type_index rect = typeid(RectTransform2DComponent);
+			for (const std::type_index& world : twoD) registry.DeclareConflict(world, rect);
+			for (const std::type_index& world : threeD) registry.DeclareConflict(world, rect);
+		}
 
 		// Debug check: conflict edges must be symmetric — asymmetry would silently break "Add Component" filtering.
 		registry.ValidateConflictSymmetry();

@@ -55,10 +55,8 @@ namespace Index {
 			case BuildPlatform::MacOS:    return "macos";
 			case BuildPlatform::Android:  return "android";
 			case BuildPlatform::IOS:      return "ios";
-			// visionOS/Web icons not shipped under PlatformIcons/ yet; the
-			// panel renders a name-only row when this returns nullptr.
-			case BuildPlatform::VisionOS: return nullptr;
-			case BuildPlatform::Web:      return nullptr;
+			case BuildPlatform::VisionOS: return "visionos";
+			case BuildPlatform::Web:      return "web";
 		}
 		return nullptr;
 	}
@@ -118,6 +116,11 @@ namespace Index {
 		root.AddMember("name", Name);
 		root.AddMember("platform", std::string(PlatformToString(Platform)));
 		root.AddMember("renderBackend", std::string(IndexProject::RenderBackendToString(RenderBackend)));
+		if (!PlatformOptions.empty()) {
+			Json::Value options = Json::Value::MakeObject();
+			for (const auto& [key, value] : PlatformOptions) options.AddMember(key, value);
+			root.AddMember("platformOptions", std::move(options));
+		}
 
 		std::error_code ec;
 		const std::filesystem::path target(filePath);
@@ -154,6 +157,11 @@ namespace Index {
 		if (const Json::Value* v = root.FindMember("renderBackend")) {
 			profile.RenderBackend = IndexProject::RenderBackendFromString(v->AsStringOr("Auto"));
 		}
+		if (const Json::Value* v = root.FindMember("platformOptions"); v && v->IsObject()) {
+			for (const auto& [key, value] : v->GetObject()) {
+				profile.PlatformOptions.emplace_back(key, value.IsString() ? value.AsStringOr() : Json::Stringify(value));
+			}
+		}
 
 		if (!IsBackendAllowed(profile.Platform, profile.RenderBackend)) {
 			const auto allowed = AllowedBackends(profile.Platform);
@@ -184,6 +192,7 @@ namespace Index {
 		const DefaultSpec defaults[] = {
 			{ "Windows", BuildPlatform::Windows, IndexProject::RenderBackend::Direct3D12 },
 			{ "Linux",   BuildPlatform::Linux,   IndexProject::RenderBackend::Vulkan     },
+			{ "macOS",   BuildPlatform::MacOS,   IndexProject::RenderBackend::Metal      },
 		};
 
 		int written = 0;

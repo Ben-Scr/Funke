@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Scripting/ScriptBindingGuard.hpp"
 #include "Assets/AssetRegistry.hpp"
 #include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptEngine.hpp"
@@ -12,7 +13,6 @@
 #include "Core/Time.hpp"
 #include "Core/Window.hpp"
 #include "Core/Log.hpp"
-#include "Scene/EntityPicker.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneExecutionContext.hpp"
 #include "Scene/SceneManager.hpp"
@@ -27,23 +27,14 @@
 #include "Scene/ComponentRegistry.hpp"
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/UUIDComponent.hpp"
+#if INDEX_WITH_2D
 #include "Components/General/Transform2DComponent.hpp"
+#endif
 #include "Components/General/NameComponent.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
-#include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
-#include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
-#include "Components/Physics/Rigidbody2DComponent.hpp"
-#include "Components/Physics/BoxCollider2DComponent.hpp"
-#include "Components/Physics/CircleCollider2DComponent.hpp"
-#include "Components/Physics/PolygonCollider2DComponent.hpp"
-#include "Components/Physics/FastBody2DComponent.hpp"
-#include "Components/Physics/FastBoxCollider2DComponent.hpp"
-#include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #include "Components/Audio/AudioSourceComponent.hpp"
-#include "Components/Graphics/ParticleSystem2DComponent.hpp"
-#include "Components/Graphics/SpriteAnimator2DComponent.hpp"
 #include "Components/UI/ButtonComponent.hpp"
 #include "Components/UI/CircularSliderComponent.hpp"
 #include "Components/UI/ContentSizeFitterComponent.hpp"
@@ -64,8 +55,6 @@
 #include "Graphics/TextureManager.hpp"
 #include "Graphics/Text/FontManager.hpp"
 #include "Graphics/Gizmo.hpp"
-#include "Physics/Physics2D.hpp"
-#include "Physics/FastPhysics2D.hpp"
 #include "Jobs/ParallelFor.hpp"
 #include "Profiling/Profiler.hpp"
 
@@ -204,6 +193,9 @@ namespace Index {
 		return CopyStringToBuffer(value ? std::string_view(value) : std::string_view(), outBuffer, capacity);
 	}
 
+#if INDEX_WITH_2D
+	bool SetParentKeepingWorld2D(Scene& scene, EntityHandle handle, Entity newParent);
+#endif
 	void PopulateNonComponentBindings(NativeBindings& b);
 	void PopulateEcbBindings(NativeBindings& b);
 	void PopulateJobsBindings(NativeBindings& b);
@@ -218,10 +210,7 @@ namespace Index {
 		auto& comp = scene->GetComponent<Type>(handle)
 
 
-	static const ComponentInfo* FindComponentByName(std::string_view name) {
-		if (name.empty()) return nullptr;
-		const auto& registry = SceneManager::GetComponentRegistry();
-
+	static const ComponentInfo* FindComponentByNameUncached(const ComponentRegistry& registry, std::string_view name) {
 		// Hash fast path 1: name matches a registered serializedName directly.
 		if (const ComponentInfo* hit = registry.FindBySerializedName(name)) {
 			return hit;
@@ -265,6 +254,34 @@ namespace Index {
 			}
 		});
 		return found;
+	}
+
+	struct ComponentNameHash {
+		using is_transparent = void;
+		size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
+	};
+
+	// C# sends display names ("Transform 2D") that miss the serializedName hash index, so without
+	// this memo every component access from a script would fall into the linear slow path.
+	static const ComponentInfo* FindComponentByName(std::string_view name) {
+		if (name.empty()) return nullptr;
+		const auto& registry = SceneManager::GetComponentRegistry();
+
+		// Thread-local: bindings also run on job-system workers.
+		thread_local uint64_t t_Generation = ~0ull;
+		thread_local std::unordered_map<std::string, const ComponentInfo*, ComponentNameHash, std::equal_to<>> t_Cache;
+		if (t_Generation != registry.GetGeneration()) {
+			t_Cache.clear();
+			t_Generation = registry.GetGeneration();
+		}
+
+		if (const auto it = t_Cache.find(name); it != t_Cache.end()) {
+			return it->second;
+		}
+		const ComponentInfo* info = FindComponentByNameUncached(registry, name);
+		if (t_Cache.size() >= 1024) t_Cache.clear(); // bound misses from arbitrary script strings
+		t_Cache.emplace(std::string(name), info);
+		return info;
 	}
 
 	static const ComponentInfo* FindComponentByName(const char* name) {
@@ -457,8 +474,8 @@ namespace Index {
 				return 1;
 			}
 
-			SceneManager::GetComponentRegistry().AddWithDependencies(entity, info->typeId);
-			return 1;
+			// 0 when refused because the entity has a conflicting component (the registry logs which one).
+			return SceneManager::GetComponentRegistry().AddWithDependencies(entity, info->typeId) ? 1 : 0;
 		} IDX_BINDING_CATCH(0)
 	}
 
@@ -525,11 +542,24 @@ namespace Index {
 		}
 		if (added && !added->HasAnyInstance() && ScriptEngine::ClassExists(className)) {
 			added->Bind(handle);
-			uint32_t gcHandle = ScriptEngine::CreateScriptInstance(className, handle);
-			if (gcHandle != 0) {
-				added->SetGCHandle(gcHandle);
-				ScriptEngine::InvokeAwake(gcHandle);
+			// CreateScriptInstance derives the entity id from ScriptEngine's current scene. Outside a ScriptSystem
+			// pass (GlobalSystem, UI callback) that is null or another scene, which bound the script to a bogus id.
+			SceneExecutionScope executionScope(*scene);
+			Scene* previousScriptScene = ScriptEngine::GetScene();
+			ScriptEngine::SetScene(scene);
+			uint32_t gcHandle = 0;
+			try {
+				gcHandle = ScriptEngine::CreateScriptInstance(className, handle);
+				if (gcHandle != 0) {
+					added->SetGCHandle(gcHandle);
+					ScriptEngine::InvokeAwake(gcHandle);
+				}
 			}
+			catch (...) {
+				ScriptEngine::SetScene(previousScriptScene);
+				throw;
+			}
+			ScriptEngine::SetScene(previousScriptScene);
 		}
 		return 1;
 	}
@@ -612,8 +642,13 @@ namespace Index {
 	// parent this frame. Without it, moving a parent from C# leaves its children behind.
 	static bool IsTransform2DComponentInfo(const ComponentInfo* info)
 	{
+#if INDEX_WITH_2D
 		static const std::type_index kTransform2DType(typeid(Transform2DComponent));
 		return info && info->typeId == kTransform2DType;
+#else
+		(void)info;
+		return false;
+#endif
 	}
 
 	// Validity contract: pointer is invalidated by any structural change to the pool; callers must refetch each frame.
@@ -631,6 +666,18 @@ namespace Index {
 		// reprocesses every root regardless, so the flag alone is enough and stays allocation-free.
 		if (raw && IsTransform2DComponentInfo(info)) scene->MarkTransformDirty(entt::null);
 		return raw;
+	}
+
+	// Managed side wraps this in `ref readonly`, so skipping the dirty gate is safe and avoids a full hierarchy pass per read.
+	static void* Index_Entity_GetComponentPtrReadOnly(uint64_t entityID, const char* componentName)
+	{
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		if (!ResolveEntityReference(entityID, scene, handle)) return nullptr;
+
+		const ComponentInfo* info = FindComponentByName(componentName);
+		if (!info || !info->getRaw) return nullptr;
+		return info->getRaw(scene->GetEntity(handle));
 	}
 
 	static int Index_Entity_GetComponentSize(const char* componentName)
@@ -793,17 +840,21 @@ namespace Index {
 			});
 		}
 
-		const SceneLoadResult loadResult = additive
-			? SceneManager::TryLoadSceneAdditive(name)
-			: SceneManager::TryLoadScene(name);
+		// LoadScene on a scene that is already loaded restarts it from disk (a single load would otherwise be a no-op).
+		const bool restart = !additive && SceneManager::IsSceneLoaded(name);
+		const SceneLoadResult loadResult = restart
+			? SceneManager::TryRestartScene(name)
+			: additive
+				? SceneManager::TryLoadSceneAdditive(name)
+				: SceneManager::TryLoadScene(name);
 		auto scenePtr = loadResult.LoadedScene.lock();
 		if (!loadResult || !scenePtr) {
-			IDX_CORE_ERROR_TAG("ScriptBindings", "Failed to load scene{} '{}': {}",
-				additive ? " additively" : "", name, loadResult.Message);
+			IDX_CORE_ERROR_TAG("ScriptBindings", "Failed to {} scene{} '{}': {}",
+				restart ? "restart" : "load", additive ? " additively" : "", name, loadResult.Message);
 			return 0;
 		}
 
-		IDX_INFO_TAG("ScriptBindings", "Loaded scene{}: {}", additive ? " additively" : "", name);
+		IDX_INFO_TAG("ScriptBindings", "{} scene{}: {}", restart ? "Restarted" : "Loaded", additive ? " additively" : "", name);
 		return 1;
 	}
 
@@ -1362,27 +1413,31 @@ namespace Index {
 				if (enableFilter == 2 && (!disabledStorage || disabledStorage->empty())) return 0;
 			}
 
-			// Stack arrays capped at 8 per category (IJobQuery limit); avoids heap allocation in the hot snapshot path.
+			// Vectors, not fixed arrays: With<>/Without<> chains and [WithAll]/[WithoutAll] have no upper bound.
 			struct OtherPool {
 				entt::sparse_set*        ss = nullptr;
 				DynamicComponentStorage::SceneView dv;
 			};
-			constexpr size_t kMaxPoolsPerCategory = 8;
-			OtherPool otherWrite[kMaxPoolsPerCategory];   size_t otherWriteCount = 0;
-			OtherPool otherRo[kMaxPoolsPerCategory];      size_t otherRoCount = 0;
-			OtherPool otherWith[kMaxPoolsPerCategory];    size_t otherWithCount = 0;
-			OtherPool withoutP[kMaxPoolsPerCategory];     size_t withoutCountResolved = 0;
-			for (const auto& p : writePools) { if (&p != driver) otherWrite[otherWriteCount++] = { p.Storage, p.DynView }; }
-			for (const auto& p : roPools)    { if (&p != driver) otherRo[otherRoCount++]       = { p.Storage, p.DynView }; }
-			for (const auto& p : withPools)  { if (&p != driver) otherWith[otherWithCount++]   = { p.Storage, p.DynView }; }
+			std::vector<OtherPool> otherWrite, otherRo, otherWith, withoutP;
+			otherWrite.reserve(writePools.size());
+			otherRo.reserve(roPools.size());
+			otherWith.reserve(withPools.size());
+			withoutP.reserve(withoutPools.size());
+			for (const auto& p : writePools) { if (&p != driver) otherWrite.push_back({ p.Storage, p.DynView }); }
+			for (const auto& p : roPools)    { if (&p != driver) otherRo.push_back({ p.Storage, p.DynView }); }
+			for (const auto& p : withPools)  { if (&p != driver) otherWith.push_back({ p.Storage, p.DynView }); }
 			for (const auto& p : withoutPools) {
 				// Both null = component pool never created = nobody has it →
 				// the without-filter is trivially satisfied for every entity.
 				// Drop the entry so the inner loop's contains() doesn't branch.
 				if (p.Storage || p.DynStorage) {
-					withoutP[withoutCountResolved++] = { p.Storage, p.DynView };
+					withoutP.push_back({ p.Storage, p.DynView });
 				}
 			}
+			const size_t otherWriteCount = otherWrite.size();
+			const size_t otherRoCount = otherRo.size();
+			const size_t otherWithCount = otherWith.size();
+			const size_t withoutCountResolved = withoutP.size();
 
 			auto poolContains = [](const OtherPool& op, EntityHandle h) -> bool {
 				return op.ss ? op.ss->contains(h) : op.dv.Contains(h);
@@ -1616,150 +1671,7 @@ namespace Index {
 		} IDX_BINDING_CATCH_VOID
 	}
 
-	// ── Transform2D ─────────────────────────────────────────────────────
-
-	static const Transform2DComponent* GetParentTransform(Scene& scene, EntityHandle handle)
-	{
-		if (!scene.HasComponent<HierarchyComponent>(handle)) return nullptr;
-		const EntityHandle parent = scene.GetComponent<HierarchyComponent>(handle).Parent;
-		if (parent == entt::null || !scene.IsValid(parent) || !scene.HasComponent<Transform2DComponent>(parent)) {
-			return nullptr;
-		}
-		return &scene.GetComponent<Transform2DComponent>(parent);
-	}
-
-	static Vec2 WorldPositionToLocal(const Transform2DComponent* parent, const Vec2& worldPosition)
-	{
-		if (!parent) return worldPosition;
-		Vec2 local = Rotate(worldPosition - parent->Position, -parent->Rotation);
-		if (std::abs(parent->Scale.x) > 0.00001f) local.x /= parent->Scale.x;
-		if (std::abs(parent->Scale.y) > 0.00001f) local.y /= parent->Scale.y;
-		return local;
-	}
-
-	static Vec2 WorldScaleToLocal(const Transform2DComponent* parent, const Vec2& worldScale)
-	{
-		if (!parent) return worldScale;
-		Vec2 local = worldScale;
-		if (std::abs(parent->Scale.x) > 0.00001f) local.x /= parent->Scale.x;
-		if (std::abs(parent->Scale.y) > 0.00001f) local.y /= parent->Scale.y;
-		return local;
-	}
-
-	static void Index_Transform2D_GetPosition(uint64_t entityID, float* outX, float* outY)
-	{
-		GET_COMPONENT(Transform2DComponent, entityID, (void)(*outX = 0, *outY = 0));
-		*outX = comp.Position.x; *outY = comp.Position.y;
-	}
-
-	static void Index_Transform2D_SetPosition(uint64_t entityID, float x, float y)
-	{
-		GET_COMPONENT(Transform2DComponent, entityID, );
-		const Vec2 worldPosition{ x, y };
-		comp.LocalPosition = WorldPositionToLocal(GetParentTransform(*scene, handle), worldPosition);
-		comp.Position = worldPosition;
-		comp.MarkDirty();
-	}
-
-	static float Index_Transform2D_GetRotation(uint64_t entityID)
-	{
-		GET_COMPONENT(Transform2DComponent, entityID, 0.0f);
-		return comp.Rotation;
-	}
-
-	static void Index_Transform2D_SetRotation(uint64_t entityID, float rotation)
-	{
-		GET_COMPONENT(Transform2DComponent, entityID, );
-		if (const Transform2DComponent* parent = GetParentTransform(*scene, handle)) {
-			comp.LocalRotation = rotation - parent->Rotation;
-		}
-		else {
-			comp.LocalRotation = rotation;
-		}
-		comp.Rotation = rotation;
-		comp.MarkDirty();
-	}
-
-	static void Index_Transform2D_GetScale(uint64_t entityID, float* outX, float* outY)
-	{
-		GET_COMPONENT(Transform2DComponent, entityID, (void)(*outX = 1, *outY = 1));
-		*outX = comp.Scale.x; *outY = comp.Scale.y;
-	}
-
-	static void Index_Transform2D_SetScale(uint64_t entityID, float x, float y)
-	{
-		GET_COMPONENT(Transform2DComponent, entityID, );
-		const Vec2 worldScale{ x, y };
-		comp.LocalScale = WorldScaleToLocal(GetParentTransform(*scene, handle), worldScale);
-		comp.Scale = worldScale;
-		comp.MarkDirty();
-	}
-
-	static uint64_t Index_Transform2D_GetEntity(uint64_t entityID)
-	{
-		Scene* scene = nullptr;
-		EntityHandle handle = entt::null;
-		if (!ResolveEntityReference(entityID, scene, handle)) return 0;
-		if (!scene->HasComponent<Transform2DComponent>(handle)) return 0;
-		return GetEntityScriptId(*scene, handle);
-	}
-
-	static void Index_Transform2D_GetLocalPosition(uint64_t entityID, float* outX, float* outY)
-	{
-		GET_COMPONENT(Transform2DComponent, entityID, (void)(*outX = 0, *outY = 0));
-		*outX = comp.LocalPosition.x; *outY = comp.LocalPosition.y;
-	}
-
-	static void Index_Transform2D_SetLocalPosition(uint64_t entityID, float x, float y)
-	{
-		GET_COMPONENT(Transform2DComponent, entityID, );
-		const Vec2 localPosition{ x, y };
-		comp.LocalPosition = localPosition;
-		if (const Transform2DComponent* parent = GetParentTransform(*scene, handle)) {
-			comp.Position = parent->TransformPoint(localPosition);
-		}
-		else {
-			comp.Position = localPosition;
-		}
-		comp.MarkDirty();
-	}
-
-	static float Index_Transform2D_GetLocalRotation(uint64_t entityID)
-	{
-		GET_COMPONENT(Transform2DComponent, entityID, 0.0f);
-		return comp.LocalRotation;
-	}
-
-	static void Index_Transform2D_SetLocalRotation(uint64_t entityID, float rotation)
-	{
-		GET_COMPONENT(Transform2DComponent, entityID, );
-		comp.LocalRotation = rotation;
-		comp.Rotation = rotation;
-		if (const Transform2DComponent* parent = GetParentTransform(*scene, handle)) {
-			comp.Rotation += parent->Rotation;
-		}
-		comp.MarkDirty();
-	}
-
-	static void Index_Transform2D_GetLocalScale(uint64_t entityID, float* outX, float* outY)
-	{
-		GET_COMPONENT(Transform2DComponent, entityID, (void)(*outX = 1, *outY = 1));
-		*outX = comp.LocalScale.x; *outY = comp.LocalScale.y;
-	}
-
-	static void Index_Transform2D_SetLocalScale(uint64_t entityID, float x, float y)
-	{
-		GET_COMPONENT(Transform2DComponent, entityID, );
-		const Vec2 localScale{ x, y };
-		comp.LocalScale = localScale;
-		if (const Transform2DComponent* parent = GetParentTransform(*scene, handle)) {
-			comp.Scale = Hadamard(parent->Scale, localScale);
-		}
-		else {
-			comp.Scale = localScale;
-		}
-		comp.MarkDirty();
-	}
+	// ── Entity hierarchy ──
 
 	static uint64_t Index_Entity_GetParent(uint64_t entityID)
 	{
@@ -1796,36 +1708,12 @@ namespace Index {
 			newParent = scene->GetEntity(parentHandle);
 		}
 
-		// Snapshot the child's world transform before the hierarchy change so we can keep
-		// it in place: SetParent only swaps the parent, leaving the local transform — and
-		// therefore the world transform — to shift into the new parent's frame.
-		Transform2DComponent* childTransform = nullptr;
-		if (worldPositionStays != 0 && scene->HasComponent<Transform2DComponent>(handle)) {
-			childTransform = &scene->GetComponent<Transform2DComponent>(handle);
-		}
-		Vec2 worldPosition{ 0.0f, 0.0f };
-		Vec2 worldScale{ 1.0f, 1.0f };
-		float worldRotation = 0.0f;
-		if (childTransform) {
-			worldPosition = childTransform->Position;
-			worldRotation = childTransform->Rotation;
-			worldScale = childTransform->Scale;
-		}
-
+#if INDEX_WITH_2D
+		if (worldPositionStays != 0 && SetParentKeepingWorld2D(*scene, handle, newParent)) return 1;
+#else
+		(void)worldPositionStays;
+#endif
 		entity.SetParent(newParent);
-
-		// Re-derive local values against the (now current) parent so the cached world
-		// transform is reproduced by the next hierarchy pass.
-		if (childTransform) {
-			const Transform2DComponent* parentTransform = GetParentTransform(*scene, handle);
-			childTransform->LocalPosition = WorldPositionToLocal(parentTransform, worldPosition);
-			childTransform->LocalScale = WorldScaleToLocal(parentTransform, worldScale);
-			childTransform->LocalRotation = parentTransform ? worldRotation - parentTransform->Rotation : worldRotation;
-			childTransform->Position = worldPosition;
-			childTransform->Rotation = worldRotation;
-			childTransform->Scale = worldScale;
-			childTransform->MarkDirty();
-		}
 		return 1;
 	}
 
@@ -1865,102 +1753,23 @@ namespace Index {
 		return total;
 	}
 
-	// ── SpriteRenderer ──────────────────────────────────────────────────
+	// Front-most Interactable UI entity under the pointer (or 0). Reads UIEventSystem's per-frame
+	// hover result, which is already gated on an enabled InteractableComponent.
+	static int Index_UI_GetHoveredEntity(uint64_t* outEntityID) {
+		if (!outEntityID) return 0;
+		*outEntityID = 0;
 
-	static void Index_SpriteRenderer_GetColor(uint64_t entityID, float* r, float* g, float* b, float* a)
-	{
-		GET_COMPONENT(SpriteRendererComponent, entityID, (void)(*r = 1, *g = 1, *b = 1, *a = 1));
-		*r = comp.Color.r; *g = comp.Color.g; *b = comp.Color.b; *a = comp.Color.a;
-	}
+		Scene* scene = GetScene();
+		if (!scene) return 0;
 
-	static void Index_SpriteRenderer_SetColor(uint64_t entityID, float r, float g, float b, float a)
-	{
-		GET_COMPONENT(SpriteRendererComponent, entityID, );
-		comp.Color = { r, g, b, a };
-	}
+		auto* uiEvents = scene->GetSystem<UIEventSystem>();
+		if (!uiEvents) return 0;
 
-	static uint64_t Index_SpriteRenderer_GetTexture(uint64_t entityID)
-	{
-		GET_COMPONENT(SpriteRendererComponent, entityID, 0);
+		EntityHandle hovered = uiEvents->GetHoveredEntity(*scene);
+		if (hovered == entt::null || !scene->IsValid(hovered)) return 0;
 
-		uint64_t assetId = static_cast<uint64_t>(comp.TextureAssetId);
-		if (assetId == 0 && TextureManager::IsValid(comp.TextureHandle)) {
-			assetId = TextureManager::GetTextureAssetUUID(comp.TextureHandle);
-			if (assetId != 0) {
-				comp.TextureAssetId = UUID(assetId);
-			}
-		}
-
-		return assetId;
-	}
-
-	static void Index_SpriteRenderer_SetTexture(uint64_t entityID, uint64_t assetId)
-	{
-		GET_COMPONENT(SpriteRendererComponent, entityID, );
-
-		if (assetId == 0) {
-			comp.TextureHandle = TextureHandle::Invalid();
-			comp.TextureAssetId = UUID(0);
-			return;
-		}
-
-		comp.TextureAssetId = UUID(assetId);
-		comp.TextureHandle = TextureManager::LoadTextureByUUID(assetId);
-		// Apply FilterMode to the freshly bound texture; the sampler carries over from the previous owner otherwise.
-		if (auto* tex = TextureManager::GetTexture(comp.TextureHandle); tex) {
-			tex->SetFilter(comp.FilterMode);
-		}
-	}
-
-	static int Index_SpriteRenderer_GetSortingOrder(uint64_t entityID)
-	{
-		GET_COMPONENT(SpriteRendererComponent, entityID, 0);
-		return comp.SortingOrder;
-	}
-
-	static void Index_SpriteRenderer_SetSortingOrder(uint64_t entityID, int order)
-	{
-		GET_COMPONENT(SpriteRendererComponent, entityID, );
-		comp.SortingOrder = static_cast<short>(order);
-	}
-
-	static int Index_SpriteRenderer_GetSortingLayer(uint64_t entityID)
-	{
-		GET_COMPONENT(SpriteRendererComponent, entityID, 0);
-		return comp.SortingLayer;
-	}
-
-	static void Index_SpriteRenderer_SetSortingLayer(uint64_t entityID, int layer)
-	{
-		GET_COMPONENT(SpriteRendererComponent, entityID, );
-		comp.SortingLayer = static_cast<uint8_t>(layer);
-	}
-
-	static int Index_SpriteRenderer_GetFilter(uint64_t entityID)
-	{
-		GET_COMPONENT(SpriteRendererComponent, entityID, static_cast<int>(Filter::Bilinear));
-		return static_cast<int>(comp.FilterMode);
-	}
-
-	static void Index_SpriteRenderer_SetFilter(uint64_t entityID, int filter)
-	{
-		GET_COMPONENT(SpriteRendererComponent, entityID, );
-		comp.FilterMode = static_cast<Filter>(filter);
-		if (auto* tex = TextureManager::GetTexture(comp.TextureHandle); tex) {
-			tex->SetFilter(comp.FilterMode);
-		}
-	}
-
-	static int Index_SpriteRenderer_GetSpriteNameBuffer(uint64_t entityID, char* outBuffer, int capacity)
-	{
-		GET_COMPONENT(SpriteRendererComponent, entityID, CopyCStringToBuffer("", outBuffer, capacity));
-		return CopyStringToBuffer(comp.SpriteName, outBuffer, capacity);
-	}
-
-	static void Index_SpriteRenderer_SetSpriteName(uint64_t entityID, const char* name)
-	{
-		GET_COMPONENT(SpriteRendererComponent, entityID, );
-		comp.SpriteName = name ? std::string(name) : std::string{};
+		*outEntityID = GetEntityScriptId(*scene, hovered);
+		return *outEntityID != 0 ? 1 : 0;
 	}
 
 	// ── Dynamic component registration (runtime, reflection-driven) ─────
@@ -2144,442 +1953,6 @@ namespace Index {
 		comp.SortingLayer = static_cast<uint8_t>(layer);
 	}
 
-	// ── Camera2D ────────────────────────────────────────────────────────
-
-	static float Index_Camera2D_GetOrthographicSize(uint64_t entityID)
-	{
-		GET_COMPONENT(Camera2DComponent, entityID, 5.0f);
-		return comp.GetOrthographicSize();
-	}
-
-	static void Index_Camera2D_SetOrthographicSize(uint64_t entityID, float size)
-	{
-		GET_COMPONENT(Camera2DComponent, entityID, );
-		comp.SetOrthographicSize(size);
-	}
-
-	static float Index_Camera2D_GetZoom(uint64_t entityID)
-	{
-		GET_COMPONENT(Camera2DComponent, entityID, 1.0f);
-		return comp.GetZoom();
-	}
-
-	static void Index_Camera2D_SetZoom(uint64_t entityID, float zoom)
-	{
-		GET_COMPONENT(Camera2DComponent, entityID, );
-		comp.SetZoom(zoom);
-	}
-
-	static void Index_Camera2D_GetClearColor(uint64_t entityID, float* r, float* g, float* b, float* a)
-	{
-		GET_COMPONENT(Camera2DComponent, entityID, (void)(*r = 0.1f, *g = 0.1f, *b = 0.1f, *a = 1.0f));
-		const auto& cc = comp.GetClearColor();
-		*r = cc.r; *g = cc.g; *b = cc.b; *a = cc.a;
-	}
-
-	static void Index_Camera2D_SetClearColor(uint64_t entityID, float r, float g, float b, float a)
-	{
-		GET_COMPONENT(Camera2DComponent, entityID, );
-		comp.SetClearColor(Color(r, g, b, a));
-	}
-
-	static void Index_Camera2D_ScreenToWorld(uint64_t entityID, float sx, float sy, float* outX, float* outY)
-	{
-		GET_COMPONENT(Camera2DComponent, entityID, (void)(*outX = 0, *outY = 0));
-		Vec2 world = comp.ScreenToWorld({ sx, sy });
-		*outX = world.x; *outY = world.y;
-	}
-
-	static float Index_Camera2D_GetViewportWidth(uint64_t entityID)
-	{
-		GET_COMPONENT(Camera2DComponent, entityID, 0.0f);
-		return comp.ViewportWidth();
-	}
-
-	static float Index_Camera2D_GetViewportHeight(uint64_t entityID)
-	{
-		GET_COMPONENT(Camera2DComponent, entityID, 0.0f);
-		return comp.ViewportHeight();
-	}
-
-	static uint64_t Index_Camera2D_GetMainEntity()
-	{
-		Scene* scene = GetScene();
-		if (!scene) return 0;
-
-		const EntityHandle handle = scene->GetMainCameraEntity();
-		if (handle == entt::null) return 0;
-		return GetEntityScriptId(*scene, handle);
-	}
-
-	static void Index_Camera2D_GetFrustum(uint64_t entityID, float* minX, float* minY, float* maxX, float* maxY)
-	{
-		GET_COMPONENT(Camera2DComponent, entityID, (void)(*minX = 0, *minY = 0, *maxX = 0, *maxY = 0));
-		// Rebuild from the live transform first: the renderer refreshes this cache after scripts run, so a camera moved this frame would otherwise report last frame's bounds.
-		comp.UpdateViewport();
-		const AABB box = comp.GetViewportAABB();
-		*minX = box.Min.x; *minY = box.Min.y; *maxX = box.Max.x; *maxY = box.Max.y;
-	}
-
-	// ── Rigidbody2D ─────────────────────────────────────────────────────
-
-	static void Index_Rigidbody2D_ApplyForce(uint64_t entityID, float forceX, float forceY, int wake)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, );
-		b2BodyId bodyId = comp.GetBodyHandle();
-		if (b2Body_IsValid(bodyId)) b2Body_ApplyForceToCenter(bodyId, { forceX, forceY }, wake != 0);
-	}
-
-	static void Index_Rigidbody2D_ApplyImpulse(uint64_t entityID, float impulseX, float impulseY, int wake)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, );
-		b2BodyId bodyId = comp.GetBodyHandle();
-		if (b2Body_IsValid(bodyId)) b2Body_ApplyLinearImpulseToCenter(bodyId, { impulseX, impulseY }, wake != 0);
-	}
-
-	static void Index_Rigidbody2D_GetLinearVelocity(uint64_t entityID, float* outX, float* outY)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, (void)(*outX = 0, *outY = 0));
-		Vec2 vel = comp.GetVelocity(); *outX = vel.x; *outY = vel.y;
-	}
-
-	static void Index_Rigidbody2D_SetLinearVelocity(uint64_t entityID, float x, float y)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, );
-		comp.SetVelocity({ x, y });
-	}
-
-	static float Index_Rigidbody2D_GetAngularVelocity(uint64_t entityID)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, 0.0f);
-		return comp.GetAngularVelocity();
-	}
-
-	static void Index_Rigidbody2D_SetAngularVelocity(uint64_t entityID, float velocity)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, );
-		comp.SetAngularVelocity(velocity);
-	}
-
-	static int Index_Rigidbody2D_GetBodyType(uint64_t entityID)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, 0);
-		return static_cast<int>(comp.GetBodyType());
-	}
-
-	static void Index_Rigidbody2D_SetBodyType(uint64_t entityID, int type)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, );
-		comp.SetBodyType(static_cast<BodyType>(type));
-	}
-
-	static float Index_Rigidbody2D_GetGravityScale(uint64_t entityID)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, 1.0f);
-		return comp.GetGravityScale();
-	}
-
-	static void Index_Rigidbody2D_SetGravityScale(uint64_t entityID, float scale)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, );
-		comp.SetGravityScale(scale);
-	}
-
-	static float Index_Rigidbody2D_GetMass(uint64_t entityID)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, 1.0f);
-		return comp.GetMass();
-	}
-
-	static void Index_Rigidbody2D_SetMass(uint64_t entityID, float mass)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, );
-		comp.SetMass(mass);
-	}
-
-	// ── Rigidbody2D constraints (motion locks) ─────────────────────────
-	static int Index_Rigidbody2D_GetFreezePositionX(uint64_t entityID)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, 0);
-		return comp.GetFreezePositionX() ? 1 : 0;
-	}
-	static void Index_Rigidbody2D_SetFreezePositionX(uint64_t entityID, int freeze)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, );
-		comp.SetFreezePositionX(freeze != 0);
-	}
-	static int Index_Rigidbody2D_GetFreezePositionY(uint64_t entityID)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, 0);
-		return comp.GetFreezePositionY() ? 1 : 0;
-	}
-	static void Index_Rigidbody2D_SetFreezePositionY(uint64_t entityID, int freeze)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, );
-		comp.SetFreezePositionY(freeze != 0);
-	}
-	static int Index_Rigidbody2D_GetFreezeRotation(uint64_t entityID)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, 0);
-		return comp.GetFreezeRotation() ? 1 : 0;
-	}
-	static void Index_Rigidbody2D_SetFreezeRotation(uint64_t entityID, int freeze)
-	{
-		GET_COMPONENT(Rigidbody2DComponent, entityID, );
-		comp.SetFreezeRotation(freeze != 0);
-	}
-
-	// ── BoxCollider2D ───────────────────────────────────────────────────
-
-	static void Index_BoxCollider2D_GetScale(uint64_t entityID, float* outX, float* outY)
-	{
-		GET_COMPONENT(BoxCollider2DComponent, entityID, (void)(*outX = 1, *outY = 1));
-		Vec2 s = comp.GetScale(); *outX = s.x; *outY = s.y;
-	}
-
-	static void Index_BoxCollider2D_GetCenter(uint64_t entityID, float* outX, float* outY)
-	{
-		GET_COMPONENT(BoxCollider2DComponent, entityID, (void)(*outX = 0, *outY = 0));
-		Vec2 c = comp.GetCenter(); *outX = c.x; *outY = c.y;
-	}
-
-	static void Index_BoxCollider2D_SetEnabled(uint64_t entityID, int enabled)
-	{
-		GET_COMPONENT(BoxCollider2DComponent, entityID, );
-		comp.SetEnabled(enabled != 0);
-	}
-
-	// ── Collider2D (shared by Box/Circle/Polygon) ──────────────────────
-	// colliderType: 0 = Box, 1 = Circle, 2 = Polygon (matches C# ColliderKind).
-
-	static Collider2D* FindCollider(uint64_t entityID, int colliderType, Scene*& outScene)
-	{
-		EntityHandle handle = entt::null;
-		if (!ResolveEntityReference(entityID, outScene, handle) || !outScene->IsValid(handle)) return nullptr;
-		switch (colliderType) {
-		case 0: return outScene->HasComponent<BoxCollider2DComponent>(handle) ? &outScene->GetComponent<BoxCollider2DComponent>(handle) : nullptr;
-		case 1: return outScene->HasComponent<CircleCollider2DComponent>(handle) ? &outScene->GetComponent<CircleCollider2DComponent>(handle) : nullptr;
-		case 2: return outScene->HasComponent<PolygonCollider2DComponent>(handle) ? &outScene->GetComponent<PolygonCollider2DComponent>(handle) : nullptr;
-		default: return nullptr;
-		}
-	}
-
-	static int Index_Collider2D_GetSensor(uint64_t entityID, int colliderType)
-	{
-		Scene* scene = nullptr;
-		Collider2D* collider = FindCollider(entityID, colliderType, scene);
-		return collider && collider->IsSensor() ? 1 : 0;
-	}
-	static void Index_Collider2D_SetSensor(uint64_t entityID, int colliderType, int sensor)
-	{
-		Scene* scene = nullptr;
-		Collider2D* collider = FindCollider(entityID, colliderType, scene);
-		if (!collider) return;
-		// SetSensor recreates the shape and is not virtual on Collider2D.
-		switch (colliderType) {
-		case 0: static_cast<BoxCollider2DComponent*>(collider)->SetSensor(sensor != 0, *scene); break;
-		case 1: static_cast<CircleCollider2DComponent*>(collider)->SetSensor(sensor != 0, *scene); break;
-		case 2: static_cast<PolygonCollider2DComponent*>(collider)->SetSensor(sensor != 0, *scene); break;
-		}
-	}
-	static uint64_t Index_Collider2D_GetLayer(uint64_t entityID, int colliderType)
-	{
-		Scene* scene = nullptr;
-		Collider2D* collider = FindCollider(entityID, colliderType, scene);
-		return collider ? collider->GetLayer() : 0;
-	}
-	static void Index_Collider2D_SetLayer(uint64_t entityID, int colliderType, uint64_t layer)
-	{
-		Scene* scene = nullptr;
-		if (Collider2D* collider = FindCollider(entityID, colliderType, scene)) collider->SetLayer(layer);
-	}
-	static uint64_t Index_Collider2D_GetCollisionMask(uint64_t entityID, int colliderType)
-	{
-		Scene* scene = nullptr;
-		Collider2D* collider = FindCollider(entityID, colliderType, scene);
-		return collider ? collider->GetCollisionMask() : 0;
-	}
-	static void Index_Collider2D_SetCollisionMask(uint64_t entityID, int colliderType, uint64_t mask)
-	{
-		Scene* scene = nullptr;
-		if (Collider2D* collider = FindCollider(entityID, colliderType, scene)) collider->SetCollisionMask(mask);
-	}
-	static float Index_Collider2D_GetFriction(uint64_t entityID, int colliderType)
-	{
-		Scene* scene = nullptr;
-		Collider2D* collider = FindCollider(entityID, colliderType, scene);
-		return collider ? collider->GetFriction() : 0.0f;
-	}
-	static void Index_Collider2D_SetFriction(uint64_t entityID, int colliderType, float friction)
-	{
-		Scene* scene = nullptr;
-		if (Collider2D* collider = FindCollider(entityID, colliderType, scene)) collider->SetFriction(friction);
-	}
-	static float Index_Collider2D_GetBounciness(uint64_t entityID, int colliderType)
-	{
-		Scene* scene = nullptr;
-		Collider2D* collider = FindCollider(entityID, colliderType, scene);
-		return collider ? collider->GetBounciness() : 0.0f;
-	}
-	static void Index_Collider2D_SetBounciness(uint64_t entityID, int colliderType, float bounciness)
-	{
-		Scene* scene = nullptr;
-		if (Collider2D* collider = FindCollider(entityID, colliderType, scene)) collider->SetBounciness(bounciness);
-	}
-	static void Index_Physics2D_SetQueryLayerMask(uint64_t layerMask)
-	{
-		Physics2D::SetQueryLayerMask(layerMask);
-	}
-
-	// ── SpriteAnimator2D ────────────────────────────────────────────────
-
-	static void Index_SpriteAnimator2D_Command(uint64_t entityID, int command)
-	{
-		GET_COMPONENT(SpriteAnimator2DComponent, entityID, );
-		switch (command) {
-		case 0: comp.Play(); break;
-		case 1: comp.Pause(); break;
-		case 2: comp.Stop(); break;
-		default: break;
-		}
-	}
-	static int Index_SpriteAnimator2D_IsPlaying(uint64_t entityID)
-	{
-		GET_COMPONENT(SpriteAnimator2DComponent, entityID, 0);
-		return comp.Playing ? 1 : 0;
-	}
-	static int Index_SpriteAnimator2D_GetFrame(uint64_t entityID)
-	{
-		GET_COMPONENT(SpriteAnimator2DComponent, entityID, 0);
-		return comp.CurrentFrame;
-	}
-	static void Index_SpriteAnimator2D_SetFrame(uint64_t entityID, int frame)
-	{
-		GET_COMPONENT(SpriteAnimator2DComponent, entityID, );
-		const int last = std::max(0, static_cast<int>(comp.Frames.size()) - 1);
-		comp.CurrentFrame = std::clamp(frame, 0, last);
-		comp.FrameTime = 0.0f;
-	}
-	static float Index_SpriteAnimator2D_GetFramesPerSecond(uint64_t entityID)
-	{
-		GET_COMPONENT(SpriteAnimator2DComponent, entityID, 0.0f);
-		return comp.FramesPerSecond;
-	}
-	static void Index_SpriteAnimator2D_SetFramesPerSecond(uint64_t entityID, float fps)
-	{
-		GET_COMPONENT(SpriteAnimator2DComponent, entityID, );
-		comp.FramesPerSecond = std::max(0.0f, fps);
-	}
-
-	// ── CircleCollider2D ────────────────────────────────────────────────
-
-	static float Index_CircleCollider2D_GetRadius(uint64_t entityID)
-	{
-		GET_COMPONENT(CircleCollider2DComponent, entityID, 0.0f);
-		return comp.GetLocalRadius(*scene);
-	}
-
-	static void Index_CircleCollider2D_SetRadius(uint64_t entityID, float radius)
-	{
-		GET_COMPONENT(CircleCollider2DComponent, entityID, );
-		comp.SetRadius(radius, *scene);
-	}
-
-	static void Index_CircleCollider2D_GetCenter(uint64_t entityID, float* outX, float* outY)
-	{
-		GET_COMPONENT(CircleCollider2DComponent, entityID, (void)(*outX = 0, *outY = 0));
-		Vec2 c = comp.GetCenter(); *outX = c.x; *outY = c.y;
-	}
-
-	static void Index_CircleCollider2D_SetCenter(uint64_t entityID, float x, float y)
-	{
-		GET_COMPONENT(CircleCollider2DComponent, entityID, );
-		comp.SetCenter(Vec2{ x, y }, *scene);
-	}
-
-	static void Index_CircleCollider2D_SetEnabled(uint64_t entityID, int enabled)
-	{
-		GET_COMPONENT(CircleCollider2DComponent, entityID, );
-		comp.SetEnabled(enabled != 0);
-	}
-
-	// ── PolygonCollider2D ───────────────────────────────────────────────
-
-	static int Index_PolygonCollider2D_GetVertexCount(uint64_t entityID)
-	{
-		GET_COMPONENT(PolygonCollider2DComponent, entityID, 0);
-		return comp.GetVertexCount();
-	}
-
-	static int Index_PolygonCollider2D_GetWorldPoints(uint64_t entityID, float* outPoints, int maxOut)
-	{
-		if (!outPoints || maxOut <= 0) return 0;
-		GET_COMPONENT(PolygonCollider2DComponent, entityID, 0);
-
-		std::vector<Vec2> world = comp.GetWorldPoints();
-		const int writable = std::min(static_cast<int>(world.size()) * 2, maxOut);
-		// Pair pack: index i -> (outPoints[2i], outPoints[2i+1]) so the C# side
-		// can read it as a Span<Vector2> without an extra reshape pass.
-		for (int i = 0; i < writable / 2; ++i) {
-			outPoints[i * 2 + 0] = world[i].x;
-			outPoints[i * 2 + 1] = world[i].y;
-		}
-		return writable / 2;
-	}
-
-	static void Index_PolygonCollider2D_SetPoints(uint64_t entityID, const float* points, int pointCount)
-	{
-		if (!points) return;
-		GET_COMPONENT(PolygonCollider2DComponent, entityID, );
-		if (pointCount < PolygonCollider2DComponent::k_MinVertices ||
-			pointCount > PolygonCollider2DComponent::k_MaxVertices) {
-			return;
-		}
-
-		std::vector<Vec2> localPoints;
-		localPoints.reserve(static_cast<size_t>(pointCount));
-		for (int i = 0; i < pointCount; ++i) {
-			localPoints.push_back(Vec2{ points[i * 2], points[i * 2 + 1] });
-		}
-		comp.SetPoints(localPoints, *scene);
-	}
-
-	static void Index_PolygonCollider2D_SetSides(uint64_t entityID, int sides)
-	{
-		GET_COMPONENT(PolygonCollider2DComponent, entityID, );
-		comp.SetSides(sides, *scene);
-	}
-
-	static void Index_PolygonCollider2D_GetCenter(uint64_t entityID, float* outX, float* outY)
-	{
-		GET_COMPONENT(PolygonCollider2DComponent, entityID, (void)(*outX = 0, *outY = 0));
-		Vec2 c = comp.GetCenter(); *outX = c.x; *outY = c.y;
-	}
-
-	static void Index_PolygonCollider2D_SetCenter(uint64_t entityID, float x, float y)
-	{
-		GET_COMPONENT(PolygonCollider2DComponent, entityID, );
-		comp.SetCenter(Vec2{ x, y }, *scene);
-	}
-
-	static void Index_PolygonCollider2D_GetSize(uint64_t entityID, float* outX, float* outY)
-	{
-		GET_COMPONENT(PolygonCollider2DComponent, entityID, (void)(*outX = 1, *outY = 1));
-		Vec2 s = comp.GetSize(); *outX = s.x; *outY = s.y;
-	}
-
-	static void Index_PolygonCollider2D_SetSize(uint64_t entityID, float x, float y)
-	{
-		GET_COMPONENT(PolygonCollider2DComponent, entityID, );
-		comp.SetSize(Vec2{ x, y }, *scene);
-	}
-
-	static void Index_PolygonCollider2D_SetEnabled(uint64_t entityID, int enabled)
-	{
-		GET_COMPONENT(PolygonCollider2DComponent, entityID, );
-		comp.SetEnabled(enabled != 0);
-	}
-
 	// ── AudioSource ─────────────────────────────────────────────────────
 
 	static void Index_AudioSource_Play(uint64_t entityID) { GET_COMPONENT(AudioSourceComponent, entityID, ); AudioManager::PlayAudioSource(comp); }
@@ -2623,114 +1996,6 @@ namespace Index {
 		comp.SetAudioHandle(AudioManager::LoadAudioByUUID(assetId), UUID(assetId));
 	}
 
-	// ── Index-Physics ────────────────────────────────────────────────────
-
-	static int Index_FastBody2D_GetBodyType(uint64_t entityID) { GET_COMPONENT(FastBody2DComponent, entityID, 1); return static_cast<int>(comp.Type); }
-	static void Index_FastBody2D_SetBodyType(uint64_t entityID, int type) { GET_COMPONENT(FastBody2DComponent, entityID, ); comp.Type = static_cast<IndexPhys::BodyType>(type); if (comp.m_Body) comp.m_Body->SetBodyType(comp.Type); }
-	static float Index_FastBody2D_GetMass(uint64_t entityID) { GET_COMPONENT(FastBody2DComponent, entityID, 1.0f); return comp.Mass; }
-	static void Index_FastBody2D_SetMass(uint64_t entityID, float mass) { GET_COMPONENT(FastBody2DComponent, entityID, ); comp.Mass = mass; if (comp.m_Body) comp.m_Body->SetMass(mass); }
-	static int Index_FastBody2D_GetUseGravity(uint64_t entityID) { GET_COMPONENT(FastBody2DComponent, entityID, 1); return comp.UseGravity ? 1 : 0; }
-	static void Index_FastBody2D_SetUseGravity(uint64_t entityID, int enabled) { GET_COMPONENT(FastBody2DComponent, entityID, ); comp.UseGravity = enabled != 0; if (comp.m_Body) comp.m_Body->SetGravityEnabled(comp.UseGravity); }
-	static void Index_FastBody2D_GetVelocity(uint64_t entityID, float* outX, float* outY) { GET_COMPONENT(FastBody2DComponent, entityID, (void)(*outX = 0, *outY = 0)); Vec2 v = comp.GetVelocity(); *outX = v.x; *outY = v.y; }
-	static void Index_FastBody2D_SetVelocity(uint64_t entityID, float x, float y) { GET_COMPONENT(FastBody2DComponent, entityID, ); comp.SetVelocity({ x, y }); }
-
-	static void Index_FastBoxCollider2D_GetHalfExtents(uint64_t entityID, float* outX, float* outY) { GET_COMPONENT(FastBoxCollider2DComponent, entityID, (void)(*outX = 0.5f, *outY = 0.5f)); *outX = comp.HalfExtents.x; *outY = comp.HalfExtents.y; }
-	static void Index_FastBoxCollider2D_SetHalfExtents(uint64_t entityID, float x, float y) { GET_COMPONENT(FastBoxCollider2DComponent, entityID, ); comp.SetHalfExtents({ x, y }); }
-
-	static float Index_FastCircleCollider2D_GetRadius(uint64_t entityID) { GET_COMPONENT(FastCircleCollider2DComponent, entityID, 0.5f); return comp.Radius; }
-	static void Index_FastCircleCollider2D_SetRadius(uint64_t entityID, float radius) { GET_COMPONENT(FastCircleCollider2DComponent, entityID, ); comp.SetRadius(radius); }
-
-	// ── ParticleSystem2D ────────────────────────────────────────────────
-
-	static void Index_ParticleSystem2D_Play(uint64_t entityID) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
-		comp.Play();
-	}
-	static void Index_ParticleSystem2D_Pause(uint64_t entityID) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
-		comp.Pause();
-	}
-	static void Index_ParticleSystem2D_Stop(uint64_t entityID) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
-		comp.Stop();
-	}
-	static int Index_ParticleSystem2D_IsPlaying(uint64_t entityID) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, 0);
-		return comp.IsPlaying() ? 1 : 0;
-	}
-	static int Index_ParticleSystem2D_GetPlayOnAwake(uint64_t entityID) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, 0);
-		return comp.PlayOnAwake ? 1 : 0;
-	}
-	static void Index_ParticleSystem2D_SetPlayOnAwake(uint64_t entityID, int enabled) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
-		comp.PlayOnAwake = (enabled != 0);
-	}
-	static uint64_t Index_ParticleSystem2D_GetTexture(uint64_t entityID) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, 0);
-		uint64_t assetId = static_cast<uint64_t>(comp.GetTextureAssetId());
-		const TextureHandle texHandle = comp.GetTextureHandle();
-		if (assetId == 0 && TextureManager::IsValid(texHandle)) {
-			assetId = TextureManager::GetTextureAssetUUID(texHandle);
-			if (assetId != 0) comp.SetTexture(texHandle, UUID(assetId));
-		}
-		return assetId;
-	}
-	static void Index_ParticleSystem2D_SetTexture(uint64_t entityID, uint64_t assetId) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
-		if (assetId == 0) {
-			comp.SetTexture(TextureHandle::Invalid(), UUID(0));
-			return;
-		}
-		const TextureHandle texHandle = TextureManager::LoadTextureByUUID(assetId);
-		comp.SetTexture(texHandle, UUID(assetId));
-	}
-	static void Index_ParticleSystem2D_GetColor(uint64_t entityID, float* r, float* g, float* b, float* a) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
-		*r = comp.RenderingSettings.Color.r; *g = comp.RenderingSettings.Color.g;
-		*b = comp.RenderingSettings.Color.b; *a = comp.RenderingSettings.Color.a;
-	}
-	static void Index_ParticleSystem2D_SetColor(uint64_t entityID, float r, float g, float b, float a) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
-		comp.RenderingSettings.Color = { r, g, b, a };
-	}
-	static float Index_ParticleSystem2D_GetLifeTime(uint64_t entityID) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, 0.0f);
-		return comp.ParticleSettings.LifeTime;
-	}
-	static void Index_ParticleSystem2D_SetLifeTime(uint64_t entityID, float lifetime) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
-		comp.ParticleSettings.LifeTime = lifetime;
-	}
-	static float Index_ParticleSystem2D_GetSpeed(uint64_t entityID) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, 0.0f);
-		return comp.ParticleSettings.Speed;
-	}
-	static void Index_ParticleSystem2D_SetSpeed(uint64_t entityID, float speed) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
-		comp.ParticleSettings.Speed = speed;
-	}
-	static void Index_ParticleSystem2D_GetScale(uint64_t entityID, float* outX, float* outY) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, (void)(*outX = 1, *outY = 1));
-		*outX = comp.ParticleSettings.Scale.x; *outY = comp.ParticleSettings.Scale.y;
-	}
-	static void Index_ParticleSystem2D_SetScale(uint64_t entityID, float x, float y) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
-		comp.ParticleSettings.Scale = { x, y };
-	}
-	static int Index_ParticleSystem2D_GetEmitOverTime(uint64_t entityID) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, 0);
-		return comp.EmissionSettings.EmitOverTime;
-	}
-	static void Index_ParticleSystem2D_SetEmitOverTime(uint64_t entityID, int rate) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
-		comp.EmissionSettings.EmitOverTime = static_cast<uint16_t>(rate);
-	}
-	static void Index_ParticleSystem2D_Emit(uint64_t entityID, int count) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
-		comp.Emit(static_cast<size_t>(count));
-	}
-
 	// ── Gizmos ──────────────────────────────────────────────────────────
 
 	static void Index_Gizmo_DrawLine(float x1, float y1, float x2, float y2) { Gizmo::DrawLine({ x1, y1 }, { x2, y2 }); }
@@ -2748,253 +2013,6 @@ namespace Index {
 	static int Index_Gizmo_GetRegisteredVertices() { return static_cast<int>(Gizmo::GetRegisteredVertices()); }
 		static int Index_Gizmo_GetEnabled() { return Gizmo::IsEnabled() ? 1 : 0; }
 		static void Index_Gizmo_SetEnabled(int enabled) { Gizmo::SetEnabled(enabled != 0); }
-
-	// ── Physics2D ───────────────────────────────────────────────────────
-
-	static int Index_Physics2D_Raycast(
-		float originX, float originY, float dirX, float dirY, float distance,
-		uint64_t* hitEntityID, float* hitX, float* hitY, float* hitNormalX, float* hitNormalY, float* hitDistance)
-	{
-		if (!hitEntityID || !hitX || !hitY || !hitNormalX || !hitNormalY || !hitDistance) return 0;
-		*hitEntityID = 0; *hitX = 0; *hitY = 0; *hitNormalX = 0; *hitNormalY = 0; *hitDistance = 0;
-
-		auto result = Physics2D::Raycast({ originX, originY }, { dirX, dirY }, distance);
-		if (result.has_value()) {
-			if (result->scene && result->scene->IsValid(result->entity)) {
-				*hitEntityID = GetEntityScriptId(*result->scene, result->entity);
-			}
-			*hitX = result->point.x; *hitY = result->point.y;
-			*hitNormalX = result->normal.x; *hitNormalY = result->normal.y;
-			*hitDistance = result->distance;
-			return 1;
-		}
-		return 0;
-	}
-
-	static uint64_t ToScriptEntityId(const PhysicsBodyRef2D& ref) {
-		if (!ref.scene || ref.entity == entt::null || !ref.scene->IsValid(ref.entity)) {
-			return 0;
-		}
-		return GetEntityScriptId(*ref.scene, ref.entity);
-	}
-
-	static OverlapMode ToOverlapMode(int mode) {
-		return mode == 1 ? OverlapMode::Nearest : OverlapMode::First;
-	}
-
-	static std::vector<Vec2> ReadPolygonPoints(const float* points, int pointCount) {
-		std::vector<Vec2> result;
-		constexpr int maxPolygonVertices = 8;
-		if (!points || pointCount < 3 || pointCount > maxPolygonVertices) {
-			return result;
-		}
-
-		result.reserve(static_cast<size_t>(pointCount));
-		for (int i = 0; i < pointCount; ++i) {
-			result.push_back({ points[i * 2], points[i * 2 + 1] });
-		}
-		return result;
-	}
-
-	static int WriteOverlapResult(std::optional<PhysicsBodyRef2D> result, uint64_t* entityID) {
-		if (!entityID) return 0;
-		*entityID = result.has_value() ? ToScriptEntityId(*result) : 0;
-		return *entityID != 0 ? 1 : 0;
-	}
-
-	static int WriteOverlapResults(const std::vector<PhysicsBodyRef2D>& refs, uint64_t* outEntityIDs, int maxOut) {
-		if (!outEntityIDs || maxOut <= 0) return 0;
-
-		int count = 0;
-		for (const PhysicsBodyRef2D& ref : refs) {
-			uint64_t id = ToScriptEntityId(ref);
-			if (id == 0) continue;
-
-			if (count < maxOut) {
-				outEntityIDs[count] = id;
-			}
-			++count;
-		}
-		return count;
-	}
-
-	static int Index_Physics2D_OverlapCircle(float originX, float originY, float radius, int mode, uint64_t* entityID) {
-		return WriteOverlapResult(
-			Physics2D::OverlapCircleRef({ originX, originY }, radius, ToOverlapMode(mode)),
-			entityID);
-	}
-
-	static int Index_Physics2D_OverlapBox(float originX, float originY, float halfX, float halfY, float degrees, int mode, uint64_t* entityID) {
-		return WriteOverlapResult(
-			Physics2D::OverlapBoxRef({ originX, originY }, { halfX, halfY }, degrees, ToOverlapMode(mode)),
-			entityID);
-	}
-
-	static int Index_Physics2D_OverlapPolygon(float originX, float originY, const float* points, int pointCount, int mode, uint64_t* entityID) {
-		std::vector<Vec2> polygon = ReadPolygonPoints(points, pointCount);
-		if (polygon.empty()) {
-			if (entityID) *entityID = 0;
-			return 0;
-		}
-
-		return WriteOverlapResult(
-			Physics2D::OverlapPolygonRef({ originX, originY }, polygon, ToOverlapMode(mode)),
-			entityID);
-	}
-
-	static int Index_Physics2D_OverlapCircleAll(float originX, float originY, float radius, uint64_t* outEntityIDs, int maxOut) {
-		return WriteOverlapResults(
-			Physics2D::OverlapCircleAllRefs({ originX, originY }, radius),
-			outEntityIDs, maxOut);
-	}
-
-	static int Index_Physics2D_OverlapBoxAll(float originX, float originY, float halfX, float halfY, float degrees, uint64_t* outEntityIDs, int maxOut) {
-		return WriteOverlapResults(
-			Physics2D::OverlapBoxAllRefs({ originX, originY }, { halfX, halfY }, degrees),
-			outEntityIDs, maxOut);
-	}
-
-	static int Index_Physics2D_OverlapPolygonAll(float originX, float originY, const float* points, int pointCount, uint64_t* outEntityIDs, int maxOut) {
-		std::vector<Vec2> polygon = ReadPolygonPoints(points, pointCount);
-		if (polygon.empty()) {
-			return 0;
-		}
-
-		return WriteOverlapResults(
-			Physics2D::OverlapPolygonAllRefs({ originX, originY }, polygon),
-			outEntityIDs, maxOut);
-	}
-
-	static int Index_Physics2D_ContainsPoint(float originX, float originY, int mode, uint64_t* entityID) {
-		return WriteOverlapResult(
-			Physics2D::ContainsPointRef({ originX, originY }, ToOverlapMode(mode)),
-			entityID);
-	}
-
-	static int Index_Physics2D_ContainsPointAll(float originX, float originY, uint64_t* outEntityIDs, int maxOut) {
-		return WriteOverlapResults(
-			Physics2D::ContainsPointAllRefs({ originX, originY }),
-			outEntityIDs, maxOut);
-	}
-
-	// ── FastPhysics2D (Index-Physics) ────────────────────────────────────
-	// Same script ABI as Physics2D_*, but routed to the Index-Physics world via
-	// FastPhysics2D. Reuses the shared PhysicsBodyRef2D helpers below.
-
-	static int Index_FastPhysics2D_Raycast(
-		float originX, float originY, float dirX, float dirY, float distance,
-		uint64_t* hitEntityID, float* hitX, float* hitY, float* hitNormalX, float* hitNormalY, float* hitDistance)
-	{
-		if (!hitEntityID || !hitX || !hitY || !hitNormalX || !hitNormalY || !hitDistance) return 0;
-		*hitEntityID = 0; *hitX = 0; *hitY = 0; *hitNormalX = 0; *hitNormalY = 0; *hitDistance = 0;
-
-		auto result = FastPhysics2D::Raycast({ originX, originY }, { dirX, dirY }, distance);
-		if (result.has_value()) {
-			if (result->scene && result->scene->IsValid(result->entity)) {
-				*hitEntityID = GetEntityScriptId(*result->scene, result->entity);
-			}
-			*hitX = result->point.x; *hitY = result->point.y;
-			*hitNormalX = result->normal.x; *hitNormalY = result->normal.y;
-			*hitDistance = result->distance;
-			return 1;
-		}
-		return 0;
-	}
-
-	static int Index_FastPhysics2D_OverlapCircle(float originX, float originY, float radius, int mode, uint64_t* entityID) {
-		return WriteOverlapResult(
-			FastPhysics2D::OverlapCircleRef({ originX, originY }, radius, ToOverlapMode(mode)),
-			entityID);
-	}
-
-	static int Index_FastPhysics2D_OverlapBox(float originX, float originY, float halfX, float halfY, float degrees, int mode, uint64_t* entityID) {
-		return WriteOverlapResult(
-			FastPhysics2D::OverlapBoxRef({ originX, originY }, { halfX, halfY }, degrees, ToOverlapMode(mode)),
-			entityID);
-	}
-
-	static int Index_FastPhysics2D_OverlapPolygon(float originX, float originY, const float* points, int pointCount, int mode, uint64_t* entityID) {
-		std::vector<Vec2> polygon = ReadPolygonPoints(points, pointCount);
-		if (polygon.empty()) {
-			if (entityID) *entityID = 0;
-			return 0;
-		}
-
-		return WriteOverlapResult(
-			FastPhysics2D::OverlapPolygonRef({ originX, originY }, polygon, ToOverlapMode(mode)),
-			entityID);
-	}
-
-	static int Index_FastPhysics2D_OverlapCircleAll(float originX, float originY, float radius, uint64_t* outEntityIDs, int maxOut) {
-		return WriteOverlapResults(
-			FastPhysics2D::OverlapCircleAllRefs({ originX, originY }, radius),
-			outEntityIDs, maxOut);
-	}
-
-	static int Index_FastPhysics2D_OverlapBoxAll(float originX, float originY, float halfX, float halfY, float degrees, uint64_t* outEntityIDs, int maxOut) {
-		return WriteOverlapResults(
-			FastPhysics2D::OverlapBoxAllRefs({ originX, originY }, { halfX, halfY }, degrees),
-			outEntityIDs, maxOut);
-	}
-
-	static int Index_FastPhysics2D_OverlapPolygonAll(float originX, float originY, const float* points, int pointCount, uint64_t* outEntityIDs, int maxOut) {
-		std::vector<Vec2> polygon = ReadPolygonPoints(points, pointCount);
-		if (polygon.empty()) {
-			return 0;
-		}
-
-		return WriteOverlapResults(
-			FastPhysics2D::OverlapPolygonAllRefs({ originX, originY }, polygon),
-			outEntityIDs, maxOut);
-	}
-
-	static int Index_FastPhysics2D_ContainsPoint(float originX, float originY, int mode, uint64_t* entityID) {
-		return WriteOverlapResult(
-			FastPhysics2D::ContainsPointRef({ originX, originY }, ToOverlapMode(mode)),
-			entityID);
-	}
-
-	static int Index_FastPhysics2D_ContainsPointAll(float originX, float originY, uint64_t* outEntityIDs, int maxOut) {
-		return WriteOverlapResults(
-			FastPhysics2D::ContainsPointAllRefs({ originX, originY }),
-			outEntityIDs, maxOut);
-	}
-
-	// ── EntityPicker ────────────────────────────────────────────────────
-
-	static int Index_EntityPicker_TryPickEntity(float worldX, float worldY, uint64_t* entityID) {
-		if (!entityID) return 0;
-		*entityID = 0;
-
-		Scene* scene = GetScene();
-		if (!scene) return 0;
-
-		EntityHandle picked = entt::null;
-		if (!EntityPicker::TryPickEntity(*scene, { worldX, worldY }, picked)) {
-			return 0;
-		}
-		*entityID = GetEntityScriptId(*scene, picked);
-		return *entityID != 0 ? 1 : 0;
-	}
-
-	// Front-most Interactable UI entity under the pointer (or 0). Reads UIEventSystem's per-frame
-	// hover result, which is already gated on an enabled InteractableComponent.
-	static int Index_UI_GetHoveredEntity(uint64_t* outEntityID) {
-		if (!outEntityID) return 0;
-		*outEntityID = 0;
-
-		Scene* scene = GetScene();
-		if (!scene) return 0;
-
-		auto* uiEvents = scene->GetSystem<UIEventSystem>();
-		if (!uiEvents) return 0;
-
-		EntityHandle hovered = uiEvents->GetHoveredEntity();
-		if (hovered == entt::null || !scene->IsValid(hovered)) return 0;
-
-		*outEntityID = GetEntityScriptId(*scene, hovered);
-		return *outEntityID != 0 ? 1 : 0;
-	}
 
 	// ── UI: RectTransform2D ─────────────────────────────────────────────
 
@@ -3026,25 +2044,6 @@ namespace Index {
 		return true;
 	}
 
-	static float ResolveUiScale(int viewportWidth, int viewportHeight) {
-		float uiScale = 1.0f;
-		if (const IndexProject* project = ProjectManager::GetCurrentProject()) {
-			const int refW = std::max(1, project->UIReferenceWidth);
-			const int refH = std::max(1, project->UIReferenceHeight);
-			const float xRatio = static_cast<float>(viewportWidth) / static_cast<float>(refW);
-			const float yRatio = static_cast<float>(viewportHeight) / static_cast<float>(refH);
-			const float match = std::clamp(project->UIScaleMatch, 0.0f, 1.0f);
-			if (xRatio > 0.0f && yRatio > 0.0f) {
-				const float logBlend = (1.0f - match) * std::log(xRatio) + match * std::log(yRatio);
-				uiScale = std::exp(logBlend);
-			}
-			if (!std::isfinite(uiScale) || uiScale <= 0.0f) {
-				uiScale = 1.0f;
-			}
-		}
-		return uiScale;
-	}
-
 	static bool TryGetRootRectReference(RectLayoutReference& outReference) {
 		int vpW = 0;
 		int vpH = 0;
@@ -3052,11 +2051,16 @@ namespace Index {
 			return false;
 		}
 
+		// Same parent rect and scale UILayoutSystem gives UI roots: the safe area of the UI surface.
 		const float halfW = static_cast<float>(vpW) * 0.5f;
 		const float halfH = static_cast<float>(vpH) * 0.5f;
-		const float uiScale = ResolveUiScale(vpW, vpH);
-		outReference.Min = Vec2{ -halfW, -halfH };
-		outReference.Max = Vec2{ halfW, halfH };
+		const Window::SafeAreaInsets insets = Window::GetSafeAreaInsets();
+		outReference.Min = Vec2{ -halfW + insets.Left, -halfH + insets.Bottom };
+		outReference.Max = Vec2{ halfW - insets.Right, halfH - insets.Top };
+		const IndexProject* project = ProjectManager::GetCurrentProject();
+		const float uiScale = project
+			? project->ComputeUIScale(outReference.Max.x - outReference.Min.x, outReference.Max.y - outReference.Min.y)
+			: 1.0f;
 		outReference.Pivot = Vec2{ 0.0f, 0.0f };
 		outReference.Scale = Vec2{ uiScale, uiScale };
 		outReference.Rotation = 0.0f;
@@ -4096,780 +3100,645 @@ namespace Index {
 		// the managed Job.Schedule path into the native work-stealing
 		// pool so C# work shares cores cleanly with native systems.
 		PopulateJobsBindings(b);
+		PopulateModuleBindings(b);
 
-		b.Entity_Clone = &Index_Entity_Clone;
-		b.Entity_InstantiatePrefab = &Index_Entity_InstantiatePrefab;
-		b.Entity_GetOrigin = &Index_Entity_GetOrigin;
-		b.Entity_GetRuntimeID = &Index_Entity_GetRuntimeID;
-		b.Entity_GetSceneGUID = &Index_Entity_GetSceneGUID;
-		b.Entity_GetPrefabGUID = &Index_Entity_GetPrefabGUID;
-		b.Entity_HasComponent = &Index_Entity_HasComponent;
-		b.Entity_AddComponent = &Index_Entity_AddComponent;
-		b.Entity_RemoveComponent = &Index_Entity_RemoveComponent;
-		b.Entity_AddScript = &Index_Entity_AddScript;
-		b.Entity_HasScript = &Index_Entity_HasScript;
-		b.Entity_RemoveScript = &Index_Entity_RemoveScript;
+		b.Entity_Clone = IDX_GUARDED_BINDING(Index_Entity_Clone);
+		b.Entity_InstantiatePrefab = IDX_GUARDED_BINDING(Index_Entity_InstantiatePrefab);
+		b.Entity_GetOrigin = IDX_GUARDED_BINDING(Index_Entity_GetOrigin);
+		b.Entity_GetRuntimeID = IDX_GUARDED_BINDING(Index_Entity_GetRuntimeID);
+		b.Entity_GetSceneGUID = IDX_GUARDED_BINDING(Index_Entity_GetSceneGUID);
+		b.Entity_GetPrefabGUID = IDX_GUARDED_BINDING(Index_Entity_GetPrefabGUID);
+		b.Entity_HasComponent = IDX_GUARDED_BINDING(Index_Entity_HasComponent);
+		b.Entity_AddComponent = IDX_GUARDED_BINDING(Index_Entity_AddComponent);
+		b.Entity_RemoveComponent = IDX_GUARDED_BINDING(Index_Entity_RemoveComponent);
+		b.Entity_AddScript = IDX_GUARDED_BINDING(Index_Entity_AddScript);
+		b.Entity_HasScript = IDX_GUARDED_BINDING(Index_Entity_HasScript);
+		b.Entity_RemoveScript = IDX_GUARDED_BINDING(Index_Entity_RemoveScript);
 		// Unbuffered string slots removed: they returned a thread-local pointer that raced across calls. Use *Buffer variants only.
-		b.Entity_GetManagedComponentFieldsBuffer = &Index_Entity_GetManagedComponentFieldsBuffer;
-		b.Entity_GetIsStatic = &Index_Entity_GetIsStatic;
-		b.Entity_SetIsStatic = &Index_Entity_SetIsStatic;
-		b.Entity_GetIsEnabled            = &Index_Entity_GetIsEnabled;
-		b.Entity_GetIsEnabledInHierarchy = &Index_Entity_GetIsEnabledInHierarchy;
-		b.Entity_SetIsEnabled            = &Index_Entity_SetIsEnabled;
+		b.Entity_GetManagedComponentFieldsBuffer = IDX_GUARDED_BINDING(Index_Entity_GetManagedComponentFieldsBuffer);
+		b.Entity_GetIsStatic = IDX_GUARDED_BINDING(Index_Entity_GetIsStatic);
+		b.Entity_SetIsStatic = IDX_GUARDED_BINDING(Index_Entity_SetIsStatic);
+		b.Entity_GetIsEnabled            = IDX_GUARDED_BINDING(Index_Entity_GetIsEnabled);
+		b.Entity_GetIsEnabledInHierarchy = IDX_GUARDED_BINDING(Index_Entity_GetIsEnabledInHierarchy);
+		b.Entity_SetIsEnabled            = IDX_GUARDED_BINDING(Index_Entity_SetIsEnabled);
 
-		b.NameComponent_GetNameBuffer = &Index_NameComponent_GetNameBuffer;
-		b.NameComponent_SetName = &Index_NameComponent_SetName;
+		b.NameComponent_GetNameBuffer = IDX_GUARDED_BINDING(Index_NameComponent_GetNameBuffer);
+		b.NameComponent_SetName = IDX_GUARDED_BINDING(Index_NameComponent_SetName);
 
-		b.Transform2D_GetPosition = &Index_Transform2D_GetPosition;
-		b.Transform2D_SetPosition = &Index_Transform2D_SetPosition;
-		b.Transform2D_GetRotation = &Index_Transform2D_GetRotation;
-		b.Transform2D_SetRotation = &Index_Transform2D_SetRotation;
-		b.Transform2D_GetScale = &Index_Transform2D_GetScale;
-		b.Transform2D_SetScale = &Index_Transform2D_SetScale;
-		b.Transform2D_GetEntity = &Index_Transform2D_GetEntity;
-		b.Transform2D_GetLocalPosition = &Index_Transform2D_GetLocalPosition;
-		b.Transform2D_SetLocalPosition = &Index_Transform2D_SetLocalPosition;
-		b.Transform2D_GetLocalRotation = &Index_Transform2D_GetLocalRotation;
-		b.Transform2D_SetLocalRotation = &Index_Transform2D_SetLocalRotation;
-		b.Transform2D_GetLocalScale = &Index_Transform2D_GetLocalScale;
-		b.Transform2D_SetLocalScale = &Index_Transform2D_SetLocalScale;
-		b.Entity_GetParent = &Index_Entity_GetParent;
-		b.Entity_SetParent = &Index_Entity_SetParent;
-		b.Entity_GetChildCount = &Index_Entity_GetChildCount;
-		b.Entity_GetChildAt = &Index_Entity_GetChildAt;
-		b.Entity_GetChildren = &Index_Entity_GetChildren;
+		b.Entity_GetParent = IDX_GUARDED_BINDING(Index_Entity_GetParent);
+		b.Entity_SetParent = IDX_GUARDED_BINDING(Index_Entity_SetParent);
+		b.Entity_GetChildCount = IDX_GUARDED_BINDING(Index_Entity_GetChildCount);
+		b.Entity_GetChildAt = IDX_GUARDED_BINDING(Index_Entity_GetChildAt);
+		b.Entity_GetChildren = IDX_GUARDED_BINDING(Index_Entity_GetChildren);
 
-		b.SpriteRenderer_GetColor = &Index_SpriteRenderer_GetColor;
-		b.SpriteRenderer_SetColor = &Index_SpriteRenderer_SetColor;
-		b.SpriteRenderer_GetTexture = &Index_SpriteRenderer_GetTexture;
-		b.SpriteRenderer_SetTexture = &Index_SpriteRenderer_SetTexture;
-		b.SpriteRenderer_GetSortingOrder = &Index_SpriteRenderer_GetSortingOrder;
-		b.SpriteRenderer_SetSortingOrder = &Index_SpriteRenderer_SetSortingOrder;
-		b.SpriteRenderer_GetSortingLayer = &Index_SpriteRenderer_GetSortingLayer;
-		b.SpriteRenderer_SetSortingLayer = &Index_SpriteRenderer_SetSortingLayer;
 
-		b.TextRenderer_GetTextBuffer = &Index_TextRenderer_GetTextBuffer;
-		b.TextRenderer_SetText = &Index_TextRenderer_SetText;
-		b.TextRenderer_GetFont = &Index_TextRenderer_GetFont;
-		b.TextRenderer_SetFont = &Index_TextRenderer_SetFont;
-		b.TextRenderer_GetFontSize = &Index_TextRenderer_GetFontSize;
-		b.TextRenderer_SetFontSize = &Index_TextRenderer_SetFontSize;
-		b.TextRenderer_GetColor = &Index_TextRenderer_GetColor;
-		b.TextRenderer_SetColor = &Index_TextRenderer_SetColor;
-		b.TextRenderer_GetLetterSpacing = &Index_TextRenderer_GetLetterSpacing;
-		b.TextRenderer_SetLetterSpacing = &Index_TextRenderer_SetLetterSpacing;
-		b.TextRenderer_GetLineSpacing = &Index_TextRenderer_GetLineSpacing;
-		b.TextRenderer_SetLineSpacing = &Index_TextRenderer_SetLineSpacing;
-		b.TextRenderer_GetHAlign = &Index_TextRenderer_GetHAlign;
-		b.TextRenderer_SetHAlign = &Index_TextRenderer_SetHAlign;
-		b.TextRenderer_GetVAlign = &Index_TextRenderer_GetVAlign;
-		b.TextRenderer_SetVAlign = &Index_TextRenderer_SetVAlign;
-		b.TextRenderer_GetWrapMode = &Index_TextRenderer_GetWrapMode;
-		b.TextRenderer_SetWrapMode = &Index_TextRenderer_SetWrapMode;
+		b.TextRenderer_GetTextBuffer = IDX_GUARDED_BINDING(Index_TextRenderer_GetTextBuffer);
+		b.TextRenderer_SetText = IDX_GUARDED_BINDING(Index_TextRenderer_SetText);
+		b.TextRenderer_GetFont = IDX_GUARDED_BINDING(Index_TextRenderer_GetFont);
+		b.TextRenderer_SetFont = IDX_GUARDED_BINDING(Index_TextRenderer_SetFont);
+		b.TextRenderer_GetFontSize = IDX_GUARDED_BINDING(Index_TextRenderer_GetFontSize);
+		b.TextRenderer_SetFontSize = IDX_GUARDED_BINDING(Index_TextRenderer_SetFontSize);
+		b.TextRenderer_GetColor = IDX_GUARDED_BINDING(Index_TextRenderer_GetColor);
+		b.TextRenderer_SetColor = IDX_GUARDED_BINDING(Index_TextRenderer_SetColor);
+		b.TextRenderer_GetLetterSpacing = IDX_GUARDED_BINDING(Index_TextRenderer_GetLetterSpacing);
+		b.TextRenderer_SetLetterSpacing = IDX_GUARDED_BINDING(Index_TextRenderer_SetLetterSpacing);
+		b.TextRenderer_GetLineSpacing = IDX_GUARDED_BINDING(Index_TextRenderer_GetLineSpacing);
+		b.TextRenderer_SetLineSpacing = IDX_GUARDED_BINDING(Index_TextRenderer_SetLineSpacing);
+		b.TextRenderer_GetHAlign = IDX_GUARDED_BINDING(Index_TextRenderer_GetHAlign);
+		b.TextRenderer_SetHAlign = IDX_GUARDED_BINDING(Index_TextRenderer_SetHAlign);
+		b.TextRenderer_GetVAlign = IDX_GUARDED_BINDING(Index_TextRenderer_GetVAlign);
+		b.TextRenderer_SetVAlign = IDX_GUARDED_BINDING(Index_TextRenderer_SetVAlign);
+		b.TextRenderer_GetWrapMode = IDX_GUARDED_BINDING(Index_TextRenderer_GetWrapMode);
+		b.TextRenderer_SetWrapMode = IDX_GUARDED_BINDING(Index_TextRenderer_SetWrapMode);
 		// WrapWidth get/set slots removed; the C# struct doesn't carry
 		// them anymore.
-		b.TextRenderer_GetSortingOrder = &Index_TextRenderer_GetSortingOrder;
-		b.TextRenderer_SetSortingOrder = &Index_TextRenderer_SetSortingOrder;
-		b.TextRenderer_GetSortingLayer = &Index_TextRenderer_GetSortingLayer;
-		b.TextRenderer_SetSortingLayer = &Index_TextRenderer_SetSortingLayer;
+		b.TextRenderer_GetSortingOrder = IDX_GUARDED_BINDING(Index_TextRenderer_GetSortingOrder);
+		b.TextRenderer_SetSortingOrder = IDX_GUARDED_BINDING(Index_TextRenderer_SetSortingOrder);
+		b.TextRenderer_GetSortingLayer = IDX_GUARDED_BINDING(Index_TextRenderer_GetSortingLayer);
+		b.TextRenderer_SetSortingLayer = IDX_GUARDED_BINDING(Index_TextRenderer_SetSortingLayer);
 
-		b.Camera2D_GetOrthographicSize = &Index_Camera2D_GetOrthographicSize;
-		b.Camera2D_SetOrthographicSize = &Index_Camera2D_SetOrthographicSize;
-		b.Camera2D_GetZoom = &Index_Camera2D_GetZoom;
-		b.Camera2D_SetZoom = &Index_Camera2D_SetZoom;
-		b.Camera2D_GetClearColor = &Index_Camera2D_GetClearColor;
-		b.Camera2D_SetClearColor = &Index_Camera2D_SetClearColor;
-		b.Camera2D_ScreenToWorld = &Index_Camera2D_ScreenToWorld;
-		b.Camera2D_GetViewportWidth = &Index_Camera2D_GetViewportWidth;
-		b.Camera2D_GetViewportHeight = &Index_Camera2D_GetViewportHeight;
-		b.Camera2D_GetMainEntity = &Index_Camera2D_GetMainEntity;
-		b.Camera2D_GetFrustum = &Index_Camera2D_GetFrustum;
 
-		b.Rigidbody2D_ApplyForce = &Index_Rigidbody2D_ApplyForce;
-		b.Rigidbody2D_ApplyImpulse = &Index_Rigidbody2D_ApplyImpulse;
-		b.Rigidbody2D_GetLinearVelocity = &Index_Rigidbody2D_GetLinearVelocity;
-		b.Rigidbody2D_SetLinearVelocity = &Index_Rigidbody2D_SetLinearVelocity;
-		b.Rigidbody2D_GetAngularVelocity = &Index_Rigidbody2D_GetAngularVelocity;
-		b.Rigidbody2D_SetAngularVelocity = &Index_Rigidbody2D_SetAngularVelocity;
-		b.Rigidbody2D_GetBodyType = &Index_Rigidbody2D_GetBodyType;
-		b.Rigidbody2D_SetBodyType = &Index_Rigidbody2D_SetBodyType;
-		b.Rigidbody2D_GetGravityScale = &Index_Rigidbody2D_GetGravityScale;
-		b.Rigidbody2D_SetGravityScale = &Index_Rigidbody2D_SetGravityScale;
-		b.Rigidbody2D_GetMass = &Index_Rigidbody2D_GetMass;
-		b.Rigidbody2D_SetMass = &Index_Rigidbody2D_SetMass;
 
-		b.BoxCollider2D_GetScale = &Index_BoxCollider2D_GetScale;
-		b.BoxCollider2D_GetCenter = &Index_BoxCollider2D_GetCenter;
-		b.BoxCollider2D_SetEnabled = &Index_BoxCollider2D_SetEnabled;
 
-		b.CircleCollider2D_GetRadius = &Index_CircleCollider2D_GetRadius;
-		b.CircleCollider2D_SetRadius = &Index_CircleCollider2D_SetRadius;
-		b.CircleCollider2D_GetCenter = &Index_CircleCollider2D_GetCenter;
-		b.CircleCollider2D_SetCenter = &Index_CircleCollider2D_SetCenter;
-		b.CircleCollider2D_SetEnabled = &Index_CircleCollider2D_SetEnabled;
 
-		b.PolygonCollider2D_GetVertexCount = &Index_PolygonCollider2D_GetVertexCount;
-		b.PolygonCollider2D_GetWorldPoints = &Index_PolygonCollider2D_GetWorldPoints;
-		b.PolygonCollider2D_SetPoints = &Index_PolygonCollider2D_SetPoints;
-		b.PolygonCollider2D_SetSides = &Index_PolygonCollider2D_SetSides;
-		b.PolygonCollider2D_GetCenter = &Index_PolygonCollider2D_GetCenter;
-		b.PolygonCollider2D_SetCenter = &Index_PolygonCollider2D_SetCenter;
-		b.PolygonCollider2D_GetSize = &Index_PolygonCollider2D_GetSize;
-		b.PolygonCollider2D_SetSize = &Index_PolygonCollider2D_SetSize;
-		b.PolygonCollider2D_SetEnabled = &Index_PolygonCollider2D_SetEnabled;
 
-		b.AudioSource_Play = &Index_AudioSource_Play;
-		b.AudioSource_Pause = &Index_AudioSource_Pause;
-		b.AudioSource_Stop = &Index_AudioSource_Stop;
-		b.AudioSource_Resume = &Index_AudioSource_Resume;
-		b.AudioSource_GetVolume = &Index_AudioSource_GetVolume;
-		b.AudioSource_SetVolume = &Index_AudioSource_SetVolume;
-		b.AudioSource_GetPitch = &Index_AudioSource_GetPitch;
-		b.AudioSource_SetPitch = &Index_AudioSource_SetPitch;
-		b.AudioSource_GetLoop = &Index_AudioSource_GetLoop;
-		b.AudioSource_SetLoop = &Index_AudioSource_SetLoop;
-		b.AudioSource_IsPlaying = &Index_AudioSource_IsPlaying;
-		b.AudioSource_IsPaused = &Index_AudioSource_IsPaused;
-		b.AudioSource_GetAudio = &Index_AudioSource_GetAudio;
-		b.AudioSource_SetAudio = &Index_AudioSource_SetAudio;
+		b.AudioSource_Play = IDX_GUARDED_BINDING(Index_AudioSource_Play);
+		b.AudioSource_Pause = IDX_GUARDED_BINDING(Index_AudioSource_Pause);
+		b.AudioSource_Stop = IDX_GUARDED_BINDING(Index_AudioSource_Stop);
+		b.AudioSource_Resume = IDX_GUARDED_BINDING(Index_AudioSource_Resume);
+		b.AudioSource_GetVolume = IDX_GUARDED_BINDING(Index_AudioSource_GetVolume);
+		b.AudioSource_SetVolume = IDX_GUARDED_BINDING(Index_AudioSource_SetVolume);
+		b.AudioSource_GetPitch = IDX_GUARDED_BINDING(Index_AudioSource_GetPitch);
+		b.AudioSource_SetPitch = IDX_GUARDED_BINDING(Index_AudioSource_SetPitch);
+		b.AudioSource_GetLoop = IDX_GUARDED_BINDING(Index_AudioSource_GetLoop);
+		b.AudioSource_SetLoop = IDX_GUARDED_BINDING(Index_AudioSource_SetLoop);
+		b.AudioSource_IsPlaying = IDX_GUARDED_BINDING(Index_AudioSource_IsPlaying);
+		b.AudioSource_IsPaused = IDX_GUARDED_BINDING(Index_AudioSource_IsPaused);
+		b.AudioSource_GetAudio = IDX_GUARDED_BINDING(Index_AudioSource_GetAudio);
+		b.AudioSource_SetAudio = IDX_GUARDED_BINDING(Index_AudioSource_SetAudio);
 
-		b.FastBody2D_GetBodyType = &Index_FastBody2D_GetBodyType;
-		b.FastBody2D_SetBodyType = &Index_FastBody2D_SetBodyType;
-		b.FastBody2D_GetMass = &Index_FastBody2D_GetMass;
-		b.FastBody2D_SetMass = &Index_FastBody2D_SetMass;
-		b.FastBody2D_GetUseGravity = &Index_FastBody2D_GetUseGravity;
-		b.FastBody2D_SetUseGravity = &Index_FastBody2D_SetUseGravity;
-		b.FastBody2D_GetVelocity = &Index_FastBody2D_GetVelocity;
-		b.FastBody2D_SetVelocity = &Index_FastBody2D_SetVelocity;
-		b.FastBoxCollider2D_GetHalfExtents = &Index_FastBoxCollider2D_GetHalfExtents;
-		b.FastBoxCollider2D_SetHalfExtents = &Index_FastBoxCollider2D_SetHalfExtents;
-		b.FastCircleCollider2D_GetRadius = &Index_FastCircleCollider2D_GetRadius;
-		b.FastCircleCollider2D_SetRadius = &Index_FastCircleCollider2D_SetRadius;
 
-		b.Scene_GetActiveSceneNameBuffer = &Index_Scene_GetActiveSceneNameBuffer;
-		b.Scene_GetEntityCount = &Index_Scene_GetEntityCount;
-		b.Scene_GetEntityCountByName = &Index_Scene_GetEntityCountByName;
-		b.Scene_LoadAdditive = &Index_Scene_LoadAdditive;
-		b.Scene_Load = &Index_Scene_Load;
-		b.Scene_Unload = &Index_Scene_Unload;
-		b.Scene_SetActive = &Index_Scene_SetActive;
-		b.Scene_Reload = &Index_Scene_Reload;
-		b.Scene_SetSceneSystemEnabled = &Index_Scene_SetSceneSystemEnabled;
-		b.Scene_IsSceneSystemEnabled = &Index_Scene_IsSceneSystemEnabled;
-		b.Scene_SetGlobalSystemEnabled = &Index_Scene_SetGlobalSystemEnabled;
-		b.Scene_DoesSceneExist = &Index_Scene_DoesSceneExist;
-		b.Scene_GetLoadedCount = &Index_Scene_GetLoadedCount;
-		b.Scene_GetLoadedSceneNameAtBuffer = &Index_Scene_GetLoadedSceneNameAtBuffer;
-		b.Scene_GetEntityNameByUUIDBuffer = &Index_Scene_GetEntityNameByUUIDBuffer;
-		b.Scene_QueryEntities = &Index_Scene_QueryEntities;
-		b.Scene_QueryEntitiesFiltered = &Index_Scene_QueryEntitiesFiltered;
-		b.Scene_QueryEntitiesInScene = &Index_Scene_QueryEntitiesInScene;
-		b.Scene_QueryEntitiesFilteredInScene = &Index_Scene_QueryEntitiesFilteredInScene;
+		b.Scene_GetActiveSceneNameBuffer = IDX_GUARDED_BINDING(Index_Scene_GetActiveSceneNameBuffer);
+		b.Scene_GetEntityCount = IDX_GUARDED_BINDING(Index_Scene_GetEntityCount);
+		b.Scene_GetEntityCountByName = IDX_GUARDED_BINDING(Index_Scene_GetEntityCountByName);
+		b.Scene_LoadAdditive = IDX_GUARDED_BINDING(Index_Scene_LoadAdditive);
+		b.Scene_Load = IDX_GUARDED_BINDING(Index_Scene_Load);
+		b.Scene_Unload = IDX_GUARDED_BINDING(Index_Scene_Unload);
+		b.Scene_SetActive = IDX_GUARDED_BINDING(Index_Scene_SetActive);
+		b.Scene_Reload = IDX_GUARDED_BINDING(Index_Scene_Reload);
+		b.Scene_SetSceneSystemEnabled = IDX_GUARDED_BINDING(Index_Scene_SetSceneSystemEnabled);
+		b.Scene_IsSceneSystemEnabled = IDX_GUARDED_BINDING(Index_Scene_IsSceneSystemEnabled);
+		b.Scene_SetGlobalSystemEnabled = IDX_GUARDED_BINDING(Index_Scene_SetGlobalSystemEnabled);
+		b.Scene_DoesSceneExist = IDX_GUARDED_BINDING(Index_Scene_DoesSceneExist);
+		b.Scene_GetLoadedCount = IDX_GUARDED_BINDING(Index_Scene_GetLoadedCount);
+		b.Scene_GetLoadedSceneNameAtBuffer = IDX_GUARDED_BINDING(Index_Scene_GetLoadedSceneNameAtBuffer);
+		b.Scene_GetEntityNameByUUIDBuffer = IDX_GUARDED_BINDING(Index_Scene_GetEntityNameByUUIDBuffer);
+		b.Scene_QueryEntities = IDX_GUARDED_BINDING(Index_Scene_QueryEntities);
+		b.Scene_QueryEntitiesFiltered = IDX_GUARDED_BINDING(Index_Scene_QueryEntitiesFiltered);
+		b.Scene_QueryEntitiesInScene = IDX_GUARDED_BINDING(Index_Scene_QueryEntitiesInScene);
+		b.Scene_QueryEntitiesFilteredInScene = IDX_GUARDED_BINDING(Index_Scene_QueryEntitiesFilteredInScene);
 
-		b.Asset_IsValid = &Index_Asset_IsValid;
-		b.Asset_GetOrCreateUUIDFromPath = &Index_Asset_GetOrCreateUUIDFromPath;
-		b.Asset_GetPathBuffer = &Index_Asset_GetPathBuffer;
-		b.Asset_GetDisplayNameBuffer = &Index_Asset_GetDisplayNameBuffer;
-		b.Asset_GetKind = &Index_Asset_GetKind;
-		b.Asset_FindAllBuffer = &Index_Asset_FindAllBuffer;
-		b.DataAsset_EnsureLoaded = &Index_DataAsset_EnsureLoaded;
-		b.Texture_LoadAsset = &Index_Texture_LoadAsset;
-		b.Texture_GetWidth = &Index_Texture_GetWidth;
-		b.Texture_GetHeight = &Index_Texture_GetHeight;
-		b.Texture_GetDefaultAssetUUID = &Index_Texture_GetDefaultAssetUUID;
-		b.Texture_CreateRuntime = &Index_Texture_CreateRuntime;
-		b.Texture_UpdateRuntime = &Index_Texture_UpdateRuntime;
-		b.Texture_DestroyRuntime = &Index_Texture_DestroyRuntime;
-		b.Texture_IsRuntime = &Index_Texture_IsRuntime;
-		b.Audio_LoadAsset = &Index_Audio_LoadAsset;
-		b.Audio_PlayOneShotAsset = &Index_Audio_PlayOneShotAsset;
-		b.Font_LoadAsset = &Index_Font_LoadAsset;
+		b.Asset_IsValid = IDX_GUARDED_BINDING(Index_Asset_IsValid);
+		b.Asset_GetOrCreateUUIDFromPath = IDX_GUARDED_BINDING(Index_Asset_GetOrCreateUUIDFromPath);
+		b.Asset_GetPathBuffer = IDX_GUARDED_BINDING(Index_Asset_GetPathBuffer);
+		b.Asset_GetDisplayNameBuffer = IDX_GUARDED_BINDING(Index_Asset_GetDisplayNameBuffer);
+		b.Asset_GetKind = IDX_GUARDED_BINDING(Index_Asset_GetKind);
+		b.Asset_FindAllBuffer = IDX_GUARDED_BINDING(Index_Asset_FindAllBuffer);
+		b.DataAsset_EnsureLoaded = IDX_GUARDED_BINDING(Index_DataAsset_EnsureLoaded);
+		b.Texture_LoadAsset = IDX_GUARDED_BINDING(Index_Texture_LoadAsset);
+		b.Texture_GetWidth = IDX_GUARDED_BINDING(Index_Texture_GetWidth);
+		b.Texture_GetHeight = IDX_GUARDED_BINDING(Index_Texture_GetHeight);
+		b.Texture_GetDefaultAssetUUID = IDX_GUARDED_BINDING(Index_Texture_GetDefaultAssetUUID);
+		b.Texture_CreateRuntime = IDX_GUARDED_BINDING(Index_Texture_CreateRuntime);
+		b.Texture_UpdateRuntime = IDX_GUARDED_BINDING(Index_Texture_UpdateRuntime);
+		b.Texture_DestroyRuntime = IDX_GUARDED_BINDING(Index_Texture_DestroyRuntime);
+		b.Texture_IsRuntime = IDX_GUARDED_BINDING(Index_Texture_IsRuntime);
+		b.Audio_LoadAsset = IDX_GUARDED_BINDING(Index_Audio_LoadAsset);
+		b.Audio_PlayOneShotAsset = IDX_GUARDED_BINDING(Index_Audio_PlayOneShotAsset);
+		b.Font_LoadAsset = IDX_GUARDED_BINDING(Index_Font_LoadAsset);
 
-		b.ParticleSystem2D_Play = &Index_ParticleSystem2D_Play;
-		b.ParticleSystem2D_Pause = &Index_ParticleSystem2D_Pause;
-		b.ParticleSystem2D_Stop = &Index_ParticleSystem2D_Stop;
-		b.ParticleSystem2D_IsPlaying = &Index_ParticleSystem2D_IsPlaying;
-		b.ParticleSystem2D_GetPlayOnAwake = &Index_ParticleSystem2D_GetPlayOnAwake;
-		b.ParticleSystem2D_SetPlayOnAwake = &Index_ParticleSystem2D_SetPlayOnAwake;
-		b.ParticleSystem2D_GetColor = &Index_ParticleSystem2D_GetColor;
-		b.ParticleSystem2D_SetColor = &Index_ParticleSystem2D_SetColor;
-		b.ParticleSystem2D_GetLifeTime = &Index_ParticleSystem2D_GetLifeTime;
-		b.ParticleSystem2D_SetLifeTime = &Index_ParticleSystem2D_SetLifeTime;
-		b.ParticleSystem2D_GetSpeed = &Index_ParticleSystem2D_GetSpeed;
-		b.ParticleSystem2D_SetSpeed = &Index_ParticleSystem2D_SetSpeed;
-		b.ParticleSystem2D_GetScale = &Index_ParticleSystem2D_GetScale;
-		b.ParticleSystem2D_SetScale = &Index_ParticleSystem2D_SetScale;
-		b.ParticleSystem2D_GetEmitOverTime = &Index_ParticleSystem2D_GetEmitOverTime;
-		b.ParticleSystem2D_SetEmitOverTime = &Index_ParticleSystem2D_SetEmitOverTime;
-		b.ParticleSystem2D_Emit = &Index_ParticleSystem2D_Emit;
 
-		b.Gizmo_DrawLine = &Index_Gizmo_DrawLine;
-		b.Gizmo_DrawWireSquare = &Index_Gizmo_DrawWireSquare;
-		b.Gizmo_DrawWireCircle = &Index_Gizmo_DrawWireCircle;
-		b.Gizmo_DrawSquare = &Index_Gizmo_DrawSquare;
-		b.Gizmo_DrawCircle = &Index_Gizmo_DrawCircle;
-		b.Gizmo_DrawText = &Index_Gizmo_DrawText;
-		b.Gizmo_SetColor = &Index_Gizmo_SetColor;
-		b.Gizmo_GetColor = &Index_Gizmo_GetColor;
-		b.Gizmo_GetLineWidth = &Index_Gizmo_GetLineWidth;
-		b.Gizmo_SetLineWidth = &Index_Gizmo_SetLineWidth;
-		b.Gizmo_SetMaxVertices = &Index_Gizmo_SetMaxVertices;
-		b.Gizmo_GetMaxVertices = &Index_Gizmo_GetMaxVertices;
-		b.Gizmo_GetRegisteredVertices = &Index_Gizmo_GetRegisteredVertices;
-		b.Gizmo_GetEnabled = &Index_Gizmo_GetEnabled;
-		b.Gizmo_SetEnabled = &Index_Gizmo_SetEnabled;
+		b.Gizmo_DrawLine = IDX_GUARDED_BINDING(Index_Gizmo_DrawLine);
+		b.Gizmo_DrawWireSquare = IDX_GUARDED_BINDING(Index_Gizmo_DrawWireSquare);
+		b.Gizmo_DrawWireCircle = IDX_GUARDED_BINDING(Index_Gizmo_DrawWireCircle);
+		b.Gizmo_DrawSquare = IDX_GUARDED_BINDING(Index_Gizmo_DrawSquare);
+		b.Gizmo_DrawCircle = IDX_GUARDED_BINDING(Index_Gizmo_DrawCircle);
+		b.Gizmo_DrawText = IDX_GUARDED_BINDING(Index_Gizmo_DrawText);
+		b.Gizmo_SetColor = IDX_GUARDED_BINDING(Index_Gizmo_SetColor);
+		b.Gizmo_GetColor = IDX_GUARDED_BINDING(Index_Gizmo_GetColor);
+		b.Gizmo_GetLineWidth = IDX_GUARDED_BINDING(Index_Gizmo_GetLineWidth);
+		b.Gizmo_SetLineWidth = IDX_GUARDED_BINDING(Index_Gizmo_SetLineWidth);
+		b.Gizmo_SetMaxVertices = IDX_GUARDED_BINDING(Index_Gizmo_SetMaxVertices);
+		b.Gizmo_GetMaxVertices = IDX_GUARDED_BINDING(Index_Gizmo_GetMaxVertices);
+		b.Gizmo_GetRegisteredVertices = IDX_GUARDED_BINDING(Index_Gizmo_GetRegisteredVertices);
+		b.Gizmo_GetEnabled = IDX_GUARDED_BINDING(Index_Gizmo_GetEnabled);
+		b.Gizmo_SetEnabled = IDX_GUARDED_BINDING(Index_Gizmo_SetEnabled);
 
-		b.Physics2D_Raycast = &Index_Physics2D_Raycast;
-		b.Physics2D_SetQueryLayerMask = &Index_Physics2D_SetQueryLayerMask;
-		b.Collider2D_GetSensor = &Index_Collider2D_GetSensor;
-		b.Collider2D_SetSensor = &Index_Collider2D_SetSensor;
-		b.Collider2D_GetLayer = &Index_Collider2D_GetLayer;
-		b.Collider2D_SetLayer = &Index_Collider2D_SetLayer;
-		b.Collider2D_GetCollisionMask = &Index_Collider2D_GetCollisionMask;
-		b.Collider2D_SetCollisionMask = &Index_Collider2D_SetCollisionMask;
-		b.Collider2D_GetFriction = &Index_Collider2D_GetFriction;
-		b.Collider2D_SetFriction = &Index_Collider2D_SetFriction;
-		b.Collider2D_GetBounciness = &Index_Collider2D_GetBounciness;
-		b.Collider2D_SetBounciness = &Index_Collider2D_SetBounciness;
-		b.SpriteAnimator2D_Command = &Index_SpriteAnimator2D_Command;
-		b.SpriteAnimator2D_IsPlaying = &Index_SpriteAnimator2D_IsPlaying;
-		b.SpriteAnimator2D_GetFrame = &Index_SpriteAnimator2D_GetFrame;
-		b.SpriteAnimator2D_SetFrame = &Index_SpriteAnimator2D_SetFrame;
-		b.SpriteAnimator2D_GetFramesPerSecond = &Index_SpriteAnimator2D_GetFramesPerSecond;
-		b.SpriteAnimator2D_SetFramesPerSecond = &Index_SpriteAnimator2D_SetFramesPerSecond;
-		b.Physics2D_OverlapCircle = &Index_Physics2D_OverlapCircle;
-		b.Physics2D_OverlapBox = &Index_Physics2D_OverlapBox;
-		b.Physics2D_OverlapPolygon = &Index_Physics2D_OverlapPolygon;
-		b.Physics2D_OverlapCircleAll = &Index_Physics2D_OverlapCircleAll;
-		b.Physics2D_OverlapBoxAll = &Index_Physics2D_OverlapBoxAll;
-		b.Physics2D_OverlapPolygonAll = &Index_Physics2D_OverlapPolygonAll;
-		b.Physics2D_ContainsPoint = &Index_Physics2D_ContainsPoint;
-		b.Physics2D_ContainsPointAll = &Index_Physics2D_ContainsPointAll;
 
-		b.FastPhysics2D_Raycast = &Index_FastPhysics2D_Raycast;
-		b.FastPhysics2D_OverlapCircle = &Index_FastPhysics2D_OverlapCircle;
-		b.FastPhysics2D_OverlapBox = &Index_FastPhysics2D_OverlapBox;
-		b.FastPhysics2D_OverlapPolygon = &Index_FastPhysics2D_OverlapPolygon;
-		b.FastPhysics2D_OverlapCircleAll = &Index_FastPhysics2D_OverlapCircleAll;
-		b.FastPhysics2D_OverlapBoxAll = &Index_FastPhysics2D_OverlapBoxAll;
-		b.FastPhysics2D_OverlapPolygonAll = &Index_FastPhysics2D_OverlapPolygonAll;
-		b.FastPhysics2D_ContainsPoint = &Index_FastPhysics2D_ContainsPoint;
-		b.FastPhysics2D_ContainsPointAll = &Index_FastPhysics2D_ContainsPointAll;
 
-		b.EntityPicker_TryPickEntity = &Index_EntityPicker_TryPickEntity;
-		b.UI_GetHoveredEntity = &Index_UI_GetHoveredEntity;
-		b.RectTransform_GetScreenPosition = &Index_RectTransform_GetScreenPosition;
-		b.RectTransform_SetScreenPosition = &Index_RectTransform_SetScreenPosition;
+
+		b.UI_GetHoveredEntity = IDX_GUARDED_BINDING(Index_UI_GetHoveredEntity);
+		b.RectTransform_GetScreenPosition = IDX_GUARDED_BINDING(Index_RectTransform_GetScreenPosition);
+		b.RectTransform_SetScreenPosition = IDX_GUARDED_BINDING(Index_RectTransform_SetScreenPosition);
 
 		// ── UI ──────────────────────────────────────────────────────
-		b.RectTransform_GetAnchorMin        = &Index_RectTransform_GetAnchorMin;
-		b.RectTransform_SetAnchorMin        = &Index_RectTransform_SetAnchorMin;
-		b.RectTransform_GetAnchorMax        = &Index_RectTransform_GetAnchorMax;
-		b.RectTransform_SetAnchorMax        = &Index_RectTransform_SetAnchorMax;
-		b.RectTransform_GetPivot            = &Index_RectTransform_GetPivot;
-		b.RectTransform_SetPivot            = &Index_RectTransform_SetPivot;
-		b.RectTransform_GetAnchoredPosition = &Index_RectTransform_GetAnchoredPosition;
-		b.RectTransform_SetAnchoredPosition = &Index_RectTransform_SetAnchoredPosition;
-		b.RectTransform_GetSizeDelta        = &Index_RectTransform_GetSizeDelta;
-		b.RectTransform_SetSizeDelta        = &Index_RectTransform_SetSizeDelta;
-		b.RectTransform_GetRotation         = &Index_RectTransform_GetRotation;
-		b.RectTransform_SetRotation         = &Index_RectTransform_SetRotation;
-		b.RectTransform_GetScale            = &Index_RectTransform_GetScale;
-		b.RectTransform_SetScale            = &Index_RectTransform_SetScale;
-		b.RectTransform_GetLocalRotation    = &Index_RectTransform_GetLocalRotation;
-		b.RectTransform_SetLocalRotation    = &Index_RectTransform_SetLocalRotation;
-		b.RectTransform_GetLocalScale       = &Index_RectTransform_GetLocalScale;
-		b.RectTransform_SetLocalScale       = &Index_RectTransform_SetLocalScale;
-		b.RectTransform_GetResolvedSize     = &Index_RectTransform_GetResolvedSize;
+		b.RectTransform_GetAnchorMin        = IDX_GUARDED_BINDING(Index_RectTransform_GetAnchorMin);
+		b.RectTransform_SetAnchorMin        = IDX_GUARDED_BINDING(Index_RectTransform_SetAnchorMin);
+		b.RectTransform_GetAnchorMax        = IDX_GUARDED_BINDING(Index_RectTransform_GetAnchorMax);
+		b.RectTransform_SetAnchorMax        = IDX_GUARDED_BINDING(Index_RectTransform_SetAnchorMax);
+		b.RectTransform_GetPivot            = IDX_GUARDED_BINDING(Index_RectTransform_GetPivot);
+		b.RectTransform_SetPivot            = IDX_GUARDED_BINDING(Index_RectTransform_SetPivot);
+		b.RectTransform_GetAnchoredPosition = IDX_GUARDED_BINDING(Index_RectTransform_GetAnchoredPosition);
+		b.RectTransform_SetAnchoredPosition = IDX_GUARDED_BINDING(Index_RectTransform_SetAnchoredPosition);
+		b.RectTransform_GetSizeDelta        = IDX_GUARDED_BINDING(Index_RectTransform_GetSizeDelta);
+		b.RectTransform_SetSizeDelta        = IDX_GUARDED_BINDING(Index_RectTransform_SetSizeDelta);
+		b.RectTransform_GetRotation         = IDX_GUARDED_BINDING(Index_RectTransform_GetRotation);
+		b.RectTransform_SetRotation         = IDX_GUARDED_BINDING(Index_RectTransform_SetRotation);
+		b.RectTransform_GetScale            = IDX_GUARDED_BINDING(Index_RectTransform_GetScale);
+		b.RectTransform_SetScale            = IDX_GUARDED_BINDING(Index_RectTransform_SetScale);
+		b.RectTransform_GetLocalRotation    = IDX_GUARDED_BINDING(Index_RectTransform_GetLocalRotation);
+		b.RectTransform_SetLocalRotation    = IDX_GUARDED_BINDING(Index_RectTransform_SetLocalRotation);
+		b.RectTransform_GetLocalScale       = IDX_GUARDED_BINDING(Index_RectTransform_GetLocalScale);
+		b.RectTransform_SetLocalScale       = IDX_GUARDED_BINDING(Index_RectTransform_SetLocalScale);
+		b.RectTransform_GetResolvedSize     = IDX_GUARDED_BINDING(Index_RectTransform_GetResolvedSize);
 
-		b.Image_GetColor        = &Index_Image_GetColor;
-		b.Image_SetColor        = &Index_Image_SetColor;
-		b.Image_GetTexture      = &Index_Image_GetTexture;
-		b.Image_SetTexture      = &Index_Image_SetTexture;
-		b.Image_GetSortingOrder = &Index_Image_GetSortingOrder;
-		b.Image_SetSortingOrder = &Index_Image_SetSortingOrder;
-		b.Image_GetSortingLayer = &Index_Image_GetSortingLayer;
-		b.Image_SetSortingLayer = &Index_Image_SetSortingLayer;
+		b.Image_GetColor        = IDX_GUARDED_BINDING(Index_Image_GetColor);
+		b.Image_SetColor        = IDX_GUARDED_BINDING(Index_Image_SetColor);
+		b.Image_GetTexture      = IDX_GUARDED_BINDING(Index_Image_GetTexture);
+		b.Image_SetTexture      = IDX_GUARDED_BINDING(Index_Image_SetTexture);
+		b.Image_GetSortingOrder = IDX_GUARDED_BINDING(Index_Image_GetSortingOrder);
+		b.Image_SetSortingOrder = IDX_GUARDED_BINDING(Index_Image_SetSortingOrder);
+		b.Image_GetSortingLayer = IDX_GUARDED_BINDING(Index_Image_GetSortingLayer);
+		b.Image_SetSortingLayer = IDX_GUARDED_BINDING(Index_Image_SetSortingLayer);
 
-		b.Interactable_GetInteractable = &Index_Interactable_GetInteractable;
-		b.Interactable_SetInteractable = &Index_Interactable_SetInteractable;
-		b.Interactable_GetIsHovered    = &Index_Interactable_GetIsHovered;
-		b.Interactable_GetIsClicked    = &Index_Interactable_GetIsClicked;
-		b.Interactable_GetIsPressed    = &Index_Interactable_GetIsPressed;
-		b.Interactable_GetIsMouseDown  = &Index_Interactable_GetIsMouseDown;
-		b.Interactable_GetIsMouseUp    = &Index_Interactable_GetIsMouseUp;
-		b.Interactable_GetFocusable    = &Index_Interactable_GetFocusable;
-		b.Interactable_SetFocusable    = &Index_Interactable_SetFocusable;
-		b.Interactable_GetIsFocused    = &Index_Interactable_GetIsFocused;
-		b.Interactable_SetIsFocused    = &Index_Interactable_SetIsFocused;
+		b.Interactable_GetInteractable = IDX_GUARDED_BINDING(Index_Interactable_GetInteractable);
+		b.Interactable_SetInteractable = IDX_GUARDED_BINDING(Index_Interactable_SetInteractable);
+		b.Interactable_GetIsHovered    = IDX_GUARDED_BINDING(Index_Interactable_GetIsHovered);
+		b.Interactable_GetIsClicked    = IDX_GUARDED_BINDING(Index_Interactable_GetIsClicked);
+		b.Interactable_GetIsPressed    = IDX_GUARDED_BINDING(Index_Interactable_GetIsPressed);
+		b.Interactable_GetIsMouseDown  = IDX_GUARDED_BINDING(Index_Interactable_GetIsMouseDown);
+		b.Interactable_GetIsMouseUp    = IDX_GUARDED_BINDING(Index_Interactable_GetIsMouseUp);
+		b.Interactable_GetFocusable    = IDX_GUARDED_BINDING(Index_Interactable_GetFocusable);
+		b.Interactable_SetFocusable    = IDX_GUARDED_BINDING(Index_Interactable_SetFocusable);
+		b.Interactable_GetIsFocused    = IDX_GUARDED_BINDING(Index_Interactable_GetIsFocused);
+		b.Interactable_SetIsFocused    = IDX_GUARDED_BINDING(Index_Interactable_SetIsFocused);
 
-		b.Button_GetNormalColor   = &Index_Button_GetNormalColor;
-		b.Button_SetNormalColor   = &Index_Button_SetNormalColor;
-		b.Button_GetHoveredColor  = &Index_Button_GetHoveredColor;
-		b.Button_SetHoveredColor  = &Index_Button_SetHoveredColor;
-		b.Button_GetPressedColor  = &Index_Button_GetPressedColor;
-		b.Button_SetPressedColor  = &Index_Button_SetPressedColor;
-		b.Button_GetDisabledColor = &Index_Button_GetDisabledColor;
-		b.Button_SetDisabledColor = &Index_Button_SetDisabledColor;
+		b.Button_GetNormalColor   = IDX_GUARDED_BINDING(Index_Button_GetNormalColor);
+		b.Button_SetNormalColor   = IDX_GUARDED_BINDING(Index_Button_SetNormalColor);
+		b.Button_GetHoveredColor  = IDX_GUARDED_BINDING(Index_Button_GetHoveredColor);
+		b.Button_SetHoveredColor  = IDX_GUARDED_BINDING(Index_Button_SetHoveredColor);
+		b.Button_GetPressedColor  = IDX_GUARDED_BINDING(Index_Button_GetPressedColor);
+		b.Button_SetPressedColor  = IDX_GUARDED_BINDING(Index_Button_SetPressedColor);
+		b.Button_GetDisabledColor = IDX_GUARDED_BINDING(Index_Button_GetDisabledColor);
+		b.Button_SetDisabledColor = IDX_GUARDED_BINDING(Index_Button_SetDisabledColor);
 
-		b.Slider_GetValue                 = &Index_Slider_GetValue;
-		b.Slider_SetValue                 = &Index_Slider_SetValue;
-		b.Slider_GetMinValue              = &Index_Slider_GetMinValue;
-		b.Slider_SetMinValue              = &Index_Slider_SetMinValue;
-		b.Slider_GetMaxValue              = &Index_Slider_GetMaxValue;
-		b.Slider_SetMaxValue              = &Index_Slider_SetMaxValue;
-		b.Slider_GetWholeNumbers          = &Index_Slider_GetWholeNumbers;
-		b.Slider_SetWholeNumbers          = &Index_Slider_SetWholeNumbers;
-		b.Slider_GetValueChangedThisFrame = &Index_Slider_GetValueChangedThisFrame;
-		b.Slider_MarkValueObserved        = &Index_Slider_MarkValueObserved;
-		b.Slider_GetNormalColor   = &Index_Slider_GetNormalColor;
-		b.Slider_SetNormalColor   = &Index_Slider_SetNormalColor;
-		b.Slider_GetHoveredColor  = &Index_Slider_GetHoveredColor;
-		b.Slider_SetHoveredColor  = &Index_Slider_SetHoveredColor;
-		b.Slider_GetPressedColor  = &Index_Slider_GetPressedColor;
-		b.Slider_SetPressedColor  = &Index_Slider_SetPressedColor;
-		b.Slider_GetDisabledColor = &Index_Slider_GetDisabledColor;
-		b.Slider_SetDisabledColor = &Index_Slider_SetDisabledColor;
+		b.Slider_GetValue                 = IDX_GUARDED_BINDING(Index_Slider_GetValue);
+		b.Slider_SetValue                 = IDX_GUARDED_BINDING(Index_Slider_SetValue);
+		b.Slider_GetMinValue              = IDX_GUARDED_BINDING(Index_Slider_GetMinValue);
+		b.Slider_SetMinValue              = IDX_GUARDED_BINDING(Index_Slider_SetMinValue);
+		b.Slider_GetMaxValue              = IDX_GUARDED_BINDING(Index_Slider_GetMaxValue);
+		b.Slider_SetMaxValue              = IDX_GUARDED_BINDING(Index_Slider_SetMaxValue);
+		b.Slider_GetWholeNumbers          = IDX_GUARDED_BINDING(Index_Slider_GetWholeNumbers);
+		b.Slider_SetWholeNumbers          = IDX_GUARDED_BINDING(Index_Slider_SetWholeNumbers);
+		b.Slider_GetValueChangedThisFrame = IDX_GUARDED_BINDING(Index_Slider_GetValueChangedThisFrame);
+		b.Slider_MarkValueObserved        = IDX_GUARDED_BINDING(Index_Slider_MarkValueObserved);
+		b.Slider_GetNormalColor   = IDX_GUARDED_BINDING(Index_Slider_GetNormalColor);
+		b.Slider_SetNormalColor   = IDX_GUARDED_BINDING(Index_Slider_SetNormalColor);
+		b.Slider_GetHoveredColor  = IDX_GUARDED_BINDING(Index_Slider_GetHoveredColor);
+		b.Slider_SetHoveredColor  = IDX_GUARDED_BINDING(Index_Slider_SetHoveredColor);
+		b.Slider_GetPressedColor  = IDX_GUARDED_BINDING(Index_Slider_GetPressedColor);
+		b.Slider_SetPressedColor  = IDX_GUARDED_BINDING(Index_Slider_SetPressedColor);
+		b.Slider_GetDisabledColor = IDX_GUARDED_BINDING(Index_Slider_GetDisabledColor);
+		b.Slider_SetDisabledColor = IDX_GUARDED_BINDING(Index_Slider_SetDisabledColor);
 
-		b.Toggle_GetIsOn                  = &Index_Toggle_GetIsOn;
-		b.Toggle_SetIsOn                  = &Index_Toggle_SetIsOn;
-		b.Toggle_GetValueChangedThisFrame = &Index_Toggle_GetValueChangedThisFrame;
-		b.Toggle_MarkIsOnObserved         = &Index_Toggle_MarkIsOnObserved;
-		b.Toggle_GetNormalColor   = &Index_Toggle_GetNormalColor;
-		b.Toggle_SetNormalColor   = &Index_Toggle_SetNormalColor;
-		b.Toggle_GetHoveredColor  = &Index_Toggle_GetHoveredColor;
-		b.Toggle_SetHoveredColor  = &Index_Toggle_SetHoveredColor;
-		b.Toggle_GetPressedColor  = &Index_Toggle_GetPressedColor;
-		b.Toggle_SetPressedColor  = &Index_Toggle_SetPressedColor;
-		b.Toggle_GetDisabledColor = &Index_Toggle_GetDisabledColor;
-		b.Toggle_SetDisabledColor = &Index_Toggle_SetDisabledColor;
+		b.Toggle_GetIsOn                  = IDX_GUARDED_BINDING(Index_Toggle_GetIsOn);
+		b.Toggle_SetIsOn                  = IDX_GUARDED_BINDING(Index_Toggle_SetIsOn);
+		b.Toggle_GetValueChangedThisFrame = IDX_GUARDED_BINDING(Index_Toggle_GetValueChangedThisFrame);
+		b.Toggle_MarkIsOnObserved         = IDX_GUARDED_BINDING(Index_Toggle_MarkIsOnObserved);
+		b.Toggle_GetNormalColor   = IDX_GUARDED_BINDING(Index_Toggle_GetNormalColor);
+		b.Toggle_SetNormalColor   = IDX_GUARDED_BINDING(Index_Toggle_SetNormalColor);
+		b.Toggle_GetHoveredColor  = IDX_GUARDED_BINDING(Index_Toggle_GetHoveredColor);
+		b.Toggle_SetHoveredColor  = IDX_GUARDED_BINDING(Index_Toggle_SetHoveredColor);
+		b.Toggle_GetPressedColor  = IDX_GUARDED_BINDING(Index_Toggle_GetPressedColor);
+		b.Toggle_SetPressedColor  = IDX_GUARDED_BINDING(Index_Toggle_SetPressedColor);
+		b.Toggle_GetDisabledColor = IDX_GUARDED_BINDING(Index_Toggle_GetDisabledColor);
+		b.Toggle_SetDisabledColor = IDX_GUARDED_BINDING(Index_Toggle_SetDisabledColor);
 
-		b.InputField_GetTextBuffer            = &Index_InputField_GetTextBuffer;
-		b.InputField_SetText                  = &Index_InputField_SetText;
-		b.InputField_GetPlaceholderTextBuffer = &Index_InputField_GetPlaceholderTextBuffer;
-		b.InputField_SetPlaceholderText       = &Index_InputField_SetPlaceholderText;
-		b.InputField_GetIsFocused             = &Index_InputField_GetIsFocused;
-		b.InputField_SetIsFocused             = &Index_InputField_SetIsFocused;
-		b.InputField_GetSubmittedThisFrame    = &Index_InputField_GetSubmittedThisFrame;
-		b.InputField_GetCharacterLimit        = &Index_InputField_GetCharacterLimit;
-		b.InputField_SetCharacterLimit        = &Index_InputField_SetCharacterLimit;
-		b.InputField_GetMultiline             = &Index_InputField_GetMultiline;
-		b.InputField_SetMultiline             = &Index_InputField_SetMultiline;
-		b.InputField_GetVerticalScrollbarEntity = &Index_InputField_GetVerticalScrollbarEntity;
-		b.InputField_SetVerticalScrollbarEntity = &Index_InputField_SetVerticalScrollbarEntity;
-		b.InputField_GetNormalColor   = &Index_InputField_GetNormalColor;
-		b.InputField_SetNormalColor   = &Index_InputField_SetNormalColor;
-		b.InputField_GetHoveredColor  = &Index_InputField_GetHoveredColor;
-		b.InputField_SetHoveredColor  = &Index_InputField_SetHoveredColor;
-		b.InputField_GetPressedColor  = &Index_InputField_GetPressedColor;
-		b.InputField_SetPressedColor  = &Index_InputField_SetPressedColor;
-		b.InputField_GetDisabledColor = &Index_InputField_GetDisabledColor;
-		b.InputField_SetDisabledColor = &Index_InputField_SetDisabledColor;
+		b.InputField_GetTextBuffer            = IDX_GUARDED_BINDING(Index_InputField_GetTextBuffer);
+		b.InputField_SetText                  = IDX_GUARDED_BINDING(Index_InputField_SetText);
+		b.InputField_GetPlaceholderTextBuffer = IDX_GUARDED_BINDING(Index_InputField_GetPlaceholderTextBuffer);
+		b.InputField_SetPlaceholderText       = IDX_GUARDED_BINDING(Index_InputField_SetPlaceholderText);
+		b.InputField_GetIsFocused             = IDX_GUARDED_BINDING(Index_InputField_GetIsFocused);
+		b.InputField_SetIsFocused             = IDX_GUARDED_BINDING(Index_InputField_SetIsFocused);
+		b.InputField_GetSubmittedThisFrame    = IDX_GUARDED_BINDING(Index_InputField_GetSubmittedThisFrame);
+		b.InputField_GetCharacterLimit        = IDX_GUARDED_BINDING(Index_InputField_GetCharacterLimit);
+		b.InputField_SetCharacterLimit        = IDX_GUARDED_BINDING(Index_InputField_SetCharacterLimit);
+		b.InputField_GetMultiline             = IDX_GUARDED_BINDING(Index_InputField_GetMultiline);
+		b.InputField_SetMultiline             = IDX_GUARDED_BINDING(Index_InputField_SetMultiline);
+		b.InputField_GetVerticalScrollbarEntity = IDX_GUARDED_BINDING(Index_InputField_GetVerticalScrollbarEntity);
+		b.InputField_SetVerticalScrollbarEntity = IDX_GUARDED_BINDING(Index_InputField_SetVerticalScrollbarEntity);
+		b.InputField_GetNormalColor   = IDX_GUARDED_BINDING(Index_InputField_GetNormalColor);
+		b.InputField_SetNormalColor   = IDX_GUARDED_BINDING(Index_InputField_SetNormalColor);
+		b.InputField_GetHoveredColor  = IDX_GUARDED_BINDING(Index_InputField_GetHoveredColor);
+		b.InputField_SetHoveredColor  = IDX_GUARDED_BINDING(Index_InputField_SetHoveredColor);
+		b.InputField_GetPressedColor  = IDX_GUARDED_BINDING(Index_InputField_GetPressedColor);
+		b.InputField_SetPressedColor  = IDX_GUARDED_BINDING(Index_InputField_SetPressedColor);
+		b.InputField_GetDisabledColor = IDX_GUARDED_BINDING(Index_InputField_GetDisabledColor);
+		b.InputField_SetDisabledColor = IDX_GUARDED_BINDING(Index_InputField_SetDisabledColor);
 
-		b.Dropdown_GetSelectedIndex             = &Index_Dropdown_GetSelectedIndex;
-		b.Dropdown_SetSelectedIndex             = &Index_Dropdown_SetSelectedIndex;
-		b.Dropdown_GetIsOpen                    = &Index_Dropdown_GetIsOpen;
-		b.Dropdown_SetIsOpen                    = &Index_Dropdown_SetIsOpen;
-		b.Dropdown_GetSelectionChangedThisFrame = &Index_Dropdown_GetSelectionChangedThisFrame;
-		b.Dropdown_MarkSelectedIndexObserved    = &Index_Dropdown_MarkSelectedIndexObserved;
-		b.Dropdown_GetOptionCount               = &Index_Dropdown_GetOptionCount;
-		b.Dropdown_GetOptionBuffer              = &Index_Dropdown_GetOptionBuffer;
-		b.Dropdown_SetOption                    = &Index_Dropdown_SetOption;
-		b.Dropdown_AddOption                    = &Index_Dropdown_AddOption;
-		b.Dropdown_RemoveOption                 = &Index_Dropdown_RemoveOption;
-		b.Dropdown_ClearOptions                 = &Index_Dropdown_ClearOptions;
-		b.Dropdown_GetNormalColor   = &Index_Dropdown_GetNormalColor;
-		b.Dropdown_SetNormalColor   = &Index_Dropdown_SetNormalColor;
-		b.Dropdown_GetHoveredColor  = &Index_Dropdown_GetHoveredColor;
-		b.Dropdown_SetHoveredColor  = &Index_Dropdown_SetHoveredColor;
-		b.Dropdown_GetPressedColor  = &Index_Dropdown_GetPressedColor;
-		b.Dropdown_SetPressedColor  = &Index_Dropdown_SetPressedColor;
-		b.Dropdown_GetDisabledColor = &Index_Dropdown_GetDisabledColor;
-		b.Dropdown_SetDisabledColor = &Index_Dropdown_SetDisabledColor;
+		b.Dropdown_GetSelectedIndex             = IDX_GUARDED_BINDING(Index_Dropdown_GetSelectedIndex);
+		b.Dropdown_SetSelectedIndex             = IDX_GUARDED_BINDING(Index_Dropdown_SetSelectedIndex);
+		b.Dropdown_GetIsOpen                    = IDX_GUARDED_BINDING(Index_Dropdown_GetIsOpen);
+		b.Dropdown_SetIsOpen                    = IDX_GUARDED_BINDING(Index_Dropdown_SetIsOpen);
+		b.Dropdown_GetSelectionChangedThisFrame = IDX_GUARDED_BINDING(Index_Dropdown_GetSelectionChangedThisFrame);
+		b.Dropdown_MarkSelectedIndexObserved    = IDX_GUARDED_BINDING(Index_Dropdown_MarkSelectedIndexObserved);
+		b.Dropdown_GetOptionCount               = IDX_GUARDED_BINDING(Index_Dropdown_GetOptionCount);
+		b.Dropdown_GetOptionBuffer              = IDX_GUARDED_BINDING(Index_Dropdown_GetOptionBuffer);
+		b.Dropdown_SetOption                    = IDX_GUARDED_BINDING(Index_Dropdown_SetOption);
+		b.Dropdown_AddOption                    = IDX_GUARDED_BINDING(Index_Dropdown_AddOption);
+		b.Dropdown_RemoveOption                 = IDX_GUARDED_BINDING(Index_Dropdown_RemoveOption);
+		b.Dropdown_ClearOptions                 = IDX_GUARDED_BINDING(Index_Dropdown_ClearOptions);
+		b.Dropdown_GetNormalColor   = IDX_GUARDED_BINDING(Index_Dropdown_GetNormalColor);
+		b.Dropdown_SetNormalColor   = IDX_GUARDED_BINDING(Index_Dropdown_SetNormalColor);
+		b.Dropdown_GetHoveredColor  = IDX_GUARDED_BINDING(Index_Dropdown_GetHoveredColor);
+		b.Dropdown_SetHoveredColor  = IDX_GUARDED_BINDING(Index_Dropdown_SetHoveredColor);
+		b.Dropdown_GetPressedColor  = IDX_GUARDED_BINDING(Index_Dropdown_GetPressedColor);
+		b.Dropdown_SetPressedColor  = IDX_GUARDED_BINDING(Index_Dropdown_SetPressedColor);
+		b.Dropdown_GetDisabledColor = IDX_GUARDED_BINDING(Index_Dropdown_GetDisabledColor);
+		b.Dropdown_SetDisabledColor = IDX_GUARDED_BINDING(Index_Dropdown_SetDisabledColor);
 
-		b.Button_GetFocusedColor    = &Index_Button_GetFocusedColor;
-		b.Button_SetFocusedColor    = &Index_Button_SetFocusedColor;
-		b.Toggle_GetFocusedColor    = &Index_Toggle_GetFocusedColor;
-		b.Toggle_SetFocusedColor    = &Index_Toggle_SetFocusedColor;
-		b.Slider_GetFocusedColor    = &Index_Slider_GetFocusedColor;
-		b.Slider_SetFocusedColor    = &Index_Slider_SetFocusedColor;
-		b.InputField_GetFocusedColor= &Index_InputField_GetFocusedColor;
-		b.InputField_SetFocusedColor= &Index_InputField_SetFocusedColor;
-		b.Dropdown_GetFocusedColor  = &Index_Dropdown_GetFocusedColor;
-		b.Dropdown_SetFocusedColor  = &Index_Dropdown_SetFocusedColor;
+		b.Button_GetFocusedColor    = IDX_GUARDED_BINDING(Index_Button_GetFocusedColor);
+		b.Button_SetFocusedColor    = IDX_GUARDED_BINDING(Index_Button_SetFocusedColor);
+		b.Toggle_GetFocusedColor    = IDX_GUARDED_BINDING(Index_Toggle_GetFocusedColor);
+		b.Toggle_SetFocusedColor    = IDX_GUARDED_BINDING(Index_Toggle_SetFocusedColor);
+		b.Slider_GetFocusedColor    = IDX_GUARDED_BINDING(Index_Slider_GetFocusedColor);
+		b.Slider_SetFocusedColor    = IDX_GUARDED_BINDING(Index_Slider_SetFocusedColor);
+		b.InputField_GetFocusedColor= IDX_GUARDED_BINDING(Index_InputField_GetFocusedColor);
+		b.InputField_SetFocusedColor= IDX_GUARDED_BINDING(Index_InputField_SetFocusedColor);
+		b.Dropdown_GetFocusedColor  = IDX_GUARDED_BINDING(Index_Dropdown_GetFocusedColor);
+		b.Dropdown_SetFocusedColor  = IDX_GUARDED_BINDING(Index_Dropdown_SetFocusedColor);
 
-		b.Button_GetTransitionMode     = &Index_Button_GetTransitionMode;
-		b.Button_SetTransitionMode     = &Index_Button_SetTransitionMode;
-		b.Toggle_GetTransitionMode     = &Index_Toggle_GetTransitionMode;
-		b.Toggle_SetTransitionMode     = &Index_Toggle_SetTransitionMode;
-		b.Slider_GetTransitionMode     = &Index_Slider_GetTransitionMode;
-		b.Slider_SetTransitionMode     = &Index_Slider_SetTransitionMode;
-		b.InputField_GetTransitionMode = &Index_InputField_GetTransitionMode;
-		b.InputField_SetTransitionMode = &Index_InputField_SetTransitionMode;
-		b.Dropdown_GetTransitionMode   = &Index_Dropdown_GetTransitionMode;
-		b.Dropdown_SetTransitionMode   = &Index_Dropdown_SetTransitionMode;
+		b.Button_GetTransitionMode     = IDX_GUARDED_BINDING(Index_Button_GetTransitionMode);
+		b.Button_SetTransitionMode     = IDX_GUARDED_BINDING(Index_Button_SetTransitionMode);
+		b.Toggle_GetTransitionMode     = IDX_GUARDED_BINDING(Index_Toggle_GetTransitionMode);
+		b.Toggle_SetTransitionMode     = IDX_GUARDED_BINDING(Index_Toggle_SetTransitionMode);
+		b.Slider_GetTransitionMode     = IDX_GUARDED_BINDING(Index_Slider_GetTransitionMode);
+		b.Slider_SetTransitionMode     = IDX_GUARDED_BINDING(Index_Slider_SetTransitionMode);
+		b.InputField_GetTransitionMode = IDX_GUARDED_BINDING(Index_InputField_GetTransitionMode);
+		b.InputField_SetTransitionMode = IDX_GUARDED_BINDING(Index_InputField_SetTransitionMode);
+		b.Dropdown_GetTransitionMode   = IDX_GUARDED_BINDING(Index_Dropdown_GetTransitionMode);
+		b.Dropdown_SetTransitionMode   = IDX_GUARDED_BINDING(Index_Dropdown_SetTransitionMode);
 
-		b.Button_GetNormalSprite   = &Index_Button_GetNormalSprite;
-		b.Button_SetNormalSprite   = &Index_Button_SetNormalSprite;
-		b.Button_GetHoveredSprite  = &Index_Button_GetHoveredSprite;
-		b.Button_SetHoveredSprite  = &Index_Button_SetHoveredSprite;
-		b.Button_GetPressedSprite  = &Index_Button_GetPressedSprite;
-		b.Button_SetPressedSprite  = &Index_Button_SetPressedSprite;
-		b.Button_GetDisabledSprite = &Index_Button_GetDisabledSprite;
-		b.Button_SetDisabledSprite = &Index_Button_SetDisabledSprite;
-		b.Button_GetFocusedSprite  = &Index_Button_GetFocusedSprite;
-		b.Button_SetFocusedSprite  = &Index_Button_SetFocusedSprite;
+		b.Button_GetNormalSprite   = IDX_GUARDED_BINDING(Index_Button_GetNormalSprite);
+		b.Button_SetNormalSprite   = IDX_GUARDED_BINDING(Index_Button_SetNormalSprite);
+		b.Button_GetHoveredSprite  = IDX_GUARDED_BINDING(Index_Button_GetHoveredSprite);
+		b.Button_SetHoveredSprite  = IDX_GUARDED_BINDING(Index_Button_SetHoveredSprite);
+		b.Button_GetPressedSprite  = IDX_GUARDED_BINDING(Index_Button_GetPressedSprite);
+		b.Button_SetPressedSprite  = IDX_GUARDED_BINDING(Index_Button_SetPressedSprite);
+		b.Button_GetDisabledSprite = IDX_GUARDED_BINDING(Index_Button_GetDisabledSprite);
+		b.Button_SetDisabledSprite = IDX_GUARDED_BINDING(Index_Button_SetDisabledSprite);
+		b.Button_GetFocusedSprite  = IDX_GUARDED_BINDING(Index_Button_GetFocusedSprite);
+		b.Button_SetFocusedSprite  = IDX_GUARDED_BINDING(Index_Button_SetFocusedSprite);
 
-		b.Toggle_GetNormalSprite   = &Index_Toggle_GetNormalSprite;
-		b.Toggle_SetNormalSprite   = &Index_Toggle_SetNormalSprite;
-		b.Toggle_GetHoveredSprite  = &Index_Toggle_GetHoveredSprite;
-		b.Toggle_SetHoveredSprite  = &Index_Toggle_SetHoveredSprite;
-		b.Toggle_GetPressedSprite  = &Index_Toggle_GetPressedSprite;
-		b.Toggle_SetPressedSprite  = &Index_Toggle_SetPressedSprite;
-		b.Toggle_GetDisabledSprite = &Index_Toggle_GetDisabledSprite;
-		b.Toggle_SetDisabledSprite = &Index_Toggle_SetDisabledSprite;
-		b.Toggle_GetFocusedSprite  = &Index_Toggle_GetFocusedSprite;
-		b.Toggle_SetFocusedSprite  = &Index_Toggle_SetFocusedSprite;
+		b.Toggle_GetNormalSprite   = IDX_GUARDED_BINDING(Index_Toggle_GetNormalSprite);
+		b.Toggle_SetNormalSprite   = IDX_GUARDED_BINDING(Index_Toggle_SetNormalSprite);
+		b.Toggle_GetHoveredSprite  = IDX_GUARDED_BINDING(Index_Toggle_GetHoveredSprite);
+		b.Toggle_SetHoveredSprite  = IDX_GUARDED_BINDING(Index_Toggle_SetHoveredSprite);
+		b.Toggle_GetPressedSprite  = IDX_GUARDED_BINDING(Index_Toggle_GetPressedSprite);
+		b.Toggle_SetPressedSprite  = IDX_GUARDED_BINDING(Index_Toggle_SetPressedSprite);
+		b.Toggle_GetDisabledSprite = IDX_GUARDED_BINDING(Index_Toggle_GetDisabledSprite);
+		b.Toggle_SetDisabledSprite = IDX_GUARDED_BINDING(Index_Toggle_SetDisabledSprite);
+		b.Toggle_GetFocusedSprite  = IDX_GUARDED_BINDING(Index_Toggle_GetFocusedSprite);
+		b.Toggle_SetFocusedSprite  = IDX_GUARDED_BINDING(Index_Toggle_SetFocusedSprite);
 
-		b.Slider_GetNormalSprite   = &Index_Slider_GetNormalSprite;
-		b.Slider_SetNormalSprite   = &Index_Slider_SetNormalSprite;
-		b.Slider_GetHoveredSprite  = &Index_Slider_GetHoveredSprite;
-		b.Slider_SetHoveredSprite  = &Index_Slider_SetHoveredSprite;
-		b.Slider_GetPressedSprite  = &Index_Slider_GetPressedSprite;
-		b.Slider_SetPressedSprite  = &Index_Slider_SetPressedSprite;
-		b.Slider_GetDisabledSprite = &Index_Slider_GetDisabledSprite;
-		b.Slider_SetDisabledSprite = &Index_Slider_SetDisabledSprite;
-		b.Slider_GetFocusedSprite  = &Index_Slider_GetFocusedSprite;
-		b.Slider_SetFocusedSprite  = &Index_Slider_SetFocusedSprite;
+		b.Slider_GetNormalSprite   = IDX_GUARDED_BINDING(Index_Slider_GetNormalSprite);
+		b.Slider_SetNormalSprite   = IDX_GUARDED_BINDING(Index_Slider_SetNormalSprite);
+		b.Slider_GetHoveredSprite  = IDX_GUARDED_BINDING(Index_Slider_GetHoveredSprite);
+		b.Slider_SetHoveredSprite  = IDX_GUARDED_BINDING(Index_Slider_SetHoveredSprite);
+		b.Slider_GetPressedSprite  = IDX_GUARDED_BINDING(Index_Slider_GetPressedSprite);
+		b.Slider_SetPressedSprite  = IDX_GUARDED_BINDING(Index_Slider_SetPressedSprite);
+		b.Slider_GetDisabledSprite = IDX_GUARDED_BINDING(Index_Slider_GetDisabledSprite);
+		b.Slider_SetDisabledSprite = IDX_GUARDED_BINDING(Index_Slider_SetDisabledSprite);
+		b.Slider_GetFocusedSprite  = IDX_GUARDED_BINDING(Index_Slider_GetFocusedSprite);
+		b.Slider_SetFocusedSprite  = IDX_GUARDED_BINDING(Index_Slider_SetFocusedSprite);
 
-		b.InputField_GetNormalSprite   = &Index_InputField_GetNormalSprite;
-		b.InputField_SetNormalSprite   = &Index_InputField_SetNormalSprite;
-		b.InputField_GetHoveredSprite  = &Index_InputField_GetHoveredSprite;
-		b.InputField_SetHoveredSprite  = &Index_InputField_SetHoveredSprite;
-		b.InputField_GetPressedSprite  = &Index_InputField_GetPressedSprite;
-		b.InputField_SetPressedSprite  = &Index_InputField_SetPressedSprite;
-		b.InputField_GetDisabledSprite = &Index_InputField_GetDisabledSprite;
-		b.InputField_SetDisabledSprite = &Index_InputField_SetDisabledSprite;
-		b.InputField_GetFocusedSprite  = &Index_InputField_GetFocusedSprite;
-		b.InputField_SetFocusedSprite  = &Index_InputField_SetFocusedSprite;
+		b.InputField_GetNormalSprite   = IDX_GUARDED_BINDING(Index_InputField_GetNormalSprite);
+		b.InputField_SetNormalSprite   = IDX_GUARDED_BINDING(Index_InputField_SetNormalSprite);
+		b.InputField_GetHoveredSprite  = IDX_GUARDED_BINDING(Index_InputField_GetHoveredSprite);
+		b.InputField_SetHoveredSprite  = IDX_GUARDED_BINDING(Index_InputField_SetHoveredSprite);
+		b.InputField_GetPressedSprite  = IDX_GUARDED_BINDING(Index_InputField_GetPressedSprite);
+		b.InputField_SetPressedSprite  = IDX_GUARDED_BINDING(Index_InputField_SetPressedSprite);
+		b.InputField_GetDisabledSprite = IDX_GUARDED_BINDING(Index_InputField_GetDisabledSprite);
+		b.InputField_SetDisabledSprite = IDX_GUARDED_BINDING(Index_InputField_SetDisabledSprite);
+		b.InputField_GetFocusedSprite  = IDX_GUARDED_BINDING(Index_InputField_GetFocusedSprite);
+		b.InputField_SetFocusedSprite  = IDX_GUARDED_BINDING(Index_InputField_SetFocusedSprite);
 
-		b.Dropdown_GetNormalSprite   = &Index_Dropdown_GetNormalSprite;
-		b.Dropdown_SetNormalSprite   = &Index_Dropdown_SetNormalSprite;
-		b.Dropdown_GetHoveredSprite  = &Index_Dropdown_GetHoveredSprite;
-		b.Dropdown_SetHoveredSprite  = &Index_Dropdown_SetHoveredSprite;
-		b.Dropdown_GetPressedSprite  = &Index_Dropdown_GetPressedSprite;
-		b.Dropdown_SetPressedSprite  = &Index_Dropdown_SetPressedSprite;
-		b.Dropdown_GetDisabledSprite = &Index_Dropdown_GetDisabledSprite;
-		b.Dropdown_SetDisabledSprite = &Index_Dropdown_SetDisabledSprite;
-		b.Dropdown_GetFocusedSprite  = &Index_Dropdown_GetFocusedSprite;
-		b.Dropdown_SetFocusedSprite  = &Index_Dropdown_SetFocusedSprite;
+		b.Dropdown_GetNormalSprite   = IDX_GUARDED_BINDING(Index_Dropdown_GetNormalSprite);
+		b.Dropdown_SetNormalSprite   = IDX_GUARDED_BINDING(Index_Dropdown_SetNormalSprite);
+		b.Dropdown_GetHoveredSprite  = IDX_GUARDED_BINDING(Index_Dropdown_GetHoveredSprite);
+		b.Dropdown_SetHoveredSprite  = IDX_GUARDED_BINDING(Index_Dropdown_SetHoveredSprite);
+		b.Dropdown_GetPressedSprite  = IDX_GUARDED_BINDING(Index_Dropdown_GetPressedSprite);
+		b.Dropdown_SetPressedSprite  = IDX_GUARDED_BINDING(Index_Dropdown_SetPressedSprite);
+		b.Dropdown_GetDisabledSprite = IDX_GUARDED_BINDING(Index_Dropdown_GetDisabledSprite);
+		b.Dropdown_SetDisabledSprite = IDX_GUARDED_BINDING(Index_Dropdown_SetDisabledSprite);
+		b.Dropdown_GetFocusedSprite  = IDX_GUARDED_BINDING(Index_Dropdown_GetFocusedSprite);
+		b.Dropdown_SetFocusedSprite  = IDX_GUARDED_BINDING(Index_Dropdown_SetFocusedSprite);
 
-		b.Toggle_GetIsReadOnly   = &Index_Toggle_GetIsReadOnly;
-		b.Toggle_SetIsReadOnly   = &Index_Toggle_SetIsReadOnly;
-		b.Slider_GetIsReadOnly   = &Index_Slider_GetIsReadOnly;
-		b.Slider_SetIsReadOnly   = &Index_Slider_SetIsReadOnly;
-		b.Dropdown_GetIsReadOnly = &Index_Dropdown_GetIsReadOnly;
-		b.Dropdown_SetIsReadOnly = &Index_Dropdown_SetIsReadOnly;
+		b.Toggle_GetIsReadOnly   = IDX_GUARDED_BINDING(Index_Toggle_GetIsReadOnly);
+		b.Toggle_SetIsReadOnly   = IDX_GUARDED_BINDING(Index_Toggle_SetIsReadOnly);
+		b.Slider_GetIsReadOnly   = IDX_GUARDED_BINDING(Index_Slider_GetIsReadOnly);
+		b.Slider_SetIsReadOnly   = IDX_GUARDED_BINDING(Index_Slider_SetIsReadOnly);
+		b.Dropdown_GetIsReadOnly = IDX_GUARDED_BINDING(Index_Dropdown_GetIsReadOnly);
+		b.Dropdown_SetIsReadOnly = IDX_GUARDED_BINDING(Index_Dropdown_SetIsReadOnly);
 
-		b.Button_GetTargetGraphic     = &Index_Button_GetTargetGraphic;
-		b.Button_SetTargetGraphic     = &Index_Button_SetTargetGraphic;
-		b.Slider_GetFillEntity        = &Index_Slider_GetFillEntity;
-		b.Slider_SetFillEntity        = &Index_Slider_SetFillEntity;
-		b.Slider_GetHandleEntity      = &Index_Slider_GetHandleEntity;
-		b.Slider_SetHandleEntity      = &Index_Slider_SetHandleEntity;
-		b.Slider_GetBackgroundEntity  = &Index_Slider_GetBackgroundEntity;
-		b.Slider_SetBackgroundEntity  = &Index_Slider_SetBackgroundEntity;
-		b.Toggle_GetCheckmarkEntity   = &Index_Toggle_GetCheckmarkEntity;
-		b.Toggle_SetCheckmarkEntity   = &Index_Toggle_SetCheckmarkEntity;
-		b.InputField_GetTextEntity    = &Index_InputField_GetTextEntity;
-		b.InputField_SetTextEntity    = &Index_InputField_SetTextEntity;
-		b.Dropdown_GetLabelEntity     = &Index_Dropdown_GetLabelEntity;
-		b.Dropdown_SetLabelEntity     = &Index_Dropdown_SetLabelEntity;
+		b.Button_GetTargetGraphic     = IDX_GUARDED_BINDING(Index_Button_GetTargetGraphic);
+		b.Button_SetTargetGraphic     = IDX_GUARDED_BINDING(Index_Button_SetTargetGraphic);
+		b.Slider_GetFillEntity        = IDX_GUARDED_BINDING(Index_Slider_GetFillEntity);
+		b.Slider_SetFillEntity        = IDX_GUARDED_BINDING(Index_Slider_SetFillEntity);
+		b.Slider_GetHandleEntity      = IDX_GUARDED_BINDING(Index_Slider_GetHandleEntity);
+		b.Slider_SetHandleEntity      = IDX_GUARDED_BINDING(Index_Slider_SetHandleEntity);
+		b.Slider_GetBackgroundEntity  = IDX_GUARDED_BINDING(Index_Slider_GetBackgroundEntity);
+		b.Slider_SetBackgroundEntity  = IDX_GUARDED_BINDING(Index_Slider_SetBackgroundEntity);
+		b.Toggle_GetCheckmarkEntity   = IDX_GUARDED_BINDING(Index_Toggle_GetCheckmarkEntity);
+		b.Toggle_SetCheckmarkEntity   = IDX_GUARDED_BINDING(Index_Toggle_SetCheckmarkEntity);
+		b.InputField_GetTextEntity    = IDX_GUARDED_BINDING(Index_InputField_GetTextEntity);
+		b.InputField_SetTextEntity    = IDX_GUARDED_BINDING(Index_InputField_SetTextEntity);
+		b.Dropdown_GetLabelEntity     = IDX_GUARDED_BINDING(Index_Dropdown_GetLabelEntity);
+		b.Dropdown_SetLabelEntity     = IDX_GUARDED_BINDING(Index_Dropdown_SetLabelEntity);
 
-		b.Dropdown_GetOptionNormalColor   = &Index_Dropdown_GetOptionNormalColor;
-		b.Dropdown_SetOptionNormalColor   = &Index_Dropdown_SetOptionNormalColor;
-		b.Dropdown_GetOptionHoverColor    = &Index_Dropdown_GetOptionHoverColor;
-		b.Dropdown_SetOptionHoverColor    = &Index_Dropdown_SetOptionHoverColor;
-		b.Dropdown_GetOptionPressedColor  = &Index_Dropdown_GetOptionPressedColor;
-		b.Dropdown_SetOptionPressedColor  = &Index_Dropdown_SetOptionPressedColor;
-		b.Dropdown_GetOptionSelectedColor = &Index_Dropdown_GetOptionSelectedColor;
-		b.Dropdown_SetOptionSelectedColor = &Index_Dropdown_SetOptionSelectedColor;
-		b.Dropdown_GetPopupBackgroundColor = &Index_Dropdown_GetPopupBackgroundColor;
-		b.Dropdown_SetPopupBackgroundColor = &Index_Dropdown_SetPopupBackgroundColor;
-		b.Dropdown_GetOptionTextColor      = &Index_Dropdown_GetOptionTextColor;
-		b.Dropdown_SetOptionTextColor      = &Index_Dropdown_SetOptionTextColor;
+		b.Dropdown_GetOptionNormalColor   = IDX_GUARDED_BINDING(Index_Dropdown_GetOptionNormalColor);
+		b.Dropdown_SetOptionNormalColor   = IDX_GUARDED_BINDING(Index_Dropdown_SetOptionNormalColor);
+		b.Dropdown_GetOptionHoverColor    = IDX_GUARDED_BINDING(Index_Dropdown_GetOptionHoverColor);
+		b.Dropdown_SetOptionHoverColor    = IDX_GUARDED_BINDING(Index_Dropdown_SetOptionHoverColor);
+		b.Dropdown_GetOptionPressedColor  = IDX_GUARDED_BINDING(Index_Dropdown_GetOptionPressedColor);
+		b.Dropdown_SetOptionPressedColor  = IDX_GUARDED_BINDING(Index_Dropdown_SetOptionPressedColor);
+		b.Dropdown_GetOptionSelectedColor = IDX_GUARDED_BINDING(Index_Dropdown_GetOptionSelectedColor);
+		b.Dropdown_SetOptionSelectedColor = IDX_GUARDED_BINDING(Index_Dropdown_SetOptionSelectedColor);
+		b.Dropdown_GetPopupBackgroundColor = IDX_GUARDED_BINDING(Index_Dropdown_GetPopupBackgroundColor);
+		b.Dropdown_SetPopupBackgroundColor = IDX_GUARDED_BINDING(Index_Dropdown_SetPopupBackgroundColor);
+		b.Dropdown_GetOptionTextColor      = IDX_GUARDED_BINDING(Index_Dropdown_GetOptionTextColor);
+		b.Dropdown_SetOptionTextColor      = IDX_GUARDED_BINDING(Index_Dropdown_SetOptionTextColor);
 
-		b.Entity_GetComponentPtr   = &Index_Entity_GetComponentPtr;
-		b.Entity_GetComponentSize  = &Index_Entity_GetComponentSize;
-		b.Scene_OpenQueryView      = &Index_Scene_OpenQueryView;
+		b.Entity_GetComponentPtr   = IDX_GUARDED_BINDING(Index_Entity_GetComponentPtr);
+		b.Entity_GetComponentPtrReadOnly = IDX_GUARDED_BINDING(Index_Entity_GetComponentPtrReadOnly);
+		b.Entity_GetComponentSize  = IDX_GUARDED_BINDING(Index_Entity_GetComponentSize);
+		b.Scene_OpenQueryView      = IDX_GUARDED_BINDING(Index_Scene_OpenQueryView);
 
 		// ── UI (appended for binary compat — order MUST match NativeBindings in ScriptGlue.hpp and the C# mirror) ──
 
 		// Scrollbar
-		b.Scrollbar_GetValue                 = &Index_Scrollbar_GetValue;
-		b.Scrollbar_SetValue                 = &Index_Scrollbar_SetValue;
-		b.Scrollbar_GetSize                  = &Index_Scrollbar_GetSize;
-		b.Scrollbar_SetSize                  = &Index_Scrollbar_SetSize;
-		b.Scrollbar_GetNumberOfSteps         = &Index_Scrollbar_GetNumberOfSteps;
-		b.Scrollbar_SetNumberOfSteps         = &Index_Scrollbar_SetNumberOfSteps;
-		b.Scrollbar_GetDirection             = &Index_Scrollbar_GetDirection;
-		b.Scrollbar_SetDirection             = &Index_Scrollbar_SetDirection;
-		b.Scrollbar_GetIsReadOnly            = &Index_Scrollbar_GetIsReadOnly;
-		b.Scrollbar_SetIsReadOnly            = &Index_Scrollbar_SetIsReadOnly;
-		b.Scrollbar_GetHandleEntity          = &Index_Scrollbar_GetHandleEntity;
-		b.Scrollbar_SetHandleEntity          = &Index_Scrollbar_SetHandleEntity;
-		b.Scrollbar_GetValueChangedThisFrame = &Index_Scrollbar_GetValueChangedThisFrame;
-		b.Scrollbar_MarkValueObserved        = &Index_Scrollbar_MarkValueObserved;
-		b.Scrollbar_GetNormalColor   = &Index_Scrollbar_GetNormalColor;
-		b.Scrollbar_SetNormalColor   = &Index_Scrollbar_SetNormalColor;
-		b.Scrollbar_GetHoveredColor  = &Index_Scrollbar_GetHoveredColor;
-		b.Scrollbar_SetHoveredColor  = &Index_Scrollbar_SetHoveredColor;
-		b.Scrollbar_GetPressedColor  = &Index_Scrollbar_GetPressedColor;
-		b.Scrollbar_SetPressedColor  = &Index_Scrollbar_SetPressedColor;
-		b.Scrollbar_GetDisabledColor = &Index_Scrollbar_GetDisabledColor;
-		b.Scrollbar_SetDisabledColor = &Index_Scrollbar_SetDisabledColor;
-		b.Scrollbar_GetFocusedColor  = &Index_Scrollbar_GetFocusedColor;
-		b.Scrollbar_SetFocusedColor  = &Index_Scrollbar_SetFocusedColor;
-		b.Scrollbar_GetTransitionMode = &Index_Scrollbar_GetTransitionMode;
-		b.Scrollbar_SetTransitionMode = &Index_Scrollbar_SetTransitionMode;
-		b.Scrollbar_GetNormalSprite   = &Index_Scrollbar_GetNormalSprite;
-		b.Scrollbar_SetNormalSprite   = &Index_Scrollbar_SetNormalSprite;
-		b.Scrollbar_GetHoveredSprite  = &Index_Scrollbar_GetHoveredSprite;
-		b.Scrollbar_SetHoveredSprite  = &Index_Scrollbar_SetHoveredSprite;
-		b.Scrollbar_GetPressedSprite  = &Index_Scrollbar_GetPressedSprite;
-		b.Scrollbar_SetPressedSprite  = &Index_Scrollbar_SetPressedSprite;
-		b.Scrollbar_GetDisabledSprite = &Index_Scrollbar_GetDisabledSprite;
-		b.Scrollbar_SetDisabledSprite = &Index_Scrollbar_SetDisabledSprite;
-		b.Scrollbar_GetFocusedSprite  = &Index_Scrollbar_GetFocusedSprite;
-		b.Scrollbar_SetFocusedSprite  = &Index_Scrollbar_SetFocusedSprite;
+		b.Scrollbar_GetValue                 = IDX_GUARDED_BINDING(Index_Scrollbar_GetValue);
+		b.Scrollbar_SetValue                 = IDX_GUARDED_BINDING(Index_Scrollbar_SetValue);
+		b.Scrollbar_GetSize                  = IDX_GUARDED_BINDING(Index_Scrollbar_GetSize);
+		b.Scrollbar_SetSize                  = IDX_GUARDED_BINDING(Index_Scrollbar_SetSize);
+		b.Scrollbar_GetNumberOfSteps         = IDX_GUARDED_BINDING(Index_Scrollbar_GetNumberOfSteps);
+		b.Scrollbar_SetNumberOfSteps         = IDX_GUARDED_BINDING(Index_Scrollbar_SetNumberOfSteps);
+		b.Scrollbar_GetDirection             = IDX_GUARDED_BINDING(Index_Scrollbar_GetDirection);
+		b.Scrollbar_SetDirection             = IDX_GUARDED_BINDING(Index_Scrollbar_SetDirection);
+		b.Scrollbar_GetIsReadOnly            = IDX_GUARDED_BINDING(Index_Scrollbar_GetIsReadOnly);
+		b.Scrollbar_SetIsReadOnly            = IDX_GUARDED_BINDING(Index_Scrollbar_SetIsReadOnly);
+		b.Scrollbar_GetHandleEntity          = IDX_GUARDED_BINDING(Index_Scrollbar_GetHandleEntity);
+		b.Scrollbar_SetHandleEntity          = IDX_GUARDED_BINDING(Index_Scrollbar_SetHandleEntity);
+		b.Scrollbar_GetValueChangedThisFrame = IDX_GUARDED_BINDING(Index_Scrollbar_GetValueChangedThisFrame);
+		b.Scrollbar_MarkValueObserved        = IDX_GUARDED_BINDING(Index_Scrollbar_MarkValueObserved);
+		b.Scrollbar_GetNormalColor   = IDX_GUARDED_BINDING(Index_Scrollbar_GetNormalColor);
+		b.Scrollbar_SetNormalColor   = IDX_GUARDED_BINDING(Index_Scrollbar_SetNormalColor);
+		b.Scrollbar_GetHoveredColor  = IDX_GUARDED_BINDING(Index_Scrollbar_GetHoveredColor);
+		b.Scrollbar_SetHoveredColor  = IDX_GUARDED_BINDING(Index_Scrollbar_SetHoveredColor);
+		b.Scrollbar_GetPressedColor  = IDX_GUARDED_BINDING(Index_Scrollbar_GetPressedColor);
+		b.Scrollbar_SetPressedColor  = IDX_GUARDED_BINDING(Index_Scrollbar_SetPressedColor);
+		b.Scrollbar_GetDisabledColor = IDX_GUARDED_BINDING(Index_Scrollbar_GetDisabledColor);
+		b.Scrollbar_SetDisabledColor = IDX_GUARDED_BINDING(Index_Scrollbar_SetDisabledColor);
+		b.Scrollbar_GetFocusedColor  = IDX_GUARDED_BINDING(Index_Scrollbar_GetFocusedColor);
+		b.Scrollbar_SetFocusedColor  = IDX_GUARDED_BINDING(Index_Scrollbar_SetFocusedColor);
+		b.Scrollbar_GetTransitionMode = IDX_GUARDED_BINDING(Index_Scrollbar_GetTransitionMode);
+		b.Scrollbar_SetTransitionMode = IDX_GUARDED_BINDING(Index_Scrollbar_SetTransitionMode);
+		b.Scrollbar_GetNormalSprite   = IDX_GUARDED_BINDING(Index_Scrollbar_GetNormalSprite);
+		b.Scrollbar_SetNormalSprite   = IDX_GUARDED_BINDING(Index_Scrollbar_SetNormalSprite);
+		b.Scrollbar_GetHoveredSprite  = IDX_GUARDED_BINDING(Index_Scrollbar_GetHoveredSprite);
+		b.Scrollbar_SetHoveredSprite  = IDX_GUARDED_BINDING(Index_Scrollbar_SetHoveredSprite);
+		b.Scrollbar_GetPressedSprite  = IDX_GUARDED_BINDING(Index_Scrollbar_GetPressedSprite);
+		b.Scrollbar_SetPressedSprite  = IDX_GUARDED_BINDING(Index_Scrollbar_SetPressedSprite);
+		b.Scrollbar_GetDisabledSprite = IDX_GUARDED_BINDING(Index_Scrollbar_GetDisabledSprite);
+		b.Scrollbar_SetDisabledSprite = IDX_GUARDED_BINDING(Index_Scrollbar_SetDisabledSprite);
+		b.Scrollbar_GetFocusedSprite  = IDX_GUARDED_BINDING(Index_Scrollbar_GetFocusedSprite);
+		b.Scrollbar_SetFocusedSprite  = IDX_GUARDED_BINDING(Index_Scrollbar_SetFocusedSprite);
 
 		// ScrollRect
-		b.ScrollRect_GetContent                       = &Index_ScrollRect_GetContent;
-		b.ScrollRect_SetContent                       = &Index_ScrollRect_SetContent;
-		b.ScrollRect_GetViewport                      = &Index_ScrollRect_GetViewport;
-		b.ScrollRect_SetViewport                      = &Index_ScrollRect_SetViewport;
-		b.ScrollRect_GetHorizontal                    = &Index_ScrollRect_GetHorizontal;
-		b.ScrollRect_SetHorizontal                    = &Index_ScrollRect_SetHorizontal;
-		b.ScrollRect_GetVertical                      = &Index_ScrollRect_GetVertical;
-		b.ScrollRect_SetVertical                      = &Index_ScrollRect_SetVertical;
-		b.ScrollRect_GetMovementType                  = &Index_ScrollRect_GetMovementType;
-		b.ScrollRect_SetMovementType                  = &Index_ScrollRect_SetMovementType;
-		b.ScrollRect_GetElasticity                    = &Index_ScrollRect_GetElasticity;
-		b.ScrollRect_SetElasticity                    = &Index_ScrollRect_SetElasticity;
-		b.ScrollRect_GetInertia                       = &Index_ScrollRect_GetInertia;
-		b.ScrollRect_SetInertia                       = &Index_ScrollRect_SetInertia;
-		b.ScrollRect_GetDecelerationRate              = &Index_ScrollRect_GetDecelerationRate;
-		b.ScrollRect_SetDecelerationRate              = &Index_ScrollRect_SetDecelerationRate;
-		b.ScrollRect_GetScrollSensitivity             = &Index_ScrollRect_GetScrollSensitivity;
-		b.ScrollRect_SetScrollSensitivity             = &Index_ScrollRect_SetScrollSensitivity;
-		b.ScrollRect_GetHorizontalScrollbar           = &Index_ScrollRect_GetHorizontalScrollbar;
-		b.ScrollRect_SetHorizontalScrollbar           = &Index_ScrollRect_SetHorizontalScrollbar;
-		b.ScrollRect_GetVerticalScrollbar             = &Index_ScrollRect_GetVerticalScrollbar;
-		b.ScrollRect_SetVerticalScrollbar             = &Index_ScrollRect_SetVerticalScrollbar;
-		b.ScrollRect_GetHorizontalScrollbarVisibility = &Index_ScrollRect_GetHorizontalScrollbarVisibility;
-		b.ScrollRect_SetHorizontalScrollbarVisibility = &Index_ScrollRect_SetHorizontalScrollbarVisibility;
-		b.ScrollRect_GetVerticalScrollbarVisibility   = &Index_ScrollRect_GetVerticalScrollbarVisibility;
-		b.ScrollRect_SetVerticalScrollbarVisibility   = &Index_ScrollRect_SetVerticalScrollbarVisibility;
-		b.ScrollRect_GetHorizontalScrollbarSpacing    = &Index_ScrollRect_GetHorizontalScrollbarSpacing;
-		b.ScrollRect_SetHorizontalScrollbarSpacing    = &Index_ScrollRect_SetHorizontalScrollbarSpacing;
-		b.ScrollRect_GetVerticalScrollbarSpacing      = &Index_ScrollRect_GetVerticalScrollbarSpacing;
-		b.ScrollRect_SetVerticalScrollbarSpacing      = &Index_ScrollRect_SetVerticalScrollbarSpacing;
-		b.ScrollRect_GetNormalizedPosition            = &Index_ScrollRect_GetNormalizedPosition;
-		b.ScrollRect_SetNormalizedPosition            = &Index_ScrollRect_SetNormalizedPosition;
-		b.ScrollRect_GetValueChangedThisFrame         = &Index_ScrollRect_GetValueChangedThisFrame;
-		b.ScrollRect_MarkValueObserved                = &Index_ScrollRect_MarkValueObserved;
+		b.ScrollRect_GetContent                       = IDX_GUARDED_BINDING(Index_ScrollRect_GetContent);
+		b.ScrollRect_SetContent                       = IDX_GUARDED_BINDING(Index_ScrollRect_SetContent);
+		b.ScrollRect_GetViewport                      = IDX_GUARDED_BINDING(Index_ScrollRect_GetViewport);
+		b.ScrollRect_SetViewport                      = IDX_GUARDED_BINDING(Index_ScrollRect_SetViewport);
+		b.ScrollRect_GetHorizontal                    = IDX_GUARDED_BINDING(Index_ScrollRect_GetHorizontal);
+		b.ScrollRect_SetHorizontal                    = IDX_GUARDED_BINDING(Index_ScrollRect_SetHorizontal);
+		b.ScrollRect_GetVertical                      = IDX_GUARDED_BINDING(Index_ScrollRect_GetVertical);
+		b.ScrollRect_SetVertical                      = IDX_GUARDED_BINDING(Index_ScrollRect_SetVertical);
+		b.ScrollRect_GetMovementType                  = IDX_GUARDED_BINDING(Index_ScrollRect_GetMovementType);
+		b.ScrollRect_SetMovementType                  = IDX_GUARDED_BINDING(Index_ScrollRect_SetMovementType);
+		b.ScrollRect_GetElasticity                    = IDX_GUARDED_BINDING(Index_ScrollRect_GetElasticity);
+		b.ScrollRect_SetElasticity                    = IDX_GUARDED_BINDING(Index_ScrollRect_SetElasticity);
+		b.ScrollRect_GetInertia                       = IDX_GUARDED_BINDING(Index_ScrollRect_GetInertia);
+		b.ScrollRect_SetInertia                       = IDX_GUARDED_BINDING(Index_ScrollRect_SetInertia);
+		b.ScrollRect_GetDecelerationRate              = IDX_GUARDED_BINDING(Index_ScrollRect_GetDecelerationRate);
+		b.ScrollRect_SetDecelerationRate              = IDX_GUARDED_BINDING(Index_ScrollRect_SetDecelerationRate);
+		b.ScrollRect_GetScrollSensitivity             = IDX_GUARDED_BINDING(Index_ScrollRect_GetScrollSensitivity);
+		b.ScrollRect_SetScrollSensitivity             = IDX_GUARDED_BINDING(Index_ScrollRect_SetScrollSensitivity);
+		b.ScrollRect_GetHorizontalScrollbar           = IDX_GUARDED_BINDING(Index_ScrollRect_GetHorizontalScrollbar);
+		b.ScrollRect_SetHorizontalScrollbar           = IDX_GUARDED_BINDING(Index_ScrollRect_SetHorizontalScrollbar);
+		b.ScrollRect_GetVerticalScrollbar             = IDX_GUARDED_BINDING(Index_ScrollRect_GetVerticalScrollbar);
+		b.ScrollRect_SetVerticalScrollbar             = IDX_GUARDED_BINDING(Index_ScrollRect_SetVerticalScrollbar);
+		b.ScrollRect_GetHorizontalScrollbarVisibility = IDX_GUARDED_BINDING(Index_ScrollRect_GetHorizontalScrollbarVisibility);
+		b.ScrollRect_SetHorizontalScrollbarVisibility = IDX_GUARDED_BINDING(Index_ScrollRect_SetHorizontalScrollbarVisibility);
+		b.ScrollRect_GetVerticalScrollbarVisibility   = IDX_GUARDED_BINDING(Index_ScrollRect_GetVerticalScrollbarVisibility);
+		b.ScrollRect_SetVerticalScrollbarVisibility   = IDX_GUARDED_BINDING(Index_ScrollRect_SetVerticalScrollbarVisibility);
+		b.ScrollRect_GetHorizontalScrollbarSpacing    = IDX_GUARDED_BINDING(Index_ScrollRect_GetHorizontalScrollbarSpacing);
+		b.ScrollRect_SetHorizontalScrollbarSpacing    = IDX_GUARDED_BINDING(Index_ScrollRect_SetHorizontalScrollbarSpacing);
+		b.ScrollRect_GetVerticalScrollbarSpacing      = IDX_GUARDED_BINDING(Index_ScrollRect_GetVerticalScrollbarSpacing);
+		b.ScrollRect_SetVerticalScrollbarSpacing      = IDX_GUARDED_BINDING(Index_ScrollRect_SetVerticalScrollbarSpacing);
+		b.ScrollRect_GetNormalizedPosition            = IDX_GUARDED_BINDING(Index_ScrollRect_GetNormalizedPosition);
+		b.ScrollRect_SetNormalizedPosition            = IDX_GUARDED_BINDING(Index_ScrollRect_SetNormalizedPosition);
+		b.ScrollRect_GetValueChangedThisFrame         = IDX_GUARDED_BINDING(Index_ScrollRect_GetValueChangedThisFrame);
+		b.ScrollRect_MarkValueObserved                = IDX_GUARDED_BINDING(Index_ScrollRect_MarkValueObserved);
 
 		// Mask
-		b.Mask_GetShowMaskGraphic = &Index_Mask_GetShowMaskGraphic;
-		b.Mask_SetShowMaskGraphic = &Index_Mask_SetShowMaskGraphic;
+		b.Mask_GetShowMaskGraphic = IDX_GUARDED_BINDING(Index_Mask_GetShowMaskGraphic);
+		b.Mask_SetShowMaskGraphic = IDX_GUARDED_BINDING(Index_Mask_SetShowMaskGraphic);
 
 		// CircularSlider
-		b.CircularSlider_GetValue                 = &Index_CircularSlider_GetValue;
-		b.CircularSlider_SetValue                 = &Index_CircularSlider_SetValue;
-		b.CircularSlider_GetMinValue              = &Index_CircularSlider_GetMinValue;
-		b.CircularSlider_SetMinValue              = &Index_CircularSlider_SetMinValue;
-		b.CircularSlider_GetMaxValue              = &Index_CircularSlider_GetMaxValue;
-		b.CircularSlider_SetMaxValue              = &Index_CircularSlider_SetMaxValue;
-		b.CircularSlider_GetWholeNumbers          = &Index_CircularSlider_GetWholeNumbers;
-		b.CircularSlider_SetWholeNumbers          = &Index_CircularSlider_SetWholeNumbers;
-		b.CircularSlider_GetIsReadOnly            = &Index_CircularSlider_GetIsReadOnly;
-		b.CircularSlider_SetIsReadOnly            = &Index_CircularSlider_SetIsReadOnly;
-		b.CircularSlider_GetStartAngleDegrees     = &Index_CircularSlider_GetStartAngleDegrees;
-		b.CircularSlider_SetStartAngleDegrees     = &Index_CircularSlider_SetStartAngleDegrees;
-		b.CircularSlider_GetSweepDegrees          = &Index_CircularSlider_GetSweepDegrees;
-		b.CircularSlider_SetSweepDegrees          = &Index_CircularSlider_SetSweepDegrees;
-		b.CircularSlider_GetClockwise             = &Index_CircularSlider_GetClockwise;
-		b.CircularSlider_SetClockwise             = &Index_CircularSlider_SetClockwise;
-		b.CircularSlider_GetRingThickness         = &Index_CircularSlider_GetRingThickness;
-		b.CircularSlider_SetRingThickness         = &Index_CircularSlider_SetRingThickness;
-		b.CircularSlider_GetRingSegments          = &Index_CircularSlider_GetRingSegments;
-		b.CircularSlider_SetRingSegments          = &Index_CircularSlider_SetRingSegments;
-		b.CircularSlider_GetBackgroundColor       = &Index_CircularSlider_GetBackgroundColor;
-		b.CircularSlider_SetBackgroundColor       = &Index_CircularSlider_SetBackgroundColor;
-		b.CircularSlider_GetFillColor             = &Index_CircularSlider_GetFillColor;
-		b.CircularSlider_SetFillColor             = &Index_CircularSlider_SetFillColor;
-		b.CircularSlider_GetHandleEntity          = &Index_CircularSlider_GetHandleEntity;
-		b.CircularSlider_SetHandleEntity          = &Index_CircularSlider_SetHandleEntity;
-		b.CircularSlider_GetValueChangedThisFrame = &Index_CircularSlider_GetValueChangedThisFrame;
-		b.CircularSlider_MarkValueObserved        = &Index_CircularSlider_MarkValueObserved;
-		b.CircularSlider_GetNormalColor   = &Index_CircularSlider_GetNormalColor;
-		b.CircularSlider_SetNormalColor   = &Index_CircularSlider_SetNormalColor;
-		b.CircularSlider_GetHoveredColor  = &Index_CircularSlider_GetHoveredColor;
-		b.CircularSlider_SetHoveredColor  = &Index_CircularSlider_SetHoveredColor;
-		b.CircularSlider_GetPressedColor  = &Index_CircularSlider_GetPressedColor;
-		b.CircularSlider_SetPressedColor  = &Index_CircularSlider_SetPressedColor;
-		b.CircularSlider_GetDisabledColor = &Index_CircularSlider_GetDisabledColor;
-		b.CircularSlider_SetDisabledColor = &Index_CircularSlider_SetDisabledColor;
-		b.CircularSlider_GetFocusedColor  = &Index_CircularSlider_GetFocusedColor;
-		b.CircularSlider_SetFocusedColor  = &Index_CircularSlider_SetFocusedColor;
-		b.CircularSlider_GetTransitionMode = &Index_CircularSlider_GetTransitionMode;
-		b.CircularSlider_SetTransitionMode = &Index_CircularSlider_SetTransitionMode;
-		b.CircularSlider_GetNormalSprite   = &Index_CircularSlider_GetNormalSprite;
-		b.CircularSlider_SetNormalSprite   = &Index_CircularSlider_SetNormalSprite;
-		b.CircularSlider_GetHoveredSprite  = &Index_CircularSlider_GetHoveredSprite;
-		b.CircularSlider_SetHoveredSprite  = &Index_CircularSlider_SetHoveredSprite;
-		b.CircularSlider_GetPressedSprite  = &Index_CircularSlider_GetPressedSprite;
-		b.CircularSlider_SetPressedSprite  = &Index_CircularSlider_SetPressedSprite;
-		b.CircularSlider_GetDisabledSprite = &Index_CircularSlider_GetDisabledSprite;
-		b.CircularSlider_SetDisabledSprite = &Index_CircularSlider_SetDisabledSprite;
-		b.CircularSlider_GetFocusedSprite  = &Index_CircularSlider_GetFocusedSprite;
-		b.CircularSlider_SetFocusedSprite  = &Index_CircularSlider_SetFocusedSprite;
+		b.CircularSlider_GetValue                 = IDX_GUARDED_BINDING(Index_CircularSlider_GetValue);
+		b.CircularSlider_SetValue                 = IDX_GUARDED_BINDING(Index_CircularSlider_SetValue);
+		b.CircularSlider_GetMinValue              = IDX_GUARDED_BINDING(Index_CircularSlider_GetMinValue);
+		b.CircularSlider_SetMinValue              = IDX_GUARDED_BINDING(Index_CircularSlider_SetMinValue);
+		b.CircularSlider_GetMaxValue              = IDX_GUARDED_BINDING(Index_CircularSlider_GetMaxValue);
+		b.CircularSlider_SetMaxValue              = IDX_GUARDED_BINDING(Index_CircularSlider_SetMaxValue);
+		b.CircularSlider_GetWholeNumbers          = IDX_GUARDED_BINDING(Index_CircularSlider_GetWholeNumbers);
+		b.CircularSlider_SetWholeNumbers          = IDX_GUARDED_BINDING(Index_CircularSlider_SetWholeNumbers);
+		b.CircularSlider_GetIsReadOnly            = IDX_GUARDED_BINDING(Index_CircularSlider_GetIsReadOnly);
+		b.CircularSlider_SetIsReadOnly            = IDX_GUARDED_BINDING(Index_CircularSlider_SetIsReadOnly);
+		b.CircularSlider_GetStartAngleDegrees     = IDX_GUARDED_BINDING(Index_CircularSlider_GetStartAngleDegrees);
+		b.CircularSlider_SetStartAngleDegrees     = IDX_GUARDED_BINDING(Index_CircularSlider_SetStartAngleDegrees);
+		b.CircularSlider_GetSweepDegrees          = IDX_GUARDED_BINDING(Index_CircularSlider_GetSweepDegrees);
+		b.CircularSlider_SetSweepDegrees          = IDX_GUARDED_BINDING(Index_CircularSlider_SetSweepDegrees);
+		b.CircularSlider_GetClockwise             = IDX_GUARDED_BINDING(Index_CircularSlider_GetClockwise);
+		b.CircularSlider_SetClockwise             = IDX_GUARDED_BINDING(Index_CircularSlider_SetClockwise);
+		b.CircularSlider_GetRingThickness         = IDX_GUARDED_BINDING(Index_CircularSlider_GetRingThickness);
+		b.CircularSlider_SetRingThickness         = IDX_GUARDED_BINDING(Index_CircularSlider_SetRingThickness);
+		b.CircularSlider_GetRingSegments          = IDX_GUARDED_BINDING(Index_CircularSlider_GetRingSegments);
+		b.CircularSlider_SetRingSegments          = IDX_GUARDED_BINDING(Index_CircularSlider_SetRingSegments);
+		b.CircularSlider_GetBackgroundColor       = IDX_GUARDED_BINDING(Index_CircularSlider_GetBackgroundColor);
+		b.CircularSlider_SetBackgroundColor       = IDX_GUARDED_BINDING(Index_CircularSlider_SetBackgroundColor);
+		b.CircularSlider_GetFillColor             = IDX_GUARDED_BINDING(Index_CircularSlider_GetFillColor);
+		b.CircularSlider_SetFillColor             = IDX_GUARDED_BINDING(Index_CircularSlider_SetFillColor);
+		b.CircularSlider_GetHandleEntity          = IDX_GUARDED_BINDING(Index_CircularSlider_GetHandleEntity);
+		b.CircularSlider_SetHandleEntity          = IDX_GUARDED_BINDING(Index_CircularSlider_SetHandleEntity);
+		b.CircularSlider_GetValueChangedThisFrame = IDX_GUARDED_BINDING(Index_CircularSlider_GetValueChangedThisFrame);
+		b.CircularSlider_MarkValueObserved        = IDX_GUARDED_BINDING(Index_CircularSlider_MarkValueObserved);
+		b.CircularSlider_GetNormalColor   = IDX_GUARDED_BINDING(Index_CircularSlider_GetNormalColor);
+		b.CircularSlider_SetNormalColor   = IDX_GUARDED_BINDING(Index_CircularSlider_SetNormalColor);
+		b.CircularSlider_GetHoveredColor  = IDX_GUARDED_BINDING(Index_CircularSlider_GetHoveredColor);
+		b.CircularSlider_SetHoveredColor  = IDX_GUARDED_BINDING(Index_CircularSlider_SetHoveredColor);
+		b.CircularSlider_GetPressedColor  = IDX_GUARDED_BINDING(Index_CircularSlider_GetPressedColor);
+		b.CircularSlider_SetPressedColor  = IDX_GUARDED_BINDING(Index_CircularSlider_SetPressedColor);
+		b.CircularSlider_GetDisabledColor = IDX_GUARDED_BINDING(Index_CircularSlider_GetDisabledColor);
+		b.CircularSlider_SetDisabledColor = IDX_GUARDED_BINDING(Index_CircularSlider_SetDisabledColor);
+		b.CircularSlider_GetFocusedColor  = IDX_GUARDED_BINDING(Index_CircularSlider_GetFocusedColor);
+		b.CircularSlider_SetFocusedColor  = IDX_GUARDED_BINDING(Index_CircularSlider_SetFocusedColor);
+		b.CircularSlider_GetTransitionMode = IDX_GUARDED_BINDING(Index_CircularSlider_GetTransitionMode);
+		b.CircularSlider_SetTransitionMode = IDX_GUARDED_BINDING(Index_CircularSlider_SetTransitionMode);
+		b.CircularSlider_GetNormalSprite   = IDX_GUARDED_BINDING(Index_CircularSlider_GetNormalSprite);
+		b.CircularSlider_SetNormalSprite   = IDX_GUARDED_BINDING(Index_CircularSlider_SetNormalSprite);
+		b.CircularSlider_GetHoveredSprite  = IDX_GUARDED_BINDING(Index_CircularSlider_GetHoveredSprite);
+		b.CircularSlider_SetHoveredSprite  = IDX_GUARDED_BINDING(Index_CircularSlider_SetHoveredSprite);
+		b.CircularSlider_GetPressedSprite  = IDX_GUARDED_BINDING(Index_CircularSlider_GetPressedSprite);
+		b.CircularSlider_SetPressedSprite  = IDX_GUARDED_BINDING(Index_CircularSlider_SetPressedSprite);
+		b.CircularSlider_GetDisabledSprite = IDX_GUARDED_BINDING(Index_CircularSlider_GetDisabledSprite);
+		b.CircularSlider_SetDisabledSprite = IDX_GUARDED_BINDING(Index_CircularSlider_SetDisabledSprite);
+		b.CircularSlider_GetFocusedSprite  = IDX_GUARDED_BINDING(Index_CircularSlider_GetFocusedSprite);
+		b.CircularSlider_SetFocusedSprite  = IDX_GUARDED_BINDING(Index_CircularSlider_SetFocusedSprite);
 
 		// HorizontalLayoutGroup
-		b.HorizontalLayoutGroup_GetPaddingLeft            = &Index_HorizontalLayoutGroup_GetPaddingLeft;
-		b.HorizontalLayoutGroup_SetPaddingLeft            = &Index_HorizontalLayoutGroup_SetPaddingLeft;
-		b.HorizontalLayoutGroup_GetPaddingRight           = &Index_HorizontalLayoutGroup_GetPaddingRight;
-		b.HorizontalLayoutGroup_SetPaddingRight           = &Index_HorizontalLayoutGroup_SetPaddingRight;
-		b.HorizontalLayoutGroup_GetPaddingTop             = &Index_HorizontalLayoutGroup_GetPaddingTop;
-		b.HorizontalLayoutGroup_SetPaddingTop             = &Index_HorizontalLayoutGroup_SetPaddingTop;
-		b.HorizontalLayoutGroup_GetPaddingBottom          = &Index_HorizontalLayoutGroup_GetPaddingBottom;
-		b.HorizontalLayoutGroup_SetPaddingBottom          = &Index_HorizontalLayoutGroup_SetPaddingBottom;
-		b.HorizontalLayoutGroup_GetSpacing                = &Index_HorizontalLayoutGroup_GetSpacing;
-		b.HorizontalLayoutGroup_SetSpacing                = &Index_HorizontalLayoutGroup_SetSpacing;
-		b.HorizontalLayoutGroup_GetChildAlignment         = &Index_HorizontalLayoutGroup_GetChildAlignment;
-		b.HorizontalLayoutGroup_SetChildAlignment         = &Index_HorizontalLayoutGroup_SetChildAlignment;
-		b.HorizontalLayoutGroup_GetReverseArrangement     = &Index_HorizontalLayoutGroup_GetReverseArrangement;
-		b.HorizontalLayoutGroup_SetReverseArrangement     = &Index_HorizontalLayoutGroup_SetReverseArrangement;
-		b.HorizontalLayoutGroup_GetControlChildWidth      = &Index_HorizontalLayoutGroup_GetControlChildWidth;
-		b.HorizontalLayoutGroup_SetControlChildWidth      = &Index_HorizontalLayoutGroup_SetControlChildWidth;
-		b.HorizontalLayoutGroup_GetControlChildHeight     = &Index_HorizontalLayoutGroup_GetControlChildHeight;
-		b.HorizontalLayoutGroup_SetControlChildHeight     = &Index_HorizontalLayoutGroup_SetControlChildHeight;
-		b.HorizontalLayoutGroup_GetUseChildScaleWidth     = &Index_HorizontalLayoutGroup_GetUseChildScaleWidth;
-		b.HorizontalLayoutGroup_SetUseChildScaleWidth     = &Index_HorizontalLayoutGroup_SetUseChildScaleWidth;
-		b.HorizontalLayoutGroup_GetUseChildScaleHeight    = &Index_HorizontalLayoutGroup_GetUseChildScaleHeight;
-		b.HorizontalLayoutGroup_SetUseChildScaleHeight    = &Index_HorizontalLayoutGroup_SetUseChildScaleHeight;
-		b.HorizontalLayoutGroup_GetChildForceExpandWidth  = &Index_HorizontalLayoutGroup_GetChildForceExpandWidth;
-		b.HorizontalLayoutGroup_SetChildForceExpandWidth  = &Index_HorizontalLayoutGroup_SetChildForceExpandWidth;
-		b.HorizontalLayoutGroup_GetChildForceExpandHeight = &Index_HorizontalLayoutGroup_GetChildForceExpandHeight;
-		b.HorizontalLayoutGroup_SetChildForceExpandHeight = &Index_HorizontalLayoutGroup_SetChildForceExpandHeight;
+		b.HorizontalLayoutGroup_GetPaddingLeft            = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_GetPaddingLeft);
+		b.HorizontalLayoutGroup_SetPaddingLeft            = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_SetPaddingLeft);
+		b.HorizontalLayoutGroup_GetPaddingRight           = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_GetPaddingRight);
+		b.HorizontalLayoutGroup_SetPaddingRight           = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_SetPaddingRight);
+		b.HorizontalLayoutGroup_GetPaddingTop             = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_GetPaddingTop);
+		b.HorizontalLayoutGroup_SetPaddingTop             = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_SetPaddingTop);
+		b.HorizontalLayoutGroup_GetPaddingBottom          = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_GetPaddingBottom);
+		b.HorizontalLayoutGroup_SetPaddingBottom          = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_SetPaddingBottom);
+		b.HorizontalLayoutGroup_GetSpacing                = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_GetSpacing);
+		b.HorizontalLayoutGroup_SetSpacing                = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_SetSpacing);
+		b.HorizontalLayoutGroup_GetChildAlignment         = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_GetChildAlignment);
+		b.HorizontalLayoutGroup_SetChildAlignment         = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_SetChildAlignment);
+		b.HorizontalLayoutGroup_GetReverseArrangement     = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_GetReverseArrangement);
+		b.HorizontalLayoutGroup_SetReverseArrangement     = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_SetReverseArrangement);
+		b.HorizontalLayoutGroup_GetControlChildWidth      = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_GetControlChildWidth);
+		b.HorizontalLayoutGroup_SetControlChildWidth      = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_SetControlChildWidth);
+		b.HorizontalLayoutGroup_GetControlChildHeight     = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_GetControlChildHeight);
+		b.HorizontalLayoutGroup_SetControlChildHeight     = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_SetControlChildHeight);
+		b.HorizontalLayoutGroup_GetUseChildScaleWidth     = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_GetUseChildScaleWidth);
+		b.HorizontalLayoutGroup_SetUseChildScaleWidth     = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_SetUseChildScaleWidth);
+		b.HorizontalLayoutGroup_GetUseChildScaleHeight    = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_GetUseChildScaleHeight);
+		b.HorizontalLayoutGroup_SetUseChildScaleHeight    = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_SetUseChildScaleHeight);
+		b.HorizontalLayoutGroup_GetChildForceExpandWidth  = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_GetChildForceExpandWidth);
+		b.HorizontalLayoutGroup_SetChildForceExpandWidth  = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_SetChildForceExpandWidth);
+		b.HorizontalLayoutGroup_GetChildForceExpandHeight = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_GetChildForceExpandHeight);
+		b.HorizontalLayoutGroup_SetChildForceExpandHeight = IDX_GUARDED_BINDING(Index_HorizontalLayoutGroup_SetChildForceExpandHeight);
 
 		// VerticalLayoutGroup
-		b.VerticalLayoutGroup_GetPaddingLeft            = &Index_VerticalLayoutGroup_GetPaddingLeft;
-		b.VerticalLayoutGroup_SetPaddingLeft            = &Index_VerticalLayoutGroup_SetPaddingLeft;
-		b.VerticalLayoutGroup_GetPaddingRight           = &Index_VerticalLayoutGroup_GetPaddingRight;
-		b.VerticalLayoutGroup_SetPaddingRight           = &Index_VerticalLayoutGroup_SetPaddingRight;
-		b.VerticalLayoutGroup_GetPaddingTop             = &Index_VerticalLayoutGroup_GetPaddingTop;
-		b.VerticalLayoutGroup_SetPaddingTop             = &Index_VerticalLayoutGroup_SetPaddingTop;
-		b.VerticalLayoutGroup_GetPaddingBottom          = &Index_VerticalLayoutGroup_GetPaddingBottom;
-		b.VerticalLayoutGroup_SetPaddingBottom          = &Index_VerticalLayoutGroup_SetPaddingBottom;
-		b.VerticalLayoutGroup_GetSpacing                = &Index_VerticalLayoutGroup_GetSpacing;
-		b.VerticalLayoutGroup_SetSpacing                = &Index_VerticalLayoutGroup_SetSpacing;
-		b.VerticalLayoutGroup_GetChildAlignment         = &Index_VerticalLayoutGroup_GetChildAlignment;
-		b.VerticalLayoutGroup_SetChildAlignment         = &Index_VerticalLayoutGroup_SetChildAlignment;
-		b.VerticalLayoutGroup_GetReverseArrangement     = &Index_VerticalLayoutGroup_GetReverseArrangement;
-		b.VerticalLayoutGroup_SetReverseArrangement     = &Index_VerticalLayoutGroup_SetReverseArrangement;
-		b.VerticalLayoutGroup_GetControlChildWidth      = &Index_VerticalLayoutGroup_GetControlChildWidth;
-		b.VerticalLayoutGroup_SetControlChildWidth      = &Index_VerticalLayoutGroup_SetControlChildWidth;
-		b.VerticalLayoutGroup_GetControlChildHeight     = &Index_VerticalLayoutGroup_GetControlChildHeight;
-		b.VerticalLayoutGroup_SetControlChildHeight     = &Index_VerticalLayoutGroup_SetControlChildHeight;
-		b.VerticalLayoutGroup_GetUseChildScaleWidth     = &Index_VerticalLayoutGroup_GetUseChildScaleWidth;
-		b.VerticalLayoutGroup_SetUseChildScaleWidth     = &Index_VerticalLayoutGroup_SetUseChildScaleWidth;
-		b.VerticalLayoutGroup_GetUseChildScaleHeight    = &Index_VerticalLayoutGroup_GetUseChildScaleHeight;
-		b.VerticalLayoutGroup_SetUseChildScaleHeight    = &Index_VerticalLayoutGroup_SetUseChildScaleHeight;
-		b.VerticalLayoutGroup_GetChildForceExpandWidth  = &Index_VerticalLayoutGroup_GetChildForceExpandWidth;
-		b.VerticalLayoutGroup_SetChildForceExpandWidth  = &Index_VerticalLayoutGroup_SetChildForceExpandWidth;
-		b.VerticalLayoutGroup_GetChildForceExpandHeight = &Index_VerticalLayoutGroup_GetChildForceExpandHeight;
-		b.VerticalLayoutGroup_SetChildForceExpandHeight = &Index_VerticalLayoutGroup_SetChildForceExpandHeight;
+		b.VerticalLayoutGroup_GetPaddingLeft            = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_GetPaddingLeft);
+		b.VerticalLayoutGroup_SetPaddingLeft            = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_SetPaddingLeft);
+		b.VerticalLayoutGroup_GetPaddingRight           = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_GetPaddingRight);
+		b.VerticalLayoutGroup_SetPaddingRight           = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_SetPaddingRight);
+		b.VerticalLayoutGroup_GetPaddingTop             = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_GetPaddingTop);
+		b.VerticalLayoutGroup_SetPaddingTop             = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_SetPaddingTop);
+		b.VerticalLayoutGroup_GetPaddingBottom          = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_GetPaddingBottom);
+		b.VerticalLayoutGroup_SetPaddingBottom          = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_SetPaddingBottom);
+		b.VerticalLayoutGroup_GetSpacing                = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_GetSpacing);
+		b.VerticalLayoutGroup_SetSpacing                = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_SetSpacing);
+		b.VerticalLayoutGroup_GetChildAlignment         = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_GetChildAlignment);
+		b.VerticalLayoutGroup_SetChildAlignment         = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_SetChildAlignment);
+		b.VerticalLayoutGroup_GetReverseArrangement     = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_GetReverseArrangement);
+		b.VerticalLayoutGroup_SetReverseArrangement     = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_SetReverseArrangement);
+		b.VerticalLayoutGroup_GetControlChildWidth      = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_GetControlChildWidth);
+		b.VerticalLayoutGroup_SetControlChildWidth      = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_SetControlChildWidth);
+		b.VerticalLayoutGroup_GetControlChildHeight     = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_GetControlChildHeight);
+		b.VerticalLayoutGroup_SetControlChildHeight     = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_SetControlChildHeight);
+		b.VerticalLayoutGroup_GetUseChildScaleWidth     = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_GetUseChildScaleWidth);
+		b.VerticalLayoutGroup_SetUseChildScaleWidth     = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_SetUseChildScaleWidth);
+		b.VerticalLayoutGroup_GetUseChildScaleHeight    = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_GetUseChildScaleHeight);
+		b.VerticalLayoutGroup_SetUseChildScaleHeight    = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_SetUseChildScaleHeight);
+		b.VerticalLayoutGroup_GetChildForceExpandWidth  = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_GetChildForceExpandWidth);
+		b.VerticalLayoutGroup_SetChildForceExpandWidth  = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_SetChildForceExpandWidth);
+		b.VerticalLayoutGroup_GetChildForceExpandHeight = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_GetChildForceExpandHeight);
+		b.VerticalLayoutGroup_SetChildForceExpandHeight = IDX_GUARDED_BINDING(Index_VerticalLayoutGroup_SetChildForceExpandHeight);
 
 		// GridLayoutGroup
-		b.GridLayoutGroup_GetPaddingLeft     = &Index_GridLayoutGroup_GetPaddingLeft;
-		b.GridLayoutGroup_SetPaddingLeft     = &Index_GridLayoutGroup_SetPaddingLeft;
-		b.GridLayoutGroup_GetPaddingRight    = &Index_GridLayoutGroup_GetPaddingRight;
-		b.GridLayoutGroup_SetPaddingRight    = &Index_GridLayoutGroup_SetPaddingRight;
-		b.GridLayoutGroup_GetPaddingTop      = &Index_GridLayoutGroup_GetPaddingTop;
-		b.GridLayoutGroup_SetPaddingTop      = &Index_GridLayoutGroup_SetPaddingTop;
-		b.GridLayoutGroup_GetPaddingBottom   = &Index_GridLayoutGroup_GetPaddingBottom;
-		b.GridLayoutGroup_SetPaddingBottom   = &Index_GridLayoutGroup_SetPaddingBottom;
-		b.GridLayoutGroup_GetCellSize        = &Index_GridLayoutGroup_GetCellSize;
-		b.GridLayoutGroup_SetCellSize        = &Index_GridLayoutGroup_SetCellSize;
-		b.GridLayoutGroup_GetSpacing         = &Index_GridLayoutGroup_GetSpacing;
-		b.GridLayoutGroup_SetSpacing         = &Index_GridLayoutGroup_SetSpacing;
-		b.GridLayoutGroup_GetStartCorner     = &Index_GridLayoutGroup_GetStartCorner;
-		b.GridLayoutGroup_SetStartCorner     = &Index_GridLayoutGroup_SetStartCorner;
-		b.GridLayoutGroup_GetStartAxis       = &Index_GridLayoutGroup_GetStartAxis;
-		b.GridLayoutGroup_SetStartAxis       = &Index_GridLayoutGroup_SetStartAxis;
-		b.GridLayoutGroup_GetChildAlignment  = &Index_GridLayoutGroup_GetChildAlignment;
-		b.GridLayoutGroup_SetChildAlignment  = &Index_GridLayoutGroup_SetChildAlignment;
-		b.GridLayoutGroup_GetConstraint      = &Index_GridLayoutGroup_GetConstraint;
-		b.GridLayoutGroup_SetConstraint      = &Index_GridLayoutGroup_SetConstraint;
-		b.GridLayoutGroup_GetConstraintCount = &Index_GridLayoutGroup_GetConstraintCount;
-		b.GridLayoutGroup_SetConstraintCount = &Index_GridLayoutGroup_SetConstraintCount;
-		b.GridLayoutGroup_GetReverse         = &Index_GridLayoutGroup_GetReverse;
-		b.GridLayoutGroup_SetReverse         = &Index_GridLayoutGroup_SetReverse;
+		b.GridLayoutGroup_GetPaddingLeft     = IDX_GUARDED_BINDING(Index_GridLayoutGroup_GetPaddingLeft);
+		b.GridLayoutGroup_SetPaddingLeft     = IDX_GUARDED_BINDING(Index_GridLayoutGroup_SetPaddingLeft);
+		b.GridLayoutGroup_GetPaddingRight    = IDX_GUARDED_BINDING(Index_GridLayoutGroup_GetPaddingRight);
+		b.GridLayoutGroup_SetPaddingRight    = IDX_GUARDED_BINDING(Index_GridLayoutGroup_SetPaddingRight);
+		b.GridLayoutGroup_GetPaddingTop      = IDX_GUARDED_BINDING(Index_GridLayoutGroup_GetPaddingTop);
+		b.GridLayoutGroup_SetPaddingTop      = IDX_GUARDED_BINDING(Index_GridLayoutGroup_SetPaddingTop);
+		b.GridLayoutGroup_GetPaddingBottom   = IDX_GUARDED_BINDING(Index_GridLayoutGroup_GetPaddingBottom);
+		b.GridLayoutGroup_SetPaddingBottom   = IDX_GUARDED_BINDING(Index_GridLayoutGroup_SetPaddingBottom);
+		b.GridLayoutGroup_GetCellSize        = IDX_GUARDED_BINDING(Index_GridLayoutGroup_GetCellSize);
+		b.GridLayoutGroup_SetCellSize        = IDX_GUARDED_BINDING(Index_GridLayoutGroup_SetCellSize);
+		b.GridLayoutGroup_GetSpacing         = IDX_GUARDED_BINDING(Index_GridLayoutGroup_GetSpacing);
+		b.GridLayoutGroup_SetSpacing         = IDX_GUARDED_BINDING(Index_GridLayoutGroup_SetSpacing);
+		b.GridLayoutGroup_GetStartCorner     = IDX_GUARDED_BINDING(Index_GridLayoutGroup_GetStartCorner);
+		b.GridLayoutGroup_SetStartCorner     = IDX_GUARDED_BINDING(Index_GridLayoutGroup_SetStartCorner);
+		b.GridLayoutGroup_GetStartAxis       = IDX_GUARDED_BINDING(Index_GridLayoutGroup_GetStartAxis);
+		b.GridLayoutGroup_SetStartAxis       = IDX_GUARDED_BINDING(Index_GridLayoutGroup_SetStartAxis);
+		b.GridLayoutGroup_GetChildAlignment  = IDX_GUARDED_BINDING(Index_GridLayoutGroup_GetChildAlignment);
+		b.GridLayoutGroup_SetChildAlignment  = IDX_GUARDED_BINDING(Index_GridLayoutGroup_SetChildAlignment);
+		b.GridLayoutGroup_GetConstraint      = IDX_GUARDED_BINDING(Index_GridLayoutGroup_GetConstraint);
+		b.GridLayoutGroup_SetConstraint      = IDX_GUARDED_BINDING(Index_GridLayoutGroup_SetConstraint);
+		b.GridLayoutGroup_GetConstraintCount = IDX_GUARDED_BINDING(Index_GridLayoutGroup_GetConstraintCount);
+		b.GridLayoutGroup_SetConstraintCount = IDX_GUARDED_BINDING(Index_GridLayoutGroup_SetConstraintCount);
+		b.GridLayoutGroup_GetReverse         = IDX_GUARDED_BINDING(Index_GridLayoutGroup_GetReverse);
+		b.GridLayoutGroup_SetReverse         = IDX_GUARDED_BINDING(Index_GridLayoutGroup_SetReverse);
 
 		// ContentSizeFitter
-		b.ContentSizeFitter_GetHorizontalFit  = &Index_ContentSizeFitter_GetHorizontalFit;
-		b.ContentSizeFitter_SetHorizontalFit  = &Index_ContentSizeFitter_SetHorizontalFit;
-		b.ContentSizeFitter_GetVerticalFit    = &Index_ContentSizeFitter_GetVerticalFit;
-		b.ContentSizeFitter_SetVerticalFit    = &Index_ContentSizeFitter_SetVerticalFit;
-		b.ContentSizeFitter_GetPaddingLeft    = &Index_ContentSizeFitter_GetPaddingLeft;
-		b.ContentSizeFitter_SetPaddingLeft    = &Index_ContentSizeFitter_SetPaddingLeft;
-		b.ContentSizeFitter_GetPaddingRight   = &Index_ContentSizeFitter_GetPaddingRight;
-		b.ContentSizeFitter_SetPaddingRight   = &Index_ContentSizeFitter_SetPaddingRight;
-		b.ContentSizeFitter_GetPaddingTop     = &Index_ContentSizeFitter_GetPaddingTop;
-		b.ContentSizeFitter_SetPaddingTop     = &Index_ContentSizeFitter_SetPaddingTop;
-		b.ContentSizeFitter_GetPaddingBottom  = &Index_ContentSizeFitter_GetPaddingBottom;
-		b.ContentSizeFitter_SetPaddingBottom  = &Index_ContentSizeFitter_SetPaddingBottom;
+		b.ContentSizeFitter_GetHorizontalFit  = IDX_GUARDED_BINDING(Index_ContentSizeFitter_GetHorizontalFit);
+		b.ContentSizeFitter_SetHorizontalFit  = IDX_GUARDED_BINDING(Index_ContentSizeFitter_SetHorizontalFit);
+		b.ContentSizeFitter_GetVerticalFit    = IDX_GUARDED_BINDING(Index_ContentSizeFitter_GetVerticalFit);
+		b.ContentSizeFitter_SetVerticalFit    = IDX_GUARDED_BINDING(Index_ContentSizeFitter_SetVerticalFit);
+		b.ContentSizeFitter_GetPaddingLeft    = IDX_GUARDED_BINDING(Index_ContentSizeFitter_GetPaddingLeft);
+		b.ContentSizeFitter_SetPaddingLeft    = IDX_GUARDED_BINDING(Index_ContentSizeFitter_SetPaddingLeft);
+		b.ContentSizeFitter_GetPaddingRight   = IDX_GUARDED_BINDING(Index_ContentSizeFitter_GetPaddingRight);
+		b.ContentSizeFitter_SetPaddingRight   = IDX_GUARDED_BINDING(Index_ContentSizeFitter_SetPaddingRight);
+		b.ContentSizeFitter_GetPaddingTop     = IDX_GUARDED_BINDING(Index_ContentSizeFitter_GetPaddingTop);
+		b.ContentSizeFitter_SetPaddingTop     = IDX_GUARDED_BINDING(Index_ContentSizeFitter_SetPaddingTop);
+		b.ContentSizeFitter_GetPaddingBottom  = IDX_GUARDED_BINDING(Index_ContentSizeFitter_GetPaddingBottom);
+		b.ContentSizeFitter_SetPaddingBottom  = IDX_GUARDED_BINDING(Index_ContentSizeFitter_SetPaddingBottom);
 
 		// WidthConstraint
-		b.WidthConstraint_GetMinWidth = &Index_WidthConstraint_GetMinWidth;
-		b.WidthConstraint_SetMinWidth = &Index_WidthConstraint_SetMinWidth;
-		b.WidthConstraint_GetMaxWidth = &Index_WidthConstraint_GetMaxWidth;
-		b.WidthConstraint_SetMaxWidth = &Index_WidthConstraint_SetMaxWidth;
+		b.WidthConstraint_GetMinWidth = IDX_GUARDED_BINDING(Index_WidthConstraint_GetMinWidth);
+		b.WidthConstraint_SetMinWidth = IDX_GUARDED_BINDING(Index_WidthConstraint_SetMinWidth);
+		b.WidthConstraint_GetMaxWidth = IDX_GUARDED_BINDING(Index_WidthConstraint_GetMaxWidth);
+		b.WidthConstraint_SetMaxWidth = IDX_GUARDED_BINDING(Index_WidthConstraint_SetMaxWidth);
 
 		// ── SpriteRenderer filter (appended for binary compat) ──
-		b.SpriteRenderer_GetFilter = &Index_SpriteRenderer_GetFilter;
-		b.SpriteRenderer_SetFilter = &Index_SpriteRenderer_SetFilter;
 
 		// ── SpriteRenderer slice name (appended for binary compat) ──
-		b.SpriteRenderer_GetSpriteNameBuffer = &Index_SpriteRenderer_GetSpriteNameBuffer;
-		b.SpriteRenderer_SetSpriteName       = &Index_SpriteRenderer_SetSpriteName;
 
 		// ── Dynamic component registration (appended for binary compat) ──
-		b.Component_RegisterDynamic       = &Index_Component_RegisterDynamic;
-		b.Component_UnregisterAllDynamic  = &Index_Component_UnregisterAllDynamic;
+		b.Component_RegisterDynamic       = IDX_GUARDED_BINDING(Index_Component_RegisterDynamic);
+		b.Component_UnregisterAllDynamic  = IDX_GUARDED_BINDING(Index_Component_UnregisterAllDynamic);
 
 		// ── Scene load-by-GUID (appended for binary compat) ──
-		b.Scene_LoadByGuid           = &Index_Scene_LoadByGuid;
-		b.Scene_LoadAdditiveByGuid   = &Index_Scene_LoadAdditiveByGuid;
-		b.Scene_UnloadByGuid         = &Index_Scene_UnloadByGuid;
-		b.Scene_SetActiveByGuid      = &Index_Scene_SetActiveByGuid;
-		b.Scene_ReloadByGuid         = &Index_Scene_ReloadByGuid;
-		b.Scene_DoesSceneExistByGuid = &Index_Scene_DoesSceneExistByGuid;
-		b.Scene_GetActiveSceneGuid   = &Index_Scene_GetActiveSceneGuid;
+		b.Scene_LoadByGuid           = IDX_GUARDED_BINDING(Index_Scene_LoadByGuid);
+		b.Scene_LoadAdditiveByGuid   = IDX_GUARDED_BINDING(Index_Scene_LoadAdditiveByGuid);
+		b.Scene_UnloadByGuid         = IDX_GUARDED_BINDING(Index_Scene_UnloadByGuid);
+		b.Scene_SetActiveByGuid      = IDX_GUARDED_BINDING(Index_Scene_SetActiveByGuid);
+		b.Scene_ReloadByGuid         = IDX_GUARDED_BINDING(Index_Scene_ReloadByGuid);
+		b.Scene_DoesSceneExistByGuid = IDX_GUARDED_BINDING(Index_Scene_DoesSceneExistByGuid);
+		b.Scene_GetActiveSceneGuid   = IDX_GUARDED_BINDING(Index_Scene_GetActiveSceneGuid);
 
 		// Rigidbody2D motion locks (appended for binary compat).
-		b.Rigidbody2D_GetFreezePositionX = &Index_Rigidbody2D_GetFreezePositionX;
-		b.Rigidbody2D_SetFreezePositionX = &Index_Rigidbody2D_SetFreezePositionX;
-		b.Rigidbody2D_GetFreezePositionY = &Index_Rigidbody2D_GetFreezePositionY;
-		b.Rigidbody2D_SetFreezePositionY = &Index_Rigidbody2D_SetFreezePositionY;
-		b.Rigidbody2D_GetFreezeRotation  = &Index_Rigidbody2D_GetFreezeRotation;
-		b.Rigidbody2D_SetFreezeRotation  = &Index_Rigidbody2D_SetFreezeRotation;
 
-		b.ParticleSystem2D_GetTexture = &Index_ParticleSystem2D_GetTexture;
-		b.ParticleSystem2D_SetTexture = &Index_ParticleSystem2D_SetTexture;
 
-		b.Scene_OpenQueryViewWithEntities = &Index_Scene_OpenQueryViewWithEntities;
+		b.Scene_OpenQueryViewWithEntities = IDX_GUARDED_BINDING(Index_Scene_OpenQueryViewWithEntities);
 	}
 
 } // namespace Index

@@ -6,6 +6,7 @@
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/PostProcessing2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Collections/Viewport.hpp"
 #include "Core/Log.hpp"
@@ -549,6 +550,11 @@ namespace Index {
 				CollectStaticSpriteInstances(scene, *staticGrid, viewportAABB, outInstances);
 			}
 
+			// Particles get draw indices from their own high range, counted before culling: using
+			// outInstances.size() made their order relative to equal-layer sprites depend on how many
+			// sprites survived culling, so it flipped as the camera moved.
+			constexpr std::uint32_t k_ParticleDrawIndexBase = 0x80000000u;
+			std::uint32_t particleDrawIndex = k_ParticleDrawIndexBase;
 			auto particleView = scene.GetRegistry().view<ParticleSystem2DComponent>(entt::exclude<DisabledTag>);
 			for (auto entity : particleView) {
 				if (particleQuality == ParticleQualityLevel::Off) break;
@@ -561,17 +567,21 @@ namespace Index {
 				const size_t firstParticle = particles.size() - renderCount;
 				for (size_t particleIndex = firstParticle; particleIndex < particles.size(); ++particleIndex) {
 					const auto& particle = particles[particleIndex];
+					const std::uint32_t drawIndex = particleDrawIndex++;
 					Vec2 position = particle.Transform.Position;
 					Vec2 scale = particle.Transform.Scale;
 					float rotation = particle.Transform.Rotation;
-					if (particleSystem.EmissionSettings.EmissionSpace == ParticleSystem2DComponent::Space::Local) {
-						const auto& emitterTransform = particleSystem.GetTransform2D();
-						position = emitterTransform.TransformPoint(position);
+					// No emitter transform (a 2D system on a 3D or UI entity): draw as world space instead of asserting.
+					const Transform2DComponent* emitterTransform =
+						particleSystem.EmissionSettings.EmissionSpace == ParticleSystem2DComponent::Space::Local
+						? particleSystem.TryGetEmitterTransform() : nullptr;
+					if (emitterTransform) {
+						position = emitterTransform->TransformPoint(position);
 						scale = Vec2{
-							scale.x * emitterTransform.Scale.x,
-							scale.y * emitterTransform.Scale.y
+							scale.x * emitterTransform->Scale.x,
+							scale.y * emitterTransform->Scale.y
 						};
-						rotation += emitterTransform.Rotation;
+						rotation += emitterTransform->Rotation;
 					}
 					if (!AABB::Intersects(viewportAABB, CreateQuadAABB(position, scale, rotation))) {
 						continue;
@@ -584,7 +594,7 @@ namespace Index {
 						texture,
 						particleSystem.RenderingSettings.SortingOrder,
 						particleSystem.RenderingSettings.SortingLayer,
-						static_cast<std::uint32_t>(outInstances.size()));
+						drawIndex);
 				}
 			}
 
@@ -724,11 +734,26 @@ namespace Index {
 		bool EnsureInstanceBuffer(wgpu::Device device, uint32_t neededInstances) {
 			if (g_InstanceBufferCapacity >= neededInstances && g_InstanceBuffer) return true;
 
-			uint32_t newCapacity = g_InstanceBufferCapacity > 0 ? g_InstanceBufferCapacity : 256;
+			// Over maxBufferSize Dawn returns an error buffer (never null); caching it as the capacity would
+			// blank all sprites permanently. Refuse instead, and never grow past the limit.
+			const uint64_t maxInstances = WebGPUBackend::GetMaxBufferSize() / sizeof(SpriteInstance);
+			if (neededInstances > maxInstances) {
+				static bool s_LoggedOverLimit = false;
+				if (!s_LoggedOverLimit) {
+					s_LoggedOverLimit = true;
+					IDX_CORE_ERROR_TAG("Renderer2D",
+						"{} visible sprites exceed the GPU buffer limit ({} instances); skipping the sprite pass",
+						neededInstances, maxInstances);
+				}
+				return false;
+			}
+
+			uint64_t newCapacity = g_InstanceBufferCapacity > 0 ? g_InstanceBufferCapacity : 256;
 			while (newCapacity < neededInstances) newCapacity *= 2;
+			newCapacity = std::min<uint64_t>(newCapacity, maxInstances);
 
 			wgpu::BufferDescriptor desc{};
-			desc.size  = static_cast<uint64_t>(newCapacity) * sizeof(SpriteInstance);
+			desc.size  = newCapacity * sizeof(SpriteInstance);
 			desc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
 			desc.label = "renderer2d-instance-vbo";
 			wgpu::Buffer buf = device.CreateBuffer(&desc);
@@ -738,7 +763,7 @@ namespace Index {
 				return false;
 			}
 			g_InstanceBuffer         = std::move(buf);
-			g_InstanceBufferCapacity = newCapacity;
+			g_InstanceBufferCapacity = static_cast<uint32_t>(newCapacity);
 			return true;
 		}
 
@@ -830,6 +855,14 @@ namespace Index {
 				"PostProcessor::Initialize failed — scene will render direct to caller (no PP)");
 		}
 
+		m_TextRenderer = std::make_unique<TextRenderer>();
+		m_TextRenderer->Initialize();
+		if (!m_TextRenderer->IsInitialized()) {
+			IDX_CORE_WARN_TAG("Renderer2D",
+				"World text renderer failed to initialize — TextRenderer on Transform2D entities will not draw");
+			m_TextRenderer.reset();
+		}
+
 		m_IsInitialized = true;
 	}
 
@@ -851,6 +884,10 @@ namespace Index {
 #endif
 
 		// MUST precede WebGPUApi::Shutdown — FBO and pipelines hold Dawn handles.
+		if (m_TextRenderer) {
+			m_TextRenderer->Shutdown();
+			m_TextRenderer.reset();
+		}
 		m_SceneFbo.Destroy();
 		m_PostProcessOutputFbo.Destroy();
 		m_PostProcessor.Shutdown();
@@ -896,7 +933,10 @@ namespace Index {
 		// Clear swap chain to BLACK for aspect-locked letterbox bars before the sub-rect blit; restore camera clear color immediately after.
 		Viewport* mainViewport = Window::GetMainViewport();
 		const bool hasLetterbox = mainViewport && mainViewport->HasLetterbox();
-		if (hasLetterbox) {
+		if (m_ComposeOverTarget) {
+			// Renderer3D already cleared and drew this frame.
+		}
+		else if (hasLetterbox) {
 			RenderApi::SetClearColor(Color{ 0.0f, 0.0f, 0.0f, 1.0f });
 			RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
 			// Restore camera clear color so the scene FBO (not just the letterbox bars) uses it.
@@ -1000,7 +1040,14 @@ namespace Index {
 			}
 		}
 
-		if (n == 0 && !usePostProcess) {
+		bool hasWorldText = false;
+		if (m_TextRenderer) {
+			auto worldText = scene.GetRegistry().view<TextRendererComponent, Transform2DComponent>(entt::exclude<DisabledTag>);
+			hasWorldText = worldText.begin() != worldText.end();
+		}
+
+		// Composing over 3D with nothing to draw: an empty intermediate would only add a blit.
+		if (n == 0 && !hasWorldText && (!usePostProcess || m_ComposeOverTarget)) {
 			finishTiming();
 			return;
 		}
@@ -1008,7 +1055,7 @@ namespace Index {
 		if (usePostProcess) {
 			RenderApi::BindFramebuffer(m_SceneFbo);
 			RenderApi::SetViewport(0, 0, fboWidth, fboHeight);
-			if (RenderApi::GetPolygonMode() == PolygonMode::Wireframe) {
+			if (RenderApi::GetPolygonMode() == PolygonMode::Wireframe || m_ComposeOverTarget) {
 				const Color savedClear = RenderApi::GetClearColor();
 				RenderApi::SetClearColor(Color{ 0.0f, 0.0f, 0.0f, 0.0f });
 				RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
@@ -1092,6 +1139,8 @@ namespace Index {
 			if (target.HasDepth) {
 				depthAtt.view              = target.DepthView;
 				depthAtt.depthLoadOp       = wgpu::LoadOp::Load;
+				// Ignored for Load, but browsers reject the non-finite default.
+				depthAtt.depthClearValue   = 1.0f;
 				depthAtt.depthStoreOp      = wgpu::StoreOp::Store;
 				depthAtt.stencilLoadOp     = wgpu::LoadOp::Load;
 				depthAtt.stencilStoreOp    = wgpu::StoreOp::Store;
@@ -1182,6 +1231,13 @@ namespace Index {
 				m_GpuTimer->ResolveCurrentFrame(encoder);
 			}
 #endif
+		}
+
+		// World text (TextRenderer on a Transform2D entity) draws over the sprites into the same target,
+		// so post-processing and letterboxing apply to it too. UI text (RectTransform2D) is GuiRenderer's.
+		if (hasWorldText) {
+			INDEX_PROFILE_SCOPE("Renderer2D.WorldText");
+			m_TextRenderer->RenderScene(scene, vp, viewportAABB);
 		}
 
 		if (usePostProcess) {

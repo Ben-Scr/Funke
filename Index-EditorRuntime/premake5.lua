@@ -1,6 +1,6 @@
 group "Runtime"
 project "Index-EditorRuntime"
-    location "."
+    location (IndexProjectLocation("Index-EditorRuntime", "."))
     kind "StaticLib"
     language "C++"
     cppdialect "C++20"
@@ -18,7 +18,7 @@ project "Index-EditorRuntime"
         "src/**.hpp"
     }
 
-    -- Pulls Index-Engine + ImGui + GLFW so this lib's TUs can see the engine
+    -- Pulls Index-Engine + ImGui + SDL3 so this lib's TUs can see the engine
     -- headers (Core/Application.hpp, Core/Window.hpp, Gui/ImGuiImplWebGPU.hpp,
     -- Packages/PackageImGuiBridge.hpp) and the imgui headers used by the
     -- titlebar and context-setup code. The consumer .exe (Launcher / Editor /
@@ -51,6 +51,9 @@ project "Index-EditorRuntime"
 
     filter "system:linux"
         defines { "IDX_PLATFORM_LINUX" }
+
+    filter "system:macosx"
+        defines { "IDX_PLATFORM_MACOS" }
 
     filter "configurations:Debug"
         runtime "Debug"

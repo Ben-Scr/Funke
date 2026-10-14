@@ -1,49 +1,47 @@
 #include "pch.hpp"
 #include "Project/BuildPlatformSupport.hpp"
 
+#include "Project/PlatformPackages.hpp"
+
 namespace Index {
 
-	bool BuildPlatformSupport::IsAvailable(BuildPlatform platform) {
-		switch (platform) {
-			case BuildPlatform::Windows:
+	std::optional<BuildPlatform> BuildPlatformSupport::HostDesktopPlatform() {
 #if defined(IDX_PLATFORM_WINDOWS)
-				return true;
+		return BuildPlatform::Windows;
+#elif defined(IDX_PLATFORM_LINUX)
+		return BuildPlatform::Linux;
+#elif defined(IDX_PLATFORM_MACOS)
+		return BuildPlatform::MacOS;
 #else
-				return false;
+		return std::nullopt;
 #endif
-			// All non-Windows platforms disabled until editor platform-packages exist.
-			case BuildPlatform::Linux:
-			case BuildPlatform::MacOS:
-			case BuildPlatform::Android:
-			case BuildPlatform::IOS:
-			case BuildPlatform::VisionOS:
-			case BuildPlatform::Web:
-				return false;
-		}
-		return false;
+	}
+
+	bool BuildPlatformSupport::IsHostDesktop(BuildPlatform platform) {
+		const std::optional<BuildPlatform> host = HostDesktopPlatform();
+		return host && *host == platform;
+	}
+
+	bool BuildPlatformSupport::IsAvailable(BuildPlatform platform) {
+		if (IsHostDesktop(platform)) return true;
+		const std::optional<PlatformPackageInfo> package = PlatformPackages::FindForPlatform(platform);
+		return package && package->SupportsHost(PlatformPackages::CurrentHostName());
+	}
+
+	std::optional<PlatformPackageInfo> BuildPlatformSupport::GetPackage(BuildPlatform platform) {
+		if (IsHostDesktop(platform)) return std::nullopt;
+		return PlatformPackages::FindForPlatform(platform);
 	}
 
 	std::string BuildPlatformSupport::UnavailableReason(BuildPlatform platform) {
-		auto notInstalled = [](const char* displayName) {
-			return std::string(displayName) + " platform support is not installed. "
-				"Install it via the Package Manager once " + displayName +
-				" platform packages are available.";
-		};
-		switch (platform) {
-			case BuildPlatform::Windows:
-#if defined(IDX_PLATFORM_WINDOWS)
-				return {};
-#else
-				return "Windows cross-compilation is not available on this host.";
-#endif
-			case BuildPlatform::Linux:    return notInstalled("Linux");
-			case BuildPlatform::MacOS:    return notInstalled("macOS");
-			case BuildPlatform::Android:  return notInstalled("Android");
-			case BuildPlatform::IOS:      return notInstalled("iOS");
-			case BuildPlatform::VisionOS: return notInstalled("visionOS");
-			case BuildPlatform::Web:      return notInstalled("Web");
+		if (IsAvailable(platform)) return {};
+		const std::string displayName = IndexBuildProfile::PlatformDisplayName(platform);
+		if (const std::optional<PlatformPackageInfo> package = PlatformPackages::FindForPlatform(platform)) {
+			return package->Name + " is installed but cannot build on this computer (supported hosts: "
+				+ package->Hosts + ").";
 		}
-		return "Unknown platform.";
+		return displayName + " platform support is not installed. Install the Index.Platform."
+			+ IndexBuildProfile::PlatformToString(platform) + " package (Package Manager > Platforms).";
 	}
 
 } // namespace Index

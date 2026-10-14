@@ -3,18 +3,15 @@
 #include "Scripting/NativeScript.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Core/Log.hpp"
+#include "Core/Platform.hpp"
 #include "Core/Time.hpp"
 #include "Scene/Scene.hpp"
+#if INDEX_WITH_2D
 #include "Components/General/Transform2DComponent.hpp"
+#endif
 
 #include <chrono>
 #include <exception>
-
-#if defined(IDX_PLATFORM_WINDOWS)
-#include <windows.h>
-#elif defined(IDX_PLATFORM_LINUX)
-#include <dlfcn.h>
-#endif
 
 namespace Index {
 
@@ -33,6 +30,7 @@ namespace Index {
 	static float API_GetDeltaTime() {
 		return Time::GetDeltaTime();
 	}
+#if INDEX_WITH_2D
 	static void API_GetPosition(uint32_t entityID, float* x, float* y) {
 		Scene* scene = ScriptEngine::GetScene();
 		if (!scene) { *x = 0; *y = 0; return; }
@@ -62,6 +60,13 @@ namespace Index {
 		if (!scene->HasComponent<Transform2DComponent>(handle)) return;
 		scene->GetComponent<Transform2DComponent>(handle).Rotation = rot;
 	}
+#else
+	// NativeEngineAPI keeps its layout without the 2D module; transforms read as zero.
+	static void API_GetPosition(uint32_t, float* x, float* y) { *x = 0; *y = 0; }
+	static void API_SetPosition(uint32_t, float, float) {}
+	static float API_GetRotation(uint32_t) { return 0.0f; }
+	static void API_SetRotation(uint32_t, float) {}
+#endif
 
 	static NativeEngineAPI s_EngineAPI = {
 		API_LogInfo, API_LogWarn, API_LogError,
@@ -107,17 +112,7 @@ namespace Index {
 
 		void UnloadLibraryHandle(void* dllHandle)
 		{
-#if defined(IDX_PLATFORM_WINDOWS)
-			if (dllHandle) {
-				FreeLibrary(static_cast<HMODULE>(dllHandle));
-			}
-#elif defined(IDX_PLATFORM_LINUX)
-			if (dllHandle) {
-				dlclose(dllHandle);
-			}
-#else
-			(void)dllHandle;
-#endif
+			Platform::UnloadSharedLibrary(dllHandle);
 		}
 
 		void RemoveShadowCopy(const std::filesystem::path& shadowPath)
@@ -197,39 +192,17 @@ namespace Index {
 
 		void* newDllHandle = nullptr;
 
-#if defined(IDX_PLATFORM_WINDOWS)
-		newDllHandle = static_cast<void*>(LoadLibraryA(shadowPath.string().c_str()));
+		std::string loadError;
+		newDllHandle = Platform::LoadSharedLibrary(shadowPath, &loadError);
 		if (!newDllHandle)
 		{
-			IDX_CORE_ERROR_TAG("NativeScriptHost", "Failed to load DLL: {}", sourcePath.string());
+			IDX_CORE_ERROR_TAG("NativeScriptHost", "Failed to load shared library '{}': {}", sourcePath.string(), loadError);
 			RemoveShadowCopy(shadowPath);
 			return false;
 		}
-#elif defined(IDX_PLATFORM_LINUX)
-		dlerror();
-		newDllHandle = dlopen(shadowPath.string().c_str(), RTLD_NOW);
-		if (!newDllHandle)
-		{
-			const char* error = dlerror();
-			IDX_CORE_ERROR_TAG("NativeScriptHost", "Failed to load shared library '{}': {}", sourcePath.string(), error ? error : "unknown error");
-			RemoveShadowCopy(shadowPath);
-			return false;
-		}
-#else
-		IDX_CORE_ERROR_TAG("NativeScriptHost", "Native scripts are not supported on this platform");
-		RemoveShadowCopy(shadowPath);
-		return false;
-#endif
 
 		auto getSymbol = [newDllHandle](const char* name) -> void* {
-#if defined(IDX_PLATFORM_WINDOWS)
-			return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(newDllHandle), name));
-#elif defined(IDX_PLATFORM_LINUX)
-			dlerror();
-			return dlsym(newDllHandle, name);
-#else
-			return nullptr;
-#endif
+			return Platform::GetSharedLibrarySymbol(newDllHandle, name);
 		};
 
 		NativeCreateFn newCreateFn = reinterpret_cast<NativeCreateFn>(getSymbol("IndexCreateScript"));

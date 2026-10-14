@@ -1,7 +1,10 @@
 #pragma once
 
+#include "Core/Export.hpp"
 #include "Components/ComponentUtils.hpp"
+#if INDEX_WITH_2D
 #include "Components/General/Transform2DComponent.hpp"
+#endif
 #include "Scene/Scene.hpp"
 #include "Scripting/NativeEngineAPI.hpp"
 #include "Scripting/NativeScriptRegistry.hpp"

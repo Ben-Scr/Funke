@@ -45,6 +45,10 @@ public static class SceneManager
         return new Scene { Name = name, AssetUUID = guid };
     }
 
+    /// <summary>
+    /// Loads a scene. In Single mode, loading the scene that is already loaded restarts it fresh from disk
+    /// (a level restart); <see cref="ReloadScene(string)"/> keeps the runtime state instead.
+    /// </summary>
     public static Scene? LoadScene(string name, LoadSceneMode mode = LoadSceneMode.Single)
     {
         bool success;

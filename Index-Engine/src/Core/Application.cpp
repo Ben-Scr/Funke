@@ -1,16 +1,26 @@
 #include "pch.hpp"
 #include "Application.hpp"
 #include "Assets/AssetRegistry.hpp"
-#include "Components/Graphics/Camera2DComponent.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Core/Window.hpp"
 #include "Graphics/GLInitSpecifications.hpp"
 #include "Graphics/RenderApi.hpp"
+#include "Graphics/IRenderer.hpp"
+#include "Physics/IPhysicsEngine.hpp"
+#if INDEX_WITH_2D
+#include "Components/Graphics/Camera2DComponent.hpp"
 #include "Graphics/Renderer2D.hpp"
+#include "Physics/PhysicsSystem2D.hpp"
+#endif
+#if INDEX_WITH_3D
+#include "Graphics/Renderer3D.hpp"
+#endif
 #include "Graphics/GizmoRenderer.hpp"
+#include "Graphics/ImageProcessing.hpp"
 #include "Graphics/ShaderManager.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Core/PackageHost.hpp"
+#include "Core/Platform.hpp"
 #include "Gui/GuiRenderer.hpp"
 #include "Math/Math.hpp"
 #include "Core/SingleInstance.hpp"
@@ -21,7 +31,6 @@
 #include "Graphics/TextureManager.hpp"
 #include "Jobs/JobSystem.hpp"
 #include "Memory/FrameArenas.hpp"
-#include "Physics/PhysicsSystem2D.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Scene/Scene.hpp"
 #include "Scripting/ScriptEngine.hpp"
@@ -43,8 +52,9 @@
 
 #include "Input.hpp"
 #include "Project/ProjectManager.hpp"
+#include "Core/EngineModules.hpp"
 #include "Project/IndexProject.hpp"
-#include <GLFW/glfw3.h>
+#include "Project/SplashAssetResolve.hpp"
 
 namespace Index {
 
@@ -69,7 +79,11 @@ namespace Index {
 	}
 
 	Renderer2D* Application::GetRenderer2D() {
+#if INDEX_WITH_2D
 		return static_cast<Renderer2D*>(m_Renderer2D.get());
+#else
+		return nullptr;
+#endif
 	}
 
 	GraphicsApplyStatus Application::ApplyGraphicsSettings(const GraphicsSettings& settings) {
@@ -93,9 +107,16 @@ namespace Index {
 		if (!m_GraphicsSettingsPending) return;
 		m_EffectiveGraphicsSettings = m_RequestedGraphicsSettings;
 		m_GraphicsSettingsPending = false;
+#if INDEX_WITH_2D
 		if (Renderer2D* renderer = GetRenderer2D()) {
 			renderer->SetGraphicsSettings(m_EffectiveGraphicsSettings);
 		}
+#endif
+#if INDEX_WITH_3D
+		if (m_Renderer3D) {
+			m_Renderer3D->SetGraphicsSettings(m_EffectiveGraphicsSettings);
+		}
+#endif
 	}
 
 	Scene* Application::GetActiveScene() {
@@ -116,232 +137,316 @@ namespace Index {
 		}
 	}
 
+	namespace {
+		// The browser paces frames with requestAnimationFrame; sleeping there would only add latency.
+#if defined(IDX_PLATFORM_WEB)
+		constexpr bool k_PaceFramesInLoop = false;
+#else
+		constexpr bool k_PaceFramesInLoop = true;
+#endif
+	}
+
 	int Application::Run()
 	{
+		if (!BeginRun()) return GetRunExitCode();
+		do {
+			while (RunFrame()) {}
+		} while (FinishRunCycle());
+		return GetRunExitCode();
+	}
+
+	bool Application::BeginRun()
+	{
 		m_MainThreadId = std::this_thread::get_id();
-		bool ciSmokeTest = false;
+		m_RunLoop = RunLoopState{};
 		for (int i = 1; i < s_CommandLineArgs.Count; ++i) {
 			const char* value = s_CommandLineArgs[i];
-			if (value && std::string_view(value) == "--ci-smoke-test") {
-				ciSmokeTest = true;
-				break;
+			if (!value) continue;
+			const std::string_view arg(value);
+			if (arg == "--ci-smoke-test") {
+				m_RunLoop.CiSmokeTest = true;
+			}
+			else if (arg.rfind("--quit-after=", 0) == 0) {
+				try {
+					m_RunLoop.QuitAfterSeconds = std::max(0.0f, std::stof(std::string(arg.substr(13))));
+				}
+				catch (...) {
+					IDX_WARN_TAG("Application", "Ignoring invalid {}", arg);
+				}
 			}
 		}
-		int exitCode = 0;
-		int smokeFramesRemaining = 3;
-		bool smokeQuitRequested = false;
 
 		if (m_ForceSingleInstance) {
 			static SingleInstance instance(m_Name);
 			IDX_ASSERT(!instance.IsAlreadyRunning(), IndexErrorCode::Undefined, "An Instance of this app is already running!");
 		}
 
-		for (;;) {
-			IDX_INFO_TAG("Application", "Initializing...");
-			Timer timer = Timer();
-			try {
-				Initialize();
-			}
-			catch (const std::exception& e) {
-				IDX_ERROR_TAG("Application", std::string("Initialization failed: ") + e.what());
-				Shutdown(false, true);
-				return 1;
-			}
-			catch (...) {
-				IDX_ERROR_TAG("Application", "Initialization failed with unknown exception");
-				Shutdown(false, true);
-				return 1;
-			}
-			IDX_INFO_TAG("Application", "Full Initialization took " + StringHelper::ToString(timer));
+		return StartRunCycle();
+	}
 
-			try {
-				Start();
-			}
-			catch (const std::exception& e) {
-				IDX_ERROR_TAG("Application", std::string("Start failed: ") + e.what());
-				Shutdown(true, true);
-				return 1;
-			}
-			catch (...) {
-				IDX_ERROR_TAG("Application", "Start failed with unknown exception");
-				Shutdown(true, true);
-				return 1;
-			}
-			m_LastFrameTime = Clock::now();
+	bool Application::StartRunCycle()
+	{
+		IDX_INFO_TAG("Application", "Initializing...");
+		Timer timer = Timer();
+		try {
+			Initialize();
+		}
+		catch (const std::exception& e) {
+			IDX_ERROR_TAG("Application", std::string("Initialization failed: ") + e.what());
+			Shutdown(false, true);
+			m_RunLoop.ExitCode = 1;
+			return false;
+		}
+		catch (...) {
+			IDX_ERROR_TAG("Application", "Initialization failed with unknown exception");
+			Shutdown(false, true);
+			m_RunLoop.ExitCode = 1;
+			return false;
+		}
+		IDX_INFO_TAG("Application", "Full Initialization took " + StringHelper::ToString(timer));
 
-			while (!m_ShouldQuit && !(m_Window && m_Window->ShouldClose())) {
-				const float targetFps = Max(GetTargetFramerate(), 0.0f);
-				DurationChrono targetFrameTime{};
-				if (targetFps > 0.0f) {
-					targetFrameTime = std::chrono::duration_cast<DurationChrono>(std::chrono::duration<double>(1.0 / targetFps));
+		try {
+			Start();
+		}
+		catch (const std::exception& e) {
+			IDX_ERROR_TAG("Application", std::string("Start failed: ") + e.what());
+			Shutdown(true, true);
+			m_RunLoop.ExitCode = 1;
+			return false;
+		}
+		catch (...) {
+			IDX_ERROR_TAG("Application", "Start failed with unknown exception");
+			Shutdown(true, true);
+			m_RunLoop.ExitCode = 1;
+			return false;
+		}
+		m_LastFrameTime = Clock::now();
+		// Absolute schedule, not "last frame + period": a late wake-up shortens the next wait instead of lowering the average rate.
+		m_RunLoop.FrameDeadline = m_LastFrameTime;
+		return true;
+	}
+
+	bool Application::RunFrame()
+	{
+		if (m_ShouldQuit || (m_Window && m_Window->ShouldClose())) {
+			return false;
+		}
+
+		const float targetFps = Max(GetTargetFramerate(), 0.0f);
+		DurationChrono targetFrameTime{};
+		if (targetFps > 0.0f) {
+			targetFrameTime = std::chrono::duration_cast<DurationChrono>(std::chrono::duration<double>(1.0 / targetFps));
+		}
+		auto now = Clock::now();
+
+		// VSync bucket: gap between last frame's render end and now (covers SwapBuffers + frame-cap idle).
+		const auto vsyncStart = m_LastFrameEndTime != Clock::time_point{}
+			? m_LastFrameEndTime
+			: now;
+
+		// Headless has no swap-chain vsync so the cap runs unconditionally when UseTargetFrameRateForMainLoop is set.
+		const bool paceToTarget = m_Configuration.UseTargetFrameRateForMainLoop && targetFps > 0.0f
+			&& (!m_Window || !m_Window->IsVsync() || IsEnginePaused());
+		if (paceToTarget && !k_PaceFramesInLoop)
+		{
+			// requestAnimationFrame cannot wait, so ticks that arrive before the next scheduled frame are skipped.
+			// A quarter-frame allowance keeps 60 fps on displays whose refresh is not a multiple of the cap;
+			// the absolute schedule keeps the average at or below the target.
+			auto nextFrameTime = m_RunLoop.FrameDeadline + targetFrameTime;
+			if (nextFrameTime + targetFrameTime < now) {
+				nextFrameTime = now;
+			}
+			if (now + targetFrameTime / 4 < nextFrameTime) {
+				return true;
+			}
+			m_RunLoop.FrameDeadline = nextFrameTime;
+		}
+		else if (k_PaceFramesInLoop && paceToTarget)
+		{
+			auto nextFrameTime = m_RunLoop.FrameDeadline + targetFrameTime;
+			// More than a frame behind (hitch, pause, breakpoint): restart the schedule rather than burst to catch up.
+			if (nextFrameTime + targetFrameTime < now) {
+				nextFrameTime = now;
+			}
+
+			// Sleep can wake ~1-2 ms late even at 1 ms timer resolution; sleep short and yield out the rest.
+			constexpr auto k_SpinMargin = std::chrono::microseconds(1500);
+			if (now + k_SpinMargin < nextFrameTime) {
+				std::this_thread::sleep_until(nextFrameTime - k_SpinMargin);
+			}
+			while (Clock::now() < nextFrameTime) {
+				std::this_thread::yield();
+			}
+			m_RunLoop.FrameDeadline = nextFrameTime;
+		}
+		else {
+			m_RunLoop.FrameDeadline = Clock::now();
+		}
+
+
+		auto frameStart = Clock::now();
+		const float vsyncMs = std::chrono::duration<float, std::milli>(frameStart - vsyncStart).count();
+		float deltaTime = std::chrono::duration<float>(frameStart - m_LastFrameTime).count();
+
+		if (deltaTime >= 0.25f) {
+			ResetTimePoints();
+			deltaTime = 0.0f;
+			m_DeltaSnapDebt = 0.0;
+		}
+		else if (m_Window && m_Window->IsVsync() && !IsEnginePaused()) {
+			deltaTime = SnapVsyncDelta(deltaTime);
+		}
+
+		try {
+			INDEX_PROFILE_SCOPE("Frame");
+
+			Profiler::PushFrameDelta(deltaTime);
+
+			m_Time.Update(deltaTime);
+
+			// Headless: skip input entirely — there is no SDL video/gamepad subsystem without a window.
+			if (m_Window) {
+				// Snapshot prev-state BEFORE polling so GetKeyDown/Up reflect events from this frame.
+				m_Input.Update();
+				Window::PollEvents();
+				// PostPoll AFTER PollEvents so derived state (gamepads, axis) sees this
+				// frame's input, not last frame's.
+				m_Input.PostPoll();
+			}
+			m_IsRenderingFrame = true;
+			CoreInput();
+
+			// Pause changes from callbacks apply next loop so fixed, update, and render stay paired.
+			const bool enginePausedForFrame = IsEnginePaused();
+			// Poll-time refreshes need the previous Gizmo base until an active frame starts.
+			if (m_GizmoRenderer2D && !enginePausedForFrame) m_GizmoRenderer2D->BeginCommandFrame();
+			// MUST NOT TryCompleteQuitRequest here — must run AFTER OnPreRender so layers (save-before-quit dialog) can call CancelQuit before the request auto-completes.
+
+			// TimeScale controls step frequency via the accumulator; the step quantum stays unscaled so Box2D's solver gets a constant dt.
+			m_FixedUpdateAccumulator += Time::GetDeltaTime();
+			const double fixedDt = Time::GetUnscaledFixedDeltaTime();
+			if (fixedDt <= 0.0) {
+				// Misconfigured fixed-step: a zero/negative step would make the
+				// accumulator loop infinite. Drop accumulated time and skip the
+				// FixedUpdate dispatch this frame.
+				m_FixedUpdateAccumulator = 0.0;
+			} else {
+				// Cap catch-up so a slow frame or high TimeScale can't spiral; excess simulated time is dropped.
+				// The time floor keeps high tick rates (240 Hz) from slowing down at ordinary low frame rates.
+				constexpr double k_MaxFixedStepsPerFrame = 8.0;
+				constexpr double k_MinCatchUpSeconds = 0.1;
+				const double maxAccumulated = std::max(fixedDt * k_MaxFixedStepsPerFrame, k_MinCatchUpSeconds);
+				if (m_FixedUpdateAccumulator > maxAccumulated) {
+					m_FixedUpdateAccumulator = maxAccumulated;
 				}
-				auto now = Clock::now();
-
-				// VSync bucket: gap between last frame's render end and now (covers SwapBuffers + frame-cap idle).
-				const auto vsyncStart = m_LastFrameEndTime != Clock::time_point{}
-					? m_LastFrameEndTime
-					: now;
-
-				// Headless has no swap-chain vsync so the cap runs unconditionally when UseTargetFrameRateForMainLoop is set.
-				if (m_Configuration.UseTargetFrameRateForMainLoop && targetFps > 0.0f && (!m_Window || !m_Window->IsVsync() || IsEnginePaused()))
-				{
-					auto const nextFrameTime = m_LastFrameTime + targetFrameTime;
-
-					if (now + std::chrono::milliseconds(1) < nextFrameTime) {
-						std::this_thread::sleep_until(nextFrameTime - std::chrono::milliseconds(1));
-					}
-				}
-
-
-				auto frameStart = Clock::now();
-				const float vsyncMs = std::chrono::duration<float, std::milli>(frameStart - vsyncStart).count();
-				float deltaTime = std::chrono::duration<float>(frameStart - m_LastFrameTime).count();
-
-				if (deltaTime >= 0.25f) {
-					ResetTimePoints();
-					deltaTime = 0.0f;
-				}
-
-				try {
-					INDEX_PROFILE_SCOPE("Frame");
-
-					Profiler::PushFrameDelta(deltaTime);
-
-					m_Time.Update(deltaTime);
-
-					// Headless: skip input entirely — Input::Update calls glfwGetGamepadState which crashes without a GLFW window.
-					if (m_Window) {
-						// Snapshot prev-state BEFORE polling so GetKeyDown/Up reflect events from this frame.
-						m_Input.Update();
-						glfwPollEvents();
-						// PostPoll AFTER glfwPollEvents so derived state (axis) sees this
-						// frame's keys, not last frame's.
-						m_Input.PostPoll();
-					}
-					m_IsRenderingFrame = true;
-					CoreInput();
-
-					// Pause changes from callbacks apply next loop so fixed, update, and render stay paired.
-					const bool enginePausedForFrame = IsEnginePaused();
-					// Poll-time refreshes need the previous Gizmo base until an active frame starts.
-					if (m_GizmoRenderer2D && !enginePausedForFrame) m_GizmoRenderer2D->BeginCommandFrame();
-					// MUST NOT TryCompleteQuitRequest here — must run AFTER OnPreRender so layers (save-before-quit dialog) can call CancelQuit before the request auto-completes.
-
-					// TimeScale controls step frequency via the accumulator; the step quantum stays unscaled so Box2D's solver gets a constant dt.
-					m_FixedUpdateAccumulator += Time::GetDeltaTime();
-					const double fixedDt = Time::GetUnscaledFixedDeltaTime();
-					if (fixedDt <= 0.0) {
-						// Misconfigured fixed-step: a zero/negative step would make the
-						// accumulator loop infinite. Drop accumulated time and skip the
-						// FixedUpdate dispatch this frame.
-						m_FixedUpdateAccumulator = 0.0;
-					} else {
-						// Cap catch-up so a slow frame or high TimeScale can't spiral; excess simulated time is dropped.
-						// The time floor keeps high tick rates (240 Hz) from slowing down at ordinary low frame rates.
-						constexpr double k_MaxFixedStepsPerFrame = 8.0;
-						constexpr double k_MinCatchUpSeconds = 0.1;
-						const double maxAccumulated = std::max(fixedDt * k_MaxFixedStepsPerFrame, k_MinCatchUpSeconds);
-						if (m_FixedUpdateAccumulator > maxAccumulated) {
-							m_FixedUpdateAccumulator = maxAccumulated;
+				while (m_FixedUpdateAccumulator >= fixedDt) {
+					if (!enginePausedForFrame && !m_IsGameplayPaused) {
+						BeginFixedFrame();
+						// Dispatch guard defers any PopLayer/PopOverlay to the end of
+						// the snapshot so a popped sibling's memory stays alive while
+						// we're still iterating raw pointers into it.
+						LayerDispatchGuard dispatchGuard(m_LayerStack);
+						for (Layer* layer : SnapshotLayerOrder()) {
+							if (m_LayerStack.IsPendingPop(layer)) continue;
+							layer->OnFixedUpdate(*this, Time::GetUnscaledFixedDeltaTime());
 						}
-						while (m_FixedUpdateAccumulator >= fixedDt) {
-							if (!enginePausedForFrame && !m_IsGameplayPaused) {
-								BeginFixedFrame();
-								// Dispatch guard defers any PopLayer/PopOverlay to the end of
-								// the snapshot so a popped sibling's memory stays alive while
-								// we're still iterating raw pointers into it.
-								LayerDispatchGuard dispatchGuard(m_LayerStack);
-								for (Layer* layer : SnapshotLayerOrder()) {
-									layer->OnFixedUpdate(*this, Time::GetUnscaledFixedDeltaTime());
-								}
-								EndFixedFrame();
-							}
-
-							m_FixedUpdateAccumulator -= fixedDt;
-						}
+						EndFixedFrame();
 					}
 
-					BeginFrame(enginePausedForFrame);
-					EndFrame(enginePausedForFrame);
-					TryCompleteQuitRequest();
+					m_FixedUpdateAccumulator -= fixedDt;
+				}
+			}
 
-					m_LastFrameTime = frameStart;
-					m_Time.AdvanceFrameCount();
-					if (ciSmokeTest && !smokeQuitRequested && m_StartupLoadComplete && --smokeFramesRemaining <= 0) {
-						IDX_INFO_TAG("Application", "CI smoke test reached a stable frame; requesting graceful shutdown.");
-						RequestQuit();
-						smokeQuitRequested = true;
-					}
+			BeginFrame(enginePausedForFrame);
+			EndFrame(enginePausedForFrame);
+			TryCompleteQuitRequest();
+
+			m_LastFrameTime = frameStart;
+			m_Time.AdvanceFrameCount();
+			if (m_RunLoop.CiSmokeTest && !m_RunLoop.SmokeQuitRequested && m_StartupLoadComplete && --m_RunLoop.SmokeFramesRemaining <= 0) {
+				IDX_INFO_TAG("Application", "CI smoke test reached a stable frame; requesting graceful shutdown.");
+				RequestQuit();
+				m_RunLoop.SmokeQuitRequested = true;
+			}
+			// Automation: run the loaded game for N real seconds, then quit gracefully (scripts' OnDestroy/OnQuit still run).
+			if (m_RunLoop.QuitAfterSeconds >= 0.0f && !m_RunLoop.QuitAfterRequested && m_StartupLoadComplete) {
+				if (!m_RunLoop.HasQuitAfterStart) {
+					m_RunLoop.QuitAfterStart = Clock::now();
+					m_RunLoop.HasQuitAfterStart = true;
+				}
+				else if (std::chrono::duration<float>(Clock::now() - m_RunLoop.QuitAfterStart).count() >= m_RunLoop.QuitAfterSeconds) {
+					IDX_INFO_TAG("Application", "--quit-after {}s elapsed; requesting graceful shutdown.", m_RunLoop.QuitAfterSeconds);
+					RequestQuit();
+					m_RunLoop.QuitAfterRequested = true;
+				}
+			}
 
 #ifdef INDEX_PROFILER_ENABLED
-					INDEX_PROFILE_VALUE("VSync", vsyncMs);
+			INDEX_PROFILE_VALUE("VSync", vsyncMs);
 
-#  ifdef IDX_PLATFORM_WINDOWS
-					{
-						PROCESS_MEMORY_COUNTERS pmc{};
-						if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
-							const float workingSetMb = static_cast<float>(pmc.WorkingSetSize) / (1024.0f * 1024.0f);
-							TracyPlot("Working Set", double(workingSetMb));
-							Profiler::PushValue("Total Memory", workingSetMb);
-						}
-					}
-#  endif
-					{
-						const std::size_t textureBytes = TextureManager::GetTotalTextureMemoryBytes();
-						INDEX_PROFILE_VALUE("Texture Memory", float(textureBytes / (1024 * 1024)));
-					}
-
-					{
-						std::size_t totalEntities = 0;
-						if (m_SceneManager) {
-							m_SceneManager->ForeachLoadedSceneImpl([&totalEntities](Scene& scene) {
-								totalEntities += scene.GetEntityCount();
-							});
-						}
-						INDEX_PROFILE_VALUE("Entity Count", float(totalEntities));
-					}
-
-					INDEX_PROFILE_VALUE("Playing Sources", float(AudioManager::GetActiveSoundCount()));
-
-					// "Others" residual: Frame Time minus the four named CPU buckets.
-					{
-						const float frameMs    = Profiler::GetCurrentValue("Frame Time");
-						const float renderMs   = Profiler::GetCurrentValue("Rendering");
-						const float scriptsMs  = Profiler::GetCurrentValue("Scripts");
-						const float physicsMs  = Profiler::GetCurrentValue("Physics");
-						const float others = frameMs - renderMs - scriptsMs - physicsMs - vsyncMs;
-						INDEX_PROFILE_VALUE("Others", std::max(0.0f, others));
-					}
-#endif
-
-					INDEX_PROFILE_FRAME("Frame");
-
-					// MUST be last in try-block — anything after eats into next frame's VSync bucket.
-					m_LastFrameEndTime = Clock::now();
-				}
-				catch (const std::exception& e) {
-					m_IsRenderingFrame = false;
-					IDX_ERROR_TAG("Application", "Unhandled frame exception: {}", e.what());
-					exitCode = 1;
-					m_ShouldQuit = true;
-					NotifyUnhandledFrameException(e.what());
-				}
-				catch (...) {
-					m_IsRenderingFrame = false;
-					IDX_ERROR_TAG("Application", "Unhandled frame exception: unknown exception");
-					exitCode = 1;
-					m_ShouldQuit = true;
-					NotifyUnhandledFrameException("unknown exception");
-				}
+			if (const float workingSetMb = Platform::GetProcessMemoryMiB(); workingSetMb > 0.0f) {
+				TracyPlot("Working Set", double(workingSetMb));
+				Profiler::PushValue("Total Memory", workingSetMb);
+			}
+			{
+				const std::size_t textureBytes = TextureManager::GetTotalTextureMemoryBytes();
+				INDEX_PROFILE_VALUE("Texture Memory", float(textureBytes / (1024 * 1024)));
 			}
 
-			Shutdown();
+			{
+				std::size_t totalEntities = 0;
+				if (m_SceneManager) {
+					m_SceneManager->ForeachLoadedSceneImpl([&totalEntities](Scene& scene) {
+						totalEntities += scene.GetEntityCount();
+					});
+				}
+				INDEX_PROFILE_VALUE("Entity Count", float(totalEntities));
+			}
 
-			if (!m_CanReload) break;
-			m_CanReload = false;
-			m_RestartWindow = false;
+			INDEX_PROFILE_VALUE("Playing Sources", float(AudioManager::GetActiveSoundCount()));
+
+			// "Others" residual: Frame Time minus the four named CPU buckets.
+			{
+				const float frameMs    = Profiler::GetCurrentValue("Frame Time");
+				const float renderMs   = Profiler::GetCurrentValue("Rendering");
+				const float scriptsMs  = Profiler::GetCurrentValue("Scripts");
+				const float physicsMs  = Profiler::GetCurrentValue("Physics");
+				const float others = frameMs - renderMs - scriptsMs - physicsMs - vsyncMs;
+				INDEX_PROFILE_VALUE("Others", std::max(0.0f, others));
+			}
+#endif
+
+			INDEX_PROFILE_FRAME("Frame");
+
+			// MUST be last in try-block — anything after eats into next frame's VSync bucket.
+			m_LastFrameEndTime = Clock::now();
 		}
-		return exitCode;
+		catch (const std::exception& e) {
+			m_IsRenderingFrame = false;
+			IDX_ERROR_TAG("Application", "Unhandled frame exception: {}", e.what());
+			m_RunLoop.ExitCode = 1;
+			m_ShouldQuit = true;
+			NotifyUnhandledFrameException(e.what());
+		}
+		catch (...) {
+			m_IsRenderingFrame = false;
+			IDX_ERROR_TAG("Application", "Unhandled frame exception: unknown exception");
+			m_RunLoop.ExitCode = 1;
+			m_ShouldQuit = true;
+			NotifyUnhandledFrameException("unknown exception");
+		}
+
+		return true;
+	}
+
+	bool Application::FinishRunCycle()
+	{
+		Shutdown();
+
+		if (!m_CanReload) return false;
+		m_CanReload = false;
+		m_RestartWindow = false;
+		return StartRunCycle();
 	}
 
 	void Application::Initialize() {
@@ -387,6 +492,17 @@ namespace Index {
 			Time::SetFixedDeltaTime(project->GetFixedDeltaTimeSeconds());
 		}
 
+		// Before renderers, systems and component registration: each asks which modules are active.
+		if (const IndexProject* project = ProjectManager::GetCurrentProject()) {
+			EngineModules::Configure(project->Modules);
+			for (const std::string& missing : EngineModules::GetMissingModules(project->Modules)) {
+				IDX_WARN_TAG("Application", "Project uses module '{}', but this build was compiled without it.", missing);
+			}
+		}
+		else {
+			EngineModules::ActivateAllCompiled();
+		}
+
 		// Profiler first — no GL/window deps, lets later subsystems emit profile marks during init.
 #ifdef INDEX_PROFILER_ENABLED
 		Profiler::Initialize();
@@ -411,11 +527,21 @@ namespace Index {
 		if (m_Configuration.EnableWindow) {
 			timer.Reset();
 			if (!m_Window) {
-				Window::Initialize();
+				AppIdentity identity;
+				if (const IndexProject* project = ProjectManager::GetCurrentProject(); project && !IsEditor()) {
+					identity.Name = project->Name;
+					identity.Version = project->BuildVersion;
+					identity.Identifier = project->GetApplicationIdentifier();
+				}
+				Window::Initialize(identity);
+				// No display (headless / detached RDP session) leaves SDL video uninitialized; creating a window would fail.
+				if (!Window::IsInitialized()) {
+					IDX_THROW(IndexErrorCode::Undefined, "Window system failed to initialize (no primary monitor available)");
+				}
 				m_Window = std::make_unique<Window>(m_Configuration.WindowSpecification);
 			}
 			else {
-				IDX_VERIFY(Window::IsInitialized(), "Application: preserved window requires initialized GLFW");
+				IDX_VERIFY(Window::IsInitialized(), "Application: preserved window requires initialized SDL video");
 			}
 			m_Window->SetVsync(m_Configuration.Vsync);
 			m_Window->SetEventCallback([this](IndexEvent& e) { DispatchEvent(e); });
@@ -425,7 +551,7 @@ namespace Index {
 			RenderApi::Init(GLInitSpecifications(Color::Background(), GLCullingMode::Back));
 			IDX_INFO_TAG("RenderApi", "Initialization took " + StringHelper::ToString(timer));
 
-			// MUST call after RenderApi::Init: ConfigureSurface resets the viewport to full surface dims; the GLFW framebuffer-size callback doesn't fire at startup so frame 0 would render stretched without this.
+			// MUST call after RenderApi::Init: ConfigureSurface resets the viewport to full surface dims; no resize event fires at startup so frame 0 would render stretched without this.
 			m_Window->ResyncViewportAfterRenderApiInit();
 		}
 		else {
@@ -458,6 +584,8 @@ namespace Index {
 		}
 
 		if (m_Configuration.EnableRenderer2D) {
+#if INDEX_WITH_2D
+			if (EngineModules::IsActive(EngineModule::TwoD)) {
 			timer.Reset();
 			auto renderer = std::make_unique<Renderer2D>();
 			renderer->Initialize();
@@ -469,6 +597,24 @@ namespace Index {
 				});
 			m_Renderer2D = std::move(renderer);
 			IDX_INFO_TAG("Renderer2D", "Initialization took " + StringHelper::ToString(timer));
+			}
+#endif
+
+#if INDEX_WITH_3D
+			// Scene rendering is one switch: whoever disables Renderer2D (launcher, headless) wants no 3D either.
+			timer.Reset();
+			auto renderer3D = EngineModules::IsActive(EngineModule::ThreeD) ? std::make_unique<Renderer3D>() : nullptr;
+			if (renderer3D && renderer3D->Initialize()) {
+				renderer3D->SetGraphicsSettings(m_EffectiveGraphicsSettings);
+				renderer3D->SetSceneProvider([this](const std::function<void(Scene&)>& fn) {
+					if (m_SceneManager) {
+						m_SceneManager->ForeachLoadedSceneImpl(fn);
+					}
+					});
+				m_Renderer3D = std::move(renderer3D);
+				IDX_INFO_TAG("Renderer3D", "Initialization took " + StringHelper::ToString(timer));
+			}
+#endif
 		}
 
 		if (m_Configuration.EnableGizmoRenderer) {
@@ -489,10 +635,14 @@ namespace Index {
 			timer.Reset();
 			// Construct the concrete default impl, then move into the
 			// IPhysicsEngine-typed member — mirrors the renderer wiring.
-			auto physics = std::make_unique<PhysicsSystem2D>();
-			physics->Initialize();
-			m_PhysicsSystem2D = std::move(physics);
-			IDX_INFO_TAG("PhysicsSystem", "Initialization took " + StringHelper::ToString(timer));
+#if INDEX_WITH_2D
+			auto physics = EngineModules::IsActive(EngineModule::TwoD) ? std::make_unique<PhysicsSystem2D>() : nullptr;
+			if (physics) {
+				physics->Initialize();
+				m_PhysicsSystem2D = std::move(physics);
+				IDX_INFO_TAG("PhysicsSystem", "Initialization took " + StringHelper::ToString(timer));
+			}
+#endif
 		}
 
 		if (m_Configuration.EnableTextureManager && m_Configuration.EnableRenderer2D) {
@@ -538,9 +688,10 @@ namespace Index {
 		RenderOnceForRefresh();
 		RenderOnceForRefresh();
 
+#if !IDX_PLATFORM_MOBILE
 		if (m_Window) {
 			IndexProject* project = ProjectManager::GetCurrentProject();
-			auto applyCursor = [&](const std::string& projectPath, void (Window::*setter)(const Texture2D*))
+			auto applyCursor = [&](const std::string& projectPath, Vec2Int hotspot, void (Window::*setter)(const Texture2D*, Vec2Int))
 			{
 				if (!project || projectPath.empty()) return;
 				std::filesystem::path absPath(projectPath);
@@ -553,33 +704,35 @@ namespace Index {
 				}
 				TextureHandle h = TextureManager::LoadTexture(absPath.string());
 				if (Texture2D* tex = TextureManager::GetTexture(h); tex && tex->IsValid()) {
-					(m_Window.get()->*setter)(tex);
+					(m_Window.get()->*setter)(tex, hotspot);
 				}
 			};
 			if (project) {
-				applyCursor(project->CursorImagePath, &Window::SetCursorImage);
-				applyCursor(project->UIInteractableCursorImagePath, &Window::SetUICursorImage);
+				applyCursor(project->CursorImagePath, project->CursorHotspot, &Window::SetCursorImage);
+				applyCursor(project->UIInteractableCursorImagePath, project->UIInteractableCursorHotspot, &Window::SetUICursorImage);
 			}
 		}
+#endif
 
 		if (m_Configuration.SetWindowIcon && m_Window) {
-			m_Window->SetWindowIconFromResource();
-
-			// Skip in editor: applying AppIconPath would replace the editor's own embedded RT_ICON with the user's game icon.
-			if (!IsEditor()) {
-				IndexProject* project = ProjectManager::GetCurrentProject();
-				if (project && !project->AppIconPath.empty()) {
-					// Prepend project root: TextureManager resolvers don't cover project-relative paths when the runtime launches from another directory.
-					std::filesystem::path iconPath(project->AppIconPath);
-					if (!iconPath.is_absolute()) {
-						iconPath = std::filesystem::path(project->RootDirectory) / project->AppIconPath;
-					}
-					TextureHandle h = TextureManager::LoadTexture(iconPath.string());
-					Texture2D* tex = TextureManager::GetTexture(h);
-					if (tex && tex->IsValid()) {
-						m_Window->SetWindowIcon(tex);
-					}
+			// The editor keeps its own icon; AppIconPath is the shipped game's.
+			const IndexProject* project = IsEditor() ? nullptr : ProjectManager::GetCurrentProject();
+			std::string iconPath = project ? SplashAssetResolve::Resolve(project->AppIconPath, project) : std::string{};
+#if !defined(IDX_PLATFORM_WINDOWS)
+			// Windows falls back to the executable's embedded icon; other desktops show none unless given one.
+			if (iconPath.empty()) iconPath = SplashAssetResolve::DefaultLogoPath();
+#endif
+			if (!iconPath.empty()) {
+				if (std::unique_ptr<ImageData> icon = ImageProcessing::LoadFile(std::filesystem::path(iconPath))) {
+					m_Window->SetWindowIcon(*icon);
 				}
+				else {
+					IDX_WARN_TAG("Application", "App icon could not be decoded: {}", iconPath);
+					m_Window->SetEmbeddedWindowIcon();
+				}
+			}
+			else {
+				m_Window->SetEmbeddedWindowIcon();
 			}
 		}
 
@@ -631,7 +784,7 @@ namespace Index {
 			// Suspend the audio device while the engine is paused (background-pause/minimize) so playback
 			// freezes in place instead of droning on a frozen sim; refocus resumes it from the same cursor.
 			if (enginePaused) {
-				if (m_Configuration.EnableAudio) AudioManager::PauseAll();
+				if (m_Configuration.EnableAudio && !AudioManager::GetPlayInBackground()) AudioManager::PauseAll();
 				ScriptEngine::RaiseApplicationPaused();
 			}
 			else if (m_Configuration.EnableAudio) {
@@ -657,6 +810,8 @@ namespace Index {
 				// siblings stay live for the rest of this iteration.
 				LayerDispatchGuard updateGuard(m_LayerStack);
 				for (Layer* layer : SnapshotLayerOrder()) {
+					// A layer popped earlier in this pass is already OnDetach'd; skip it.
+					if (m_LayerStack.IsPendingPop(layer)) continue;
 					layer->OnUpdate(*this, Time::GetDeltaTime());
 				}
 			}
@@ -683,13 +838,31 @@ namespace Index {
 				INDEX_PROFILE_SCOPE("Layer.OnPreRender");
 				LayerDispatchGuard preRenderGuard(m_LayerStack);
 				for (Layer* layer : SnapshotLayerOrder()) {
+					if (m_LayerStack.IsPendingPop(layer)) continue;
 					INDEX_TRY_CATCH_LOG(layer->OnPreRender(*this));
 				}
 			}
 
+			bool rendered3D = false;
+#if INDEX_WITH_3D
+			if (m_Renderer3D) {
+				INDEX_PROFILE_SCOPE("Renderer3D.Begin");
+				INDEX_TRY_CATCH_LOG(rendered3D = m_Renderer3D->BeginFrame());
+			}
+#endif
+
 			if (m_Renderer2D) {
 				INDEX_PROFILE_SCOPE("Renderer2D.Begin");
+#if INDEX_WITH_2D
+				if (Renderer2D* renderer2D = GetRenderer2D()) renderer2D->SetComposeOverTarget(rendered3D);
+#endif
 				INDEX_TRY_CATCH_LOG(m_Renderer2D->BeginFrame());
+			}
+			else if (!rendered3D && m_Window && m_Configuration.EnableRenderer2D) {
+				// No scene renderer drew this frame (no 2D module, no 3D camera): clear what UI draws over.
+				RenderApi::BindDefaultFramebuffer();
+				RenderApi::SetClearColor(Color::Background());
+				RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
 			}
 
 			if (m_GuiRenderer) {
@@ -703,6 +876,13 @@ namespace Index {
 			}
 		}
 		else {
+			// Background audio: a music player must still notice a track ending and start the next one, so scripts
+			// and audio keep ticking (at the paused frame rate) while nothing is rendered.
+			if (AudioManager::GetPlayInBackground() && !m_IsPaused && m_IsPlaying && !m_IsGameplayPaused) {
+				if (m_Configuration.EnableAudio) AudioManager::Update();
+				ScriptEngine::UpdateGlobalSystems();
+				if (m_SceneManager) m_SceneManager->UpdateScenes();
+			}
 			OnPaused();
 		}
 	}
@@ -727,7 +907,7 @@ namespace Index {
 
 		dispatcher.Dispatch<WindowCloseEvent>([this](WindowCloseEvent&) {
 			RequestQuit();
-			glfwSetWindowShouldClose(m_Window->GetGLFWWindow(), GLFW_FALSE);
+			m_Window->SetShouldClose(false);
 			return false;
 			});
 
@@ -736,12 +916,14 @@ namespace Index {
 			if (!m_IsMinimized) {
 				// Update camera projections: m_ProjMat is cached and not rebuilt automatically; without this sprites stretch on resize.
 				if (m_SceneManager) {
+#if INDEX_WITH_2D
 					m_SceneManager->ForeachLoadedSceneImpl([](Scene& scene) {
 						auto view = scene.GetRegistry().view<Camera2DComponent>();
 						for (EntityHandle entity : view) {
 							view.get<Camera2DComponent>(entity).UpdateViewport();
 						}
 					});
+#endif
 				}
 				ScriptEngine::RaiseWindowResize();
 			}
@@ -749,7 +931,7 @@ namespace Index {
 			});
 
 		dispatcher.Dispatch<FileDropEvent>([this](FileDropEvent& e) {
-			// Append rather than replace: GLFW can fire multiple drop events in
+			// Append rather than replace: the OS can deliver several drop batches in
 			// the same frame (drag of N files split across batches), and the
 			// previous assignment dropped earlier batches before TakePendingFileDrops ran.
 			const auto& paths = e.GetPaths();
@@ -764,6 +946,7 @@ namespace Index {
 			if (event.Handled) {
 				break;
 			}
+			if (m_LayerStack.IsPendingPop(layer)) continue;
 			layer->OnEvent(*this, event);
 		}
 
@@ -815,6 +998,40 @@ namespace Index {
 		Quit();
 	}
 
+	// With vsync, frames reach the screen at whole refresh intervals, but the measured gap between frames
+	// jitters with present/wake-up timing (here ±25% at 144 Hz). Moving the game by the jittery value while
+	// the display advances evenly makes all motion judder, so round to the refresh interval it matches.
+	// The rounding difference is carried as debt and paid back once it reaches half an interval, so game
+	// time never drifts from real time (e.g. a 143.9 Hz display reported as 144).
+	float Application::SnapVsyncDelta(float deltaTime) {
+		if (--m_RefreshQueryCountdown <= 0) {
+			m_RefreshQueryCountdown = 240;
+			const std::optional<DisplayMode> mode = m_Window->GetDisplayMode();
+			m_RefreshInterval = mode && mode->RefreshRate >= 20.0f ? 1.0f / mode->RefreshRate : 0.0f;
+		}
+		if (m_RefreshInterval <= 0.0f || deltaTime <= 0.0f) return deltaTime;
+
+		const float intervals = std::round(deltaTime / m_RefreshInterval);
+		if (intervals < 1.0f || std::abs(deltaTime - intervals * m_RefreshInterval) > m_RefreshInterval * 0.45f) {
+			m_DeltaSnapDebt = 0.0;
+			return deltaTime; // Not vsync-paced right now (hitch, window being dragged): use the real gap.
+		}
+
+		float snapped = intervals * m_RefreshInterval;
+		m_DeltaSnapDebt += static_cast<double>(deltaTime) - snapped;
+		if (std::abs(m_DeltaSnapDebt) > m_RefreshInterval * 0.5) {
+			snapped += static_cast<float>(m_DeltaSnapDebt);
+			m_DeltaSnapDebt = 0.0;
+		}
+		return snapped;
+	}
+
+	float Application::GetFixedStepAlpha() {
+		const double fixedDt = Time::GetUnscaledFixedDeltaTime();
+		if (!s_Instance || fixedDt <= 0.0) return 1.0f;
+		return static_cast<float>(std::clamp(s_Instance->m_FixedUpdateAccumulator / fixedDt, 0.0, 1.0));
+	}
+
 	void Application::BeginFixedFrame() {
 		FixedUpdate();
 
@@ -840,6 +1057,7 @@ namespace Index {
 			INDEX_PROFILE_SCOPE("Layer.OnPostRender");
 			LayerDispatchGuard postRenderGuard(m_LayerStack);
 			for (Layer* layer : SnapshotLayerOrder()) {
+				if (m_LayerStack.IsPendingPop(layer)) continue;
 				INDEX_TRY_CATCH_LOG(layer->OnPostRender(*this));
 			}
 		}
@@ -852,11 +1070,13 @@ namespace Index {
 			INDEX_PROFILE_SCOPE("GizmoRenderer.End");
 			// Explicit gizmo pass — used to be a hidden draw inside EndFrame.
 			// Now declared as its own step in the render pipeline.
+#if INDEX_WITH_2D
 			if (Gizmo::GetShowInRuntime()) {
 				if (Camera2DComponent* cam = Camera2DComponent::GetMain()) {
 					INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->RenderWithVP(cam->GetViewProjectionMatrix(), GizmoLayerMask::Shared));
 				}
 			}
+#endif
 			INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->EndFrame());
 		}
 
@@ -866,9 +1086,11 @@ namespace Index {
 		}
 
 		// Safe to issue MapAsync here: SwapBuffers already ran Queue::Submit, so these reads won't race against the current frame's command buffer.
+#if INDEX_WITH_2D
 		if (Renderer2D* r2d = GetRenderer2D()) {
 			INDEX_TRY_CATCH_LOG(r2d->OnAfterPresent());
 		}
+#endif
 	}
 
 	void Application::RenderOnceForRefresh() {
@@ -896,6 +1118,7 @@ namespace Index {
 
 		if (m_SceneManager) INDEX_TRY_CATCH_LOG(m_SceneManager->OnPreRenderScenes());
 		for (Layer* layer : SnapshotLayerOrder()) {
+			if (m_LayerStack.IsPendingPop(layer)) continue;
 			INDEX_TRY_CATCH_LOG(layer->OnPreRender(*this));
 		}
 
@@ -906,6 +1129,7 @@ namespace Index {
 		}
 
 		for (Layer* layer : SnapshotLayerOrder()) {
+			if (m_LayerStack.IsPendingPop(layer)) continue;
 			INDEX_TRY_CATCH_LOG(layer->OnPostRender(*this));
 		}
 
@@ -916,11 +1140,13 @@ namespace Index {
 
 		if (m_GizmoRenderer2D) {
 			INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->BeginFrame());
+#if INDEX_WITH_2D
 			if (Gizmo::GetShowInRuntime()) {
 				if (Camera2DComponent* cam = Camera2DComponent::GetMain()) {
 					INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->RenderWithVP(cam->GetViewProjectionMatrix(), GizmoLayerMask::Shared));
 				}
 			}
+#endif
 			INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->EndFrame());
 		}
 
@@ -944,8 +1170,35 @@ namespace Index {
 		m_LastFrameEndTime = Clock::time_point{};
 	}
 
+	void Application::EnterBackground() {
+		Application* app = s_Instance;
+		if (!app) return;
+		app->m_IsMinimized = true;
+		if (app->m_WasEnginePaused) return;
+		if (AudioManager::GetPlayInBackground()) {
+			IDX_CORE_INFO_TAG("Application", "Entering background: rendering paused, audio keeps playing");
+		}
+		else {
+			IDX_CORE_INFO_TAG("Application", "Entering background: audio and game paused");
+			if (app->m_Configuration.EnableAudio) AudioManager::PauseAll();
+		}
+		ScriptEngine::RaiseApplicationPaused();
+		// BeginFrame sees the pause as already applied and resumes audio on the way back.
+		app->m_WasEnginePaused = true;
+	}
+
+	void Application::EnterForeground() {
+		SetWindowMinimized(false);
+	}
+
 	void Application::RefreshBackgroundPauseState() {
+#if defined(IDX_PLATFORM_WEB)
+		// Browsers already stop requestAnimationFrame for hidden tabs; losing focus to devtools or the
+		// surrounding page must not freeze a visible game.
+		m_IsBackgroundPaused = false;
+#else
 		m_IsBackgroundPaused = !m_RunInBackground && !m_WindowHasFocus;
+#endif
 	}
 
 	void Application::NotifyUnhandledFrameException(const std::string& message) {
@@ -1027,6 +1280,9 @@ namespace Index {
 		guardedShutdownOwned("PhysicsSystem2D", m_PhysicsSystem2D);
 		guardedShutdownOwned("GuiRenderer", m_GuiRenderer);
 		guardedShutdownOwned("GizmoRenderer2D", m_GizmoRenderer2D);
+#if INDEX_WITH_3D
+		guardedShutdownOwned("Renderer3D", m_Renderer3D);
+#endif
 		guardedShutdownOwned("Renderer2D", m_Renderer2D);
 		if (RenderApi::IsInitialized()) guardedShutdownStatic("RenderApi", []{ RenderApi::Shutdown(); });
 
@@ -1047,6 +1303,7 @@ namespace Index {
 				m_Window->Destroy();
 			});
 		}
+		if (!preserveWindow) m_Input.CloseGamepads();
 		if (!preserveWindow && Window::IsInitialized()) guardedShutdownStatic("Window::Shutdown", []{ Window::Shutdown(); });
 
 		if (!preserveWindow) m_Window.reset();

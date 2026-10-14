@@ -17,12 +17,7 @@
 #include <unordered_set>
 #include <utility>
 
-#ifdef IDX_PLATFORM_WINDOWS
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
+#include "Core/Platform.hpp"
 
 namespace Index::Localization {
 
@@ -518,24 +513,14 @@ namespace Index::Localization {
 		}
 
 		std::string ProbeOsLocale() {
-#ifdef IDX_PLATFORM_WINDOWS
-			wchar_t buf[LOCALE_NAME_MAX_LENGTH] = {};
-			const int len = ::GetUserDefaultLocaleName(buf, LOCALE_NAME_MAX_LENGTH);
-			if (len <= 0) return {};
-			// LOCALE_NAME_MAX_LENGTH is small (85), narrow ASCII conversion is fine
-			// since BCP-47 tags are ASCII-only.
-			std::string out;
-			out.reserve(static_cast<std::size_t>(len));
-			for (int i = 0; i < len && buf[i]; ++i) {
-				out.push_back(static_cast<char>(buf[i] & 0x7F));
-			}
-			return out;
-#else
-			if (const char* env = std::getenv("LC_ALL"); env && *env) return env;
-			if (const char* env = std::getenv("LC_MESSAGES"); env && *env) return env;
-			if (const char* env = std::getenv("LANG"); env && *env) return env;
-			return {};
+			// SDL reads the right source per OS (GetUserPreferredUILanguages, NSLocale, LANG, the Android
+			// configuration, navigator.languages).
+			std::string locale = Platform::GetPreferredLocale();
+#if IDX_PLATFORM_POSIX
+			// LC_ALL / LANG still win for desktop POSIX users who override the session language.
+			if (const char* env = std::getenv("LC_ALL"); env && *env) locale = env;
 #endif
+			return locale;
 		}
 	}
 

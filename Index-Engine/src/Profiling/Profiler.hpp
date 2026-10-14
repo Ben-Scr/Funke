@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <chrono>
 
@@ -60,23 +61,25 @@ namespace Index {
 		static void AllModules(std::vector<ProfilerModule>& outBuffer);
 
 		// Returns 0.0 if no such module; used by the "Others" residual in Application::Run for unattributed CPU time.
-		static float GetCurrentValue(const std::string& name);
+		static float GetCurrentValue(std::string_view name);
 
 		// Push an already-computed numeric sample into a named module.
 		// Used for non-time metrics (DrawCalls, Entities, RAM, GPU memory).
 		// Honors the visibility / enabled / sampling-rate gates.
-		static void PushValue(const std::string& name, float value);
+		static void PushValue(std::string_view name, float value);
 
-		static void PushSample(const std::string& name, float milliseconds);
+		static void PushSample(std::string_view name, float milliseconds);
 
 		// OnFrameMark advances the sampling cadence; PushFrameDelta records FPS + FrameTime from one shared dt so they can't drift.
-		static void OnFrameMark(const std::string& name);
+		static void OnFrameMark(std::string_view name);
 		static void PushFrameDelta(float deltaSeconds);
 
 		// Both gates required for samples to land; background tracking keeps collection alive when the panel is closed.
 		static void SetPanelVisible(bool visible);
 		static void SetBackgroundTracking(bool enabled);
 		static bool IsCollecting();
+		// Lock-free pre-gate (panel visible or background tracking): lets scopes skip clock reads and the lock entirely.
+		static bool IsArmed() noexcept;
 
 		// Sampling configuration. Both persisted by the editor across sessions.
 		static void SetSamplingHz(int hz);
@@ -100,14 +103,15 @@ namespace Index {
 		static inline ProfilerModule* Find(const std::string&) { return nullptr; }
 		static inline std::vector<ProfilerModule> AllModules() { return {}; }
 		static inline void AllModules(std::vector<ProfilerModule>& outBuffer) { outBuffer.clear(); }
-		static inline float GetCurrentValue(const std::string&) { return 0.0f; }
-		static inline void PushValue(const std::string&, float) {}
-		static inline void PushSample(const std::string&, float) {}
-		static inline void OnFrameMark(const std::string&) {}
+		static inline float GetCurrentValue(std::string_view) { return 0.0f; }
+		static inline void PushValue(std::string_view, float) {}
+		static inline void PushSample(std::string_view, float) {}
+		static inline void OnFrameMark(std::string_view) {}
 		static inline void PushFrameDelta(float) {}
 		static inline void SetPanelVisible(bool) {}
 		static inline void SetBackgroundTracking(bool) {}
 		static inline bool IsCollecting() { return false; }
+		static inline bool IsArmed() noexcept { return false; }
 		static inline void SetSamplingHz(int) {}
 		static inline void SetTrackingSpan(int) {}
 		static inline int  GetSamplingHz() { return 60; }
@@ -125,10 +129,11 @@ namespace Index {
 	class INDEX_API ProfilerScopedSample {
 	public:
 		explicit ProfilerScopedSample(const char* name)
-			: m_Name(name)
-			, m_Start(std::chrono::steady_clock::now()) {
+			: m_Name(Profiler::IsArmed() ? name : nullptr) {
+			if (m_Name) m_Start = std::chrono::steady_clock::now();
 		}
 		~ProfilerScopedSample() {
+			if (!m_Name) return;
 			using namespace std::chrono;
 			const auto end = steady_clock::now();
 			const float ms = duration<float, std::milli>(end - m_Start).count();

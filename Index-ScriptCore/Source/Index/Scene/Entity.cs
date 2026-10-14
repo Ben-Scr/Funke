@@ -196,6 +196,19 @@ public class Entity : IEquatable<Entity>
         { typeof(FastCircleCollider2D),  "Fast Circle Collider 2D" },
         { typeof(ParticleSystem2D),      "Particle System 2D" },
         { typeof(SpriteAnimator2D),      "Sprite Animator 2D" },
+        { typeof(PostProcessing2D),      "Post Processing" },
+        { typeof(Transform3D),           "Transform 3D" },
+        { typeof(Camera3D),              "Camera 3D" },
+        { typeof(MeshRenderer),          "Mesh Renderer" },
+        { typeof(DirectionalLight),      "Directional Light" },
+        { typeof(PointLight),            "Point Light" },
+        { typeof(SpotLight),             "Spot Light" },
+        { typeof(ParticleSystem3D),      "Particle System 3D" },
+        { typeof(Rigidbody3D),           "Rigidbody 3D" },
+        { typeof(BoxCollider3D),         "Box Collider 3D" },
+        { typeof(SphereCollider3D),      "Sphere Collider 3D" },
+        { typeof(CapsuleCollider3D),     "Capsule Collider 3D" },
+        { typeof(MeshCollider3D),        "Mesh Collider 3D" },
 
         // Strings must match native display names in BuiltInComponentRegistration.cpp; class names alone lack the "2D" suffix that RectTransform2DComponent uses on the C++ side.
         { typeof(Index.UI.RectTransform),  "Rect Transform 2D" },
@@ -547,6 +560,14 @@ public class Entity : IEquatable<Entity>
         return ref Unsafe.AsRef<T>(p);
     }
 
+    // Read-only twin of GetNativeComponent: reading a Transform this way doesn't force a full hierarchy pass that frame.
+    public unsafe ref readonly T GetNativeComponentReadOnly<T>() where T : unmanaged, IComponent
+    {
+        void* p = InternalCalls.Entity_GetComponentPtrReadOnly(ID, ComponentTypes<T>.NativeName);
+        if (p == null) return ref Unsafe.NullRef<T>();
+        return ref Unsafe.AsRef<T>(p);
+    }
+
     public unsafe ref T GetRefOrThrow<T>() where T : unmanaged, IComponent
     {
         void* p = InternalCalls.Entity_GetComponentPtr(ID, ComponentTypes<T>.NativeName);
@@ -561,6 +582,19 @@ public class Entity : IEquatable<Entity>
         get
         {
             void* p = InternalCalls.Entity_GetComponentPtr(ID, Native.NativeTransform2D.NativeName);
+            if (p == null)
+                throw new InvalidOperationException(
+                    $"Entity {ID} has no Transform 2D component.");
+            return ref Unsafe.AsRef<Native.NativeTransform2D>(p);
+        }
+    }
+
+    // Prefer over TransformRef when only reading: TransformRef marks the whole scene's transforms dirty.
+    public unsafe ref readonly Native.NativeTransform2D TransformRefReadOnly
+    {
+        get
+        {
+            void* p = InternalCalls.Entity_GetComponentPtrReadOnly(ID, Native.NativeTransform2D.NativeName);
             if (p == null)
                 throw new InvalidOperationException(
                     $"Entity {ID} has no Transform 2D component.");

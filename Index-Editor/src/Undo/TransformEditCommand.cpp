@@ -18,7 +18,7 @@ namespace Index {
 			snap.Rect = RectTransformSnapshot{
 				rect->AnchorMin, rect->AnchorMax, rect->Pivot,
 				rect->AnchoredPosition, rect->SizeDelta,
-				rect->LocalRotation, rect->LocalScale };
+				rect->LocalRotation, rect->LocalScale, rect->IgnoreSafeArea, rect->FillWidth, rect->FillHeight };
 			return snap;
 		}
 		Transform2DComponent* tf = nullptr;
@@ -44,6 +44,9 @@ namespace Index {
 			rect->SizeDelta = snap.Rect.SizeDelta;
 			rect->LocalRotation = snap.Rect.LocalRotation;
 			rect->LocalScale = snap.Rect.LocalScale;
+			rect->IgnoreSafeArea = snap.Rect.IgnoreSafeArea;
+			rect->FillWidth = snap.Rect.FillWidth;
+			rect->FillHeight = snap.Rect.FillHeight;
 			// UILayoutSystem re-resolves the world rect every frame; no dirty flag.
 			return;
 		}
@@ -72,7 +75,8 @@ namespace Index {
 		bool RectSnapshotsDiffer(const RectTransformSnapshot& a, const RectTransformSnapshot& b) {
 			return !(a.AnchorMin == b.AnchorMin && a.AnchorMax == b.AnchorMax && a.Pivot == b.Pivot
 				&& a.AnchoredPosition == b.AnchoredPosition && a.SizeDelta == b.SizeDelta
-				&& a.LocalRotation == b.LocalRotation && a.LocalScale == b.LocalScale);
+				&& a.LocalRotation == b.LocalRotation && a.LocalScale == b.LocalScale
+				&& a.IgnoreSafeArea == b.IgnoreSafeArea && a.FillWidth == b.FillWidth && a.FillHeight == b.FillHeight);
 		}
 	}
 

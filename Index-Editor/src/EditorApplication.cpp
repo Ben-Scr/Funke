@@ -11,7 +11,12 @@
 #include <Project/ProjectManager.hpp>
 #include <Project/IndexProject.hpp>
 #include <Serialization/SceneSerializer.hpp>
+#include <Serialization/SceneSerializerStorage.hpp>
 #include <Serialization/File.hpp>
+#include <Serialization/Json.hpp>
+#include "Core/UUID.hpp"
+#include <filesystem>
+#include <memory>
 #include <Core/Version.hpp>
 #include "Editor/EditorComponentRegistration.hpp"
 #include "Editor/SceneRecovery.hpp"
@@ -20,9 +25,10 @@
 #include <string>
 #include <string_view>
 
-#ifdef IDX_PLATFORM_WINDOWS
-#include <windows.h>
-#endif
+#include "Core/PackageHost.hpp"
+#include "Core/Platform.hpp"
+#include "Serialization/Path.hpp"
+#include "Serialization/SpecialFolder.hpp"
 
 using namespace Index;
 
@@ -38,45 +44,78 @@ static bool HasCommandLineFlag(std::string_view flag) {
 	return false;
 }
 
-#ifdef IDX_PLATFORM_WINDOWS
-static std::wstring Utf8ToWide(std::string_view utf8) {
-	if (utf8.empty()) {
-		return {};
+// Value of a "--name=value" argument (surrounding quotes stripped); empty when absent.
+static std::string GetCommandLineValue(std::string_view prefix) {
+	const Application::CommandLineArgs args = Application::GetCommandLineArgs();
+	for (int i = 1; i < args.Count; ++i) {
+		if (!args[i]) continue;
+		const std::string_view arg(args[i]);
+		if (arg.rfind(prefix, 0) != 0) continue;
+		std::string value(arg.substr(prefix.size()));
+		if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+			value = value.substr(1, value.size() - 2);
+		}
+		return value;
 	}
+	return {};
+}
 
-	const int requiredChars = MultiByteToWideChar(
-		CP_UTF8, MB_ERR_INVALID_CHARS,
-		utf8.data(), static_cast<int>(utf8.size()),
-		nullptr, 0);
-	if (requiredChars <= 0) {
-		return {};
-	}
-
-	std::wstring wide(static_cast<size_t>(requiredChars), L'\0');
-	if (MultiByteToWideChar(
-		CP_UTF8, MB_ERR_INVALID_CHARS,
-		utf8.data(), static_cast<int>(utf8.size()),
-		wide.data(), requiredChars) != requiredChars) {
-		return {};
-	}
-	return wide;
+// Unattended runs (CI, agents): never block on a modal dialog, fail loudly instead.
+static bool IsAutomationRun() {
+	return HasCommandLineFlag("--ci-smoke-test") || HasCommandLineFlag("--build");
 }
 
 static void ShowProjectLoadError(const std::string& message) {
-	std::wstring wide = Utf8ToWide(message);
-	if (wide.empty()) {
-		wide = L"Index Editor could not open the selected project. No project was loaded.";
-	}
-	MessageBoxW(nullptr, wide.c_str(), L"Index Editor - Project Open Failed",
-		MB_OK | MB_ICONERROR | MB_TASKMODAL);
+	Platform::ShowMessageBox(Platform::MessageBoxKind::Error, "Index Editor - Project Open Failed",
+		message.empty() ? "Index Editor could not open the selected project. No project was loaded." : message);
 }
-#endif
+
+static std::string JoinNames(const std::vector<std::string>& names) {
+	std::string joined;
+	for (const std::string& name : names) joined += (joined.empty() ? "" : ", ") + name;
+	return joined;
+}
+
+// Engine rebuilds change the Index-Engine.dll fingerprint, so PackageHost would skip every native project package.
+// Runs before the window exists: scenes deserialize package components, so the packages must load in LoadAll.
+static void RebuildStaleProjectPackages(const IndexProject& project) {
+	const std::vector<std::string> stale = PackageHost::FindStaleProjectNativePackages();
+	if (stale.empty()) return;
+
+	IDX_CORE_INFO_TAG("Editor", "Rebuilding native package(s) against the running engine: {}", JoinNames(stale));
+	// Exit code -1 means a missing tool (premake), not a failed run; an existing workspace still builds.
+	const IndexProject::RegenerateResult regenerate =
+		IndexProject::RegeneratePackageWorkspaceForProject(project.RootDirectory);
+	if (!regenerate.Succeeded && regenerate.ExitCode != -1) {
+		IDX_CORE_ERROR_TAG("Editor", "Package workspace generation failed; native packages stay unloaded:\n{}",
+			regenerate.Output);
+		return;
+	}
+	const IndexProject::BuildResult build = IndexProject::BuildProjectPackages(
+		project.RootDirectory, IndexProject::GetActiveBuildConfiguration(), "x64");
+	if (!build.Succeeded) {
+		IDX_CORE_ERROR_TAG("Editor", "Package build failed; native packages stay unloaded:\n{}", build.Output);
+		return;
+	}
+
+	const std::vector<std::string> stillStale = PackageHost::FindStaleProjectNativePackages();
+	if (stillStale.empty()) {
+		IDX_CORE_INFO_TAG("Editor", "Rebuilt native package(s): {}", JoinNames(stale));
+	}
+	else {
+		IDX_CORE_WARN_TAG("Editor", "Package build succeeded but produced no loadable build for: {}",
+			JoinNames(stillStale));
+	}
+}
 
 class EditorApplication : public Application {
 public:
 	EditorApplication() { 
 		SetEditorHost(true);
 		m_CiSmokeTest = HasCommandLineFlag("--ci-smoke-test");
+		m_CommandLineBuild = HasCommandLineFlag("--build");
+		m_BuildProfileArg = GetCommandLineValue("--build-profile=");
+		m_BuildOutputArg = GetCommandLineValue("--build-output=");
 	}
 
 	ApplicationConfig GetConfiguration() const override {
@@ -130,15 +169,12 @@ public:
 					}
 					scene.SetName(fallbackName);
 					EntityHelper::CreateCamera2DEntity(scene);
-#ifdef IDX_PLATFORM_WINDOWS
-					if (!HasCommandLineFlag("--ci-smoke-test")) {
-						const std::wstring text = Utf8ToWide(
+					if (!IsAutomationRun()) {
+						Platform::ShowMessageBox(Platform::MessageBoxKind::Warning, "Index Editor - Scene Load Failed",
 							"The last opened scene could not be loaded:\n\n" + scenePath +
 							"\n\nThe file was left untouched. An empty, unsaved scene was opened instead."
 							" Check the console for the exact error, or restore the file from version control or its .bak copy.");
-						MessageBoxW(nullptr, text.c_str(), L"Index Editor - Scene Load Failed", MB_OK | MB_ICONWARNING | MB_TASKMODAL);
 					}
-#endif
 					return true;
 				}
 				if (!sceneName.empty()) {
@@ -161,7 +197,7 @@ public:
 		// ImGuiContextLayer must be pushed first — its OnPreRender / OnPostRender wrap
 		// ImGui::NewFrame and ImGui::Render around the other layers' UI work.
 		PushLayer<ImGuiContextLayer>();
-		PushLayer<ImGuiEditorLayer>();
+		m_EditorLayer = &PushLayer<ImGuiEditorLayer>();
 		PushOverlay<GizmosDebugSystem>();
 	}
 
@@ -169,6 +205,8 @@ public:
 		RegisterEditorComponentInspectors(SceneManager::GetComponentRegistry());
 	}
 	void Update() override {
+		UpdateCommandLineBuild();
+
 		if (!m_CiSmokeTest || m_CiSmokeVerified || !Application::IsStartupLoadComplete()) {
 			return;
 		}
@@ -181,17 +219,7 @@ public:
 		if (!active || !active->IsLoaded()) {
 			throw std::runtime_error("Editor CI smoke test has no loaded active scene");
 		}
-		const std::string scenePath = project->GetSceneFilePath(active->GetName());
-		if (scenePath.empty() || !SceneSerializer::SaveToFile(*active, scenePath)) {
-			throw std::runtime_error("Editor CI smoke test could not save the active scene");
-		}
-
-		const std::string previousLastOpenedScene = project->LastOpenedScene;
-		project->LastOpenedScene = active->GetName();
-		if (!project->Save()) {
-			project->LastOpenedScene = previousLastOpenedScene;
-			throw std::runtime_error("Editor CI smoke test could not save project metadata");
-		}
+		VerifyCiSmokeSaveRoundTrip(*project, *active);
 
 		m_CiSmokeVerified = true;
 		IDX_INFO_TAG("Editor", "Editor CI smoke test opened project: {}; scene: {}",
@@ -208,23 +236,104 @@ public:
 	void OnUnhandledFrameException(const std::string& message) override {
 		SceneRecovery::SnapshotDirtyScenes();
 		m_RecoverySnapshotWritten = true;
-#ifdef IDX_PLATFORM_WINDOWS
-		if (!m_CiSmokeTest) {
-			const std::wstring text = Utf8ToWide(
+		if (!m_CiSmokeTest && !m_CommandLineBuild) {
+			const std::string logDirectory = Path::ToUtf8(
+				Path::FromUtf8(Path::GetSpecialFolderPath(SpecialFolder::LocalAppData)) / "Index" / "Logs");
+			Platform::ShowMessageBox(Platform::MessageBoxKind::Error, "Index Editor - Unexpected Error",
 				"Index Editor hit an unexpected error and has to close:\n\n" + message +
 				"\n\nUnsaved scene changes were kept and will be offered for recovery the next time you open this project."
-				"\n\nDetails are in the editor log (%LOCALAPPDATA%\\Index\\Logs).");
-			MessageBoxW(nullptr, text.c_str(), L"Index Editor - Unexpected Error", MB_OK | MB_ICONERROR | MB_TASKMODAL);
+				"\n\nDetails are in the editor log (" + logDirectory + ").");
 		}
-#else
-		(void)message;
-#endif
 	}
 
 private:
+	// Runs the scene and project save paths into a scratch directory: the smoke test may run on a
+	// user's project, and re-saving there would turn hand-written JSON scenes binary and drop unknown keys.
+	static void VerifyCiSmokeSaveRoundTrip(const IndexProject& project, Scene& scene) {
+		std::error_code ec;
+		const std::filesystem::path scratchDir = std::filesystem::temp_directory_path(ec)
+			/ ("Index-CiSmoke-" + std::to_string(static_cast<uint64_t>(Index::UUID())));
+		std::filesystem::create_directories(scratchDir, ec);
+		if (ec) {
+			throw std::runtime_error("Editor CI smoke test could not create its scratch directory: " + ec.message());
+		}
+		struct ScratchCleanup {
+			std::filesystem::path Dir;
+			~ScratchCleanup() { std::error_code ignored; std::filesystem::remove_all(Dir, ignored); }
+		} cleanup{ scratchDir };
+
+		const SceneSerializationFormat format =
+			project.AssetSerializationFormat == IndexProject::ProjectAssetSerializationFormat::Binary
+				? SceneSerializationFormat::Binary
+				: SceneSerializationFormat::Json;
+		const std::string scenePath = Path::ToUtf8(scratchDir / "SmokeTest.scene");
+		if (!SceneSerializerStorage::WriteRootToFile(scenePath, SceneSerializer::SerializeScene(scene), format)) {
+			throw std::runtime_error("Editor CI smoke test could not save the active scene");
+		}
+		Json::Value sceneRoot;
+		std::string error;
+		const std::unique_ptr<Scene> reloadedScene = Scene::CreateDetachedScene(scene.GetName());
+		if (!SceneSerializerStorage::ReadRootFromFile(scenePath, sceneRoot, &error)
+			|| !SceneSerializer::DeserializeScene(*reloadedScene, sceneRoot, "editor CI smoke test")) {
+			throw std::runtime_error("Editor CI smoke test could not reload the saved scene: " + error);
+		}
+
+		IndexProject projectCopy = project;
+		projectCopy.ProjectFilePath = Path::ToUtf8(scratchDir / "project.json");
+		projectCopy.LastOpenedScene = scene.GetName();
+		// Save() also refreshes the csproj's IndexDefines.props; that stays the real project's business.
+		projectCopy.CsprojPath.clear();
+		Json::Value projectRoot;
+		if (!projectCopy.Save()
+			|| !Json::TryParse(File::ReadAllText(projectCopy.ProjectFilePath), projectRoot, &error)
+			|| !projectRoot.IsObject()) {
+			throw std::runtime_error("Editor CI smoke test could not save project metadata: " + error);
+		}
+	}
+
+	// --build [--build-profile=<name>] [--build-output=<dir>]: build once startup has loaded, then quit with 0/1.
+	void UpdateCommandLineBuild() {
+		if (!m_CommandLineBuild || m_BuildFinished || !m_EditorLayer || !Application::IsStartupLoadComplete()) {
+			return;
+		}
+		if (!m_BuildRequested) {
+			std::string error;
+			if (!m_EditorLayer->RequestCommandLineBuild(m_BuildProfileArg, m_BuildOutputArg, error)) {
+				FinishCommandLineBuild(false, error);
+				return;
+			}
+			m_BuildRequested = true;
+			return;
+		}
+		if (m_EditorLayer->IsBuildInProgress()) {
+			return;
+		}
+		FinishCommandLineBuild(m_EditorLayer->DidLastBuildSucceed(), {});
+	}
+
+	void FinishCommandLineBuild(bool succeeded, const std::string& error) {
+		m_BuildFinished = true;
+		if (succeeded) {
+			const std::string& exe = m_EditorLayer->GetLastBuiltExecutablePath();
+			IDX_INFO_TAG("Build", "Command-line build succeeded: {}",
+				exe.empty() ? m_EditorLayer->GetLastBuildOutputDirectory() : exe);
+		}
+		else {
+			IDX_ERROR_TAG("Build", "Command-line build failed{}", error.empty() ? std::string(" (see errors above)") : ": " + error);
+		}
+		Application::SetExitCode(succeeded ? 0 : 1);
+		Application::RequestQuit();
+	}
+
 	bool m_RecoverySnapshotWritten = false;
 	bool m_CiSmokeTest = false;
 	bool m_CiSmokeVerified = false;
+	bool m_CommandLineBuild = false;
+	bool m_BuildRequested = false;
+	bool m_BuildFinished = false;
+	std::string m_BuildProfileArg;
+	std::string m_BuildOutputArg;
+	ImGuiEditorLayer* m_EditorLayer = nullptr;
 };
 
 Index::Application* Index::CreateApplication() {
@@ -258,18 +367,17 @@ Index::Application* Index::CreateApplication() {
 			auto project = std::make_unique<IndexProject>(std::move(loadedProject));
 			IDX_CORE_INFO_TAG("Editor", "Opening project: {} ({})", project->Name, project->RootDirectory);
 			ProjectManager::SetCurrentProject(std::move(project));
+			RebuildStaleProjectPackages(*ProjectManager::GetCurrentProject());
 		}
 		else {
 			const std::string detail = loadError.empty() ? "project validation failed" : loadError;
 			IDX_CORE_ERROR_TAG("Editor", "Cannot open project '{}': {}", s_ProjectPath, detail);
-			if (HasCommandLineFlag("--ci-smoke-test")) {
-				throw std::runtime_error("Editor CI smoke test rejected the project: " + detail);
+			if (IsAutomationRun()) {
+				throw std::runtime_error("Editor automation run rejected the project: " + detail);
 			}
-#ifdef IDX_PLATFORM_WINDOWS
 			ShowProjectLoadError(
 				"Index Editor could not open the selected project:\n\n" + s_ProjectPath +
 				"\n\n" + detail + "\n\nNo project was loaded.");
-#endif
 		}
 	}
 

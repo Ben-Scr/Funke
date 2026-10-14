@@ -4,8 +4,10 @@
 #include "Assets/AssetRegistry.hpp"
 #include "Assets/TextureMeta.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
+#if INDEX_WITH_2D
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#endif
 #include "Core/Log.hpp"
 #include "Graphics/TextureEntry.hpp"
 #include "Scene/SceneManager.hpp"
@@ -286,6 +288,11 @@ namespace Index {
 		if (handle.index < g_CanonicalKeys.size()) {
 			g_CanonicalKeys[handle.index].clear();
 		}
+		// Drop the runtime-uuid mapping too, or a file texture reusing this slot reports the stale synthetic UUID.
+		if (auto runtimeIt = g_RuntimeIndexToUuid.find(handle.index); runtimeIt != g_RuntimeIndexToUuid.end()) {
+			g_RuntimeUuidToHandle.erase(runtimeIt->second);
+			g_RuntimeIndexToUuid.erase(runtimeIt);
+		}
 		slot.Texture.Destroy();
 		slot.Name.clear();
 		slot.IsValid = false;
@@ -392,6 +399,8 @@ namespace Index {
 		for (std::string& key : g_CanonicalKeys) {
 			key.clear();
 		}
+		g_RuntimeUuidToHandle.clear();
+		g_RuntimeIndexToUuid.clear();
 	}
 
 	uint64_t TextureManager::GetTextureAssetUUID(TextureHandle handle) {
@@ -481,20 +490,24 @@ namespace Index {
 		SceneManager::ForeachLoadedScene([&emit](Scene& scene) {
 			entt::registry& registry = scene.GetRegistry();
 
+#if INDEX_WITH_2D
 			auto sprites = registry.view<SpriteRendererComponent>();
 			for (EntityHandle entity : sprites) {
 				emit(sprites.get<SpriteRendererComponent>(entity).TextureHandle);
 			}
+#endif
 
 			auto images = registry.view<ImageComponent>();
 			for (EntityHandle entity : images) {
 				emit(images.get<ImageComponent>(entity).TextureHandle);
 			}
 
+#if INDEX_WITH_2D
 			auto particles = registry.view<ParticleSystem2DComponent>();
 			for (EntityHandle entity : particles) {
 				emit(particles.get<ParticleSystem2DComponent>(entity).GetTextureHandle());
 			}
+#endif
 		});
 
 		const std::vector<ProviderEntry> providers = g_Providers;
@@ -509,6 +522,9 @@ namespace Index {
 		for (size_t i = 0; i < s_Textures.size(); ++i) {
 			const TextureEntry& slot = s_Textures[i];
 			if (!slot.IsValid) continue;
+			// Runtime textures are owned by script Texture objects and freed via DestroyRuntimeTexture;
+			// no provider sees script-held references, so purging them would pull them out from under scripts.
+			if (g_RuntimeIndexToUuid.contains(static_cast<uint32_t>(i))) continue;
 			TextureHandle handle{ static_cast<uint16_t>(i), slot.Generation };
 			if (!referenced.contains(handle)) {
 				toFree.push_back(handle);
@@ -521,6 +537,40 @@ namespace Index {
 
 		IDX_CORE_INFO_TAG("TextureManager", "Purged {} unreferenced texture entries", toFree.size());
 		return toFree.size();
+	}
+
+	size_t TextureManager::ResolveMissingSceneTextures() {
+		if (!s_IsInitialized) return 0;
+
+		size_t resolved = 0;
+		SceneManager::ForeachLoadedScene([&resolved](Scene& scene) {
+			entt::registry& registry = scene.GetRegistry();
+
+#if INDEX_WITH_2D
+			for (auto [entity, sprite] : registry.view<SpriteRendererComponent>().each()) {
+				const uint64_t assetId = static_cast<uint64_t>(sprite.TextureAssetId);
+				if (assetId == 0 || IsValid(sprite.TextureHandle)) continue;
+				const TextureHandle handle = LoadTextureByUUID(assetId, sprite.FilterMode);
+				if (!IsValid(handle)) continue;
+				sprite.TextureHandle = handle;
+				++resolved;
+			}
+#endif
+
+			for (auto [entity, image] : registry.view<ImageComponent>().each()) {
+				const uint64_t assetId = static_cast<uint64_t>(image.TextureAssetId);
+				if (assetId == 0 || IsValid(image.TextureHandle)) continue;
+				const TextureHandle handle = LoadTextureByUUID(assetId, image.FilterMode);
+				if (!IsValid(handle)) continue;
+				image.TextureHandle = handle;
+				++resolved;
+			}
+		});
+
+		if (resolved > 0) {
+			IDX_CORE_INFO_TAG("TextureManager", "Resolved {} sprite/image texture(s) that had failed to load", resolved);
+		}
+		return resolved;
 	}
 
 	uint32_t TextureManager::AddReferenceProvider(ReferenceProvider provider) {

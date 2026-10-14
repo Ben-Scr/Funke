@@ -15,6 +15,7 @@ The font bundle has its own attribution file:
 |---|---|---|---|
 | Box2D | MIT | Copyright (c) 2022 Erin Catto | [External/box2d/LICENSE](External/box2d/LICENSE) |
 | EnTT | MIT | Copyright (c) 2017-2026 Michele Caini | [External/entt/LICENSE](External/entt/LICENSE) |
+| Jolt Physics | MIT | Copyright (c) 2021 Jorrit Rouwe | [External/JoltPhysics/LICENSE](External/JoltPhysics/LICENSE) |
 | GLM | MIT / "Happy Bunny" | Copyright (c) 2005 G-Truc Creation | [External/glm/copying.txt](External/glm/copying.txt) |
 | Dear ImGui | MIT | Copyright (c) 2014-2026 Omar Cornut | [External/imgui/LICENSE.txt](External/imgui/LICENSE.txt) |
 | ImGuizmo | MIT | Copyright (c) 2016 Cedric Guillemet | [External/ImGuizmo/LICENSE](External/ImGuizmo/LICENSE) |
@@ -51,7 +52,7 @@ satisfies the attribution requirement transitively.
 
 | Component | License | Source |
 |---|---|---|
-| GLFW (`GLFW.dll`) | zlib/libpng | [External/glfw/LICENSE.md](External/glfw/LICENSE.md) — Copyright (c) 2002-2006 Marcus Geelnard, Copyright (c) 2006-2019 Camilla Löwy |
+| SDL3 (`SDL3.dll`) | zlib | [External/SDL/LICENSE.txt](External/SDL/LICENSE.txt) — Copyright (C) 1997-2026 Sam Lantinga |
 | .NET host (`nethost.dll`) | MIT | The .NET Foundation. https://github.com/dotnet/runtime |
 | Tracy (`Tracy.dll`) | 3-clause BSD | See Tracy entry above. Stripped from Dist builds when `--no-profiler` is passed. |
 

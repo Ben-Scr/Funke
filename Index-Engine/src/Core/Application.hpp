@@ -29,6 +29,7 @@ namespace Index {
 	class IRenderer;
 	class PhysicsSystem2D;
 	class Renderer2D;
+	class Renderer3D;
 	class Scene;
 	class SceneManager;
 	class Window;
@@ -60,7 +61,16 @@ namespace Index {
 		virtual ~Application();
 
 
+		// Blocking main loop (desktop, mobile).
 		int Run();
+
+		// Stepped main loop for hosts that own the frame loop (the browser's requestAnimationFrame).
+		// BeginRun false: startup failed. RunFrame false: the loop wants to stop; call FinishRunCycle,
+		// which returns true when a reload started a new cycle and frames should continue.
+		bool BeginRun();
+		bool RunFrame();
+		bool FinishRunCycle();
+		int GetRunExitCode() const { return m_RunLoop.ExitCode != 0 ? m_RunLoop.ExitCode : m_ExitCode; }
 
 		virtual ApplicationConfig GetConfiguration() const { return {}; }
 		virtual void ConfigureScenes() {}
@@ -75,6 +85,8 @@ namespace Index {
 
 		static void SetIsPlaying(bool enabled) { if (s_Instance) s_Instance->m_IsPlaying = enabled; }
 		static bool GetIsPlaying() { if (s_Instance) return s_Instance->m_IsPlaying; return false; }
+		// How far the frame is into the next fixed step (0..1): blend factor for rendering fixed-step state.
+		static float GetFixedStepAlpha();
 
 		void SetName(const std::string& s) { m_Name = s; }
 		static void SetTargetFramerate(float framerate) { Time::SetTargetFramerate(framerate); }
@@ -97,6 +109,11 @@ namespace Index {
 
 		IRenderer* GetRenderer() { return m_Renderer2D.get(); }
 		Renderer2D* GetRenderer2D();
+#if INDEX_WITH_3D
+		Renderer3D* GetRenderer3D() { return m_Renderer3D.get(); }
+#else
+		Renderer3D* GetRenderer3D() { return nullptr; }
+#endif
 		GuiRenderer* GetGuiRenderer() { return m_GuiRenderer.get(); }
 		Input& GetInput() { return m_Input; }
 		Time& GetTime() { return m_Time; }
@@ -165,6 +182,9 @@ namespace Index {
 			if (s_Instance) { s_Instance->m_IsEditorHost = isEditor; }
 		}
 
+		/// Process exit code Run() returns after a graceful quit; a crash still returns 1.
+		static void SetExitCode(int exitCode) { if (s_Instance) s_Instance->m_ExitCode = exitCode; }
+
 		/// Signals a quit request that can be intercepted (e.g. to show a save dialog).
 		static void RequestQuit();
 		static bool IsQuitRequested();
@@ -196,7 +216,9 @@ namespace Index {
 
 		// Dispatch-safe: erase is deferred while a dispatch is in flight so the caller's `this` stays valid for the rest of OnUpdate.
 		bool PopOverlay(Layer* layer) {
-			if (!layer) return false;
+			// Only detach an overlay that is actually in the stack (and not already popped): detaching a regular
+			// layer here left it detached-but-live, and Shutdown detached it a second time.
+			if (!layer || !m_LayerStack.ContainsOverlay(layer) || m_LayerStack.IsPendingPop(layer)) return false;
 			layer->OnDetach(*this);
 			return m_LayerStack.PopOverlay(layer);
 		}
@@ -258,6 +280,9 @@ namespace Index {
 	private:
 		std::unique_ptr<Window> m_Window;
 		std::unique_ptr<IRenderer> m_Renderer2D;
+#if INDEX_WITH_3D
+		std::unique_ptr<Renderer3D> m_Renderer3D;
+#endif
 		std::unique_ptr<GuiRenderer> m_GuiRenderer;
 		std::unique_ptr<GizmoRenderer2D> m_GizmoRenderer2D;
 		std::unique_ptr<IPhysicsEngine> m_PhysicsSystem2D;
@@ -277,6 +302,22 @@ namespace Index {
 		bool m_ForceSingleInstance = false;
 		bool m_RunInBackground = false;
 		bool m_ShouldQuit = false;
+		int m_ExitCode = 0;
+
+		struct RunLoopState {
+			bool CiSmokeTest = false;
+			float QuitAfterSeconds = -1.0f;
+			int ExitCode = 0;
+			int SmokeFramesRemaining = 3;
+			bool SmokeQuitRequested = false;
+			bool HasQuitAfterStart = false;
+			std::chrono::steady_clock::time_point QuitAfterStart{};
+			bool QuitAfterRequested = false;
+			std::chrono::steady_clock::time_point FrameDeadline{};
+		};
+		RunLoopState m_RunLoop;
+		bool StartRunCycle();
+
 		bool m_CanReload = false;
 		bool m_RestartWindow = false;
 		bool m_IsEditorHost = false;
@@ -311,6 +352,11 @@ namespace Index {
 
 		std::vector<std::string> m_PendingFileDrops;
 		double m_FixedUpdateAccumulator;
+		// VSync delta snapping (see SnapVsyncDelta): display refresh interval and the real time not yet handed out.
+		float m_RefreshInterval = 0.0f;
+		int m_RefreshQueryCountdown = 0;
+		double m_DeltaSnapDebt = 0.0;
+		float SnapVsyncDelta(float deltaTime);
 		Clock::time_point m_LastFrameTime = Clock::now();
 		// Stamped at end of frame; next frame reads it to compute the VSync bucket.
 		Clock::time_point m_LastFrameEndTime{};
@@ -349,12 +395,17 @@ namespace Index {
 			}
 		}
 
-		// From GLFW iconify callback (not framebuffer resize): resize-to-(0,0) doesn't fire reliably on all platforms/WMs.
+		// From the window minimize/restore events (not framebuffer resize): resize-to-(0,0) doesn't fire reliably on all platforms/WMs.
 		static void SetWindowMinimized(bool minimized) {
 			if (s_Instance) {
 				s_Instance->m_IsMinimized = minimized;
 			}
 		}
+
+		// Mobile app lifecycle. Android and iOS suspend the main thread right after the background event,
+		// so pausing audio and raising OnApplicationPaused cannot wait for the next frame.
+		static void EnterBackground();
+		static void EnterForeground();
 	};
 
 	inline Window* GetWindow() {

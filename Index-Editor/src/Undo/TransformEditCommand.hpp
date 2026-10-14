@@ -34,6 +34,9 @@ namespace Index {
 		Vec2 SizeDelta{ 100.0f, 100.0f };
 		float LocalRotation = 0.0f;
 		Vec2 LocalScale{ 1.0f, 1.0f };
+		bool IgnoreSafeArea = false;
+		bool FillWidth = false;
+		bool FillHeight = false;
 	};
 
 	// Snapshot of whichever transform an entity carries (the two are mutually

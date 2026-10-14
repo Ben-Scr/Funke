@@ -177,6 +177,7 @@ namespace Index {
 		void CreateDataAssetScript(const std::string& parentDir);
 		void CreateScene(const std::string& parentDir);
 		void CreateDataAsset(const std::string& parentDir, const std::string& typeName);
+		void CreateMaterial(const std::string& parentDir);
 		void CreateEntityPrefab(const std::string& parentDir, EntityHandle sourceEntity = entt::null);
 		void CreateDefaultTexture(const std::string& parentDir,
 			const std::string& sourceFile, const std::string& displayName);

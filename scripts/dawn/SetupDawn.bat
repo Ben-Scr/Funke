@@ -124,6 +124,22 @@ if errorlevel 1 (
     goto :error
 )
 
+REM --- Local patches ----------------------------------------------------------
+REM Backports from upstream Dawn main; skipped when already applied.
+for %%P in ("scripts\dawn\patches\*.patch") do (
+    git -C "%DAWN_DIR%" apply --reverse --check "%CD%\%%~P" >nul 2>nul
+    if errorlevel 1 (
+        echo [info] Applying Dawn patch: %%~nxP
+        git -C "%DAWN_DIR%" apply "%CD%\%%~P"
+        if errorlevel 1 (
+            echo [ERROR] Dawn patch %%~nxP did not apply.
+            goto :error
+        )
+    ) else (
+        echo [info] Dawn patch already applied: %%~nxP
+    )
+)
+
 REM --- Configure --------------------------------------------------------------
 :configure
 echo [3/5] Configuring Dawn via CMake...

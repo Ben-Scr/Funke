@@ -3,6 +3,9 @@
 #include "Collections/Color.hpp"
 #include "Components/General/NameComponent.hpp"
 #include "Components/General/Transform2DComponent.hpp"
+#include "Components/General/Transform3DComponent.hpp"
+#include "Components/General/RectTransform2DComponent.hpp"
+#include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
@@ -11,7 +14,9 @@
 #include "Core/UUID.hpp"
 #include "Graphics/Filter.hpp"
 #include "Scene/Entity.hpp"
+#include "Scene/EntityHelper.hpp"
 #include "Scene/Scene.hpp"
+#include "Scripting/ScriptComponent.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/SceneSerializerShared.hpp"
@@ -367,6 +372,53 @@ TEST_CASE("Malformed scene entity reports deserialization failure")
 	CHECK(scene->IsDirty());
 }
 
+// Regression: the standalone runtime loads its startup scene before the script engine is up, and the staged
+// commit re-serializes the scene. Without C# field metadata that pass used to drop every ScriptFields value.
+TEST_CASE("Staged scene load keeps script field values while the script engine is not initialized")
+{
+	Json::Value field = Json::Value::MakeObject();
+	field.AddMember("name", "Speed");
+	field.AddMember("type", "float");
+	field.AddMember("value", "9");
+	Json::Value fields = Json::Value::MakeArray();
+	fields.Append(std::move(field));
+	Json::Value fieldsByClass = Json::Value::MakeObject();
+	fieldsByClass.AddMember("FieldProbe", std::move(fields));
+
+	Json::Value script = Json::Value::MakeObject();
+	script.AddMember("className", "FieldProbe");
+	script.AddMember("type", "Managed");
+	Json::Value scripts = Json::Value::MakeArray();
+	scripts.Append(std::move(script));
+
+	Json::Value entity = Json::Value::MakeObject();
+	entity.AddMember("name", "Paddle");
+	entity.AddMember("uuid", "4242");
+	entity.AddMember("Transform2D", Json::Value::MakeObject());
+	entity.AddMember("Scripts", std::move(scripts));
+	entity.AddMember("ScriptFields", std::move(fieldsByClass));
+	Json::Value entities = Json::Value::MakeArray();
+	entities.Append(std::move(entity));
+
+	Json::Value root = Json::Value::MakeObject();
+	root.AddMember("version", 1);
+	root.AddMember("name", "StartupFieldScene");
+	root.AddMember("entities", std::move(entities));
+
+	auto scene = Scene::CreateDetachedScene("StartupFieldTarget");
+	REQUIRE(SceneSerializer::DeserializeScene(*scene, root));
+
+	int scriptEntities = 0;
+	for (auto [handle, scriptComponent] : scene->GetRegistry().view<ScriptComponent>().each()) {
+		(void)handle;
+		++scriptEntities;
+		const auto value = scriptComponent.PendingFieldValues.find("FieldProbe.Speed");
+		REQUIRE(value != scriptComponent.PendingFieldValues.end());
+		CHECK(value->second == "9");
+	}
+	CHECK(scriptEntities == 1);
+}
+
 TEST_CASE("Malformed scene header is rejected without replacing current content")
 {
 	Json::Value root = Json::Value::MakeObject();
@@ -495,4 +547,114 @@ TEST_CASE("Scene file round-trip (JSON) preserves entities, hierarchy, component
 
 	std::error_code ec;
 	std::filesystem::remove(path, ec);
+}
+
+TEST_CASE("RectTransform2D Ignore Safe Area and Fill Parent survive both serialize ladders")
+{
+	auto scene = Scene::CreateDetachedScene("RoundTrip Safe Area");
+
+	Entity src = EntityHelper::CreateUIPanel(*scene);
+	src.GetComponent<RectTransform2DComponent>().IgnoreSafeArea = true;
+	src.GetComponent<RectTransform2DComponent>().FillWidth = true;
+	src.GetComponent<RectTransform2DComponent>().FillHeight = true;
+	Entity plain = EntityHelper::CreateUIPanel(*scene);
+
+	const Json::Value full = SceneSerializer::SerializeEntityFull(*scene, src.GetHandle());
+	const EntityHandle clone = SceneSerializer::DeserializeEntityFromValue(*scene, full);
+	REQUIRE(clone != entt::null);
+	CHECK(scene->GetComponent<RectTransform2DComponent>(clone).IgnoreSafeArea);
+	CHECK(scene->GetComponent<RectTransform2DComponent>(clone).FillWidth);
+	CHECK(scene->GetComponent<RectTransform2DComponent>(clone).FillHeight);
+
+	// Off is the default and stays out of the file, so existing scenes load unchanged.
+	const Json::Value plainValue = SceneSerializer::SerializeEntityFull(*scene, plain.GetHandle());
+	const EntityHandle plainClone = SceneSerializer::DeserializeEntityFromValue(*scene, plainValue);
+	REQUIRE(plainClone != entt::null);
+	CHECK_FALSE(scene->GetComponent<RectTransform2DComponent>(plainClone).IgnoreSafeArea);
+	CHECK_FALSE(scene->GetComponent<RectTransform2DComponent>(plainClone).FillWidth);
+	CHECK_FALSE(scene->GetComponent<RectTransform2DComponent>(plainClone).FillHeight);
+
+	// One axis only round-trips as that axis.
+	Entity bar = EntityHelper::CreateUIPanel(*scene);
+	bar.GetComponent<RectTransform2DComponent>().FillWidth = true;
+	const Json::Value barValue = SceneSerializer::SerializeEntityFull(*scene, bar.GetHandle());
+	const EntityHandle barClone = SceneSerializer::DeserializeEntityFromValue(*scene, barValue);
+	REQUIRE(barClone != entt::null);
+	CHECK(scene->GetComponent<RectTransform2DComponent>(barClone).FillWidth);
+	CHECK_FALSE(scene->GetComponent<RectTransform2DComponent>(barClone).FillHeight);
+
+	const Json::Value comp = SceneSerializer::SerializeComponent(*scene, src.GetHandle(), "RectTransform2D");
+	Entity dst = EntityHelper::CreateUIPanel(*scene);
+	REQUIRE(SceneSerializer::DeserializeComponent(*scene, dst.GetHandle(), "RectTransform2D", comp));
+	CHECK(dst.GetComponent<RectTransform2DComponent>().IgnoreSafeArea);
+	CHECK(dst.GetComponent<RectTransform2DComponent>().FillWidth);
+	CHECK(dst.GetComponent<RectTransform2DComponent>().FillHeight);
+}
+
+TEST_CASE("Registry-serialized components survive a round-trip without an Application")
+{
+	// The CLI rewrites scenes headless; registry components used to be dropped there.
+	auto scene = Scene::CreateDetachedScene("RoundTrip Headless Registry");
+
+	Entity src = scene->CreateEmptyEntity();
+	auto& transform = src.AddComponent<Transform3DComponent>();
+	transform.Position = { 1.0f, 2.0f, 3.0f };
+	transform.Scale = { 2.0f, 2.0f, 2.0f };
+
+	const Json::Value full = SceneSerializer::SerializeEntityFull(*scene, src.GetHandle());
+	REQUIRE(full.IsObject());
+	CHECK(full.FindMember("Transform3D") != nullptr);
+
+	const EntityHandle clone = SceneSerializer::DeserializeEntityFromValue(*scene, full);
+	REQUIRE(clone != entt::null);
+	REQUIRE(scene->HasComponent<Transform3DComponent>(clone));
+	CHECK(scene->GetComponent<Transform3DComponent>(clone).Position.y == doctest::Approx(2.0f));
+	CHECK(scene->GetComponent<Transform3DComponent>(clone).Scale.x == doctest::Approx(2.0f));
+
+	Entity dst = scene->CreateEmptyEntity();
+	const Json::Value comp = SceneSerializer::SerializeComponent(*scene, src.GetHandle(), "Transform3D");
+	REQUIRE(SceneSerializer::DeserializeComponent(*scene, dst.GetHandle(), "Transform3D", comp));
+	CHECK(dst.GetComponent<Transform3DComponent>().Position.z == doctest::Approx(3.0f));
+}
+
+TEST_CASE("Transform2D is written first and Camera2D round-trips through the registry")
+{
+	auto scene = Scene::CreateDetachedScene("RoundTrip 2D Order");
+
+	Entity src = scene->CreateEntity("Cam");
+	src.GetComponent<Transform2DComponent>().SetScale({ 2.0f, 3.0f });
+	auto& camera = src.AddComponent<Camera2DComponent>();
+	camera.SetOrthographicSize(7.5f);
+	camera.SetClearColor(Color{ 0.2f, 0.4f, 0.6f, 1.0f });
+	camera.SetPostProcessingEnabled(false);
+	src.AddComponent<BoxCollider2DComponent>();
+
+	const Json::Value full = SceneSerializer::SerializeEntityFull(*scene, src.GetHandle());
+	REQUIRE(full.IsObject());
+
+	// Colliders read the transform's scale while loading, so it has to come before them in the file.
+	int transformIndex = -1;
+	int colliderIndex = -1;
+	int index = 0;
+	for (const auto& [key, value] : full.GetObject()) {
+		if (key == "Transform2D") transformIndex = index;
+		if (key == "BoxCollider2D") colliderIndex = index;
+		++index;
+	}
+	REQUIRE(transformIndex >= 0);
+	REQUIRE(colliderIndex >= 0);
+	CHECK(transformIndex < colliderIndex);
+
+	const EntityHandle clone = SceneSerializer::DeserializeEntityFromValue(*scene, full);
+	REQUIRE(clone != entt::null);
+	const auto& cloneCamera = scene->GetComponent<Camera2DComponent>(clone);
+	CHECK(cloneCamera.GetOrthographicSize() == doctest::Approx(7.5f));
+	CHECK(cloneCamera.GetClearColor().b == doctest::Approx(0.6f));
+	CHECK_FALSE(cloneCamera.IsPostProcessingEnabled());
+	CHECK(scene->GetComponent<Transform2DComponent>(clone).LocalScale.y == doctest::Approx(3.0f));
+
+	// Missing keys reset to the component defaults (inspector Reset).
+	REQUIRE(SceneSerializer::ResetComponent(*scene, clone, "Camera2D"));
+	CHECK(scene->GetComponent<Camera2DComponent>(clone).GetOrthographicSize() == doctest::Approx(5.0f));
+	CHECK(scene->GetComponent<Camera2DComponent>(clone).IsPostProcessingEnabled());
 }

@@ -5,9 +5,6 @@
 
 #include "Core/Window.hpp"
 
-#include <GLFW/glfw3.h>
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3native.h>
 
 #include <dwmapi.h>
 #include <algorithm>
@@ -195,12 +192,8 @@ namespace Index::Win32BuildProgressWindow {
         }
 
         void ComputeCenteredRect(int width, int height, int& outX, int& outY) {
-            HWND parent = nullptr;
-            if (Window* w = Window::GetActiveWindow()) {
-                if (GLFWwindow* g = w->GetGLFWWindow()) {
-                    parent = glfwGetWin32Window(g);
-                }
-            }
+            Window* w = Window::GetActiveWindow();
+            HWND parent = w ? static_cast<HWND>(w->GetPlatformHandle()) : nullptr;
             RECT area{ 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
             HMONITOR mon = parent
                 ? MonitorFromWindow(parent, MONITOR_DEFAULTTONEAREST)
@@ -235,14 +228,10 @@ namespace Index::Win32BuildProgressWindow {
             return;
         }
 
-        // Owner = main GLFW window → behaves as a secondary window of the app
+        // Owner = main window → behaves as a secondary window of the app
         // (stays above its owner, no taskbar button) and hides with it.
-        HWND parent = nullptr;
-        if (Window* w = Window::GetActiveWindow()) {
-            if (GLFWwindow* g = w->GetGLFWWindow()) {
-                parent = glfwGetWin32Window(g);
-            }
-        }
+        Window* activeWindow = Window::GetActiveWindow();
+        HWND parent = activeWindow ? static_cast<HWND>(activeWindow->GetPlatformHandle()) : nullptr;
 
         // Standard OS chrome: caption + border, fixed size (no resize/min/max).
         // No WS_SYSMENU → no dead close button on a build that can't be cancelled.
@@ -307,7 +296,7 @@ namespace Index::Win32BuildProgressWindow {
         st.Progress = clamped;
         st.Stage = std::move(newStage);
         InvalidateRect(st.Hwnd, nullptr, FALSE);
-        UpdateWindow(st.Hwnd); // flush WM_PAINT immediately; glfwPollEvents would deliver it eventually but UpdateWindow keeps the bar smooth during long builds
+        UpdateWindow(st.Hwnd); // flush WM_PAINT immediately; the event pump would deliver it eventually but UpdateWindow keeps the bar smooth during long builds
     }
 
     void Hide() {
@@ -321,6 +310,46 @@ namespace Index::Win32BuildProgressWindow {
 
     bool IsVisible() {
         return Get().Hwnd != nullptr;
+    }
+
+}
+
+#else
+
+#include <mutex>
+
+namespace Index::Win32BuildProgressWindow {
+
+    namespace {
+        std::mutex s_Mutex;
+        State s_State;
+    }
+
+    void Show(const std::string& title) {
+        std::lock_guard lock(s_Mutex);
+        s_State.Visible = true;
+        s_State.Title = title;
+    }
+
+    void Update(float progress, const std::string& stage) {
+        std::lock_guard lock(s_Mutex);
+        s_State.Progress = progress;
+        s_State.Stage = stage;
+    }
+
+    void Hide() {
+        std::lock_guard lock(s_Mutex);
+        s_State = {};
+    }
+
+    bool IsVisible() {
+        std::lock_guard lock(s_Mutex);
+        return s_State.Visible;
+    }
+
+    State GetState() {
+        std::lock_guard lock(s_Mutex);
+        return s_State;
     }
 
 }

@@ -1,5 +1,6 @@
 #pragma once
 #include "Scene/EntityHandle.hpp"
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -7,9 +8,15 @@
 namespace Index {
 
 	class Scene;
+	namespace Json { class Value; }
 
 	bool SavePrefabSourceTransactionally(Scene& sourceScene, EntityHandle sourceRoot,
 		const std::string& prefabPath, std::string_view logTag);
+
+	// Same propagation for a .prefab changed outside the editor: previousSource (the parse the loaded
+	// instances were built from) is the override baseline. Edit mode only; scenes roll back on failure.
+	bool RefreshPrefabInstancesFromDisk(const std::string& prefabPath, const Json::Value& previousSource,
+		std::string_view logTag, size_t* outRefreshedCount = nullptr);
 
 	// Inspector for a .prefab asset backed by a detached Scene. Component-destroy hooks that touch global subsystems are gated by Scene::IsDetached().
 	class PrefabInspector {

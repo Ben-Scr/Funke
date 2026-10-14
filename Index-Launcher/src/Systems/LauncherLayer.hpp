@@ -2,12 +2,14 @@
 #include "Core/Layer.hpp"
 #include "Project/LauncherRegistry.hpp"
 #include "Project/IndexProject.hpp"
+#include "Project/ProjectTemplate.hpp"
 #include "Core/Export.hpp"
 #include "Gui/SplashScreen.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Systems/Prerequisites.hpp"
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <cstdint>
 #include <memory>
@@ -102,6 +104,19 @@ namespace Index {
 			bool Success = false;
 		};
 
+		// Worker for template saves and refreshes; Stage/Progress read by the popup each frame.
+		struct TemplateTaskState {
+			std::mutex Mutex;
+			std::thread Worker;
+			std::optional<ProjectTemplate> Result;
+			std::string Error;
+			std::string Stage = "Idle";
+			float Progress = 0.0f;
+			bool Running = false;
+			bool Finished = false;
+			bool Success = false;
+		};
+
 		struct ProjectSizeTaskState {
 			std::mutex Mutex;
 			bool Finished = false;
@@ -124,9 +139,7 @@ namespace Index {
 			bool Running = false;
 			bool Finished = false;
 			bool Success = false;
-#ifdef IDX_PLATFORM_WINDOWS
-			DWORD SpawnedProcessId = 0;
-#endif
+			unsigned long SpawnedProcessId = 0;
 		};
 
 		struct AssetLibraryTaskState {
@@ -189,6 +202,7 @@ namespace Index {
 		enum class LauncherPage : uint8_t {
 			Projects = 0,
 			AssetLibrary = 1,
+			Templates = 2,
 		};
 
 		void RenderLauncherPanel();
@@ -233,7 +247,36 @@ namespace Index {
 		void RequestProjectDelete(const LauncherProjectEntry& entry);
 		bool DeleteProjectFromDisk(const LauncherProjectEntry& entry);
 		void StartCreateProjectAsync(const std::string& name, const std::string& location,
-			const std::string& directoryName, bool initializeGit);
+			const std::string& directoryName, bool initializeGit, std::optional<ProjectTemplate> projectTemplate);
+		void RenderTemplatePicker(float contentWidth);
+		const ProjectTemplate* GetSelectedTemplate() const;
+		void RefreshProjectTemplates();
+		void RequestSaveAsTemplate(const LauncherProjectEntry& entry);
+		void RenderSaveTemplatePopup();
+		void PollSaveTemplateTask();
+		using TemplateTaskWork = std::function<bool(ProjectTemplate& outTemplate, std::string& outError,
+			const ProjectTemplates::ProgressCallback& progress)>;
+		static void StartTemplateTask(TemplateTaskState& task, TemplateTaskWork work);
+		// True once the worker finished; the task is reset and ready for the next run.
+		static bool PollTemplateTask(TemplateTaskState& task, std::optional<ProjectTemplate>& outResult, std::string& outError);
+		static void ResetTemplateTask(TemplateTaskState& task, bool clearWorker = true);
+		static void RenderTemplateTaskProgress(TemplateTaskState& task, float width);
+		// Rendered both inside the create dialog (its template cards) and at panel scope (Templates page).
+		void RenderDeleteTemplatePopup();
+		void OpenUserTemplatesFolder();
+		void BeginCreateProjectFromTemplate(const std::string& templateId);
+
+		// Templates page.
+		void RenderTemplatesTab();
+		void RenderTemplateTiles(const std::vector<const ProjectTemplate*>& templates);
+		void RenderTemplateContextMenu(const ProjectTemplate& projectTemplate);
+		void RequestEditTemplate(const ProjectTemplate& projectTemplate);
+		void RenderEditTemplatePopup();
+		void RenderRefreshTemplatePopup();
+		void PollRefreshTemplateTask();
+		void OpenTemplateSourceProject(const ProjectTemplate& projectTemplate);
+		// Cached by file path and re-checked every 2s, like the project thumbnails.
+		const Texture2D* GetCachedImage(const std::string& filePath);
 		void PollCreateProjectTask();
 		void ResetCreateProjectTask(bool clearWorker = true);
 		void StartProjectLaunch(const LauncherProjectEntry& entry, bool launchRuntime);
@@ -290,6 +333,46 @@ namespace Index {
 		char m_NewProjectLocation[512]{};
 		bool m_NewProjectInitializeGit = true;
 		std::string m_CreateError;
+		// Re-discovered each time the create dialog opens so new template folders show up without a restart.
+		std::vector<ProjectTemplate> m_ProjectTemplates;
+		std::string m_SelectedTemplateId;
+		std::string m_TemplateCategoryFilter;
+
+		std::optional<LauncherProjectEntry> m_PendingTemplateProject;
+		bool m_OpenSaveTemplatePopup = false;
+		bool m_IsSavingTemplate = false;
+		char m_TemplateNameBuffer[128]{};
+		char m_TemplateDescriptionBuffer[512]{};
+		char m_TemplateCategoryBuffer[64]{};
+		std::string m_SaveTemplateError;
+		// Set once the worker succeeds; the popup then switches to its "saved" state.
+		std::optional<ProjectTemplate> m_SavedTemplate;
+		TemplateTaskState m_SaveTemplateTask;
+
+		std::optional<ProjectTemplate> m_PendingDeleteTemplate;
+		bool m_OpenDeleteTemplatePopup = false;
+		std::string m_DeleteTemplateError;
+
+		std::string m_TemplatePageSearch;
+		std::string m_TemplatePageCategory;
+		std::string m_TemplatePageSelectedId;
+		// Deferred to after the tile loop: creating a project rediscovers m_ProjectTemplates.
+		std::optional<std::string> m_PendingNewProjectTemplateId;
+
+		std::optional<ProjectTemplate> m_PendingEditTemplate;
+		bool m_OpenEditTemplatePopup = false;
+		char m_EditTemplateNameBuffer[128]{};
+		char m_EditTemplateDescriptionBuffer[512]{};
+		char m_EditTemplateCategoryBuffer[64]{};
+		char m_EditTemplateSourceBuffer[512]{};
+		std::string m_EditTemplateError;
+
+		std::optional<ProjectTemplate> m_PendingRefreshTemplate;
+		bool m_OpenRefreshTemplatePopup = false;
+		bool m_IsRefreshingTemplate = false;
+		bool m_CloseRefreshTemplatePopup = false;
+		std::string m_RefreshTemplateError;
+		TemplateTaskState m_RefreshTemplateTask;
 
 		bool m_IsCreating = false;
 		bool m_OpenCreatePopup = false;
@@ -365,14 +448,12 @@ namespace Index {
 		Texture2D m_LogoTexture;
 		bool m_LogoLoadAttempted = false;
 
-#ifdef IDX_PLATFORM_WINDOWS
 		// Two slots so launching the runtime via "Execute" doesn't make "Open In Editor" think the project is already open.
 		struct RunningProjectProcesses {
-			DWORD EditorPid = 0;
-			DWORD RuntimePid = 0;
+			unsigned long EditorPid = 0;
+			unsigned long RuntimePid = 0;
 		};
 		std::unordered_map<std::string, RunningProjectProcesses> m_RunningProjects;
-#endif
 
 		std::string m_ErrorMessage;
 		bool m_OpenErrorPopup = false;

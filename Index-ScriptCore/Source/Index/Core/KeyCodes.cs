@@ -2,7 +2,7 @@
 namespace Index;
 
 /// <summary>
-/// Key codes matching Index-Engine's KeyCode enum (GLFW-based values).
+/// Key codes matching Index-Engine's KeyCode enum (stable values, independent of the platform layer).
 /// </summary>
 public enum KeyCode
 {

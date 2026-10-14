@@ -18,6 +18,17 @@ namespace Index {
 		float LocalRotation = 0.0f;
 		Vec2 LocalScale{ 1.0f, 1.0f };
 
+		// UI stays inside the device safe area (notch, camera cutout, rounded corners, home indicator).
+		// Set on full-bleed elements such as backgrounds: edges that would stop at the safe area reach
+		// the screen edge instead.
+		bool IgnoreSafeArea = false;
+
+		// Per axis: span the parent rect (the screen for a root) instead of using SizeDelta and the anchors.
+		// Both on a root canvas lets it grow with wide or tall screens so corner-anchored children stay in
+		// the screen corners; FillWidth alone suits a full-width bar anchored to an edge.
+		bool FillWidth = false;
+		bool FillHeight = false;
+
 		// Transient resolved screen rect (NOT serialized) — filled by UILayoutSystem each frame.
 		Vec2 ResolvedMin{ 0.0f, 0.0f };
 		Vec2 ResolvedMax{ 0.0f, 0.0f };

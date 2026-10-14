@@ -2,6 +2,7 @@
 #include "Project/IndexProject.hpp"
 #include "Project/IndexBuildProfile.hpp"
 #include "Project/ProjectManager.hpp"
+#include "Project/ProjectTemplate.hpp"
 #include "Collections/AspectRatio.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/Directory.hpp"
@@ -65,6 +66,38 @@ namespace Index {
 			if (value == "Low") return ParticleQualityLevel::Low;
 			if (value == "Medium") return ParticleQualityLevel::Medium;
 			return ParticleQualityLevel::High;
+		}
+
+		const char* ShadowQualityToString(ShadowQualityLevel value) {
+			switch (value) {
+				case ShadowQualityLevel::Off: return "Off";
+				case ShadowQualityLevel::Low: return "Low";
+				case ShadowQualityLevel::Medium: return "Medium";
+				case ShadowQualityLevel::High: return "High";
+			}
+			return "Medium";
+		}
+
+		ShadowQualityLevel ShadowQualityFromString(std::string_view value) {
+			if (value == "Off") return ShadowQualityLevel::Off;
+			if (value == "Low") return ShadowQualityLevel::Low;
+			if (value == "High") return ShadowQualityLevel::High;
+			return ShadowQualityLevel::Medium;
+		}
+
+		const char* ToneMappingToString(ToneMappingMode value) {
+			switch (value) {
+				case ToneMappingMode::None: return "None";
+				case ToneMappingMode::Reinhard: return "Reinhard";
+				case ToneMappingMode::ACES: return "ACES";
+			}
+			return "ACES";
+		}
+
+		ToneMappingMode ToneMappingFromString(std::string_view value) {
+			if (value == "None") return ToneMappingMode::None;
+			if (value == "Reinhard") return ToneMappingMode::Reinhard;
+			return ToneMappingMode::ACES;
 		}
 
 		// Reject scene/icon strings that try to escape the project tree or carry
@@ -219,13 +252,32 @@ namespace Index {
 				return {};
 			}
 
+			// Matches premake's %{cfg.system}-%{cfg.architecture} output folders.
 #if defined(IDX_PLATFORM_WINDOWS)
 			return "windows-" + architectureDirectory;
+#elif defined(IDX_PLATFORM_MACOS)
+			return "macosx-" + architectureDirectory;
 #elif defined(IDX_PLATFORM_LINUX)
 			return "linux-" + architectureDirectory;
 #else
 			return {};
 #endif
+		}
+
+		// dotnet arguments for an engine-generated .csproj; those always carry the x64 platform label.
+		std::vector<std::string> ManagedPlatformArguments(const std::string& platform) {
+			std::vector<std::string> arguments{ "-p:Platform=" + platform };
+#if defined(_M_ARM64) || defined(__aarch64__)
+			// An arm64 CoreCLR refuses IL marked x64.
+			arguments.push_back("-p:PlatformTarget=AnyCPU");
+#endif
+			return arguments;
+		}
+
+		std::string ToLowerAscii(std::string value) {
+			std::transform(value.begin(), value.end(), value.begin(),
+				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			return value;
 		}
 
 		std::vector<std::string> GetPreferredBuildConfigurations() {
@@ -464,8 +516,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     "${INDEX_DIR}/External/stb"
     "${INDEX_DIR}/External/magic_enum/include"
     "${INDEX_DIR}/External/rapidxml"
-    "${INDEX_DIR}/External/glfw/include"
-    "${INDEX_DIR}/External/glad/include"
+    "${INDEX_DIR}/External/SDL/include"
     "${INDEX_DIR}/External/miniaudio"
     "${INDEX_DIR}/External/box2d/include"
     "${INDEX_DIR}/External/Index-Physics/include"
@@ -492,7 +543,11 @@ if(WIN32)
     idx_normalize_native_arch(IDX_NATIVE_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
     set(IDX_NATIVE_PLATFORM "windows-${IDX_NATIVE_ARCH}")
     target_compile_definitions(${PROJECT_NAME} PRIVATE IDX_PLATFORM_WINDOWS)
-elseif(UNIX AND NOT APPLE)
+elseif(APPLE AND NOT IOS)
+    idx_normalize_native_arch(IDX_NATIVE_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+    set(IDX_NATIVE_PLATFORM "macosx-${IDX_NATIVE_ARCH}")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE IDX_PLATFORM_MACOS)
+elseif(UNIX AND NOT APPLE AND NOT ANDROID)
     idx_normalize_native_arch(IDX_NATIVE_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
     set(IDX_NATIVE_PLATFORM "linux-${IDX_NATIVE_ARCH}")
     target_compile_definitions(${PROJECT_NAME} PRIVATE IDX_PLATFORM_LINUX)
@@ -672,20 +727,21 @@ endforeach()
 	}
 
 	static bool IsKnownProjectMember(std::string_view name) {
-		static constexpr std::array<std::string_view, 54> knownMembers = {
+		static constexpr std::array<std::string_view, 60> knownMembers = {
 			"projectFormatVersion", "name", "engineVersion", "startupScene", "lastOpenedScene",
-			"gameViewAspect", "gameViewVsync", "buildWidth", "buildHeight", "buildMinWidth",
+			"gameViewAspect", "gameViewVsync", "editorView3D", "buildWidth", "buildHeight", "buildMinWidth",
 			"buildMinHeight", "buildMaxWidth", "buildMaxHeight", "buildFullscreen",
 			"buildFullscreenMode", "buildResizable", "buildRunInBackground", "buildAspect",
-			"uiReferenceWidth", "uiReferenceHeight", "uiScaleMatch", "appIcon", "executableName",
+			"mobileOrientation", "uiReferenceWidth", "uiReferenceHeight", "uiScaleMode", "uiScaleMatch", "appIcon", "executableName",
 			"buildVersion", "buildCompany", "splashScreen", "buildScenes", "globalSystems",
 			"packages", "profiler", "showRuntimeStats", "showRuntimeLogs", "graphics",
 			"enablePostProcessing", "physicsTickRate", "autoSaveScenes", "autoSaveIntervalSeconds",
 			"autoRecompileScripts", "recompileScriptsOnPlay", "assetSerializationFormat",
 			"showFileExtensions", "editorEnsureUniqueEntityNames", "editorEntityNameSuffix",
 			"editorAssetDuplicateSuffix", "cursorImagePath", "uiInteractableCursorImagePath",
+			"cursorHotspot", "uiInteractableCursorHotspot",
 			"buildProfile", "renderBackend", "activeBuildProfile", "defaultFontAsset", "fontBakeStep",
-			"fontAtlasBudgetMb", "customDefines", "entityBits"
+			"fontAtlasBudgetMb", "customDefines", "entityBits", "modules"
 		};
 		return std::find(knownMembers.begin(), knownMembers.end(), name) != knownMembers.end();
 	}
@@ -706,9 +762,9 @@ endforeach()
 			return std::find(members.begin(), members.end(), name) != members.end();
 		}
 		if (parent == "graphics") {
-			static constexpr std::array<std::string_view, 5> members = {
+			static constexpr std::array<std::string_view, 10> members = {
 				"renderScale", "upscaleFilter", "postProcessingEnabled", "postProcessingQuality",
-				"particleQuality"
+				"particleQuality", "shadowQuality", "shadowDistance", "maxLights", "exposure", "toneMapping"
 			};
 			return std::find(members.begin(), members.end(), name) != members.end();
 		}
@@ -779,14 +835,14 @@ endforeach()
 
 		for (std::string_view name : {
 			"name", "engineVersion", "startupScene", "lastOpenedScene", "gameViewAspect",
-			"buildFullscreenMode", "buildAspect", "appIcon", "executableName", "buildVersion",
+			"buildFullscreenMode", "mobileOrientation", "uiScaleMode", "buildAspect", "appIcon", "executableName", "buildVersion",
 			"buildCompany", "assetSerializationFormat", "editorEntityNameSuffix",
 			"editorAssetDuplicateSuffix", "cursorImagePath", "uiInteractableCursorImagePath",
 			"buildProfile", "renderBackend", "activeBuildProfile" }) {
 			if (!require(name, [](const Json::Value& value) { return value.IsString(); }, "a string")) return false;
 		}
 		for (std::string_view name : {
-			"gameViewVsync", "buildFullscreen", "buildResizable", "buildRunInBackground",
+			"gameViewVsync", "editorView3D", "buildFullscreen", "buildResizable", "buildRunInBackground",
 			"showRuntimeStats", "showRuntimeLogs", "enablePostProcessing", "autoSaveScenes",
 			"autoRecompileScripts", "recompileScriptsOnPlay", "showFileExtensions",
 			"editorEnsureUniqueEntityNames" }) {
@@ -801,6 +857,15 @@ endforeach()
 		}
 		for (std::string_view name : { "buildScenes", "globalSystems", "packages", "customDefines" }) {
 			if (!require(name, [](const Json::Value& value) { return value.IsArray(); }, "an array")) return false;
+		}
+		for (std::string_view name : { "cursorHotspot", "uiInteractableCursorHotspot" }) {
+			if (!require(name, [](const Json::Value& value) {
+				if (!value.IsArray() || value.GetArray().size() != 2) return false;
+				for (const Json::Value& component : value.GetArray()) {
+					if (!component.IsNumber()) return false;
+				}
+				return true;
+			}, "an [x, y] number array")) return false;
 		}
 		for (std::string_view name : { "splashScreen", "profiler", "graphics" }) {
 			if (!require(name, [](const Json::Value& value) { return value.IsObject(); }, "an object")) return false;
@@ -864,9 +929,13 @@ endforeach()
 				[](const Json::Value& value) { return value.IsNumber(); }, "a number")) return false;
 			if (!requireNested(*graphics, "graphics", "postProcessingEnabled",
 				[](const Json::Value& value) { return value.IsBool(); }, "a boolean")) return false;
-			for (std::string_view member : { "upscaleFilter", "postProcessingQuality", "particleQuality" }) {
+			for (std::string_view member : { "upscaleFilter", "postProcessingQuality", "particleQuality", "shadowQuality", "toneMapping" }) {
 				if (!requireNested(*graphics, "graphics", member,
 					[](const Json::Value& value) { return value.IsString(); }, "a string")) return false;
+			}
+			for (std::string_view member : { "shadowDistance", "maxLights", "exposure" }) {
+				if (!requireNested(*graphics, "graphics", member,
+					[](const Json::Value& value) { return value.IsNumber(); }, "a number")) return false;
 			}
 		}
 
@@ -941,6 +1010,7 @@ endforeach()
 		root.AddMember("lastOpenedScene", project.LastOpenedScene);
 		root.AddMember("gameViewAspect", project.GameViewAspect);
 		root.AddMember("gameViewVsync", project.GameViewVsync);
+		if (project.EditorView3D) root.AddMember("editorView3D", *project.EditorView3D);
 		root.AddMember("buildWidth", project.BuildWidth);
 		root.AddMember("buildHeight", project.BuildHeight);
 		root.AddMember("buildMinWidth", project.BuildMinWidth);
@@ -950,11 +1020,14 @@ endforeach()
 		root.AddMember("buildFullscreen", project.BuildFullscreen);
 		root.AddMember("buildFullscreenMode",
 			std::string(IndexProject::FullscreenModeToString(project.BuildFullscreenMode)));
+		root.AddMember("mobileOrientation",
+			std::string(IndexProject::ScreenOrientationToString(project.MobileOrientation)));
 		root.AddMember("buildResizable", project.BuildResizable);
 		root.AddMember("buildRunInBackground", project.BuildRunInBackground);
 		root.AddMember("buildAspect", project.BuildAspect);
 		root.AddMember("uiReferenceWidth", project.UIReferenceWidth);
 		root.AddMember("uiReferenceHeight", project.UIReferenceHeight);
+		root.AddMember("uiScaleMode", std::string(IndexProject::UIScaleModeToString(project.UIScaling)));
 		root.AddMember("uiScaleMatch", project.UIScaleMatch);
 		if (!project.AppIconPath.empty()) {
 			root.AddMember("appIcon", project.AppIconPath);
@@ -1029,6 +1102,16 @@ endforeach()
 			root.AddMember("packages", std::move(packages));
 		}
 
+		{
+			Json::Value modules = Json::Value::MakeArray();
+			for (const std::string& module : project.Modules) {
+				if (!module.empty()) {
+					modules.Append(module);
+				}
+			}
+			root.AddMember("modules", std::move(modules));
+		}
+
 		// Only written when non-default to keep virgin project files clean.
 		const auto& prof = project.Profiler;
 		const bool profilerNonDefault =
@@ -1066,6 +1149,11 @@ endforeach()
 			graphics.AddMember("postProcessingEnabled", project.Graphics.PostProcessingEnabled);
 			graphics.AddMember("postProcessingQuality", std::string(PostProcessingQualityToString(project.Graphics.PostProcessingQuality)));
 			graphics.AddMember("particleQuality", std::string(ParticleQualityToString(project.Graphics.ParticleQuality)));
+			graphics.AddMember("shadowQuality", std::string(ShadowQualityToString(project.Graphics.ShadowQuality)));
+			graphics.AddMember("shadowDistance", project.Graphics.ShadowDistance);
+			graphics.AddMember("maxLights", project.Graphics.MaxLights);
+			graphics.AddMember("exposure", project.Graphics.Exposure);
+			graphics.AddMember("toneMapping", std::string(ToneMappingToString(project.Graphics.ToneMapping)));
 			root.AddMember("graphics", std::move(graphics));
 		}
 		if (project.PhysicsTickRate != 50) {
@@ -1095,6 +1183,15 @@ endforeach()
 			root.AddMember("uiInteractableCursorImagePath",
 				project.UIInteractableCursorImagePath);
 		}
+		auto writeHotspot = [&root](const char* name, Vec2Int hotspot) {
+			if (hotspot == Vec2Int(0, 0)) return;
+			Json::Value value = Json::Value::MakeArray();
+			value.Append(Json::Value(hotspot.x));
+			value.Append(Json::Value(hotspot.y));
+			root.AddMember(name, std::move(value));
+		};
+		writeHotspot("cursorHotspot", project.CursorHotspot);
+		writeHotspot("uiInteractableCursorHotspot", project.UIInteractableCursorHotspot);
 
 		if (project.ActiveBuildProfile != IndexProject::BuildProfile::Development) {
 			root.AddMember("buildProfile",
@@ -1155,6 +1252,19 @@ endforeach()
 #endif
 	}
 
+	std::string IndexProject::GetManagedPlatformDefine(BuildPlatform platform) {
+		switch (platform) {
+			case BuildPlatform::Windows:  return "INDEX_WINDOWS";
+			case BuildPlatform::Linux:    return "INDEX_LINUX";
+			case BuildPlatform::MacOS:    return "INDEX_MACOS";
+			case BuildPlatform::Android:  return "INDEX_ANDROID";
+			case BuildPlatform::IOS:      return "INDEX_IOS";
+			case BuildPlatform::VisionOS: return "INDEX_VISIONOS";
+			case BuildPlatform::Web:      return "INDEX_WEB";
+		}
+		return {};
+	}
+
 	std::string IndexProject::GetManagedPlatformDefine() {
 #if defined(IDX_PLATFORM_WINDOWS)
 		return "INDEX_WINDOWS";
@@ -1162,6 +1272,12 @@ endforeach()
 		return "INDEX_MACOS";
 #elif defined(IDX_PLATFORM_LINUX)
 		return "INDEX_LINUX";
+#elif defined(IDX_PLATFORM_ANDROID)
+		return "INDEX_ANDROID";
+#elif defined(IDX_PLATFORM_IOS)
+		return "INDEX_IOS";
+#elif defined(IDX_PLATFORM_WEB)
+		return "INDEX_WEB";
 #else
 		return {};
 #endif
@@ -1259,6 +1375,75 @@ endforeach()
 			case FullscreenMode::Maximized:          return "Maximized";
 		}
 		return "Exclusive";
+	}
+
+	namespace {
+		constexpr std::pair<ScreenOrientation, const char*> k_ScreenOrientationNames[] = {
+			{ ScreenOrientation::Auto,                "Auto" },
+			{ ScreenOrientation::Landscape,           "Landscape" },
+			{ ScreenOrientation::LandscapeLeft,       "LandscapeLeft" },
+			{ ScreenOrientation::LandscapeRight,      "LandscapeRight" },
+			{ ScreenOrientation::Portrait,            "Portrait" },
+			{ ScreenOrientation::PortraitUpsideDown,  "PortraitUpsideDown" },
+			{ ScreenOrientation::PortraitAny,         "PortraitAny" },
+			{ ScreenOrientation::AnyExceptUpsideDown, "AnyExceptUpsideDown" },
+			{ ScreenOrientation::Any,                 "Any" },
+		};
+	}
+
+	const char* IndexProject::ScreenOrientationToString(ScreenOrientation orientation) {
+		for (const auto& [value, name] : k_ScreenOrientationNames) {
+			if (value == orientation) return name;
+		}
+		return "Auto";
+	}
+
+	ScreenOrientation IndexProject::ScreenOrientationFromString(std::string_view value) {
+		for (const auto& [orientation, name] : k_ScreenOrientationNames) {
+			if (value == name) return orientation;
+		}
+		return ScreenOrientation::Auto;
+	}
+
+	namespace {
+		constexpr std::pair<IndexProject::UIScaleMode, const char*> k_UIScaleModeNames[] = {
+			{ IndexProject::UIScaleMode::MatchWidthOrHeight, "MatchWidthOrHeight" },
+			{ IndexProject::UIScaleMode::Fit,                "Fit" },
+			{ IndexProject::UIScaleMode::Fill,               "Fill" },
+		};
+	}
+
+	const char* IndexProject::UIScaleModeToString(UIScaleMode mode) {
+		for (const auto& [value, name] : k_UIScaleModeNames) {
+			if (value == mode) return name;
+		}
+		return "MatchWidthOrHeight";
+	}
+
+	IndexProject::UIScaleMode IndexProject::UIScaleModeFromString(std::string_view value) {
+		for (const auto& [mode, name] : k_UIScaleModeNames) {
+			if (value == name) return mode;
+		}
+		return UIScaleMode::MatchWidthOrHeight;
+	}
+
+	float IndexProject::ComputeUIScale(float surfaceWidth, float surfaceHeight) const {
+		const float xRatio = surfaceWidth / static_cast<float>(std::max(1, UIReferenceWidth));
+		const float yRatio = surfaceHeight / static_cast<float>(std::max(1, UIReferenceHeight));
+		if (!(xRatio > 0.0f) || !(yRatio > 0.0f)) return 1.0f;
+
+		float scale = 1.0f;
+		switch (UIScaling) {
+			case UIScaleMode::Fit:  scale = std::min(xRatio, yRatio); break;
+			case UIScaleMode::Fill: scale = std::max(xRatio, yRatio); break;
+			case UIScaleMode::MatchWidthOrHeight: {
+				// Blend in log space so 0.5 is the geometric mean: doubling width and halving height cancel out.
+				const float match = std::clamp(UIScaleMatch, 0.0f, 1.0f);
+				scale = std::exp((1.0f - match) * std::log(xRatio) + match * std::log(yRatio));
+				break;
+			}
+		}
+		return std::isfinite(scale) && scale > 0.0f ? scale : 1.0f;
 	}
 
 	FullscreenMode IndexProject::FullscreenModeFromString(std::string_view value) {
@@ -1702,6 +1887,9 @@ endforeach()
 				if (const Json::Value* gameViewVsyncValue = root.FindMember("gameViewVsync")) {
 					project.GameViewVsync = gameViewVsyncValue->AsBoolOr(true);
 				}
+				if (const Json::Value* editorView3DValue = root.FindMember("editorView3D")) {
+					if (editorView3DValue->IsBool()) project.EditorView3D = editorView3DValue->AsBoolOr(false);
+				}
 				if (const Json::Value* buildWidthValue = root.FindMember("buildWidth")) {
 					project.BuildWidth = buildWidthValue->AsIntOr(1920);
 				}
@@ -1714,6 +1902,9 @@ endforeach()
 				if (const Json::Value* v = root.FindMember("buildFullscreenMode")) {
 					project.BuildFullscreenMode =
 						IndexProject::FullscreenModeFromString(v->AsStringOr("Exclusive"));
+				}
+				if (const Json::Value* v = root.FindMember("mobileOrientation")) {
+					project.MobileOrientation = IndexProject::ScreenOrientationFromString(v->AsStringOr("Auto"));
 				}
 				if (const Json::Value* resizableValue = root.FindMember("buildResizable")) {
 					project.BuildResizable = resizableValue->AsBoolOr(true);
@@ -1751,6 +1942,9 @@ endforeach()
 				}
 				if (const Json::Value* uiRefHeightValue = root.FindMember("uiReferenceHeight")) {
 					project.UIReferenceHeight = std::max(1, uiRefHeightValue->AsIntOr(project.UIReferenceHeight));
+				}
+				if (const Json::Value* v = root.FindMember("uiScaleMode")) {
+					project.UIScaling = IndexProject::UIScaleModeFromString(v->AsStringOr("MatchWidthOrHeight"));
 				}
 				if (const Json::Value* uiMatchValue = root.FindMember("uiScaleMatch")) {
 					const float raw = static_cast<float>(uiMatchValue->AsDoubleOr(project.UIScaleMatch));
@@ -1896,6 +2090,21 @@ endforeach()
 							"Project '{}': 'packages' field is not a JSON array; ignoring.", configPath);
 					}
 				}
+				if (const Json::Value* modulesValue = root.FindMember("modules")) {
+					if (modulesValue->IsArray()) {
+						project.Modules.clear();
+						for (const Json::Value& moduleValue : modulesValue->GetArray()) {
+							std::string module = moduleValue.AsStringOr();
+							if (!module.empty() && !project.HasModule(module)) {
+								project.Modules.push_back(std::move(module));
+							}
+						}
+					}
+					else {
+						IDX_CORE_WARN_TAG("IndexProject",
+							"Project '{}': 'modules' field is not a JSON array; keeping all modules.", configPath);
+					}
+				}
 				if (const Json::Value* profilerValue = root.FindMember("profiler")) {
 					if (const Json::Value* v = profilerValue->FindMember("enableInRuntime"))
 						project.Profiler.EnableInRuntime = v->AsBoolOr(false);
@@ -1938,6 +2147,17 @@ endforeach()
 						project.Graphics.PostProcessingQuality = PostProcessingQualityFromString(v->AsStringOr("High"));
 					if (const Json::Value* v = graphics->FindMember("particleQuality"))
 						project.Graphics.ParticleQuality = ParticleQualityFromString(v->AsStringOr("High"));
+					if (const Json::Value* v = graphics->FindMember("shadowQuality"))
+						project.Graphics.ShadowQuality = ShadowQualityFromString(v->AsStringOr("Medium"));
+					if (const Json::Value* v = graphics->FindMember("shadowDistance"))
+						project.Graphics.ShadowDistance = static_cast<float>(v->AsDoubleOr(project.Graphics.ShadowDistance));
+					if (const Json::Value* v = graphics->FindMember("maxLights"))
+						project.Graphics.MaxLights = v->AsIntOr(project.Graphics.MaxLights);
+					if (const Json::Value* v = graphics->FindMember("exposure"))
+						project.Graphics.Exposure = static_cast<float>(v->AsDoubleOr(project.Graphics.Exposure));
+					if (const Json::Value* v = graphics->FindMember("toneMapping"))
+						project.Graphics.ToneMapping = ToneMappingFromString(v->AsStringOr("ACES"));
+					project.Graphics = ClampGraphicsSettings(project.Graphics);
 				}
 				if (!hasNestedPostProcessingEnabled) {
 					if (const Json::Value* v = root.FindMember("enablePostProcessing"))
@@ -1983,6 +2203,13 @@ endforeach()
 					{ const std::string p = v->AsStringOr(); if (IsSafeAssetPath(p)) project.CursorImagePath = p; else IDX_CORE_WARN_TAG("IndexProject", "Project '{}': ignoring unsafe cursorImagePath '{}'", configPath, p); }
 				if (const Json::Value* v = root.FindMember("uiInteractableCursorImagePath"))
 					{ const std::string p = v->AsStringOr(); if (IsSafeAssetPath(p)) project.UIInteractableCursorImagePath = p; else IDX_CORE_WARN_TAG("IndexProject", "Project '{}': ignoring unsafe uiInteractableCursorImagePath '{}'", configPath, p); }
+				auto readHotspot = [&root](const char* name, Vec2Int& outHotspot) {
+					const Json::Value* v = root.FindMember(name);
+					if (!v || !v->IsArray() || v->GetArray().size() != 2) return;
+					outHotspot = { std::max(0, v->GetArray()[0].AsIntOr(0)), std::max(0, v->GetArray()[1].AsIntOr(0)) };
+				};
+				readHotspot("cursorHotspot", project.CursorHotspot);
+				readHotspot("uiInteractableCursorHotspot", project.UIInteractableCursorHotspot);
 				if (const Json::Value* v = root.FindMember("buildProfile"))
 					project.ActiveBuildProfile = IndexProject::BuildProfileFromString(v->AsStringOr("Development"));
 				if (const Json::Value* v = root.FindMember("renderBackend"))
@@ -2214,8 +2441,7 @@ endforeach()
 	}
 
 	Json::Value IndexProject::BuildStarterScene(const std::string& sceneName) {
-		// Pre-seeds a Camera2D entity so a fresh project renders something — the deserializer
-		// no longer auto-injects a camera, so the template has to carry one explicitly.
+		// An empty scene with only a Camera2D: the deserializer no longer auto-injects a camera.
 		Json::Value sceneRoot = Json::Value::MakeObject();
 		sceneRoot.AddMember("version", 1);
 		sceneRoot.AddMember("name", sceneName);
@@ -2237,65 +2463,8 @@ endforeach()
 		cameraEntity.AddMember("Transform2D", std::move(transform2D));
 		cameraEntity.AddMember("Camera2D", std::move(camera2D));
 
-		// A tiny playable example: move the Player into the Coin. Shows input, physics,
-		// a trigger and saved data; everything is plain scene content the user can delete.
-		auto makeTransform = [](double x, double y, double scale) {
-			Json::Value transform = Json::Value::MakeObject();
-			transform.AddMember("posX", x);
-			transform.AddMember("posY", y);
-			transform.AddMember("rotation", 0.0);
-			transform.AddMember("scaleX", scale);
-			transform.AddMember("scaleY", scale);
-			return transform;
-		};
-		auto makeSprite = [](double r, double g, double b) {
-			Json::Value sprite = Json::Value::MakeObject();
-			sprite.AddMember("r", r);
-			sprite.AddMember("g", g);
-			sprite.AddMember("b", b);
-			sprite.AddMember("a", 1.0);
-			return sprite;
-		};
-		auto makeScripts = [](const char* className) {
-			Json::Value script = Json::Value::MakeObject();
-			script.AddMember("className", std::string(className));
-			script.AddMember("type", std::string("Managed"));
-			Json::Value scripts = Json::Value::MakeArray();
-			scripts.Append(std::move(script));
-			return scripts;
-		};
-
-		Json::Value playerBody = Json::Value::MakeObject();
-		playerBody.AddMember("bodyType", 2); // Dynamic
-		playerBody.AddMember("gravityScale", 0.0);
-		playerBody.AddMember("freezeRotation", true);
-		Json::Value playerCollider = Json::Value::MakeObject();
-		playerCollider.AddMember("localSizeX", 1.0);
-		playerCollider.AddMember("localSizeY", 1.0);
-
-		Json::Value playerEntity = Json::Value::MakeObject();
-		playerEntity.AddMember("name", std::string("Player"));
-		playerEntity.AddMember("Transform2D", makeTransform(-2.0, 0.0, 1.0));
-		playerEntity.AddMember("SpriteRenderer", makeSprite(0.30, 0.62, 1.0));
-		playerEntity.AddMember("Rigidbody2D", std::move(playerBody));
-		playerEntity.AddMember("BoxCollider2D", std::move(playerCollider));
-		playerEntity.AddMember("Scripts", makeScripts("PlayerController"));
-
-		Json::Value coinCollider = Json::Value::MakeObject();
-		coinCollider.AddMember("radius", 0.5);
-		coinCollider.AddMember("sensor", true);
-
-		Json::Value coinEntity = Json::Value::MakeObject();
-		coinEntity.AddMember("name", std::string("Coin"));
-		coinEntity.AddMember("Transform2D", makeTransform(2.0, 0.0, 0.5));
-		coinEntity.AddMember("SpriteRenderer", makeSprite(1.0, 0.82, 0.25));
-		coinEntity.AddMember("CircleCollider2D", std::move(coinCollider));
-		coinEntity.AddMember("Scripts", makeScripts("Coin"));
-
 		Json::Value entities = Json::Value::MakeArray();
 		entities.Append(std::move(cameraEntity));
-		entities.Append(std::move(playerEntity));
-		entities.Append(std::move(coinEntity));
 		sceneRoot.AddMember("entities", std::move(entities));
 		return sceneRoot;
 	}
@@ -2307,10 +2476,125 @@ endforeach()
 
 	IndexProject IndexProject::Create(const std::string& name, const std::string& parentDir,
 		const std::string& directoryName, const CreateProgressCallback& progressCallback) {
-		IndexProject project;
+		return Create(name, parentDir, directoryName, nullptr, progressCallback);
+	}
+
+	namespace {
+		bool IsTemplateTextFile(const std::string& lowerExtension) {
+			return lowerExtension == ".cs" || lowerExtension == ".json" || lowerExtension == ".md"
+				|| lowerExtension == ".txt" || lowerExtension == ".meta" || lowerExtension == ".dataasset";
+		}
+
+		// Scenes are authored as JSON in the template and written in the project's serialization format.
+		void CopyTemplateAssets(const ProjectTemplate& projectTemplate, const IndexProject& project, SceneSerializationFormat sceneFormat) {
+			const std::filesystem::path sourceRoot = Path::FromUtf8(projectTemplate.GetAssetsDirectory());
+			const std::filesystem::path destinationRoot = Path::FromUtf8(project.AssetsDirectory);
+			std::error_code ec;
+			if (!std::filesystem::is_directory(sourceRoot, ec)) {
+				throw std::runtime_error("Template '" + projectTemplate.Id + "' has no Assets folder");
+			}
+
+			for (auto it = std::filesystem::recursive_directory_iterator(sourceRoot, ec);
+				!ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+				const std::filesystem::path relative = std::filesystem::relative(it->path(), sourceRoot, ec);
+				if (ec) break;
+				const std::filesystem::path destination = destinationRoot / relative;
+				if (it->is_directory(ec)) {
+					std::filesystem::create_directories(destination, ec);
+					continue;
+				}
+				std::filesystem::create_directories(destination.parent_path(), ec);
+
+				const std::string sourcePath = Path::ToUtf8(it->path());
+				const std::string destinationPath = Path::ToUtf8(destination);
+				std::string extension = Path::ToUtf8(it->path().extension());
+				std::transform(extension.begin(), extension.end(), extension.begin(),
+					[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+				if (extension == ".scene") {
+					// Templates saved from binary-format projects carry binary scenes; those have no placeholders.
+					std::string parseError;
+					Json::Value sceneRoot;
+					const bool parsed = SceneSerializerStorage::IsBinaryData(File::ReadAllBytes(sourcePath))
+						? SceneSerializerStorage::ReadRootFromFile(sourcePath, sceneRoot, &parseError)
+						: Json::TryParse(ProjectTemplates::ExpandPlaceholders(File::ReadAllText(sourcePath), project.Name),
+							sceneRoot, &parseError);
+					if (!parsed || !SceneSerializerStorage::WriteRootToFile(destinationPath, sceneRoot, sceneFormat)) {
+						throw std::runtime_error("Could not write template scene '" + destinationPath + "': " + parseError);
+					}
+					continue;
+				}
+
+				const std::string text = IsTemplateTextFile(extension) ? File::ReadAllText(sourcePath) : std::string{};
+				const std::string expanded = text.empty() ? text : ProjectTemplates::ExpandPlaceholders(text, project.Name);
+				if (expanded != text) {
+					if (!File::WriteAllText(destinationPath, expanded)) {
+						throw std::runtime_error("Could not write template file: " + destinationPath);
+					}
+				}
+				else {
+					std::filesystem::copy_file(it->path(), destination, std::filesystem::copy_options::overwrite_existing, ec);
+					if (ec) {
+						throw std::runtime_error("Could not copy template file '" + sourcePath + "': " + ec.message());
+					}
+				}
+			}
+			if (ec) {
+				throw std::runtime_error("Could not read template '" + projectTemplate.Id + "': " + ec.message());
+			}
+		}
+
+		// Verbatim copy of an optional template subtree (build profiles, native sources, local packages).
+		void CopyTemplateDirectory(const std::filesystem::path& source, const std::filesystem::path& destination) {
+			std::error_code ec;
+			if (!std::filesystem::is_directory(source, ec)) return;
+			std::filesystem::create_directories(destination, ec);
+			std::filesystem::copy(source, destination,
+				std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
+			if (ec) {
+				throw std::runtime_error("Could not copy template folder '" + Path::ToUtf8(source) + "': " + ec.message());
+			}
+		}
+
+		// Settings saved with the template; name, location and per-user editor state belong to the new project.
+		IndexProject LoadTemplateProjectSettings(const ProjectTemplate& projectTemplate) {
+			IndexProject settings;
+			std::string error;
+			if (!IndexProject::TryLoad(projectTemplate.RootDirectory, settings, &error, false)) {
+				throw std::runtime_error("Template '" + projectTemplate.Id + "' has invalid project settings: " + error);
+			}
+			if (settings.ExecutableName == settings.Name) {
+				settings.ExecutableName.clear();
+			}
+			settings.EditorView3D.reset();
+			settings.ProjectFormatVersion = IndexProject::k_CurrentProjectFormatVersion;
+			return settings;
+		}
+	}
+
+	IndexProject IndexProject::Create(const std::string& name, const std::string& parentDir,
+		const std::string& directoryName, const ProjectTemplate* projectTemplate,
+		const CreateProgressCallback& progressCallback) {
+		const bool templateHasSettings = projectTemplate && !projectTemplate->GetProjectSettingsPath().empty();
+		IndexProject project = templateHasSettings ? LoadTemplateProjectSettings(*projectTemplate) : IndexProject{};
 		project.Name = name;
 		project.RootDirectory = Path::Combine(parentDir, directoryName.empty() ? name : directoryName);
 		project.EngineVersion = IDX_VERSION;
+		if (!templateHasSettings) {
+			// Text scenes/prefabs diff in git and stay editable by tools; builds still ship them as binary.
+			project.AssetSerializationFormat = ProjectAssetSerializationFormat::Json;
+		}
+		if (projectTemplate) {
+			if (!projectTemplate->Modules.empty()) {
+				project.Modules = projectTemplate->Modules;
+			}
+			project.StartupScene = projectTemplate->StartupScene;
+			project.LastOpenedScene = projectTemplate->StartupScene;
+		}
+		else {
+			// The built-in starter scene is 2D.
+			project.Modules = { std::string(k_Module2D) };
+		}
 		ResolvePaths(project);
 
 		ReportCreateProgress(progressCallback, 0.08f, "Creating project folders...");
@@ -2320,8 +2604,16 @@ endforeach()
 		if (!ConfigurePackages(project, &packageError)) {
 			throw std::runtime_error(packageError);
 		}
-		ReportCreateProgress(progressCallback, 0.20f, "Creating default build profiles...");
-		IndexBuildProfile::WriteDefaultProfiles(project.GetBuildProfilesDirectory());
+		const std::filesystem::path templateRoot = projectTemplate ? Path::FromUtf8(projectTemplate->RootDirectory) : std::filesystem::path{};
+		std::error_code templateProfilesError;
+		if (projectTemplate && std::filesystem::is_directory(templateRoot / "BuildProfiles", templateProfilesError)) {
+			ReportCreateProgress(progressCallback, 0.20f, "Copying template build profiles...");
+			CopyTemplateDirectory(templateRoot / "BuildProfiles", Path::FromUtf8(project.GetBuildProfilesDirectory()));
+		}
+		else {
+			ReportCreateProgress(progressCallback, 0.20f, "Creating default build profiles...");
+			IndexBuildProfile::WriteDefaultProfiles(project.GetBuildProfilesDirectory());
+		}
 
 		std::string engineAssets = Path::ResolveIndexAssets("");
 		if (!engineAssets.empty() && Directory::Exists(engineAssets)) {
@@ -2353,14 +2645,24 @@ endforeach()
 			}
 		}
 
-		{
+		const SceneSerializationFormat starterFormat =
+			project.AssetSerializationFormat == IndexProject::ProjectAssetSerializationFormat::Binary
+				? SceneSerializationFormat::Binary
+				: SceneSerializationFormat::Json;
+		if (projectTemplate) {
+			ReportCreateProgress(progressCallback, 0.56f, "Copying template '" + projectTemplate->DisplayName + "'...");
+			CopyTemplateAssets(*projectTemplate, project, starterFormat);
+			CopyTemplateDirectory(templateRoot / "NativeScripts" / "Source", Path::FromUtf8(project.NativeSourceDir));
+			CopyTemplateDirectory(templateRoot / "Packages", Path::FromUtf8(project.PackagesDirectory));
+			const std::string startupScenePath = project.GetSceneFilePath(project.StartupScene);
+			if (startupScenePath.empty() || !File::Exists(startupScenePath)) {
+				throw std::runtime_error("Template '" + projectTemplate->Id + "' does not contain its startup scene '"
+					+ project.StartupScene + "'");
+			}
+		}
+		else {
 			ReportCreateProgress(progressCallback, 0.56f, "Generating starter scene...");
 			const Json::Value sceneRoot = BuildStarterScene(project.StartupScene);
-
-			const SceneSerializationFormat starterFormat =
-				project.AssetSerializationFormat == IndexProject::ProjectAssetSerializationFormat::Binary
-					? SceneSerializationFormat::Binary
-					: SceneSerializationFormat::Json;
 			const std::string starterScenePath = project.GetSceneFilePath(project.StartupScene);
 			if (starterScenePath.empty()
 				|| !SceneSerializerStorage::WriteRootToFile(starterScenePath, sceneRoot, starterFormat)) {
@@ -2485,8 +2787,9 @@ EndGlobal
 			throw std::runtime_error("Could not write Visual Studio solution: " + project.SlnPath);
 		}
 
-		// Generate starter script
-		std::string starterScript = R"(using Index;
+		// Templates ship their own scripts; without one the project gets an empty GameScript.
+		if (!projectTemplate) {
+			std::string starterScript = R"(using Index;
 
 public class GameScript : EntityScript
 {
@@ -2500,51 +2803,8 @@ public class GameScript : EntityScript
     }
 }
 )";
-		(void)File::WriteAllText(Path::Combine(project.ScriptsDirectory, "GameScript.cs"), starterScript);
-
-		const std::string playerControllerScript = R"CS(using Index;
-
-// Moves the Player with WASD / arrow keys or a gamepad's left stick.
-public class PlayerController : EntityScript
-{
-    public float Speed = 5.0f;
-
-    private Rigidbody2D? m_Body;
-
-    public override void OnStart()
-    {
-        m_Body = GetComponent<Rigidbody2D>();
-    }
-
-    public override void OnFixedUpdate()
-    {
-        if (m_Body != null)
-            m_Body.LinearVelocity = Input.GetAxis() * Speed;
-    }
-}
-)CS";
-		(void)File::WriteAllText(Path::Combine(project.ScriptsDirectory, "PlayerController.cs"), playerControllerScript);
-
-		const std::string coinScript = R"CS(using Index;
-
-// The Coin's collider is a Sensor, so touching it raises OnTriggerEnter2D instead of a collision.
-public class Coin : EntityScript
-{
-    public override void OnTriggerEnter2D(Collision2D other)
-    {
-        if (other.Other.Name != "Player")
-            return;
-
-        // PlayerPrefs survives restarts; it is stored per game in Application.PersistentDataPath.
-        int collected = PlayerPrefs.GetInt("CoinsCollected") + 1;
-        PlayerPrefs.SetInt("CoinsCollected", collected);
-        Log.Info($"Coin collected! Total across all sessions: {collected}");
-
-        Entity.Destroy();
-    }
-}
-)CS";
-		(void)File::WriteAllText(Path::Combine(project.ScriptsDirectory, "Coin.cs"), coinScript);
+			(void)File::WriteAllText(Path::Combine(project.ScriptsDirectory, "GameScript.cs"), starterScript);
+		}
 
 		// Generate .vscode/settings.json
 		std::string vsCodeSettings = R"({
@@ -2957,19 +3217,34 @@ public class Coin : EntityScript
 			return result;
 		}
 
-		Process::Result processResult = Process::Run({
-			premakePath,
-			"--file=" + Path::ToGenericUtf8(generator),
-			"vs2022",
-			"--index-project=" + Path::ToGenericUtf8(std::filesystem::absolute(Path::FromUtf8(projectRootDir))),
-		}, Path::FromUtf8(engineRoot), std::chrono::minutes(2));
+		const std::string projectArgument =
+			"--index-project=" + Path::ToGenericUtf8(std::filesystem::absolute(Path::FromUtf8(projectRootDir)));
+#if defined(_WIN32)
+		const std::vector<std::vector<std::string>> actions = { { "vs2022" } };
+#else
+		// vs2022 still emits the .csproj files dotnet builds C# packages from; gmake2 builds the native layers.
+	#if defined(__APPLE__)
+		const std::string hostSystem = "--os=macosx";
+	#else
+		const std::string hostSystem = "--os=linux";
+	#endif
+		const std::vector<std::vector<std::string>> actions = { { hostSystem, "vs2022" }, { "gmake2" } };
+#endif
+		for (const std::vector<std::string>& action : actions) {
+			std::vector<std::string> command{ premakePath, "--file=" + Path::ToGenericUtf8(generator) };
+			command.insert(command.end(), action.begin(), action.end());
+			command.push_back(projectArgument);
+			Process::Result processResult = Process::Run(command, Path::FromUtf8(engineRoot), std::chrono::minutes(2));
 
-		result.ExitCode = processResult.ExitCode;
-		result.Succeeded = processResult.Succeeded();
-		result.Output = std::move(processResult.Output);
-		if (!result.Succeeded) {
-			IDX_ERROR_TAG("IndexProject", "Project package generation failed (exit code {}): {}",
-				result.ExitCode, result.Output);
+			result.ExitCode = processResult.ExitCode;
+			result.Succeeded = processResult.Succeeded();
+			if (!result.Output.empty()) result.Output += "\n";
+			result.Output += processResult.Output;
+			if (!result.Succeeded) {
+				IDX_ERROR_TAG("IndexProject", "Project package generation failed (exit code {}): {}",
+					result.ExitCode, result.Output);
+				return result;
+			}
 		}
 		return result;
 	}
@@ -3017,6 +3292,7 @@ public class Coin : EntityScript
 		};
 
 		if (!nativeProjects.empty()) {
+#if defined(_WIN32)
 			const std::string msbuild = GetMSBuildPath();
 			if (msbuild.empty()) {
 				result.Output = "MSBuild was not found.";
@@ -3039,16 +3315,27 @@ public class Coin : EntityScript
 					return result;
 				}
 			}
+#else
+			// The gmake2 workspace from RegeneratePackageWorkspaceForProject; targets share the .vcxproj names.
+			std::vector<std::string> command{ "make", "-C", Path::ToUtf8(workspaceRoot),
+				"config=" + ToLowerAscii(configuration),
+				"-j" + std::to_string(std::max(1u, std::thread::hardware_concurrency())) };
+			for (const auto& projectPath : nativeProjects) command.push_back(Path::ToUtf8(projectPath.stem()));
+			const Process::Result processResult = Process::Run(command, workspaceRoot, std::chrono::minutes(20));
+			appendOutput(workspaceRoot / "Makefile", processResult);
+			if (!processResult.Succeeded()) {
+				result.ExitCode = processResult.ExitCode;
+				IDX_ERROR_TAG("IndexProject", "Native project package build failed: {}", result.Output);
+				return result;
+			}
+#endif
 		}
 
 		for (const auto& projectPath : managedProjects) {
-			const Process::Result processResult = Process::Run({
-				"dotnet", "build", Path::ToGenericUtf8(projectPath),
-				"-c", configuration,
-				"-p:Platform=" + platform,
-				"--nologo", "-v", "minimal",
-				"-nodeReuse:false", "-p:UseSharedCompilation=false"
-			}, workspaceRoot, std::chrono::minutes(10));
+			std::vector<std::string> command{ "dotnet", "build", Path::ToGenericUtf8(projectPath), "-c", configuration };
+			for (std::string& argument : ManagedPlatformArguments(platform)) command.push_back(std::move(argument));
+			command.insert(command.end(), { "--nologo", "-v", "minimal", "-nodeReuse:false", "-p:UseSharedCompilation=false" });
+			const Process::Result processResult = Process::Run(command, workspaceRoot, std::chrono::minutes(10));
 			appendOutput(projectPath, processResult);
 			if (!processResult.Succeeded()) {
 				result.ExitCode = processResult.ExitCode;
@@ -3120,6 +3407,26 @@ public class Coin : EntityScript
 		result.Build = BuildProjectPackages(projectRootDir, configuration, platform);
 		result.RanBuild = true;
 		return result;
+	}
+
+	std::string IndexProject::MakeApplicationIdentifier(std::string_view company, std::string_view name) {
+		// Strictest common subset (Android package names): lowercase alnum/underscore, no leading digit.
+		const auto segment = [](std::string_view text, std::string_view fallback) {
+			std::string out;
+			for (char c : text) {
+				const unsigned char u = static_cast<unsigned char>(c);
+				if (std::isalnum(u) && u < 0x80) out.push_back(static_cast<char>(std::tolower(u)));
+				else if (c == '_') out.push_back('_');
+			}
+			if (out.empty()) return std::string(fallback);
+			if (std::isdigit(static_cast<unsigned char>(out.front()))) out.insert(0, "app");
+			return out;
+		};
+		return "com." + segment(company, "index") + "." + segment(name, "game");
+	}
+
+	std::string IndexProject::GetApplicationIdentifier() const {
+		return MakeApplicationIdentifier(BuildCompany, Name);
 	}
 
 } // namespace Index

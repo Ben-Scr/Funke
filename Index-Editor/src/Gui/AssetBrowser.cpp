@@ -1,5 +1,8 @@
 #include <pch.hpp>
+#include "Core/EngineModules.hpp"
 #include "Assets/AssetRegistry.hpp"
+#include "Core/Platform.hpp"
+#include "Serialization/Path.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Serialization/Json.hpp"
 #include "Gui/AssetBrowser.hpp"
@@ -244,7 +247,7 @@ namespace Index {
 			std::filesystem::rename(source, destination, ec);
 			if (!ec) {
 				if (std::filesystem::is_regular_file(destination, ec)) {
-					AssetRegistry::MoveCompanionMetadata(source.string(), destination.string());
+					AssetRegistry::MoveCompanionMetadata(Path::ToUtf8(source), Path::ToUtf8(destination));
 				}
 				return true;
 			}
@@ -254,7 +257,27 @@ namespace Index {
 				return false;
 			}
 
-			Directory::Delete(source.string());
+			// Carry the .meta across before deleting the source (Directory::Delete removes the source .meta),
+			// otherwise the moved asset re-imports with a fresh GUID and every reference to it breaks.
+			const std::filesystem::path sourceMeta = Path::FromUtf8(AssetRegistry::GetMetaPath(Path::ToUtf8(source)));
+			const std::filesystem::path destinationMeta = Path::FromUtf8(AssetRegistry::GetMetaPath(Path::ToUtf8(destination)));
+			if (std::filesystem::exists(sourceMeta, ec) && !ec) {
+				std::filesystem::copy_file(sourceMeta, destinationMeta, std::filesystem::copy_options::overwrite_existing, ec);
+				if (ec) {
+					std::error_code cleanupEc;
+					std::filesystem::remove_all(destination, cleanupEc);
+					return false;
+				}
+			}
+			ec.clear();
+
+			if (!Directory::Delete(Path::ToUtf8(source))) {
+				// Source still in place (e.g. locked): undo the copy rather than leave two copies sharing a GUID.
+				std::error_code cleanupEc;
+				std::filesystem::remove_all(destination, cleanupEc);
+				std::filesystem::remove(destinationMeta, cleanupEc);
+				return false;
+			}
 			return true;
 		}
 
@@ -962,7 +985,8 @@ namespace Index {
 		}
 	}
 
-	void AssetBrowser::RunSearchWorker(std::string rootDirectory, std::string queryText) {
+	// Function-try-block: an exception escaping a std::thread body calls std::terminate.
+	void AssetBrowser::RunSearchWorker(std::string rootDirectory, std::string queryText) try {
 		std::vector<DirectoryEntry> results;
 		bool truncated = false;
 
@@ -988,7 +1012,7 @@ namespace Index {
 		};
 
 		std::error_code ec;
-		const std::filesystem::path root(rootDirectory);
+		const std::filesystem::path root = Path::FromUtf8(rootDirectory);
 		if (rootDirectory.empty() || !std::filesystem::exists(root, ec) || ec) {
 			std::scoped_lock lock(m_SearchMutex);
 			m_SearchWorkerResults.clear();
@@ -1011,8 +1035,8 @@ namespace Index {
 			const std::filesystem::directory_entry& de = *it;
 
 			DirectoryEntry e;
-			e.Path = de.path().string();
-			e.Name = de.path().filename().string();
+			e.Path = Path::ToUtf8(de.path());
+			e.Name = Path::ToUtf8(de.path().filename());
 			std::error_code dirEc;
 			e.IsDirectory = de.is_directory(dirEc) && !dirEc;
 
@@ -1040,6 +1064,13 @@ namespace Index {
 			m_SearchWorkerTruncated = truncated;
 			m_SearchWorkerFinished = true;
 		}
+	}
+	catch (const std::exception& e) {
+		IDX_CORE_ERROR_TAG("AssetBrowser", "Asset search failed: {}", e.what());
+		std::scoped_lock lock(m_SearchMutex);
+		m_SearchWorkerResults.clear();
+		m_SearchWorkerTruncated = false;
+		m_SearchWorkerFinished = true;
 	}
 
 	void AssetBrowser::RebuildSliceCache() {
@@ -2324,17 +2355,7 @@ namespace Index {
 	}
 
 	void AssetBrowser::RevealAssetInExplorer(const std::string& path) {
-#ifdef IDX_PLATFORM_WINDOWS
-		std::string args = "/select,\"" + path + "\"";
-		ShellExecuteA(nullptr, "open", "explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
-#else
-		std::filesystem::path target(path);
-		DirectoryEntry entry;
-		entry.Path = target.has_parent_path() ? target.parent_path().string() : path;
-		entry.Name = std::filesystem::path(entry.Path).filename().string();
-		entry.IsDirectory = true;
-		OpenAssetExternal(entry);
-#endif
+		Platform::RevealInFileManager(Path::FromUtf8(path));
 	}
 
 	bool AssetBrowser::RevealAssetInBrowser(const std::string& path) {
@@ -2551,6 +2572,9 @@ namespace Index {
 					}
 					ImGui::EndMenu();
 				}
+				if (EngineModules::IsActive(EngineModule::ThreeD) && ImGui::MenuItem("Material")) {
+					CreateMaterial(m_CurrentDirectory);
+				}
 				if (ImGui::BeginMenu("File")) {
 					if (ImGui::MenuItem("Empty File")) {
 						CreateFile(m_CurrentDirectory, "NewFile", "", "");
@@ -2570,7 +2594,7 @@ namespace Index {
 				ImGui::EndMenu();
 			}
 
-			if (ImGui::MenuItem("Show in Explorer")) {
+			if (ImGui::MenuItem(Platform::RevealInFileManagerLabel())) {
 				RevealAssetInExplorer(m_CurrentDirectory);
 			}
 
@@ -2612,7 +2636,7 @@ namespace Index {
 				ImGui::EndPopup();
 				return;
 			}
-			if (ImGui::MenuItem("Show in Explorer")) {
+			if (ImGui::MenuItem(Platform::RevealInFileManagerLabel())) {
 				RevealAssetInExplorer(entry.Path);
 			}
 			ImGui::Separator();

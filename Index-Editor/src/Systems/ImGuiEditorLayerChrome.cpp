@@ -11,7 +11,9 @@
 #include "Components/Tags.hpp"
 #include "Core/Application.hpp"
 #include "Core/Window.hpp"
+#include "Core/Platform.hpp"
 #include "Core/Platform/Win32BuildProgressWindow.hpp"
+#include "Gui/BuildProgressOverlay.hpp"
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Graphics/GizmoRenderer.hpp"
@@ -50,6 +52,46 @@
 namespace Index {
 	namespace {
 		constexpr const char* k_UnsavedWorkPopupName = "Unsaved Work";
+
+		// The rebuild script must outlive the editor and show its progress, so it gets its own console / terminal.
+		bool LaunchEngineRebuildScript(const std::string& script, const std::string& workingDirectory) {
+#if defined(IDX_PLATFORM_WINDOWS)
+			return Process::LaunchDetached({ "cmd.exe", "/c", script }, workingDirectory);
+#elif defined(IDX_PLATFORM_MACOS)
+			return Process::LaunchDetached({ "open", "-a", "Terminal", script }, workingDirectory);
+#else
+			const std::vector<std::vector<std::string>> terminals = {
+				{ "x-terminal-emulator", "-e" },
+				{ "gnome-terminal", "--" },
+				{ "konsole", "-e" },
+				{ "xfce4-terminal", "-x" },
+				{ "kitty" },
+				{ "alacritty", "-e" },
+				{ "xterm", "-e" },
+			};
+			const char* pathVariable = std::getenv("PATH");
+			std::string searchPath = pathVariable ? pathVariable : "";
+			for (const std::vector<std::string>& terminal : terminals) {
+				size_t start = 0;
+				bool found = false;
+				while (!found && start <= searchPath.size()) {
+					const size_t end = std::min(searchPath.find(':', start), searchPath.size());
+					std::error_code ec;
+					found = end > start && std::filesystem::exists(
+						std::filesystem::path(searchPath.substr(start, end - start)) / terminal.front(), ec);
+					start = end + 1;
+				}
+				if (!found) continue;
+				std::vector<std::string> command = terminal;
+				command.push_back("/bin/sh");
+				command.push_back(script);
+				if (Process::LaunchDetached(command, workingDirectory)) return true;
+			}
+			// No terminal emulator: build without a window; the editor relaunches when it is done.
+			IDX_WARN_TAG("Editor", "No terminal emulator found; the engine rebuild runs without a progress window.");
+			return Process::LaunchDetached({ "/bin/sh", script }, workingDirectory);
+#endif
+		}
 	}
 
 	std::string ImGuiEditorLayer::MakeEditorSceneDefinitionName() {
@@ -345,9 +387,7 @@ namespace Index {
 				succeeded = true;
 				break;
 			case PendingEditorAction::RebuildEngine:
-				succeeded = Process::LaunchDetached(
-					{ "cmd.exe", "/c", m_PendingEditorActionPayload },
-					m_PendingEngineRebuildWorkingDirectory);
+				succeeded = LaunchEngineRebuildScript(m_PendingEditorActionPayload, m_PendingEngineRebuildWorkingDirectory);
 				if (succeeded) {
 					Application::Quit();
 				}
@@ -526,6 +566,18 @@ namespace Index {
 			ImGui::EndPopup();
 		}
 
+		RenderExternalSceneConflictDialog();
+
+		// Dev tooling: INDEX_EDITOR_AUTOPLAY=1 enters play mode once after startup (scripts/dev/Run.ps1 -Play).
+		static bool s_AutoplayPending = [] {
+			const char* value = std::getenv("INDEX_EDITOR_AUTOPLAY");
+			return value && std::string_view(value) == "1";
+		}();
+		if (s_AutoplayPending && Application::IsStartupLoadComplete() && !Application::GetIsPlaying()) {
+			s_AutoplayPending = false;
+			if (Scene* active = SceneManager::GetActiveScene()) BeginPlayModeRequest(*active);
+		}
+
 		if (!m_RecoveryChecked && ProjectManager::HasProject() && Application::IsStartupLoadComplete()) {
 			m_RecoveryChecked = true;
 			m_PendingRecovery = SceneRecovery::FindPending();
@@ -596,61 +648,35 @@ namespace Index {
 			}
 			m_BuildState = 0;
 
-			// ShellExecute must run on the UI thread: it can pop modal dialogs on its calling thread.
-#ifdef IDX_PLATFORM_WINDOWS
-			if (!quitInProgress && m_BuildSucceeded.load(std::memory_order_relaxed) && !m_BuildOutputDir.empty()) {
-				const std::wstring outputDirectory = Path::FromUtf8(m_BuildOutputDir).wstring();
-				ShellExecuteW(nullptr, L"open", outputDirectory.c_str(),
-					nullptr, nullptr, SW_SHOWNORMAL);
+			// Shell opens must run on the UI thread: they can pop modal dialogs on their calling thread.
+			if (!quitInProgress && !m_CommandLineBuild && m_BuildSucceeded.load(std::memory_order_relaxed) && !m_BuildOutputDir.empty()) {
+				Platform::OpenPath(Path::FromUtf8(m_BuildOutputDir));
 			}
-#endif
 
 			// Launch the built game if "Build and Play" was clicked
 			if (!quitInProgress && m_BuildAndPlay && m_BuildSucceeded.load(std::memory_order_relaxed)) {
 				m_BuildAndPlay = false;
 				IndexProject* project = ProjectManager::GetCurrentProject();
 				if (project && !m_BuiltExecutablePath.empty()) {
-#ifdef IDX_PLATFORM_WINDOWS
 					const std::filesystem::path exePath = Path::FromUtf8(m_BuiltExecutablePath);
 					if (std::filesystem::exists(exePath)) {
-						std::string cmd = "\"" + Path::ToUtf8(std::filesystem::canonical(exePath)) + "\"";
-						// Proper UTF-8 → wide conversion; byte-wise iterator construction corrupts non-ASCII paths (Unicode folders, accented names).
-						std::wstring wcmd;
-						{
-							const int needed = MultiByteToWideChar(CP_UTF8, 0,
-								cmd.c_str(), static_cast<int>(cmd.size()), nullptr, 0);
-							if (needed > 0) {
-								wcmd.resize(static_cast<size_t>(needed));
-								MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(),
-									static_cast<int>(cmd.size()), wcmd.data(), needed);
-							}
-						}
-						std::vector<wchar_t> buf(wcmd.begin(), wcmd.end());
-						buf.push_back(L'\0');
-						STARTUPINFOW si{}; si.cb = sizeof(si);
-						PROCESS_INFORMATION pi{};
-						if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr,
-							FALSE, CREATE_NEW_PROCESS_GROUP, nullptr, nullptr, &si, &pi)) {
-							const DWORD errorCode = GetLastError();
-							IDX_ERROR_TAG("Editor",
-								"Failed to launch built game '{}': error {}",
-								Path::ToUtf8(exePath), errorCode);
+						const std::filesystem::path canonicalExe = std::filesystem::canonical(exePath);
+						if (Process::LaunchDetached({ Path::ToUtf8(canonicalExe) }, canonicalExe.parent_path())) {
+							IDX_INFO_TAG("Build", "Launched: {}", Path::ToUtf8(exePath));
 						}
 						else {
-							CloseHandle(pi.hProcess);
-							CloseHandle(pi.hThread);
-							IDX_INFO_TAG("Build", "Launched: {}", Path::ToUtf8(exePath));
+							IDX_ERROR_TAG("Editor", "Failed to launch built game '{}'", Path::ToUtf8(exePath));
 						}
 					} else {
 						IDX_CORE_ERROR_TAG("Build", "Built executable not found: {}", Path::ToUtf8(exePath));
 					}
-#endif
 				}
 			}
 			// Reset m_BuildAndPlay even on failure so a subsequent
 			// "Build" click doesn't unexpectedly auto-launch a stale
 			// state from the failed run.
 			m_BuildAndPlay = false;
+			m_CommandLineBuild = false;
 		}
 
 		// Asset format reserialization (Project Settings → Serialization) runs the same 3-step async
@@ -856,13 +882,17 @@ namespace Index {
 			else {
 				ImGui::Text("Delete %zu selected entities?", m_PendingEntityDeleteCount);
 			}
-			ImGui::TextDisabled("This cannot be undone.");
 
 			const int choice = EditorUI::DialogFooter({ "Delete", "Cancel" }, -1, 0);
 			if (choice == 0) {
 				// Re-resolve by id: the scene could have unloaded since the
 				// request (matches the AssetBrowser prefab-drop resolution).
 				Scene* target = nullptr;
+				// The prefab-edit scene is detached, so it never appears among the loaded scenes.
+				if (m_PrefabEditScene
+					&& static_cast<uint64_t>(m_PrefabEditScene->GetSceneId()) == m_PendingEntityDeleteSceneId) {
+					target = m_PrefabEditScene.get();
+				}
 				SceneManager::ForeachLoadedScene([&](Scene& s) {
 					if (!target && static_cast<uint64_t>(s.GetSceneId()) == m_PendingEntityDeleteSceneId) {
 						target = &s;
@@ -1058,5 +1088,6 @@ namespace Index {
 		}
 
 		ImGui::End(); // Close dockspace opened in RenderDockspaceRoot.
+		EditorRuntime::RenderBuildProgressOverlay();
 	}
 }

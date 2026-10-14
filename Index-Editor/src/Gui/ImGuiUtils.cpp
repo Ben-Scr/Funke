@@ -8,7 +8,9 @@
 #include "Gui/EditorTheme.hpp"
 #include "Gui/EditorUI.hpp"
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <cmath>
+#include <cstdio>
 
 namespace Index::ImGuiUtils {
 	void MarkSelectionDirty(std::span<const Entity> entities)
@@ -966,13 +968,36 @@ namespace Index::ImGuiUtils {
 		// Left padding covers the axis letter so typed text (left-aligned in input mode) never overlaps it.
 		const ImVec2 basePad = ImGui::GetStyle().FramePadding;
 		const float letterW = ImGui::CalcTextSize(axisLabel).x;
+		// DragFloat centers its value over the whole frame and ignores the padding, so in narrow fields
+		// the number slid under the letter. Hide ImGui's text and center it in the space right of the letter.
+		const ImGuiID itemId = ImGui::GetID(id);
+		const bool wasTyping = ImGui::TempInputIsActive(itemId);
 		ImGui::SetNextItemWidth(width);
 		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(basePad.x * 2.0f + letterW, basePad.y));
+		if (!wasTyping) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(0, 0, 0, 0));
 		const bool changed = ImGui::DragFloat(id, value, speed, vmin, vmax, format);
+		if (!wasTyping) ImGui::PopStyleColor();
 		ImGui::PopStyleVar();
+
 		const ImVec2 min = ImGui::GetItemRectMin();
+		const ImVec2 max = ImGui::GetItemRectMax();
 		ImGui::GetWindowDrawList()->AddText(ImVec2(min.x + basePad.x, min.y + basePad.y),
 			AxisColor(axis), axisLabel);
+		if (!ImGui::TempInputIsActive(itemId)) {
+			const ImVec2 textMin(min.x + basePad.x * 2.0f + letterW, min.y);
+			const ImVec2 textMax(max.x - basePad.x, max.y);
+			char text[64];
+			ImFormatString(text, IM_ARRAYSIZE(text), format, static_cast<double>(*value));
+			// Narrow fields drop decimals before clipping ("1.25" reads better than "1.250" cut to "1.25(").
+			int decimals = 0;
+			if (std::sscanf(format, "%%.%df", &decimals) == 1) {
+				while (decimals > 0 && ImGui::CalcTextSize(text).x > textMax.x - textMin.x) {
+					--decimals;
+					ImFormatString(text, IM_ARRAYSIZE(text), "%.*f", decimals, static_cast<double>(*value));
+				}
+			}
+			ImGui::RenderTextClipped(textMin, textMax, text, nullptr, nullptr, ImVec2(0.5f, 0.5f));
+		}
 		return changed;
 	}
 

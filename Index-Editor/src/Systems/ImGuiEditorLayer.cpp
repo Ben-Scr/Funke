@@ -1,5 +1,6 @@
 #include <pch.hpp>
 #include "ImGuiEditorLayer.hpp"
+#include "Core/EngineModules.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -14,11 +15,17 @@
 #include "Components/UI/UI.hpp"
 #include "Components/Tags.hpp"
 #include "Components/Audio/AudioSourceComponent.hpp"
+#include "Audio/AudioStreams.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
 #include "Components/Graphics/Camera2DComponent.hpp"
+#include "Components/Graphics/Camera3DComponent.hpp"
+#include "Components/Graphics/DirectionalLightComponent.hpp"
+#include "Components/Graphics/PointLightComponent.hpp"
+#include "Components/Graphics/SpotLightComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
+#include "Components/Graphics/ParticleSystem3DComponent.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
@@ -46,6 +53,8 @@
 #include <Scene/EntityHelper.hpp>
 
 #include "Graphics/TextureManager.hpp"
+#include "Graphics/Text/FontManager.hpp"
+#include "Audio/AudioManager.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Serialization/Path.hpp"
 #include "Project/ProjectManager.hpp"
@@ -53,6 +62,8 @@
 #include "Serialization/SceneSerializerShared.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/File.hpp"
+#include "Serialization/FileStamp.hpp"
+#include "Scripting/DataAssetManager.hpp"
 #include "Utils/Process.hpp"
 #include "Packages/NuGetSource.hpp"
 #include "Packages/GitHubSource.hpp"
@@ -69,6 +80,7 @@
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Gui/HierarchyDragData.hpp"
 #include "Assets/AssetRegistry.hpp"
+#include "Serialization/PrefabTemplateCache.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Scripting/ScriptSystem.hpp"
 #include "Scripting/ScriptDiscovery.hpp"
@@ -114,6 +126,9 @@ namespace Index {
 				audio.PlayOnAwakeIfEnabled();
 
 			for (auto [ent, particleSystem] : scene.GetRegistry().view<ParticleSystem2DComponent>(entt::exclude<DisabledTag>).each())
+				particleSystem.PlayOnAwakeIfEnabled();
+
+			for (auto [ent, particleSystem] : scene.GetRegistry().view<ParticleSystem3DComponent>(entt::exclude<DisabledTag>).each())
 				particleSystem.PlayOnAwakeIfEnabled();
 		}
 
@@ -1054,6 +1069,8 @@ namespace Index {
 			m_LogSubscriptionId = EventId{};
 		}
 		m_AssetWatcher.Stop();
+		m_ContentWatcher.Stop();
+		m_ProjectFileWatcher.Stop();
 		m_AssetWatcherRoot.clear();
 		m_LogDispatchState.reset();
 		// Reset before further teardown: destructor unsubscribes from Log::OnLog, which must run while the layer is still live.
@@ -1116,17 +1133,23 @@ namespace Index {
 		// cursor gate keeps it off elsewhere; NoMouseCursorChange lets ImGui own
 		// the cursor over the rest of the editor and reassert cleanly on exit.
 		// Uses last frame's hover/focus — a 1-frame settle is imperceptible.
-		if (Window* win = app.GetWindow(); win && win->HasGameCursor()) {
+		// A game that hides/locks the cursor (Cursor.Visible = false) owns it over the
+		// Game View too: without NoMouseCursorChange the SDL3 backend calls
+		// SDL_ShowCursor every frame and undoes it.
+		if (Window* win = app.GetWindow()) {
 			ImGuiIO& io = ImGui::GetIO();
-			const bool overGameView = m_IsGameViewHovered || m_IsGameViewFocused;
-			if (overGameView) {
+			const bool customCursorHere = win->HasGameCursor() && (m_IsGameViewHovered || m_IsGameViewFocused);
+			const bool hiddenHere = win->GetCursorMode() != 0 && m_IsGameViewHovered;
+			if (customCursorHere || hiddenHere)
 				io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-				win->SetGameCursorEnabled(true);
-			}
-			else {
+			else
 				io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
-				win->SetGameCursorEnabled(false);
-			}
+			if (win->HasGameCursor())
+				win->SetGameCursorEnabled(customCursorHere);
+			// ImGui showed the cursor while the pointer was outside; hide it again on the way back in.
+			if (hiddenHere && !m_GameViewHidesCursor)
+				win->SetCursorMode(win->GetCursorMode());
+			m_GameViewHidesCursor = hiddenHere;
 		}
 
 		DrainPendingLogEntries();
@@ -1151,7 +1174,8 @@ namespace Index {
 				m_AssetWatcherRoot = project->AssetsDirectory;
 				m_AssetWatcher.Watch(
 					std::vector<std::string>{ m_AssetWatcherRoot },
-					std::vector<std::string>{ ".png", ".jpg", ".jpeg", ".bmp", ".tga" },
+					// .meta too: a GUID read while its .meta was mid-write stays "missing" until the registry is marked dirty again.
+					std::vector<std::string>{ ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".meta" },
 					[this]() {
 						if (m_AssetBrowser.IsImportingAssets()
 							|| m_AssetBrowser.IsDeleting()
@@ -1160,6 +1184,9 @@ namespace Index {
 						}
 						const size_t reloaded = TextureManager::ReloadTexturesFromDisk();
 						AssetRegistry::MarkDirty();
+						// Loads that failed on a half-written file get another try, and templates baked from them are dropped.
+						TextureManager::ResolveMissingSceneTextures();
+						PrefabTemplateCache::Get().InvalidateAll();
 						m_AssetBrowser.RequestRefresh();
 						// Clear thumbnail tile cache too — otherwise the asset
 						// browser keeps showing the pre-edit file icon until
@@ -1170,26 +1197,50 @@ namespace Index {
 							IDX_INFO_TAG("Editor", "Hot-reloaded {} texture(s)", reloaded);
 						}
 					});
+				m_ContentWatcher.Watch(
+					std::vector<std::string>{ m_AssetWatcherRoot },
+					std::vector<std::string>{ ".scene", ".prefab", ".wav", ".mp3", ".flac", ".ttf", ".otf", ".dataasset", ".material", ".obj" },
+					[this]() { ReloadExternallyChangedContent(); });
+				m_ProjectFileWatcher.Watch(
+					std::vector<std::string>{ project->ProjectFilePath, project->GetBuildProfilesDirectory() },
+					std::vector<std::string>{ "project.json", ".build" },
+					[this]() { m_ExternalProjectCheckPending = true; },
+					/*recursive=*/false);
 			}
 			if (!m_AssetBrowser.IsImportingAssets() && !m_AssetBrowser.IsDeleting()) {
 				m_AssetWatcher.Poll(0.25f);
+				m_ContentWatcher.Poll(0.25f);
+			}
+			m_ProjectFileWatcher.Poll(0.25f);
+			const bool canApplyExternalChanges = !Application::GetIsPlaying()
+				&& m_BuildState == 0 && m_ReserializeState == 0;
+			if (m_ExternalSceneCheckPending && canApplyExternalChanges) {
+				m_ExternalSceneCheckPending = false;
+				CheckExternalSceneChanges();
+			}
+			if (m_ExternalPrefabCheckPending && canApplyExternalChanges) {
+				m_ExternalPrefabCheckPending = false;
+				CheckExternalPrefabChanges();
+			}
+			if (m_ExternalProjectCheckPending && canApplyExternalChanges) {
+				m_ExternalProjectCheckPending = false;
+				CheckExternalProjectChanges();
 			}
 		}
 		else if (!m_AssetWatcherRoot.empty()) {
 			m_AssetWatcher.Stop();
+			m_ContentWatcher.Stop();
+			m_ProjectFileWatcher.Stop();
 			m_AssetWatcherRoot.clear();
+			m_ExternalSceneConflicts.clear();
+			m_PendingPrefabRefreshes.clear();
 		}
 
 		// Script-driven Application.Quit() in editor routes through the same stop path as the Stop button.
 		if (Application::GetIsPlaying() && ApplicationEditorAccess::ConsumeQuitStopPlayRequest()) {
-			Scene* act = SceneManager::GetActiveScene();
-			if (act) {
-				for (auto [ent, audio] : act->GetRegistry().view<AudioSourceComponent>().each()) {
-					if (audio.IsPlaying() || audio.IsPaused()) audio.Stop();
-				}
-			}
-			RestoreEditorSceneAfterPlaymode();
+			RequestPlayModeStop();
 		}
+		ProcessPendingPlayModeStop();
 
 		Input& input = app.GetInput();
 		Scene* activeScene = app.GetSceneManager() ? SceneManager::GetActiveScene() : nullptr;
@@ -1439,6 +1490,11 @@ namespace Index {
 		if (scenePath.empty()) {
 			return;
 		}
+		// Never overwrite an external edit unasked; the conflict prompt decides which version wins.
+		if (KnownFileStamps::HasChangedOnDisk(scenePath)) {
+			m_ExternalSceneCheckPending = true;
+			return;
+		}
 		if (SceneSerializer::SaveToFile(*active, scenePath, false)) {
 			active->ClearDirty();
 		}
@@ -1451,6 +1507,12 @@ namespace Index {
 		if (!m_PrefabEditScene->IsDirty()) return;
 		// Debounce: skip while any ImGui widget is active (e.g. dragging a slider) to avoid thrashing disk on every intermediate value.
 		if (ImGui::IsAnyItemActive()) return;
+		// Never overwrite an external edit unasked; the conflict prompt decides which version wins.
+		if (m_PrefabEditConflict) return;
+		if (KnownFileStamps::HasChangedOnDisk(m_PrefabEditPath)) {
+			m_ExternalPrefabCheckPending = true;
+			return;
+		}
 
 		SavePrefabEditChanges();
 	}
@@ -1470,8 +1532,10 @@ namespace Index {
 
 	// Icon for an entity's dominant type; shared by the hierarchy rows and the inspector header.
 	static const char* EntityTypeIconName(Scene& scene, EntityHandle handle) {
-		if (scene.HasComponent<Camera2DComponent>(handle)) return "camera";
-		if (scene.HasComponent<ParticleSystem2DComponent>(handle)) return "light_sun";
+		if (scene.HasComponent<Camera2DComponent>(handle) || scene.HasComponent<Camera3DComponent>(handle)) return "camera";
+		if (scene.HasComponent<DirectionalLightComponent>(handle) || scene.HasComponent<PointLightComponent>(handle)
+			|| scene.HasComponent<SpotLightComponent>(handle)) return "light_sun";
+		if (scene.HasComponent<ParticleSystem2DComponent>(handle) || scene.HasComponent<ParticleSystem3DComponent>(handle)) return "light_sun";
 		if (scene.HasComponent<RectTransform2DComponent>(handle)) return "bounding_box";
 		return "entity";
 	}
@@ -2413,8 +2477,6 @@ namespace Index {
 				for (const auto& [key, value] : sc.PendingFieldValues) {
 					fields[key] = value;
 					++captured;
-					IDX_CORE_INFO_TAG("PlayFix", "capture({}) scene='{}' uuid={} {}='{}'",
-						merge ? "overlay" : "baseline", s.GetName(), uuid, key, value);
 				}
 			}
 		});
@@ -2443,10 +2505,6 @@ namespace Index {
 				}
 				ScriptComponent& sc = loaded->GetComponent<ScriptComponent>(handle);
 				for (const auto& [key, value] : fields) {
-					const auto existing = sc.PendingFieldValues.find(key);
-					IDX_CORE_INFO_TAG("PlayFix", "reapply scene='{}' uuid={} {}: reload-had='{}' -> forcing='{}'",
-						sceneName, uuid, key,
-						existing == sc.PendingFieldValues.end() ? "<absent>" : existing->second, value);
 					sc.PendingFieldValues[key] = value;
 				}
 			}
@@ -2650,6 +2708,8 @@ namespace Index {
 		for (const std::string& definitionName : previousDefinitions) {
 			SceneManager::UnregisterScene(definitionName);
 		}
+		// Scripts own their streams; one that wasn't disposed would keep playing in edit mode.
+		AudioStreams::CloseAll();
 
 		try {
 			ScriptEngine::OnPlayModeExited();
@@ -2853,6 +2913,11 @@ namespace Index {
 				EnsureEditorUniqueEntityNames(scene, { loaded });
 				created = loaded;
 			}
+		}
+		else if ((ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga")
+			&& !EngineModules::IsActive(EngineModule::TwoD)) {
+			// A dropped image becomes a Sprite Renderer on a Transform2D entity.
+			IDX_WARN_TAG("Editor", "Dropping an image creates a sprite, which needs the Index.2D module (Project Settings > Build > Engine Modules).");
 		}
 		else if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga") {
 			const std::string entityName = std::filesystem::path(assetPath).stem().string();
@@ -3688,13 +3753,13 @@ namespace Index {
 		}
 		if (ImGui::MenuItem("Create (Entity)"))
 		{
-			finishCreated(scene.CreateEntity("Entity"));
+			finishCreated(CreateDefaultEntity(scene, "Entity"));
 		}
 
 		auto renderPackagePresets = [&](std::string_view menuPath) {
 			bool renderedAny = false;
 			for (const SceneManager::EntityPresetInfo& preset : SceneManager::GetEntityPresets()) {
-				if (preset.MenuPath != menuPath) {
+				if (preset.MenuPath != menuPath || !preset.IsModuleActive()) {
 					continue;
 				}
 				if (!renderedAny) {
@@ -3709,7 +3774,7 @@ namespace Index {
 
 		ImGui::Separator();
 
-		if (ImGui::BeginMenu("2D Entity"))
+		if (EngineModules::IsActive(EngineModule::TwoD) && ImGui::BeginMenu("2D Entity"))
 		{
 			if (ImGui::BeginMenu("Sprite"))
 			{
@@ -3861,7 +3926,7 @@ namespace Index {
 
 		std::vector<std::string> packageMenuPaths;
 		for (const SceneManager::EntityPresetInfo& preset : SceneManager::GetEntityPresets()) {
-			if (preset.MenuPath.empty() || preset.MenuPath == "2D Entity" || preset.MenuPath == "UI") {
+			if (preset.MenuPath.empty() || preset.MenuPath == "2D Entity" || preset.MenuPath == "UI" || !preset.IsModuleActive()) {
 				continue;
 			}
 			if (std::find(packageMenuPaths.begin(), packageMenuPaths.end(), preset.MenuPath) == packageMenuPaths.end()) {
@@ -3871,7 +3936,7 @@ namespace Index {
 		for (const std::string& menuPath : packageMenuPaths) {
 			if (ImGui::BeginMenu(menuPath.c_str())) {
 				for (const SceneManager::EntityPresetInfo& preset : SceneManager::GetEntityPresets()) {
-					if (preset.MenuPath == menuPath && ImGui::MenuItem(preset.Label.c_str())) {
+					if (preset.MenuPath == menuPath && preset.IsModuleActive() && ImGui::MenuItem(preset.Label.c_str())) {
 						finishCreated(preset.Create(scene));
 					}
 				}
@@ -3883,8 +3948,13 @@ namespace Index {
 
 		if (ImGui::MenuItem("Camera"))
 		{
-			Entity created = scene.CreateEntity("Camera");
-			created.AddComponent<Camera2DComponent>();
+			Entity created = CreateDefaultEntity(scene, "Camera");
+			if (m_EditorView3D) {
+				created.AddComponent<Camera3DComponent>();
+			}
+			else {
+				created.AddComponent<Camera2DComponent>();
+			}
 			finishCreated(created);
 		}
 
@@ -4093,6 +4163,8 @@ namespace Index {
 			return true;
 		}
 
+		// Before the read: an edit landing mid-read must still count as a change afterwards.
+		KnownFileStamps::Record(path);
 		Json::Value root;
 		std::string parseError;
 		if (!SceneSerializerStorage::ReadRootFromFile(path, root, &parseError) || !root.IsObject()) {
@@ -4300,6 +4372,7 @@ namespace Index {
 		m_PrefabEditRootEntity = entt::null;
 		m_PrefabEditPath.clear();
 		m_PrefabEditDirty = false;
+		m_PrefabEditConflict = false;
 		// unique_ptr destruction tears down the registry; destroy hooks
 		// gated by Scene::IsDetached() short-circuit so global physics/
 		// audio/script subsystems aren't touched.
@@ -5429,6 +5502,11 @@ namespace Index {
 								m_EntityOrder.clear(); m_EntityOrderDirty = true;
 							}
 						}
+						else if ((ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga")
+							&& !EngineModules::IsActive(EngineModule::TwoD)) {
+							// A dropped image becomes a Sprite Renderer on a Transform2D entity.
+							IDX_WARN_TAG("Editor", "Dropping an image creates a sprite, which needs the Index.2D module (Project Settings > Build > Engine Modules).");
+						}
 						else if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga") {
 							Scene* dropScene = GetContextScene();
 							if (dropScene) {
@@ -5650,6 +5728,14 @@ namespace Index {
 		ImGui::Begin("Inspector");
 
 		// Cache avoids O(N×M) loops per frame over (selection × components) at large selections.
+		// Gameplay can destroy a selected entity between OnUpdate's selection prune and this render.
+		bool cacheHasStaleHandle = false;
+		for (EntityHandle h : m_InspectorCache.Handles) {
+			if (!scene.IsValid(h)) { cacheHasStaleHandle = true; break; }
+		}
+		if (cacheHasStaleHandle) {
+			++m_SelectionVersion;
+		}
 		if (m_InspectorCache.Version != m_SelectionVersion) {
 			RecomputeInspectorSelectionCache(scene);
 			m_InspectorCache.Version = m_SelectionVersion;
@@ -6061,7 +6147,8 @@ namespace Index {
 				bool anyAdded = false;
 				for (const Entity& e : selectedEntities) {
 					if (!pastedComponentInfo->has(e)) {
-						registry.AddWithDependencies(e, pastedComponentInfo->typeId);
+						// Refused (conflicts with a component on the entity): don't let the deserialize below add it anyway.
+						if (!registry.AddWithDependencies(e, pastedComponentInfo->typeId)) continue;
 						anyAdded = true;
 					}
 					if (SceneSerializer::DeserializeComponent(scene, e.GetHandle(),

@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Scripting/ScriptSystem.hpp"
 #include "Scripting/ScriptEngine.hpp"
+#include "Scripting/ManagedScriptCompiler.hpp"
 #include "Scripting/ScriptCoreArtifact.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/NativeScript.hpp"
@@ -9,7 +10,12 @@
 #include "Scene/SceneManager.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Components/Tags.hpp"
+#if INDEX_WITH_2D
 #include "Physics/Collision2D.hpp"
+#endif
+#if INDEX_WITH_3D
+#include "Physics3D/PhysicsWorld3D.hpp"
+#endif
 #include "Core/Log.hpp"
 #include "Core/Application.hpp"
 #include "Core/Time.hpp"
@@ -27,6 +33,8 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+
+#include "Core/Platform.hpp"
 
 #if defined(IDX_PLATFORM_WINDOWS)
 #define WIN32_LEAN_AND_MEAN
@@ -65,13 +73,7 @@ namespace Index {
 
 		std::string GetNativeLibraryFilename(const std::string& targetName)
 		{
-#if defined(IDX_PLATFORM_WINDOWS)
-			return targetName + ".dll";
-#elif defined(IDX_PLATFORM_LINUX)
-			return "lib" + targetName + ".so";
-#else
-#error Unsupported platform for native scripts
-#endif
+			return Platform::SharedLibraryFileName(targetName);
 		}
 
 		std::filesystem::path NormalizeNativePath(std::filesystem::path path)
@@ -699,17 +701,19 @@ namespace Index {
 		template<typename Fn>
 		bool TryInvokeNativeScript(const ScriptInstance& instance, const char* callbackName, Fn&& callback)
 		{
+			// Copy now: the callback may reallocate the entity's Scripts vector, leaving `instance` dangling.
+			const std::string className = instance.GetClassName();
 			try {
 				callback();
 				return true;
 			}
 			catch (const std::exception& e) {
 				IDX_CORE_ERROR_TAG("ScriptSystem", "Native script '{}' failed during {}: {}",
-					instance.GetClassName(), callbackName, e.what());
+					className, callbackName, e.what());
 			}
 			catch (...) {
 				IDX_CORE_ERROR_TAG("ScriptSystem", "Native script '{}' failed during {} with an unknown exception",
-					instance.GetClassName(), callbackName);
+					className, callbackName);
 			}
 
 			return false;
@@ -914,26 +918,26 @@ namespace Index {
 			auto& callbacks = ScriptEngine::GetCallbacks();
 			if (!callbacks.SetScriptField) return;
 
-			const std::string prefix = instance.GetClassName() + ".";
-			int applied = 0;
-			int matchingPending = 0;
+			// Snapshot before invoking setters: user property setters can add/remove scripts or
+			// components, which invalidates scriptComp, its map, and instance.
+			const std::string className = instance.GetClassName();
+			const auto gcHandle = static_cast<int32_t>(instance.GetGCHandle());
+			const std::string prefix = className + ".";
+			std::vector<std::pair<std::string, std::string>> toApply;
 			for (auto it = scriptComp.PendingFieldValues.begin(); it != scriptComp.PendingFieldValues.end(); ) {
 				if (it->first.rfind(prefix, 0) == 0) {
-					++matchingPending;
-					std::string fieldName = it->first.substr(prefix.size());
-					callbacks.SetScriptField(
-						static_cast<int32_t>(instance.GetGCHandle()),
-						fieldName.c_str(), it->second.c_str());
+					toApply.emplace_back(it->first.substr(prefix.size()), std::move(it->second));
 					it = scriptComp.PendingFieldValues.erase(it);
-					++applied;
 				} else {
 					++it;
 				}
 			}
-			if (applied > 0 || matchingPending > 0) {
+			for (const auto& [fieldName, value] : toApply) {
+				callbacks.SetScriptField(gcHandle, fieldName.c_str(), value.c_str());
+			}
+			if (!toApply.empty()) {
 				IDX_CORE_INFO_TAG("ScriptSystem",
-					"Applied {} pending field value(s) for {} (matched={})",
-					applied, instance.GetClassName(), matchingPending);
+					"Applied {} pending field value(s) for {}", toApply.size(), className);
 			}
 		}
 	}
@@ -1243,8 +1247,29 @@ namespace Index {
 		const char* primarySymbol = Application::IsEditor() ? "INDEX_EDITOR" : "INDEX_BUILD";
 		const std::string defineConstantsArg =
 			"-p:DefineConstants=" + IndexProject::BuildManagedDefineConstants(primarySymbol);
-		m_RebuildTask = LaunchTask([sandboxProjectPath, buildConfig, defineConstantsArg]() {
-			// IndexCodegenEnabled=false: hot-reload must not regenerate CodegenComponents.cpp — the running engine has the old C++ layout and a size mismatch would crash on next ComponentTypes<T> init.
+		// IndexCodegenEnabled=false: hot-reload must not regenerate CodegenComponents.cpp — the running engine has the old C++ layout and a size mismatch would crash on next ComponentTypes<T> init.
+		const char* codegenArg = "-p:IndexCodegenEnabled=false";
+		const bool inProcess = ManagedScriptCompiler::EnsureLoaded();
+		ManagedScriptCompiler::Request compileRequest{
+			sandboxProjectPath, buildConfig, { codegenArg, defineConstantsArg }, m_ManagedBuildOutputPath };
+		m_RebuildTask = LaunchTask([sandboxProjectPath, buildConfig, defineConstantsArg, codegenArg, inProcess, compileRequest]() {
+			if (inProcess) {
+				const ManagedScriptCompiler::Result compiled = ManagedScriptCompiler::Compile(compileRequest);
+				if (compiled.Status == ManagedScriptCompiler::Status::Compiled) {
+					IDX_INFO_TAG("ScriptSystem", "C# scripts compiled in-process in {:.0f} ms{}", compiled.ElapsedMs,
+						compiled.Evaluated ? " (project re-evaluated)" : "");
+					Process::Result result;
+					result.ExitCode = 0;
+					return result;
+				}
+				if (compiled.Status == ManagedScriptCompiler::Status::Failed) {
+					Process::Result result;
+					result.ExitCode = 1;
+					result.Output = compiled.Diagnostics;
+					return result;
+				}
+				IDX_INFO_TAG("ScriptSystem", "Running dotnet build: {}", compiled.Message);
+			}
 			return Process::Run({
 				"dotnet",
 				"build",
@@ -1254,7 +1279,7 @@ namespace Index {
 				"-v", "q",
 				"-nodeReuse:false",
 				"-p:UseSharedCompilation=false",
-				"-p:IndexCodegenEnabled=false",
+				codegenArg,
 				defineConstantsArg
 			}, {}, std::chrono::minutes(5));
 		});
@@ -1564,6 +1589,7 @@ namespace Index {
 		});
 	}
 
+#if INDEX_WITH_2D
 	namespace {
 		enum class CollisionDispatchPhase {
 			Enter,
@@ -1641,6 +1667,43 @@ namespace Index {
 	{
 		DispatchCollision2D(collision, CollisionDispatchPhase::Exit);
 	}
+#endif
+
+#if INDEX_WITH_3D
+	void ScriptSystem::DispatchCollision3D(const Collision3D& collision, CollisionPhase3D phase)
+	{
+		Scene* scene = collision.OwningScene;
+		if (!ScriptEngine::IsInitialized() || !scene) {
+			return;
+		}
+
+		const auto dispatchToEntity = [&](EntityHandle self, EntityHandle other, const Vec3& normalTowardSelf) {
+			if (!scene->IsValid(self)
+				|| !scene->HasComponent<ScriptComponent>(self)
+				|| scene->HasComponent<DisabledTag>(self)) {
+				return;
+			}
+
+			ScriptSceneScope sceneScope(*scene);
+			const uint64_t selfID = ToManagedEntityID(*scene, self);
+			const uint64_t otherID = scene->IsValid(other) ? ToManagedEntityID(*scene, other) : 0;
+			ForEachScriptOnEntitySafe(*scene, self,
+				[&](ScriptComponent&, ScriptInstance& instance, size_t) -> bool {
+					if (instance.HasManagedInstance() && instance.HasEnabled()) {
+						ScriptEngine::InvokeCollision3D(instance.GetGCHandle(), static_cast<int32_t>(phase), collision.IsTrigger,
+							selfID, otherID, collision.ContactPoint, normalTowardSelf);
+					}
+					return true;
+				});
+		};
+
+		// Collision3D::Normal points from A to B.
+		dispatchToEntity(collision.EntityA, collision.EntityB, -collision.Normal);
+		if (collision.EntityB != collision.EntityA) {
+			dispatchToEntity(collision.EntityB, collision.EntityA, collision.Normal);
+		}
+	}
+#endif
 
 	void ScriptSystem::OnPreRender(Scene& scene)
 	{
@@ -1696,7 +1759,7 @@ namespace Index {
 				m_LastRebuildFailed = true;
 				IDX_ERROR_TAG("ScriptSystem", "C# build failed (exit code {})", result.ExitCode);
 				if (!result.Output.empty()) {
-					IDX_ERROR_TAG("ScriptSystem", "dotnet build output:\n{}", result.Output);
+					IDX_ERROR_TAG("ScriptSystem", "Compiler output:\n{}", result.Output);
 				}
 			}
 
@@ -1843,9 +1906,13 @@ namespace Index {
 						if (!instance->HasAnyInstance())
 							return true;
 
+						// Capture before apply: property setters may AddScript, reallocating Scripts and dangling `instance`.
+						const bool isManaged = instance->GetType() == ScriptType::Managed && instance->HasManagedInstance();
+						const uint32_t awakeHandle = instance->GetGCHandle();
 						ApplyPendingFieldValues(*scriptComp, *instance);
-						if (instance->GetType() == ScriptType::Managed && instance->HasManagedInstance()) {
-							const uint32_t awakeHandle = instance->GetGCHandle();
+						if (isManaged) {
+							instance = FindManagedScriptInstance(scene, entity, awakeHandle);
+							if (!instance) return true;
 							ScriptEngine::InvokeAwake(awakeHandle);
 							// Rebind: user Awake may have AddScript'd, reallocating Scripts.
 							instance = FindManagedScriptInstance(scene, entity, awakeHandle);

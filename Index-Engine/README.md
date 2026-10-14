@@ -139,7 +139,7 @@ Per-subsystem flags on `ApplicationConfig` (override individually after a factor
 
 The `TargetFrameRate` field sets the initial main-loop cap in frames per second; `0` disables the cap. Runtime calls may change it later.
 
-The `WindowSpecification WindowSpecification` field controls the GLFW window — width, height, title, resizable, decorated, fullscreen. See [`Core/WindowSpecification.hpp`](src/Core/WindowSpecification.hpp).
+The `WindowSpecification WindowSpecification` field controls the SDL3 window — width, height, title, resizable, decorated, fullscreen. See [`Core/WindowSpecification.hpp`](src/Core/WindowSpecification.hpp).
 
 These are runtime feature requests. Enabling a flag does nothing if the corresponding module was stripped at build time (next section).
 
@@ -163,11 +163,15 @@ Profiles (defined in [`premake5.lua`](../premake5.lua)):
 
 Per-module flags (only meaningful with `--module-profile=custom`, or implicitly enable `custom` when used without `--module-profile`):
 
-- `--with-render` — Selects GLFW, Dawn/WebGPU, `Graphics/`, `Gui/GuiRenderer`, and particle/gizmo systems. Partial custom profiles are not currently supported, so this must be combined with `--with-editor`.
+- `--with-render` — Selects Dawn/WebGPU, `Graphics/`, `Gui/GuiRenderer`, and particle/gizmo systems. Partial custom profiles are not currently supported, so this must be combined with `--with-editor`.
 - `--with-audio` — Selects miniaudio, `Audio/`, `Components/Audio/`, and `AudioUpdateSystem`. Partial custom profiles are not currently supported, so this must be combined with `--with-editor`.
 - `--with-physics` — Selects Box2D, Index-Physics, `Physics/`, and `Components/Physics/`. Partial custom profiles are not currently supported, so this must be combined with `--with-editor`.
 - `--with-scripting` — Selects the .NET host, `Scripting/`, `Index-ScriptCore`, and `Index-Sandbox` projects. Custom profiles must also pass `--with-editor`.
 - `--with-editor` — ImGui static lib. Implicitly turns on render, audio, physics, and scripting (the editor depends on all of them).
+
+Engine feature modules (`Index.2D`, `Index.3D`; source lists in [`EngineModules.json`](EngineModules.json), also read by `cmake/IndexEngine.cmake`) are switched off per runtime variant rather than per profile:
+
+- `--without-2d`, `--without-3d` — Generate an isolated workspace in `premake/generated/variant-<modules>` (Engine, EditorRuntime, Runtime and their dependencies only) that builds into `bin/<cfg>-<system>-<arch>-<modules>` with `INDEX_WITH_2D=0` / `INDEX_WITH_3D=0`, without the module's sources and without Box2D/Index-Physics (2D) or Jolt (3D). The game builder generates and builds these for projects that leave a module out; see [Engine Modules](../Github-Docs/Documentation/Engine-Core/Engine-Modules.md).
 
 Other build-shaping flags:
 
@@ -191,7 +195,7 @@ Always required:
 
 - `<YourGame>.exe` — your game binary.
 - `Index-Engine.dll` — the engine shared lib. Built as a `SharedLib` from `Index-Engine/premake5.lua`. Consumers define `IDX_IMPORT_DLL`; the engine builds with `IDX_BUILD_DLL`.
-- `GLFW.dll` — windowing/input. Shipped as a `SharedLib` so engine+exe share its global state.
+- `SDL3.dll` (`libSDL3.so.0` / `libSDL3.0.dylib`) — windowing, input and platform services. Shared so engine and exe share its global state; built by `scripts/sdl/SetupSDL.py`.
 - `IndexAssets/` directory — engine default assets (`Audio/`, `Fonts/`, `Shader/`, `Textures/`). Source of truth is [`Index-Runtime/IndexAssets/`](../Index-Runtime/IndexAssets); the post-build copies it next to the exe.
 
 Conditional:

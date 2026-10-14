@@ -1,6 +1,9 @@
 #include "pch.hpp"
 #include "Input.hpp"
 #include "Window.hpp"
+#include "Core/Platform/SDLInputMapping.hpp"
+
+#include <SDL3/SDL_gamepad.h>
 
 #include <algorithm>
 #include <cmath>
@@ -18,10 +21,17 @@ namespace Index {
 
     void Input::Reset() {
         m_CurrentKeyStates.fill(false);
-        m_PreviousKeyStates.fill(false);
         m_CurrentMouseButtons.fill(false);
-        m_PreviousMouseButtons.fill(false);
-        m_Gamepads.fill(GamepadState{});
+        m_KeysPressedThisFrame.fill(false);
+        m_KeysReleasedThisFrame.fill(false);
+        m_MousePressedThisFrame.fill(false);
+        m_MouseReleasedThisFrame.fill(false);
+        // Device handles outlive a scene reload; only the sampled state resets.
+        for (GamepadState& pad : m_Gamepads) {
+            pad.CurrentButtons.fill(false);
+            pad.PreviousButtons.fill(false);
+            pad.Axes.fill(0.f);
+        }
         m_ScrollValue = 0.f;
         m_MousePosition = { 0, 0 };
         m_MouseDelta = { 0, 0 };
@@ -41,14 +51,14 @@ namespace Index {
         const Input* input = TryGetCurrent();
         if (!input) return false;
         const int i = static_cast<int>(keycode);
-        return (i >= 0 && i < k_KeyCount) && input->m_CurrentKeyStates[i] && !input->m_PreviousKeyStates[i];
+        return (i >= 0 && i < k_KeyCount) && input->m_KeysPressedThisFrame[i];
     }
 
     bool Input::GetKeyUp(KeyCode keycode) {
         const Input* input = TryGetCurrent();
         if (!input) return false;
         const int i = static_cast<int>(keycode);
-        return (i >= 0 && i < k_KeyCount) && !input->m_CurrentKeyStates[i] && input->m_PreviousKeyStates[i];
+        return (i >= 0 && i < k_KeyCount) && input->m_KeysReleasedThisFrame[i];
     }
 
     bool Input::GetAnyKey() {
@@ -69,14 +79,14 @@ namespace Index {
         const Input* input = TryGetCurrent();
         if (!input) return false;
         const int btn = static_cast<int>(keycode);
-        return (btn >= 0 && btn < k_MouseCount) && input->m_CurrentMouseButtons[btn] && !input->m_PreviousMouseButtons[btn];
+        return (btn >= 0 && btn < k_MouseCount) && input->m_MousePressedThisFrame[btn];
     }
 
     bool Input::GetMouseUp(MouseButton keycode) {
         const Input* input = TryGetCurrent();
         if (!input) return false;
         const int btn = static_cast<int>(keycode);
-        return (btn >= 0 && btn < k_MouseCount) && !input->m_CurrentMouseButtons[btn] && input->m_PreviousMouseButtons[btn];
+        return (btn >= 0 && btn < k_MouseCount) && input->m_MouseReleasedThisFrame[btn];
     }
 
     bool Input::IsGamepadConnected(int gamepadIndex) {
@@ -161,15 +171,20 @@ namespace Index {
             auto& g = m_Gamepads[i];
             g.PreviousButtons = g.CurrentButtons;
 
-            GLFWgamepadstate state{};
-            const int connected = glfwGetGamepadState(GLFW_JOYSTICK_1 + i, &state);
-            if (connected == GLFW_TRUE) {
+            if (g.Handle && SDL_GamepadConnected(g.Handle)) {
                 g.Connected = true;
                 for (int b = 0; b < k_GamepadButtonCount; ++b) {
-                    g.CurrentButtons[b] = (state.buttons[b] == GLFW_PRESS);
+                    const int sdlButton = SDLInputMapping::SDLGamepadButtonFromIndex(b);
+                    g.CurrentButtons[b] = sdlButton >= 0
+                        && SDL_GetGamepadButton(g.Handle, static_cast<SDL_GamepadButton>(sdlButton));
                 }
+                // GamepadAxis matches SDL_GamepadAxis order. SDL triggers are [0, 32767]; the public contract keeps them in [-1, 1].
                 for (int a = 0; a < k_GamepadAxisCount; ++a) {
-                    g.Axes[a] = state.axes[a];
+                    const Sint16 raw = SDL_GetGamepadAxis(g.Handle, static_cast<SDL_GamepadAxis>(a));
+                    const float value = std::max(-1.f, static_cast<float>(raw) / 32767.f);
+                    const bool isTrigger = a == static_cast<int>(GamepadAxis::LeftTrigger)
+                        || a == static_cast<int>(GamepadAxis::RightTrigger);
+                    g.Axes[a] = isTrigger ? value * 2.f - 1.f : value;
                 }
             }
             else {
@@ -181,10 +196,10 @@ namespace Index {
     }
 
     void Input::Update() {
-        std::copy(m_CurrentKeyStates.begin(), m_CurrentKeyStates.end(), m_PreviousKeyStates.begin());
-        std::copy(m_CurrentMouseButtons.begin(), m_CurrentMouseButtons.end(), m_PreviousMouseButtons.begin());
-
-        PollGamepads();
+        m_KeysPressedThisFrame.fill(false);
+        m_KeysReleasedThisFrame.fill(false);
+        m_MousePressedThisFrame.fill(false);
+        m_MouseReleasedThisFrame.fill(false);
 
         m_ScrollValue = 0.f;
         m_MouseDelta = { 0, 0 };
@@ -192,9 +207,10 @@ namespace Index {
     }
 
     void Input::PostPoll() {
-        // Recomputed AFTER glfwPollEvents() so the axis reflects the keys
-        // pressed *this* frame, not last frame's snapshot. Application::Run
-        // calls this immediately after polling.
+        // Runs AFTER Window::PollEvents so gamepads and the axis reflect *this*
+        // frame's input, not last frame's snapshot.
+        PollGamepads();
+
         const bool inputRight = GetKey(KeyCode::D) || GetKey(KeyCode::Right);
         const bool inputUp = GetKey(KeyCode::W) || GetKey(KeyCode::Up);
         const bool inputDown = GetKey(KeyCode::S) || GetKey(KeyCode::Bottom);
@@ -214,7 +230,7 @@ namespace Index {
                 if (x == 0.f && y == 0.f) {
                     const Vec2 stick = ApplyRadialDeadzone(
                         pad.Axes[static_cast<int>(GamepadAxis::LeftX)],
-                        -pad.Axes[static_cast<int>(GamepadAxis::LeftY)],  // GLFW reports up as negative
+                        -pad.Axes[static_cast<int>(GamepadAxis::LeftY)],  // SDL reports up as negative
                         k_GamepadAxisDeadzone);
                     x = stick.x;
                     y = stick.y;
@@ -233,8 +249,7 @@ namespace Index {
     }
 
     void Input::OnChar(uint32_t codepoint) {
-        // Filter out 0 (defensive — GLFW shouldn't send it but some drivers
-        // surface stray null codepoints during composition).
+        // Filter out 0: some IMEs surface stray null codepoints during composition.
         if (codepoint == 0) return;
         m_CharsThisFrame.push_back(codepoint);
     }
@@ -267,28 +282,33 @@ namespace Index {
     }
 
     void Input::OnKeyDown(int key) {
-        if (key >= 0 && key < k_KeyCount)
-            m_CurrentKeyStates[key] = true;
+        if (key < 0 || key >= k_KeyCount) return;
+        // Key repeat arrives as further downs while held; only the first is a press.
+        if (!m_CurrentKeyStates[key]) m_KeysPressedThisFrame[key] = true;
+        m_CurrentKeyStates[key] = true;
     }
 
     void Input::OnKeyUp(int key) {
-        if (key >= 0 && key < k_KeyCount)
-            m_CurrentKeyStates[key] = false;
+        if (key < 0 || key >= k_KeyCount) return;
+        if (m_CurrentKeyStates[key]) m_KeysReleasedThisFrame[key] = true;
+        m_CurrentKeyStates[key] = false;
     }
 
     void Input::OnMouseDown(int btn) {
-        if (btn >= 0 && btn < k_MouseCount)
-            m_CurrentMouseButtons[btn] = true;
+        if (btn < 0 || btn >= k_MouseCount) return;
+        if (!m_CurrentMouseButtons[btn]) m_MousePressedThisFrame[btn] = true;
+        m_CurrentMouseButtons[btn] = true;
     }
 
     void Input::OnMouseUp(int btn) {
-        if (btn >= 0 && btn < k_MouseCount)
-            m_CurrentMouseButtons[btn] = false;
+        if (btn < 0 || btn >= k_MouseCount) return;
+        if (m_CurrentMouseButtons[btn]) m_MouseReleasedThisFrame[btn] = true;
+        m_CurrentMouseButtons[btn] = false;
     }
 
     void Input::OnMouseMove(double x, double y) {
         const Vec2 pos{ static_cast<float>(x), static_cast<float>(y) };
-        // Accumulate: GLFW delivers several cursor events per frame and Update() zeroes the
+        // Accumulate: SDL delivers several motion events per frame and Update() zeroes the
         // delta once per frame, so assigning kept only the last segment and made mouse-look
         // under-sensitive and frame-rate dependent. The first sample only establishes the
         // position; otherwise the delta would equal the whole cursor position.
@@ -297,5 +317,41 @@ namespace Index {
         }
         m_MousePosition = pos;
         m_HasMousePosition = true;
+    }
+
+    void Input::OnGamepadAdded(uint32_t joystickId) {
+        for (const GamepadState& pad : m_Gamepads) {
+            if (pad.Handle && pad.JoystickId == joystickId) return;
+        }
+        for (GamepadState& pad : m_Gamepads) {
+            if (pad.Handle) continue;
+            pad.Handle = SDL_OpenGamepad(joystickId);
+            if (!pad.Handle) {
+                IDX_CORE_WARN_TAG("Input", "SDL_OpenGamepad({}) failed: {}", joystickId, SDL_GetError());
+                return;
+            }
+            pad.JoystickId = joystickId;
+            const char* name = SDL_GetGamepadName(pad.Handle);
+            IDX_CORE_INFO_TAG("Input", "Gamepad connected: {}", name ? name : "unknown");
+            return;
+        }
+        IDX_CORE_WARN_TAG("Input", "Ignoring gamepad {}: all {} slots are in use", joystickId, k_MaxGamepads);
+    }
+
+    void Input::OnGamepadRemoved(uint32_t joystickId) {
+        for (GamepadState& pad : m_Gamepads) {
+            if (!pad.Handle || pad.JoystickId != joystickId) continue;
+            SDL_CloseGamepad(pad.Handle);
+            pad = GamepadState{};
+            IDX_CORE_INFO_TAG("Input", "Gamepad disconnected ({})", joystickId);
+            return;
+        }
+    }
+
+    void Input::CloseGamepads() {
+        for (GamepadState& pad : m_Gamepads) {
+            if (pad.Handle) SDL_CloseGamepad(pad.Handle);
+            pad = GamepadState{};
+        }
     }
 }

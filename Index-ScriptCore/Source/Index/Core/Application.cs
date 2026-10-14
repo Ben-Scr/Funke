@@ -54,6 +54,13 @@ public static class Application
     public static int ScreenHeight => InternalCalls.Application_GetScreenHeight();
     public static float AspectRatio => ScreenHeight > 0 ? (float)ScreenWidth / ScreenHeight : 1.0f;
 
+    /// <summary>
+    /// How far, in screen pixels, the notch, camera cutout, rounded corners and home indicator reach in
+    /// from each edge on phones and tablets. UI already keeps clear of them unless a RectTransform has
+    /// Ignore Safe Area set; use this for layouts computed in code. All zero on desktop and Web.
+    /// </summary>
+    public static SafeAreaInsets SafeArea => InternalCalls.Application_GetSafeAreaInsets();
+
     public static bool RunningInBackground
     {
         get => InternalCalls.Application_GetRunInBackground();
@@ -63,10 +70,19 @@ public static class Application
     /// <summary>Runtime sibling of the compile-time INDEX_EDITOR define; use <c>#if INDEX_EDITOR</c> to strip at compile time, this property for runtime branches.</summary>
     public static bool IsEditor => InternalCalls.Application_IsEditor();
 
+    /// <summary>
+    /// Asks for an Android runtime permission such as <c>"android.permission.READ_MEDIA_AUDIO"</c>. The answer arrives
+    /// asynchronously; poll <see cref="GetPermissionState"/>. Every other platform grants immediately. The permission
+    /// must also be listed in the Android build profile's <c>permissions</c> option.
+    /// </summary>
+    public static void RequestPermission(string permission) => InternalCalls.Application_RequestPermission(permission);
+
+    public static PermissionState GetPermissionState(string permission) => (PermissionState)InternalCalls.Application_GetPermissionState(permission);
+
     /// <summary>Logical CPU core count; returns 4 as a floor when the OS can't report a value.</summary>
     public static int ProcessorCount => InternalCalls.Application_GetProcessorCount();
 
-    /// <summary>OS clipboard string via GLFW; returns empty and setter is a no-op in headless (no window) contexts.</summary>
+    /// <summary>OS clipboard string; returns empty and setter is a no-op in headless (no window) contexts.</summary>
     public static string ClipboardString
     {
         get => InternalCalls.Application_GetClipboardString();
@@ -83,6 +99,8 @@ public static class Application
     private static string GetLocalApplicationDataPath()
     {
         string path = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        // The browser has no such folder; the Web host points $HOME at its IndexedDB-backed storage.
+        if (string.IsNullOrEmpty(path)) path = Environment.GetEnvironmentVariable("HOME") ?? string.Empty;
         return string.IsNullOrEmpty(path) ? AppContext.BaseDirectory : path;
     }
 
@@ -117,4 +135,15 @@ public static class Application
         Directory.CreateDirectory(path);
         return path;
     }
+}
+
+/// <summary>Answer to <see cref="Application.RequestPermission"/>. Values match the native <c>Platform::PermissionState</c>.</summary>
+public enum PermissionState
+{
+    /// <summary>Never requested.</summary>
+    Unknown = 0,
+    /// <summary>The system dialog is still open.</summary>
+    Pending = 1,
+    Granted = 2,
+    Denied = 3,
 }

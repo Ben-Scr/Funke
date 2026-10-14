@@ -1,11 +1,13 @@
 #pragma once
 #include "Core/Export.hpp"
+#include "Collections/Vec2.hpp"
 #include "Scene/EntityHandle.hpp"
-#include "Scripting/DotNetHost.hpp"
+#include "Scripting/ScriptRuntimeHost.hpp"
 #include "Scripting/ScriptGlue.hpp"
 #include <cstddef>
 #include <string>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace Index {
@@ -42,6 +44,7 @@ namespace Index {
 		static void InvokeCollisionStay2D(uint32_t handle, uint64_t selfEntityID, uint64_t otherEntityID, uint64_t entityAID, uint64_t entityBID, float contactPointX, float contactPointY);
 		static void InvokeCollisionExit2D(uint32_t handle, uint64_t selfEntityID, uint64_t otherEntityID, uint64_t entityAID, uint64_t entityBID, float contactPointX, float contactPointY);
 		static void InvokeTrigger2D(uint32_t handle, int32_t phase, uint64_t selfEntityID, uint64_t otherEntityID, uint64_t entityAID, uint64_t entityBID);
+		static void InvokeCollision3D(uint32_t handle, int32_t phase, bool isTrigger, uint64_t selfEntityID, uint64_t otherEntityID, const Vec3& contactPoint, const Vec3& normal);
 		static bool ClassExists(const std::string& className);
 
 		static void RaiseApplicationStart();
@@ -61,7 +64,7 @@ namespace Index {
 		static void RaiseSceneUnloaded(const std::string& sceneName);
 		static void RaiseUiEventDispatch();
 		// Fired by Application::DispatchEvent on WindowResizeEvent — the
-		// managed `Index.Window.OnResize` event runs same-frame as GLFW's
+		// managed `Index.Window.OnResize` event runs same-frame as the window's
 		// framebuffer-size callback.
 		static void RaiseWindowResize();
 
@@ -112,6 +115,10 @@ namespace Index {
 
 		static const ManagedCallbacks& GetCallbacks() { return s_Callbacks; }
 
+		// Resolves an [UnmanagedCallersOnly] method of another assembly on the running runtime; null before LoadCoreAssembly.
+		static void* GetUnmanagedEntryPoint(const std::filesystem::path& assemblyPath, std::string_view assemblyName,
+			std::string_view typeName, std::string_view methodName);
+
 		struct GlobalSystemInstance {
 			std::string ClassName;
 			uint32_t Handle = 0;
@@ -126,7 +133,8 @@ namespace Index {
 		static bool s_HasUserAssembly;
 		static std::vector<GlobalSystemInstance> s_GlobalSystems;
 
-		static DotNetHost s_Host;
+		// Created on first LoadCoreAssembly; a runtime boots once per process and is never torn down.
+		static std::unique_ptr<ScriptRuntimeHost> s_Host;
 		static ManagedCallbacks s_Callbacks;
 	};
 

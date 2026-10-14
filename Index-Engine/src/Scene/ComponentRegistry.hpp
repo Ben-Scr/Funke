@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -53,6 +54,7 @@ namespace Index {
                 // Preserve serialize/deserialize: AttachInspector re-registers and would otherwise drop them.
                 if (!info.serialize) info.serialize = existing->second.serialize;
                 if (!info.deserialize) info.deserialize = existing->second.deserialize;
+                if (!info.serializeFirst) info.serializeFirst = existing->second.serializeFirst;
                 if (!info.serializeArchive) info.serializeArchive = existing->second.serializeArchive;
                 if (info.serializationVersion == 1 && existing->second.serializationVersion != 1) {
                     info.serializationVersion = existing->second.serializationVersion;
@@ -68,6 +70,8 @@ namespace Index {
             // Ownership is fixed at first registration so a package re-registering a built-in can't take it down on unload.
             if (existing != m_map.end()) info.ownerId = existing->second.ownerId;
             else if (info.ownerId == 0) info.ownerId = m_registrationOwner;
+            if (existing != m_map.end()) info.engineModule = existing->second.engineModule;
+            else if (!info.engineModule) info.engineModule = m_registrationModule;
 
             info.typeId = id;
             info.storageHash = entt::type_hash<T>::value();
@@ -194,6 +198,7 @@ namespace Index {
             if (stored.typeIdU32 != 0 && stored.typeIdU32 < m_byTypeId.size()) {
                 m_byTypeId[stored.typeIdU32] = &stored;
             }
+            ++m_generation;
         }
 
         /// O(1) lookup by stable u32 type ID. Returns nullptr for id 0 (sentinel) or out-of-range ids.
@@ -208,6 +213,9 @@ namespace Index {
         }
 
         const auto& All() const { return m_map; }
+
+        /// Bumped on every registration change; lets callers memoize ComponentInfo pointers.
+        uint64_t GetGeneration() const noexcept { return m_generation; }
 
         /// O(1) lookup by FNV-1a hash of serializedName. Returns nullptr for hash 0 or no match.
         const ComponentInfo* FindByHash(uint64_t serializedNameHash) const {
@@ -225,6 +233,20 @@ namespace Index {
         const ComponentInfo* GetInfo() const {
             const auto it = m_map.find(typeid(T));
             return it != m_map.end() ? &it->second : nullptr;
+        }
+
+        template <typename T>
+        ComponentInfo* GetInfo() {
+            const auto it = m_map.find(typeid(T));
+            return it != m_map.end() ? &it->second : nullptr;
+        }
+
+        /// Registration order (typeIdU32), static and dynamic entries alike; keeps written files deterministic.
+        template <typename F>
+        void ForEachComponentInfoInRegistrationOrder(F&& fn) const {
+            for (size_t typeId = 1; typeId < m_byTypeId.size(); ++typeId) {
+                if (const ComponentInfo* info = m_byTypeId[typeId]) fn(*info);
+            }
         }
 
         template <typename F>
@@ -425,6 +447,7 @@ namespace Index {
             if (stored.typeIdU32 < m_byTypeId.size()) {
                 m_byTypeId[stored.typeIdU32] = &stored;
             }
+            ++m_generation;
             return typeIdU32;
         }
 
@@ -462,11 +485,16 @@ namespace Index {
             }
             m_dynamicMap.clear();
             m_dynamicStorages.clear();
+            ++m_generation;
         }
 
         // Register<T> tags new entries with this owner while non-zero.
         void SetRegistrationOwner(uint32_t owner) noexcept { m_registrationOwner = owner; }
         uint32_t GetRegistrationOwner() const noexcept { return m_registrationOwner; }
+
+        // Register<T> tags new entries with this engine module while set.
+        void SetRegistrationModule(std::optional<EngineModule> module) noexcept { m_registrationModule = module; }
+        std::optional<EngineModule> GetRegistrationModule() const noexcept { return m_registrationModule; }
 
         // MUST be called before the owner's module unloads: entries hold function pointers into it. Typed IDs are not reused.
         size_t UnregisterOwner(uint32_t owner) {
@@ -492,6 +520,7 @@ namespace Index {
                 it = m_map.erase(it);
             }
             if (removed.empty()) return 0;
+            ++m_generation;
 
             const auto isRemoved = [&removed](const std::type_index& type) {
                 return std::find(removed.begin(), removed.end(), type) != removed.end();
@@ -520,26 +549,59 @@ namespace Index {
             }
         }
 
-        bool HasConflict(Entity entity, std::type_index proposed) const {
+        // The component already on the entity that `proposed` conflicts with, or null.
+        const ComponentInfo* FindConflict(Entity entity, std::type_index proposed) const {
             const auto proposedIt = m_map.find(proposed);
-            const ComponentInfo* proposedInfo = (proposedIt != m_map.end()) ? &proposedIt->second : nullptr;
-
-            for (const auto& [existingId, existingInfo] : m_map) {
-                if (existingId == proposed) continue;
-                if (!existingInfo.has || !existingInfo.has(entity)) continue;
-
-                // proposed → existing
-                if (proposedInfo) {
-                    for (const std::type_index& conflict : proposedInfo->conflictsWith) {
-                        if (conflict == existingId) return true;
+            if (proposedIt != m_map.end()) {
+                // Conflicts are declared on both sides, so the proposed component's list is complete; this
+                // keeps the check proportional to its few conflicts (ECB playback calls it per add).
+                for (const std::type_index& conflict : proposedIt->second.conflictsWith) {
+                    const auto existing = m_map.find(conflict);
+                    if (existing != m_map.end() && existing->second.has && existing->second.has(entity)) {
+                        return &existing->second;
                     }
                 }
-                // existing → proposed
+                return nullptr;
+            }
+            for (const auto& [existingId, existingInfo] : m_map) {
+                if (!existingInfo.has || !existingInfo.has(entity)) continue;
                 for (const std::type_index& conflict : existingInfo.conflictsWith) {
-                    if (conflict == proposed) return true;
+                    if (conflict == proposed) return &existingInfo;
                 }
             }
-            return false;
+            return nullptr;
+        }
+
+        bool HasConflict(Entity entity, std::type_index proposed) const {
+            return FindConflict(entity, proposed) != nullptr;
+        }
+
+        // A pair of components on the entity that may not be combined (data from before a conflict existed).
+        std::pair<const ComponentInfo*, const ComponentInfo*> FindConflictingPair(Entity entity) const {
+            for (const auto& [id, info] : m_map) {
+                if (info.conflictsWith.empty() || !info.has || !info.has(entity)) continue;
+                for (const std::type_index& conflict : info.conflictsWith) {
+                    const auto other = m_map.find(conflict);
+                    if (other != m_map.end() && other->second.has && other->second.has(entity)) {
+                        return { &info, &other->second };
+                    }
+                }
+            }
+            return { nullptr, nullptr };
+        }
+
+        // Symmetric, like Codegen::DeclareConflict<A, B>, for types only known at runtime.
+        void DeclareConflict(std::type_index a, std::type_index b) {
+            if (a == b) return;
+            const auto ai = m_map.find(a);
+            const auto bi = m_map.find(b);
+            if (ai == m_map.end() || bi == m_map.end()) return;
+            if (std::find(ai->second.conflictsWith.begin(), ai->second.conflictsWith.end(), b) == ai->second.conflictsWith.end()) {
+                ai->second.conflictsWith.push_back(b);
+            }
+            if (std::find(bi->second.conflictsWith.begin(), bi->second.conflictsWith.end(), a) == bi->second.conflictsWith.end()) {
+                bi->second.conflictsWith.push_back(a);
+            }
         }
 
         /// Adds component + transitive dependsOn chain. Cycle-safe. Conflicting deps are skipped with a warning.
@@ -599,11 +661,16 @@ namespace Index {
 
             if (info.has(entity)) return true;
 
-            if (HasConflict(entity, type)) {
-                if (!isRoot) {
+            if (const ComponentInfo* conflict = FindConflict(entity, type)) {
+                const std::string& name = info.displayName.empty() ? info.serializedName : info.displayName;
+                const std::string& conflictName = conflict->displayName.empty() ? conflict->serializedName : conflict->displayName;
+                if (isRoot) {
+                    IDX_CORE_WARN_TAG("ComponentRegistry", "Cannot add '{}': the entity has '{}', which it can't be combined with",
+                        name, conflictName);
+                }
+                else {
                     IDX_CORE_WARN_TAG("ComponentRegistry",
-                        "Skipping auto-add of dependency '{}' — conflicts with a component already on the entity",
-                        info.displayName.empty() ? type.name() : info.displayName);
+                        "Skipping auto-add of dependency '{}' — conflicts with '{}' on the entity", name, conflictName);
                 }
                 return false;
             }
@@ -625,6 +692,8 @@ namespace Index {
         std::unordered_map<uint32_t, ComponentInfo> m_dynamicMap;
         std::unordered_map<uint32_t, std::unique_ptr<DynamicComponentStorage>> m_dynamicStorages;
         uint32_t m_registrationOwner = 0;
+        std::optional<EngineModule> m_registrationModule;
+        uint64_t m_generation = 0;
         // Dynamics share typeid(void) — std::type_index can't be synthesized; callers that key by
         // type_index implicitly skip dynamic entries.
         static inline const std::type_index s_VoidTypeIndex{ typeid(void) };

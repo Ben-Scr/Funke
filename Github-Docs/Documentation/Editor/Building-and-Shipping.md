@@ -1,6 +1,6 @@
 # Building and Shipping
 
-Index currently supports end-to-end game exports for **Windows x64**. Linux engine builds are covered by CI, but Linux, macOS, mobile, and Web editor exports remain disabled until their platform packages are available.
+The editor exports games for the desktop platform it runs on: **Windows x64**, **Linux** or **macOS**. **Android, iOS and Web** exports come from platform packages; see [Platform Packages](Platform-Packages.md) for their requirements.
 
 ## Build a game
 
@@ -8,15 +8,59 @@ Before exporting:
 
 1. Open **Project Settings** and set the executable name, company, version, window mode, icon, and splash screen.
 2. Add every required scene to **Build Scenes** and choose a valid startup scene.
-3. Select a Windows build profile.
+3. Select a build profile for your desktop platform (new projects get `Windows`, `Linux` and `macOS` profiles).
 4. Use **Development** while testing and **Release** for distribution.
-5. Choose an empty output directory outside the project and click **Build**.
+5. Choose an empty output directory (outside the project or under its `Builds` folder) and click **Build**.
+
+The output directory defaults to `<project>/Builds/<Platform>`. While its last folder is a platform name (`Windows`, `Linux`, `MacOS`, `Android`, `Web`, ...), it follows the active profile's platform; any other folder name is kept as typed.
+
+What the build produces:
+
+| Platform | Output |
+|---|---|
+| Windows | `<Name>.exe` with `Index-Engine.dll`, `SDL3.dll`, `nethost.dll` and the game content next to it. |
+| Linux | `<Name>` (executable) with `libIndex-Engine.so`, `libSDL3.so.0`, `libwebgpu_dawn.so` and the game content next to it. Ship the folder, e.g. as a `.tar.gz`. |
+| macOS | `<Name>.app`: the executable and libraries in `Contents/MacOS`, the game content in `Contents/Resources`, an `Info.plist` with the app id and version, and the icon as `AppIcon.icns`. The bundle is ad-hoc signed; sign and notarize it with your Developer ID before distributing it outside your own Macs. |
+
+From a source checkout the editor compiles a fresh runtime for the export first (MSBuild on Windows, `make` on Linux and macOS). That runtime contains only the [engine modules](../Engine-Core/Engine-Modules.md) the project enables, so a 2D game ships without the 3D renderer and Jolt and a 3D game without sprites and Box2D. The first export with a new module set compiles the engine once. A build stops when a shipped scene uses a component of a module the project leaves out.
 
 The build is fail-closed: invalid paths, missing scenes, incomplete scripting artifacts, package failures, and incomplete runtime payloads stop the export instead of publishing a partial folder. The completed directory is staged first and then moved into place.
 
-Do not remove files from the result. The executable depends on the adjacent engine, GLFW, .NET host, ScriptCore, project assembly, package libraries, project configuration, assets, and license folders produced by the build.
+Do not remove files from the result. The executable depends on the adjacent engine, SDL3, .NET host, ScriptCore, project assembly, package libraries, project configuration, assets, and license folders produced by the build.
 
 For the current demo release, list every native package dependency directly in the project's `packages` array. Native runtime loading does not yet expand transitive package dependencies.
+
+## Which assets ship
+
+A build only contains the files from `Assets/` and the engine's `IndexAssets/` that the game can reach:
+
+- The enabled **Build Scenes**, and everything they reference: textures, audio, fonts, prefabs, Data Assets and other scenes (by GUID, asset path or scene name). References inside those assets are followed too.
+- Paths in `project.json` (splash images, cursors).
+- Files and folders whose path appears as a string literal in a C# script, e.g. `Path.Combine(Application.DataPath, "Levels/Official")` ships the whole `Levels/Official` folder. A literal scene name, e.g. `SceneManager.LoadScene("Credits")`, ships that scene.
+- `AssetManager.FindAll<T>("Prefix")` ships every asset of that type under the prefix. Without a literal prefix, every asset of that type ships.
+- Everything in **`Assets/StreamingAssets/`**, unchanged.
+- The engine's default font, default shape textures, splash logo and localization files.
+
+`.cs` sources, scenes not in the build list, and assets nothing refers to are left out, along with their `.meta` files. The build log lists how many files were skipped and their total size.
+
+Built-in files always come from the engine you build with, so engine updates (a new splash logo, fixed default textures) reach older projects too. The project's own `IndexAssets/` folder, a copy made when the project was created, only replaces an engine file when you changed that file in the project (it is newer than the engine's).
+
+Files your code finds through a computed path (`"Level" + i + ".json"`, a path from a config value) cannot be detected. Put them in `Assets/StreamingAssets/`. If the project cannot be scanned completely (unreadable file, missing build scene), the build logs a warning and ships all assets.
+
+## App icon and cursors
+
+**Project Settings › Branding › App Icon** accepts PNG, JPG, BMP or ICO at any size; use a square image of 1024×1024 or larger. Non-square images are centred on a transparent square. Each build places it next to `project.json` as `AppIcon.png`, so the shipped game finds it even if the source file sits outside `Assets/`.
+
+| Target | Where the icon appears |
+|---|---|
+| Windows | Embedded in the `.exe` at 16–256 px (Explorer, taskbar, title bar). An `.ico` source is embedded unchanged. The window also gets icons at the exact size for the monitor's DPI. |
+| Android, iOS, Web | Passed to the platform package as a PNG, together with the app id. |
+| macOS | `AppIcon.icns` in the app bundle (Finder, Dock), made with `iconutil` from the PNG. |
+| Linux, macOS (runtime) | Set on the window at several sizes. GNOME on Wayland only shows icons from an installed `.desktop` file; there the window is grouped by the app id. |
+
+The app id is `com.<company>.<name>`, built from **Company** and the project name as lowercase letters and digits, e.g. `com.benscr.geometrydash`. Without a company it is `com.index.<name>`.
+
+**Branding › Cursors** sets the default cursor and the cursor over Interactable UI elements. Each has a **Hotspot**: the click point in image pixels, measured from the top-left corner (**Center** for crosshairs). The image keeps its aspect ratio and is 32 px on its longest side at 100 % display scaling. Larger scaling uses sharp images up to 400 %, so source images of 128 px or more look best. On Android and iOS cursor settings are ignored. From C#: `Cursor.SetTexture(texture, new Vector2(x, y))`.
 
 ## Player prerequisites
 
@@ -25,6 +69,8 @@ A Windows player machine needs:
 - Windows x64 with a WebGPU-capable D3D12 or Vulkan graphics driver.
 - The [.NET 10 x64 Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/10.0).
 - The [Microsoft Visual C++ 2015-2022 x64 Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe).
+
+A Linux player machine needs a Vulkan driver and the .NET 10 Runtime (`dotnet-runtime-10.0` from the distribution or Microsoft). A macOS player needs macOS 11 or later and the .NET 10 Runtime for their CPU (Arm64 on Apple Silicon).
 
 Index is framework-dependent rather than self-contained, so installing the matching .NET runtime is required. If it is missing, the game shows a message with a download link instead of failing silently.
 

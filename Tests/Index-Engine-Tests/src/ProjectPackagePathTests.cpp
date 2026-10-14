@@ -15,8 +15,10 @@ TEST_CASE("Project package output paths are deterministic and traversal-safe") {
 	CHECK(output.filename() == "Pkg.Game.Tools");
 #if defined(IDX_PLATFORM_WINDOWS)
 	CHECK(output.parent_path().filename() == "Dist-windows-x86_64");
-#elif defined(IDX_PLATFORM_LINUX)
+#elif defined(IDX_PLATFORM_LINUX) && (defined(__x86_64__) || defined(_M_X64))
 	CHECK(output.parent_path().filename() == "Dist-linux-x86_64");
+#elif defined(IDX_PLATFORM_MACOS) && defined(__aarch64__)
+	CHECK(output.parent_path().filename() == "Dist-macosx-arm64");
 #endif
 
 	for (const std::string_view invalidTarget : {

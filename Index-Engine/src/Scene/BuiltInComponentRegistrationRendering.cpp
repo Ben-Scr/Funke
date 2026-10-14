@@ -2,16 +2,19 @@
 #include "Scene/BuiltInComponentRegistrationShared.hpp"
 
 #include "Assets/AssetRegistry.hpp"
-#include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
+#include "Components/Graphics/TextRendererComponent.hpp"
+#include "Graphics/Text/FontManager.hpp"
+#include "Graphics/TextureManager.hpp"
+
+#if INDEX_WITH_2D
+#include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/PostProcessing2DComponent.hpp"
 #include "Components/Graphics/SpriteAnimator2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
-#include "Components/Graphics/TextRendererComponent.hpp"
-#include "Graphics/Text/FontManager.hpp"
-#include "Graphics/TextureManager.hpp"
 #include "Physics/PhysicsTypes.hpp"
+#endif
 
 #include <cmath>
 #include <string>
@@ -22,6 +25,12 @@
 // Sprites, images, cameras, particles, post-processing and text.
 // Split out of BuiltInComponentRegistration.cpp, which owns the call order.
 namespace Index::BuiltInComponentRegistrationInternal {
+
+	// The member ends the struct; only tail padding (which differs between 32- and 64-bit targets) may follow.
+	constexpr bool IsTrailingMember(size_t offset, size_t memberSize, size_t structSize, size_t structAlign) {
+		return offset + memberSize <= structSize && structSize - (offset + memberSize) < structAlign;
+	}
+
 	namespace {
 		template <typename T, typename HandleAccessor, typename HandleAssign>
 		PropertyDescriptor MakeTextureRefDirect(const std::string& name, const std::string& displayName,
@@ -71,6 +80,9 @@ namespace Index::BuiltInComponentRegistrationInternal {
 
 		// ── Rendering ───────────────────────────────────────────────
 
+#if INDEX_WITH_2D
+		{
+		ModuleRegistrationScope module2D(registry, EngineModule::TwoD);
 		RegisterComponent<SpriteRendererComponent>(registry, "Sprite Renderer",
 			ComponentCategory::Component, "Rendering", "SpriteRenderer",
 			{
@@ -120,11 +132,12 @@ namespace Index::BuiltInComponentRegistrationInternal {
 		// the type non-trivially-destructible, so the auto byte-emplacer is
 		// skipped. Register a prefix-aware one so ECB AddComponent of the
 		// native mirror works from scripts AND prefabs with a sprite stay bakeable.
-		static_assert(offsetof(SpriteRendererComponent, SpriteName) + sizeof(std::string)
-			== sizeof(SpriteRendererComponent),
+		static_assert(IsTrailingMember(offsetof(SpriteRendererComponent, SpriteName), sizeof(std::string), sizeof(SpriteRendererComponent), alignof(SpriteRendererComponent)),
 			"SpriteName must stay the last member: the prefix emplacer bakes only the POD bytes before it.");
 		Index::Codegen::RegisterPrefixByteEmplacer<SpriteRendererComponent>(
 			registry, offsetof(SpriteRendererComponent, SpriteName));
+		}
+#endif
 
 		RegisterComponent<ImageComponent>(registry, "Image",
 			ComponentCategory::Component, "UI", "Image",
@@ -172,12 +185,14 @@ namespace Index::BuiltInComponentRegistrationInternal {
 
 		// Same trailing-std::string layout as SpriteRenderer: register a prefix emplacer so UI
 		// prefabs containing an Image are ECB-bakeable instead of forced onto the slow spawn path.
-		static_assert(offsetof(ImageComponent, SpriteName) + sizeof(std::string)
-			== sizeof(ImageComponent),
+		static_assert(IsTrailingMember(offsetof(ImageComponent, SpriteName), sizeof(std::string), sizeof(ImageComponent), alignof(ImageComponent)),
 			"SpriteName must stay the last member: the prefix emplacer bakes only the POD bytes before it.");
 		Index::Codegen::RegisterPrefixByteEmplacer<ImageComponent>(
 			registry, offsetof(ImageComponent, SpriteName));
 
+#if INDEX_WITH_2D
+		{
+		ModuleRegistrationScope module2D(registry, EngineModule::TwoD);
 		RegisterComponent<Camera2DComponent>(registry, "Camera 2D",
 			ComponentCategory::Component, "Rendering", "Camera2D",
 			{
@@ -804,6 +819,8 @@ namespace Index::BuiltInComponentRegistrationInternal {
 
 			registry.Register<PostProcessing2DComponent>(ppInfo);
 		}
+		}
+#endif
 
 		RegisterComponent<TextRendererComponent>(registry, "Text Renderer",
 			ComponentCategory::Component, "UI", "TextRenderer",
@@ -880,8 +897,10 @@ namespace Index::BuiltInComponentRegistrationInternal {
 					}),
 			});
 
-		DeclareConflict<SpriteRendererComponent, TextRendererComponent>(registry);
 		DeclareConflict<ImageComponent, TextRendererComponent>(registry);
+#if INDEX_WITH_2D
+		DeclareConflict<SpriteRendererComponent, TextRendererComponent>(registry);
 		DeclareConflict<ParticleSystem2DComponent, TextRendererComponent>(registry);
+#endif
 	}
 }

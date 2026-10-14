@@ -26,6 +26,7 @@ public abstract class EntityScript : Component
 
     protected bool AddNativeComponent<T>() where T : unmanaged, IComponent => Entity.AddNativeComponent<T>();
     protected unsafe ref T GetNativeComponent<T>() where T : unmanaged, IComponent => ref Entity.GetNativeComponent<T>();
+    protected unsafe ref readonly T GetNativeComponentReadOnly<T>() where T : unmanaged, IComponent => ref Entity.GetNativeComponentReadOnly<T>();
 
 
     protected Entity Create(string? name = null) => Entity.Create(name);
@@ -110,4 +111,15 @@ public abstract class EntityScript : Component
     public virtual void OnTriggerStay2D(Collision2D other) { }
     /// <summary>Called when a sensor overlap ends, including when either collider is destroyed or disabled.</summary>
     public virtual void OnTriggerExit2D(Collision2D other) { }
+
+    /// <summary>Called when this entity's Rigidbody3D (or static collider) starts touching another one.</summary>
+    public virtual void OnCollisionEnter3D(Collision3D collision) { }
+    /// <summary>Called every physics step while the contact persists.</summary>
+    public virtual void OnCollisionStay3D(Collision3D collision) { }
+    public virtual void OnCollisionExit3D(Collision3D collision) { }
+
+    /// <summary>Called when a 3D body starts overlapping a trigger ("Is Trigger"), on both the trigger and the other entity.</summary>
+    public virtual void OnTriggerEnter3D(Collision3D other) { }
+    public virtual void OnTriggerStay3D(Collision3D other) { }
+    public virtual void OnTriggerExit3D(Collision3D other) { }
 }

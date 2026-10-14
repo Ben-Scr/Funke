@@ -1,6 +1,9 @@
 #include "pch.hpp"
+// hostfxr / nethost only exist for the desktop .NET runtime; other platforms use a ScriptRuntimeHost backend.
+#if IDX_PLATFORM_DESKTOP
 #include "Scripting/DotNetHost.hpp"
 #include "Core/Log.hpp"
+#include "Core/Platform.hpp"
 
 #include <nethost.h>
 #include <hostfxr.h>
@@ -8,13 +11,12 @@
 
 #include <type_traits>
 
+#include <cstdlib>
+
 #ifdef IDX_PLATFORM_WINDOWS
 #include <windows.h>
-#include <shellapi.h>
-#include <cstdlib>
 #define STR(s) L ## s
 #else
-#include <dlfcn.h>
 #define STR(s) s
 #endif
 
@@ -46,18 +48,20 @@ namespace Index {
 	// Players usually only see this: without it a missing runtime is just a line in a log file.
 	static void ReportMissingDotNetRuntime()
 	{
+		constexpr const char* k_DownloadUrl = "https://dotnet.microsoft.com/download/dotnet/10.0";
 		IDX_CORE_ERROR_TAG("DotNetHost",
-			"The .NET 10 Runtime (x64) is not installed. Download it from https://dotnet.microsoft.com/download/dotnet/10.0");
-#ifdef IDX_PLATFORM_WINDOWS
+			"The .NET 10 Runtime ({}) is not installed. Download it from {}", IDX_ARCH_NAME, k_DownloadUrl);
+#if IDX_PLATFORM_DESKTOP
 		static bool s_Shown = false;
 		if (s_Shown || std::getenv("CI") != nullptr) return;
 		s_Shown = true;
-		const int choice = MessageBoxW(nullptr,
-			L"This application needs the Microsoft .NET 10 Runtime (x64), which is not installed on this computer.\n\n"
-			L"Open the download page now? Install \".NET Runtime 10.x (x64)\" and start the application again.",
-			L".NET Runtime required", MB_YESNO | MB_ICONERROR | MB_TASKMODAL);
-		if (choice == IDYES) {
-			ShellExecuteW(nullptr, L"open", L"https://dotnet.microsoft.com/download/dotnet/10.0", nullptr, nullptr, SW_SHOWNORMAL);
+		const std::string arch = IDX_ARCH_NAME;
+		const bool openDownload = Platform::ShowConfirmDialog(Platform::MessageBoxKind::Error,
+			".NET Runtime required",
+			"This application needs the Microsoft .NET 10 Runtime (" + arch + "), which is not installed on this computer.\n\n"
+			"Open the download page now? Install \".NET Runtime 10.x (" + arch + ")\" and start the application again.");
+		if (openDownload) {
+			Platform::OpenUrl(k_DownloadUrl);
 		}
 #endif
 	}
@@ -67,7 +71,7 @@ namespace Index {
 #ifdef IDX_PLATFORM_WINDOWS
 		return static_cast<void*>(LoadLibraryW(path));
 #else
-		return dlopen(path, RTLD_LAZY | RTLD_LOCAL);
+		return Platform::LoadSharedLibrary(std::filesystem::path(path));
 #endif
 	}
 
@@ -76,7 +80,7 @@ namespace Index {
 #ifdef IDX_PLATFORM_WINDOWS
 		return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(lib), name));
 #else
-		return dlsym(lib, name);
+		return Platform::GetSharedLibrarySymbol(lib, name);
 #endif
 	}
 
@@ -85,7 +89,7 @@ namespace Index {
 #ifdef IDX_PLATFORM_WINDOWS
 		::FreeLibrary(static_cast<HMODULE>(lib));
 #else
-		dlclose(lib);
+		Platform::UnloadSharedLibrary(lib);
 #endif
 	}
 
@@ -186,6 +190,11 @@ namespace Index {
 			return false;
 		}
 
+		// The runtime stays loaded without its init context. Closing it later from static teardown runs after
+		// hostfxr's own globals are gone on Linux / macOS ("Invalid host context handle marker").
+		reinterpret_cast<hostfxr_close_fn>(m_CloseFn)(m_HostContext);
+		m_HostContext = nullptr;
+
 		m_Initialized = true;
 		IDX_CORE_INFO_TAG("DotNetHost", "CoreCLR runtime initialized successfully");
 		return true;
@@ -259,3 +268,5 @@ namespace Index {
 	}
 
 } // namespace Index
+
+#endif // IDX_PLATFORM_DESKTOP

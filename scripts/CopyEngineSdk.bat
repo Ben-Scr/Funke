@@ -31,7 +31,13 @@ robocopy "%BIN%\Index-Editor" "%SDK%\.." Index-Editor.exe %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 robocopy "%BIN%\Index-Runtime" "%SDK%\.." Index-Runtime.exe %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
+REM --- `index` command-line tool; optional so a Launcher built without it still packages.
+if exist "%BIN%\Index-CLI\index.exe" robocopy "%BIN%\Index-CLI" "%SDK%\.." index.exe %ROBOFLAGS% >nul
+if errorlevel 8 goto :robofail
 robocopy "%BIN%\Index-ScriptCore" "%SDK%\.." Index-ScriptCore.dll Index-ScriptCore.xml Index-ScriptCore.runtimeconfig.json Index-ScriptCore.deps.json %ROBOFLAGS% >nul
+if errorlevel 8 goto :robofail
+REM --- Editor's in-process hot-reload compiler; optional, the editor falls back to dotnet build without it.
+if exist "%BIN%\Index-ScriptCompiler\Index-ScriptCompiler.dll" robocopy "%BIN%\Index-ScriptCompiler" "%SDK%\..\ScriptCompiler" Index-ScriptCompiler.dll Index-ScriptCompiler.deps.json Index-ScriptCompiler.runtimeconfig.json %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 robocopy "%ROOT%\build" "%SDK%\.." BuildMetadata.json %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
@@ -39,6 +45,9 @@ if errorlevel 8 goto :robofail
 REM --- Index-Engine headers and sources. CMakeLists.txt adds this as an
 REM     include path; .cpp files are harmless dead weight we accept here.
 robocopy "%ROOT%\Index-Engine\src" "%SDK%\Index-Engine\src" /MIR %ROBOFLAGS% >nul
+if errorlevel 8 goto :robofail
+REM --- Launcher project templates (ProjectTemplates resolves <engine root>\templates).
+robocopy "%ROOT%\templates" "%SDK%\templates" /MIR %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 REM --- Flat package tool used by Launcher and Editor package operations.
 robocopy "%BIN%\Index-PackageTool" "%SDK%\.." Index-PackageTool.exe Index-PackageTool.dll Index-PackageTool.runtimeconfig.json Index-PackageTool.deps.json %ROBOFLAGS% >nul
@@ -77,7 +86,7 @@ call :CopyExternalDir magic_enum\include
 if errorlevel 1 goto :robofail
 call :CopyExternalDir rapidxml
 if errorlevel 1 goto :robofail
-call :CopyExternalDir glfw\include
+call :CopyExternalDir SDL\include
 if errorlevel 1 goto :robofail
 call :CopyExternalDir glad\include
 if errorlevel 1 goto :robofail
@@ -114,11 +123,13 @@ call :CopyRequiredLicense "%ROOT%" "Index" "THIRD_PARTY_LICENSES.md"
 if errorlevel 1 goto :robofail
 call :CopyRequiredLicense "%ROOT%\External\box2d" "Box2D" "LICENSE"
 if errorlevel 1 goto :robofail
+call :CopyRequiredLicense "%ROOT%\External\JoltPhysics" "JoltPhysics" "LICENSE"
+if errorlevel 1 goto :robofail
 call :CopyRequiredLicense "%ROOT%\External\entt" "EnTT" "LICENSE"
 if errorlevel 1 goto :robofail
 call :CopyRequiredLicense "%ROOT%\External\glm" "GLM" "copying.txt"
 if errorlevel 1 goto :robofail
-call :CopyRequiredLicense "%ROOT%\External\glfw" "GLFW" "LICENSE.md"
+call :CopyRequiredLicense "%ROOT%\External\SDL" "SDL3" "LICENSE.txt"
 if errorlevel 1 goto :robofail
 call :CopyRequiredLicense "%ROOT%\External\imgui" "Dear-ImGui" "LICENSE.txt"
 if errorlevel 1 goto :robofail
@@ -161,7 +172,7 @@ REM --- Active-config runtime for repo-less Development exports.
 set "DEVRT=%BIN%\Index-Runtime"
 if not exist "%DEVRT%\Index-Runtime.exe" goto :skipRuntimeDevelopment
 if exist "%SDK%\Runtime-Development" rmdir /s /q "%SDK%\Runtime-Development"
-robocopy "%DEVRT%" "%SDK%\Runtime-Development" Index-Runtime.exe Index-Engine.dll GLFW.dll nethost.dll %ROBOFLAGS% >nul
+robocopy "%DEVRT%" "%SDK%\Runtime-Development" Index-Runtime.exe Index-Engine.dll SDL3.dll nethost.dll %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 robocopy "%BIN%\Index-ScriptCore" "%SDK%\Runtime-Development" Index-ScriptCore.dll Index-ScriptCore.runtimeconfig.json Index-ScriptCore.deps.json %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
@@ -192,7 +203,7 @@ REM     postbuild for the bundle to populate.
 set "DISTRT=%ROOT%\bin\!DISTPLAT!\Index-Runtime"
 if not exist "%DISTRT%\Index-Runtime.exe" goto :skipRuntimeDist
 if exist "%SDK%\Runtime-Dist" rmdir /s /q "%SDK%\Runtime-Dist"
-robocopy "%DISTRT%" "%SDK%\Runtime-Dist" Index-Runtime.exe Index-Engine.dll GLFW.dll nethost.dll %ROBOFLAGS% >nul
+robocopy "%DISTRT%" "%SDK%\Runtime-Dist" Index-Runtime.exe Index-Engine.dll SDL3.dll nethost.dll %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 robocopy "%ROOT%\bin\!DISTPLAT!\Index-ScriptCore" "%SDK%\Runtime-Dist" Index-ScriptCore.dll Index-ScriptCore.runtimeconfig.json Index-ScriptCore.deps.json %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail

@@ -7,6 +7,7 @@
 #include "Core/UUID.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Scene/EntityHandle.hpp"
+#include "Serialization/FileStamp.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/SceneSerializerStorage.hpp"
 
@@ -45,6 +46,10 @@ namespace Index::Detail {
 	// override diff) to compare structurally. Previously duplicated across both TUs.
 	void RemoveObjectMember(Json::Value& value, std::string_view key);
 	void RemoveEntityIdentityMembers(Json::Value& value);
+
+	// After a same-content rewrite (format conversion): keeps the cached prefab parse current
+	// unless an external edit was already pending (`before` no longer matches the cache).
+	void RestampCachedPrefabRoot(const std::string& path, const FileStamp& before);
 }
 
 namespace Index::SceneSerializerShared {

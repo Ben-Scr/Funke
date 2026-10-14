@@ -122,6 +122,8 @@ namespace Index {
 		bool IsPlaying() const { return m_IsEmitting; }
 		Transform2DComponent& GetTransform2D();
 		const Transform2DComponent& GetTransform2D() const;
+		// Null when the emitter entity has no Transform2D (e.g. a 3D or UI entity).
+		const Transform2DComponent* TryGetEmitterTransform() const;
 		void PreviewUpdate(float deltaTime) { Update(deltaTime); }
 
 		// Info: Enables both emitting and simulating
@@ -168,7 +170,6 @@ namespace Index {
 		void Update();
 		void Update(float deltaTime, ParticleQualityLevel quality = ParticleQualityLevel::High);
 		void Emit(size_t count, ParticleQualityLevel quality);
-		const Transform2DComponent* TryGetEmitterTransform() const;
 		void ResetSimulation();
 		std::vector<Particle> m_Particles;
 		std::vector<Burst> m_Bursts;

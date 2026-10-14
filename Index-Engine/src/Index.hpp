@@ -31,19 +31,26 @@
 #if INDEX_WITH_APPLICATION
 #include "Graphics/RenderSettings.hpp"
 #endif
-#include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
+#if INDEX_WITH_2D
+#include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteAnimator2DComponent.hpp"
 #include "Components/Graphics/PostProcessing2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#endif
+#if INDEX_WITH_3D
+#include "Components/Graphics/ParticleSystem3DComponent.hpp"
+#endif
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/UI/UI.hpp"
 
 #include "Graphics/DefaultTexture.hpp"
 #include "Graphics/Gizmo.hpp"
 #include "Graphics/Instance44.hpp"
+#if INDEX_WITH_2D
 #include "Graphics/Renderer2D.hpp"
+#endif
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureHandle.hpp"
 #include "Graphics/TextureManager.hpp"
@@ -56,7 +63,7 @@
 #include "Components/Audio/AudioSourceComponent.hpp"
 #endif
 
-#if INDEX_WITH_PHYSICS
+#if INDEX_WITH_PHYSICS && INDEX_WITH_2D
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/FastBody2DComponent.hpp"

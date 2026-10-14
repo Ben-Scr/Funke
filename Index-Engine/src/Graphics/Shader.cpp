@@ -243,6 +243,402 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
+#if INDEX_WITH_3D
+		constexpr const char* k_MeshWGSL = R"WGSL(
+const PI: f32 = 3.14159265;
+const MAX_LIGHTS: u32 = 64u;
+
+struct Frame {
+	viewProj:      mat4x4<f32>,
+	lightViewProj: mat4x4<f32>,
+	cameraPos:     vec4<f32>,  // w = exposure
+	ambient:       vec4<f32>,  // linear flat ambient, w = sky ambient strength
+	skyTop:        vec4<f32>,  // linear
+	skyHorizon:    vec4<f32>,
+	skyGround:     vec4<f32>,
+	params:        vec4<f32>,  // x = light count, y = tone mapping, z = 1 encodes sRGB, w = shadowed light index or -1
+	shadowParams:  vec4<f32>,  // x = texel size in uv, y = depth bias, z = normal offset, w = shadow distance
+};
+
+struct Light {
+	positionRange: vec4<f32>,
+	directionType: vec4<f32>,  // xyz = direction the light travels, w = 0 directional / 1 point / 2 spot
+	radiance:      vec4<f32>,  // linear color * intensity
+	spot:          vec4<f32>,  // x = cos inner, y = cos outer
+};
+
+struct Lights {
+	items: array<Light, 64>,
+};
+
+@group(0) @binding(0) var<uniform> frame: Frame;
+@group(0) @binding(1) var<uniform> lights: Lights;
+@group(0) @binding(2) var shadowMap: texture_depth_2d;
+@group(0) @binding(3) var shadowSampler: sampler_comparison;
+@group(1) @binding(0) var baseTexture: texture_2d<f32>;
+@group(1) @binding(1) var baseSampler: sampler;
+
+struct VertexInput {
+	@location(0)  position:    vec3<f32>,
+	@location(1)  normal:      vec3<f32>,
+	@location(2)  uv:          vec2<f32>,
+	@location(3)  model0:      vec4<f32>,
+	@location(4)  model1:      vec4<f32>,
+	@location(5)  model2:      vec4<f32>,
+	@location(6)  model3:      vec4<f32>,
+	@location(7)  normal0:     vec4<f32>,
+	@location(8)  normal1:     vec4<f32>,
+	@location(9)  normal2:     vec4<f32>,
+	@location(10) color:       vec4<f32>,  // sRGB base color * tint
+	@location(11) emissive:    vec4<f32>,  // linear
+	@location(12) surface:     vec4<f32>,  // x = metallic, y = roughness, z = lit, w = transparent
+	@location(13) uvTransform: vec4<f32>,  // xy = tiling, zw = offset
+};
+
+struct VertexOutput {
+	@builtin(position) clip_position: vec4<f32>,
+	@location(0) worldPos: vec3<f32>,
+	@location(1) normal:   vec3<f32>,
+	@location(2) uv:       vec2<f32>,
+	@location(3) color:    vec4<f32>,
+	@location(4) emissive: vec3<f32>,
+	@location(5) @interpolate(flat) surface: vec4<f32>,
+};
+
+@vertex
+fn vs_main(in: VertexInput) -> VertexOutput {
+	let model = mat4x4<f32>(in.model0, in.model1, in.model2, in.model3);
+	let normalMatrix = mat3x3<f32>(in.normal0.xyz, in.normal1.xyz, in.normal2.xyz);
+	let world = model * vec4<f32>(in.position, 1.0);
+	var out: VertexOutput;
+	out.clip_position = frame.viewProj * world;
+	out.worldPos = world.xyz;
+	out.normal = normalMatrix * in.normal;
+	out.uv = in.uv * in.uvTransform.xy + in.uvTransform.zw;
+	out.color = in.color;
+	out.emissive = in.emissive.rgb;
+	out.surface = in.surface;
+	return out;
+}
+
+fn srgbToLinear(c: vec3<f32>) -> vec3<f32> {
+	let lo = c / 12.92;
+	let hi = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+	return select(hi, lo, c <= vec3<f32>(0.04045));
+}
+
+fn linearToSrgb(c: vec3<f32>) -> vec3<f32> {
+	let x = max(c, vec3<f32>(0.0));
+	let lo = x * 12.92;
+	let hi = 1.055 * pow(x, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
+	return select(hi, lo, x <= vec3<f32>(0.0031308));
+}
+
+fn toneMap(c: vec3<f32>) -> vec3<f32> {
+	let mode = frame.params.y;
+	if (mode < 0.5) {
+		return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+	}
+	if (mode < 1.5) {
+		return c / (vec3<f32>(1.0) + c);
+	}
+	// ACES filmic fit (Narkowicz).
+	return clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn encodeOutput(c: vec3<f32>) -> vec3<f32> {
+	if (frame.params.z > 0.5) {
+		return linearToSrgb(c);
+	}
+	return c;
+}
+
+// Same gradient as the "sky" shader, evaluated in linear space.
+fn skyColor(dir: vec3<f32>) -> vec3<f32> {
+	let up = dir.y;
+	if (up >= 0.0) {
+		return mix(frame.skyHorizon.rgb, frame.skyTop.rgb, pow(up, 0.6));
+	}
+	return mix(frame.skyHorizon.rgb, frame.skyGround.rgb, smoothstep(0.0, 0.2, -up));
+}
+
+fn distributionGGX(NoH: f32, a: f32) -> f32 {
+	let a2 = a * a;
+	let f = (NoH * a2 - NoH) * NoH + 1.0;
+	return a2 / (PI * f * f);
+}
+
+fn visibilitySmithGGX(NoV: f32, NoL: f32, a: f32) -> f32 {
+	let a2 = a * a;
+	let ggxL = NoV * sqrt(NoL * NoL * (1.0 - a2) + a2);
+	let ggxV = NoL * sqrt(NoV * NoV * (1.0 - a2) + a2);
+	return 0.5 / max(ggxV + ggxL, 1e-5);
+}
+
+fn fresnelSchlick(VoH: f32, f0: vec3<f32>) -> vec3<f32> {
+	return f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - VoH, 5.0);
+}
+
+// Karis' analytic fit of the split-sum environment BRDF.
+fn envBRDF(f0: vec3<f32>, roughness: f32, NoV: f32) -> vec3<f32> {
+	let c0 = vec4<f32>(-1.0, -0.0275, -0.572, 0.022);
+	let c1 = vec4<f32>(1.0, 0.0425, 1.04, -0.04);
+	let r = roughness * c0 + c1;
+	let a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+	let ab = vec2<f32>(-1.04, 1.04) * a004 + r.zw;
+	return f0 * ab.x + vec3<f32>(ab.y);
+}
+
+fn pointAttenuation(dist: f32, lightRange: f32) -> f32 {
+	if (dist >= lightRange) {
+		return 0.0;
+	}
+	let ratio = dist / lightRange;
+	let window = clamp(1.0 - ratio * ratio * ratio * ratio, 0.0, 1.0);
+	return (window * window) / (dist * dist + 1.0);
+}
+
+fn shadowFactor(worldPos: vec3<f32>, normal: vec3<f32>) -> f32 {
+	let lp = frame.lightViewProj * vec4<f32>(worldPos + normal * frame.shadowParams.z, 1.0);
+	let ndc = lp.xyz / lp.w;
+	let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z > 1.0) {
+		return 1.0;
+	}
+	let depth = ndc.z - frame.shadowParams.y;
+	let texel = frame.shadowParams.x;
+	var sum = 0.0;
+	for (var y = -1; y <= 1; y++) {
+		for (var x = -1; x <= 1; x++) {
+			sum += textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2<f32>(f32(x), f32(y)) * texel, depth);
+		}
+	}
+	let fade = smoothstep(frame.shadowParams.w * 0.85, frame.shadowParams.w, length(worldPos - frame.cameraPos.xyz));
+	return mix(sum / 9.0, 1.0, fade);
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+	let texel = textureSample(baseTexture, baseSampler, in.uv);
+	let albedo = srgbToLinear(in.color.rgb * texel.rgb);
+	// Opaque surfaces keep alpha 1 so the target stays opaque.
+	let alpha = select(1.0, clamp(in.color.a * texel.a, 0.0, 1.0), in.surface.w > 0.5);
+	if (in.surface.z < 0.5) {
+		return vec4<f32>(encodeOutput(albedo + in.emissive), alpha);
+	}
+
+	let metallic = clamp(in.surface.x, 0.0, 1.0);
+	let roughness = clamp(in.surface.y, 0.045, 1.0);
+	let a = roughness * roughness;
+	let n = normalize(in.normal);
+	let v = normalize(frame.cameraPos.xyz - in.worldPos);
+	let NoV = max(dot(n, v), 1e-4);
+	let f0 = mix(vec3<f32>(0.04), albedo, metallic);
+	let diffuseColor = albedo * (1.0 - metallic);
+
+	var color = vec3<f32>(0.0);
+	let count = min(u32(frame.params.x), MAX_LIGHTS);
+	let shadowedLight = i32(frame.params.w);
+	for (var i = 0u; i < count; i++) {
+		let light = lights.items[i];
+		let lightType = light.directionType.w;
+		var l = -light.directionType.xyz;
+		var attenuation = 1.0;
+		if (lightType > 0.5) {
+			let toLight = light.positionRange.xyz - in.worldPos;
+			let dist = length(toLight);
+			l = toLight / max(dist, 1e-4);
+			attenuation = pointAttenuation(dist, light.positionRange.w);
+			if (lightType > 1.5) {
+				let cosAngle = dot(-l, light.directionType.xyz);
+				let t = clamp((cosAngle - light.spot.y) / max(light.spot.x - light.spot.y, 1e-4), 0.0, 1.0);
+				attenuation *= t * t;
+			}
+		}
+		let NoL = dot(n, l);
+		if (NoL <= 0.0 || attenuation <= 0.0) {
+			continue;
+		}
+		if (i32(i) == shadowedLight) {
+			attenuation *= shadowFactor(in.worldPos, n);
+		}
+		let h = normalize(l + v);
+		let NoH = max(dot(n, h), 0.0);
+		let VoH = max(dot(v, h), 0.0);
+		let f = fresnelSchlick(VoH, f0);
+		let specular = distributionGGX(NoH, a) * visibilitySmithGGX(NoV, NoL, a) * f;
+		let diffuse = diffuseColor * (vec3<f32>(1.0) - f) / PI;
+		// Scaled by PI so a white light of intensity 1 lights a white surface head-on to 1.
+		color += (diffuse + specular) * light.radiance.rgb * (attenuation * NoL * PI);
+	}
+
+	let skyStrength = frame.ambient.w;
+	let r = reflect(-v, n);
+	let ambientDiffuse = frame.ambient.rgb + skyColor(n) * skyStrength;
+	let ambientSpecular = frame.ambient.rgb + skyColor(normalize(mix(r, n, a))) * skyStrength;
+	let reflectance = envBRDF(f0, roughness, NoV);
+	color += diffuseColor * ambientDiffuse + reflectance * ambientSpecular;
+	color += in.emissive;
+
+	// Reflected light isn't filtered by the surface's transparency: glass and water turn mirror-like at grazing angles.
+	let fresnelAlpha = clamp(alpha + (1.0 - alpha) * max(reflectance.r, max(reflectance.g, reflectance.b)), 0.0, 1.0);
+	return vec4<f32>(encodeOutput(toneMap(color * frame.cameraPos.w)), select(alpha, fresnelAlpha, in.surface.w > 0.5));
+}
+)WGSL";
+
+		constexpr const char* k_SkyWGSL = R"WGSL(
+struct Sky {
+	inverseViewProj: mat4x4<f32>,
+	top:          vec4<f32>,  // display (sRGB) colors
+	horizon:      vec4<f32>,
+	ground:       vec4<f32>,
+	sunDirection: vec4<f32>,  // xyz = towards the sun, w = cos of the disc radius
+	sunColor:     vec4<f32>,  // a = 1 when the sun is drawn
+	params:       vec4<f32>,  // x = 1 when the target format is sRGB (output must be linear)
+};
+
+@group(0) @binding(0) var<uniform> sky: Sky;
+
+struct VertexOutput {
+	@builtin(position) clip_position: vec4<f32>,
+	@location(0) nearPoint: vec4<f32>,
+	@location(1) farPoint:  vec4<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
+	// One triangle covering the viewport; homogeneous points stay linear in screen space.
+	let uv = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
+	let ndc = uv * 2.0 - vec2<f32>(1.0);
+	var out: VertexOutput;
+	out.clip_position = vec4<f32>(ndc, 0.0, 1.0);
+	out.nearPoint = sky.inverseViewProj * vec4<f32>(ndc, 0.0, 1.0);
+	out.farPoint = sky.inverseViewProj * vec4<f32>(ndc, 1.0, 1.0);
+	return out;
+}
+
+fn srgbToLinear(c: vec3<f32>) -> vec3<f32> {
+	let lo = c / 12.92;
+	let hi = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+	return select(hi, lo, c <= vec3<f32>(0.04045));
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+	let dir = normalize(in.farPoint.xyz / in.farPoint.w - in.nearPoint.xyz / in.nearPoint.w);
+	let up = dir.y;
+	var color: vec3<f32>;
+	if (up >= 0.0) {
+		color = mix(sky.horizon.rgb, sky.top.rgb, pow(up, 0.6));
+	} else {
+		color = mix(sky.horizon.rgb, sky.ground.rgb, smoothstep(0.0, 0.2, -up));
+	}
+
+	if (sky.sunColor.a > 0.5) {
+		let cosAngle = dot(dir, sky.sunDirection.xyz);
+		let edge = (1.0 - sky.sunDirection.w) * 0.25 + 1e-5;
+		let disc = smoothstep(sky.sunDirection.w - edge, sky.sunDirection.w + edge, cosAngle);
+		let glow = pow(max(cosAngle, 0.0), 256.0) * 0.6 + pow(max(cosAngle, 0.0), 16.0) * 0.12;
+		let horizonFade = smoothstep(-0.05, 0.02, up);
+		color = mix(color, sky.sunColor.rgb, disc * horizonFade) + sky.sunColor.rgb * glow * horizonFade;
+	}
+
+	color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+	if (sky.params.x > 0.5) {
+		color = srgbToLinear(color);
+	}
+	return vec4<f32>(color, 1.0);
+}
+)WGSL";
+
+		constexpr const char* k_Shadow3DWGSL = R"WGSL(
+struct ShadowFrame {
+	lightViewProj: mat4x4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> shadowFrame: ShadowFrame;
+
+struct VertexInput {
+	@location(0) position: vec3<f32>,
+	@location(1) model0:   vec4<f32>,
+	@location(2) model1:   vec4<f32>,
+	@location(3) model2:   vec4<f32>,
+	@location(4) model3:   vec4<f32>,
+};
+
+@vertex
+fn vs_main(in: VertexInput) -> @builtin(position) vec4<f32> {
+	let model = mat4x4<f32>(in.model0, in.model1, in.model2, in.model3);
+	return shadowFrame.lightViewProj * model * vec4<f32>(in.position, 1.0);
+}
+)WGSL";
+
+		constexpr const char* k_Particle3DWGSL = R"WGSL(
+struct ParticleFrame {
+	viewProj:    mat4x4<f32>,
+	cameraRight: vec4<f32>,
+	cameraUp:    vec4<f32>,
+	params:      vec4<f32>,  // x = 1 when the target format is sRGB (output must be linear)
+};
+
+@group(0) @binding(0) var<uniform> frame: ParticleFrame;
+@group(1) @binding(0) var particleTexture: texture_2d<f32>;
+@group(1) @binding(1) var particleSampler: sampler;
+
+struct InstanceInput {
+	@location(0) positionSize: vec4<f32>,  // xyz = world center, w = edge length
+	@location(1) color:        vec4<f32>,  // sRGB
+	@location(2) params:       vec4<f32>,  // x = rotation in radians, y = 1 draws a soft round dot instead of the texture
+};
+
+struct VertexOutput {
+	@builtin(position) clip_position: vec4<f32>,
+	@location(0) uv: vec2<f32>,
+	@location(1) color: vec4<f32>,
+	@location(2) @interpolate(flat) softDot: f32,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) index: u32, in: InstanceInput) -> VertexOutput {
+	var corners = array<vec2<f32>, 6>(
+		vec2<f32>(-0.5, -0.5), vec2<f32>(0.5, -0.5), vec2<f32>(-0.5, 0.5),
+		vec2<f32>(-0.5, 0.5), vec2<f32>(0.5, -0.5), vec2<f32>(0.5, 0.5));
+	let corner = corners[index];
+	let c = cos(in.params.x);
+	let s = sin(in.params.x);
+	let rotated = vec2<f32>(corner.x * c - corner.y * s, corner.x * s + corner.y * c);
+	let world = in.positionSize.xyz + (frame.cameraRight.xyz * rotated.x + frame.cameraUp.xyz * rotated.y) * in.positionSize.w;
+	var out: VertexOutput;
+	out.clip_position = frame.viewProj * vec4<f32>(world, 1.0);
+	out.uv = vec2<f32>(corner.x + 0.5, 0.5 - corner.y);
+	out.color = in.color;
+	out.softDot = in.params.y;
+	return out;
+}
+
+fn srgbToLinear(c: vec3<f32>) -> vec3<f32> {
+	let lo = c / 12.92;
+	let hi = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+	return select(hi, lo, c <= vec3<f32>(0.04045));
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+	var texel = textureSample(particleTexture, particleSampler, in.uv);
+	if (in.softDot > 0.5) {
+		let a = clamp(1.0 - length(in.uv - vec2<f32>(0.5)) * 2.0, 0.0, 1.0);
+		texel = vec4<f32>(1.0, 1.0, 1.0, a * a * (3.0 - 2.0 * a));
+	}
+	var rgb = clamp(in.color.rgb * texel.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+	let alpha = clamp(in.color.a * texel.a, 0.0, 1.0);
+	if (frame.params.x > 0.5) {
+		rgb = srgbToLinear(rgb);
+	}
+	return vec4<f32>(rgb, alpha);
+}
+)WGSL";
+#endif
+
 		constexpr const char* k_PostBlitWGSL = R"WGSL(
 @group(0) @binding(0) var t_src: texture_2d<f32>;
 @group(0) @binding(1) var s_src: sampler;
@@ -738,6 +1134,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 			{ "sprite",              k_SpriteWGSL              },
 			{ "text",                k_TextWGSL                },
 			{ "gizmo",               k_GizmoWGSL               },
+#if INDEX_WITH_3D
+			{ "mesh",                k_MeshWGSL                },
+			{ "sky",                 k_SkyWGSL                 },
+			{ "shadow3d",            k_Shadow3DWGSL            },
+			{ "particle3d",          k_Particle3DWGSL          },
+#endif
 			{ "postblit",            k_PostBlitWGSL            },
 			{ "postvignette",        k_PostVignetteWGSL        },
 			{ "postchromatic",       k_PostChromaticWGSL       },
@@ -821,6 +1223,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 			if (!module) {
 				IDX_CORE_ERROR_TAG("Shader",
 					"wgpu::Device::CreateShaderModule returned null for '{}'", name);
+				return module;
+			}
+			// A WGSL error still yields a non-null error module; using it would invalidate every pipeline and
+			// silently drop frames, and it would replace a working shader on hot reload.
+			std::string compileErrors;
+			if (!WebGPUBackend::ShaderModuleCompiled(module, &compileErrors)) {
+				IDX_CORE_ERROR_TAG("Shader", "WGSL compile failed for '{}':\n{}", name, compileErrors);
+				return nullptr;
 			}
 			return module;
 		}

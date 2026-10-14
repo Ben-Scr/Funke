@@ -4,7 +4,7 @@
 namespace Index {
 
 	// Bump together with InteropHandshake.LayoutVersion (ScriptHostBridge.cs) on any add/remove/reorder in NativeBindings or ManagedCallbacks.
-	inline constexpr int32_t k_ScriptInteropLayoutVersion = 1;
+	inline constexpr int32_t k_ScriptInteropLayoutVersion = 15;
 
 	/// Layout must match C# NativeBindingsStruct exactly (Sequential, blittable).
 	struct NativeBindings
@@ -639,7 +639,7 @@ namespace Index {
 		int      (*Cursor_GetMode)();
 		void     (*Cursor_SetMode)(int mode);
 		uint64_t (*Cursor_GetTexture)();
-		void     (*Cursor_SetTexture)(uint64_t assetId);
+		void     (*Cursor_SetTexture)(uint64_t assetId, int hotspotX, int hotspotY);
 
 		// ── EntityCommandBuffer (appended for binary compat) ────────────
 		// Returns 0 when unknown; cached in ComponentTypes<T>.NativeId so the hot path avoids string lookups.
@@ -1040,6 +1040,145 @@ namespace Index {
 		void  (*SpriteAnimator2D_SetFrame)(uint64_t entityID, int frame);
 		float (*SpriteAnimator2D_GetFramesPerSecond)(uint64_t entityID);
 		void  (*SpriteAnimator2D_SetFramesPerSecond)(uint64_t entityID, float fps);
+
+		// ── PostProcessing2D (appended for binary compat) ──
+		// effect: PostProcessingInterop::Effect; data/size: the matching PostProcessingInterop struct. Returns 1 on success.
+		int (*PostProcessing2D_GetEffect)(uint64_t entityID, int effect, void* outData, int size);
+		int (*PostProcessing2D_SetEffect)(uint64_t entityID, int effect, void* data, int size);
+
+		// ── Safe area (appended for binary compat) ── pixels from each edge of the screen.
+		void (*Application_GetSafeAreaInsets)(float* left, float* top, float* right, float* bottom);
+
+		// ── Read-only ECS ref (appended for binary compat) ── unlike Entity_GetComponentPtr, never marks transforms dirty.
+		void* (*Entity_GetComponentPtrReadOnly)(uint64_t entityID, const char* componentName);
+
+		// ── 3D components (appended for binary compat) ── rotations are Euler degrees; bools/enums travel as int.
+		void  (*Transform3D_GetPosition)(uint64_t entityID, float* x, float* y, float* z);
+		void  (*Transform3D_SetPosition)(uint64_t entityID, float x, float y, float z);
+		void  (*Transform3D_GetRotation)(uint64_t entityID, float* x, float* y, float* z);
+		void  (*Transform3D_SetRotation)(uint64_t entityID, float x, float y, float z);
+		void  (*Transform3D_GetScale)(uint64_t entityID, float* x, float* y, float* z);
+		void  (*Transform3D_SetScale)(uint64_t entityID, float x, float y, float z);
+		void  (*Transform3D_GetWorldPosition)(uint64_t entityID, float* x, float* y, float* z);
+		void  (*Transform3D_GetForward)(uint64_t entityID, float* x, float* y, float* z);
+		int   (*Camera3D_GetProjection)(uint64_t entityID);
+		void  (*Camera3D_SetProjection)(uint64_t entityID, int projection);
+		float (*Camera3D_GetFieldOfView)(uint64_t entityID);
+		void  (*Camera3D_SetFieldOfView)(uint64_t entityID, float degrees);
+		float (*Camera3D_GetOrthographicSize)(uint64_t entityID);
+		void  (*Camera3D_SetOrthographicSize)(uint64_t entityID, float size);
+		float (*Camera3D_GetNearClip)(uint64_t entityID);
+		void  (*Camera3D_SetNearClip)(uint64_t entityID, float value);
+		float (*Camera3D_GetFarClip)(uint64_t entityID);
+		void  (*Camera3D_SetFarClip)(uint64_t entityID, float value);
+		void  (*Camera3D_GetClearColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void  (*Camera3D_SetClearColor)(uint64_t entityID, float r, float g, float b, float a);
+		uint64_t (*Camera3D_GetMainEntity)();
+		int   (*MeshRenderer_GetMesh)(uint64_t entityID);
+		void  (*MeshRenderer_SetMesh)(uint64_t entityID, int mesh);
+		void  (*MeshRenderer_GetColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void  (*MeshRenderer_SetColor)(uint64_t entityID, float r, float g, float b, float a);
+		int   (*MeshRenderer_GetLit)(uint64_t entityID);
+		void  (*MeshRenderer_SetLit)(uint64_t entityID, int lit);
+		void  (*DirectionalLight_GetColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void  (*DirectionalLight_SetColor)(uint64_t entityID, float r, float g, float b, float a);
+		float (*DirectionalLight_GetIntensity)(uint64_t entityID);
+		void  (*DirectionalLight_SetIntensity)(uint64_t entityID, float intensity);
+		void  (*DirectionalLight_GetAmbient)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void  (*DirectionalLight_SetAmbient)(uint64_t entityID, float r, float g, float b, float a);
+
+		// ── 3D materials, lights, sky, 3D graphics settings (appended for binary compat) ──
+		// Packed float arrays; index layouts are documented next to the implementations in ScriptBindings3D.cpp.
+		uint64_t (*MeshRenderer_GetMaterial)(uint64_t entityID);
+		void  (*MeshRenderer_SetMaterial)(uint64_t entityID, uint64_t materialGuid);
+		int   (*MeshRenderer_GetCastShadows)(uint64_t entityID);
+		void  (*MeshRenderer_SetCastShadows)(uint64_t entityID, int castShadows);
+		int   (*DirectionalLight_GetCastShadows)(uint64_t entityID);
+		void  (*DirectionalLight_SetCastShadows)(uint64_t entityID, int castShadows);
+		int   (*Material_Get)(uint64_t materialGuid, float* values, int count);
+		void  (*Material_Set)(uint64_t materialGuid, const float* values, int count);
+		uint64_t (*Material_GetTexture)(uint64_t materialGuid);
+		void  (*Material_SetTexture)(uint64_t materialGuid, uint64_t textureGuid);
+		void  (*PointLight_Get)(uint64_t entityID, float* values, int count);
+		void  (*PointLight_Set)(uint64_t entityID, const float* values, int count);
+		void  (*SpotLight_Get)(uint64_t entityID, float* values, int count);
+		void  (*SpotLight_Set)(uint64_t entityID, const float* values, int count);
+		void  (*Camera3D_GetSky)(uint64_t entityID, float* values, int count);
+		void  (*Camera3D_SetSky)(uint64_t entityID, const float* values, int count);
+		void  (*RenderSettings_Get3D)(int* shadowQuality, float* shadowDistance, int* maxLights, float* exposure, int* toneMapping);
+		int   (*RenderSettings_Apply3D)(int shadowQuality, float shadowDistance, int maxLights, float exposure, int toneMapping);
+
+		// ── Audio streams, runtime permissions (appended for binary compat) ──
+		uint32_t (*AudioStream_Open)(const char* path);
+		void  (*AudioStream_Close)(uint32_t stream);
+		int   (*AudioStream_Play)(uint32_t stream);
+		void  (*AudioStream_Pause)(uint32_t stream);
+		void  (*AudioStream_Stop)(uint32_t stream);
+		int   (*AudioStream_IsPlaying)(uint32_t stream);
+		int   (*AudioStream_IsAtEnd)(uint32_t stream);
+		float (*AudioStream_GetCursor)(uint32_t stream);
+		float (*AudioStream_GetLength)(uint32_t stream);
+		void  (*AudioStream_Seek)(uint32_t stream, float seconds);
+		float (*AudioStream_GetVolume)(uint32_t stream);
+		void  (*AudioStream_SetVolume)(uint32_t stream, float volume);
+		int   (*AudioStream_GetLoop)(uint32_t stream);
+		void  (*AudioStream_SetLoop)(uint32_t stream, int loop);
+		void  (*Application_RequestPermission)(const char* permission);
+		int   (*Application_GetPermissionState)(const char* permission);
+
+		// ── Physics 3D / Jolt (appended for binary compat) ──
+		// Packed value layouts are documented in ScriptBindingsPhysics3D.cpp.
+		void  (*Rigidbody3D_Get)(uint64_t entityID, float* values, int count);
+		void  (*Rigidbody3D_Set)(uint64_t entityID, const float* values, int count);
+		void  (*Rigidbody3D_GetVelocity)(uint64_t entityID, int angular, float* x, float* y, float* z);
+		void  (*Rigidbody3D_SetVelocity)(uint64_t entityID, int angular, float x, float y, float z);
+		void  (*Rigidbody3D_AddForce)(uint64_t entityID, int kind, int mode, float x, float y, float z, float px, float py, float pz);
+		int   (*Rigidbody3D_IsSleeping)(uint64_t entityID);
+		void  (*Rigidbody3D_SetSleeping)(uint64_t entityID, int sleeping);
+		void  (*Collider3D_Get)(uint64_t entityID, int kind, float* values, int count);
+		void  (*Collider3D_Set)(uint64_t entityID, int kind, const float* values, int count);
+		int   (*Physics3D_Raycast)(float ox, float oy, float oz, float dx, float dy, float dz, float maxDistance, uint64_t* hitEntityID, float* hitValues, int count);
+		void  (*Physics3D_GetGravity)(float* x, float* y, float* z);
+		void  (*Physics3D_SetGravity)(float x, float y, float z);
+
+		// ── Background audio (appended for binary compat) ──
+		void  (*Audio_SetPlayInBackground)(int enabled);
+		int   (*Audio_GetPlayInBackground)();
+
+		// ── Image decoding (appended for binary compat) ── thread-safe, touches no engine state.
+		int   (*Image_Decode)(const uint8_t* data, int size, int maxSize, uint8_t* outRgba, int capacity, int* outWidth, int* outHeight);
+
+		// ── Custom meshes (appended for binary compat) ──
+		uint64_t (*MeshRenderer_GetCustomMesh)(uint64_t entityID);
+		void  (*MeshRenderer_SetCustomMesh)(uint64_t entityID, uint64_t meshGuid);
+		uint64_t (*MeshCollider3D_GetCustomMesh)(uint64_t entityID);
+		void  (*MeshCollider3D_SetCustomMesh)(uint64_t entityID, uint64_t meshGuid);
+		// Layout documented next to the implementation in ScriptBindings3D.cpp.
+		int   (*Mesh_GetInfo)(uint64_t meshGuid, float* values, int count);
+
+		// ── ParticleSystem3D (appended for binary compat) ──
+		// Packed value layout and control ops are documented in ScriptBindings3D.cpp.
+		void  (*ParticleSystem3D_Get)(uint64_t entityID, float* values, int count);
+		void  (*ParticleSystem3D_Set)(uint64_t entityID, const float* values, int count);
+		void  (*ParticleSystem3D_Control)(uint64_t entityID, int op);
+		void  (*ParticleSystem3D_Emit)(uint64_t entityID, int count);
+		int   (*ParticleSystem3D_GetState)(uint64_t entityID, int* particleCount);
+		uint64_t (*ParticleSystem3D_GetTexture)(uint64_t entityID);
+		void  (*ParticleSystem3D_SetTexture)(uint64_t entityID, uint64_t textureGuid);
+
+		// ── Media session (appended for binary compat) ──
+		void  (*Media_SetNowPlaying)(const char* title, const char* artist, const char* album, float durationSeconds,
+			const uint8_t* rgba, int width, int height);
+		void  (*Media_SetPlaybackState)(int playing, float positionSeconds);
+		int   (*Media_PollCommand)(float* seekSeconds);
+
+		// ── Runtime mesh (appended for binary compat) ──
+		uint64_t (*Mesh_CreateRuntime)();
+		// normals/uvs may be null (normals are then recalculated smooth); indices are a triangle list.
+		int   (*Mesh_SetData)(uint64_t meshGuid, const float* positions, const float* normals, const float* uvs, int vertexCount,
+			const uint32_t* indices, int indexCount);
+		int   (*Mesh_DestroyRuntime)(uint64_t meshGuid);
+		int   (*Mesh_IsRuntime)(uint64_t meshGuid);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.
@@ -1141,6 +1280,11 @@ namespace Index {
 		// ── Sensor overlaps (appended for binary compat) ──
 		// phase: 0 = Enter, 1 = Stay, 2 = Exit.
 		void        (*InvokeTrigger2D)(int32_t handle, int32_t phase, uint64_t selfEntityID, uint64_t otherEntityID, uint64_t entityAID, uint64_t entityBID);
+
+		// ── 3D contacts (appended for binary compat) ──
+		// phase: 0 = Enter, 1 = Stay, 2 = Exit; isTrigger routes to OnTrigger*3D; the normal points from other toward self.
+		void        (*InvokeCollision3D)(int32_t handle, int32_t phase, int32_t isTrigger, uint64_t selfEntityID, uint64_t otherEntityID,
+			float contactX, float contactY, float contactZ, float normalX, float normalY, float normalZ);
 	};
 
 } // namespace Index

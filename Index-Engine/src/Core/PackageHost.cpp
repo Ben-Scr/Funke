@@ -1,7 +1,11 @@
 #include "pch.hpp"
 #include "Core/PackageHost.hpp"
 
+#include "Core/EngineModules.hpp"
 #include "Core/Log.hpp"
+#include "Core/Platform.hpp"
+#include "Packages/PackageManifest.hpp"
+#include "Packages/PackageResolver.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Scene/SceneManager.hpp"
@@ -21,8 +25,6 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#else
-#include <dlfcn.h>
 #endif
 
 namespace Index {
@@ -92,7 +94,7 @@ namespace Index {
 #ifdef IDX_PLATFORM_WINDOWS
 			return reinterpret_cast<void*>(::GetProcAddress(static_cast<HMODULE>(module), symbol));
 #else
-			return dlsym(module, symbol);
+			return Platform::GetSharedLibrarySymbol(module, symbol);
 #endif
 		}
 
@@ -100,7 +102,7 @@ namespace Index {
 #ifdef IDX_PLATFORM_WINDOWS
 			FreeLibrary(static_cast<HMODULE>(module));
 #else
-			dlclose(module);
+			Platform::UnloadSharedLibrary(module);
 #endif
 		}
 
@@ -115,8 +117,11 @@ namespace Index {
 			}
 		}
 #else
-		void* LoadLibraryGuarded(const char* path) {
-			return dlopen(path, RTLD_NOW | RTLD_LOCAL);
+		void* LoadLibraryGuarded(const std::filesystem::path& path) {
+			std::string error;
+			void* module = Platform::LoadSharedLibrary(path, &error);
+			if (!module) IDX_CORE_WARN_TAG("PackageHost", "Loading '{}' failed: {}", path.string(), error);
+			return module;
 		}
 #endif
 
@@ -143,7 +148,7 @@ namespace Index {
 				return 0;
 			}
 #else
-			OnLoadFn fn = reinterpret_cast<OnLoadFn>(dlsym(moduleHandle, "IndexPackage_OnLoad"));
+			OnLoadFn fn = reinterpret_cast<OnLoadFn>(PlatformResolve(moduleHandle, "IndexPackage_OnLoad"));
 			if (!fn) return 0;
 			*outHadExport = true;
 			return fn();
@@ -164,7 +169,7 @@ namespace Index {
 				*outCrashed = true;
 			}
 #else
-			OnUnloadFn fn = reinterpret_cast<OnUnloadFn>(dlsym(moduleHandle, "IndexPackage_OnUnload"));
+			OnUnloadFn fn = reinterpret_cast<OnUnloadFn>(PlatformResolve(moduleHandle, "IndexPackage_OnUnload"));
 			if (fn) fn();
 #endif
 		}
@@ -207,15 +212,11 @@ namespace Index {
 				if (ec) break;
 
 				const auto& entryPath = entry.path();
-				const std::string name = entryPath.filename().string();
+				const std::string name = PathToUtf8(entryPath.filename());
 
 				if (entry.is_directory(ec) && !ec) {
 					if (LooksLikeNativePackageFolder(name)) {
-#ifdef IDX_PLATFORM_WINDOWS
-						const std::filesystem::path candidate = entryPath / (name + ".dll");
-#else
-						const std::filesystem::path candidate = entryPath / ("lib" + name + ".so");
-#endif
+						const std::filesystem::path candidate = entryPath / Platform::SharedLibraryFileName(name);
 						if (std::filesystem::exists(candidate, ec) && !ec) {
 							outCandidates.push_back(candidate);
 						}
@@ -230,8 +231,7 @@ namespace Index {
 #ifdef IDX_PLATFORM_WINDOWS
 			return LoadLibraryGuarded(path.c_str());
 #else
-			const std::string nativePath = path.string();
-			return LoadLibraryGuarded(nativePath.c_str());
+			return LoadLibraryGuarded(path);
 #endif
 		}
 
@@ -307,8 +307,93 @@ namespace Index {
 		void AppendProjectNativeCandidates(const IndexProject& project,
 			std::string_view configuration,
 			std::vector<std::filesystem::path>& outCandidates) {
+			AppendProjectNativeCandidates(project, configuration, project.Packages, outCandidates);
+		}
+
+		std::vector<PackageManifest> DiscoverPackageManifests(const IndexProject& project) {
+			std::vector<PackageManifest> manifests;
+			auto scan = [&](const std::filesystem::path& root) {
+				std::error_code ec;
+				if (root.empty() || !std::filesystem::is_directory(root, ec)) return;
+				std::vector<std::filesystem::path> folders;
+				for (const auto& entry : std::filesystem::directory_iterator(root, std::filesystem::directory_options::skip_permission_denied, ec)) {
+					if (entry.is_directory(ec) && std::filesystem::exists(entry.path() / std::string(PackageManifest::k_FileName), ec)) {
+						folders.push_back(entry.path());
+					}
+				}
+				std::sort(folders.begin(), folders.end());
+				for (const auto& folder : folders) {
+					PackageManifest manifest;
+					std::string error;
+					if (PackageManifest::TryLoad(PathToUtf8(folder), manifest, &error)) {
+						manifests.push_back(std::move(manifest));
+					}
+					else {
+						IDX_CORE_WARN_TAG("PackageHost", "Ignoring unreadable package manifest: {}", error);
+					}
+				}
+			};
+			const std::string engineRoot = IndexProject::GetEngineRootDir();
+			if (!engineRoot.empty()) scan(std::filesystem::path(Path::FromUtf8(engineRoot)) / "packages");
+			if (!project.PackagesDirectory.empty()) scan(Path::FromUtf8(project.PackagesDirectory));
+			return manifests;
+		}
+
+		std::vector<std::string> FindStaleProjectNativePackages(const IndexProject& project,
+			std::string_view configuration, std::string_view runningEngineSha256) {
+			std::vector<std::string> stale;
+			if (project.Packages.empty() || project.PackagesDirectory.empty()) return stale;
+
+			const std::vector<PackageManifest> manifests = DiscoverPackageManifests(project);
+			const PackageResolution resolution =
+				ResolvePackages(manifests, project.Packages, GetEngineCompatibilityVersion());
+			const std::filesystem::path projectPackages = Path::FromUtf8(project.PackagesDirectory);
+			for (const std::string& name : resolution.LoadOrder) {
+				const auto manifest = std::find_if(manifests.begin(), manifests.end(),
+					[&](const PackageManifest& candidate) { return candidate.Name == name; });
+				if (manifest == manifests.end()
+					|| !(manifest->HasNativeLayer || manifest->HasNativeStandaloneLayer)) {
+					continue;
+				}
+				// Engine packages are built by the engine solution; only project sources rebuild per project.
+				std::error_code ec;
+				if (!std::filesystem::equivalent(
+						Path::FromUtf8(manifest->PackageDir).parent_path(), projectPackages, ec) || ec) {
+					continue;
+				}
+
+				std::vector<std::filesystem::path> candidates;
+				AppendProjectNativeCandidates(project, configuration, { name }, candidates);
+				const bool loadable = std::any_of(candidates.begin(), candidates.end(),
+					[&](const std::filesystem::path& candidate) {
+						if (runningEngineSha256.empty()) return true;
+						std::string reason;
+						return ValidateNativePackageCompatibility(candidate, runningEngineSha256, reason);
+					});
+				if (!loadable) stale.push_back(name);
+			}
+			return stale;
+		}
+
+		std::vector<std::string> BuildNativeLoadOrder(const PackageResolution& resolution,
+			const std::vector<std::string>& requested, const std::vector<PackageManifest>& manifests) {
+			std::vector<std::string> order = resolution.LoadOrder;
+			for (const std::string& name : requested) {
+				const bool hasManifest = std::any_of(manifests.begin(), manifests.end(),
+					[&](const PackageManifest& manifest) { return manifest.Name == name; });
+				if (!hasManifest && std::find(order.begin(), order.end(), name) == order.end()) {
+					order.push_back(name);
+				}
+			}
+			return order;
+		}
+
+		void AppendProjectNativeCandidates(const IndexProject& project,
+			std::string_view configuration,
+			const std::vector<std::string>& packageNames,
+			std::vector<std::filesystem::path>& outCandidates) {
 			const std::filesystem::path projectPackages(project.PackagesDirectory);
-			for (const std::string& packageName : project.Packages) {
+			for (const std::string& packageName : packageNames) {
 				const std::filesystem::path workspaceCandidate =
 					IndexProject::GetProjectNativePackageLibraryPath(
 						project.RootDirectory, packageName, std::string(configuration));
@@ -318,10 +403,11 @@ namespace Index {
 					outCandidates.push_back(workspaceCandidate);
 				}
 
+				// Prebuilt binaries ship per platform: Bin/Windows-x64, Bin/macOS-arm64, Bin/Linux-x64, ...
 				const std::filesystem::path prebuiltCandidate = projectPackages
 					/ packageName
-					/ "Bin" / "Windows-x64"
-					/ ("Pkg." + packageName + ".Native.dll");
+					/ "Bin" / (std::string(IDX_PLATFORM_NAME) + "-" + IDX_ARCH_NAME)
+					/ Platform::SharedLibraryFileName("Pkg." + packageName + ".Native");
 				ec.clear();
 				if (std::filesystem::exists(prebuiltCandidate, ec) && !ec) {
 					outCandidates.push_back(prebuiltCandidate);
@@ -331,13 +417,51 @@ namespace Index {
 	}
 
 	namespace {
+		void LogResolutionIssues(const PackageResolution& resolution, const std::vector<std::string>& requested,
+			const std::vector<PackageManifest>& manifests) {
+			for (const PackageIssue& issue : resolution.Issues) {
+				const bool hasManifest = std::any_of(manifests.begin(), manifests.end(),
+					[&](const PackageManifest& manifest) { return manifest.Name == issue.Package; });
+				const bool isRequested = std::find(requested.begin(), requested.end(), issue.Package) != requested.end();
+				// Shipped games stage DLLs without manifests; those load in project order, not as errors.
+				if (!hasManifest && isRequested) continue;
+				if (issue.Level == PackageIssue::Severity::Error) {
+					IDX_CORE_ERROR_TAG("PackageHost", "Package '{}' {}", issue.Package, issue.Message);
+				}
+				else {
+					IDX_CORE_WARN_TAG("PackageHost", "Package '{}' {}", issue.Package, issue.Message);
+				}
+			}
+			if (!resolution.AutoIncluded.empty()) {
+				std::string names;
+				for (const std::string& name : resolution.AutoIncluded) names += (names.empty() ? "" : ", ") + name;
+				IDX_CORE_INFO_TAG("PackageHost", "Also loading dependencies not listed in project.json: {}", names);
+			}
+		}
+
 		size_t LoadInternal(bool isInitialLoadAll) {
 			std::vector<std::filesystem::path> candidates;
+			const IndexProject* activeProject = ProjectManager::GetCurrentProject();
 
-			const IndexProject* projectForScan = ProjectManager::GetCurrentProject();
-			if (projectForScan && !projectForScan->PackagesDirectory.empty()) {
+			// Dependencies first; packages outside this list (and blocked ones) never load.
+			std::vector<std::string> loadOrder;
+			std::unordered_map<std::string, std::string> manifestVersions;
+			if (activeProject && !activeProject->Packages.empty()) {
+				const std::vector<PackageManifest> manifests = PackageHostDetail::DiscoverPackageManifests(*activeProject);
+				// Against the active modules: a package registering 2D components can't load without Index.2D.
+				const std::vector<std::string> activeModules = EngineModules::GetActiveIds();
+				const PackageResolution resolution = ResolvePackages(manifests, activeProject->Packages,
+					GetEngineCompatibilityVersion(), &activeModules);
+				loadOrder = PackageHostDetail::BuildNativeLoadOrder(resolution, activeProject->Packages, manifests);
+				for (const PackageManifest& manifest : manifests) manifestVersions.emplace(manifest.Name, manifest.VersionText);
+				if (isInitialLoadAll) {
+					LogResolutionIssues(resolution, activeProject->Packages, manifests);
+				}
+			}
+
+			if (activeProject && !activeProject->PackagesDirectory.empty()) {
 				PackageHostDetail::AppendProjectNativeCandidates(
-					*projectForScan, IndexProject::GetActiveBuildConfiguration(), candidates);
+					*activeProject, IndexProject::GetActiveBuildConfiguration(), loadOrder, candidates);
 			}
 
 			const std::filesystem::path exeDir(Path::ExecutableDir());
@@ -350,10 +474,9 @@ namespace Index {
 			DiscoverIn(exeDir / "Packages", candidates);
 
 			// INDEX_LOAD_ALL_PACKAGES is an engine-development escape hatch for the project allow-list.
-			const IndexProject* activeProject = ProjectManager::GetCurrentProject();
-			std::unordered_set<std::string> allowList;
-			if (activeProject) {
-				allowList.insert(activeProject->Packages.begin(), activeProject->Packages.end());
+			std::unordered_map<std::string, size_t> allowList;
+			for (size_t i = 0; i < loadOrder.size(); ++i) {
+				allowList.emplace(loadOrder[i], i);
 			}
 
 			bool loadEverything = false;
@@ -368,7 +491,8 @@ namespace Index {
 			}
 
 			if (!loadEverything && allowList.empty()) {
-				if (isInitialLoadAll) {
+				// Listed packages that all failed resolution were already reported above.
+				if (isInitialLoadAll && !(activeProject && !activeProject->Packages.empty())) {
 					if (activeProject) {
 						IDX_CORE_INFO_TAG("PackageHost",
 							"No packages installed for project '{}' — skipping all {} discovered package DLL(s). Add entries to project.json's `packages` array to install them.",
@@ -396,10 +520,21 @@ namespace Index {
 				alreadyLoadedByPath.insert(existing.ModulePath);
 			}
 
+			// A dependency's OnLoad registers what its dependents' OnLoad looks up.
+			if (!loadEverything) {
+				std::stable_sort(candidates.begin(), candidates.end(), [&](const auto& a, const auto& b) {
+					auto rank = [&](const std::filesystem::path& candidate) {
+						const auto it = allowList.find(PackageNameFromFilename(PathToUtf8(candidate.filename())));
+						return it == allowList.end() ? allowList.size() : it->second;
+					};
+					return rank(a) < rank(b);
+				});
+			}
+
 			size_t newlyLoaded = 0;
 			for (const auto& candidate : candidates) {
 				const std::string pathStr = PathToUtf8(candidate);
-				const std::string fileName = candidate.filename().string();
+				const std::string fileName = PathToUtf8(candidate.filename());
 				const std::string packageName = PackageNameFromFilename(fileName);
 
 				if (!loadEverything && allowList.find(packageName) == allowList.end()) {
@@ -433,7 +568,7 @@ namespace Index {
 				void* module = PackageHostDetail::LoadNativeModule(candidate);
 				if (!module) {
 					IDX_CORE_WARN_TAG("PackageHost",
-						"Failed to load package '{}' from '{}' (LoadLibrary returned null — likely binary "
+						"Failed to load package '{}' from '{}' (the OS loader returned null — likely binary "
 						"incompatibility with the running engine, or a static-init crash). Skipping.",
 						packageName, pathStr);
 					continue;
@@ -470,6 +605,9 @@ namespace Index {
 
 				LoadedPackage loaded;
 				loaded.Name = packageName;
+				if (const auto version = manifestVersions.find(packageName); version != manifestVersions.end()) {
+					loaded.Version = version->second;
+				}
 				loaded.ModulePath = pathStr;
 				loaded.ModuleHandle = module;
 				loaded.OwnerId = ownerId;
@@ -540,6 +678,18 @@ namespace Index {
 			if (loaded.Name == packageName) return true;
 		}
 		return false;
+	}
+
+	std::vector<std::string> PackageHost::FindStaleProjectNativePackages() {
+		const IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project) return {};
+		std::string runningEngineSha256;
+#ifdef IDX_PLATFORM_WINDOWS
+		std::string fingerprintError;
+		GetRunningEngineSha256(runningEngineSha256, fingerprintError);
+#endif
+		return PackageHostDetail::FindStaleProjectNativePackages(
+			*project, IndexProject::GetActiveBuildConfiguration(), runningEngineSha256);
 	}
 
 }			

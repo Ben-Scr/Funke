@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Editor/ExternalEditor.hpp"
+#include "Core/Platform.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <mutex>
 #include <thread>
@@ -136,11 +138,16 @@ namespace Index {
 
 	static void TrackLaunchThread(std::thread t) {
 		std::scoped_lock lock(s_LaunchMutex);
-		// Drop already-finished threads so the vector doesn't grow without
-		// bound during a long editor session.
+		// Join and drop already-finished threads so the vector doesn't grow without bound during a long
+		// editor session. A finished std::thread stays joinable until joined, so test the OS handle instead.
 		s_LaunchThreads.erase(
 			std::remove_if(s_LaunchThreads.begin(), s_LaunchThreads.end(),
-				[](std::thread& th) { return !th.joinable(); }),
+				[](std::thread& th) {
+					if (!th.joinable()) return true;
+					if (WaitForSingleObject(th.native_handle(), 0) != WAIT_OBJECT_0) return false;
+					th.join();
+					return true;
+				}),
 			s_LaunchThreads.end());
 		s_LaunchThreads.push_back(std::move(t));
 	}
@@ -148,6 +155,30 @@ namespace Index {
 
 #ifndef IDX_PLATFORM_WINDOWS
 	namespace {
+		// First executable named `name` on $PATH; empty when absent.
+		std::string FindOnPath(const char* name) {
+			const char* pathEnv = std::getenv("PATH");
+			if (!pathEnv) return {};
+			std::string_view remaining(pathEnv);
+			while (!remaining.empty()) {
+				const size_t separator = remaining.find(':');
+				const std::string_view directory = remaining.substr(0, separator);
+				if (!directory.empty()) {
+					const std::filesystem::path candidate = std::filesystem::path(std::string(directory)) / name;
+					std::error_code ec;
+					if (std::filesystem::is_regular_file(candidate, ec)) return candidate.string();
+				}
+				if (separator == std::string_view::npos) break;
+				remaining.remove_prefix(separator + 1);
+			}
+			return {};
+		}
+
+		std::string HomeRelative(const char* relative) {
+			const std::filesystem::path home = Platform::GetUserFolder(Platform::UserFolder::Home);
+			return home.empty() ? std::string() : (home / relative).string();
+		}
+
 		bool SamePath(const std::string& lhs, const std::string& rhs) {
 			if (lhs.empty() || rhs.empty()) return false;
 			std::error_code lhsError;
@@ -277,6 +308,43 @@ namespace Index {
 
 			if (!riderPaths.empty())
 				TryDetect(ExternalEditorType::Rider, "JetBrains Rider", riderPaths);
+		}
+#else
+		{
+			std::vector<std::string> vscodePaths;
+			// VSCodium and Code - OSS take the same command line.
+			for (const char* command : { "code", "codium", "code-oss" }) {
+				if (std::string onPath = FindOnPath(command); !onPath.empty()) vscodePaths.push_back(std::move(onPath));
+			}
+#if defined(IDX_PLATFORM_MACOS)
+			vscodePaths.push_back("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code");
+			vscodePaths.push_back(HomeRelative("Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"));
+			vscodePaths.push_back("/opt/homebrew/bin/code");
+			vscodePaths.push_back("/usr/local/bin/code");
+			vscodePaths.push_back("/Applications/VSCodium.app/Contents/Resources/app/bin/codium");
+#else
+			vscodePaths.push_back("/usr/bin/code");
+			vscodePaths.push_back("/snap/bin/code");
+			vscodePaths.push_back("/var/lib/flatpak/exports/bin/com.visualstudio.code");
+			vscodePaths.push_back(HomeRelative(".local/share/flatpak/exports/bin/com.visualstudio.code"));
+			vscodePaths.push_back("/usr/bin/codium");
+			vscodePaths.push_back("/var/lib/flatpak/exports/bin/com.vscodium.codium");
+#endif
+			TryDetect(ExternalEditorType::VSCode, "Visual Studio Code", vscodePaths);
+		}
+		{
+			std::vector<std::string> riderPaths;
+			if (std::string onPath = FindOnPath("rider"); !onPath.empty()) riderPaths.push_back(std::move(onPath));
+#if defined(IDX_PLATFORM_MACOS)
+			riderPaths.push_back("/Applications/Rider.app/Contents/MacOS/rider");
+			riderPaths.push_back(HomeRelative("Applications/Rider.app/Contents/MacOS/rider"));
+			riderPaths.push_back(HomeRelative("Library/Application Support/JetBrains/Toolbox/scripts/rider"));
+#else
+			riderPaths.push_back(HomeRelative(".local/share/JetBrains/Toolbox/scripts/rider"));
+			riderPaths.push_back("/snap/bin/rider");
+			riderPaths.push_back("/opt/rider/bin/rider.sh");
+#endif
+			TryDetect(ExternalEditorType::Rider, "JetBrains Rider", riderPaths);
 		}
 #endif
 
@@ -650,10 +718,7 @@ namespace Index {
 
 		if (s_Editors.empty()) {
 			IDX_CORE_WARN_TAG("ExternalEditor", "No code editor available, falling back to OS default");
-#ifdef IDX_PLATFORM_WINDOWS
-			std::wstring wpath = Utf8ToWide(filePath);
-			ShellExecuteW(nullptr, L"open", wpath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-#endif
+			Platform::OpenPath(Path::FromUtf8(filePath));
 			return;
 		}
 
@@ -797,6 +862,32 @@ namespace Index {
 			}
 		});
 		TrackLaunchThread(std::move(launcher));
+#else
+		std::vector<std::string> command{ editor.ExecutablePath };
+		switch (editor.Type) {
+		case ExternalEditorType::VSCode:
+			// The project folder first so IntelliSense sees the whole workspace; --goto jumps to the line.
+			if (!projectFolder.empty()) command.push_back(projectFolder);
+			command.push_back("--reuse-window");
+			command.push_back("--goto");
+			command.push_back(line > 0 ? absPath + ":" + std::to_string(line) : absPath);
+			break;
+		case ExternalEditorType::Rider:
+			if (!slnPath.empty()) command.push_back(slnPath);
+			if (line > 0) {
+				command.push_back("--line");
+				command.push_back(std::to_string(line));
+			}
+			command.push_back(absPath);
+			break;
+		default:
+			command.push_back(absPath);
+			break;
+		}
+		if (!Process::LaunchDetached(command)) {
+			IDX_CORE_WARN_TAG("ExternalEditor", "Failed to launch {}; opening with the OS default", editor.DisplayName);
+			Platform::OpenPath(Path::FromUtf8(absPath));
+		}
 #endif
 	}
 

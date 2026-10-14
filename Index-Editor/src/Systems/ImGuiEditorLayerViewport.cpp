@@ -3,6 +3,7 @@
 #include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Systems/ImGuiEditorLayer.hpp"
+#include "Core/EngineModules.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -23,7 +24,10 @@
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
 #include "Components/Graphics/Camera2DComponent.hpp"
+#include "Components/Graphics/Camera3DComponent.hpp"
+#include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
+#include "Components/Graphics/ParticleSystem3DComponent.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
@@ -57,6 +61,7 @@
 #include "Scene/EntityPicker.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
+#include "Systems/Transform3DHierarchySystem.hpp"
 #include "Systems/TransformHierarchySystem.hpp"
 #include "Systems/UILayoutSystem.hpp"
 
@@ -560,24 +565,50 @@ namespace Index {
 
 	bool ImGuiEditorLayer::CaptureProjectThumbnail(Scene& scene) {
 		IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project) return false;
 		Camera2DComponent* camera = Camera2DComponent::GetMain();
-		if (!project || !camera || !camera->IsValid()) return false;
-		Viewport* cameraViewport = camera->GetViewport();
-		if (!cameraViewport) return false;
+		Viewport* cameraViewport = camera && camera->IsValid() ? camera->GetViewport() : nullptr;
+		// Same camera choice as the Game View: a Camera3D renders the scene, a Camera2D only the 2D overlay.
+		const EntityHandle camera3DEntity = Camera3DComponent::FindMain(scene);
+		const bool hasCamera3D = camera3DEntity != entt::null
+			&& Application::GetInstance() && Application::GetInstance()->GetRenderer3D();
+		if (!cameraViewport && !hasCamera3D) return false;
 
 		constexpr int k_ThumbWidth = 480;
 		constexpr int k_ThumbHeight = 270;
 		Framebuffer fbo(k_ThumbWidth, k_ThumbHeight);
 		if (!fbo.IsValid()) return false;
 
-		const int savedW = cameraViewport->GetWidth();
-		const int savedH = cameraViewport->GetHeight();
-		cameraViewport->SetSize(k_ThumbWidth, k_ThumbHeight);
-		camera->UpdateViewport();
-		RenderSceneIntoFBO(fbo, scene, camera->GetViewProjectionMatrix(), camera->GetViewportAABB(),
-			/*withGizmos=*/false, /*sharedGizmosOnly=*/true, camera->GetClearColor());
-		cameraViewport->SetSize(savedW, savedH);
-		camera->UpdateViewport();
+		std::optional<Camera3DView> view3D;
+		if (hasCamera3D) {
+			Transform3DHierarchySystem::Propagate(scene);
+			const auto& registry = scene.GetRegistry();
+			view3D = Renderer3D::MakeView(registry.get<Transform3DComponent>(camera3DEntity).WorldMatrix,
+				registry.get<Camera3DComponent>(camera3DEntity),
+				static_cast<float>(k_ThumbWidth) / static_cast<float>(k_ThumbHeight));
+		}
+
+		const int savedW = cameraViewport ? cameraViewport->GetWidth() : 0;
+		const int savedH = cameraViewport ? cameraViewport->GetHeight() : 0;
+		glm::mat4 vp = view3D ? view3D->Projection * view3D->View : glm::mat4(1.0f);
+		AABB viewAABB{ Vec2{ -1.0e9f, -1.0e9f }, Vec2{ 1.0e9f, 1.0e9f } };
+		if (cameraViewport) {
+			cameraViewport->SetSize(k_ThumbWidth, k_ThumbHeight);
+			camera->UpdateViewport();
+			if (!view3D) {
+				vp = camera->GetViewProjectionMatrix();
+				viewAABB = camera->GetViewportAABB();
+			}
+		}
+		const Color clearColor = view3D
+			? scene.GetRegistry().get<Camera3DComponent>(camera3DEntity).ClearColor
+			: camera->GetClearColor();
+		RenderSceneIntoFBO(fbo, scene, vp, viewAABB, /*withGizmos=*/false, /*sharedGizmosOnly=*/true, clearColor,
+			false, false, EditorViewDrawMode::Default, GizmoLayerMask::Shared, view3D ? &*view3D : nullptr);
+		if (cameraViewport) {
+			cameraViewport->SetSize(savedW, savedH);
+			camera->UpdateViewport();
+		}
 
 		std::vector<uint8_t> pixels;
 		if (!fbo.ReadPixelsRGBA8(pixels)) {
@@ -604,24 +635,29 @@ namespace Index {
 		bool withGizmos, bool sharedGizmosOnly, const Color& clearColor,
 		bool onlyPassedScene, bool uiInWorldSpace,
 		EditorViewDrawMode drawMode,
-		GizmoLayerMask gizmoLayerMask)
+		GizmoLayerMask gizmoLayerMask,
+		const Camera3DView* view3D)
 	{
 		auto* app = Application::GetInstance();
 		if (!app) return;
+		// Null while the project leaves Index.2D out; 3D, UI and gizmos still render.
 		auto* renderer = app->GetRenderer2D();
-		if (!renderer) return;
+		Renderer3D* renderer3D = view3D ? app->GetRenderer3D() : nullptr;
 
 		struct RenderStateGuard {
 			PolygonMode PreviousPolygonMode = PolygonMode::Filled;
+			Renderer2D* Renderer = nullptr;
 
 			~RenderStateGuard() {
 				RenderApi::SetPolygonMode(PreviousPolygonMode);
 				RenderApi::SetColorMask(true, true, true, true);
+				if (Renderer) Renderer->SetComposeOverTarget(false);
 			}
 		};
 
 		RenderStateGuard stateGuard{
-			RenderApi::GetPolygonMode()
+			RenderApi::GetPolygonMode(),
+			renderer
 		};
 		RenderApi::SetPolygonMode(PolygonMode::Filled);
 		RenderApi::SetColorMask(true, true, true, true);
@@ -637,8 +673,24 @@ namespace Index {
 		RenderApi::SetClearColor(clearColor);
 		RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
 
+		if (renderer3D) {
+			renderer3D->RenderSky(*view3D, &scene);
+			if (onlyPassedScene) {
+				renderer3D->RenderScene(scene, *view3D);
+			}
+			else {
+				SceneManager::ForeachLoadedScene([&](Scene& s) {
+					renderer3D->RenderScene(s, *view3D);
+					});
+			}
+			// Editor grid and selection outlines are depth-tested against the meshes.
+			renderer3D->FlushLines(*view3D, true);
+			if (renderer) renderer->SetComposeOverTarget(true);
+		}
+
 		// Sprites-only lambda: only the sprite pipeline honours PolygonMode::Wireframe; GuiRenderer/GizmoRenderer2D paint filled quads regardless and would mask it out.
 		auto runSpriteRender = [&]() {
+			if (!renderer) return;
 			if (onlyPassedScene) {
 				renderer->RenderSceneWithVP(scene, vp, viewportAABB);
 			}
@@ -1187,10 +1239,24 @@ namespace Index {
 		Gizmo::SetLineWidth(previousLineWidth);
 	}
 
+	namespace {
+		bool HasParticleSystem(Scene& scene, EntityHandle entity) {
+			return entity != entt::null && scene.IsValid(entity)
+				&& (scene.HasComponent<ParticleSystem2DComponent>(entity) || scene.HasComponent<ParticleSystem3DComponent>(entity));
+		}
+
+		// Calls fn with whichever particle component the entity has (2D and 3D conflict, so at most one).
+		template <typename TFn>
+		void WithParticleSystem(Scene& scene, EntityHandle entity, TFn&& fn) {
+			if (!HasParticleSystem(scene, entity)) return;
+			if (scene.HasComponent<ParticleSystem2DComponent>(entity)) fn(scene.GetComponent<ParticleSystem2DComponent>(entity));
+			else fn(scene.GetComponent<ParticleSystem3DComponent>(entity));
+		}
+	}
+
 	void ImGuiEditorLayer::TickParticlePreview(Scene& scene) {
-		// Editor-only preview path. In play mode the ParticleUpdateSystem
-		// owns the per-frame tick across every ParticleSystem2DComponent,
-		// so bailing here avoids a double-step on the selected entity.
+		// Editor-only preview path. In play mode the particle update systems own
+		// the per-frame tick, so bailing here avoids a double-step on the selected entity.
 		if (Application::GetIsPlaying()) {
 			return;
 		}
@@ -1203,24 +1269,20 @@ namespace Index {
 			return;
 		}
 		const std::uint64_t renderSceneId = static_cast<std::uint64_t>(renderScene->GetSceneId());
-		const bool selectedParticleSystem = m_SelectedEntity != entt::null
-			&& renderScene->IsValid(m_SelectedEntity)
-			&& renderScene->HasComponent<ParticleSystem2DComponent>(m_SelectedEntity);
+		const bool selectedParticleSystem = HasParticleSystem(*renderScene, m_SelectedEntity);
 
 		if (m_ParticlePreviewEntity != entt::null
 			&& (m_ParticlePreviewSceneId != renderSceneId
 				|| !selectedParticleSystem
 				|| m_SelectedEntity != m_ParticlePreviewEntity))
 		{
-			if (m_ParticlePreviewSceneId == renderSceneId
-				&& renderScene->IsValid(m_ParticlePreviewEntity)
-				&& renderScene->HasComponent<ParticleSystem2DComponent>(m_ParticlePreviewEntity))
-			{
-				auto& previousParticleSystem = renderScene->GetComponent<ParticleSystem2DComponent>(m_ParticlePreviewEntity);
-				if (previousParticleSystem.IsEmitting() || previousParticleSystem.IsSimulating()) {
-					previousParticleSystem.StopAndReset();
-					renderScene->MarkDirty();
-				}
+			if (m_ParticlePreviewSceneId == renderSceneId) {
+				WithParticleSystem(*renderScene, m_ParticlePreviewEntity, [&](auto& previous) {
+					if (previous.IsEmitting() || previous.IsSimulating()) {
+						previous.StopAndReset();
+						renderScene->MarkDirty();
+					}
+				});
 			}
 
 			m_ParticlePreviewEntity = entt::null;
@@ -1231,8 +1293,9 @@ namespace Index {
 			return;
 		}
 
-		auto& particleSystem = renderScene->GetComponent<ParticleSystem2DComponent>(m_SelectedEntity);
-		if (!particleSystem.IsEmitting() && !particleSystem.IsSimulating()) {
+		bool running = false;
+		WithParticleSystem(*renderScene, m_SelectedEntity, [&](auto& ps) { running = ps.IsEmitting() || ps.IsSimulating(); });
+		if (!running) {
 			if (m_ParticlePreviewEntity == m_SelectedEntity && m_ParticlePreviewSceneId == renderSceneId) {
 				m_ParticlePreviewEntity = entt::null;
 				m_ParticlePreviewSceneId = 0;
@@ -1246,13 +1309,80 @@ namespace Index {
 		// Unscaled dt: editor preview ignores TimeScale so designers see
 		// the effect at its authored cadence regardless of debug slow-mo.
 		const float dt = Time::GetDeltaTimeUnscaled();
-		particleSystem.PreviewUpdate(dt);
+		if (renderScene->HasComponent<ParticleSystem2DComponent>(m_SelectedEntity)) {
+			renderScene->GetComponent<ParticleSystem2DComponent>(m_SelectedEntity).PreviewUpdate(dt);
+			return;
+		}
+		Transform3DHierarchySystem::Propagate(*renderScene);
+		const auto* transform = renderScene->GetRegistry().try_get<Transform3DComponent>(m_SelectedEntity);
+		const Application* app = Application::GetInstance();
+		renderScene->GetComponent<ParticleSystem3DComponent>(m_SelectedEntity).Simulate(dt,
+			transform ? transform->WorldMatrix : glm::mat4(1.0f),
+			app ? app->GetEffectiveGraphicsSettings().ParticleQuality : ParticleQualityLevel::High);
+	}
+
+	void ImGuiEditorLayer::DrawParticlePreviewControls(Scene& renderScene, const Vec2& imageTopLeft, const Vec2& viewportSize) {
+		if (!HasParticleSystem(renderScene, m_SelectedEntity)) {
+			return;
+		}
+		const ImGuiWindowFlags overlayFlags =
+			ImGuiWindowFlags_NoSavedSettings |
+			ImGuiWindowFlags_NoScrollbar |
+			ImGuiWindowFlags_NoScrollWithMouse |
+			ImGuiWindowFlags_NoNav;
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float spacing = style.ItemSpacing.x;
+		const ImVec2 overlaySize{
+			64.0f + 72.0f + 64.0f + spacing * 2.0f + style.WindowPadding.x * 2.0f,
+			ImGui::GetFrameHeight() + style.WindowPadding.y * 2.0f
+		};
+		const ImVec2 overlayPos{
+			std::max(imageTopLeft.x + 8.0f, imageTopLeft.x + viewportSize.x - overlaySize.x - 12.0f),
+			std::max(imageTopLeft.y + 8.0f, imageTopLeft.y + viewportSize.y - overlaySize.y - 12.0f)
+		};
+		ImGui::SetCursorScreenPos(overlayPos);
+		ImGui::SetNextWindowBgAlpha(0.86f);
+		if (ImGui::BeginChild("##ParticleSystemViewportControls", overlaySize, ImGuiChildFlags_Borders, overlayFlags)) {
+			WithParticleSystem(renderScene, m_SelectedEntity, [&](auto& particleSystem) {
+				const bool isRunning = particleSystem.IsEmitting() || particleSystem.IsSimulating();
+				if (ImGui::Button(isRunning ? "Pause" : "Play", ImVec2(64.0f, 0.0f))) {
+					if (isRunning) {
+						particleSystem.Pause();
+					}
+					else {
+						particleSystem.Play();
+					}
+					renderScene.MarkDirty();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Restart", ImVec2(72.0f, 0.0f))) {
+					particleSystem.Restart();
+					renderScene.MarkDirty();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Stop", ImVec2(64.0f, 0.0f))) {
+					particleSystem.StopAndReset();
+					renderScene.MarkDirty();
+				}
+			});
+		}
+		ImGui::EndChild();
 	}
 
 	void ImGuiEditorLayer::RenderEditorView(Scene& scene) {
 		// NoScrollbar/NoScrollWithMouse: InvisibleButton overlays set off-panel cursor positions that extend CursorMaxPos and trigger a spurious scrollbar.
 		// Zero padding: the viewport image fills the panel edge to edge; the toolbars float over it as pills.
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+		// Dev tooling: INDEX_EDITOR_FOCUS_VIEW=editor keeps this tab in front for the first frames (scripts/dev/Run.ps1
+		// screenshots); several frames because the startup layout load can still re-select another tab.
+		static int s_FocusFramesFromEnvironment = [] {
+			const char* value = std::getenv("INDEX_EDITOR_FOCUS_VIEW");
+			return value && std::string_view(value) == "editor" ? 300 : 0;
+		}();
+		if (s_FocusFramesFromEnvironment > 0) {
+			ImGui::SetNextWindowFocus();
+			--s_FocusFramesFromEnvironment;
+		}
 		m_IsEditorViewActive = ImGui::Begin("Editor View", nullptr,
 			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 		ImGui::PopStyleVar();
@@ -1310,6 +1440,19 @@ namespace Index {
 		auto drawOptionsPill = [&](const ImVec2& pos) -> ImVec2 {
 			BeginViewportPill("##EditorViewOptionsPill", pos);
 			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, ImGui::GetStyle().ItemSpacing.y));
+
+			// With only one of the 2D/3D modules active the view mode is fixed (ResolveEditorViewMode).
+			if (EngineModules::IsActive(EngineModule::TwoD) && EngineModules::IsActive(EngineModule::ThreeD)) {
+				if (EditorUI::ToggleButton("3D##EditorViewMode", m_EditorView3D)) {
+					m_EditorView3D = !m_EditorView3D;
+					if (IndexProject* project = ProjectManager::GetCurrentProject()) {
+						project->EditorView3D = m_EditorView3D;
+						project->Save();
+					}
+				}
+				EditorUI::Tooltip("3D scene camera: RMB orbit (+WASD/QE fly), MMB pan, wheel zoom, F focus. Off: 2D camera.");
+				EditorUI::ToolbarSeparator();
+			}
 
 			constexpr const char* k_DrawModeLabels[] = { "Default", "Triangle", "Mixed" };
 			const int currentIndex = static_cast<int>(m_EditorViewDrawMode);
@@ -1458,7 +1601,19 @@ namespace Index {
 		const int fbW = static_cast<int>(viewportSize.x);
 		const int fbH = static_cast<int>(viewportSize.y);
 
-		if (fbW > 0 && fbH > 0) {
+		ResolveEditorViewMode();
+		if (fbW > 0 && fbH > 0 && m_EditorView3D) {
+			const Vec2 topLeft = RenderEditorView3D(*renderScene, Vec2{ viewportSize.x, viewportSize.y }, overlayHovered);
+			const ImVec2 toolsPos(topLeft.x + k_ViewportPillMargin, topLeft.y + k_ViewportPillMargin);
+			const ImVec2 toolsSize = drawToolsPill(toolsPos);
+			ImVec2 optionsPos(topLeft.x + viewportSize.x - k_ViewportPillMargin - s_EditorViewRightPillSize.x, toolsPos.y);
+			if (optionsPos.x < toolsPos.x + toolsSize.x + k_ViewportPillMargin) {
+				optionsPos = ImVec2(toolsPos.x, toolsPos.y + toolsSize.y + 4.0f);
+			}
+			s_EditorViewRightPillSize = drawOptionsPill(optionsPos);
+			DrawParticlePreviewControls(*renderScene, topLeft, Vec2{ viewportSize.x, viewportSize.y });
+		}
+		else if (fbW > 0 && fbH > 0) {
 
 			m_EditorViewFBO.Recreate(fbW, fbH);
 			m_EditorCamera.SetViewportSize(fbW, fbH);
@@ -1606,53 +1761,7 @@ namespace Index {
 					s_EditorViewRightPillSize = drawOptionsPill(optionsPos);
 				}
 
-				if (m_SelectedEntity != entt::null
-					&& renderScene->IsValid(m_SelectedEntity)
-					&& renderScene->HasComponent<ParticleSystem2DComponent>(m_SelectedEntity))
-				{
-					auto& particleSystem = renderScene->GetComponent<ParticleSystem2DComponent>(m_SelectedEntity);
-					const ImGuiWindowFlags overlayFlags =
-						ImGuiWindowFlags_NoSavedSettings |
-						ImGuiWindowFlags_NoScrollbar |
-						ImGuiWindowFlags_NoScrollWithMouse |
-						ImGuiWindowFlags_NoNav;
-					const ImGuiStyle& style = ImGui::GetStyle();
-					const float spacing = style.ItemSpacing.x;
-					const ImVec2 overlaySize{
-						64.0f + 72.0f + 64.0f + spacing * 2.0f + style.WindowPadding.x * 2.0f,
-						ImGui::GetFrameHeight() + style.WindowPadding.y * 2.0f
-					};
-					const ImVec2 overlayPos{
-						std::max(imageTopLeft.x + 8.0f, imageTopLeft.x + viewportSize.x - overlaySize.x - 12.0f),
-						std::max(imageTopLeft.y + 8.0f, imageTopLeft.y + viewportSize.y - overlaySize.y - 12.0f)
-					};
-					ImGui::SetCursorScreenPos(overlayPos);
-					ImGui::SetNextWindowBgAlpha(0.86f);
-					if (ImGui::BeginChild("##ParticleSystem2DViewportControls", overlaySize, ImGuiChildFlags_Borders, overlayFlags)) {
-						const bool isRunning = particleSystem.IsEmitting() || particleSystem.IsSimulating();
-						const char* playPauseLabel = isRunning ? "Pause" : "Play";
-						if (ImGui::Button(playPauseLabel, ImVec2(64.0f, 0.0f))) {
-							if (isRunning) {
-								particleSystem.Pause();
-							}
-							else {
-								particleSystem.Play();
-							}
-							renderScene->MarkDirty();
-						}
-						ImGui::SameLine();
-						if (ImGui::Button("Restart", ImVec2(72.0f, 0.0f))) {
-							particleSystem.Restart();
-							renderScene->MarkDirty();
-						}
-						ImGui::SameLine();
-						if (ImGui::Button("Stop", ImVec2(64.0f, 0.0f))) {
-							particleSystem.StopAndReset();
-							renderScene->MarkDirty();
-						}
-					}
-					ImGui::EndChild();
-				}
+				DrawParticlePreviewControls(*renderScene, Vec2{ imageTopLeft.x, imageTopLeft.y }, Vec2{ viewportSize.x, viewportSize.y });
 
 				// -- Bounds resize gizmo (m_GizmoMode == Bounds) --
 				// 8 handles: 4 edges resize one axis, 4 corners resize both. Works for
@@ -2612,7 +2721,12 @@ namespace Index {
 
 		if (viewportSize.x > 0.0f && viewportSize.y > 0.0f) {
 			Camera2DComponent* gameCam = Camera2DComponent::GetMain();
-			if ((gameCam && gameCam->IsValid()) || !m_GameViewFBO.IsValid()) {
+			const bool hasCamera2D = gameCam && gameCam->IsValid();
+			// A Camera3D renders the scene; a Camera2D alongside it only drives the 2D overlay.
+			const EntityHandle camera3DEntity = Camera3DComponent::FindMain(scene);
+			const bool hasCamera3D = camera3DEntity != entt::null
+				&& Application::GetInstance() && Application::GetInstance()->GetRenderer3D();
+			if (hasCamera2D || hasCamera3D || !m_GameViewFBO.IsValid()) {
 				m_GameViewFBO.Recreate(fbW, fbH);
 			}
 
@@ -2659,9 +2773,9 @@ namespace Index {
 				}
 			};
 
-			if (m_GameViewFBO.IsValid() && gameCam && gameCam->IsValid()) {
-				Viewport* savedViewport = gameCam->GetViewport();
-				if (!savedViewport) {
+			if (m_GameViewFBO.IsValid() && (hasCamera2D || hasCamera3D)) {
+				Viewport* savedViewport = hasCamera2D ? gameCam->GetViewport() : nullptr;
+				if (hasCamera2D && !savedViewport) {
 					drawNoCameraFallback();
 					m_IsGameViewHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
 					m_IsGameViewFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
@@ -2669,8 +2783,8 @@ namespace Index {
 					ImGui::End();
 					return;
 				}
-				const int savedW = savedViewport->GetWidth();
-				const int savedH = savedViewport->GetHeight();
+				const int savedW = savedViewport ? savedViewport->GetWidth() : 0;
+				const int savedH = savedViewport ? savedViewport->GetHeight() : 0;
 
 				// RAII guard: if RenderSceneIntoFBO throws, the camera viewport
 				// is still restored before the exception unwinds out of ImGui::End.
@@ -2680,22 +2794,41 @@ namespace Index {
 					int h;
 					Camera2DComponent* cam;
 					~ViewportRestoreGuard() {
+						if (!vp) return;
 						vp->SetSize(w, h);
 						cam->UpdateViewport();
 					}
 				} guard{ savedViewport, savedW, savedH, gameCam };
 
-				savedViewport->SetSize(fbW, fbH);
-				gameCam->UpdateViewport();
-				glm::mat4 vp = gameCam->GetViewProjectionMatrix();
-				AABB viewAABB = gameCam->GetViewportAABB();
+				std::optional<Camera3DView> gameView3D;
+				if (hasCamera3D) {
+					Transform3DHierarchySystem::Propagate(scene);
+					const auto& registry = scene.GetRegistry();
+					gameView3D = Renderer3D::MakeView(registry.get<Transform3DComponent>(camera3DEntity).WorldMatrix,
+						registry.get<Camera3DComponent>(camera3DEntity), static_cast<float>(fbW) / static_cast<float>(fbH));
+				}
+
+				glm::mat4 vp = gameView3D ? gameView3D->Projection * gameView3D->View : glm::mat4(1.0f);
+				// 3D-only games still draw world sprites; nothing is culled because the perspective frustum has no 2D box.
+				AABB viewAABB{ Vec2{ -1.0e9f, -1.0e9f }, Vec2{ 1.0e9f, 1.0e9f } };
+				if (hasCamera2D) {
+					savedViewport->SetSize(fbW, fbH);
+					gameCam->UpdateViewport();
+					if (!gameView3D) {
+						vp = gameCam->GetViewProjectionMatrix();
+						viewAABB = gameCam->GetViewportAABB();
+					}
+				}
+				const Color gameClearColor = gameView3D
+					? scene.GetRegistry().get<Camera3DComponent>(camera3DEntity).ClearColor
+					: gameCam->GetClearColor();
 				const auto now = std::chrono::steady_clock::now();
 				float targetFps = 0.0f;
 				const bool appVsyncEnabled = Window::IsVsync();
 				if (m_GameViewVsync && appVsyncEnabled) {
 					if (auto* window = Application::GetWindow()) {
-						const GLFWvidmode* videoMode = window->GetVideomode();
-						targetFps = videoMode ? static_cast<float>(videoMode->refreshRate) : 60.0f;
+						const std::optional<DisplayMode> displayMode = window->GetDisplayMode();
+						targetFps = displayMode && displayMode->RefreshRate > 0.0f ? displayMode->RefreshRate : 60.0f;
 					}
 					else {
 						targetFps = 60.0f;
@@ -2723,7 +2856,7 @@ namespace Index {
 					canvasMin.y + (viewportSize.y - renderSize.y) * 0.5f);
 				const ImVec2 imageMax(imageMin.x + renderSize.x, imageMin.y + renderSize.y);
 
-				// MUST precede RenderSceneIntoFBO: UIRegion pins layout/event coords to the panel rect; subtract mainViewportPos to convert ImGui desktop coords to GLFW window-client space (avoids Y-drift when window is not at desktop Y=0).
+				// MUST precede RenderSceneIntoFBO: UIRegion pins layout/event coords to the panel rect; subtract mainViewportPos to convert ImGui desktop coords to window-client space (avoids Y-drift when window is not at desktop Y=0).
 				const ImVec2 mainViewportPos = ImGui::GetMainViewport()->Pos;
 				Window::SetUIRegion(
 					static_cast<int>(imageMin.x - mainViewportPos.x),
@@ -2732,7 +2865,8 @@ namespace Index {
 					static_cast<int>(renderSize.y));
 
 				if (renderFrame) {
-					RenderSceneIntoFBO(m_GameViewFBO, scene, vp, viewAABB, true, true, gameCam->GetClearColor());
+					RenderSceneIntoFBO(m_GameViewFBO, scene, vp, viewAABB, true, true, gameClearColor,
+						false, false, EditorViewDrawMode::Default, GizmoLayerMask::All, gameView3D ? &*gameView3D : nullptr);
 					m_LastGameViewRenderTime = now;
 					m_LastGameViewFbW = fbW;
 					m_LastGameViewFbH = fbH;

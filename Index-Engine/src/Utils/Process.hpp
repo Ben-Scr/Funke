@@ -4,7 +4,9 @@
 
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -33,8 +35,16 @@ namespace Index::Process {
 		return Run(command, nativeWorkingDirectory, timeout);
 	}
 
+	// Same as Run, but forwards output chunks to onOutput as they arrive (on the calling thread).
+	INDEX_API Result Run(const std::vector<std::string>& command, const std::filesystem::path& workingDirectory,
+		std::chrono::milliseconds timeout, const std::function<void(std::string_view chunk)>& onOutput);
+
 	INDEX_API bool LaunchDetached(const std::vector<std::string>& command,
 		const std::filesystem::path& workingDirectory = {});
+	// Same, and reports the started process's id (0 when unknown) for IsProcessRunning.
+	INDEX_API bool LaunchDetached(const std::vector<std::string>& command,
+		const std::filesystem::path& workingDirectory, unsigned long& outProcessId);
+	INDEX_API bool IsProcessRunning(unsigned long processId);
 
 	template <typename String,
 		std::enable_if_t<std::is_same_v<std::remove_cvref_t<String>, std::string>, int> = 0>

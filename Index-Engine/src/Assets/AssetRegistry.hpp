@@ -34,15 +34,18 @@ namespace Index {
 		};
 
 		static constexpr std::string_view MetaExtension = ".meta";
+		static constexpr std::string_view CorruptMetaExtension = ".meta.corrupt";
 
 		static bool IsMetaFilePath(std::string_view path) {
 			const std::string normalized = ToLowerCopy(std::string(path));
-			const std::string metaExtension(MetaExtension);
-			if (normalized.size() < metaExtension.size()) {
-				return false;
+			// The .meta.corrupt backups LoadMetaJson leaves behind are not assets either.
+			for (const std::string_view extension : { MetaExtension, CorruptMetaExtension }) {
+				if (normalized.size() >= extension.size()
+					&& normalized.compare(normalized.size() - extension.size(), extension.size(), extension) == 0) {
+					return true;
+				}
 			}
-
-			return normalized.compare(normalized.size() - metaExtension.size(), metaExtension.size(), metaExtension) == 0;
+			return false;
 		}
 
 		static void MarkDirty() {
@@ -948,6 +951,12 @@ namespace Index {
 			if (extension == ".dataasset") {
 				return AssetKind::DataAsset;
 			}
+			if (extension == ".material") {
+				return AssetKind::Material;
+			}
+			if (extension == ".obj") {
+				return AssetKind::Mesh;
+			}
 			if (!extension.empty()) {
 				return AssetKind::Other;
 			}
@@ -1035,17 +1044,31 @@ namespace Index {
 			object.AddMember(key, std::move(value));
 		}
 
+		// Only for callers about to rewrite the meta: an unparsable one is backed up first, since the
+		// rewrite drops its GUID and `import`/`sprites` blocks (often a hand edit with a typo).
 		static Json::Value LoadMetaJson(const std::string& metaPath) {
 			Json::Value root = Json::Value::MakeObject();
 			if (!File::Exists(metaPath)) {
 				return root;
 			}
+			const std::string text = File::ReadAllText(metaPath);
 			Json::Value parsed;
 			std::string parseError;
-			if (!Json::TryParse(File::ReadAllText(metaPath), parsed, &parseError) || !parsed.IsObject()) {
+			const bool parsedOk = Json::TryParse(text, parsed, &parseError);
+			if (parsedOk && parsed.IsObject()) {
+				return parsed;
+			}
+			if (text.find_first_not_of(" \t\r\n") == std::string::npos) {
 				return root;
 			}
-			return parsed;
+
+			const std::string backupPath = metaPath + ".corrupt";
+			const bool backedUp = File::WriteAllText(backupPath, text);
+			IDX_CORE_ERROR_TAG("AssetRegistry",
+				"Meta file '{}' is not a valid JSON object ({}); it is regenerated, original {}",
+				metaPath, parsedOk ? std::string("root is not an object") : parseError,
+				backedUp ? "saved as '" + backupPath + "'" : std::string("could NOT be backed up"));
+			return root;
 		}
 
 		// Merge-write: load existing meta, overwrite identity fields only — leaves `import`, `sprites`, etc. intact.
@@ -1188,6 +1211,8 @@ namespace Index {
 			case AssetKind::Font: return "Font";
 			case AssetKind::Shader: return "Shader";
 			case AssetKind::DataAsset: return "DataAsset";
+			case AssetKind::Material: return "Material";
+			case AssetKind::Mesh: return "Mesh";
 			case AssetKind::Other: return "Other";
 			case AssetKind::Unknown:
 			default:

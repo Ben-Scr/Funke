@@ -20,7 +20,8 @@ project "Index-Launcher"
 
     -- icon.rc is a Windows resource (app icon); Linux has no .rc toolchain. Windows-only.
     filter "system:windows"
-        files { "icon.rc" }
+        -- UTF-8 process code page: the engine passes UTF-8 std::strings to std::filesystem and narrow Win32 APIs.
+        files { "icon.rc", path.join(ROOT_DIR, "premake/Utf8CodePage.manifest") }
     filter {}
 
     UseDependencySet(Dependency.EditorRuntimeCommon)
@@ -40,13 +41,13 @@ project "Index-Launcher"
     -- CopyEngineSdk materializes a bundled EngineSDK/ next to the launcher
     -- exe so a zipped distribution works without the source tree. The SDK
     -- bundles Index-ScriptCore.dll, so we depend on the C# project to
-    -- ensure it exists before our postbuild runs. Managed C# builds on
-    -- Windows only (see root premake5.lua), so gate the dependency.
-    if os.target() == "windows" then
-        dependson { "Index-Editor", "Index-Runtime", "Index-ScriptCore", "Index-PackageTool" }
-    end
+    -- ensure it exists before our postbuild runs. Index-Managed builds the
+    -- C# projects on Linux / macOS (see root premake5.lua).
+    dependson { "Index-Editor", "Index-Runtime" }
+    dependson(IndexManagedDependencies({ "Index-ScriptCore", "Index-PackageTool" }))
+    if os.target() ~= "windows" then dependson { "Index-CLI" } end
 
-    postbuildcommands { CopyIndexAssets, CopyIndexEngineDll, CopyGlfwDll, CopyGladDll, CopyEngineSdk }
+    postbuildcommands { CopyIndexAssets, CopyIndexEngineDll, CopySDL3SharedLib, CopyGladDll, CopyEngineSdk }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
     ApplyIndexProfilerRuntime()
 
@@ -65,6 +66,10 @@ project "Index-Launcher"
     filter "system:linux"
         defines { "IDX_PLATFORM_LINUX" }
         linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
+
+    filter "system:macosx"
+        defines { "IDX_PLATFORM_MACOS" }
+        linkoptions { "-Wl,-rpath,@executable_path" }
 
     filter "configurations:Debug"
         runtime "Debug"

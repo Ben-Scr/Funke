@@ -195,6 +195,16 @@ Time.FixedDeltaTime;   // physics step length
 Time.TimeScale = 0.5f; // slow motion (or 0 to pause game time); clamped to [0, 100]
 ```
 
+**Window \& frame rate**:
+
+```csharp
+Window.IsFullScreen = true;            // also Window.Position, Window.Title, Minimize/Maximize/Restore()
+Application.VsyncEnabled = false;      // present without waiting for the monitor refresh
+Application.TargetFrameRate = 240;     // frame cap while VSync is off (0 = uncapped)
+```
+
+Window changes only apply in the built game: in the editor the game view lives inside the editor's own window, so these calls are ignored there (the Console says so once per call type). With VSync off on Direct3D 12 the game may tear; that is what lets it run above the monitor's refresh rate.
+
 **Physics 2D** — raycasts and overlap checks:
 
 ```csharp
@@ -215,6 +225,24 @@ anim.FramesPerSecond = 16f;
 if (!anim.IsPlaying) anim.Play();   // Pause() keeps the frame, Stop() rewinds
 ```
 
+**Post-processing** — add **Post Processing** to the entity with the main **Camera 2D** (its *Post Processing* toggle must stay on). `PostProcessing2D` exposes each effect as a value struct: read it, change fields, assign it back.
+
+```csharp
+var pp = GetComponent<PostProcessing2D>();
+
+var bloom = pp.Bloom;                 // copy
+bloom.Enabled = true;
+bloom.Intensity = 3f;
+pp.Bloom = bloom;                     // write back — editing pp.Bloom.Intensity directly changes only a copy
+
+var vignette = PostProcessing2D.VignetteSettings.Default;   // Inspector defaults
+vignette.Enabled = true;
+vignette.Color = new Color(0.4f, 0f, 0f, 1f);
+pp.Vignette = vignette;
+```
+
+Effects: `ColorGrading`, `Vignette`, `ChromaticAberration`, `Grain`, `Bloom`, `LensDistortion`, `Pixelated`, `GaussianBlur`. Values outside the Inspector ranges are clamped (for example `Bloom.Taps` to 7..500, `ColorGrading.Saturation` to 0..4); the ranges are in each field's XML doc.
+
 **Saving data** — per game, stored under `Application.PersistentDataPath` (`%LOCALAPPDATA%/<Company>/<Name>`, from Project Settings):
 
 ```csharp
@@ -233,6 +261,47 @@ Writes are atomic: a crash while saving leaves the previous file intact.
 Audio sfx = Audio.FromAssetUUID(clipGuid);
 sfx.PlayOneShot();
 ```
+
+**Music and files outside the project** — `AudioStream` plays an MP3, WAV or FLAC file from any path (a music folder, a download) and streams it from disk instead of loading it whole:
+
+```csharp
+AudioStream? song = AudioStream.Open(path);      // null if the file is missing or not audio
+song?.Play();
+song.Time = 42f;                                 // seek; Length, IsPlaying, IsAtEnd, Volume, Loop, Pause(), Stop()
+song.Dispose();                                  // e.g. in OnDestroy; leaving Play mode closes every stream
+```
+
+**Media controls** — for music and podcast apps on Android: a "now playing" notification with cover, previous / play-pause / next and a seek bar, also on the lock screen and for headset buttons. It belongs to the background-audio service, so keep `Audio.PlayInBackground` on while a track is loaded (also when paused) and enable `backgroundAudio` in the Android build profile:
+
+```csharp
+MediaSession.SetNowPlaying(track.Title, track.Artist, track.Album, stream.Length, coverRgba, w, h); // on track change
+MediaSession.SetPlaybackState(isPlaying, stream.Time);                                            // on play / pause / seek
+while (MediaSession.TryGetCommand(out MediaCommand cmd, out float seek)) { /* Play, Pause, Next, Previous, Seek */ }
+```
+
+**Images from bytes** — decode a PNG/JPEG you read yourself (a download, cover art embedded in an MP3) into a texture. Decoding is safe on a worker thread; create the texture on the main thread:
+
+```csharp
+byte[]? pixels = Texture.DecodeImage(bytes, maxSize: 256, out int w, out int h);
+Texture? cover = pixels != null ? Texture.Create(w, h, pixels) : null;   // Dispose() it when done
+```
+
+**Background audio** — keep playing when the player switches apps or locks the phone:
+
+```csharp
+Audio.PlayInBackground = true;    // while music plays; set false when the user pauses
+```
+
+While it's on, sounds keep playing and scripts keep updating (about ten times a second, nothing is rendered) when the game is minimized or in the background. On Android a "playing" notification keeps the app alive; turn on the Android build profile option `backgroundAudio`, and ask for `android.permission.POST_NOTIFICATIONS` on Android 13+ so the notification is visible.
+
+**Permissions on Android** — reading the phone's music or other shared files needs a runtime permission. Ask for it, then poll until the user has answered:
+
+```csharp
+Application.RequestPermission("android.permission.READ_MEDIA_AUDIO");
+if (Application.GetPermissionState("android.permission.READ_MEDIA_AUDIO") == PermissionState.Granted) { ... }
+```
+
+The permission must also be declared in the APK with the Android build profile's `permissions` option ([Platform Packages](../Editor/Platform-Packages.md#android)). Every other platform reports `Granted` right away.
 
 **Logging** — prints to the editor Console:
 
@@ -310,6 +379,16 @@ Use C# for almost everything; drop to native scripts only when you've measured a
 A big convenience of C# scripting: you can change your scripts and reload them **without restarting** the editor. When you rebuild your game's script assembly, the engine swaps in the new code and keeps your scenes running. Entity state is preserved where it can be (matching script classes keep their instances; fields reset to their default/saved values).
 
 The engine's *core* scripting library can't be reloaded mid-session (a .NET limitation), so changing engine-level scripting bits needs a restart — but your everyday game scripts reload freely.
+
+### How fast a reload is
+
+When you save a script, the editor compiles it **in-process** with Roslyn, the C# compiler from your installed .NET SDK, instead of starting `dotnet build`. Editing an existing script usually compiles in well under a second.
+
+* The editor asks MSBuild once for the exact compiler settings `dotnet build` would use (references, defines, `Nullable`, language version, analyzer config, source generators) and reuses them. MSBuild runs again (about 1 s) only after you **add or delete** a `.cs` file or change the active build configuration or defines.
+* A change to the `.csproj`, a `.props`/`.targets` file, `global.json` or an installed package still triggers one full `dotnet build`, because MSBuild may need to copy new dependencies into `bin/`. The reload after that is in-process again.
+* Source generators (for example `[GeneratedRegex]`, `[LibraryImport]`, `[JsonSerializable]`) run as usual. Analyzer warnings (`CAxxxx`) appear only in a full `dotnet build` or your IDE.
+* Compile errors appear in the Console in the usual `File.cs(line,col): error CSxxxx` format.
+* If the in-process compiler can't reproduce the build (an unusual project setup, a different .NET SDK, the compiler isn't installed next to the editor), the editor falls back to `dotnet build` and logs why under **ScriptSystem**. Set the environment variable `INDEX_SCRIPT_COMPILER=dotnet` before starting the editor to always use `dotnet build`.
 
 \---
 

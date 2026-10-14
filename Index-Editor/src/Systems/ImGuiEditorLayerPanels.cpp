@@ -1,9 +1,11 @@
 #include <pch.hpp>
+#include "Core/EngineModules.hpp"
 #include "Systems/ImGuiEditorLayer.hpp"
 
 #include <imgui.h>
 
 #include "Assets/AssetRegistry.hpp"
+#include "Build/GameBuilder.hpp"
 #include "Collections/AspectRatio.hpp"
 #include "Core/Application.hpp"
 #include "Core/Time.hpp"
@@ -12,6 +14,8 @@
 #include "Editor/ExternalEditor.hpp"
 #include "Editor/IndexPackageInstaller.hpp"
 #include "Graphics/ImageData.hpp"
+#include "Graphics/ImageProcessing.hpp"
+#include "Graphics/Material.hpp"
 #include "Graphics/RenderSettings.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
@@ -20,6 +24,8 @@
 #include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Gui/ImGuiUtils.hpp"
+#include "Inspector/PropertyDrawer.hpp"
+#include "Inspector/PropertyRegistration.hpp"
 #include "Inspector/ReferencePicker.hpp"
 #include "Packages/GitHubSource.hpp"
 #include "Packages/NuGetSource.hpp"
@@ -37,9 +43,11 @@
 #include "Scripting/ScriptSystem.hpp"
 #include "Serialization/Directory.hpp"
 #include "Serialization/File.hpp"
+#include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Utils/Process.hpp"
+#include "Editor/PlatformBuilder.hpp"
 
 #include <algorithm>
 #include <array>
@@ -55,20 +63,58 @@
 #include <sstream>
 #include <unordered_set>
 
+#include <stb_image_write.h>
+
 #ifdef IDX_PLATFORM_WINDOWS
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 namespace Index {
 	namespace {
+#if !defined(IDX_PLATFORM_WINDOWS)
+		std::string ShellQuote(std::string_view value) {
+			std::string quoted = "'";
+			for (char c : value) {
+				if (c == '\'') quoted += "'\\''";
+				else quoted += c;
+			}
+			return quoted + "'";
+		}
+#endif
+
 		std::vector<IndexProject::BuildSceneEntry>::iterator FindBuildScene(
 			std::vector<IndexProject::BuildSceneEntry>& sceneList, const std::string& sceneName)
 		{
 			return std::find_if(sceneList.begin(), sceneList.end(),
 				[&](const IndexProject::BuildSceneEntry& entry) { return entry.Name == sceneName; });
+		}
+
+		// Builds/<Platform> follows the target platform; a folder the user named themselves is left alone.
+		std::string PlatformBuildOutputDirectory(const std::string& current, const std::string& projectRoot,
+			BuildPlatform platform)
+		{
+			const char* platformFolder = IndexBuildProfile::PlatformToString(platform);
+			if (current.empty()) return Path::Combine(projectRoot, "Builds", platformFolder);
+
+			std::filesystem::path path = Path::FromUtf8(current);
+			if (!path.has_filename()) path = path.parent_path();
+			const std::string leaf = Path::ToUtf8(path.filename());
+			const auto equalsIgnoreCase = [](std::string_view a, std::string_view b) {
+				return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+					return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+				});
+			};
+			for (BuildPlatform candidate : IndexBuildProfile::AllPlatforms()) {
+				if (!equalsIgnoreCase(leaf, IndexBuildProfile::PlatformToString(candidate))) continue;
+				if (candidate == platform) return current;
+				return Path::ToUtf8(path.parent_path() / platformFolder);
+			}
+			return current;
 		}
 
 		std::string FirstEnabledBuildScene(const std::vector<IndexProject::BuildSceneEntry>& sceneList) {
@@ -193,713 +239,6 @@ namespace Index {
 			catch (...) {
 				return 0;
 			}
-		}
-
-		bool NeedsCopy(const std::filesystem::path& src, const std::filesystem::path& dest) {
-			if (!std::filesystem::exists(dest)) return true;
-			try {
-				return std::filesystem::last_write_time(src) > std::filesystem::last_write_time(dest);
-			}
-			catch (...) {
-				return true;
-			}
-		}
-
-		struct DirectoryCopyResult {
-			int Copied = 0;
-			std::string Error;
-
-			bool Succeeded() const { return Error.empty(); }
-		};
-
-		DirectoryCopyResult CopyDirIncremental(const std::filesystem::path& srcDir,
-			const std::filesystem::path& destDir)
-		{
-			DirectoryCopyResult result;
-			try {
-				std::filesystem::create_directories(destDir);
-				for (auto& entry : std::filesystem::recursive_directory_iterator(srcDir)) {
-					const auto status = entry.symlink_status();
-					if (std::filesystem::is_symlink(status)) {
-						result.Error = "symbolic links are not supported in build inputs: " + entry.path().string();
-						return result;
-					}
-					auto rel = entry.path().lexically_relative(srcDir);
-					if (!BuildOutputSafety::IsSafeRelativePath(rel)) {
-						result.Error = "unsafe relative build-input path: " + entry.path().string();
-						return result;
-					}
-					auto dest = destDir / rel;
-					if (std::filesystem::is_directory(status)) {
-						std::filesystem::create_directories(dest);
-					}
-					else if (std::filesystem::is_regular_file(status) && NeedsCopy(entry.path(), dest)) {
-						std::filesystem::create_directories(dest.parent_path());
-						std::filesystem::copy_file(entry.path(), dest, std::filesystem::copy_options::overwrite_existing);
-						result.Copied++;
-					}
-					else if (!std::filesystem::is_regular_file(status)) {
-						result.Error = "unsupported build-input entry: " + entry.path().string();
-						return result;
-					}
-				}
-			}
-			catch (const std::exception& e) {
-				result.Error = e.what();
-			}
-			return result;
-		}
-
-		bool IsSerializedAssetPath(const std::filesystem::path& path) {
-			std::string ext = path.extension().string();
-			std::transform(ext.begin(), ext.end(), ext.begin(),
-				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-			return ext == ".scene" || ext == ".prefab";
-		}
-
-		// onProgress(done, total, fileName) is invoked before converting each file (done = files
-		// already finished) and once more at the end with done == total. Pass {} for no reporting.
-		int ConvertSerializedAssetsInDirectory(const std::filesystem::path& rootDir,
-			SceneSerializationFormat format,
-			const std::function<void(int, int, const std::string&)>& onProgress = {},
-			std::string* failureMessage = nullptr)
-		{
-			if (!std::filesystem::exists(rootDir)) {
-				if (failureMessage) *failureMessage = "asset directory does not exist";
-				return 0;
-			}
-
-			// Collect first so the conversion loop can report determinate done/total progress; the
-			// walk itself can be slow on asset-heavy projects (cold, Defender-amplified), which is why
-			// the whole operation belongs on a worker thread.
-			std::vector<std::filesystem::path> targets;
-			std::error_code ec;
-			for (std::filesystem::recursive_directory_iterator it(rootDir,
-					std::filesystem::directory_options::skip_permission_denied, ec), end;
-				it != end;
-				it.increment(ec))
-			{
-				if (ec) {
-					if (failureMessage && failureMessage->empty()) {
-						*failureMessage = "failed to enumerate assets: " + ec.message();
-					}
-					ec.clear();
-					continue;
-				}
-				if (!it->is_regular_file(ec) || ec || !IsSerializedAssetPath(it->path())) {
-					ec.clear();
-					continue;
-				}
-				targets.push_back(it->path());
-			}
-
-			int converted = 0;
-			const int total = static_cast<int>(targets.size());
-			for (int i = 0; i < total; ++i) {
-				if (onProgress) {
-					onProgress(i, total, targets[i].filename().string());
-				}
-				if (SceneSerializer::ConvertFileFormat(targets[i].string(), format)) {
-					++converted;
-				}
-				else if (failureMessage && failureMessage->empty()) {
-					*failureMessage = "failed to convert " + targets[i].string();
-				}
-			}
-			if (onProgress) {
-				onProgress(total, total, {});
-			}
-			return converted;
-		}
-
-		SceneSerializationFormat ToSceneSerializationFormat(
-			IndexProject::ProjectAssetSerializationFormat format)
-		{
-			return format == IndexProject::ProjectAssetSerializationFormat::Binary
-				? SceneSerializationFormat::Binary
-				: SceneSerializationFormat::Json;
-		}
-
-		// Match is case-insensitive on Windows so "Editor" excludes regardless of the user's disk casing.
-		DirectoryCopyResult CopyDirIncrementalExcluding(const std::filesystem::path& srcDir,
-			const std::filesystem::path& destDir,
-			const std::vector<std::filesystem::path>& excludedRelativePaths)
-		{
-			DirectoryCopyResult result;
-			try {
-				std::filesystem::create_directories(destDir);
-
-					auto isExcluded = [&](const std::filesystem::path& rel) {
-					const std::string relStr = rel.generic_string();
-					for (const auto& excluded : excludedRelativePaths) {
-						const std::string excStr = excluded.generic_string();
-						// Match the excluded path itself or anything underneath it.
-#ifdef IDX_PLATFORM_WINDOWS
-						if (relStr.size() >= excStr.size()
-							&& _strnicmp(relStr.c_str(), excStr.c_str(), excStr.size()) == 0
-							&& (relStr.size() == excStr.size() || relStr[excStr.size()] == '/'))
-						{
-							return true;
-						}
-#else
-						if (relStr.size() >= excStr.size()
-							&& relStr.compare(0, excStr.size(), excStr) == 0
-							&& (relStr.size() == excStr.size() || relStr[excStr.size()] == '/'))
-						{
-							return true;
-						}
-#endif
-					}
-					return false;
-				};
-
-				for (auto it = std::filesystem::recursive_directory_iterator(srcDir);
-					it != std::filesystem::recursive_directory_iterator(); ++it)
-				{
-					const auto status = it->symlink_status();
-					if (std::filesystem::is_symlink(status)) {
-						result.Error = "symbolic links are not supported in build inputs: " + it->path().string();
-						return result;
-					}
-					auto rel = it->path().lexically_relative(srcDir);
-					if (!BuildOutputSafety::IsSafeRelativePath(rel)) {
-						result.Error = "unsafe relative build-input path: " + it->path().string();
-						return result;
-					}
-					if (isExcluded(rel)) {
-						if (std::filesystem::is_directory(status)) {
-							it.disable_recursion_pending();
-						}
-						continue;
-					}
-					auto dest = destDir / rel;
-					if (std::filesystem::is_directory(status)) {
-						std::filesystem::create_directories(dest);
-					}
-					else if (std::filesystem::is_regular_file(status) && NeedsCopy(it->path(), dest)) {
-						std::filesystem::create_directories(dest.parent_path());
-						std::filesystem::copy_file(it->path(), dest, std::filesystem::copy_options::overwrite_existing);
-						result.Copied++;
-					}
-					else if (!std::filesystem::is_regular_file(status)) {
-						result.Error = "unsupported build-input entry: " + it->path().string();
-						return result;
-					}
-				}
-			}
-			catch (const std::exception& e) {
-				result.Error = e.what();
-			}
-			return result;
-		}
-
-		class BuildStagingDirectory {
-		public:
-			explicit BuildStagingDirectory(std::filesystem::path finalPath)
-				: m_FinalPath(std::move(finalPath)) {}
-
-			~BuildStagingDirectory() {
-				if (m_StagingPath.empty()) return;
-				std::error_code error;
-				std::filesystem::remove_all(m_StagingPath, error);
-			}
-
-			bool Prepare(std::string& errorMessage) {
-				std::error_code error;
-				std::filesystem::create_directories(m_FinalPath.parent_path(), error);
-				if (error) {
-					errorMessage = error.message();
-					return false;
-				}
-
-				m_StagingPath = MakeUniqueSibling("staging");
-				std::filesystem::create_directories(m_StagingPath, error);
-				if (error) {
-					errorMessage = error.message();
-					return false;
-				}
-				std::ofstream marker(m_StagingPath /
-					std::string(BuildOutputSafety::OwnershipMarkerFilename), std::ios::trunc);
-				marker << "Index build output\n";
-				if (!marker) {
-					errorMessage = "failed to create the build ownership marker";
-					return false;
-				}
-				return true;
-			}
-
-			bool Publish(std::string& errorMessage) {
-				const BuildOutputSafety::OutputPathError ownershipError =
-					BuildOutputSafety::ValidateExistingOutput(m_FinalPath);
-				if (ownershipError != BuildOutputSafety::OutputPathError::None
-					&& !(ownershipError == BuildOutputSafety::OutputPathError::UnownedExistingDirectory
-						&& BuildOutputSafety::LooksLikeLegacyIndexBuildOutput(m_FinalPath))) {
-					errorMessage = BuildOutputSafety::GetErrorMessage(ownershipError);
-					return false;
-				}
-
-				std::error_code error;
-				std::filesystem::path backupPath;
-				const bool hadExistingOutput = std::filesystem::exists(m_FinalPath, error);
-				if (error) {
-					errorMessage = error.message();
-					return false;
-				}
-
-				if (hadExistingOutput) {
-					backupPath = MakeUniqueSibling("backup");
-					std::filesystem::rename(m_FinalPath, backupPath, error);
-					if (error) {
-						errorMessage = error.message();
-						return false;
-					}
-				}
-
-				std::filesystem::rename(m_StagingPath, m_FinalPath, error);
-				if (error) {
-					errorMessage = error.message();
-					if (!backupPath.empty()) {
-						std::error_code restoreError;
-						std::filesystem::rename(backupPath, m_FinalPath, restoreError);
-						if (restoreError) {
-							errorMessage += "; previous output remains at " + backupPath.string();
-						}
-					}
-					return false;
-				}
-
-				m_StagingPath.clear();
-				if (!backupPath.empty()) {
-					std::filesystem::remove_all(backupPath, error);
-					if (error) {
-						IDX_WARN_TAG("Build", "Could not remove previous build backup '{}': {}",
-							backupPath.string(), error.message());
-					}
-				}
-				return true;
-			}
-
-			const std::filesystem::path& GetPath() const { return m_StagingPath; }
-
-		private:
-			std::filesystem::path MakeUniqueSibling(std::string_view role) const {
-				const auto token = std::chrono::steady_clock::now().time_since_epoch().count();
-				const std::string prefix = "." + m_FinalPath.filename().string() + "." + std::string(role)
-					+ "-" + std::to_string(token);
-				std::filesystem::path candidate = m_FinalPath.parent_path() / prefix;
-				for (int suffix = 1; std::filesystem::exists(candidate); ++suffix) {
-					candidate = m_FinalPath.parent_path() / (prefix + "-" + std::to_string(suffix));
-				}
-				return candidate;
-			}
-
-			std::filesystem::path m_FinalPath;
-			std::filesystem::path m_StagingPath;
-		};
-
-		std::string GetRuntimeExecutableFilename() {
-#if defined(IDX_PLATFORM_WINDOWS)
-			return "Index-Runtime.exe";
-#else
-			return "Index-Runtime";
-#endif
-		}
-
-		std::string GetRuntimeOutputFolderName(std::string_view configuration) {
-#if defined(IDX_PLATFORM_WINDOWS)
-			return std::string(configuration) + "-windows-x86_64";
-#elif defined(__APPLE__)
-			return std::string(configuration) + "-macosx-x86_64";
-#else
-			return std::string(configuration) + "-linux-x86_64";
-#endif
-		}
-
-#ifdef IDX_PLATFORM_WINDOWS
-		// Layout: [IconDir 6B][IcoEntry 16B][BITMAPINFOHEADER 40B, biHeight=2*H][BGRA pixels bottom-up][AND mask 1bpp 4B-aligned, all zero].
-		std::string BuildIcoBytesFromImage(const std::filesystem::path& imagePath,
-			std::vector<std::uint8_t>& outIcoBytes)
-		{
-#pragma pack(push, 1)
-			struct IconDirHdr {
-				std::uint16_t Reserved;
-				std::uint16_t Type;
-				std::uint16_t Count;
-			};
-			struct IcoEntryHdr {
-				std::uint8_t Width;
-				std::uint8_t Height;
-				std::uint8_t ColorCount;
-				std::uint8_t Reserved;
-				std::uint16_t Planes;
-				std::uint16_t BitCount;
-				std::uint32_t BytesInRes;
-				std::uint32_t ImageOffset;
-			};
-			struct BitmapInfoHdr {
-				std::uint32_t biSize;
-				std::int32_t  biWidth;
-				std::int32_t  biHeight;
-				std::uint16_t biPlanes;
-				std::uint16_t biBitCount;
-				std::uint32_t biCompression;
-				std::uint32_t biSizeImage;
-				std::int32_t  biXPelsPerMeter;
-				std::int32_t  biYPelsPerMeter;
-				std::uint32_t biClrUsed;
-				std::uint32_t biClrImportant;
-			};
-#pragma pack(pop)
-
-			// flipVertical=false: pixels come top-down; we flip + BGRA-swizzle into the DIB below.
-			std::unique_ptr<ImageData> img = Texture2D::DecodeFileToCpu(
-				imagePath.string().c_str(), /*flipVertical*/ false);
-			if (!img) {
-				return "failed to decode image";
-			}
-
-			const int width = img->Width;
-			const int height = img->Height;
-			if (width <= 0 || height <= 0) {
-				return "image has zero size";
-			}
-			// Win32 ICO entries store width/height in 8-bit fields with 0
-			// meaning "256 or larger". We refuse > 256 — Explorer scales the
-			// largest entry it finds anyway, and accidentally writing a 257
-			// would silently truncate to 1 in the on-disk entry.
-			if (width > 256 || height > 256) {
-				return "image exceeds 256x256 (use a smaller icon source)";
-			}
-
-			const std::uint32_t pixelBytes =
-				static_cast<std::uint32_t>(width) *
-				static_cast<std::uint32_t>(height) * 4u;
-			// AND mask: 1 bit per pixel, each row padded to a 4-byte boundary.
-			const std::uint32_t maskRowBytes =
-				((static_cast<std::uint32_t>(width) + 31u) / 32u) * 4u;
-			const std::uint32_t maskBytes = maskRowBytes * static_cast<std::uint32_t>(height);
-			const std::uint32_t dibBytes = sizeof(BitmapInfoHdr) + pixelBytes + maskBytes;
-
-			outIcoBytes.assign(sizeof(IconDirHdr) + sizeof(IcoEntryHdr) + dibBytes, 0);
-
-			IconDirHdr dir{};
-			dir.Reserved = 0;
-			dir.Type = 1;
-			dir.Count = 1;
-			std::memcpy(outIcoBytes.data(), &dir, sizeof(dir));
-
-			IcoEntryHdr entry{};
-			entry.Width = static_cast<std::uint8_t>(width == 256 ? 0 : width);
-			entry.Height = static_cast<std::uint8_t>(height == 256 ? 0 : height);
-			entry.ColorCount = 0;
-			entry.Reserved = 0;
-			entry.Planes = 1;
-			entry.BitCount = 32;
-			entry.BytesInRes = dibBytes;
-			entry.ImageOffset = sizeof(IconDirHdr) + sizeof(IcoEntryHdr);
-			std::memcpy(outIcoBytes.data() + sizeof(IconDirHdr), &entry, sizeof(entry));
-
-			BitmapInfoHdr bih{};
-			bih.biSize = sizeof(BitmapInfoHdr);
-			bih.biWidth = width;
-			// biHeight = 2*H per ICO convention: XOR bitmap + AND mask stacked; positive = bottom-up DIB.
-			bih.biHeight = height * 2;
-			bih.biPlanes = 1;
-			bih.biBitCount = 32;
-			bih.biCompression = 0; // BI_RGB
-			bih.biSizeImage = pixelBytes + maskBytes;
-			std::uint8_t* dibStart = outIcoBytes.data() + entry.ImageOffset;
-			std::memcpy(dibStart, &bih, sizeof(bih));
-
-			// Swizzle RGBA top-down -> BGRA bottom-up. ImageData's pixels are
-			// laid out row by row with row 0 at the top; the DIB needs row 0
-			// at the bottom.
-			const std::uint8_t* srcPixels = img->Pixels;
-			std::uint8_t* dstPixels = dibStart + sizeof(BitmapInfoHdr);
-			for (int y = 0; y < height; ++y) {
-				const std::uint8_t* srcRow = srcPixels + (height - 1 - y) * width * 4;
-				std::uint8_t* dstRow = dstPixels + y * width * 4;
-				for (int x = 0; x < width; ++x) {
-					dstRow[x * 4 + 0] = srcRow[x * 4 + 2]; // B
-					dstRow[x * 4 + 1] = srcRow[x * 4 + 1]; // G
-					dstRow[x * 4 + 2] = srcRow[x * 4 + 0]; // R
-					dstRow[x * 4 + 3] = srcRow[x * 4 + 3]; // A
-				}
-			}
-			// AND mask is all-zero (assign() above): signals "use alpha channel" for 32-bit icons.
-
-			return std::string{};
-		}
-
-		// Read an existing .ico file straight into a byte vector. Used when
-		// the user supplied a real .ico (no decode/re-encode needed).
-		std::string ReadIcoFileBytes(const std::filesystem::path& icoPath,
-			std::vector<std::uint8_t>& outIcoBytes)
-		{
-			std::ifstream in(icoPath, std::ios::binary);
-			if (!in) return "open .ico failed";
-			outIcoBytes.assign((std::istreambuf_iterator<char>(in)),
-				std::istreambuf_iterator<char>());
-			return std::string{};
-		}
-
-		struct ExistingResName {
-			bool IsNumeric = false;
-			WORD NumericId = 0;
-			std::string StringName;
-		};
-
-		std::vector<ExistingResName> EnumerateExistingResources(
-			const std::string& exePath, WORD resType, std::string& outError)
-		{
-			std::vector<ExistingResName> out;
-			HMODULE hMod = ::LoadLibraryExA(exePath.c_str(), nullptr,
-				LOAD_LIBRARY_AS_DATAFILE);
-			if (!hMod) {
-				const DWORD err = ::GetLastError();
-				outError = "LoadLibraryEx failed (error " +
-					std::to_string(err) + ")";
-				return out;
-			}
-			struct Ctx { std::vector<ExistingResName>* List; };
-			Ctx ctx{ &out };
-			auto cb = [](HMODULE, LPCSTR, LPSTR lpName, LONG_PTR lParam) -> BOOL {
-				auto* c = reinterpret_cast<Ctx*>(lParam);
-				ExistingResName r{};
-				if ((reinterpret_cast<ULONG_PTR>(lpName) >> 16) == 0) {
-					r.IsNumeric = true;
-					r.NumericId = static_cast<WORD>(reinterpret_cast<ULONG_PTR>(lpName) & 0xFFFF);
-				}
-				else {
-					r.IsNumeric = false;
-					r.StringName = lpName;
-				}
-				c->List->push_back(std::move(r));
-				return TRUE;
-			};
-			if (!::EnumResourceNamesA(hMod, MAKEINTRESOURCEA(resType),
-				cb, reinterpret_cast<LONG_PTR>(&ctx)))
-			{
-				const DWORD err = ::GetLastError();
-				// ERROR_RESOURCE_TYPE_NOT_FOUND (1813) just means the .exe
-				// has no resources of this type — return an empty list.
-				if (err != ERROR_RESOURCE_TYPE_NOT_FOUND
-					&& err != ERROR_RESOURCE_DATA_NOT_FOUND)
-				{
-					outError = "EnumResourceNames failed (error " +
-						std::to_string(err) + ")";
-				}
-			}
-			::FreeLibrary(hMod);
-			return out;
-		}
-
-		// Retries up to 6 times on error 1359/32/33 and BeginUpdateResource failures — AV/Explorer hold the
-		// freshly copied exe open transiently; polling fixes the race without permanently failing the Build.
-		std::string EmbedIconIntoExecutableOnce(const std::string& exePath,
-			const std::vector<std::uint8_t>& icoBytes);
-
-		std::string EmbedIconIntoExecutable(const std::string& exePath,
-			const std::vector<std::uint8_t>& icoBytes)
-		{
-			constexpr int k_MaxAttempts = 6;
-			constexpr int k_BaseDelayMs = 150;
-			std::string lastErr;
-			for (int attempt = 0; attempt < k_MaxAttempts; ++attempt) {
-				lastErr = EmbedIconIntoExecutableOnce(exePath, icoBytes);
-				if (lastErr.empty()) return {};
-				// Only retry on the well-known transient failure modes;
-				// other errors (malformed .ico, ico-out-of-bounds, etc.)
-				// won't fix themselves with a delay.
-				const bool transient = lastErr.find("error 1359") != std::string::npos
-					|| lastErr.find("error 32") != std::string::npos       // ERROR_SHARING_VIOLATION
-					|| lastErr.find("error 33") != std::string::npos       // ERROR_LOCK_VIOLATION
-					|| lastErr.find("BeginUpdateResource") != std::string::npos;
-				if (!transient) return lastErr;
-				::Sleep(static_cast<DWORD>(k_BaseDelayMs * (attempt + 1)));
-			}
-			return lastErr.empty() ? std::string("icon embed retry exhausted") : lastErr;
-		}
-
-		std::string EmbedIconIntoExecutableOnce(const std::string& exePath,
-			const std::vector<std::uint8_t>& icoBytes)
-		{
-#pragma pack(push, 1)
-			struct IconDir {
-				std::uint16_t Reserved;
-				std::uint16_t Type;
-				std::uint16_t Count;
-			};
-			struct IcoEntry {
-				std::uint8_t Width;
-				std::uint8_t Height;
-				std::uint8_t ColorCount;
-				std::uint8_t Reserved;
-				std::uint16_t Planes;
-				std::uint16_t BitCount;
-				std::uint32_t BytesInRes;
-				std::uint32_t ImageOffset;
-			};
-			// RT_GROUP_ICON wire format: trailing field is a 16-bit resource ID (not a 32-bit offset), so 14 bytes/entry; pack to avoid loader-rejected padding.
-			struct GroupEntry {
-				std::uint8_t Width;
-				std::uint8_t Height;
-				std::uint8_t ColorCount;
-				std::uint8_t Reserved;
-				std::uint16_t Planes;
-				std::uint16_t BitCount;
-				std::uint32_t BytesInRes;
-				std::uint16_t Id;
-			};
-#pragma pack(pop)
-
-			if (icoBytes.size() < sizeof(IconDir)) return "ico too small";
-
-			IconDir dir{};
-			std::memcpy(&dir, icoBytes.data(), sizeof(dir));
-			if (dir.Type != 1 || dir.Count == 0) return "not a .ico";
-
-			const std::size_t entriesEnd = sizeof(IconDir)
-				+ static_cast<std::size_t>(dir.Count) * sizeof(IcoEntry);
-			if (icoBytes.size() < entriesEnd) return "ico header truncated";
-
-			std::vector<IcoEntry> entries(dir.Count);
-			std::memcpy(entries.data(), icoBytes.data() + sizeof(IconDir),
-				entries.size() * sizeof(IcoEntry));
-
-			// Snapshot pre-existing icon ids BEFORE opening the update handle
-			// (LoadLibraryEx + UpdateResource on the same file have to be
-			// sequential). We only need these to choose fresh RT_ICON ids.
-			std::string enumErr;
-			std::vector<ExistingResName> existingIcons =
-				EnumerateExistingResources(exePath, 3 /*RT_ICON*/, enumErr);
-			if (!enumErr.empty()) return enumErr;
-
-			HANDLE hUpdate = ::BeginUpdateResourceA(exePath.c_str(), FALSE);
-			if (!hUpdate) {
-				return "BeginUpdateResource failed (error " +
-					std::to_string(::GetLastError()) + ")";
-			}
-
-			// Avoid the delete-then-add pattern: updating without deleting is more reliable on freshly copied exes.
-			std::unordered_set<WORD> usedIconIds;
-			for (const ExistingResName& r : existingIcons) {
-				if (r.IsNumeric) usedIconIds.insert(r.NumericId);
-			}
-			std::uint32_t nextIconId = 256;
-			std::vector<GroupEntry> groupEntries(dir.Count);
-			for (std::size_t i = 0; i < entries.size(); ++i) {
-				const IcoEntry& e = entries[i];
-				if (e.ImageOffset + e.BytesInRes > icoBytes.size()) {
-					::EndUpdateResourceA(hUpdate, TRUE);
-					return "ico entry out of bounds";
-				}
-				while (nextIconId <= 0xFFFFu
-					&& usedIconIds.find(static_cast<WORD>(nextIconId)) != usedIconIds.end())
-				{
-					++nextIconId;
-				}
-				if (nextIconId > 0xFFFFu) {
-					::EndUpdateResourceA(hUpdate, TRUE);
-					return "too many icon resources";
-				}
-				const WORD iconId = static_cast<WORD>(nextIconId++);
-				usedIconIds.insert(iconId);
-				// Use MAKEINTRESOURCEA (not RT_ICON macro): RT_ICON expands to WIDE under UNICODE, mismatching UpdateResourceA's LPCSTR.
-				if (!::UpdateResourceA(hUpdate,
-					MAKEINTRESOURCEA(3),
-					MAKEINTRESOURCEA(iconId),
-					MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL),
-					const_cast<std::uint8_t*>(icoBytes.data()) + e.ImageOffset,
-					e.BytesInRes))
-				{
-					const DWORD err = ::GetLastError();
-					::EndUpdateResourceA(hUpdate, TRUE);
-					return "UpdateResource(RT_ICON) failed (error " +
-						std::to_string(err) + ")";
-				}
-				groupEntries[i] = GroupEntry{
-					e.Width, e.Height, e.ColorCount, e.Reserved,
-					e.Planes, e.BitCount, e.BytesInRes, iconId,
-				};
-			}
-
-			std::vector<std::uint8_t> groupBlob(sizeof(IconDir)
-				+ groupEntries.size() * sizeof(GroupEntry));
-			std::memcpy(groupBlob.data(), &dir, sizeof(IconDir));
-			std::memcpy(groupBlob.data() + sizeof(IconDir),
-				groupEntries.data(),
-				groupEntries.size() * sizeof(GroupEntry));
-
-			// Group ID 1 matches Index-Runtime/icon.rc. Overwriting that group
-			// makes the runtime point at the fresh icon resources above.
-			if (!::UpdateResourceA(hUpdate,
-				MAKEINTRESOURCEA(14),
-				MAKEINTRESOURCEA(1),
-				MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL),
-				groupBlob.data(),
-				static_cast<DWORD>(groupBlob.size())))
-			{
-				const DWORD err = ::GetLastError();
-				::EndUpdateResourceA(hUpdate, TRUE);
-				return "UpdateResource(RT_GROUP_ICON) failed (error " +
-					std::to_string(err) + ")";
-			}
-
-			if (!::EndUpdateResourceA(hUpdate, FALSE)) {
-				return "EndUpdateResource failed (error " +
-					std::to_string(::GetLastError()) + ")";
-			}
-			return std::string{};
-		}
-#endif
-
-		std::string GetEngineRuntimeFilename() {
-#if defined(IDX_PLATFORM_WINDOWS)
-			return "Index-Engine.dll";
-#elif defined(__APPLE__)
-			return "libIndex-Engine.dylib";
-#else
-			return "libIndex-Engine.so";
-#endif
-		}
-
-#if defined(IDX_PLATFORM_WINDOWS)
-		std::string GetNetHostRuntimeFilename() {
-			return "nethost.dll";
-		}
-#endif
-
-		// Filename of a premake `kind "SharedLib"` target on the current platform.
-		// Windows: <Name>.dll, Linux: lib<Name>.so, macOS: lib<Name>.dylib.
-		std::string SharedLibraryFilename(std::string_view projectName) {
-#if defined(IDX_PLATFORM_WINDOWS)
-			return std::string(projectName) + ".dll";
-#elif defined(__APPLE__)
-			return "lib" + std::string(projectName) + ".dylib";
-#else
-			return "lib" + std::string(projectName) + ".so";
-#endif
-		}
-
-		std::string BuildManagedDefinesForSnapshot(
-			const IndexProject& project,
-			std::string_view primarySymbol,
-			std::string_view configuration)
-		{
-			std::string defines(primarySymbol);
-			const auto append = [&](std::string_view value) {
-				if (value.empty()) return;
-				if (!defines.empty()) defines += "%3B";
-				defines.append(value);
-			};
-			if (configuration == "Debug") append("IDX_DEBUG");
-			else if (configuration == "Release") append("IDX_RELEASE");
-			else if (configuration == "Dist") append("IDX_DIST");
-			append(project.GetActiveBuildProfileDefine());
-			append(IndexProject::GetManagedPlatformDefine());
-			for (const std::string& customDefine : project.CustomDefines) append(customDefine);
-			return defines;
 		}
 
 		std::string NormalizePreviewTexturePath(const std::filesystem::path& path) {
@@ -1118,11 +457,13 @@ namespace Index {
 		constexpr SettingsIndexEntry k_SettingsIndex[] = {
 			// Display (RenderSettings_Display)
 			{ ImGuiEditorLayer::SettingsCategory::Display,  "Window",          "width height fullscreen resizable resolution window size run background" },
-			{ ImGuiEditorLayer::SettingsCategory::Display,  "UI Scaling",      "ui scaling reference resolution canvas scaler match width height layout" },
+			{ ImGuiEditorLayer::SettingsCategory::Display,  "Mobile",          "mobile android ios phone tablet orientation landscape portrait rotation rotate upside down" },
+			{ ImGuiEditorLayer::SettingsCategory::Display,  "UI Scaling",      "ui scaling reference resolution canvas scaler scale mode fit fill expand match width height layout" },
 
 			// Graphics (RenderSettings_Graphics)
 			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Render Backend",  "render backend rendering api dawn webgpu vulkan d3d11 d3d12 opengl metal auto" },
 			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Runtime Quality", "render scale upscale filter post processing post-processing particles quality performance" },
+			{ ImGuiEditorLayer::SettingsCategory::Graphics, "3D Rendering", "3d shadows shadow quality distance lights max lights exposure tone mapping aces reinhard hdr" },
 			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Default Font",    "default font typeface text font asset" },
 			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Font Baking",     "font baking atlas memory budget step granularity bake size lru cache vram ram" },
 
@@ -1132,6 +473,7 @@ namespace Index {
 			{ ImGuiEditorLayer::SettingsCategory::Branding, "Cursors",         "cursor mouse pointer ui hover default" },
 
 			// Build (RenderSettings_Build)
+			{ ImGuiEditorLayer::SettingsCategory::Build,    "Engine Modules",  "modules module 2d 3d sprites physics box2d jolt meshes lights index.2d index.3d strip size" },
 			{ ImGuiEditorLayer::SettingsCategory::Build,    "Executable",      "executable exe name output binary" },
 			{ ImGuiEditorLayer::SettingsCategory::Build,    "Diagnostics",     "diagnostics runtime stats logs overlay fps f6 f7 debug" },
 			{ ImGuiEditorLayer::SettingsCategory::Build,    "ECS Entity Bits", "ecs entity bits entt entities versions rebuild engine 16 20 22 24 28" },
@@ -1442,6 +784,43 @@ namespace Index {
 		m_BuildStage.assign(stage);
 	}
 
+	bool ImGuiEditorLayer::RequestCommandLineBuild(const std::string& profileName, const std::string& outputDirectory, std::string& outError) {
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project) {
+			outError = "No project loaded (pass --project=<path>).";
+			return false;
+		}
+		if (m_BuildState != 0 || m_ReserializeState != 0) {
+			outError = "Another build or reserialization is already running.";
+			return false;
+		}
+
+		const std::string resolvedProfile = GameBuilder::ResolveProfileName(*project, profileName, std::nullopt, outError);
+		if (resolvedProfile.empty()) {
+			return false;
+		}
+		project->ActiveBuildProfileName = resolvedProfile;
+		if (!project->Save()) {
+			outError = "Failed to save project.json.";
+			return false;
+		}
+
+		std::filesystem::path output = Path::FromUtf8(outputDirectory.empty()
+			? GameBuilder::DefaultOutputDirectory(*project, resolvedProfile)
+			: outputDirectory);
+		std::error_code absoluteError;
+		output = std::filesystem::absolute(output, absoluteError);
+		m_BuildOutputDir = Path::ToUtf8(output);
+		std::snprintf(m_BuildOutputDirBuffer, sizeof(m_BuildOutputDirBuffer), "%s", m_BuildOutputDir.c_str());
+
+		m_BuildAndPlay = false;
+		m_CommandLineBuild = true;
+		m_BuildStartTime = std::chrono::steady_clock::now();
+		m_BuildState = 1;
+		IDX_INFO_TAG("Build", "Command-line build queued: profile '{}', output '{}'", resolvedProfile, m_BuildOutputDir);
+		return true;
+	}
+
 	void ImGuiEditorLayer::ExecuteBuildAsync() {
 		{
 			std::lock_guard<std::mutex> lk(m_BuildProgressMutex);
@@ -1499,71 +878,15 @@ namespace Index {
 
 		Scene* active = SceneManager::GetActiveScene();
 		if (active) project->LastOpenedScene = active->GetName();
-		const std::filesystem::path activeProfilePath =
-			std::filesystem::path(project->GetBuildProfilesDirectory()) /
-			(project->ActiveBuildProfileName + std::string(IndexBuildProfile::FileExtension));
-		if (project->ActiveBuildProfileName.empty() || !std::filesystem::exists(activeProfilePath)) {
-			IDX_ERROR_TAG("Build", "The active build profile is missing.");
+		GameBuilder::Request request;
+		std::string prepareError;
+		if (!GameBuilder::Prepare(*project, request, prepareError)) {
+			IDX_ERROR_TAG("Build", "{}", prepareError);
 			m_BuildSucceeded.store(false, std::memory_order_relaxed);
-			ReportBuildProgress(1.0f, "Build profile missing");
+			ReportBuildProgress(1.0f, prepareError);
 			completeWithoutWorker();
 			return;
 		}
-		const IndexBuildProfile activeProfile = IndexBuildProfile::Load(activeProfilePath.string());
-		if (!BuildPlatformSupport::IsAvailable(activeProfile.Platform)) {
-			IDX_ERROR_TAG("Build", "Target platform is unavailable: {}",
-				BuildPlatformSupport::UnavailableReason(activeProfile.Platform));
-			m_BuildSucceeded.store(false, std::memory_order_relaxed);
-			ReportBuildProgress(1.0f, "Target platform unavailable");
-			completeWithoutWorker();
-			return;
-		}
-		project->ActiveRenderBackend = activeProfile.RenderBackend;
-		const std::vector<std::string> buildScenes = project->GetEnabledBuildScenes();
-		if (buildScenes.empty()) {
-			IDX_ERROR_TAG("Build", "No scenes are selected for the build.");
-			m_BuildSucceeded.store(false, std::memory_order_relaxed);
-			ReportBuildProgress(1.0f, "Build scene list is empty");
-			completeWithoutWorker();
-			return;
-		}
-		{
-			std::unordered_set<std::string> uniqueSceneNames;
-			for (const std::string& sceneName : buildScenes) {
-				if (!BuildOutputSafety::IsSafePathSegment(sceneName)) {
-					IDX_ERROR_TAG("Build", "Build scene '{}' is not a safe scene name.", sceneName);
-					m_BuildSucceeded.store(false, std::memory_order_relaxed);
-					ReportBuildProgress(1.0f, "Build scene validation failed");
-					completeWithoutWorker();
-					return;
-				}
-				std::string uniquenessKey = sceneName;
-#ifdef IDX_PLATFORM_WINDOWS
-				std::transform(uniquenessKey.begin(), uniquenessKey.end(), uniquenessKey.begin(),
-					[](unsigned char character) { return static_cast<char>(std::tolower(character)); });
-#endif
-				if (!uniqueSceneNames.insert(std::move(uniquenessKey)).second) {
-					IDX_ERROR_TAG("Build", "Build scene '{}' is listed more than once.", sceneName);
-					m_BuildSucceeded.store(false, std::memory_order_relaxed);
-					ReportBuildProgress(1.0f, "Build scene validation failed");
-					completeWithoutWorker();
-					return;
-				}
-				const std::filesystem::path scenePath = project->GetSceneFilePath(sceneName);
-				std::error_code sceneError;
-				std::ifstream sceneInput(scenePath, std::ios::binary);
-				if (!std::filesystem::is_regular_file(scenePath, sceneError)
-					|| sceneError || !sceneInput.good()) {
-					IDX_ERROR_TAG("Build", "Build scene '{}' is missing or unreadable at {}.",
-						sceneName, scenePath.string());
-					m_BuildSucceeded.store(false, std::memory_order_relaxed);
-					ReportBuildProgress(1.0f, "Build scene validation failed");
-					completeWithoutWorker();
-					return;
-				}
-			}
-		}
-		project->StartupScene = buildScenes.front();
 		if (!project->Save()) {
 			IDX_ERROR_TAG("Build", "Failed to save project.json before building.");
 			m_BuildSucceeded.store(false, std::memory_order_relaxed);
@@ -1572,12 +895,16 @@ namespace Index {
 			return;
 		}
 
-		IndexProject projectSnapshot = *project;
-		std::string outputDirectory(m_BuildOutputDirBuffer);
-		m_BuildFuture = std::async(std::launch::async,
-			[this, project = std::move(projectSnapshot), output = std::move(outputDirectory)]() mutable {
-				ExecuteBuild(std::move(project), std::move(output));
-			});
+		request.OutputDirectory = m_BuildOutputDirBuffer;
+		m_BuildStartTime = std::chrono::steady_clock::now();
+		m_BuiltExecutablePath.clear();
+		m_BuildFuture = std::async(std::launch::async, [this, request = std::move(request)]() mutable {
+			const GameBuilder::Result result = GameBuilder::Build(std::move(request),
+				[this](float progress, std::string_view stage) { ReportBuildProgress(progress, stage); });
+			m_BuildOutputDir = result.OutputDirectory;
+			m_BuiltExecutablePath = result.ExecutablePath;
+			m_BuildSucceeded.store(result.Succeeded, std::memory_order_relaxed);
+		});
 	}
 
 	void ImGuiEditorLayer::ReportReserializeProgress(float progress, std::string_view stage) {
@@ -1596,7 +923,7 @@ namespace Index {
 			return; // poll's !valid() guard clears the state next frame
 		}
 
-		const SceneSerializationFormat format = ToSceneSerializationFormat(project->AssetSerializationFormat);
+		const SceneSerializationFormat format = GameBuilder::ToSceneSerializationFormat(project->AssetSerializationFormat);
 		const std::string assetsDir = project->AssetsDirectory;
 
 		if (m_PrefabEditScene && (m_PrefabEditScene->IsDirty() || m_PrefabEditDirty)
@@ -1627,7 +954,7 @@ namespace Index {
 		}
 
 		m_ReserializeFuture = std::async(std::launch::async, [this, assetsDir, format]() {
-			const int converted = ConvertSerializedAssetsInDirectory(assetsDir, format,
+			const int converted = GameBuilder::ConvertSerializedAssets(assetsDir, format,
 				[this](int done, int total, const std::string& fileName) {
 					// done+1 = the item now being converted, matching the "(k/total)" label; clamped in
 					// ReportReserializeProgress so the final done==total call lands at 1.0.
@@ -1645,658 +972,6 @@ namespace Index {
 				});
 			m_ReserializeConverted.store(converted, std::memory_order_relaxed);
 		});
-	}
-
-	void ImGuiEditorLayer::ExecuteBuild(IndexProject projectSnapshot, std::string outputDirectory) {
-		m_BuildStartTime = std::chrono::steady_clock::now();
-		m_BuiltExecutablePath.clear();
-		auto failBuild = [this](std::string_view stage) {
-			m_BuildSucceeded.store(false, std::memory_order_relaxed);
-			ReportBuildProgress(1.0f, stage);
-		};
-
-		IndexProject* project = &projectSnapshot;
-
-		m_BuildOutputDir = std::move(outputDirectory);
-		if (m_BuildOutputDir.empty()) {
-			IDX_ERROR_TAG("Build", "No output directory specified.");
-			failBuild("No output directory");
-			return;
-		}
-
-		const BuildOutputSafety::OutputPathValidation outputValidation =
-			BuildOutputSafety::ValidateOutputPath(
-				project->RootDirectory, project->AssetsDirectory, m_BuildOutputDir);
-		if (!outputValidation.IsValid()) {
-			IDX_ERROR_TAG("Build", "Unsafe output directory '{}': {}",
-				m_BuildOutputDir, BuildOutputSafety::GetErrorMessage(outputValidation.Error));
-			failBuild("Unsafe output directory");
-			return;
-		}
-
-		const std::filesystem::path finalOutDir = outputValidation.CanonicalOutput;
-		m_BuildOutputDir = finalOutDir.string();
-		BuildStagingDirectory stagedOutput(finalOutDir);
-		std::string stagingError;
-		if (!stagedOutput.Prepare(stagingError)) {
-			IDX_ERROR_TAG("Build", "Failed to prepare build staging directory: {}", stagingError);
-			failBuild("Output staging failed");
-			return;
-		}
-		const std::filesystem::path& outDir = stagedOutput.GetPath();
-		if (!std::filesystem::exists(project->AssetsDirectory)) {
-			IDX_ERROR_TAG("Build", "Project Assets directory not found at {}", project->AssetsDirectory);
-			failBuild("Project Assets missing");
-			return;
-		}
-		const BuildOutputSafety::DirectoryFingerprint assetInputFingerprint =
-			BuildOutputSafety::CaptureDirectoryFingerprint(project->AssetsDirectory);
-		if (!assetInputFingerprint.Succeeded()) {
-			IDX_ERROR_TAG("Build", "Failed to snapshot project Assets: {}", assetInputFingerprint.Error);
-			failBuild("Project asset snapshot failed");
-			return;
-		}
-		try {
-			std::filesystem::copy_file(project->ProjectFilePath, outDir / "project.json",
-				std::filesystem::copy_options::overwrite_existing);
-		}
-		catch (const std::exception& error) {
-			IDX_ERROR_TAG("Build", "Failed to snapshot project.json: {}", error.what());
-			failBuild("Project snapshot failed");
-			return;
-		}
-		const DirectoryCopyResult initialAssetsCopy =
-			CopyDirIncremental(project->AssetsDirectory, outDir / "Assets");
-		if (!initialAssetsCopy.Succeeded()) {
-			IDX_ERROR_TAG("Build", "Failed to snapshot project Assets: {}", initialAssetsCopy.Error);
-			failBuild("Project asset snapshot failed");
-			return;
-		}
-		const BuildOutputSafety::DirectoryFingerprint postCopyFingerprint =
-			BuildOutputSafety::CaptureDirectoryFingerprint(project->AssetsDirectory);
-		if (!(assetInputFingerprint == postCopyFingerprint)) {
-			IDX_ERROR_TAG("Build", "Project Assets changed while the build snapshot was being captured.");
-			failBuild("Project assets changed during snapshot");
-			return;
-		}
-
-		IDX_INFO_TAG("Build", "Starting build for '{}'...", project->Name);
-		ReportBuildProgress(0.05f, "Preparing build");
-
-		const std::filesystem::path exeDir(Path::ExecutableDir());
-		const std::string buildConfiguration =
-			project->ActiveBuildProfile == IndexProject::BuildProfile::Release
-			? "Dist"
-			: IndexProject::GetActiveBuildConfiguration();
-		const std::string runtimeOutputFolder = GetRuntimeOutputFolderName(buildConfiguration);
-		const std::string resolvedEngineRoot = IndexProject::GetEngineRootDir();
-		const std::filesystem::path engineRoot(resolvedEngineRoot);
-		const std::vector<IndexPackageManifest> packageManifests =
-			IndexPackageInstaller::EnumerateAll(project->RootDirectory);
-		std::vector<std::string> engineNativePackageTargets;
-		std::vector<const IndexPackageManifest*> projectLocalPackageManifests;
-		for (const std::string& packageName : project->Packages) {
-			if (!BuildOutputSafety::IsSafePathSegment(packageName)) {
-				IDX_ERROR_TAG("Build", "Unsafe package identifier '{}'.", packageName);
-				failBuild("Invalid package identifier");
-				return;
-			}
-
-			const auto manifest = std::find_if(packageManifests.begin(), packageManifests.end(),
-				[&](const IndexPackageManifest& candidate) { return candidate.Name == packageName; });
-			if (manifest == packageManifests.end()) {
-				IDX_ERROR_TAG("Build", "Package '{}' has no readable index-package.lua.", packageName);
-				failBuild("Package manifest missing");
-				return;
-			}
-			if (!manifest->IsEngine) {
-				projectLocalPackageManifests.push_back(&*manifest);
-			}
-			if (manifest->IsEngine && (manifest->HasNativeLayer || manifest->HasNativeStandaloneLayer)) {
-				engineNativePackageTargets.push_back("Pkg." + packageName + ".Native");
-			}
-		}
-
-#if INDEX_WITH_SCRIPTING && defined(IDX_PLATFORM_WINDOWS)
-		if (!engineRoot.empty()) {
-			const std::filesystem::path scriptCoreProject =
-				engineRoot / "Index-ScriptCore" / "Index-ScriptCore.csproj";
-			const std::filesystem::path scriptCoreSources = engineRoot / "Index-ScriptCore" / "Source";
-			if (std::filesystem::is_regular_file(scriptCoreProject)
-				&& std::filesystem::is_directory(scriptCoreSources)) {
-				ReportBuildProgress(0.08f, "Building scripting runtime");
-				const Process::Result scriptCoreBuild = Process::Run({
-					"dotnet", "build", scriptCoreProject.string(),
-					"-c", buildConfiguration,
-					"--nologo", "-v", "q", "-nodeReuse:false",
-					"-p:UseSharedCompilation=false"
-				}, engineRoot.string(), std::chrono::minutes(5));
-				if (!scriptCoreBuild.Succeeded()) {
-					IDX_ERROR_TAG("Build", "Index-ScriptCore build failed (exit code {}).",
-						scriptCoreBuild.ExitCode);
-					if (!scriptCoreBuild.Output.empty()) IDX_ERROR_TAG("Build", "{}", scriptCoreBuild.Output);
-					failBuild("Scripting runtime build failed");
-					return;
-				}
-			}
-		}
-#endif
-
-		if (!projectLocalPackageManifests.empty()) {
-			ReportBuildProgress(0.09f, "Compiling project packages");
-			const IndexProject::RegenerateResult packageGeneration =
-				IndexProject::RegeneratePackageWorkspaceForProject(project->RootDirectory);
-			if (!packageGeneration.Succeeded) {
-				IDX_ERROR_TAG("Build", "Project package generation failed: {}", packageGeneration.Output);
-				failBuild("Project package generation failed");
-				return;
-			}
-
-			const IndexProject::BuildResult packageBuild =
-				IndexProject::BuildProjectPackages(project->RootDirectory, buildConfiguration, "x64");
-			if (!packageBuild.Succeeded) {
-				IDX_ERROR_TAG("Build", "Project package compilation failed: {}", packageBuild.Output);
-				failBuild("Project package compilation failed");
-				return;
-			}
-
-			for (const IndexPackageManifest* manifest : projectLocalPackageManifests) {
-				if (!manifest->HasCSharpLayer) continue;
-
-				const std::string targetName = "Pkg." + manifest->Name;
-				const std::filesystem::path sourceDirectory =
-					IndexProject::GetProjectPackageOutputDirectory(
-						project->RootDirectory, targetName, buildConfiguration);
-				const std::filesystem::path assemblyPath = sourceDirectory / (targetName + ".dll");
-				std::error_code assemblyError;
-				if (!std::filesystem::is_regular_file(assemblyPath, assemblyError) || assemblyError) {
-					IDX_ERROR_TAG("Build", "Managed project package artifact is missing: {}",
-						assemblyPath.string());
-					failBuild("Project package artifact missing");
-					return;
-				}
-
-				const std::filesystem::path destinationDirectory =
-					std::filesystem::path(manifest->PackageDir) / "Bin" / "Windows-x64";
-				const DirectoryCopyResult packageCopy =
-					CopyDirIncremental(sourceDirectory, destinationDirectory);
-				if (!packageCopy.Succeeded()) {
-					IDX_ERROR_TAG("Build", "Failed to stage managed project package '{}': {}",
-						manifest->Name, packageCopy.Error);
-					failBuild("Project package staging failed");
-					return;
-				}
-			}
-			IndexPackageInstaller::RegeneratePackageReferences(*project);
-		}
-
-		const bool hasManagedProject = std::filesystem::exists(project->CsprojPath);
-		if (hasManagedProject) {
-			ReportBuildProgress(0.10f, "Compiling C# scripts");
-			IDX_INFO_TAG("Build", "Compiling C# scripts...");
-			Process::Result buildResult = Process::Run({
-				"dotnet",
-				"build",
-				project->CsprojPath,
-				"-c", buildConfiguration,
-				"--nologo",
-				"-v", "q",
-				"-nodeReuse:false",
-				"-p:UseSharedCompilation=false",
-				"-p:DefineConstants=" + BuildManagedDefinesForSnapshot(
-					*project, "INDEX_BUILD", buildConfiguration)
-			}, {}, std::chrono::minutes(5));
-			if (!buildResult.Succeeded()) {
-				IDX_ERROR_TAG("Build", "C# script compilation failed (exit code {}).", buildResult.ExitCode);
-				if (!buildResult.Output.empty()) {
-					IDX_ERROR_TAG("Build", "{}", buildResult.Output);
-				}
-				failBuild("C# compilation failed");
-				return;
-			}
-			IDX_INFO_TAG("Build", "C# scripts compiled.");
-			ReportBuildProgress(0.30f, "C# scripts compiled");
-		}
-
-		if (!engineNativePackageTargets.empty()) {
-			const std::filesystem::path solutionPath =
-				std::filesystem::path(IndexProject::GetEngineRootDir()) / "Index.sln";
-			if (!IndexProject::GetMSBuildPath().empty() && std::filesystem::exists(solutionPath)) {
-				ReportBuildProgress(0.40f, "Compiling native packages");
-				const IndexProject::BuildResult packageBuild = IndexProject::BuildSolutionTargets(
-					engineNativePackageTargets, buildConfiguration, "x64");
-				if (!packageBuild.Succeeded) {
-					IDX_ERROR_TAG("Build", "Native package compilation failed: {}", packageBuild.Output);
-					failBuild("Native package compilation failed");
-					return;
-				}
-			}
-			else {
-				IDX_WARN_TAG("Build", "MSBuild is unavailable; staging existing native package binaries.");
-			}
-		}
-
-		const std::filesystem::path developmentRuntimeDirectory = engineRoot.empty()
-			? std::filesystem::path{}
-			: engineRoot / "bin" / runtimeOutputFolder / "Index-Runtime";
-		std::filesystem::path runtimeOutputDirectory;
-		{
-			const std::filesystem::path runtimeProject = engineRoot.empty()
-				? std::filesystem::path{}
-				: engineRoot / "Index-Runtime" / "Index-Runtime.vcxproj";
-			const std::string msbuildPath = IndexProject::GetMSBuildPath();
-#if defined(IDX_PLATFORM_WINDOWS)
-			if (!runtimeProject.empty() && std::filesystem::exists(runtimeProject)) {
-				if (msbuildPath.empty()) {
-					IDX_ERROR_TAG("Build", "MSBuild is required to produce a fresh runtime artifact.");
-					failBuild("MSBuild unavailable");
-					return;
-				}
-				ReportBuildProgress(0.45f, "Building runtime (" + buildConfiguration + ")");
-				IDX_INFO_TAG("Build", "Building Index-Runtime ({})...", buildConfiguration);
-				const Process::Result runtimeBuild = Process::Run({
-					msbuildPath, runtimeProject.string(),
-					"/p:Configuration=" + buildConfiguration, "/p:Platform=x64",
-					"/p:CL_MPCount=1", "/p:UseMultiToolTask=false",
-					"/m:1", "/nr:false", "/v:minimal", "/nologo"
-				}, engineRoot.string(), std::chrono::minutes(15));
-				if (!runtimeBuild.Succeeded()) {
-					IDX_ERROR_TAG("Build", "Runtime build ({}) failed (exit code {}).", buildConfiguration, runtimeBuild.ExitCode);
-					if (!runtimeBuild.Output.empty()) IDX_ERROR_TAG("Build", "{}", runtimeBuild.Output);
-					failBuild("Runtime build failed");
-					return;
-				}
-				runtimeOutputDirectory = developmentRuntimeDirectory;
-				IDX_INFO_TAG("Build", "Runtime ({}) ready; staging from {}", buildConfiguration,
-					runtimeOutputDirectory.string());
-			}
-#endif
-			if (runtimeOutputDirectory.empty()) {
-				const std::string runtimeExecutable = GetRuntimeExecutableFilename();
-				const std::string engineLibrary = GetEngineRuntimeFilename();
-				const std::string bundledRuntimeName =
-					project->ActiveBuildProfile == IndexProject::BuildProfile::Release
-					? "Runtime-Dist" : "Runtime-Development";
-				runtimeOutputDirectory = BuildOutputSafety::FindFirstCompleteArtifactDirectory({
-					developmentRuntimeDirectory,
-					engineRoot.empty() ? std::filesystem::path{} : engineRoot / bundledRuntimeName,
-					engineRoot.empty() ? std::filesystem::path{} : engineRoot / "Runtime-Dist",
-					exeDir / bundledRuntimeName,
-					exeDir / "Runtime-Dist",
-					exeDir,
-					exeDir.parent_path() / "Index-Runtime",
-				}, { runtimeExecutable, engineLibrary });
-				if (runtimeOutputDirectory.empty()) {
-					IDX_ERROR_TAG("Build", "No complete runtime artifact set is available for {}.",
-						buildConfiguration);
-					failBuild("Runtime artifacts unavailable");
-					return;
-				}
-				IDX_INFO_TAG("Build", "Using prebuilt runtime artifacts from {}",
-					runtimeOutputDirectory.string());
-			}
-		}
-
-		ReportBuildProgress(0.55f, "Copying runtime binaries");
-
-		auto copyFile = [&](const std::filesystem::path& src, const std::filesystem::path& dest,
-			const std::string& name, bool required)
-		{
-			try {
-				if (!std::filesystem::exists(src)) {
-					if (required) IDX_ERROR_TAG("Build", "Required {} not found at {}", name, src.string());
-					else IDX_WARN_TAG("Build", "{} not found at {}", name, src.string());
-					return false;
-				}
-				auto canonical = std::filesystem::canonical(src);
-				if (NeedsCopy(canonical, dest)) {
-					std::filesystem::create_directories(dest.parent_path());
-					std::filesystem::copy_file(canonical, dest, std::filesystem::copy_options::overwrite_existing);
-					IDX_INFO_TAG("Build", "Copied {}", name);
-				}
-				return true;
-			}
-			catch (const std::exception& e) {
-				if (required) IDX_ERROR_TAG("Build", "Failed to copy {}: {}", name, e.what());
-				else IDX_WARN_TAG("Build", "Failed to copy {}: {}", name, e.what());
-				return false;
-			}
-		};
-		auto copyRequiredFile = [&](const std::filesystem::path& src,
-			const std::filesystem::path& dest, const std::string& name)
-		{
-			if (copyFile(src, dest, name, true)) return true;
-			failBuild("Required artifact staging failed");
-			return false;
-		};
-
-		const std::string runtimeExecutableFilename = GetRuntimeExecutableFilename();
-		const std::string outputExecutableStem = project->ExecutableName.empty()
-			? project->Name : project->ExecutableName;
-		if (!BuildOutputSafety::IsSafePathSegment(outputExecutableStem)) {
-			IDX_ERROR_TAG("Build", "Unsafe executable name '{}'.", outputExecutableStem);
-			failBuild("Invalid executable name");
-			return;
-		}
-		m_BuiltExecutablePath = (finalOutDir /
-			(outputExecutableStem + std::filesystem::path(runtimeExecutableFilename).extension().string())).string();
-		if (!copyRequiredFile(runtimeOutputDirectory / runtimeExecutableFilename,
-			outDir / (outputExecutableStem + std::filesystem::path(runtimeExecutableFilename).extension().string()),
-			"runtime executable")) return;
-		if (!copyRequiredFile(runtimeOutputDirectory / GetEngineRuntimeFilename(),
-			outDir / GetEngineRuntimeFilename(),
-			GetEngineRuntimeFilename())) return;
-
-		{
-			const std::string glfwFilename = SharedLibraryFilename("GLFW");
-			if (!copyRequiredFile(runtimeOutputDirectory / glfwFilename,
-				outDir / glfwFilename, glfwFilename)) return;
-		}
-		if (buildConfiguration != "Dist") {
-			const std::string tracyFilename = SharedLibraryFilename("Tracy");
-			const std::filesystem::path tracySource = runtimeOutputDirectory / tracyFilename;
-#if INDEX_PROFILER_ENABLED
-			if (!copyRequiredFile(tracySource, outDir / tracyFilename, tracyFilename)) return;
-#else
-			if (std::filesystem::exists(tracySource)) {
-				copyFile(tracySource, outDir / tracyFilename, tracyFilename, false);
-			}
-#endif
-		}
-
-#if INDEX_WITH_RENDER && !defined(IDX_PLATFORM_WINDOWS)
-		{
-			const std::string dawnFilename = SharedLibraryFilename("webgpu_dawn");
-			if (!copyRequiredFile(runtimeOutputDirectory / dawnFilename,
-				outDir / dawnFilename, dawnFilename)) return;
-		}
-#endif
-
-#if INDEX_WITH_SCRIPTING
-		const std::filesystem::path scriptCoreDir =
-			BuildOutputSafety::FindFirstCompleteArtifactDirectory({
-				runtimeOutputDirectory,
-				runtimeOutputDirectory.parent_path() / "Index-ScriptCore",
-				engineRoot.empty() ? std::filesystem::path{} : engineRoot / "Index-ScriptCore",
-			}, {
-				"Index-ScriptCore.dll",
-				"Index-ScriptCore.runtimeconfig.json",
-				"Index-ScriptCore.deps.json",
-			});
-		if (scriptCoreDir.empty()) {
-			IDX_ERROR_TAG("Build", "No complete Index-ScriptCore artifact set is available.");
-			failBuild("Scripting runtime artifacts unavailable");
-			return;
-		}
-		if (!copyRequiredFile(scriptCoreDir / "Index-ScriptCore.dll",
-			outDir / "Index-ScriptCore.dll", "Index-ScriptCore.dll")) return;
-		if (!copyRequiredFile(scriptCoreDir / "Index-ScriptCore.runtimeconfig.json",
-			outDir / "Index-ScriptCore.runtimeconfig.json", "ScriptCore config")) return;
-		if (!copyRequiredFile(scriptCoreDir / "Index-ScriptCore.deps.json",
-			outDir / "Index-ScriptCore.deps.json", "ScriptCore deps")) return;
-#if defined(IDX_PLATFORM_WINDOWS)
-		{
-			const std::string netHostFilename = GetNetHostRuntimeFilename();
-			const std::filesystem::path netHostSource = runtimeOutputDirectory / netHostFilename;
-			if (!copyRequiredFile(netHostSource, outDir / netHostFilename, netHostFilename)) return;
-		}
-#endif
-#endif
-
-		const std::filesystem::path licenseSource =
-			BuildOutputSafety::FindFirstCompleteArtifactDirectory({
-				runtimeOutputDirectory / "Licenses",
-				engineRoot.empty() ? std::filesystem::path{} : engineRoot / "Licenses",
-				exeDir / "EngineSDK" / "Licenses",
-				exeDir.parent_path() / "Index-Launcher" / "EngineSDK" / "Licenses",
-			}, {
-				std::filesystem::path("Index") / "LICENSE.txt",
-				std::filesystem::path("Index") / "THIRD_PARTY_LICENSES.md",
-				std::filesystem::path("DotNet") / "ThirdPartyNotices.txt",
-			});
-		if (licenseSource.empty()) {
-			IDX_ERROR_TAG("Build", "A complete redistribution license payload is unavailable.");
-			failBuild("Redistribution licenses unavailable");
-			return;
-		}
-		const DirectoryCopyResult licenseCopy = CopyDirIncremental(licenseSource, outDir / "Licenses");
-		if (!licenseCopy.Succeeded()) {
-			IDX_ERROR_TAG("Build", "Failed to stage redistribution licenses: {}", licenseCopy.Error);
-			failBuild("License staging failed");
-			return;
-		}
-
-		ReportBuildProgress(0.75f, "Optimizing project assets");
-		{
-			IDX_INFO_TAG("Build", "Assets: {} file(s) snapshotted", initialAssetsCopy.Copied);
-			ReportBuildProgress(0.78f, "Optimizing scene assets");
-			std::string conversionError;
-			const int convertedFiles = ConvertSerializedAssetsInDirectory(
-				outDir / "Assets", SceneSerializationFormat::Binary, {}, &conversionError);
-			if (!conversionError.empty()) {
-				IDX_ERROR_TAG("Build", "Failed to optimize serialized assets: {}", conversionError);
-				failBuild("Scene asset optimization failed");
-				return;
-			}
-			IDX_INFO_TAG("Build", "Serialized assets optimized to binary: {} file(s)", convertedFiles);
-		}
-
-		// Ship the asset-registry manifest (<project>/.index/asset-registry.cache) so the runtime
-		// trusts it and skips the cold ~9k-.meta directory scan on launch. Copy-only — no registry
-		// calls from this build worker thread; a stale/absent manifest self-heals on first launch.
-		{
-			const std::filesystem::path manifestSrc =
-				std::filesystem::path(project->AssetsDirectory).parent_path() / ".index" / "asset-registry.cache";
-			if (std::filesystem::exists(manifestSrc)) {
-				try {
-					const std::filesystem::path manifestDest = outDir / ".index" / "asset-registry.cache";
-					std::filesystem::create_directories(manifestDest.parent_path());
-					std::filesystem::copy_file(manifestSrc, manifestDest,
-						std::filesystem::copy_options::overwrite_existing);
-					IDX_INFO_TAG("Build", "Shipped asset-registry manifest");
-				}
-				catch (const std::exception& e) {
-					IDX_WARN_TAG("Build", "Failed to ship asset-registry manifest: {}", e.what());
-				}
-			}
-			else {
-				IDX_WARN_TAG("Build", "Asset-registry manifest not found at {}; runtime cold-scans on first launch", manifestSrc.string());
-			}
-		}
-
-		{
-			std::string indexAssetsSrc;
-			if (std::filesystem::exists(project->IndexAssetsDirectory)) {
-				indexAssetsSrc = project->IndexAssetsDirectory;
-			}
-			else {
-				indexAssetsSrc = Path::ResolveIndexAssets("");
-			}
-
-			if (!indexAssetsSrc.empty() && std::filesystem::exists(indexAssetsSrc)) {
-				std::vector<std::filesystem::path> excluded{
-					std::filesystem::path("Textures") / "Editor",
-				};
-				const std::vector<std::filesystem::path> unusedFonts = BuildAssetPruning::FindUnreferencedBuiltInFonts(
-					Path::FromUtf8(indexAssetsSrc), Path::FromUtf8(project->RootDirectory), { outDir, finalOutDir });
-				for (const auto& font : unusedFonts) {
-					IDX_INFO_TAG("Build", "Skipping unreferenced built-in font: IndexAssets/{}", font.generic_string());
-					excluded.push_back(font);
-				}
-				const DirectoryCopyResult indexAssetsCopy = CopyDirIncrementalExcluding(
-					indexAssetsSrc, outDir / "IndexAssets", excluded);
-				if (!indexAssetsCopy.Succeeded()) {
-					IDX_ERROR_TAG("Build", "Failed to copy IndexAssets: {}", indexAssetsCopy.Error);
-					failBuild("IndexAssets staging failed");
-					return;
-				}
-				IDX_INFO_TAG("Build", "IndexAssets: {} file(s) copied", indexAssetsCopy.Copied);
-			}
-			else {
-				IDX_ERROR_TAG("Build", "IndexAssets not found; build cannot be completed");
-				failBuild("IndexAssets missing");
-				return;
-			}
-		}
-
-		if (hasManagedProject) {
-			auto userBinDir = std::filesystem::path(
-				project->GetUserAssemblyOutputPath(buildConfiguration)).parent_path();
-			const std::filesystem::path userAssemblyPath =
-				project->GetUserAssemblyOutputPath(buildConfiguration);
-			if (!std::filesystem::exists(userAssemblyPath)) {
-				IDX_ERROR_TAG("Build", "Compiled user assembly not found at {}", userAssemblyPath.string());
-				failBuild("User assembly missing");
-				return;
-			}
-			auto destBinDir = outDir / "bin" / buildConfiguration;
-			int copied = 0;
-			try {
-				for (const auto& entry : std::filesystem::directory_iterator(userBinDir)) {
-					if (!entry.is_regular_file()) continue;
-					auto ext = entry.path().extension().string();
-					if (ext == ".dll" || ext == ".json") {
-						if (!copyRequiredFile(entry.path(), destBinDir / entry.path().filename(),
-							entry.path().filename().string())) return;
-						copied++;
-					}
-				}
-			}
-			catch (const std::exception& e) {
-				IDX_ERROR_TAG("Build", "Failed to enumerate user assemblies: {}", e.what());
-				failBuild("User assembly staging failed");
-				return;
-			}
-			IDX_INFO_TAG("Build", "User assemblies: {} file(s) copied", copied);
-		}
-
-		// Native siblings must be staged explicitly for managed P/Invoke package bridges.
-		{
-			int copiedPackages = 0;
-			for (const std::string& packageName : project->Packages) {
-				if (packageName.empty()) continue;
-				if (!BuildOutputSafety::IsSafePathSegment(packageName)) {
-					IDX_ERROR_TAG("Build", "Unsafe package identifier '{}'.", packageName);
-					failBuild("Invalid package identifier");
-					return;
-				}
-				const auto manifest = std::find_if(packageManifests.begin(), packageManifests.end(),
-					[&](const IndexPackageManifest& candidate) { return candidate.Name == packageName; });
-				if (manifest == packageManifests.end()) {
-					IDX_ERROR_TAG("Build", "Package '{}' has no readable index-package.lua.", packageName);
-					failBuild("Package manifest missing");
-					return;
-				}
-				if (!manifest->HasNativeLayer && !manifest->HasNativeStandaloneLayer) {
-					IDX_INFO_TAG("Build", "Package '{}' is managed-only.", packageName);
-					continue;
-				}
-				const std::string nativeFolderName = "Pkg." + packageName + ".Native";
-				const std::string nativeFileName = SharedLibraryFilename(nativeFolderName);
-				const std::string nativeAbiFileName = nativeFileName + ".indexabi";
-				std::vector<std::filesystem::path> candidateDirectories;
-				if (!manifest->IsEngine) {
-					candidateDirectories.emplace_back(
-						IndexProject::GetProjectPackageOutputDirectory(
-							project->RootDirectory, nativeFolderName, buildConfiguration));
-				}
-				else {
-					candidateDirectories.emplace_back(
-						runtimeOutputDirectory.parent_path() / nativeFolderName);
-				}
-				candidateDirectories.emplace_back(
-					std::filesystem::path(manifest->PackageDir) / "Bin" / "Windows-x64");
-				const std::filesystem::path sourceDirectory =
-					BuildOutputSafety::FindFirstCompleteArtifactDirectory(
-						candidateDirectories, { nativeFileName, nativeAbiFileName });
-				const std::filesystem::path src = sourceDirectory / nativeFileName;
-				const std::filesystem::path dst = outDir / "Packages" / nativeFolderName / nativeFileName;
-				if (!copyRequiredFile(src, dst, nativeFileName)) return;
-				if (!copyRequiredFile(sourceDirectory / nativeAbiFileName,
-					dst.parent_path() / nativeAbiFileName, nativeAbiFileName)) return;
-				copiedPackages++;
-
-#if defined(IDX_PLATFORM_WINDOWS)
-				const std::filesystem::path pdbSrc = sourceDirectory / (nativeFolderName + ".pdb");
-				if (std::filesystem::exists(pdbSrc)) {
-					copyFile(pdbSrc, dst.parent_path() / pdbSrc.filename(), pdbSrc.filename().string(), false);
-				}
-#endif
-			}
-			if (copiedPackages > 0) {
-				IDX_INFO_TAG("Build", "Native packages: {} library file(s) staged under Packages/.", copiedPackages);
-			}
-		}
-
-#ifdef IDX_PLATFORM_WINDOWS
-		if (!project->AppIconPath.empty()) {
-			std::filesystem::path iconPath(project->AppIconPath);
-			if (!iconPath.is_absolute()) {
-				iconPath = std::filesystem::path(project->RootDirectory) / project->AppIconPath;
-			}
-			const std::string iconExt = iconPath.has_extension()
-				? iconPath.extension().string() : std::string{};
-			std::string iconExtLower = iconExt;
-			std::transform(iconExtLower.begin(), iconExtLower.end(),
-				iconExtLower.begin(), [](unsigned char c) { return std::tolower(c); });
-			const std::filesystem::path embedTargetExe = outDir
-				/ (outputExecutableStem + std::filesystem::path(runtimeExecutableFilename).extension().string());
-			if (!std::filesystem::exists(iconPath)) {
-				IDX_WARN_TAG("Build", "AppIcon not found at {}", iconPath.string());
-			}
-			else if (!std::filesystem::exists(embedTargetExe)) {
-				IDX_WARN_TAG("Build", "Cannot embed icon — built executable not found at {}",
-					embedTargetExe.string());
-			}
-			else {
-				std::vector<std::uint8_t> icoBytes;
-				std::string buildErr;
-				if (iconExtLower == ".ico") {
-					buildErr = ReadIcoFileBytes(iconPath, icoBytes);
-				}
-				else {
-					buildErr = BuildIcoBytesFromImage(iconPath, icoBytes);
-				}
-				if (!buildErr.empty()) {
-					IDX_WARN_TAG("Build", "Failed to prepare icon ({}): {}",
-						iconPath.filename().string(), buildErr);
-				}
-				else {
-					const std::string err = EmbedIconIntoExecutable(
-						embedTargetExe.string(), icoBytes);
-					if (err.empty()) {
-						IDX_INFO_TAG("Build", "Embedded icon: {}", iconPath.filename().string());
-					}
-					else {
-						IDX_WARN_TAG("Build", "Failed to embed icon: {}", err);
-					}
-				}
-			}
-		}
-#endif
-
-		const BuildOutputSafety::DirectoryFingerprint finalAssetFingerprint =
-			BuildOutputSafety::CaptureDirectoryFingerprint(project->AssetsDirectory);
-		if (!(assetInputFingerprint == finalAssetFingerprint)) {
-			IDX_ERROR_TAG("Build", "Project Assets changed during the build; discarding mixed-version output.");
-			failBuild("Project assets changed during build");
-			return;
-		}
-
-		ReportBuildProgress(0.95f, "Finalizing");
-		std::string publishError;
-		if (!stagedOutput.Publish(publishError)) {
-			IDX_ERROR_TAG("Build", "Failed to publish staged output: {}", publishError);
-			failBuild("Build publish failed");
-			return;
-		}
-		float elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() - m_BuildStartTime).count();
-		IDX_INFO_TAG("Build", "Build completed in {:.2f}s -> {}", elapsed, m_BuildOutputDir);
-		ReportBuildProgress(1.0f, "Build complete");
-
-#ifdef IDX_PLATFORM_WINDOWS
-		// Explorer popup runs on the UI thread once the future resolves, not on the build worker (ShellExecute touches OS UI state).
-#endif
 	}
 
 	void ImGuiEditorLayer::RenderBuildPanel() {
@@ -2406,10 +1081,10 @@ namespace Index {
 				}
 			}
 
-			// Default to first Windows profile; leave empty if none exists (don't silently target Linux).
+			// Default to the first profile for this desktop; leave empty if none exists (don't silently target another OS).
 			if (project->ActiveBuildProfileName.empty()) {
 				for (const auto& p : diskProfiles) {
-					if (p.Platform == BuildPlatform::Windows) {
+					if (BuildPlatformSupport::IsHostDesktop(p.Platform)) {
 						project->ActiveBuildProfileName = p.Name;
 						project->Save();
 						break;
@@ -2669,12 +1344,13 @@ namespace Index {
 			}
 			EditorUI::Tooltip("Open the Build Profiles window.");
 
+			const IndexBuildProfile* active = nullptr;
+			for (const auto& p : diskProfiles) {
+				if (p.Name == project->ActiveBuildProfileName) { active = &p; break; }
+			}
+
 			// Echo what Build will actually target without flipping over to the Build Profiles window.
 			if (!project->ActiveBuildProfileName.empty()) {
-				const IndexBuildProfile* active = nullptr;
-				for (const auto& p : diskProfiles) {
-					if (p.Name == project->ActiveBuildProfileName) { active = &p; break; }
-				}
 				if (active) {
 					rowLabel("Platform");
 					ImGui::Text("%s", IndexBuildProfile::PlatformDisplayName(active->Platform));
@@ -2714,6 +1390,14 @@ namespace Index {
 					project->ShowRuntimeStats = isDev;
 					project->ShowRuntimeLogs  = isDev;
 					project->Save();
+				}
+			}
+
+			if (active && m_BuildState == 0) {
+				const std::string retargeted = PlatformBuildOutputDirectory(
+					m_BuildOutputDirBuffer, project->RootDirectory, active->Platform);
+				if (retargeted != m_BuildOutputDirBuffer) {
+					std::snprintf(m_BuildOutputDirBuffer, sizeof(m_BuildOutputDirBuffer), "%s", retargeted.c_str());
 				}
 			}
 
@@ -2869,7 +1553,7 @@ namespace Index {
 		if (!canBuild) ImGui::BeginDisabled();
 
 		if (EditorUI::Button("Build and Play", EditorUI::ButtonVariant::Default, ImVec2(buttonW, 0.0f))) {
-			if (activeProfileResolved && project) {
+			if (activeProfileResolved && project && BuildPlatformSupport::IsHostDesktop(activeProfile.Platform)) {
 				project->ActiveRenderBackend = activeProfile.RenderBackend;
 				project->Save();
 			}
@@ -2879,7 +1563,7 @@ namespace Index {
 		}
 		ImGui::SameLine();
 		if (EditorUI::Button("Build", EditorUI::ButtonVariant::Primary, ImVec2(buttonW, 0.0f))) {
-			if (activeProfileResolved && project) {
+			if (activeProfileResolved && project && BuildPlatformSupport::IsHostDesktop(activeProfile.Platform)) {
 				project->ActiveRenderBackend = activeProfile.RenderBackend;
 				project->Save();
 			}
@@ -3120,6 +1804,50 @@ namespace Index {
 			}
 		}
 
+		if (SectionVisible(SettingsCategory::Display, "Mobile", filterLower)) {
+			if (SettingsSectionHeader("Mobile", filterLower)) {
+				ImGui::Indent(8);
+				struct OrientationOption {
+					const char* Label;
+					ScreenOrientation Value;
+				};
+				static constexpr std::array<OrientationOption, 9> k_OrientationOptions = {{
+					{ "Auto (from window size)",               ScreenOrientation::Auto },
+					{ "Landscape (either side)",               ScreenOrientation::Landscape },
+					{ "Landscape Left (top points left)",      ScreenOrientation::LandscapeLeft },
+					{ "Landscape Right (top points right)",    ScreenOrientation::LandscapeRight },
+					{ "Portrait",                              ScreenOrientation::Portrait },
+					{ "Portrait Upside Down",                  ScreenOrientation::PortraitUpsideDown },
+					{ "Portrait (either way up)",              ScreenOrientation::PortraitAny },
+					{ "Any except Upside Down",                ScreenOrientation::AnyExceptUpsideDown },
+					{ "Any",                                   ScreenOrientation::Any },
+				}};
+				const char* currentLabel = k_OrientationOptions[0].Label;
+				for (const auto& option : k_OrientationOptions) {
+					if (option.Value == project.MobileOrientation) currentLabel = option.Label;
+				}
+				ImGui::SetNextItemWidth(260.0f);
+				if (ImGui::BeginCombo("Orientation", currentLabel)) {
+					for (const auto& option : k_OrientationOptions) {
+						const bool selected = option.Value == project.MobileOrientation;
+						if (ImGui::Selectable(option.Label, selected)) {
+							project.MobileOrientation = option.Value;
+							changed = true;
+						}
+						if (selected) ImGui::SetItemDefaultFocus();
+					}
+					ImGui::EndCombo();
+				}
+				EditorUI::Tooltip(
+					"Which way up the game may be held on Android and iOS.\n"
+					"Left/Right name the side the top of the device points to.\n"
+					"Options with more than one direction turn with the device.\n"
+					"Auto uses landscape when the window is wider than tall.\n"
+					"Desktop and Web builds ignore this.");
+				ImGui::Unindent(8);
+			}
+		}
+
 		if (SectionVisible(SettingsCategory::Display, "UI Scaling", filterLower)) {
 			if (SettingsSectionHeader("UI Scaling", filterLower)) {
 				ImGui::Indent(8);
@@ -3127,14 +1855,50 @@ namespace Index {
 				changed |= ImGui::InputInt("Reference Height##UIRef", &project.UIReferenceHeight, 0, 0);
 				if (project.UIReferenceWidth  < 1) project.UIReferenceWidth  = 1;
 				if (project.UIReferenceHeight < 1) project.UIReferenceHeight = 1;
-				changed |= ImGui::SliderFloat("Match Width / Height", &project.UIScaleMatch, 0.0f, 1.0f, "%.2f");
+
+				using UIScaleMode = IndexProject::UIScaleMode;
+				struct ScaleModeOption {
+					const char* Label;
+					UIScaleMode Value;
+				};
+				static constexpr std::array<ScaleModeOption, 3> k_ScaleModeOptions = {{
+					{ "Match Width or Height", UIScaleMode::MatchWidthOrHeight },
+					{ "Fit (always fully visible)", UIScaleMode::Fit },
+					{ "Fill (covers the screen)", UIScaleMode::Fill },
+				}};
+				const char* currentScaleLabel = k_ScaleModeOptions[0].Label;
+				for (const auto& option : k_ScaleModeOptions) {
+					if (option.Value == project.UIScaling) currentScaleLabel = option.Label;
+				}
+				ImGui::SetNextItemWidth(260.0f);
+				if (ImGui::BeginCombo("Scale Mode##UIRef", currentScaleLabel)) {
+					for (const auto& option : k_ScaleModeOptions) {
+						const bool selected = option.Value == project.UIScaling;
+						if (ImGui::Selectable(option.Label, selected)) {
+							project.UIScaling = option.Value;
+							changed = true;
+						}
+						if (selected) ImGui::SetItemDefaultFocus();
+					}
+					ImGui::EndCombo();
+				}
 				EditorUI::Tooltip(
-					"0 = scale UI by window WIDTH only.\n"
-					"1 = scale UI by window HEIGHT only.\n"
-					"0.5 = balanced (geometric mean).\n"
-					"\n"
-					"Move toward 1 if your UI hugs the top/bottom edges,\n"
-					"toward 0 if it hugs the left/right edges.");
+					"How the reference resolution is scaled to the screen.\n"
+					"Fit: the whole reference area stays visible on every aspect ratio\n"
+					"(wide phones, tall windows); extra space appears around it.\n"
+					"Fill: the reference area covers the screen; edges may be cut off.\n"
+					"Match Width or Height: blend set by the slider below.");
+
+				if (project.UIScaling == UIScaleMode::MatchWidthOrHeight) {
+					changed |= ImGui::SliderFloat("Match Width / Height", &project.UIScaleMatch, 0.0f, 1.0f, "%.2f");
+					EditorUI::Tooltip(
+						"0 = scale UI by window WIDTH only.\n"
+						"1 = scale UI by window HEIGHT only.\n"
+						"0.5 = balanced (geometric mean).\n"
+						"\n"
+						"Move toward 1 if your UI hugs the top/bottom edges,\n"
+						"toward 0 if it hugs the left/right edges.");
+				}
 				ImGui::Unindent(8);
 			}
 		}
@@ -3235,6 +1999,45 @@ namespace Index {
 			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Runtime Quality")
+
+		if (EngineModules::IsActive(EngineModule::ThreeD) && SectionVisible(SettingsCategory::Graphics, "3D Rendering", filterLower)) {
+		if (SettingsSectionHeader("3D Rendering", filterLower)) {
+			ImGui::Indent(8);
+			bool graphicsChanged = false;
+
+			const char* shadowLabels[] = { "Off", "Low (1024)", "Medium (2048)", "High (4096)" };
+			int shadowQuality = static_cast<int>(project.Graphics.ShadowQuality);
+			if (ImGui::Combo("Shadow Quality", &shadowQuality, shadowLabels, IM_ARRAYSIZE(shadowLabels))) {
+				project.Graphics.ShadowQuality = static_cast<ShadowQualityLevel>(shadowQuality);
+				graphicsChanged = true;
+			}
+			EditorUI::Tooltip("Shadow map resolution of the main Directional Light.");
+
+			graphicsChanged |= ImGui::DragFloat("Shadow Distance", &project.Graphics.ShadowDistance, 0.5f,
+				GraphicsSettings::MinShadowDistance, GraphicsSettings::MaxShadowDistance, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+			EditorUI::Tooltip("World units from the camera that receive directional shadows; smaller is sharper.");
+
+			graphicsChanged |= ImGui::SliderInt("Max Lights", &project.Graphics.MaxLights,
+				GraphicsSettings::MinMaxLights, GraphicsSettings::MaxMaxLights, "%d", ImGuiSliderFlags_AlwaysClamp);
+			EditorUI::Tooltip("Lights per frame: directional lights first, then the point and spot lights nearest the camera.");
+
+			graphicsChanged |= ImGui::DragFloat("Exposure", &project.Graphics.Exposure, 0.01f,
+				GraphicsSettings::MinExposure, GraphicsSettings::MaxExposure, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+
+			const char* toneMappingLabels[] = { "None", "Reinhard", "ACES" };
+			int toneMapping = static_cast<int>(project.Graphics.ToneMapping);
+			if (ImGui::Combo("Tone Mapping", &toneMapping, toneMappingLabels, IM_ARRAYSIZE(toneMappingLabels))) {
+				project.Graphics.ToneMapping = static_cast<ToneMappingMode>(toneMapping);
+				graphicsChanged = true;
+			}
+
+			if (graphicsChanged) {
+				changed = true;
+				RenderSettings::Apply(project.Graphics);
+			}
+			ImGui::Unindent(8);
+		}
+		}  // end SectionVisible("3D Rendering")
 
 		if (SectionVisible(SettingsCategory::Graphics, "Default Font", filterLower)) {
 		if (SettingsSectionHeader("Default Font", filterLower)) {
@@ -3563,7 +2366,7 @@ namespace Index {
 
 			constexpr const char* k_AppIconPickerKey = "ProjectSettings.AppIcon";
 
-			// AppIconPath is the shipped game's icon only; do NOT push to glfwSetWindowIcon — the editor keeps its own embedded RT_ICON.
+			// AppIconPath is the shipped game's icon only; do NOT push to SetWindowIcon — the editor keeps its own embedded RT_ICON.
 			if (auto pending = ReferencePicker::ConsumeSelection(k_AppIconPickerKey); pending) {
 				const std::string raw = *pending;
 				uint64_t pickedId = 0;
@@ -3671,28 +2474,34 @@ namespace Index {
 			// Apply a project-relative path to the live Window cursor so
 			// the change is visible immediately rather than requiring a
 			// restart. Empty path clears the slot back to the OS default.
-			auto applyCursorLive = [&](const std::string& path, void (Window::*setter)(const Texture2D*))
+			auto loadCursorTexture = [&](const std::string& path) -> Texture2D* {
+				if (path.empty()) return nullptr;
+				const std::string abs = resolveProjectRelativeCursor(path);
+				if (!std::filesystem::exists(abs)) return nullptr;
+				Texture2D* tex = TextureManager::GetTexture(TextureManager::LoadTexture(abs));
+				return tex && tex->IsValid() ? tex : nullptr;
+			};
+
+			using CursorSetter = void (Window::*)(const Texture2D*, Vec2Int);
+			auto applyCursorLive = [&](const std::string& path, Vec2Int hotspot, CursorSetter setter)
 			{
 				Window* win = Application::GetInstance() ? Application::GetInstance()->GetWindow() : nullptr;
 				if (!win) return;
 				if (path.empty()) {
-					(win->*setter)(nullptr);
+					(win->*setter)(nullptr, {});
 					return;
 				}
-				const std::string abs = resolveProjectRelativeCursor(path);
-				if (!std::filesystem::exists(abs)) {
-					IDX_WARN_TAG("Editor", "Cursor image not found: {}", abs);
-					return;
+				if (Texture2D* tex = loadCursorTexture(path)) {
+					(win->*setter)(tex, hotspot);
 				}
-				TextureHandle h = TextureManager::LoadTexture(abs);
-				if (Texture2D* tex = TextureManager::GetTexture(h); tex && tex->IsValid()) {
-					(win->*setter)(tex);
+				else {
+					IDX_WARN_TAG("Editor", "Cursor image not found: {}", resolveProjectRelativeCursor(path));
 				}
 			};
 
 			auto renderCursorSlot = [&](const char* label,
-				const char* pickerKey, std::string& slotPath,
-				void (Window::*liveSetter)(const Texture2D*))
+				const char* pickerKey, std::string& slotPath, Vec2Int& hotspot,
+				CursorSetter liveSetter)
 			{
 				ImGui::PushID(label);
 				ImGui::TextUnformatted(label);
@@ -3704,7 +2513,7 @@ namespace Index {
 					if (pickedId == 0) {
 						slotPath.clear();
 						changed = true;
-						applyCursorLive("", liveSetter);
+						applyCursorLive("", hotspot, liveSetter);
 					}
 					else {
 						std::string absPath = AssetRegistry::ResolvePath(pickedId);
@@ -3718,7 +2527,7 @@ namespace Index {
 								slotPath = absFs.filename().string();
 							}
 							changed = true;
-							applyCursorLive(slotPath, liveSetter);
+							applyCursorLive(slotPath, hotspot, liveSetter);
 						}
 					}
 				}
@@ -3738,24 +2547,53 @@ namespace Index {
 				if (BrowseAcceptImageDrop(k_ImageExts, [&](const std::string& dropped) {
 					slotPath = ToProjectRelativeAssetPath(dropped, project.AssetsDirectory);
 					changed = true;
-					applyCursorLive(slotPath, liveSetter);
+					applyCursorLive(slotPath, hotspot, liveSetter);
 				})) {}
 				if (!slotPath.empty()) {
 					ImGui::SameLine();
 					if (ImGui::Button("Clear")) {
 						slotPath.clear();
+						hotspot = { 0, 0 };
 						changed = true;
-						applyCursorLive("", liveSetter);
+						applyCursorLive("", hotspot, liveSetter);
+					}
+
+					const Texture2D* tex = loadCursorTexture(slotPath);
+					const Vec2Int imageSize = tex
+						? Vec2Int(static_cast<int>(tex->GetWidth()), static_cast<int>(tex->GetHeight()))
+						: Vec2Int(0, 0);
+					int values[2] = { hotspot.x, hotspot.y };
+					ImGui::SetNextItemWidth(140.0f);
+					bool hotspotChanged = ImGui::DragInt2("Hotspot", values, 0.25f, 0,
+						std::max(imageSize.x, imageSize.y) > 0 ? std::max(imageSize.x, imageSize.y) - 1 : 4096);
+					// Rebuild the OS cursor only once a drag settles; regenerating every DPI image per frame stalls the editor.
+					bool applyNow = ImGui::IsItemDeactivatedAfterEdit();
+					EditorUI::Tooltip("Click point in image pixels, measured from the top-left corner.\n"
+						"0, 0 suits arrow cursors; use Center for crosshairs.");
+					if (imageSize.x > 0) {
+						ImGui::SameLine();
+						if (ImGui::SmallButton("Top-left")) { values[0] = 0; values[1] = 0; hotspotChanged = applyNow = true; }
+						ImGui::SameLine();
+						if (ImGui::SmallButton("Center")) { values[0] = imageSize.x / 2; values[1] = imageSize.y / 2; hotspotChanged = applyNow = true; }
+						values[0] = std::clamp(values[0], 0, imageSize.x - 1);
+						values[1] = std::clamp(values[1], 0, imageSize.y - 1);
+					}
+					if (hotspotChanged) {
+						hotspot = { std::max(0, values[0]), std::max(0, values[1]) };
+						changed = true;
+					}
+					if (applyNow) {
+						applyCursorLive(slotPath, hotspot, liveSetter);
 					}
 				}
 				ImGui::PopID();
 			};
 
 			renderCursorSlot("Default cursor", "ProjectSettings.DefaultCursor",
-				project.CursorImagePath, &Window::SetCursorImage);
+				project.CursorImagePath, project.CursorHotspot, &Window::SetCursorImage);
 			ImGui::Spacing();
 			renderCursorSlot("UI hover cursor", "ProjectSettings.UICursor",
-				project.UIInteractableCursorImagePath, &Window::SetUICursorImage);
+				project.UIInteractableCursorImagePath, project.UIInteractableCursorHotspot, &Window::SetUICursorImage);
 			EditorUI::Tooltip(
 				"Shown while the cursor sits over an Index UI element\n"
 				"with an Interactable component (Button / Slider / etc.).\n"
@@ -3769,6 +2607,25 @@ namespace Index {
 	void ImGuiEditorLayer::RenderSettings_Build(IndexProject& project, bool& changed,
 		const std::string& filterLower)
 	{
+		if (SectionVisible(SettingsCategory::Build, "Engine Modules", filterLower)) {
+		if (SettingsSectionHeader("Engine Modules", filterLower)) {
+			ImGui::Indent(8);
+			// Managed next to packages so a package that needs a module can enable it; shown here read-only.
+			std::string enabled;
+			for (EngineModule module : k_AllEngineModules) {
+				if (project.HasModule(EngineModules::GetId(module))) {
+					enabled += (enabled.empty() ? "" : ", ") + std::string(EngineModules::GetId(module));
+				}
+			}
+			ImGui::TextUnformatted(("Enabled: " + (enabled.empty() ? std::string("none (UI only)") : enabled)).c_str());
+			ImGui::TextDisabled("Add or remove Index.2D and Index.3D in the Package Manager.");
+			if (ImGui::Button("Open Package Manager")) {
+				m_ShowPackageManager = true;
+			}
+			ImGui::Unindent(8);
+		}
+		}  // end SectionVisible("Engine Modules")
+
 		if (SectionVisible(SettingsCategory::Build, "Executable", filterLower)) {
 		if (SettingsSectionHeader("Executable", filterLower)) {
 			ImGui::Indent(8);
@@ -3877,7 +2734,7 @@ namespace Index {
 				ImGui::TextDisabled("Engine matches the selected width. Choose a different size to enable rebuild.");
 			}
 
-			// Build runs in a detached cmd.exe (not in-process) because the editor/launcher both hold Index-Engine.dll locked — MSBuild would fail with LNK1104.
+			// Build runs in a detached terminal (not in-process) because the editor/launcher both hold Index-Engine.dll locked — MSBuild would fail with LNK1104.
 			// Editor writes IndexEntityBitsConfig.h directly so MSBuild incremental only recompiles TUs that include entt (no premake regen needed).
 			ImGuiUtils::CenterNextModal();
 			ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
@@ -3885,9 +2742,9 @@ namespace Index {
 				ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 				ImGui::TextWrapped(
 					"Rebuild the engine with entityBits = %d?\n\n"
-					"The editor will close and a console window will open showing the build "
+					"The editor will close and a terminal window will open showing the build "
 					"progress. The editor reopens automatically when the build finishes. "
-					"Don't close the console window.",
+					"Don't close the terminal window.",
 					project.EntityBits);
 				const int clicked = EditorUI::DialogFooter({ "Rebuild", "Cancel" }, 0);
 				if (clicked == 0) {
@@ -3901,7 +2758,11 @@ namespace Index {
 						editorExeDir.parent_path().parent_path().parent_path();
 					const std::string msbuildPath = IndexProject::GetMSBuildPath();
 					const std::filesystem::path slnPath = engineRoot / "Index.sln";
+				#ifdef IDX_PLATFORM_WINDOWS
 					const std::filesystem::path editorExe = editorExeDir / "Index-Editor.exe";
+				#else
+					const std::filesystem::path editorExe = editorExeDir / "Index-Editor";
+				#endif
 					const std::string config = IndexProject::GetActiveBuildConfiguration();
 					const std::string projectRootDir = project.RootDirectory;
 					const std::string userCsprojPath = project.CsprojPath;
@@ -3912,7 +2773,7 @@ namespace Index {
 				#ifdef IDX_PLATFORM_WINDOWS
 					const unsigned long editorPid = ::GetCurrentProcessId();
 				#else
-					const unsigned long editorPid = 0; // Windows-only flow today; placeholder for clarity.
+					const unsigned long editorPid = static_cast<unsigned long>(::getpid());
 				#endif
 
 					const std::filesystem::path generatedDir = engineRoot
@@ -3945,6 +2806,7 @@ namespace Index {
 					}
 
 					if (headerWritten) {
+					#ifdef IDX_PLATFORM_WINDOWS
 						std::ostringstream bat;
 						bat <<
 							"@echo off\r\n"
@@ -4018,15 +2880,78 @@ namespace Index {
 							"start \"\" \"" << editorExe.string() << "\" --project=\"" << projectRootDir << "\"\r\n"
 							"endlocal\r\n"
 							"exit /b 0\r\n";
+						const std::string scriptText = bat.str();
+						const char* const scriptName = "engine-rebuild.bat";
+					#else
+						(void)msbuildPath;
+						(void)slnPath;
+						(void)packageBuildScript;
+						std::string makeConfig = config;
+						std::transform(makeConfig.begin(), makeConfig.end(), makeConfig.begin(),
+							[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+						const std::string root = ShellQuote(engineRoot.string());
+						const std::string projectRoot = ShellQuote(projectRootDir);
+						const std::string premake = ShellQuote((engineRoot / "vendor" / "bin" / "premake5").string());
+						const std::string packageGenerator = ShellQuote((engineRoot / "premake" / "project-packages.lua").string());
+						const std::string packageWorkspace = ShellQuote(projectRootDir + "/.index/build/packages");
+					#if defined(IDX_PLATFORM_MACOS)
+						const char* const premakeSystem = "macosx";
+					#else
+						const char* const premakeSystem = "linux";
+					#endif
+						std::ostringstream sh;
+						sh <<
+							"#!/bin/sh\n"
+							"fail() { echo; echo \"*** $1 Scroll up for errors. ***\"; echo 'Press Enter to close.'; read _; exit 1; }\n"
+							"echo '===================================================='\n"
+							"echo '  Rebuilding Index Engine  (entityBits=" << newEntityBits << ")'\n"
+							"echo '===================================================='\n"
+							"echo 'Waiting for editor (PID " << editorPid << ") to exit...'\n"
+							"waited=0\n"
+							"while kill -0 " << editorPid << " 2>/dev/null && [ $waited -lt 30 ]; do sleep 1; waited=$((waited + 1)); done\n"
+							"echo; echo '[1/3] Building user scripts (dotnet build)...'\n"
+							"dotnet build " << ShellQuote(userCsprojPath) << " -c " << config <<
+							" --nologo -v q -nodeReuse:false -p:UseSharedCompilation=false || fail 'User script build FAILED.'\n"
+							"echo; echo '[2/3] Building the engine (this is the long step)...'\n"
+							"cd " << root << " || fail 'Engine folder missing.'\n"
+							"make config=" << makeConfig << " -j\"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)\" "
+							"Index-Engine Index-Runtime Index-Editor || fail 'Engine build FAILED.'\n"
+							"echo; echo '[3/3] Rebuilding enabled project packages...'\n"
+							"if [ -d " << ShellQuote(projectRootDir + "/Packages") << " ]; then\n"
+							// Newline-only splitting keeps paths with spaces intact in the loops below.
+							"  IFS='\n'\n"
+							"  " << premake << " --file=" << packageGenerator << " --os=" << premakeSystem << " vs2022 --index-project=" << projectRoot
+								<< " || fail 'Package workspace generation FAILED.'\n"
+							"  " << premake << " --file=" << packageGenerator << " gmake2 --index-project=" << projectRoot
+								<< " || fail 'Package workspace generation FAILED.'\n"
+							"  for project in $(find " << packageWorkspace << "/generated -name '*.vcxproj'); do\n"
+							"    make -C " << packageWorkspace << " config=" << makeConfig << " \"$(basename \"$project\" .vcxproj)\" || fail 'Native package build FAILED.'\n"
+							"  done\n"
+							"  for project in $(find " << packageWorkspace << "/generated -name '*.csproj'); do\n"
+							"    dotnet build \"$project\" -c " << config << " -p:Platform=x64 --nologo -v q || fail 'Managed package build FAILED.'\n"
+							"  done\n"
+							"fi\n"
+							"echo; echo '[Relaunching editor...]'\n"
+							"nohup " << ShellQuote(editorExe.string()) << " --project=" << projectRoot << " >/dev/null 2>&1 &\n"
+							"exit 0\n";
+						const std::string scriptText = sh.str();
+						// .command: macOS Terminal runs it when opened; Linux terminals take any name.
+						const char* const scriptName = "engine-rebuild.command";
+					#endif
 
 						std::error_code mkdirEc;
 						const std::filesystem::path batDir = engineRoot / "bin-int";
 						std::filesystem::create_directories(batDir, mkdirEc);
-						const std::filesystem::path batPath = batDir / "engine-rebuild.bat";
+						const std::filesystem::path batPath = batDir / scriptName;
 						std::ofstream batFile(batPath, std::ios::binary | std::ios::trunc);
-						batFile << bat.str();
+						batFile << scriptText;
 						const bool scriptWritten = static_cast<bool>(batFile);
 						batFile.close();
+					#ifndef IDX_PLATFORM_WINDOWS
+						std::error_code permissionEc;
+						std::filesystem::permissions(batPath, std::filesystem::perms::owner_exec,
+							std::filesystem::perm_options::add, permissionEc);
+					#endif
 
 						if (scriptWritten) {
 							m_PendingEngineRebuildWorkingDirectory = engineRoot.string();
@@ -4383,6 +3308,77 @@ namespace Index {
 		}
 	}
 
+	namespace {
+		// Every edit is written to the .material file at once and seen by all MeshRenderers using it.
+		void DrawMaterialAssetFields(uint64_t guid) {
+			if (guid == 0 || !MaterialLibrary::Get(guid)) {
+				EditorUI::EmptyState("Material could not be read", "Check the file for JSON errors.");
+				return;
+			}
+
+			auto current = [guid]() -> Material {
+				const Material* material = MaterialLibrary::Get(guid);
+				return material ? *material : Material{};
+			};
+			auto edit = [guid](auto change) {
+				const Material* material = MaterialLibrary::Get(guid);
+				if (!material) return;
+				Material updated = *material;
+				change(updated);
+				MaterialLibrary::Save(guid, updated);
+			};
+
+			const std::vector<PropertyDescriptor> properties = {
+				Properties::MakeWith<bool>("Lit", "Lit",
+					[current](const Entity&) { return current().Lit; },
+					[edit](Entity&, bool v) { edit([v](Material& m) { m.Lit = v; }); },
+					Properties::Meta::Tooltip("Unlit materials ignore lights, exposure and tone mapping.")),
+				Properties::MakeWith<MaterialSurface>("Surface", "Surface",
+					[current](const Entity&) { return current().Surface; },
+					[edit](Entity&, MaterialSurface v) { edit([v](Material& m) { m.Surface = v; }); },
+					Properties::Meta::Tooltip("Transparent blends by the alpha of Base Color, texture and the renderer's Color, "
+						"sorted back to front per object; it does not write depth.")),
+				Properties::MakeWith<Color>("BaseColor", "Base Color",
+					[current](const Entity&) { return current().BaseColor; },
+					[edit](Entity&, Color v) { edit([v](Material& m) { m.BaseColor = v; }); }),
+				Properties::MakeTextureRef("BaseColorTexture", "Base Color Texture",
+					[current](const Entity&) { return current().BaseColorTexture; },
+					[edit](Entity&, uint64_t v) { edit([v](Material& m) { m.BaseColorTexture = v; }); },
+					Properties::Meta::Tooltip("Multiplied into Base Color; sampled with repeat wrapping.")),
+				Properties::MakeWith<float>("Metallic", "Metallic",
+					[current](const Entity&) { return current().Metallic; },
+					[edit](Entity&, float v) { edit([v](Material& m) { m.Metallic = v; }); },
+					Properties::Meta::Clamp(0.0, 1.0, 0.005f)),
+				Properties::MakeWith<float>("Roughness", "Roughness",
+					[current](const Entity&) { return current().Roughness; },
+					[edit](Entity&, float v) { edit([v](Material& m) { m.Roughness = v; }); },
+					Properties::Meta::Clamp(0.0, 1.0, 0.005f)),
+				Properties::MakeWith<Color>("EmissiveColor", "Emissive Color",
+					[current](const Entity&) { return current().EmissiveColor; },
+					[edit](Entity&, Color v) { edit([v](Material& m) { m.EmissiveColor = v; }); }),
+				Properties::MakeWith<float>("EmissiveIntensity", "Emissive Intensity",
+					[current](const Entity&) { return current().EmissiveIntensity; },
+					[edit](Entity&, float v) { edit([v](Material& m) { m.EmissiveIntensity = v; }); },
+					Properties::Meta::Clamp(0.0, 1000.0, 0.01f)),
+				Properties::MakeWith<glm::vec2>("Tiling", "Tiling",
+					[current](const Entity&) { return current().Tiling; },
+					[edit](Entity&, glm::vec2 v) { edit([v](Material& m) { m.Tiling = v; }); },
+					Properties::Meta::DragSpeed(0.01f)),
+				Properties::MakeWith<glm::vec2>("Offset", "Offset",
+					[current](const Entity&) { return current().Offset; },
+					[edit](Entity&, glm::vec2 v) { edit([v](Material& m) { m.Offset = v; }); },
+					Properties::Meta::DragSpeed(0.01f)),
+			};
+
+			const Entity placeholder = Entity::Null;
+			const std::span<const Entity> entitySpan(&placeholder, 1);
+			const std::string keyPrefix = "material:" + std::to_string(guid) + ".";
+			for (const PropertyDescriptor& descriptor : properties) {
+				PropertyDrawer::Draw(entitySpan, descriptor, keyPrefix + descriptor.Name);
+			}
+		}
+	}
+
 	void ImGuiEditorLayer::RenderAssetInspector() {
 		const std::string& selectedPath = m_AssetBrowser.GetSelectedPath();
 		if (selectedPath.empty()) {
@@ -4439,6 +3435,15 @@ namespace Index {
 		if (m_PrefabInspector.IsOpen() && !m_PrefabInspector.HasUnsavedChanges()) {
 			m_PrefabInspector.Close();
 			m_PrefabInspectorPath.clear();
+		}
+
+		if (ext == k_MaterialExtension) {
+			ImGui::TextDisabled("Material:");
+			ImGui::SameLine();
+			ImGuiUtils::TextEllipsis(name);
+			ImGui::Separator();
+			DrawMaterialAssetFields(AssetRegistry::GetOrCreateAssetUUID(selectedPath));
+			return;
 		}
 
 		if (ext == ".dataasset") {
@@ -4608,6 +3613,7 @@ namespace Index {
 			}
 
 			m_PackageManagerPanel.Initialize(&m_PackageManager);
+			m_PackageManagerPanel.SetReloadEditorCallback([this] { RequestEditorAction(PendingEditorAction::Reload); });
 			m_PackageManagerInitialized = true;
 		}
 

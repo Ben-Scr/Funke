@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <new>
 #include <span>
 #include <type_traits>
@@ -51,7 +52,8 @@ namespace Index {
 			static_assert(std::is_trivially_destructible_v<T>,
 				"Arena::CreateArray<T> requires a trivially-destructible T.");
 
-			if (count == 0) {
+			// sizeof(T) * count must not wrap, or a small block is handed out as a span of `count` elements.
+			if (count == 0 || count > std::numeric_limits<std::size_t>::max() / sizeof(T)) {
 				return {};
 			}
 			void* memory = Allocate(sizeof(T) * count, alignof(T));

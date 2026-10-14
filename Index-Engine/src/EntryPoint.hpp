@@ -161,7 +161,60 @@ namespace Index {
 	}
 }
 
-#if defined(IDX_WINDOWED_APP) && defined(IDX_PLATFORM_WINDOWS)
+#if defined(INDEX_CUSTOM_MAIN)
+
+// Platform packages own main() (SDL_main on Android/iOS, the browser loop on the Web): they prepare the
+// content root and script runtime, then call IndexRuntimeMain, or the stepped trio when the host owns
+// the frame loop.
+int IndexRuntimeMain(int argc, char** argv)
+{
+	return Index::Main(argc, argv);
+}
+
+namespace {
+	Index::Application* g_SteppedApplication = nullptr;
+}
+
+// Null on startup failure (already logged).
+Index::Application* IndexRuntimeBegin(int argc, char** argv)
+{
+	try {
+		Index::InitializeCore();
+		Index::Localization::Initialize();
+		Index::Application::SetCommandLineArgs(argc, argv);
+		g_SteppedApplication = Index::CreateApplication();
+		if (g_SteppedApplication && g_SteppedApplication->BeginRun()) return g_SteppedApplication;
+	}
+	catch (const std::exception& ex) {
+		std::fprintf(stderr, "Index startup failed: %s\n", ex.what());
+	}
+	delete g_SteppedApplication;
+	g_SteppedApplication = nullptr;
+	return nullptr;
+}
+
+// False once the game has stopped (IndexRuntimeEnd must then be called).
+bool IndexRuntimeFrame()
+{
+	if (!g_SteppedApplication) return false;
+	if (g_SteppedApplication->RunFrame()) return true;
+	return g_SteppedApplication->FinishRunCycle();
+}
+
+int IndexRuntimeEnd()
+{
+	int exitCode = 0;
+	if (g_SteppedApplication) {
+		exitCode = g_SteppedApplication->GetRunExitCode();
+		delete g_SteppedApplication;
+		g_SteppedApplication = nullptr;
+	}
+	try { Index::ShutdownCore(); }
+	catch (...) {}
+	return exitCode;
+}
+
+#elif defined(IDX_WINDOWED_APP) && defined(IDX_PLATFORM_WINDOWS)
 
 int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmdshow)
 {

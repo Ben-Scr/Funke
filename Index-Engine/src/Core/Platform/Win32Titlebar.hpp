@@ -2,46 +2,32 @@
 #include "Collections/Color.hpp"
 #include "Core/Export.hpp"
 
-struct GLFWwindow;
-
 namespace Index { class Window; }
 
+// Windows keeps a WndProc subclass for the custom titlebar: SDL's hit-test callback has
+// no answer for DWM's maximized-frame inset, the work-area clamp, or the 1px shadow margin.
 namespace Index::Win32Titlebar {
 
 #ifdef IDX_PLATFORM_WINDOWS
 
-    void Install(GLFWwindow* window, Window* owner);
-    // MUST run before glfwDestroyWindow — Windows can dispatch teardown messages into the subclass after state is gone.
-    void Uninstall(GLFWwindow* window);
+    // hwnd is the window's HWND (Window::GetPlatformHandle()).
+    void Install(void* hwnd, Window* owner);
+    // MUST run before the window is destroyed — Windows can dispatch teardown messages into the subclass after state is gone.
+    void Uninstall(void* hwnd);
 
-    // Logical-pixel height of the draggable caption row. The hit-test
-    // handler DPI-scales this at query time.
-    void SetTitlebarHeight(int logicalPx);
-    int  GetTitlebarHeight();
     // Physical-pixel height for the given window (logical * DPI / 96).
-    // Returns the logical value if the HWND can't be queried.
-    int  GetTitlebarHeightPhysical(GLFWwindow* window);
+    int  GetTitlebarHeightPhysical(void* hwnd);
 
-    void SetCaptionRect(int x, int y, int w, int h);
-    // Points inside non-client rects that would be HTCAPTION get HTCLIENT — ImGui buttons in the caption row receive clicks.
-    void AddNonClientRect(int x, int y, int w, int h);
-    void ResetNonClientRects();
-
-    void SetDarkMode(GLFWwindow* window, bool enabled);
-    void SetColors(GLFWwindow* window, Color caption, Color text, Color border);
+    void SetDarkMode(void* hwnd, bool enabled);
+    void SetColors(void* hwnd, Color caption, Color text, Color border);
 
 #else
 
-    inline void Install(GLFWwindow*, Window*) {}
-    inline void Uninstall(GLFWwindow*) {}
-    inline void SetTitlebarHeight(int) {}
-    inline int  GetTitlebarHeight() { return 0; }
-    inline int  GetTitlebarHeightPhysical(GLFWwindow*) { return 0; }
-    inline void SetCaptionRect(int, int, int, int) {}
-    inline void AddNonClientRect(int, int, int, int) {}
-    inline void ResetNonClientRects() {}
-    inline void SetDarkMode(GLFWwindow*, bool) {}
-    inline void SetColors(GLFWwindow*, Color, Color, Color) {}
+    inline void Install(void*, Window*) {}
+    inline void Uninstall(void*) {}
+    inline int  GetTitlebarHeightPhysical(void*) { return 0; }
+    inline void SetDarkMode(void*, bool) {}
+    inline void SetColors(void*, Color, Color, Color) {}
 
 #endif
 

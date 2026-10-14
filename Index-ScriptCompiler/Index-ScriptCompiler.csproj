@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Editor-only in-process C# compiler for script hot reload. Loaded into the editor's CoreCLR next to
+    Index-ScriptCore (ManagedScriptCompiler.cpp). Roslyn is not shipped: it is referenced from the SDK
+    that builds this project and resolved at run time from the SDK the game project uses.
+  -->
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Configurations>Debug;Release;Dist</Configurations>
+    <Platforms>x64</Platforms>
+    <Platform>x64</Platform>
+    <PlatformTarget>x64</PlatformTarget>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Some SDKs (Linux distro builds) ship Roslyn ReadyToRun-compiled for one CPU; it is never copied or loaded from here. -->
+    <NoWarn>$(NoWarn);CS8012</NoWarn>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <DebugType>portable</DebugType>
+    <OutputPath>..\bin\$(Configuration)-windows-x86_64\Index-ScriptCompiler\</OutputPath>
+    <IntermediateOutputPath>..\bin-int\$(Configuration)-windows-x86_64\Index-ScriptCompiler\</IntermediateOutputPath>
+    <Optimize Condition="'$(Configuration)' != 'Debug'">true</Optimize>
+    <RoslynBinDirectory>$(NetCoreRoot)sdk\$(NETCoreSdkVersion)\Roslyn\bincore\</RoslynBinDirectory>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Private=false: never copied or listed in deps.json; CompilerHost resolves it from the project's SDK. -->
+    <Reference Include="Microsoft.CodeAnalysis">
+      <HintPath>$(RoslynBinDirectory)Microsoft.CodeAnalysis.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.CodeAnalysis.CSharp">
+      <HintPath>$(RoslynBinDirectory)Microsoft.CodeAnalysis.CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

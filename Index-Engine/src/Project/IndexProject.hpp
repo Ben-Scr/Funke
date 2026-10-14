@@ -1,4 +1,5 @@
 #pragma once
+#include "Collections/Vec2.hpp"
 #include "Core/Export.hpp"
 #include "Core/WindowSpecification.hpp"
 #include "Core/GraphicsSettings.hpp"
@@ -6,12 +7,18 @@
 #include <cstdint>
 #include <string>
 #include <functional>
+#include <optional>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 namespace Index {
+	enum class BuildPlatform : uint8_t;
+}
+
+namespace Index {
 	namespace Json { class Value; }
+	struct ProjectTemplate;
 
 	struct INDEX_API IndexProject {
 		using CreateProgressCallback = std::function<void(float progress, std::string_view stage)>;
@@ -49,11 +56,13 @@ namespace Index {
 		std::string LastOpenedScene = "SampleScene";
 		std::string GameViewAspect = "16:9";
 		bool GameViewVsync = true;
+		// Editor View 3D toggle; unset (never toggled) falls back to PrefersThreeD().
+		std::optional<bool> EditorView3D;
 
 		// Build settings
 		int BuildWidth = 1920;
 		int BuildHeight = 1080;
-		// 0 = no limit (translates to GLFW_DONT_CARE).
+		// 0 = no limit.
 		int BuildMinWidth = 0;
 		int BuildMinHeight = 0;
 		int BuildMaxWidth = 0;
@@ -61,6 +70,8 @@ namespace Index {
 		bool BuildFullscreen = true;
 		// Persisted as a string label in project.json; unknown labels fall back to Exclusive on load.
 		FullscreenMode BuildFullscreenMode = FullscreenMode::Exclusive;
+		// Android / iOS: allowed device orientations ("mobileOrientation" in project.json).
+		ScreenOrientation MobileOrientation = ScreenOrientation::Auto;
 		bool BuildResizable = true;
 		bool BuildRunInBackground = true;
 
@@ -73,9 +84,18 @@ namespace Index {
 		std::string BuildVersion = "1.0.0";
 		std::string BuildCompany;
 
-		// UIScaleMatch (0..1): 0.0 = width-only, 1.0 = height-only, 0.5 = geometric mean (default).
+		// How the reference resolution maps onto the screen. Fit keeps the whole reference visible on any
+		// aspect ratio; Fill covers the screen and may push edges off it.
+		enum class UIScaleMode : uint8_t {
+			MatchWidthOrHeight = 0,
+			Fit,
+			Fill,
+		};
+
+		// UIScaleMatch (0..1, MatchWidthOrHeight only): 0.0 = width-only, 1.0 = height-only, 0.5 = geometric mean.
 		int UIReferenceWidth = 1920;
 		int UIReferenceHeight = 1080;
+		UIScaleMode UIScaling = UIScaleMode::MatchWidthOrHeight;
 		float UIScaleMatch = 0.5f;
 		std::string AppIconPath;
 		std::vector<BuildSceneEntry> BuildSceneList;
@@ -91,6 +111,21 @@ namespace Index {
 
 		// Empty == legacy "scan everything" mode.
 		std::vector<std::string> Packages;
+
+		// Engine feature modules the project uses ("Index.2D", "Index.3D"). The editor offers only these
+		// modules' components and a game build ships a runtime compiled without the others.
+		// Projects without the field predate modules and keep both.
+		static constexpr std::string_view k_Module2D = "Index.2D";
+		static constexpr std::string_view k_Module3D = "Index.3D";
+		std::vector<std::string> Modules{ std::string(k_Module2D), std::string(k_Module3D) };
+		bool HasModule(std::string_view module) const {
+			for (const std::string& entry : Modules) {
+				if (entry == module) return true;
+			}
+			return false;
+		}
+		// UI is core, so a 3D game with a HUD is 3D-only; with both modules the 2D view stays the default.
+		bool PrefersThreeD() const { return HasModule(k_Module3D) && !HasModule(k_Module2D); }
 
 		struct ProfilerSettings {
 			bool EnableInRuntime = false; // Ctrl+F6 panel in shipped runtime; off by default
@@ -113,6 +148,10 @@ namespace Index {
 		// Single source of truth for the Hz -> fixed-timestep-seconds conversion shared by
 		// every apply site (startup, play-entry, the settings slider).
 		float GetFixedDeltaTimeSeconds() const { return 1.0f / static_cast<float>(PhysicsTickRate); }
+
+		// Reverse-DNS id ("com.<company>.<name>") for the OS: Wayland app_id, bundle / package id.
+		std::string GetApplicationIdentifier() const;
+		static std::string MakeApplicationIdentifier(std::string_view company, std::string_view name);
 
 		bool AutoRecompileScripts = true;
 		bool RecompileScriptsOnPlay = false;
@@ -151,6 +190,9 @@ namespace Index {
 		// Project-relative paths. UIInteractableCursorImagePath is swapped in by UIEventSystem over Interactable elements; empty = use OS default.
 		std::string CursorImagePath;
 		std::string UIInteractableCursorImagePath;
+		// Click point in source-image pixels from the top-left.
+		Vec2Int CursorHotspot{ 0, 0 };
+		Vec2Int UIInteractableCursorHotspot{ 0, 0 };
 
 		uint64_t DefaultFontAssetId = k_DefaultFontAssetId;
 
@@ -221,6 +263,13 @@ namespace Index {
 
 		static const char* FullscreenModeToString(FullscreenMode mode);
 		static FullscreenMode FullscreenModeFromString(std::string_view value);
+		static const char* ScreenOrientationToString(ScreenOrientation orientation);
+		static ScreenOrientation ScreenOrientationFromString(std::string_view value);
+		static const char* UIScaleModeToString(UIScaleMode mode);
+		static UIScaleMode UIScaleModeFromString(std::string_view value);
+
+		// Factor from reference-resolution UI units to pixels for a UI surface of the given size.
+		float ComputeUIScale(float surfaceWidth, float surfaceHeight) const;
 
 		std::string GetNativeDllPath(std::string_view configuration = {}) const;
 		std::string GetSceneFilePath(const std::string& sceneName) const;
@@ -238,14 +287,21 @@ namespace Index {
 		static std::string GetActiveBuildConfiguration();
 		static std::string GetActiveBuildDefineConstant();
 		static std::string GetManagedPlatformDefine();
+		// C# define for a build target (INDEX_ANDROID, INDEX_WEB, ...), independent of the editor host.
+		static std::string GetManagedPlatformDefine(BuildPlatform platform);
 		static std::string BuildManagedDefineConstants(std::string_view primarySymbol);
 
-		// Scene JSON written as the startup scene of a new project (camera plus a small playable example).
+		// Scene JSON written as the startup scene of a new project without a template: an empty scene with a camera.
 		static Json::Value BuildStarterScene(const std::string& sceneName);
 		static IndexProject Create(const std::string& name, const std::string& parentDir,
 			const CreateProgressCallback& progressCallback = {});
 		static IndexProject Create(const std::string& name, const std::string& parentDir,
 			const std::string& directoryName, const CreateProgressCallback& progressCallback = {});
+		// Null template = the built-in 2D starter; otherwise the template's Assets/ and modules are used, plus its
+		// project.json settings, BuildProfiles/, native sources and local packages when the template has them.
+		static IndexProject Create(const std::string& name, const std::string& parentDir,
+			const std::string& directoryName, const ProjectTemplate* projectTemplate,
+			const CreateProgressCallback& progressCallback = {});
 		// Deep-copies an existing project to a new name/location. Inherits every
 		// setting, rewrites the name-bound files (project.json, .csproj/.sln
 		// rename + .sln/.vscode contents), and skips build artifacts

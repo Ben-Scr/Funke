@@ -9,7 +9,7 @@ namespace Index {
 
 	// Values are stable on disk (mapped in project.json) — do not reorder, append only.
 	enum class FullscreenMode : uint8_t {
-		// True exclusive fullscreen: glfwSetWindowMonitor, lowest latency, expensive Alt-Tab restore.
+		// True exclusive fullscreen at the desktop mode, lowest latency, expensive Alt-Tab restore. Platforms without exclusive modes (Wayland, mobile, Web) get desktop fullscreen.
 		Exclusive = 0,
 		// Decorated window sized to the monitor's video mode. Same look as
 		// Exclusive to the player but Alt-Tab is instant and the OS
@@ -18,10 +18,23 @@ namespace Index {
 		Maximized = 2,
 	};
 
+	// Which way up a phone or tablet game may be held. Left/Right name the side the top of the device
+	// points to, the same on Android and iOS. Values are stable on disk — do not reorder, append only.
+	enum class ScreenOrientation : uint8_t {
+		Auto = 0,                  // follows the window size: landscape when wider than tall
+		Landscape = 1,             // landscape, either way round (turns with the device)
+		LandscapeLeft = 2,         // device turned counter-clockwise, top on the left
+		LandscapeRight = 3,        // device turned clockwise, top on the right
+		Portrait = 4,              // upright only
+		PortraitUpsideDown = 5,    // upside down only
+		PortraitAny = 6,           // upright or upside down
+		AnyExceptUpsideDown = 7,   // landscape either way or upright portrait
+		Any = 8,                   // all four
+	};
+
 	struct WindowSpecification {
 		int Width{ 800 }, Height{ 800 };
-		// Resize limits passed to glfwSetWindowSizeLimits. 0 means
-		// "no constraint" (translated to GLFW_DONT_CARE at create time).
+		// Resize limits; 0 means "no constraint".
 		int MinWidth{ 0 }, MinHeight{ 0 };
 		int MaxWidth{ 0 }, MaxHeight{ 0 };
 		// >0: start size is this fraction of the primary monitor's work area, so the window
@@ -29,7 +42,7 @@ namespace Index {
 		float MonitorFraction{ 0.0f };
 		// >0: min size as a fraction of the work area at the same aspect; overrides MinWidth/MinHeight.
 		float MinMonitorFraction{ 0.0f };
-		std::string Title{ "GLFW Window" };
+		std::string Title{ "Index" };
 		bool Resizeable{ true };
 		bool Decorated{ true };
 		bool Fullscreen{ false };
@@ -37,6 +50,8 @@ namespace Index {
 		bool Windowed{ false };
 		// Selected only when Fullscreen=true. Ignored otherwise.
 		Index::FullscreenMode FullscreenMode{ Index::FullscreenMode::Exclusive };
+		// Phones and tablets only; desktop and Web windows ignore it.
+		Index::ScreenOrientation Orientation{ Index::ScreenOrientation::Auto };
 		Color ClearColor;
 
 		bool CustomTitlebar{ false };

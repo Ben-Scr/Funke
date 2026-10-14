@@ -28,6 +28,9 @@ namespace Index {
         static void UnloadFont(const FontHandle& handle);
         static void UnloadAll();
 
+        // Drops fonts whose TTF changed outside the engine; holders re-bake from disk. Returns how many changed.
+        static size_t ReloadChangedFromDisk();
+
         static bool IsValid(const FontHandle& handle);
         static Font* GetFont(const FontHandle& handle);
         static uint64_t GetFontAssetUUID(const FontHandle& handle);

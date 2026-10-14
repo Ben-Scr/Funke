@@ -81,6 +81,50 @@ public sealed class Texture : IEquatable<Texture>, IDisposable
         return new Texture(uuid);
     }
 
+    /// <summary>
+    /// Creates a runtime texture from RGBA8 pixels (row 0 at the top), e.g. the result of <see cref="DecodeImage"/>.
+    /// The array is kept as the texture's CPU buffer. Dispose it when done.
+    /// </summary>
+    public static Texture? Create(int width, int height, byte[] rgba, TextureFilter filter = TextureFilter.Bilinear)
+    {
+        if (width <= 0 || height <= 0 || rgba == null || rgba.Length < width * height * 4)
+        {
+            Log.Error($"Texture.Create: {width}x{height} needs {width * height * 4} RGBA bytes.");
+            return null;
+        }
+        ulong uuid = InternalCalls.Texture_CreateRuntime(width, height, rgba, (int)filter);
+        if (uuid == 0)
+            return null;
+        s_RuntimeBuffers[uuid] = new RuntimeBuffer { Pixels = rgba, Width = width, Height = height };
+        return new Texture(uuid);
+    }
+
+    /// <summary>
+    /// Decodes PNG / JPEG / BMP / TGA bytes (cover art, downloads) to RGBA8 pixels, shrinking it so the longer side is
+    /// at most <paramref name="maxSize"/> (0 = keep). Safe to call from worker threads; turn the pixels into a texture
+    /// with <see cref="Create(int, int, byte[], TextureFilter)"/> on the main thread. Returns null for unreadable data.
+    /// </summary>
+    public static byte[]? DecodeImage(byte[] data, int maxSize, out int width, out int height)
+    {
+        width = height = 0;
+        if (data == null || data.Length == 0)
+            return null;
+        // With a size cap the result fits a cap-sized buffer, so one decode is enough; otherwise ask for the size first.
+        byte[] pixels = new byte[maxSize > 0 ? maxSize * maxSize * 4 : 0];
+        int needed = InternalCalls.Image_Decode(data, maxSize, pixels, out width, out height);
+        if (needed <= 0)
+            return null;
+        if (needed > pixels.Length)
+        {
+            pixels = new byte[needed];
+            if (InternalCalls.Image_Decode(data, maxSize, pixels, out width, out height) != needed)
+                return null;
+        }
+        if (pixels.Length != needed)
+            Array.Resize(ref pixels, needed);
+        return pixels;
+    }
+
     public bool IsValid => UUID != 0 && (IsRuntime || InternalCalls.Texture_LoadAsset(UUID));
 
     public string Name
@@ -193,7 +237,7 @@ public sealed class Texture : IEquatable<Texture>, IDisposable
     /// <see cref="GetPixel"/> per cell. The returned array is a fresh copy of
     /// the CPU buffer; mutating it does not change the texture (write it back
     /// with <see cref="SetPixels"/> + <see cref="Apply"/>). Only valid on a
-    /// runtime texture created with <see cref="Create"/>.
+    /// runtime texture created with <see cref="Create(int, int, TextureFilter)"/>.
     /// </summary>
     public Color[] GetPixels()
     {
@@ -223,7 +267,7 @@ public sealed class Texture : IEquatable<Texture>, IDisposable
 
     /// <summary>
     /// Write this texture to a PNG file. Only valid for runtime textures created
-    /// with <see cref="Create"/> (their pixels live in a CPU buffer). The current
+    /// with <see cref="Create(int, int, TextureFilter)"/> (their pixels live in a CPU buffer). The current
     /// CPU buffer is saved as-is, so you do NOT need to call <see cref="Apply"/>
     /// first — Apply only pushes to the GPU. For a file/asset texture the source
     /// image is already on disk; copy <see cref="Path"/> instead.

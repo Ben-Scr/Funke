@@ -2,9 +2,10 @@ IncludeDir = {}
 IncludeDir["ExternalRoot"] = "External"
 IncludeDir["ImGui"] = "External/imgui"
 IncludeDir["Spdlog"] = "External/spdlog/include"
-IncludeDir["GLFW"] = "External/glfw/include"
+IncludeDir["SDL3"] = "External/SDL/include"
 IncludeDir["IndexPhysics"] = "External/Index-Physics/include"
 IncludeDir["Box2D"] = "External/box2d/include"
+IncludeDir["Jolt"] = "External/JoltPhysics"
 IncludeDir["GLM"] = "External/glm"
 IncludeDir["EnTT"] = "External/entt/src"
 IncludeDir["STB"] = "External/stb"
@@ -88,7 +89,6 @@ end
 local MergeDependencies = MergeDependencySets
 
 Library = {}
-Library["GLFW"] = "glfw3.lib"
 Library["Box2D"] = "box2d.lib"
 Library["FreeType"] = "freetype.lib"
 Library["OpenGL"] = "%{cfg.system == 'windows' and 'opengl32.lib' or 'GL'}"
@@ -103,18 +103,18 @@ LibDir["DotNet"] = "External/dotnet/lib"
 Dependency = {}
 Dependency["ImGui"] =
 {
-    -- imgui_impl_glfw + imgui_impl_opengl3 serve the consumer executables
+    -- imgui_impl_sdl3 serves the consumer executables
     -- (editor / launcher / runtime). imgui_impl_wgpu serves engine.dll
     -- (Gui/ImGuiImpl.cpp wraps it). Dawn's include paths splice in so
     -- imgui_impl_wgpu.cpp can find <webgpu/webgpu.h>; the WGPU_SHARED_-
     -- LIBRARY=0 define carries through too so every TU that touches the
     -- WebGPU C ABI agrees on linkage.
     IncludeDirs = MergeListsForDep(
-        { "%{IncludeDir.ImGui}", "%{IncludeDir.ImGui}/backends", "%{IncludeDir.GLFW}" },
+        { "%{IncludeDir.ImGui}", "%{IncludeDir.ImGui}/backends", "%{IncludeDir.SDL3}" },
         DawnLayout and DawnLayout.IncludeDirs or {}
     ),
     Defines = MergeListsForDep(
-        { "GLFW_DLL" },
+        {},
         DawnLayout and DawnLayout.Defines or {}
     ),
     BuildProject = true
@@ -130,7 +130,7 @@ Dependency["ExternalIncludes"] =
 {
     IncludeDirs =
     {
-        "%{IncludeDir.GLFW}",
+        "%{IncludeDir.SDL3}",
         "%{IncludeDir.Box2D}",
         "%{IncludeDir.GLM}",
         "%{IncludeDir.EnTT}",
@@ -169,14 +169,17 @@ Dependency["EngineCore"] =
         -- MPMC replacement for the prior std::mutex + std::deque queue.
         -- Added globally for the same reason RapidXML is (per-file scoping
         -- doesn't emit on vcxproj reliably).
-        "%{IncludeDir.ConcurrentQueue}"
+        "%{IncludeDir.ConcurrentQueue}",
+        -- SDL3 is the platform layer (paths, dynamic libraries, dialogs,
+        -- locale, threads), so even core-only builds link it.
+        "%{IncludeDir.SDL3}"
     },
 
-    LibDirs = {},
+    LibDirs = MergeListsForDep(SDL3Layout and SDL3Layout.LibDirs or {}),
 
     DependsOn = {},
 
-    Links = {}
+    Links = MergeListsForDep(SDL3Layout and SDL3Layout.Links or {})
 }
 
 -- Render-API dep set — WebGPU via Dawn. Dawn is built out-of-band by
@@ -187,7 +190,7 @@ Dependency["EngineCore"] =
 Dependency["EngineCoreRender"] =
 {
     IncludeDirs = MergeListsForDep(
-        { "%{IncludeDir.GLFW}" },
+        { "%{IncludeDir.SDL3}" },
         DawnLayout and DawnLayout.IncludeDirs or {}
     ),
 
@@ -201,14 +204,13 @@ Dependency["EngineCoreRender"] =
     LibDirs = {},
 
     Defines = MergeListsForDep(
-        { "GLFW_DLL", "IDX_RHI_WEBGPU" },
+        { "IDX_RHI_WEBGPU" },
         DawnLayout and DawnLayout.Defines or {}
     ),
 
-    DependsOn = { "GLFW" },
+    DependsOn = {},
 
     Links = MergeListsForDep(
-        { "GLFW" },
         DawnLayout and DawnLayout.Links or {}
     )
 }
@@ -227,7 +229,8 @@ Dependency["EngineCoreAudio"] =
     Links = {}
 }
 
-Dependency["EngineCorePhysics"] =
+-- Physics is split by engine feature module so a runtime variant links only what it ships.
+Dependency["EngineCorePhysics2D"] =
 {
     IncludeDirs =
     {
@@ -249,6 +252,31 @@ Dependency["EngineCorePhysics"] =
         "Index-Physics"
     }
 }
+
+Dependency["EngineCorePhysics3D"] =
+{
+    IncludeDirs =
+    {
+        "%{IncludeDir.Jolt}"
+    },
+
+    LibDirs = {},
+
+    DependsOn =
+    {
+        "Jolt"
+    },
+
+    Links =
+    {
+        "Jolt"
+    }
+}
+
+Dependency["EngineCorePhysics"] = MergeDependencies(
+    Dependency["EngineCorePhysics2D"],
+    Dependency["EngineCorePhysics3D"]
+)
 
 Dependency["EngineCoreScripting"] =
 {

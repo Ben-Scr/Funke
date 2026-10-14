@@ -1,10 +1,13 @@
 #pragma once
 
+#include "Core/PlatformDetection.hpp"
+
+#include <filesystem>
 #include <string>
 
 #ifdef IDX_PLATFORM_WINDOWS
 #include <Windows.h>
-#else
+#elif IDX_PLATFORM_DESKTOP
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
@@ -21,11 +24,15 @@ namespace Index {
             m_Handle = CreateMutexA(nullptr, TRUE, mutexName.c_str());
             if (m_Handle && GetLastError() == ERROR_ALREADY_EXISTS)
                 m_AlreadyRunning = true;
-#else
-            const std::string path = "/tmp/" + mutexName + ".lock";
-            m_FileDescriptor = open(path.c_str(), O_CREAT | O_RDWR, 0666);
+#elif IDX_PLATFORM_DESKTOP
+            std::error_code ec;
+            const std::filesystem::path path = std::filesystem::temp_directory_path(ec) / (mutexName + ".lock");
+            m_FileDescriptor = ec ? -1 : open(path.c_str(), O_CREAT | O_RDWR, 0666);
             if (m_FileDescriptor != -1)
                 m_AlreadyRunning = (flock(m_FileDescriptor, LOCK_EX | LOCK_NB) != 0);
+#else
+            // Mobile and Web: the OS already guarantees a single app instance.
+            (void)mutexName;
 #endif
         }
 
@@ -37,7 +44,7 @@ namespace Index {
                 ReleaseMutex(m_Handle);
                 CloseHandle(m_Handle);
             }
-#else
+#elif IDX_PLATFORM_DESKTOP
             if (m_FileDescriptor != -1)
             {
                 flock(m_FileDescriptor, LOCK_UN);

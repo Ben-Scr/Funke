@@ -52,6 +52,18 @@ else
     git clone --depth=1 https://dawn.googlesource.com/dawn "${DAWN_DIR}"
 fi
 
+# --- Local patches -----------------------------------------------------------
+# Backports from upstream Dawn main; skipped when already applied.
+for patch in scripts/dawn/patches/*.patch; do
+    [[ -f "${patch}" ]] || continue
+    if git -C "${DAWN_DIR}" apply --reverse --check "${PWD}/${patch}" 2>/dev/null; then
+        echo "[info] Dawn patch already applied: ${patch}"
+    else
+        echo "[info] Applying Dawn patch: ${patch}"
+        git -C "${DAWN_DIR}" apply "${PWD}/${patch}"
+    fi
+done
+
 # --- Configure ---------------------------------------------------------------
 echo "[2/3] Configuring Dawn via CMake..."
 # Dawn's build is Clang-oriented: it passes Clang-only -Wno-* flags, and under
@@ -72,6 +84,10 @@ CMAKE_ARGS=(
     -DTINT_BUILD_SPV_READER=OFF
     -DDAWN_ENABLE_SPIRV_VALIDATION=OFF
 )
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    # Same floor as SDL3 (scripts/sdl/SetupSDL.py) and the exported games' Info.plist.
+    CMAKE_ARGS+=(-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0)
+fi
 if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
     echo "      Compiler: Clang ($(command -v clang++))"
     CMAKE_ARGS+=(-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++)
@@ -90,7 +106,11 @@ echo "  Dawn build complete."
 echo "============================================"
 echo "Headers : ${DAWN_DIR}/include"
 echo "Headers : ${DAWN_BUILD_DIR}/gen/include"
-echo "Library : ${DAWN_BUILD_DIR}/src/dawn/native/libwebgpu_dawn.so"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    echo "Library : ${DAWN_BUILD_DIR}/src/dawn/native/libwebgpu_dawn.dylib"
+else
+    echo "Library : ${DAWN_BUILD_DIR}/src/dawn/native/libwebgpu_dawn.so"
+fi
 echo
 echo "Next: regenerate the engine project files with --rhi=webgpu, e.g."
 echo "  premake5 gmake2 --rhi=webgpu"

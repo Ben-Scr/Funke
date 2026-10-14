@@ -2,6 +2,7 @@
 #include "Graphics/Text/Font.hpp"
 
 #include "Core/Log.hpp"
+#include "Core/PlatformDetection.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
 #include "Serialization/File.hpp"
 
@@ -408,10 +409,15 @@ namespace Index {
 		// on the worker), so concurrent bakes of other sizes of the same font are safe.
 		std::shared_ptr<CpuBakeResult> result = m_AsyncBake->Result;
 		std::atomic<bool>* ready              = &m_AsyncBake->Ready;
+#if IDX_PLATFORM_HAS_THREADS
 		m_AsyncBake->Worker = std::thread([result, ready, pixelSize]() {
 			RasterizeAtlasCpu(*result->TtfBuffer, pixelSize, *result);
 			ready->store(true, std::memory_order_release);
 		});
+#else
+		RasterizeAtlasCpu(*result->TtfBuffer, pixelSize, *result);
+		ready->store(true, std::memory_order_release);
+#endif
 		return true;
 	}
 

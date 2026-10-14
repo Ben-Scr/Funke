@@ -1,6 +1,7 @@
 #include "pch.hpp"
 
 #include "Jobs/JobSystem.hpp"
+#include "Core/Platform.hpp"
 
 #include "Profiling/Profiler.hpp"
 
@@ -15,9 +16,6 @@
 
 #include <blockingconcurrentqueue.h>
 
-#ifdef IDX_PLATFORM_WINDOWS
-#include <processthreadsapi.h>
-#endif
 
 namespace Index {
 
@@ -64,11 +62,7 @@ namespace Index {
 		void SetWorkerThreadName(int workerIndex) {
 			char name[32];
 			std::snprintf(name, sizeof(name), "Index Worker %d", workerIndex);
-#ifdef IDX_PLATFORM_WINDOWS
-			wchar_t wname[32];
-			swprintf_s(wname, L"Index Worker %d", workerIndex);
-			::SetThreadDescription(::GetCurrentThread(), wname);
-#endif
+			Platform::SetCurrentThreadName(name);
 			INDEX_PROFILE_THREAD_NAME(name);
 		}
 
@@ -110,6 +104,12 @@ namespace Index {
 			return;
 		}
 
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+		// Browser builds without SharedArrayBuffer have no threads; Enqueue runs jobs inline while the pool is down.
+		(void)spec;
+		IDX_CORE_INFO_TAG("JobSystem", "No thread support on this platform; jobs run inline");
+		return;
+#endif
 		const int workerCount = ResolveAutoWorkerCount(spec.WorkerCount);
 
 		s_Workers.reserve(static_cast<size_t>(workerCount));
@@ -125,6 +125,11 @@ namespace Index {
 	}
 
 	void JobSystem::Shutdown() {
+		// A worker joining itself throws resource_deadlock_would_occur and would wedge the pool in ShuttingDown.
+		if (IsCallerWorker()) {
+			IDX_CORE_ERROR_TAG("JobSystem", "Shutdown/Reconfigure cannot be called from a job worker thread");
+			return;
+		}
 		std::lock_guard<std::recursive_mutex> lifecycle(s_LifecycleMutex);
 		if (s_State.load(std::memory_order_acquire) != PoolState::Running) {
 			return;
@@ -158,6 +163,10 @@ namespace Index {
 	}
 
 	int JobSystem::Reconfigure(int workerCount) {
+		if (IsCallerWorker()) {
+			IDX_CORE_ERROR_TAG("JobSystem", "Reconfigure cannot be called from a job worker thread");
+			return GetWorkerCount();
+		}
 		std::lock_guard<std::recursive_mutex> lifecycle(s_LifecycleMutex);
 		Shutdown();
 		JobSystemSpec spec;

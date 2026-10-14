@@ -7,9 +7,11 @@
 #include "Components/General/UUIDComponent.hpp"
 #include "Components/General/PrefabInstanceComponent.hpp"
 #include "Components/General/HierarchyComponent.hpp"
+#if INDEX_WITH_2D
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
+#endif
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/Entity.hpp"
@@ -346,6 +348,7 @@ namespace Index {
 			}
 		}
 
+#if INDEX_WITH_2D
 		// Fast-spawn created the collider shapes with default material/geometry — CreateShape
 		// ignores the component's logical state — so push the byte-restored state (size/radius,
 		// center, friction/bounciness/layer, sensor, contact events) into the live shapes,
@@ -369,6 +372,7 @@ namespace Index {
 				rb->RestoreBodyFromState();
 			}
 		}
+#endif
 
 		// Second pass: every entity must exist before SetParent runs so cycle guards and child-list updates resolve correctly.
 		for (uint32_t i = 0; i < entityCount; ++i) {

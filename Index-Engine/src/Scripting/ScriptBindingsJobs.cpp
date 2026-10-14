@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Scripting/ScriptBindingGuard.hpp"
 
 #include "Jobs/Job.hpp"
 #include "Jobs/JobSystem.hpp"
@@ -173,14 +174,14 @@ namespace Index {
 
 	void PopulateJobsBindings(NativeBindings& b)
 	{
-		b.JobSystem_Enqueue              = &Index_JobSystem_Enqueue;
-		b.JobSystem_ParallelFor          = &Index_JobSystem_ParallelFor;
-		b.JobSystem_Wait                 = &Index_JobSystem_Wait;
-		b.JobSystem_IsComplete           = &Index_JobSystem_IsComplete;
-		b.JobSystem_Release              = &Index_JobSystem_Release;
-		b.JobSystem_GetWorkerCount       = &Index_JobSystem_GetWorkerCount;
-		b.JobSystem_GetCallerWorkerIndex = &Index_JobSystem_GetCallerWorkerIndex;
-		b.JobSystem_Reconfigure          = &Index_JobSystem_Reconfigure;
+		b.JobSystem_Enqueue              = IDX_GUARDED_BINDING(Index_JobSystem_Enqueue);
+		b.JobSystem_ParallelFor          = IDX_GUARDED_BINDING(Index_JobSystem_ParallelFor);
+		b.JobSystem_Wait                 = IDX_GUARDED_BINDING(Index_JobSystem_Wait);
+		b.JobSystem_IsComplete           = IDX_GUARDED_BINDING(Index_JobSystem_IsComplete);
+		b.JobSystem_Release              = IDX_GUARDED_BINDING(Index_JobSystem_Release);
+		b.JobSystem_GetWorkerCount       = IDX_GUARDED_BINDING(Index_JobSystem_GetWorkerCount);
+		b.JobSystem_GetCallerWorkerIndex = IDX_GUARDED_BINDING(Index_JobSystem_GetCallerWorkerIndex);
+		b.JobSystem_Reconfigure          = IDX_GUARDED_BINDING(Index_JobSystem_Reconfigure);
 	}
 
 } // namespace Index

@@ -82,6 +82,8 @@
     <Compile Include="Source\Index\Attributes\SpaceAttribute.cs" />
     <Compile Include="Source\Index\Attributes\ToolTipAttribute.cs" />
     <Compile Include="Source\Index\Audio\Audio.cs" />
+    <Compile Include="Source\Index\Audio\AudioStream.cs" />
+    <Compile Include="Source\Index\Audio\MediaSession.cs" />
     <Compile Include="Source\Index\Collections\Native\NativeArray.cs" />
     <Compile Include="Source\Index\Collections\Native\NativeBitArray.cs" />
     <Compile Include="Source\Index\Collections\Native\NativeBool.cs" />
@@ -113,6 +115,7 @@
     <Compile Include="Source\Index\Core\KeyCodes.cs" />
     <Compile Include="Source\Index\Core\Log.cs" />
     <Compile Include="Source\Index\Core\PlayerPrefs.cs" />
+    <Compile Include="Source\Index\Core\SafeAreaInsets.cs" />
     <Compile Include="Source\Index\Core\SaveData.cs" />
     <Compile Include="Source\Index\Core\Time.cs" />
     <Compile Include="Source\Index\Core\Window.cs" />
@@ -121,7 +124,10 @@
     <Compile Include="Source\Index\Coroutines\IndexSynchronizationContext.cs" />
     <Compile Include="Source\Index\Graphics\Font.cs" />
     <Compile Include="Source\Index\Graphics\Gizmo.cs" />
+    <Compile Include="Source\Index\Graphics\Material.cs" />
+    <Compile Include="Source\Index\Graphics\Mesh.cs" />
     <Compile Include="Source\Index\Graphics\Png.cs" />
+    <Compile Include="Source\Index\Graphics\PostProcessing2D.cs" />
     <Compile Include="Source\Index\Graphics\RenderSettings.cs" />
     <Compile Include="Source\Index\Graphics\Renderer2D.cs" />
     <Compile Include="Source\Index\Graphics\Texture.cs" />
@@ -129,6 +135,7 @@
     <Compile Include="Source\Index\Interop\NativeCallbacks.cs" />
     <Compile Include="Source\Index\Interop\NativeInterop.cs" />
     <Compile Include="Source\Index\Interop\PackageNativeResolver.cs" />
+    <Compile Include="Source\Index\Interop\PostProcessingInterop.cs" />
     <Compile Include="Source\Index\Interop\ScriptHostBridge.cs" />
     <Compile Include="Source\Index\Interop\ScriptInstanceManager.cs" />
     <Compile Include="Source\Index\Jobs\AtomicBool.cs" />
@@ -166,13 +173,17 @@
     <Compile Include="Source\Index\Native\NativeSpriteRenderer.cs" />
     <Compile Include="Source\Index\Native\NativeTransform2D.cs" />
     <Compile Include="Source\Index\Physics\Collision2D.cs" />
+    <Compile Include="Source\Index\Physics\Collision3D.cs" />
     <Compile Include="Source\Index\Physics\FastPhysics2D.cs" />
     <Compile Include="Source\Index\Physics\Physics2D.cs" />
+    <Compile Include="Source\Index\Physics\Physics3D.cs" />
     <Compile Include="Source\Index\Physics\PhysicsLayers.cs" />
     <Compile Include="Source\Index\Physics\PhysicsShared.cs" />
     <Compile Include="Source\Index\Scene\AssetRef.cs" />
     <Compile Include="Source\Index\Scene\Component.cs" />
     <Compile Include="Source\Index\Scene\Components.cs" />
+    <Compile Include="Source\Index\Scene\Components3D.cs" />
+    <Compile Include="Source\Index\Scene\ComponentsPhysics3D.cs" />
     <Compile Include="Source\Index\Scene\DataAsset.cs" />
     <Compile Include="Source\Index\Scene\Entity.cs" />
     <Compile Include="Source\Index\Scene\EntityCommandBuffer.cs" />

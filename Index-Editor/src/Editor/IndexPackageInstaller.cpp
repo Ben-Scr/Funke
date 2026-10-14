@@ -1,6 +1,8 @@
 #include "Editor/IndexPackageInstaller.hpp"
 
+#include "Core/EngineModules.hpp"
 #include "Core/Log.hpp"
+#include "Core/Version.hpp"
 #include "Project/IndexProject.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Path.hpp"
@@ -9,59 +11,11 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
-#include <fstream>
-#include <mutex>
-#include <regex>
 #include <sstream>
-#include <unordered_map>
 
 namespace Index {
 
 	namespace {
-
-		struct ExtractRegexPair {
-			std::regex DoubleQuoted;
-			std::regex SingleQuoted;
-		};
-
-		const ExtractRegexPair& GetExtractRegexes(const std::string& fieldName) {
-			static std::unordered_map<std::string, ExtractRegexPair> s_Cache;
-			static std::mutex s_CacheMutex;
-			std::scoped_lock lock(s_CacheMutex);
-			auto it = s_Cache.find(fieldName);
-			if (it == s_Cache.end()) {
-				ExtractRegexPair pair{
-					std::regex(fieldName + "\\s*=\\s*\"([^\"]*)\""),
-					std::regex(fieldName + "\\s*=\\s*'([^']*)'"),
-				};
-				it = s_Cache.emplace(fieldName, std::move(pair)).first;
-			}
-			return it->second;
-		}
-
-		std::string ExtractStringField(const std::string& content, const std::string& fieldName) {
-			const ExtractRegexPair& regexes = GetExtractRegexes(fieldName);
-
-			std::smatch match;
-			if (std::regex_search(content, match, regexes.DoubleQuoted)) {
-				return match[1].str();
-			}
-			if (std::regex_search(content, match, regexes.SingleQuoted)) {
-				return match[1].str();
-			}
-			return {};
-		}
-
-		bool ReadFileToString(const std::filesystem::path& path, std::string& out) {
-			std::ifstream stream(path, std::ios::binary);
-			if (!stream.is_open()) {
-				return false;
-			}
-			std::ostringstream ss;
-			ss << stream.rdbuf();
-			out = ss.str();
-			return true;
-		}
 
 		bool IsSafePathComponent(std::string_view value) {
 			if (value.empty() || value == "." || value == "..") return false;
@@ -115,47 +69,49 @@ namespace Index {
 
 	} // namespace
 
+	PackageManifest IndexPackageManifest::ToPackageManifest() const {
+		PackageManifest manifest;
+		manifest.Name = Name;
+		manifest.VersionText = Version;
+		manifest.Version = SemanticVersion::Parse(Version);
+		manifest.Description = Description;
+		manifest.EngineRange = EngineRange;
+		manifest.Dependencies = Dependencies;
+		manifest.Modules = Modules;
+		manifest.HasNativeLayer = HasNativeLayer;
+		manifest.HasNativeStandaloneLayer = HasNativeStandaloneLayer;
+		manifest.HasCSharpLayer = HasCSharpLayer;
+		manifest.CSharpAllowUnsafe = CSharpAllowUnsafe;
+		manifest.PackageDir = PackageDir;
+		return manifest;
+	}
+
 	std::optional<IndexPackageManifest> IndexPackageInstaller::ReadManifest(const std::string& packageDir) {
-		std::filesystem::path manifestPath = std::filesystem::path(packageDir) / "index-package.lua";
-		std::error_code ec;
-		if (!std::filesystem::exists(manifestPath, ec) || ec) {
+		PackageManifest parsed;
+		std::string error;
+		if (!PackageManifest::TryLoad(packageDir, parsed, &error)) {
+			std::error_code ec;
+			if (std::filesystem::exists(std::filesystem::path(packageDir) / std::string(PackageManifest::k_FileName), ec)) {
+				IDX_WARN_TAG("IndexPackages", "Skipping package: {}", error);
+			}
 			return std::nullopt;
 		}
-
-		std::string content;
-		if (!ReadFileToString(manifestPath, content) || content.empty()) {
+		if (!IsSafePathComponent(parsed.Name)) {
 			return std::nullopt;
 		}
 
 		IndexPackageManifest manifest;
-		manifest.Name = ExtractStringField(content, "name");
-		manifest.Version = ExtractStringField(content, "version");
-		manifest.Description = ExtractStringField(content, "description");
+		manifest.Name = parsed.Name;
+		manifest.Version = parsed.VersionText;
+		manifest.Description = parsed.Description;
 		manifest.PackageDir = std::filesystem::path(packageDir).generic_string();
-
-		static const std::regex k_NativeRe(R"((^|[\s,;{])native\s*=\s*\{)");
-		static const std::regex k_EngineCoreRe(R"((^|[\s,;{])engine_core\s*=\s*\{)");
-		static const std::regex k_NativeStandaloneRe(R"((^|[\s,;{])native_standalone\s*=\s*\{)");
-		static const std::regex k_StandaloneCppRe(R"((^|[\s,;{])standalone_cpp\s*=\s*\{)");
-		static const std::regex k_CSharpRe(R"((^|[\s,;{])csharp\s*=\s*\{)");
-
-		manifest.HasNativeLayer = std::regex_search(content, k_NativeRe)
-			|| std::regex_search(content, k_EngineCoreRe);
-		manifest.HasNativeStandaloneLayer = std::regex_search(content, k_NativeStandaloneRe)
-			|| std::regex_search(content, k_StandaloneCppRe);
-		manifest.HasCSharpLayer = std::regex_search(content, k_CSharpRe);
-
-		// `allow_unsafe = true` is a per-layer flag inside the csharp block;
-		// loose match (anywhere in the manifest) is fine since it's an opt-in
-		// boolean — a true positive only matters if the csharp layer exists.
-		if (manifest.HasCSharpLayer) {
-			static const std::regex k_AllowUnsafeRe(R"(\ballow_unsafe\s*=\s*true\b)");
-			manifest.CSharpAllowUnsafe = std::regex_search(content, k_AllowUnsafeRe);
-		}
-
-		if (!IsSafePathComponent(manifest.Name) || manifest.Version.empty()) {
-			return std::nullopt;
-		}
+		manifest.HasNativeLayer = parsed.HasNativeLayer;
+		manifest.HasNativeStandaloneLayer = parsed.HasNativeStandaloneLayer;
+		manifest.HasCSharpLayer = parsed.HasCSharpLayer;
+		manifest.CSharpAllowUnsafe = parsed.CSharpAllowUnsafe;
+		manifest.EngineRange = parsed.EngineRange;
+		manifest.Dependencies = std::move(parsed.Dependencies);
+		manifest.Modules = std::move(parsed.Modules);
 		return manifest;
 	}
 
@@ -176,9 +132,14 @@ namespace Index {
 			return false;
 		}
 
-		auto manifest = ReadManifest(packageDir);
-		if (!manifest) {
-			outError = "index-package.lua at " + packageDir + " is missing required fields (name, version).";
+		PackageManifest parsed;
+		std::string parseError;
+		if (!PackageManifest::TryLoad(packageDir, parsed, &parseError)) {
+			outError = parseError;
+			return false;
+		}
+		if (!IsSafePathComponent(parsed.Name)) {
+			outError = "index-package.lua at " + packageDir + " has an unsafe package name.";
 			return false;
 		}
 		return true;
@@ -422,14 +383,30 @@ namespace Index {
 	}
 
 	namespace {
-		std::string BuildPackagesPropsContent(const IndexProject& project,
+		// `packageNames` is the resolved list, so C# dependencies of listed packages are referenced too.
+		std::string BuildPackagesPropsContent(const std::vector<std::string>& packageNames,
 			const std::vector<IndexPackageManifest>& manifests) {
 			std::string content;
 			content += "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
 			content += "<!-- Auto-generated by Index Package Manager. Do not edit. -->\n";
 			content += "<Project>\n";
+			// The file is committed and shared between Windows, macOS and Linux checkouts, so MSBuild picks the
+			// host's folders: premake's <cfg>-<system>-<arch> workspace output and the prebuilt Bin/<platform>-<arch>.
+			content += "  <PropertyGroup>\n";
+			content += "    <IndexPackageSystem Condition=\"$([MSBuild]::IsOSPlatform('Windows'))\">windows</IndexPackageSystem>\n";
+			content += "    <IndexPackageSystem Condition=\"$([MSBuild]::IsOSPlatform('OSX'))\">macosx</IndexPackageSystem>\n";
+			content += "    <IndexPackageSystem Condition=\"'$(IndexPackageSystem)' == ''\">linux</IndexPackageSystem>\n";
+			content += "    <IndexPackagePlatform Condition=\"'$(IndexPackageSystem)' == 'windows'\">Windows</IndexPackagePlatform>\n";
+			content += "    <IndexPackagePlatform Condition=\"'$(IndexPackageSystem)' == 'macosx'\">macOS</IndexPackagePlatform>\n";
+			content += "    <IndexPackagePlatform Condition=\"'$(IndexPackageSystem)' == 'linux'\">Linux</IndexPackagePlatform>\n";
+			content += "    <IndexPackageArch>x86_64</IndexPackageArch>\n";
+			content += "    <IndexPackageArch Condition=\"'$(IndexPackageSystem)' != 'windows' And "
+				"'$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'Arm64'\">arm64</IndexPackageArch>\n";
+			content += "    <IndexPackageBinArch>x64</IndexPackageBinArch>\n";
+			content += "    <IndexPackageBinArch Condition=\"'$(IndexPackageArch)' == 'arm64'\">arm64</IndexPackageBinArch>\n";
+			content += "  </PropertyGroup>\n";
 			content += "  <ItemGroup>\n";
-			for (const std::string& packageName : project.Packages) {
+			for (const std::string& packageName : packageNames) {
 				auto it = std::find_if(manifests.begin(), manifests.end(),
 					[&](const IndexPackageManifest& m) { return m.Name == packageName; });
 				if (it == manifests.end() || !it->HasCSharpLayer) {
@@ -439,13 +416,18 @@ namespace Index {
 				const std::string escapedAssemblyName = XmlEscape(assemblyName);
 				const std::string escapedPackageName = XmlEscape(packageName);
 				const std::string workspaceAssembly =
-					"$(MSBuildThisFileDirectory)..\\.index\\build\\packages\\bin\\$(Configuration)-windows-x86_64\\"
-					+ escapedAssemblyName + "\\" + escapedAssemblyName + ".dll";
+					"$(MSBuildThisFileDirectory)../.index/build/packages/bin/$(Configuration)-$(IndexPackageSystem)-$(IndexPackageArch)/"
+					+ escapedAssemblyName + "/" + escapedAssemblyName + ".dll";
 				const std::string prebuiltAssembly = "$(MSBuildThisFileDirectory)" + escapedPackageName
-					+ "\\Bin\\Windows-x64\\" + escapedAssemblyName + ".dll";
+					+ "/Bin/$(IndexPackagePlatform)-$(IndexPackageBinArch)/" + escapedAssemblyName + ".dll";
+				// Managed assemblies are CPU-neutral, so a package prebuilt only for Windows still works elsewhere.
+				const std::string portableAssembly = "$(MSBuildThisFileDirectory)" + escapedPackageName
+					+ "/Bin/Windows-x64/" + escapedAssemblyName + ".dll";
 				content += "    <Reference Include=\"" + escapedAssemblyName
-					+ "\" Condition=\"Exists('" + workspaceAssembly + "') Or Exists('" + prebuiltAssembly + "')\">\n";
-				content += "      <HintPath>" + prebuiltAssembly + "</HintPath>\n";
+					+ "\" Condition=\"Exists('" + workspaceAssembly + "') Or Exists('" + prebuiltAssembly
+					+ "') Or Exists('" + portableAssembly + "')\">\n";
+				content += "      <HintPath>" + portableAssembly + "</HintPath>\n";
+				content += "      <HintPath Condition=\"Exists('" + prebuiltAssembly + "')\">" + prebuiltAssembly + "</HintPath>\n";
 				content += "      <HintPath Condition=\"Exists('" + workspaceAssembly + "')\">"
 					+ workspaceAssembly + "</HintPath>\n";
 				content += "      <Private>true</Private>\n";
@@ -511,13 +493,93 @@ namespace Index {
 			return result;
 		}
 
+		// The package and its dependencies build on these engine modules; turning them on is part of installing it.
+		const std::vector<std::string> previousModules = project.Modules;
+		for (const std::string& module : CollectRequiredModules(ToPackageManifests(allManifests), packageName)) {
+			if (!project.HasModule(module)) {
+				project.Modules.push_back(module);
+				result.EnabledModules.push_back(module);
+			}
+		}
+
 		project.Packages.push_back(packageName);
-		project.Save();
+		if (!project.Save()) {
+			// Reporting success here would leave the package live only in memory; it vanishes on next open.
+			project.Packages.pop_back();
+			project.Modules = previousModules;
+			result.EnabledModules.clear();
+			result.Message = "Could not save project.json for '" + project.Name + "' (read-only or locked?); '"
+				+ packageName + "' was not installed.";
+			IDX_ERROR_TAG("IndexPackages", "{}", result.Message);
+			return result;
+		}
 
 		RegeneratePackageReferences(project);
 
 		result.Success = true;
 		result.Message = "Installed '" + packageName + "' to project '" + project.Name + "'";
+		if (!result.EnabledModules.empty()) {
+			std::string modules;
+			for (const std::string& module : result.EnabledModules) modules += (modules.empty() ? "" : ", ") + module;
+			result.Message += "; enabled the engine module " + modules + " it needs (applies after an editor reload)";
+		}
+		IDX_INFO_TAG("IndexPackages", "{}", result.Message);
+		return result;
+	}
+
+	IndexPackageInstaller::InstallResult IndexPackageInstaller::EnableModule(IndexProject& project, const std::string& moduleId) {
+		InstallResult result;
+		const std::optional<EngineModule> module = EngineModules::FromId(moduleId);
+		if (!module) {
+			result.Message = "'" + moduleId + "' is not an engine module (known: Index.2D, Index.3D).";
+			return result;
+		}
+		if (project.HasModule(moduleId)) {
+			result.Success = true;
+			result.Message = moduleId + " is already enabled.";
+			return result;
+		}
+		project.Modules.push_back(moduleId);
+		if (!project.Save()) {
+			project.Modules.pop_back();
+			result.Message = "Could not save project.json for '" + project.Name + "'; " + moduleId + " was not enabled.";
+			return result;
+		}
+		result.Success = true;
+		result.EnabledModules.push_back(moduleId);
+		result.Message = "Enabled " + moduleId + " (applies after an editor reload).";
+		IDX_INFO_TAG("IndexPackages", "{}", result.Message);
+		return result;
+	}
+
+	IndexPackageInstaller::InstallResult IndexPackageInstaller::DisableModule(IndexProject& project, const std::string& moduleId) {
+		InstallResult result;
+		if (!EngineModules::FromId(moduleId)) {
+			result.Message = "'" + moduleId + "' is not an engine module (known: Index.2D, Index.3D).";
+			return result;
+		}
+		if (!project.HasModule(moduleId)) {
+			result.Success = true;
+			result.Message = moduleId + " is not enabled.";
+			return result;
+		}
+		const std::vector<std::string> dependents =
+			FindModuleDependents(ToPackageManifests(EnumerateAll(project.RootDirectory)), project.Packages, moduleId);
+		if (!dependents.empty()) {
+			std::string names;
+			for (const std::string& name : dependents) names += (names.empty() ? "" : ", ") + name;
+			result.Message = moduleId + " is needed by " + names + ". Remove those packages first.";
+			return result;
+		}
+		const std::vector<std::string> previousModules = project.Modules;
+		std::erase(project.Modules, moduleId);
+		if (!project.Save()) {
+			project.Modules = previousModules;
+			result.Message = "Could not save project.json for '" + project.Name + "'; " + moduleId + " is still enabled.";
+			return result;
+		}
+		result.Success = true;
+		result.Message = "Removed " + moduleId + " (applies after an editor reload; scenes keep its components).";
 		IDX_INFO_TAG("IndexPackages", "{}", result.Message);
 		return result;
 	}
@@ -606,7 +668,8 @@ namespace Index {
 		std::filesystem::create_directories(project.PackagesDirectory, ec);
 
 		auto manifests = EnumerateAll(project.RootDirectory);
-		const std::string content = BuildPackagesPropsContent(project, manifests);
+		const PackageResolution resolution = ResolveProject(project, manifests);
+		const std::string content = BuildPackagesPropsContent(resolution.LoadOrder, manifests);
 
 		std::filesystem::path propsPath = std::filesystem::path(project.PackagesDirectory) / "IndexPackages.props";
 		(void)File::WriteAllText(propsPath.generic_string(), content);
@@ -654,6 +717,79 @@ namespace Index {
 		result.Message = "Removed package '" + packageName + "'";
 		IDX_INFO_TAG("IndexPackages", "{}", result.Message);
 		return result;
+	}
+
+	std::vector<PackageManifest> IndexPackageInstaller::ToPackageManifests(const std::vector<IndexPackageManifest>& manifests) {
+		std::vector<PackageManifest> converted;
+		converted.reserve(manifests.size());
+		for (const IndexPackageManifest& manifest : manifests) {
+			// EnumerateAll lists engine packages first; the loader treats a name in both roots as one package.
+			const bool seen = std::any_of(converted.begin(), converted.end(),
+				[&](const PackageManifest& existing) { return existing.Name == manifest.Name; });
+			if (!seen) converted.push_back(manifest.ToPackageManifest());
+		}
+		return converted;
+	}
+
+	PackageResolution IndexPackageInstaller::ResolveProject(const IndexProject& project, const std::vector<IndexPackageManifest>& manifests) {
+		return ResolvePackages(ToPackageManifests(manifests), project.Packages, GetEngineCompatibilityVersion(), &project.Modules);
+	}
+
+	IndexPackageInstaller::InstallResult IndexPackageInstaller::CheckCanUninstall(const IndexProject& project, const std::string& packageName) {
+		InstallResult result;
+		const std::vector<IndexPackageManifest> manifests = EnumerateAll(project.RootDirectory);
+		const PackageResolution resolution = ResolveProject(project, manifests);
+
+		std::vector<std::string> dependents;
+		for (const IndexPackageManifest& manifest : manifests) {
+			if (manifest.Name == packageName) continue;
+			const bool active = std::find(resolution.LoadOrder.begin(), resolution.LoadOrder.end(), manifest.Name) != resolution.LoadOrder.end();
+			const bool needsIt = std::any_of(manifest.Dependencies.begin(), manifest.Dependencies.end(),
+				[&](const PackageDependency& dependency) { return dependency.Name == packageName; });
+			if (active && needsIt && std::find(dependents.begin(), dependents.end(), manifest.Name) == dependents.end()) {
+				dependents.push_back(manifest.Name);
+			}
+		}
+		if (!dependents.empty()) {
+			std::string names;
+			for (const std::string& name : dependents) names += (names.empty() ? "" : ", ") + name;
+			result.Message = "'" + packageName + "' is still required by " + names + ". Remove those first.";
+			return result;
+		}
+		result.Success = true;
+		return result;
+	}
+
+	bool IndexPackageInstaller::UpdateLock(const IndexProject& project, const std::vector<PackageLockEntry>& sourceHints) {
+		PackageLock previous;
+		std::string error;
+		if (!PackageLock::TryLoad(project.RootDirectory, previous, &error)) {
+			IDX_WARN_TAG("IndexPackages", "Rewriting unreadable lock file: {}", error);
+			previous = {};
+		}
+		for (const PackageLockEntry& hint : sourceHints) {
+			previous.Upsert(hint);
+		}
+
+		const std::vector<IndexPackageManifest> manifests = EnumerateAll(project.RootDirectory);
+		const PackageResolution resolution = ResolveProject(project, manifests);
+		PackageLock lock = PackageLock::Build(resolution.LoadOrder, ToPackageManifests(manifests), previous, IDX_VERSION);
+		for (PackageLockEntry& entry : lock.Packages) {
+			if (entry.Source != "unknown") continue;
+			const auto manifest = std::find_if(manifests.begin(), manifests.end(),
+				[&](const IndexPackageManifest& candidate) { return candidate.Name == entry.Name; });
+			if (manifest != manifests.end() && manifest->IsEngine) entry.Source = "engine";
+		}
+
+		// An empty lock only matters once the project has used packages; don't litter fresh projects.
+		if (lock.Packages.empty() && !File::Exists(PackageLock::GetPath(project.RootDirectory))) {
+			return true;
+		}
+		if (!lock.Save(project.RootDirectory)) {
+			IDX_WARN_TAG("IndexPackages", "Could not write {}", PackageLock::GetPath(project.RootDirectory));
+			return false;
+		}
+		return true;
 	}
 
 }

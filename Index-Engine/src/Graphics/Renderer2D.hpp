@@ -63,6 +63,10 @@ namespace Index {
 		void RenderSceneWithVP(Scene& scene, const glm::mat4& vp, const AABB& viewportAABB);
 
 		void SetSkipBeginFrameRender(bool skip) { m_SkipBeginFrameRender = skip; }
+		// Set when 3D content already sits in the target: BeginFrame skips its clear and the
+		// post-process intermediate starts transparent so the blit composites instead of overwriting.
+		void SetComposeOverTarget(bool compose) { m_ComposeOverTarget = compose; }
+		bool IsComposingOverTarget() const { return m_ComposeOverTarget; }
 
 		size_t GetRenderedInstancesCount() const { return m_RenderedInstancesCount; }
 		size_t GetDrawCallsCount() const { return m_DrawCallsCount; }
@@ -88,6 +92,7 @@ namespace Index {
 		bool m_IsEnabled = true;
 		bool m_PostProcessingEnabled = true;
 		bool m_SkipBeginFrameRender = false;
+		bool m_ComposeOverTarget = false;
 		GraphicsSettings m_GraphicsSettings{};
 
 		std::vector<Instance44> m_Instances;

@@ -4,20 +4,20 @@
 #include "Core/Export.hpp"
 #include "KeyCodes.hpp"
 
-#include <GLFW/glfw3.h>
 #include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
 
+struct SDL_Gamepad;
+
 namespace Index {
     class Application;
     class Window;
 
-    // Mirrors GLFW_GAMEPAD_BUTTON_*. Names follow the SDL2 layout
-    // (A/B/X/Y on Xbox; the equivalent on other pads is mapped by
-    // GLFW's controller DB) so user code can stay agnostic to the
-    // physical pad family.
+    // Positional names on the Xbox layout (A = bottom face button); SDL's
+    // controller database maps other pad families onto the same positions.
+    // Values are stable for C# and serialized input bindings.
     enum class GamepadButton : std::uint8_t {
         A            = 0,
         B            = 1,
@@ -66,7 +66,7 @@ namespace Index {
         static bool GetGamepadButton(GamepadButton button, int gamepadIndex = 0);
         static bool GetGamepadButtonDown(GamepadButton button, int gamepadIndex = 0);
         static bool GetGamepadButtonUp(GamepadButton button, int gamepadIndex = 0);
-        // Returns the raw axis value in [-1, 1] (triggers in [0, 1]).
+        // Returns the raw axis value in [-1, 1]; triggers rest at -1 (C# GetGamepadTrigger remaps to [0, 1]).
         // Apply your own deadzone — Input does no shaping here so the
         // raw values stay available for analog gameplay use.
         static float GetGamepadAxis(GamepadAxis axis, int gamepadIndex = 0);
@@ -76,13 +76,13 @@ namespace Index {
 		// Scales the stick so output starts at 0 at the deadzone edge instead of jumping to its radius.
 		static Vec2 ApplyRadialDeadzone(float x, float y, float deadzone);
 		static constexpr float k_GamepadAxisDeadzone = 0.2f;
-		// Viewport-local pixels; raw GLFW coordinates stay stored so resize remapping remains current.
+		// Viewport-local pixels; raw window coordinates stay stored so resize remapping remains current.
 		static Vec2 GetMousePosition();
         static Vec2 GetMouseDelta();
         static float ScrollValue();
 
         // Unicode codepoints typed this frame, in the order they arrived
-        // from GLFW's char callback. Cleared at the start of every Update.
+        // as text-input events. Cleared at the start of every Update.
         // UI input fields read this each frame to append typed characters.
         static const std::vector<uint32_t>& GetCharsThisFrame();
 
@@ -101,7 +101,7 @@ namespace Index {
 
         void Reset();
         void Update();
-        // Recompute frame-derived state (e.g. m_Axis) after glfwPollEvents.
+        // Recompute frame-derived state (gamepads, m_Axis) after Window::PollEvents.
         // Called by Application::Run AFTER polling so reads reflect *this*
         // frame's keys, not last frame's.
         void PostPoll();
@@ -114,18 +114,27 @@ namespace Index {
         void OnScroll(float delta) { m_ScrollValue += delta; }
         void OnMouseMove(double x, double y);
         void OnChar(uint32_t codepoint);
+        void OnGamepadAdded(uint32_t joystickId);
+        void OnGamepadRemoved(uint32_t joystickId);
+        void CloseGamepads();
 
-        static constexpr int k_KeyCount = GLFW_KEY_LAST + 1;
-        static constexpr int k_MouseCount = GLFW_MOUSE_BUTTON_LAST + 1;
-        static constexpr int k_GamepadButtonCount = 15;  // GLFW_GAMEPAD_BUTTON_LAST + 1
-        static constexpr int k_GamepadAxisCount = 6;     // GLFW_GAMEPAD_AXIS_LAST + 1
+        static constexpr int k_KeyCount = static_cast<int>(KeyCode::Menu) + 1;
+        static constexpr int k_MouseCount = 8;
+        static constexpr int k_GamepadButtonCount = 15;
+        static constexpr int k_GamepadAxisCount = 6;
 
         std::array<bool, k_KeyCount> m_CurrentKeyStates{};
-        std::array<bool, k_KeyCount> m_PreviousKeyStates{};
         std::array<bool, k_MouseCount> m_CurrentMouseButtons{};
-        std::array<bool, k_MouseCount> m_PreviousMouseButtons{};
+        // Press/release edges seen during this frame's poll. Diffing held state against last frame loses
+        // a press and release that land in one poll (soft-keyboard Backspace, very short taps).
+        std::array<bool, k_KeyCount> m_KeysPressedThisFrame{};
+        std::array<bool, k_KeyCount> m_KeysReleasedThisFrame{};
+        std::array<bool, k_MouseCount> m_MousePressedThisFrame{};
+        std::array<bool, k_MouseCount> m_MouseReleasedThisFrame{};
 
         struct GamepadState {
+            SDL_Gamepad* Handle = nullptr;
+            uint32_t JoystickId = 0;
             bool Connected = false;
             std::array<bool, k_GamepadButtonCount> CurrentButtons{};
             std::array<bool, k_GamepadButtonCount> PreviousButtons{};

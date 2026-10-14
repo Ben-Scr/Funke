@@ -1,6 +1,7 @@
 #include <pch.hpp>
 #include "Path.hpp"
 
+#include "Core/Platform.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
 
@@ -9,10 +10,6 @@
 #ifdef IDX_PLATFORM_WINDOWS
 #include <windows.h>
 #include <shlobj.h>
-#else
-#include <cstdlib>
-#include <unistd.h>
-#include <limits.h>
 #endif
 
 namespace Index {
@@ -55,33 +52,53 @@ namespace Index {
         CoTaskMemFree(path);
         return result;
 #else
-        const char* home = std::getenv("HOME");
-        if (!home)
-            IDX_THROW(IndexErrorCode::Undefined, "HOME environment variable is not set");
+        auto userFolder = [](Platform::UserFolder userFolder) {
+            std::filesystem::path path = Platform::GetUserFolder(userFolder);
+            // Sandboxed platforms (mobile, Web) have no user folders; their data root is the only writable place.
+            if (path.empty()) path = Platform::GetUserDataRoot();
+            return ToUtf8(path.lexically_normal());
+        };
 
         switch (folder) {
-        case SpecialFolder::User: return home;
-        case SpecialFolder::Desktop: return Combine(home, "Desktop");
-        case SpecialFolder::Documents: return Combine(home, "Documents");
-        case SpecialFolder::Downloads: return Combine(home, "Downloads");
-        case SpecialFolder::Music: return Combine(home, "Music");
-        case SpecialFolder::Pictures: return Combine(home, "Pictures");
-        case SpecialFolder::Videos: return Combine(home, "Videos");
+        case SpecialFolder::User: return userFolder(Platform::UserFolder::Home);
+        case SpecialFolder::Desktop: return userFolder(Platform::UserFolder::Desktop);
+        case SpecialFolder::Documents: return userFolder(Platform::UserFolder::Documents);
+        case SpecialFolder::Downloads: return userFolder(Platform::UserFolder::Downloads);
+        case SpecialFolder::Music: return userFolder(Platform::UserFolder::Music);
+        case SpecialFolder::Pictures: return userFolder(Platform::UserFolder::Pictures);
+        case SpecialFolder::Videos: return userFolder(Platform::UserFolder::Videos);
         case SpecialFolder::AppDataRoaming:
-        case SpecialFolder::LocalAppData: {
-            const char* xdg = std::getenv("XDG_CONFIG_HOME");
-            return (xdg && *xdg) ? std::string(xdg) : Combine(home, ".config");
-        }
+        case SpecialFolder::LocalAppData:
+            return ToUtf8(Platform::GetUserDataRoot());
         case SpecialFolder::ProgramData:
+#if defined(IDX_PLATFORM_MACOS)
+            return "/Library/Application Support";
+#elif defined(IDX_PLATFORM_LINUX)
             return "/usr/share";
+#else
+            return ToUtf8(Platform::GetUserDataRoot());
+#endif
         default:
             IDX_THROW(IndexErrorCode::InvalidArgument, "Unknown SpecialFolder");
         }
 #endif
     }
 
+    namespace {
+        std::string& ExecutableDirOverride() {
+            static std::string s_Override;
+            return s_Override;
+        }
+    }
+
+    void Path::SetExecutableDirOverride(const std::string& directory)
+    {
+        ExecutableDirOverride() = directory;
+    }
+
     std::string Path::ExecutableDir()
     {
+        if (!ExecutableDirOverride().empty()) return ExecutableDirOverride();
 #ifdef IDX_PLATFORM_WINDOWS
         // Grow the buffer until the path fits — silent truncation at MAX_PATH would
         // produce a wrong directory on long-installation paths (the registry-key value
@@ -102,12 +119,13 @@ namespace Index {
         const auto utf8 = std::filesystem::path(buf.data()).parent_path().u8string();
         return std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size());
 #else
-        char buf[PATH_MAX]{};
-        ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-        if (len <= 0)
+        // SDL_GetBasePath covers /proc/self/exe, macOS bundles, Android assets and the Web VFS root.
+        const std::filesystem::path dir = Platform::GetExecutableDirectory();
+        if (dir.empty())
             IDX_THROW(IndexErrorCode::Undefined, "Failed to resolve executable path");
-        buf[len] = '\0';
-        return std::filesystem::path(buf).parent_path().string();
+        std::string result = ToUtf8(dir);
+        while (result.size() > 1 && (result.back() == '/' || result.back() == '\\')) result.pop_back();
+        return result;
 #endif
     }
 

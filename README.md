@@ -4,9 +4,9 @@
 
 Index is a lightweight C++20 2D game engine mainly focused on performance and modularity.
 
-> **Beta.** The editor, launcher and game exports run on **Windows x64**. Linux builds from source only; macOS, Web and mobile are not supported yet. See [Known Limitations](Github-Docs/Documentation/Known-Limitations.md).
+> **Beta.** The editor and launcher run on **Windows x64**, **Linux x64** and **macOS** (Apple Silicon and Intel), and each exports games for its own desktop platform. Android, iOS and Web exports come from platform packages. See [Known Limitations](Github-Docs/Documentation/Known-Limitations.md).
 
-**Making a game?** Download the latest Windows build from [Releases](https://github.com/Ben-Scr/Index/releases), install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0), and follow **[Your First Game](Github-Docs/Documentation/Getting-Started.md)**.
+**Making a game?** Download the latest build for Windows, Linux or macOS from [Releases](https://github.com/Ben-Scr/Index/releases), install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0), and follow **[Your First Game](Github-Docs/Documentation/Getting-Started.md)**.
 
 **License:** Index is free and open source under the [MIT License](LICENSE.txt). Use it for any project, commercial or not; just keep the license notice with copies of the engine (game builds already include it in their `Licenses` folder).
 
@@ -75,7 +75,7 @@ See [Building and Shipping](Github-Docs/Documentation/Editor/Building-and-Shippi
 <details>
 <summary><b>Linux (GNU Make)</b></summary>
 
-**Prerequisites:** a C++20 compiler (GCC; Dawn's source build also needs Clang), GNU Make, the .NET 10 SDK, Python 3.10+, Git, and the GLFW + X11 development packages. Linux is a source build for engine development; there is no Linux editor release or game export yet.
+**Prerequisites:** a C++20 compiler (GCC or Clang; Dawn's source build needs Clang), GNU Make, CMake, the .NET 10 SDK, Python 3.10+, Git, and the X11 / Wayland development packages SDL3 builds against. Running the editor needs a Vulkan driver (Mesa or the GPU vendor's).
 
 Generate the makefiles:
 
@@ -84,13 +84,41 @@ chmod +x scripts/Setup.sh
 ./scripts/Setup.sh
 ```
 
-Setup asks `[Y/n]` before installing anything missing through apt, dnf, pacman or zypper: Python, Git, the .NET 10 SDK, CMake, and the C++ toolchain with the X11/GL development headers.
+Setup asks `[Y/n]` before installing anything missing through apt, dnf, pacman or zypper: Python, Git, the .NET 10 SDK, CMake, and the C++ toolchain with the X11/Wayland/GL development headers. It then builds SDL3 (`scripts/sdl/SetupSDL.py`). Distribution-built .NET SDKs (e.g. Ubuntu's `dotnet-sdk-10.0`) work as well as Microsoft's.
 
-Build:
+Build Dawn (WebGPU) once, then everything else. `Index-Managed` builds the C# projects (Index-ScriptCore, the hot-reload compiler and the package tool) with `dotnet`; the Launcher target also bundles the Editor, Runtime, `index` tool and EngineSDK next to the Launcher:
 
 ```bash
-make config=release -j"$(nproc)" Index-Engine Index-Runtime Index-Editor
+./scripts/dawn/SetupDawn.sh
+make config=dist -j"$(nproc)" Index-Runtime
+make config=release -j"$(nproc)" Index-Launcher
+./bin/Release-linux-x86_64/Index-Launcher/Index-Launcher
 ```
+
+`python3 scripts/PackagePosix.py` packs that folder into `Index-Editor-<version>-Linux-x64.tar.gz`.
+
+</details>
+
+<details>
+<summary><b>macOS (Apple Silicon or Intel, GNU Make)</b></summary>
+
+**Prerequisites:** macOS 11 or later, the Xcode Command Line Tools (`xcode-select --install`), CMake, the .NET 10 SDK, Python 3.10+ and Git. Rendering uses Metal through Dawn.
+
+```bash
+chmod +x scripts/Setup.sh
+./scripts/Setup.sh
+```
+
+Setup offers to install missing tools through [Homebrew](https://brew.sh) and opens the Command Line Tools installer when they are missing. Then build Dawn once and the rest:
+
+```bash
+./scripts/dawn/SetupDawn.sh
+make config=dist -j"$(sysctl -n hw.ncpu)" Index-Runtime
+make config=release -j"$(sysctl -n hw.ncpu)" Index-Launcher
+./bin/Release-macosx-arm64/Index-Launcher/Index-Launcher
+```
+
+On Intel Macs the folder is `Release-macosx-x86_64`. `python3 scripts/PackagePosix.py` packs it into `Index-Editor-<version>-macOS-<arch>.tar.gz`.
 
 </details>
 
@@ -101,7 +129,7 @@ Guides for building games with Index live in **[`Github-Docs/Documentation`](Git
 ## Built With
 
 - [WebGPU via Dawn](https://dawn.googlesource.com/dawn) — rendering (picks D3D12 / Vulkan / Metal at runtime)
-- [GLFW](https://github.com/glfw/glfw) — windowing & input
+- [SDL3](https://github.com/libsdl-org/SDL) — windowing, input, gamepads & platform services
 - [Box2D](https://github.com/erincatto/box2d) / [Index-Physics](https://github.com/Ben-Scr/Index-Physics) — 2D physics
 - [EnTT](https://github.com/skypjack/entt) — ECS
 - [Miniaudio](https://github.com/mackron/miniaudio) — audio

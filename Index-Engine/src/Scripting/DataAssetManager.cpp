@@ -2,6 +2,7 @@
 #include "Scripting/DataAssetManager.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Assets/AssetRegistry.hpp"
+#include "Serialization/FileStamp.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/SceneSerializerStorage.hpp"
 #if INDEX_WITH_APPLICATION
@@ -49,6 +50,7 @@ namespace Index {
 			if (path.empty())
 				return false;
 
+			KnownFileStamps::Record(path);
 			// ReadRootFromFile auto-detects JSON vs the binary container.
 			std::string error;
 			Json::Value root;
@@ -156,6 +158,39 @@ namespace Index {
 			ReplayFields(p.Guid, p.Fields);
 	}
 
+	size_t DataAssetManager::ReloadChangedFromDisk() {
+		std::vector<std::pair<uint64_t, std::string>> loaded;
+		{
+			std::lock_guard<std::mutex> lock(s_Mutex);
+			loaded.assign(s_LoadedTypes.begin(), s_LoadedTypes.end());
+		}
+
+		size_t reloaded = 0;
+		for (const auto& [guid, loadedType] : loaded) {
+			const std::string path = AssetRegistry::ResolvePath(guid);
+			if (path.empty() || !KnownFileStamps::HasChangedOnDisk(path))
+				continue;
+
+			std::string type;
+			FieldList fields;
+			// A half-written file fails to parse; keep the live instance, the write's completion re-triggers.
+			if (!ReadFile(guid, type, fields))
+				continue;
+
+			if (type == loadedType) {
+				// Replay onto the live instance so script references to it stay valid.
+				ReplayFields(guid, fields);
+			}
+			else {
+				Unload(guid);
+				if (!Instantiate(guid))
+					continue;
+			}
+			++reloaded;
+		}
+		return reloaded;
+	}
+
 	const char* DataAssetManager::GetFields(uint64_t guid) {
 		Load(guid);
 		return ScriptEngine::GetDataAssetFields(guid);
@@ -203,6 +238,7 @@ namespace Index {
 			IDX_CORE_ERROR_TAG("DataAsset", "Failed to write '{}'", path);
 			return false;
 		}
+		KnownFileStamps::Record(path);
 		return true;
 	}
 
@@ -216,6 +252,7 @@ namespace Index {
 			IDX_CORE_ERROR_TAG("DataAsset", "Failed to write new data asset '{}'", path);
 			return 0;
 		}
+		KnownFileStamps::Record(path);
 
 		// Mints (and persists, via .meta) a stable GUID for the new file.
 		return AssetRegistry::GetOrCreateAssetUUID(path);

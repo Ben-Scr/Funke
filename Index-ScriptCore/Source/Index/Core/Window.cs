@@ -4,7 +4,7 @@ namespace Index;
 
 public static class Window
 {
-    /// <summary>Fired same-frame as the GLFW resize callback; skipped while minimised so subscribers never see a transient 0×0.</summary>
+    /// <summary>Fired same-frame as the window resize event; skipped while minimised so subscribers never see a transient 0×0.</summary>
     public static event Action? OnResize;
     public static event Action<bool>? FocusChanged;
     public static event Action? OnMaximize;
@@ -66,7 +66,7 @@ public static class Window
 
     public static Vector2Int WindowCenter => new Vector2Int(Width / 2, Height / 2);
 
-    /// <summary>Half-extent of the primary monitor's video mode; stays in sync with GLFW's video mode (same source as <c>Window::GetScreenCenter()</c>).</summary>
+    /// <summary>Half-extent of the desktop mode of the window's display; stays in sync with the display's desktop mode (same source as <c>Window::GetScreenCenter()</c>).</summary>
     public static Vector2Int ScreenCenter
     {
         get

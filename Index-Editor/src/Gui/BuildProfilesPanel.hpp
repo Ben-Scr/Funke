@@ -1,6 +1,10 @@
 #pragma once
+#include "Editor/PlatformBuilder.hpp"
 #include "Project/IndexBuildProfile.hpp"
 
+#include <future>
+#include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -12,6 +16,8 @@ namespace Index {
 		void Shutdown();
 		// `pOpen` flips false when the user hits the title bar X.
 		void Render(bool* pOpen);
+		// Re-reads every .build file on the next Render, e.g. after one was edited outside the editor.
+		void ReloadFromDisk() { m_Dirty = true; }
 
 	private:
 		void RefreshProfilesIfDirty();
@@ -21,6 +27,7 @@ namespace Index {
 		void RenderProfilePopups();
 		void RenderInspector();
 		void RenderPlatformTiles(IndexBuildProfile& profile);
+		void RenderPlatformPackage(IndexBuildProfile& profile);
 
 		bool HasSelection() const;
 		bool IsActiveProfile(const std::string& name) const;
@@ -55,6 +62,16 @@ namespace Index {
 		bool m_OpenDeletePopup = false;
 		std::string m_PendingDeleteName;
 		std::string m_PendingDeleteProjectFilePath;
+
+		// Builder `describe` / `check` answers per package platform; both run a Python process.
+		struct PackageState {
+			std::string PackageName;
+			std::future<PlatformBuilder::Description> DescribeTask;
+			std::future<PlatformBuilder::CheckResult> CheckTask;
+			std::optional<PlatformBuilder::Description> Described;
+			std::optional<PlatformBuilder::CheckResult> Checked;
+		};
+		std::map<BuildPlatform, PackageState> m_PackageStates;
 
 		// Status strip at the bottom of the panel.
 		std::string m_StatusMessage;

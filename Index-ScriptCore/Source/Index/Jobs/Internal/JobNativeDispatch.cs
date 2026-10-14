@@ -72,20 +72,31 @@ internal static unsafe class JobNativeDispatch
 
         // Surface unconsumed exceptions before freeing the box — keeps
         // fire-and-forget paths from silently swallowing faults.
-        ulong nh = 0;
-        switch (gch.Target)
+        // An exception escaping an [UnmanagedCallersOnly] method kills the process, and skipping Free leaks the box.
+        try
         {
-            case IJobBox singleBox:
-                nh = singleBox.NativeHandle;
-                singleBox.OnRelease();
-                break;
-            case IJobRangeBox rangeBox:
-                nh = rangeBox.NativeHandle;
-                rangeBox.OnRelease();
-                break;
+            ulong nh = 0;
+            switch (gch.Target)
+            {
+                case IJobBox singleBox:
+                    nh = singleBox.NativeHandle;
+                    singleBox.OnRelease();
+                    break;
+                case IJobRangeBox rangeBox:
+                    nh = rangeBox.NativeHandle;
+                    rangeBox.OnRelease();
+                    break;
+            }
+            JobExceptionRegistry.DrainOrLog(nh);
         }
-        JobExceptionRegistry.DrainOrLog(nh);
-        gch.Free();
+        catch (Exception ex)
+        {
+            Log.Error($"Job release failed: {ex}");
+        }
+        finally
+        {
+            gch.Free();
+        }
     }
 
     internal static JobHandle Schedule(IJobBox box)

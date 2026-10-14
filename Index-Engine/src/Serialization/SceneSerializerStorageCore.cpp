@@ -206,7 +206,8 @@ namespace Index::SceneSerializerStorage {
 					std::uint32_t count = 0;
 					if (!ReadU32(count)) return false;
 					out = Value::MakeObject();
-					out.ReserveMembers(count);
+					// Every element takes at least one byte, so cap untrusted counts by what is left in the buffer.
+					out.ReserveMembers(std::min<std::size_t>(count, Remaining()));
 					for (std::uint32_t i = 0; i < count; ++i) {
 						std::string key;
 						Value memberValue;
@@ -219,7 +220,7 @@ namespace Index::SceneSerializerStorage {
 					std::uint32_t count = 0;
 					if (!ReadU32(count)) return false;
 					out = Value::MakeArray();
-					out.EnsureArray().reserve(count);
+					out.EnsureArray().reserve(std::min<std::size_t>(count, Remaining()));
 					for (std::uint32_t i = 0; i < count; ++i) {
 						Value item;
 						if (!ReadValue(item, depth + 1)) return false;
@@ -384,7 +385,8 @@ namespace Index::SceneSerializerStorage {
 		}
 
 		outHeader = Value::MakeObject();
-		outHeader.ReserveMembers(memberCount);
+		// Untrusted count: cap the up-front reservation; real members still append past it.
+		outHeader.ReserveMembers(std::min<std::uint32_t>(memberCount, 256u));
 		for (std::uint32_t i = 0; i < memberCount; ++i) {
 			std::string key;
 			if (!reader.ReadString(key)) {

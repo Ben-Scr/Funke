@@ -19,6 +19,7 @@
 #include "Gui/SplashScreen.hpp"
 #include "Packages/PackageManager.hpp"
 #include "Editor/EditorCamera.hpp"
+#include "Editor/EditorCamera3D.hpp"
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/Gizmo.hpp"
 #include "Graphics/Texture2D.hpp"
@@ -26,6 +27,7 @@
 #include "Serialization/FileWatcher.hpp"
 #include "Undo/UndoStack.hpp"
 #include "Undo/TransformEditCommand.hpp"
+#include "Undo/Transform3DEditCommand.hpp"
 #include "Undo/StructureEditCommand.hpp"
 #include "Editor/SceneRecovery.hpp"
 
@@ -43,6 +45,8 @@
 #include <vector>
 #include <utility>
 #include <chrono>
+#include "Project/PlatformPackages.hpp"
+#include <optional>
 
 namespace Index {
 
@@ -74,6 +78,14 @@ namespace Index {
 		void OnPreRender(Application& app) override;
 		void OnUpdate(Application& app, float dt) override;
 		void OnEvent(Application& app, IndexEvent& event) override;
+
+		// Command-line build (--build): queues the same pipeline as the Build button, without opening the output folder.
+		// Empty profile = project's active profile, else the first Windows profile; empty output = <project>/Builds/<profile>.
+		bool RequestCommandLineBuild(const std::string& profileName, const std::string& outputDirectory, std::string& outError);
+		bool IsBuildInProgress() const { return m_BuildState != 0; }
+		bool DidLastBuildSucceed() const { return m_BuildSucceeded.load(std::memory_order_relaxed); }
+		const std::string& GetLastBuildOutputDirectory() const { return m_BuildOutputDir; }
+		const std::string& GetLastBuiltExecutablePath() const { return m_BuiltExecutablePath; }
 	private:
 		enum class PendingEditorAction : uint8_t {
 			None = 0,
@@ -127,6 +139,7 @@ namespace Index {
 		void RenderEditorView(Scene& scene);
 		void RenderGameView(Scene& scene);
 		void TickParticlePreview(Scene& scene);
+		void DrawParticlePreviewControls(Scene& renderScene, const Vec2& imageTopLeft, const Vec2& viewportSize);
 		void RenderLogPanel();
 		void RenderProjectPanel();
 		void RenderBuildPanel();
@@ -141,7 +154,6 @@ namespace Index {
 		void RenderSettings_Physics(IndexProject& project, bool& changed, const std::string& filterLower);
 		void TickSplashPreview();
 		void RenderSceneSystemsInspector(Scene& scene);
-		void ExecuteBuild(IndexProject project, std::string outputDirectory);
 		void ExecuteBuildAsync();
 		void ReportBuildProgress(float progress, std::string_view stage);
 		void ExecuteReserializeAsync();
@@ -169,6 +181,10 @@ namespace Index {
 		void CompletePlayModeEntry(Scene& scene);
 		void PollPendingPlayModeRequest();
 		bool RestoreEditorSceneAfterPlaymode();
+		// Restoring destroys the play scenes, so a stop asked for during the UI pass (which holds Scene&)
+		// is deferred to ProcessPendingPlayModeStop, run before the next UI pass.
+		void RequestPlayModeStop(std::string sceneToOpen = {});
+		void ProcessPendingPlayModeStop();
 		// Snapshot inspector-authored script field overrides for the play/stop round-trip
 		// so component references survive even when the scene-file round-trip drops them.
 		// merge=false (play-entry) captures the edit-mode baseline; merge=true (play-exit,
@@ -193,6 +209,17 @@ namespace Index {
 		void DrainPendingLogEntries();
 		void RunAutoSaveTick(Application& app, float dt);
 		void RunPrefabAutoSaveTick();
+		void ReloadExternallyChangedContent();
+		void CheckExternalSceneChanges();
+		// Swaps the loaded scene for a fresh load of its file; the old instance stays if the file can't load.
+		bool ReloadEditorSceneFromDisk(const std::string& sceneName);
+		void RenderExternalSceneConflictDialog();
+		// project.json / BuildProfiles/*.build edited outside the editor: reload instead of overwriting them.
+		void CheckExternalProjectChanges();
+		// .prefab edited outside the editor: refresh loaded instances, reload or flag the prefab open in edit mode.
+		void CheckExternalPrefabChanges();
+		bool ReloadPrefabEditFromDisk();
+		void RenderExternalPrefabEditConflictDialog();
 		void AppendLogEntry(LogEntry entry);
 		void ClearLogEntries();
 		void ResetEditorFocusCycle();
@@ -272,7 +299,18 @@ namespace Index {
 			bool onlyPassedScene = false,
 			bool uiInWorldSpace = false,
 			EditorViewDrawMode drawMode = EditorViewDrawMode::Default,
-			GizmoLayerMask gizmoLayerMask = GizmoLayerMask::All);
+			GizmoLayerMask gizmoLayerMask = GizmoLayerMask::All,
+			const Camera3DView* view3D = nullptr);
+
+		// 3D Editor View (ImGuiEditorLayerViewport3D.cpp). Returns the image's top-left screen position.
+		Vec2 RenderEditorView3D(Scene& scene, const Vec2& viewportSize, bool overlayHovered);
+		bool DrawTransform3DGizmo(Scene& scene, const Camera3DView& view, const Vec2& imageTopLeft, const Vec2& viewportSize);
+		void QueueEditorView3DOverlays(Scene& scene, Renderer3D& renderer);
+		void FrameEditorCamera3D(Scene& scene);
+		void ResolveEditorViewMode();
+		bool IsEditorView3D() const { return m_EditorView3D; }
+		// Create (Entity) / Camera menu entries follow the Editor View mode.
+		Entity CreateDefaultEntity(Scene& scene, const std::string& name);
 
 		EntityHandle m_ParticlePreviewEntity = entt::null;
 		std::uint64_t m_ParticlePreviewSceneId = 0;
@@ -373,6 +411,15 @@ namespace Index {
 
 		Framebuffer m_EditorViewFBO;
 		EditorCamera m_EditorCamera;
+		EditorCamera3D m_EditorCamera3D;
+		// By name, not pointer: Play/Stop swap the Scene instance but must not reframe.
+		std::string m_EditorCamera3DFramedScene;
+		// Initialised from the project's modules on first draw; the toolbar toggle flips it.
+		bool m_EditorView3D = false;
+		bool m_EditorViewModeResolved = false;
+		bool m_Gizmo3DDragActive = false;
+		uint64_t m_Gizmo3DDragEntityId = 0;
+		Transform3DEditCommand::State m_Gizmo3DDragBefore;
 		bool m_IsEditorViewHovered = false;
 		bool m_IsEditorViewFocused = false;
 		EditorViewDrawMode m_EditorViewDrawMode = EditorViewDrawMode::Default;
@@ -458,6 +505,7 @@ namespace Index {
 		Framebuffer m_GameViewFBO;
 		bool m_IsGameViewHovered = false;
 		bool m_IsGameViewFocused = false;
+		bool m_GameViewHidesCursor = false;
 		int m_GameViewAspectPresetIndex = 0;
 		bool m_GameViewAspectLoaded = false;
 		bool m_GameViewVsync = true;
@@ -499,6 +547,23 @@ namespace Index {
 		bool m_AssetBrowserInitialized = false;
 		FileWatcher m_AssetWatcher;
 		std::string m_AssetWatcherRoot;
+		// Scenes, audio, fonts and data assets edited outside the editor (other tools, AI agents, git).
+		FileWatcher m_ContentWatcher;
+		// Deferred while playing: the Stop restore reloads scenes, so decide afterwards.
+		bool m_ExternalSceneCheckPending = false;
+		// Changed-on-disk scenes that also have unsaved editor edits; auto-save holds off until resolved.
+		std::vector<std::string> m_ExternalSceneConflicts;
+		bool m_ExternalSceneConflictPopupOpen = false;
+		// project.json and BuildProfiles/*.build; same deferral rules as scenes.
+		FileWatcher m_ProjectFileWatcher;
+		bool m_ExternalProjectCheckPending = false;
+		bool m_ExternalPrefabCheckPending = false;
+		// Override baselines of changed prefabs whose instances could not be refreshed yet (e.g. a
+		// half-written file); retried on the next prefab change.
+		std::unordered_map<std::string, std::shared_ptr<const Json::Value>> m_PendingPrefabRefreshes;
+		// The prefab open in edit mode changed on disk while it had unsaved edits; auto-save holds off.
+		bool m_PrefabEditConflict = false;
+		bool m_PrefabEditConflictPopupOpen = false;
 
 		PrefabInspector m_PrefabInspector;
 		std::string m_PrefabInspectorPath;
@@ -560,6 +625,8 @@ namespace Index {
 			m_PlayModeScriptFields;
 		std::weak_ptr<Scene> m_PlayModeRecompileScene;
 		bool m_PlayModeRecompilePending = false;
+		bool m_PlayModeStopRequested = false;
+		std::string m_PlayModeStopOpenScene;
 		bool m_ShowPlayModeRestoreError = false;
 		std::string m_PlayModeRestoreError;
 		int m_StepFrames = 0;
@@ -613,6 +680,7 @@ namespace Index {
 		char m_CustomDefineEntryBuffer[128]{}; // Build panel custom-define text input
 		int m_BuildState = 0; // 0=idle, 1=pending, 2=launch worker, 3=running
 		bool m_BuildAndPlay = false;
+		bool m_CommandLineBuild = false;
 		// Progress + stage written together under m_BuildProgressMutex so UI never observes a mismatched pair.
 		std::future<void> m_BuildFuture;
 		std::atomic<bool>  m_BuildSucceeded{ true };

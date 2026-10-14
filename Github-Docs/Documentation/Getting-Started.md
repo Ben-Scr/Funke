@@ -1,38 +1,37 @@
 # Your First Game
 
-This walkthrough takes a new project from the Launcher to a finished Windows build in about 15 minutes. It assumes you have never used Index before.
+This walkthrough takes a new project from the Launcher to a finished desktop build in about 15 minutes. It assumes you have never used Index before. Screens and names are the same on Windows, Linux and macOS; executables just have no `.exe` outside Windows.
 
 ## 1. Install the prerequisites
 
 | You need | For | Download |
 |---|---|---|
-| Windows 10/11 x64 with a D3D12- or Vulkan-capable GPU | running the editor | — |
-| **.NET 10 SDK (x64)** | compiling C# scripts | [dotnet.microsoft.com](https://dotnet.microsoft.com/download/dotnet/10.0) |
-| MSVC Build Tools (v143) | only native C++ scripts and packages | [visualstudio.microsoft.com](https://visualstudio.microsoft.com/visual-cpp-build-tools/) |
+| Windows 10/11 x64 with a D3D12- or Vulkan-capable GPU, a 64-bit Linux with a Vulkan driver, or macOS 11+ | running the editor | — |
+| **.NET 10 SDK** for your CPU | compiling C# scripts | [dotnet.microsoft.com](https://dotnet.microsoft.com/download/dotnet/10.0) |
+| A C++ toolchain: MSVC Build Tools (v143) on Windows, GCC/Clang + make on Linux, Xcode Command Line Tools on macOS | only native C++ scripts and packages | [visualstudio.microsoft.com](https://visualstudio.microsoft.com/visual-cpp-build-tools/) |
 
 The Launcher checks for these on start and shows a **Download** button next to anything that is missing.
 
 ## 2. Create a project
 
 1. Start **Index-Launcher.exe** from the release folder.
-2. Click **New Project**, enter a name, pick a folder, and confirm.
-3. The Launcher creates the project, compiles the starter scripts, and lists it under **Projects**. Double-click it to open the editor.
+2. Click **New Project**, choose **Empty 2D**, enter a name, pick a folder, and confirm.
+3. The Launcher creates the project, compiles its scripts once, and lists it under **Projects**. Double-click it to open the editor.
 
-The new project already contains a small playable example in `Assets/Scenes/SampleScene.scene`:
+New projects start empty: `Assets/Scenes/SampleScene.scene` holds only a **Camera**, and `Assets/Scripts/GameScript.cs` is an empty script. The next steps build a small game in it: a player you move into a coin.
 
-- **Camera**: what the player sees.
-- **Player**: a blue square with a `Rigidbody2D`, a `BoxCollider2D` and the `PlayerController` script.
-- **Coin**: a yellow square whose `CircleCollider2D` has **Sensor** enabled, plus the `Coin` script.
+## 3. Build the scene
 
-## 3. Press Play
+1. Right-click the **Hierarchy** and choose **Create › 2D Entity › Physics › Dynamic Body**. Rename it to **Player**. In the Inspector set the **Rigidbody 2D**'s **Gravity Scale** to `0` and enable **Freeze Rotation**, so it does not fall or spin.
+2. Choose **Create › 2D Entity › Sprite › Circle** and rename it to **Coin**. Move it to the right of the player, then **Add Component › Circle Collider 2D** and enable **Sensor**: the player passes through it, and the coin is told about the touch.
 
-Click **Play** in the toolbar. Move with **WASD**, the arrow keys or a gamepad's left stick, and touch the coin. The Console prints how many coins you have collected across all sessions; the count is stored with `PlayerPrefs`, so it survives restarts. Press **Stop** to return to editing; nothing that happened during play is kept.
+## 4. Write two scripts
 
-## 4. Read the two scripts
-
-Open `Assets/Scripts/PlayerController.cs` (double-click it in the Asset Browser to open your code editor):
+In the **Asset Browser**, open `Assets/Scripts`, right-click and choose **Create › EntityScript**. Name it `PlayerController` and double-click it to open your code editor:
 
 ```csharp
+using Index;
+
 public class PlayerController : EntityScript
 {
     public float Speed = 5.0f;
@@ -49,12 +48,38 @@ public class PlayerController : EntityScript
 }
 ```
 
-- `Speed` is a public field, so it appears in the **Inspector** when you select the Player. Change it there and press Play again.
+- `Speed` is a public field, so it appears in the **Inspector**. Change it there and press Play again.
 - Movement is set in `OnFixedUpdate` because it drives physics.
 
-`Assets/Scripts/Coin.cs` reacts in `OnTriggerEnter2D`, the callback for **sensor** colliders, and destroys its own entity.
+Create a second EntityScript named `Coin`:
 
-Save a script and the editor recompiles and reloads it automatically.
+```csharp
+using Index;
+
+public class Coin : EntityScript
+{
+    public override void OnTriggerEnter2D(Collision2D other)
+    {
+        if (other.Other.Name != "Player")
+            return;
+
+        // PlayerPrefs survives restarts.
+        int collected = PlayerPrefs.GetInt("CoinsCollected") + 1;
+        PlayerPrefs.SetInt("CoinsCollected", collected);
+        Log.Info($"Coin collected! Total across all sessions: {collected}");
+
+        Entity.Destroy();
+    }
+}
+```
+
+`OnTriggerEnter2D` is the callback for **sensor** colliders. Save a script and the editor recompiles and reloads it automatically.
+
+Attach the scripts: select the Player, **Add Component**, pick `PlayerController`; do the same for the Coin with `Coin`.
+
+### Press Play
+
+Click **Play** in the toolbar. Move with **WASD**, the arrow keys or a gamepad's left stick, and touch the coin. The Console prints how many coins you have collected across all sessions. Press **Stop** to return to editing; nothing that happened during play is kept.
 
 ## 5. Make it yours
 

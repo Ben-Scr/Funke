@@ -33,6 +33,9 @@ namespace Index {
 		// cross-asset references resolve.
 		static void ReloadAll();
 
+		// Re-reads loaded assets whose file changed outside the engine. Returns how many were reloaded.
+		static size_t ReloadChangedFromDisk();
+
 		// Editor inspector pass-throughs. GetFields ensures the asset is loaded first
 		// and returns the inspector field-array JSON (valid until the next field call).
 		static const char* GetFields(uint64_t guid);

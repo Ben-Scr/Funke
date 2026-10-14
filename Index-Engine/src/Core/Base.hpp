@@ -18,10 +18,6 @@ namespace Index {
 
 }
 
-#if !defined(IDX_PLATFORM_WINDOWS) && !defined(IDX_PLATFORM_LINUX)
-#error Unknown platform.
-#endif
-
 #define BIT(x) (1u << x)
 
 #if defined(__GNUC__)

@@ -55,6 +55,9 @@ namespace Index {
 		// click doesn't leave a tiny unintended selection the next key would replace.
 		float MouseDownX = 0.0f;
 		float MouseDownY = 0.0f;
+		// Touch long-press (selects a word and opens the cut/copy/paste toolbar on phones).
+		float PressHoldTime = 0.0f;
+		bool LongPressFired = false;
 		float BackspaceHoldTime = 0.0f;
 		float BackspaceRepeatAccumulator = 0.0f;
 		float DeleteHoldTime = 0.0f;

@@ -322,10 +322,14 @@ namespace Index {
 			}
 		}
 
-		// Exit — pairs that were active last frame but aren't anymore.
+		// Exit — pairs that were active last frame but aren't anymore. Snapshot first: an exit
+		// callback that destroys an entity re-enters DestroyBody, which erases from m_PreviousContacts.
 		if (onExit) {
+			std::vector<ContactPair> exited;
 			for (const ContactPair& pair : m_PreviousContacts) {
-				if (currentContacts.count(pair)) continue;
+				if (!currentContacts.count(pair)) exited.push_back(pair);
+			}
+			for (const ContactPair& pair : exited) {
 				Collision2D collision{};
 				collision.entityA = static_cast<EntityHandle>(static_cast<entt::entity>(pair.entityA.entity));
 				collision.entityB = static_cast<EntityHandle>(static_cast<entt::entity>(pair.entityB.entity));
@@ -335,11 +339,20 @@ namespace Index {
 			}
 		}
 
+		// Drop pairs whose body was destroyed by a callback above, or next frame synthesises a phantom Exit.
+		for (auto pairIt = currentContacts.begin(); pairIt != currentContacts.end(); ) {
+			if (!m_Bodies.count(pairIt->entityA) || !m_Bodies.count(pairIt->entityB)) {
+				pairIt = currentContacts.erase(pairIt);
+			} else {
+				++pairIt;
+			}
+		}
 		m_PreviousContacts = std::move(currentContacts);
 	}
 
 	void IndexPhysicsWorld2D::DispatchContacts() {
-		const auto& contacts = m_World.GetContacts();
+		// Copy: a callback that destroys an entity reaches UnregisterBody, which erases from the world's contact list.
+		const auto contacts = m_World.GetContacts();
 		for (const auto& contact : contacts) {
 			EntityHandle entityA = entt::null;
 			EntityHandle entityB = entt::null;

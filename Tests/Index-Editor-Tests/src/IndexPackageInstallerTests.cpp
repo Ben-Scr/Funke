@@ -85,14 +85,20 @@ return {
 
 	const std::string props = fixture.Read("Packages/IndexPackages.props");
 	const std::string workspaceAssembly =
-		"$(MSBuildThisFileDirectory)..\\.index\\build\\packages\\bin\\$(Configuration)-windows-x86_64\\Pkg.Game.Managed\\Pkg.Game.Managed.dll";
+		"$(MSBuildThisFileDirectory)../.index/build/packages/bin/$(Configuration)-$(IndexPackageSystem)-$(IndexPackageArch)/Pkg.Game.Managed/Pkg.Game.Managed.dll";
 	const std::string prebuiltAssembly =
-		"$(MSBuildThisFileDirectory)Game.Managed\\Bin\\Windows-x64\\Pkg.Game.Managed.dll";
+		"$(MSBuildThisFileDirectory)Game.Managed/Bin/$(IndexPackagePlatform)-$(IndexPackageBinArch)/Pkg.Game.Managed.dll";
+	const std::string portableAssembly =
+		"$(MSBuildThisFileDirectory)Game.Managed/Bin/Windows-x64/Pkg.Game.Managed.dll";
 
 	CHECK(props.find("<Reference Include=\"Pkg.Game.Managed\"") != std::string::npos);
+	CHECK(props.find("$([MSBuild]::IsOSPlatform('OSX'))") != std::string::npos);
 	CHECK(props.find(workspaceAssembly) != std::string::npos);
 	CHECK(props.find(prebuiltAssembly) != std::string::npos);
-	CHECK(props.find("<HintPath>" + prebuiltAssembly + "</HintPath>")
+	// Later HintPaths win: workspace build, then this host's prebuilt, then the CPU-neutral Windows one.
+	CHECK(props.find("<HintPath>" + portableAssembly + "</HintPath>")
+		< props.find(">" + prebuiltAssembly + "</HintPath>"));
+	CHECK(props.find(">" + prebuiltAssembly + "</HintPath>")
 		< props.find(">" + workspaceAssembly + "</HintPath>"));
 	CHECK(props.find("Pkg.Game.NativeOnly") == std::string::npos);
 
@@ -116,4 +122,43 @@ TEST_CASE("Managed-only packages never roll back for missing PackageHost modules
 	standalone.HasNativeStandaloneLayer = true;
 	CHECK(Index::IndexPackageInstaller::RequiresNativeRuntimeLoad(standalone));
 	CHECK(Index::IndexPackageInstaller::ShouldRollbackAfterLoad(standalone, false));
+}
+
+TEST_CASE("Installing a package enables the engine modules it needs, and they can't be removed under it") {
+	ScopedPackageProject fixture;
+	fixture.Write("Packages/Game.Tiles2D/index-package.lua", R"(
+return { name = "Game.Tiles2D", version = "1.0.0", modules = { "Index.2D" } }
+)");
+	fixture.Write("Packages/Game.Levels/index-package.lua", R"(
+return { name = "Game.Levels", version = "1.0.0", dependencies = { "Game.Tiles2D" } }
+)");
+	fixture.Write("Demo.csproj", "<Project>\n</Project>\n");
+
+	Index::IndexProject project;
+	project.Name = "Demo";
+	project.RootDirectory = fixture.Root.string();
+	project.PackagesDirectory = (fixture.Root / "Packages").string();
+	project.CsprojPath = (fixture.Root / "Demo.csproj").string();
+	project.ProjectFilePath = (fixture.Root / "project.json").string();
+	project.Modules = { "Index.3D" };
+	project.Packages = { "Game.Tiles2D" };
+
+	// Transitive: Game.Levels itself declares no module, its dependency does.
+	const auto installed = Index::IndexPackageInstaller::InstallToProject(project, "Game.Levels");
+	REQUIRE_MESSAGE(installed.Success, installed.Message);
+	REQUIRE(installed.EnabledModules.size() == 1);
+	CHECK(installed.EnabledModules[0] == "Index.2D");
+	CHECK(project.HasModule("Index.2D"));
+	CHECK(fixture.Read("project.json").find("Index.2D") != std::string::npos);
+
+	const auto refused = Index::IndexPackageInstaller::DisableModule(project, "Index.2D");
+	CHECK_FALSE(refused.Success);
+	CHECK(refused.Message.find("Game.Levels") != std::string::npos);
+	CHECK(project.HasModule("Index.2D"));
+
+	CHECK_FALSE(Index::IndexPackageInstaller::EnableModule(project, "Index.4D").Success);
+	CHECK(Index::IndexPackageInstaller::DisableModule(project, "Index.3D").Success);
+	CHECK_FALSE(project.HasModule("Index.3D"));
+	CHECK(Index::IndexPackageInstaller::EnableModule(project, "Index.3D").Success);
+	CHECK(project.HasModule("Index.3D"));
 }

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 #include <sstream>
+#include "Utils/CharConv.hpp"
 
 namespace Index::Json {
 
@@ -324,7 +325,7 @@ namespace Index::Json {
 				const char* first = numericText.data();
 				const char* last = first + numericText.size();
 				double parsed = 0.0;
-				auto [ptr, ec] = std::from_chars(first, last, parsed);
+				auto [ptr, ec] = CharConv::ParseFloat(first, last, parsed);
 				if (ec != std::errc{} || ptr != last) {
 					SetError(outError, "Failed to parse JSON number");
 					return false;
@@ -511,7 +512,12 @@ namespace Index::Json {
 				{
 					// to_chars on stack buffer; ostringstream alloc dominated Stringify time on large scenes.
 					char buffer[32];
-					const double doubleValue = value.AsDoubleOr(0.0);
+					double doubleValue = value.AsDoubleOr(0.0);
+					// to_chars renders NaN/Inf as "nan"/"inf", which no JSON parser (ours included) accepts;
+					// one bad float would make the whole file unloadable.
+					if (!std::isfinite(doubleValue)) {
+						doubleValue = 0.0;
+					}
 					auto [ptr, ec] = std::to_chars(
 						buffer, buffer + sizeof(buffer), doubleValue,
 						std::chars_format::general);
@@ -825,9 +831,8 @@ namespace Index::Json {
 		SetType(Type::Object);
 		for (auto& [memberKey, memberValue] : m_Object) {
 			if (memberKey == key) {
-				// Overwrite-on-duplicate is load-bearing (BuildOverridePatch re-keys); trace for visibility.
-				IDX_CORE_TRACE_TAG("Serialization",
-					"Duplicate JSON key '{}' overwritten", key);
+				// Insert-or-assign is the contract (prefab override patching re-keys every instance);
+				// no logging — it runs per overridden field on every scene load.
 				memberValue = std::move(value);
 				return memberValue;
 			}

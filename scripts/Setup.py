@@ -76,6 +76,12 @@ LINUX_PACKAGES = {
     "dotnet": {"default": ["dotnet-sdk-10.0"], "pacman": ["dotnet-sdk"]},
     "cmake": {"default": ["cmake"]},
 }
+# Homebrew formulae / casks on macOS.
+BREW_PACKAGES = {
+    "git": ["git"],
+    "dotnet": ["--cask", "dotnet-sdk"],
+    "cmake": ["cmake"],
+}
 # MSVC v143 for the engine, native scripts and native packages. The C++ workload
 # alone is several GB, so it gets its own prompt that defaults to "no".
 VS_BUILD_TOOLS_PACKAGE = "Microsoft.VisualStudio.2022.BuildTools"
@@ -84,16 +90,20 @@ VS_BUILD_TOOLS_OVERRIDE = (
     "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 )
 MSVC_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
-# Linux C++ toolchain plus the GLFW/X11 headers; mirrors the CI dependency list.
-# Clang is required because Dawn does not compile with GCC 13.
+# Linux C++ toolchain plus the X11 / Wayland headers SDL3 builds its video backends
+# from; mirrors the CI dependency list. Clang is required because Dawn does not
+# compile with GCC 13. dbus enables SDL's portal file dialogs.
 LINUX_BUILD_PACKAGES = {
-    "apt-get": ["build-essential", "clang", "lld", "pkg-config", "xorg-dev", "libglu1-mesa-dev", "libx11-xcb-dev"],
+    "apt-get": ["build-essential", "clang", "lld", "pkg-config", "xorg-dev", "libglu1-mesa-dev", "libx11-xcb-dev",
+                "libwayland-dev", "libxkbcommon-dev", "wayland-protocols", "libdbus-1-dev", "libudev-dev"],
     "dnf": ["gcc", "gcc-c++", "make", "clang", "lld", "pkgconf-pkg-config", "libX11-devel", "libXrandr-devel",
-            "libXinerama-devel", "libXcursor-devel", "libXi-devel", "mesa-libGLU-devel"],
+            "libXinerama-devel", "libXcursor-devel", "libXi-devel", "mesa-libGLU-devel", "wayland-devel",
+            "libxkbcommon-devel", "wayland-protocols-devel", "dbus-devel", "systemd-devel"],
     "pacman": ["base-devel", "clang", "lld", "pkgconf", "libx11", "libxrandr", "libxinerama", "libxcursor",
-               "libxi", "glu"],
+               "libxi", "glu", "wayland", "libxkbcommon", "wayland-protocols", "dbus"],
     "zypper": ["gcc", "gcc-c++", "make", "clang", "lld", "pkg-config", "libX11-devel", "libXrandr-devel",
-               "libXinerama-devel", "libXcursor-devel", "libXi-devel", "glu-devel"],
+               "libXinerama-devel", "libXcursor-devel", "libXi-devel", "glu-devel", "wayland-devel",
+               "libxkbcommon-devel", "wayland-protocols-devel", "dbus-1-devel", "libudev-devel"],
 }
 LINUX_BUILD_TOOLS = ("c++", "make", "clang", "clang++", "pkg-config")
 LINUX_PKGCONFIG_MODULES = ("x11", "xrandr", "xinerama", "xcursor", "xi", "x11-xcb", "glu")
@@ -198,6 +208,35 @@ def linux_package_install(tool: str) -> bool:
     return linux_install_packages(name, install_cmd, packages)
 
 
+def brew_install(tool: str) -> bool:
+    packages = BREW_PACKAGES.get(tool)
+    if not packages:
+        print(f"  [!!] No known Homebrew package for {tool}.")
+        return False
+    if not shutil.which("brew"):
+        print("  [!!] Homebrew was not found (https://brew.sh); install it or install the tool manually.")
+        return False
+    print(f"  [..] brew install {' '.join(packages)}")
+    return subprocess.run(["brew", "install", *packages]).returncode == 0
+
+
+def ensure_macos_build_deps(install_enabled: bool, assume_yes: bool) -> bool:
+    """Check the Xcode Command Line Tools (clang, make, iconutil, codesign); offer to install them."""
+    has_clt = subprocess.run(["xcode-select", "-p"], capture_output=True).returncode == 0
+    if has_clt and shutil.which("clang++") and shutil.which("make"):
+        print("  [OK] Xcode Command Line Tools found")
+        return True
+    print("  [!!] The Xcode Command Line Tools (clang, make) are missing")
+    if not install_enabled or not (assume_yes or is_interactive()):
+        print("  [!!] Install them with: xcode-select --install")
+        return False
+    if not prompt_yes_no("[Index Setup] Open the Xcode Command Line Tools installer?", assume_yes):
+        return False
+    subprocess.run(["xcode-select", "--install"])
+    print("  [..] Finish the installer window, then re-run setup.")
+    return False
+
+
 def linux_install_packages(name: str, install_cmd: list[str], packages: list[str]) -> bool:
     cmd = list(install_cmd) + packages
     if hasattr(os, "geteuid") and os.geteuid() != 0:
@@ -271,6 +310,8 @@ def offer_install(tool: str, install_enabled: bool, assume_yes: bool) -> bool:
         installed = winget_install(package) if package else False
         if installed:
             refresh_windows_path()
+    elif platform.system() == "Darwin":
+        installed = brew_install(tool)
     else:
         installed = linux_package_install(tool)
 
@@ -345,7 +386,7 @@ def missing_linux_build_deps() -> list[str]:
 
 
 def ensure_linux_build_deps(install_enabled: bool, assume_yes: bool) -> bool:
-    """Check the C++ toolchain and GLFW/X11 headers; offer to install them."""
+    """Check the C++ toolchain and X11/Wayland headers; offer to install them."""
     missing = missing_linux_build_deps()
     if not missing:
         print("  [OK] C++ toolchain and X11/GL development headers found")
@@ -424,7 +465,9 @@ def find_dotnet_root_unix() -> Path | None:
         root = Path(exe).resolve().parent  # dotnet may be a symlink
         if (root / "packs").is_dir() or (root / "shared").is_dir():
             return root
-    for candidate in ("/usr/lib/dotnet", "/usr/share/dotnet", "/usr/lib64/dotnet", "/opt/dotnet"):
+    # /usr/local/share/dotnet is the macOS installer location; ~/.dotnet is dotnet-install.sh's default.
+    for candidate in ("/usr/local/share/dotnet", "/usr/lib/dotnet", "/usr/share/dotnet", "/usr/lib64/dotnet",
+                      "/opt/dotnet", str(Path.home() / ".dotnet")):
         if Path(candidate).is_dir():
             return Path(candidate)
     return None
@@ -443,8 +486,14 @@ def setup_dotnet_unix(repo_root: Path) -> bool:
     rid = f"{rid_os}-{arch}"
     host_pack_base = root / "packs" / f"Microsoft.NETCore.App.Host.{rid}"
     if not host_pack_base.is_dir():
-        print(f"  [!!] .NET host pack not found at '{host_pack_base}'.")
-        return False
+        # Distro-built SDKs (Ubuntu, Fedora) ship their own RID, e.g. Microsoft.NETCore.App.Host.ubuntu.26.04-x64.
+        prefix = "Microsoft.NETCore.App.Host."
+        distro_packs = sorted((root / "packs").glob(f"{prefix}*-{arch}")) if (root / "packs").is_dir() else []
+        if not distro_packs:
+            print(f"  [!!] .NET host pack not found at '{host_pack_base}'.")
+            return False
+        host_pack_base = distro_packs[0]
+        rid = host_pack_base.name[len(prefix):]
 
     version = find_latest_dotnet_host_pack_version(host_pack_base)
     if not version:
@@ -806,6 +855,9 @@ def main() -> int:
     elif platform.system() == "Linux":
         if not ensure_linux_build_deps(install_enabled, assume_yes):
             soft_missing.append("linux-build-deps")
+    elif platform.system() == "Darwin":
+        if not ensure_macos_build_deps(install_enabled, assume_yes):
+            soft_missing.append("xcode-command-line-tools")
 
     # E12: detect MSBuild via vswhere on Windows (non-fatal). Writes
     # scripts/index-build-env.bat with MSBUILD_PATH for downstream tools.
@@ -885,6 +937,17 @@ def main() -> int:
         elif scripting_wanted:
             print("[Index Setup] Skipping .NET hosting setup - dotnet not on PATH.")
 
+    # SDL3 (window, input, platform services) is built with its own CMake; premake only links it.
+    sdl_ok = run_step(
+        [sys.executable, str(script_dir / "sdl" / "SetupSDL.py"), "--if-missing"],
+        repo_root,
+        "Building SDL3",
+        allow_failure=True,
+    )
+    if not sdl_ok:
+        print("[Index Setup] WARNING: SDL3 build failed; the engine will not link until")
+        print("[Index Setup] `python scripts/sdl/SetupSDL.py` succeeds (needs CMake and a C compiler).")
+
     if not premake_path:
         raise RuntimeError(describe_premake_expectation(repo_root))
 
@@ -906,6 +969,7 @@ def main() -> int:
             repo_root / "Index-ScriptCore" / "Index-ScriptCore.csproj",
             repo_root / "Index-Sandbox" / "Index-Sandbox.csproj",
             repo_root / "Index-PackageTool" / "Index-PackageTool.csproj",
+            repo_root / "Index-ScriptCompiler" / "Index-ScriptCompiler.csproj",
         ]
         for managed_project in managed_projects:
             if not managed_project.is_file():
@@ -921,6 +985,11 @@ def main() -> int:
 
     print()
     print("[Index Setup] Setup complete.")
+    if not is_windows:
+        dawn_library = "libwebgpu_dawn.dylib" if platform.system() == "Darwin" else "libwebgpu_dawn.so"
+        if not (repo_root / "External" / "dawn" / "build" / "src" / "dawn" / "native" / dawn_library).is_file():
+            print("[Index Setup] Next: build Dawn once (WebGPU, ~15-30 min):  ./scripts/dawn/SetupDawn.sh")
+        print("[Index Setup] Then build:  make config=release -j$(getconf _NPROCESSORS_ONLN) Index-Launcher")
     return 0
 
 

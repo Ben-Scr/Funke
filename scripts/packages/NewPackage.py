@@ -94,7 +94,7 @@ return {{
     name        = "{name}",
     version     = "0.1.0",
     description = "{description}",
-
+{engine_line}{modules_line}
     layers = {{
 {layers}
     }},
@@ -554,8 +554,12 @@ def write_file(path: Path, contents: str) -> None:
     print(f"  wrote {path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path}")
 
 
+ENGINE_MODULES = ("Index.2D", "Index.3D")
+
+
 def render_manifest(name: str, description: str, layers: set[str],
-                    depends_on: list[str] | None = None) -> str:
+                    depends_on: list[str] | None = None,
+                    modules: list[str] | None = None) -> str:
     blocks: list[str] = []
     if "native" in layers:
         blocks.append(NATIVE_LAYER_BLOCK)
@@ -579,12 +583,31 @@ def render_manifest(name: str, description: str, layers: set[str],
     else:
         deps_text = ""
 
+    engine = read_engine_version()
+    # Native packages are rebuilt per engine anyway; the range documents the oldest engine the package was made for.
+    engine_line = f'    engine      = ">={engine}",\n' if engine else ""
+
+    # Engine modules the package builds on; installing it enables them in the project.
+    modules_line = ("    modules     = { " + ", ".join(f'"{m}"' for m in modules) + " },\n") if modules else ""
+
     return MANIFEST_TEMPLATE.format(
         name=name,
         description=description,
+        engine_line=engine_line,
+        modules_line=modules_line,
         layers=layers_text,
         dependencies=deps_text,
     )
+
+
+def read_engine_version() -> str | None:
+    """MAJOR.MINOR.PATCH of the engine this script ships with (pre-release suffix dropped), or None."""
+    metadata = REPO_ROOT / "Index-Engine" / "src" / "Core" / "BuildMetadata.generated.hpp"
+    try:
+        match = re.search(r'#define\s+IDX_VERSION\s+"(\d+)\.(\d+)\.(\d+)', metadata.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    return ".".join(match.groups()) if match else None
 
 
 def emit_native_sources(pkg_dir: Path, name: str, kind: str,
@@ -911,9 +934,16 @@ def main(argv: Iterable[str] | None = None) -> int:
         default="",
         metavar="A,B",
         help="Comma- or plus-separated list of OTHER package names this package "
-        "depends on. Each entry becomes an item in the manifest's `dependencies` "
-        "array. The loader topologically sorts before registering, so dep order "
-        "doesn't matter; missing deps fail loudly at premake time.",
+        "depends on, each optionally pinned with @<range> (e.g. Index.Grid@^1.2.0). "
+        "Each entry becomes an item in the manifest's `dependencies` array. The loader "
+        "orders dependencies first; missing ones or versions outside the range fail at premake time.",
+    )
+    parser.add_argument(
+        "--modules",
+        default="",
+        metavar="Index.2D,Index.3D",
+        help="Comma-separated engine modules the package builds on (Index.2D, Index.3D). "
+        "Written to the manifest's `modules`; installing the package enables them in the project.",
     )
     parser.add_argument(
         "--component",
@@ -953,16 +983,32 @@ def main(argv: Iterable[str] | None = None) -> int:
     # (premake will fail-loud later, but warning earlier helps).
     depends_on: list[str] = []
     if args.depends_on:
+        # "+" also joins layers elsewhere, but ranges like "^1.2.0" never contain it; "," separates entries.
         for token in re.split(r"[+,]", args.depends_on.strip()):
             token = token.strip()
             if not token:
                 continue
-            if not PACKAGE_NAME_PATTERN.match(token):
+            dep_name, _, dep_range = token.partition("@")
+            if not PACKAGE_NAME_PATTERN.match(dep_name):
                 raise SystemExit(
                     f"[NewPackage] --depends-on entry '{token}' is not a valid "
-                    "Index package name (PascalCase.PascalCase form expected)."
+                    "Index package name (PascalCase.PascalCase form expected, "
+                    "optionally followed by @<version range>, e.g. Index.Grid@^1.2.0)."
                 )
+            if "@" in token and not dep_range.strip():
+                raise SystemExit(f"[NewPackage] --depends-on entry '{token}' has an empty version range after '@'.")
             depends_on.append(token)
+
+    modules: list[str] = []
+    for token in (args.modules or "").replace("+", ",").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if token not in ENGINE_MODULES:
+            raise SystemExit(f"[NewPackage] --modules entry '{token}' is not an engine module "
+                             f"(known: {', '.join(ENGINE_MODULES)}).")
+        if token not in modules:
+            modules.append(token)
 
     component: str | None = args.component.strip() if args.component else None
     if component:
@@ -1034,12 +1080,12 @@ def main(argv: Iterable[str] | None = None) -> int:
                 for child in search_root.iterdir():
                     if (child / "index-package.lua").is_file():
                         known_packages.add(child.name)
-        for dep in depends_on:
+        for dep in (entry.partition("@")[0] for entry in depends_on):
             if dep not in known_packages:
                 print(f"[NewPackage] WARNING: dependency '{dep}' has no index-package.lua "
                       "on disk yet. premake will fail until it's created.")
     write_file(pkg_dir / "index-package.lua",
-               render_manifest(name, description, layers, depends_on))
+               render_manifest(name, description, layers, depends_on, modules))
 
     # 2. Sources per layer
     if "native" in layers:

@@ -1,6 +1,6 @@
 group "Core"
 project "Index-Engine"
-    location (IndexCoreValidationRoot and path.join(IndexCoreValidationRoot, "Index-Engine") or ".")
+    location (IndexProjectLocation("Index-Engine", "."))
     kind "SharedLib"
     language "C++"
     cppdialect "C++20"
@@ -121,7 +121,9 @@ project "Index-Engine"
     RemoveFilesIfModuleDisabled(IndexModules.Physics,
         {
             "src/Components/Physics/**",
+            "src/Components/Physics3D/**",
             "src/Physics/**",
+            "src/Physics3D/**",
             "src/Systems/TransformHierarchySystem.*"
         }
     )
@@ -131,6 +133,11 @@ project "Index-Engine"
             "src/Scripting/**"
         }
     )
+
+    -- Engine feature modules (Index.2D / Index.3D): source lists in EngineModules.json.
+    for _, featureModule in ipairs(IndexFeatureModules) do
+        RemoveFilesIfModuleDisabled(featureModule.Enabled, featureModule.sources)
+    end
 
     -- Profiler is gated by the standalone --no-profiler premake flag, not
     -- by the module profile. When stripped, drop the entire Profiling/
@@ -170,7 +177,7 @@ project "Index-Engine"
     end
 
     local renderIncludes = {
-        "../External/glfw/include",
+        "../External/SDL/include",
     }
 
     -- Splice in Dawn's header paths so the WebGPU backend + every
@@ -206,6 +213,8 @@ project "Index-Engine"
                 "src/Core/Application.cpp",
                 "src/Core/Application.hpp",
                 "src/Core/Input.hpp",
+                "src/Core/Input.cpp",
+                "src/Core/Platform/**",
                 "src/Core/Window.cpp",
                 "src/Core/Window.hpp",
                 "src/Graphics/**",
@@ -278,7 +287,7 @@ project "Index-Engine"
         defines { "IDX_PLATFORM_WINDOWS" }
         -- dwmapi: Win32Titlebar uses DwmExtendFrameIntoClientArea for
         -- custom-titlebar shadows and DwmSetWindowAttribute for native
-        -- titlebar dark mode/colors. user32 / gdi32 come through GLFW.
+        -- titlebar dark mode/colors. user32 / gdi32 come through SDL3.
         -- dbghelp: CrashReporter writes minidumps via MiniDumpWriteDump.
         links { "dwmapi.lib", "dbghelp.lib" }
 
@@ -286,6 +295,12 @@ project "Index-Engine"
         pic "On"
         defines { "IDX_PLATFORM_LINUX" }
         linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
+
+    filter "system:macosx"
+        defines { "IDX_PLATFORM_MACOS" }
+        linkoptions { "-Wl,-rpath,@loader_path" }
+        -- Dawn's Metal backend and SDL's Cocoa video backend.
+        links { "Cocoa.framework", "Metal.framework", "QuartzCore.framework", "IOKit.framework", "IOSurface.framework" }
 
     filter {}
 
@@ -349,3 +364,6 @@ project "Index-Engine"
     ApplyDawnLibDirs("../")
 
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
+    -- gmake2 gives consumers a RUNPATH to this folder, and RUNPATH only covers their direct dependencies:
+    -- the engine library resolves SDL3 through its own $ORIGIN, so SDL3 has to sit next to it as well.
+    if os.target() ~= "windows" then postbuildcommands { CopySDL3SharedLib } end

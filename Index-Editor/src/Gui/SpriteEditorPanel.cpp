@@ -3,6 +3,7 @@
 
 #include "Assets/AssetRegistry.hpp"
 #include "Core/Log.hpp"
+#include "Editor/SpriteSlicing.hpp"
 #include "Graphics/SpriteUVResolver.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Gui/EditorUI.hpp"
@@ -18,7 +19,6 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
-#include <queue>
 #include <string>
 
 namespace Index {
@@ -710,98 +710,30 @@ namespace Index {
 	{
 		if (cellW < 1 || cellH < 1) return;
 		if (!keepExisting) m_Slices.clear();
-		std::string stem = std::filesystem::path(m_AssetPath).stem().string();
-		if (stem.empty()) stem = "slice";
-
-		int nextIndex = 0;
-		for (int y = offsetY; y + cellH <= m_TexHeight; y += cellH + padY) {
-			for (int x = offsetX; x + cellW <= m_TexWidth; x += cellW + padX) {
-				SpriteSlice slice;
-				slice.X = x; slice.Y = y;
-				slice.W = cellW; slice.H = cellH;
-				slice.Name = MakeUniqueName(stem + "_" + std::to_string(nextIndex++));
-				m_Slices.push_back(std::move(slice));
-			}
-		}
+		SpriteSlicing::ByGridSize(m_Slices, std::filesystem::path(m_AssetPath).stem().string(),
+			m_TexWidth, m_TexHeight, cellW, cellH, padX, padY, offsetX, offsetY);
 		m_Selection.clear();
 		m_Dirty = true;
 	}
 
 	void SpriteEditorPanel::SliceByGridCount(int cols, int rows, int padX, int padY, bool keepExisting) {
-		if (cols < 1 || rows < 1) return;
-		const int cellW = (m_TexWidth  - (cols - 1) * padX) / cols;
-		const int cellH = (m_TexHeight - (rows - 1) * padY) / rows;
-		if (cellW < 1 || cellH < 1) {
-			IDX_WARN_TAG("SpriteEditor",
-				"Grid-by-count yielded cell {}x{} on {}x{} texture — refusing.",
-				cellW, cellH, m_TexWidth, m_TexHeight);
+		std::vector<SpriteSlice> slices = keepExisting ? m_Slices : std::vector<SpriteSlice>{};
+		if (SpriteSlicing::ByGridCount(slices, std::filesystem::path(m_AssetPath).stem().string(),
+				m_TexWidth, m_TexHeight, cols, rows, padX, padY) < 0) {
+			IDX_WARN_TAG("SpriteEditor", "A {}x{} grid does not fit the {}x{} texture — refusing.",
+				cols, rows, m_TexWidth, m_TexHeight);
 			return;
 		}
-		SliceByGridSize(cellW, cellH, padX, padY, 0, 0, keepExisting);
+		m_Slices = std::move(slices);
+		m_Selection.clear();
+		m_Dirty = true;
 	}
 
 	void SpriteEditorPanel::SliceAuto(uint8_t alphaThreshold, int minSize, bool keepExisting) {
 		if (!BitmapAvailable() || m_TexWidth <= 0 || m_TexHeight <= 0) return;
 		if (!keepExisting) m_Slices.clear();
-
-		const int W = m_TexWidth;
-		const int H = m_TexHeight;
-		const std::vector<uint8_t>& px = m_DecodedPixels;
-		std::vector<uint8_t> visited(static_cast<std::size_t>(W) * H, 0);
-
-		auto alphaAt = [&](int x, int y) -> uint8_t {
-			return px[(static_cast<std::size_t>(y) * W + x) * 4 + 3];
-		};
-
-		std::string stem = std::filesystem::path(m_AssetPath).stem().string();
-		if (stem.empty()) stem = "slice";
-
-		int emitted = 0;
-		std::queue<std::pair<int,int>> frontier;
-		for (int y = 0; y < H; ++y) {
-			for (int x = 0; x < W; ++x) {
-				if (visited[static_cast<std::size_t>(y) * W + x]) continue;
-				if (alphaAt(x, y) < alphaThreshold) {
-					visited[static_cast<std::size_t>(y) * W + x] = 1;
-					continue;
-				}
-				// 4-connected flood. Bounding box collected as we go.
-				int minX = x, minY = y, maxX = x, maxY = y;
-				frontier.emplace(x, y);
-				visited[static_cast<std::size_t>(y) * W + x] = 1;
-				while (!frontier.empty()) {
-					const auto [cx, cy] = frontier.front();
-					frontier.pop();
-					minX = std::min(minX, cx); maxX = std::max(maxX, cx);
-					minY = std::min(minY, cy); maxY = std::max(maxY, cy);
-					constexpr int dx[4] = { -1, 1,  0, 0 };
-					constexpr int dy[4] = {  0, 0, -1, 1 };
-					for (int k = 0; k < 4; ++k) {
-						const int nx = cx + dx[k];
-						const int ny = cy + dy[k];
-						if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-						const std::size_t idx = static_cast<std::size_t>(ny) * W + nx;
-						if (visited[idx]) continue;
-						if (alphaAt(nx, ny) < alphaThreshold) {
-							visited[idx] = 1;
-							continue;
-						}
-						visited[idx] = 1;
-						frontier.emplace(nx, ny);
-					}
-				}
-
-				const int w = maxX - minX + 1;
-				const int h = maxY - minY + 1;
-				if (w < minSize || h < minSize) continue;
-
-				SpriteSlice slice;
-				slice.X = minX; slice.Y = minY;
-				slice.W = w;    slice.H = h;
-				slice.Name = MakeUniqueName(stem + "_" + std::to_string(emitted++));
-				m_Slices.push_back(std::move(slice));
-			}
-		}
+		SpriteSlicing::ByAlpha(m_Slices, std::filesystem::path(m_AssetPath).stem().string(),
+			m_DecodedPixels.data(), m_TexWidth, m_TexHeight, alphaThreshold, minSize);
 		m_Selection.clear();
 		m_Dirty = true;
 	}
@@ -902,21 +834,7 @@ namespace Index {
 	// ─────────────────────────────────────────────────────────────────────
 
 	std::string SpriteEditorPanel::MakeUniqueName(std::string baseName) const {
-		if (baseName.empty()) baseName = "slice";
-		// Strip a trailing `_N` so "slice_3" rolls into the next collision
-		// as "slice_4" rather than "slice_3_2".
-		auto findExisting = [&](const std::string& candidate) -> bool {
-			for (const SpriteSlice& s : m_Slices) {
-				if (s.Name == candidate) return true;
-			}
-			return false;
-		};
-		if (!findExisting(baseName)) return baseName;
-		for (int n = 2; n < 10000; ++n) {
-			std::string candidate = baseName + "_" + std::to_string(n);
-			if (!findExisting(candidate)) return candidate;
-		}
-		return baseName + "_dup";
+		return SpriteSlicing::MakeUniqueName(m_Slices, std::move(baseName));
 	}
 
 	void SpriteEditorPanel::AppendUniqueSlice(SpriteSlice slice) {

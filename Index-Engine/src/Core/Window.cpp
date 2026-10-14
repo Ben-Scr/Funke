@@ -1,7 +1,12 @@
 #include "pch.hpp"
 #include "Window.hpp"
 #include "Application.hpp"
+#include "Engine.hpp"
+#include "Core/Platform.hpp"
+#include "Core/Platform/SDLInputMapping.hpp"
+#include "Core/Platform/TitlebarRegions.hpp"
 #include "Core/Platform/Win32Titlebar.hpp"
+#include "Graphics/ImageProcessing.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/RenderApi.hpp"
 #include "Events/WindowEvents.hpp"
@@ -9,13 +14,11 @@
 #include "Events/MouseEvents.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include <Utils/StringHelper.hpp>
+
+#include <SDL3/SDL.h>
+
 #include <algorithm>
 #include <cmath>
-
-#ifdef IDX_PLATFORM_WINDOWS
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
-#endif
 
 namespace Index {
 	Window* Window::s_ActiveWindow = nullptr;
@@ -24,7 +27,89 @@ namespace Index {
 	Window::UIRegion Window::s_UIRegion{};
 	Vec2 Window::s_WindowToFramebufferScale{ 1.0f, 1.0f };
 	bool Window::s_IsInitialized = false;
-	const GLFWvidmode* Window::k_Videomode = nullptr;
+	uint32_t Window::s_NativeSurfaceGeneration = 0;
+
+	namespace {
+		// SDL_HINT_ORIENTATIONS value. SDL's LandscapeLeft means "top points left" on Android but follows
+		// UIKit (top points right) on iOS, so iOS swaps the names. Auto is resolved here from the requested
+		// window size: a fullscreen window takes the display's size, and SDL would otherwise pick the
+		// orientation from that (portrait on phones) and turn a landscape game sideways.
+		[[maybe_unused]] const char* OrientationHint(ScreenOrientation orientation, int width, int height) {
+			if (orientation == ScreenOrientation::Auto) {
+				orientation = width > height ? ScreenOrientation::Landscape : ScreenOrientation::PortraitAny;
+			}
+#if defined(IDX_PLATFORM_IOS)
+			constexpr const char* k_TopLeft = "LandscapeRight";
+			constexpr const char* k_TopRight = "LandscapeLeft";
+			constexpr const char* k_BothLandscape = "LandscapeRight LandscapeLeft";
+			constexpr const char* k_AllButUpsideDown = "LandscapeRight LandscapeLeft Portrait";
+			constexpr const char* k_All = "LandscapeRight LandscapeLeft Portrait PortraitUpsideDown";
+#else
+			constexpr const char* k_TopLeft = "LandscapeLeft";
+			constexpr const char* k_TopRight = "LandscapeRight";
+			constexpr const char* k_BothLandscape = "LandscapeLeft LandscapeRight";
+			constexpr const char* k_AllButUpsideDown = "LandscapeLeft LandscapeRight Portrait";
+			constexpr const char* k_All = "LandscapeLeft LandscapeRight Portrait PortraitUpsideDown";
+#endif
+			switch (orientation) {
+				case ScreenOrientation::Auto:                return nullptr;  // resolved above
+				case ScreenOrientation::Landscape:           return k_BothLandscape;
+				case ScreenOrientation::LandscapeLeft:       return k_TopLeft;
+				case ScreenOrientation::LandscapeRight:      return k_TopRight;
+				case ScreenOrientation::Portrait:            return "Portrait";
+				case ScreenOrientation::PortraitUpsideDown:  return "PortraitUpsideDown";
+				case ScreenOrientation::PortraitAny:         return "Portrait PortraitUpsideDown";
+				case ScreenOrientation::AnyExceptUpsideDown: return k_AllButUpsideDown;
+				case ScreenOrientation::Any:                 return k_All;
+			}
+			return nullptr;
+		}
+
+		struct NativeHookEntry {
+			int Id = 0;
+			Window::NativeEventHook Hook;
+		};
+		std::vector<NativeHookEntry> g_NativeHooks;
+		int g_NextNativeHookId = 1;
+
+		constexpr bool k_TextInputByDefault = !IDX_PLATFORM_MOBILE;
+
+		SDL_DisplayID DisplayForWindow(SDL_Window* window) {
+			SDL_DisplayID display = window ? SDL_GetDisplayForWindow(window) : 0;
+			return display != 0 ? display : SDL_GetPrimaryDisplay();
+		}
+
+		void AppendUtf8Codepoints(const char* text, std::vector<uint32_t>& out) {
+			const char* cursor = text;
+			while (cursor && *cursor) {
+				const Uint32 cp = SDL_StepUTF8(&cursor, nullptr);
+				if (cp == 0) break;
+				if (cp != SDL_INVALID_UNICODE_CODEPOINT) out.push_back(cp);
+			}
+		}
+
+		// Non-Windows custom titlebar: SDL's hit test drives OS-level move/resize from the ImGui-drawn caption.
+		SDL_HitTestResult SDLCALL CustomTitlebarHitTest(SDL_Window* window, const SDL_Point* point, void*) {
+			int w = 0, h = 0;
+			SDL_GetWindowSize(window, &w, &h);
+			const SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+			using TitlebarRegions::Hit;
+			switch (TitlebarRegions::HitTest(point->x, point->y, w, h, 6,
+				(flags & SDL_WINDOW_RESIZABLE) != 0, (flags & SDL_WINDOW_MAXIMIZED) != 0)) {
+				case Hit::Caption:           return SDL_HITTEST_DRAGGABLE;
+				case Hit::ResizeTopLeft:     return SDL_HITTEST_RESIZE_TOPLEFT;
+				case Hit::ResizeTop:         return SDL_HITTEST_RESIZE_TOP;
+				case Hit::ResizeTopRight:    return SDL_HITTEST_RESIZE_TOPRIGHT;
+				case Hit::ResizeRight:       return SDL_HITTEST_RESIZE_RIGHT;
+				case Hit::ResizeBottomRight: return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+				case Hit::ResizeBottom:      return SDL_HITTEST_RESIZE_BOTTOM;
+				case Hit::ResizeBottomLeft:  return SDL_HITTEST_RESIZE_BOTTOMLEFT;
+				case Hit::ResizeLeft:        return SDL_HITTEST_RESIZE_LEFT;
+				case Hit::Client:            break;
+			}
+			return SDL_HITTEST_NORMAL;
+		}
+	}
 
 	Window::Window(int width, int height, const std::string& title)
 	{
@@ -36,35 +121,41 @@ namespace Index {
 		Create(props);
 	}
 
-	void Window::RefreshCallback(GLFWwindow* window) {
-		(void)window;
-		Application* app = Application::GetInstance();
-		if (!app) return;
-		app->RenderOnceForRefresh();
-	}
-
-	void Window::Initialize() {
+	void Window::Initialize(const AppIdentity& identity) {
 		if (s_IsInitialized) {
-			IDX_CORE_WARN_TAG("Window", "GLFW is already initialized");
+			IDX_CORE_WARN_TAG("Window", "SDL video is already initialized");
 			return;
 		}
 
-		int code = glfwInit();
+		// Window close is a per-window request the editor may veto (unsaved changes); SDL_EVENT_QUIT stays for OS-level quits.
+		SDL_SetHint(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0");
+		// Gamepads keep working while the editor's Game View is in a detached viewport window.
+		SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+		// Windows only scales custom cursors with the display when asked; must precede cursor creation.
+		SDL_SetHint(SDL_HINT_MOUSE_DPI_SCALE_CURSORS, "1");
+		// Android would otherwise freeze the main loop in the background, and AudioManager::SetPlayInBackground needs
+		// scripts to keep running there (a music player starting the next track). Paused frames only cost ~10 Hz of polling.
+		SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE, "0");
+		const std::string version = identity.Version.empty() ? std::string(Engine::GetVersionLong()) : identity.Version;
+		SDL_SetAppMetadata(identity.Name.c_str(), version.c_str(), identity.Identifier.c_str());
 
-		IDX_ASSERT(code == GLFW_TRUE, IndexErrorCode::Undefined, "GLFW library couldn't initialize, error code " + StringHelper::WrapWith(std::to_string(code), '\''));
-
-		// Headless / CI / detached-session: glfwGetPrimaryMonitor can return null.
-		GLFWmonitor* mainMonitor = GetMainMonitor();
-		if (!mainMonitor) {
-			IDX_CORE_ERROR_TAG("Window", "No primary monitor available");
-			k_Videomode = nullptr;
-			glfwTerminate();
-			s_IsInitialized = false;
+		if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+			IDX_CORE_ERROR_TAG("Window", "SDL_Init failed: {}", SDL_GetError());
 			return;
 		}
-		k_Videomode = glfwGetVideoMode(mainMonitor);
-		IDX_ASSERT(k_Videomode != nullptr, IndexErrorCode::Undefined, "Failed to query monitor video mode");
 
+		// Headless / CI / detached-session: there can be no display at all.
+		if (SDL_GetPrimaryDisplay() == 0) {
+			IDX_CORE_ERROR_TAG("Window", "No primary display available: {}", SDL_GetError());
+			SDL_Quit();
+			return;
+		}
+
+		SDL_AddEventWatch(&Window::OnEventWatch, nullptr);
+		IDX_CORE_INFO_TAG("Window", "SDL {}.{}.{} initialized (video driver: {})",
+			SDL_VERSIONNUM_MAJOR(SDL_GetVersion()), SDL_VERSIONNUM_MINOR(SDL_GetVersion()),
+			SDL_VERSIONNUM_MICRO(SDL_GetVersion()),
+			SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "none");
 		s_IsInitialized = true;
 	}
 
@@ -73,58 +164,314 @@ namespace Index {
 			return;
 		}
 
+		SDL_RemoveEventWatch(&Window::OnEventWatch, nullptr);
 		s_MainViewport.reset();
 		s_ActiveWindow = nullptr;
 		ClearUIRegion();
 		s_WindowToFramebufferScale = { 1.0f, 1.0f };
-		k_Videomode = nullptr;
 		// Avoid carrying the previous window's VSync state into a later recreation.
 		s_IsVsync = true;
 		s_IsInitialized = false;
-		glfwTerminate();
+		SDL_Quit();
 	}
 
 	void Window::SetVsync(bool enabled) {
 		// Vsync is owned by the WebGPU swap-chain; see RenderApi::SetVsync.
-		// GLFW is initialised with GLFW_NO_API (Dawn owns the GPU context),
-		// so glfwSwapInterval has no context to act on here.
 		s_IsVsync = enabled;
 		RenderApi::SetVsync(enabled);
 	}
 
-	void Window::IconifyCallback(GLFWwindow* /*window*/, int iconified) {
-		Application::SetWindowMinimized(static_cast<bool>(iconified));
+	int Window::AddNativeEventHook(NativeEventHook hook) {
+		const int id = g_NextNativeHookId++;
+		g_NativeHooks.push_back({ id, std::move(hook) });
+		return id;
 	}
 
-	void Window::FocusCallback(GLFWwindow* window, int focused) {
-		Window* win = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
-		Application::SetWindowFocused(static_cast<bool>(focused));
-		if (win) {
-			win->ApplyTitlebarAppearance();
+	void Window::RemoveNativeEventHook(int hookId) {
+		std::erase_if(g_NativeHooks, [hookId](const NativeHookEntry& entry) { return entry.Id == hookId; });
+	}
+
+	void Window::PollEvents() {
+		if (!s_IsInitialized) return;
+
+		// ImGui's SDL3 backend stops text input when its own fields lose focus; desktop games expect it always on.
+		if (Window* active = s_ActiveWindow; active && active->m_Window && active->m_TextInputWanted
+			&& !SDL_TextInputActive(active->m_Window)) {
+			SDL_StartTextInput(active->m_Window);
 		}
+
+		SDL_Event event;
+		while (SDL_PollEvent(&event)) {
+			if (!g_NativeHooks.empty()) {
+				// Copy: a hook may unregister itself (ImGui shutdown on a close request).
+				const std::vector<NativeHookEntry> hooks = g_NativeHooks;
+				for (const NativeHookEntry& entry : hooks) {
+					entry.Hook(event);
+				}
+			}
+
+			Application* app = Application::GetInstance();
+			switch (event.type) {
+			case SDL_EVENT_GAMEPAD_ADDED:
+				if (app) app->m_Input.OnGamepadAdded(event.gdevice.which);
+				continue;
+			case SDL_EVENT_GAMEPAD_REMOVED:
+				if (app) app->m_Input.OnGamepadRemoved(event.gdevice.which);
+				continue;
+			case SDL_EVENT_WILL_ENTER_BACKGROUND:
+			case SDL_EVENT_DID_ENTER_FOREGROUND:
+				// Handled in OnEventWatch the moment they're queued.
+				continue;
+			case SDL_EVENT_SCREEN_KEYBOARD_SHOWN:
+				if (Window* active = s_ActiveWindow; active && active->m_TextEditOwner) active->m_TextEditKeyboardShown = true;
+				continue;
+			case SDL_EVENT_SCREEN_KEYBOARD_HIDDEN:
+				// The back gesture closes the keyboard without SDL stopping text input; without this the field
+				// stayed focused and tapping it could not bring the keyboard back.
+				if (Window* active = s_ActiveWindow; active && active->m_TextEditOwner && active->m_TextEditKeyboardShown) {
+					active->m_TextEditDismissed = true;
+				}
+				continue;
+			case SDL_EVENT_QUIT:
+				// OS-level quit (Cmd+Q, SIGINT, mobile termination) behaves like closing the main window.
+				if (s_ActiveWindow) {
+					SDL_Event close{};
+					close.type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+					close.window.windowID = SDL_GetWindowID(s_ActiveWindow->m_Window);
+					s_ActiveWindow->HandleEvent(close);
+				}
+				continue;
+			default:
+				break;
+			}
+
+			if (s_ActiveWindow) {
+				s_ActiveWindow->HandleEvent(event);
+			}
+		}
+	}
+
+	bool Window::OnEventWatch(void*, SDL_Event* event) {
+		// Android blocks the main thread inside SDL_PumpEvents right after queueing these, so PollEvents
+		// would only see them on return; watchers run synchronously on the main thread while they're queued.
+		if (event->type == SDL_EVENT_WILL_ENTER_BACKGROUND && SDL_IsMainThread()) {
+			++s_NativeSurfaceGeneration;
+			Application::EnterBackground();
+			return true;
+		}
+		if (event->type == SDL_EVENT_DID_ENTER_FOREGROUND && SDL_IsMainThread()) {
+			Application::EnterForeground();
+			return true;
+		}
+
+		// Windows' modal move/size loop blocks PollEvents; SDL forwards live-resize exposes here so the frame keeps up with the drag.
+		if (event->type != SDL_EVENT_WINDOW_EXPOSED || event->window.data1 != 1 || !SDL_IsMainThread()) {
+			return true;
+		}
+		Window* active = s_ActiveWindow;
+		if (active && active->m_Window && event->window.windowID == SDL_GetWindowID(active->m_Window)) {
+			active->SyncViewportFromFramebuffer();
+			active->UpdateViewport();
+		}
+		if (Application* app = Application::GetInstance()) {
+			app->RenderOnceForRefresh();
+		}
+		return true;
+	}
+
+	void Window::HandleEvent(const SDL_Event& event) {
+		if (!m_Window) return;
+		const SDL_WindowID ownId = SDL_GetWindowID(m_Window);
+
+		if (event.type >= SDL_EVENT_WINDOW_FIRST && event.type <= SDL_EVENT_WINDOW_LAST) {
+			if (event.window.windowID != ownId) return;
+			switch (event.type) {
+			case SDL_EVENT_WINDOW_FOCUS_GAINED: OnFocusChanged(true); break;
+			case SDL_EVENT_WINDOW_FOCUS_LOST:   OnFocusChanged(false); break;
+			case SDL_EVENT_WINDOW_MINIMIZED:    Application::SetWindowMinimized(true); break;
+			case SDL_EVENT_WINDOW_RESTORED:
+			case SDL_EVENT_WINDOW_MAXIMIZED:    Application::SetWindowMinimized(false); break;
+			case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: OnFramebufferResized(); break;
+			case SDL_EVENT_WINDOW_CLOSE_REQUESTED: {
+				// The app's close handler clears this when it takes over the quit flow.
+				m_ShouldClose = true;
+				if (m_EventCallback) {
+					WindowCloseEvent e;
+					m_EventCallback(e);
+				}
+				break;
+			}
+			default: break;
+			}
+			return;
+		}
+
+		switch (event.type) {
+		case SDL_EVENT_KEY_DOWN:
+		case SDL_EVENT_KEY_UP: {
+			if (event.key.windowID != ownId) return;
+			const int key = SDLInputMapping::KeyCodeFromScancode(static_cast<int>(event.key.scancode));
+			if (key < 0) return;
+			OnKey(key, event.type == SDL_EVENT_KEY_DOWN, event.key.repeat);
+			break;
+		}
+		case SDL_EVENT_TEXT_INPUT: {
+			if (event.text.windowID != ownId) return;
+			Application* app = Application::GetInstance();
+			if (!app) return;
+			std::vector<uint32_t> codepoints;
+			AppendUtf8Codepoints(event.text.text, codepoints);
+			for (uint32_t cp : codepoints) {
+				app->m_Input.OnChar(cp);
+				ScriptEngine::RaiseEnterChar(cp);
+			}
+			break;
+		}
+		case SDL_EVENT_MOUSE_BUTTON_DOWN:
+		case SDL_EVENT_MOUSE_BUTTON_UP: {
+			if (event.button.windowID != ownId) return;
+			const int button = SDLInputMapping::MouseButtonFromSDL(event.button.button);
+			if (button < 0) return;
+			OnMouseButton(button, event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+			break;
+		}
+		case SDL_EVENT_MOUSE_MOTION: {
+			if (event.motion.windowID != ownId) return;
+			if (SDL_GetWindowRelativeMouseMode(m_Window)) {
+				m_VirtualCursor.x += event.motion.xrel;
+				m_VirtualCursor.y += event.motion.yrel;
+			}
+			else {
+				m_VirtualCursor = { event.motion.x, event.motion.y };
+			}
+			OnCursorMoved(m_VirtualCursor.x, m_VirtualCursor.y);
+			break;
+		}
+		case SDL_EVENT_MOUSE_WHEEL: {
+			if (event.wheel.windowID != ownId) return;
+			const float sign = event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0f : 1.0f;
+			const float x = event.wheel.x * sign;
+			const float y = event.wheel.y * sign;
+			Application* app = Application::GetInstance();
+			if (!app) return;
+			app->m_Input.OnScroll(y);
+			ScriptEngine::RaiseMouseScroll(y);
+			if (m_EventCallback) {
+				MouseScrolledEvent e(x, y);
+				m_EventCallback(e);
+			}
+			break;
+		}
+		case SDL_EVENT_DROP_BEGIN:
+			if (event.drop.windowID == ownId) m_PendingDrops.clear();
+			break;
+		case SDL_EVENT_DROP_FILE:
+			if (event.drop.windowID == ownId && event.drop.data) m_PendingDrops.emplace_back(event.drop.data);
+			break;
+		case SDL_EVENT_DROP_COMPLETE: {
+			if (event.drop.windowID != ownId || m_PendingDrops.empty()) break;
+			std::vector<std::string> paths = std::move(m_PendingDrops);
+			m_PendingDrops.clear();
+			if (m_EventCallback) {
+				FileDropEvent e(std::move(paths));
+				m_EventCallback(e);
+			}
+			break;
+		}
+		default:
+			break;
+		}
+	}
+
+	void Window::OnFocusChanged(bool focused) {
+		Application::SetWindowFocused(focused);
+		ApplyTitlebarAppearance();
 		if (Application::IsShuttingDown()) return;
 
-		if ((bool)focused) {
-			ScriptEngine::RaiseFocusChanged(true);
-			if (win && win->m_EventCallback) {
-				WindowFocusEvent e;
-				win->m_EventCallback(e);
+		ScriptEngine::RaiseFocusChanged(focused);
+		if (!m_EventCallback) return;
+		if (focused) {
+			WindowFocusEvent e;
+			m_EventCallback(e);
+		}
+		else {
+			WindowLostFocusEvent e;
+			m_EventCallback(e);
+		}
+	}
+
+	void Window::OnKey(int key, bool pressed, bool repeat) {
+		Application* app = Application::GetInstance();
+		if (!app) return;
+
+		if (pressed) {
+			app->m_Input.OnKeyDown(key);
+			if (!repeat) ScriptEngine::RaiseKeyDown(key);
+			if (m_EventCallback) {
+				KeyPressedEvent e(key, repeat);
+				m_EventCallback(e);
 			}
 		}
 		else {
-			ScriptEngine::RaiseFocusChanged(false);
-			if (win && win->m_EventCallback) {
-				WindowLostFocusEvent e;
-				win->m_EventCallback(e);
+			app->m_Input.OnKeyUp(key);
+			ScriptEngine::RaiseKeyUp(key);
+			if (m_EventCallback) {
+				KeyReleasedEvent e(key);
+				m_EventCallback(e);
 			}
 		}
 	}
 
-	void Window::CloseCallback(GLFWwindow* window) {
-		Window* win = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
-		if (win && win->m_EventCallback) {
-			WindowCloseEvent e;
-			win->m_EventCallback(e);
+	void Window::OnMouseButton(int button, bool pressed) {
+		Application* app = Application::GetInstance();
+		if (!app) return;
+
+		if (pressed) {
+			app->m_Input.OnMouseDown(button);
+			ScriptEngine::RaiseMouseDown(button);
+			if (m_EventCallback) {
+				MouseButtonPressedEvent e(button);
+				m_EventCallback(e);
+			}
+		}
+		else {
+			app->m_Input.OnMouseUp(button);
+			ScriptEngine::RaiseMouseUp(button);
+			if (m_EventCallback) {
+				MouseButtonReleasedEvent e(button);
+				m_EventCallback(e);
+			}
+		}
+	}
+
+	void Window::OnCursorMoved(float x, float y) {
+		Application* app = Application::GetInstance();
+		if (!app) return;
+		app->m_Input.OnMouseMove(x, y);
+		const Vec2 viewportPosition = ToViewportLocalPosition({ x, y });
+		ScriptEngine::RaiseMouseMove(viewportPosition.x, viewportPosition.y);
+
+		if (m_EventCallback) {
+			MouseMovedEvent e(viewportPosition.x, viewportPosition.y);
+			m_EventCallback(e);
+		}
+	}
+
+	void Window::OnFramebufferResized() {
+		SyncViewportFromFramebuffer();
+		UpdateViewport();
+		if (s_MainViewport) {
+			IDX_CORE_INFO_TAG("Window", "Framebuffer {}x{}, viewport {}x{} at {},{}, window-to-framebuffer scale {}x{}",
+				s_MainViewport->GetFramebufferWidth(), s_MainViewport->GetFramebufferHeight(),
+				s_MainViewport->GetWidth(), s_MainViewport->GetHeight(),
+				s_MainViewport->GetOffsetX(), s_MainViewport->GetOffsetY(), s_WindowToFramebufferScale.x, s_WindowToFramebufferScale.y);
+		}
+
+		if (m_EventCallback) {
+			int fbW = 0, fbH = 0;
+			SDL_GetWindowSizeInPixels(m_Window, &fbW, &fbH);
+			WindowResizeEvent e(fbW, fbH);
+			m_EventCallback(e);
 		}
 	}
 
@@ -133,20 +480,12 @@ namespace Index {
 
 		m_AspectLock = props.AspectLock > 0.0f ? props.AspectLock : 0.0f;
 
-		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-		glfwWindowHint(GLFW_SAMPLES, 8);
-
-		if (props.CustomTitlebar) {
-			glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-		}
-
 		int width = props.Width, height = props.Height;
 		int minWidth = props.MinWidth, minHeight = props.MinHeight;
 		if (props.MonitorFraction > 0.0f || props.MinMonitorFraction > 0.0f) {
-			int areaX = 0, areaY = 0, areaW = 0, areaH = 0;
-			if (GLFWmonitor* monitor = GetMainMonitor()) {
-				glfwGetMonitorWorkarea(monitor, &areaX, &areaY, &areaW, &areaH);
-			}
+			SDL_Rect area{};
+			SDL_GetDisplayUsableBounds(SDL_GetPrimaryDisplay(), &area);
+			const int areaW = area.w, areaH = area.h;
 			if (areaW > 0 && areaH > 0) {
 				const float aspect = (props.Width > 0 && props.Height > 0)
 					? static_cast<float>(props.Width) / static_cast<float>(props.Height) : 0.0f;
@@ -168,31 +507,43 @@ namespace Index {
 			}
 		}
 
+		const SDL_DisplayMode* desktopMode = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay());
+		const bool useMonitorSize = props.Fullscreen && desktopMode;
 		s_MainViewport = std::make_unique<Viewport>(
-			props.Fullscreen ? k_Videomode->width : width,
-			props.Fullscreen ? k_Videomode->height : height
+			useMonitorSize ? desktopMode->w : width,
+			useMonitorSize ? desktopMode->h : height
 		);
 
 		IDX_INFO_TAG("Window",
-			"Create: spec={}x{}, fullscreen={}, videomode={}x{} -> viewport={}x{}",
+			"Create: spec={}x{}, fullscreen={}, display={}x{} -> viewport={}x{}",
 			width, height, props.Fullscreen,
-			k_Videomode ? k_Videomode->width : 0,
-			k_Videomode ? k_Videomode->height : 0,
+			desktopMode ? desktopMode->w : 0,
+			desktopMode ? desktopMode->h : 0,
 			s_MainViewport->GetWidth(), s_MainViewport->GetHeight());
 
-		m_GLFWwindow = glfwCreateWindow(s_MainViewport->GetWidth(), s_MainViewport->GetHeight(), props.Title.c_str(), nullptr, nullptr);
-		IDX_ASSERT(m_GLFWwindow, IndexErrorCode::Undefined, "Failed to create window!");
+#if IDX_PLATFORM_MOBILE
+		if (const char* orientations = OrientationHint(props.Orientation, props.Width, props.Height)) {
+			SDL_SetHint(SDL_HINT_ORIENTATIONS, orientations);
+		}
+#endif
+		SDL_WindowFlags flags = SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN;
+		if (props.Resizeable) flags |= SDL_WINDOW_RESIZABLE;
+		if (!props.Decorated || props.CustomTitlebar) flags |= SDL_WINDOW_BORDERLESS;
+#if defined(IDX_PLATFORM_MACOS)
+		flags |= SDL_WINDOW_METAL;
+#elif IDX_PLATFORM_MOBILE
+		// Fullscreen hides the status and navigation bars (Android immersive mode, iOS status bar);
+		// otherwise they cover the top and bottom of the game.
+		flags |= SDL_WINDOW_FULLSCREEN;
+#endif
 
-		m_MinSize = { minWidth, minHeight };
-		m_MaxSize = { props.MaxWidth, props.MaxHeight };
-		glfwSetWindowSizeLimits(m_GLFWwindow,
-			minWidth  > 0 ? minWidth  : GLFW_DONT_CARE,
-			minHeight > 0 ? minHeight : GLFW_DONT_CARE,
-			props.MaxWidth  > 0 ? props.MaxWidth  : GLFW_DONT_CARE,
-			props.MaxHeight > 0 ? props.MaxHeight : GLFW_DONT_CARE);
+		m_Window = SDL_CreateWindow(props.Title.c_str(), s_MainViewport->GetWidth(), s_MainViewport->GetHeight(), flags);
+		IDX_ASSERT(m_Window, IndexErrorCode::Undefined, std::string("Failed to create window: ") + SDL_GetError());
 
-		SetDecorated(props.Decorated);
-		SetResizeable(props.Resizeable);
+		m_MinSize = { minWidth > 0 ? minWidth : 0, minHeight > 0 ? minHeight : 0 };
+		m_MaxSize = { props.MaxWidth > 0 ? props.MaxWidth : 0, props.MaxHeight > 0 ? props.MaxHeight : 0 };
+		SDL_SetWindowMinimumSize(m_Window, m_MinSize.x, m_MinSize.y);
+		SDL_SetWindowMaximumSize(m_Window, m_MaxSize.x, m_MaxSize.y);
 
 		m_TitlebarColor         = props.TitlebarColor;
 		m_TitlebarTextColor     = props.TitlebarTextColor;
@@ -200,23 +551,22 @@ namespace Index {
 		m_TitlebarInactiveColor = props.TitlebarInactiveColor;
 		m_TitlebarDarkMode      = props.TitlebarDarkMode;
 		if (props.CustomTitlebar) {
-			glfwSetWindowAttrib(m_GLFWwindow, GLFW_DECORATED, GLFW_FALSE);
+			TitlebarRegions::SetHeight(props.TitlebarHeight);
 #ifdef IDX_PLATFORM_WINDOWS
-			Win32Titlebar::SetTitlebarHeight(props.TitlebarHeight);
-			Win32Titlebar::Install(m_GLFWwindow, this);
-			ApplyTitlebarAppearance();
+			Win32Titlebar::Install(GetPlatformHandle(), this);
+#else
+			SDL_SetWindowHitTest(m_Window, &CustomTitlebarHitTest, nullptr);
 #endif
-			glfwShowWindow(m_GLFWwindow);
 			m_CustomTitlebar = true;
 		}
-#ifdef IDX_PLATFORM_WINDOWS
-		else {
-			// Apply native titlebar colors while keeping the OS chrome.
-			ApplyTitlebarAppearance();
-		}
-#endif
+		ApplyTitlebarAppearance();
 
+#if defined(IDX_PLATFORM_WEB) || IDX_PLATFORM_MOBILE
+		// Browser and mobile windows always cover their page / screen.
+		if (false) {
+#else
 		if (props.Fullscreen) {
+#endif
 			// Legacy compat: Fullscreen+Windowed=true maps to Maximized so old projects don't silently switch to Exclusive.
 			FullscreenMode mode = props.FullscreenMode;
 			if (mode == FullscreenMode::Exclusive && props.Windowed) {
@@ -226,78 +576,86 @@ namespace Index {
 				case FullscreenMode::Exclusive:
 					SetFullScreen(true);
 					break;
-				case FullscreenMode::BorderlessWindowed:
-					glfwSetWindowAttrib(m_GLFWwindow, GLFW_DECORATED, GLFW_FALSE);
-					if (k_Videomode) {
-						glfwSetWindowSize(m_GLFWwindow,
-							k_Videomode->width, k_Videomode->height);
-						glfwSetWindowPos(m_GLFWwindow, 0, 0);
+				case FullscreenMode::BorderlessWindowed: {
+					SDL_SetWindowBordered(m_Window, false);
+					SDL_Rect bounds{};
+					if (SDL_GetDisplayBounds(DisplayForWindow(m_Window), &bounds)) {
+						SDL_SetWindowSize(m_Window, bounds.w, bounds.h);
+						SDL_SetWindowPosition(m_Window, bounds.x, bounds.y);
 					}
 					break;
+				}
 				case FullscreenMode::Maximized:
-					MaximizeWindow();
+					SDL_MaximizeWindow(m_Window);
 					break;
 			}
 		}
-		else {
+		else if (IDX_PLATFORM_DESKTOP) {
 			CenterWindow();
 		}
 
+		SDL_ShowWindow(m_Window);
+#if defined(IDX_PLATFORM_WEB)
+		// The canvas fills the page and follows browser resizes; real fullscreen needs a user gesture. Set
+		// after creation: as a creation flag the canvas kept the requested size.
+		SDL_SetWindowFillDocument(m_Window, true);
+#endif
+		SDL_SyncWindow(m_Window);
+
+		m_TextInputWanted = k_TextInputByDefault;
+		if (m_TextInputWanted) SDL_StartTextInput(m_Window);
+
 		{
 			int fbW = 0, fbH = 0;
-			glfwGetFramebufferSize(m_GLFWwindow, &fbW, &fbH);
-			IDX_INFO_TAG("Window",
-				"After fullscreen/center: GLFW framebuffer={}x{}", fbW, fbH);
+			SDL_GetWindowSizeInPixels(m_Window, &fbW, &fbH);
+			IDX_INFO_TAG("Window", "After fullscreen/center: framebuffer={}x{}, display scale={}",
+				fbW, fbH, GetDisplayScale());
 		}
 
-		// No GL context to make current — the render backend handles the device.
-		glfwSetWindowUserPointer(m_GLFWwindow, this);
-
-		glfwSetKeyCallback(m_GLFWwindow, SetKeyCallback);
-		glfwSetCharCallback(m_GLFWwindow, SetCharCallback);
-		glfwSetMouseButtonCallback(m_GLFWwindow, SetMouseButtonCallback);
-		glfwSetCursorPosCallback(m_GLFWwindow, SetCursorPositionCallback);
-		glfwSetScrollCallback(m_GLFWwindow, SetScrollCallback);
-		glfwSetWindowFocusCallback(m_GLFWwindow, FocusCallback);
-
-		glfwSetFramebufferSizeCallback(m_GLFWwindow, SetWindowResizedCallback);
-		glfwSetWindowIconifyCallback(m_GLFWwindow, &Window::IconifyCallback);
-
-		glfwSetDropCallback(m_GLFWwindow, SetDropCallback);
-		glfwSetWindowRefreshCallback(m_GLFWwindow, RefreshCallback);
-		glfwSetWindowCloseCallback(m_GLFWwindow, &Window::CloseCallback);
+		float mouseX = 0.0f, mouseY = 0.0f;
+		SDL_GetMouseState(&mouseX, &mouseY);
+		m_VirtualCursor = { mouseX, mouseY };
 
 		// Vsync is handled by the render backend.
 		SyncViewportFromFramebuffer();
 
 		s_ActiveWindow = this;
 	}
+
 	void Window::Destroy() {
-		if (!m_GLFWwindow) {
+		if (!m_Window) {
 			return;
 		}
 
 		m_Cursor = nullptr;
 		m_CursorTextureAssetId = 0;
+		if (m_DefaultCursor || m_UICursor) {
+			SDL_SetCursor(SDL_GetDefaultCursor());
+		}
 		if (m_DefaultCursor) {
-			glfwDestroyCursor(m_DefaultCursor);
+			SDL_DestroyCursor(m_DefaultCursor);
 			m_DefaultCursor = nullptr;
 		}
 		if (m_UICursor) {
-			glfwDestroyCursor(m_UICursor);
+			SDL_DestroyCursor(m_UICursor);
 			m_UICursor = nullptr;
 		}
-		glfwSetWindowUserPointer(m_GLFWwindow, nullptr);
+#ifdef IDX_PLATFORM_WINDOWS
+		if (m_BigIcon) ::DestroyIcon(static_cast<HICON>(m_BigIcon));
+		if (m_SmallIcon) ::DestroyIcon(static_cast<HICON>(m_SmallIcon));
+#endif
+		m_BigIcon = nullptr;
+		m_SmallIcon = nullptr;
 		m_EventCallback = {};
 #ifdef IDX_PLATFORM_WINDOWS
-		// MUST uninstall before glfwDestroyWindow: teardown messages can arrive after HWND destruction, dangling the subclass state map entry.
+		// MUST uninstall before SDL_DestroyWindow: teardown messages can arrive after HWND destruction, dangling the subclass state map entry.
 		if (m_CustomTitlebar) {
-			Win32Titlebar::Uninstall(m_GLFWwindow);
-			m_CustomTitlebar = false;
+			Win32Titlebar::Uninstall(GetPlatformHandle());
 		}
 #endif
-		glfwDestroyWindow(m_GLFWwindow);
-		m_GLFWwindow = nullptr;
+		m_CustomTitlebar = false;
+		SDL_DestroyWindow(m_Window);
+		m_Window = nullptr;
 		if (s_ActiveWindow == this) {
 			s_ActiveWindow = nullptr;
 			ClearUIRegion();
@@ -309,199 +667,244 @@ namespace Index {
 		RenderApi::Present();
 	}
 
+	void* Window::GetPlatformHandle() const {
+		if (!m_Window) return nullptr;
+		const SDL_PropertiesID props = SDL_GetWindowProperties(m_Window);
+#if defined(IDX_PLATFORM_WINDOWS)
+		return SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+#elif defined(IDX_PLATFORM_MACOS)
+		return SDL_GetPointerProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
+#elif defined(IDX_PLATFORM_IOS)
+		return SDL_GetPointerProperty(props, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr);
+#elif defined(IDX_PLATFORM_ANDROID)
+		return SDL_GetPointerProperty(props, SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr);
+#else
+		(void)props;
+		return nullptr;
+#endif
+	}
+
+	void Window::SetClipboardString(const std::string& s) {
+		SDL_SetClipboardText(s.c_str());
+	}
+
+	std::string Window::GetClipboardString() const {
+		char* text = SDL_GetClipboardText();
+		std::string result = text ? std::string(text) : std::string{};
+		SDL_free(text);
+		return result;
+	}
+
+	void Window::SetPosition(Vec2Int pos) {
+		SDL_SetWindowPosition(m_Window, pos.x, pos.y);
+	}
+
+	Vec2Int Window::GetPosition() const {
+		Vec2Int pos;
+		SDL_GetWindowPosition(m_Window, &pos.x, &pos.y);
+		return pos;
+	}
+
+	void Window::SetSize(Vec2Int size) {
+		SDL_SetWindowSize(m_Window, size.x, size.y);
+	}
+
+	void Window::SetTitle(const std::string& title) {
+		SDL_SetWindowTitle(m_Window, title.c_str());
+	}
+
+	std::string Window::GetTitle() const {
+		const char* title = m_Window ? SDL_GetWindowTitle(m_Window) : nullptr;
+		return title ? std::string(title) : std::string{};
+	}
+
+	float Window::GetDisplayScale() const {
+		const float scale = m_Window ? SDL_GetWindowDisplayScale(m_Window) : 0.0f;
+		return scale > 0.0f ? scale : 1.0f;
+	}
+
+	void Window::SetTextInputActive(bool active) {
+		m_TextInputWanted = active;
+		if (!m_Window) return;
+		if (active) SDL_StartTextInput(m_Window);
+		else SDL_StopTextInput(m_Window);
+	}
+
+	void Window::BeginTextEditing(const TextEditRequest& request, const void* owner) {
+#if IDX_PLATFORM_MOBILE
+		if (!m_Window || !owner) return;
+
+		const bool region = s_UIRegion.IsActive();
+		const float uiLeft = static_cast<float>(region ? s_UIRegion.OffsetX : (s_MainViewport ? s_MainViewport->GetOffsetX() : 0));
+		const float uiTop  = static_cast<float>(region ? s_UIRegion.OffsetY : (s_MainViewport ? s_MainViewport->GetOffsetY() : 0));
+		const Vec2 scale = s_WindowToFramebufferScale;
+		const SDL_Rect area{
+			static_cast<int>((uiLeft + request.Left) / scale.x),
+			static_cast<int>((uiTop + request.Top) / scale.y),
+			static_cast<int>(std::ceil(request.Width / scale.x)),
+			static_cast<int>(std::ceil(request.Height / scale.y)) };
+		// Every change is a JNI / UIKit round trip; the field rarely moves while edited.
+		if (area.x != m_TextEditArea[0] || area.y != m_TextEditArea[1] || area.w != m_TextEditArea[2] || area.h != m_TextEditArea[3]) {
+			SDL_SetTextInputArea(m_Window, &area, 0);
+			m_TextEditArea[0] = area.x; m_TextEditArea[1] = area.y; m_TextEditArea[2] = area.w; m_TextEditArea[3] = area.h;
+		}
+
+		const bool sameKeyboard = m_TextEditOwner && request.Kind == m_TextEditKind && request.Multiline == m_TextEditMultiline;
+		m_TextEditOwner = owner;
+		if (sameKeyboard) return;
+
+		m_TextEditKeyboardShown = false;
+		m_TextEditDismissed = false;
+		// A different keyboard layout only applies when the keyboard is shown again.
+		if (SDL_TextInputActive(m_Window)) SDL_StopTextInput(m_Window);
+		m_TextEditKind = request.Kind;
+		m_TextEditMultiline = request.Multiline;
+
+		SDL_PropertiesID props = SDL_CreateProperties();
+		SDL_TextInputType type = SDL_TEXTINPUT_TYPE_TEXT;
+		switch (request.Kind) {
+			case TextInputKind::Text:     type = SDL_TEXTINPUT_TYPE_TEXT; break;
+			case TextInputKind::Integer:
+			case TextInputKind::Decimal:  type = SDL_TEXTINPUT_TYPE_NUMBER; break;
+			case TextInputKind::Password: type = SDL_TEXTINPUT_TYPE_TEXT_PASSWORD_HIDDEN; break;
+		}
+		SDL_SetNumberProperty(props, SDL_PROP_TEXTINPUT_TYPE_NUMBER, type);
+		SDL_SetBooleanProperty(props, SDL_PROP_TEXTINPUT_MULTILINE_BOOLEAN, request.Multiline);
+		// SDL's number keyboard has no minus sign or decimal point on Android; the raw InputType adds them
+		// (TYPE_CLASS_NUMBER | TYPE_NUMBER_FLAG_SIGNED [| TYPE_NUMBER_FLAG_DECIMAL]).
+		if (request.Kind == TextInputKind::Integer) SDL_SetNumberProperty(props, SDL_PROP_TEXTINPUT_ANDROID_INPUTTYPE_NUMBER, 0x1002);
+		if (request.Kind == TextInputKind::Decimal) SDL_SetNumberProperty(props, SDL_PROP_TEXTINPUT_ANDROID_INPUTTYPE_NUMBER, 0x3002);
+		SDL_StartTextInputWithProperties(m_Window, props);
+		SDL_DestroyProperties(props);
+#else
+		(void)request;
+		(void)owner;
+#endif
+	}
+
+	bool Window::ShowTextActions(const TextEditRequest& area, int flags) const {
+#if IDX_PLATFORM_MOBILE
+		const bool region = s_UIRegion.IsActive();
+		const float uiLeft = static_cast<float>(region ? s_UIRegion.OffsetX : (s_MainViewport ? s_MainViewport->GetOffsetX() : 0));
+		const float uiTop  = static_cast<float>(region ? s_UIRegion.OffsetY : (s_MainViewport ? s_MainViewport->GetOffsetY() : 0));
+		const Vec2 scale = s_WindowToFramebufferScale;
+		return Platform::ShowTextActions(
+			static_cast<int>((uiLeft + area.Left) / scale.x), static_cast<int>((uiTop + area.Top) / scale.y),
+			static_cast<int>(std::ceil(area.Width / scale.x)), static_cast<int>(std::ceil(area.Height / scale.y)), flags);
+#else
+		(void)area;
+		(void)flags;
+		return false;
+#endif
+	}
+
+	void Window::EndTextEditing(const void* owner) {
+#if IDX_PLATFORM_MOBILE
+		if (!m_Window || !owner || owner != m_TextEditOwner) return;
+		m_TextEditOwner = nullptr;
+		m_TextEditKeyboardShown = false;
+		m_TextEditDismissed = false;
+		m_TextEditArea[0] = m_TextEditArea[1] = m_TextEditArea[2] = m_TextEditArea[3] = 0;
+		if (!m_TextInputWanted && SDL_TextInputActive(m_Window)) SDL_StopTextInput(m_Window);
+#else
+		(void)owner;
+#endif
+	}
+
+	bool Window::WasTextEditingDismissed(const void* owner) const {
+#if IDX_PLATFORM_MOBILE
+		// SDL stops text input itself when the user hides the keyboard.
+		return m_Window && owner && owner == m_TextEditOwner && (m_TextEditDismissed || !SDL_TextInputActive(m_Window));
+#else
+		(void)owner;
+		return false;
+#endif
+	}
+
 	void Window::CenterWindow() {
-		Vec2Int screenCenter = GetScreenCenter();
-		int windowWidth, windowHeight;
-		glfwGetWindowSize(m_GLFWwindow, &windowWidth, &windowHeight);
-		int posX = screenCenter.x - windowWidth / 2;
-		int posY = screenCenter.y - windowHeight / 2;
-		glfwSetWindowPos(m_GLFWwindow, posX, posY);
+		const SDL_DisplayID display = DisplayForWindow(m_Window);
+		SDL_SetWindowPosition(m_Window,
+			static_cast<int>(SDL_WINDOWPOS_CENTERED_DISPLAY(display)),
+			static_cast<int>(SDL_WINDOWPOS_CENTERED_DISPLAY(display)));
 	}
 	void Window::Focus() {
-		glfwFocusWindow(m_GLFWwindow);
+		SDL_RaiseWindow(m_Window);
 	}
 	void Window::MaximizeWindow(bool reset) {
 		if (reset && IsMaximized()) {
-			glfwRestoreWindow(m_GLFWwindow);
+			SDL_RestoreWindow(m_Window);
 		}
 		else {
-			glfwMaximizeWindow(m_GLFWwindow);
+			SDL_MaximizeWindow(m_Window);
 		}
+		SDL_SyncWindow(m_Window);
 
 		SyncViewportFromFramebuffer();
 		UpdateViewport();
 	}
 	void Window::MinimizeWindow() {
-		glfwIconifyWindow(m_GLFWwindow);
+		SDL_MinimizeWindow(m_Window);
 	}
 	void Window::RestoreWindow() {
-		glfwRestoreWindow(m_GLFWwindow);
+		SDL_RestoreWindow(m_Window);
+		SDL_SyncWindow(m_Window);
 		SyncViewportFromFramebuffer();
 		UpdateViewport();
-	}
-
-	void Window::SetKeyCallback(GLFWwindow* window, int key, int, int action, int mods) {
-		(void)mods;
-		if (key == GLFW_KEY_UNKNOWN) {
-			return;
-		}
-
-		Application* app = Application::GetInstance();
-		if (!app) return;
-
-		Window* win = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
-
-		switch (action) {
-		case GLFW_PRESS:
-			app->m_Input.OnKeyDown(key);
-			ScriptEngine::RaiseKeyDown(key);
-			if (win && win->m_EventCallback) {
-				KeyPressedEvent e(key, false);
-				win->m_EventCallback(e);
-			}
-			break;
-		case GLFW_RELEASE:
-			app->m_Input.OnKeyUp(key);
-			ScriptEngine::RaiseKeyUp(key);
-			if (win && win->m_EventCallback) {
-				KeyReleasedEvent e(key);
-				win->m_EventCallback(e);
-			}
-			break;
-		case GLFW_REPEAT:
-			app->m_Input.OnKeyDown(key);
-			if (win && win->m_EventCallback) {
-				KeyPressedEvent e(key, true);
-				win->m_EventCallback(e);
-			}
-			break;
-		default:
-			break;
-		}
-	}
-
-	void Window::SetCharCallback(GLFWwindow* /*window*/, unsigned int codepoint) {
-		Application* app = Application::GetInstance();
-		if (!app) return;
-		app->m_Input.OnChar(static_cast<uint32_t>(codepoint));
-		ScriptEngine::RaiseEnterChar(static_cast<uint32_t>(codepoint));
-	}
-
-	void Window::SetMouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
-		(void)mods;
-		Application* app = Application::GetInstance();
-		if (!app) return;
-
-		Window* win = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
-
-		switch (action) {
-		case GLFW_PRESS:
-			app->m_Input.OnMouseDown(button);
-			ScriptEngine::RaiseMouseDown(button);
-			if (win && win->m_EventCallback) {
-				MouseButtonPressedEvent e(button);
-				win->m_EventCallback(e);
-			}
-			break;
-		case GLFW_RELEASE:
-			app->m_Input.OnMouseUp(button);
-			ScriptEngine::RaiseMouseUp(button);
-			if (win && win->m_EventCallback) {
-				MouseButtonReleasedEvent e(button);
-				win->m_EventCallback(e);
-			}
-			break;
-		default:
-			break;
-		}
-	}
-
-	void Window::SetCursorPositionCallback(GLFWwindow* window, double xPos, double yPos) {
-		Application* app = Application::GetInstance();
-		if (!app) return;
-		app->m_Input.OnMouseMove(xPos, yPos);
-		const Vec2 viewportPosition = ToViewportLocalPosition({ static_cast<float>(xPos), static_cast<float>(yPos) });
-		ScriptEngine::RaiseMouseMove(viewportPosition.x, viewportPosition.y);
-
-		Window* win = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
-		if (win && win->m_EventCallback) {
-			MouseMovedEvent e(viewportPosition.x, viewportPosition.y);
-			win->m_EventCallback(e);
-		}
-	}
-
-	void Window::SetScrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
-		Application* app = Application::GetInstance();
-		if (!app) return;
-		app->m_Input.OnScroll(static_cast<float>(yoffset));
-		ScriptEngine::RaiseMouseScroll(static_cast<float>(yoffset));
-
-		Window* win = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
-		if (win && win->m_EventCallback) {
-			MouseScrolledEvent e(static_cast<float>(xoffset), static_cast<float>(yoffset));
-			win->m_EventCallback(e);
-		}
 	}
 
 	void Window::SetFullScreen(bool enabled) {
-		bool isFullScreen = IsFullScreen();
-
-		if ((isFullScreen && enabled) || (!isFullScreen && !enabled))
+		// Phones and tablets have no windowed mode; leaving fullscreen would only bring the system bars back.
+		if (IDX_PLATFORM_MOBILE) return;
+		if (IsFullScreen() == enabled)
 			return;
 
 		if (enabled) {
-			m_RestoreSize = GetSize();
-			m_RestorePos = GetPosition();
+			const SDL_DisplayID display = DisplayForWindow(m_Window);
+			const SDL_DisplayMode* desktop = SDL_GetDesktopDisplayMode(display);
+			if (!desktop) {
+				IDX_CORE_WARN_TAG("Window", "Cannot enter fullscreen: no display mode ({})", SDL_GetError());
+				return;
+			}
+			// Exclusive mode at the desktop resolution; SDL falls back to borderless desktop fullscreen where exclusive modes don't exist (Wayland, mobile, Web).
+			SDL_DisplayMode closest{};
+			if (SDL_GetClosestFullscreenDisplayMode(display, desktop->w, desktop->h, desktop->refresh_rate, true, &closest)) {
+				SDL_SetWindowFullscreenMode(m_Window, &closest);
+			}
+			else {
+				SDL_SetWindowFullscreenMode(m_Window, nullptr);
+			}
 		}
 
-		glfwSetWindowMonitor(
-			m_GLFWwindow,
-			enabled ? GetMainMonitor() : nullptr,
-			enabled ? 0 : m_RestorePos.x,
-			enabled ? 0 : m_RestorePos.y,
-			enabled ? k_Videomode->width : m_RestoreSize.x,
-			enabled ? k_Videomode->height : m_RestoreSize.y,
-			k_Videomode->refreshRate
-		);
+		if (!SDL_SetWindowFullscreen(m_Window, enabled)) {
+			IDX_CORE_WARN_TAG("Window", "SDL_SetWindowFullscreen({}) failed: {}", enabled, SDL_GetError());
+		}
+		SDL_SyncWindow(m_Window);
 		SyncViewportFromFramebuffer();
 		UpdateViewport();
-
-		if (!enabled) {
-			SetSize(m_RestoreSize);
-			SetPosition(m_RestorePos);
-		}
 	}
 
 	void Window::SetDecorated(bool enabled) {
-		glfwSetWindowAttrib(m_GLFWwindow, GLFW_DECORATED, enabled ? GLFW_TRUE : GLFW_FALSE);
+		SDL_SetWindowBordered(m_Window, enabled);
 	}
 	void Window::SetVisible(bool enabled) {
 		if (enabled)
-			glfwShowWindow(m_GLFWwindow);
+			SDL_ShowWindow(m_Window);
 		else
-			glfwHideWindow(m_GLFWwindow);
+			SDL_HideWindow(m_Window);
 	}
 
 	void Window::SetResizeable(bool enabled) {
-		glfwSetWindowAttrib(m_GLFWwindow, GLFW_RESIZABLE, enabled ? GLFW_TRUE : GLFW_FALSE);
+		SDL_SetWindowResizable(m_Window, enabled);
 	}
 
 	void Window::SetMinSize(Vec2Int size) {
 		m_MinSize = { size.x > 0 ? size.x : 0, size.y > 0 ? size.y : 0 };
-		glfwSetWindowSizeLimits(m_GLFWwindow,
-			m_MinSize.x > 0 ? m_MinSize.x : GLFW_DONT_CARE,
-			m_MinSize.y > 0 ? m_MinSize.y : GLFW_DONT_CARE,
-			m_MaxSize.x > 0 ? m_MaxSize.x : GLFW_DONT_CARE,
-			m_MaxSize.y > 0 ? m_MaxSize.y : GLFW_DONT_CARE);
+		SDL_SetWindowMinimumSize(m_Window, m_MinSize.x, m_MinSize.y);
 	}
 
 	void Window::SetMaxSize(Vec2Int size) {
 		m_MaxSize = { size.x > 0 ? size.x : 0, size.y > 0 ? size.y : 0 };
-		glfwSetWindowSizeLimits(m_GLFWwindow,
-			m_MinSize.x > 0 ? m_MinSize.x : GLFW_DONT_CARE,
-			m_MinSize.y > 0 ? m_MinSize.y : GLFW_DONT_CARE,
-			m_MaxSize.x > 0 ? m_MaxSize.x : GLFW_DONT_CARE,
-			m_MaxSize.y > 0 ? m_MaxSize.y : GLFW_DONT_CARE);
+		SDL_SetWindowMaximumSize(m_Window, m_MaxSize.x, m_MaxSize.y);
 	}
 
 	void Window::SetCursorLocked(bool enabled) {
@@ -511,132 +914,205 @@ namespace Index {
 		SetCursorMode(enabled ? 3 : 0);
 	}
 	void Window::SetCursorMode(int mode) {
-		int normalized = 0;
-		int glfwMode = GLFW_CURSOR_NORMAL;
-
-		switch (mode) {
-		case 1:
-			normalized = 1;
-			glfwMode = GLFW_CURSOR_DISABLED;
-			break;
-		case 2:
-			normalized = 2;
-			glfwMode = GLFW_CURSOR_DISABLED;
-			break;
-		case 3:
-			normalized = 3;
-			glfwMode = GLFW_CURSOR_HIDDEN;
-			break;
-		default:
-			break;
+		const int normalized = (mode >= 1 && mode <= 3) ? mode : 0;
+		// 1 = locked, 2 = confined-and-hidden (both relative mode), 3 = hidden but free.
+		const bool relative = normalized == 1 || normalized == 2;
+		if (relative && !SDL_GetWindowRelativeMouseMode(m_Window)) {
+			m_VirtualCursor = GetCursorPosition();
 		}
-
-		glfwSetInputMode(m_GLFWwindow, GLFW_CURSOR, glfwMode);
+		SDL_SetWindowRelativeMouseMode(m_Window, relative);
+		if (normalized == 0) SDL_ShowCursor();
+		else SDL_HideCursor();
 		m_CursorMode = normalized;
 	}
-	namespace {
-		// 32×32 matches the classic Windows cursor; all project cursors are resampled to this size so source resolution doesn't affect on-screen size.
-		constexpr int k_CursorTargetSize = 32;
 
-		unsigned char* ResizeRGBA8Bilinear(const unsigned char* src,
-			int srcW, int srcH, int dstW, int dstH)
-		{
-			if (!src || srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) return nullptr;
-			auto* dst = new unsigned char[static_cast<size_t>(dstW) * dstH * 4];
-			const float scaleX = static_cast<float>(srcW) / static_cast<float>(dstW);
-			const float scaleY = static_cast<float>(srcH) / static_cast<float>(dstH);
-			for (int y = 0; y < dstH; ++y) {
-				const float sy = (y + 0.5f) * scaleY - 0.5f;
-				const int y0 = std::max(0, static_cast<int>(std::floor(sy)));
-				const int y1 = std::min(srcH - 1, y0 + 1);
-				const float fy = sy - std::floor(sy);
-				for (int x = 0; x < dstW; ++x) {
-					const float sx = (x + 0.5f) * scaleX - 0.5f;
-					const int x0 = std::max(0, static_cast<int>(std::floor(sx)));
-					const int x1 = std::min(srcW - 1, x0 + 1);
-					const float fx = sx - std::floor(sx);
-					for (int c = 0; c < 4; ++c) {
-						const float p00 = src[(y0 * srcW + x0) * 4 + c];
-						const float p10 = src[(y0 * srcW + x1) * 4 + c];
-						const float p01 = src[(y1 * srcW + x0) * 4 + c];
-						const float p11 = src[(y1 * srcW + x1) * 4 + c];
-						const float top = p00 + (p10 - p00) * fx;
-						const float bot = p01 + (p11 - p01) * fx;
-						const float v = top + (bot - top) * fy;
-						dst[(y * dstW + x) * 4 + c] = static_cast<unsigned char>(v + 0.5f);
-					}
-				}
+	void Window::SetCursorPosition(Vec2 position) {
+		SDL_WarpMouseInWindow(m_Window, position.x, position.y);
+		m_VirtualCursor = position;
+	}
+
+	Vec2 Window::GetCursorPosition() const {
+		if (!m_Window) return {};
+		if (SDL_GetWindowRelativeMouseMode(m_Window)) return m_VirtualCursor;
+		float x = 0.0f, y = 0.0f;
+		if (SDL_GetMouseFocus() == m_Window) {
+			SDL_GetMouseState(&x, &y);
+			return { x, y };
+		}
+		// Mouse is over another window (an ImGui viewport): derive window-local coordinates from the global position.
+		SDL_GetGlobalMouseState(&x, &y);
+		const Vec2Int pos = GetPosition();
+		return { x - static_cast<float>(pos.x), y - static_cast<float>(pos.y) };
+	}
+
+	namespace {
+		// 32 logical px matches the classic Windows cursor; every project cursor is fitted to it so source resolution doesn't change on-screen size.
+		constexpr int k_CursorTargetSize = 32;
+		// Exact per-scale images: SDL's own rescale for in-between DPIs drops the hotspot on Windows.
+		constexpr float k_CursorScales[] = { 1.25f, 1.5f, 1.75f, 2.0f, 2.25f, 2.5f, 3.0f, 3.5f, 4.0f };
+		constexpr int k_WindowIconBaseSize = 256;
+		constexpr int k_WindowIconAlternateSizes[] = { 16, 24, 32, 48, 64, 128, 512 };
+
+		// Copies the pixels: SDL keeps cursor/icon surfaces alive past this call (Windows rebuilds cursors per DPI).
+		SDL_Surface* CreateOwnedSurface(const ImageData& image) {
+			SDL_Surface* surface = SDL_CreateSurface(image.Width, image.Height, SDL_PIXELFORMAT_RGBA32);
+			if (!surface) return nullptr;
+			for (int y = 0; y < image.Height; ++y) {
+				std::memcpy(static_cast<unsigned char*>(surface->pixels) + static_cast<size_t>(y) * surface->pitch,
+					image.Pixels + static_cast<size_t>(y) * image.Width * 4, static_cast<size_t>(image.Width) * 4);
 			}
-			return dst;
+			return surface;
 		}
 
-		GLFWcursor* MakeCursorFromTexture(const Texture2D* tex2D) {
-			if (!tex2D) return nullptr;
-			std::unique_ptr<ImageData> imgData = tex2D->GetImageData();
-			if (!imgData || !imgData->Pixels) {
+		std::unique_ptr<ImageData> ReadTextureImage(const Texture2D* tex2D) {
+			std::unique_ptr<ImageData> image = tex2D ? tex2D->GetImageData() : nullptr;
+			if (!image || !image->Pixels || image->Width <= 0 || image->Height <= 0) return nullptr;
+			// GetImageData decodes with the texture's own flip; undo it so row 0 is the top again.
+			if (tex2D->IsFlippedY()) image->FlipVerticalRGBA();
+			return image;
+		}
+
+		Vec2Int ScaleHotspot(Vec2Int hotspot, const ImageData& source, int width, int height) {
+			const auto scaleAxis = [](int value, int from, int to) {
+				return std::clamp(static_cast<int>(static_cast<long long>(value) * to / std::max(from, 1)), 0, to - 1);
+			};
+			return { scaleAxis(hotspot.x, source.Width, width), scaleAxis(hotspot.y, source.Height, height) };
+		}
+
+		SDL_Cursor* MakeCursorFromTexture(const Texture2D* tex2D, Vec2Int hotspot) {
+#if IDX_PLATFORM_MOBILE
+			(void)tex2D; (void)hotspot;
+			return nullptr;
+#else
+			std::unique_ptr<ImageData> source = ReadTextureImage(tex2D);
+			if (!source) {
 				IDX_WARN_TAG("Window", "Cannot set cursor image from invalid texture data");
 				return nullptr;
 			}
-			if (tex2D->IsFlippedY()) {
-				imgData->FlipVerticalRGBA();
+
+			// Keep the aspect ratio: the longest side becomes the target size.
+			const float baseScale = static_cast<float>(k_CursorTargetSize) / static_cast<float>(std::max(source->Width, source->Height));
+			const int baseW = std::max(1, static_cast<int>(std::lround(source->Width * baseScale)));
+			const int baseH = std::max(1, static_cast<int>(std::lround(source->Height * baseScale)));
+
+			std::unique_ptr<ImageData> baseImage = ImageProcessing::Resize(*source, baseW, baseH);
+			SDL_Surface* surface = baseImage ? CreateOwnedSurface(*baseImage) : nullptr;
+			if (!surface) {
+				IDX_WARN_TAG("Window", "Cursor surface creation failed: {}", SDL_GetError());
+				return nullptr;
 			}
 
-			GLFWimage img;
-			img.width = k_CursorTargetSize;
-			img.height = k_CursorTargetSize;
-
-			std::unique_ptr<unsigned char[]> resized;
-			if (imgData->Width == k_CursorTargetSize && imgData->Height == k_CursorTargetSize) {
-				img.pixels = imgData->Pixels;
-			}
-			else {
-				resized.reset(ResizeRGBA8Bilinear(imgData->Pixels,
-					imgData->Width, imgData->Height,
-					k_CursorTargetSize, k_CursorTargetSize));
-				if (!resized) {
-					IDX_WARN_TAG("Window", "Cursor resize to {}x{} failed",
-						k_CursorTargetSize, k_CursorTargetSize);
-					return nullptr;
-				}
-				img.pixels = resized.get();
+			for (float scale : k_CursorScales) {
+				// Must equal SDL_GetSurfaceImage's rounding so the exact image (and its hotspot) is picked.
+				const int w = static_cast<int>(SDL_round(baseW * scale));
+				const int h = static_cast<int>(SDL_round(baseH * scale));
+				std::unique_ptr<ImageData> scaled = ImageProcessing::Resize(*source, w, h);
+				SDL_Surface* alternate = scaled ? CreateOwnedSurface(*scaled) : nullptr;
+				if (!alternate) continue;
+				const Vec2Int scaledHotspot = ScaleHotspot(hotspot, *source, w, h);
+				const SDL_PropertiesID props = SDL_GetSurfaceProperties(alternate);
+				SDL_SetNumberProperty(props, SDL_PROP_SURFACE_HOTSPOT_X_NUMBER, scaledHotspot.x);
+				SDL_SetNumberProperty(props, SDL_PROP_SURFACE_HOTSPOT_Y_NUMBER, scaledHotspot.y);
+				SDL_AddSurfaceAlternateImage(surface, alternate);
+				SDL_DestroySurface(alternate);
 			}
 
-			return glfwCreateCursor(&img, 0, 0);
+			const Vec2Int baseHotspot = ScaleHotspot(hotspot, *source, baseW, baseH);
+			SDL_Cursor* cursor = SDL_CreateColorCursor(surface, baseHotspot.x, baseHotspot.y);
+			SDL_DestroySurface(surface);
+			if (!cursor) {
+				IDX_WARN_TAG("Window", "SDL_CreateColorCursor failed: {}", SDL_GetError());
+			}
+			return cursor;
+#endif
 		}
+
+#ifdef IDX_PLATFORM_WINDOWS
+		HICON CreateWin32Icon(const ImageData& source, int size) {
+			std::unique_ptr<ImageData> image = ImageProcessing::FitSquare(source, size);
+			if (!image) return nullptr;
+
+			BITMAPV5HEADER header{};
+			header.bV5Size = sizeof(header);
+			header.bV5Width = size;
+			header.bV5Height = -size; // top-down
+			header.bV5Planes = 1;
+			header.bV5BitCount = 32;
+			header.bV5Compression = BI_BITFIELDS;
+			header.bV5RedMask = 0x00FF0000;
+			header.bV5GreenMask = 0x0000FF00;
+			header.bV5BlueMask = 0x000000FF;
+			header.bV5AlphaMask = 0xFF000000;
+
+			void* bits = nullptr;
+			HDC dc = ::GetDC(nullptr);
+			HBITMAP color = ::CreateDIBSection(dc, reinterpret_cast<BITMAPINFO*>(&header), DIB_RGB_COLORS, &bits, nullptr, 0);
+			::ReleaseDC(nullptr, dc);
+			if (!color || !bits) {
+				if (color) ::DeleteObject(color);
+				return nullptr;
+			}
+			auto* dst = static_cast<std::uint8_t*>(bits);
+			for (size_t i = 0; i < static_cast<size_t>(size) * size; ++i) {
+				dst[i * 4 + 0] = image->Pixels[i * 4 + 2];
+				dst[i * 4 + 1] = image->Pixels[i * 4 + 1];
+				dst[i * 4 + 2] = image->Pixels[i * 4 + 0];
+				dst[i * 4 + 3] = image->Pixels[i * 4 + 3];
+			}
+			HBITMAP mask = ::CreateBitmap(size, size, 1, 1, nullptr);
+			ICONINFO info{};
+			info.fIcon = TRUE;
+			info.hbmColor = color;
+			info.hbmMask = mask;
+			HICON icon = ::CreateIconIndirect(&info);
+			::DeleteObject(color);
+			if (mask) ::DeleteObject(mask);
+			return icon;
+		}
+#endif
 	}
 
-	void Window::SetCursorImage(const Texture2D* tex2D) {
-		GLFWcursor* fresh = tex2D ? MakeCursorFromTexture(tex2D) : nullptr;
+	void Window::ApplyCursor(SDL_Cursor* cursor) const {
+		SDL_SetCursor(cursor ? cursor : SDL_GetDefaultCursor());
+	}
+
+	void Window::SetCursorImage(const Texture2D* tex2D, Vec2Int hotspot) {
+		SDL_Cursor* fresh = tex2D ? MakeCursorFromTexture(tex2D, hotspot) : nullptr;
 		if (tex2D && !fresh) return;
 
 		m_CursorTextureAssetId = 0;
 		const bool wasUsingDefault = (m_Cursor == m_DefaultCursor);
-		if (m_DefaultCursor) {
-			glfwDestroyCursor(m_DefaultCursor);
-		}
+		SDL_Cursor* previous = m_DefaultCursor;
 		m_DefaultCursor = fresh;
 
 		if (wasUsingDefault) {
 			m_Cursor = m_DefaultCursor;
 			// Track the cursor but only push it to the OS when enabled — the
 			// editor keeps it off so the game cursor doesn't leak outside the Game View.
-			if (m_GameCursorEnabled) glfwSetCursor(m_GLFWwindow, m_DefaultCursor);
+			if (m_GameCursorEnabled) ApplyCursor(m_DefaultCursor);
+		}
+		// Destroy after the switch: SDL must never be left pointing at a freed active cursor.
+		if (previous) {
+			if (SDL_GetCursor() == previous) SDL_SetCursor(SDL_GetDefaultCursor());
+			SDL_DestroyCursor(previous);
 		}
 	}
 
-	void Window::SetUICursorImage(const Texture2D* tex2D) {
-		GLFWcursor* fresh = tex2D ? MakeCursorFromTexture(tex2D) : nullptr;
+	void Window::SetUICursorImage(const Texture2D* tex2D, Vec2Int hotspot) {
+		SDL_Cursor* fresh = tex2D ? MakeCursorFromTexture(tex2D, hotspot) : nullptr;
 		if (tex2D && !fresh) return;
 
 		const bool wasUsingUI = (m_Cursor == m_UICursor);
-		if (m_UICursor) {
-			glfwDestroyCursor(m_UICursor);
-		}
+		SDL_Cursor* previous = m_UICursor;
 		m_UICursor = fresh;
 
 		if (wasUsingUI) {
 			m_Cursor = m_UICursor;
-			if (m_GameCursorEnabled) glfwSetCursor(m_GLFWwindow, m_UICursor);
+			if (m_GameCursorEnabled) ApplyCursor(m_UICursor);
+		}
+		if (previous) {
+			if (SDL_GetCursor() == previous) SDL_SetCursor(SDL_GetDefaultCursor());
+			SDL_DestroyCursor(previous);
 		}
 	}
 
@@ -644,10 +1120,10 @@ namespace Index {
 		if (overUI == m_CursorOverUI) return;
 		m_CursorOverUI = overUI;
 
-		GLFWcursor* desired = overUI && m_UICursor ? m_UICursor : m_DefaultCursor;
+		SDL_Cursor* desired = overUI && m_UICursor ? m_UICursor : m_DefaultCursor;
 		if (desired == m_Cursor) return;
 		m_Cursor = desired;
-		if (m_GameCursorEnabled) glfwSetCursor(m_GLFWwindow, desired);
+		if (m_GameCursorEnabled) ApplyCursor(desired);
 	}
 
 	void Window::SetGameCursorEnabled(bool enabled) {
@@ -657,158 +1133,159 @@ namespace Index {
 		// with ImGui's NoMouseCursorChange so ImGui doesn't overwrite it). On
 		// disable, leave the OS cursor and let the caller hand control back to ImGui.
 		if (enabled) {
-			glfwSetCursor(m_GLFWwindow, m_Cursor);
+			ApplyCursor(m_Cursor);
 		}
 	}
 
 	void Window::SetWindowIcon(const Texture2D* tex2D) {
-		IDX_ASSERT(tex2D, IndexErrorCode::NullReference, "Texture is null");
-		std::unique_ptr<ImageData> imgData(tex2D->GetImageData());
-		IDX_ASSERT(imgData, IndexErrorCode::NullReference, "Image data is null");
-
-
-		const int w = imgData->Width;
-		const int h = imgData->Height;
-
-		IDX_ASSERT(w > 0 && h > 0, IndexErrorCode::InvalidValue, "Icon size must be > 0");
-		IDX_ASSERT(imgData->Pixels != nullptr, IndexErrorCode::NullReference, "Icon pixels null");
-
-		if (tex2D->IsFlippedY()) {
-			imgData->FlipVerticalRGBA();
+		std::unique_ptr<ImageData> image = ReadTextureImage(tex2D);
+		if (!image) {
+			IDX_WARN_TAG("Window", "Cannot set window icon from invalid texture data");
+			return;
 		}
-
-		GLFWimage img;
-		img.width = imgData->Width;
-		img.height = imgData->Height;
-		img.pixels = imgData->Pixels;
-
-		glfwSetWindowIcon(m_GLFWwindow, 1, &img);
+		SetWindowIcon(*image);
 	}
 
-	void Window::SetWindowIconFromResource() {
-#ifdef IDX_PLATFORM_WINDOWS
-		HICON hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(1));
-		if (!hIcon) {
-			IDX_WARN_TAG("Window", "No embedded icon resource found.");
-			return;
-		}
-
-		ICONINFO iconInfo{};
-		if (!GetIconInfo(hIcon, &iconInfo)) {
-			DestroyIcon(hIcon);
-			IDX_WARN_TAG("Window", "Failed to get icon info.");
-			return;
-		}
-
-		BITMAP bm{};
-		GetObject(iconInfo.hbmColor, sizeof(bm), &bm);
-
-		int w = bm.bmWidth;
-		int h = bm.bmHeight;
-
-		std::vector<unsigned char> pixels(w * h * 4);
-
-		BITMAPINFOHEADER bi{};
-		bi.biSize = sizeof(bi);
-		bi.biWidth = w;
-		bi.biHeight = -h; // top-down
-		bi.biPlanes = 1;
-		bi.biBitCount = 32;
-		bi.biCompression = BI_RGB;
-
-		HDC hdc = GetDC(NULL);
-		GetDIBits(hdc, iconInfo.hbmColor, 0, h, pixels.data(),
-			reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS);
-		ReleaseDC(NULL, hdc);
-
-		// Windows gives BGRA, GLFW expects RGBA
-		for (int i = 0; i < w * h * 4; i += 4)
-			std::swap(pixels[i], pixels[i + 2]);
-
-		DeleteObject(iconInfo.hbmColor);
-		DeleteObject(iconInfo.hbmMask);
-		DestroyIcon(hIcon);
-
-		GLFWimage img;
-		img.width = w;
-		img.height = h;
-		img.pixels = pixels.data();
-
-		glfwSetWindowIcon(m_GLFWwindow, 1, &img);
+	void Window::SetWindowIcon(const ImageData& image) {
+		if (!m_Window || !image.Pixels || image.Width <= 0 || image.Height <= 0) return;
+#if defined(IDX_PLATFORM_WINDOWS)
+		HWND hwnd = static_cast<HWND>(GetPlatformHandle());
+		if (!hwnd) return;
+		const UINT dpi = ::GetDpiForWindow(hwnd);
+		HICON bigIcon = CreateWin32Icon(image, ::GetSystemMetricsForDpi(SM_CXICON, dpi));
+		HICON smallIcon = CreateWin32Icon(image, ::GetSystemMetricsForDpi(SM_CXSMICON, dpi));
+		ApplyWin32Icons(bigIcon, smallIcon);
+#elif IDX_PLATFORM_MOBILE || defined(IDX_PLATFORM_WEB)
+		// The OS takes the icon from the app bundle / APK / web manifest.
 #else
-		IDX_WARN_TAG("Window", "SetWindowIconFromResource is only supported on Windows.");
+		// X11 uses the base image; Wayland (xdg-toplevel-icon) and the macOS dock also read the alternates.
+		const int largest = std::max(image.Width, image.Height);
+		const int baseSize = std::min(k_WindowIconBaseSize, largest);
+		std::unique_ptr<ImageData> base = ImageProcessing::FitSquare(image, baseSize);
+		SDL_Surface* surface = base ? CreateOwnedSurface(*base) : nullptr;
+		if (!surface) {
+			IDX_WARN_TAG("Window", "Window icon surface creation failed: {}", SDL_GetError());
+			return;
+		}
+		for (int size : k_WindowIconAlternateSizes) {
+			if (size == baseSize || size > largest) continue;
+			std::unique_ptr<ImageData> scaled = ImageProcessing::FitSquare(image, size);
+			if (SDL_Surface* alternate = scaled ? CreateOwnedSurface(*scaled) : nullptr) {
+				SDL_AddSurfaceAlternateImage(surface, alternate);
+				SDL_DestroySurface(alternate);
+			}
+		}
+		if (!SDL_SetWindowIcon(m_Window, surface)) {
+			IDX_WARN_TAG("Window", "SDL_SetWindowIcon failed: {}", SDL_GetError());
+		}
+		SDL_DestroySurface(surface);
 #endif
 	}
 
-	void Window::SetWindowResizedCallback(GLFWwindow* window, int width, int height) {
-		Window* win = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
-		if (!win) return;
-
-		win->SyncViewportFromFramebuffer();
-		win->UpdateViewport();
-
-		if (win->m_EventCallback) {
-			WindowResizeEvent e(width, height);
-			win->m_EventCallback(e);
-		}
+	void Window::SetEmbeddedWindowIcon() {
+#if defined(IDX_PLATFORM_WINDOWS)
+		HWND hwnd = m_Window ? static_cast<HWND>(GetPlatformHandle()) : nullptr;
+		if (!hwnd) return;
+		// SDL's class icon comes from ExtractIconEx at 32 px, which the taskbar upscales on HiDPI.
+		const HINSTANCE module = ::GetModuleHandleW(nullptr);
+		const UINT dpi = ::GetDpiForWindow(hwnd);
+		// LoadIconWithScaleDown would need the comctl32 v6 manifest in every host exe.
+		const auto load = [&](int metric) {
+			const int size = ::GetSystemMetricsForDpi(metric, dpi);
+			return static_cast<HICON>(::LoadImageW(module, MAKEINTRESOURCEW(1), IMAGE_ICON, size, size, LR_DEFAULTCOLOR));
+		};
+		ApplyWin32Icons(load(SM_CXICON), load(SM_CXSMICON));
+#endif
 	}
 
-	Vec2 Window::GetCursorPosition() const {
-		double x, y;
-		glfwGetCursorPos(m_GLFWwindow, &x, &y);
-		return Vec2(x, y);
+#if defined(IDX_PLATFORM_WINDOWS)
+	void Window::ApplyWin32Icons(void* bigHandle, void* smallHandle) {
+		HICON bigIcon = static_cast<HICON>(bigHandle);
+		HICON smallIcon = static_cast<HICON>(smallHandle);
+		if (!bigIcon || !smallIcon) {
+			if (bigIcon) ::DestroyIcon(bigIcon);
+			if (smallIcon) ::DestroyIcon(smallIcon);
+			IDX_WARN_TAG("Window", "Window icon creation failed (error {})", ::GetLastError());
+			return;
+		}
+		HWND hwnd = static_cast<HWND>(GetPlatformHandle());
+		::SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(bigIcon));
+		::SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(smallIcon));
+		if (m_BigIcon) ::DestroyIcon(static_cast<HICON>(m_BigIcon));
+		if (m_SmallIcon) ::DestroyIcon(static_cast<HICON>(m_SmallIcon));
+		m_BigIcon = bigIcon;
+		m_SmallIcon = smallIcon;
+	}
+#endif
+
+	Window::SafeAreaInsets Window::GetSafeAreaInsets() {
+		SafeAreaInsets insets;
+		if (s_UIRegion.Source == UIRegionSource::Editor || !s_ActiveWindow || !s_ActiveWindow->m_Window || !s_MainViewport) {
+			return insets;
+		}
+		SDL_Rect safe{};
+		if (!SDL_GetWindowSafeArea(s_ActiveWindow->m_Window, &safe) || safe.w <= 0 || safe.h <= 0) {
+			return insets;
+		}
+		// The UI surface: the aspect-locked sub-rect when letterboxed, otherwise the viewport.
+		const bool region = s_UIRegion.IsActive();
+		const float uiLeft   = static_cast<float>(region ? s_UIRegion.OffsetX : s_MainViewport->GetOffsetX());
+		const float uiTop    = static_cast<float>(region ? s_UIRegion.OffsetY : s_MainViewport->GetOffsetY());
+		const float uiWidth  = static_cast<float>(region ? s_UIRegion.Width : s_MainViewport->GetWidth());
+		const float uiHeight = static_cast<float>(region ? s_UIRegion.Height : s_MainViewport->GetHeight());
+
+		const Vec2 scale = s_WindowToFramebufferScale;
+		const float safeLeft   = static_cast<float>(safe.x) * scale.x;
+		const float safeTop    = static_cast<float>(safe.y) * scale.y;
+		const float safeRight  = static_cast<float>(safe.x + safe.w) * scale.x;
+		const float safeBottom = static_cast<float>(safe.y + safe.h) * scale.y;
+		// Clamped so a stale or odd report can never collapse the UI.
+		insets.Left   = std::clamp(safeLeft - uiLeft, 0.0f, uiWidth * 0.5f);
+		insets.Top    = std::clamp(safeTop - uiTop, 0.0f, uiHeight * 0.5f);
+		insets.Right  = std::clamp(uiLeft + uiWidth - safeRight, 0.0f, uiWidth * 0.5f);
+		insets.Bottom = std::clamp(uiTop + uiHeight - safeBottom, 0.0f, uiHeight * 0.5f);
+		return insets;
 	}
 
 	Vec2 Window::ToViewportLocalPosition(Vec2 windowPosition) {
 		return MapToViewportLocalPosition(windowPosition, s_UIRegion, s_WindowToFramebufferScale);
 	}
 
-	std::string Window::GetClipboardString() const {
-		const char* clipboard = glfwGetClipboardString(m_GLFWwindow);
-		return clipboard ? std::string(clipboard) : std::string{};
+	std::optional<DisplayMode> Window::GetDisplayMode() const {
+		const SDL_DisplayMode* mode = SDL_GetDesktopDisplayMode(DisplayForWindow(m_Window));
+		if (!mode) return std::nullopt;
+		return DisplayMode{ mode->w, mode->h, mode->refresh_rate };
 	}
 	Vec2Int Window::GetScreenCenter() const {
-		return Vec2Int(k_Videomode->width / 2, k_Videomode->height / 2);
+		const std::optional<DisplayMode> mode = GetDisplayMode();
+		if (!mode) return Vec2Int(0, 0);
+		return Vec2Int(mode->Width / 2, mode->Height / 2);
 	}
 	Vec2 Window::GetWindowCenter() const {
 		Vec2Int size = GetSize();
 		return Vec2(size.x / 2.f, size.y / 2.f);
 	}
-	GLFWmonitor* Window::GetWindowMonitor() const { return glfwGetWindowMonitor(m_GLFWwindow); }
-	GLFWmonitor* Window::GetMainMonitor() { return glfwGetPrimaryMonitor(); }
 
 	bool Window::IsMaximized() const {
-		return glfwGetWindowAttrib(m_GLFWwindow, GLFW_MAXIMIZED);
+		return (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_MAXIMIZED) != 0;
 	}
 	bool Window::IsMinimized() const {
-		return glfwGetWindowAttrib(m_GLFWwindow, GLFW_ICONIFIED);
+		return (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_MINIMIZED) != 0;
 	}
-	bool Window::IsFullScreen()const {
-		return GetWindowMonitor() != nullptr;
+	bool Window::IsFullScreen() const {
+		return (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_FULLSCREEN) != 0;
 	}
 	bool Window::IsVisible() const {
-		return glfwGetWindowAttrib(m_GLFWwindow, GLFW_VISIBLE) == GLFW_TRUE;
+		return (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_HIDDEN) == 0;
 	}
-	bool Window::IsDecorated()const {
-		return glfwGetWindowAttrib(m_GLFWwindow, GLFW_DECORATED);
+	bool Window::IsDecorated() const {
+		return (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_BORDERLESS) == 0;
 	}
 	bool Window::IsResizeable() const {
-		return glfwGetWindowAttrib(m_GLFWwindow, GLFW_RESIZABLE);
+		return (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_RESIZABLE) != 0;
 	}
-
-
-	void Window::SetDropCallback(GLFWwindow* window, int count, const char** paths) {
-		Window* win = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
-		if (!win || !win->m_EventCallback || count <= 0) return;
-
-		std::vector<std::string> filePaths;
-		filePaths.reserve(count);
-		for (int i = 0; i < count; i++) {
-			filePaths.emplace_back(paths[i]);
-		}
-
-		FileDropEvent e(std::move(filePaths));
-		win->m_EventCallback(e);
+	bool Window::IsFocused() const {
+		return m_Window && (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_INPUT_FOCUS) != 0;
 	}
 
 	void Window::UpdateViewport() {
@@ -827,16 +1304,16 @@ namespace Index {
 	}
 
 	void Window::SyncViewportFromFramebuffer() {
-		if (!m_GLFWwindow) {
+		if (!m_Window) {
 			return;
 		}
 
 		int fbW = 0;
 		int fbH = 0;
-		glfwGetFramebufferSize(m_GLFWwindow, &fbW, &fbH);
+		SDL_GetWindowSizeInPixels(m_Window, &fbW, &fbH);
 		int windowW = 0;
 		int windowH = 0;
-		glfwGetWindowSize(m_GLFWwindow, &windowW, &windowH);
+		SDL_GetWindowSize(m_Window, &windowW, &windowH);
 		s_WindowToFramebufferScale = CalculateWindowToFramebufferScale(
 			{ windowW, windowH }, { fbW, fbH });
 
@@ -883,15 +1360,15 @@ namespace Index {
 	}
 
 	void Window::SetTitlebarCaptionRect(int x, int y, int w, int h) {
-		Win32Titlebar::SetCaptionRect(x, y, w, h);
+		TitlebarRegions::SetCaptionRect(x, y, w, h);
 	}
 
 	void Window::AddTitlebarNonClientRect(int x, int y, int w, int h) {
-		Win32Titlebar::AddNonClientRect(x, y, w, h);
+		TitlebarRegions::AddNonClientRect(x, y, w, h);
 	}
 
 	void Window::ResetTitlebarNonClientRects() {
-		Win32Titlebar::ResetNonClientRects();
+		TitlebarRegions::ResetNonClientRects();
 	}
 
 	void Window::SetTitlebarDarkMode(bool enabled) {
@@ -902,9 +1379,9 @@ namespace Index {
 
 	void Window::ApplyTitlebarAppearance() {
 #ifdef IDX_PLATFORM_WINDOWS
-		if (!m_GLFWwindow) return;
+		if (!m_Window) return;
 
-		const bool focused = glfwGetWindowAttrib(m_GLFWwindow, GLFW_FOCUSED) == GLFW_TRUE;
+		const bool focused = IsFocused();
 		Color caption = m_TitlebarColor;
 		if (focused && m_TitlebarActiveColor.a > 0.0f) {
 			caption = m_TitlebarActiveColor;
@@ -913,24 +1390,17 @@ namespace Index {
 			caption = m_TitlebarInactiveColor;
 		}
 
-		Win32Titlebar::SetDarkMode(m_GLFWwindow, m_TitlebarDarkMode);
-		Win32Titlebar::SetColors(m_GLFWwindow, caption, m_TitlebarTextColor, caption);
+		void* hwnd = GetPlatformHandle();
+		Win32Titlebar::SetDarkMode(hwnd, m_TitlebarDarkMode);
+		Win32Titlebar::SetColors(hwnd, caption, m_TitlebarTextColor, caption);
 #endif
 	}
 
 	int Window::GetTitlebarHeight() const {
-#ifdef IDX_PLATFORM_WINDOWS
-		return Win32Titlebar::GetTitlebarHeight();
-#else
-		return 0;
-#endif
+		return TitlebarRegions::GetHeight();
 	}
 
 	void Window::SetTitlebarHeight(int logicalPx) {
-#ifdef IDX_PLATFORM_WINDOWS
-		Win32Titlebar::SetTitlebarHeight(logicalPx);
-#else
-		(void)logicalPx;
-#endif
+		TitlebarRegions::SetHeight(logicalPx);
 	}
 }

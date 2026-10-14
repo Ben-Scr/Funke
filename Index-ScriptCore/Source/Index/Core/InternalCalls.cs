@@ -10,6 +10,13 @@ internal static unsafe class InternalCalls
     internal static float Application_GetElapsedTime() => NativeCallbacks.Bindings.Application_GetElapsedTime();
     internal static int Application_GetScreenWidth() => NativeCallbacks.Bindings.Application_GetScreenWidth();
     internal static int Application_GetScreenHeight() => NativeCallbacks.Bindings.Application_GetScreenHeight();
+
+    internal static SafeAreaInsets Application_GetSafeAreaInsets()
+    {
+        float left, top, right, bottom;
+        NativeCallbacks.Bindings.Application_GetSafeAreaInsets(&left, &top, &right, &bottom);
+        return new SafeAreaInsets(left, top, right, bottom);
+    }
     internal static float Application_GetTargetFrameRate() => NativeCallbacks.Bindings.Application_GetTargetFrameRate();
     internal static void Application_SetTargetFrameRate(float fps) => NativeCallbacks.Bindings.Application_SetTargetFrameRate(fps);
     internal static void Application_Quit() => NativeCallbacks.Bindings.Application_Quit();
@@ -31,6 +38,62 @@ internal static unsafe class InternalCalls
         byte[] buf = EncodeUtf8Z(value);
         fixed (byte* ptr = buf) NativeCallbacks.Bindings.Application_SetClipboardString(ptr);
     }
+
+    internal static void Application_RequestPermission(string permission)
+    {
+        byte[] buf = EncodeUtf8Z(permission);
+        fixed (byte* ptr = buf) NativeCallbacks.Bindings.Application_RequestPermission(ptr);
+    }
+
+    internal static int Application_GetPermissionState(string permission)
+    {
+        byte[] buf = EncodeUtf8Z(permission);
+        fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Application_GetPermissionState(ptr);
+    }
+
+    // ── AudioStream ─────────────────────────────────────────────────
+
+    internal static uint AudioStream_Open(string path)
+    {
+        byte[] buf = EncodeUtf8Z(path);
+        fixed (byte* ptr = buf) return NativeCallbacks.Bindings.AudioStream_Open(ptr);
+    }
+
+    internal static unsafe void Media_SetNowPlaying(string title, string artist, string album, float duration, byte[]? rgba, int width, int height)
+    {
+        byte[] t = EncodeUtf8Z(title), a = EncodeUtf8Z(artist), al = EncodeUtf8Z(album);
+        fixed (byte* pt = t)
+        fixed (byte* pa = a)
+        fixed (byte* pal = al)
+        fixed (byte* px = rgba)
+            NativeCallbacks.Bindings.Media_SetNowPlaying(pt, pa, pal, duration, px, rgba != null ? width : 0, rgba != null ? height : 0);
+    }
+
+    internal static void Media_SetPlaybackState(bool playing, float position) => NativeCallbacks.Bindings.Media_SetPlaybackState(playing ? 1 : 0, position);
+
+    internal static unsafe int Media_PollCommand(out float seekSeconds)
+    {
+        float seek = 0;
+        int command = NativeCallbacks.Bindings.Media_PollCommand(&seek);
+        seekSeconds = seek;
+        return command;
+    }
+
+    internal static void Audio_SetPlayInBackground(bool enabled) => NativeCallbacks.Bindings.Audio_SetPlayInBackground(enabled ? 1 : 0);
+    internal static bool Audio_GetPlayInBackground() => NativeCallbacks.Bindings.Audio_GetPlayInBackground() != 0;
+    internal static void AudioStream_Close(uint stream) => NativeCallbacks.Bindings.AudioStream_Close(stream);
+    internal static bool AudioStream_Play(uint stream) => NativeCallbacks.Bindings.AudioStream_Play(stream) != 0;
+    internal static void AudioStream_Pause(uint stream) => NativeCallbacks.Bindings.AudioStream_Pause(stream);
+    internal static void AudioStream_Stop(uint stream) => NativeCallbacks.Bindings.AudioStream_Stop(stream);
+    internal static bool AudioStream_IsPlaying(uint stream) => NativeCallbacks.Bindings.AudioStream_IsPlaying(stream) != 0;
+    internal static bool AudioStream_IsAtEnd(uint stream) => NativeCallbacks.Bindings.AudioStream_IsAtEnd(stream) != 0;
+    internal static float AudioStream_GetCursor(uint stream) => NativeCallbacks.Bindings.AudioStream_GetCursor(stream);
+    internal static float AudioStream_GetLength(uint stream) => NativeCallbacks.Bindings.AudioStream_GetLength(stream);
+    internal static void AudioStream_Seek(uint stream, float seconds) => NativeCallbacks.Bindings.AudioStream_Seek(stream, seconds);
+    internal static float AudioStream_GetVolume(uint stream) => NativeCallbacks.Bindings.AudioStream_GetVolume(stream);
+    internal static void AudioStream_SetVolume(uint stream, float volume) => NativeCallbacks.Bindings.AudioStream_SetVolume(stream, volume);
+    internal static bool AudioStream_GetLoop(uint stream) => NativeCallbacks.Bindings.AudioStream_GetLoop(stream) != 0;
+    internal static void AudioStream_SetLoop(uint stream, bool loop) => NativeCallbacks.Bindings.AudioStream_SetLoop(stream, loop ? 1 : 0);
 
     internal static bool Application_GetVsyncEnabled() => NativeCallbacks.Bindings.Application_GetVsyncEnabled() != 0;
     internal static void Application_SetVsyncEnabled(bool enabled) => NativeCallbacks.Bindings.Application_SetVsyncEnabled(enabled ? 1 : 0);
@@ -54,21 +117,46 @@ internal static unsafe class InternalCalls
         NativeCallbacks.Bindings.RenderSettings_Get(
             &renderScale, &upscaleFilter, &postProcessingEnabled,
             &postProcessingQuality, &particleQuality);
-        return new GraphicsSettings(
+        var settings = new GraphicsSettings(
             renderScale,
             (UpscaleFilterMode)upscaleFilter,
             postProcessingEnabled != 0,
             (PostProcessingQualityLevel)postProcessingQuality,
             (ParticleQualityLevel)particleQuality);
+
+        int shadowQuality, maxLights, toneMapping;
+        float shadowDistance, exposure;
+        NativeCallbacks.Bindings.RenderSettings_Get3D(&shadowQuality, &shadowDistance, &maxLights, &exposure, &toneMapping);
+        settings.ShadowQuality = (ShadowQualityLevel)shadowQuality;
+        settings.ShadowDistance = shadowDistance;
+        settings.MaxLights = maxLights;
+        settings.Exposure = exposure;
+        settings.ToneMapping = (ToneMappingMode)toneMapping;
+        return settings;
     }
 
     internal static GraphicsApplyStatus RenderSettings_Apply(GraphicsSettings settings)
-        => (GraphicsApplyStatus)NativeCallbacks.Bindings.RenderSettings_Apply(
+    {
+        var status2D = (GraphicsApplyStatus)NativeCallbacks.Bindings.RenderSettings_Apply(
             settings.RenderScale,
             (int)settings.UpscaleFilter,
             settings.PostProcessingEnabled ? 1 : 0,
             (int)settings.PostProcessingQuality,
             (int)settings.ParticleQuality);
+        if (status2D != GraphicsApplyStatus.Applied && status2D != GraphicsApplyStatus.Unchanged)
+            return status2D;
+        var status3D = (GraphicsApplyStatus)NativeCallbacks.Bindings.RenderSettings_Apply3D(
+            (int)settings.ShadowQuality,
+            settings.ShadowDistance,
+            settings.MaxLights,
+            settings.Exposure,
+            (int)settings.ToneMapping);
+        if (status3D != GraphicsApplyStatus.Applied && status3D != GraphicsApplyStatus.Unchanged)
+            return status3D;
+        return status2D == GraphicsApplyStatus.Applied || status3D == GraphicsApplyStatus.Applied
+            ? GraphicsApplyStatus.Applied
+            : GraphicsApplyStatus.Unchanged;
+    }
 
     internal static GraphicsApplyStatus RenderSettings_ResetToDefaults()
         => (GraphicsApplyStatus)NativeCallbacks.Bindings.RenderSettings_ResetToDefaults();
@@ -117,7 +205,7 @@ internal static unsafe class InternalCalls
     internal static int Cursor_GetMode() => NativeCallbacks.Bindings.Cursor_GetMode();
     internal static void Cursor_SetMode(int mode) => NativeCallbacks.Bindings.Cursor_SetMode(mode);
     internal static ulong Cursor_GetTexture() => NativeCallbacks.Bindings.Cursor_GetTexture();
-    internal static void Cursor_SetTexture(ulong assetId) => NativeCallbacks.Bindings.Cursor_SetTexture(assetId);
+    internal static void Cursor_SetTexture(ulong assetId, int hotspotX, int hotspotY) => NativeCallbacks.Bindings.Cursor_SetTexture(assetId, hotspotX, hotspotY);
 
     // ── Engine ──────────────────────────────────────────────────────
 
@@ -274,6 +362,18 @@ internal static unsafe class InternalCalls
     internal static void SpriteAnimator2D_SetFrame(ulong id, int frame) => NativeCallbacks.Bindings.SpriteAnimator2D_SetFrame(id, frame);
     internal static float SpriteAnimator2D_GetFramesPerSecond(ulong id) => NativeCallbacks.Bindings.SpriteAnimator2D_GetFramesPerSecond(id);
     internal static void SpriteAnimator2D_SetFramesPerSecond(ulong id, float fps) => NativeCallbacks.Bindings.SpriteAnimator2D_SetFramesPerSecond(id, fps);
+
+    // ── PostProcessing2D ───────────────────────────────────────
+
+    internal static T PostProcessing2D_GetEffect<T>(ulong id, PostProcessingInterop.Effect effect) where T : unmanaged
+    {
+        T value = default;
+        NativeCallbacks.Bindings.PostProcessing2D_GetEffect(id, (int)effect, &value, sizeof(T));
+        return value;
+    }
+
+    internal static void PostProcessing2D_SetEffect<T>(ulong id, PostProcessingInterop.Effect effect, T value) where T : unmanaged
+        => NativeCallbacks.Bindings.PostProcessing2D_SetEffect(id, (int)effect, &value, sizeof(T));
 
     // ── Scene ───────────────────────────────────────────────────
 
@@ -440,6 +540,12 @@ internal static unsafe class InternalCalls
     {
         byte[] buf = EncodeUtf8Z(componentName);
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_GetComponentPtr(entityID, ptr);
+    }
+
+    internal static void* Entity_GetComponentPtrReadOnly(ulong entityID, string componentName)
+    {
+        byte[] buf = EncodeUtf8Z(componentName);
+        fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_GetComponentPtrReadOnly(entityID, ptr);
     }
 
     internal static int Entity_GetComponentSize(string componentName)
@@ -867,6 +973,18 @@ internal static unsafe class InternalCalls
     internal static int Texture_GetWidth(ulong assetId) => NativeCallbacks.Bindings.Texture_GetWidth(assetId);
     internal static int Texture_GetHeight(ulong assetId) => NativeCallbacks.Bindings.Texture_GetHeight(assetId);
     internal static ulong Texture_GetDefaultAssetUUID(byte which) => NativeCallbacks.Bindings.Texture_GetDefaultAssetUUID(which);
+
+    internal static unsafe int Image_Decode(byte[] data, int maxSize, byte[] outRgba, out int width, out int height)
+    {
+        int w = 0, h = 0;
+        int result;
+        fixed (byte* src = data)
+        fixed (byte* dst = outRgba)
+            result = NativeCallbacks.Bindings.Image_Decode(src, data.Length, maxSize, dst, outRgba.Length, &w, &h);
+        width = w;
+        height = h;
+        return result;
+    }
 
     internal static unsafe ulong Texture_CreateRuntime(int width, int height, byte[] rgba, int filter)
     {
@@ -1768,4 +1886,152 @@ internal static unsafe class InternalCalls
 
     internal static ulong Scene_GetActiveSceneGuid()
         => NativeCallbacks.Bindings.Scene_GetActiveSceneGuid();
+
+    // ── 3D components ───────────────────────────────────────────────
+
+    private static Vector3 ReadVector3(ulong id, delegate* unmanaged<ulong, float*, float*, float*, void> getter)
+    {
+        float x, y, z;
+        getter(id, &x, &y, &z);
+        return new Vector3(x, y, z);
+    }
+
+    private static Color ReadColor(ulong id, delegate* unmanaged<ulong, float*, float*, float*, float*, void> getter)
+    {
+        float r, g, b, a;
+        getter(id, &r, &g, &b, &a);
+        return new Color(r, g, b, a);
+    }
+
+    internal static Vector3 Transform3D_GetPosition(ulong id) => ReadVector3(id, NativeCallbacks.Bindings.Transform3D_GetPosition);
+    internal static void Transform3D_SetPosition(ulong id, Vector3 v) => NativeCallbacks.Bindings.Transform3D_SetPosition(id, v.X, v.Y, v.Z);
+    internal static Vector3 Transform3D_GetRotation(ulong id) => ReadVector3(id, NativeCallbacks.Bindings.Transform3D_GetRotation);
+    internal static void Transform3D_SetRotation(ulong id, Vector3 v) => NativeCallbacks.Bindings.Transform3D_SetRotation(id, v.X, v.Y, v.Z);
+    internal static Vector3 Transform3D_GetScale(ulong id) => ReadVector3(id, NativeCallbacks.Bindings.Transform3D_GetScale);
+    internal static void Transform3D_SetScale(ulong id, Vector3 v) => NativeCallbacks.Bindings.Transform3D_SetScale(id, v.X, v.Y, v.Z);
+    internal static Vector3 Transform3D_GetWorldPosition(ulong id) => ReadVector3(id, NativeCallbacks.Bindings.Transform3D_GetWorldPosition);
+    internal static Vector3 Transform3D_GetForward(ulong id) => ReadVector3(id, NativeCallbacks.Bindings.Transform3D_GetForward);
+
+    internal static int Camera3D_GetProjection(ulong id) => NativeCallbacks.Bindings.Camera3D_GetProjection(id);
+    internal static void Camera3D_SetProjection(ulong id, int projection) => NativeCallbacks.Bindings.Camera3D_SetProjection(id, projection);
+    internal static float Camera3D_GetFieldOfView(ulong id) => NativeCallbacks.Bindings.Camera3D_GetFieldOfView(id);
+    internal static void Camera3D_SetFieldOfView(ulong id, float degrees) => NativeCallbacks.Bindings.Camera3D_SetFieldOfView(id, degrees);
+    internal static float Camera3D_GetOrthographicSize(ulong id) => NativeCallbacks.Bindings.Camera3D_GetOrthographicSize(id);
+    internal static void Camera3D_SetOrthographicSize(ulong id, float size) => NativeCallbacks.Bindings.Camera3D_SetOrthographicSize(id, size);
+    internal static float Camera3D_GetNearClip(ulong id) => NativeCallbacks.Bindings.Camera3D_GetNearClip(id);
+    internal static void Camera3D_SetNearClip(ulong id, float value) => NativeCallbacks.Bindings.Camera3D_SetNearClip(id, value);
+    internal static float Camera3D_GetFarClip(ulong id) => NativeCallbacks.Bindings.Camera3D_GetFarClip(id);
+    internal static void Camera3D_SetFarClip(ulong id, float value) => NativeCallbacks.Bindings.Camera3D_SetFarClip(id, value);
+    internal static Color Camera3D_GetClearColor(ulong id) => ReadColor(id, NativeCallbacks.Bindings.Camera3D_GetClearColor);
+    internal static void Camera3D_SetClearColor(ulong id, Color c) => NativeCallbacks.Bindings.Camera3D_SetClearColor(id, c.R, c.G, c.B, c.A);
+    internal static ulong Camera3D_GetMainEntity() => NativeCallbacks.Bindings.Camera3D_GetMainEntity();
+
+    internal static int MeshRenderer_GetMesh(ulong id) => NativeCallbacks.Bindings.MeshRenderer_GetMesh(id);
+    internal static void MeshRenderer_SetMesh(ulong id, int mesh) => NativeCallbacks.Bindings.MeshRenderer_SetMesh(id, mesh);
+    internal static Color MeshRenderer_GetColor(ulong id) => ReadColor(id, NativeCallbacks.Bindings.MeshRenderer_GetColor);
+    internal static void MeshRenderer_SetColor(ulong id, Color c) => NativeCallbacks.Bindings.MeshRenderer_SetColor(id, c.R, c.G, c.B, c.A);
+    internal static bool MeshRenderer_GetLit(ulong id) => NativeCallbacks.Bindings.MeshRenderer_GetLit(id) != 0;
+    internal static void MeshRenderer_SetLit(ulong id, bool lit) => NativeCallbacks.Bindings.MeshRenderer_SetLit(id, lit ? 1 : 0);
+
+    internal static Color DirectionalLight_GetColor(ulong id) => ReadColor(id, NativeCallbacks.Bindings.DirectionalLight_GetColor);
+    internal static void DirectionalLight_SetColor(ulong id, Color c) => NativeCallbacks.Bindings.DirectionalLight_SetColor(id, c.R, c.G, c.B, c.A);
+    internal static float DirectionalLight_GetIntensity(ulong id) => NativeCallbacks.Bindings.DirectionalLight_GetIntensity(id);
+    internal static void DirectionalLight_SetIntensity(ulong id, float intensity) => NativeCallbacks.Bindings.DirectionalLight_SetIntensity(id, intensity);
+    internal static Color DirectionalLight_GetAmbient(ulong id) => ReadColor(id, NativeCallbacks.Bindings.DirectionalLight_GetAmbient);
+    internal static void DirectionalLight_SetAmbient(ulong id, Color c) => NativeCallbacks.Bindings.DirectionalLight_SetAmbient(id, c.R, c.G, c.B, c.A);
+    internal static bool DirectionalLight_GetCastShadows(ulong id) => NativeCallbacks.Bindings.DirectionalLight_GetCastShadows(id) != 0;
+    internal static void DirectionalLight_SetCastShadows(ulong id, bool value) => NativeCallbacks.Bindings.DirectionalLight_SetCastShadows(id, value ? 1 : 0);
+
+    internal static ulong MeshRenderer_GetMaterial(ulong id) => NativeCallbacks.Bindings.MeshRenderer_GetMaterial(id);
+    internal static void MeshRenderer_SetMaterial(ulong id, ulong materialGuid) => NativeCallbacks.Bindings.MeshRenderer_SetMaterial(id, materialGuid);
+    internal static bool MeshRenderer_GetCastShadows(ulong id) => NativeCallbacks.Bindings.MeshRenderer_GetCastShadows(id) != 0;
+    internal static void MeshRenderer_SetCastShadows(ulong id, bool value) => NativeCallbacks.Bindings.MeshRenderer_SetCastShadows(id, value ? 1 : 0);
+    internal static ulong MeshRenderer_GetCustomMesh(ulong id) => NativeCallbacks.Bindings.MeshRenderer_GetCustomMesh(id);
+    internal static void MeshRenderer_SetCustomMesh(ulong id, ulong meshGuid) => NativeCallbacks.Bindings.MeshRenderer_SetCustomMesh(id, meshGuid);
+    internal static ulong MeshCollider3D_GetCustomMesh(ulong id) => NativeCallbacks.Bindings.MeshCollider3D_GetCustomMesh(id);
+    internal static void MeshCollider3D_SetCustomMesh(ulong id, ulong meshGuid) => NativeCallbacks.Bindings.MeshCollider3D_SetCustomMesh(id, meshGuid);
+
+    // Packed layouts mirror ScriptBindings3D.cpp.
+    internal const int MaterialValueCount = 16;
+    internal const int MeshInfoValueCount = 8;
+    internal const int PointLightValueCount = 6;
+    internal const int SpotLightValueCount = 8;
+    internal const int CameraSkyValueCount = 15;
+    internal const int ParticleSystem3DValueCount = 21;
+
+    internal static void ParticleSystem3D_Get(ulong id, Span<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.ParticleSystem3D_Get(id, p, values.Length);
+    }
+    internal static void ParticleSystem3D_Set(ulong id, ReadOnlySpan<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.ParticleSystem3D_Set(id, p, values.Length);
+    }
+    internal static void ParticleSystem3D_Control(ulong id, int op) => NativeCallbacks.Bindings.ParticleSystem3D_Control(id, op);
+    internal static void ParticleSystem3D_Emit(ulong id, int count) => NativeCallbacks.Bindings.ParticleSystem3D_Emit(id, count);
+    internal static int ParticleSystem3D_GetState(ulong id, out int particleCount)
+    {
+        int count = 0;
+        int state = NativeCallbacks.Bindings.ParticleSystem3D_GetState(id, &count);
+        particleCount = count;
+        return state;
+    }
+    internal static ulong ParticleSystem3D_GetTexture(ulong id) => NativeCallbacks.Bindings.ParticleSystem3D_GetTexture(id);
+    internal static void ParticleSystem3D_SetTexture(ulong id, ulong textureGuid) => NativeCallbacks.Bindings.ParticleSystem3D_SetTexture(id, textureGuid);
+
+    internal static bool Material_Get(ulong guid, Span<float> values)
+    {
+        fixed (float* p = values) return NativeCallbacks.Bindings.Material_Get(guid, p, values.Length) != 0;
+    }
+    internal static void Material_Set(ulong guid, ReadOnlySpan<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.Material_Set(guid, p, values.Length);
+    }
+    internal static bool Mesh_GetInfo(ulong guid, Span<float> values)
+    {
+        fixed (float* p = values) return NativeCallbacks.Bindings.Mesh_GetInfo(guid, p, values.Length) != 0;
+    }
+    internal static ulong Mesh_CreateRuntime() => NativeCallbacks.Bindings.Mesh_CreateRuntime();
+    internal static bool Mesh_SetData(ulong guid, ReadOnlySpan<float> positions, ReadOnlySpan<float> normals, ReadOnlySpan<float> uvs,
+        int vertexCount, ReadOnlySpan<uint> indices)
+    {
+        fixed (float* pp = positions)
+        fixed (float* pn = normals)
+        fixed (float* pu = uvs)
+        fixed (uint* pi = indices)
+        {
+            // An empty span pins to null, which tells native to recalculate normals / zero the UVs.
+            return NativeCallbacks.Bindings.Mesh_SetData(guid, pp, normals.IsEmpty ? null : pn, uvs.IsEmpty ? null : pu,
+                vertexCount, pi, indices.Length) != 0;
+        }
+    }
+    internal static bool Mesh_DestroyRuntime(ulong guid) => NativeCallbacks.Bindings.Mesh_DestroyRuntime(guid) != 0;
+    internal static bool Mesh_IsRuntime(ulong guid) => NativeCallbacks.Bindings.Mesh_IsRuntime(guid) != 0;
+    internal static ulong Material_GetTexture(ulong guid) => NativeCallbacks.Bindings.Material_GetTexture(guid);
+    internal static void Material_SetTexture(ulong guid, ulong textureGuid) => NativeCallbacks.Bindings.Material_SetTexture(guid, textureGuid);
+
+    internal static void PointLight_Get(ulong id, Span<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.PointLight_Get(id, p, values.Length);
+    }
+    internal static void PointLight_Set(ulong id, ReadOnlySpan<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.PointLight_Set(id, p, values.Length);
+    }
+    internal static void SpotLight_Get(ulong id, Span<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.SpotLight_Get(id, p, values.Length);
+    }
+    internal static void SpotLight_Set(ulong id, ReadOnlySpan<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.SpotLight_Set(id, p, values.Length);
+    }
+    internal static void Camera3D_GetSky(ulong id, Span<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.Camera3D_GetSky(id, p, values.Length);
+    }
+    internal static void Camera3D_SetSky(ulong id, ReadOnlySpan<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.Camera3D_SetSky(id, p, values.Length);
+    }
 }

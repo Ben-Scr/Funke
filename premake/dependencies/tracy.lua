@@ -10,7 +10,7 @@
 -- in by that TU.
 
 project "Tracy"
-    location (path.join(ROOT_DIR, "premake/generated/Tracy"))
+    location (IndexProjectLocation("Tracy", path.join(ROOT_DIR, "premake/generated/Tracy")))
     kind "SharedLib"
     language "C++"
     cppdialect "C++17"

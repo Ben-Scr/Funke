@@ -5,11 +5,13 @@
 #include "Core/Log.hpp"
 #include "Core/Time.hpp"
 #include "Serialization/File.hpp"
+#include "Serialization/FileStamp.hpp"
 #include "Serialization/Path.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <unordered_set>
 #include <limits>
 #include <utility>
 
@@ -20,6 +22,13 @@ namespace Index {
 		// Protects the current frame's working set; zero before an Application is active.
 		int CurrentFrame() {
 			return Time::GetFrameCount();
+		}
+
+		// (assetId, quantized size) whose async bake failed; not retried until UnloadAll, so a font that
+		// can never bake (e.g. atlas over the size cap) doesn't respawn a bake thread every frame.
+		std::unordered_set<uint64_t> s_FailedAsyncBakes;
+		uint64_t FailedBakeKey(uint64_t assetId, int quantizedSize) {
+			return assetId ^ (static_cast<uint64_t>(static_cast<uint32_t>(quantizedSize)) * 0x9E3779B97F4A7C15ull);
 		}
 	}
 
@@ -72,12 +81,12 @@ namespace Index {
 	{
 		// Reuse the cached bytes only if they came from the same path — a moved/
 		// renamed font keeps its UUID but resolves to a new path, so a mismatch
-		// must re-read. (In-place edits to the same path during an editor session
-		// still serve cached bytes; fonts aren't hot-reload-watched like textures.)
+		// must re-read. In-place edits are picked up by ReloadChangedFromDisk.
 		auto it = s_TtfBufferCache.find(assetId);
 		if (it != s_TtfBufferCache.end() && it->second.Bytes && it->second.Path == path) {
 			return it->second.Bytes;
 		}
+		KnownFileStamps::Record(path);
 		std::vector<uint8_t> bytes = File::ReadAllBytes(path);
 		if (bytes.empty()) {
 			IDX_CORE_ERROR_TAG("FontManager", "TTF read failed: {}", path);
@@ -181,6 +190,9 @@ namespace Index {
 				return FontHandle{ idx, s_Slots[idx].Generation };
 			}
 		}
+		if (s_FailedAsyncBakes.contains(FailedBakeKey(assetId, key.PixelSizeQuantized))) {
+			return FontHandle::Invalid();
+		}
 
 		// ResolvePath self-recovers once on a miss; don't MarkDirty()+Sync() (clears the negative
 		// cache → full O(N) Assets/ rescan ×3 per dangling GUID, re-arms every other miss).
@@ -200,7 +212,8 @@ namespace Index {
 	void FontManager::PollAsync() {
 		if (!s_IsInitialized) return;
 		const int frame = CurrentFrame();
-		for (Slot& slot : s_Slots) {
+		for (size_t i = 0; i < s_Slots.size(); ++i) {
+			Slot& slot = s_Slots[i];
 			if (!slot.InUse || !slot.Font) continue;
 			if (!slot.Font->IsBakingAsync()) continue;
 			slot.Font->PollAsyncBake();
@@ -209,6 +222,13 @@ namespace Index {
 			if (slot.Font->IsLoaded()) {
 				slot.LastAccessFrame = frame;
 				slot.LastAccessTick = ++s_AccessTick;
+			}
+			else if (!slot.Font->IsBakingAsync()) {
+				// Bake failed: free the slot so it isn't handed out forever (and the next request can retry);
+				// EnforceMemoryBudget skips unloaded fonts, so nothing else would reclaim it.
+				IDX_CORE_WARN_TAG("FontManager", "Async font bake failed for asset {}", slot.AssetUUID);
+				s_FailedAsyncBakes.insert(FailedBakeKey(slot.AssetUUID, slot.QuantizedSize));
+				UnloadFont(FontHandle{ static_cast<uint16_t>(i), slot.Generation });
 			}
 		}
 		// A bake may have just published a new atlas; reclaim old ones if over budget.
@@ -243,7 +263,43 @@ namespace Index {
 			}
 		}
 		s_Lookup.clear();
+		s_FailedAsyncBakes.clear();
 		s_DefaultFont = FontHandle::Invalid();
+	}
+
+	size_t FontManager::ReloadChangedFromDisk() {
+		if (!s_IsInitialized) return 0;
+
+		std::vector<uint64_t> changed;
+		for (const auto& [assetId, entry] : s_TtfBufferCache) {
+			if (KnownFileStamps::HasChangedOnDisk(entry.Path)) {
+				changed.push_back(assetId);
+			}
+		}
+
+		for (const uint64_t assetId : changed) {
+			s_TtfBufferCache.erase(assetId);
+			// Dropping every baked size is enough: holders see an invalid handle next frame and re-bake from disk.
+			// Not via UnloadFont: it skips in-flight bakes (IsValid needs a loaded font), which would publish stale glyphs.
+			for (size_t i = 0; i < s_Slots.size(); ++i) {
+				Slot& slot = s_Slots[i];
+				if (!slot.InUse || slot.AssetUUID != assetId) continue;
+				const auto lookup = s_Lookup.find(LookupKey{ slot.AssetUUID, slot.QuantizedSize });
+				if (lookup != s_Lookup.end() && lookup->second == i) {
+					s_Lookup.erase(lookup);
+				}
+				slot.Font.reset();
+				slot.AssetUUID = 0;
+				slot.PixelSize = 0.0f;
+				slot.InUse = false;
+				++slot.Generation;
+			}
+		}
+		if (!changed.empty()) {
+			// A fixed file may bake now where the old one could not.
+			s_FailedAsyncBakes.clear();
+		}
+		return changed.size();
 	}
 
 	void FontManager::EnforceMemoryBudget() {

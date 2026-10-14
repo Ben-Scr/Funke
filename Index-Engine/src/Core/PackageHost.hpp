@@ -11,8 +11,12 @@
 namespace Index {
 	struct IndexProject;
 
+	struct PackageManifest;
+	struct PackageResolution;
+
 	struct LoadedPackage {
 		std::string Name;          // Without the "Pkg." prefix or ".Native" suffix, e.g. "Index.Hello".
+		std::string Version;       // From index-package.lua; empty when the package shipped without one.
 		std::string ModulePath;    // Absolute path to the loaded shared library.
 		void*       ModuleHandle = nullptr; // HMODULE on Windows; void* dlopen handle on POSIX.
 		uint32_t    OwnerId = 0;            // Tags this package's ComponentRegistry / entity-preset entries.
@@ -32,6 +36,10 @@ namespace Index {
 		static const std::vector<LoadedPackage>& GetLoaded();
 
 		static bool IsPackageLoaded(const std::string& packageName);
+
+		// Active project's source packages under <project>/Packages/ with no native build loadable by this engine
+		// (never built, or built against another Index-Engine binary). Rebuilding the package workspace fixes them.
+		static std::vector<std::string> FindStaleProjectNativePackages();
 	};
 
 	namespace PackageHostDetail {
@@ -46,6 +54,20 @@ namespace Index {
 		INDEX_API void AppendProjectNativeCandidates(const IndexProject& project,
 			std::string_view configuration,
 			std::vector<std::filesystem::path>& outCandidates);
+		INDEX_API void AppendProjectNativeCandidates(const IndexProject& project,
+			std::string_view configuration,
+			const std::vector<std::string>& packageNames,
+			std::vector<std::filesystem::path>& outCandidates);
+
+		// Manifests under <engine root>/packages/ and <project>/Packages/; unreadable ones are logged and skipped.
+		INDEX_API std::vector<PackageManifest> DiscoverPackageManifests(const IndexProject& project);
+		// Native load order: resolved packages dependencies-first, then listed packages that have no manifest
+		// (shipped games stage only the DLLs) in project.json order. Blocked packages are left out.
+		INDEX_API std::vector<std::string> BuildNativeLoadOrder(const PackageResolution& resolution,
+			const std::vector<std::string>& requested, const std::vector<PackageManifest>& manifests);
+		// An empty runningEngineSha256 only reports packages without any native build.
+		INDEX_API std::vector<std::string> FindStaleProjectNativePackages(const IndexProject& project,
+			std::string_view configuration, std::string_view runningEngineSha256);
 	}
 
 }

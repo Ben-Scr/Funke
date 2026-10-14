@@ -6,6 +6,7 @@
 #include "Core/Log.hpp"
 #include "Core/Window.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
+#include "Graphics/Backend/WebGPUSurfaceSource.hpp"
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/GLInitSpecifications.hpp"
 #include "Graphics/Texture2D.hpp"
@@ -19,14 +20,6 @@
 #include <cstring>
 #include <string>
 #include <vector>
-
-#include <GLFW/glfw3.h>
-// glfw3native.h pulls in <windows.h> for glfwGetWin32Window; only the Windows
-// surface path needs it (Linux/X11 surface is Stage 1b). Keep it Windows-only.
-#if defined(IDX_PLATFORM_WINDOWS)
-    #define GLFW_EXPOSE_NATIVE_WIN32
-    #include <GLFW/glfw3native.h>
-#endif
 
 #if defined(IDX_PLATFORM_WINDOWS)
     #ifndef WIN32_LEAN_AND_MEAN
@@ -58,9 +51,19 @@ namespace Index {
 		wgpu::Device        g_Device;
 		wgpu::Queue         g_Queue;
 		wgpu::Surface       g_Surface;
+		SDL_Window*         g_SurfaceWindow = nullptr;
+		// What g_Surface was built on; Android hands out a new ANativeWindow after the app was backgrounded.
+		void*               g_SurfaceNativeHandle = nullptr;
+		uint32_t            g_SurfaceGeneration = 0;
 		wgpu::TextureFormat g_SurfaceFormat = wgpu::TextureFormat::Undefined;
 
 		bool g_HasTimestampQuery = false;
+
+		// Set by hosts that cannot block on WaitAny (the browser): adapter and device were requested
+		// asynchronously before the engine started.
+		wgpu::Instance g_ProvidedInstance;
+		wgpu::Adapter  g_ProvidedAdapter;
+		wgpu::Device   g_ProvidedDevice;
 
 		// Always false until Dawn stabilises a portable bindless feature name; gate kept ready for when it does.
 		bool g_HasBindlessTextures = false;
@@ -196,6 +199,26 @@ namespace Index {
 			return false;
 		}
 
+		const char* PresentModeName(wgpu::PresentMode mode) {
+			switch (mode) {
+			case wgpu::PresentMode::Fifo:        return "Fifo";
+			case wgpu::PresentMode::FifoRelaxed: return "FifoRelaxed";
+			case wgpu::PresentMode::Immediate:   return "Immediate";
+			case wgpu::PresentMode::Mailbox:     return "Mailbox";
+			default:                             return "Undefined";
+			}
+		}
+
+		void LogPresentModeChoice(const char* surfaceName, const wgpu::SurfaceCapabilities& caps, wgpu::PresentMode chosen) {
+			std::string supported;
+			for (size_t i = 0; i < caps.presentModeCount; ++i) {
+				if (!supported.empty()) supported += ", ";
+				supported += PresentModeName(caps.presentModes[i]);
+			}
+			IDX_CORE_INFO_TAG("WebGPUApi", "{} surface: vsync={}, supported present modes [{}] -> {}",
+				surfaceName, g_VsyncEnabled, supported, PresentModeName(chosen));
+		}
+
 		wgpu::PresentMode ChoosePresentMode(const wgpu::SurfaceCapabilities& caps) {
 			if (g_VsyncEnabled) {
 				if (SupportsPresentMode(caps, wgpu::PresentMode::Fifo)) {
@@ -228,30 +251,36 @@ namespace Index {
 				IDX_CORE_ERROR_TAG("WebGPUApi", "No engine window available for surface creation");
 				return false;
 			}
-			GLFWwindow* w = win->GetGLFWWindow();
-			if (!w) {
-				IDX_CORE_ERROR_TAG("WebGPUApi", "GLFW window handle is null");
+			g_SurfaceWindow = win->GetNativeWindow();
+			if (!g_SurfaceWindow) {
+				IDX_CORE_ERROR_TAG("WebGPUApi", "SDL window handle is null");
 				return false;
 			}
 
-#if defined(IDX_PLATFORM_WINDOWS)
-			wgpu::SurfaceSourceWindowsHWND hwndSource{};
-			hwndSource.hwnd      = glfwGetWin32Window(w);
-			hwndSource.hinstance = ::GetModuleHandleW(nullptr);
-
-			wgpu::SurfaceDescriptor surfaceDesc{};
-			surfaceDesc.nextInChain = &hwndSource;
-
-			g_Surface = g_Instance.CreateSurface(&surfaceDesc);
-#else
-			IDX_CORE_ERROR_TAG("WebGPUApi",
-				"WebGPU backend platform-data is Windows-only in Stage 1 (macOS NSView + Linux X11/Wayland land in Stage 1b)");
-			return false;
-#endif
+			g_Surface = WebGPUSurfaceSource::Create(g_Instance, g_SurfaceWindow);
 			if (!g_Surface) {
 				IDX_CORE_ERROR_TAG("WebGPUApi", "wgpu::Instance::CreateSurface returned null");
 				return false;
 			}
+			g_SurfaceNativeHandle = WebGPUSurfaceSource::CurrentNativeHandle(g_SurfaceWindow);
+			g_SurfaceGeneration = Window::GetNativeSurfaceGeneration();
+			return true;
+		}
+
+		// False while there is nothing to draw to (Android paused). Touching a surface whose native window
+		// is gone fails with VK_ERROR_SURFACE_LOST, which Dawn escalates to device loss: black until restart.
+		bool RefreshSurfaceIfReplaced(bool& replaced) {
+			replaced = false;
+			void* handle = WebGPUSurfaceSource::CurrentNativeHandle(g_SurfaceWindow);
+			if (!handle) return false;
+			const uint32_t generation = Window::GetNativeSurfaceGeneration();
+			if (handle == g_SurfaceNativeHandle && generation == g_SurfaceGeneration) return true;
+			wgpu::Surface replacement = WebGPUSurfaceSource::Create(g_Instance, g_SurfaceWindow);
+			if (!replacement) return false;
+			g_Surface = std::move(replacement);
+			g_SurfaceNativeHandle = handle;
+			g_SurfaceGeneration = generation;
+			replaced = true;
 			return true;
 		}
 
@@ -286,8 +315,13 @@ namespace Index {
 			AppendBackend(candidates, wgpu::BackendType::Vulkan);
 			AppendBackend(candidates, wgpu::BackendType::D3D11);
 			AppendBackend(candidates, wgpu::BackendType::OpenGL);
-#elif defined(IDX_PLATFORM_MACOS)
+#elif defined(IDX_PLATFORM_MACOS) || defined(IDX_PLATFORM_IOS)
 			AppendBackend(candidates, wgpu::BackendType::Metal);
+#elif defined(IDX_PLATFORM_ANDROID)
+			AppendBackend(candidates, wgpu::BackendType::Vulkan);
+			AppendBackend(candidates, wgpu::BackendType::OpenGLES);
+#elif defined(IDX_PLATFORM_WEB)
+			AppendBackend(candidates, wgpu::BackendType::WebGPU);
 #else
 			AppendBackend(candidates, wgpu::BackendType::Vulkan);
 			AppendBackend(candidates, wgpu::BackendType::OpenGL);
@@ -329,6 +363,19 @@ namespace Index {
 			opts.compatibleSurface = g_Surface;
 			opts.powerPreference   = wgpu::PowerPreference::HighPerformance;
 			opts.backendType       = backendType;
+
+#if defined(IDX_PLATFORM_ANDROID)
+			// Mali drivers (seen on G715) cache a subpass for every distinct VkRenderingInfo and never free it;
+			// with fresh swapchain views each frame that leaked ~100 MB/s until the process was killed.
+			// Classic render passes are cached by Dawn itself. Dawn already does this for Mali-G68.
+			const char* const disabledToggles[] = { "vulkan_use_dynamic_rendering" };
+			wgpu::DawnTogglesDescriptor toggles{};
+			if (backendType == wgpu::BackendType::Vulkan) {
+				toggles.disabledToggleCount = 1;
+				toggles.disabledToggles = disabledToggles;
+				opts.nextInChain = &toggles;
+			}
+#endif
 
 			struct AdapterCtx { wgpu::Adapter Adapter; std::string Error; };
 			AdapterCtx ctx;
@@ -438,6 +485,14 @@ namespace Index {
 		}
 
 		void ConfigureSurface(uint32_t width, uint32_t height) {
+			bool replaced = false;
+			if (g_SurfaceWindow && !RefreshSurfaceIfReplaced(replaced)) {
+				// Remember the size; the first frame after resume configures the new surface with it.
+				g_BackbufferWidth  = width;
+				g_BackbufferHeight = height;
+				return;
+			}
+
 			wgpu::SurfaceCapabilities caps{};
 			g_Surface.GetCapabilities(g_Adapter, &caps);
 
@@ -452,7 +507,13 @@ namespace Index {
 			config.width       = width;
 			config.height      = height;
 			config.presentMode = ChoosePresentMode(caps);
-			config.alphaMode   = wgpu::CompositeAlphaMode::Opaque;
+			LogPresentModeChoice("Main", caps, config.presentMode);
+			// Opaque where offered; Android (Mali, Adreno) often only offers Inherit, and an unsupported mode
+			// makes Configure fail, leaving the screen black.
+			config.alphaMode   = caps.alphaModeCount > 0 ? caps.alphaModes[0] : wgpu::CompositeAlphaMode::Auto;
+			for (size_t i = 0; i < caps.alphaModeCount; ++i) {
+				if (caps.alphaModes[i] == wgpu::CompositeAlphaMode::Opaque) config.alphaMode = wgpu::CompositeAlphaMode::Opaque;
+			}
 			config.viewFormatCount = 0;
 
 			g_Surface.Configure(&config);
@@ -484,20 +545,46 @@ namespace Index {
 		bool EnsureSurfaceTexture() {
 			if (g_Frame.HasSurfaceTexture) return true;
 
+			bool replaced = false;
+			if (g_SurfaceWindow && !RefreshSurfaceIfReplaced(replaced)) return false;
+			if (replaced) ConfigureSurface(g_BackbufferWidth, g_BackbufferHeight);
+
 			wgpu::SurfaceTexture surfaceTex{};
 			g_Surface.GetCurrentTexture(&surfaceTex);
+
+			// Android replaces its native window when the app returns from the background (or the system
+			// bars toggle); the old surface then reports Lost. Rebuild it from the window SDL has now.
+			if (surfaceTex.status == wgpu::SurfaceGetCurrentTextureStatus::Lost && g_SurfaceWindow) {
+				if (wgpu::Surface replacement = WebGPUSurfaceSource::Create(g_Instance, g_SurfaceWindow)) {
+					g_Surface = std::move(replacement);
+					g_SurfaceNativeHandle = WebGPUSurfaceSource::CurrentNativeHandle(g_SurfaceWindow);
+					ConfigureSurface(g_BackbufferWidth, g_BackbufferHeight);
+					surfaceTex = wgpu::SurfaceTexture{};
+					g_Surface.GetCurrentTexture(&surfaceTex);
+				}
+			}
+			else if (surfaceTex.status == wgpu::SurfaceGetCurrentTextureStatus::Outdated) {
+				ConfigureSurface(g_BackbufferWidth, g_BackbufferHeight);
+				surfaceTex = wgpu::SurfaceTexture{};
+				g_Surface.GetCurrentTexture(&surfaceTex);
+			}
 
 			// SuboptimalConfiguration is non-fatal — the surface still has a
 			// usable texture, we just want to re-configure on next resize.
 			const bool ok =
 				surfaceTex.status == wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal ||
 				surfaceTex.status == wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal;
+			static wgpu::SurfaceGetCurrentTextureStatus s_LastFailure{};
 			if (!ok) {
-				IDX_CORE_WARN_TAG("WebGPUApi",
-					"GetCurrentTexture: status={} — skipping frame",
-					static_cast<int>(surfaceTex.status));
+				// Once per failure kind: a backgrounded app fails every frame.
+				if (surfaceTex.status != s_LastFailure) {
+					IDX_CORE_WARN_TAG("WebGPUApi", "GetCurrentTexture: status={} — skipping frames",
+						static_cast<int>(surfaceTex.status));
+				}
+				s_LastFailure = surfaceTex.status;
 				return false;
 			}
+			s_LastFailure = {};
 
 			g_Frame.SurfaceTexture = wgpu::Texture(surfaceTex.texture);
 
@@ -579,7 +666,14 @@ namespace Index {
 					mapped = (status == wgpu::MapAsyncStatus::Success);
 				});
 			wgpu::FutureWaitInfo wait{ future };
+#if defined(IDX_PLATFORM_WEB)
+			// The browser resolves the map only after control returns to its event loop.
+			(void)wait;
+			buffer.Destroy();
+			return false;
+#else
 			g_Instance.WaitAny(1, &wait, UINT64_MAX);
+#endif
 			if (!mapped) return false;
 
 			const auto* data = static_cast<const uint8_t*>(buffer.GetConstMappedRange(0, bufDesc.size));
@@ -632,9 +726,12 @@ namespace Index {
 				g_Queue.Submit(1, &cmd);
 			}
 
+#if !defined(IDX_PLATFORM_WEB)
+			// The browser presents the canvas itself when the requestAnimationFrame callback returns.
 			if (g_Frame.HasSurfaceTexture) {
 				g_Surface.Present();
 			}
+#endif
 
 			Framebuffer::ProcessFrameEndDeferredDestroy();
 			g_Frame = FrameState{};
@@ -647,6 +744,54 @@ namespace Index {
 		bool HasTimestampQuery() { return g_HasTimestampQuery; }
 		bool HasBindlessTextures() { return g_HasBindlessTextures; }
 		bool IsInitialized() { return g_Initialized; }
+
+		uint32_t GetMaxTextureDimension2D() {
+			wgpu::Limits limits{};
+			if (g_Device && g_Device.GetLimits(&limits) == wgpu::Status::Success && limits.maxTextureDimension2D != 0) {
+				return limits.maxTextureDimension2D;
+			}
+			return 8192u;
+		}
+
+		uint64_t GetMaxBufferSize() {
+			wgpu::Limits limits{};
+			if (g_Device && g_Device.GetLimits(&limits) == wgpu::Status::Success && limits.maxBufferSize != 0) {
+				return limits.maxBufferSize;
+			}
+			return 256ull * 1024ull * 1024ull;
+		}
+
+		bool ShaderModuleCompiled(const wgpu::ShaderModule& module, std::string* outErrors) {
+			if (!module) return false;
+#if defined(IDX_PLATFORM_WEB)
+			// No synchronous waits in the browser; errors still reach the uncaptured-error callback.
+			(void)outErrors;
+			return true;
+#endif
+			if (!g_Instance) return true;  // no way to wait; assume the caller's module is usable
+			bool ok = true;
+			std::string errors;
+			wgpu::Future future = module.GetCompilationInfo(wgpu::CallbackMode::WaitAnyOnly,
+				[&ok, &errors](wgpu::CompilationInfoRequestStatus status, const wgpu::CompilationInfo* info) {
+					if (status != wgpu::CompilationInfoRequestStatus::Success || !info) return;
+					for (size_t i = 0; i < info->messageCount; ++i) {
+						const wgpu::CompilationMessage& message = info->messages[i];
+						if (message.type != wgpu::CompilationMessageType::Error) continue;
+						ok = false;
+						errors += "line " + std::to_string(message.lineNum) + ": ";
+						if (message.message.data) {
+							const size_t length = message.message.length == WGPU_STRLEN
+								? std::strlen(message.message.data) : message.message.length;
+							errors.append(message.message.data, length);
+						}
+						errors += '\n';
+					}
+				});
+			wgpu::FutureWaitInfo wait{ future };
+			g_Instance.WaitAny(1, &wait, UINT64_MAX);
+			if (outErrors) *outErrors = std::move(errors);
+			return ok;
+		}
 
 		wgpu::CommandEncoder GetFrameEncoder() {
 			if (!g_Initialized) return nullptr;
@@ -663,6 +808,15 @@ namespace Index {
 				static_cast<float>(g_ViewportW),
 				static_cast<float>(g_ViewportH),
 				0.0f, 1.0f);
+		}
+
+		bool GetCachedViewport(uint32_t& x, uint32_t& y, uint32_t& width, uint32_t& height) {
+			if (g_ViewportW == 0 || g_ViewportH == 0) return false;
+			x = g_ViewportX;
+			y = g_ViewportY;
+			width = g_ViewportW;
+			height = g_ViewportH;
+			return true;
 		}
 
 		CurrentTargetInfo BeginRenderToCurrentTarget() {
@@ -741,6 +895,7 @@ namespace Index {
 			wgpu::PresentMode        PresentMode = wgpu::PresentMode::Fifo;
 			wgpu::CompositeAlphaMode AlphaMode   = wgpu::CompositeAlphaMode::Opaque;
 			bool                     HasCurrent  = false;
+			SDL_Window*              Window      = nullptr;
 		};
 
 		std::vector<ViewportSurface*> g_LiveViewportSurfaces;
@@ -755,6 +910,7 @@ namespace Index {
 				vs->Surface.GetCapabilities(g_Adapter, &caps);
 
 				vs->PresentMode = ChoosePresentMode(caps);
+				LogPresentModeChoice("Viewport", caps, vs->PresentMode);
 				vs->AlphaMode   = wgpu::CompositeAlphaMode::Opaque;
 				for (size_t i = 0; i < caps.alphaModeCount; ++i) {
 					if (caps.alphaModes[i] == wgpu::CompositeAlphaMode::Premultiplied) {
@@ -792,44 +948,39 @@ namespace Index {
 			}
 		}
 
-		ViewportSurface* CreateViewportSurface(void* hwnd, void* hinstance,
+		void ProvideDevice(wgpu::Instance instance, wgpu::Adapter adapter, wgpu::Device device) {
+			g_ProvidedInstance = std::move(instance);
+			g_ProvidedAdapter  = std::move(adapter);
+			g_ProvidedDevice   = std::move(device);
+		}
+
+		ViewportSurface* CreateViewportSurface(SDL_Window* window,
 			uint32_t width, uint32_t height)
 		{
-			if (!g_Initialized || !g_Instance || !hwnd) return nullptr;
+			if (!g_Initialized || !g_Instance || !window) return nullptr;
 
-#if defined(IDX_PLATFORM_WINDOWS)
-			wgpu::SurfaceSourceWindowsHWND hwndSource{};
-			hwndSource.hwnd      = hwnd;
-			hwndSource.hinstance = hinstance ? hinstance
-				: static_cast<void*>(::GetModuleHandleW(nullptr));
-
-			wgpu::SurfaceDescriptor surfaceDesc{};
-			surfaceDesc.nextInChain = &hwndSource;
-
-			wgpu::Surface surface = g_Instance.CreateSurface(&surfaceDesc);
+			wgpu::Surface surface = WebGPUSurfaceSource::Create(g_Instance, window);
 			if (!surface) {
 				IDX_CORE_ERROR_TAG("WebGPUApi",
 					"CreateViewportSurface: instance.CreateSurface returned null");
+				WebGPUSurfaceSource::Release(window);
 				return nullptr;
 			}
 
 			auto* vs = new ViewportSurface{};
 			vs->Surface = std::move(surface);
+			vs->Window  = window;
 			if (!ConfigureViewportSurface(vs, width, height)) {
 				IDX_CORE_ERROR_TAG("WebGPUApi",
 					"CreateViewportSurface: ConfigureViewportSurface failed at {}x{}",
 					width, height);
+				vs->Surface = nullptr;
+				WebGPUSurfaceSource::Release(window);
 				delete vs;
 				return nullptr;
 			}
 			g_LiveViewportSurfaces.push_back(vs);
 			return vs;
-#else
-			(void)hwnd; (void)hinstance; (void)width; (void)height;
-			IDX_CORE_ERROR_TAG("WebGPUApi",
-				"CreateViewportSurface: only Windows is supported in Stage 1");
-			return nullptr;
-#endif
 		}
 
 		void DestroyViewportSurface(ViewportSurface* vs) {
@@ -841,6 +992,7 @@ namespace Index {
 			vs->CurrentTexture = nullptr;
 			if (vs->Surface) vs->Surface.Unconfigure();
 			vs->Surface = nullptr;
+			WebGPUSurfaceSource::Release(vs->Window);
 			delete vs;
 		}
 
@@ -917,22 +1069,36 @@ namespace Index {
 		if (g_BackbufferWidth == 0)  g_BackbufferWidth  = 1280;
 		if (g_BackbufferHeight == 0) g_BackbufferHeight = 720;
 
-		// TimedWaitAny is REQUIRED: without it WaitAny rejects any non-zero timeout and adapter/device requests silently fail.
-		const wgpu::InstanceFeatureName requiredFeatures[] = {
-			wgpu::InstanceFeatureName::TimedWaitAny,
-		};
-		wgpu::InstanceDescriptor instanceDesc{};
-		instanceDesc.requiredFeatureCount = 1;
-		instanceDesc.requiredFeatures     = requiredFeatures;
-		g_Instance = wgpu::CreateInstance(&instanceDesc);
+		const bool provided = g_ProvidedInstance && g_ProvidedAdapter && g_ProvidedDevice;
+		if (provided) {
+			g_Instance = g_ProvidedInstance;
+		}
+		else {
+			// TimedWaitAny is REQUIRED: without it WaitAny rejects any non-zero timeout and adapter/device requests silently fail.
+			const wgpu::InstanceFeatureName requiredFeatures[] = {
+				wgpu::InstanceFeatureName::TimedWaitAny,
+			};
+			wgpu::InstanceDescriptor instanceDesc{};
+			instanceDesc.requiredFeatureCount = 1;
+			instanceDesc.requiredFeatures     = requiredFeatures;
+			g_Instance = wgpu::CreateInstance(&instanceDesc);
+		}
 		if (!g_Instance) {
 			IDX_CORE_ERROR_TAG("WebGPUApi", "wgpu::CreateInstance failed");
 			return false;
 		}
 
 		if (!CreateSurface())       { Shutdown(); return false; }
-		if (!RequestAdapterSync())  { Shutdown(); return false; }
-		if (!RequestDeviceSync())   { Shutdown(); return false; }
+		if (provided) {
+			g_Adapter = g_ProvidedAdapter;
+			g_Device  = g_ProvidedDevice;
+			g_Queue   = g_Device.GetQueue();
+			g_HasTimestampQuery = g_Device.HasFeature(wgpu::FeatureName::TimestampQuery);
+		}
+		else {
+			if (!RequestAdapterSync())  { Shutdown(); return false; }
+			if (!RequestDeviceSync())   { Shutdown(); return false; }
+		}
 		ConfigureSurface(g_BackbufferWidth, g_BackbufferHeight);
 
 		wgpu::AdapterInfo info{};
@@ -967,10 +1133,14 @@ namespace Index {
 		Texture2D::ReleaseMipGenResources();
 		if (g_Surface) g_Surface.Unconfigure();
 		g_CurrentTarget = TargetState{};
+		// Surface before device: Dawn's Vulkan swapchain detaches through the device when the surface dies.
+		g_Surface = nullptr;
 		g_Queue   = nullptr;
 		g_Device  = nullptr;
 		g_Adapter = nullptr;
-		g_Surface = nullptr;
+		WebGPUSurfaceSource::Release(g_SurfaceWindow);
+		g_SurfaceWindow = nullptr;
+		g_SurfaceNativeHandle = nullptr;
 		g_Instance = nullptr;
 
 		g_VersionString.clear();

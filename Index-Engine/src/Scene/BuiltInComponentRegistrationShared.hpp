@@ -10,6 +10,7 @@
 #include "Core/UUID.hpp"
 #include "Inspector/PropertyRegistration.hpp"
 #include "Scene/ComponentRegistrationHelpers.hpp"
+#include "Scene/ComponentRegistry.hpp"
 #include "Scene/Scene.hpp"
 #include "Serialization/Json.hpp"
 
@@ -22,6 +23,22 @@ namespace Index {
 
 namespace Index::BuiltInComponentRegistrationInternal {
 
+	// Tags everything registered while alive with an engine feature module (ComponentInfo::engineModule).
+	class ModuleRegistrationScope {
+	public:
+		ModuleRegistrationScope(ComponentRegistry& registry, EngineModule module)
+			: m_Registry(registry), m_Previous(registry.GetRegistrationModule()) {
+			registry.SetRegistrationModule(module);
+		}
+		~ModuleRegistrationScope() { m_Registry.SetRegistrationModule(m_Previous); }
+		ModuleRegistrationScope(const ModuleRegistrationScope&) = delete;
+		ModuleRegistrationScope& operator=(const ModuleRegistrationScope&) = delete;
+
+	private:
+		ComponentRegistry& m_Registry;
+		std::optional<EngineModule> m_Previous;
+	};
+
 	// One per category, each defined in BuiltInComponentRegistration<Category>.cpp.
 	// RegisterBuiltInComponents() calls them in exactly this order.
 	void RegisterGeneral(ComponentRegistry& registry);
@@ -30,6 +47,11 @@ namespace Index::BuiltInComponentRegistrationInternal {
 	void RegisterAudio(ComponentRegistry& registry);
 	void RegisterUIWidgets(ComponentRegistry& registry);
 	void RegisterUILayout(ComponentRegistry& registry);
+	// Adds serialization to components the slices registered; assigns no type ids.
+	void Attach2DSerialization(ComponentRegistry& registry);
+	void Register3D(ComponentRegistry& registry);
+	void RegisterPhysics3D(ComponentRegistry& registry);
+	void RegisterParticles3D(ComponentRegistry& registry);
 
 	// JSON codecs and reference-field helpers shared by the Rendering and both UI slices.
 	inline Json::Value UIColorToJson(const Color& c) {

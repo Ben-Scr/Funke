@@ -19,6 +19,7 @@ have_python() {
 
 # Echo the package-manager command that installs Python, or return 1.
 detect_python_install_cmd() {
+    if command -v brew >/dev/null 2>&1; then echo "brew install python@3.13"; return 0; fi
     if command -v apt-get >/dev/null 2>&1; then echo "apt-get install -y python3"; return 0; fi
     if command -v dnf >/dev/null 2>&1; then echo "dnf install -y python3"; return 0; fi
     if command -v pacman >/dev/null 2>&1; then echo "pacman -S --noconfirm python"; return 0; fi
@@ -29,11 +30,12 @@ detect_python_install_cmd() {
 install_python() {
     local cmd
     if ! cmd="$(detect_python_install_cmd)"; then
-        echo "[Index Setup] No supported package manager (apt/dnf/pacman/zypper) was found."
+        echo "[Index Setup] No supported package manager (Homebrew/apt/dnf/pacman/zypper) was found."
         echo "[Index Setup] Install Python 3.10+ manually, then re-run setup."
         return 1
     fi
-    if [ "$(id -u)" -ne 0 ]; then
+    # Homebrew refuses to run as root; the system package managers need it.
+    if [ "$(id -u)" -ne 0 ] && [ "${cmd#brew }" = "$cmd" ]; then
         if command -v sudo >/dev/null 2>&1; then
             cmd="sudo $cmd"
         else

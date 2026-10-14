@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "Scripting/ScriptBindingGuard.hpp"
 #include "Scripting/EntityCommandBufferWire.hpp"
 #include "Scripting/ScriptGlue.hpp"
 #include "Scripting/ScriptBindings.hpp"
@@ -9,9 +10,11 @@
 #include "Scene/SceneManager.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Components/General/EntityMetaDataComponent.hpp"
-#include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/HierarchyComponent.hpp"
+#if INDEX_WITH_2D
+#include "Components/General/Transform2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
+#endif
 #include "Serialization/PrefabTemplateCache.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Core/Application.hpp"
@@ -205,6 +208,23 @@ namespace Index {
 						return kEcbErrorTruncated;
 					}
 				}
+				else if (opcode == Ecb_AddComponent || opcode == Ecb_SetComponent || opcode == Ecb_DefaultConstructComponent) {
+					// Validate component types before CreateEntitiesBulk: failing mid-execute would leave half-built
+					// entities in the scene whose ids never reach managed code (e.g. a type unregistered by hot reload).
+					const uint32_t typeId = EcbReadLE<uint32_t>(cursor + 5);
+					const ComponentInfo* info = SceneManager::GetComponentRegistry().GetByTypeId(typeId);
+					const bool usable = info != nullptr
+						&& (opcode == Ecb_DefaultConstructComponent ? info->defaultEmplace != nullptr
+							: info->emplaceFromBytes != nullptr);
+					if (!usable) {
+						IDX_CORE_WARN_TAG("Ecb",
+							"Ecb_Playback rejected: command {} uses component typeId {} which is not registered or "
+							"cannot be {} (see ComponentRegistry contract)",
+							cmdIdx, typeId,
+							opcode == Ecb_DefaultConstructComponent ? "default-constructed" : "emplaced from bytes");
+						return kEcbErrorUnknownComponent;
+					}
+				}
 
 				cursor = payload + payloadSize;
 			}
@@ -263,6 +283,23 @@ namespace Index {
 		std::vector<EntityHandle> prefabSlotScratch;
 		std::size_t nextPrefabSpawn = 0;
 
+		// Raw emplaces skip AddWithDependencies, so conflicts (e.g. a 3D component on a 2D entity) are checked here;
+		// only first-time adds of components that have conflicts pay for it.
+		bool warnedConflict = false;
+		auto refusesConflictingAdd = [&](const ComponentInfo& info, EntityHandle handle) {
+			if (info.conflictsWith.empty() || info.isDynamic || !info.has) return false;
+			const Entity entity = scene->GetEntity(handle);
+			if (info.has(entity)) return false;
+			const ComponentInfo* conflict = componentRegistry.FindConflict(entity, info.typeId);
+			if (!conflict) return false;
+			if (!warnedConflict) {
+				warnedConflict = true;
+				IDX_CORE_WARN_TAG("Ecb", "AddComponent '{}' skipped: the entity has '{}', which it can't be combined with.",
+					info.displayName, conflict->displayName);
+			}
+			return true;
+		};
+
 		// Dynamic IComponent adds must seed a ScriptComponent.Scripts entry so the inspector renders it; idempotent.
 		auto seedScriptsEntryForDynamic = [&](const ComponentInfo* info, EntityHandle handle) {
 			if (!info->isDynamic) return;
@@ -313,6 +350,7 @@ namespace Index {
 						typeId);
 					return kEcbErrorUnknownComponent;
 				}
+				if (refusesConflictingAdd(*info, handles[entityIndex])) continue;
 				info->emplaceFromBytes(scene->GetRegistry(), handles[entityIndex],
 					payload, payloadSize);
 				seedScriptsEntryForDynamic(info, handles[entityIndex]);
@@ -330,6 +368,7 @@ namespace Index {
 						typeId);
 					return kEcbErrorUnknownComponent;
 				}
+				if (refusesConflictingAdd(*info, handles[entityIndex])) continue;
 				info->defaultEmplace(scene->GetRegistry(), handles[entityIndex]);
 				seedScriptsEntryForDynamic(info, handles[entityIndex]);
 			}
@@ -395,6 +434,7 @@ namespace Index {
 			// aligned for the next iteration.
 		}
 
+#if INDEX_WITH_2D
 		// A Transform2D written by the ECB to place a spawned prefab (e.g.
 		// ecb.AddComponent(root, new NativeTransform2D{Position})) is a raw byte copy. m_Dirty is set in
 		// the bytes, but m_OwnerScene/m_OwnerEntity are zeroed, so MarkDirty can't enqueue the entity in
@@ -428,6 +468,7 @@ namespace Index {
 				}
 			}
 		}
+#endif
 
 		for (uint32_t i = 0; i < header.entityCount; ++i) {
 			outRuntimeIds[i] = destroyedRoot[i] != 0
@@ -461,8 +502,8 @@ namespace Index {
 
 	void PopulateEcbBindings(NativeBindings& b)
 	{
-		b.Component_GetTypeId = &Index_Component_GetTypeId;
-		b.Ecb_Playback        = &Index_Ecb_Playback;
+		b.Component_GetTypeId = IDX_GUARDED_BINDING(Index_Component_GetTypeId);
+		b.Ecb_Playback        = IDX_GUARDED_BINDING(Index_Ecb_Playback);
 	}
 
 } // namespace Index

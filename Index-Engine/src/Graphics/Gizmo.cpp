@@ -71,6 +71,8 @@ namespace Index {
 	}
 
 	void Gizmo::DrawWireCircle(const Vec2& center, float radius, int segments) {
+		// Script-supplied: a negative count added to the size_t vertex counter wraps it and drops every later gizmo.
+		segments = std::max(segments, 3);
 		if (!IsCurrentLayerEnabled() || ExceedsGizmoAccumCap(s_RegisteredVertices, segments))
 			return;
 
@@ -87,6 +89,8 @@ namespace Index {
 	}
 
 	void Gizmo::DrawCircle(const Vec2& center, float radius, int segments) {
+		// Script-supplied: a negative count added to the size_t vertex counter wraps it and drops every later gizmo.
+		segments = std::max(segments, 3);
 		if (!IsCurrentLayerEnabled() || ExceedsGizmoAccumCap(s_RegisteredVertices, segments))
 			return;
 

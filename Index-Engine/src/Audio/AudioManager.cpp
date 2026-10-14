@@ -3,14 +3,17 @@
 #include "Assets/AssetRegistry.hpp"
 #include "AudioManager.hpp"
 #include "Audio.hpp"
+#include "Audio/AudioStreams.hpp"
 #include  <Math/Common.hpp>
 
+#include "Serialization/FileStamp.hpp"
 #include "Serialization/Path.hpp"
 
 #include "Audio/IAudioBackend.hpp"
 #include "Audio/Backends/MiniaudioBackend.hpp"
 #include "Components/Audio/AudioSourceComponent.hpp"
 #include "Core/Application.hpp"
+#include "Core/Platform.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 
@@ -99,6 +102,7 @@ namespace Index {
 	std::vector<std::unique_ptr<AudioManager::SoundInstance>> AudioManager::s_soundInstances;
 	std::vector<uint32_t> AudioManager::s_freeInstanceIndices;
 	float AudioManager::s_masterVolume = 1.0f;
+	bool AudioManager::s_PlayInBackground = false;
 	std::string AudioManager::s_RootPath = Path::Combine("IndexAssets", "Audio");
 
 	uint32_t AudioManager::s_maxConcurrentSounds = MAX_CONCURRENT_SOUNDS;
@@ -118,7 +122,8 @@ namespace Index {
 
 		std::string audioDir = Path::ResolveIndexAssets("Audio");
 		if (audioDir.empty()) {
-			IDX_CORE_WARN("IndexAssets/Audio not found");
+			// Builds leave the folder out when no built-in sound is referenced.
+			IDX_CORE_TRACE("IndexAssets/Audio not found");
 			audioDir = Path::Combine(Path::ExecutableDir(), "IndexAssets", "Audio");
 		}
 		s_RootPath = audioDir;
@@ -151,6 +156,8 @@ namespace Index {
 			return;
 		}
 
+		// Streams hold ma_sounds on the backend's engine and must go before it.
+		AudioStreams::CloseAll();
 		UnloadAllAudio();
 
 		s_soundInstances.clear();
@@ -323,6 +330,7 @@ namespace Index {
 			}
 		}
 
+		KnownFileStamps::Record(resolvedPath);
 		AudioHandle::HandleType id = GenerateHandle();
 		if (!RegisterAudioData(*audio)) {
 			IDX_CORE_WARN_TAG("AudioManager", "Falling back to on-demand audio loading for '{}'", resolvedPath);
@@ -409,6 +417,61 @@ namespace Index {
 		s_soundLimits.clear();
 		s_soundQueue = {};
 		s_activeSoundCount = 0;
+	}
+
+	size_t AudioManager::ReloadChangedFromDisk() {
+		IDX_CORE_ASSERT(Application::IsMainThread(), IndexErrorCode::Undefined, "AudioManager::ReloadChangedFromDisk must be called on the main thread");
+		if (!s_IsInitialized) {
+			return 0;
+		}
+
+		size_t reloadedCount = 0;
+		for (auto& [id, audio] : s_audioMap) {
+			if (!audio || !KnownFileStamps::HasChangedOnDisk(audio->GetFilepath())) {
+				continue;
+			}
+
+			const std::string path = audio->GetFilepath();
+			KnownFileStamps::Record(path);
+			auto reloaded = std::make_unique<Audio>();
+			// A half-written file fails to decode; keep the old clip, the write's completion re-triggers.
+			if (!reloaded->LoadFromFile(path)) {
+				continue;
+			}
+
+			// Handle stays the same so AudioSourceComponents keep their clip; playing sources restart below.
+			const AudioHandle handle(id);
+			std::vector<AudioSourceComponent*> restartSources;
+			SceneManager::ForeachLoadedScene([&handle, &restartSources](Scene& scene) {
+				auto sources = scene.GetRegistry().view<AudioSourceComponent>();
+				for (auto entity : sources) {
+					auto& source = sources.get<AudioSourceComponent>(entity);
+					if (source.GetAudioHandle() == handle && source.IsPlaying()) {
+						restartSources.push_back(&source);
+					}
+				}
+			});
+
+			// Same order as UnloadAudio: the audio thread must never read a freed PCM buffer.
+			for (size_t i = 0; i < s_soundInstances.size(); ++i) {
+				auto& slot = s_soundInstances[i];
+				if (slot && slot->IsValid && slot->AudioHandle == handle) {
+					RecycleSoundInstance(static_cast<uint32_t>(i));
+				}
+			}
+			UnregisterAudioData(*audio);
+			audio = std::move(reloaded);
+			if (!RegisterAudioData(*audio)) {
+				IDX_CORE_WARN_TAG("AudioManager", "Falling back to on-demand audio loading for '{}'", path);
+			}
+
+			for (AudioSourceComponent* source : restartSources) {
+				source->SetInstanceId(0);
+				PlayAudioSource(*source);
+			}
+			++reloadedCount;
+		}
+		return reloadedCount;
 	}
 
 	size_t AudioManager::PurgeUnreferenced() {
@@ -552,6 +615,19 @@ namespace Index {
 		IDX_CORE_ASSERT(Application::IsMainThread(), IndexErrorCode::Undefined, "AudioManager::ResumeAll must be called on the main thread");
 		if (s_IsInitialized && s_Backend) {
 			s_Backend->SetSuspended(false);
+		}
+	}
+
+	void AudioManager::SetPlayInBackground(bool enabled) {
+		IDX_CORE_ASSERT(Application::IsMainThread(), IndexErrorCode::Undefined, "AudioManager::SetPlayInBackground must be called on the main thread");
+		if (s_PlayInBackground == enabled) {
+			return;
+		}
+		s_PlayInBackground = enabled;
+		Platform::SetBackgroundAudioService(enabled);
+		// Toggled while already in the background: apply now instead of waiting for the next pause transition.
+		if (Application::IsPaused() && s_IsInitialized && s_Backend) {
+			s_Backend->SetSuspended(!enabled);
 		}
 	}
 
@@ -704,6 +780,7 @@ namespace Index {
 
 		uint32_t index;
 		uint32_t reuseGeneration = 0;
+		bool freshSlot = false;
 
 		if (!s_freeInstanceIndices.empty()) {
 			index = s_freeInstanceIndices.back();
@@ -717,8 +794,16 @@ namespace Index {
 			s_soundInstances[index]->Generation = reuseGeneration;
 		}
 		else {
+			// The id's 8-bit index field holds index+1, so slot 254 is the last encodable one; past it ids
+			// would wrap onto slot 0 and one entity's Stop/volume would hit another entity's sound.
+			if (s_soundInstances.size() >= k_AudioInstanceIndexMask) {
+				IDX_CORE_WARN("AudioManager: Too many live sound instances ({}); not creating another",
+					s_soundInstances.size());
+				return 0;
+			}
 			index = static_cast<uint32_t>(s_soundInstances.size());
 			s_soundInstances.emplace_back(std::make_unique<SoundInstance>());
+			freshSlot = true;
 		}
 
 		SoundInstance& instance = *s_soundInstances[index];
@@ -731,7 +816,7 @@ namespace Index {
 			&instance.DataSource);
 		if (result != MA_SUCCESS) {
 			IDX_CORE_WARN("[{}] AudioManager: Failed to create sound data source. Error: {}", ErrorCodeToString(IndexErrorCode::LoadFailed), static_cast<int>(result));
-			if (index == s_soundInstances.size() - 1) {
+			if (freshSlot && index == s_soundInstances.size() - 1) {
 				s_soundInstances.pop_back();
 			}
 			else {
@@ -752,7 +837,7 @@ namespace Index {
 			ma_resource_manager_data_source_uninit(&instance.DataSource);
 			instance.HasDataSource = false;
 			IDX_CORE_WARN("[{}] AudioManager: Failed to create sound instance. Error: {}", ErrorCodeToString(IndexErrorCode::LoadFailed), static_cast<int>(result));
-			if (index == s_soundInstances.size() - 1) {
+			if (freshSlot && index == s_soundInstances.size() - 1) {
 				s_soundInstances.pop_back();
 			}
 			else {

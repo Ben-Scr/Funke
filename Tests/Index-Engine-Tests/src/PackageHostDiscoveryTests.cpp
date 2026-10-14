@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "Core/PackageHost.hpp"
+#include "Core/Platform.hpp"
 #include "Project/IndexProject.hpp"
 #include "Scene/ComponentRegistry.hpp"
 
@@ -124,7 +125,8 @@ TEST_CASE("PackageHost keeps prebuilt native packages as fallback") {
 	project.Packages = { "Game.Tools" };
 
 	const std::filesystem::path prebuiltLibrary = temp.Path / "Packages" / "Game.Tools"
-		/ "Bin" / "Windows-x64" / "Pkg.Game.Tools.Native.dll";
+		/ "Bin" / (std::string(IDX_PLATFORM_NAME) + "-" + IDX_ARCH_NAME)
+		/ Index::Platform::SharedLibraryFileName("Pkg.Game.Tools.Native");
 	Touch(prebuiltLibrary);
 
 	std::vector<std::filesystem::path> candidates;
@@ -146,7 +148,8 @@ TEST_CASE("PackageHost prioritizes workspace outputs over prebuilt packages") {
 		Index::IndexProject::GetProjectNativePackageLibraryPath(
 			project.RootDirectory, "Game.Tools", "Release");
 	const std::filesystem::path prebuiltLibrary = temp.Path / "Packages" / "Game.Tools"
-		/ "Bin" / "Windows-x64" / "Pkg.Game.Tools.Native.dll";
+		/ "Bin" / (std::string(IDX_PLATFORM_NAME) + "-" + IDX_ARCH_NAME)
+		/ Index::Platform::SharedLibraryFileName("Pkg.Game.Tools.Native");
 	Touch(workspaceLibrary);
 	Touch(prebuiltLibrary);
 
@@ -157,6 +160,75 @@ TEST_CASE("PackageHost prioritizes workspace outputs over prebuilt packages") {
 	REQUIRE(candidates.size() == 2);
 	CHECK(candidates[0].lexically_normal() == workspaceLibrary.lexically_normal());
 	CHECK(candidates[1].lexically_normal() == prebuiltLibrary.lexically_normal());
+}
+
+namespace {
+	void WriteManifest(const std::filesystem::path& packagesDir, const std::string& name, const std::string& layers) {
+		std::filesystem::create_directories(packagesDir / name);
+		std::ofstream(packagesDir / name / "index-package.lua", std::ios::binary)
+			<< "return { name = \"" << name << "\", version = \"1.0.0\", layers = { " << layers << " } }\n";
+	}
+
+	Index::IndexProject MakeSourcePackageProject(const std::filesystem::path& root) {
+		Index::IndexProject project;
+		project.RootDirectory = root.string();
+		project.PackagesDirectory = (root / "Packages").string();
+		project.Packages = { "Game.Tools" };
+		WriteManifest(root / "Packages", "Game.Tools", "native = { sources = { \"src/**.cpp\" } }");
+		return project;
+	}
+
+	std::filesystem::path BuildWorkspaceLibrary(const Index::IndexProject& project, std::string_view engineSha256) {
+		const std::filesystem::path library = Index::IndexProject::GetProjectNativePackageLibraryPath(
+			project.RootDirectory, "Game.Tools", "Release");
+		Touch(library);
+		WriteAbiMetadata(library, "schema=1\nboundary=engine_cpp\nengine_sha256=" + std::string(engineSha256) + "\n");
+		return library;
+	}
+}
+
+TEST_CASE("PackageHost reports never-built project source packages as stale") {
+	ScopedTempDirectory temp;
+	const Index::IndexProject project = MakeSourcePackageProject(temp.Path);
+
+	CHECK(Index::PackageHostDetail::FindStaleProjectNativePackages(project, "Release", std::string(64, 'a'))
+		== std::vector<std::string>{ "Game.Tools" });
+	CHECK(Index::PackageHostDetail::FindStaleProjectNativePackages(project, "Release", {})
+		== std::vector<std::string>{ "Game.Tools" });
+}
+
+TEST_CASE("PackageHost reports project packages built against another engine as stale") {
+	ScopedTempDirectory temp;
+	const Index::IndexProject project = MakeSourcePackageProject(temp.Path);
+	BuildWorkspaceLibrary(project, std::string(64, 'a'));
+
+	CHECK(Index::PackageHostDetail::FindStaleProjectNativePackages(project, "Release", std::string(64, 'b'))
+		== std::vector<std::string>{ "Game.Tools" });
+	CHECK(Index::PackageHostDetail::FindStaleProjectNativePackages(project, "Release", std::string(64, 'a')).empty());
+	// Without a running fingerprint only missing builds count.
+	CHECK(Index::PackageHostDetail::FindStaleProjectNativePackages(project, "Release", {}).empty());
+}
+
+TEST_CASE("PackageHost does not rebuild packages that have a loadable prebuilt fallback") {
+	ScopedTempDirectory temp;
+	const Index::IndexProject project = MakeSourcePackageProject(temp.Path);
+	BuildWorkspaceLibrary(project, std::string(64, 'a'));
+	const std::filesystem::path prebuiltLibrary = temp.Path / "Packages" / "Game.Tools"
+		/ "Bin" / (std::string(IDX_PLATFORM_NAME) + "-" + IDX_ARCH_NAME)
+		/ Index::Platform::SharedLibraryFileName("Pkg.Game.Tools.Native");
+	Touch(prebuiltLibrary);
+	WriteAbiMetadata(prebuiltLibrary, "schema=1\nboundary=engine_cpp\nengine_sha256=" + std::string(64, 'b') + "\n");
+
+	CHECK(Index::PackageHostDetail::FindStaleProjectNativePackages(project, "Release", std::string(64, 'b')).empty());
+}
+
+TEST_CASE("PackageHost ignores unlisted and managed-only packages when looking for stale builds") {
+	ScopedTempDirectory temp;
+	Index::IndexProject project = MakeSourcePackageProject(temp.Path);
+	WriteManifest(temp.Path / "Packages", "Game.Scripts", "csharp = { sources = { \"csharp/**.cs\" } }");
+	project.Packages = { "Game.Scripts" };
+
+	CHECK(Index::PackageHostDetail::FindStaleProjectNativePackages(project, "Release", std::string(64, 'a')).empty());
 }
 
 #ifdef IDX_PLATFORM_WINDOWS

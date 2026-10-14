@@ -140,23 +140,23 @@ namespace Index {
 		}
 
 		// Aspect-locked: ImGui manages its own viewport so the cached-viewport path doesn't apply; clear the full swap chain first, then offset the ImGui window to the sub-rect.
-		int width = 0, height = 0;
-		int offsetX = 0, offsetY = 0;
+		int pixelWidth = 0, pixelHeight = 0;
+		int pixelOffsetX = 0, pixelOffsetY = 0;
 		bool hasLetterbox = false;
 		if (Window* window = app.GetWindow()) {
 			if (Viewport* vp = Window::GetMainViewport()) {
-				width = vp->GetWidth();
-				height = vp->GetHeight();
-				offsetX = vp->GetOffsetX();
-				offsetY = vp->GetOffsetY();
+				pixelWidth = vp->GetWidth();
+				pixelHeight = vp->GetHeight();
+				pixelOffsetX = vp->GetOffsetX();
+				pixelOffsetY = vp->GetOffsetY();
 				hasLetterbox = vp->HasLetterbox();
 			}
 			else {
-				width = window->GetWidth();
-				height = window->GetHeight();
+				pixelWidth = window->GetWidth();
+				pixelHeight = window->GetHeight();
 			}
 		}
-		if (width <= 0 || height <= 0) return;
+		if (pixelWidth <= 0 || pixelHeight <= 0) return;
 
 		if (hasLetterbox && RenderApi::IsInitialized()) {
 			RenderApi::BindDefaultFramebuffer();
@@ -165,6 +165,16 @@ namespace Index {
 		}
 
 		RuntimeImGuiHost::BeginFrame();
+
+		// The viewport is in framebuffer pixels, ImGui in window coordinates; they differ on the Web and on
+		// high-density displays.
+		const ImVec2 framebufferScale = ImGui::GetIO().DisplayFramebufferScale;
+		const float scaleX = framebufferScale.x > 0.0f ? framebufferScale.x : 1.0f;
+		const float scaleY = framebufferScale.y > 0.0f ? framebufferScale.y : 1.0f;
+		const float width = static_cast<float>(pixelWidth) / scaleX;
+		const float height = static_cast<float>(pixelHeight) / scaleY;
+		const float offsetX = static_cast<float>(pixelOffsetX) / scaleX;
+		const float offsetY = static_cast<float>(pixelOffsetY) / scaleY;
 
 		float alpha = 1.0f;
 		if (m_Elapsed < m_FadeIn && m_FadeIn > 0.0f) {
@@ -175,8 +185,8 @@ namespace Index {
 		}
 		alpha = std::clamp(alpha, 0.0f, 1.0f);
 
-		ImGui::SetNextWindowPos(ImVec2(static_cast<float>(offsetX), static_cast<float>(offsetY)));
-		ImGui::SetNextWindowSize(ImVec2(static_cast<float>(width), static_cast<float>(height)));
+		ImGui::SetNextWindowPos(ImVec2(offsetX, offsetY));
+		ImGui::SetNextWindowSize(ImVec2(width, height));
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -201,10 +211,10 @@ namespace Index {
 			const float bgW = static_cast<float>(background->GetWidth());
 			const float bgH = static_cast<float>(background->GetHeight());
 			if (bgW > 0.0f && bgH > 0.0f) {
-				const float canvasAspect = static_cast<float>(width) / static_cast<float>(height);
+				const float canvasAspect = width / height;
 				const float bgAspect = bgW / bgH;
-				float drawW = static_cast<float>(width);
-				float drawH = static_cast<float>(height);
+				float drawW = width;
+				float drawH = height;
 				if (bgAspect > canvasAspect) {
 					// Image is wider than canvas — fit to height, overflow horizontally.
 					drawW = drawH * bgAspect;

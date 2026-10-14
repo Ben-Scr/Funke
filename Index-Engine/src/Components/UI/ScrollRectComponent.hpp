@@ -66,6 +66,8 @@ namespace Index {
 
 		// Transient drag + inertia state. Owned by UIEventSystem.
 		bool IsDragging = false;
+		// Press began on an interactable inside the scroll rect; turns into a drag once it moves past a threshold.
+		bool DragPending = false;
 		Vec2 PressMouseUi{ 0.0f, 0.0f };
 		Vec2 PressContentPosition{ 0.0f, 0.0f }; // Content.AnchoredPosition at press
 		Vec2 Velocity{ 0.0f, 0.0f };             // pixels/second, used for inertia + elastic rebound

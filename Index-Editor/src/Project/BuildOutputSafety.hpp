@@ -58,7 +58,12 @@ namespace Index::BuildOutputSafety {
 		error.clear();
 		std::filesystem::path absolute = std::filesystem::absolute(path, error);
 		if (error) return {};
-		return std::filesystem::weakly_canonical(absolute, error);
+		std::filesystem::path normalized = std::filesystem::weakly_canonical(absolute, error);
+		// libstdc++ keeps the separator left by a resolved "..": "Project/Builds/.." becomes "Project/".
+		if (!error && normalized.has_relative_path() && normalized.filename().empty()) {
+			normalized = normalized.parent_path();
+		}
+		return normalized;
 	}
 
 	inline bool ComponentsEqual(const std::filesystem::path& lhs,

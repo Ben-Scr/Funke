@@ -15,10 +15,11 @@ local projectRoot = os.realpath(requestedProjectRoot)
 local workspaceRoot = path.join(projectRoot, ".index/build/packages")
 
 dofile(path.join(scriptDir, "fix_csharp_platforms.lua"))
+dofile(path.join(scriptDir, "architecture.lua"))
 
 workspace "IndexProjectPackages"
     location(workspaceRoot)
-    architecture "x64"
+    architecture(IndexPremakeArchitecture)
     configurations { "Debug", "Release", "Dist" }
 
     filter { "system:windows", "language:C++" }
@@ -29,7 +30,7 @@ workspace "IndexProjectPackages"
         buildoptions { "-Wno-changes-meaning" }
     filter {}
 
-outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
+outputdir = "%{cfg.buildcfg}-%{cfg.system}-" .. IndexArchitecture
 ROOT_DIR = engineRoot
 
 IndexPackageProjectLocationRoot = path.join(workspaceRoot, "generated")
@@ -66,7 +67,7 @@ local includeDirs = {
     path.join(engineRoot, "External/stb"),
     path.join(engineRoot, "External/magic_enum/include"),
     path.join(engineRoot, "External/rapidxml"),
-    path.join(engineRoot, "External/glfw/include"),
+    path.join(engineRoot, "External/SDL/include"),
     path.join(engineRoot, "External/glad/include"),
     path.join(engineRoot, "External/miniaudio"),
     path.join(engineRoot, "External/box2d/include"),
@@ -113,7 +114,6 @@ Dependency = {
         Links = { "Index-Engine" },
         Defines = {
             "INDEX_ALL_MODULES=1",
-            "GLFW_DLL",
             "IDX_RHI_WEBGPU",
             "WEBGPU_CPP_HAS_ENUM_CLASS_BITMASKS=1",
             "IMGUI_IMPL_WEBGPU_BACKEND_DAWN",
@@ -141,7 +141,7 @@ end
 IndexPackageScriptCoreAssemblies = {}
 for _, configuration in ipairs({ "Debug", "Release", "Dist" }) do
     IndexPackageScriptCoreAssemblies[configuration] = FirstExistingPath({
-        path.join(engineRoot, "bin/" .. configuration .. "-" .. os.target() .. "-x86_64/Index-ScriptCore/Index-ScriptCore.dll"),
+        path.join(engineRoot, "bin/" .. configuration .. "-" .. os.target() .. "-" .. IndexArchitecture .. "/Index-ScriptCore/Index-ScriptCore.dll"),
         path.join(engineRoot, "Index-ScriptCore/Index-ScriptCore.dll"),
     })
 end

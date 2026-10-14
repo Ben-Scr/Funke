@@ -601,7 +601,7 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<int> Cursor_GetMode;
     public delegate* unmanaged<int, void> Cursor_SetMode;
     public delegate* unmanaged<ulong> Cursor_GetTexture;
-    public delegate* unmanaged<ulong, void> Cursor_SetTexture;
+    public delegate* unmanaged<ulong, int, int, void> Cursor_SetTexture;
 
     // ── EntityCommandBuffer (appended for binary compat) ────────────
     // Component_GetTypeId: resolve name → stable u32; cached at AppDomain load, no per-call marshaling. Returns 0 for unknown names.
@@ -971,6 +971,137 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, int, void> SpriteAnimator2D_SetFrame;
     public delegate* unmanaged<ulong, float> SpriteAnimator2D_GetFramesPerSecond;
     public delegate* unmanaged<ulong, float, void> SpriteAnimator2D_SetFramesPerSecond;
+
+    // ── PostProcessing2D (appended for binary compat) ──
+    public delegate* unmanaged<ulong, int, void*, int, int> PostProcessing2D_GetEffect;
+    public delegate* unmanaged<ulong, int, void*, int, int> PostProcessing2D_SetEffect;
+
+    // ── Safe area (appended for binary compat) ──
+    public delegate* unmanaged<float*, float*, float*, float*, void> Application_GetSafeAreaInsets;
+
+    // ── Read-only ECS ref (appended for binary compat) ──
+    public delegate* unmanaged<ulong, byte*, void*> Entity_GetComponentPtrReadOnly;
+
+    // ── 3D components (appended for binary compat) ──
+    public delegate* unmanaged<ulong, float*, float*, float*, void> Transform3D_GetPosition;
+    public delegate* unmanaged<ulong, float, float, float, void> Transform3D_SetPosition;
+    public delegate* unmanaged<ulong, float*, float*, float*, void> Transform3D_GetRotation;
+    public delegate* unmanaged<ulong, float, float, float, void> Transform3D_SetRotation;
+    public delegate* unmanaged<ulong, float*, float*, float*, void> Transform3D_GetScale;
+    public delegate* unmanaged<ulong, float, float, float, void> Transform3D_SetScale;
+    public delegate* unmanaged<ulong, float*, float*, float*, void> Transform3D_GetWorldPosition;
+    public delegate* unmanaged<ulong, float*, float*, float*, void> Transform3D_GetForward;
+    public delegate* unmanaged<ulong, int> Camera3D_GetProjection;
+    public delegate* unmanaged<ulong, int, void> Camera3D_SetProjection;
+    public delegate* unmanaged<ulong, float> Camera3D_GetFieldOfView;
+    public delegate* unmanaged<ulong, float, void> Camera3D_SetFieldOfView;
+    public delegate* unmanaged<ulong, float> Camera3D_GetOrthographicSize;
+    public delegate* unmanaged<ulong, float, void> Camera3D_SetOrthographicSize;
+    public delegate* unmanaged<ulong, float> Camera3D_GetNearClip;
+    public delegate* unmanaged<ulong, float, void> Camera3D_SetNearClip;
+    public delegate* unmanaged<ulong, float> Camera3D_GetFarClip;
+    public delegate* unmanaged<ulong, float, void> Camera3D_SetFarClip;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Camera3D_GetClearColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Camera3D_SetClearColor;
+    public delegate* unmanaged<ulong> Camera3D_GetMainEntity;
+    public delegate* unmanaged<ulong, int> MeshRenderer_GetMesh;
+    public delegate* unmanaged<ulong, int, void> MeshRenderer_SetMesh;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> MeshRenderer_GetColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> MeshRenderer_SetColor;
+    public delegate* unmanaged<ulong, int> MeshRenderer_GetLit;
+    public delegate* unmanaged<ulong, int, void> MeshRenderer_SetLit;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> DirectionalLight_GetColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> DirectionalLight_SetColor;
+    public delegate* unmanaged<ulong, float> DirectionalLight_GetIntensity;
+    public delegate* unmanaged<ulong, float, void> DirectionalLight_SetIntensity;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> DirectionalLight_GetAmbient;
+    public delegate* unmanaged<ulong, float, float, float, float, void> DirectionalLight_SetAmbient;
+
+    // ── 3D materials, lights, sky, 3D graphics settings (appended for binary compat) ──
+    public delegate* unmanaged<ulong, ulong> MeshRenderer_GetMaterial;
+    public delegate* unmanaged<ulong, ulong, void> MeshRenderer_SetMaterial;
+    public delegate* unmanaged<ulong, int> MeshRenderer_GetCastShadows;
+    public delegate* unmanaged<ulong, int, void> MeshRenderer_SetCastShadows;
+    public delegate* unmanaged<ulong, int> DirectionalLight_GetCastShadows;
+    public delegate* unmanaged<ulong, int, void> DirectionalLight_SetCastShadows;
+    public delegate* unmanaged<ulong, float*, int, int> Material_Get;
+    public delegate* unmanaged<ulong, float*, int, void> Material_Set;
+    public delegate* unmanaged<ulong, ulong> Material_GetTexture;
+    public delegate* unmanaged<ulong, ulong, void> Material_SetTexture;
+    public delegate* unmanaged<ulong, float*, int, void> PointLight_Get;
+    public delegate* unmanaged<ulong, float*, int, void> PointLight_Set;
+    public delegate* unmanaged<ulong, float*, int, void> SpotLight_Get;
+    public delegate* unmanaged<ulong, float*, int, void> SpotLight_Set;
+    public delegate* unmanaged<ulong, float*, int, void> Camera3D_GetSky;
+    public delegate* unmanaged<ulong, float*, int, void> Camera3D_SetSky;
+    public delegate* unmanaged<int*, float*, int*, float*, int*, void> RenderSettings_Get3D;
+    public delegate* unmanaged<int, float, int, float, int, int> RenderSettings_Apply3D;
+
+    // ── Audio streams, runtime permissions (appended for binary compat) ──
+    public delegate* unmanaged<byte*, uint> AudioStream_Open;
+    public delegate* unmanaged<uint, void> AudioStream_Close;
+    public delegate* unmanaged<uint, int> AudioStream_Play;
+    public delegate* unmanaged<uint, void> AudioStream_Pause;
+    public delegate* unmanaged<uint, void> AudioStream_Stop;
+    public delegate* unmanaged<uint, int> AudioStream_IsPlaying;
+    public delegate* unmanaged<uint, int> AudioStream_IsAtEnd;
+    public delegate* unmanaged<uint, float> AudioStream_GetCursor;
+    public delegate* unmanaged<uint, float> AudioStream_GetLength;
+    public delegate* unmanaged<uint, float, void> AudioStream_Seek;
+    public delegate* unmanaged<uint, float> AudioStream_GetVolume;
+    public delegate* unmanaged<uint, float, void> AudioStream_SetVolume;
+    public delegate* unmanaged<uint, int> AudioStream_GetLoop;
+    public delegate* unmanaged<uint, int, void> AudioStream_SetLoop;
+    public delegate* unmanaged<byte*, void> Application_RequestPermission;
+    public delegate* unmanaged<byte*, int> Application_GetPermissionState;
+
+    // ── Physics 3D / Jolt (appended for binary compat) ──
+    public delegate* unmanaged<ulong, float*, int, void> Rigidbody3D_Get;
+    public delegate* unmanaged<ulong, float*, int, void> Rigidbody3D_Set;
+    public delegate* unmanaged<ulong, int, float*, float*, float*, void> Rigidbody3D_GetVelocity;
+    public delegate* unmanaged<ulong, int, float, float, float, void> Rigidbody3D_SetVelocity;
+    public delegate* unmanaged<ulong, int, int, float, float, float, float, float, float, void> Rigidbody3D_AddForce;
+    public delegate* unmanaged<ulong, int> Rigidbody3D_IsSleeping;
+    public delegate* unmanaged<ulong, int, void> Rigidbody3D_SetSleeping;
+    public delegate* unmanaged<ulong, int, float*, int, void> Collider3D_Get;
+    public delegate* unmanaged<ulong, int, float*, int, void> Collider3D_Set;
+    public delegate* unmanaged<float, float, float, float, float, float, float, ulong*, float*, int, int> Physics3D_Raycast;
+    public delegate* unmanaged<float*, float*, float*, void> Physics3D_GetGravity;
+    public delegate* unmanaged<float, float, float, void> Physics3D_SetGravity;
+
+    // ── Background audio (appended for binary compat) ──
+    public delegate* unmanaged<int, void> Audio_SetPlayInBackground;
+    public delegate* unmanaged<int> Audio_GetPlayInBackground;
+
+    // ── Image decoding (appended for binary compat) ──
+    public delegate* unmanaged<byte*, int, int, byte*, int, int*, int*, int> Image_Decode;
+
+    // ── Custom meshes (appended for binary compat) ──
+    public delegate* unmanaged<ulong, ulong> MeshRenderer_GetCustomMesh;
+    public delegate* unmanaged<ulong, ulong, void> MeshRenderer_SetCustomMesh;
+    public delegate* unmanaged<ulong, ulong> MeshCollider3D_GetCustomMesh;
+    public delegate* unmanaged<ulong, ulong, void> MeshCollider3D_SetCustomMesh;
+    public delegate* unmanaged<ulong, float*, int, int> Mesh_GetInfo;
+
+    // ── ParticleSystem3D (appended for binary compat) ──
+    public delegate* unmanaged<ulong, float*, int, void> ParticleSystem3D_Get;
+    public delegate* unmanaged<ulong, float*, int, void> ParticleSystem3D_Set;
+    public delegate* unmanaged<ulong, int, void> ParticleSystem3D_Control;
+    public delegate* unmanaged<ulong, int, void> ParticleSystem3D_Emit;
+    public delegate* unmanaged<ulong, int*, int> ParticleSystem3D_GetState;
+    public delegate* unmanaged<ulong, ulong> ParticleSystem3D_GetTexture;
+    public delegate* unmanaged<ulong, ulong, void> ParticleSystem3D_SetTexture;
+
+    // ── Media session (appended for binary compat) ──
+    public delegate* unmanaged<byte*, byte*, byte*, float, byte*, int, int, void> Media_SetNowPlaying;
+    public delegate* unmanaged<int, float, void> Media_SetPlaybackState;
+    public delegate* unmanaged<float*, int> Media_PollCommand;
+
+    // ── Runtime mesh (appended for binary compat) ──
+    public delegate* unmanaged<ulong> Mesh_CreateRuntime;
+    public delegate* unmanaged<ulong, float*, float*, float*, int, uint*, int, int> Mesh_SetData;
+    public delegate* unmanaged<ulong, int> Mesh_DestroyRuntime;
+    public delegate* unmanaged<ulong, int> Mesh_IsRuntime;
 }
 
 internal static unsafe class NativeCallbacks

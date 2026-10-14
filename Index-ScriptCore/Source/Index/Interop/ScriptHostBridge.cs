@@ -105,13 +105,16 @@ internal unsafe struct ManagedCallbacksStruct
 
     // ── Sensor overlaps (appended for binary compat) ──
     public delegate* unmanaged<int, int, ulong, ulong, ulong, ulong, void> InvokeTrigger2D;
+
+    // ── 3D contacts (appended for binary compat) ──
+    public delegate* unmanaged<int, int, int, ulong, ulong, float, float, float, float, float, float, void> InvokeCollision3D;
 }
 
 /// <summary>Guards the native/managed function-pointer tables against layout drift before either is touched.</summary>
 internal static class InteropHandshake
 {
     // Bump together with k_ScriptInteropLayoutVersion (ScriptGlue.hpp) on any add/remove/reorder in either table.
-    internal const int LayoutVersion = 1;
+    internal const int LayoutVersion = 15;
 
     // Codes are mirrored in ScriptEngine::LoadCoreAssembly.
     internal const int Ok = 0;
@@ -257,6 +260,7 @@ internal static class ScriptHostBridge
             // ── Native→managed entity invalidation (appended for binary compat) ──
             managedCallbacks->NotifyEntityDestroyed = &ScriptInstanceManager.NotifyEntityDestroyed;
             managedCallbacks->InvokeTrigger2D = &ScriptInstanceManager.InvokeTrigger2D;
+            managedCallbacks->InvokeCollision3D = &ScriptInstanceManager.InvokeCollision3D;
 
             ScriptInstanceManager.SetCoreAssembly(typeof(ScriptHostBridge).Assembly);
 

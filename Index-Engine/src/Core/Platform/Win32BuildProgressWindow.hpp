@@ -2,10 +2,9 @@
 #include "Core/Export.hpp"
 #include <string>
 
-// Windows-only progress popup (real OS window, not ImGui overlay). No-ops on non-Windows.
+// Build / import progress popup. Windows shows a real OS window (it stays responsive while the editor is busy);
+// elsewhere these calls only record the state and BuildProgressOverlay (Index-EditorRuntime) draws it with ImGui.
 namespace Index::Win32BuildProgressWindow {
-
-#ifdef IDX_PLATFORM_WINDOWS
 
     INDEX_API void Show(const std::string& title);
 
@@ -19,13 +18,14 @@ namespace Index::Win32BuildProgressWindow {
 
     INDEX_API bool IsVisible();
 
-#else
-
-    inline void Show(const std::string&) {}
-    inline void Update(float, const std::string&) {}
-    inline void Hide() {}
-    inline bool IsVisible() { return false; }
-
+#ifndef IDX_PLATFORM_WINDOWS
+    struct State {
+        bool Visible = false;
+        std::string Title;
+        std::string Stage;
+        float Progress = 0.0f;
+    };
+    INDEX_API State GetState();
 #endif
 
 }

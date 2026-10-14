@@ -56,7 +56,7 @@ TEST_CASE("Mouse coordinates remove aspect-lock offsets") {
 	}
 }
 
-TEST_CASE("Mouse coordinates scale GLFW positions before HiDPI offsets") {
+TEST_CASE("Mouse coordinates scale window positions before HiDPI offsets") {
 	const Vec2 scale = Window::CalculateWindowToFramebufferScale({ 800, 600 }, { 1600, 1200 });
 	Window::UIRegion region{ 0, 150, 1600, 900, scale };
 

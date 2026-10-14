@@ -65,6 +65,48 @@ Skipped packages produce a one-line log. A listed package with no matching manif
 
 ---
 
+## Versions and dependencies
+
+`version` is a [SemVer](https://semver.org) number: `MAJOR.MINOR.PATCH` with an optional pre-release (`1.2.0-beta.1`). Two optional manifest fields build on it:
+
+```lua
+engine = ">=2026.1.0 <2027.0.0",            -- engine versions the package supports
+dependencies = {
+    "MyGame.Core",                          -- any version
+    "MyGame.Grid@^1.2.0",                   -- name@range
+    { name = "MyGame.Ui", version = "~2.1" },
+    ["MyGame.Audio"] = ">=0.3.0",
+},
+```
+
+Ranges use npm syntax:
+
+| Range | Means |
+|---|---|
+| `^1.2.3` | `>=1.2.3 <2.0.0` (below 1.0: `^0.2.3` is `<0.3.0`) |
+| `~1.2.3` | `>=1.2.3 <1.3.0` |
+| `1.2`, `1.x` | any `1.2.*` / `1.*` |
+| `>=1.0.0 <2.0.0` | every comparator must hold |
+| `1.0.0 - 2.0.0` | inclusive range |
+| `^1.0.0 \|\| ^3.0.0` | either set |
+| `*` or empty | any release |
+
+A pre-release only matches when the range names that exact version with a pre-release (`>=2.0.0-beta`), so `^1.0.0` never picks up `2.0.0-beta`. For the `engine` check the engine's own pre-release suffix is ignored: `>=2026.1.0` accepts `2026.1.0-beta.1`.
+
+The rules are checked in three places, all with the same resolver:
+
+- **Project file generation** (`premake/package-loader.lua`) fails with an `[Index Packages]` error naming the package, the range and the installed version.
+- **Runtime loading** (`PackageHost`) pulls in dependencies that `project.json` does not list, loads dependencies before the packages that need them, and skips a package whose dependency is missing, outside its range or incompatible with the engine. Only that package and its dependents are skipped; the error is in the log.
+- **The Package Manager** shows each package's requirements, marks unmet ones and lists dependency-only packages as *dependency*.
+
+A package can also need [engine modules](../Engine-Core/Engine-Modules.md) (`modules = { "Index.2D" }`). Installing it adds them to `project.json` `modules`; runtime loading skips a package whose module is off, and the game build fails with an error naming the package and the module. The engine modules themselves are listed in the Package Manager under **Engine Modules**.
+
+### packages-lock.json
+
+The editor writes `packages-lock.json` next to `project.json` whenever packages change. It records the exact version of every loaded package and where it came from (registry URL and SHA-256, git URL, local copy or engine). Commit it: `Packages/` is not committed, and on a fresh clone the Package Manager offers **Restore locked versions**, which downloads exactly those registry releases and checks their SHA-256.
+
+---
+
 ## Build outputs
 
 For each registered package:
@@ -73,8 +115,6 @@ For each registered package:
   - Output: `bin/<config>/Pkg.<Name>.Native/Pkg.<Name>.Native.dll`
   - Compatibility metadata: the adjacent `Pkg.<Name>.Native.dll.indexabi` file.
 - A **csharp** layer → one `Pkg.<Name>` project (C# net10.0 SharedLib).
-
-> **Demo-release limitation:** native dependencies must also be direct entries in the project's `packages` array. The build resolves transitive dependencies, but the runtime host does not yet expand them automatically.
   - Output: `bin/<config>/Pkg.<Name>/Pkg.<Name>.dll`
   - Always references `Index-ScriptCore` implicitly.
 
@@ -97,6 +137,13 @@ a missing or different fingerprint is rejected with rebuild guidance before any
 package code can run. `native_standalone` records an engine-independent boundary.
 Keep the sidecar with the DLL whenever package binaries are copied or shipped.
 
+When the editor opens a project, it first checks every source package under
+`<project>/Packages/` that has a native layer. If none of its builds (workspace
+output or `Bin/` prebuilt) passes this check for the running engine, the editor
+regenerates the package workspace and rebuilds it before `LoadAll()` runs. An
+engine rebuild therefore costs one package build on the next editor start
+instead of a manual rebuild (`PackageHost::FindStaleProjectNativePackages()`).
+
 This guard detects C++ ABI drift; it does not make the C++ boundary stable.
 Distribute `native` packages as source and rebuild them for each engine SDK/build.
 
@@ -118,14 +165,27 @@ End users install packages through the editor's **Package Manager**, which reads
 Install flow:
 
 1. Fetch the registry `index.json` (atomic write to a cache file).
-2. On install: download the package zip, **verify its SHA-256**, extract it (rejecting path-traversal and zip-bomb tricks), and move the single top-level folder into `<project>/Packages/<Name>/`.
-3. Add the package name to the project's allow-list.
-4. Regenerate project files and trigger a rebuild.
-5. Call `PackageHost::LoadInstalled()` to load the new DLLs live.
+2. Plan the install: pick the newest release that supports this engine, then the newest fitting release of each dependency that is missing or outside its range. A plan that would push an installed package outside a range another installed package declares is refused, with the reason.
+3. For each release in the plan (dependencies first): download the zip, **verify its SHA-256**, extract it (rejecting path-traversal and zip-bomb tricks), move the single top-level folder into `<project>/Packages/`, and check that it contains the expected name and version.
+4. Add the requested package to the project's allow-list (dependencies load transitively) and update `packages-lock.json`.
+5. Regenerate project files, rebuild, and call `PackageHost::LoadInstalled()` to load the new DLLs live.
 
-The whole install is **atomic with rollback**: any failure cleans up the temp files *and* removes a half-installed package directory, so re-running install is always safe.
+**Updates** use the same plan: when the registry has a newer release that fits the engine and every installed dependent, the package shows **Update to x.y.z**. The old folder is moved to `.index/package-backup/` and restored if any step fails, so a failed update leaves the previous set of packages in place.
 
-To **publish**: zip your package folder (a single top-level folder containing `index-package.lua`), host the zip somewhere fetchable, and append an entry — download URL plus SHA-256 — to the registry's `index.json`. Pushing that file is the only deploy step.
+To **publish**: zip your package folder (a single top-level folder containing `index-package.lua`), host the zip somewhere fetchable, and add an entry to the registry's `index.json`:
+
+```json
+{ "packages": [ {
+    "name": "MyGame.Grid", "description": "...", "layers": ["native", "csharp"],
+    "version": "1.3.0", "downloadUrl": "https://.../grid-1.3.0.zip", "sha256": "<64 hex>",
+    "engine": ">=2026.1.0", "dependencies": ["MyGame.Core@^2.0.0"],
+    "versions": [
+        { "version": "1.2.0", "downloadUrl": "https://.../grid-1.2.0.zip", "sha256": "<64 hex>", "engine": ">=2026.1.0" }
+    ]
+} ] }
+```
+
+The top-level `version` / `downloadUrl` / `sha256` describe one release; `versions` adds others, so projects on an older engine can still install a release that supports it. `minEngineVersion: "X"` is still read as `engine: ">=X"`. A release may list `"modules": ["Index.2D"]`; the install then enables those modules, and a module this engine doesn't know or wasn't compiled with stops the install. Pushing that file is the only deploy step.
 
 ---
 
@@ -151,7 +211,7 @@ These break things in ways the error messages don't always explain:
 
 6. **Regenerate after manifest/allow-list changes.** The scaffolder does this; manual edits don't.
 
-7. **Native DLLs are tied to one engine binary.** The build writes a `.dll.indexabi` sidecar and PackageHost refuses a missing or stale one. Rebuild from source after changing or recompiling the engine; do not publish one generic native DLL for multiple engine builds.
+7. **Native DLLs are tied to one engine binary.** The build writes a `.dll.indexabi` sidecar and PackageHost refuses a missing or stale one. The editor rebuilds project source packages automatically on the next project open after the engine changes; engine packages under `packages/` are rebuilt with the engine. Do not publish one generic native DLL for multiple engine builds.
 
 ---
 

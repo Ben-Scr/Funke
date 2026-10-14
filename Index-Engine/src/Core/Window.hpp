@@ -6,14 +6,33 @@
 #include "Core/WindowSpecification.hpp"
 #include "Events/IndexEvent.hpp"
 
-#include <GLFW/glfw3.h>
 #include <cstdint>
 #include <string>
 #include <memory>
 #include <functional>
+#include <optional>
+#include <vector>
+
+struct SDL_Window;
+struct SDL_Cursor;
+union SDL_Event;
 
 namespace Index {
 	class Texture2D;
+	struct ImageData;
+
+	// Name/version/reverse-DNS id the OS uses to group windows and pick the taskbar/dock entry (Wayland app_id, macOS).
+	struct AppIdentity {
+		std::string Name = "Index";
+		std::string Version;
+		std::string Identifier = "dev.index.engine";
+	};
+
+	struct DisplayMode {
+		int Width = 0;
+		int Height = 0;
+		float RefreshRate = 0.0f;
+	};
 
 	class INDEX_API Window {
 		friend class Application;
@@ -22,39 +41,46 @@ namespace Index {
 		Window(int width, int height, const std::string& title);
 		Window(const WindowSpecification& props);
 
-		// Info: Initializes the GLFW library
-		static void Initialize();
-		// Info: Terminates the GLFW library
+		// Initializes SDL's video, event and gamepad subsystems.
+		static void Initialize(const AppIdentity& identity = {});
 		static void Shutdown();
 		static bool IsInitialized() { return s_IsInitialized; }
+
+		// Drains the SDL event queue and routes events to the owning Window and the native hooks.
+		static void PollEvents();
+
+		// Raw SDL events for consumer-side backends (ImGui's SDL3 platform backend) that live outside engine.dll.
+		using NativeEventHook = std::function<void(const SDL_Event&)>;
+		static int AddNativeEventHook(NativeEventHook hook);
+		static void RemoveNativeEventHook(int hookId);
 
 		static void SetVsync(bool enabled);
 
 		void Destroy();
 
-		void SetClipboardString(const std::string& s) { glfwSetClipboardString(m_GLFWwindow, s.c_str()); }
-		void SetWindowResizeable(bool enabled) { glfwSetWindowAttrib(m_GLFWwindow, GLFW_RESIZABLE, enabled ? GLFW_TRUE : GLFW_FALSE); }
-		void SetWindowMoveable(bool enabled) { glfwSetWindowAttrib(m_GLFWwindow, GLFW_DECORATED, enabled ? GLFW_TRUE : GLFW_FALSE); }
-		void SetPosition(Vec2Int pos) { glfwSetWindowPos(m_GLFWwindow, pos.x, pos.y); }
-		void SetSize(Vec2Int size) { glfwSetWindowSize(m_GLFWwindow, size.x, size.y); }
+		void SetClipboardString(const std::string& s);
+		void SetWindowResizeable(bool enabled) { SetResizeable(enabled); }
+		void SetWindowMoveable(bool enabled) { SetDecorated(enabled); }
+		void SetPosition(Vec2Int pos);
+		void SetSize(Vec2Int size);
 
-		// Components <= 0 are treated as GLFW_DONT_CARE; cached because GLFW has no getter for size limits.
+		// Components <= 0 mean "no limit".
 		void SetMinSize(Vec2Int size);
 		void SetMaxSize(Vec2Int size);
 		Vec2Int GetMinSize() const { return m_MinSize; }
 		Vec2Int GetMaxSize() const { return m_MaxSize; }
-		void SetCursorPosition(Vec2 position) { glfwSetCursorPos(m_GLFWwindow, (double)position.x, (double)position.y); }
+		void SetCursorPosition(Vec2 position);
 
 		void SetCursorLocked(bool enabled);
 		void SetCursorHidden(bool enabled);
 		void SetCursorMode(int mode);
 		int GetCursorMode() const { return m_CursorMode; }
 
-		void SetUICursorImage(const Texture2D* tex2D);
+		// Hotspot = click point in source-image pixels from the top-left. No-op on touch platforms.
+		void SetUICursorImage(const Texture2D* tex2D, Vec2Int hotspot = {});
 		void SetCursorOverUI(bool overUI);
 
-
-		void SetCursorImage(const Texture2D* tex2D);
+		void SetCursorImage(const Texture2D* tex2D, Vec2Int hotspot = {});
 		// Editor-only gate. When false, SetCursorImage / SetUICursorImage /
 		// SetCursorOverUI keep their state but DON'T touch the OS cursor, so the
 		// project's game cursor stays scoped to the Game View instead of leaking
@@ -65,40 +91,60 @@ namespace Index {
 		uint64_t GetCursorTextureAsset() const { return m_CursorTextureAssetId; }
 		void SetCursorTextureAsset(uint64_t assetId) { m_CursorTextureAssetId = assetId; }
 		void SetWindowIcon(const Texture2D* tex2D);
-		void SetWindowIconFromResource();
+		void SetWindowIcon(const ImageData& image);
+		// Windows: the executable's embedded icon at this window's DPI. No-op elsewhere.
+		void SetEmbeddedWindowIcon();
 
 		// Info: If enabled equals true the window will become fullscreen else windowed
 		void SetFullScreen(bool enabled);
 		void SetDecorated(bool enabled);
 		void SetVisible(bool enabled);
 		void SetResizeable(bool enabled);
-		void SetTitle(const std::string& title) { glfwSetWindowTitle(m_GLFWwindow, title.c_str()); }
+		void SetTitle(const std::string& title);
 
 		void SetAspectLock(float aspect);
 		float GetAspectLock() const { return m_AspectLock; }
 
-		// MUST be called once after RenderApi::Init: the framebuffer-size callback doesn't fire on initial window creation, so frame 0 would miss the aspect-lock sub-rect without this.
+		// MUST be called once after RenderApi::Init: no resize event fires on initial window creation, so frame 0 would miss the aspect-lock sub-rect without this.
 		void ResyncViewportAfterRenderApiInit();
 
-		std::string GetTitle() const { return std::string(glfwGetWindowTitle(m_GLFWwindow)); }
+		std::string GetTitle() const;
 		int GetWidth()  const { return s_MainViewport->GetWidth(); }
 		int GetHeight() const { return s_MainViewport->GetHeight(); }
-		GLFWmonitor* GetWindowMonitor() const;
-		static GLFWmonitor* GetMainMonitor();
-		const GLFWvidmode* GetVideomode() const { return k_Videomode; }
-		GLFWwindow* GetGLFWWindow() const { return m_GLFWwindow; }
+		// Desktop mode of the display the window is on; empty when no display is available.
+		std::optional<DisplayMode> GetDisplayMode() const;
+		SDL_Window* GetNativeWindow() const { return m_Window; }
+		// HWND on Windows, NSWindow* on macOS, null elsewhere.
+		void* GetPlatformHandle() const;
 		float GetAspect() const { return s_MainViewport->GetAspect(); }
 		Vec2Int GetSize() const { return s_MainViewport->GetSize(); }
-		Vec2Int GetPosition() const {
-			Vec2Int pos;
-			glfwGetWindowPos(m_GLFWwindow, &pos.x, &pos.y);
-			return pos;
-		}
+		Vec2Int GetPosition() const;
+		// Content scale of the window's display (1 = 96 DPI on Windows, 2 on Retina).
+		float GetDisplayScale() const;
 
 		std::string GetClipboardString() const;
-		// Raw GLFW window coordinates; gameplay uses Input::GetMousePosition().
+		// Window coordinates; gameplay uses Input::GetMousePosition().
 		Vec2 GetCursorPosition() const;
 
+		// Desktop keeps text input on; touch platforms show the on-screen keyboard only while a field wants it.
+		void SetTextInputActive(bool active);
+		bool IsTextInputActive() const { return m_TextInputWanted; }
+
+		enum class TextInputKind : uint8_t { Text, Integer, Decimal, Password };
+		struct TextEditRequest {
+			TextInputKind Kind = TextInputKind::Text;
+			bool Multiline = false;
+			// The edited field in UI-surface pixels (top-left origin); the OS keeps it clear of the keyboard.
+			float Left = 0.0f, Top = 0.0f, Width = 0.0f, Height = 0.0f;
+		};
+		// Phones and tablets show the on-screen keyboard while a field is edited; no-ops elsewhere. owner
+		// identifies the requester so another scene's EndTextEditing can't close a keyboard it didn't open.
+		void BeginTextEditing(const TextEditRequest& request, const void* owner);
+		void EndTextEditing(const void* owner);
+		// The user closed the keyboard (back gesture, hide key) while editing was still requested.
+		bool WasTextEditingDismissed(const void* owner) const;
+		// Cut / Copy / Paste toolbar above a rect given like TextEditRequest (Platform::TextActionFlags). False on desktop.
+		bool ShowTextActions(const TextEditRequest& area, int flags) const;
 
 		bool IsMaximized() const;
 		bool IsMinimized() const;
@@ -106,6 +152,9 @@ namespace Index {
 		bool IsVisible() const;
 		bool IsDecorated() const;
 		bool IsResizeable() const;
+		bool IsFocused() const;
+		bool ShouldClose() const { return m_ShouldClose; }
+		void SetShouldClose(bool shouldClose) { m_ShouldClose = shouldClose; }
 
 		bool IsCustomTitlebarEnabled() const { return m_CustomTitlebar; }
 		int GetTitlebarHeight() const;
@@ -162,6 +211,18 @@ namespace Index {
 		};
 
 		static UIRegion GetUIRegion() { return s_UIRegion; }
+		// Bumped whenever the OS may take the native surface away (app sent to the background); a renderer
+		// that sees a new value rebuilds its surface even if the OS reused the old window's address.
+		static uint32_t GetNativeSurfaceGeneration() { return s_NativeSurfaceGeneration; }
+
+		// Framebuffer-pixel distances from the edges of the UI surface that UI keeps clear of on phones
+		// and tablets: notch / camera cutout, rounded corners, home indicator. Zero on desktop, Web and in
+		// the editor's game view.
+		struct SafeAreaInsets {
+			float Left = 0.0f, Top = 0.0f, Right = 0.0f, Bottom = 0.0f;
+			bool IsZero() const { return Left <= 0.0f && Top <= 0.0f && Right <= 0.0f && Bottom <= 0.0f; }
+		};
+		static SafeAreaInsets GetSafeAreaInsets();
 		static void SetUIRegion(int x, int y, int w, int h, Vec2 windowToRegionScale = { 1.0f, 1.0f }) {
 			s_UIRegion = UIRegion{ x, y, w, h, windowToRegionScale, UIRegionSource::Editor };
 		}
@@ -208,39 +269,48 @@ namespace Index {
 		void ApplyTitlebarAppearance();
 		void SyncViewportFromFramebuffer();
 		void UpdateViewport();
-		// GLFW_NO_API window — glfwSwapBuffers is not available; delegates to RenderApi::Present().
+		// The surface is owned by the render backend; this presents through RenderApi::Present().
 		void SwapBuffers() const;
 
-		bool ShouldClose() const { return glfwWindowShouldClose(m_GLFWwindow); }
 		Vec2Int GetScreenCenter() const;
 		Vec2 GetWindowCenter() const;
+		void ApplyCursor(SDL_Cursor* cursor) const;
 
-		static void FocusCallback(GLFWwindow* window, int focused);
-		static void RefreshCallback(GLFWwindow* window);
-		static void IconifyCallback(GLFWwindow* window, int iconified);
-		static void CloseCallback(GLFWwindow* window);
-		static void SetKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
-		static void SetCharCallback(GLFWwindow* window, unsigned int codepoint);
-		static void SetMouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
-		static void SetCursorPositionCallback(GLFWwindow* window, double xPos, double yPos);
-		static void SetScrollCallback(GLFWwindow* window, double xOffset, double yOffset);
-		static void SetWindowResizedCallback(GLFWwindow* window, int width, int height);
-		static void SetDropCallback(GLFWwindow* window, int count, const char** paths);
+		void HandleEvent(const SDL_Event& event);
+		void OnFocusChanged(bool focused);
+		void OnKey(int key, bool pressed, bool repeat);
+		void OnMouseButton(int button, bool pressed);
+		void OnCursorMoved(float x, float y);
+		void OnFramebufferResized();
+		static bool OnEventWatch(void* userData, SDL_Event* event);
 
 		static Window* s_ActiveWindow;
 
-		GLFWwindow* m_GLFWwindow = nullptr;
-		GLFWcursor* m_Cursor = nullptr;
-		GLFWcursor* m_DefaultCursor = nullptr;
-		GLFWcursor* m_UICursor = nullptr;
+		SDL_Window* m_Window = nullptr;
+		SDL_Cursor* m_Cursor = nullptr;
+		SDL_Cursor* m_DefaultCursor = nullptr;
+		SDL_Cursor* m_UICursor = nullptr;
 		bool m_CursorOverUI = false;
 		// Runtime: always true. Editor: false except while over the Game View.
 		bool m_GameCursorEnabled = true;
 		int m_CursorMode = 0;
 		uint64_t m_CursorTextureAssetId = 0;
+		// Win32 HICONs at the exact big/small system sizes; SDL would hand Windows one image to scale.
+		void* m_BigIcon = nullptr;
+		void* m_SmallIcon = nullptr;
+		void ApplyWin32Icons(void* bigHandle, void* smallHandle);
+		bool m_ShouldClose = false;
+		bool m_TextInputWanted = false;
+		const void* m_TextEditOwner = nullptr;
+		TextInputKind m_TextEditKind = TextInputKind::Text;
+		bool m_TextEditMultiline = false;
+		int m_TextEditArea[4] = { 0, 0, 0, 0 };
+		bool m_TextEditKeyboardShown = false;
+		bool m_TextEditDismissed = false;
+		// Relative mouse mode reports deltas only; integrating them keeps Input's absolute-position model.
+		Vec2 m_VirtualCursor{ 0.0f, 0.0f };
+		std::vector<std::string> m_PendingDrops;
 
-		Vec2Int m_RestoreSize;
-		Vec2Int m_RestorePos;
 		Vec2Int m_MinSize;
 		Vec2Int m_MaxSize;
 		bool m_CustomTitlebar = false;
@@ -251,13 +321,12 @@ namespace Index {
 		Color m_TitlebarInactiveColor { 0.0f, 0.0f, 0.0f, 0.0f };
 		bool m_TitlebarDarkMode = true;
 
-		static const GLFWvidmode* k_Videomode;
-
 		static std::unique_ptr<Viewport> s_MainViewport;
 		static UIRegion s_UIRegion;
 		static Vec2 s_WindowToFramebufferScale;
 		static bool s_IsVsync;
 		static bool s_IsInitialized;
+		static uint32_t s_NativeSurfaceGeneration;
 
 		EventCallbackFn m_EventCallback;
 	};

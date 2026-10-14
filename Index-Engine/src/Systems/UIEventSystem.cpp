@@ -24,6 +24,7 @@
 #include "Core/Log.hpp"
 #include "Core/Time.hpp"
 #include "Core/UUID.hpp"
+#include "Core/Platform.hpp"
 #include "Core/Window.hpp"
 #include "Graphics/Text/Font.hpp"
 #include "Graphics/Text/TextRenderer.hpp"
@@ -47,7 +48,7 @@ namespace Index {
 
 	namespace {
 
-		// Convert raw GLFW pixel coords (top-left origin, +Y down) to the
+		// Convert raw window pixel coords (top-left origin, +Y down) to the
 		// centred-origin, +Y-up screen space the layout system uses.
 		Vec2 ScreenPixelToUiSpace(const Vec2& mouseRaw, int viewportWidth, int viewportHeight) {
 			return Vec2{
@@ -360,6 +361,22 @@ namespace Index {
 			const int n = static_cast<int>(field.Text.size());
 			field.CaretBytePos = std::clamp(field.CaretBytePos, 0, n);
 			field.SelectionAnchorBytePos = std::clamp(field.SelectionAnchorBytePos, 0, n);
+		}
+
+		void SelectWordAt(InputFieldComponent& field, int byte) {
+			const int n = static_cast<int>(field.Text.size());
+			auto isWord = [&](int i) {
+				const unsigned char c = static_cast<unsigned char>(field.Text[i]);
+				return c >= 0x80 || std::isalnum(c) || c == '_' || c == '\'';
+			};
+			int lo = std::clamp(byte, 0, n);
+			// A finger just past the end of a word means that word.
+			if ((lo == n || !isWord(lo)) && lo > 0 && isWord(lo - 1)) --lo;
+			int hi = lo;
+			while (lo > 0 && isWord(lo - 1)) --lo;
+			while (hi < n && isWord(hi)) ++hi;
+			field.SelectionAnchorBytePos = lo;
+			field.CaretBytePos = hi;
 		}
 
 		// Wipe the active selection. No-op when caret == anchor.
@@ -741,7 +758,7 @@ namespace Index {
 				followCaret = false;
 			}
 			else if (hovered) {
-				const float wheel = input.ScrollValue(); // GLFW: + = up = toward top = less offset
+				const float wheel = input.ScrollValue(); // + = up = toward top = less offset
 				if (wheel != 0.0f) desired -= wheel * field.ScrollSensitivity * layout.LineHeight;
 			}
 
@@ -1044,6 +1061,19 @@ namespace Index {
 		}
 
 		constexpr float k_ScrollbarDragThresholdPx = 4.0f;
+		// Larger than the slider dead-zone: a finger tap on a list row wobbles a few units and must still click.
+		constexpr float k_ScrollRectPassthroughThresholdUi = 14.0f;
+
+		bool IsDescendantOf(const entt::registry& registry, EntityHandle entity, EntityHandle ancestor) {
+			EntityHandle current = entity;
+			for (int depth = 0; depth < 256 && registry.valid(current); ++depth) {
+				const auto* hierarchy = registry.try_get<HierarchyComponent>(current);
+				if (!hierarchy || hierarchy->Parent == entt::null) return false;
+				if (hierarchy->Parent == ancestor) return true;
+				current = hierarchy->Parent;
+			}
+			return false;
+		}
 
 		// True when the scrollbar's value axis runs along X. Vertical
 		// scrollbars (BottomToTop / TopToBottom) walk along Y.
@@ -1138,7 +1168,156 @@ namespace Index {
 			tc.Color = useText ? field.TextColor : field.PlaceholderColor;
 		}
 
+		struct UiPointer {
+			bool HasSurface = false;   // false: no viewport at all, nothing to hit-test against
+			bool OverSurface = false;  // pointer is over the game's UI surface (not an editor panel)
+			int SurfaceWidth = 0;
+			int SurfaceHeight = 0;
+			Vec2 Ui{ std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest() };
+		};
+
+		UiPointer ResolveUiPointer(const Vec2& mousePosition) {
+			UiPointer out;
+			const Window::UIRegion uiRegion = Window::GetUIRegion();
+			if (uiRegion.IsActive()) {
+				// Editor input stays confined to the Game View instead of leaking through other panels.
+				out.OverSurface =
+					mousePosition.x >= 0.0f && mousePosition.y >= 0.0f &&
+					mousePosition.x < static_cast<float>(uiRegion.Width) &&
+					mousePosition.y < static_cast<float>(uiRegion.Height);
+				out.SurfaceWidth = uiRegion.Width;
+				out.SurfaceHeight = uiRegion.Height;
+			}
+			else {
+				Viewport* viewport = Window::GetMainViewport();
+				if (!viewport || viewport->GetWidth() <= 0 || viewport->GetHeight() <= 0) return out;
+				out.SurfaceWidth = viewport->GetWidth();
+				out.SurfaceHeight = viewport->GetHeight();
+				// Without a Game View region, the editor window is not a game input surface.
+				out.OverSurface = !Application::IsEditor();
+			}
+			out.HasSurface = true;
+			// The lowest() sentinel avoids repeating the viewport gate at every hit-test site.
+			if (out.OverSurface) out.Ui = ScreenPixelToUiSpace(mousePosition, out.SurfaceWidth, out.SurfaceHeight);
+			return out;
+		}
+
+		// Front-most Interactable under mouseUi, using the same (SortingLayer, SortingOrder, DrawIndex) key as GuiRenderer.
+		EntityHandle PickInteractable(entt::registry& registry, const Vec2& mouseUi) {
+			std::vector<std::pair<EntityHandle, int>> uiDrawOrder;
+			uiDrawOrder.reserve(64);
+			UIDrawOrder::Build(registry, uiDrawOrder);
+
+			std::unordered_map<EntityHandle, int> drawIndexByEntity;
+			drawIndexByEntity.reserve(uiDrawOrder.size());
+			for (const auto& [entity, di] : uiDrawOrder) {
+				drawIndexByEntity.emplace(entity, di);
+			}
+
+			struct SortKey {
+				int Layer = 0;
+				int Order = 0;
+				int DrawIndex = 0;
+			};
+			auto keyFor = [&](EntityHandle entity, int drawIndex) {
+				SortKey k;
+				k.DrawIndex = drawIndex;
+				if (auto* image = registry.try_get<ImageComponent>(entity)) {
+					k.Layer = image->SortingLayer;
+					k.Order = image->SortingOrder;
+				} else if (auto* text = registry.try_get<TextRendererComponent>(entity)) {
+					k.Layer = text->SortingLayer;
+					k.Order = text->SortingOrder;
+				}
+				return k;
+			};
+			auto less = [](const SortKey& a, const SortKey& b) {
+				if (a.Layer != b.Layer) return a.Layer < b.Layer;
+				if (a.Order != b.Order) return a.Order < b.Order;
+				return a.DrawIndex < b.DrawIndex;
+			};
+
+			EntityHandle hovered = entt::null;
+			SortKey bestKey;
+			bool haveHit = false;
+			auto hitView = registry.view<RectTransform2DComponent, InteractableComponent>(entt::exclude<DisabledTag>);
+			for (auto&& [entity, rect, interact] : hitView.each()) {
+				if (!interact.Interactable) continue;
+				if (!UIDrawOrder::HitTest(registry, entity, rect, mouseUi)) continue;
+
+				// CircularSlider: reject bounding-rect hits outside the ring annulus (donut hole and outer edge).
+				if (const auto* cs = registry.try_get<CircularSliderComponent>(entity)) {
+					const Vec2 size = rect.GetSize();
+					const float outerR = std::min(size.x, size.y) * 0.5f;
+					const float innerR = std::max(0.0f, outerR - cs->RingThickness);
+					// Use geometric centre (not pivot): renderer paints the disc at centre regardless of pivot.
+					const Vec2 c = rect.GetCenter();
+					const float dx = mouseUi.x - c.x;
+					const float dy = mouseUi.y - c.y;
+					const float distSq = dx * dx + dy * dy;
+					if (distSq < innerR * innerR || distSq > outerR * outerR) continue;
+				}
+
+				auto it = drawIndexByEntity.find(entity);
+				if (it == drawIndexByEntity.end()) continue;
+
+				SortKey key = keyFor(entity, it->second);
+				if (!haveHit || less(bestKey, key)) {
+					hovered = entity;
+					bestKey = key;
+					haveHit = true;
+				}
+			}
+			return hovered;
+		}
+
 	} // namespace
+
+	EntityHandle UIEventSystem::GetHoveredEntity(Scene& scene) const {
+		Application* app = Application::GetInstance();
+		if (!app) return m_HoveredEntity;
+		const Vec2 mousePosition = app->GetInput().GetMousePosition();
+		// Scripts run before this system, so on a touch screen the finger has already jumped to where it
+		// lands while the last result still names what was under it before. Re-pick at the current position.
+		if (mousePosition.x == m_HoveredAtMouse.x && mousePosition.y == m_HoveredAtMouse.y) return m_HoveredEntity;
+		// An open dropdown popup swallows the pointer; only Update resolves its rows.
+		for (auto&& [entity, dd] : scene.GetRegistry().view<DropdownComponent>(entt::exclude<DisabledTag>).each()) {
+			if (dd.IsOpen) return m_HoveredEntity;
+		}
+		const UiPointer pointer = ResolveUiPointer(mousePosition);
+		if (!pointer.HasSurface || !pointer.OverSurface) return entt::null;
+		return PickInteractable(scene.GetRegistry(), pointer.Ui);
+	}
+
+	void UIEventSystem::SelectWordAt(InputFieldComponent& field, int byte) {
+		Index::SelectWordAt(field, byte);
+	}
+
+	EntityHandle UIEventSystem::WheelScrollTarget(const entt::registry& registry, EntityHandle hovered) {
+		if (!registry.valid(hovered)) return entt::null;
+		// A multiline field scrolls its own text with the wheel.
+		if (const auto* field = registry.try_get<InputFieldComponent>(hovered); field && field->Multiline) return entt::null;
+		EntityHandle firstHorizontal = entt::null;
+		EntityHandle current = hovered;
+		for (int depth = 0; depth < 256 && registry.valid(current); ++depth) {
+			if (const auto* sr = registry.try_get<ScrollRectComponent>(current)) {
+				if (sr->Vertical) return current;
+				if (sr->Horizontal && firstHorizontal == entt::null) firstHorizontal = current;
+			}
+			const auto* hierarchy = registry.try_get<HierarchyComponent>(current);
+			if (!hierarchy) break;
+			current = hierarchy->Parent;
+		}
+		return firstHorizontal;
+	}
+
+	bool UIEventSystem::CanScrollRectTakeOverPress(const entt::registry& registry, EntityHandle pressed, EntityHandle scrollRect) {
+		if (pressed == scrollRect || !registry.valid(pressed) || !registry.valid(scrollRect)) return false;
+		if (registry.any_of<SliderComponent, ScrollbarComponent, CircularSliderComponent, ScrollRectComponent, InputFieldComponent>(pressed)) {
+			return false;
+		}
+		return IsDescendantOf(registry, pressed, scrollRect);
+	}
 
 	void UIEventSystem::Update(Scene& scene) {
 		INDEX_PROFILE_SCOPE("UIEvent.Update");
@@ -1148,36 +1327,14 @@ namespace Index {
 		if (!app) return;
 		Input& input = app->GetInput();
 
-		const Window::UIRegion uiRegion = Window::GetUIRegion();
 		const Vec2 mousePosition = input.GetMousePosition();
-		int vpW = 0;
-		int vpH = 0;
-		// Editor input stays confined to the Game View instead of leaking through other panels.
-		bool cursorOverUiSurface = true;
-		if (uiRegion.IsActive()) {
-			cursorOverUiSurface =
-				mousePosition.x >= 0.0f && mousePosition.y >= 0.0f &&
-				mousePosition.x < static_cast<float>(uiRegion.Width) &&
-				mousePosition.y < static_cast<float>(uiRegion.Height);
-			vpW = uiRegion.Width;
-			vpH = uiRegion.Height;
-		}
-		else {
-			Viewport* viewport = Window::GetMainViewport();
-			if (!viewport || viewport->GetWidth() <= 0 || viewport->GetHeight() <= 0) return;
-			vpW = viewport->GetWidth();
-			vpH = viewport->GetHeight();
-			// Without a Game View region, the editor window is not a game input surface.
-			if (Application::IsEditor()) {
-				cursorOverUiSurface = false;
-			}
-		}
-
-		// A sentinel avoids repeating the viewport gate at every hit-test site.
-		const Vec2 mouseUi = cursorOverUiSurface
-			? ScreenPixelToUiSpace(mousePosition, vpW, vpH)
-			: Vec2{ std::numeric_limits<float>::lowest(),
-			        std::numeric_limits<float>::lowest() };
+		const UiPointer pointer = ResolveUiPointer(mousePosition);
+		if (!pointer.HasSurface) return;
+		const int vpW = pointer.SurfaceWidth;
+		const int vpH = pointer.SurfaceHeight;
+		const bool cursorOverUiSurface = pointer.OverSurface;
+		const Vec2 mouseUi = pointer.Ui;
+		m_HoveredAtMouse = mousePosition;
 
 		// Held and release stay ungated so drags leaving the viewport can finish cleanly.
 		const bool mouseDownThisFrame = cursorOverUiSurface && input.GetMouseDown(MouseButton::Left);
@@ -1349,68 +1506,7 @@ namespace Index {
 
 		auto hitView = registry.view<RectTransform2DComponent, InteractableComponent>(entt::exclude<DisabledTag>);
 		if (!popupConsumes) {
-			std::vector<std::pair<EntityHandle, int>> uiDrawOrder;
-			uiDrawOrder.reserve(64);
-			UIDrawOrder::Build(registry, uiDrawOrder);
-
-			std::unordered_map<EntityHandle, int> drawIndexByEntity;
-			drawIndexByEntity.reserve(uiDrawOrder.size());
-			for (const auto& [entity, di] : uiDrawOrder) {
-				drawIndexByEntity.emplace(entity, di);
-			}
-
-			struct SortKey {
-				int Layer = 0;
-				int Order = 0;
-				int DrawIndex = 0;
-			};
-			auto keyFor = [&](EntityHandle entity, int drawIndex) {
-				SortKey k;
-				k.DrawIndex = drawIndex;
-				if (auto* image = registry.try_get<ImageComponent>(entity)) {
-					k.Layer = image->SortingLayer;
-					k.Order = image->SortingOrder;
-				} else if (auto* text = registry.try_get<TextRendererComponent>(entity)) {
-					k.Layer = text->SortingLayer;
-					k.Order = text->SortingOrder;
-				}
-				return k;
-			};
-			auto less = [](const SortKey& a, const SortKey& b) {
-				if (a.Layer != b.Layer) return a.Layer < b.Layer;
-				if (a.Order != b.Order) return a.Order < b.Order;
-				return a.DrawIndex < b.DrawIndex;
-			};
-
-			SortKey bestKey;
-			bool haveHit = false;
-			for (auto&& [entity, rect, interact] : hitView.each()) {
-				if (!interact.Interactable) continue;
-				if (!UIDrawOrder::HitTest(registry, entity, rect, mouseUi)) continue;
-
-				// CircularSlider: reject bounding-rect hits outside the ring annulus (donut hole and outer edge).
-				if (const auto* cs = registry.try_get<CircularSliderComponent>(entity)) {
-					const Vec2 size = rect.GetSize();
-					const float outerR = std::min(size.x, size.y) * 0.5f;
-					const float innerR = std::max(0.0f, outerR - cs->RingThickness);
-					// Use geometric centre (not pivot): renderer paints the disc at centre regardless of pivot.
-					const Vec2 c = rect.GetCenter();
-					const float dx = mouseUi.x - c.x;
-					const float dy = mouseUi.y - c.y;
-					const float distSq = dx * dx + dy * dy;
-					if (distSq < innerR * innerR || distSq > outerR * outerR) continue;
-				}
-
-				auto it = drawIndexByEntity.find(entity);
-				if (it == drawIndexByEntity.end()) continue;
-
-				SortKey key = keyFor(entity, it->second);
-				if (!haveHit || less(bestKey, key)) {
-					hovered = entity;
-					bestKey = key;
-					haveHit = true;
-				}
-			}
+			hovered = PickInteractable(registry, mouseUi);
 		}
 
 		// ── 3. Per-entity interaction state machine ──────────────────
@@ -1615,28 +1711,46 @@ namespace Index {
 				slider.ValueObserved = true;
 			}
 
-			InteractableComponent* dragInteract = nullptr;
+			// Both the handle and the track take presses: the handle drags relative to where it was
+			// grabbed, the bare track jumps the value to the pointer first.
+			InteractableComponent* handleInteract = nullptr;
 			if (slider.HandleEntity != entt::null
 				&& registry.valid(slider.HandleEntity))
 			{
-				dragInteract = registry.try_get<InteractableComponent>(slider.HandleEntity);
+				handleInteract = registry.try_get<InteractableComponent>(slider.HandleEntity);
 			}
-			if (!dragInteract) {
-				dragInteract = registry.try_get<InteractableComponent>(entity);
-			}
+			InteractableComponent* trackInteract = registry.try_get<InteractableComponent>(entity);
+			const bool handlePressed = handleInteract && handleInteract->Interactable && handleInteract->IsPressed;
+			const bool trackPressed = trackInteract && trackInteract->Interactable && trackInteract->IsPressed;
 
 			if (slider.IsReadOnly) {
 				slider.IsDragging = false;
 			}
-			else if (dragInteract && dragInteract->Interactable && dragInteract->IsPressed) {
+			else if (handlePressed || trackPressed) {
 				const bool sliderHorizontal = IsSliderHorizontal(slider.Direction);
 				const bool sliderReversed   = IsSliderReversed(slider.Direction);
 				const float mouseAxis = sliderHorizontal ? mouseUi.x : mouseUi.y;
 
-				if (dragInteract->IsMouseDown) {
+				const bool pressStarted = handlePressed ? handleInteract->IsMouseDown : trackInteract->IsMouseDown;
+				if (pressStarted) {
 					slider.PressMouseAxis = mouseAxis;
 					slider.PressValue = slider.Value;
 					slider.IsDragging = false;
+					if (!handlePressed) {
+						const Vec2 bl = rect.GetBottomLeft();
+						const Vec2 tr = rect.GetTopRight();
+						const float start = sliderHorizontal ? bl.x : bl.y;
+						const float trackLen = sliderHorizontal ? (tr.x - bl.x) : (tr.y - bl.y);
+						if (trackLen > 0.0f) {
+							float t = std::clamp((mouseAxis - start) / trackLen, 0.0f, 1.0f);
+							if (sliderReversed) t = 1.0f - t;
+							float jumped = slider.MinValue + t * (slider.MaxValue - slider.MinValue);
+							if (slider.WholeNumbers) jumped = std::round(jumped);
+							slider.Value = jumped;
+							slider.PressValue = jumped;
+							slider.IsDragging = true;
+						}
+					}
 				}
 
 				if (!slider.IsDragging
@@ -1917,6 +2031,9 @@ namespace Index {
 		// ── 6d. Scroll Rects ─────────────────────────────────────────
 		auto scrollRectView = registry.view<ScrollRectComponent, RectTransform2DComponent>(entt::exclude<DisabledTag>);
 		std::vector<std::pair<EntityHandle, bool>> deferredScrollbarEnable;
+		// The wheel goes to the scroll rect around whatever is under the cursor; list rows are buttons that
+		// cover the whole viewport, so requiring the viewport itself to be hovered only scrolled in the gaps.
+		const EntityHandle wheelTarget = WheelScrollTarget(registry, m_HoveredEntity);
 		for (auto&& [entity, sr, viewportRect] : scrollRectView.each()) {
 			sr.ValueChangedThisFrame = false;
 			if (!sr.ValueObserved) {
@@ -1942,15 +2059,20 @@ namespace Index {
 
 			const Vec2 vbl = effectiveViewport->GetBottomLeft();
 			const Vec2 vtr = effectiveViewport->GetTopRight();
-			const float viewportW = vtr.x - vbl.x;
-			const float viewportH = vtr.y - vbl.y;
+			// Resolved corners and the pointer are in canvas pixels; content offsets and SizeDelta are in the content's
+			// parent units. They only match at a UI scale of 1 (e.g. a 540-wide window on a 1080 canvas is 0.5).
+			const Vec2 parentScale{
+				contentRect.LocalScale.x != 0.0f && contentRect.Scale.x > 0.0f ? contentRect.Scale.x / contentRect.LocalScale.x : 1.0f,
+				contentRect.LocalScale.y != 0.0f && contentRect.Scale.y > 0.0f ? contentRect.Scale.y / contentRect.LocalScale.y : 1.0f };
+			const float viewportW = (vtr.x - vbl.x) / parentScale.x;
+			const float viewportH = (vtr.y - vbl.y) / parentScale.y;
 			const float contentW = contentRect.SizeDelta.x;
 			const float contentH = contentRect.SizeDelta.y;
 			const float maxScrollX = std::max(0.0f, contentW - viewportW);
 			const float maxScrollY = std::max(0.0f, contentH - viewportH);
 
 			InteractableComponent* viewInteract = registry.try_get<InteractableComponent>(entity);
-			const bool hovered = viewInteract && viewInteract->IsHovered;
+			const bool wheelHere = entity == wheelTarget;
 
 			// ── Drag inside viewport ────────────────────────────────
 			if (viewInteract && viewInteract->Interactable) {
@@ -1961,10 +2083,37 @@ namespace Index {
 					sr.Velocity = Vec2{ 0.0f, 0.0f };
 				}
 			}
+			// Touch lists are covered by row buttons, so a press on one of them must still be able to scroll.
+			if (!sr.IsDragging && !sr.DragPending && mouseDownThisFrame && CanScrollRectTakeOverPress(registry, m_PressedEntity, entity))
+			{
+				sr.DragPending = true;
+				sr.PressMouseUi = mouseUi;
+				sr.Velocity = Vec2{ 0.0f, 0.0f };
+			}
+			if (sr.DragPending) {
+				const float moved = std::max(sr.Horizontal ? std::abs(mouseUi.x - sr.PressMouseUi.x) : 0.0f,
+					sr.Vertical ? std::abs(mouseUi.y - sr.PressMouseUi.y) : 0.0f);
+				if (!mouseHeld) {
+					sr.DragPending = false;
+				}
+				else if (moved >= k_ScrollRectPassthroughThresholdUi) {
+					sr.DragPending = false;
+					sr.IsDragging = true;
+					sr.PressMouseUi = mouseUi;
+					sr.PressContentPosition = contentRect.AnchoredPosition;
+					// Cancelling the press means the release no longer clicks the row the drag started on.
+					if (registry.valid(m_PressedEntity)) {
+						if (auto* pressed = registry.try_get<InteractableComponent>(m_PressedEntity)) {
+							pressed->IsPressed = false;
+						}
+					}
+					m_PressedEntity = entt::null;
+				}
+			}
 			if (sr.IsDragging) {
 				if (mouseHeld) {
-					const Vec2 delta{ mouseUi.x - sr.PressMouseUi.x,
-					                  mouseUi.y - sr.PressMouseUi.y };
+					const Vec2 delta{ (mouseUi.x - sr.PressMouseUi.x) / parentScale.x,
+					                  (mouseUi.y - sr.PressMouseUi.y) / parentScale.y };
 					Vec2 next = sr.PressContentPosition;
 					if (sr.Horizontal) next.x = sr.PressContentPosition.x + delta.x;
 					if (sr.Vertical)   next.y = sr.PressContentPosition.y + delta.y;
@@ -1976,7 +2125,7 @@ namespace Index {
 			}
 
 			// ── Mouse wheel ─────────────────────────────────────────
-			if (hovered) {
+			if (wheelHere) {
 				const float wheel = input.ScrollValue();
 				if (wheel != 0.0f) {
 					// ScrollSensitivity is in whole-number inspector units; * 0.01 converts to calibrated speed (5 = default).
@@ -2189,6 +2338,8 @@ namespace Index {
 					field.MouseSelecting = true;
 					field.MouseDownX = mouseUi.x;
 					field.MouseDownY = mouseUi.y;
+					field.PressHoldTime = 0.0f;
+					field.LongPressFired = false;
 				}
 				else {
 					field.IsFocused = false;
@@ -2206,6 +2357,11 @@ namespace Index {
 		// Drag-to-select: while the mouse is held and we started inside the
 		// field's rect, every frame's cursor position updates the caret.
 		// The anchor stays put, so the selection grows / shrinks naturally.
+		// Phones: holding still on a field selects the word under the finger and opens the system's
+		// Cut / Copy / Paste toolbar; releasing a drag-selection opens it too.
+		constexpr bool k_TouchTextActions = IDX_PLATFORM_MOBILE != 0;
+		constexpr float k_LongPressSeconds = 0.45f;
+		EntityHandle showTextActionsFor = entt::null;
 		for (auto&& [entity, interact, field] : inputView.each()) {
 			if (field.MouseSelecting && mouseHeld) {
 				// Only extend the selection once the cursor moves past a few pixels (or a
@@ -2213,15 +2369,30 @@ namespace Index {
 				// unintended selection that the next keystroke would replace, snapping the caret back.
 				const float ddx = mouseUi.x - field.MouseDownX;
 				const float ddy = mouseUi.y - field.MouseDownY;
-				if (ddx * ddx + ddy * ddy > 16.0f || field.CaretBytePos != field.SelectionAnchorBytePos) {
+				const float moved = ddx * ddx + ddy * ddy;
+				if (k_TouchTextActions && moved <= 100.0f && !HasSelection(field)) {
+					field.PressHoldTime += dt;
+					if (field.PressHoldTime >= k_LongPressSeconds && !field.LongPressFired) {
+						field.LongPressFired = true;
+						field.MouseSelecting = false;
+						SelectWordAt(field, field.CaretBytePos);
+						showTextActionsFor = entity;
+						continue;
+					}
+				}
+				if (moved > 16.0f || field.CaretBytePos != field.SelectionAnchorBytePos) {
 					field.CaretBytePos = ByteFromMouseX(registry, field, mouseUi);
 					field.CaretDesiredX = -1.0f; // mouse caret move resets the vertical goal column
 				}
 			}
 			if (!mouseHeld) {
+				if (k_TouchTextActions && field.MouseSelecting && field.IsFocused && HasSelection(field)) {
+					showTextActionsFor = entity;
+				}
 				field.MouseSelecting = false;
 			}
 		}
+		const Platform::TextAction textAction = Platform::PollTextAction();
 
 		// Per-frame typed text + special keys. We drain the char buffer
 		// once per frame and only apply it to the focused field; the same
@@ -2260,12 +2431,21 @@ namespace Index {
 				const size_t textSizeBefore = field.Text.size();
 				bool didVerticalNav = false;
 
-				if (ctrlDown) {
-				if (input.GetKeyDown(KeyCode::A)) {
+				// Ctrl shortcuts and the phone's text toolbar share one path.
+				const Platform::TextAction fieldAction = entity == m_TextActionsField ? textAction : Platform::TextAction::None;
+				const bool wantSelectAll = (ctrlDown && input.GetKeyDown(KeyCode::A)) || fieldAction == Platform::TextAction::SelectAll;
+				const bool wantCut = (ctrlDown && input.GetKeyDown(KeyCode::X)) || fieldAction == Platform::TextAction::Cut;
+				const bool wantCopy = (ctrlDown && input.GetKeyDown(KeyCode::C)) || fieldAction == Platform::TextAction::Copy || wantCut;
+				const bool wantPaste = (ctrlDown && input.GetKeyDown(KeyCode::V)) || fieldAction == Platform::TextAction::Paste;
+				{
+				if (wantSelectAll) {
 					field.SelectionAnchorBytePos = 0;
 					field.CaretBytePos = static_cast<int>(field.Text.size());
+					// The toolbar closes on a tap; reopen it for the new selection like Android does.
+					if (fieldAction == Platform::TextAction::SelectAll && !field.Text.empty()) showTextActionsFor = entity;
 				}
-				if (input.GetKeyDown(KeyCode::C) || input.GetKeyDown(KeyCode::X)) {
+				// Password fields never leave the field.
+				if (wantCopy && !field.IsSecret) {
 					auto [lo, hi] = SelectionRange(field);
 					if (lo != hi) {
 						if (Window* w = Application::GetWindow()) {
@@ -2273,12 +2453,12 @@ namespace Index {
 						}
 						// Cut mutates Text — read-only fields stay
 						// copy-only.
-						if (input.GetKeyDown(KeyCode::X) && !field.IsReadOnly) {
+						if (wantCut && !field.IsReadOnly) {
 							DeleteSelection(field);
 						}
 					}
 				}
-				if (input.GetKeyDown(KeyCode::V) && !field.IsReadOnly) {
+				if (wantPaste && !field.IsReadOnly) {
 					if (Window* w = Application::GetWindow()) {
 						const std::string clip = w->GetClipboardString();
 						if (!clip.empty()) {
@@ -2443,7 +2623,7 @@ namespace Index {
 					field.UpRepeatAccumulator = 0.0f;
 				}
 
-				// Down arrow is KeyCode::Bottom (GLFW KEY_DOWN = 264).
+				// Down arrow is KeyCode::Bottom (value 264).
 				if (input.GetKeyDown(KeyCode::Bottom)) {
 					moveVerticalOnce(1);
 					field.DownHoldTime = 0.0f;
@@ -2611,6 +2791,66 @@ namespace Index {
 				SetEntityEnabled(scene, scrollbar, desiredEnabled);
 			}
 
+		// On-screen keyboard (phones/tablets): open while an editable field is focused; closing it ends editing.
+		if (Window* window = Application::GetWindow()) {
+			InputFieldComponent* edited = nullptr;
+			InteractableComponent* editedInteract = nullptr;
+			const RectTransform2DComponent* editedRect = nullptr;
+			EntityHandle editedEntity = entt::null;
+			for (auto&& [entity, interact, field] : inputView.each()) {
+				if (!field.IsFocused || field.IsReadOnly) continue;
+				edited = &field;
+				editedInteract = &interact;
+				editedRect = registry.try_get<RectTransform2DComponent>(entity);
+				editedEntity = entity;
+				break;
+			}
+			if (edited && window->WasTextEditingDismissed(this)) {
+				edited->IsFocused = false;
+				edited->MouseSelecting = false;
+				// UIFocusSystem re-focuses the field from its navigation focus unless the Interactable lets go too.
+				editedInteract->IsFocused = false;
+				edited = nullptr;
+			}
+			// The text toolbar belongs to one field and one moment: a new tap, typing or losing focus closes it.
+			if (m_TextActionsField != entt::null
+				&& (editedEntity != m_TextActionsField || mouseDownThisFrame || !typedText.empty()
+					|| input.GetKeyDown(KeyCode::Backspace) || textAction != Platform::TextAction::None))
+			{
+				Platform::HideTextActions();
+				m_TextActionsField = entt::null;
+			}
+			if (!edited) {
+				window->EndTextEditing(this);
+			}
+			else {
+				Window::TextEditRequest request;
+				request.Multiline = edited->Multiline;
+				if (edited->IsSecret) request.Kind = Window::TextInputKind::Password;
+				else if (edited->ContentType == InputContentType::IntegerNumber) request.Kind = Window::TextInputKind::Integer;
+				else if (edited->ContentType == InputContentType::DecimalNumber) request.Kind = Window::TextInputKind::Decimal;
+				if (editedRect && editedRect->ResolvedValid) {
+					// UI space is centred and y-up; the request wants top-left surface pixels.
+					request.Left = editedRect->ResolvedMin.x + static_cast<float>(vpW) * 0.5f;
+					request.Top = static_cast<float>(vpH) * 0.5f - editedRect->ResolvedMax.y;
+					request.Width = editedRect->ResolvedMax.x - editedRect->ResolvedMin.x;
+					request.Height = editedRect->ResolvedMax.y - editedRect->ResolvedMin.y;
+				}
+				window->BeginTextEditing(request, this);
+
+				if (showTextActionsFor == editedEntity) {
+					const bool hasSelection = HasSelection(*edited);
+					const bool canCopy = hasSelection && !edited->IsSecret;
+					int flags = 0;
+					if (canCopy) flags |= Platform::TextActionCut | Platform::TextActionCopy;
+					if (!window->GetClipboardString().empty()) flags |= Platform::TextActionPaste;
+					auto [lo, hi] = SelectionRange(*edited);
+					if (!edited->Text.empty() && (hi - lo) < static_cast<int>(edited->Text.size())) flags |= Platform::TextActionSelectAll;
+					if (window->ShowTextActions(request, flags)) m_TextActionsField = editedEntity;
+				}
+			}
+		}
+
 		// ── 9. Dropdowns: open/close, sync label ─────────────────────
 		for (auto&& [entity, rect, dd] : dropdownView.each()) {
 			InteractableComponent* interact = registry.try_get<InteractableComponent>(entity);
@@ -2652,6 +2892,17 @@ namespace Index {
 		// ── 11. Fan out UI events to managed subscribers ─────────────
 		ScriptEngine::RaiseUiEventDispatch();
 		} // end UIEvent.Widgets scope
+	}
+
+	void UIEventSystem::OnDestroy(Scene&) {
+		m_PressedEntity = entt::null;
+		m_HoveredEntity = entt::null;
+		// A scene unloaded mid-edit must not leave the on-screen keyboard open.
+		if (Window* window = Application::GetWindow()) window->EndTextEditing(this);
+		if (m_TextActionsField != entt::null) {
+			Platform::HideTextActions();
+			m_TextActionsField = entt::null;
+		}
 	}
 
 	void UIEventSystem::OnPreRender(Scene& scene) {

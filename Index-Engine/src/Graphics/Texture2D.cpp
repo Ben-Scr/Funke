@@ -435,6 +435,14 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 			IDX_CORE_WARN_TAG("Texture2D", "Failed to load texture: {}", path);
 			return false;
 		}
+		// Over the device limit Dawn hands back an error texture, and every pass sampling it drops the frame.
+		const uint32_t maxDimension = WebGPUBackend::GetMaxTextureDimension2D();
+		if (static_cast<uint32_t>(w) > maxDimension || static_cast<uint32_t>(h) > maxDimension) {
+			stbi_image_free(pixels);
+			IDX_CORE_ERROR_TAG("Texture2D", "Texture {}x{} exceeds the GPU limit of {}px per side: {}",
+				w, h, maxDimension, path);
+			return false;
+		}
 
 		wgpu::Device device = WebGPUBackend::GetDevice();
 		wgpu::Queue  queue  = WebGPUBackend::GetQueue();
@@ -522,6 +530,13 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		if (width <= 0 || height <= 0 || rgba == nullptr) return false;
 		if (!WebGPUBackend::IsInitialized()) {
 			IDX_CORE_WARN_TAG("Texture2D", "CreateFromPixels called before WebGPU backend initialized");
+			return false;
+		}
+
+		const uint32_t maxDimension = WebGPUBackend::GetMaxTextureDimension2D();
+		if (static_cast<uint32_t>(width) > maxDimension || static_cast<uint32_t>(height) > maxDimension) {
+			IDX_CORE_ERROR_TAG("Texture2D", "CreateFromPixels: {}x{} exceeds the GPU limit of {}px per side",
+				width, height, maxDimension);
 			return false;
 		}
 

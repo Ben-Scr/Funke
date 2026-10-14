@@ -9,6 +9,7 @@
 #include "Serialization/Path.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
@@ -125,6 +126,90 @@ TEST_CASE("IndexProject round-trips a non-default build resolution through proje
 	const IndexProject loaded = IndexProject::Load(root.string());
 	CHECK(loaded.BuildWidth == 3440);
 	CHECK(loaded.BuildHeight == 1440);
+}
+
+TEST_CASE("IndexProject persists the Editor View 3D toggle only once it was set") {
+	namespace fs = std::filesystem;
+	const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+	const fs::path root = fs::temp_directory_path() / ("IndexEditorView3DRT_" + std::to_string(suffix));
+	fs::create_directories(root / "Assets");
+	struct Cleanup {
+		fs::path Root;
+		~Cleanup() { std::error_code error; fs::remove_all(Root, error); }
+	} cleanup{ root };
+
+	IndexProject project;
+	project.Name = "Editor View RT";
+	project.RootDirectory = root.string();
+	project.ProjectFilePath = Path::Combine(root.string(), "project.json");
+	REQUIRE(project.Save());
+	CHECK_FALSE(IndexProject::Load(root.string()).EditorView3D.has_value());
+
+	for (bool value : { true, false }) {
+		project.EditorView3D = value;
+		REQUIRE(project.Save());
+		const IndexProject loaded = IndexProject::Load(root.string());
+		REQUIRE(loaded.EditorView3D.has_value());
+		CHECK(*loaded.EditorView3D == value);
+	}
+}
+
+TEST_CASE("UI scale modes map the reference resolution onto any aspect ratio") {
+	IndexProject project;
+	project.UIReferenceWidth = 1920;
+	project.UIReferenceHeight = 1080;
+
+	SUBCASE("Fit keeps the whole reference visible on a wide phone and a tall window") {
+		project.UIScaling = IndexProject::UIScaleMode::Fit;
+		CHECK(project.ComputeUIScale(2424.0f, 1080.0f) == doctest::Approx(1.0f));
+		CHECK(project.ComputeUIScale(960.0f, 1080.0f) == doctest::Approx(0.5f));
+		CHECK(1080.0f * project.ComputeUIScale(2424.0f, 1080.0f) <= 1080.0f + 0.01f);
+	}
+
+	SUBCASE("Fill covers the screen") {
+		project.UIScaling = IndexProject::UIScaleMode::Fill;
+		CHECK(project.ComputeUIScale(2424.0f, 1080.0f) == doctest::Approx(2424.0f / 1920.0f));
+	}
+
+	SUBCASE("Match blends width and height in log space") {
+		project.UIScaling = IndexProject::UIScaleMode::MatchWidthOrHeight;
+		project.UIScaleMatch = 0.0f;
+		CHECK(project.ComputeUIScale(3840.0f, 1080.0f) == doctest::Approx(2.0f));
+		project.UIScaleMatch = 1.0f;
+		CHECK(project.ComputeUIScale(3840.0f, 1080.0f) == doctest::Approx(1.0f));
+		project.UIScaleMatch = 0.5f;
+		CHECK(project.ComputeUIScale(3840.0f, 1080.0f) == doctest::Approx(std::sqrt(2.0f)));
+	}
+
+	SUBCASE("A zero-sized surface falls back to 1") {
+		project.UIScaling = IndexProject::UIScaleMode::Fit;
+		CHECK(project.ComputeUIScale(0.0f, 1080.0f) == doctest::Approx(1.0f));
+	}
+}
+
+TEST_CASE("IndexProject round-trips the UI scale mode through project.json") {
+	namespace fs = std::filesystem;
+	const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+	const fs::path root = fs::temp_directory_path() / ("IndexUIScaleRT_" + std::to_string(suffix));
+	fs::create_directories(root / "Assets");
+	struct Cleanup {
+		fs::path Root;
+		~Cleanup() { std::error_code error; fs::remove_all(Root, error); }
+	} cleanup{ root };
+
+	IndexProject project;
+	project.Name = "UI Scale RT";
+	project.RootDirectory = root.string();
+	project.ProjectFilePath = Path::Combine(root.string(), "project.json");
+	project.UIScaling = IndexProject::UIScaleMode::Fit;
+	REQUIRE(project.Save());
+	CHECK(IndexProject::Load(root.string()).UIScaling == IndexProject::UIScaleMode::Fit);
+
+	for (IndexProject::UIScaleMode mode : { IndexProject::UIScaleMode::MatchWidthOrHeight,
+			IndexProject::UIScaleMode::Fit, IndexProject::UIScaleMode::Fill }) {
+		CHECK(IndexProject::UIScaleModeFromString(IndexProject::UIScaleModeToString(mode)) == mode);
+	}
+	CHECK(IndexProject::UIScaleModeFromString("Stretch") == IndexProject::UIScaleMode::MatchWidthOrHeight);
 }
 
 TEST_CASE("IndexProject rejects unreadable and newer project formats") {

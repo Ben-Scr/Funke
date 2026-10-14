@@ -17,6 +17,7 @@ static_assert(std::is_same_v<decltype(Index::Transform2DComponent{}.Up()), Index
 static_assert(std::is_default_constructible_v<Index::SpriteRendererComponent>);
 static_assert(std::is_default_constructible_v<Index::Camera2DComponent>);
 static_assert(std::is_default_constructible_v<Index::ParticleSystem2DComponent>);
+static_assert(std::is_default_constructible_v<Index::ParticleSystem3DComponent>);
 static_assert(std::is_default_constructible_v<Index::AudioSourceComponent>);
 static_assert(std::is_default_constructible_v<Index::Rigidbody2DComponent>);
 static_assert(std::is_default_constructible_v<Index::ButtonComponent>);

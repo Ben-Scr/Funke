@@ -23,14 +23,20 @@ public static class Cursor
         set => InternalCalls.Cursor_SetMode(value ? (int)CursorMode.Default : k_CursorModeHidden);
     }
 
-    /// <summary>The current texture of the cursor</summary>
+    /// <summary>The current texture of the cursor. Setting it clicks at the image's top-left; use <see cref="SetTexture"/> for another hotspot.</summary>
     public static Texture? Texture
     {
         get => Texture.FromAssetUUID(InternalCalls.Cursor_GetTexture());
-        set => InternalCalls.Cursor_SetTexture(value?.UUID ?? 0);
+        set => SetTexture(value, Vector2.Zero);
     }
 
-    // Native mode 3 = GLFW_CURSOR_HIDDEN (invisible, free movement). Kept off
+    /// <summary>Sets the cursor image. <paramref name="hotspot"/> is the click point in texture pixels from the top-left. Ignored on touch platforms.</summary>
+    public static void SetTexture(Texture? texture, Vector2 hotspot)
+    {
+        InternalCalls.Cursor_SetTexture(texture?.UUID ?? 0, (int)MathF.Round(hotspot.X), (int)MathF.Round(hotspot.Y));
+    }
+
+    // Native mode 3 = hidden cursor (invisible, free movement). Kept off
     // the CursorMode enum because hide-without-lock is a visibility concern,
     // not a meaningful input mode like Default/Locked.
     private const int k_CursorModeHidden = 3;

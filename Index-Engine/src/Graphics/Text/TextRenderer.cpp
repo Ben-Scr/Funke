@@ -1,7 +1,9 @@
 #include "pch.hpp"
 #include "Graphics/Text/TextRenderer.hpp"
 
+#if INDEX_WITH_2D
 #include "Components/General/Transform2DComponent.hpp"
+#endif
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Core/Log.hpp"
@@ -353,10 +355,18 @@ namespace Index {
 
 		bool EnsureVertexBuffer(wgpu::Device device, PerInstance& inst, uint32_t neededBytes) {
 			if (inst.VertexBufferCapacityBytes >= neededBytes && inst.VertexBuffer) return true;
-			uint32_t cap = inst.VertexBufferCapacityBytes > 0
+			// Over maxBufferSize Dawn returns an error buffer (never null) that would drop every text draw.
+			const uint64_t maxBytes = std::min<uint64_t>(WebGPUBackend::GetMaxBufferSize(), UINT32_MAX);
+			if (neededBytes > maxBytes) {
+				IDX_CORE_ERROR_TAG("TextRenderer", "Text vertex data ({} bytes) exceeds the GPU buffer limit; skipping text",
+					neededBytes);
+				return false;
+			}
+			uint64_t cap = inst.VertexBufferCapacityBytes > 0
 				? inst.VertexBufferCapacityBytes
-				: static_cast<uint32_t>(k_InitialVertexCapacity * sizeof(TextVertex));
+				: static_cast<uint64_t>(k_InitialVertexCapacity * sizeof(TextVertex));
 			while (cap < neededBytes) cap *= 2;
+			cap = std::min(cap, maxBytes);
 
 			wgpu::BufferDescriptor desc{};
 			desc.size  = cap;
@@ -365,7 +375,7 @@ namespace Index {
 			wgpu::Buffer buf = device.CreateBuffer(&desc);
 			if (!buf) return false;
 			inst.VertexBuffer              = std::move(buf);
-			inst.VertexBufferCapacityBytes = cap;
+			inst.VertexBufferCapacityBytes = static_cast<uint32_t>(cap);
 			return true;
 		}
 
@@ -462,12 +472,17 @@ namespace Index {
 			ndcMinY = std::clamp(ndcMinY, -1.0f, 1.0f);
 			ndcMaxY = std::clamp(ndcMaxY, -1.0f, 1.0f);
 
-			const float fW = static_cast<float>(targetW);
-			const float fH = static_cast<float>(targetH);
-			const float xMin = (ndcMinX * 0.5f + 0.5f) * fW;
-			const float xMax = (ndcMaxX * 0.5f + 0.5f) * fW;
-			const float yMinTop = (1.0f - (ndcMaxY * 0.5f + 0.5f)) * fH;
-			const float yMaxTop = (1.0f - (ndcMinY * 0.5f + 0.5f)) * fH;
+			// NDC maps onto the pass viewport, not the whole target: letterboxed output offsets and scales it.
+			uint32_t vpX = 0, vpY = 0, vpW = targetW, vpH = targetH;
+			WebGPUBackend::GetCachedViewport(vpX, vpY, vpW, vpH);
+			const float fX = static_cast<float>(vpX);
+			const float fY = static_cast<float>(vpY);
+			const float fW = static_cast<float>(vpW);
+			const float fH = static_cast<float>(vpH);
+			const float xMin = fX + (ndcMinX * 0.5f + 0.5f) * fW;
+			const float xMax = fX + (ndcMaxX * 0.5f + 0.5f) * fW;
+			const float yMinTop = fY + (1.0f - (ndcMaxY * 0.5f + 0.5f)) * fH;
+			const float yMaxTop = fY + (1.0f - (ndcMinY * 0.5f + 0.5f)) * fH;
 			const float sx = std::floor(std::min(xMin, xMax));
 			const float sy = std::floor(std::min(yMinTop, yMaxTop));
 			const float sw = std::ceil(std::abs(xMax - xMin));
@@ -520,17 +535,6 @@ namespace Index {
 		const float requested = pixelSize > 0.0f ? pixelSize : text.FontSize;
 		const float bakeRequest = std::min(requested, k_MaxBakedPixelSize);
 
-		// Bucket via FontManager so the cached-font check matches exactly what
-		// LoadFontByUUIDAsync will key the slot under (incl. the user's bake-step setting).
-		if (FontManager::IsValid(text.ResolvedFont)) {
-			if (Font* font = FontManager::GetFont(text.ResolvedFont)) {
-				if (FontManager::QuantizeBakeSize(font->GetPixelSize())
-					== FontManager::QuantizeBakeSize(bakeRequest)) {
-					return font;
-				}
-			}
-		}
-
 		uint64_t uuid = static_cast<uint64_t>(text.FontAssetId);
 		if (uuid == 0 || uuid == k_DefaultFontAssetId) {
 			if (IndexProject* project = ProjectManager::GetCurrentProject()) {
@@ -539,9 +543,28 @@ namespace Index {
 				}
 			}
 		}
+
+		// Bucket via FontManager so the cached-font check matches exactly what
+		// LoadFontByUUIDAsync will key the slot under (incl. the user's bake-step setting).
+		// Also require the requested asset: otherwise a default-font fallback cached while a custom
+		// font was still baking would pass the size check and stick forever.
+		if (FontManager::IsValid(text.ResolvedFont)) {
+			if (Font* font = FontManager::GetFont(text.ResolvedFont)) {
+				const bool sameAsset = uuid == 0 || FontManager::GetFontAssetUUID(text.ResolvedFont) == uuid;
+				if (sameAsset && FontManager::QuantizeBakeSize(font->GetPixelSize())
+					== FontManager::QuantizeBakeSize(bakeRequest)) {
+					return font;
+				}
+			}
+		}
+
 		if (uuid != 0) {
 			text.ResolvedFont = FontManager::LoadFontByUUIDAsync(uuid, bakeRequest);
 			if (Font* f = FontManager::GetFont(text.ResolvedFont)) return f;
+			// Still baking: draw with the default this frame but keep the pending handle cached.
+			if (FontManager::IsValid(text.ResolvedFont)) {
+				if (Font* fallback = FontManager::GetFont(FontManager::GetDefaultFont())) return fallback;
+			}
 		}
 
 		text.ResolvedFont = FontManager::GetDefaultFont();
@@ -907,6 +930,8 @@ namespace Index {
 		if (target.HasDepth) {
 			depthAtt.view              = target.DepthView;
 			depthAtt.depthLoadOp       = wgpu::LoadOp::Load;
+			// Ignored for Load, but browsers reject the non-finite default.
+			depthAtt.depthClearValue   = 1.0f;
 			depthAtt.depthStoreOp      = wgpu::StoreOp::Store;
 			depthAtt.stencilLoadOp     = wgpu::LoadOp::Load;
 			depthAtt.stencilStoreOp    = wgpu::StoreOp::Store;
@@ -958,6 +983,8 @@ namespace Index {
 		m_LastFrameGlyphCount = m_Vertices.size() / k_VerticesPerGlyph;
 	}
 
+#if INDEX_WITH_2D
+	// World-space text sits on Transform2D entities and is drawn by Renderer2D (Index.2D).
 	void TextRenderer::RenderScene(Scene& scene, const glm::mat4& vp, const AABB& viewportAABB) {
 		m_LastFrameGlyphCount = 0;
 		m_LastFrameDrawCalls = 0;
@@ -1008,10 +1035,13 @@ namespace Index {
 			cmd.WrapWidthPixels = 0.0f;
 			cmd.SortingOrder = text.SortingOrder;
 			cmd.SortingLayer = text.SortingLayer;
+			cmd.Rotation = tr.Rotation;
+			cmd.Pivot = tr.Position;
 			m_PendingDrawCmds.push_back(cmd);
 		}
 
 		RenderInstances(m_PendingDrawCmds, vp);
 	}
+#endif
 
 }  // namespace Index

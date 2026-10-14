@@ -19,7 +19,9 @@ public static class AssetManager
         Font = 6,
         Shader = 7,
         DataAsset = 8,
-        Other = 9
+        Other = 9,
+        Material = 10,
+        Mesh = 11
     }
 
     public static T? Load<T>(string path) where T : class
@@ -50,6 +52,12 @@ public static class AssetManager
 
         if (type == typeof(Font) && kind == AssetKind.Font)
             return Font.FromAssetUUID(guid) as T;
+
+        if (type == typeof(Material) && kind == AssetKind.Material)
+            return Material.FromAssetUUID(guid) as T;
+
+        if (type == typeof(Mesh) && kind == AssetKind.Mesh)
+            return Mesh.FromAssetUUID(guid) as T;
 
         if (kind == AssetKind.DataAsset && typeof(DataAsset).IsAssignableFrom(type))
             return DataAssetRuntime.LoadByGuid(guid, type) as T;
@@ -99,6 +107,8 @@ public static class AssetManager
         if (type == typeof(Audio)) return AssetKind.Audio;
         if (type == typeof(Entity)) return AssetKind.Prefab;
         if (type == typeof(Font)) return AssetKind.Font;
+        if (type == typeof(Material)) return AssetKind.Material;
+        if (type == typeof(Mesh)) return AssetKind.Mesh;
         if (typeof(DataAsset).IsAssignableFrom(type)) return AssetKind.DataAsset;
         return AssetKind.Unknown;
     }

@@ -1,0 +1,502 @@
+{
+  "version": 1,
+  "name": "SampleScene",
+  "sceneId": "15806697271546185086",
+  "systems": [],
+  "entities": [
+    {
+      "name": "Camera",
+      "uuid": "10186979197619817898",
+      "Origin": "Scene",
+      "SceneGUID": "10186979197619817898",
+      "Transform3D": {
+        "posX": 0,
+        "posY": 3.200000047683716,
+        "posZ": 9,
+        "rotX": -16,
+        "rotY": 0,
+        "rotZ": 0,
+        "scaleX": 1,
+        "scaleY": 1,
+        "scaleZ": 1
+      },
+      "Camera3D": {
+        "projection": 0,
+        "fov": 60,
+        "orthoSize": 5,
+        "near": 0.10000000149011612,
+        "far": 500,
+        "background": 0,
+        "clearColor": {
+          "r": 0.1899999976158142,
+          "g": 0.30000001192092896,
+          "b": 0.4699999988079071,
+          "a": 1
+        },
+        "skyTop": {
+          "r": 0.23999999463558197,
+          "g": 0.44999998807907104,
+          "b": 0.7799999713897705,
+          "a": 1
+        },
+        "skyHorizon": {
+          "r": 0.7300000190734863,
+          "g": 0.8299999833106995,
+          "b": 0.9300000071525574,
+          "a": 1
+        },
+        "skyGround": {
+          "r": 0.36000001430511475,
+          "g": 0.3400000035762787,
+          "b": 0.3100000023841858,
+          "a": 1
+        },
+        "sunSize": 2,
+        "skyAmbient": 0.5
+      }
+    },
+    {
+      "name": "Sun",
+      "uuid": "11765862824790562522",
+      "Origin": "Scene",
+      "SceneGUID": "11765862824790562522",
+      "Transform3D": {
+        "posX": 0,
+        "posY": 5,
+        "posZ": 0,
+        "rotX": -40,
+        "rotY": -35,
+        "rotZ": 0,
+        "scaleX": 1,
+        "scaleY": 1,
+        "scaleZ": 1
+      },
+      "DirectionalLight": {
+        "color": {
+          "r": 1,
+          "g": 0.949999988079071,
+          "b": 0.8500000238418579,
+          "a": 1
+        },
+        "intensity": 1.600000023841858,
+        "ambient": {
+          "r": 0.10000000149011612,
+          "g": 0.10000000149011612,
+          "b": 0.11999999731779099,
+          "a": 1
+        },
+        "castShadows": true
+      }
+    },
+    {
+      "name": "Point Light",
+      "uuid": "18445381389245350647",
+      "Origin": "Scene",
+      "SceneGUID": "18445381389245350647",
+      "Transform3D": {
+        "posX": -3.200000047683716,
+        "posY": 1.2000000476837158,
+        "posZ": 1.5,
+        "rotX": 0,
+        "rotY": 0,
+        "rotZ": 0,
+        "scaleX": 1,
+        "scaleY": 1,
+        "scaleZ": 1
+      },
+      "PointLight": {
+        "color": {
+          "r": 1,
+          "g": 0.44999998807907104,
+          "b": 0.10000000149011612,
+          "a": 1
+        },
+        "intensity": 8,
+        "range": 6
+      }
+    },
+    {
+      "name": "Spot Light",
+      "uuid": "9702867718647535792",
+      "Origin": "Scene",
+      "SceneGUID": "9702867718647535792",
+      "Transform3D": {
+        "posX": 3.5,
+        "posY": 4,
+        "posZ": 1.5,
+        "rotX": -90,
+        "rotY": 0,
+        "rotZ": 0,
+        "scaleX": 1,
+        "scaleY": 1,
+        "scaleZ": 1
+      },
+      "SpotLight": {
+        "color": {
+          "r": 0.30000001192092896,
+          "g": 0.6000000238418579,
+          "b": 1,
+          "a": 1
+        },
+        "intensity": 25,
+        "range": 8,
+        "innerAngle": 18,
+        "outerAngle": 28
+      }
+    },
+    {
+      "name": "Ground",
+      "uuid": "8299247891247991629",
+      "Origin": "Scene",
+      "SceneGUID": "8299247891247991629",
+      "Transform3D": {
+        "posX": 0,
+        "posY": 0,
+        "posZ": 0,
+        "rotX": 0,
+        "rotY": 0,
+        "rotZ": 0,
+        "scaleX": 20,
+        "scaleY": 1,
+        "scaleZ": 20
+      },
+      "MeshRenderer": {
+        "mesh": 2,
+        "material": "7100000000000000011",
+        "color": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+        },
+        "lit": true,
+        "castShadows": true
+      },
+      "MeshCollider3D": {
+        "useMeshRenderer": true,
+        "mesh": 0,
+        "convex": false,
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "isTrigger": false,
+        "friction": 0.5,
+        "bounciness": 0
+      }
+    },
+    {
+      "name": "Gold Sphere",
+      "uuid": "5060680782819062057",
+      "Origin": "Scene",
+      "SceneGUID": "5060680782819062057",
+      "Transform3D": {
+        "posX": -1.5,
+        "posY": 1,
+        "posZ": 0,
+        "rotX": 0,
+        "rotY": 0,
+        "rotZ": 0,
+        "scaleX": 2,
+        "scaleY": 2,
+        "scaleZ": 2
+      },
+      "MeshRenderer": {
+        "mesh": 1,
+        "material": "7100000000000000012",
+        "color": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+        },
+        "lit": true,
+        "castShadows": true
+      },
+      "SphereCollider3D": {
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "isTrigger": false,
+        "friction": 0.5,
+        "bounciness": 0,
+        "radius": 0.5
+      }
+    },
+    {
+      "name": "Red Cube",
+      "uuid": "16954538224724630415",
+      "Origin": "Scene",
+      "SceneGUID": "16954538224724630415",
+      "Transform3D": {
+        "posX": 1.5,
+        "posY": 0.75,
+        "posZ": 0.5,
+        "rotX": 0,
+        "rotY": 30,
+        "rotZ": 0,
+        "scaleX": 1.5,
+        "scaleY": 1.5,
+        "scaleZ": 1.5
+      },
+      "MeshRenderer": {
+        "mesh": 0,
+        "material": "7100000000000000013",
+        "color": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+        },
+        "lit": true,
+        "castShadows": true
+      },
+      "BoxCollider3D": {
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "isTrigger": false,
+        "friction": 0.5,
+        "bounciness": 0,
+        "size": {
+          "x": 1.2,
+          "y": 1.2,
+          "z": 1.2
+        }
+      }
+    },
+    {
+      "name": "Glow Cylinder",
+      "uuid": "4450009626429718548",
+      "Origin": "Scene",
+      "SceneGUID": "4450009626429718548",
+      "Transform3D": {
+        "posX": -3.799999952316284,
+        "posY": 0.75,
+        "posZ": -1.5,
+        "rotX": 0,
+        "rotY": 0,
+        "rotZ": 0,
+        "scaleX": 0.800000011920929,
+        "scaleY": 1.5,
+        "scaleZ": 0.800000011920929
+      },
+      "MeshRenderer": {
+        "mesh": 3,
+        "material": "7100000000000000014",
+        "color": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+        },
+        "lit": true,
+        "castShadows": true
+      },
+      "MeshCollider3D": {
+        "useMeshRenderer": true,
+        "mesh": 0,
+        "convex": false,
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "isTrigger": false,
+        "friction": 0.5,
+        "bounciness": 0
+      },
+      "CapsuleCollider3D": {
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "isTrigger": true,
+        "friction": 0.5,
+        "bounciness": 0,
+        "radius": 0.5,
+        "height": 1.0,
+        "direction": 1
+      }
+    },
+    {
+      "name": "Blue Sphere",
+      "uuid": "6141767485638349464",
+      "Origin": "Scene",
+      "SceneGUID": "6141767485638349464",
+      "Transform3D": {
+        "posX": 3.5,
+        "posY": 0.6000000238418579,
+        "posZ": 1.5,
+        "rotX": 0,
+        "rotY": 0,
+        "rotZ": 0,
+        "scaleX": 1.2000000476837158,
+        "scaleY": 1.2000000476837158,
+        "scaleZ": 1.2000000476837158
+      },
+      "MeshRenderer": {
+        "mesh": 1,
+        "material": "7100000000000000015",
+        "color": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+        },
+        "lit": true,
+        "castShadows": true
+      }
+    },
+    {
+      "name": "Default Cube",
+      "uuid": "12058277348307097541",
+      "Origin": "Scene",
+      "SceneGUID": "12058277348307097541",
+      "Transform3D": {
+        "posX": 0,
+        "posY": 0.5,
+        "posZ": -3.5,
+        "rotX": 0,
+        "rotY": 0,
+        "rotZ": 0,
+        "scaleX": 1,
+        "scaleY": 1,
+        "scaleZ": 1
+      },
+      "MeshRenderer": {
+        "mesh": 0,
+        "color": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+        },
+        "lit": true,
+        "castShadows": true
+      }
+    },
+    {
+      "name": "Torus",
+      "uuid": "72297969800234410",
+      "Origin": "Scene",
+      "SceneGUID": "72297969800234410",
+      "Transform3D": {
+        "posX": -3.7302727699279785,
+        "posY": 3.0431604385375977,
+        "posZ": -1.629020094871521,
+        "rotX": 20,
+        "rotY": 0,
+        "rotZ": 0,
+        "scaleX": 1,
+        "scaleY": 1,
+        "scaleZ": 1
+      },
+      "MeshRenderer": {
+        "mesh": 0,
+        "customMesh": "7100000000000000101",
+        "material": "7100000000000000012",
+        "color": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+        },
+        "lit": true,
+        "castShadows": true
+      },
+      "Rigidbody3D": {
+        "type": 2,
+        "mass": 1,
+        "linearDrag": 0.05000000074505806,
+        "angularDrag": 0.05000000074505806,
+        "gravityScale": 1,
+        "continuous": false,
+        "interpolate": true,
+        "freezePosX": false,
+        "freezePosY": false,
+        "freezePosZ": false,
+        "freezeRotX": false,
+        "freezeRotY": false,
+        "freezeRotZ": false
+      },
+      "MeshCollider3D": {
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "isTrigger": false,
+        "friction": 0.5,
+        "bounciness": 0,
+        "useMeshRenderer": true,
+        "mesh": 0,
+        "convex": false
+      }
+    },
+    {
+      "name": "Glass Cube",
+      "uuid": "4675537308179391321",
+      "Origin": "Scene",
+      "SceneGUID": "4675537308179391321",
+      "Transform3D": {
+        "posX": 1.5,
+        "posY": 1,
+        "posZ": 2.799999952316284,
+        "rotX": 0,
+        "rotY": 25,
+        "rotZ": 0,
+        "scaleX": 1.600000023841858,
+        "scaleY": 1.600000023841858,
+        "scaleZ": 1.600000023841858
+      },
+      "MeshRenderer": {
+        "mesh": 0,
+        "material": "7100000000000000102",
+        "color": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+        },
+        "lit": true,
+        "castShadows": false
+      }
+    },
+    {
+      "name": "Glass Sphere",
+      "uuid": "9152818025869968787",
+      "Origin": "Scene",
+      "SceneGUID": "9152818025869968787",
+      "Transform3D": {
+        "posX": -1.600000023841858,
+        "posY": 1.100000023841858,
+        "posZ": 2.5999999046325684,
+        "rotX": 0,
+        "rotY": 0,
+        "rotZ": 0,
+        "scaleX": 1.399999976158142,
+        "scaleY": 1.399999976158142,
+        "scaleZ": 1.399999976158142
+      },
+      "MeshRenderer": {
+        "mesh": 1,
+        "material": "7100000000000000102",
+        "color": {
+          "r": 1,
+          "g": 0.6000000238418579,
+          "b": 0.6000000238418579,
+          "a": 1
+        },
+        "lit": true,
+        "castShadows": false
+      }
+    }
+  ]
+}

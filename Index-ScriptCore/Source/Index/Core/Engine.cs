@@ -117,7 +117,7 @@ public static class Engine
             "MacOS" or "macOS" or "OSX" => Index.Platform.MacOS,
             "Android" => Index.Platform.Android,
             "iOS" => Index.Platform.iOS,
-            "WebGL" => Index.Platform.WebGL,
+            "Web" or "WebGL" => Index.Platform.WebGL,
             _ => Index.Platform.Unknown
         };
 

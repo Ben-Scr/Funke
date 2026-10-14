@@ -219,28 +219,39 @@ namespace Index {
 			}
 		});
 
+		// Queued events carry raw Scene*; a callback calling LoadScene (Single) releases those scenes
+		// mid-dispatch. Keep them alive until dispatch ends and skip events for scenes unloaded meanwhile.
+		std::vector<std::shared_ptr<Scene>> sceneKeepAlive;
+		for (const std::weak_ptr<Scene>& weakScene : SceneManager::GetLoadedScenes()) {
+			if (auto scene = weakScene.lock()) sceneKeepAlive.push_back(std::move(scene));
+		}
+		const auto scenesStillLoaded = [](const Collision2D& collision) {
+			return (!collision.sceneA || collision.sceneA->IsLoaded())
+				&& (!collision.sceneB || collision.sceneB->IsLoaded());
+		};
+
 		s_MainWorld->GetDispatcher().Process(
 			s_MainWorld->GetWorldID(),
 			[world = &*s_MainWorld](b2ShapeId shapeId) { return world->ResolveShape(shapeId); },
-			[](const Collision2D& collision) {
-				ScriptSystem::DispatchCollisionEnter2D(collision);
+			[&](const Collision2D& collision) {
+				if (scenesStillLoaded(collision)) ScriptSystem::DispatchCollisionEnter2D(collision);
 			},
-			[](const Collision2D& collision) {
-				ScriptSystem::DispatchCollisionExit2D(collision);
+			[&](const Collision2D& collision) {
+				if (scenesStillLoaded(collision)) ScriptSystem::DispatchCollisionExit2D(collision);
 			},
-			[](const Collision2D& collision) {
-				ScriptSystem::DispatchCollisionStay2D(collision);
+			[&](const Collision2D& collision) {
+				if (scenesStillLoaded(collision)) ScriptSystem::DispatchCollisionStay2D(collision);
 			});
 
 		s_IndexWorld->DispatchScriptContacts(
-			[](const Collision2D& collision) {
-				ScriptSystem::DispatchCollisionEnter2D(collision);
+			[&](const Collision2D& collision) {
+				if (scenesStillLoaded(collision)) ScriptSystem::DispatchCollisionEnter2D(collision);
 			},
-			[](const Collision2D& collision) {
-				ScriptSystem::DispatchCollisionStay2D(collision);
+			[&](const Collision2D& collision) {
+				if (scenesStillLoaded(collision)) ScriptSystem::DispatchCollisionStay2D(collision);
 			},
-			[](const Collision2D& collision) {
-				ScriptSystem::DispatchCollisionExit2D(collision);
+			[&](const Collision2D& collision) {
+				if (scenesStillLoaded(collision)) ScriptSystem::DispatchCollisionExit2D(collision);
 			});
 	}
 

@@ -42,6 +42,9 @@ namespace Index {
 		/// Frees Audio entries not referenced by any Scene component. Returns the number of entries freed.
 		static size_t PurgeUnreferenced();
 
+		/// Re-decodes loaded clips whose file changed outside the engine, keeping their handles. Returns how many were reloaded.
+		static size_t ReloadChangedFromDisk();
+
 
 		static void PlayAudioSource(AudioSourceComponent& source);
 		static void PauseAudioSource(AudioSourceComponent& source);
@@ -56,6 +59,12 @@ namespace Index {
 		/// Freezes every playing sound in place; ResumeAll continues from the same point (a pause, not a stop).
 		static void PauseAll();
 		static void ResumeAll();
+
+		/// Background audio (music players, podcasts): while enabled, sounds keep playing and the game keeps
+		/// updating (without rendering) when the app is minimized, unfocused or sent to the background.
+		/// On Android this also runs a foreground media service, which the APK must declare (build option backgroundAudio).
+		static void SetPlayInBackground(bool enabled);
+		static bool GetPlayInBackground() { return s_PlayInBackground; }
 
 
 		static void PlayOneShot(const AudioHandle& audioHandle, float volume = 1.0f);
@@ -138,6 +147,7 @@ namespace Index {
 
 
 		static float s_masterVolume;
+		static bool s_PlayInBackground;
 		static std::string s_RootPath;
 
 

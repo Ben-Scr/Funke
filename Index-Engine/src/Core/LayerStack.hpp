@@ -114,6 +114,13 @@ namespace Index {
 			m_PendingPop.clear();
 		}
 
+		bool ContainsOverlay(const Layer* layer) const {
+			auto begin = m_Layers.begin() + static_cast<std::ptrdiff_t>(m_InsertIndex);
+			return std::find_if(begin, m_Layers.end(), [layer](const std::unique_ptr<Layer>& entry) {
+				return entry.get() == layer;
+			}) != m_Layers.end();
+		}
+
 		bool IsPendingPop(Layer* layer) const {
 			if (m_PendingPop.empty()) {
 				return false;

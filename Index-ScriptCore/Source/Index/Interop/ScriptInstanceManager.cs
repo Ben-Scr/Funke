@@ -19,6 +19,28 @@ internal class ScriptAssemblyLoadContext : AssemblyLoadContext
     private readonly AssemblyDependencyResolver? _resolver;
     private readonly string? _userAssemblyDir;
 
+    // Hosts without hot reload (Mono players) turn this off and the game loads into the default context:
+    // Mono only uses AOT code for non-collectible assemblies.
+    public static bool Collectible =>
+        !AppContext.TryGetSwitch("Index.Scripting.CollectibleUserAssembly", out bool collectible) || collectible;
+
+    private static string? s_DefaultProbeDir;
+
+    // The game's own dependencies (NuGet DLLs next to it) are not on the TPA list; the default context
+    // only raises Resolving for names it could not bind itself, so framework loads never get here.
+    public static void ProbeFromDefaultContext(string userAssemblyPath)
+    {
+        if (s_DefaultProbeDir == null)
+        {
+            Default.Resolving += (_, name) =>
+            {
+                string candidate = System.IO.Path.Combine(s_DefaultProbeDir!, name.Name + ".dll");
+                return System.IO.File.Exists(candidate) ? Default.LoadFromAssemblyPath(candidate) : null;
+            };
+        }
+        s_DefaultProbeDir = System.IO.Path.GetDirectoryName(userAssemblyPath);
+    }
+
     public ScriptAssemblyLoadContext(Assembly coreAssembly, string? userAssemblyPath = null)
         : base("IndexUserScripts", isCollectible: true)
     {
@@ -313,6 +335,9 @@ internal static class ScriptInstanceManager
             DispatchToGlobalSystems(system => system.OnApplicationPaused(), nameof(GlobalSystem.OnApplicationPaused));
         }
         catch (Exception ex) { Log.Error($"Exception in Application.OnPaused handler: {ex}"); }
+
+        // Phones may end a backgrounded app without a quit callback; persist what the handlers changed.
+        PlayerPrefs.SaveQuietly();
     }
 
     [UnmanagedCallersOnly]
@@ -466,6 +491,14 @@ internal static class ScriptInstanceManager
         Index.Jobs.Internal.JobLayoutCache.Clear();
         Index.Jobs.Internal.JobExceptionRegistry.Clear();
         Index.Coroutines.IndexSynchronizationContext.Instance.Clear();
+
+        if (!s_UserLoadContext.IsCollectible)
+        {
+            s_UserLoadContext = null;
+            s_UserAssembly = null;
+            ReleaseFieldJsonBuffer();
+            return;
+        }
 
         var weakContext = new WeakReference(s_UserLoadContext, trackResurrection: false);
         s_UserLoadContext.Unload();
@@ -731,8 +764,7 @@ internal static class ScriptInstanceManager
         {
             data.Instance.OnStart();
             data.StartMethod?.Invoke(data.Instance, null);
-            data.HasStarted = true;
-            s_Instances[handle] = data;
+            MarkLifecycleFlag(handle, data.Instance, started: true);
         }
         catch (TargetInvocationException ex) { Log.Error($"Exception in OnStart(): {ex.InnerException}"); }
         catch (Exception ex) { Log.Error($"Exception in OnStart(): {ex}"); }
@@ -746,11 +778,20 @@ internal static class ScriptInstanceManager
         try
         {
             data.Instance.OnAwake();
-            data.HasAwoken = true;
-            s_Instances[handle] = data;
+            MarkLifecycleFlag(handle, data.Instance, started: false);
         }
         catch (TargetInvocationException ex) { Log.Error($"Exception in OnAwake(): {ex.InnerException}"); }
         catch (Exception ex) { Log.Error($"Exception in OnAwake(): {ex}"); }
+    }
+
+    // Re-read rather than write back the pre-callback copy: OnStart/OnAwake may destroy the entity or remove
+    // this script (removing the entry), and a recycled handle may now belong to a different instance.
+    private static void MarkLifecycleFlag(int handle, object instance, bool started)
+    {
+        if (!s_Instances.TryGetValue(handle, out var current) || !ReferenceEquals(current.Instance, instance)) return;
+        if (started) current.HasStarted = true;
+        else current.HasAwoken = true;
+        s_Instances[handle] = current;
     }
 
     [UnmanagedCallersOnly]
@@ -851,6 +892,44 @@ internal static class ScriptInstanceManager
                 CollisionPhase.Enter => nameof(EntityScript.OnTriggerEnter2D),
                 CollisionPhase.Stay => nameof(EntityScript.OnTriggerStay2D),
                 _ => nameof(EntityScript.OnTriggerExit2D)
+            };
+            Log.Error($"Exception in {callbackName}: {ex}");
+        }
+    }
+
+    // phase matches the native CollisionPhase3D: 0 = Enter, 1 = Stay, 2 = Exit.
+    [UnmanagedCallersOnly]
+    public static void InvokeCollision3D(int handle, int phase, int isTrigger, ulong selfEntityId, ulong otherEntityId,
+        float contactX, float contactY, float contactZ, float normalX, float normalY, float normalZ)
+    {
+        if (!s_Instances.TryGetValue(handle, out var data)) return;
+
+        var collisionPhase = (CollisionPhase)phase;
+        bool trigger = isTrigger != 0;
+        try
+        {
+            var collision = new Collision3D(selfEntityId, otherEntityId,
+                new Vector3(contactX, contactY, contactZ), new Vector3(normalX, normalY, normalZ), trigger);
+            switch (collisionPhase, trigger)
+            {
+                case (CollisionPhase.Enter, false): data.Instance.OnCollisionEnter3D(collision); break;
+                case (CollisionPhase.Stay, false): data.Instance.OnCollisionStay3D(collision); break;
+                case (CollisionPhase.Exit, false): data.Instance.OnCollisionExit3D(collision); break;
+                case (CollisionPhase.Enter, true): data.Instance.OnTriggerEnter3D(collision); break;
+                case (CollisionPhase.Stay, true): data.Instance.OnTriggerStay3D(collision); break;
+                default: data.Instance.OnTriggerExit3D(collision); break;
+            }
+        }
+        catch (Exception ex)
+        {
+            string callbackName = (collisionPhase, trigger) switch
+            {
+                (CollisionPhase.Enter, false) => nameof(EntityScript.OnCollisionEnter3D),
+                (CollisionPhase.Stay, false) => nameof(EntityScript.OnCollisionStay3D),
+                (CollisionPhase.Exit, false) => nameof(EntityScript.OnCollisionExit3D),
+                (CollisionPhase.Enter, true) => nameof(EntityScript.OnTriggerEnter3D),
+                (CollisionPhase.Stay, true) => nameof(EntityScript.OnTriggerStay3D),
+                _ => nameof(EntityScript.OnTriggerExit3D)
             };
             Log.Error($"Exception in {callbackName}: {ex}");
         }
@@ -1242,9 +1321,23 @@ internal static class ScriptInstanceManager
 
             s_ClassCache.Clear();
 
-            // Load from bytes to avoid file-locking the DLL on disk
             string fullPath = System.IO.Path.GetFullPath(path);
+            if (!ScriptAssemblyLoadContext.Collectible)
+            {
+                // No hot reload: the default context binds references natively through the TPA list. A managed
+                // Load override would be re-entered by Mono's AOT loader while it resolves them (stack overflow).
+                // Loading by path (nothing rebuilds the DLL here) lets Mono find the assembly's AOT image.
+                s_UserLoadContext = AssemblyLoadContext.Default;
+                ScriptAssemblyLoadContext.ProbeFromDefaultContext(fullPath);
+                s_UserAssembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(fullPath);
+                Log.Info($"User assembly loaded: {path}");
+                DynamicComponentRegistrar.RegisterAll(s_UserAssembly);
+                return 1;
+            }
+
             s_UserLoadContext = new ScriptAssemblyLoadContext(s_CoreAssembly!, fullPath);
+
+            // Load from bytes to avoid file-locking the DLL on disk
             byte[] assemblyBytes = System.IO.File.ReadAllBytes(fullPath);
 
             // Load PDB so stack traces have file/line info; without symbols the editor's log-link parser points to this file instead of the user's script.

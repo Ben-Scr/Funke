@@ -154,6 +154,8 @@ Data Assets play nicely with C# [hot reload](../Scripting/Scripting.md#hot-reloa
 
 In practice this means you can tweak a Data Asset class, reload, and keep working — your `.dataasset` files and their values are preserved.
 
+Editing a `.dataasset` file outside the editor (a text editor, a `git pull`, an AI agent) also applies live: the editor re-reads the changed file and writes its values onto the existing instance, so scripts holding a reference see the new values without a recompile — in edit mode and during Play.
+
 ---
 
 ## Data Asset vs. the alternatives

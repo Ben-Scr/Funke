@@ -24,6 +24,7 @@
 using namespace Index;
   
 static std::string s_ProjectPath;
+static std::string s_SceneOverride;
 
 
 class RuntimeApplication : public Index::Application {
@@ -58,6 +59,7 @@ public:
 			// Selects how Window::Create realises fullscreen when
 			// BuildFullscreen is true. Has no effect for windowed builds.
 			config.WindowSpecification.FullscreenMode = project->BuildFullscreenMode;
+			config.WindowSpecification.Orientation = project->MobileOrientation;
 			// Resolves the stored preset label ("16:9" etc.) to a float
 			// aspect. "Free Aspect" / unknown labels resolve to 0.0f
 			// which the Window treats as "no lock".
@@ -78,7 +80,11 @@ public:
 
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		std::string startupScene = "SampleScene";
-		if (project) {
+		if (!s_SceneOverride.empty()) {
+			startupScene = s_SceneOverride;
+			IDX_CORE_INFO_TAG("Runtime", "Startup scene overridden by --scene: {}", startupScene);
+		}
+		else if (project) {
 			if (!project->StartupScene.empty()) startupScene = project->StartupScene;
 			else if (!project->LastOpenedScene.empty()) startupScene = project->LastOpenedScene;
 		}
@@ -120,9 +126,11 @@ public:
 	}
 
 	void Start() override {
+#if INDEX_WITH_2D
 		if (!ProjectManager::GetCurrentProject()) {
 			EntityHelper::CreateCamera2DEntity();
 		}
+#endif
 
 		IndexProject* project = ProjectManager::GetCurrentProject();
 
@@ -166,6 +174,9 @@ Index::Application* Index::CreateApplication() {
 				s_ProjectPath = s_ProjectPath.substr(1, s_ProjectPath.size() - 2);
 			}
 		}
+		else if (arg.rfind("--scene=", 0) == 0) {
+			s_SceneOverride = arg.substr(8);
+		}
 	}
 
 	// Auto-detect project: look for project.json next to the executable
@@ -178,6 +189,9 @@ Index::Application* Index::CreateApplication() {
 			throw std::runtime_error("Project load rejected: " + loadError);
 		}
 		IDX_CORE_INFO_TAG("Runtime", "Loaded project: {} ({})", project->Name, project->RootDirectory);
+		if (!s_SceneOverride.empty() && !File::Exists(project->GetSceneFilePath(s_SceneOverride))) {
+			throw std::runtime_error("--scene: no scene file resolves for '" + s_SceneOverride + "' under Assets/");
+		}
 		// assetsImmutable=true: a shipped game's Assets/ is read-only, so the registry trusts the
 		// shipped manifest and skips the directory walk (set inside SetCurrentProject/engine.dll so it
 		// reaches the registry copy that actually runs the rebuild; ResolvePath still existence-checks).

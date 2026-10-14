@@ -627,7 +627,9 @@ public class PolygonCollider2D : Collider2D
     {
         if (outPoints.Length == 0) return 0;
 
-        Span<float> packed = stackalloc float[outPoints.Length * 2];
+        // Native never returns more than MaxVertices; sizing the stackalloc by the caller's span could overflow the stack.
+        int capacity = Math.Min(outPoints.Length, MaxVertices);
+        Span<float> packed = stackalloc float[capacity * 2];
         int written = InternalCalls.PolygonCollider2D_GetWorldPoints(RequireComponent<PolygonCollider2D>(), packed);
         for (int i = 0; i < written; ++i)
         {

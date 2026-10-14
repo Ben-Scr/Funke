@@ -24,8 +24,13 @@ project "Index-Editor-Tests"
     -- resolves through the engine include dir below.
     files
     {
+        path.join(ROOT_DIR, "Index-Editor/src/Build/GameBuilder.cpp"),
         path.join(ROOT_DIR, "Index-Editor/src/Editor/BuildAssetPruning.cpp"),
+        path.join(ROOT_DIR, "Index-Editor/src/Editor/PlatformBuilder.cpp"),
+        path.join(ROOT_DIR, "Index-Editor/src/Editor/SpriteSlicing.cpp"),
         path.join(ROOT_DIR, "Index-Editor/src/Editor/EditorCamera.cpp"),
+        path.join(ROOT_DIR, "Index-Editor/src/Editor/EditorCamera3D.cpp"),
+        path.join(ROOT_DIR, "Index-Editor/src/Undo/Transform3DEditCommand.cpp"),
         path.join(ROOT_DIR, "Index-Editor/src/Editor/IndexPackageInstaller.cpp"),
         path.join(ROOT_DIR, "Index-Editor/src/Undo/UndoStack.cpp"),
         path.join(ROOT_DIR, "Index-Editor/src/Undo/TransformEditCommand.cpp"),
@@ -52,7 +57,7 @@ project "Index-Editor-Tests"
     postbuildcommands
     {
         CopyIndexEngineDll,
-        CopyGlfwDll,
+        CopySDL3SharedLib,
         CopyGladDll
     }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
@@ -70,6 +75,10 @@ project "Index-Editor-Tests"
     filter "system:linux"
         defines { "IDX_PLATFORM_LINUX" }
         linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
+
+    filter "system:macosx"
+        defines { "IDX_PLATFORM_MACOS" }
+        linkoptions { "-Wl,-rpath,@executable_path" }
 
     filter "configurations:Debug"
         runtime "Debug"

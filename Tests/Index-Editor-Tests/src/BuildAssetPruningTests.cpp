@@ -2,32 +2,39 @@
 
 #include "Assets/AssetRegistry.hpp"
 #include "Editor/BuildAssetPruning.hpp"
+#include "Serialization/Json.hpp"
+#include "Serialization/SceneSerializerStorage.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
-using Index::BuildAssetPruning::FindUnreferencedBuiltInFonts;
+using namespace Index;
 
 namespace {
 	struct ScopedPruningFixture {
 		std::filesystem::path Root;
 		std::filesystem::path IndexAssets;
 		std::filesystem::path Project;
+		std::filesystem::path Assets;
+		std::vector<std::string> BuildScenes{ "Main" };
 
 		ScopedPruningFixture() {
 			const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
 			Root = std::filesystem::temp_directory_path() / ("IndexBuildAssetPruning_" + std::to_string(suffix));
 			IndexAssets = Root / "IndexAssets";
 			Project = Root / "Project";
-			std::filesystem::create_directories(IndexAssets / "Fonts");
-			std::filesystem::create_directories(Project / "Assets" / "Scenes");
-			for (const char* font : { "GoogleSans-Regular.ttf", "Inter_28pt-Regular.ttf", "Creepster-Regular.ttf" }) {
-				Write(IndexAssets / "Fonts" / font, "font");
+			Assets = Project / "Assets";
+			for (const char* file : { "Fonts/GoogleSans-Regular.ttf", "Fonts/Creepster-Regular.ttf", "Fonts/LICENSES.md",
+				"Textures/Default/Square.png", "Textures/Default/Spike.png", "Textures/Editor/Play/play_32.png",
+				"Localization/en.json", "Shader/2D/sprite.vert.glsl" }) {
+				Write(IndexAssets / file, "x");
 			}
-			Write(Project / "project.json", R"({ "name": "Test" })");
+			Write(Project / "project.json", R"({ "name": "Test", "buildScenes": ["Main"] })");
+			Write(Assets / "Scenes" / "Main.scene", R"({ "entities": [] })");
 		}
 
 		~ScopedPruningFixture() {
@@ -40,58 +47,187 @@ namespace {
 			std::ofstream(path, std::ios::binary) << content;
 		}
 
-		static std::string GuidOf(const char* relative) {
-			return std::to_string(Index::AssetRegistry::ComputeBuiltInPathGuid(relative));
+		// Creates the asset and its .meta; returns the GUID as written in content.
+		std::string AddAsset(const std::string& relative, uint64_t guid, const std::string& content = "x") const {
+			Write(Assets / relative, content);
+			Write(Assets / (relative + ".meta"), R"({ "AssetGUID": ")" + std::to_string(guid) + R"(", "kind": 1 })");
+			return std::to_string(guid);
 		}
 
-		std::vector<std::string> Unused(const std::vector<std::filesystem::path>& skipped = {}) const {
-			std::vector<std::string> names;
-			for (const auto& p : FindUnreferencedBuiltInFonts(IndexAssets, Project, skipped)) {
-				names.push_back(p.generic_string());
-			}
-			std::sort(names.begin(), names.end());
-			return names;
+		static std::string BuiltInGuid(const char* relative) {
+			return std::to_string(AssetRegistry::ComputeBuiltInPathGuid(relative));
+		}
+
+		BuildAssetPruning::Plan Compute(std::vector<std::filesystem::path> skipped = {}) const {
+			return BuildAssetPruning::ComputeShippedAssets({ Project, Assets, IndexAssets, BuildScenes, std::move(skipped) });
 		}
 	};
 }
 
-TEST_CASE("Unreferenced built-in fonts are pruned, the default font never is") {
+TEST_CASE("Only content reachable from build scenes ships") {
 	ScopedPruningFixture f;
-	CHECK(f.Unused() == std::vector<std::string>{ "Fonts/Creepster-Regular.ttf", "Fonts/Inter_28pt-Regular.ttf" });
+	const std::string used = f.AddAsset("Textures/Used.png", 1111111111111111111ull);
+	f.AddAsset("Textures/Unused.png", 2222222222222222222ull);
+	f.Write(f.Assets / "Scenes" / "Main.scene", R"({ "textureAsset": ")" + used + R"(" })");
+	f.Write(f.Assets / "Scenes" / "Other.scene", "{}");
+	f.Write(f.Assets / "Scripts" / "Player.cs", "class Player {}");
+
+	const BuildAssetPruning::Plan plan = f.Compute();
+	REQUIRE(plan.Valid);
+	CHECK(plan.KeepsProjectFile("Scenes/Main.scene"));
+	CHECK(plan.KeepsProjectFile("Textures/Used.png"));
+	CHECK(plan.KeepsProjectFile("Textures/Used.png.meta"));
+	CHECK_FALSE(plan.KeepsProjectFile("Textures/Unused.png"));
+	CHECK_FALSE(plan.KeepsProjectFile("Textures/Unused.png.meta"));
+	CHECK_FALSE(plan.KeepsProjectFile("Scenes/Other.scene"));
+	CHECK_FALSE(plan.KeepsProjectFile("Scripts/Player.cs"));
 }
 
-TEST_CASE("A font GUID in a text scene keeps the font") {
+TEST_CASE("References are followed through prefabs and data assets") {
 	ScopedPruningFixture f;
-	f.Write(f.Project / "Assets" / "Scenes" / "Main.scene",
-		R"({ "fontAsset": ")" + f.GuidOf("Fonts/Inter_28pt-Regular.ttf") + R"(" })");
-	CHECK(f.Unused() == std::vector<std::string>{ "Fonts/Creepster-Regular.ttf" });
+	const std::string icon = f.AddAsset("Icons/Coin.png", 3333333333333333333ull);
+	const std::string item = f.AddAsset("Data/Coin.dataasset", 4444444444444444444ull,
+		R"({ "type": "Item", "fields": { "Icons": "\n)" + icon + R"(" } })");
+	const std::string prefab = f.AddAsset("Prefabs/Coin.prefab", 5555555555555555555ull,
+		R"({ "ScriptFields": { "Coin": [ { "type": "dataasset:Item", "value": ")" + item + R"(" } ] } })");
+	f.Write(f.Assets / "Scenes" / "Main.scene", R"({ "spawn": "prefab:)" + prefab + R"(" })");
+
+	const BuildAssetPruning::Plan plan = f.Compute();
+	REQUIRE(plan.Valid);
+	CHECK(plan.KeepsProjectFile("Prefabs/Coin.prefab"));
+	CHECK(plan.KeepsProjectFile("Data/Coin.dataasset"));
+	CHECK(plan.KeepsProjectFile("Icons/Coin.png"));
 }
 
-TEST_CASE("A font GUID inside binary data keeps the font") {
+TEST_CASE("Binary scenes are scanned through the serializer") {
 	ScopedPruningFixture f;
-	const uint64_t guid = Index::AssetRegistry::ComputeBuiltInPathGuid("Fonts/Creepster-Regular.ttf");
-	std::string bytes("\x00\x01\x02", 3);
-	bytes.append(reinterpret_cast<const char*>(&guid), sizeof(guid));
-	f.Write(f.Project / "Assets" / "Scenes" / "Main.scene", bytes);
-	CHECK(f.Unused() == std::vector<std::string>{ "Fonts/Inter_28pt-Regular.ttf" });
+	const std::string clip = f.AddAsset("Audio/Hit.wav", 6666666666666666666ull);
+	Json::Value root = Json::Value::MakeObject();
+	root.AddMember("clipAsset", clip);
+	REQUIRE(SceneSerializerStorage::WriteRootToFile((f.Assets / "Scenes" / "Main.scene").string(), root,
+		SceneSerializationFormat::Binary));
+
+	const BuildAssetPruning::Plan plan = f.Compute();
+	REQUIRE(plan.Valid);
+	CHECK(plan.KeepsProjectFile("Audio/Hit.wav"));
 }
 
-TEST_CASE("A font file name in a script keeps the font regardless of case") {
+TEST_CASE("Folders and files named in C# literals ship") {
 	ScopedPruningFixture f;
-	f.Write(f.Project / "Assets" / "Scripts" / "Hud.cs", R"(Font.Load("IndexAssets/Fonts/CREEPSTER-regular.ttf");)");
-	CHECK(f.Unused() == std::vector<std::string>{ "Fonts/Inter_28pt-Regular.ttf" });
+	f.Write(f.Assets / "Maps" / "Official" / "01.json", "{}");
+	f.Write(f.Assets / "Maps" / "Official" / "02.json", "{}");
+	f.Write(f.Assets / "Maps" / "Drafts" / "03.json", "{}");
+	f.Write(f.Assets / "Config" / "Balance.json", "{}");
+	f.Write(f.Assets / "Scenes" / "Credits.scene", "{}");
+	f.Write(f.Assets / "Scripts" / "Catalog.cs", R"(
+		// don't confuse the lexer
+		char quote = '"';
+		var dir = Path.Combine(Application.DataPath, "Maps\\Official");
+		var cfg = $"{Application.DataPath}/Config/Balance.json";
+		SceneManager.LoadScene(@"Credits");
+	)");
+
+	const BuildAssetPruning::Plan plan = f.Compute();
+	REQUIRE(plan.Valid);
+	CHECK(plan.KeepsProjectFile("Maps/Official/01.json"));
+	CHECK(plan.KeepsProjectFile("Maps/Official/02.json"));
+	CHECK_FALSE(plan.KeepsProjectFile("Maps/Drafts/03.json"));
+	CHECK(plan.KeepsProjectFile("Config/Balance.json"));
+	CHECK(plan.KeepsProjectFile("Scenes/Credits.scene"));
 }
 
-TEST_CASE("Build outputs and caches are not treated as references") {
+TEST_CASE("FindAll keeps every asset of its type under the prefix") {
 	ScopedPruningFixture f;
-	const std::string reference = R"({ "fontAsset": ")" + f.GuidOf("Fonts/Creepster-Regular.ttf") + R"(" })";
-	f.Write(f.Project / "bin" / "Debug" / "Old.scene", reference);
-	f.Write(f.Project / "Builds" / "Windows" / "Assets" / "Old.scene", reference);
-	CHECK(f.Unused({ f.Project / "Builds" / "Windows" }).size() == 2);
+	f.AddAsset("Textures/Icons/A.png", 7000000000000000001ull);
+	f.AddAsset("Textures/Other/B.png", 7000000000000000002ull);
+	f.AddAsset("Audio/C.wav", 7000000000000000003ull);
+	f.Write(f.Assets / "Scripts" / "Icons.cs", R"(var icons = AssetManager.FindAll<Texture>("Textures/Icons");)");
+
+	BuildAssetPruning::Plan plan = f.Compute();
+	REQUIRE(plan.Valid);
+	CHECK(plan.KeepsProjectFile("Textures/Icons/A.png"));
+	CHECK_FALSE(plan.KeepsProjectFile("Textures/Other/B.png"));
+
+	f.Write(f.Assets / "Scripts" / "Icons.cs", "var all = AssetManager.FindAll<Texture>(folder);");
+	plan = f.Compute();
+	REQUIRE(plan.Valid);
+	CHECK(plan.KeepsProjectFile("Textures/Other/B.png"));
+	CHECK_FALSE(plan.KeepsProjectFile("Audio/C.wav"));
 }
 
-TEST_CASE("A missing project root prunes nothing") {
+TEST_CASE("StreamingAssets always ships") {
 	ScopedPruningFixture f;
-	std::filesystem::remove_all(f.Project);
-	CHECK(f.Unused().empty());
+	f.Write(f.Assets / "StreamingAssets" / "Levels" / "1.txt", "x");
+	const BuildAssetPruning::Plan plan = f.Compute();
+	REQUIRE(plan.Valid);
+	CHECK(plan.KeepsProjectFile("StreamingAssets/Levels/1.txt"));
+}
+
+TEST_CASE("Built-in assets ship when loaded by fixed path or referenced") {
+	ScopedPruningFixture f;
+	f.Write(f.Assets / "Scenes" / "Main.scene",
+		R"({ "fontAsset": ")" + f.BuiltInGuid("Fonts/Creepster-Regular.ttf") + R"(" })");
+
+	const BuildAssetPruning::Plan plan = f.Compute();
+	REQUIRE(plan.Valid);
+	CHECK(plan.KeepsBuiltInFile("Fonts/GoogleSans-Regular.ttf"));
+	CHECK(plan.KeepsBuiltInFile("Fonts/Creepster-Regular.ttf"));
+	CHECK(plan.KeepsBuiltInFile("Fonts/LICENSES.md"));
+	CHECK(plan.KeepsBuiltInFile("Textures/Default/Square.png"));
+	CHECK(plan.KeepsBuiltInFile("Localization/en.json"));
+	CHECK_FALSE(plan.KeepsBuiltInFile("Textures/Default/Spike.png"));
+	CHECK_FALSE(plan.KeepsBuiltInFile("Textures/Editor/Play/play_32.png"));
+	CHECK_FALSE(plan.KeepsBuiltInFile("Shader/2D/sprite.vert.glsl"));
+}
+
+TEST_CASE("Project settings paths and index: references ship") {
+	ScopedPruningFixture f;
+	f.Write(f.Assets / "UI" / "Cursor.png", "x");
+	f.Write(f.Project / "project.json", R"({ "buildScenes": ["Main"], "cursorImagePath": "Assets/UI/Cursor.png",
+		"splashScreen": { "imagePath": "index:Textures/Default/Spike.png" } })");
+
+	const BuildAssetPruning::Plan plan = f.Compute();
+	REQUIRE(plan.Valid);
+	CHECK(plan.KeepsProjectFile("UI/Cursor.png"));
+	CHECK(plan.KeepsBuiltInFile("Textures/Default/Spike.png"));
+}
+
+TEST_CASE("Old build outputs are not treated as references") {
+	ScopedPruningFixture f;
+	f.Write(f.Assets / "Maps" / "A.json", "{}");
+	f.Write(f.Project / "Builds" / "Windows" / "Assets" / "Scripts" / "Old.cs", R"(var p = "Maps/A.json";)");
+	f.Write(f.Project / "Out" / "Old.cs", R"(var p = "Maps/A.json";)");
+
+	const BuildAssetPruning::Plan plan = f.Compute({ f.Project / "Out" });
+	REQUIRE(plan.Valid);
+	CHECK_FALSE(plan.KeepsProjectFile("Maps/A.json"));
+}
+
+TEST_CASE("An unscannable project ships everything") {
+	ScopedPruningFixture f;
+	f.BuildScenes = { "Missing" };
+	CHECK_FALSE(f.Compute().Valid);
+
+	ScopedPruningFixture g;
+	std::filesystem::remove(g.Project / "project.json");
+	CHECK_FALSE(g.Compute().Valid);
+}
+
+TEST_CASE("The registry manifest only lists shipped files") {
+	ScopedPruningFixture f;
+	const std::string used = f.AddAsset("Textures/Used.png", 1111111111111111111ull);
+	f.AddAsset("Textures/Unused.png", 2222222222222222222ull);
+	f.Write(f.Assets / "Scenes" / "Main.scene", R"({ "textureAsset": ")" + used + R"(" })");
+	const BuildAssetPruning::Plan plan = f.Compute();
+	REQUIRE(plan.Valid);
+
+	const std::string manifest =
+		"IDXAR1\n"
+		"1111111111111111111\t1\t0\t0\tTextures/Used.png\n"
+		"2222222222222222222\t1\t0\t0\tTextures/Unused.png\n";
+	CHECK(BuildAssetPruning::FilterRegistryManifest(manifest, plan)
+		== "IDXAR1\n1111111111111111111\t1\t0\t0\tTextures/Used.png\n");
+
+	BuildAssetPruning::Plan invalid;
+	CHECK(BuildAssetPruning::FilterRegistryManifest(manifest, invalid) == manifest);
 }

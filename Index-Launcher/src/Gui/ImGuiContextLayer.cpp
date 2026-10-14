@@ -1,11 +1,6 @@
 #include "ImGuiContextLayer.hpp"
 
-#ifdef IDX_PLATFORM_WINDOWS
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
+#include "Core/Platform.hpp"
 
 #include "Core/Application.hpp"
 #include "Core/Assert.hpp"
@@ -52,8 +47,8 @@ namespace Index {
 
 		Window* window = app.GetWindow();
 		IDX_ASSERT(window != nullptr, IndexErrorCode::InvalidHandle, "ImGuiContextLayer requires an active Window");
-		GLFWwindow* glfwWindow = window->GetGLFWWindow();
-		IDX_ASSERT(glfwWindow != nullptr, IndexErrorCode::InvalidHandle, "Window has no GLFW handle");
+		SDL_Window* sdlWindow = window->GetNativeWindow();
+		IDX_ASSERT(sdlWindow != nullptr, IndexErrorCode::InvalidHandle, "Window has no SDL handle");
 
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();
@@ -63,12 +58,12 @@ namespace Index {
 		ImGuiIO& io = ImGui::GetIO();
 		EditorRuntime::ImGuiContextSetup::ApplyCommonIoConfigFlags(io);
 
-		const float dpiScale = EditorRuntime::ImGuiContextSetup::CaptureDpiScale(glfwWindow);
+		const float dpiScale = EditorRuntime::ImGuiContextSetup::CaptureDpiScale(sdlWindow);
 		s_DpiScale = dpiScale;
 
 		LoadIndexImGuiFont(io, dpiScale);
 
-		EditorRuntime::ImGuiContextSetup::InitBackends(glfwWindow);
+		EditorRuntime::ImGuiContextSetup::InitBackends(sdlWindow);
 
 		ApplyIndexTheme(GetSystemTheme());
 		m_IsInitialized = true;
@@ -102,22 +97,7 @@ namespace Index {
 	}
 
 	ImGuiContextLayer::Theme ImGuiContextLayer::GetSystemTheme() {
-#ifdef IDX_PLATFORM_WINDOWS
-		DWORD appsUseLightTheme = 1;
-		DWORD valueSize = sizeof(appsUseLightTheme);
-		const LSTATUS status = RegGetValueW(
-			HKEY_CURRENT_USER,
-			L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-			L"AppsUseLightTheme",
-			RRF_RT_REG_DWORD,
-			nullptr,
-			&appsUseLightTheme,
-			&valueSize);
-		if (status == ERROR_SUCCESS) {
-			return appsUseLightTheme == 0 ? Theme::Dark : Theme::Light;
-		}
-#endif
-		return Theme::Dark;
+		return Platform::IsSystemDarkTheme().value_or(true) ? Theme::Dark : Theme::Light;
 	}
 
 	void ImGuiContextLayer::ApplyIndexTheme(Theme theme) {

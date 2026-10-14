@@ -26,14 +26,8 @@
 #include <cstring>
 #include <filesystem>
 
-#ifdef IDX_PLATFORM_WINDOWS
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <shlobj.h>
-#include <shobjidl.h>
-#endif
+#include "Core/Platform.hpp"
+#include "Serialization/Path.hpp"
 
 namespace Index {
 
@@ -110,9 +104,6 @@ namespace Index {
 		// Wait for every worker before tearing down the state they touch.
 		if (m_AutomationWorker.joinable()) {
 			m_AutomationWorker.join();
-		}
-		if (m_DiskInstallWorker.joinable()) {
-			m_DiskInstallWorker.join();
 		}
 		if (m_RegistryFetchWorker.joinable()) {
 			m_RegistryFetchWorker.join();
@@ -291,6 +282,21 @@ namespace Index {
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		const std::string projectRoot = project ? project->RootDirectory : std::string{};
 		m_AllManifests = IndexPackageInstaller::EnumerateAll(projectRoot);
+		m_Resolution = project ? IndexPackageInstaller::ResolveProject(*project, m_AllManifests) : PackageResolution{};
+
+		m_Lock = {};
+		m_MissingLockedPackages.clear();
+		if (project) {
+			std::string lockError;
+			if (!PackageLock::TryLoad(project->RootDirectory, m_Lock, &lockError)) {
+				IDX_WARN_TAG("IndexPackages", "{}", lockError);
+			}
+			for (const PackageLockEntry& entry : m_Lock.Packages) {
+				const bool onDisk = std::any_of(m_AllManifests.begin(), m_AllManifests.end(),
+					[&](const IndexPackageManifest& manifest) { return manifest.Name == entry.Name; });
+				if (!onDisk) m_MissingLockedPackages.push_back(entry);
+			}
+		}
 		m_ManifestsDirty = false;
 	}
 
@@ -349,6 +355,12 @@ namespace Index {
 
 		EditorUI::EndToolbar();
 
+		RenderModuleReloadBanner();
+
+		if (EditorUI::SectionHeader("Engine Modules", true)) {
+			RenderEngineModulesSection(RowMode::ShowAll);
+		}
+
 		if (EditorUI::SectionHeader("Index Registry", true)) {
 			RenderIndexRegistrySection();
 		}
@@ -402,8 +414,7 @@ namespace Index {
 
 		for (const auto& manifest : m_AllManifests) {
 			if (manifest.IsEngine) continue;
-			const bool inRegistry = std::any_of(m_RegistryEntries.begin(), m_RegistryEntries.end(),
-				[&](const RegistryEntry& e) { return e.Name == manifest.Name; });
+			const bool inRegistry = FindRegistryPackage(m_RegistryEntries, manifest.Name) != nullptr;
 			if (!inRegistry) continue;
 			seenNames.push_back(manifest.Name);
 			if (!MatchesFilter(manifest.Name, m_IndexSearchFilterBuffer)) continue;
@@ -420,18 +431,27 @@ namespace Index {
 			ImGui::PushID(("registry:" + entry.Name).c_str());
 			BeginPackageCard();
 
+			// Show the release that would actually be installed; fall back to the newest for context.
+			const RegistryPackageVersion* compatible = entry.FindBest(VersionRange::Any(), GetEngineCompatibilityVersion());
+			const RegistryPackageVersion* shown = compatible ? compatible : entry.Latest();
+
 			ImGui::AlignTextToFramePadding();
 			ImGui::TextColored(EditorTheme::Colors::Info(), "%s", entry.Name.c_str());
 			ImGui::SameLine();
-			ImGui::TextDisabled("v%s", entry.Version.c_str());
+			ImGui::TextDisabled("v%s", shown->VersionText.c_str());
 
 			const float buttonWidth = 90.0f;
 			ImGui::SameLine(CardButtonX(buttonWidth));
-			if (!canInstall) ImGui::BeginDisabled();
+			const bool installable = canInstall && compatible != nullptr;
+			if (!installable) ImGui::BeginDisabled();
 			if (EditorUI::Button("Install", EditorUI::ButtonVariant::Primary, ImVec2(buttonWidth, 0))) {
-				HandleCloudInstall(entry);
+				HandleRegistryInstall(entry.Name, false);
 			}
-			if (!canInstall) ImGui::EndDisabled();
+			if (!installable) ImGui::EndDisabled();
+			if (!compatible) {
+				EditorUI::Tooltip(("No release supports Index " + GetEngineCompatibilityVersion().ToString()
+					+ (shown->EngineRange.empty() ? std::string() : " (newest needs " + shown->EngineRange + ")")).c_str());
+			}
 
 			// Layer badges. We don't have an on-disk manifest yet, so synthesize
 			// one from the registry entry — RenderLayerBadges only reads the
@@ -446,20 +466,12 @@ namespace Index {
 			if (!entry.Description.empty()) {
 				ImGui::TextWrapped("%s", entry.Description.c_str());
 			}
-			// Dependency status — flag missing deps but don't auto-install.
-			if (!entry.Dependencies.empty()) {
-				ImGui::TextDisabled("Depends on:");
-				ImGui::SameLine();
-				bool first = true;
-				for (const auto& dep : entry.Dependencies) {
-					if (!first) { ImGui::SameLine(); ImGui::TextDisabled(","); ImGui::SameLine(); }
-					const bool depInstalled = IsPackageInstalled(dep);
-					const ImVec4 color = depInstalled ? EditorTheme::Colors::Success() : EditorTheme::Colors::Error();
-					ImGui::TextColored(color, "%s%s", dep.c_str(),
-						depInstalled ? "" : " (missing)");
-					first = false;
-				}
+			if (!shown->EngineRange.empty()) {
+				ImGui::TextDisabled("Engine: %s", shown->EngineRange.c_str());
 			}
+			// Missing dependencies are installed along with the package.
+			RenderDependencyLine(shown->Dependencies);
+			RenderModuleRequirementLine(shown->Modules);
 			EndPackageCard();
 			ImGui::PopID();
 			++shown;
@@ -488,12 +500,7 @@ namespace Index {
 			return;
 		}
 
-		// Join prior worker BEFORE clearing state — Running=false doesn't mean the lambda has unwound.
-		if (m_DiskInstallWorker.joinable()) {
-			m_DiskInstallWorker.join();
-		}
-
-		// Worker initializes STA, runs IFileOpenDialog::Show, signals Finished. Main polls in PollDiskInstallTask.
+		// The OS dialog reports back on its own thread; the main thread polls in PollDiskInstallTask.
 		{
 			std::scoped_lock lock(m_DiskInstallTask->Mutex);
 			m_DiskInstallTask->Finished = false;
@@ -505,52 +512,12 @@ namespace Index {
 		m_StatusIsError = false;
 
 		auto state = m_DiskInstallTask;
-		m_DiskInstallWorker = std::thread([state]() {
-			std::string picked;
-#ifdef IDX_PLATFORM_WINDOWS
-			HRESULT initResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-			const bool ownsCom = SUCCEEDED(initResult);
-
-			IFileOpenDialog* dialog = nullptr;
-			HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL,
-				IID_IFileOpenDialog, reinterpret_cast<void**>(&dialog));
-
-			if (SUCCEEDED(hr)) {
-				DWORD options = 0;
-				dialog->GetOptions(&options);
-				dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-				dialog->SetTitle(L"Select an Index Package Folder");
-				if (SUCCEEDED(dialog->Show(nullptr))) {
-					IShellItem* item = nullptr;
-					if (SUCCEEDED(dialog->GetResult(&item)) && item) {
-						PWSTR widePath = nullptr;
-						if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &widePath)) && widePath) {
-							const int len = WideCharToMultiByte(CP_UTF8, 0, widePath, -1, nullptr, 0, nullptr, nullptr);
-							if (len > 1) {
-								std::string utf8(static_cast<size_t>(len), '\0');
-								if (WideCharToMultiByte(CP_UTF8, 0, widePath, -1, utf8.data(), len, nullptr, nullptr) == len) {
-									utf8.pop_back();
-									picked = std::move(utf8);
-								}
-							}
-							CoTaskMemFree(widePath);
-						}
-						item->Release();
-					}
-				}
-				dialog->Release();
-			}
-
-			if (ownsCom) CoUninitialize();
-#endif
-
-			{
-				std::scoped_lock lock(state->Mutex);
-				// Clear Running inside the mutex so any observer seeing Running==false is guaranteed to see Finished==true.
-				state->Running.store(false, std::memory_order_release);
-				state->PickedPath = std::move(picked);
-				state->Finished = true;
-			}
+		Platform::PickFolderAsync([state](std::optional<std::filesystem::path> picked) {
+			std::scoped_lock lock(state->Mutex);
+			// Clear Running inside the mutex so any observer seeing Running==false is guaranteed to see Finished==true.
+			state->Running.store(false, std::memory_order_release);
+			state->PickedPath = picked ? Path::ToUtf8(*picked) : std::string();
+			state->Finished = true;
 		});
 	}
 
@@ -571,10 +538,6 @@ namespace Index {
 			std::scoped_lock lock(m_DiskInstallTask->Mutex);
 			m_DiskInstallTask->Finished = false;
 			m_DiskInstallTask->PickedPath.clear();
-		}
-
-		if (m_DiskInstallWorker.joinable()) {
-			m_DiskInstallWorker.join();
 		}
 
 		// User cancelled — clear transient status.
@@ -599,6 +562,13 @@ namespace Index {
 
 		if (!result.PackageName.empty()) {
 			IndexPackageInstaller::InstallToProject(*project, result.PackageName);
+			// The source folder is machine-specific, so the lock only records that it was a local copy.
+			std::string installedVersion;
+			for (const IndexPackageManifest& manifest : IndexPackageInstaller::EnumeratePackages(project->PackagesDirectory, false)) {
+				if (manifest.Name == result.PackageName) installedVersion = manifest.Version;
+			}
+			IndexPackageInstaller::UpdateLock(*project, { PackageLockEntry{ result.PackageName,
+				installedVersion, "local", {}, {}, {} } });
 		}
 		m_ManifestsDirty = true;
 		StartPostInstallAutomation(result.PackageName);
@@ -921,6 +891,13 @@ namespace Index {
 			"Filter installed packages...");
 		EditorUI::EndToolbar();
 
+		RenderLockRestoreBanner();
+		RenderModuleReloadBanner();
+
+		if (EditorUI::SectionHeader("Engine Modules##installed", true)) {
+			RenderEngineModulesSection(RowMode::InstalledOnly);
+		}
+
 		if (EditorUI::SectionHeader("Index Packages##installed", true)) {
 			RenderInstalledIndexPackagesSection();
 		}
@@ -942,15 +919,14 @@ namespace Index {
 		}
 
 		auto isFromRegistry = [&](const std::string& name) {
-			return std::any_of(m_RegistryEntries.begin(), m_RegistryEntries.end(),
-				[&](const RegistryEntry& e) { return e.Name == name; });
+			return FindRegistryPackage(m_RegistryEntries, name) != nullptr;
 		};
 
 		int shown = 0;
 		for (const auto& manifest : m_AllManifests) {
 			const bool indexPackage = manifest.IsEngine || isFromRegistry(manifest.Name);
 			if (!indexPackage) continue;
-			if (!IsPackageInstalled(manifest.Name)) continue;
+			if (!IsPackageInstalled(manifest.Name) && !IsDependencyOnly(manifest.Name)) continue;
 			if (!MatchesFilter(manifest.Name, m_InstalledFilterBuffer)) continue;
 			RenderIndexPackageRow(manifest, "installed-index", RowMode::InstalledOnly);
 			++shown;
@@ -968,14 +944,13 @@ namespace Index {
 		}
 
 		auto isFromRegistry = [&](const std::string& name) {
-			return std::any_of(m_RegistryEntries.begin(), m_RegistryEntries.end(),
-				[&](const RegistryEntry& e) { return e.Name == name; });
+			return FindRegistryPackage(m_RegistryEntries, name) != nullptr;
 		};
 		int shown = 0;
 		for (const auto& manifest : m_AllManifests) {
 			if (manifest.IsEngine) continue;
 			if (isFromRegistry(manifest.Name)) continue;
-			if (!IsPackageInstalled(manifest.Name)) continue;
+			if (!IsPackageInstalled(manifest.Name) && !IsDependencyOnly(manifest.Name)) continue;
 			if (!MatchesFilter(manifest.Name, m_InstalledFilterBuffer)) continue;
 			RenderIndexPackageRow(manifest, "installed-user", RowMode::InstalledOnly);
 			++shown;
@@ -1022,6 +997,221 @@ namespace Index {
 		return std::find(project->Packages.begin(), project->Packages.end(), name) != project->Packages.end();
 	}
 
+	bool PackageManagerPanel::IsDependencyOnly(const std::string& name) const {
+		return !IsPackageInstalled(name)
+			&& std::find(m_Resolution.AutoIncluded.begin(), m_Resolution.AutoIncluded.end(), name) != m_Resolution.AutoIncluded.end();
+	}
+
+	const RegistryPackageVersion* PackageManagerPanel::FindRegistryUpdate(const IndexPackageManifest& manifest) const {
+		if (manifest.IsEngine) return nullptr;
+		const RegistryPackage* package = FindRegistryPackage(m_RegistryEntries, manifest.Name);
+		const auto installed = SemanticVersion::Parse(manifest.Version);
+		if (!package || !installed) return nullptr;
+		const RegistryPackageVersion* best = package->FindBest(VersionRange::Any(), GetEngineCompatibilityVersion());
+		if (!best || !best->Version || !(*best->Version > *installed)) return nullptr;
+
+		// Offer only what installed dependents accept; anything else needs them updated first.
+		for (const IndexPackageManifest& other : m_AllManifests) {
+			for (const PackageDependency& dependency : other.Dependencies) {
+				if (dependency.Name != manifest.Name) continue;
+				const auto range = VersionRange::Parse(dependency.Range);
+				if (range && !range->IsAny() && !range->IsSatisfiedBy(*best->Version)) return nullptr;
+			}
+		}
+		return best;
+	}
+
+	void PackageManagerPanel::RenderDependencyLine(const std::vector<PackageDependency>& dependencies) {
+		if (dependencies.empty()) return;
+		ImGui::TextDisabled("Requires:");
+		bool first = true;
+		for (const PackageDependency& dependency : dependencies) {
+			ImGui::SameLine(0.0f, first ? -1.0f : 2.0f);
+			if (!first) {
+				ImGui::TextDisabled(",");
+				ImGui::SameLine();
+			}
+			first = false;
+
+			const auto manifest = std::find_if(m_AllManifests.begin(), m_AllManifests.end(),
+				[&](const IndexPackageManifest& candidate) { return candidate.Name == dependency.Name; });
+			const std::string label = dependency.Range == "*" ? dependency.Name : dependency.Name + " " + dependency.Range;
+			if (manifest == m_AllManifests.end()) {
+				ImGui::TextColored(EditorTheme::Colors::Warning(), "%s (will be installed)", label.c_str());
+				continue;
+			}
+			const auto range = VersionRange::Parse(dependency.Range);
+			const auto version = SemanticVersion::Parse(manifest->Version);
+			const bool fits = range && (range->IsAny() || (version && range->IsSatisfiedBy(*version)));
+			if (fits) {
+				ImGui::TextColored(EditorTheme::Colors::Success(), "%s", label.c_str());
+			}
+			else {
+				ImGui::TextColored(EditorTheme::Colors::Error(), "%s (have %s)", label.c_str(), manifest->Version.c_str());
+			}
+		}
+	}
+
+	void PackageManagerPanel::RenderModuleReloadBanner() {
+		const IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project) return;
+		bool pending = false;
+		for (EngineModule module : k_AllEngineModules) {
+			pending |= EngineModules::IsCompiled(module)
+				&& project->HasModule(EngineModules::GetId(module)) != EngineModules::IsActive(module);
+		}
+		if (!pending) return;
+
+		ImGui::PushID("module-reload");
+		BeginPackageCard();
+		ImGui::AlignTextToFramePadding();
+		EditorUI::StatusText(EditorUI::Tone::Warning, "Engine module changes apply after the editor reloads.");
+		const bool automating = m_AutomationTask && m_AutomationTask->Running.load(std::memory_order_acquire);
+		const bool busy = m_IsOperating || automating;
+		const float buttonWidth = 110.0f;
+		ImGui::SameLine(CardButtonX(buttonWidth));
+		if (busy || !m_ReloadEditor) ImGui::BeginDisabled();
+		if (EditorUI::Button("Reload Editor", EditorUI::ButtonVariant::Primary, ImVec2(buttonWidth, 0))) {
+			m_ReloadEditor();
+		}
+		if (busy || !m_ReloadEditor) ImGui::EndDisabled();
+		EndPackageCard();
+		ImGui::PopID();
+	}
+
+	void PackageManagerPanel::RenderEngineModulesSection(RowMode mode) {
+		const IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project) {
+			EditorUI::EmptyState("No project open.", "Open a project to choose its engine modules.");
+			return;
+		}
+		const char* filter = mode == RowMode::ShowAll ? m_IndexSearchFilterBuffer : m_InstalledFilterBuffer;
+		int shown = 0;
+		for (EngineModule module : k_AllEngineModules) {
+			const std::string id(EngineModules::GetId(module));
+			if (mode == RowMode::InstalledOnly && !project->HasModule(id)) continue;
+			if (!MatchesFilter(id, filter) && !MatchesFilter(std::string(EngineModules::GetDescription(module)), filter)) continue;
+			RenderEngineModuleRow(module, mode == RowMode::ShowAll ? "search-module" : "installed-module");
+			++shown;
+		}
+		if (shown == 0 && mode == RowMode::InstalledOnly) {
+			EditorUI::EmptyState("No engine modules enabled.", "The project uses only UI, audio and scripting. Add Index.2D or Index.3D from the Search tab.");
+		}
+	}
+
+	void PackageManagerPanel::RenderEngineModuleRow(EngineModule module, const char* idHint) {
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project) return;
+		const std::string id(EngineModules::GetId(module));
+		const bool enabled = project->HasModule(id);
+		const bool compiled = EngineModules::IsCompiled(module);
+
+		ImGui::PushID((std::string(idHint) + ":" + id).c_str());
+		BeginPackageCard();
+
+		ImGui::AlignTextToFramePadding();
+		ImGui::TextColored(EditorTheme::Colors::Info(), "%s", id.c_str());
+		ImGui::SameLine();
+		EditorUI::Badge("engine module");
+		EditorUI::Tooltip("Part of the engine, not a download. Game builds leave out the modules a project doesn't use.");
+		if (enabled != EngineModules::IsActive(module) && compiled) {
+			ImGui::SameLine();
+			EditorUI::Badge(enabled ? "added, reload pending" : "removed, reload pending", EditorUI::Tone::Warning);
+		}
+
+		const float buttonWidth = 90.0f;
+		const bool automating = m_AutomationTask && m_AutomationTask->Running.load(std::memory_order_acquire);
+		const bool cloudInstalling = m_CloudInstallTask && m_CloudInstallTask->Running.load(std::memory_order_acquire);
+		const bool canMutate = compiled && !m_IsOperating && !automating && !cloudInstalling;
+		ImGui::SameLine(CardButtonX(buttonWidth));
+		if (!canMutate) ImGui::BeginDisabled();
+		const bool clicked = enabled
+			? EditorUI::Button("Remove", EditorUI::ButtonVariant::Danger, ImVec2(buttonWidth, 0))
+			: EditorUI::Button("Add", EditorUI::ButtonVariant::Primary, ImVec2(buttonWidth, 0));
+		if (!canMutate) ImGui::EndDisabled();
+		if (!compiled) EditorUI::Tooltip("This editor build was compiled without the module.");
+		if (clicked) {
+			const auto result = enabled
+				? IndexPackageInstaller::DisableModule(*project, id)
+				: IndexPackageInstaller::EnableModule(*project, id);
+			m_StatusMessage = result.Message;
+			m_StatusIsError = !result.Success;
+			m_ManifestsDirty = true;
+		}
+
+		ImGui::TextWrapped("%s", std::string(EngineModules::GetDescription(module)).c_str());
+		const std::vector<std::string> dependents = FindModuleDependents(
+			IndexPackageInstaller::ToPackageManifests(m_AllManifests), project->Packages, id);
+		if (!dependents.empty()) {
+			std::string names;
+			for (const std::string& name : dependents) names += (names.empty() ? "" : ", ") + name;
+			ImGui::TextDisabled("Needed by: %s", names.c_str());
+		}
+		EndPackageCard();
+		ImGui::PopID();
+	}
+
+	void PackageManagerPanel::RenderModuleRequirementLine(const std::vector<std::string>& modules) {
+		if (modules.empty()) return;
+		const IndexProject* project = ProjectManager::GetCurrentProject();
+		ImGui::TextDisabled("Engine modules:");
+		bool first = true;
+		for (const std::string& id : modules) {
+			ImGui::SameLine(0.0f, first ? -1.0f : 2.0f);
+			if (!first) {
+				ImGui::TextDisabled(",");
+				ImGui::SameLine();
+			}
+			first = false;
+			const std::optional<EngineModule> module = EngineModules::FromId(id);
+			if (!module || !EngineModules::IsCompiled(*module)) {
+				ImGui::TextColored(EditorTheme::Colors::Error(), "%s (not in this engine)", id.c_str());
+			}
+			else if (project && project->HasModule(id)) {
+				ImGui::TextColored(EditorTheme::Colors::Success(), "%s", id.c_str());
+			}
+			else {
+				ImGui::TextColored(EditorTheme::Colors::Warning(), "%s (enabled on install)", id.c_str());
+			}
+		}
+	}
+
+	void PackageManagerPanel::RenderLockRestoreBanner() {
+		if (m_MissingLockedPackages.empty()) return;
+		ImGui::PushID("lock-restore");
+		BeginPackageCard();
+		EditorUI::StatusText(EditorUI::Tone::Warning,
+			(std::to_string(m_MissingLockedPackages.size()) + " package(s) from packages-lock.json are not on disk").c_str());
+
+		size_t restorable = 0;
+		for (const PackageLockEntry& entry : m_MissingLockedPackages) {
+			const bool fromRegistry = entry.Source == "registry" && !entry.Url.empty() && !entry.Sha256.empty();
+			restorable += fromRegistry ? 1 : 0;
+			if (fromRegistry) {
+				ImGui::BulletText("%s %s", entry.Name.c_str(), entry.Version.c_str());
+			}
+			else if (entry.Source == "git" && !entry.Url.empty()) {
+				ImGui::BulletText("%s %s: reinstall from %s", entry.Name.c_str(), entry.Version.c_str(), entry.Url.c_str());
+			}
+			else {
+				ImGui::BulletText("%s %s: copy it into Packages/ by hand (source: %s)", entry.Name.c_str(), entry.Version.c_str(), entry.Source.c_str());
+			}
+		}
+
+		const bool busy = (m_CloudInstallTask && m_CloudInstallTask->Running.load(std::memory_order_acquire))
+			|| (m_AutomationTask && m_AutomationTask->Running.load(std::memory_order_acquire));
+		if (restorable > 0) {
+			if (busy) ImGui::BeginDisabled();
+			if (EditorUI::Button("Restore locked versions", EditorUI::ButtonVariant::Primary)) {
+				HandleRestoreFromLock();
+			}
+			if (busy) ImGui::EndDisabled();
+			EditorUI::Tooltip("Downloads the exact versions recorded in packages-lock.json and checks their SHA-256");
+		}
+		EndPackageCard();
+		ImGui::PopID();
+	}
+
 	void PackageManagerPanel::RenderLayerBadges(const IndexPackageManifest& manifest) {
 		bool any = false;
 		if (manifest.HasNativeLayer) {
@@ -1045,7 +1235,8 @@ namespace Index {
 
 	void PackageManagerPanel::RenderIndexPackageRow(const IndexPackageManifest& manifest, const char* idHint, RowMode mode) {
 		const bool installed = IsPackageInstalled(manifest.Name);
-		if (mode == RowMode::InstalledOnly && !installed) {
+		const bool dependencyOnly = IsDependencyOnly(manifest.Name);
+		if (mode == RowMode::InstalledOnly && !installed && !dependencyOnly) {
 			return;
 		}
 
@@ -1060,13 +1251,21 @@ namespace Index {
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		const float buttonWidth = 90.0f;
 		const bool automating = m_AutomationTask && m_AutomationTask->Running.load(std::memory_order_acquire);
-		const bool canMutate = (project != nullptr) && !m_IsOperating && !automating;
+		const bool cloudInstalling = m_CloudInstallTask && m_CloudInstallTask->Running.load(std::memory_order_acquire);
+		const bool canMutate = (project != nullptr) && !m_IsOperating && !automating && !cloudInstalling;
+		const RegistryPackageVersion* update = (installed || dependencyOnly) ? FindRegistryUpdate(manifest) : nullptr;
 
-		if (installed) {
+		if (dependencyOnly) {
+			ImGui::SameLine(CardButtonX(buttonWidth));
+			EditorUI::Badge("dependency");
+			EditorUI::Tooltip("Loaded because another package needs it; it goes away with the last package that requires it.");
+		}
+		else if (installed) {
 			ImGui::SameLine(CardButtonX(buttonWidth));
 			if (!canMutate) ImGui::BeginDisabled();
 			if (EditorUI::Button("Uninstall", EditorUI::ButtonVariant::Danger, ImVec2(buttonWidth, 0))) {
-				auto result = IndexPackageInstaller::UninstallFromProject(*project, manifest.Name);
+				auto check = IndexPackageInstaller::CheckCanUninstall(*project, manifest.Name);
+				auto result = check.Success ? IndexPackageInstaller::UninstallFromProject(*project, manifest.Name) : check;
 				m_StatusMessage = result.Message;
 				m_StatusIsError = !result.Success;
 				if (result.Success) {
@@ -1077,7 +1276,17 @@ namespace Index {
 			}
 			if (!canMutate) ImGui::EndDisabled();
 		}
-		else if (project) {
+		if (update) {
+			const std::string updateLabel = "Update to " + update->VersionText;
+			const float updateWidth = ImGui::CalcTextSize(updateLabel.c_str()).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+			ImGui::SameLine(CardButtonX(buttonWidth) - updateWidth - ImGui::GetStyle().ItemSpacing.x);
+			if (!canMutate) ImGui::BeginDisabled();
+			if (EditorUI::Button(updateLabel.c_str(), EditorUI::ButtonVariant::Primary, ImVec2(updateWidth, 0))) {
+				HandleRegistryInstall(manifest.Name, true);
+			}
+			if (!canMutate) ImGui::EndDisabled();
+		}
+		else if (project && !installed && !dependencyOnly) {
 			ImGui::SameLine(CardButtonX(buttonWidth));
 			if (!canMutate) ImGui::BeginDisabled();
 			if (EditorUI::Button("Install", EditorUI::ButtonVariant::Primary, ImVec2(buttonWidth, 0))) {
@@ -1095,6 +1304,16 @@ namespace Index {
 		RenderLayerBadges(manifest);
 		if (!manifest.Description.empty()) {
 			ImGui::TextWrapped("%s", manifest.Description.c_str());
+		}
+		if (!manifest.EngineRange.empty()) {
+			ImGui::TextDisabled("Engine: %s", manifest.EngineRange.c_str());
+		}
+		RenderDependencyLine(manifest.Dependencies);
+		RenderModuleRequirementLine(manifest.Modules);
+		if (installed || dependencyOnly) {
+			for (const std::string& message : m_Resolution.GetMessages(manifest.Name)) {
+				ImGui::TextColored(EditorTheme::Colors::Error(), "%s", message.c_str());
+			}
 		}
 		EndPackageCard();
 		ImGui::PopID();
@@ -1169,51 +1388,6 @@ namespace Index {
 		m_StatusMessage = "Searching NuGet...";
 		m_StatusIsError = false;
 		m_SearchFuture = m_Manager->SearchAsync(m_SelectedSource, m_LastNuGetQuery, 20);
-	}
-
-	bool PackageManagerPanel::BrowseForLocalFolder(std::string& outPath) {
-#ifdef IDX_PLATFORM_WINDOWS
-		HRESULT initResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-		const bool ownsCom = SUCCEEDED(initResult);
-
-		IFileOpenDialog* dialog = nullptr;
-		HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL,
-			IID_IFileOpenDialog, reinterpret_cast<void**>(&dialog));
-
-		bool picked = false;
-		if (SUCCEEDED(hr)) {
-			DWORD options = 0;
-			dialog->GetOptions(&options);
-			dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-			dialog->SetTitle(L"Select an Index Package Folder");
-			if (SUCCEEDED(dialog->Show(nullptr))) {
-				IShellItem* item = nullptr;
-				if (SUCCEEDED(dialog->GetResult(&item)) && item) {
-					PWSTR widePath = nullptr;
-					if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &widePath)) && widePath) {
-						const int len = WideCharToMultiByte(CP_UTF8, 0, widePath, -1, nullptr, 0, nullptr, nullptr);
-						if (len > 1) {
-							std::string utf8(static_cast<size_t>(len), '\0');
-							if (WideCharToMultiByte(CP_UTF8, 0, widePath, -1, utf8.data(), len, nullptr, nullptr) == len) {
-								utf8.pop_back();
-								outPath = std::move(utf8);
-								picked = true;
-							}
-						}
-						CoTaskMemFree(widePath);
-					}
-					item->Release();
-				}
-			}
-			dialog->Release();
-		}
-
-		if (ownsCom) CoUninitialize();
-		return picked;
-#else
-		(void)outPath;
-		return false;
-#endif
 	}
 
 	void PackageManagerPanel::StartPostInstallAutomation(const std::string& justInstalledPackageName) {
@@ -1337,6 +1511,7 @@ namespace Index {
 
 			const size_t newlyLoaded = PackageHost::LoadInstalled();
 			bool shouldRollback = false;
+			bool waitsForReload = false;
 			if (!pendingInstall.empty()) {
 				const std::vector<IndexPackageManifest> manifests =
 					IndexPackageInstaller::EnumerateAll(project->RootDirectory);
@@ -1344,9 +1519,15 @@ namespace Index {
 					[&](const IndexPackageManifest& candidate) {
 						return candidate.Name == pendingInstall;
 					});
-				shouldRollback = manifest == manifests.end()
+				// PackageHost resolves against the modules this editor session applied; one enabled by the
+				// install only becomes active on reload, so the package loads then rather than having failed.
+				for (const std::string& module : CollectRequiredModules(IndexPackageInstaller::ToPackageManifests(manifests), pendingInstall)) {
+					const std::optional<EngineModule> engineModule = EngineModules::FromId(module);
+					waitsForReload |= engineModule && !EngineModules::IsActive(*engineModule);
+				}
+				shouldRollback = !waitsForReload && (manifest == manifests.end()
 					|| IndexPackageInstaller::ShouldRollbackAfterLoad(
-						*manifest, PackageHost::IsPackageLoaded(pendingInstall));
+						*manifest, PackageHost::IsPackageLoaded(pendingInstall)));
 			}
 
 			// A failed native load would otherwise fail again on every project open.
@@ -1355,6 +1536,7 @@ namespace Index {
 				IndexPackageInstaller::UninstallFromProject(*project, pendingInstall);
 				didRollback = true;
 			}
+			IndexPackageInstaller::UpdateLock(*project);
 
 			if (didRollback) {
 				m_StatusMessage.clear();
@@ -1368,6 +1550,11 @@ namespace Index {
 					"the current engine, or check the package's release notes for a compatible version.\n\n"
 					"See the editor's log for the exact failure mode (see lines tagged [PackageHost]).";
 				m_OpenInstallErrorPopup = true;
+			}
+			else if (waitsForReload) {
+				m_StatusMessage = "Installed '" + pendingInstall + "'. It loads after the editor reloads with the engine "
+					"module it needs (see the banner above).";
+				m_StatusIsError = false;
 			}
 			else if (newlyLoaded > 0) {
 				m_StatusMessage = "Package operation complete; loaded " +
@@ -1433,6 +1620,13 @@ namespace Index {
 			IndexProject* project = ProjectManager::GetCurrentProject();
 			if (project && !packageName.empty()) {
 				IndexPackageInstaller::InstallToProject(*project, packageName);
+				// The clone folder is named after the repository, not the package.
+				std::string installedVersion;
+				for (const IndexPackageManifest& manifest : IndexPackageInstaller::EnumeratePackages(project->PackagesDirectory, false)) {
+					if (manifest.Name == packageName) installedVersion = manifest.Version;
+				}
+				IndexPackageInstaller::UpdateLock(*project, { PackageLockEntry{ packageName,
+					installedVersion, "git", std::string(m_GitHubUrlBuffer), {}, {} } });
 			}
 			m_ManifestsDirty = true;
 			m_GitHubUrlBuffer[0] = '\0';
@@ -1523,62 +1717,6 @@ namespace Index {
 			return command;
 		}
 	} // namespace
-
-	void PackageManagerPanel::ParseRegistry(const std::string& jsonText,
-		std::vector<RegistryEntry>& outEntries,
-		std::string& outError) {
-		outEntries.clear();
-		std::string parseError;
-		Json::Value root;
-		if (!Json::TryParse(jsonText, root, &parseError)) {
-			outError = "Registry JSON parse failed: " + parseError;
-			return;
-		}
-		if (!root.IsObject()) {
-			outError = "Registry JSON root is not an object.";
-			return;
-		}
-		const Json::Value* packagesNode = root.FindMember("packages");
-		if (!packagesNode || !packagesNode->IsArray()) {
-			outError = "Registry JSON missing 'packages' array.";
-			return;
-		}
-		for (const Json::Value& pkg : packagesNode->GetArray()) {
-			if (!pkg.IsObject()) continue;
-			RegistryEntry entry;
-			if (auto* v = pkg.FindMember("name"))             entry.Name = v->AsStringOr();
-			if (auto* v = pkg.FindMember("version"))          entry.Version = v->AsStringOr();
-			if (auto* v = pkg.FindMember("description"))      entry.Description = v->AsStringOr();
-			if (auto* v = pkg.FindMember("downloadUrl"))      entry.DownloadUrl = v->AsStringOr();
-			if (auto* v = pkg.FindMember("sha256"))           entry.Sha256 = v->AsStringOr();
-			if (auto* v = pkg.FindMember("homepage"))         entry.Homepage = v->AsStringOr();
-			if (auto* v = pkg.FindMember("license"))          entry.License = v->AsStringOr();
-			if (auto* v = pkg.FindMember("minEngineVersion")) entry.MinEngineVersion = v->AsStringOr();
-			if (auto* v = pkg.FindMember("sizeBytes"))        entry.SizeBytes = v->AsUInt64Or(0);
-			if (auto* v = pkg.FindMember("dependencies"); v && v->IsArray()) {
-				for (const auto& dep : v->GetArray()) {
-					if (dep.IsString()) entry.Dependencies.push_back(dep.AsStringOr());
-				}
-			}
-			// "layers": ["native", "csharp", ...] — fold legacy names too so
-			// older registries that still use engine_core / standalone_cpp
-			// don't lose their badges.
-			if (auto* v = pkg.FindMember("layers"); v && v->IsArray()) {
-				for (const auto& layer : v->GetArray()) {
-					if (!layer.IsString()) continue;
-					const std::string name = layer.AsStringOr();
-					if (name == "native" || name == "engine_core") entry.HasNativeLayer = true;
-					else if (name == "native_standalone" || name == "standalone_cpp") entry.HasNativeStandaloneLayer = true;
-					else if (name == "csharp") entry.HasCSharpLayer = true;
-				}
-			}
-			if (entry.Name.empty() || entry.Version.empty() || entry.DownloadUrl.empty()
-				|| !IsSha256Hex(entry.Sha256)) {
-				continue; // skip malformed rows; required fields missing
-			}
-			outEntries.push_back(std::move(entry));
-		}
-	}
 
 	void PackageManagerPanel::RefreshRegistryIfDirty() {
 		if (!m_RegistryDirty) return;
@@ -1686,7 +1824,7 @@ namespace Index {
 
 		if (success && haveCache) {
 			std::string parseError;
-			ParseRegistry(jsonText, m_RegistryEntries, parseError);
+			ParseRegistryIndex(jsonText, m_RegistryEntries, parseError);
 			if (!parseError.empty()) {
 				m_RegistryStatusMessage = parseError;
 				m_RegistryStatusIsError = true;
@@ -1699,7 +1837,7 @@ namespace Index {
 		}
 		else if (!success && haveCache) {
 			std::string parseError;
-			ParseRegistry(jsonText, m_RegistryEntries, parseError);
+			ParseRegistryIndex(jsonText, m_RegistryEntries, parseError);
 			m_RegistryStatusMessage = parseError.empty()
 				? std::string("Using cached registry (offline).")
 				: parseError;
@@ -1714,20 +1852,90 @@ namespace Index {
 		}
 	}
 
-	void PackageManagerPanel::HandleCloudInstall(const RegistryEntry& entry) {
+	namespace {
+		// Folder that holds `name`'s manifest; archives may unpack under a folder name other than the package name.
+		std::filesystem::path FindPackageFolder(const std::string& packagesDir, const std::string& name) {
+			for (const IndexPackageManifest& manifest : IndexPackageInstaller::EnumeratePackages(packagesDir, false)) {
+				if (manifest.Name == name) return Path::FromUtf8(manifest.PackageDir);
+			}
+			return {};
+		}
+
+		std::string JoinLines(const std::vector<std::string>& lines) {
+			std::string text;
+			for (const std::string& line : lines) text += (text.empty() ? "" : "\n") + line;
+			return text;
+		}
+	} // namespace
+
+	void PackageManagerPanel::HandleRegistryInstall(const std::string& packageName, bool update) {
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (!project) {
 			m_StatusMessage = "Open a project before installing a package.";
 			m_StatusIsError = true;
 			return;
 		}
-		if (!m_CloudInstallTask) return;
-		if (m_CloudInstallTask->Running.load(std::memory_order_acquire)) return;
-		if (!IsSha256Hex(entry.Sha256)) {
-			m_StatusMessage = "Registry package '" + entry.Name + "' has no valid SHA-256 digest.";
-			m_StatusIsError = true;
+
+		const PackageInstallPlan plan = PlanRegistryInstall(m_RegistryEntries,
+			IndexPackageInstaller::ToPackageManifests(m_AllManifests), packageName, "*",
+			GetEngineCompatibilityVersion(), update);
+		if (!plan.IsValid()) {
+			m_InstallErrorMessage = (update ? "Cannot update " : "Cannot install ") + packageName + ":\n\n" + JoinLines(plan.Errors);
+			m_OpenInstallErrorPopup = true;
 			return;
 		}
+
+		if (plan.Steps.empty()) {
+			// Everything needed is already on disk; only the project list may be missing it.
+			if (!update && !IsPackageInstalled(packageName)) {
+				const auto result = IndexPackageInstaller::InstallToProject(*project, packageName);
+				m_StatusMessage = result.Message;
+				m_StatusIsError = !result.Success;
+				if (result.Success) {
+					m_ManifestsDirty = true;
+					StartPostInstallAutomation(packageName);
+				}
+			}
+			else {
+				m_StatusMessage = packageName + " is already installed.";
+				m_StatusIsError = false;
+			}
+			return;
+		}
+
+		std::string summary;
+		for (const PackageInstallStep& step : plan.Steps) {
+			if (step.Requested) continue;
+			summary += (summary.empty() ? "" : ", ") + step.Name + " " + step.Version;
+		}
+		m_StatusMessage = (update ? "Updating " : "Installing ") + packageName
+			+ (summary.empty() ? std::string() : " with " + summary) + "...";
+		m_StatusIsError = false;
+		StartRegistrySteps(plan.Steps, update ? std::string() : packageName,
+			(update ? "Updating " : "Installing ") + packageName + "...");
+	}
+
+	void PackageManagerPanel::HandleRestoreFromLock() {
+		std::vector<PackageInstallStep> steps;
+		for (const PackageLockEntry& entry : m_MissingLockedPackages) {
+			if (entry.Source != "registry" || entry.Url.empty() || !IsSha256Hex(entry.Sha256)) continue;
+			PackageInstallStep step;
+			step.Name = entry.Name;
+			step.Version = entry.Version;
+			step.DownloadUrl = entry.Url;
+			step.Sha256 = entry.Sha256;
+			steps.push_back(std::move(step));
+		}
+		if (steps.empty()) return;
+		m_StatusMessage = "Restoring " + std::to_string(steps.size()) + " package(s) from packages-lock.json...";
+		m_StatusIsError = false;
+		StartRegistrySteps(std::move(steps), {}, "Restoring packages...");
+	}
+
+	void PackageManagerPanel::StartRegistrySteps(std::vector<PackageInstallStep> steps, std::string requestedName, std::string title) {
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project || !m_CloudInstallTask) return;
+		if (m_CloudInstallTask->Running.load(std::memory_order_acquire)) return;
 
 		const std::filesystem::path toolPath = Index::PackageTool::ResolveExecutable();
 		if (toolPath.empty()) {
@@ -1743,62 +1951,124 @@ namespace Index {
 
 		{
 			std::scoped_lock lock(m_CloudInstallTask->Mutex);
-			m_CloudInstallTask->Title = "Downloading " + entry.Name + "...";
-			m_CloudInstallTask->Stage = "Downloading " + entry.Name + " v" + entry.Version + "...";
-			m_CloudInstallTask->Progress = 0.1f;
+			m_CloudInstallTask->Title = std::move(title);
+			m_CloudInstallTask->Stage = "Preparing...";
+			m_CloudInstallTask->Progress = 0.05f;
 			m_CloudInstallTask->Finished = false;
 			m_CloudInstallTask->Success = false;
 			m_CloudInstallTask->Error.clear();
 			m_CloudInstallTask->PackageName.clear();
+			m_CloudInstallTask->RequestedName = std::move(requestedName);
+			m_CloudInstallTask->LockHints.clear();
 		}
 		m_CloudInstallTask->Running.store(true, std::memory_order_release);
 
-		m_StatusMessage = "Installing " + entry.Name + " from registry...";
-		m_StatusIsError = false;
-
 		auto state = m_CloudInstallTask;
 		const std::string packagesDir = project->PackagesDirectory;
-		const std::string expectedName = entry.Name;
-		const std::string downloadUrl = entry.DownloadUrl;
-		const std::string sha256 = entry.Sha256;
-		m_CloudInstallWorker = std::thread([state, toolPath, packagesDir, downloadUrl, sha256, expectedName]() {
-			std::vector<std::string> command = BuildPackageToolBase(toolPath);
-			command.push_back("registry-download");
-			command.push_back(downloadUrl);
-			command.push_back(sha256);
-			command.push_back(packagesDir);
+		const std::filesystem::path backupRoot = Path::FromUtf8(project->RootDirectory) / ".index" / "package-backup";
+		m_CloudInstallWorker = std::thread([state, toolPath, packagesDir, backupRoot, steps = std::move(steps)]() {
+			struct Backup {
+				std::string Name;
+				std::filesystem::path Original;
+				std::filesystem::path Saved;
+			};
+			std::vector<Backup> backups;
+			std::vector<std::string> freshInstalls;
+			std::vector<PackageLockEntry> hints;
 
-			{
+			// A failed step must not leave a half-updated set: newer dependencies with an older dependent.
+			auto rollback = [&]() {
+				std::error_code ec;
+				for (const std::string& name : freshInstalls) {
+					const std::filesystem::path folder = FindPackageFolder(packagesDir, name);
+					if (!folder.empty()) std::filesystem::remove_all(folder, ec);
+				}
+				for (auto it = backups.rbegin(); it != backups.rend(); ++it) {
+					const std::filesystem::path replaced = FindPackageFolder(packagesDir, it->Name);
+					if (!replaced.empty()) std::filesystem::remove_all(replaced, ec);
+					std::filesystem::rename(it->Saved, it->Original, ec);
+				}
+			};
+			auto fail = [&](std::string error) {
+				rollback();
 				std::scoped_lock lock(state->Mutex);
-				state->Stage = "Downloading " + expectedName + "...";
-				state->Progress = 0.3f;
-			}
-
-			// Bounded timeout (not 0 = wait-forever): a stalled registry download would
-			// otherwise pin m_CloudInstallWorker, and Shutdown()'s unconditional join()
-			// would hang the editor on exit. 180s is generous for large artifacts; the
-			// sibling registry-fetch uses 30s.
-			const Process::Result result = Process::Run(command, {}, std::chrono::milliseconds(180000));
-
-			std::scoped_lock lock(state->Mutex);
-			state->Success = result.Succeeded();
-			if (state->Success) {
-				state->Stage = "Verified + extracted " + expectedName;
-				state->Progress = 0.9f;
-				state->PackageName = expectedName;
-			}
-			else {
-				if (result.TimedOut && result.Output.empty()) {
-					state->Error = "Cloud install timed out.";
-				}
-				else {
-					state->Error = result.Output.empty()
-						? std::string("Cloud install failed (exit ")
-							+ std::to_string(result.ExitCode) + ")."
-						: result.Output;
-				}
+				state->Error = std::move(error);
 				state->Progress = 0.0f;
+				state->Finished = true;
+				state->Running.store(false, std::memory_order_release);
+			};
+
+			for (size_t i = 0; i < steps.size(); ++i) {
+				const PackageInstallStep& step = steps[i];
+				{
+					std::scoped_lock lock(state->Mutex);
+					state->Stage = (step.Kind == PackageInstallStep::Action::Update ? "Updating " : "Downloading ")
+						+ step.Name + " " + step.Version + " (" + std::to_string(i + 1) + "/" + std::to_string(steps.size()) + ")...";
+					state->Progress = 0.1f + 0.8f * static_cast<float>(i) / static_cast<float>(steps.size());
+				}
+
+				if (step.Kind == PackageInstallStep::Action::Update) {
+					const std::filesystem::path folder = FindPackageFolder(packagesDir, step.Name);
+					if (folder.empty()) {
+						fail(step.Name + " is not in this project's Packages folder (engine packages update with the engine).");
+						return;
+					}
+					std::error_code ec;
+					std::filesystem::create_directories(backupRoot, ec);
+					const std::filesystem::path saved = backupRoot / step.Name;
+					std::filesystem::remove_all(saved, ec);
+					ec.clear();
+					std::filesystem::rename(folder, saved, ec);
+					if (ec) {
+						fail("Could not move " + step.Name + " aside for the update: " + ec.message() + ". Close programs using its files and retry.");
+						return;
+					}
+					backups.push_back({ step.Name, folder, saved });
+				}
+
+				std::vector<std::string> command = BuildPackageToolBase(toolPath);
+				command.push_back("registry-download");
+				command.push_back(step.DownloadUrl);
+				command.push_back(step.Sha256);
+				command.push_back(packagesDir);
+				// Bounded: Shutdown() joins this worker, so a stalled download must not hang the editor.
+				const Process::Result result = Process::Run(command, {}, std::chrono::milliseconds(180000));
+				if (!result.Succeeded()) {
+					std::string error = step.Name + " " + step.Version + ": ";
+					if (result.TimedOut && result.Output.empty()) error += "download timed out.";
+					else if (result.Output.empty()) error += "download failed (exit " + std::to_string(result.ExitCode) + ").";
+					else error += result.Output;
+					fail(std::move(error));
+					return;
+				}
+				if (step.Kind == PackageInstallStep::Action::Install) {
+					freshInstalls.push_back(step.Name);
+				}
+
+				const std::filesystem::path installed = FindPackageFolder(packagesDir, step.Name);
+				const auto manifest = installed.empty() ? std::nullopt : IndexPackageInstaller::ReadManifest(Path::ToUtf8(installed));
+				if (!manifest) {
+					fail("The archive for " + step.Name + " " + step.Version + " does not contain a valid " + step.Name + " package.");
+					return;
+				}
+				const auto expected = SemanticVersion::Parse(step.Version);
+				const auto actual = SemanticVersion::Parse(manifest->Version);
+				if (manifest->Version != step.Version && !(expected && actual && *expected == *actual)) {
+					fail("The registry lists " + step.Name + " " + step.Version + ", but the archive contains " + manifest->Version + ".");
+					return;
+				}
+				hints.push_back({ step.Name, manifest->Version, "registry", step.DownloadUrl, step.Sha256, {} });
 			}
+
+			std::error_code ec;
+			for (const Backup& backup : backups) {
+				std::filesystem::remove_all(backup.Saved, ec);
+			}
+			std::scoped_lock lock(state->Mutex);
+			state->Success = true;
+			state->Stage = "Downloaded and verified";
+			state->Progress = 0.9f;
+			state->LockHints = std::move(hints);
 			state->Finished = true;
 			state->Running.store(false, std::memory_order_release);
 		});
@@ -1807,56 +2077,58 @@ namespace Index {
 	void PackageManagerPanel::PollCloudInstallTask() {
 		if (!m_CloudInstallTask) return;
 
-		bool finished = false;
 		bool success = false;
 		std::string error;
-		std::string packageName;
+		std::string requestedName;
+		std::vector<PackageLockEntry> hints;
 		{
 			std::scoped_lock lock(m_CloudInstallTask->Mutex);
-			finished = m_CloudInstallTask->Finished;
+			if (!m_CloudInstallTask->Finished) return;
 			success = m_CloudInstallTask->Success;
 			error = m_CloudInstallTask->Error;
-			packageName = m_CloudInstallTask->PackageName;
-		}
-		if (!finished) return;
-
-		{
-			std::scoped_lock lock(m_CloudInstallTask->Mutex);
+			requestedName = m_CloudInstallTask->RequestedName;
+			hints = m_CloudInstallTask->LockHints;
 			m_CloudInstallTask->Finished = false;
 		}
 
 		if (m_CloudInstallWorker.joinable()) {
 			m_CloudInstallWorker.join();
 		}
+		m_ManifestsDirty = true;
 
 		if (!success) {
 			m_StatusMessage.clear();
 			m_StatusIsError = false;
-			m_InstallErrorMessage = error.empty() ? std::string("Cloud install failed.") : error;
+			m_InstallErrorMessage = (error.empty() ? std::string("Registry install failed.") : error)
+				+ "\n\nPackages that were already installed were restored.";
 			m_OpenInstallErrorPopup = true;
 			return;
 		}
 
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (!project) {
-			m_StatusMessage = "Downloaded " + packageName + " but no project is open to install it into.";
-			m_StatusIsError = true;
-			return;
-		}
-		const auto result = IndexPackageInstaller::InstallToProject(*project, packageName);
-		if (!result.Success) {
-			m_StatusMessage = "Downloaded " + packageName + " but allow-list update failed: " + result.Message;
+			m_StatusMessage = "Downloaded packages, but no project is open to install them into.";
 			m_StatusIsError = true;
 			return;
 		}
 
-		m_ManifestsDirty = true;
-		m_StatusMessage = "Installed " + packageName + " from registry.";
+		std::string addedToProject;
+		if (!requestedName.empty() && !IsPackageInstalled(requestedName)) {
+			const auto result = IndexPackageInstaller::InstallToProject(*project, requestedName);
+			if (!result.Success) {
+				m_StatusMessage = "Downloaded " + requestedName + " but could not add it to project.json: " + result.Message;
+				m_StatusIsError = true;
+				return;
+			}
+			addedToProject = requestedName;
+		}
+		IndexPackageInstaller::UpdateLock(*project, hints);
+		IndexPackageInstaller::RegeneratePackageReferences(*project);
+
+		m_StatusMessage = "Downloaded and verified " + std::to_string(hints.size()) + " package(s).";
 		m_StatusIsError = false;
-		// Pass the package name so the SEH-guarded LoadInstalled() can roll
-		// back the project's allow-list if the just-downloaded DLL fails to
-		// load (the Tilemap2D ABI-mismatch scenario this safety net targets).
-		StartPostInstallAutomation(packageName);
+		// A just-added package rolls back if its DLL then fails to load (ABI mismatch safety net).
+		StartPostInstallAutomation(addedToProject);
 	}
 
 }

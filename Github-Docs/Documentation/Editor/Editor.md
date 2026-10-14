@@ -22,8 +22,71 @@ So the flow is: **Launcher → create/open a project → Editor → build your g
 
 You create and open projects from the **Launcher**:
 
-- **New Project** — pick a name and location; the launcher copies a template, sets up the C# script project, and creates an empty starting scene.
+- **New Project** — pick a template, a name and a location; the launcher copies the template's scene and scripts, sets up the C# script project and compiles the scripts once.
+
+### Project templates
+
+| Template | Contents |
+|---|---|
+| **Empty 2D** | A Camera 2D. |
+| **Empty 3D** | A Camera 3D and a Directional Light. |
+
+A template is a folder in `templates/` (inside `EngineSDK/` for the packaged Launcher):
+
+```
+templates/MyStudio.Platformer/
+  template.json
+  preview.png          (optional)
+  Assets/Scenes/SampleScene.scene
+  Assets/Scripts/*.cs
+```
+
+```json
+{
+  "id": "MyStudio.Platformer",
+  "displayName": "Platformer",
+  "description": "Shown on the template card.",
+  "category": "2D",
+  "sortOrder": 50,
+  "modules": [ "Index.2D" ],
+  "startupScene": "SampleScene"
+}
+```
+
+Everything under `Assets/` is copied into the new project. Scenes are written as JSON and converted to the project's asset format. In `.cs`, `.json`, `.md`, `.txt`, `.meta` and `.dataasset` files, `{{ProjectName}}` becomes the project name and `{{ProjectIdentifier}}` a C#-safe version of it. `modules` is written to the project's `project.json` and selects the project's [engine modules](../Engine-Core/Engine-Modules.md); a project with only `"Index.3D"` opens the Editor View in 3D mode ([3D](../Engine-Core/3D.md)). Each category in use becomes a filter tab in the dialog.
+
+A template may also contain:
+
+| Entry | Effect on new projects |
+|---|---|
+| `project.json` | Project settings (window and build settings, UI scaling, splash screen, graphics, physics rate, defines, packages, build scene list, asset format, ...). Name, location and engine version come from the new project; `lastOpenedScene` is reset to the startup scene and an `executableName` equal to the old project name is dropped. |
+| `BuildProfiles/` | Replaces the default `Windows` / `Linux` / `macOS` build profiles. |
+| `NativeScripts/Source/` | Native C++ scripts. |
+| `Packages/<Name>/` | Project-local packages. |
+
+#### Your own templates
+
+Right-click a project in the Launcher and choose **Save as Template...**. Enter a name, an optional description and a category (prefilled with `2D` or `3D`). The Launcher copies the project's `Assets/` (folder structure, scenes, scripts, `.meta` files and all other assets), its `project.json`, `BuildProfiles/`, `NativeScripts/Source/`, project-local packages and the editor preview image (as `preview.png`) into `%LOCALAPPDATA%\Index\Templates\<Name>\` and writes a `template.json` with the id `User.<Name>`. Build output (`bin`, `obj`, `build`) and `.git` are skipped. The template reflects what is saved on disk, so save the project in the editor first.
+
+The template then appears in **New Project** with a **Custom** chip. Right-click its card to show its folder or delete it; deleting a template does not affect projects created from it. **Open templates folder** in the dialog opens `%LOCALAPPDATA%\Index\Templates`; folders copied in there by hand are picked up the next time the dialog opens.
+
+#### The Templates page
+
+**Templates** in the Launcher sidebar lists custom templates and the built-in ones, each with its `preview.png` (or a colored tile). Search and the category chips filter the list. **From Project** saves one of your projects as a template; **New Project** on a card (or a double-click) opens the create dialog with that template selected.
+
+The `...` menu (or a right-click) of a custom template offers:
+
+| Action | What it does |
+|---|---|
+| **Edit...** | Changes name, description, category and the source project. The content stays as it is. |
+| **Open Source Project** | Opens the project the template was saved from in the editor. |
+| **Update from Source Project...** | Replaces the template's content (assets, project settings, build profiles, native scripts, local packages, preview) with the source project's current state on disk. Id, name, description and category stay. |
+| **Show in Explorer** / **Delete Template** | As on the cards in the create dialog. |
+
+To change what a template contains: **Open Source Project**, edit and save the project, then **Update from Source Project...**. The source project is stored as `sourceProjectPath` in `template.json`; if the project has moved, set the new folder under **Edit...**.
 - **Open** — pick an existing project; the launcher prepares it and opens the editor.
+
+Each project tile shows a preview image of the open scene, which the editor writes to `.index/thumbnail.png` shortly after the project opens and on every save. It is rendered through the scene's Camera 3D if it has one (with sprites and UI on top), otherwise through its main Camera 2D. A project without either keeps the colored tile with its initials.
 
 A project is a folder with an `project.json` (its settings: scenes, window size, packages, build options) plus folders for your `Assets`, scripts, and scenes.
 

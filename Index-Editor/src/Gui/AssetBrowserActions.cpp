@@ -2,8 +2,10 @@
 #include "Gui/AssetBrowser.hpp"
 
 #include "Assets/AssetRegistry.hpp"
+#include "Graphics/Material.hpp"
 #include "Scripting/DataAssetManager.hpp"
 #include "Core/Log.hpp"
+#include "Core/Platform.hpp"
 #include "Core/Platform/Win32BuildProgressWindow.hpp"
 #include "Editor/EditorPreferences.hpp"
 #include "Editor/ExternalEditor.hpp"
@@ -119,7 +121,10 @@ namespace Index {
 				std::remove_if(s_ShellLaunchThreads.begin(), s_ShellLaunchThreads.end(),
 					[](std::thread& t) {
 						if (!t.joinable()) return true;
-						return false;
+						// A finished std::thread stays joinable until joined; test the OS handle and join it.
+						if (WaitForSingleObject(t.native_handle(), 0) != WAIT_OBJECT_0) return false;
+						t.join();
+						return true;
 					}),
 				s_ShellLaunchThreads.end());
 		}
@@ -905,6 +910,18 @@ namespace Index {
 	}
 
 	void AssetBrowser::RenameEntry(const std::string& path, const std::string& newName) {
+		// The name is joined onto the parent directory, so separators or ".." would move the asset (and its
+		// .meta) elsewhere, even out of Assets/. Windows also rejects reserved characters and trailing dots/spaces.
+		const bool invalidName = newName.empty() || newName == "." || newName == ".."
+			|| newName.find_first_of("/\\:*?\"<>|") != std::string::npos
+			|| newName.back() == '.' || newName.back() == ' '
+			|| std::any_of(newName.begin(), newName.end(), [](char c) { return static_cast<unsigned char>(c) < 0x20; });
+		if (invalidName) {
+			IDX_WARN_TAG("AssetBrowser", "Cannot rename to '{}': names cannot be empty, contain / \\ : * ? \" < > |, or end with a dot or space",
+				newName);
+			return;
+		}
+
 		const std::filesystem::path oldPath(path);
 		const std::filesystem::path requestedPath = oldPath.parent_path() / newName;
 		if (NormalizeSceneStem(requestedPath.extension().string()) == ".scene"
@@ -1407,6 +1424,25 @@ namespace Index {
 			});
 	}
 
+	void AssetBrowser::CreateMaterial(const std::string& parentDir) {
+		const std::filesystem::path preferred = std::filesystem::path(parentDir) / (std::string("NewMaterial") + k_MaterialExtension);
+
+		CreateAssetWithCollisionCheck(preferred,
+			[this](const std::filesystem::path& finalPath) {
+				const std::string finalPathStr = finalPath.string();
+				if (!MaterialLibrary::SaveToFile(finalPathStr, Material{})) {
+					IDX_WARN_TAG("AssetBrowser", "Failed to create material '{}'", finalPathStr);
+					return;
+				}
+
+				AssetRegistry::ImportAssetPathIncremental(finalPathStr);
+				m_NeedsRefresh = true;
+				Refresh();
+				m_SelectedPath = finalPathStr;
+				BeginRename(finalPathStr, finalPath.stem().string());
+			});
+	}
+
 	void AssetBrowser::CreateFile(const std::string& parentDir, const std::string& baseName,
 		const std::string& extension, const std::string& defaultContent) {
 		// Normalize: extension may or may not include the leading dot.
@@ -1530,6 +1566,8 @@ namespace Index {
 				s_ActiveOpens.fetch_sub(1, std::memory_order_acq_rel);
 			});
 			TrackShellLaunchThread(std::move(worker));
+#else
+			Platform::OpenPath(std::filesystem::absolute(entry.Path));
 #endif
 		}
 		catch (...) {}

@@ -1,16 +1,21 @@
 #include "Gui/ImGuiContextSetup.hpp"
 
 #include "Core/Assert.hpp"
+#include "Core/Window.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Packages/PackageImGuiBridge.hpp"
 
-#include <GLFW/glfw3.h>
+#include <SDL3/SDL.h>
 #include <imgui.h>
-#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_sdl3.h>
 
 #include <algorithm>
 
 namespace Index::EditorRuntime::ImGuiContextSetup {
+
+	namespace {
+		int g_EventHookId = 0;
+	}
 
 	void PublishImGuiContextToPackages() {
 		// Engine.dll has its own static-linked copy of ImGui (so it can
@@ -36,14 +41,14 @@ namespace Index::EditorRuntime::ImGuiContextSetup {
 		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 		// Multi-viewport: undocked ImGui windows (and popups marked with
 		// ImGuiViewportFlags_NoAutoMerge via a window class) spawn real OS
-		// windows through imgui_impl_glfw's platform handlers + the
+		// windows through imgui_impl_sdl3's platform handlers + the
 		// engine's WebGPUBackend::ViewportSurface renderer handlers
 		// (registered in InitBackends below). imgui_impl_wgpu doesn't
 		// advertise renderer-side multi-viewport support on its own — we
 		// bolt it on in ImGuiImplWebGPU. The matching BackendFlag tells
 		// ImGui's per-frame UpdatePlatformWindows traversal that the
 		// renderer side is ready to drive secondary viewports;
-		// imgui_impl_glfw sets PlatformHasViewports in its own Init.
+		// imgui_impl_sdl3 sets PlatformHasViewports in its own Init.
 		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 		io.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;
 		// Tell ImGui that secondary viewports have OS-provided decoration,
@@ -56,63 +61,67 @@ namespace Index::EditorRuntime::ImGuiContextSetup {
 		// unaffected: this flag only governs WHAT VIEWPORTS GET; docked
 		// tab strips with close buttons are rendered by a separate path.
 		io.ConfigViewportsNoDecoration = false;
-		// Taskbar hiding is handled by the owner-window relationship that
-		// MultiViewport_CreateWindow sets on each viewport HWND (Windows
-		// excludes owned windows from the taskbar automatically). We
-		// deliberately do NOT set io.ConfigViewportsNoTaskBarIcon = true
-		// here — that would push ImGui to set
-		// ImGuiViewportFlags_NoTaskBarIcon on every secondary viewport,
-		// which causes imgui_impl_glfw's Platform_ShowWindow to re-apply
-		// WS_EX_TOOLWINDOW (stripping WS_THICKFRAME and triggering the
-		// chunky "compact dialog" close-button rendering instead of the
-		// normal app close button).
+		// Taskbar hiding is handled by the owner-window relationship
+		// imgui_impl_sdl3 sets via SDL_SetWindowParent (Windows excludes
+		// owned windows from the taskbar automatically). We deliberately
+		// do NOT set io.ConfigViewportsNoTaskBarIcon = true here — that
+		// would make every secondary viewport an SDL utility window
+		// (WS_EX_TOOLWINDOW: no thick frame, the chunky "compact dialog"
+		// close button instead of the normal app close button).
 		// Edge-resize left at default (true). Forcing it false combined
 		// with the transparent ResizeGrip colors in the theme made
 		// undocked floating windows effectively non-resizable.
 	}
 
-	void InitBackends(GLFWwindow* window) {
-		// GLFW_NO_API means there's no GL context; use ImGui's "Other"
-		// GLFW init that doesn't bind one. The WebGPU backend lives
+	void InitBackends(SDL_Window* window) {
+		// "Other": the window has no GL context. The WebGPU backend lives
 		// inside engine.dll (Index-Engine/src/Gui/ImGuiImplWebGPU.{hpp,cpp},
 		// a thin wrapper around imgui_impl_wgpu), reachable via INDEX_API.
-		IDX_VERIFY(ImGui_ImplGlfw_InitForOther(window, true),
-			"Failed to init glfw for imgui (WebGPU backend)!");
+		IDX_VERIFY(ImGui_ImplSDL3_InitForOther(window),
+			"Failed to init SDL3 for imgui (WebGPU backend)!");
+		// SDL has no callback chaining like GLFW; the engine's event pump forwards every event.
+		g_EventHookId = Window::AddNativeEventHook([](const SDL_Event& event) {
+			if (ImGui::GetCurrentContext() != nullptr) {
+				ImGui_ImplSDL3_ProcessEvent(&event);
+			}
+		});
 		IDX_VERIFY(ImGuiImplWebGPU::Init(),
 			"Failed to init WebGPU imgui backend (device not ready?)");
 
 		// Wire renderer-side multi-viewport handlers AFTER ImGui_ImplWGPU
 		// is up. RegisterMultiViewportHandlers binds Renderer_RenderWindow
-		// / SwapBuffers etc. to platform_io. imgui_impl_glfw registers its
-		// own platform-side handlers lazily on first NewFrame when
-		// ViewportsEnable is set.
+		// / SwapBuffers etc. to platform_io. imgui_impl_sdl3 registered its
+		// platform-side handlers in Init when ViewportsEnable is set.
 		ImGuiImplWebGPU::RegisterMultiViewportHandlers();
 	}
 
-	float CaptureDpiScale(GLFWwindow* window) {
-		// One-time HiDPI scale captured from the window's monitor.
+	float CaptureDpiScale(SDL_Window* window) {
+		// One-time HiDPI scale captured from the window's display.
 		// Callers apply it to the UI font and to the theme via
-		// ScaleAllSizes. Mid-session monitor moves are not handled —
-		// wire glfwSetWindowContentScaleCallback if that becomes a real
-		// symptom.
-		float xScale = 1.0f, yScale = 1.0f;
-		glfwGetWindowContentScale(window, &xScale, &yScale);
-		(void)yScale;
-		return std::max(1.0f, xScale);
+		// ScaleAllSizes. Mid-session display moves are not handled —
+		// react to SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED if that becomes
+		// a real symptom. Pixel density is divided out: Retina's 2x is
+		// already covered by ImGui's DisplayFramebufferScale.
+		const float displayScale = SDL_GetWindowDisplayScale(window);
+		const float pixelDensity = SDL_GetWindowPixelDensity(window);
+		const float contentScale = pixelDensity > 0.0f ? displayScale / pixelDensity : displayScale;
+		return std::max(1.0f, contentScale);
 	}
 
 	void ShutdownBackends() {
 		// Secondary viewports must release their WebGPU surfaces before the renderer callback is removed.
 		ImGui::DestroyPlatformWindows();
 		ImGuiImplWebGPU::Shutdown();
-		ImGui_ImplGlfw_Shutdown();
+		Window::RemoveNativeEventHook(g_EventHookId);
+		g_EventHookId = 0;
+		ImGui_ImplSDL3_Shutdown();
 		PackageImGuiBridge::Clear();
 		ImGui::DestroyContext();
 	}
 
 	void NewFrame() {
 		ImGuiImplWebGPU::NewFrame();
-		ImGui_ImplGlfw_NewFrame();
+		ImGui_ImplSDL3_NewFrame();
 		ImGui::NewFrame();
 	}
 

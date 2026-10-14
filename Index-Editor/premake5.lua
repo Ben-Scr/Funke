@@ -20,7 +20,8 @@ project "Index-Editor"
 
     -- icon.rc is a Windows resource (app icon); Linux has no .rc toolchain. Windows-only.
     filter "system:windows"
-        files { "icon.rc" }
+        -- UTF-8 process code page: the engine passes UTF-8 std::strings to std::filesystem and narrow Win32 APIs.
+        files { "icon.rc", path.join(ROOT_DIR, "premake/Utf8CodePage.manifest") }
     filter {}
 
     -- Engine-level diagnostic overlays (StatsOverlay, LogOverlay, …).
@@ -74,11 +75,12 @@ project "Index-Editor"
     -- ScriptSystem loads Index-ScriptCore.dll at runtime. The packaged-layout
     -- branch (ScriptSystem.cpp:194) finds it next to the editor exe; the
     -- copy lets a zipped Editor folder work standalone. The managed C# project
-    -- builds on Windows only (see root premake5.lua), so gate the dep + copy.
-    if os.target() == "windows" then dependson { "Index-ScriptCore" } end
-    postbuildcommands { CopyIndexAssets, CopyIndexEngineDll, CopyGlfwDll, CopyGladDll }
+    -- is built by the solution on Windows and by Index-Managed elsewhere (see root premake5.lua).
+    dependson(IndexManagedDependencies({ "Index-ScriptCore" }))
+    postbuildcommands { CopyIndexAssets, CopyIndexEngineDll, CopySDL3SharedLib, CopyGladDll }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
-    if os.target() == "windows" then postbuildcommands(CopyScriptCoreArtifacts) end
+    postbuildcommands(CopyScriptCoreArtifacts)
+    postbuildcommands(CopyScriptCompilerArtifacts)
     ApplyIndexProfilerRuntime()
 
     filter "system:windows"
@@ -117,6 +119,10 @@ project "Index-Editor"
     filter "system:linux"
         defines { "IDX_PLATFORM_LINUX" }
         linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
+
+    filter "system:macosx"
+        defines { "IDX_PLATFORM_MACOS" }
+        linkoptions { "-Wl,-rpath,@executable_path" }
 
     filter "configurations:Debug"
         runtime "Debug"

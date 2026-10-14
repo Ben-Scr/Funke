@@ -1,5 +1,9 @@
 #pragma once
 
+#include "Packages/PackageLock.hpp"
+#include "Packages/PackageManifest.hpp"
+#include "Packages/PackageResolver.hpp"
+
 #include <optional>
 #include <string>
 #include <vector>
@@ -21,6 +25,12 @@ namespace Index {
 		bool HasCSharpLayer = false;
 
 		bool CSharpAllowUnsafe = false;
+
+		std::string EngineRange;                    // "engine" field; empty = any engine
+		std::vector<PackageDependency> Dependencies;
+		std::vector<std::string> Modules;           // "modules" field: engine modules the package needs
+
+		PackageManifest ToPackageManifest() const;
 	};
 
 	// Install/validate helpers for index-package.lua packages (engine packages under <engine>/packages/, project packages under <project>/Packages/).
@@ -33,7 +43,15 @@ namespace Index {
 			// cloned manifest. Caller can pass this to InstallToProject() to also add
 			// the package to the project's allow-list.
 			std::string PackageName;
+			// Engine modules the operation added to project.json `modules`; they take effect after an editor reload.
+			std::vector<std::string> EnabledModules;
 		};
+
+		// Engine modules (Index.2D, Index.3D) live in project.json `modules` and are offered next to
+		// packages. Enabling saves the project; the editor applies it on reload.
+		static InstallResult EnableModule(IndexProject& project, const std::string& moduleId);
+		// Refuses while an installed package needs the module.
+		static InstallResult DisableModule(IndexProject& project, const std::string& moduleId);
 
 		// Read index-package.lua at `<packageDir>/index-package.lua` and project-relevant
 		// fields. Returns nullopt if the file is missing or required fields (name, version)
@@ -76,6 +94,17 @@ namespace Index {
 		static InstallResult UninstallFromProject(IndexProject& project, const std::string& packageName);
 
 		static void RegeneratePackageReferences(const IndexProject& project);
+
+		// The project's package list resolved against what is on disk (dependencies, versions, engine range).
+		static PackageResolution ResolveProject(const IndexProject& project, const std::vector<IndexPackageManifest>& manifests);
+		static std::vector<PackageManifest> ToPackageManifests(const std::vector<IndexPackageManifest>& manifests);
+
+		// Fails with the names of loaded packages that still need `packageName`.
+		static InstallResult CheckCanUninstall(const IndexProject& project, const std::string& packageName);
+
+		// Rewrites packages-lock.json from the current resolution. `sourceHints` record where freshly
+		// installed versions came from (registry URL + SHA-256, git URL, local copy).
+		static bool UpdateLock(const IndexProject& project, const std::vector<PackageLockEntry>& sourceHints = {});
 	};
 
 }

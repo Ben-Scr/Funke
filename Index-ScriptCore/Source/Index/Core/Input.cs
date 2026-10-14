@@ -90,7 +90,7 @@ public static class Input
     public static bool GetGamepadButtonUp(GamepadButton button, int gamepad = 0)
         => InternalCalls.Input_GetGamepadButtonUp((int)button, gamepad);
 
-    /// <summary>Raw axis value without deadzone: sticks in [-1, 1] (Y is down-positive), triggers in [-1, 1] as reported by GLFW.</summary>
+    /// <summary>Raw axis value without deadzone: sticks in [-1, 1] (Y is down-positive), triggers in [-1, 1] (-1 = released).</summary>
     public static float GetGamepadAxis(GamepadAxis axis, int gamepad = 0)
         => InternalCalls.Input_GetGamepadAxis((int)axis, gamepad);
 
@@ -169,7 +169,7 @@ public static class Input
     public static bool GetMouseButtonUp(MouseButton button) => InternalCalls.Input_GetMouseButtonUp((int)button);
 }
 
-/// <summary>Xbox-style button names; other controllers are mapped to the same layout by GLFW's controller database.</summary>
+/// <summary>Xbox-style button names; other controllers are mapped to the same layout by SDL's controller database.</summary>
 public enum GamepadButton
 {
     A = 0,

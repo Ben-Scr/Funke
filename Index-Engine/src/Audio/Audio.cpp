@@ -93,11 +93,11 @@ namespace Index {
 					m_DecodedFrames.data() + static_cast<size_t>(totalFramesRead * channelCount),
 					frameCount - totalFramesRead,
 					&framesRead);
+				// Count before checking: the final read can deliver frames together with MA_AT_END.
+				totalFramesRead += framesRead;
 				if (result != MA_SUCCESS || framesRead == 0) {
 					break;
 				}
-
-				totalFramesRead += framesRead;
 			}
 
 			if (totalFramesRead == 0) {
@@ -133,13 +133,14 @@ namespace Index {
 
 				ma_uint64 framesRead = 0;
 				result = ma_decoder_read_pcm_frames(&decoder, decodedFrames.data() + oldSize, chunkFrames, &framesRead);
-				if (result != MA_SUCCESS) {
+				// MA_AT_END is the normal end of stream (the final read returns it), not a decode failure.
+				if (result != MA_SUCCESS && result != MA_AT_END) {
 					decodedFrames.clear();
 					break;
 				}
 
 				decodedFrames.resize(oldSize + static_cast<size_t>(framesRead * m_Channels));
-				if (framesRead == 0) {
+				if (framesRead == 0 || result == MA_AT_END) {
 					break;
 				}
 			}

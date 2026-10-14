@@ -14,6 +14,9 @@ namespace Index::BuiltInComponentRegistrationInternal {
 
 		// ── General ─────────────────────────────────────────────────
 
+#if INDEX_WITH_2D
+		{
+		ModuleRegistrationScope module2D(registry, EngineModule::TwoD);
 		RegisterComponent<Transform2DComponent>(registry, "Transform 2D",
 			ComponentCategory::Component, "General", "Transform2D",
 			{
@@ -36,6 +39,8 @@ namespace Index::BuiltInComponentRegistrationInternal {
 						e.GetComponent<Transform2DComponent>().SetScale(v);
 					}),
 			});
+		}
+#endif
 
 		// Inspector is fully custom (DrawRectTransform2DInspector) so this
 		// component declares no PropertyDescriptors — they would be ignored

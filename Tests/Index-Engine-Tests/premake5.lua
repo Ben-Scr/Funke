@@ -33,7 +33,7 @@ project "Index-Engine-Tests"
     postbuildcommands
     {
         CopyIndexEngineDll,
-        CopyGlfwDll,
+        CopySDL3SharedLib,
         CopyGladDll
     }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
@@ -53,6 +53,10 @@ project "Index-Engine-Tests"
     filter "system:linux"
         defines { "IDX_PLATFORM_LINUX" }
         linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
+
+    filter "system:macosx"
+        defines { "IDX_PLATFORM_MACOS" }
+        linkoptions { "-Wl,-rpath,@executable_path" }
 
     filter "configurations:Debug"
         runtime "Debug"

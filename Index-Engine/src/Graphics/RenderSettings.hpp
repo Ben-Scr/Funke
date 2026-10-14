@@ -35,6 +35,23 @@ namespace Index {
 
 		static ParticleQualityLevel GetParticleQuality();
 		static GraphicsApplyStatus SetParticleQuality(ParticleQualityLevel quality);
+
+		static ShadowQualityLevel GetShadowQuality();
+		static GraphicsApplyStatus SetShadowQuality(ShadowQualityLevel quality);
+
+		// World units from the camera covered by the directional shadow; clamped to [1, 1000].
+		static float GetShadowDistance();
+		static GraphicsApplyStatus SetShadowDistance(float distance);
+
+		// Lights per frame in the 3D forward pass; clamped to [1, 64].
+		static int32_t GetMaxLights();
+		static GraphicsApplyStatus SetMaxLights(int32_t maxLights);
+
+		static float GetExposure();
+		static GraphicsApplyStatus SetExposure(float exposure);
+
+		static ToneMappingMode GetToneMapping();
+		static GraphicsApplyStatus SetToneMapping(ToneMappingMode mode);
 	};
 
 } // namespace Index

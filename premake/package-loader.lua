@@ -39,12 +39,262 @@
 --                                                Use sparingly; matches the engine's "no mandatory
 --                                                dependencies" rule (the package opts in, the user
 --                                                opts into the package).
---   dependencies  table    optional list of other package names
+--   dependencies  table    optional; each entry is a package name ("Index.Foo"), "Index.Foo@^1.2.0",
+--                          { name = "Index.Foo", version = "^1.2.0" }, or a map entry ["Index.Foo"] = "^1.2.0"
+--   engine        string   optional engine version range, e.g. ">=2026.1.0 <2027.0.0"
+--   modules       table    optional engine modules the package builds on, e.g. { "Index.2D" }
+--
+-- `version` should be MAJOR.MINOR.PATCH (SemVer). Ranges follow npm syntax: ^ ~ x-ranges, comparators,
+-- hyphen ranges and ||. The C++ side (Index-Engine/src/Packages/SemanticVersion.cpp) implements the same rules.
 
 local PackageSystem = {}
 
 local function PackageError(msg)
     error("[Index Packages] " .. msg, 0)
+end
+
+-- ── Semantic versions and ranges ───────────────────────────────────────────
+local SemVer = {}
+
+local function Trim(text)
+    return (text:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function ParseNumber(text)
+    if not text:match("^%d+$") then return nil end
+    if #text > 1 and text:sub(1, 1) == "0" then return nil end
+    return tonumber(text)
+end
+
+local function SplitDots(text)
+    local parts = {}
+    for part in (text .. "."):gmatch("([^%.]*)%.") do table.insert(parts, part) end
+    return parts
+end
+
+function SemVer.Parse(text)
+    if type(text) ~= "string" then return nil end
+    text = Trim(text):gsub("^[vV]", "")
+    local plus = text:find("+", 1, true)
+    if plus then text = text:sub(1, plus - 1) end
+    local pre = {}
+    local dash = text:find("-", 1, true)
+    if dash then
+        local preText = text:sub(dash + 1)
+        text = text:sub(1, dash - 1)
+        for _, identifier in ipairs(SplitDots(preText)) do
+            if identifier == "" or identifier:match("[^%w%-]") then return nil end
+            if identifier:match("^%d+$") and #identifier > 1 and identifier:sub(1, 1) == "0" then return nil end
+            table.insert(pre, identifier)
+        end
+    end
+    local major, minor, patch = text:match("^(%d+)%.(%d+)%.(%d+)$")
+    if not major then return nil end
+    major, minor, patch = ParseNumber(major), ParseNumber(minor), ParseNumber(patch)
+    if not (major and minor and patch) then return nil end
+    return { major, minor, patch, pre = pre }
+end
+
+local function CompareIdentifiers(a, b)
+    local an, bn = a:match("^%d+$"), b:match("^%d+$")
+    if an and bn then
+        local x, y = tonumber(a), tonumber(b)
+        if x == y then return 0 end
+        return x < y and -1 or 1
+    end
+    if an then return -1 end
+    if bn then return 1 end
+    if a == b then return 0 end
+    return a < b and -1 or 1
+end
+
+function SemVer.Compare(a, b)
+    for i = 1, 3 do
+        if a[i] ~= b[i] then return a[i] < b[i] and -1 or 1 end
+    end
+    local ap, bp = a.pre or {}, b.pre or {}
+    if #ap == 0 or #bp == 0 then
+        if #ap == #bp then return 0 end
+        return #ap == 0 and 1 or -1
+    end
+    for i = 1, math.min(#ap, #bp) do
+        local result = CompareIdentifiers(ap[i], bp[i])
+        if result ~= 0 then return result end
+    end
+    if #ap == #bp then return 0 end
+    return #ap < #bp and -1 or 1
+end
+
+function SemVer.ToString(v)
+    local text = v[1] .. "." .. v[2] .. "." .. v[3]
+    if v.pre and #v.pre > 0 then text = text .. "-" .. table.concat(v.pre, ".") end
+    return text
+end
+
+-- Partial versions in ranges: "1", "1.2", "1.x", "*". Returns { numbers..., given = n } or nil.
+local function ParsePartial(text)
+    text = text:gsub("^[vV]", "")
+    if text == "" then return nil end
+    local full = SemVer.Parse(text)
+    if full then return { full[1], full[2], full[3], given = 3, full = full } end
+    local numbers, given, sawWildcard = { 0, 0, 0 }, 0, false
+    local parts = SplitDots(text)
+    if #parts > 3 then return nil end
+    for _, part in ipairs(parts) do
+        if part == "x" or part == "X" or part == "*" then
+            sawWildcard = true
+        else
+            local number = ParseNumber(part)
+            if sawWildcard or not number then return nil end
+            given = given + 1
+            numbers[given] = number
+        end
+    end
+    return { numbers[1], numbers[2], numbers[3], given = given, full = { numbers[1], numbers[2], numbers[3], pre = {} } }
+end
+
+local function V(major, minor, patch, lowestPre)
+    return { major, minor, patch, pre = lowestPre and { "0" } or {} }
+end
+
+local function UpperBound(partial)
+    if partial.given == 1 then return V(partial[1] + 1, 0, 0, true) end
+    return V(partial[1], partial[2] + 1, 0, true)
+end
+
+-- Returns a list of comparator sets ({ op, version, synthetic }) or nil, errorMessage.
+function SemVer.ParseRange(text)
+    text = Trim(text or "")
+    if text == "" or text == "*" then
+        return { { { op = ">=", v = V(0, 0, 0), synthetic = true } } }
+    end
+    local sets = {}
+    for setText in (text .. "||"):gmatch("(.-)||") do
+        setText = Trim(setText)
+        local set = {}
+        if setText == "" or setText == "*" then
+            table.insert(set, { op = ">=", v = V(0, 0, 0), synthetic = true })
+        else
+            local raw = {}
+            for token in setText:gmatch("%S+") do table.insert(raw, token) end
+            local tokens = {}
+            local i = 1
+            while i <= #raw do
+                local token = raw[i]
+                if (token == ">" or token == ">=" or token == "<" or token == "<=" or token == "=" or token == "^" or token == "~") and raw[i + 1] then
+                    token = token .. raw[i + 1]
+                    i = i + 1
+                end
+                table.insert(tokens, token)
+                i = i + 1
+            end
+
+            if #tokens == 3 and tokens[2] == "-" then
+                local low, high = ParsePartial(tokens[1]), ParsePartial(tokens[3])
+                if not low or not high then return nil, "invalid hyphen range '" .. setText .. "'" end
+                table.insert(set, { op = ">=", v = low.full })
+                if high.given == 3 then
+                    table.insert(set, { op = "<=", v = high.full })
+                elseif high.given > 0 then
+                    table.insert(set, { op = "<", v = UpperBound(high), synthetic = true })
+                end
+            else
+                for _, token in ipairs(tokens) do
+                    local op, body = token:match("^([<>=^~]*)(.*)$")
+                    if not (op == "" or op == ">=" or op == "<=" or op == ">" or op == "<" or op == "=" or op == "^" or op == "~") then
+                        return nil, "invalid operator in '" .. token .. "'"
+                    end
+                    local partial = ParsePartial(body)
+                    if not partial then return nil, "invalid version '" .. body .. "' in range '" .. text .. "'" end
+                    local major, minor, patch = partial[1], partial[2], partial[3]
+                    if op == "^" then
+                        table.insert(set, { op = ">=", v = partial.full })
+                        if partial.given > 0 then
+                            local upper
+                            if major > 0 or partial.given == 1 then upper = V(major + 1, 0, 0, true)
+                            elseif minor > 0 or partial.given == 2 then upper = V(0, minor + 1, 0, true)
+                            else upper = V(0, 0, patch + 1, true) end
+                            table.insert(set, { op = "<", v = upper, synthetic = true })
+                        end
+                    elseif op == "~" then
+                        table.insert(set, { op = ">=", v = partial.full })
+                        if partial.given > 0 then
+                            table.insert(set, { op = "<", v = partial.given == 1 and V(major + 1, 0, 0, true) or V(major, minor + 1, 0, true), synthetic = true })
+                        end
+                    elseif partial.given == 3 then
+                        table.insert(set, { op = op == "" and "=" or op, v = partial.full })
+                    elseif partial.given == 0 then
+                        if op == "<" or op == ">" then
+                            table.insert(set, { op = "<", v = V(0, 0, 0, true), synthetic = true })
+                        else
+                            table.insert(set, { op = ">=", v = V(0, 0, 0), synthetic = true })
+                        end
+                    elseif op == "" or op == "=" then
+                        table.insert(set, { op = ">=", v = partial.full })
+                        table.insert(set, { op = "<", v = UpperBound(partial), synthetic = true })
+                    elseif op == ">" then
+                        local bound = UpperBound(partial)
+                        table.insert(set, { op = ">=", v = V(bound[1], bound[2], bound[3]) })
+                    elseif op == ">=" then
+                        table.insert(set, { op = ">=", v = partial.full })
+                    elseif op == "<" then
+                        table.insert(set, { op = "<", v = V(major, minor, patch, true), synthetic = true })
+                    elseif op == "<=" then
+                        table.insert(set, { op = "<", v = UpperBound(partial), synthetic = true })
+                    end
+                end
+            end
+        end
+        if #set == 0 then return nil, "empty comparator set in range '" .. text .. "'" end
+        table.insert(sets, set)
+    end
+    return sets
+end
+
+function SemVer.Satisfies(sets, version)
+    for _, set in ipairs(sets) do
+        local all = true
+        for _, comparator in ipairs(set) do
+            local c = SemVer.Compare(version, comparator.v)
+            local op = comparator.op
+            local ok = (op == "<" and c < 0) or (op == "<=" and c <= 0) or (op == ">" and c > 0)
+                or (op == ">=" and c >= 0) or (op == "=" and c == 0)
+            if not ok then all = false break end
+        end
+        if all then
+            if #version.pre == 0 then return true end
+            -- Pre-releases need an explicit opt-in on the same MAJOR.MINOR.PATCH.
+            for _, comparator in ipairs(set) do
+                if not comparator.synthetic and #comparator.v.pre > 0
+                    and comparator.v[1] == version[1] and comparator.v[2] == version[2] and comparator.v[3] == version[3] then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+PackageSystem.SemVer = SemVer
+
+-- IDX_VERSION from the generated build metadata; nil when it is not available (pre-release suffix dropped).
+local function ReadEngineVersion()
+    local metadataPath = path.join(ROOT_DIR, "Index-Engine/src/Core/BuildMetadata.generated.hpp")
+    local file = io.open(metadataPath, "rb")
+    if not file then return nil end
+    local text = file:read("*all")
+    file:close()
+    local version = SemVer.Parse(text:match('#define%s+IDX_VERSION%s+"([^"]+)"') or "")
+    if not version then return nil end
+    return V(version[1], version[2], version[3])
+end
+
+local k_EngineVersion = nil
+local function GetEngineVersion()
+    if k_EngineVersion == nil then
+        k_EngineVersion = ReadEngineVersion() or false
+    end
+    return k_EngineVersion or nil
 end
 
 -- Canonical layer names. Old names (engine_core, standalone_cpp) are accepted
@@ -185,6 +435,87 @@ local function ValidateManifest(manifest, manifestPath)
     if manifest.dependencies ~= nil and type(manifest.dependencies) ~= "table" then
         PackageError("Package '" .. manifest.name .. "' has invalid 'dependencies' field; expected a table or nil.")
     end
+
+    -- Engine modules (Index-Engine/EngineModules.json) the package builds on; the editor enables them on install.
+    if manifest.modules ~= nil then
+        if type(manifest.modules) ~= "table" then
+            PackageError("Package '" .. manifest.name .. "' has invalid 'modules' field; expected a list such as { \"Index.2D\" }.")
+        end
+        local known = { ["Index.2D"] = true, ["Index.3D"] = true }
+        for _, module in ipairs(manifest.modules) do
+            if type(module) ~= "string" or not known[module] then
+                PackageError("Package '" .. manifest.name .. "' lists unknown engine module '" .. tostring(module) ..
+                    "' in 'modules' (known: Index.2D, Index.3D).")
+            end
+        end
+    end
+end
+
+-- Rewrites `dependencies` into a plain name list (what the rest of the loader reads) and keeps the
+-- version ranges in `DependencySpecs`. Also validates `version` and the engine range.
+local function NormaliseVersioning(manifest)
+    local specs = {}
+    local seen = {}
+    local function Add(name, range)
+        if type(name) ~= "string" or not IsValidPackageName(name) then
+            PackageError("Package '" .. manifest.name .. "' has invalid dependency name '" .. tostring(name) .. "'.")
+        end
+        if name == manifest.name then
+            PackageError("Package '" .. manifest.name .. "' declares itself as a dependency.")
+        end
+        if seen[name] then
+            PackageError("Package '" .. manifest.name .. "' lists dependency '" .. name .. "' twice.")
+        end
+        range = (range == nil or range == "") and "*" or range
+        if type(range) ~= "string" then
+            PackageError("Package '" .. manifest.name .. "' dependency '" .. name .. "' has a non-string version range.")
+        end
+        local parsed, rangeError = SemVer.ParseRange(range)
+        if not parsed then
+            PackageError("Package '" .. manifest.name .. "' dependency '" .. name .. "' has an invalid version range: " .. rangeError)
+        end
+        seen[name] = true
+        table.insert(specs, { name = name, range = range, parsed = parsed })
+    end
+
+    if manifest.dependencies then
+        for _, entry in ipairs(manifest.dependencies) do
+            if type(entry) == "string" then
+                local name, range = entry:match("^([^@]+)@(.*)$")
+                Add(name or entry, range)
+            elseif type(entry) == "table" then
+                Add(entry.name, entry.version)
+            else
+                PackageError("Package '" .. manifest.name .. "' has a dependency entry that is neither a string nor a table.")
+            end
+        end
+        for key, value in pairs(manifest.dependencies) do
+            if type(key) == "string" then Add(key, value) end
+        end
+    end
+
+    manifest.DependencySpecs = specs
+    manifest.dependencies = {}
+    for _, spec in ipairs(specs) do table.insert(manifest.dependencies, spec.name) end
+
+    manifest.ParsedVersion = SemVer.Parse(manifest.version)
+    if not manifest.ParsedVersion then
+        print("[Index Packages] WARNING: package '" .. manifest.name .. "' has version '" .. manifest.version ..
+            "', which is not MAJOR.MINOR.PATCH; packages that depend on it with a version range will fail.")
+    end
+
+    local engineRange = manifest.engine or manifest.engineVersion
+    if engineRange ~= nil and engineRange ~= "" then
+        local parsed, rangeError = SemVer.ParseRange(engineRange)
+        if not parsed then
+            PackageError("Package '" .. manifest.name .. "' has an invalid 'engine' range: " .. rangeError)
+        end
+        local engineVersion = GetEngineVersion()
+        if engineVersion and not SemVer.Satisfies(parsed, engineVersion) then
+            PackageError("Package '" .. manifest.name .. "' needs engine " .. engineRange ..
+                ", but this is Index " .. SemVer.ToString(engineVersion) .. ". Install a release of the package made for this engine.")
+        end
+    end
 end
 
 local function LoadManifestsFromRoot(searchRoot, manifests, byName)
@@ -201,6 +532,7 @@ local function LoadManifestsFromRoot(searchRoot, manifests, byName)
             -- validator / dispatcher reads them. Warns on rewrite.
             NormaliseLayerNames(manifest)
             ValidateManifest(manifest, manifestPath)
+            NormaliseVersioning(manifest)
 
             if byName[manifest.name] then
                 PackageError("Duplicate package name '" .. manifest.name ..
@@ -239,12 +571,18 @@ local function TopoSort(manifests, byName)
 
         visiting[name] = true
 
-        if m.dependencies then
-            for _, depName in ipairs(m.dependencies) do
-                if depName == name then
-                    PackageError("Package '" .. name .. "' declares itself as a dependency.")
+        for _, spec in ipairs(m.DependencySpecs or {}) do
+            Visit(spec.name, name)
+            if spec.range ~= "*" then
+                local dependency = byName[spec.name]
+                if not dependency.ParsedVersion then
+                    PackageError("Package '" .. name .. "' requires " .. spec.name .. " " .. spec.range ..
+                        ", but its version '" .. tostring(dependency.version) .. "' is not MAJOR.MINOR.PATCH.")
                 end
-                Visit(depName, name)
+                if not SemVer.Satisfies(spec.parsed, dependency.ParsedVersion) then
+                    PackageError("Package '" .. name .. "' requires " .. spec.name .. " " .. spec.range ..
+                        ", but " .. dependency.version .. " is installed (" .. dependency.PackageDir .. ").")
+                end
             end
         end
 
@@ -311,6 +649,16 @@ local function NativeAbiMetadataCommand(hasEngineLinked)
 
     return "powershell -NoProfile -ExecutionPolicy Bypass -Command \"" .. lines ..
         ";[IO.File]::WriteAllLines(" .. sidecar .. ",$lines,[Text.Encoding]::ASCII)\""
+end
+
+local function PosixNativeAbiMetadataCommand(hasEngineLinked)
+    local command = 'python3 "' .. path.join(ROOT_DIR, "scripts/packages/WriteNativeAbi.py") ..
+        '" "%{cfg.buildtarget.abspath}"'
+    if not hasEngineLinked then
+        return command .. " standalone_c"
+    end
+    local engineLibrary = os.target() == "macosx" and "libIndex-Engine.dylib" or "libIndex-Engine.so"
+    return command .. ' engine_cpp "' .. path.join(ROOT_DIR, "bin", outputdir, "Index-Engine", engineLibrary) .. '"'
 end
 
 local function RegisterNativeProject(manifest)
@@ -405,6 +753,11 @@ local function RegisterNativeProject(manifest)
         filter "system:linux"
             pic "On"
             defines { "IDX_PLATFORM_LINUX" }
+            postbuildcommands { PosixNativeAbiMetadataCommand(hasEngineLinked) }
+
+        filter "system:macosx"
+            defines { "IDX_PLATFORM_MACOS" }
+            postbuildcommands { PosixNativeAbiMetadataCommand(hasEngineLinked) }
 
         filter "configurations:Debug"
             runtime "Debug"
@@ -439,6 +792,8 @@ local function RegisterCSharpProject(manifest)
         kind "SharedLib"
         language "C#"
         dotnetframework "net10.0"
+        -- IL runs on any CPU; keep the x64 platform label the build tools pass on every host (arm64 included).
+        architecture "x64"
 
         if layer.allow_unsafe then
             clr "Unsafe"
@@ -668,7 +1023,9 @@ function PackageSystem.LoadEnginePackages()
     print("[Index Packages] Registered " .. tostring(#sorted) .. " engine package(s): " .. table.concat(names, ", "))
 end
 
-function PackageSystem.LoadProjectPackages(projectRootDir)
+-- Validates and orders a project's enabled packages (dependencies first) without registering
+-- any premake project. Raises "[Index Packages] ..." errors like the loader does.
+function PackageSystem.ResolveProjectPackages(projectRootDir)
     if not projectRootDir or projectRootDir == "" then
         PackageError("LoadProjectPackages requires an absolute project root.")
     end
@@ -681,11 +1038,18 @@ function PackageSystem.LoadProjectPackages(projectRootDir)
     local allowList = ReadProjectPackagesAllowList(projectRootDir)
     manifests, byName = FilterManifestsByAllowList(manifests, byName, allowList or {})
     if #manifests == 0 then
+        return {}
+    end
+    return TopoSort(manifests, byName)
+end
+
+function PackageSystem.LoadProjectPackages(projectRootDir)
+    local sorted = PackageSystem.ResolveProjectPackages(projectRootDir)
+    if #sorted == 0 then
         print("[Index Packages] No enabled packages to register for " .. projectRootDir)
         return 0
     end
 
-    local sorted = TopoSort(manifests, byName)
     group "Packages"
     for _, manifest in ipairs(sorted) do
         RegisterNativeProject(manifest)

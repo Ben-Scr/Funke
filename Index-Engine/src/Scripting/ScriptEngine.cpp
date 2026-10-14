@@ -4,6 +4,9 @@
 #include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/DataAssetManager.hpp"
+#if INDEX_WITH_3D
+#include "Graphics/MeshAsset.hpp"
+#endif
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/ComponentRegistry.hpp"
@@ -24,7 +27,7 @@ namespace Index {
 	bool        ScriptEngine::s_HasUserAssembly = false;
 	std::vector<ScriptEngine::GlobalSystemInstance> ScriptEngine::s_GlobalSystems;
 
-	DotNetHost       ScriptEngine::s_Host;
+	std::unique_ptr<ScriptRuntimeHost> ScriptEngine::s_Host;
 	ManagedCallbacks ScriptEngine::s_Callbacks{};
 
 	void ScriptEngine::Init()
@@ -32,7 +35,7 @@ namespace Index {
 		if (s_Initialized)
 			return;
 
-		IDX_CORE_INFO_TAG("ScriptEngine", "ScriptEngine ready (CoreCLR, deferred init)");
+		IDX_CORE_INFO_TAG("ScriptEngine", "ScriptEngine ready (deferred runtime init)");
 	}
 
 	void ScriptEngine::Shutdown()
@@ -57,7 +60,7 @@ namespace Index {
 			}
 		}
 
-		// CoreCLR can only init once per process - never close host, only unload assemblies.
+		// A .NET runtime can only init once per process - never close host, only unload assemblies.
 		if (s_Callbacks.UnloadUserAssembly)
 			s_Callbacks.UnloadUserAssembly();
 
@@ -87,21 +90,19 @@ namespace Index {
 			return;
 		}
 		auto asmPath = std::filesystem::canonical(std::filesystem::path(path));
-		auto configPath = asmPath.parent_path() / (asmPath.stem().string() + ".runtimeconfig.json");
 		IDX_CORE_INFO_TAG("ScriptEngine", "Assembly: {}", asmPath.string());
-		IDX_CORE_INFO_TAG("ScriptEngine", "RuntimeConfig: {}", configPath.string());
 
-		if (!std::filesystem::exists(configPath))
+		if (!s_Host)
 		{
-			IDX_CORE_ERROR_TAG("ScriptEngine", "Runtime config not found: {}", configPath.string());
-			return;
+			s_Host = ScriptRuntimeHosts::CreatePreferred();
+			if (!s_Host) return;
+			IDX_CORE_INFO_TAG("ScriptEngine", "Script runtime backend: {}", s_Host->GetName());
 		}
-
-		if (!s_Host.IsInitialized())
+		if (!s_Host->IsInitialized())
 		{
-			if (!s_Host.Initialize(configPath))
+			if (!s_Host->Initialize(asmPath))
 			{
-				IDX_CORE_ERROR_TAG("ScriptEngine", "Failed to initialize CoreCLR runtime");
+				IDX_CORE_ERROR_TAG("ScriptEngine", "Failed to initialize the .NET runtime ({})", s_Host->GetName());
 				return;
 			}
 		}
@@ -109,16 +110,10 @@ namespace Index {
 		// Trailing handshake args: an older 2-arg managed entry ignores them; a newer one rejects garbage from an older caller.
 		using InitializeFn = int(*)(void* nativeBindings, void* managedCallbacks,
 			int32_t nativeBindingsSize, int32_t managedCallbacksSize, int32_t layoutVersion);
-		InitializeFn initFn = nullptr;
+		InitializeFn initFn = reinterpret_cast<InitializeFn>(s_Host->GetUnmanagedEntryPoint(
+			asmPath, "Index-ScriptCore", "Index.Interop.ScriptHostBridge", "Initialize"));
 
-		bool ok = s_Host.LoadAssemblyAndGetFunction(
-			asmPath,
-			INDEX_DOTNET_STR("Index.Interop.ScriptHostBridge, Index-ScriptCore"),
-			INDEX_DOTNET_STR("Initialize"),
-			INDEX_DOTNET_UNMANAGEDCALLERSONLY_METHOD,
-			reinterpret_cast<void**>(&initFn));
-
-		if (!ok || !initFn)
+		if (!initFn)
 		{
 			IDX_CORE_ERROR_TAG("ScriptEngine", "Failed to get ScriptHostBridge.Initialize");
 			return;
@@ -154,6 +149,13 @@ namespace Index {
 		s_Callbacks = managedCallbacks;
 		s_Initialized = true;
 		IDX_CORE_INFO_TAG("ScriptEngine", "Core assembly loaded: {}", path);
+	}
+
+	void* ScriptEngine::GetUnmanagedEntryPoint(const std::filesystem::path& assemblyPath, std::string_view assemblyName,
+		std::string_view typeName, std::string_view methodName)
+	{
+		if (!s_Initialized || !s_Host) return nullptr;
+		return s_Host->GetUnmanagedEntryPoint(assemblyPath, assemblyName, typeName, methodName);
 	}
 
 	bool ScriptEngine::LoadUserAssembly(const std::string& path)
@@ -398,6 +400,13 @@ namespace Index {
 		s_Callbacks.InvokeTrigger2D(static_cast<int32_t>(handle), phase, selfEntityID, otherEntityID, entityAID, entityBID);
 	}
 
+	void ScriptEngine::InvokeCollision3D(uint32_t handle, int32_t phase, bool isTrigger, uint64_t selfEntityID, uint64_t otherEntityID, const Vec3& contactPoint, const Vec3& normal)
+	{
+		if (handle == 0 || !s_Callbacks.InvokeCollision3D) return;
+		s_Callbacks.InvokeCollision3D(static_cast<int32_t>(handle), phase, isTrigger ? 1 : 0, selfEntityID, otherEntityID,
+			contactPoint.x, contactPoint.y, contactPoint.z, normal.x, normal.y, normal.z);
+	}
+
 	bool ScriptEngine::ClassExists(const std::string& className)
 	{
 		if (!s_Initialized || !s_Callbacks.ClassExists) return false;
@@ -492,6 +501,10 @@ namespace Index {
 	void ScriptEngine::OnPlayModeExited()
 	{
 		if (s_Initialized && s_Callbacks.OnPlayModeExited) s_Callbacks.OnPlayModeExited();
+		// Meshes scripts built during play would otherwise outlive the session that owns them.
+#if INDEX_WITH_3D
+		MeshLibrary::DestroyAllRuntime();
+#endif
 	}
 
 	void ScriptEngine::NotifyEntityDestroyed(uint64_t entityID)

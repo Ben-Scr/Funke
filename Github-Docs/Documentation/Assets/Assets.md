@@ -124,6 +124,19 @@ Fonts are cached per **pixel size** — text at 16px and 48px are baked into sep
 
 In the editor, changing an asset file on disk updates it live. For example, editing `player.png` in an image editor and saving triggers the Texture Manager to re-decode it and re-upload to the GPU, so the change appears in the editor without a restart. Thumbnails in the Asset Browser refresh the same way.
 
+This covers every file another program can change while the editor is open: an image or audio editor, a text editor, a `git pull`, or an AI agent working on the project.
+
+| File | What happens when it changes on disk |
+|------|--------------------------------------|
+| Textures (`.png`, `.jpg`, `.bmp`, `.tga`) | Re-decoded and re-uploaded. |
+| Audio (`.wav`, `.mp3`, `.flac`) | Re-decoded; Audio Sources keep the clip, and sources that were playing restart. |
+| Fonts (`.ttf`, `.otf`) | Every baked size is dropped and re-baked from the new file. |
+| Data Assets (`.dataasset`) | Field values are re-read onto the live instance, so script references to it stay valid. |
+| Prefabs (`.prefab`) | New instances use the new file. |
+| Scenes (`.scene`) | A loaded scene without unsaved edits reloads (selection is kept, undo history is cleared). A scene with unsaved edits asks first: **Reload from Disk** or **Keep Editor Version**; auto-save waits until you choose. During Play the decision waits until Stop. |
+
+The editor only reacts to changes it did not make itself: its own saves are recognized and ignored. To be asked about every changed scene instead of reloading unsaved-free scenes automatically, turn off **Preferences › Behavior › External Changes › Reload scenes changed on disk**.
+
 ### Unloading and purging
 
 Managers can free assets that nothing is using anymore. Systems that hold references (scenes, components, plugins) can register as "reference providers," and a `PurgeUnreferenced()` pass unloads anything no provider still needs — keeping memory in check during long sessions.

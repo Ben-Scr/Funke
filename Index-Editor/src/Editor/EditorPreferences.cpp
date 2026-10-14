@@ -21,10 +21,7 @@
 #include <string>
 #include <string_view>
 
-#ifdef _WIN32
-	#define WIN32_LEAN_AND_MEAN
-	#include <Windows.h>
-#endif
+#include "Core/Platform.hpp"
 
 namespace Index {
 	namespace {
@@ -49,6 +46,7 @@ namespace Index {
 			bool AutoSaveScenes = false;
 			float AutoSaveIntervalSeconds = 120.0f;
 			bool AutoSavePrefabs = true;
+			bool AutoReloadExternalSceneChanges = true;
 			bool ConfirmOnDeleteEntity = true;
 			bool ConfirmOnDeleteAsset = true;
 
@@ -134,30 +132,14 @@ namespace Index {
 			return scale;
 		}
 
-#ifdef _WIN32
-		bool IsSystemDarkMode_Win32() {
-			DWORD value = 0;
-			DWORD size = sizeof(value);
-			LSTATUS status = RegGetValueW(
-				HKEY_CURRENT_USER,
-				L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-				L"AppsUseLightTheme",
-				RRF_RT_REG_DWORD,
-				nullptr,
-				&value,
-				&size);
-			if (status != ERROR_SUCCESS) {
-				return true; // default to dark when registry says nothing
-			}
-			return value == 0;
+		bool IsSystemDarkMode() {
+			// Dark when the OS exposes no preference.
+			return Platform::IsSystemDarkTheme().value_or(true);
 		}
-#else
-		bool IsSystemDarkMode_Win32() { return true; }
-#endif
 
 		EditorThemeMode ResolveTheme(EditorThemeMode mode) {
 			if (mode == EditorThemeMode::SystemDefault) {
-				return IsSystemDarkMode_Win32() ? EditorThemeMode::Dark : EditorThemeMode::Light;
+				return IsSystemDarkMode() ? EditorThemeMode::Dark : EditorThemeMode::Light;
 			}
 			return mode;
 		}
@@ -293,6 +275,9 @@ namespace Index {
 		if (const Json::Value* v = root.FindMember("AutoSavePrefabs")) {
 			s.AutoSavePrefabs = v->AsBoolOr(true);
 		}
+		if (const Json::Value* v = root.FindMember("AutoReloadExternalSceneChanges")) {
+			s.AutoReloadExternalSceneChanges = v->AsBoolOr(true);
+		}
 		// Back-compat: the single ConfirmOnDelete pref was split into separate
 		// entity/asset toggles. Seed both from the legacy key when present so an
 		// existing "off" choice carries over, then let the new keys override.
@@ -387,6 +372,7 @@ namespace Index {
 		root.AddMember("AutoSaveScenes", Json::Value(s.AutoSaveScenes));
 		root.AddMember("AutoSaveIntervalSeconds", Json::Value(static_cast<double>(s.AutoSaveIntervalSeconds)));
 		root.AddMember("AutoSavePrefabs", Json::Value(s.AutoSavePrefabs));
+		root.AddMember("AutoReloadExternalSceneChanges", Json::Value(s.AutoReloadExternalSceneChanges));
 		root.AddMember("ConfirmOnDeleteEntity", Json::Value(s.ConfirmOnDeleteEntity));
 		root.AddMember("ConfirmOnDeleteAsset", Json::Value(s.ConfirmOnDeleteAsset));
 		root.AddMember("GridSnapEnabled", Json::Value(s.GridSnapEnabled));
@@ -629,6 +615,16 @@ namespace Index {
 	void EditorPreferences::SetAutoSavePrefabs(bool value) {
 		if (S().AutoSavePrefabs == value) return;
 		S().AutoSavePrefabs = value;
+		Save();
+	}
+
+	bool EditorPreferences::GetAutoReloadExternalSceneChanges() {
+		return S().AutoReloadExternalSceneChanges;
+	}
+
+	void EditorPreferences::SetAutoReloadExternalSceneChanges(bool value) {
+		if (S().AutoReloadExternalSceneChanges == value) return;
+		S().AutoReloadExternalSceneChanges = value;
 		Save();
 	}
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Core/EngineModules.hpp"
 #include "Inspector/PropertyDescriptor.hpp"
 #include "Scene/ComponentCategory.hpp"
 #include "Scene/Entity.hpp"
@@ -10,6 +11,7 @@
 #include <entt/entity/registry.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <typeindex>
@@ -103,6 +105,8 @@ namespace Index {
 		// Package components must set both to round-trip in .scene/.prefab files.
 		InlineFunction<Json::Value(Entity)> serialize;
 		InlineFunction<void(Entity, const Json::Value&)> deserialize;
+		// Written and read before every other component of the entity, so construct hooks of later ones see it (transforms).
+		bool serializeFirst = false;
 
 		// Unified binary+JSON path; wins over the legacy pair when both are set. Bump serializationVersion only for non-additive schema changes.
 		void (*serializeArchive)(Entity, Index::Serialization::IArchive&) = nullptr;
@@ -113,6 +117,10 @@ namespace Index {
 
 		// Non-zero for native package registrations; ComponentRegistry::UnregisterOwner drops them before the package module unloads.
 		uint32_t ownerId = 0;
+
+		// Engine feature module that owns the component; the editor hides it while the module is inactive.
+		std::optional<EngineModule> engineModule;
+		bool IsModuleActive() const { return !engineModule || EngineModules::IsActive(*engineModule); }
 	};
 
 } // namespace Index

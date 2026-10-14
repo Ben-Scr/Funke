@@ -4,6 +4,11 @@
 
 #include "Components/Audio/AudioSourceComponent.hpp"
 
+#if INDEX_WITH_2D
+#include "Components/General/Transform2DComponent.hpp"
+#include "Components/Graphics/Camera2DComponent.hpp"
+#include "Components/Graphics/ParticleSystem2DComponent.hpp"
+#include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
@@ -11,23 +16,26 @@
 #include "Components/Physics/FastBody2DComponent.hpp"
 #include "Components/Physics/FastBoxCollider2DComponent.hpp"
 #include "Components/Physics/FastCircleCollider2DComponent.hpp"
+#include "Graphics/Renderer2D.hpp"
+#include "Physics/Box2DWorld.hpp"
 #include "Physics/PhysicsSystem2D.hpp"
-#include "Components/Graphics/ParticleSystem2DComponent.hpp"
-#include "Components/Graphics/SpriteRendererComponent.hpp"
+#endif
+#if INDEX_WITH_3D
+#include "Components/General/Transform3DComponent.hpp"
+#include "Components/Graphics/ParticleSystem3DComponent.hpp"
+#endif
 #include "Components/General/NameComponent.hpp"
+#include "Components/General/RectTransform2DComponent.hpp"
+#include "Core/EngineModules.hpp"
 #include "Graphics/StaticRenderData.hpp"
 #include <Components/Tags.hpp>
 
-#include "Physics/Box2DWorld.hpp"
-
-#include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/General/UUIDComponent.hpp"
 #include "Components/General/EntityMetaDataComponent.hpp"
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/PrefabInstanceComponent.hpp"
 #include "Core/Application.hpp"
 #include "Core/Time.hpp"
-#include "Graphics/Renderer2D.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/SceneExecutionContext.hpp"
@@ -47,6 +55,28 @@
 
 namespace Index {
 	namespace {
+		// C# component wrappers are keyed by entity UUID. A scene restart loads the new copy before releasing
+		// the old one, so both hold the same UUIDs; the old copy must not invalidate wrappers the new one uses.
+		bool IsPersistentIdLiveInOtherScene(const Scene& self, uint64_t persistentId)
+		{
+			const size_t count = SceneManager::GetLoadedSceneCount();
+			for (size_t i = 0; i < count; ++i) {
+				const Scene* other = SceneManager::GetLoadedSceneAt(i);
+				EntityHandle handle = entt::null;
+				if (other && other != &self && other->TryResolveEntityRef(persistentId, handle)) {
+					return true;
+				}
+			}
+			return false;
+		}
+
+		void NotifyScriptsEntityDestroyed(const Scene& self, uint64_t persistentId)
+		{
+			if (persistentId != 0 && !IsPersistentIdLiveInOtherScene(self, persistentId)) {
+				ScriptEngine::NotifyEntityDestroyed(persistentId);
+			}
+		}
+
 		class ManagedSceneSystem final : public SceneSystem {
 		public:
 			explicit ManagedSceneSystem(std::string className)
@@ -231,14 +261,29 @@ namespace Index {
 		}
 	}
 
+	void Scene::AddDefaultTransform(EntityHandle entity) {
+#if INDEX_WITH_2D
+		if (EngineModules::IsActive(EngineModule::TwoD)) {
+			AddComponent<Transform2DComponent>(entity);
+			return;
+		}
+#endif
+#if INDEX_WITH_3D
+		if (EngineModules::IsActive(EngineModule::ThreeD)) {
+			AddComponent<Transform3DComponent>(entity);
+		}
+#endif
+		(void)entity;
+	}
+
 	Entity Scene::CreateEntity() {
 		auto entityHandle = CreateEntityHandle(EntityOrigin::Scene);
-		AddComponent<Transform2DComponent>(entityHandle);
+		AddDefaultTransform(entityHandle);
 		return Entity(entityHandle, *this);
 	}
 	Entity Scene::CreateEntity(const std::string& name) {
 		auto entityHandle = CreateEntityHandle(EntityOrigin::Scene);
-		AddComponent<Transform2DComponent>(entityHandle);
+		AddDefaultTransform(entityHandle);
 		if (!name.empty()) {
 			AddComponent<NameComponent>(entityHandle, name);
 		}
@@ -251,13 +296,13 @@ namespace Index {
 
 	Entity Scene::CreateRuntimeEntity() {
 		auto entityHandle = CreateEntityHandle(EntityOrigin::Runtime);
-		AddComponent<Transform2DComponent>(entityHandle);
+		AddDefaultTransform(entityHandle);
 		return Entity(entityHandle, *this);
 	}
 
 	Entity Scene::CreateRuntimeEntity(const std::string& name) {
 		auto entityHandle = CreateEntityHandle(EntityOrigin::Runtime);
-		AddComponent<Transform2DComponent>(entityHandle);
+		AddDefaultTransform(entityHandle);
 		if (!name.empty()) {
 			AddComponent<NameComponent>(entityHandle, name);
 		}
@@ -585,6 +630,15 @@ namespace Index {
 		m_EntityRefRemap[oldId] = newId;
 	}
 
+	void Scene::RetargetEntityRefRemap(uint64_t fromId, uint64_t toId) {
+		if (m_EntityRefRemapDepth == 0 || fromId == 0 || toId == 0) {
+			return;
+		}
+		for (auto& [oldId, newId] : m_EntityRefRemap) {
+			if (newId == fromId) newId = toId;
+		}
+	}
+
 	uint64_t Scene::TranslateEntityRef(uint64_t id) const {
 		if (m_EntityRefRemapDepth == 0 || id == 0) {
 			return id;
@@ -731,7 +785,12 @@ namespace Index {
 
 			// Disabled entities don't awaken — mirrors the scene-start passes' exclude<DisabledTag>.
 			if (!registry.any_of<DisabledTag>(entity)) {
+#if INDEX_WITH_2D
 				if (auto* particles = registry.try_get<ParticleSystem2DComponent>(entity)) particles->PlayOnAwakeIfEnabled();
+#endif
+#if INDEX_WITH_3D
+				if (auto* particles = registry.try_get<ParticleSystem3DComponent>(entity)) particles->PlayOnAwakeIfEnabled();
+#endif
 				if (auto* audio = registry.try_get<AudioSourceComponent>(entity)) audio->PlayOnAwakeIfEnabled();
 			}
 
@@ -780,8 +839,12 @@ namespace Index {
 		m_DirtyTransformEntities.clear();
 		m_DirtyTransformEntitySet.clear();
 		m_PendingDestroys.clear();
+		// Fixups hold raw pointers into component storage that was just destroyed.
+		m_PendingEntityRefFixups.clear();
 		MarkStaticRenderDataDirty();
+#if INDEX_WITH_2D
 		Renderer2D::ClearSceneCache(this);
+#endif
 	}
 
 	bool Scene::BeginContentReplacement(bool& restartLifecycle) {
@@ -1075,10 +1138,11 @@ namespace Index {
 	}
 
 	Camera2DComponent* Scene::GetMainCamera() {
+#if INDEX_WITH_2D
 		const auto isUsableCamera = [this](EntityHandle entity) {
 			return entity != entt::null
 				&& m_Registry.valid(entity)
-				&& m_Registry.all_of<Camera2DComponent>(entity)
+				&& m_Registry.all_of<Camera2DComponent, Transform2DComponent>(entity)
 				&& !m_Registry.all_of<DisabledTag>(entity);
 		};
 
@@ -1086,7 +1150,7 @@ namespace Index {
 			return &m_Registry.get<Camera2DComponent>(m_MainCameraEntity);
 		}
 
-		auto view = m_Registry.view<Camera2DComponent>(entt::exclude<DisabledTag>);
+		auto view = m_Registry.view<Camera2DComponent, Transform2DComponent>(entt::exclude<DisabledTag>);
 		for (EntityHandle entity : view) {
 			m_MainCameraEntity = entity;
 			return &view.get<Camera2DComponent>(entity);
@@ -1094,15 +1158,19 @@ namespace Index {
 
 		m_MainCameraEntity = entt::null;
 		return nullptr;
+#else
+		return nullptr;
+#endif
 	}
 
 	const Camera2DComponent* Scene::GetMainCamera() const {
+#if INDEX_WITH_2D
 		// m_MainCameraEntity is `mutable` so this const overload can do
 		// the same lazy-cache update without const_casting the registry.
 		const auto isUsableCamera = [this](EntityHandle entity) {
 			return entity != entt::null
 				&& m_Registry.valid(entity)
-				&& m_Registry.all_of<Camera2DComponent>(entity)
+				&& m_Registry.all_of<Camera2DComponent, Transform2DComponent>(entity)
 				&& !m_Registry.all_of<DisabledTag>(entity);
 		};
 
@@ -1110,7 +1178,7 @@ namespace Index {
 			return &m_Registry.get<Camera2DComponent>(m_MainCameraEntity);
 		}
 
-		auto view = m_Registry.view<Camera2DComponent>(entt::exclude<DisabledTag>);
+		auto view = m_Registry.view<Camera2DComponent, Transform2DComponent>(entt::exclude<DisabledTag>);
 		for (EntityHandle entity : view) {
 			m_MainCameraEntity = entity;
 			return &view.get<Camera2DComponent>(entity);
@@ -1118,6 +1186,9 @@ namespace Index {
 
 		m_MainCameraEntity = entt::null;
 		return nullptr;
+#else
+		return nullptr;
+#endif
 	}
 
 	EntityHandle Scene::GetMainCameraEntity() {
@@ -1127,9 +1198,14 @@ namespace Index {
 	}
 
 	bool Scene::SetMainCamera(EntityHandle entity) {
+#if !INDEX_WITH_2D
+		return false;
+#endif
 		if (entity == entt::null
 			|| !m_Registry.valid(entity)
-			|| !m_Registry.all_of<Camera2DComponent>(entity)
+#if INDEX_WITH_2D
+			|| !m_Registry.all_of<Camera2DComponent, Transform2DComponent>(entity)
+#endif
 			|| m_Registry.all_of<DisabledTag>(entity)) {
 			return false;
 		}
@@ -1183,7 +1259,7 @@ namespace Index {
 		// child, ClearEntities, and scene-unload destroys, so covering it here covers
 		// all of them. Read the UUID while the entity is still alive.
 		if (!m_LifecycleSuspended && !m_SuppressEntityDestructionCallbacks) {
-			ScriptEngine::NotifyEntityDestroyed(GetEntityPersistentID(nativeEntity));
+			NotifyScriptsEntityDestroyed(*this, GetEntityPersistentID(nativeEntity));
 		}
 
 		UnregisterEntityIdentity(nativeEntity);
@@ -1256,6 +1332,7 @@ namespace Index {
 	}
 
 	void Scene::InitializeRuntimeComponentState() {
+#if INDEX_WITH_2D
 		if (PhysicsSystem2D::IsInitialized()) {
 			for (EntityHandle entity : m_Registry.view<Rigidbody2DComponent>()) {
 				OnRigidBody2DComponentConstruct(m_Registry, entity);
@@ -1289,6 +1366,7 @@ namespace Index {
 		for (EntityHandle entity : m_Registry.view<ParticleSystem2DComponent>()) {
 			OnParticleSystem2DComponentConstruct(m_Registry, entity);
 		}
+#endif
 	}
 
 	void Scene::UpdateSystems() {
@@ -1426,6 +1504,7 @@ namespace Index {
 		, m_Persistent(IsPersistent)
 		, m_IsLoaded(false) {
 
+#if INDEX_WITH_2D
 		m_Registry.on_construct<Transform2DComponent>().connect<&Scene::OnTransform2DComponentConstruct>(this);
 		m_Registry.on_destroy<Transform2DComponent>().connect<&Scene::OnTransform2DComponentDestroy>(this);
 		m_Registry.on_construct<SpriteRendererComponent>().connect<&Scene::OnSpriteRendererComponentConstruct>(this);
@@ -1436,19 +1515,12 @@ namespace Index {
 		m_Registry.on_construct<PolygonCollider2DComponent>().connect<&Scene::OnPolygonCollider2DComponentConstruct>(this);
 		m_Registry.on_construct<Camera2DComponent>().connect<&Scene::OnCamera2DComponentConstruct>(this);
 		m_Registry.on_construct<ParticleSystem2DComponent>().connect<&Scene::OnParticleSystem2DComponentConstruct>(this);
-		m_Registry.on_construct<DisabledTag>().connect<&Scene::OnDisabledTagConstruct>(this);
-		m_Registry.on_construct<StaticTag>().connect<&Scene::OnStaticTagConstruct>(this);
-
 		m_Registry.on_destroy<Rigidbody2DComponent>().connect<&Scene::OnRigidBody2DComponentDestroy>(this);
 		m_Registry.on_destroy<BoxCollider2DComponent>().connect<&Scene::OnBoxCollider2DComponentDestroy>(this);
 		m_Registry.on_destroy<CircleCollider2DComponent>().connect<&Scene::OnCircleCollider2DComponentDestroy>(this);
 		m_Registry.on_destroy<PolygonCollider2DComponent>().connect<&Scene::OnPolygonCollider2DComponentDestroy>(this);
-		m_Registry.on_destroy<AudioSourceComponent>().connect<&Scene::OnAudioSourceComponentDestroy>(this);
-		m_Registry.on_destroy<ScriptComponent>().connect<&Scene::OnScriptComponentDestroy>(this);
 		m_Registry.on_destroy<Camera2DComponent>().connect<&Scene::OnCamera2DComponentDestruct>(this);
 		m_Registry.on_destroy<ParticleSystem2DComponent>().connect<&Scene::OnParticleSystem2DComponentDestruct>(this);
-		m_Registry.on_destroy<DisabledTag>().connect<&Scene::OnDisabledTagDestroy>(this);
-		m_Registry.on_destroy<StaticTag>().connect<&Scene::OnStaticTagDestroy>(this);
 
 		// Index-Physics component hooks
 		m_Registry.on_construct<FastBody2DComponent>().connect<&Scene::OnFastBody2DConstruct>(this);
@@ -1457,6 +1529,14 @@ namespace Index {
 		m_Registry.on_destroy<FastBoxCollider2DComponent>().connect<&Scene::OnFastBoxCollider2DDestroy>(this);
 		m_Registry.on_construct<FastCircleCollider2DComponent>().connect<&Scene::OnFastCircleCollider2DConstruct>(this);
 		m_Registry.on_destroy<FastCircleCollider2DComponent>().connect<&Scene::OnFastCircleCollider2DDestroy>(this);
+#endif
+		m_Registry.on_construct<DisabledTag>().connect<&Scene::OnDisabledTagConstruct>(this);
+		m_Registry.on_construct<StaticTag>().connect<&Scene::OnStaticTagConstruct>(this);
+
+		m_Registry.on_destroy<AudioSourceComponent>().connect<&Scene::OnAudioSourceComponentDestroy>(this);
+		m_Registry.on_destroy<ScriptComponent>().connect<&Scene::OnScriptComponentDestroy>(this);
+		m_Registry.on_destroy<DisabledTag>().connect<&Scene::OnDisabledTagDestroy>(this);
+		m_Registry.on_destroy<StaticTag>().connect<&Scene::OnStaticTagDestroy>(this);
 	}
 
 	Scene::~Scene()
@@ -1471,8 +1551,8 @@ namespace Index {
 		m_MainCameraEntity = entt::null;
 		try {
 			if (!m_LifecycleSuspended && !m_SuppressEntityDestructionCallbacks) {
-				m_Registry.view<UUIDComponent>().each([](const UUIDComponent& uuid) {
-					ScriptEngine::NotifyEntityDestroyed(static_cast<uint64_t>(uuid.Id));
+				m_Registry.view<UUIDComponent>().each([this](const UUIDComponent& uuid) {
+					NotifyScriptsEntityDestroyed(*this, static_cast<uint64_t>(uuid.Id));
 				});
 			}
 			m_Registry.clear();
@@ -1530,6 +1610,15 @@ namespace Index {
 		}
 	}
 
+	// Dynamic sprites aren't in the static grid; bumping for them would rebuild it on every spawn/despawn.
+	// Their draw-index lookup simply misses and falls back to group order until the next real rebuild.
+	void Scene::MarkStaticRenderDataDirtyIfStatic(const entt::registry& registry, EntityHandle entity)
+	{
+		if (registry.valid(entity) && registry.all_of<StaticTag>(entity)) {
+			MarkStaticRenderDataDirty();
+		}
+	}
+
 	void Scene::MarkHierarchyStructureDirty()
 	{
 		++m_HierarchyVersion;
@@ -1538,6 +1627,31 @@ namespace Index {
 		}
 	}
 
+#if INDEX_WITH_2D
+	namespace {
+		// Lets a 2D component adopt a missing Transform2D, except on a 3D or UI entity: that transform would sit
+		// next to the entity's own, so the component stays inert instead (the editor refuses the mix up front).
+		bool EnsureTransform2D(entt::registry& registry, EntityHandle entity, const char* component) {
+			if (registry.all_of<Transform2DComponent>(entity)) return true;
+			const char* otherTransform = nullptr;
+#if INDEX_WITH_3D
+			if (registry.all_of<Transform3DComponent>(entity)) otherTransform = "Transform3D";
+#endif
+			if (!otherTransform && registry.all_of<RectTransform2DComponent>(entity)) otherTransform = "RectTransform2D";
+			if (otherTransform) {
+				IDX_CORE_WARN_TAG("Scene", "{} on entity {} needs a Transform2D, but the entity uses {}; the component stays inactive.",
+					component, static_cast<uint32_t>(entity), otherTransform);
+				return false;
+			}
+			IDX_CORE_WARN_TAG("Scene", "Adding missing Transform2DComponent before creating {} for entity {}",
+				component, static_cast<uint32_t>(entity));
+			registry.emplace<Transform2DComponent>(entity);
+			return true;
+		}
+	}
+#endif
+
+#if INDEX_WITH_2D
 	void Scene::OnTransform2DComponentConstruct(entt::registry& registry, EntityHandle entity)
 	{
 		if (m_SuppressConstructHooks) {
@@ -1547,27 +1661,27 @@ namespace Index {
 		auto& transform = registry.get<Transform2DComponent>(entity);
 		transform.BindOwner(this, entity);
 		transform.MarkDirty();
-		MarkStaticRenderDataDirty();
+		MarkStaticRenderDataDirtyIfStatic(registry, entity);
 	}
 
-	void Scene::OnTransform2DComponentDestroy(entt::registry&, EntityHandle)
+	void Scene::OnTransform2DComponentDestroy(entt::registry& registry, EntityHandle entity)
 	{
 		m_TransformHierarchyDirty = true;
-		MarkStaticRenderDataDirty();
+		MarkStaticRenderDataDirtyIfStatic(registry, entity);
 	}
 
-	void Scene::OnSpriteRendererComponentConstruct(entt::registry&, EntityHandle entity)
+	void Scene::OnSpriteRendererComponentConstruct(entt::registry& registry, EntityHandle entity)
 	{
 		if (m_SuppressConstructHooks) {
 			m_DeferredConstructHooks.push_back({ &Scene::OnSpriteRendererComponentConstruct, entity });
 			return;
 		}
-		MarkStaticRenderDataDirty();
+		MarkStaticRenderDataDirtyIfStatic(registry, entity);
 	}
 
-	void Scene::OnSpriteRendererComponentDestroy(entt::registry&, EntityHandle)
+	void Scene::OnSpriteRendererComponentDestroy(entt::registry& registry, EntityHandle entity)
 	{
-		MarkStaticRenderDataDirty();
+		MarkStaticRenderDataDirtyIfStatic(registry, entity);
 	}
 
 	void Scene::OnRigidBody2DComponentConstruct(entt::registry& registry, EntityHandle entity)
@@ -1575,10 +1689,7 @@ namespace Index {
 		// Body adoption invariant: rigidbody adopts an existing collider's b2BodyId; the destroyer that calls b2DestroyBody MUST zero the sibling's m_BodyId to prevent aliasing on ID recycle.
 		if (m_IsDetached || m_LifecycleSuspended) return;
 
-		if (!registry.all_of<Transform2DComponent>(entity)) {
-			IDX_CORE_WARN_TAG("Scene", "Adding missing Transform2DComponent before creating Rigidbody2D for entity {}", static_cast<uint32_t>(entity));
-			registry.emplace<Transform2DComponent>(entity);
-		}
+		if (!EnsureTransform2D(registry, entity, "Rigidbody2D")) return;
 
 		bool isEnabled = !registry.all_of<DisabledTag>(entity);
 		Rigidbody2DComponent& rb2D = registry.get<Rigidbody2DComponent>(entity);
@@ -1651,10 +1762,7 @@ namespace Index {
 
 	void Scene::OnBoxCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity) {
 		if (m_IsDetached || m_LifecycleSuspended) return;
-		if (!registry.all_of<Transform2DComponent>(entity)) {
-			IDX_CORE_WARN_TAG("Scene", "Adding missing Transform2DComponent before creating BoxCollider2D for entity {}", static_cast<uint32_t>(entity));
-			registry.emplace<Transform2DComponent>(entity);
-		}
+		if (!EnsureTransform2D(registry, entity, "BoxCollider2D")) return;
 
 		bool isEnabled = !registry.all_of<DisabledTag>(entity);
 		BoxCollider2DComponent& boxCollider = GetComponent<BoxCollider2DComponent>(entity);
@@ -1699,10 +1807,7 @@ namespace Index {
 
 	void Scene::OnCircleCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity) {
 		if (m_IsDetached || m_LifecycleSuspended) return;
-		if (!registry.all_of<Transform2DComponent>(entity)) {
-			IDX_CORE_WARN_TAG("Scene", "Adding missing Transform2DComponent before creating CircleCollider2D for entity {}", static_cast<uint32_t>(entity));
-			registry.emplace<Transform2DComponent>(entity);
-		}
+		if (!EnsureTransform2D(registry, entity, "CircleCollider2D")) return;
 
 		bool isEnabled = !registry.all_of<DisabledTag>(entity);
 		CircleCollider2DComponent& circleCollider = GetComponent<CircleCollider2DComponent>(entity);
@@ -1747,10 +1852,7 @@ namespace Index {
 
 	void Scene::OnPolygonCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity) {
 		if (m_IsDetached || m_LifecycleSuspended) return;
-		if (!registry.all_of<Transform2DComponent>(entity)) {
-			IDX_CORE_WARN_TAG("Scene", "Adding missing Transform2DComponent before creating PolygonCollider2D for entity {}", static_cast<uint32_t>(entity));
-			registry.emplace<Transform2DComponent>(entity);
-		}
+		if (!EnsureTransform2D(registry, entity, "PolygonCollider2D")) return;
 
 		bool isEnabled = !registry.all_of<DisabledTag>(entity);
 		PolygonCollider2DComponent& polygonCollider = GetComponent<PolygonCollider2DComponent>(entity);
@@ -1790,6 +1892,7 @@ namespace Index {
 			}
 		}
 	}
+#endif
 
 	void Scene::OnAudioSourceComponentDestroy(entt::registry& registry, EntityHandle entity)
 	{
@@ -1804,14 +1907,12 @@ namespace Index {
 		ScriptSystem::RemoveAllScripts(Entity(entity, *this));
 	}
 
+#if INDEX_WITH_2D
 	void Scene::OnCamera2DComponentConstruct(entt::registry& registry, EntityHandle entity)
 	{
 		if (m_IsDetached || m_LifecycleSuspended) return;
 
-		if (!registry.all_of<Transform2DComponent>(entity)) {
-			IDX_CORE_WARN_TAG("Scene", "Adding missing Transform2DComponent before creating Camera2D for entity {}", static_cast<uint32_t>(entity));
-			registry.emplace<Transform2DComponent>(entity);
-		}
+		if (!EnsureTransform2D(registry, entity, "Camera2D")) return;
 
 		Camera2DComponent& camera2D = GetComponent<Camera2DComponent>(entity);
 		camera2D.Initialize(*this, entity);
@@ -1839,6 +1940,7 @@ namespace Index {
 			RefreshMainCameraSelection(registry, entt::null, entity);
 		}
 	}
+#endif
 
 	void Scene::OnDisabledTagConstruct(entt::registry& registry, EntityHandle entity)
 	{
@@ -1846,7 +1948,7 @@ namespace Index {
 			return;
 		}
 
-		MarkStaticRenderDataDirty();
+		MarkStaticRenderDataDirtyIfStatic(registry, entity);
 		ApplyEntityEnabledState(registry, entity, false);
 
 		// Snapshot children before iterating (emplace may reorder pool). InheritedDisabledTag tracks which DisabledTags this cascade owns.
@@ -1867,7 +1969,7 @@ namespace Index {
 			return;
 		}
 
-		MarkStaticRenderDataDirty();
+		MarkStaticRenderDataDirtyIfStatic(registry, entity);
 		if (registry.all_of<InheritedDisabledTag>(entity)) {
 			registry.remove<InheritedDisabledTag>(entity);
 		}
@@ -1904,6 +2006,7 @@ namespace Index {
 		}
 	}
 
+#if INDEX_WITH_2D
 	void Scene::OnParticleSystem2DComponentConstruct(entt::registry& registry, EntityHandle entity) {
 		if (m_LifecycleSuspended) return;
 		if (m_SuppressConstructHooks) {
@@ -1987,6 +2090,7 @@ namespace Index {
 		PhysicsSystem2D::GetIndexPhysicsWorld().DestroyCollider(
 			entity, IndexPhysicsWorld2D::FastColliderKind::Circle, this);
 	}
+#endif
 
 	void Scene::ApplyEntityEnabledState(entt::registry& registry, EntityHandle entity, bool enabled)
 	{
@@ -2005,6 +2109,7 @@ namespace Index {
 			}
 		}
 
+#if INDEX_WITH_2D
 		if (auto* rigidbody = registry.try_get<Rigidbody2DComponent>(entity); rigidbody && rigidbody->IsValid()) {
 			rigidbody->SetEnabled(enabled);
 		}
@@ -2020,11 +2125,13 @@ namespace Index {
 		if (auto* collider = registry.try_get<PolygonCollider2DComponent>(entity); collider && collider->IsValid()) {
 			collider->SetEnabled(enabled);
 		}
+#endif
 
 		if (registry.all_of<ScriptComponent>(entity)) {
 			ScriptSystem::SetScriptsEnabled(Entity(entity, *this), enabled);
 		}
 
+#if INDEX_WITH_2D
 		if (!registry.all_of<Camera2DComponent>(entity)) {
 			return;
 		}
@@ -2038,15 +2145,17 @@ namespace Index {
 				|| registry.all_of<DisabledTag>(m_MainCameraEntity))) {
 			RefreshMainCameraSelection(registry, entity);
 		}
+#endif
 	}
 
+#if INDEX_WITH_2D
 	void Scene::RefreshMainCameraSelection(entt::registry& registry, EntityHandle preferred, EntityHandle excluded)
 	{
 		const auto isUsableCamera = [&](EntityHandle entity) {
 			return entity != entt::null
 				&& entity != excluded
 				&& registry.valid(entity)
-				&& registry.all_of<Camera2DComponent>(entity)
+				&& registry.all_of<Camera2DComponent, Transform2DComponent>(entity)
 				&& !registry.all_of<DisabledTag>(entity);
 		};
 
@@ -2055,7 +2164,7 @@ namespace Index {
 			return;
 		}
 
-		auto view = registry.view<Camera2DComponent>(entt::exclude<DisabledTag>);
+		auto view = registry.view<Camera2DComponent, Transform2DComponent>(entt::exclude<DisabledTag>);
 		for (EntityHandle candidate : view) {
 			if (candidate != excluded) {
 				m_MainCameraEntity = candidate;
@@ -2065,4 +2174,5 @@ namespace Index {
 
 		m_MainCameraEntity = entt::null;
 	}
+#endif
 }

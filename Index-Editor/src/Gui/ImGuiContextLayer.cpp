@@ -201,8 +201,8 @@ namespace Index {
 
 		Window* window = app.GetWindow();
 		IDX_ASSERT(window != nullptr, IndexErrorCode::InvalidHandle, "ImGuiContextLayer requires an active Window");
-		GLFWwindow* glfwWindow = window->GetGLFWWindow();
-		IDX_ASSERT(glfwWindow != nullptr, IndexErrorCode::InvalidHandle, "Window has no GLFW handle");
+		SDL_Window* sdlWindow = window->GetNativeWindow();
+		IDX_ASSERT(sdlWindow != nullptr, IndexErrorCode::InvalidHandle, "Window has no SDL handle");
 
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();
@@ -233,7 +233,7 @@ namespace Index {
 			iniFileExists ? "loaded" : "missing — defaults will be used",
 			iniFileSize);
 
-		const float dpiScale = EditorRuntime::ImGuiContextSetup::CaptureDpiScale(glfwWindow);
+		const float dpiScale = EditorRuntime::ImGuiContextSetup::CaptureDpiScale(sdlWindow);
 		s_DpiScale = dpiScale;
 
 		// EditorPreferences::Load hasn't run yet (ImGuiEditorLayer::OnAttach is later); font size is finalised by ApplyEditorFontSize once prefs load.
@@ -266,7 +266,7 @@ namespace Index {
 			}
 		}
 
-		EditorRuntime::ImGuiContextSetup::InitBackends(glfwWindow);
+		EditorRuntime::ImGuiContextSetup::InitBackends(sdlWindow);
 
 		ApplyIndexTheme();
 		// Must run after the theme — ScaleAllSizes is multiplicative on the

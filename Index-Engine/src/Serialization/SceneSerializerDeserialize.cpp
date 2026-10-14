@@ -1,26 +1,31 @@
 #include "pch.hpp"
+#include <atomic>
+#include <mutex>
 #include "Assets/AssetRegistry.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/SceneSerializerShared.hpp"
 #include "Serialization/File.hpp"
+#include "Serialization/FileStamp.hpp"
 #include "Serialization/Json.hpp"
+#include "Serialization/Path.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/EntityHelper.hpp"
 #include "Components/General/NameComponent.hpp"
+#if INDEX_WITH_2D
 #include "Components/General/Transform2DComponent.hpp"
-#include "Components/Graphics/SpriteRendererComponent.hpp"
+#endif
 #include "Components/Graphics/TextRendererComponent.hpp"
-#include "Components/Graphics/Camera2DComponent.hpp"
+#if INDEX_WITH_2D
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
+#endif
 #include "Components/Audio/AudioSourceComponent.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/PrefabInstanceComponent.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
-#include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/General/UUIDComponent.hpp"
 #include "Components/General/EntityMetaDataComponent.hpp"
 #include "Profiling/Profiler.hpp"
@@ -28,9 +33,11 @@
 #include "Components/Tags.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptEngine.hpp"
+#if INDEX_WITH_2D
 #include "Components/Physics/FastBody2DComponent.hpp"
 #include "Components/Physics/FastBoxCollider2DComponent.hpp"
 #include "Components/Physics/FastCircleCollider2DComponent.hpp"
+#endif
 #include "Graphics/TextureManager.hpp"
 #include "Audio/AudioManager.hpp"
 #include "Physics/PhysicsTypes.hpp"
@@ -60,6 +67,7 @@ namespace Index {
 
 	namespace {
 		static constexpr int SCENE_FORMAT_VERSION = 1;
+#if INDEX_WITH_2D
 		static constexpr float k_MinScaleAxis = 0.0001f;
 
 		// BoxCollider2D size: prefer the exact local size written since localSizeX/Y were
@@ -88,6 +96,7 @@ namespace Index {
 			}
 			return localScale;
 		}
+#endif
 
 		bool IsUnsignedIntegerValue(const Value& value) {
 			if (value.IsString()) {
@@ -836,6 +845,24 @@ namespace Index {
 			return 0;
 		}
 
+		EntityHandle GetSamePrefabParent(Scene& scene, EntityHandle entity, uint64_t prefabGuid) {
+			auto& registry = scene.GetRegistry();
+			const auto* hierarchy = registry.try_get<HierarchyComponent>(entity);
+			if (!hierarchy) return entt::null;
+			const EntityHandle parent = hierarchy->Parent;
+			if (parent == entt::null || !registry.valid(parent)) return entt::null;
+			if (scene.GetEntityOrigin(parent) != EntityOrigin::Prefab
+				|| static_cast<uint64_t>(scene.GetPrefabGUID(parent)) != prefabGuid) {
+				return entt::null;
+			}
+			return parent;
+		}
+
+		uint64_t GetPrefabSourceIdOrZero(Scene& scene, EntityHandle entity) {
+			const auto* instance = scene.GetRegistry().try_get<PrefabInstanceComponent>(entity);
+			return instance ? instance->SourceEntityId : 0;
+		}
+
 		std::vector<EntityHandle> CollectPrefabInstanceSubtree(Scene& scene, EntityHandle root, uint64_t prefabGuid) {
 			std::vector<EntityHandle> entities;
 			auto& registry = scene.GetRegistry();
@@ -853,7 +880,8 @@ namespace Index {
 
 				if (entity != root
 					&& (scene.GetEntityOrigin(entity) != EntityOrigin::Prefab
-						|| static_cast<uint64_t>(scene.GetPrefabGUID(entity)) != prefabGuid)) {
+						|| static_cast<uint64_t>(scene.GetPrefabGUID(entity)) != prefabGuid
+						|| SceneSerializer::IsPrefabInstanceRoot(scene, entity))) {
 					return;
 				}
 
@@ -870,6 +898,36 @@ namespace Index {
 
 			visit(root);
 			return entities;
+		}
+
+		// Prefab-instance children aren't written to the scene file, so their ids must be reproducible from
+		// (instance root id, source entity id); random ids broke parentUuid links and entity refs on reload.
+		uint64_t DerivePrefabChildPersistentId(uint64_t instanceId, uint64_t sourceId) {
+			uint64_t z = instanceId ^ (sourceId * 0x9E3779B97F4A7C15ull);
+			z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+			z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+			z ^= z >> 31;
+			return z != 0 ? z : 1;
+		}
+
+		void PinPrefabInstanceChildIds(Scene& scene, EntityHandle root) {
+			if (root == entt::null || !scene.IsValid(root)) return;
+			const uint64_t instanceId = scene.GetEntityPersistentID(root);
+			const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(root));
+			if (instanceId == 0 || prefabGuid == 0) return;
+
+			for (EntityHandle child : CollectPrefabInstanceSubtree(scene, root, prefabGuid)) {
+				if (child == root) continue;
+				const uint64_t sourceId = GetPrefabSourceIdOrZero(scene, child);
+				if (sourceId == 0) continue;
+				const uint64_t previousId = scene.GetEntityPersistentID(child);
+				const uint64_t derivedId = DerivePrefabChildPersistentId(instanceId, sourceId);
+				if (previousId == derivedId) continue;
+				if (scene.SetEntityPersistentID(child, derivedId)) {
+					// Template-internal refs were remapped to the old id; follow the re-key.
+					scene.RetargetEntityRefRemap(previousId, derivedId);
+				}
+			}
 		}
 
 		Value SerializePrefabComparableEntity(
@@ -974,6 +1032,68 @@ namespace Index {
 			return true;
 		}
 
+		struct CachedPrefabRoot {
+			std::string Path;
+			FileStamp Stamp;
+			std::shared_ptr<const Value> Root;
+		};
+		std::mutex g_PrefabRootCacheMutex;
+		std::unordered_map<std::string, CachedPrefabRoot> g_PrefabRootCache;
+		// Parses replaced because the file changed outside SaveEntityToFile (which drops its entry
+		// instead); the editor drains these to refresh loaded instances against the old parse.
+		std::unordered_map<std::string, SceneSerializer::ExternalPrefabChange> g_SupersededPrefabRoots;
+
+		std::string PrefabRootCacheKey(const std::string& prefabPath) {
+			std::string key = Path::ToGenericUtf8(Path::FromUtf8(prefabPath).lexically_normal());
+#ifdef IDX_PLATFORM_WINDOWS
+			std::transform(key.begin(), key.end(), key.begin(),
+				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+#endif
+			return key;
+		}
+
+		// Caller holds g_PrefabRootCacheMutex. Keeps the oldest parse when several edits land before a drain.
+		void SupersedePrefabRootLocked(const std::string& key, const CachedPrefabRoot& entry) {
+			if (entry.Root && !g_SupersededPrefabRoots.contains(key)) {
+				g_SupersededPrefabRoots.emplace(key, SceneSerializer::ExternalPrefabChange{ entry.Path, entry.Root });
+			}
+		}
+
+		// Every prefab instance (and every runtime spawn of a non-bakeable prefab) used to re-read and
+		// re-parse the file. Keyed on (mtime, size) so editor saves and external edits still land.
+		bool ReadPrefabRootCached(const std::string& prefabPath, std::shared_ptr<const Value>& outRoot) {
+			const FileStamp stamp = FileStamp::Read(prefabPath);
+			if (!stamp.Exists) return false;
+
+			const std::string key = PrefabRootCacheKey(prefabPath);
+			{
+				std::lock_guard<std::mutex> lock(g_PrefabRootCacheMutex);
+				const auto it = g_PrefabRootCache.find(key);
+				if (it != g_PrefabRootCache.end() && it->second.Stamp == stamp) {
+					outRoot = it->second.Root;
+					return true;
+				}
+			}
+
+			auto root = std::make_shared<Value>();
+			std::string readError;
+			if (!SceneSerializerStorage::ReadRootFromFile(prefabPath, *root, &readError) || !root->IsObject()) {
+				IDX_CORE_WARN_TAG("SceneSerializer", "Failed to parse prefab {}: {}", prefabPath, readError);
+				return false;
+			}
+
+			std::lock_guard<std::mutex> lock(g_PrefabRootCacheMutex);
+			auto& entry = g_PrefabRootCache[key];
+			if (entry.Root && entry.Stamp != stamp) {
+				SupersedePrefabRootLocked(key, entry);
+			}
+			entry.Path = prefabPath;
+			entry.Stamp = stamp;
+			entry.Root = std::move(root);
+			outRoot = entry.Root;
+			return true;
+		}
+
 		bool LoadPrefabDefinitionRecursive(uint64_t prefabGuid, PrefabDefinition& outDefinition,
 			std::unordered_set<uint64_t>& inProgress) {
 			if (!inProgress.insert(prefabGuid).second) {
@@ -988,18 +1108,12 @@ namespace Index {
 			}
 
 			const std::string prefabPath = AssetRegistry::ResolvePath(prefabGuid);
-			if (prefabPath.empty() || !File::Exists(prefabPath)) {
+			std::shared_ptr<const Value> cachedRoot;
+			if (prefabPath.empty() || !ReadPrefabRootCached(prefabPath, cachedRoot)) {
 				inProgress.erase(prefabGuid);
 				return false;
 			}
-
-			Value root;
-			std::string readError;
-			if (!SceneSerializerStorage::ReadRootFromFile(prefabPath, root, &readError) || !root.IsObject()) {
-				IDX_CORE_WARN_TAG("SceneSerializer", "Failed to parse prefab {}: {}", prefabPath, readError);
-				inProgress.erase(prefabGuid);
-				return false;
-			}
+			const Value& root = *cachedRoot;
 
 			if (ReadPrefabDefinitionFromRoot(root, outDefinition)) {
 				const bool valid = ValidateEntityTreeSourceIds(outDefinition.Entities, EntityOrigin::Prefab, true);
@@ -1090,6 +1204,8 @@ namespace Index {
 				return false;
 			}
 
+			// Before the read: an edit landing mid-read must still show up as a change afterwards.
+			KnownFileStamps::Record(path);
 			std::vector<std::uint8_t> bytes;
 			{
 				INDEX_PROFILE_SCOPE("SceneSerializer::ReadFileBytes");
@@ -1199,15 +1315,9 @@ namespace Index {
 		EntityHandle handle = DeserializeEntity(scene, entityValue);
 		if (handle == entt::null) return false;
 
-		const std::string parentUuidStr = GetStringMember(entityValue, "parentUuid", std::string{});
-		if (!parentUuidStr.empty()) {
-			try {
-				const uint64_t parentUuid = std::stoull(parentUuidStr);
-				if (parentUuid != 0) state.pendingParents.emplace_back(handle, parentUuid);
-			} catch (...) {
-				// Malformed UUID â€” ignore; entity becomes a root.
-			}
-		}
+		// Accepts string or numeric ids like "uuid" does; malformed ids read as 0 and the entity becomes a root.
+		const uint64_t parentUuid = GetUInt64Member(entityValue, "parentUuid", 0);
+		if (parentUuid != 0) state.pendingParents.emplace_back(handle, parentUuid);
 
 		const int childIdx = GetIntMember(entityValue, "childIndex", -1);
 		if (childIdx >= 0) {
@@ -1395,7 +1505,9 @@ namespace Index {
 			scene.ReserveForLoad<
 				EntityMetaDataComponent,
 				UUIDComponent,
+#if INDEX_WITH_2D
 				Transform2DComponent,
+#endif
 				NameComponent>(entityCount);
 			state.pendingParents.reserve(entityCount);
 			state.childIndexByEntity.reserve(entityCount);
@@ -1477,7 +1589,9 @@ namespace Index {
 			scene.ReserveForLoad<
 				EntityMetaDataComponent,
 				UUIDComponent,
+#if INDEX_WITH_2D
 				Transform2DComponent,
+#endif
 				NameComponent>(entityCount);
 			state.pendingParents.reserve(entityCount);
 			state.childIndexByEntity.reserve(entityCount);
@@ -1509,9 +1623,11 @@ namespace Index {
 		}
 
 		const std::string originText = GetStringMember(entityValue, "Origin", "Scene");
-		const EntityOrigin origin = EntityOriginFromString(originText);
+		EntityOrigin origin = EntityOriginFromString(originText);
 		if (origin == EntityOrigin::Runtime) {
-			return entt::null;
+			// Returning null here fails the whole scene load; keep the entity as scene content instead.
+			IDX_CORE_WARN_TAG("SceneSerializer", "Entity has unsupported Origin '{}'; loading it as a scene entity", originText);
+			origin = EntityOrigin::Scene;
 		}
 
 		try {
@@ -1532,6 +1648,65 @@ namespace Index {
 		}
 	}
 
+	namespace {
+		// Data is kept so nothing is lost; the warning tells the user why those entities look inert.
+		void WarnInactiveModuleComponent(const ComponentInfo& info) {
+			static std::atomic<bool> s_Warned[std::size(k_AllEngineModules)];
+			if (s_Warned[static_cast<size_t>(*info.engineModule)].exchange(true)) return;
+			const std::string_view id = EngineModules::GetId(*info.engineModule);
+			IDX_CORE_WARN_TAG("SceneSerializer", "The scene uses {} components (e.g. {}), but the project does not enable "
+				"the {} module. They are kept but not rendered or simulated; enable the module in Project Settings > "
+				"Build > Engine Modules.", id, info.serializedName, id);
+		}
+
+#if INDEX_WITH_EDITOR
+		// Scenes from before a conflict existed (e.g. a 3D component on a 2D entity) still load; say which part is inert.
+		void WarnConflictingComponents(Scene& scene, EntityHandle entity) {
+			const auto [first, second] = SceneManager::GetComponentRegistryOrBuiltIn().FindConflictingPair(scene.GetEntity(entity));
+			if (!first) return;
+			NameComponent* name = nullptr;
+			scene.TryGetComponent<NameComponent>(entity, name);
+			const std::string entityName = name ? name->Name : std::to_string(static_cast<uint32_t>(entity));
+			// Opening a scene, entering and leaving play mode all reload it; report each mix once per session.
+			static std::mutex s_ReportedMutex;
+			static std::unordered_set<std::string> s_Reported;
+			{
+				std::scoped_lock lock(s_ReportedMutex);
+				if (!s_Reported.insert(scene.GetName() + '/' + entityName + '/' + first->serializedName + '/' + second->serializedName).second) return;
+			}
+			IDX_CORE_WARN_TAG("SceneSerializer", "Entity '{}' in scene '{}' combines '{}' and '{}', which can't work together; remove one of them.",
+				entityName, scene.GetName(), first->displayName, second->displayName);
+		}
+#endif
+
+		// Iterates the entity's members (O(1) lookup each) rather than every registered type.
+		void ReadRegistryComponents(Scene& scene, EntityHandle entity, const Json::Value& entityValue, bool first) {
+			Entity entityWrapper = scene.GetEntity(entity);
+			const ComponentRegistry& componentRegistry = SceneManager::GetComponentRegistryOrBuiltIn();
+			for (const auto& [memberName, memberValue] : entityValue.GetObject()) {
+				const ComponentInfo* info = componentRegistry.FindBySerializedName(memberName);
+				if (!info || info->serializeFirst != first) continue;
+				if (!info->deserialize || !info->has || !info->add) continue;
+				if (!info->IsModuleActive()) WarnInactiveModuleComponent(*info);
+				try {
+					if (!info->has(entityWrapper)) {
+						info->add(entityWrapper);
+					}
+					info->deserialize(entityWrapper, memberValue);
+				} catch (const std::exception& e) {
+					// The entity handle lets the editor's log clicker jump to the offending entity.
+					IDX_CORE_ERROR_TAG("SceneSerializer",
+						"Component '{}' deserialize threw on entity {}: {}",
+						info->serializedName, static_cast<uint32_t>(entity), e.what());
+				} catch (...) {
+					IDX_CORE_ERROR_TAG("SceneSerializer",
+						"Component '{}' deserialize threw an unknown exception on entity {}",
+						info->serializedName, static_cast<uint32_t>(entity));
+				}
+			}
+		}
+	}
+
 	EntityHandle SceneSerializer::DeserializeFullEntity(
 		Scene& scene,
 		const Json::Value& entityValue,
@@ -1544,13 +1719,13 @@ namespace Index {
 		const std::string name = GetStringMember(entityValue, "name", "");
 		const bool wasDirty = scene.IsDirty();
 		const bool wasUiDirty = scene.IsUIDirty();
-		const EntityHandle entity = scene.CreateEntity(name).GetHandle();
-		EntityRollbackGuard rollback(scene, entity, wasDirty, wasUiDirty);
-
-		// Drop the auto-seeded Transform2D if the snapshot omits it — UI entities must not sprout one on reload.
-		if (!entityValue.FindMember("Transform2D")) {
-			scene.GetRegistry().remove<Transform2DComponent>(entity);
+		// No default transform: the snapshot's own transform (if any) is added by ReadRegistryComponents,
+		// so UI entities don't sprout one on reload.
+		const EntityHandle entity = scene.CreateEmptyEntity().GetHandle();
+		if (!name.empty()) {
+			scene.AddComponent<NameComponent>(entity, name);
 		}
+		EntityRollbackGuard rollback(scene, entity, wasDirty, wasUiDirty);
 
 		uint64_t savedSceneGuid = GetUInt64Member(entityValue, "SceneGUID", 0);
 		if (savedSceneGuid == 0) {
@@ -1570,16 +1745,10 @@ namespace Index {
 			scene.GetComponent<PrefabInstanceComponent>(entity).SourceEntityId = savedSceneGuid;
 		}
 
-		if (const Value* transformValue = GetObjectMember(entityValue, "Transform2D")) {
-			auto& transform = scene.GetComponent<Transform2DComponent>(entity);
-			transform.LocalPosition.x = GetFloatMember(*transformValue, "posX", 0.0f);
-			transform.LocalPosition.y = GetFloatMember(*transformValue, "posY", 0.0f);
-			transform.LocalRotation = GetFloatMember(*transformValue, "rotation", 0.0f);
-			transform.LocalScale.x = GetFloatMember(*transformValue, "scaleX", 1.0f);
-			transform.LocalScale.y = GetFloatMember(*transformValue, "scaleY", 1.0f);
-			transform.Position = transform.LocalPosition;
-			transform.Scale = transform.LocalScale;
-			transform.Rotation = transform.LocalRotation;
+		ReadRegistryComponents(scene, entity, entityValue, true);
+		// The rect is read with the UI components below; present it now so 2D construct hooks see a UI entity.
+		if (GetObjectMember(entityValue, "RectTransform2D")) {
+			scene.AddComponent<RectTransform2DComponent>(entity);
 		}
 
 		if (GetBoolMember(entityValue, "static", false)) {
@@ -1590,40 +1759,6 @@ namespace Index {
 		}
 		if (GetBoolMember(entityValue, "deadly", false)) {
 			scene.AddComponent<DeadlyTag>(entity);
-		}
-
-		if (const Value* spriteValue = GetObjectMember(entityValue, "SpriteRenderer")) {
-			auto& spriteRenderer = scene.AddComponent<SpriteRendererComponent>(entity);
-			spriteRenderer.Color.r = GetFloatMember(*spriteValue, "r", 1.0f);
-			spriteRenderer.Color.g = GetFloatMember(*spriteValue, "g", 1.0f);
-			spriteRenderer.Color.b = GetFloatMember(*spriteValue, "b", 1.0f);
-			spriteRenderer.Color.a = GetFloatMember(*spriteValue, "a", 1.0f);
-			spriteRenderer.SortingOrder = static_cast<short>(GetIntMember(*spriteValue, "sortOrder", 0));
-			spriteRenderer.SortingLayer = static_cast<uint8_t>(GetIntMember(*spriteValue, "sortLayer", 0));
-			// Prefer the new per-component "filterMode" key; fall back to
-			// legacy "filter" (previously sourced from the texture's live
-			// sampler state) so older scenes still load with the same
-			// filter they were saved with.
-			spriteRenderer.FilterMode = static_cast<Filter>(GetIntMember(*spriteValue, "filterMode",
-				GetIntMember(*spriteValue, "filter", static_cast<int>(spriteRenderer.FilterMode))));
-			const Wrap wrapU = static_cast<Wrap>(GetIntMember(*spriteValue, "wrapU", static_cast<int>(Wrap::Clamp)));
-			const Wrap wrapV = static_cast<Wrap>(GetIntMember(*spriteValue, "wrapV", static_cast<int>(Wrap::Clamp)));
-			spriteRenderer.TextureHandle = LoadTextureFromValue(
-				*spriteValue,
-				"textureAsset",
-				"texture",
-				spriteRenderer.FilterMode,
-				wrapU,
-				wrapV,
-				&spriteRenderer.TextureAssetId);
-			if (spriteRenderer.FilterMode != Filter::Default) {
-				if (auto* tex = TextureManager::GetTexture(spriteRenderer.TextureHandle); tex) {
-					tex->SetFilter(spriteRenderer.FilterMode);
-				}
-			}
-			// SpriteName key is optional. Empty/missing = full texture (the
-			// default behaviour every pre-Phase-D scene relied on).
-			spriteRenderer.SpriteName = GetStringMember(*spriteValue, "spriteName", std::string{});
 		}
 
 		if (const Value* textValue = GetObjectMember(entityValue, "TextRenderer")) {
@@ -1659,6 +1794,7 @@ namespace Index {
 			text.ResolvedFont = FontHandle{};
 		}
 
+#if INDEX_WITH_2D
 		if (const Value* rigidbodyValue = GetObjectMember(entityValue, "Rigidbody2D")) {
 			auto& rigidbody = scene.AddComponent<Rigidbody2DComponent>(entity);
 			rigidbody.SetBodyType(static_cast<BodyType>(GetIntMember(*rigidbodyValue, "bodyType", static_cast<int>(BodyType::Dynamic))));
@@ -1684,7 +1820,10 @@ namespace Index {
 			};
 			boxCollider.SetCenter(savedCenter, scene);
 
-			const auto& transform = scene.GetComponent<Transform2DComponent>(entity);
+			// UI entities (RectTransform) can carry a collider without a Transform2D; GetComponent would throw and fail the load.
+			static const Transform2DComponent k_DefaultTransform{};
+			const Transform2DComponent* transformPtr = scene.GetRegistry().try_get<Transform2DComponent>(entity);
+			const Transform2DComponent& transform = transformPtr ? *transformPtr : k_DefaultTransform;
 			boxCollider.SetScale(ReadBoxColliderLocalSize(*colliderValue, transform), scene);
 			boxCollider.SetSensor(GetBoolMember(*colliderValue, "sensor", false), scene);
 			boxCollider.SetFriction(GetFloatMember(*colliderValue, "friction", boxCollider.GetFriction()));
@@ -1755,6 +1894,7 @@ namespace Index {
 			polygonCollider.SetLayer(GetUInt64Member(*colliderValue, "layer", polygonCollider.GetLayer()));
 			polygonCollider.SetRegisterContacts(GetBoolMember(*colliderValue, "registerContacts", polygonCollider.CanRegisterContacts()));
 		}
+#endif
 
 		if (const Value* audioValue = GetObjectMember(entityValue, "AudioSource")) {
 			auto& audioSource = scene.AddComponent<AudioSourceComponent>(entity);
@@ -1771,18 +1911,7 @@ namespace Index {
 			}
 		}
 
-		if (const Value* cameraValue = GetObjectMember(entityValue, "Camera2D")) {
-			auto& camera = scene.AddComponent<Camera2DComponent>(entity);
-			camera.SetOrthographicSize(GetFloatMember(*cameraValue, "orthoSize", 5.0f));
-			camera.SetZoom(GetFloatMember(*cameraValue, "zoom", 1.0f));
-			camera.SetClearColor(Color(
-				GetFloatMember(*cameraValue, "clearR", 0.1f),
-				GetFloatMember(*cameraValue, "clearG", 0.1f),
-				GetFloatMember(*cameraValue, "clearB", 0.1f),
-				GetFloatMember(*cameraValue, "clearA", 1.0f)));
-			camera.SetPostProcessingEnabled(GetBoolMember(*cameraValue, "postProcessing", true));
-		}
-
+#if INDEX_WITH_2D
 		if (const Value* bodyValue = GetObjectMember(entityValue, "FastBody2D")) {
 			auto& body = scene.AddComponent<FastBody2DComponent>(entity);
 			body.Type = static_cast<IndexPhys::BodyType>(GetIntMember(*bodyValue, "type", 1));
@@ -1817,139 +1946,10 @@ namespace Index {
 			// SetRadius (not raw m_Collider->SetRadius) so OnConstruct's scaled value isn't blown away.
 			collider.SetRadius(GetFloatMember(*colliderValue, "radius", 0.5f));
 		}
-
-		if (const Value* particleValue = GetObjectMember(entityValue, "ParticleSystem2D")) {
-			auto& particleSystem = scene.AddComponent<ParticleSystem2DComponent>(entity);
-			particleSystem.PlayOnAwake = GetBoolMember(*particleValue, "playOnAwake", true);
-			particleSystem.ParticleSettings.LifeTime = GetFloatMember(*particleValue, "lifetime", 1.0f);
-			particleSystem.ParticleSettings.Speed = GetFloatMember(*particleValue, "speed", 5.0f);
-			const float legacyScale = GetFloatMember(*particleValue, "scale", 1.0f); // pre-Vec2 scenes stored one scalar
-			particleSystem.ParticleSettings.Scale.x = GetFloatMember(*particleValue, "scaleX", legacyScale);
-			particleSystem.ParticleSettings.Scale.y = GetFloatMember(*particleValue, "scaleY", legacyScale);
-			particleSystem.ParticleSettings.Gravity.x = GetFloatMember(*particleValue, "gravityX", 0.0f);
-			particleSystem.ParticleSettings.Gravity.y = GetFloatMember(*particleValue, "gravityY", 0.0f);
-			particleSystem.ParticleSettings.UseGravity = GetBoolMember(*particleValue, "useGravity", false);
-			particleSystem.ParticleSettings.UseRandomColors = GetBoolMember(*particleValue, "useRandomColors", false);
-			particleSystem.ParticleSettings.MoveDirection.x = GetFloatMember(*particleValue, "moveDirectionX", 0.0f);
-			particleSystem.ParticleSettings.MoveDirection.y = GetFloatMember(*particleValue, "moveDirectionY", 0.0f);
-			particleSystem.ParticleSettings.ScaleOverLifetime.Enabled =
-				GetBoolMember(*particleValue, "scaleOverLifetimeEnabled", false);
-			if (const Value* solKeys = GetArrayMember(*particleValue, "scaleOverLifetimeKeys")) {
-				auto& solKeyList = particleSystem.ParticleSettings.ScaleOverLifetime.Curve.Keys;
-				solKeyList.clear();
-				for (const Value& keyValue : solKeys->GetArray()) {
-					Curve::Key key;
-					key.Pos = Vec2{ GetFloatMember(keyValue, "x", 0.0f), GetFloatMember(keyValue, "y", 1.0f) };
-					key.InTangent = Vec2{ GetFloatMember(keyValue, "inX", -0.2f), GetFloatMember(keyValue, "inY", 0.0f) };
-					key.OutTangent = Vec2{ GetFloatMember(keyValue, "outX", 0.2f), GetFloatMember(keyValue, "outY", 0.0f) };
-					solKeyList.push_back(key);
-				}
-				std::sort(solKeyList.begin(), solKeyList.end(),
-					[](const auto& a, const auto& b) { return a.Pos.x < b.Pos.x; });
-				if (solKeyList.size() < 2) {
-					solKeyList = Curve::DefaultKeys();
-				}
-			}
-			particleSystem.ParticleSettings.ColorOverLifetime.Enabled =
-				GetBoolMember(*particleValue, "colorOverLifetimeEnabled", false);
-			if (const Value* colorKeys = GetArrayMember(*particleValue, "colorOverLifetimeColorKeys")) {
-				auto& colorKeyList = particleSystem.ParticleSettings.ColorOverLifetime.Gradient.ColorKeys;
-				colorKeyList.clear();
-				for (const Value& keyValue : colorKeys->GetArray()) {
-					Gradient::ColorKey key;
-					key.Position = GetFloatMember(keyValue, "t", 0.0f);
-					key.R = GetFloatMember(keyValue, "r", 1.0f);
-					key.G = GetFloatMember(keyValue, "g", 1.0f);
-					key.B = GetFloatMember(keyValue, "b", 1.0f);
-					colorKeyList.push_back(key);
-				}
-				std::sort(colorKeyList.begin(), colorKeyList.end(),
-					[](const auto& a, const auto& b) { return a.Position < b.Position; });
-				if (colorKeyList.empty()) {
-					colorKeyList = Gradient::DefaultColorKeys();
-				}
-			}
-			if (const Value* alphaKeys = GetArrayMember(*particleValue, "colorOverLifetimeAlphaKeys")) {
-				auto& alphaKeyList = particleSystem.ParticleSettings.ColorOverLifetime.Gradient.AlphaKeys;
-				alphaKeyList.clear();
-				for (const Value& keyValue : alphaKeys->GetArray()) {
-					Gradient::AlphaKey key;
-					key.Position = GetFloatMember(keyValue, "t", 0.0f);
-					key.Alpha = GetFloatMember(keyValue, "a", 1.0f);
-					alphaKeyList.push_back(key);
-				}
-				std::sort(alphaKeyList.begin(), alphaKeyList.end(),
-					[](const auto& a, const auto& b) { return a.Position < b.Position; });
-				if (alphaKeyList.empty()) {
-					alphaKeyList = Gradient::DefaultAlphaKeys();
-				}
-			}
-			particleSystem.EmissionSettings.EmitOverTime =
-				static_cast<uint16_t>(GetIntMember(*particleValue, "emitOverTime", 10));
-			particleSystem.EmissionSettings.RateOverDistance =
-				static_cast<uint16_t>(GetIntMember(*particleValue, "rateOverDistance", 0));
-			particleSystem.EmissionSettings.EmissionSpace = static_cast<ParticleSystem2DComponent::Space>(
-				GetIntMember(*particleValue, "emissionSpace", static_cast<int>(ParticleSystem2DComponent::Space::World)));
-
-			const int shapeType = GetIntMember(*particleValue, "shapeType", 0);
-			if (shapeType == 0) {
-				ParticleSystem2DComponent::CircleParams circle;
-				circle.Radius = GetFloatMember(*particleValue, "radius", 1.0f);
-				circle.IsOnCircle = GetBoolMember(*particleValue, "isOnCircle", false);
-				circle.Arc = GetFloatMember(*particleValue, "arc", 360.0f);
-				particleSystem.Shape = circle;
-			}
-			else if (shapeType == 1) {
-				ParticleSystem2DComponent::SquareParams square;
-				square.HalfExtends.x = GetFloatMember(*particleValue, "halfExtendsX", 1.0f);
-				square.HalfExtends.y = GetFloatMember(*particleValue, "halfExtendsY", 1.0f);
-				particleSystem.Shape = square;
-			}
-			else {
-				ParticleSystem2DComponent::EdgeParams edge;
-				edge.Length = GetFloatMember(*particleValue, "edgeLength", 1.0f);
-				particleSystem.Shape = edge;
-			}
-
-			particleSystem.RenderingSettings.MaxParticles =
-				static_cast<uint32_t>(GetUInt64Member(*particleValue, "maxParticles", 1000));
-			particleSystem.RenderingSettings.Color.r = GetFloatMember(*particleValue, "colorR", 1.0f);
-			particleSystem.RenderingSettings.Color.g = GetFloatMember(*particleValue, "colorG", 1.0f);
-			particleSystem.RenderingSettings.Color.b = GetFloatMember(*particleValue, "colorB", 1.0f);
-			particleSystem.RenderingSettings.Color.a = GetFloatMember(*particleValue, "colorA", 1.0f);
-			particleSystem.RenderingSettings.SortingOrder =
-				static_cast<short>(GetIntMember(*particleValue, "sortOrder", 0));
-			particleSystem.RenderingSettings.SortingLayer =
-				static_cast<uint8_t>(GetIntMember(*particleValue, "sortLayer", 0));
-
-			UUID textureAssetId = UUID(0);
-			const TextureHandle textureHandle = LoadTextureFromValue(
-				*particleValue,
-				"textureAsset",
-				"texture",
-				Filter::Point,
-				Wrap::Clamp,
-				Wrap::Clamp,
-				&textureAssetId);
-			particleSystem.SetTexture(textureHandle, textureAssetId);
-
-			particleSystem.ClearBursts();
-			if (const Value* burstsValue = GetArrayMember(*particleValue, "bursts")) {
-				for (const Value& burstValue : burstsValue->GetArray()) {
-					if (!burstValue.IsObject()) {
-						continue;
-					}
-					ParticleSystem2DComponent::Burst burst;
-					burst.Count = static_cast<uint32_t>(GetUInt64Member(burstValue, "count", burst.Count));
-					burst.Interval = GetFloatMember(burstValue, "interval", burst.Interval);
-					burst.TimeUntilNext = 0.0f;
-					particleSystem.AddBurst(burst);
-				}
-			}
-		}
+#endif
 
 		if (const Value* rectValue = GetObjectMember(entityValue, "RectTransform2D")) {
-			auto& rectTransform = scene.AddComponent<RectTransform2DComponent>(entity);
+			auto& rectTransform = scene.GetComponent<RectTransform2DComponent>(entity);
 			rectTransform.AnchorMin.x        = GetFloatMember(*rectValue, "anchorMinX", 0.5f);
 			rectTransform.AnchorMin.y        = GetFloatMember(*rectValue, "anchorMinY", 0.5f);
 			rectTransform.AnchorMax.x        = GetFloatMember(*rectValue, "anchorMaxX", 0.5f);
@@ -1966,6 +1966,12 @@ namespace Index {
 			rectTransform.LocalRotation      = GetFloatMember(*rectValue, "rotation", 0.0f);
 			rectTransform.LocalScale.x       = GetFloatMember(*rectValue, "scaleX", 1.0f);
 			rectTransform.LocalScale.y       = GetFloatMember(*rectValue, "scaleY", 1.0f);
+			rectTransform.IgnoreSafeArea     = GetBoolMember(*rectValue, "ignoreSafeArea", false);
+			{
+				const bool fillParent = GetBoolMember(*rectValue, "fillParent", false);
+				rectTransform.FillWidth  = fillParent || GetBoolMember(*rectValue, "fillWidth", false);
+				rectTransform.FillHeight = fillParent || GetBoolMember(*rectValue, "fillHeight", false);
+			}
 			// Seed the world cache from the local values so a one-frame
 			// pre-layout read returns sensible defaults — UILayoutSystem
 			// overwrites these on the first tick (matches Transform2D).
@@ -2116,7 +2122,8 @@ namespace Index {
 						}
 					}
 				}
-				if (populated > 0 || skippedNoScript > 0) {
+				// Only the skip case is worth a line; logging every scripted entity stalls large scene loads.
+				if (skippedNoScript > 0) {
 					IDX_CORE_INFO_TAG("SceneSerializer",
 						"Entity '{}' ScriptFields: {} populated, {} class(es) skipped (script not registered yet)",
 						name, populated, skippedNoScript);
@@ -2179,37 +2186,7 @@ namespace Index {
 			}
 		}
 
-		// Registry-driven deserialize for package components.
-		// Iterate the entity's actual members and resolve each name against the registry
-		// (O(1) hashed lookup, covers both static and dynamic components) instead of
-		// scanning every registered component type per entity. Same set of components is
-		// processed; the registry already iterated in unordered order, so member order is fine.
-		if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
-			Entity entityWrapper = scene.GetEntity(entity);
-			const ComponentRegistry& componentRegistryRef =
-				SceneManager::GetComponentRegistry();
-			for (const auto& [memberName, memberValue] : entityValue.GetObject()) {
-				const ComponentInfo* info = componentRegistryRef.FindBySerializedName(memberName);
-				if (!info || !info->deserialize || !info->has || !info->add) continue;
-				try {
-					if (!info->has(entityWrapper)) {
-						info->add(entityWrapper);
-					}
-					info->deserialize(entityWrapper, memberValue);
-				} catch (const std::exception& e) {
-					// Include the entity handle so the editor's log clicker can
-					// jump to the offending entity even when many components fail
-					// in a corrupt scene load.
-					IDX_CORE_ERROR_TAG("SceneSerializer",
-						"Package component '{}' deserialize threw on entity {}: {}",
-						info->serializedName, static_cast<uint32_t>(entity), e.what());
-				} catch (...) {
-					IDX_CORE_ERROR_TAG("SceneSerializer",
-						"Package component '{}' deserialize threw an unknown exception on entity {}",
-						info->serializedName, static_cast<uint32_t>(entity));
-				}
-			}
-		}
+		ReadRegistryComponents(scene, entity, entityValue, false);
 
 		// Materialize native/dynamic (IComponent) rows listed only in the entity's
 		// managed script/component list. The registry-driven loop above adds any
@@ -2237,6 +2214,9 @@ namespace Index {
 			for (const std::string& className : sc.ManagedComponents) materializeDynamic(className);
 		}
 
+#if INDEX_WITH_EDITOR
+		WarnConflictingComponents(scene, entity);
+#endif
 		rollback.Commit();
 		return entity;
 	}
@@ -2419,52 +2399,16 @@ namespace Index {
 
 		const std::string component(componentName);
 
-		if (component == "Transform2D") {
-			auto& transform = scene.HasComponent<Transform2DComponent>(entity)
-				? scene.GetComponent<Transform2DComponent>(entity)
-				: scene.AddComponent<Transform2DComponent>(entity);
-			transform.LocalPosition.x = GetFloatMember(componentValue, "posX", 0.0f);
-			transform.LocalPosition.y = GetFloatMember(componentValue, "posY", 0.0f);
-			transform.LocalRotation = GetFloatMember(componentValue, "rotation", 0.0f);
-			transform.LocalScale.x = GetFloatMember(componentValue, "scaleX", 1.0f);
-			transform.LocalScale.y = GetFloatMember(componentValue, "scaleY", 1.0f);
-			transform.Position = transform.LocalPosition;
-			transform.Scale = transform.LocalScale;
-			transform.Rotation = transform.LocalRotation;
-			transform.MarkDirty();
-			return true;
-		}
-
-		if (component == "SpriteRenderer") {
-			auto& spriteRenderer = scene.HasComponent<SpriteRendererComponent>(entity)
-				? scene.GetComponent<SpriteRendererComponent>(entity)
-				: scene.AddComponent<SpriteRendererComponent>(entity);
-			spriteRenderer.Color.r = GetFloatMember(componentValue, "r", 1.0f);
-			spriteRenderer.Color.g = GetFloatMember(componentValue, "g", 1.0f);
-			spriteRenderer.Color.b = GetFloatMember(componentValue, "b", 1.0f);
-			spriteRenderer.Color.a = GetFloatMember(componentValue, "a", 1.0f);
-			spriteRenderer.SortingOrder = static_cast<short>(GetIntMember(componentValue, "sortOrder", 0));
-			spriteRenderer.SortingLayer = static_cast<uint8_t>(GetIntMember(componentValue, "sortLayer", 0));
-			spriteRenderer.FilterMode = static_cast<Filter>(GetIntMember(componentValue, "filterMode",
-				GetIntMember(componentValue, "filter", static_cast<int>(spriteRenderer.FilterMode))));
-			const Wrap wrapU = static_cast<Wrap>(GetIntMember(componentValue, "wrapU", static_cast<int>(Wrap::Clamp)));
-			const Wrap wrapV = static_cast<Wrap>(GetIntMember(componentValue, "wrapV", static_cast<int>(Wrap::Clamp)));
-			spriteRenderer.TextureHandle = LoadTextureFromValue(
-				componentValue,
-				"textureAsset",
-				"texture",
-				spriteRenderer.FilterMode,
-				wrapU,
-				wrapV,
-				&spriteRenderer.TextureAssetId);
-			if (spriteRenderer.FilterMode != Filter::Default) {
-				if (auto* tex = TextureManager::GetTexture(spriteRenderer.TextureHandle); tex) {
-					tex->SetFilter(spriteRenderer.FilterMode);
-				}
+		// Paste/Reset run outside a load batch, so drain the ref fixups queued here before returning:
+		// they hold raw pointers into component storage that a later delete would invalidate.
+		struct FixupDrain {
+			Scene& TargetScene;
+			std::size_t Start;
+			~FixupDrain() {
+				try { TargetScene.RunPendingEntityRefFixupsFrom(Start); }
+				catch (...) { TargetScene.DiscardPendingEntityRefFixupsFrom(Start); }
 			}
-			spriteRenderer.SpriteName = GetStringMember(componentValue, "spriteName", std::string{});
-			return true;
-		}
+		} fixupDrain{ scene, scene.GetPendingEntityRefFixupCount() };
 
 		if (component == "TextRenderer") {
 			auto& text = scene.HasComponent<TextRendererComponent>(entity)
@@ -2502,6 +2446,7 @@ namespace Index {
 			return true;
 		}
 
+#if INDEX_WITH_2D
 		if (component == "Rigidbody2D") {
 			auto& rigidbody = scene.HasComponent<Rigidbody2DComponent>(entity)
 				? scene.GetComponent<Rigidbody2DComponent>(entity)
@@ -2527,7 +2472,10 @@ namespace Index {
 			};
 			boxCollider.SetCenter(savedCenter, scene);
 
-			const auto& transform = scene.GetComponent<Transform2DComponent>(entity);
+			// UI entities (RectTransform) can carry a collider without a Transform2D; GetComponent would throw and fail the load.
+			static const Transform2DComponent k_DefaultTransform{};
+			const Transform2DComponent* transformPtr = scene.GetRegistry().try_get<Transform2DComponent>(entity);
+			const Transform2DComponent& transform = transformPtr ? *transformPtr : k_DefaultTransform;
 			boxCollider.SetScale(ReadBoxColliderLocalSize(componentValue, transform), scene);
 			boxCollider.SetSensor(GetBoolMember(componentValue, "sensor", false), scene);
 			boxCollider.SetFriction(GetFloatMember(componentValue, "friction", boxCollider.GetFriction()));
@@ -2598,6 +2546,7 @@ namespace Index {
 			polygonCollider.SetRegisterContacts(GetBoolMember(componentValue, "registerContacts", polygonCollider.CanRegisterContacts()));
 			return true;
 		}
+#endif
 
 		if (component == "AudioSource") {
 			auto& audioSource = scene.HasComponent<AudioSourceComponent>(entity)
@@ -2614,21 +2563,7 @@ namespace Index {
 			return true;
 		}
 
-		if (component == "Camera2D") {
-			auto& camera = scene.HasComponent<Camera2DComponent>(entity)
-				? scene.GetComponent<Camera2DComponent>(entity)
-				: scene.AddComponent<Camera2DComponent>(entity);
-			camera.SetOrthographicSize(GetFloatMember(componentValue, "orthoSize", 5.0f));
-			camera.SetZoom(GetFloatMember(componentValue, "zoom", 1.0f));
-			camera.SetClearColor(Color(
-				GetFloatMember(componentValue, "clearR", 0.1f),
-				GetFloatMember(componentValue, "clearG", 0.1f),
-				GetFloatMember(componentValue, "clearB", 0.1f),
-				GetFloatMember(componentValue, "clearA", 1.0f)));
-			camera.SetPostProcessingEnabled(GetBoolMember(componentValue, "postProcessing", true));
-			return true;
-		}
-
+#if INDEX_WITH_2D
 		if (component == "FastBody2D") {
 			auto& body = scene.HasComponent<FastBody2DComponent>(entity)
 				? scene.GetComponent<FastBody2DComponent>(entity)
@@ -2665,142 +2600,7 @@ namespace Index {
 			collider.SetRadius(GetFloatMember(componentValue, "radius", 0.5f));
 			return true;
 		}
-
-		if (component == "ParticleSystem2D") {
-			auto& particleSystem = scene.HasComponent<ParticleSystem2DComponent>(entity)
-				? scene.GetComponent<ParticleSystem2DComponent>(entity)
-				: scene.AddComponent<ParticleSystem2DComponent>(entity);
-			particleSystem.PlayOnAwake = GetBoolMember(componentValue, "playOnAwake", true);
-			particleSystem.ParticleSettings.LifeTime = GetFloatMember(componentValue, "lifetime", 1.0f);
-			particleSystem.ParticleSettings.Speed = GetFloatMember(componentValue, "speed", 5.0f);
-			const float legacyScale = GetFloatMember(componentValue, "scale", 1.0f); // pre-Vec2 scenes stored one scalar
-			particleSystem.ParticleSettings.Scale.x = GetFloatMember(componentValue, "scaleX", legacyScale);
-			particleSystem.ParticleSettings.Scale.y = GetFloatMember(componentValue, "scaleY", legacyScale);
-			particleSystem.ParticleSettings.Gravity.x = GetFloatMember(componentValue, "gravityX", 0.0f);
-			particleSystem.ParticleSettings.Gravity.y = GetFloatMember(componentValue, "gravityY", 0.0f);
-			particleSystem.ParticleSettings.UseGravity = GetBoolMember(componentValue, "useGravity", false);
-			particleSystem.ParticleSettings.UseRandomColors = GetBoolMember(componentValue, "useRandomColors", false);
-			particleSystem.ParticleSettings.MoveDirection.x = GetFloatMember(componentValue, "moveDirectionX", 0.0f);
-			particleSystem.ParticleSettings.MoveDirection.y = GetFloatMember(componentValue, "moveDirectionY", 0.0f);
-			particleSystem.ParticleSettings.ScaleOverLifetime.Enabled =
-				GetBoolMember(componentValue, "scaleOverLifetimeEnabled", false);
-			if (const Value* solKeys = GetArrayMember(componentValue, "scaleOverLifetimeKeys")) {
-				auto& solKeyList = particleSystem.ParticleSettings.ScaleOverLifetime.Curve.Keys;
-				solKeyList.clear();
-				for (const Value& keyValue : solKeys->GetArray()) {
-					Curve::Key key;
-					key.Pos = Vec2{ GetFloatMember(keyValue, "x", 0.0f), GetFloatMember(keyValue, "y", 1.0f) };
-					key.InTangent = Vec2{ GetFloatMember(keyValue, "inX", -0.2f), GetFloatMember(keyValue, "inY", 0.0f) };
-					key.OutTangent = Vec2{ GetFloatMember(keyValue, "outX", 0.2f), GetFloatMember(keyValue, "outY", 0.0f) };
-					solKeyList.push_back(key);
-				}
-				std::sort(solKeyList.begin(), solKeyList.end(),
-					[](const auto& a, const auto& b) { return a.Pos.x < b.Pos.x; });
-				if (solKeyList.size() < 2) {
-					solKeyList = Curve::DefaultKeys();
-				}
-			}
-			particleSystem.ParticleSettings.ColorOverLifetime.Enabled =
-				GetBoolMember(componentValue, "colorOverLifetimeEnabled", false);
-			if (const Value* colorKeys = GetArrayMember(componentValue, "colorOverLifetimeColorKeys")) {
-				auto& colorKeyList = particleSystem.ParticleSettings.ColorOverLifetime.Gradient.ColorKeys;
-				colorKeyList.clear();
-				for (const Value& keyValue : colorKeys->GetArray()) {
-					Gradient::ColorKey key;
-					key.Position = GetFloatMember(keyValue, "t", 0.0f);
-					key.R = GetFloatMember(keyValue, "r", 1.0f);
-					key.G = GetFloatMember(keyValue, "g", 1.0f);
-					key.B = GetFloatMember(keyValue, "b", 1.0f);
-					colorKeyList.push_back(key);
-				}
-				std::sort(colorKeyList.begin(), colorKeyList.end(),
-					[](const auto& a, const auto& b) { return a.Position < b.Position; });
-				if (colorKeyList.empty()) {
-					colorKeyList = Gradient::DefaultColorKeys();
-				}
-			}
-			if (const Value* alphaKeys = GetArrayMember(componentValue, "colorOverLifetimeAlphaKeys")) {
-				auto& alphaKeyList = particleSystem.ParticleSettings.ColorOverLifetime.Gradient.AlphaKeys;
-				alphaKeyList.clear();
-				for (const Value& keyValue : alphaKeys->GetArray()) {
-					Gradient::AlphaKey key;
-					key.Position = GetFloatMember(keyValue, "t", 0.0f);
-					key.Alpha = GetFloatMember(keyValue, "a", 1.0f);
-					alphaKeyList.push_back(key);
-				}
-				std::sort(alphaKeyList.begin(), alphaKeyList.end(),
-					[](const auto& a, const auto& b) { return a.Position < b.Position; });
-				if (alphaKeyList.empty()) {
-					alphaKeyList = Gradient::DefaultAlphaKeys();
-				}
-			}
-			particleSystem.EmissionSettings.EmitOverTime =
-				static_cast<uint16_t>(GetIntMember(componentValue, "emitOverTime", 10));
-			particleSystem.EmissionSettings.RateOverDistance =
-				static_cast<uint16_t>(GetIntMember(componentValue, "rateOverDistance", 0));
-			particleSystem.EmissionSettings.EmissionSpace = static_cast<ParticleSystem2DComponent::Space>(
-				GetIntMember(componentValue, "emissionSpace", static_cast<int>(ParticleSystem2DComponent::Space::World)));
-
-			const int shapeType = GetIntMember(componentValue, "shapeType", 0);
-			if (shapeType == 0) {
-				ParticleSystem2DComponent::CircleParams circle;
-				circle.Radius = GetFloatMember(componentValue, "radius", 1.0f);
-				circle.IsOnCircle = GetBoolMember(componentValue, "isOnCircle", false);
-				circle.Arc = GetFloatMember(componentValue, "arc", 360.0f);
-				particleSystem.Shape = circle;
-			}
-			else if (shapeType == 1) {
-				ParticleSystem2DComponent::SquareParams square;
-				square.HalfExtends.x = GetFloatMember(componentValue, "halfExtendsX", 1.0f);
-				square.HalfExtends.y = GetFloatMember(componentValue, "halfExtendsY", 1.0f);
-				particleSystem.Shape = square;
-			}
-			else {
-				ParticleSystem2DComponent::EdgeParams edge;
-				edge.Length = GetFloatMember(componentValue, "edgeLength", 1.0f);
-				particleSystem.Shape = edge;
-			}
-
-			particleSystem.RenderingSettings.MaxParticles =
-				static_cast<uint32_t>(GetUInt64Member(componentValue, "maxParticles", 1000));
-			particleSystem.RenderingSettings.Color.r = GetFloatMember(componentValue, "colorR", 1.0f);
-			particleSystem.RenderingSettings.Color.g = GetFloatMember(componentValue, "colorG", 1.0f);
-			particleSystem.RenderingSettings.Color.b = GetFloatMember(componentValue, "colorB", 1.0f);
-			particleSystem.RenderingSettings.Color.a = GetFloatMember(componentValue, "colorA", 1.0f);
-			particleSystem.RenderingSettings.SortingOrder =
-				static_cast<short>(GetIntMember(componentValue, "sortOrder", 0));
-			particleSystem.RenderingSettings.SortingLayer =
-				static_cast<uint8_t>(GetIntMember(componentValue, "sortLayer", 0));
-
-			UUID textureAssetId = UUID(0);
-			const TextureHandle textureHandle = LoadTextureFromValue(
-				componentValue,
-				"textureAsset",
-				"texture",
-				Filter::Point,
-				Wrap::Clamp,
-				Wrap::Clamp,
-				&textureAssetId);
-			particleSystem.SetTexture(textureHandle, textureAssetId);
-
-			particleSystem.ClearBursts();
-			if (const Json::Value* burstsValue = componentValue.FindMember("bursts");
-				burstsValue && burstsValue->IsArray())
-			{
-				for (const Json::Value& burstValue : burstsValue->GetArray()) {
-					if (!burstValue.IsObject()) {
-						continue;
-					}
-					ParticleSystem2DComponent::Burst burst;
-					burst.Count = static_cast<uint32_t>(
-						GetUInt64Member(burstValue, "count", burst.Count));
-					burst.Interval = GetFloatMember(burstValue, "interval", burst.Interval);
-					burst.TimeUntilNext = 0.0f;
-					particleSystem.AddBurst(burst);
-				}
-			}
-			return true;
-		}
+#endif
 
 		if (component == "RectTransform2D") {
 			auto& rectTransform = scene.HasComponent<RectTransform2DComponent>(entity)
@@ -2821,6 +2621,12 @@ namespace Index {
 			rectTransform.LocalRotation      = GetFloatMember(componentValue, "rotation", 0.0f);
 			rectTransform.LocalScale.x       = GetFloatMember(componentValue, "scaleX", 1.0f);
 			rectTransform.LocalScale.y       = GetFloatMember(componentValue, "scaleY", 1.0f);
+			rectTransform.IgnoreSafeArea     = GetBoolMember(componentValue, "ignoreSafeArea", false);
+			{
+				const bool fillParent = GetBoolMember(componentValue, "fillParent", false);
+				rectTransform.FillWidth  = fillParent || GetBoolMember(componentValue, "fillWidth", false);
+				rectTransform.FillHeight = fillParent || GetBoolMember(componentValue, "fillHeight", false);
+			}
 			// Seed the world cache from the local values so a one-frame
 			// pre-layout read returns sensible defaults — UILayoutSystem
 			// overwrites these on the first tick (matches Transform2D).
@@ -2859,11 +2665,11 @@ namespace Index {
 			return true;
 		}
 
-		// Unknown built-in: try registry for a package component with matching serializedName.
-		if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
+		// Not hand-serialized: resolve through the registry by serializedName.
+		{
 			Entity entityWrapper = scene.GetEntity(entity);
 			bool handled = false;
-			SceneManager::GetComponentRegistry().ForEachComponentInfo(
+			SceneManager::GetComponentRegistryOrBuiltIn().ForEachComponentInfo(
 				[&](const std::type_index&, const ComponentInfo& info) {
 					if (handled) return;
 					if (!info.deserialize || !info.has || !info.add) return;
@@ -2912,8 +2718,17 @@ namespace Index {
 
 		PrefabDefinition definition;
 		if (!LoadPrefabDefinition(prefabGuid, definition)) {
-			IDX_CORE_WARN_TAG("SceneSerializer", "Could not load prefab {}", prefabGuid);
-			return entt::null;
+			// Failing here would fail the whole scene load, leaving the user unable to open the scene to fix it.
+			// Keep a placeholder that preserves the instance JSON (uuid, parent, overrides) for the next save.
+			IDX_CORE_WARN_TAG("SceneSerializer",
+				"Could not load prefab {}; keeping a placeholder so the scene still opens and the instance data is preserved",
+				prefabGuid);
+			Entity placeholder = scene.CreateEntity("Missing Prefab (" + std::to_string(prefabGuid) + ")");
+			const EntityHandle handle = placeholder.GetHandle();
+			scene.SetEntityMetaData(handle, EntityOrigin::Prefab, AssetGUID(prefabGuid), AssetGUID(0), instanceUuid);
+			scene.GetRegistry().emplace_or_replace<UnresolvedPrefabInstanceComponent>(
+				handle, UnresolvedPrefabInstanceComponent{ Json::Stringify(entityValue, false) });
+			return handle;
 		}
 
 		if (!ApplyEntityOverrides(definition, entityValue)) return entt::null;
@@ -2939,6 +2754,7 @@ namespace Index {
 				const uint64_t templateRootId = GetUInt64Member(definition.Entities.front(), "uuid", 0);
 				scene.RegisterEntityRefRemap(templateRootId, instanceUuid);
 			}
+			PinPrefabInstanceChildIds(scene, root);
 			scene.RunPendingEntityRefFixupsFrom(fixupStart);
 			rollback.Commit();
 		}
@@ -2955,6 +2771,7 @@ namespace Index {
 			if (baked->bakeable) {
 				EntityHandle root = cache.Hydrate(prefabGuid, scene);
 				if (root != entt::null) {
+					PinPrefabInstanceChildIds(scene, root);
 					scene.RunPendingEntityRefFixups();
 					return root;
 				}
@@ -2975,6 +2792,7 @@ namespace Index {
 			Scene::EntityRefRemapScope remapScope(scene);
 			root = DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
 			fixupCountAfter = scene.GetPendingEntityRefFixupCount();
+			PinPrefabInstanceChildIds(scene, root);
 			scene.RunPendingEntityRefFixupsFrom(fixupCountBefore);
 		}
 
@@ -3182,24 +3000,44 @@ namespace Index {
 			return entt::null;
 		}
 
-		// Walk up to the topmost ancestor still inside this prefab (same Origin+GUID); every node in the tree has PrefabInstanceComponent, not just the root.
+		// Walk up while still inside this prefab (same Origin+GUID); every node in the tree has PrefabInstanceComponent,
+		// not just the root. Stop at a nested instance root so instance B parented under instance A stays its own instance.
 		constexpr int k_MaxAncestorWalk = 1024;
 		EntityHandle root = entity;
 		for (int i = 0; i < k_MaxAncestorWalk; ++i) {
-			if (!registry.all_of<HierarchyComponent>(root)) {
+			if (IsPrefabInstanceRoot(scene, root)) {
 				break;
 			}
-			const EntityHandle parent = registry.get<HierarchyComponent>(root).Parent;
-			if (parent == entt::null || !registry.valid(parent)) {
-				break;
-			}
-			if (scene.GetEntityOrigin(parent) != EntityOrigin::Prefab
-				|| static_cast<uint64_t>(scene.GetPrefabGUID(parent)) != prefabGuid) {
+			const EntityHandle parent = GetSamePrefabParent(scene, root, prefabGuid);
+			if (parent == entt::null) {
 				break;
 			}
 			root = parent;
 		}
 		return root;
+	}
+
+	bool SceneSerializer::IsPrefabInstanceRoot(Scene& scene, EntityHandle entity) {
+		if (entity == entt::null || !scene.IsValid(entity) || scene.GetEntityOrigin(entity) != EntityOrigin::Prefab) {
+			return false;
+		}
+		const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(entity));
+		if (GetSamePrefabParent(scene, entity, prefabGuid) == entt::null) {
+			return true;
+		}
+
+		// Parent is the same prefab: either an internal child, or a separate instance dropped under another
+		// instance. Every instance root carries the prefab root's source id, which the topmost same-prefab
+		// ancestor (always a root) also carries; internal children have their own distinct source ids.
+		constexpr int k_MaxAncestorWalk = 1024;
+		EntityHandle top = entity;
+		for (int i = 0; i < k_MaxAncestorWalk; ++i) {
+			const EntityHandle parent = GetSamePrefabParent(scene, top, prefabGuid);
+			if (parent == entt::null) break;
+			top = parent;
+		}
+		const uint64_t sourceId = GetPrefabSourceIdOrZero(scene, entity);
+		return sourceId != 0 && sourceId == GetPrefabSourceIdOrZero(scene, top);
 	}
 
 	bool SceneSerializer::HasPrefabInstanceOverrides(Scene& scene, EntityHandle entity) {
@@ -3333,6 +3171,45 @@ namespace Index {
 		// (No-op cost at runtime: m_HierarchyVersion is read only by the editor.)
 		scene.MarkHierarchyStructureDirty();
 		return freshRoot;
+	}
+
+	std::vector<SceneSerializer::ExternalPrefabChange> SceneSerializer::TakeExternallyChangedPrefabs() {
+		std::vector<ExternalPrefabChange> changes;
+		std::lock_guard<std::mutex> lock(g_PrefabRootCacheMutex);
+		for (auto it = g_PrefabRootCache.begin(); it != g_PrefabRootCache.end();) {
+			const FileStamp stamp = FileStamp::Read(it->second.Path);
+			if (stamp == it->second.Stamp) {
+				++it;
+				continue;
+			}
+			// A deleted prefab leaves its instances as they are; there is nothing to refresh them from.
+			if (stamp.Exists) {
+				SupersedePrefabRootLocked(it->first, it->second);
+			}
+			it = g_PrefabRootCache.erase(it);
+		}
+		changes.reserve(g_SupersededPrefabRoots.size());
+		for (auto& [key, change] : g_SupersededPrefabRoots) {
+			changes.push_back(std::move(change));
+		}
+		g_SupersededPrefabRoots.clear();
+		return changes;
+	}
+
+	void SceneSerializer::ForgetCachedPrefabRoot(const std::string& path) {
+		const std::string key = PrefabRootCacheKey(path);
+		std::lock_guard<std::mutex> lock(g_PrefabRootCacheMutex);
+		g_PrefabRootCache.erase(key);
+		g_SupersededPrefabRoots.erase(key);
+	}
+
+	void Detail::RestampCachedPrefabRoot(const std::string& path, const FileStamp& before) {
+		const std::string key = PrefabRootCacheKey(path);
+		std::lock_guard<std::mutex> lock(g_PrefabRootCacheMutex);
+		const auto it = g_PrefabRootCache.find(key);
+		if (it != g_PrefabRootCache.end() && it->second.Stamp == before) {
+			it->second.Stamp = FileStamp::Read(path);
+		}
 	}
 
 	bool SceneSerializer::ComputeInstanceOverrides(Scene& scene, EntityHandle entity, Json::Value& outOverrides) {

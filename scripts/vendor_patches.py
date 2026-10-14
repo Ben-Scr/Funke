@@ -50,11 +50,6 @@ PATCHES = (
         patch_file="imgui-scalar-expression.patch",
         files=(
             PatchedFile(
-                "backends/imgui_impl_glfw.cpp",
-                "967c0d4ed3725cb362930219b83842d013139b48",
-                "c23e33db721f6796e5340a6eb45236da0e178e32",
-            ),
-            PatchedFile(
                 "imgui.cpp",
                 "cb73b8dcbbfa4f7dfcc91108561e3c84af08ce2f",
                 "1160dcb24d7ac83289af67113cd0ce2cffdc5023",

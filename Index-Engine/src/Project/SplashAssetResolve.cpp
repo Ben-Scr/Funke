@@ -133,10 +133,11 @@ namespace Index::SplashAssetResolve {
 	std::string DefaultLogoPath() {
 		const std::string root = Path::ResolveIndexAssets("Textures");
 		if (root.empty()) return {};
-		std::filesystem::path candidate = std::filesystem::path(root) / "icon.png";
-		if (std::filesystem::exists(candidate)) return candidate.string();
-		candidate = std::filesystem::path(root) / "Index64.png";
-		if (std::filesystem::exists(candidate)) return candidate.string();
+		// Exact case: the Web, Android and Linux file systems are case-sensitive.
+		for (const char* name : { "Icon.png", "icon.png", "Index64.png" }) {
+			const std::filesystem::path candidate = std::filesystem::path(root) / name;
+			if (std::filesystem::exists(candidate)) return candidate.string();
+		}
 		return {};
 	}
 
@@ -149,14 +150,7 @@ namespace Index::SplashAssetResolve {
 #else
 		profile = "Development";
 #endif
-		std::string platform;
-#if defined(IDX_PLATFORM_WINDOWS)
-		platform = "Windows";
-#elif defined(__APPLE__)
-		platform = "macOS";
-#else
-		platform = "Linux";
-#endif
+		const std::string platform = IDX_PLATFORM_NAME;
 		// "  ·  " uses U+00B7 (middle dot), inside the Latin-1 supplement
 		// the engine's text renderer + ImGui's default font both bake by
 		// default. Higher codepoints would need the on-demand SDF path.

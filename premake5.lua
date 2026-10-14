@@ -9,12 +9,70 @@ IndexCoreValidationRoot = _OPTIONS["core-validation"]
     and path.join(ROOT_DIR, "premake/generated/core")
     or nil
 
-workspace "Index"
-    architecture "x64"
-    startproject (IndexCoreValidationRoot and "Index-Engine" or "Index-Launcher")
+-- Optional engine feature modules (Index.2D, Index.3D). Their source lists live in
+-- Index-Engine/EngineModules.json, shared with cmake/IndexEngine.cmake.
+IndexFeatureModules = json.decode(io.readfile(path.join(ROOT_DIR, "Index-Engine/EngineModules.json"))).modules
+for _, featureModule in ipairs(IndexFeatureModules) do
+    newoption
+    {
+        trigger = "without-" .. featureModule.option,
+        description = "Build a runtime variant without the " .. featureModule.id .. " engine module (isolated workspace under premake/generated/variant-*)."
+    }
+end
 
-    if IndexCoreValidationRoot then
-        location(IndexCoreValidationRoot)
+local function ResolveIndexEngineVariant()
+    local included = {}
+    local excludedAny = false
+    for _, featureModule in ipairs(IndexFeatureModules) do
+        featureModule.Enabled = not _OPTIONS["without-" .. featureModule.option]
+        if featureModule.Enabled then
+            table.insert(included, featureModule.option)
+        else
+            excludedAny = true
+        end
+    end
+    if not excludedAny then
+        return nil
+    end
+    return #included > 0 and table.concat(included, "-") or "nomodules"
+end
+
+-- A variant only builds the engine + runtime a game ships, into its own workspace and output
+-- folders, so it never overwrites the full-engine projects the editor uses.
+IndexEngineVariant = ResolveIndexEngineVariant()
+IndexVariantRoot = IndexEngineVariant
+    and path.join(ROOT_DIR, "premake/generated/variant-" .. IndexEngineVariant)
+    or nil
+if IndexVariantRoot and IndexCoreValidationRoot then
+    error("--without-* module options cannot be combined with --core-validation")
+end
+IndexIsolatedRoot = IndexCoreValidationRoot or IndexVariantRoot
+
+-- Project files go to the isolated workspace root when one is active.
+function IndexProjectLocation(projectName, defaultLocation)
+    if IndexIsolatedRoot then
+        return path.join(IndexIsolatedRoot, projectName)
+    end
+    return defaultLocation
+end
+
+function IsIndexFeatureModuleEnabled(moduleId)
+    for _, featureModule in ipairs(IndexFeatureModules) do
+        if featureModule.id == moduleId then
+            return featureModule.Enabled
+        end
+    end
+    error("Unknown engine feature module '" .. tostring(moduleId) .. "'")
+end
+
+include "premake/architecture.lua"
+
+workspace "Index"
+    architecture(IndexPremakeArchitecture)
+    startproject ((IndexCoreValidationRoot and "Index-Engine") or (IndexVariantRoot and "Index-Runtime") or "Index-Launcher")
+
+    if IndexIsolatedRoot then
+        location(IndexIsolatedRoot)
     end
 
     configurations
@@ -58,8 +116,8 @@ workspace "Index"
     filter "system:linux"
         -- Every Linux artifact ultimately links into libIndex-Engine.so, so all
         -- static deps (ImGui, Box2D, glad, Index-Physics, ...) must be position-
-        -- independent. Set it workspace-wide so no dependency is missed (GLFW and
-        -- Tracy already set it locally; this is harmless there).
+        -- independent. Set it workspace-wide so no dependency is missed (Tracy
+        -- already sets it locally; this is harmless there).
         pic "On"
 
     filter {}
@@ -88,8 +146,11 @@ end
 
 local outputVariant = _OPTIONS["sanitize"] and "-sanitized"
     or (_OPTIONS["coverage"] and "-coverage")
-    or (_OPTIONS["core-validation"] and "-core" or "")
-outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}" .. outputVariant
+    or (_OPTIONS["core-validation"] and "-core")
+    or (IndexEngineVariant and ("-" .. IndexEngineVariant) or "")
+outputdir = "%{cfg.buildcfg}-%{cfg.system}-" .. IndexArchitecture .. outputVariant
+-- Module-independent outputs (ScriptCore) that a runtime variant reuses from the full build.
+outputdirFull = "%{cfg.buildcfg}-%{cfg.system}-" .. IndexArchitecture
 
 if (_OPTIONS["sanitize"] or _OPTIONS["coverage"]) and os.target() ~= "linux" then
     error("--sanitize and --coverage are supported only for Linux targets")
@@ -167,6 +228,7 @@ require("premake/fix_csharp_platforms")
 -- — WebGPU is the only RHI, so a missing External/dawn/ checkout is a
 -- real configuration error (scripts/dawn/SetupDawn.bat fixes it).
 include "premake/dependencies/dawn.lua"
+include "premake/dependencies/sdl3.lua"
 
 include "Dependencies.lua"
 
@@ -226,6 +288,15 @@ local function ResolveIndexModules()
         error("Partial custom module profiles are not supported; use --module-profile=core or add --with-editor (which enables the complete application surface).")
     end
 
+    if IndexVariantRoot and profile ~= "full" then
+        error("--without-* module options build a full-profile runtime variant; drop --module-profile/--with-*")
+    end
+
+    -- Feature modules sit on top of the application surface; a core build has neither.
+    local hasApplicationSurface = modules.Render and modules.Physics
+    modules.TwoD = hasApplicationSurface and IsIndexFeatureModuleEnabled("Index.2D")
+    modules.ThreeD = hasApplicationSurface and IsIndexFeatureModuleEnabled("Index.3D")
+
     return modules
 end
 
@@ -247,7 +318,8 @@ Dependency.EngineSelectedModules = MergeDependencySets(
     IndexModules.Render and Dependency.EngineCoreEditor or nil,
     IndexModules.Render and Dependency.EngineCoreRender or nil,
     IndexModules.Audio and Dependency.EngineCoreAudio or nil,
-    IndexModules.Physics and Dependency.EngineCorePhysics or nil,
+    IndexModules.Physics and IndexModules.TwoD and Dependency.EngineCorePhysics2D or nil,
+    IndexModules.Physics and IndexModules.ThreeD and Dependency.EngineCorePhysics3D or nil,
     IndexModules.Scripting and Dependency.EngineCoreScripting or nil,
     Dependency.EngineCoreLinuxSystem
 )
@@ -410,6 +482,8 @@ function GetIndexModuleDefines()
         -- applied by ApplyIndexEditorModuleDefine() below, which every engine
         -- consumer calls right after defines(GetIndexModuleDefines()).
         "INDEX_WITH_APPLICATION=" .. (hasApplication and "1" or "0"),
+        "INDEX_WITH_2D=" .. (IndexModules.TwoD and "1" or "0"),
+        "INDEX_WITH_3D=" .. (IndexModules.ThreeD and "1" or "0"),
         "INDEX_ENTITY_BITS=" .. tostring(GetIndexEntityBits()),
         -- Shrink magic_enum's default reflection window [-128, 127] -> [-1, 64].
         -- All engine-side reflected enums are small `enum class : uint8_t`
@@ -479,11 +553,21 @@ local function SharedLibFileName(projectName)
     return "lib" .. projectName .. ".so"
 end
 
+-- Copies a shared library next to a consumer. On Linux / macOS a changed library is replaced by a new file
+-- (rm + cp) instead of being overwritten in place: a running editor may have the old one mapped, and
+-- truncating a mapped library crashes it (the editor rebuilds the runtime with make while it runs).
+function CopySharedLibFile(source, destination)
+    if os.target() == "windows" then
+        return '{COPYFILE} "' .. source .. '" "' .. destination .. '"'
+    end
+    return 'cmp -s "' .. source .. '" "' .. destination .. '" || { rm -f "' .. destination ..
+        '" && cp "' .. source .. '" "' .. destination .. '"; }'
+end
+
 local function CopySharedLib(projectName)
     local fileName = SharedLibFileName(projectName)
-    return '{COPYFILE} "' ..
-        path.join(ROOT_DIR, "bin/" .. outputdir, projectName, fileName) ..
-        '" "%{cfg.targetdir}/' .. fileName .. '"'
+    return CopySharedLibFile(path.join(ROOT_DIR, "bin/" .. outputdir, projectName, fileName),
+        "%{cfg.targetdir}/" .. fileName)
 end
 
 local function RemoveSharedLib(projectName)
@@ -508,9 +592,8 @@ CopyIndexEngineDll = CopySharedLib("Index-Engine")
 CopyDawnSharedLib = ""
 if IndexModules.Render and os.target() ~= "windows" then
     local dawnSharedLib = DawnSharedLibFileName()
-    CopyDawnSharedLib = '{COPYFILE} "' ..
-        path.join(ROOT_DIR, "External/dawn/build/src/dawn/native", dawnSharedLib) ..
-        '" "%{cfg.targetdir}/' .. dawnSharedLib .. '"'
+    CopyDawnSharedLib = CopySharedLibFile(path.join(ROOT_DIR, "External/dawn/build/src/dawn/native", dawnSharedLib),
+        "%{cfg.targetdir}/" .. dawnSharedLib)
 end
 
 -- The Index-GameComponents sidecar DLL is removed — user components now
@@ -521,7 +604,7 @@ CopyIndexGameComponentsDll = "" -- retained as a no-op so any leftover postbuild
 -- Consumers load private ScriptCore copies so its shared build output remains replaceable while they run.
 local function CopyScriptCoreArtifact(filename)
     return '{COPYFILE} "' ..
-        path.join(ROOT_DIR, "bin/" .. outputdir, "Index-ScriptCore", filename) ..
+        path.join(ROOT_DIR, "bin/" .. (IndexVariantRoot and outputdirFull or outputdir), "Index-ScriptCore", filename) ..
         '" "%{cfg.targetdir}/' .. filename .. '"'
 end
 
@@ -530,6 +613,22 @@ CopyScriptCoreArtifacts = {
     CopyScriptCoreArtifact("Index-ScriptCore.runtimeconfig.json"),
     CopyScriptCoreArtifact("Index-ScriptCore.deps.json"),
 }
+
+-- Editor-only in-process hot-reload compiler (Index-ScriptCompiler, a dotnet-built project outside the
+-- solution). Optional: without it the editor falls back to dotnet build.
+if os.target() == "windows" then
+    local scriptCompilerDir = path.translate(path.join(ROOT_DIR, "bin/" .. outputdir, "Index-ScriptCompiler"), "\\")
+    CopyScriptCompilerArtifacts = { 'if exist "' .. scriptCompilerDir .. '\\Index-ScriptCompiler.dll" xcopy /Y /Q /I "' ..
+        scriptCompilerDir .. '\\Index-ScriptCompiler.*" "%{cfg.targetdir}\\ScriptCompiler\\" >nul' }
+else
+    -- Index-Managed (below) always builds it on Linux / macOS.
+    local scriptCompilerDir = path.join(ROOT_DIR, "bin/" .. outputdir, "Index-ScriptCompiler")
+    CopyScriptCompilerArtifacts = { '{MKDIR} "%{cfg.targetdir}/ScriptCompiler"' }
+    for _, file in ipairs({ "Index-ScriptCompiler.dll", "Index-ScriptCompiler.deps.json", "Index-ScriptCompiler.runtimeconfig.json" }) do
+        table.insert(CopyScriptCompilerArtifacts,
+            '{COPYFILE} "' .. path.join(scriptCompilerDir, file) .. '" "%{cfg.targetdir}/ScriptCompiler/' .. file .. '"')
+    end
+end
 
 -- Materialize a self-contained EngineSDK/ folder next to the Launcher exe
 -- so the zipped Launcher can build new projects' NativeScripts (which
@@ -544,12 +643,24 @@ if os.target() == "windows" then
         '" "%{cfg.targetdir}/EngineSDK" "' .. ROOT_DIR ..
         '" "' .. path.join(ROOT_DIR, "bin/" .. outputdir) .. '"'
 else
-    CopyEngineSdk = ""
+    CopyEngineSdk = 'python3 "' .. path.join(ROOT_DIR, "scripts/CopyEngineSdk.py") ..
+        '" "%{cfg.targetdir}/EngineSDK" "' .. ROOT_DIR ..
+        '" "' .. path.join(ROOT_DIR, "bin/" .. outputdir) .. '"'
 end
 
--- GLFW and Glad are SharedLibs so all consumers (engine.dll + consumer .exes) share
--- one copy of their global state. Each consumer ships the DLLs alongside its binary.
-CopyGlfwDll = CopySharedLib("GLFW")
+-- Managed projects consumers depend on: the solution's C# projects on Windows, the Index-Managed
+-- utility (scripts/BuildManaged.py) on Linux / macOS where gmake2 cannot build SDK-style projects.
+function IndexManagedDependencies(windowsProjects)
+    if os.target() == "windows" then
+        return windowsProjects
+    end
+    return { "Index-Managed" }
+end
+
+-- SDL3 is a shared library so engine.dll and the consumer executables share one copy
+-- of its global state. Each consumer ships it alongside its binary.
+CopySDL3SharedLib = CopySharedLibFile(path.join(ROOT_DIR, SDL3Layout.SharedLibPath),
+    "%{cfg.targetdir}/" .. SDL3Layout.SharedLibFileName)
 
 -- Glad has been removed from the engine build (the render backend
 -- handles its own GPU context). CopyGladDll stays defined as a no-op so
@@ -707,7 +818,7 @@ end
 group "Dependencies"
 if IndexModules.Render then
     project "ImGui"
-        location (path.join(ROOT_DIR, "premake/generated/ImGui"))
+        location (IndexProjectLocation("ImGui", path.join(ROOT_DIR, "premake/generated/ImGui")))
         kind "StaticLib"
         language "C++"
         cppdialect "C++20"
@@ -731,22 +842,14 @@ if IndexModules.Render then
             "External/imgui/imgui_widgets.cpp",
 
             -- Backends:
-            --   * imgui_impl_glfw     — used by editor / launcher / runtime
+            --   * imgui_impl_sdl3 — used by editor / launcher / runtime
             --     executables for input + window-event plumbing.
-            --   * imgui_impl_opengl3  — used by those same executables for
-            --     their own ImGui overlays (editor-managed panels, the
-            --     launcher's project picker, runtime debug HUD). These run
-            --     against a GLFW-owned GL context that's independent from
-            --     the engine's WebGPU device.
-            --   * imgui_impl_wgpu     — used by engine.dll via
+            --   * imgui_impl_wgpu — used by engine.dll via
             --     Gui/ImGuiImplWebGPU.cpp for in-engine ImGui draws on the
             --     shared wgpu::Device. Headers are reachable through
             --     Dependency.ImGui below (DawnLayout spliced in).
-            "External/imgui/backends/imgui_impl_glfw.h",
-            "External/imgui/backends/imgui_impl_glfw.cpp",
-            "External/imgui/backends/imgui_impl_opengl3.h",
-            "External/imgui/backends/imgui_impl_opengl3.cpp",
-            "External/imgui/backends/imgui_impl_opengl3_loader.h",
+            "External/imgui/backends/imgui_impl_sdl3.h",
+            "External/imgui/backends/imgui_impl_sdl3.cpp",
             "External/imgui/backends/imgui_impl_wgpu.h",
             "External/imgui/backends/imgui_impl_wgpu.cpp"
         }
@@ -772,11 +875,8 @@ if IndexModules.Render then
             },
             ["Backends/*"] =
             {
-                "External/imgui/backends/imgui_impl_glfw.h",
-                "External/imgui/backends/imgui_impl_glfw.cpp",
-                "External/imgui/backends/imgui_impl_opengl3.h",
-                "External/imgui/backends/imgui_impl_opengl3.cpp",
-                "External/imgui/backends/imgui_impl_opengl3_loader.h",
+                "External/imgui/backends/imgui_impl_sdl3.h",
+                "External/imgui/backends/imgui_impl_sdl3.cpp",
                 "External/imgui/backends/imgui_impl_wgpu.h",
                 "External/imgui/backends/imgui_impl_wgpu.cpp"
             },
@@ -815,7 +915,7 @@ end
 -- ImGuizmo (translate/rotate/scale gizmos) — editor-only. Built as its own
 -- StaticLib so it compiles WITHOUT the engine PCH/forceinclude the editor uses;
 -- it only needs the imgui headers and resolves ImGui symbols at editor link time.
-if IndexModules.Editor then
+if IndexModules.Editor and not IndexVariantRoot then
     project "ImGuizmo"
         location (path.join(ROOT_DIR, "premake/generated/ImGuizmo"))
         kind "StaticLib"
@@ -863,18 +963,15 @@ if IndexModules.Editor then
         filter {}
 end
 
-if IndexModules.Render then
-    include "premake/dependencies/glfw.lua"
-    -- Dawn (WebGPU) is the engine's sole GPU backend. The pre-built
-    -- webgpu_dawn.lib comes from scripts/dawn/SetupDawn.bat — premake just
-    -- links against it; see dawn.lua / DawnLayout for the paths.
-    -- (No project here, no premake-side compilation — Dawn is too large
-    -- to mirror into premake.)
-end
+-- Dawn (WebGPU) and SDL3 are built out-of-band by scripts/dawn/SetupDawn.* and
+-- scripts/sdl/SetupSDL.py; premake only links them (see dawn.lua / sdl3.lua).
 
-if IndexModules.Physics then
+if IndexModules.Physics and IndexModules.TwoD then
     include "premake/dependencies/box2d.lua"
     include "premake/dependencies/index_physics.lua"
+end
+if IndexModules.Physics and IndexModules.ThreeD then
+    include "premake/dependencies/jolt.lua"
 end
 
 if IndexProfiler.Enabled then
@@ -883,13 +980,31 @@ end
 
 include "Index-Engine"
 
--- Managed projects build on Windows only; gmake2 cannot build SDK-style .NET 10 projects.
-if os.target() == "windows" and not IndexCoreValidationRoot then
+-- The solution builds the managed projects on Windows. gmake2 cannot build SDK-style .NET 10 projects,
+-- so Linux / macOS run them through dotnet in one utility project the native consumers depend on.
+-- A runtime variant reuses the full build's ScriptCore: the C# surface is module-independent.
+if IndexVariantRoot then
+    -- nothing managed
+elseif os.target() == "windows" and not IndexCoreValidationRoot then
     include "Index-PackageTool"
     if IndexModules.Scripting then
         include "Index-ScriptCore"
         include "Index-Sandbox"
     end
+elseif not IndexCoreValidationRoot and IndexModules.Scripting then
+    group "Core"
+    project "Index-Managed"
+        location "premake/generated/Index-Managed"
+        -- "Makefile", not "Utility": gmake2 never runs a Utility project's commands.
+        kind "Makefile"
+        targetdir ("bin/" .. outputdir .. "/%{prj.name}")
+        objdir ("bin-int/" .. outputdir .. "/%{prj.name}")
+        buildcommands {
+            'python3 "' .. path.join(ROOT_DIR, "scripts/BuildManaged.py") .. '" --configuration %{cfg.buildcfg}'
+                .. ' --output-dir "' .. path.join(ROOT_DIR, "bin/" .. outputdir) .. '"'
+                .. ' --intermediate-dir "' .. path.join(ROOT_DIR, "bin-int/" .. outputdir) .. '"'
+        }
+    group ""
 end
 
 -- Shared StaticLib between the editor and launcher; must be defined
@@ -899,12 +1014,16 @@ if IndexModules.Editor or IndexModules.FullCompatibility then
     include "Index-EditorRuntime"
 end
 
-if IndexModules.Editor then
+if IndexModules.Editor and not IndexVariantRoot then
     include "Index-Editor"
+    -- `index` command-line tool; compiles the editor's UI-free build sources directly.
+    include "Index-CLI"
 end
 
 if IndexModules.FullCompatibility then
-    include "Index-Launcher"
+    if not IndexVariantRoot then
+        include "Index-Launcher"
+    end
     include "Index-Runtime"
 end
 
@@ -912,7 +1031,7 @@ group ""
 
 -- Tests live in their own group so they're easy to spot in the IDE solution
 -- explorer and trivial to disable by commenting out this block.
-if not IndexCoreValidationRoot then
+if not IndexIsolatedRoot then
     group "Tests"
         include "Tests/Index-Engine-Tests"
         include "Tests/Index-Editor-Tests"
@@ -920,7 +1039,7 @@ if not IndexCoreValidationRoot then
 end
 
 -- Load any index-package.lua manifests under packages/ and register their projects.
-if not IndexCoreValidationRoot then
+if not IndexIsolatedRoot then
     local IndexPackageLoader = dofile(path.join(ROOT_DIR, "premake/package-loader.lua"))
     IndexPackageLoader.LoadAll()
 end

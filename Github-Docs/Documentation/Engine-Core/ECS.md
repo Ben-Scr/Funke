@@ -91,11 +91,13 @@ Index ships a large set of components, grouped by area. Here are the main ones:
 - `TextRenderer` — draws text with a font.
 - `Image` — a UI image.
 - `ParticleSystem2D` — particle effects.
+- `ParticleSystem3D` — 3D billboard particle effects (see [3D](3D.md#particles)).
 - `PostProcessing2D` — screen effects like bloom or vignette.
 
 **Physics**
 - `Rigidbody2D` — makes an entity participate in physics.
 - `BoxCollider2D`, `CircleCollider2D`, `PolygonCollider2D` — collision shapes.
+- `Rigidbody3D`, `BoxCollider3D`, `SphereCollider3D`, `CapsuleCollider3D`, `MeshCollider3D` — the 3D equivalents (Jolt Physics, see [Physics 3D](Physics-3D.md)).
 
 **UI**
 - `Button`, `Slider`, `Toggle`, `InputField`, `Dropdown`, `ScrollRect`, layout groups, and more.
@@ -147,6 +149,14 @@ foreach (ref var t in Scene.QueryRef<NativeTransform2D>())
 {
     t.LocalRotation += Time.DeltaTime;  // spin everything
 }
+```
+
+For a single entity, `entity.TransformRef` (or `GetNativeComponent<T>()`) returns a writable `ref` straight into component memory. When you only **read** a transform, use `entity.TransformRefReadOnly` (or `GetNativeComponentReadOnly<T>()`): a writable transform ref makes the engine re-check every transform in the scene that frame, a read-only one does not.
+
+```csharp
+ref readonly var self = ref Entity.TransformRefReadOnly;
+ref readonly var target = ref Target.TransformRefReadOnly;   // Target: an Entity field
+float distance = Vector2.Distance(self.Position, target.Position);
 ```
 
 In C++, a system iterates a *view* of the registry:

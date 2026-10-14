@@ -5,12 +5,14 @@
 #include <atomic>
 #include <cctype>
 #include <cstdint>
+#include <functional>
 #include <sstream>
+#include <string_view>
 
 #ifdef IDX_PLATFORM_WINDOWS
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
-#else
+#elif IDX_PLATFORM_HAS_PROCESSES
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -26,7 +28,11 @@ namespace Index::Process {
 		std::atomic<std::uint64_t> g_CancelGeneration{ 0 };
 		constexpr std::size_t kMaxCapturedOutput = 16 * 1024 * 1024;
 
+		// Set by the streaming Run overload for the duration of the call; reads happen on the calling thread.
+		thread_local const std::function<void(std::string_view)>* t_OutputSink = nullptr;
+
 		void AppendCapturedOutput(std::string& output, const char* data, std::size_t size) {
+			if (t_OutputSink && size > 0) (*t_OutputSink)(std::string_view(data, size));
 			if (output.size() >= kMaxCapturedOutput) return;
 			const std::size_t remaining = kMaxCapturedOutput - output.size();
 			output.append(data, std::min(size, remaining));
@@ -328,6 +334,11 @@ namespace Index::Process {
 		CloseHandle(processInfo.hThread);
 		CloseHandle(job);
 		return result;
+#elif !IDX_PLATFORM_HAS_PROCESSES
+		(void)hasTimeout;
+		(void)workingDirectory;
+		result.Output = std::string("Child processes are not supported on ") + IDX_PLATFORM_NAME;
+		return result;
 #else
 		// Build argv before fork(): post-fork code must be async-signal-safe; malloc is not safe in a multithreaded process.
 		std::vector<char*> argv;
@@ -473,6 +484,16 @@ namespace Index::Process {
 #endif
 	}
 
+	Result Run(const std::vector<std::string>& command, const std::filesystem::path& workingDirectory,
+		std::chrono::milliseconds timeout, const std::function<void(std::string_view chunk)>& onOutput) {
+		struct SinkScope {
+			explicit SinkScope(const std::function<void(std::string_view)>* sink) : Previous(t_OutputSink) { t_OutputSink = sink; }
+			~SinkScope() { t_OutputSink = Previous; }
+			const std::function<void(std::string_view)>* Previous;
+		} scope(onOutput ? &onOutput : nullptr);
+		return Run(command, workingDirectory, timeout);
+	}
+
 	void CancelAll() {
 		g_CancellationActive.store(true, std::memory_order_release);
 		g_CancelGeneration.fetch_add(1, std::memory_order_acq_rel);
@@ -484,6 +505,34 @@ namespace Index::Process {
 	}
 
 	bool LaunchDetached(const std::vector<std::string>& command, const std::filesystem::path& workingDirectory) {
+		unsigned long ignored = 0;
+		return LaunchDetached(command, workingDirectory, ignored);
+	}
+
+	bool IsProcessRunning(unsigned long processId) {
+		if (processId == 0) {
+			return false;
+		}
+#ifdef IDX_PLATFORM_WINDOWS
+		HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(processId));
+		if (!process) {
+			return false;
+		}
+		DWORD exitCode = 0;
+		const bool running = GetExitCodeProcess(process, &exitCode) && exitCode == STILL_ACTIVE;
+		CloseHandle(process);
+		return running;
+#elif !IDX_PLATFORM_HAS_PROCESSES
+		return false;
+#else
+		// EPERM: the process exists but belongs to someone else.
+		return kill(static_cast<pid_t>(processId), 0) == 0 || errno == EPERM;
+#endif
+	}
+
+	bool LaunchDetached(const std::vector<std::string>& command, const std::filesystem::path& workingDirectory,
+		unsigned long& outProcessId) {
+		outProcessId = 0;
 		if (command.empty()) {
 			return false;
 		}
@@ -518,9 +567,13 @@ namespace Index::Process {
 			return false;
 		}
 
+		outProcessId = processInfo.dwProcessId;
 		CloseHandle(processInfo.hProcess);
 		CloseHandle(processInfo.hThread);
 		return true;
+#elif !IDX_PLATFORM_HAS_PROCESSES
+		(void)workingDirectory;
+		return false;
 #else
 		std::vector<char*> argv;
 		argv.reserve(command.size() + 1);
@@ -532,27 +585,52 @@ namespace Index::Process {
 		const std::string workingDirectoryStr = workingDirectory.empty() ? std::string() : workingDirectory.string();
 		const char* workingDirectoryCStr = workingDirectoryStr.empty() ? nullptr : workingDirectoryStr.c_str();
 
+		// The intermediate child reports the grandchild's pid; the grandchild is what keeps running.
+		int pidPipe[2];
+		if (pipe(pidPipe) != 0) {
+			return false;
+		}
+
 		pid_t pid = fork();
 		if (pid < 0) {
+			close(pidPipe[0]);
+			close(pidPipe[1]);
 			return false;
 		}
 
 		if (pid == 0) {
+			close(pidPipe[0]);
 			if (setsid() < 0) _exit(126);
 			const pid_t detachedPid = fork();
 			if (detachedPid < 0) _exit(126);
-			if (detachedPid > 0) _exit(0);
+			if (detachedPid > 0) {
+				(void)!write(pidPipe[1], &detachedPid, sizeof(detachedPid));
+				_exit(0);
+			}
+			close(pidPipe[1]);
 			if (workingDirectoryCStr && chdir(workingDirectoryCStr) != 0) _exit(126);
 			execvp(argvData[0], argvData);
 			_exit(127);
 		}
+
+		close(pidPipe[1]);
+		pid_t detachedPid = 0;
+		ssize_t bytesRead = -1;
+		do {
+			bytesRead = read(pidPipe[0], &detachedPid, sizeof(detachedPid));
+		} while (bytesRead < 0 && errno == EINTR);
+		close(pidPipe[0]);
 
 		int status = 0;
 		pid_t waitResult = -1;
 		do {
 			waitResult = waitpid(pid, &status, 0);
 		} while (waitResult < 0 && errno == EINTR);
-		return waitResult == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+		const bool launched = waitResult == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+		if (launched && bytesRead == static_cast<ssize_t>(sizeof(detachedPid))) {
+			outProcessId = static_cast<unsigned long>(detachedPid);
+		}
+		return launched;
 #endif
 	}
 

@@ -6,7 +6,10 @@
 #include <webgpu/webgpu_cpp.h>
 
 #include <cstdint>
+#include <string>
 #include <vector>
+
+struct SDL_Window;
 
 namespace Index::WebGPUBackend {
 
@@ -25,6 +28,16 @@ namespace Index::WebGPUBackend {
 
 	// Currently always false — baseline WebGPU has no stable bindless feature; hook exists for future enablement.
 	bool                HasBindlessTextures();
+
+	// Device limits (spec defaults before the device exists). Dawn never returns null for an over-limit
+	// texture/buffer: it returns an error object that invalidates every pass using it, dropping the whole
+	// frame's submission. Check sizes against these before creating.
+	uint32_t            GetMaxTextureDimension2D();
+	uint64_t            GetMaxBufferSize();
+
+	// Blocks until Dawn reports the module's WGSL diagnostics. CreateShaderModule never returns null on a
+	// compile error, so this is the only way to tell a broken module from a good one.
+	bool                ShaderModuleCompiled(const wgpu::ShaderModule& module, std::string* outErrors = nullptr);
 
 	// Blocking GPU→CPU copy of an 8-bit RGBA/BGRA texture (needs CopySrc usage). Submits pending frame
 	// commands first so earlier draws into the texture are included. Output: tight RGBA8, top row first.
@@ -94,6 +107,11 @@ namespace Index::WebGPUBackend {
 	// Do NOT call from ImGui passes — ImGui drives its own viewport per draw command.
 	void ApplyCachedViewportToPass(wgpu::RenderPassEncoder& pass);
 
+	// The viewport ApplyCachedViewportToPass sets, in target pixels (top-left origin). Scissor rects derived
+	// from NDC must map through it, or they land offset/scaled in letterboxed (aspect-locked) output.
+	// Returns false when no viewport is cached (the pass then covers the full target).
+	bool GetCachedViewport(uint32_t& x, uint32_t& y, uint32_t& width, uint32_t& height);
+
 	// RestoreBoundTarget flushes commands so WriteBuffer copies to the intermediate target resolve before the next pass.
 	struct BoundTargetSnapshot {
 		wgpu::TextureView   ColorView;
@@ -115,12 +133,16 @@ namespace Index::WebGPUBackend {
 	// to the same buffer into the last value, so the first pass would read stale data without an explicit flush.
 	void FlushCommands();
 
+	// Hosts that cannot block on WaitAny (the browser) request the adapter and device asynchronously
+	// before the engine starts and hand them over; RenderApi::Init then skips its own requests.
+	void ProvideDevice(wgpu::Instance instance, wgpu::Adapter adapter, wgpu::Device device);
+
 	// ── Multi-viewport surface support ───────────────────────────────────
 
 	struct ViewportSurface;
 
-	// Windows-only (HWND + HINSTANCE); returns nullptr on failure.
-	ViewportSurface* CreateViewportSurface(void* hwnd, void* hinstance,
+	// Returns nullptr on failure.
+	ViewportSurface* CreateViewportSurface(SDL_Window* window,
 		uint32_t width, uint32_t height);
 
 	void DestroyViewportSurface(ViewportSurface* vs); // safe with null.

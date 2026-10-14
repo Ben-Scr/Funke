@@ -6,7 +6,9 @@
 #include "Physics/IndexPhysicsWorld2D.hpp"
 #include "Physics/Collision2D.hpp"
 #include "Scene/DynamicComponentStorage.hpp"
+#include "Scene/Entity.hpp"
 #include "Scene/Scene.hpp"
+#include "Scene/SceneDefinition.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Serialization/PrefabTemplateCache.hpp"
 
@@ -26,6 +28,63 @@ namespace {
 		void FixedUpdate() override {}
 		void OnPaused() override {}
 		void OnQuit() override {}
+	};
+
+	// Scene unloads purge textures/audio; templates baked before the unload must not survive it with freed handles.
+	class PrefabCacheSceneSwitchApplication final : public Application {
+	public:
+		ApplicationConfig GetConfiguration() const override {
+			ApplicationConfig config = ApplicationConfig::Headless();
+			config.EnablePhysics2D = false;
+			config.EnableAudio = false;
+			config.EnableScripting = false;
+			config.EnablePackageHost = false;
+			config.JobSystemWorkerCount = 1;
+			return config;
+		}
+
+		void ConfigureScenes() override {
+			SceneManager::RegisterScene(k_LevelScene).WithoutDefaultCamera2D().SetAsStartupScene();
+			SceneManager::RegisterScene(k_MenuScene).WithoutDefaultCamera2D();
+			SceneManager::RegisterScene(k_OverlayScene).WithoutDefaultCamera2D();
+		}
+
+		void Start() override {
+			PrefabTemplateCache& cache = PrefabTemplateCache::Get();
+			cache.InvalidateAll();
+
+			BakeTemplate(k_LevelScene);
+			CachedBeforeSwitch = static_cast<bool>(cache.Find(k_PrefabGuid));
+			SceneManager::LoadScene(k_MenuScene);
+			CachedAfterSwitch = static_cast<bool>(cache.Find(k_PrefabGuid));
+
+			SceneManager::LoadSceneAdditive(k_OverlayScene);
+			BakeTemplate(k_OverlayScene);
+			CachedBeforeUnload = static_cast<bool>(cache.Find(k_PrefabGuid));
+			SceneManager::UnloadScene(k_OverlayScene);
+			CachedAfterUnload = static_cast<bool>(cache.Find(k_PrefabGuid));
+
+			Application::Quit();
+		}
+
+		bool CachedBeforeSwitch = false;
+		bool CachedAfterSwitch = true;
+		bool CachedBeforeUnload = false;
+		bool CachedAfterUnload = true;
+
+	private:
+		static void BakeTemplate(const char* sceneName) {
+			std::shared_ptr<Scene> scene = SceneManager::GetLoadedScene(sceneName).lock();
+			if (!scene) return;
+			Entity source = scene->CreateEntity("Baked Prefab");
+			scene->SetEntityMetaData(source.GetHandle(), EntityOrigin::Prefab, AssetGUID(k_PrefabGuid));
+			PrefabTemplateCache::Get().CaptureFromLive(k_PrefabGuid, *scene, source.GetHandle(), 0);
+		}
+
+		static constexpr uint64_t k_PrefabGuid = 9002;
+		static constexpr const char* k_LevelScene = "Prefab Cache Level";
+		static constexpr const char* k_MenuScene = "Prefab Cache Menu";
+		static constexpr const char* k_OverlayScene = "Prefab Cache Overlay";
 	};
 }
 
@@ -207,4 +266,15 @@ TEST_CASE("Cached prefab hydration preserves source identity and snapshot lifeti
 	CHECK_FALSE(cache.Find(prefabGuid));
 	snapshot.reset();
 	CHECK(weakSnapshot.expired());
+}
+
+TEST_CASE("Scene unloads invalidate baked prefab templates")
+{
+	PrefabCacheSceneSwitchApplication application;
+	application.Run();
+
+	CHECK(application.CachedBeforeSwitch);
+	CHECK_FALSE(application.CachedAfterSwitch);
+	CHECK(application.CachedBeforeUnload);
+	CHECK_FALSE(application.CachedAfterUnload);
 }

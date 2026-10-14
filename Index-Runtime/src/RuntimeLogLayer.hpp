@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/Layer.hpp"
+#include "Core/PlatformDetection.hpp"
 #include "Diagnostics/LogOverlay.hpp"
 
 namespace Index {
@@ -21,7 +22,8 @@ namespace Index {
 		void SetVisible(bool v) { m_Show = v; }
 
 	private:
-		bool m_Show = false;
+		// Mobile has no F-keys to toggle, so the overlay starts visible there.
+		bool m_Show = IDX_PLATFORM_MOBILE;
 		bool m_ImGuiAcquired = false;
 		// unique_ptr delays LogOverlay construction (and its Log::OnLog subscription) until OnAttach, not at layer-push time.
 		std::unique_ptr<Diagnostics::LogOverlay> m_Overlay;

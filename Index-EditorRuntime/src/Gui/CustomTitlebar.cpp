@@ -4,7 +4,6 @@
 #include "Core/Application.hpp"
 #include "Core/Window.hpp"
 
-#include <GLFW/glfw3.h>
 #include <imgui.h>
 
 namespace Index::EditorRuntime {
@@ -149,7 +148,7 @@ namespace Index::EditorRuntime {
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 0.0f));
 		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
 
-		const bool focused = glfwGetWindowAttrib(window->GetGLFWWindow(), GLFW_FOCUSED) == GLFW_TRUE;
+		const bool focused = window->IsFocused();
 		const Color bg = ResolveTitlebarBg(*window, focused);
 		const Color text = window->GetTitlebarTextColor();
 		int colorPushes = 0;

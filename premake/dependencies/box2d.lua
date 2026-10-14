@@ -1,5 +1,5 @@
 project "Box2D"
-    location (path.join(ROOT_DIR, "premake/generated/Box2D"))
+    location (IndexProjectLocation("Box2D", path.join(ROOT_DIR, "premake/generated/Box2D")))
     kind "StaticLib"
     language "C++"
     cppdialect "C++23"

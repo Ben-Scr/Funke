@@ -446,7 +446,7 @@ namespace Index {
 	}
 
 	void GizmoRenderer2D::EndFrame() {
-		// Keep update commands available while GLFW services resize repaints without running Update.
+		// Keep update commands available while the OS live-resize loop repaints without running Update.
 		Gizmo::EndCommandFrame();
 	}
 
@@ -749,6 +749,8 @@ namespace Index {
 		if (target.HasDepth) {
 			depthAtt.view              = target.DepthView;
 			depthAtt.depthLoadOp       = wgpu::LoadOp::Load;
+			// Ignored for Load, but browsers reject the non-finite default.
+			depthAtt.depthClearValue   = 1.0f;
 			depthAtt.depthStoreOp      = wgpu::StoreOp::Store;
 			depthAtt.stencilLoadOp     = wgpu::LoadOp::Load;
 			depthAtt.stencilStoreOp    = wgpu::StoreOp::Store;

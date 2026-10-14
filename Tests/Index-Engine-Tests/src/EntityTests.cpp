@@ -8,6 +8,7 @@
 #include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
+#include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
@@ -707,4 +708,25 @@ TEST_CASE("Runtime single-entity deserialization retargets self references")
 	const auto field = scriptComponent.PendingFieldValues.find("SelfReferenceScript.Target");
 	REQUIRE(field != scriptComponent.PendingFieldValues.end());
 	CHECK(field->second == std::to_string(scene->GetEntityPersistentID(cloneHandle)));
+}
+
+TEST_CASE("Spawning dynamic sprites does not invalidate the static sprite grid")
+{
+	auto scene = Scene::CreateDetachedScene("Static Grid Version Test");
+
+	Entity wall = scene->CreateEntity("Wall");
+	wall.AddComponent<SpriteRendererComponent>();
+	wall.AddComponent<StaticTag>();
+	const uint64_t versionAfterStatic = scene->GetStaticRenderDataVersion();
+
+	Entity bullet = scene->CreateRuntimeEntity("Bullet");
+	bullet.AddComponent<SpriteRendererComponent>();
+	bullet.AddComponent<DisabledTag>();
+	Entity::Destroy(bullet);
+	CHECK(scene->GetStaticRenderDataVersion() == versionAfterStatic);
+
+	Entity floor = scene->CreateEntity("Floor");
+	floor.AddComponent<StaticTag>();
+	floor.AddComponent<SpriteRendererComponent>();
+	CHECK(scene->GetStaticRenderDataVersion() != versionAfterStatic);
 }

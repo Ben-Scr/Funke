@@ -49,6 +49,9 @@ namespace Index {
             // Frees every loaded slot not referenced by any scene component or registered provider; default textures are never evicted.
             static size_t PurgeUnreferenced();
 
+            // Retries sprites/images in loaded scenes whose texture asset failed to load (e.g. read while the file was being written).
+            static size_t ResolveMissingSceneTextures();
+
             using ReferenceEmitter = std::function<void(TextureHandle)>;
             using ReferenceProvider = std::function<void(const ReferenceEmitter&)>;
             static uint32_t AddReferenceProvider(ReferenceProvider provider);

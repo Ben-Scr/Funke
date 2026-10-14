@@ -3,6 +3,7 @@
 #include "Core/CrashReporter.hpp"
 #include "Core/Log.hpp"
 #include "Core/BuildIdentity.hpp"
+#include "Core/Platform.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/SpecialFolder.hpp"
 
@@ -24,7 +25,16 @@
 #  include <csignal>
 #  include <cstdio>
 #  include <cstring>
+#  include <exception>
 #  include <unistd.h>
+#endif
+
+#if defined(IDX_PLATFORM_LINUX) || defined(IDX_PLATFORM_MACOS)
+#  include <execinfo.h>
+#  include <fcntl.h>
+#  define IDX_CRASH_TEXT_REPORT 1
+#else
+#  define IDX_CRASH_TEXT_REPORT 0
 #endif
 
 namespace Index {
@@ -69,13 +79,8 @@ namespace Index {
 			}
 			return PathToUtf8(std::filesystem::path(buffer).stem());
 #else
-			char buffer[4096];
-			ssize_t length = ::readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
-			if (length <= 0) {
-				return "Index";
-			}
-			buffer[length] = '\0';
-			return std::filesystem::path(buffer).stem().string();
+			const std::filesystem::path executable = Platform::GetExecutablePath();
+			return executable.empty() ? std::string("Index") : executable.stem().string();
 #endif
 		}
 
@@ -216,6 +221,55 @@ namespace Index {
 		}
 		void __cdecl OnAbortSignal(int) { DumpAndTerminate(k_AbortCode); }
 #else
+#if IDX_CRASH_TEXT_REPORT
+		std::terminate_handler g_PreviousTerminate = nullptr;
+		// A stack overflow leaves no room on the crashing stack for the handler.
+		alignas(16) char g_AlternateStack[64 * 1024];
+
+		void WriteText(int fd, const char* text) {
+			(void)::write(fd, text, std::strlen(text));
+		}
+
+		// <CrashDumps>/<exe>-<time>.crash.txt with the reason and a symbolized backtrace; the POSIX stand-in for
+		// the Windows minidump. Best effort: only write() and backtrace_symbols_fd() are signal-safe here.
+		void WriteCrashReport(const char* reason) {
+			void* frames[128];
+			const int frameCount = ::backtrace(frames, 128);
+
+			std::string reportPath;
+			if (!g_DumpDirectory.empty()) {
+				try { reportPath = g_DumpDirectory + "/" + g_AppStem + "-" + FormatTimestamp() + ".crash.txt"; }
+				catch (...) {}
+			}
+			const int fd = reportPath.empty() ? -1 : ::open(reportPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+			if (fd >= 0) {
+				WriteText(fd, IDX_VERSION_LONG "\nCommit: " IDX_BUILD_COMMIT "\nReason: ");
+				WriteText(fd, reason);
+				WriteText(fd, "\n\nBacktrace:\n");
+				::backtrace_symbols_fd(frames, frameCount, fd);
+				::close(fd);
+				WriteText(STDERR_FILENO, "[Index] crash report written to ");
+				WriteText(STDERR_FILENO, reportPath.c_str());
+				WriteText(STDERR_FILENO, "\n");
+			}
+			::backtrace_symbols_fd(frames, frameCount, STDERR_FILENO);
+		}
+
+		void OnTerminate() {
+			bool expected = false;
+			if (g_HandlerEntered.compare_exchange_strong(expected, true)) {
+				WriteText(STDERR_FILENO, "[Index] std::terminate called\n");
+				WriteCrashReport("std::terminate (uncaught exception or noexcept violation)");
+				try {
+					if (auto core = Log::GetCoreLogger()) core->flush();
+				}
+				catch (...) {}
+			}
+			std::signal(SIGABRT, SIG_DFL);
+			std::abort();
+		}
+#endif
+
 		void SignalHandler(int signal) {
 			bool expected = false;
 			if (!g_HandlerEntered.compare_exchange_strong(expected, true)) {
@@ -242,6 +296,11 @@ namespace Index {
 			(void)::write(STDERR_FILENO, prefix, sizeof(prefix) - 1);
 			(void)::write(STDERR_FILENO, name, std::strlen(name));
 			(void)::write(STDERR_FILENO, "\n", 1);
+#if IDX_CRASH_TEXT_REPORT
+			char reason[64] = "fatal signal ";
+			std::strncat(reason, name, sizeof(reason) - std::strlen(reason) - 1);
+			WriteCrashReport(reason);
+#endif
 
 			try {
 				if (auto core = Log::GetCoreLogger()) core->flush();
@@ -272,6 +331,17 @@ namespace Index {
 		g_PreviousPurecall = _set_purecall_handler(&OnPurecall);
 		g_PreviousInvalidParameter = _set_invalid_parameter_handler(&OnInvalidParameter);
 		g_PreviousAbortSignal = std::signal(SIGABRT, &OnAbortSignal);
+#elif IDX_CRASH_TEXT_REPORT
+		stack_t alternateStack{};
+		alternateStack.ss_sp = g_AlternateStack;
+		alternateStack.ss_size = sizeof(g_AlternateStack);
+		::sigaltstack(&alternateStack, nullptr);
+		struct sigaction action {};
+		action.sa_handler = &SignalHandler;
+		action.sa_flags = SA_ONSTACK;
+		sigemptyset(&action.sa_mask);
+		for (const int signal : { SIGSEGV, SIGABRT, SIGFPE, SIGILL, SIGBUS }) ::sigaction(signal, &action, nullptr);
+		g_PreviousTerminate = std::set_terminate(&OnTerminate);
 #else
 		std::signal(SIGSEGV, &SignalHandler);
 		std::signal(SIGABRT, &SignalHandler);
@@ -310,6 +380,9 @@ namespace Index {
 		std::signal(SIGFPE,  SIG_DFL);
 		std::signal(SIGILL,  SIG_DFL);
 		std::signal(SIGBUS,  SIG_DFL);
+#if IDX_CRASH_TEXT_REPORT
+		std::set_terminate(g_PreviousTerminate);
+#endif
 #endif
 
 		g_Initialized = false;

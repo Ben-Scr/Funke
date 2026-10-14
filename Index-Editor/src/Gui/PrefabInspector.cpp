@@ -19,6 +19,7 @@
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptDiscovery.hpp"
 #include "Serialization/File.hpp"
+#include "Serialization/FileStamp.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/PrefabTemplateCache.hpp"
 #include "Serialization/SceneSerializer.hpp"
@@ -29,6 +30,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <functional>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -87,6 +89,10 @@ namespace Index {
 			SceneSerializationFormat previousFormat, uint64_t prefabGuid, std::string_view logTag) {
 			const bool restored = SceneSerializerStorage::WriteRootToFile(
 				prefabPath, previousSource, previousFormat);
+			if (restored) {
+				KnownFileStamps::Record(prefabPath);
+			}
+			SceneSerializer::ForgetCachedPrefabRoot(prefabPath);
 			PrefabTemplateCache::Get().Invalidate(prefabGuid);
 			if (!restored) {
 				IDX_CORE_ERROR_TAG(logTag, "Failed to restore prefab source {} after propagation failure.", prefabPath);
@@ -172,6 +178,160 @@ namespace Index {
 		}
 	}
 
+	// Suspends every loaded scene holding instances of the prefab, publishes the new source, then
+	// refreshes the instances against previousSource; any failure rolls scenes (and source) back.
+	// An empty publishSource means the file already changed on disk, so it is never rolled back.
+	static bool PropagatePrefabSource(uint64_t prefabGuid, const std::string& prefabPath,
+		const Json::Value& previousSource, SceneSerializationFormat previousFormat,
+		const std::function<bool()>& publishSource, std::string_view logTag, size_t* outRefreshedCount) {
+		if (!ValidateLoadedPersistentIdentities(logTag)) return false;
+		const bool ownsSource = static_cast<bool>(publishSource);
+
+		std::vector<PrefabSceneTransaction> sceneTransactions;
+		for (const std::weak_ptr<Scene>& weakScene : SceneManager::GetLoadedScenes()) {
+			std::shared_ptr<Scene> scene = weakScene.lock();
+			if (!scene || !scene->IsLoaded()) continue;
+			std::vector<EntityHandle> roots;
+			if (!CollectPrefabInstanceRoots(*scene, prefabGuid, roots)) {
+				IDX_CORE_ERROR_TAG(logTag, "Scene '{}' contains a malformed instance of {}.",
+					scene->GetName(), prefabPath);
+				return false;
+			}
+			if (roots.empty()) continue;
+			if (scene->IsLifecycleSuspended()) {
+				IDX_CORE_ERROR_TAG(logTag, "Scene '{}' is already lifecycle-suspended; prefab propagation was aborted.",
+					scene->GetName());
+				return false;
+			}
+			try {
+				PrefabSceneTransaction transaction;
+				transaction.LiveScene = scene;
+				transaction.SerializedState = SceneSerializer::SerializeScene(*transaction.LiveScene);
+				transaction.ExpectedInstanceCount = roots.size();
+				transaction.ValidationScene = Scene::CreateDetachedScene(scene->GetName());
+				if (!SceneSerializer::DeserializeScene(*transaction.ValidationScene,
+					transaction.SerializedState, "prefab propagation preflight")) {
+					IDX_CORE_ERROR_TAG(logTag, "Failed to stage scene '{}' for prefab propagation.", scene->GetName());
+					return false;
+				}
+				sceneTransactions.push_back(std::move(transaction));
+			}
+			catch (const std::exception& exception) {
+				IDX_CORE_ERROR_TAG(logTag, "Failed to snapshot scene '{}': {}", scene->GetName(), exception.what());
+				return false;
+			}
+			catch (...) {
+				IDX_CORE_ERROR_TAG(logTag, "Failed to snapshot scene '{}'.", scene->GetName());
+				return false;
+			}
+		}
+
+		bool sourcePublished = false;
+		auto restoreSource = [&]() {
+			return !ownsSource || !sourcePublished
+				|| RestorePrefabSource(prefabPath, previousSource, previousFormat, prefabGuid, logTag);
+		};
+		try {
+		for (PrefabSceneTransaction& transaction : sceneTransactions) {
+			if (SceneManager::BeginLoadedSceneRecovery(transaction.LiveScene)) {
+				transaction.RecoveryBegun = true;
+				continue;
+			}
+			transaction.RecoveryBegun = transaction.LiveScene->IsLifecycleSuspended();
+			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
+			IDX_CORE_ERROR_TAG(logTag, "Failed to suspend scene '{}' for prefab propagation; scene recovery: {}.",
+				transaction.LiveScene->GetName(), scenesRestored);
+			return false;
+		}
+
+		if (ownsSource && !publishSource()) {
+			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
+			IDX_CORE_ERROR_TAG(logTag, "Prefab source save failed; scene recovery: {}.", scenesRestored);
+			return false;
+		}
+		sourcePublished = true;
+		PrefabTemplateCache::Get().Invalidate(prefabGuid);
+
+		if (!ValidatePrefabRefreshes(sceneTransactions, prefabGuid, previousSource, logTag)) {
+			const bool sourceRestored = restoreSource();
+			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
+			IDX_CORE_ERROR_TAG(logTag, "Prefab propagation preflight failed for {}; source rollback: {}; scene rollback: {}.",
+				prefabPath, sourceRestored, scenesRestored);
+			return false;
+		}
+
+		size_t failedInstanceCount = 0;
+		size_t refreshedInstanceCount = 0;
+		for (const PrefabSceneTransaction& transaction : sceneTransactions) {
+			std::vector<EntityHandle> roots;
+			if (!CollectPrefabInstanceRoots(*transaction.LiveScene, prefabGuid, roots)
+				|| roots.size() != transaction.ExpectedInstanceCount) {
+				failedInstanceCount += std::max<size_t>(transaction.ExpectedInstanceCount, 1);
+				continue;
+			}
+			bool sceneRefreshFailed = false;
+			for (EntityHandle root : roots) {
+				const EntityHandle replacement = SceneSerializer::RefreshPrefabInstance(
+					*transaction.LiveScene, root, previousSource);
+				if (replacement == entt::null || replacement == root) {
+					++failedInstanceCount;
+					sceneRefreshFailed = true;
+				}
+				else {
+					++refreshedInstanceCount;
+				}
+			}
+			if (!sceneRefreshFailed) {
+				transaction.LiveScene->MarkDirty();
+			}
+		}
+
+		if (failedInstanceCount != 0) {
+			const bool sourceRestored = restoreSource();
+			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
+			IDX_CORE_ERROR_TAG(logTag, "Failed to refresh {} live prefab instance(s) from {}; source rollback: {}; scene rollback: {}.",
+				failedInstanceCount, prefabPath, sourceRestored, scenesRestored);
+			return false;
+		}
+
+		std::vector<std::shared_ptr<Scene>> activatedScenes;
+		activatedScenes.reserve(sceneTransactions.size());
+		for (const PrefabSceneTransaction& transaction : sceneTransactions) {
+			if (!SceneManager::ActivateSuspendedScene(transaction.LiveScene)) {
+				const bool sourceRestored = restoreSource();
+				const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
+				IDX_CORE_ERROR_TAG(logTag, "Failed to activate refreshed scene '{}'; source rollback: {}; scene rollback: {}.",
+					transaction.LiveScene->GetName(), sourceRestored, scenesRestored);
+				return false;
+			}
+			activatedScenes.push_back(transaction.LiveScene);
+		}
+
+		bool committed = true;
+		for (const std::shared_ptr<Scene>& scene : activatedScenes) {
+			if (!SceneManager::CommitSuspendedSceneActivation(scene)) {
+				IDX_CORE_ERROR_TAG(logTag, "Failed to finalize prefab propagation for scene '{}'.", scene->GetName());
+				committed = false;
+			}
+		}
+		if (outRefreshedCount) *outRefreshedCount = refreshedInstanceCount;
+		return committed;
+		}
+		catch (const std::exception& exception) {
+			const bool sourceRestored = restoreSource();
+			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
+			IDX_CORE_ERROR_TAG(logTag, "Prefab propagation failed: {}; source rollback: {}; scene rollback: {}.",
+				exception.what(), sourceRestored, scenesRestored);
+		}
+		catch (...) {
+			const bool sourceRestored = restoreSource();
+			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
+			IDX_CORE_ERROR_TAG(logTag, "Prefab propagation failed; source rollback: {}; scene rollback: {}.",
+				sourceRestored, scenesRestored);
+		}
+		return false;
+	}
+
 	bool SavePrefabSourceTransactionally(Scene& sourceScene, EntityHandle sourceRoot,
 		const std::string& prefabPath, std::string_view logTag) {
 		if (sourceRoot == entt::null || !sourceScene.IsValid(sourceRoot) || prefabPath.empty()) {
@@ -202,147 +362,31 @@ namespace Index {
 			PrefabTemplateCache::Get().Invalidate(prefabGuid);
 			return true;
 		}
-		if (!ValidateLoadedPersistentIdentities(logTag)) return false;
+		return PropagatePrefabSource(prefabGuid, prefabPath, previousSource, previousFormat,
+			[&]() { return SceneSerializer::SaveEntityToFile(sourceScene, sourceRoot, prefabPath); },
+			logTag, nullptr);
+	}
 
-		std::vector<PrefabSceneTransaction> sceneTransactions;
-		for (const std::weak_ptr<Scene>& weakScene : SceneManager::GetLoadedScenes()) {
-			std::shared_ptr<Scene> scene = weakScene.lock();
-			if (!scene || !scene->IsLoaded()) continue;
-			std::vector<EntityHandle> roots;
-			if (!CollectPrefabInstanceRoots(*scene, prefabGuid, roots)) {
-				IDX_CORE_ERROR_TAG(logTag, "Scene '{}' contains a malformed instance of {}.",
-					scene->GetName(), prefabPath);
-				return false;
-			}
-			if (roots.empty()) continue;
-			if (scene->IsLifecycleSuspended()) {
-				IDX_CORE_ERROR_TAG(logTag, "Scene '{}' is already lifecycle-suspended; prefab save was aborted.",
-					scene->GetName());
-				return false;
-			}
-			try {
-				PrefabSceneTransaction transaction;
-				transaction.LiveScene = scene;
-				transaction.SerializedState = SceneSerializer::SerializeScene(*transaction.LiveScene);
-				transaction.ExpectedInstanceCount = roots.size();
-				transaction.ValidationScene = Scene::CreateDetachedScene(scene->GetName());
-				if (!SceneSerializer::DeserializeScene(*transaction.ValidationScene,
-					transaction.SerializedState, "prefab propagation preflight")) {
-					IDX_CORE_ERROR_TAG(logTag, "Failed to stage scene '{}' for prefab propagation.", scene->GetName());
-					return false;
-				}
-				sceneTransactions.push_back(std::move(transaction));
-			}
-			catch (const std::exception& exception) {
-				IDX_CORE_ERROR_TAG(logTag, "Failed to snapshot scene '{}': {}", scene->GetName(), exception.what());
-				return false;
-			}
-			catch (...) {
-				IDX_CORE_ERROR_TAG(logTag, "Failed to snapshot scene '{}'.", scene->GetName());
-				return false;
-			}
-		}
-
-		bool sourcePublished = false;
-		try {
-		for (PrefabSceneTransaction& transaction : sceneTransactions) {
-			if (SceneManager::BeginLoadedSceneRecovery(transaction.LiveScene)) {
-				transaction.RecoveryBegun = true;
-				continue;
-			}
-			transaction.RecoveryBegun = transaction.LiveScene->IsLifecycleSuspended();
-			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
-			IDX_CORE_ERROR_TAG(logTag, "Failed to suspend scene '{}' for prefab propagation; scene recovery: {}.",
-				transaction.LiveScene->GetName(), scenesRestored);
+	bool RefreshPrefabInstancesFromDisk(const std::string& prefabPath, const Json::Value& previousSource,
+		std::string_view logTag, size_t* outRefreshedCount) {
+		if (outRefreshedCount) *outRefreshedCount = 0;
+		if (prefabPath.empty() || !previousSource.IsObject() || Application::GetIsPlaying()) return false;
+		// Often a write still in progress; the caller retries on the next change.
+		Json::Value currentSource;
+		std::string readError;
+		if (!SceneSerializerStorage::ReadRootFromFile(prefabPath, currentSource, &readError) || !currentSource.IsObject()) {
+			IDX_CORE_WARN_TAG(logTag, "Prefab {} changed on disk but cannot be read ({}); its instances keep the previous version for now.",
+				prefabPath, readError);
 			return false;
 		}
-
-		if (!SceneSerializer::SaveEntityToFile(sourceScene, sourceRoot, prefabPath)) {
-			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
-			IDX_CORE_ERROR_TAG(logTag, "Prefab source save failed; scene recovery: {}.", scenesRestored);
+		const uint64_t prefabGuid = AssetRegistry::GetOrCreateAssetUUID(prefabPath);
+		if (prefabGuid == 0) {
+			IDX_CORE_ERROR_TAG(logTag, "Failed to resolve the prefab GUID for {}.", prefabPath);
 			return false;
 		}
-		sourcePublished = true;
 		PrefabTemplateCache::Get().Invalidate(prefabGuid);
-
-		if (!ValidatePrefabRefreshes(sceneTransactions, prefabGuid, previousSource, logTag)) {
-			const bool sourceRestored = RestorePrefabSource(
-				prefabPath, previousSource, previousFormat, prefabGuid, logTag);
-			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
-			IDX_CORE_ERROR_TAG(logTag, "Prefab propagation preflight failed for {}; source rollback: {}; scene rollback: {}.",
-				prefabPath, sourceRestored, scenesRestored);
-			return false;
-		}
-
-		size_t failedInstanceCount = 0;
-		for (const PrefabSceneTransaction& transaction : sceneTransactions) {
-			std::vector<EntityHandle> roots;
-			if (!CollectPrefabInstanceRoots(*transaction.LiveScene, prefabGuid, roots)
-				|| roots.size() != transaction.ExpectedInstanceCount) {
-				failedInstanceCount += std::max<size_t>(transaction.ExpectedInstanceCount, 1);
-				continue;
-			}
-			bool sceneRefreshFailed = false;
-			for (EntityHandle root : roots) {
-				const EntityHandle replacement = SceneSerializer::RefreshPrefabInstance(
-					*transaction.LiveScene, root, previousSource);
-				if (replacement == entt::null || replacement == root) {
-					++failedInstanceCount;
-					sceneRefreshFailed = true;
-				}
-			}
-			if (!sceneRefreshFailed) {
-				transaction.LiveScene->MarkDirty();
-			}
-		}
-
-		if (failedInstanceCount != 0) {
-			const bool sourceRestored = RestorePrefabSource(
-				prefabPath, previousSource, previousFormat, prefabGuid, logTag);
-			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
-			IDX_CORE_ERROR_TAG(logTag, "Failed to refresh {} live prefab instance(s) from {}; source rollback: {}; scene rollback: {}.",
-				failedInstanceCount, prefabPath, sourceRestored, scenesRestored);
-			return false;
-		}
-
-		std::vector<std::shared_ptr<Scene>> activatedScenes;
-		activatedScenes.reserve(sceneTransactions.size());
-		for (const PrefabSceneTransaction& transaction : sceneTransactions) {
-			if (!SceneManager::ActivateSuspendedScene(transaction.LiveScene)) {
-				const bool sourceRestored = RestorePrefabSource(
-					prefabPath, previousSource, previousFormat, prefabGuid, logTag);
-				const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
-				IDX_CORE_ERROR_TAG(logTag, "Failed to activate refreshed scene '{}'; source rollback: {}; scene rollback: {}.",
-					transaction.LiveScene->GetName(), sourceRestored, scenesRestored);
-				return false;
-			}
-			activatedScenes.push_back(transaction.LiveScene);
-		}
-
-		bool committed = true;
-		for (const std::shared_ptr<Scene>& scene : activatedScenes) {
-			if (!SceneManager::CommitSuspendedSceneActivation(scene)) {
-				IDX_CORE_ERROR_TAG(logTag, "Failed to finalize prefab propagation for scene '{}'.", scene->GetName());
-				committed = false;
-			}
-		}
-		return committed;
-		}
-		catch (const std::exception& exception) {
-			const bool sourceRestored = !sourcePublished || RestorePrefabSource(
-				prefabPath, previousSource, previousFormat, prefabGuid, logTag);
-			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
-			IDX_CORE_ERROR_TAG(logTag, "Prefab save transaction failed: {}; source rollback: {}; scene rollback: {}.",
-				exception.what(), sourceRestored, scenesRestored);
-		}
-		catch (...) {
-			const bool sourceRestored = !sourcePublished || RestorePrefabSource(
-				prefabPath, previousSource, previousFormat, prefabGuid, logTag);
-			const bool scenesRestored = RestorePrefabScenes(sceneTransactions, logTag);
-			IDX_CORE_ERROR_TAG(logTag, "Prefab save transaction failed; source rollback: {}; scene rollback: {}.",
-				sourceRestored, scenesRestored);
-		}
-		return false;
+		return PropagatePrefabSource(prefabGuid, prefabPath, previousSource, SceneSerializationFormat::Json,
+			{}, logTag, outRefreshedCount);
 	}
 
 	PrefabInspector::PrefabInspector() = default;

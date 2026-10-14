@@ -144,6 +144,8 @@ namespace Index::ReferencePicker {
 				case AssetKind::Font: return "Font";
 				case AssetKind::Shader: return "Shader";
 				case AssetKind::DataAsset: return "Data Asset";
+				case AssetKind::Material: return "Material";
+				case AssetKind::Mesh: return "Mesh";
 				case AssetKind::Unknown:
 				case AssetKind::Other:
 				default: return "Asset";

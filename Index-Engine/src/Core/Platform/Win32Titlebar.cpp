@@ -1,11 +1,8 @@
 #include "pch.hpp"
 #include "Win32Titlebar.hpp"
+#include "TitlebarRegions.hpp"
 
 #ifdef IDX_PLATFORM_WINDOWS
-
-#include <GLFW/glfw3.h>
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3native.h>
 
 #include <windowsx.h>
 #include <dwmapi.h>
@@ -27,19 +24,6 @@ namespace Index::Win32Titlebar {
             return s_Map;
         }
 
-        int g_TitlebarHeightLogical = 32;
-
-        struct Rect {
-            int X = 0, Y = 0, W = 0, H = 0;
-            bool Contains(int px, int py) const {
-                return px >= X && px < X + W && py >= Y && py < Y + H;
-            }
-            bool Empty() const { return W <= 0 || H <= 0; }
-        };
-
-        Rect g_CaptionRect{};
-        std::vector<Rect> g_NonClientRects;
-
         int DpiScale(int logical, UINT dpi) {
             return MulDiv(logical, static_cast<int>(dpi), 96);
         }
@@ -56,6 +40,23 @@ namespace Index::Win32Titlebar {
             constexpr COLORREF k_DwmDefaultColor = 0xFFFFFFFF;
             COLORREF value = color.a > 0.0f ? ToColorRef(color) : k_DwmDefaultColor;
             DwmSetWindowAttribute(hwnd, attribute, &value, sizeof(value));
+        }
+
+        LRESULT ToNcHit(TitlebarRegions::Hit hit) {
+            using TitlebarRegions::Hit;
+            switch (hit) {
+                case Hit::Caption:           return HTCAPTION;
+                case Hit::ResizeTopLeft:     return HTTOPLEFT;
+                case Hit::ResizeTop:         return HTTOP;
+                case Hit::ResizeTopRight:    return HTTOPRIGHT;
+                case Hit::ResizeRight:       return HTRIGHT;
+                case Hit::ResizeBottomRight: return HTBOTTOMRIGHT;
+                case Hit::ResizeBottom:      return HTBOTTOM;
+                case Hit::ResizeBottomLeft:  return HTBOTTOMLEFT;
+                case Hit::ResizeLeft:        return HTLEFT;
+                case Hit::Client:            break;
+            }
+            return HTCLIENT;
         }
 
         LRESULT CALLBACK TitlebarWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -92,41 +93,16 @@ namespace Index::Win32Titlebar {
                 const POINT cursor{ GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
                 RECT window;
                 GetWindowRect(hwnd, &window);
-                const int x = cursor.x - window.left;
-                const int y = cursor.y - window.top;
-                const int w = window.right - window.left;
-                const int h = window.bottom - window.top;
                 const UINT dpi = GetDpiForWindow(hwnd);
-                const int border = MulDiv(8, static_cast<int>(dpi), 96);
                 const bool resizable = (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_THICKFRAME) != 0;
-                const bool maximized = IsZoomed(hwnd) != FALSE;
-
-                if (resizable && !maximized) {
-                    const bool onLeft   = x < border;
-                    const bool onRight  = x >= w - border;
-                    const bool onTop    = y < border;
-                    const bool onBottom = y >= h - border;
-                    if (onTop    && onLeft)  return HTTOPLEFT;
-                    if (onTop    && onRight) return HTTOPRIGHT;
-                    if (onBottom && onLeft)  return HTBOTTOMLEFT;
-                    if (onBottom && onRight) return HTBOTTOMRIGHT;
-                    if (onLeft)   return HTLEFT;
-                    if (onRight)  return HTRIGHT;
-                    if (onTop)    return HTTOP;
-                    if (onBottom) return HTBOTTOM;
-                }
-
-                if (!g_CaptionRect.Empty() && g_CaptionRect.Contains(x, y)) {
-                    for (const auto& r : g_NonClientRects) {
-                        if (r.Contains(x, y)) {
-                            return HTCLIENT;
-                        }
-                    }
-                    return HTCAPTION;
-                }
-                return HTCLIENT;
+                return ToNcHit(TitlebarRegions::HitTest(
+                    cursor.x - window.left, cursor.y - window.top,
+                    window.right - window.left, window.bottom - window.top,
+                    MulDiv(8, static_cast<int>(dpi), 96), resizable, IsZoomed(hwnd) != FALSE));
             }
             case WM_GETMINMAXINFO: {
+                // SDL first, for the window's min/max size limits.
+                CallWindowProcW(originalProc, hwnd, msg, wparam, lparam);
                 // Without WS_CAPTION the default sizing covers the full monitor; constrain to rcWork so maximize respects the taskbar.
                 HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
                 MONITORINFO mi{};
@@ -147,17 +123,6 @@ namespace Index::Win32Titlebar {
                 // Returning TRUE suppresses the inactive-frame repaint
                 // flicker that DWM otherwise does on focus change.
                 return TRUE;
-            case WM_DPICHANGED: {
-                const RECT* suggested = reinterpret_cast<const RECT*>(lparam);
-                if (suggested) {
-                    SetWindowPos(hwnd, nullptr,
-                        suggested->left, suggested->top,
-                        suggested->right - suggested->left,
-                        suggested->bottom - suggested->top,
-                        SWP_NOZORDER | SWP_NOACTIVATE);
-                }
-                return 0;
-            }
             case WM_SIZE: {
                 // Re-apply DWM margins on restore; some Windows builds drop them across minimize/restore.
                 if (wparam == SIZE_RESTORED) {
@@ -175,9 +140,8 @@ namespace Index::Win32Titlebar {
 
     }
 
-    void Install(GLFWwindow* window, Window* owner) {
-        if (!window) return;
-        HWND hwnd = glfwGetWin32Window(window);
+    void Install(void* nativeHandle, Window* owner) {
+        HWND hwnd = static_cast<HWND>(nativeHandle);
         if (!hwnd) return;
 
         auto& map = StateMap();
@@ -205,9 +169,8 @@ namespace Index::Win32Titlebar {
             SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
-    void Uninstall(GLFWwindow* window) {
-        if (!window) return;
-        HWND hwnd = glfwGetWin32Window(window);
+    void Uninstall(void* nativeHandle) {
+        HWND hwnd = static_cast<HWND>(nativeHandle);
         if (!hwnd) return;
 
         auto& map = StateMap();
@@ -219,47 +182,22 @@ namespace Index::Win32Titlebar {
         map.erase(it);
     }
 
-    void SetTitlebarHeight(int logicalPx) {
-        g_TitlebarHeightLogical = logicalPx;
+    int GetTitlebarHeightPhysical(void* nativeHandle) {
+        HWND hwnd = static_cast<HWND>(nativeHandle);
+        if (!hwnd) return TitlebarRegions::GetHeight();
+        return DpiScale(TitlebarRegions::GetHeight(), GetDpiForWindow(hwnd));
     }
 
-    int GetTitlebarHeight() {
-        return g_TitlebarHeightLogical;
-    }
-
-    int GetTitlebarHeightPhysical(GLFWwindow* window) {
-        if (!window) return g_TitlebarHeightLogical;
-        HWND hwnd = glfwGetWin32Window(window);
-        if (!hwnd) return g_TitlebarHeightLogical;
-        const UINT dpi = GetDpiForWindow(hwnd);
-        return DpiScale(g_TitlebarHeightLogical, dpi);
-    }
-
-    void SetCaptionRect(int x, int y, int w, int h) {
-        g_CaptionRect = Rect{ x, y, w, h };
-    }
-
-    void AddNonClientRect(int x, int y, int w, int h) {
-        if (w <= 0 || h <= 0) return;
-        g_NonClientRects.push_back(Rect{ x, y, w, h });
-    }
-
-    void ResetNonClientRects() {
-        g_NonClientRects.clear();
-    }
-
-    void SetDarkMode(GLFWwindow* window, bool enabled) {
-        if (!window) return;
-        HWND hwnd = glfwGetWin32Window(window);
+    void SetDarkMode(void* nativeHandle, bool enabled) {
+        HWND hwnd = static_cast<HWND>(nativeHandle);
         if (!hwnd) return;
         constexpr DWORD k_DwmwaUseImmersiveDarkMode = 20;
         BOOL useDark = enabled ? TRUE : FALSE;
         DwmSetWindowAttribute(hwnd, k_DwmwaUseImmersiveDarkMode, &useDark, sizeof(useDark));
     }
 
-    void SetColors(GLFWwindow* window, Color caption, Color text, Color border) {
-        if (!window) return;
-        HWND hwnd = glfwGetWin32Window(window);
+    void SetColors(void* nativeHandle, Color caption, Color text, Color border) {
+        HWND hwnd = static_cast<HWND>(nativeHandle);
         if (!hwnd) return;
 
         constexpr DWORD k_DwmwaBorderColor = 34;

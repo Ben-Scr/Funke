@@ -15,24 +15,35 @@
 #include "Scripting/ScriptSystem.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Systems/AudioUpdateSystem.hpp"
-#include "Systems/ParticleUpdateSystem.hpp"
-#include "Systems/SpriteAnimationSystem.hpp"
-#include "Systems/TransformHierarchySystem.hpp"
 #include "Systems/UIEventSystem.hpp"
 #include "Systems/UIFocusSystem.hpp"
 #include "Systems/UILayoutSystem.hpp"
 #include "Components/General/UUIDComponent.hpp"
-#include "Components/Graphics/Camera2DComponent.hpp"
 #include "Core/Application.hpp"
 #include "Core/ApplicationConfig.hpp"
 #include "Core/Exceptions.hpp"
 #include "Events/SceneEvents.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Audio/AudioManager.hpp"
-#include "Physics/PhysicsSystem2D.hpp"
-#include "Physics/Box2DWorld.hpp"
 #include "Serialization/Json.hpp"
+#include "Serialization/PrefabTemplateCache.hpp"
 #include "Serialization/SceneSerializer.hpp"
+#include "Core/EngineModules.hpp"
+
+#if INDEX_WITH_2D
+#include "Components/Graphics/Camera2DComponent.hpp"
+#include "Physics/Box2DWorld.hpp"
+#include "Physics/PhysicsSystem2D.hpp"
+#include "Systems/ParticleUpdateSystem.hpp"
+#include "Systems/SpriteAnimationSystem.hpp"
+#include "Systems/TransformHierarchySystem.hpp"
+#endif
+#if INDEX_WITH_3D
+#include "Components/Graphics/Camera3DComponent.hpp"
+#include "Physics3D/PhysicsSystem3D.hpp"
+#include "Systems/Particle3DUpdateSystem.hpp"
+#include "Systems/Transform3DHierarchySystem.hpp"
+#endif
 
 
 namespace Index {
@@ -42,6 +53,7 @@ namespace Index {
 			bool applicationEnabled,
 			bool sceneEnabled,
 			bool sceneWillBeActive) {
+#if INDEX_WITH_2D
 			if (!rendererAvailable || !applicationEnabled || !sceneEnabled || !sceneWillBeActive) {
 				return false;
 			}
@@ -50,10 +62,21 @@ namespace Index {
 			if (cameras.begin() != cameras.end()) {
 				return false;
 			}
+#if INDEX_WITH_3D
+			// A 3D scene renders through its Camera3D; a fallback 2D camera would clear over it.
+			auto cameras3D = scene.GetRegistry().view<Camera3DComponent>();
+			if (cameras3D.begin() != cameras3D.end()) {
+				return false;
+			}
+#endif
 
 			Entity camera = scene.CreateRuntimeEntity("Main Camera");
 			camera.AddComponent<Camera2DComponent>();
 			return true;
+#else
+			(void)scene; (void)rendererAvailable; (void)applicationEnabled; (void)sceneEnabled; (void)sceneWillBeActive;
+			return false;
+#endif
 		}
 	}
 
@@ -85,22 +108,47 @@ namespace Index {
 
 		void AddStandardSceneSystems(SceneDefinition& definition) {
 			const ApplicationConfig config = GetActiveAppConfig();
+#if INDEX_WITH_2D
+			const bool with2D = EngineModules::IsActive(EngineModule::TwoD);
+#endif
+#if INDEX_WITH_3D
+			const bool with3D = EngineModules::IsActive(EngineModule::ThreeD);
+#endif
 
 			// TransformHierarchy runs first so all subsequent systems see up-to-date world transforms.
-			definition.AddSystem<TransformHierarchySystem>();
+#if INDEX_WITH_2D
+			if (with2D) definition.AddSystem<TransformHierarchySystem>();
+#endif
+#if INDEX_WITH_3D
+			if (with3D) {
+				definition.AddSystem<Transform3DHierarchySystem>();
+				definition.AddSystem<PhysicsInterpolationSystem3D>();
+			}
+#endif
 
 			if (config.EnableRenderer2D) {
 				definition.AddSystem<UILayoutSystem>();
 			}
 
-			if (config.EnableRenderer2D) {
+#if INDEX_WITH_2D
+			if (config.EnableRenderer2D && with2D) {
 				definition.AddSystem<ParticleUpdateSystem>();
 				definition.AddSystem<SpriteAnimationSystem>();
 			}
+#endif
+#if INDEX_WITH_3D
+			if (with3D) definition.AddSystem<Particle3DUpdateSystem>();
+#endif
 
 			if (config.EnableScripting) {
 				definition.AddSystem<ScriptSystem>();
 			}
+
+#if INDEX_WITH_3D
+			// After ScriptSystem: forces applied in OnFixedUpdate land in the same step. Idle (no world)
+			// until play mode finds a 3D physics component.
+			if (with3D) definition.AddSystem<PhysicsSystem3D>();
+#endif
 
 			if (config.EnableAudio) {
 				definition.AddSystem<AudioUpdateSystem>();
@@ -113,6 +161,40 @@ namespace Index {
 
 			if (config.EnableRenderer2D) {
 				definition.AddSystem<UIEventSystem>();
+			}
+		}
+
+		void PurgeAssetsAfterSceneUnload() {
+			// Baked templates hold raw texture/audio handles; the purges below can free them, and a stale handle renders white.
+			PrefabTemplateCache::Get().InvalidateAll();
+
+			Application* app = Application::GetInstance();
+			if (!app) {
+				return;
+			}
+
+			const ApplicationConfig config = app->GetConfiguration();
+			if (config.EnableTextureManager) {
+				try {
+					TextureManager::PurgeUnreferenced();
+				}
+				catch (const std::exception& e) {
+					IDX_CORE_ERROR_TAG("SceneManager", "Texture purge after scene unload failed: {}", e.what());
+				}
+				catch (...) {
+					IDX_CORE_ERROR_TAG("SceneManager", "Texture purge after scene unload failed");
+				}
+			}
+			if (config.EnableAudio) {
+				try {
+					AudioManager::PurgeUnreferenced();
+				}
+				catch (const std::exception& e) {
+					IDX_CORE_ERROR_TAG("SceneManager", "Audio purge after scene unload failed: {}", e.what());
+				}
+				catch (...) {
+					IDX_CORE_ERROR_TAG("SceneManager", "Audio purge after scene unload failed");
+				}
 			}
 		}
 	}
@@ -138,6 +220,18 @@ namespace Index {
 
 	ComponentRegistry& SceneManager::GetComponentRegistry() {
 		return Get().m_ComponentRegistry;
+	}
+
+	ComponentRegistry& SceneManager::GetComponentRegistryOrBuiltIn() {
+		// TryGet is null off the main thread (the editor's build worker), which must not touch the live registry.
+		if (SceneManager* manager = TryGet()) {
+			return manager->m_ComponentRegistry;
+		}
+		// Without it, registry-serialized components vanish when a headless tool rewrites a scene.
+		static ComponentRegistry s_BuiltInRegistry;
+		static const bool s_Registered = (RegisterBuiltInComponents(s_BuiltInRegistry), true);
+		(void)s_Registered;
+		return s_BuiltInRegistry;
 	}
 
 	const std::vector<SceneManager::EntityPresetInfo>& SceneManager::GetEntityPresets() {
@@ -190,6 +284,9 @@ namespace Index {
 		}
 		if (preset.OwnerId == 0) {
 			preset.OwnerId = m_ComponentRegistry.GetRegistrationOwner();
+		}
+		if (!preset.Module) {
+			preset.Module = m_ComponentRegistry.GetRegistrationModule();
 		}
 
 		for (EntityPresetInfo& existing : m_EntityPresets) {
@@ -247,6 +344,17 @@ namespace Index {
 			return { SceneLoadStatus::NotInitialized, {}, "SceneManager is not available" };
 		}
 		return manager->TryReloadSceneImpl(name);
+	}
+
+	SceneLoadResult SceneManager::TryRestartScene(const std::string& name) {
+		if (!Application::IsMainThread()) {
+			return WrongThreadLoadResult();
+		}
+		SceneManager* manager = TryGet();
+		if (!manager) {
+			return { SceneLoadStatus::NotInitialized, {}, "SceneManager is not available" };
+		}
+		return manager->TryReloadSceneImpl(name, false);
 	}
 
 	std::weak_ptr<Scene> SceneManager::LoadScene(const std::string& name) {
@@ -486,6 +594,11 @@ namespace Index {
 
 	void SceneManager::RegisterCoreComponents() {
 		RegisterBuiltInComponents(m_ComponentRegistry);
+#if INDEX_WITH_3D
+		m_ComponentRegistry.SetRegistrationModule(EngineModule::ThreeD);
+		RegisterBuiltIn3DEntityPresets();
+		m_ComponentRegistry.SetRegistrationModule(std::nullopt);
+#endif
 	}
 
 	void SceneManager::Shutdown() {
@@ -755,7 +868,7 @@ namespace Index {
 		return { SceneLoadStatus::Success, newScene, {} };
 	}
 
-	SceneLoadResult SceneManager::TryReloadSceneImpl(const std::string& name) {
+	SceneLoadResult SceneManager::TryReloadSceneImpl(const std::string& name, bool restoreLiveState) {
 		auto it = FindLoadedSceneIterator(name);
 		if (it == m_LoadedScenes.end()) {
 			IDX_CORE_WARN_TAG("SceneManager", "ReloadScene: scene '{}' is not loaded", name);
@@ -772,34 +885,42 @@ namespace Index {
 		}
 
 		Json::Value snapshotRoot;
-		try {
-			snapshotRoot = SceneSerializer::SerializeScene(*scene);
-		}
-		catch (const std::exception& e) {
-			const std::string message = "Failed to snapshot scene '" + name + "': " + e.what();
-			IDX_CORE_ERROR_TAG("SceneManager", "{}", message);
-			return { SceneLoadStatus::SnapshotFailed, scene, message };
-		}
-		catch (...) {
-			const std::string message = "Failed to snapshot scene '" + name + "'";
-			IDX_CORE_ERROR_TAG("SceneManager", "{}", message);
-			return { SceneLoadStatus::SnapshotFailed, scene, message };
-		}
-
-		SceneLoadResult result = LoadSceneInternal(name, true, [&snapshotRoot, wasDirty](Scene& restoredScene) {
-			if (!SceneSerializer::DeserializeScene(restoredScene, snapshotRoot)) {
-				IDX_CORE_ERROR_TAG("SceneManager", "ReloadScene: failed to restore snapshot for '{}'", restoredScene.GetName());
-				return false;
+		SceneSetupCallback restoreSnapshot;
+		if (restoreLiveState) {
+			try {
+				snapshotRoot = SceneSerializer::SerializeScene(*scene);
+			}
+			catch (const std::exception& e) {
+				const std::string message = "Failed to snapshot scene '" + name + "': " + e.what();
+				IDX_CORE_ERROR_TAG("SceneManager", "{}", message);
+				return { SceneLoadStatus::SnapshotFailed, scene, message };
+			}
+			catch (...) {
+				const std::string message = "Failed to snapshot scene '" + name + "'";
+				IDX_CORE_ERROR_TAG("SceneManager", "{}", message);
+				return { SceneLoadStatus::SnapshotFailed, scene, message };
 			}
 
-			if (wasDirty) {
-				restoredScene.MarkDirty();
-			}
-			else {
-				restoredScene.ClearDirty();
-			}
-			return true;
-		}, wasActive, reloadIndex, false);
+			restoreSnapshot = [&snapshotRoot, wasDirty](Scene& restoredScene) {
+				if (!SceneSerializer::DeserializeScene(restoredScene, snapshotRoot)) {
+					IDX_CORE_ERROR_TAG("SceneManager", "ReloadScene: failed to restore snapshot for '{}'", restoredScene.GetName());
+					return false;
+				}
+
+				if (wasDirty) {
+					restoredScene.MarkDirty();
+				}
+				else {
+					restoredScene.ClearDirty();
+				}
+				return true;
+			};
+		}
+
+		// A restart is a real load from the game's point of view, so it raises the scene events; a reload stays silent.
+		const bool emitNotifications = !restoreLiveState;
+		SceneLoadResult result = LoadSceneInternal(name, true, std::move(restoreSnapshot), wasActive, reloadIndex,
+			emitNotifications);
 		if (!result) {
 			result.LoadedScene = scene;
 			return result;
@@ -807,7 +928,7 @@ namespace Index {
 
 		auto originalIt = std::find(m_LoadedScenes.begin(), m_LoadedScenes.end(), scene);
 		if (originalIt != m_LoadedScenes.end()) {
-			ReleaseScene(originalIt, false);
+			ReleaseScene(originalIt, emitNotifications);
 		}
 		return result;
 	}
@@ -887,6 +1008,7 @@ namespace Index {
 			IDX_CORE_ERROR_TAG("SceneManager", "Rollback entity cleanup failed for '{}'", sceneName);
 		}
 
+#if INDEX_WITH_2D
 		if (PhysicsSystem2D::IsInitialized()) {
 			try {
 				PhysicsSystem2D::GetMainPhysicsWorld().DestroyAllBodiesForScene(scene.get());
@@ -901,6 +1023,7 @@ namespace Index {
 				IDX_CORE_ERROR_TAG("SceneManager", "Rollback IndexPhys body cleanup for '{}' failed", sceneName);
 			}
 		}
+#endif
 
 		if (m_ActiveScene == scene.get()) {
 			m_ActiveScene = nullptr;
@@ -1007,32 +1130,7 @@ namespace Index {
 			}
 		}
 
-		Application* app = Application::GetInstance();
-		if (app) {
-			const ApplicationConfig config = app->GetConfiguration();
-			if (config.EnableTextureManager) {
-				try {
-					TextureManager::PurgeUnreferenced();
-				}
-				catch (const std::exception& e) {
-					IDX_CORE_ERROR_TAG("SceneManager", "Texture purge after scene unload failed: {}", e.what());
-				}
-				catch (...) {
-					IDX_CORE_ERROR_TAG("SceneManager", "Texture purge after scene unload failed");
-				}
-			}
-			if (config.EnableAudio) {
-				try {
-					AudioManager::PurgeUnreferenced();
-				}
-				catch (const std::exception& e) {
-					IDX_CORE_ERROR_TAG("SceneManager", "Audio purge after scene unload failed: {}", e.what());
-				}
-				catch (...) {
-					IDX_CORE_ERROR_TAG("SceneManager", "Audio purge after scene unload failed");
-				}
-			}
-		}
+		PurgeAssetsAfterSceneUnload();
 	}
 
 	void SceneManager::ReleaseScene(LoadedSceneList::iterator it, bool emitNotifications,
@@ -1119,6 +1217,7 @@ namespace Index {
 		scene.m_LifecycleSuspended = false;
 
 		// Force-purge physics bodies even if ClearEntities threw mid-way, to prevent dangling Scene* in the global physics worlds.
+#if INDEX_WITH_2D
 		if (PhysicsSystem2D::IsInitialized()) {
 			try {
 				PhysicsSystem2D::GetMainPhysicsWorld().DestroyAllBodiesForScene(&scene);
@@ -1133,6 +1232,7 @@ namespace Index {
 				IDX_CORE_ERROR_TAG("SceneManager", "IndexPhys body cleanup for unloaded scene '{}' failed", sceneName);
 			}
 		}
+#endif
 		if (emitNotifications && !lifecycleWasSuspended) {
 			try {
 				ScenePostStopEvent e(sceneName);
@@ -1185,32 +1285,7 @@ namespace Index {
 		}
 
 		if (!includePersistent) {
-			Application* app = Application::GetInstance();
-			if (app) {
-				const ApplicationConfig config = app->GetConfiguration();
-				if (config.EnableTextureManager) {
-					try {
-						TextureManager::PurgeUnreferenced();
-					}
-					catch (const std::exception& e) {
-						IDX_CORE_ERROR_TAG("SceneManager", "Texture purge after scene unload failed: {}", e.what());
-					}
-					catch (...) {
-						IDX_CORE_ERROR_TAG("SceneManager", "Texture purge after scene unload failed");
-					}
-				}
-				if (config.EnableAudio) {
-					try {
-						AudioManager::PurgeUnreferenced();
-					}
-					catch (const std::exception& e) {
-						IDX_CORE_ERROR_TAG("SceneManager", "Audio purge after scene unload failed: {}", e.what());
-					}
-					catch (...) {
-						IDX_CORE_ERROR_TAG("SceneManager", "Audio purge after scene unload failed");
-					}
-				}
-			}
+			PurgeAssetsAfterSceneUnload();
 		}
 	}
 

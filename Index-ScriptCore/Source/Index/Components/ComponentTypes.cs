@@ -85,8 +85,12 @@ internal static class ComponentTypes
     internal static void RunAllStaticInitializers()
     {
         Type generic = typeof(ComponentTypes<>);
-        foreach (Type t in s_NativeNames.Keys)
+        foreach ((Type t, string nativeName) in s_NativeNames)
         {
+            // A build without the engine module that owns the built-in (e.g. Index.2D) never registers it;
+            // scripts that use it still get the regular error on first use.
+            if (InternalCalls.Entity_GetComponentSize(nativeName) == 0)
+                continue;
             RuntimeHelpers.RunClassConstructor(generic.MakeGenericType(t).TypeHandle);
         }
     }

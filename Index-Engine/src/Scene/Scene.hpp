@@ -311,6 +311,7 @@ namespace Index {
 		// transform must be re-derived, not just the entities in the dirty list.
 		bool IsTransformDirtyAll() const { return m_TransformDirtyAll; }
 		void MarkStaticRenderDataDirty();
+		void MarkStaticRenderDataDirtyIfStatic(const entt::registry& registry, EntityHandle entity);
 		uint64_t GetStaticRenderDataVersion() const { return m_StaticRenderDataVersion; }
 
 		// Bumped on any change to the entity set/topology that the entity COUNT can't detect: parent/child changes
@@ -385,6 +386,8 @@ namespace Index {
 		void PushEntityRefRemap();
 		void PopEntityRefRemap();
 		void RegisterEntityRefRemap(uint64_t oldId, uint64_t newId);
+		// Repoints every remap entry targeting fromId at toId (an entity was re-keyed after its remap was recorded).
+		void RetargetEntityRefRemap(uint64_t fromId, uint64_t toId);
 		uint64_t TranslateEntityRef(uint64_t id) const;
 		bool IsEntityRefRemapActive() const { return m_EntityRefRemapDepth > 0; }
 
@@ -405,6 +408,8 @@ namespace Index {
 	private:
 		Scene(const std::string& name, const SceneDefinition* definition, bool IsPersistent);
 
+		// Transform2D while Index.2D is active, else Transform3D while Index.3D is, else none.
+		void AddDefaultTransform(EntityHandle entity);
 		void OnTransform2DComponentConstruct(entt::registry& registry, EntityHandle entity);
 		void OnTransform2DComponentDestroy(entt::registry& registry, EntityHandle entity);
 		void OnSpriteRendererComponentConstruct(entt::registry& registry, EntityHandle entity);

@@ -65,7 +65,7 @@ Next, `Application::Initialize()` starts every engine subsystem **in a fixed ord
 | 1 | **Profiler** | Performance measurement (only in profiling builds). |
 | 2 | **Job System** | The worker-thread pool for multithreaded work. See [Job System](Job-System.md). |
 | 3 | **Frame Arenas** | Fast per-frame scratch memory. |
-| 4 | **Window** | Opens the OS window and input via **GLFW**. |
+| 4 | **Window** | Opens the OS window and input via **SDL3**. |
 | 5 | **Render API** | Starts the graphics device — **WebGPU (via Dawn)**, which picks Direct3D 12 / Vulkan / Metal under the hood. |
 | 6 | **Texture Manager** | Loads built-in textures, manages GPU textures. |
 | 7 | **Shader Manager** | Loads and manages shaders. |
@@ -165,7 +165,7 @@ Main()
  └─ Application::Run()
      ├─ Initialize()
      │   ├─ Profiler → JobSystem → FrameArenas
-     │   ├─ Window (GLFW) → Render API (WebGPU/Dawn)
+     │   ├─ Window (SDL3) → Render API (WebGPU/Dawn)
      │   ├─ Textures → Shaders → Renderer2D → Gizmos → GUI
      │   ├─ Physics2D → Fonts → Asset Registry → Audio
      │   ├─ ConfigureScenes()   (choose + register startup scene)

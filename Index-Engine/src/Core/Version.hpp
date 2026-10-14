@@ -29,13 +29,8 @@
 //
 // Build Platform
 //
-#if defined(IDX_PLATFORM_WINDOWS)
-#define IDX_BUILD_PLATFORM_NAME "Windows x64"
-#elif defined(IDX_PLATFORM_LINUX)
-#define IDX_BUILD_PLATFORM_NAME "Linux x64"
-#else
-#error Unsupported Platform!
-#endif
+#include "Core/PlatformDetection.hpp"
+#define IDX_BUILD_PLATFORM_NAME IDX_PLATFORM_NAME " " IDX_ARCH_NAME
 
 #include <cstdint>
 #include <string_view>

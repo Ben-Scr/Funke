@@ -3,6 +3,7 @@
 #include "Core/Export.hpp"
 #include "Scene/EntityHandle.hpp"
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -64,11 +65,25 @@ namespace Index {
 		static EntityHandle RefreshPrefabInstance(Scene& scene, EntityHandle existing,
 			const Json::Value& previousSourceEntityValue);
 
+		// A prefab whose file changed outside SaveEntityToFile after the engine parsed it.
+		// PreviousRoot is the parse loaded instances were built from: the RefreshPrefabInstance baseline.
+		struct ExternalPrefabChange {
+			std::string Path;
+			std::shared_ptr<const Json::Value> PreviousRoot;
+		};
+		// Drains the changes seen so far, including ones a re-read already picked up.
+		static std::vector<ExternalPrefabChange> TakeExternallyChangedPrefabs();
+		// For writers other than SaveEntityToFile, so their own write is not reported as external.
+		static void ForgetCachedPrefabRoot(const std::string& path);
+
 		// outOverrides is filled with dot-path keys e.g. "Transform2D.posX". Returns false for non-instances and orphans (source GUID not in AssetRegistry).
 		static bool ComputeInstanceOverrides(Scene& scene, EntityHandle entity, Json::Value& outOverrides);
 
 		// NOTE: PrefabInstanceComponent is on every entity in the subtree (not just the root), so the root is determined by walking HierarchyComponent.Parent upward.
 		static EntityHandle GetPrefabInstanceRoot(Scene& scene, EntityHandle entity);
+
+		// True for the root of a prefab instance, including an instance parented under another instance of the same prefab.
+		static bool IsPrefabInstanceRoot(Scene& scene, EntityHandle entity);
 
 		// Walks the entire subtree so a child-only edit still enables Apply/Revert All on the root. `entity` may be any member of the instance.
 		static bool HasPrefabInstanceOverrides(Scene& scene, EntityHandle entity);

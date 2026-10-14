@@ -309,6 +309,78 @@ namespace {
 		static constexpr const char* ReplacementSceneName = "Successful Load Replacement";
 	};
 
+	class SceneRestartTestApplication final : public Application {
+	public:
+		SceneRestartTestApplication() {
+			PushLayer<SceneEventTraceLayer>(EventTrace, EventTracingEnabled);
+		}
+
+		ApplicationConfig GetConfiguration() const override {
+			return MakeSceneTestConfiguration();
+		}
+
+		void ConfigureScenes() override {
+			SceneManager::RegisterScene(SceneName)
+				.OnLoad([](Scene& scene) { scene.CreateEntity("Authored Sentinel"); })
+				.WithoutDefaultCamera2D()
+				.SetAsStartupScene();
+		}
+
+		void Start() override {
+			std::shared_ptr<Scene> original = SceneManager::GetLoadedScene(SceneName).lock();
+			if (!original) {
+				Application::Quit();
+				return;
+			}
+			original->CreateEntity("Runtime Addition");
+			InitialStateReady = original->GetEntityCount() == 2;
+
+			const SceneLoadResult reloadResult = SceneManager::TryReloadScene(SceneName);
+			std::shared_ptr<Scene> reloaded = reloadResult.LoadedScene.lock();
+			ReloadKeptRuntimeState = reloadResult.Succeeded() && reloaded && reloaded->GetEntityCount() == 2;
+
+			EventTrace.clear();
+			EventTracingEnabled = true;
+			SceneLoadResult restartResult;
+			try {
+				restartResult = SceneManager::TryRestartScene(SceneName);
+			}
+			catch (...) {
+				RestartThrew = true;
+			}
+			EventTracingEnabled = false;
+
+			std::shared_ptr<Scene> restarted = restartResult.LoadedScene.lock();
+			RestartDiscardedRuntimeState = restartResult.Status == SceneLoadStatus::Success
+				&& restarted
+				&& restarted != reloaded
+				&& restarted->IsLoaded()
+				&& restarted->GetEntityCount() == 1;
+			RestartCommitted = reloaded
+				&& !reloaded->IsLoaded()
+				&& SceneManager::GetActiveScene() == restarted.get()
+				&& SceneManager::GetLoadedSceneCount() == 1;
+			RestartRaisedSceneEvents = !EventTrace.empty();
+
+			RestartOfUnloadedSceneRejected =
+				SceneManager::TryRestartScene("Restart Missing").Status == SceneLoadStatus::NotLoaded;
+			Application::Quit();
+		}
+
+		bool InitialStateReady = false;
+		bool ReloadKeptRuntimeState = false;
+		bool RestartThrew = false;
+		bool RestartDiscardedRuntimeState = false;
+		bool RestartCommitted = false;
+		bool RestartRaisedSceneEvents = false;
+		bool RestartOfUnloadedSceneRejected = false;
+		std::vector<EventType> EventTrace;
+		bool EventTracingEnabled = false;
+
+	private:
+		static constexpr const char* SceneName = "Restart Target";
+	};
+
 	class FailedSceneReloadTestApplication final : public Application {
 	public:
 		ApplicationConfig GetConfiguration() const override {
@@ -1258,6 +1330,19 @@ TEST_CASE("A successful non-additive load commits before replacing the active sc
 	CHECK(application.ReloadCommitted);
 	CHECK(application.ReloadNotificationsSuppressed);
 	CHECK(application.ForeachUnloadSafe);
+}
+
+TEST_CASE("Restarting a scene reloads it from its definition while reload keeps runtime state") {
+	SceneRestartTestApplication application;
+	application.Run();
+
+	REQUIRE(application.InitialStateReady);
+	CHECK(application.ReloadKeptRuntimeState);
+	CHECK_FALSE(application.RestartThrew);
+	CHECK(application.RestartDiscardedRuntimeState);
+	CHECK(application.RestartCommitted);
+	CHECK(application.RestartRaisedSceneEvents);
+	CHECK(application.RestartOfUnloadedSceneRejected);
 }
 
 TEST_CASE("A failed scene reload preserves and reports the original scene") {

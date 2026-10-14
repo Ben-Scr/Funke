@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Core/PlatformDetection.hpp"
+
 #if defined(IDX_PLATFORM_WINDOWS)
 #if defined(IDX_BUILD_DLL)
 #define INDEX_API __declspec(dllexport)
@@ -8,6 +10,8 @@
 #else
 #define INDEX_API
 #endif
+#elif defined(IDX_BUILD_DLL) || defined(IDX_IMPORT_DLL)
+#define INDEX_API __attribute__((visibility("default")))
 #else
 #define INDEX_API
 #endif
@@ -51,6 +55,16 @@
 
 #ifndef INDEX_WITH_APPLICATION
 #define INDEX_WITH_APPLICATION 0
+#endif
+
+// Engine feature modules (Index-Engine/EngineModules.json). Builds that don't name them (packages,
+// NativeScripts) get both whenever the application surface exists; runtime variants pass =0.
+#ifndef INDEX_WITH_2D
+#define INDEX_WITH_2D INDEX_WITH_APPLICATION
+#endif
+
+#ifndef INDEX_WITH_3D
+#define INDEX_WITH_3D INDEX_WITH_APPLICATION
 #endif
 
 #if !INDEX_WITH_RENDER && !INDEX_WITH_AUDIO && !INDEX_WITH_PHYSICS && !INDEX_WITH_SCRIPTING && !INDEX_WITH_EDITOR

@@ -65,6 +65,9 @@ namespace Index {
 			std::string DefaultName;
 			std::function<Entity(Scene&)> Create;
 			uint32_t OwnerId = 0;
+			// The editor lists the preset only while this module is active.
+			std::optional<EngineModule> Module;
+			bool IsModuleActive() const { return !Module || EngineModules::IsActive(*Module); }
 		};
 
 		SceneManager() = default;
@@ -76,6 +79,8 @@ namespace Index {
 			GetComponentRegistry().Register<T>(std::move(componentInfo));
 		}
 		static ComponentRegistry& GetComponentRegistry();
+		// The live registry, or the built-in components alone when no Application exists (CLI, headless tools).
+		static ComponentRegistry& GetComponentRegistryOrBuiltIn();
 		static void RegisterEntityPreset(EntityPresetInfo preset);
 		static const std::vector<EntityPresetInfo>& GetEntityPresets();
 		// Tags component/preset registrations with a native package owner until reset to 0. No-op without a SceneManager.
@@ -89,7 +94,10 @@ namespace Index {
 		static SceneLoadResult TryLoadSceneAdditive(const std::string& name);
 		// Loads without scene notifications or system Awake/Start and never makes the instance active.
 		static SceneLoadResult TryLoadSceneAdditiveSuspended(const std::string& name);
+		// Keeps the live state: snapshots the loaded scene and restores it into a fresh instance.
 		static SceneLoadResult TryReloadScene(const std::string& name);
+		// Discards the live state: reloads a loaded scene from its definition (the file on disk), like a level restart.
+		static SceneLoadResult TryRestartScene(const std::string& name);
 		static std::weak_ptr<Scene> LoadScene(const std::string& name);
 
 		static std::weak_ptr<Scene> LoadSceneAdditive(const std::string& name);
@@ -175,7 +183,7 @@ namespace Index {
 		SceneLoadResult TryLoadSceneImpl(const std::string& name);
 		SceneLoadResult TryLoadSceneAdditiveImpl(const std::string& name);
 		SceneLoadResult TryLoadSceneAdditiveSuspendedImpl(const std::string& name);
-		SceneLoadResult TryReloadSceneImpl(const std::string& name);
+		SceneLoadResult TryReloadSceneImpl(const std::string& name, bool restoreLiveState = true);
 		void UnloadSceneImpl(const std::string& name);
 		void UnloadAllScenesImpl(bool includePersistent);
 		void UnregisterSceneImpl(const std::string& name);

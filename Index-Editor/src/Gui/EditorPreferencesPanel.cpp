@@ -12,6 +12,7 @@
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Inspector/ReferencePicker.hpp"
+#include "Serialization/Path.hpp"
 
 #include <imgui.h>
 
@@ -24,6 +25,17 @@
 namespace Index {
 	namespace {
 		constexpr const char* k_FontPickerKey = "EditorPrefs.EditorFont";
+
+		// Same folder ImGuiContextLayer stores layout presets in.
+		std::string LayoutsFolderDisplay() {
+			try {
+				return Path::ToUtf8((Path::FromUtf8(Path::GetSpecialFolderPath(SpecialFolder::LocalAppData))
+					/ "Index" / "Editor" / "Layouts").make_preferred());
+			}
+			catch (...) {
+				return "Layouts";
+			}
+		}
 
 		uint64_t ParseUInt64String(const std::string& value) {
 			if (value.empty()) return 0;
@@ -433,7 +445,7 @@ namespace Index {
 		if (ImGui::Button("Reset to Default")) {
 			ImGuiContextLayer::ResetLayoutToBundledDefault();
 		}
-		ImGui::TextDisabled("Stored under %%LOCALAPPDATA%%\\Index\\Editor\\Layouts.");
+		ImGui::TextDisabled("Stored under %s.", LayoutsFolderDisplay().c_str());
 
 		ImGui::Spacing();
 
@@ -478,7 +490,8 @@ namespace Index {
 		const bool showAutoSave = PreferenceSectionVisible("Auto-Save", "behavior auto save autosave scene prefab interval");
 		const bool showEditing = PreferenceSectionVisible("Editing", "behavior editing delete deletion confirm confirmation prompt ask dialog warn entity asset safety");
 		const bool showViewport = PreferenceSectionVisible("Viewport", "behavior viewport ui alignment guides guide smart snap snapping align rect transform");
-		if (!showAssetBrowser && !showAutoSave && !showEditing && !showViewport) return;
+		const bool showExternalChanges = PreferenceSectionVisible("External Changes", "behavior external changes changed disk reload hot reload scene file watcher ai agent git conflict");
+		if (!showAssetBrowser && !showAutoSave && !showEditing && !showViewport && !showExternalChanges) return;
 
 		if (showEditing && EditorUI::SectionHeader("Editing")) {
 			bool confirmOnDeleteEntity = EditorPreferences::GetConfirmOnDeleteEntity();
@@ -566,6 +579,20 @@ namespace Index {
 				"per edit on release. Skipped during Play mode.");
 			ImGui::Spacing();
 		}
+
+		if (showExternalChanges && EditorUI::SectionHeader("External Changes")) {
+			bool autoReload = EditorPreferences::GetAutoReloadExternalSceneChanges();
+			if (ImGuiUtils::Switch("Reload scenes changed on disk", &autoReload)) {
+				EditorPreferences::SetAutoReloadExternalSceneChanges(autoReload);
+			}
+			EditorUI::Tooltip(
+				"When a loaded scene file is changed outside the editor\n"
+				"(another tool, an AI agent, a git pull), reload it right away.\n"
+				"Scenes with unsaved editor changes always ask first, and are\n"
+				"not auto-saved until you decide. When off, every change asks.\n"
+				"Textures, audio, fonts and data assets always reload.");
+			ImGui::Spacing();
+		}
 	}
 
 	void EditorPreferencesPanel::RenderLayoutModals() {
@@ -600,7 +627,7 @@ namespace Index {
 				EditorUI::StatusText(EditorUI::Tone::Error,
 					"Invalid name (no / \\ : * ? \" < > |, no trailing dot/space, max 64 chars).");
 			} else {
-				ImGui::TextDisabled("Stored under %%LOCALAPPDATA%%\\Index\\Editor\\Layouts.");
+				ImGui::TextDisabled("Stored under %s.", LayoutsFolderDisplay().c_str());
 			}
 
 			const int clicked = EditorUI::DialogFooter({ "Save", "Cancel" }, 0, -1, nameValid ? 0u : 1u);

@@ -90,6 +90,11 @@ namespace Index {
 		if (static_cast<uint64_t>(textureAssetId) == 0 || texPxW <= 0 || texPxH <= 0) {
 			return SpriteUVRect{};
 		}
+		// Empty name = full texture. Checked before the lock: this runs per visible sprite per
+		// frame, and most sprites are unsliced.
+		if (spriteName.empty()) {
+			return SpriteUVRect{};
+		}
 
 		const uint64_t epoch = g_SliceEpoch.load(std::memory_order_acquire);
 		const uint64_t key   = static_cast<uint64_t>(textureAssetId);

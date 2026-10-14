@@ -26,6 +26,8 @@
          of the native engine (its [DllImport]s resolve at call time, not build
          time), so these tests need no engine/GPU/native lib. -->
     <ProjectReference Include="..\..\Index-ScriptCore\Index-ScriptCore.csproj" />
+    <!-- Editor-only Roslyn compiler; ScriptCompilerTests drive it against throwaway projects. -->
+    <ProjectReference Include="..\..\Index-ScriptCompiler\Index-ScriptCompiler.csproj" />
   </ItemGroup>
 
 </Project>

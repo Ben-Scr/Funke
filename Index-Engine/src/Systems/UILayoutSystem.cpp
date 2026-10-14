@@ -27,6 +27,18 @@
 namespace Index {
 
 	namespace {
+		// Set per ComputeUILayout call: the full UI surface and its safe-area part, in UI space.
+		Vec2 s_ScreenMin, s_ScreenMax, s_SafeMin, s_SafeMax;
+
+		// Edges of the parent that stop at the safe area reach the screen edge instead.
+		void ExtendToScreenEdges(Vec2& parentMin, Vec2& parentMax) {
+			constexpr float k_Tolerance = 0.5f;
+			if (std::abs(parentMin.x - s_SafeMin.x) < k_Tolerance) parentMin.x = s_ScreenMin.x;
+			if (std::abs(parentMin.y - s_SafeMin.y) < k_Tolerance) parentMin.y = s_ScreenMin.y;
+			if (std::abs(parentMax.x - s_SafeMax.x) < k_Tolerance) parentMax.x = s_ScreenMax.x;
+			if (std::abs(parentMax.y - s_SafeMax.y) < k_Tolerance) parentMax.y = s_ScreenMax.y;
+		}
+
 
 		// Width/height: SizeDelta*worldScale (parent*local); parent resolved size does NOT propagate, but world scale does.
 		// Rotation: child world = parent.Rotation+LocalRotation; pivot rotated around parentPivot; ResolvedMin/Max stay axis-aligned.
@@ -62,8 +74,8 @@ namespace Index {
 
 			// finalSize = SizeDelta*worldScale: world = parent*local; parent scale must resize children too.
 			const Vec2 finalSize{
-				rect.SizeDelta.x * rect.Scale.x,
-				rect.SizeDelta.y * rect.Scale.y
+				rect.FillWidth ? parentSize.x : rect.SizeDelta.x * rect.Scale.x,
+				rect.FillHeight ? parentSize.y : rect.SizeDelta.y * rect.Scale.y
 			};
 
 			// Anchor centre — the reference point that AnchoredPosition
@@ -81,8 +93,13 @@ namespace Index {
 				anchorCenter.y + rect.AnchoredPosition.y * parentScale.y
 			};
 
+			if (rect.FillWidth || rect.FillHeight) {
+				// parentMin/Max are already world-space, so the parent's rotation is not applied a second time.
+				if (rect.FillWidth) pivotWorld.x = parentMin.x + parentSize.x * rect.Pivot.x;
+				if (rect.FillHeight) pivotWorld.y = parentMin.y + parentSize.y * rect.Pivot.y;
+			}
 			// Rotate pivotWorld around parentPivot; without this, children stay at their unrotated slot and float visually.
-			if (parentRotation != 0.0f) {
+			else if (parentRotation != 0.0f) {
 				const float c = std::cos(parentRotation);
 				const float s = std::sin(parentRotation);
 				const float dx = pivotWorld.x - parentPivot.x;
@@ -447,7 +464,10 @@ namespace Index {
 			Vec2 childParentPivot = parentPivot;
 
 			if (rect) {
-				ResolveRect(*rect, parentMin, parentMax, parentRotation, parentScale, parentPivot);
+				Vec2 resolveMin = parentMin;
+				Vec2 resolveMax = parentMax;
+				if (rect->IgnoreSafeArea) ExtendToScreenEdges(resolveMin, resolveMax);
+				ResolveRect(*rect, resolveMin, resolveMax, parentRotation, parentScale, parentPivot);
 				childParentMin = rect->ResolvedMin;
 				childParentMax = rect->ResolvedMax;
 				childParentRotation = rect->Rotation;
@@ -505,27 +525,22 @@ namespace Index {
 			vpH = vp->GetHeight();
 		}
 
-		// Scale-with-screen-size: blend x/y ratios in log space via match weight; match=0.5 gives geometric mean.
-		float uiScale = 1.0f;
-		if (const IndexProject* project = ProjectManager::GetCurrentProject()) {
-			const int refW = std::max(1, project->UIReferenceWidth);
-			const int refH = std::max(1, project->UIReferenceHeight);
-			const float xRatio = static_cast<float>(vpW) / static_cast<float>(refW);
-			const float yRatio = static_cast<float>(vpH) / static_cast<float>(refH);
-			const float match  = std::clamp(project->UIScaleMatch, 0.0f, 1.0f);
-			if (xRatio > 0.0f && yRatio > 0.0f) {
-				const float logBlend = (1.0f - match) * std::log(xRatio) + match * std::log(yRatio);
-				uiScale = std::exp(logBlend);
-			}
-			if (!std::isfinite(uiScale) || uiScale <= 0.0f) {
-				uiScale = 1.0f;
-			}
-		}
-
 		const float halfW = static_cast<float>(vpW) * 0.5f;
 		const float halfH = static_cast<float>(vpH) * 0.5f;
 		const Vec2 windowMin{ -halfW, -halfH };
 		const Vec2 windowMax{ +halfW, +halfH };
+		// UI space is y-up, so the top inset lowers the max edge.
+		const Window::SafeAreaInsets insets = Window::GetSafeAreaInsets();
+		s_ScreenMin = windowMin;
+		s_ScreenMax = windowMax;
+		s_SafeMin = Vec2{ windowMin.x + insets.Left, windowMin.y + insets.Bottom };
+		s_SafeMax = Vec2{ windowMax.x - insets.Right, windowMax.y - insets.Top };
+
+		// Scaled against the safe area so Fit keeps the reference resolution clear of notches too.
+		const IndexProject* project = ProjectManager::GetCurrentProject();
+		const float uiScale = project
+			? project->ComputeUIScale(s_SafeMax.x - s_SafeMin.x, s_SafeMax.y - s_SafeMin.y)
+			: 1.0f;
 
 		auto rectView = registry.view<RectTransform2DComponent>();
 		for (auto entity : rectView) {
@@ -533,10 +548,18 @@ namespace Index {
 		}
 
 		auto uiView = registry.view<RectTransform2DComponent>();
+		// Root = no RectTransform anywhere above. ResolveHierarchy recurses through plain (rect-less) entities,
+		// so a rect under a plain child of a UI rect is already resolved there; treating it as a root too laid it
+		// out twice, with the EnTT pool order deciding which result won.
 		auto isUIRoot = [&](EntityHandle entity) {
-			const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(entity);
-			if (!hierarchy || hierarchy->Parent == entt::null) return true;
-			return !registry.all_of<RectTransform2DComponent>(hierarchy->Parent);
+			EntityHandle current = entity;
+			for (int depth = 0; depth < 1024; ++depth) {
+				const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(current);
+				if (!hierarchy || hierarchy->Parent == entt::null || !registry.valid(hierarchy->Parent)) return true;
+				if (registry.all_of<RectTransform2DComponent>(hierarchy->Parent)) return false;
+				current = hierarchy->Parent;
+			}
+			return true;
 		};
 
 		for (auto entity : uiView) {
@@ -552,7 +575,7 @@ namespace Index {
 			if (!isUIRoot(entity)) continue;
 
 			// parentPivot=windowCenter so root rotation pivots at screen center; parentScale=uiScale propagates reference-res scaling.
-			ResolveHierarchy(registry, entity, windowMin, windowMax, 0.0f, Vec2{ uiScale, uiScale }, windowCenter);
+			ResolveHierarchy(registry, entity, s_SafeMin, s_SafeMax, 0.0f, Vec2{ uiScale, uiScale }, windowCenter);
 		}
 	}
 

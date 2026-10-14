@@ -8,6 +8,7 @@
 #include <string_view>
 #include <system_error>
 #include <vector>
+#include "Utils/CharConv.hpp"
 
 namespace Index {
 
@@ -59,7 +60,7 @@ namespace Index {
 			float result = 0.0f;
 			const char* first = s.data();
 			const char* last = first + s.size();
-			auto [ptr, ec] = std::from_chars(first, last, result);
+			auto [ptr, ec] = CharConv::ParseFloat(first, last, result);
 			(void)ptr;
 			if (ec != std::errc{}) {
 				return 0.0f;
@@ -107,7 +108,7 @@ namespace Index {
 			double result = 0.0;
 			const char* first = s.data();
 			const char* last = first + s.size();
-			auto [ptr, ec] = std::from_chars(first, last, result);
+			auto [ptr, ec] = CharConv::ParseFloat(first, last, result);
 			(void)ptr;
 			if (ec != std::errc{}) {
 				return 0.0;

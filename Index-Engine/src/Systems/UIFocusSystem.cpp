@@ -141,9 +141,9 @@ namespace Index {
 						hitFocusable = e;
 					}
 				}
-				if (hitFocusable != entt::null) {
-					m_FocusedEntity = hitFocusable;
-				}
+				// A click on anything else lets go: otherwise a focused input field kept its focus (and the phone
+				// keyboard) because UIEventSystem's click-outside defocus was undone here next frame.
+				m_FocusedEntity = hitFocusable;
 			}
 		}
 

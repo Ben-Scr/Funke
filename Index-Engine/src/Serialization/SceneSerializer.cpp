@@ -4,6 +4,7 @@
 #include "Serialization/SceneSerializerShared.hpp"
 #include "Serialization/PrefabTemplateCache.hpp"
 #include "Serialization/File.hpp"
+#include "Serialization/FileStamp.hpp"
 #include "Serialization/Json.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
@@ -11,27 +12,30 @@
 #include "Scene/ComponentInfo.hpp"
 #include "Scene/EntityHelper.hpp"
 #include "Components/General/NameComponent.hpp"
+#if INDEX_WITH_2D
 #include "Components/General/Transform2DComponent.hpp"
-#include "Components/Graphics/SpriteRendererComponent.hpp"
+#endif
 #include "Components/Graphics/TextRendererComponent.hpp"
-#include "Components/Graphics/Camera2DComponent.hpp"
+#if INDEX_WITH_2D
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
+#endif
 #include "Components/Audio/AudioSourceComponent.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/PrefabInstanceComponent.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
-#include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/General/UUIDComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptEngine.hpp"
+#if INDEX_WITH_2D
 #include "Components/Physics/FastBody2DComponent.hpp"
 #include "Components/Physics/FastBoxCollider2DComponent.hpp"
 #include "Components/Physics/FastCircleCollider2DComponent.hpp"
+#endif
 #include "Graphics/TextureManager.hpp"
 #include "Audio/AudioManager.hpp"
 #include "Physics/PhysicsTypes.hpp"
@@ -255,7 +259,8 @@ namespace Index {
 						std::uint32_t count = 0;
 						if (!ReadU32(count)) return false;
 						out = Value::MakeObject();
-						out.ReserveMembers(count);
+						// Every element takes at least one byte, so cap untrusted counts by what is left in the buffer.
+						out.ReserveMembers(std::min<std::size_t>(count, Remaining()));
 						for (std::uint32_t i = 0; i < count; ++i) {
 							std::string key;
 							Value memberValue;
@@ -272,7 +277,7 @@ namespace Index {
 						std::uint32_t count = 0;
 						if (!ReadU32(count)) return false;
 						out = Value::MakeArray();
-						out.EnsureArray().reserve(count);
+						out.EnsureArray().reserve(std::min<std::size_t>(count, Remaining()));
 						for (std::uint32_t i = 0; i < count; ++i) {
 							Value item;
 							if (!ReadValue(item, depth + 1)) {
@@ -449,7 +454,8 @@ namespace Index {
 			}
 
 			outHeader = Value::MakeObject();
-			outHeader.ReserveMembers(memberCount);
+			// Untrusted count: cap the up-front reservation; real members still append past it.
+			outHeader.ReserveMembers(std::min<std::uint32_t>(memberCount, 256u));
 
 			// Decode every member except "entities" into the header. "entities" is recorded
 			// (offset + count) and skipped here, then streamed later — independent of whether
@@ -719,10 +725,14 @@ namespace Index {
 			return static_cast<uint64_t>(generatedId);
 		}
 
-		std::vector<EntityHandle> CollectEntitySubtree(Scene& scene, EntityHandle root) {
+		// excludeNestedSameInstances: skip subtrees rooted at another instance of root's prefab; they share
+		// root's source ids, so folding them in would duplicate ids in overrides or an applied .prefab.
+		std::vector<EntityHandle> CollectEntitySubtree(Scene& scene, EntityHandle root, bool excludeNestedSameInstances = false) {
 			std::vector<EntityHandle> entities;
 			auto& registry = scene.GetRegistry();
 			std::unordered_set<uint32_t> visited;
+			const bool rootIsPrefab = scene.IsValid(root) && scene.GetEntityOrigin(root) == EntityOrigin::Prefab;
+			const uint64_t rootPrefabGuid = rootIsPrefab ? static_cast<uint64_t>(scene.GetPrefabGUID(root)) : 0;
 
 			std::function<void(EntityHandle)> visit = [&](EntityHandle entity) {
 				if (entity == entt::null || !registry.valid(entity)) {
@@ -731,6 +741,13 @@ namespace Index {
 
 				const uint32_t key = static_cast<uint32_t>(entity);
 				if (!visited.insert(key).second) {
+					return;
+				}
+
+				if (excludeNestedSameInstances && rootIsPrefab && entity != root
+					&& scene.GetEntityOrigin(entity) == EntityOrigin::Prefab
+					&& static_cast<uint64_t>(scene.GetPrefabGUID(entity)) == rootPrefabGuid
+					&& SceneSerializer::IsPrefabInstanceRoot(scene, entity)) {
 					return;
 				}
 
@@ -750,20 +767,10 @@ namespace Index {
 		}
 
 		bool IsNestedPrefabInstanceChild(Scene& scene, EntityHandle entity) {
-			if (scene.GetEntityOrigin(entity) != EntityOrigin::Prefab) {
-				return false;
-			}
-
-			auto& registry = scene.GetRegistry();
-			if (!registry.all_of<HierarchyComponent>(entity)) {
-				return false;
-			}
-
-			const EntityHandle parent = registry.get<HierarchyComponent>(entity).Parent;
-			return parent != entt::null
-				&& registry.valid(parent)
-				&& scene.GetEntityOrigin(parent) == EntityOrigin::Prefab
-				&& static_cast<uint64_t>(scene.GetPrefabGUID(parent)) == static_cast<uint64_t>(scene.GetPrefabGUID(entity));
+			// A same-prefab parent alone isn't enough: an instance dropped under another instance of the same
+			// prefab is its own root and must be saved, not folded into the outer instance's overrides.
+			return scene.GetEntityOrigin(entity) == EntityOrigin::Prefab
+				&& !SceneSerializer::IsPrefabInstanceRoot(scene, entity);
 		}
 
 		void RemoveEntityComparisonIdentityMembers(Value& value) {
@@ -840,7 +847,7 @@ namespace Index {
 			outRootEntity = Value::MakeObject();
 			outEntities = Value::MakeArray();
 
-			const std::vector<EntityHandle> subtree = CollectEntitySubtree(scene, root);
+			const std::vector<EntityHandle> subtree = CollectEntitySubtree(scene, root, /*excludeNestedSameInstances=*/true);
 			if (subtree.empty()) {
 				return;
 			}
@@ -983,6 +990,18 @@ namespace Index {
 
 			std::vector<Value> prefabEntities;
 			if (prefabGuid == 0 || !LoadPrefabEntityValues(prefabGuid, prefabEntities)) {
+				// Placeholder for a prefab that failed to load: write the original instance data back, keeping
+				// the live uuid/parent so a reparent in the editor still sticks.
+				if (const auto* unresolved = registry.try_get<UnresolvedPrefabInstanceComponent>(entity)) {
+					Value preserved;
+					if (Json::TryParse(unresolved->InstanceJson, preserved, nullptr) && preserved.IsObject()) {
+						RemoveObjectMember(preserved, "uuid");
+						RemoveObjectMember(preserved, "parentUuid");
+						if (const Value* uuid = instanceValue.FindMember("uuid")) preserved.AddMember("uuid", *uuid);
+						if (const Value* parentUuid = instanceValue.FindMember("parentUuid")) preserved.AddMember("parentUuid", *parentUuid);
+						return preserved;
+					}
+				}
 				return instanceValue;
 			}
 
@@ -1000,6 +1019,23 @@ namespace Index {
 			Value fieldsByClass = Value::MakeObject();
 			auto& callbacks = ScriptEngine::GetCallbacks();
 
+			// Without C# metadata (assembly failed to compile, class renamed, runtime not up) write the
+			// stored values verbatim; dropping them would erase authored data on the next save.
+			const auto addPendingOnly = [&](const std::string& className) {
+				const std::string prefix = className + ".";
+				Value fieldArray = Value::MakeArray();
+				for (const auto& [key, value] : scriptComponent.PendingFieldValues) {
+					if (key.size() <= prefix.size() || key.rfind(prefix, 0) != 0) continue;
+					Value row = Value::MakeObject();
+					row.AddMember("name", Value(key.substr(prefix.size())));
+					row.AddMember("value", Value(value));
+					fieldArray.EnsureArray().push_back(std::move(row));
+				}
+				if (!fieldArray.GetArray().empty()) {
+					fieldsByClass.AddMember(className, std::move(fieldArray));
+				}
+			};
+
 			for (const ScriptInstance& instance : scriptComponent.Scripts) {
 				if (instance.GetType() == ScriptType::Native) {
 					continue;
@@ -1016,6 +1052,7 @@ namespace Index {
 				}
 
 				if (!rawJson || !*rawJson) {
+					if (!hasLiveInstance) addPendingOnly(instance.GetClassName());
 					continue;
 				}
 
@@ -1027,6 +1064,11 @@ namespace Index {
 						"Failed to parse script field metadata for {}: {}",
 						instance.GetClassName(),
 						parseError);
+					if (!hasLiveInstance) addPendingOnly(instance.GetClassName());
+					continue;
+				}
+				if (!hasLiveInstance && fieldArray.GetArray().empty()) {
+					addPendingOnly(instance.GetClassName());
 					continue;
 				}
 
@@ -1070,12 +1112,13 @@ namespace Index {
 			}
 
 			for (const std::string& className : scriptComponent.ManagedComponents) {
-				if (className.empty() || !callbacks.GetClassFieldDefs) {
+				if (className.empty()) {
 					continue;
 				}
 
-				const char* rawJson = callbacks.GetClassFieldDefs(className.c_str());
+				const char* rawJson = callbacks.GetClassFieldDefs ? callbacks.GetClassFieldDefs(className.c_str()) : nullptr;
 				if (!rawJson || !*rawJson) {
+					addPendingOnly(className);
 					continue;
 				}
 
@@ -1083,6 +1126,11 @@ namespace Index {
 				std::string parseError;
 				if (!Json::TryParse(rawJson, fieldArray, &parseError) || !fieldArray.IsArray()) {
 					IDX_CORE_WARN_TAG("SceneSerializer", "Failed to parse managed component field metadata for {}: {}", className, parseError);
+					addPendingOnly(className);
+					continue;
+				}
+				if (fieldArray.GetArray().empty()) {
+					addPendingOnly(className);
 					continue;
 				}
 
@@ -1116,6 +1164,34 @@ namespace Index {
 			}
 
 			return fieldsByClass;
+		}
+
+		void WriteRegistryComponents(Scene& scene, EntityHandle entity, Value& entityValue, bool first) {
+			Entity entityWrapper = scene.GetEntity(entity);
+			SceneManager::GetComponentRegistryOrBuiltIn().ForEachComponentInfoInRegistrationOrder(
+				[&](const ComponentInfo& info) {
+					if (info.serializeFirst != first) return;
+					if (!info.serialize || !info.has || info.serializedName.empty()) return;
+					if (!info.has(entityWrapper)) return;
+					// The ScriptComponent list is the authored source of truth for managed component rows.
+					if (info.isDynamic) {
+						if (!scene.HasComponent<ScriptComponent>(entity)) return;
+						const ScriptComponent& sc = scene.GetComponent<ScriptComponent>(entity);
+						if (!sc.HasScript(info.serializedName) && !sc.HasManagedComponent(info.serializedName)) return;
+					}
+					try {
+						Value componentValue = info.serialize(entityWrapper);
+						entityValue.AddMember(info.serializedName, std::move(componentValue));
+					} catch (const std::exception& e) {
+						IDX_CORE_ERROR_TAG("SceneSerializer",
+							"Component '{}' serialize threw: {}",
+							info.serializedName, e.what());
+					} catch (...) {
+						IDX_CORE_ERROR_TAG("SceneSerializer",
+							"Component '{}' serialize threw an unknown exception",
+							info.serializedName);
+					}
+				});
 		}
 
 		Value SerializeEntity(Scene& scene, EntityHandle entity) {
@@ -1165,53 +1241,7 @@ namespace Index {
 				}
 			}
 
-			if (registry.all_of<Transform2DComponent>(entity)) {
-				const auto& transform = registry.get<Transform2DComponent>(entity);
-				Value transformValue = Value::MakeObject();
-				// Legacy posX/posY/rotation/scaleX/scaleY keys kept for backwards compat with older builds and external tools.
-				transformValue.AddMember("posX", Value(transform.LocalPosition.x));
-				transformValue.AddMember("posY", Value(transform.LocalPosition.y));
-				transformValue.AddMember("rotation", Value(transform.LocalRotation));
-				transformValue.AddMember("scaleX", Value(transform.LocalScale.x));
-				transformValue.AddMember("scaleY", Value(transform.LocalScale.y));
-				entityValue.AddMember("Transform2D", std::move(transformValue));
-			}
-
-			if (registry.all_of<SpriteRendererComponent>(entity)) {
-				auto& spriteRenderer = registry.get<SpriteRendererComponent>(entity);
-				Value spriteValue = Value::MakeObject();
-				spriteValue.AddMember("r", Value(spriteRenderer.Color.r));
-				spriteValue.AddMember("g", Value(spriteRenderer.Color.g));
-				spriteValue.AddMember("b", Value(spriteRenderer.Color.b));
-				spriteValue.AddMember("a", Value(spriteRenderer.Color.a));
-				spriteValue.AddMember("sortOrder", Value(static_cast<int>(spriteRenderer.SortingOrder)));
-				spriteValue.AddMember("sortLayer", Value(static_cast<int>(spriteRenderer.SortingLayer)));
-				spriteValue.AddMember("filterMode", Value(static_cast<int>(spriteRenderer.FilterMode)));
-				// Persisted slice ref. Missing key on load = full texture
-				// (the default-constructed empty string).
-				if (!spriteRenderer.SpriteName.empty()) {
-					spriteValue.AddMember("spriteName", Value(spriteRenderer.SpriteName));
-				}
-
-				uint64_t textureAssetId = static_cast<uint64_t>(spriteRenderer.TextureAssetId);
-				if (textureAssetId == 0) {
-					textureAssetId = TextureManager::GetTextureAssetUUID(spriteRenderer.TextureHandle);
-					if (textureAssetId != 0) {
-						spriteRenderer.TextureAssetId = UUID(textureAssetId);
-					}
-				}
-
-				if (textureAssetId != 0) {
-					spriteValue.AddMember("textureAsset", Value(std::to_string(textureAssetId)));
-					Texture2D* texture = TextureManager::GetTexture(spriteRenderer.TextureHandle);
-					if (texture) {
-						spriteValue.AddMember("wrapU", Value(static_cast<int>(texture->GetWrapU())));
-						spriteValue.AddMember("wrapV", Value(static_cast<int>(texture->GetWrapV())));
-					}
-				}
-
-				entityValue.AddMember("SpriteRenderer", std::move(spriteValue));
-			}
+			WriteRegistryComponents(scene, entity, entityValue, true);
 
 			if (registry.all_of<TextRendererComponent>(entity)) {
 				const auto& text = registry.get<TextRendererComponent>(entity);
@@ -1240,6 +1270,7 @@ namespace Index {
 				entityValue.AddMember("TextRenderer", std::move(textValue));
 			}
 
+#if INDEX_WITH_2D
 			if (registry.all_of<Rigidbody2DComponent>(entity)) {
 				auto& rigidbody = registry.get<Rigidbody2DComponent>(entity);
 				Value rigidbodyValue = Value::MakeObject();
@@ -1332,6 +1363,7 @@ namespace Index {
 				colliderValue.AddMember("sensor", Value(collider.IsSensor()));
 				entityValue.AddMember("PolygonCollider2D", std::move(colliderValue));
 			}
+#endif
 
 			if (registry.all_of<AudioSourceComponent>(entity)) {
 				auto& audioSource = registry.get<AudioSourceComponent>(entity);
@@ -1366,20 +1398,7 @@ namespace Index {
 				entityValue.AddMember("deadly", Value(true));
 			}
 
-			if (registry.all_of<Camera2DComponent>(entity)) {
-				auto& camera = registry.get<Camera2DComponent>(entity);
-				const Color clearColor = camera.GetClearColor();
-				Value cameraValue = Value::MakeObject();
-				cameraValue.AddMember("orthoSize", Value(camera.GetOrthographicSize()));
-				cameraValue.AddMember("zoom", Value(camera.GetZoom()));
-				cameraValue.AddMember("clearR", Value(clearColor.r));
-				cameraValue.AddMember("clearG", Value(clearColor.g));
-				cameraValue.AddMember("clearB", Value(clearColor.b));
-				cameraValue.AddMember("clearA", Value(clearColor.a));
-				cameraValue.AddMember("postProcessing", Value(camera.IsPostProcessingEnabled()));
-				entityValue.AddMember("Camera2D", std::move(cameraValue));
-			}
-
+#if INDEX_WITH_2D
 			if (registry.all_of<FastBody2DComponent>(entity)) {
 				const auto& indexBody = registry.get<FastBody2DComponent>(entity);
 				Value bodyValue = Value::MakeObject();
@@ -1404,124 +1423,7 @@ namespace Index {
 				colliderValue.AddMember("radius", Value(collider.Radius));
 				entityValue.AddMember("FastCircleCollider2D", std::move(colliderValue));
 			}
-
-			if (registry.all_of<ParticleSystem2DComponent>(entity)) {
-				auto& particleSystem = registry.get<ParticleSystem2DComponent>(entity);
-				Value particleValue = Value::MakeObject();
-				const int shapeType = std::visit([](auto&& shape) -> int {
-					using T = std::decay_t<decltype(shape)>;
-					if constexpr (std::is_same_v<T, ParticleSystem2DComponent::CircleParams>) return 0;
-					else if constexpr (std::is_same_v<T, ParticleSystem2DComponent::SquareParams>) return 1;
-					else return 2;
-				}, particleSystem.Shape);
-
-				particleValue.AddMember("playOnAwake", Value(particleSystem.PlayOnAwake));
-				particleValue.AddMember("lifetime", Value(particleSystem.ParticleSettings.LifeTime));
-				particleValue.AddMember("speed", Value(particleSystem.ParticleSettings.Speed));
-				particleValue.AddMember("scaleX", Value(particleSystem.ParticleSettings.Scale.x));
-				particleValue.AddMember("scaleY", Value(particleSystem.ParticleSettings.Scale.y));
-				particleValue.AddMember("gravityX", Value(particleSystem.ParticleSettings.Gravity.x));
-				particleValue.AddMember("gravityY", Value(particleSystem.ParticleSettings.Gravity.y));
-				particleValue.AddMember("useGravity", Value(particleSystem.ParticleSettings.UseGravity));
-				particleValue.AddMember("useRandomColors", Value(particleSystem.ParticleSettings.UseRandomColors));
-				particleValue.AddMember("moveDirectionX", Value(particleSystem.ParticleSettings.MoveDirection.x));
-				particleValue.AddMember("moveDirectionY", Value(particleSystem.ParticleSettings.MoveDirection.y));
-				{
-					const auto& sol = particleSystem.ParticleSettings.ScaleOverLifetime;
-					particleValue.AddMember("scaleOverLifetimeEnabled", Value(sol.Enabled));
-					Value solKeys = Value::MakeArray();
-					for (const auto& key : sol.Curve.Keys) {
-						Value keyValue = Value::MakeObject();
-						keyValue.AddMember("x", Value(key.Pos.x));
-						keyValue.AddMember("y", Value(key.Pos.y));
-						keyValue.AddMember("inX", Value(key.InTangent.x));
-						keyValue.AddMember("inY", Value(key.InTangent.y));
-						keyValue.AddMember("outX", Value(key.OutTangent.x));
-						keyValue.AddMember("outY", Value(key.OutTangent.y));
-						solKeys.Append(std::move(keyValue));
-					}
-					particleValue.AddMember("scaleOverLifetimeKeys", std::move(solKeys));
-				}
-				{
-					const auto& col = particleSystem.ParticleSettings.ColorOverLifetime;
-					particleValue.AddMember("colorOverLifetimeEnabled", Value(col.Enabled));
-					Value colorKeys = Value::MakeArray();
-					for (const auto& key : col.Gradient.ColorKeys) {
-						Value keyValue = Value::MakeObject();
-						keyValue.AddMember("t", Value(key.Position));
-						keyValue.AddMember("r", Value(key.R));
-						keyValue.AddMember("g", Value(key.G));
-						keyValue.AddMember("b", Value(key.B));
-						colorKeys.Append(std::move(keyValue));
-					}
-					particleValue.AddMember("colorOverLifetimeColorKeys", std::move(colorKeys));
-					Value alphaKeys = Value::MakeArray();
-					for (const auto& key : col.Gradient.AlphaKeys) {
-						Value keyValue = Value::MakeObject();
-						keyValue.AddMember("t", Value(key.Position));
-						keyValue.AddMember("a", Value(key.Alpha));
-						alphaKeys.Append(std::move(keyValue));
-					}
-					particleValue.AddMember("colorOverLifetimeAlphaKeys", std::move(alphaKeys));
-				}
-				particleValue.AddMember("emitOverTime", Value(static_cast<int>(particleSystem.EmissionSettings.EmitOverTime)));
-				particleValue.AddMember(
-					"rateOverDistance",
-					Value(static_cast<int>(particleSystem.EmissionSettings.RateOverDistance)));
-				particleValue.AddMember(
-					"emissionSpace",
-					Value(static_cast<int>(particleSystem.EmissionSettings.EmissionSpace)));
-				particleValue.AddMember("shapeType", Value(shapeType));
-
-				if (shapeType == 0) {
-					const auto& circle = std::get<ParticleSystem2DComponent::CircleParams>(particleSystem.Shape);
-					particleValue.AddMember("radius", Value(circle.Radius));
-					particleValue.AddMember("isOnCircle", Value(circle.IsOnCircle));
-					particleValue.AddMember("arc", Value(circle.Arc));
-				}
-				else {
-					if (shapeType == 1) {
-						const auto& square = std::get<ParticleSystem2DComponent::SquareParams>(particleSystem.Shape);
-						particleValue.AddMember("halfExtendsX", Value(square.HalfExtends.x));
-						particleValue.AddMember("halfExtendsY", Value(square.HalfExtends.y));
-					}
-					else {
-						const auto& edge = std::get<ParticleSystem2DComponent::EdgeParams>(particleSystem.Shape);
-						particleValue.AddMember("edgeLength", Value(edge.Length));
-					}
-				}
-
-				particleValue.AddMember("maxParticles", Value(static_cast<int64_t>(particleSystem.RenderingSettings.MaxParticles)));
-				particleValue.AddMember("colorR", Value(particleSystem.RenderingSettings.Color.r));
-				particleValue.AddMember("colorG", Value(particleSystem.RenderingSettings.Color.g));
-				particleValue.AddMember("colorB", Value(particleSystem.RenderingSettings.Color.b));
-				particleValue.AddMember("colorA", Value(particleSystem.RenderingSettings.Color.a));
-				particleValue.AddMember("sortOrder", Value(static_cast<int>(particleSystem.RenderingSettings.SortingOrder)));
-				particleValue.AddMember("sortLayer", Value(static_cast<int>(particleSystem.RenderingSettings.SortingLayer)));
-
-				uint64_t textureAssetId = static_cast<uint64_t>(particleSystem.GetTextureAssetId());
-				if (textureAssetId == 0) {
-					textureAssetId = TextureManager::GetTextureAssetUUID(particleSystem.GetTextureHandle());
-					if (textureAssetId != 0) {
-						particleSystem.SetTexture(particleSystem.GetTextureHandle(), UUID(textureAssetId));
-					}
-				}
-
-				if (textureAssetId != 0) {
-					particleValue.AddMember("textureAsset", Value(std::to_string(textureAssetId)));
-				}
-
-				Value burstsValue = Value::MakeArray();
-				for (const auto& burst : particleSystem.GetBursts()) {
-					Value burstValue = Value::MakeObject();
-					burstValue.AddMember("count", Value(static_cast<int64_t>(burst.Count)));
-					burstValue.AddMember("interval", Value(burst.Interval));
-					burstsValue.Append(std::move(burstValue));
-				}
-				particleValue.AddMember("bursts", std::move(burstsValue));
-
-				entityValue.AddMember("ParticleSystem2D", std::move(particleValue));
-			}
+#endif
 
 			if (registry.all_of<RectTransform2DComponent>(entity)) {
 				const auto& rectTransform = registry.get<RectTransform2DComponent>(entity);
@@ -1539,6 +1441,10 @@ namespace Index {
 				rectValue.AddMember("rotation", Value(rectTransform.LocalRotation));
 				rectValue.AddMember("scaleX", Value(rectTransform.LocalScale.x));
 				rectValue.AddMember("scaleY", Value(rectTransform.LocalScale.y));
+				if (rectTransform.IgnoreSafeArea) rectValue.AddMember("ignoreSafeArea", Value(true));
+				if (rectTransform.FillWidth && rectTransform.FillHeight) rectValue.AddMember("fillParent", Value(true));
+				else if (rectTransform.FillWidth) rectValue.AddMember("fillWidth", Value(true));
+				else if (rectTransform.FillHeight) rectValue.AddMember("fillHeight", Value(true));
 				entityValue.AddMember("RectTransform2D", std::move(rectValue));
 			}
 
@@ -1599,32 +1505,19 @@ namespace Index {
 				}
 			}
 
-			// Registry-driven serialize for package components (mirror of deserialize sweep).
-			if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
-				Entity entityWrapper = scene.GetEntity(entity);
-				SceneManager::GetComponentRegistry().ForEachComponentInfo(
-					[&](const std::type_index&, const ComponentInfo& info) {
-						if (!info.serialize || !info.has || info.serializedName.empty()) return;
-						if (!info.has(entityWrapper)) return;
-						// The ScriptComponent list is the authored source of truth for managed component rows.
-						if (info.isDynamic) {
-							if (!scene.HasComponent<ScriptComponent>(entity)) return;
-							const ScriptComponent& sc = scene.GetComponent<ScriptComponent>(entity);
-							if (!sc.HasScript(info.serializedName) && !sc.HasManagedComponent(info.serializedName)) return;
-						}
-						try {
-							Value componentValue = info.serialize(entityWrapper);
-							entityValue.AddMember(info.serializedName, std::move(componentValue));
-						} catch (const std::exception& e) {
-							IDX_CORE_ERROR_TAG("SceneSerializer",
-								"Package component '{}' serialize threw: {}",
-								info.serializedName, e.what());
-						} catch (...) {
-							IDX_CORE_ERROR_TAG("SceneSerializer",
-								"Package component '{}' serialize threw an unknown exception",
-								info.serializedName);
-						}
-					});
+			WriteRegistryComponents(scene, entity, entityValue, false);
+
+			// Dynamic (C#-defined) component data parked before its type was registered: write it back
+			// verbatim, or the staged-load round trip / an early save resets the component to defaults.
+			if (scene.HasComponent<ScriptComponent>(entity)) {
+				const ScriptComponent& sc = scene.GetComponent<ScriptComponent>(entity);
+				for (const auto& [className, payload] : sc.PendingDynamicComponentValues) {
+					if (className.empty() || entityValue.FindMember(className)) continue;
+					Value pendingValue;
+					if (Json::TryParse(payload, pendingValue, nullptr) && pendingValue.IsObject()) {
+						entityValue.AddMember(className, std::move(pendingValue));
+					}
+				}
 			}
 
 			return entityValue;
@@ -1747,6 +1640,7 @@ namespace Index {
 				IDX_CORE_ERROR_TAG("SceneSerializer", "Save failed (write error): {}", path);
 				return false;
 			}
+			KnownFileStamps::Record(path);
 			AssetRegistry::GetOrCreateAssetUUID(path);
 			// Only clear the dirty flag once persistence is confirmed; otherwise a failed
 			// write would silently desync the editor's "saved" state from the disk file.
@@ -1848,6 +1742,8 @@ namespace Index {
 				IDX_CORE_ERROR_TAG("SceneSerializer", "Save prefab failed (write error): {}", path);
 				return false;
 			}
+			KnownFileStamps::Record(path);
+			ForgetCachedPrefabRoot(path);
 
 			// Drop any baked template for this prefab so the next InstantiatePrefab re-reads from disk; closes the
 			// TOCTOU window vs the async .prefab FileWatcher so a drag-spawn right after an edit cannot hydrate a
@@ -1906,6 +1802,9 @@ namespace Index {
 				return false;
 			}
 
+			// Same content in a new encoding: keep the known stamp current, unless an external edit was already pending.
+			const bool stampWasCurrent = !KnownFileStamps::HasChangedOnDisk(path);
+			const FileStamp stampBefore = FileStamp::Read(path);
 			Value root;
 			std::string error;
 			if (!SceneSerializerStorage::ReadRootFromFile(path, root, &error) || !root.IsObject()) {
@@ -1917,6 +1816,10 @@ namespace Index {
 				IDX_CORE_WARN_TAG("SceneSerializer", "Failed to rewrite serialized asset: {}", path);
 				return false;
 			}
+			if (stampWasCurrent) {
+				KnownFileStamps::Record(path);
+			}
+			Detail::RestampCachedPrefabRoot(path, stampBefore);
 			return true;
 		}
 		catch (const std::exception& exception) {

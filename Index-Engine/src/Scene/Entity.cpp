@@ -4,7 +4,9 @@
 #include "Scene/Scene.hpp"
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/NameComponent.hpp"
+#if INDEX_WITH_2D
 #include "Components/General/Transform2DComponent.hpp"
+#endif
 #include "Components/Tags.hpp"
 #include "Core/Exceptions.hpp"
 #include "Core/Log.hpp"

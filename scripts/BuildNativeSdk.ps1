@@ -21,7 +21,7 @@ $sdkMarker = Join-Path $sdkRoot ".index-native-sdk"
 $engineBinaryDirectory = Join-Path $repoRoot "bin\$platformDirectory\Index-Engine"
 $engineDll = Join-Path $engineBinaryDirectory "Index-Engine.dll"
 $engineLib = Join-Path $engineBinaryDirectory "Index-Engine.lib"
-$builtGlfwDll = Join-Path $repoRoot "bin\$platformDirectory\GLFW\GLFW.dll"
+$builtSdlDll = Join-Path $repoRoot "External\SDL-build\windows-x64\install\bin\SDL3.dll"
 $netHostDll = Join-Path $repoRoot "External\dotnet\lib\nethost.dll"
 $assetsSource = Join-Path $repoRoot "Index-Runtime\IndexAssets"
 
@@ -140,17 +140,14 @@ if ($LASTEXITCODE -ne 0) {
     throw "Could not inspect Index-Engine.dll dependencies."
 }
 $profilerEnabled = $engineDependencies -match "(?im)^\s*Tracy\.dll\s*$"
-$glfwDependencyMatch = [regex]::Match($engineDependencies, "(?im)^\s*(GLFW(?:3)?\.dll)\s*$")
-if (-not $glfwDependencyMatch.Success) {
-    throw "Index-Engine.dll does not declare a supported GLFW runtime dependency."
+if ($engineDependencies -notmatch "(?im)^\s*SDL3\.dll\s*$") {
+    throw "Index-Engine.dll does not declare the SDL3 runtime dependency."
 }
-$glfwDependencyName = $glfwDependencyMatch.Groups[1].Value
-$glfwDll = Join-Path $engineBinaryDirectory $glfwDependencyName
-if (-not (Test-Path -LiteralPath $glfwDll -PathType Leaf) -and
-    [string]::Equals($glfwDependencyName, "GLFW.dll", [System.StringComparison]::OrdinalIgnoreCase)) {
-    $glfwDll = $builtGlfwDll
+$sdlDll = Join-Path $engineBinaryDirectory "SDL3.dll"
+if (-not (Test-Path -LiteralPath $sdlDll -PathType Leaf)) {
+    $sdlDll = $builtSdlDll
 }
-Assert-File $glfwDll
+Assert-File $sdlDll
 
 if (Test-Path -LiteralPath $sdkRoot) {
     if (-not (Test-Path -LiteralPath $sdkMarker -PathType Leaf)) {
@@ -187,7 +184,7 @@ $headerRoots = @(
     "External\magic_enum\include",
     "External\rapidxml",
     "External\concurrentqueue",
-    "External\glfw\include",
+    "External\SDL\include",
     "External\dawn\include",
     "External\dawn\build\gen\include",
     "External\miniaudio",
@@ -219,7 +216,7 @@ $entityBits = $entityBitsMatch.Groups[1].Value
 
 Copy-Item -LiteralPath $engineLib -Destination (Join-Path $libraryDirectory "Index-Engine.lib")
 Copy-Item -LiteralPath $engineDll -Destination (Join-Path $runtimeDirectory "Index-Engine.dll")
-Copy-Item -LiteralPath $glfwDll -Destination (Join-Path $runtimeDirectory $glfwDependencyName)
+Copy-Item -LiteralPath $sdlDll -Destination (Join-Path $runtimeDirectory "SDL3.dll")
 Copy-Item -LiteralPath $netHostDll -Destination (Join-Path $runtimeDirectory "nethost.dll")
 
 if ($profilerEnabled) {
@@ -244,10 +241,11 @@ $licenseFiles = @(
     @{ Source = "External\magic_enum\LICENSE"; Destination = "magic_enum\LICENSE" },
     @{ Source = "External\rapidxml\LICENSE.txt"; Destination = "RapidXML\LICENSE.txt" },
     @{ Source = "External\concurrentqueue\LICENSE.md"; Destination = "concurrentqueue\LICENSE.md" },
-    @{ Source = "External\glfw\LICENSE.md"; Destination = "GLFW\LICENSE.md" },
+    @{ Source = "External\SDL\LICENSE.txt"; Destination = "SDL3\LICENSE.txt" },
     @{ Source = "External\dawn\LICENSE"; Destination = "Dawn\LICENSE" },
     @{ Source = "External\miniaudio\LICENSE"; Destination = "miniaudio\LICENSE" },
     @{ Source = "External\box2d\LICENSE"; Destination = "Box2D\LICENSE" },
+    @{ Source = "External\JoltPhysics\LICENSE"; Destination = "JoltPhysics\LICENSE" },
     @{ Source = "External\imgui\LICENSE.txt"; Destination = "Dear-ImGui\LICENSE.txt" },
     @{ Source = "External\ImGuizmo\LICENSE"; Destination = "ImGuizmo\LICENSE" }
 )
@@ -293,7 +291,7 @@ $targetsFile = @'
   <Import Project="$(IndexSdkPreviousForceImportAfterCppTargets)" Condition="'$(IndexSdkPreviousForceImportAfterCppTargets)' != '' and '$(IndexSdkPreviousForceImportAfterCppTargets)' != '$(IndexSdkRoot)IndexSDK.targets' and Exists('$(IndexSdkPreviousForceImportAfterCppTargets)')" />
   <ItemDefinitionGroup>
     <ClCompile>
-      <PreprocessorDefinitions>IDX_IMPORT_DLL;IDX_PLATFORM_WINDOWS;IDX_DIST;NDEBUG;GLFW_DLL;IDX_RHI_WEBGPU;WEBGPU_CPP_HAS_ENUM_CLASS_BITMASKS=1;IMGUI_IMPL_WEBGPU_BACKEND_DAWN;INDEX_WITH_RENDER=1;INDEX_WITH_AUDIO=1;INDEX_WITH_PHYSICS=1;INDEX_WITH_SCRIPTING=1;INDEX_WITH_APPLICATION=1;INDEX_WITH_EDITOR=0;INDEX_ENTITY_BITS=@@ENTITY_BITS@@;MAGIC_ENUM_RANGE_MIN=-1;MAGIC_ENUM_RANGE_MAX=32;INDEX_ALL_MODULES=1;@@PROFILER_DEFINES@@%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>IDX_IMPORT_DLL;IDX_PLATFORM_WINDOWS;IDX_DIST;NDEBUG;IDX_RHI_WEBGPU;WEBGPU_CPP_HAS_ENUM_CLASS_BITMASKS=1;IMGUI_IMPL_WEBGPU_BACKEND_DAWN;INDEX_WITH_RENDER=1;INDEX_WITH_AUDIO=1;INDEX_WITH_PHYSICS=1;INDEX_WITH_SCRIPTING=1;INDEX_WITH_APPLICATION=1;INDEX_WITH_EDITOR=0;INDEX_ENTITY_BITS=@@ENTITY_BITS@@;MAGIC_ENUM_RANGE_MIN=-1;MAGIC_ENUM_RANGE_MAX=32;INDEX_ALL_MODULES=1;@@PROFILER_DEFINES@@%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>

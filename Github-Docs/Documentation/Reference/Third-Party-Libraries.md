@@ -11,7 +11,7 @@ Index's philosophy is to keep mandatory dependencies few and focused — each li
 | Library | Role in Index |
 |---------|---------------|
 | [WebGPU via Dawn](https://dawn.googlesource.com/dawn) | The graphics backend. Dawn implements the WebGPU API and **picks the right native backend at runtime** — Direct3D 12, Vulkan, or Metal — depending on the platform. |
-| [GLFW](https://github.com/glfw/glfw) | Opens the OS window and handles keyboard/mouse input. |
+| [SDL3](https://github.com/libsdl-org/SDL) | Opens the OS window and handles keyboard, mouse, touch and gamepad input, plus dialogs, clipboard, paths and other platform services on every target. |
 | [Dear ImGui](https://github.com/ocornut/imgui) | The immediate-mode UI used to build the editor's panels and the runtime's on-screen overlays. |
 | [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo) | The editor's move/rotate/scale gizmos in the Viewport. |
 
@@ -23,6 +23,7 @@ Index's philosophy is to keep mandatory dependencies few and focused — each li
 |---------|---------------|
 | [EnTT](https://github.com/skypjack/entt) | The Entity Component System — how entities and components are stored and iterated. See [ECS](../Engine-Core/ECS.md). |
 | [Box2D](https://github.com/erincatto/box2d) / [Index-Physics](https://github.com/Ben-Scr/Index-Physics) | 2D physics — rigid bodies, colliders, and collision detection. |
+| [Jolt Physics](https://github.com/jrouwe/JoltPhysics) | 3D physics — Rigidbody 3D, box/sphere/capsule/mesh colliders, triggers and raycasts. See [Physics 3D](../Engine-Core/Physics-3D.md). |
 
 ---
 

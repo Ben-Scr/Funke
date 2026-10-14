@@ -11,11 +11,13 @@
 #include "Project/BuildPlatformSupport.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
+#include "Serialization/FileStamp.hpp"
 #include "Serialization/Path.hpp"
 
 #include <imgui.h>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -190,6 +192,8 @@ namespace Index {
 			if (!entry.is_regular_file(ec) || ec) { ec.clear(); continue; }
 			const auto path = entry.path();
 			if (path.extension().string() != ext) continue;
+			// Before the read: an edit landing mid-read must still count as a change afterwards.
+			KnownFileStamps::Record(path.string());
 			m_Profiles.push_back(IndexBuildProfile::Load(path.string()));
 			m_Profiles.back().Name = path.stem().string();
 		}
@@ -234,8 +238,8 @@ namespace Index {
 
 		IndexBuildProfile profile;
 		profile.Name = name;
-		profile.Platform = BuildPlatform::Windows;
-		profile.RenderBackend = IndexProject::RenderBackend::Direct3D12;
+		profile.Platform = BuildPlatformSupport::HostDesktopPlatform().value_or(BuildPlatform::Windows);
+		profile.RenderBackend = IndexBuildProfile::AllowedBackends(profile.Platform).front();
 
 		const std::string path = BuildFilePath(name);
 		if (path.empty() || !profile.Save(path)) {
@@ -363,7 +367,8 @@ namespace Index {
 		}
 
 		profile.Name = newName;
-		profile.Save(newPath);
+		KnownFileStamps::Forget(oldPath);
+		if (profile.Save(newPath)) KnownFileStamps::Record(newPath);
 		m_StatusMessage = "Renamed to '" + newName + "'.";
 		m_StatusIsError = false;
 		return true;
@@ -374,11 +379,21 @@ namespace Index {
 		const IndexBuildProfile& profile = m_Profiles[m_SelectedIndex];
 		const std::string path = BuildFilePath(profile.Name);
 		if (path.empty()) return;
+		// The watcher reloads external edits, but one can land before it fires; never write over it.
+		if (KnownFileStamps::HasChangedOnDisk(path)) {
+			IDX_WARN_TAG("Build", "Build profile '{}' changed on disk; reloaded it instead of saving the editor change.", path);
+			m_StatusMessage = "'" + profile.Name + "' changed on disk and was reloaded; reapply your change.";
+			m_StatusIsError = true;
+			m_Dirty = true;
+			return;
+		}
 		if (!profile.Save(path)) {
 			m_StatusMessage = "Failed to save profile changes.";
 			m_StatusIsError = true;
 			IDX_WARN_TAG("Build", "Failed to write build profile '{}'.", path);
+			return;
 		}
+		KnownFileStamps::Record(path);
 	}
 
 	bool BuildProfilesPanel::HasSelection() const {
@@ -505,6 +520,8 @@ namespace Index {
 		if (m_Profiles.empty()) {
 			EditorUI::EmptyState("No profiles yet.", "Use + to create one.");
 		}
+		// Rows restore the cursor manually; a real item must close the layout before EndChild.
+		ImGui::Dummy(ImVec2(0.0f, 0.0f));
 		ImGui::EndChild();
 
 		RenderProfilePopups();
@@ -766,7 +783,6 @@ namespace Index {
 		if (EditorUI::SectionHeader("Target Platform")) {
 			ImGui::Spacing();
 			RenderPlatformTiles(profile);
-			// Placeholder for the future package check.
 			if (!BuildPlatformSupport::IsAvailable(profile.Platform)) {
 				ImGui::Spacing();
 				const std::string warning = BuildPlatformSupport::UnavailableReason(profile.Platform);
@@ -774,6 +790,8 @@ namespace Index {
 			}
 			ImGui::Spacing();
 		}
+
+		RenderPlatformPackage(profile);
 
 		if (EditorUI::SectionHeader("Rendering")) {
 			// Backends are filtered by the current platform.
@@ -794,6 +812,108 @@ namespace Index {
 				ImGui::EndCombo();
 			}
 			ImGui::PopID();
+		}
+	}
+
+	void BuildProfilesPanel::RenderPlatformPackage(IndexBuildProfile& profile) {
+		const std::optional<PlatformPackageInfo> package = BuildPlatformSupport::GetPackage(profile.Platform);
+		if (!package) return;
+
+		PackageState& state = m_PackageStates[profile.Platform];
+		if (state.PackageName != package->Name) {
+			state = PackageState{};
+			state.PackageName = package->Name;
+		}
+		const auto collect = [](auto& task, auto& result) {
+			if (task.valid() && task.wait_for(std::chrono::seconds(0)) == std::future_status::ready) result = task.get();
+		};
+		collect(state.DescribeTask, state.Described);
+		collect(state.CheckTask, state.Checked);
+		if (!state.Described && !state.DescribeTask.valid()) {
+			state.DescribeTask = std::async(std::launch::async, [info = *package] { return PlatformBuilder::Describe(info); });
+		}
+		if (!state.Checked && !state.CheckTask.valid()) {
+			state.CheckTask = std::async(std::launch::async, [info = *package] { return PlatformBuilder::Check(info); });
+		}
+
+		if (EditorUI::SectionHeader("Platform Package")) {
+			ImGui::Spacing();
+			ImGui::Text("%s %s", package->Name.c_str(), package->Version.c_str());
+			const std::string directory = Path::ToUtf8(package->Directory);
+			ImGui::TextDisabled("%s", directory.c_str());
+			EditorUI::Tooltip(directory);
+			ImGui::Spacing();
+
+			if (state.CheckTask.valid()) {
+				EditorUI::StatusText(EditorUI::Tone::Info, "Checking build requirements...");
+			}
+			else if (state.Checked) {
+				const PlatformBuilder::CheckResult& check = *state.Checked;
+				if (!check.Ran) {
+					EditorUI::StatusText(EditorUI::Tone::Error, check.Error.c_str());
+				}
+				else if (check.Issues.empty()) {
+					EditorUI::StatusText(EditorUI::Tone::Success, "All build requirements are installed.");
+				}
+				for (const PlatformBuilder::CheckIssue& issue : check.Issues) {
+					EditorUI::StatusText(issue.Severity == "error" ? EditorUI::Tone::Error : EditorUI::Tone::Warning,
+						issue.Message.c_str());
+					if (!issue.Fix.empty()) {
+						ImGui::Indent();
+						ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+						ImGui::TextWrapped("%s", issue.Fix.c_str());
+						ImGui::PopStyleColor();
+						ImGui::Unindent();
+					}
+				}
+				ImGui::Spacing();
+				if (EditorUI::Button("Check Again")) state.Checked.reset();
+				EditorUI::Tooltip("Run the platform builder's requirement check again, e.g. after installing an SDK.");
+			}
+			ImGui::Spacing();
+		}
+
+		if (EditorUI::SectionHeader("Platform Options")) {
+			// Options the builder describes first, then any extra keys already in the .build file.
+			std::vector<std::pair<std::string, std::string>> rows;
+			if (state.Described && state.Described->Ran) rows = state.Described->Options;
+			for (const auto& [key, value] : profile.PlatformOptions) {
+				const bool listed = std::any_of(rows.begin(), rows.end(), [&](const auto& row) { return row.first == key; });
+				if (!listed) rows.emplace_back(key, std::string());
+			}
+			if (rows.empty()) {
+				ImGui::TextDisabled(state.DescribeTask.valid() ? "Loading options..." : "This platform has no options.");
+			}
+
+			for (const auto& [key, help] : rows) {
+				auto it = std::find_if(profile.PlatformOptions.begin(), profile.PlatformOptions.end(),
+					[&](const auto& option) { return option.first == key; });
+				char buffer[1024]{};
+				if (it != profile.PlatformOptions.end()) {
+					std::strncpy(buffer, it->second.c_str(), sizeof(buffer) - 1);
+				}
+				ImGui::PushID(key.c_str());
+				ImGuiUtils::BeginInspectorFieldRow(key.c_str());
+				ImGui::SetNextItemWidth(-1.0f);
+				const bool secret = key.find("assword") != std::string::npos;
+				if (ImGui::InputTextWithHint("##Value", secret ? "env:VARIABLE_NAME" : "", buffer, sizeof(buffer))) {
+					if (it != profile.PlatformOptions.end()) {
+						if (buffer[0]) it->second = buffer; else profile.PlatformOptions.erase(it);
+					}
+					else if (buffer[0]) {
+						profile.PlatformOptions.emplace_back(key, buffer);
+					}
+				}
+				if (ImGui::IsItemDeactivatedAfterEdit()) SaveSelected();
+				std::string tooltip = help;
+				if (secret) {
+					tooltip += (tooltip.empty() ? "" : "\n") + std::string(
+						"Stored in the .build file. Use env:NAME to read it from an environment variable instead.");
+				}
+				if (!tooltip.empty()) EditorUI::Tooltip(tooltip);
+				ImGui::PopID();
+			}
+			ImGui::Spacing();
 		}
 	}
 

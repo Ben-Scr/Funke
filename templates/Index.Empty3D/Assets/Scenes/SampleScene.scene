@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "name": "SampleScene",
+  "systems": [],
+  "entities": [
+    {
+      "name": "Camera",
+      "Transform3D": { "posX": 0.0, "posY": 1.5, "posZ": 6.0, "rotX": -10.0, "rotY": 0.0, "rotZ": 0.0, "scaleX": 1.0, "scaleY": 1.0, "scaleZ": 1.0 },
+      "Camera3D": { "projection": 0, "fov": 60.0, "orthoSize": 5.0, "near": 0.1, "far": 1000.0, "background": 0, "clearColor": { "r": 0.19, "g": 0.3, "b": 0.47, "a": 1.0 } }
+    },
+    {
+      "name": "Directional Light",
+      "Transform3D": { "posX": 0.0, "posY": 3.0, "posZ": 0.0, "rotX": -50.0, "rotY": -30.0, "rotZ": 0.0, "scaleX": 1.0, "scaleY": 1.0, "scaleZ": 1.0 },
+      "DirectionalLight": { "color": { "r": 1.0, "g": 0.96, "b": 0.9, "a": 1.0 }, "intensity": 1.0, "ambient": { "r": 0.22, "g": 0.24, "b": 0.28, "a": 1.0 } }
+    }
+  ]
+}

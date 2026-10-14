@@ -272,7 +272,7 @@ namespace Index {
 			// Flat filtered list when searching across both built-in components
 			// and project scripts.
 			registry.ForEachComponentInfo([&](const std::type_index& typeId, const ComponentInfo& info) {
-				if (info.category != ComponentCategory::Component) return;
+				if (info.category != ComponentCategory::Component || !info.IsModuleActive()) return;
 				if (info.displayName == "Scripts") return;
 				if (isHandMirror(info)) return;
 
@@ -284,7 +284,7 @@ namespace Index {
 			});
 
 			registry.ForEachComponentInfo([&](const std::type_index& typeId, const ComponentInfo& info) {
-				if (info.category != ComponentCategory::Component) return;
+				if (info.category != ComponentCategory::Component || !info.IsModuleActive()) return;
 				if (info.displayName == "Scripts") return;
 				if (!isHandMirror(info)) return;
 
@@ -342,7 +342,7 @@ namespace Index {
 			}
 
 			registry.ForEachComponentInfo([&](const std::type_index& typeId, const ComponentInfo& info) {
-				if (info.category != ComponentCategory::Component) return;
+				if (info.category != ComponentCategory::Component || !info.IsModuleActive()) return;
 				if (info.displayName == "Scripts") return;
 				if (isHandMirror(info)) return;
 
@@ -372,7 +372,7 @@ namespace Index {
 			struct NativeEntry { std::type_index TypeId; const ComponentInfo* Info; };
 			std::vector<NativeEntry> nativeBackedComponents;
 			registry.ForEachComponentInfo([&](const std::type_index& typeId, const ComponentInfo& info) {
-				if (info.category != ComponentCategory::Component) return;
+				if (info.category != ComponentCategory::Component || !info.IsModuleActive()) return;
 				if (info.displayName == "Scripts") return;
 				if (!isHandMirror(info)) return;
 				nativeBackedComponents.push_back({ typeId, &info });

@@ -104,6 +104,11 @@ namespace Index {
 		static bool GetAutoSavePrefabs();
 		static void SetAutoSavePrefabs(bool value);
 
+		// When true (default), a loaded scene changed on disk by another program reloads
+		// without a prompt; scenes with unsaved editor changes always prompt.
+		static bool GetAutoReloadExternalSceneChanges();
+		static void SetAutoReloadExternalSceneChanges(bool value);
+
 		// ── Editing ───────────────────────────────────────────────
 		// When true (default), deleting an entity (Entities hierarchy) or an
 		// asset (Project panel) raises a confirmation dialog first. The two are

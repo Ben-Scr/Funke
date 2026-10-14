@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/Layer.hpp"
+#include "Core/PlatformDetection.hpp"
 #include "Diagnostics/StatsOverlay.hpp"
 
 namespace Index {
@@ -20,7 +21,8 @@ namespace Index {
 		void SetVisible(bool v) { m_Show = v; }
 
 	private:
-		bool m_Show = false;
+		// Mobile has no F-keys to toggle, so the overlay starts visible there.
+		bool m_Show = IDX_PLATFORM_MOBILE;
 		bool m_ImGuiAcquired = false;
 		Diagnostics::StatsOverlay m_Overlay;
 	};

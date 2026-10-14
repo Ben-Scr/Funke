@@ -1,8 +1,11 @@
 #include "pch.hpp"
 #include "Collections/AABB.hpp"
+#if INDEX_WITH_2D
 #include "Components/General/Transform2DComponent.hpp"
+#endif
 
 namespace Index {
+#if INDEX_WITH_2D
 	AABB AABB::FromTransform(const Transform2DComponent& transform) {
 		// Fast-path the rotation == 0 case (overwhelmingly common for sprites/particles).
 		// Skips IsAxisAligned's fmod + 5-element abs loop entirely.
@@ -22,4 +25,5 @@ namespace Index {
 			transform.GetRotationDegrees()
 		);
 	}
+#endif
 }

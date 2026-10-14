@@ -89,4 +89,54 @@ namespace Index {
 		});
 	}
 
+	ShadowQualityLevel RenderSettings::GetShadowQuality() {
+		return Get().ShadowQuality;
+	}
+
+	GraphicsApplyStatus RenderSettings::SetShadowQuality(ShadowQualityLevel quality) {
+		return ModifyRequestedSettings([quality](GraphicsSettings& settings) {
+			settings.ShadowQuality = quality;
+		});
+	}
+
+	float RenderSettings::GetShadowDistance() {
+		return Get().ShadowDistance;
+	}
+
+	GraphicsApplyStatus RenderSettings::SetShadowDistance(float distance) {
+		return ModifyRequestedSettings([distance](GraphicsSettings& settings) {
+			settings.ShadowDistance = distance;
+		});
+	}
+
+	int32_t RenderSettings::GetMaxLights() {
+		return Get().MaxLights;
+	}
+
+	GraphicsApplyStatus RenderSettings::SetMaxLights(int32_t maxLights) {
+		return ModifyRequestedSettings([maxLights](GraphicsSettings& settings) {
+			settings.MaxLights = maxLights;
+		});
+	}
+
+	float RenderSettings::GetExposure() {
+		return Get().Exposure;
+	}
+
+	GraphicsApplyStatus RenderSettings::SetExposure(float exposure) {
+		return ModifyRequestedSettings([exposure](GraphicsSettings& settings) {
+			settings.Exposure = exposure;
+		});
+	}
+
+	ToneMappingMode RenderSettings::GetToneMapping() {
+		return Get().ToneMapping;
+	}
+
+	GraphicsApplyStatus RenderSettings::SetToneMapping(ToneMappingMode mode) {
+		return ModifyRequestedSettings([mode](GraphicsSettings& settings) {
+			settings.ToneMapping = mode;
+		});
+	}
+
 } // namespace Index

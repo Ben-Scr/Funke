@@ -3,7 +3,7 @@ param(
     [ValidateSet("Debug", "Release", "Dist")]
     [string]$Configuration = "Release",
 
-    [ValidateSet("Engine", "Editor", "Runtime", "Launcher")]
+    [ValidateSet("Engine", "Editor", "Runtime", "Launcher", "CLI")]
     [string[]]$Targets = @("Editor", "Runtime"),
 
     [switch]$PublishBundle,
@@ -113,6 +113,7 @@ function Invoke-NativeBuild {
         Editor = "Index-Editor\Index-Editor.vcxproj"
         Runtime = "Index-Runtime\Index-Runtime.vcxproj"
         Launcher = "Index-Launcher\Index-Launcher.vcxproj"
+        CLI = "Index-CLI\Index-CLI.vcxproj"
     }
 
     foreach ($target in $BuildTargets) {
@@ -633,9 +634,10 @@ try {
         Invoke-ManagedBuild "Release" @(
             "Index-ScriptCore\Index-ScriptCore.csproj",
             "Index-PackageTool\Index-PackageTool.csproj",
+            "Index-ScriptCompiler\Index-ScriptCompiler.csproj",
             "Index-Sandbox\Index-Sandbox.csproj"
         )
-        Invoke-NativeBuild "Release" @("Editor", "Runtime")
+        Invoke-NativeBuild "Release" @("Editor", "Runtime", "CLI")
 
         Invoke-ManagedBuild "Dist" @("Index-ScriptCore\Index-ScriptCore.csproj") -EmitSymbols
         Invoke-Premake -NoProfiler
@@ -710,6 +712,7 @@ try {
     Invoke-ManagedBuild $Configuration @(
         "Index-ScriptCore\Index-ScriptCore.csproj",
         "Index-PackageTool\Index-PackageTool.csproj",
+        "Index-ScriptCompiler\Index-ScriptCompiler.csproj",
         "Index-Sandbox\Index-Sandbox.csproj"
     )
     Invoke-NativeBuild $Configuration $Targets

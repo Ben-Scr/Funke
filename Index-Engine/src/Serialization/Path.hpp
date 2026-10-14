@@ -34,7 +34,10 @@ namespace Index {
 			return ToUtf8(std::filesystem::current_path());
 		}
 
+		// The game's content root: next to the executable, or the directory a platform set with
+		// SetExecutableDirOverride (Android extracts the APK payload, the Web preloads a virtual FS).
 		static std::string ExecutableDir();
+		static void SetExecutableDirOverride(const std::string& directory);
 
 		/// Resolves a IndexAssets subdirectory (e.g. "Textures", "Shader").
 		/// Checks: exeDir/IndexAssets/<sub> (packaged), then exeDir/../IndexAssets/<sub> (dev layout).

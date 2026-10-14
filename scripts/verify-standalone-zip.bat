@@ -36,7 +36,7 @@ call :RequireFile "%LAUNCHER%\Index-Launcher.exe"
 call :RequireFile "%LAUNCHER%\Index-Editor.exe"
 call :RequireFile "%LAUNCHER%\Index-Runtime.exe"
 call :RequireFile "%LAUNCHER%\Index-Engine.dll"
-call :RequireFile "%LAUNCHER%\GLFW.dll"
+call :RequireFile "%LAUNCHER%\SDL3.dll"
 call :RequireFile "%LAUNCHER%\Tracy.dll"
 call :RequireFile "%LAUNCHER%\nethost.dll"
 call :RequireFile "%LAUNCHER%\Index-ScriptCore.dll"
@@ -55,6 +55,8 @@ call :RequireDir  "%LAUNCHER%\IndexAssets\Shader"
 REM ---- EngineSDK folder must exist with the expected layout
 call :RequireDir  "%SDK%"
 call :RequireDir  "%SDK%\Index-Engine\src"
+call :RequireFile "%SDK%\templates\Index.Empty2D\template.json"
+call :RequireFile "%SDK%\templates\Index.Empty3D\template.json"
 call :RequireFile "%SDK%\Index-ScriptCore\Index-ScriptCore.csproj"
 call :RequireFile "%SDK%\Index-ScriptCore\Index-ScriptCore.dll"
 call :RequireFile "%SDK%\premake5.exe"
@@ -79,9 +81,10 @@ REM ---- Redistribution notices must be self-contained; source-tree links are no
 call :RequireFile "%SDK%\Licenses\Index\LICENSE.txt"
 call :RequireFile "%SDK%\Licenses\Index\THIRD_PARTY_LICENSES.md"
 call :RequireFile "%SDK%\Licenses\Box2D\LICENSE"
+call :RequireFile "%SDK%\Licenses\JoltPhysics\LICENSE"
 call :RequireFile "%SDK%\Licenses\EnTT\LICENSE"
 call :RequireFile "%SDK%\Licenses\GLM\copying.txt"
-call :RequireFile "%SDK%\Licenses\GLFW\LICENSE.md"
+call :RequireFile "%SDK%\Licenses\SDL3\LICENSE.txt"
 call :RequireFile "%SDK%\Licenses\Dear-ImGui\LICENSE.txt"
 call :RequireFile "%SDK%\Licenses\ImGuizmo\LICENSE"
 call :RequireFile "%SDK%\Licenses\magic_enum\LICENSE"
@@ -101,7 +104,7 @@ call :RequireFile "%SDK%\Licenses\Dawn-Third-Party\directx-shader-compiler\LICEN
 REM ---- Active-config runtime used by repo-less Development exports.
 call :RequireFile "%SDK%\Runtime-Development\Index-Runtime.exe"
 call :RequireFile "%SDK%\Runtime-Development\Index-Engine.dll"
-call :RequireFile "%SDK%\Runtime-Development\GLFW.dll"
+call :RequireFile "%SDK%\Runtime-Development\SDL3.dll"
 call :RequireFile "%SDK%\Runtime-Development\Tracy.dll"
 call :RequireFile "%SDK%\Runtime-Development\Index-ScriptCore.dll"
 call :RequireFile "%SDK%\Runtime-Development\Index-ScriptCore.runtimeconfig.json"
@@ -117,7 +120,7 @@ REM      mirror the files that script copies (it skips silently when the Dist
 REM      runtime is absent, so this is the only safety net).
 call :RequireFile "%SDK%\Runtime-Dist\Index-Runtime.exe"
 call :RequireFile "%SDK%\Runtime-Dist\Index-Engine.dll"
-call :RequireFile "%SDK%\Runtime-Dist\GLFW.dll"
+call :RequireFile "%SDK%\Runtime-Dist\SDL3.dll"
 call :RequireFile "%SDK%\Runtime-Dist\Index-ScriptCore.dll"
 call :RequireFile "%SDK%\Runtime-Dist\Index-ScriptCore.runtimeconfig.json"
 call :RequireFile "%SDK%\Runtime-Dist\Index-ScriptCore.deps.json"
@@ -137,7 +140,7 @@ call :RequireDir "%SDK%\External\entt\src"
 call :RequireDir "%SDK%\External\stb"
 call :RequireDir "%SDK%\External\magic_enum\include"
 call :RequireDir "%SDK%\External\rapidxml"
-call :RequireDir "%SDK%\External\glfw\include"
+call :RequireDir "%SDK%\External\SDL\include"
 call :RequireDir "%SDK%\External\glad\include"
 call :RequireDir "%SDK%\External\miniaudio"
 call :RequireDir "%SDK%\External\box2d\include"
@@ -197,7 +200,7 @@ set /a FAIL+=1
 exit /b 0
 
 :RequireAllowedExternal
-for %%A in (spdlog glm entt stb magic_enum rapidxml glfw glad dawn miniaudio box2d Index-Physics dotnet) do if /I "%~1"=="%%A" exit /b 0
+for %%A in (spdlog glm entt stb magic_enum rapidxml SDL glad dawn miniaudio box2d Index-Physics dotnet) do if /I "%~1"=="%%A" exit /b 0
 echo   UNEXPECTED dir:  %SDK%\External\%~1
 set /a FAIL+=1
 exit /b 0

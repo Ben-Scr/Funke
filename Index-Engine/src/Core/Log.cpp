@@ -1,10 +1,15 @@
 #include "pch.hpp"
 
 #include "Core/Log.hpp"
+#include "Core/Platform.hpp"
+#include "Core/PlatformDetection.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/SpecialFolder.hpp"
 
 #include <spdlog/sinks/callback_sink.h>
+#if defined(IDX_PLATFORM_ANDROID)
+#include <spdlog/sinks/android_sink.h>
+#endif
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
@@ -13,9 +18,6 @@
 
 #ifdef IDX_PLATFORM_WINDOWS
 #  include <windows.h>
-#else
-#  include <unistd.h>
-#  include <limits.h>
 #endif
 
 namespace Index {
@@ -33,20 +35,15 @@ namespace Index {
 			}
 			return std::filesystem::path(buffer).stem().wstring();
 #else
-			char buffer[PATH_MAX];
-			ssize_t length = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
-			if (length <= 0) {
-				return "Index";
-			}
-			buffer[length] = '\0';
-			return std::filesystem::path(buffer).stem().string();
+			const std::filesystem::path executable = Platform::GetExecutablePath();
+			return executable.empty() ? std::string("Index") : executable.stem().string();
 #endif
 		}
 
 		// Builds the "{LocalAppData}/Index/Logs/{exeName}.log" path and
 		// ensures the parent directory exists. Returns empty string on
 		// failure — Log::Initialize then proceeds without the file sink.
-		spdlog::filename_t ResolveLogFilePath() {
+		[[maybe_unused]] spdlog::filename_t ResolveLogFilePath() {
 			try {
 				const std::string base = Path::GetSpecialFolderPath(SpecialFolder::LocalAppData);
 				if (base.empty()) {
@@ -94,19 +91,28 @@ namespace Index {
 
 		std::vector<spdlog::sink_ptr> sinks;
 		sinks.emplace_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
+#if defined(IDX_PLATFORM_ANDROID)
+		// Android discards stdout; logcat (tag "Index") is where adb and Android Studio show the log.
+		sinks.emplace_back(std::make_shared<spdlog::sinks::android_sink_mt>("Index"));
+#endif
 
+		spdlog::sink_ptr fileSink;
+#if !defined(IDX_PLATFORM_WEB)
+		// The browser console is the Web log; a file there would land in the IndexedDB-backed save storage.
 		if (const spdlog::filename_t logPath = ResolveLogFilePath(); !logPath.empty()) {
 			try {
 				constexpr std::size_t k_MaxFileSize = 10 * 1024 * 1024;
 				constexpr std::size_t k_MaxFiles = 3;
-				sinks.emplace_back(std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-					logPath, k_MaxFileSize, k_MaxFiles));
+				fileSink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+					logPath, k_MaxFileSize, k_MaxFiles);
+				sinks.emplace_back(fileSink);
 			}
 			catch (...) {
 				// File sink is best-effort. A locked file or denied path
 				// shouldn't crash the engine before it's even started.
 			}
 		}
+#endif
 
 		// _st: the _mt sink holds its mutex across the callback, so a listener that logs re-locks it and deadlocks. Event and the listeners are thread-safe on their own.
 		sinks.emplace_back(std::make_shared<spdlog::sinks::callback_sink_st>([](const spdlog::details::log_msg& msg) {
@@ -152,6 +158,10 @@ namespace Index {
 		s_CoreLogger->set_pattern("[%T] [%^%n%$] %v");
 		s_ClientLogger->set_pattern("[%T] [%^%n%$] %v");
 		s_EditorConsoleLogger->set_pattern("[%T] [%^%n%$] %v");
+		// The console shows level by color only; the file needs it in text so logs can be filtered.
+		if (fileSink) {
+			fileSink->set_pattern("[%T] [%n] [%l] %v");
+		}
 
 		spdlog::set_default_logger(s_CoreLogger);
 		s_Initialized = true;

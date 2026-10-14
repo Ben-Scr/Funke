@@ -14,6 +14,8 @@
 namespace Index {
 	struct ScriptSystemProcessTaskState;
 	struct Collision2D;
+	struct Collision3D;
+	enum class CollisionPhase3D : int;
 
 	class INDEX_API ScriptSystem : public SceneSystem {
 	public:
@@ -31,6 +33,8 @@ namespace Index {
 		static void DispatchCollisionEnter2D(const Collision2D& collision);
 		static void DispatchCollisionStay2D(const Collision2D& collision);
 		static void DispatchCollisionExit2D(const Collision2D& collision);
+		// Body-owner entities receive OnCollision*3D, or OnTrigger*3D when either side is a trigger.
+		static void DispatchCollision3D(const Collision3D& collision, CollisionPhase3D phase);
 
 		void SetCoreAssemblyPath(const std::string& path) { m_CoreAssemblyPath = path; }
 		void SetUserAssemblyPath(const std::string& path) { m_UserAssemblyPath = path; }

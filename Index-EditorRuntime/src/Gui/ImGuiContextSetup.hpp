@@ -1,6 +1,6 @@
 #pragma once
 
-struct GLFWwindow;
+struct SDL_Window;
 struct ImGuiIO;
 
 namespace Index::EditorRuntime::ImGuiContextSetup {
@@ -21,19 +21,20 @@ namespace Index::EditorRuntime::ImGuiContextSetup {
 	// are caller-specific.
 	void ApplyCommonIoConfigFlags(ImGuiIO& io);
 
-	// Initialize the GLFW + WebGPU ImGui backends and register the
-	// multi-viewport renderer handlers. Asserts (IDX_VERIFY) on failure.
-	void InitBackends(GLFWwindow* window);
+	// Initialize the SDL3 + WebGPU ImGui backends, route SDL events into
+	// ImGui, and register the multi-viewport renderer handlers. Asserts
+	// (IDX_VERIFY) on failure.
+	void InitBackends(SDL_Window* window);
 
-	// Return the DPI scale captured from the window's monitor (≥ 1.0).
+	// Return the UI content scale of the window's display (≥ 1.0).
 	// Caller stores it for ScaleAllSizes / font sizing.
-	float CaptureDpiScale(GLFWwindow* window);
+	float CaptureDpiScale(SDL_Window* window);
 
 	// Shut down the backends in the order both binaries use: WebGPU →
-	// GLFW → PackageImGuiBridge → ImGui::DestroyContext.
+	// SDL3 → PackageImGuiBridge → ImGui::DestroyContext.
 	void ShutdownBackends();
 
-	// Drive a new ImGui frame: WebGPU NewFrame → GLFW NewFrame →
+	// Drive a new ImGui frame: WebGPU NewFrame → SDL3 NewFrame →
 	// ImGui::NewFrame.
 	void NewFrame();
 

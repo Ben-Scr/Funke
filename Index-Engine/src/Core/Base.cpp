@@ -4,11 +4,13 @@
 #include "Core/CrashReporter.hpp"
 #include "Core/Log.hpp"
 #include "Core/Memory.hpp"
+#include "Core/Platform.hpp"
 
 namespace Index {
 
 	void InitializeCore()
 	{
+		Platform::ExtendToolSearchPath();
 		Allocator::Init();
 		Log::Initialize();
 		// CrashReporter installed after Log so the handler can flush

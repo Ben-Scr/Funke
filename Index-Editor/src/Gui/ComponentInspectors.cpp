@@ -10,6 +10,7 @@
 #include "Components/Graphics/ImageComponent.hpp"
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
+#include "Components/Graphics/ParticleSystem3DComponent.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
@@ -395,6 +396,75 @@ namespace Index {
 		}
 	}
 
+	void DrawParticleSystem3DInspector(std::span<const Entity> entities)
+	{
+		DrawPropertiesFor<ParticleSystem3DComponent>(entities);
+		if (entities.size() != 1) return;
+
+		auto& ps = const_cast<Entity&>(entities[0]).GetComponent<ParticleSystem3DComponent>();
+		ImGui::Spacing();
+		ImGui::TextUnformatted("Bursts");
+		ImGui::Separator();
+
+		auto bursts = ps.GetBursts();
+		int removeIndex = -1;
+		for (std::size_t i = 0; i < bursts.size(); ++i) {
+			ImGui::PushID(static_cast<int>(i));
+			const std::string label = "Burst " + std::to_string(i + 1);
+			const bool open = ImGui::TreeNodeEx(label.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+			ImGui::SameLine();
+			if (ImGui::SmallButton("-")) {
+				removeIndex = static_cast<int>(i);
+			}
+			if (open) {
+				int count = static_cast<int>(bursts[i].Count);
+				ImGui::SetNextItemWidth(120.0f);
+				if (ImGui::InputInt("Count", &count, 0, 0)) {
+					bursts[i].Count = static_cast<uint32_t>(std::max(0, count));
+					ImGuiUtils::MarkSelectionDirty(entities);
+				}
+				float interval = bursts[i].Interval;
+				ImGui::SetNextItemWidth(120.0f);
+				if (ImGui::InputFloat("Interval", &interval, 0.0f, 0.0f, "%.3f")) {
+					bursts[i].Interval = std::max(0.0f, interval);
+					ImGuiUtils::MarkSelectionDirty(entities);
+				}
+				ImGui::TreePop();
+			}
+			ImGui::PopID();
+		}
+		if (removeIndex >= 0) {
+			ps.RemoveBurst(static_cast<std::size_t>(removeIndex));
+			ImGuiUtils::MarkSelectionDirty(entities);
+		}
+		if (ImGui::Button("+ Add Burst")) {
+			ps.AddBurst(ParticleSystem3DComponent::Burst{});
+			ImGuiUtils::MarkSelectionDirty(entities);
+		}
+
+		bool solEnabled = ps.ScaleOverLifetimeEnabled;
+		bool solChanged = false;
+		const bool solOpen = EditorUI::SectionHeader("Scale over Lifetime", false, &solEnabled, &solChanged);
+		if (solChanged) {
+			ps.ScaleOverLifetimeEnabled = solEnabled;
+			ImGuiUtils::MarkSelectionDirty(entities);
+		}
+		if (solOpen && ImGuiUtils::DrawCurveEditor("ScaleOverLifetimeCurve3D", ps.ScaleOverLifetime, ps.ScaleOverLifetimeEnabled)) {
+			ImGuiUtils::MarkSelectionDirty(entities);
+		}
+
+		bool colEnabled = ps.ColorOverLifetimeEnabled;
+		bool colChanged = false;
+		const bool colOpen = EditorUI::SectionHeader("Color over Lifetime", false, &colEnabled, &colChanged);
+		if (colChanged) {
+			ps.ColorOverLifetimeEnabled = colEnabled;
+			ImGuiUtils::MarkSelectionDirty(entities);
+		}
+		if (colOpen && ImGuiUtils::DrawGradientEditor("ColorOverLifetimeGradient3D", ps.ColorOverLifetime, ps.ColorOverLifetimeEnabled)) {
+			ImGuiUtils::MarkSelectionDirty(entities);
+		}
+	}
+
 	// MUST lock these fields: SliderComponent writes SizeDelta.x each frame and assumes fixed anchor/pivot geometry.
 	bool IsEntitySliderFill(const Entity& entity) {
 		const Scene* scene = entity.GetScene();
@@ -545,6 +615,45 @@ namespace Index {
 		}
 
 		const char* xyLabels[] = { "X", "Y" };
+
+		{
+			bool ignoreSafeArea = entities.front().GetComponent<RTC>().IgnoreSafeArea;
+			bool mixed = false;
+			for (const Entity& e : entities) mixed |= e.GetComponent<RTC>().IgnoreSafeArea != ignoreSafeArea;
+			ImGuiUtils::BeginInspectorFieldRow("Ignore Safe Area");
+			if (ImGuiUtils::Switch("##IgnoreSafeArea", &ignoreSafeArea, mixed)) {
+				for (const Entity& e : entities) {
+					Entity& entity = const_cast<Entity&>(e);
+					entity.GetComponent<RTC>().IgnoreSafeArea = ignoreSafeArea;
+					if (Scene* scene = entity.GetScene()) scene->MarkDirty();
+				}
+			}
+			EditorUI::Tooltip(
+				"On phones and tablets UI stays clear of the notch, camera cutout, rounded\n"
+				"corners and home indicator. Turn this on for full-bleed elements such as\n"
+				"backgrounds: edges that would stop at that safe area reach the screen edge.\n"
+				"No effect on desktop and Web.");
+		}
+
+		for (const bool widthAxis : { true, false }) {
+			auto member = [widthAxis](RTC& rect) -> bool& { return widthAxis ? rect.FillWidth : rect.FillHeight; };
+			bool fill = member(const_cast<Entity&>(entities.front()).GetComponent<RTC>());
+			bool mixed = false;
+			for (const Entity& e : entities) mixed |= member(const_cast<Entity&>(e).GetComponent<RTC>()) != fill;
+			ImGuiUtils::BeginInspectorFieldRow(widthAxis ? "Fill Parent Width" : "Fill Parent Height");
+			if (ImGuiUtils::Switch(widthAxis ? "##FillWidth" : "##FillHeight", &fill, mixed)) {
+				for (const Entity& e : entities) {
+					Entity& entity = const_cast<Entity&>(e);
+					member(entity.GetComponent<RTC>()) = fill;
+					if (Scene* scene = entity.GetScene()) scene->MarkDirty();
+				}
+			}
+			EditorUI::Tooltip(
+				"Span the parent rect along this axis instead of using Size and the anchors.\n"
+				"Both on a root canvas make it the screen (its safe area), so children anchored\n"
+				"to corners and edges follow the screen on every aspect ratio.\n"
+				"Width alone suits a bar anchored to the top or bottom edge.");
+		}
 
 		if (EditorUI::SectionHeader("Anchors", true)) {
 			ImGui::PushID("Anchors");

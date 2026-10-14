@@ -13,6 +13,8 @@ namespace Index {
 
 	// Hybrid inspector: declarative particle fields plus a texture preview.
 	void DrawParticleSystem2DInspector(std::span<const Entity> entities);
+	// Declarative fields plus bursts and the lifetime curve/gradient editors.
+	void DrawParticleSystem3DInspector(std::span<const Entity> entities);
 
 	void DrawRectTransform2DInspector(std::span<const Entity> entities);
 

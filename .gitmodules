@@ -1,9 +1,6 @@
 [submodule "External/spdlog"]
 	path = External/spdlog
 	url = https://github.com/gabime/spdlog.git
-[submodule "External/glfw"]
-	path = External/glfw
-	url = https://github.com/glfw/glfw.git
 [submodule "External/box2d"]
 	path = External/box2d
 	url = https://github.com/erincatto/box2d.git
@@ -38,3 +35,9 @@
 [submodule "External/ImGuizmo"]
 	path = External/ImGuizmo
 	url = https://github.com/CedricGuillemet/ImGuizmo.git
+[submodule "External/SDL"]
+	path = External/SDL
+	url = https://github.com/libsdl-org/SDL.git
+[submodule "External/JoltPhysics"]
+	path = External/JoltPhysics
+	url = https://github.com/jrouwe/JoltPhysics.git

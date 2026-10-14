@@ -3,6 +3,7 @@
 
 #include "Core/Log.hpp"
 #include "Profiling/Profiler.hpp"
+#include "Serialization/Path.hpp"
 #include "Utils/Hash.hpp"
 #include "Utils/PackageToolPath.hpp"
 #include "Utils/Process.hpp"
@@ -68,20 +69,31 @@ namespace Index::Localization {
 		std::string finalError;
 
 		const std::size_t total = items.empty() ? 1 : items.size();
-		for (std::size_t i = 0; i < items.size(); ++i) {
-			const DownloadItem& item = items[i];
-			{
-				std::scoped_lock lock(m_Mutex);
-				m_Stage = "Downloading " + item.TargetPath.filename().string();
-				m_Progress = static_cast<float>(i) / static_cast<float>(total);
-			}
+		// An exception escaping a std::thread body calls std::terminate.
+		try {
+			for (std::size_t i = 0; i < items.size(); ++i) {
+				const DownloadItem& item = items[i];
+				{
+					std::scoped_lock lock(m_Mutex);
+					m_Stage = "Downloading " + Path::ToUtf8(item.TargetPath.filename());
+					m_Progress = static_cast<float>(i) / static_cast<float>(total);
+				}
 
-			std::string err;
-			if (!DownloadOne(item, err)) {
-				success = false;
-				finalError = err;
-				break;
+				std::string err;
+				if (!DownloadOne(item, err)) {
+					success = false;
+					finalError = err;
+					break;
+				}
 			}
+		}
+		catch (const std::exception& e) {
+			success = false;
+			finalError = e.what();
+		}
+		catch (...) {
+			success = false;
+			finalError = "Unknown error";
 		}
 
 		{
@@ -106,20 +118,22 @@ namespace Index::Localization {
 		std::error_code ec;
 		std::filesystem::create_directories(item.TargetPath.parent_path(), ec);
 
-		const std::filesystem::path tempPath = item.TargetPath.string() + ".dl.tmp";
+		std::filesystem::path tempPath = item.TargetPath;
+		tempPath += ".dl.tmp";
 		std::filesystem::remove(tempPath, ec);
 
+		// Process::Run decodes arguments as UTF-8; path::string() would hand it the ANSI code page.
 		std::vector<std::string> command;
 		if (toolPath.extension() == ".dll") {
 			command.push_back("dotnet");
-			command.push_back(toolPath.string());
+			command.push_back(Path::ToUtf8(toolPath));
 		}
 		else {
-			command.push_back(toolPath.string());
+			command.push_back(Path::ToUtf8(toolPath));
 		}
 		command.push_back("github-download");
 		command.push_back(item.Url);
-		command.push_back(tempPath.string());
+		command.push_back(Path::ToUtf8(tempPath));
 
 		const Process::Result result = Process::Run(command, {}, std::chrono::minutes(2));
 		if (!result.Succeeded()) {
@@ -156,7 +170,7 @@ namespace Index::Localization {
 		}
 
 		IDX_CORE_INFO_TAG("Localization", "Downloaded '{}' ({})",
-			item.TargetPath.string(), item.Url);
+			Path::ToUtf8(item.TargetPath), item.Url);
 		return true;
 	}
 

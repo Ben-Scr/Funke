@@ -66,7 +66,7 @@ namespace Index {
 
 	struct ApplicationConfig {
 		WindowSpecification WindowSpecification{ 800, 800, "Index Runtime", true, true, false };
-		// Off: no GLFW window or graphics backend; render-dependent subsystems force-disabled at Initialize (with warning). Use Headless() for sensible defaults.
+		// Off: no OS window or graphics backend; render-dependent subsystems force-disabled at Initialize (with warning). Use Headless() for sensible defaults.
 		bool EnableWindow = INDEX_DEFAULT_ENABLE_WINDOW != 0;
 		bool EnableGuiRenderer = INDEX_DEFAULT_ENABLE_GUI_RENDERER != 0;
 		bool EnableGizmoRenderer = INDEX_DEFAULT_ENABLE_GIZMO_RENDERER != 0;
@@ -85,7 +85,7 @@ namespace Index {
 		float TargetFrameRate = 144.0f;
 		bool UseTargetFrameRateForMainLoop = true;
 
-		// F11 toggles true exclusive fullscreen (glfwSetWindowMonitor). Games
+		// F11 toggles true exclusive fullscreen (SDL_SetWindowFullscreen with a display mode). Games
 		// want it; the editor and launcher do NOT — exclusive fullscreen takes
 		// over the display and breaks their multi-window UI (secondary OS
 		// windows get covered / auto-iconified). Those apps set this false.

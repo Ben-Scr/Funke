@@ -2104,7 +2104,9 @@ namespace Index::PropertyDrawer {
 		case PropertyType::AssetRef:
 			changed = DrawAssetRefByKind(entities, d, fieldKey, d.Metadata.AssetKindFilter,
 				PropertyType::AssetRef,
-				d.Metadata.AssetKindFilter == AssetKind::DataAsset ? "Select Data Asset" : "Select Asset"); break;
+				d.Metadata.AssetKindFilter == AssetKind::DataAsset ? "Select Data Asset"
+					: d.Metadata.AssetKindFilter == AssetKind::Material ? "Select Material"
+					: d.Metadata.AssetKindFilter == AssetKind::Mesh ? "Select Mesh" : "Select Asset"); break;
 		case PropertyType::EntityRef:    changed = DrawEntityRef(entities, d, fieldKey); break;
 		case PropertyType::ComponentRef: changed = DrawComponentRef(entities, d, fieldKey); break;
 		case PropertyType::Graph:        changed = DrawGraph(entities, d, fieldKey); break;

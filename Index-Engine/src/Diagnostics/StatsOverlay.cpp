@@ -6,7 +6,9 @@
 #include "Core/Application.hpp"
 #include "Core/Time.hpp"
 #include "Core/Window.hpp"
+#if INDEX_WITH_2D
 #include "Graphics/Renderer2D.hpp"
+#endif
 #include "Scene/SceneManager.hpp"
 
 #include <imgui.h>
@@ -64,14 +66,16 @@ namespace Index::Diagnostics {
 		m_Cached.Fps       = (dt > 0.0f) ? (1.0f / dt) : 0.0f;
 		m_Cached.CpuMainMs = dt * 1000.0f;
 
-		auto* renderer = app ? app->GetRenderer2D() : nullptr;
-		if (renderer) {
+#if INDEX_WITH_2D
+		if (auto* renderer = app ? app->GetRenderer2D() : nullptr) {
 			m_Cached.RenderThreadMs = renderer->GetRenderLoopDuration();
 			const std::size_t inst = renderer->GetRenderedInstancesCount();
 			m_Cached.Tris  = inst * 2u; // 2 triangles per instanced quad
 			m_Cached.Verts = inst * 4u; // 4 vertices per instanced quad
 		}
-		else {
+		else
+#endif
+		{
 			m_Cached.RenderThreadMs = 0.0f;
 			m_Cached.Tris  = 0;
 			m_Cached.Verts = 0;

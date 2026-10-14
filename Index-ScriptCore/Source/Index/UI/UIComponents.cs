@@ -120,14 +120,8 @@ public class RectTransform : Component
         }
     }
 
-    public new Entity? Entity
-    {
-        get
-        {
-            ulong entityId = InternalCalls.Transform2D_GetEntity(RequireComponent<Transform2D>());
-            return entityId != 0 ? new Entity(entityId) : null;
-        }
-    }
+    // Checks the RectTransform itself (UI entities never have a Transform2D, which this used to require).
+    public new Entity? Entity => new Entity(RequireComponent<RectTransform>());
 }
 
 public class Image : Component

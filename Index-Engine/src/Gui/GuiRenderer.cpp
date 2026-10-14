@@ -3,7 +3,9 @@
 
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
+#if INDEX_WITH_2D
 #include "Components/Graphics/Camera2DComponent.hpp"
+#endif
 #include "Components/Graphics/ImageComponent.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/Tags.hpp"
@@ -477,13 +479,18 @@ namespace Index {
 			ndcMinY = std::clamp(ndcMinY, -1.0f, 1.0f);
 			ndcMaxY = std::clamp(ndcMaxY, -1.0f, 1.0f);
 
-			const float fW = static_cast<float>(targetW);
-			const float fH = static_cast<float>(targetH);
-			const float xMin = (ndcMinX * 0.5f + 0.5f) * fW;
-			const float xMax = (ndcMaxX * 0.5f + 0.5f) * fW;
+			// NDC maps onto the pass viewport, not the whole target: letterboxed output offsets and scales it.
+			uint32_t vpX = 0, vpY = 0, vpW = targetW, vpH = targetH;
+			WebGPUBackend::GetCachedViewport(vpX, vpY, vpW, vpH);
+			const float fX = static_cast<float>(vpX);
+			const float fY = static_cast<float>(vpY);
+			const float fW = static_cast<float>(vpW);
+			const float fH = static_cast<float>(vpH);
+			const float xMin = fX + (ndcMinX * 0.5f + 0.5f) * fW;
+			const float xMax = fX + (ndcMaxX * 0.5f + 0.5f) * fW;
 			// Y flip: NDC +Y up -> screen +Y down for top-left origin.
-			const float yMinTop = (1.0f - (ndcMaxY * 0.5f + 0.5f)) * fH;
-			const float yMaxTop = (1.0f - (ndcMinY * 0.5f + 0.5f)) * fH;
+			const float yMinTop = fY + (1.0f - (ndcMaxY * 0.5f + 0.5f)) * fH;
+			const float yMaxTop = fY + (1.0f - (ndcMinY * 0.5f + 0.5f)) * fH;
 			const float sx = std::floor(std::min(xMin, xMax));
 			const float sy = std::floor(std::min(yMinTop, yMaxTop));
 			const float sw = std::ceil(std::abs(xMax - xMin));
@@ -543,10 +550,12 @@ namespace Index {
 		int canvasW = 0;
 		int canvasH = 0;
 		if (!ResolveUICanvasSize(canvasW, canvasH)) return 0.01f;
+#if INDEX_WITH_2D
 		if (Camera2DComponent* cam = Camera2DComponent::GetMain()) {
 			const float worldHeight = 2.0f * cam->GetOrthographicSize() * cam->GetZoom();
 			if (worldHeight > 0.0f) return worldHeight / static_cast<float>(canvasH);
 		}
+#endif
 		return 0.01f;
 	}
 
@@ -961,6 +970,10 @@ namespace Index {
 			m_DrawIndexByEntity.emplace(entity, static_cast<std::uint32_t>(di));
 		}
 
+		// At least one logical pixel: a 1 px caret is invisible on a ~400 dpi phone.
+		const Window* caretWindow = Application::GetWindow();
+		const float minCaretWidth = std::max(1.0f, caretWindow ? caretWindow->GetDisplayScale() : 1.0f);
+
 		auto inputView = registry.view<RectTransform2DComponent, InputFieldComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, fieldRect, field] : inputView.each()) {
 			const bool hasSelection = field.SelectionAnchorBytePos != field.CaretBytePos;
@@ -975,6 +988,15 @@ namespace Index {
 
 			const std::uint32_t fieldDI = fieldIt->second;
 			const std::uint32_t textDI = textIt->second;
+
+			// Overlays join the sorting bucket of what they sit on: with order 0 they vanished behind any
+			// raised panel, e.g. a field in a popup. Selection sits over the field's image, the caret over the text.
+			const auto* textSort = registry.try_get<TextRendererComponent>(field.TextEntity);
+			const auto* fieldImageSort = registry.try_get<ImageComponent>(entity);
+			const std::int16_t caretOrder = textSort ? textSort->SortingOrder : std::int16_t{ 0 };
+			const std::uint8_t caretLayer = textSort ? textSort->SortingLayer : std::uint8_t{ 0 };
+			const std::int16_t selectionOrder = fieldImageSort ? fieldImageSort->SortingOrder : caretOrder;
+			const std::uint8_t selectionLayer = fieldImageSort ? fieldImageSort->SortingLayer : caretLayer;
 
 			const UIMaskClip fieldClip = ResolveClipForEntity(registry, entity);
 			// Single-line fields also clip the caret/selection to the field's text rect so
@@ -1072,7 +1094,7 @@ namespace Index {
 						const Vec2 selCenter{ xA + selW * 0.5f, lineCenterY(li) };
 						const Vec2 selSize{ selW, halfHeight * 2.0f };
 						Instance44 selInst(selCenter, selSize, 0.0f, field.SelectionColor,
-							TextureHandle{}, 0, 0, fieldDI + 1u);
+							TextureHandle{}, selectionOrder, selectionLayer, fieldDI + 1u);
 						ApplyMaskClipToInstance(fieldClipRect, selInst);
 						m_InstancesScratch.push_back(selInst);
 					}
@@ -1085,11 +1107,11 @@ namespace Index {
 					int caretLine = VisualLineOfByte(lines, std::clamp(field.CaretBytePos, 0, static_cast<int>(field.Text.size())));
 					caretLine = std::clamp(caretLine, 0, static_cast<int>(lines.size()) - 1);
 					const float caretX = byteToAbsX(caretLine, field.CaretBytePos);
-					const float caretWidth = std::max(1.0f, field.CaretWidth);
+					const float caretWidth = std::max(minCaretWidth, field.CaretWidth * fieldRect.Scale.x);
 					const Vec2 caretCenter{ caretX + caretWidth * 0.5f, lineCenterY(caretLine) };
 					const Vec2 caretSize{ caretWidth, halfHeight * 2.0f };
 					Instance44 caretInst(caretCenter, caretSize, 0.0f, field.CaretColor,
-						TextureHandle{}, 0, 0, textDI + 1u);
+						TextureHandle{}, caretOrder, caretLayer, textDI + 1u);
 					ApplyMaskClipToInstance(fieldClipRect, caretInst);
 					m_InstancesScratch.push_back(caretInst);
 				}
@@ -1155,7 +1177,7 @@ namespace Index {
 						selCenter, selSize, 0.0f,
 						field.SelectionColor,
 						TextureHandle{},
-						0, 0,
+						selectionOrder, selectionLayer,
 						fieldDI + 1u);
 					ApplyMaskClipToInstance(fieldClipRect, selInst);
 					m_InstancesScratch.push_back(selInst);
@@ -1167,14 +1189,14 @@ namespace Index {
 				: (std::fmod(elapsedSeconds * field.CaretBlinkRate, 1.0f) < 0.5f);
 			if (field.IsFocused && caretBlinkOn && !field.IsReadOnly) {
 				const float caretX = byteToAbsX(field.CaretBytePos);
-				const float caretWidth = std::max(1.0f, field.CaretWidth);
+				const float caretWidth = std::max(minCaretWidth, field.CaretWidth * fieldRect.Scale.x);
 				const Vec2 caretCenter{ caretX + caretWidth * 0.5f, centerY };
 				const Vec2 caretSize{ caretWidth, halfHeight * 2.0f };
 				Instance44 caretInst(
 					caretCenter, caretSize, 0.0f,
 					field.CaretColor,
 					TextureHandle{},
-					0, 0,
+					caretOrder, caretLayer,
 					textDI + 1u);
 				ApplyMaskClipToInstance(fieldClipRect, caretInst);
 				m_InstancesScratch.push_back(caretInst);
@@ -1272,6 +1294,8 @@ namespace Index {
 			if (target.HasDepth) {
 				depthAtt.view              = target.DepthView;
 				depthAtt.depthLoadOp       = wgpu::LoadOp::Load;
+				// Ignored for Load, but browsers reject the non-finite default.
+				depthAtt.depthClearValue   = 1.0f;
 				depthAtt.depthStoreOp      = wgpu::StoreOp::Store;
 				depthAtt.stencilLoadOp     = wgpu::LoadOp::Load;
 				depthAtt.stencilStoreOp    = wgpu::StoreOp::Store;

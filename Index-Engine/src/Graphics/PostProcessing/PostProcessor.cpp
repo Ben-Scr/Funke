@@ -885,10 +885,14 @@ namespace Index {
 			const PostProcessing2DComponent::BloomSettings& b,
 			int maximumTaps)
 		{
+			// Half resolution: the threshold pass's bilinear fetch doubles as a 2x2 downsample, and the
+			// blur touches a quarter of the pixels. The composite samples by UV, so it's resolution-agnostic.
 			const int fullW = std::max(1, static_cast<int>(dstWidth));
 			const int fullH = std::max(1, static_cast<int>(dstHeight));
-			if (!impl.BloomTempA.Recreate(fullW, fullH, TextureFormat::RGBA16F)) return;
-			if (!impl.BloomTempB.Recreate(fullW, fullH, TextureFormat::RGBA16F)) return;
+			const int bloomW = std::max(1, (fullW + 1) / 2);
+			const int bloomH = std::max(1, (fullH + 1) / 2);
+			if (!impl.BloomTempA.Recreate(bloomW, bloomH, TextureFormat::RGBA16F)) return;
+			if (!impl.BloomTempB.Recreate(bloomW, bloomH, TextureFormat::RGBA16F)) return;
 
 			WebGPUBackend::FramebufferLookup tempALook =
 				WebGPUBackend::LookupFramebufferByFboId(impl.BloomTempA.GetBackendId());
@@ -899,7 +903,13 @@ namespace Index {
 			const wgpu::TextureFormat tempFormat = wgpu::TextureFormat::RGBA16Float;
 
 			const int tapsClamped = std::max(3, std::min(maximumTaps, b.Taps));
-			const float halfKernel = static_cast<float>(std::max(1, (tapsClamped - 1) / 2));
+			// The requested kernel is in full-res texels. Keep its on-screen radius but cover it with at
+			// most 25 taps per direction by widening the step; past that the extra taps cost far more than
+			// they add to an already soft, half-res glow.
+			constexpr int k_MaxBloomHalfKernel = 12;
+			const float requestedHalfKernel = static_cast<float>(std::max(1, (tapsClamped - 1) / 2));
+			const float halfKernel = std::min(requestedHalfKernel, static_cast<float>(k_MaxBloomHalfKernel));
+			const float stepScale = requestedHalfKernel / halfKernel;
 
 			// ── Pass 1: Threshold extract (srcView -> BloomTempA) ──
 			{
@@ -922,8 +932,8 @@ namespace Index {
 			if (!blurPipeline) return;
 
 			const float scatterMul = 1.0f + 10.0f * b.Scatter;   // [1.0 .. 11.0]
-			const float texelW = scatterMul / static_cast<float>(fullW);
-			const float texelH = scatterMul / static_cast<float>(fullH);
+			const float texelW = scatterMul * stepScale / static_cast<float>(fullW);
+			const float texelH = scatterMul * stepScale / static_cast<float>(fullH);
 
 			{
 				float u[4]{};

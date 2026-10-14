@@ -51,8 +51,11 @@ Index-Engine/src/Core/.BuildIdentity.generated.hpp.*
 *.vcxproj.user
 *.lastbuildstate
 *.tlog
-.claude/
-.agents/
+# Agent skills are shared with every clone; everything else in these folders stays local.
+.claude/*
+!.claude/skills/
+.agents/*
+!.agents/skills/
 .scratch/
 
 # User-specific files
@@ -442,3 +445,6 @@ vendor/cmake/
 
 # Stale, unreferenced Mono runtime from the pre-CoreCLR scripting host.
 Index-Editor/mono/
+External/SDL-build/
+vendor/emsdk/
+vendor/dotnet11/

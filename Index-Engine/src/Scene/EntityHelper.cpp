@@ -1,8 +1,10 @@
 #include "pch.hpp"
 #include "EntityHelper.hpp"
 
+#if INDEX_WITH_2D
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#endif
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
@@ -51,6 +53,7 @@ namespace Index {
 		return count;
 	}
 
+#if INDEX_WITH_2D
 	Entity EntityHelper::CreateCamera2DEntity(Scene& scene) {
 		Entity entity = CreateWith<Transform2DComponent, Camera2DComponent>(scene);
 		entity.AddComponent<NameComponent>(NameComponent("Camera 2D"));
@@ -70,6 +73,8 @@ namespace Index {
 		Scene* scene = ResolveEntityCreationScene();
 		return scene ? CreateSpriteEntity(*scene) : Entity::Null;
 	}
+
+#endif
 
 	Entity EntityHelper::CreateImageEntity(Scene& scene) {
 		Entity e = CreateWith<RectTransform2DComponent, ImageComponent>(scene);

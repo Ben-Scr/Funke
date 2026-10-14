@@ -66,8 +66,8 @@ python scripts/packages/NewPackage.py MyGame.Tools --layers csharp --project "C:
 # C++ and C# together, bridged via P/Invoke:
 python scripts/packages/NewPackage.py MyGame.Loot --layers native+csharp --project "C:/path/to/MyProject"
 
-# Depends on another package:
-python scripts/packages/NewPackage.py MyGame.Combat --depends-on MyGame.Core
+# Depends on another package (optionally with a version range):
+python scripts/packages/NewPackage.py MyGame.Combat --depends-on MyGame.Core@^1.0.0
 ```
 
 The scaffolder creates the folder, the manifest, the entry point, the example code, **adds the package to your project's allow-list**, and regenerates the project files so it appears in your IDE. After that you can build from the editor (or your IDE) and it loads automatically.
@@ -83,8 +83,9 @@ The manifest is a small Lua file that returns a table describing your package. A
 ```lua
 return {
     name        = "MyGame.Loot",        -- required, PascalCase.PascalCase
-    version     = "0.1.0",              -- required
+    version     = "0.1.0",              -- required, MAJOR.MINOR.PATCH
     description = "Loot drops and tables.",
+    engine      = ">=2026.1.0",         -- optional, engine versions this release supports
 
     layers = {
         native = {
@@ -98,14 +99,17 @@ return {
         },
     },
 
-    dependencies = { "MyGame.Core" },   -- optional, other packages this one needs
+    dependencies = { "MyGame.Core@^1.0.0" },   -- optional, other packages this one needs
+    modules = { "Index.2D" },                  -- optional, engine modules this one builds on
 }
 ```
 
 Key points:
 
-- **`name`** and **`version`** are required; every layer needs a non-empty **`sources`** list.
-- **`dependencies`** lists *other packages* (not NuGet packages, not the script core). The loader sorts them so dependencies build first.
+- **`name`** and **`version`** are required; every layer needs a non-empty **`sources`** list. Bump `version` with `scripts/packages/BumpPackageVersion.py` when you publish a change: patch for fixes, minor for additions, major for anything that breaks packages or games using yours.
+- **`dependencies`** lists *other packages* (not NuGet packages, not the script core), each optionally with a version range (`"MyGame.Core@^1.0.0"` or `{ name = "MyGame.Core", version = "^1.0.0" }`). Dependencies build and load first, and a project only needs to list your package; the rest comes along. The range syntax is in [Package System](Package-System.md#versions-and-dependencies).
+- **`engine`** states which engine versions the release supports; a project on another engine gets a clear error instead of a crash.
+- **`modules`** lists the [engine modules](../Engine-Core/Engine-Modules.md) your package uses (`"Index.2D"`, `"Index.3D"`). Installing the package turns them on in the project; a project with one of them off doesn't load the package and refuses to build it. Leave it out when you only use the core (UI, text, audio, input, assets). `NewPackage.py --modules Index.2D` writes it for you.
 - The manifest is validated when project files are generated — mistakes fail loudly with a clear `[Index Packages]` message, so you'll know right away.
 
 ---
@@ -243,7 +247,7 @@ These trip people up, so internalize them:
 - **No entry point** → the package is silently ignored. Every C++ package needs `IndexPackage_OnLoad`.
 - **Forgetting the allow-list** → the package never builds. Add it to `project.json` (and regenerate).
 - **Editing files but not regenerating project files** → your IDE solution lags behind the manifest. Re-run premake (or use the scaffolder, which does it for you).
-- **Copying only a native DLL** → PackageHost also requires its generated `.dll.indexabi` sidecar. A `native` package must be rebuilt after the engine changes.
+- **Copying only a native DLL** → PackageHost also requires its generated `.dll.indexabi` sidecar. A `native` package must be rebuilt after the engine changes; for source packages under `<project>/Packages/` the editor does this when it opens the project.
 - **Mixing `native` and `native_standalone`** → not allowed; pick one.
 - **Wrong package name format** → must be `PascalCase.PascalCase`. The folder name must match.
 - **P/Invoke name/signature mismatch** → runtime crash. Keep both sides identical.

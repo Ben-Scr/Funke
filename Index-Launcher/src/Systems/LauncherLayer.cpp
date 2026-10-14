@@ -6,6 +6,7 @@
 #include <Core/Version.hpp>
 #include <Core/Log.hpp>
 #include "Core/Platform/Win32BuildProgressWindow.hpp"
+#include "Gui/BuildProgressOverlay.hpp"
 #include "Gui/CustomTitlebar.hpp"
 #include "Gui/Icons.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
@@ -37,36 +38,17 @@
 #include <system_error>
 #include <vector>
 
+#include "Core/Platform.hpp"
+
 #ifdef IDX_PLATFORM_WINDOWS
-#include <shellapi.h>
-#include <shobjidl.h>
 #include <windows.h>
-#else
-#include <climits>
-#include <unistd.h>
 #endif
 
 namespace Index {
 
 	// Restart is the only way to add CJK glyphs: the atlas is baked statically at startup (no RendererHasTextures).
 	static std::string ResolveOwnExecutablePath() {
-#ifdef IDX_PLATFORM_WINDOWS
-		std::vector<wchar_t> buf(MAX_PATH);
-		for (;;) {
-			DWORD copied = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
-			if (copied == 0) return {};
-			if (copied < buf.size()) break;
-			buf.resize(buf.size() * 2);
-			if (buf.size() > 65536) return {};
-		}
-		return std::filesystem::path(buf.data()).string();
-#else
-		char buf[PATH_MAX]{};
-		ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-		if (len <= 0) return {};
-		buf[len] = '\0';
-		return std::string(buf);
-#endif
+		return Path::ToUtf8(Platform::GetExecutablePath());
 	}
 
 	// Spawns a new instance of the current binary and then quits the
@@ -87,47 +69,11 @@ namespace Index {
 		Application::Quit();
 	}
 
-#ifdef IDX_PLATFORM_WINDOWS
 	// Native folder dialog; returns an empty string when cancelled.
-	static std::string PickFolder(const wchar_t* title) {
-		std::string picked;
-		CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-		IFileOpenDialog* dialog = nullptr;
-		if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL,
-			IID_IFileOpenDialog, reinterpret_cast<void**>(&dialog))))
-		{
-			DWORD options;
-			dialog->GetOptions(&options);
-			dialog->SetOptions(options | FOS_PICKFOLDERS);
-			dialog->SetTitle(title);
-			if (SUCCEEDED(dialog->Show(nullptr))) {
-				IShellItem* result = nullptr;
-				dialog->GetResult(&result);
-				if (result) {
-					PWSTR widePath = nullptr;
-					result->GetDisplayName(SIGDN_FILESYSPATH, &widePath);
-					if (widePath) {
-						const int len = WideCharToMultiByte(CP_UTF8, 0, widePath, -1, nullptr, 0, nullptr, nullptr);
-						if (len > 1) {
-							picked.resize(static_cast<size_t>(len), '\0');
-							if (WideCharToMultiByte(CP_UTF8, 0, widePath, -1, picked.data(), len, nullptr, nullptr) == len) {
-								picked.pop_back();
-							}
-							else {
-								picked.clear();
-							}
-						}
-						CoTaskMemFree(widePath);
-					}
-					result->Release();
-				}
-			}
-			dialog->Release();
-		}
-		CoUninitialize();
-		return picked;
+	static std::string PickFolder(const std::string& title) {
+		const std::optional<std::filesystem::path> picked = Platform::PickFolder({}, title);
+		return picked ? Path::ToUtf8(*picked) : std::string();
 	}
-#endif
 
 	// ── Relative Time Formatting ────────────────────────────────────
 
@@ -224,13 +170,7 @@ namespace Index {
 #endif
 
 	static void OpenUrlInBrowser(const char* url) {
-#ifdef IDX_PLATFORM_WINDOWS
-		ShellExecuteW(nullptr, L"open", Utf8ToWide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-#elif defined(IDX_PLATFORM_LINUX)
-		Process::LaunchDetached({ "xdg-open", url });
-#else
-		(void)url;
-#endif
+		Platform::OpenUrl(url ? url : "");
 	}
 
 	static void AddSaturating(std::uintmax_t& total, std::uintmax_t value) {
@@ -506,6 +446,15 @@ artifacts/
 		std::snprintf(m_NewProjectLocation, sizeof(m_NewProjectLocation), "%s",
 			defaultLocation.c_str());
 
+		// Dev tooling: INDEX_LAUNCHER_PAGE=templates|assets opens on that page (scripts/dev/Run.ps1 -LauncherPage).
+		if (const char* page = std::getenv("INDEX_LAUNCHER_PAGE"); page && std::string_view(page) == "templates") {
+			m_ActivePage = LauncherPage::Templates;
+			RefreshProjectTemplates();
+		}
+		else if (page && std::string_view(page) == "assets") {
+			m_ActivePage = LauncherPage::AssetLibrary;
+		}
+
 		m_Splash.Begin();
 		m_PrerequisiteProbe = std::async(std::launch::async, &ProbePrerequisites);
 	}
@@ -593,6 +542,8 @@ artifacts/
 
 		PollCreateProjectTask();
 		PollDuplicateProjectTask();
+		PollSaveTemplateTask();
+		PollRefreshTemplateTask();
 		const std::string titlebarText = IDX_TR("launcher.title") + std::string(" ") + std::string(IDX_VERSION);
 		EditorRuntime::RenderTitlebar(EditorRuntime::TitlebarConfig{ titlebarText, /*Centered=*/false });
 		RenderLauncherPanel();
@@ -640,6 +591,8 @@ artifacts/
 		(void)app;
 		ResetCreateProjectTask();
 		ResetDuplicateProjectTask();
+		ResetTemplateTask(m_SaveTemplateTask);
+		ResetTemplateTask(m_RefreshTemplateTask);
 		if (m_OpenTask.Worker.joinable()) {
 			m_OpenTask.Worker.join();
 		}
@@ -681,7 +634,7 @@ artifacts/
 	}
 
 	void LauncherLayer::StartCreateProjectAsync(const std::string& name, const std::string& location,
-		const std::string& directoryName, bool initializeGit) {
+		const std::string& directoryName, bool initializeGit, std::optional<ProjectTemplate> projectTemplate) {
 		ResetCreateProjectTask();
 
 		m_CreateError.clear();
@@ -695,7 +648,7 @@ artifacts/
 			m_CreateTask.Running = true;
 		}
 
-		m_CreateTask.Worker = std::thread([this, name, location, directoryName, initializeGit]() {
+		m_CreateTask.Worker = std::thread([this, name, location, directoryName, initializeGit, projectTemplate = std::move(projectTemplate)]() {
 			auto updateProgress = [this](float progress, std::string_view stage) {
 				std::scoped_lock lock(m_CreateTask.Mutex);
 				m_CreateTask.Progress = progress;
@@ -715,7 +668,8 @@ artifacts/
 				}
 
 				updateProgress(0.05f, "Creating project...");
-				IndexProject project = IndexProject::Create(name, location, directoryName, updateProgress);
+				IndexProject project = IndexProject::Create(name, location, directoryName,
+					projectTemplate ? &*projectTemplate : nullptr, updateProgress);
 
 				// Keep the isolated package workspace ready for source packages.
 				updateProgress(0.55f, "Preparing package workspace...");
@@ -1248,6 +1202,9 @@ artifacts/
 				}
 				RenderAssetLibraryTab();
 				break;
+			case LauncherPage::Templates:
+				RenderTemplatesTab();
+				break;
 		}
 
 		ImGui::EndChild();
@@ -1260,6 +1217,10 @@ artifacts/
 		RenderErrorPopup();
 		RenderRenameProjectPopup();
 		RenderDuplicateProjectPopup();
+		RenderSaveTemplatePopup();
+		RenderEditTemplatePopup();
+		RenderRefreshTemplatePopup();
+		RenderDeleteTemplatePopup();
 		RenderAssetLibraryDetailModal();
 		RenderAssetLibraryTrustModal();
 		RenderAssetLibraryDoneModal();
@@ -1290,7 +1251,7 @@ artifacts/
 		// Brand block: logo + name + version.
 		if (!m_LogoLoadAttempted) {
 			m_LogoLoadAttempted = true;
-			const std::string logoPath = Path::Combine(Path::ResolveIndexAssets("Textures"), "Icon.png");
+			const std::string logoPath = Path::Combine(Path::ResolveIndexAssets("Textures"), "icon.png");
 			if (!logoPath.empty() && std::filesystem::exists(logoPath)) {
 				m_LogoTexture = Texture2D(logoPath.c_str(), Filter::Bilinear, Wrap::Clamp, Wrap::Clamp);
 			}
@@ -1330,6 +1291,13 @@ artifacts/
 			m_ActivePage == LauncherPage::Projects, pal)) {
 			m_ActivePage = LauncherPage::Projects;
 		}
+		if (SidebarNavItem("##NavTemplates", Icons::Type::Copy, IDX_TR("launcher.nav.templates"),
+			m_ActivePage == LauncherPage::Templates, pal)) {
+			if (m_ActivePage != LauncherPage::Templates) {
+				RefreshProjectTemplates();
+			}
+			m_ActivePage = LauncherPage::Templates;
+		}
 		if (SidebarNavItem("##NavAssetLibrary", Icons::Type::Download, IDX_TR("launcher.nav.asset_library"),
 			m_ActivePage == LauncherPage::AssetLibrary, pal)) {
 			m_ActivePage = LauncherPage::AssetLibrary;
@@ -1361,6 +1329,32 @@ artifacts/
 			: m_DefaultProjectsLocation;
 		std::snprintf(m_NewProjectLocation, sizeof(m_NewProjectLocation), "%s",
 			defaultLocation.c_str());
+
+		RefreshProjectTemplates();
+	}
+
+	void LauncherLayer::RefreshProjectTemplates() {
+		m_ProjectTemplates = ProjectTemplates::Discover();
+		if (!GetSelectedTemplate()) {
+			m_SelectedTemplateId.clear();
+			for (const ProjectTemplate& projectTemplate : m_ProjectTemplates) {
+				if (projectTemplate.Id == ProjectTemplates::k_DefaultTemplateId) {
+					m_SelectedTemplateId = projectTemplate.Id;
+				}
+			}
+			if (m_SelectedTemplateId.empty() && !m_ProjectTemplates.empty()) {
+				m_SelectedTemplateId = m_ProjectTemplates.front().Id;
+			}
+		}
+	}
+
+	const ProjectTemplate* LauncherLayer::GetSelectedTemplate() const {
+		for (const ProjectTemplate& projectTemplate : m_ProjectTemplates) {
+			if (projectTemplate.Id == m_SelectedTemplateId) {
+				return &projectTemplate;
+			}
+		}
+		return nullptr;
 	}
 
 	// ── My Projects Page ─────────────────────────────────────────────
@@ -1542,25 +1536,27 @@ artifacts/
 	}
 
 	const Texture2D* LauncherLayer::GetProjectThumbnail(const std::string& projectPath) {
-		ProjectThumbnail& slot = m_ProjectThumbnails[projectPath];
+		return GetCachedImage(Path::Combine(projectPath, ".index", "thumbnail.png"));
+	}
+
+	const Texture2D* LauncherLayer::GetCachedImage(const std::string& filePath) {
+		ProjectThumbnail& slot = m_ProjectThumbnails[filePath];
 		const auto now = std::chrono::steady_clock::now();
-		// The editor rewrites the file on save; re-stat at most every 2s instead of every frame.
+		// The editor rewrites thumbnails on save; re-stat at most every 2s instead of every frame.
 		if (slot.CheckedAt != std::chrono::steady_clock::time_point{} && now - slot.CheckedAt < std::chrono::seconds(2)) {
 			return slot.Texture.IsValid() ? &slot.Texture : nullptr;
 		}
 		slot.CheckedAt = now;
 
-		const std::filesystem::path file = Path::FromUtf8(projectPath) / ".index" / "thumbnail.png";
 		std::error_code ec;
-		const auto stamp = std::filesystem::last_write_time(file, ec);
+		const auto stamp = std::filesystem::last_write_time(Path::FromUtf8(filePath), ec);
 		if (ec) {
 			slot.Texture = Texture2D();
 			return nullptr;
 		}
 		if (!slot.Texture.IsValid() || stamp != slot.Stamp) {
 			slot.Stamp = stamp;
-			const std::string utf8 = Path::Combine(projectPath, ".index", "thumbnail.png");
-			slot.Texture = Texture2D(utf8.c_str(), Filter::Bilinear, Wrap::Clamp, Wrap::Clamp);
+			slot.Texture = Texture2D(filePath.c_str(), Filter::Bilinear, Wrap::Clamp, Wrap::Clamp);
 		}
 		return slot.Texture.IsValid() ? &slot.Texture : nullptr;
 	}
@@ -1580,8 +1576,14 @@ artifacts/
 
 		ImGui::Separator();
 
-		if (Icons::MenuItemWithIcon(Icons::Type::FileManager,
-			IDX_TR("launcher.context.open_in_explorer").c_str()))
+#if defined(IDX_PLATFORM_MACOS)
+		constexpr const char* k_RevealKey = "launcher.context.reveal_in_finder";
+#elif defined(IDX_PLATFORM_LINUX)
+		constexpr const char* k_RevealKey = "launcher.context.show_in_file_manager";
+#else
+		constexpr const char* k_RevealKey = "launcher.context.open_in_explorer";
+#endif
+		if (Icons::MenuItemWithIcon(Icons::Type::FileManager, IDX_TR(k_RevealKey).c_str()))
 		{
 			OpenProjectInExplorer(entry);
 		}
@@ -1604,6 +1606,12 @@ artifacts/
 			IDX_TR("launcher.context.duplicate").c_str()))
 		{
 			RequestProjectDuplicate(entry);
+		}
+
+		if (Icons::MenuItemWithIcon(Icons::Type::Plus,
+			IDX_TR("launcher.context.save_as_template").c_str()))
+		{
+			RequestSaveAsTemplate(entry);
 		}
 
 		if (Icons::MenuItemWithIcon(Icons::Type::Info,
@@ -1723,6 +1731,10 @@ artifacts/
 			ImGui::SetNextItemAllowOverlap();
 			ImGui::InvisibleButton("##Row", ImVec2(rowWidth, cardH));
 			const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem);
+			// While Open / Run is held it is the active item and plain hover reports false; the buttons
+			// must stay submitted until release or an unselected row never registers the click.
+			const bool showActions = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem
+				| ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 			if (ImGui::IsItemClicked(ImGuiMouseButton_Left) || ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
 				m_SelectedProjectPath = entry.Path;
 			}
@@ -1746,7 +1758,7 @@ artifacts/
 			// Right side: actions on hover/selection, then metadata chips.
 			const float centerY = p0.y + cardH * 0.5f;
 			float right = p1.x - pad;
-			if (hovered || selected) {
+			if (showActions || selected) {
 				const float bh = ImGui::GetFrameHeight();
 				const float by = p0.y + (cardH - bh) * 0.5f;
 
@@ -1763,6 +1775,7 @@ artifacts/
 				right -= bh + em * 0.4f;
 				ImGui::SetCursorScreenPos(ImVec2(right, by));
 				if (Icons::IconButton("##Run", Icons::Type::Play, ImVec2(bh, bh))) {
+					m_SelectedProjectPath = entry.Path;
 					ExecuteProject(entry);
 				}
 				if (ImGui::IsItemHovered()) {
@@ -1842,6 +1855,9 @@ artifacts/
 			ImGui::SetNextItemAllowOverlap();
 			ImGui::InvisibleButton("##Tile", ImVec2(tileW, tileH));
 			const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem);
+			// See RenderProjectRows: keep the actions submitted while one of them is held.
+			const bool showActions = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem
+				| ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 			if (ImGui::IsItemClicked(ImGuiMouseButton_Left) || ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
 				m_SelectedProjectPath = entry.Path;
 			}
@@ -1886,7 +1902,7 @@ artifacts/
 			ImGui::PopFont();
 
 			// Actions float over the preview's bottom-right corner on hover / selection.
-			if (hovered || selected) {
+			if (showActions || selected) {
 				const float bh = ImGui::GetFrameHeight();
 				const float by = p0.y + previewH - bh - pad * 0.6f;
 				float right = p1.x - pad * 0.6f - bh;
@@ -1901,6 +1917,7 @@ artifacts/
 				right -= bh + em * 0.35f;
 				ImGui::SetCursorScreenPos(ImVec2(right, by));
 				if (Icons::IconButton("##Run", Icons::Type::Play, ImVec2(bh, bh))) {
+					m_SelectedProjectPath = entry.Path;
 					ExecuteProject(entry);
 				}
 				if (ImGui::IsItemHovered()) {
@@ -2380,6 +2397,879 @@ artifacts/
 
 	// ── Create Project Popup ────────────────────────────────────────
 
+	void LauncherLayer::RenderTemplatePicker(float contentWidth) {
+		const LauncherPalette pal = GetLauncherPalette();
+		const float em = ImGui::GetFontSize();
+
+		if (m_ProjectTemplates.empty()) {
+			ImGui::PushStyleColor(ImGuiCol_Text, pal.TextDim);
+			ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + contentWidth);
+			ImGui::TextWrapped("%s", IDX_TR("launcher.create.template.none").c_str());
+			ImGui::PopTextWrapPos();
+			ImGui::PopStyleColor();
+			return;
+		}
+
+		// Category tabs come from the templates themselves, so a "2.5D" template adds its own tab.
+		std::vector<std::string> categories;
+		for (const ProjectTemplate& projectTemplate : m_ProjectTemplates) {
+			if (!projectTemplate.Category.empty()
+				&& std::find(categories.begin(), categories.end(), projectTemplate.Category) == categories.end()) {
+				categories.push_back(projectTemplate.Category);
+			}
+		}
+		auto categoryTab = [&](const std::string& label, const std::string& value) {
+			const bool active = m_TemplateCategoryFilter == value;
+			ImGui::PushStyleColor(ImGuiCol_Button, active ? pal.Accent : pal.Chip);
+			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active ? pal.AccentHover : pal.CardHover);
+			ImGui::PushStyleColor(ImGuiCol_Text, active ? pal.AccentText : ImGui::GetColorU32(ImGuiCol_Text));
+			if (ImGui::Button((label + "##TemplateCategory").c_str())) {
+				m_TemplateCategoryFilter = value;
+			}
+			ImGui::PopStyleColor(3);
+		};
+		categoryTab(IDX_TR("launcher.create.template.all"), "");
+		for (const std::string& category : categories) {
+			ImGui::SameLine();
+			categoryTab(category, category);
+		}
+
+		const float spacing = em * 0.5f;
+		const float cardW = std::floor((contentWidth - spacing) * 0.5f);
+		const float cardH = std::round(em * 4.4f);
+		const float pad = std::round(em * 0.6f);
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+		int column = 0;
+		for (const ProjectTemplate& projectTemplate : m_ProjectTemplates) {
+			if (!m_TemplateCategoryFilter.empty() && projectTemplate.Category != m_TemplateCategoryFilter) {
+				continue;
+			}
+			if (column == 1) {
+				ImGui::SameLine(0.0f, spacing);
+			}
+
+			const ImVec2 p0 = ImGui::GetCursorScreenPos();
+			const ImVec2 p1(p0.x + cardW, p0.y + cardH);
+			ImGui::InvisibleButton(("##Template_" + projectTemplate.Id).c_str(), ImVec2(cardW, cardH));
+			const bool hovered = ImGui::IsItemHovered();
+			if (ImGui::IsItemClicked() || ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+				m_SelectedTemplateId = projectTemplate.Id;
+			}
+			if (projectTemplate.IsUserTemplate && ImGui::BeginPopupContextItem(("##TemplateMenu_" + projectTemplate.Id).c_str())) {
+				if (Icons::MenuItemWithIcon(Icons::Type::FileManager, IDX_TR("launcher.context.open_in_explorer").c_str())) {
+					if (!Platform::OpenPath(Path::FromUtf8(projectTemplate.RootDirectory))) {
+						m_CreateError = "Failed to open the template folder";
+					}
+				}
+				if (Icons::MenuItemWithIcon(Icons::Type::Delete, IDX_TR("launcher.template_delete.menu").c_str())) {
+					m_PendingDeleteTemplate = projectTemplate;
+					m_DeleteTemplateError.clear();
+					m_OpenDeleteTemplatePopup = true;
+				}
+				ImGui::EndPopup();
+			}
+			const bool selected = projectTemplate.Id == m_SelectedTemplateId;
+
+			dl->AddRectFilled(p0, p1, selected ? pal.CardSelected : (hovered ? pal.CardHover : pal.Card), em * 0.5f);
+			dl->AddRect(p0, p1, selected ? pal.Accent : pal.CardBorder, em * 0.5f, 0, selected ? 2.0f : 1.0f);
+			dl->PushClipRect(p0, p1, true);
+
+			const ImVec2 titlePos(p0.x + pad, p0.y + pad * 0.8f);
+			dl->AddText(titlePos, ImGui::GetColorU32(ImGuiCol_Text), projectTemplate.DisplayName.c_str());
+			// Chips are laid out right to left: category, then the "custom" marker for user templates.
+			float chipRight = p1.x - pad;
+			auto drawChip = [&](const std::string& text, ImU32 fill, ImU32 textColor) {
+				const ImVec2 chipText = ImGui::CalcTextSize(text.c_str());
+				const ImVec2 chipMax(chipRight, titlePos.y + chipText.y + 2.0f);
+				const ImVec2 chipMin(chipMax.x - chipText.x - em * 0.7f, titlePos.y - 2.0f);
+				dl->AddRectFilled(chipMin, chipMax, fill, em * 0.4f);
+				dl->AddText(ImVec2(chipMin.x + em * 0.35f, titlePos.y), textColor, text.c_str());
+				chipRight = chipMin.x - em * 0.3f;
+			};
+			if (!projectTemplate.Category.empty()) {
+				drawChip(projectTemplate.Category, pal.AccentSoft, pal.AccentText);
+			}
+			if (projectTemplate.IsUserTemplate) {
+				drawChip(IDX_TR("launcher.create.template.custom"), pal.Chip, pal.TextDim);
+			}
+			dl->AddText(ImGui::GetFont(), em * 0.9f,
+				ImVec2(p0.x + pad, titlePos.y + ImGui::GetTextLineHeight() + em * 0.25f),
+				pal.TextDim, projectTemplate.Description.c_str(), nullptr, cardW - pad * 2.0f);
+			dl->PopClipRect();
+
+			if (hovered && !projectTemplate.Description.empty()) {
+				ImGui::SetTooltip("%s", projectTemplate.Description.c_str());
+			}
+			column = (column + 1) % 2;
+		}
+
+		const bool hasUserTemplates = std::any_of(m_ProjectTemplates.begin(), m_ProjectTemplates.end(),
+			[](const ProjectTemplate& projectTemplate) { return projectTemplate.IsUserTemplate; });
+		ImGui::PushStyleColor(ImGuiCol_Text, pal.TextDim);
+		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + contentWidth);
+		ImGui::TextWrapped("%s", IDX_TR(hasUserTemplates
+			? "launcher.create.template.manage_hint" : "launcher.create.template.hint").c_str());
+		ImGui::PopTextWrapPos();
+		ImGui::PopStyleColor();
+		if (ImGui::SmallButton(IDX_TR("launcher.create.template.open_folder").c_str())) {
+			OpenUserTemplatesFolder();
+		}
+	}
+
+	void LauncherLayer::OpenUserTemplatesFolder() {
+		const std::string directory = ProjectTemplates::GetUserTemplatesDirectory();
+		std::error_code ec;
+		if (directory.empty() || (!std::filesystem::create_directories(Path::FromUtf8(directory), ec) && ec)
+			|| !Platform::OpenPath(Path::FromUtf8(directory))) {
+			m_CreateError = "Failed to open the template folder: " + directory;
+		}
+	}
+
+	void LauncherLayer::RenderDeleteTemplatePopup() {
+		constexpr const char* k_DeleteTemplateId = "###LauncherDeleteTemplate";
+		if (m_OpenDeleteTemplatePopup) {
+			ImGui::OpenPopup(k_DeleteTemplateId);
+			m_OpenDeleteTemplatePopup = false;
+		}
+
+		ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 26.0f, 0), ImGuiCond_Appearing);
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		const std::string title = IDX_TR("launcher.template_delete.title") + k_DeleteTemplateId;
+		if (!ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+			return;
+		}
+		if (!m_PendingDeleteTemplate.has_value()) {
+			ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+			return;
+		}
+
+		ImGui::TextWrapped("%s", Localization::Format("launcher.template_delete.message",
+			m_PendingDeleteTemplate->DisplayName).c_str());
+		ImGui::TextDisabled("%s", m_PendingDeleteTemplate->RootDirectory.c_str());
+		if (!m_DeleteTemplateError.empty()) {
+			ImGui::Spacing();
+			ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "%s", m_DeleteTemplateError.c_str());
+		}
+
+		const int clicked = DialogFooter({ IDX_TR("launcher.template_delete.cancel"),
+			IDX_TR("launcher.template_delete.confirm") }, 1);
+		if (clicked == 0) {
+			m_PendingDeleteTemplate.reset();
+			ImGui::CloseCurrentPopup();
+		}
+		else if (clicked == 1) {
+			if (ProjectTemplates::DeleteUserTemplate(*m_PendingDeleteTemplate, &m_DeleteTemplateError)) {
+				m_PendingDeleteTemplate.reset();
+				RefreshProjectTemplates();
+				ImGui::CloseCurrentPopup();
+			}
+		}
+		ImGui::EndPopup();
+	}
+
+	// ── Save Project as Template ────────────────────────────────────
+
+	void LauncherLayer::RequestSaveAsTemplate(const LauncherProjectEntry& entry) {
+		if (m_IsSavingTemplate) return;
+		m_PendingTemplateProject = entry;
+		m_SaveTemplateError.clear();
+		m_SavedTemplate.reset();
+		std::snprintf(m_TemplateNameBuffer, sizeof(m_TemplateNameBuffer), "%s", entry.Name.c_str());
+		m_TemplateDescriptionBuffer[0] = '\0';
+		IndexProject project;
+		const bool threeD = IndexProject::TryLoad(entry.Path, project, nullptr, false) && project.PrefersThreeD();
+		std::snprintf(m_TemplateCategoryBuffer, sizeof(m_TemplateCategoryBuffer), "%s", threeD ? "3D" : "2D");
+		m_OpenSaveTemplatePopup = true;
+	}
+
+	void LauncherLayer::RenderSaveTemplatePopup() {
+		constexpr const char* k_SaveTemplateId = "###LauncherSaveTemplate";
+		if (m_OpenSaveTemplatePopup) {
+			ImGui::OpenPopup(k_SaveTemplateId);
+			m_OpenSaveTemplatePopup = false;
+		}
+
+		ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 30.0f, 0), ImGuiCond_Appearing);
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		const std::string title = IDX_TR("launcher.template_save.title") + k_SaveTemplateId;
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ImGui::GetFontSize() * 1.3f, ImGui::GetFontSize() * 1.1f));
+		const bool open = ImGui::BeginPopupModal(title.c_str(), nullptr,
+			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize);
+		ImGui::PopStyleVar();
+		if (!open) return;
+		if (!m_PendingTemplateProject.has_value()) {
+			ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+			return;
+		}
+
+		const float em = ImGui::GetFontSize();
+		const float contentW = em * 27.0f;
+		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + contentW);
+
+		if (m_SavedTemplate.has_value()) {
+			DialogTitle(IDX_TR("launcher.template_save.title"),
+				Localization::Format("launcher.template_save.saved", m_SavedTemplate->DisplayName));
+			ImGui::TextDisabled("%s", m_SavedTemplate->RootDirectory.c_str());
+			ImGui::PopTextWrapPos();
+			const int clicked = DialogFooter({ IDX_TR("launcher.template_save.close"),
+				IDX_TR("launcher.template_save.use_now") }, 1);
+			if (clicked >= 0) {
+				const std::string templateId = m_SavedTemplate->Id;
+				m_SavedTemplate.reset();
+				m_PendingTemplateProject.reset();
+				ImGui::CloseCurrentPopup();
+				if (clicked == 1) {
+					m_SelectedTemplateId = templateId;
+					m_TemplateCategoryFilter.clear();
+					BeginCreateProject();
+				}
+			}
+			ImGui::EndPopup();
+			return;
+		}
+
+		DialogTitle(IDX_TR("launcher.template_save.title"),
+			Localization::Format("launcher.template_save.subtitle", m_PendingTemplateProject->Name));
+		ImGui::PopTextWrapPos();
+
+		if (m_IsSavingTemplate) ImGui::BeginDisabled();
+		BeginFormRow(IDX_TR("launcher.template_save.name"));
+		if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+		ImGui::InputText("##TemplateName", m_TemplateNameBuffer, sizeof(m_TemplateNameBuffer));
+		EndFormRow();
+
+		BeginFormRow(IDX_TR("launcher.template_save.description"));
+		ImGui::InputText("##TemplateDescription", m_TemplateDescriptionBuffer, sizeof(m_TemplateDescriptionBuffer));
+		EndFormRow();
+
+		BeginFormRow(IDX_TR("launcher.template_save.category"));
+		ImGui::InputTextWithHint("##TemplateCategory", IDX_TR("launcher.template_save.category_hint").c_str(),
+			m_TemplateCategoryBuffer, sizeof(m_TemplateCategoryBuffer));
+		EndFormRow();
+		if (m_IsSavingTemplate) ImGui::EndDisabled();
+
+		if (m_IsSavingTemplate) {
+			RenderTemplateTaskProgress(m_SaveTemplateTask, contentW);
+		}
+		if (!m_SaveTemplateError.empty()) {
+			ImGui::Spacing();
+			ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(240, 107, 102, 255));
+			ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + contentW);
+			ImGui::TextWrapped("%s", m_SaveTemplateError.c_str());
+			ImGui::PopTextWrapPos();
+			ImGui::PopStyleColor();
+		}
+
+		std::string trimmedName = m_TemplateNameBuffer;
+		while (!trimmedName.empty() && trimmedName.back() == ' ') trimmedName.pop_back();
+		while (!trimmedName.empty() && trimmedName.front() == ' ') trimmedName.erase(trimmedName.begin());
+		const bool canSave = !trimmedName.empty() && !m_IsSavingTemplate;
+		if (m_IsSavingTemplate) ImGui::BeginDisabled();
+		const int clicked = DialogFooter({ IDX_TR("launcher.template_save.cancel"),
+			IDX_TR("launcher.template_save.save_button") }, 1, canSave);
+		if (m_IsSavingTemplate) ImGui::EndDisabled();
+		if (clicked == 0) {
+			m_PendingTemplateProject.reset();
+			ImGui::CloseCurrentPopup();
+		}
+		else if (clicked == 1 && canSave) {
+			m_SaveTemplateError.clear();
+			m_IsSavingTemplate = true;
+			StartTemplateTask(m_SaveTemplateTask, [projectRoot = m_PendingTemplateProject->Path,
+				info = ProjectTemplateCreateInfo{ trimmedName, m_TemplateDescriptionBuffer, m_TemplateCategoryBuffer }](
+					ProjectTemplate& outTemplate, std::string& outError, const ProjectTemplates::ProgressCallback& progress) {
+				return ProjectTemplates::CreateFromProject(projectRoot, info, outTemplate, &outError, {}, progress);
+			});
+		}
+		ImGui::EndPopup();
+	}
+
+	void LauncherLayer::PollSaveTemplateTask() {
+		std::optional<ProjectTemplate> result;
+		std::string error;
+		if (!PollTemplateTask(m_SaveTemplateTask, result, error)) return;
+
+		m_IsSavingTemplate = false;
+		if (result.has_value()) {
+			m_SavedTemplate = std::move(result);
+			RefreshProjectTemplates();
+		}
+		else {
+			m_SaveTemplateError = error.empty() ? std::string("Saving the template failed.") : error;
+		}
+	}
+
+	void LauncherLayer::StartTemplateTask(TemplateTaskState& task, TemplateTaskWork work) {
+		ResetTemplateTask(task);
+		{
+			std::scoped_lock lock(task.Mutex);
+			task.Stage = "Preparing...";
+			task.Progress = 0.02f;
+			task.Running = true;
+		}
+
+		task.Worker = std::thread([&task, work = std::move(work)]() {
+			auto updateProgress = [&task](float progress, std::string_view stage) {
+				std::scoped_lock lock(task.Mutex);
+				task.Progress = progress;
+				task.Stage = std::string(stage);
+			};
+
+			ProjectTemplate result;
+			std::string error;
+			bool success = false;
+			try {
+				success = work(result, error, updateProgress);
+			}
+			catch (const std::exception& e) {
+				error = e.what();
+			}
+
+			std::scoped_lock lock(task.Mutex);
+			if (success) task.Result = std::move(result);
+			task.Error = std::move(error);
+			task.Finished = true;
+			task.Running = false;
+			task.Success = success;
+		});
+	}
+
+	bool LauncherLayer::PollTemplateTask(TemplateTaskState& task, std::optional<ProjectTemplate>& outResult, std::string& outError) {
+		{
+			std::scoped_lock lock(task.Mutex);
+			if (!task.Finished) return false;
+			if (task.Success) outResult = task.Result;
+			outError = task.Error;
+		}
+		if (task.Worker.joinable()) {
+			task.Worker.join();
+		}
+		ResetTemplateTask(task, false);
+		return true;
+	}
+
+	void LauncherLayer::ResetTemplateTask(TemplateTaskState& task, bool clearWorker) {
+		if (clearWorker && task.Worker.joinable()) {
+			task.Worker.join();
+		}
+
+		std::scoped_lock lock(task.Mutex);
+		task.Worker = std::thread();
+		task.Result.reset();
+		task.Error.clear();
+		task.Stage = "Idle";
+		task.Progress = 0.0f;
+		task.Running = false;
+		task.Finished = false;
+		task.Success = false;
+	}
+
+	void LauncherLayer::RenderTemplateTaskProgress(TemplateTaskState& task, float width) {
+		std::string stage;
+		float progress = 0.0f;
+		{
+			std::scoped_lock lock(task.Mutex);
+			stage = task.Stage;
+			progress = task.Progress;
+		}
+		ImGui::Spacing();
+		ImGui::ProgressBar(progress, ImVec2(width, 0));
+		ImGui::TextDisabled("%s", stage.c_str());
+	}
+
+	void LauncherLayer::BeginCreateProjectFromTemplate(const std::string& templateId) {
+		m_SelectedTemplateId = templateId;
+		m_TemplateCategoryFilter.clear();
+		BeginCreateProject();
+	}
+
+	// ── Templates Page ──────────────────────────────────────────────
+
+	void LauncherLayer::RenderTemplatesTab() {
+		const LauncherPalette pal = GetLauncherPalette();
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float em = ImGui::GetFontSize();
+		const float startX = ImGui::GetCursorPosX();
+		const float availW = ImGui::GetContentRegionAvail().x;
+
+		const size_t customCount = static_cast<size_t>(std::count_if(m_ProjectTemplates.begin(), m_ProjectTemplates.end(),
+			[](const ProjectTemplate& projectTemplate) { return projectTemplate.IsUserTemplate; }));
+		const std::string countText = Localization::Format("launcher.templates.count",
+			std::to_string(m_ProjectTemplates.size()), std::to_string(customCount));
+		const float headerTop = ImGui::GetCursorPosY();
+		const float headerH = PageHeader(IDX_TR("launcher.nav.templates"), countText);
+		const float headerBottom = ImGui::GetCursorPosY();
+
+		const std::string fromProjectLabel = IDX_TR("launcher.templates.create_from_project");
+		const std::string folderLabel = IDX_TR("launcher.create.template.open_folder");
+		const float buttonH = std::round(ImGui::GetFrameHeight() + em * 0.35f);
+		const float fromProjectW = IconButtonWidth(fromProjectLabel);
+		const float folderW = IconButtonWidth(folderLabel);
+		ImGui::SetCursorPos(ImVec2(startX + availW - fromProjectW - folderW - style.ItemSpacing.x,
+			headerTop + std::max(0.0f, (headerH - buttonH) * 0.5f)));
+		if (Icons::ButtonWithIcon(Icons::Type::OpenFolder, folderLabel.c_str(), ImVec2(folderW, buttonH), true)) {
+			OpenUserTemplatesFolder();
+		}
+		ImGui::SameLine();
+		if (AccentButtonWithIcon(Icons::Type::Plus, fromProjectLabel, ImVec2(fromProjectW, buttonH))) {
+			ImGui::OpenPopup("##TemplateSourcePicker");
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("%s", IDX_TR("launcher.templates.create_from_project_tooltip").c_str());
+		}
+		ImGui::SetNextWindowSizeConstraints(ImVec2(em * 16.0f, 0.0f), ImVec2(em * 28.0f, em * 22.0f));
+		if (ImGui::BeginPopup("##TemplateSourcePicker")) {
+			const std::vector<const LauncherProjectEntry*> projects = GetSortedProjectsView();
+			if (projects.empty()) {
+				ImGui::TextDisabled("%s", IDX_TR("launcher.templates.no_projects").c_str());
+			}
+			for (const LauncherProjectEntry* entry : projects) {
+				ImGui::PushID(entry->Path.c_str());
+				if (ImGui::Selectable(entry->Name.c_str())) {
+					RequestSaveAsTemplate(*entry);
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("%s", entry->Path.c_str());
+				}
+				ImGui::PopID();
+			}
+			ImGui::EndPopup();
+		}
+
+		ImGui::SetCursorPos(ImVec2(startX, headerBottom + em * 0.6f));
+
+		// Toolbar: search + refresh, then the category filter chips.
+		const float frameH = ImGui::GetFrameHeight();
+		ImGui::SetNextItemWidth(availW - frameH - style.ItemSpacing.x);
+		char searchBuffer[256];
+		std::snprintf(searchBuffer, sizeof(searchBuffer), "%s", m_TemplatePageSearch.c_str());
+		if (ImGui::InputTextWithHint("##TemplateSearch", IDX_TR("launcher.templates.search_placeholder").c_str(),
+			searchBuffer, sizeof(searchBuffer))) {
+			m_TemplatePageSearch = searchBuffer;
+		}
+		ImGui::SameLine();
+		if (Icons::IconButton("##TemplatesRefresh", Icons::Type::Refresh, ImVec2(frameH, frameH))) {
+			RefreshProjectTemplates();
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("%s", IDX_TR("launcher.sort.tooltip.refresh").c_str());
+		}
+
+		std::vector<std::string> categories;
+		for (const ProjectTemplate& projectTemplate : m_ProjectTemplates) {
+			if (!projectTemplate.Category.empty()
+				&& std::find(categories.begin(), categories.end(), projectTemplate.Category) == categories.end()) {
+				categories.push_back(projectTemplate.Category);
+			}
+		}
+		if (!m_TemplatePageCategory.empty()
+			&& std::find(categories.begin(), categories.end(), m_TemplatePageCategory) == categories.end()) {
+			m_TemplatePageCategory.clear();
+		}
+		auto categoryChip = [&](const std::string& label, const std::string& value) {
+			const bool active = m_TemplatePageCategory == value;
+			ImGui::PushStyleColor(ImGuiCol_Button, active ? pal.Accent : pal.Chip);
+			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active ? pal.AccentHover : pal.CardHover);
+			ImGui::PushStyleColor(ImGuiCol_Text, active ? pal.AccentText : ImGui::GetColorU32(ImGuiCol_Text));
+			if (ImGui::Button((label + "##TemplatePageCategory").c_str())) {
+				m_TemplatePageCategory = value;
+			}
+			ImGui::PopStyleColor(3);
+		};
+		categoryChip(IDX_TR("launcher.create.template.all"), "");
+		for (const std::string& category : categories) {
+			ImGui::SameLine();
+			categoryChip(category, category);
+		}
+		ImGui::Dummy(ImVec2(0.0f, em * 0.2f));
+
+		auto toLower = [](std::string text) {
+			std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			return text;
+		};
+		const std::string needle = toLower(m_TemplatePageSearch);
+		std::vector<const ProjectTemplate*> customTemplates;
+		std::vector<const ProjectTemplate*> builtInTemplates;
+		for (const ProjectTemplate& projectTemplate : m_ProjectTemplates) {
+			if (!m_TemplatePageCategory.empty() && projectTemplate.Category != m_TemplatePageCategory) continue;
+			if (!needle.empty() && toLower(projectTemplate.DisplayName).find(needle) == std::string::npos
+				&& toLower(projectTemplate.Description).find(needle) == std::string::npos) continue;
+			(projectTemplate.IsUserTemplate ? customTemplates : builtInTemplates).push_back(&projectTemplate);
+		}
+
+		ImGui::BeginChild("##TemplateList", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
+		auto emptyText = [&](const std::string& text) {
+			ImGui::PushStyleColor(ImGuiCol_Text, pal.TextDim);
+			ImGui::PushTextWrapPos(0.0f);
+			ImGui::TextWrapped("%s", text.c_str());
+			ImGui::PopTextWrapPos();
+			ImGui::PopStyleColor();
+		};
+
+		FormSection(IDX_TR("launcher.templates.section.custom"));
+		if (!customTemplates.empty()) {
+			RenderTemplateTiles(customTemplates);
+		}
+		else {
+			emptyText(IDX_TR(needle.empty() && m_TemplatePageCategory.empty()
+				? "launcher.templates.custom_empty" : "launcher.templates.no_matches"));
+		}
+
+		ImGui::Dummy(ImVec2(0.0f, em * 0.4f));
+		FormSection(IDX_TR("launcher.templates.section.builtin"));
+		if (!builtInTemplates.empty()) {
+			RenderTemplateTiles(builtInTemplates);
+		}
+		else {
+			emptyText(IDX_TR(m_ProjectTemplates.empty() ? "launcher.create.template.none" : "launcher.templates.no_matches"));
+		}
+		ImGui::EndChild();
+
+		// m_ProjectTemplates must not be rediscovered while the tiles still point into it.
+		if (m_PendingNewProjectTemplateId.has_value()) {
+			const std::string templateId = std::move(*m_PendingNewProjectTemplateId);
+			m_PendingNewProjectTemplateId.reset();
+			BeginCreateProjectFromTemplate(templateId);
+		}
+	}
+
+	void LauncherLayer::RenderTemplateTiles(const std::vector<const ProjectTemplate*>& templates) {
+		const LauncherPalette pal = GetLauncherPalette();
+		const float em = ImGui::GetFontSize();
+		const float gap = std::round(em * 0.8f);
+		const float listW = ImGui::GetContentRegionAvail().x;
+		const int columns = std::max(1, static_cast<int>((listW + gap) / (em * 14.0f + gap)));
+		const float tileW = std::floor((listW - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns));
+		const float previewH = std::round(tileW * 9.0f / 16.0f);
+		const float pad = std::round(em * 0.75f);
+		const float tileH = previewH + std::round(em * 4.6f);
+		const float rounding = std::round(em * 0.6f);
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+
+		const ImVec2 origin = ImGui::GetCursorScreenPos();
+		for (size_t i = 0; i < templates.size(); ++i) {
+			const ProjectTemplate& projectTemplate = *templates[i];
+			const size_t col = i % static_cast<size_t>(columns);
+			const size_t row = i / static_cast<size_t>(columns);
+			ImGui::PushID(projectTemplate.Id.c_str());
+
+			const ImVec2 p0(origin.x + col * (tileW + gap), origin.y + row * (tileH + gap));
+			const ImVec2 p1(p0.x + tileW, p0.y + tileH);
+			ImGui::SetCursorScreenPos(p0);
+			ImGui::SetNextItemAllowOverlap();
+			ImGui::InvisibleButton("##TemplateTile", ImVec2(tileW, tileH));
+			const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem);
+			// Same as the project tiles: keep the actions submitted while one of them is held.
+			const bool showActions = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem
+				| ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+			if (ImGui::IsItemClicked(ImGuiMouseButton_Left) || ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+				m_TemplatePageSelectedId = projectTemplate.Id;
+			}
+			if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+				m_PendingNewProjectTemplateId = projectTemplate.Id;
+			}
+			if (ImGui::BeginPopupContextItem("##TemplateTileCtx")) {
+				RenderTemplateContextMenu(projectTemplate);
+				ImGui::EndPopup();
+			}
+			if (hovered && !projectTemplate.Description.empty() && !ImGui::IsPopupOpen("##TemplateTileCtx")) {
+				ImGui::SetItemTooltip("%s", projectTemplate.Description.c_str());
+			}
+
+			const bool selected = m_TemplatePageSelectedId == projectTemplate.Id;
+			dl->AddRectFilled(p0, p1, selected ? pal.CardSelected : hovered ? pal.CardHover : pal.Card, rounding);
+			const LauncherProjectEntry tileEntry{ projectTemplate.DisplayName, projectTemplate.RootDirectory };
+			DrawProjectThumbnail(dl, p0, ImVec2(p1.x, p0.y + previewH), tileEntry,
+				projectTemplate.PreviewImagePath.empty() ? nullptr : GetCachedImage(projectTemplate.PreviewImagePath),
+				rounding, 2.0f, ImDrawFlags_RoundCornersTop);
+			dl->AddRect(p0, p1, selected ? pal.Accent : pal.CardBorder, rounding, 0, selected ? 1.5f : 1.0f);
+
+			dl->PushClipRect(ImVec2(p0.x + pad, p0.y + previewH), ImVec2(p1.x - pad, p1.y), true);
+			float y = p0.y + previewH + pad * 0.7f;
+			ImGui::PushFont(nullptr, BaseFontSize() * 1.1f);
+			dl->AddText(ImVec2(p0.x + pad, y), ImGui::GetColorU32(ImGuiCol_Text), projectTemplate.DisplayName.c_str());
+			y += ImGui::GetTextLineHeight();
+			ImGui::PopFont();
+			const std::string description = projectTemplate.Description.empty()
+				? IDX_TR("launcher.templates.no_description") : projectTemplate.Description;
+			dl->AddText(ImVec2(p0.x + pad, y), pal.TextDim, description.c_str());
+			dl->PopClipRect();
+
+			ImGui::PushFont(nullptr, BaseFontSize() * 0.9f);
+			{
+				const float chipY = p1.y - pad * 0.6f - ImGui::GetFontSize() * 0.75f;
+				float right = p1.x - pad;
+				if (!projectTemplate.Category.empty()) {
+					right = DrawChipRightAligned(dl, right, chipY, projectTemplate.Category.c_str(), pal) - em * 0.4f;
+				}
+				if (projectTemplate.IsUserTemplate) {
+					DrawChipRightAligned(dl, right, chipY, IDX_TR("launcher.create.template.custom").c_str(), pal);
+				}
+			}
+			ImGui::PopFont();
+
+			if (showActions || selected) {
+				const float bh = ImGui::GetFrameHeight();
+				const float by = p0.y + previewH - bh - pad * 0.6f;
+				float right = p1.x - pad * 0.6f - bh;
+				ImGui::SetCursorScreenPos(ImVec2(right, by));
+				if (MoreButton("##More", bh)) {
+					m_TemplatePageSelectedId = projectTemplate.Id;
+					ImGui::OpenPopup("##TemplateTileCtx");
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("%s", IDX_TR("launcher.list.more").c_str());
+				}
+				const std::string newLabel = IDX_TR("launcher.templates.new_project");
+				const float newW = IconButtonWidth(newLabel);
+				right -= newW + em * 0.35f;
+				ImGui::SetCursorScreenPos(ImVec2(right, by));
+				if (AccentButtonWithIcon(Icons::Type::Plus, newLabel, ImVec2(newW, bh))) {
+					m_TemplatePageSelectedId = projectTemplate.Id;
+					m_PendingNewProjectTemplateId = projectTemplate.Id;
+				}
+			}
+
+			ImGui::PopID();
+		}
+		const size_t rows = (templates.size() + columns - 1) / static_cast<size_t>(columns);
+		ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + rows * (tileH + gap)));
+		ImGui::Dummy(ImVec2(0.0f, 0.0f));
+	}
+
+	void LauncherLayer::RenderTemplateContextMenu(const ProjectTemplate& projectTemplate) {
+		if (Icons::MenuItemWithIcon(Icons::Type::Plus, IDX_TR("launcher.templates.new_project").c_str())) {
+			m_PendingNewProjectTemplateId = projectTemplate.Id;
+		}
+		ImGui::Separator();
+
+		if (projectTemplate.IsUserTemplate) {
+			if (Icons::MenuItemWithIcon(Icons::Type::Pen, IDX_TR("launcher.templates.edit").c_str())) {
+				RequestEditTemplate(projectTemplate);
+			}
+			const bool hasSource = !projectTemplate.SourceProjectPath.empty()
+				&& IndexProject::Validate(projectTemplate.SourceProjectPath);
+			if (!hasSource) ImGui::BeginDisabled();
+			if (Icons::MenuItemWithIcon(Icons::Type::Play, IDX_TR("launcher.templates.open_source").c_str())) {
+				OpenTemplateSourceProject(projectTemplate);
+			}
+			if (Icons::MenuItemWithIcon(Icons::Type::Refresh, IDX_TR("launcher.templates.refresh").c_str())) {
+				m_PendingRefreshTemplate = projectTemplate;
+				m_RefreshTemplateError.clear();
+				m_OpenRefreshTemplatePopup = true;
+			}
+			if (!hasSource) ImGui::EndDisabled();
+			if (!hasSource && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+				ImGui::SetTooltip("%s", IDX_TR("launcher.templates.refresh_unavailable").c_str());
+			}
+			ImGui::Separator();
+		}
+
+		if (Icons::MenuItemWithIcon(Icons::Type::FileManager, IDX_TR("launcher.context.open_in_explorer").c_str())) {
+			if (!Platform::OpenPath(Path::FromUtf8(projectTemplate.RootDirectory))) {
+				ShowError("Failed to open the template folder");
+			}
+		}
+		if (projectTemplate.IsUserTemplate
+			&& Icons::MenuItemWithIcon(Icons::Type::Delete, IDX_TR("launcher.template_delete.menu").c_str())) {
+			m_PendingDeleteTemplate = projectTemplate;
+			m_DeleteTemplateError.clear();
+			m_OpenDeleteTemplatePopup = true;
+		}
+	}
+
+	void LauncherLayer::OpenTemplateSourceProject(const ProjectTemplate& projectTemplate) {
+		IndexProject project;
+		std::string error;
+		if (!IndexProject::TryLoad(projectTemplate.SourceProjectPath, project, &error, false)) {
+			ShowError(error);
+			return;
+		}
+		m_Registry.AddProject(project.Name, project.RootDirectory);
+		m_Registry.Save();
+		RefreshProjectsList();
+		OpenProject(LauncherProjectEntry{ project.Name, project.RootDirectory });
+	}
+
+	void LauncherLayer::RequestEditTemplate(const ProjectTemplate& projectTemplate) {
+		m_PendingEditTemplate = projectTemplate;
+		m_EditTemplateError.clear();
+		std::snprintf(m_EditTemplateNameBuffer, sizeof(m_EditTemplateNameBuffer), "%s", projectTemplate.DisplayName.c_str());
+		std::snprintf(m_EditTemplateDescriptionBuffer, sizeof(m_EditTemplateDescriptionBuffer), "%s", projectTemplate.Description.c_str());
+		std::snprintf(m_EditTemplateCategoryBuffer, sizeof(m_EditTemplateCategoryBuffer), "%s", projectTemplate.Category.c_str());
+		std::snprintf(m_EditTemplateSourceBuffer, sizeof(m_EditTemplateSourceBuffer), "%s", projectTemplate.SourceProjectPath.c_str());
+		m_OpenEditTemplatePopup = true;
+	}
+
+	void LauncherLayer::RenderEditTemplatePopup() {
+		constexpr const char* k_EditTemplateId = "###LauncherEditTemplate";
+		if (m_OpenEditTemplatePopup) {
+			ImGui::OpenPopup(k_EditTemplateId);
+			m_OpenEditTemplatePopup = false;
+		}
+
+		ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 30.0f, 0), ImGuiCond_Appearing);
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		const std::string title = IDX_TR("launcher.template_edit.title") + k_EditTemplateId;
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ImGui::GetFontSize() * 1.3f, ImGui::GetFontSize() * 1.1f));
+		const bool open = ImGui::BeginPopupModal(title.c_str(), nullptr,
+			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize);
+		ImGui::PopStyleVar();
+		if (!open) return;
+		if (!m_PendingEditTemplate.has_value()) {
+			ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+			return;
+		}
+
+		const float em = ImGui::GetFontSize();
+		const float contentW = em * 27.0f;
+		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + contentW);
+		DialogTitle(IDX_TR("launcher.template_edit.title"), IDX_TR("launcher.template_edit.subtitle"));
+		ImGui::PopTextWrapPos();
+
+		BeginFormRow(IDX_TR("launcher.template_save.name"));
+		if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+		ImGui::InputText("##EditTemplateName", m_EditTemplateNameBuffer, sizeof(m_EditTemplateNameBuffer));
+		EndFormRow();
+
+		BeginFormRow(IDX_TR("launcher.template_save.description"));
+		ImGui::InputText("##EditTemplateDescription", m_EditTemplateDescriptionBuffer, sizeof(m_EditTemplateDescriptionBuffer));
+		EndFormRow();
+
+		BeginFormRow(IDX_TR("launcher.template_save.category"));
+		ImGui::InputTextWithHint("##EditTemplateCategory", IDX_TR("launcher.template_save.category_hint").c_str(),
+			m_EditTemplateCategoryBuffer, sizeof(m_EditTemplateCategoryBuffer));
+		EndFormRow();
+
+		BeginFormRow(IDX_TR("launcher.template_edit.source"));
+		{
+			const float folderW = ImGui::GetFrameHeight();
+			ImGui::SetNextItemWidth(ImGui::CalcItemWidth() - folderW - ImGui::GetStyle().ItemInnerSpacing.x);
+			ImGui::InputTextWithHint("##EditTemplateSource", IDX_TR("launcher.template_edit.source_hint").c_str(),
+				m_EditTemplateSourceBuffer, sizeof(m_EditTemplateSourceBuffer));
+			ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+			if (Icons::IconButton("##BrowseTemplateSource", Icons::Type::OpenFolder, ImVec2(folderW, folderW))) {
+				if (const std::string picked = PickFolder(IDX_TR("launcher.template_edit.source")); !picked.empty()) {
+					std::snprintf(m_EditTemplateSourceBuffer, sizeof(m_EditTemplateSourceBuffer), "%s", picked.c_str());
+				}
+			}
+		}
+		EndFormRow();
+
+		const std::string sourcePath = m_EditTemplateSourceBuffer;
+		const bool sourceValid = sourcePath.empty() || IndexProject::Validate(sourcePath);
+		if (!sourceValid) {
+			ImGui::TextColored(ImVec4(0.96f, 0.68f, 0.26f, 1.0f), "%s", IDX_TR("launcher.template_edit.source_invalid").c_str());
+		}
+		if (!m_EditTemplateError.empty()) {
+			ImGui::Spacing();
+			ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(240, 107, 102, 255));
+			ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + contentW);
+			ImGui::TextWrapped("%s", m_EditTemplateError.c_str());
+			ImGui::PopTextWrapPos();
+			ImGui::PopStyleColor();
+		}
+
+		std::string trimmedName = m_EditTemplateNameBuffer;
+		while (!trimmedName.empty() && trimmedName.back() == ' ') trimmedName.pop_back();
+		while (!trimmedName.empty() && trimmedName.front() == ' ') trimmedName.erase(trimmedName.begin());
+		const int clicked = DialogFooter({ IDX_TR("launcher.template_edit.cancel"), IDX_TR("launcher.template_edit.save") },
+			1, !trimmedName.empty() && sourceValid);
+		if (clicked == 0) {
+			m_PendingEditTemplate.reset();
+			ImGui::CloseCurrentPopup();
+		}
+		else if (clicked == 1 && !trimmedName.empty() && sourceValid) {
+			ProjectTemplate updated;
+			if (ProjectTemplates::UpdateUserTemplate(*m_PendingEditTemplate,
+				{ trimmedName, m_EditTemplateDescriptionBuffer, m_EditTemplateCategoryBuffer }, sourcePath,
+				updated, &m_EditTemplateError)) {
+				m_PendingEditTemplate.reset();
+				RefreshProjectTemplates();
+				ImGui::CloseCurrentPopup();
+			}
+		}
+		ImGui::EndPopup();
+	}
+
+	void LauncherLayer::RenderRefreshTemplatePopup() {
+		constexpr const char* k_RefreshTemplateId = "###LauncherRefreshTemplate";
+		if (m_OpenRefreshTemplatePopup) {
+			ImGui::OpenPopup(k_RefreshTemplateId);
+			m_OpenRefreshTemplatePopup = false;
+		}
+
+		ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 28.0f, 0), ImGuiCond_Appearing);
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		const std::string title = IDX_TR("launcher.template_refresh.title") + k_RefreshTemplateId;
+		if (!ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+			return;
+		}
+		if (m_CloseRefreshTemplatePopup || !m_PendingRefreshTemplate.has_value()) {
+			m_CloseRefreshTemplatePopup = false;
+			m_PendingRefreshTemplate.reset();
+			ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+			return;
+		}
+
+		const ProjectTemplate& projectTemplate = *m_PendingRefreshTemplate;
+		ImGui::TextWrapped("%s", Localization::Format("launcher.template_refresh.message", projectTemplate.DisplayName).c_str());
+		ImGui::TextDisabled("%s", projectTemplate.SourceProjectPath.c_str());
+		ImGui::Spacing();
+		ImGui::TextWrapped("%s", IDX_TR("launcher.template_refresh.note").c_str());
+
+		if (m_IsRefreshingTemplate) {
+			RenderTemplateTaskProgress(m_RefreshTemplateTask, -1.0f);
+		}
+		if (!m_RefreshTemplateError.empty()) {
+			ImGui::Spacing();
+			ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "%s", m_RefreshTemplateError.c_str());
+		}
+
+		if (m_IsRefreshingTemplate) ImGui::BeginDisabled();
+		const int clicked = DialogFooter({ IDX_TR("launcher.template_refresh.cancel"),
+			IDX_TR("launcher.template_refresh.confirm") }, 1, !m_IsRefreshingTemplate);
+		if (m_IsRefreshingTemplate) ImGui::EndDisabled();
+		if (clicked == 0) {
+			m_PendingRefreshTemplate.reset();
+			ImGui::CloseCurrentPopup();
+		}
+		else if (clicked == 1 && !m_IsRefreshingTemplate) {
+			m_RefreshTemplateError.clear();
+			m_IsRefreshingTemplate = true;
+			StartTemplateTask(m_RefreshTemplateTask, [projectTemplate](ProjectTemplate& outTemplate, std::string& outError,
+				const ProjectTemplates::ProgressCallback& progress) {
+				return ProjectTemplates::RefreshFromSourceProject(projectTemplate, outTemplate, &outError, progress);
+			});
+		}
+		ImGui::EndPopup();
+	}
+
+	void LauncherLayer::PollRefreshTemplateTask() {
+		std::optional<ProjectTemplate> result;
+		std::string error;
+		if (!PollTemplateTask(m_RefreshTemplateTask, result, error)) return;
+
+		m_IsRefreshingTemplate = false;
+		if (result.has_value()) {
+			m_CloseRefreshTemplatePopup = true;
+			// Drop the cached preview so a new thumbnail from the project shows up.
+			m_ProjectThumbnails.erase(result->PreviewImagePath);
+			RefreshProjectTemplates();
+		}
+		else {
+			m_RefreshTemplateError = error.empty() ? std::string("Updating the template failed.") : error;
+		}
+	}
+
 	void LauncherLayer::RenderCreateProjectPopup() {
 		constexpr const char* k_CreateId = "###LauncherCreateProject";
 
@@ -2447,6 +3337,9 @@ artifacts/
 			ImGui::Dummy(ImVec2(contentW, cardH));
 		}
 
+		FormSection(IDX_TR("launcher.create.section.template"));
+		RenderTemplatePicker(contentW);
+
 		FormSection(IDX_TR("launcher.create.section.project"));
 
 		BeginFormRow(IDX_TR("launcher.create.project_name"));
@@ -2460,14 +3353,12 @@ artifacts/
 			ImGui::SetNextItemWidth(ImGui::CalcItemWidth() - folderW - ImGui::GetStyle().ItemInnerSpacing.x);
 			ImGui::InputText("##ProjLocation", m_NewProjectLocation, sizeof(m_NewProjectLocation));
 			ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-#ifdef IDX_PLATFORM_WINDOWS
 			if (Icons::IconButton("##BrowseLocation", Icons::Type::OpenFolder, ImVec2(folderW, folderW))) {
-				if (const std::string picked = PickFolder(L"Project location"); !picked.empty()) {
+				if (const std::string picked = PickFolder("Project location"); !picked.empty()) {
 					std::snprintf(m_NewProjectLocation, sizeof(m_NewProjectLocation), "%s", picked.c_str());
 				}
 			}
 			if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", IDX_TR("launcher.settings.browse").c_str());
-#endif
 		}
 		EndFormRow();
 
@@ -2487,6 +3378,7 @@ artifacts/
 		}
 
 		// Create-project progress is surfaced via the shared OS-level popup (Win32BuildProgressWindow).
+		const ProjectTemplate* selectedTemplate = GetSelectedTemplate();
 		const bool canCreate = IndexProject::IsValidProjectName(m_NewProjectName)
 			&& IndexProject::IsValidProjectName(directoryName)
 			&& !m_IsCreating;
@@ -2502,14 +3394,17 @@ artifacts/
 			StartCreateProjectAsync(std::string(m_NewProjectName),
 				std::string(m_NewProjectLocation),
 				directoryName,
-				m_NewProjectInitializeGit);
+				m_NewProjectInitializeGit,
+				selectedTemplate ? std::optional<ProjectTemplate>(*selectedTemplate) : std::nullopt);
 			IDX_INFO_TAG("Project", "Queued async project creation in {}", StringHelper::ToString(timer));
 		}
 		if (ImGui::IsKeyPressed(ImGuiKey_Enter) && canCreate && !ImGui::IsAnyItemActive()) {
 			StartCreateProjectAsync(std::string(m_NewProjectName), std::string(m_NewProjectLocation),
-				directoryName, m_NewProjectInitializeGit);
+				directoryName, m_NewProjectInitializeGit,
+				selectedTemplate ? std::optional<ProjectTemplate>(*selectedTemplate) : std::nullopt);
 		}
 
+		RenderDeleteTemplatePopup();
 		ImGui::EndPopup();
 	}
 
@@ -2530,22 +3425,15 @@ artifacts/
 			if (m_OpenTask.Running) return; // Worker already busy
 		}
 
-#ifdef IDX_PLATFORM_WINDOWS
 		// Blocks duplicate editor OR runtime for the same project; the two kinds are independent and may coexist.
 		{
 			auto it = m_RunningProjects.find(entry.Path);
 			if (it != m_RunningProjects.end()) {
-				DWORD& slot = launchRuntime ? it->second.RuntimePid : it->second.EditorPid;
+				unsigned long& slot = launchRuntime ? it->second.RuntimePid : it->second.EditorPid;
 				if (slot != 0) {
-					HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, slot);
-					if (hProc) {
-						DWORD exitCode = 0;
-						if (GetExitCodeProcess(hProc, &exitCode) && exitCode == STILL_ACTIVE) {
-							CloseHandle(hProc);
-							ShowError(IDX_TR("launcher.error.project_already_open"));
-							return;
-						}
-						CloseHandle(hProc);
+					if (Process::IsProcessRunning(slot)) {
+						ShowError(IDX_TR("launcher.error.project_already_open"));
+						return;
 					}
 					slot = 0;
 				}
@@ -2554,7 +3442,6 @@ artifacts/
 				}
 			}
 		}
-#endif
 
 		// Initialize task state and spawn the worker. The render thread shows progress
 		// from the task state each frame; PollOpenProjectTask collects results.
@@ -2568,9 +3455,7 @@ artifacts/
 			m_OpenTask.Running = true;
 			m_OpenTask.Finished = false;
 			m_OpenTask.Success = false;
-#ifdef IDX_PLATFORM_WINDOWS
 			m_OpenTask.SpawnedProcessId = 0;
-#endif
 		}
 
 		if (m_OpenTask.Worker.joinable()) {
@@ -2584,7 +3469,21 @@ artifacts/
 		m_OpeningProjectName = entry.Name;
 
 		m_OpenTask.Worker = std::thread([this, entry, launchRuntime]() {
-			OpenProjectWorkerBody(entry, launchRuntime);
+			// An exception escaping a std::thread body calls std::terminate (e.g. filesystem_error on a dropped network path).
+			std::string error;
+			try {
+				OpenProjectWorkerBody(entry, launchRuntime);
+				return;
+			}
+			catch (const std::exception& e) { error = e.what(); }
+			catch (...) { error = "Unknown error"; }
+			std::scoped_lock lock(m_OpenTask.Mutex);
+			m_OpenTask.Stage = "Failed";
+			m_OpenTask.Progress = 1.0f;
+			m_OpenTask.Error = "Opening the project failed: " + error;
+			m_OpenTask.Finished = true;
+			m_OpenTask.Running = false;
+			m_OpenTask.Success = false;
 		});
 	}
 
@@ -2725,9 +3624,41 @@ artifacts/
 		m_OpenTask.Finished = true;
 		m_OpenTask.Running = false;
 #else
-		fail(launchRuntime
-			? "Project execute is only implemented on Windows."
-			: "Project open is only implemented on Windows.");
+		const std::filesystem::path exeDir = Platform::GetExecutableDirectory();
+		const char* executableName = launchRuntime ? "Index-Runtime" : "Index-Editor";
+
+		std::filesystem::path targetExe = exeDir / executableName;
+		if (!std::filesystem::exists(targetExe)) {
+			targetExe = exeDir / ".." / executableName / executableName;
+		}
+		if (!std::filesystem::exists(targetExe)) {
+			fail(std::string(executableName) + " not found.");
+			return;
+		}
+
+		std::error_code canonicalError;
+		std::filesystem::path resolvedTargetExe = std::filesystem::weakly_canonical(targetExe, canonicalError);
+		if (canonicalError) {
+			resolvedTargetExe = targetExe.lexically_normal();
+		}
+
+		unsigned long spawnedPid = 0;
+		if (!Process::LaunchDetached({ Path::ToUtf8(resolvedTargetExe), "--project=" + entry.Path },
+				resolvedTargetExe.parent_path(), spawnedPid)) {
+			fail(std::string("Failed to launch ") + (launchRuntime ? "runtime." : "editor."));
+			return;
+		}
+
+		IDX_INFO_TAG("Launcher", "{} project: {} at {}",
+			launchRuntime ? "Executed" : "Opened", entry.Name, entry.Path);
+
+		std::scoped_lock lock(m_OpenTask.Mutex);
+		m_OpenTask.Stage = launchRuntime ? "Runtime launched" : "Editor launched";
+		m_OpenTask.Progress = 1.0f;
+		m_OpenTask.SpawnedProcessId = spawnedPid;
+		m_OpenTask.Success = true;
+		m_OpenTask.Finished = true;
+		m_OpenTask.Running = false;
 #endif
 	}
 
@@ -2737,9 +3668,7 @@ artifacts/
 		bool launchRuntime = false;
 		std::string error;
 		LauncherProjectEntry entry;
-#ifdef IDX_PLATFORM_WINDOWS
-		DWORD pid = 0;
-#endif
+		unsigned long pid = 0;
 
 		{
 			std::scoped_lock lock(m_OpenTask.Mutex);
@@ -2749,9 +3678,7 @@ artifacts/
 			launchRuntime = m_OpenTask.LaunchRuntime;
 			error = m_OpenTask.Error;
 			entry = m_OpenTask.Entry;
-#ifdef IDX_PLATFORM_WINDOWS
 			pid = m_OpenTask.SpawnedProcessId;
-#endif
 			m_OpenTask.Finished = false;
 		}
 
@@ -2766,10 +3693,8 @@ artifacts/
 			m_OpenStartTime = std::chrono::steady_clock::now();
 			m_OpeningProjectName = entry.Name;
 			m_DeferredUpdatePath = entry.Path;
-#ifdef IDX_PLATFORM_WINDOWS
 			auto& slots = m_RunningProjects[entry.Path];
 			(launchRuntime ? slots.RuntimePid : slots.EditorPid) = pid;
-#endif
 		}
 		else {
 			const std::string msg = error.empty()
@@ -2856,6 +3781,7 @@ artifacts/
 		else if (Win32BuildProgressWindow::IsVisible()) {
 			Win32BuildProgressWindow::Hide();
 		}
+		EditorRuntime::RenderBuildProgressOverlay();
 	}
 
 	void LauncherLayer::OpenProjectInExplorer(const LauncherProjectEntry& entry) {
@@ -2865,25 +3791,9 @@ artifacts/
 			return;
 		}
 
-#ifdef IDX_PLATFORM_WINDOWS
-		const std::wstring projectPath = Utf8ToWide(entry.Path);
-		if (projectPath.empty() && !entry.Path.empty()) {
-			ShowError("Project path is not valid UTF-8");
-			return;
+		if (!Platform::OpenPath(Path::FromUtf8(entry.Path))) {
+			ShowError("Failed to open project in the file manager");
 		}
-
-		const HINSTANCE result = ShellExecuteW(nullptr, L"open", projectPath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-		const INT_PTR resultCode = reinterpret_cast<INT_PTR>(result);
-		if (resultCode <= 32) {
-			ShowError("Failed to open project in Explorer (code " + std::to_string(resultCode) + ")");
-		}
-#elif defined(IDX_PLATFORM_LINUX)
-		if (!Process::LaunchDetached({ "xdg-open", entry.Path })) {
-			ShowError("Failed to open project in file manager");
-		}
-#else
-		ShowError("Open in Explorer is not supported on this platform");
-#endif
 	}
 
 	bool LauncherLayer::DeleteProjectFromDisk(const LauncherProjectEntry& entry) {
@@ -2950,8 +3860,7 @@ artifacts/
 	// ── Browse for Existing Project ─────────────────────────────────
 
 	void LauncherLayer::BrowseForExistingProject() {
-#ifdef IDX_PLATFORM_WINDOWS
-		const std::string path = PickFolder(L"Select Index Project Folder");
+		const std::string path = PickFolder("Select Index Project Folder");
 		if (path.empty()) return;
 		if (!IndexProject::Validate(path)) {
 			ShowError("Not a valid Index project (missing project.json or Assets/)");
@@ -2966,7 +3875,6 @@ artifacts/
 		else {
 			ShowError(loadError);
 		}
-#endif
 	}
 
 	// ── Sort / Refresh / Settings ───────────────────────────────────
@@ -3719,11 +4627,9 @@ artifacts/
 	}
 
 	void LauncherLayer::BrowseForDefaultProjectsLocation() {
-#ifdef IDX_PLATFORM_WINDOWS
-		if (std::string path = PickFolder(L"Default projects location"); !path.empty()) {
+		if (std::string path = PickFolder("Default projects location"); !path.empty()) {
 			m_DefaultProjectsLocation = std::move(path);
 		}
-#endif
 	}
 
 	// ── Asset Library ─────────────────────────────────────────────────
@@ -3924,6 +4830,13 @@ artifacts/
 								if (!entryVal.IsObject()) continue;
 								AssetLibraryEntry e = ParseLibraryEntry(entryVal);
 								if (e.Id.empty() || e.Name.empty() || e.ArchiveUrl.empty()) continue;
+								// The id becomes a path component for the download zip and staging dir; a remote
+								// index must not be able to steer those outside .asset-library-staging.
+								const bool safeId = e.Id != "." && e.Id != ".."
+									&& std::all_of(e.Id.begin(), e.Id.end(), [](char c) {
+										return std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.';
+									});
+								if (!safeId) continue;
 								parsed.push_back(std::move(e));
 							}
 						}
@@ -4155,6 +5068,8 @@ artifacts/
 				}
 				else { out.push_back(c); }
 			}
+			// "." / ".." (or a name of only dots) would resolve outside the projects directory.
+			if (out.find_first_not_of('.') == std::string::npos) out = "Project";
 			return out;
 		};
 		std::filesystem::path finalDir = std::filesystem::path(baseDir) / sanitize(entry.Name);
@@ -4177,6 +5092,8 @@ artifacts/
 		IndexProject loaded;
 		std::string loadError;
 		if (!IndexProject::TryLoad(finalDir.string(), loaded, &loadError)) {
+			// Not registered anywhere, so remove it; otherwise each retry leaves a Name-1, Name-2, ... orphan.
+			std::filesystem::remove_all(finalDir, ec);
 			fail("Project failed to load: " + loadError);
 			return;
 		}

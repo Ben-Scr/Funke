@@ -1,8 +1,14 @@
 #pragma once
 #include "Editor/IndexPackageInstaller.hpp"
+#include "Packages/PackageLock.hpp"
 #include "Packages/PackageManager.hpp"
+#include "Packages/PackageRegistryIndex.hpp"
+#include "Packages/PackageResolver.hpp"
+
+#include "Core/EngineModules.hpp"
 
 #include <atomic>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -22,7 +28,13 @@ namespace Index {
 		// for the shared Win32BuildProgressWindow (editor chrome owns that popup, not the panel).
 		bool GetActiveLoadingPopup(std::string& outTitle, std::string& outStage, float& outProgress);
 
+		// Engine module changes apply on an editor reload; the host decides how to run one (unsaved-work prompt).
+		void SetReloadEditorCallback(std::function<void()> callback) { m_ReloadEditor = std::move(callback); }
+
 	private:
+		// ShowAll = Search tab (Install button for missing); InstalledOnly = Installed tab (skip missing).
+		enum class RowMode { ShowAll, InstalledOnly };
+
 		// ── Top-level tabs ──────────────────────────────────────────────────────────
 		void RenderSearchPackagesTab();
 		void RenderInstalledPackagesTab();
@@ -31,8 +43,21 @@ namespace Index {
 		void RenderIndexRegistrySection();
 		void RefreshRegistryIfDirty();
 		void PollRegistryFetchTask();
-		struct RegistryEntry;
-		void HandleCloudInstall(const RegistryEntry& entry);
+		// Plans the install/update (dependencies included) and starts the download worker.
+		void HandleRegistryInstall(const std::string& packageName, bool update);
+		void StartRegistrySteps(std::vector<PackageInstallStep> steps, std::string requestedName, std::string title);
+		void HandleRestoreFromLock();
+		void RenderLockRestoreBanner();
+		void RenderDependencyLine(const std::vector<PackageDependency>& dependencies);
+
+		// ── Engine modules (Index.2D / Index.3D, project.json `modules`) ──────────
+		void RenderEngineModulesSection(RowMode mode);
+		void RenderEngineModuleRow(EngineModule module, const char* idHint);
+		void RenderModuleRequirementLine(const std::vector<std::string>& modules);
+		// Shown while project.json lists other modules than the running editor applied.
+		void RenderModuleReloadBanner();
+		// Newest registry release that fits the engine and every installed dependent, if newer than `manifest`.
+		const RegistryPackageVersion* FindRegistryUpdate(const IndexPackageManifest& manifest) const;
 		// Floating add-package windows opened from the "+" button's drop-down menu.
 		void RenderGitInstallWindow();
 		void RenderNuGetInstallWindow();
@@ -51,15 +76,14 @@ namespace Index {
 		// ── Shared helpers ─────────────────────────────────────────────────────────
 		void RefreshManifestsIfDirty();
 		void RenderLayerBadges(const IndexPackageManifest& manifest);
-		// ShowAll = Search tab (Install button for missing); InstalledOnly = Installed tab (skip missing).
-		enum class RowMode { ShowAll, InstalledOnly };
 		void RenderIndexPackageRow(const IndexPackageManifest& manifest, const char* idHint, RowMode mode);
 		void RenderNugetPackageRow(const PackageInfo& pkg, int index);
 		void TriggerNuGetSearch();
-		bool BrowseForLocalFolder(std::string& outPath);
 
 		// True if `name` is in the active project's Packages allow-list.
 		bool IsPackageInstalled(const std::string& name) const;
+		// Loaded only because a listed package depends on it.
+		bool IsDependencyOnly(const std::string& name) const;
 
 		// Native installs roll back when the built library cannot load; managed-only installs do not enter PackageHost.
 		void StartPostInstallAutomation(const std::string& justInstalledPackageName = {});
@@ -68,6 +92,7 @@ namespace Index {
 		void PollAutomationTask();
 
 		std::string m_PendingPostInstallPackageName;
+		std::function<void()> m_ReloadEditor;
 
 		struct AutomationTaskState {
 			std::mutex Mutex;
@@ -83,7 +108,7 @@ namespace Index {
 		std::shared_ptr<AutomationTaskState> m_AutomationTask;
 		std::thread m_AutomationWorker;
 
-		// IFileOpenDialog::Show is modal/blocking — runs in a worker STA thread to avoid freezing the editor UI.
+		// Filled by the asynchronous OS folder dialog (Platform::PickFolderAsync).
 		struct DiskInstallTaskState {
 			std::mutex Mutex;
 			std::atomic<bool> Running{ false };
@@ -91,27 +116,9 @@ namespace Index {
 			std::string PickedPath; // empty if the user cancelled
 		};
 		std::shared_ptr<DiskInstallTaskState> m_DiskInstallTask;
-		std::thread m_DiskInstallWorker;
 		void PollDiskInstallTask();
 
-		// TODO(registry-v2): add explicit version pinning per project.
-		struct RegistryEntry {
-			std::string Name;
-			std::string Version;
-			std::string Description;
-			std::string DownloadUrl;
-			std::string Sha256;
-			std::vector<std::string> Dependencies;
-			std::string MinEngineVersion;
-			std::string Homepage;
-			std::string License;
-			std::uint64_t SizeBytes = 0;
-			bool HasNativeLayer = false;
-			bool HasNativeStandaloneLayer = false;
-			bool HasCSharpLayer = false;
-		};
-
-		std::vector<RegistryEntry> m_RegistryEntries;
+		std::vector<RegistryPackage> m_RegistryEntries;
 		bool m_RegistryDirty = true;       // true on first open / after manual Refresh
 		std::string m_RegistryStatusMessage;
 		bool m_RegistryStatusIsError = false;
@@ -128,13 +135,6 @@ namespace Index {
 		std::shared_ptr<RegistryFetchTaskState> m_RegistryFetchTask;
 		std::thread m_RegistryFetchWorker;
 
-		// Parse the JSON the C# tool wrote into RegistryEntry rows.
-		// Sets outError when the document is missing required structure;
-		// silently skips individual malformed entries.
-		static void ParseRegistry(const std::string& jsonText,
-			std::vector<RegistryEntry>& outEntries,
-			std::string& outError);
-
 		struct CloudInstallTaskState {
 			std::mutex Mutex;
 			std::string Title = "Downloading...";
@@ -145,6 +145,10 @@ namespace Index {
 			bool Success = false;
 			std::string Error;
 			std::string PackageName; // set on success — drives InstallToProject
+			// Empty for restores: nothing is added to project.json.
+			std::string RequestedName;
+			// Lock entries for every release that was downloaded and verified.
+			std::vector<PackageLockEntry> LockHints;
 		};
 		std::shared_ptr<CloudInstallTaskState> m_CloudInstallTask;
 		std::thread m_CloudInstallWorker;
@@ -223,6 +227,10 @@ namespace Index {
 		// Cached enumerations
 		std::vector<IndexPackageManifest> m_AllManifests;
 		bool m_ManifestsDirty = true;
+		// Refreshed with m_AllManifests.
+		PackageResolution m_Resolution;
+		PackageLock m_Lock;
+		std::vector<PackageLockEntry> m_MissingLockedPackages;
 
 		// NuGet installed cache (still useful for the Installed tab)
 		std::vector<PackageInfo> m_InstalledNuGetPackages;
