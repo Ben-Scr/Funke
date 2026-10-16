@@ -291,7 +291,8 @@ public class Entity : IEquatable<Entity>
         return null;
     }
 
-    internal static Entity FromPrefabGUID(ulong prefabGuid)
+    /// <summary>The prefab asset with this GUID (<see cref="PrefabGUID"/>), ready for <see cref="Instantiate(Entity)"/>; Invalid for 0.</summary>
+    public static Entity FromPrefabGUID(ulong prefabGuid)
         => prefabGuid != 0 ? new Entity(0, prefabGuid) : Invalid;
 
     internal static string? GetNativeComponentName<T>() where T : Component, new() => GetNativeName<T>();

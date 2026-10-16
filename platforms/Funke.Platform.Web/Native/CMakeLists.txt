@@ -20,10 +20,15 @@ foreach(required ${_required})
     endif()
 endforeach()
 
-# The engine relies on C++ exceptions; native wasm exceptions are supported by every WebGPU browser
-# and are what the .NET runtime is built with.
+# The engine relies on C++ exceptions; native wasm exceptions are supported by every WebGPU browser.
 add_compile_options(-fwasm-exceptions)
 add_link_options(-fwasm-exceptions)
+if(FUNKE_WEB_MANAGED)
+    # .NET 11 builds its runtime with the new (exnref) encoding; browsers refuse a module that mixes it
+    # with the legacy one ("module uses a mix of legacy and new exception handling instructions").
+    add_compile_options(-sWASM_LEGACY_EXCEPTIONS=0)
+    add_link_options(-sWASM_LEGACY_EXCEPTIONS=0)
+endif()
 # Box2D's wasm path uses SSE2 intrinsics, which Emscripten maps onto WebAssembly SIMD.
 add_compile_options(-msimd128 -msse2)
 set(_port "--use-port=${FUNKE_EMDAWNWEBGPU_PORT}")

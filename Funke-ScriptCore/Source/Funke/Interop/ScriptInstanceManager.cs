@@ -3114,7 +3114,51 @@ internal static class ScriptInstanceManager
             if (type != null) return type;
         }
 
-        return null;
+        return FindPackageType(className);
+    }
+
+    // Scripts shipped in packages (Pkg.*.dll): by full name, or by class name when only one package type has it.
+    private static Type? FindPackageType(string className)
+    {
+        Type? match = null;
+        foreach (Assembly assembly in PackageAssemblies())
+        {
+            Type? type = assembly.GetType(className) ?? assembly.GetType($"Funke.{className}");
+            if (type != null) return type;
+            if (className.Contains('.')) continue;
+            foreach (Type candidate in EditorWindowRegistry.LoadableTypes(assembly))
+            {
+                if (!candidate.IsPublic || candidate.Name != className) continue;
+                if (match != null && match != candidate)
+                {
+                    Log.Warn($"[ScriptLoader] '{className}' exists in more than one package ({match.FullName}, {candidate.FullName}); use the full type name.");
+                    return null;
+                }
+                match = candidate;
+            }
+        }
+        return match;
+    }
+
+    private static IEnumerable<Assembly> PackageAssemblies()
+    {
+        Assembly? user = s_UserAssembly;
+        if (user == null) yield break;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // References work where there is no assembly folder to scan (Web, Mono AOT); the scan finds packages the game never names in code.
+        foreach (AssemblyName reference in user.GetReferencedAssemblies())
+        {
+            string? name = reference.Name;
+            if (name == null || !name.StartsWith("Pkg.", StringComparison.Ordinal) || !seen.Add(name)) continue;
+            Assembly? assembly = LoadIntoUserContext(name);
+            if (assembly != null) yield return assembly;
+        }
+        foreach (Assembly assembly in EditorWindowRegistry.ScanAssemblies())
+        {
+            string? name = assembly.GetName().Name;
+            if (assembly == user || name == null || !seen.Add(name)) continue;
+            yield return assembly;
+        }
     }
 }
 

@@ -178,6 +178,14 @@ Package::DeclareComponentConflict<MyLootComponent, Funke::SomeOtherComponent>();
 
 ---
 
+## Scripts in a C# package
+
+A `csharp` layer can ship `EntityScript`s, `SceneSystem`s and `GlobalSystem`s like a game's own scripts. Scenes and prefabs name them by full class name (`"className": "MyGame.Loot.LootDrop"`), or by class name alone when no other package has a class with that name. Public fields show in the Inspector and are saved like any script field.
+
+The editor's **Add Component** menu lists only scripts under `Assets/` for now. Users of the package add a script through scene/prefab JSON, or by deriving an empty class in their game (`public class Drop : LootDrop { }`).
+
+---
+
 ## Bridging C# to C++ (P/Invoke)
 
 If your package has **both** a native and a csharp layer, the C# side can call into the C++ side. This is useful when you want fast native data with a friendly managed API on top.

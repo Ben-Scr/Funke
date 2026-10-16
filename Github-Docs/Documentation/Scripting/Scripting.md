@@ -254,6 +254,19 @@ anim.FramesPerSecond = 16f;
 if (!anim.IsPlaying) anim.Play();   // Pause() keeps the frame, Stop() rewinds
 ```
 
+**Multiplayer** — the **Funke.Networking** package (Package Manager) hosts and joins games on every platform: desktop, Android and iOS over UDP, browsers over WebSocket, all on the same server. Messages are structs implementing `INetMessage`; prefabs spawned by the server appear on every client, and a **NetworkTransform2D** / **NetworkTransform3D** script on them keeps their movement smooth on the other screens:
+
+```csharp
+using Funke.Networking;
+NetworkManager.StartHost();                                    // or StartServer(), StartClient("192.168.0.5")
+NetworkServer.ClientConnected += client => NetworkServer.Spawn(PlayerPrefab, Vector3.Zero, 0f, ownerId: client.Id);
+NetworkServer.RegisterHandler<Chat>((from, chat) => NetworkServer.SendToAll(chat));
+NetworkClient.Send(new Chat { Text = "hi" });
+if (NetworkObject.Of(Entity) is { IsOwner: true }) Move();     // scripts run everywhere; only the owner moves
+```
+
+Scripts that ship in a package are added to scenes and prefabs by their full class name (`"className": "Funke.Networking.NetworkObject"`). The full API, browser hosting (`wss://`) and internet play are in the package's [README](https://github.com/Ben-Scr/Index-PackageRegistry/tree/main/packages/Funke.Networking).
+
 **Post-processing** — add **Post Processing** to the entity with the main **Camera 2D** (its *Post Processing* toggle must stay on). `PostProcessing2D` exposes each effect as a value struct: read it, change fields, assign it back.
 
 ```csharp
