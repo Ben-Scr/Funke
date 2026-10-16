@@ -5,7 +5,7 @@
 ## How it was tested
 
 - [ ] `scripts\RunTests.bat --release`
-- [ ] `dotnet test Tests\Index-ScriptCore-Tests\Index-ScriptCore-Tests.csproj -c Release`
+- [ ] `dotnet test Tests\Funke-ScriptCore-Tests\Funke-ScriptCore-Tests.csproj -c Release`
 - [ ] Tried it in the editor (describe what you did)
 
 ## Checklist

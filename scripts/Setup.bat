@@ -2,13 +2,13 @@
 setlocal enabledelayedexpansion
 pushd %~dp0
 echo ============================================
-echo   Index Engine Setup
+echo   Funke Engine Setup
 echo ============================================
 echo.
 
-REM Pre-approve installs via -y / --assume-yes / --yes, or INDEX_SETUP_ASSUME_YES=1.
+REM Pre-approve installs via -y / --assume-yes / --yes, or FUNKE_SETUP_ASSUME_YES=1.
 set "ASSUME_YES="
-if /i "%INDEX_SETUP_ASSUME_YES%"=="1" set "ASSUME_YES=1"
+if /i "%FUNKE_SETUP_ASSUME_YES%"=="1" set "ASSUME_YES=1"
 echo %* | findstr /i /c:"--assume-yes" /c:"--yes" /c:"-y" >nul && set "ASSUME_YES=1"
 
 call :find_python
@@ -27,7 +27,7 @@ PAUSE
 exit /b 1
 
 :have_python
-echo [Index Setup] Using Python: %PYTHON_VERSION%
+echo [Funke Setup] Using Python: %PYTHON_VERSION%
 %PYTHON% Setup.py %*
 set "EXITCODE=%ERRORLEVEL%"
 PAUSE
@@ -66,27 +66,27 @@ goto :eof
 
 REM ---------------------------------------------------------------------------
 :offer_python_install
-echo [Index Setup] Python 3.10+ was not found.
-if defined PYTHON_VERSION echo [Index Setup] Closest match: %PYTHON_VERSION%
+echo [Funke Setup] Python 3.10+ was not found.
+if defined PYTHON_VERSION echo [Funke Setup] Closest match: %PYTHON_VERSION%
 where winget >nul 2>&1
 if errorlevel 1 (
-    echo [Index Setup] winget is unavailable, so Python cannot be installed automatically.
-    echo [Index Setup] Install it from https://www.python.org/downloads/ and re-run setup.
+    echo [Funke Setup] winget is unavailable, so Python cannot be installed automatically.
+    echo [Funke Setup] Install it from https://www.python.org/downloads/ and re-run setup.
     goto :eof
 )
 set "DOINSTALL="
 if defined ASSUME_YES (
     set "DOINSTALL=1"
 ) else (
-    set /p "ANSWER=[Index Setup] Install Python 3.12 via winget now? [Y/n] "
+    set /p "ANSWER=[Funke Setup] Install Python 3.12 via winget now? [Y/n] "
     if /i "!ANSWER!"=="" set "DOINSTALL=1"
     if /i "!ANSWER!"=="y" set "DOINSTALL=1"
     if /i "!ANSWER!"=="yes" set "DOINSTALL=1"
 )
 if not defined DOINSTALL (
-    echo [Index Setup] Skipping Python installation.
+    echo [Funke Setup] Skipping Python installation.
     goto :eof
 )
-echo [Index Setup] Installing Python 3.12 via winget...
+echo [Funke Setup] Installing Python 3.12 via winget...
 winget install --exact --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements --disable-interactivity
 goto :eof

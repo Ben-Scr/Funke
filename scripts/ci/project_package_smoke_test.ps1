@@ -13,7 +13,7 @@ if ($EngineRoot) {
 }
 $projectRoot = Join-Path $repoRoot "Tests\Fixtures\ProjectPackages"
 $packageBuildParent = [System.IO.Path]::GetFullPath(
-    (Join-Path $projectRoot ".index\build")
+    (Join-Path $projectRoot ".funke\build")
 )
 $packageBuildRoot = [System.IO.Path]::GetFullPath(
     (Join-Path $packageBuildParent "packages")
@@ -41,7 +41,7 @@ foreach ($requiredTool in @($premake, $generator, $newPackageScript, $removePack
     }
 }
 
-& $premake "--file=$generator" "--index-project=$projectRoot" vs2022
+& $premake "--file=$generator" "--funke-project=$projectRoot" vs2022
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
@@ -53,7 +53,7 @@ if (-not $msbuild) {
     throw "MSBuild.exe not found via vswhere."
 }
 
-$generatedRoot = Join-Path $projectRoot ".index\build\packages\generated"
+$generatedRoot = Join-Path $projectRoot ".funke\build\packages\generated"
 $nativeProject = Join-Path $generatedRoot "Pkg.Game.TestPackage.Native\Pkg.Game.TestPackage.Native.vcxproj"
 $managedProject = Join-Path $generatedRoot "Pkg.Game.TestPackage\Pkg.Game.TestPackage.csproj"
 $pathValue = $env:PATH
@@ -71,11 +71,11 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$outputRoot = Join-Path $projectRoot ".index\build\packages\bin\$Configuration-windows-x86_64"
+$outputRoot = Join-Path $projectRoot ".funke\build\packages\bin\$Configuration-windows-x86_64"
 $expected = @(
     (Join-Path $outputRoot "Pkg.Game.TestPackage\Pkg.Game.TestPackage.dll"),
     (Join-Path $outputRoot "Pkg.Game.TestPackage.Native\Pkg.Game.TestPackage.Native.dll"),
-    (Join-Path $outputRoot "Pkg.Game.TestPackage.Native\Pkg.Game.TestPackage.Native.dll.indexabi")
+    (Join-Path $outputRoot "Pkg.Game.TestPackage.Native\Pkg.Game.TestPackage.Native.dll.funkeabi")
 )
 foreach ($artifact in $expected) {
     if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
@@ -88,12 +88,12 @@ if ($standaloneMetadata -notmatch "(?m)^schema=1\r?$" -or
     throw "Standalone package ABI metadata was invalid: $($expected[2])"
 }
 
-if (-not ("IndexPackageSmoke.NativeMethods" -as [type])) {
+if (-not ("FunkePackageSmoke.NativeMethods" -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 
-namespace IndexPackageSmoke
+namespace FunkePackageSmoke
 {
     public static class NativeMethods
     {
@@ -111,22 +111,22 @@ namespace IndexPackageSmoke
 '@
 }
 
-$nativeHandle = [IndexPackageSmoke.NativeMethods]::LoadLibrary($expected[1])
+$nativeHandle = [FunkePackageSmoke.NativeMethods]::LoadLibrary($expected[1])
 if ($nativeHandle -eq [IntPtr]::Zero) {
     $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
     throw "Project package library was not loadable (Win32 error $errorCode): $($expected[1])"
 }
 try {
-    $nativeExport = [IndexPackageSmoke.NativeMethods]::GetProcAddress(
+    $nativeExport = [FunkePackageSmoke.NativeMethods]::GetProcAddress(
         $nativeHandle,
-        "IndexTestPackage_Value"
+        "FunkeTestPackage_Value"
     )
     if ($nativeExport -eq [IntPtr]::Zero) {
-        throw "Project package export was not loadable: IndexTestPackage_Value"
+        throw "Project package export was not loadable: FunkeTestPackage_Value"
     }
 }
 finally {
-    [void][IndexPackageSmoke.NativeMethods]::FreeLibrary($nativeHandle)
+    [void][FunkePackageSmoke.NativeMethods]::FreeLibrary($nativeHandle)
 }
 
 $lifecycleRoot = Join-Path $repoRoot ".scratch\package-lifecycle-smoke"
@@ -139,7 +139,7 @@ Copy-Item -LiteralPath (Join-Path $projectRoot "project.json") -Destination $lif
 Copy-Item -LiteralPath (Join-Path $projectRoot "Packages") -Destination $lifecycleRoot -Recurse
 
 try {
-    & $premake "--file=$generator" "--index-project=$lifecycleRoot" vs2022
+    & $premake "--file=$generator" "--funke-project=$lifecycleRoot" vs2022
     if ($LASTEXITCODE -ne 0) {
         throw "Initial lifecycle workspace generation failed."
     }
@@ -149,12 +149,12 @@ try {
         throw "Project-local package removal failed."
     }
 
-    $removedProject = Join-Path $lifecycleRoot ".index\build\packages\generated\Pkg.Game.TestPackage"
+    $removedProject = Join-Path $lifecycleRoot ".funke\build\packages\generated\Pkg.Game.TestPackage"
     if (Test-Path -LiteralPath $removedProject) {
         throw "Removed package remained in the generated workspace."
     }
 
-    $emptyProject = Join-Path $lifecycleRoot ".index\build\packages\generated\IndexProjectPackages.Empty\IndexProjectPackages.Empty.vcxproj"
+    $emptyProject = Join-Path $lifecycleRoot ".funke\build\packages\generated\FunkeProjectPackages.Empty\FunkeProjectPackages.Empty.vcxproj"
     if (-not (Test-Path -LiteralPath $emptyProject -PathType Leaf)) {
         throw "The empty package workspace was not generated."
     }
@@ -164,7 +164,7 @@ try {
         throw "Project-local package creation failed."
     }
 
-    $lifecycleGenerated = Join-Path $lifecycleRoot ".index\build\packages\generated"
+    $lifecycleGenerated = Join-Path $lifecycleRoot ".funke\build\packages\generated"
     $lifecycleNative = Join-Path $lifecycleGenerated "Pkg.Game.GeneratedSmoke.Native\Pkg.Game.GeneratedSmoke.Native.vcxproj"
     $lifecycleManaged = Join-Path $lifecycleGenerated "Pkg.Game.GeneratedSmoke\Pkg.Game.GeneratedSmoke.csproj"
     $restoreAssets = Join-Path (Split-Path $lifecycleManaged) "obj\project.assets.json"
@@ -184,18 +184,18 @@ try {
         throw "Generated managed package build failed."
     }
 
-    $lifecycleOutput = Join-Path $lifecycleRoot ".index\build\packages\bin\$Configuration-windows-x86_64"
+    $lifecycleOutput = Join-Path $lifecycleRoot ".funke\build\packages\bin\$Configuration-windows-x86_64"
     $lifecycleExpected = @(
         (Join-Path $lifecycleOutput "Pkg.Game.GeneratedSmoke\Pkg.Game.GeneratedSmoke.dll"),
         (Join-Path $lifecycleOutput "Pkg.Game.GeneratedSmoke.Native\Pkg.Game.GeneratedSmoke.Native.dll"),
-        (Join-Path $lifecycleOutput "Pkg.Game.GeneratedSmoke.Native\Pkg.Game.GeneratedSmoke.Native.dll.indexabi")
+        (Join-Path $lifecycleOutput "Pkg.Game.GeneratedSmoke.Native\Pkg.Game.GeneratedSmoke.Native.dll.funkeabi")
     )
     foreach ($artifact in $lifecycleExpected) {
         if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
             throw "Generated package output missing: $artifact"
         }
     }
-    $engineDll = Join-Path $packageEngineRoot "bin\$Configuration-windows-x86_64\Index-Engine\Index-Engine.dll"
+    $engineDll = Join-Path $packageEngineRoot "bin\$Configuration-windows-x86_64\Funke-Engine\Funke-Engine.dll"
     if (-not (Test-Path -LiteralPath $engineDll -PathType Leaf)) {
         throw "Matching engine DLL was not found: $engineDll"
     }

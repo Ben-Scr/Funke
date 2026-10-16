@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the .indexabi sidecar next to a freshly linked native package library (Linux / macOS).
+"""Write the .funkeabi sidecar next to a freshly linked native package library (Linux / macOS).
 
 PackageHost refuses a native package whose sidecar is missing or names a different engine binary.
 Windows writes the same file from a PowerShell postbuild (premake/package-loader.lua).
@@ -32,7 +32,7 @@ def main() -> int:
             print(f"WriteNativeAbi: matching engine library was not built: {engine}", file=sys.stderr)
             return 1
         lines.append("engine_sha256=" + hashlib.sha256(engine.read_bytes()).hexdigest())
-    Path(str(library) + ".indexabi").write_text("\n".join(lines) + "\n", encoding="ascii")
+    Path(str(library) + ".funkeabi").write_text("\n".join(lines) + "\n", encoding="ascii")
     return 0
 
 

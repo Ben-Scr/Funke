@@ -50,19 +50,19 @@ $premake = $premakeCandidates | Where-Object {
 } | Select-Object -First 1
 
 Require-File -Path $generator -Description "Project package generator"
-Require-File -Path $projectFile -Description "Index project manifest"
+Require-File -Path $projectFile -Description "Funke project manifest"
 Require-File -Path $MSBuildPath -Description "MSBuild"
 if (-not $premake) {
     throw "premake5.exe was not found below '$engineRootPath'."
 }
 
 Write-Host "Generating package workspace for '$projectRootPath'..."
-& $premake "--file=$generator" "vs2022" "--index-project=$projectRootPath"
+& $premake "--file=$generator" "vs2022" "--funke-project=$projectRootPath"
 if ($LASTEXITCODE -ne 0) {
     throw "Project package generation failed with exit code $LASTEXITCODE."
 }
 
-$workspaceRoot = Join-Path $projectRootPath ".index\build\packages"
+$workspaceRoot = Join-Path $projectRootPath ".funke\build\packages"
 $generatedRoot = Join-Path $workspaceRoot "generated"
 if (-not (Test-Path -LiteralPath $generatedRoot -PathType Container)) {
     throw "Generated project package directory was not found at '$generatedRoot'."

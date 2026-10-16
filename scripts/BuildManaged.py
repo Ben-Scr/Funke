@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Build the engine's managed (.NET) projects into the premake output tree.
 
-Windows builds them through Index.sln. gmake2 cannot build SDK-style .NET projects, so on Linux and
-macOS premake's Index-Managed utility project runs this script before the native consumers link.
+Windows builds them through Funke.sln. gmake2 cannot build SDK-style .NET projects, so on Linux and
+macOS premake's Funke-Managed utility project runs this script before the native consumers link.
 
 Outputs land where the native binaries look for them:
-    bin/<cfg>-<system>-<arch>/Index-ScriptCore/      Index-ScriptCore.dll (+ runtimeconfig, deps, xml)
-    bin/<cfg>-<system>-<arch>/Index-ScriptCompiler/  editor-only hot-reload compiler
-    bin/<cfg>-<system>-<arch>/Index-PackageTool/     package registry / asset library tool
+    bin/<cfg>-<system>-<arch>/Funke-ScriptCore/      Funke-ScriptCore.dll (+ runtimeconfig, deps, xml)
+    bin/<cfg>-<system>-<arch>/Funke-ScriptCompiler/  editor-only hot-reload compiler
+    bin/<cfg>-<system>-<arch>/Funke-PackageTool/     package registry / asset library tool
 
 Usage:
     python3 scripts/BuildManaged.py --configuration Release --output-dir bin/Release-linux-x86_64
@@ -26,9 +26,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 PROJECTS = {
-    "ScriptCore": REPO_ROOT / "Index-ScriptCore" / "Index-ScriptCore.csproj",
-    "ScriptCompiler": REPO_ROOT / "Index-ScriptCompiler" / "Index-ScriptCompiler.csproj",
-    "PackageTool": REPO_ROOT / "Index-PackageTool" / "Index-PackageTool.csproj",
+    "ScriptCore": REPO_ROOT / "Funke-ScriptCore" / "Funke-ScriptCore.csproj",
+    "ScriptCompiler": REPO_ROOT / "Funke-ScriptCompiler" / "Funke-ScriptCompiler.csproj",
+    "PackageTool": REPO_ROOT / "Funke-PackageTool" / "Funke-PackageTool.csproj",
 }
 
 # Where dotnet lands when the editor or make runs without a login shell's PATH (Finder, desktop entries).
@@ -62,8 +62,8 @@ def is_arm64_host() -> bool:
 
 
 def build(dotnet: str, name: str, csproj: Path, configuration: str, output_dir: Path, intermediate_dir: Path) -> bool:
-    out = output_dir / f"Index-{name}"
-    obj = intermediate_dir / f"Index-{name}"
+    out = output_dir / f"Funke-{name}"
+    obj = intermediate_dir / f"Funke-{name}"
     command = [
         dotnet, "build", str(csproj),
         "-c", configuration,
@@ -77,7 +77,7 @@ def build(dotnet: str, name: str, csproj: Path, configuration: str, output_dir: 
     # The checked-in projects target x64; an arm64 CoreCLR refuses to load x64-marked IL.
     if is_arm64_host():
         command.append("-p:PlatformTarget=AnyCPU")
-    print(f"[BuildManaged] Index-{name} ({configuration}) -> {out}", flush=True)
+    print(f"[BuildManaged] Funke-{name} ({configuration}) -> {out}", flush=True)
     return subprocess.run(command, cwd=REPO_ROOT).returncode == 0
 
 
@@ -111,7 +111,7 @@ def main() -> int:
             print(f"[BuildManaged] error: unknown project '{name}'.", file=sys.stderr)
             return 2
         if not build(dotnet, name, PROJECTS[name], args.configuration, output_dir, intermediate_dir):
-            print(f"[BuildManaged] error: Index-{name} failed to build.", file=sys.stderr)
+            print(f"[BuildManaged] error: Funke-{name} failed to build.", file=sys.stderr)
             return 1
     return 0
 

@@ -1,0 +1,374 @@
+#pragma once
+#include <box2d/box2d.h>
+#include "Physics/Collision2D.hpp"
+
+#include <unordered_map>
+#include <functional>
+#include <vector>
+#include <cstdint>
+#include <optional>
+#include <type_traits>
+#include <utility>
+
+namespace Funke {
+	using ContactBeginCallback = std::function<void(const Collision2D&)>;
+	using ContactStayCallback = std::function<void(const Collision2D&)>;
+	using ContactEndCallback = std::function<void(const Collision2D&)>;
+	using ContactHitCallback = std::function<void(const Collision2D&)>;
+
+	struct CollisionBodyRef {
+		EntityHandle Entity = entt::null;
+		Scene* OwningScene = nullptr;
+	};
+
+	using ShapeResolver = std::function<CollisionBodyRef(b2ShapeId)>;
+
+	struct ShapeIdHash {
+		size_t operator()(b2ShapeId id) const noexcept {
+			return std::hash<uint64_t>()(b2StoreShapeId(id));
+		}
+	};
+
+	struct ShapeIdEqual {
+		bool operator()(b2ShapeId a, b2ShapeId b) const noexcept {
+			return b2StoreShapeId(a) == b2StoreShapeId(b);
+		}
+	};
+
+	class CollisionDispatcher {
+	public:
+		void RegisterBegin(b2ShapeId id, ContactBeginCallback cb) {
+			m_begin[id].push_back(std::move(cb));
+		}
+
+		void RegisterEnd(b2ShapeId id, ContactEndCallback cb) {
+			m_end[id].push_back(std::move(cb));
+		}
+
+		// Hit events are opt-in per shape in Box2D; enable on demand so unlistened shapes skip the hit scan.
+		void RegisterHit(b2ShapeId id, ContactHitCallback cb) {
+			if (b2Shape_IsValid(id)) b2Shape_EnableHitEvents(id, true);
+			m_hit[id].push_back(std::move(cb));
+		}
+
+		void UnregisterShape(b2ShapeId id) {
+			m_begin.erase(id);
+			m_end.erase(id);
+			m_hit.erase(id);
+			EraseShapeFrom(m_activeContacts, id);
+			EraseShapeFrom(m_activeSensors, id);
+		}
+
+		// Used by SetSensor to survive shape recreation (id changes): snapshot old shape, destroy/create, restore on new shape.
+		struct CallbackSnapshot {
+			std::vector<ContactBeginCallback> Begin;
+			std::vector<ContactEndCallback> End;
+			std::vector<ContactHitCallback> Hit;
+		};
+
+		CallbackSnapshot SnapshotCallbacks(b2ShapeId id) {
+			CallbackSnapshot snapshot;
+			if (auto it = m_begin.find(id); it != m_begin.end()) snapshot.Begin = std::move(it->second);
+			if (auto it = m_end.find(id);   it != m_end.end())   snapshot.End   = std::move(it->second);
+			if (auto it = m_hit.find(id);   it != m_hit.end())   snapshot.Hit   = std::move(it->second);
+			return snapshot;
+		}
+
+		void RestoreCallbacks(b2ShapeId id, CallbackSnapshot&& snapshot) {
+			if (!snapshot.Begin.empty()) {
+				auto& dest = m_begin[id];
+				dest.insert(dest.end(),
+					std::make_move_iterator(snapshot.Begin.begin()),
+					std::make_move_iterator(snapshot.Begin.end()));
+			}
+			if (!snapshot.End.empty()) {
+				auto& dest = m_end[id];
+				dest.insert(dest.end(),
+					std::make_move_iterator(snapshot.End.begin()),
+					std::make_move_iterator(snapshot.End.end()));
+			}
+			if (!snapshot.Hit.empty()) {
+				if (b2Shape_IsValid(id)) b2Shape_EnableHitEvents(id, true);
+				auto& dest = m_hit[id];
+				dest.insert(dest.end(),
+					std::make_move_iterator(snapshot.Hit.begin()),
+					std::make_move_iterator(snapshot.Hit.end()));
+			}
+		}
+
+		void Clear() {
+			m_begin.clear();
+			m_end.clear();
+			m_hit.clear();
+			m_activeContacts.clear();
+			m_activeSensors.clear();
+		}
+
+		void Process(
+			b2WorldId world,
+			const ShapeResolver& resolveShape,
+			const ContactBeginCallback& onBegin = {},
+			const ContactEndCallback& onEnd = {},
+			const ContactStayCallback& onStay = {}) {
+			b2ContactEvents ev = b2World_GetContactEvents(world);
+
+			// SNAPSHOT PHASE: resolve all events before dispatching — a callback may destroy entities, invalidating b2ShapeId/b2BodyId for later events.
+			m_pendingBegin.clear();
+			m_pendingEnd.clear();
+			m_pendingHit.clear();
+			m_pendingBegin.reserve(ev.beginCount);
+			m_pendingEnd.reserve(ev.endCount);
+			m_pendingHit.reserve(ev.hitCount);
+
+			for (int i = 0; i < ev.beginCount; ++i) {
+				auto& e = ev.beginEvents[i];
+				if (!b2Shape_IsValid(e.shapeIdA) || !b2Shape_IsValid(e.shapeIdB)) continue;
+				const std::optional<ContactGeometry> geometry = GetManifoldGeometry(e.contactId);
+				Collision2D collision2D = MakeCollision(e.shapeIdA, e.shapeIdB, resolveShape,
+					geometry ? std::optional<Vec2>(geometry->Point) : std::nullopt);
+				if (geometry) collision2D.normal = geometry->Normal;
+				m_activeContacts[MakeContactKey(e.shapeIdA, e.shapeIdB)] = { e.shapeIdA, e.shapeIdB, collision2D };
+				m_pendingBegin.push_back({ e.shapeIdA, e.shapeIdB, collision2D });
+			}
+
+			for (int i = 0; i < ev.endCount; ++i) {
+				auto& e = ev.endEvents[i];
+				const ContactKey key = MakeContactKey(e.shapeIdA, e.shapeIdB);
+				Collision2D collision2D;
+				if (auto active = m_activeContacts.find(key); active != m_activeContacts.end()) {
+					collision2D = active->second.Collision;
+					m_activeContacts.erase(active);
+				}
+				else if (b2Shape_IsValid(e.shapeIdA) && b2Shape_IsValid(e.shapeIdB)) {
+					collision2D = MakeCollision(e.shapeIdA, e.shapeIdB, resolveShape);
+				}
+				else {
+					// Both shapes already invalid and no cached active contact —
+					// nothing safe to dispatch.
+					continue;
+				}
+				m_pendingEnd.push_back({ e.shapeIdA, e.shapeIdB, collision2D });
+			}
+
+			for (int i = 0; i < ev.hitCount; ++i) {
+				auto& e = ev.hitEvents[i];
+				if (!b2Shape_IsValid(e.shapeIdA) || !b2Shape_IsValid(e.shapeIdB)) continue;
+				Collision2D collision2D = MakeCollision(e.shapeIdA, e.shapeIdB, resolveShape, Vec2{ e.point.x, e.point.y });
+				collision2D.normal = Vec2{ e.normal.x, e.normal.y };
+				const ContactKey key = MakeContactKey(e.shapeIdA, e.shapeIdB);
+				if (auto active = m_activeContacts.find(key); active != m_activeContacts.end()) {
+					active->second.Collision.contactPoint = collision2D.contactPoint;
+					active->second.Collision.normal = collision2D.normal;
+				}
+				m_pendingHit.push_back({ e.shapeIdA, e.shapeIdB, collision2D });
+			}
+
+			// Sensor overlaps travel through the same begin/end/stay path with isTrigger set.
+			b2SensorEvents sensorEv = b2World_GetSensorEvents(world);
+			for (int i = 0; i < sensorEv.beginCount; ++i) {
+				auto& e = sensorEv.beginEvents[i];
+				if (!b2Shape_IsValid(e.sensorShapeId) || !b2Shape_IsValid(e.visitorShapeId)) continue;
+				Collision2D collision2D = MakeCollision(e.sensorShapeId, e.visitorShapeId, resolveShape);
+				collision2D.isTrigger = true;
+				m_activeSensors[MakeContactKey(e.sensorShapeId, e.visitorShapeId)] = { e.sensorShapeId, e.visitorShapeId, collision2D };
+				m_pendingBegin.push_back({ e.sensorShapeId, e.visitorShapeId, collision2D });
+			}
+
+			for (int i = 0; i < sensorEv.endCount; ++i) {
+				auto& e = sensorEv.endEvents[i];
+				auto active = m_activeSensors.find(MakeContactKey(e.sensorShapeId, e.visitorShapeId));
+				// End events also fire for destroyed shapes; without a cached begin there is nothing safe to report.
+				if (active == m_activeSensors.end()) continue;
+				m_pendingEnd.push_back({ e.sensorShapeId, e.visitorShapeId, active->second.Collision });
+				m_activeSensors.erase(active);
+			}
+
+			// Snapshot stay events before dispatch — Begin/End callbacks may re-enter UnregisterShape and mutate m_activeContacts.
+			m_pendingStay.clear();
+			if (onStay) {
+				m_pendingStay.reserve(m_activeContacts.size() + m_activeSensors.size());
+				for (const auto& [_, active] : m_activeContacts) {
+					m_pendingStay.push_back(active.Collision);
+				}
+				for (const auto& [_, active] : m_activeSensors) {
+					m_pendingStay.push_back(active.Collision);
+				}
+			}
+
+			// DISPATCH PHASE — only touches pre-resolved data.
+			for (const PendingDispatch& p : m_pendingBegin) {
+				if (onBegin) onBegin(p.Collision);
+				DispatchSafe(p.ShapeA, p.Collision, m_begin);
+				DispatchSafe(p.ShapeB, p.Collision, m_begin);
+			}
+
+			for (const PendingDispatch& p : m_pendingEnd) {
+				if (onEnd) onEnd(p.Collision);
+				DispatchSafe(p.ShapeA, p.Collision, m_end);
+				DispatchSafe(p.ShapeB, p.Collision, m_end);
+			}
+
+			for (const PendingDispatch& p : m_pendingHit) {
+				DispatchSafe(p.ShapeA, p.Collision, m_hit);
+				DispatchSafe(p.ShapeB, p.Collision, m_hit);
+			}
+
+			if (onStay) {
+				for (const Collision2D& c : m_pendingStay) {
+					onStay(c);
+				}
+			}
+		}
+
+		// Public so Box2DWorld::DestroyAllBodiesForScene can scrub stale entries
+		// when a scene is torn down (a Step/Process boundary issue).
+		void PurgeContactsForScene(Scene* scene) {
+			if (!scene) return;
+			for (auto* contacts : { &m_activeContacts, &m_activeSensors }) {
+				for (auto it = contacts->begin(); it != contacts->end(); ) {
+					if (it->second.Collision.sceneA == scene || it->second.Collision.sceneB == scene) {
+						it = contacts->erase(it);
+					}
+					else {
+						++it;
+					}
+				}
+			}
+		}
+
+	private:
+		struct ActiveContact {
+			b2ShapeId ShapeA;
+			b2ShapeId ShapeB;
+			Collision2D Collision;
+		};
+
+		struct ContactKey {
+			uint64_t ShapeA = 0;
+			uint64_t ShapeB = 0;
+
+			bool operator==(const ContactKey& other) const noexcept {
+				return ShapeA == other.ShapeA && ShapeB == other.ShapeB;
+			}
+		};
+
+		struct ContactKeyHash {
+			size_t operator()(const ContactKey& key) const noexcept {
+				const size_t hashA = std::hash<uint64_t>()(key.ShapeA);
+				const size_t hashB = std::hash<uint64_t>()(key.ShapeB);
+				return hashA ^ (hashB + 0x9e3779b97f4a7c15ull + (hashA << 6) + (hashA >> 2));
+			}
+		};
+
+		using ActiveContactMap = std::unordered_map<ContactKey, ActiveContact, ContactKeyHash>;
+
+		static void EraseShapeFrom(ActiveContactMap& contacts, b2ShapeId id) {
+			for (auto it = contacts.begin(); it != contacts.end(); ) {
+				if (ShapeIdEqual{}(it->second.ShapeA, id) || ShapeIdEqual{}(it->second.ShapeB, id)) {
+					it = contacts.erase(it);
+				}
+				else {
+					++it;
+				}
+			}
+		}
+
+		static ContactKey MakeContactKey(b2ShapeId a, b2ShapeId b) {
+			uint64_t ia = b2StoreShapeId(a);
+			uint64_t ib = b2StoreShapeId(b);
+			if (ia > ib) {
+				std::swap(ia, ib);
+			}
+			return ContactKey{ ia, ib };
+		}
+
+		static Vec2 EstimateContactPoint(b2ShapeId shapeA, b2ShapeId shapeB) {
+			b2BodyId bodyA = b2Shape_GetBody(shapeA);
+			b2BodyId bodyB = b2Shape_GetBody(shapeB);
+			b2Transform transformA = b2Body_GetTransform(bodyA);
+			b2Transform transformB = b2Body_GetTransform(bodyB);
+			return {
+				(transformA.p.x + transformB.p.x) * 0.5f,
+				(transformA.p.y + transformB.p.y) * 0.5f
+			};
+		}
+
+		struct ContactGeometry {
+			Vec2 Point;
+			Vec2 Normal;
+		};
+
+		static std::optional<ContactGeometry> GetManifoldGeometry(b2ContactId contactId) {
+			if (!b2Contact_IsValid(contactId)) return std::nullopt;
+			const b2ContactData data = b2Contact_GetData(contactId);
+			const b2Manifold& manifold = data.manifold;
+			if (manifold.pointCount <= 0 || !b2Shape_IsValid(data.shapeIdA)) return std::nullopt;
+
+			// Anchors are relative to body A's origin.
+			const b2Vec2 originA = b2Body_GetPosition(b2Shape_GetBody(data.shapeIdA));
+			b2Vec2 sum{ 0.0f, 0.0f };
+			for (int i = 0; i < manifold.pointCount; ++i) {
+				sum = b2Add(sum, manifold.points[i].anchorA);
+			}
+			const float inv = 1.0f / static_cast<float>(manifold.pointCount);
+			return ContactGeometry{
+				.Point = Vec2{ originA.x + sum.x * inv, originA.y + sum.y * inv },
+				.Normal = Vec2{ manifold.normal.x, manifold.normal.y }
+			};
+		}
+
+		static Collision2D MakeCollision(
+			b2ShapeId shapeA,
+			b2ShapeId shapeB,
+			const ShapeResolver& resolveShape,
+			std::optional<Vec2> contactPoint = std::nullopt) {
+			CollisionBodyRef bodyA = resolveShape ? resolveShape(shapeA) : CollisionBodyRef{};
+			CollisionBodyRef bodyB = resolveShape ? resolveShape(shapeB) : CollisionBodyRef{};
+			return Collision2D{
+				.entityA = bodyA.Entity,
+				.entityB = bodyB.Entity,
+				.sceneA = bodyA.OwningScene,
+				.sceneB = bodyB.OwningScene,
+				.contactPoint = contactPoint.value_or(EstimateContactPoint(shapeA, shapeB))
+			};
+		}
+
+		template<typename Evt, typename Map>
+		void Dispatch(b2ShapeId id, const Evt& e, Map& map) {
+			auto it = map.find(id);
+			if (it == map.end()) return;
+			for (auto& cb : it->second) cb(e);
+		}
+
+		// Reentrant-safe: callback may UnregisterShape mid-dispatch, so snapshot the vector first.
+		template<typename Evt, typename Map>
+		void DispatchSafe(b2ShapeId id, const Evt& e, Map& map) {
+			auto it = map.find(id);
+			if (it == map.end()) return;
+			using CallbackVec = std::remove_reference_t<decltype(it->second)>;
+			CallbackVec snapshot = it->second;
+			for (auto& cb : snapshot) cb(e);
+		}
+
+		struct PendingDispatch {
+			b2ShapeId ShapeA;
+			b2ShapeId ShapeB;
+			Collision2D Collision;
+		};
+
+		std::unordered_map<b2ShapeId,
+			std::vector<ContactBeginCallback>,
+			ShapeIdHash,
+			ShapeIdEqual> m_begin;
+		std::unordered_map<b2ShapeId, std::vector<ContactEndCallback>, ShapeIdHash, ShapeIdEqual> m_end;
+		std::unordered_map<b2ShapeId, std::vector<ContactHitCallback>, ShapeIdHash, ShapeIdEqual> m_hit;
+		ActiveContactMap m_activeContacts;
+		ActiveContactMap m_activeSensors;
+
+		// Snapshot buffers reused across Process() calls to avoid per-frame allocs.
+		std::vector<PendingDispatch> m_pendingBegin;
+		std::vector<PendingDispatch> m_pendingEnd;
+		std::vector<PendingDispatch> m_pendingHit;
+		std::vector<Collision2D>     m_pendingStay;
+	};
+}

@@ -1,19 +1,19 @@
 <Project>
   <PropertyGroup>
-    <IndexPythonExe Condition="'$(IndexPythonExe)' == ''">python</IndexPythonExe>
-    <IndexBuildMetadataScript>$(MSBuildThisFileDirectory)scripts\generate_build_metadata.py</IndexBuildMetadataScript>
+    <FunkePythonExe Condition="'$(FunkePythonExe)' == ''">python</FunkePythonExe>
+    <FunkeBuildMetadataScript>$(MSBuildThisFileDirectory)scripts\generate_build_metadata.py</FunkeBuildMetadataScript>
   </PropertyGroup>
   <!--
     Keeps the local build identity fresh; CI and BuildWindows.ps1 run the script
     themselves with release checks. It costs 1.5-5 s (git status walks every
-    submodule), so it runs only in Index-Engine: that is where the generated
+    submodule), so it runs only in Funke-Engine: that is where the generated
     headers live and every other native project builds after it. Hooking
     BuildGenerateSources instead of PrepareForBuild keeps it out of the
     GetProjectInfoForReference queries that dependent projects issue.
   -->
-  <Target Name="GenerateIndexBuildMetadata"
+  <Target Name="GenerateFunkeBuildMetadata"
           BeforeTargets="BuildGenerateSources"
-          Condition="'$(DesignTimeBuild)' != 'true' and '$(MSBuildProjectName)' == 'Index-Engine' and Exists('$(IndexBuildMetadataScript)')">
-    <Exec Command="&quot;$(IndexPythonExe)&quot; &quot;$(IndexBuildMetadataScript)&quot;" />
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(MSBuildProjectName)' == 'Funke-Engine' and Exists('$(FunkeBuildMetadataScript)')">
+    <Exec Command="&quot;$(FunkePythonExe)&quot; &quot;$(FunkeBuildMetadataScript)&quot;" />
   </Target>
 </Project>

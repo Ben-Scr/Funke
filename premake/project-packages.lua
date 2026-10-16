@@ -1,25 +1,25 @@
 newoption {
-    trigger = "index-project",
+    trigger = "funke-project",
     value = "PATH",
-    description = "Absolute path to the Index project whose package workspace should be generated."
+    description = "Absolute path to the Funke project whose package workspace should be generated."
 }
 
-local requestedProjectRoot = _OPTIONS["index-project"]
+local requestedProjectRoot = _OPTIONS["funke-project"]
 if not requestedProjectRoot or requestedProjectRoot == "" then
-    error("[Index Packages] --index-project=<absolute-path> is required.", 0)
+    error("[Funke Packages] --funke-project=<absolute-path> is required.", 0)
 end
 
 local scriptDir = path.getdirectory(os.realpath(_MAIN_SCRIPT))
 local engineRoot = os.realpath(path.join(scriptDir, ".."))
 local projectRoot = os.realpath(requestedProjectRoot)
-local workspaceRoot = path.join(projectRoot, ".index/build/packages")
+local workspaceRoot = path.join(projectRoot, ".funke/build/packages")
 
 dofile(path.join(scriptDir, "fix_csharp_platforms.lua"))
 dofile(path.join(scriptDir, "architecture.lua"))
 
-workspace "IndexProjectPackages"
+workspace "FunkeProjectPackages"
     location(workspaceRoot)
-    architecture(IndexPremakeArchitecture)
+    architecture(FunkePremakeArchitecture)
     configurations { "Debug", "Release", "Dist" }
 
     filter { "system:windows", "language:C++" }
@@ -30,13 +30,13 @@ workspace "IndexProjectPackages"
         buildoptions { "-Wno-changes-meaning" }
     filter {}
 
-outputdir = "%{cfg.buildcfg}-%{cfg.system}-" .. IndexArchitecture
+outputdir = "%{cfg.buildcfg}-%{cfg.system}-" .. FunkeArchitecture
 ROOT_DIR = engineRoot
 
-IndexPackageProjectLocationRoot = path.join(workspaceRoot, "generated")
-IndexPackageTargetRoot = path.join(workspaceRoot, "bin")
-IndexPackageObjectRoot = path.join(workspaceRoot, "bin-int")
-IndexEntityBitsConfigIncludeDir = path.join(engineRoot, "Index-Engine/src/Generated")
+FunkePackageProjectLocationRoot = path.join(workspaceRoot, "generated")
+FunkePackageTargetRoot = path.join(workspaceRoot, "bin")
+FunkePackageObjectRoot = path.join(workspaceRoot, "bin-int")
+FunkeEntityBitsConfigIncludeDir = path.join(engineRoot, "Funke-Engine/src/Generated")
 
 local function ReadEntityBits()
     local projectFile = io.open(path.join(projectRoot, "project.json"), "rb")
@@ -54,13 +54,13 @@ local function ReadEntityBits()
 end
 
 local entityBits = ReadEntityBits()
-function GetIndexEntityBits()
+function GetFunkeEntityBits()
     return entityBits
 end
 
 local includeDirs = {
-    path.join(engineRoot, "Index-Engine/src"),
-    path.join(engineRoot, "Index-Engine/src/Generated"),
+    path.join(engineRoot, "Funke-Engine/src"),
+    path.join(engineRoot, "Funke-Engine/src/Generated"),
     path.join(engineRoot, "External/spdlog/include"),
     path.join(engineRoot, "External/glm"),
     path.join(engineRoot, "External/entt/src"),
@@ -78,8 +78,8 @@ local includeDirs = {
     path.join(engineRoot, "External/dawn/build/gen/include"),
 }
 
-local engineLibDirs = { path.join(engineRoot, "bin/" .. outputdir .. "/Index-Engine") }
-for _, directory in ipairs(os.matchdirs(path.join(engineRoot, "bin/*/Index-Engine"))) do
+local engineLibDirs = { path.join(engineRoot, "bin/" .. outputdir .. "/Funke-Engine") }
+for _, directory in ipairs(os.matchdirs(path.join(engineRoot, "bin/*/Funke-Engine"))) do
     table.insert(engineLibDirs, directory)
 end
 
@@ -103,7 +103,7 @@ if os.target() == "windows" then
     end
 end
 
-IndexPackageUseDawnLibDirs = false
+FunkePackageUseDawnLibDirs = false
 
 Dependency = {
     EditorRuntimeCommon = {
@@ -111,10 +111,10 @@ Dependency = {
         BuildOptions = engineBuildOptions,
         LibDirs = engineLibDirsForPremake,
         LinkOptions = engineLinkOptions,
-        Links = { "Index-Engine" },
+        Links = { "Funke-Engine" },
         Defines = {
-            "INDEX_ALL_MODULES=1",
-            "IDX_RHI_WEBGPU",
+            "FUNKE_ALL_MODULES=1",
+            "FNK_RHI_WEBGPU",
             "WEBGPU_CPP_HAS_ENUM_CLASS_BITMASKS=1",
             "IMGUI_IMPL_WEBGPU_BACKEND_DAWN",
         },
@@ -138,11 +138,11 @@ local function FirstExistingPath(candidates)
     return candidates[1]
 end
 
-IndexPackageScriptCoreAssemblies = {}
+FunkePackageScriptCoreAssemblies = {}
 for _, configuration in ipairs({ "Debug", "Release", "Dist" }) do
-    IndexPackageScriptCoreAssemblies[configuration] = FirstExistingPath({
-        path.join(engineRoot, "bin/" .. configuration .. "-" .. os.target() .. "-" .. IndexArchitecture .. "/Index-ScriptCore/Index-ScriptCore.dll"),
-        path.join(engineRoot, "Index-ScriptCore/Index-ScriptCore.dll"),
+    FunkePackageScriptCoreAssemblies[configuration] = FirstExistingPath({
+        path.join(engineRoot, "bin/" .. configuration .. "-" .. os.target() .. "-" .. FunkeArchitecture .. "/Funke-ScriptCore/Funke-ScriptCore.dll"),
+        path.join(engineRoot, "Funke-ScriptCore/Funke-ScriptCore.dll"),
     })
 end
 
@@ -150,8 +150,8 @@ local packageLoader = dofile(path.join(engineRoot, "premake/package-loader.lua")
 local packageCount = packageLoader.LoadProjectPackages(projectRoot)
 if packageCount == 0 then
     group "Packages"
-    project "IndexProjectPackages.Empty"
-        location(path.join(workspaceRoot, "generated/IndexProjectPackages.Empty"))
+    project "FunkeProjectPackages.Empty"
+        location(path.join(workspaceRoot, "generated/FunkeProjectPackages.Empty"))
         kind "Utility"
     group ""
 end

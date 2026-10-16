@@ -5,7 +5,7 @@ local function QuoteVendorPatchArgument(value)
     return "'" .. value:gsub("'", "'\\''") .. "'"
 end
 
-function ApplyIndexVendorPatches()
+function ApplyFunkeVendorPatches()
     local python = os.host() == "windows" and "python" or "python3"
     local script = path.join(ROOT_DIR, "scripts/vendor_patches.py")
     local command = python .. " " .. QuoteVendorPatchArgument(script) .. " apply"

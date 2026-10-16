@@ -15,9 +15,9 @@ IncludeDir["ConcurrentQueue"] = "External/concurrentqueue"
 IncludeDir["RapidXml"] = "External/rapidxml"
 IncludeDir["Glad"] = "External/glad/include"
 IncludeDir["DotNet"] = "External/dotnet"
-IncludeDir["IndexEngine"] = "Index-Engine/src"
-IncludeDir["IndexEngineLegacy"] = "Index-Engine/src"
-IncludeDir["IndexEditorRuntime"] = "Index-EditorRuntime/src"
+IncludeDir["FunkeEngine"] = "Funke-Engine/src"
+IncludeDir["FunkeEngineLegacy"] = "Funke-Engine/src"
+IncludeDir["FunkeEditorRuntime"] = "Funke-EditorRuntime/src"
 IncludeDir["Tracy"] = "External/tracy/public"
 
 local isWindowsTarget = os.target() == "windows"
@@ -143,16 +143,16 @@ Dependency["ExternalIncludes"] =
 }
 
 -- Minimal public core contract:
--- - Index-Engine/src headers
+-- - Funke-Engine/src headers
 -- - Core/Export.hpp feature metadata
--- - Index.hpp lean umbrella
+-- - Funke.hpp lean umbrella
 -- - header-only/public dependencies required by that core surface
 Dependency["EngineCore"] =
 {
     IncludeDirs =
     {
-        "%{IncludeDir.IndexEngine}",
-        "%{IncludeDir.IndexEngineLegacy}",
+        "%{IncludeDir.FunkeEngine}",
+        "%{IncludeDir.FunkeEngineLegacy}",
         "%{IncludeDir.Spdlog}",
         "%{IncludeDir.GLM}",
         "%{IncludeDir.EnTT}",
@@ -198,13 +198,13 @@ Dependency["EngineCoreRender"] =
     -- mixing runtime libraries (/MDd Debug vs /MD Release) trips MSVC's
     -- "_ITERATOR_DEBUG_LEVEL" + "RuntimeLibrary" mismatch (LNK2038). So
     -- LibDirs MUST be set per-config, not as a single default. The
-    -- per-config wiring lives in Index-Engine/premake5.lua via explicit
+    -- per-config wiring lives in Funke-Engine/premake5.lua via explicit
     -- `filter "configurations:Debug" / Release / Dist` blocks that
     -- libdirs() each into the matching Dawn output folder.
     LibDirs = {},
 
     Defines = MergeListsForDep(
-        { "IDX_RHI_WEBGPU" },
+        { "FNK_RHI_WEBGPU" },
         DawnLayout and DawnLayout.Defines or {}
     ),
 
@@ -316,12 +316,12 @@ Dependency["EngineCoreEditor"] =
     }
 }
 
--- Tracy client — available to development configurations when IndexProfiler.Enabled.
+-- Tracy client — available to development configurations when FunkeProfiler.Enabled.
 -- Engine.dll + editor.exe + runtime.exe attach the same Tracy client SharedLib so
 -- there's exactly one client instance per process. Header `Tracy.hpp`
 -- sees TRACY_IMPORTS on consumer side -> dllimport, matching the
 -- TRACY_EXPORTS in the Tracy project itself.
-if IndexProfiler and IndexProfiler.Enabled then
+if FunkeProfiler and FunkeProfiler.Enabled then
     Dependency["Profiler"] =
     {
         IncludeDirs = { "%{IncludeDir.Tracy}" },
@@ -330,7 +330,7 @@ if IndexProfiler and IndexProfiler.Enabled then
         -- TRACY_ON_DEMAND must match the Tracy lib build (premake/dependencies/tracy.lua).
         -- Mismatched on/off across consumer + lib produces ABI drift in the SourceLocationData
         -- struct, which is hashed by Tracy at runtime — wrong size = corrupted zones.
-        Defines     = { "INDEX_PROFILER_ENABLED", "TRACY_ENABLE", "TRACY_IMPORTS", "TRACY_ON_DEMAND" }
+        Defines     = { "FUNKE_PROFILER_ENABLED", "TRACY_ENABLE", "TRACY_IMPORTS", "TRACY_ON_DEMAND" }
     }
 else
     Dependency["Profiler"] = { IncludeDirs = {}, DependsOn = {}, Links = {}, Defines = {} }
@@ -359,20 +359,20 @@ Dependency["EngineCoreAllModules"] = MergeDependencies(
     Dependency["EngineCoreLinuxSystem"]
 )
 
--- Explicit legacy/full-module compatibility path for consumers that opt into INDEX_ALL_MODULES.
+-- Explicit legacy/full-module compatibility path for consumers that opt into FUNKE_ALL_MODULES.
 Dependency["EngineCoreLegacy"] = Dependency["EngineCoreAllModules"]
 
 -- NOTE: `EditorRuntimeCommon` is re-defined in the root `premake5.lua`
--- (after this file is loaded), where it picks up `Index-EditorRuntime`
+-- (after this file is loaded), where it picks up `Funke-EditorRuntime`
 -- in its DependsOn/Links list. This earlier definition exists only for
 -- compatibility with consumers that still resolve the dep set during
 -- Dependencies.lua load order; the root file's definition supersedes
 -- it at premake-run time.
 Dependency["EditorRuntimeCommon"] = MergeDependencies(
     {
-        IncludeDirs = { "%{IncludeDir.IndexEditorRuntime}" },
-        DependsOn = { "Index-Engine", "Index-EditorRuntime" },
-        Links = { "Index-Engine", "Index-EditorRuntime" }
+        IncludeDirs = { "%{IncludeDir.FunkeEditorRuntime}" },
+        DependsOn = { "Funke-Engine", "Funke-EditorRuntime" },
+        Links = { "Funke-Engine", "Funke-EditorRuntime" }
     },
     Dependency["EngineCoreAllModules"]
 )

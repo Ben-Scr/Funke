@@ -8,7 +8,7 @@
     Visual Studio runners usable instead of requiring a VS 2022 installation.
   -->
   <PropertyGroup>
-    <!-- Index vendors its native dependencies; classic vcpkg auto-link can inject duplicate runtimes. -->
+    <!-- Funke vendors its native dependencies; classic vcpkg auto-link can inject duplicate runtimes. -->
     <VcpkgEnabled>false</VcpkgEnabled>
     <!--
       Force the 64-bit hosted cl.exe. The 32-bit compiler is limited to a
@@ -50,7 +50,7 @@
     <UseMultiToolTask Condition="'$(UseMultiToolTask)' == ''">true</UseMultiToolTask>
     <EnforceProcessCountAcrossBuilds Condition="'$(EnforceProcessCountAcrossBuilds)' == ''">true</EnforceProcessCountAcrossBuilds>
     <MultiProcMaxCount Condition="'$(MultiProcMaxCount)' == ''">$(CL_MPCount)</MultiProcMaxCount>
-    <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(IndexVersion)+unknown</InformationalVersion>
+    <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(FunkeVersion)+unknown</InformationalVersion>
     <Win32Resource Condition="'$(OS)' == 'Windows_NT' and Exists('$(MSBuildThisFileDirectory)build\ManagedVersion.res')">$(MSBuildThisFileDirectory)build\ManagedVersion.res</Win32Resource>
   </PropertyGroup>
 </Project>

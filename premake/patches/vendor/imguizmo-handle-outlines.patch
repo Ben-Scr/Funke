@@ -1,12 +1,12 @@
 diff --git a/src/ImGuizmo.cpp b/src/ImGuizmo.cpp
-index 60bd8d0eb269d1d8b083967d3d340e25fab61c4d..f14ed60cd899d7751a1479cd737ba46f38b563b1 100755
+index 60bd8d0eb269d1d8b083967d3d340e25fab61c4d..5dbc556ffa3b66ae27801398502c7da2b4c656b7 100755
 --- a/src/ImGuizmo.cpp
 +++ b/src/ImGuizmo.cpp
 @@ -1285,6 +1285,31 @@ namespace IMGUIZMO_NAMESPACE
        return angle;
     }
  
-+   // Index patch: dark halo behind gizmo handles so they stay visible when the
++   // Funke patch: dark halo behind gizmo handles so they stay visible when the
 +   // entity under them shares the handle's color (e.g. a blue UI panel hiding the
 +   // blue/white handles). Each helper draws a slightly larger/thicker black shape
 +   // that the colored primitive is then painted over — the same outline trick the

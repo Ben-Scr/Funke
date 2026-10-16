@@ -2,7 +2,7 @@ blank_issues_enabled: false
 contact_links:
   - name: Documentation
     url: https://github.com/Ben-Scr/Index/blob/master/Github-Docs/Documentation/README.md
-    about: Guides for building games with Index, including the Your First Game walkthrough.
+    about: Guides for building games with Funke, including the Your First Game walkthrough.
   - name: Report a security issue
     url: https://github.com/Ben-Scr/Index/security/advisories/new
     about: Please report vulnerabilities privately instead of opening a public issue.

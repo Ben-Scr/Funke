@@ -4,6 +4,6 @@
 #define TEST_PACKAGE_API __attribute__((visibility("default")))
 #endif
 
-extern "C" TEST_PACKAGE_API int IndexTestPackage_Value() {
+extern "C" TEST_PACKAGE_API int FunkeTestPackage_Value() {
     return 42;
 }

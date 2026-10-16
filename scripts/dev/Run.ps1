@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Launch an Index app, screenshot its window, close it, and report log
+    Launch a Funke app, screenshot its window, close it, and report log
     warnings/errors and crash dumps. Lets an agent verify runtime behaviour.
 
 .DESCRIPTION
@@ -49,20 +49,20 @@ param(
 
     [string[]]$ExtraArgs = @(),
     [switch]$KeepOpen,
-    # Editor only: bring the Editor View tab to the front (INDEX_EDITOR_FOCUS_VIEW).
+    # Editor only: bring the Editor View tab to the front (FUNKE_EDITOR_FOCUS_VIEW).
     [switch]$EditorView,
-    # Editor only: enter play mode once the startup scene has loaded (INDEX_EDITOR_AUTOPLAY).
+    # Editor only: enter play mode once the startup scene has loaded (FUNKE_EDITOR_AUTOPLAY).
     [switch]$Play,
-    # Editor only: leave play mode again after this many seconds (INDEX_EDITOR_AUTOSTOP); implies -Play.
+    # Editor only: leave play mode again after this many seconds (FUNKE_EDITOR_AUTOSTOP); implies -Play.
     [double]$StopAfter = 0,
-    # Editor only: reload the editor in-process once after this many seconds (INDEX_EDITOR_AUTORELOAD).
+    # Editor only: reload the editor in-process once after this many seconds (FUNKE_EDITOR_AUTORELOAD).
     [double]$ReloadAfter = 0,
-    # Editor only, with -ReloadAfter: remove this engine module (e.g. Index.2D) right before the reload.
+    # Editor only, with -ReloadAfter: remove this engine module (e.g. Funke.2D) right before the reload.
     [string]$RemoveModule = "",
-    # Editor only: open these windows once loaded (INDEX_EDITOR_OPEN): build, buildprofiles, projectsettings,
+    # Editor only: open these windows once loaded (FUNKE_EDITOR_OPEN): build, buildprofiles, projectsettings,
     # preferences, packages, profiler.
     [string[]]$OpenWindow = @(),
-    # Launcher only: start on this page (INDEX_LAUNCHER_PAGE).
+    # Launcher only: start on this page (FUNKE_LAUNCHER_PAGE).
     [ValidateSet("", "templates", "assets")]
     [string]$LauncherPage = "",
     # Runtime only: engine screenshots at game time ("2s", "2.5") or frame ("120f").
@@ -84,7 +84,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 . (Join-Path $PSScriptRoot "LoaderExitCodes.ps1")
-$exeName = "Index-$App"
+$exeName = "Funke-$App"
 $outputFolder = if ($Variant) { "$Config-windows-x86_64-$Variant" } else { "$Config-windows-x86_64" }
 $exe = Join-Path $repoRoot "bin\$outputFolder\$exeName\$exeName.exe"
 if (-not (Test-Path -LiteralPath $exe)) { throw "Not built: $exe (run scripts\dev\Build.ps1 $App -Config $Config)" }
@@ -110,13 +110,13 @@ if ($engineDriven -and -not $QuitAt -and -not $InputScript) {
 }
 
 Add-Type -AssemblyName System.Drawing
-if (-not ("IndexAgent.WindowShot" -as [type])) {
+if (-not ("FunkeAgent.WindowShot" -as [type])) {
     Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @"
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
-namespace IndexAgent {
+namespace FunkeAgent {
 public static class WindowShot {
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
@@ -143,7 +143,7 @@ public static class WindowShot {
 }
 "@
 }
-[void][IndexAgent.WindowShot]::SetProcessDPIAware()
+[void][FunkeAgent.WindowShot]::SetProcessDPIAware()
 
 function Read-LogHead([string]$path, [int]$length) {
     $stream = [System.IO.File]::Open($path, "Open", "Read", "ReadWrite")
@@ -192,7 +192,7 @@ function New-SandboxProject {
 
 if ($App -ne "Launcher") {
     if ($Recent) {
-        $launcherJson = Join-Path $env:LOCALAPPDATA "Index\Launcher\launcher.json"
+        $launcherJson = Join-Path $env:LOCALAPPDATA "Funke\Launcher\launcher.json"
         $entries = Get-Content -LiteralPath $launcherJson -Raw | ConvertFrom-Json
         $Project = ($entries | Sort-Object { $_.lastOpened } -Descending | Select-Object -First 1).path
     }
@@ -200,7 +200,7 @@ if ($App -ne "Launcher") {
     $Project = (Resolve-Path -LiteralPath $Project).Path
 }
 
-$logPath = Join-Path $env:LOCALAPPDATA "Index\Logs\$exeName.log"
+$logPath = Join-Path $env:LOCALAPPDATA "Funke\Logs\$exeName.log"
 $logOffset = 0
 $logHead = $null
 if (Test-Path -LiteralPath $logPath) {
@@ -208,7 +208,7 @@ if (Test-Path -LiteralPath $logPath) {
     $logHeadLength = [int][Math]::Min(256, $logOffset)
     if ($logHeadLength -gt 0) { $logHead = Read-LogHead $logPath $logHeadLength }
 }
-$dumpDir = Join-Path $env:LOCALAPPDATA "Index\CrashDumps"
+$dumpDir = Join-Path $env:LOCALAPPDATA "Funke\CrashDumps"
 $started = Get-Date
 
 $argList = @()
@@ -227,26 +227,26 @@ Write-Host "[run] $exeName $($argList -join ' ')"
 # Start-Process rejects an empty -ArgumentList (the Launcher runs without a project).
 $startArgs = @{ FilePath = $exe; WorkingDirectory = (Split-Path $exe -Parent); PassThru = $true }
 if ($argList.Count -gt 0) { $startArgs.ArgumentList = $argList }
-$previousFocusView = $env:INDEX_EDITOR_FOCUS_VIEW
-$previousLauncherPage = $env:INDEX_LAUNCHER_PAGE
-$previousOpenWindow = $env:INDEX_EDITOR_OPEN
-$previousAutoplay = $env:INDEX_EDITOR_AUTOPLAY
-$previousAutostop = $env:INDEX_EDITOR_AUTOSTOP
-$previousAutoreload = $env:INDEX_EDITOR_AUTORELOAD
-if ($Play -or $StopAfter -gt 0) { $env:INDEX_EDITOR_AUTOPLAY = "1" }
-if ($StopAfter -gt 0) { $env:INDEX_EDITOR_AUTOSTOP = [string]$StopAfter }
-if ($ReloadAfter -gt 0) { $env:INDEX_EDITOR_AUTORELOAD = if ($RemoveModule) { "${ReloadAfter}:$RemoveModule" } else { [string]$ReloadAfter } }
-if ($EditorView) { $env:INDEX_EDITOR_FOCUS_VIEW = "editor" }
-if ($LauncherPage) { $env:INDEX_LAUNCHER_PAGE = $LauncherPage }
-if ($OpenWindow.Count -gt 0) { $env:INDEX_EDITOR_OPEN = (@($OpenWindow | ForEach-Object { $_ -split ',' }) -join ',') }
+$previousFocusView = $env:FUNKE_EDITOR_FOCUS_VIEW
+$previousLauncherPage = $env:FUNKE_LAUNCHER_PAGE
+$previousOpenWindow = $env:FUNKE_EDITOR_OPEN
+$previousAutoplay = $env:FUNKE_EDITOR_AUTOPLAY
+$previousAutostop = $env:FUNKE_EDITOR_AUTOSTOP
+$previousAutoreload = $env:FUNKE_EDITOR_AUTORELOAD
+if ($Play -or $StopAfter -gt 0) { $env:FUNKE_EDITOR_AUTOPLAY = "1" }
+if ($StopAfter -gt 0) { $env:FUNKE_EDITOR_AUTOSTOP = [string]$StopAfter }
+if ($ReloadAfter -gt 0) { $env:FUNKE_EDITOR_AUTORELOAD = if ($RemoveModule) { "${ReloadAfter}:$RemoveModule" } else { [string]$ReloadAfter } }
+if ($EditorView) { $env:FUNKE_EDITOR_FOCUS_VIEW = "editor" }
+if ($LauncherPage) { $env:FUNKE_LAUNCHER_PAGE = $LauncherPage }
+if ($OpenWindow.Count -gt 0) { $env:FUNKE_EDITOR_OPEN = (@($OpenWindow | ForEach-Object { $_ -split ',' }) -join ',') }
 try { $proc = Start-Process @startArgs }
 finally {
-    $env:INDEX_EDITOR_FOCUS_VIEW = $previousFocusView
-    $env:INDEX_LAUNCHER_PAGE = $previousLauncherPage
-    $env:INDEX_EDITOR_OPEN = $previousOpenWindow
-    $env:INDEX_EDITOR_AUTOPLAY = $previousAutoplay
-    $env:INDEX_EDITOR_AUTOSTOP = $previousAutostop
-    $env:INDEX_EDITOR_AUTORELOAD = $previousAutoreload
+    $env:FUNKE_EDITOR_FOCUS_VIEW = $previousFocusView
+    $env:FUNKE_LAUNCHER_PAGE = $previousLauncherPage
+    $env:FUNKE_EDITOR_OPEN = $previousOpenWindow
+    $env:FUNKE_EDITOR_AUTOPLAY = $previousAutoplay
+    $env:FUNKE_EDITOR_AUTOSTOP = $previousAutostop
+    $env:FUNKE_EDITOR_AUTORELOAD = $previousAutoreload
 }
 
 $shotsTaken = New-Object System.Collections.Generic.List[string]
@@ -265,7 +265,7 @@ for ($i = 1; $i -le $wallClockShots; $i++) {
     $proc.Refresh()
     $hwnd = $proc.MainWindowHandle
     $shot = Join-Path $outDir "$App-$i.png"
-    if ($hwnd -ne [IntPtr]::Zero -and [IndexAgent.WindowShot]::Capture($hwnd, $shot)) {
+    if ($hwnd -ne [IntPtr]::Zero -and [FunkeAgent.WindowShot]::Capture($hwnd, $shot)) {
         $shotsTaken.Add($shot)
     }
     else {

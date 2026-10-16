@@ -1,6 +1,6 @@
 # Assets
 
-This page explains the **whole asset system** of Index: what an asset is, how Index keeps track of them, how you reference them from components and scripts, and how they get loaded while your game runs.
+This page explains the **whole asset system** of Funke: what an asset is, how Funke keeps track of them, how you reference them from components and scripts, and how they get loaded while your game runs.
 
 If you just want the short version: every file in your project's `Assets` folder is given a permanent ID. Components and scripts store that ID (not the file path), so you can freely move or rename files without breaking anything. The engine loads the actual data on demand and caches it.
 
@@ -8,9 +8,9 @@ If you just want the short version: every file in your project's `Assets` folder
 
 ## What is an asset?
 
-An **asset** is any content file your game uses — a sprite, a sound, a font, a scene, and so on. In Index you don't "import" assets through a wizard; you simply **drop files into your project's `Assets` folder** and the engine discovers them automatically.
+An **asset** is any content file your game uses — a sprite, a sound, a font, a scene, and so on. In Funke you don't "import" assets through a wizard; you simply **drop files into your project's `Assets` folder** and the engine discovers them automatically.
 
-Index recognizes these asset kinds (from the `AssetKind` list):
+Funke recognizes these asset kinds (from the `AssetKind` list):
 
 | Kind | Typical file types | Used for |
 |------|--------------------|----------|
@@ -38,7 +38,7 @@ Why? Because paths change. If references used paths, renaming `player.png` to `h
 
 ### The `.meta` file
 
-To make a GUID *stick* to a file, Index writes a small companion file next to it with a `.meta` extension:
+To make a GUID *stick* to a file, Funke writes a small companion file next to it with a `.meta` extension:
 
 ```
 Assets/
@@ -56,7 +56,7 @@ The `.meta` is a small JSON file that stores:
 ### Two kinds of GUID
 
 - **Project assets** (your files) get a GUID derived from the file. These live alongside your `.meta` files.
-- **Built-in engine assets** (things shipped with Index, like the default font and the default white texture) get fixed, stable GUIDs so they're identical on every machine. The default font, for example, always has the same ID.
+- **Built-in engine assets** (things shipped with Funke, like the default font and the default white texture) get fixed, stable GUIDs so they're identical on every machine. The default font, for example, always has the same ID.
 
 ---
 
@@ -181,7 +181,7 @@ See [Editor](../Editor/Editor.md) for how the Asset Browser fits with the other 
 | Hot-reload | Yes — edits apply live | No — files are read once |
 | Form on disk | Loose files | **Loose files** (no archive/pack step) |
 
-Index ships assets as **loose files** — there is no "cook" or archive step that bundles everything into one package file. When you build a game, the project's assets are copied alongside the runtime executable, and the game reads them from disk as scenes load. (See the Build flow in [Editor](../Editor/Editor.md).)
+Funke ships assets as **loose files** — there is no "cook" or archive step that bundles everything into one package file. When you build a game, the project's assets are copied alongside the runtime executable, and the game reads them from disk as scenes load. (See the Build flow in [Editor](../Editor/Editor.md).)
 
 ---
 

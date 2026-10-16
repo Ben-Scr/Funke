@@ -1,10 +1,10 @@
-# Contributing to Index
+# Contributing to Funke
 
 Bug reports, documentation fixes and focused pull requests are welcome.
 
 ## Reporting bugs
 
-Use the **Bug report** issue template. Attach the log from `%LOCALAPPDATA%\Index\Logs\` and, for crashes, the dump from `%LOCALAPPDATA%\Index\CrashDumps\`. Check [Known Limitations](Github-Docs/Documentation/Known-Limitations.md) first.
+Use the **Bug report** issue template. Attach the log from `%LOCALAPPDATA%\Funke\Logs\` and, for crashes, the dump from `%LOCALAPPDATA%\Funke\CrashDumps\`. Check [Known Limitations](Github-Docs/Documentation/Known-Limitations.md) first.
 
 ## Building from source
 
@@ -12,7 +12,7 @@ Follow **Getting Started** in the [README](README.md). Before opening a pull req
 
 ```powershell
 .\scripts\RunTests.bat --release
-dotnet test Tests\Index-ScriptCore-Tests\Index-ScriptCore-Tests.csproj -c Release
+dotnet test Tests\Funke-ScriptCore-Tests\Funke-ScriptCore-Tests.csproj -c Release
 ```
 
 ## Pull requests
@@ -24,4 +24,4 @@ dotnet test Tests\Index-ScriptCore-Tests\Index-ScriptCore-Tests.csproj -c Releas
 
 ## License
 
-Index is licensed under the [MIT License](LICENSE.txt). By submitting a contribution you agree that it is licensed under the MIT License as well.
+Funke is licensed under the [MIT License](LICENSE.txt). By submitting a contribution you agree that it is licensed under the MIT License as well.

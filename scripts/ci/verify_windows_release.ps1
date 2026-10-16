@@ -65,16 +65,16 @@ function Read-PePolicy {
 }
 
 $nativeFiles = @(
-    @{ Path = "Index-Launcher.exe"; Subsystem = 2 },
-    @{ Path = "Index-Editor.exe"; Subsystem = 2 },
-    @{ Path = "Index-Runtime.exe"; Subsystem = 2 },
-    @{ Path = "Index-Engine.dll"; Subsystem = 3 },
-    @{ Path = "EngineSDK\Runtime-Development\Index-Runtime.exe"; Subsystem = 2 },
-    @{ Path = "EngineSDK\Runtime-Development\Index-Engine.dll"; Subsystem = 3 },
-    @{ Path = "EngineSDK\Runtime-Dist\Index-Runtime.exe"; Subsystem = 2 },
-    @{ Path = "EngineSDK\Runtime-Dist\Index-Engine.dll"; Subsystem = 3 },
-    @{ Path = "EngineSDK\bin\Release-windows-x86_64\Index-Engine\Index-Engine.dll"; Subsystem = 3 },
-    @{ Path = "EngineSDK\bin\Dist-windows-x86_64\Index-Engine\Index-Engine.dll"; Subsystem = 3 }
+    @{ Path = "Funke-Launcher.exe"; Subsystem = 2 },
+    @{ Path = "Funke-Editor.exe"; Subsystem = 2 },
+    @{ Path = "Funke-Runtime.exe"; Subsystem = 2 },
+    @{ Path = "Funke-Engine.dll"; Subsystem = 3 },
+    @{ Path = "EngineSDK\Runtime-Development\Funke-Runtime.exe"; Subsystem = 2 },
+    @{ Path = "EngineSDK\Runtime-Development\Funke-Engine.dll"; Subsystem = 3 },
+    @{ Path = "EngineSDK\Runtime-Dist\Funke-Runtime.exe"; Subsystem = 2 },
+    @{ Path = "EngineSDK\Runtime-Dist\Funke-Engine.dll"; Subsystem = 3 },
+    @{ Path = "EngineSDK\bin\Release-windows-x86_64\Funke-Engine\Funke-Engine.dll"; Subsystem = 3 },
+    @{ Path = "EngineSDK\bin\Dist-windows-x86_64\Funke-Engine\Funke-Engine.dll"; Subsystem = 3 }
 )
 $requiredCharacteristics = [ordered]@{
     HighEntropyVA = 0x0020
@@ -105,7 +105,7 @@ foreach ($entry in $nativeFiles) {
 }
 
 $firstPartyFiles = @(Get-ChildItem -LiteralPath $bundle -Recurse -File |
-    Where-Object { $_.Name -match '^Index-.*\.(exe|dll)$' })
+    Where-Object { $_.Name -match '^Funke-.*\.(exe|dll)$' })
 foreach ($file in $firstPartyFiles) {
     $versionInfo = $file.VersionInfo
     if ($versionInfo.ProductVersion -cne $metadata.version) {

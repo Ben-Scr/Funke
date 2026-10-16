@@ -1,0 +1,222 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Configurations>Debug;Release;Dist</Configurations>
+    <Platforms>x64</Platforms>
+    <Platform>x64</Platform>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x64' ">
+    <PlatformTarget>x64</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize>false</Optimize>
+    <OutputPath>..\bin\Debug-windows-x86_64\Funke-ScriptCore\</OutputPath>
+    <IntermediateOutputPath>..\bin-int\Debug-windows-x86_64\Funke-ScriptCore\</IntermediateOutputPath>
+    <DefineConstants>FNK_DEBUG</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
+    <PlatformTarget>x64</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize>true</Optimize>
+    <OutputPath>..\bin\Release-windows-x86_64\Funke-ScriptCore\</OutputPath>
+    <IntermediateOutputPath>..\bin-int\Release-windows-x86_64\Funke-ScriptCore\</IntermediateOutputPath>
+    <DefineConstants>FNK_RELEASE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Dist|x64' ">
+    <PlatformTarget>x64</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize>true</Optimize>
+    <OutputPath>..\bin\Dist-windows-x86_64\Funke-ScriptCore\</OutputPath>
+    <IntermediateOutputPath>..\bin-int\Dist-windows-x86_64\Funke-ScriptCore\</IntermediateOutputPath>
+    <DefineConstants>FNK_DIST</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x64' ">
+  </ItemGroup>
+  <ItemGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
+  </ItemGroup>
+  <ItemGroup Condition=" '$(Configuration)|$(Platform)' == 'Dist|x64' ">
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Source\Funke\Animation\Animator.cs" />
+    <Compile Include="Source\Funke\Attributes\ClampValueAttribute.cs" />
+    <Compile Include="Source\Funke\Attributes\CreateDataAssetAttribute.cs" />
+    <Compile Include="Source\Funke\Attributes\DevCommandAttribute.cs" />
+    <Compile Include="Source\Funke\Attributes\EditorIgnoreAttribute.cs" />
+    <Compile Include="Source\Funke\Attributes\EditorReadOnlyAttribute.cs" />
+    <Compile Include="Source\Funke\Attributes\EnabledIfAttribute.cs" />
+    <Compile Include="Source\Funke\Attributes\HeaderAttribute.cs" />
+    <Compile Include="Source\Funke\Attributes\HideFromEditorAttribute.cs" />
+    <Compile Include="Source\Funke\Attributes\ShowInEditorAttribute.cs" />
+    <Compile Include="Source\Funke\Attributes\SpaceAttribute.cs" />
+    <Compile Include="Source\Funke\Attributes\ToolTipAttribute.cs" />
+    <Compile Include="Source\Funke\Audio\Audio.cs" />
+    <Compile Include="Source\Funke\Audio\AudioStream.cs" />
+    <Compile Include="Source\Funke\Audio\MediaSession.cs" />
+    <Compile Include="Source\Funke\Collections\Native\NativeArray.cs" />
+    <Compile Include="Source\Funke\Collections\Native\NativeBitArray.cs" />
+    <Compile Include="Source\Funke\Collections\Native\NativeBool.cs" />
+    <Compile Include="Source\Funke\Collections\Native\NativeBuffer.cs" />
+    <Compile Include="Source\Funke\Collections\Native\NativeCollectionUtility.cs" />
+    <Compile Include="Source\Funke\Collections\Native\NativeDeque.cs" />
+    <Compile Include="Source\Funke\Collections\Native\NativeDictionary.cs" />
+    <Compile Include="Source\Funke\Collections\Native\NativeHashset.cs" />
+    <Compile Include="Source\Funke\Collections\Native\NativeList.cs" />
+    <Compile Include="Source\Funke\Collections\Native\NativeMemoryPool.cs" />
+    <Compile Include="Source\Funke\Collections\Native\NativePriorityQueue.cs" />
+    <Compile Include="Source\Funke\Collections\Native\NativeQueue.cs" />
+    <Compile Include="Source\Funke\Collections\Native\NativeStack.cs" />
+    <Compile Include="Source\Funke\Collections\Native\NativeString.cs" />
+    <Compile Include="Source\Funke\Collections\Range.cs" />
+    <Compile Include="Source\Funke\Collections\Timer.cs" />
+    <Compile Include="Source\Funke\Components\ComponentTypes.cs" />
+    <Compile Include="Source\Funke\Components\IComponent.cs" />
+    <Compile Include="Source\Funke\Components\Ref.cs" />
+    <Compile Include="Source\Funke\Components\TextureHandle.cs" />
+    <Compile Include="Source\Funke\Core\AndroidBridge.cs" />
+    <Compile Include="Source\Funke\Core\Application.cs" />
+    <Compile Include="Source\Funke\Core\AssetManager.cs" />
+    <Compile Include="Source\Funke\Core\Cursor.cs" />
+    <Compile Include="Source\Funke\Core\DataAssetRuntime.cs" />
+    <Compile Include="Source\Funke\Core\DevConsole.cs" />
+    <Compile Include="Source\Funke\Core\Engine.cs" />
+    <Compile Include="Source\Funke\Core\GlobalUsings.cs" />
+    <Compile Include="Source\Funke\Core\Input.cs" />
+    <Compile Include="Source\Funke\Core\InternalCalls.cs" />
+    <Compile Include="Source\Funke\Core\KeyCodes.cs" />
+    <Compile Include="Source\Funke\Core\Localization.cs" />
+    <Compile Include="Source\Funke\Core\Log.cs" />
+    <Compile Include="Source\Funke\Core\PlayerPrefs.cs" />
+    <Compile Include="Source\Funke\Core\SafeAreaInsets.cs" />
+    <Compile Include="Source\Funke\Core\SaveData.cs" />
+    <Compile Include="Source\Funke\Core\Time.cs" />
+    <Compile Include="Source\Funke\Core\Window.cs" />
+    <Compile Include="Source\Funke\Coroutines\Awaiters.cs" />
+    <Compile Include="Source\Funke\Coroutines\CoroutineScheduler.cs" />
+    <Compile Include="Source\Funke\Coroutines\FunkeSynchronizationContext.cs" />
+    <Compile Include="Source\Funke\Editor\EditorGUI.cs" />
+    <Compile Include="Source\Funke\Editor\EditorWindow.cs" />
+    <Compile Include="Source\Funke\Graphics\Font.cs" />
+    <Compile Include="Source\Funke\Graphics\Gizmo.cs" />
+    <Compile Include="Source\Funke\Graphics\Material.cs" />
+    <Compile Include="Source\Funke\Graphics\Mesh.cs" />
+    <Compile Include="Source\Funke\Graphics\Png.cs" />
+    <Compile Include="Source\Funke\Graphics\PostProcessing2D.cs" />
+    <Compile Include="Source\Funke\Graphics\RenderSettings.cs" />
+    <Compile Include="Source\Funke\Graphics\Renderer2D.cs" />
+    <Compile Include="Source\Funke\Graphics\Texture.cs" />
+    <Compile Include="Source\Funke\Interop\DevCommandRegistry.cs" />
+    <Compile Include="Source\Funke\Interop\DynamicComponentRegistrar.cs" />
+    <Compile Include="Source\Funke\Interop\EditorWindowRegistry.cs" />
+    <Compile Include="Source\Funke\Interop\NativeCallbacks.cs" />
+    <Compile Include="Source\Funke\Interop\NativeInterop.cs" />
+    <Compile Include="Source\Funke\Interop\PackageNativeResolver.cs" />
+    <Compile Include="Source\Funke\Interop\PostProcessingInterop.cs" />
+    <Compile Include="Source\Funke\Interop\ScriptExceptionLog.cs" />
+    <Compile Include="Source\Funke\Interop\ScriptHostBridge.cs" />
+    <Compile Include="Source\Funke\Interop\ScriptInstanceManager.cs" />
+    <Compile Include="Source\Funke\Interop\StructFieldLayout.cs" />
+    <Compile Include="Source\Funke\Jobs\AtomicBool.cs" />
+    <Compile Include="Source\Funke\Jobs\AtomicDouble.cs" />
+    <Compile Include="Source\Funke\Jobs\AtomicFloat.cs" />
+    <Compile Include="Source\Funke\Jobs\AtomicInt.cs" />
+    <Compile Include="Source\Funke\Jobs\AtomicLong.cs" />
+    <Compile Include="Source\Funke\Jobs\AtomicRef.cs" />
+    <Compile Include="Source\Funke\Jobs\IJobQuery.cs" />
+    <Compile Include="Source\Funke\Jobs\Internal\JobBoxPool.cs" />
+    <Compile Include="Source\Funke\Jobs\Internal\JobExceptionRegistry.cs" />
+    <Compile Include="Source\Funke\Jobs\Internal\JobLayoutCache.cs" />
+    <Compile Include="Source\Funke\Jobs\Internal\JobNativeDispatch.cs" />
+    <Compile Include="Source\Funke\Jobs\Internal\JobQueryPinPool.cs" />
+    <Compile Include="Source\Funke\Jobs\Job.cs" />
+    <Compile Include="Source\Funke\Jobs\JobContext.cs" />
+    <Compile Include="Source\Funke\Jobs\ParallelReducer.cs" />
+    <Compile Include="Source\Funke\Jobs\ReadOnlyAttribute.cs" />
+    <Compile Include="Source\Funke\Jobs\WriteOnlyAttribute.cs" />
+    <Compile Include="Source\Funke\Math\AABB.cs" />
+    <Compile Include="Source\Funke\Math\Color.cs" />
+    <Compile Include="Source\Funke\Math\Graph.cs" />
+    <Compile Include="Source\Funke\Math\Mathf.cs" />
+    <Compile Include="Source\Funke\Math\ParallelRandom.cs" />
+    <Compile Include="Source\Funke\Math\PerlinNoise2D.cs" />
+    <Compile Include="Source\Funke\Math\Quaternion.cs" />
+    <Compile Include="Source\Funke\Math\Random.cs" />
+    <Compile Include="Source\Funke\Math\RandomHandler.cs" />
+    <Compile Include="Source\Funke\Math\Ray.cs" />
+    <Compile Include="Source\Funke\Math\Vector2.cs" />
+    <Compile Include="Source\Funke\Math\Vector2Int.cs" />
+    <Compile Include="Source\Funke\Math\Vector3.cs" />
+    <Compile Include="Source\Funke\Math\Vector3Int.cs" />
+    <Compile Include="Source\Funke\Math\Vector4.cs" />
+    <Compile Include="Source\Funke\Math\Vector4Int.cs" />
+    <Compile Include="Source\Funke\Native\NativeSpriteRenderer.cs" />
+    <Compile Include="Source\Funke\Native\NativeTransform2D.cs" />
+    <Compile Include="Source\Funke\Physics\Collision2D.cs" />
+    <Compile Include="Source\Funke\Physics\Collision3D.cs" />
+    <Compile Include="Source\Funke\Physics\FastPhysics2D.cs" />
+    <Compile Include="Source\Funke\Physics\Physics2D.cs" />
+    <Compile Include="Source\Funke\Physics\Physics3D.cs" />
+    <Compile Include="Source\Funke\Physics\PhysicsLayers.cs" />
+    <Compile Include="Source\Funke\Physics\PhysicsShared.cs" />
+    <Compile Include="Source\Funke\Scene\AssetRef.cs" />
+    <Compile Include="Source\Funke\Scene\Component.cs" />
+    <Compile Include="Source\Funke\Scene\Components.cs" />
+    <Compile Include="Source\Funke\Scene\Components3D.cs" />
+    <Compile Include="Source\Funke\Scene\ComponentsPhysics3D.cs" />
+    <Compile Include="Source\Funke\Scene\DataAsset.cs" />
+    <Compile Include="Source\Funke\Scene\Entity.cs" />
+    <Compile Include="Source\Funke\Scene\EntityCommandBuffer.cs" />
+    <Compile Include="Source\Funke\Scene\EntityCommandBufferParallelWriter.cs" />
+    <Compile Include="Source\Funke\Scene\EntityPicker.cs" />
+    <Compile Include="Source\Funke\Scene\EntityRef.cs" />
+    <Compile Include="Source\Funke\Scene\EntityScript.cs" />
+    <Compile Include="Source\Funke\Scene\GlobalSystem.cs" />
+    <Compile Include="Source\Funke\Scene\QueryRef.cs" />
+    <Compile Include="Source\Funke\Scene\QueryRefWithEntity.cs" />
+    <Compile Include="Source\Funke\Scene\SceneManager.cs" />
+    <Compile Include="Source\Funke\Scene\SceneQuery.cs" />
+    <Compile Include="Source\Funke\Scene\SceneSystem.cs" />
+    <Compile Include="Source\Funke\UI\UIComponents.cs" />
+    <Compile Include="Source\Funke\UI\UIEnums.cs" />
+    <Compile Include="Source\Funke\UI\UIEventDispatcher.cs" />
+    <Compile Include="Source\Funke\UI\UIPointer.cs" />
+    <Compile Include="Source\Funke\UI\UITransitionMode.cs" />
+    <Compile Include="Source\Funke\Utility\CameraUtility.cs" />
+    <Compile Include="Source\Funke\Utility\RectTransformUtility.cs" />
+    <Compile Include="Source\Funke\Utility\TextUtility.cs" />
+    <Compile Include="Source\Funke\Utility\TransformUtility.cs" />
+    <Compile Include="Source\GlobalUsings.cs" />
+  </ItemGroup>
+</Project>

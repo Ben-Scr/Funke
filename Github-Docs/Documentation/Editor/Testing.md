@@ -14,11 +14,11 @@ A game build uses one of three configurations:
 
 | Configuration | Binaries | C# define | Overlays and console by default | For |
 |---|---|---|---|---|
-| **Debug** | Debug engine and runtime, plus PDBs for the runtime, the engine, ScriptCore and your scripts | `INDEX_BUILD_DEBUG` | on | Attaching Visual Studio or Rider, stepping through engine code |
-| **Development** | Optimized (the editor's own configuration) | `INDEX_BUILD_DEVELOPMENT` | on | Everyday testing on your machine and devices |
-| **Release** | Fully optimized Dist binaries | `INDEX_BUILD_RELEASE` | off | Distribution |
+| **Debug** | Debug engine and runtime, plus PDBs for the runtime, the engine, ScriptCore and your scripts | `FUNKE_BUILD_DEBUG` | on | Attaching Visual Studio or Rider, stepping through engine code |
+| **Development** | Optimized (the editor's own configuration) | `FUNKE_BUILD_DEVELOPMENT` | on | Everyday testing on your machine and devices |
+| **Release** | Fully optimized Dist binaries | `FUNKE_BUILD_RELEASE` | off | Distribution |
 
-Pick it in the Build window under **Configuration**, in the build profile (see below), or with `index build --debug | --development | --release`. The order of precedence is: the command line, then the build profile, then the Build window.
+Pick it in the Build window under **Configuration**, in the build profile (see below), or with `funke build --debug | --development | --release`. The order of precedence is: the command line, then the build profile, then the Build window.
 
 **Debug builds:**
 
@@ -39,7 +39,7 @@ Besides platform and rendering API, a build profile (`BuildProfiles/<Name>.build
   "platform": "Android",
   "renderBackend": "Vulkan",
   "configuration": "Development",
-  "defines": [ "INDEX_TEST", "DEMO" ],
+  "defines": [ "FUNKE_TEST", "DEMO" ],
   "showRuntimeStats": true,
   "showRuntimeLogs": false,
   "devConsole": true,
@@ -55,7 +55,7 @@ Besides platform and rendering API, a build profile (`BuildProfiles/<Name>.build
 | `devConsole` | The developer console and F8 physics overlay. |
 | `isolatedPrefs` | Saves to a separate player-data profile named after the build profile (see below). |
 
-`index build --profile AndroidTest` builds that variant. The settings go into the build's own `project.json` only. Your project stays unchanged.
+`funke build --profile AndroidTest` builds that variant. The settings go into the build's own `project.json` only. Your project stays unchanged.
 
 `project.json` itself accepts `devConsole` (true/false) and `prefsProfile` (a name) for every build. **Project Settings › Build › Diagnostics** has a switch for the console.
 
@@ -88,7 +88,7 @@ Any **static** method with `[DevCommand]` becomes a command. Its parameters are 
 - If the method returns a value, the console prints it.
 
 ```csharp
-using Index;
+using Funke;
 
 public static class CheatCommands
 {
@@ -141,7 +141,7 @@ The runtime and every built game read these command-line options:
 |---|---|
 | `--input-script=<file.json>` | Timed input and actions (see below) |
 | `--screenshot-at=<t>[,<t>...]` | PNG screenshots at game time (`2.5s`, `2.5`, `500ms`) or frame (`120f`) |
-| `--screenshot-dir=<dir>` | Where screenshots go (default `%LOCALAPPDATA%\Index\Screenshots`) |
+| `--screenshot-dir=<dir>` | Where screenshots go (default `%LOCALAPPDATA%\Funke\Screenshots`) |
 | `--fixed-step=<fps>` | Every frame advances exactly 1/fps seconds, however long it really took |
 | `--quit-at=<t>` | Quit at a game time or frame |
 | `--exec="<cmd>; <cmd>"` | Console commands on the first game frame, e.g. `"physics.debug on; timescale 2"` |
@@ -193,7 +193,7 @@ A broken script stops nothing: the log names the step and the problem, and the g
 ### From the command line and `Run.ps1`
 
 ```powershell
-index run --input-script Tests\level5.json --fixed-step 60 --prefs-profile qa
+funke run --input-script Tests\level5.json --fixed-step 60 --prefs-profile qa
 .\Builds\Windows\MarbleSky.exe --screenshot-at=2s,5s --quit-at=6s --prefs-profile=qa
 scripts\dev\Run.ps1 -App Runtime -Project <dir> -ScreenshotAt 2s,5s -FixedStep 60
 scripts\dev\Run.ps1 -App Runtime -Project <dir> -InputScript Tests\level5.json -Exec "physics.debug on"

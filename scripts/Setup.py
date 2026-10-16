@@ -36,14 +36,14 @@ def ensure_supported_python() -> None:
         required = ".".join(str(part) for part in MINIMUM_PYTHON)
         found = ".".join(str(part) for part in sys.version_info[:3])
         raise SystemExit(
-            f"[Index Setup] Python {required}+ is required. "
+            f"[Funke Setup] Python {required}+ is required. "
             f"Found Python {found}. Please install a newer Python version and try again."
         )
 
 
 def run_step(cmd: list[str], cwd: Path, label: str, allow_failure: bool = False) -> bool:
-    print(f"[Index Setup] {label}...")
-    print(f"[Index Setup] > {' '.join(cmd)}")
+    print(f"[Funke Setup] {label}...")
+    print(f"[Funke Setup] > {' '.join(cmd)}")
     result = subprocess.run(cmd, cwd=cwd)
     if result.returncode != 0 and not allow_failure:
         raise RuntimeError(f"Step failed ({label}) with exit code {result.returncode}.")
@@ -230,7 +230,7 @@ def ensure_macos_build_deps(install_enabled: bool, assume_yes: bool) -> bool:
     if not install_enabled or not (assume_yes or is_interactive()):
         print("  [!!] Install them with: xcode-select --install")
         return False
-    if not prompt_yes_no("[Index Setup] Open the Xcode Command Line Tools installer?", assume_yes):
+    if not prompt_yes_no("[Funke Setup] Open the Xcode Command Line Tools installer?", assume_yes):
         return False
     subprocess.run(["xcode-select", "--install"])
     print("  [..] Finish the installer window, then re-run setup.")
@@ -302,7 +302,7 @@ def offer_install(tool: str, install_enabled: bool, assume_yes: bool) -> bool:
         return False
     if not (assume_yes or is_interactive()):
         return False
-    if not prompt_yes_no(f"[Index Setup] {tool} is missing. Install it automatically?", assume_yes):
+    if not prompt_yes_no(f"[Funke Setup] {tool} is missing. Install it automatically?", assume_yes):
         return False
 
     if platform.system() == "Windows":
@@ -355,7 +355,7 @@ def ensure_msvc(install_enabled: bool, assume_yes: bool) -> bool:
     if not install_enabled or not (assume_yes or is_interactive()):
         return False
     question = (
-        "[Index Setup] Install Visual Studio 2022 Build Tools with the C++ workload? "
+        "[Funke Setup] Install Visual Studio 2022 Build Tools with the C++ workload? "
         "This is a download of several GB and can take a while"
     )
     if not prompt_yes_no(question, assume_yes, default_yes=False):
@@ -400,7 +400,7 @@ def ensure_linux_build_deps(install_enabled: bool, assume_yes: bool) -> bool:
     name, install_cmd = manager
     packages = LINUX_BUILD_PACKAGES[name]
     if not prompt_yes_no(
-        f"[Index Setup] Install the C++ build dependencies ({' '.join(packages)})?", assume_yes
+        f"[Funke Setup] Install the C++ build dependencies ({' '.join(packages)})?", assume_yes
     ):
         return False
     if not linux_install_packages(name, install_cmd, packages):
@@ -575,7 +575,7 @@ def detect_dotnet_version(dotnet_root: Path, host_arch: str) -> str | None:
 
 def detect_msbuild(script_dir: Path) -> str | None:
     """Locate MSBuild.exe via vswhere on Windows. Writes the resolved path to
-    scripts/index-build-env.bat for downstream tools (e.g. RunTests.bat).
+    scripts/funke-build-env.bat for downstream tools (e.g. RunTests.bat).
 
     Returns the resolved MSBuild path, or None if vswhere/MSBuild was not
     located. Non-fatal: failures are logged and the function returns None.
@@ -617,7 +617,7 @@ def detect_msbuild(script_dir: Path) -> str | None:
     msbuild_path = candidates[0]
     print(f"  [OK] MSBuild detected: {msbuild_path}")
 
-    env_file = script_dir / "index-build-env.bat"
+    env_file = script_dir / "funke-build-env.bat"
     try:
         env_file.write_text(
             "@echo off\r\n"
@@ -633,15 +633,15 @@ def detect_msbuild(script_dir: Path) -> str | None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Set up Index dependencies and generate project files.")
+    parser = argparse.ArgumentParser(description="Set up Funke dependencies and generate project files.")
     parser.add_argument(
         "--generator",
-        default=os.environ.get("INDEX_PREMAKE_ACTION"),
+        default=os.environ.get("FUNKE_PREMAKE_ACTION"),
         help="Premake action to generate (defaults to vs2022 on Windows, gmake2 elsewhere).",
     )
     parser.add_argument(
         "--dotnet-arch",
-        default=os.environ.get("INDEX_DOTNET_ARCH"),
+        default=os.environ.get("FUNKE_DOTNET_ARCH"),
         help="Windows .NET host-pack architecture to copy (for example: x64 or arm64).",
     )
     parser.add_argument(
@@ -658,7 +658,7 @@ def parse_args() -> argparse.Namespace:
         "--module-profile",
         choices=("full", "core", "custom"),
         help=(
-            "Premake Index module profile to generate. Custom accepts no module flags "
+            "Premake Funke module profile to generate. Custom accepts no module flags "
             "(core-equivalent) or --with-editor for the complete application surface."
         ),
     )
@@ -754,13 +754,13 @@ def main() -> int:
     repo_root = script_dir.parent
 
     os.chdir(repo_root)
-    print(f"[Index Setup] Repository root: {repo_root}")
-    print(f"[Index Setup] Platform: {platform.system()}")
+    print(f"[Funke Setup] Repository root: {repo_root}")
+    print(f"[Funke Setup] Platform: {platform.system()}")
     print()
 
-    os.environ["INDEX_DIR"] = str(repo_root)
+    os.environ["FUNKE_DIR"] = str(repo_root)
 
-    print("[Index Setup] Checking prerequisites...")
+    print("[Funke Setup] Checking prerequisites...")
     # "required" prereqs hard-fail by default (override with --ignore-prereqs).
     # "soft" prereqs only warn -- they cover downstream resources that have
     # their own fallback paths (e.g. setup-dotnet.ps1 copies the host pack).
@@ -792,7 +792,7 @@ def main() -> int:
             install_enabled
             and (assume_yes or is_interactive())
             and prompt_yes_no(
-                "[Index Setup] premake5 is missing. Download it into vendor/bin now?",
+                "[Funke Setup] premake5 is missing. Download it into vendor/bin now?",
                 assume_yes,
             )
         ):
@@ -823,7 +823,7 @@ def main() -> int:
                 soft_missing.append("dotnet-host-pack")
         else:
             print(f"  [OK] Using .NET host architecture: {dotnet_arch}")
-            os.environ["INDEX_DOTNET_ARCH"] = dotnet_arch
+            os.environ["FUNKE_DOTNET_ARCH"] = dotnet_arch
             detected_ver = detect_dotnet_version(dotnet_root, dotnet_arch)
         if detected_ver:
             print(f"  [OK] .NET host pack found: {detected_ver}")
@@ -832,7 +832,7 @@ def main() -> int:
             if not dotnet_files_present(repo_root):
                 soft_missing.append("dotnet-host-pack")
     else:
-        # Non-Windows: dotnet is still required for scripting/Index-ScriptCore.
+        # Non-Windows: dotnet is still required for scripting/Funke-ScriptCore.
         if dotnet_exe:
             print(f"  [OK] dotnet found: {dotnet_exe}")
         else:
@@ -860,7 +860,7 @@ def main() -> int:
             soft_missing.append("xcode-command-line-tools")
 
     # E12: detect MSBuild via vswhere on Windows (non-fatal). Writes
-    # scripts/index-build-env.bat with MSBUILD_PATH for downstream tools.
+    # scripts/funke-build-env.bat with MSBUILD_PATH for downstream tools.
     if is_windows:
         detect_msbuild(script_dir)
 
@@ -869,19 +869,19 @@ def main() -> int:
         # Deduplicate while preserving order.
         seen: set[str] = set()
         unique_soft = [m for m in soft_missing if not (m in seen or seen.add(m))]
-        print(f"[Index Setup] WARNING: Optional resources missing: {', '.join(unique_soft)}")
-        print("[Index Setup] Some downstream steps may fall back or fail; continuing.")
+        print(f"[Funke Setup] WARNING: Optional resources missing: {', '.join(unique_soft)}")
+        print("[Funke Setup] Some downstream steps may fall back or fail; continuing.")
         print()
 
     if required_missing:
         if args.ignore_prereqs:
-            print(f"[Index Setup] WARNING: Missing prerequisites: {', '.join(required_missing)}")
-            print("[Index Setup] --ignore-prereqs supplied; continuing anyway. Some steps may fail.")
+            print(f"[Funke Setup] WARNING: Missing prerequisites: {', '.join(required_missing)}")
+            print("[Funke Setup] --ignore-prereqs supplied; continuing anyway. Some steps may fail.")
             print()
         else:
-            print(f"[Index Setup] ERROR: Missing required prerequisites: {', '.join(required_missing)}")
-            print("[Index Setup] Install the listed tools, or re-run with --ignore-prereqs to")
-            print("[Index Setup] continue anyway (steps depending on the missing tool will fail).")
+            print(f"[Funke Setup] ERROR: Missing required prerequisites: {', '.join(required_missing)}")
+            print("[Funke Setup] Install the listed tools, or re-run with --ignore-prereqs to")
+            print("[Funke Setup] continue anyway (steps depending on the missing tool will fail).")
             return 1
 
     run_step(
@@ -896,10 +896,10 @@ def main() -> int:
             "Updating git submodules",
         )
     else:
-        print("[Index Setup] Submodules already match the recorded revisions.")
+        print("[Funke Setup] Submodules already match the recorded revisions.")
 
     if args.skip_lfs:
-        print("[Index Setup] Git LFS skipped by --skip-lfs.")
+        print("[Funke Setup] Git LFS skipped by --skip-lfs.")
     elif has_lfs_patterns(repo_root):
         lfs_ok = run_step(
             ["git", "lfs", "pull"],
@@ -908,18 +908,18 @@ def main() -> int:
             allow_failure=not args.require_lfs,
         )
         if not lfs_ok:
-            print("[Index Setup] Warning: git lfs pull failed or Git LFS is unavailable. Continuing...")
+            print("[Funke Setup] Warning: git lfs pull failed or Git LFS is unavailable. Continuing...")
     else:
-        print("[Index Setup] No Git LFS attributes found - skipping git lfs pull.")
+        print("[Funke Setup] No Git LFS attributes found - skipping git lfs pull.")
 
     if is_windows:
         if dotnet_files_present(repo_root):
-            print("[Index Setup] .NET hosting files already present - skipping.")
+            print("[Funke Setup] .NET hosting files already present - skipping.")
         else:
-            print("[Index Setup] Setting up .NET hosting files...")
+            print("[Funke Setup] Setting up .NET hosting files...")
             ps_script = script_dir / "setup-dotnet.ps1"
             if not ps_script.is_file():
-                print("[Index Setup] WARNING: setup-dotnet.ps1 not found, skipping .NET setup.")
+                print("[Funke Setup] WARNING: setup-dotnet.ps1 not found, skipping .NET setup.")
             else:
                 ps_args = ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(ps_script)]
                 if detected_ver:
@@ -930,12 +930,12 @@ def main() -> int:
     else:
         if scripting_wanted and dotnet_exe:
             if dotnet_files_present(repo_root):
-                print("[Index Setup] .NET hosting files already present - skipping.")
+                print("[Funke Setup] .NET hosting files already present - skipping.")
             else:
-                print("[Index Setup] Setting up .NET hosting files (libnethost)...")
+                print("[Funke Setup] Setting up .NET hosting files (libnethost)...")
                 setup_dotnet_unix(repo_root)
         elif scripting_wanted:
-            print("[Index Setup] Skipping .NET hosting setup - dotnet not on PATH.")
+            print("[Funke Setup] Skipping .NET hosting setup - dotnet not on PATH.")
 
     # SDL3 (window, input, platform services) is built with its own CMake; premake only links it.
     sdl_ok = run_step(
@@ -945,8 +945,8 @@ def main() -> int:
         allow_failure=True,
     )
     if not sdl_ok:
-        print("[Index Setup] WARNING: SDL3 build failed; the engine will not link until")
-        print("[Index Setup] `python scripts/sdl/SetupSDL.py` succeeds (needs CMake and a C compiler).")
+        print("[Funke Setup] WARNING: SDL3 build failed; the engine will not link until")
+        print("[Funke Setup] `python scripts/sdl/SetupSDL.py` succeeds (needs CMake and a C compiler).")
 
     if not premake_path:
         raise RuntimeError(describe_premake_expectation(repo_root))
@@ -966,10 +966,10 @@ def main() -> int:
     # projects, which the SDK-only MSBuild cannot evaluate.
     if scripting_wanted and dotnet_exe:
         managed_projects = [
-            repo_root / "Index-ScriptCore" / "Index-ScriptCore.csproj",
-            repo_root / "Index-Sandbox" / "Index-Sandbox.csproj",
-            repo_root / "Index-PackageTool" / "Index-PackageTool.csproj",
-            repo_root / "Index-ScriptCompiler" / "Index-ScriptCompiler.csproj",
+            repo_root / "Funke-ScriptCore" / "Funke-ScriptCore.csproj",
+            repo_root / "Funke-Sandbox" / "Funke-Sandbox.csproj",
+            repo_root / "Funke-PackageTool" / "Funke-PackageTool.csproj",
+            repo_root / "Funke-ScriptCompiler" / "Funke-ScriptCompiler.csproj",
         ]
         for managed_project in managed_projects:
             if not managed_project.is_file():
@@ -981,15 +981,15 @@ def main() -> int:
                 allow_failure=True,
             )
     elif scripting_wanted and not dotnet_exe:
-        print("[Index Setup] Skipping dotnet restore - dotnet not on PATH.")
+        print("[Funke Setup] Skipping dotnet restore - dotnet not on PATH.")
 
     print()
-    print("[Index Setup] Setup complete.")
+    print("[Funke Setup] Setup complete.")
     if not is_windows:
         dawn_library = "libwebgpu_dawn.dylib" if platform.system() == "Darwin" else "libwebgpu_dawn.so"
         if not (repo_root / "External" / "dawn" / "build" / "src" / "dawn" / "native" / dawn_library).is_file():
-            print("[Index Setup] Next: build Dawn once (WebGPU, ~15-30 min):  ./scripts/dawn/SetupDawn.sh")
-        print("[Index Setup] Then build:  make config=release -j$(getconf _NPROCESSORS_ONLN) Index-Launcher")
+            print("[Funke Setup] Next: build Dawn once (WebGPU, ~15-30 min):  ./scripts/dawn/SetupDawn.sh")
+        print("[Funke Setup] Then build:  make config=release -j$(getconf _NPROCESSORS_ONLN) Funke-Launcher")
     return 0
 
 
@@ -997,5 +997,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        print(f"[Index Setup] ERROR: {exc}")
+        print(f"[Funke Setup] ERROR: {exc}")
         raise SystemExit(1)

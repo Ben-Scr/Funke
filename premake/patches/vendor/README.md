@@ -1,6 +1,6 @@
-# Index vendor patches
+# Funke vendor patches
 
-These patches reproduce the small Index-owned changes made to pinned upstream
+These patches reproduce the small Funke-owned changes made to pinned upstream
 submodules. Normal Premake generation runs `scripts/vendor_patches.py apply`
 before defining projects. The command is idempotent and rejects an unexpected
 submodule commit, file path, blob ID, staged change, or untracked file.

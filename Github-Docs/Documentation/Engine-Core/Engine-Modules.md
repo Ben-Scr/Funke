@@ -1,34 +1,34 @@
 # Engine Modules
 
-Index splits its world features into two optional engine modules. A project lists the ones it uses in `project.json`:
+Funke splits its world features into two optional engine modules. A project lists the ones it uses in `project.json`:
 
 ```json
-"modules": [ "Index.2D", "Index.3D" ]
+"modules": [ "Funke.2D", "Funke.3D" ]
 ```
 
 | Module | Contains |
 |---|---|
-| `Index.2D` | Transform 2D, Sprite Renderer, Camera 2D, Sprite Animator 2D, Particle System 2D, 2D physics (Box2D and Index-Physics: Rigidbody 2D, colliders, `Physics2D`), world-space text on 2D entities, 2D picking |
-| `Index.3D` | Transform 3D, Camera 3D with sky, Mesh Renderer, materials and meshes, Directional/Point/Spot lights, Particle System 3D, 3D physics (Jolt: Rigidbody 3D, colliders, `Physics3D`) |
+| `Funke.2D` | Transform 2D, Sprite Renderer, Camera 2D, Sprite Animator 2D, Particle System 2D, 2D physics (Box2D and Index-Physics: Rigidbody 2D, colliders, `Physics2D`), world-space text on 2D entities, 2D picking |
+| `Funke.3D` | Transform 3D, Camera 3D with sky, Mesh Renderer, materials and meshes, Directional/Point/Spot lights, Particle System 3D, 3D physics (Jolt: Rigidbody 3D, colliders, `Physics3D`) |
 
 UI (Rect Transform 2D and every UI widget), text, images, Post Processing (on a Camera 2D or Camera 3D), audio, scripting, gizmos, input and assets belong to the engine core and are always available. A project may list one module, both, or none (a pure UI app).
 
 ## In the editor
 
-The **Package Manager** lists the modules under **Engine Modules**, next to the packages: **Install** turns a module on, **Remove** turns it off. The editor then asks in its main window whether to reload now; **Later** keeps a "Reload pending" hint with a **Reload Now** button in the status bar until the reload happens. Project Settings only shows which modules are on and links there. From the command line, `index package add Index.3D` / `index package remove Index.3D` do the same.
+The **Package Manager** lists the modules under **Engine Modules**, next to the packages: **Install** turns a module on, **Remove** turns it off. The editor then asks in its main window whether to reload now; **Later** keeps a "Reload pending" hint with a **Reload Now** button in the status bar until the reload happens. Project Settings only shows which modules are on and links there. From the command line, `funke package add Funke.3D` / `funke package remove Funke.3D` do the same.
 
-Packages declare the modules they build on (`modules = { "Index.2D" }` in `index-package.lua`). Installing such a package turns those modules on as well, including the ones its dependencies need, and a module can't be removed while an installed package needs it. A package whose module is off is not loaded and the build stops with an error that names it.
+Packages declare the modules they build on (`modules = { "Funke.2D" }` in `funke-package.lua`). Installing such a package turns those modules on as well, including the ones its dependencies need, and a module can't be removed while an installed package needs it. A package whose module is off is not loaded and the build stops with an error that names it.
 
 The editor offers only the enabled modules:
 
 - the Add Component menu and the **Create** menus (2D Entity, 3D Entity presets, Camera) list their components only while their module is on;
 - the Editor View is fixed to 2D or 3D when only one module is on, and shows the **3D** toggle only with both;
-- **Create > Material** and the **3D Rendering** graphics settings need `Index.3D`;
+- **Create > Material** and the **3D Rendering** graphics settings need `Funke.3D`;
 - systems and renderers of a disabled module don't run, and script calls into its API do nothing and log one error.
 
 Turning a module off never deletes data: components of a disabled module stay in scenes and prefabs, and loading such a scene logs a warning that names the module.
 
-Projects created before modules existed have no `modules` field and keep both. New projects get the modules of their template (the built-in starter is `Index.2D`).
+Projects created before modules existed have no `modules` field and keep both. New projects get the modules of their template (the built-in starter is `Funke.2D`).
 
 ## One world per entity
 
@@ -38,17 +38,17 @@ Scenes saved before this rule may still mix them. They load unchanged, the edito
 
 ## In a game build
 
-The game ships a runtime compiled **without** the modules the project leaves out — their code, shaders and third-party libraries (Box2D and Index-Physics for `Index.2D`, Jolt for `Index.3D`) are not in the executable.
+The game ships a runtime compiled **without** the modules the project leaves out — their code, shaders and third-party libraries (Box2D and Index-Physics for `Funke.2D`, Jolt for `Funke.3D`) are not in the executable.
 
 - **Windows, Linux, macOS:** the build generates a runtime variant workspace (`premake/generated/variant-<modules>`) and compiles it into `bin/<config>-<system>-<arch>-<modules>`. The first build of a variant compiles the whole engine once; later builds are incremental.
-- **Android, iOS, Web:** the platform package passes the modules to the engine's CMake build (`MODULES` of `index_add_engine`); each module set gets its own build cache.
+- **Android, iOS, Web:** the platform package passes the modules to the engine's CMake build (`MODULES` of `funke_add_engine`); each module set gets its own build cache.
 - A project whose shipped scenes or prefabs use a component of a module it doesn't list fails the build, with every offending entity in the log.
 - Projects with native (C++) packages ship the full engine: those packages are linked against it.
 - From an EngineSDK without project files (no MSBuild/`make` workspace) the build falls back to the prebuilt full runtime.
 
 ## For engine developers
 
-The module source lists live in [`Index-Engine/EngineModules.json`](../../../Index-Engine/EngineModules.json); premake and `cmake/IndexEngine.cmake` both read it. Code in the core that touches a module guards it with `#if INDEX_WITH_2D` / `#if INDEX_WITH_3D` (compile time) and asks `EngineModules::IsActive(EngineModule::TwoD)` (project setting at runtime). Built-in components register inside a `ModuleRegistrationScope` so the editor can hide them. Script bindings of a module live in `Scripting/ScriptBindings2D.cpp` / `ScriptBindings3D.cpp`, and every slot they fill is listed in `Scripting/ScriptBindingModuleSlots.hpp`, which provides signature-matched stubs when the module is off.
+The module source lists live in [`Funke-Engine/EngineModules.json`](../../../Funke-Engine/EngineModules.json); premake and `cmake/FunkeEngine.cmake` both read it. Code in the core that touches a module guards it with `#if FUNKE_WITH_2D` / `#if FUNKE_WITH_3D` (compile time) and asks `EngineModules::IsActive(EngineModule::TwoD)` (project setting at runtime). Built-in components register inside a `ModuleRegistrationScope` so the editor can hide them. Script bindings of a module live in `Scripting/ScriptBindings2D.cpp` / `ScriptBindings3D.cpp`, and every slot they fill is listed in `Scripting/ScriptBindingModuleSlots.hpp`, which provides signature-matched stubs when the module is off.
 
 Build a variant by hand:
 
@@ -56,4 +56,4 @@ Build a variant by hand:
 vendor\bin\premake5.exe --without-3d vs2022
 ```
 
-then build `premake\generated\variant-2d\Index-Runtime\Index-Runtime.vcxproj`, and run it with `scripts\dev\Run.ps1 -App Runtime -Variant 2d -Project <dir>`.
+then build `premake\generated\variant-2d\Funke-Runtime\Funke-Runtime.vcxproj`, and run it with `scripts\dev\Run.ps1 -App Runtime -Variant 2d -Project <dir>`.

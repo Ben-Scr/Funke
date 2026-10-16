@@ -1,0 +1,20 @@
+#include "pch.hpp"
+#include "Systems/AudioUpdateSystem.hpp"
+#include "Scene/Scene.hpp"
+#include "Components/Audio/AudioSourceComponent.hpp"
+#include "Components/Tags.hpp"
+#include "Core/Application.hpp"
+
+namespace Funke {
+	void AudioUpdateSystem::Start(Scene& scene) {
+		if (!Application::GetIsPlaying()) return;
+		StartPlayOnAwake(scene);
+	}
+
+	void AudioUpdateSystem::StartPlayOnAwake(Scene& scene) {
+		auto view = scene.GetRegistry().view<AudioSourceComponent>(entt::exclude<DisabledTag>);
+		for (auto [entity, audio] : view.each()) {
+			audio.PlayOnAwakeIfEnabled();
+		}
+	}
+}

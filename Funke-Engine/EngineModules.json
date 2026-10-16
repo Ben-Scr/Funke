@@ -1,0 +1,73 @@
+{
+  "//": "Optional engine feature modules. Read by premake (Funke-Engine/premake5.lua) and cmake/FunkeEngine.cmake; a build without a module drops these sources (globs relative to Funke-Engine/) and compiles with <define>=0. Ids match project.json `modules`.",
+  "modules": [
+    {
+      "id": "Funke.2D",
+      "define": "FUNKE_WITH_2D",
+      "option": "2d",
+      "sources": [
+        "src/Components/General/Transform2DComponent.*",
+        "src/Components/Graphics/Camera2DComponent.*",
+        "src/Components/Graphics/SpriteRendererComponent.hpp",
+        "src/Components/Graphics/SpriteAnimator2DComponent.hpp",
+        "src/Components/Graphics/ParticleSystem2DComponent.*",
+        "src/Components/Physics/**",
+        "src/Graphics/Renderer2D.*",
+        "src/Graphics/DynamicRenderData.hpp",
+        "src/Physics/Box2DWorld.*",
+        "src/Physics/Collision2D.hpp",
+        "src/Physics/CollisionDispatcher.hpp",
+        "src/Physics/FastPhysics2D.*",
+        "src/Physics/IndexContact2D.hpp",
+        "src/Physics/IndexPhysicsInterop.hpp",
+        "src/Physics/IndexPhysicsWorld2D.*",
+        "src/Physics/OverlapMode.hpp",
+        "src/Physics/PhysicsDebugDraw2D.*",
+        "src/Physics/Physics2D.*",
+        "src/Physics/PhysicsSystem2D.*",
+        "src/Physics/PhysicsUtility.*",
+        "src/Physics/RaycastHit2D.hpp",
+        "src/Scene/BuiltInComponentRegistration2D.cpp",
+        "src/Scene/BuiltInComponentRegistrationPhysics.cpp",
+        "src/Scene/EntityPicker.*",
+        "src/Scripting/ScriptBindings2D.cpp",
+        "src/Systems/TransformHierarchySystem.*",
+        "src/Systems/SpriteAnimationSystem.*",
+        "src/Systems/ParticleUpdateSystem.*"
+      ]
+    },
+    {
+      "id": "Funke.3D",
+      "define": "FUNKE_WITH_3D",
+      "option": "3d",
+      "sources": [
+        "src/Components/General/Transform3DComponent.*",
+        "src/Components/Graphics/Camera3DComponent.*",
+        "src/Components/Graphics/DirectionalLightComponent.hpp",
+        "src/Components/Graphics/PointLightComponent.hpp",
+        "src/Components/Graphics/SpotLightComponent.hpp",
+        "src/Components/Graphics/MeshRendererComponent.hpp",
+        "src/Components/Graphics/ParticleSystem3DComponent.*",
+        "src/Components/Graphics/SkinnedMeshRendererComponent.hpp",
+        "src/Components/Physics3D/**",
+        "src/Graphics/Renderer3D.*",
+        "src/Graphics/Lighting3D.*",
+        "src/Graphics/MeshAsset.*",
+        "src/Graphics/GltfImporter.*",
+        "src/Graphics/SkeletalAnimation.*",
+        "src/Graphics/PrimitiveMesh.*",
+        "src/Physics3D/**",
+        "src/Scene/BuiltInComponentRegistration3D.cpp",
+        "src/Scene/BuiltInComponentRegistrationPhysics3D.cpp",
+        "src/Scene/BuiltInComponentRegistrationParticles3D.cpp",
+        "src/Scene/BuiltInComponentRegistrationSkinnedMesh3D.cpp",
+        "src/Scene/EntityPicker3D.*",
+        "src/Scripting/ScriptBindings3D.cpp",
+        "src/Scripting/ScriptBindingsPhysics3D.cpp",
+        "src/Systems/Transform3DHierarchySystem.*",
+        "src/Systems/Particle3DUpdateSystem.*",
+        "src/Systems/SkinnedMeshAnimationSystem.*"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+1 ICON "icon.ico"
+
+#define FNK_FILE_DESCRIPTION "Funke Runtime"
+#define FNK_INTERNAL_NAME "Funke-Runtime"
+#define FNK_ORIGINAL_FILENAME "Funke-Runtime.exe"
+#include "../Funke-Engine/src/Core/VersionResource.rcinc"

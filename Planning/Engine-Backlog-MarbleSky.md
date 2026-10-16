@@ -1,20 +1,20 @@
 # Engine-Backlog aus der MarbleSky-Session (14.10.2026)
 
-Beim Bau von MarbleSky (`C:\Users\benso\Index\Projects\MarbleSky`) gefundene Schwächen im Index-Workflow, nach Nutzen sortiert.
+Beim Bau von MarbleSky (`C:\Users\benso\Index\Projects\MarbleSky`) gefundene Schwächen im Funke-Workflow, nach Nutzen sortiert.
 Jeder Punkt nennt das Problem, wo es auftrat, den Workaround im Spiel (falls vorhanden) und einen Vorschlag für den Fix.
 
 Bereits behoben in derselben Session (nur zur Einordnung):
 - Szene neu starten invalidierte die C#-Komponenten der neuen Kopie (`Scene.cpp`, `NotifyScriptsEntityDestroyed`).
-- Builds lieferten den veralteten `IndexAssets`-Schnappschuss des Projekts aus, z. B. das alte Icon im Splash (`GameBuilder.cpp`).
+- Builds lieferten den veralteten `FunkeAssets`-Schnappschuss des Projekts aus, z. B. das alte Icon im Splash (`GameBuilder.cpp`).
 - `RectTransform.Entity` verlangte ein `Transform2D` (`UIComponents.cs`).
 
 ---
 
 ## 1. 9-Slice für UI-Images
 
-**Status (15.10.2026):** erledigt — `Image` hat `Type` (Simple/Sliced), `BorderLeft/Bottom/Right/Top` (Texturpixel) und `BorderScale` am Component statt in der `.meta`; `GuiRenderer` zeichnet bis zu 9 Quads (`Gui/NineSlice.hpp`), zu große Ränder schrumpfen. JSON `imageType`/`border`/`borderScale`, Inspector, C# `Image.Type/Border/BorderScale`. Doctest `NineSliceTests.cpp` (64×64, 24 px Rand auf 500×80 und 80×500), Runtime-Screenshot geprüft. Nachtrag: Ränder in der `.meta` (ganze Textur im Textur-Inspector, pro Slice im Sprite-Editor mit Hilfslinien, CLI `index sprite border`), genutzt wenn die Image-Ränder 0 sind; `Image Type = Tiled` (`BuildTiled`, Kachelzahl begrenzt). Doctests für Tiled und den `.meta`-Roundtrip, Runtime-Screenshot geprüft.
+**Status (15.10.2026):** erledigt — `Image` hat `Type` (Simple/Sliced), `BorderLeft/Bottom/Right/Top` (Texturpixel) und `BorderScale` am Component statt in der `.meta`; `GuiRenderer` zeichnet bis zu 9 Quads (`Gui/NineSlice.hpp`), zu große Ränder schrumpfen. JSON `imageType`/`border`/`borderScale`, Inspector, C# `Image.Type/Border/BorderScale`. Doctest `NineSliceTests.cpp` (64×64, 24 px Rand auf 500×80 und 80×500), Runtime-Screenshot geprüft. Nachtrag: Ränder in der `.meta` (ganze Textur im Textur-Inspector, pro Slice im Sprite-Editor mit Hilfslinien, CLI `funke sprite border`), genutzt wenn die Image-Ränder 0 sind; `Image Type = Tiled` (`BuildTiled`, Kachelzahl begrenzt). Doctests für Tiled und den `.meta`-Roundtrip, Runtime-Screenshot geprüft.
 
-**Problem:** `ImageComponent` hat nur `SpriteName` (Teilbereich aus einem Atlas, `Index-Engine/src/Components/Graphics/ImageComponent.hpp`), keine Ränder, die beim Strecken fest bleiben. Abgerundete Buttons, Panels und Slider verzerren, sobald sie nicht in Originalgröße gezeigt werden.
+**Problem:** `ImageComponent` hat nur `SpriteName` (Teilbereich aus einem Atlas, `Funke-Engine/src/Components/Graphics/ImageComponent.hpp`), keine Ränder, die beim Strecken fest bleiben. Abgerundete Buttons, Panels und Slider verzerren, sobald sie nicht in Originalgröße gezeigt werden.
 
 **Workaround in MarbleSky:** Jedes Sprite wird in exakter Zielgröße generiert (`Tools/generate_art.py`). Die Slider-Füllung ist ein Balken voller Länge, der über `Mask` abgeschnitten wird (`Tools/generate_scenes.py`, Settings).
 
@@ -28,14 +28,14 @@ Bereits behoben in derselben Session (nur zur Einordnung):
 
 ## 2. Klare Fehler bei DLL-Mismatch und Log-Fluten
 
-**Problem A:** `index.exe validate` endete ohne jede Ausgabe mit Exit-Code `-1073741512` (`0xC0000138`, Ordinal fehlt). Ursache: `Build.ps1` konnte `bin/Release-windows-x86_64/Index-CLI/Index-Engine.dll` nicht ersetzen (Datei in Benutzung) und meldete das nur als Hinweis.
+**Problem A:** `funke.exe validate` endete ohne jede Ausgabe mit Exit-Code `-1073741512` (`0xC0000138`, Ordinal fehlt). Ursache: `Build.ps1` konnte `bin/Release-windows-x86_64/Funke-CLI/Funke-Engine.dll` nicht ersetzen (Datei in Benutzung) und meldete das nur als Hinweis.
 
 **Vorschlag A:**
 - `Build.ps1` schlägt fehl (oder meldet laut am Ende), wenn ein Deploy in einen Consumer-Ordner nicht klappt.
 - Die Executables prüfen beim Start den Build-Identifier der Engine-DLL (`Engine::GetVersionLong()`) gegen den eigenen und geben eine verständliche Meldung aus.
 - Für den Ordinal-Fehler, der vor `main` passiert, die Engine-DLL verzögert laden oder einen Mini-Launcher-Check einbauen.
 
-**Problem B:** Eine Exception pro Frame (`[Script] Exception in OnUpdate()`) flutet das Log. `Index-Runtime.log` rotiert nach 10 MB (`.1`, `.2`), und der erste, eigentliche Fehler ist weg. Auch der Log-Ausschnitt von `Run.ps1` enthielt ihn nicht mehr.
+**Problem B:** Eine Exception pro Frame (`[Script] Exception in OnUpdate()`) flutet das Log. `Funke-Runtime.log` rotiert nach 10 MB (`.1`, `.2`), und der erste, eigentliche Fehler ist weg. Auch der Log-Ausschnitt von `Run.ps1` enthielt ihn nicht mehr.
 
 **Vorschlag B:**
 - Gleiche Script-Exceptions drosseln: erste N vollständig, danach „… x weitere Male in den letzten n s“.
@@ -45,13 +45,13 @@ Bereits behoben in derselben Session (nur zur Einordnung):
 
 **Vorschlag C:** Beim Herunterfahren der App auf Debug herabstufen, nur bei Hot-Reload als Warnung melden.
 
-**Status (15.10.2026):** B und C erledigt — `ScriptExceptionLog.cs` (3× voll, dann Zusammenfassung alle 5 s, Flush beim Play-Stopp); ALC-Meldung beim Beenden als Trace, Warnung nur, wenn der alte Kontext beim nächsten Laden noch lebt. A teilweise: `Build.ps1` bricht mit `DEPLOY FAILED` (Exit 1) ab, wenn eine Consumer-Kopie veraltet bleibt; `Run.ps1` liest über rotierte Logs (`<exe>.1.log` …). Nachtrag (A erledigt): eigene ABI-Kennung `IDX_ENGINE_ABI` (Hash über alle Engine-Header, `generate_build_metadata.py` → `EngineAbi.generated.hpp`); Editor/Launcher/Runtime (`EntryPoint.hpp`) und CLI vergleichen sie beim Start mit `Engine::GetAbiKey()` und loggen eine lesbare Meldung. Loader-Fehler vor `main`: `Process::LaunchDetachedChecked` + `DescribeLoaderFailure` in Launcher, Build & Run und CLI; `Run.ps1`/`Test.ps1` übersetzen 0xC0000135/138/139/7B/142 (`LoaderExitCodes.ps1`). `EngineAbiTests.cpp`.
+**Status (15.10.2026):** B und C erledigt — `ScriptExceptionLog.cs` (3× voll, dann Zusammenfassung alle 5 s, Flush beim Play-Stopp); ALC-Meldung beim Beenden als Trace, Warnung nur, wenn der alte Kontext beim nächsten Laden noch lebt. A teilweise: `Build.ps1` bricht mit `DEPLOY FAILED` (Exit 1) ab, wenn eine Consumer-Kopie veraltet bleibt; `Run.ps1` liest über rotierte Logs (`<exe>.1.log` …). Nachtrag (A erledigt): eigene ABI-Kennung `FNK_ENGINE_ABI` (Hash über alle Engine-Header, `generate_build_metadata.py` → `EngineAbi.generated.hpp`); Editor/Launcher/Runtime (`EntryPoint.hpp`) und CLI vergleichen sie beim Start mit `Engine::GetAbiKey()` und loggen eine lesbare Meldung. Loader-Fehler vor `main`: `Process::LaunchDetachedChecked` + `DescribeLoaderFailure` in Launcher, Build & Run und CLI; `Run.ps1`/`Test.ps1` übersetzen 0xC0000135/138/139/7B/142 (`LoaderExitCodes.ps1`). `EngineAbiTests.cpp`.
 
 ## 3. Asset-Felder für Scripts (Material, Mesh, Prefab)
 
 **Status (15.10.2026):** erledigt — `Material`- und `Mesh`-Felder (auch `List<…>`/Arrays) als gefilterte Asset-Slots (`material`/`mesh` → `AssetRef`), GUID-Roundtrip, Pfad→GUID-Normalisierung in Szenen; xUnit `ScriptAssetFieldTests.cs`. Prefab-Felder gab es schon über `Entity` (`prefab:<guid>`).
 
-**Problem:** `ScriptInstanceManager.MapFieldType` kennt `texture` und `audio`, aber kein `Material`, kein `Mesh` und kein Prefab-Asset. Der Lint (`index_game_tool.py`, Regel 2) verbietet `Material.FromAssetUUID` im Spielcode zu Recht.
+**Problem:** `ScriptInstanceManager.MapFieldType` kennt `texture` und `audio`, aber kein `Material`, kein `Mesh` und kein Prefab-Asset. Der Lint (`funke_game_tool.py`, Regel 2) verbietet `Material.FromAssetUUID` im Spielcode zu Recht.
 
 **Workaround in MarbleSky:** Eine „Skin Library“-Entity mit deaktivierten Kindern, die je ein `MeshRenderer`-Material tragen. `MarbleSkin.cs` kopiert das Material des ausgewählten Kinds.
 
@@ -77,31 +77,31 @@ Bereits behoben in derselben Session (nur zur Einordnung):
 
 ## 5. `ParticleSystem3D.Emit` nutzt die alte Emitter-Position
 
-**Status (15.10.2026):** erledigt — `Index_ParticleSystem3D_Emit` setzt vorher die aktuelle Weltmatrix (`Transform3DHierarchySystem::ComputeWorldMatrix`, inkl. Eltern); Doctest in `ParticleSystem3DTests.cpp`.
+**Status (15.10.2026):** erledigt — `Funke_ParticleSystem3D_Emit` setzt vorher die aktuelle Weltmatrix (`Transform3DHierarchySystem::ComputeWorldMatrix`, inkl. Eltern); Doctest in `ParticleSystem3DTests.cpp`.
 
 **Problem:** `ParticleSystem3DComponent::Emit` verwendet `m_EmitterWorld` aus dem letzten `Simulate`. Ein Script, das den Emitter verschiebt und sofort `Emit` ruft, erzeugt den Burst an der vorherigen Stelle.
 
 **Workaround in MarbleSky:** `EffectsPlayer.cs` verschiebt den Emitter und emittiert zwei Frames später.
 
-**Vorschlag:** In `Index_ParticleSystem3D_Emit` (`ScriptBindings3D.cpp`) vor dem Emittieren die aktuelle Weltmatrix aus dem `Transform3D` (inklusive Eltern) setzen. Dazu ein Doctest: verschieben, emittieren, Partikelposition prüfen.
+**Vorschlag:** In `Funke_ParticleSystem3D_Emit` (`ScriptBindings3D.cpp`) vor dem Emittieren die aktuelle Weltmatrix aus dem `Transform3D` (inklusive Eltern) setzen. Dazu ein Doctest: verschieben, emittieren, Partikelposition prüfen.
 
 ## 6. Validierung von Komponenten-Verweisen in Szenen
 
 **Problem:** Script-Felder verweisen über `"<uuid>:<Anzeigename>"` (z. B. `"…:Particle System 3D"`, `"…:Rect Transform 2D"`). Ein falscher Name oder ein fehlendes Component fällt erst zur Laufzeit als `null` auf. Bei Verweisen innerhalb eines Prefabs (Kind-Entity im selben Prefab) war unklar, ob sie beim Instanziieren umgebogen werden. MarbleSky hat deshalb Pads und Bumper ohne Prefabs gebaut.
 
 **Vorschlag:**
-- `index validate` prüft jedes `component:`/`entity`-Feld: Ziel-Entity existiert und hat das Component (serialisierten Namen zusätzlich zum Anzeigenamen akzeptieren).
+- `funke validate` prüft jedes `component:`/`entity`-Feld: Ziel-Entity existiert und hat das Component (serialisierten Namen zusätzlich zum Anzeigenamen akzeptieren).
 - Prefab-interne Verweise per Test absichern und in `scene-json.md` dokumentieren.
 
-**Status (15.10.2026):** erledigt — `index validate` prüft Entity-/Komponenten-Verweise (inkl. Prefab-Instanzen und Overrides), Test in `SceneSerializerPrefabRefTests.cpp` deckt Komponenten-Verweise ab, `scene-json.md` ergänzt.
+**Status (15.10.2026):** erledigt — `funke validate` prüft Entity-/Komponenten-Verweise (inkl. Prefab-Instanzen und Overrides), Test in `SceneSerializerPrefabRefTests.cpp` deckt Komponenten-Verweise ab, `scene-json.md` ergänzt.
 
 ## 7. Release-Builds ohne Debug-Overlay als Standard
 
-**Problem:** `showRuntimeStats` und `showRuntimeLogs` sind standardmäßig `true`, auch bei `index build --release`. Das gebaute Spiel zeigt dann Statistik- und Log-Fenster, auf dem Handy über dem Pause-Button.
+**Problem:** `showRuntimeStats` und `showRuntimeLogs` sind standardmäßig `true`, auch bei `funke build --release`. Das gebaute Spiel zeigt dann Statistik- und Log-Fenster, auf dem Handy über dem Pause-Button.
 
 **Vorschlag:** Bei Release-Builds standardmäßig aus (in `project.json` bzw. im Build-Profil überschreibbar), oder eine Option im Build-Panel.
 
-**Status (15.10.2026):** erledigt — ungesetzt folgen beide Overlays dem Build-Profil (`IndexProject::ResolveShowRuntimeStats/Logs`), explizite Werte in `project.json` gewinnen.
+**Status (15.10.2026):** erledigt — ungesetzt folgen beide Overlays dem Build-Profil (`FunkeProject::ResolveShowRuntimeStats/Logs`), explizite Werte in `project.json` gewinnen.
 
 ## 8. Nahtstellen zwischen Physik-Collidern
 
@@ -122,18 +122,18 @@ Bereits behoben in derselben Session (nur zur Einordnung):
 ## 10. Debug-Werkzeuge und eigene Test-Builds
 
 **Erledigt (15.10.2026), alle fünf Punkte:**
-- **Konfiguration:** `BuildProfile::Debug` (Debug-Runtime + PDBs von Runtime, Engine, ScriptCore und User-Assembly, Define `INDEX_BUILD_DEBUG`, braucht Engine-Quellen bzw. `Runtime-Debug`). Build-Fenster „Configuration“, `index build --debug`. C# `Engine.BuildConfiguration`: `Editor`/`Development`/`Release`/`Debug`.
-- **Profile:** `.build` mit `configuration`, `defines`, `showRuntimeStats/Logs`, `devConsole`, `isolatedPrefs` (`IndexBuildProfile::ApplyTo`, nur im Build-Snapshot). UI unter Build Profiles › Configuration & Testing. CLI-Flags schlagen das Profil.
+- **Konfiguration:** `BuildProfile::Debug` (Debug-Runtime + PDBs von Runtime, Engine, ScriptCore und User-Assembly, Define `FUNKE_BUILD_DEBUG`, braucht Engine-Quellen bzw. `Runtime-Debug`). Build-Fenster „Configuration“, `funke build --debug`. C# `Engine.BuildConfiguration`: `Editor`/`Development`/`Release`/`Debug`.
+- **Profile:** `.build` mit `configuration`, `defines`, `showRuntimeStats/Logs`, `devConsole`, `isolatedPrefs` (`FunkeBuildProfile::ApplyTo`, nur im Build-Snapshot). UI unter Build Profiles › Configuration & Testing. CLI-Flags schlagen das Profil.
 - **Dev-Konsole:** `DevTools/DevConsole` (Engine) + `RuntimeConsoleLayer` (` bzw. Drei-Finger-Tipp, Tab, Verlauf). Eingebaut: `help`, `scene`, `timescale`, `physics.debug/contacts`, `stats`, `logs`, `screenshot`, `prefs.clear/path`, `echo`, `clear`, `quit`. C#: `[DevCommand]` (typisierte und optionale Parameter), `DevConsole.Register/Execute`. Interop-Layout 25. Spiel-Eingaben sind blockiert, solange sie offen ist.
 - **Isolierte Spielstände:** `--prefs-profile=`, `"prefsProfile"`, `isolatedPrefs` → `PersistentDataPath/Profiles/<name>`. `Run.ps1` nutzt standardmäßig `agent`.
 - **Physik-Overlay:** F8 / `physics.debug`. 2D (`Physics/PhysicsDebugDraw2D`, 2 px Umrisse, Box2D-Kontakte) und 3D (`Physics3D/PhysicsDebugDraw3D`, aus dem Editor in die Engine verschoben; Kontakte über `PhysicsWorld3D::ForEachActiveContact`). Neue Gizmo-Ebene `Debug`. Runtime flusht jetzt die 3D-Linien. Der Gizmo-Pass läuft vor den ImGui-Overlays.
-- **Automatisierte Läufe:** `DevTools/RunAutomation`: `--input-script` (Tasten, Maus, Touch über SDL-Events; Befehle; Screenshots; Log; Quit), `--screenshot-at`, `--fixed-step`, `--quit-at`, `--exec`. Die Uhr läuft nur in nicht pausierten Spiel-Frames. Testläufe pausieren nicht im Hintergrund, und Vollbild minimiert nicht bei Fokusverlust. `ScreenCapture` liest die Swapchain (CopySrc). `index run` reicht alles durch. `Run.ps1 -ScreenshotAt/-InputScript/-FixedStep/-Exec/-QuitAt` schreibt Screenshots pro Lauf nach `run\shots-*`.
+- **Automatisierte Läufe:** `DevTools/RunAutomation`: `--input-script` (Tasten, Maus, Touch über SDL-Events; Befehle; Screenshots; Log; Quit), `--screenshot-at`, `--fixed-step`, `--quit-at`, `--exec`. Die Uhr läuft nur in nicht pausierten Spiel-Frames. Testläufe pausieren nicht im Hintergrund, und Vollbild minimiert nicht bei Fokusverlust. `ScreenCapture` liest die Swapchain (CopySrc). `funke run` reicht alles durch. `Run.ps1 -ScreenshotAt/-InputScript/-FixedStep/-Exec/-QuitAt` schreibt Screenshots pro Lauf nach `run\shots-*`.
 - **Getestet:** `DevToolsTests.cpp`, `GameBuilderTests.cpp` (Prepare), xUnit `DevCommandRegistryTests.cs`; im Runtime mit `bin-int/_agent/DevToolsSandbox` (Input-Script: Tasten frame-genau, Klick, `[DevCommand]`, Prefs-Profil, Screenshots, Quit bei Frame 120), `MarbleSkyCopy` und `SandboxPhysics3D` (Collider, Trigger, Kontakte).
 - **Doku:** `Editor/Testing.md`, CHANGELOG, Skills.
-- **Debug-Build geprüft:** `index build` mit einem QA-Profil (`configuration: Debug`) baut die Debug-Runtime (bei 2D-only als Modul-Variante) und liefert `Index-Runtime.pdb` + `Index-Engine.pdb` + Script-PDBs aus. Das gebaute Spiel meldet `config=Debug` und das Profil `QA`. Editor-UI (Build-Fenster, Build Profiles) per `Run.ps1 -OpenWindow` gescreenshottet.
+- **Debug-Build geprüft:** `funke build` mit einem QA-Profil (`configuration: Debug`) baut die Debug-Runtime (bei 2D-only als Modul-Variante) und liefert `Funke-Runtime.pdb` + `Funke-Engine.pdb` + Script-PDBs aus. Das gebaute Spiel meldet `config=Debug` und das Profil `QA`. Editor-UI (Build-Fenster, Build Profiles) per `Run.ps1 -OpenWindow` gescreenshottet.
 - **Offen:** Gamepads lassen sich nicht skripten. Kein `--seed` für Zufall. UI-Klicks unter dem offenen Konsolenfenster erreichen weiterhin das Spiel-UI. Die Konsole selbst (Tippen, Tab, Verlauf) ist nicht per Hand durchgeklickt; die Befehle laufen über dieselbe `DevConsole::Execute` wie die Input-Scripts.
 
-**Ist-Zustand (vorher):** Ein Game-Build ist entweder `Development` (Release-Binaries, `Runtime-Development`, Define `IDX_RELEASE`) oder `Release` (Dist-Binaries, `INDEX_BUILD_RELEASE`). Es gibt keinen Debug-Runtime für Spiele (Asserts, Symbole, C#-Debugging), und keine eigenen Varianten. `CustomDefines` gelten projektweit, ein Build-Profil (`BuildProfiles/*.build`) wählt nur Plattform und Render-Backend (`GameBuilder.cpp`, `BuildManagedDefinesForSnapshot`).
+**Ist-Zustand (vorher):** Ein Game-Build ist entweder `Development` (Release-Binaries, `Runtime-Development`, Define `FNK_RELEASE`) oder `Release` (Dist-Binaries, `FUNKE_BUILD_RELEASE`). Es gibt keinen Debug-Runtime für Spiele (Asserts, Symbole, C#-Debugging), und keine eigenen Varianten. `CustomDefines` gelten projektweit, ein Build-Profil (`BuildProfiles/*.build`) wählt nur Plattform und Render-Backend (`GameBuilder.cpp`, `BuildManagedDefinesForSnapshot`).
 
 **Was beim Testen von MarbleSky gefehlt hat:**
 - **Testhilfen ohne Code-Eingriff:** Um Sprungpad, Bumper und Ziel zu prüfen, musste ich eine Probe per Umgebungsvariable vorübergehend in `LevelTimer.cs` einbauen (Murmel schieben, ins Ziel teleportieren, Pfad loggen) und danach wieder löschen.
@@ -143,8 +143,8 @@ Bereits behoben in derselben Session (nur zur Einordnung):
 
 **Vorschlag:**
 1. **Build-Konfiguration im Profil:**
-   - `BuildProfiles/<Name>.build` bekommt `"configuration": "Debug" | "Development" | "Release"`, eigene `"defines"` (z. B. `INDEX_TEST`, `DEMO`) und Schalter wie `showRuntimeStats`, `devConsole`, `isolatedPrefs`.
-   - So lassen sich beliebige Test-, Demo- oder QA-Builds anlegen (`index build --profile AndroidTest`).
+   - `BuildProfiles/<Name>.build` bekommt `"configuration": "Debug" | "Development" | "Release"`, eigene `"defines"` (z. B. `FUNKE_TEST`, `DEMO`) und Schalter wie `showRuntimeStats`, `devConsole`, `isolatedPrefs`.
+   - So lassen sich beliebige Test-, Demo- oder QA-Builds anlegen (`funke build --profile AndroidTest`).
    - Ein **Debug**-Runtime (Debug-Binaries, C#-Debug-Symbole, Debugger zum Anhängen) als dritte Konfiguration.
 2. **Entwickler-Konsole im Runtime** (nur in Development/Debug/Test):
    - Taste bzw. Drei-Finger-Tipp öffnet sie.
@@ -177,7 +177,7 @@ Bereits behoben in derselben Session (nur zur Einordnung):
 
 **Ist-Zustand:**
 - `.wgsl` (und `.vert`/`.frag`/`.glsl`) wird im Projekt schon als `AssetKind::Shader` erkannt (`AssetRegistry.hpp`), aber nirgends benutzt.
-- Shader kommen nur aus dem Engine-Bestand (`Shader.cpp`, eingebaut oder `IndexAssets/Shaders/webgpu/<name>.wgsl`).
+- Shader kommen nur aus dem Engine-Bestand (`Shader.cpp`, eingebaut oder `FunkeAssets/Shaders/webgpu/<name>.wgsl`).
 - `Material` (`Graphics/Material.hpp`) ist ein fester PBR-Parametersatz (BaseColor, Metallic, Roughness, Emissive, Lit, Surface) ohne Shader-Feld.
 - 2D (`SpriteRenderer`, UI-`Image`) und Post-Processing haben gar keine Material-/Shader-Wahl.
 
@@ -189,21 +189,21 @@ Bereits behoben in derselben Session (nur zur Einordnung):
 5. **Custom Post-Process-Pass:** Fullscreen-Shader als Effekt in `PostProcessing2DComponent` bzw. der 3D-Kamera einhängbar, mit Reihenfolge.
 6. **Hot Reload und Fehler:** Datei-Watcher kompiliert neu; Compiler-Fehler von Dawn/Tint mit Datei und Zeile in die Console, bei Fehler bleibt der letzte gültige Stand bzw. ein Magenta-Fallback-Shader aktiv.
 7. **C#-API:** `material.SetFloat/SetColor/SetTexture("name", …)` für Laufzeitänderungen, plus Builtins wie `time`, `deltaTime`, Kamera- und Objektmatrizen in der Vorlage.
-8. **Build:** Shader-Assets werden mit ins Spiel gepackt; optional beim Build vorkompilieren bzw. validieren (`index validate` meldet Shader-Fehler).
+8. **Build:** Shader-Assets werden mit ins Spiel gepackt; optional beim Build vorkompilieren bzw. validieren (`funke validate` meldet Shader-Fehler).
 
 **Fertig, wenn:** ein User-Shader (z. B. animiertes Wasser mit `time` und zwei Farb-Properties) auf einem Mesh und auf einem Sprite im Editor und im gebauten Spiel läuft, Änderungen per Hot Reload sofort sichtbar sind, ein Syntaxfehler mit Zeilennummer in der Console landet und nichts abstürzt. Doctests für Property-Parsing und Material-Serialisierung, Doku-Seite „Custom Shaders“ mit Beispielen, `CHANGELOG.md`.
 
 **Stand 15.10.2026 – umgesetzt (uncommitted):**
-- Kern: `Graphics/CustomShader.{hpp,cpp}` (Kopf-Direktiven, `@property`, WGSL-Uniform-Layout, Vorlagen Mesh3D/Sprite2D/PostProcess, Magenta-Fallback), `Graphics/CustomShaderLibrary.{hpp,cpp}` + `CustomShaderGpu.hpp` (Laden per GUID, Kompilieren im Error-Scope mit Zeilen-Mapping auf die User-Datei, letzter gültiger Stand, Hot Reload per Datei-Stempel im Editor, `CustomMaterialBindings` = Gruppe 1 je Renderer, Headless-Validierung). `Material` hat `Shader` + `Properties` (`"shader"`/`"properties"`), `Material.*` ist dafür aus dem Index.3D-Modul in den Kern gewandert.
+- Kern: `Graphics/CustomShader.{hpp,cpp}` (Kopf-Direktiven, `@property`, WGSL-Uniform-Layout, Vorlagen Mesh3D/Sprite2D/PostProcess, Magenta-Fallback), `Graphics/CustomShaderLibrary.{hpp,cpp}` + `CustomShaderGpu.hpp` (Laden per GUID, Kompilieren im Error-Scope mit Zeilen-Mapping auf die User-Datei, letzter gültiger Stand, Hot Reload per Datei-Stempel im Editor, `CustomMaterialBindings` = Gruppe 1 je Renderer, Headless-Validierung). `Material` hat `Shader` + `Properties` (`"shader"`/`"properties"`), `Material.*` ist dafür aus dem Funke.3D-Modul in den Kern gewandert.
 - Renderer: Mesh3D in `Renderer3D` (Sortierung/Batching nach Material, transparente User-Shader in der Rückwärts-Sortierung), Sprite2D in `Renderer2D` (`SpriteRendererComponent::Material`, `"materialAsset"`, Batching nur bei gleichem Material), PostProcess in `PostProcessor` (`PostProcessing2DComponent::CustomEffects[4]`, `"customEffects"`, nach den eingebauten Effekten).
 - Editor: Shader-Feld + Property-Felder + Fehlerliste im Material-Inspector (`Inspector/MaterialShaderInspector.cpp`), Material-Slot am Sprite Renderer, 4 Effekt-Slots an Post Processing.
 - C#: `Material.SetFloat/SetVector/SetColor/SetTexture`, Getter, `HasProperty`, `ShaderUUID`, `SpriteRenderer.Material` (Interop-Layout 17).
-- Build/CLI: Shader werden über die GUID-Referenzen der Materialien mitgepackt; `index validate` kompiliert jede `.wgsl` (Headless-Device) und prüft `"shader"`-Verweise.
+- Build/CLI: Shader werden über die GUID-Referenzen der Materialien mitgepackt; `funke validate` kompiliert jede `.wgsl` (Headless-Device) und prüft `"shader"`-Verweise.
 - Getestet: Doctests (`CustomShaderTests.cpp`), Editor/Runtime/gebautes Spiel mit Wasser-Shader auf Mesh und Sprite, Hot Reload, Syntaxfehler mit Zeile, Post-Effekt, C#-API. Doku `Engine-Core/Custom-Shaders.md`, CHANGELOG.
 
 **Nachtrag – Reste erledigt:**
 - Ziel `UI`: `Image::Material` (`"materialAsset"`, Inspector-Slot, C# `Image.Material`, Interop-Layout 21); `CustomSpriteDrawer` (Kern) teilt die Pipeline-Logik zwischen Renderer2D und GuiRenderer.
-- Post-Processing für 3D: `PostProcessing2DComponent`, `PostProcessor` und die PP-Bindings sind Kern (nicht mehr Index.2D); Renderer3D rendert bei aktivem Effekt in ein Zwischen-FBO und lässt die Kette laufen (Runtime und Editor-Views, Editor-View-Schalter gilt auch für 3D).
+- Post-Processing für 3D: `PostProcessing2DComponent`, `PostProcessor` und die PP-Bindings sind Kern (nicht mehr Funke.2D); Renderer3D rendert bei aktivem Effekt in ein Zwischen-FBO und lässt die Kette laufen (Runtime und Editor-Views, Editor-View-Schalter gilt auch für 3D).
 - Vertex-Offset: Mesh3D-Vorlage hat `vs_shadow`, der Schatten-Pass nutzt dafür eine eigene Pipeline; Picking über `// @displacement` (Bounds werden vergrößert).
 - Material-Inspector im Editor durchgeklickt (Shader-Feld, Properties, live Änderung, Reset).
 - Skybox-Ziel: mit Punkt 21 umgesetzt (`ShaderTarget::Skybox`).
@@ -212,15 +212,15 @@ Bereits behoben in derselben Session (nur zur Einordnung):
 ## 13. Animator: Keyframe-Animationen (`.anim`) und State Machine
 
 **Erledigt (15.10.2026):**
-- Kern (`Index-Engine/src/Animation/`): `AnimationClip`/`AnimatorController` mit JSON und Libraries, `AnimatorStateMachine` mit Parametern, Exit Time, Any State, Trigger-Verbrauch und Crossfade, `AnimationBinding` über die `PropertyDescriptor`s bzw. C#-Felder (`SetScriptField`) und `AnimatorRuntime` (Blending, Events per `InvokeScriptMethodByName`).
+- Kern (`Funke-Engine/src/Animation/`): `AnimationClip`/`AnimatorController` mit JSON und Libraries, `AnimatorStateMachine` mit Parametern, Exit Time, Any State, Trigger-Verbrauch und Crossfade, `AnimationBinding` über die `PropertyDescriptor`s bzw. C#-Felder (`SetScriptField`) und `AnimatorRuntime` (Blending, Events per `InvokeScriptMethodByName`).
 - `AnimatorComponent` (Kern, Icon `animator`) und `AnimatorSystem` (nach `ScriptSystem`, Update oder Fixed). RectTransform2D hat dafür jetzt Descriptoren.
 - C#: `Animator`, `AnimationClip`, `AnimatorController`, Asset-Felder, `AssetManager`.
 - Editor: Animation-Fenster (Dopesheet, Kurven mit Tangenten, Events, Record per Werte-Diff, Undo) und Animator-Fenster (Graph, Parameter, Transition-Details, Live-Ansicht). Dazu `AnimationPreview`: Posen werden nur zwischen Panel-Aufbau und Viewport-Render geschrieben, so dass Speichern und Play-Snapshot die Autorenwerte sehen. Außerdem Content-Browser-Create/Open und Hot Reload.
-- `index validate` prüft `.anim`/`.animctrl` und Animator-Verweise.
+- `funke validate` prüft `.anim`/`.animctrl` und Animator-Verweise.
 - Getestet: Doctests (`AnimationTests.cpp`), Play-Modus in `bin-int/_agent/AnimatorSandbox` (Transitionen und Events im Log), beide Fenster im Editor durchgeklickt, gespeicherte Szene ohne Vorschauwerte.
 - Doku `Engine-Core/Animation.md`, CHANGELOG, Skills.
 
-**Offen:** Blend Trees, Layers und Root Motion. Felder von C#-`IComponent`-Structs sind nicht animierbar. Ein beim Test gefundener Altfehler: Der erste Klick in ein schwebendes OS-Fenster über dem Editor View landet als Picking im Viewport, was die Auswahl aufhebt. Zweiter Altfehler: `index build` eines reinen 3D-Projekts scheitert auf diesem Rechner. `IndexProject::GetMSBuildPath` wählt VS „18“, dessen Header nicht zur VS2022-PCH der Runtime-Variante passen (C2375 `__builtin_assume_aligned`). Gespielt wurde deshalb im Runtime-Player direkt mit dem Projekt.
+**Offen:** Blend Trees, Layers und Root Motion. Felder von C#-`IComponent`-Structs sind nicht animierbar. Ein beim Test gefundener Altfehler: Der erste Klick in ein schwebendes OS-Fenster über dem Editor View landet als Picking im Viewport, was die Auswahl aufhebt. Zweiter Altfehler: `funke build` eines reinen 3D-Projekts scheitert auf diesem Rechner. `FunkeProject::GetMSBuildPath` wählt VS „18“, dessen Header nicht zur VS2022-PCH der Runtime-Variante passen (C2375 `__builtin_assume_aligned`). Gespielt wurde deshalb im Runtime-Player direkt mit dem Projekt.
 
 **Ist-Zustand:** Es gibt nur `SpriteAnimator2D` (`SpriteAnimationSystem.cpp`, Frame-Wechsel eines Sprites). Beliebige Komponentenwerte (Position, Farbe, Light-Intensität, Script-Felder …) lassen sich nur per eigenem C#-Code animieren, und es gibt keine Übergänge zwischen Animationen.
 
@@ -249,16 +249,16 @@ Bereits behoben in derselben Session (nur zur Einordnung):
 - beides im gebauten Spiel genauso läuft.
 Doctests für Interpolation/Sampling, `.anim`-/Controller-Serialisierung und Transition-Auswertung (Trigger-Verbrauch, Exit Time), xUnit für die C#-API, Doku-Seite „Animation“, `CHANGELOG.md`.
 
-## 14. Umbenennung Index → Funke
+## 14. Umbenennung Funke → Funke
 
 **Entscheidung (14.10.2026):** Komplettes Rebranding vor 2026.1.0 final, solange ein Kompatibilitätsbruch am wenigsten kostet. Harter Bruch: alte Projekte müssen nicht mehr laden, Migration später.
 
 **Umfang:**
-- Makros: `IDX_*` → `FNK_*`, `INDEX_*` → `FUNKE_*` (inkl. `INDEX_API`, `INDEX_PROFILE_*`, `INDEX_BUILD_RELEASE`, `IDX_RELEASE`).
-- C++-Namespace `Index` → `Funke`, C#-Namespace und Assemblies (`Index-ScriptCore` → `Funke-ScriptCore`, `Index.*` → `Funke.*`).
-- Projektordner, premake-Projekte, DLLs und Executables: `Index-Engine` → `Funke-Engine`, `Index-Editor`, `Index-Runtime`, `Index-Launcher`, `Index-EditorRuntime`, `Index-CLI` (`index.exe` → `funke.exe`), `Index-ScriptCompiler`, Test-Projekte, `Index.sln`.
-- Pakete: `index-package.lua` → `funke-package.lua`, `Pkg.Index.*` → `Pkg.Funke.*`, `INDEX_PACKAGE_API`, `IndexPackage_OnLoad`, Package-Tools und -Registry-Namen.
-- Dateiformate und Pfade: Magic-Strings wie `IDXSCNB`, `IndexAssets`, `%LOCALAPPDATA%\Index\` (Logs, CrashDumps, Einstellungen), Projekt-Dateinamen und Format-Felder.
+- Makros: `FNK_*` → `FNK_*`, `FUNKE_*` → `FUNKE_*` (inkl. `FUNKE_API`, `FUNKE_PROFILE_*`, `FUNKE_BUILD_RELEASE`, `FNK_RELEASE`).
+- C++-Namespace `Funke` → `Funke`, C#-Namespace und Assemblies (`Funke-ScriptCore` → `Funke-ScriptCore`, `Funke.*` → `Funke.*`).
+- Projektordner, premake-Projekte, DLLs und Executables: `Funke-Engine` → `Funke-Engine`, `Funke-Editor`, `Funke-Runtime`, `Funke-Launcher`, `Funke-EditorRuntime`, `Funke-CLI` (`funke.exe` → `funke.exe`), `Funke-ScriptCompiler`, Test-Projekte, `Funke.sln`.
+- Pakete: `funke-package.lua` → `funke-package.lua`, `Pkg.Funke.*` → `Pkg.Funke.*`, `FUNKE_PACKAGE_API`, `FunkePackage_OnLoad`, Package-Tools und -Registry-Namen.
+- Dateiformate und Pfade: Magic-Strings wie `FNKSCNB`, `FunkeAssets`, `%LOCALAPPDATA%\Funke\` (Logs, CrashDumps, Einstellungen), Projekt-Dateinamen und Format-Felder.
 - Tooling: `scripts/dev/*.ps1`, CI, `Setup.py`, Skills (`index-*` → `funke-*` in `.claude/skills` und `.agents/skills`), `CLAUDE.md`, Memory.
 - Doku, `CHANGELOG.md`, README, Fenstertitel, About-Dialog, Splash und Icons.
 
@@ -266,11 +266,11 @@ Doctests für Interpolation/Sampling, `.anim`-/Controller-Serialisierung und Tra
 1. Vorher: großen uncommitteten Arbeitsstand committen, parallele Agents pausieren.
 2. Umbenennung in einem Durchgang per Skript (Dateinamen + Inhalte, mit Ausnahmeliste für `External/` und echte Wörter wie „index“ in Arrays/Suchindizes), danach premake regenerieren.
 3. `Build.ps1 All`, `Test.ps1 -Suite All`, `Run.ps1` für Editor, Launcher und Runtime, Spiel-Build eines Testprojekts.
-4. Rest-Suche nach `Index`/`IDX_`/`INDEX_` und manuell prüfen.
+4. Rest-Suche nach `Funke`/`FNK_`/`FUNKE_` und manuell prüfen.
 
 **Beim User:** GitHub-Repo, Submodul `External/Index-Physics`, Package-Registry, Logo.
 
-**Fertig, wenn:** kein `IDX_`/`INDEX_`/`Index-` mehr außerhalb von `External/` vorkommt (bis auf bewusste Ausnahmen), alles baut, alle Tests grün sind und ein neu angelegtes Projekt im Editor und als gebautes Spiel läuft.
+**Fertig, wenn:** kein `FNK_`/`FUNKE_`/`Funke-` mehr außerhalb von `External/` vorkommt (bis auf bewusste Ausnahmen), alles baut, alle Tests grün sind und ein neu angelegtes Projekt im Editor und als gebautes Spiel läuft.
 
 ## 15. Performance und Stabilität unter Last (gesamte Engine)
 
@@ -283,7 +283,7 @@ Doctests für Interpolation/Sampling, `.anim`-/Controller-Serialisierung und Tra
 - Budget pro Bereich festlegen (z. B. 60 FPS auf Referenz-Handy, P99 < 20 ms) und in CI bzw. per Skript gegen gespeicherte Werte vergleichen (Warnung ab z. B. +10 %).
 
 **2. CPU pro Frame:**
-- Profiler-Abdeckung prüfen (`INDEX_PROFILE_*`, Tracy): jede Systemstufe, Scripts, Physik, Render-Vorbereitung, UI, Audio als eigene Zone.
+- Profiler-Abdeckung prüfen (`FUNKE_PROFILE_*`, Tracy): jede Systemstufe, Scripts, Physik, Render-Vorbereitung, UI, Audio als eigene Zone.
 - C#-Interop: Anzahl Native↔Managed-Übergänge pro Frame senken (Batch-Calls statt pro Entity, `OnUpdate` nur für Scripts, die es überschreiben).
 - Managed-Allokationen pro Frame auf ~0 bringen (keine LINQ/Closures/Boxing in Engine-API-Pfaden), GC-Pausen messen.
 - ECS: Hot-Path-Queries auf Cache-Freundlichkeit prüfen, unnötige Kopien/`std::string`/`std::function` im Frame entfernen.
@@ -323,10 +323,10 @@ Doctests für Interpolation/Sampling, `.anim`-/Controller-Serialisierung und Tra
 
 **Ist-Zustand (geprüft 14.10.2026):** Nur teilweise inkrementell.
 - **Schon inkrementell:**
-  - Kompilieren über die Toolchains selbst: `dotnet build` für `Index-ScriptCore` und die User-Scripts, MSBuild für `Index-Runtime` bzw. die Runtime-Variante und für Paket-Projekte (`GameBuilder.cpp`).
+  - Kompilieren über die Toolchains selbst: `dotnet build` für `Funke-ScriptCore` und die User-Scripts, MSBuild für `Funke-Runtime` bzw. die Runtime-Variante und für Paket-Projekte (`GameBuilder.cpp`).
   - Android/Web: Der native Player liegt pro Engine-Stand, Konfiguration und Modulen im `PlatformCache` (`player-<engine>-<config>-<modules>`). Dazu kommen gecachte Java-Klassen (Hash über die Quellen), Mono-AOT-Images pro Assembly-Hash und das Emscripten-/Dawn-Cache (`platforms/*/Builder/build.py`, `mono_aot.py`).
 - **Nicht inkrementell:**
-  - Jeder Build schreibt in ein **neues, leeres Staging-Verzeichnis** (`BuildStagingDirectory::Prepare`, `MakeUniqueSibling("staging")`) und tauscht es danach gegen die alte Ausgabe. `CopyDirIncremental*` vergleicht deshalb immer gegen nichts. Alle Assets, `IndexAssets`, Runtime-Binaries, Lizenzen und Pakete werden bei jedem Build komplett neu kopiert, die alte Ausgabe wird gelöscht.
+  - Jeder Build schreibt in ein **neues, leeres Staging-Verzeichnis** (`BuildStagingDirectory::Prepare`, `MakeUniqueSibling("staging")`) und tauscht es danach gegen die alte Ausgabe. `CopyDirIncremental*` vergleicht deshalb immer gegen nichts. Alle Assets, `FunkeAssets`, Runtime-Binaries, Lizenzen und Pakete werden bei jedem Build komplett neu kopiert, die alte Ausgabe wird gelöscht.
   - Asset-Pruning (`BuildAssetPruning::ComputeShippedAssets`) und Fingerprint laufen jedes Mal komplett.
   - App-Icon wird jedes Mal neu dekodiert und skaliert.
   - Bei Plattform-Paketen (APK/Web) wird das Paket immer komplett neu gepackt und auf dem Gerät komplett neu installiert.
@@ -334,15 +334,15 @@ Doctests für Interpolation/Sampling, `.anim`-/Controller-Serialisierung und Tra
 
 **Vorschlag:**
 1. **Zeit pro Schritt loggen** (Snapshot, Pruning, C#, Runtime, Kopieren, Packen, Installieren) und am Ende eine Zusammenfassung ausgeben. Das ist die Grundlage für alles Weitere.
-2. **Build-Manifest in der Ausgabe** (`.index-build/manifest.json`): pro Ausgabedatei Quelle, Größe, Zeitstempel bzw. Hash, dazu Engine-Version, Konfiguration, Profil, Defines und Module. Ändert sich einer der globalen Schlüssel, folgt ein vollständiger Build.
+2. **Build-Manifest in der Ausgabe** (`.funke-build/manifest.json`): pro Ausgabedatei Quelle, Größe, Zeitstempel bzw. Hash, dazu Engine-Version, Konfiguration, Profil, Defines und Module. Ändert sich einer der globalen Schlüssel, folgt ein vollständiger Build.
 3. **Staging gegen die vorherige Ausgabe:**
    - Unveränderte Dateien nicht neu kopieren, sondern per Hardlink bzw. Rename aus der alten Ausgabe übernehmen. Nur Geändertes kopieren, Entferntes weglassen.
    - Der atomare Tausch und die Sicherheitsprüfungen (`BuildOutputSafety`) bleiben erhalten.
    - Alternative: direkt in die Ausgabe schreiben mit Manifest-Abgleich, alte Dateien aufräumen, Ausgabe bei Abbruch als „unvollständig“ markieren.
-4. **Teure Schritte cachen:** Pruning-Plan, Icon-Varianten und spätere Asset-Verarbeitung (Textur-Kompression, Mesh-Konvertierung, Shader-Vorkompilierung aus Punkt 12) mit Schlüssel über den Inhalt in `<project>/.index/build-cache/`.
+4. **Teure Schritte cachen:** Pruning-Plan, Icon-Varianten und spätere Asset-Verarbeitung (Textur-Kompression, Mesh-Konvertierung, Shader-Vorkompilierung aus Punkt 12) mit Schlüssel über den Inhalt in `<project>/.funke/build-cache/`.
 5. **Schnelle Teil-Builds:**
    - „Nur Scripts“ bzw. „nur Content“, wenn sich Runtime und Engine nicht geändert haben (Erkennung über das Manifest).
-   - Im Editor als Option „Build & Run (schnell)“ und in der CLI als `index build --incremental` (Standard) bzw. `--clean`.
+   - Im Editor als Option „Build & Run (schnell)“ und in der CLI als `funke build --incremental` (Standard) bzw. `--clean`.
 6. **Mobile-Deploy:**
    - Android: unverändertes APK nicht neu installieren. Bei reinen Content-/Script-Änderungen optional nur geänderte Dateien per `adb push` in einen Dev-Content-Ordner schieben, den der Development-Runtime bevorzugt lädt (nur in Dev/Test-Builds, vgl. Punkt 10).
    - Web: nur geänderte Dateien in den Ausgabeordner schreiben.
@@ -366,7 +366,7 @@ Sofort erledigt (15.10.2026), hier nur zur Einordnung:
 - **Durchklicken in 3D:** wiederholter Klick auf dieselbe Stelle wählt die nächste Entity dahinter (`EntityPicker3D::PickAll`, gleiche Logik wie in 2D).
 - **Inspector-Icons:** nicht mehr blau (Highlight-Tönung) eingefärbt, sondern in Textfarbe (`BeginComponentSection`).
 - **Game View Aspect „Project (…)“:** Option im Dropdown, die das Aspect Ratio aus den Projekteinstellungen (Build) übernimmt.
-- **Skills:** `index-make-a-game` / `index-make-a-mobile-app` um „Entities ohne unnötigen Name/Transform“ und „eigene C#-Komponenten (Struct und Klasse)“ ergänzt.
+- **Skills:** `funke-make-a-game` / `funke-make-a-mobile-app` um „Entities ohne unnötigen Name/Transform“ und „eigene C#-Komponenten (Struct und Klasse)“ ergänzt.
 
 ## 17. Play Mode sofort verlassen
 
@@ -375,7 +375,7 @@ Sofort erledigt (15.10.2026), hier nur zur Einordnung:
 **Problem:** Stop im Play Mode dauert spürbar, statt sofort zurückzukehren.
 
 **Vorschlag:**
-- Stop-Pfad mit `INDEX_PROFILE_SCOPE` zerlegen (Script-`OnDestroy`/`OnDisable`, Freigabe der Play-Szene, Physik-Welten 2D/3D, Audio, Wiederherstellen der Edit-Szene, `AssemblyLoadContext`, GC) und messen.
+- Stop-Pfad mit `FUNKE_PROFILE_SCOPE` zerlegen (Script-`OnDestroy`/`OnDisable`, Freigabe der Play-Szene, Physik-Welten 2D/3D, Audio, Wiederherstellen der Edit-Szene, `AssemblyLoadContext`, GC) und messen.
 - Edit-Szene nicht neu laden/deserialisieren, sondern die vor Play gehaltene Kopie direkt wieder aktivieren; Play-Szene im Hintergrund bzw. über mehrere Frames abbauen, wo sicher.
 - Keine vollständige GC/Unload pro Stop erzwingen, wenn kein Hot Reload ansteht.
 
@@ -383,12 +383,12 @@ Sofort erledigt (15.10.2026), hier nur zur Einordnung:
 
 ## 18. Absturz nach Entfernen des 2D-Moduls
 
-**Erledigt (15.10.2026):** Ursache war ein thread-lokaler `ComponentInfo*`-Cache in `ScriptBindings.cpp`, der nur über `registry.GetGeneration()` invalidiert wurde. Die nach dem Reload neue Registry konnte denselben Zähler erreichen → Aufruf in freigegebenen Speicher (CFG-Fast-Fail, daher kein Dump). Jede Registry zählt jetzt in einem eigenen Bereich. UI-only (ohne beide Module) läuft. Test-Hook: `Run.ps1 -ReloadAfter 3 -RemoveModule Index.2D`.
+**Erledigt (15.10.2026):** Ursache war ein thread-lokaler `ComponentInfo*`-Cache in `ScriptBindings.cpp`, der nur über `registry.GetGeneration()` invalidiert wurde. Die nach dem Reload neue Registry konnte denselben Zähler erreichen → Aufruf in freigegebenen Speicher (CFG-Fast-Fail, daher kein Dump). Jede Registry zählt jetzt in einem eigenen Bereich. UI-only (ohne beide Module) läuft. Test-Hook: `Run.ps1 -ReloadAfter 3 -RemoveModule Funke.2D`.
 
 **Problem:** In einem 2D-Projekt das 2D-Modul entfernen und neu laden → Editor stürzt ab. Projekte ohne 2D und ohne 3D (reine UI-Apps) müssen aber möglich sein.
 
 **Vorschlag:**
-- Absturz reproduzieren (Crash-Dump in `%LOCALAPPDATA%\Index\CrashDumps\`), Ursache beheben: vermutlich Szenen mit `Transform2D`/`SpriteRenderer`/`Camera2D`, deren Komponenten nicht mehr registriert sind, oder Editor-Code, der Renderer2D/`Camera2DComponent::GetMain()` ohne Modul-Prüfung nutzt.
+- Absturz reproduzieren (Crash-Dump in `%LOCALAPPDATA%\Funke\CrashDumps\`), Ursache beheben: vermutlich Szenen mit `Transform2D`/`SpriteRenderer`/`Camera2D`, deren Komponenten nicht mehr registriert sind, oder Editor-Code, der Renderer2D/`Camera2DComponent::GetMain()` ohne Modul-Prüfung nutzt.
 - Unbekannte Komponenten beim Laden behalten (als „fehlendes Modul“-Platzhalter im Inspector mit Hinweis), statt zu verwerfen oder abzustürzen.
 - UI-only-Modus prüfen: UI (`RectTransform`, `Image`, Text) muss ohne 2D- und 3D-Modul rendern; Editor View dann im UI-Modus.
 
@@ -439,7 +439,7 @@ Sofort erledigt (15.10.2026), hier nur zur Einordnung:
 
 **Problem:** Viele Komponenten nutzen Platzhalter-Icons (`ComponentIconName` in `ImGuiUtils.cpp`: Audio → „play“, Particle → „light_sun“, Script → „link“, Rigidbody → „circle_dot“, Lichter/3D-Physik ohne eigenes Icon).
 
-**Vorschlag:** Eigene Icons (gleicher Stil, `IndexAssets/Textures/Editor/<Gruppe>/<name>/<name>_<size>.png` in 16/32/64/128) für:
+**Vorschlag:** Eigene Icons (gleicher Stil, `FunkeAssets/Textures/Editor/<Gruppe>/<name>/<name>_<size>.png` in 16/32/64/128) für:
 - Audio (`AudioSource`, `AudioListener`): Musiknote.
 - `ParticleSystem2D` / `ParticleSystem3D`: eigenes Partikel-Icon.
 - Script-Komponenten (`EntityScript`, eigene C#-Komponenten): eigenes Script-Icon.
@@ -459,18 +459,18 @@ Sofort erledigt (15.10.2026), hier nur zur Einordnung:
 **Vorschlag:**
 - Erkennung erweitern: versionierte Ordner unter `Program Files\JetBrains\*Rider*`, Toolbox 2.x (`Programs\Rider`, Toolbox-Skripte, `state.json`), Registry (`HKLM/HKCU\Software\JetBrains\Rider`), `PATH`; mehrere Versionen auflisten, neueste vorschlagen. Optional IntelliJ IDEA erkennen, mit Hinweis „C# braucht Rider“.
 - Öffnen: Solution/`.csproj` des Projekts plus Datei und Zeile (`rider64.exe <sln> --line <n> <datei>`), vorhandene Instanz wiederverwenden.
-- Projekt-Dateien so erzeugen, dass Rider IntelliSense hat (Referenz auf `Index-ScriptCore.dll` + XML-Doku, `.sln` im Projekt-Root).
+- Projekt-Dateien so erzeugen, dass Rider IntelliSense hat (Referenz auf `Funke-ScriptCore.dll` + XML-Doku, `.sln` im Projekt-Root).
 - Doppelklick auf Script, Fehler in der Console und „Open C# Project“ funktionieren mit Rider.
 
-**Fertig, wenn:** Rider (Toolbox und Standalone) automatisch erkannt wird, Doppelklick auf ein Script die Datei an der richtigen Zeile im laufenden Rider öffnet und IntelliSense für die Index-API funktioniert. Doku im Scripting-Kapitel.
+**Fertig, wenn:** Rider (Toolbox und Standalone) automatisch erkannt wird, Doppelklick auf ein Script die Datei an der richtigen Zeile im laufenden Rider öffnet und IntelliSense für die Funke-API funktioniert. Doku im Scripting-Kapitel.
 
 ## 24. Audio Mixer (als Paket)
 
-**Erledigt (15.10.2026):** `Index.AudioMixer` 1.0.0 (C#): Gruppen, Mute, Fades, Snapshots, dB, PlayerPrefs, BindSlider/BindMuteToggle; im Play Mode geprüft. Veröffentlicht in `Ben-Scr/Index-PackageRegistry` (Release `Index.AudioMixer-1.0.0`, Quelle dort unter `packages/Index.AudioMixer`; aus dem Engine-Repo entfernt, weil der Loader doppelte Paketnamen ablehnt). Nachtrag: Logik-Tests neu im Registry-Repo unter `tests/Index.AudioMixer.Tests` (xUnit, 10 Tests, kompiliert `AudioMixerGraph.cs` direkt). Offen: Mixer-Fenster im Editor – C#-Pakete können heute keine Editor-Fenster beisteuern; braucht entweder eine C#-Editor-Fenster-API oder ein natives Fenster, das den Mixer-Zustand über eine Schnittstelle abfragt.
+**Erledigt (15.10.2026):** `Funke.AudioMixer` 1.0.0 (C#): Gruppen, Mute, Fades, Snapshots, dB, PlayerPrefs, BindSlider/BindMuteToggle; im Play Mode geprüft. Veröffentlicht in `Ben-Scr/Index-PackageRegistry` (Release `Funke.AudioMixer-1.0.0`, Quelle dort unter `packages/Funke.AudioMixer`; aus dem Engine-Repo entfernt, weil der Loader doppelte Paketnamen ablehnt). Nachtrag: Logik-Tests neu im Registry-Repo unter `tests/Funke.AudioMixer.Tests` (xUnit, 10 Tests, kompiliert `AudioMixerGraph.cs` direkt). Offen: Mixer-Fenster im Editor – C#-Pakete können heute keine Editor-Fenster beisteuern; braucht entweder eine C#-Editor-Fenster-API oder ein natives Fenster, das den Mixer-Zustand über eine Schnittstelle abfragt.
 
 **Problem:** Es gibt keine zentrale Lautstärkeverwaltung. Jedes Spiel baut sich Master/Musik/SFX-Regler selbst.
 
-**Vorschlag (als herunterladbares Paket, z. B. `Index.AudioMixer`):**
+**Vorschlag (als herunterladbares Paket, z. B. `Funke.AudioMixer`):**
 - Asset `.mixer` mit Gruppen-Baum: `Master` → `Music`, `SFX` (frei erweiterbar, z. B. `UI`, `Voice`), je Gruppe Lautstärke (dB bzw. linear), Mute, Solo, optional Pitch.
 - `AudioSource` bekommt ein Feld „Output“ (Mixer-Gruppe); `Audio.PlayOneShot` mit optionaler Gruppe.
 - Mixer-Fenster im Editor mit Pegeln und Reglern, live im Play Mode.
@@ -491,7 +491,7 @@ Sofort erledigt (15.10.2026), hier nur zur Einordnung:
 
 **Vorschlag:** Im Editor nachstellen; Inspector-Änderungen direkt in die Struct-Bytes schreiben (Edit- und Play-Mode, Undo) bzw. beim Laden aus `ScriptFields` übernehmen. Veraltete `NativeComponent`-Verweise entfernen. xUnit/Doctest für Registrierung, Serialisierung (Feld anhängen = Daten bleiben) und Hot Reload. Doku-Seite „Eigene Komponenten in C#“.
 
-**Fertig, wenn:** ein im Inspector gesetzter Struct-Wert nach Speichern, Neuladen und Play stimmt, Tests grün, Doku vorhanden; danach den Hinweis in den Skills `index-make-a-game`/`index-make-a-mobile-app` entfernen.
+**Fertig, wenn:** ein im Inspector gesetzter Struct-Wert nach Speichern, Neuladen und Play stimmt, Tests grün, Doku vorhanden; danach den Hinweis in den Skills `funke-make-a-game`/`funke-make-a-mobile-app` entfernen.
 
 ---
 
@@ -506,7 +506,7 @@ Sofort erledigt (15.10.2026), hier nur zur Einordnung:
 
 ## 27. `SetEnabled(true)` lässt ausgeschaltete Kinder aus (beim UI-Redesign gefunden, 15.10.)
 
-- `Entity::SetEnabled(true)` (`Index-Engine/src/Scene/Entity.cpp`, ca. Z. 166–187) überspringt ein im Editor ausgeschaltetes Kind, wenn dessen Elternobjekt in dem Moment noch aus ist; der Kommentar am C#-Binding verspricht anderes. Folge: Panels mit vorab ausgeschalteten Unterelementen zeigen nach dem Einschalten Teile nicht an.
+- `Entity::SetEnabled(true)` (`Funke-Engine/src/Scene/Entity.cpp`, ca. Z. 166–187) überspringt ein im Editor ausgeschaltetes Kind, wenn dessen Elternobjekt in dem Moment noch aus ist; der Kommentar am C#-Binding verspricht anderes. Folge: Panels mit vorab ausgeschalteten Unterelementen zeigen nach dem Einschalten Teile nicht an.
 - Workaround im Spiel: Menü-Skripte aktualisieren sich beim ersten OnUpdate noch einmal; LevelCompletePanel schaltet erst das Panel, dann die Kinder ein.
 - Gebraucht: klare, dokumentierte Semantik (activeSelf vs. activeInHierarchy wie in Unity) und ein Test dazu.
 - Laufzeit-Prozesse mit `--quit-at` beenden sich nicht, wenn ein Skript die Frames extrem verlangsamt (hängender Endlos-Testlauf, 15.10.); ein Watchdog auf Wanduhrzeit (`--quit-after`) für Agenten-Läufe wäre hilfreich.

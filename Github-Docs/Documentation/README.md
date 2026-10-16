@@ -1,6 +1,6 @@
-# Index Documentation
+# Funke Documentation
 
-Welcome to the documentation for **Index**, a 2D game engine. These pages explain how the engine works and how to build games with it, from launching a game to writing your own packages.
+Welcome to the documentation for **Funke**, a 2D game engine. These pages explain how the engine works and how to build games with it, from launching a game to writing your own packages.
 
 New here? Start with **[Your First Game](Getting-Started.md)**, a 15-minute walkthrough from install to a Windows build. After that, a good reading order is **Editor → ECS → Scenes → Scripting**, then the rest as you need it. **[Known Limitations](Known-Limitations.md)** lists what the beta does not do yet.
 
@@ -13,7 +13,7 @@ The foundational systems that make a game run.
 - **[Startup Processes](Engine-Core/Startup-Processes.md)** — what happens, step by step, when a game launches: boot, load, and the main loop.
 - **[ECS](Engine-Core/ECS.md)** — entities and components, the building blocks of everything in a scene.
 - **[Scenes](Engine-Core/Scenes.md)** — scenes, systems, the scene lifecycle, saving, and prefabs.
-- **[Engine Modules](Engine-Core/Engine-Modules.md)** — the optional `Index.2D` / `Index.3D` modules: turning them on in a project, what the editor offers, and how game builds leave unused modules out.
+- **[Engine Modules](Engine-Core/Engine-Modules.md)** — the optional `Funke.2D` / `Funke.3D` modules: turning them on in a project, what the editor offers, and how game builds leave unused modules out.
 - **[Physics 3D](Engine-Core/Physics-3D.md)** — Jolt-based Rigidbody 3D, Box/Sphere/Capsule/Mesh Collider 3D, triggers, raycasts and the C# API.
 - **[3D](Engine-Core/3D.md)** — Transform 3D, Camera 3D with skybox, Mesh Renderer and materials, directional/point/spot lights, shadows, the 3D renderer and the 3D Editor View.
 - **[Animation](Engine-Core/Animation.md)** — keyframe clips for any component property or script field, Animator Controller state machines with crossfades, the Animation and Animator windows, record mode, events and the C# API.
@@ -25,7 +25,7 @@ The foundational systems that make a game run.
 ## Assets
 
 - **[Assets](Assets/Assets.md)** — how textures, audio, fonts, scenes, and prefabs are identified, found, referenced, and loaded.
-- **[Data Assets](Assets/Data-Assets.md)** — shared, reusable game data (Index's ScriptableObject equivalent).
+- **[Data Assets](Assets/Data-Assets.md)** — shared, reusable game data (Funke's ScriptableObject equivalent).
 
 ## Scripting
 
@@ -33,7 +33,7 @@ The foundational systems that make a game run.
 
 ## Packages
 
-Index's extensibility model — add anything the core doesn't ship.
+Funke's extensibility model — add anything the core doesn't ship.
 
 - **[Writing Packages](Packages/Writing-Packages.md)** — a practical guide to authoring your own package.
 - **[Package System](Packages/Package-System.md)** — how packages are built, loaded, and distributed (the internals).
@@ -43,12 +43,12 @@ Index's extensibility model — add anything the core doesn't ship.
 - **[Editor](Editor/Editor.md)** — the visual tool for building scenes, testing in Play mode, and producing a finished game.
 - **[Building and Shipping](Editor/Building-and-Shipping.md)** — verified Windows game exports and standalone engine release bundles.
 - **[Test Builds and Debug Tools](Editor/Testing.md)** — Debug/Development/Release, build profiles for test variants, the developer console with `[DevCommand]`, the physics overlay, isolated player data and scripted test runs with screenshots.
-- **[Command-Line Tool](Editor/Command-Line.md)** — `index create`, `index build`, validate, convert, prefabs, sprite slicing and packages without opening the editor.
+- **[Command-Line Tool](Editor/Command-Line.md)** — `funke create`, `funke build`, validate, convert, prefabs, sprite slicing and packages without opening the editor.
 - **[Platform Packages](Editor/Platform-Packages.md)** — Android, iOS and Web exports as installable packages, their requirements, C# through Mono, and the builder protocol for writing your own.
 
 ## Reference
 
-- **[Third-Party Libraries](Reference/Third-Party-Libraries.md)** — the open-source libraries Index is built on.
+- **[Third-Party Libraries](Reference/Third-Party-Libraries.md)** — the open-source libraries Funke is built on.
 
 ---
 

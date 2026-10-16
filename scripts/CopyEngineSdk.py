@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Materialize a self-contained EngineSDK folder next to the Launcher (Linux / macOS).
 
-POSIX counterpart of scripts/CopyEngineSdk.bat, run by the Index-Launcher postbuild. The result lets a
+POSIX counterpart of scripts/CopyEngineSdk.bat, run by the Funke-Launcher postbuild. The result lets a
 packaged Launcher folder create projects, build project packages and export games without the source tree:
 
-    <launcher dir>/                 Index-Editor, Index-Runtime, index, Index-PackageTool, ScriptCore, ...
+    <launcher dir>/                 Funke-Editor, Funke-Runtime, funke, Funke-PackageTool, ScriptCore, ...
     <launcher dir>/EngineSDK/       engine headers, External headers, premake, licenses, engine library
     <launcher dir>/EngineSDK/Runtime-Development, Runtime-Dist   runtimes the editor exports games from
 
@@ -33,16 +33,16 @@ def shared_lib(stem: str) -> str:
 
 SDL_LIB = "SDL3.dll" if os.name == "nt" else ("libSDL3.0.dylib" if IS_MAC else "libSDL3.so.0")
 DAWN_LIB = None if os.name == "nt" else shared_lib("webgpu_dawn")
-ENGINE_LIB = shared_lib("Index-Engine")
+ENGINE_LIB = shared_lib("Funke-Engine")
 TRACY_LIB = shared_lib("Tracy")
 
 SCRIPT_CORE_RUNTIME_FILES = (
-    "Index-ScriptCore.dll",
-    "Index-ScriptCore.runtimeconfig.json",
-    "Index-ScriptCore.deps.json",
+    "Funke-ScriptCore.dll",
+    "Funke-ScriptCore.runtimeconfig.json",
+    "Funke-ScriptCore.deps.json",
 )
 # IntelliSense docs; optional like in CopyEngineSdk.bat.
-SCRIPT_CORE_DOCS = "Index-ScriptCore.xml"
+SCRIPT_CORE_DOCS = "Funke-ScriptCore.xml"
 
 EXTERNAL_DIRS = (
     "spdlog/include", "glm", "entt/src", "stb", "magic_enum/include", "rapidxml", "SDL/include",
@@ -51,8 +51,8 @@ EXTERNAL_DIRS = (
 )
 
 LICENSES = (
-    ("", "Index", "LICENSE.txt"),
-    ("", "Index", "THIRD_PARTY_LICENSES.md"),
+    ("", "Funke", "LICENSE.txt"),
+    ("", "Funke", "THIRD_PARTY_LICENSES.md"),
     ("External/box2d", "Box2D", "LICENSE"),
     ("External/JoltPhysics", "JoltPhysics", "LICENSE"),
     ("External/entt", "EnTT", "LICENSE"),
@@ -68,7 +68,7 @@ LICENSES = (
     ("External/dawn", "Dawn", "LICENSE"),
     ("External/concurrentqueue", "concurrentqueue", "LICENSE.md"),
     ("External/rapidxml", "RapidXML", "LICENSE.txt"),
-    ("Index-Runtime/IndexAssets/Fonts", "Fonts", "LICENSES.md"),
+    ("Funke-Runtime/FunkeAssets/Fonts", "Fonts", "LICENSES.md"),
 )
 DAWN_LICENSE_PATTERNS = ("LICENSE*", "NOTICE*", "COPYING*", "ThirdPartyNotices.txt")
 
@@ -136,18 +136,18 @@ def stage_licenses(root: Path, licenses_dir: Path) -> None:
 
 
 def stage_runtime(runtime_dir: Path, script_core_dir: Path, licenses_dir: Path, destination: Path) -> bool:
-    if not (runtime_dir / f"Index-Runtime{EXE}").is_file():
+    if not (runtime_dir / f"Funke-Runtime{EXE}").is_file():
         return False
     if destination.exists():
         shutil.rmtree(destination)
-    # Named files plus IndexAssets only, so files left by running a game from that folder never leak in.
-    copy_files(runtime_dir, destination, [f"Index-Runtime{EXE}", ENGINE_LIB, SDL_LIB])
+    # Named files plus FunkeAssets only, so files left by running a game from that folder never leak in.
+    copy_files(runtime_dir, destination, [f"Funke-Runtime{EXE}", ENGINE_LIB, SDL_LIB])
     if DAWN_LIB:
         copy_file(runtime_dir / DAWN_LIB, destination / DAWN_LIB)
     copy_file(runtime_dir / TRACY_LIB, destination / TRACY_LIB, required=False)
     copy_file(runtime_dir / "nethost.dll", destination / "nethost.dll", required=False)
     copy_files(script_core_dir, destination, SCRIPT_CORE_RUNTIME_FILES)
-    mirror(runtime_dir / "IndexAssets", destination / "IndexAssets")
+    mirror(runtime_dir / "FunkeAssets", destination / "FunkeAssets")
     mirror(licenses_dir, destination / "Licenses")
     return True
 
@@ -162,27 +162,27 @@ def main() -> int:
     launcher_dir = sdk.parent
 
     # --- Flat host applications next to the Launcher.
-    copy_file(bin_dir / "Index-Editor" / f"Index-Editor{EXE}", launcher_dir / f"Index-Editor{EXE}")
-    copy_file(bin_dir / "Index-Runtime" / f"Index-Runtime{EXE}", launcher_dir / f"Index-Runtime{EXE}")
-    copy_file(bin_dir / "Index-CLI" / f"index{EXE}", launcher_dir / f"index{EXE}", required=False)
-    copy_files(bin_dir / "Index-ScriptCore", launcher_dir, SCRIPT_CORE_RUNTIME_FILES)
-    copy_file(bin_dir / "Index-ScriptCore" / SCRIPT_CORE_DOCS, launcher_dir / SCRIPT_CORE_DOCS, required=False)
-    copy_files(bin_dir / "Index-ScriptCompiler", launcher_dir / "ScriptCompiler",
-               ("Index-ScriptCompiler.dll", "Index-ScriptCompiler.deps.json", "Index-ScriptCompiler.runtimeconfig.json"),
+    copy_file(bin_dir / "Funke-Editor" / f"Funke-Editor{EXE}", launcher_dir / f"Funke-Editor{EXE}")
+    copy_file(bin_dir / "Funke-Runtime" / f"Funke-Runtime{EXE}", launcher_dir / f"Funke-Runtime{EXE}")
+    copy_file(bin_dir / "Funke-CLI" / f"funke{EXE}", launcher_dir / f"funke{EXE}", required=False)
+    copy_files(bin_dir / "Funke-ScriptCore", launcher_dir, SCRIPT_CORE_RUNTIME_FILES)
+    copy_file(bin_dir / "Funke-ScriptCore" / SCRIPT_CORE_DOCS, launcher_dir / SCRIPT_CORE_DOCS, required=False)
+    copy_files(bin_dir / "Funke-ScriptCompiler", launcher_dir / "ScriptCompiler",
+               ("Funke-ScriptCompiler.dll", "Funke-ScriptCompiler.deps.json", "Funke-ScriptCompiler.runtimeconfig.json"),
                required=False)
     copy_file(root / "build" / "BuildMetadata.json", launcher_dir / "BuildMetadata.json", required=False)
-    copy_files(bin_dir / "Index-PackageTool", launcher_dir,
-               (f"Index-PackageTool{EXE}", "Index-PackageTool.dll", "Index-PackageTool.runtimeconfig.json",
-                "Index-PackageTool.deps.json"))
+    copy_files(bin_dir / "Funke-PackageTool", launcher_dir,
+               (f"Funke-PackageTool{EXE}", "Funke-PackageTool.dll", "Funke-PackageTool.runtimeconfig.json",
+                "Funke-PackageTool.deps.json"))
 
     # --- Engine sources (NativeScripts CMake include path) and project templates.
-    mirror(root / "Index-Engine" / "src", sdk / "Index-Engine" / "src")
+    mirror(root / "Funke-Engine" / "src", sdk / "Funke-Engine" / "src")
     mirror(root / "templates", sdk / "templates")
 
-    # --- Index-ScriptCore project and runtime artifacts.
-    copy_file(root / "Index-ScriptCore" / "Index-ScriptCore.csproj", sdk / "Index-ScriptCore" / "Index-ScriptCore.csproj")
-    copy_files(bin_dir / "Index-ScriptCore", sdk / "Index-ScriptCore", SCRIPT_CORE_RUNTIME_FILES)
-    copy_file(bin_dir / "Index-ScriptCore" / SCRIPT_CORE_DOCS, sdk / "Index-ScriptCore" / SCRIPT_CORE_DOCS, required=False)
+    # --- Funke-ScriptCore project and runtime artifacts.
+    copy_file(root / "Funke-ScriptCore" / "Funke-ScriptCore.csproj", sdk / "Funke-ScriptCore" / "Funke-ScriptCore.csproj")
+    copy_files(bin_dir / "Funke-ScriptCore", sdk / "Funke-ScriptCore", SCRIPT_CORE_RUNTIME_FILES)
+    copy_file(bin_dir / "Funke-ScriptCore" / SCRIPT_CORE_DOCS, sdk / "Funke-ScriptCore" / SCRIPT_CORE_DOCS, required=False)
 
     # --- Project-local package build tooling.
     copy_file(root / "vendor" / "bin" / f"premake5{EXE}", sdk / f"premake5{EXE}")
@@ -199,24 +199,24 @@ def main() -> int:
 
     # --- Engine library for the active config and Dist (native packages link it).
     cfg_plat = bin_dir.name
-    copy_files(bin_dir / "Index-Engine", sdk / "bin" / cfg_plat / "Index-Engine", (ENGINE_LIB,))
+    copy_files(bin_dir / "Funke-Engine", sdk / "bin" / cfg_plat / "Funke-Engine", (ENGINE_LIB,))
     dist_plat = "Dist-" + cfg_plat.split("-", 1)[1]
-    dist_engine = root / "bin" / dist_plat / "Index-Engine"
+    dist_engine = root / "bin" / dist_plat / "Funke-Engine"
     if (dist_engine / ENGINE_LIB).is_file():
-        copy_files(dist_engine, sdk / "bin" / dist_plat / "Index-Engine", (ENGINE_LIB,))
+        copy_files(dist_engine, sdk / "bin" / dist_plat / "Funke-Engine", (ENGINE_LIB,))
 
     licenses_dir = sdk / "Licenses"
     stage_licenses(root, licenses_dir)
 
     # --- Runtimes the editor exports games from without a source tree.
-    if not stage_runtime(bin_dir / "Index-Runtime", bin_dir / "Index-ScriptCore", licenses_dir,
+    if not stage_runtime(bin_dir / "Funke-Runtime", bin_dir / "Funke-ScriptCore", licenses_dir,
                          sdk / "Runtime-Development"):
-        print(f"CopyEngineSdk: active-config runtime missing at {bin_dir / 'Index-Runtime'}; "
+        print(f"CopyEngineSdk: active-config runtime missing at {bin_dir / 'Funke-Runtime'}; "
               "Runtime-Development not bundled", file=sys.stderr)
     dist_bin = root / "bin" / dist_plat
-    if not stage_runtime(dist_bin / "Index-Runtime", dist_bin / "Index-ScriptCore", licenses_dir,
+    if not stage_runtime(dist_bin / "Funke-Runtime", dist_bin / "Funke-ScriptCore", licenses_dir,
                          sdk / "Runtime-Dist"):
-        print(f"CopyEngineSdk: Dist runtime missing at {dist_bin / 'Index-Runtime'}; Runtime-Dist not bundled",
+        print(f"CopyEngineSdk: Dist runtime missing at {dist_bin / 'Funke-Runtime'}; Runtime-Dist not bundled",
               file=sys.stderr)
     return 0
 

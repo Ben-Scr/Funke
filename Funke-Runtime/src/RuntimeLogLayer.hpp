@@ -1,0 +1,32 @@
+#pragma once
+
+#include "Core/Layer.hpp"
+#include "Core/PlatformDetection.hpp"
+#include "Diagnostics/LogOverlay.hpp"
+
+namespace Funke {
+
+	class RuntimeStatsLayer; // for stacking-offset query
+
+	class RuntimeLogLayer : public Layer {
+	public:
+		using Layer::Layer; // inherit explicit Layer(name)
+
+		void OnAttach(Application& app) override;
+		void OnDetach(Application& app) override;
+		void OnUpdate(Application& app, float dt) override;
+		void OnPreRender(Application& app) override;
+		void OnPostRender(Application& app) override;
+
+		bool IsVisible() const { return m_Show; }
+		void SetVisible(bool v) { m_Show = v; }
+
+	private:
+		// Mobile has no F-keys to toggle, so the overlay starts visible there.
+		bool m_Show = FNK_PLATFORM_MOBILE;
+		bool m_ImGuiAcquired = false;
+		// unique_ptr delays LogOverlay construction (and its Log::OnLog subscription) until OnAttach, not at layer-push time.
+		std::unique_ptr<Diagnostics::LogOverlay> m_Overlay;
+	};
+
+} // namespace Funke

@@ -1,6 +1,6 @@
--- Index package system — Phase A loader.
+-- Funke package system — Phase A loader.
 --
--- Discovers `index-package.lua` manifests under `packages/<Name>/`, validates them,
+-- Discovers `funke-package.lua` manifests under `packages/<Name>/`, validates them,
 -- topologically sorts by dependency, and registers Premake projects:
 --
 --   - native  / native_standalone  →  Pkg.<Name>.Native  (C++ SharedLib)
@@ -21,7 +21,7 @@
 -- so existing project-local packages don't break — but new manifests should
 -- use the canonical names.
 --
--- Manifest schema (returned by index-package.lua via `return { ... }`):
+-- Manifest schema (returned by funke-package.lua via `return { ... }`):
 --
 --   name          string   required, unique
 --   version       string   required
@@ -39,20 +39,20 @@
 --                                                Use sparingly; matches the engine's "no mandatory
 --                                                dependencies" rule (the package opts in, the user
 --                                                opts into the package).
---   dependencies  table    optional; each entry is a package name ("Index.Foo"), "Index.Foo@^1.2.0",
---                          { name = "Index.Foo", version = "^1.2.0" }, or a map entry ["Index.Foo"] = "^1.2.0"
+--   dependencies  table    optional; each entry is a package name ("Funke.Foo"), "Funke.Foo@^1.2.0",
+--                          { name = "Funke.Foo", version = "^1.2.0" }, or a map entry ["Funke.Foo"] = "^1.2.0"
 --   engine        string   optional engine version range, e.g. ">=2026.1.0 <2027.0.0"
---   modules       table    optional engine modules the package builds on, e.g. { "Index.2D" }
+--   modules       table    optional engine modules the package builds on, e.g. { "Funke.2D" }
 --   android       table    optional; read by the Android platform builder, not here: java, maven, manifest,
---                          placeholders (platforms/Index.Platform.Android/Builder/android_libraries.py)
+--                          placeholders (platforms/Funke.Platform.Android/Builder/android_libraries.py)
 --
 -- `version` should be MAJOR.MINOR.PATCH (SemVer). Ranges follow npm syntax: ^ ~ x-ranges, comparators,
--- hyphen ranges and ||. The C++ side (Index-Engine/src/Packages/SemanticVersion.cpp) implements the same rules.
+-- hyphen ranges and ||. The C++ side (Funke-Engine/src/Packages/SemanticVersion.cpp) implements the same rules.
 
 local PackageSystem = {}
 
 local function PackageError(msg)
-    error("[Index Packages] " .. msg, 0)
+    error("[Funke Packages] " .. msg, 0)
 end
 
 -- ── Semantic versions and ranges ───────────────────────────────────────────
@@ -279,14 +279,14 @@ end
 
 PackageSystem.SemVer = SemVer
 
--- IDX_VERSION from the generated build metadata; nil when it is not available (pre-release suffix dropped).
+-- FNK_VERSION from the generated build metadata; nil when it is not available (pre-release suffix dropped).
 local function ReadEngineVersion()
-    local metadataPath = path.join(ROOT_DIR, "Index-Engine/src/Core/BuildMetadata.generated.hpp")
+    local metadataPath = path.join(ROOT_DIR, "Funke-Engine/src/Core/BuildMetadata.generated.hpp")
     local file = io.open(metadataPath, "rb")
     if not file then return nil end
     local text = file:read("*all")
     file:close()
-    local version = SemVer.Parse(text:match('#define%s+IDX_VERSION%s+"([^"]+)"') or "")
+    local version = SemVer.Parse(text:match('#define%s+FNK_VERSION%s+"([^"]+)"') or "")
     if not version then return nil end
     return V(version[1], version[2], version[3])
 end
@@ -321,9 +321,9 @@ local function NormaliseLayerNames(manifest)
                     "' declares both '" .. oldName .. "' (deprecated alias) and '" ..
                     newName .. "' (canonical). Pick one.")
             end
-            print("[Index Packages] Package '" .. tostring(manifest.name) ..
+            print("[Funke Packages] Package '" .. tostring(manifest.name) ..
                 "' uses deprecated layer name '" .. oldName .. "'. Rename to '" ..
-                newName .. "' in index-package.lua. (Old name still works for now.)")
+                newName .. "' in funke-package.lua. (Old name still works for now.)")
             manifest.layers[newName] = spec
             manifest.layers[oldName] = nil
         end
@@ -361,7 +361,7 @@ local function ValidateManifest(manifest, manifestPath)
     if not IsValidPackageName(manifest.name) then
         PackageError("Manifest at '" .. manifestPath ..
             "' has invalid 'name' = '" .. tostring(manifest.name) ..
-            "'. Expected PascalCase.PascalCase[.PascalCase…] with only [A-Za-z0-9.] (e.g. 'Index.Foo', 'MyGame.Loot').")
+            "'. Expected PascalCase.PascalCase[.PascalCase…] with only [A-Za-z0-9.] (e.g. 'Funke.Foo', 'MyGame.Loot').")
     end
     if type(manifest.version) ~= "string" then
         PackageError("Package '" .. manifest.name .. "' is missing required string field 'version'.")
@@ -438,16 +438,16 @@ local function ValidateManifest(manifest, manifestPath)
         PackageError("Package '" .. manifest.name .. "' has invalid 'dependencies' field; expected a table or nil.")
     end
 
-    -- Engine modules (Index-Engine/EngineModules.json) the package builds on; the editor enables them on install.
+    -- Engine modules (Funke-Engine/EngineModules.json) the package builds on; the editor enables them on install.
     if manifest.modules ~= nil then
         if type(manifest.modules) ~= "table" then
-            PackageError("Package '" .. manifest.name .. "' has invalid 'modules' field; expected a list such as { \"Index.2D\" }.")
+            PackageError("Package '" .. manifest.name .. "' has invalid 'modules' field; expected a list such as { \"Funke.2D\" }.")
         end
-        local known = { ["Index.2D"] = true, ["Index.3D"] = true }
+        local known = { ["Funke.2D"] = true, ["Funke.3D"] = true }
         for _, module in ipairs(manifest.modules) do
             if type(module) ~= "string" or not known[module] then
                 PackageError("Package '" .. manifest.name .. "' lists unknown engine module '" .. tostring(module) ..
-                    "' in 'modules' (known: Index.2D, Index.3D).")
+                    "' in 'modules' (known: Funke.2D, Funke.3D).")
             end
         end
     end
@@ -502,7 +502,7 @@ local function NormaliseVersioning(manifest)
 
     manifest.ParsedVersion = SemVer.Parse(manifest.version)
     if not manifest.ParsedVersion then
-        print("[Index Packages] WARNING: package '" .. manifest.name .. "' has version '" .. manifest.version ..
+        print("[Funke Packages] WARNING: package '" .. manifest.name .. "' has version '" .. manifest.version ..
             "', which is not MAJOR.MINOR.PATCH; packages that depend on it with a version range will fail.")
     end
 
@@ -515,7 +515,7 @@ local function NormaliseVersioning(manifest)
         local engineVersion = GetEngineVersion()
         if engineVersion and not SemVer.Satisfies(parsed, engineVersion) then
             PackageError("Package '" .. manifest.name .. "' needs engine " .. engineRange ..
-                ", but this is Index " .. SemVer.ToString(engineVersion) .. ". Install a release of the package made for this engine.")
+                ", but this is Funke " .. SemVer.ToString(engineVersion) .. ". Install a release of the package made for this engine.")
         end
     end
 end
@@ -527,7 +527,7 @@ local function LoadManifestsFromRoot(searchRoot, manifests, byName)
 
     local entries = os.matchdirs(path.join(searchRoot, "*"))
     for _, entry in ipairs(entries) do
-        local manifestPath = path.join(entry, "index-package.lua")
+        local manifestPath = path.join(entry, "funke-package.lua")
         if os.isfile(manifestPath) then
             local manifest = dofile(manifestPath)
             -- Rewrite deprecated layer names to canonical form before any
@@ -617,17 +617,17 @@ local function AppendAll(dst, src)
 end
 
 local function PackageProjectLocation(projectName)
-    local root = IndexPackageProjectLocationRoot or path.join(ROOT_DIR, "premake/generated")
+    local root = FunkePackageProjectLocationRoot or path.join(ROOT_DIR, "premake/generated")
     return path.join(root, projectName)
 end
 
 local function PackageTargetDirectory()
-    local root = IndexPackageTargetRoot or path.join(ROOT_DIR, "bin")
+    local root = FunkePackageTargetRoot or path.join(ROOT_DIR, "bin")
     return path.join(root, outputdir, "%{prj.name}")
 end
 
 local function PackageObjectDirectory()
-    local root = IndexPackageObjectRoot or path.join(ROOT_DIR, "bin-int")
+    local root = FunkePackageObjectRoot or path.join(ROOT_DIR, "bin-int")
     return path.join(root, outputdir, "%{prj.name}")
 end
 
@@ -636,15 +636,15 @@ local function PowerShellLiteral(value)
 end
 
 local function NativeAbiMetadataCommand(hasEngineLinked)
-    local sidecar = PowerShellLiteral("%{cfg.buildtarget.abspath}.indexabi")
+    local sidecar = PowerShellLiteral("%{cfg.buildtarget.abspath}.funkeabi")
     local boundary = hasEngineLinked and "engine_cpp" or "standalone_c"
     local lines = "$lines=@('schema=1','boundary=" .. boundary .. "')"
 
     if hasEngineLinked then
         local engineDll = PowerShellLiteral(path.join(
-            ROOT_DIR, "bin", outputdir, "Index-Engine", "Index-Engine.dll"))
+            ROOT_DIR, "bin", outputdir, "Funke-Engine", "Funke-Engine.dll"))
         lines = "$engine=" .. engineDll ..
-            ";if(!(Test-Path -LiteralPath $engine)){throw 'Matching Index-Engine.dll was not built'}" ..
+            ";if(!(Test-Path -LiteralPath $engine)){throw 'Matching Funke-Engine.dll was not built'}" ..
             ";$hash=(Get-FileHash -LiteralPath $engine -Algorithm SHA256).Hash.ToLowerInvariant()" ..
             ";$lines=@('schema=1','boundary=engine_cpp',('engine_sha256='+$hash))"
     end
@@ -660,7 +660,7 @@ local function PosixNativeAbiMetadataCommand(hasEngineLinked)
         return command .. " standalone_c"
     end
     local engineLibrary = os.target() == "macosx" and "libIndex-Engine.dylib" or "libIndex-Engine.so"
-    return command .. ' engine_cpp "' .. path.join(ROOT_DIR, "bin", outputdir, "Index-Engine", engineLibrary) .. '"'
+    return command .. ' engine_cpp "' .. path.join(ROOT_DIR, "bin", outputdir, "Funke-Engine", engineLibrary) .. '"'
 end
 
 local function RegisterNativeProject(manifest)
@@ -706,23 +706,23 @@ local function RegisterNativeProject(manifest)
             -- include set transitively. `native_standalone` skips this — it's
             -- the explicit "no engine link" path.
             UseDependencySet(Dependency.EditorRuntimeCommon)
-            if UseIndexProfilerDependencies then
-                UseIndexProfilerDependencies(true)
+            if UseFunkeProfilerDependencies then
+                UseFunkeProfilerDependencies(true)
             end
-            -- Engine is a SharedLib; consumers must declare the import side of INDEX_API.
-            defines { "IDX_IMPORT_DLL" }
+            -- Engine is a SharedLib; consumers must declare the import side of FUNKE_API.
+            defines { "FNK_IMPORT_DLL" }
             -- Match the engine's EnTT entity-bit split so transitively-included
             -- entt headers see the same entt_traits specialization (otherwise
             -- ODR violation between engine.dll and the package's native lib).
-            -- GetIndexEntityBits() is defined in the root premake5.lua.
-            defines { "INDEX_ENTITY_BITS=" .. tostring(GetIndexEntityBits()) }
-            -- The editor's Rebuild Engine flow rewrites IndexEntityBitsConfig.h
+            -- GetFunkeEntityBits() is defined in the root premake5.lua.
+            defines { "FUNKE_ENTITY_BITS=" .. tostring(GetFunkeEntityBits()) }
+            -- The editor's Rebuild Engine flow rewrites FunkeEntityBitsConfig.h
             -- to override the above -D without a premake regen. The EnTT patch
             -- in entity.hpp picks it up via __has_include. Native package layers
             -- must have the folder on their include path so that override path
             -- stays consistent with the main engine binaries.
-            includedirs { IndexEntityBitsConfigIncludeDir }
-            if IndexPackageUseDawnLibDirs ~= false then
+            includedirs { FunkeEntityBitsConfigIncludeDir }
+            if FunkePackageUseDawnLibDirs ~= false then
                 -- Engine-workspace packages link Dawn directly; isolated
                 -- project packages only consume the engine import library.
                 filter "configurations:Debug"
@@ -745,38 +745,38 @@ local function RegisterNativeProject(manifest)
 
         filter "system:windows"
             systemversion "latest"
-            -- See Index-Engine/premake5.lua for the rationale on
+            -- See Funke-Engine/premake5.lua for the rationale on
             -- MultiProcessorCompile + /Zc:preprocessor.
             flags { "MultiProcessorCompile" }
             buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
-            defines { "IDX_PLATFORM_WINDOWS" }
+            defines { "FNK_PLATFORM_WINDOWS" }
             postbuildcommands { NativeAbiMetadataCommand(hasEngineLinked) }
 
         filter "system:linux"
             pic "On"
-            defines { "IDX_PLATFORM_LINUX" }
+            defines { "FNK_PLATFORM_LINUX" }
             postbuildcommands { PosixNativeAbiMetadataCommand(hasEngineLinked) }
 
         filter "system:macosx"
-            defines { "IDX_PLATFORM_MACOS" }
+            defines { "FNK_PLATFORM_MACOS" }
             postbuildcommands { PosixNativeAbiMetadataCommand(hasEngineLinked) }
 
         filter "configurations:Debug"
             runtime "Debug"
             symbols "On"
-            defines { "IDX_DEBUG", "_DEBUG" }
+            defines { "FNK_DEBUG", "_DEBUG" }
 
         filter "configurations:Release"
             runtime "Release"
             optimize "On"
             symbols "On"
-            defines { "IDX_RELEASE", "NDEBUG" }
+            defines { "FNK_RELEASE", "NDEBUG" }
 
         filter "configurations:Dist"
             runtime "Release"
             optimize "Full"
             symbols "Off"
-            defines { "IDX_DIST", "NDEBUG" }
+            defines { "FNK_DIST", "NDEBUG" }
 
         filter {}
 end
@@ -804,7 +804,7 @@ local function RegisterCSharpProject(manifest)
         targetdir(PackageTargetDirectory())
         objdir(PackageObjectDirectory())
 
-        -- Sensible defaults for Index packages: nullable annotations enabled, dynamic
+        -- Sensible defaults for Funke packages: nullable annotations enabled, dynamic
         -- loading allowed (so the runtime can Assembly.LoadFrom them), output sits
         -- directly under bin/<config>/<Pkg.Name>/ without a net10.0/ sub-folder.
         vsprops {
@@ -825,22 +825,22 @@ local function RegisterCSharpProject(manifest)
             nuget(layer.nuget)
         end
 
-        -- Index-ScriptCore is the default reference for every csharp
+        -- Funke-ScriptCore is the default reference for every csharp
         -- package: it provides the managed `Component`, `Entity`, `Texture`,
         -- `Vector2Int`, math types, etc. that any package wanting to bind
         -- to live scene state must subclass / construct. Pure-managed
-        -- packages that don't touch scene state (e.g. Pkg.Index.Serialization)
+        -- packages that don't touch scene state (e.g. Pkg.Funke.Serialization)
         -- pay nothing for the unused reference. Keeping this implicit means
         -- package authors don't have to plumb the dependency themselves.
-        if IndexPackageScriptCoreAssemblies then
-            for configuration, assemblyPath in pairs(IndexPackageScriptCoreAssemblies) do
+        if FunkePackageScriptCoreAssemblies then
+            for configuration, assemblyPath in pairs(FunkePackageScriptCoreAssemblies) do
                 filter("configurations:" .. configuration)
                     links { assemblyPath }
             end
             filter {}
         else
-            links { "Index-ScriptCore" }
-            dependson { "Index-ScriptCore" }
+            links { "Funke-ScriptCore" }
+            dependson { "Funke-ScriptCore" }
         end
 
         -- If this package bridges to its own native sibling via P/Invoke, make
@@ -863,15 +863,15 @@ local function RegisterCSharpProject(manifest)
         filter "configurations:Debug"
             symbols "On"
             optimize "Off"
-            defines { "IDX_DEBUG" }
+            defines { "FNK_DEBUG" }
         filter "configurations:Release"
             optimize "On"
             symbols "On"
-            defines { "IDX_RELEASE" }
+            defines { "FNK_RELEASE" }
         filter "configurations:Dist"
             optimize "Full"
             symbols "Off"
-            defines { "IDX_DIST" }
+            defines { "FNK_DIST" }
         filter {}
 end
 
@@ -971,13 +971,13 @@ local function FilterManifestsByAllowList(manifests, byName, allowList)
     -- Detect missing dependencies — the user listed a package that isn't on disk anywhere.
     for _, name in ipairs(allowList) do
         if not filteredByName[name] then
-            print("[Index Packages] WARNING: project lists package '" .. name ..
+            print("[Funke Packages] WARNING: project lists package '" .. name ..
                 "' but no manifest with that name was found under packages/ or <project>/Packages/.")
         end
     end
 
     if #skipped > 0 then
-        print("[Index Packages] Skipped " .. tostring(#skipped) ..
+        print("[Funke Packages] Skipped " .. tostring(#skipped) ..
             " package(s) not in the project's allow-list: " .. table.concat(skipped, ", "))
     end
 
@@ -989,15 +989,15 @@ end
 --
 -- Project-local packages (under <project>/Packages/) are NOT touched here —
 -- they belong to a per-project package workspace that lives under
--- <project>/.index/build/ and is generated by premake/project-packages.lua.
+-- <project>/.funke/build/ and is generated by premake/project-packages.lua.
 -- Keeping them out of the engine workspace means:
---   * Index.sln stays static across project switches (no churn when an engine
+--   * Funke.sln stays static across project switches (no churn when an engine
 --     dev opens a project).
 --   * Shipped Editor/Launcher binaries that don't have premake5.lua can still
 --     build project-local packages — they only need the SDK-side premake
 --     script and the bundled EngineSDK.
 --
--- The engine workspace no longer loads project-local packages from `--index-project`;
+-- The engine workspace no longer loads project-local packages from `--funke-project`;
 -- that option only selects entityBits there. This script owns package generation.
 function PackageSystem.LoadEnginePackages()
     local manifests = {}
@@ -1022,11 +1022,11 @@ function PackageSystem.LoadEnginePackages()
     for _, m in ipairs(sorted) do
         table.insert(names, m.name)
     end
-    print("[Index Packages] Registered " .. tostring(#sorted) .. " engine package(s): " .. table.concat(names, ", "))
+    print("[Funke Packages] Registered " .. tostring(#sorted) .. " engine package(s): " .. table.concat(names, ", "))
 end
 
 -- Validates and orders a project's enabled packages (dependencies first) without registering
--- any premake project. Raises "[Index Packages] ..." errors like the loader does.
+-- any premake project. Raises "[Funke Packages] ..." errors like the loader does.
 function PackageSystem.ResolveProjectPackages(projectRootDir)
     if not projectRootDir or projectRootDir == "" then
         PackageError("LoadProjectPackages requires an absolute project root.")
@@ -1048,7 +1048,7 @@ end
 function PackageSystem.LoadProjectPackages(projectRootDir)
     local sorted = PackageSystem.ResolveProjectPackages(projectRootDir)
     if #sorted == 0 then
-        print("[Index Packages] No enabled packages to register for " .. projectRootDir)
+        print("[Funke Packages] No enabled packages to register for " .. projectRootDir)
         return 0
     end
 
@@ -1063,7 +1063,7 @@ function PackageSystem.LoadProjectPackages(projectRootDir)
     for _, manifest in ipairs(sorted) do
         table.insert(names, manifest.name)
     end
-    print("[Index Packages] Registered " .. tostring(#sorted) ..
+    print("[Funke Packages] Registered " .. tostring(#sorted) ..
         " project package(s): " .. table.concat(names, ", "))
     return #sorted
 end

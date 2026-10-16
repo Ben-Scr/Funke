@@ -1,0 +1,1853 @@
+#include "pch.hpp"
+#include "Assets/AssetRegistry.hpp"
+#include "Serialization/SceneSerializer.hpp"
+#include "Serialization/SceneSerializerShared.hpp"
+#include "Serialization/PrefabTemplateCache.hpp"
+#include "Serialization/File.hpp"
+#include "Serialization/FileStamp.hpp"
+#include "Serialization/Json.hpp"
+#include "Scene/Scene.hpp"
+#include "Scene/SceneManager.hpp"
+#include "Scene/ComponentRegistry.hpp"
+#include "Scene/ComponentInfo.hpp"
+#include "Scene/EntityHelper.hpp"
+#include "Components/General/NameComponent.hpp"
+#if FUNKE_WITH_2D
+#include "Components/General/Transform2DComponent.hpp"
+#endif
+#include "Components/Graphics/TextRendererComponent.hpp"
+#if FUNKE_WITH_2D
+#include "Components/Physics/Rigidbody2DComponent.hpp"
+#include "Components/Physics/BoxCollider2DComponent.hpp"
+#include "Components/Physics/CircleCollider2DComponent.hpp"
+#include "Components/Physics/PolygonCollider2DComponent.hpp"
+#endif
+#include "Components/Audio/AudioSourceComponent.hpp"
+#include "Components/General/RectTransform2DComponent.hpp"
+#include "Components/General/HierarchyComponent.hpp"
+#include "Components/General/PrefabInstanceComponent.hpp"
+#include "Components/Graphics/ImageComponent.hpp"
+#include "Components/General/UUIDComponent.hpp"
+#include "Components/Tags.hpp"
+#include "Scripting/ScriptComponent.hpp"
+#include "Scripting/ScriptEngine.hpp"
+#if FUNKE_WITH_2D
+#include "Components/Physics/FastBody2DComponent.hpp"
+#include "Components/Physics/FastBoxCollider2DComponent.hpp"
+#include "Components/Physics/FastCircleCollider2DComponent.hpp"
+#endif
+#include "Graphics/TextureManager.hpp"
+#include "Audio/AudioManager.hpp"
+#include "Physics/PhysicsTypes.hpp"
+#include "Core/Application.hpp"
+#include "Core/Log.hpp"
+#include "Project/FunkeProject.hpp"
+#include "Project/ProjectManager.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cctype>
+#include <cstring>
+#include <filesystem>
+#include <functional>
+#include <iterator>
+#include <limits>
+#include <sstream>
+#include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+namespace Funke {
+
+	using Json::Value;
+	using namespace SceneSerializerShared;
+
+	namespace SceneSerializerStorage {
+		namespace {
+			constexpr std::uint8_t k_BinaryMagic[] = {
+				'F', 'N', 'K', 'S', 'C', 'N', 'B', 0x1A
+			};
+			constexpr std::uint32_t k_BinaryStorageVersion = 1;
+
+			enum class BinaryValueTag : std::uint8_t {
+				Null = 0,
+				Bool,
+				Double,
+				Int64,
+				UInt64,
+				String,
+				Object,
+				Array
+			};
+
+			void WriteU8(std::vector<std::uint8_t>& out, std::uint8_t value) {
+				out.push_back(value);
+			}
+
+			void WriteU32(std::vector<std::uint8_t>& out, std::uint32_t value) {
+				for (int i = 0; i < 4; ++i) {
+					out.push_back(static_cast<std::uint8_t>((value >> (i * 8)) & 0xFFu));
+				}
+			}
+
+			void WriteU64(std::vector<std::uint8_t>& out, std::uint64_t value) {
+				for (int i = 0; i < 8; ++i) {
+					out.push_back(static_cast<std::uint8_t>((value >> (i * 8)) & 0xFFu));
+				}
+			}
+
+			bool WriteString(std::vector<std::uint8_t>& out, const std::string& value) {
+				if (value.size() > std::numeric_limits<std::uint32_t>::max()) {
+					return false;
+				}
+				WriteU32(out, static_cast<std::uint32_t>(value.size()));
+				out.insert(out.end(), value.begin(), value.end());
+				return true;
+			}
+
+			bool WriteValue(std::vector<std::uint8_t>& out, const Value& value) {
+				switch (value.GetType()) {
+				case Value::Type::Null:
+					WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::Null));
+					return true;
+				case Value::Type::Bool:
+					WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::Bool));
+					WriteU8(out, value.AsBoolOr(false) ? 1u : 0u);
+					return true;
+				case Value::Type::Number:
+					switch (value.GetNumberKind()) {
+					case Value::NumberKind::Double: {
+						WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::Double));
+						std::uint64_t bits = 0;
+						const double number = value.AsDoubleOr(0.0);
+						std::memcpy(&bits, &number, sizeof(bits));
+						WriteU64(out, bits);
+						return true;
+					}
+					case Value::NumberKind::Int64:
+						WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::Int64));
+						WriteU64(out, static_cast<std::uint64_t>(value.AsInt64Or(0)));
+						return true;
+					case Value::NumberKind::UInt64:
+						WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::UInt64));
+						WriteU64(out, value.AsUInt64Or(0));
+						return true;
+					}
+					return false;
+				case Value::Type::String:
+					WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::String));
+					return WriteString(out, value.AsStringOr());
+				case Value::Type::Object: {
+					const auto& object = value.GetObject();
+					if (object.size() > std::numeric_limits<std::uint32_t>::max()) {
+						return false;
+					}
+					WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::Object));
+					WriteU32(out, static_cast<std::uint32_t>(object.size()));
+					for (const auto& [key, memberValue] : object) {
+						if (!WriteString(out, key) || !WriteValue(out, memberValue)) {
+							return false;
+						}
+					}
+					return true;
+				}
+				case Value::Type::Array: {
+					const auto& array = value.GetArray();
+					if (array.size() > std::numeric_limits<std::uint32_t>::max()) {
+						return false;
+					}
+					WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::Array));
+					WriteU32(out, static_cast<std::uint32_t>(array.size()));
+					for (const Value& item : array) {
+						if (!WriteValue(out, item)) {
+							return false;
+						}
+					}
+					return true;
+				}
+				}
+				return false;
+			}
+
+			class BinaryReader {
+			public:
+				explicit BinaryReader(const std::vector<std::uint8_t>& bytes)
+					: m_Bytes(bytes) {}
+
+				bool ReadU8(std::uint8_t& out) {
+					if (Remaining() < 1) return false;
+					out = m_Bytes[m_Offset++];
+					return true;
+				}
+
+				bool ReadU32(std::uint32_t& out) {
+					if (Remaining() < 4) return false;
+					out = 0;
+					for (int i = 0; i < 4; ++i) {
+						out |= static_cast<std::uint32_t>(m_Bytes[m_Offset++]) << (i * 8);
+					}
+					return true;
+				}
+
+				bool ReadU64(std::uint64_t& out) {
+					if (Remaining() < 8) return false;
+					out = 0;
+					for (int i = 0; i < 8; ++i) {
+						out |= static_cast<std::uint64_t>(m_Bytes[m_Offset++]) << (i * 8);
+					}
+					return true;
+				}
+
+				bool ReadString(std::string& out) {
+					std::uint32_t size = 0;
+					if (!ReadU32(size) || Remaining() < size) return false;
+					out.assign(reinterpret_cast<const char*>(m_Bytes.data() + m_Offset), size);
+					m_Offset += size;
+					return true;
+				}
+
+				bool ReadValue(Value& out, int depth = 0) {
+					constexpr int k_MaxDepth = 256;
+					if (depth > k_MaxDepth) {
+						return false;
+					}
+
+					std::uint8_t rawTag = 0;
+					if (!ReadU8(rawTag)) {
+						return false;
+					}
+
+					const auto tag = static_cast<BinaryValueTag>(rawTag);
+					switch (tag) {
+					case BinaryValueTag::Null:
+						out = Value();
+						return true;
+					case BinaryValueTag::Bool: {
+						std::uint8_t value = 0;
+						if (!ReadU8(value)) return false;
+						out = Value(value != 0);
+						return true;
+					}
+					case BinaryValueTag::Double: {
+						std::uint64_t bits = 0;
+						if (!ReadU64(bits)) return false;
+						double number = 0.0;
+						std::memcpy(&number, &bits, sizeof(number));
+						out = Value(number);
+						return true;
+					}
+					case BinaryValueTag::Int64: {
+						std::uint64_t bits = 0;
+						if (!ReadU64(bits)) return false;
+						out = Value(static_cast<std::int64_t>(bits));
+						return true;
+					}
+					case BinaryValueTag::UInt64: {
+						std::uint64_t value = 0;
+						if (!ReadU64(value)) return false;
+						out = Value(value);
+						return true;
+					}
+					case BinaryValueTag::String: {
+						std::string value;
+						if (!ReadString(value)) return false;
+						out = Value(std::move(value));
+						return true;
+					}
+					case BinaryValueTag::Object: {
+						std::uint32_t count = 0;
+						if (!ReadU32(count)) return false;
+						out = Value::MakeObject();
+						// Every element takes at least one byte, so cap untrusted counts by what is left in the buffer.
+						out.ReserveMembers(std::min<std::size_t>(count, Remaining()));
+						for (std::uint32_t i = 0; i < count; ++i) {
+							std::string key;
+							Value memberValue;
+							if (!ReadString(key) || !ReadValue(memberValue, depth + 1)) {
+								return false;
+							}
+							// Keys were de-duplicated when the object was built before serialization,
+							// so a fresh decode can skip AddMember's per-insert dup scan (O(n^2) -> O(n)).
+							out.AddMemberUnchecked(std::move(key), std::move(memberValue));
+						}
+						return true;
+					}
+					case BinaryValueTag::Array: {
+						std::uint32_t count = 0;
+						if (!ReadU32(count)) return false;
+						out = Value::MakeArray();
+						out.EnsureArray().reserve(std::min<std::size_t>(count, Remaining()));
+						for (std::uint32_t i = 0; i < count; ++i) {
+							Value item;
+							if (!ReadValue(item, depth + 1)) {
+								return false;
+							}
+							out.Append(std::move(item));
+						}
+						return true;
+					}
+					}
+					return false;
+				}
+
+				bool AtEnd() const { return m_Offset == m_Bytes.size(); }
+
+				std::size_t Tell() const { return m_Offset; }
+				void Seek(std::size_t offset) { m_Offset = offset; }
+
+				bool SkipBytes(std::size_t count) {
+					if (Remaining() < count) return false;
+					m_Offset += count;
+					return true;
+				}
+
+				bool SkipString() {
+					std::uint32_t size = 0;
+					return ReadU32(size) && SkipBytes(size);
+				}
+
+				// Advances past one value without materializing it — used to walk over the
+				// "entities" array so the rest of the scene header can be decoded before the
+				// entities are streamed back one at a time.
+				bool SkipValue(int depth = 0) {
+					constexpr int k_MaxDepth = 256;
+					if (depth > k_MaxDepth) return false;
+
+					std::uint8_t rawTag = 0;
+					if (!ReadU8(rawTag)) return false;
+
+					switch (static_cast<BinaryValueTag>(rawTag)) {
+					case BinaryValueTag::Null:   return true;
+					case BinaryValueTag::Bool:   return SkipBytes(1);
+					case BinaryValueTag::Double:
+					case BinaryValueTag::Int64:
+					case BinaryValueTag::UInt64: return SkipBytes(8);
+					case BinaryValueTag::String: return SkipString();
+					case BinaryValueTag::Object: {
+						std::uint32_t count = 0;
+						if (!ReadU32(count)) return false;
+						for (std::uint32_t i = 0; i < count; ++i) {
+							if (!SkipString() || !SkipValue(depth + 1)) return false;
+						}
+						return true;
+					}
+					case BinaryValueTag::Array: {
+						std::uint32_t count = 0;
+						if (!ReadU32(count)) return false;
+						for (std::uint32_t i = 0; i < count; ++i) {
+							if (!SkipValue(depth + 1)) return false;
+						}
+						return true;
+					}
+					}
+					return false;
+				}
+
+			private:
+				std::size_t Remaining() const { return m_Bytes.size() - m_Offset; }
+
+				const std::vector<std::uint8_t>& m_Bytes;
+				std::size_t m_Offset = 0;
+			};
+
+			std::vector<std::uint8_t> EncodeBinaryRoot(const Value& root) {
+				std::vector<std::uint8_t> bytes;
+				bytes.reserve(256);
+				bytes.insert(bytes.end(), std::begin(k_BinaryMagic), std::end(k_BinaryMagic));
+				WriteU32(bytes, k_BinaryStorageVersion);
+				if (!WriteValue(bytes, root)) {
+					return {};
+				}
+				return bytes;
+			}
+
+			bool DecodeBinaryRoot(const std::vector<std::uint8_t>& bytes, Value& outRoot, std::string* outError) {
+				if (!IsBinaryData(bytes)) {
+					if (outError) *outError = "Missing Funke binary scene magic";
+					return false;
+				}
+
+				BinaryReader reader(bytes);
+				for (std::size_t i = 0; i < sizeof(k_BinaryMagic); ++i) {
+					std::uint8_t ignored = 0;
+					if (!reader.ReadU8(ignored)) {
+						if (outError) *outError = "Truncated binary scene header";
+						return false;
+					}
+				}
+
+				std::uint32_t version = 0;
+				if (!reader.ReadU32(version)) {
+					if (outError) *outError = "Truncated binary scene version";
+					return false;
+				}
+				if (version > k_BinaryStorageVersion) {
+					if (outError) *outError = "Binary scene version is newer than this engine";
+					return false;
+				}
+				if (!reader.ReadValue(outRoot)) {
+					if (outError) *outError = "Failed to decode binary scene payload";
+					return false;
+				}
+				if (!reader.AtEnd()) {
+					if (outError) *outError = "Binary scene has trailing bytes";
+					return false;
+				}
+				return true;
+			}
+		}
+
+		FUNKE_API bool IsBinaryData(const std::vector<std::uint8_t>& bytes) {
+			return bytes.size() >= sizeof(k_BinaryMagic)
+				&& std::equal(std::begin(k_BinaryMagic), std::end(k_BinaryMagic), bytes.begin());
+		}
+
+		// Streaming binary load: decode the scene header (every root member EXCEPT the
+		// "entities" array) into `outHeader`, and leave `outCursor` positioned at the first
+		// entity. The entities are then pulled one at a time via ReadNextBinaryEntity so the
+		// whole-file DOM (one fat Json::Value subtree per entity, all alive at once) never
+		// has to exist — only a single entity is materialized at a time. JSON scenes keep the
+		// plain whole-DOM path; this is binary-only.
+		FUNKE_API bool BeginBinaryScene(
+			const std::vector<std::uint8_t>& bytes,
+			Value& outHeader,
+			BinarySceneEntityCursor& outCursor,
+			std::string* outError) {
+			outCursor = BinarySceneEntityCursor{};
+
+			if (!IsBinaryData(bytes)) {
+				if (outError) *outError = "Missing Funke binary scene magic";
+				return false;
+			}
+
+			BinaryReader reader(bytes);
+			for (std::size_t i = 0; i < sizeof(k_BinaryMagic); ++i) {
+				std::uint8_t ignored = 0;
+				if (!reader.ReadU8(ignored)) {
+					if (outError) *outError = "Truncated binary scene header";
+					return false;
+				}
+			}
+
+			std::uint32_t version = 0;
+			if (!reader.ReadU32(version)) {
+				if (outError) *outError = "Truncated binary scene version";
+				return false;
+			}
+			if (version > k_BinaryStorageVersion) {
+				if (outError) *outError = "Binary scene version is newer than this engine";
+				return false;
+			}
+
+			std::uint8_t rootTag = 0;
+			if (!reader.ReadU8(rootTag) ||
+				static_cast<BinaryValueTag>(rootTag) != BinaryValueTag::Object) {
+				if (outError) *outError = "Binary scene root is not an object";
+				return false;
+			}
+
+			std::uint32_t memberCount = 0;
+			if (!reader.ReadU32(memberCount)) {
+				if (outError) *outError = "Truncated binary scene root";
+				return false;
+			}
+
+			outHeader = Value::MakeObject();
+			// Untrusted count: cap the up-front reservation; real members still append past it.
+			outHeader.ReserveMembers(std::min<std::uint32_t>(memberCount, 256u));
+
+			// Decode every member except "entities" into the header. "entities" is recorded
+			// (offset + count) and skipped here, then streamed later — independent of whether
+			// it is the first, last, or a middle member of the root object.
+			for (std::uint32_t i = 0; i < memberCount; ++i) {
+				std::string key;
+				if (!reader.ReadString(key)) {
+					if (outError) *outError = "Truncated binary scene member key";
+					return false;
+				}
+
+				if (key == "entities") {
+					std::uint8_t arrayTag = 0;
+					if (!reader.ReadU8(arrayTag) ||
+						static_cast<BinaryValueTag>(arrayTag) != BinaryValueTag::Array) {
+						if (outError) *outError = "Binary scene 'entities' is not an array";
+						return false;
+					}
+					std::uint32_t entityCount = 0;
+					if (!reader.ReadU32(entityCount)) {
+						if (outError) *outError = "Truncated binary scene 'entities' count";
+						return false;
+					}
+					outCursor.bytes = &bytes;
+					outCursor.offset = reader.Tell();
+					outCursor.remaining = entityCount;
+					for (std::uint32_t e = 0; e < entityCount; ++e) {
+						if (!reader.SkipValue()) {
+							if (outError) *outError = "Truncated binary scene entity";
+							outCursor = BinarySceneEntityCursor{};
+							return false;
+						}
+					}
+				}
+				else {
+					Value memberValue;
+					if (!reader.ReadValue(memberValue)) {
+						if (outError) *outError = "Failed to decode binary scene header member";
+						return false;
+					}
+					outHeader.AddMemberUnchecked(std::move(key), std::move(memberValue));
+				}
+			}
+
+			if (!reader.AtEnd()) {
+				if (outError) *outError = "Binary scene has trailing bytes";
+				return false;
+			}
+			return true;
+		}
+
+		FUNKE_API bool ReadNextBinaryEntity(
+			BinarySceneEntityCursor& cursor,
+			Value& outEntity,
+			std::string* outError) {
+			if (cursor.bytes == nullptr || cursor.remaining == 0) {
+				return false;
+			}
+
+			BinaryReader reader(*cursor.bytes);
+			reader.Seek(cursor.offset);
+			if (!reader.ReadValue(outEntity)) {
+				if (outError) *outError = "Failed to decode binary scene entity";
+				cursor.remaining = 0;
+				return false;
+			}
+			cursor.offset = reader.Tell();
+			--cursor.remaining;
+			return true;
+		}
+
+		FUNKE_API bool ReadRootFromFile(const std::string& path, Value& outRoot, std::string* outError) {
+			const std::vector<std::uint8_t> bytes = File::ReadAllBytes(path);
+			if (bytes.empty()) {
+				if (outError) *outError = "File is empty";
+				return false;
+			}
+
+			if (IsBinaryData(bytes)) {
+				return DecodeBinaryRoot(bytes, outRoot, outError);
+			}
+
+			const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+			if (!Json::TryParse(text, outRoot, outError)) {
+				return false;
+			}
+			return true;
+		}
+
+		FUNKE_API bool WriteRootToFile(const std::string& path, const Value& root, SceneSerializationFormat format) {
+			if (format == SceneSerializationFormat::Binary) {
+				const std::vector<std::uint8_t> bytes = EncodeBinaryRoot(root);
+				return !bytes.empty() && File::WriteAllBytes(path, bytes);
+			}
+			return File::WriteAllText(path, Json::Stringify(root, true));
+		}
+	}
+
+	namespace {
+		static constexpr int SCENE_FORMAT_VERSION = 1;
+		static constexpr float k_MinScaleAxis = 0.0001f;
+
+		SceneSerializationFormat GetProjectSerializationFormat() {
+			FunkeProject* project = ProjectManager::GetCurrentProject();
+			if (!project) {
+				return SceneSerializationFormat::Json;
+			}
+
+			return project->AssetSerializationFormat == FunkeProject::ProjectAssetSerializationFormat::Binary
+				? SceneSerializationFormat::Binary
+				: SceneSerializationFormat::Json;
+		}
+
+		const char* EntityOriginToString(EntityOrigin origin) {
+			switch (origin) {
+			case EntityOrigin::Scene: return "Scene";
+			case EntityOrigin::Prefab: return "Prefab";
+			case EntityOrigin::Runtime: return "Runtime";
+			default: return "Runtime";
+			}
+		}
+
+		void RemoveObjectMember(Value& value, std::string_view key) {
+			if (!value.IsObject()) {
+				return;
+			}
+
+			auto& members = value.GetObject();
+			members.erase(
+				std::remove_if(members.begin(), members.end(), [key](const auto& member) {
+					return member.first == key;
+				}),
+				members.end());
+		}
+
+		void RemoveEntityIdentityMembers(Value& value) {
+			RemoveObjectMember(value, "Origin");
+			RemoveObjectMember(value, "RuntimeID");
+			RemoveObjectMember(value, "EntityID");
+			RemoveObjectMember(value, "SceneGUID");
+			RemoveObjectMember(value, "PrefabGUID");
+			RemoveObjectMember(value, "uuid");
+		}
+
+		void RemovePrefabRuntimeIdentityMembers(Value& value) {
+			RemoveObjectMember(value, "Origin");
+			RemoveObjectMember(value, "RuntimeID");
+			RemoveObjectMember(value, "EntityID");
+			RemoveObjectMember(value, "SceneGUID");
+			RemoveObjectMember(value, "PrefabGUID");
+		}
+
+		bool JsonEquivalent(const Value& left, const Value& right) {
+			// Use Json::operator== not stringify-compare: BuildOverridePatch calls this O(N) per save and the prefab inspector calls it every frame.
+			return left == right;
+		}
+
+		void BuildOverridePatch(const Value& prefabValue, const Value& instanceValue, const std::string& prefix, Value& overrides, int depth = 0) {
+			// Cap matches the JSON parser's depth limit so a pathological
+			// nested-object instance can't blow the stack here.
+			constexpr int k_MaxDepth = 256;
+			if (depth > k_MaxDepth) {
+				FNK_CORE_WARN_TAG("SceneSerializer", "BuildOverridePatch depth cap ({}) exceeded at '{}' - skipping nested overrides", k_MaxDepth, prefix);
+				return;
+			}
+
+			if (prefabValue.IsObject() && instanceValue.IsObject()) {
+				for (const auto& [key, instanceMember] : instanceValue.GetObject()) {
+					const Value* prefabMember = prefabValue.FindMember(key);
+					const std::string path = prefix.empty() ? key : prefix + "." + key;
+					if (prefabMember && prefabMember->IsObject() && instanceMember.IsObject()) {
+						BuildOverridePatch(*prefabMember, instanceMember, path, overrides, depth + 1);
+						continue;
+					}
+
+					if (!prefabMember || !JsonEquivalent(*prefabMember, instanceMember)) {
+						overrides.AddMember(path, instanceMember);
+					}
+				}
+				return;
+			}
+
+			if (!JsonEquivalent(prefabValue, instanceValue)) {
+				overrides.AddMember(prefix, instanceValue);
+			}
+		}
+
+		bool ReadPrefabEntityValuesFromRoot(const Value& root, std::vector<Value>& outEntities) {
+			outEntities.clear();
+			if (!root.IsObject()) {
+				return false;
+			}
+
+			if (const Value* entities = GetArrayMember(root, "Entities")) {
+				for (const Value& entityValue : entities->GetArray()) {
+					if (entityValue.IsObject()) {
+						outEntities.push_back(entityValue);
+					}
+				}
+				if (!outEntities.empty()) {
+					return true;
+				}
+			}
+
+			if (const Value* entityValue = GetObjectMember(root, "Entity")) {
+				outEntities.push_back(*entityValue);
+				return true;
+			}
+			if (const Value* entityValue = GetObjectMember(root, "prefab")) {
+				outEntities.push_back(*entityValue);
+				return true;
+			}
+
+			if (root.FindMember("Transform2D") || root.FindMember("Scripts") || root.FindMember("Name")) {
+				outEntities.push_back(root);
+				return true;
+			}
+
+			return false;
+		}
+
+		bool LoadPrefabEntityValues(uint64_t prefabGuid, std::vector<Value>& outEntities) {
+			const std::string prefabPath = AssetRegistry::ResolvePath(prefabGuid);
+			if (prefabPath.empty() || !File::Exists(prefabPath)) {
+				return false;
+			}
+
+			Value root;
+			std::string readError;
+			if (!SceneSerializerStorage::ReadRootFromFile(prefabPath, root, &readError) || !root.IsObject()) {
+				FNK_CORE_WARN_TAG("SceneSerializer", "Failed to parse prefab {}: {}", prefabPath, readError);
+				return false;
+			}
+
+			return ReadPrefabEntityValuesFromRoot(root, outEntities);
+		}
+
+		bool LoadPrefabEntityValue(uint64_t prefabGuid, Value& outEntityValue) {
+			std::vector<Value> entities;
+			if (!LoadPrefabEntityValues(prefabGuid, entities) || entities.empty()) {
+				return false;
+			}
+
+			outEntityValue = entities.front();
+			return true;
+		}
+
+		Value SerializeEntity(Scene& scene, EntityHandle entity);
+		void SerializePrefabSourceTree(Scene& scene, EntityHandle root, Value& outRootEntity, Value& outEntities);
+		void SerializeClipboardEntityTree(Scene& scene, EntityHandle root, Value& outRootEntity, Value& outEntities);
+
+		uint64_t GetPrefabSourceEntityId(Scene& scene, EntityHandle entity) {
+			auto& registry = scene.GetRegistry();
+			if (registry.all_of<PrefabInstanceComponent>(entity)) {
+				const auto& prefabInstance = registry.get<PrefabInstanceComponent>(entity);
+				if (prefabInstance.SourceEntityId != 0) {
+					return prefabInstance.SourceEntityId;
+				}
+			}
+
+			if (registry.all_of<UUIDComponent>(entity)) {
+				return static_cast<uint64_t>(registry.get<UUIDComponent>(entity).Id);
+			}
+
+			const UUID generatedId;
+			registry.emplace_or_replace<UUIDComponent>(entity, generatedId);
+			return static_cast<uint64_t>(generatedId);
+		}
+
+		// excludeNestedSameInstances: skip subtrees rooted at another instance of root's prefab; they share
+		// root's source ids, so folding them in would duplicate ids in overrides or an applied .prefab.
+		std::vector<EntityHandle> CollectEntitySubtree(Scene& scene, EntityHandle root, bool excludeNestedSameInstances = false) {
+			std::vector<EntityHandle> entities;
+			auto& registry = scene.GetRegistry();
+			std::unordered_set<uint32_t> visited;
+			const bool rootIsPrefab = scene.IsValid(root) && scene.GetEntityOrigin(root) == EntityOrigin::Prefab;
+			const uint64_t rootPrefabGuid = rootIsPrefab ? static_cast<uint64_t>(scene.GetPrefabGUID(root)) : 0;
+
+			std::function<void(EntityHandle)> visit = [&](EntityHandle entity) {
+				if (entity == entt::null || !registry.valid(entity)) {
+					return;
+				}
+
+				const uint32_t key = static_cast<uint32_t>(entity);
+				if (!visited.insert(key).second) {
+					return;
+				}
+
+				if (excludeNestedSameInstances && rootIsPrefab && entity != root
+					&& scene.GetEntityOrigin(entity) == EntityOrigin::Prefab
+					&& static_cast<uint64_t>(scene.GetPrefabGUID(entity)) == rootPrefabGuid
+					&& SceneSerializer::IsPrefabInstanceRoot(scene, entity)) {
+					return;
+				}
+
+				entities.push_back(entity);
+				if (!registry.all_of<HierarchyComponent>(entity)) {
+					return;
+				}
+
+				const auto children = registry.get<HierarchyComponent>(entity).Children;
+				for (EntityHandle child : children) {
+					visit(child);
+				}
+			};
+
+			visit(root);
+			return entities;
+		}
+
+		bool IsNestedPrefabInstanceChild(Scene& scene, EntityHandle entity) {
+			// A same-prefab parent alone isn't enough: an instance dropped under another instance of the same
+			// prefab is its own root and must be saved, not folded into the outer instance's overrides.
+			return scene.GetEntityOrigin(entity) == EntityOrigin::Prefab
+				&& !SceneSerializer::IsPrefabInstanceRoot(scene, entity);
+		}
+
+		void RemoveEntityComparisonIdentityMembers(Value& value) {
+			RemoveEntityIdentityMembers(value);
+			RemoveObjectMember(value, "parentUuid");
+		}
+
+		std::unordered_map<uint64_t, const Value*> BuildSourceEntityMap(const std::vector<Value>& entities) {
+			std::unordered_map<uint64_t, const Value*> bySourceId;
+			bySourceId.reserve(entities.size());
+			for (const Value& entityValue : entities) {
+				const uint64_t sourceId = GetUInt64Member(entityValue, "uuid", 0);
+				if (sourceId != 0) {
+					bySourceId[sourceId] = &entityValue;
+				}
+			}
+			return bySourceId;
+		}
+
+		void BuildPrefabOverrideSet(
+			Scene& scene,
+			EntityHandle entity,
+			const std::vector<Value>& sourceEntities,
+			Value& outRootOverrides,
+			Value& outEntityOverrides) {
+			outRootOverrides = Value::MakeObject();
+			outEntityOverrides = Value::MakeObject();
+			if (sourceEntities.empty()) {
+				return;
+			}
+
+			Value currentRoot;
+			Value currentEntitiesValue;
+			SerializePrefabSourceTree(scene, entity, currentRoot, currentEntitiesValue);
+
+			Value sourceRoot = sourceEntities.front();
+			RemoveEntityComparisonIdentityMembers(sourceRoot);
+			Value currentRootComparable = currentRoot;
+			RemoveEntityComparisonIdentityMembers(currentRootComparable);
+			NormalizeLegacyColliderKeysForDiff(sourceRoot, currentRootComparable);
+			BuildOverridePatch(sourceRoot, currentRootComparable, {}, outRootOverrides);
+
+			const auto sourceById = BuildSourceEntityMap(sourceEntities);
+			if (!currentEntitiesValue.IsArray()) {
+				return;
+			}
+
+			for (const Value& currentEntityValue : currentEntitiesValue.GetArray()) {
+				const uint64_t sourceId = GetUInt64Member(currentEntityValue, "uuid", 0);
+				if (sourceId == 0) {
+					continue;
+				}
+
+				const auto sourceIt = sourceById.find(sourceId);
+				if (sourceIt == sourceById.end() || !sourceIt->second) {
+					continue;
+				}
+
+				Value sourceComparable = *sourceIt->second;
+				Value currentComparable = currentEntityValue;
+				RemoveEntityComparisonIdentityMembers(sourceComparable);
+				RemoveEntityComparisonIdentityMembers(currentComparable);
+
+				Value entityOverrides = Value::MakeObject();
+				NormalizeLegacyColliderKeysForDiff(sourceComparable, currentComparable);
+				BuildOverridePatch(sourceComparable, currentComparable, {}, entityOverrides);
+				if (!entityOverrides.GetObject().empty()) {
+					outEntityOverrides.AddMember(std::to_string(sourceId), std::move(entityOverrides));
+				}
+			}
+		}
+
+		void SerializePrefabSourceTree(Scene& scene, EntityHandle root, Value& outRootEntity, Value& outEntities) {
+			outRootEntity = Value::MakeObject();
+			outEntities = Value::MakeArray();
+
+			const std::vector<EntityHandle> subtree = CollectEntitySubtree(scene, root, /*excludeNestedSameInstances=*/true);
+			if (subtree.empty()) {
+				return;
+			}
+
+			auto& registry = scene.GetRegistry();
+			std::unordered_map<uint32_t, uint64_t> sourceIds;
+			sourceIds.reserve(subtree.size());
+			for (EntityHandle entity : subtree) {
+				sourceIds[static_cast<uint32_t>(entity)] = GetPrefabSourceEntityId(scene, entity);
+			}
+
+			for (EntityHandle entity : subtree) {
+				Value entityValue = SerializeEntity(scene, entity);
+				RemovePrefabRuntimeIdentityMembers(entityValue);
+				// SerializeEntity already stamped live uuid/parentUuid; drop them so the
+				// source-id re-stamp below inserts cleanly instead of tripping AddMember's
+				// duplicate-key overwrite trace.
+				RemoveObjectMember(entityValue, "uuid");
+				RemoveObjectMember(entityValue, "parentUuid");
+
+				const uint64_t sourceId = sourceIds[static_cast<uint32_t>(entity)];
+				if (sourceId != 0) {
+					entityValue.AddMember("uuid", Value(std::to_string(sourceId)));
+				}
+
+				if (entity == root) {
+					RemoveObjectMember(entityValue, "parentUuid");
+				}
+				else {
+					EntityHandle parent = entt::null;
+					if (registry.all_of<HierarchyComponent>(entity)) {
+						parent = registry.get<HierarchyComponent>(entity).Parent;
+					}
+
+					const auto parentIt = sourceIds.find(static_cast<uint32_t>(parent));
+					if (parentIt != sourceIds.end() && parentIt->second != 0) {
+						entityValue.AddMember("parentUuid", Value(std::to_string(parentIt->second)));
+					}
+					else {
+						RemoveObjectMember(entityValue, "parentUuid");
+					}
+				}
+
+				if (entity == root) {
+					outRootEntity = entityValue;
+				}
+				outEntities.Append(std::move(entityValue));
+			}
+		}
+
+		void SerializeClipboardEntityTree(Scene& scene, EntityHandle root, Value& outRootEntity, Value& outEntities) {
+			outRootEntity = Value::MakeObject();
+			outEntities = Value::MakeArray();
+
+			const std::vector<EntityHandle> subtree = CollectEntitySubtree(scene, root);
+			if (subtree.empty()) {
+				return;
+			}
+
+			auto& registry = scene.GetRegistry();
+			std::unordered_map<uint32_t, uint64_t> clipboardIds;
+			clipboardIds.reserve(subtree.size());
+			uint64_t nextClipboardId = 1;
+			for (EntityHandle entity : subtree) {
+				clipboardIds[static_cast<uint32_t>(entity)] = nextClipboardId++;
+			}
+
+			for (EntityHandle entity : subtree) {
+				Value entityValue = SerializeEntity(scene, entity);
+				RemoveEntityIdentityMembers(entityValue);
+				RemoveObjectMember(entityValue, "parentUuid");
+
+				const uint64_t clipboardId = clipboardIds[static_cast<uint32_t>(entity)];
+				entityValue.AddMember("uuid", Value(std::to_string(clipboardId)));
+
+				// The clipboard "uuid" is a synthetic 1..N hierarchy id; in-component entity refs were
+				// serialized against the entity's REAL persistent id. Carry that original id so the
+				// deserializer can build the original->clone remap that retargets internal refs.
+				const uint64_t originalPersistentId = scene.GetEntityPersistentID(entity);
+				if (originalPersistentId != 0) {
+					entityValue.AddMember("sourceUuid", Value(std::to_string(originalPersistentId)));
+				}
+
+				// Origin/PrefabGUID survive the identity strip (they describe kind, not runtime id); SourceEntityId must be re-emitted or DeserializeFullEntity re-seeds it from the clipboard uuid, scrambling override diffs.
+				if (scene.GetEntityOrigin(entity) == EntityOrigin::Prefab) {
+					const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(entity));
+					if (prefabGuid != 0) {
+						entityValue.AddMember("Origin", Value(EntityOriginToString(EntityOrigin::Prefab)));
+						entityValue.AddMember("PrefabGUID", Value(std::to_string(prefabGuid)));
+					}
+					if (registry.all_of<PrefabInstanceComponent>(entity)) {
+						const uint64_t sourceEntityId = registry.get<PrefabInstanceComponent>(entity).SourceEntityId;
+						if (sourceEntityId != 0) {
+							entityValue.AddMember("SourceEntityId", Value(std::to_string(sourceEntityId)));
+						}
+					}
+				}
+
+				if (entity != root) {
+					EntityHandle parent = entt::null;
+					if (registry.all_of<HierarchyComponent>(entity)) {
+						parent = registry.get<HierarchyComponent>(entity).Parent;
+					}
+
+					const auto parentIt = clipboardIds.find(static_cast<uint32_t>(parent));
+					if (parentIt != clipboardIds.end() && parentIt->second != 0) {
+						entityValue.AddMember("parentUuid", Value(std::to_string(parentIt->second)));
+					}
+				}
+
+				if (entity == root) {
+					outRootEntity = entityValue;
+				}
+				outEntities.Append(std::move(entityValue));
+			}
+		}
+
+		Value SerializePrefabInstance(Scene& scene, EntityHandle entity) {
+			Value instanceValue = Value::MakeObject();
+			const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(entity));
+			instanceValue.AddMember("Origin", Value("Prefab"));
+			instanceValue.AddMember("PrefabGUID", Value(std::to_string(prefabGuid)));
+
+			auto& registry = scene.GetRegistry();
+			if (registry.all_of<UUIDComponent>(entity)) {
+				const uint64_t uuid = static_cast<uint64_t>(registry.get<UUIDComponent>(entity).Id);
+				instanceValue.AddMember("uuid", Value(std::to_string(uuid)));
+			}
+
+			if (registry.all_of<HierarchyComponent>(entity)) {
+				const auto& hierarchy = registry.get<HierarchyComponent>(entity);
+				if (hierarchy.Parent != entt::null
+					&& registry.valid(hierarchy.Parent)
+					&& registry.all_of<UUIDComponent>(hierarchy.Parent))
+				{
+					const uint64_t parentUuid = static_cast<uint64_t>(registry.get<UUIDComponent>(hierarchy.Parent).Id);
+					instanceValue.AddMember("parentUuid", Value(std::to_string(parentUuid)));
+				}
+			}
+
+			std::vector<Value> prefabEntities;
+			if (prefabGuid == 0 || !LoadPrefabEntityValues(prefabGuid, prefabEntities)) {
+				// Placeholder for a prefab that failed to load: write the original instance data back, keeping
+				// the live uuid/parent so a reparent in the editor still sticks.
+				if (const auto* unresolved = registry.try_get<UnresolvedPrefabInstanceComponent>(entity)) {
+					Value preserved;
+					if (Json::TryParse(unresolved->InstanceJson, preserved, nullptr) && preserved.IsObject()) {
+						RemoveObjectMember(preserved, "uuid");
+						RemoveObjectMember(preserved, "parentUuid");
+						if (const Value* uuid = instanceValue.FindMember("uuid")) preserved.AddMember("uuid", *uuid);
+						if (const Value* parentUuid = instanceValue.FindMember("parentUuid")) preserved.AddMember("parentUuid", *parentUuid);
+						return preserved;
+					}
+				}
+				return instanceValue;
+			}
+
+			Value overrides;
+			Value entityOverrides;
+			BuildPrefabOverrideSet(scene, entity, prefabEntities, overrides, entityOverrides);
+			instanceValue.AddMember("Overrides", std::move(overrides));
+			if (!entityOverrides.GetObject().empty()) {
+				instanceValue.AddMember("EntityOverrides", std::move(entityOverrides));
+			}
+			return instanceValue;
+		}
+
+		Value SerializeScriptFields(const ScriptComponent& scriptComponent) {
+			Value fieldsByClass = Value::MakeObject();
+			auto& callbacks = ScriptEngine::GetCallbacks();
+
+			// Without C# metadata (assembly failed to compile, class renamed, runtime not up) write the
+			// stored values verbatim; dropping them would erase authored data on the next save.
+			const auto addPendingOnly = [&](const std::string& className) {
+				const std::string prefix = className + ".";
+				Value fieldArray = Value::MakeArray();
+				for (const auto& [key, value] : scriptComponent.PendingFieldValues) {
+					if (key.size() <= prefix.size() || key.rfind(prefix, 0) != 0) continue;
+					Value row = Value::MakeObject();
+					row.AddMember("name", Value(key.substr(prefix.size())));
+					row.AddMember("value", Value(value));
+					fieldArray.EnsureArray().push_back(std::move(row));
+				}
+				if (!fieldArray.GetArray().empty()) {
+					fieldsByClass.AddMember(className, std::move(fieldArray));
+				}
+			};
+
+			for (const ScriptInstance& instance : scriptComponent.Scripts) {
+				if (instance.GetType() == ScriptType::Native) {
+					continue;
+				}
+
+				const char* rawJson = nullptr;
+				const bool hasLiveInstance = instance.HasManagedInstance();
+
+				if (hasLiveInstance && callbacks.GetScriptFields) {
+					rawJson = callbacks.GetScriptFields(static_cast<int32_t>(instance.GetGCHandle()));
+				}
+				else if (callbacks.GetClassFieldDefs) {
+					rawJson = callbacks.GetClassFieldDefs(instance.GetClassName().c_str());
+				}
+
+				if (!rawJson || !*rawJson) {
+					if (!hasLiveInstance) addPendingOnly(instance.GetClassName());
+					continue;
+				}
+
+				Value fieldArray;
+				std::string parseError;
+				if (!Json::TryParse(rawJson, fieldArray, &parseError) || !fieldArray.IsArray()) {
+					FNK_CORE_WARN_TAG(
+						"SceneSerializer",
+						"Failed to parse script field metadata for {}: {}",
+						instance.GetClassName(),
+						parseError);
+					if (!hasLiveInstance) addPendingOnly(instance.GetClassName());
+					continue;
+				}
+				if (!hasLiveInstance && fieldArray.GetArray().empty()) {
+					addPendingOnly(instance.GetClassName());
+					continue;
+				}
+
+				if (!hasLiveInstance && !scriptComponent.PendingFieldValues.empty()) {
+					const std::string prefix = instance.GetClassName() + ".";
+					for (Value& fieldValue : fieldArray.GetArray()) {
+						if (!fieldValue.IsObject()) {
+							continue;
+						}
+
+						const std::string fieldName = GetStringMember(fieldValue, "name");
+						if (fieldName.empty()) {
+							continue;
+						}
+
+						const auto pendingValueIt = scriptComponent.PendingFieldValues.find(prefix + fieldName);
+						if (pendingValueIt == scriptComponent.PendingFieldValues.end()) {
+							continue;
+						}
+
+						fieldValue.AddMember("value", Value(pendingValueIt->second));
+					}
+				}
+
+				for (Value& fieldValue : fieldArray.GetArray()) {
+					if (!fieldValue.IsObject()) {
+						continue;
+					}
+
+					const std::string fieldType = GetStringMember(fieldValue, "type");
+					const std::string currentValue = GetStringMember(fieldValue, "value");
+					const std::string normalizedValue = NormalizeScriptAssetValue(fieldType, currentValue);
+					if (normalizedValue != currentValue) {
+						fieldValue.AddMember("value", Value(normalizedValue));
+					}
+				}
+
+				if (!fieldArray.GetArray().empty()) {
+					fieldsByClass.AddMember(instance.GetClassName(), std::move(fieldArray));
+				}
+			}
+
+			for (const std::string& className : scriptComponent.ManagedComponents) {
+				if (className.empty()) {
+					continue;
+				}
+
+				const char* rawJson = callbacks.GetClassFieldDefs ? callbacks.GetClassFieldDefs(className.c_str()) : nullptr;
+				if (!rawJson || !*rawJson) {
+					addPendingOnly(className);
+					continue;
+				}
+
+				Value fieldArray;
+				std::string parseError;
+				if (!Json::TryParse(rawJson, fieldArray, &parseError) || !fieldArray.IsArray()) {
+					FNK_CORE_WARN_TAG("SceneSerializer", "Failed to parse managed component field metadata for {}: {}", className, parseError);
+					addPendingOnly(className);
+					continue;
+				}
+				if (fieldArray.GetArray().empty()) {
+					addPendingOnly(className);
+					continue;
+				}
+
+				const std::string prefix = className + ".";
+				for (Value& fieldValue : fieldArray.GetArray()) {
+					if (!fieldValue.IsObject()) {
+						continue;
+					}
+
+					const std::string fieldName = GetStringMember(fieldValue, "name");
+					if (fieldName.empty()) {
+						continue;
+					}
+
+					const auto pendingValueIt = scriptComponent.PendingFieldValues.find(prefix + fieldName);
+					if (pendingValueIt != scriptComponent.PendingFieldValues.end()) {
+						fieldValue.AddMember("value", Value(pendingValueIt->second));
+					}
+
+					const std::string fieldType = GetStringMember(fieldValue, "type");
+					const std::string currentValue = GetStringMember(fieldValue, "value");
+					const std::string normalizedValue = NormalizeScriptAssetValue(fieldType, currentValue);
+					if (normalizedValue != currentValue) {
+						fieldValue.AddMember("value", Value(normalizedValue));
+					}
+				}
+
+				if (!fieldArray.GetArray().empty()) {
+					fieldsByClass.AddMember(className, std::move(fieldArray));
+				}
+			}
+
+			return fieldsByClass;
+		}
+
+		void WriteRegistryComponents(Scene& scene, EntityHandle entity, Value& entityValue, bool first) {
+			Entity entityWrapper = scene.GetEntity(entity);
+			SceneManager::GetComponentRegistryOrBuiltIn().ForEachComponentInfoInRegistrationOrder(
+				[&](const ComponentInfo& info) {
+					if (info.serializeFirst != first) return;
+					if (!info.serialize || !info.has || info.serializedName.empty()) return;
+					if (!info.has(entityWrapper)) return;
+					// The ScriptComponent list is the authored source of truth for managed component rows.
+					if (info.isDynamic) {
+						if (!scene.HasComponent<ScriptComponent>(entity)) return;
+						const ScriptComponent& sc = scene.GetComponent<ScriptComponent>(entity);
+						if (!sc.HasScript(info.serializedName) && !sc.HasManagedComponent(info.serializedName)) return;
+					}
+					try {
+						Value componentValue = info.serialize(entityWrapper);
+						entityValue.AddMember(info.serializedName, std::move(componentValue));
+					} catch (const std::exception& e) {
+						FNK_CORE_ERROR_TAG("SceneSerializer",
+							"Component '{}' serialize threw: {}",
+							info.serializedName, e.what());
+					} catch (...) {
+						FNK_CORE_ERROR_TAG("SceneSerializer",
+							"Component '{}' serialize threw an unknown exception",
+							info.serializedName);
+					}
+				});
+		}
+
+		Value SerializeEntity(Scene& scene, EntityHandle entity) {
+			auto& registry = scene.GetRegistry();
+			Value entityValue = Value::MakeObject();
+
+			// Omit "name" entirely when absent — writing a placeholder would round-trip back into a real NameComponent.
+			if (registry.all_of<NameComponent>(entity)) {
+				entityValue.AddMember("name", Value(registry.get<NameComponent>(entity).Name));
+			}
+
+			if (registry.all_of<UUIDComponent>(entity)) {
+				entityValue.AddMember(
+					"uuid",
+					Value(std::to_string(static_cast<uint64_t>(registry.get<UUIDComponent>(entity).Id))));
+			}
+
+			// parentUuid resolved in a second pass; childIndex is the canonical child-order source-of-truth so on-disk array order can't silently reorder children.
+			if (registry.all_of<HierarchyComponent>(entity)) {
+				const auto& hc = registry.get<HierarchyComponent>(entity);
+				if (hc.Parent != entt::null
+					&& registry.valid(hc.Parent)
+					&& registry.all_of<UUIDComponent>(hc.Parent))
+				{
+					const uint64_t parentUuid = static_cast<uint64_t>(registry.get<UUIDComponent>(hc.Parent).Id);
+					entityValue.AddMember("parentUuid", Value(std::to_string(parentUuid)));
+
+					if (registry.all_of<HierarchyComponent>(hc.Parent)) {
+						const auto& parentHc = registry.get<HierarchyComponent>(hc.Parent);
+						for (size_t i = 0; i < parentHc.Children.size(); ++i) {
+							if (parentHc.Children[i] == entity) {
+								entityValue.AddMember("childIndex", Value(static_cast<int>(i)));
+								break;
+							}
+						}
+					}
+				}
+			}
+
+			if (const EntityMetaData* metaData = scene.GetEntityMetaData(entity)) {
+				entityValue.AddMember("Origin", Value(EntityOriginToString(metaData->Origin)));
+				if (metaData->Origin == EntityOrigin::Scene && static_cast<uint64_t>(metaData->SceneGUID) != 0) {
+					entityValue.AddMember("SceneGUID", Value(std::to_string(static_cast<uint64_t>(metaData->SceneGUID))));
+				}
+				if (metaData->Origin == EntityOrigin::Prefab && static_cast<uint64_t>(metaData->PrefabGUID) != 0) {
+					entityValue.AddMember("PrefabGUID", Value(std::to_string(static_cast<uint64_t>(metaData->PrefabGUID))));
+				}
+			}
+
+			WriteRegistryComponents(scene, entity, entityValue, true);
+
+			if (registry.all_of<TextRendererComponent>(entity)) {
+				const auto& text = registry.get<TextRendererComponent>(entity);
+				Value textValue = Value::MakeObject();
+				textValue.AddMember("text", Value(text.Text));
+				textValue.AddMember("fontAsset", Value(std::to_string(static_cast<uint64_t>(text.FontAssetId))));
+				textValue.AddMember("fontSize", Value(text.FontSize));
+				textValue.AddMember("r", Value(text.Color.r));
+				textValue.AddMember("g", Value(text.Color.g));
+				textValue.AddMember("b", Value(text.Color.b));
+				textValue.AddMember("a", Value(text.Color.a));
+				textValue.AddMember("alignment", Value(static_cast<int>(text.HAlign)));
+				textValue.AddMember("valign", Value(static_cast<int>(text.VAlign)));
+				textValue.AddMember("letterSpacing", Value(text.LetterSpacing));
+				textValue.AddMember("lineSpacing", Value(text.LineSpacing));
+				textValue.AddMember("wrapMode", Value(static_cast<int>(text.WrapMode)));
+				textValue.AddMember("autoSize", Value(text.AutoSize));
+				// WrapWidth field removed — wrap area is now derived
+				// from the host rect's width minus Margin every frame.
+				textValue.AddMember("marginL", Value(text.Margin.x));
+				textValue.AddMember("marginT", Value(text.Margin.y));
+				textValue.AddMember("marginR", Value(text.Margin.z));
+				textValue.AddMember("marginB", Value(text.Margin.w));
+				textValue.AddMember("sortOrder", Value(static_cast<int>(text.SortingOrder)));
+				textValue.AddMember("sortLayer", Value(static_cast<int>(text.SortingLayer)));
+				entityValue.AddMember("TextRenderer", std::move(textValue));
+			}
+
+#if FUNKE_WITH_2D
+			if (registry.all_of<Rigidbody2DComponent>(entity)) {
+				auto& rigidbody = registry.get<Rigidbody2DComponent>(entity);
+				Value rigidbodyValue = Value::MakeObject();
+				rigidbodyValue.AddMember("bodyType", Value(static_cast<int>(rigidbody.GetBodyType())));
+				rigidbodyValue.AddMember("gravityScale", Value(rigidbody.GetGravityScale()));
+				rigidbodyValue.AddMember("mass", Value(rigidbody.GetMass()));
+				// massOverridden distinguishes a pinned mass from Box2D's density*area
+				// auto value. Absent in legacy files -> false -> auto mass preserved.
+				rigidbodyValue.AddMember("massOverridden", Value(rigidbody.IsMassOverridden()));
+				// Constraints. Defaults to false on the deserializer side when
+				// the key is missing, so existing scene files keep loading
+				// without modification.
+				rigidbodyValue.AddMember("freezePositionX", Value(rigidbody.GetFreezePositionX()));
+				rigidbodyValue.AddMember("freezePositionY", Value(rigidbody.GetFreezePositionY()));
+				rigidbodyValue.AddMember("freezeRotation", Value(rigidbody.GetFreezeRotation()));
+				entityValue.AddMember("Rigidbody2D", std::move(rigidbodyValue));
+			}
+
+			if (registry.all_of<BoxCollider2DComponent>(entity)) {
+				auto& collider = registry.get<BoxCollider2DComponent>(entity);
+				// Serialize the LOGICAL size (m_LocalSize x transform scale), never the
+				// live b2 polygon span. GetScale() reflects the SafeHalfExtent clamp, so
+				// a sub-0.02 collider would persist ~20x too large, and it returns {0,0}
+				// with no live shape (detached prefab edit). The logical size matches the
+				// inspector and round-trips with or without a live shape.
+				const Vec2 localSize = collider.GetLocalScale(scene);
+				Vec2 scale = localSize;
+				if (const auto* tr = registry.try_get<Transform2DComponent>(entity)) {
+					scale = { tr->Scale.x * localSize.x, tr->Scale.y * localSize.y };
+				}
+				const Vec2 center = collider.GetCenter();
+				Value colliderValue = Value::MakeObject();
+				colliderValue.AddMember("scaleX", Value(scale.x));
+				colliderValue.AddMember("scaleY", Value(scale.y));
+				// Exact local size, independent of the parent chain. scaleX/Y above are
+				// world-scaled and kept for older readers; loaders prefer these keys because
+				// world scale isn't known yet when an entity is loaded before its parent is wired.
+				colliderValue.AddMember("localSizeX", Value(localSize.x));
+				colliderValue.AddMember("localSizeY", Value(localSize.y));
+				colliderValue.AddMember("centerX", Value(center.x));
+				colliderValue.AddMember("centerY", Value(center.y));
+				colliderValue.AddMember("friction", Value(collider.GetFriction()));
+				colliderValue.AddMember("bounciness", Value(collider.GetBounciness()));
+				colliderValue.AddMember("layer", Value(collider.GetLayer()));
+				colliderValue.AddMember("collisionMask", Value(collider.GetCollisionMask()));
+				colliderValue.AddMember("registerContacts", Value(collider.CanRegisterContacts()));
+				colliderValue.AddMember("sensor", Value(collider.IsSensor()));
+				entityValue.AddMember("BoxCollider2D", std::move(colliderValue));
+			}
+
+			if (registry.all_of<CircleCollider2DComponent>(entity)) {
+				auto& collider = registry.get<CircleCollider2DComponent>(entity);
+				const Vec2 center = collider.GetCenter();
+				Value colliderValue = Value::MakeObject();
+				colliderValue.AddMember("radius", Value(collider.GetLocalRadius(scene)));
+				colliderValue.AddMember("centerX", Value(center.x));
+				colliderValue.AddMember("centerY", Value(center.y));
+				colliderValue.AddMember("friction", Value(collider.GetFriction()));
+				colliderValue.AddMember("bounciness", Value(collider.GetBounciness()));
+				colliderValue.AddMember("layer", Value(collider.GetLayer()));
+				colliderValue.AddMember("collisionMask", Value(collider.GetCollisionMask()));
+				colliderValue.AddMember("registerContacts", Value(collider.CanRegisterContacts()));
+				colliderValue.AddMember("sensor", Value(collider.IsSensor()));
+				entityValue.AddMember("CircleCollider2D", std::move(colliderValue));
+			}
+
+			if (registry.all_of<PolygonCollider2DComponent>(entity)) {
+				auto& collider = registry.get<PolygonCollider2DComponent>(entity);
+				const Vec2 center = collider.GetCenter();
+				const Vec2 size = collider.GetLocalSize(scene);
+				Value colliderValue = Value::MakeObject();
+				colliderValue.AddMember("sizeX", Value(size.x));
+				colliderValue.AddMember("sizeY", Value(size.y));
+				colliderValue.AddMember("centerX", Value(center.x));
+				colliderValue.AddMember("centerY", Value(center.y));
+
+				Value pointsArr = Value::MakeArray();
+				for (const Vec2& p : collider.GetLocalPoints()) {
+					Value pt = Value::MakeObject();
+					pt.AddMember("x", Value(p.x));
+					pt.AddMember("y", Value(p.y));
+					pointsArr.Append(std::move(pt));
+				}
+				colliderValue.AddMember("points", std::move(pointsArr));
+				colliderValue.AddMember("friction", Value(collider.GetFriction()));
+				colliderValue.AddMember("bounciness", Value(collider.GetBounciness()));
+				colliderValue.AddMember("layer", Value(collider.GetLayer()));
+				colliderValue.AddMember("collisionMask", Value(collider.GetCollisionMask()));
+				colliderValue.AddMember("registerContacts", Value(collider.CanRegisterContacts()));
+				colliderValue.AddMember("sensor", Value(collider.IsSensor()));
+				entityValue.AddMember("PolygonCollider2D", std::move(colliderValue));
+			}
+#endif
+
+			if (registry.all_of<AudioSourceComponent>(entity)) {
+				auto& audioSource = registry.get<AudioSourceComponent>(entity);
+				Value audioValue = Value::MakeObject();
+				audioValue.AddMember("volume", Value(audioSource.GetVolume()));
+				audioValue.AddMember("pitch", Value(audioSource.GetPitch()));
+				audioValue.AddMember("loop", Value(audioSource.IsLooping()));
+				audioValue.AddMember("playOnAwake", Value(audioSource.GetPlayOnAwake()));
+
+				uint64_t audioAssetId = static_cast<uint64_t>(audioSource.GetAudioAssetId());
+				if (audioAssetId == 0) {
+					audioAssetId = AudioManager::GetAudioAssetUUID(audioSource.GetAudioHandle());
+					if (audioAssetId != 0) {
+						audioSource.SetAudioAssetId(UUID(audioAssetId));
+					}
+				}
+
+				if (audioAssetId != 0) {
+					audioValue.AddMember("clipAsset", Value(std::to_string(audioAssetId)));
+				}
+
+				entityValue.AddMember("AudioSource", std::move(audioValue));
+			}
+
+			if (registry.all_of<StaticTag>(entity)) {
+				entityValue.AddMember("static", Value(true));
+			}
+			if (registry.all_of<DisabledTag>(entity) && !registry.all_of<InheritedDisabledTag>(entity)) {
+				entityValue.AddMember("disabled", Value(true));
+			}
+			if (registry.all_of<DeadlyTag>(entity)) {
+				entityValue.AddMember("deadly", Value(true));
+			}
+
+#if FUNKE_WITH_2D
+			if (registry.all_of<FastBody2DComponent>(entity)) {
+				const auto& indexBody = registry.get<FastBody2DComponent>(entity);
+				Value bodyValue = Value::MakeObject();
+				bodyValue.AddMember("type", Value(static_cast<int>(indexBody.Type)));
+				bodyValue.AddMember("mass", Value(indexBody.Mass));
+				bodyValue.AddMember("useGravity", Value(indexBody.UseGravity));
+				bodyValue.AddMember("boundaryCheck", Value(indexBody.BoundaryCheck));
+				entityValue.AddMember("FastBody2D", std::move(bodyValue));
+			}
+
+			if (registry.all_of<FastBoxCollider2DComponent>(entity)) {
+				const auto& collider = registry.get<FastBoxCollider2DComponent>(entity);
+				Value colliderValue = Value::MakeObject();
+				colliderValue.AddMember("halfX", Value(collider.HalfExtents.x));
+				colliderValue.AddMember("halfY", Value(collider.HalfExtents.y));
+				entityValue.AddMember("FastBoxCollider2D", std::move(colliderValue));
+			}
+
+			if (registry.all_of<FastCircleCollider2DComponent>(entity)) {
+				const auto& collider = registry.get<FastCircleCollider2DComponent>(entity);
+				Value colliderValue = Value::MakeObject();
+				colliderValue.AddMember("radius", Value(collider.Radius));
+				entityValue.AddMember("FastCircleCollider2D", std::move(colliderValue));
+			}
+#endif
+
+			if (registry.all_of<RectTransform2DComponent>(entity)) {
+				const auto& rectTransform = registry.get<RectTransform2DComponent>(entity);
+				Value rectValue = Value::MakeObject();
+				rectValue.AddMember("anchorMinX", Value(rectTransform.AnchorMin.x));
+				rectValue.AddMember("anchorMinY", Value(rectTransform.AnchorMin.y));
+				rectValue.AddMember("anchorMaxX", Value(rectTransform.AnchorMax.x));
+				rectValue.AddMember("anchorMaxY", Value(rectTransform.AnchorMax.y));
+				rectValue.AddMember("pivotX", Value(rectTransform.Pivot.x));
+				rectValue.AddMember("pivotY", Value(rectTransform.Pivot.y));
+				rectValue.AddMember("posX", Value(rectTransform.AnchoredPosition.x));
+				rectValue.AddMember("posY", Value(rectTransform.AnchoredPosition.y));
+				rectValue.AddMember("sizeX", Value(rectTransform.SizeDelta.x));
+				rectValue.AddMember("sizeY", Value(rectTransform.SizeDelta.y));
+				rectValue.AddMember("rotation", Value(rectTransform.LocalRotation));
+				rectValue.AddMember("scaleX", Value(rectTransform.LocalScale.x));
+				rectValue.AddMember("scaleY", Value(rectTransform.LocalScale.y));
+				if (rectTransform.IgnoreSafeArea) rectValue.AddMember("ignoreSafeArea", Value(true));
+				if (rectTransform.FillWidth && rectTransform.FillHeight) rectValue.AddMember("fillParent", Value(true));
+				else if (rectTransform.FillWidth) rectValue.AddMember("fillWidth", Value(true));
+				else if (rectTransform.FillHeight) rectValue.AddMember("fillHeight", Value(true));
+				entityValue.AddMember("RectTransform2D", std::move(rectValue));
+			}
+
+			if (registry.all_of<ImageComponent>(entity)) {
+				auto& image = registry.get<ImageComponent>(entity);
+				Value imageValue = Value::MakeObject();
+				imageValue.AddMember("r", Value(image.Color.r));
+				imageValue.AddMember("g", Value(image.Color.g));
+				imageValue.AddMember("b", Value(image.Color.b));
+				imageValue.AddMember("a", Value(image.Color.a));
+				imageValue.AddMember("sortOrder", Value(static_cast<int>(image.SortingOrder)));
+				imageValue.AddMember("sortLayer", Value(static_cast<int>(image.SortingLayer)));
+				imageValue.AddMember("filterMode", Value(static_cast<int>(image.FilterMode)));
+				if (!image.SpriteName.empty()) {
+					imageValue.AddMember("spriteName", Value(image.SpriteName));
+				}
+				if (image.Material != 0) {
+					imageValue.AddMember("materialAsset", Value(std::to_string(image.Material)));
+				}
+				// Only sliced/tiled images write these keys, so Simple images keep their old file shape.
+				if (image.Type != ImageType::Simple) {
+					imageValue.AddMember("imageType", Value(static_cast<int>(image.Type)));
+					// [left, bottom, right, top] in texture pixels.
+					Value border = Value::MakeArray();
+					border.Append(Value(image.BorderLeft));
+					border.Append(Value(image.BorderBottom));
+					border.Append(Value(image.BorderRight));
+					border.Append(Value(image.BorderTop));
+					imageValue.AddMember("border", std::move(border));
+					imageValue.AddMember("borderScale", Value(image.BorderScale));
+				}
+
+				uint64_t textureAssetId = static_cast<uint64_t>(image.TextureAssetId);
+				if (textureAssetId == 0) {
+					textureAssetId = TextureManager::GetTextureAssetUUID(image.TextureHandle);
+					if (textureAssetId != 0) {
+						image.TextureAssetId = UUID(textureAssetId);
+					}
+				}
+
+				if (textureAssetId != 0) {
+					imageValue.AddMember("textureAsset", Value(std::to_string(textureAssetId)));
+				}
+
+				entityValue.AddMember("Image", std::move(imageValue));
+			}
+
+			if (registry.all_of<ScriptComponent>(entity)) {
+				const auto& scriptComponent = registry.get<ScriptComponent>(entity);
+				if (!scriptComponent.Scripts.empty()) {
+					Value scriptsValue = Value::MakeArray();
+					for (const ScriptInstance& instance : scriptComponent.Scripts) {
+						Value scriptValue = Value::MakeObject();
+						scriptValue.AddMember("className", Value(instance.GetClassName()));
+						scriptValue.AddMember("type", Value(ScriptTypeToString(instance.GetType())));
+						scriptsValue.Append(std::move(scriptValue));
+					}
+					entityValue.AddMember("Scripts", std::move(scriptsValue));
+				}
+				if (!scriptComponent.ManagedComponents.empty()) {
+					Value componentsValue = Value::MakeArray();
+					for (const std::string& className : scriptComponent.ManagedComponents) {
+						componentsValue.Append(Value(className));
+					}
+					entityValue.AddMember("ManagedComponents", std::move(componentsValue));
+				}
+
+				if (!scriptComponent.Scripts.empty() || !scriptComponent.ManagedComponents.empty()) {
+					Value scriptFields = SerializeScriptFields(scriptComponent);
+					if (!scriptFields.GetObject().empty()) {
+						entityValue.AddMember("ScriptFields", std::move(scriptFields));
+					}
+				}
+			}
+
+			WriteRegistryComponents(scene, entity, entityValue, false);
+
+			// Dynamic (C#-defined) component data parked before its type was registered: write it back
+			// verbatim, or the staged-load round trip / an early save resets the component to defaults.
+			if (scene.HasComponent<ScriptComponent>(entity)) {
+				const ScriptComponent& sc = scene.GetComponent<ScriptComponent>(entity);
+				for (const auto& [className, payload] : sc.PendingDynamicComponentValues) {
+					if (className.empty() || entityValue.FindMember(className)) continue;
+					Value pendingValue;
+					if (Json::TryParse(payload, pendingValue, nullptr) && pendingValue.IsObject()) {
+						entityValue.AddMember(className, std::move(pendingValue));
+					}
+				}
+			}
+
+			return entityValue;
+		}
+	} // namespace
+
+	// External-linkage adapters forwarding to the anonymous-namespace helpers; declarations in SceneSerializerShared.hpp.
+	namespace Detail {
+		Json::Value SerializeEntity(Scene& scene, EntityHandle entity) {
+			return ::Funke::SerializeEntity(scene, entity);
+		}
+
+		bool JsonEquivalent(const Json::Value& a, const Json::Value& b) {
+			return ::Funke::JsonEquivalent(a, b);
+		}
+
+		void BuildOverridePatch(
+			const Json::Value& prefabValue,
+			const Json::Value& instanceValue,
+			const std::string& prefix,
+			Json::Value& overrides) {
+			::Funke::BuildOverridePatch(prefabValue, instanceValue, prefix, overrides);
+		}
+
+		void RemoveObjectMember(Json::Value& value, std::string_view key) {
+			::Funke::RemoveObjectMember(value, key);
+		}
+
+		void RemoveEntityIdentityMembers(Json::Value& value) {
+			::Funke::RemoveEntityIdentityMembers(value);
+		}
+	}
+
+	Json::Value SceneSerializer::SerializeScene(Scene& scene) {
+		Value root = Value::MakeObject();
+		root.AddMember("version", Value(SCENE_FORMAT_VERSION));
+		root.AddMember("name", Value(scene.GetName()));
+		root.AddMember("sceneId", Value(std::to_string(static_cast<uint64_t>(scene.GetSceneId()))));
+
+		Value systemsValue = Value::MakeArray();
+		for (const std::string& className : scene.GetSceneSystemClassNames()) {
+			if (className.empty()) continue;
+			const bool enabled = scene.IsSceneSystemEnabled(className);
+
+			// Compact form: classes without authored field values stay as a
+			// bare string while enabled so existing scenes round-trip cleanly.
+			// Disabled systems or authored fields use the object form.
+			const auto* overrides = scene.GetSceneSystemFieldValues(className);
+			if (enabled && (!overrides || overrides->empty())) {
+				systemsValue.Append(Value(className));
+				continue;
+			}
+
+			Value entry = Value::MakeObject();
+			entry.AddMember("className", Value(className));
+			if (!enabled) {
+				entry.AddMember("enabled", Value(false));
+			}
+			if (overrides && !overrides->empty()) {
+				Value fieldsObj = Value::MakeObject();
+				for (const auto& [fieldName, fieldValue] : *overrides) {
+					fieldsObj.AddMember(fieldName, Value(fieldValue));
+				}
+				entry.AddMember("fields", std::move(fieldsObj));
+			}
+			systemsValue.Append(std::move(entry));
+		}
+		root.AddMember("systems", std::move(systemsValue));
+
+		Value entitiesValue = Value::MakeArray();
+		auto& registry = scene.GetRegistry();
+		auto view = registry.view<entt::entity>();
+		std::vector<entt::entity> entities(view.begin(), view.end());
+
+		// entt iterates newest-first; reverse to creation order so a save+reload roundtrip is a true identity.
+		std::reverse(entities.begin(), entities.end());
+
+		for (const entt::entity entity : entities) {
+			if (IsNestedPrefabInstanceChild(scene, entity)) {
+				continue;
+			}
+
+			const EntityOrigin origin = scene.GetEntityOrigin(entity);
+			switch (origin) {
+			case EntityOrigin::Scene:
+				entitiesValue.Append(SerializeEntity(scene, entity));
+				break;
+			case EntityOrigin::Prefab:
+				entitiesValue.Append(SerializePrefabInstance(scene, entity));
+				break;
+			case EntityOrigin::Runtime:
+				break;
+			}
+		}
+
+		root.AddMember("entities", std::move(entitiesValue));
+		return root;
+	}
+
+	bool SceneSerializer::SaveToFile(Scene& scene, const std::string& path) {
+		return SaveToFile(scene, path, GetProjectSerializationFormat(), true);
+	}
+
+	bool SceneSerializer::SaveToFile(Scene& scene, const std::string& path, SceneSerializationFormat format) {
+		return SaveToFile(scene, path, format, true);
+	}
+
+	bool SceneSerializer::SaveToFile(Scene& scene, const std::string& path, bool logSuccess) {
+		return SaveToFile(scene, path, GetProjectSerializationFormat(), logSuccess);
+	}
+
+	bool SceneSerializer::SaveToFile(Scene& scene, const std::string& path, SceneSerializationFormat format, bool logSuccess) {
+		try {
+			const std::filesystem::path parentDir = Path::FromUtf8(path).parent_path();
+			if (!parentDir.empty() && !std::filesystem::exists(parentDir)) {
+				std::filesystem::create_directories(parentDir);
+			}
+
+			if (!SceneSerializerStorage::WriteRootToFile(path, SerializeScene(scene), format)) {
+				FNK_CORE_ERROR_TAG("SceneSerializer", "Save failed (write error): {}", path);
+				return false;
+			}
+			KnownFileStamps::Record(path);
+			AssetRegistry::GetOrCreateAssetUUID(path);
+			// Only clear the dirty flag once persistence is confirmed; otherwise a failed
+			// write would silently desync the editor's "saved" state from the disk file.
+			scene.ClearDirty();
+			if (logSuccess) {
+				FNK_CORE_INFO_TAG("SceneSerializer", "Saved scene: {}", scene.GetName());
+			}
+			return true;
+		}
+		catch (const std::exception& exception) {
+			FNK_CORE_ERROR_TAG("SceneSerializer", "Save failed: {}", exception.what());
+			return false;
+		}
+	}
+
+	Json::Value SceneSerializer::SerializeEntityFull(Scene& scene, EntityHandle entity) {
+		if (entity == entt::null || !scene.IsValid(entity)) {
+			return Value::MakeObject();
+		}
+
+		return SerializeEntity(scene, entity);
+	}
+
+	Json::Value SceneSerializer::SerializeEntityForClipboard(Scene& scene, EntityHandle entity) {
+		if (entity == entt::null || !scene.IsValid(entity)) {
+			return Value::MakeObject();
+		}
+
+		Value rootEntity;
+		Value entities;
+		SerializeClipboardEntityTree(scene, entity, rootEntity, entities);
+		if (!entities.IsArray() || entities.GetArray().empty()) {
+			return Value::MakeObject();
+		}
+
+		Value clipboardEntity = Value::MakeObject();
+		clipboardEntity.AddMember("ClipboardEntity", Value(true));
+		clipboardEntity.AddMember("Entity", std::move(rootEntity));
+		clipboardEntity.AddMember("Entities", std::move(entities));
+		return clipboardEntity;
+	}
+
+	Json::Value SceneSerializer::SerializePrefabSource(
+		Scene& scene,
+		EntityHandle entity,
+		uint64_t prefabGuid) {
+		Value root = Value::MakeObject();
+		if (entity == entt::null || !scene.IsValid(entity)) return root;
+
+		Value prefabEntity;
+		Value prefabEntities;
+		SerializePrefabSourceTree(scene, entity, prefabEntity, prefabEntities);
+		if (!prefabEntity.IsObject() || !prefabEntities.IsArray()
+			|| prefabEntities.GetArray().empty()) return root;
+
+		root.AddMember("version", Value(SCENE_FORMAT_VERSION));
+		root.AddMember("type", Value("Prefab"));
+		if (prefabGuid != 0) {
+			root.AddMember("AssetGUID", Value(std::to_string(prefabGuid)));
+		}
+		root.AddMember("Entity", prefabEntity);
+		root.AddMember("prefab", prefabEntity);
+		root.AddMember("Entities", std::move(prefabEntities));
+		return root;
+	}
+
+	Json::Value SceneSerializer::SerializeComponent(Scene& scene, EntityHandle entity, std::string_view componentName) {
+		if (entity == entt::null || !scene.IsValid(entity) || componentName.empty()) {
+			return Value();
+		}
+
+		Value entityValue = SerializeEntity(scene, entity);
+		if (const Value* componentValue = entityValue.FindMember(componentName)) {
+			return *componentValue;
+		}
+
+		return Value();
+	}
+
+	bool SceneSerializer::SaveEntityToFile(Scene& scene, EntityHandle entity, const std::string& path) {
+		return SaveEntityToFile(scene, entity, path, GetProjectSerializationFormat());
+	}
+
+	bool SceneSerializer::SaveEntityToFile(Scene& scene, EntityHandle entity, const std::string& path, SceneSerializationFormat format) {
+		try {
+			const std::filesystem::path parentDir = Path::FromUtf8(path).parent_path();
+			if (!parentDir.empty() && !std::filesystem::exists(parentDir)) {
+				std::filesystem::create_directories(parentDir);
+			}
+
+			// GUID derived from path (not content), so we can register before writing — avoids the previous double-write per prefab save.
+			const uint64_t prefabGuid = AssetRegistry::GetOrCreateAssetUUID(path);
+			Value root = SerializePrefabSource(scene, entity, prefabGuid);
+			if (!root.FindMember("Entity")) {
+				FNK_CORE_ERROR_TAG("SceneSerializer", "Save prefab failed (invalid entity): {}", path);
+				return false;
+			}
+			if (!SceneSerializerStorage::WriteRootToFile(path, root, format)) {
+				FNK_CORE_ERROR_TAG("SceneSerializer", "Save prefab failed (write error): {}", path);
+				return false;
+			}
+			KnownFileStamps::Record(path);
+			ForgetCachedPrefabRoot(path);
+
+			// Drop any baked template for this prefab so the next InstantiatePrefab re-reads from disk; closes the
+			// TOCTOU window vs the async .prefab FileWatcher so a drag-spawn right after an edit cannot hydrate a
+			// stale template (e.g. one predating a just-added managed/native script component).
+			if (prefabGuid != 0) {
+				PrefabTemplateCache::Get().Invalidate(prefabGuid);
+			}
+
+			std::string name = "Entity";
+			if (scene.GetRegistry().all_of<NameComponent>(entity)) {
+				name = scene.GetRegistry().get<NameComponent>(entity).Name;
+			}
+
+			FNK_CORE_INFO_TAG("SceneSerializer", "Saved prefab: {}", name);
+			return true;
+		}
+		catch (const std::exception& exception) {
+			FNK_CORE_ERROR_TAG("SceneSerializer", "SaveEntityToFile failed: {}", exception.what());
+			return false;
+		}
+	}
+
+	uint64_t SceneSerializer::SaveEntityAsPrefabInstance(Scene& scene, EntityHandle entity, const std::string& path) {
+		// Write first: GetPrefabSourceEntityId stamps stable UUIDs we reuse as SourceEntityId below so disk and live state never drift.
+		if (!SaveEntityToFile(scene, entity, path)) {
+			return 0;
+		}
+
+		const uint64_t prefabGuid = AssetRegistry::GetOrCreateAssetUUID(path);
+		if (prefabGuid == 0) {
+			return 0;
+		}
+
+		// Capture source ids BEFORE the loop: SetEntityMetaData overwrites UUIDComponent, severing the link to the on-disk "uuid".
+		const std::vector<EntityHandle> subtree = CollectEntitySubtree(scene, entity);
+		std::vector<uint64_t> sourceIds;
+		sourceIds.reserve(subtree.size());
+		for (EntityHandle subtreeEntity : subtree) {
+			sourceIds.push_back(GetPrefabSourceEntityId(scene, subtreeEntity));
+		}
+
+		for (std::size_t i = 0; i < subtree.size(); ++i) {
+			scene.SetEntityMetaData(subtree[i], EntityOrigin::Prefab, AssetGUID(prefabGuid));
+			if (scene.HasComponent<PrefabInstanceComponent>(subtree[i])) {
+				scene.GetComponent<PrefabInstanceComponent>(subtree[i]).SourceEntityId = sourceIds[i];
+			}
+		}
+
+		scene.MarkDirty();
+		return prefabGuid;
+	}
+
+	bool SceneSerializer::ConvertFileFormat(const std::string& path, SceneSerializationFormat format) {
+		try {
+			if (!File::Exists(path)) {
+				return false;
+			}
+
+			// Same content in a new encoding: keep the known stamp current, unless an external edit was already pending.
+			const bool stampWasCurrent = !KnownFileStamps::HasChangedOnDisk(path);
+			const FileStamp stampBefore = FileStamp::Read(path);
+			Value root;
+			std::string error;
+			if (!SceneSerializerStorage::ReadRootFromFile(path, root, &error) || !root.IsObject()) {
+				FNK_CORE_WARN_TAG("SceneSerializer", "Cannot convert serialized asset {}: {}", path, error);
+				return false;
+			}
+
+			if (!SceneSerializerStorage::WriteRootToFile(path, root, format)) {
+				FNK_CORE_WARN_TAG("SceneSerializer", "Failed to rewrite serialized asset: {}", path);
+				return false;
+			}
+			if (stampWasCurrent) {
+				KnownFileStamps::Record(path);
+			}
+			Detail::RestampCachedPrefabRoot(path, stampBefore);
+			return true;
+		}
+		catch (const std::exception& exception) {
+			FNK_CORE_WARN_TAG("SceneSerializer", "ConvertFileFormat failed for {}: {}", path, exception.what());
+			return false;
+		}
+	}
+
+	bool SceneSerializer::IsBinarySerializedFile(const std::string& path) {
+		if (!File::Exists(path)) {
+			return false;
+		}
+		return SceneSerializerStorage::IsBinaryData(File::ReadAllBytes(path));
+	}
+
+} // namespace Funke

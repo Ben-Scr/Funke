@@ -13,17 +13,17 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $platformDirectory = "$Configuration-windows-x86_64"
 
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
-    $OutputDirectory = Join-Path $repoRoot "bin\IndexSDK-$platformDirectory"
+    $OutputDirectory = Join-Path $repoRoot "bin\FunkeSDK-$platformDirectory"
 }
 
 $sdkRoot = [System.IO.Path]::GetFullPath($OutputDirectory)
-$sdkMarker = Join-Path $sdkRoot ".index-native-sdk"
-$engineBinaryDirectory = Join-Path $repoRoot "bin\$platformDirectory\Index-Engine"
-$engineDll = Join-Path $engineBinaryDirectory "Index-Engine.dll"
-$engineLib = Join-Path $engineBinaryDirectory "Index-Engine.lib"
+$sdkMarker = Join-Path $sdkRoot ".funke-native-sdk"
+$engineBinaryDirectory = Join-Path $repoRoot "bin\$platformDirectory\Funke-Engine"
+$engineDll = Join-Path $engineBinaryDirectory "Funke-Engine.dll"
+$engineLib = Join-Path $engineBinaryDirectory "Funke-Engine.lib"
 $builtSdlDll = Join-Path $repoRoot "External\SDL-build\windows-x64\install\bin\SDL3.dll"
 $netHostDll = Join-Path $repoRoot "External\dotnet\lib\nethost.dll"
-$assetsSource = Join-Path $repoRoot "Index-Runtime\IndexAssets"
+$assetsSource = Join-Path $repoRoot "Funke-Runtime\FunkeAssets"
 
 function Assert-File {
     param([string]$Path)
@@ -112,11 +112,11 @@ Assert-Directory $assetsSource
 $engineSha256 = (Get-FileHash -LiteralPath $engineDll -Algorithm SHA256).Hash.ToLowerInvariant()
 
 $dumpbin = Find-VisualStudioTool "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" "dumpbin.exe"
-$sceneManagerGetActiveSceneSymbol = "?GetActiveScene@SceneManager@Index@@SAPEAVScene@2@XZ"
-$sceneManagerTryLoadSceneSymbol = '?TryLoadScene@SceneManager@Index@@SA?AUSceneLoadResult@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z'
-$sceneManagerTryLoadSceneAdditiveSymbol = '?TryLoadSceneAdditive@SceneManager@Index@@SA?AUSceneLoadResult@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z'
-$sceneManagerTryReloadSceneSymbol = '?TryReloadScene@SceneManager@Index@@SA?AUSceneLoadResult@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z'
-$renderSettingsApplySymbol = "?Apply@RenderSettings@Index@@"
+$sceneManagerGetActiveSceneSymbol = "?GetActiveScene@SceneManager@Funke@@SAPEAVScene@2@XZ"
+$sceneManagerTryLoadSceneSymbol = '?TryLoadScene@SceneManager@Funke@@SA?AUSceneLoadResult@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z'
+$sceneManagerTryLoadSceneAdditiveSymbol = '?TryLoadSceneAdditive@SceneManager@Funke@@SA?AUSceneLoadResult@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z'
+$sceneManagerTryReloadSceneSymbol = '?TryReloadScene@SceneManager@Funke@@SA?AUSceneLoadResult@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z'
+$renderSettingsApplySymbol = "?Apply@RenderSettings@Funke@@"
 $engineExports = (& $dumpbin /exports $engineDll 2>&1 | Out-String)
 if ($LASTEXITCODE -ne 0 -or
     -not $engineExports.Contains($sceneManagerGetActiveSceneSymbol) -or
@@ -124,7 +124,7 @@ if ($LASTEXITCODE -ne 0 -or
     -not $engineExports.Contains($sceneManagerTryLoadSceneAdditiveSymbol) -or
     -not $engineExports.Contains($sceneManagerTryReloadSceneSymbol) -or
     -not $engineExports.Contains($renderSettingsApplySymbol)) {
-    throw "Index-Engine.dll has a stale native SDK ABI. Rebuild Index-Engine Dist|x64 before packaging the SDK."
+    throw "Funke-Engine.dll has a stale native SDK ABI. Rebuild Funke-Engine Dist|x64 before packaging the SDK."
 }
 $engineLibrarySymbols = (& $dumpbin /linkermember:2 $engineLib 2>&1 | Out-String)
 if ($LASTEXITCODE -ne 0 -or
@@ -133,15 +133,15 @@ if ($LASTEXITCODE -ne 0 -or
     -not $engineLibrarySymbols.Contains($sceneManagerTryLoadSceneAdditiveSymbol) -or
     -not $engineLibrarySymbols.Contains($sceneManagerTryReloadSceneSymbol) -or
     -not $engineLibrarySymbols.Contains($renderSettingsApplySymbol)) {
-    throw "Index-Engine.lib has a stale native SDK ABI. Rebuild Index-Engine Dist|x64 before packaging the SDK."
+    throw "Funke-Engine.lib has a stale native SDK ABI. Rebuild Funke-Engine Dist|x64 before packaging the SDK."
 }
 $engineDependencies = (& $dumpbin /dependents $engineDll 2>&1 | Out-String)
 if ($LASTEXITCODE -ne 0) {
-    throw "Could not inspect Index-Engine.dll dependencies."
+    throw "Could not inspect Funke-Engine.dll dependencies."
 }
 $profilerEnabled = $engineDependencies -match "(?im)^\s*Tracy\.dll\s*$"
 if ($engineDependencies -notmatch "(?im)^\s*SDL3\.dll\s*$") {
-    throw "Index-Engine.dll does not declare the SDL3 runtime dependency."
+    throw "Funke-Engine.dll does not declare the SDL3 runtime dependency."
 }
 $sdlDll = Join-Path $engineBinaryDirectory "SDL3.dll"
 if (-not (Test-Path -LiteralPath $sdlDll -PathType Leaf)) {
@@ -173,10 +173,10 @@ foreach ($directory in @(
 )) {
     [System.IO.Directory]::CreateDirectory($directory) | Out-Null
 }
-Write-Utf8File $sdkMarker "Index Native SDK`n"
+Write-Utf8File $sdkMarker "Funke Native SDK`n"
 
 $headerRoots = @(
-    "Index-Engine\src",
+    "Funke-Engine\src",
     "External\spdlog\include",
     "External\glm",
     "External\entt\src",
@@ -203,19 +203,19 @@ foreach ($relativeRoot in $headerRoots) {
     Copy-HeaderTree (Join-Path $repoRoot $relativeRoot) $includeDirectory
 }
 
-$entityConfigSource = Join-Path $repoRoot "Index-Engine\src\Generated\IndexEntityBitsConfig.h"
+$entityConfigSource = Join-Path $repoRoot "Funke-Engine\src\Generated\FunkeEntityBitsConfig.h"
 Assert-File $entityConfigSource
-Copy-Item -LiteralPath $entityConfigSource -Destination (Join-Path $includeDirectory "IndexEntityBitsConfig.h")
+Copy-Item -LiteralPath $entityConfigSource -Destination (Join-Path $includeDirectory "FunkeEntityBitsConfig.h")
 
 $entityConfigText = Get-Content -Raw -LiteralPath $entityConfigSource
-$entityBitsMatch = [regex]::Match($entityConfigText, "(?m)^#define\s+INDEX_ENTITY_BITS\s+(\d+)\s*$")
+$entityBitsMatch = [regex]::Match($entityConfigText, "(?m)^#define\s+FUNKE_ENTITY_BITS\s+(\d+)\s*$")
 if (-not $entityBitsMatch.Success) {
-    throw "Could not read INDEX_ENTITY_BITS from $entityConfigSource"
+    throw "Could not read FUNKE_ENTITY_BITS from $entityConfigSource"
 }
 $entityBits = $entityBitsMatch.Groups[1].Value
 
-Copy-Item -LiteralPath $engineLib -Destination (Join-Path $libraryDirectory "Index-Engine.lib")
-Copy-Item -LiteralPath $engineDll -Destination (Join-Path $runtimeDirectory "Index-Engine.dll")
+Copy-Item -LiteralPath $engineLib -Destination (Join-Path $libraryDirectory "Funke-Engine.lib")
+Copy-Item -LiteralPath $engineDll -Destination (Join-Path $runtimeDirectory "Funke-Engine.dll")
 Copy-Item -LiteralPath $sdlDll -Destination (Join-Path $runtimeDirectory "SDL3.dll")
 Copy-Item -LiteralPath $netHostDll -Destination (Join-Path $runtimeDirectory "nethost.dll")
 
@@ -229,11 +229,11 @@ if ($profilerEnabled) {
     Copy-Item -LiteralPath $tracyDll -Destination (Join-Path $runtimeDirectory "Tracy.dll")
 }
 
-Copy-Item -LiteralPath $assetsSource -Destination (Join-Path $runtimeDirectory "IndexAssets") -Recurse
+Copy-Item -LiteralPath $assetsSource -Destination (Join-Path $runtimeDirectory "FunkeAssets") -Recurse
 
 $licenseFiles = @(
-    @{ Source = "LICENSE.txt"; Destination = "Index\LICENSE.txt" },
-    @{ Source = "THIRD_PARTY_LICENSES.md"; Destination = "Index\THIRD_PARTY_LICENSES.md" },
+    @{ Source = "LICENSE.txt"; Destination = "Funke\LICENSE.txt" },
+    @{ Source = "THIRD_PARTY_LICENSES.md"; Destination = "Funke\THIRD_PARTY_LICENSES.md" },
     @{ Source = "External\spdlog\LICENSE"; Destination = "spdlog\LICENSE" },
     @{ Source = "External\glm\copying.txt"; Destination = "GLM\copying.txt" },
     @{ Source = "External\entt\LICENSE"; Destination = "EnTT\LICENSE" },
@@ -265,7 +265,7 @@ foreach ($license in $licenseFiles) {
 $profilerDefines = ""
 $profilerLibraries = ""
 if ($profilerEnabled) {
-    $profilerDefines = "INDEX_PROFILER_ENABLED;TRACY_ENABLE;TRACY_IMPORTS;TRACY_ON_DEMAND;"
+    $profilerDefines = "FUNKE_PROFILER_ENABLED;TRACY_ENABLE;TRACY_IMPORTS;TRACY_ON_DEMAND;"
     $profilerLibraries = "Tracy.lib;"
 }
 
@@ -273,83 +273,83 @@ $propertySheet = @'
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup Label="UserMacros">
-    <IndexSdkRoot>$(MSBuildThisFileDirectory)</IndexSdkRoot>
+    <FunkeSdkRoot>$(MSBuildThisFileDirectory)</FunkeSdkRoot>
   </PropertyGroup>
   <PropertyGroup>
     <CharacterSet>Unicode</CharacterSet>
-    <ExternalIncludePath>$(IndexSdkRoot)include;$(ExternalIncludePath)</ExternalIncludePath>
-    <IndexSdkPreviousForceImportAfterCppTargets Condition="'$(ForceImportAfterCppTargets)' != ''">$(ForceImportAfterCppTargets)</IndexSdkPreviousForceImportAfterCppTargets>
-    <ForceImportAfterCppTargets>$(IndexSdkRoot)IndexSDK.targets</ForceImportAfterCppTargets>
+    <ExternalIncludePath>$(FunkeSdkRoot)include;$(ExternalIncludePath)</ExternalIncludePath>
+    <FunkeSdkPreviousForceImportAfterCppTargets Condition="'$(ForceImportAfterCppTargets)' != ''">$(ForceImportAfterCppTargets)</FunkeSdkPreviousForceImportAfterCppTargets>
+    <ForceImportAfterCppTargets>$(FunkeSdkRoot)FunkeSDK.targets</ForceImportAfterCppTargets>
   </PropertyGroup>
 </Project>
 '@
-Write-Utf8File (Join-Path $sdkRoot "IndexSDK.props") $propertySheet
+Write-Utf8File (Join-Path $sdkRoot "FunkeSDK.props") $propertySheet
 
 $targetsFile = @'
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="$(IndexSdkPreviousForceImportAfterCppTargets)" Condition="'$(IndexSdkPreviousForceImportAfterCppTargets)' != '' and '$(IndexSdkPreviousForceImportAfterCppTargets)' != '$(IndexSdkRoot)IndexSDK.targets' and Exists('$(IndexSdkPreviousForceImportAfterCppTargets)')" />
+  <Import Project="$(FunkeSdkPreviousForceImportAfterCppTargets)" Condition="'$(FunkeSdkPreviousForceImportAfterCppTargets)' != '' and '$(FunkeSdkPreviousForceImportAfterCppTargets)' != '$(FunkeSdkRoot)FunkeSDK.targets' and Exists('$(FunkeSdkPreviousForceImportAfterCppTargets)')" />
   <ItemDefinitionGroup>
     <ClCompile>
-      <PreprocessorDefinitions>IDX_IMPORT_DLL;IDX_PLATFORM_WINDOWS;IDX_DIST;NDEBUG;IDX_RHI_WEBGPU;WEBGPU_CPP_HAS_ENUM_CLASS_BITMASKS=1;IMGUI_IMPL_WEBGPU_BACKEND_DAWN;INDEX_WITH_RENDER=1;INDEX_WITH_AUDIO=1;INDEX_WITH_PHYSICS=1;INDEX_WITH_SCRIPTING=1;INDEX_WITH_APPLICATION=1;INDEX_WITH_EDITOR=0;INDEX_ENTITY_BITS=@@ENTITY_BITS@@;MAGIC_ENUM_RANGE_MIN=-1;MAGIC_ENUM_RANGE_MAX=32;INDEX_ALL_MODULES=1;@@PROFILER_DEFINES@@%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>FNK_IMPORT_DLL;FNK_PLATFORM_WINDOWS;FNK_DIST;NDEBUG;FNK_RHI_WEBGPU;WEBGPU_CPP_HAS_ENUM_CLASS_BITMASKS=1;IMGUI_IMPL_WEBGPU_BACKEND_DAWN;FUNKE_WITH_RENDER=1;FUNKE_WITH_AUDIO=1;FUNKE_WITH_PHYSICS=1;FUNKE_WITH_SCRIPTING=1;FUNKE_WITH_APPLICATION=1;FUNKE_WITH_EDITOR=0;FUNKE_ENTITY_BITS=@@ENTITY_BITS@@;MAGIC_ENUM_RANGE_MIN=-1;MAGIC_ENUM_RANGE_MAX=32;FUNKE_ALL_MODULES=1;@@PROFILER_DEFINES@@%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
       <AdditionalOptions>/utf-8 /FS /Zc:preprocessor %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories>$(IndexSdkRoot)lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>Index-Engine.lib;@@PROFILER_LIBRARIES@@shell32.lib;gdi32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(FunkeSdkRoot)lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>Funke-Engine.lib;@@PROFILER_LIBRARIES@@shell32.lib;gdi32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <SubSystem>Windows</SubSystem>
     </Link>
   </ItemDefinitionGroup>
-  <Target Name="CopyIndexSdkRuntime" AfterTargets="Build" Condition="'$(IndexSdkDeployRuntime)' != 'false'">
+  <Target Name="CopyFunkeSdkRuntime" AfterTargets="Build" Condition="'$(FunkeSdkDeployRuntime)' != 'false'">
     <ItemGroup>
-      <IndexSdkRuntimeDll Include="$(IndexSdkRoot)runtime\*.dll" />
-      <IndexSdkAsset Include="$(IndexSdkRoot)runtime\IndexAssets\**\*" />
+      <FunkeSdkRuntimeDll Include="$(FunkeSdkRoot)runtime\*.dll" />
+      <FunkeSdkAsset Include="$(FunkeSdkRoot)runtime\FunkeAssets\**\*" />
     </ItemGroup>
-    <Copy SourceFiles="@(IndexSdkRuntimeDll)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
-    <Copy SourceFiles="@(IndexSdkAsset)" DestinationFiles="@(IndexSdkAsset-&gt;'$(OutDir)IndexAssets\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(FunkeSdkRuntimeDll)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(FunkeSdkAsset)" DestinationFiles="@(FunkeSdkAsset-&gt;'$(OutDir)FunkeAssets\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
 </Project>
 '@
 $targetsFile = $targetsFile.Replace("@@ENTITY_BITS@@", $entityBits)
 $targetsFile = $targetsFile.Replace("@@PROFILER_DEFINES@@", $profilerDefines)
 $targetsFile = $targetsFile.Replace("@@PROFILER_LIBRARIES@@", $profilerLibraries)
-Write-Utf8File (Join-Path $sdkRoot "IndexSDK.targets") $targetsFile
+Write-Utf8File (Join-Path $sdkRoot "FunkeSDK.targets") $targetsFile
 
 $packagePropertySheet = @'
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="$(MSBuildThisFileDirectory)IndexSDK.props" />
+  <Import Project="$(MSBuildThisFileDirectory)FunkeSDK.props" />
   <PropertyGroup>
-    <IndexSdkDeployRuntime>false</IndexSdkDeployRuntime>
-    <IndexPackagePreviousForceImportAfterCppTargets>$(ForceImportAfterCppTargets)</IndexPackagePreviousForceImportAfterCppTargets>
-    <ForceImportAfterCppTargets>$(IndexSdkRoot)IndexPackageSDK.targets</ForceImportAfterCppTargets>
+    <FunkeSdkDeployRuntime>false</FunkeSdkDeployRuntime>
+    <FunkePackagePreviousForceImportAfterCppTargets>$(ForceImportAfterCppTargets)</FunkePackagePreviousForceImportAfterCppTargets>
+    <ForceImportAfterCppTargets>$(FunkeSdkRoot)FunkePackageSDK.targets</ForceImportAfterCppTargets>
   </PropertyGroup>
 </Project>
 '@
-Write-Utf8File (Join-Path $sdkRoot "IndexPackageSDK.props") $packagePropertySheet
+Write-Utf8File (Join-Path $sdkRoot "FunkePackageSDK.props") $packagePropertySheet
 
 $packageTargets = @'
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="$(IndexPackagePreviousForceImportAfterCppTargets)" Condition="'$(IndexPackagePreviousForceImportAfterCppTargets)' != '' and '$(IndexPackagePreviousForceImportAfterCppTargets)' != '$(IndexSdkRoot)IndexPackageSDK.targets' and Exists('$(IndexPackagePreviousForceImportAfterCppTargets)')" />
-  <Target Name="WriteIndexPackageAbiMetadata" AfterTargets="Link" Condition="'$(ConfigurationType)' == 'DynamicLibrary'">
+  <Import Project="$(FunkePackagePreviousForceImportAfterCppTargets)" Condition="'$(FunkePackagePreviousForceImportAfterCppTargets)' != '' and '$(FunkePackagePreviousForceImportAfterCppTargets)' != '$(FunkeSdkRoot)FunkePackageSDK.targets' and Exists('$(FunkePackagePreviousForceImportAfterCppTargets)')" />
+  <Target Name="WriteFunkePackageAbiMetadata" AfterTargets="Link" Condition="'$(ConfigurationType)' == 'DynamicLibrary'">
     <ItemGroup>
-      <IndexPackageAbiLine Include="schema=1" />
-      <IndexPackageAbiLine Include="boundary=engine_cpp" />
-      <IndexPackageAbiLine Include="engine_sha256=@@ENGINE_SHA256@@" />
+      <FunkePackageAbiLine Include="schema=1" />
+      <FunkePackageAbiLine Include="boundary=engine_cpp" />
+      <FunkePackageAbiLine Include="engine_sha256=@@ENGINE_SHA256@@" />
     </ItemGroup>
-    <WriteLinesToFile File="$(TargetPath).indexabi" Lines="@(IndexPackageAbiLine)" Overwrite="true" Encoding="ASCII" />
+    <WriteLinesToFile File="$(TargetPath).funkeabi" Lines="@(FunkePackageAbiLine)" Overwrite="true" Encoding="ASCII" />
   </Target>
 </Project>
 '@
 $packageTargets = $packageTargets.Replace("@@ENGINE_SHA256@@", $engineSha256)
-Write-Utf8File (Join-Path $sdkRoot "IndexPackageSDK.targets") $packageTargets
+Write-Utf8File (Join-Path $sdkRoot "FunkePackageSDK.targets") $packageTargets
 
 $exampleSource = @'
-#include <Index.hpp>
+#include <Funke.hpp>
 
 #include <Core/PackageHost.hpp>
 #include <Project/ProjectManager.hpp>
@@ -365,7 +365,7 @@ $exampleSource = @'
 
 #include <windows.h>
 
-using namespace Index;
+using namespace Funke;
 
 namespace {
 
@@ -487,7 +487,7 @@ public:
     {
         auto config = ApplicationConfig::Minimal();
         config.WindowSpecification = WindowSpecification(
-            960, 540, "Index Native SDK", true, true, false);
+            960, 540, "Funke Native SDK", true, true, false);
         config.EnableRenderer2D = true;
         config.EnableShaderManager = true;
         config.EnableTextureManager = true;
@@ -510,12 +510,12 @@ public:
     void ConfigureLayers() override { PushLayer<MainLayer>(); }
     void Start() override
     {
-        IndexExamplePackage_IsLoadedFn isLoaded = nullptr;
+        FunkeExamplePackage_IsLoadedFn isLoaded = nullptr;
         for (const LoadedPackage& package : PackageHost::GetLoaded()) {
             if (package.Name == "Example") {
-                isLoaded = reinterpret_cast<IndexExamplePackage_IsLoadedFn>(
+                isLoaded = reinterpret_cast<FunkeExamplePackage_IsLoadedFn>(
                     ::GetProcAddress(static_cast<HMODULE>(package.ModuleHandle),
-                        "IndexExamplePackage_IsLoaded"));
+                        "FunkeExamplePackage_IsLoaded"));
                 break;
             }
         }
@@ -554,7 +554,7 @@ public:
             try {
                 (void)componentProbe.GetComponent<NameComponent>();
             }
-            catch (const IndexException&) {
+            catch (const FunkeException&) {
                 missingGetThrew = true;
             }
             catch (...) {
@@ -578,7 +578,7 @@ public:
             try {
                 (void)staleEntity.GetComponent<NameComponent>();
             }
-            catch (const IndexException&) {
+            catch (const FunkeException&) {
                 staleGetThrew = true;
             }
             catch (...) {
@@ -644,7 +644,7 @@ private:
 
 }
 
-Index::Application* Index::CreateApplication()
+Funke::Application* Funke::CreateApplication()
 {
     const std::filesystem::path appRoot(Path::ExecutableDir());
     const Application::CommandLineArgs args = Application::GetCommandLineArgs();
@@ -655,7 +655,7 @@ Index::Application* Index::CreateApplication()
         }
     }
 
-    auto project = std::make_unique<IndexProject>();
+    auto project = std::make_unique<FunkeProject>();
     project->Name = "Native SDK Example";
     project->RootDirectory = appRoot.string();
     project->AssetsDirectory = (appRoot / "Assets").string();
@@ -692,7 +692,7 @@ $exampleProject = @'
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <Import Project="..\..\IndexSDK.props" />
+  <Import Project="..\..\FunkeSDK.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Dist|x64'">
     <OutDir>$(ProjectDir)bin\Dist\</OutDir>
     <IntDir>$(ProjectDir)obj\Dist\</IntDir>
@@ -726,17 +726,17 @@ $packageHeader = @'
 #pragma once
 
 #if defined(_WIN32)
-#if defined(INDEX_EXAMPLE_PACKAGE_BUILD)
-#define INDEX_EXAMPLE_PACKAGE_API __declspec(dllexport)
+#if defined(FUNKE_EXAMPLE_PACKAGE_BUILD)
+#define FUNKE_EXAMPLE_PACKAGE_API __declspec(dllexport)
 #else
-#define INDEX_EXAMPLE_PACKAGE_API __declspec(dllimport)
+#define FUNKE_EXAMPLE_PACKAGE_API __declspec(dllimport)
 #endif
 #else
-#define INDEX_EXAMPLE_PACKAGE_API __attribute__((visibility("default")))
+#define FUNKE_EXAMPLE_PACKAGE_API __attribute__((visibility("default")))
 #endif
 
-extern "C" INDEX_EXAMPLE_PACKAGE_API int IndexExamplePackage_IsLoaded();
-using IndexExamplePackage_IsLoadedFn = int (*)();
+extern "C" FUNKE_EXAMPLE_PACKAGE_API int FunkeExamplePackage_IsLoaded();
+using FunkeExamplePackage_IsLoadedFn = int (*)();
 '@
 Write-Utf8File (Join-Path $packageExampleDirectory "include\ExamplePackage.hpp") $packageHeader
 
@@ -750,19 +750,19 @@ namespace {
     bool s_Loaded = false;
 }
 
-extern "C" INDEX_PACKAGE_API int IndexPackage_OnLoad()
+extern "C" FUNKE_PACKAGE_API int FunkePackage_OnLoad()
 {
     s_Loaded = true;
-    IDX_CORE_INFO_TAG("NativePackage", "Loaded the IndexSDK native package example.");
+    FNK_CORE_INFO_TAG("NativePackage", "Loaded the FunkeSDK native package example.");
     return 0;
 }
 
-extern "C" INDEX_PACKAGE_API void IndexPackage_OnUnload()
+extern "C" FUNKE_PACKAGE_API void FunkePackage_OnUnload()
 {
     s_Loaded = false;
 }
 
-extern "C" INDEX_EXAMPLE_PACKAGE_API int IndexExamplePackage_IsLoaded()
+extern "C" FUNKE_EXAMPLE_PACKAGE_API int FunkeExamplePackage_IsLoaded()
 {
     return s_Loaded ? 1 : 0;
 }
@@ -792,7 +792,7 @@ $packageProject = @'
     <WholeProgramOptimization>true</WholeProgramOptimization>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <Import Project="..\..\IndexPackageSDK.props" />
+  <Import Project="..\..\FunkePackageSDK.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Dist|x64'">
     <TargetName>Pkg.Example.Native</TargetName>
     <OutDir>$(ProjectDir)..\MinimalApp\bin\Dist\Packages\Example\Bin\Windows-x64\</OutDir>
@@ -801,7 +801,7 @@ $packageProject = @'
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Dist|x64'">
     <ClCompile>
       <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>INDEX_EXAMPLE_PACKAGE_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>FUNKE_EXAMPLE_PACKAGE_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <Optimization>Full</Optimization>
       <WarningLevel>Level4</WarningLevel>
     </ClCompile>
@@ -819,7 +819,7 @@ $packageManifest = @'
 return {
     name = "Example",
     version = "0.1.0",
-    description = "Minimal native package built against the exact IndexSDK engine binary.",
+    description = "Minimal native package built against the exact FunkeSDK engine binary.",
     layers = {
         native = {
             sources = { "src/**.cpp", "src/**.hpp", "include/**.hpp" },
@@ -829,7 +829,7 @@ return {
     dependencies = {},
 }
 '@
-Write-Utf8File (Join-Path $packageExampleDirectory "index-package.lua") $packageManifest
+Write-Utf8File (Join-Path $packageExampleDirectory "funke-package.lua") $packageManifest
 
 $metadata = [ordered]@{
     configuration = $Configuration
@@ -841,21 +841,21 @@ $metadata = [ordered]@{
     includeRootsRequiredByConsumer = 1
     importLibrariesRequiredByConsumer = 1 + [int]$profilerEnabled
 }
-Write-Utf8File (Join-Path $sdkRoot "IndexSDK.json") ($metadata | ConvertTo-Json)
+Write-Utf8File (Join-Path $sdkRoot "FunkeSDK.json") ($metadata | ConvertTo-Json)
 
 $sdkReadme = @'
-# Index Native SDK
+# Funke Native SDK
 
 For a Visual Studio 2022 C++ project:
 
 1. Open View > Other Windows > Property Manager.
-2. Add the existing property sheet `IndexSDK.props` to `Dist | x64`.
-3. Include `<Index.hpp>` and place `<EntryPoint.hpp>` in exactly one `.cpp`.
+2. Add the existing property sheet `FunkeSDK.props` to `Dist | x64`.
+3. Include `<Funke.hpp>` and place `<EntryPoint.hpp>` in exactly one `.cpp`.
 
-The property sheet supplies the single include root and loads `IndexSDK.targets`
+The property sheet supplies the single include root and loads `FunkeSDK.targets`
 after the project settings. The targets file applies compiler defines, the import
 library, the Windows subsystem, system libraries, and post-build deployment of
-runtime DLLs and `IndexAssets`.
+runtime DLLs and `FunkeAssets`.
 
 Treat the generated headers, import library, and engine DLL as one versioned set.
 Replace them together and rebuild every raw C++ host whenever the SDK changes.
@@ -899,13 +899,13 @@ It references `examples/NativePackage/Pkg.Example.Native.vcxproj`, stages the
 DLL in the PackageHost layout, and verifies during `--smoke-test` that the
 package loaded before startup-scene deserialization.
 
-For your own engine-linked package DLL, import `IndexPackageSDK.props`, name
+For your own engine-linked package DLL, import `FunkePackageSDK.props`, name
 the output `Pkg.<Name>.Native.dll`, and keep it beside the generated
-`.dll.indexabi` file. Native packages use Index's C++ ABI and therefore must be
+`.dll.funkeabi` file. Native packages use Funke's C++ ABI and therefore must be
 rebuilt whenever the SDK changes. The sidecar makes a stale binary fail before
 `LoadLibrary` instead of crashing inside package initialization. Package public
 headers and the generated import `.lib` can also be consumed normally by C++;
-including a header alone does not run `IndexPackage_OnLoad`.
+including a header alone does not run `FunkePackage_OnLoad`.
 '@
 Write-Utf8File (Join-Path $sdkRoot "README.md") $sdkReadme
 
@@ -938,6 +938,6 @@ if ($Verify) {
     }
 }
 
-Write-Host "Index Native SDK: $sdkRoot"
+Write-Host "Funke Native SDK: $sdkRoot"
 Write-Host "Profiler ABI: $profilerEnabled"
-Write-Host "Consumer setup: import IndexSDK.props"
+Write-Host "Consumer setup: import FunkeSDK.props"

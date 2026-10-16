@@ -91,7 +91,7 @@ A Mesh3D shader with `@blend Alpha` or `Additive` is drawn with the transparent 
 | `color` | `vec4<f32>` | `(r, g, b[, a])` or `#RRGGBB[AA]` | color picker |
 | `texture` | `texture_2d<f32>` named `<name>`, plus a sampler `<name>Sampler` | `white`, `black`, `gray` or `normal` | texture picker |
 
-Values are read in WGSL as `material.speed`, `material.deep` and so on. Textures are sampled with `textureSample(noise, noiseSampler, uv)`. A texture uses its own import settings (filter, wrap); while the material assigns none, the default from the declaration is used. Colors are sRGB, like every other color in the editor. `range` clamps the value both in the Inspector and at runtime. A shader can have up to 6 texture properties. Property names must be valid WGSL identifiers, must not start with `idx_`, and must not repeat a name the template uses (`globals`, `material`, `surface`, …).
+Values are read in WGSL as `material.speed`, `material.deep` and so on. Textures are sampled with `textureSample(noise, noiseSampler, uv)`. A texture uses its own import settings (filter, wrap); while the material assigns none, the default from the declaration is used. Colors are sRGB, like every other color in the editor. `range` clamps the value both in the Inspector and at runtime. A shader can have up to 6 texture properties. Property names must be valid WGSL identifiers, must not start with `fnk_`, and must not repeat a name the template uses (`globals`, `material`, `surface`, …).
 
 The material stores its values under `"properties"`. Properties the shader doesn't declare (anymore) are kept, so switching between shaders loses nothing. A missing value, or one of the wrong type, falls back to the shader's default.
 
@@ -297,11 +297,11 @@ sprite.Material = otherMaterial;                    // null = the standard sprit
 
 `range` limits apply to scripted values too. Setting a value whose type doesn't fit the declaration (for example `SetFloat` on a color, or `SetTexture` on a float) changes nothing and logs a warning.
 
-## Builds and `index validate`
+## Builds and `funke validate`
 
 Game builds include every shader that a shipped material references, and every texture its properties use (the build's asset pruning follows the GUIDs). Shaders are compiled when first drawn, on the player's GPU.
 
-`index validate` parses and compiles every `.wgsl` file under `Assets/` (with a headless GPU device, no window), reports errors with line numbers, and checks that each material's `"shader"` GUID points at a `.wgsl` file:
+`funke validate` parses and compiles every `.wgsl` file under `Assets/` (with a headless GPU device, no window), reports errors with line numbers, and checks that each material's `"shader"` GUID points at a `.wgsl` file:
 
 ```
 error: Assets/Shaders/Typo.wgsl: line 3: unresolved value 'undefinedThing'

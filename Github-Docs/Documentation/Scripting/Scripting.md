@@ -1,8 +1,8 @@
 # Scripting
 
-Index uses **C#** as its primary scripting language (running on **.NET 10 LTS**). You write scripts to give your game behavior — move the player, spawn enemies, handle UI, manage game state. Index also supports **native C++ scripts** for performance-critical code.
+Funke uses **C#** as its primary scripting language (running on **.NET 10 LTS**). You write scripts to give your game behavior — move the player, spawn enemies, handle UI, manage game state. Funke also supports **native C++ scripts** for performance-critical code.
 
-Visual Studio IntelliSense for Index game projects requires Visual Studio 2026 (18.0+) because Visual Studio 2022 cannot evaluate `net10.0` projects. VS Code or Rider can use the installed .NET 10 SDK instead.
+Visual Studio IntelliSense for Funke game projects requires Visual Studio 2026 (18.0+) because Visual Studio 2022 cannot evaluate `net10.0` projects. VS Code or Rider can use the installed .NET 10 SDK instead.
 
 **Script editor:** Editor Preferences › Scripting › External Script Editor lists every detected Visual Studio, VS Code, JetBrains Rider and IntelliJ IDEA installation (standalone installer, JetBrains Toolbox 1.x and 2.x), each version on its own. Double-clicking a script or a console error opens the file at that line; Rider opens the project's `.sln`, IntelliJ IDEA the project folder. IntelliJ IDEA has no C# language support, so you get editing without code completion; use Rider for that.
 
@@ -12,7 +12,7 @@ If you just want the short version: make a class that inherits from `EntityScrip
 
 ## The three kinds of script
 
-Index has three script base classes, each with a different **scope**:
+Funke has three script base classes, each with a different **scope**:
 
 |Base class|Scope|Use it for|
 |-|-|-|
@@ -29,7 +29,7 @@ Pick the smallest scope that fits. Most gameplay is `EntityScript`; reach for `S
 Here's a complete `EntityScript` that moves its entity with the arrow keys / WASD:
 
 ```csharp
-using Index;
+using Funke;
 
 public class PlayerController : EntityScript
 {
@@ -150,7 +150,7 @@ You can also expose **asset slots** (a texture, audio clip, etc.) using referenc
 
 ## What scripts can do (the API)
 
-The `Index` namespace gives you a broad API. The main categories:
+The `Funke` namespace gives you a broad API. The main categories:
 
 **Entities \& components**
 
@@ -300,10 +300,10 @@ song.Time = 42f;                                 // seek; Length, IsPlaying, IsA
 song.Dispose();                                  // e.g. in OnDestroy; leaving Play mode closes every stream
 ```
 
-**Music / SFX volume settings** — the **Index.AudioMixer** package (Package Manager) adds volume groups (`Master` → `Music`, `SFX`, plus your own) with mute, fades, snapshots, saved settings and one-line slider binding:
+**Music / SFX volume settings** — the **Funke.AudioMixer** package (Package Manager) adds volume groups (`Master` → `Music`, `SFX`, plus your own) with mute, fades, snapshots, saved settings and one-line slider binding:
 
 ```csharp
-using Index.AudioMixer;
+using Funke.AudioMixer;
 AudioMixer.Attach(musicSource, AudioMixer.Music);        // AudioSource or AudioStream follows the group
 AudioMixer.PlayOneShot(clip, AudioMixer.Sfx);
 AudioMixer.BindSlider(musicSlider, AudioMixer.Music);    // settings screen; saved to PlayerPrefs
@@ -397,8 +397,8 @@ The Inspector edits struct fields in place, also during Play. Struct data is sav
 When you need to operate on lots of entities, a `SceneSystem` with a query is the natural tool:
 
 ```csharp
-using Index;
-using Index.Native;
+using Funke;
+using Funke.Native;
 
 public class SpinSystem : SceneSystem
 {
@@ -422,7 +422,7 @@ public class SpinSystem : SceneSystem
 For performance-critical code, you can write a **native script** in C++ instead. A native script inherits from `NativeScript` and registers itself with a macro:
 
 ```cpp
-class MyScript : public Index::NativeScript {
+class MyScript : public Funke::NativeScript {
 public:
     void Start() override { /\* ... \*/ }
     void Update(float deltaTime) override { /\* ... \*/ }
@@ -456,7 +456,7 @@ When you save a script, the editor compiles it **in-process** with Roslyn, the C
 * A change to the `.csproj`, a `.props`/`.targets` file, `global.json` or an installed package still triggers one full `dotnet build`, because MSBuild may need to copy new dependencies into `bin/`. The reload after that is in-process again.
 * Source generators (for example `[GeneratedRegex]`, `[LibraryImport]`, `[JsonSerializable]`) run as usual. Analyzer warnings (`CAxxxx`) appear only in a full `dotnet build` or your IDE.
 * Compile errors appear in the Console in the usual `File.cs(line,col): error CSxxxx` format.
-* If the in-process compiler can't reproduce the build (an unusual project setup, a different .NET SDK, the compiler isn't installed next to the editor), the editor falls back to `dotnet build` and logs why under **ScriptSystem**. Set the environment variable `INDEX_SCRIPT_COMPILER=dotnet` before starting the editor to always use `dotnet build`.
+* If the in-process compiler can't reproduce the build (an unusual project setup, a different .NET SDK, the compiler isn't installed next to the editor), the editor falls back to `dotnet build` and logs why under **ScriptSystem**. Set the environment variable `FUNKE_SCRIPT_COMPILER=dotnet` before starting the editor to always use `dotnet build`.
 
 \---
 
@@ -464,7 +464,7 @@ When you save a script, the editor compiles it **in-process** with Roslyn, the C
 
 You don't need this to write scripts, but it helps to know the shape:
 
-* At startup, the engine boots the **.NET runtime** (via hostfxr) and loads two assemblies: **`Index-ScriptCore.dll`** (the scripting API you call) and **your game's script assembly**.
+* At startup, the engine boots the **.NET runtime** (via hostfxr) and loads two assemblies: **`Funke-ScriptCore.dll`** (the scripting API you call) and **your game's script assembly**.
 * A bridge connects the two worlds: C# calls into the engine through **InternalCalls** (P/Invoke), and the engine calls back into your scripts (e.g. to invoke `OnUpdate`) through a table of function pointers.
 * This bridge is set up once during the scripting-host startup step described in [Startup Processes](../Engine-Core/Startup-Processes.md#start-scripting).
 

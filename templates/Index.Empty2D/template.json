@@ -1,9 +1,0 @@
-{
-  "id": "Index.Empty2D",
-  "displayName": "Empty 2D",
-  "description": "An empty 2D scene with just a camera.",
-  "category": "2D",
-  "sortOrder": 0,
-  "modules": [ "Index.2D" ],
-  "startupScene": "SampleScene"
-}

@@ -4,8 +4,8 @@ function Get-LoaderFailure([long]$ExitCode) {
     $code = [BitConverter]::ToInt32([BitConverter]::GetBytes($ExitCode), 0)
     switch ($code) {
         0xC0000135 { return "a DLL it needs was not found (0xC0000135)" }
-        0xC0000138 { return "a DLL next to it lacks an ordinal it imports (0xC0000138) - stale Index-Engine.dll? rerun Build.ps1 for this app" }
-        0xC0000139 { return "a DLL next to it lacks a function it imports (0xC0000139) - stale Index-Engine.dll? rerun Build.ps1 for this app" }
+        0xC0000138 { return "a DLL next to it lacks an ordinal it imports (0xC0000138) - stale Funke-Engine.dll? rerun Build.ps1 for this app" }
+        0xC0000139 { return "a DLL next to it lacks a function it imports (0xC0000139) - stale Funke-Engine.dll? rerun Build.ps1 for this app" }
         0xC000007B { return "a DLL next to it is for another architecture or corrupt (0xC000007B)" }
         0xC0000142 { return "a DLL failed to initialize (0xC0000142)" }
     }

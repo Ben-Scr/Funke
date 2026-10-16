@@ -1,5 +1,0 @@
-#define IDX_FILE_DESCRIPTION "Index Engine"
-#define IDX_INTERNAL_NAME "Index-Engine"
-#define IDX_ORIGINAL_FILENAME "Index-Engine.dll"
-#define IDX_FILE_TYPE VFT_DLL
-#include "src/Core/VersionResource.rcinc"

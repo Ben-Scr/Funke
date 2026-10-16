@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>@APP_NAME@</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0b0d12; overflow: hidden; }
+    /* No CSS size: SDL sizes the canvas to the page and keeps it in sync on resize and zoom. */
+    #canvas { display: block; outline: none; }
+    #status { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+              color: #c9d1e0; font: 15px/1.4 system-ui, sans-serif; pointer-events: none; text-align: center; padding: 16px; z-index: 1; }
+    #status.error { color: #ff8a80; }
+    #status.ended { background: rgba(11, 13, 18, 0.75); }
+  </style>
+</head>
+<body>
+  <canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+  <div id="status">Loading…</div>
+  <script>
+    const status = document.getElementById('status');
+    var Module = {
+      canvas: document.getElementById('canvas'),
+      setStatus(text) { if (!status.classList.contains('error')) status.textContent = text || ''; },
+      // SDL hides every other page element once the canvas fills the page; bring the message back.
+      funkeReportError(text) { document.body.appendChild(status); status.classList.add('error'); status.textContent = text; },
+      funkeGameEnded() { document.body.appendChild(status); status.classList.add('ended'); status.textContent = 'The game has ended. Reload the page to play again.'; },
+      onRuntimeInitialized() { status.textContent = ''; },
+      print(text) { console.log(text); },
+      printErr(text) { console.error(text); },
+    };
+    if (!navigator.gpu) {
+      Module.funkeReportError('This browser does not support WebGPU. Use a current Chrome, Edge, Safari or Firefox.');
+    }
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>

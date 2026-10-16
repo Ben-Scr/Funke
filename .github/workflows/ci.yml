@@ -40,20 +40,20 @@ jobs:
         if: github.ref_type == 'tag'
         shell: pwsh
         env:
-          INDEX_SIGNING_CERTIFICATE_BASE64: ${{ secrets.INDEX_SIGNING_CERTIFICATE_BASE64 }}
-          INDEX_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.INDEX_SIGNING_CERTIFICATE_PASSWORD }}
+          FUNKE_SIGNING_CERTIFICATE_BASE64: ${{ secrets.FUNKE_SIGNING_CERTIFICATE_BASE64 }}
+          FUNKE_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.FUNKE_SIGNING_CERTIFICATE_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:INDEX_SIGNING_CERTIFICATE_BASE64)) {
-            throw 'Tagged releases require the INDEX_SIGNING_CERTIFICATE_BASE64 secret.'
+          if ([string]::IsNullOrWhiteSpace($env:FUNKE_SIGNING_CERTIFICATE_BASE64)) {
+            throw 'Tagged releases require the FUNKE_SIGNING_CERTIFICATE_BASE64 secret.'
           }
-          if ([string]::IsNullOrWhiteSpace($env:INDEX_SIGNING_CERTIFICATE_PASSWORD)) {
-            throw 'Tagged releases require the INDEX_SIGNING_CERTIFICATE_PASSWORD secret.'
+          if ([string]::IsNullOrWhiteSpace($env:FUNKE_SIGNING_CERTIFICATE_PASSWORD)) {
+            throw 'Tagged releases require the FUNKE_SIGNING_CERTIFICATE_PASSWORD secret.'
           }
           try {
-            [Convert]::FromBase64String($env:INDEX_SIGNING_CERTIFICATE_BASE64) | Out-Null
+            [Convert]::FromBase64String($env:FUNKE_SIGNING_CERTIFICATE_BASE64) | Out-Null
           }
           catch {
-            throw 'INDEX_SIGNING_CERTIFICATE_BASE64 is not valid base64.'
+            throw 'FUNKE_SIGNING_CERTIFICATE_BASE64 is not valid base64.'
           }
 
       - name: Release Script Tests
@@ -131,7 +131,7 @@ jobs:
 
       - name: C# ScriptCore Tests
         shell: pwsh
-        run: dotnet test Tests/Index-ScriptCore-Tests/Index-ScriptCore-Tests.csproj -c Release --nologo
+        run: dotnet test Tests/Funke-ScriptCore-Tests/Funke-ScriptCore-Tests.csproj -c Release --nologo
 
       - name: Project-local Package Smoke Test
         shell: pwsh
@@ -144,9 +144,9 @@ jobs:
       - name: Build Release + Dist Publish Bundle
         shell: pwsh
         env:
-          INDEX_SIGNING_CERTIFICATE_BASE64: ${{ secrets.INDEX_SIGNING_CERTIFICATE_BASE64 }}
-          INDEX_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.INDEX_SIGNING_CERTIFICATE_PASSWORD }}
-          INDEX_SIGNING_TIMESTAMP_URL: ${{ vars.INDEX_SIGNING_TIMESTAMP_URL }}
+          FUNKE_SIGNING_CERTIFICATE_BASE64: ${{ secrets.FUNKE_SIGNING_CERTIFICATE_BASE64 }}
+          FUNKE_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.FUNKE_SIGNING_CERTIFICATE_PASSWORD }}
+          FUNKE_SIGNING_TIMESTAMP_URL: ${{ vars.FUNKE_SIGNING_TIMESTAMP_URL }}
         run: |
           $certificatePath = $null
           try {
@@ -154,15 +154,15 @@ jobs:
             if ($env:GITHUB_REF_TYPE -eq 'tag') {
               $arguments += @('-ReleaseTag', $env:GITHUB_REF_NAME, '-RequireSigning')
             }
-            if ($env:INDEX_SIGNING_CERTIFICATE_BASE64) {
-              $certificatePath = Join-Path $env:RUNNER_TEMP 'index-code-signing.pfx'
+            if ($env:FUNKE_SIGNING_CERTIFICATE_BASE64) {
+              $certificatePath = Join-Path $env:RUNNER_TEMP 'funke-code-signing.pfx'
               [IO.File]::WriteAllBytes(
                 $certificatePath,
-                [Convert]::FromBase64String($env:INDEX_SIGNING_CERTIFICATE_BASE64)
+                [Convert]::FromBase64String($env:FUNKE_SIGNING_CERTIFICATE_BASE64)
               )
               $arguments += @('-SigningCertificatePath', $certificatePath)
-              if ($env:INDEX_SIGNING_TIMESTAMP_URL) {
-                $arguments += @('-SigningTimestampUrl', $env:INDEX_SIGNING_TIMESTAMP_URL)
+              if ($env:FUNKE_SIGNING_TIMESTAMP_URL) {
+                $arguments += @('-SigningTimestampUrl', $env:FUNKE_SIGNING_TIMESTAMP_URL)
               }
             }
             .\scripts\BuildWindows.ps1 @arguments
@@ -175,38 +175,38 @@ jobs:
 
       - name: Bundled SDK Package Authoring Smoke Test
         shell: pwsh
-        run: scripts/ci/project_package_smoke_test.ps1 -Configuration Release -EngineRoot bin/Release-windows-x86_64/Index-Launcher/EngineSDK
+        run: scripts/ci/project_package_smoke_test.ps1 -Configuration Release -EngineRoot bin/Release-windows-x86_64/Funke-Launcher/EngineSDK
 
       - name: Bundled SDK Dist Package Authoring Smoke Test
         shell: pwsh
-        run: scripts/ci/project_package_smoke_test.ps1 -Configuration Dist -EngineRoot bin/Release-windows-x86_64/Index-Launcher/EngineSDK
+        run: scripts/ci/project_package_smoke_test.ps1 -Configuration Dist -EngineRoot bin/Release-windows-x86_64/Funke-Launcher/EngineSDK
 
       - name: Windows Runtime Smoke Test
         shell: pwsh
-        run: python scripts/ci/runtime_smoke_test.py --binary bin/Release-windows-x86_64/Index-Runtime/Index-Runtime.exe
+        run: python scripts/ci/runtime_smoke_test.py --binary bin/Release-windows-x86_64/Funke-Runtime/Funke-Runtime.exe
 
       - name: Packaged Launcher + Editor Smoke Tests
         shell: pwsh
         run: |
-          $bundle = 'bin/Release-windows-x86_64/Index-Launcher'
-          python scripts/ci/application_smoke_test.py --binary "$bundle/Index-Launcher.exe"
-          python scripts/ci/application_smoke_test.py --binary "$bundle/Index-Editor.exe" --editor-project
+          $bundle = 'bin/Release-windows-x86_64/Funke-Launcher'
+          python scripts/ci/application_smoke_test.py --binary "$bundle/Funke-Launcher.exe"
+          python scripts/ci/application_smoke_test.py --binary "$bundle/Funke-Editor.exe" --editor-project
 
       - name: Archived Launcher + Editor + Dist Runtime Smoke Tests
         shell: pwsh
         run: |
-          $stageLeaf = 'Index Dist Pr{0}fung' -f [char]0x00FC
+          $stageLeaf = 'Funke Dist Pr{0}fung' -f [char]0x00FC
           $stage = Join-Path $env:RUNNER_TEMP $stageLeaf
           if (Test-Path -LiteralPath $stage) {
             Remove-Item -LiteralPath $stage -Recurse -Force
           }
           $archive = Join-Path 'bin/Release-windows-x86_64' '${{ steps.build_metadata.outputs.archive_name }}'
           Expand-Archive -LiteralPath $archive -DestinationPath $stage
-          $launcher = Join-Path $stage 'Index-Launcher.exe'
-          $editor = Join-Path $stage 'Index-Editor.exe'
+          $launcher = Join-Path $stage 'Funke-Launcher.exe'
+          $editor = Join-Path $stage 'Funke-Editor.exe'
           python scripts/ci/application_smoke_test.py --binary $launcher
           python scripts/ci/application_smoke_test.py --binary $editor --editor-project
-          $runtime = Join-Path $stage 'EngineSDK/Runtime-Dist/Index-Runtime.exe'
+          $runtime = Join-Path $stage 'EngineSDK/Runtime-Dist/Funke-Runtime.exe'
           python scripts/ci/runtime_smoke_test.py --binary $runtime --require-scripting
 
       - name: Verify Release Checksum and Signature
@@ -222,7 +222,7 @@ jobs:
       - name: Upload Verified Windows Bundle
         uses: actions/upload-artifact@v4
         with:
-          name: Index-Editor-${{ steps.build_metadata.outputs.version }}-Windows-x64
+          name: Funke-Editor-${{ steps.build_metadata.outputs.version }}-Windows-x64
           path: |
             bin/Release-windows-x86_64/${{ steps.build_metadata.outputs.archive_name }}
             bin/Release-windows-x86_64/${{ steps.build_metadata.outputs.archive_name }}.sha256
@@ -232,7 +232,7 @@ jobs:
       - name: Upload Private Windows Symbols
         uses: actions/upload-artifact@v4
         with:
-          name: Index-Private-Symbols-${{ steps.build_metadata.outputs.build_id }}
+          name: Funke-Private-Symbols-${{ steps.build_metadata.outputs.build_id }}
           path: bin/Release-windows-x86_64/PrivateSymbols/${{ steps.build_metadata.outputs.symbols_archive_name }}
           if-no-files-found: error
           retention-days: 90
@@ -333,12 +333,12 @@ jobs:
       - name: Verify Vendor Patches Applied
         run: python3 scripts/vendor_patches.py verify --require-applied
 
-      # Index-Managed builds Index-ScriptCore, the hot-reload compiler and the package tool with dotnet;
+      # Funke-Managed builds Funke-ScriptCore, the hot-reload compiler and the package tool with dotnet;
       # the Launcher's postbuild bundles everything into EngineSDK (scripts/CopyEngineSdk.py).
       - name: Build Linux Targets
         run: |
-          make config=dist verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Runtime
-          make config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Engine Index-Managed Index-Runtime Index-Editor Index-CLI Index-Launcher
+          make config=dist verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Funke-Runtime
+          make config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Funke-Engine Funke-Managed Funke-Runtime Funke-Editor Funke-CLI Funke-Launcher
 
       - name: Package Linux Bundle
         run: python3 scripts/PackagePosix.py --configuration Release --output-dir dist-posix
@@ -346,30 +346,30 @@ jobs:
       - name: Upload Linux Bundle
         uses: actions/upload-artifact@v4
         with:
-          name: Index-Editor-Linux-x64
+          name: Funke-Editor-Linux-x64
           path: dist-posix/*.tar.gz
           if-no-files-found: error
 
       - name: Linux Engine + Editor Tests
         run: |
-          make config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Engine-Tests Index-Editor-Tests
-          ./bin/Release-linux-x86_64/Index-Engine-Tests/Index-Engine-Tests
-          ./bin/Release-linux-x86_64/Index-Editor-Tests/Index-Editor-Tests
+          make config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Funke-Engine-Tests Funke-Editor-Tests
+          ./bin/Release-linux-x86_64/Funke-Engine-Tests/Funke-Engine-Tests
+          ./bin/Release-linux-x86_64/Funke-Editor-Tests/Funke-Editor-Tests
 
       - name: Build Linux Debug Targets
-        run: make config=debug verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Engine Index-Runtime Index-Editor
+        run: make config=debug verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Funke-Engine Funke-Runtime Funke-Editor
 
       - name: Linux Runtime Smoke Test
-        run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Release-linux-x86_64/Index-Runtime/Index-Runtime
+        run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Release-linux-x86_64/Funke-Runtime/Funke-Runtime
 
       - name: Linux Debug Runtime Smoke Test
-        run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Debug-linux-x86_64/Index-Runtime/Index-Runtime
+        run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Debug-linux-x86_64/Funke-Runtime/Funke-Runtime
 
       - name: Linux Debug Engine + Editor Tests
         run: |
-          make config=debug verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Engine-Tests Index-Editor-Tests
-          ./bin/Debug-linux-x86_64/Index-Engine-Tests/Index-Engine-Tests
-          ./bin/Debug-linux-x86_64/Index-Editor-Tests/Index-Editor-Tests
+          make config=debug verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Funke-Engine-Tests Funke-Editor-Tests
+          ./bin/Debug-linux-x86_64/Funke-Engine-Tests/Funke-Engine-Tests
+          ./bin/Debug-linux-x86_64/Funke-Editor-Tests/Funke-Editor-Tests
 
       - name: Linux ASan + UBSan Engine Tests
         env:
@@ -377,14 +377,14 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
           vendor/bin/premake5 --sanitize --no-profiler gmake2
-          make config=debug verbose=1 LDFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fuse-ld=lld" -j"$(nproc)" Index-Engine-Tests
-          ./bin/Debug-linux-x86_64-sanitized/Index-Engine-Tests/Index-Engine-Tests
+          make config=debug verbose=1 LDFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fuse-ld=lld" -j"$(nproc)" Funke-Engine-Tests
+          ./bin/Debug-linux-x86_64-sanitized/Funke-Engine-Tests/Funke-Engine-Tests
 
       - name: Linux Debug Engine Coverage
         run: |
           vendor/bin/premake5 --coverage --no-profiler gmake2
-          make config=debug verbose=1 LDFLAGS="--coverage -fuse-ld=lld" -j"$(nproc)" Index-Engine-Tests
-          ./bin/Debug-linux-x86_64-coverage/Index-Engine-Tests/Index-Engine-Tests
+          make config=debug verbose=1 LDFLAGS="--coverage -fuse-ld=lld" -j"$(nproc)" Funke-Engine-Tests
+          ./bin/Debug-linux-x86_64-coverage/Funke-Engine-Tests/Funke-Engine-Tests
           lcov --capture --directory bin-int/Debug-linux-x86_64-coverage --output-file coverage-raw.info --ignore-errors mismatch
           lcov --remove coverage-raw.info '*/External/*' '*/vendor/*' '*/Tests/*' '/usr/*' --output-file coverage.info --ignore-errors unused
           genhtml coverage.info --output-directory coverage-html
@@ -392,7 +392,7 @@ jobs:
       - name: Upload Linux Debug Coverage
         uses: actions/upload-artifact@v4
         with:
-          name: Index-Linux-Debug-Coverage
+          name: Funke-Linux-Debug-Coverage
           path: |
             coverage.info
             coverage-html
@@ -401,7 +401,7 @@ jobs:
       - name: Linux Core-only Engine Validation
         run: |
           vendor/bin/premake5 --core-validation --module-profile=core gmake2
-          make -C premake/generated/core config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Engine
+          make -C premake/generated/core config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Funke-Engine
 
   macos-build:
     # Apple Silicon. Builds the engine, editor, launcher and CLI natively (Dawn on Metal) and runs the
@@ -480,14 +480,14 @@ jobs:
 
       - name: Build macOS Targets
         run: |
-          make config=dist verbose=1 -j"$(sysctl -n hw.ncpu)" Index-Runtime
-          make config=release verbose=1 -j"$(sysctl -n hw.ncpu)" Index-Engine Index-Managed Index-Runtime Index-Editor Index-CLI Index-Launcher
+          make config=dist verbose=1 -j"$(sysctl -n hw.ncpu)" Funke-Runtime
+          make config=release verbose=1 -j"$(sysctl -n hw.ncpu)" Funke-Engine Funke-Managed Funke-Runtime Funke-Editor Funke-CLI Funke-Launcher
 
       - name: macOS Engine + Editor Tests
         run: |
-          make config=release verbose=1 -j"$(sysctl -n hw.ncpu)" Index-Engine-Tests Index-Editor-Tests
-          ./bin/Release-macosx-arm64/Index-Engine-Tests/Index-Engine-Tests
-          ./bin/Release-macosx-arm64/Index-Editor-Tests/Index-Editor-Tests
+          make config=release verbose=1 -j"$(sysctl -n hw.ncpu)" Funke-Engine-Tests Funke-Editor-Tests
+          ./bin/Release-macosx-arm64/Funke-Engine-Tests/Funke-Engine-Tests
+          ./bin/Release-macosx-arm64/Funke-Editor-Tests/Funke-Editor-Tests
 
       - name: Package macOS Bundle
         run: python3 scripts/PackagePosix.py --configuration Release --output-dir dist-posix
@@ -495,7 +495,7 @@ jobs:
       - name: Upload macOS Bundle
         uses: actions/upload-artifact@v4
         with:
-          name: Index-Editor-macOS-arm64
+          name: Funke-Editor-macOS-arm64
           path: dist-posix/*.tar.gz
           if-no-files-found: error
 
@@ -515,19 +515,19 @@ jobs:
       - name: Download Verified Windows Bundle
         uses: actions/download-artifact@v4
         with:
-          name: Index-Editor-${{ needs.windows-build.outputs.version }}-Windows-x64
+          name: Funke-Editor-${{ needs.windows-build.outputs.version }}-Windows-x64
           path: release
 
       - name: Download Linux Bundle
         uses: actions/download-artifact@v4
         with:
-          name: Index-Editor-Linux-x64
+          name: Funke-Editor-Linux-x64
           path: release
 
       - name: Download macOS Bundle
         uses: actions/download-artifact@v4
         with:
-          name: Index-Editor-macOS-arm64
+          name: Funke-Editor-macOS-arm64
           path: release
 
       - name: Create Draft Release
@@ -540,7 +540,7 @@ jobs:
             echo "CHANGELOG.md has no notes for $VERSION" >&2
             exit 1
           fi
-          flags=(--draft --verify-tag --title "Index $VERSION" --notes-file release-notes.md)
+          flags=(--draft --verify-tag --title "Funke $VERSION" --notes-file release-notes.md)
           if [[ "$VERSION" == *-* ]]; then
             flags+=(--prerelease)
           fi

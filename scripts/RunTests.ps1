@@ -43,7 +43,7 @@ function Get-MSBuild {
 
 Push-Location $repoRoot
 try {
-    if (-not (Test-Path -LiteralPath "Index.sln")) {
+    if (-not (Test-Path -LiteralPath "Funke.sln")) {
         Write-Host "[RunTests] Generating Visual Studio projects."
         & "vendor\bin\premake5.exe" vs2022
         if ($LASTEXITCODE -ne 0) {
@@ -52,7 +52,7 @@ try {
     }
 
     $msbuild = Get-MSBuild
-    foreach ($testProject in @("Index-Engine-Tests", "Index-Editor-Tests")) {
+    foreach ($testProject in @("Funke-Engine-Tests", "Funke-Editor-Tests")) {
         Write-Host "[RunTests] Building $testProject ($configuration x64)."
         $projectPath = "Tests\$testProject\$testProject.vcxproj"
         & $msbuild $projectPath /m:1 /nr:false /p:CL_MPCount=1 `

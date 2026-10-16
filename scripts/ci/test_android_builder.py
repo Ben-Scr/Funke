@@ -12,10 +12,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "platform"))
-sys.path.insert(0, str(REPO_ROOT / "platforms" / "Index.Platform.Android" / "Builder"))
+sys.path.insert(0, str(REPO_ROOT / "platforms" / "Funke.Platform.Android" / "Builder"))
 
-from index_platform_sdk import BuilderError  # noqa: E402
-from index_platform_sdk.packages import ProjectPackage, parse_manifest, project_packages  # noqa: E402
+from funke_platform_sdk import BuilderError  # noqa: E402
+from funke_platform_sdk.packages import ProjectPackage, parse_manifest, project_packages  # noqa: E402
 
 import android_libraries  # noqa: E402
 import android_manifest  # noqa: E402
@@ -28,7 +28,7 @@ APP_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <application android:label="Game">
-        <activity android:name="dev.index.player.IndexActivity" android:exported="true" />
+        <activity android:name="dev.funke.player.FunkeActivity" android:exported="true" />
     </application>
 </manifest>
 """
@@ -37,7 +37,7 @@ APP_MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
 class LuaManifestTests(unittest.TestCase):
     def write(self, folder: Path, text: str) -> Path:
         folder.mkdir(parents=True, exist_ok=True)
-        path = folder / "index-package.lua"
+        path = folder / "funke-package.lua"
         path.write_text(text, encoding="utf-8")
         return path
 
@@ -48,7 +48,7 @@ class LuaManifestTests(unittest.TestCase):
 --[[ block
 comment ]]
 return {
-    name = "Index.Ads", version = '1.0.0',
+    name = "Funke.Ads", version = '1.0.0',
     description = [[multi
 line]],
     layers = { csharp = { sources = { "Source/**.cs" }, allow_unsafe = true } },
@@ -60,7 +60,7 @@ line]],
 }
 """)
             manifest = parse_manifest(path)
-        self.assertEqual(manifest["name"], "Index.Ads")
+        self.assertEqual(manifest["name"], "Funke.Ads")
         self.assertEqual(manifest["description"], "multi\nline")
         self.assertTrue(manifest["layers"]["csharp"]["allow_unsafe"])
         self.assertEqual(manifest["android"]["maven"], ["a:b:1.0", "c:d:2.0"])
@@ -76,13 +76,13 @@ line]],
     def test_project_packages_follow_dependencies_and_prefer_the_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             engine, project = Path(tmp) / "engine", Path(tmp) / "project"
-            self.write(engine / "packages" / "Index.Base", 'return { name = "Index.Base", version = "1.0.0" }')
+            self.write(engine / "packages" / "Funke.Base", 'return { name = "Funke.Base", version = "1.0.0" }')
             self.write(engine / "packages" / "Game.Ads", 'return { name = "Game.Ads", version = "0.0.1" }')
             self.write(project / "Packages" / "Game.Ads",
-                       'return { name = "Game.Ads", version = "2.0.0", dependencies = { "Index.Base@^1.0.0" } }')
+                       'return { name = "Game.Ads", version = "2.0.0", dependencies = { "Funke.Base@^1.0.0" } }')
             (project / "project.json").write_text(json.dumps({"packages": ["Game.Ads", "Missing.Package"]}), encoding="utf-8")
             packages = project_packages(engine, project)
-        self.assertEqual([p.name for p in packages], ["Index.Base", "Game.Ads"])
+        self.assertEqual([p.name for p in packages], ["Funke.Base", "Game.Ads"])
         self.assertEqual(packages[1].manifest["version"], "2.0.0")
 
     def test_premake_style_globs_recurse(self) -> None:

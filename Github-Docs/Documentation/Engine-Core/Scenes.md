@@ -8,7 +8,7 @@ If you just want the short version: you design a scene in the editor, it's saved
 
 ## Two halves: definition and instance
 
-Index separates a scene into two things:
+Funke separates a scene into two things:
 
 | | **Scene Definition** | **Scene (instance)** |
 |---|---|---|
@@ -108,13 +108,13 @@ Raw C++ callers that need failure details should use `TryLoadScene`, `TryLoadSce
 ```cpp
 const SceneLoadResult result = SceneManager::TryLoadScene("Level2");
 if (!result) {
-    IDX_CORE_ERROR("Scene load failed: {}", result.Message);
+    FNK_CORE_ERROR("Scene load failed: {}", result.Message);
 }
 ```
 
 `Succeeded()` is true for `Success` and `AlreadyLoaded`. Failure statuses are `ReentrantLoad`, `NotInitialized`, `NotRegistered`, `NotLoaded`, `InstantiationFailed`, `LoadCallbackFailed`, `SetupFailed`, `BeforeStartFailed`, `AwakeFailed`, `StartFailed`, `CommitFailed`, `AfterStartFailed`, `SnapshotFailed`, and `WrongThread`. `Message` carries the error context, while `LoadedScene` is expired when no usable scene was produced. A failed `TryReloadScene` can return the preserved original scene there, so always check the result before treating it as reload success. The legacy `LoadScene`, `LoadSceneAdditive`, and `ReloadScene` methods remain available and return an expired pointer on failure.
 
-Raw C++ `SceneManager` APIs are main-thread-only. Off the main thread, the structured load methods return `WrongThread`; legacy loads and queries return empty, null, false, or zero results; and unload-style void methods do nothing. Registration and mutable-reference APIs throw a catchable `IndexException` instead of asserting or touching live scene state. Marshal scene work back to the application thread before retrying it.
+Raw C++ `SceneManager` APIs are main-thread-only. Off the main thread, the structured load methods return `WrongThread`; legacy loads and queries return empty, null, false, or zero results; and unload-style void methods do nothing. Registration and mutable-reference APIs throw a catchable `FunkeException` instead of asserting or touching live scene state. Marshal scene work back to the application thread before retrying it.
 
 A non-additive load stages and validates its replacement through load callbacks and system startup before unloading the current non-persistent scenes. If any staged phase fails, the previous loaded scene set and active scene are preserved.
 
@@ -153,7 +153,7 @@ Editing the prefab asset updates every instance (except the parts an instance ha
 
 While you're editing, scene **scripts don't run** — your game logic only ticks when you press **Play**. When you do:
 
-1. The editor snapshots every loaded scene. Scenes with unsaved edits are written to a private snapshot in `.index/PlayMode`; your `.scene` files are not modified.
+1. The editor snapshots every loaded scene. Scenes with unsaved edits are written to a private snapshot in `.funke/PlayMode`; your `.scene` files are not modified.
 2. Scripts and systems begin their `Awake` → `Start` → `Update` lifecycle on the scenes as you left them.
 
 When you press **Stop**, the scenes are reloaded from those snapshots, discarding anything that happened during play; scenes that were unsaved before Play stay marked unsaved. That's why changes you make to entities *while playing* don't stick — it's a safety net. (In a shipped [runtime](Startup-Processes.md), there's no editor, so the game is simply always "playing.")

@@ -2,7 +2,7 @@
 REM ============================================================================
 REM SetupDawn.bat - Fetch and build the Dawn WebGPU implementation as a
 REM                monolithic static library at External\dawn\, then
-REM                regenerate Index.sln so the engine is build-ready.
+REM                regenerate Funke.sln so the engine is build-ready.
 REM
 REM Run once after cloning the engine. Subsequent engine builds link against
 REM the pre-built webgpu_dawn.lib.
@@ -143,8 +143,8 @@ for %%P in ("scripts\dawn\patches\*.patch") do (
 REM --- Configure --------------------------------------------------------------
 :configure
 echo [3/5] Configuring Dawn via CMake...
-REM Index only feeds WGSL to Dawn, so the SPIR-V input reader and SPIRV-Tools
-REM validation are dead weight (~1.6 MB of SPIRV-Tools in Index-Engine.dll).
+REM Funke only feeds WGSL to Dawn, so the SPIR-V input reader and SPIRV-Tools
+REM validation are dead weight (~1.6 MB of SPIRV-Tools in Funke-Engine.dll).
 "!CMAKE_EXE!" -S "%DAWN_DIR%" -B "%DAWN_BUILD_DIR%" -A x64 -T v143 -DDAWN_BUILD_MONOLITHIC_LIBRARY=STATIC -DDAWN_ENABLE_INSTALL=OFF -DDAWN_BUILD_SAMPLES=OFF -DDAWN_BUILD_TESTS=OFF -DDAWN_USE_GLFW=OFF -DTINT_BUILD_TESTS=OFF -DTINT_BUILD_CMD_TOOLS=OFF -DTINT_BUILD_SPV_READER=OFF -DDAWN_ENABLE_SPIRV_VALIDATION=OFF
 if errorlevel 1 (
     echo [ERROR] CMake configure failed.
@@ -165,7 +165,7 @@ for %%C in (!DAWN_BUILD_CONFIGS!) do (
     )
 )
 
-REM --- Regenerate Index.sln ---------------------------------------------------
+REM --- Regenerate Funke.sln ---------------------------------------------------
 REM CI sets DAWN_SKIP_PREMAKE=1: the workflow regenerates project files itself
 REM (scripts/Setup.py) with the correct module-profile / options right after
 REM this, so a redundant default-option premake run here is skipped.
@@ -173,7 +173,7 @@ if defined DAWN_SKIP_PREMAKE (
     echo [5/5] DAWN_SKIP_PREMAKE set - skipping premake regen.
     goto :done
 )
-echo [5/5] Regenerating Index.sln via Premake...
+echo [5/5] Regenerating Funke.sln via Premake...
 if not exist "vendor\bin\premake5.exe" goto :no_premake
 "vendor\bin\premake5.exe" vs2022
 if errorlevel 1 echo [WARN] Premake regen returned non-zero. Run manually: vendor\bin\premake5.exe vs2022
@@ -191,7 +191,7 @@ echo Headers : %DAWN_BUILD_DIR%\gen\include
 echo Lib(D)  : %DAWN_BUILD_DIR%\src\dawn\native\Debug\webgpu_dawn.lib
 echo Lib(R)  : %DAWN_BUILD_DIR%\src\dawn\native\Release\webgpu_dawn.lib
 echo.
-echo Open Index.sln in Visual Studio and build.
+echo Open Funke.sln in Visual Studio and build.
 echo.
 
 popd

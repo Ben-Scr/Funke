@@ -1,6 +1,6 @@
 # Editor
 
-The **Index Editor** is the visual tool where you build your game: arrange entities, edit their components, design scenes, test in Play mode, and build a finished game. This page is a tour of the editor and its core workflows.
+The **Funke Editor** is the visual tool where you build your game: arrange entities, edit their components, design scenes, test in Play mode, and build a finished game. This page is a tour of the editor and its core workflows.
 
 If you just want the short version: the editor is a separate app that opens your project. You build scenes in the **Hierarchy** and **Viewport**, edit selected objects in the **Inspector**, manage files in the **Asset Browser**, and press **Play** to test.
 
@@ -10,9 +10,9 @@ If you just want the short version: the editor is a separate app that opens your
 
 It helps to know how the pieces relate:
 
-- The **Editor** (`Index-Editor`) is an authoring tool. It embeds the engine and adds visual tools on top. It does *not* ship with your game.
-- The **Runtime** (`Index-Runtime`) is the slim executable that *runs* your finished game using the scenes and assets you authored. See [Startup Processes](../Engine-Core/Startup-Processes.md).
-- The **Launcher** (`Index-Launcher`) is the small app you use to **create** and **open** projects.
+- The **Editor** (`Funke-Editor`) is an authoring tool. It embeds the engine and adds visual tools on top. It does *not* ship with your game.
+- The **Runtime** (`Funke-Runtime`) is the slim executable that *runs* your finished game using the scenes and assets you authored. See [Startup Processes](../Engine-Core/Startup-Processes.md).
+- The **Launcher** (`Funke-Launcher`) is the small app you use to **create** and **open** projects.
 
 So the flow is: **Launcher → create/open a project → Editor → build your game → Runtime runs it.**
 
@@ -48,12 +48,12 @@ templates/MyStudio.Platformer/
   "description": "Shown on the template card.",
   "category": "2D",
   "sortOrder": 50,
-  "modules": [ "Index.2D" ],
+  "modules": [ "Funke.2D" ],
   "startupScene": "SampleScene"
 }
 ```
 
-Everything under `Assets/` is copied into the new project. Scenes are written as JSON and converted to the project's asset format. In `.cs`, `.json`, `.md`, `.txt`, `.meta` and `.dataasset` files, `{{ProjectName}}` becomes the project name and `{{ProjectIdentifier}}` a C#-safe version of it. `modules` is written to the project's `project.json` and selects the project's [engine modules](../Engine-Core/Engine-Modules.md); a project with only `"Index.3D"` opens the Editor View in 3D mode ([3D](../Engine-Core/3D.md)). Each category in use becomes a filter tab in the dialog.
+Everything under `Assets/` is copied into the new project. Scenes are written as JSON and converted to the project's asset format. In `.cs`, `.json`, `.md`, `.txt`, `.meta` and `.dataasset` files, `{{ProjectName}}` becomes the project name and `{{ProjectIdentifier}}` a C#-safe version of it. `modules` is written to the project's `project.json` and selects the project's [engine modules](../Engine-Core/Engine-Modules.md); a project with only `"Funke.3D"` opens the Editor View in 3D mode ([3D](../Engine-Core/3D.md)). Each category in use becomes a filter tab in the dialog.
 
 A template may also contain:
 
@@ -66,9 +66,9 @@ A template may also contain:
 
 #### Your own templates
 
-Right-click a project in the Launcher and choose **Save as Template...**. Enter a name, an optional description and a category (prefilled with `2D` or `3D`). The Launcher copies the project's `Assets/` (folder structure, scenes, scripts, `.meta` files and all other assets), its `project.json`, `BuildProfiles/`, `NativeScripts/Source/`, project-local packages and the editor preview image (as `preview.png`) into `%LOCALAPPDATA%\Index\Templates\<Name>\` and writes a `template.json` with the id `User.<Name>`. Build output (`bin`, `obj`, `build`) and `.git` are skipped. The template reflects what is saved on disk, so save the project in the editor first.
+Right-click a project in the Launcher and choose **Save as Template...**. Enter a name, an optional description and a category (prefilled with `2D` or `3D`). The Launcher copies the project's `Assets/` (folder structure, scenes, scripts, `.meta` files and all other assets), its `project.json`, `BuildProfiles/`, `NativeScripts/Source/`, project-local packages and the editor preview image (as `preview.png`) into `%LOCALAPPDATA%\Funke\Templates\<Name>\` and writes a `template.json` with the id `User.<Name>`. Build output (`bin`, `obj`, `build`) and `.git` are skipped. The template reflects what is saved on disk, so save the project in the editor first.
 
-The template then appears in **New Project** with a **Custom** chip. Right-click its card to show its folder or delete it; deleting a template does not affect projects created from it. **Open templates folder** in the dialog opens `%LOCALAPPDATA%\Index\Templates`; folders copied in there by hand are picked up the next time the dialog opens.
+The template then appears in **New Project** with a **Custom** chip. Right-click its card to show its folder or delete it; deleting a template does not affect projects created from it. **Open templates folder** in the dialog opens `%LOCALAPPDATA%\Funke\Templates`; folders copied in there by hand are picked up the next time the dialog opens.
 
 #### The Templates page
 
@@ -86,7 +86,7 @@ The `...` menu (or a right-click) of a custom template offers:
 To change what a template contains: **Open Source Project**, edit and save the project, then **Update from Source Project...**. The source project is stored as `sourceProjectPath` in `template.json`; if the project has moved, set the new folder under **Edit...**.
 - **Open** — pick an existing project; the launcher prepares it and opens the editor.
 
-Each project tile shows a preview image of the open scene, which the editor writes to `.index/thumbnail.png` shortly after the project opens and on every save. It is rendered through the scene's Camera 3D if it has one (with sprites and UI on top), otherwise through its main Camera 2D. A project without either keeps the colored tile with its initials.
+Each project tile shows a preview image of the open scene, which the editor writes to `.funke/thumbnail.png` shortly after the project opens and on every save. It is rendered through the scene's Camera 3D if it has one (with sprites and UI on top), otherwise through its main Camera 2D. A project without either keeps the colored tile with its initials.
 
 A project is a folder with an `project.json` (its settings: scenes, window size, packages, build options) plus folders for your `Assets`, scripts, and scenes.
 
@@ -165,7 +165,7 @@ The **Game View** toolbar (aspect ratio, VSync, Stats, Logs) has the same kind o
 
 The toolbar controls let you test the game inside the editor:
 
-- **Play** — snapshots your scenes and starts the game. Unsaved edits go into a private snapshot (`.index/PlayMode`), so pressing Play never writes your `.scene` files. Scripts and systems begin running. The **Game View** shows the result.
+- **Play** — snapshots your scenes and starts the game. Unsaved edits go into a private snapshot (`.funke/PlayMode`), so pressing Play never writes your `.scene` files. Scripts and systems begin running. The **Game View** shows the result.
 - **Pause** — freezes the game so you can inspect it; the editor stays responsive.
 - **Step** — while paused, advance a single frame (great for debugging).
 - **Stop** — ends play and **restores the snapshot**, discarding anything that changed during play. Scenes that had unsaved edits before Play are still marked unsaved afterwards.
@@ -182,9 +182,9 @@ Save the current scene from the menu (or with the usual save shortcut). Scenes a
 
 ### Crash recovery
 
-Every 30 seconds the editor keeps a private copy of scenes with unsaved changes in `<project>/.index/Recovery`. If the editor closes unexpectedly, the next time you open the project it offers to **Restore** those changes (the current file is kept as `<scene>.scene.bak`) or **Discard** them. Your scene files are only touched when you choose Restore. If the last opened scene can't be read, the editor opens an empty unsaved scene instead and leaves the broken file alone.
+Every 30 seconds the editor keeps a private copy of scenes with unsaved changes in `<project>/.funke/Recovery`. If the editor closes unexpectedly, the next time you open the project it offers to **Restore** those changes (the current file is kept as `<scene>.scene.bak`) or **Discard** them. Your scene files are only touched when you choose Restore. If the last opened scene can't be read, the editor opens an empty unsaved scene instead and leaves the broken file alone.
 
-Logs are written to `%LOCALAPPDATA%\Index\Logs\<application>.log` and crash dumps to `%LOCALAPPDATA%\Index\CrashDumps\`. Please attach both when reporting a bug.
+Logs are written to `%LOCALAPPDATA%\Funke\Logs\<application>.log` and crash dumps to `%LOCALAPPDATA%\Funke\CrashDumps\`. Please attach both when reporting a bug.
 
 ---
 
@@ -208,7 +208,7 @@ When you're ready to ship, open the **Build** panel:
 2. Check the **scene list**. Every scene in your project is listed automatically and included by default; untick a scene to leave it out of the build. The first ticked scene is the **startup** scene. Drag rows to reorder them, or right-click a row to use **Set as startup scene** / **Move up** / **Move down**. **Add Open Scene** adds the scene you have open, or ticks it again.
 3. Pick an **output folder** and click **Build** (or **Build & Run**).
 
-The editor compiles your C# scripts, copies the **runtime executable**, copies your **assets**, and writes the configuration the game needs to start. The result is a folder you can run or distribute. Because Index ships [assets as loose files](../Assets/Assets.md#assets-at-runtime-vs-in-the-editor), the output contains your `Assets` alongside the executable.
+The editor compiles your C# scripts, copies the **runtime executable**, copies your **assets**, and writes the configuration the game needs to start. The result is a folder you can run or distribute. Because Funke ships [assets as loose files](../Assets/Assets.md#assets-at-runtime-vs-in-the-editor), the output contains your `Assets` alongside the executable.
 
 Build profiles can be managed separately (create/duplicate/delete) so you can keep, say, a Windows debug profile and a release profile side by side.
 

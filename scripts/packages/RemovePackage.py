@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Index package remover — inverse of `scripts/packages/NewPackage.py`.
+Funke package remover — inverse of `scripts/packages/NewPackage.py`.
 
 Deletes a package directory, removes it from a project's `project.json`
 allow-list (when `--project` is given), and regenerates the appropriate workspace.
@@ -8,13 +8,13 @@ allow-list (when `--project` is given), and regenerates the appropriate workspac
 Usage examples
 --------------
     # Engine package:
-    python scripts/packages/RemovePackage.py Index.Foo
+    python scripts/packages/RemovePackage.py Funke.Foo
 
     # Project-local package (also removes from project.json):
     python scripts/packages/RemovePackage.py MyGame.Loot --project "C:/path/to/MyProject"
 
     # Skip premake regen (CI / batch removal):
-    python scripts/packages/RemovePackage.py Index.Foo --no-premake
+    python scripts/packages/RemovePackage.py Funke.Foo --no-premake
 
     # Skip the directory delete (only remove from allow-list):
     python scripts/packages/RemovePackage.py MyGame.Loot --project "C:/path/to/MyProject" --keep-files
@@ -115,7 +115,7 @@ def delete_package_dir(pkg_dir: Path, force: bool) -> bool:
 
 
 def remove_generated_projects(project_root: Path, name: str) -> None:
-    generated_root = project_root / ".index" / "build" / "packages" / "generated"
+    generated_root = project_root / ".funke" / "build" / "packages" / "generated"
     for target in (f"Pkg.{name}", f"Pkg.{name}.Native"):
         target_dir = generated_root / target
         if target_dir.is_dir():
@@ -141,7 +141,7 @@ def run_premake(project_path: Path | None) -> None:
         cmd = [
             str(PREMAKE_EXE),
             f"--file={generator}",
-            f"--index-project={project_path}",
+            f"--funke-project={project_path}",
             "vs2022",
         ]
     print(f"[RemovePackage] regenerating projects: {' '.join(cmd)}")
@@ -152,14 +152,14 @@ def run_premake(project_path: Path | None) -> None:
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Remove an Index package (inverse of scripts/packages/NewPackage.py).",
+        description="Remove a Funke package (inverse of scripts/packages/NewPackage.py).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("name", help="Package name in PascalCase.PascalCase form.")
     parser.add_argument(
         "--project",
         default=None,
-        help="Absolute path to an Index project. If set, the package is looked up under "
+        help="Absolute path to a Funke project. If set, the package is looked up under "
         "<project>/Packages/<Name>/ AND removed from <project>/project.json. "
         "Otherwise, looked up under <repo>/packages/<Name>/.",
     )
@@ -184,7 +184,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     name: str = args.name.strip()
     if not PACKAGE_NAME_PATTERN.match(name):
         raise SystemExit(
-            f"[RemovePackage] '{name}' is not a valid Index package name. "
+            f"[RemovePackage] '{name}' is not a valid Funke package name. "
             "Expected PascalCase.PascalCase[.PascalCase…]."
         )
 
@@ -220,7 +220,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     print()
     if project_root is None:
-        print("[RemovePackage] done. Restart Visual Studio so the removed project disappears from Index.sln.")
+        print("[RemovePackage] done. Restart Visual Studio so the removed project disappears from Funke.sln.")
     else:
         print("[RemovePackage] done. The project-local package workspace has been refreshed.")
     return 0

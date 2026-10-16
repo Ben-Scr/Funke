@@ -1,23 +1,23 @@
-# Command-Line Tool (`index`)
+# Command-Line Tool (`funke`)
 
-`index` creates, inspects, edits and builds Index projects without opening the editor. It runs the same code as the editor: `index build` is the editor's Build button, `index prefab apply` is the Inspector's Apply, `index sprite slice` is the Sprite Editor's slice buttons. That makes it the tool of choice for CI pipelines, scripts and AI agents.
+`funke` creates, inspects, edits and builds Funke projects without opening the editor. It runs the same code as the editor: `funke build` is the editor's Build button, `funke prefab apply` is the Inspector's Apply, `funke sprite slice` is the Sprite Editor's slice buttons. That makes it the tool of choice for CI pipelines, scripts and AI agents.
 
-`index.exe` ships next to `Index-Launcher.exe` and `Index-Editor.exe` (`index` on Linux and macOS). In a source checkout it is built to `bin/<Config>-windows-x86_64/Index-CLI/index.exe` (`scripts\dev\Build.ps1 CLI`), or `bin/<Config>-<linux|macosx>-<arch>/Index-CLI/index` (`make Index-CLI`).
+`funke.exe` ships next to `Funke-Launcher.exe` and `Funke-Editor.exe` (`funke` on Linux and macOS). In a source checkout it is built to `bin/<Config>-windows-x86_64/Funke-CLI/funke.exe` (`scripts\dev\Build.ps1 CLI`), or `bin/<Config>-<linux|macosx>-<arch>/Funke-CLI/index` (`make Funke-CLI`).
 
-To call it from any terminal, run it once with `setup-path`. On Windows this adds its folder to **your user** `PATH`; on Linux and macOS it installs a small `index` launcher script in `~/.local/bin` (and tells you if that folder is not on your `PATH` yet). Nothing else changes. `index setup-path --remove` undoes it.
+To call it from any terminal, run it once with `setup-path`. On Windows this adds its folder to **your user** `PATH`; on Linux and macOS it installs a small `funke` launcher script in `~/.local/bin` (and tells you if that folder is not on your `PATH` yet). Nothing else changes. `funke setup-path --remove` undoes it.
 
 ```powershell
-& "C:\path\to\Index\index.exe" setup-path
+& "C:\path\to\Funke\funke.exe" setup-path
 ```
 
 ```bash
-~/Index/index setup-path
+~/Funke/funke setup-path
 ```
 
 ## Conventions
 
 - **Which project:** a command acts on the project that contains the working directory (it looks upward for `project.json`). `--project <dir>` picks another one.
-- **Where output goes:** results go to **stdout**. Progress, warnings and engine log lines go to **stderr**, so `index info --json > info.json` stays parseable.
+- **Where output goes:** results go to **stdout**. Progress, warnings and engine log lines go to **stderr**, so `funke info --json > info.json` stays parseable.
 - **Global options:**
 
   | Option | Effect |
@@ -27,20 +27,20 @@ To call it from any terminal, run it once with `setup-path`. On Windows this add
   | `--quiet` | Hide progress lines |
 
 - **Exit codes:** `0` success, `1` failure, `2` usage error. Unknown options are an error, never silently ignored.
-- **Help:** `index help` lists the commands. `index help <command>` shows all options of one command.
+- **Help:** `funke help` lists the commands. `funke help <command>` shows all options of one command.
 
 ## Projects
 
 ```powershell
-index create MyGame                         # ~/Index/Projects/MyGame
-index create MyGame --path D:\Games --no-git
-index info                                  # name, format, scenes, build profiles, packages
-index open                                  # open in the editor
-index run --scene Level2 --seconds 10       # compile scripts, play in Index-Runtime, quit after 10 s
-index run --input-script Tests\level5.json --fixed-step 60 --prefs-profile qa   # scripted, reproducible test run
+funke create MyGame                         # ~/Funke/Projects/MyGame
+funke create MyGame --path D:\Games --no-git
+funke info                                  # name, format, scenes, build profiles, packages
+funke open                                  # open in the editor
+funke run --scene Level2 --seconds 10       # compile scripts, play in Funke-Runtime, quit after 10 s
+funke run --input-script Tests\level5.json --fixed-step 60 --prefs-profile qa   # scripted, reproducible test run
 ```
 
-`index run` passes `--prefs-profile`, `--input-script`, `--screenshot-at`, `--screenshot-dir`, `--fixed-step`, `--quit-at` and `--exec` to the runtime. They are described in [Test Builds and Debug Tools](Testing.md).
+`funke run` passes `--prefs-profile`, `--input-script`, `--screenshot-at`, `--screenshot-dir`, `--fixed-step`, `--quit-at` and `--exec` to the runtime. They are described in [Test Builds and Debug Tools](Testing.md).
 
 `create` does everything the Launcher does:
 
@@ -54,12 +54,12 @@ The steps can be skipped with `--no-compile`, `--no-git` and `--no-register`. Ne
 ## Building
 
 ```powershell
-index build                                  # active profile, Development or Release as set in the Build panel
-index build --release                        # Release build (Dist binaries, INDEX_BUILD_RELEASE)
-index build --platform Android --release     # the project's Android profile (needs the platform package)
-index build --profile Steam --output D:\Out
-index build --release --run                  # build, then launch the game
-index build --debug                          # Debug binaries + PDBs for a debugger (needs the engine sources)
+funke build                                  # active profile, Development or Release as set in the Build panel
+funke build --release                        # Release build (Dist binaries, FUNKE_BUILD_RELEASE)
+funke build --platform Android --release     # the project's Android profile (needs the platform package)
+funke build --profile Steam --output D:\Out
+funke build --release --run                  # build, then launch the game
+funke build --debug                          # Debug binaries + PDBs for a debugger (needs the engine sources)
 ```
 
 The pipeline is the editor's own, including:
@@ -80,8 +80,8 @@ With `--json` the result is one object. It contains `succeeded`, `stage` (the fa
 ### Convert between JSON and binary
 
 ```powershell
-index convert --format json                  # every .scene/.prefab/.dataasset, plus project.json's setting
-index convert --format binary Assets/Levels  # only that folder; the project setting stays
+funke convert --format json                  # every .scene/.prefab/.dataasset, plus project.json's setting
+funke convert --format binary Assets/Levels  # only that folder; the project setting stays
 ```
 
 Binary files cannot be edited as text. Convert a project to JSON before editing its scenes by hand or with a script. Builds always ship binary regardless.
@@ -89,8 +89,8 @@ Binary files cannot be edited as text. Convert a project to JSON before editing 
 ### Check the project
 
 ```powershell
-index validate          # errors and warnings; exit code 1 on errors
-index validate --strict # warnings fail too
+funke validate          # errors and warnings; exit code 1 on errors
+funke validate --strict # warnings fail too
 ```
 
 `validate` is read-only. It reports what the engine would reject or silently repair:
@@ -110,20 +110,20 @@ Finally it loads every scene and prefab through the engine's own loader.
 ### Asset registry
 
 ```powershell
-index assets refresh             # write a .meta (with a GUID) for every asset that lacks one
-index assets list --kind texture
-index assets guid Assets/Textures/Player.png
+funke assets refresh             # write a .meta (with a GUID) for every asset that lacks one
+funke assets list --kind texture
+funke assets guid Assets/Textures/Player.png
 ```
 
 ### Sprite sheets
 
 ```powershell
-index sprite slice Assets/Textures/Hero.png --grid 32x32
-index sprite slice Assets/Textures/Ui.png --count 4x2 --padding 2
-index sprite slice Assets/Textures/Props.png --alpha --min-size 4 --pivot 0.5,0
-index sprite list Assets/Textures/Hero.png
-index sprite border Assets/Textures/Panel.png --border 16
-index sprite border Assets/Textures/Ui.png --slice Ui_3 --border 8,8,12,8
+funke sprite slice Assets/Textures/Hero.png --grid 32x32
+funke sprite slice Assets/Textures/Ui.png --count 4x2 --padding 2
+funke sprite slice Assets/Textures/Props.png --alpha --min-size 4 --pivot 0.5,0
+funke sprite list Assets/Textures/Hero.png
+funke sprite border Assets/Textures/Panel.png --border 16
+funke sprite border Assets/Textures/Ui.png --slice Ui_3 --border 8,8,12,8
 ```
 
 `--keep` appends to the existing slices instead of replacing them. `--dry-run` prints the slices without writing them.
@@ -133,12 +133,12 @@ index sprite border Assets/Textures/Ui.png --slice Ui_3 --border 8,8,12,8
 ### Prefabs
 
 ```powershell
-index prefab create SampleScene Player Assets/Prefabs/Player.prefab
-index prefab list   SampleScene                 # instances and their overrides
-index prefab apply  SampleScene Player          # write the instance's overrides into the prefab
-index prefab revert SampleScene Player          # drop all overrides
-index prefab revert SampleScene Player --path Transform2D.posX
-index prefab unpack SampleScene Enemy/Weapon
+funke prefab create SampleScene Player Assets/Prefabs/Player.prefab
+funke prefab list   SampleScene                 # instances and their overrides
+funke prefab apply  SampleScene Player          # write the instance's overrides into the prefab
+funke prefab revert SampleScene Player          # drop all overrides
+funke prefab revert SampleScene Player --path Transform2D.posX
+funke prefab unpack SampleScene Enemy/Weapon
 ```
 
 Scenes are named as in `project.json` or given as a `.scene` path. An entity is addressed by its uuid, by its name, or by a `Parent/Child` path. If a name matches more than one entity, the command lists the candidates and stops.
@@ -148,20 +148,20 @@ A scene is saved in the format it already has. When the editor has that scene op
 ## Packages
 
 ```powershell
-index package list
-index package add Physics3D                       # engine or project package by name
-index package add https://github.com/me/MyPackage.git
-index package add ..\Shared\MyPackage             # copy a local package into Packages/
-index package add nuget:Newtonsoft.Json@13.0.3
-index package remove MyPackage --delete
-index package refresh                             # regenerate Packages/IndexPackages.props
+funke package list
+funke package add Physics3D                       # engine or project package by name
+funke package add https://github.com/me/MyPackage.git
+funke package add ..\Shared\MyPackage             # copy a local package into Packages/
+funke package add nuget:Newtonsoft.Json@13.0.3
+funke package remove MyPackage --delete
+funke package refresh                             # regenerate Packages/FunkePackages.props
 ```
 
-`add` and `remove` update `project.json` **and** the generated `IndexPackages.props` that the C# project imports. Editing the `packages` list in `project.json` by hand needs an `index package refresh` afterwards.
+`add` and `remove` update `project.json` **and** the generated `FunkePackages.props` that the C# project imports. Editing the `packages` list in `project.json` by hand needs an `funke package refresh` afterwards.
 
 ## Editing files while the editor is open
 
-Everything `index` changes is an ordinary file on disk. The editor picks the changes up:
+Everything `funke` changes is an ordinary file on disk. The editor picks the changes up:
 
 | Change | What the editor does |
 |---|---|

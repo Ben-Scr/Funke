@@ -122,7 +122,7 @@ Script fields of type `AnimationClip` and `AnimatorController` show as asset slo
 
 ## File formats
 
-Both are JSON with a GUID in their `.meta`, like other assets, and can be written by hand or by tools. `index validate` checks them: tracks need a component and a property, controller states must point at `.anim` files, transitions at existing states, and conditions at parameters. It also checks that an Animator's `controllerAsset` / `clipAsset` point at the right kind of file.
+Both are JSON with a GUID in their `.meta`, like other assets, and can be written by hand or by tools. `funke validate` checks them: tracks need a component and a property, controller states must point at `.anim` files, transitions at existing states, and conditions at parameters. It also checks that an Animator's `controllerAsset` / `clipAsset` point at the right kind of file.
 
 ```json
 {

@@ -1,0 +1,6 @@
+1 ICON "icon.ico"
+
+#define FNK_FILE_DESCRIPTION "Funke Launcher"
+#define FNK_INTERNAL_NAME "Funke-Launcher"
+#define FNK_ORIGINAL_FILENAME "Funke-Launcher.exe"
+#include "../Funke-Engine/src/Core/VersionResource.rcinc"

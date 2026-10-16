@@ -1,0 +1,96 @@
+#pragma once
+#include "Core/Export.hpp"
+#include "Collections/Vec2.hpp"
+#include "Math/Trigonometry.hpp"
+#include "Scene/EntityHandle.hpp"
+#include <cmath>
+#include <glm/glm.hpp>
+
+// Forward-declared to avoid pulling Box2D headers into non-physics consumers; full def in Transform2DComponent.cpp.
+struct b2Rot;
+
+namespace Funke {
+	class Scene;
+
+    static inline Vec2 Hadamard(const Vec2& a, const Vec2& b) {
+        return { a.x * b.x, a.y * b.y };
+    }
+
+    static inline Vec2 Rotate(const Vec2& v, float radians) {
+        float c = std::cos(radians);
+        float s = std::sin(radians);
+        return { c * v.x - s * v.y, s * v.x + c * v.y };
+    }
+
+	class FUNKE_API Transform2DComponent {
+    public:
+		Vec2 Position{ 0.0f, 0.0f };
+		Vec2 Scale{ 1.0f, 1.0f };
+        float Rotation{ 0.0f };   // Info: Z-Rotation angle in radians
+
+        Vec2 LocalPosition{ 0.0f, 0.0f };
+        Vec2 LocalScale{ 1.0f, 1.0f };
+        float LocalRotation{ 0.0f };
+
+
+		Transform2DComponent() = default;
+        Transform2DComponent(const Vec2& position)
+            : Position{ position }, LocalPosition{ position } {};
+        Transform2DComponent(const Vec2& position, const Vec2& scale)
+            : Position{ position }, Scale{ scale }, LocalPosition{ position }, LocalScale{ scale } {};
+        Transform2DComponent(const Vec2& position, const Vec2& scale, float rotation)
+            : Position{ position }, Scale{scale}, Rotation{ rotation },
+              LocalPosition{ position }, LocalScale{ scale }, LocalRotation{ rotation } {};
+
+        static Transform2DComponent FromPosition(const Vec2& pos);
+        static Transform2DComponent FromScale(const Vec2& scale);
+
+        bool IsDirty() const { return m_Dirty; }
+        void MarkDirty();
+        void ClearDirty() { m_Dirty = false; }
+        void BindOwner(Scene* scene, EntityHandle entity) {
+            m_OwnerScene = scene;
+            m_OwnerEntity = entity;
+        }
+        // Setters write Local* only; writing world Position directly would cause a one-frame jump on child entities.
+        void SetPosition(const Vec2& position) { LocalPosition = position; MarkDirty(); }
+        void SetRotation(float rotationDegrees) { LocalRotation = rotationDegrees; MarkDirty(); }
+        void SetScale(const Vec2& scale) { LocalScale = scale; MarkDirty(); }
+
+        float GetRotationDegrees() const;
+        Vec2 Up() const;
+        Vec2 Down() const;
+        Vec2 Right() const;
+        Vec2 Left() const;
+        glm::mat3 GetModelMatrix() const;
+        Vec2 GetForwardDirection() const;
+
+        Vec2 TransformPoint(const Vec2& localPoint) const {
+            Vec2 p = Hadamard(localPoint, Scale); // S
+            p = Rotate(p, Rotation);              // R
+            p = { p.x + Position.x, p.y + Position.y }; // T
+            return p;
+        }
+        Vec2 TransformVector(const Vec2& localVec) const {
+            Vec2 v = Hadamard(localVec, Scale);
+            return Rotate(v, Rotation);
+        }
+
+        // Info: Used internally for Box2D
+        b2Rot GetB2Rotation() const;
+        bool operator==(const Transform2DComponent& other) const {
+            return Position == other.Position
+                && Rotation == other.Rotation
+                && Scale == other.Scale;
+        }
+        bool operator!=(const Transform2DComponent& other) const {
+            return !(*this == other);
+        }
+
+        // No arithmetic operators — composing whole transforms has no well-defined semantics.
+    private:
+        bool m_Dirty = true;
+        Scene* m_OwnerScene = nullptr;
+        EntityHandle m_OwnerEntity = entt::null;
+	};
+}

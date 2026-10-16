@@ -29,17 +29,17 @@ BUILD_WINDOWS_SCRIPT = Path(__file__).resolve().parents[1] / "BuildWindows.ps1"
 VERIFY_RELEASE_SCRIPT = Path(__file__).resolve().parents[1] / "VerifyRelease.ps1"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROOT_PREMAKE = REPO_ROOT / "premake5.lua"
-ENGINE_PREMAKE = REPO_ROOT / "Index-Engine/premake5.lua"
-ENGINE_README = REPO_ROOT / "Index-Engine/README.md"
+ENGINE_PREMAKE = REPO_ROOT / "Funke-Engine/premake5.lua"
+ENGINE_README = REPO_ROOT / "Funke-Engine/README.md"
 SETUP_SCRIPT = REPO_ROOT / "scripts/Setup.py"
-STORAGE_HEADER = REPO_ROOT / "Index-Engine/src/Serialization/SceneSerializerStorage.hpp"
-STORAGE_FALLBACK = REPO_ROOT / "Index-Engine/src/Serialization/SceneSerializerStorageCore.cpp"
-FULL_SERIALIZER = REPO_ROOT / "Index-Engine/src/Serialization/SceneSerializer.cpp"
-DATA_ASSET_MANAGER = REPO_ROOT / "Index-Engine/src/Scripting/DataAssetManager.cpp"
-SCRIPT_SYSTEM = REPO_ROOT / "Index-Engine/src/Scripting/ScriptSystem.cpp"
-SCRIPT_ENGINE_HEADER = REPO_ROOT / "Index-Engine/src/Scripting/ScriptEngine.hpp"
-SCRIPT_ENGINE_SOURCE = REPO_ROOT / "Index-Engine/src/Scripting/ScriptEngine.cpp"
-FILE_WATCHER_SOURCE = REPO_ROOT / "Index-Engine/src/Serialization/FileWatcher.cpp"
+STORAGE_HEADER = REPO_ROOT / "Funke-Engine/src/Serialization/SceneSerializerStorage.hpp"
+STORAGE_FALLBACK = REPO_ROOT / "Funke-Engine/src/Serialization/SceneSerializerStorageCore.cpp"
+FULL_SERIALIZER = REPO_ROOT / "Funke-Engine/src/Serialization/SceneSerializer.cpp"
+DATA_ASSET_MANAGER = REPO_ROOT / "Funke-Engine/src/Scripting/DataAssetManager.cpp"
+SCRIPT_SYSTEM = REPO_ROOT / "Funke-Engine/src/Scripting/ScriptSystem.cpp"
+SCRIPT_ENGINE_HEADER = REPO_ROOT / "Funke-Engine/src/Scripting/ScriptEngine.hpp"
+SCRIPT_ENGINE_SOURCE = REPO_ROOT / "Funke-Engine/src/Scripting/ScriptEngine.cpp"
+FILE_WATCHER_SOURCE = REPO_ROOT / "Funke-Engine/src/Serialization/FileWatcher.cpp"
 
 
 class EditorScriptToolingSourceTests(unittest.TestCase):
@@ -47,7 +47,7 @@ class EditorScriptToolingSourceTests(unittest.TestCase):
         source = SCRIPT_SYSTEM.read_text(encoding="utf-8")
 
         self.assertNotIn("kEnableHotReload", source)
-        self.assertNotIn("#if INDEX_WITH_EDITOR", source)
+        self.assertNotIn("#if FUNKE_WITH_EDITOR", source)
         self.assertIn(
             "if (Application::IsEditor() && std::filesystem::exists(csproj))",
             source,
@@ -107,10 +107,10 @@ class EditorScriptToolingSourceTests(unittest.TestCase):
         source = SCRIPT_SYSTEM.read_text(encoding="utf-8")
 
         self.assertIn(
-            'IDX_ERROR_TAG("ScriptSystem", "dotnet build output:\\n{}", result.Output);',
+            'FNK_ERROR_TAG("ScriptSystem", "dotnet build output:\\n{}", result.Output);',
             source,
         )
-        self.assertNotIn('IDX_TRACE_TAG("ScriptSystem", "dotnet build output:', source)
+        self.assertNotIn('FNK_TRACE_TAG("ScriptSystem", "dotnet build output:', source)
 
     def test_file_watcher_decodes_utf8_targets(self) -> None:
         source = FILE_WATCHER_SOURCE.read_text(encoding="utf-8")
@@ -123,13 +123,13 @@ class BuildMetadataTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        (self.root / "Index-Engine" / "src" / "Core").mkdir(parents=True)
+        (self.root / "Funke-Engine" / "src" / "Core").mkdir(parents=True)
         (self.root / "Version.props").write_text(
-            "<Project><PropertyGroup><IndexVersion>2026.1.0-rc.1</IndexVersion>"
-            "<Version>$(IndexVersion)</Version>"
+            "<Project><PropertyGroup><FunkeVersion>2026.1.0-rc.1</FunkeVersion>"
+            "<Version>$(FunkeVersion)</Version>"
             "<AssemblyVersion>2026.1.0.0</AssemblyVersion>"
             "<FileVersion>2026.1.0.0</FileVersion>"
-            "<Product>Index</Product>"
+            "<Product>Funke</Product>"
             "</PropertyGroup></Project>\n",
             encoding="utf-8",
         )
@@ -150,8 +150,8 @@ class BuildMetadataTests(unittest.TestCase):
         }
         metadata_script.REPO_ROOT = self.root
         metadata_script.VERSION_PROPS = self.root / "Version.props"
-        metadata_script.NATIVE_HEADER = self.root / "Index-Engine/src/Core/BuildMetadata.generated.hpp"
-        metadata_script.BUILD_IDENTITY_HEADER = self.root / "Index-Engine/src/Core/BuildIdentity.generated.hpp"
+        metadata_script.NATIVE_HEADER = self.root / "Funke-Engine/src/Core/BuildMetadata.generated.hpp"
+        metadata_script.BUILD_IDENTITY_HEADER = self.root / "Funke-Engine/src/Core/BuildIdentity.generated.hpp"
         metadata_script.MANAGED_PROPS = self.root / "build/BuildMetadata.props"
         metadata_script.MANAGED_RC = self.root / "build/ManagedVersion.rc"
         metadata_script.METADATA_JSON = self.root / "build/BuildMetadata.json"
@@ -168,7 +168,7 @@ class BuildMetadataTests(unittest.TestCase):
     def _run(self, *arguments: str) -> int:
         with (
             mock.patch.object(sys, "argv", [str(SCRIPT_PATH), *arguments]),
-            mock.patch.dict(os.environ, {"INDEX_BUILD_COMMIT": ""}, clear=False),
+            mock.patch.dict(os.environ, {"FUNKE_BUILD_COMMIT": ""}, clear=False),
             redirect_stdout(StringIO()),
             redirect_stderr(StringIO()),
         ):
@@ -179,7 +179,7 @@ class BuildMetadataTests(unittest.TestCase):
         metadata = json.loads(metadata_script.METADATA_JSON.read_text(encoding="utf-8"))
         self.assertEqual(metadata["version"], "2026.1.0-rc.1")
         self.assertRegex(metadata["buildId"], r"^2026\.1\.0-rc\.1\+[0-9a-f]{12}$")
-        self.assertEqual(metadata["archiveName"], "Index-Editor-2026.1.0-rc.1-Windows-x64.zip")
+        self.assertEqual(metadata["archiveName"], "Funke-Editor-2026.1.0-rc.1-Windows-x64.zip")
         self.assertFalse(metadata["dirty"])
         managed_props = metadata_script.MANAGED_PROPS.read_text(encoding="utf-8")
         self.assertIn(
@@ -227,12 +227,12 @@ class BuildMetadataTests(unittest.TestCase):
 class RuntimeSmokeStagingTests(unittest.TestCase):
     def test_runtime_harness_uses_a_unicode_staging_path(self) -> None:
         script = SMOKE_SCRIPT_PATH.read_text(encoding="utf-8")
-        self.assertIn('prefix="Index Runtime Smoke Prüfung "', script)
+        self.assertIn('prefix="Funke Runtime Smoke Prüfung "', script)
 
     def test_staging_never_mutates_the_supplied_runtime_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            source = root / "source" / "Index-Runtime"
+            source = root / "source" / "Funke-Runtime"
             source_assets = source / "Assets"
             source_assets.mkdir(parents=True)
             binary = source / runtime_smoke_test.RUNTIME_NAME
@@ -313,7 +313,7 @@ class ModularStorageSourceTests(unittest.TestCase):
         header = STORAGE_HEADER.read_text(encoding="utf-8")
         fallback = STORAGE_FALLBACK.read_text(encoding="utf-8")
         full = FULL_SERIALIZER.read_text(encoding="utf-8")
-        declared = set(re.findall(r"INDEX_API\s+bool\s+(\w+)\s*\(", header))
+        declared = set(re.findall(r"FUNKE_API\s+bool\s+(\w+)\s*\(", header))
         self.assertEqual(
             declared,
             {
@@ -325,7 +325,7 @@ class ModularStorageSourceTests(unittest.TestCase):
             },
         )
         for name in declared:
-            definition = rf"(?m)^\s*(?:INDEX_API\s+)?bool\s+{name}\s*\("
+            definition = rf"(?m)^\s*(?:FUNKE_API\s+)?bool\s+{name}\s*\("
             self.assertRegex(fallback, definition)
             self.assertRegex(full, definition)
 
@@ -333,7 +333,7 @@ class ModularStorageSourceTests(unittest.TestCase):
         fallback = STORAGE_FALLBACK.read_text(encoding="utf-8")
         premake = ENGINE_PREMAKE.read_text(encoding="utf-8")
         self.assertIn(
-            "#if !(INDEX_WITH_RENDER && INDEX_WITH_AUDIO && INDEX_WITH_PHYSICS && INDEX_WITH_SCRIPTING)",
+            "#if !(FUNKE_WITH_RENDER && FUNKE_WITH_AUDIO && FUNKE_WITH_PHYSICS && FUNKE_WITH_SCRIPTING)",
             fallback,
         )
         gate = re.search(
@@ -352,12 +352,12 @@ class ModularStorageSourceTests(unittest.TestCase):
         self.assertNotIn("SceneSerializerShared.hpp", source)
         self.assertRegex(
             source,
-            r'(?s)#if INDEX_WITH_APPLICATION\s+#include "Project/IndexProject.hpp".*?'
+            r'(?s)#if FUNKE_WITH_APPLICATION\s+#include "Project/FunkeProject.hpp".*?'
             r'#include "Core/Application.hpp"\s+#endif',
         )
         self.assertRegex(
             source,
-            r'#if !INDEX_WITH_APPLICATION\s+return SceneSerializationFormat::Binary;\s+#else',
+            r'#if !FUNKE_WITH_APPLICATION\s+return SceneSerializationFormat::Binary;\s+#else',
         )
         self.assertNotIn("SceneSerializerShared.hpp", fallback)
         self.assertNotIn('#include "Audio/', fallback)

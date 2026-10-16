@@ -34,17 +34,17 @@ PATCHES = (
         name="EnTT entity bit split",
         submodule="External/entt",
         pinned_commit="1333fa53129e7cfded5a9640c4336a254049917b",
-        patch_file="entt-index-entity-bits.patch",
+        patch_file="entt-funke-entity-bits.patch",
         files=(
             PatchedFile(
                 "src/entt/entity/entity.hpp",
                 "7123b780f5cea6b1fa88d94c0f13424589639091",
-                "f2210cca9ef07e7167504a07ca0746a342247983",
+                "06c6e2887e8c209bb1aeeab12e032f7908f53174",
             ),
         ),
     ),
     VendorPatch(
-        name="Dear ImGui Index extensions",
+        name="Dear ImGui Funke extensions",
         submodule="External/imgui",
         pinned_commit="dc5c6b3688d27dac69ae9e72f33c8f8fdb6cac69",
         patch_file="imgui-scalar-expression.patch",
@@ -57,12 +57,12 @@ PATCHES = (
             PatchedFile(
                 "imgui.h",
                 "c32a6baf15dea7332cffda09721d272a4a23f673",
-                "67ede794aaa1654de73d7afd4664908859dd9d0b",
+                "d4db17b9b0e8118d83d8e57f79cc27b98b294ece",
             ),
             PatchedFile(
                 "imgui_widgets.cpp",
                 "abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9",
-                "5dedab76b480602fee7be032fe9a4f9fda2a356b",
+                "ca15cf9066d4c2fdda0e17feca5b7fb06bc5a38b",
             ),
         ),
     ),
@@ -75,7 +75,7 @@ PATCHES = (
             PatchedFile(
                 "src/ImGuizmo.cpp",
                 "60bd8d0eb269d1d8b083967d3d340e25fab61c4d",
-                "f14ed60cd899d7751a1479cd737ba46f38b563b1",
+                "5dbc556ffa3b66ae27801398502c7da2b4c656b7",
             ),
         ),
     ),
@@ -249,7 +249,7 @@ def verify_one(spec: VendorPatch, mode: str, require_applied: bool) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Apply or verify the pinned Index vendor patches without submodule commits."
+        description="Apply or verify the pinned Funke vendor patches without submodule commits."
     )
     parser.add_argument("mode", choices=("apply", "verify"))
     parser.add_argument(

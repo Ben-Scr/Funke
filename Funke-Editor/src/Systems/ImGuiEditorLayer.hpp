@@ -1,0 +1,742 @@
+#pragma once
+#include "Core/Layer.hpp"
+#include "Core/Export.hpp"
+#include "Collections/Color.hpp"
+#include "Diagnostics/LogOverlay.hpp"
+#include "Diagnostics/StatsOverlay.hpp"
+#include "Scene/Entity.hpp"
+#include "Scene/Scene.hpp"
+#include "Collections/Ids.hpp"
+#include "Collections/Viewport.hpp"
+#include "Core/Log.hpp"
+#include "Editor/AnimationPreview.hpp"
+#include "Gui/AnimationWindow.hpp"
+#include "Gui/AnimatorWindow.hpp"
+#include "Gui/AssetBrowser.hpp"
+#include "Gui/BuildProfilesPanel.hpp"
+#include "Gui/EditorPreferencesPanel.hpp"
+#include "Gui/PackageManagerPanel.hpp"
+#include "Gui/PrefabInspector.hpp"
+#include "Gui/ProfilerPanel.hpp"
+#include "Gui/ScriptEditorWindows.hpp"
+#include "Gui/SpriteEditorPanel.hpp"
+#include "Gui/SplashScreen.hpp"
+#include "Packages/PackageManager.hpp"
+#include "Editor/EditorCamera.hpp"
+#include "Editor/EditorCamera3D.hpp"
+#include "Graphics/Framebuffer.hpp"
+#include "Graphics/Gizmo.hpp"
+#include "Graphics/Texture2D.hpp"
+#include "Graphics/TextureHandle.hpp"
+#include "Serialization/FileWatcher.hpp"
+#include "Undo/UndoStack.hpp"
+#include "Undo/TransformEditCommand.hpp"
+#include "Undo/Transform3DEditCommand.hpp"
+#include "Undo/StructureEditCommand.hpp"
+#include "Editor/SceneRecovery.hpp"
+
+
+#include <atomic>
+#include <filesystem>
+#include <future>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <typeindex>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include <utility>
+#include <chrono>
+#include "Project/FunkeProject.hpp"
+#include "Project/PlatformPackages.hpp"
+#include <optional>
+
+namespace Funke {
+
+	struct FunkeProject;
+
+	enum class EditorViewDrawMode : uint8_t {
+		Default = 0,
+		Triangle,
+		Mixed,
+	};
+
+	// Active Editor View manipulation gizmo. None hides the gizmo entirely.
+	enum class EditorGizmoMode : uint8_t {
+		None = 0,
+		Translate,
+		Rotate,
+		Scale,
+		// Bounding-box resize: drag edges/corners to resize the entity's bounds —
+		// RectTransform2D size (SizeDelta) or Transform2D scale.
+		Bounds,
+	};
+
+	class ImGuiEditorLayer : public Layer {
+	public:
+		using Layer::Layer;
+
+		void OnAttach(Application& app) override;
+		void OnDetach(Application& app) override;
+		void OnPreRender(Application& app) override;
+		void OnUpdate(Application& app, float dt) override;
+		void OnEvent(Application& app, FunkeEvent& event) override;
+
+		// Command-line build (--build): queues the same pipeline as the Build button, without opening the output folder.
+		// Empty profile = project's active profile, else the first Windows profile; empty output = <project>/Builds/<profile>.
+		bool RequestCommandLineBuild(const std::string& profileName, const std::string& outputDirectory, std::string& outError);
+		bool IsBuildInProgress() const { return m_BuildState != 0; }
+		bool DidLastBuildSucceed() const { return m_BuildSucceeded.load(std::memory_order_relaxed); }
+		const std::string& GetLastBuildOutputDirectory() const { return m_BuildOutputDir; }
+		const std::string& GetLastBuiltExecutablePath() const { return m_BuiltExecutablePath; }
+	private:
+		enum class PendingEditorAction : uint8_t {
+			None = 0,
+			OpenScene,
+			RemoveScene,
+			Quit,
+			Reload,
+			Restart,
+			RebuildEngine,
+		};
+
+		struct LogEntry {
+			std::string Message;
+			Log::Level Level;
+			std::string SourceFilePath;
+			std::string SourceLinkText;
+			int SourceLine = 0;
+			// Byte span within `Message` of the clickable "<path>:line N"
+			// substring. The renderer styles those bytes as a link inline
+			// in the message text; equal start/end means no inline link.
+			size_t SourceLinkStart = 0;
+			size_t SourceLinkEnd = 0;
+			// Local wall-clock "HH:MM:SS" captured when the entry was received.
+			std::string Timestamp;
+		};
+
+		struct LogDispatchState {
+			std::mutex Mutex;
+			std::vector<LogEntry> PendingEntries;
+		};
+
+		struct PreviewTextureEntry {
+			std::string CanonicalPath;
+			std::unique_ptr<Texture2D> Texture;
+			std::uint64_t LastTouchTick = 0;
+		};
+
+		// Per-panel render targets are RAII-managed Framebuffers — see
+		// `Graphics/Framebuffer.hpp`. Resize is `m_*FBO.Recreate(w, h)`,
+		// destruction is automatic on layer teardown.
+		void EnsureViewportFramebuffer(int width, int height);
+		void DestroyViewportFramebuffer();
+
+		void RenderDockspaceRoot();
+		void RenderMainMenu(Scene& scene);
+		void RenderToolbar();
+
+		void LaunchStandalone();
+		void RenderEntitiesPanel();
+		void RenderInspectorPanel(Scene& scene);
+		void RenderEditorView(Scene& scene);
+		void RenderGameView(Scene& scene);
+		void TickParticlePreview(Scene& scene);
+		void DrawParticlePreviewControls(Scene& renderScene, const Vec2& imageTopLeft, const Vec2& viewportSize);
+		void RenderLogPanel();
+		void RenderProjectPanel();
+		void RenderBuildPanel();
+		void RenderBuildProfilesPanel();
+		void RenderProjectSettingsPanel();
+		void RenderSettings_Display(FunkeProject& project, bool& changed, const std::string& filterLower);
+		void RenderSettings_Graphics(FunkeProject& project, bool& changed, const std::string& filterLower);
+		void RenderSettings_Branding(FunkeProject& project, bool& changed, const std::string& filterLower);
+		void RenderSettings_Build(FunkeProject& project, bool& changed, const std::string& filterLower);
+		void RenderSettings_Editor(FunkeProject& project, bool& changed, const std::string& filterLower);
+		void RenderSettings_Systems(FunkeProject& project, bool& changed, bool& outGlobalSystemsChanged, const std::string& filterLower);
+		void RenderSettings_Physics(FunkeProject& project, bool& changed, const std::string& filterLower);
+		void TickSplashPreview();
+		void RenderSceneSystemsInspector(Scene& scene);
+		void ExecuteBuildAsync();
+		void ReportBuildProgress(float progress, std::string_view stage);
+		void ExecuteReserializeAsync();
+		void ReportReserializeProgress(float progress, std::string_view stage);
+		void RenderPackageManagerPanel();
+		void RenderAssetInspector();
+		void RequestEditorAction(PendingEditorAction action, std::string payload = {});
+		bool ProcessPendingEditorAction();
+		bool HasUnsavedWorkForPendingAction() const;
+		bool SaveUnsavedWorkForPendingAction();
+		bool SaveCurrentProjectMetadata();
+		void ClearPendingEditorAction();
+		std::vector<std::shared_ptr<Scene>> GetDirtyScenesForPendingAction() const;
+		bool OpenSceneExclusive(const std::string& path);
+		bool LoadEditorScene(const std::string& path, bool additive,
+			std::shared_ptr<Scene>& loadedScene, std::string& definitionName,
+			bool allowDuplicateSceneName = false, bool suspendLifecycle = false);
+		void RemoveEditorScene(const std::string& sceneName);
+		std::string MakeEditorSceneDefinitionName();
+		void BeginPlayModeRequest(Scene& scene);
+		bool SaveDirtyPrefabsBeforeRun(std::string_view actionName);
+		bool ValidateUniquePersistentEntityIds(const std::vector<Scene*>& scenes,
+			std::string_view actionName) const;
+		bool PreparePlayModeSnapshot(Scene& scene);
+		void CompletePlayModeEntry(Scene& scene);
+		void PollPendingPlayModeRequest();
+		bool RestoreEditorSceneAfterPlaymode();
+		// Restoring destroys the play scenes, so a stop asked for during the UI pass (which holds Scene&)
+		// is deferred to ProcessPendingPlayModeStop, run before the next UI pass.
+		void RequestPlayModeStop(std::string sceneToOpen = {});
+		void ProcessPendingPlayModeStop();
+		// Snapshot inspector-authored script field overrides for the play/stop round-trip
+		// so component references survive even when the scene-file round-trip drops them.
+		// merge=false (play-entry) captures the edit-mode baseline; merge=true (play-exit,
+		// pre-reload) overlays values edited in the inspector during play. See m_PlayModeScriptFields.
+		void CaptureScriptFieldOverrides(bool merge);
+		// Re-apply the captured overrides onto the reloaded entities (play-exit, post-reload).
+		void ReapplyScriptFieldOverrides(const std::vector<std::shared_ptr<Scene>>& scenes);
+		void SelectSceneNode();
+		void SelectEntity(EntityHandle entity);
+		void ClearEntitySelection();
+		bool IsEntitySelected(EntityHandle entity) const;
+		std::vector<EntityHandle> GetSelectedEntities(const Scene& scene) const;
+		void SetSingleEntitySelection(EntityHandle entity, int index);
+		void ToggleEntitySelection(EntityHandle entity, int index);
+		void SelectEntityRange(int index);
+		// Marquee box-select: select every entity whose bounds intersect the drag
+		// rectangle; additive (Ctrl/Shift) adds to the selection instead of replacing.
+		void SelectEntitiesInBox(const std::vector<EntityHandle>& entities, bool additive);
+
+		void RebuildSelectionSet();
+		void RecomputeInspectorSelectionCache(Scene& scene);
+		void DrainPendingLogEntries();
+		void RunAutoSaveTick(Application& app, float dt);
+		void RunPrefabAutoSaveTick();
+		void ReloadExternallyChangedContent();
+		void CheckExternalSceneChanges();
+		// Swaps the loaded scene for a fresh load of its file; the old instance stays if the file can't load.
+		bool ReloadEditorSceneFromDisk(const std::string& sceneName);
+		void RenderExternalSceneConflictDialog();
+		// project.json / BuildProfiles/*.build edited outside the editor: reload instead of overwriting them.
+		void CheckExternalProjectChanges();
+		// .prefab edited outside the editor: refresh loaded instances, reload or flag the prefab open in edit mode.
+		void CheckExternalPrefabChanges();
+		bool ReloadPrefabEditFromDisk();
+		void RenderExternalPrefabEditConflictDialog();
+		void AppendLogEntry(LogEntry entry);
+		void ClearLogEntries();
+		void ResetEditorFocusCycle();
+		void UpdateEditorCameraFocus(float dt);
+		bool TryBuildEntityAABB(Scene& scene, EntityHandle entity, bool includeChildren, AABB& outAABB);
+		void FocusSelectedEntity(Scene& scene);
+		void DuplicateSelectedEntity(Scene& scene);
+		// Structural undo: only the context scene owns history, edits elsewhere stay unrecorded.
+		void PushStructureUndo(Scene& scene, std::unique_ptr<EditCommand> command);
+		void PerformUndoRedo(Scene& scene, bool redo);
+		void RecordCreatedEntities(Scene& scene, std::span<const EntityHandle> created, std::string label);
+		// User-facing delete entry point: opens the confirmation dialog when
+		// enabled in preferences, otherwise deletes immediately.
+		void RequestDeleteSelectedEntity(Scene& scene);
+		void DeleteSelectedEntity(Scene& scene);
+		void BeginRenameSelectedEntity(Scene& scene);
+		void UnpackSelectedPrefabs(Scene& scene);
+		void CopySelectedEntities(Scene& scene);
+		void CutSelectedEntities(Scene& scene);
+		void PasteEntities(Scene& scene);
+		EntityHandle FinishCreatedEditorEntity(Scene& scene, Entity parent, Entity created);
+		EntityHandle RenderCreateEntityMenu(Scene& scene, Entity parent);
+		// Spawns an entity from a dropped asset path (image → sprite, .prefab →
+		// instance) with its root placed at worldPos, and selects it. Returns the
+		// new root, or entt::null if the asset type isn't spawnable.
+		EntityHandle SpawnAssetEntityAt(Scene& scene, const std::string& assetPath, const Vec2& worldPos);
+		std::string MakeEditorUniqueEntityName(Scene& scene, std::string_view baseName, EntityHandle ignoreEntity = entt::null) const;
+		void EnsureEditorUniqueEntityName(Scene& scene, EntityHandle entity);
+		void EnsureEditorUniqueEntityNames(Scene& scene, const std::vector<EntityHandle>& roots);
+		bool SetEntityParentPreservingWorld(Scene& scene, EntityHandle child, Entity parent);
+		// Reorders `dragged` to be the previous/next sibling of `target`; reparents across branches; returns true if the scene was actually mutated.
+		bool MoveSiblingNextTo(Scene& scene, EntityHandle dragged, EntityHandle target, bool insertAfter);
+
+		std::vector<EntityHandle> ResolveDraggedHierarchyEntities(Scene& scene, EntityHandle primary) const;
+
+		// Serializes roots + subtrees through the clipboard path and re-creates them in targetScene; used by cross-scene drag-drop.
+		std::vector<EntityHandle> MigrateEntitiesToScene(Scene& sourceScene, Scene& targetScene,
+			const std::vector<EntityHandle>& sourceRoots, Entity targetParent);
+
+		// ── Prefab edit mode ──────────────────────────────────────────
+		bool OpenPrefabForEditing(const std::string& path);
+		bool ClosePrefabEditing(bool save);
+		bool SavePrefabEditChanges();
+		bool SavePrefabInspectorChanges();
+		bool ApplyPrefabInstanceToSource(Scene& scene, EntityHandle entity);
+		struct LoadedSceneSelectionEntity {
+			uint64_t PersistentId = 0;
+			uint64_t PrefabRootPersistentId = 0;
+			uint64_t PrefabSourceEntityId = 0;
+		};
+		struct LoadedSceneSelectionSnapshot {
+			std::string SceneName;
+			std::vector<LoadedSceneSelectionEntity> Entities;
+			size_t PrimaryIndex = static_cast<size_t>(-1);
+			bool SceneNodeSelected = false;
+		};
+		LoadedSceneSelectionSnapshot CaptureLoadedSceneSelection() const;
+		void RestoreLoadedSceneSelection(const LoadedSceneSelectionSnapshot& snapshot);
+		bool IsInPrefabEditMode() const { return m_PrefabEditScene != nullptr; }
+		Scene* GetContextScene() const;
+
+		bool HasEntityShortcutFocus() const;
+		void DrawEditorComponentGizmos(Scene& scene, bool componentGizmosEnabled);
+		void DrawComponentGizmosForActiveEntity(Scene& scene, bool componentGizmosEnabled);
+		// Always-visible component gizmos (Camera frames + components flagged
+		// drawEditorGizmoAlways), drawn for every matching entity, not just selected.
+		void DrawAlwaysVisibleComponentGizmos(Scene& scene);
+		void DrawCameraFrameGizmo(Scene& scene, EntityHandle entity);
+		const Texture2D* GetPreviewTexture(const std::filesystem::path& path);
+		void TrimPreviewTextureCache();
+		void ClearPreviewTextureCache();
+
+		void RenderSceneIntoFBO(Framebuffer& fbo, Scene& scene,
+			const glm::mat4& vp, const AABB& viewportAABB,
+			bool withGizmos, bool sharedGizmosOnly = false,
+			const Color& clearColor = Color::Background(),
+			bool onlyPassedScene = false,
+			bool uiInWorldSpace = false,
+			EditorViewDrawMode drawMode = EditorViewDrawMode::Default,
+			GizmoLayerMask gizmoLayerMask = GizmoLayerMask::All,
+			const Camera3DView* view3D = nullptr);
+
+		// 3D Editor View (ImGuiEditorLayerViewport3D.cpp). Returns the image's top-left screen position.
+		Vec2 RenderEditorView3D(Scene& scene, const Vec2& viewportSize, bool overlayHovered);
+		bool DrawTransform3DGizmo(Scene& scene, const Camera3DView& view, const Vec2& imageTopLeft, const Vec2& viewportSize);
+		void QueueEditorView3DOverlays(Scene& scene, Renderer3D& renderer);
+		void FrameEditorCamera3D(Scene& scene);
+		void FocusSelectedEntity3D(Scene& scene);
+		void ResolveEditorViewMode();
+		bool IsEditorView3D() const { return m_EditorView3D; }
+		// Remembered per project; ignored unless both the 2D and 3D modules are active.
+		void SetEditorView3D(bool enabled);
+		// Create (Entity) / Camera menu entries follow the Editor View mode.
+		Entity CreateDefaultEntity(Scene& scene, const std::string& name);
+
+		EntityHandle m_ParticlePreviewEntity = entt::null;
+		std::uint64_t m_ParticlePreviewSceneId = 0;
+		EntityHandle m_SelectedEntity = entt::null;
+		EntityHandle m_PressedEntity = entt::null;
+		std::vector<EntityHandle> m_SelectedEntities;
+		std::unordered_set<EntityHandle> m_SelectedEntitySet;
+		// Editor View marquee box-select drag state. Start is stored in screen space
+		// so the rectangle is drawn WYSIWYG; both corners convert to world on release.
+		bool m_BoxSelectPending = false;
+		bool m_BoxSelectActive = false;
+		Vec2 m_BoxSelectStartScreen{ 0.0f, 0.0f };
+		// Click-to-cycle selection: repeated plain clicks at the same screen spot step
+		// through entities stacked under the cursor (topmost → beneath → wrap), so
+		// entities hidden behind others stay reachable. Reset when the cursor leaves
+		// the spot or the overlap set changes.
+		Vec2 m_PickCycleScreenPos{ 0.0f, 0.0f };
+		std::vector<EntityHandle> m_PickCycleStack;
+		// Bumped every time the selection mutates. Inspector / future
+		// consumers compare against their own cached snapshot to decide
+		// whether their derived state is still valid.
+		std::uint64_t m_SelectionVersion = 0;
+		int m_LastEntitySelectionIndex = -1;
+		bool m_IsSceneNodeSelected = false;
+
+		// Lazily recomputed when m_SelectionVersion changes; avoids per-frame N×M loops at large selection counts.
+		struct InspectorSelectionCache {
+			std::uint64_t Version = UINT64_MAX;
+			std::vector<EntityHandle> Handles;
+			std::unordered_set<std::type_index> CommonComponentTypes;
+			std::vector<std::string> PartialComponents;
+			bool NameUniform = true;
+			std::string FirstName;
+			bool EnabledUniform = true;
+			bool EnabledFirst = true;
+			bool StaticUniform = true;
+			bool StaticFirst = false;
+		};
+		InspectorSelectionCache m_InspectorCache;
+		EventId m_LogSubscriptionId{};
+		std::vector<LogEntry> m_LogEntries;
+		std::shared_ptr<LogDispatchState> m_LogDispatchState;
+		bool m_ShowLogInfo = true;
+		bool m_ShowLogWarn = true;
+		bool m_ShowLogError = true;
+		// Index into m_LogEntries of the click-selected log row, or -1. Stable across filter
+		// toggles (keyed by absolute index); reset on Clear.
+		int m_SelectedLogIndex = -1;
+		std::vector<PreviewTextureEntry> m_PreviewTextureCache;
+		std::unordered_map<std::string, size_t> m_PreviewTextureLookup;
+		std::uint64_t m_PreviewTextureTick = 0;
+		static constexpr size_t kMaxPreviewTextures = 16;
+
+		// Entity ordering for hierarchy drag-reorder
+		std::vector<entt::entity> m_EntityOrder;
+
+		// Rebuilt only when structural changes flip m_EntityOrderDirty; per-frame UI interactions (select/expand) do not.
+		bool m_EntityOrderDirty = true;
+		std::vector<entt::entity> m_RenderedEntityOrder;
+		std::vector<int> m_RenderedEntityDepths;
+		std::vector<entt::entity> m_VisibleEntityOrder;
+		std::vector<int> m_VisibleEntityDepths;
+		// Hierarchy search: a non-empty query flattens the rendered rows to the
+		// name-matching entities (the visible lists above become the filtered set).
+		char m_HierarchySearchBuffer[128]{};
+		// Detects scene swaps that don't flip m_EntityOrderDirty; stale handles from a prior scene cause ImGui to assert if not caught here.
+		// Scene* (not sceneId): two loaded scenes can collide on sceneId — a duplicated .scene file keeps its serialized id, and an
+		// additively loaded script-only scene starts at the UUID default. Scene* is always distinct among currently-loaded scenes.
+		const class Scene* m_EntityOrderSceneId = nullptr;
+		// Structural changes from outside the editor (a script calling Entity.SetParent at runtime) don't flip
+		// m_EntityOrderDirty and don't change the entity count; the scene's hierarchy version catches them.
+		uint64_t m_LastHierarchyVersion = 0;
+
+		// ── Prefab edit mode ──────────────────────────────────────────
+		std::unique_ptr<Scene> m_PrefabEditScene;
+		std::string m_PrefabEditPath;
+		EntityHandle m_PrefabEditRootEntity = entt::null;
+		bool m_PrefabEditDirty = false;
+		// Camera state saved at OpenPrefabForEditing and restored on close so the user returns to their prior viewport.
+		Vec2 m_PrefabEditSavedCameraPosition{ 0.0f, 0.0f };
+		float m_PrefabEditSavedCameraOrthoSize = 5.0f;
+		float m_PrefabEditSavedCameraZoom = 1.0f;
+		bool m_PrefabEditHasSavedCameraState = false;
+		bool m_ShowPrefabEditDiscardPrompt = false;
+		static constexpr float k_PrefabEditClearR = 0.13f;
+		static constexpr float k_PrefabEditClearG = 0.21f;
+		static constexpr float k_PrefabEditClearB = 0.32f;
+
+		std::unordered_set<uint32_t> m_CollapsedHierarchyEntities;
+
+		std::unordered_set<uint32_t> m_CutEntities;
+
+		std::string m_LastInteractedSceneName;
+
+		EntityHandle m_RenamingEntity = entt::null;
+		char m_EntityRenameBuffer[256]{};
+		int m_EntityRenameFrameCounter = 0;
+
+		Framebuffer m_EditorViewFBO;
+		EditorCamera m_EditorCamera;
+		EditorCamera3D m_EditorCamera3D;
+		// By name, not pointer: Play/Stop swap the Scene instance but must not reframe.
+		std::string m_EditorCamera3DFramedScene;
+		// Initialised from the project's modules on first draw; the toolbar toggle flips it.
+		bool m_EditorView3D = false;
+		bool m_EditorViewModeResolved = false;
+		bool m_Gizmo3DDragActive = false;
+		uint64_t m_Gizmo3DDragEntityId = 0;
+		Transform3DEditCommand::State m_Gizmo3DDragBefore;
+		bool m_IsEditorViewHovered = false;
+		bool m_IsEditorViewFocused = false;
+		EditorViewDrawMode m_EditorViewDrawMode = EditorViewDrawMode::Default;
+		bool m_ShowGizmos = true;
+		bool m_ShowPostProcessing = true;
+		EditorGizmoMode m_GizmoMode = EditorGizmoMode::Translate;
+		// Running total scale read from ImGuizmo during a group-scale drag, used to
+		// derive the per-frame factor applied to the selection. Reset between drags.
+		Vec2 m_GizmoGroupScalePrev{ 1.0f, 1.0f };
+
+		// Editor undo/redo. Commands are recorded already-applied. The history is
+		// dropped whenever the context scene changes (tracked by m_UndoStackSceneId)
+		// and at play-mode boundaries — its commands reference the prior scene.
+		UndoStack m_UndoStack;
+		const Scene* m_UndoStackSceneId = nullptr;
+
+		// Crash recovery: periodic copies of dirty scenes, offered back after an abnormal exit.
+		std::vector<SceneRecovery::PendingScene> m_PendingRecovery;
+		bool m_RecoveryChecked = false;
+		float m_RecoveryAccumulator = 0.0f;
+		std::string m_RecoveryError;
+		// Transforms captured on the gizmo-drag rising edge; one undo step covering
+		// the whole drag is committed on the falling edge.
+		bool m_GizmoDragActive = false;
+		std::vector<std::pair<uint64_t, EntityTransformSnapshot>> m_GizmoDragBefore;
+		// Cumulative (raw - applied) world offset the alignment snap has held back
+		// during the active drag. Comparing the snap against the true mouse position
+		// (current edge + this debt + frame delta) instead of the already-snapped
+		// rect is what lets it release once the mouse passes the threshold instead of
+		// sticking. Reset on each drag's rising edge.
+		Vec2 m_AlignSnapDebt{ 0.0f, 0.0f };
+
+		// Unreal-style transient toast: fades in/out over the editor view to show
+		// the last undone/redone action. Rect is captured during RenderEditorView.
+		void ShowUndoToast(const std::string& action, bool redo);
+		void DrawUndoToast();
+		std::string m_UndoToastText;
+		float m_UndoToastElapsed = 0.0f;
+		bool m_UndoToastActive = false;
+		bool m_UndoToastRedo = false;
+		float m_EditorViewImageX = 0.0f;
+		float m_EditorViewImageY = 0.0f;
+		float m_EditorViewImageW = 0.0f;
+		float m_EditorViewImageH = 0.0f;
+
+		// Applies the ImGuizmo gizmo result: the full transform (pos/rot/scale)
+		// goes to the primary selected entity; the translation delta also moves
+		// the other selected hierarchy roots (descendants follow via hierarchy).
+		void ApplyGizmoManipulation(Scene& scene, const Vec2& newWorldPos,
+			float newWorldRotation, const Vec2& newWorldScale);
+		// Group rotate/scale for multi-selection: transforms every selected root
+		// about `pivot` (the selection centroid); descendants follow via hierarchy.
+		void ApplyGroupRotationScale(Scene& scene, const Vec2& pivot,
+			float deltaAngle, const Vec2& scaleFactor);
+		// UI (RectTransform2D) analogues of the two above. Translate carries a shared
+		// canvas-space delta to every selected UI root; rotate/scale orbit each root's
+		// pivot about `pivotWorld` (the selection centroid) and add the increment to
+		// LocalRotation / LocalScale. A single selection reduces to the pivot being the
+		// entity's own, so it just edits the authored fields in place.
+		void ApplyUIGroupTranslate(Scene& scene, const Vec2& deltaCanvas);
+		void ApplyUIGroupRotationScale(Scene& scene, const Vec2& pivotWorld,
+			float deltaAngle, const Vec2& scaleFactor, float worldScale);
+		void BeginGizmoTransformDrag(Scene& scene);
+		void CommitGizmoTransformDrag(Scene& scene);
+		// Draws a faint EditorOnly grid at the snap spacing across the visible view.
+		void DrawSnapGrid(const AABB& viewBounds);
+		// Draws the world X (red) and Y (green) axis lines through the origin.
+		void DrawWorldAxes(const AABB& viewBounds);
+		bool m_EditorCameraFocusActive = false;
+		Vec2 m_EditorCameraFocusTarget{ 0.0f, 0.0f };
+		float m_EditorCameraFocusOrthoSize = 5.0f;
+		Vec2 m_EditorCameraFocusStartPosition{ 0.0f, 0.0f };
+		float m_EditorCameraFocusStartOrthoSize = 5.0f;
+		float m_EditorCameraFocusElapsed = 0.0f;
+		EntityHandle m_FocusLastEntity = entt::null;
+		bool m_FocusNextPressTight = false;
+
+		bool m_IsGameViewActive = false;
+		bool m_IsEditorViewActive = false;
+		bool m_IsEntitiesPanelFocused = false;
+		bool m_IsInspectorPanelFocused = false;
+
+		Framebuffer m_GameViewFBO;
+		bool m_IsGameViewHovered = false;
+		bool m_IsGameViewFocused = false;
+		bool m_WasGameViewFocused = false;
+		bool m_GameViewCanvasClicked = false;
+		bool m_FocusGameViewOnPlay = false;
+		// Escape or leaving the editor window handed the mouse to the editor; focusing the Game View gives it back.
+		bool m_GameCursorReleased = false;
+		int m_CursorModeLastUpdate = 0;
+		// -1 = follow the project's build aspect; otherwise an index into k_AspectRatioPresets.
+		static constexpr int k_GameViewProjectAspectIndex = -1;
+		static constexpr const char* k_GameViewProjectAspectLabel = "Project";
+		int m_GameViewAspectPresetIndex = 0;
+		bool m_GameViewAspectLoaded = false;
+		// 0 = free (fill the panel).
+		float GetGameViewAspect() const;
+		bool m_GameViewVsync = true;
+		bool m_GameViewVsyncLoaded = false;
+		bool m_GameViewHasRendered = false;
+
+		// Top bar / status bar / command palette (ImGuiEditorLayer.cpp).
+		void SaveScenesFromMenu(Scene& scene);
+		void RenderToolbarLeft();
+		void RenderTopBarRight();
+		// Editor View options (3D, draw mode, gizmos, ...) in the viewport's top-right pill and their visibility menu (ImGuiEditorLayerViewport.cpp).
+		bool RenderEditorViewToolbarOptions();
+		void RenderGameViewSettingsMenu();
+		void RenderEditorViewSettingsMenu();
+		// Width of the view options pill last frame; it is right-aligned before it can be measured.
+		float m_EditorViewOptionsPillWidth = 0.0f;
+		void RenderCommandPalette(Scene& scene);
+		void RenderStatusBar(float height);
+		// Main-window prompt for everything queued in EditorRestart (modules, packages, render backend, font).
+		void RenderEditorReloadPrompt();
+		// Backend this editor run's GPU device was created with; set on the first frame with a project.
+		std::optional<FunkeProject::RenderBackend> m_LaunchRenderBackend;
+		bool m_OpenCommandPalette = false;
+		char m_CommandPaletteBuffer[128]{};
+		int m_CommandPaletteSelection = 0;
+
+		// Launcher preview image (<project>/.funke/thumbnail.png): captured once after open, then on every save.
+		void UpdateProjectThumbnail(Scene& scene);
+		bool CaptureProjectThumbnail(Scene& scene);
+		bool m_ThumbnailSceneWasDirty = false;
+		bool m_ThumbnailInitialCaptureDone = false;
+		int m_ThumbnailFrameCounter = 0;
+		int m_LastGameViewFbW = 0;
+		int m_LastGameViewFbH = 0;
+		std::chrono::steady_clock::time_point m_LastGameViewRenderTime{};
+
+		bool m_ShowGameViewStats = false;
+		bool m_ShowGameViewLogs  = false;
+		Funke::Diagnostics::StatsOverlay m_GameViewStatsOverlay;
+		// unique_ptr: lazily constructed to avoid subscribing to Log::OnLog before Application::Initialize.
+		std::unique_ptr<Funke::Diagnostics::LogOverlay> m_GameViewLogOverlay;
+
+		Viewport m_EditorViewport{ 1, 1 };
+		bool m_IsViewportHovered = false;
+		bool m_IsViewportFocused = false;
+		bool m_IsPlaying = false;
+
+		AssetBrowser m_AssetBrowser;
+		bool m_AssetBrowserInitialized = false;
+		FileWatcher m_AssetWatcher;
+		std::string m_AssetWatcherRoot;
+		// Scenes, audio, fonts and data assets edited outside the editor (other tools, AI agents, git).
+		FileWatcher m_ContentWatcher;
+		// Assets/Localization/*.json: the game's string tables reload in edit and play mode.
+		FileWatcher m_LocalizationWatcher;
+		// Deferred while playing: the Stop restore reloads scenes, so decide afterwards.
+		bool m_ExternalSceneCheckPending = false;
+		// Changed-on-disk scenes that also have unsaved editor edits; auto-save holds off until resolved.
+		std::vector<std::string> m_ExternalSceneConflicts;
+		bool m_ExternalSceneConflictPopupOpen = false;
+		// project.json and BuildProfiles/*.build; same deferral rules as scenes.
+		FileWatcher m_ProjectFileWatcher;
+		bool m_ExternalProjectCheckPending = false;
+		bool m_ExternalPrefabCheckPending = false;
+		// Override baselines of changed prefabs whose instances could not be refreshed yet (e.g. a
+		// half-written file); retried on the next prefab change.
+		std::unordered_map<std::string, std::shared_ptr<const Json::Value>> m_PendingPrefabRefreshes;
+		// The prefab open in edit mode changed on disk while it had unsaved edits; auto-save holds off.
+		bool m_PrefabEditConflict = false;
+		bool m_PrefabEditConflictPopupOpen = false;
+
+		PrefabInspector m_PrefabInspector;
+		std::string m_PrefabInspectorPath;
+		// Save/discard prompt state for switching away from a dirty prefab.
+		bool m_ShowPrefabSavePrompt = false;
+		std::string m_PendingPrefabSwitchPath;
+
+		// Queued rather than called directly to keep the OpenTexture → unsaved-changes-prompt flow at ImGui-render time.
+		bool m_ShowSpriteEditor = false;
+		std::string m_PendingSpriteEditorPath;
+		uint64_t m_PendingSpriteEditorAssetId = 0;
+		SpriteEditorPanel m_SpriteEditorPanel;
+
+		std::string m_PendingSceneFileDrop;
+		PendingEditorAction m_PendingEditorAction = PendingEditorAction::None;
+		std::string m_PendingEditorActionPayload;
+		bool m_PendingEditorActionApproved = false;
+		bool m_PendingEditorActionProjectSaveCompleted = false;
+		bool m_PendingEditorActionDiscardUnsavedWork = false;
+		bool m_ShowUnsavedWorkDialog = false;
+		bool m_UnsavedWorkDialogOpen = false;
+		bool m_DeferredQuitRequested = false;
+		std::string m_PendingEngineRebuildWorkingDirectory;
+		uint64_t m_EditorSceneDefinitionSerial = 0;
+		std::unordered_map<std::string, std::string> m_EditorSceneDefinitionsBySceneName;
+		std::unordered_set<std::string> m_EditorOwnedSceneDefinitions{ "$EditorWorkingScene" };
+
+		// Entity-deletion confirmation (see RequestDeleteSelectedEntity and the
+		// modal in ImGuiEditorLayerChrome). Scene is re-resolved by id at
+		// confirm time so an unloaded scene can't leave a dangling pointer.
+		bool m_ShowEntityDeleteConfirm = false;
+		uint64_t m_PendingEntityDeleteSceneId = 0;
+		size_t m_PendingEntityDeleteCount = 0;
+		std::string m_PendingEntityDeleteLabel;
+		char m_ComponentSearchBuffer[128]{};
+		char m_SystemSearchBuffer[128]{};
+		char m_GlobalSystemSearchBuffer[128]{};
+		char m_ProjectSettingsSearchBuffer[256]{};
+		std::string m_SelectedAssetPath;
+		std::string m_ComponentClipboardJson;
+		std::string m_EntityClipboardJson;
+
+		std::vector<std::pair<std::string, std::string>> m_PlayModeScenes;
+		// Scenes that had unsaved edits when Play started; they are snapshotted privately and marked dirty again on Stop.
+		std::unordered_set<std::string> m_PlayModeDirtyScenes;
+		// Name of the active scene at play-mode entry. Restored after exit so
+		// a script-side LoadScene during play doesn't leak its choice into edit mode.
+		std::string m_PlayModeActiveScene;
+		LoadedSceneSelectionSnapshot m_PlayModeSelection;
+		// Inspector-authored script field values (ScriptComponent::PendingFieldValues)
+		// captured per entity at play-entry and forced back onto the reloaded entities
+		// after the play-exit restore. The play snapshot round-trips through the scene
+		// serializer, which can drop a pending value (notably a component/UI reference);
+		// re-applying the captured map guarantees inspector-assigned references survive a
+		// play/stop cycle regardless of where the serialize round-trip loses them.
+		// Keyed: scene name -> entity persistent UUID -> ("ClassName.FieldName" -> value).
+		std::unordered_map<std::string,
+			std::unordered_map<uint64_t, std::unordered_map<std::string, std::string>>>
+			m_PlayModeScriptFields;
+		std::weak_ptr<Scene> m_PlayModeRecompileScene;
+		bool m_PlayModeRecompilePending = false;
+		bool m_PlayModeStopRequested = false;
+		std::chrono::steady_clock::time_point m_PlayModeStopRequestTime{};
+		int m_PlayModeStopFramesToMeasure = 0;
+		std::string m_PlayModeStopOpenScene;
+		bool m_ShowPlayModeRestoreError = false;
+		std::string m_PlayModeRestoreError;
+		int m_StepFrames = 0;
+
+		float m_AutoSaveAccumulator = 0.0f;
+		std::string m_AutoSaveLastScenePath;
+
+		bool m_ShowBuildPanel = false;
+		bool m_ShowBuildProfilesPanel = false;
+		BuildProfilesPanel m_BuildProfilesPanel;
+		bool m_BuildProfilesPanelInitialized = false;
+		bool m_ShowPackageManager = false;
+		bool m_ShowProfiler = false;
+		ProfilerPanel m_ProfilerPanel;
+		bool m_ShowAnimationWindow = false;
+		AnimationWindow m_AnimationWindow;
+		bool m_ShowAnimatorWindow = false;
+		AnimatorWindow m_AnimatorWindow;
+		AnimationPreview m_AnimationPreview;
+		ScriptEditorWindows m_ScriptWindows;
+		std::string m_ScriptWindowsProjectRoot;
+
+		// AssetRegistry::GetChangeVersion() the build scene list was last reconciled against; gates the
+		// O(assets) FindAll so opening the Build panel doesn't force a registry rebuild every frame.
+		uint64_t m_BuildSceneListVersion = 0;
+		int m_DraggedSceneIndex = -1;
+		bool m_ShowProjectSettings = false;
+	public:
+		enum class SettingsCategory : uint8_t {
+			Display = 0,
+			Graphics,
+			Branding,
+			Build,
+			Editor,
+			Systems,
+			Physics,
+		};
+	private:
+		SettingsCategory m_SelectedSettingsCategory = SettingsCategory::Display;
+		bool m_ShowEditorPreferences = false;
+		EditorPreferencesPanel m_EditorPreferencesPanel;
+
+		// Startup splash: holds (static) while the deferred startup load runs
+		// behind it, then fades out. See EditorRuntime::SplashScreen.
+		EditorRuntime::SplashScreen m_Splash;
+		bool m_PackageManagerInitialized = false;
+		bool m_SplashPreviewRequest = false;
+		bool m_SplashPreviewActive = false;
+		float m_SplashPreviewElapsed = 0.0f;
+		TextureHandle m_SplashPreviewLogo;
+		TextureHandle m_SplashPreviewBackground;
+		std::uint32_t m_SplashPreviewTexRefToken = 0;
+		PackageManager m_PackageManager;
+		PackageManagerPanel m_PackageManagerPanel;
+		std::string m_BuildOutputDir;
+		std::string m_BuiltExecutablePath;
+		char m_BuildOutputDirBuffer[512]{};
+		char m_CustomDefineEntryBuffer[128]{}; // Build panel custom-define text input
+		int m_BuildState = 0; // 0=idle, 1=pending, 2=launch worker, 3=running
+		bool m_BuildAndPlay = false;
+		bool m_CommandLineBuild = false;
+		// Progress + stage written together under m_BuildProgressMutex so UI never observes a mismatched pair.
+		std::future<void> m_BuildFuture;
+		std::atomic<bool>  m_BuildSucceeded{ true };
+		std::mutex m_BuildProgressMutex;
+		float m_BuildProgress{ 0.0f };  // protected by m_BuildProgressMutex
+		std::string m_BuildStage;       // protected by m_BuildProgressMutex
+		std::vector<entt::entity> m_EditorPausedAudioEntities; // AudioSources paused by editor, not by gameplay
+		std::chrono::steady_clock::time_point m_BuildStartTime;
+
+		// Async scene/prefab format reserialization (Project Settings → Serialization → Asset format).
+		// Like the build worker, the heavy disk conversion runs off-thread while OnPreRender keeps
+		// painting the shared Win32 progress window from the values published here under the mutex.
+		int m_ReserializeState = 0; // 0=idle, 1=pending, 2=launch worker, 3=running
+		std::future<void> m_ReserializeFuture;
+		std::atomic<int> m_ReserializeConverted{ 0 };
+		std::mutex m_ReserializeProgressMutex;
+		float m_ReserializeProgress{ 0.0f }; // protected by m_ReserializeProgressMutex
+		std::string m_ReserializeStage;      // protected by m_ReserializeProgressMutex
+	};
+}

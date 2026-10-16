@@ -1,6 +1,6 @@
 # Job System
 
-The **Job System** is Index's tool for doing work on multiple CPU cores at once. Instead of running everything on the main thread, you hand off chunks of work as **jobs** and let a pool of worker threads run them in parallel.
+The **Job System** is Funke's tool for doing work on multiple CPU cores at once. Instead of running everything on the main thread, you hand off chunks of work as **jobs** and let a pool of worker threads run them in parallel.
 
 If you just want the short version: wrap independent work in a job, schedule it, and (optionally) wait for it to finish. Use it for heavy, parallel-friendly work like processing thousands of entities.
 
@@ -84,7 +84,7 @@ Job.ScheduleParallelFor(job, length: count).Complete();
 int created = ecb.Playback();   // all the entities are created here, on the main thread
 ```
 
-Each worker writes into its own slice of the buffer (no locks), and `Playback()` applies everything in one bulk step. This is the standard pattern for spawning lots of entities in parallel. (See `Index-Sandbox/Source/CreateEntityJobSample.cs` for a complete, runnable example.)
+Each worker writes into its own slice of the buffer (no locks), and `Playback()` applies everything in one bulk step. This is the standard pattern for spawning lots of entities in parallel. (See `Funke-Sandbox/Source/CreateEntityJobSample.cs` for a complete, runnable example.)
 
 ---
 

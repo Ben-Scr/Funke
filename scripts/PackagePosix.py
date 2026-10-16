@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Archive the Linux / macOS editor bundle (POSIX counterpart of BuildWindows.ps1 -PublishBundle).
 
-The Release Index-Launcher output already holds everything a user needs: the Launcher, Editor, Runtime,
-`index` CLI, Index-ScriptCore, the hot-reload compiler and the EngineSDK (scripts/CopyEngineSdk.py). This
-script checks that layout and packs it as Index-Editor-<version>-<Linux|macOS>-<arch>.tar.gz, keeping
+The Release Funke-Launcher output already holds everything a user needs: the Launcher, Editor, Runtime,
+`funke` CLI, Funke-ScriptCore, the hot-reload compiler and the EngineSDK (scripts/CopyEngineSdk.py). This
+script checks that layout and packs it as Funke-Editor-<version>-<Linux|macOS>-<arch>.tar.gz, keeping
 executable bits and the shared-library symlinks.
 
 Usage:
@@ -40,23 +40,23 @@ def main() -> int:
     folder_arch, label_arch = architecture()
     system = "macosx" if IS_MAC else "linux"
     platform_label = "macOS" if IS_MAC else "Linux"
-    launcher_dir = REPO_ROOT / "bin" / f"{args.configuration}-{system}-{folder_arch}" / "Index-Launcher"
+    launcher_dir = REPO_ROOT / "bin" / f"{args.configuration}-{system}-{folder_arch}" / "Funke-Launcher"
 
     engine_lib = "libIndex-Engine.dylib" if IS_MAC else "libIndex-Engine.so"
     required = [
-        "Index-Launcher", "Index-Editor", "Index-Runtime", engine_lib, "Index-ScriptCore.dll",
-        "Index-ScriptCore.runtimeconfig.json", "Index-PackageTool", "IndexAssets",
-        "EngineSDK/Licenses/Index/LICENSE.txt", "EngineSDK/Index-Engine/src",
+        "Funke-Launcher", "Funke-Editor", "Funke-Runtime", engine_lib, "Funke-ScriptCore.dll",
+        "Funke-ScriptCore.runtimeconfig.json", "Funke-PackageTool", "FunkeAssets",
+        "EngineSDK/Licenses/Funke/LICENSE.txt", "EngineSDK/Funke-Engine/src",
     ]
     missing = [name for name in required if not (launcher_dir / name).exists()]
     if missing:
         print(f"[PackagePosix] error: {launcher_dir} is incomplete; missing: {', '.join(missing)}", file=sys.stderr)
-        print("[PackagePosix] Build first: make config=release Index-Launcher (and config=dist Index-Runtime "
+        print("[PackagePosix] Build first: make config=release Funke-Launcher (and config=dist Funke-Runtime "
               "for Release exports).", file=sys.stderr)
         return 1
     if not (launcher_dir / "EngineSDK" / "Runtime-Dist").is_dir():
         print("[PackagePosix] warning: EngineSDK/Runtime-Dist is missing; Release-profile exports will need a "
-              "source tree. Build `make config=dist Index-Runtime` before the Launcher.", file=sys.stderr)
+              "source tree. Build `make config=dist Funke-Runtime` before the Launcher.", file=sys.stderr)
 
     version = "0.0.0-dev"
     metadata = REPO_ROOT / "build" / "BuildMetadata.json"
@@ -65,11 +65,11 @@ def main() -> int:
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    archive = output_dir / f"Index-Editor-{version}-{platform_label}-{label_arch}.tar.gz"
-    root_name = f"Index-{version}"
+    archive = output_dir / f"Funke-Editor-{version}-{platform_label}-{label_arch}.tar.gz"
+    root_name = f"Funke-{version}"
 
     # Files a local run leaves behind must not ship.
-    skipped = {"imgui.ini", "index-project.json"}
+    skipped = {"imgui.ini", "funke-project.json"}
 
     def keep(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
         if Path(info.name).name in skipped:

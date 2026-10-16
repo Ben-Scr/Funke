@@ -43,7 +43,7 @@
   ],
   "globalSystems": [],
   "modules": [
-    "Index.3D"
+    "Funke.3D"
   ],
   "assetSerializationFormat": "Json"
 }

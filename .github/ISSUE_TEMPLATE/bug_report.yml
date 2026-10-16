@@ -5,12 +5,12 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting! Logs live in `%LOCALAPPDATA%\Index\Logs\` and crash dumps in `%LOCALAPPDATA%\Index\CrashDumps\`.
+        Thanks for reporting! Logs live in `%LOCALAPPDATA%\Funke\Logs\` and crash dumps in `%LOCALAPPDATA%\Funke\CrashDumps\`.
         Please check [Known Limitations](https://github.com/Ben-Scr/Index/blob/master/Github-Docs/Documentation/Known-Limitations.md) first.
   - type: input
     id: version
     attributes:
-      label: Index version
+      label: Funke version
       description: Shown in the editor title bar and in BuildMetadata.json next to the executables.
       placeholder: 2026.1.0-beta.1
     validations:

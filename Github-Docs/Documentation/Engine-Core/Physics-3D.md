@@ -1,6 +1,6 @@
 # Physics 3D
 
-3D entities are simulated by [Jolt Physics](https://github.com/jrouwe/JoltPhysics), the engine behind *Horizon Forbidden West* and the default 3D physics of Godot. It runs multi-threaded and is statically linked into `Index-Engine.dll`. 2D physics (Box2D / Index-Physics) is separate and unchanged; the two stacks never interact, because an entity has either a Transform 2D or a Transform 3D.
+3D entities are simulated by [Jolt Physics](https://github.com/jrouwe/JoltPhysics), the engine behind *Horizon Forbidden West* and the default 3D physics of Godot. It runs multi-threaded and is statically linked into `Funke-Engine.dll`. 2D physics (Box2D / Index-Physics) is separate and unchanged; the two stacks never interact, because an entity has either a Transform 2D or a Transform 3D.
 
 ## Components
 
@@ -34,13 +34,13 @@ Dynamic bodies write their position and rotation back into the Transform 3D afte
 
 **Interpolate:** physics steps at the fixed tick rate (50 Hz by default), usually slower than the screen refreshes. With Interpolate on, a dynamic body's Transform 3D is blended between its last two physics steps every frame, before scripts run, so the body and a camera that follows it in `OnUpdate` move smoothly. The cost is one physics step of visual delay. Scripts read the blended pose; setting the position still teleports the body.
 
-Physics steps at the project's fixed tick rate (see `IndexProject::PhysicsTickRate`). Steps longer than 1/60 s are split into several collision sub-steps.
+Physics steps at the project's fixed tick rate (see `FunkeProject::PhysicsTickRate`). Steps longer than 1/60 s are split into several collision sub-steps.
 
 ## Scripting
 
 ```csharp
-using Index;
-using Index.Physics;
+using Funke;
+using Funke.Physics;
 
 public class Ball : EntityScript
 {
@@ -86,11 +86,11 @@ Velocity, forces and raycasts do nothing in edit mode. Scripts run their `OnFixe
 
 | Path | Contents |
 |---|---|
-| `Index-Engine/src/Components/Physics3D/` | `Rigidbody3DComponent`, `Collider3DComponents` (plain data, no Jolt types) |
-| `Index-Engine/src/Physics3D/PhysicsWorld3D.*` | One Jolt `PhysicsSystem` per scene: body sync, stepping, contact pairing, raycasts (Jolt is hidden behind a pimpl) |
-| `Index-Engine/src/Physics3D/PhysicsSystem3D.*` | The scene system that owns the world in play mode (one of the standard scene systems) |
-| `Index-Engine/src/Scene/BuiltInComponentRegistrationPhysics3D.cpp` | Inspector properties and JSON serialization |
-| `Index-Engine/src/Scripting/ScriptBindingsPhysics3D.cpp` | C# bindings |
+| `Funke-Engine/src/Components/Physics3D/` | `Rigidbody3DComponent`, `Collider3DComponents` (plain data, no Jolt types) |
+| `Funke-Engine/src/Physics3D/PhysicsWorld3D.*` | One Jolt `PhysicsSystem` per scene: body sync, stepping, contact pairing, raycasts (Jolt is hidden behind a pimpl) |
+| `Funke-Engine/src/Physics3D/PhysicsSystem3D.*` | The scene system that owns the world in play mode (one of the standard scene systems) |
+| `Funke-Engine/src/Scene/BuiltInComponentRegistrationPhysics3D.cpp` | Inspector properties and JSON serialization |
+| `Funke-Engine/src/Scripting/ScriptBindingsPhysics3D.cpp` | C# bindings |
 | `premake/dependencies/jolt.lua`, `External/JoltPhysics` | The Jolt build (submodule, pinned to v5.6.0) |
 
 Jolt is compiled without any `JPH_*` feature defines (no debug renderer, profiler, ObjectStream or GPU compute), so engine code that includes Jolt headers needs none either. If you ever add one, add it to the Jolt project **and** every consumer, because a mismatch changes object layouts.

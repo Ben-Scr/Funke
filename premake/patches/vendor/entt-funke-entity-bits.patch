@@ -1,0 +1,65 @@
+diff --git a/src/entt/entity/entity.hpp b/src/entt/entity/entity.hpp
+index 7123b780f5cea6b1fa88d94c0f13424589639091..06c6e2887e8c209bb1aeeab12e032f7908f53174 100644
+--- a/src/entt/entity/entity.hpp
++++ b/src/entt/entity/entity.hpp
+@@ -34,6 +34,30 @@ struct entt_traits<Type>
+     using value_type = Type;
+ };
+ 
++// Funke-engine patch: the entity/version bit split is configurable at
++// build time via the `entityBits` field in funke-project.json, which
++// premake translates into a -DFUNKE_ENTITY_BITS=N define. The EnTT
++// stock split (20 entity / 12 version) caps a scene at 1,048,575 live
++// entities — that's the default the engine ships with. Selecting 22,
++// 24, or 28 raises that to 4M / 16M / 268M respectively at the cost
++// of fewer version bits (EnTT uses the version to detect stale handles
++// to recycled slots; fewer bits = aliasing happens sooner). See
++// premake5.lua's GetFunkeEntityBits() and the editor's Project Settings
++// panel for the user-facing surfaces.
++//
++// On top of the build-time -D, the editor's "Rebuild Engine" flow can
++// change the bit split without forcing a premake regen by rewriting a
++// generated header that #undef/#defines FUNKE_ENTITY_BITS to the new
++// value. The header lives at:
++//   Funke-Engine/src/Generated/FunkeEntityBitsConfig.h
++// and that folder is on every C++ project's include path (the four main
++// projects + native package layers; see WriteFunkeEntityBitsConfigHeader
++// in premake5.lua). __has_include guards the inclusion so a missing or
++// stale-include-path build still falls back to the -D value.
++#if __has_include("FunkeEntityBitsConfig.h")
++#  include "FunkeEntityBitsConfig.h"
++#endif
++
+ template<>
+ struct entt_traits<std::uint32_t> {
+     using value_type = std::uint32_t;
+@@ -41,8 +65,29 @@ struct entt_traits<std::uint32_t> {
+     using entity_type = std::uint32_t;
+     using version_type = std::uint16_t;
+ 
++#if defined(FUNKE_ENTITY_BITS)
++  #if   FUNKE_ENTITY_BITS == 16
++    static constexpr entity_type entity_mask  = 0xFFFF;
++    static constexpr entity_type version_mask = 0xFFFF;
++  #elif FUNKE_ENTITY_BITS == 20
++    static constexpr entity_type entity_mask  = 0xFFFFF;
++    static constexpr entity_type version_mask = 0xFFF;
++  #elif FUNKE_ENTITY_BITS == 22
++    static constexpr entity_type entity_mask  = 0x3FFFFF;
++    static constexpr entity_type version_mask = 0x3FF;
++  #elif FUNKE_ENTITY_BITS == 24
++    static constexpr entity_type entity_mask  = 0xFFFFFF;
++    static constexpr entity_type version_mask = 0xFF;
++  #elif FUNKE_ENTITY_BITS == 28
++    static constexpr entity_type entity_mask  = 0xFFFFFFF;
++    static constexpr entity_type version_mask = 0xF;
++  #else
++    #error "FUNKE_ENTITY_BITS must be one of: 16, 20, 22, 24, 28"
++  #endif
++#else
+     static constexpr entity_type entity_mask = 0xFFFFF;
+     static constexpr entity_type version_mask = 0xFFF;
++#endif
+ };
+ 
+ template<>

@@ -1,0 +1,15 @@
+#pragma once
+#include "Scene/SceneSystem.hpp"
+
+namespace Funke {
+	class AudioUpdateSystem : public SceneSystem {
+	public:
+		void Start(Scene& scene) override;
+
+	private:
+		// Pulled out so re-spawn-after-Start could reuse it later. Today only
+		// Start() calls this; documenting the contract makes future expansion
+		// (e.g. polling for newly-added AudioSourceComponents) cheap.
+		void StartPlayOnAwake(Scene& scene);
+	};
+}

@@ -1,10 +1,10 @@
 # ECS — Entities & Components
 
-Index organizes everything in your game with an **Entity Component System (ECS)**. This page explains the model: what entities and components are, the components Index ships with, and how you work with them.
+Funke organizes everything in your game with an **Entity Component System (ECS)**. This page explains the model: what entities and components are, the components Funke ships with, and how you work with them.
 
 If you just want the short version: an **entity** is an empty "thing" in your scene. You give it **components** (data like a position, a sprite, a collider) to make it *something*. Code then reads and changes those components.
 
-> Index uses the [EnTT](https://github.com/skypjack/entt) library under the hood, but you rarely touch it directly — Index wraps it in a friendly `Entity` type.
+> Funke uses the [EnTT](https://github.com/skypjack/entt) library under the hood, but you rarely touch it directly — Funke wraps it in a friendly `Entity` type.
 
 ---
 
@@ -24,7 +24,7 @@ The power of this split: an entity is whatever its components say it is. Add a `
 
 ## Entities
 
-An **entity** is essentially an ID. In code, Index gives you an `Entity` handle that bundles that ID with the scene it belongs to, so you can call methods on it.
+An **entity** is essentially an ID. In code, Funke gives you an `Entity` handle that bundles that ID with the scene it belongs to, so you can call methods on it.
 
 Creating and using an entity in C++:
 
@@ -77,7 +77,7 @@ Some components hold no data at all — these are **tags**, used purely as marke
 
 ### Built-in components
 
-Index ships a large set of components, grouped by area. Here are the main ones:
+Funke ships a large set of components, grouped by area. Here are the main ones:
 
 **General**
 - `Transform2D` — position, rotation, and scale (the most fundamental component). Supports local *and* world space, and follows its parent in a hierarchy.
@@ -89,7 +89,7 @@ Index ships a large set of components, grouped by area. Here are the main ones:
 - `SpriteRenderer` — draws a texture/sprite.
 - `Camera2D` — a 2D camera (what the player sees).
 - `TextRenderer` — draws text with a font.
-- `Image` — a UI image. **Image Type = Sliced** (9-slice) keeps **Border Left/Right/Top/Bottom** (texture pixels, scaled by **Border Scale**) at their size while the middle stretches, so one rounded-rectangle sprite fits buttons and panels of any size. **Image Type = Tiled** keeps the corners as well but repeats the edges and the middle at **Border Scale** UI units per texture pixel instead of stretching them (without a border the whole sprite repeats). When all four borders are 0, the image uses the border stored with its texture: the texture Inspector's **Border** for a whole image, or the Sprite Editor's per-slice border for a sprite slice (`.meta`: `"border": [left, bottom, right, top]`; `index sprite border` sets it from the command line). **Material** takes a `.material` whose shader targets `UI` (see *Custom Shaders*). Scene keys: `imageType` (1 = Sliced, 2 = Tiled), `border` `[left, bottom, right, top]`, `borderScale`, `materialAsset`. C#: `Image.Type`, `Image.Border` (X left, Y bottom, Z right, W top), `Image.BorderScale`, `Image.Material`.
+- `Image` — a UI image. **Image Type = Sliced** (9-slice) keeps **Border Left/Right/Top/Bottom** (texture pixels, scaled by **Border Scale**) at their size while the middle stretches, so one rounded-rectangle sprite fits buttons and panels of any size. **Image Type = Tiled** keeps the corners as well but repeats the edges and the middle at **Border Scale** UI units per texture pixel instead of stretching them (without a border the whole sprite repeats). When all four borders are 0, the image uses the border stored with its texture: the texture Inspector's **Border** for a whole image, or the Sprite Editor's per-slice border for a sprite slice (`.meta`: `"border": [left, bottom, right, top]`; `funke sprite border` sets it from the command line). **Material** takes a `.material` whose shader targets `UI` (see *Custom Shaders*). Scene keys: `imageType` (1 = Sliced, 2 = Tiled), `border` `[left, bottom, right, top]`, `borderScale`, `materialAsset`. C#: `Image.Type`, `Image.Border` (X left, Y bottom, Z right, W top), `Image.BorderScale`, `Image.Material`.
 - `ParticleSystem2D` — particle effects.
 - `ParticleSystem3D` — 3D billboard particle effects (see [3D](3D.md#particles)).
 - `PostProcessing2D` — screen effects like bloom or vignette.
@@ -177,7 +177,7 @@ For details on **systems** (the C++ side, with `Awake`/`Start`/`Update`) see [Sc
 
 - An **entity** is an ID; **components** are the data attached to it; **systems/scripts** are the code.
 - Components are plain data; empty ones are **tags**.
-- Index ships components for transforms, graphics, physics, UI, and audio; packages add more.
+- Funke ships components for transforms, graphics, physics, UI, and audio; packages add more.
 - Each **scene** owns its entities. Entities can form **parent/child** hierarchies.
 - You work with entities via `AddComponent` / `GetComponent` and query many at once with views (C++) or `Query` (C#).
 

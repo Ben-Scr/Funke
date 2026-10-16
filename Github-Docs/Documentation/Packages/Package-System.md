@@ -1,6 +1,6 @@
 # Package System
 
-This page explains how Index's package system works **under the hood** — the loader, build outputs, runtime loading, the cloud registry, and the rules that aren't obvious from the outside.
+This page explains how Funke's package system works **under the hood** — the loader, build outputs, runtime loading, the cloud registry, and the rules that aren't obvious from the outside.
 
 If you just want to *write* a package, start with [Writing Packages](Writing-Packages.md). This page is the reference for how the machinery fits together.
 
@@ -21,7 +21,7 @@ A package can reach a project from three places:
 When generating project files for a specific game, the project path is passed to premake:
 
 ```sh
-./vendor/bin/premake5.exe vs2022 --index-project="C:/path/to/MyProject"
+./vendor/bin/premake5.exe vs2022 --funke-project="C:/path/to/MyProject"
 ```
 
 That absolute path tells the loader both where the project's `Packages/` folder is and where to read `project.json`.
@@ -34,7 +34,7 @@ That absolute path tells the loader both where the project's `Packages/` folder 
 |-------|--------|---------------|-------|
 | `native` | `Pkg.<Name>.Native` (C++ SharedLib) | Yes | Gets the engine include set, the import macro, and the matching EnTT entity-bits define. |
 | `native_standalone` | the same `Pkg.<Name>.Native` SharedLib | No | Pure C++. No engine symbols — logging macros are unavailable; use `printf` or your own logger. |
-| `csharp` | `Pkg.<Name>` (C# net10.0 SharedLib) | n/a | Always references `Index-ScriptCore`. |
+| `csharp` | `Pkg.<Name>` (C# net10.0 SharedLib) | n/a | Always references `Funke-ScriptCore`. |
 
 **`native` and `native_standalone` cannot coexist** in one package: they would both compile into the single `Pkg.<Name>.Native` DLL, but one links the engine and the other is explicitly the "no engine link" path. The loader rejects the combination at generation time, and the scaffolder refuses it upfront.
 
@@ -49,7 +49,7 @@ Older manifests used `engine_core` (→ `native`) and `standalone_cpp` (→ `nat
 When project files are generated for a project, `project.json`'s `packages` array decides which packages actually register as build projects:
 
 ```jsonc
-{ "packages": ["Index.Tilemap2D", "MyGame.Loot"] }
+{ "packages": ["Funke.Tilemap2D", "MyGame.Loot"] }
 ```
 
 | State | Result |
@@ -95,11 +95,11 @@ A pre-release only matches when the range names that exact version with a pre-re
 
 The rules are checked in three places, all with the same resolver:
 
-- **Project file generation** (`premake/package-loader.lua`) fails with an `[Index Packages]` error naming the package, the range and the installed version.
+- **Project file generation** (`premake/package-loader.lua`) fails with an `[Funke Packages]` error naming the package, the range and the installed version.
 - **Runtime loading** (`PackageHost`) pulls in dependencies that `project.json` does not list, loads dependencies before the packages that need them, and skips a package whose dependency is missing, outside its range or incompatible with the engine. Only that package and its dependents are skipped; the error is in the log.
 - **The Package Manager** shows each package's requirements, marks unmet ones and lists dependency-only packages as *dependency*.
 
-A package can also need [engine modules](../Engine-Core/Engine-Modules.md) (`modules = { "Index.2D" }`). Installing it adds them to `project.json` `modules`; runtime loading skips a package whose module is off, and the game build fails with an error naming the package and the module. The engine modules themselves are listed in the Package Manager under **Engine Modules**.
+A package can also need [engine modules](../Engine-Core/Engine-Modules.md) (`modules = { "Funke.2D" }`). Installing it adds them to `project.json` `modules`; runtime loading skips a package whose module is off, and the game build fails with an error naming the package and the module. The engine modules themselves are listed in the Package Manager under **Engine Modules**.
 
 ### packages-lock.json
 
@@ -113,10 +113,10 @@ For each registered package:
 
 - A **native** (or **native_standalone**) layer → one `Pkg.<Name>.Native` project (C++20 SharedLib).
   - Output: `bin/<config>/Pkg.<Name>.Native/Pkg.<Name>.Native.dll`
-  - Compatibility metadata: the adjacent `Pkg.<Name>.Native.dll.indexabi` file.
+  - Compatibility metadata: the adjacent `Pkg.<Name>.Native.dll.funkeabi` file.
 - A **csharp** layer → one `Pkg.<Name>` project (C# net10.0 SharedLib).
   - Output: `bin/<config>/Pkg.<Name>/Pkg.<Name>.dll`
-  - Always references `Index-ScriptCore` implicitly.
+  - Always references `Funke-ScriptCore` implicitly.
 
 Configurations are **Debug / Release / Dist**. `Dist` strips symbols and is what shipped runtimes use.
 
@@ -124,15 +124,15 @@ Configurations are **Debug / Release / Dist**. `Dist` strips symbols and is what
 
 ## Runtime loading
 
-The runtime side is `Index-Engine/src/Core/PackageHost.{hpp,cpp}`:
+The runtime side is `Funke-Engine/src/Core/PackageHost.{hpp,cpp}`:
 
 - **`PackageHost::LoadAll()`** — scans the directory next to the running executable for `Pkg.<Name>.Native.dll` files and loads each one. Idempotent. This runs during [startup](../Engine-Core/Startup-Processes.md), **before any scene loads**, so package-defined components exist before a scene tries to deserialize them.
 - **`PackageHost::LoadInstalled()`** — the editor's "I just installed a package, pick it up without restarting" hook. Filters against the project allow-list first.
-- Each loaded DLL is queried for **`IndexPackage_OnLoad`** (called now) and optionally **`IndexPackage_OnUnload`** (called at shutdown). Both are plain C entry points.
-- **`PackageHost::UnloadAll()`** — runs `IndexPackage_OnUnload` and frees modules in reverse order at shutdown.
+- Each loaded DLL is queried for **`FunkePackage_OnLoad`** (called now) and optionally **`FunkePackage_OnUnload`** (called at shutdown). Both are plain C entry points.
+- **`PackageHost::UnloadAll()`** — runs `FunkePackage_OnUnload` and frees modules in reverse order at shutdown.
 
-Before loading, PackageHost validates the adjacent `.indexabi` file. A `native`
-package records the SHA-256 fingerprint of the exact `Index-Engine.dll` it linked;
+Before loading, PackageHost validates the adjacent `.funkeabi` file. A `native`
+package records the SHA-256 fingerprint of the exact `Funke-Engine.dll` it linked;
 a missing or different fingerprint is rejected with rebuild guidance before any
 package code can run. `native_standalone` records an engine-independent boundary.
 Keep the sidecar with the DLL whenever package binaries are copied or shipped.
@@ -149,10 +149,10 @@ Distribute `native` packages as source and rebuild them for each engine SDK/buil
 
 ### The package API surface
 
-Inside `IndexPackage_OnLoad`, packages register their content through helpers:
+Inside `FunkePackage_OnLoad`, packages register their content through helpers:
 
-- `Index-Engine/src/Packages/PackageApi.hpp` — defines `INDEX_PACKAGE_API` (the cross-DLL export marker) and the entry-point signatures.
-- `Index-Engine/src/Packages/PackageRegistration.hpp` — `Package::RegisterSerializableComponent<T>(...)` and `Package::DeclareComponentConflict<A, B>()`.
+- `Funke-Engine/src/Packages/PackageApi.hpp` — defines `FUNKE_PACKAGE_API` (the cross-DLL export marker) and the entry-point signatures.
+- `Funke-Engine/src/Packages/PackageRegistration.hpp` — `Package::RegisterSerializableComponent<T>(...)` and `Package::DeclareComponentConflict<A, B>()`.
 
 A registered component behaves exactly like a built-in one: it shows up in the Add Component menu, draws in the Inspector, and round-trips through scene serialization.
 
@@ -160,7 +160,7 @@ A registered component behaves exactly like a built-in one: it shows up in the A
 
 ## Cloud registry
 
-End users install packages through the editor's **Package Manager**, which reads a static `index.json` from a public GitHub repo (the **Index Package Registry**). There is no server — it's a static file served over the GitHub CDN.
+End users install packages through the editor's **Package Manager**, which reads a static `index.json` from a public GitHub repo (the **Funke Package Registry**). There is no server — it's a static file served over the GitHub CDN.
 
 Install flow:
 
@@ -170,9 +170,9 @@ Install flow:
 4. Add the requested package to the project's allow-list (dependencies load transitively) and update `packages-lock.json`.
 5. Regenerate project files, rebuild, and call `PackageHost::LoadInstalled()` to load the new DLLs live.
 
-**Updates** use the same plan: when the registry has a newer release that fits the engine and every installed dependent, the package shows **Update to x.y.z**. The old folder is moved to `.index/package-backup/` and restored if any step fails, so a failed update leaves the previous set of packages in place.
+**Updates** use the same plan: when the registry has a newer release that fits the engine and every installed dependent, the package shows **Update to x.y.z**. The old folder is moved to `.funke/package-backup/` and restored if any step fails, so a failed update leaves the previous set of packages in place.
 
-To **publish**: zip your package folder (a single top-level folder containing `index-package.lua`), host the zip somewhere fetchable, and add an entry to the registry's `index.json`:
+To **publish**: zip your package folder (a single top-level folder containing `funke-package.lua`), host the zip somewhere fetchable, and add an entry to the registry's `index.json`:
 
 ```json
 { "packages": [ {
@@ -185,13 +185,13 @@ To **publish**: zip your package folder (a single top-level folder containing `i
 } ] }
 ```
 
-The top-level `version` / `downloadUrl` / `sha256` describe one release; `versions` adds others, so projects on an older engine can still install a release that supports it. `minEngineVersion: "X"` is still read as `engine: ">=X"`. A release may list `"modules": ["Index.2D"]`; the install then enables those modules, and a module this engine doesn't know or wasn't compiled with stops the install. Pushing that file is the only deploy step.
+The top-level `version` / `downloadUrl` / `sha256` describe one release; `versions` adds others, so projects on an older engine can still install a release that supports it. `minEngineVersion: "X"` is still read as `engine: ">=X"`. A release may list `"modules": ["Funke.2D"]`; the install then enables those modules, and a module this engine doesn't know or wasn't compiled with stops the install. Pushing that file is the only deploy step.
 
 ---
 
 ## The package CLI tool
 
-`Index-PackageTool` is a small stateless .NET command-line program the engine shells out to for network and archive work. It handles things like searching NuGet, downloading files with progress, zipping/unzipping projects, and the registry fetch/download/verify/extract operations above. The editor calls it behind the scenes — you rarely invoke it directly.
+`Funke-PackageTool` is a small stateless .NET command-line program the engine shells out to for network and archive work. It handles things like searching NuGet, downloading files with progress, zipping/unzipping projects, and the registry fetch/download/verify/extract operations above. The editor calls it behind the scenes — you rarely invoke it directly.
 
 ---
 
@@ -205,13 +205,13 @@ These break things in ways the error messages don't always explain:
 
 3. **Graphics library paths are per-configuration.** The native layer links the WebGPU/Dawn library, which lives in per-config folders. The loader sets this up per configuration (Dist points at the Release library). A linker error here usually means a configuration mismatch.
 
-4. **The csharp layer auto-references `Index-ScriptCore`.** Don't list it in `dependencies` — that field is for *other packages*. Pure-managed packages pay nothing for the reference if they don't use it.
+4. **The csharp layer auto-references `Funke-ScriptCore`.** Don't list it in `dependencies` — that field is for *other packages*. Pure-managed packages pay nothing for the reference if they don't use it.
 
 5. **The allow-list is fail-closed.** A missing `project.json` or absent `packages` field means *no* packages, not *all* packages.
 
 6. **Regenerate after manifest/allow-list changes.** The scaffolder does this; manual edits don't.
 
-7. **Native DLLs are tied to one engine binary.** The build writes a `.dll.indexabi` sidecar and PackageHost refuses a missing or stale one. The editor rebuilds project source packages automatically on the next project open after the engine changes; engine packages under `packages/` are rebuilt with the engine. Do not publish one generic native DLL for multiple engine builds.
+7. **Native DLLs are tied to one engine binary.** The build writes a `.dll.funkeabi` sidecar and PackageHost refuses a missing or stale one. The editor rebuilds project source packages automatically on the next project open after the engine changes; engine packages under `packages/` are rebuilt with the engine. Do not publish one generic native DLL for multiple engine builds.
 
 ---
 
@@ -220,14 +220,14 @@ These break things in ways the error messages don't always explain:
 | Concern | File |
 |---------|------|
 | Loader / validator / project registration | `premake/package-loader.lua` (read this first) |
-| Runtime DLL discovery & lifecycle | `Index-Engine/src/Core/PackageHost.{hpp,cpp}` |
-| Component registration API | `Index-Engine/src/Packages/PackageRegistration.hpp` |
-| Cross-DLL export marker + entry points | `Index-Engine/src/Packages/PackageApi.hpp` |
-| Editor Package Manager UI | `Index-Editor/src/Gui/PackageManagerPanel.{hpp,cpp}` |
-| NuGet / registry management | `Index-Engine/src/Packages/PackageManager.{hpp,cpp}` |
-| Stateless CLI tool | `Index-PackageTool/Program.cs` |
+| Runtime DLL discovery & lifecycle | `Funke-Engine/src/Core/PackageHost.{hpp,cpp}` |
+| Component registration API | `Funke-Engine/src/Packages/PackageRegistration.hpp` |
+| Cross-DLL export marker + entry points | `Funke-Engine/src/Packages/PackageApi.hpp` |
+| Editor Package Manager UI | `Funke-Editor/src/Gui/PackageManagerPanel.{hpp,cpp}` |
+| NuGet / registry management | `Funke-Engine/src/Packages/PackageManager.{hpp,cpp}` |
+| Stateless CLI tool | `Funke-PackageTool/Program.cs` |
 | Scaffolder / remover / version bump | `scripts/packages/NewPackage.py`, `RemovePackage.py`, `BumpPackageVersion.py` |
-| Cloud registry (external repo) | the Index Package Registry's `index.json` |
+| Cloud registry (external repo) | the Funke Package Registry's `index.json` |
 
 ---
 

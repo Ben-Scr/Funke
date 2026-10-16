@@ -1,0 +1,9 @@
+{
+  "id": "Funke.Empty3D",
+  "displayName": "Empty 3D",
+  "description": "An empty 3D scene with a perspective camera and a directional light.",
+  "category": "3D",
+  "sortOrder": 20,
+  "modules": [ "Funke.3D" ],
+  "startupScene": "SampleScene"
+}

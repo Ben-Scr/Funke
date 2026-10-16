@@ -1,22 +1,22 @@
 # Platform Packages
 
-Windows (and, from source, Linux and macOS) builds are part of the editor. Every other export target — Android, iOS, Web — comes from a **platform package**: a folder with an `index-package.lua` and a builder script. The engine itself knows nothing about those platforms' toolchains; when no package for a platform is installed, the platform is simply unavailable in **Build Profiles**.
+Windows (and, from source, Linux and macOS) builds are part of the editor. Every other export target — Android, iOS, Web — comes from a **platform package**: a folder with an `funke-package.lua` and a builder script. The engine itself knows nothing about those platforms' toolchains; when no package for a platform is installed, the platform is simply unavailable in **Build Profiles**.
 
 First-party packages live in the engine checkout under `platforms/`:
 
 | Package | Kind | What it adds |
 |---|---|---|
-| `Index.Platform.Android` | platform | Signed `.apk` (arm64-v8a, Android 8.0 / API 26+), plus an `.aab` for Google Play in Release |
-| `Index.Platform.iOS` | platform | Xcode project, or a signed `.app` with a development team (macOS only) |
-| `Index.Platform.Web` | platform | Static site: WebAssembly + WebGPU |
-| `Index.ScriptRuntime.Mono` | build-component | C# scripting on Android, iOS and Web through the Mono runtime |
+| `Funke.Platform.Android` | platform | Signed `.apk` (arm64-v8a, Android 8.0 / API 26+), plus an `.aab` for Google Play in Release |
+| `Funke.Platform.iOS` | platform | Xcode project, or a signed `.app` with a development team (macOS only) |
+| `Funke.Platform.Web` | platform | Static site: WebAssembly + WebGPU |
+| `Funke.ScriptRuntime.Mono` | build-component | C# scripting on Android, iOS and Web through the Mono runtime |
 
 ## Where packages are found
 
 The editor looks in these folders, first match per platform wins:
 
-1. Every folder in `INDEX_PLATFORM_PACKAGES` (`;`-separated on Windows, `:` elsewhere) — for package development.
-2. `<user data>/Index/Platforms/<Name>/` — where installed packages go (`%LOCALAPPDATA%\Index\Platforms` on Windows, `~/Library/Application Support/Index/Platforms` on macOS, `~/.local/share/Index/Platforms` on Linux).
+1. Every folder in `FUNKE_PLATFORM_PACKAGES` (`;`-separated on Windows, `:` elsewhere) — for package development.
+2. `<user data>/Funke/Platforms/<Name>/` — where installed packages go (`%LOCALAPPDATA%\Funke\Platforms` on Windows, `~/Library/Application Support/Funke/Platforms` on macOS, `~/.local/share/Funke/Platforms` on Linux).
 3. `<engine>/platforms/<Name>/` — the first-party packages of an engine checkout.
 
 A package only shows up when its builder supports the machine the editor runs on (`hosts`), so the iOS package is listed only on macOS.
@@ -43,7 +43,7 @@ Platform-specific settings go into the profile's `.build` file under `platformOp
 }
 ```
 
-The first build for a platform compiles SDL3, Dawn and the engine for that target and caches the results in `%LOCALAPPDATA%\Index\PlatformCache` (override with `INDEX_PLATFORM_CACHE`); later builds only recompile what changed.
+The first build for a platform compiles SDL3, Dawn and the engine for that target and caches the results in `%LOCALAPPDATA%\Funke\PlatformCache` (override with `FUNKE_PLATFORM_CACHE`); later builds only recompile what changed.
 
 ## Android
 
@@ -62,7 +62,7 @@ Requirements: Python 3.10+, CMake, Ninja, the Android SDK with build-tools and a
 | `bundletoolPath` | A `bundletool-all.jar` to use; empty = bundletool 1.18.3, downloaded once and checked against its SHA-256. |
 | `sdkPath`, `ndkPath`, `jdkPath` | Explicit tool locations. |
 
-Packages can read further options, for example `admobAppId` for [Index.Ads](#ads-and-other-java-libraries-from-packages).
+Packages can read further options, for example `admobAppId` for [Funke.Ads](#ads-and-other-java-libraries-from-packages).
 
 The APK contains the engine, SDL3 and the Mono runtime as native libraries; the game content is unpacked to the app's private storage on first launch. Games target Android 16 (API 36), which Google Play requires for new apps and updates since 31 August 2026; they declare themselves as games (`android:appCategory="game"`), so large screens keep the chosen orientation, and keep the classic back button (`enableOnBackInvokedCallback="false"`). All native libraries support 16 KB memory pages, which Play requires for apps targeting Android 15 and later.
 
@@ -93,9 +93,9 @@ Play accepts only App Bundles for new apps. A Release build writes both files to
 
 ### Ads and other Java libraries from packages
 
-Engine packages can bring Android code with them: Java sources, libraries from Maven (AARs and JARs, such as Google's ad or billing SDKs) and manifest entries. The builder resolves the libraries without Gradle, merges their manifests and resources into the game's and dexes everything into the APK and bundle. [Writing Packages](../Packages/Writing-Packages.md#android-java-code-maven-libraries-and-manifest-entries) describes the `android` section of `index-package.lua`.
+Engine packages can bring Android code with them: Java sources, libraries from Maven (AARs and JARs, such as Google's ad or billing SDKs) and manifest entries. The builder resolves the libraries without Gradle, merges their manifests and resources into the game's and dexes everything into the APK and bundle. [Writing Packages](../Packages/Writing-Packages.md#android-java-code-maven-libraries-and-manifest-entries) describes the `android` section of `funke-package.lua`.
 
-**Index.Ads** uses this for Google AdMob: banners, interstitials, rewarded ads and Google's GDPR consent form, simulated with placeholders in the editor. Install it from the Package Manager and set the profile option `admobAppId`; its README covers ad units, consent and the Play Console declarations.
+**Funke.Ads** uses this for Google AdMob: banners, interstitials, rewarded ads and Google's GDPR consent form, simulated with placeholders in the editor. Install it from the Package Manager and set the profile option `admobAppId`; its README covers ad units, consent and the Play Console declarations.
 
 Scripts reach a package's Java classes through `AndroidBridge`:
 
@@ -103,17 +103,17 @@ Scripts reach a package's Java classes through `AndroidBridge`:
 // Calls `public static String greet(String)` on a Java class the package ships.
 string? answer = AndroidBridge.Call("com.example.mylib.MyPlugin", "greet", "{\"name\":\"Ada\"}");
 
-// Java answers later with dev.index.player.IndexBridge.send("MyPlugin", json); handlers run on the main thread.
+// Java answers later with dev.funke.player.FunkeBridge.send("MyPlugin", json); handlers run on the main thread.
 AndroidBridge.Subscribe("MyPlugin", json => Log.Info(json));
 ```
 
-`Call` returns null when the class or method is missing, it threw (the exception is in logcat), or off Android. Java code that touches views hops to the UI thread itself (`IndexBridge.getActivity().runOnUiThread(...)`). `AndroidBridge.Simulate(channel, message)` delivers a message as if Java had sent it, for tests and editor stand-ins.
+`Call` returns null when the class or method is missing, it threw (the exception is in logcat), or off Android. Java code that touches views hops to the UI thread itself (`FunkeBridge.getActivity().runOnUiThread(...)`). `AndroidBridge.Simulate(channel, message)` delivers a message as if Java had sent it, for tests and editor stand-ins.
 
 ### Precompiled C# (AOT)
 
-Release builds compile the game's assemblies, `Index-ScriptCore` and the framework assemblies they use directly (including `System.Private.CoreLib`) to native ARM64 code with Mono's AOT compiler and LLVM, and ship them as `lib/arm64-v8a/libaot-<Assembly>.dll.so`. Compute-heavy scripts run noticeably faster than with the JIT, and startup no longer pays for compiling them: on a Pixel 9a a 3D SPH fluid with 4000 particles went from 29–32 to 49–57 FPS (simulation step 5.5–6.3 → 3.7–4.0 ms, surface meshing 8–11 → 3.4–4.9 ms). Code the AOT step does not cover — deeper framework dependencies such as networking, or generic code it cannot foresee — still runs through the JIT, so nothing has to be configured. The player's log shows `Mono runtime started (android-arm64, AOT: N precompiled assemblies, JIT for the rest)` followed by one `AOT image loaded` line per assembly.
+Release builds compile the game's assemblies, `Funke-ScriptCore` and the framework assemblies they use directly (including `System.Private.CoreLib`) to native ARM64 code with Mono's AOT compiler and LLVM, and ship them as `lib/arm64-v8a/libaot-<Assembly>.dll.so`. Compute-heavy scripts run noticeably faster than with the JIT, and startup no longer pays for compiling them: on a Pixel 9a a 3D SPH fluid with 4000 particles went from 29–32 to 49–57 FPS (simulation step 5.5–6.3 → 3.7–4.0 ms, surface meshing 8–11 → 3.4–4.9 ms). Code the AOT step does not cover — deeper framework dependencies such as networking, or generic code it cannot foresee — still runs through the JIT, so nothing has to be configured. The player's log shows `Mono runtime started (android-arm64, AOT: N precompiled assemblies, JIT for the rest)` followed by one `AOT image loaded` line per assembly.
 
-The compiler (`Microsoft.NETCore.App.Runtime.AOT.<host>.Cross.android-arm64`, same version as the runtime pack) is downloaded from nuget.org on the first AOT build and verified like the runtime pack. Each compiled image is cached in `%LOCALAPPDATA%\Index\PlatformCache\Android\aot`, keyed by the assembly and everything it references: the first Release build spends about a minute on the framework (mostly `System.Private.CoreLib` with LLVM), later builds only recompile the game's assemblies, which takes seconds. The APK grows by roughly 5 MB (about 15 MB once installed); without LLVM the first build takes about 5 seconds instead of a minute. Development builds skip AOT to stay quick; set `aot` to `true` in a Development profile to measure AOT performance there.
+The compiler (`Microsoft.NETCore.App.Runtime.AOT.<host>.Cross.android-arm64`, same version as the runtime pack) is downloaded from nuget.org on the first AOT build and verified like the runtime pack. Each compiled image is cached in `%LOCALAPPDATA%\Funke\PlatformCache\Android\aot`, keyed by the assembly and everything it references: the first Release build spends about a minute on the framework (mostly `System.Private.CoreLib` with LLVM), later builds only recompile the game's assemblies, which takes seconds. The APK grows by roughly 5 MB (about 15 MB once installed); without LLVM the first build takes about 5 seconds instead of a minute. Development builds skip AOT to stay quick; set `aot` to `true` in a Development profile to measure AOT performance there.
 
 ## iOS
 
@@ -131,7 +131,7 @@ iOS forbids JIT compilation, so C# runs in Mono's interpreter.
 Requirements: Python 3.10+, CMake, Ninja, and a browser with WebGPU (current Chrome, Edge, Safari or Firefox).
 
 - **Games without C# scripts** need the [Emscripten SDK](https://emscripten.org) 4.0.3 or newer (`EMSDK`, or `<engine>/vendor/emsdk`).
-- **Games with C# scripts** need the **.NET 11 SDK** with the WebAssembly workload: `dotnet workload install wasm-tools`. The engine is compiled with that SDK's own Emscripten and linked together with the Mono runtime by `dotnet publish`, because WebAssembly cannot create the native/managed call bridges at runtime — they are generated from your assemblies at build time. Point `INDEX_DOTNET_WASM_SDK` (or the `dotnetSdk` option) at the SDK if it is not the `dotnet` on your `PATH`.
+- **Games with C# scripts** need the **.NET 11 SDK** with the WebAssembly workload: `dotnet workload install wasm-tools`. The engine is compiled with that SDK's own Emscripten and linked together with the Mono runtime by `dotnet publish`, because WebAssembly cannot create the native/managed call bridges at runtime — they are generated from your assemblies at build time. Point `FUNKE_DOTNET_WASM_SDK` (or the `dotnetSdk` option) at the SDK if it is not the `dotnet` on your `PATH`.
 
 The output is a folder with `index.html`. Browsers do not run WebAssembly from `file://`; serve the folder over HTTP, for example `python -m http.server` inside it, or upload it to any static web host.
 
@@ -192,11 +192,11 @@ Cut, copy and paste work like in other apps: holding a finger on the text select
 
 ## Debug overlays on phones and tablets
 
-On the desktop, F6 and F7 toggle the runtime stats and log overlays. Phones and tablets have no F-keys, so on Android and iOS both overlays are always visible while they are enabled (Project Settings › Build › Diagnostics). Unless set there or in `project.json` (`showRuntimeStats`, `showRuntimeLogs`), they are on for the Development profile and off for Release, including `index build --release`.
+On the desktop, F6 and F7 toggle the runtime stats and log overlays. Phones and tablets have no F-keys, so on Android and iOS both overlays are always visible while they are enabled (Project Settings › Build › Diagnostics). Unless set there or in `project.json` (`showRuntimeStats`, `showRuntimeLogs`), they are on for the Development profile and off for Release, including `funke build --release`.
 
 ## C# on Android, iOS and Web
 
-The desktop player hosts .NET through `hostfxr`, which only exists on Windows, macOS and Linux. On the other platforms `Index.ScriptRuntime.Mono` embeds the official Mono runtime packs. Android and iOS download them from nuget.org on the first build and check them against the SHA-512 hash NuGet publishes; the Web build takes them from the .NET SDK's workload. Scripts are the same `net10.0` assemblies as on desktop and get `INDEX_ANDROID`, `INDEX_IOS` or `INDEX_WEB` as a define constant.
+The desktop player hosts .NET through `hostfxr`, which only exists on Windows, macOS and Linux. On the other platforms `Funke.ScriptRuntime.Mono` embeds the official Mono runtime packs. Android and iOS download them from nuget.org on the first build and check them against the SHA-512 hash NuGet publishes; the Web build takes them from the .NET SDK's workload. Scripts are the same `net10.0` assemblies as on desktop and get `FUNKE_ANDROID`, `FUNKE_IOS` or `FUNKE_WEB` as a define constant.
 
 Limitations on these platforms:
 
@@ -209,15 +209,15 @@ Limitations on these platforms:
 A platform package is a folder:
 
 ```text
-Index.Platform.MyConsole/
-  index-package.lua
+Funke.Platform.MyConsole/
+  funke-package.lua
   Builder/build.py
-  Native/            -- usually a CMake project that calls index_add_engine() / index_add_runtime()
+  Native/            -- usually a CMake project that calls funke_add_engine() / funke_add_runtime()
 ```
 
 ```lua
 return {
-    name        = "Index.Platform.MyConsole",
+    name        = "Funke.Platform.MyConsole",
     version     = "0.1.0",
     kind        = "platform",          -- or "build-component" for shared pieces like the Mono runtime
     platform    = "Web",               -- the BuildPlatform it provides
@@ -228,7 +228,7 @@ return {
 }
 ```
 
-The builder is a command-line program speaking the **Index Platform Builder protocol v1**. The Python SDK in `scripts/platform/index_platform_sdk` implements it (`run_builder(describe, check, build)`), plus helpers for tool discovery, cached SDL3/Dawn builds and logging.
+The builder is a command-line program speaking the **Funke Platform Builder protocol v1**. The Python SDK in `scripts/platform/funke_platform_sdk` implements it (`run_builder(describe, check, build)`), plus helpers for tool discovery, cached SDL3/Dawn builds and logging.
 
 | Command | Output (stdout, JSON) |
 |---|---|
@@ -236,6 +236,6 @@ The builder is a command-line program speaking the **Index Platform Builder prot
 | `check --engine-root <dir>` | One object: `ok`, `issues` (`severity`, `message`, `fix`), `details`. |
 | `build --request <file>` | JSON lines: `{"event":"progress","value":0.4,"stage":"..."}`, `{"event":"log","level":"info","message":"..."}`, and finally `{"event":"result","ok":true,"artifact":"<path>","error":""}`. |
 
-The build request names the engine root, project root, the staged content folder (`project.json`, `Assets/`, `IndexAssets/`, compiled scripts in `bin/<config>/`, `Index-ScriptCore.dll`, `Licenses/`), the output folder, configuration (`Development` or `Release`), app name and id, version, company, icon, entity bits and the profile's `platformOptions`. `appId` is `com.<company>.<name>` (lowercase letters, digits and `_`, never starting with a digit). `iconPath` is the staged content folder's `AppIcon.png`: square, RGBA, up to 1024 px, never upscaled. It is the project's app icon, or the Index logo if none is set. The editor shows progress and log events in the build window and publishes the output folder only when the result is `ok`.
+The build request names the engine root, project root, the staged content folder (`project.json`, `Assets/`, `FunkeAssets/`, compiled scripts in `bin/<config>/`, `Funke-ScriptCore.dll`, `Licenses/`), the output folder, configuration (`Development` or `Release`), app name and id, version, company, icon, entity bits and the profile's `platformOptions`. `appId` is `com.<company>.<name>` (lowercase letters, digits and `_`, never starting with a digit). `iconPath` is the staged content folder's `AppIcon.png`: square, RGBA, up to 1024 px, never upscaled. It is the project's app icon, or the Funke logo if none is set. The editor shows progress and log events in the build window and publishes the output folder only when the result is `ok`.
 
-The engine's portable CMake build (`cmake/IndexEngine.cmake`) compiles the engine and the runtime for any CMake toolchain; a package supplies the toolchain, SDL3 and WebGPU libraries, and its own entry point.
+The engine's portable CMake build (`cmake/FunkeEngine.cmake`) compiles the engine and the runtime for any CMake toolchain; a package supplies the toolchain, SDL3 and WebGPU libraries, and its own entry point.

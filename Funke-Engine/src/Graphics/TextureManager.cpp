@@ -1,0 +1,717 @@
+#include "pch.hpp"
+#include "Graphics/TextureManager.hpp"
+
+#include "Assets/AssetRegistry.hpp"
+#include "Assets/TextureMeta.hpp"
+#include "Components/Graphics/ImageComponent.hpp"
+#if FUNKE_WITH_2D
+#include "Components/Graphics/ParticleSystem2DComponent.hpp"
+#include "Components/Graphics/SpriteRendererComponent.hpp"
+#endif
+#include "Core/Log.hpp"
+#include "Graphics/TextureEntry.hpp"
+#include "Scene/SceneManager.hpp"
+#include "Serialization/Path.hpp"
+
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <filesystem>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+
+namespace Funke {
+
+	std::array<std::string, 9> TextureManager::s_DefaultTextures{};
+	std::vector<TextureEntry>  TextureManager::s_Textures;
+	std::queue<uint16_t>       TextureManager::s_FreeIndices;
+	bool                       TextureManager::s_IsInitialized = false;
+	std::string                TextureManager::s_RootPath;
+
+	namespace {
+		struct ProviderEntry {
+			uint32_t Token = 0;
+			TextureManager::ReferenceProvider Provider;
+		};
+		std::vector<ProviderEntry> g_Providers;
+		uint32_t g_NextProviderToken = 1;
+
+		struct DestroyListenerEntry {
+			uint32_t Token = 0;
+			TextureManager::DestroyListener Listener;
+		};
+		std::vector<DestroyListenerEntry> g_DestroyListeners;
+		uint32_t g_NextDestroyListenerToken = 1;
+
+		void FireDestroyListeners(TextureHandle handle) {
+			// Snapshot before iterating — listeners may remove themselves during the callback.
+			if (g_DestroyListeners.empty()) return;
+			std::vector<DestroyListenerEntry> snapshot = g_DestroyListeners;
+			for (const auto& e : snapshot) {
+				if (e.Listener) e.Listener(handle);
+			}
+		}
+
+		std::array<TextureHandle, 9> g_DefaultHandles{};
+
+		// (path, filter, wrapU, wrapV) → slot+1 reverse index; 0 = miss. Stores index+1 since 0 is a valid slot.
+		std::unordered_map<std::uint64_t, std::uint32_t> g_PathIndex;
+
+		// Runtime/procedural textures: synthetic UUID ↔ slot. The forward map
+		// lets LoadTextureByUUID resolve a script-created texture without a
+		// file path; the reverse map lets GetTextureAssetUUID hand back the
+		// synthetic UUID so a SpriteRenderer that references it serializes /
+		// resolves consistently. Synthetic UUIDs come from a high counter so
+		// they're effectively disjoint from the AssetRegistry's random file
+		// UUIDs (and the forward map is consulted first regardless).
+		std::unordered_map<std::uint64_t, TextureHandle> g_RuntimeUuidToHandle;
+		std::unordered_map<std::uint32_t, std::uint64_t> g_RuntimeIndexToUuid;
+		std::uint64_t g_NextRuntimeUuid = 0xF000000000000000ULL;
+
+		// (assetId, filter, wrapU, wrapV) → handle of an already-resolved file texture. Spares the
+		// path resolve + .meta read/parse (sheet metas hold thousands of slices) on every repeat load.
+		// Stale handles fail IsValid; sampler edits go through ApplyMetaSamplerToLoaded, which clears it.
+		struct UuidLoadEntry {
+			std::uint64_t AssetId = 0;
+			TextureHandle Handle;
+		};
+		std::unordered_map<std::uint64_t, UuidLoadEntry> g_UuidLoadCache;
+
+		std::uint64_t UuidLoadKey(std::uint64_t assetId, Filter filter, Wrap u, Wrap v) {
+			std::uint64_t key = assetId * 0x9E3779B97F4A7C15ULL;
+			key ^= (static_cast<std::uint64_t>(filter) << 16) | (static_cast<std::uint64_t>(u) << 8) | static_cast<std::uint64_t>(v);
+			return key;
+		}
+
+		// Pre-canonicalized key per slot; avoids N stat() syscalls per FileWatcher tick on hot-reload.
+		std::vector<std::string> g_CanonicalKeys;
+
+		std::string ToLower(std::string value) {
+			std::transform(value.begin(), value.end(), value.begin(),
+				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			return value;
+		}
+
+		bool IsReloadableImagePath(const std::filesystem::path& path) {
+			const std::string ext = ToLower(path.extension().string());
+			return ext == ".png" || ext == ".jpg" || ext == ".jpeg"
+				|| ext == ".bmp" || ext == ".tga";
+		}
+
+		std::string CanonicalPathKey(const std::string& path) {
+			std::error_code ec;
+			std::filesystem::path canonical = std::filesystem::weakly_canonical(path, ec);
+			if (ec) {
+				canonical = std::filesystem::absolute(path, ec);
+				if (ec) {
+					canonical = path;
+				}
+			}
+			return canonical.lexically_normal().make_preferred().string();
+		}
+
+		// FNV-1a 64-bit over the path string then mixed with the sampler
+		// state. Keeps the lookup key stable across the lifetime of a slot
+		// (the path string doesn't move once stored).
+		std::uint64_t HashLookupKey(std::string_view path,
+			Filter filter,
+			Wrap u,
+			Wrap v)
+		{
+			std::uint64_t h = 0xcbf29ce484222325ULL;
+			for (char c : path) {
+				h ^= static_cast<std::uint8_t>(c);
+				h *= 0x100000001b3ULL;
+			}
+			h ^= static_cast<std::uint64_t>(filter) << 1;
+			h ^= static_cast<std::uint64_t>(u) << 16;
+			h ^= static_cast<std::uint64_t>(v) << 32;
+			h *= 0x100000001b3ULL;
+			return h;
+		}
+
+		void EnsureCanonicalKeyCapacity(std::size_t slotCount) {
+			if (g_CanonicalKeys.size() < slotCount) {
+				g_CanonicalKeys.resize(slotCount);
+			}
+		}
+	}
+
+	void TextureManager::Initialize() {
+		if (s_IsInitialized) return;
+		s_Textures.clear();
+		while (!s_FreeIndices.empty()) s_FreeIndices.pop();
+		s_Textures.reserve(64);
+		g_PathIndex.clear();
+		g_PathIndex.reserve(64);
+		g_CanonicalKeys.clear();
+		g_CanonicalKeys.reserve(64);
+		g_DefaultHandles.fill(TextureHandle{});
+		s_IsInitialized = true;
+		LoadDefaultTextures();
+	}
+
+	void TextureManager::Shutdown() {
+		UnloadAll(true);
+		s_Textures.clear();
+		while (!s_FreeIndices.empty()) s_FreeIndices.pop();
+		g_Providers.clear();
+		g_DestroyListeners.clear();
+		g_PathIndex.clear();
+		g_CanonicalKeys.clear();
+		g_RuntimeUuidToHandle.clear();
+		g_RuntimeIndexToUuid.clear();
+		g_UuidLoadCache.clear();
+		s_IsInitialized = false;
+	}
+
+	TextureHandle TextureManager::LoadTexture(const std::string_view& path,
+		Filter filter, Wrap u, Wrap v)
+	{
+		if (!s_IsInitialized || path.empty()) return TextureHandle{};
+		const std::string pathStr(path);
+
+		// Filter::Default is a renderer-component sentinel ("use the texture's own
+		// filter"), not a real sampler value — resolve it here so the slot key and
+		// sampler stay concrete. (.meta still wins upstream in LoadTextureByUUID.)
+		// The no-meta default is Point: it keeps pixel art crisp and matches what an
+		// original entity renders, so a duplicate — which re-resolves Default here —
+		// keys onto the same Point slot instead of a separate Bilinear one.
+		if (filter == Filter::Default) filter = Filter::Point;
+
+		TextureHandle existing = FindTextureByPath(pathStr, filter, u, v);
+		// IsValid already rejects the {0xFFFF,0} miss handle (index out of range), so
+		// the prior index/generation precheck was wrong: it skipped the legitimate
+		// slot-0/generation-0 texture (the first one ever loaded), duplicating it.
+		if (IsValid(existing)) return existing;
+
+		uint16_t idx;
+		if (!s_FreeIndices.empty()) {
+			idx = s_FreeIndices.front();
+			s_FreeIndices.pop();
+		}
+		else {
+			// TextureHandle::index is uint16_t — refuse rather than truncate and corrupt a live slot.
+			if (s_Textures.size() >= 0xFFFFu) {
+				FNK_CORE_ERROR_TAG("TextureManager", "Texture slot capacity exceeded (>= 65535); cannot load '{}'", pathStr);
+				return TextureHandle{};
+			}
+			idx = static_cast<uint16_t>(s_Textures.size());
+			s_Textures.emplace_back();
+		}
+		TextureEntry& slot = s_Textures[idx];
+		// flipVertical=false: WebGPU UV origin is top-left (matches stb default); flipping would double-flip and render upside-down.
+		if (!slot.Texture.Load(pathStr.c_str(), /*generateMipmaps=*/true,
+			/*srgb=*/false, /*flipVertical=*/false))
+		{
+			s_FreeIndices.push(idx);
+			return TextureHandle{};
+		}
+		slot.Texture.SetSampler(filter, u, v);
+		slot.Name = pathStr;
+		slot.SamplerFilter = filter;
+		slot.WrapU = u;
+		slot.WrapV = v;
+		slot.IsValid = true;
+		g_PathIndex[HashLookupKey(pathStr, filter, u, v)] =
+			static_cast<std::uint32_t>(idx) + 1u;
+		EnsureCanonicalKeyCapacity(s_Textures.size());
+		g_CanonicalKeys[idx] = CanonicalPathKey(pathStr);
+		return TextureHandle{ idx, slot.Generation };
+	}
+
+	TextureHandle TextureManager::LoadTextureByUUID(uint64_t assetId,
+		Filter filter, Wrap u, Wrap v)
+	{
+		if (!s_IsInitialized || assetId == 0) return TextureHandle{};
+
+		// Runtime texture: no file, resolve straight to its live slot.
+		if (auto rt = g_RuntimeUuidToHandle.find(assetId); rt != g_RuntimeUuidToHandle.end()) {
+			if (IsValid(rt->second)) return rt->second;
+			g_RuntimeUuidToHandle.erase(rt);  // slot was freed out from under us
+			return TextureHandle{};
+		}
+
+		// ResolvePath self-recovers once on a miss (a single bounded rescan, then caches the
+		// miss in s_KnownMissingIds). Don't MarkDirty()+Sync() here: MarkDirty clears that
+		// negative cache, so a dangling GUID would force a full O(N) Assets/ rescan ×3, and
+		// re-arm every other missing GUID to rescan too.
+		const std::uint64_t cacheKey = UuidLoadKey(assetId, filter, u, v);
+		if (auto cached = g_UuidLoadCache.find(cacheKey); cached != g_UuidLoadCache.end()) {
+			if (cached->second.AssetId == assetId && IsValid(cached->second.Handle)) return cached->second.Handle;
+			g_UuidLoadCache.erase(cached);
+		}
+
+		const std::string path = AssetRegistry::ResolvePath(assetId);
+		if (path.empty()) return TextureHandle{};
+
+		const TextureMeta meta = AssetRegistry::ReadTextureMeta(path);
+		if (meta.HasImportBlock) {
+			filter = meta.Import.FilterMode;
+			u      = meta.Import.WrapU;
+			v      = meta.Import.WrapV;
+		}
+		const TextureHandle handle = LoadTexture(path, filter, u, v);
+		if (IsValid(handle)) g_UuidLoadCache[cacheKey] = UuidLoadEntry{ assetId, handle };
+		return handle;
+	}
+
+	size_t TextureManager::ApplyMetaSamplerToLoaded(const std::string& path) {
+		if (!s_IsInitialized || path.empty()) return 0;
+		// The meta may have gained or changed its import block; cached UUID loads resolved the old one.
+		g_UuidLoadCache.clear();
+		const TextureMeta meta = AssetRegistry::ReadTextureMeta(path);
+		if (!meta.HasImportBlock) return 0;
+
+		const std::string targetKey = CanonicalPathKey(path);
+		size_t count = 0;
+		const std::size_t end = std::min<std::size_t>(s_Textures.size(), g_CanonicalKeys.size());
+		for (size_t i = 0; i < end; ++i) {
+			TextureEntry& slot = s_Textures[i];
+			if (!slot.IsValid || slot.Name.empty()) continue;
+			if (g_CanonicalKeys[i] != targetKey) continue;
+			if (slot.SamplerFilter == meta.Import.FilterMode
+				&& slot.WrapU == meta.Import.WrapU
+				&& slot.WrapV == meta.Import.WrapV)
+			{
+				// Already aligned with the meta — no GPU sampler rebuild,
+				// no index re-key, no count bump (the editor doesn't need
+				// to know "0 changed" vs "0 matched").
+				continue;
+			}
+
+			// Hash bakes sampler: must re-key so LoadTexture(path, oldFilter) doesn't find this slot with the new sampler.
+			g_PathIndex.erase(HashLookupKey(slot.Name, slot.SamplerFilter, slot.WrapU, slot.WrapV));
+
+			slot.SamplerFilter = meta.Import.FilterMode;
+			slot.WrapU         = meta.Import.WrapU;
+			slot.WrapV         = meta.Import.WrapV;
+			slot.Texture.SetSampler(meta.Import.FilterMode, meta.Import.WrapU, meta.Import.WrapV);
+
+			g_PathIndex[HashLookupKey(slot.Name, slot.SamplerFilter, slot.WrapU, slot.WrapV)] =
+				static_cast<std::uint32_t>(i) + 1u;
+			++count;
+		}
+		return count;
+	}
+
+	TextureHandle TextureManager::GetDefaultTexture(DefaultTexture type) {
+		const size_t idx = static_cast<size_t>(type);
+		if (idx >= g_DefaultHandles.size()) return TextureHandle{};
+		return g_DefaultHandles[idx];
+	}
+
+	void TextureManager::UnloadTexture(TextureHandle handle) {
+		if (!IsValid(handle)) return;
+		// Fire listeners BEFORE we tear the slot down so subscribers (e.g.
+		// Renderer2D's bind-group cache) can still resolve handle -> Texture2D
+		// to capture the soon-to-be-stale GPU pool ID.
+		FireDestroyListeners(handle);
+		TextureEntry& slot = s_Textures[handle.index];
+		// MUST erase before clearing slot.Name — the hash key is derived from it.
+		g_PathIndex.erase(HashLookupKey(slot.Name, slot.SamplerFilter, slot.WrapU, slot.WrapV));
+		if (handle.index < g_CanonicalKeys.size()) {
+			g_CanonicalKeys[handle.index].clear();
+		}
+		// Drop the runtime-uuid mapping too, or a file texture reusing this slot reports the stale synthetic UUID.
+		if (auto runtimeIt = g_RuntimeIndexToUuid.find(handle.index); runtimeIt != g_RuntimeIndexToUuid.end()) {
+			g_RuntimeUuidToHandle.erase(runtimeIt->second);
+			g_RuntimeIndexToUuid.erase(runtimeIt);
+		}
+		slot.Texture.Destroy();
+		slot.Name.clear();
+		slot.IsValid = false;
+		++slot.Generation;
+		s_FreeIndices.push(handle.index);
+	}
+
+	TextureHandle TextureManager::GetTextureHandle(const std::string& name,
+		Filter filter, Wrap u, Wrap v)
+	{
+		return FindTextureByPath(name, filter, u, v);
+	}
+
+	TextureHandle TextureManager::GetTextureHandle(const std::string& name) {
+		return FindTextureByPath(name);
+	}
+
+	Texture2D* TextureManager::GetTexture(TextureHandle handle) {
+		if (!IsValid(handle)) return nullptr;
+		return &s_Textures[handle.index].Texture;
+	}
+
+	bool TextureManager::ReloadTexture(TextureHandle handle) {
+		if (!IsValid(handle)) return false;
+
+		TextureEntry& slot = s_Textures[handle.index];
+		if (slot.Name.empty() || !std::filesystem::exists(slot.Name) || !IsReloadableImagePath(slot.Name)) {
+			return false;
+		}
+
+		Texture2D reloaded;
+		if (!reloaded.Load(slot.Name.c_str(), /*generateMipmaps=*/true,
+			/*srgb=*/false, /*flipVertical=*/false))
+		{
+			FNK_CORE_WARN_TAG("TextureManager", "Hot reload failed for texture: {}", slot.Name);
+			return false;
+		}
+
+		reloaded.SetSampler(slot.SamplerFilter, slot.WrapU, slot.WrapV);
+		// MUST fire before move-assign destroys the old GPU resource; bind-group cache needs the old pool ID.
+		FireDestroyListeners(handle);
+		slot.Texture = std::move(reloaded);
+		FNK_CORE_INFO_TAG("TextureManager", "Reloaded texture: {}", slot.Name);
+		return true;
+	}
+
+	size_t TextureManager::ReloadTexturePath(const std::string& path) {
+		if (!s_IsInitialized || path.empty()) return 0;
+		const std::string targetKey = CanonicalPathKey(path);
+		size_t count = 0;
+		const std::size_t end = std::min<std::size_t>(s_Textures.size(), g_CanonicalKeys.size());
+		for (size_t i = 0; i < end; ++i) {
+			const TextureEntry& slot = s_Textures[i];
+			if (!slot.IsValid || slot.Name.empty()) continue;
+			if (g_CanonicalKeys[i] == targetKey) {
+				if (ReloadTexture(TextureHandle{ static_cast<uint16_t>(i), slot.Generation })) {
+					++count;
+				}
+			}
+		}
+		return count;
+	}
+
+	size_t TextureManager::ReloadTexturesFromDisk() {
+		if (!s_IsInitialized) return 0;
+		size_t count = 0;
+		for (size_t i = 0; i < s_Textures.size(); ++i) {
+			const TextureEntry& slot = s_Textures[i];
+			if (!slot.IsValid || slot.Name.empty() || !IsReloadableImagePath(slot.Name)) {
+				continue;
+			}
+			if (ReloadTexture(TextureHandle{ static_cast<uint16_t>(i), slot.Generation })) {
+				++count;
+			}
+		}
+		return count;
+	}
+
+	std::vector<TextureHandle> TextureManager::GetLoadedHandles() {
+		std::vector<TextureHandle> out;
+		out.reserve(s_Textures.size());
+		for (size_t i = 0; i < s_Textures.size(); ++i) {
+			if (s_Textures[i].IsValid) {
+				out.push_back(TextureHandle{ static_cast<uint16_t>(i), s_Textures[i].Generation });
+			}
+		}
+		return out;
+	}
+
+	void TextureManager::UnloadAll(bool /*defaultTextures*/) {
+		for (size_t i = 0; i < s_Textures.size(); ++i) {
+			TextureEntry& slot = s_Textures[i];
+			if (slot.IsValid) {
+				// MUST fire before invalidating so listeners can still resolve handle→GPU pool ID.
+				FireDestroyListeners(TextureHandle{ static_cast<uint16_t>(i), slot.Generation });
+				slot.Texture.Destroy();
+				slot.Name.clear();
+				slot.IsValid = false;
+				++slot.Generation;
+				s_FreeIndices.push(static_cast<uint16_t>(i));
+			}
+		}
+		g_PathIndex.clear();
+		g_UuidLoadCache.clear();
+		for (std::string& key : g_CanonicalKeys) {
+			key.clear();
+		}
+		g_RuntimeUuidToHandle.clear();
+		g_RuntimeIndexToUuid.clear();
+	}
+
+	uint64_t TextureManager::GetTextureAssetUUID(TextureHandle handle) {
+		if (!IsValid(handle)) return 0;
+		// Runtime texture: hand back its synthetic UUID (no file path to hash).
+		if (auto it = g_RuntimeIndexToUuid.find(handle.index); it != g_RuntimeIndexToUuid.end()) {
+			return it->second;
+		}
+		return AssetRegistry::GetOrCreateAssetUUID(s_Textures[handle.index].Name);
+	}
+
+	bool TextureManager::IsRuntimeTextureUUID(uint64_t uuid) {
+		return g_RuntimeUuidToHandle.find(uuid) != g_RuntimeUuidToHandle.end();
+	}
+
+	uint64_t TextureManager::CreateRuntimeTexture(int width, int height, const uint8_t* rgba,
+		Filter filter, Wrap u, Wrap v)
+	{
+		if (!s_IsInitialized || width <= 0 || height <= 0 || rgba == nullptr) return 0;
+
+		uint16_t idx;
+		if (!s_FreeIndices.empty()) {
+			idx = s_FreeIndices.front();
+			s_FreeIndices.pop();
+		}
+		else {
+			// TextureHandle::index is uint16_t — refuse rather than truncate and corrupt a live slot.
+			if (s_Textures.size() >= 0xFFFFu) {
+				FNK_CORE_ERROR_TAG("TextureManager", "Texture slot capacity exceeded (>= 65535); cannot create runtime texture");
+				return 0;
+			}
+			idx = static_cast<uint16_t>(s_Textures.size());
+			s_Textures.emplace_back();
+		}
+		TextureEntry& slot = s_Textures[idx];
+		if (!slot.Texture.CreateFromPixels(width, height, rgba, filter, u, v)) {
+			s_FreeIndices.push(idx);
+			return 0;
+		}
+		slot.Name = "<runtime>";
+		slot.SamplerFilter = filter;
+		slot.WrapU = u;
+		slot.WrapV = v;
+		slot.IsValid = true;
+		EnsureCanonicalKeyCapacity(s_Textures.size());
+		g_CanonicalKeys[idx].clear();  // never path-matched
+
+		const uint64_t uuid = g_NextRuntimeUuid++;
+		const TextureHandle handle{ idx, slot.Generation };
+		g_RuntimeUuidToHandle[uuid] = handle;
+		g_RuntimeIndexToUuid[idx] = uuid;
+		return uuid;
+	}
+
+	bool TextureManager::UpdateRuntimeTexture(uint64_t runtimeUuid, const uint8_t* rgba, size_t byteCount) {
+		if (!s_IsInitialized) return false;
+		auto it = g_RuntimeUuidToHandle.find(runtimeUuid);
+		if (it == g_RuntimeUuidToHandle.end() || !IsValid(it->second)) return false;
+		return s_Textures[it->second.index].Texture.UploadPixels(rgba, byteCount);
+	}
+
+	void TextureManager::DestroyRuntimeTexture(uint64_t runtimeUuid) {
+		if (!s_IsInitialized) return;
+		auto it = g_RuntimeUuidToHandle.find(runtimeUuid);
+		if (it == g_RuntimeUuidToHandle.end()) return;
+		const TextureHandle handle = it->second;
+		g_RuntimeIndexToUuid.erase(handle.index);
+		g_RuntimeUuidToHandle.erase(it);
+		UnloadTexture(handle);
+	}
+
+	size_t TextureManager::PurgeUnreferenced() {
+		if (!s_IsInitialized) return 0;
+
+		std::unordered_set<TextureHandle> referenced;
+		referenced.reserve(s_Textures.size());
+		const auto emit = [&referenced](TextureHandle handle) {
+			if (TextureManager::IsValid(handle)) {
+				referenced.insert(handle);
+			}
+		};
+
+		for (TextureHandle handle : g_DefaultHandles) {
+			emit(handle);
+		}
+
+		SceneManager::ForeachLoadedScene([&emit](Scene& scene) {
+			entt::registry& registry = scene.GetRegistry();
+
+#if FUNKE_WITH_2D
+			auto sprites = registry.view<SpriteRendererComponent>();
+			for (EntityHandle entity : sprites) {
+				emit(sprites.get<SpriteRendererComponent>(entity).TextureHandle);
+			}
+#endif
+
+			auto images = registry.view<ImageComponent>();
+			for (EntityHandle entity : images) {
+				emit(images.get<ImageComponent>(entity).TextureHandle);
+			}
+
+#if FUNKE_WITH_2D
+			auto particles = registry.view<ParticleSystem2DComponent>();
+			for (EntityHandle entity : particles) {
+				emit(particles.get<ParticleSystem2DComponent>(entity).GetTextureHandle());
+			}
+#endif
+		});
+
+		const std::vector<ProviderEntry> providers = g_Providers;
+		for (const ProviderEntry& provider : providers) {
+			if (provider.Provider) {
+				provider.Provider(emit);
+			}
+		}
+
+		std::vector<TextureHandle> toFree;
+		toFree.reserve(s_Textures.size());
+		for (size_t i = 0; i < s_Textures.size(); ++i) {
+			const TextureEntry& slot = s_Textures[i];
+			if (!slot.IsValid) continue;
+			// Runtime textures are owned by script Texture objects and freed via DestroyRuntimeTexture;
+			// no provider sees script-held references, so purging them would pull them out from under scripts.
+			if (g_RuntimeIndexToUuid.contains(static_cast<uint32_t>(i))) continue;
+			TextureHandle handle{ static_cast<uint16_t>(i), slot.Generation };
+			if (!referenced.contains(handle)) {
+				toFree.push_back(handle);
+			}
+		}
+
+		for (TextureHandle handle : toFree) {
+			UnloadTexture(handle);
+		}
+
+		FNK_CORE_INFO_TAG("TextureManager", "Purged {} unreferenced texture entries", toFree.size());
+		return toFree.size();
+	}
+
+	size_t TextureManager::ResolveMissingSceneTextures() {
+		if (!s_IsInitialized) return 0;
+
+		size_t resolved = 0;
+		SceneManager::ForeachLoadedScene([&resolved](Scene& scene) {
+			entt::registry& registry = scene.GetRegistry();
+
+#if FUNKE_WITH_2D
+			for (auto [entity, sprite] : registry.view<SpriteRendererComponent>().each()) {
+				const uint64_t assetId = static_cast<uint64_t>(sprite.TextureAssetId);
+				if (assetId == 0 || IsValid(sprite.TextureHandle)) continue;
+				const TextureHandle handle = LoadTextureByUUID(assetId, sprite.FilterMode);
+				if (!IsValid(handle)) continue;
+				sprite.TextureHandle = handle;
+				++resolved;
+			}
+#endif
+
+			for (auto [entity, image] : registry.view<ImageComponent>().each()) {
+				const uint64_t assetId = static_cast<uint64_t>(image.TextureAssetId);
+				if (assetId == 0 || IsValid(image.TextureHandle)) continue;
+				const TextureHandle handle = LoadTextureByUUID(assetId, image.FilterMode);
+				if (!IsValid(handle)) continue;
+				image.TextureHandle = handle;
+				++resolved;
+			}
+		});
+
+		if (resolved > 0) {
+			FNK_CORE_INFO_TAG("TextureManager", "Resolved {} sprite/image texture(s) that had failed to load", resolved);
+		}
+		return resolved;
+	}
+
+	uint32_t TextureManager::AddReferenceProvider(ReferenceProvider provider) {
+		if (!provider) return 0;
+		const uint32_t token = g_NextProviderToken++;
+		g_Providers.push_back({ token, std::move(provider) });
+		return token;
+	}
+
+	void TextureManager::RemoveReferenceProvider(uint32_t token) {
+		auto it = std::remove_if(g_Providers.begin(), g_Providers.end(),
+			[token](const ProviderEntry& e) { return e.Token == token; });
+		g_Providers.erase(it, g_Providers.end());
+	}
+
+	uint32_t TextureManager::AddDestroyListener(DestroyListener listener) {
+		if (!listener) return 0;
+		const uint32_t token = g_NextDestroyListenerToken++;
+		g_DestroyListeners.push_back({ token, std::move(listener) });
+		return token;
+	}
+
+	void TextureManager::RemoveDestroyListener(uint32_t token) {
+		auto it = std::remove_if(g_DestroyListeners.begin(), g_DestroyListeners.end(),
+			[token](const DestroyListenerEntry& e) { return e.Token == token; });
+		g_DestroyListeners.erase(it, g_DestroyListeners.end());
+	}
+
+	std::size_t TextureManager::GetTotalTextureMemoryBytes() {
+		std::size_t total = 0;
+		for (const TextureEntry& e : s_Textures) {
+			if (!e.IsValid) continue;
+			const std::size_t w = static_cast<std::size_t>(e.Texture.GetWidth());
+			const std::size_t h = static_cast<std::size_t>(e.Texture.GetHeight());
+			total += w * h * 4u; // RGBA8 estimate, same as OpenGL impl.
+		}
+		return total;
+	}
+
+	TextureHandle TextureManager::FindTextureByPath(const std::string& path,
+		Filter filter, Wrap u, Wrap v)
+	{
+		auto it = g_PathIndex.find(HashLookupKey(path, filter, u, v));
+		if (it == g_PathIndex.end() || it->second == 0u) {
+			return TextureHandle{};
+		}
+		const std::uint32_t slotIdx = it->second - 1u;
+		if (slotIdx >= s_Textures.size()) {
+			return TextureHandle{};
+		}
+		const TextureEntry& e = s_Textures[slotIdx];
+		// Defensive verify against hash collision — exceedingly rare with
+		// FNV-1a but cheap to confirm before handing back a handle.
+		if (!e.IsValid || e.Name != path
+			|| e.SamplerFilter != filter
+			|| e.WrapU != u || e.WrapV != v)
+		{
+			return TextureHandle{};
+		}
+		return TextureHandle{ static_cast<uint16_t>(slotIdx), e.Generation };
+	}
+
+	TextureHandle TextureManager::FindTextureByPath(const std::string& path) {
+		for (size_t i = 0; i < s_Textures.size(); ++i) {
+			const TextureEntry& e = s_Textures[i];
+			if (e.IsValid && e.Name == path) {
+				return TextureHandle{ static_cast<uint16_t>(i), e.Generation };
+			}
+		}
+		return TextureHandle{};
+	}
+
+	void TextureManager::LoadDefaultTextures() {
+		// Order MUST match DefaultTexture enum declaration — indexed by underlying byte into g_DefaultHandles.
+		static constexpr const char* k_DefaultPaths[9] = {
+			"Textures/Default/Square.png",            // Square
+			"Textures/Default/Pixel.png",             // Pixel
+			"Textures/Default/circle.png",            // Circle
+			"Textures/Default/Capsule.png",           // Capsule
+			"Textures/Default/IsometricDiamond.png",  // IsometricDiamond
+			"Textures/Default/HexagonFlatTop.png",    // HexagonFlatTop
+			"Textures/Default/HexagonPointedTop.png", // HexagonPointedTop
+			"Textures/Default/9Sliced.png",           // _9Sliced
+			"Textures/Default/Invisible.png",         // Invisible
+		};
+
+		const std::string assetsRoot = Path::ResolveFunkeAssets("");
+		if (assetsRoot.empty()) {
+			FNK_CORE_WARN_TAG("TextureManager",
+				"FunkeAssets root not resolved — default textures unavailable; "
+				"sprites/UI without explicit textures will render invisible.");
+			return;
+		}
+
+		for (size_t i = 0; i < g_DefaultHandles.size(); ++i) {
+			const std::string fullPath = Path::Combine(assetsRoot, k_DefaultPaths[i]);
+			if (!std::filesystem::exists(fullPath)) {
+				FNK_CORE_WARN_TAG("TextureManager",
+					"Default texture missing: {} — sprites/UI relying on this fallback will be invisible.",
+					fullPath);
+				continue;
+			}
+			TextureHandle h = LoadTexture(fullPath, Filter::Bilinear, Wrap::Repeat, Wrap::Repeat);
+			if (!IsValid(h)) {
+				FNK_CORE_WARN_TAG("TextureManager",
+					"Default texture failed to load: {}", fullPath);
+				continue;
+			}
+			g_DefaultHandles[i] = h;
+			s_DefaultTextures[i] = fullPath;
+		}
+
+		FNK_CORE_INFO_TAG("TextureManager",
+			"Loaded default textures from {}", assetsRoot);
+	}
+
+} // namespace Funke

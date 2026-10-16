@@ -1,0 +1,45 @@
+#include <winver.h>
+#include "BuildMetadata.generated.hpp"
+#include "BuildIdentity.generated.hpp"
+
+#ifndef FNK_FILE_TYPE
+#define FNK_FILE_TYPE VFT_APP
+#endif
+
+1 VERSIONINFO
+ FILEVERSION FNK_VERSION_RESOURCE
+ PRODUCTVERSION FNK_VERSION_RESOURCE
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+#if defined(_DEBUG)
+ FILEFLAGS VS_FF_DEBUG | VS_FF_PRIVATEBUILD | VS_FF_SPECIALBUILD
+#elif FNK_BUILD_DIRTY
+ FILEFLAGS VS_FF_PRIVATEBUILD | VS_FF_SPECIALBUILD
+#else
+ FILEFLAGS VS_FF_SPECIALBUILD
+#endif
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE FNK_FILE_TYPE
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "Funke Contributors\0"
+            VALUE "FileDescription", FNK_FILE_DESCRIPTION "\0"
+            VALUE "FileVersion", FNK_VERSION "\0"
+            VALUE "InternalName", FNK_INTERNAL_NAME "\0"
+            VALUE "OriginalFilename", FNK_ORIGINAL_FILENAME "\0"
+            VALUE "ProductName", "Funke\0"
+            VALUE "ProductVersion", FNK_VERSION "\0"
+            VALUE "PrivateBuild", FNK_BUILD_ID "\0"
+            VALUE "SpecialBuild", FNK_BUILD_ID "\0"
+            VALUE "BuildId", FNK_BUILD_ID "\0"
+            VALUE "Commit", FNK_BUILD_COMMIT "\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

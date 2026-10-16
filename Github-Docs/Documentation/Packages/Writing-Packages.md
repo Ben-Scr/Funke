@@ -1,6 +1,6 @@
 # Writing Packages
 
-A **package** is how you add new functionality to Index. Anything the engine core doesn't ship — a custom component, a gameplay system, a third-party integration — lives in a package. This page shows you how to write your own.
+A **package** is how you add new functionality to Funke. Anything the engine core doesn't ship — a custom component, a gameplay system, a third-party integration — lives in a package. This page shows you how to write your own.
 
 If you just want the short version: run the scaffolder, fill in your code, list the package in your project, and the editor builds and loads it.
 
@@ -12,10 +12,10 @@ If you just want the short version: run the scaffolder, fill in your code, list 
 
 A package is a self-contained folder with:
 
-- a **manifest** (`index-package.lua`) that describes it, and
+- a **manifest** (`funke-package.lua`) that describes it, and
 - one or more **layers** of code (C++ and/or C#).
 
-When built, a package produces one or two DLLs that Index loads at startup. Your package can register new components, systems, and behavior, and those show up in the editor just like the built-in ones.
+When built, a package produces one or two DLLs that Funke loads at startup. Your package can register new components, systems, and behavior, and those show up in the editor just like the built-in ones.
 
 ### Where packages live
 
@@ -43,7 +43,7 @@ A package is made of **layers**. Each layer is a kind of code, and you pick the 
 Two important rules:
 
 - A package can mix `csharp` with `native`, but it **cannot have both `native` and `native_standalone`** — they conflict (one links the engine, the other deliberately doesn't).
-- The `csharp` layer automatically references `Index-ScriptCore`, so you get the scripting API for free.
+- The `csharp` layer automatically references `Funke-ScriptCore`, so you get the scripting API for free.
 
 ---
 
@@ -76,7 +76,7 @@ The scaffolder creates the folder, the manifest, the entry point, the example co
 
 ---
 
-## The manifest (`index-package.lua`)
+## The manifest (`funke-package.lua`)
 
 The manifest is a small Lua file that returns a table describing your package. A typical one:
 
@@ -100,7 +100,7 @@ return {
     },
 
     dependencies = { "MyGame.Core@^1.0.0" },   -- optional, other packages this one needs
-    modules = { "Index.2D" },                  -- optional, engine modules this one builds on
+    modules = { "Funke.2D" },                  -- optional, engine modules this one builds on
 }
 ```
 
@@ -109,42 +109,42 @@ Key points:
 - **`name`** and **`version`** are required; every layer needs a non-empty **`sources`** list. Bump `version` with `scripts/packages/BumpPackageVersion.py` when you publish a change: patch for fixes, minor for additions, major for anything that breaks packages or games using yours.
 - **`dependencies`** lists *other packages* (not NuGet packages, not the script core), each optionally with a version range (`"MyGame.Core@^1.0.0"` or `{ name = "MyGame.Core", version = "^1.0.0" }`). Dependencies build and load first, and a project only needs to list your package; the rest comes along. The range syntax is in [Package System](Package-System.md#versions-and-dependencies).
 - **`engine`** states which engine versions the release supports; a project on another engine gets a clear error instead of a crash.
-- **`modules`** lists the [engine modules](../Engine-Core/Engine-Modules.md) your package uses (`"Index.2D"`, `"Index.3D"`). Installing the package turns them on in the project; a project with one of them off doesn't load the package and refuses to build it. Leave it out when you only use the core (UI, text, audio, input, assets). `NewPackage.py --modules Index.2D` writes it for you.
-- The manifest is validated when project files are generated — mistakes fail loudly with a clear `[Index Packages]` message, so you'll know right away.
+- **`modules`** lists the [engine modules](../Engine-Core/Engine-Modules.md) your package uses (`"Funke.2D"`, `"Funke.3D"`). Installing the package turns them on in the project; a project with one of them off doesn't load the package and refuses to build it. Leave it out when you only use the core (UI, text, audio, input, assets). `NewPackage.py --modules Funke.2D` writes it for you.
+- The manifest is validated when project files are generated — mistakes fail loudly with a clear `[Funke Packages]` message, so you'll know right away.
 
 ---
 
 ## Writing C++ code: the entry point
 
-Every C++ package needs an **entry point** — a function Index calls when it loads your package. Without it, the package won't be recognized.
+Every C++ package needs an **entry point** — a function Funke calls when it loads your package. Without it, the package won't be recognized.
 
 ```cpp
 #include "Packages/PackageApi.hpp"
 #include "Core/Log.hpp"
 
-extern "C" INDEX_PACKAGE_API int IndexPackage_OnLoad() {
-    IDX_INFO_TAG("Pkg.MyGame.Loot", "Loaded.");
+extern "C" FUNKE_PACKAGE_API int FunkePackage_OnLoad() {
+    FNK_INFO_TAG("Pkg.MyGame.Loot", "Loaded.");
     return 0;   // 0 = success
 }
 
 // Optional — runs when the package unloads:
-extern "C" INDEX_PACKAGE_API void IndexPackage_OnUnload() {
+extern "C" FUNKE_PACKAGE_API void FunkePackage_OnUnload() {
 }
 ```
 
-`INDEX_PACKAGE_API` is the marker that exports these functions across the DLL boundary. Always use it (not the engine's `INDEX_API`).
+`FUNKE_PACKAGE_API` is the marker that exports these functions across the DLL boundary. Always use it (not the engine's `FUNKE_API`).
 
 ### Registering a component
 
-Most C++ packages exist to add a **component**. You register it inside `IndexPackage_OnLoad`:
+Most C++ packages exist to add a **component**. You register it inside `FunkePackage_OnLoad`:
 
 ```cpp
 #include "MyLootComponent.hpp"
 #include "Inspector/PropertyRegistration.hpp"
 #include "Packages/PackageRegistration.hpp"
 
-extern "C" INDEX_PACKAGE_API int IndexPackage_OnLoad() {
-    using namespace Index;
+extern "C" FUNKE_PACKAGE_API int FunkePackage_OnLoad() {
+    using namespace Funke;
 
     std::vector<PropertyDescriptor> props = {
         Properties::Make("DropChance", "Drop Chance", &MyLootComponent::DropChance),
@@ -168,12 +168,12 @@ extern "C" INDEX_PACKAGE_API int IndexPackage_OnLoad() {
 
 Once registered, your component appears in the editor's **Add Component** menu, draws its fields in the Inspector, and saves/loads with scenes automatically. The `props` list is what makes its fields editable — see the inspector documentation for the full set of field types (sliders, asset pickers, enums, references, and so on).
 
-The optional **icon** is the name of an editor icon from `IndexAssets/Textures/Editor/General` without size and extension (`audio_source`, `particles`, `light_point`, `collider_box_3d`, `rigidbody_2d`, `camera`, `grid`, ...). The Inspector shows it in the component's header. `Package::RegisterComponent` takes it as its last argument too, and `Package::SetComponentIcon<MyLootComponent>("particles")` sets it after registration. Without one the editor guesses an icon from the display name.
+The optional **icon** is the name of an editor icon from `FunkeAssets/Textures/Editor/General` without size and extension (`audio_source`, `particles`, `light_point`, `collider_box_3d`, `rigidbody_2d`, `camera`, `grid`, ...). The Inspector shows it in the component's header. `Package::RegisterComponent` takes it as its last argument too, and `Package::SetComponentIcon<MyLootComponent>("particles")` sets it after registration. Without one the editor guesses an icon from the display name.
 
 You can also declare that two components can't coexist:
 
 ```cpp
-Package::DeclareComponentConflict<MyLootComponent, Index::SomeOtherComponent>();
+Package::DeclareComponentConflict<MyLootComponent, Funke::SomeOtherComponent>();
 ```
 
 ---
@@ -191,7 +191,7 @@ The conventions:
 C++ side:
 
 ```cpp
-extern "C" INDEX_PACKAGE_API
+extern "C" FUNKE_PACKAGE_API
 int32_t MyGame_Loot_RollDrop(int32_t tableId) { /* ... */ return 0; }
 ```
 
@@ -229,14 +229,14 @@ android = {
 - **`maven`** coordinates are resolved from Google's Maven repository and Maven Central, transitive dependencies included (the newest requested version of a library wins, as in Gradle). Pin the result with a lock file and ship it with the package; builds then download exactly those files and check their SHA-256:
 
   ```sh
-  python <engine>/platforms/Index.Platform.Android/Builder/android_maven.py lock Packages/MyGame.Billing
+  python <engine>/platforms/Funke.Platform.Android/Builder/android_maven.py lock Packages/MyGame.Billing
   ```
 
   This writes `Android/maven.lock.json`. Rerun it whenever the `maven` list changes; without a matching lock the build resolves the libraries again and warns. Downloads are cached per user, so only the first build needs internet access.
 - **`manifest`** is a normal `AndroidManifest.xml`: activities, services, providers, `<meta-data>`, permissions and `<queries>` are merged into the game's, like the libraries' own manifests. `${applicationId}` is the game's application ID; every other `${name}` comes from the Android build profile option of that name, or from `placeholders` when the profile does not set it (Release builds warn about that, so a sample key never ships unnoticed).
-- **Calling the Java code from C#:** a Java class exposes `public static String method(String)` methods, C# calls them with `AndroidBridge.Call(className, method, argument)`, and Java answers asynchronously with `dev.index.player.IndexBridge.send(channel, message)`, received by `AndroidBridge.Subscribe(channel, handler)` on the main thread. Strings are typically JSON. `IndexBridge.getActivity()` returns the game's activity; SDK calls that touch views belong on its UI thread. See [Platform Packages](../Editor/Platform-Packages.md#ads-and-other-java-libraries-from-packages).
+- **Calling the Java code from C#:** a Java class exposes `public static String method(String)` methods, C# calls them with `AndroidBridge.Call(className, method, argument)`, and Java answers asynchronously with `dev.funke.player.FunkeBridge.send(channel, message)`, received by `AndroidBridge.Subscribe(channel, handler)` on the main thread. Strings are typically JSON. `FunkeBridge.getActivity()` returns the game's activity; SDK calls that touch views belong on its UI thread. See [Platform Packages](../Editor/Platform-Packages.md#ads-and-other-java-libraries-from-packages).
 
-`Index.Ads` in the package registry is a complete example: a C# API, a Java plugin, AdMob and UMP from Maven, and a manifest entry filled from the build option `admobAppId`.
+`Funke.Ads` in the package registry is a complete example: a C# API, a Java plugin, AdMob and UMP from Maven, and a manifest entry filled from the build option `admobAppId`.
 
 ---
 
@@ -264,7 +264,7 @@ A project only builds the packages it explicitly lists. Open your project's `pro
 
 ## Sharing and installing packages
 
-Packages can be shared through Index's **cloud registry**. End users don't touch any of the above — they open the editor's **Package Manager**, browse the registry, and click install. The editor downloads the package, verifies it, drops it into the project's `Packages/` folder, adds it to the allow-list, rebuilds, and loads it — all without a restart.
+Packages can be shared through Funke's **cloud registry**. End users don't touch any of the above — they open the editor's **Package Manager**, browse the registry, and click install. The editor downloads the package, verifies it, drops it into the project's `Packages/` folder, adds it to the allow-list, rebuilds, and loads it — all without a restart.
 
 To publish your own package to the registry, you zip the package folder and add an entry (download URL + checksum) to the registry index. The full publishing flow and the registry format are covered in [Package System](Package-System.md#cloud-registry).
 
@@ -274,10 +274,10 @@ To publish your own package to the registry, you zip the package folder and add 
 
 These trip people up, so internalize them:
 
-- **No entry point** → the package is silently ignored. Every C++ package needs `IndexPackage_OnLoad`.
+- **No entry point** → the package is silently ignored. Every C++ package needs `FunkePackage_OnLoad`.
 - **Forgetting the allow-list** → the package never builds. Add it to `project.json` (and regenerate).
 - **Editing files but not regenerating project files** → your IDE solution lags behind the manifest. Re-run premake (or use the scaffolder, which does it for you).
-- **Copying only a native DLL** → PackageHost also requires its generated `.dll.indexabi` sidecar. A `native` package must be rebuilt after the engine changes; for source packages under `<project>/Packages/` the editor does this when it opens the project.
+- **Copying only a native DLL** → PackageHost also requires its generated `.dll.funkeabi` sidecar. A `native` package must be rebuilt after the engine changes; for source packages under `<project>/Packages/` the editor does this when it opens the project.
 - **Mixing `native` and `native_standalone`** → not allowed; pick one.
 - **Wrong package name format** → must be `PascalCase.PascalCase`. The folder name must match.
 - **P/Invoke name/signature mismatch** → runtime crash. Keep both sides identical.

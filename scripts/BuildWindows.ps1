@@ -14,7 +14,7 @@ param(
 
     [string]$SigningCertificateThumbprint,
 
-    [string]$SigningPasswordEnvironmentVariable = "INDEX_SIGNING_CERTIFICATE_PASSWORD",
+    [string]$SigningPasswordEnvironmentVariable = "FUNKE_SIGNING_CERTIFICATE_PASSWORD",
 
     [string]$SigningTimestampUrl,
 
@@ -109,11 +109,11 @@ function Invoke-NativeBuild {
 
     $msbuild = Get-MSBuild
     $projectMap = @{
-        Engine = "Index-Engine\Index-Engine.vcxproj"
-        Editor = "Index-Editor\Index-Editor.vcxproj"
-        Runtime = "Index-Runtime\Index-Runtime.vcxproj"
-        Launcher = "Index-Launcher\Index-Launcher.vcxproj"
-        CLI = "Index-CLI\Index-CLI.vcxproj"
+        Engine = "Funke-Engine\Funke-Engine.vcxproj"
+        Editor = "Funke-Editor\Funke-Editor.vcxproj"
+        Runtime = "Funke-Runtime\Funke-Runtime.vcxproj"
+        Launcher = "Funke-Launcher\Funke-Launcher.vcxproj"
+        CLI = "Funke-CLI\Funke-CLI.vcxproj"
     }
 
     foreach ($target in $BuildTargets) {
@@ -213,7 +213,7 @@ function Assert-DotNetHostVersion {
 
     $productVersion = (Get-Item -LiteralPath $nethost).VersionInfo.ProductVersion
     if ($productVersion -notmatch '^10\.') {
-        throw "Index targets .NET 10, but bundled nethost is '$productVersion'. Run scripts\setup-dotnet.ps1."
+        throw "Funke targets .NET 10, but bundled nethost is '$productVersion'. Run scripts\setup-dotnet.ps1."
     }
 }
 
@@ -222,11 +222,11 @@ function Reset-PublishOutput {
         (Join-Path $repoRoot "bin\Release-windows-x86_64")
     )
     $publishDirectory = [System.IO.Path]::GetFullPath(
-        (Join-Path $publishParent "Index-Launcher")
+        (Join-Path $publishParent "Funke-Launcher")
     )
     $resolvedParent = [System.IO.DirectoryInfo]::new($publishDirectory).Parent.FullName
     $unexpectedParent = $resolvedParent -ne $publishParent
-    $unexpectedLeaf = [System.IO.Path]::GetFileName($publishDirectory) -ne "Index-Launcher"
+    $unexpectedLeaf = [System.IO.Path]::GetFileName($publishDirectory) -ne "Funke-Launcher"
     if ($unexpectedParent -or $unexpectedLeaf) {
         throw "Refusing to clear unexpected publish output: $publishDirectory"
     }
@@ -239,7 +239,7 @@ function Remove-EmbeddedGitMetadata {
     param([string]$PublishDirectory)
 
     $expectedPublishDirectory = [System.IO.Path]::GetFullPath(
-        (Join-Path $repoRoot "bin\Release-windows-x86_64\Index-Launcher")
+        (Join-Path $repoRoot "bin\Release-windows-x86_64\Funke-Launcher")
     )
     $publishDirectoryPath = [System.IO.Path]::GetFullPath($PublishDirectory)
     if ($publishDirectoryPath -ne $expectedPublishDirectory) {
@@ -361,7 +361,7 @@ function Invoke-AuthenticodeSigning {
     $signTool = Get-WindowsSdkTool "signtool.exe"
     $files = @(Get-ChildItem -LiteralPath $PublishDirectory -Recurse -File |
         Where-Object {
-            $_.Name -match '^Index-.*\.(exe|dll)$' -and
+            $_.Name -match '^Funke-.*\.(exe|dll)$' -and
             $_.Extension -in @('.exe', '.dll')
         })
     if ($files.Count -eq 0) {
@@ -397,15 +397,15 @@ function Invoke-AuthenticodeSigning {
 
 function Get-RequiredPrivateSymbolPaths {
     return @(
-        "bin\Release-windows-x86_64\Index-Engine\Index-Engine.pdb",
-        "bin\Release-windows-x86_64\Index-Editor\Index-Editor.pdb",
-        "bin\Release-windows-x86_64\Index-Launcher\Index-Launcher.pdb",
-        "bin\Release-windows-x86_64\Index-Runtime\Index-Runtime.pdb",
-        "bin\Release-windows-x86_64\Index-ScriptCore\Index-ScriptCore.pdb",
-        "bin\Release-windows-x86_64\Index-PackageTool\Index-PackageTool.pdb",
-        "bin\Dist-windows-x86_64\Index-Engine\Index-Engine.pdb",
-        "bin\Dist-windows-x86_64\Index-Runtime\Index-Runtime.pdb",
-        "bin\Dist-windows-x86_64\Index-ScriptCore\Index-ScriptCore.pdb"
+        "bin\Release-windows-x86_64\Funke-Engine\Funke-Engine.pdb",
+        "bin\Release-windows-x86_64\Funke-Editor\Funke-Editor.pdb",
+        "bin\Release-windows-x86_64\Funke-Launcher\Funke-Launcher.pdb",
+        "bin\Release-windows-x86_64\Funke-Runtime\Funke-Runtime.pdb",
+        "bin\Release-windows-x86_64\Funke-ScriptCore\Funke-ScriptCore.pdb",
+        "bin\Release-windows-x86_64\Funke-PackageTool\Funke-PackageTool.pdb",
+        "bin\Dist-windows-x86_64\Funke-Engine\Funke-Engine.pdb",
+        "bin\Dist-windows-x86_64\Funke-Runtime\Funke-Runtime.pdb",
+        "bin\Dist-windows-x86_64\Funke-ScriptCore\Funke-ScriptCore.pdb"
     )
 }
 
@@ -446,7 +446,7 @@ function New-PrivateSymbolsArchive {
     }
 
     $tempParent = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\')
-    $stageDirectory = Join-Path $tempParent ("Index Symbols " + [guid]::NewGuid())
+    $stageDirectory = Join-Path $tempParent ("Funke Symbols " + [guid]::NewGuid())
     try {
         New-Item -ItemType Directory -Path $stageDirectory | Out-Null
         foreach ($relativePath in $requiredSymbols) {
@@ -457,7 +457,7 @@ function New-PrivateSymbolsArchive {
         }
 
         $binaries = @(Get-ChildItem -LiteralPath $PublishDirectory -Recurse -File |
-            Where-Object { $_.Name -match '^Index-.*\.(exe|dll)$' } |
+            Where-Object { $_.Name -match '^Funke-.*\.(exe|dll)$' } |
             ForEach-Object {
                 [ordered]@{
                     path = [System.IO.Path]::GetRelativePath($PublishDirectory, $_.FullName).Replace('\', '/')
@@ -565,7 +565,7 @@ function Publish-VerifiedArchive {
     )
 
     $tempParent = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\')
-    $verifyLeaf = "Index Bundle Pr{0}fung {1}" -f [char]0x00FC, [guid]::NewGuid()
+    $verifyLeaf = "Funke Bundle Pr{0}fung {1}" -f [char]0x00FC, [guid]::NewGuid()
     $verifyDirectory = Join-Path $tempParent $verifyLeaf
     $verifyDirectory = [System.IO.Path]::GetFullPath($verifyDirectory)
     if ([System.IO.DirectoryInfo]::new($verifyDirectory).Parent.FullName -ne $tempParent) {
@@ -632,17 +632,17 @@ try {
         Remove-StalePrivateSymbols
         Invoke-Premake
         Invoke-ManagedBuild "Release" @(
-            "Index-ScriptCore\Index-ScriptCore.csproj",
-            "Index-PackageTool\Index-PackageTool.csproj",
-            "Index-ScriptCompiler\Index-ScriptCompiler.csproj",
-            "Index-Sandbox\Index-Sandbox.csproj"
+            "Funke-ScriptCore\Funke-ScriptCore.csproj",
+            "Funke-PackageTool\Funke-PackageTool.csproj",
+            "Funke-ScriptCompiler\Funke-ScriptCompiler.csproj",
+            "Funke-Sandbox\Funke-Sandbox.csproj"
         )
         Invoke-NativeBuild "Release" @("Editor", "Runtime", "CLI")
 
-        Invoke-ManagedBuild "Dist" @("Index-ScriptCore\Index-ScriptCore.csproj") -EmitSymbols
+        Invoke-ManagedBuild "Dist" @("Funke-ScriptCore\Funke-ScriptCore.csproj") -EmitSymbols
         Invoke-Premake -NoProfiler
         try {
-            $staleProfilerDll = Join-Path $repoRoot "bin\Dist-windows-x86_64\Index-Runtime\Tracy.dll"
+            $staleProfilerDll = Join-Path $repoRoot "bin\Dist-windows-x86_64\Funke-Runtime\Tracy.dll"
             if (Test-Path -LiteralPath $staleProfilerDll) {
                 Remove-Item -LiteralPath $staleProfilerDll -Force
             }
@@ -656,7 +656,7 @@ try {
         Invoke-NativeBuild "Release" @("Launcher")
 
         $publishDirectory = Join-Path $repoRoot `
-            "bin\Release-windows-x86_64\Index-Launcher"
+            "bin\Release-windows-x86_64\Funke-Launcher"
         Remove-EmbeddedGitMetadata $publishDirectory
 
         $signingIdentity = Get-SigningCertificate
@@ -710,10 +710,10 @@ try {
     }
 
     Invoke-ManagedBuild $Configuration @(
-        "Index-ScriptCore\Index-ScriptCore.csproj",
-        "Index-PackageTool\Index-PackageTool.csproj",
-        "Index-ScriptCompiler\Index-ScriptCompiler.csproj",
-        "Index-Sandbox\Index-Sandbox.csproj"
+        "Funke-ScriptCore\Funke-ScriptCore.csproj",
+        "Funke-PackageTool\Funke-PackageTool.csproj",
+        "Funke-ScriptCompiler\Funke-ScriptCompiler.csproj",
+        "Funke-Sandbox\Funke-Sandbox.csproj"
     )
     Invoke-NativeBuild $Configuration $Targets
 }

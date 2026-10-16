@@ -3,8 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Pre-approve installs via -y / --assume-yes / --yes, or INDEX_SETUP_ASSUME_YES=1.
-ASSUME_YES="${INDEX_SETUP_ASSUME_YES:-}"
+# Pre-approve installs via -y / --assume-yes / --yes, or FUNKE_SETUP_ASSUME_YES=1.
+ASSUME_YES="${FUNKE_SETUP_ASSUME_YES:-}"
 for arg in "$@"; do
     case "$arg" in
         -y | --yes | --assume-yes) ASSUME_YES=1 ;;
@@ -30,8 +30,8 @@ detect_python_install_cmd() {
 install_python() {
     local cmd
     if ! cmd="$(detect_python_install_cmd)"; then
-        echo "[Index Setup] No supported package manager (Homebrew/apt/dnf/pacman/zypper) was found."
-        echo "[Index Setup] Install Python 3.10+ manually, then re-run setup."
+        echo "[Funke Setup] No supported package manager (Homebrew/apt/dnf/pacman/zypper) was found."
+        echo "[Funke Setup] Install Python 3.10+ manually, then re-run setup."
         return 1
     fi
     # Homebrew refuses to run as root; the system package managers need it.
@@ -39,22 +39,22 @@ install_python() {
         if command -v sudo >/dev/null 2>&1; then
             cmd="sudo $cmd"
         else
-            echo "[Index Setup] Root privileges are required but 'sudo' is unavailable."
+            echo "[Funke Setup] Root privileges are required but 'sudo' is unavailable."
             return 1
         fi
     fi
-    echo "[Index Setup] Installing Python via: $cmd"
+    echo "[Funke Setup] Installing Python via: $cmd"
     # shellcheck disable=SC2086
     $cmd
 }
 
 if ! have_python; then
-    echo "[Index Setup] Python 3.10+ was not found."
+    echo "[Funke Setup] Python 3.10+ was not found."
     do_install=0
     if [ -n "$ASSUME_YES" ]; then
         do_install=1
     elif [ -t 0 ]; then
-        read -r -p "[Index Setup] Install Python now? [Y/n] " answer
+        read -r -p "[Funke Setup] Install Python now? [Y/n] " answer
         case "${answer:-y}" in
             "" | y | Y | yes | Yes) do_install=1 ;;
         esac
@@ -63,7 +63,7 @@ if ! have_python; then
         install_python || true
     fi
     if ! have_python; then
-        echo "[Index Setup] ERROR: Python 3.10+ is still unavailable. Aborting."
+        echo "[Funke Setup] ERROR: Python 3.10+ is still unavailable. Aborting."
         exit 1
     fi
 fi

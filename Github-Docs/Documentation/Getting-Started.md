@@ -1,6 +1,6 @@
 # Your First Game
 
-This walkthrough takes a new project from the Launcher to a finished desktop build in about 15 minutes. It assumes you have never used Index before. Screens and names are the same on Windows, Linux and macOS; executables just have no `.exe` outside Windows.
+This walkthrough takes a new project from the Launcher to a finished desktop build in about 15 minutes. It assumes you have never used Funke before. Screens and names are the same on Windows, Linux and macOS; executables just have no `.exe` outside Windows.
 
 ## 1. Install the prerequisites
 
@@ -14,7 +14,7 @@ The Launcher checks for these on start and shows a **Download** button next to a
 
 ## 2. Create a project
 
-1. Start **Index-Launcher.exe** from the release folder.
+1. Start **Funke-Launcher.exe** from the release folder.
 2. Click **New Project**, choose **Empty 2D**, enter a name, pick a folder, and confirm.
 3. The Launcher creates the project, compiles its scripts once, and lists it under **Projects**. Double-click it to open the editor.
 
@@ -30,7 +30,7 @@ New projects start empty: `Assets/Scenes/SampleScene.scene` holds only a **Camer
 In the **Asset Browser**, open `Assets/Scripts`, right-click and choose **Create › EntityScript**. Name it `PlayerController` and double-click it to open your code editor:
 
 ```csharp
-using Index;
+using Funke;
 
 public class PlayerController : EntityScript
 {
@@ -54,7 +54,7 @@ public class PlayerController : EntityScript
 Create a second EntityScript named `Coin`:
 
 ```csharp
-using Index;
+using Funke;
 
 public class Coin : EntityScript
 {

@@ -3,7 +3,7 @@
 Trimmed wrapper around External/dawn/tools/fetch_dawn_dependencies.py.
 
 Dawn's stock fetcher hard-codes an 18-submodule list (see
-fetch_dawn_dependencies.py:98-118 in the Dawn tree). For Index we don't
+fetch_dawn_dependencies.py:98-118 in the Dawn tree). For Funke we don't
 need glfw3, googletest, or google_benchmark, so we re-use the same
 DEPS-resolution machinery with a smaller required-submodules set.
 

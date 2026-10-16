@@ -1,0 +1,5 @@
+#define FNK_FILE_DESCRIPTION "Funke Engine"
+#define FNK_INTERNAL_NAME "Funke-Engine"
+#define FNK_ORIGINAL_FILENAME "Funke-Engine.dll"
+#define FNK_FILE_TYPE VFT_DLL
+#include "src/Core/VersionResource.rcinc"

@@ -5,14 +5,14 @@ newoption
 }
 
 ROOT_DIR = os.realpath(_MAIN_SCRIPT_DIR)
-IndexCoreValidationRoot = _OPTIONS["core-validation"]
+FunkeCoreValidationRoot = _OPTIONS["core-validation"]
     and path.join(ROOT_DIR, "premake/generated/core")
     or nil
 
--- Optional engine feature modules (Index.2D, Index.3D). Their source lists live in
--- Index-Engine/EngineModules.json, shared with cmake/IndexEngine.cmake.
-IndexFeatureModules = json.decode(io.readfile(path.join(ROOT_DIR, "Index-Engine/EngineModules.json"))).modules
-for _, featureModule in ipairs(IndexFeatureModules) do
+-- Optional engine feature modules (Funke.2D, Funke.3D). Their source lists live in
+-- Funke-Engine/EngineModules.json, shared with cmake/FunkeEngine.cmake.
+FunkeFeatureModules = json.decode(io.readfile(path.join(ROOT_DIR, "Funke-Engine/EngineModules.json"))).modules
+for _, featureModule in ipairs(FunkeFeatureModules) do
     newoption
     {
         trigger = "without-" .. featureModule.option,
@@ -20,10 +20,10 @@ for _, featureModule in ipairs(IndexFeatureModules) do
     }
 end
 
-local function ResolveIndexEngineVariant()
+local function ResolveFunkeEngineVariant()
     local included = {}
     local excludedAny = false
-    for _, featureModule in ipairs(IndexFeatureModules) do
+    for _, featureModule in ipairs(FunkeFeatureModules) do
         featureModule.Enabled = not _OPTIONS["without-" .. featureModule.option]
         if featureModule.Enabled then
             table.insert(included, featureModule.option)
@@ -39,25 +39,25 @@ end
 
 -- A variant only builds the engine + runtime a game ships, into its own workspace and output
 -- folders, so it never overwrites the full-engine projects the editor uses.
-IndexEngineVariant = ResolveIndexEngineVariant()
-IndexVariantRoot = IndexEngineVariant
-    and path.join(ROOT_DIR, "premake/generated/variant-" .. IndexEngineVariant)
+FunkeEngineVariant = ResolveFunkeEngineVariant()
+FunkeVariantRoot = FunkeEngineVariant
+    and path.join(ROOT_DIR, "premake/generated/variant-" .. FunkeEngineVariant)
     or nil
-if IndexVariantRoot and IndexCoreValidationRoot then
+if FunkeVariantRoot and FunkeCoreValidationRoot then
     error("--without-* module options cannot be combined with --core-validation")
 end
-IndexIsolatedRoot = IndexCoreValidationRoot or IndexVariantRoot
+FunkeIsolatedRoot = FunkeCoreValidationRoot or FunkeVariantRoot
 
 -- Project files go to the isolated workspace root when one is active.
-function IndexProjectLocation(projectName, defaultLocation)
-    if IndexIsolatedRoot then
-        return path.join(IndexIsolatedRoot, projectName)
+function FunkeProjectLocation(projectName, defaultLocation)
+    if FunkeIsolatedRoot then
+        return path.join(FunkeIsolatedRoot, projectName)
     end
     return defaultLocation
 end
 
-function IsIndexFeatureModuleEnabled(moduleId)
-    for _, featureModule in ipairs(IndexFeatureModules) do
+function IsFunkeFeatureModuleEnabled(moduleId)
+    for _, featureModule in ipairs(FunkeFeatureModules) do
         if featureModule.id == moduleId then
             return featureModule.Enabled
         end
@@ -67,12 +67,12 @@ end
 
 include "premake/architecture.lua"
 
-workspace "Index"
-    architecture(IndexPremakeArchitecture)
-    startproject ((IndexCoreValidationRoot and "Index-Engine") or (IndexVariantRoot and "Index-Runtime") or "Index-Launcher")
+workspace "Funke"
+    architecture(FunkePremakeArchitecture)
+    startproject ((FunkeCoreValidationRoot and "Funke-Engine") or (FunkeVariantRoot and "Funke-Runtime") or "Funke-Launcher")
 
-    if IndexIsolatedRoot then
-        location(IndexIsolatedRoot)
+    if FunkeIsolatedRoot then
+        location(FunkeIsolatedRoot)
     end
 
     configurations
@@ -147,10 +147,10 @@ end
 local outputVariant = _OPTIONS["sanitize"] and "-sanitized"
     or (_OPTIONS["coverage"] and "-coverage")
     or (_OPTIONS["core-validation"] and "-core")
-    or (IndexEngineVariant and ("-" .. IndexEngineVariant) or "")
-outputdir = "%{cfg.buildcfg}-%{cfg.system}-" .. IndexArchitecture .. outputVariant
+    or (FunkeEngineVariant and ("-" .. FunkeEngineVariant) or "")
+outputdir = "%{cfg.buildcfg}-%{cfg.system}-" .. FunkeArchitecture .. outputVariant
 -- Module-independent outputs (ScriptCore) that a runtime variant reuses from the full build.
-outputdirFull = "%{cfg.buildcfg}-%{cfg.system}-" .. IndexArchitecture
+outputdirFull = "%{cfg.buildcfg}-%{cfg.system}-" .. FunkeArchitecture
 
 if (_OPTIONS["sanitize"] or _OPTIONS["coverage"]) and os.target() ~= "linux" then
     error("--sanitize and --coverage are supported only for Linux targets")
@@ -184,10 +184,10 @@ newoption
 {
     trigger = "module-profile",
     value = "PROFILE",
-    description = "Index module profile: full (default compatibility), core, or custom. Supplying any --with-* option without this flag selects custom.",
+    description = "Funke module profile: full (default compatibility), core, or custom. Supplying any --with-* option without this flag selects custom.",
     allowed =
     {
-        { "full", "Compatibility profile: render, audio, physics, scripting, editor, and INDEX_ALL_MODULES." },
+        { "full", "Compatibility profile: render, audio, physics, scripting, editor, and FUNKE_ALL_MODULES." },
         { "core", "Core-only profile: no optional module defines or third-party module dependencies." },
         { "custom", "Core-equivalent with no module flags, or the complete application surface with --with-editor." }
     }
@@ -201,15 +201,15 @@ newoption { trigger = "with-editor", description = "Enable the editor and implic
 
 newoption
 {
-    trigger = "index-project",
+    trigger = "funke-project",
     value = "PATH",
-    description = "Absolute path to an Index project whose entityBits setting should configure the engine build. Project-local packages use premake/project-packages.lua."
+    description = "Absolute path to a Funke project whose entityBits setting should configure the engine build. Project-local packages use premake/project-packages.lua."
 }
 
 newoption
 {
     trigger = "no-profiler",
-    description = "Strip the Index profiler from every configuration. By default, Tracy and the profiler panel are available in Debug/Release; Dist is always profiler-free."
+    description = "Strip the Funke profiler from every configuration. By default, Tracy and the profiler panel are available in Debug/Release; Dist is always profiler-free."
 }
 
 -- The engine has exactly one graphics backend (WebGPU via Dawn); the
@@ -217,8 +217,8 @@ newoption
 -- itself based on the adapter request in WebGPUApi.cpp::RequestAdapterSync.
 
 -- Controls whether development configurations offer profiler support; Dist is always stripped.
-IndexProfiler = {}
-IndexProfiler.Enabled = not _OPTIONS["no-profiler"] and not IndexCoreValidationRoot
+FunkeProfiler = {}
+FunkeProfiler.Enabled = not _OPTIONS["no-profiler"] and not FunkeCoreValidationRoot
 
 require("premake/fix_csharp_platforms")
 
@@ -240,7 +240,7 @@ local function HasExplicitModuleOption()
         or _OPTIONS["with-editor"]
 end
 
-local function ResolveIndexModules()
+local function ResolveFunkeModules()
     local profile = _OPTIONS["module-profile"]
     if not profile then
         profile = HasExplicitModuleOption() and "custom" or "full"
@@ -288,19 +288,19 @@ local function ResolveIndexModules()
         error("Partial custom module profiles are not supported; use --module-profile=core or add --with-editor (which enables the complete application surface).")
     end
 
-    if IndexVariantRoot and profile ~= "full" then
+    if FunkeVariantRoot and profile ~= "full" then
         error("--without-* module options build a full-profile runtime variant; drop --module-profile/--with-*")
     end
 
     -- Feature modules sit on top of the application surface; a core build has neither.
     local hasApplicationSurface = modules.Render and modules.Physics
-    modules.TwoD = hasApplicationSurface and IsIndexFeatureModuleEnabled("Index.2D")
-    modules.ThreeD = hasApplicationSurface and IsIndexFeatureModuleEnabled("Index.3D")
+    modules.TwoD = hasApplicationSurface and IsFunkeFeatureModuleEnabled("Funke.2D")
+    modules.ThreeD = hasApplicationSurface and IsFunkeFeatureModuleEnabled("Funke.3D")
 
     return modules
 end
 
-IndexModules = ResolveIndexModules()
+FunkeModules = ResolveFunkeModules()
 
 -- The engine itself no longer depends on ImGui (the editor application owns its own
 -- ImGui context as a Layer). EngineCoreEditor is therefore consumed only by the
@@ -315,27 +315,27 @@ IndexModules = ResolveIndexModules()
 -- already use).
 Dependency.EngineSelectedModules = MergeDependencySets(
     Dependency.EngineCore,
-    IndexModules.Render and Dependency.EngineCoreEditor or nil,
-    IndexModules.Render and Dependency.EngineCoreRender or nil,
-    IndexModules.Audio and Dependency.EngineCoreAudio or nil,
-    IndexModules.Physics and IndexModules.TwoD and Dependency.EngineCorePhysics2D or nil,
-    IndexModules.Physics and IndexModules.ThreeD and Dependency.EngineCorePhysics3D or nil,
-    IndexModules.Scripting and Dependency.EngineCoreScripting or nil,
+    FunkeModules.Render and Dependency.EngineCoreEditor or nil,
+    FunkeModules.Render and Dependency.EngineCoreRender or nil,
+    FunkeModules.Audio and Dependency.EngineCoreAudio or nil,
+    FunkeModules.Physics and FunkeModules.TwoD and Dependency.EngineCorePhysics2D or nil,
+    FunkeModules.Physics and FunkeModules.ThreeD and Dependency.EngineCorePhysics3D or nil,
+    FunkeModules.Scripting and Dependency.EngineCoreScripting or nil,
     Dependency.EngineCoreLinuxSystem
 )
 
 Dependency.EditorRuntimeCommon = MergeDependencySets(
     {
-        -- Index-EditorRuntime is the StaticLib that holds shared editor /
+        -- Funke-EditorRuntime is the StaticLib that holds shared editor /
         -- launcher scaffolding (custom titlebar, ImGui context bring-up).
         -- Both consumers compile and link the same source via this dep
         -- set instead of duplicating the files into each binary.
-        IncludeDirs = { "%{IncludeDir.IndexEditorRuntime}" },
-        DependsOn = { "Index-Engine", "Index-EditorRuntime" },
-        Links = { "Index-Engine", "Index-EditorRuntime" }
+        IncludeDirs = { "%{IncludeDir.FunkeEditorRuntime}" },
+        DependsOn = { "Funke-Engine", "Funke-EditorRuntime" },
+        Links = { "Funke-Engine", "Funke-EditorRuntime" }
     },
     Dependency.EngineSelectedModules,
-    IndexModules.Editor and Dependency.EngineCoreEditor or nil
+    FunkeModules.Editor and Dependency.EngineCoreEditor or nil
 )
 
 -- Picks the EnTT entity/version bit-split from the active project's
@@ -344,109 +344,109 @@ Dependency.EditorRuntimeCommon = MergeDependencySets(
 -- unpatched engine. Cached so repeated calls from each consumer's
 -- premake5.lua don't re-parse the file. The vendored EnTT header at
 -- External/entt/src/entt/entity/entity.hpp branches on the resulting
--- -DINDEX_ENTITY_BITS=N to adjust entt_traits<uint32_t>::entity_mask /
+-- -DFUNKE_ENTITY_BITS=N to adjust entt_traits<uint32_t>::entity_mask /
 -- version_mask.
 --
--- Mirrors the IndexProject::Load validator in
--- Index-Engine/src/Project/IndexProject.cpp so the premake-time and
+-- Mirrors the FunkeProject::Load validator in
+-- Funke-Engine/src/Project/FunkeProject.cpp so the premake-time and
 -- runtime views of the setting stay in sync.
-IndexEntityBits = nil
-function GetIndexEntityBits()
-    if IndexEntityBits ~= nil then
-        return IndexEntityBits
+FunkeEntityBits = nil
+function GetFunkeEntityBits()
+    if FunkeEntityBits ~= nil then
+        return FunkeEntityBits
     end
 
     local default = 20
-    local projectRootDir = _OPTIONS["index-project"]
+    local projectRootDir = _OPTIONS["funke-project"]
     if not projectRootDir or projectRootDir == "" then
-        IndexEntityBits = default
-        return IndexEntityBits
+        FunkeEntityBits = default
+        return FunkeEntityBits
     end
 
     local manifestPath = path.join(projectRootDir, "project.json")
     if not os.isfile(manifestPath) then
-        IndexEntityBits = default
-        return IndexEntityBits
+        FunkeEntityBits = default
+        return FunkeEntityBits
     end
 
     local file = io.open(manifestPath, "rb")
     if not file then
-        IndexEntityBits = default
-        return IndexEntityBits
+        FunkeEntityBits = default
+        return FunkeEntityBits
     end
     local jsonText = file:read("*all")
     file:close()
     if not jsonText then
-        IndexEntityBits = default
-        return IndexEntityBits
+        FunkeEntityBits = default
+        return FunkeEntityBits
     end
 
     jsonText = jsonText:gsub("//[^\n]*", ""):gsub("/%*.-%*/", "")
     local valueText = jsonText:match('"entityBits"%s*:%s*(%-?%d+)')
     if not valueText then
-        IndexEntityBits = default
-        return IndexEntityBits
+        FunkeEntityBits = default
+        return FunkeEntityBits
     end
 
     local bits = tonumber(valueText)
     if bits == 16 or bits == 20 or bits == 22 or bits == 24 or bits == 28 then
-        IndexEntityBits = bits
+        FunkeEntityBits = bits
     else
-        print("[Index] project.json: entityBits=" .. tostring(valueText)
+        print("[Funke] project.json: entityBits=" .. tostring(valueText)
             .. " is not one of {16, 20, 22, 24, 28}; falling back to 20.")
-        IndexEntityBits = default
+        FunkeEntityBits = default
     end
-    return IndexEntityBits
+    return FunkeEntityBits
 end
 
 -- Writes the generated header that the EnTT patch reads to override
--- INDEX_ENTITY_BITS at compile time. The build-time -D in
--- GetIndexModuleDefines() (and in package-loader.lua's RegisterNative-
+-- FUNKE_ENTITY_BITS at compile time. The build-time -D in
+-- GetFunkeModuleDefines() (and in package-loader.lua's RegisterNative-
 -- Project) is the fallback; the header is the override path that the
 -- editor's Rebuild Engine flow uses to change the value without
 -- regenerating project files.
 --
 -- Layout:
---   Index-Engine/src/Generated/IndexEntityBitsConfig.h
+--   Funke-Engine/src/Generated/FunkeEntityBitsConfig.h
 --
 -- Every C++ project that compiles entt-using code has this folder on its
 -- include path (the four main projects + RegisterNativeProject). On
 -- premake regen we always rewrite the header so its value tracks
 -- project.json. If the file ever drifts from the -D, the header
--- wins (it #undef/#defines INDEX_ENTITY_BITS).
-IndexEntityBitsConfigHeader = path.join(ROOT_DIR,
-    "Index-Engine/src/Generated/IndexEntityBitsConfig.h")
-IndexEntityBitsConfigIncludeDir = path.join(ROOT_DIR,
-    "Index-Engine/src/Generated")
+-- wins (it #undef/#defines FUNKE_ENTITY_BITS).
+FunkeEntityBitsConfigHeader = path.join(ROOT_DIR,
+    "Funke-Engine/src/Generated/FunkeEntityBitsConfig.h")
+FunkeEntityBitsConfigIncludeDir = path.join(ROOT_DIR,
+    "Funke-Engine/src/Generated")
 
-function WriteIndexEntityBitsConfigHeader()
-    local bits = GetIndexEntityBits()
-    os.mkdir(IndexEntityBitsConfigIncludeDir)
+function WriteFunkeEntityBitsConfigHeader()
+    local bits = GetFunkeEntityBits()
+    os.mkdir(FunkeEntityBitsConfigIncludeDir)
     local newContent =
         "// Auto-generated by premake (and rewritten by the editor's\n" ..
         "// Rebuild Engine flow). Do not edit by hand. Overrides the\n" ..
-        "// build-time -DINDEX_ENTITY_BITS so the editor can change the\n" ..
+        "// build-time -DFUNKE_ENTITY_BITS so the editor can change the\n" ..
         "// EnTT entity/version bit split without a full premake regen.\n" ..
-        "// See premake5.lua's WriteIndexEntityBitsConfigHeader() and\n" ..
-        "// Index-Editor/src/Systems/ImGuiEditorLayerPanels.cpp's\n" ..
+        "// See premake5.lua's WriteFunkeEntityBitsConfigHeader() and\n" ..
+        "// Funke-Editor/src/Systems/ImGuiEditorLayerPanels.cpp's\n" ..
         "// Rebuild Engine handler for the two writers.\n" ..
         "#pragma once\n" ..
-        "#undef  INDEX_ENTITY_BITS\n" ..
-        "#define INDEX_ENTITY_BITS " .. tostring(bits) .. "\n"
+        "#undef  FUNKE_ENTITY_BITS\n" ..
+        "#define FUNKE_ENTITY_BITS " .. tostring(bits) .. "\n"
     -- Skip the write when the on-disk content already matches. Touching the
     -- mtime here invalidates every TU that transitively includes entt (the
     -- header sits on every entt-using project's include path), which is what
     -- forces Visual Studio to recompile the world on every launcher-driven
     -- premake regen.
-    local existing = io.open(IndexEntityBitsConfigHeader, "rb")
+    local existing = io.open(FunkeEntityBitsConfigHeader, "rb")
     if existing then
         local current = existing:read("*all")
         existing:close()
         if current == newContent then return end
     end
-    local file, err = io.open(IndexEntityBitsConfigHeader, "wb")
+    local file, err = io.open(FunkeEntityBitsConfigHeader, "wb")
     if not file then
-        error("[Index] cannot write " .. IndexEntityBitsConfigHeader
+        error("[Funke] cannot write " .. FunkeEntityBitsConfigHeader
             .. " (" .. tostring(err) .. ")")
     end
     file:write(newContent)
@@ -456,62 +456,62 @@ end
 -- Run once at premake-time so the header exists before any project block
 -- is processed. The editor's Rebuild Engine path rewrites this same file
 -- from C++ when only the bit count changes (avoiding the premake regen).
-WriteIndexEntityBitsConfigHeader()
+WriteFunkeEntityBitsConfigHeader()
 
 -- Reproduce the engine-owned changes in pinned upstream submodules.
 -- Hash and path verification prevents dependency bumps from accepting stale patches.
 require("premake/vendor-patches")
-ApplyIndexVendorPatches()
+ApplyFunkeVendorPatches()
 
-function GetIndexModuleDefines()
-    local hasApplication = IndexModules.Render
-        and IndexModules.Audio
-        and IndexModules.Physics
-        and IndexModules.Scripting
-        and IndexModules.Editor
+function GetFunkeModuleDefines()
+    local hasApplication = FunkeModules.Render
+        and FunkeModules.Audio
+        and FunkeModules.Physics
+        and FunkeModules.Scripting
+        and FunkeModules.Editor
 
     local defines =
     {
-        "INDEX_WITH_RENDER=" .. (IndexModules.Render and "1" or "0"),
-        "INDEX_WITH_AUDIO=" .. (IndexModules.Audio and "1" or "0"),
-        "INDEX_WITH_PHYSICS=" .. (IndexModules.Physics and "1" or "0"),
-        "INDEX_WITH_SCRIPTING=" .. (IndexModules.Scripting and "1" or "0"),
-        -- INDEX_WITH_EDITOR is intentionally NOT emitted here: it varies per
+        "FUNKE_WITH_RENDER=" .. (FunkeModules.Render and "1" or "0"),
+        "FUNKE_WITH_AUDIO=" .. (FunkeModules.Audio and "1" or "0"),
+        "FUNKE_WITH_PHYSICS=" .. (FunkeModules.Physics and "1" or "0"),
+        "FUNKE_WITH_SCRIPTING=" .. (FunkeModules.Scripting and "1" or "0"),
+        -- FUNKE_WITH_EDITOR is intentionally NOT emitted here: it varies per
         -- build configuration (1 in Debug/Release so the workspace can host the
         -- editor, 0 in Dist so shipped runtimes carry no editor systems). It is
-        -- applied by ApplyIndexEditorModuleDefine() below, which every engine
-        -- consumer calls right after defines(GetIndexModuleDefines()).
-        "INDEX_WITH_APPLICATION=" .. (hasApplication and "1" or "0"),
-        "INDEX_WITH_2D=" .. (IndexModules.TwoD and "1" or "0"),
-        "INDEX_WITH_3D=" .. (IndexModules.ThreeD and "1" or "0"),
-        "INDEX_ENTITY_BITS=" .. tostring(GetIndexEntityBits()),
+        -- applied by ApplyFunkeEditorModuleDefine() below, which every engine
+        -- consumer calls right after defines(GetFunkeModuleDefines()).
+        "FUNKE_WITH_APPLICATION=" .. (hasApplication and "1" or "0"),
+        "FUNKE_WITH_2D=" .. (FunkeModules.TwoD and "1" or "0"),
+        "FUNKE_WITH_3D=" .. (FunkeModules.ThreeD and "1" or "0"),
+        "FUNKE_ENTITY_BITS=" .. tostring(GetFunkeEntityBits()),
         -- Shrink magic_enum's default reflection window [-128, 127] -> [-1, 64].
         -- All engine-side reflected enums are small `enum class : uint8_t`
-        -- with sequential values in [0, ~16] (see Index-Engine/src/Components/
-        -- and Index-Engine/src/Graphics/Wrap.hpp for the only customized
+        -- with sequential values in [0, ~16] (see Funke-Engine/src/Components/
+        -- and Funke-Engine/src/Graphics/Wrap.hpp for the only customized
         -- range). The default window instantiates 256 template specializations
         -- per reflected enum; ComponentInspectors.cpp reflects so many enums
         -- via Properties::MakeWith<T>() that even 64-bit cl.exe runs out of
         -- heap (C1060 in magic_enum.hpp). Shrinking the window cuts template
         -- bloat ~4x. If a new enum exceeds [-1, 64], specialize
         -- magic_enum::customize::enum_range<T> in its header (see
-        -- Index-Engine/src/Graphics/Wrap.hpp for the existing pattern).
+        -- Funke-Engine/src/Graphics/Wrap.hpp for the existing pattern).
         "MAGIC_ENUM_RANGE_MIN=-1",
         "MAGIC_ENUM_RANGE_MAX=32"
     }
 
-    if IndexModules.FullCompatibility then
-        table.insert(defines, "INDEX_ALL_MODULES=1")
+    if FunkeModules.FullCompatibility then
+        table.insert(defines, "FUNKE_ALL_MODULES=1")
     end
 
     return defines
 end
 
--- Emits INDEX_WITH_EDITOR per build configuration. MUST be called inside a
--- project block, right after defines(GetIndexModuleDefines()).
+-- Emits FUNKE_WITH_EDITOR per build configuration. MUST be called inside a
+-- project block, right after defines(GetFunkeModuleDefines()).
 --
 -- Editor-support code in the engine (the PrefabTemplateCache .prefab watcher,
--- ProjectManager's cache hook, ...) is gated on `#if INDEX_WITH_EDITOR`. It
+-- ProjectManager's cache hook, ...) is gated on `#if FUNKE_WITH_EDITOR`. It
 -- compiles into Debug/Release so the dev workspace can host the editor, but is
 -- stripped from Dist so a shipped runtime carries no editor-only systems.
 -- When the workspace was generated without the editor module at all, it stays
@@ -520,28 +520,28 @@ end
 -- Splitting it out per-config (rather than baking one value at premake time)
 -- is safe for cross-DLL ODR: every binary in a single process is built in the
 -- same configuration, so engine.dll and its consumers always agree on the
--- value (PrefabTemplateCache has an INDEX_WITH_EDITOR-conditional member).
-function ApplyIndexEditorModuleDefine()
-    if IndexModules.Editor then
+-- value (PrefabTemplateCache has an FUNKE_WITH_EDITOR-conditional member).
+function ApplyFunkeEditorModuleDefine()
+    if FunkeModules.Editor then
         filter "configurations:Dist"
-            defines { "INDEX_WITH_EDITOR=0" }
+            defines { "FUNKE_WITH_EDITOR=0" }
         filter "configurations:not Dist"
-            defines { "INDEX_WITH_EDITOR=1" }
+            defines { "FUNKE_WITH_EDITOR=1" }
         filter {}
     else
-        defines { "INDEX_WITH_EDITOR=0" }
+        defines { "FUNKE_WITH_EDITOR=0" }
     end
 end
 
-function UseIndexEngineModuleDependencies()
+function UseFunkeEngineModuleDependencies()
     UseDependencySet(Dependency.EngineSelectedModules)
-    UseIndexProfilerDependencies(true)
+    UseFunkeProfilerDependencies(true)
 end
 
--- Shared postbuild command: copy IndexAssets into each target output
--- directory. The single source tree is `Index-Runtime/IndexAssets/`,
+-- Shared postbuild command: copy FunkeAssets into each target output
+-- directory. The single source tree is `Funke-Runtime/FunkeAssets/`,
 -- staged via one {COPYDIR} next to the consumer exe.
-CopyIndexAssets = '{COPYDIR} "' .. path.join(ROOT_DIR, "Index-Runtime/IndexAssets") .. '" "%{cfg.targetdir}/IndexAssets"'
+CopyFunkeAssets = '{COPYDIR} "' .. path.join(ROOT_DIR, "Funke-Runtime/FunkeAssets") .. '" "%{cfg.targetdir}/FunkeAssets"'
 
 local function SharedLibFileName(projectName)
     if os.target() == "windows" then
@@ -588,43 +588,43 @@ local function DawnSharedLibFileName()
     return "libwebgpu_dawn.so"
 end
 
-CopyIndexEngineDll = CopySharedLib("Index-Engine")
+CopyFunkeEngineDll = CopySharedLib("Funke-Engine")
 CopyDawnSharedLib = ""
-if IndexModules.Render and os.target() ~= "windows" then
+if FunkeModules.Render and os.target() ~= "windows" then
     local dawnSharedLib = DawnSharedLibFileName()
     CopyDawnSharedLib = CopySharedLibFile(path.join(ROOT_DIR, "External/dawn/build/src/dawn/native", dawnSharedLib),
         "%{cfg.targetdir}/" .. dawnSharedLib)
 end
 
--- The Index-GameComponents sidecar DLL is removed — user components now
--- register at runtime via DynamicComponentRegistrar in Index-ScriptCore.
+-- The Funke-GameComponents sidecar DLL is removed — user components now
+-- register at runtime via DynamicComponentRegistrar in Funke-ScriptCore.
 -- No per-project codegen artifact gets shipped alongside consumer exes.
-CopyIndexGameComponentsDll = "" -- retained as a no-op so any leftover postbuild reference stays harmless
+CopyFunkeGameComponentsDll = "" -- retained as a no-op so any leftover postbuild reference stays harmless
 
 -- Consumers load private ScriptCore copies so its shared build output remains replaceable while they run.
 local function CopyScriptCoreArtifact(filename)
     return '{COPYFILE} "' ..
-        path.join(ROOT_DIR, "bin/" .. (IndexVariantRoot and outputdirFull or outputdir), "Index-ScriptCore", filename) ..
+        path.join(ROOT_DIR, "bin/" .. (FunkeVariantRoot and outputdirFull or outputdir), "Funke-ScriptCore", filename) ..
         '" "%{cfg.targetdir}/' .. filename .. '"'
 end
 
 CopyScriptCoreArtifacts = {
-    CopyScriptCoreArtifact("Index-ScriptCore.dll"),
-    CopyScriptCoreArtifact("Index-ScriptCore.runtimeconfig.json"),
-    CopyScriptCoreArtifact("Index-ScriptCore.deps.json"),
+    CopyScriptCoreArtifact("Funke-ScriptCore.dll"),
+    CopyScriptCoreArtifact("Funke-ScriptCore.runtimeconfig.json"),
+    CopyScriptCoreArtifact("Funke-ScriptCore.deps.json"),
 }
 
--- Editor-only in-process hot-reload compiler (Index-ScriptCompiler, a dotnet-built project outside the
+-- Editor-only in-process hot-reload compiler (Funke-ScriptCompiler, a dotnet-built project outside the
 -- solution). Optional: without it the editor falls back to dotnet build.
 if os.target() == "windows" then
-    local scriptCompilerDir = path.translate(path.join(ROOT_DIR, "bin/" .. outputdir, "Index-ScriptCompiler"), "\\")
-    CopyScriptCompilerArtifacts = { 'if exist "' .. scriptCompilerDir .. '\\Index-ScriptCompiler.dll" xcopy /Y /Q /I "' ..
-        scriptCompilerDir .. '\\Index-ScriptCompiler.*" "%{cfg.targetdir}\\ScriptCompiler\\" >nul' }
+    local scriptCompilerDir = path.translate(path.join(ROOT_DIR, "bin/" .. outputdir, "Funke-ScriptCompiler"), "\\")
+    CopyScriptCompilerArtifacts = { 'if exist "' .. scriptCompilerDir .. '\\Funke-ScriptCompiler.dll" xcopy /Y /Q /I "' ..
+        scriptCompilerDir .. '\\Funke-ScriptCompiler.*" "%{cfg.targetdir}\\ScriptCompiler\\" >nul' }
 else
-    -- Index-Managed (below) always builds it on Linux / macOS.
-    local scriptCompilerDir = path.join(ROOT_DIR, "bin/" .. outputdir, "Index-ScriptCompiler")
+    -- Funke-Managed (below) always builds it on Linux / macOS.
+    local scriptCompilerDir = path.join(ROOT_DIR, "bin/" .. outputdir, "Funke-ScriptCompiler")
     CopyScriptCompilerArtifacts = { '{MKDIR} "%{cfg.targetdir}/ScriptCompiler"' }
-    for _, file in ipairs({ "Index-ScriptCompiler.dll", "Index-ScriptCompiler.deps.json", "Index-ScriptCompiler.runtimeconfig.json" }) do
+    for _, file in ipairs({ "Funke-ScriptCompiler.dll", "Funke-ScriptCompiler.deps.json", "Funke-ScriptCompiler.runtimeconfig.json" }) do
         table.insert(CopyScriptCompilerArtifacts,
             '{COPYFILE} "' .. path.join(scriptCompilerDir, file) .. '" "%{cfg.targetdir}/ScriptCompiler/' .. file .. '"')
     end
@@ -632,9 +632,9 @@ end
 
 -- Materialize a self-contained EngineSDK/ folder next to the Launcher exe
 -- so the zipped Launcher can build new projects' NativeScripts (which
--- generate a CMakeLists.txt that hard-references ${INDEX_DIR}/Index-Engine/
--- src and ${INDEX_DIR}/External/... — see BuildNativeScriptCMakeLists in
--- Index-Engine/src/Project/IndexProject.cpp). ResolveEngineRoot() picks up
+-- generate a CMakeLists.txt that hard-references ${FUNKE_DIR}/Funke-Engine/
+-- src and ${FUNKE_DIR}/External/... — see BuildNativeScriptCMakeLists in
+-- Funke-Engine/src/Project/FunkeProject.cpp). ResolveEngineRoot() picks up
 -- the bundled SDK ahead of the dev-layout fallbacks. The script is a thin
 -- batch wrapper around robocopy so the lua stays free of per-folder copy
 -- spam; see scripts/CopyEngineSdk.bat for the actual copy list.
@@ -648,13 +648,13 @@ else
         '" "' .. path.join(ROOT_DIR, "bin/" .. outputdir) .. '"'
 end
 
--- Managed projects consumers depend on: the solution's C# projects on Windows, the Index-Managed
+-- Managed projects consumers depend on: the solution's C# projects on Windows, the Funke-Managed
 -- utility (scripts/BuildManaged.py) on Linux / macOS where gmake2 cannot build SDK-style projects.
-function IndexManagedDependencies(windowsProjects)
+function FunkeManagedDependencies(windowsProjects)
     if os.target() == "windows" then
         return windowsProjects
     end
-    return { "Index-Managed" }
+    return { "Funke-Managed" }
 end
 
 -- SDL3 is a shared library so engine.dll and the consumer executables share one copy
@@ -669,15 +669,15 @@ CopySDL3SharedLib = CopySharedLibFile(path.join(ROOT_DIR, SDL3Layout.SharedLibPa
 CopyGladDll = ""
 
 -- Tracy is process-wide and ships only beside profiler-enabled development binaries.
-if IndexProfiler and IndexProfiler.Enabled then
+if FunkeProfiler and FunkeProfiler.Enabled then
     CopyTracyDll = CopySharedLib("Tracy")
 else
     CopyTracyDll = ""
 end
 RemoveTracyDll = RemoveSharedLib("Tracy")
 
-function ApplyIndexProfilerRuntime()
-    if IndexProfiler and IndexProfiler.Enabled then
+function ApplyFunkeProfilerRuntime()
+    if FunkeProfiler and FunkeProfiler.Enabled then
         filter "configurations:not Dist"
             postbuildcommands { CopyTracyDll }
         filter "configurations:Dist"
@@ -712,8 +712,8 @@ end
 --
 -- `rootRelPrefix` is the path prefix to prepend so the (repo-root-
 -- relative) Dawn build directory resolves correctly from the consumer's
--- own premake working directory. Top-level project folders (Index-Engine/,
--- Index-Editor/, etc.) need "../"; deeper folders (Tests/Index-Engine-
+-- own premake working directory. Top-level project folders (Funke-Engine/,
+-- Funke-Editor/, etc.) need "../"; deeper folders (Tests/Funke-Engine-
 -- Tests/) need "../../" — caller picks.
 --
 -- Why per-config: webgpu_dawn.lib lives in both `Debug/` and `Release/`
@@ -743,7 +743,7 @@ function ApplyDawnLibDirs(rootRelPrefix)
 end
 
 -- True when an engine-shipped package with this name is installed on disk —
--- its manifest is present at <repo>/packages/<Name>/index-package.lua. The
+-- its manifest is present at <repo>/packages/<Name>/funke-package.lua. The
 -- package loader (premake/package-loader.lua) registers exactly those, so this
 -- is a faithful "will the Pkg.<Name> project exist in the workspace?" predicate.
 -- It checks the filesystem rather than loader state, so a consumer's premake5.lua
@@ -751,8 +751,8 @@ end
 -- package link only when the package is actually present, so a checkout without
 -- it (CI, a fresh clone, a user who hasn't fetched it from the registry) builds
 -- clean instead of emitting MSB3245 for an unresolvable assembly reference.
-function IndexEnginePackageInstalled(name)
-    return os.isfile(path.join(ROOT_DIR, "packages", name, "index-package.lua"))
+function FunkeEnginePackageInstalled(name)
+    return os.isfile(path.join(ROOT_DIR, "packages", name, "funke-package.lua"))
 end
 
 function UseDependencySet(dep)
@@ -801,8 +801,8 @@ function UseDependencySetNoLink(dep)
     end
 end
 
-function UseIndexProfilerDependencies(linkTracy)
-    if not (IndexProfiler and IndexProfiler.Enabled) then
+function UseFunkeProfilerDependencies(linkTracy)
+    if not (FunkeProfiler and FunkeProfiler.Enabled) then
         return
     end
 
@@ -816,9 +816,9 @@ function UseIndexProfilerDependencies(linkTracy)
 end
 
 group "Dependencies"
-if IndexModules.Render then
+if FunkeModules.Render then
     project "ImGui"
-        location (IndexProjectLocation("ImGui", path.join(ROOT_DIR, "premake/generated/ImGui")))
+        location (FunkeProjectLocation("ImGui", path.join(ROOT_DIR, "premake/generated/ImGui")))
         kind "StaticLib"
         language "C++"
         cppdialect "C++20"
@@ -886,7 +886,7 @@ if IndexModules.Render then
         UseDependencySet(Dependency.ImGui)
 
         filter "system:windows"
-            -- See Index-Engine/premake5.lua for the rationale on
+            -- See Funke-Engine/premake5.lua for the rationale on
             -- MultiProcessorCompile + /Zc:preprocessor.
             flags { "MultiProcessorCompile" }
             buildoptions { "/FS", "/Zc:preprocessor" }
@@ -915,7 +915,7 @@ end
 -- ImGuizmo (translate/rotate/scale gizmos) — editor-only. Built as its own
 -- StaticLib so it compiles WITHOUT the engine PCH/forceinclude the editor uses;
 -- it only needs the imgui headers and resolves ImGui symbols at editor link time.
-if IndexModules.Editor and not IndexVariantRoot then
+if FunkeModules.Editor and not FunkeVariantRoot then
     project "ImGuizmo"
         location (path.join(ROOT_DIR, "premake/generated/ImGuizmo"))
         kind "StaticLib"
@@ -966,35 +966,35 @@ end
 -- Dawn (WebGPU) and SDL3 are built out-of-band by scripts/dawn/SetupDawn.* and
 -- scripts/sdl/SetupSDL.py; premake only links them (see dawn.lua / sdl3.lua).
 
-if IndexModules.Physics and IndexModules.TwoD then
+if FunkeModules.Physics and FunkeModules.TwoD then
     include "premake/dependencies/box2d.lua"
     include "premake/dependencies/index_physics.lua"
 end
-if IndexModules.Physics and IndexModules.ThreeD then
+if FunkeModules.Physics and FunkeModules.ThreeD then
     include "premake/dependencies/jolt.lua"
 end
 
-if IndexProfiler.Enabled then
+if FunkeProfiler.Enabled then
     include "premake/dependencies/tracy.lua"
 end
 
-include "Index-Engine"
+include "Funke-Engine"
 
 -- The solution builds the managed projects on Windows. gmake2 cannot build SDK-style .NET 10 projects,
 -- so Linux / macOS run them through dotnet in one utility project the native consumers depend on.
 -- A runtime variant reuses the full build's ScriptCore: the C# surface is module-independent.
-if IndexVariantRoot then
+if FunkeVariantRoot then
     -- nothing managed
-elseif os.target() == "windows" and not IndexCoreValidationRoot then
-    include "Index-PackageTool"
-    if IndexModules.Scripting then
-        include "Index-ScriptCore"
-        include "Index-Sandbox"
+elseif os.target() == "windows" and not FunkeCoreValidationRoot then
+    include "Funke-PackageTool"
+    if FunkeModules.Scripting then
+        include "Funke-ScriptCore"
+        include "Funke-Sandbox"
     end
-elseif not IndexCoreValidationRoot and IndexModules.Scripting then
+elseif not FunkeCoreValidationRoot and FunkeModules.Scripting then
     group "Core"
-    project "Index-Managed"
-        location "premake/generated/Index-Managed"
+    project "Funke-Managed"
+        location "premake/generated/Funke-Managed"
         -- "Makefile", not "Utility": gmake2 never runs a Utility project's commands.
         kind "Makefile"
         targetdir ("bin/" .. outputdir .. "/%{prj.name}")
@@ -1010,36 +1010,36 @@ end
 -- Shared StaticLib between the editor and launcher; must be defined
 -- before either consumer is `include`d so each project's DependencySet
 -- resolution can see it.
-if IndexModules.Editor or IndexModules.FullCompatibility then
-    include "Index-EditorRuntime"
+if FunkeModules.Editor or FunkeModules.FullCompatibility then
+    include "Funke-EditorRuntime"
 end
 
-if IndexModules.Editor and not IndexVariantRoot then
-    include "Index-Editor"
-    -- `index` command-line tool; compiles the editor's UI-free build sources directly.
-    include "Index-CLI"
+if FunkeModules.Editor and not FunkeVariantRoot then
+    include "Funke-Editor"
+    -- `funke` command-line tool; compiles the editor's UI-free build sources directly.
+    include "Funke-CLI"
 end
 
-if IndexModules.FullCompatibility then
-    if not IndexVariantRoot then
-        include "Index-Launcher"
+if FunkeModules.FullCompatibility then
+    if not FunkeVariantRoot then
+        include "Funke-Launcher"
     end
-    include "Index-Runtime"
+    include "Funke-Runtime"
 end
 
 group ""
 
 -- Tests live in their own group so they're easy to spot in the IDE solution
 -- explorer and trivial to disable by commenting out this block.
-if not IndexIsolatedRoot then
+if not FunkeIsolatedRoot then
     group "Tests"
-        include "Tests/Index-Engine-Tests"
-        include "Tests/Index-Editor-Tests"
+        include "Tests/Funke-Engine-Tests"
+        include "Tests/Funke-Editor-Tests"
     group ""
 end
 
--- Load any index-package.lua manifests under packages/ and register their projects.
-if not IndexIsolatedRoot then
-    local IndexPackageLoader = dofile(path.join(ROOT_DIR, "premake/package-loader.lua"))
-    IndexPackageLoader.LoadAll()
+-- Load any funke-package.lua manifests under packages/ and register their projects.
+if not FunkeIsolatedRoot then
+    local FunkePackageLoader = dofile(path.join(ROOT_DIR, "premake/package-loader.lua"))
+    FunkePackageLoader.LoadAll()
 end

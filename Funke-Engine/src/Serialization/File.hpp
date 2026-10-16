@@ -1,0 +1,78 @@
+#pragma once
+#include "Core/Export.hpp"
+#include "Core/Log.hpp"
+#include "Serialization/Path.hpp"
+#include <array>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+namespace Funke {
+	class FUNKE_API File {
+	public:
+		File() = delete;
+
+		static bool Exists(const std::string& path);
+
+		// Atomic write via ".tmp" rename; [[nodiscard]] — callers MUST check before clearing dirty flags.
+		[[nodiscard]] static bool WriteAllText(const std::string& path, const std::string& text);
+		[[nodiscard]] static bool WriteAllBytes(const std::string& path, const std::vector<std::uint8_t>& bytes);
+
+		template<size_t Size>
+		static void WriteAllLines(const std::string& path, const std::array<std::string, Size> lines) {
+			std::ofstream file(Path::FromUtf8(path));
+			if (!file.is_open()) {
+				FNK_CORE_ERROR("File couldn't be opened for writing: {}", path);
+				return;
+			}
+
+			for (const std::string& line : lines) {
+				file.write(line.c_str(), line.size());
+				file.write("\n", 1);
+			}
+
+			file.close();
+		}
+
+		template<size_t Size>
+		static void WriteAllBytes(const std::string& path, const std::array<std::uint8_t, Size> bytes) {
+			std::ofstream file(Path::FromUtf8(path), std::ios::binary);
+			if (!file.is_open()) {
+				FNK_CORE_ERROR("File couldn't be opened for writing: {}", path);
+				return;
+			}
+
+			file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+			file.close();
+		}
+
+		template<typename T>
+		static void WriteObject(const std::string& path, const T& obj) {
+			std::ofstream file(Path::FromUtf8(path), std::ios::out | std::ios::binary);
+			if (!file.is_open()) {
+				FNK_CORE_ERROR("File couldn't be opened for writing: {}", path);
+				return;
+			}
+
+			file.write(reinterpret_cast<const char*>(&obj), sizeof(T));
+		}
+
+		template<typename T>
+		static T ReadObject(const std::string& path) {
+			std::ifstream file(Path::FromUtf8(path), std::ios::binary);
+			if (!file.is_open()) {
+				FNK_CORE_ERROR("File couldn't be opened for reading: {}", path);
+				return T{};
+			}
+
+			T obj{};
+			file.read(reinterpret_cast<char*>(&obj), sizeof(T));
+			return obj;
+		}
+
+		static std::string ReadAllText(const std::string& path);
+		static std::vector<std::uint8_t> ReadAllBytes(const std::string& path);
+	};
+}

@@ -4,7 +4,7 @@ local INDEX_PHYSICS_SOURCE_DIR = path.join(INDEX_PHYSICS_DIR, "src")
 local INDEX_PHYSICS_GLM_INCLUDE_DIR = path.getabsolute(path.join(ROOT_DIR, IncludeDir["GLM"]))
 
 project "Index-Physics"
-    location (IndexProjectLocation("Index-Physics", path.join(ROOT_DIR, "premake/generated/Index-Physics")))
+    location (FunkeProjectLocation("Index-Physics", path.join(ROOT_DIR, "premake/generated/Index-Physics")))
     kind "StaticLib"
     language "C++"
     cppdialect "C++23"
@@ -31,7 +31,7 @@ project "Index-Physics"
     }
 
     filter "system:windows"
-        -- See Index-Engine/premake5.lua for the rationale on
+        -- See Funke-Engine/premake5.lua for the rationale on
         -- MultiProcessorCompile + /Zc:preprocessor.
         flags { "MultiProcessorCompile" }
         buildoptions { "/FS", "/Zc:preprocessor" }

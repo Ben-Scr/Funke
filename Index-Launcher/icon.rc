@@ -1,6 +1,0 @@
-1 ICON "icon.ico"
-
-#define IDX_FILE_DESCRIPTION "Index Launcher"
-#define IDX_INTERNAL_NAME "Index-Launcher"
-#define IDX_ORIGINAL_FILENAME "Index-Launcher.exe"
-#include "../Index-Engine/src/Core/VersionResource.rcinc"

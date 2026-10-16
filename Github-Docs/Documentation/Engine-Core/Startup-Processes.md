@@ -1,6 +1,6 @@
 # Startup Processes
 
-This page explains **what happens, step by step, when you launch a game made with Index** — from double-clicking the `.exe` to the first frame your player sees.
+This page explains **what happens, step by step, when you launch a game made with Funke** — from double-clicking the `.exe` to the first frame your player sees.
 
 If you just want the short version: the runtime boots the engine's subsystems in a fixed order, finds your project, loads your starting scene, runs your scripts, and then enters the main loop that draws every frame.
 
@@ -38,7 +38,7 @@ Window closed → shut everything down cleanly
 
 ### The entry point
 
-Every Index program (game or editor) starts in the same place: a single `Main()` function (in `EntryPoint.hpp`). The very first things it does are:
+Every Funke program (game or editor) starts in the same place: a single `Main()` function (in `EntryPoint.hpp`). The very first things it does are:
 
 1. **Initialize the core** – low-level setup (memory, assertions, logging).
 2. **Initialize localization** – the language/translation system.
@@ -100,7 +100,7 @@ At this point scenes are *registered* (the engine knows they exist and how to lo
 
 ### Load packages
 
-The runtime then calls `PackageHost::LoadAll()`. This scans next to the executable for package DLLs (`Pkg.<Name>.Native.dll`) and loads each one, calling its `IndexPackage_OnLoad()` function.
+The runtime then calls `PackageHost::LoadAll()`. This scans next to the executable for package DLLs (`Pkg.<Name>.Native.dll`) and loads each one, calling its `FunkePackage_OnLoad()` function.
 
 **Packages must load before any scene loads**, because a scene may contain components that a package defines. If the package isn't loaded first, the engine wouldn't know how to recreate those components. See [Writing Packages](../Packages/Writing-Packages.md).
 
@@ -121,7 +121,7 @@ See [Scenes](Scenes.md) for the full scene lifecycle.
 
 ### Start scripting
 
-When the game needs C# code, the **Scripting host** boots: it starts the .NET runtime (via hostfxr), loads `Index-ScriptCore.dll` and your game's script assembly, and connects the native ↔ managed bridge. Then `OnApplicationStart` and the per-scene/per-entity script lifecycle begin running. See [Scripting](../Scripting/Scripting.md).
+When the game needs C# code, the **Scripting host** boots: it starts the .NET runtime (via hostfxr), loads `Funke-ScriptCore.dll` and your game's script assembly, and connects the native ↔ managed bridge. Then `OnApplicationStart` and the per-scene/per-entity script lifecycle begin running. See [Scripting](../Scripting/Scripting.md).
 
 ---
 
@@ -152,7 +152,7 @@ A few details worth knowing:
 
 ## Stage 4 — Shutdown
 
-When the loop ends, the engine tears everything down in a clean order: scenes are unloaded (systems get their `OnDestroy`), packages run `IndexPackage_OnUnload`, subsystems shut down, and the core shutdown guard runs last. This ensures files are flushed and resources are released properly.
+When the loop ends, the engine tears everything down in a clean order: scenes are unloaded (systems get their `OnDestroy`), packages run `FunkePackage_OnUnload`, subsystems shut down, and the core shutdown guard runs last. This ensures files are flushed and resources are released properly.
 
 ---
 

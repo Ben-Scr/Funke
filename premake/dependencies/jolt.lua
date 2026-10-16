@@ -3,7 +3,7 @@
 -- changes inline code and object layout, and a lib/consumer mismatch is UB.
 -- No GPU compute (hair), ObjectStream, debug renderer or profiler.
 project "Jolt"
-    location (IndexProjectLocation("Jolt", path.join(ROOT_DIR, "premake/generated/Jolt")))
+    location (FunkeProjectLocation("Jolt", path.join(ROOT_DIR, "premake/generated/Jolt")))
     kind "StaticLib"
     language "C++"
     cppdialect "C++17"

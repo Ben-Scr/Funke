@@ -30,7 +30,7 @@ def log_snapshot(binary: Path) -> tuple[Path | None, int]:
             base = str(Path(home) / ".config") if home else None
     if not base:
         return None, 0
-    path = Path(base) / "Index" / "Logs" / f"{binary.stem}.log"
+    path = Path(base) / "Funke" / "Logs" / f"{binary.stem}.log"
     return path, path.stat().st_size if path.is_file() else 0
 
 
@@ -44,7 +44,7 @@ def read_log_tail(path: Path | None, offset: int) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Launch an Index GUI application and require graceful exit.")
+    parser = argparse.ArgumentParser(description="Launch a Funke GUI application and require graceful exit.")
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=45.0)
     parser.add_argument("--argument", action="append", default=[])
@@ -57,7 +57,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def stage_editor_project(binary: Path) -> tempfile.TemporaryDirectory[str]:
-    temporary = tempfile.TemporaryDirectory(prefix="Index Editor Prüfung ")
+    temporary = tempfile.TemporaryDirectory(prefix="Funke Editor Prüfung ")
     project = Path(temporary.name)
     scenes = project / "Assets" / "Scenes"
     scenes.mkdir(parents=True)
@@ -107,8 +107,8 @@ def main() -> int:
     if not binary.is_file():
         print(f"Application binary was not found: {binary}", file=sys.stderr)
         return 1
-    if not (binary.parent / "IndexAssets").is_dir():
-        print(f"IndexAssets was not found next to: {binary}", file=sys.stderr)
+    if not (binary.parent / "FunkeAssets").is_dir():
+        print(f"FunkeAssets was not found next to: {binary}", file=sys.stderr)
         return 1
 
     editor_project: tempfile.TemporaryDirectory[str] | None = None

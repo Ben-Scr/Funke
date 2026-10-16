@@ -2,7 +2,7 @@
 
 A **Data Asset** is a reusable, shared piece of game data that lives on its own — not attached to any entity or scene. Item definitions, character stats, loot tables, dialogue, difficulty settings: anything you'd want to author once and reference from many places.
 
-If you've used Unity, this is Index's equivalent of a **ScriptableObject**.
+If you've used Unity, this is Funke's equivalent of a **ScriptableObject**.
 
 If you just want the short version: write a C# class that inherits from `DataAsset`, create instances of it in the editor as `.dataasset` files, fill in their fields, and reference them from your scripts.
 
@@ -43,7 +43,7 @@ At runtime, the engine keeps **one shared live instance** per `.dataasset` file.
 Write a class that inherits from `DataAsset` and add `[CreateDataAsset(...)]` so it shows up in the editor's create menu. Here's the sample from the Sandbox:
 
 ```csharp
-using Index;
+using Funke;
 
 [CreateDataAsset("Gameplay/Item Data")]
 public class ItemData : DataAsset
@@ -98,7 +98,7 @@ Each file is an independent instance with its own values, but all share the clas
 Just declare a field of your Data Asset type. The editor shows a picker so you can assign an asset by drag-and-drop, and the reference is saved (by GUID) with the scene:
 
 ```csharp
-using Index;
+using Funke;
 
 public class ItemHolder : EntityScript
 {
@@ -174,7 +174,7 @@ Rule of thumb: if several objects should read the **same** data and you want to 
 
 ## Summary
 
-- A **Data Asset** is shared game data in its own file — Index's **ScriptableObject** equivalent.
+- A **Data Asset** is shared game data in its own file — Funke's **ScriptableObject** equivalent.
 - Write a `class X : DataAsset`; add `[CreateDataAsset("Menu/Path")]` to get a create-menu entry.
 - Each instance is a `.dataasset` file with a permanent **GUID**; the engine keeps **one shared live instance** per file.
 - Fields follow the script-field rules (primitives, strings, enums, vectors/colors, `Texture`/`Audio`, and other Data Assets); `OnValidate()` runs after edits.

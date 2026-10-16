@@ -1,0 +1,162 @@
+#include "pch.hpp"
+#include "File.hpp"
+
+#ifdef FNK_PLATFORM_WINDOWS
+#define WIN32_LEAN_AND_MEAN
+#  include <Windows.h>
+#endif
+
+namespace Funke {
+	bool File::Exists(const std::string& path) {
+		return std::filesystem::exists(Path::FromUtf8(path));
+	}
+
+	bool File::WriteAllText(const std::string& path, const std::string& text) {
+		const std::filesystem::path target = Path::FromUtf8(path);
+		std::filesystem::path tmp = target;
+		tmp += ".tmp";
+
+		{
+			std::ofstream file(tmp, std::ios::binary | std::ios::trunc);
+			if (!file.is_open()) {
+				FNK_CORE_ERROR("File couldn't be opened for writing: {}", Path::ToUtf8(tmp));
+				return false;
+			}
+
+			file.write(text.c_str(), text.size());
+			if (!file.good()) {
+				FNK_CORE_ERROR("Write failed (disk full / IO error): {}", Path::ToUtf8(tmp));
+				file.close();
+				std::error_code ec;
+				std::filesystem::remove(tmp, ec);
+				return false;
+			}
+			file.close();
+			if (file.fail()) {
+				FNK_CORE_ERROR("Close failed for: {}", Path::ToUtf8(tmp));
+				std::error_code ec;
+				std::filesystem::remove(tmp, ec);
+				return false;
+			}
+		}
+
+#ifdef FNK_PLATFORM_WINDOWS
+		// REPLACE_EXISTING|WRITE_THROUGH: atomic swap with metadata flush — no rename window, safe on power loss.
+		const std::wstring tmpW = tmp.wstring();
+		const std::wstring targetW = target.wstring();
+		if (!MoveFileExW(tmpW.c_str(), targetW.c_str(),
+				MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+			const DWORD err = GetLastError();
+			FNK_CORE_ERROR("MoveFileEx failed: {} -> {} (Win32 error {})", Path::ToUtf8(tmp), Path::ToUtf8(target), static_cast<unsigned long>(err));
+			std::error_code cleanup;
+			std::filesystem::remove(tmp, cleanup);
+			return false;
+		}
+#else
+		// POSIX rename is atomic and replaces the target unconditionally.
+		std::error_code ec;
+		std::filesystem::rename(tmp, target, ec);
+		if (ec) {
+			FNK_CORE_ERROR("Rename failed: {} -> {} ({})", Path::ToUtf8(tmp), Path::ToUtf8(target), ec.message());
+			std::error_code cleanup;
+			std::filesystem::remove(tmp, cleanup);
+			return false;
+		}
+#endif
+
+		return true;
+	}
+
+	bool File::WriteAllBytes(const std::string& path, const std::vector<std::uint8_t>& bytes) {
+		const std::filesystem::path target = Path::FromUtf8(path);
+		std::filesystem::path tmp = target;
+		tmp += ".tmp";
+
+		{
+			std::ofstream file(tmp, std::ios::binary | std::ios::trunc);
+			if (!file.is_open()) {
+				FNK_CORE_ERROR("File couldn't be opened for writing: {}", Path::ToUtf8(tmp));
+				return false;
+			}
+
+			if (!bytes.empty()) {
+				file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+			}
+			if (!file.good()) {
+				FNK_CORE_ERROR("Write failed (disk full / IO error): {}", Path::ToUtf8(tmp));
+				file.close();
+				std::error_code ec;
+				std::filesystem::remove(tmp, ec);
+				return false;
+			}
+			file.close();
+			if (file.fail()) {
+				FNK_CORE_ERROR("Close failed for: {}", Path::ToUtf8(tmp));
+				std::error_code ec;
+				std::filesystem::remove(tmp, ec);
+				return false;
+			}
+		}
+
+#ifdef FNK_PLATFORM_WINDOWS
+		const std::wstring tmpW = tmp.wstring();
+		const std::wstring targetW = target.wstring();
+		if (!MoveFileExW(tmpW.c_str(), targetW.c_str(),
+				MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+			const DWORD err = GetLastError();
+			FNK_CORE_ERROR("MoveFileEx failed: {} -> {} (Win32 error {})", Path::ToUtf8(tmp), Path::ToUtf8(target), static_cast<unsigned long>(err));
+			std::error_code cleanup;
+			std::filesystem::remove(tmp, cleanup);
+			return false;
+		}
+#else
+		std::error_code ec;
+		std::filesystem::rename(tmp, target, ec);
+		if (ec) {
+			FNK_CORE_ERROR("Rename failed: {} -> {} ({})", Path::ToUtf8(tmp), Path::ToUtf8(target), ec.message());
+			std::error_code cleanup;
+			std::filesystem::remove(tmp, cleanup);
+			return false;
+		}
+#endif
+
+		return true;
+	}
+
+	std::string File::ReadAllText(const std::string& path) {
+		std::ifstream file(Path::FromUtf8(path), std::ios::binary);
+		if (!file.is_open()) {
+			FNK_CORE_ERROR("File couldn't be opened for reading: {}", path);
+			return {};
+		}
+
+		return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+	}
+
+	std::vector<std::uint8_t> File::ReadAllBytes(const std::string& path) {
+		std::ifstream file(Path::FromUtf8(path), std::ios::binary | std::ios::ate);
+		if (!file.is_open()) {
+			FNK_CORE_ERROR("File couldn't be opened for reading: {}", path);
+			return {};
+		}
+
+		std::streamsize size = file.tellg();
+
+		if (size < 0) {
+			FNK_CORE_ERROR("tellg() failed while reading file: {}", path);
+			return {};
+		}
+
+		file.seekg(0, std::ios::beg);
+
+		std::vector<std::uint8_t> buffer(static_cast<std::size_t>(size));
+
+		if (!file.read(reinterpret_cast<char*>(buffer.data()), size)) {
+			FNK_CORE_ERROR("File reading failed: {}", path);
+			return {};
+		}
+
+		file.close();
+		return buffer;
+	}
+}

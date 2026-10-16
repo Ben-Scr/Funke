@@ -1,6 +1,0 @@
-1 ICON "icon.ico"
-
-#define IDX_FILE_DESCRIPTION "Index Editor"
-#define IDX_INTERNAL_NAME "Index-Editor"
-#define IDX_ORIGINAL_FILENAME "Index-Editor.exe"
-#include "../Index-Engine/src/Core/VersionResource.rcinc"

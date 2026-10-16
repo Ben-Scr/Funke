@@ -143,7 +143,7 @@ def configure_args(args: argparse.Namespace, build_dir: Path, install_dir: Path)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build SDL3 for the Index engine.")
+    parser = argparse.ArgumentParser(description="Build SDL3 for the Funke engine.")
     parser.add_argument("--target", choices=TARGETS, default=host_target())
     parser.add_argument("--arch", default=None, help="x64, arm64 (macOS also: universal). Defaults to the host arch.")
     parser.add_argument("--config", default="Release", choices=("Release", "RelWithDebInfo", "Debug"))

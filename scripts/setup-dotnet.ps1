@@ -1,7 +1,7 @@
 param(
     [string]$DotNetVersion,
     [string]$DotNetRoot = $env:DOTNET_ROOT,
-    [string]$DotNetArch = $env:INDEX_DOTNET_ARCH
+    [string]$DotNetArch = $env:FUNKE_DOTNET_ARCH
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,7 +62,7 @@ if (-not $DotNetVersion) {
 }
 
 if ($DotNetVersion -notmatch '^10\.') {
-    Write-Error "Index targets .NET 10; requested host pack version was $DotNetVersion."
+    Write-Error "Funke targets .NET 10; requested host pack version was $DotNetVersion."
     exit 1
 }
 

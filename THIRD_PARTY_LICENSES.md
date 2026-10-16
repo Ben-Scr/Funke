@@ -1,15 +1,15 @@
 # Third-Party Licenses
 
-Index ships and/or statically links the following third-party software.
+Funke ships and/or statically links the following third-party software.
 Each component's full license text is preserved in the corresponding
 `External/<name>/LICENSE*` file in this repository; this document is the
-aggregated attribution required by those licenses when Index is
+aggregated attribution required by those licenses when Funke is
 redistributed in binary form.
 
 The font bundle has its own attribution file:
-[Index-Runtime/IndexAssets/Fonts/LICENSES.md](Index-Runtime/IndexAssets/Fonts/LICENSES.md).
+[Funke-Runtime/FunkeAssets/Fonts/LICENSES.md](Funke-Runtime/FunkeAssets/Fonts/LICENSES.md).
 
-## C++ libraries (statically linked into `Index-Engine.dll`)
+## C++ libraries (statically linked into `Funke-Engine.dll`)
 
 | Component | License | Copyright | Source |
 |---|---|---|---|
@@ -27,12 +27,12 @@ The font bundle has its own attribution file:
 | Dawn (WebGPU) | BSD 3-clause | Copyright 2017-2023 The Dawn & Tint Authors | [External/dawn/LICENSE](External/dawn/LICENSE) |
 | concurrentqueue | BSD 2-clause / Boost Software License | Copyright (c) 2013-2016 Cameron Desrochers | [External/concurrentqueue/LICENSE.md](External/concurrentqueue/LICENSE.md) |
 | glad | Apache 2.0 / MIT (generated from public Khronos OpenGL specs) | Copyright (c) 2013-2022 David Herberth | [External/glad](External/glad) |
-| Index-Physics | Same license as Index (this engine) | Copyright (c) 2026 Ben Schneider | [External/Index-Physics](External/Index-Physics) |
+| Index-Physics | Same license as Funke (this engine) | Copyright (c) 2026 Ben Schneider | [External/Index-Physics](External/Index-Physics) |
 
 ### Dawn transitive dependencies
 
 Dawn statically links several third-party components which are also
-compiled into `Index-Engine.dll`. Their licenses (Apache 2.0, BSD,
+compiled into `Funke-Engine.dll`. Their licenses (Apache 2.0, BSD,
 MIT) ship with the Dawn source tree under
 `External/dawn/third_party/<name>/LICENSE`. The most material ones are:
 
@@ -42,7 +42,7 @@ MIT) ship with the Dawn source tree under
 - **glslang / SPIRV-Tools / SPIRV-Headers / SPIRV-Cross** — Apache 2.0 / MIT.
 - **DirectX Headers** — MIT.
 
-A copy of `External/dawn/third_party/` is **not** required for Index
+A copy of `External/dawn/third_party/` is **not** required for Funke
 binary redistribution as long as Dawn's own NOTICE/LICENSE files are
 preserved in the engine's source distribution. Anyone redistributing
 the engine's compiled DLL alongside this repository's source tree
@@ -66,9 +66,9 @@ satisfies the attribution requirement transitively.
 
 ## Fonts
 
-See [Index-Runtime/IndexAssets/Fonts/LICENSES.md](Index-Runtime/IndexAssets/Fonts/LICENSES.md)
+See [Funke-Runtime/FunkeAssets/Fonts/LICENSES.md](Funke-Runtime/FunkeAssets/Fonts/LICENSES.md)
 for the full per-font attribution.
 
 ## Engine
 
-Index itself is licensed under the MIT License; see [`LICENSE.txt`](LICENSE.txt).
+Funke itself is licensed under the MIT License; see [`LICENSE.txt`](LICENSE.txt).

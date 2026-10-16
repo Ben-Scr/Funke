@@ -1,5 +1,5 @@
 project "Box2D"
-    location (IndexProjectLocation("Box2D", path.join(ROOT_DIR, "premake/generated/Box2D")))
+    location (FunkeProjectLocation("Box2D", path.join(ROOT_DIR, "premake/generated/Box2D")))
     kind "StaticLib"
     language "C++"
     cppdialect "C++23"
@@ -24,7 +24,7 @@ project "Box2D"
     }
 
     filter "system:windows"
-        -- See Index-Engine/premake5.lua for the rationale on
+        -- See Funke-Engine/premake5.lua for the rationale on
         -- MultiProcessorCompile + /Zc:preprocessor.
         flags { "MultiProcessorCompile" }
         buildoptions { "/FS", "/Zc:preprocessor" }

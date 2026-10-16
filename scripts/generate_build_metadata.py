@@ -15,14 +15,14 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VERSION_PROPS = REPO_ROOT / "Version.props"
-NATIVE_HEADER = REPO_ROOT / "Index-Engine" / "src" / "Core" / "BuildMetadata.generated.hpp"
+NATIVE_HEADER = REPO_ROOT / "Funke-Engine" / "src" / "Core" / "BuildMetadata.generated.hpp"
 # Kept apart from NATIVE_HEADER: that one reaches pch.hpp and may only change on a
 # version bump, while the build identity changes with every working-tree edit.
-BUILD_IDENTITY_HEADER = REPO_ROOT / "Index-Engine" / "src" / "Core" / "BuildIdentity.generated.hpp"
+BUILD_IDENTITY_HEADER = REPO_ROOT / "Funke-Engine" / "src" / "Core" / "BuildIdentity.generated.hpp"
 # Hash of every engine header: an executable compiled against other headers than the loaded
-# Index-Engine.dll reports it at startup instead of crashing later (Core/EngineAbi.hpp).
-ENGINE_ABI_HEADER = REPO_ROOT / "Index-Engine" / "src" / "Core" / "EngineAbi.generated.hpp"
-ENGINE_SOURCE_ROOT = REPO_ROOT / "Index-Engine" / "src"
+# Funke-Engine.dll reports it at startup instead of crashing later (Core/EngineAbi.hpp).
+ENGINE_ABI_HEADER = REPO_ROOT / "Funke-Engine" / "src" / "Core" / "EngineAbi.generated.hpp"
+ENGINE_SOURCE_ROOT = REPO_ROOT / "Funke-Engine" / "src"
 ENGINE_HEADER_SUFFIXES = {".hpp", ".h", ".inl"}
 MANAGED_PROPS = REPO_ROOT / "build" / "BuildMetadata.props"
 MANAGED_RC = REPO_ROOT / "build" / "ManagedVersion.rc"
@@ -41,8 +41,8 @@ SEMVER_PATTERN = re.compile(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate immutable Index build metadata.")
-    parser.add_argument("--tag", help="Require this release tag to equal v<IndexVersion>.")
+    parser = argparse.ArgumentParser(description="Generate immutable Funke build metadata.")
+    parser.add_argument("--tag", help="Require this release tag to equal v<FunkeVersion>.")
     parser.add_argument(
         "--require-clean",
         action="store_true",
@@ -141,23 +141,23 @@ def read_version() -> tuple[str, int, int, int]:
         for element in root.iter()
         if element.text and element.text.strip()
     }
-    version = properties.get("IndexVersion", "")
+    version = properties.get("FunkeVersion", "")
     match = SEMVER_PATTERN.fullmatch(version)
     if not match:
-        raise RuntimeError(f"IndexVersion must be SemVer; found {version!r} in {VERSION_PROPS}")
+        raise RuntimeError(f"FunkeVersion must be SemVer; found {version!r} in {VERSION_PROPS}")
     major, minor, patch = (int(match.group(index)) for index in range(1, 4))
     expected_managed_version = f"{major}.{minor}.{patch}.0"
     required_properties = {
-        "Version": "$(IndexVersion)",
+        "Version": "$(FunkeVersion)",
         "AssemblyVersion": expected_managed_version,
         "FileVersion": expected_managed_version,
-        "Product": "Index",
+        "Product": "Funke",
     }
     for name, expected in required_properties.items():
         actual = properties.get(name, "")
         if actual != expected:
             raise RuntimeError(
-                f"{name} must be {expected!r} for IndexVersion {version!r}; found {actual!r}."
+                f"{name} must be {expected!r} for FunkeVersion {version!r}; found {actual!r}."
             )
     return version, major, minor, patch
 
@@ -208,7 +208,7 @@ def main() -> int:
 
         if args.tag and args.tag != f"v{version}":
             raise RuntimeError(
-                f"Release tag {args.tag!r} does not match IndexVersion {version!r}; expected v{version}."
+                f"Release tag {args.tag!r} does not match FunkeVersion {version!r}; expected v{version}."
             )
         if args.tag:
             tag_commit = run_git("rev-list", "-n", "1", args.tag).lower()
@@ -232,37 +232,37 @@ def main() -> int:
             dirty_fingerprint = calculate_dirty_fingerprint(status)
             build_id += f".dirty.{dirty_fingerprint}"
 
-        archive_name = f"Index-Editor-{version}-Windows-x64.zip"
-        symbols_name = f"Index-Editor-{build_id}-Windows-x64-symbols.zip"
+        archive_name = f"Funke-Editor-{version}-Windows-x64.zip"
+        symbols_name = f"Funke-Editor-{build_id}-Windows-x64-symbols.zip"
 
         native = (
-            "#ifndef IDX_BUILD_METADATA_GENERATED\n"
-            "#define IDX_BUILD_METADATA_GENERATED\n\n"
-            f"#define IDX_VERSION \"{c_escape(version)}\"\n"
-            f"#define IDX_VERSION_MAJOR {major}\n"
-            f"#define IDX_VERSION_MINOR {minor}\n"
-            f"#define IDX_VERSION_PATCH {patch}\n"
-            f"#define IDX_VERSION_RESOURCE {major},{minor},{patch},0\n\n"
+            "#ifndef FNK_BUILD_METADATA_GENERATED\n"
+            "#define FNK_BUILD_METADATA_GENERATED\n\n"
+            f"#define FNK_VERSION \"{c_escape(version)}\"\n"
+            f"#define FNK_VERSION_MAJOR {major}\n"
+            f"#define FNK_VERSION_MINOR {minor}\n"
+            f"#define FNK_VERSION_PATCH {patch}\n"
+            f"#define FNK_VERSION_RESOURCE {major},{minor},{patch},0\n\n"
             "#endif\n"
         )
         build_identity = (
-            "#ifndef IDX_BUILD_IDENTITY_GENERATED\n"
-            "#define IDX_BUILD_IDENTITY_GENERATED\n\n"
-            f"#define IDX_BUILD_ID \"{c_escape(build_id)}\"\n"
-            f"#define IDX_BUILD_COMMIT \"{c_escape(commit)}\"\n"
-            f"#define IDX_BUILD_DIRTY {1 if dirty else 0}\n\n"
+            "#ifndef FNK_BUILD_IDENTITY_GENERATED\n"
+            "#define FNK_BUILD_IDENTITY_GENERATED\n\n"
+            f"#define FNK_BUILD_ID \"{c_escape(build_id)}\"\n"
+            f"#define FNK_BUILD_COMMIT \"{c_escape(commit)}\"\n"
+            f"#define FNK_BUILD_DIRTY {1 if dirty else 0}\n\n"
             "#endif\n"
         )
         engine_abi = (
-            "#ifndef IDX_ENGINE_ABI_GENERATED\n"
-            "#define IDX_ENGINE_ABI_GENERATED\n\n"
-            f"#define IDX_ENGINE_ABI \"{calculate_engine_abi()}\"\n\n"
+            "#ifndef FNK_ENGINE_ABI_GENERATED\n"
+            "#define FNK_ENGINE_ABI_GENERATED\n\n"
+            f"#define FNK_ENGINE_ABI \"{calculate_engine_abi()}\"\n\n"
             "#endif\n"
         )
         managed = (
             "<Project>\n"
             "  <PropertyGroup>\n"
-            "    <IndexBuildMetadataGenerated>true</IndexBuildMetadataGenerated>\n"
+            "    <FunkeBuildMetadataGenerated>true</FunkeBuildMetadataGenerated>\n"
             f"    <InformationalVersion>{xml_escape(build_id)}</InformationalVersion>\n"
             "    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>\n"
             f"    <RepositoryCommit>{xml_escape(commit)}</RepositoryCommit>\n"
@@ -271,14 +271,14 @@ def main() -> int:
             "</Project>\n"
         )
         managed_rc = (
-            '#define IDX_FILE_DESCRIPTION "Index Managed Assembly"\n'
-            '#define IDX_INTERNAL_NAME "Index-Managed"\n'
-            '#define IDX_ORIGINAL_FILENAME "Index-Managed.dll"\n'
-            '#include "../Index-Engine/src/Core/VersionResource.rcinc"\n'
+            '#define FNK_FILE_DESCRIPTION "Funke Managed Assembly"\n'
+            '#define FNK_INTERNAL_NAME "Funke-Managed"\n'
+            '#define FNK_ORIGINAL_FILENAME "Funke-Managed.dll"\n'
+            '#include "../Funke-Engine/src/Core/VersionResource.rcinc"\n'
         )
         metadata = {
             "schemaVersion": 1,
-            "product": "Index",
+            "product": "Funke",
             "version": version,
             "buildId": build_id,
             "commit": commit,

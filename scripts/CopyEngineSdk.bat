@@ -1,10 +1,10 @@
 @echo off
 REM Materialize a self-contained EngineSDK folder under a consumer's
-REM target directory. Invoked from the Index-Launcher postbuild via the
+REM target directory. Invoked from the Funke-Launcher postbuild via the
 REM CopyEngineSdk variable in premake5.lua.
 REM
 REM Args:
-REM   %1 = SDK target dir, e.g. ...\bin\Debug-windows-x86_64\Index-Launcher\EngineSDK
+REM   %1 = SDK target dir, e.g. ...\bin\Debug-windows-x86_64\Funke-Launcher\EngineSDK
 REM   %2 = engine repo root, the ROOT_DIR value from premake
 REM   %3 = config-specific bin dir, e.g. ...\bin\Debug-windows-x86_64
 REM
@@ -26,38 +26,49 @@ if "%BIN%"=="" goto :missingBin
 
 set "ROBOFLAGS=/NJH /NJS /NDL /NP /NS /NC /XD .git /XF .git"
 
+REM --- A missing source folder would only surface as robocopy errorlevel 16, and
+REM     nothing after it (Licenses included) would be staged.
+call :RequireBuildOutput Funke-Editor\Funke-Editor.exe
+if errorlevel 1 goto :fail
+call :RequireBuildOutput Funke-Runtime\Funke-Runtime.exe
+if errorlevel 1 goto :fail
+call :RequireBuildOutput Funke-ScriptCore\Funke-ScriptCore.dll
+if errorlevel 1 goto :fail
+call :RequireBuildOutput Funke-PackageTool\Funke-PackageTool.exe
+if errorlevel 1 goto :fail
+
 REM --- Flat host applications used by LauncherLayer.
-robocopy "%BIN%\Index-Editor" "%SDK%\.." Index-Editor.exe %ROBOFLAGS% >nul
+robocopy "%BIN%\Funke-Editor" "%SDK%\.." Funke-Editor.exe %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
-robocopy "%BIN%\Index-Runtime" "%SDK%\.." Index-Runtime.exe %ROBOFLAGS% >nul
+robocopy "%BIN%\Funke-Runtime" "%SDK%\.." Funke-Runtime.exe %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
-REM --- `index` command-line tool; optional so a Launcher built without it still packages.
-if exist "%BIN%\Index-CLI\index.exe" robocopy "%BIN%\Index-CLI" "%SDK%\.." index.exe %ROBOFLAGS% >nul
+REM --- `funke` command-line tool; optional so a Launcher built without it still packages.
+if exist "%BIN%\Funke-CLI\funke.exe" robocopy "%BIN%\Funke-CLI" "%SDK%\.." funke.exe %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
-robocopy "%BIN%\Index-ScriptCore" "%SDK%\.." Index-ScriptCore.dll Index-ScriptCore.xml Index-ScriptCore.runtimeconfig.json Index-ScriptCore.deps.json %ROBOFLAGS% >nul
+robocopy "%BIN%\Funke-ScriptCore" "%SDK%\.." Funke-ScriptCore.dll Funke-ScriptCore.xml Funke-ScriptCore.runtimeconfig.json Funke-ScriptCore.deps.json %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 REM --- Editor's in-process hot-reload compiler; optional, the editor falls back to dotnet build without it.
-if exist "%BIN%\Index-ScriptCompiler\Index-ScriptCompiler.dll" robocopy "%BIN%\Index-ScriptCompiler" "%SDK%\..\ScriptCompiler" Index-ScriptCompiler.dll Index-ScriptCompiler.deps.json Index-ScriptCompiler.runtimeconfig.json %ROBOFLAGS% >nul
+if exist "%BIN%\Funke-ScriptCompiler\Funke-ScriptCompiler.dll" robocopy "%BIN%\Funke-ScriptCompiler" "%SDK%\..\ScriptCompiler" Funke-ScriptCompiler.dll Funke-ScriptCompiler.deps.json Funke-ScriptCompiler.runtimeconfig.json %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 robocopy "%ROOT%\build" "%SDK%\.." BuildMetadata.json %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 
-REM --- Index-Engine headers and sources. CMakeLists.txt adds this as an
+REM --- Funke-Engine headers and sources. CMakeLists.txt adds this as an
 REM     include path; .cpp files are harmless dead weight we accept here.
-robocopy "%ROOT%\Index-Engine\src" "%SDK%\Index-Engine\src" /MIR %ROBOFLAGS% >nul
+robocopy "%ROOT%\Funke-Engine\src" "%SDK%\Funke-Engine\src" /MIR %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 REM --- Launcher project templates (ProjectTemplates resolves <engine root>\templates).
 robocopy "%ROOT%\templates" "%SDK%\templates" /MIR %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 REM --- Flat package tool used by Launcher and Editor package operations.
-robocopy "%BIN%\Index-PackageTool" "%SDK%\.." Index-PackageTool.exe Index-PackageTool.dll Index-PackageTool.runtimeconfig.json Index-PackageTool.deps.json %ROBOFLAGS% >nul
+robocopy "%BIN%\Funke-PackageTool" "%SDK%\.." Funke-PackageTool.exe Funke-PackageTool.dll Funke-PackageTool.runtimeconfig.json Funke-PackageTool.deps.json %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 
 
-REM --- Index-ScriptCore project and runtime artifacts.
-robocopy "%ROOT%\Index-ScriptCore" "%SDK%\Index-ScriptCore" Index-ScriptCore.csproj %ROBOFLAGS% >nul
+REM --- Funke-ScriptCore project and runtime artifacts.
+robocopy "%ROOT%\Funke-ScriptCore" "%SDK%\Funke-ScriptCore" Funke-ScriptCore.csproj %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
-robocopy "%BIN%\Index-ScriptCore" "%SDK%\Index-ScriptCore" Index-ScriptCore.dll Index-ScriptCore.xml Index-ScriptCore.runtimeconfig.json Index-ScriptCore.deps.json %ROBOFLAGS% >nul
+robocopy "%BIN%\Funke-ScriptCore" "%SDK%\Funke-ScriptCore" Funke-ScriptCore.dll Funke-ScriptCore.xml Funke-ScriptCore.runtimeconfig.json Funke-ScriptCore.deps.json %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 REM --- Project-local package build tooling.
 robocopy "%ROOT%\vendor\bin" "%SDK%" premake5.exe %ROBOFLAGS% >nul
@@ -107,19 +118,19 @@ REM --- Active-config engine import library and DLL. Native packages link the
 REM     library and hash the exact DLL after linking to emit their ABI sidecar.
 REM     Preserve the repo layout expected by project-packages.lua.
 for %%I in ("%BIN%") do set "CFGPLAT=%%~nxI"
-robocopy "%BIN%\Index-Engine" "%SDK%\bin\%CFGPLAT%\Index-Engine" Index-Engine.lib Index-Engine.dll %ROBOFLAGS% >nul
+robocopy "%BIN%\Funke-Engine" "%SDK%\bin\%CFGPLAT%\Funke-Engine" Funke-Engine.lib Funke-Engine.dll %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 for /f "tokens=1* delims=-" %%A in ("!CFGPLAT!") do set "DISTPLAT=Dist-%%B"
-if not exist "%ROOT%\bin\!DISTPLAT!\Index-Engine\Index-Engine.lib" goto :skipDistEngineSdk
-if not exist "%ROOT%\bin\!DISTPLAT!\Index-Engine\Index-Engine.dll" goto :skipDistEngineSdk
-robocopy "%ROOT%\bin\!DISTPLAT!\Index-Engine" "%SDK%\bin\!DISTPLAT!\Index-Engine" Index-Engine.lib Index-Engine.dll %ROBOFLAGS% >nul
+if not exist "%ROOT%\bin\!DISTPLAT!\Funke-Engine\Funke-Engine.lib" goto :skipDistEngineSdk
+if not exist "%ROOT%\bin\!DISTPLAT!\Funke-Engine\Funke-Engine.dll" goto :skipDistEngineSdk
+robocopy "%ROOT%\bin\!DISTPLAT!\Funke-Engine" "%SDK%\bin\!DISTPLAT!\Funke-Engine" Funke-Engine.lib Funke-Engine.dll %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 :skipDistEngineSdk
 
 REM --- Self-contained redistribution notices.
-call :CopyRequiredLicense "%ROOT%" "Index" "LICENSE.txt"
+call :CopyRequiredLicense "%ROOT%" "Funke" "LICENSE.txt"
 if errorlevel 1 goto :robofail
-call :CopyRequiredLicense "%ROOT%" "Index" "THIRD_PARTY_LICENSES.md"
+call :CopyRequiredLicense "%ROOT%" "Funke" "THIRD_PARTY_LICENSES.md"
 if errorlevel 1 goto :robofail
 call :CopyRequiredLicense "%ROOT%\External\box2d" "Box2D" "LICENSE"
 if errorlevel 1 goto :robofail
@@ -151,7 +162,7 @@ call :CopyRequiredLicense "%ROOT%\External\concurrentqueue" "concurrentqueue" "L
 if errorlevel 1 goto :robofail
 call :CopyRequiredLicense "%ROOT%\External\rapidxml" "RapidXML" "LICENSE.txt"
 if errorlevel 1 goto :robofail
-call :CopyRequiredLicense "%ROOT%\Index-Runtime\IndexAssets\Fonts" "Fonts" "LICENSES.md"
+call :CopyRequiredLicense "%ROOT%\Funke-Runtime\FunkeAssets\Fonts" "Fonts" "LICENSES.md"
 if errorlevel 1 goto :robofail
 
 if not exist "%ROOT%\External\dawn\third_party" goto :missingDawnLicenses
@@ -169,51 +180,51 @@ call :CopyRequiredLicense "!DOTNET_LICENSE_DIR!" "DotNet" "ThirdPartyNotices.txt
 if errorlevel 1 goto :robofail
 
 REM --- Active-config runtime for repo-less Development exports.
-set "DEVRT=%BIN%\Index-Runtime"
-if not exist "%DEVRT%\Index-Runtime.exe" goto :skipRuntimeDevelopment
+set "DEVRT=%BIN%\Funke-Runtime"
+if not exist "%DEVRT%\Funke-Runtime.exe" goto :skipRuntimeDevelopment
 if exist "%SDK%\Runtime-Development" rmdir /s /q "%SDK%\Runtime-Development"
-robocopy "%DEVRT%" "%SDK%\Runtime-Development" Index-Runtime.exe Index-Engine.dll SDL3.dll nethost.dll %ROBOFLAGS% >nul
+robocopy "%DEVRT%" "%SDK%\Runtime-Development" Funke-Runtime.exe Funke-Engine.dll SDL3.dll nethost.dll %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
-robocopy "%BIN%\Index-ScriptCore" "%SDK%\Runtime-Development" Index-ScriptCore.dll Index-ScriptCore.runtimeconfig.json Index-ScriptCore.deps.json %ROBOFLAGS% >nul
+robocopy "%BIN%\Funke-ScriptCore" "%SDK%\Runtime-Development" Funke-ScriptCore.dll Funke-ScriptCore.runtimeconfig.json Funke-ScriptCore.deps.json %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 if exist "%DEVRT%\Tracy.dll" robocopy "%DEVRT%" "%SDK%\Runtime-Development" Tracy.dll %ROBOFLAGS% >nul
-robocopy "%DEVRT%\IndexAssets" "%SDK%\Runtime-Development\IndexAssets" /MIR %ROBOFLAGS% >nul
+robocopy "%DEVRT%\FunkeAssets" "%SDK%\Runtime-Development\FunkeAssets" /MIR %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 robocopy "%SDK%\Licenses" "%SDK%\Runtime-Development\Licenses" /MIR %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 goto :afterRuntimeDevelopment
 :skipRuntimeDevelopment
-echo CopyEngineSdk: active-config runtime missing at %BIN%\Index-Runtime; Runtime-Development not bundled 1>&2
+echo CopyEngineSdk: active-config runtime missing at %BIN%\Funke-Runtime; Runtime-Development not bundled 1>&2
 :afterRuntimeDevelopment
 
 REM --- Prebuilt editor-free Dist runtime, bundled under Runtime-Dist\ so a
 REM     shipped repo-less Launcher/editor carries a fully runnable runtime and
 REM     a future copy-based Release export has everything it needs. The Dist
-REM     runtime always comes from bin\Dist-<plat>\Index-Runtime regardless of
+REM     runtime always comes from bin\Dist-<plat>\Funke-Runtime regardless of
 REM     the Launcher's own config, so derive Dist-<plat> from CFGPLAT set above.
-REM     Copy the distribution artifacts by name plus the IndexAssets tree --
+REM     Copy the distribution artifacts by name plus the FunkeAssets tree --
 REM     NOT a /MIR of the whole folder -- so stray files left by running a game
 REM     from that dir (imgui.ini, a project's Assets\, Packages\,
-REM     index-project.json) never leak into the bundle. The dest is wiped first
+REM     funke-project.json) never leak into the bundle. The dest is wiped first
 REM     for a deterministic, stale-free bundle. Skipped with a stderr note if
 REM     the Dist runtime is not built yet (mirrors the :CopyExternalDir
 REM     missing-source behavior), so a Debug-only or partial build still
-REM     succeeds. Build Index-Runtime in the Dist config BEFORE this Launcher
+REM     succeeds. Build Funke-Runtime in the Dist config BEFORE this Launcher
 REM     postbuild for the bundle to populate.
-set "DISTRT=%ROOT%\bin\!DISTPLAT!\Index-Runtime"
-if not exist "%DISTRT%\Index-Runtime.exe" goto :skipRuntimeDist
+set "DISTRT=%ROOT%\bin\!DISTPLAT!\Funke-Runtime"
+if not exist "%DISTRT%\Funke-Runtime.exe" goto :skipRuntimeDist
 if exist "%SDK%\Runtime-Dist" rmdir /s /q "%SDK%\Runtime-Dist"
-robocopy "%DISTRT%" "%SDK%\Runtime-Dist" Index-Runtime.exe Index-Engine.dll SDL3.dll nethost.dll %ROBOFLAGS% >nul
+robocopy "%DISTRT%" "%SDK%\Runtime-Dist" Funke-Runtime.exe Funke-Engine.dll SDL3.dll nethost.dll %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
-robocopy "%ROOT%\bin\!DISTPLAT!\Index-ScriptCore" "%SDK%\Runtime-Dist" Index-ScriptCore.dll Index-ScriptCore.runtimeconfig.json Index-ScriptCore.deps.json %ROBOFLAGS% >nul
+robocopy "%ROOT%\bin\!DISTPLAT!\Funke-ScriptCore" "%SDK%\Runtime-Dist" Funke-ScriptCore.dll Funke-ScriptCore.runtimeconfig.json Funke-ScriptCore.deps.json %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
-robocopy "%DISTRT%\IndexAssets" "%SDK%\Runtime-Dist\IndexAssets" /MIR %ROBOFLAGS% >nul
+robocopy "%DISTRT%\FunkeAssets" "%SDK%\Runtime-Dist\FunkeAssets" /MIR %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 robocopy "%SDK%\Licenses" "%SDK%\Runtime-Dist\Licenses" /MIR %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 goto :afterRuntimeDist
 :skipRuntimeDist
-echo CopyEngineSdk: Dist runtime missing at bin\!DISTPLAT!\Index-Runtime; Runtime-Dist not bundled 1>&2
+echo CopyEngineSdk: Dist runtime missing at bin\!DISTPLAT!\Funke-Runtime; Runtime-Dist not bundled 1>&2
 :afterRuntimeDist
 
 endlocal
@@ -231,6 +242,11 @@ exit /b 0
 
 :externalFail
 echo CopyEngineSdk: robocopy failed mirroring External\%REL% with errorlevel %errorlevel% 1>&2
+exit /b 1
+
+:RequireBuildOutput
+if exist "%BIN%\%~1" exit /b 0
+echo CopyEngineSdk: required build output missing at %BIN%\%~1; build that project before Funke-Launcher 1>&2
 exit /b 1
 
 :CopyRequiredLicense
@@ -252,6 +268,10 @@ exit /b 1
 
 :robofail
 echo CopyEngineSdk: robocopy failed with errorlevel %errorlevel% 1>&2
+endlocal
+exit /b 1
+
+:fail
 endlocal
 exit /b 1
 

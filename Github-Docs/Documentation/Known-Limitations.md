@@ -1,6 +1,6 @@
 # Known Limitations (Beta)
 
-Index is in beta. These gaps are known and planned; plan your project around them. Please report anything else as a bug.
+Funke is in beta. These gaps are known and planned; plan your project around them. Please report anything else as a bug.
 
 ## Platforms
 

@@ -1,5 +1,5 @@
 -- Self-test for premake/package-loader.lua's versioning rules.
---   vendor\bin\premake5.exe --file=premake/tests/package-loader-tests.lua index-test-packages
+--   vendor\bin\premake5.exe --file=premake/tests/package-loader-tests.lua funke-test-packages
 -- Exits non-zero on the first failing check.
 
 ROOT_DIR = path.getabsolute(_SCRIPT_DIR .. "/../..")
@@ -33,9 +33,9 @@ end
 
 -- Every package under <root>/Packages, allow-listed in project.json; returns ok, sortedNamesOrError.
 local function Resolve(packages, allowList)
-    local root = path.join(os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp", "index-loader-test-" .. tostring(os.time()) .. "-" .. tostring(math.random(1, 1000000)))
+    local root = path.join(os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp", "funke-loader-test-" .. tostring(os.time()) .. "-" .. tostring(math.random(1, 1000000)))
     for name, source in pairs(packages) do
-        WriteFile(path.join(root, "Packages", name, "index-package.lua"), source)
+        WriteFile(path.join(root, "Packages", name, "funke-package.lua"), source)
     end
     WriteFile(path.join(root, "project.json"), "{ \"packages\": [\"" .. table.concat(allowList, "\", \"") .. "\"] }")
     local ok, result = pcall(Packages.ResolveProjectPackages, root)
@@ -47,7 +47,7 @@ local function Resolve(packages, allowList)
 end
 
 newaction {
-    trigger = "index-test-packages",
+    trigger = "funke-test-packages",
     description = "Run package-loader versioning self-tests",
     execute = function()
         math.randomseed(os.time())

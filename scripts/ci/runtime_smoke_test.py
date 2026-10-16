@@ -17,7 +17,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BIN_DIR = REPO_ROOT / "bin"
-RUNTIME_NAME = "Index-Runtime.exe" if os.name == "nt" else "Index-Runtime"
+RUNTIME_NAME = "Funke-Runtime.exe" if os.name == "nt" else "Funke-Runtime"
 DEFAULT_TIMEOUT_SECONDS = 45.0
 TERMINATE_GRACE_SECONDS = 5.0
 REQUIRED_MARKERS = (
@@ -30,7 +30,7 @@ FORBIDDEN_MARKERS = (
     "CI smoke test failed",
     "CrashReporter wrote minidump",
     "Failed to load default texture",
-    "IndexAssets/Textures not found",
+    "FunkeAssets/Textures not found",
     "Texture 'Default/",
     "Failed to start scene 'SampleScene'",
     "Scene destroy failed for 'SampleScene'",
@@ -47,7 +47,7 @@ def log_snapshot(binary: Path) -> tuple[Path | None, int]:
             base = str(Path(home) / ".config") if home else None
     if not base:
         return None, 0
-    path = Path(base) / "Index" / "Logs" / f"{binary.stem}.log"
+    path = Path(base) / "Funke" / "Logs" / f"{binary.stem}.log"
     return path, path.stat().st_size if path.is_file() else 0
 
 
@@ -70,11 +70,11 @@ def fail(message: str, log: str | None = None) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the Index runtime smoke test.")
+    parser = argparse.ArgumentParser(description="Run the Funke runtime smoke test.")
     parser.add_argument(
         "--binary",
         type=Path,
-        help="Exact Index-Runtime binary to test. Falls back to bin/ auto-discovery when omitted.",
+        help="Exact Funke-Runtime binary to test. Falls back to bin/ auto-discovery when omitted.",
     )
     parser.add_argument(
         "--timeout",
@@ -85,7 +85,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--require-scripting",
         action="store_true",
-        help="Also require successful CoreCLR and Index-ScriptCore initialization.",
+        help="Also require successful CoreCLR and Funke-ScriptCore initialization.",
     )
     return parser.parse_args()
 
@@ -96,7 +96,7 @@ def find_runtime_binary() -> Path:
 
     candidates = [
         path for path in BIN_DIR.rglob(RUNTIME_NAME)
-        if path.is_file() and path.parent.name == "Index-Runtime"
+        if path.is_file() and path.parent.name == "Funke-Runtime"
     ]
     if not candidates:
         raise FileNotFoundError(f"{RUNTIME_NAME} was not found under {BIN_DIR}")
@@ -106,7 +106,7 @@ def find_runtime_binary() -> Path:
         build_name = runtime_dir.parent.name.lower()
 
         score = 0
-        if (runtime_dir / "IndexAssets").is_dir():
+        if (runtime_dir / "FunkeAssets").is_dir():
             score += 100
         if build_name.startswith("release-"):
             score += 50
@@ -347,12 +347,12 @@ def main() -> int:
             return fail(str(error))
 
     runtime_dir = runtime_binary.parent
-    index_assets_dir = runtime_dir / "IndexAssets"
-    if not index_assets_dir.is_dir():
-        return fail(f"Expected IndexAssets next to the runtime binary at {index_assets_dir}")
+    funke_assets_dir = runtime_dir / "FunkeAssets"
+    if not funke_assets_dir.is_dir():
+        return fail(f"Expected FunkeAssets next to the runtime binary at {funke_assets_dir}")
 
     try:
-        with tempfile.TemporaryDirectory(prefix="Index Runtime Smoke Prüfung ") as temp_dir:
+        with tempfile.TemporaryDirectory(prefix="Funke Runtime Smoke Prüfung ") as temp_dir:
             staged_binary = stage_runtime_copy(runtime_binary, Path(temp_dir))
 
             required_markers = REQUIRED_MARKERS

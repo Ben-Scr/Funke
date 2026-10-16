@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "_comment": "Download URLs are GitHub Release assets. The CJK font is download-on-demand and lives on the Index-AssetLibrary repo (it's ~19 MB, so it's not bundled): LanguageDownloader fetches it the first time a user selects a CJK language and stores it under %LocalAppData%/Funke/Fonts/NotoSansCJK/. The language JSONs are hosted on the Funke repo; de.json/ja.json also stay bundled in this folder so the launcher works offline, so their URLs here are the update path only.",
+  "languages": [
+    {
+      "code": "de",
+      "displayName": "Deutsch",
+      "url": "https://github.com/Ben-Scr/Index/releases/download/v1/lang-de.json",
+      "sha256": "eb52447f074f7d8662da496d4dd423327e078177bb42664d9248cfcac0f039b1",
+      "sizeBytes": 3965,
+      "requiresCjkFont": false
+    },
+    {
+      "code": "ja",
+      "displayName": "Japanese (日本語)",
+      "url": "https://github.com/Ben-Scr/Index/releases/download/v1/lang-ja.json",
+      "sha256": "7e65f7710bc5ca6e8fcca5f6e2318554a79ce5ada7779a6a32a723de4b91a9df",
+      "sizeBytes": 4321,
+      "requiresCjkFont": true
+    }
+  ],
+  "fonts": {
+    "cjk": {
+      "url": "https://github.com/Ben-Scr/Index-AssetLibrary/releases/download/fonts-v1/NotoSansCJK-Regular.ttc",
+      "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+      "sizeBytes": 19484784,
+      "targetSubpath": "Fonts/NotoSansCJK/NotoSansCJK-Regular.ttc"
+    }
+  }
+}

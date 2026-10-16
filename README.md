@@ -2,13 +2,13 @@
  <img src="Github-Docs/Logos/logo3.gif" width="15%" alt="Demo">
 <p align="left">
 
-Index is a lightweight C++20 2D game engine mainly focused on performance and modularity.
+Funke is a lightweight C++20 2D game engine mainly focused on performance and modularity.
 
 > **Beta.** The editor and launcher run on **Windows x64**, **Linux x64** and **macOS** (Apple Silicon and Intel), and each exports games for its own desktop platform. Android, iOS and Web exports come from platform packages. See [Known Limitations](Github-Docs/Documentation/Known-Limitations.md).
 
 **Making a game?** Download the latest build for Windows, Linux or macOS from [Releases](https://github.com/Ben-Scr/Index/releases), install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0), and follow **[Your First Game](Github-Docs/Documentation/Getting-Started.md)**.
 
-**License:** Index is free and open source under the [MIT License](LICENSE.txt). Use it for any project, commercial or not; just keep the license notice with copies of the engine (game builds already include it in their `Licenses` folder).
+**License:** Funke is free and open source under the [MIT License](LICENSE.txt). Use it for any project, commercial or not; just keep the license notice with copies of the engine (game builds already include it in their `Licenses` folder).
 
 ## Preview Images
 
@@ -32,7 +32,7 @@ Clone with submodules:
 
 ```bash
 git clone --recurse https://github.com/Ben-Scr/Index.git
-cd Index
+cd Funke
 ```
 
 Then follow the steps for your platform. Re-run setup after pulling changes that touch dependencies, submodules, Premake files, or C# projects.
@@ -40,7 +40,7 @@ Then follow the steps for your platform. Re-run setup after pulling changes that
 <details>
 <summary><b>Windows (MSVC v143 / Visual Studio 2022 toolchain)</b></summary>
 
-**Prerequisites:** Visual Studio 2022 (MSVC v143 toolset + Windows SDK), .NET 10 SDK, Python 3.10+, Git, and CMake. Opening Index's `net10.0` game projects in Visual Studio requires Visual Studio 2026 (18.0+) even though the native build continues to use the VS2022/v143 toolchain.
+**Prerequisites:** Visual Studio 2022 (MSVC v143 toolset + Windows SDK), .NET 10 SDK, Python 3.10+, Git, and CMake. Opening Funke's `net10.0` game projects in Visual Studio requires Visual Studio 2026 (18.0+) even though the native build continues to use the VS2022/v143 toolchain.
 
 After a fresh clone, fetch and build the git-ignored Dawn/WebGPU dependency once:
 
@@ -86,16 +86,16 @@ chmod +x scripts/Setup.sh
 
 Setup asks `[Y/n]` before installing anything missing through apt, dnf, pacman or zypper: Python, Git, the .NET 10 SDK, CMake, and the C++ toolchain with the X11/Wayland/GL development headers. It then builds SDL3 (`scripts/sdl/SetupSDL.py`). Distribution-built .NET SDKs (e.g. Ubuntu's `dotnet-sdk-10.0`) work as well as Microsoft's.
 
-Build Dawn (WebGPU) once, then everything else. `Index-Managed` builds the C# projects (Index-ScriptCore, the hot-reload compiler and the package tool) with `dotnet`; the Launcher target also bundles the Editor, Runtime, `index` tool and EngineSDK next to the Launcher:
+Build Dawn (WebGPU) once, then everything else. `Funke-Managed` builds the C# projects (Funke-ScriptCore, the hot-reload compiler and the package tool) with `dotnet`; the Launcher target also bundles the Editor, Runtime, `funke` tool and EngineSDK next to the Launcher:
 
 ```bash
 ./scripts/dawn/SetupDawn.sh
-make config=dist -j"$(nproc)" Index-Runtime
-make config=release -j"$(nproc)" Index-Launcher
-./bin/Release-linux-x86_64/Index-Launcher/Index-Launcher
+make config=dist -j"$(nproc)" Funke-Runtime
+make config=release -j"$(nproc)" Funke-Launcher
+./bin/Release-linux-x86_64/Funke-Launcher/Funke-Launcher
 ```
 
-`python3 scripts/PackagePosix.py` packs that folder into `Index-Editor-<version>-Linux-x64.tar.gz`.
+`python3 scripts/PackagePosix.py` packs that folder into `Funke-Editor-<version>-Linux-x64.tar.gz`.
 
 </details>
 
@@ -113,18 +113,18 @@ Setup offers to install missing tools through [Homebrew](https://brew.sh) and op
 
 ```bash
 ./scripts/dawn/SetupDawn.sh
-make config=dist -j"$(sysctl -n hw.ncpu)" Index-Runtime
-make config=release -j"$(sysctl -n hw.ncpu)" Index-Launcher
-./bin/Release-macosx-arm64/Index-Launcher/Index-Launcher
+make config=dist -j"$(sysctl -n hw.ncpu)" Funke-Runtime
+make config=release -j"$(sysctl -n hw.ncpu)" Funke-Launcher
+./bin/Release-macosx-arm64/Funke-Launcher/Funke-Launcher
 ```
 
-On Intel Macs the folder is `Release-macosx-x86_64`. `python3 scripts/PackagePosix.py` packs it into `Index-Editor-<version>-macOS-<arch>.tar.gz`.
+On Intel Macs the folder is `Release-macosx-x86_64`. `python3 scripts/PackagePosix.py` packs it into `Funke-Editor-<version>-macOS-<arch>.tar.gz`.
 
 </details>
 
 ## Documentation
 
-Guides for building games with Index live in **[`Github-Docs/Documentation`](Github-Docs/Documentation/README.md)**.
+Guides for building games with Funke live in **[`Github-Docs/Documentation`](Github-Docs/Documentation/README.md)**.
 
 ## Built With
 

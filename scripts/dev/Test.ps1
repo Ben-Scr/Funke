@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Build and run Index tests with failure-only output.
+    Build and run Funke tests with failure-only output.
 
 .EXAMPLE
     scripts\dev\Test.ps1                       # engine + editor doctest suites
@@ -46,7 +46,7 @@ Push-Location $repoRoot
 try {
     foreach ($s in $Suite) {
         if ($s -eq "CSharp") {
-            $csArgs = @("test", "Tests\Index-ScriptCore-Tests\Index-ScriptCore-Tests.csproj", "-c", $Config, "--nologo", "-v", "q")
+            $csArgs = @("test", "Tests\Funke-ScriptCore-Tests\Funke-ScriptCore-Tests.csproj", "-c", $Config, "--nologo", "-v", "q")
             if ($NoBuild) { $csArgs += "--no-build" }
             if ($List) { $csArgs += "--list-tests" }
             if ($Filter) {
@@ -63,7 +63,7 @@ try {
             continue
         }
 
-        $name = "Index-$s-Tests"
+        $name = "Funke-$s-Tests"
         $exe = Join-Path $repoRoot "bin\$Config-windows-x86_64\$name\$name.exe"
         if (-not (Test-Path -LiteralPath $exe)) { Write-Host "[test] missing $exe" -ForegroundColor Red; $failed = $true; continue }
         $docArgs = @("--no-intro", "--no-version")

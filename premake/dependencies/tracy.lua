@@ -10,7 +10,7 @@
 -- in by that TU.
 
 project "Tracy"
-    location (IndexProjectLocation("Tracy", path.join(ROOT_DIR, "premake/generated/Tracy")))
+    location (FunkeProjectLocation("Tracy", path.join(ROOT_DIR, "premake/generated/Tracy")))
     kind "SharedLib"
     language "C++"
     cppdialect "C++17"
@@ -50,7 +50,7 @@ project "Tracy"
     }
 
     filter "system:windows"
-        -- See Index-Engine/premake5.lua for the rationale on
+        -- See Funke-Engine/premake5.lua for the rationale on
         -- MultiProcessorCompile.
         --
         -- /Zc:preprocessor: enables MSVC's standards-conformant preprocessor.
@@ -60,7 +60,7 @@ project "Tracy"
         -- __LINE__Var (a non-constant intermediate) which fails constexpr
         -- evaluation (C2131). The conformant preprocessor expands it to a
         -- proper integer literal. The rest of the engine now sets this flag
-        -- too (Index-Engine/premake5.lua etc.) so all TUs agree.
+        -- too (Funke-Engine/premake5.lua etc.) so all TUs agree.
         flags { "MultiProcessorCompile" }
         buildoptions { "/FS", "/Zc:preprocessor" }
         systemversion "latest"

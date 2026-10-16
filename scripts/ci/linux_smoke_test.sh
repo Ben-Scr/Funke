@@ -14,19 +14,19 @@ if [[ ! -d "$bin_dir" ]]; then
     exit 1
 fi
 
-runtime_binary="$(find "$bin_dir" -path '*/Index-Runtime/Index-Runtime' -type f | head -n 1)"
+runtime_binary="$(find "$bin_dir" -path '*/Funke-Runtime/Funke-Runtime' -type f | head -n 1)"
 
 if [[ -z "${runtime_binary}" ]]; then
-    echo "Index-Runtime binary was not found under $bin_dir" >&2
+    echo "Funke-Runtime binary was not found under $bin_dir" >&2
     find "$bin_dir" -maxdepth 5 -type f | sort >&2
     exit 1
 fi
 
 runtime_dir="$(dirname "$runtime_binary")"
-index_assets_dir="$runtime_dir/IndexAssets"
+funke_assets_dir="$runtime_dir/FunkeAssets"
 
-if [[ ! -d "$index_assets_dir" ]]; then
-    echo "Expected IndexAssets next to the runtime binary at $index_assets_dir" >&2
+if [[ ! -d "$funke_assets_dir" ]]; then
+    echo "Expected FunkeAssets next to the runtime binary at $funke_assets_dir" >&2
     exit 1
 fi
 
@@ -102,7 +102,7 @@ print_log() {
 set +e
 (
     cd "$runtime_dir"
-    timeout 10s xvfb-run -a ./Index-Runtime >"$log_file" 2>&1
+    timeout 10s xvfb-run -a ./Funke-Runtime >"$log_file" 2>&1
 )
 status=$?
 set -e
@@ -131,8 +131,8 @@ if grep -q "Failed to load default texture" "$log_file"; then
     exit 1
 fi
 
-if grep -q "IndexAssets/Textures not found" "$log_file"; then
-    echo "Runtime could not resolve IndexAssets/Textures." >&2
+if grep -q "FunkeAssets/Textures not found" "$log_file"; then
+    echo "Runtime could not resolve FunkeAssets/Textures." >&2
     print_log
     exit 1
 fi

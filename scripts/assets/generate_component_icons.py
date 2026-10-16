@@ -2,7 +2,7 @@
 
 Flat, colored, round-cap strokes like the existing camera/light_sun icons. Each icon is drawn at
 512 px and downsampled to the shipped sizes into
-Index-Runtime/IndexAssets/Textures/Editor/General/<name>/<name>_<size>.png.
+Funke-Runtime/FunkeAssets/Textures/Editor/General/<name>/<name>_<size>.png.
 
 Usage: python scripts/assets/generate_component_icons.py [--only name,name]
 """
@@ -13,7 +13,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / "Index-Runtime" / "IndexAssets" / "Textures" / "Editor" / "General"
+OUT = ROOT / "Funke-Runtime" / "FunkeAssets" / "Textures" / "Editor" / "General"
 SIZES = (16, 32, 64, 128)
 S = 512  # supersampled canvas
 W = 40   # main stroke width at 512 px
