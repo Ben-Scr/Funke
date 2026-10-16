@@ -25,6 +25,32 @@
 
 namespace Index {
 	namespace {
+		constexpr size_t k_EditorViewToolbarItemCount = static_cast<size_t>(EditorViewToolbarItem::Count);
+
+		// JSON keys, indexed by EditorViewToolbarItem.
+		constexpr const char* k_EditorViewToolbarKeys[k_EditorViewToolbarItemCount] = {
+			"GizmoModes", "ViewMode3D", "DrawMode", "Gizmos", "PostProcessing", "GridSnap", "OptionsPill",
+		};
+
+		constexpr std::array<bool, k_EditorViewToolbarItemCount> AllToolbarItemsVisible() {
+			std::array<bool, k_EditorViewToolbarItemCount> items{};
+			for (bool& item : items) item = true;
+			return items;
+		}
+
+		constexpr size_t k_GameViewToolbarItemCount = static_cast<size_t>(GameViewToolbarItem::Count);
+
+		// JSON keys, indexed by GameViewToolbarItem.
+		constexpr const char* k_GameViewToolbarKeys[k_GameViewToolbarItemCount] = {
+			"Aspect", "VSync", "Stats", "Logs", "Toolbar",
+		};
+
+		constexpr std::array<bool, k_GameViewToolbarItemCount> AllGameViewToolbarItemsVisible() {
+			std::array<bool, k_GameViewToolbarItemCount> items{};
+			for (bool& item : items) item = true;
+			return items;
+		}
+
 		// All state lives in the .cpp so the header stays light. The
 		// class is a static facade — there's only ever one EditorPreferences
 		// per editor process.
@@ -62,6 +88,9 @@ namespace Index {
 
 			bool AlignmentGuidesEnabled = true;
 			float AlignmentSnapThreshold = EditorPreferences::k_DefaultAlignmentSnapThreshold;
+
+			std::array<bool, static_cast<size_t>(EditorViewToolbarItem::Count)> EditorViewToolbar = AllToolbarItemsVisible();
+			std::array<bool, static_cast<size_t>(GameViewToolbarItem::Count)> GameViewToolbar = AllGameViewToolbarItemsVisible();
 
 			bool Loaded = false;
 			bool FreshlyCreated = false;
@@ -327,6 +356,20 @@ namespace Index {
 			s.AlignmentSnapThreshold = static_cast<float>(v->AsDoubleOr(EditorPreferences::k_DefaultAlignmentSnapThreshold));
 			if (s.AlignmentSnapThreshold < EditorPreferences::k_MinAlignmentSnapThreshold) s.AlignmentSnapThreshold = EditorPreferences::k_MinAlignmentSnapThreshold;
 		}
+		if (const Json::Value* v = root.FindMember("EditorViewToolbar"); v && v->IsObject()) {
+			for (size_t i = 0; i < k_EditorViewToolbarItemCount; ++i) {
+				if (const Json::Value* item = v->FindMember(k_EditorViewToolbarKeys[i])) {
+					s.EditorViewToolbar[i] = item->AsBoolOr(true);
+				}
+			}
+		}
+		if (const Json::Value* v = root.FindMember("GameViewToolbar"); v && v->IsObject()) {
+			for (size_t i = 0; i < k_GameViewToolbarItemCount; ++i) {
+				if (const Json::Value* item = v->FindMember(k_GameViewToolbarKeys[i])) {
+					s.GameViewToolbar[i] = item->AsBoolOr(true);
+				}
+			}
+		}
 
 		if (const Json::Value* v = root.FindMember("CustomColors"); v && v->IsObject()) {
 			ImGuiStyle tempStyle;
@@ -385,6 +428,20 @@ namespace Index {
 		root.AddMember("ScaleSnap", Json::Value(static_cast<double>(s.ScaleSnap)));
 		root.AddMember("AlignmentGuidesEnabled", Json::Value(s.AlignmentGuidesEnabled));
 		root.AddMember("AlignmentSnapThreshold", Json::Value(static_cast<double>(s.AlignmentSnapThreshold)));
+		{
+			Json::Value toolbar = Json::Value::MakeObject();
+			for (size_t i = 0; i < k_EditorViewToolbarItemCount; ++i) {
+				toolbar.AddMember(std::string(k_EditorViewToolbarKeys[i]), Json::Value(s.EditorViewToolbar[i]));
+			}
+			root.AddMember("EditorViewToolbar", std::move(toolbar));
+		}
+		{
+			Json::Value toolbar = Json::Value::MakeObject();
+			for (size_t i = 0; i < k_GameViewToolbarItemCount; ++i) {
+				toolbar.AddMember(std::string(k_GameViewToolbarKeys[i]), Json::Value(s.GameViewToolbar[i]));
+			}
+			root.AddMember("GameViewToolbar", std::move(toolbar));
+		}
 
 		// Always serialize CustomColors once seeded — the user can return
 		// to the saved set after experimenting with Dark/Light/System.
@@ -750,6 +807,50 @@ namespace Index {
 		const float clamped = (value < k_MinAlignmentSnapThreshold) ? k_MinAlignmentSnapThreshold : value;
 		if (S().AlignmentSnapThreshold == clamped) return;
 		S().AlignmentSnapThreshold = clamped;
+		Save();
+	}
+
+	bool EditorPreferences::IsEditorViewToolbarItemVisible(EditorViewToolbarItem item) {
+		const size_t index = static_cast<size_t>(item);
+		return index >= k_EditorViewToolbarItemCount || S().EditorViewToolbar[index];
+	}
+
+	void EditorPreferences::SetEditorViewToolbarItemVisible(EditorViewToolbarItem item, bool visible) {
+		const size_t index = static_cast<size_t>(item);
+		if (index >= k_EditorViewToolbarItemCount || S().EditorViewToolbar[index] == visible) return;
+		S().EditorViewToolbar[index] = visible;
+		Save();
+	}
+
+	bool EditorPreferences::IsEditorViewToolbarDefault() {
+		return S().EditorViewToolbar == AllToolbarItemsVisible();
+	}
+
+	void EditorPreferences::ResetEditorViewToolbar() {
+		if (IsEditorViewToolbarDefault()) return;
+		S().EditorViewToolbar = AllToolbarItemsVisible();
+		Save();
+	}
+
+	bool EditorPreferences::IsGameViewToolbarItemVisible(GameViewToolbarItem item) {
+		const size_t index = static_cast<size_t>(item);
+		return index >= k_GameViewToolbarItemCount || S().GameViewToolbar[index];
+	}
+
+	void EditorPreferences::SetGameViewToolbarItemVisible(GameViewToolbarItem item, bool visible) {
+		const size_t index = static_cast<size_t>(item);
+		if (index >= k_GameViewToolbarItemCount || S().GameViewToolbar[index] == visible) return;
+		S().GameViewToolbar[index] = visible;
+		Save();
+	}
+
+	bool EditorPreferences::IsGameViewToolbarDefault() {
+		return S().GameViewToolbar == AllGameViewToolbarItemsVisible();
+	}
+
+	void EditorPreferences::ResetGameViewToolbar() {
+		if (IsGameViewToolbarDefault()) return;
+		S().GameViewToolbar = AllGameViewToolbarItemsVisible();
 		Save();
 	}
 

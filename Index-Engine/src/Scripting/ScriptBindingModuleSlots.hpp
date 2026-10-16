@@ -114,8 +114,6 @@
 	X(SpriteAnimator2D_SetFrame) \
 	X(SpriteAnimator2D_GetFramesPerSecond) \
 	X(SpriteAnimator2D_SetFramesPerSecond) \
-	X(PostProcessing2D_GetEffect) \
-	X(PostProcessing2D_SetEffect) \
 	X(Physics2D_OverlapCircle) \
 	X(Physics2D_OverlapBox) \
 	X(Physics2D_OverlapPolygon) \
@@ -138,6 +136,8 @@
 	X(SpriteRenderer_SetFilter) \
 	X(SpriteRenderer_GetSpriteNameBuffer) \
 	X(SpriteRenderer_SetSpriteName) \
+	X(SpriteRenderer_GetMaterial) \
+	X(SpriteRenderer_SetMaterial) \
 	X(Rigidbody2D_GetFreezePositionX) \
 	X(Rigidbody2D_SetFreezePositionX) \
 	X(Rigidbody2D_GetFreezePositionY) \
@@ -211,6 +211,10 @@
 	X(ParticleSystem3D_GetState) \
 	X(ParticleSystem3D_GetTexture) \
 	X(ParticleSystem3D_SetTexture) \
+	X(Camera3D_GetSkyboxMaterial) \
+	X(Camera3D_SetSkyboxMaterial) \
+	X(Camera3D_ScreenPointToRay) \
+	X(Camera3D_WorldToScreenPoint) \
 	X(Rigidbody3D_Get) \
 	X(Rigidbody3D_Set) \
 	X(Rigidbody3D_GetVelocity) \
@@ -224,4 +228,15 @@
 	X(Physics3D_GetGravity) \
 	X(Physics3D_SetGravity) \
 	X(MeshCollider3D_GetCustomMesh) \
-	X(MeshCollider3D_SetCustomMesh)
+	X(MeshCollider3D_SetCustomMesh) \
+	X(SkinnedMeshRenderer_Get) \
+	X(SkinnedMeshRenderer_Set) \
+	X(SkinnedMeshRenderer_GetAsset) \
+	X(SkinnedMeshRenderer_SetAsset) \
+	X(SkinnedMeshRenderer_Play) \
+	X(SkinnedMeshRenderer_Control) \
+	X(SkinnedMeshRenderer_GetClip) \
+	X(SkinnedMeshRenderer_GetClipCount) \
+	X(SkinnedMeshRenderer_GetClipName) \
+	X(SkinnedMeshRenderer_GetClipDuration) \
+	X(SkinnedMeshRenderer_GetBone)

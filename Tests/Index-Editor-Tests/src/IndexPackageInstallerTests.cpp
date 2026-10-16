@@ -3,6 +3,7 @@
 #include "Editor/IndexPackageInstaller.hpp"
 #include "Project/IndexProject.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -161,4 +162,31 @@ return { name = "Game.Levels", version = "1.0.0", dependencies = { "Game.Tiles2D
 	CHECK_FALSE(project.HasModule("Index.3D"));
 	CHECK(Index::IndexPackageInstaller::EnableModule(project, "Index.3D").Success);
 	CHECK(project.HasModule("Index.3D"));
+}
+
+TEST_CASE("Packages of a project stay project packages when the tools run inside the project") {
+	ScopedPackageProject fixture;
+	fixture.Write("Packages/Game.Ads/index-package.lua", R"(
+return {
+    name = "Game.Ads",
+    version = "1.0.0",
+    layers = { csharp = { sources = { "Source/**.cs" } } },
+    android = {
+        maven = { "com.example:lib:1.0.0" },
+        placeholders = { appId = "test" },
+    },
+}
+)");
+	const std::filesystem::path previous = std::filesystem::current_path();
+	std::filesystem::current_path(fixture.Root);
+	const auto manifests = Index::IndexPackageInstaller::EnumerateAll(fixture.Root.generic_string() + "/");
+	std::filesystem::current_path(previous);
+
+	const auto found = std::find_if(manifests.begin(), manifests.end(),
+		[](const Index::IndexPackageManifest& manifest) { return manifest.Name == "Game.Ads"; });
+	REQUIRE(found != manifests.end());
+	CHECK_FALSE(found->IsEngine);
+	CHECK(found->HasCSharpLayer);
+	CHECK(std::count_if(manifests.begin(), manifests.end(),
+		[](const Index::IndexPackageManifest& manifest) { return manifest.Name == "Game.Ads"; }) == 1);
 }

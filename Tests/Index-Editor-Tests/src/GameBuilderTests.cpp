@@ -39,6 +39,48 @@ namespace {
 	};
 }
 
+TEST_CASE("GameBuilder::Prepare folds the profile's configuration, defines and test switches into the snapshot only") {
+	TempProject temp;
+	std::filesystem::create_directories(temp.Root / "Assets" / "Scenes");
+	REQUIRE(File::WriteAllText(Path::ToUtf8(temp.Root / "Assets" / "Scenes" / "Main.scene"),
+		R"({ "version": 1, "name": "Main", "entities": [] })"));
+	temp.Project.AssetsDirectory = Path::ToUtf8(temp.Root / "Assets");
+	temp.Project.BuildSceneList = { { "Main", true } };
+	temp.Project.CustomDefines = { "STEAM" };
+
+	IndexBuildProfile qa;
+	qa.Name = "QA";
+	qa.Platform = BuildPlatform::Windows;
+	qa.RenderBackend = IndexProject::RenderBackend::Direct3D12;
+	qa.Configuration = IndexProject::BuildProfile::Debug;
+	qa.Defines = { "INDEX_TEST" };
+	qa.DevConsole = false;
+	qa.ShowRuntimeLogs = true;
+	qa.IsolatedPrefs = true;
+	REQUIRE(qa.Save(Path::ToUtf8(temp.Root / "BuildProfiles" / "QA.build")));
+	temp.Project.ActiveBuildProfileName = "QA";
+
+	std::string error;
+	GameBuilder::Request request;
+	REQUIRE(GameBuilder::Prepare(temp.Project, request, error));
+	CHECK(request.Project.ActiveBuildProfile == IndexProject::BuildProfile::Debug);
+	CHECK(request.Project.CustomDefines == std::vector<std::string>{ "STEAM", "INDEX_TEST" });
+	CHECK(request.Project.DevConsole == false);
+	CHECK(request.Project.ShowRuntimeLogs == true);
+	CHECK_FALSE(request.Project.ShowRuntimeStats.has_value());
+	CHECK(request.Project.PrefsProfile == "QA");
+	// The live project keeps its own values.
+	CHECK(temp.Project.ActiveBuildProfile == IndexProject::BuildProfile::Development);
+	CHECK(temp.Project.CustomDefines == std::vector<std::string>{ "STEAM" });
+	CHECK(temp.Project.PrefsProfile.empty());
+
+	// --release/--development/--debug on the CLI beat the profile.
+	GameBuilder::Request overridden;
+	overridden.ConfigurationOverride = IndexProject::BuildProfile::Release;
+	REQUIRE(GameBuilder::Prepare(temp.Project, overridden, error));
+	CHECK(overridden.Project.ActiveBuildProfile == IndexProject::BuildProfile::Release);
+}
+
 TEST_CASE("GameBuilder resolves the requested, active or first matching build profile") {
 	TempProject temp;
 	temp.AddProfile("Android", BuildPlatform::Android);

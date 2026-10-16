@@ -34,6 +34,8 @@ namespace Index {
 
     class INDEX_API Font {
     public:
+        static constexpr uint32_t k_GlyphTableSize = 256;
+
         Font();
         ~Font();
 
@@ -100,7 +102,14 @@ namespace Index {
         // in m_StbFontInfoStorage points INTO these bytes for kerning, so the buffer
         // must outlive this Font — the shared_ptr guarantees that.
         std::shared_ptr<const std::vector<uint8_t>> m_TtfBuffer;
-        std::unordered_map<uint32_t, GlyphMetrics> m_Glyphs;
+        // Indexed by codepoint; every baked range lies below k_GlyphTableSize.
+        std::vector<GlyphMetrics> m_Glyphs;
+        // Kerning in font units for ASCII pairs, baked once so text layout skips
+        // stbtt's GPOS/kern table walk; empty when the font has no kerning data.
+        std::vector<int16_t> m_AsciiKerning;
+        // Glyph index per codepoint < k_GlyphTableSize for the non-ASCII kerning fallback.
+        std::vector<int> m_GlyphIndices;
+        bool m_HasKerning = false;
 
         unsigned m_AtlasTexture = 0;
         int m_AtlasWidth = 0;

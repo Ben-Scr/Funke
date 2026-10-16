@@ -101,7 +101,7 @@ The editor is a set of dockable panels. The main ones:
 | **Hierarchy** (Entities) | The tree of all entities in the loaded scene(s). Create, rename, parent, reorder, and delete entities here. |
 | **Inspector** | Shows and edits the components of whatever you've selected. This is where most editing happens. |
 | **Editor View** (Viewport) | The interactive 2D canvas. Move the camera, select objects, and drag gizmos to position them. |
-| **Game View** | A preview of the game exactly as the player will see it (active during Play mode). |
+| **Game View** | A preview of the game exactly as the player will see it (active during Play mode). The aspect dropdown picks a fixed ratio, Free Aspect, or **Project (…)**, which follows the build Aspect Ratio from Project Settings. |
 | **Asset Browser** | Your project's files — sprites, scenes, prefabs, scripts. Create assets, drag them into scenes, slice sprites. See [Assets](../Assets/Assets.md). |
 | **Console** | Engine and script log output (info, warnings, errors). |
 | **Profiler** | Real-time performance timings per subsystem. |
@@ -148,6 +148,18 @@ The **Editor View** is your 2D workspace:
 - With **Gizmos** enabled, drag the on-screen handles to **move, rotate, and scale** the selected entity.
 
 There are also display toggles (wireframe vs. filled, post-processing on/off) to help you see what you're doing.
+
+#### View Settings
+
+The gizmo modes float over the top-left corner of the Editor View. The view options — 3D toggle, draw mode, Gizmos, Post Processing and Grid Snap (with its settings arrow) — float over its top-right corner. If you never use some of them, hide them:
+
+- Open **Edit › View**, or **right-click** either floating toolbar.
+- Untick any element to hide it. **Gizmo Modes** hides the left toolbar; **Show View Options** hides the whole right one.
+- **Reset to Default** shows everything again.
+
+The choice is saved per user (in the editor preferences, not in the project), so it survives restarts and applies to every project. Hidden actions are still in the command palette (**Ctrl+K**): *Gizmo Mode: None / Move / Rotate / Scale / Rect*, *Toggle 3D Editor View*, *Draw Mode: …*, *Toggle Gizmos*, *Toggle Post Processing in Editor View*, *Toggle Grid Snap*, *Reset Editor View Toolbar*.
+
+The **Game View** toolbar (aspect ratio, VSync, Stats, Logs) has the same kind of menu in **Edit › View** (or a right-click on the toolbar): hide single elements or the whole toolbar, and **Reset Game View Toolbar** brings everything back. The command palette keeps *Toggle Game View Stats*, *Toggle Game View Logs*, *Toggle Game View VSync* and *Toggle Game View Toolbar*.
 
 ### Play, Pause, Stop
 

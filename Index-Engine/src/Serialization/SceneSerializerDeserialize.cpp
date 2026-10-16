@@ -67,6 +67,26 @@ namespace Index {
 
 	namespace {
 		static constexpr int SCENE_FORMAT_VERSION = 1;
+
+		// Absent keys mean a Simple image with the standard shader (files from before 9-slice and materials).
+		void ReadImageSlicingAndMaterial(const Value& imageValue, ImageComponent& image) {
+			image.Material = GetUInt64Member(imageValue, "materialAsset", 0);
+			const int type = GetIntMember(imageValue, "imageType", 0);
+			image.Type = type == static_cast<int>(ImageType::Sliced) || type == static_cast<int>(ImageType::Tiled)
+				? static_cast<ImageType>(type) : ImageType::Simple;
+			float border[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			if (const Value* values = GetArrayMember(imageValue, "border")) {
+				const auto& items = values->GetArray();
+				for (size_t i = 0; i < items.size() && i < 4; ++i) {
+					border[i] = std::max(static_cast<float>(items[i].AsDoubleOr(0.0)), 0.0f);
+				}
+			}
+			image.BorderLeft = border[0];
+			image.BorderBottom = border[1];
+			image.BorderRight = border[2];
+			image.BorderTop = border[3];
+			image.BorderScale = std::max(GetFloatMember(imageValue, "borderScale", 1.0f), 0.0f);
+		}
 #if INDEX_WITH_2D
 		static constexpr float k_MinScaleAxis = 0.0001f;
 
@@ -2004,6 +2024,7 @@ namespace Index {
 				}
 			}
 			image.SpriteName = GetStringMember(*imageValue, "spriteName", std::string{});
+			ReadImageSlicingAndMaterial(*imageValue, image);
 		}
 
 		ScriptComponent* scriptComponent = nullptr;
@@ -2371,8 +2392,7 @@ namespace Index {
 
 		EntityHandle root = entt::null;
 		PrefabDefinition definition;
-		if (ReadPrefabDefinitionFromRoot(entityValue, definition)
-			&& (entityValue.FindMember("Entity") || entityValue.FindMember("prefab") || entityValue.FindMember("Entities"))) {
+		if (HasPrefabEntityPayload(entityValue) && ReadPrefabDefinitionFromRoot(entityValue, definition)) {
 			const bool isClipboardEntity = GetBoolMember(entityValue, "ClipboardEntity", false)
 				|| GetBoolMember(entityValue, "Clipboard", false);
 			root = DeserializeEntityTree(scene, definition.Entities, origin, 0, !isClipboardEntity);
@@ -2390,6 +2410,16 @@ namespace Index {
 
 		scene.RunPendingEntityRefFixups();
 		return root;
+	}
+
+	bool SceneSerializer::HasPrefabEntityPayload(const Json::Value& root) {
+		if (!root.IsObject()) return false;
+		if (const Value* entities = GetArrayMember(root, "Entities")) {
+			for (const Value& entityValue : entities->GetArray()) {
+				if (entityValue.IsObject()) return true;
+			}
+		}
+		return GetObjectMember(root, "Entity") || GetObjectMember(root, "prefab");
 	}
 
 	bool SceneSerializer::DeserializeComponent(Scene& scene, EntityHandle entity, std::string_view componentName, const Json::Value& componentValue) {
@@ -2662,6 +2692,7 @@ namespace Index {
 				}
 			}
 			image.SpriteName = GetStringMember(componentValue, "spriteName", std::string{});
+			ReadImageSlicingAndMaterial(componentValue, image);
 			return true;
 		}
 

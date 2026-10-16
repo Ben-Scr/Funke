@@ -51,7 +51,6 @@ namespace Index {
 			case PropertyType::UInt16:
 			case PropertyType::UInt32:
 			case PropertyType::UInt64:
-			case PropertyType::TextureRef:
 			case PropertyType::AudioRef:
 			case PropertyType::AssetRef:
 			case PropertyType::SceneRef:
@@ -60,6 +59,9 @@ namespace Index {
 				return UIntValue == other.UIntValue;
 			case PropertyType::EntityRef:
 				// EntityRef may also be a prefab reference (StringValue=="prefab")
+				return UIntValue == other.UIntValue && StringValue == other.StringValue;
+			case PropertyType::TextureRef:
+				// StringValue is the sprite slice; two slices of one sheet are different values.
 				return UIntValue == other.UIntValue && StringValue == other.StringValue;
 			case PropertyType::Float:
 			case PropertyType::Double:

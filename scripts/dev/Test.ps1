@@ -26,6 +26,7 @@ param(
 
 $ErrorActionPreference = "Continue"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+. (Join-Path $PSScriptRoot "LoaderExitCodes.ps1")
 $Suite = @($Suite | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 if ($Suite -contains "All") { $Suite = @("Engine", "Editor", "CSharp") }
 foreach ($s in $Suite) { if (@("Engine", "Editor", "CSharp") -notcontains $s) { throw "Unknown suite '$s'." } }
@@ -78,7 +79,12 @@ try {
             $out | Where-Object { $_ -notmatch '^\[\d\d:\d\d:\d\d\] \[' -and $_ -notmatch '^=+$' -and $_.Trim() } | Write-Host
             if ($code -ne 0) { Write-Host "[test] full output incl. engine log: bin-int\_agent\test-$s.log" }
         }
-        if ($code -ne 0) { $failed = $true; Write-Host "[test] $s FAILED (exit $code)" -ForegroundColor Red }
+        if ($code -ne 0) {
+            $failed = $true
+            $loaderFailure = Get-LoaderFailure $code
+            if ($loaderFailure) { Write-Host "[test] $s did not start: $loaderFailure" -ForegroundColor Red }
+            Write-Host "[test] $s FAILED (exit $code)" -ForegroundColor Red
+        }
         else { Write-Host "[test] $s ok" -ForegroundColor Green }
     }
 }

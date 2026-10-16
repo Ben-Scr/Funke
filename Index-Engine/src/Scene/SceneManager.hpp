@@ -110,10 +110,15 @@ namespace Index {
 			bool runDefinitionUnloadCallbacks = true);
 		// Captures an active loaded baseline before suspending it for transactional mutation.
 		static bool BeginLoadedSceneRecovery(const std::shared_ptr<Scene>& scene);
+		// Like BeginLoadedSceneRecovery for an instance that is about to be released (Play Mode stop): systems are torn
+		// down as in a normal unload without serializing the scene; RollbackLoadedSceneRecovery keeps the live entities,
+		// including any changes the systems' OnDestroy made.
+		static bool SuspendLoadedSceneForRelease(const std::shared_ptr<Scene>& scene);
 		// Restores a captured baseline and leaves the instance lifecycle-suspended.
 		static bool RollbackLoadedSceneRecovery(const std::shared_ptr<Scene>& scene);
 		// Runs Awake/Start without scene notifications after old instances with colliding IDs are gone.
-		static bool ActivateSuspendedScene(const std::shared_ptr<Scene>& scene);
+		// validateBaseline=false skips the round-trip check of the rollback snapshot (content just loaded from a file).
+		static bool ActivateSuspendedScene(const std::shared_ptr<Scene>& scene, bool validateBaseline = true);
 		// Restores the exact pre-activation serialized state and returns the instance to lifecycle suspension.
 		static bool ResuspendSceneForRecovery(const std::shared_ptr<Scene>& scene);
 		// Forgets the pre-activation recovery snapshot after the whole replacement set has activated.
@@ -222,7 +227,7 @@ namespace Index {
 			bool runDefinitionUnloadCallbacks = true);
 		void UnloadAllScenesInternal(bool includePersistent, bool ensureActiveCamera, const Scene* sceneToKeep = nullptr);
 		void RefreshActiveScene();
-		bool CaptureSuspendedRecoveryState(const std::shared_ptr<Scene>& scene);
+		bool CaptureSuspendedRecoveryState(const std::shared_ptr<Scene>& scene, bool validate = true, bool serialize = true);
 		bool HasPersistentIdentityCollision(const Scene& scene) const;
 		bool RestoreSuspendedRecoveryState(const std::shared_ptr<Scene>& scene,
 			bool retainRecoveryState = false);
@@ -233,6 +238,8 @@ namespace Index {
 			UUID SceneId = UUID(0);
 			bool Dirty = false;
 			bool UiDirty = false;
+			// No snapshot: a rollback keeps the live registry as the baseline.
+			bool LiveEntities = false;
 		};
 
 		SceneDefinitionMap m_SceneDefinitions;

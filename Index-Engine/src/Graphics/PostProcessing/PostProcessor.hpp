@@ -55,14 +55,10 @@ namespace Index {
 
 		// Owned here (not in pImpl) so Shader dtor runs after pImpl pipelines are destroyed — pImpl pipelines captured the ShaderModule by value at creation time.
 		std::unique_ptr<Shader> m_BlitShader;
-		std::unique_ptr<Shader> m_VignetteShader;
-		std::unique_ptr<Shader> m_ChromaticShader;
-		std::unique_ptr<Shader> m_GrainShader;
-		std::unique_ptr<Shader> m_LensDistortionShader;
-		std::unique_ptr<Shader> m_ColorGradingShader;
 		std::unique_ptr<Shader> m_BloomThresholdShader;
 		std::unique_ptr<Shader> m_BloomBlurShader;
-		std::unique_ptr<Shader> m_BloomCompositeShader;
+		// Bloom composite, color grading, lens distortion, chromatic aberration, vignette and grain in one pass.
+		std::unique_ptr<Shader> m_CompositeShader;
 		std::unique_ptr<Shader> m_PixelatedShader;
 	};
 

@@ -14,7 +14,9 @@
 #include "Scene/BuiltInComponentRegistration.hpp"
 #include "Scripting/ScriptSystem.hpp"
 #include "Scripting/ScriptEngine.hpp"
+#include "Systems/AnimatorSystem.hpp"
 #include "Systems/AudioUpdateSystem.hpp"
+#include "Systems/LocalizedTextSystem.hpp"
 #include "Systems/UIEventSystem.hpp"
 #include "Systems/UIFocusSystem.hpp"
 #include "Systems/UILayoutSystem.hpp"
@@ -42,6 +44,7 @@
 #include "Components/Graphics/Camera3DComponent.hpp"
 #include "Physics3D/PhysicsSystem3D.hpp"
 #include "Systems/Particle3DUpdateSystem.hpp"
+#include "Systems/SkinnedMeshAnimationSystem.hpp"
 #include "Systems/Transform3DHierarchySystem.hpp"
 #endif
 
@@ -137,12 +140,18 @@ namespace Index {
 			}
 #endif
 #if INDEX_WITH_3D
-			if (with3D) definition.AddSystem<Particle3DUpdateSystem>();
+			if (with3D) {
+				definition.AddSystem<Particle3DUpdateSystem>();
+				definition.AddSystem<SkinnedMeshAnimationSystem>();
+			}
 #endif
 
 			if (config.EnableScripting) {
 				definition.AddSystem<ScriptSystem>();
 			}
+
+			// After the scripts so parameters they set apply this frame; before 3D physics reads kinematic bodies.
+			definition.AddSystem<AnimatorSystem>();
 
 #if INDEX_WITH_3D
 			// After ScriptSystem: forces applied in OnFixedUpdate land in the same step. Idle (no world)
@@ -161,6 +170,7 @@ namespace Index {
 
 			if (config.EnableRenderer2D) {
 				definition.AddSystem<UIEventSystem>();
+				definition.AddSystem<LocalizedTextSystem>();
 			}
 		}
 
@@ -417,6 +427,39 @@ namespace Index {
 		return teardownSucceeded && baselineRestored;
 	}
 
+	bool SceneManager::SuspendLoadedSceneForRelease(const std::shared_ptr<Scene>& scene) {
+		SceneManager* manager = TryGet();
+		if (!manager || !scene || !scene->m_IsLoaded || scene->m_LifecycleSuspended) return false;
+		if (manager->m_LoadInProgress || manager->m_ReleaseDepth != 0) return false;
+		if (std::find(manager->m_LoadedScenes.begin(), manager->m_LoadedScenes.end(), scene)
+			== manager->m_LoadedScenes.end()) return false;
+		manager->m_LoadInProgress = true;
+		ScopeExit loadGuard([manager]() { manager->m_LoadInProgress = false; });
+		// Teardown only runs system OnDestroy and leaves the registry alone, so serializing a baseline (seconds for
+		// thousands of runtime-spawned entities) buys nothing a rollback couldn't get from the live entities.
+		if (!manager->CaptureSuspendedRecoveryState(scene, false, false)) return false;
+
+		bool teardownSucceeded = true;
+		scene->m_IsLoaded = false;
+		try {
+			scene->DestroyScene();
+		}
+		catch (const std::exception& exception) {
+			IDX_CORE_ERROR_TAG("SceneManager", "Scene release suspension failed for '{}': {}",
+				scene->GetName(), exception.what());
+			teardownSucceeded = false;
+		}
+		catch (...) {
+			IDX_CORE_ERROR_TAG("SceneManager", "Scene release suspension failed for '{}'", scene->GetName());
+			teardownSucceeded = false;
+		}
+		scene->m_IsLoaded = true;
+		scene->m_LifecycleSuspended = true;
+		// After a failed teardown the caller rolls back; give it the baseline right away, as BeginLoadedSceneRecovery does.
+		if (!teardownSucceeded) manager->RestoreSuspendedRecoveryState(scene, true);
+		return teardownSucceeded;
+	}
+
 	bool SceneManager::RollbackLoadedSceneRecovery(const std::shared_ptr<Scene>& scene) {
 		SceneManager* manager = TryGet();
 		if (!manager || !scene || !scene->m_IsLoaded) return false;
@@ -449,7 +492,7 @@ namespace Index {
 		return manager->RestoreSuspendedRecoveryState(scene) && teardownSucceeded;
 	}
 
-	bool SceneManager::ActivateSuspendedScene(const std::shared_ptr<Scene>& scene) {
+	bool SceneManager::ActivateSuspendedScene(const std::shared_ptr<Scene>& scene, bool validateBaseline) {
 		SceneManager* manager = TryGet();
 		if (!manager || !scene || !scene->m_IsLoaded || !scene->m_LifecycleSuspended) return false;
 		if (manager->m_LoadInProgress || manager->m_ReleaseDepth != 0) return false;
@@ -460,7 +503,7 @@ namespace Index {
 		ScopeExit loadGuard([manager]() { manager->m_LoadInProgress = false; });
 		const bool transactionBaseline = manager->m_SuspendedRecoveryStates.contains(scene.get());
 		if (!transactionBaseline
-			&& !manager->CaptureSuspendedRecoveryState(scene)) return false;
+			&& !manager->CaptureSuspendedRecoveryState(scene, validateBaseline)) return false;
 
 		size_t awakenedSystemCount = 0;
 		try {
@@ -1507,7 +1550,7 @@ namespace Index {
 		}
 	}
 
-	bool SceneManager::CaptureSuspendedRecoveryState(const std::shared_ptr<Scene>& scene) {
+	bool SceneManager::CaptureSuspendedRecoveryState(const std::shared_ptr<Scene>& scene, bool validate, bool serialize) {
 		if (!scene || m_SuspendedRecoveryStates.contains(scene.get())) return false;
 		try {
 			SuspendedRecoveryState recovery;
@@ -1515,7 +1558,14 @@ namespace Index {
 			recovery.SceneId = scene->GetSceneId();
 			recovery.Dirty = scene->IsDirty();
 			recovery.UiDirty = scene->IsUIDirty();
+			if (!serialize) {
+				recovery.LiveEntities = true;
+				return m_SuspendedRecoveryStates.emplace(scene.get(), std::move(recovery)).second;
+			}
 			recovery.SerializedScene = Json::Stringify(SceneSerializer::SerializeScene(*scene), false);
+			if (!validate) {
+				return m_SuspendedRecoveryStates.emplace(scene.get(), std::move(recovery)).second;
+			}
 
 			Json::Value validationRoot;
 			std::string parseError;
@@ -1588,7 +1638,8 @@ namespace Index {
 		try {
 			Json::Value root;
 			std::string parseError;
-			if (!Json::TryParse(recovery.SerializedScene, root, &parseError)) {
+			if (recovery.LiveEntities) restored = true;
+			else if (!Json::TryParse(recovery.SerializedScene, root, &parseError)) {
 				IDX_CORE_ERROR_TAG("SceneManager", "Could not parse scene recovery snapshot: {}", parseError);
 			}
 			else restored = SceneSerializer::DeserializeScene(*scene, root, recovery.Name);

@@ -338,13 +338,40 @@ namespace Index {
 		case SDL_EVENT_MOUSE_MOTION: {
 			if (event.motion.windowID != ownId) return;
 			if (SDL_GetWindowRelativeMouseMode(m_Window)) {
-				m_VirtualCursor.x += event.motion.xrel;
-				m_VirtualCursor.y += event.motion.yrel;
+				// A locked/hidden cursor stays on the game's centre: the motion only feeds the mouse delta, so UI hover
+				// and clicks hit what is under the crosshair instead of wherever the summed motion drifted to.
+				m_VirtualCursor = GetCursorLockPoint();
+				if (Application* app = Application::GetInstance())
+					app->m_Input.OnMouseMoveRelative(m_VirtualCursor, { event.motion.xrel, event.motion.yrel });
+				const Vec2 viewportPosition = ToViewportLocalPosition(m_VirtualCursor);
+				ScriptEngine::RaiseMouseMove(viewportPosition.x, viewportPosition.y);
+				if (m_EventCallback) {
+					MouseMovedEvent e(viewportPosition.x, viewportPosition.y);
+					m_EventCallback(e);
+				}
+				break;
 			}
-			else {
-				m_VirtualCursor = { event.motion.x, event.motion.y };
-			}
+			m_VirtualCursor = { event.motion.x, event.motion.y };
 			OnCursorMoved(m_VirtualCursor.x, m_VirtualCursor.y);
+			break;
+		}
+		case SDL_EVENT_FINGER_DOWN:
+		case SDL_EVENT_FINGER_MOTION:
+		case SDL_EVENT_FINGER_UP:
+		case SDL_EVENT_FINGER_CANCELED: {
+			// windowID is 0 for touch devices not bound to a window (a separate touchpad); those aren't screen touches.
+			if (event.tfinger.windowID != ownId) return;
+			Application* app = Application::GetInstance();
+			if (!app) return;
+			int width = 0, height = 0;
+			SDL_GetWindowSize(m_Window, &width, &height);
+			// Normalized to the window; scaled to window coordinates like mouse positions.
+			const Vec2 position{ event.tfinger.x * static_cast<float>(width), event.tfinger.y * static_cast<float>(height) };
+			// Unique across touch devices: the finger id is only unique within one device.
+			const int64_t id = static_cast<int64_t>(event.tfinger.fingerID ^ (event.tfinger.touchID << 32));
+			if (event.type == SDL_EVENT_FINGER_DOWN) app->m_Input.m_Touches.OnDown(id, position);
+			else if (event.type == SDL_EVENT_FINGER_MOTION) app->m_Input.m_Touches.OnMove(id, position);
+			else app->m_Input.m_Touches.OnUp(id, position);
 			break;
 		}
 		case SDL_EVENT_MOUSE_WHEEL: {
@@ -447,9 +474,12 @@ namespace Index {
 	void Window::OnCursorMoved(float x, float y) {
 		Application* app = Application::GetInstance();
 		if (!app) return;
-		app->m_Input.OnMouseMove(x, y);
 		const Vec2 viewportPosition = ToViewportLocalPosition({ x, y });
-		ScriptEngine::RaiseMouseMove(viewportPosition.x, viewportPosition.y);
+		// A suspended lock leaves the pointer to the editor: moving it to another panel must not turn the game's camera.
+		if (!(m_CursorModeSuspended && m_CursorMode != 0)) {
+			app->m_Input.OnMouseMove(x, y);
+			ScriptEngine::RaiseMouseMove(viewportPosition.x, viewportPosition.y);
+		}
 
 		if (m_EventCallback) {
 			MouseMovedEvent e(viewportPosition.x, viewportPosition.y);
@@ -914,16 +944,48 @@ namespace Index {
 		SetCursorMode(enabled ? 3 : 0);
 	}
 	void Window::SetCursorMode(int mode) {
-		const int normalized = (mode >= 1 && mode <= 3) ? mode : 0;
-		// 1 = locked, 2 = confined-and-hidden (both relative mode), 3 = hidden but free.
-		const bool relative = normalized == 1 || normalized == 2;
-		if (relative && !SDL_GetWindowRelativeMouseMode(m_Window)) {
-			m_VirtualCursor = GetCursorPosition();
+		// 1 = locked, 2 = confined-and-hidden, 3 = hidden.
+		m_CursorMode = (mode >= 1 && mode <= 3) ? mode : 0;
+		ApplyCursorMode();
+	}
+
+	void Window::SetCursorModeSuspended(bool suspended) {
+		if (suspended == m_CursorModeSuspended) return;
+		m_CursorModeSuspended = suspended;
+		ApplyCursorMode();
+	}
+
+	void Window::ApplyCursorMode() {
+		// Every invisible mode is relative mode with the cursor parked on the game's centre: an invisible cursor that
+		// roams would hover and click UI the player cannot see.
+		const bool relative = GetAppliedCursorMode() != 0;
+		const bool wasRelative = SDL_GetWindowRelativeMouseMode(m_Window);
+		const Vec2 lockPoint = GetCursorLockPoint();
+		if (relative && !wasRelative) {
+			m_VirtualCursor = lockPoint;
+			if (Application* app = Application::GetInstance()) app->m_Input.OnMouseMoveRelative(lockPoint, {});
 		}
 		SDL_SetWindowRelativeMouseMode(m_Window, relative);
-		if (normalized == 0) SDL_ShowCursor();
-		else SDL_HideCursor();
-		m_CursorMode = normalized;
+		// Reappear where the player was looking, not where the OS kept the hidden pointer. Without focus the pointer is
+		// over another app (alt-tab) and must not be pulled back.
+		if (!relative && wasRelative && (SDL_GetWindowFlags(m_Window) & SDL_WINDOW_INPUT_FOCUS)) {
+			SDL_WarpMouseInWindow(m_Window, lockPoint.x, lockPoint.y);
+			m_VirtualCursor = lockPoint;
+		}
+		if (relative) SDL_HideCursor();
+		else SDL_ShowCursor();
+	}
+
+	Vec2 Window::GetCursorLockPoint() const {
+		if (s_UIRegion.IsActive()) {
+			const Vec2 scale = s_UIRegion.WindowToRegionScale;
+			return { (static_cast<float>(s_UIRegion.OffsetX) + s_UIRegion.Width * 0.5f) / (scale.x > 0.0f ? scale.x : 1.0f),
+					 (static_cast<float>(s_UIRegion.OffsetY) + s_UIRegion.Height * 0.5f) / (scale.y > 0.0f ? scale.y : 1.0f) };
+		}
+		if (!s_MainViewport) return {};
+		const Vec2 scale = s_WindowToFramebufferScale;
+		return { (s_MainViewport->GetOffsetX() + s_MainViewport->GetWidth() * 0.5f) / (scale.x > 0.0f ? scale.x : 1.0f),
+				 (s_MainViewport->GetOffsetY() + s_MainViewport->GetHeight() * 0.5f) / (scale.y > 0.0f ? scale.y : 1.0f) };
 	}
 
 	void Window::SetCursorPosition(Vec2 position) {
@@ -1131,9 +1193,13 @@ namespace Index {
 		m_GameCursorEnabled = enabled;
 		// On enable, re-assert the game's current cursor (the editor pairs this
 		// with ImGui's NoMouseCursorChange so ImGui doesn't overwrite it). On
-		// disable, leave the OS cursor and let the caller hand control back to ImGui.
+		// disable, hand back the OS arrow: ImGui only sets its cursor when the shape
+		// changes, so the game's image would otherwise linger over the editor.
 		if (enabled) {
 			ApplyCursor(m_Cursor);
+		}
+		else if (SDL_Cursor* active = SDL_GetCursor(); active && (active == m_DefaultCursor || active == m_UICursor)) {
+			SDL_SetCursor(SDL_GetDefaultCursor());
 		}
 	}
 

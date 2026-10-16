@@ -14,6 +14,7 @@
 #include "Inspector/ReferencePicker.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Scene/ComponentRegistry.hpp"
+#include "Scene/DynamicComponentStorage.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scripting/ScriptComponent.hpp"
@@ -22,6 +23,7 @@
 #include "Scripting/ScriptEngine.hpp"
 #include "Scripting/DataAssetManager.hpp"
 #include "Scripting/ScriptSystem.hpp"
+#include "Scripting/StructFieldBytes.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
 
@@ -31,6 +33,7 @@
 #include <cctype>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -75,6 +78,9 @@ namespace Index {
 			std::string EnabledIfField;
 			std::string EnabledIfValue;
 			std::shared_ptr<EnumDescriptor> Enum;
+			// Byte slot inside a C# IComponent struct's storage; -1 for script fields.
+			int Offset = -1;
+			int Size = 0;
 		};
 
 		std::string ToLowerCopy(std::string value) {
@@ -111,9 +117,19 @@ namespace Index {
 			});
 		}
 
+		// Script asset types drawn as a filtered AssetRef picker; Unknown = not one of them.
+		AssetKind ScriptAssetKindForTag(std::string_view tag) {
+			if (tag.rfind("dataasset:", 0) == 0) return AssetKind::DataAsset;
+			if (tag == "material") return AssetKind::Material;
+			if (tag == "animationclip") return AssetKind::AnimationClip;
+			if (tag == "animatorcontroller") return AssetKind::AnimatorController;
+			if (tag == "mesh") return AssetKind::Mesh;
+			return AssetKind::Unknown;
+		}
+
 		PropertyType ResolveScriptFieldType(const EditorFieldRecord& rec) {
 			if (rec.TypeTag.rfind("component:", 0) == 0) return PropertyType::ComponentRef;
-			if (rec.TypeTag.rfind("dataasset:", 0) == 0) return PropertyType::AssetRef;
+			if (ScriptAssetKindForTag(rec.TypeTag) != AssetKind::Unknown) return PropertyType::AssetRef;
 			if (rec.TypeTag == "entity") return PropertyType::EntityRef;
 			return PropertyTypeFromString(rec.TypeTag);
 		}
@@ -151,6 +167,8 @@ namespace Index {
 				if (const Json::Value* v = item.FindMember("enabledIfAny"))   rec.EnabledIfAny = v->AsBoolOr(false);
 				if (const Json::Value* v = item.FindMember("enabledIfField")) rec.EnabledIfField = v->AsStringOr();
 				if (const Json::Value* v = item.FindMember("enabledIfValue")) rec.EnabledIfValue = v->AsStringOr();
+				if (const Json::Value* v = item.FindMember("offset"))         rec.Offset = static_cast<int>(v->AsDoubleOr(-1.0));
+				if (const Json::Value* v = item.FindMember("size"))           rec.Size = static_cast<int>(v->AsDoubleOr(0.0));
 
 				if (rec.TypeTag.rfind("component:", 0) == 0) {
 					rec.ComponentTypeName = rec.TypeTag.substr(10);
@@ -236,6 +254,33 @@ namespace Index {
 			sc.PendingFieldValues[className + "." + fieldName] = newValueStr;
 		}
 
+		// The raw bytes of a C# IComponent struct on an entity, or null when `className` isn't one / the entity lacks it.
+		uint8_t* FindNativeComponentBytes(const Entity& entity, const std::string& className, std::size_t& outSize) {
+			outSize = 0;
+			const ComponentInfo* info = SceneManager::GetComponentRegistry().FindBySerializedName(className);
+			Scene* scene = const_cast<Entity&>(entity).GetScene();
+			if (!info || !info->isDynamic || !info->dynamicStorage || !scene) return nullptr;
+			void* bytes = info->dynamicStorage->Get(scene->GetRegistry(), entity.GetHandle());
+			if (!bytes) return nullptr;
+			outSize = info->dynamicStorage->ElementSize();
+			return static_cast<uint8_t*>(bytes);
+		}
+
+		// Struct components have no managed instance to take the value; write it into the component bytes, which is
+		// what the scene saves. Returns false when the field has no byte slot (falls back to PendingFieldValues).
+		bool ApplyNativeComponentFieldEdit(const Entity& entity, const std::string& className,
+			const std::string& typeTag, int offset, int size, const std::string& newValueStr)
+		{
+			if (offset < 0) return false;
+			std::size_t byteCount = 0;
+			uint8_t* bytes = FindNativeComponentBytes(entity, className, byteCount);
+			if (!bytes) return false;
+			const StructFieldSlot slot{ typeTag, static_cast<uint32_t>(offset), static_cast<uint32_t>(size) };
+			if (!WriteStructField(bytes, byteCount, slot, newValueStr)) return false;
+			if (Scene* scene = const_cast<Entity&>(entity).GetScene()) scene->MarkDirty();
+			return true;
+		}
+
 		void ApplyManagedComponentFieldEdit(const Entity& entity,
 			const std::string& className, const std::string& fieldName,
 			const std::string& newValueStr)
@@ -298,6 +343,7 @@ namespace Index {
 			for (const auto& r : records) {
 				if (r.Name == name) {
 					if (r.TypeTag.rfind("component:", 0) == 0) return PropertyType::ComponentRef;
+					if (ScriptAssetKindForTag(r.TypeTag) != AssetKind::Unknown) return PropertyType::AssetRef;
 					if (r.TypeTag == "entity") return PropertyType::EntityRef;
 					return PropertyTypeFromString(r.TypeTag);
 				}
@@ -347,7 +393,7 @@ namespace Index {
 			outComponentName.clear();
 			outAssetKind = AssetKind::Unknown;
 			if (itemTag.rfind("component:", 0) == 0) { outComponentName = itemTag.substr(10); return PropertyType::ComponentRef; }
-			if (itemTag.rfind("dataasset:", 0) == 0) { outAssetKind = AssetKind::DataAsset; return PropertyType::AssetRef; }
+			if (const AssetKind kind = ScriptAssetKindForTag(itemTag); kind != AssetKind::Unknown) { outAssetKind = kind; return PropertyType::AssetRef; }
 			if (itemTag == "entity") return PropertyType::EntityRef;
 			return PropertyTypeFromString(itemTag);
 		}
@@ -517,7 +563,7 @@ namespace Index {
 			d.Metadata.ClampMax = rec.ClampMax;
 			d.Metadata.Enum = rec.Enum;
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
-			d.Metadata.AssetKindFilter = (rec.TypeTag.rfind("dataasset:", 0) == 0) ? AssetKind::DataAsset : AssetKind::Unknown;
+			d.Metadata.AssetKindFilter = ScriptAssetKindForTag(rec.TypeTag);
 			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
 			d.Metadata.SuppressTextureSlices = true;
 			if (auto pred = BuildScriptEnabledIfPredicate(rec, siblingRecords, perEntityValues)) {
@@ -542,9 +588,11 @@ namespace Index {
 					return LookupPerEntityValue(perEntityValues, e, fieldName, defaultValue, type);
 				};
 
-			d.Set = [className, fieldName = rec.Name, scriptIndex, multiEditEnabled, isPlaying]
+			d.Set = [className, fieldName = rec.Name, scriptIndex, multiEditEnabled, isPlaying,
+				typeTag = rec.TypeTag, offset = rec.Offset, size = rec.Size]
 				(Entity& entity, const PropertyValue& v) {
 					const std::string newValueStr = v.ToString();
+					if (ApplyNativeComponentFieldEdit(entity, className, typeTag, offset, size, newValueStr)) return;
 					ApplyScriptFieldEdit(entity, scriptIndex, className, fieldName, newValueStr, isPlaying);
 					(void)multiEditEnabled; // PropertyDrawer already iterates the span
 				};
@@ -571,7 +619,7 @@ namespace Index {
 			d.Metadata.ClampMax = rec.ClampMax;
 			d.Metadata.Enum = rec.Enum;
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
-			d.Metadata.AssetKindFilter = (rec.TypeTag.rfind("dataasset:", 0) == 0) ? AssetKind::DataAsset : AssetKind::Unknown;
+			d.Metadata.AssetKindFilter = ScriptAssetKindForTag(rec.TypeTag);
 			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
 			d.Metadata.SuppressTextureSlices = true;
 			if (auto pred = BuildScriptEnabledIfPredicate(rec, siblingRecords, perEntityValues)) {
@@ -734,7 +782,19 @@ namespace Index {
 				if (eInst.GetClassName() != className) continue;
 
 				auto& bucket = (*perEntityValues)[static_cast<uint32_t>(e.GetHandle())];
-				if (eInst.HasManagedInstance() && callbacks.GetScriptFields) {
+				std::size_t structSize = 0;
+				if (const uint8_t* structBytes = FindNativeComponentBytes(e, className, structSize)) {
+					// C# IComponent struct: the component bytes are the truth, in edit and play mode alike.
+					for (const auto& r : records) {
+						std::optional<std::string> value;
+						if (r.Offset >= 0) {
+							value = ReadStructField(structBytes, structSize,
+								StructFieldSlot{ r.TypeTag, static_cast<uint32_t>(r.Offset), static_cast<uint32_t>(r.Size) });
+						}
+						bucket[r.Name] = value ? std::move(*value) : r.Value;
+					}
+				}
+				else if (eInst.HasManagedInstance() && callbacks.GetScriptFields) {
 					const char* eJson = callbacks.GetScriptFields(static_cast<int32_t>(eInst.GetGCHandle()));
 					if (eJson && *eJson && !(eJson[0] == '[' && eJson[1] == ']')) {
 						auto eRecords = ParseEditorFields(eJson);
@@ -796,7 +856,7 @@ namespace Index {
 			d.Metadata.ClampMax = rec.ClampMax;
 			d.Metadata.Enum = rec.Enum;
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
-			d.Metadata.AssetKindFilter = (rec.TypeTag.rfind("dataasset:", 0) == 0) ? AssetKind::DataAsset : AssetKind::Unknown;
+			d.Metadata.AssetKindFilter = ScriptAssetKindForTag(rec.TypeTag);
 			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
 			d.Metadata.SuppressTextureSlices = true;
 
@@ -853,7 +913,7 @@ namespace Index {
 			d.Metadata.ClampMax = rec.ClampMax;
 			d.Metadata.Enum = rec.Enum;
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
-			d.Metadata.AssetKindFilter = (rec.TypeTag.rfind("dataasset:", 0) == 0) ? AssetKind::DataAsset : AssetKind::Unknown;
+			d.Metadata.AssetKindFilter = ScriptAssetKindForTag(rec.TypeTag);
 			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
 			d.Metadata.SuppressTextureSlices = true;
 
@@ -1079,7 +1139,7 @@ namespace Index {
 			ImGui::PushID(("managed-component-" + std::to_string(i)).c_str());
 
 			bool removeRequested = false;
-			bool open = ImGuiUtils::BeginComponentSection(label.c_str(), removeRequested);
+			bool open = ImGuiUtils::BeginComponentSection(label.c_str(), removeRequested, {}, "script");
 			if (removeRequested) removeManagedComponentIndex = i;
 
 			if (open) {
@@ -1118,7 +1178,7 @@ namespace Index {
 			ImGui::PushID(static_cast<int>(i));
 
 			bool removeRequested = false;
-			bool open = ImGuiUtils::BeginComponentSection(label.c_str(), removeRequested);
+			bool open = ImGuiUtils::BeginComponentSection(label.c_str(), removeRequested, {}, "script");
 			if (removeRequested) removeIndex = i;
 
 			if (open) {

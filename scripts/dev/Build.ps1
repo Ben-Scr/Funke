@@ -223,9 +223,11 @@ function Sync-ScriptCore {
                 if (Test-Path -LiteralPath $file) { Copy-Item -LiteralPath $file -Destination (Join-Path $binDir $consumer) -Force }
             }
             Write-Host "[build] deployed Index-ScriptCore.dll -> $consumer"
+            $script:DeployFailures.Remove("$consumer\Index-ScriptCore.dll")
         }
         catch {
             Write-Host "[build] could not update $consumer\Index-ScriptCore.dll (in use? close the app): $($_.Exception.Message)" -ForegroundColor Yellow
+            $script:DeployFailures["$consumer\Index-ScriptCore.dll"] = $_.Exception.Message
         }
     }
 }
@@ -248,9 +250,11 @@ function Sync-ScriptCompiler {
                 if (Test-Path -LiteralPath $path) { Copy-Item -LiteralPath $path -Destination $targetDir -Force }
             }
             Write-Host "[build] deployed Index-ScriptCompiler.dll -> $consumer\ScriptCompiler"
+            $script:DeployFailures.Remove("$consumer\ScriptCompiler")
         }
         catch {
             Write-Host "[build] could not update $consumer\ScriptCompiler (in use? close the app): $($_.Exception.Message)" -ForegroundColor Yellow
+            $script:DeployFailures["$consumer\ScriptCompiler"] = $_.Exception.Message
         }
     }
 }
@@ -268,14 +272,20 @@ function Sync-EngineDll {
             $pdb = [System.IO.Path]::ChangeExtension($source, ".pdb")
             if (Test-Path -LiteralPath $pdb) { Copy-Item -LiteralPath $pdb -Destination (Join-Path $binDir $consumer) -Force -ErrorAction SilentlyContinue }
             Write-Host "[build] deployed Index-Engine.dll -> $consumer"
+            $script:DeployFailures.Remove("$consumer\Index-Engine.dll")
         }
         catch {
             Write-Host "[build] could not update $consumer\Index-Engine.dll (in use? close the app): $($_.Exception.Message)" -ForegroundColor Yellow
+            $script:DeployFailures["$consumer\Index-Engine.dll"] = $_.Exception.Message
         }
     }
 }
 
 # --- main -------------------------------------------------------------------
+
+# Consumer copies that stayed stale. A stale Index-Engine.dll next to a fresh exe dies before main
+# (STATUS_ENTRYPOINT_NOT_FOUND) without a word, so this fails the build instead of only warning.
+$script:DeployFailures = @{}
 
 # `powershell -File` passes "a,b" as one string; split it here.
 $Project = @($Project | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
@@ -369,4 +379,9 @@ foreach ($t in $targets) {
     }
 }
 
+if ($script:DeployFailures.Count -gt 0) {
+    Write-Host "[build] DEPLOY FAILED - these copies are stale, close the app using them and rerun:" -ForegroundColor Red
+    foreach ($key in ($script:DeployFailures.Keys | Sort-Object)) { Write-Host "  bin\$Config-windows-x86_64\$key" -ForegroundColor Red }
+    $ok = $false
+}
 if ($ok) { exit 0 } else { exit 1 }

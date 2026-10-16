@@ -59,3 +59,33 @@ TEST_CASE("UI hit-test intersects nested masks")
 	CHECK_FALSE(Hit(registry, leaf, { -25.0f, 0.0f }));
 	CHECK_FALSE(Hit(registry, leaf, { 75.0f, 0.0f }));
 }
+
+TEST_CASE("UI draw order skips subtrees under a disabled ancestor and keeps child order")
+{
+	entt::registry registry;
+	const EntityHandle root = registry.create();
+	registry.emplace<HierarchyComponent>(root);
+	const EntityHandle first = MakeRect(registry, root, { 0.0f, 0.0f }, { 10.0f, 10.0f });
+	const EntityHandle second = MakeRect(registry, root, { 0.0f, 0.0f }, { 10.0f, 10.0f });
+	const EntityHandle grandchild = MakeRect(registry, second, { 0.0f, 0.0f }, { 10.0f, 10.0f });
+
+	const EntityHandle hiddenGroup = registry.create();
+	registry.emplace<HierarchyComponent>(hiddenGroup).Parent = root;
+	registry.get<HierarchyComponent>(root).Children.push_back(hiddenGroup);
+	registry.emplace<DisabledTag>(hiddenGroup);
+	const EntityHandle hidden = MakeRect(registry, hiddenGroup, { 0.0f, 0.0f }, { 10.0f, 10.0f });
+
+	std::vector<std::pair<EntityHandle, int>> order;
+	UIDrawOrder::Build(registry, order);
+	REQUIRE(order.size() == 3);
+	CHECK(order[0].first == first);
+	CHECK(order[1].first == second);
+	CHECK(order[2].first == grandchild);
+
+	UIDrawOrder::OrderLookup lookup;
+	lookup.Rebuild(order);
+	REQUIRE(lookup.DrawIndexOf(grandchild) != nullptr);
+	CHECK(*lookup.DrawIndexOf(grandchild) == order[2].second);
+	CHECK(lookup.DrawIndexOf(hidden) == nullptr);
+	CHECK(lookup.DrawIndexOf(root) == nullptr);
+}

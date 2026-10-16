@@ -7,19 +7,29 @@
 #include "Components/Graphics/MeshRendererComponent.hpp"
 #include "Components/Graphics/ParticleSystem3DComponent.hpp"
 #include "Components/Graphics/PointLightComponent.hpp"
+#include "Components/Graphics/PostProcessing2DComponent.hpp"
+#include "Components/Graphics/SkinnedMeshRendererComponent.hpp"
 #include "Components/Graphics/SpotLightComponent.hpp"
 #include "Components/Tags.hpp"
+#include "Core/Application.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
+#include "Graphics/CustomShaderGpu.hpp"
+#include "Graphics/CustomShaderLibrary.hpp"
+#include "Graphics/Framebuffer.hpp"
 #include "Graphics/Lighting3D.hpp"
 #include "Graphics/Material.hpp"
 #include "Graphics/MeshAsset.hpp"
+#include "Graphics/PostProcessing/PostProcessor.hpp"
 #include "Graphics/PrimitiveMesh.hpp"
 #include "Graphics/RenderApi.hpp"
 #include "Graphics/Shader.hpp"
+#include "Graphics/SkeletalAnimation.hpp"
+#include "Graphics/SkyAmbient.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Scene/Scene.hpp"
+#include "Systems/SkinnedMeshAnimationSystem.hpp"
 #include "Systems/Transform3DHierarchySystem.hpp"
 
 #include <webgpu/webgpu_cpp.h>
@@ -32,6 +42,7 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <unordered_map>
 
 namespace Index {
@@ -51,8 +62,10 @@ namespace Index {
 			glm::vec4 SkyGround;
 			glm::vec4 Params;
 			glm::vec4 ShadowParams;
+			glm::vec4 FogColor;         // linear rgb, w = 1 when fog is on
+			glm::vec4 FogParams;        // x = start, y = end
 		};
-		static_assert(sizeof(FrameUniforms) == 240);
+		static_assert(sizeof(FrameUniforms) == 272);
 
 		struct GpuLight {
 			glm::vec4 PositionRange;
@@ -115,13 +128,57 @@ namespace Index {
 			uint32_t Instance;
 			float ViewDistanceSq;  // sorts transparent items back to front
 			bool Transparent;
+			uint32_t Custom = 0;   // frame custom-material slot + 1; 0 = the standard shader
+			// World AABB for culling; Cullable is false when the vertex shader may move geometry past it.
+			glm::vec3 BoundsCenter{ 0.0f };
+			glm::vec3 BoundsExtent{ 0.0f };
+			bool Cullable = false;
+		};
+
+		// One custom-shaded material drawn this frame.
+		struct FrameCustom {
+			uint64_t MaterialGuid = 0;
+			const Material* Material = nullptr;
+			const CustomShaderProgram* Program = nullptr;
+			wgpu::RenderPipeline Pipeline;
+			wgpu::BindGroup Group;
+			// Set when the shader has fn vertex: the shadow pass then draws through its vs_shadow.
+			wgpu::RenderPipeline ShadowPipeline;
 		};
 
 		uint64_t MakeDrawKey(size_t mesh, bool castsShadow, uint32_t textureSlot) {
 			return (static_cast<uint64_t>(mesh) << 40) | (static_cast<uint64_t>(castsShadow ? 0 : 1) << 32) | textureSlot;
 		}
 		size_t KeyMesh(uint64_t key) { return static_cast<size_t>(key >> 40); }
-		bool KeyCastsShadow(uint64_t key) { return ((key >> 32) & 0xFF) == 0; }
+		bool KeyCastsShadow(uint64_t key) { return ((key >> 32) & 1) == 0; }
+		// Bit 33: outside the camera frustum, drawn only into the shadow map.
+		constexpr uint64_t k_KeyHiddenBit = uint64_t(1) << 33;
+		bool KeyHidden(uint64_t key) { return (key & k_KeyHiddenBit) != 0; }
+
+		// Planes (xyz normal, w distance) of a view-projection's clip volume, inside where dot >= 0. The near
+		// plane uses -w <= z, which also holds for 0..1 depth, so the test errs towards drawing.
+		struct FrustumPlanes { glm::vec4 Planes[6]; };
+
+		FrustumPlanes ExtractFrustum(const glm::mat4& viewProjection) {
+			const glm::mat4 m = glm::transpose(viewProjection);
+			FrustumPlanes f;
+			f.Planes[0] = m[3] + m[0];
+			f.Planes[1] = m[3] - m[0];
+			f.Planes[2] = m[3] + m[1];
+			f.Planes[3] = m[3] - m[1];
+			f.Planes[4] = m[3] + m[2];
+			f.Planes[5] = m[3] - m[2];
+			return f;
+		}
+
+		bool IntersectsFrustum(const FrustumPlanes& frustum, const glm::vec3& center, const glm::vec3& extent) {
+			for (const glm::vec4& plane : frustum.Planes) {
+				const float distance = plane.x * center.x + plane.y * center.y + plane.z * center.z + plane.w;
+				const float radius = std::abs(plane.x) * extent.x + std::abs(plane.y) * extent.y + std::abs(plane.z) * extent.z;
+				if (distance < -radius) return false;
+			}
+			return true;
+		}
 		uint32_t KeyTextureSlot(uint64_t key) { return static_cast<uint32_t>(key & 0xFFFFFFFFu); }
 
 		void SetAttribute(wgpu::VertexAttribute& attribute, wgpu::VertexFormat format, uint64_t offset, uint32_t location) {
@@ -334,6 +391,18 @@ namespace Index {
 		environment.SkyGround = camera.SkyGroundColor;
 		environment.SunSize = camera.SunSize;
 		environment.SkyAmbient = camera.SkyAmbient;
+		environment.SkyboxMaterial = camera.SkyboxMaterial;
+		environment.FogEnabled = camera.FogEnabled;
+		environment.FogColor = camera.FogColor;
+		environment.FogStart = camera.FogStart;
+		environment.FogEnd = camera.FogEnd;
+		if (camera.AmbientFromSkybox && camera.SkyboxMaterial != 0) {
+			if (const auto derived = SkyAmbient::FromMaterial(camera.SkyboxMaterial)) {
+				environment.SkyTop = derived->Top;
+				environment.SkyHorizon = derived->Horizon;
+				environment.SkyGround = derived->Ground;
+			}
+		}
 		return environment;
 	}
 
@@ -349,6 +418,26 @@ namespace Index {
 			uint32_t Revision = 0;
 			uint64_t VertexCapacity = 0;
 			uint64_t IndexCapacity = 0;
+		};
+
+		// One posed copy of an animated model per (scene, entity); re-skinned only when the pose or the model changed.
+		struct SkinnedKey {
+			const Scene* OwnerScene = nullptr;
+			uint32_t Entity = 0;
+			bool operator==(const SkinnedKey&) const = default;
+		};
+		struct SkinnedKeyHash {
+			size_t operator()(const SkinnedKey& key) const noexcept {
+				return std::hash<const void*>{}(key.OwnerScene) ^ (std::hash<uint32_t>{}(key.Entity) * 0x9e3779b97f4a7c15ULL);
+			}
+		};
+		struct SkinnedEntry {
+			MeshBuffers Buffers;
+			uint64_t VertexCapacity = 0;
+			std::vector<MeshVertex> Vertices;
+			SkeletalPoseRequest Pose;
+			uint32_t Revision = 0;
+			std::chrono::steady_clock::time_point LastUsed{};
 		};
 
 		struct CachedMaterialGroup {
@@ -371,6 +460,9 @@ namespace Index {
 		wgpu::BindGroupLayout MaterialLayout;
 		wgpu::BindGroupLayout SkyLayout;
 		wgpu::BindGroupLayout ShadowLayout;
+		// Group 0 of custom shadow pipelines: the frame uniform only (the shadow map is the pass's attachment).
+		wgpu::BindGroupLayout CustomShadowFrameLayout;
+		wgpu::BindGroup CustomShadowFrameGroup;
 		wgpu::BindGroupLayout LineLayout;
 		wgpu::PipelineLayout MeshPipelineLayout;
 		wgpu::PipelineLayout SkyPipelineLayout;
@@ -413,7 +505,12 @@ namespace Index {
 		uint64_t LineVertexCapacity = 0;
 
 		std::array<MeshBuffers, k_MeshTypeCount> Meshes;
+		std::array<glm::vec3, k_MeshTypeCount> MeshBoundsMin{};
+		std::array<glm::vec3, k_MeshTypeCount> MeshBoundsMax{};
 		std::unordered_map<uint64_t, CustomMeshEntry> CustomMeshes;
+		std::unordered_map<SkinnedKey, SkinnedEntry, SkinnedKeyHash> SkinnedMeshes;
+		std::vector<glm::mat4> PoseNodes;
+		std::vector<glm::mat4> PoseJoints;
 		std::vector<const MeshBuffers*> FrameMeshes;
 		std::unordered_map<uint64_t, uint32_t> FrameMeshSlots;
 		std::unordered_map<uint32_t, wgpu::RenderPipeline> MeshPipelines;
@@ -421,6 +518,21 @@ namespace Index {
 		std::unordered_map<uint32_t, wgpu::RenderPipeline> LinePipelines;
 		wgpu::RenderPipeline ShadowPipeline;
 		std::unordered_map<uint64_t, CachedMaterialGroup> MaterialGroups;
+
+		CustomMaterialBindings CustomBindings;
+		std::vector<FrameCustom> FrameCustoms;
+		std::unordered_map<uint64_t, uint32_t> FrameCustomSlots;
+		// MaterialLibrary + shader lookups resolved once per material per RenderMeshes.
+		struct FrameMaterial {
+			const Material* Value = nullptr;
+			const CustomShaderProgram* Program = nullptr;
+		};
+		std::unordered_map<uint64_t, FrameMaterial> FrameMaterials;
+		// By program id and color format; failed creations stay cached as null.
+		std::unordered_map<uint64_t, wgpu::RenderPipeline> CustomPipelines;
+		std::unordered_map<uint32_t, wgpu::PipelineLayout> CustomPipelineLayouts;
+		std::unordered_map<uint64_t, wgpu::RenderPipeline> CustomShadowPipelines;
+		std::unordered_map<uint32_t, wgpu::PipelineLayout> CustomShadowPipelineLayouts;
 
 		// Swap-chain passes have no depth attachment of their own.
 		wgpu::Texture OwnDepthTexture;
@@ -559,6 +671,31 @@ namespace Index {
 			return entry.Buffers.Vertices && entry.Buffers.Indices ? &entry.Buffers : nullptr;
 		}
 
+		// Vertices posed on the CPU into a per-entity grow-only buffer; indices are the model's shared ones.
+		const MeshBuffers* ResolveSkinnedMesh(wgpu::Device device, const SkinnedKey& key, const SkinnedMeshRendererComponent& renderer,
+			const MeshAsset& asset, const MeshBuffers& shared, std::chrono::steady_clock::time_point now) {
+			SkinnedEntry& entry = SkinnedMeshes[key];
+			entry.LastUsed = now;
+			const SkinnedMeshData& data = *asset.Skin;
+			const SkeletalPoseRequest pose = SkinnedMeshAnimationSystem::MakePoseRequest(renderer, data);
+			if (!entry.Buffers.Vertices || entry.Revision != asset.Revision || !(entry.Pose == pose)) {
+				INDEX_PROFILE_SCOPE("Renderer3D.Skinning");
+				SkeletalAnimation::EvaluatePose(data, pose, PoseNodes);
+				SkeletalAnimation::ComputeJointMatrices(data, PoseNodes, PoseJoints);
+				SkeletalAnimation::SkinVertices(data, PoseJoints, entry.Vertices);
+				const uint64_t bytes = entry.Vertices.size() * sizeof(MeshVertex);
+				if (bytes == 0 || !EnsureBuffer(device, entry.Buffers.Vertices, entry.VertexCapacity, bytes, wgpu::BufferUsage::Vertex, "renderer3d-skinned-vb")) {
+					return nullptr;
+				}
+				device.GetQueue().WriteBuffer(entry.Buffers.Vertices, 0, entry.Vertices.data(), bytes);
+				entry.Revision = asset.Revision;
+				entry.Pose = pose;
+			}
+			entry.Buffers.Indices = shared.Indices;
+			entry.Buffers.IndexCount = shared.IndexCount;
+			return &entry.Buffers;
+		}
+
 		TextureHandle ResolveMaterialTexture(uint64_t textureGuid) {
 			if (textureGuid == 0) return TextureHandle{};
 			TextureEntry& entry = MaterialTextures[textureGuid];
@@ -643,6 +780,150 @@ namespace Index {
 			wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&desc);
 			if (pipeline) MeshPipelines.emplace(key, pipeline);
 			return pipeline;
+		}
+
+		// User shader: same vertex streams as "mesh", group 0 = frame, group 1 = the shader's globals/properties/textures.
+		wgpu::RenderPipeline GetCustomPipeline(wgpu::TextureFormat colorFormat, const CustomShaderProgram& program) {
+			const uint64_t key = (program.Id << 16) ^ static_cast<uint64_t>(colorFormat);
+			if (auto it = CustomPipelines.find(key); it != CustomPipelines.end()) return it->second;
+			// Recompiles leave old ids behind; rebuilding the few live ones is cheap.
+			if (CustomPipelines.size() > 128) CustomPipelines.clear();
+
+			const ShaderDescription& description = program.Description;
+			wgpu::BindGroupLayout customLayout = CustomBindings.GetLayout(description);
+			if (!customLayout) return nullptr;
+			wgpu::PipelineLayout& layout = CustomPipelineLayouts[description.TextureCount];
+			if (!layout) {
+				const wgpu::BindGroupLayout layouts[2] = { FrameLayout, customLayout };
+				layout = CreatePipelineLayout(WebGPUBackend::GetDevice(), layouts, 2, "renderer3d-custom-layout");
+			}
+
+			wgpu::VertexAttribute vertexAttributes[3] = {};
+			SetAttribute(vertexAttributes[0], wgpu::VertexFormat::Float32x3, offsetof(MeshVertex, Position), 0);
+			SetAttribute(vertexAttributes[1], wgpu::VertexFormat::Float32x3, offsetof(MeshVertex, Normal), 1);
+			SetAttribute(vertexAttributes[2], wgpu::VertexFormat::Float32x2, offsetof(MeshVertex, UV), 2);
+			wgpu::VertexAttribute instanceAttributes[k_InstanceVec4Count] = {};
+			for (uint32_t i = 0; i < k_InstanceVec4Count; ++i) {
+				SetAttribute(instanceAttributes[i], wgpu::VertexFormat::Float32x4, static_cast<uint64_t>(i) * 16u, 3u + i);
+			}
+			wgpu::VertexBufferLayout buffers[2] = {};
+			buffers[0].arrayStride = sizeof(MeshVertex);
+			buffers[0].stepMode = wgpu::VertexStepMode::Vertex;
+			buffers[0].attributeCount = 3;
+			buffers[0].attributes = vertexAttributes;
+			buffers[1].arrayStride = sizeof(MeshInstance);
+			buffers[1].stepMode = wgpu::VertexStepMode::Instance;
+			buffers[1].attributeCount = k_InstanceVec4Count;
+			buffers[1].attributes = instanceAttributes;
+
+			const wgpu::BlendState blend = CustomShaderGpu::MakeBlendState(description.Blend);
+			wgpu::ColorTargetState colorTarget{};
+			colorTarget.format = colorFormat;
+			colorTarget.writeMask = wgpu::ColorWriteMask::All;
+			if (description.Blend != ShaderBlend::Opaque) colorTarget.blend = &blend;
+
+			wgpu::FragmentState fragment{};
+			fragment.module = program.Module;
+			fragment.entryPoint = "fs_main";
+			fragment.targetCount = 1;
+			fragment.targets = &colorTarget;
+
+			wgpu::DepthStencilState depth{};
+			depth.format = k_DepthFormat;
+			depth.depthWriteEnabled = description.DepthWrite;
+			depth.depthCompare = wgpu::CompareFunction::Less;
+
+			wgpu::RenderPipelineDescriptor desc{};
+			desc.label = "renderer3d-custom-pipeline";
+			desc.layout = layout;
+			desc.vertex.module = program.Module;
+			desc.vertex.entryPoint = "vs_main";
+			desc.vertex.bufferCount = 2;
+			desc.vertex.buffers = buffers;
+			desc.fragment = &fragment;
+			desc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+			desc.primitive.frontFace = wgpu::FrontFace::CCW;
+			desc.primitive.cullMode = CustomShaderGpu::ToCullMode(description.Cull);
+			desc.depthStencil = &depth;
+			desc.multisample.count = 1;
+			desc.multisample.mask = 0xFFFFFFFF;
+
+			wgpu::RenderPipeline pipeline = layout ? CustomShaderGpu::CreatePipeline(desc, program) : nullptr;
+			CustomPipelines.emplace(key, pipeline);
+			return pipeline;
+		}
+
+		// Same vertex streams as the custom pipeline, depth only: the user's fn vertex runs for the shadow map too.
+		wgpu::RenderPipeline GetCustomShadowPipeline(const CustomShaderProgram& program) {
+			if (auto it = CustomShadowPipelines.find(program.Id); it != CustomShadowPipelines.end()) return it->second;
+			if (CustomShadowPipelines.size() > 128) CustomShadowPipelines.clear();
+
+			const ShaderDescription& description = program.Description;
+			wgpu::BindGroupLayout customLayout = CustomBindings.GetLayout(description);
+			if (!customLayout || !CustomShadowFrameLayout) return nullptr;
+			wgpu::PipelineLayout& layout = CustomShadowPipelineLayouts[description.TextureCount];
+			if (!layout) {
+				const wgpu::BindGroupLayout layouts[2] = { CustomShadowFrameLayout, customLayout };
+				layout = CreatePipelineLayout(WebGPUBackend::GetDevice(), layouts, 2, "renderer3d-custom-shadow-layout");
+			}
+
+			wgpu::VertexAttribute vertexAttributes[3] = {};
+			SetAttribute(vertexAttributes[0], wgpu::VertexFormat::Float32x3, offsetof(MeshVertex, Position), 0);
+			SetAttribute(vertexAttributes[1], wgpu::VertexFormat::Float32x3, offsetof(MeshVertex, Normal), 1);
+			SetAttribute(vertexAttributes[2], wgpu::VertexFormat::Float32x2, offsetof(MeshVertex, UV), 2);
+			wgpu::VertexAttribute instanceAttributes[k_InstanceVec4Count] = {};
+			for (uint32_t i = 0; i < k_InstanceVec4Count; ++i) {
+				SetAttribute(instanceAttributes[i], wgpu::VertexFormat::Float32x4, static_cast<uint64_t>(i) * 16u, 3u + i);
+			}
+			wgpu::VertexBufferLayout buffers[2] = {};
+			buffers[0].arrayStride = sizeof(MeshVertex);
+			buffers[0].stepMode = wgpu::VertexStepMode::Vertex;
+			buffers[0].attributeCount = 3;
+			buffers[0].attributes = vertexAttributes;
+			buffers[1].arrayStride = sizeof(MeshInstance);
+			buffers[1].stepMode = wgpu::VertexStepMode::Instance;
+			buffers[1].attributeCount = k_InstanceVec4Count;
+			buffers[1].attributes = instanceAttributes;
+
+			// Matches GetShadowPipeline.
+			wgpu::DepthStencilState depth{};
+			depth.format = k_ShadowFormat;
+			depth.depthWriteEnabled = true;
+			depth.depthCompare = wgpu::CompareFunction::Less;
+			depth.depthBiasSlopeScale = 1.5f;
+
+			wgpu::RenderPipelineDescriptor desc{};
+			desc.label = "renderer3d-custom-shadow-pipeline";
+			desc.layout = layout;
+			desc.vertex.module = program.Module;
+			desc.vertex.entryPoint = "vs_shadow";
+			desc.vertex.bufferCount = 2;
+			desc.vertex.buffers = buffers;
+			desc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+			desc.primitive.cullMode = wgpu::CullMode::None;
+			desc.depthStencil = &depth;
+			desc.multisample.count = 1;
+			desc.multisample.mask = 0xFFFFFFFF;
+
+			wgpu::RenderPipeline pipeline = layout ? CustomShaderGpu::CreatePipeline(desc, program) : nullptr;
+			CustomShadowPipelines.emplace(program.Id, pipeline);
+			return pipeline;
+		}
+
+		// Pipeline and material group for each custom slot; a slot whose shader cannot draw switches to the fallback.
+		void ResolveFrameCustoms(wgpu::TextureFormat colorFormat) {
+			for (FrameCustom& custom : FrameCustoms) {
+				custom.ShadowPipeline = nullptr;
+				for (int attempt = 0; attempt < 2 && custom.Program; ++attempt) {
+					custom.Pipeline = GetCustomPipeline(colorFormat, *custom.Program);
+					custom.Group = custom.Pipeline ? CustomBindings.GetGroup(custom.MaterialGuid, custom.Material, *custom.Program) : nullptr;
+					if (custom.Pipeline && custom.Group) break;
+					custom.Program = custom.Program->IsFallback ? nullptr : CustomShaderGpu::GetFallback(ShaderTarget::Mesh3D);
+				}
+				if (custom.Program && custom.Pipeline && custom.Group && custom.Program->Description.HasVertexFunction) {
+					custom.ShadowPipeline = GetCustomShadowPipeline(*custom.Program);
+				}
+			}
 		}
 
 		// Unlit billboards: depth tested against the meshes but never written, so overlapping particles all show.
@@ -783,6 +1064,48 @@ namespace Index {
 			return pipeline;
 		}
 
+		// Skybox-target material shaders: group 0 is the gradient sky's block, group 1 the material's.
+		std::unordered_map<uint64_t, wgpu::RenderPipeline> CustomSkyPipelines;
+		std::unordered_map<uint32_t, wgpu::PipelineLayout> CustomSkyPipelineLayouts;
+
+		wgpu::RenderPipeline GetCustomSkyPipeline(wgpu::TextureFormat colorFormat, const CustomShaderProgram& program) {
+			const uint64_t key = (program.Id << 16) ^ static_cast<uint64_t>(colorFormat);
+			if (auto it = CustomSkyPipelines.find(key); it != CustomSkyPipelines.end()) return it->second;
+			if (CustomSkyPipelines.size() > 64) CustomSkyPipelines.clear();
+
+			wgpu::BindGroupLayout customLayout = CustomBindings.GetLayout(program.Description);
+			wgpu::PipelineLayout& layout = CustomSkyPipelineLayouts[program.Description.TextureCount];
+			if (!layout && customLayout) {
+				const wgpu::BindGroupLayout layouts[2] = { SkyLayout, customLayout };
+				layout = CreatePipelineLayout(WebGPUBackend::GetDevice(), layouts, 2, "renderer3d-custom-sky-layout");
+			}
+
+			wgpu::ColorTargetState colorTarget{};
+			colorTarget.format = colorFormat;
+			colorTarget.writeMask = wgpu::ColorWriteMask::All;
+
+			wgpu::FragmentState fragment{};
+			fragment.module = program.Module;
+			fragment.entryPoint = "fs_main";
+			fragment.targetCount = 1;
+			fragment.targets = &colorTarget;
+
+			wgpu::RenderPipelineDescriptor desc{};
+			desc.label = "renderer3d-custom-sky-pipeline";
+			desc.layout = layout;
+			desc.vertex.module = program.Module;
+			desc.vertex.entryPoint = "vs_main";
+			desc.fragment = &fragment;
+			desc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+			desc.primitive.cullMode = wgpu::CullMode::None;
+			desc.multisample.count = 1;
+			desc.multisample.mask = 0xFFFFFFFF;
+
+			wgpu::RenderPipeline pipeline = layout ? CustomShaderGpu::CreatePipeline(desc, program) : nullptr;
+			CustomSkyPipelines.emplace(key, pipeline);
+			return pipeline;
+		}
+
 		wgpu::RenderPipeline GetLinePipeline(wgpu::Device device, wgpu::TextureFormat colorFormat, bool depthTested) {
 			const uint32_t key = (static_cast<uint32_t>(colorFormat) << 1) | (depthTested ? 1u : 0u);
 			if (auto it = LinePipelines.find(key); it != LinePipelines.end()) {
@@ -841,6 +1164,17 @@ namespace Index {
 			if (pipeline) LinePipelines.emplace(key, pipeline);
 			return pipeline;
 		}
+	};
+
+	struct Renderer3D::PostProcessState {
+		PostProcessor Processor;
+		Framebuffer SceneFbo;
+		WebGPUBackend::BoundTargetSnapshot Caller;
+		// The snapshot has no view for the swap chain (acquired lazily); the effects write here.
+		WebGPUBackend::CurrentTargetInfo CallerTarget;
+		const PostProcessing2DComponent* Settings = nullptr;
+		bool Active = false;
+		bool InitFailed = false;
 	};
 
 	Renderer3D::Renderer3D() = default;
@@ -913,6 +1247,8 @@ namespace Index {
 		gpu.SkyLayout = CreateLayout(device, &skyEntry, 1, "renderer3d-sky-bgl");
 		gpu.ShadowLayout = CreateLayout(device, &shadowEntry, 1, "renderer3d-shadow-bgl");
 		gpu.LineLayout = CreateLayout(device, &lineEntry, 1, "renderer3d-line-bgl");
+		const wgpu::BindGroupLayoutEntry customShadowFrameEntry = UniformEntry(0, sizeof(FrameUniforms), wgpu::ShaderStage::Vertex);
+		gpu.CustomShadowFrameLayout = CreateLayout(device, &customShadowFrameEntry, 1, "renderer3d-custom-shadow-frame-bgl");
 
 		const wgpu::BindGroupLayout meshLayouts[2] = { gpu.FrameLayout, gpu.MaterialLayout };
 		gpu.MeshPipelineLayout = CreatePipelineLayout(device, meshLayouts, 2, "renderer3d-mesh-layout");
@@ -951,6 +1287,10 @@ namespace Index {
 		}
 		gpu.SkyBindGroup = CreateUniformBindGroup(device, gpu.SkyLayout, gpu.SkyUniformBuffer, sizeof(SkyUniforms), "renderer3d-sky-bg");
 		gpu.ShadowBindGroup = CreateUniformBindGroup(device, gpu.ShadowLayout, gpu.ShadowUniformBuffer, sizeof(glm::mat4), "renderer3d-shadow-bg");
+		if (gpu.CustomShadowFrameLayout) {
+			gpu.CustomShadowFrameGroup = CreateUniformBindGroup(device, gpu.CustomShadowFrameLayout, gpu.FrameUniformBuffer,
+				sizeof(FrameUniforms), "renderer3d-custom-shadow-frame-bg");
+		}
 		gpu.LineBindGroup = CreateUniformBindGroup(device, gpu.LineLayout, gpu.LineUniformBuffer, sizeof(glm::mat4), "renderer3d-line-bg");
 
 		m_ParticleShader = std::make_unique<Shader>(std::string("IndexAssets/Shaders/Particle3DShader.vs"), std::string("IndexAssets/Shaders/Particle3DShader.fs"));
@@ -976,6 +1316,20 @@ namespace Index {
 			mesh.Vertices = CreateBufferWithData(device, wgpu::BufferUsage::Vertex, data.Vertices.data(), data.Vertices.size() * sizeof(MeshVertex), "renderer3d-mesh-vb");
 			mesh.Indices = CreateBufferWithData(device, wgpu::BufferUsage::Index, data.Indices.data(), data.Indices.size() * sizeof(uint32_t), "renderer3d-mesh-ib");
 			mesh.IndexCount = static_cast<uint32_t>(data.Indices.size());
+			glm::vec3 boundsMin(std::numeric_limits<float>::max());
+			glm::vec3 boundsMax(std::numeric_limits<float>::lowest());
+			for (const MeshVertex& vertex : data.Vertices) {
+				const glm::vec3 position(vertex.Position[0], vertex.Position[1], vertex.Position[2]);
+				boundsMin = glm::min(boundsMin, position);
+				boundsMax = glm::max(boundsMax, position);
+			}
+			if (data.Vertices.empty()) boundsMin = boundsMax = glm::vec3(0.0f);
+			gpu.MeshBoundsMin[i] = boundsMin;
+			gpu.MeshBoundsMax[i] = boundsMax;
+		}
+
+		if (!gpu.CustomBindings.Initialize("renderer3d-custom")) {
+			IDX_CORE_WARN_TAG("Renderer3D", "Custom shader resources unavailable; materials with a shader draw with the standard one");
 		}
 
 		GpuState* state = m_Gpu.get();
@@ -999,6 +1353,11 @@ namespace Index {
 			if (m_Gpu->TextureDestroyToken != 0) TextureManager::RemoveDestroyListener(m_Gpu->TextureDestroyToken);
 		}
 		// Dawn objects must die before RenderApi::Shutdown.
+		if (m_PostProcess) {
+			m_PostProcess->Processor.Shutdown();
+			m_PostProcess->SceneFbo.Destroy();
+			m_PostProcess.reset();
+		}
 		m_Gpu.reset();
 		m_MeshShader.reset();
 		m_SkyShader.reset();
@@ -1007,6 +1366,7 @@ namespace Index {
 		m_ParticleShader.reset();
 		m_Lines.clear();
 		MaterialLibrary::Clear();
+		CustomShaderLibrary::Clear();
 		m_IsInitialized = false;
 	}
 
@@ -1041,6 +1401,58 @@ namespace Index {
 		return 1.0f;
 	}
 
+	bool Renderer3D::BeginPostProcess(const PostProcessing2DComponent* settings, const Color& clearColor) {
+		if (!m_IsInitialized || !settings || !m_PostProcessingEnabled || !m_Settings.PostProcessingEnabled
+			|| !settings->HasEnabledEffect()) {
+			return false;
+		}
+		if (!m_PostProcess) m_PostProcess = std::make_unique<PostProcessState>();
+		PostProcessState& state = *m_PostProcess;
+		if (state.Active) return false;
+		if (!state.Processor.IsInitialized()) {
+			if (state.InitFailed) return false;
+			if (!state.Processor.Initialize()) {
+				state.InitFailed = true;
+				IDX_CORE_WARN_TAG("Renderer3D", "PostProcessor unavailable; 3D cameras render without post-processing");
+				return false;
+			}
+		}
+		const auto caller = WebGPUBackend::BeginRenderToCurrentTarget();
+		if (!caller.Valid || caller.Width == 0 || caller.Height == 0) return false;
+		if (!state.SceneFbo.Recreate(static_cast<int>(caller.Width), static_cast<int>(caller.Height), TextureFormat::RGBA16F)) {
+			return false;
+		}
+		state.Caller = WebGPUBackend::SaveBoundTarget();
+		state.CallerTarget = caller;
+		state.Settings = settings;
+		state.Active = true;
+		RenderApi::BindFramebuffer(state.SceneFbo);
+		RenderApi::SetViewport(0, 0, static_cast<int>(caller.Width), static_cast<int>(caller.Height));
+		const Color savedClear = RenderApi::GetClearColor();
+		RenderApi::SetClearColor(clearColor);
+		RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+		RenderApi::SetClearColor(savedClear);
+		m_OwnDepthNeedsClear = true;
+		return true;
+	}
+
+	void Renderer3D::EndPostProcess() {
+		if (!m_PostProcess || !m_PostProcess->Active) return;
+		PostProcessState& state = *m_PostProcess;
+		state.Active = false;
+		// Flushes the 3D passes so the effects read the finished intermediate.
+		WebGPUBackend::FlushCommands();
+		const WebGPUBackend::CurrentTargetInfo target = state.CallerTarget;
+		state.Processor.Run(state.SceneFbo, target.ColorView, target.ColorFormat, target.Width, target.Height,
+			state.Settings, m_Settings.PostProcessingQuality, true);
+		WebGPUBackend::RestoreBoundTarget(state.Caller);
+		state.Settings = nullptr;
+		state.CallerTarget = {};
+		// The caller's depth no longer matches what was drawn; meshes drawn after this clear their own depth again.
+		m_OwnDepthNeedsClear = true;
+		if (target.IsSwapChain) WebGPUBackend::MarkSwapChainRendered();
+	}
+
 	bool Renderer3D::BeginFrame() {
 		m_RenderedThisFrame = false;
 		m_DrawCalls = 0;
@@ -1072,10 +1484,15 @@ namespace Index {
 		m_OwnDepthNeedsClear = true;
 
 		const Camera3DView view = MakeView(transform.WorldMatrix, camera, GetCurrentTargetAspect());
+		const auto* postProcessing = registry.try_get<PostProcessing2DComponent>(cameraEntity);
+		const bool postProcess = BeginPostProcess(postProcessing, camera.ClearColor);
 		RenderSky(view, cameraScene);
 		m_SceneProvider([&](Scene& scene) {
 			RenderScene(scene, view);
 		});
+		if (postProcess) EndPostProcess();
+		// Runtime debug lines (physics overlay); the editor flushes its queue into the Editor View itself.
+		if (!Application::IsEditor()) FlushLines(view, true);
 		m_RenderedThisFrame = true;
 		return true;
 	}
@@ -1091,10 +1508,33 @@ namespace Index {
 		wgpu::Queue queue = WebGPUBackend::GetQueue();
 		wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
 		if (!device || !queue || !encoder) return;
-		wgpu::RenderPipeline pipeline = gpu.GetSkyPipeline(device, target.ColorFormat);
+		const Camera3DEnvironment& environment = view.Environment;
+
+		// A Skybox material replaces the gradient; one that cannot draw falls back to the magenta sky, then the gradient.
+		wgpu::RenderPipeline pipeline;
+		wgpu::BindGroup customGroup;
+		if (environment.SkyboxMaterial != 0) {
+			const Material* material = MaterialLibrary::Get(environment.SkyboxMaterial);
+			const CustomShaderProgram* program = material && material->Shader != 0
+				? CustomShaderGpu::GetProgram(material->Shader, ShaderTarget::Skybox) : nullptr;
+			for (int attempt = 0; attempt < 2 && program && gpu.CustomBindings.IsInitialized(); ++attempt) {
+				pipeline = gpu.GetCustomSkyPipeline(target.ColorFormat, *program);
+				customGroup = pipeline ? gpu.CustomBindings.GetGroup(environment.SkyboxMaterial, material, *program) : nullptr;
+				if (pipeline && customGroup) break;
+				pipeline = nullptr;
+				program = program->IsFallback ? nullptr : CustomShaderGpu::GetFallback(ShaderTarget::Skybox);
+			}
+			if (pipeline) {
+				gpu.CustomBindings.WriteGlobals(CustomMaterialBindings::MakeGlobals(view.View, view.Projection, view.Position,
+					target.Width, target.Height));
+			}
+		}
+		if (!pipeline) {
+			customGroup = nullptr;
+			pipeline = gpu.GetSkyPipeline(device, target.ColorFormat);
+		}
 		if (!pipeline) return;
 
-		const Camera3DEnvironment& environment = view.Environment;
 		SkyUniforms sky{};
 		sky.InverseViewProjection = glm::inverse(view.Projection * view.View);
 		sky.Top = ToVec4(environment.SkyTop);
@@ -1130,6 +1570,7 @@ namespace Index {
 		WebGPUBackend::ApplyCachedViewportToPass(pass);
 		pass.SetPipeline(pipeline);
 		pass.SetBindGroup(0, gpu.SkyBindGroup);
+		if (customGroup) pass.SetBindGroup(k_CustomShaderGroup, customGroup);
 		pass.Draw(3);
 		pass.End();
 		++m_DrawCalls;
@@ -1160,7 +1601,14 @@ namespace Index {
 		gpu.FrameTextureSlots.clear();
 		gpu.FrameMeshes.clear();
 		gpu.FrameMeshSlots.clear();
+		gpu.FrameCustoms.clear();
+		gpu.FrameCustomSlots.clear();
+		gpu.FrameMaterials.clear();
 		std::erase_if(gpu.CustomMeshes, [](const auto& pair) { return IsRuntimeMeshGuid(pair.first) && !MeshLibrary::IsLiveRuntime(pair.first); });
+		// Posed copies of entities that stopped drawing (destroyed, disabled, scene unloaded).
+		std::erase_if(gpu.SkinnedMeshes, [now = std::chrono::steady_clock::now()](const auto& pair) {
+			return now - pair.second.LastUsed > std::chrono::seconds(2);
+		});
 		for (const auto& primitive : gpu.Meshes) gpu.FrameMeshes.push_back(&primitive);
 		bool anyCaster = false;
 		const TextureHandle whiteTexture = TextureManager::GetDefaultTexture(DefaultTexture::Pixel);
@@ -1172,50 +1620,130 @@ namespace Index {
 			return it->second;
 		};
 
+		// Frame slot of a mesh asset's shared GPU copy; nullopt when it cannot draw.
+		auto customMeshSlot = [&](uint64_t guid, const MeshAsset& asset) -> std::optional<size_t> {
+			auto slot = gpu.FrameMeshSlots.find(guid);
+			if (slot == gpu.FrameMeshSlots.end()) {
+				const auto* buffers = gpu.ResolveCustomMesh(device, guid, asset);
+				if (!buffers) return std::nullopt;
+				slot = gpu.FrameMeshSlots.emplace(guid, static_cast<uint32_t>(gpu.FrameMeshes.size())).first;
+				gpu.FrameMeshes.push_back(buffers);
+			}
+			return slot->second;
+		};
+
+		static const Material k_FallbackMaterials[2] = {
+			[] { Material m; m.Lit = false; return m; }(),
+			[] { Material m; m.Lit = true; return m; }(),
+		};
+
+		auto submit = [&](size_t meshIndex, const glm::vec3& localMin, const glm::vec3& localMax, const glm::mat4& world,
+			uint64_t materialGuid, const Color& color, bool lit, bool castShadows, bool cullable) {
+			auto [memo, firstUse] = gpu.FrameMaterials.try_emplace(materialGuid);
+			if (firstUse) {
+				memo->second.Value = MaterialLibrary::Get(materialGuid);
+				const Material* resolved = memo->second.Value ? memo->second.Value : &k_FallbackMaterials[0];
+				// A user shader replaces the standard one; its color input is the renderer's Color alone.
+				memo->second.Program = resolved->Shader != 0 && gpu.CustomBindings.IsInitialized()
+					? CustomShaderGpu::GetProgram(resolved->Shader, ShaderTarget::Mesh3D) : nullptr;
+			}
+			const Material* material = memo->second.Value ? memo->second.Value : &k_FallbackMaterials[lit ? 1 : 0];
+			const CustomShaderProgram* program = memo->second.Program;
+
+			uint32_t custom = 0;
+			if (program) {
+				auto [it, inserted] = gpu.FrameCustomSlots.emplace(materialGuid, static_cast<uint32_t>(gpu.FrameCustoms.size()));
+				if (inserted) gpu.FrameCustoms.push_back({ materialGuid, material, program, nullptr, nullptr });
+				custom = it->second + 1;
+			}
+
+			MeshInstance instance{};
+			for (int i = 0; i < 4; ++i) instance.Model[i] = world[i];
+			const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(world)));
+			for (int i = 0; i < 3; ++i) instance.Normal[i] = glm::vec4(normalMatrix[i], 0.0f);
+			const bool transparent = program ? program->Description.Blend != ShaderBlend::Opaque : material->Surface == MaterialSurface::Transparent;
+			if (program) {
+				instance.Color = ToVec4(color);
+				instance.Emissive = glm::vec4(0.0f, 0.0f, 0.0f, material->Fog ? 1.0f : 0.0f);
+				instance.UvTransform = { 1.0f, 1.0f, 0.0f, 0.0f };
+			}
+			else {
+				instance.Color = ToVec4(material->BaseColor) * ToVec4(color);
+				// w = 1 lets the camera's fog reach this mesh.
+				instance.Emissive = glm::vec4(Lighting3D::SrgbToLinear(material->EmissiveColor) * std::max(material->EmissiveIntensity, 0.0f),
+					material->Fog ? 1.0f : 0.0f);
+				instance.Surface = { material->Metallic, material->Roughness, material->Lit ? 1.0f : 0.0f, transparent ? 1.0f : 0.0f };
+				instance.UvTransform = { material->Tiling.x, material->Tiling.y, material->Offset.x, material->Offset.y };
+			}
+
+			const uint32_t slot = program ? 0u : textureSlot(gpu.ResolveMaterialTexture(material->BaseColorTexture));
+
+			// Arvo: the world AABB of a transformed local box.
+			glm::vec3 localExtent = (localMax - localMin) * 0.5f;
+			if (program && program->Description.HasVertexFunction) {
+				cullable &= program->Description.Displacement > 0.0f;
+				localExtent += glm::vec3(program->Description.Displacement);
+			}
+			const glm::vec3 worldCenter = glm::vec3(world * glm::vec4((localMin + localMax) * 0.5f, 1.0f));
+			const glm::mat3 basis(world);
+			const glm::vec3 worldExtent = glm::abs(basis[0]) * localExtent.x + glm::abs(basis[1]) * localExtent.y
+				+ glm::abs(basis[2]) * localExtent.z;
+
+			const glm::vec3 toCamera = worldCenter - view.Position;
+			DrawItem item{ MakeDrawKey(meshIndex, castShadows, slot), static_cast<uint32_t>(gpu.Instances.size()),
+				glm::dot(toCamera, toCamera), transparent, custom };
+			item.BoundsCenter = worldCenter;
+			item.BoundsExtent = worldExtent;
+			item.Cullable = cullable;
+			gpu.DrawItems.push_back(item);
+			gpu.Instances.push_back(instance);
+			anyCaster |= castShadows;
+		};
+
 		const auto meshes = registry.view<const MeshRendererComponent, const Transform3DComponent>(entt::exclude<DisabledTag>);
 		for (EntityHandle entity : meshes) {
 			const auto& renderer = meshes.get<const MeshRendererComponent>(entity);
 			const auto& transform = meshes.get<const Transform3DComponent>(entity);
 			size_t meshIndex = static_cast<size_t>(renderer.Mesh);
-			glm::vec3 localCenter(0.0f);
+			glm::vec3 localMin(0.0f);
+			glm::vec3 localMax(0.0f);
 			if (renderer.CustomMesh != 0) {
-				auto slot = gpu.FrameMeshSlots.find(renderer.CustomMesh);
 				const MeshAsset* asset = MeshLibrary::Get(renderer.CustomMesh);
-				if (!asset) continue;
-				if (slot == gpu.FrameMeshSlots.end()) {
-					const auto* buffers = gpu.ResolveCustomMesh(device, renderer.CustomMesh, *asset);
-					if (!buffers) continue;
-					slot = gpu.FrameMeshSlots.emplace(renderer.CustomMesh, static_cast<uint32_t>(gpu.FrameMeshes.size())).first;
-					gpu.FrameMeshes.push_back(buffers);
-				}
-				meshIndex = slot->second;
-				localCenter = (asset->BoundsMin + asset->BoundsMax) * 0.5f;
+				const std::optional<size_t> slot = asset ? customMeshSlot(renderer.CustomMesh, *asset) : std::nullopt;
+				if (!slot) continue;
+				meshIndex = *slot;
+				localMin = asset->BoundsMin;
+				localMax = asset->BoundsMax;
 			}
 			else if (meshIndex >= k_MeshTypeCount) {
 				continue;
 			}
+			else {
+				localMin = gpu.MeshBoundsMin[meshIndex];
+				localMax = gpu.MeshBoundsMax[meshIndex];
+			}
+			submit(meshIndex, localMin, localMax, transform.WorldMatrix, renderer.Material, renderer.Color, renderer.Lit,
+				renderer.CastShadows, true);
+		}
 
-			Material fallback;
-			fallback.Lit = renderer.Lit;
-			const Material* material = MaterialLibrary::Get(renderer.Material);
-			if (!material) material = &fallback;
-
-			MeshInstance instance{};
-			for (int i = 0; i < 4; ++i) instance.Model[i] = transform.WorldMatrix[i];
-			const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(transform.WorldMatrix)));
-			for (int i = 0; i < 3; ++i) instance.Normal[i] = glm::vec4(normalMatrix[i], 0.0f);
-			instance.Color = ToVec4(material->BaseColor) * ToVec4(renderer.Color);
-			instance.Emissive = glm::vec4(Lighting3D::SrgbToLinear(material->EmissiveColor) * std::max(material->EmissiveIntensity, 0.0f), 0.0f);
-			const bool transparent = material->Surface == MaterialSurface::Transparent;
-			instance.Surface = { material->Metallic, material->Roughness, material->Lit ? 1.0f : 0.0f, transparent ? 1.0f : 0.0f };
-			instance.UvTransform = { material->Tiling.x, material->Tiling.y, material->Offset.x, material->Offset.y };
-
-			const uint32_t slot = textureSlot(gpu.ResolveMaterialTexture(material->BaseColorTexture));
-			const glm::vec3 toCamera = glm::vec3(transform.WorldMatrix * glm::vec4(localCenter, 1.0f)) - view.Position;
-			gpu.DrawItems.push_back({ MakeDrawKey(meshIndex, renderer.CastShadows, slot), static_cast<uint32_t>(gpu.Instances.size()),
-				glm::dot(toCamera, toCamera), transparent });
-			gpu.Instances.push_back(instance);
-			anyCaster |= renderer.CastShadows;
+		const auto now = std::chrono::steady_clock::now();
+		const auto skinned = registry.view<const SkinnedMeshRendererComponent, const Transform3DComponent>(entt::exclude<DisabledTag>);
+		for (EntityHandle entity : skinned) {
+			const auto& renderer = skinned.get<const SkinnedMeshRendererComponent>(entity);
+			const MeshAsset* asset = MeshLibrary::Get(renderer.Model);
+			const std::optional<size_t> shared = asset ? customMeshSlot(renderer.Model, *asset) : std::nullopt;
+			if (!shared) continue;
+			size_t meshIndex = *shared;
+			if (asset->Skin) {
+				const GpuState::SkinnedKey key{ &scene, static_cast<uint32_t>(entity) };
+				const auto* buffers = gpu.ResolveSkinnedMesh(device, key, renderer, *asset, *gpu.FrameMeshes[*shared], now);
+				if (!buffers) continue;
+				meshIndex = gpu.FrameMeshes.size();
+				gpu.FrameMeshes.push_back(buffers);
+			}
+			// Bind-pose bounds don't hold once animated, so skinned meshes always draw.
+			submit(meshIndex, asset->BoundsMin, asset->BoundsMax, skinned.get<const Transform3DComponent>(entity).WorldMatrix,
+				renderer.Material, renderer.Color, renderer.Lit, renderer.CastShadows, false);
 		}
 		if (gpu.Instances.empty()) return;
 
@@ -1225,33 +1753,6 @@ namespace Index {
 		wgpu::Queue queue = WebGPUBackend::GetQueue();
 		wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
 		if (!queue || !encoder) return;
-
-		// Opaque items batch by key; transparent ones follow, farthest first, so blending composites correctly.
-		const auto firstTransparent = std::partition(gpu.DrawItems.begin(), gpu.DrawItems.end(),
-			[](const DrawItem& item) { return !item.Transparent; });
-		const size_t transparentBegin = static_cast<size_t>(firstTransparent - gpu.DrawItems.begin());
-		std::sort(gpu.DrawItems.begin(), firstTransparent, [](const DrawItem& a, const DrawItem& b) {
-			return a.Key < b.Key;
-		});
-		std::sort(firstTransparent, gpu.DrawItems.end(), [](const DrawItem& a, const DrawItem& b) {
-			if (a.ViewDistanceSq != b.ViewDistanceSq) return a.ViewDistanceSq > b.ViewDistanceSq;
-			return a.Key < b.Key;
-		});
-
-		wgpu::TextureView depthView = target.HasDepth ? target.DepthView : gpu.EnsureOwnDepth(device, target.Width, target.Height);
-		wgpu::RenderPipeline pipeline = gpu.GetMeshPipeline(device, target.ColorFormat, false);
-		wgpu::RenderPipeline transparentPipeline = transparentBegin < gpu.DrawItems.size()
-			? gpu.GetMeshPipeline(device, target.ColorFormat, true) : nullptr;
-		if (!depthView || !pipeline) return;
-		gpu.InstanceUpload.clear();
-		gpu.InstanceUpload.reserve(gpu.DrawItems.size());
-		for (const DrawItem& item : gpu.DrawItems) gpu.InstanceUpload.push_back(gpu.Instances[item.Instance]);
-
-		const uint64_t instanceBytes = gpu.InstanceUpload.size() * sizeof(MeshInstance);
-		if (!EnsureBuffer(device, gpu.InstanceBuffer, gpu.InstanceCapacity, instanceBytes, wgpu::BufferUsage::Vertex, "renderer3d-instances")) {
-			IDX_CORE_WARN_TAG("Renderer3D", "Instance buffer too large ({} bytes); meshes skipped", instanceBytes);
-			return;
-		}
 
 		const SceneLighting lighting = CollectLights(registry, view.Position, m_Settings.MaxLights);
 		m_LightCount = std::max(m_LightCount, static_cast<uint32_t>(lighting.Selected.size()));
@@ -1301,6 +1802,62 @@ namespace Index {
 			gpu.ReleaseShadowMap();
 		}
 
+		{
+			INDEX_PROFILE_SCOPE("Renderer3D.Cull");
+			const FrustumPlanes cameraFrustum = ExtractFrustum(frame.ViewProjection);
+			const bool shadowPass = frame.Params.w >= 0.0f;
+			const FrustumPlanes shadowFrustum = ExtractFrustum(frame.LightViewProjection);
+			std::erase_if(gpu.DrawItems, [&](DrawItem& item) {
+				if (!item.Cullable) return false;
+				const bool visible = IntersectsFrustum(cameraFrustum, item.BoundsCenter, item.BoundsExtent);
+				bool casts = KeyCastsShadow(item.Key);
+				if (casts && (!shadowPass || !IntersectsFrustum(shadowFrustum, item.BoundsCenter, item.BoundsExtent))) {
+					casts = false;
+					item.Key |= uint64_t(1) << 32;
+				}
+				if (!visible) item.Key |= k_KeyHiddenBit;
+				return !visible && !casts;
+			});
+		}
+		if (gpu.DrawItems.empty()) return;
+
+		// Opaque items batch by key; transparent ones follow, farthest first, so blending composites correctly.
+		const auto firstTransparent = std::partition(gpu.DrawItems.begin(), gpu.DrawItems.end(),
+			[](const DrawItem& item) { return !item.Transparent; });
+		const size_t transparentBegin = static_cast<size_t>(firstTransparent - gpu.DrawItems.begin());
+		std::sort(gpu.DrawItems.begin(), firstTransparent, [](const DrawItem& a, const DrawItem& b) {
+			if (a.Custom != b.Custom) return a.Custom < b.Custom;
+			return a.Key < b.Key;
+		});
+		std::sort(firstTransparent, gpu.DrawItems.end(), [](const DrawItem& a, const DrawItem& b) {
+			if (a.ViewDistanceSq != b.ViewDistanceSq) return a.ViewDistanceSq > b.ViewDistanceSq;
+			if (a.Custom != b.Custom) return a.Custom < b.Custom;
+			return a.Key < b.Key;
+		});
+
+		wgpu::TextureView depthView = target.HasDepth ? target.DepthView : gpu.EnsureOwnDepth(device, target.Width, target.Height);
+		wgpu::RenderPipeline pipeline = gpu.GetMeshPipeline(device, target.ColorFormat, false);
+		wgpu::RenderPipeline transparentPipeline = transparentBegin < gpu.DrawItems.size()
+			? gpu.GetMeshPipeline(device, target.ColorFormat, true) : nullptr;
+		if (!depthView || !pipeline) return;
+		if (!gpu.FrameCustoms.empty()) {
+			gpu.ResolveFrameCustoms(target.ColorFormat);
+			gpu.CustomBindings.WriteGlobals(CustomMaterialBindings::MakeGlobals(view.View, view.Projection, view.Position, target.Width, target.Height));
+		}
+		gpu.InstanceUpload.clear();
+		gpu.InstanceUpload.reserve(gpu.DrawItems.size());
+		for (const DrawItem& item : gpu.DrawItems) gpu.InstanceUpload.push_back(gpu.Instances[item.Instance]);
+
+		const uint64_t instanceBytes = gpu.InstanceUpload.size() * sizeof(MeshInstance);
+		if (!EnsureBuffer(device, gpu.InstanceBuffer, gpu.InstanceCapacity, instanceBytes, wgpu::BufferUsage::Vertex, "renderer3d-instances")) {
+			IDX_CORE_WARN_TAG("Renderer3D", "Instance buffer too large ({} bytes); meshes skipped", instanceBytes);
+			return;
+		}
+
+		if (environment.FogEnabled) {
+			frame.FogColor = glm::vec4(Lighting3D::SrgbToLinear(environment.FogColor), 1.0f);
+			frame.FogParams = glm::vec4(environment.FogStart, std::max(environment.FogEnd, environment.FogStart + 0.01f), 0.0f, 0.0f);
+		}
 		queue.WriteBuffer(gpu.FrameUniformBuffer, 0, &frame, sizeof(frame));
 		queue.WriteBuffer(gpu.LightBuffer, 0, gpu.LightUpload.data(), sizeof(LightUniforms));
 		queue.WriteBuffer(gpu.InstanceBuffer, 0, gpu.InstanceUpload.data(), instanceBytes);
@@ -1319,19 +1876,32 @@ namespace Index {
 
 			// Full map, not the cached viewport: the shadow map has its own resolution.
 			wgpu::RenderPassEncoder shadowPass = encoder.BeginRenderPass(&shadowPassDesc);
-			shadowPass.SetPipeline(gpu.GetShadowPipeline(device));
-			shadowPass.SetBindGroup(0, gpu.ShadowBindGroup);
+			wgpu::RenderPipeline standardShadow = gpu.GetShadowPipeline(device);
+			wgpu::RenderPipeline boundShadow;
 			shadowPass.SetVertexBuffer(1, gpu.InstanceBuffer);
+			// Custom slot whose fn vertex moves the shadow, or 0 for the standard shadow pipeline.
+			auto shadowSlot = [&](const DrawItem& item) -> uint32_t {
+				return item.Custom != 0 && gpu.FrameCustoms[item.Custom - 1].ShadowPipeline && gpu.CustomShadowFrameGroup
+					? item.Custom : 0u;
+			};
 			for (size_t begin = 0; begin < gpu.DrawItems.size();) {
 				const size_t mesh = KeyMesh(gpu.DrawItems[begin].Key);
 				const bool casts = KeyCastsShadow(gpu.DrawItems[begin].Key);
+				const uint32_t slot = shadowSlot(gpu.DrawItems[begin]);
 				size_t end = begin + 1;
 				while (end < gpu.DrawItems.size() && KeyMesh(gpu.DrawItems[end].Key) == mesh
-					&& KeyCastsShadow(gpu.DrawItems[end].Key) == casts) {
+					&& KeyCastsShadow(gpu.DrawItems[end].Key) == casts && shadowSlot(gpu.DrawItems[end]) == slot) {
 					++end;
 				}
 				const auto& buffers = *gpu.FrameMeshes[mesh];
 				if (casts && buffers.Vertices && buffers.Indices) {
+					const wgpu::RenderPipeline runPipeline = slot != 0 ? gpu.FrameCustoms[slot - 1].ShadowPipeline : standardShadow;
+					if (runPipeline.Get() != boundShadow.Get()) {
+						shadowPass.SetPipeline(runPipeline);
+						boundShadow = runPipeline;
+						shadowPass.SetBindGroup(0, slot != 0 ? gpu.CustomShadowFrameGroup : gpu.ShadowBindGroup);
+					}
+					if (slot != 0) shadowPass.SetBindGroup(1, gpu.FrameCustoms[slot - 1].Group);
 					shadowPass.SetVertexBuffer(0, buffers.Vertices);
 					shadowPass.SetIndexBuffer(buffers.Indices, wgpu::IndexFormat::Uint32);
 					shadowPass.DrawIndexed(buffers.IndexCount, static_cast<uint32_t>(end - begin), 0, 0, static_cast<uint32_t>(begin));
@@ -1368,28 +1938,46 @@ namespace Index {
 
 		wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 		WebGPUBackend::ApplyCachedViewportToPass(pass);
-		pass.SetPipeline(pipeline);
 		pass.SetBindGroup(0, frameGroup);
 		pass.SetVertexBuffer(1, gpu.InstanceBuffer);
 		size_t boundMesh = std::numeric_limits<size_t>::max();
+		wgpu::RenderPipeline boundPipeline;
+		uint32_t drawnInstances = 0;
 		for (size_t begin = 0; begin < gpu.DrawItems.size();) {
-			if (begin == transparentBegin) {
-				if (!transparentPipeline) break;
-				pass.SetPipeline(transparentPipeline);
-			}
 			const uint64_t key = gpu.DrawItems[begin].Key;
+			const uint32_t custom = gpu.DrawItems[begin].Custom;
 			const size_t mesh = KeyMesh(key);
 			const uint32_t slot = KeyTextureSlot(key);
 			// Batches never straddle the opaque/transparent boundary: the pipeline switches there.
 			const size_t rangeEnd = begin < transparentBegin ? transparentBegin : gpu.DrawItems.size();
 			size_t end = begin + 1;
-			while (end < rangeEnd && KeyMesh(gpu.DrawItems[end].Key) == mesh && KeyTextureSlot(gpu.DrawItems[end].Key) == slot) {
+			const bool hidden = KeyHidden(key);
+			while (end < rangeEnd && gpu.DrawItems[end].Custom == custom && KeyMesh(gpu.DrawItems[end].Key) == mesh
+				&& KeyTextureSlot(gpu.DrawItems[end].Key) == slot && KeyHidden(gpu.DrawItems[end].Key) == hidden) {
 				++end;
 			}
+			if (hidden) {
+				begin = end;
+				continue;
+			}
+			drawnInstances += static_cast<uint32_t>(end - begin);
+			wgpu::RenderPipeline itemPipeline = begin < transparentBegin ? pipeline : transparentPipeline;
+			wgpu::BindGroup materialGroup;
+			if (custom != 0) {
+				const FrameCustom& frameCustom = gpu.FrameCustoms[custom - 1];
+				itemPipeline = frameCustom.Pipeline;
+				materialGroup = frameCustom.Group;
+			}
+			else {
+				materialGroup = gpu.GetMaterialBindGroup(device, gpu.FrameTextures[slot]);
+				if (!materialGroup) materialGroup = gpu.GetMaterialBindGroup(device, whiteTexture);
+			}
 			const auto& buffers = *gpu.FrameMeshes[mesh];
-			wgpu::BindGroup materialGroup = gpu.GetMaterialBindGroup(device, gpu.FrameTextures[slot]);
-			if (!materialGroup) materialGroup = gpu.GetMaterialBindGroup(device, whiteTexture);
-			if (materialGroup && buffers.Vertices && buffers.Indices) {
+			if (itemPipeline && materialGroup && buffers.Vertices && buffers.Indices) {
+				if (itemPipeline.Get() != boundPipeline.Get()) {
+					pass.SetPipeline(itemPipeline);
+					boundPipeline = itemPipeline;
+				}
 				if (boundMesh != mesh) {
 					pass.SetVertexBuffer(0, buffers.Vertices);
 					pass.SetIndexBuffer(buffers.Indices, wgpu::IndexFormat::Uint32);
@@ -1402,7 +1990,7 @@ namespace Index {
 			begin = end;
 		}
 		pass.End();
-		m_RenderedMeshes += static_cast<uint32_t>(gpu.Instances.size());
+		m_RenderedMeshes += drawnInstances;
 		if (!target.HasDepth) m_OwnDepthNeedsClear = false;
 
 		// The next scene's WriteBuffer would otherwise overwrite this pass's uniforms (Dawn batches writes per submit).

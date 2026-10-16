@@ -4,7 +4,7 @@
 namespace Index {
 
 	// Bump together with InteropHandshake.LayoutVersion (ScriptHostBridge.cs) on any add/remove/reorder in NativeBindings or ManagedCallbacks.
-	inline constexpr int32_t k_ScriptInteropLayoutVersion = 15;
+	inline constexpr int32_t k_ScriptInteropLayoutVersion = 30;
 
 	/// Layout must match C# NativeBindingsStruct exactly (Sequential, blittable).
 	struct NativeBindings
@@ -1179,6 +1179,133 @@ namespace Index {
 			const uint32_t* indices, int indexCount);
 		int   (*Mesh_DestroyRuntime)(uint64_t meshGuid);
 		int   (*Mesh_IsRuntime)(uint64_t meshGuid);
+
+		// ── Motion sensors (appended for binary compat) ──
+		void  (*Input_GetAcceleration)(float* x, float* y, float* z);
+		void  (*Input_GetGyroscope)(float* x, float* y, float* z);
+		// sensor: 0 = accelerometer, 1 = gyroscope.
+		int   (*Input_IsMotionSensorAvailable)(int sensor);
+
+		// ── Material shader properties (appended for binary compat) ──
+		uint64_t (*Material_GetShader)(uint64_t guid);
+		void     (*Material_SetShader)(uint64_t guid, uint64_t shaderGuid);
+		// values: 4 floats; returns the ShaderPropertyType + 1, 0 when the property is unknown.
+		int      (*Material_GetProperty)(uint64_t guid, const char* name, float* values, uint64_t* texture);
+		// Returns 0 when the shader declares the property with an incompatible type.
+		int      (*Material_SetProperty)(uint64_t guid, const char* name, int type, const float* values, uint64_t texture);
+		uint64_t (*SpriteRenderer_GetMaterial)(uint64_t entityID);
+		void     (*SpriteRenderer_SetMaterial)(uint64_t entityID, uint64_t materialGuid);
+
+		// ── Camera3D skybox material (appended for binary compat) ──
+		uint64_t (*Camera3D_GetSkyboxMaterial)(uint64_t entityID);
+		void     (*Camera3D_SetSkyboxMaterial)(uint64_t entityID, uint64_t materialGuid);
+
+		// ── Image 9-slice (appended for binary compat) ──
+		// values: type, borderLeft, borderBottom, borderRight, borderTop, borderScale (6).
+		void     (*Image_GetSlicing)(uint64_t entityID, float* values, int count);
+		void     (*Image_SetSlicing)(uint64_t entityID, const float* values, int count);
+
+		// ── Touch (appended for binary compat) ──
+		int      (*Input_GetTouchCount)();
+		// values: x, y, startX, startY (viewport-local pixels). Returns 0 when index is out of range.
+		int      (*Input_GetTouch)(int index, int64_t* id, int* phase, float* values);
+
+		// ── Image material (appended for binary compat) ──
+		uint64_t (*Image_GetMaterial)(uint64_t entityID);
+		void     (*Image_SetMaterial)(uint64_t entityID, uint64_t materialGuid);
+
+		// ── Editor windows from C# (appended for binary compat) ──
+		// Only draw inside EditorWindow.OnGUI in the editor; elsewhere they do nothing and return the value passed in.
+		void     (*EditorGUI_Text)(const char* text, int style);
+		int      (*EditorGUI_Button)(const char* label, float width, float height);
+		int      (*EditorGUI_Toggle)(const char* label, int value);
+		float    (*EditorGUI_Slider)(const char* label, float value, float min, float max, const char* format);
+		float    (*EditorGUI_VerticalSlider)(const char* label, float width, float height, float value, float min, float max, const char* format);
+		float    (*EditorGUI_FloatField)(const char* label, float value, float speed);
+		// Edits the UTF-8 text in buffer (capacity bytes incl. terminator); 1 when it changed.
+		int      (*EditorGUI_TextField)(const char* label, char* buffer, int capacity);
+		void     (*EditorGUI_ProgressBar)(float fraction, float width, float height, const char* overlay);
+		// op: EditorGuiLayoutOp; value: spacing for SameLine, width for Indent/Unindent.
+		void     (*EditorGUI_Layout)(int op, float value);
+		void     (*EditorGUI_PushId)(const char* id);
+		// what: EditorGuiQuery.
+		float    (*EditorGUI_Query)(int what);
+
+		// ── Animator (appended for binary compat) ──
+		// op: 0 float, 1 int, 2 bool, 3 trigger, 4 reset trigger. Returns 0 without an Animator that can play.
+		int      (*Animator_SetParameter)(uint64_t entityID, const char* name, int op, float value);
+		float    (*Animator_GetParameter)(uint64_t entityID, const char* name, int op);
+		int      (*Animator_HasParameter)(uint64_t entityID, const char* name);
+		// crossFade < 0 jumps to the state; otherwise blends over that many seconds.
+		int      (*Animator_Play)(uint64_t entityID, const char* state, float normalizedTime, float crossFade);
+		// which: 0 current state, 1 crossfade target.
+		int      (*Animator_GetStateBuffer)(uint64_t entityID, int which, char* outBuffer, int capacity);
+		// values: normalizedTime, inTransition, transitionProgress (3).
+		void     (*Animator_GetPlayback)(uint64_t entityID, float* values, int count);
+		// which: 0 Controller, 1 Clip.
+		uint64_t (*Animator_GetAsset)(uint64_t entityID, int which);
+		void     (*Animator_SetAsset)(uint64_t entityID, int which, uint64_t guid);
+		float    (*Animator_GetSpeed)(uint64_t entityID);
+		void     (*Animator_SetSpeed)(uint64_t entityID, float speed);
+
+		// ── Camera3D screen <-> world (appended for binary compat) ──
+		// Screen points are viewport pixels, origin top-left (Input.MousePosition). values: origin xyz, direction xyz (6).
+		int      (*Camera3D_ScreenPointToRay)(uint64_t entityID, float screenX, float screenY, float* values, int count);
+		// values: screen x, y, depth (3). Returns 1 when the point is in front of the camera.
+		int      (*Camera3D_WorldToScreenPoint)(uint64_t entityID, float x, float y, float z, float* values, int count);
+
+		// ── Dev tools (appended for binary compat) ──
+		// Isolated player-data profile name ("" = the player's real saves).
+		int      (*Application_GetPrefsProfileBuffer)(char* outBuffer, int capacity);
+		// Runs a console line (native and C# commands); returns bytes written incl. terminator, output truncated.
+		int      (*DevConsole_Execute)(const char* line, char* outBuffer, int capacity);
+		// bit 0: the build offers the console, bit 1: it is open.
+		int      (*DevConsole_GetState)();
+
+		// ── Java bridge (appended for binary compat) ──
+		// Android: calls `static String method(String)` on a packaged Java class. Returns the answer's byte count
+		// (read it with Java_ReadResult), -1 when the call failed and off Android.
+		int      (*Java_Call)(const char* className, const char* method, const char* argument);
+		// Pops the next IndexBridge.send message as "channel message"; returns its byte count, -1 when none is queued.
+		int      (*Java_PollMessage)();
+		// Copies the calling thread's last Java_Call / Java_PollMessage answer; returns the bytes copied.
+		int      (*Java_ReadResult)(char* outBuffer, int capacity);
+
+		// ── SkinnedMeshRenderer (appended for binary compat) ──
+		// Packed: speed, loop, playOnAwake, time, playing (read-only), lit, castShadows, color rgba.
+		void     (*SkinnedMeshRenderer_Get)(uint64_t entityID, float* values, int count);
+		void     (*SkinnedMeshRenderer_Set)(uint64_t entityID, const float* values, int count);
+		// which: 0 = model, 1 = material.
+		uint64_t (*SkinnedMeshRenderer_GetAsset)(uint64_t entityID, int which);
+		void     (*SkinnedMeshRenderer_SetAsset)(uint64_t entityID, int which, uint64_t guid);
+		void     (*SkinnedMeshRenderer_Play)(uint64_t entityID, const char* clip, float crossFade);
+		// op: 0 = pause, 1 = resume, 2 = stop.
+		void     (*SkinnedMeshRenderer_Control)(uint64_t entityID, int op);
+		int      (*SkinnedMeshRenderer_GetClip)(uint64_t entityID, char* outBuffer, int capacity);
+		int      (*SkinnedMeshRenderer_GetClipCount)(uint64_t entityID);
+		int      (*SkinnedMeshRenderer_GetClipName)(uint64_t entityID, int index, char* outBuffer, int capacity);
+		float    (*SkinnedMeshRenderer_GetClipDuration)(uint64_t entityID, int index);
+		// 9 floats: world position, forward, up. Returns 0 for an unknown bone.
+		int      (*SkinnedMeshRenderer_GetBone)(uint64_t entityID, const char* bone, float* values, int count);
+
+		// ── Game localization (appended for binary compat) ──
+		// Translation of key (current language, then fallback, then the key itself); returns the bytes needed.
+		int      (*Localization_GetBuffer)(const char* key, char* outBuffer, int capacity);
+		int      (*Localization_HasKey)(const char* key);
+		// which: 0 = current, 1 = fallback, 2 = OS UI language.
+		int      (*Localization_GetLanguageBuffer)(int which, char* outBuffer, int capacity);
+		// 1 when the game has the language (it is then active), 0 otherwise.
+		int      (*Localization_SetLanguage)(const char* code);
+		// JSON array of {"code","name"}, fallback first; returns the bytes needed.
+		int      (*Localization_GetLanguagesBuffer)(char* outBuffer, int capacity);
+		// Bumped by every language switch or table reload.
+		uint32_t (*Localization_GetRevision)();
+		int      (*LocalizedText_GetKeyBuffer)(uint64_t entityID, char* outBuffer, int capacity);
+		void     (*LocalizedText_SetKey)(uint64_t entityID, const char* key);
+
+		// ── Image slice (appended for binary compat) ──
+		int      (*Image_GetSpriteNameBuffer)(uint64_t entityID, char* outBuffer, int capacity);
+		void     (*Image_SetSpriteName)(uint64_t entityID, const char* name);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.
@@ -1285,6 +1412,33 @@ namespace Index {
 		// phase: 0 = Enter, 1 = Stay, 2 = Exit; isTrigger routes to OnTrigger*3D; the normal points from other toward self.
 		void        (*InvokeCollision3D)(int32_t handle, int32_t phase, int32_t isTrigger, uint64_t selfEntityID, uint64_t otherEntityID,
 			float contactX, float contactY, float contactZ, float normalX, float normalY, float normalZ);
+
+		// ── Editor windows from C# (appended for binary compat) ──
+		// JSON array of {"type","title","menu"} for every EditorWindow subclass in the user and package assemblies;
+		// returns the bytes needed (incl. terminator), so a too-small buffer can be retried.
+		int         (*GetEditorWindowTypes)(char* outBuffer, int capacity);
+		// Calls OnGUI of the window of that type (created and OnOpen'ed on first use).
+		// 1 = drawn, 0 = type not found (assembly not loaded or class removed), -1 = OnGUI threw.
+		int         (*DrawEditorWindow)(const char* typeName);
+		void        (*CloseEditorWindow)(const char* typeName);
+
+		// ── Dev console (appended for binary compat) ──
+		// JSON array of {"name","usage","description"} for [DevCommand] methods and DevConsole.Register handlers;
+		// returns the bytes needed (incl. terminator), so a too-small buffer can be retried.
+		int         (*GetDevCommands)(char* outBuffer, int capacity);
+		// Runs one command (no ';'): 0 = no C# command of that name, 1 = ran, 2 = failed (bad arguments or it threw).
+		// The output is truncated to capacity: the command must never run twice.
+		int         (*ExecuteDevCommand)(const char* line, char* outBuffer, int capacity);
+
+		// ── Script callback mask (appended for binary compat) ──
+		// ScriptCallback bits the instance's class overrides (ScriptInstance.hpp); -1 when unknown.
+		int32_t     (*GetScriptCallbackMask)(int32_t handle);
+
+		// ── Game localization (appended for binary compat) ──
+		// The player's saved language (PlayerPrefs) or ""; returns the bytes needed incl. terminator.
+		int         (*GetSavedLanguage)(char* outBuffer, int capacity);
+		// After the game language changed or its tables were reloaded.
+		void        (*RaiseLanguageChanged)();
 	};
 
 } // namespace Index

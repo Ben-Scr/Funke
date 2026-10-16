@@ -1,5 +1,7 @@
 #include <Index.hpp>
 #include "Core/Application.hpp"
+#include "DevTools/DevConsole.hpp"
+#include "RuntimeConsoleLayer.hpp"
 #include "RuntimeLogLayer.hpp"
 #include "RuntimeProfilerLayer.hpp"
 #include "RuntimeSplashLayer.hpp"
@@ -25,6 +27,8 @@ using namespace Index;
   
 static std::string s_ProjectPath;
 static std::string s_SceneOverride;
+static std::string s_PrefsProfile;
+static bool s_HasPrefsProfile = false;
 
 
 class RuntimeApplication : public Index::Application {
@@ -126,6 +130,9 @@ public:
 	}
 
 	void Start() override {
+		// Application.Reload runs Start again on fresh layers.
+		m_StatsLayer = nullptr;
+		m_LogLayer = nullptr;
 #if INDEX_WITH_2D
 		if (!ProjectManager::GetCurrentProject()) {
 			EntityHelper::CreateCamera2DEntity();
@@ -141,21 +148,54 @@ public:
 			PushLayer<RuntimeProfilerLayer>("RuntimeProfiler");
 		}
 
-		const bool showStats = project ? project->ShowRuntimeStats : true;
+		const bool showStats = project ? project->ResolveShowRuntimeStats() : true;
 		if (showStats) {
-			PushLayer<RuntimeStatsLayer>("RuntimeStats");
+			m_StatsLayer = &PushLayer<RuntimeStatsLayer>("RuntimeStats");
 		}
 
-		const bool showLogs = project ? project->ShowRuntimeLogs : true;
+		const bool showLogs = project ? project->ResolveShowRuntimeLogs() : true;
 		if (showLogs) {
-			PushLayer<RuntimeLogLayer>("RuntimeLogs");
+			m_LogLayer = &PushLayer<RuntimeLogLayer>("RuntimeLogs");
 		}
+
+		// Registered in every build: input scripts and DevConsole.Execute work in Release too, only the window is gated.
+		RegisterRuntimeCommands();
+		DevConsole::SetEnabled(project ? project->ResolveDevConsole() : true);
+		if (DevConsole::IsEnabled()) {
+			PushOverlay<RuntimeConsoleLayer>("RuntimeConsole");
+		}
+	}
+
+	// The overlays exist only when the build enabled them at start; the commands create them on demand.
+	void RegisterRuntimeCommands() {
+		DevConsole::Register("stats", "[on|off|toggle]", "Frame stats overlay (also F6).", [this](const std::vector<std::string>& args) {
+			if (!m_StatsLayer) m_StatsLayer = &PushLayer<RuntimeStatsLayer>("RuntimeStats");
+			bool show = !m_StatsLayer->IsVisible();
+			if (!args.empty() && args[0] != "toggle" && !DevConsole::ParseBool(args[0], show)) {
+				return DevCommandResult::Error("Expected on, off or toggle.");
+			}
+			m_StatsLayer->SetVisible(show);
+			return DevCommandResult::Ok(show ? "stats on" : "stats off");
+		});
+		DevConsole::Register("logs", "[on|off|toggle]", "Log overlay (also F7).", [this](const std::vector<std::string>& args) {
+			if (!m_LogLayer) m_LogLayer = &PushLayer<RuntimeLogLayer>("RuntimeLogs");
+			bool show = !m_LogLayer->IsVisible();
+			if (!args.empty() && args[0] != "toggle" && !DevConsole::ParseBool(args[0], show)) {
+				return DevCommandResult::Error("Expected on, off or toggle.");
+			}
+			m_LogLayer->SetVisible(show);
+			return DevCommandResult::Ok(show ? "logs on" : "logs off");
+		});
 	}
 
 	void Update() override {}
 	void FixedUpdate() override {}
 	void OnPaused() override {}
 	void OnQuit() override {}
+
+private:
+	RuntimeStatsLayer* m_StatsLayer = nullptr;
+	RuntimeLogLayer* m_LogLayer = nullptr;
 };
 
 
@@ -177,6 +217,14 @@ Index::Application* Index::CreateApplication() {
 		else if (arg.rfind("--scene=", 0) == 0) {
 			s_SceneOverride = arg.substr(8);
 		}
+		else if (arg.rfind("--prefs-profile=", 0) == 0) {
+			s_PrefsProfile = arg.substr(16);
+			s_HasPrefsProfile = true;
+		}
+		else if (arg == "--prefs-profile" && i + 1 < args.Count && args[i + 1]) {
+			s_PrefsProfile = args[++i];
+			s_HasPrefsProfile = true;
+		}
 	}
 
 	// Auto-detect project: look for project.json next to the executable
@@ -189,6 +237,12 @@ Index::Application* Index::CreateApplication() {
 			throw std::runtime_error("Project load rejected: " + loadError);
 		}
 		IDX_CORE_INFO_TAG("Runtime", "Loaded project: {} ({})", project->Name, project->RootDirectory);
+		// --prefs-profile= (empty) turns a build's isolated profile off again.
+		if (s_HasPrefsProfile) project->PrefsProfile = IndexProject::SanitizePrefsProfileName(s_PrefsProfile);
+		if (!project->PrefsProfile.empty()) {
+			IDX_CORE_INFO_TAG("Runtime", "Player data profile '{}': PlayerPrefs and SaveData are kept apart from the real saves.",
+				project->PrefsProfile);
+		}
 		if (!s_SceneOverride.empty() && !File::Exists(project->GetSceneFilePath(s_SceneOverride))) {
 			throw std::runtime_error("--scene: no scene file resolves for '" + s_SceneOverride + "' under Assets/");
 		}

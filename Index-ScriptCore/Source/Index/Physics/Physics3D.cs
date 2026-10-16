@@ -55,4 +55,21 @@ public static unsafe class Physics3D
 
     public static bool Raycast(Vector3 origin, Vector3 direction, float maxDistance = 1000.0f)
         => Raycast(origin, direction, out _, maxDistance);
+
+    /// <summary>Closest non-trigger collider along the ray.</summary>
+    public static bool Raycast(Ray ray, out RaycastHit3D hit, float maxDistance = 1000.0f)
+        => Raycast(ray.Origin, ray.Direction, out hit, maxDistance);
+
+    public static bool Raycast(Ray ray, float maxDistance = 1000.0f) => Raycast(ray.Origin, ray.Direction, out _, maxDistance);
+
+    /// <summary>
+    /// What is under a screen point (viewport pixels, origin top-left: <c>Input.MousePosition</c>, a touch position), seen
+    /// through <c>Camera3D.Main</c>. False without a main camera or when nothing is hit.
+    /// </summary>
+    public static bool RaycastFromScreen(Vector2 screenPoint, out RaycastHit3D hit, float maxDistance = 1000.0f)
+    {
+        hit = default;
+        Camera3D? camera = Camera3D.Main;
+        return camera != null && Raycast(camera.ScreenPointToRay(screenPoint), out hit, maxDistance);
+    }
 }

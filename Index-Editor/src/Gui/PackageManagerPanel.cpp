@@ -355,8 +355,6 @@ namespace Index {
 
 		EditorUI::EndToolbar();
 
-		RenderModuleReloadBanner();
-
 		if (EditorUI::SectionHeader("Engine Modules", true)) {
 			RenderEngineModulesSection(RowMode::ShowAll);
 		}
@@ -892,7 +890,6 @@ namespace Index {
 		EditorUI::EndToolbar();
 
 		RenderLockRestoreBanner();
-		RenderModuleReloadBanner();
 
 		if (EditorUI::SectionHeader("Engine Modules##installed", true)) {
 			RenderEngineModulesSection(RowMode::InstalledOnly);
@@ -1050,33 +1047,6 @@ namespace Index {
 				ImGui::TextColored(EditorTheme::Colors::Error(), "%s (have %s)", label.c_str(), manifest->Version.c_str());
 			}
 		}
-	}
-
-	void PackageManagerPanel::RenderModuleReloadBanner() {
-		const IndexProject* project = ProjectManager::GetCurrentProject();
-		if (!project) return;
-		bool pending = false;
-		for (EngineModule module : k_AllEngineModules) {
-			pending |= EngineModules::IsCompiled(module)
-				&& project->HasModule(EngineModules::GetId(module)) != EngineModules::IsActive(module);
-		}
-		if (!pending) return;
-
-		ImGui::PushID("module-reload");
-		BeginPackageCard();
-		ImGui::AlignTextToFramePadding();
-		EditorUI::StatusText(EditorUI::Tone::Warning, "Engine module changes apply after the editor reloads.");
-		const bool automating = m_AutomationTask && m_AutomationTask->Running.load(std::memory_order_acquire);
-		const bool busy = m_IsOperating || automating;
-		const float buttonWidth = 110.0f;
-		ImGui::SameLine(CardButtonX(buttonWidth));
-		if (busy || !m_ReloadEditor) ImGui::BeginDisabled();
-		if (EditorUI::Button("Reload Editor", EditorUI::ButtonVariant::Primary, ImVec2(buttonWidth, 0))) {
-			m_ReloadEditor();
-		}
-		if (busy || !m_ReloadEditor) ImGui::EndDisabled();
-		EndPackageCard();
-		ImGui::PopID();
 	}
 
 	void PackageManagerPanel::RenderEngineModulesSection(RowMode mode) {

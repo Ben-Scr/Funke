@@ -31,7 +31,7 @@ namespace Index::Codegen {
     // PREFIX of the larger C++ struct — i.e. the C++ type carries trailing
     // non-memcpy-safe state (std::string, owning containers) past the bytes
     // the managed side knows about. SpriteRendererComponent is the case:
-    // NativeSpriteRenderer is the 40-byte POD prefix; SpriteName (std::string)
+    // NativeSpriteRenderer is the POD prefix; SpriteName (std::string)
     // lives past it.
     //
     // The auto byte-emplacer in ComponentRegistry is gated on

@@ -9,9 +9,16 @@ public static class Application
     public static event Action? OnStart;
     public static event Action? OnQuit;
 
+    /// <summary>
+    /// Editor only: Play mode stopped and the scenes were restored. Static state survives Play sessions (scripts are not
+    /// reloaded), so packages and global services reset what one session left behind here.
+    /// </summary>
+    public static event Action? OnPlayModeExited;
+
     internal static void RaiseApplicationPaused() => OnPaused?.Invoke();
     internal static void RaiseApplicationStart() => OnStart?.Invoke();
     internal static void RaiseApplicationQuit() => OnQuit?.Invoke();
+    internal static void RaisePlayModeExited() => OnPlayModeExited?.Invoke();
 
     public static float TargetFrameRate
     {
@@ -27,10 +34,18 @@ public static class Application
 
     /// <summary>
     /// Writable per-game data directory for save files and settings: <c>%LOCALAPPDATA%/&lt;Company&gt;/&lt;Name&gt;</c>.
-    /// Editor play mode and the built game share it. Guaranteed to exist.
+    /// Editor play mode and the built game share it. With a <see cref="PrefsProfile"/> it is
+    /// <c>…/&lt;Name&gt;/Profiles/&lt;profile&gt;</c> instead. Guaranteed to exist.
     /// </summary>
     public static string PersistentDataPath => EnsureDirectory(
-        BuildGameDataPath(GetLocalApplicationDataPath(), Company, Name));
+        WithPrefsProfile(BuildGameDataPath(GetLocalApplicationDataPath(), Company, Name), PrefsProfile));
+
+    /// <summary>
+    /// Isolated player-data profile ("isolatedPrefs" in a build profile, <c>"prefsProfile"</c> in project.json or
+    /// <c>--prefs-profile=&lt;name&gt;</c> on the command line); empty for the player's real saves. Test runs use it so
+    /// PlayerPrefs and SaveData never touch real progress.
+    /// </summary>
+    public static string PrefsProfile => InternalCalls.Application_GetPrefsProfile();
 
     /// <summary>Absolute path to the current project's <c>Assets</c> folder (e.g. <c>…/MyGame/Assets</c>); empty if no project is loaded.</summary>
     public static string DataPath => InternalCalls.Application_GetDataPath();
@@ -112,6 +127,9 @@ public static class Application
         => Path.Combine(root,
             ToPathSegment(company, DefaultCompanyFolder),
             ToPathSegment(product, DefaultProductFolder));
+
+    internal static string WithPrefsProfile(string dataPath, string? profile)
+        => string.IsNullOrWhiteSpace(profile) ? dataPath : Path.Combine(dataPath, "Profiles", ToPathSegment(profile, "Test"));
 
     internal static string ToPathSegment(string? value, string fallback)
     {

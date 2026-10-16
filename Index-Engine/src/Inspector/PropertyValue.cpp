@@ -189,6 +189,10 @@ namespace Index {
 				FormatInt(IntVec[2]) + "," + FormatInt(IntVec[3]);
 		}
 		case PropertyType::TextureRef:
+			// Inverse of FromString's slice encoding, so animation keys keep the slice.
+			if (UIntValue == 0) return std::string();
+			if (!StringValue.empty()) return std::to_string(UIntValue) + "|slice|" + StringValue;
+			return std::to_string(UIntValue);
 		case PropertyType::AudioRef:
 		case PropertyType::AssetRef:
 		case PropertyType::SceneRef:

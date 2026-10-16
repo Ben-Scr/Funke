@@ -40,6 +40,7 @@
 #include "Events/EventDispatcher.hpp"
 #include "Events/SceneEvents.hpp"
 #include "Events/WindowFocusEvent.hpp"
+#include "Events/WindowLostFocusEvent.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Graphics/RenderSettings.hpp"
 #include "Graphics/GizmoRenderer.hpp"
@@ -53,10 +54,13 @@
 #include <Scene/EntityHelper.hpp>
 
 #include "Graphics/TextureManager.hpp"
+#include "Graphics/SkyAmbient.hpp"
+#include "Graphics/SpriteUVResolver.hpp"
 #include "Graphics/Text/FontManager.hpp"
 #include "Audio/AudioManager.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Serialization/Path.hpp"
+#include "Localization/GameLocalization.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/SceneSerializerShared.hpp"
@@ -70,6 +74,7 @@
 #include "Editor/ApplicationEditorAccess.hpp"
 #include "Editor/EditorComponentRegistration.hpp"
 #include "Editor/EditorPreferences.hpp"
+#include "Editor/EditorRestart.hpp"
 #include "Editor/ExternalEditor.hpp"
 #include "Inspector/ReferencePicker.hpp"
 #include "Gui/AddComponentPopup.hpp"
@@ -981,6 +986,7 @@ namespace Index {
 
 		m_ProfilerPanel.Initialize();
 		m_SpriteEditorPanel.Initialize();
+		m_ScriptWindows.Initialize();
 
 		// Load BEFORE ApplyTheme: ImGuiContextLayer already ran ApplyIndexTheme on its OnAttach; this reskins the live style with the user's saved choice.
 		EditorPreferences::Load();
@@ -1060,6 +1066,7 @@ namespace Index {
 		// MUST precede WebGPU teardown: Texture2D destructor touches the device.
 		m_Splash.Shutdown();
 		m_ProfilerPanel.Shutdown();
+		m_ScriptWindows.Shutdown();
 		m_SpriteEditorPanel.Shutdown();
 		m_EditorPreferencesPanel.Shutdown();
 		ApplicationEditorAccess::SetGameInputEnabled(true);
@@ -1070,6 +1077,7 @@ namespace Index {
 		}
 		m_AssetWatcher.Stop();
 		m_ContentWatcher.Stop();
+		m_LocalizationWatcher.Stop();
 		m_ProjectFileWatcher.Stop();
 		m_AssetWatcherRoot.clear();
 		m_LogDispatchState.reset();
@@ -1094,6 +1102,11 @@ namespace Index {
 		EventDispatcher dispatcher(event);
 		dispatcher.Dispatch<WindowFocusEvent>([this](WindowFocusEvent&) {
 			m_AssetBrowser.RequestRefresh();
+			return false;
+			});
+		dispatcher.Dispatch<WindowLostFocusEvent>([this](WindowLostFocusEvent&) {
+			// Coming back to the editor must not grab the mouse; a click into the Game View takes it again.
+			if (Application::GetIsPlaying()) m_GameCursorReleased = true;
 			return false;
 			});
 
@@ -1129,27 +1142,49 @@ namespace Index {
 	}
 
 	void ImGuiEditorLayer::OnUpdate(Application& app, float dt) {
-		// Scope the project's custom game cursor to the Game View. The engine
-		// cursor gate keeps it off elsewhere; NoMouseCursorChange lets ImGui own
-		// the cursor over the rest of the editor and reassert cleanly on exit.
+		// As in Unity, the game owns the mouse (lock/hide, custom cursor) only while it plays in a focused Game View.
+		// Escape or switching apps hands the plain OS cursor back to the editor without touching what the game asked
+		// for; focusing or clicking into the Game View applies the game's settings again.
 		// Uses last frame's hover/focus — a 1-frame settle is imperceptible.
-		// A game that hides/locks the cursor (Cursor.Visible = false) owns it over the
-		// Game View too: without NoMouseCursorChange the SDL3 backend calls
-		// SDL_ShowCursor every frame and undoes it.
 		if (Window* win = app.GetWindow()) {
 			ImGuiIO& io = ImGui::GetIO();
-			const bool customCursorHere = win->HasGameCursor() && (m_IsGameViewHovered || m_IsGameViewFocused);
-			const bool hiddenHere = win->GetCursorMode() != 0 && m_IsGameViewHovered;
-			if (customCursorHere || hiddenHere)
+			const bool playing = Application::GetIsPlaying();
+			// Only a running game may hold the mouse; anything left locked outside play mode would trap the editor.
+			if (!playing && win->GetCursorMode() != 0) win->SetCursorMode(0);
+			const int requestedMode = win->GetCursorMode();
+			const bool gameViewFocusGained = m_IsGameViewFocused && !m_WasGameViewFocused;
+			// A fresh lock from the game (e.g. closing its pause menu with Escape) takes the mouse back too.
+			const bool freshLock = m_IsGameViewFocused && requestedMode != 0 && m_CursorModeLastUpdate == 0;
+			if (!playing || gameViewFocusGained || m_GameViewCanvasClicked || freshLock)
+				m_GameCursorReleased = false;
+			else if (requestedMode != 0 && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+				m_GameCursorReleased = true;
+			m_GameViewCanvasClicked = false;
+			m_WasGameViewFocused = m_IsGameViewFocused;
+			m_CursorModeLastUpdate = requestedMode;
+			win->SetCursorModeSuspended(!playing || !m_IsGameViewFocused || m_GameCursorReleased);
+
+			// A locked/hidden cursor is parked on the Game View's centre (Window::GetCursorLockPoint); ImGui's pointer is
+			// held there too, so clicks while playing reach the Game View and no other panel.
+			const bool captured = win->GetAppliedCursorMode() != 0;
+			if (captured) {
+				Vec2 lockPoint = win->GetCursorLockPoint();
+				if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+					const Vec2Int windowPosition = win->GetPosition();
+					lockPoint.x += static_cast<float>(windowPosition.x);
+					lockPoint.y += static_cast<float>(windowPosition.y);
+				}
+				io.AddMousePosEvent(lockPoint.x, lockPoint.y);
+			}
+			const bool customCursorHere = win->HasGameCursor() && !m_GameCursorReleased
+				&& (m_IsGameViewHovered || m_IsGameViewFocused);
+			// Without NoMouseCursorChange the SDL3 backend calls SDL_ShowCursor every frame and undoes a hidden cursor.
+			if (customCursorHere || captured)
 				io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 			else
 				io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
 			if (win->HasGameCursor())
 				win->SetGameCursorEnabled(customCursorHere);
-			// ImGui showed the cursor while the pointer was outside; hide it again on the way back in.
-			if (hiddenHere && !m_GameViewHidesCursor)
-				win->SetCursorMode(win->GetCursorMode());
-			m_GameViewHidesCursor = hiddenHere;
 		}
 
 		DrainPendingLogEntries();
@@ -1183,6 +1218,9 @@ namespace Index {
 							return;
 						}
 						const size_t reloaded = TextureManager::ReloadTexturesFromDisk();
+						SkyAmbient::ClearCache();
+						// Slice rects and borders may come from an externally edited .meta.
+						NotifySpriteSliceEpochBumped();
 						AssetRegistry::MarkDirty();
 						// Loads that failed on a half-written file get another try, and templates baked from them are dropped.
 						TextureManager::ResolveMissingSceneTextures();
@@ -1199,8 +1237,13 @@ namespace Index {
 					});
 				m_ContentWatcher.Watch(
 					std::vector<std::string>{ m_AssetWatcherRoot },
-					std::vector<std::string>{ ".scene", ".prefab", ".wav", ".mp3", ".flac", ".ttf", ".otf", ".dataasset", ".material", ".obj" },
+					std::vector<std::string>{ ".scene", ".prefab", ".wav", ".mp3", ".flac", ".ttf", ".otf", ".dataasset", ".material", ".obj", ".gltf", ".glb", ".anim", ".animctrl" },
 					[this]() { ReloadExternallyChangedContent(); });
+				// The whole Assets tree: the Localization folder may not exist yet. Reload is a no-op when the tables didn't change.
+				m_LocalizationWatcher.Watch(
+					std::vector<std::string>{ m_AssetWatcherRoot },
+					std::vector<std::string>{ ".json" },
+					[]() { GameLocalization::Reload(); });
 				m_ProjectFileWatcher.Watch(
 					std::vector<std::string>{ project->ProjectFilePath, project->GetBuildProfilesDirectory() },
 					std::vector<std::string>{ "project.json", ".build" },
@@ -1211,6 +1254,7 @@ namespace Index {
 				m_AssetWatcher.Poll(0.25f);
 				m_ContentWatcher.Poll(0.25f);
 			}
+			m_LocalizationWatcher.Poll(0.25f);
 			m_ProjectFileWatcher.Poll(0.25f);
 			const bool canApplyExternalChanges = !Application::GetIsPlaying()
 				&& m_BuildState == 0 && m_ReserializeState == 0;
@@ -1230,6 +1274,7 @@ namespace Index {
 		else if (!m_AssetWatcherRoot.empty()) {
 			m_AssetWatcher.Stop();
 			m_ContentWatcher.Stop();
+			m_LocalizationWatcher.Stop();
 			m_ProjectFileWatcher.Stop();
 			m_AssetWatcherRoot.clear();
 			m_ExternalSceneConflicts.clear();
@@ -1241,6 +1286,11 @@ namespace Index {
 			RequestPlayModeStop();
 		}
 		ProcessPendingPlayModeStop();
+		// Click-to-edit-frame latency: the stop itself plus the first edit-mode frame (texture/pipeline warm-up).
+		if (m_PlayModeStopFramesToMeasure > 0 && --m_PlayModeStopFramesToMeasure == 0) {
+			IDX_INFO_TAG("PlayMode", "Stop to second edit frame: {:.1f} ms", std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - m_PlayModeStopRequestTime).count());
+		}
 
 		Input& input = app.GetInput();
 		Scene* activeScene = app.GetSceneManager() ? SceneManager::GetActiveScene() : nullptr;
@@ -1530,14 +1580,27 @@ namespace Index {
 	//  Dockspace & Menu
 	// ──────────────────────────────────────────────
 
-	// Icon for an entity's dominant type; shared by the hierarchy rows and the inspector header.
+	template <typename T>
+	static bool TryComponentIcon(Scene& scene, EntityHandle handle, const char*& icon) {
+		if (!scene.HasComponent<T>(handle)) return false;
+		const ComponentInfo* info = SceneManager::GetComponentRegistry().GetInfo<T>();
+		if (info && !info->icon.empty()) icon = info->icon.c_str();
+		return true;
+	}
+
+	// Icon (ComponentInfo::icon) of an entity's dominant component, first match wins; shared by the hierarchy rows and the inspector header.
 	static const char* EntityTypeIconName(Scene& scene, EntityHandle handle) {
-		if (scene.HasComponent<Camera2DComponent>(handle) || scene.HasComponent<Camera3DComponent>(handle)) return "camera";
-		if (scene.HasComponent<DirectionalLightComponent>(handle) || scene.HasComponent<PointLightComponent>(handle)
-			|| scene.HasComponent<SpotLightComponent>(handle)) return "light_sun";
-		if (scene.HasComponent<ParticleSystem2DComponent>(handle) || scene.HasComponent<ParticleSystem3DComponent>(handle)) return "light_sun";
-		if (scene.HasComponent<RectTransform2DComponent>(handle)) return "bounding_box";
-		return "entity";
+		const char* icon = "entity";
+		TryComponentIcon<Camera2DComponent>(scene, handle, icon)
+			|| TryComponentIcon<Camera3DComponent>(scene, handle, icon)
+			|| TryComponentIcon<DirectionalLightComponent>(scene, handle, icon)
+			|| TryComponentIcon<PointLightComponent>(scene, handle, icon)
+			|| TryComponentIcon<SpotLightComponent>(scene, handle, icon)
+			|| TryComponentIcon<ParticleSystem2DComponent>(scene, handle, icon)
+			|| TryComponentIcon<ParticleSystem3DComponent>(scene, handle, icon)
+			|| TryComponentIcon<AudioSourceComponent>(scene, handle, icon)
+			|| TryComponentIcon<RectTransform2DComponent>(scene, handle, icon);
+		return icon;
 	}
 
 	void ImGuiEditorLayer::RenderDockspaceRoot() {
@@ -1660,6 +1723,12 @@ namespace Index {
 				PerformUndoRedo(*undoScene, true);
 			}
 			ImGui::Separator();
+			if (ImGui::BeginMenu("View")) {
+				RenderEditorViewSettingsMenu();
+				ImGui::Separator();
+				RenderGameViewSettingsMenu();
+				ImGui::EndMenu();
+			}
 			if (ImGui::MenuItem("Preferences...")) {
 				m_ShowEditorPreferences = true;
 			}
@@ -1668,6 +1737,10 @@ namespace Index {
 
 		if (ImGui::BeginMenu("Tools")) {
 			ImGui::MenuItem("Profiler", "Ctrl+F6", &m_ShowProfiler);
+			ImGui::MenuItem("Animation", nullptr, &m_ShowAnimationWindow);
+			ImGui::MenuItem("Animator", nullptr, &m_ShowAnimatorWindow);
+			// Windows written in C# by the game or its packages (Index.Editor.EditorWindow).
+			m_ScriptWindows.DrawMenuItems();
 			ImGui::EndMenu();
 		}
 
@@ -1796,7 +1869,8 @@ namespace Index {
 		const bool hasProject = ProjectManager::HasProject();
 		Scene* undoScene = GetContextScene();
 		const bool canEditHistory = undoScene && !playing;
-		const Command commands[] = {
+		const bool canSwitchViewMode = EngineModules::IsActive(EngineModule::TwoD) && EngineModules::IsActive(EngineModule::ThreeD);
+		std::vector<Command> commands = {
 			{ "Save Scene", "Ctrl+S", !playing, [&]() { SaveScenesFromMenu(scene); } },
 			{ "Enter Play Mode", nullptr, !playing && !m_PlayModeRecompilePending, [&]() {
 				if (Scene* active = SceneManager::GetActiveScene()) BeginPlayModeRequest(*active);
@@ -1809,10 +1883,54 @@ namespace Index {
 			{ "Package Manager", nullptr, hasProject, [&]() { m_ShowPackageManager = true; } },
 			{ "Preferences", nullptr, true, [&]() { m_ShowEditorPreferences = true; } },
 			{ "Toggle Profiler", "Ctrl+F6", true, [&]() { m_ShowProfiler = !m_ShowProfiler; } },
+			{ "Animation Window", nullptr, true, [&]() { m_ShowAnimationWindow = true; } },
+			{ "Animator Window", nullptr, true, [&]() { m_ShowAnimatorWindow = true; } },
 			{ "Reset Layout", nullptr, true, [&]() { ImGuiContextLayer::ResetLayoutToBundledDefault(); } },
+			// Editor View toolbar actions stay here so hiding them in Edit > View loses nothing.
+			{ "Gizmo Mode: None", nullptr, true, [&]() { m_GizmoMode = EditorGizmoMode::None; } },
+			{ "Gizmo Mode: Move", nullptr, true, [&]() { m_GizmoMode = EditorGizmoMode::Translate; } },
+			{ "Gizmo Mode: Rotate", nullptr, true, [&]() { m_GizmoMode = EditorGizmoMode::Rotate; } },
+			{ "Gizmo Mode: Scale", nullptr, true, [&]() { m_GizmoMode = EditorGizmoMode::Scale; } },
+			{ "Gizmo Mode: Rect", nullptr, true, [&]() { m_GizmoMode = EditorGizmoMode::Bounds; } },
+			{ "Toggle 3D Editor View", nullptr, canSwitchViewMode, [&]() { SetEditorView3D(!m_EditorView3D); } },
+			{ "Draw Mode: Default", nullptr, true, [&]() { m_EditorViewDrawMode = EditorViewDrawMode::Default; } },
+			{ "Draw Mode: Triangle", nullptr, true, [&]() { m_EditorViewDrawMode = EditorViewDrawMode::Triangle; } },
+			{ "Draw Mode: Mixed", nullptr, true, [&]() { m_EditorViewDrawMode = EditorViewDrawMode::Mixed; } },
+			{ "Toggle Gizmos", nullptr, true, [&]() { m_ShowGizmos = !m_ShowGizmos; } },
+			{ "Toggle Post Processing in Editor View", nullptr, true, [&]() { m_ShowPostProcessing = !m_ShowPostProcessing; } },
+			{ "Toggle Grid Snap", nullptr, true, [&]() { EditorPreferences::SetGridSnapEnabled(!EditorPreferences::GetGridSnapEnabled()); } },
+			{ "Reset Editor View Toolbar", nullptr, !EditorPreferences::IsEditorViewToolbarDefault(),
+				[&]() { EditorPreferences::ResetEditorViewToolbar(); } },
+			// Game View toolbar actions, reachable with the toolbar hidden.
+			{ "Toggle Game View Stats", nullptr, true, [&]() { m_ShowGameViewStats = !m_ShowGameViewStats; } },
+			{ "Toggle Game View Logs", nullptr, true, [&]() { m_ShowGameViewLogs = !m_ShowGameViewLogs; } },
+			{ "Toggle Game View VSync", nullptr, true, [&]() {
+				m_GameViewVsync = !m_GameViewVsync;
+				m_GameViewHasRendered = false;
+				if (IndexProject* project = ProjectManager::GetCurrentProject()) {
+					project->GameViewVsync = m_GameViewVsync;
+					project->Save();
+				}
+			} },
+			{ "Toggle Game View Toolbar", nullptr, true, [&]() {
+				EditorPreferences::SetGameViewToolbarItemVisible(GameViewToolbarItem::Toolbar,
+					!EditorPreferences::IsGameViewToolbarItemVisible(GameViewToolbarItem::Toolbar));
+			} },
+			{ "Reset Game View Toolbar", nullptr, !EditorPreferences::IsGameViewToolbarDefault(),
+				[&]() { EditorPreferences::ResetGameViewToolbar(); } },
 			{ "Reload Editor", nullptr, true, [&]() { RequestEditorAction(PendingEditorAction::Reload); } },
 			{ "Quit", nullptr, true, [&]() { Application::RequestQuit(); } },
 		};
+
+		// Labels must outlive the commands that point at them.
+		m_ScriptWindows.Refresh();
+		std::vector<std::string> scriptWindowLabels;
+		scriptWindowLabels.reserve(m_ScriptWindows.GetTypes().size());
+		for (const ScriptEditorWindows::WindowType& window : m_ScriptWindows.GetTypes()) {
+			scriptWindowLabels.push_back("Open " + window.Title);
+			const std::string type = window.Type;
+			commands.push_back({ scriptWindowLabels.back().c_str(), nullptr, true, [this, type]() { m_ScriptWindows.Open(type); } });
+		}
 
 		if (justOpened) ImGui::SetKeyboardFocusHere();
 		if (EditorUI::SearchField("##CommandFilter", m_CommandPaletteBuffer, sizeof(m_CommandPaletteBuffer), "Type a command...")) {
@@ -1904,6 +2022,25 @@ namespace Index {
 				separator();
 				ImGui::AlignTextToFramePadding();
 				ImGui::TextDisabled("%zu selected", m_SelectedEntities.size());
+			}
+		}
+
+		// After "Later": the pending reload stays visible until it happens.
+		if (EditorRestart::HasPending()) {
+			if (scene) separator();
+			ImGui::AlignTextToFramePadding();
+			EditorUI::StatusText(EditorUI::Tone::Warning, "Reload pending");
+			if (ImGui::IsItemHovered()) {
+				std::string reasons;
+				for (const EditorRestart::Reason& reason : EditorRestart::GetPending()) {
+					reasons += (reasons.empty() ? "" : "\n") + reason.Text;
+				}
+				ImGui::SetTooltip("%s", reasons.c_str());
+			}
+			ImGui::SameLine(0.0f, 6.0f);
+			if (ImGui::SmallButton("Reload Now##StatusBarReload")) {
+				RequestEditorAction(EditorRestart::GetPendingKind() == EditorRestart::Kind::Restart
+					? PendingEditorAction::Restart : PendingEditorAction::Reload);
 			}
 		}
 
@@ -2123,6 +2260,7 @@ namespace Index {
 		m_StepFrames = 0;
 		ApplicationEditorAccess::SetPlaymodePaused(false);
 		Application::SetIsPlaying(true);
+		m_FocusGameViewOnPlay = true;
 		// Reset Time.TimeSinceStartup / Time.RealtimeSinceStartup so each
 		// play session starts at t=0 from a script's perspective.
 		ApplicationEditorAccess::MarkGameStart();
@@ -2273,16 +2411,7 @@ namespace Index {
 
 			ImGui::SameLine();
 			if (IconButton("##Stop", "stop", iconSize, btnSize, /*accent=*/true)) {
-				{
-					Scene* act = SceneManager::GetActiveScene();
-					if (act) {
-						for (auto [ent, audio] : act->GetRegistry().view<AudioSourceComponent>().each()) {
-							if (audio.IsPlaying() || audio.IsPaused()) audio.Stop();
-						}
-					}
-				}
-
-				RestoreEditorSceneAfterPlaymode();
+				RequestPlayModeStop();
 			}
 			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Stop (exit playmode)");
 		}
@@ -2325,11 +2454,8 @@ namespace Index {
 			ImGui::TextDisabled("Waiting for script compilation...");
 		}
 
-		// Live playing flag (not the top-of-function snapshot): a Stop click
-		// earlier in this frame already cleared m_IsPlaying via
-		// RestoreEditorSceneAfterPlaymode + reset m_StepFrames, but if a
-		// future handler resets one and not the other, the live read keeps
-		// us from pausing after the editor has left playmode.
+		// Live playing flag (not the top-of-function snapshot): keeps us from
+		// pausing if a handler earlier in this frame already left playmode.
 		if (Application::GetIsPlaying() && m_StepFrames > 0) {
 			m_StepFrames--;
 			if (m_StepFrames == 0) {
@@ -2447,13 +2573,20 @@ namespace Index {
 			"LaunchStandalone: spawning '{}' for project '{}'",
 			runtimeStr, project->Name);
 
-		if (!Process::LaunchDetached({ runtimeStr, projectArg },
-			runtimePath.parent_path()))
+		unsigned long runtimePid = 0;
+		std::string loaderError;
+		if (!Process::LaunchDetachedChecked({ runtimeStr, projectArg },
+			runtimePath.parent_path(), runtimePid, loaderError))
 		{
-			IDX_CORE_ERROR_TAG("Editor",
-				"LaunchStandalone: failed to spawn '{}' (Process::LaunchDetached "
-				"returned false). See earlier log for the OS-level reason.",
-				runtimeStr);
+			if (!loaderError.empty()) {
+				IDX_CORE_ERROR_TAG("Editor", "LaunchStandalone: '{}' did not start. {}", runtimeStr, loaderError);
+			}
+			else {
+				IDX_CORE_ERROR_TAG("Editor",
+					"LaunchStandalone: failed to spawn '{}' (Process::LaunchDetached "
+					"returned false). See earlier log for the OS-level reason.",
+					runtimeStr);
+			}
 		}
 	}
 
@@ -2511,11 +2644,55 @@ namespace Index {
 		}
 	}
 
+	void ImGuiEditorLayer::RequestPlayModeStop(std::string sceneToOpen) {
+		if (!m_PlayModeStopRequested) m_PlayModeStopRequestTime = std::chrono::steady_clock::now();
+		m_PlayModeStopRequested = true;
+		if (!sceneToOpen.empty()) {
+			m_PlayModeStopOpenScene = std::move(sceneToOpen);
+		}
+	}
+
+	void ImGuiEditorLayer::ProcessPendingPlayModeStop() {
+		if (!m_PlayModeStopRequested) {
+			return;
+		}
+		m_PlayModeStopRequested = false;
+		std::string sceneToOpen = std::exchange(m_PlayModeStopOpenScene, {});
+		if (!Application::GetIsPlaying()) {
+			return;
+		}
+
+		if (Scene* act = SceneManager::GetActiveScene()) {
+			for (auto [ent, audio] : act->GetRegistry().view<AudioSourceComponent>().each()) {
+				if (audio.IsPlaying() || audio.IsPaused()) audio.Stop();
+			}
+		}
+		// The game can't release a mouse it locked any more; give it back before the editor scene returns.
+		if (Window* window = Application::GetWindow()) window->SetCursorMode(0);
+		const bool restored = RestoreEditorSceneAfterPlaymode();
+		if (restored) m_PlayModeStopFramesToMeasure = 2;
+		if (restored && !sceneToOpen.empty()) {
+			RequestEditorAction(PendingEditorAction::OpenScene, std::move(sceneToOpen));
+		}
+	}
+
 	bool ImGuiEditorLayer::RestoreEditorSceneAfterPlaymode() {
 		if (m_PlayModeScenes.empty()) {
 			IDX_ERROR_TAG("PlayMode", "No edit-mode scene snapshot is available.");
 			return false;
 		}
+
+		INDEX_PROFILE_SCOPE("PlayMode Stop");
+		using StopClock = std::chrono::steady_clock;
+		const StopClock::time_point stopStart = StopClock::now();
+		StopClock::time_point stageStart = stopStart;
+		auto stageMs = [&stageStart]() {
+			const StopClock::time_point now = StopClock::now();
+			const double ms = std::chrono::duration<double, std::milli>(now - stageStart).count();
+			stageStart = now;
+			return ms;
+		};
+		double reloadMs = 0.0, releaseMs = 0.0, scriptsMs = 0.0;
 
 		const bool inPrefabEdit = IsInPrefabEditMode();
 		const LoadedSceneSelectionSnapshot interruptedPlaySelection = CaptureLoadedSceneSelection();
@@ -2587,6 +2764,7 @@ namespace Index {
 			}
 		}
 
+		reloadMs = stageMs();
 		std::vector<Scene*> stagedScenePointers;
 		std::vector<std::shared_ptr<Scene>> restoredScenes;
 		std::unordered_set<std::string> restoredNames;
@@ -2630,7 +2808,7 @@ namespace Index {
 		activatedScenes.reserve(restoredScenes.size());
 		Application::SetIsPlaying(playModeRestore.PreviousState);
 		for (const std::shared_ptr<Scene>& playScene : playScenes) {
-			if (SceneManager::BeginLoadedSceneRecovery(playScene)) continue;
+			if (SceneManager::SuspendLoadedSceneForRelease(playScene)) continue;
 
 			discardStagedScenes();
 			Application::SetIsPlaying(playModeRestore.PreviousState);
@@ -2698,6 +2876,7 @@ namespace Index {
 		playModeRestore.Armed = false;
 		bool restoreSucceeded = true;
 		std::string restoreFailure;
+		const double suspendMs = stageMs();
 		for (const std::shared_ptr<Scene>& playScene : playScenes) {
 			if (!SceneManager::ReleaseLoadedSceneInstance(playScene, false, false) && playScene->IsLoaded()) {
 				restoreSucceeded = false;
@@ -2710,9 +2889,11 @@ namespace Index {
 		}
 		// Scripts own their streams; one that wasn't disposed would keep playing in edit mode.
 		AudioStreams::CloseAll();
+		releaseMs = stageMs();
 
 		try {
 			ScriptEngine::OnPlayModeExited();
+			scriptsMs = stageMs();
 		}
 		catch (const std::exception& exception) {
 			restoreSucceeded = false;
@@ -2748,7 +2929,8 @@ namespace Index {
 
 		if (restoreSucceeded) {
 			for (const std::shared_ptr<Scene>& restoredScene : restoredScenes) {
-				if (!SceneManager::ActivateSuspendedScene(restoredScene)) {
+				// Just deserialized from the Play snapshot, so the rollback baseline needs no extra round-trip check.
+				if (!SceneManager::ActivateSuspendedScene(restoredScene, false)) {
 					restoreSucceeded = false;
 					restoreFailure = "Restored scene '" + restoredScene->GetName() + "' could not be activated.";
 					break;
@@ -2863,6 +3045,10 @@ namespace Index {
 			IDX_ERROR_TAG("PlayMode", "{}", m_PlayModeRestoreError);
 			return false;
 		}
+		const double activateMs = stageMs();
+		IDX_INFO_TAG("PlayMode", "Stopped in {:.1f} ms (reload {:.1f}, suspend {:.1f}, release {:.1f}, scripts {:.1f}, activate {:.1f})",
+			std::chrono::duration<double, std::milli>(StopClock::now() - stopStart).count(),
+			reloadMs, suspendMs, releaseMs, scriptsMs, activateMs);
 		return true;
 	}
 
@@ -3305,6 +3491,10 @@ namespace Index {
 
 	void ImGuiEditorLayer::FocusSelectedEntity(Scene& scene) {
 		if (m_SelectedEntity == entt::null || !scene.IsValid(m_SelectedEntity)) {
+			return;
+		}
+		if (m_EditorView3D) {
+			FocusSelectedEntity3D(scene);
 			return;
 		}
 
@@ -4165,26 +4355,9 @@ namespace Index {
 
 		// Before the read: an edit landing mid-read must still count as a change afterwards.
 		KnownFileStamps::Record(path);
-		Json::Value root;
-		std::string parseError;
-		if (!SceneSerializerStorage::ReadRootFromFile(path, root, &parseError) || !root.IsObject()) {
-			IDX_CORE_ERROR_TAG("PrefabEdit", "Failed to parse {}: {}", path, parseError);
-			return false;
-		}
-
-		const Json::Value* entityValue = root.FindMember("Entity");
-		if (!entityValue) entityValue = root.FindMember("prefab");
-		if (!entityValue || !entityValue->IsObject()) {
-			IDX_CORE_WARN_TAG("PrefabEdit", "No Entity/prefab block in {}", path);
-			return false;
-		}
-		auto detached = Scene::CreateDetachedScene("##PrefabEdit");
-		const EntityHandle rootEntity = SceneSerializer::DeserializeEntityFromValue(*detached, root);
-		if (rootEntity == entt::null || !detached->IsValid(rootEntity)) {
-			IDX_CORE_ERROR_TAG("PrefabEdit", "Failed to deserialize prefab root from {}", path);
-			return false;
-		}
-		detached->ClearDirty();
+		std::unique_ptr<Scene> detached;
+		const EntityHandle rootEntity = LoadPrefabSourceIntoDetachedScene(path, "##PrefabEdit", "PrefabEdit", detached);
+		if (rootEntity == entt::null) return false;
 		TransformHierarchySystem::Propagate(*detached);
 
 		if (m_PrefabEditScene) {
@@ -4401,6 +4574,7 @@ namespace Index {
 	}
 
 	bool ImGuiEditorLayer::HasEntityShortcutFocus() const {
+		if ((m_ShowAnimationWindow && m_AnimationWindow.IsFocused()) || (m_ShowAnimatorWindow && m_AnimatorWindow.IsFocused())) return false;
 		return m_IsEditorViewActive || m_IsEditorViewFocused || m_IsEntitiesPanelFocused || m_IsInspectorPanelFocused;
 	}
 
@@ -4991,9 +5165,9 @@ namespace Index {
 						const float entityIconSize = ImGui::GetTextLineHeight();
 						const uint64_t entityIcon = EditorIcons::Get(entityIconName, static_cast<int>(entityIconSize));
 						if (entityIcon) {
-							// Prefab glyphs carry their own color; the plain entity glyph follows the theme text color.
-							const ImVec4 entityIconTint = entityIsPrefab
-								? ImVec4(1, 1, 1, 1) : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+							// Prefab and component glyphs carry their own color; the plain entity glyph follows the theme text color.
+							const ImVec4 entityIconTint = std::string_view(entityIconName) == "entity"
+								? ImGui::GetStyleColorVec4(ImGuiCol_Text) : ImVec4(1, 1, 1, 1);
 							ImGui::ImageWithBg(static_cast<ImTextureID>(static_cast<intptr_t>(entityIcon)),
 								ImVec2(entityIconSize, entityIconSize), ImVec2(0, 1), ImVec2(1, 0),
 								ImVec4(0, 0, 0, 0), entityIconTint);
@@ -5775,15 +5949,18 @@ namespace Index {
 			const float frameH = ImGui::GetFrameHeight();
 			const float iconBox = std::round(frameH * 1.9f);
 			const ImVec2 boxMin = ImGui::GetCursorScreenPos();
-			const ImVec4 accent = EditorTheme::Colors::Accent();
 			ImDrawList* headerDraw = ImGui::GetWindowDrawList();
 			headerDraw->AddRectFilled(boxMin, ImVec2(boxMin.x + iconBox, boxMin.y + iconBox),
-				ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.18f)), style.FrameRounding * 1.5f);
+				ImGui::GetColorU32(ImGuiCol_FrameBg), style.FrameRounding * 1.5f);
 			const float glyph = std::round(iconBox * 0.55f);
-			if (const uint64_t icon = EditorIcons::Get(EntityTypeIconName(scene, entity.GetHandle()), static_cast<int>(glyph))) {
+			const char* headerIconName = EntityTypeIconName(scene, entity.GetHandle());
+			if (const uint64_t icon = EditorIcons::Get(headerIconName, static_cast<int>(glyph))) {
 				const ImVec2 g0(boxMin.x + (iconBox - glyph) * 0.5f, boxMin.y + (iconBox - glyph) * 0.5f);
+				// Component icons are coloured; a tint would multiply them off-hue. Only the plain entity glyph follows the text colour.
+				const ImU32 tint = std::string_view(headerIconName) == "entity"
+					? ImGui::GetColorU32(ImGuiCol_Text) : IM_COL32_WHITE;
 				headerDraw->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(icon)), g0, ImVec2(g0.x + glyph, g0.y + glyph),
-					ImVec2(0, 1), ImVec2(1, 0), ImGui::GetColorU32(EditorTheme::Colors::Highlight()));
+					ImVec2(0, 1), ImVec2(1, 0), tint);
 			}
 			ImGui::Dummy(ImVec2(iconBox, iconBox));
 			ImGui::SameLine();
@@ -5966,6 +6143,17 @@ namespace Index {
 				? "Prefab Instance"
 				: "Prefab Instance (child)");
 			ImGui::PopStyleColor();
+			{
+				const char* selectLabel = "Select Prefab";
+				const float selectW = ImGui::CalcTextSize(selectLabel).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+				const float afterLabelX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetStyle().ItemSpacing.x;
+				ImGui::SameLine(std::max(afterLabelX, ImGui::GetWindowContentRegionMax().x - selectW));
+				if (ImGui::SmallButton(selectLabel)) {
+					AssetBrowser::RequestRevealAsset(
+						AssetRegistry::ResolvePath(static_cast<uint64_t>(scene.GetPrefabGUID(prefabInstanceRoot))));
+				}
+				EditorUI::Tooltip("Show the source prefab in the Asset Browser");
+			}
 			ImGui::BeginDisabled(!hasSubtreeOverrides || Application::GetIsPlaying()); // play mode: Apply would bake runtime state, Revert would destroy the running instance
 			if (ImGui::SmallButton("Apply All")) {
 				ApplyPrefabInstanceToSource(scene, prefabInstanceRoot);
@@ -6101,17 +6289,7 @@ namespace Index {
 						applyComponentRequested = true;
 					}
 				}
-			});
-
-			if (thisComponentOverridden) {
-				ImGui::SameLine();
-				ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::Colors::OverrideMarker());
-				ImGui::TextUnformatted(" *");
-				ImGui::PopStyleColor();
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip("Component has per-field overrides relative to the source prefab.");
-				}
-			}
+			}, info.icon, thisComponentOverridden);
 
 			// Embed persistent UUID (not RuntimeID): the drop target writes it to disk; RuntimeIDs are reallocated on reload.
 			if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {

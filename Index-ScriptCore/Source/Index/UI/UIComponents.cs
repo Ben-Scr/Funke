@@ -147,6 +147,20 @@ public class Image : Component
         set => InternalCalls.Image_SetTexture(RequireComponent<Image>(), value?.UUID ?? 0);
     }
 
+    /// <summary>Sprite slice name from the texture's .meta. Empty = full texture.</summary>
+    public string SpriteName
+    {
+        get => InternalCalls.Image_GetSpriteName(RequireComponent<Image>());
+        set => InternalCalls.Image_SetSpriteName(RequireComponent<Image>(), value);
+    }
+
+    /// <summary>Material whose shader targets UI (or Sprite2D); null draws with the standard shader.</summary>
+    public Material? Material
+    {
+        get => Index.Material.FromAssetUUID(InternalCalls.Image_GetMaterial(RequireComponent<Image>()));
+        set => InternalCalls.Image_SetMaterial(RequireComponent<Image>(), value?.UUID ?? 0);
+    }
+
     public int SortingOrder
     {
         get => InternalCalls.Image_GetSortingOrder(RequireComponent<Image>());
@@ -158,6 +172,49 @@ public class Image : Component
         get => InternalCalls.Image_GetSortingLayer(RequireComponent<Image>());
         set => InternalCalls.Image_SetSortingLayer(RequireComponent<Image>(), value);
     }
+
+    /// <summary>Sliced keeps <see cref="Border"/> at its size while the middle stretches (9-slice); Tiled repeats the edges and the middle instead.</summary>
+    public ImageType Type
+    {
+        get => (ImageType)(int)ReadSlicing()[0];
+        set => WriteSlicing(v => v[0] = (int)value);
+    }
+
+    /// <summary>Unstretched edges in texture pixels of the sprite: X = left, Y = bottom, Z = right, W = top. All 0 = the border from the texture's .meta.</summary>
+    public Vector4 Border
+    {
+        get { float[] v = ReadSlicing(); return new Vector4(v[1], v[2], v[3], v[4]); }
+        set => WriteSlicing(v => { v[1] = value.X; v[2] = value.Y; v[3] = value.Z; v[4] = value.W; });
+    }
+
+    /// <summary>UI units per texture pixel of the border (2 = twice as thick); for Tiled also the tile size.</summary>
+    public float BorderScale
+    {
+        get => ReadSlicing()[5];
+        set => WriteSlicing(v => v[5] = value);
+    }
+
+    private float[] ReadSlicing()
+    {
+        var values = new float[InternalCalls.ImageSlicingValueCount];
+        InternalCalls.Image_GetSlicing(RequireComponent<Image>(), values);
+        return values;
+    }
+
+    private void WriteSlicing(Action<float[]> change)
+    {
+        float[] values = ReadSlicing();
+        change(values);
+        InternalCalls.Image_SetSlicing(RequireComponent<Image>(), values);
+    }
+}
+
+// Values match the native ImageType.
+public enum ImageType
+{
+    Simple = 0,
+    Sliced = 1,
+    Tiled = 2,
 }
 
 public class Interactable : Component
@@ -1840,5 +1897,19 @@ public class WidthConstraint : Component
     {
         get => InternalCalls.WidthConstraint_GetMaxWidth(RequireComponent<WidthConstraint>());
         set => InternalCalls.WidthConstraint_SetMaxWidth(RequireComponent<WidthConstraint>(), value);
+    }
+}
+
+/// <summary>
+/// Fills the entity's <see cref="TextRenderer"/> with the translation of <see cref="Key"/> during play and again after
+/// every <see cref="Localization.SetLanguage"/>. Text a script writes stays until the key or the language changes.
+/// </summary>
+public class LocalizedText : Component
+{
+    /// <summary>Key in <c>Assets/Localization/&lt;language&gt;.json</c>; empty leaves the text alone.</summary>
+    public string Key
+    {
+        get => InternalCalls.LocalizedText_GetKey(RequireComponent<LocalizedText>());
+        set => InternalCalls.LocalizedText_SetKey(RequireComponent<LocalizedText>(), value ?? "");
     }
 }

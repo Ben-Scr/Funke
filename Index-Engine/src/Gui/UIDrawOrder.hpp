@@ -7,7 +7,6 @@
 
 #include <entt/entity/registry.hpp>
 #include <algorithm>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -40,41 +39,109 @@ namespace Index::UIDrawOrder {
 		auto uiView = registry.view<RectTransform2DComponent>();
 		if (uiView.size() == 0) return;
 
-		std::unordered_set<EntityHandle> rootSet;
-		rootSet.reserve(32);
+		// Top-most ancestor per entity, memoized by entity index so shared ancestor chains are walked once.
+		// t_Excluded marks chains with a disabled ancestor; a slot is valid only while its stamp is current.
+		thread_local std::vector<EntityHandle> t_RootOf;
+		thread_local std::vector<uint8_t> t_Excluded;
+		thread_local std::vector<uint32_t> t_Stamp;
+		thread_local uint32_t t_Serial = 0;
+		thread_local std::vector<EntityHandle> t_Path;
+		thread_local std::vector<EntityHandle> t_Roots;
+		if (++t_Serial == 0) {
+			std::fill(t_Stamp.begin(), t_Stamp.end(), 0u);
+			t_Serial = 1;
+		}
+		auto memoSlot = [&](EntityHandle e) -> size_t {
+			const size_t index = entt::to_entity(e);
+			if (index >= t_Stamp.size()) {
+				t_Stamp.resize(index + 1, 0u);
+				t_RootOf.resize(index + 1, entt::null);
+				t_Excluded.resize(index + 1, 0);
+			}
+			return index;
+		};
 
+		// rootOf(X) = top-most ancestor reached from X; excluded if any strict ancestor of X is disabled.
+		t_Roots.clear();
 		for (auto entity : uiView) {
 			if (registry.all_of<DisabledTag>(entity)) continue;
 
+			t_Path.clear();
 			EntityHandle cur = entity;
-			bool ancestorDisabled = false;
+			EntityHandle result = entt::null;
+			bool excluded = false;
+			bool resolved = false;
 			for (int hop = 0; hop < 4096; ++hop) {
-				const HierarchyComponent* hc = registry.try_get<HierarchyComponent>(cur);
-				if (!hc || hc->Parent == entt::null) break;
-				if (!registry.valid(hc->Parent)) break;
-				if (registry.all_of<DisabledTag>(hc->Parent)) {
-					ancestorDisabled = true;
+				const size_t slot = memoSlot(cur);
+				if (t_Stamp[slot] == t_Serial) {
+					result = t_RootOf[slot];
+					excluded = t_Excluded[slot] != 0;
+					resolved = true;
 					break;
 				}
+				t_Path.push_back(cur);
+				const HierarchyComponent* hc = registry.try_get<HierarchyComponent>(cur);
+				if (!hc || hc->Parent == entt::null || !registry.valid(hc->Parent)) { result = cur; resolved = true; break; }
+				if (registry.all_of<DisabledTag>(hc->Parent)) { excluded = true; resolved = true; break; }
 				cur = hc->Parent;
 			}
-			if (!ancestorDisabled) rootSet.insert(cur);
+			if (!resolved) result = cur;  // hop limit: same fallback as an unbounded walk's last node
+			for (EntityHandle onPath : t_Path) {
+				const size_t slot = memoSlot(onPath);
+				t_Stamp[slot] = t_Serial;
+				t_RootOf[slot] = result;
+				t_Excluded[slot] = excluded ? 1 : 0;
+			}
+			if (!excluded) t_Roots.push_back(result);
 		}
 
-		if (rootSet.empty()) return;
+		if (t_Roots.empty()) return;
 
 		const auto& entityStorage = registry.storage<entt::entity>();
-		std::vector<EntityHandle> roots(rootSet.begin(), rootSet.end());
-		std::sort(roots.begin(), roots.end(),
+		std::sort(t_Roots.begin(), t_Roots.end(),
 			[&](EntityHandle a, EntityHandle b) {
 				return entityStorage.index(a) < entityStorage.index(b);
 			});
+		t_Roots.erase(std::unique(t_Roots.begin(), t_Roots.end()), t_Roots.end());
 
 		int counter = 0;
-		for (EntityHandle entity : roots) {
+		for (EntityHandle entity : t_Roots) {
 			Collect(registry, entity, outOrder, counter);
 		}
 	}
+
+	// Entity → position in a Build() result without hashing; valid until the order vector changes.
+	class OrderLookup {
+	public:
+		static constexpr uint32_t k_None = UINT32_MAX;
+
+		void Rebuild(const std::vector<std::pair<EntityHandle, int>>& order) {
+			std::fill(m_Slots.begin(), m_Slots.end(), k_None);
+			m_Order = &order;
+			for (uint32_t i = 0; i < static_cast<uint32_t>(order.size()); ++i) {
+				const size_t index = entt::to_entity(order[i].first);
+				if (index >= m_Slots.size()) m_Slots.resize(index + 1, k_None);
+				m_Slots[index] = i;
+			}
+		}
+
+		uint32_t SlotOf(EntityHandle entity) const {
+			if (entity == entt::null || !m_Order) return k_None;
+			const size_t index = entt::to_entity(entity);
+			if (index >= m_Slots.size()) return k_None;
+			const uint32_t slot = m_Slots[index];
+			return slot != k_None && (*m_Order)[slot].first == entity ? slot : k_None;
+		}
+
+		const int* DrawIndexOf(EntityHandle entity) const {
+			const uint32_t slot = SlotOf(entity);
+			return slot == k_None ? nullptr : &(*m_Order)[slot].second;
+		}
+
+	private:
+		std::vector<uint32_t> m_Slots;
+		const std::vector<std::pair<EntityHandle, int>>* m_Order = nullptr;
+	};
 
 	// Mirrors GuiRenderer's ResolveClipForEntity: a point only hits if it lies inside every ancestor Mask rect. Texture-alpha masks are approximated by their rect.
 	inline bool PassesAncestorMasks(entt::registry& registry, EntityHandle entity, const Vec2& point)

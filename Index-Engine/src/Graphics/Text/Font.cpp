@@ -37,6 +37,18 @@ namespace Index {
 		}
 		constexpr int k_CodepointCount = ComputeBakedCodepointCount();
 
+		constexpr bool IsBakedCodepoint(uint32_t cp) {
+			for (const auto& r : k_BakedRanges)
+				if (cp >= r.First && cp <= r.Last) return true;
+			return false;
+		}
+		static_assert(k_BakedRanges[k_CodepointRangeCount - 1].Last < Font::k_GlyphTableSize,
+			"Baked ranges must fit the direct glyph table");
+
+		constexpr uint32_t k_KernFirst = 32;
+		constexpr uint32_t k_KernLast  = 126;
+		constexpr uint32_t k_KernSpan  = k_KernLast - k_KernFirst + 1;
+
 		constexpr int k_AtlasInitialSide = 256;
 		constexpr int k_AtlasMaxSide     = 4096;
 
@@ -76,8 +88,34 @@ namespace Index {
 			float Descent = 0.0f;
 			float LineHeight = 0.0f;
 			float StbScale = 0.0f;
+			std::vector<int16_t> AsciiKerning;
+			std::vector<int> GlyphIndices;
+			bool  HasKerning = false;
 			bool  Ok = false;  // worker sets to true on successful pack
 		};
+
+		// Pairs are bounded by k_KernSpan² GPOS lookups, cheap next to rasterizing the atlas.
+		void BakeKerning(const stbtt_fontinfo* font, CpuBakeResult& out) {
+			out.GlyphIndices.assign(Font::k_GlyphTableSize, 0);
+			for (uint32_t cp = 0; cp < Font::k_GlyphTableSize; ++cp)
+				out.GlyphIndices[cp] = stbtt_FindGlyphIndex(font, int(cp));
+
+			out.HasKerning = font->kern != 0 || font->gpos != 0;
+			out.AsciiKerning.clear();
+			if (!out.HasKerning) return;
+
+			out.AsciiKerning.assign(size_t(k_KernSpan) * k_KernSpan, 0);
+			bool any = false;
+			for (uint32_t a = 0; a < k_KernSpan; ++a) {
+				const int ga = out.GlyphIndices[k_KernFirst + a];
+				for (uint32_t b = 0; b < k_KernSpan; ++b) {
+					const int kern = stbtt_GetGlyphKernAdvance(font, ga, out.GlyphIndices[k_KernFirst + b]);
+					out.AsciiKerning[size_t(a) * k_KernSpan + b] = static_cast<int16_t>(kern);
+					any |= kern != 0;
+				}
+			}
+			if (!any) out.AsciiKerning.clear();
+		}
 
 		// CPU rasterization shared between the synchronous BakeAtlas path and
 		// the async worker. Touches no engine state — pure stbtt work against
@@ -103,6 +141,7 @@ namespace Index {
 			out.Ascent     = ascent * scale;
 			out.Descent    = descent * scale;
 			out.LineHeight = (ascent - descent + lineGap) * scale;
+			BakeKerning(font, out);
 
 			out.Packed.assign(k_CodepointCount, stbtt_packedchar{});
 
@@ -171,6 +210,9 @@ namespace Index {
 	Font::Font(Font&& other) noexcept
 		: m_TtfBuffer(std::move(other.m_TtfBuffer))
 		, m_Glyphs(std::move(other.m_Glyphs))
+		, m_AsciiKerning(std::move(other.m_AsciiKerning))
+		, m_GlyphIndices(std::move(other.m_GlyphIndices))
+		, m_HasKerning(other.m_HasKerning)
 		, m_AtlasTexture(other.m_AtlasTexture)
 		, m_AtlasWidth(other.m_AtlasWidth)
 		, m_AtlasHeight(other.m_AtlasHeight)
@@ -191,6 +233,7 @@ namespace Index {
 		other.m_Descent = 0.0f;
 		other.m_LineHeight = 0.0f;
 		other.m_StbScale = 0.0f;
+		other.m_HasKerning = false;
 	}
 
 	Font& Font::operator=(Font&& other) noexcept {
@@ -198,6 +241,10 @@ namespace Index {
 		Cleanup();
 		m_TtfBuffer = std::move(other.m_TtfBuffer);
 		m_Glyphs = std::move(other.m_Glyphs);
+		m_AsciiKerning = std::move(other.m_AsciiKerning);
+		m_GlyphIndices = std::move(other.m_GlyphIndices);
+		m_HasKerning = other.m_HasKerning;
+		other.m_HasKerning = false;
 		m_AtlasTexture = other.m_AtlasTexture;
 		m_AtlasWidth = other.m_AtlasWidth;
 		m_AtlasHeight = other.m_AtlasHeight;
@@ -321,11 +368,12 @@ namespace Index {
 			return true;
 		}
 
-		// Translate stb's packed[] table into a Font's m_Glyphs map. Shared
+		// Translate stb's packed[] table into a Font's glyph table. Shared
 		// between the sync and async publish paths.
 		void PopulateGlyphTable(const std::vector<stbtt_packedchar>& packed,
-			int atlasSide, std::unordered_map<uint32_t, GlyphMetrics>& outGlyphs)
+			int atlasSide, std::vector<GlyphMetrics>& outGlyphs)
 		{
+			outGlyphs.assign(Font::k_GlyphTableSize, GlyphMetrics{});
 			int packedIndex = 0;
 			for (int r = 0; r < k_CodepointRangeCount; ++r) {
 				const auto& cr = k_BakedRanges[r];
@@ -383,6 +431,9 @@ namespace Index {
 		m_StbScale           = result.StbScale;
 		m_StbFontInfoStorage = std::move(result.StbFontInfoStorage);
 		PopulateGlyphTable(result.Packed, atlasSide, m_Glyphs);
+		m_AsciiKerning       = std::move(result.AsciiKerning);
+		m_GlyphIndices       = std::move(result.GlyphIndices);
+		m_HasKerning         = result.HasKerning;
 		m_AtlasTexture       = atlasTexture;  // last: makes IsLoaded() flip true
 		return true;
 	}
@@ -452,6 +503,9 @@ namespace Index {
 		m_StbScale           = result->StbScale;
 		m_StbFontInfoStorage = std::move(result->StbFontInfoStorage);
 		PopulateGlyphTable(result->Packed, atlasSide, m_Glyphs);
+		m_AsciiKerning       = std::move(result->AsciiKerning);
+		m_GlyphIndices       = std::move(result->GlyphIndices);
+		m_HasKerning         = result->HasKerning;
 		m_AtlasTexture       = atlasTexture;  // last: flips IsLoaded() true
 		return true;
 	}
@@ -461,16 +515,20 @@ namespace Index {
 	}
 
 	const GlyphMetrics* Font::GetGlyph(uint32_t codepoint) const {
-		auto it = m_Glyphs.find(codepoint);
-		return it == m_Glyphs.end() ? nullptr : &it->second;
+		if (codepoint >= m_Glyphs.size() || !IsBakedCodepoint(codepoint)) return nullptr;
+		return &m_Glyphs[codepoint];
 	}
 
 	float Font::GetKerning(uint32_t a, uint32_t b) const {
-		if (m_StbFontInfoStorage.empty() || m_StbScale == 0.0f) return 0.0f;
+		if (!m_HasKerning || m_StbFontInfoStorage.empty() || m_StbScale == 0.0f) return 0.0f;
+		if (a - k_KernFirst < k_KernSpan && b - k_KernFirst < k_KernSpan) {
+			if (m_AsciiKerning.empty()) return 0.0f;
+			return m_AsciiKerning[size_t(a - k_KernFirst) * k_KernSpan + (b - k_KernFirst)] * m_StbScale;
+		}
 		const stbtt_fontinfo* font = reinterpret_cast<const stbtt_fontinfo*>(m_StbFontInfoStorage.data());
-		int kern = stbtt_GetCodepointKernAdvance(const_cast<stbtt_fontinfo*>(font),
-			static_cast<int>(a), static_cast<int>(b));
-		return kern * m_StbScale;
+		const int ga = a < m_GlyphIndices.size() ? m_GlyphIndices[a] : stbtt_FindGlyphIndex(font, int(a));
+		const int gb = b < m_GlyphIndices.size() ? m_GlyphIndices[b] : stbtt_FindGlyphIndex(font, int(b));
+		return stbtt_GetGlyphKernAdvance(font, ga, gb) * m_StbScale;
 	}
 
 	void Font::Cleanup() {
@@ -485,6 +543,9 @@ namespace Index {
 		}
 		m_TtfBuffer.reset();
 		m_Glyphs.clear();
+		m_AsciiKerning.clear();
+		m_GlyphIndices.clear();
+		m_HasKerning = false;
 		m_AtlasWidth = 0;
 		m_AtlasHeight = 0;
 		m_PixelSize = 0.0f;

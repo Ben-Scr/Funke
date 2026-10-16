@@ -21,6 +21,10 @@
 #include "Graphics/TextureManager.hpp"
 #include "Core/PackageHost.hpp"
 #include "Core/Platform.hpp"
+#include "DevTools/DevConsole.hpp"
+#include "DevTools/PhysicsDebugOverlay.hpp"
+#include "DevTools/RunAutomation.hpp"
+#include "DevTools/ScreenCapture.hpp"
 #include "Gui/GuiRenderer.hpp"
 #include "Math/Math.hpp"
 #include "Core/SingleInstance.hpp"
@@ -175,6 +179,9 @@ namespace Index {
 				}
 			}
 		}
+		// Every host: DevConsole.Execute from scripts and input-script commands need them, not only the console window.
+		DevConsole::RegisterBuiltInCommands();
+		RunAutomation::Configure(RunAutomation::ParseOptions(s_CommandLineArgs.Count, s_CommandLineArgs.Values));
 
 		if (m_ForceSingleInstance) {
 			static SingleInstance instance(m_Name);
@@ -288,7 +295,11 @@ namespace Index {
 		const float vsyncMs = std::chrono::duration<float, std::milli>(frameStart - vsyncStart).count();
 		float deltaTime = std::chrono::duration<float>(frameStart - m_LastFrameTime).count();
 
-		if (deltaTime >= 0.25f) {
+		// --fixed-step: identical game time per frame however long the frame really took (reproducible test runs).
+		if (const float automationStep = RunAutomation::GetFixedStep(); automationStep > 0.0f) {
+			deltaTime = automationStep;
+		}
+		else if (deltaTime >= 0.25f) {
 			ResetTimePoints();
 			deltaTime = 0.0f;
 			m_DeltaSnapDebt = 0.0;
@@ -303,6 +314,10 @@ namespace Index {
 			Profiler::PushFrameDelta(deltaTime);
 
 			m_Time.Update(deltaTime);
+
+			// Synthetic input goes into SDL's queue, so it reaches Input, C# events and ImGui like real input.
+			// The game clock only advances on frames the game actually updates (not minimized/paused).
+			RunAutomation::BeginFrame(m_StartupLoadComplete && !IsEnginePaused());
 
 			// Headless: skip input entirely — there is no SDL video/gamepad subsystem without a window.
 			if (m_Window) {
@@ -363,6 +378,7 @@ namespace Index {
 
 			m_LastFrameTime = frameStart;
 			m_Time.AdvanceFrameCount();
+			RunAutomation::EndFrame(deltaTime);
 			if (m_RunLoop.CiSmokeTest && !m_RunLoop.SmokeQuitRequested && m_StartupLoadComplete && --m_RunLoop.SmokeFramesRemaining <= 0) {
 				IDX_INFO_TAG("Application", "CI smoke test reached a stable frame; requesting graceful shutdown.");
 				RequestQuit();
@@ -819,6 +835,8 @@ namespace Index {
 			// MUST run before UpdateScenes/OnPreRenderScenes which require the active scene to exist.
 			TickDeferredStartupScenes();
 
+			// Re-read: a layer may have stopped Play this frame; updating the restored edit scenes would run their scripts' OnStart.
+			gameplayActive = m_IsPlaying && !m_IsGameplayPaused;
 			if (gameplayActive && m_SceneManager) {
 				INDEX_PROFILE_SCOPE("UpdateScenes");
 				m_SceneManager->UpdateScenes();
@@ -842,6 +860,7 @@ namespace Index {
 					INDEX_TRY_CATCH_LOG(layer->OnPreRender(*this));
 				}
 			}
+			INDEX_TRY_CATCH_LOG(PhysicsDebugOverlay::QueueFrame());
 
 			bool rendered3D = false;
 #if INDEX_WITH_3D
@@ -1053,6 +1072,17 @@ namespace Index {
 			INDEX_TRY_CATCH_LOG(m_Renderer2D->EndFrame());
 		}
 
+		// World gizmos before OnPostRender, so the runtime's ImGui overlays (dev console, logs) stay on top.
+#if INDEX_WITH_2D
+		if (m_GizmoRenderer2D && Gizmo::GetShowInRuntime()) {
+			INDEX_PROFILE_SCOPE("GizmoRenderer.Render");
+			if (Camera2DComponent* cam = Camera2DComponent::GetMain()) {
+				INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->RenderWithVP(cam->GetViewProjectionMatrix(),
+					GizmoLayerMask::Shared | GizmoLayerMask::Debug));
+			}
+		}
+#endif
+
 		{
 			INDEX_PROFILE_SCOPE("Layer.OnPostRender");
 			LayerDispatchGuard postRenderGuard(m_LayerStack);
@@ -1068,17 +1098,11 @@ namespace Index {
 		}
 		if (m_GizmoRenderer2D) {
 			INDEX_PROFILE_SCOPE("GizmoRenderer.End");
-			// Explicit gizmo pass — used to be a hidden draw inside EndFrame.
-			// Now declared as its own step in the render pipeline.
-#if INDEX_WITH_2D
-			if (Gizmo::GetShowInRuntime()) {
-				if (Camera2DComponent* cam = Camera2DComponent::GetMain()) {
-					INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->RenderWithVP(cam->GetViewProjectionMatrix(), GizmoLayerMask::Shared));
-				}
-			}
-#endif
 			INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->EndFrame());
 		}
+
+		// After every pass, so screenshots show exactly what is presented.
+		INDEX_TRY_CATCH_LOG(ScreenCapture::ProcessPending());
 
 		if (m_Window) {
 			INDEX_PROFILE_SCOPE("SwapBuffers");
@@ -1143,7 +1167,8 @@ namespace Index {
 #if INDEX_WITH_2D
 			if (Gizmo::GetShowInRuntime()) {
 				if (Camera2DComponent* cam = Camera2DComponent::GetMain()) {
-					INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->RenderWithVP(cam->GetViewProjectionMatrix(), GizmoLayerMask::Shared));
+					INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->RenderWithVP(cam->GetViewProjectionMatrix(),
+						GizmoLayerMask::Shared | GizmoLayerMask::Debug));
 				}
 			}
 #endif
@@ -1197,7 +1222,8 @@ namespace Index {
 		// surrounding page must not freeze a visible game.
 		m_IsBackgroundPaused = false;
 #else
-		m_IsBackgroundPaused = !m_RunInBackground && !m_WindowHasFocus;
+		// Scripted test runs keep going behind other windows; their game clock would stall otherwise.
+		m_IsBackgroundPaused = !m_RunInBackground && !m_WindowHasFocus && !RunAutomation::IsActive();
 #endif
 	}
 
@@ -1303,7 +1329,10 @@ namespace Index {
 				m_Window->Destroy();
 			});
 		}
-		if (!preserveWindow) m_Input.CloseGamepads();
+		if (!preserveWindow) {
+			m_Input.CloseGamepads();
+			m_Input.CloseSensors();
+		}
 		if (!preserveWindow && Window::IsInitialized()) guardedShutdownStatic("Window::Shutdown", []{ Window::Shutdown(); });
 
 		if (!preserveWindow) m_Window.reset();

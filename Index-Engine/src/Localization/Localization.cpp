@@ -3,21 +3,18 @@
 
 #include "Core/Log.hpp"
 #include "Localization/LanguageDownloader.hpp"
+#include "Localization/LanguageFile.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/SpecialFolder.hpp"
 
 #include <algorithm>
-#include <cctype>
-#include <cstdlib>
 #include <filesystem>
 #include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
-
-#include "Core/Platform.hpp"
 
 namespace Index::Localization {
 
@@ -155,55 +152,15 @@ namespace Index::Localization {
 		// Parses just the meta block — used by the directory scan so the
 		// dropdown can populate without loading every translation table.
 		bool ParseMeta(const std::filesystem::path& filePath, std::string& outCode, std::string& outDisplayName) {
-			const std::string text = File::ReadAllText(filePath.string());
-			if (text.empty()) return false;
-
-			std::string parseError;
-			Json::Value root = Json::Parse(text, &parseError);
-			if (!root.IsObject()) {
-				IDX_CORE_WARN_TAG("Localization",
-					"Failed to parse '{}': {}", filePath.string(), parseError);
-				return false;
-			}
-
-			const Json::Value* meta = root.FindMember("meta");
-			if (!meta || !meta->IsObject()) return false;
-
-			const Json::Value* code = meta->FindMember("code");
-			const Json::Value* displayName = meta->FindMember("displayName");
-			if (!code || !displayName) return false;
-
-			outCode = code->AsStringOr({});
-			outDisplayName = displayName->AsStringOr({});
+			LanguageFile::Meta meta;
+			if (!LanguageFile::Read(filePath, &meta, nullptr)) return false;
+			outCode = std::move(meta.Code);
+			outDisplayName = std::move(meta.DisplayName);
 			return !outCode.empty() && !outDisplayName.empty();
 		}
 
 		bool LoadStrings(const std::filesystem::path& filePath, std::unordered_map<std::string, std::string>& outTable) {
-			const std::string text = File::ReadAllText(filePath.string());
-			if (text.empty()) return false;
-
-			std::string parseError;
-			Json::Value root = Json::Parse(text, &parseError);
-			if (!root.IsObject()) {
-				IDX_CORE_WARN_TAG("Localization",
-					"Failed to parse '{}': {}", filePath.string(), parseError);
-				return false;
-			}
-
-			const Json::Value* strings = root.FindMember("strings");
-			if (!strings || !strings->IsObject()) {
-				IDX_CORE_WARN_TAG("Localization",
-					"'{}' has no 'strings' object", filePath.string());
-				return false;
-			}
-
-			outTable.clear();
-			for (const auto& [key, value] : strings->GetObject()) {
-				if (value.IsString()) {
-					outTable.emplace(key, value.AsStringOr({}));
-				}
-			}
-			return true;
+			return LanguageFile::Read(filePath, nullptr, &outTable);
 		}
 
 		// Walks one directory and records every <code>.json's path + metadata.
@@ -498,34 +455,8 @@ namespace Index::Localization {
 		return S().CurrentLanguage;
 	}
 
-	namespace {
-		// Extracts the bare language tag from an OS locale string.
-		// Accepts both BCP-47 ("de-DE") and POSIX ("de_DE.UTF-8") forms;
-		// lowercases and trims at the first '-', '_' or '.'.
-		std::string NormalizeLocaleTag(std::string_view raw) {
-			std::string out;
-			out.reserve(raw.size());
-			for (char c : raw) {
-				if (c == '-' || c == '_' || c == '.') break;
-				out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-			}
-			return out;
-		}
-
-		std::string ProbeOsLocale() {
-			// SDL reads the right source per OS (GetUserPreferredUILanguages, NSLocale, LANG, the Android
-			// configuration, navigator.languages).
-			std::string locale = Platform::GetPreferredLocale();
-#if IDX_PLATFORM_POSIX
-			// LC_ALL / LANG still win for desktop POSIX users who override the session language.
-			if (const char* env = std::getenv("LC_ALL"); env && *env) locale = env;
-#endif
-			return locale;
-		}
-	}
-
 	std::string GetSystemLanguage() {
-		const std::string tag = NormalizeLocaleTag(ProbeOsLocale());
+		const std::string tag = LanguageFile::NormalizeLocaleTag(LanguageFile::ProbeOsLocale());
 		if (tag.empty()) return k_FallbackLanguage;
 
 		const State& s = S();

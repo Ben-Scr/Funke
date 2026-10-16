@@ -1507,6 +1507,15 @@ artifacts/
 			if (thumbnail && thumbnail->IsValid() && thumbnail->GetHeight() > 0.0f && boxH > 0.0f) {
 				const float imageAspect = thumbnail->GetWidth() / thumbnail->GetHeight();
 				const float boxAspect = boxW / boxH;
+				const ImTextureID textureId = static_cast<ImTextureID>(static_cast<intptr_t>(thumbnail->GetHandle()));
+				// A portrait capture cropped into a landscape box would show only a thin middle band; pillarbox it like the Game View.
+				if (boxAspect > imageAspect * 1.5f) {
+					dl->AddRectFilled(min, max, IM_COL32(0, 0, 0, 255), rounding, corners);
+					const float imageW = boxH * imageAspect;
+					const float x0 = min.x + (boxW - imageW) * 0.5f;
+					dl->AddImage(textureId, ImVec2(x0, min.y), ImVec2(x0 + imageW, max.y), ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+					return;
+				}
 				float u0 = 0.0f, u1 = 1.0f, v0 = 0.0f, v1 = 1.0f;
 				if (boxAspect > imageAspect) {
 					const float visible = imageAspect / boxAspect;
@@ -1519,8 +1528,7 @@ artifacts/
 					u1 = 1.0f - u0;
 				}
 				// Texture2D loads flipped (GL convention), so V runs bottom-up.
-				dl->AddImageRounded(static_cast<ImTextureID>(static_cast<intptr_t>(thumbnail->GetHandle())),
-					min, max, ImVec2(u0, 1.0f - v0), ImVec2(u1, 1.0f - v1), IM_COL32_WHITE, rounding, corners);
+				dl->AddImageRounded(textureId, min, max, ImVec2(u0, 1.0f - v0), ImVec2(u1, 1.0f - v1), IM_COL32_WHITE, rounding, corners);
 				return;
 			}
 
@@ -3643,9 +3651,11 @@ artifacts/
 		}
 
 		unsigned long spawnedPid = 0;
-		if (!Process::LaunchDetached({ Path::ToUtf8(resolvedTargetExe), "--project=" + entry.Path },
-				resolvedTargetExe.parent_path(), spawnedPid)) {
-			fail(std::string("Failed to launch ") + (launchRuntime ? "runtime." : "editor."));
+		std::string loaderError;
+		if (!Process::LaunchDetachedChecked({ Path::ToUtf8(resolvedTargetExe), "--project=" + entry.Path },
+				resolvedTargetExe.parent_path(), spawnedPid, loaderError)) {
+			fail(std::string("Failed to launch ") + (launchRuntime ? "runtime." : "editor.")
+				+ (loaderError.empty() ? std::string() : " " + loaderError));
 			return;
 		}
 

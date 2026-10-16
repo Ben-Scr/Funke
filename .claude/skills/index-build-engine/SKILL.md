@@ -28,7 +28,7 @@ What it does for you:
 - Regenerates premake (`vendor\bin\premake5.exe vs2022`) when a `.cpp` exists that no project lists, or any `premake5.lua`/`Dependencies.lua`/`premake/*.lua` changed since the last regen. Files premake deliberately drops via `removefiles` (e.g. `Index-Engine/src/Diagnostics/*.cpp`) are remembered in `bin-int\_agent\premake-unlisted.txt`. Force with `-Regen`.
 - Prints only `error` lines and warnings in git-changed files, as `path(line,col): CODE message`, deduplicated. Full log: `bin-int\_agent\<target>.log`.
 - After each build copies `bin\<cfg>\Index-Engine\Index-Engine.dll` (+pdb) into Index-Editor, Index-Launcher, Index-Runtime, Index-CLI and the test folders. Without this the editor keeps running the old engine and fixes "don't work". `-NoDeploy` disables it.
-- Warns when an Index app from the same config is running (DLLs locked → copy/postbuild fail).
+- Warns when an Index app from the same config is running (DLLs locked → copy/postbuild fail). A deploy that stays stale fails the build: `DEPLOY FAILED` lists the copies, exit code 1 (a stale `Index-Engine.dll` next to a fresh exe dies before `main` with `0xC0000138` and no output).
 
 Timing on this machine: Engine incremental ~5 s, single TU 2–7 s, EngineTests ~50 s from cold, Editor ~20 s.
 
@@ -57,11 +57,16 @@ scripts\dev\Run.ps1 -ExtraArgs "--ci-smoke-test"
 scripts\dev\Run.ps1 -Project <3D project> -EditorView     # screenshot the Editor View tab (default is whatever tab the layout selected)
 scripts\dev\Run.ps1 -App Runtime -Variant 2d -Project <dir> # engine-module runtime variant (bin\<cfg>-windows-x86_64-2d)
 scripts\dev\Run.ps1 -Project <dir> -Play                    # editor enters play mode after load (INDEX_EDITOR_AUTOPLAY) — repro play-mode crashes
+scripts\dev\Run.ps1 -App Runtime -Project <dir> -ScreenshotAt 2s,5s -FixedStep 60          # engine screenshots at GAME time, then quits
+scripts\dev\Run.ps1 -App Runtime -Project <dir> -InputScript run.json -Exec "physics.debug on"  # scripted keys/mouse/touch/commands
+scripts\dev\Run.ps1 -Project <dir> -OpenWindow build,buildprofiles   # editor with those windows open (INDEX_EDITOR_OPEN); also projectsettings, preferences, packages, profiler
 ```
+
+Runtime runs use the isolated player-data profile `agent` (`--prefs-profile=agent`: PlayerPrefs/SaveData under `Profiles\agent`), so a test never changes a game's real saves; `-RealPrefs` opts out. Prefer `-ScreenshotAt` over `-Seconds/-Shots` for games: wall-clock shots drift with load times, game-time shots don't (a fresh `bin-int\_agent\run\shots-<time>-<pid>\` per run, listed at the end, so parallel sessions can't delete each other's). Instead of temporary probes in game code, drive the game with an input script (keys, mouse, touch, `[DevCommand]`s, screenshots, quit). Format: `Github-Docs/Documentation/Editor/Testing.md`.
 
 Engine-module variants (`Index.2D`/`Index.3D` left out) build in their own workspace: `vendor\bin\premake5.exe --without-3d vs2022` (or `--without-2d`, or both → `nomodules`), then MSBuild `premake\generated\variant-<2d|3d|nomodules>\Index-Runtime\Index-Runtime.vcxproj`. The first build compiles the whole engine; build after touching code under an `INDEX_WITH_2D`/`INDEX_WITH_3D` gate.
 
-Outputs: `bin-int\_agent\run\<App>-<n>.png` (Read them — this is how you see UI/rendering changes), `bin-int\_agent\run\<App>.log` (only this run's log lines). The summary lists `[warning]`/`[error]`/`[critical]` lines and any new crash dump in `%LOCALAPPDATA%\Index\CrashDumps`. Exit code 1 on crash or non-zero exit.
+Outputs: `bin-int\_agent\run\<App>-<n>.png` (Read them — this is how you see UI/rendering changes), `bin-int\_agent\run\<App>.log` (only this run's log lines, also across spdlog rotations `<exe>.1.log`…`<exe>.3.log`, so a log flood can't push the first error out). The summary lists `[warning]`/`[error]`/`[critical]` lines and any new crash dump in `%LOCALAPPDATA%\Index\CrashDumps`. Exit code 1 on crash or non-zero exit.
 
 The sandbox project is `bin-int\_agent\SandboxProject` (project.json + empty `SampleScene`). Put fixture scenes/assets there for an experiment; delete the folder to reset. Screenshots use `PrintWindow(PW_RENDERFULLCONTENT)` so they work while the window is covered; only the main window is captured.
 

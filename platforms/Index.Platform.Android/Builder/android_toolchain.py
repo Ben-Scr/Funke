@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 MIN_SDK = 26          # Vulkan 1.0 + AHardwareBuffer, which Dawn needs
-TARGET_SDK = 35
+TARGET_SDK = 36       # Google Play requires it for new apps and updates since 2026-08-31
 MIN_NDK_MAJOR = 26
 
 

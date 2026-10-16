@@ -16,6 +16,8 @@ The foundational systems that make a game run.
 - **[Engine Modules](Engine-Core/Engine-Modules.md)** — the optional `Index.2D` / `Index.3D` modules: turning them on in a project, what the editor offers, and how game builds leave unused modules out.
 - **[Physics 3D](Engine-Core/Physics-3D.md)** — Jolt-based Rigidbody 3D, Box/Sphere/Capsule/Mesh Collider 3D, triggers, raycasts and the C# API.
 - **[3D](Engine-Core/3D.md)** — Transform 3D, Camera 3D with skybox, Mesh Renderer and materials, directional/point/spot lights, shadows, the 3D renderer and the 3D Editor View.
+- **[Animation](Engine-Core/Animation.md)** — keyframe clips for any component property or script field, Animator Controller state machines with crossfades, the Animation and Animator windows, record mode, events and the C# API.
+- **[Custom Shaders](Engine-Core/Custom-Shaders.md)** — your own WGSL shaders for meshes, sprites and post effects: the `@property` header, materials, hot reload, errors, C# API and builds.
 - **[Job System](Engine-Core/Job-System.md)** — running work across multiple CPU cores.
 - **[Localization](Engine-Core/Localization.md)** — translating interface text, the per-language JSON files, supported languages, and on-demand downloads.
 - **[Platform Layer](Engine-Core/Platform-Layer.md)** — SDL3 window/input, the portable OS services, platform macros, and building SDL3 for Windows, macOS, Linux, Android, iOS and Web.
@@ -40,6 +42,7 @@ Index's extensibility model — add anything the core doesn't ship.
 
 - **[Editor](Editor/Editor.md)** — the visual tool for building scenes, testing in Play mode, and producing a finished game.
 - **[Building and Shipping](Editor/Building-and-Shipping.md)** — verified Windows game exports and standalone engine release bundles.
+- **[Test Builds and Debug Tools](Editor/Testing.md)** — Debug/Development/Release, build profiles for test variants, the developer console with `[DevCommand]`, the physics overlay, isolated player data and scripted test runs with screenshots.
 - **[Command-Line Tool](Editor/Command-Line.md)** — `index create`, `index build`, validate, convert, prefabs, sprite slicing and packages without opening the editor.
 - **[Platform Packages](Editor/Platform-Packages.md)** — Android, iOS and Web exports as installable packages, their requirements, C# through Mono, and the builder protocol for writing your own.
 

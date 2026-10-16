@@ -6,7 +6,7 @@ First-party packages live in the engine checkout under `platforms/`:
 
 | Package | Kind | What it adds |
 |---|---|---|
-| `Index.Platform.Android` | platform | Signed `.apk` (arm64-v8a, Android 8.0 / API 26+) |
+| `Index.Platform.Android` | platform | Signed `.apk` (arm64-v8a, Android 8.0 / API 26+), plus an `.aab` for Google Play in Release |
 | `Index.Platform.iOS` | platform | Xcode project, or a signed `.app` with a development team (macOS only) |
 | `Index.Platform.Web` | platform | Static site: WebAssembly + WebGPU |
 | `Index.ScriptRuntime.Mono` | build-component | C# scripting on Android, iOS and Web through the Mono runtime |
@@ -58,9 +58,56 @@ Requirements: Python 3.10+, CMake, Ninja, the Android SDK with build-tools and a
 | `versionCode` | Integer version for stores; derived from the project version when empty. |
 | `aot` | `true` / `false`: precompile C# scripts ahead of time (see below). Empty = on for Release, off for Development. |
 | `aotLlvm` | `false` compiles the AOT code without LLVM: a much faster first build, but slower code. Default `true`. |
+| `appBundle` | `true` / `false`: also build the Android App Bundle (`.aab`) Google Play needs. Empty = on for Release, off for Development. |
+| `bundletoolPath` | A `bundletool-all.jar` to use; empty = bundletool 1.18.3, downloaded once and checked against its SHA-256. |
 | `sdkPath`, `ndkPath`, `jdkPath` | Explicit tool locations. |
 
-The APK contains the engine, SDL3 and the Mono runtime as native libraries; the game content is unpacked to the app's private storage on first launch.
+Packages can read further options, for example `admobAppId` for [Index.Ads](#ads-and-other-java-libraries-from-packages).
+
+The APK contains the engine, SDL3 and the Mono runtime as native libraries; the game content is unpacked to the app's private storage on first launch. Games target Android 16 (API 36), which Google Play requires for new apps and updates since 31 August 2026; they declare themselves as games (`android:appCategory="game"`), so large screens keep the chosen orientation, and keep the classic back button (`enableOnBackInvokedCallback="false"`). All native libraries support 16 KB memory pages, which Play requires for apps targeting Android 15 and later.
+
+### Publishing on Google Play
+
+Play accepts only App Bundles for new apps. A Release build writes both files to the output folder: `<Game>.aab` to upload, `<Game>.apk` to install on a phone for a last check (`adb install <Game>.apk`).
+
+1. **Create an upload key once** and keep it safe (back it up; losing it means asking Google for a key reset). The `keytool` of the JDK the builder uses creates it:
+
+   ```bash
+   keytool -genkeypair -v -keystore C:/keys/mygame-upload.jks -alias upload -keyalg RSA -keysize 2048 -validity 10000
+   ```
+
+2. **Point the Android profile at it**, with the passwords in environment variables:
+
+   ```json
+   "platformOptions": {
+     "keystore": "C:/keys/mygame-upload.jks",
+     "keyAlias": "upload",
+     "keystorePassword": "env:MYGAME_KEYSTORE_PASSWORD"
+   }
+   ```
+
+   Without a keystore the bundle is signed with the generated debug key and the build warns: Play would make that key your upload key.
+3. **Raise the version** for every upload: `buildVersion` in `project.json` (or the profile's `versionCode`) must grow, Play rejects a version code it has seen.
+4. **Upload** the `.aab` in Play Console under *Test and release*, start with internal testing. Play App Signing signs the APKs players download; your key only proves the upload is yours.
+5. Fill in *App content* (privacy policy, ads, data safety, content rating, target audience) before the first release.
+
+### Ads and other Java libraries from packages
+
+Engine packages can bring Android code with them: Java sources, libraries from Maven (AARs and JARs, such as Google's ad or billing SDKs) and manifest entries. The builder resolves the libraries without Gradle, merges their manifests and resources into the game's and dexes everything into the APK and bundle. [Writing Packages](../Packages/Writing-Packages.md#android-java-code-maven-libraries-and-manifest-entries) describes the `android` section of `index-package.lua`.
+
+**Index.Ads** uses this for Google AdMob: banners, interstitials, rewarded ads and Google's GDPR consent form, simulated with placeholders in the editor. Install it from the Package Manager and set the profile option `admobAppId`; its README covers ad units, consent and the Play Console declarations.
+
+Scripts reach a package's Java classes through `AndroidBridge`:
+
+```csharp
+// Calls `public static String greet(String)` on a Java class the package ships.
+string? answer = AndroidBridge.Call("com.example.mylib.MyPlugin", "greet", "{\"name\":\"Ada\"}");
+
+// Java answers later with dev.index.player.IndexBridge.send("MyPlugin", json); handlers run on the main thread.
+AndroidBridge.Subscribe("MyPlugin", json => Log.Info(json));
+```
+
+`Call` returns null when the class or method is missing, it threw (the exception is in logcat), or off Android. Java code that touches views hops to the UI thread itself (`IndexBridge.getActivity().runOnUiThread(...)`). `AndroidBridge.Simulate(channel, message)` delivers a message as if Java had sent it, for tests and editor stand-ins.
 
 ### Precompiled C# (AOT)
 
@@ -145,7 +192,7 @@ Cut, copy and paste work like in other apps: holding a finger on the text select
 
 ## Debug overlays on phones and tablets
 
-On the desktop, F6 and F7 toggle the runtime stats and log overlays. Phones and tablets have no F-keys, so on Android and iOS both overlays are always visible while they are enabled (Project Settings › Build › Diagnostics; on for the Development profile, off for Release). Turn them off there for builds you hand to players.
+On the desktop, F6 and F7 toggle the runtime stats and log overlays. Phones and tablets have no F-keys, so on Android and iOS both overlays are always visible while they are enabled (Project Settings › Build › Diagnostics). Unless set there or in `project.json` (`showRuntimeStats`, `showRuntimeLogs`), they are on for the Development profile and off for Release, including `index build --release`.
 
 ## C# on Android, iOS and Web
 

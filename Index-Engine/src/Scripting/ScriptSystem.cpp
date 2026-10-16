@@ -1629,6 +1629,11 @@ namespace Index {
 							return true;
 						}
 
+						if (phase == CollisionDispatchPhase::Stay && !ScriptEngine::WantsCallback(instance,
+							collision.isTrigger ? ScriptCallback_TriggerStay2D : ScriptCallback_CollisionStay2D)) {
+							return true;
+						}
+
 						if (collision.isTrigger) {
 							ScriptEngine::InvokeTrigger2D(instance.GetGCHandle(), static_cast<int32_t>(phase), selfID, otherID, entityAID, entityBID);
 							return true;
@@ -1689,7 +1694,9 @@ namespace Index {
 			const uint64_t otherID = scene->IsValid(other) ? ToManagedEntityID(*scene, other) : 0;
 			ForEachScriptOnEntitySafe(*scene, self,
 				[&](ScriptComponent&, ScriptInstance& instance, size_t) -> bool {
-					if (instance.HasManagedInstance() && instance.HasEnabled()) {
+					const bool skipStay = phase == CollisionPhase3D::Stay && !ScriptEngine::WantsCallback(instance,
+						collision.IsTrigger ? ScriptCallback_TriggerStay3D : ScriptCallback_CollisionStay3D);
+					if (instance.HasManagedInstance() && instance.HasEnabled() && !skipStay) {
 						ScriptEngine::InvokeCollision3D(instance.GetGCHandle(), static_cast<int32_t>(phase), collision.IsTrigger,
 							selfID, otherID, collision.ContactPoint, normalTowardSelf);
 					}
@@ -1942,7 +1949,7 @@ namespace Index {
 							instance = FindManagedScriptInstance(scene, entity, handle);
 							if (!instance) return true;
 						}
-						ScriptEngine::InvokeUpdate(handle);
+						if (ScriptEngine::WantsCallback(*instance, ScriptCallback_Update)) ScriptEngine::InvokeUpdate(handle);
 						// `instance` not used after this point; no rebind needed.
 					}
 					else if (instance->GetType() == ScriptType::Native)
@@ -2011,7 +2018,7 @@ namespace Index {
 					if (instance.GetType() == ScriptType::Managed)
 					{
 						if (!managedRuntimeReady || !instance.HasManagedInstance()) return true;
-						ScriptEngine::InvokeFixedUpdate(instance.GetGCHandle());
+						if (ScriptEngine::WantsCallback(instance, ScriptCallback_FixedUpdate)) ScriptEngine::InvokeFixedUpdate(instance.GetGCHandle());
 					}
 					else if (instance.GetType() == ScriptType::Native)
 					{

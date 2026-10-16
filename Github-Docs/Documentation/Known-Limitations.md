@@ -14,7 +14,7 @@ Index is in beta. These gaps are known and planned; plan your project around the
 
 | Feature | Workaround for now |
 |---|---|
-| Animation state machines, blending, animating other properties | `Sprite Animator 2D` plays one frame list; switch lists or frames from a script. |
+| Animation blend trees, layers, avatar masks, root motion | The Animator plays one state machine layer with crossfades; drive extra motion from a script. |
 | Tilemaps | Place sprite entities or prefabs; build levels from prefabs. |
 | 2D lights, custom shaders and materials | Post-processing (bloom, color grading, vignette, ...) is available. |
 | Physics joints | Combine bodies through scripts. |
@@ -22,7 +22,8 @@ Index is in beta. These gaps are known and planned; plan your project around the
 | Multiple cameras, split screen, camera follow | Move the single main camera from a script. |
 | Spatial audio, mixer groups, streamed music | One master volume; long music tracks are fully decoded into memory. |
 | Input action maps and rebinding | Read keys and gamepad buttons directly (`Input.GetKey`, `Input.GetGamepadButton`). |
-| Localization API for games | Localization currently covers the Launcher only. |
+| Localization for games | Games have string tables, a C# API and the Localized Text component, but no table editor or preview-language picker in the editor; Button labels, Dropdown options and Input Field placeholders are not localized automatically (set them from `Localization.Get`). |
+| Text glyph coverage | Text Renderer fonts are baked for ASCII and Latin-1 only (codepoints 32–126, 160–255): Western European languages render, but Polish, Czech, Cyrillic, Greek, CJK and punctuation such as `–` or `…` are skipped. |
 | Creating prefab variants in the editor | Variants load correctly; create them by editing a prefab file. |
 
 ## Editor

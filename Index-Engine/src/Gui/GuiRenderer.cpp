@@ -7,6 +7,7 @@
 #include "Components/Graphics/Camera2DComponent.hpp"
 #endif
 #include "Components/Graphics/ImageComponent.hpp"
+#include "Gui/NineSlice.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Components/UI/CircularSliderComponent.hpp"
@@ -23,6 +24,7 @@
 #include "Graphics/Instance44.hpp"
 #include "Graphics/SpriteResources.hpp"
 #include "Graphics/SpriteUVResolver.hpp"
+#include "Graphics/CustomSpriteDrawer.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/Text/Font.hpp"
 #include "Graphics/Text/FontManager.hpp"
@@ -240,54 +242,81 @@ namespace Index {
 				static_cast<int>(tex->GetHeight()));
 		}
 
-		UIMaskClip ResolveClipForEntity(entt::registry& registry, EntityHandle entity)
+		// Sprite size in texture pixels, undoing ResolveSpriteUVRect's half-texel inset.
+		Vec2 SpritePixelSize(const Instance44& inst, const Texture2D& tex)
 		{
-			UIMaskClip result{};
+			const Vec2 texSize{ static_cast<float>(tex.GetWidth()), static_cast<float>(tex.GetHeight()) };
+			if (inst.UvRect.IsFullTexture) return texSize;
+			return { (inst.UvRect.U1 - inst.UvRect.U0) * texSize.x + 1.0f, (inst.UvRect.V1 - inst.UvRect.V0) * texSize.y + 1.0f };
+		}
 
-			EntityHandle current = entity;
-			while (true) {
-				const HierarchyComponent* h = registry.try_get<HierarchyComponent>(current);
-				if (!h || h->Parent == entt::null) break;
-				current = h->Parent;
-				if (!registry.valid(current)) break;
-				if (!registry.all_of<MaskComponent, RectTransform2DComponent>(current)) continue;
+		// Narrows `clip` by mask entity `current`; its texture mask wins because callers go top-down, nearest last.
+		void AddMaskToClip(entt::registry& registry, EntityHandle current, UIMaskClip& result)
+		{
+			const auto& rect = registry.get<RectTransform2DComponent>(current);
+			const Vec2 bl = rect.GetBottomLeft();
+			const Vec2 tr = rect.GetTopRight();
 
-				const auto& rect = registry.get<RectTransform2DComponent>(current);
-				const Vec2 bl = rect.GetBottomLeft();
-				const Vec2 tr = rect.GetTopRight();
-
-				if (!result.HasClip) {
-					result.ClipMin = bl;
-					result.ClipMax = tr;
-					result.HasClip = true;
-				}
-				else {
-					result.ClipMin.x = std::max(result.ClipMin.x, bl.x);
-					result.ClipMin.y = std::max(result.ClipMin.y, bl.y);
-					result.ClipMax.x = std::min(result.ClipMax.x, tr.x);
-					result.ClipMax.y = std::min(result.ClipMax.y, tr.y);
-				}
-
-				if (!result.HasTextureMask) {
-					if (const auto* image = registry.try_get<ImageComponent>(current)) {
-						Texture2D* tex = TextureManager::GetTexture(image->TextureHandle);
-						if (tex && tex->IsValid()) {
-							result.HasTextureMask = true;
-							result.MaskTextureHandle = image->TextureHandle;
-							result.MaskUvRect = ResolveSpriteUVRect(image->TextureAssetId,
-								image->SpriteName,
-								static_cast<int>(tex->GetWidth()),
-								static_cast<int>(tex->GetHeight()));
-							result.MaskRectMin = bl;
-							result.MaskRectMax = tr;
-							result.MaskPivot = rect.ResolvedPivot;
-							result.MaskRotation = rect.Rotation;
-						}
-					}
-				}
+			if (!result.HasClip) {
+				result.ClipMin = bl;
+				result.ClipMax = tr;
+				result.HasClip = true;
+			}
+			else {
+				result.ClipMin.x = std::max(result.ClipMin.x, bl.x);
+				result.ClipMin.y = std::max(result.ClipMin.y, bl.y);
+				result.ClipMax.x = std::min(result.ClipMax.x, tr.x);
+				result.ClipMax.y = std::min(result.ClipMax.y, tr.y);
 			}
 
-			return result;
+			if (const auto* image = registry.try_get<ImageComponent>(current)) {
+				Texture2D* tex = TextureManager::GetTexture(image->TextureHandle);
+				if (tex && tex->IsValid()) {
+					result.HasTextureMask = true;
+					result.MaskTextureHandle = image->TextureHandle;
+					result.MaskUvRect = ResolveSpriteUVRect(image->TextureAssetId,
+						image->SpriteName,
+						static_cast<int>(tex->GetWidth()),
+						static_cast<int>(tex->GetHeight()));
+					result.MaskRectMin = bl;
+					result.MaskRectMax = tr;
+					result.MaskPivot = rect.ResolvedPivot;
+					result.MaskRotation = rect.Rotation;
+				}
+			}
+		}
+
+		// Per-pass scratch shared by both GuiRenderers; CollectAndDraw is not re-entrant.
+		UIDrawOrder::OrderLookup s_OrderLookup;
+		std::vector<UIMaskClip> s_ClipByOrder;
+
+		// Clip of every entry in `order`, inherited from its nearest drawn rect ancestor (already resolved: the
+		// order is a pre-order DFS) instead of walking every ancestor per entity.
+		void BuildClipTable(entt::registry& registry, const std::vector<std::pair<EntityHandle, int>>& order)
+		{
+			s_ClipByOrder.resize(order.size());
+			for (size_t i = 0; i < order.size(); ++i) {
+				UIMaskClip clip{};
+				EntityHandle current = order[i].first;
+				for (int hop = 0; hop < 4096; ++hop) {
+					const HierarchyComponent* h = registry.try_get<HierarchyComponent>(current);
+					if (!h || h->Parent == entt::null || !registry.valid(h->Parent)) break;
+					current = h->Parent;
+					const uint32_t slot = s_OrderLookup.SlotOf(current);
+					if (slot == UIDrawOrder::OrderLookup::k_None) continue;
+					clip = s_ClipByOrder[slot];
+					if (registry.all_of<MaskComponent>(current)) AddMaskToClip(registry, current, clip);
+					break;
+				}
+				s_ClipByOrder[i] = clip;
+			}
+		}
+
+		const UIMaskClip& ClipForEntity(EntityHandle entity)
+		{
+			static const UIMaskClip k_NoClip{};
+			const uint32_t slot = s_OrderLookup.SlotOf(entity);
+			return slot == UIDrawOrder::OrderLookup::k_None ? k_NoClip : s_ClipByOrder[slot];
 		}
 
 		bool ResolveUICanvasSize(int& outW, int& outH) {
@@ -343,6 +372,9 @@ namespace Index {
 			std::unordered_map<BindGroupKey, CachedBindGroup, BindGroupKeyHash> BindGroupsThisFrame;
 			uint64_t LastClearFrameCount = static_cast<uint64_t>(-1);
 			std::vector<WebGPUSpriteResources::SpriteInstance> EncodedScratch;
+			// Images with a UI material; per GuiRenderer, since its globals hold this renderer's view.
+			std::unique_ptr<CustomSpriteDrawer> CustomImages;
+			bool CustomImagesFailed = false;
 		};
 		std::unordered_map<const GuiRenderer*, GuiRendererWebGPUState> g_State;
 
@@ -561,7 +593,7 @@ namespace Index {
 
 	void GuiRenderer::RenderScene(const Scene& scene) {
 		if (!m_IsInitialized) return;
-		ComputeUILayout(const_cast<Scene&>(scene));
+		UpdateUILayout(const_cast<Scene&>(scene));
 
 		int w = 0, h = 0;
 		if (!ResolveUICanvasSize(w, h)) return;
@@ -576,7 +608,7 @@ namespace Index {
 		const glm::mat4& worldVP, float pixelToWorldScale)
 	{
 		if (!m_IsInitialized) return;
-		ComputeUILayout(const_cast<Scene&>(scene));
+		UpdateUILayout(const_cast<Scene&>(scene));
 
 		int w = 0, h = 0;
 		if (!ResolveUICanvasSize(w, h)) return;
@@ -601,6 +633,8 @@ namespace Index {
 		// ── 1. Build hierarchy draw order ────────────────────────────
 		m_DrawOrder.clear();
 		UIDrawOrder::Build(registry, m_DrawOrder);
+		s_OrderLookup.Rebuild(m_DrawOrder);
+		BuildClipTable(registry, m_DrawOrder);
 
 		int counter = m_DrawOrder.empty()
 			? 0
@@ -609,6 +643,43 @@ namespace Index {
 		// ── 2. Image instances ───────────────────────────────────────
 		m_InstancesScratch.clear();
 		m_InstancesScratch.reserve(m_DrawOrder.size());
+
+		// Replaces `whole` by 9-slice or tiled quads sharing its sort keys and clip; false = draw it as one quad.
+		std::vector<NineSliceQuad> tiles;
+		auto emitSlicedOrTiled = [&](const Instance44& whole, const ImageComponent& image, Vec2 size) {
+			const Texture2D* tex = TextureManager::GetTexture(image.TextureHandle);
+			if (!tex) return false;
+			NineSliceBorder border{ image.BorderLeft, image.BorderBottom, image.BorderRight, image.BorderTop };
+			if (border.Left == 0.0f && border.Bottom == 0.0f && border.Right == 0.0f && border.Top == 0.0f) {
+				const SpriteBorder fromMeta = ResolveSpriteBorder(image.TextureAssetId, image.SpriteName);
+				border = { static_cast<float>(fromMeta.Left), static_cast<float>(fromMeta.Bottom),
+					static_cast<float>(fromMeta.Right), static_cast<float>(fromMeta.Top) };
+			}
+			const Vec2 spritePixels = SpritePixelSize(whole, *tex);
+			int count = 0;
+			const NineSliceQuad* quads = nullptr;
+			std::array<NineSliceQuad, 9> nine;
+			if (image.Type == ImageType::Tiled) {
+				count = BuildTiled(size, spritePixels, border, image.BorderScale, whole.UvRect, tiles);
+				quads = tiles.data();
+			}
+			else {
+				count = BuildNineSlice(size, spritePixels, border, image.BorderScale, whole.UvRect, nine);
+				quads = nine.data();
+			}
+			if (count == 0) return false;
+			const float c = std::cos(whole.Rotation);
+			const float s = std::sin(whole.Rotation);
+			for (int i = 0; i < count; ++i) {
+				Instance44 part = whole;
+				part.Position = { whole.Position.x + c * quads[i].Center.x - s * quads[i].Center.y,
+					whole.Position.y + s * quads[i].Center.x + c * quads[i].Center.y };
+				part.Scale = quads[i].Size;
+				part.UvRect = quads[i].Uv;
+				m_InstancesScratch.push_back(part);
+			}
+			return true;
+		};
 
 		for (const auto& [entity, drawIndex] : m_DrawOrder) {
 			if (!registry.all_of<RectTransform2DComponent, ImageComponent>(entity)) continue;
@@ -647,7 +718,9 @@ namespace Index {
 				image.SortingLayer,
 				static_cast<std::uint32_t>(drawIndex));
 			ApplyImageSliceToInstance(inst, image);
-			ApplyMaskClipToInstance(ResolveClipForEntity(registry, entity), inst);
+			inst.Material = image.Material;
+			ApplyMaskClipToInstance(ClipForEntity(entity), inst);
+			if (image.Type != ImageType::Simple && emitSlicedOrTiled(inst, image, size)) continue;
 			m_InstancesScratch.push_back(inst);
 		}
 
@@ -712,7 +785,7 @@ namespace Index {
 				? std::clamp((cs.Value - cs.MinValue) / range, 0.0f, 1.0f)
 				: 0.0f;
 
-			const UIMaskClip clip = ResolveClipForEntity(registry, entity);
+			const UIMaskClip& clip = ClipForEntity(entity);
 
 			{
 				Instance44 bg(
@@ -838,7 +911,7 @@ namespace Index {
 			cmd.SortingOrder = text.SortingOrder;
 			cmd.SortingLayer = text.SortingLayer;
 			cmd.DrawIndex = static_cast<std::uint32_t>(drawIndex);
-			ApplyMaskClipToText(ResolveClipForEntity(registry, entity), cmd);
+			ApplyMaskClipToText(ClipForEntity(entity), cmd);
 			cmd.Rotation = rect.Rotation;
 			cmd.Pivot = rect.ResolvedPivot;
 			auto ifIt = inputFieldTextChildren.find(entity);
@@ -964,12 +1037,6 @@ namespace Index {
 		// ── 4.5 Input field overlays (selection + caret) ────────────
 		const float elapsedSeconds = Time::GetElapsedTime();
 
-		m_DrawIndexByEntity.clear();
-		m_DrawIndexByEntity.reserve(m_DrawOrder.size());
-		for (const auto& [entity, di] : m_DrawOrder) {
-			m_DrawIndexByEntity.emplace(entity, static_cast<std::uint32_t>(di));
-		}
-
 		// At least one logical pixel: a 1 px caret is invisible on a ~400 dpi phone.
 		const Window* caretWindow = Application::GetWindow();
 		const float minCaretWidth = std::max(1.0f, caretWindow ? caretWindow->GetDisplayScale() : 1.0f);
@@ -982,12 +1049,12 @@ namespace Index {
 			InputFieldOverlayLayout layout = ResolveInputFieldOverlay(registry, field);
 			if (!layout.Valid) continue;  // font failed to load
 
-			auto fieldIt = m_DrawIndexByEntity.find(entity);
-			auto textIt = m_DrawIndexByEntity.find(field.TextEntity);
-			if (fieldIt == m_DrawIndexByEntity.end() || textIt == m_DrawIndexByEntity.end()) continue;
+			const int* fieldIt = s_OrderLookup.DrawIndexOf(entity);
+			const int* textIt = s_OrderLookup.DrawIndexOf(field.TextEntity);
+			if (!fieldIt || !textIt) continue;
 
-			const std::uint32_t fieldDI = fieldIt->second;
-			const std::uint32_t textDI = textIt->second;
+			const std::uint32_t fieldDI = static_cast<std::uint32_t>(*fieldIt);
+			const std::uint32_t textDI = static_cast<std::uint32_t>(*textIt);
 
 			// Overlays join the sorting bucket of what they sit on: with order 0 they vanished behind any
 			// raised panel, e.g. a field in a popup. Selection sits over the field's image, the caret over the text.
@@ -998,7 +1065,7 @@ namespace Index {
 			const std::int16_t selectionOrder = fieldImageSort ? fieldImageSort->SortingOrder : caretOrder;
 			const std::uint8_t selectionLayer = fieldImageSort ? fieldImageSort->SortingLayer : caretLayer;
 
-			const UIMaskClip fieldClip = ResolveClipForEntity(registry, entity);
+			const UIMaskClip& fieldClip = ClipForEntity(entity);
 			// Single-line fields also clip the caret/selection to the field's text rect so
 			// scrolled-out glyphs and the highlight don't spill past the edges. Multiline
 			// fields don't clip (they show all lines); inherited masks still apply.
@@ -1278,6 +1345,22 @@ namespace Index {
 				: defaultTexture;
 		};
 
+		const bool anyCustom = std::any_of(m_InstancesScratch.begin(), m_InstancesScratch.end(),
+			[](const Instance44& instance) { return instance.Material != 0; });
+		if (anyCustom && !state.CustomImages && !state.CustomImagesFailed) {
+			state.CustomImages = std::make_unique<CustomSpriteDrawer>();
+			if (!state.CustomImages->Initialize("guirenderer-custom")) {
+				IDX_CORE_WARN_TAG("GuiRenderer", "Custom shader resources unavailable; image materials draw with the standard shader");
+				state.CustomImages.reset();
+				state.CustomImagesFailed = true;
+			}
+		}
+		const bool drawCustom = anyCustom && state.CustomImages;
+		if (drawCustom) {
+			state.CustomImages->WriteGlobals(CustomMaterialBindings::MakeGlobals(glm::mat4(1.0f), mvp, glm::vec3(0.0f),
+				target.Width, target.Height));
+		}
+
 		auto submitImagePhase = [&](size_t start, size_t end) {
 			if (!pipeline || start >= end) return;
 
@@ -1310,6 +1393,7 @@ namespace Index {
 			wgpu::RenderPassEncoder pass = enc.BeginRenderPass(&passDesc);
 			WebGPUBackend::ApplyCachedViewportToPass(pass);
 			pass.SetPipeline(pipeline);
+			wgpu::RenderPipeline boundPipeline = pipeline;
 			pass.SetVertexBuffer(0, WebGPUSpriteResources::GetQuadVertexBuffer());
 			pass.SetVertexBuffer(1, state.InstanceBuffer);
 			pass.SetIndexBuffer(WebGPUSpriteResources::GetQuadIndexBuffer(),
@@ -1324,9 +1408,11 @@ namespace Index {
 				const bool runHasClip = m_InstancesScratch[i].HasClip;
 				const Vec2 runClipMin = m_InstancesScratch[i].ClipMin;
 				const Vec2 runClipMax = m_InstancesScratch[i].ClipMax;
+				const uint64_t runMaterial = drawCustom ? m_InstancesScratch[i].Material : 0;
 
 				size_t runEnd = i + 1;
 				while (runEnd < end) {
+					if (drawCustom && m_InstancesScratch[runEnd].Material != runMaterial) break;
 					const TextureHandle h = resolveHandle(m_InstancesScratch[runEnd].TextureHandle);
 					if (!(h.index == runHandle.index && h.generation == runHandle.generation)) break;
 					const TextureHandle maskH = resolveMaskHandle(m_InstancesScratch[runEnd]);
@@ -1360,6 +1446,15 @@ namespace Index {
 					scissorIsFull = true;
 				}
 
+				const CustomSpriteDrawer::Draw custom = runMaterial != 0
+					? state.CustomImages->Resolve(runMaterial, ShaderTarget::UI, target.ColorFormat, target.HasDepth)
+					: CustomSpriteDrawer::Draw{};
+				wgpu::RenderPipeline runPipeline = custom.Pipeline ? custom.Pipeline : pipeline;
+				if (runPipeline.Get() != boundPipeline.Get()) {
+					pass.SetPipeline(runPipeline);
+					boundPipeline = runPipeline;
+				}
+				if (custom.Pipeline) pass.SetBindGroup(1, custom.Group);
 				pass.SetBindGroup(0, bg);
 				pass.DrawIndexed(/*indexCount=*/6,
 					/*instanceCount=*/count,
@@ -1398,7 +1493,6 @@ namespace Index {
 		const size_t nTxt = m_TextScratch.size();
 		size_t imgPos = 0;
 		size_t txtPos = 0;
-		bool   anyTextPhaseSubmitted = false;
 
 		while (imgPos < n || txtPos < nTxt) {
 			bool drawImage;
@@ -1422,12 +1516,8 @@ namespace Index {
 				{
 					++txtEnd;
 				}
-				// MUST flush between text phases: TextRenderer reuses one VBO via WriteBuffer; two recorded passes without a submit both read the second write's vertices.
-				if (anyTextPhaseSubmitted) {
-					WebGPUBackend::FlushCommands();
-				}
+				// No flush between text phases: TextRenderer appends each phase into its own VBO range.
 				submitTextPhase(txtPos, txtEnd);
-				anyTextPhaseSubmitted = true;
 				txtPos = txtEnd;
 			}
 		}

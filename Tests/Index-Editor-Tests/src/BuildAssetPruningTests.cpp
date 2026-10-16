@@ -163,6 +163,18 @@ TEST_CASE("StreamingAssets always ships") {
 	CHECK(plan.KeepsProjectFile("StreamingAssets/Levels/1.txt"));
 }
 
+TEST_CASE("Game language files always ship") {
+	ScopedPruningFixture f;
+	f.AddAsset("Localization/en.json", 7777777777777777777ull, R"({ "strings": { "menu.play": "Play" } })");
+	f.AddAsset("Localization/de.json", 7777777777777777778ull, R"({ "strings": { "menu.play": "Spielen" } })");
+	f.AddAsset("Data/Unused.json", 7777777777777777779ull);
+	const BuildAssetPruning::Plan plan = f.Compute();
+	REQUIRE(plan.Valid);
+	CHECK(plan.KeepsProjectFile("Localization/en.json"));
+	CHECK(plan.KeepsProjectFile("Localization/de.json.meta"));
+	CHECK_FALSE(plan.KeepsProjectFile("Data/Unused.json"));
+}
+
 TEST_CASE("Built-in assets ship when loaded by fixed path or referenced") {
 	ScopedPruningFixture f;
 	f.Write(f.Assets / "Scenes" / "Main.scene",

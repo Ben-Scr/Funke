@@ -43,6 +43,10 @@ KIND_BY_EXT = {
     **{e: "Font" for e in (".ttf", ".otf")},
     **{e: "Shader" for e in (".wgsl", ".vs", ".fs", ".vert", ".frag", ".glsl")},
     ".dataasset": "DataAsset",
+    ".material": "Material",
+    **{e: "Mesh" for e in (".obj", ".gltf", ".glb")},
+    ".anim": "AnimationClip",
+    ".animctrl": "AnimatorController",
 }
 
 BUILTIN_TEXTURE_FILES = ["Square", "Pixel", "circle", "Capsule", "IsometricDiamond",
@@ -487,6 +491,10 @@ def validate_entities(path: Path, entities: list, is_prefab: bool, report: Repor
                 assets.check_ref(report, where, f"{comp_name}.textureAsset", c.get("textureAsset"), ("Texture",))
                 if "texture" in c and "textureAsset" not in c:
                     report.warn(where, f"{comp_name}.texture is a legacy path key - use textureAsset with a GUID")
+        anim = ent.get("Animator")
+        if isinstance(anim, dict):
+            assets.check_ref(report, where, "Animator.controllerAsset", anim.get("controllerAsset"), ("AnimatorController",))
+            assets.check_ref(report, where, "Animator.clipAsset", anim.get("clipAsset"), ("AnimationClip",))
         a = ent.get("AudioSource")
         if isinstance(a, dict):
             assets.check_ref(report, where, "AudioSource.clipAsset", a.get("clipAsset"), ("Audio",))
@@ -605,8 +613,9 @@ def check_script_field(where, cls, info, entry, uuids, is_prefab, assets, report
                 report.error(where, f"{label}: component ref must be \"<entityUuid>:<ComponentName>\"")
             elif uid not in uuids:
                 report.warn(where, f"{label}: entity {uid} not in this file")
-    elif ftype in ("texture", "audio", "scene") or ftype.startswith("dataasset"):
-        kind = {"texture": "Texture", "audio": "Audio", "scene": "Scene"}.get(ftype, "DataAsset")
+    elif ftype in ("texture", "audio", "scene", "material", "mesh", "animationclip", "animatorcontroller") or ftype.startswith("dataasset"):
+        kind = {"texture": "Texture", "audio": "Audio", "scene": "Scene", "material": "Material", "mesh": "Mesh",
+                "animationclip": "AnimationClip", "animatorcontroller": "AnimatorController"}.get(ftype, "DataAsset")
         assets.check_ref(report, where, label, value, (kind,))
     elif ftype == "bool" and value.lower() not in ("true", "false", "1", "0"):
         report.error(where, f"{label}: bool value must be \"true\"/\"false\"")

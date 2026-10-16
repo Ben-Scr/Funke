@@ -2,12 +2,16 @@
 #include "Graphics/MeshAsset.hpp"
 
 #include "Assets/AssetRegistry.hpp"
+#include "Graphics/GltfImporter.hpp"
+#include "Graphics/SkeletalAnimation.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/FileStamp.hpp"
+#include "Serialization/Path.hpp"
 
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <filesystem>
 #include <limits>
 #include <unordered_map>
 #include <vector>
@@ -107,7 +111,7 @@ namespace Index {
 			entry.LastAttempt = std::chrono::steady_clock::now();
 			entry.Path = AssetRegistry::ResolvePath(guid);
 			entry.Value = MeshAsset{};
-			entry.Valid = !entry.Path.empty() && MeshLibrary::LoadFromFile(entry.Path, entry.Value.Data);
+			entry.Valid = !entry.Path.empty() && MeshLibrary::LoadAssetFromFile(entry.Path, entry.Value);
 			if (!entry.Valid) return false;
 
 			UpdateBounds(entry.Value);
@@ -268,13 +272,42 @@ namespace Index {
 		return it->second.Valid ? &it->second.Value : nullptr;
 	}
 
+	bool IsMeshFileExtension(std::string_view extension) {
+		return extension == k_ObjMeshExtension || extension == k_GltfMeshExtension || extension == k_GlbMeshExtension;
+	}
+
 	bool MeshLibrary::LoadFromFile(const std::string& path, PrimitiveMeshData& outMesh) {
+		MeshAsset asset;
+		if (!LoadAssetFromFile(path, asset)) return false;
+		outMesh = std::move(asset.Data);
+		return true;
+	}
+
+	bool MeshLibrary::LoadAssetFromFile(const std::string& path, MeshAsset& outAsset) {
+		outAsset = MeshAsset{};
 		if (!File::Exists(path)) return false;
-		const std::string text = File::ReadAllText(path);
 		// Recorded even when parsing fails, so fixing the file on disk triggers a reload.
 		KnownFileStamps::Record(path);
 		std::string error;
-		if (!ParseObjMesh(text, outMesh, &error)) {
+		const std::filesystem::path nativePath = Path::FromUtf8(path);
+		std::string extension = Path::ToUtf8(nativePath.extension());
+		std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		bool loaded = false;
+		if (extension == k_GltfMeshExtension || extension == k_GlbMeshExtension) {
+			const std::vector<uint8_t> bytes = File::ReadAllBytes(path);
+			const std::filesystem::path directory = nativePath.parent_path();
+			loaded = ParseGltf(bytes, [&](const std::string& uri, std::vector<uint8_t>& out) {
+				const std::string external = Path::ToUtf8(directory / Path::FromUtf8(uri));
+				if (!File::Exists(external)) return false;
+				out = File::ReadAllBytes(external);
+				KnownFileStamps::Record(external);
+				return true;
+			}, outAsset, &error);
+		}
+		else {
+			loaded = ParseObjMesh(File::ReadAllText(path), outAsset.Data, &error);
+		}
+		if (!loaded) {
 			IDX_CORE_WARN_TAG("Mesh", "Could not load mesh '{}': {}", path, error);
 			return false;
 		}

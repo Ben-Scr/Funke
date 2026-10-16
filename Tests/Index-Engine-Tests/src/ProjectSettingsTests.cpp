@@ -450,3 +450,44 @@ TEST_CASE("IndexProject scene lookup fails on duplicate basenames") {
 	project.ScenesDirectory = (assets / "Scenes").string();
 	CHECK(project.GetSceneFilePath("Shared").empty());
 }
+
+// Shipped builds: unset overlays follow the build profile (Release = off), explicit values win and round-trip.
+TEST_CASE("Runtime overlays default to off for Release builds unless project.json sets them") {
+	namespace fs = std::filesystem;
+	const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+	const fs::path root = fs::temp_directory_path() / ("IndexOverlayRT_" + std::to_string(suffix));
+	fs::create_directories(root / "Assets");
+	struct Cleanup {
+		fs::path Root;
+		~Cleanup() { std::error_code ec; fs::remove_all(Root, ec); }
+	} cleanup{ root };
+
+	IndexProject p;
+	p.Name = "Overlay RT";
+	p.RootDirectory = root.string();
+	p.ProjectFilePath = Path::Combine(root.string(), "project.json");
+
+	CHECK(p.ResolveShowRuntimeStats());
+	CHECK(p.ResolveShowRuntimeLogs());
+	p.ActiveBuildProfile = IndexProject::BuildProfile::Release;
+	CHECK_FALSE(p.ResolveShowRuntimeStats());
+	CHECK_FALSE(p.ResolveShowRuntimeLogs());
+
+	SUBCASE("unset stays unset") {
+		REQUIRE(p.Save());
+		IndexProject loaded = IndexProject::Load(root.string());
+		CHECK_FALSE(loaded.ShowRuntimeStats.has_value());
+		CHECK_FALSE(loaded.ResolveShowRuntimeStats());
+	}
+
+	SUBCASE("explicit true overrides the Release default") {
+		p.ShowRuntimeStats = true;
+		p.ShowRuntimeLogs = false;
+		REQUIRE(p.Save());
+		IndexProject loaded = IndexProject::Load(root.string());
+		CHECK(loaded.ResolveShowRuntimeStats());
+		CHECK_FALSE(loaded.ResolveShowRuntimeLogs());
+		loaded.ActiveBuildProfile = IndexProject::BuildProfile::Development;
+		CHECK_FALSE(loaded.ResolveShowRuntimeLogs());
+	}
+}

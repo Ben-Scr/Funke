@@ -1,5 +1,6 @@
 #pragma once
 #include "Scene/EntityHandle.hpp"
+#include "Serialization/FileStamp.hpp"
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -17,6 +18,11 @@ namespace Index {
 	// instances were built from) is the override baseline. Edit mode only; scenes roll back on failure.
 	bool RefreshPrefabInstancesFromDisk(const std::string& prefabPath, const Json::Value& previousSource,
 		std::string_view logTag, size_t* outRefreshedCount = nullptr);
+
+	// Shared by the Prefab inspector and Prefab edit mode. Null (and outScene untouched) when the file
+	// can't be read or holds no entity tree.
+	EntityHandle LoadPrefabSourceIntoDetachedScene(const std::string& prefabPath, const std::string& sceneName,
+		std::string_view logTag, std::unique_ptr<Scene>& outScene);
 
 	// Inspector for a .prefab asset backed by a detached Scene. Component-destroy hooks that touch global subsystems are gated by Scene::IsDetached().
 	class PrefabInspector {
@@ -48,6 +54,9 @@ namespace Index {
 		std::unique_ptr<Scene> m_PrefabScene;
 		EntityHandle m_RootEntity = entt::null;
 		std::string m_PrefabPath;
+		// Selection re-calls Open every frame; a failed file is retried (and logged) only once it changes.
+		std::string m_FailedPath;
+		FileStamp m_FailedStamp;
 		char m_AddComponentSearchBuffer[128]{};
 	};
 

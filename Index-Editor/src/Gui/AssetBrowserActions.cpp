@@ -1,4 +1,6 @@
 #include <pch.hpp>
+#include "Animation/AnimationClip.hpp"
+#include "Animation/AnimatorController.hpp"
 #include "Gui/AssetBrowser.hpp"
 
 #include "Assets/AssetRegistry.hpp"
@@ -1443,6 +1445,29 @@ namespace Index {
 			});
 	}
 
+	void AssetBrowser::CreateAnimationAsset(const std::string& parentDir, bool controller) {
+		const std::filesystem::path preferred = std::filesystem::path(parentDir)
+			/ (controller ? std::string("NewAnimator") + k_AnimatorControllerExtension : std::string("NewAnimation") + k_AnimationClipExtension);
+
+		CreateAssetWithCollisionCheck(preferred,
+			[this, controller](const std::filesystem::path& finalPath) {
+				const std::string finalPathStr = finalPath.string();
+				const bool saved = controller
+					? AnimatorControllerLibrary::SaveToFile(finalPathStr, AnimatorController{})
+					: AnimationClipLibrary::SaveToFile(finalPathStr, AnimationClip{});
+				if (!saved) {
+					IDX_WARN_TAG("AssetBrowser", "Failed to create '{}'", finalPathStr);
+					return;
+				}
+
+				AssetRegistry::ImportAssetPathIncremental(finalPathStr);
+				m_NeedsRefresh = true;
+				Refresh();
+				m_SelectedPath = finalPathStr;
+				BeginRename(finalPathStr, finalPath.stem().string());
+			});
+	}
+
 	void AssetBrowser::CreateFile(const std::string& parentDir, const std::string& baseName,
 		const std::string& extension, const std::string& defaultContent) {
 		// Normalize: extension may or may not include the leading dot.
@@ -1525,6 +1550,12 @@ namespace Index {
 			if (ext == ".scene")
 			{
 				m_PendingSceneLoad = entry.Path;
+				return;
+			}
+
+			if (ext == ".anim" || ext == ".animctrl")
+			{
+				m_PendingAnimationOpen = entry.Path;
 				return;
 			}
 

@@ -32,9 +32,14 @@ Anchors are the core idea: anchor a HUD element to a screen corner so it tracks 
 ```csharp
 Color   Color;                    // tint
 Texture? Texture;                 // sprite/background; null = solid color
+string  SpriteName;               // slice of Texture from its .meta; "" = whole texture
 int     SortingOrder, SortingLayer;
+ImageType Type;                   // Simple | Sliced (9-slice) | Tiled (edges + middle repeat)
+Vector4 Border;                   // Sliced/Tiled: unstretched edges in texture px, X left, Y bottom, Z right, W top; all 0 = the texture's .meta border
+float   BorderScale;              // UI units per border pixel (Tiled: also the tile size)
+Material? Material;               // .material with a `@target UI` shader; null = standard shader
 ```
-Use `Image` for backgrounds, panels, icons. Text uses the `TextRenderer` component (see `index-game-scripting`).
+Use `Image` for backgrounds, panels, icons. For rounded buttons and panels use **one** small rounded sprite with `Type = Sliced` and its corner radius as Border instead of generating a sprite per size (scene JSON: `"imageType": 1, "border": [24, 24, 24, 24]`). Better: store the border once with the texture (`index sprite border Assets/Textures/Panel.png --border 24`, or `--slice <name>` for a sprite-sheet slice) and leave the Image's border at 0, so every Image using it slices the same way. Text uses the `TextRenderer` component (see `index-game-scripting`).
 
 ## Interactivity: `Interactable` (the base)
 
@@ -124,6 +129,7 @@ Useful for "is the cursor over UI?" gating so world clicks don't fire through th
 - **Settings screen:** `Slider.OnValueChanged` → apply audio/graphics; persist with a `GlobalSystem` or Data Asset (`index-assets-and-content`).
 - **Don't click through UI:** before handling a world click, check `UIPointer.HoveredEntity == null`.
 - **Modal popup (settings, pause, confirm):** root entity (disabled until opened) → a full-screen dim `Image` with an `Interactable` (`interactable: true`, `focusable: false`) and an explicit oversized `SizeDelta` → the panel and its widgets above it. Only `Interactable` entities hit-test, so a dim layer without one lets clicks fall through to the menu buttons behind it. Show the cursor while a popup is open and hide it again during gameplay (`Cursor` API, `index-game-scripting`).
+- **Translated UI:** one `Assets/Localization/<code>.json` per language (`{"meta": {"code": "de", "displayName": "Deutsch"}, "strings": {"menu.play": "Spielen"}}`; `en` is the fallback). Static labels get a `LocalizedText` component (`Key`) next to their `TextRenderer` and update on every switch; Button labels, Dropdown `Options` and InputField placeholders are set from code with `Localization.Get(key)` and refreshed in a `Localization.LanguageChanged` handler. A language picker lists `Localization.AvailableLanguages` and calls `Localization.SetLanguage(code)`, which also remembers the choice for the next start. Fonts render ASCII + Latin-1 only.
 - **Slider fill inside a rounded frame:** the engine sizes `Fill` to the slider's own rect. Make the slider rect the *inner* track (inset from the artwork) and draw the background/frame as larger children, or the square fill pokes out at the ends.
 
 ## Pitfalls

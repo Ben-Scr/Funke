@@ -114,8 +114,9 @@ namespace Index {
 		bool IsSimulating() const { return m_IsSimulating; }
 		bool IsPlaying() const { return m_IsEmitting; }
 
-		// Emits immediately from the emitter pose of the last Simulate, even while stopped.
+		// Emits immediately from the emitter pose of the last Simulate (or SetEmitterWorld), even while stopped.
 		void Emit(size_t count);
+		void SetEmitterWorld(const glm::mat4& emitterWorld) { m_EmitterWorld = emitterWorld; }
 
 		// Advances emission and simulation by deltaTime; emitterWorld is the entity's Transform3D world matrix.
 		void Simulate(float deltaTime, const glm::mat4& emitterWorld, ParticleQualityLevel quality = ParticleQualityLevel::High);

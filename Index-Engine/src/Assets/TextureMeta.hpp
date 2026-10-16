@@ -12,6 +12,17 @@
 
 namespace Index {
 
+	// 9-slice edges in texture pixels ("border": [left, bottom, right, top] in the .meta).
+	struct INDEX_API SpriteBorder {
+		int Left = 0;
+		int Bottom = 0;
+		int Right = 0;
+		int Top = 0;
+
+		bool IsZero() const { return Left == 0 && Bottom == 0 && Right == 0 && Top == 0; }
+		bool operator==(const SpriteBorder&) const = default;
+	};
+
 	struct INDEX_API SpriteSlice {
 		std::string Name;
 		int X = 0;
@@ -20,6 +31,7 @@ namespace Index {
 		int H = 0;
 		float PivotX = 0.5f;
 		float PivotY = 0.5f;
+		SpriteBorder Border;
 	};
 
 	struct INDEX_API TextureImportSettings {
@@ -32,6 +44,8 @@ namespace Index {
 	struct INDEX_API TextureMeta {
 		TextureImportSettings Import;
 		std::vector<SpriteSlice> Sprites;
+		// Border of the whole texture, used when no slice is named.
+		SpriteBorder Border;
 		bool HasImportBlock = false;
 
 		const SpriteSlice* FindByName(std::string_view name) const {

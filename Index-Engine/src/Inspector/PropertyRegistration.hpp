@@ -242,7 +242,9 @@ namespace Index::Properties {
 		return desc;
 	}
 
-	// Texture reference field. Setter may be slice-aware (void(Entity&, uint64_t, const std::string&)) or plain (void(Entity&, uint64_t)); dispatch is if constexpr.
+	// Texture reference field. Getter and setter may each be slice-aware (uint64_t(const Entity&, std::string& outSlice) /
+	// void(Entity&, uint64_t, const std::string&)) or plain; dispatch is if constexpr. A slice-aware setter needs a
+	// slice-aware getter, or the animation record, preview restore and multi-select compare lose the slice.
 	template <typename Getter, typename Setter>
 	PropertyDescriptor MakeTextureRef(const std::string& name, const std::string& displayName,
 		Getter getter, Setter setter, PropertyMetadata metadata = {})
@@ -255,7 +257,12 @@ namespace Index::Properties {
 		desc.Get = [getter](const Entity& e) -> PropertyValue {
 			PropertyValue v;
 			v.Type = PropertyType::TextureRef;
-			v.UIntValue = static_cast<uint64_t>(getter(e));
+			if constexpr (std::is_invocable_v<Getter, const Entity&, std::string&>) {
+				v.UIntValue = static_cast<uint64_t>(getter(e, v.StringValue));
+			}
+			else {
+				v.UIntValue = static_cast<uint64_t>(getter(e));
+			}
 			return v;
 		};
 		desc.Set = [setter](Entity& e, const PropertyValue& v) {

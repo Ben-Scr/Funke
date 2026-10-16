@@ -3,6 +3,7 @@
 #include "Project/IndexProject.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -28,6 +29,18 @@ namespace Index {
 		// "platformOptions" in the .build file, handed verbatim to the platform package's builder
 		// (signing keystore, SDK paths, ...). Keys are defined by each builder's `describe`.
 		std::vector<std::pair<std::string, std::string>> PlatformOptions;
+
+		// Test/QA variants. Unset fields keep the project.json value.
+		std::optional<IndexProject::BuildProfile> Configuration; // "configuration": Debug/Development/Release
+		std::vector<std::string> Defines;                         // added to the project's customDefines
+		std::optional<bool> ShowRuntimeStats;
+		std::optional<bool> ShowRuntimeLogs;
+		std::optional<bool> DevConsole;
+		bool IsolatedPrefs = false; // PlayerPrefs/SaveData under Profiles/<profile name>
+
+		// Folds the profile's overrides into a build snapshot of the project.
+		void ApplyTo(IndexProject& project) const;
+		std::string GetPrefsProfileName() const;
 
 		static const char* PlatformToString(BuildPlatform platform);
 		static BuildPlatform PlatformFromString(std::string_view value);

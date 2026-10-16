@@ -342,10 +342,25 @@ namespace Index {
 				}
 			};
 
+			// Views/sampler are kept so a recycled atlas id or mask pool slot is detected and rebuilt.
+			struct CachedBindGroup {
+				wgpu::BindGroup     Group;
+				wgpu::TextureView   AtlasView;
+				wgpu::TextureView   MaskView;
+				wgpu::Sampler       MaskSampler;
+			};
+
 			wgpu::Buffer VertexBuffer;
 			uint32_t     VertexBufferCapacityBytes = 0;
 			wgpu::Buffer UniformBuffer;
-			std::unordered_map<BindGroupKey, wgpu::BindGroup, BindGroupKeyHash> BindGroupsThisCall;
+			std::unordered_map<BindGroupKey, CachedBindGroup, BindGroupKeyHash> BindGroups;
+
+			// Several RenderInstances calls share one submit (GuiRenderer's text phases); each appends its
+			// vertices after the previous call's instead of overwriting them, so no flush is needed between.
+			uint64_t  PendingSubmitSerial = ~0ull;
+			uint32_t  VertexWriteOffset = 0;
+			bool      HasPendingMvp = false;
+			glm::mat4 PendingMvp{ 1.0f };
 		};
 		std::unordered_map<const TextRenderer*, PerInstance> g_PerInstance;
 
@@ -398,13 +413,19 @@ namespace Index {
 			const uint64_t maskPoolId = maskTex->GetHandle();
 			const PerInstance::BindGroupKey key{ atlasId, maskPoolId };
 
-			auto it = inst.BindGroupsThisCall.find(key);
-			if (it != inst.BindGroupsThisCall.end()) return it->second;
-
 			wgpu::TextureView view = WebGPUBackend::LookupFontAtlas(atlasId);
 			if (!view) return nullptr;
 			const auto maskLookup = WebGPUBackend::LookupTexture2D(maskPoolId);
 			if (!maskLookup.Valid || !maskLookup.View || !maskLookup.Sampler) return nullptr;
+
+			auto it = inst.BindGroups.find(key);
+			if (it != inst.BindGroups.end()
+				&& it->second.AtlasView.Get() == view.Get()
+				&& it->second.MaskView.Get() == maskLookup.View.Get()
+				&& it->second.MaskSampler.Get() == maskLookup.Sampler.Get())
+			{
+				return it->second.Group;
+			}
 
 			GlobalTextState& g = Globals();
 			wgpu::BindGroupEntry entries[5] = {};
@@ -428,7 +449,12 @@ namespace Index {
 			desc.label      = "text-atlas-bindgroup";
 			wgpu::BindGroup bg = device.CreateBindGroup(&desc);
 			if (!bg) return nullptr;
-			inst.BindGroupsThisCall.emplace(key, bg);
+			// Entries pin their views; bound the cache so destroyed fonts/masks don't stay alive forever.
+			constexpr size_t k_MaxCachedBindGroups = 128;
+			if (it == inst.BindGroups.end() && inst.BindGroups.size() >= k_MaxCachedBindGroups) {
+				inst.BindGroups.clear();
+			}
+			inst.BindGroups[key] = PerInstance::CachedBindGroup{ bg, view, maskLookup.View, maskLookup.Sampler };
 			return bg;
 		}
 
@@ -825,10 +851,24 @@ namespace Index {
 		if (!pipeline) return;
 
 		PerInstance& inst = GetPerInstance(this);
-		inst.BindGroupsThisCall.clear();
 
 		if (!EnsureUniformBuffer(device, inst)) return;
-		queue.WriteBuffer(inst.UniformBuffer, 0, glm::value_ptr(mvp), 64);
+		// One shared view-projection per submit: a different mvp before the pending passes ran must flush first.
+		if (inst.HasPendingMvp && inst.PendingSubmitSerial == WebGPUBackend::GetFrameSubmitSerial()
+			&& inst.PendingMvp != mvp)
+		{
+			WebGPUBackend::FlushCommands();
+		}
+		if (inst.PendingSubmitSerial != WebGPUBackend::GetFrameSubmitSerial()) {
+			inst.PendingSubmitSerial = WebGPUBackend::GetFrameSubmitSerial();
+			inst.VertexWriteOffset = 0;
+			inst.HasPendingMvp = false;
+		}
+		if (!inst.HasPendingMvp || inst.PendingMvp != mvp) {
+			queue.WriteBuffer(inst.UniformBuffer, 0, glm::value_ptr(mvp), 64);
+			inst.PendingMvp = mvp;
+			inst.HasPendingMvp = true;
+		}
 
 		m_Order.clear();
 		m_Order.reserve(commands.size());
@@ -914,8 +954,13 @@ namespace Index {
 		if (m_Vertices.empty() || runs.empty()) return;
 
 		const uint32_t totalBytes = static_cast<uint32_t>(m_Vertices.size() * sizeof(TextVertex));
-		if (!EnsureVertexBuffer(device, inst, totalBytes)) return;
-		queue.WriteBuffer(inst.VertexBuffer, 0, m_Vertices.data(), totalBytes);
+		const WGPUBuffer previousBuffer = inst.VertexBuffer.Get();
+		if (!EnsureVertexBuffer(device, inst, inst.VertexWriteOffset + totalBytes)) return;
+		// A regrown buffer is a fresh object; passes already recorded keep the old one alive.
+		if (inst.VertexBuffer.Get() != previousBuffer) inst.VertexWriteOffset = 0;
+		const uint32_t vertexOffset = inst.VertexWriteOffset;
+		queue.WriteBuffer(inst.VertexBuffer, vertexOffset, m_Vertices.data(), totalBytes);
+		inst.VertexWriteOffset += totalBytes;
 
 		wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
 		if (!encoder) return;
@@ -946,7 +991,7 @@ namespace Index {
 		wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 		WebGPUBackend::ApplyCachedViewportToPass(pass);
 		pass.SetPipeline(pipeline);
-		pass.SetVertexBuffer(0, inst.VertexBuffer);
+		pass.SetVertexBuffer(0, inst.VertexBuffer, vertexOffset, totalBytes);
 		pass.SetScissorRect(0, 0, target.Width, target.Height);
 
 		bool scissorIsFull = true;

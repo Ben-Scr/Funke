@@ -25,6 +25,7 @@
 #include "Components/Graphics/ImageComponent.hpp"
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/Camera3DComponent.hpp"
+#include "Components/Graphics/PostProcessing2DComponent.hpp"
 #include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem3DComponent.hpp"
@@ -86,9 +87,6 @@ namespace Index {
 		bool s_EditorViewOverlayHovered = false;
 		// Set when a middle-press starts on a pill; holds until release so that drag never pans.
 		bool s_EditorViewPanBlocked = false;
-		// Auto-resized pills only know their size after a frame; the right pill is placed from last frame's.
-		ImVec2 s_EditorViewRightPillSize{ 0.0f, 0.0f };
-
 		void BeginViewportPill(const char* id, const ImVec2& screenPos) {
 			ImGui::SetCursorScreenPos(screenPos);
 			ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_PopupBg);
@@ -102,6 +100,93 @@ namespace Index {
 				ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav);
 			ImGui::PopStyleVar(3);
 			ImGui::PopStyleColor();
+		}
+
+		constexpr const char* k_EditorViewSettingsPopup = "##EditorViewSettings";
+		constexpr const char* k_EditorViewDrawModeLabels[] = { "Default", "Triangle", "Mixed" };
+
+		bool IsToolbarItemVisible(EditorViewToolbarItem item) {
+			return EditorPreferences::IsEditorViewToolbarItemVisible(item);
+		}
+
+		// Keeps an empty options pill from drawing when every element in it is switched off.
+		bool HasVisibleViewOptions() {
+			if (!IsToolbarItemVisible(EditorViewToolbarItem::OptionsPill)) return false;
+			const bool viewModeToggle = EngineModules::IsActive(EngineModule::TwoD) && EngineModules::IsActive(EngineModule::ThreeD)
+				&& IsToolbarItemVisible(EditorViewToolbarItem::ViewMode3D);
+			return viewModeToggle
+				|| IsToolbarItemVisible(EditorViewToolbarItem::DrawMode)
+				|| IsToolbarItemVisible(EditorViewToolbarItem::Gizmos)
+				|| IsToolbarItemVisible(EditorViewToolbarItem::PostProcessing)
+				|| IsToolbarItemVisible(EditorViewToolbarItem::GridSnap);
+		}
+
+		void DrawEditorViewSettingsMenu() {
+			auto itemSwitch = [](const char* label, EditorViewToolbarItem item, bool enabled) {
+				const bool visible = IsToolbarItemVisible(item);
+				if (ImGui::MenuItem(label, nullptr, visible, enabled)) {
+					EditorPreferences::SetEditorViewToolbarItemVisible(item, !visible);
+				}
+			};
+			// Keeps the menu open so several elements can be toggled in a row.
+			ImGui::PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
+			ImGui::TextDisabled("Editor View");
+			itemSwitch("Gizmo Modes", EditorViewToolbarItem::GizmoModes, true);
+			ImGui::Separator();
+			ImGui::TextDisabled("Toolbar");
+			itemSwitch("Show View Options", EditorViewToolbarItem::OptionsPill, true);
+			const bool rightVisible = IsToolbarItemVisible(EditorViewToolbarItem::OptionsPill);
+			ImGui::Indent();
+			if (EngineModules::IsActive(EngineModule::TwoD) && EngineModules::IsActive(EngineModule::ThreeD)) {
+				itemSwitch("3D Toggle", EditorViewToolbarItem::ViewMode3D, rightVisible);
+			}
+			itemSwitch("Draw Mode", EditorViewToolbarItem::DrawMode, rightVisible);
+			itemSwitch("Gizmos", EditorViewToolbarItem::Gizmos, rightVisible);
+			itemSwitch("Post Processing", EditorViewToolbarItem::PostProcessing, rightVisible);
+			itemSwitch("Grid Snap", EditorViewToolbarItem::GridSnap, rightVisible);
+			ImGui::Unindent();
+			ImGui::PopItemFlag();
+			ImGui::Separator();
+			if (ImGui::MenuItem("Reset to Default", nullptr, false, !EditorPreferences::IsEditorViewToolbarDefault())) {
+				EditorPreferences::ResetEditorViewToolbar();
+			}
+			ImGui::TextDisabled("Hidden tools stay in the command palette (Ctrl+K).");
+		}
+
+		constexpr const char* k_GameViewSettingsPopup = "##GameViewSettings";
+
+		void DrawGameViewSettingsMenu() {
+			auto itemSwitch = [](const char* label, GameViewToolbarItem item, bool enabled) {
+				const bool visible = EditorPreferences::IsGameViewToolbarItemVisible(item);
+				if (ImGui::MenuItem(label, nullptr, visible, enabled)) {
+					EditorPreferences::SetGameViewToolbarItemVisible(item, !visible);
+				}
+			};
+			ImGui::PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
+			ImGui::TextDisabled("Game View");
+			itemSwitch("Show Toolbar", GameViewToolbarItem::Toolbar, true);
+			const bool barVisible = EditorPreferences::IsGameViewToolbarItemVisible(GameViewToolbarItem::Toolbar);
+			ImGui::Indent();
+			itemSwitch("Aspect Ratio", GameViewToolbarItem::Aspect, barVisible);
+			itemSwitch("VSync", GameViewToolbarItem::VSync, barVisible);
+			itemSwitch("Stats", GameViewToolbarItem::Stats, barVisible);
+			itemSwitch("Logs", GameViewToolbarItem::Logs, barVisible);
+			ImGui::Unindent();
+			ImGui::PopItemFlag();
+			if (ImGui::MenuItem("Reset Game View Toolbar", nullptr, false, !EditorPreferences::IsGameViewToolbarDefault())) {
+				EditorPreferences::ResetGameViewToolbar();
+			}
+		}
+
+		// Call inside a pill after its style pushes are popped; the popup takes the default style.
+		void DrawEditorViewSettingsPopup() {
+			if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+				ImGui::OpenPopup(k_EditorViewSettingsPopup);
+			}
+			if (ImGui::BeginPopup(k_EditorViewSettingsPopup)) {
+				DrawEditorViewSettingsMenu();
+				ImGui::EndPopup();
+			}
 		}
 
 		// Returns the pill's size (for placement next frame).
@@ -574,9 +659,19 @@ namespace Index {
 			&& Application::GetInstance() && Application::GetInstance()->GetRenderer3D();
 		if (!cameraViewport && !hasCamera3D) return false;
 
-		constexpr int k_ThumbWidth = 480;
-		constexpr int k_ThumbHeight = 270;
-		Framebuffer fbo(k_ThumbWidth, k_ThumbHeight);
+		// Capture at the game's own aspect (build lock, else Game View) so portrait games aren't squashed into 16:9.
+		float aspect = AspectRatioFromLabel(project->BuildAspect);
+		if (aspect <= 0.0f) aspect = AspectRatioFromLabel(project->GameViewAspect);
+		if (aspect <= 0.0f && m_GameViewFBO.IsValid() && m_GameViewFBO.GetHeight() > 0) {
+			aspect = static_cast<float>(m_GameViewFBO.GetWidth()) / static_cast<float>(m_GameViewFBO.GetHeight());
+		}
+		if (aspect <= 0.0f) aspect = 16.0f / 9.0f;
+		aspect = std::clamp(aspect, 0.25f, 4.0f);
+
+		constexpr int k_ThumbLongSide = 480;
+		const int thumbWidth = aspect >= 1.0f ? k_ThumbLongSide : std::max(1, static_cast<int>(std::round(k_ThumbLongSide * aspect)));
+		const int thumbHeight = aspect >= 1.0f ? std::max(1, static_cast<int>(std::round(k_ThumbLongSide / aspect))) : k_ThumbLongSide;
+		Framebuffer fbo(thumbWidth, thumbHeight);
 		if (!fbo.IsValid()) return false;
 
 		std::optional<Camera3DView> view3D;
@@ -585,7 +680,7 @@ namespace Index {
 			const auto& registry = scene.GetRegistry();
 			view3D = Renderer3D::MakeView(registry.get<Transform3DComponent>(camera3DEntity).WorldMatrix,
 				registry.get<Camera3DComponent>(camera3DEntity),
-				static_cast<float>(k_ThumbWidth) / static_cast<float>(k_ThumbHeight));
+				static_cast<float>(thumbWidth) / static_cast<float>(thumbHeight));
 		}
 
 		const int savedW = cameraViewport ? cameraViewport->GetWidth() : 0;
@@ -593,7 +688,7 @@ namespace Index {
 		glm::mat4 vp = view3D ? view3D->Projection * view3D->View : glm::mat4(1.0f);
 		AABB viewAABB{ Vec2{ -1.0e9f, -1.0e9f }, Vec2{ 1.0e9f, 1.0e9f } };
 		if (cameraViewport) {
-			cameraViewport->SetSize(k_ThumbWidth, k_ThumbHeight);
+			cameraViewport->SetSize(thumbWidth, thumbHeight);
 			camera->UpdateViewport();
 			if (!view3D) {
 				vp = camera->GetViewProjectionMatrix();
@@ -626,7 +721,7 @@ namespace Index {
 			[](void* ctx, void* data, int size) {
 				static_cast<std::ofstream*>(ctx)->write(static_cast<const char*>(data), size);
 			},
-			&file, k_ThumbWidth, k_ThumbHeight, 4, pixels.data(), k_ThumbWidth * 4);
+			&file, thumbWidth, thumbHeight, 4, pixels.data(), thumbWidth * 4);
 		return ok != 0 && file.good();
 	}
 
@@ -674,6 +769,12 @@ namespace Index {
 		RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
 
 		if (renderer3D) {
+			// The main Camera3D's Post Processing, as in the runtime; the Editor View gates it with its toolbar toggle.
+			const PostProcessing2DComponent* postProcessing = nullptr;
+			if (const EntityHandle camera = Camera3DComponent::FindMain(scene); camera != entt::null) {
+				postProcessing = scene.GetRegistry().try_get<PostProcessing2DComponent>(camera);
+			}
+			const bool postProcess = renderer3D->BeginPostProcess(postProcessing, clearColor);
 			renderer3D->RenderSky(*view3D, &scene);
 			if (onlyPassedScene) {
 				renderer3D->RenderScene(scene, *view3D);
@@ -683,8 +784,9 @@ namespace Index {
 					renderer3D->RenderScene(s, *view3D);
 					});
 			}
-			// Editor grid and selection outlines are depth-tested against the meshes.
+			// Editor grid and selection outlines are depth-tested against the meshes, so they join the intermediate.
 			renderer3D->FlushLines(*view3D, true);
+			if (postProcess) renderer3D->EndPostProcess();
 			if (renderer) renderer->SetComposeOverTarget(true);
 		}
 
@@ -901,6 +1003,15 @@ namespace Index {
 			});
 	}
 
+	float ImGuiEditorLayer::GetGameViewAspect() const {
+		if (m_GameViewAspectPresetIndex == k_GameViewProjectAspectIndex) {
+			const IndexProject* project = ProjectManager::GetCurrentProject();
+			return project ? AspectRatioFromLabel(project->BuildAspect) : 0.0f;
+		}
+		const int index = std::clamp(m_GameViewAspectPresetIndex, 0, static_cast<int>(k_AspectRatioPresets.size()) - 1);
+		return k_AspectRatioPresets[index].Aspect;
+	}
+
 	void ImGuiEditorLayer::DrawCameraFrameGizmo(Scene& scene, EntityHandle entity) {
 		Transform2DComponent* transform = nullptr;
 		Camera2DComponent* camera = nullptr;
@@ -911,8 +1022,7 @@ namespace Index {
 		Gizmo::SetLineWidth(1.5f);
 		// Frame at the configured Game View aspect, not the live window aspect — WorldViewPort() tracks m_Viewport (the OS window) here, so it overstates the camera's horizontal view. Free Aspect (0) has no fixed ratio → keep the window aspect.
 		Vec2 camFrame = camera->WorldViewPort();
-		const int gvAspectIdx = std::clamp(m_GameViewAspectPresetIndex, 0, static_cast<int>(k_AspectRatioPresets.size()) - 1);
-		const float gvAspect = k_AspectRatioPresets[gvAspectIdx].Aspect;
+		const float gvAspect = GetGameViewAspect();
 		if (gvAspect > 0.0f) camFrame.x = camFrame.y * gvAspect;
 		Gizmo::DrawWireSquare(transform->Position, camFrame, transform->GetRotationDegrees());
 	}
@@ -1369,6 +1479,183 @@ namespace Index {
 		ImGui::EndChild();
 	}
 
+	void ImGuiEditorLayer::RenderEditorViewSettingsMenu() {
+		DrawEditorViewSettingsMenu();
+	}
+
+	void ImGuiEditorLayer::RenderGameViewSettingsMenu() {
+		DrawGameViewSettingsMenu();
+	}
+
+	// Editor View options in the viewport's top-right pill; returns false when nothing was drawn.
+	bool ImGuiEditorLayer::RenderEditorViewToolbarOptions() {
+		if (!IsToolbarItemVisible(EditorViewToolbarItem::OptionsPill)) return false;
+		const ImVec2 pillSpacing(4.0f, ImGui::GetStyle().ItemSpacing.y);
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, pillSpacing);
+
+		// Separators only between elements that are actually drawn, so hidden ones leave no gaps.
+		bool anyDrawn = false;
+		auto beginElement = [&](EditorViewToolbarItem item) {
+			if (!IsToolbarItemVisible(item)) return false;
+			if (anyDrawn) EditorUI::ToolbarSeparator();
+			anyDrawn = true;
+			return true;
+		};
+
+		// With only one of the 2D/3D modules active the view mode is fixed (ResolveEditorViewMode).
+		if (EngineModules::IsActive(EngineModule::TwoD) && EngineModules::IsActive(EngineModule::ThreeD)
+			&& beginElement(EditorViewToolbarItem::ViewMode3D)) {
+			if (EditorUI::ToggleButton("3D##EditorViewMode", m_EditorView3D)) {
+				SetEditorView3D(!m_EditorView3D);
+			}
+			EditorUI::Tooltip("3D scene camera: RMB orbit (+WASD/QE fly), MMB pan, wheel zoom, F focus. Off: 2D camera.");
+		}
+
+		if (beginElement(EditorViewToolbarItem::DrawMode)) {
+			const int currentIndex = static_cast<int>(m_EditorViewDrawMode);
+			// Fits the longest label ("Triangle") plus the arrow.
+			ImGui::SetNextItemWidth(ImGui::CalcTextSize("Triangle").x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetFrameHeight());
+			if (ImGui::BeginCombo("##EditorViewDrawMode", k_EditorViewDrawModeLabels[currentIndex])) {
+				for (int i = 0; i < IM_ARRAYSIZE(k_EditorViewDrawModeLabels); ++i) {
+					const bool selected = (i == currentIndex);
+					if (ImGui::Selectable(k_EditorViewDrawModeLabels[i], selected)) {
+						m_EditorViewDrawMode = static_cast<EditorViewDrawMode>(i);
+					}
+					if (selected) {
+						ImGui::SetItemDefaultFocus();
+					}
+				}
+				ImGui::EndCombo();
+			}
+			EditorUI::Tooltip("Editor View draw mode (Default / Triangle wireframe / Mixed overlay)");
+		}
+
+		if (beginElement(EditorViewToolbarItem::Gizmos)) {
+			if (EditorUI::ToggleButton("Gizmos##EditorView", m_ShowGizmos)) {
+				m_ShowGizmos = !m_ShowGizmos;
+			}
+			EditorUI::Tooltip("Toggle gizmos in the Editor View");
+		}
+
+		if (beginElement(EditorViewToolbarItem::PostProcessing)) {
+			if (EditorUI::IconButton("##PostProcessingEditorView", "post_processing",
+					"Toggle post-processing effects (bloom, vignette, ...) in the Editor View", m_ShowPostProcessing,
+					false, 0.0f, "Post Processing")) {
+				m_ShowPostProcessing = !m_ShowPostProcessing;
+			}
+		}
+
+		// Grid-snapping toggle + grid-size settings popup.
+		if (beginElement(EditorViewToolbarItem::GridSnap)) {
+			if (EditorUI::IconButton("##GridSnapEditorView", "grid",
+					"Toggle grid snapping for entities dragged in the Editor View", EditorPreferences::GetGridSnapEnabled(),
+					false, 0.0f, "Snap")) {
+				EditorPreferences::SetGridSnapEnabled(!EditorPreferences::GetGridSnapEnabled());
+			}
+
+			ImGui::SameLine(0.0f, 2.0f);
+			if (ImGui::ArrowButton("##GridSnapSettings", ImGuiDir_Down)) {
+				ImGui::OpenPopup("##GridSnapPopup");
+			}
+			EditorUI::Tooltip("Grid snapping settings");
+			// Popup contents keep the default spacing; it must still be begun inside this child (same ID stack as OpenPopup).
+			ImGui::PopStyleVar();
+
+			if (ImGui::BeginPopup("##GridSnapPopup")) {
+				bool enabled = EditorPreferences::GetGridSnapEnabled();
+				if (ImGuiUtils::Switch("Snap to grid", &enabled)) {
+					EditorPreferences::SetGridSnapEnabled(enabled);
+				}
+
+				bool linked = EditorPreferences::GetGridSnapLinkXY();
+				float gridX = EditorPreferences::GetGridSizeX();
+				float gridY = EditorPreferences::GetGridSizeY();
+
+				ImGui::TextUnformatted("Grid Size");
+
+				const bool linkToggled = EditorUI::IconButton("##GridSnapLink", "link",
+					"Link X and Y so they share one grid size", linked, false, 0.0f, linked ? "Linked" : "Unlinked");
+				if (linkToggled) {
+					linked = !linked;
+					EditorPreferences::SetGridSnapLinkXY(linked);
+					if (linked) {
+						EditorPreferences::SetGridSizeY(EditorPreferences::GetGridSizeX());
+					}
+				}
+
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(70.0f);
+				if (ImGui::DragFloat("X##GridSizeX", &gridX, 0.05f,
+						EditorPreferences::k_MinGridSize, 1000.0f, "%.3f")) {
+					EditorPreferences::SetGridSizeX(gridX);
+					if (linked) {
+						EditorPreferences::SetGridSizeY(gridX);
+					}
+				}
+
+				ImGui::SameLine();
+				ImGui::BeginDisabled(linked);
+				ImGui::SetNextItemWidth(70.0f);
+				if (ImGui::DragFloat("Y##GridSizeY", &gridY, 0.05f,
+						EditorPreferences::k_MinGridSize, 1000.0f, "%.3f")) {
+					EditorPreferences::SetGridSizeY(gridY);
+				}
+				ImGui::EndDisabled();
+
+				ImGui::Separator();
+
+				// Rotation snap: rotate in fixed-degree steps (gizmo Rotate mode).
+				bool rotSnap = EditorPreferences::GetRotationSnapEnabled();
+				if (ImGui::Checkbox("Snap rotation", &rotSnap)) {
+					EditorPreferences::SetRotationSnapEnabled(rotSnap);
+				}
+				ImGui::SameLine();
+				float rotDeg = EditorPreferences::GetRotationSnapDegrees();
+				ImGui::SetNextItemWidth(70.0f);
+				if (ImGui::DragFloat("##RotationSnap", &rotDeg, 0.5f,
+						EditorPreferences::k_MinRotationSnap, 360.0f, "%.1f")) {
+					EditorPreferences::SetRotationSnapDegrees(rotDeg);
+				}
+
+				// Scale snap: scale in fixed factor steps on X/Y (gizmo Scale mode).
+				bool sclSnap = EditorPreferences::GetScaleSnapEnabled();
+				if (ImGui::Checkbox("Snap scale", &sclSnap)) {
+					EditorPreferences::SetScaleSnapEnabled(sclSnap);
+				}
+				ImGui::SameLine();
+				float sclInc = EditorPreferences::GetScaleSnap();
+				ImGui::SetNextItemWidth(70.0f);
+				if (ImGui::DragFloat("##ScaleSnap", &sclInc, 0.01f,
+						EditorPreferences::k_MinScaleSnap, 100.0f, "%.3f")) {
+					EditorPreferences::SetScaleSnap(sclInc);
+				}
+
+				ImGui::Separator();
+
+				// UI alignment guides: smart-guide snapping when dragging a UI
+				// (RectTransform) element against other UI elements' edges/centers.
+				bool alignGuides = EditorPreferences::GetAlignmentGuidesEnabled();
+				if (ImGui::Checkbox("UI alignment guides", &alignGuides)) {
+					EditorPreferences::SetAlignmentGuidesEnabled(alignGuides);
+				}
+				EditorUI::Tooltip("Show alignment guides and snap when dragging UI (RectTransform) elements");
+				ImGui::SameLine();
+				float alignThresh = EditorPreferences::GetAlignmentSnapThreshold();
+				ImGui::SetNextItemWidth(70.0f);
+				if (ImGui::DragFloat("##AlignSnapThreshold", &alignThresh, 0.5f,
+						EditorPreferences::k_MinAlignmentSnapThreshold, 64.0f, "%.0f px")) {
+					EditorPreferences::SetAlignmentSnapThreshold(alignThresh);
+				}
+
+				ImGui::EndPopup();
+			}
+			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, pillSpacing);
+		}
+
+		ImGui::PopStyleVar();
+		return anyDrawn;
+	}
+
 	void ImGuiEditorLayer::RenderEditorView(Scene& scene) {
 		// NoScrollbar/NoScrollWithMouse: InvisibleButton overlays set off-panel cursor positions that extend CursorMaxPos and trigger a spurious scrollbar.
 		// Zero padding: the viewport image fills the panel edge to edge; the toolbars float over it as pills.
@@ -1433,184 +1720,41 @@ namespace Index {
 				}
 			}
 			ImGui::PopStyleVar();
-			return EndViewportPill();
-		};
-
-		// Top-right pill: view options.
-		auto drawOptionsPill = [&](const ImVec2& pos) -> ImVec2 {
-			BeginViewportPill("##EditorViewOptionsPill", pos);
-			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, ImGui::GetStyle().ItemSpacing.y));
-
-			// With only one of the 2D/3D modules active the view mode is fixed (ResolveEditorViewMode).
-			if (EngineModules::IsActive(EngineModule::TwoD) && EngineModules::IsActive(EngineModule::ThreeD)) {
-				if (EditorUI::ToggleButton("3D##EditorViewMode", m_EditorView3D)) {
-					m_EditorView3D = !m_EditorView3D;
-					if (IndexProject* project = ProjectManager::GetCurrentProject()) {
-						project->EditorView3D = m_EditorView3D;
-						project->Save();
-					}
-				}
-				EditorUI::Tooltip("3D scene camera: RMB orbit (+WASD/QE fly), MMB pan, wheel zoom, F focus. Off: 2D camera.");
-				EditorUI::ToolbarSeparator();
-			}
-
-			constexpr const char* k_DrawModeLabels[] = { "Default", "Triangle", "Mixed" };
-			const int currentIndex = static_cast<int>(m_EditorViewDrawMode);
-			// Fits the longest label ("Triangle") plus the arrow.
-			ImGui::SetNextItemWidth(ImGui::CalcTextSize("Triangle").x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetFrameHeight());
-			if (ImGui::BeginCombo("##EditorViewDrawMode", k_DrawModeLabels[currentIndex])) {
-				for (int i = 0; i < IM_ARRAYSIZE(k_DrawModeLabels); ++i) {
-					const bool selected = (i == currentIndex);
-					if (ImGui::Selectable(k_DrawModeLabels[i], selected)) {
-						m_EditorViewDrawMode = static_cast<EditorViewDrawMode>(i);
-					}
-					if (selected) {
-						ImGui::SetItemDefaultFocus();
-					}
-				}
-				ImGui::EndCombo();
-			}
-			EditorUI::Tooltip("Editor View draw mode (Default / Triangle wireframe / Mixed overlay)");
-
-			EditorUI::ToolbarSeparator();
-			if (EditorUI::ToggleButton("Gizmos##EditorView", m_ShowGizmos)) {
-				m_ShowGizmos = !m_ShowGizmos;
-			}
-			EditorUI::Tooltip("Toggle gizmos in the Editor View");
-
-			EditorUI::ToolbarSeparator();
-			if (EditorUI::IconButton("##PostProcessingEditorView", "post_processing",
-					"Toggle post-processing effects (bloom, vignette, ...) in the Editor View", m_ShowPostProcessing,
-					false, 0.0f, "Post Processing")) {
-				m_ShowPostProcessing = !m_ShowPostProcessing;
-			}
-
-			EditorUI::ToolbarSeparator();
-			// Grid-snapping toggle + grid-size settings popup.
-			{
-				if (EditorUI::IconButton("##GridSnapEditorView", "grid",
-						"Toggle grid snapping for entities dragged in the Editor View", EditorPreferences::GetGridSnapEnabled(),
-						false, 0.0f, "Snap")) {
-					EditorPreferences::SetGridSnapEnabled(!EditorPreferences::GetGridSnapEnabled());
-				}
-
-				ImGui::SameLine(0.0f, 2.0f);
-				if (ImGui::ArrowButton("##GridSnapSettings", ImGuiDir_Down)) {
-					ImGui::OpenPopup("##GridSnapPopup");
-				}
-				EditorUI::Tooltip("Grid snapping settings");
-				// Popup contents keep the default spacing; it must still be begun inside this child (same ID stack as OpenPopup).
-				ImGui::PopStyleVar();
-
-				if (ImGui::BeginPopup("##GridSnapPopup")) {
-					bool enabled = EditorPreferences::GetGridSnapEnabled();
-					if (ImGuiUtils::Switch("Snap to grid", &enabled)) {
-						EditorPreferences::SetGridSnapEnabled(enabled);
-					}
-
-					bool linked = EditorPreferences::GetGridSnapLinkXY();
-					float gridX = EditorPreferences::GetGridSizeX();
-					float gridY = EditorPreferences::GetGridSizeY();
-
-					ImGui::TextUnformatted("Grid Size");
-
-					const bool linkToggled = EditorUI::IconButton("##GridSnapLink", "link",
-						"Link X and Y so they share one grid size", linked, false, 0.0f, linked ? "Linked" : "Unlinked");
-					if (linkToggled) {
-						linked = !linked;
-						EditorPreferences::SetGridSnapLinkXY(linked);
-						if (linked) {
-							EditorPreferences::SetGridSizeY(EditorPreferences::GetGridSizeX());
-						}
-					}
-
-					ImGui::SameLine();
-					ImGui::SetNextItemWidth(70.0f);
-					if (ImGui::DragFloat("X##GridSizeX", &gridX, 0.05f,
-							EditorPreferences::k_MinGridSize, 1000.0f, "%.3f")) {
-						EditorPreferences::SetGridSizeX(gridX);
-						if (linked) {
-							EditorPreferences::SetGridSizeY(gridX);
-						}
-					}
-
-					ImGui::SameLine();
-					ImGui::BeginDisabled(linked);
-					ImGui::SetNextItemWidth(70.0f);
-					if (ImGui::DragFloat("Y##GridSizeY", &gridY, 0.05f,
-							EditorPreferences::k_MinGridSize, 1000.0f, "%.3f")) {
-						EditorPreferences::SetGridSizeY(gridY);
-					}
-					ImGui::EndDisabled();
-
-					ImGui::Separator();
-
-					// Rotation snap: rotate in fixed-degree steps (gizmo Rotate mode).
-					bool rotSnap = EditorPreferences::GetRotationSnapEnabled();
-					if (ImGui::Checkbox("Snap rotation", &rotSnap)) {
-						EditorPreferences::SetRotationSnapEnabled(rotSnap);
-					}
-					ImGui::SameLine();
-					float rotDeg = EditorPreferences::GetRotationSnapDegrees();
-					ImGui::SetNextItemWidth(70.0f);
-					if (ImGui::DragFloat("##RotationSnap", &rotDeg, 0.5f,
-							EditorPreferences::k_MinRotationSnap, 360.0f, "%.1f")) {
-						EditorPreferences::SetRotationSnapDegrees(rotDeg);
-					}
-
-					// Scale snap: scale in fixed factor steps on X/Y (gizmo Scale mode).
-					bool sclSnap = EditorPreferences::GetScaleSnapEnabled();
-					if (ImGui::Checkbox("Snap scale", &sclSnap)) {
-						EditorPreferences::SetScaleSnapEnabled(sclSnap);
-					}
-					ImGui::SameLine();
-					float sclInc = EditorPreferences::GetScaleSnap();
-					ImGui::SetNextItemWidth(70.0f);
-					if (ImGui::DragFloat("##ScaleSnap", &sclInc, 0.01f,
-							EditorPreferences::k_MinScaleSnap, 100.0f, "%.3f")) {
-						EditorPreferences::SetScaleSnap(sclInc);
-					}
-
-					ImGui::Separator();
-
-					// UI alignment guides: smart-guide snapping when dragging a UI
-					// (RectTransform) element against other UI elements' edges/centers.
-					bool alignGuides = EditorPreferences::GetAlignmentGuidesEnabled();
-					if (ImGui::Checkbox("UI alignment guides", &alignGuides)) {
-						EditorPreferences::SetAlignmentGuidesEnabled(alignGuides);
-					}
-					EditorUI::Tooltip("Show alignment guides and snap when dragging UI (RectTransform) elements");
-					ImGui::SameLine();
-					float alignThresh = EditorPreferences::GetAlignmentSnapThreshold();
-					ImGui::SetNextItemWidth(70.0f);
-					if (ImGui::DragFloat("##AlignSnapThreshold", &alignThresh, 0.5f,
-							EditorPreferences::k_MinAlignmentSnapThreshold, 64.0f, "%.0f px")) {
-						EditorPreferences::SetAlignmentSnapThreshold(alignThresh);
-					}
-
-					ImGui::EndPopup();
-				}
-			}
-
+			DrawEditorViewSettingsPopup();
 			return EndViewportPill();
 		};
 
 		Scene* renderScene = IsInPrefabEditMode() ? m_PrefabEditScene.get() : &scene;
 
 		const ImVec2 viewportSize = ImGui::GetContentRegionAvail();
+
+		// Top-right pill: view options, right-aligned with last frame's width (0 on the first frame).
+		auto drawOptionsPill = [&](const ImVec2& imageTopLeft) {
+			const float x = std::max(imageTopLeft.x + k_ViewportPillMargin,
+				imageTopLeft.x + viewportSize.x - k_ViewportPillMargin - m_EditorViewOptionsPillWidth);
+			BeginViewportPill("##EditorViewOptionsPill", ImVec2(x, imageTopLeft.y + k_ViewportPillMargin));
+			RenderEditorViewToolbarOptions();
+			DrawEditorViewSettingsPopup();
+			m_EditorViewOptionsPillWidth = EndViewportPill().x;
+		};
+
+		// Floating toolbars over the image's top corners. Child windows render above this window's draw list,
+		// so gizmos/guides/marquee drawn earlier stay underneath them.
+		auto drawPills = [&](const ImVec2& imageTopLeft) {
+			if (IsToolbarItemVisible(EditorViewToolbarItem::GizmoModes)) {
+				drawToolsPill(ImVec2(imageTopLeft.x + k_ViewportPillMargin, imageTopLeft.y + k_ViewportPillMargin));
+			}
+			if (HasVisibleViewOptions()) {
+				drawOptionsPill(imageTopLeft);
+			}
+		};
 		const int fbW = static_cast<int>(viewportSize.x);
 		const int fbH = static_cast<int>(viewportSize.y);
 
 		ResolveEditorViewMode();
 		if (fbW > 0 && fbH > 0 && m_EditorView3D) {
 			const Vec2 topLeft = RenderEditorView3D(*renderScene, Vec2{ viewportSize.x, viewportSize.y }, overlayHovered);
-			const ImVec2 toolsPos(topLeft.x + k_ViewportPillMargin, topLeft.y + k_ViewportPillMargin);
-			const ImVec2 toolsSize = drawToolsPill(toolsPos);
-			ImVec2 optionsPos(topLeft.x + viewportSize.x - k_ViewportPillMargin - s_EditorViewRightPillSize.x, toolsPos.y);
-			if (optionsPos.x < toolsPos.x + toolsSize.x + k_ViewportPillMargin) {
-				optionsPos = ImVec2(toolsPos.x, toolsPos.y + toolsSize.y + 4.0f);
-			}
-			s_EditorViewRightPillSize = drawOptionsPill(optionsPos);
+			drawPills(ImVec2(topLeft.x, topLeft.y));
 			DrawParticlePreviewControls(*renderScene, topLeft, Vec2{ viewportSize.x, viewportSize.y });
 		}
 		else if (fbW > 0 && fbH > 0) {
@@ -1748,18 +1892,7 @@ namespace Index {
 					}
 				}
 
-				// Floating toolbars over the image's top corners. Child windows render above this window's
-				// draw list, so gizmos/guides/marquee drawn below stay underneath them.
-				{
-					const ImVec2 toolsPos(imageTopLeft.x + k_ViewportPillMargin, imageTopLeft.y + k_ViewportPillMargin);
-					const ImVec2 toolsSize = drawToolsPill(toolsPos);
-					ImVec2 optionsPos(imageTopLeft.x + viewportSize.x - k_ViewportPillMargin - s_EditorViewRightPillSize.x, toolsPos.y);
-					if (optionsPos.x < toolsPos.x + toolsSize.x + k_ViewportPillMargin) {
-						// Too narrow for one row: stack under the tools pill.
-						optionsPos = ImVec2(toolsPos.x, toolsPos.y + toolsSize.y + 4.0f);
-					}
-					s_EditorViewRightPillSize = drawOptionsPill(optionsPos);
-				}
+				drawPills(imageTopLeft);
 
 				DrawParticlePreviewControls(*renderScene, Vec2{ imageTopLeft.x, imageTopLeft.y }, Vec2{ viewportSize.x, viewportSize.y });
 
@@ -2632,6 +2765,8 @@ namespace Index {
 	}
 
 	void ImGuiEditorLayer::RenderGameView(Scene& scene) {
+		// Play starts focused on the game, as in Unity, so its input and cursor lock apply without an extra click.
+		if (std::exchange(m_FocusGameViewOnPlay, false)) ImGui::SetNextWindowFocus();
 		m_IsGameViewActive = ImGui::Begin("Game View");
 
 		if (!m_IsGameViewActive) {
@@ -2642,10 +2777,12 @@ namespace Index {
 			return;
 		}
 
-		const int aspectPresetIndex = std::clamp(m_GameViewAspectPresetIndex, 0, static_cast<int>(k_AspectRatioPresets.size()) - 1);
-		m_GameViewAspectPresetIndex = aspectPresetIndex;
+		m_GameViewAspectPresetIndex = std::clamp(m_GameViewAspectPresetIndex, k_GameViewProjectAspectIndex, static_cast<int>(k_AspectRatioPresets.size()) - 1);
 		if (!m_GameViewAspectLoaded) {
 			if (IndexProject* project = ProjectManager::GetCurrentProject()) {
+				if (project->GameViewAspect == k_GameViewProjectAspectLabel) {
+					m_GameViewAspectPresetIndex = k_GameViewProjectAspectIndex;
+				}
 				for (int i = 0; i < static_cast<int>(k_AspectRatioPresets.size()); ++i) {
 					if (project->GameViewAspect == k_AspectRatioPresets[i].Label) {
 						m_GameViewAspectPresetIndex = i;
@@ -2662,48 +2799,87 @@ namespace Index {
 			m_GameViewVsyncLoaded = true;
 		}
 
-		EditorUI::BeginToolbar("##GameViewToolbar");
-		ImGui::SetNextItemWidth(140.0f);
-		if (ImGui::BeginCombo("##GameViewAspect", k_AspectRatioPresets[m_GameViewAspectPresetIndex].Label)) {
-			for (int i = 0; i < static_cast<int>(k_AspectRatioPresets.size()); ++i) {
-				const bool selected = (i == m_GameViewAspectPresetIndex);
-				if (ImGui::Selectable(k_AspectRatioPresets[i].Label, selected)) {
-					m_GameViewAspectPresetIndex = i;
+		// The visibility menu lives in Edit › View (and the toolbar's right-click), so an all-hidden toolbar is skipped.
+		const bool anyGameViewItem = EditorPreferences::IsGameViewToolbarItemVisible(GameViewToolbarItem::Aspect)
+			|| EditorPreferences::IsGameViewToolbarItemVisible(GameViewToolbarItem::VSync)
+			|| EditorPreferences::IsGameViewToolbarItemVisible(GameViewToolbarItem::Stats)
+			|| EditorPreferences::IsGameViewToolbarItemVisible(GameViewToolbarItem::Logs);
+		if (EditorPreferences::IsGameViewToolbarItemVisible(GameViewToolbarItem::Toolbar) && anyGameViewItem) {
+			EditorUI::BeginToolbar("##GameViewToolbar");
+			// Separators only between elements that are drawn, so hidden ones leave no gaps.
+			bool anyDrawn = false;
+			auto beginElement = [&](GameViewToolbarItem item, bool separator) {
+				if (!EditorPreferences::IsGameViewToolbarItemVisible(item)) return false;
+				if (anyDrawn) {
+					if (separator) EditorUI::ToolbarSeparator();
+					else ImGui::SameLine();
+				}
+				anyDrawn = true;
+				return true;
+			};
+			if (beginElement(GameViewToolbarItem::Aspect, false)) {
+				ImGui::SetNextItemWidth(140.0f);
+				std::string projectAspectLabel = "Project (Free Aspect)";
+				if (const IndexProject* project = ProjectManager::GetCurrentProject();
+					project && AspectRatioFromLabel(project->BuildAspect) > 0.0f) {
+					projectAspectLabel = "Project (" + project->BuildAspect + ")";
+				}
+				const char* currentAspectLabel = m_GameViewAspectPresetIndex == k_GameViewProjectAspectIndex
+					? projectAspectLabel.c_str()
+					: k_AspectRatioPresets[m_GameViewAspectPresetIndex].Label;
+				if (ImGui::BeginCombo("##GameViewAspect", currentAspectLabel)) {
+					for (int i = k_GameViewProjectAspectIndex; i < static_cast<int>(k_AspectRatioPresets.size()); ++i) {
+						const bool isProject = i == k_GameViewProjectAspectIndex;
+						const bool selected = (i == m_GameViewAspectPresetIndex);
+						if (ImGui::Selectable(isProject ? projectAspectLabel.c_str() : k_AspectRatioPresets[i].Label, selected)) {
+							m_GameViewAspectPresetIndex = i;
+							if (IndexProject* project = ProjectManager::GetCurrentProject()) {
+								project->GameViewAspect = isProject ? k_GameViewProjectAspectLabel : k_AspectRatioPresets[i].Label;
+								project->Save();
+							}
+						}
+						if (isProject) {
+							EditorUI::Tooltip("Use the project's Aspect Ratio (Project Settings > Build), as the shipped game shows it");
+						}
+						if (selected) {
+							ImGui::SetItemDefaultFocus();
+						}
+					}
+					ImGui::EndCombo();
+				}
+			}
+			if (beginElement(GameViewToolbarItem::VSync, false)) {
+				if (ImGui::Checkbox("VSync##GameView", &m_GameViewVsync)) {
+					m_GameViewHasRendered = false;
 					if (IndexProject* project = ProjectManager::GetCurrentProject()) {
-						project->GameViewAspect = k_AspectRatioPresets[i].Label;
+						project->GameViewVsync = m_GameViewVsync;
 						project->Save();
 					}
 				}
-				if (selected) {
-					ImGui::SetItemDefaultFocus();
+			}
+			if (beginElement(GameViewToolbarItem::Stats, true)) {
+				if (EditorUI::ToggleButton("Stats##GameView", m_ShowGameViewStats)) {
+					m_ShowGameViewStats = !m_ShowGameViewStats;
 				}
 			}
-			ImGui::EndCombo();
-		}
-
-		ImGui::SameLine();
-		if (ImGui::Checkbox("VSync##GameView", &m_GameViewVsync)) {
-			m_GameViewHasRendered = false;
-			if (IndexProject* project = ProjectManager::GetCurrentProject()) {
-				project->GameViewVsync = m_GameViewVsync;
-				project->Save();
+			if (beginElement(GameViewToolbarItem::Logs, !EditorPreferences::IsGameViewToolbarItemVisible(GameViewToolbarItem::Stats))) {
+				// The log overlay stacks below the stats overlay when both are visible.
+				if (EditorUI::ToggleButton("Logs##GameView", m_ShowGameViewLogs)) {
+					m_ShowGameViewLogs = !m_ShowGameViewLogs;
+				}
 			}
+			if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+				ImGui::OpenPopup(k_GameViewSettingsPopup);
+			}
+			if (ImGui::BeginPopup(k_GameViewSettingsPopup)) {
+				DrawGameViewSettingsMenu();
+				ImGui::EndPopup();
+			}
+			EditorUI::EndToolbar();
 		}
-
-		EditorUI::ToolbarSeparator();
-		if (EditorUI::ToggleButton("Stats##GameView", m_ShowGameViewStats)) {
-			m_ShowGameViewStats = !m_ShowGameViewStats;
-		}
-
-		// The log overlay stacks below the stats overlay when both are visible.
-		ImGui::SameLine();
-		if (EditorUI::ToggleButton("Logs##GameView", m_ShowGameViewLogs)) {
-			m_ShowGameViewLogs = !m_ShowGameViewLogs;
-		}
-		EditorUI::EndToolbar();
 
 		const ImVec2 viewportSize = ImGui::GetContentRegionAvail();
-		const float targetAspect = k_AspectRatioPresets[m_GameViewAspectPresetIndex].Aspect;
+		const float targetAspect = GetGameViewAspect();
 
 		ImVec2 renderSize = viewportSize;
 		if (targetAspect > 0.0f && viewportSize.x > 0.0f && viewportSize.y > 0.0f) {
@@ -2718,6 +2894,13 @@ namespace Index {
 
 		const int fbW = std::max(1, static_cast<int>(std::round(renderSize.x)));
 		const int fbH = std::max(1, static_cast<int>(std::round(renderSize.y)));
+
+		// After Escape the Game View stays focused, so a click into the game is what takes the mouse back.
+		auto trackCanvasClick = [this]() {
+			if (ImGui::IsItemHovered() && (ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+				|| ImGui::IsMouseClicked(ImGuiMouseButton_Right) || ImGui::IsMouseClicked(ImGuiMouseButton_Middle)))
+				m_GameViewCanvasClicked = true;
+		};
 
 		if (viewportSize.x > 0.0f && viewportSize.y > 0.0f) {
 			Camera2DComponent* gameCam = Camera2DComponent::GetMain();
@@ -2739,6 +2922,7 @@ namespace Index {
 				const ImVec2 imageMax(imageMin.x + renderSize.x, imageMin.y + renderSize.y);
 
 				ImGui::InvisibleButton("##GameViewCanvas", viewportSize);
+				trackCanvasClick();
 				ImDrawList* drawList = ImGui::GetWindowDrawList();
 				drawList->AddRectFilled(canvasMin, canvasMax, IM_COL32(0, 0, 0, 255));
 				if (m_GameViewHasRendered && m_GameViewFBO.IsValid()) {
@@ -2877,6 +3061,7 @@ namespace Index {
 				// is no longer needed and would be a redundant double-set.
 
 				ImGui::InvisibleButton("##GameViewCanvas", viewportSize);
+				trackCanvasClick();
 				ImDrawList* drawList = ImGui::GetWindowDrawList();
 				drawList->AddRectFilled(canvasMin, canvasMax, IM_COL32(0, 0, 0, 255));
 

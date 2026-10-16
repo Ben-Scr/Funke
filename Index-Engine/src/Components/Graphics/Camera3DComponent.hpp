@@ -20,6 +20,11 @@ namespace Index {
 		SolidColor = 1
 	};
 
+	struct Camera3DRay {
+		glm::vec3 Origin{ 0.0f };
+		glm::vec3 Direction{ 0.0f, 0.0f, -1.0f };
+	};
+
 	// View comes from the entity's Transform3D (looks down local -Z).
 	struct INDEX_API Camera3DComponent {
 		CameraProjection Projection = CameraProjection::Perspective;
@@ -39,12 +44,32 @@ namespace Index {
 		float SunSize = 2.0f;
 		// How strongly the sky colors light meshes as hemispheric ambient (0 = off).
 		float SkyAmbient = 0.5f;
+		// .material whose shader targets Skybox; drawn instead of the gradient. 0 = gradient. Ambient keeps the colors above.
+		uint64_t SkyboxMaterial = 0;
+		// Sky ambient from the Skybox Material (its gradient colors or texture averages) instead of the colors above.
+		bool AmbientFromSkybox = false;
+
+		// Distance fog over meshes: none before FogStart, fully FogColor from FogEnd (world units from the camera).
+		// Materials can opt out (a sky dome). Match the horizon color so far geometry fades into the sky.
+		bool FogEnabled = false;
+		Color FogColor{ 0.73f, 0.83f, 0.93f, 1.0f };
+		float FogStart = 40.0f;
+		float FogEnd = 160.0f;
 
 		// Depth range [0, 1] as WebGPU expects.
 		glm::mat4 GetProjectionMatrix(float aspect) const;
 
 		// Rigid inverse of the camera's world matrix; scale on the camera entity is ignored.
 		static glm::mat4 ViewFromWorld(const glm::mat4& cameraWorld);
+
+		// Ray through a screen point (pixels, origin top-left, of a screen `screenSize` pixels big) from the near plane
+		// into the scene; parallel rays for orthographic cameras.
+		static Camera3DRay ScreenPointToRay(const glm::mat4& cameraWorld, const Camera3DComponent& camera, const glm::vec2& screenPoint,
+			const glm::vec2& screenSize);
+		// World point to screen pixels (origin top-left) and, in z, its distance in front of the camera. False when the
+		// point is behind the camera.
+		static bool WorldToScreenPoint(const glm::mat4& cameraWorld, const Camera3DComponent& camera, const glm::vec3& worldPoint,
+			const glm::vec2& screenSize, glm::vec3& outScreen);
 
 		// First enabled Camera3D of the scene, or entt::null.
 		static EntityHandle FindMain(const Scene& scene);

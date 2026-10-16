@@ -4,6 +4,7 @@
 #include "Collections/Vec2.hpp"
 #include "Core/Export.hpp"
 
+#include <array>
 #include <cstdint>
 
 
@@ -82,6 +83,22 @@ namespace Index {
 		LensDistortionSettings      LensDistortion{};
 		PixelatedSettings           Pixelated{};
 		GaussianBlurSettings        GaussianBlur{};
+		// .material GUIDs with a PostProcess shader, run in slot order after the built-in effects; 0 = empty slot.
+		std::array<uint64_t, 4>     CustomEffects{};
+
+		bool HasCustomEffect() const {
+			for (uint64_t material : CustomEffects) {
+				if (material != 0) return true;
+			}
+			return false;
+		}
+
+		// MUST mirror PostProcessor::Run's effect set.
+		bool HasEnabledEffect() const {
+			return Bloom.Enabled || ColorGrading.Enabled || GaussianBlur.Enabled || LensDistortion.Enabled
+				|| ChromaticAberration.Enabled || Vignette.Enabled || Grain.Enabled || Pixelated.Enabled
+				|| HasCustomEffect();
+		}
 	};
 
 } // namespace Index

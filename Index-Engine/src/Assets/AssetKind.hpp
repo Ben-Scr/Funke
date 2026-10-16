@@ -15,7 +15,9 @@ namespace Index {
 		Other,
 		// Appended after Other: C# AssetManager mirrors these values.
 		Material,
-		Mesh
+		Mesh,
+		AnimationClip,
+		AnimatorController
 	};
 
 }

@@ -6,9 +6,24 @@
 namespace Index {
 
 	glm::mat4 Transform3DComponent::GetLocalMatrix() const {
-		const glm::mat4 translation = glm::translate(glm::mat4(1.0f), Position);
-		const glm::mat4 rotation = glm::mat4_cast(GetLocalRotationQuat());
-		return glm::scale(translation * rotation, Scale);
+		// T * R * S assembled column-wise instead of two full mat4 multiplies.
+		const glm::mat3 rotation = glm::mat3_cast(GetLocalRotationQuat());
+		return glm::mat4(
+			glm::vec4(rotation[0] * Scale.x, 0.0f),
+			glm::vec4(rotation[1] * Scale.y, 0.0f),
+			glm::vec4(rotation[2] * Scale.z, 0.0f),
+			glm::vec4(Position, 1.0f));
+	}
+
+	const glm::mat4& Transform3DComponent::GetCachedLocalMatrix() {
+		if (!CachedLocalValid || CachedPosition != Position || CachedRotation != Rotation || CachedScale != Scale) {
+			CachedLocalMatrix = GetLocalMatrix();
+			CachedPosition = Position;
+			CachedRotation = Rotation;
+			CachedScale = Scale;
+			CachedLocalValid = true;
+		}
+		return CachedLocalMatrix;
 	}
 
 	void Transform3DComponent::Decompose(const glm::mat4& matrix, Vec3& outPosition, Vec3& outRotationDegrees, Vec3& outScale) {

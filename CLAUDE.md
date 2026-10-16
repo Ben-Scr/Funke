@@ -28,12 +28,13 @@ scripts\dev\Test.ps1                            # build + run engine/editor doct
 scripts\dev\Test.ps1 -Filter "*Prefab*"         # doctest test-case filter; -Suite CSharp|All
 scripts\dev\Run.ps1                             # launch Editor on a sandbox project, screenshot, close, report log warnings/errors + crash dumps
 scripts\dev\Run.ps1 -App Runtime -Project <dir> -Seconds 5 -Shots 3
+scripts\dev\Run.ps1 -App Runtime -Project <dir> -ScreenshotAt 2s,5s -FixedStep 60   # game-time shots; -InputScript for scripted input
 ```
 
 - `Build.ps1` regenerates premake automatically when a new `.cpp` or a changed `*.lua` needs it, and after building it copies `Index-Engine.dll` (and, for `ScriptCore`, `Index-ScriptCore.dll`) into every consumer output (Editor/Launcher/Runtime/tests) — a stale DLL there silently hides fixes, including in game builds staged from the editor.
 - Default config is **Release**: the user runs the Release editor (`bin\Release-windows-x86_64\Index-Editor\`).
 - Warnings are shown only for files changed in git (`-Warnings all|none` to change). C4251/C4275 are permanent noise.
-- `Run.ps1` screenshots land in `bin-int\_agent\run\*.png` — open them with Read to see the result. The run's log slice is `bin-int\_agent\run\<App>.log`. Without `-Project` it uses `bin-int\_agent\SandboxProject`, never the user's projects. If the editor is already open the build can't overwrite locked DLLs; the script says so.
+- `Run.ps1` screenshots land in `bin-int\_agent\run\*.png` — open them with Read to see the result. The run's log slice is `bin-int\_agent\run\<App>.log`. Without `-Project` it uses `bin-int\_agent\SandboxProject`, never the user's projects. Runtime runs use the player-data profile `agent`, so a game's real PlayerPrefs/SaveData stay untouched. If the editor is already open the build can't overwrite locked DLLs; the script says so.
 
 Full logs: `%LOCALAPPDATA%\Index\Logs\<exe>.log` (format `[time] [logger] [level] msg`). Crash dumps: `%LOCALAPPDATA%\Index\CrashDumps\`.
 

@@ -146,7 +146,9 @@ namespace Index::SceneSerializerShared {
 	}
 
 	inline std::string NormalizeScriptAssetValue(std::string_view fieldType, const std::string& value) {
-		if ((fieldType != "texture" && fieldType != "audio") || value.empty() || IsUnsignedIntegerString(value)) {
+		const bool isAssetField = fieldType == "texture" || fieldType == "audio" || fieldType == "material" || fieldType == "mesh"
+			|| fieldType == "animationclip" || fieldType == "animatorcontroller";
+		if (!isAssetField || value.empty() || IsUnsignedIntegerString(value)) {
 			return value;
 		}
 

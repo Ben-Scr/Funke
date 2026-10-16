@@ -15,14 +15,21 @@ A profile is a tiny file under the project's `BuildProfiles/` folder, one per `.
 {
   "name": "Windows",
   "platform": "Windows",          // Windows | Linux | MacOS | Android | IOS | VisionOS | Web
-  "renderBackend": "Direct3D12"   // must be allowed for the platform (else coerced on save)
+  "renderBackend": "Direct3D12",  // must be allowed for the platform (else coerced on save)
+  // optional test/QA switches; unset = follow project.json (IndexBuildProfile::ApplyTo)
+  "configuration": "Debug",       // Debug | Development | Release
+  "defines": ["INDEX_TEST"],      // added to customDefines for this build
+  "showRuntimeStats": true, "showRuntimeLogs": false,
+  "devConsole": true,             // ` console + F8 physics overlay
+  "isolatedPrefs": true           // PlayerPrefs/SaveData under Profiles/<profile name>
 }
 ```
 
 - `IndexBuildProfile::WriteDefaultProfiles` scaffolds **Windows + Linux** profiles on project creation (skips existing files).
 - **Allowed backends are per-platform** (`AllowedBackends`): Windows → D3D12/D3D11/Vulkan/OpenGL; Linux → Vulkan/OpenGL; macOS/iOS/visionOS → Metal; Android → Vulkan/OpenGLES; Web → OpenGLES. A backend outside the list is coerced to the first allowed entry on save. `Auto` lets the runtime choose.
 - Platform enum values are **stable integers** — don't renumber (existing `.build` files depend on them).
-- The active profile is `project.json` → `activeBuildProfile` (name) and the `buildProfile` (`Development` | `Release`) / `renderBackend` keys.
+- The active profile is `project.json` → `activeBuildProfile` (name) and the `buildProfile` (`Debug` | `Development` | `Release`) / `renderBackend` keys. `GameBuilder::Prepare` folds the active profile's switches into the build snapshot only; `Request::ConfigurationOverride` (CLI `--debug/--development/--release`) wins over the profile's `configuration`.
+- Debug/QA tooling a profile can switch on (dev console, `[DevCommand]`, physics overlay, `--prefs-profile`, `--input-script`, `--screenshot-at`, `--fixed-step`) is described in `Github-Docs/Documentation/Editor/Testing.md`; engine code in `Index-Engine/src/DevTools/`.
 
 Manage profiles in the editor's **Build Profiles** panel (create / duplicate / delete / rename, pick platform + backend).
 
@@ -30,14 +37,14 @@ Manage profiles in the editor's **Build Profiles** panel (create / duplicate / d
 
 From the **Build** panel: choose a profile, set the **scene list** (`buildScenes`) + **startup scene**, pick an output folder, **Build** (or **Build & Run**). The editor then:
 
-1. **Compiles the C# script assembly** (`<Name>.dll`) with `INDEX_BUILD` defines (below). Configuration follows the profile: **`Release` → `Dist`**; **`Development` → the editor's own configuration** (`IndexProject::GetActiveBuildConfiguration()` = `IDX_BUILD_CONFIG_NAME`).
+1. **Compiles the C# script assembly** (`<Name>.dll`) with `INDEX_BUILD` defines (below). Configuration follows the profile (`IndexProject::GetBuildConfigurationFor`): **`Release` → `Dist`**; **`Debug` → `Debug`** (debug runtime + PDBs of runtime, engine, ScriptCore and the user assembly; needs engine sources or a `Runtime-Debug` folder, links the non-redistributable debug CRT); **`Development` → the editor's own configuration** (`IndexProject::GetActiveBuildConfiguration()` = `IDX_BUILD_CONFIG_NAME`).
 2. **Copies the `Index-Runtime` executable** for the target platform (`Runtime-Dist` for Release, `Runtime-Development` otherwise, when no freshly built runtime is found).
 3. **Copies the reachable part of `Assets/`** (and `IndexAssets/`) as **loose files** beside the exe. `Editor/BuildAssetPruning.cpp` follows GUIDs, asset paths and scene names out of the enabled build scenes and `project.json`, plus path literals and `AssetManager.FindAll<T>` calls in `.cs` sources. Unreferenced assets, `.cs` files and scenes not in the build list are left out. `Assets/StreamingAssets/` always ships, so files only loaded through computed paths go there. If the scan fails, the build ships everything and logs a warning.
 4. **Writes the boot config** the runtime reads (the project settings: scene list, startup scene, window/splash/branding).
 
 The output is a runnable, distributable folder. Because assets are loose, the player's machine reads PNG/WAV/`.scene` files directly from disk on demand (`index-assets-and-content`).
 
-**Without clicking (CI, agents):** `Index-Editor.exe --project=<root> --build [--build-profile=<Name>] [--build-output=<dir>]` runs the same pipeline once the project has loaded and quits with exit code `0`/`1` (`EditorApplication.cpp` → `ImGuiEditorLayer::RequestCommandLineBuild`). Default profile: the active one, else the first Windows `.build`; default output `<root>/Builds/<Profile>`. No Explorer window opens and no modal dialog blocks. Keep the output path short — Dawn's license tree exceeds Windows' 260-char limit under long paths. Built games accept `--scene=<Name>` and `--quit-after=<seconds>` for automated test runs.
+**Without clicking (CI, agents):** `Index-Editor.exe --project=<root> --build [--build-profile=<Name>] [--build-output=<dir>]` runs the same pipeline once the project has loaded and quits with exit code `0`/`1` (`EditorApplication.cpp` → `ImGuiEditorLayer::RequestCommandLineBuild`). Default profile: the active one, else the first Windows `.build`; default output `<root>/Builds/<Profile>`. No Explorer window opens and no modal dialog blocks. Keep the output path short — Dawn's license tree exceeds Windows' 260-char limit under long paths. Built games accept `--scene=<Name>`, `--quit-after=<seconds>` (wall clock), and the game-clock test options `--input-script=`, `--screenshot-at=`, `--screenshot-dir=`, `--fixed-step=`, `--quit-at=`, `--exec=` and `--prefs-profile=` (`DevTools/RunAutomation.hpp`).
 
 ### Android, iOS, Web: platform packages
 
@@ -46,6 +53,8 @@ Only the editor's own desktop platform builds natively (`BuildPlatformSupport::I
 - Per-platform settings: `"platformOptions": { ... }` in the `.build` file → `options` in the build request (keystore, `orientation`, `developmentTeam`, `dotnetSdk`, `debugSymbols`, ...). `env:NAME` reads a value from the environment — use it for passwords. Each builder's `describe` lists its options; the Build Profiles panel shows them plus the builder's `check` results.
 - A package-platform profile's `renderBackend` goes only into the staged project.json; it must not change the live project, whose backend the editor uses for itself.
 - C# off-desktop runs on Mono (`platforms/Index.ScriptRuntime.Mono`, a `build-component`). Android Release builds AOT-compile the game assemblies, Index-ScriptCore and their direct framework references (Mono AOT + LLVM, `Builder/mono_aot.py`, cached in `PlatformCache/Android/aot`); options `aot` / `aotLlvm`; the player log says `Mono runtime started (android-arm64, AOT: N ...)`. Web + C# needs the .NET 11 SDK with `wasm-tools`: the engine is compiled to `IndexWeb.a` with that SDK's Emscripten and `dotnet publish` relinks it with the runtime. `Builder/WasmCalliSignatures` turns every `delegate* unmanaged` / `[UnmanagedCallersOnly]` signature into a placeholder `[DllImport]` so the SDK generates the wasm trampolines — a new function-pointer signature needs no manual step.
+- Android targets API 36 (Google Play's requirement since 2026-08-31) and links everything for 16 KB pages (`ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES`). Release also writes `<Game>.aab` for Play (`Builder/android_bundle.py`: aapt2 `--proto-format` → base module → bundletool 1.18.3 → jarsigner with the profile keystore); option `appBundle` forces it on/off. A Play upload needs the user's own keystore (`keystore`, `keyAlias`, `keystorePassword: "env:..."`) and a growing `versionCode`; the debug key only warns.
+- Packages contribute Android code through `android = { java, maven, manifest, placeholders }` in `index-package.lua` (`Builder/android_libraries.py`, `android_maven.py` with `Android/maven.lock.json`, `android_manifest.py`); scripts call it via `AndroidBridge.Call` / `Subscribe`. Ads: the `Index.Ads` registry package (AdMob + UMP consent, simulated in the editor), app ID = profile option `admobAppId`. Details in `index-author-package`.
 - First build per platform compiles SDL3/Dawn and caches them in `%LOCALAPPDATA%\Index\PlatformCache`. Builder logs: `PlatformCache\<Platform>\work\<hash>\build.log`.
 - Testing a Web build: serve the folder over HTTP (not `file://`). Browsers cache `_framework/*.js` aggressively; use a no-store server or a new origin when comparing builds.
 
@@ -66,21 +75,21 @@ These control how the built game looks and behaves (full list + defaults in `ind
 | `executableName` / `buildVersion` / `buildCompany` | exe name + metadata |
 | `appIcon` | window/exe icon (project-relative image) |
 | `splashScreen { … }` | startup splash (image/text/colors/durations/fades) |
-| `showRuntimeStats` | FPS/frame-time overlay in the shipped build |
-| `showRuntimeLogs` | log console in the shipped build |
+| `showRuntimeStats` | FPS/frame-time overlay in the shipped build (unset = on for Development, off for Release) |
+| `showRuntimeLogs` | log console in the shipped build (unset = on for Development, off for Release) |
 | `enablePostProcessing` | post-processing on/off |
 | `renderBackend` | preferred backend (`Auto` recommended) |
 | `assetSerializationFormat` | `Json` (new projects) \| `Binary` (compact; also what a missing key means) |
 | `profiler.enableInRuntime` | include the profiler panel in the shipped build |
 
-For a public release, typically turn `showRuntimeStats` / `showRuntimeLogs` **off** and set `buildProfile: "Release"`.
+For a public release set `buildProfile: "Release"` (or `index build --release`); the overlays are then off unless `project.json` sets them explicitly.
 
 ## Three axes — don't mix the words
 
 | Axis | Values | Lives in | Controls |
 |---|---|---|---|
 | **Engine configuration** | `Debug` / `Release` / `Dist` | MSBuild `-p:Configuration` | How the engine + script DLLs are compiled; `IDX_DEBUG` / `IDX_RELEASE` / `IDX_DIST` |
-| **Build profile** (`IndexProject::BuildProfile`) | `Development` / `Release` | `project.json` `buildProfile` (written only when not Development) | `INDEX_BUILD_*` define, Build-panel config (Release → Dist), runtime overlay defaults |
+| **Build profile** (`IndexProject::BuildProfile`, Build window "Configuration") | `Development` / `Release` / `Debug` | `project.json` `buildProfile` (written only when not Development), or a `.build`'s `configuration` | `INDEX_BUILD_*` define, shipped binaries (Release → Dist, Debug → Debug), overlay + dev-console defaults |
 | **Platform profile** (`IndexBuildProfile`, `.build` file) | platform + render backend | `BuildProfiles/*.build`, active name in `activeBuildProfile` | Target platform / backend (section above) |
 
 ## Editor vs shipped — the build defines
@@ -90,7 +99,7 @@ The C# `-p:DefineConstants=` value is assembled by `IndexProject::BuildManagedDe
 | Compile context | Primary | Config | Profile | Platform | Custom |
 |---|---|---|---|---|---|
 | Editor hot-reload (`ScriptSystem`), package restore (`PackageManager`), Launcher new-project starter-script compile | `INDEX_EDITOR` | `IDX_<editor cfg>` | **always** `INDEX_BUILD_DEVELOPMENT` | `INDEX_WINDOWS` / `INDEX_LINUX` / `INDEX_MACOS` | `customDefines` |
-| Build panel ship build | `INDEX_BUILD` | `IDX_DIST` (Release) or `IDX_<editor cfg>` | project's `INDEX_BUILD_DEVELOPMENT` / `INDEX_BUILD_RELEASE` | same | `customDefines` |
+| Build panel ship build | `INDEX_BUILD` | `IDX_DIST` (Release) or `IDX_<editor cfg>` | project's `INDEX_BUILD_DEVELOPMENT` / `INDEX_BUILD_RELEASE` / `INDEX_BUILD_DEBUG` | same | `customDefines` + the profile's `defines` |
 | Launcher "launch runtime" | `INDEX_BUILD` | `IDX_<launcher cfg>` | project's profile define | same | `customDefines` |
 
 Editor preview **never** sees `INDEX_BUILD_RELEASE`, whatever the project profile — Release-only code is only exercised by a real build.
@@ -119,7 +128,7 @@ Generated files — **don't hand-edit**:
 - **`#if`** when the code must not exist in the other binary: calls editor-only APIs, strips debug/cheat code from ship size, changes the assembly's surface.
 - **Runtime** when the same assembly should behave differently:
   - `Application.IsEditor` (C#, `Index-ScriptCore/Source/Index/Core/Application.cs`) / `Application::IsEditor()` (C++, `Core/Application.hpp`). True only in the editor process: `EditorApplication`'s constructor and `CreateApplication` call `SetEditorHost(true)` (process-global static, so it works before the `Application` exists). Runtime and Launcher leave it false.
-  - `Engine.BuildConfiguration` (C#, `Core/Engine.cs`) → `Debug` (0, editor preview) / `Development` (1) / `Release` (2), resolved at runtime from the shipped `project.json`'s profile (`Index_Engine_GetBuildConfiguration` in `ScriptBindingsScene.cpp`). `Engine.ConfigurationName` gives the string.
+  - `Engine.BuildConfiguration` (C#, `Core/Engine.cs`) → `Editor` (0, editor play mode) / `Development` (1) / `Release` (2) / `Debug` (3, Debug game build), resolved at runtime from the shipped `project.json`'s profile (`Index_Engine_GetBuildConfiguration` in `ScriptBindingsScene.cpp`). `Engine.ConfigurationName` gives the string.
 - Designer-facing switches (stats overlay, logs) belong in `project.json` settings, not `#if`.
 
 ```csharp
@@ -145,7 +154,7 @@ The script `.csproj` defines `Debug` / `Release` / `Dist` (`index-project-struct
 - **Backend coercion is silent** — an invalid platform/backend pair is rewritten to the first allowed backend on save; verify the profile shows what you intended.
 - **`Packages/` is git-ignored**, but the *build* still needs the compiled assembly + `Index-ScriptCore`; build from the editor (which restores them) rather than from a bare clone.
 - **Don't renumber `BuildPlatform`/serialized enums** — old `.build` and `project.json` files decode by value.
-- **`showRuntimeStats` / `showRuntimeLogs` default on** — turn them off for a polished release (switching the profile to Release does it for you).
+- **`showRuntimeStats` / `showRuntimeLogs` follow the profile when unset** — on for Development, off for Release. An explicit `true` in `project.json` still ships them in Release.
 - **Don't conflate `IDX_DEBUG`/`IDX_RELEASE`/`IDX_DIST` with `INDEX_BUILD_*`.** The first is the engine configuration, the second the game profile; C# sees both.
 - **"Works in the editor, broken in the Release build"** — usually logic inside `#if INDEX_EDITOR` that the game needed at runtime (move it out, or use `Application.IsEditor`), or a Release-only `#if INDEX_BUILD_RELEASE` path that editor preview never compiled. Test by building and running the output.
 - **Native scripts in a build** — not compiled or staged by the Build panel. Package native layers are (engine packages built via MSBuild, binaries staged under `Packages/`) — put shipping C++ in a package (`index-author-package`).

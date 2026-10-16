@@ -196,6 +196,7 @@ public class Entity : IEquatable<Entity>
         { typeof(FastCircleCollider2D),  "Fast Circle Collider 2D" },
         { typeof(ParticleSystem2D),      "Particle System 2D" },
         { typeof(SpriteAnimator2D),      "Sprite Animator 2D" },
+        { typeof(Animator),              "Animator" },
         { typeof(PostProcessing2D),      "Post Processing" },
         { typeof(Transform3D),           "Transform 3D" },
         { typeof(Camera3D),              "Camera 3D" },
@@ -204,6 +205,7 @@ public class Entity : IEquatable<Entity>
         { typeof(PointLight),            "Point Light" },
         { typeof(SpotLight),             "Spot Light" },
         { typeof(ParticleSystem3D),      "Particle System 3D" },
+        { typeof(SkinnedMeshRenderer),   "Skinned Mesh Renderer" },
         { typeof(Rigidbody3D),           "Rigidbody 3D" },
         { typeof(BoxCollider3D),         "Box Collider 3D" },
         { typeof(SphereCollider3D),      "Sphere Collider 3D" },
@@ -229,6 +231,7 @@ public class Entity : IEquatable<Entity>
         { typeof(Index.UI.GridLayoutGroup),       "Grid Layout Group" },
         { typeof(Index.UI.ContentSizeFitter),     "Content Size Fitter" },
         { typeof(Index.UI.WidthConstraint),       "Width Constraint" },
+        { typeof(Index.UI.LocalizedText),         "Localized Text" },
     };
 
     private static string? GetNativeName<T>() where T : Component, new() => GetComponentName(typeof(T));
@@ -385,7 +388,7 @@ public class Entity : IEquatable<Entity>
         {
             if (!InternalCalls.Entity_AddScript(ID, typeof(T).Name))
                 return null;
-            return ScriptInstanceManager.GetScriptInstance(ID, typeof(T).Name) as T;
+            return ScriptInstanceManager.GetScriptInstance(ID, typeof(T)) as T;
         }
 
         string? nativeName = GetNativeName<T>();
@@ -609,7 +612,7 @@ public class Entity : IEquatable<Entity>
             return null;
 
         if (typeof(EntityScript).IsAssignableFrom(type))
-            return ScriptInstanceManager.GetScriptInstance(ID, type.Name);
+            return ScriptInstanceManager.GetScriptInstance(ID, type);
 
         string? nativeName = GetComponentName(type);
         if (nativeName == null)
@@ -712,6 +715,10 @@ public class Entity : IEquatable<Entity>
         if (type == typeof(Audio)) return Audio.FromAssetUUID(ParseAssetUUID(value));
         if (type == typeof(TextureRef)) return new TextureRef(ParseAssetUUID(value));
         if (type == typeof(AudioRef)) return new AudioRef(ParseAssetUUID(value));
+        if (type == typeof(Material)) return Material.FromAssetUUID(ParseAssetUUID(value));
+        if (type == typeof(Mesh)) return Mesh.FromAssetUUID(ParseAssetUUID(value));
+        if (type == typeof(AnimationClip)) return AnimationClip.FromAssetUUID(ParseAssetUUID(value));
+        if (type == typeof(AnimatorController)) return AnimatorController.FromAssetUUID(ParseAssetUUID(value));
 
         string[] parts = value.Split(',', StringSplitOptions.TrimEntries);
         if (type == typeof(Vector2) && parts.Length >= 2)

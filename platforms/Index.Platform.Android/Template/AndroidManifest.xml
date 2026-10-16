@@ -20,7 +20,9 @@
         android:hasCode="true"
         android:extractNativeLibs="true"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
-        android:hardwareAccelerated="true">
+        android:hardwareAccelerated="true"
+        android:appCategory="game"
+        android:enableOnBackInvokedCallback="false">
         <activity android:name="dev.index.player.IndexActivity"
             android:label="@APP_NAME@"
             android:alwaysRetainTaskState="true"

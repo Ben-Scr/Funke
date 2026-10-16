@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "Components/General/HierarchyComponent.hpp"
+#include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/UI/ButtonComponent.hpp"
 #include "Components/UI/InputFieldComponent.hpp"
 #include "Components/UI/ScrollRectComponent.hpp"
@@ -59,6 +60,32 @@ TEST_CASE("Widgets that drag on their own keep their press inside a scroll rect"
 	CHECK_FALSE(UIEventSystem::CanScrollRectTakeOverPress(registry, slider, list));
 	CHECK_FALSE(UIEventSystem::CanScrollRectTakeOverPress(registry, field, list));
 	CHECK_FALSE(UIEventSystem::CanScrollRectTakeOverPress(registry, nested, list));
+}
+
+TEST_CASE("A slider thumb overhanging the track still grabs the slider")
+{
+	entt::registry registry;
+	const EntityHandle slider = MakeChild(registry, entt::null);
+	auto& track = registry.emplace<RectTransform2DComponent>(slider);
+	track.ResolvedMin = Vec2{ 0.0f, 0.0f };
+	track.ResolvedMax = Vec2{ 200.0f, 10.0f };
+	track.ResolvedValid = true;
+
+	// Round thumb at the right end, taller and wider than the track; no Interactable of its own.
+	const EntityHandle handle = MakeChild(registry, slider);
+	auto& thumb = registry.emplace<RectTransform2DComponent>(handle);
+	thumb.ResolvedMin = Vec2{ 185.0f, -10.0f };
+	thumb.ResolvedMax = Vec2{ 215.0f, 20.0f };
+	thumb.ResolvedValid = true;
+	registry.emplace<SliderComponent>(slider).HandleEntity = handle;
+
+	CHECK(UIEventSystem::SliderHandleContains(registry, slider, Vec2{ 210.0f, 5.0f }));
+	CHECK(UIEventSystem::SliderHandleContains(registry, slider, Vec2{ 200.0f, 18.0f }));
+	CHECK_FALSE(UIEventSystem::SliderHandleContains(registry, slider, Vec2{ 100.0f, 5.0f }));
+
+	// A read-only slider (progress bar) never takes input through its handle.
+	registry.get<SliderComponent>(slider).IsReadOnly = true;
+	CHECK_FALSE(UIEventSystem::SliderHandleContains(registry, slider, Vec2{ 210.0f, 5.0f }));
 }
 
 TEST_CASE("A long-press selects the word under the finger")

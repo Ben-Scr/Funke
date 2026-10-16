@@ -258,6 +258,8 @@ struct Frame {
 	skyGround:     vec4<f32>,
 	params:        vec4<f32>,  // x = light count, y = tone mapping, z = 1 encodes sRGB, w = shadowed light index or -1
 	shadowParams:  vec4<f32>,  // x = texel size in uv, y = depth bias, z = normal offset, w = shadow distance
+	fogColor:      vec4<f32>,  // linear, w = 1 when fog is on
+	fogParams:     vec4<f32>,  // x = start, y = end
 };
 
 struct Light {
@@ -290,7 +292,7 @@ struct VertexInput {
 	@location(8)  normal1:     vec4<f32>,
 	@location(9)  normal2:     vec4<f32>,
 	@location(10) color:       vec4<f32>,  // sRGB base color * tint
-	@location(11) emissive:    vec4<f32>,  // linear
+	@location(11) emissive:    vec4<f32>,  // linear, w = 1 when fog applies
 	@location(12) surface:     vec4<f32>,  // x = metallic, y = roughness, z = lit, w = transparent
 	@location(13) uvTransform: vec4<f32>,  // xy = tiling, zw = offset
 };
@@ -303,6 +305,7 @@ struct VertexOutput {
 	@location(3) color:    vec4<f32>,
 	@location(4) emissive: vec3<f32>,
 	@location(5) @interpolate(flat) surface: vec4<f32>,
+	@location(6) @interpolate(flat) fogged: f32,
 };
 
 @vertex
@@ -318,7 +321,18 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 	out.color = in.color;
 	out.emissive = in.emissive.rgb;
 	out.surface = in.surface;
+	out.fogged = in.emissive.w;
 	return out;
+}
+
+// Distance fog blended over the display-range color (after tone mapping), so FogColor shows as configured.
+fn applyFog(color: vec3<f32>, worldPos: vec3<f32>, fogged: f32) -> vec3<f32> {
+	if (frame.fogColor.w < 0.5 || fogged < 0.5) {
+		return color;
+	}
+	let dist = length(worldPos - frame.cameraPos.xyz);
+	let t = clamp((dist - frame.fogParams.x) / max(frame.fogParams.y - frame.fogParams.x, 1e-3), 0.0, 1.0);
+	return mix(color, frame.fogColor.rgb, t * t * (3.0 - 2.0 * t));
 }
 
 fn srgbToLinear(c: vec3<f32>) -> vec3<f32> {
@@ -424,7 +438,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 	// Opaque surfaces keep alpha 1 so the target stays opaque.
 	let alpha = select(1.0, clamp(in.color.a * texel.a, 0.0, 1.0), in.surface.w > 0.5);
 	if (in.surface.z < 0.5) {
-		return vec4<f32>(encodeOutput(albedo + in.emissive), alpha);
+		return vec4<f32>(encodeOutput(applyFog(albedo + in.emissive, in.worldPos, in.fogged)), alpha);
 	}
 
 	let metallic = clamp(in.surface.x, 0.0, 1.0);
@@ -482,7 +496,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
 	// Reflected light isn't filtered by the surface's transparency: glass and water turn mirror-like at grazing angles.
 	let fresnelAlpha = clamp(alpha + (1.0 - alpha) * max(reflectance.r, max(reflectance.g, reflectance.b)), 0.0, 1.0);
-	return vec4<f32>(encodeOutput(toneMap(color * frame.cameraPos.w)), select(alpha, fresnelAlpha, in.surface.w > 0.5));
+	return vec4<f32>(encodeOutput(applyFog(toneMap(color * frame.cameraPos.w), in.worldPos, in.fogged)),
+		select(alpha, fresnelAlpha, in.surface.w > 0.5));
 }
 )WGSL";
 
@@ -679,269 +694,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
-		constexpr const char* k_PostVignetteWGSL = R"WGSL(
-struct VignetteParams {
-	color:        vec4<f32>,
-	centerSmooth: vec4<f32>,
-	aspectRound:  vec4<f32>,
-};
-
-@group(0) @binding(0) var t_src: texture_2d<f32>;
-@group(0) @binding(1) var s_src: sampler;
-@group(0) @binding(2) var<uniform> u: VignetteParams;
-
-struct VertexOutput {
-	@builtin(position) clip_position: vec4<f32>,
-	@location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
-	var pos = array<vec2<f32>, 3>(
-		vec2<f32>(-1.0, -1.0),
-		vec2<f32>( 3.0, -1.0),
-		vec2<f32>(-1.0,  3.0),
-	);
-	var uv = array<vec2<f32>, 3>(
-		vec2<f32>(0.0, 1.0),
-		vec2<f32>(2.0, 1.0),
-		vec2<f32>(0.0, -1.0),
-	);
-	var out: VertexOutput;
-	out.clip_position = vec4<f32>(pos[idx], 0.0, 1.0);
-	out.uv = uv[idx];
-	return out;
-}
-
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-	let scene = textureSample(t_src, s_src, in.uv);
-
-	// Distance from configurable centre, with horizontal stretch driven by
-	// (1 - roundness). At roundness=1 the mask is a pure UV circle (which
-	// looks elliptical on a 16:9 viewport). At roundness=0 the mask is
-	// aspect-corrected so it appears as a true screen-space circle.
-	let aspect = u.aspectRound.x;
-	let roundness = u.aspectRound.y;
-	let stretch = mix(aspect, 1.0, roundness);  // roundness=1 -> 1.0; roundness=0 -> aspect
-	let d = (in.uv - u.centerSmooth.xy);
-	let d_corrected = vec2<f32>(d.x * stretch, d.y);
-
-	// 1.4142 normalises so r ≈ 1.0 at the corner of a centred unit-square
-	// vignette (length of (0.5, 0.5) * sqrt(2) = 1.0). Off-centre or
-	// stretched cases shift the "corner = 1" point but the intensity /
-	// smoothness sliders still scrub through the same useful range.
-	let r = length(d_corrected) * 1.4142;
-	let intensity = u.centerSmooth.z;
-	let smoothness = max(u.centerSmooth.w, 0.0001); // avoid step()-like binary mask
-	let inner = 1.0 - intensity;
-	let outer = inner + smoothness;
-	let mask = smoothstep(inner, outer, r);
-
-	return vec4<f32>(mix(scene.rgb, u.color.rgb, mask), scene.a);
-}
-)WGSL";
-
 		struct BuiltIn {
 			std::string_view Name;
 			const char*      WGSL;
 		};
 
-		constexpr const char* k_PostChromaticWGSL = R"WGSL(
-struct Params { p: vec4<f32>, };
-@group(0) @binding(0) var t_src: texture_2d<f32>;
-@group(0) @binding(1) var s_src: sampler;
-@group(0) @binding(2) var<uniform> u: Params;
-
-struct VertexOutput {
-	@builtin(position) clip_position: vec4<f32>,
-	@location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
-	var pos = array<vec2<f32>, 3>(
-		vec2<f32>(-1.0, -1.0), vec2<f32>( 3.0, -1.0), vec2<f32>(-1.0,  3.0));
-	var uv = array<vec2<f32>, 3>(
-		vec2<f32>(0.0, 1.0), vec2<f32>(2.0, 1.0), vec2<f32>(0.0, -1.0));
-	var out: VertexOutput;
-	out.clip_position = vec4<f32>(pos[idx], 0.0, 1.0);
-	out.uv = uv[idx];
-	return out;
-}
-
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-	let dir = (in.uv - vec2<f32>(0.5, 0.5));
-	// Scale offset by distance so corners get more shift than centre —
-	// matches the lens-defect aesthetic of real CA.
-	let offset = dir * u.p.x * 0.05;
-	let r = textureSample(t_src, s_src, in.uv + offset).r;
-	let g = textureSample(t_src, s_src, in.uv).g;
-	let b = textureSample(t_src, s_src, in.uv - offset).b;
-	let a = textureSample(t_src, s_src, in.uv).a;
-	return vec4<f32>(r, g, b, a);
-}
-)WGSL";
-
-		constexpr const char* k_PostGrainWGSL = R"WGSL(
-struct Params { p: vec4<f32>, };
-@group(0) @binding(0) var t_src: texture_2d<f32>;
-@group(0) @binding(1) var s_src: sampler;
-@group(0) @binding(2) var<uniform> u: Params;
-
-struct VertexOutput {
-	@builtin(position) clip_position: vec4<f32>,
-	@location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
-	var pos = array<vec2<f32>, 3>(
-		vec2<f32>(-1.0, -1.0), vec2<f32>( 3.0, -1.0), vec2<f32>(-1.0,  3.0));
-	var uv = array<vec2<f32>, 3>(
-		vec2<f32>(0.0, 1.0), vec2<f32>(2.0, 1.0), vec2<f32>(0.0, -1.0));
-	var out: VertexOutput;
-	out.clip_position = vec4<f32>(pos[idx], 0.0, 1.0);
-	out.uv = uv[idx];
-	return out;
-}
-
-// IQ-style cheap hash. Stable per UV; the time seed perturbs each frame.
-fn hash21(p: vec2<f32>) -> f32 {
-	let q = fract(p * vec2<f32>(123.34, 456.21));
-	let r = q + dot(q, q + 78.233);
-	return fract(r.x * r.y);
-}
-
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-	let scene = textureSample(t_src, s_src, in.uv);
-	let scale = max(u.p.y, 0.001);
-	// Multiply uv into the noise function's input. Time perturbation
-	// shifts the input so the grain animates instead of being static.
-	let n_seed = in.uv * (1.0 / scale) * 1000.0 + vec2<f32>(u.p.w * 17.0, u.p.w * 23.0);
-	let mono = hash21(n_seed) - 0.5;
-	var noise = vec3<f32>(mono, mono, mono);
-	if (u.p.z > 0.5) {
-		let g = hash21(n_seed + vec2<f32>(11.7, 4.3)) - 0.5;
-		let b = hash21(n_seed + vec2<f32>(31.2, 17.9)) - 0.5;
-		noise = vec3<f32>(mono, g, b);
-	}
-	return vec4<f32>(scene.rgb + noise * u.p.x, scene.a);
-}
-)WGSL";
-
-		constexpr const char* k_PostLensDistortionWGSL = R"WGSL(
-struct Params { p: vec4<f32>, };
-@group(0) @binding(0) var t_src: texture_2d<f32>;
-@group(0) @binding(1) var s_src: sampler;
-@group(0) @binding(2) var<uniform> u: Params;
-
-struct VertexOutput {
-	@builtin(position) clip_position: vec4<f32>,
-	@location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
-	var pos = array<vec2<f32>, 3>(
-		vec2<f32>(-1.0, -1.0), vec2<f32>( 3.0, -1.0), vec2<f32>(-1.0,  3.0));
-	var uv = array<vec2<f32>, 3>(
-		vec2<f32>(0.0, 1.0), vec2<f32>(2.0, 1.0), vec2<f32>(0.0, -1.0));
-	var out: VertexOutput;
-	out.clip_position = vec4<f32>(pos[idx], 0.0, 1.0);
-	out.uv = uv[idx];
-	return out;
-}
-
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-	let center = u.p.zw;
-	let d = in.uv - center;
-	let r2 = dot(d, d);
-	// Polynomial distortion: warped = d * (1 + k * r^2), then divided
-	// by Scale so the user can pull the warped frame back into view.
-	// Intensity > 0 -> barrel (image bows outward); < 0 -> pincushion.
-	let warped = d * (1.0 + u.p.x * r2 * 2.0);
-	let scale = max(u.p.y, 0.001);
-	let src_uv = center + warped / scale;
-	// Soft falloff at the edge instead of a hard discard. The linear
-	// sampler uses ClampToEdge so out-of-bounds samples return the
-	// edge color; the smoothstep on signed-distance-to-uv-bounds fades
-	// those clamped pixels to black so they read as "outside the lens"
-	// instead of stretching the edge pixel across the corner.
-	let edge_d = min(min(src_uv.x, 1.0 - src_uv.x),
-	                 min(src_uv.y, 1.0 - src_uv.y));
-	let edge_mask = smoothstep(-0.02, 0.0, edge_d);
-	let sampled = textureSample(t_src, s_src, clamp(src_uv, vec2<f32>(0.0), vec2<f32>(1.0)));
-	return vec4<f32>(sampled.rgb * edge_mask, sampled.a);
-}
-)WGSL";
-
-		// Uniform layout: colorFilter=vec4(rgb,1), exposureCS=vec4(exposure,contrast,saturation,_), tempTint=vec4(temp,tint,_,_).
-		constexpr const char* k_PostColorGradingWGSL = R"WGSL(
-struct Params {
-	colorFilter: vec4<f32>,
-	exposureCS:  vec4<f32>,
-	tempTint:    vec4<f32>,
-};
-@group(0) @binding(0) var t_src: texture_2d<f32>;
-@group(0) @binding(1) var s_src: sampler;
-@group(0) @binding(2) var<uniform> u: Params;
-
-struct VertexOutput {
-	@builtin(position) clip_position: vec4<f32>,
-	@location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
-	var pos = array<vec2<f32>, 3>(
-		vec2<f32>(-1.0, -1.0), vec2<f32>( 3.0, -1.0), vec2<f32>(-1.0,  3.0));
-	var uv = array<vec2<f32>, 3>(
-		vec2<f32>(0.0, 1.0), vec2<f32>(2.0, 1.0), vec2<f32>(0.0, -1.0));
-	var out: VertexOutput;
-	out.clip_position = vec4<f32>(pos[idx], 0.0, 1.0);
-	out.uv = uv[idx];
-	return out;
-}
-
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-	let scene = textureSample(t_src, s_src, in.uv);
-	var c = scene.rgb;
-
-	// Exposure (stops) — multiply in linear.
-	c = c * exp2(u.exposureCS.x);
-
-	// Color filter — tint multiply.
-	c = c * u.colorFilter.rgb;
-
-	// Temperature + Tint — simple two-axis colour shift. Temperature
-	// shifts the blue/red balance; Tint shifts green/magenta. Not a
-	// proper Kelvin curve but the cheap approximation tracks Unity's
-	// "Temperature/Tint" sliders within visual tolerance.
-	let temp = u.tempTint.x;
-	let tint = u.tempTint.y;
-	c.r = c.r + temp * 0.1;
-	c.b = c.b - temp * 0.1;
-	c.g = c.g + tint * 0.1;
-	c = max(c, vec3<f32>(0.0));
-
-	// Contrast around 0.5 (mid grey).
-	c = (c - 0.5) * u.exposureCS.y + 0.5;
-	c = max(c, vec3<f32>(0.0));
-
-	// Saturation — mix toward Rec.709 luma.
-	let luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
-	c = mix(vec3<f32>(luma), c, u.exposureCS.z);
-
-	return vec4<f32>(c, scene.a);
-}
-)WGSL";
-
-		// 4-pass bloom: (1) threshold extract at half-res, (2) H blur, (3) V blur, (4) composite scene+bloom. Separable H+V at half-res makes High-quality (21-tap) affordable.
+		// Bloom: threshold extract at half-res, then H and V blur; postcomposite adds it to the scene.
 		// Threshold extract — Uniform: { threshold, _, _, _ }.
 		constexpr const char* k_PostBloomThresholdWGSL = R"WGSL(
 struct Params { p: vec4<f32>, };
@@ -1040,9 +798,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
-		// Composite uses a 4-binding bgl: scene@0, sampler@1, bloom@2, uniform@3. Uniform: { tintR, tintG, tintB, intensity }.
-		constexpr const char* k_PostBloomCompositeWGSL = R"WGSL(
-struct Params { p: vec4<f32>, };
+		// Every per-pixel effect in one full-screen pass: bloom composite, color grading, lens distortion,
+		// chromatic aberration, vignette and grain, in the order the effect list runs them. Bindings:
+		// scene@0, sampler@1, bloom@2 (the scene again when bloom is off), uniform@3.
+		constexpr const char* k_PostCompositeWGSL = R"WGSL(
+struct Params {
+	flags0:          vec4<f32>,  // bloom, colorGrading, lens, chromatic
+	flags1:          vec4<f32>,  // vignette, grain, time, aspect
+	bloom:           vec4<f32>,  // tint rgb (premultiplied by tint alpha), intensity
+	cgFilter:        vec4<f32>,
+	cgExposureCS:    vec4<f32>,  // exposure, contrast, saturation
+	cgTempTint:      vec4<f32>,
+	lens:            vec4<f32>,  // intensity, scale, center
+	chroma:          vec4<f32>,  // intensity
+	vigColor:        vec4<f32>,
+	vigCenterSmooth: vec4<f32>,  // center, intensity, smoothness
+	vigRound:        vec4<f32>,  // roundness
+	grain:           vec4<f32>,  // intensity, size, colored
+};
 @group(0) @binding(0) var t_scene: texture_2d<f32>;
 @group(0) @binding(1) var s_lin:   sampler;
 @group(0) @binding(2) var t_bloom: texture_2d<f32>;
@@ -1065,12 +838,86 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
 	return out;
 }
 
+fn grade(c_in: vec3<f32>) -> vec3<f32> {
+	// Exposure (stops), color filter, then a cheap temperature/tint shift.
+	var c = c_in * exp2(u.cgExposureCS.x) * u.cgFilter.rgb;
+	c.r = c.r + u.cgTempTint.x * 0.1;
+	c.b = c.b - u.cgTempTint.x * 0.1;
+	c.g = c.g + u.cgTempTint.y * 0.1;
+	c = max(c, vec3<f32>(0.0));
+	// Contrast around mid grey, then saturation towards Rec.709 luma.
+	c = max((c - 0.5) * u.cgExposureCS.y + 0.5, vec3<f32>(0.0));
+	let luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+	return mix(vec3<f32>(luma), c, u.cgExposureCS.z);
+}
+
+// The image the effects before chromatic aberration produce at p: scene + bloom, graded, lens-warped.
+fn shade(p: vec2<f32>) -> vec4<f32> {
+	var uv = p;
+	var edge = 1.0;
+	if (u.flags0.z > 0.5) {
+		// Polynomial distortion; > 0 barrel, < 0 pincushion. Samples past the frame fade to black.
+		let center = u.lens.zw;
+		let d = p - center;
+		let warped = d * (1.0 + u.lens.x * dot(d, d) * 2.0);
+		let src_uv = center + warped / max(u.lens.y, 0.001);
+		let edge_d = min(min(src_uv.x, 1.0 - src_uv.x), min(src_uv.y, 1.0 - src_uv.y));
+		edge = smoothstep(-0.02, 0.0, edge_d);
+		uv = clamp(src_uv, vec2<f32>(0.0), vec2<f32>(1.0));
+	}
+	var c = textureSampleLevel(t_scene, s_lin, uv, 0.0);
+	if (u.flags0.x > 0.5) {
+		let bloom = textureSampleLevel(t_bloom, s_lin, uv, 0.0).rgb;
+		c = vec4<f32>(c.rgb + bloom * u.bloom.rgb * u.bloom.a, c.a);
+	}
+	if (u.flags0.y > 0.5) {
+		c = vec4<f32>(grade(c.rgb), c.a);
+	}
+	return vec4<f32>(c.rgb * edge, c.a);
+}
+
+// IQ-style cheap hash. Stable per UV; the time seed perturbs each frame.
+fn hash21(p: vec2<f32>) -> f32 {
+	let q = fract(p * vec2<f32>(123.34, 456.21));
+	let r = q + dot(q, q + 78.233);
+	return fract(r.x * r.y);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-	let scene = textureSample(t_scene, s_lin, in.uv);
-	let bloom = textureSample(t_bloom, s_lin, in.uv).rgb;
-	let bloomContribution = bloom * u.p.rgb * u.p.a;
-	return vec4<f32>(scene.rgb + bloomContribution, scene.a);
+	var c: vec4<f32>;
+	if (u.flags0.w > 0.5) {
+		// Offset grows towards the corners, like a real lens defect.
+		let offset = (in.uv - vec2<f32>(0.5, 0.5)) * u.chroma.x * 0.05;
+		let center = shade(in.uv);
+		let r = shade(clamp(in.uv + offset, vec2<f32>(0.0), vec2<f32>(1.0))).r;
+		let b = shade(clamp(in.uv - offset, vec2<f32>(0.0), vec2<f32>(1.0))).b;
+		c = vec4<f32>(r, center.g, b, center.a);
+	}
+	else {
+		c = shade(in.uv);
+	}
+
+	if (u.flags1.x > 0.5) {
+		// roundness 1 = UV circle, 0 = aspect-corrected screen circle; 1.4142 puts r = 1 at a corner.
+		let stretch = mix(u.flags1.w, 1.0, u.vigRound.x);
+		let d = in.uv - u.vigCenterSmooth.xy;
+		let r = length(vec2<f32>(d.x * stretch, d.y)) * 1.4142;
+		let inner = 1.0 - u.vigCenterSmooth.z;
+		let mask = smoothstep(inner, inner + max(u.vigCenterSmooth.w, 0.0001), r);
+		c = vec4<f32>(mix(c.rgb, u.vigColor.rgb, mask), c.a);
+	}
+
+	if (u.flags1.y > 0.5) {
+		let seed = in.uv * (1.0 / max(u.grain.y, 0.001)) * 1000.0 + vec2<f32>(u.flags1.z * 17.0, u.flags1.z * 23.0);
+		let mono = hash21(seed) - 0.5;
+		var noise = vec3<f32>(mono, mono, mono);
+		if (u.grain.z > 0.5) {
+			noise = vec3<f32>(mono, hash21(seed + vec2<f32>(11.7, 4.3)) - 0.5, hash21(seed + vec2<f32>(31.2, 17.9)) - 0.5);
+		}
+		c = vec4<f32>(c.rgb + noise * u.grain.x, c.a);
+	}
+	return c;
 }
 )WGSL";
 
@@ -1141,14 +988,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 			{ "particle3d",          k_Particle3DWGSL          },
 #endif
 			{ "postblit",            k_PostBlitWGSL            },
-			{ "postvignette",        k_PostVignetteWGSL        },
-			{ "postchromatic",       k_PostChromaticWGSL       },
-			{ "postgrain",           k_PostGrainWGSL           },
-			{ "postlensdistortion",  k_PostLensDistortionWGSL  },
-			{ "postcolorgrading",    k_PostColorGradingWGSL    },
 			{ "postbloomthreshold",  k_PostBloomThresholdWGSL  },
 			{ "postbloomblur",       k_PostBloomBlurWGSL       },
-			{ "postbloomcomposite",  k_PostBloomCompositeWGSL  },
+			{ "postcomposite",       k_PostCompositeWGSL       },
 			{ "postpixelated",       k_PostPixelatedWGSL       },
 		};
 

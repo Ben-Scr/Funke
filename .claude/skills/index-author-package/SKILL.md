@@ -184,7 +184,8 @@ extern "C" INDEX_PACKAGE_API int IndexPackage_OnLoad() {
         /* serialize      */ nullptr,   // optional; see index-serialize-field skill
         /* deserialize    */ nullptr,
         /* category       */ ComponentCategory::Component,
-        /* properties     */ std::move(props));
+        /* properties     */ std::move(props),
+        /* icon           */ "particles");  // optional editor icon stem from IndexAssets/Textures/Editor/General
 
     // Optional mutual exclusion. Declare on either side — registry checks both.
     Package::DeclareComponentConflict<MyComponent, Index::SpriteRendererComponent>();
@@ -236,6 +237,25 @@ internal static class NativeBindings {
 **The binding surface MUST match on both sides** — names, calling convention, signatures. There's no tooling that cross-checks it; a mismatch surfaces as a runtime `EntryPointNotFoundException` or stack corruption.
 
 For component wrappers (managed `MyComponent : Component` with native state under the hood), follow the Tilemap2D pattern: per-field Get/Set bindings, pin spans with `fixed` for batch APIs, no parallel state on the managed side.
+
+## Android contributions (Java, Maven AARs, manifest)
+
+Native package layers are **not** built for Android (the engine is a static lib inside `libmain.so`). Android SDKs (ads, billing, Play Games) come in through a top-level `android` table instead, read only by the Android builder (`platforms/Index.Platform.Android/Builder/android_libraries.py`; premake and the C++ manifest reader ignore it, but it must stay plain data):
+
+```lua
+android = {
+    java         = { "Android/Java/**.java" },                     -- Java 8 syntax, no lambdas (anonymous classes)
+    maven        = { "com.google.android.gms:play-services-ads:25.5.0" },
+    manifest     = "Android/AndroidManifest.xml",                 -- merged by android_manifest.py
+    placeholders = { admobAppId = "ca-app-pub-3940256099942544~3347511713" },  -- ${admobAppId}; profile option overrides
+},
+```
+
+- `maven` closures are resolved from POMs (Google Maven + Central, newest version wins, androidx constraints honoured) and **must be pinned**: `python platforms/Index.Platform.Android/Builder/android_maven.py lock <packageDir>` writes `Android/maven.lock.json` (URL + SHA-256 per file). Without a lock matching the `maven` list the build re-resolves and warns.
+- The builder links library resources as aapt2 overlays, regenerates each library package's `R` class from the app's `R.txt`, compiles package Java against all jars, dexes with d8 (multidex), copies `jni/arm64-v8a/*.so`, AAR assets and jar Java resources (`META-INF/services` merged).
+- Java ↔ C#: Java exposes `public static String method(String)`; C# `AndroidBridge.Call(class, method, json)` (engine `Platform::CallJava` → `dev.index.player.IndexBridge.call`, class loaded via the activity's class loader). Java answers with `IndexBridge.send(channel, json)` → `Platform::PushJavaMessage` → dispatched to `AndroidBridge.Subscribe` handlers each frame before coroutines. Off Android `Call` returns null; `AndroidBridge.Simulate` feeds handlers for editor stand-ins.
+- Static state survives editor Play sessions; reset it in `Application.OnPlayModeExited`.
+- Reference implementation: `Index.Ads` in the `Index-PackageRegistry` repo (C# facade + simulated/Android/unsupported backends, `IndexAds.java`, manifest meta-data from `admobAppId`). Offline tests: `python -m unittest scripts.ci.test_android_builder`.
 
 ## Scaffolding new packages
 

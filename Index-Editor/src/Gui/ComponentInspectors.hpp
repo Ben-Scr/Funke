@@ -15,6 +15,8 @@ namespace Index {
 	void DrawParticleSystem2DInspector(std::span<const Entity> entities);
 	// Declarative fields plus bursts and the lifetime curve/gradient editors.
 	void DrawParticleSystem3DInspector(std::span<const Entity> entities);
+	// Declarative fields plus a clip picker and the model's skeleton/clip summary.
+	void DrawSkinnedMeshRendererInspector(std::span<const Entity> entities);
 
 	void DrawRectTransform2DInspector(std::span<const Entity> entities);
 

@@ -13,6 +13,7 @@
 namespace Index {
 
 	class Scene;
+	class ScriptInstance;
 
 	class INDEX_API ScriptEngine {
 	public:
@@ -37,6 +38,8 @@ namespace Index {
 		static void DestroyScriptInstance(uint32_t handle);
 		static void InvokeStart(uint32_t handle);
 		static void InvokeUpdate(uint32_t handle);
+		// False when the instance's class doesn't override `callback` (a ScriptCallback bit), so the call can be skipped.
+		static bool WantsCallback(ScriptInstance& instance, uint32_t callback);
 		static void InvokeOnDestroy(uint32_t handle);
 		static void InvokeOnEnable(uint32_t handle);
 		static void InvokeOnDisable(uint32_t handle);
@@ -74,6 +77,11 @@ namespace Index {
 		// Native→managed: drop cached C# component wrappers for a destroyed entity (UUID). No-op when scripting is uninitialized.
 		static void NotifyEntityDestroyed(uint64_t entityID);
 
+		// The player's language choice from PlayerPrefs ("" when none or scripting is down).
+		static std::string GetSavedLanguage();
+		// Raises C# Localization.LanguageChanged.
+		static void RaiseLanguageChanged();
+
 		static uint32_t CreateSceneSystemInstance(const std::string& className, const std::string& sceneName);
 		static void DestroySceneSystemInstance(uint32_t handle);
 		static void InvokeSceneSystemStart(uint32_t handle);
@@ -109,6 +117,15 @@ namespace Index {
 		static void SetDataAssetField(uint64_t guid, const char* fieldName, const char* value);
 		static bool DataAssetClassExists(const std::string& typeName);
 		static int  GetDataAssetTypes(char* outBuffer, int capacity);
+
+		// C# EditorWindow classes (see ManagedCallbacks): JSON list, draw one by type name, close it.
+		static std::string GetEditorWindowTypes();
+		static int  DrawEditorWindow(const char* typeName);
+		static void CloseEditorWindow(const char* typeName);
+
+		// C# dev console commands (see ManagedCallbacks): JSON list; run one, 0 not found / 1 ok / 2 failed.
+		static std::string GetDevCommands();
+		static int  ExecuteDevCommand(const std::string& command, std::string& outOutput);
 
 		static void PumpCoroutinesUpdate(float deltaTime);
 		static void PumpCoroutinesFixedUpdate();

@@ -145,14 +145,35 @@ internal static class ScriptInstanceManager
 
     private static Assembly? s_CoreAssembly;
     private static Assembly? s_UserAssembly;
+    private static string? s_UserAssemblyDirectory;
     private static AssemblyLoadContext? s_UserLoadContext;
+
+    internal static Assembly? UserAssembly => s_UserAssembly;
+    internal static string? UserAssemblyDirectory => s_UserAssembly != null ? s_UserAssemblyDirectory : null;
+
+    // Loads an assembly from the game's output folder into the context the game lives in; null when it can't.
+    internal static Assembly? LoadIntoUserContext(string assemblyName)
+    {
+        try
+        {
+            AssemblyLoadContext context = s_UserLoadContext ?? AssemblyLoadContext.Default;
+            return context.LoadFromAssemblyName(new AssemblyName(assemblyName));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[ScriptLoader] Could not load {assemblyName}: {ex.Message}");
+            return null;
+        }
+    }
     private static readonly ConcurrentDictionary<string, ScriptClassInfo?> s_ClassCache = new();
 
     private struct ScriptInstanceData
     {
         public EntityScript Instance;
-        public MethodInfo? StartMethod;
-        public MethodInfo? UpdateMethod;
+        // Bound once per instance: MethodInfo.Invoke per frame was a reflection call per script.
+        public Action? StartAction;
+        public Action? UpdateAction;
+        public int CallbackMask;
         public bool HasStarted;
         public bool HasAwoken;
     }
@@ -169,6 +190,7 @@ internal static class ScriptInstanceManager
         public bool IsDataAsset;
         public MethodInfo? StartMethod;
         public MethodInfo? UpdateMethod;
+        public int CallbackMask = ScriptCallbacks.All;
 
         // Lazily populated by EnsureInvokableMethods. Public void methods the inspector "On Click/Value Changed" list can target; keyed by name for O(1) dispatch.
         public Dictionary<string, MethodInfo>? InvokableMethodsByName;
@@ -218,6 +240,18 @@ internal static class ScriptInstanceManager
         return new List<ScriptInstanceData>(s_Instances.Values);
     }
 
+    // Type-keyed fast path for GetComponent<T>: skips the class-name resolve on the common hit.
+    internal static EntityScript? GetScriptInstance(ulong entityID, Type type)
+    {
+        if (entityID != 0
+            && s_InstancesByType.TryGetValue((entityID, type), out int handle)
+            && s_Instances.TryGetValue(handle, out var data))
+        {
+            return data.Instance;
+        }
+        return GetScriptInstance(entityID, type.Name);
+    }
+
     internal static EntityScript? GetScriptInstance(ulong entityID, string className)
     {
         if (entityID == 0 || string.IsNullOrWhiteSpace(className))
@@ -231,9 +265,10 @@ internal static class ScriptInstanceManager
             return cachedData.Instance;
         }
 
-        foreach (var data in SnapshotInstances())
+        // Iterate in place: a snapshot copied every live instance on each miss (e.g. TryGetComponent in collision handlers).
+        foreach (var pair in s_Instances)
         {
-            EntityScript instance = data.Instance;
+            EntityScript instance = pair.Value.Instance;
             if (instance.Entity == null || instance.Entity.ID != entityID)
                 continue;
 
@@ -272,7 +307,7 @@ internal static class ScriptInstanceManager
         foreach (var data in SnapshotInstances())
         {
             try { invoke(data.Instance); }
-            catch (Exception ex) { Log.Error($"Exception in {eventName}: {ex}"); }
+            catch (Exception ex) { ScriptExceptionLog.Report(eventName, ex); }
         }
     }
 
@@ -281,7 +316,7 @@ internal static class ScriptInstanceManager
         foreach (var system in new List<SceneSystem>(s_SceneSystems.Values))
         {
             try { invoke(system); }
-            catch (Exception ex) { Log.Error($"Exception in {eventName}: {ex}"); }
+            catch (Exception ex) { ScriptExceptionLog.Report(eventName, ex); }
         }
     }
 
@@ -290,7 +325,7 @@ internal static class ScriptInstanceManager
         foreach (var system in new List<GlobalSystem>(s_GlobalSystems.Values))
         {
             try { invoke(system); }
-            catch (Exception ex) { Log.Error($"Exception in {eventName}: {ex}"); }
+            catch (Exception ex) { ScriptExceptionLog.Report(eventName, ex); }
         }
     }
 
@@ -321,7 +356,7 @@ internal static class ScriptInstanceManager
             Application.RaiseApplicationStart();
             DispatchToScripts(script => script.OnApplicationStart(), nameof(EntityScript.OnApplicationStart));
         }
-        catch (Exception ex) { Log.Error($"Exception in Application.OnStart handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Application.OnStart handler", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -334,7 +369,7 @@ internal static class ScriptInstanceManager
             DispatchToSceneSystems(system => system.OnApplicationPaused(), nameof(SceneSystem.OnApplicationPaused));
             DispatchToGlobalSystems(system => system.OnApplicationPaused(), nameof(GlobalSystem.OnApplicationPaused));
         }
-        catch (Exception ex) { Log.Error($"Exception in Application.OnPaused handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Application.OnPaused handler", ex); }
 
         // Phones may end a backgrounded app without a quit callback; persist what the handlers changed.
         PlayerPrefs.SaveQuietly();
@@ -350,7 +385,7 @@ internal static class ScriptInstanceManager
             DispatchToSceneSystems(system => system.OnApplicationQuit(), nameof(SceneSystem.OnApplicationQuit));
             DispatchToGlobalSystems(system => system.OnApplicationQuit(), nameof(GlobalSystem.OnApplicationQuit));
         }
-        catch (Exception ex) { Log.Error($"Exception in Application.OnQuit handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Application.OnQuit handler", ex); }
 
         // After the quit handlers so values they set are persisted too.
         PlayerPrefs.SaveQuietly();
@@ -367,21 +402,21 @@ internal static class ScriptInstanceManager
             DispatchToSceneSystems(system => system.OnFocusChanged(isFocused), nameof(SceneSystem.OnFocusChanged));
             DispatchToGlobalSystems(system => system.OnFocusChanged(isFocused), nameof(GlobalSystem.OnFocusChanged));
         }
-        catch (Exception ex) { Log.Error($"Exception in Window.FocusChanged handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Window.FocusChanged handler", ex); }
     }
 
     [UnmanagedCallersOnly]
     public static void RaiseKeyDown(int key)
     {
         try { Input.RaiseKeyDown((KeyCode)key); }
-        catch (Exception ex) { Log.Error($"Exception in Input.KeyDown handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Input.KeyDown handler", ex); }
     }
 
     [UnmanagedCallersOnly]
     public static void RaiseKeyUp(int key)
     {
         try { Input.RaiseKeyUp((KeyCode)key); }
-        catch (Exception ex) { Log.Error($"Exception in Input.KeyUp handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Input.KeyUp handler", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -391,70 +426,70 @@ internal static class ScriptInstanceManager
         char c = (char)codepoint;
         if (char.IsControl(c)) return;
         try { Input.RaiseEnterChar(c); }
-        catch (Exception ex) { Log.Error($"Exception in Input.EnterChar handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Input.EnterChar handler", ex); }
     }
 
     [UnmanagedCallersOnly]
     public static void RaiseMouseDown(int button)
     {
         try { Input.RaiseMouseDown((MouseButton)button); }
-        catch (Exception ex) { Log.Error($"Exception in Input.MouseDown handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Input.MouseDown handler", ex); }
     }
 
     [UnmanagedCallersOnly]
     public static void RaiseMouseUp(int button)
     {
         try { Input.RaiseMouseUp((MouseButton)button); }
-        catch (Exception ex) { Log.Error($"Exception in Input.MouseUp handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Input.MouseUp handler", ex); }
     }
 
     [UnmanagedCallersOnly]
     public static void RaiseMouseScroll(float delta)
     {
         try { Input.RaiseMouseScroll(delta); }
-        catch (Exception ex) { Log.Error($"Exception in Input.MouseScroll handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Input.MouseScroll handler", ex); }
     }
 
     [UnmanagedCallersOnly]
     public static void RaiseMouseMove(float x, float y)
     {
         try { Input.RaiseMouseMove(new Vector2(x, y)); }
-        catch (Exception ex) { Log.Error($"Exception in Input.MouseMove handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Input.MouseMove handler", ex); }
     }
 
     [UnmanagedCallersOnly]
     public static unsafe void RaiseBeforeSceneLoaded(byte* sceneName)
     {
         try { SceneManager.RaiseBeforeSceneLoaded(PtrToString(sceneName)); }
-        catch (Exception ex) { Log.Error($"Exception in SceneManager.BeforeSceneLoaded handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("SceneManager.BeforeSceneLoaded handler", ex); }
     }
 
     [UnmanagedCallersOnly]
     public static unsafe void RaiseSceneLoaded(byte* sceneName)
     {
         try { SceneManager.RaiseSceneLoaded(PtrToString(sceneName)); }
-        catch (Exception ex) { Log.Error($"Exception in SceneManager.SceneLoaded handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("SceneManager.SceneLoaded handler", ex); }
     }
 
     [UnmanagedCallersOnly]
     public static unsafe void RaiseBeforeSceneUnloaded(byte* sceneName)
     {
         try { SceneManager.RaiseBeforeSceneUnloaded(PtrToString(sceneName)); }
-        catch (Exception ex) { Log.Error($"Exception in SceneManager.BeforeSceneUnloaded handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("SceneManager.BeforeSceneUnloaded handler", ex); }
     }
 
     [UnmanagedCallersOnly]
     public static unsafe void RaiseSceneUnloaded(byte* sceneName)
     {
         try { SceneManager.RaiseSceneUnloaded(PtrToString(sceneName)); }
-        catch (Exception ex) { Log.Error($"Exception in SceneManager.SceneUnloaded handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("SceneManager.SceneUnloaded handler", ex); }
     }
 
     [UnmanagedCallersOnly]
     public static void RaiseWindowResize()
     {
         try { Window.InvokeResize(); }
-        catch (Exception ex) { Log.Error($"Exception in Window.OnResize handler: {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Window.OnResize handler", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -472,6 +507,7 @@ internal static class ScriptInstanceManager
 
     private static void UnloadCurrentUserAssemblyContext()
     {
+        ScriptExceptionLog.Flush();
         if (s_UserLoadContext == null)
             return;
 
@@ -486,6 +522,9 @@ internal static class ScriptInstanceManager
         // Entity.s_ManagedComponentStore references a user-defined type, which roots
         // the AssemblyLoadContext and would prevent it from unloading on hot reload.
         Entity.ClearManagedComponentStore();
+        EditorWindowRegistry.Clear();
+        DevCommandRegistry.Clear();
+        AndroidBridge.Clear();
 
         // Static caches keyed by / holding user types root the ALC just like the component store.
         Index.Jobs.Internal.JobLayoutCache.Clear();
@@ -510,8 +549,28 @@ internal static class ScriptInstanceManager
         GC.WaitForPendingFinalizers();
         GC.Collect();
 
+        // Common and harmless at shutdown; it only matters if it is still alive when the next assembly loads.
         if (weakContext.IsAlive)
-            Log.Warn("[ScriptLoader] User assembly load context is still alive after unload; lingering references may delay full cleanup.");
+        {
+            Log.Trace("[ScriptLoader] User assembly load context is still alive right after unload.");
+            s_UnloadedContext = weakContext;
+        }
+    }
+
+    private static WeakReference? s_UnloadedContext;
+
+    private static void WarnIfUnloadedContextLeaked()
+    {
+        if (s_UnloadedContext == null) return;
+        if (s_UnloadedContext.IsAlive)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            if (s_UnloadedContext.IsAlive)
+                Log.Warn("[ScriptLoader] Previous user assembly load context is still alive after reload; lingering references (static fields, events, threads) keep the old code in memory.");
+        }
+        s_UnloadedContext = null;
     }
 
     // Called after the editor reloads the pre-play snapshot; GlobalSystem subscriptions are preserved because they survive play mode.
@@ -520,7 +579,11 @@ internal static class ScriptInstanceManager
     {
         try
         {
+            ScriptExceptionLog.Flush();
             PlayerPrefs.SaveQuietly();
+
+            try { Application.RaisePlayModeExited(); }
+            catch (Exception ex) { ScriptExceptionLog.Report("Application.OnPlayModeExited handler", ex); }
 
             int strayHandlers = SweepUserStaticEventHandlers(SweepScope.PlayModeExit);
             if (strayHandlers > 0)
@@ -719,8 +782,9 @@ internal static class ScriptInstanceManager
             s_Instances[handle] = new ScriptInstanceData
             {
                 Instance = instance,
-                StartMethod = classInfo.StartMethod,
-                UpdateMethod = classInfo.UpdateMethod,
+                StartAction = BindLifecycleMethod(instance, classInfo.StartMethod),
+                UpdateAction = BindLifecycleMethod(instance, classInfo.UpdateMethod),
+                CallbackMask = classInfo.CallbackMask,
                 HasStarted = false,
                 HasAwoken = false
             };
@@ -755,6 +819,15 @@ internal static class ScriptInstanceManager
         }
     }
 
+    private static Action? BindLifecycleMethod(EntityScript instance, MethodInfo? method)
+    {
+        if (method == null)
+            return null;
+        if (method.ReturnType == typeof(void) && !method.ContainsGenericParameters)
+            return (Action)Delegate.CreateDelegate(typeof(Action), instance, method);
+        return () => method.Invoke(instance, null);
+    }
+
     [UnmanagedCallersOnly]
     public static void InvokeStart(int handle)
     {
@@ -763,11 +836,11 @@ internal static class ScriptInstanceManager
         try
         {
             data.Instance.OnStart();
-            data.StartMethod?.Invoke(data.Instance, null);
+            data.StartAction?.Invoke();
             MarkLifecycleFlag(handle, data.Instance, started: true);
         }
-        catch (TargetInvocationException ex) { Log.Error($"Exception in OnStart(): {ex.InnerException}"); }
-        catch (Exception ex) { Log.Error($"Exception in OnStart(): {ex}"); }
+        catch (TargetInvocationException ex) { ScriptExceptionLog.Report("OnStart()", ex.InnerException); }
+        catch (Exception ex) { ScriptExceptionLog.Report("OnStart()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -780,8 +853,8 @@ internal static class ScriptInstanceManager
             data.Instance.OnAwake();
             MarkLifecycleFlag(handle, data.Instance, started: false);
         }
-        catch (TargetInvocationException ex) { Log.Error($"Exception in OnAwake(): {ex.InnerException}"); }
-        catch (Exception ex) { Log.Error($"Exception in OnAwake(): {ex}"); }
+        catch (TargetInvocationException ex) { ScriptExceptionLog.Report("OnAwake()", ex.InnerException); }
+        catch (Exception ex) { ScriptExceptionLog.Report("OnAwake()", ex); }
     }
 
     // Re-read rather than write back the pre-callback copy: OnStart/OnAwake may destroy the entity or remove
@@ -801,10 +874,17 @@ internal static class ScriptInstanceManager
         try
         {
             data.Instance.OnUpdate();
-            data.UpdateMethod?.Invoke(data.Instance, null);
+            data.UpdateAction?.Invoke();
         }
-        catch (TargetInvocationException ex) { Log.Error($"Exception in OnUpdate(): {ex.InnerException}"); }
-        catch (Exception ex) { Log.Error($"Exception in OnUpdate(): {ex}"); }
+        catch (TargetInvocationException ex) { ScriptExceptionLog.Report("OnUpdate()", ex.InnerException); }
+        catch (Exception ex) { ScriptExceptionLog.Report("OnUpdate()", ex); }
+    }
+
+    // Bits of ScriptCallbacks the instance's class overrides; native skips the per-frame calls it doesn't.
+    [UnmanagedCallersOnly]
+    public static int GetScriptCallbackMask(int handle)
+    {
+        return s_Instances.TryGetValue(handle, out var data) ? data.CallbackMask : ScriptCallbacks.All;
     }
 
     [UnmanagedCallersOnly]
@@ -815,8 +895,8 @@ internal static class ScriptInstanceManager
         {
             data.Instance.OnFixedUpdate();
         }
-        catch (TargetInvocationException ex) { Log.Error($"Exception in OnFixedUpdate(): {ex.InnerException}"); }
-        catch (Exception ex) { Log.Error($"Exception in OnFixedUpdate(): {ex}"); }
+        catch (TargetInvocationException ex) { ScriptExceptionLog.Report("OnFixedUpdate()", ex.InnerException); }
+        catch (Exception ex) { ScriptExceptionLog.Report("OnFixedUpdate()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -828,8 +908,8 @@ internal static class ScriptInstanceManager
         try { data.Instance._CancelPendingCoroutines(); }
         catch (Exception ex) { Log.Error($"Exception cancelling coroutines: {ex}"); }
         try { data.Instance.OnDestroy(); }
-        catch (TargetInvocationException ex) { Log.Error($"Exception in OnDestroy(): {ex.InnerException}"); }
-        catch (Exception ex) { Log.Error($"Exception in OnDestroy(): {ex}"); }
+        catch (TargetInvocationException ex) { ScriptExceptionLog.Report("OnDestroy()", ex.InnerException); }
+        catch (Exception ex) { ScriptExceptionLog.Report("OnDestroy()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -837,7 +917,7 @@ internal static class ScriptInstanceManager
     {
         if (!s_Instances.TryGetValue(handle, out var data)) return;
         try { data.Instance.OnEnable(); }
-        catch (Exception ex) { Log.Error($"Exception in OnEnable(): {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("OnEnable()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -845,7 +925,7 @@ internal static class ScriptInstanceManager
     {
         if (!s_Instances.TryGetValue(handle, out var data)) return;
         try { data.Instance.OnDisable(); }
-        catch (Exception ex) { Log.Error($"Exception in OnDisable(): {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("OnDisable()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -893,7 +973,7 @@ internal static class ScriptInstanceManager
                 CollisionPhase.Stay => nameof(EntityScript.OnTriggerStay2D),
                 _ => nameof(EntityScript.OnTriggerExit2D)
             };
-            Log.Error($"Exception in {callbackName}: {ex}");
+            ScriptExceptionLog.Report(callbackName, ex);
         }
     }
 
@@ -931,7 +1011,7 @@ internal static class ScriptInstanceManager
                 (CollisionPhase.Stay, true) => nameof(EntityScript.OnTriggerStay3D),
                 _ => nameof(EntityScript.OnTriggerExit3D)
             };
-            Log.Error($"Exception in {callbackName}: {ex}");
+            ScriptExceptionLog.Report(callbackName, ex);
         }
     }
 
@@ -957,7 +1037,7 @@ internal static class ScriptInstanceManager
                 CollisionPhase.Stay => nameof(EntityScript.OnCollisionStay2D),
                 _ => nameof(EntityScript.OnCollisionExit2D)
             };
-            Log.Error($"Exception in {callbackName}: {ex}");
+            ScriptExceptionLog.Report(callbackName, ex);
         }
     }
 
@@ -1019,7 +1099,7 @@ internal static class ScriptInstanceManager
     {
         if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
         try { system.OnStart(); }
-        catch (Exception ex) { Log.Error($"Exception in SceneSystem.OnStart(): {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("SceneSystem.OnStart()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -1028,8 +1108,8 @@ internal static class ScriptInstanceManager
         if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
         if (!s_SceneSystemAwoken.TryAdd(handle, 0)) return;
         try { system.OnAwake(); }
-        catch (TargetInvocationException ex) { Log.Error($"Exception in SceneSystem.OnAwake(): {ex.InnerException}"); }
-        catch (Exception ex) { Log.Error($"Exception in SceneSystem.OnAwake(): {ex}"); }
+        catch (TargetInvocationException ex) { ScriptExceptionLog.Report("SceneSystem.OnAwake()", ex.InnerException); }
+        catch (Exception ex) { ScriptExceptionLog.Report("SceneSystem.OnAwake()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -1037,7 +1117,7 @@ internal static class ScriptInstanceManager
     {
         if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
         try { system.OnUpdate(); }
-        catch (Exception ex) { Log.Error($"Exception in SceneSystem.OnUpdate(): {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("SceneSystem.OnUpdate()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -1045,8 +1125,8 @@ internal static class ScriptInstanceManager
     {
         if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
         try { system.OnFixedUpdate(); }
-        catch (TargetInvocationException ex) { Log.Error($"Exception in SceneSystem.OnFixedUpdate(): {ex.InnerException}"); }
-        catch (Exception ex) { Log.Error($"Exception in SceneSystem.OnFixedUpdate(): {ex}"); }
+        catch (TargetInvocationException ex) { ScriptExceptionLog.Report("SceneSystem.OnFixedUpdate()", ex.InnerException); }
+        catch (Exception ex) { ScriptExceptionLog.Report("SceneSystem.OnFixedUpdate()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -1054,7 +1134,7 @@ internal static class ScriptInstanceManager
     {
         if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
         try { system.OnEnable(); }
-        catch (Exception ex) { Log.Error($"Exception in SceneSystem.OnEnable(): {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("SceneSystem.OnEnable()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -1062,7 +1142,7 @@ internal static class ScriptInstanceManager
     {
         if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
         try { system.OnDisable(); }
-        catch (Exception ex) { Log.Error($"Exception in SceneSystem.OnDisable(): {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("SceneSystem.OnDisable()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -1070,7 +1150,7 @@ internal static class ScriptInstanceManager
     {
         if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
         try { system.OnDestroy(); }
-        catch (Exception ex) { Log.Error($"Exception in SceneSystem.OnDestroy(): {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("SceneSystem.OnDestroy()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -1117,7 +1197,7 @@ internal static class ScriptInstanceManager
     {
         if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
         try { system.OnInitialize(); }
-        catch (Exception ex) { Log.Error($"Exception in GlobalSystem.OnInitialize(): {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("GlobalSystem.OnInitialize()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -1125,7 +1205,7 @@ internal static class ScriptInstanceManager
     {
         if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
         try { system.OnUpdate(); }
-        catch (Exception ex) { Log.Error($"Exception in GlobalSystem.OnUpdate(): {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("GlobalSystem.OnUpdate()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -1133,8 +1213,8 @@ internal static class ScriptInstanceManager
     {
         if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
         try { system.OnFixedUpdate(); }
-        catch (TargetInvocationException ex) { Log.Error($"Exception in GlobalSystem.OnFixedUpdate(): {ex.InnerException}"); }
-        catch (Exception ex) { Log.Error($"Exception in GlobalSystem.OnFixedUpdate(): {ex}"); }
+        catch (TargetInvocationException ex) { ScriptExceptionLog.Report("GlobalSystem.OnFixedUpdate()", ex.InnerException); }
+        catch (Exception ex) { ScriptExceptionLog.Report("GlobalSystem.OnFixedUpdate()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -1142,7 +1222,7 @@ internal static class ScriptInstanceManager
     {
         if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
         try { system.OnEnable(); }
-        catch (Exception ex) { Log.Error($"Exception in GlobalSystem.OnEnable(): {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("GlobalSystem.OnEnable()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -1150,7 +1230,7 @@ internal static class ScriptInstanceManager
     {
         if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
         try { system.OnDisable(); }
-        catch (Exception ex) { Log.Error($"Exception in GlobalSystem.OnDisable(): {ex}"); }
+        catch (Exception ex) { ScriptExceptionLog.Report("GlobalSystem.OnDisable()", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -1318,10 +1398,12 @@ internal static class ScriptInstanceManager
                 s_ClassCache.Clear();
                 UnloadCurrentUserAssemblyContext();
             }
+            WarnIfUnloadedContextLeaked();
 
             s_ClassCache.Clear();
 
             string fullPath = System.IO.Path.GetFullPath(path);
+            s_UserAssemblyDirectory = System.IO.Path.GetDirectoryName(fullPath);
             if (!ScriptAssemblyLoadContext.Collectible)
             {
                 // No hot reload: the default context binds references natively through the TPA list. A managed
@@ -1332,6 +1414,9 @@ internal static class ScriptInstanceManager
                 s_UserAssembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(fullPath);
                 Log.Info($"User assembly loaded: {path}");
                 DynamicComponentRegistrar.RegisterAll(s_UserAssembly);
+                // A list read before the first load (no game assembly yet) is empty.
+                EditorWindowRegistry.Clear();
+                DevCommandRegistry.Clear();
                 return 1;
             }
 
@@ -1364,6 +1449,8 @@ internal static class ScriptInstanceManager
             Log.Info($"User assembly loaded: {path}");
 
             DynamicComponentRegistrar.RegisterAll(s_UserAssembly);
+            EditorWindowRegistry.Clear();
+            DevCommandRegistry.Clear();
             return 1;
         }
         catch (Exception ex)
@@ -1406,6 +1493,7 @@ internal static class ScriptInstanceManager
     {
         try
         {
+            AndroidBridge.DispatchMessages();
             CoroutineScheduler.PumpUpdate(deltaTime);
         }
         catch (Exception ex)
@@ -1770,6 +1858,10 @@ internal static class ScriptInstanceManager
         if (t == typeof(Audio)) return "audio";
         if (t == typeof(TextureRef)) return "texture";
         if (t == typeof(AudioRef)) return "audio";
+        if (t == typeof(Material)) return "material";
+        if (t == typeof(Mesh)) return "mesh";
+        if (t == typeof(AnimationClip)) return "animationclip";
+        if (t == typeof(AnimatorController)) return "animatorcontroller";
         if(t == typeof(Vector2)) return "vector2";
         if (t == typeof(Vector2Int)) return "vector2Int";
         if (t == typeof(Vector3)) return "vector3";
@@ -1870,6 +1962,10 @@ internal static class ScriptInstanceManager
             AudioRef assetRef = (AudioRef)val;
             return assetRef.UUID != 0 ? assetRef.UUID.ToString(ic) : "";
         }
+        if (t == typeof(Material)) return ((Material)val).UUID.ToString(ic);
+        if (t == typeof(Mesh)) return ((Mesh)val).UUID.ToString(ic);
+        if (t == typeof(AnimationClip)) return ((AnimationClip)val).UUID.ToString(ic);
+        if (t == typeof(AnimatorController)) return ((AnimatorController)val).UUID.ToString(ic);
         if(t == typeof(Vector2))
         {
             var v = (Vector2)val;
@@ -2084,6 +2180,10 @@ internal static class ScriptInstanceManager
             if (t == typeof(Audio)) return Audio.FromAssetUUID(ParseAssetUUID(s));
             if (t == typeof(TextureRef)) return new TextureRef(ParseAssetUUID(s));
             if (t == typeof(AudioRef)) return new AudioRef(ParseAssetUUID(s));
+            if (t == typeof(Material)) return Material.FromAssetUUID(ParseAssetUUID(s));
+            if (t == typeof(Mesh)) return Mesh.FromAssetUUID(ParseAssetUUID(s));
+            if (t == typeof(AnimationClip)) return AnimationClip.FromAssetUUID(ParseAssetUUID(s));
+            if (t == typeof(AnimatorController)) return AnimatorController.FromAssetUUID(ParseAssetUUID(s));
             if (t.IsSubclassOf(typeof(DataAsset))) return DataAssetRuntime.LoadByGuid(ParseAssetUUID(s), t);
             if (t.IsSubclassOf(typeof(Component)))
             {
@@ -2209,7 +2309,7 @@ internal static class ScriptInstanceManager
         return obj;
     }
 
-    private static string EscapeJson(string s)
+    internal static string EscapeJson(string s)
     {
         if (s.Length == 0) return s;
 
@@ -2429,6 +2529,12 @@ internal static class ScriptInstanceManager
           .Append("\",\"enabledIfValue\":\"").Append(EscapeJson(enabledIfValue))
           .Append("\",\"enabledIfAny\":").Append(enabledIfAny ? "true" : "false");
 
+        if (s_CurrentStructLayout != null && s_CurrentStructLayout.TryGetValue(namePrefix + member.Name, out var slot))
+        {
+            sb.Append(",\"offset\":").Append(slot.Offset.ToString(ic))
+              .Append(",\"size\":").Append(slot.Size.ToString(ic));
+        }
+
         if (member.ValueType.IsEnum)
         {
             bool isFlags = member.ValueType.GetCustomAttribute<FlagsAttribute>() != null;
@@ -2518,6 +2624,9 @@ internal static class ScriptInstanceManager
     // becomes a single field record; a plain user struct/class is flattened
     // into dotted child records (P -> "P.X", "P.Y") so the editor renders it
     // as a nested, editable group. Genuinely unsupported types are skipped.
+    // Set while GetClassFieldDefs describes an IComponent struct; AppendMemberJson adds each field's byte slot.
+    [ThreadStatic] private static Dictionary<string, StructFieldLayout.Slot>? s_CurrentStructLayout;
+
     private static void AppendEditorMember(System.Text.StringBuilder sb, in EditorMember member,
         object? value, string namePrefix, int depth, ref bool first)
     {
@@ -2635,17 +2744,28 @@ internal static class ScriptInstanceManager
             sb.Append('[');
             bool first = true;
 
-            foreach (var member in CollectEditorMembers(classInfo.Type))
+            // IComponent structs live as raw bytes in native storage; the offsets let the inspector edit them in place.
+            s_CurrentStructLayout = classInfo.Type.IsValueType && typeof(Index.Components.IComponent).IsAssignableFrom(classInfo.Type)
+                ? StructFieldLayout.Compute(classInfo.Type)
+                : null;
+            try
             {
-                if (member.DeclaringType == typeof(EntityScript)) continue;
-                if (member.DeclaringType == typeof(Component)) continue;
-                if (member.DeclaringType == typeof(SceneSystem)) continue;
-                if (member.DeclaringType == typeof(GlobalSystem)) continue;
-                if (member.DeclaringType == typeof(DataAsset)) continue;
-                if (!IsMemberEditorVisible(member)) continue;
+                foreach (var member in CollectEditorMembers(classInfo.Type))
+                {
+                    if (member.DeclaringType == typeof(EntityScript)) continue;
+                    if (member.DeclaringType == typeof(Component)) continue;
+                    if (member.DeclaringType == typeof(SceneSystem)) continue;
+                    if (member.DeclaringType == typeof(GlobalSystem)) continue;
+                    if (member.DeclaringType == typeof(DataAsset)) continue;
+                    if (!IsMemberEditorVisible(member)) continue;
 
-                object? val = TryGetMemberValue(member, tempInstance);
-                AppendEditorMember(sb, member, val, "", 0, ref first);
+                    object? val = TryGetMemberValue(member, tempInstance);
+                    AppendEditorMember(sb, member, val, "", 0, ref first);
+                }
+            }
+            finally
+            {
+                s_CurrentStructLayout = null;
             }
 
             sb.Append(']');
@@ -2908,7 +3028,7 @@ internal static class ScriptInstanceManager
         }
         catch (TargetInvocationException ex)
         {
-            Log.Error($"Exception in {info.Type.Name}.{methodName}(): {ex.InnerException}");
+            ScriptExceptionLog.Report($"{info.Type.Name}.{methodName}()", ex.InnerException);
             return 1;  // method exists; the user's body threw — don't log "missing".
         }
         catch (Exception ex)
@@ -2919,7 +3039,7 @@ internal static class ScriptInstanceManager
     }
 
     // Can't reuse NullTerminated() — it's a singleton pinned buffer; concurrent reflection calls from the same frame would clobber each other.
-    private static unsafe int WriteUtf8(string s, byte* outBuffer, int capacity)
+    internal static unsafe int WriteUtf8(string s, byte* outBuffer, int capacity)
     {
         int byteCount = System.Text.Encoding.UTF8.GetByteCount(s);
         if (outBuffer == null || capacity <= 0) return byteCount + 1;
@@ -2969,6 +3089,8 @@ internal static class ScriptInstanceManager
             StartMethod = isScript ? type.GetMethod("Start", BindingFlags.Public | BindingFlags.Instance, Type.EmptyTypes) : null,
             UpdateMethod = isScript ? type.GetMethod("Update", BindingFlags.Public | BindingFlags.Instance, Type.EmptyTypes) : null,
         };
+        if (isScript)
+            info.CallbackMask = ScriptCallbacks.ComputeMask(type, info.UpdateMethod != null);
 
         s_ClassCache[className] = info;
         return info;
@@ -2993,5 +3115,43 @@ internal static class ScriptInstanceManager
         }
 
         return null;
+    }
+}
+
+/// <summary>Per-frame EntityScript callbacks native may skip; mirrors ScriptCallback in ScriptInstance.hpp.</summary>
+internal static class ScriptCallbacks
+{
+    internal const int Update = 1 << 0;
+    internal const int FixedUpdate = 1 << 1;
+    internal const int CollisionStay2D = 1 << 2;
+    internal const int TriggerStay2D = 1 << 3;
+    internal const int CollisionStay3D = 1 << 4;
+    internal const int TriggerStay3D = 1 << 5;
+    internal const int All = -1;
+
+    internal static int ComputeMask(Type type, bool hasUpdateMethod)
+    {
+        try
+        {
+            int mask = 0;
+            if (hasUpdateMethod || Overrides(type, nameof(EntityScript.OnUpdate), Type.EmptyTypes)) mask |= Update;
+            if (Overrides(type, nameof(EntityScript.OnFixedUpdate), Type.EmptyTypes)) mask |= FixedUpdate;
+            if (Overrides(type, nameof(EntityScript.OnCollisionStay2D), new[] { typeof(Collision2D) })) mask |= CollisionStay2D;
+            if (Overrides(type, nameof(EntityScript.OnTriggerStay2D), new[] { typeof(Collision2D) })) mask |= TriggerStay2D;
+            if (Overrides(type, nameof(EntityScript.OnCollisionStay3D), new[] { typeof(Collision3D) })) mask |= CollisionStay3D;
+            if (Overrides(type, nameof(EntityScript.OnTriggerStay3D), new[] { typeof(Collision3D) })) mask |= TriggerStay3D;
+            return mask;
+        }
+        catch
+        {
+            // Unusual metadata: keep every callback rather than risk skipping one.
+            return All;
+        }
+    }
+
+    private static bool Overrides(Type type, string name, Type[] parameters)
+    {
+        MethodInfo? method = type.GetMethod(name, BindingFlags.Public | BindingFlags.Instance, null, parameters, null);
+        return method == null || method.DeclaringType != typeof(EntityScript);
     }
 }

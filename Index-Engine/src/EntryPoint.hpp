@@ -10,10 +10,12 @@
 
 #include "Core/Base.hpp"
 #include "Core/Application.hpp"
+#include "Core/EngineAbi.hpp"
 #include "Localization/Localization.hpp"
 
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -109,6 +111,16 @@ namespace Index {
 	}
 #endif
 
+	// Logged, not fatal: a mismatch after a header-only engine change can still run.
+	inline void CheckEngineAbi(int argc, char** argv) {
+		std::string name = "This executable";
+		if (argc > 0 && argv && argv[0]) name = std::filesystem::path(argv[0]).filename().string();
+		const std::string message = DescribeEngineAbiMismatch(name);
+		if (message.empty()) return;
+		IDX_CORE_ERROR_TAG("Engine", "{}", message);
+		std::fprintf(stderr, "Index: %s\n", message.c_str());
+	}
+
 	inline int Main(int argc, char** argv) {
 		struct CoreShutdownGuard {
 			bool Initialized = false;
@@ -122,6 +134,7 @@ namespace Index {
 		try {
 			InitializeCore();
 			shutdownGuard.Initialized = true;
+			CheckEngineAbi(argc, argv);
 
 			Localization::Initialize();
 
@@ -180,6 +193,7 @@ Index::Application* IndexRuntimeBegin(int argc, char** argv)
 {
 	try {
 		Index::InitializeCore();
+		Index::CheckEngineAbi(argc, argv);
 		Index::Localization::Initialize();
 		Index::Application::SetCommandLineArgs(argc, argv);
 		g_SteppedApplication = Index::CreateApplication();
@@ -216,7 +230,7 @@ int IndexRuntimeEnd()
 
 #elif defined(IDX_WINDOWED_APP) && defined(IDX_PLATFORM_WINDOWS)
 
-int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmdshow)
+int APIENTRY WinMain(HINSTANCE, HINSTANCE, PSTR, int)
 {
 	return Index::Main(__argc, __argv);
 }

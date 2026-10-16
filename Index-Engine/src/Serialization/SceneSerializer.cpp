@@ -1461,6 +1461,21 @@ namespace Index {
 				if (!image.SpriteName.empty()) {
 					imageValue.AddMember("spriteName", Value(image.SpriteName));
 				}
+				if (image.Material != 0) {
+					imageValue.AddMember("materialAsset", Value(std::to_string(image.Material)));
+				}
+				// Only sliced/tiled images write these keys, so Simple images keep their old file shape.
+				if (image.Type != ImageType::Simple) {
+					imageValue.AddMember("imageType", Value(static_cast<int>(image.Type)));
+					// [left, bottom, right, top] in texture pixels.
+					Value border = Value::MakeArray();
+					border.Append(Value(image.BorderLeft));
+					border.Append(Value(image.BorderBottom));
+					border.Append(Value(image.BorderRight));
+					border.Append(Value(image.BorderTop));
+					imageValue.AddMember("border", std::move(border));
+					imageValue.AddMember("borderScale", Value(image.BorderScale));
+				}
 
 				uint64_t textureAssetId = static_cast<uint64_t>(image.TextureAssetId);
 				if (textureAssetId == 0) {

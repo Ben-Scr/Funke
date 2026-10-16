@@ -134,6 +134,113 @@ namespace Index {
 			});
 			return candidates;
 		}
+
+		struct JetBrainsProduct {
+			ExternalEditorType Type;
+			const char* FallbackName;
+			const char* Executable;
+			std::vector<std::string> FolderPrefixes;   // Program Files\JetBrains\<prefix>*, %LOCALAPPDATA%\Programs\<prefix>*
+			std::vector<std::string> ToolboxApps;      // %LOCALAPPDATA%\JetBrains\Toolbox\apps\<app>
+			std::vector<std::wstring> RegistryKeys;    // Software\JetBrains\<key>\<build> = install dir
+		};
+
+		struct JetBrainsCandidate {
+			std::string DisplayName;
+			std::string ExecutablePath;
+			std::vector<int> Version;
+		};
+
+		bool StartsWithInsensitive(const std::string& text, const std::string& prefix) {
+			return text.size() >= prefix.size()
+				&& _strnicmp(text.c_str(), prefix.c_str(), prefix.size()) == 0;
+		}
+
+		void AddJetBrainsInstall(std::vector<JetBrainsCandidate>& out, const JetBrainsProduct& product,
+			const std::filesystem::path& installRoot)
+		{
+			std::error_code error;
+			const std::filesystem::path executable = installRoot / "bin" / product.Executable;
+			if (!std::filesystem::is_regular_file(executable, error) || error) return;
+			const std::string executablePath = Path::ToUtf8(executable);
+			if (std::any_of(out.begin(), out.end(), [&](const auto& c) { return SamePath(c.ExecutablePath, executablePath); })) return;
+
+			std::string name = product.FallbackName;
+			std::string version;
+			Json::Value info;
+			const std::filesystem::path productInfo = installRoot / "product-info.json";
+			if (std::filesystem::is_regular_file(productInfo, error) && Json::TryParse(File::ReadAllText(Path::ToUtf8(productInfo)), info)
+				&& info.IsObject()) {
+				if (const Json::Value* v = info.FindMember("name")) name = v->AsStringOr(name);
+				if (const Json::Value* v = info.FindMember("version")) version = v->AsStringOr();
+			}
+			out.push_back({ version.empty() ? name : name + " " + version, executablePath, ParseVersion(version) });
+		}
+
+		std::string LocalAppData() {
+			std::string value;
+			char* env = nullptr;
+			size_t len = 0;
+			if (_dupenv_s(&env, &len, "LOCALAPPDATA") == 0 && env) {
+				value = env;
+				free(env);
+			}
+			return value;
+		}
+
+		// Rider and IntelliJ IDEA: standalone installer, Toolbox 1.x/2.x and the registry entries the installer writes.
+		std::vector<JetBrainsCandidate> DetectJetBrainsInstallations(const JetBrainsProduct& product) {
+			std::vector<JetBrainsCandidate> out;
+			std::error_code error;
+			auto scanPrefixed = [&](const std::filesystem::path& parent) {
+				if (!std::filesystem::is_directory(parent, error)) return;
+				for (const auto& entry : std::filesystem::directory_iterator(parent, error)) {
+					if (!entry.is_directory(error)) continue;
+					const std::string folder = Path::ToUtf8(entry.path().filename());
+					for (const std::string& prefix : product.FolderPrefixes) {
+						if (StartsWithInsensitive(folder, prefix)) {
+							AddJetBrainsInstall(out, product, entry.path());
+							break;
+						}
+					}
+				}
+			};
+			scanPrefixed("C:/Program Files/JetBrains");
+			const std::string localAppData = LocalAppData();
+			if (!localAppData.empty()) {
+				scanPrefixed(Path::FromUtf8(localAppData) / "Programs");
+				// Toolbox 1.x: apps\<app>\ch-0\<build>\bin\<exe> (older layouts drop the channel folder).
+				for (const std::string& app : product.ToolboxApps) {
+					const std::filesystem::path appDir = Path::FromUtf8(localAppData) / "JetBrains" / "Toolbox" / "apps" / app;
+					if (!std::filesystem::is_directory(appDir, error)) continue;
+					for (auto it = std::filesystem::recursive_directory_iterator(appDir, error);
+						it != std::filesystem::recursive_directory_iterator(); it.increment(error)) {
+						if (error) break;
+						if (it.depth() >= 2) it.disable_recursion_pending();
+						if (it->is_directory(error)) AddJetBrainsInstall(out, product, it->path());
+					}
+				}
+			}
+			for (HKEY hive : { HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER }) {
+				for (const std::wstring& key : product.RegistryKeys) {
+					HKEY productKey = nullptr;
+					const std::wstring keyPath = L"Software\\JetBrains\\" + key;
+					if (RegOpenKeyExW(hive, keyPath.c_str(), 0, KEY_READ | KEY_WOW64_64KEY, &productKey) != ERROR_SUCCESS) continue;
+					wchar_t build[256];
+					for (DWORD index = 0;; ++index) {
+						DWORD buildLength = static_cast<DWORD>(std::size(build));
+						if (RegEnumKeyExW(productKey, index, build, &buildLength, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) break;
+						wchar_t installDir[MAX_PATH * 2]{};
+						DWORD bytes = sizeof(installDir);
+						if (RegGetValueW(productKey, build, nullptr, RRF_RT_REG_SZ, nullptr, installDir, &bytes) == ERROR_SUCCESS) {
+							AddJetBrainsInstall(out, product, std::filesystem::path(installDir));
+						}
+					}
+					RegCloseKey(productKey);
+				}
+			}
+			std::stable_sort(out.begin(), out.end(), [](const auto& lhs, const auto& rhs) { return lhs.Version > rhs.Version; });
+			return out;
+		}
 	}
 
 	static void TrackLaunchThread(std::thread t) {
@@ -281,33 +388,20 @@ namespace Index {
 			TryDetect(ExternalEditorType::VSCode, "Visual Studio Code", vscodePaths);
 		}
 
-		// JetBrains Rider
+		// JetBrains: every installed Rider / IntelliJ IDEA version is listed on its own.
 		{
-			std::string localAppData;
-			char* env = nullptr;
-			size_t len = 0;
-			if (_dupenv_s(&env, &len, "LOCALAPPDATA") == 0 && env) {
-				localAppData = env;
-				free(env);
-			}
-
-			std::vector<std::string> riderPaths;
-			// Toolbox installations
-			auto toolboxDir = std::filesystem::path(localAppData) / "JetBrains" / "Toolbox" / "apps" / "Rider";
-			if (std::filesystem::exists(toolboxDir)) {
-				for (const auto& entry : std::filesystem::directory_iterator(toolboxDir)) {
-					if (!entry.is_directory()) continue;
-					auto bin = entry.path() / "bin" / "rider64.exe";
-					if (std::filesystem::exists(bin))
-						riderPaths.push_back(bin.string());
+			const JetBrainsProduct products[] = {
+				{ ExternalEditorType::Rider, "JetBrains Rider", "rider64.exe",
+					{ "JetBrains Rider", "Rider" }, { "Rider" }, { L"JetBrains Rider", L"Rider" } },
+				{ ExternalEditorType::IntelliJ, "IntelliJ IDEA", "idea64.exe",
+					{ "IntelliJ IDEA" }, { "IDEA-U", "IDEA-C", "IntelliJ IDEA Ultimate", "IntelliJ IDEA Community Edition" },
+					{ L"IntelliJ IDEA", L"IntelliJ IDEA Community Edition" } },
+			};
+			for (const JetBrainsProduct& product : products) {
+				for (JetBrainsCandidate& candidate : DetectJetBrainsInstallations(product)) {
+					s_Editors.push_back({ product.Type, std::move(candidate.DisplayName), std::move(candidate.ExecutablePath), true });
 				}
 			}
-
-			// Standard install
-			riderPaths.push_back("C:\\Program Files\\JetBrains\\JetBrains Rider\\bin\\rider64.exe");
-
-			if (!riderPaths.empty())
-				TryDetect(ExternalEditorType::Rider, "JetBrains Rider", riderPaths);
 		}
 #else
 		{
@@ -345,6 +439,22 @@ namespace Index {
 			riderPaths.push_back("/opt/rider/bin/rider.sh");
 #endif
 			TryDetect(ExternalEditorType::Rider, "JetBrains Rider", riderPaths);
+		}
+		{
+			std::vector<std::string> ideaPaths;
+			if (std::string onPath = FindOnPath("idea"); !onPath.empty()) ideaPaths.push_back(std::move(onPath));
+#if defined(IDX_PLATFORM_MACOS)
+			ideaPaths.push_back("/Applications/IntelliJ IDEA.app/Contents/MacOS/idea");
+			ideaPaths.push_back("/Applications/IntelliJ IDEA CE.app/Contents/MacOS/idea");
+			ideaPaths.push_back(HomeRelative("Applications/IntelliJ IDEA.app/Contents/MacOS/idea"));
+			ideaPaths.push_back(HomeRelative("Library/Application Support/JetBrains/Toolbox/scripts/idea"));
+#else
+			ideaPaths.push_back(HomeRelative(".local/share/JetBrains/Toolbox/scripts/idea"));
+			ideaPaths.push_back("/snap/bin/intellij-idea-ultimate");
+			ideaPaths.push_back("/snap/bin/intellij-idea-community");
+			ideaPaths.push_back("/opt/idea/bin/idea.sh");
+#endif
+			TryDetect(ExternalEditorType::IntelliJ, "IntelliJ IDEA", ideaPaths);
 		}
 #endif
 
@@ -837,6 +947,17 @@ namespace Index {
 			break;
 		}
 
+		case ExternalEditorType::IntelliJ: {
+			// The project folder opens (or reuses) the project window; a running IDE takes the request over.
+			fullCmd = "\"" + editor.ExecutablePath + "\"";
+			if (!projectFolder.empty())
+				fullCmd += " \"" + projectFolder + "\"";
+			if (line > 0)
+				fullCmd += " --line " + std::to_string(line);
+			fullCmd += " \"" + absPath + "\"";
+			break;
+		}
+
 		default: {
 			fullCmd = "\"" + editor.ExecutablePath + "\" \"" + absPath + "\"";
 			break;
@@ -874,6 +995,14 @@ namespace Index {
 			break;
 		case ExternalEditorType::Rider:
 			if (!slnPath.empty()) command.push_back(slnPath);
+			if (line > 0) {
+				command.push_back("--line");
+				command.push_back(std::to_string(line));
+			}
+			command.push_back(absPath);
+			break;
+		case ExternalEditorType::IntelliJ:
+			if (!projectFolder.empty()) command.push_back(projectFolder);
 			if (line > 0) {
 				command.push_back("--line");
 				command.push_back(std::to_string(line));

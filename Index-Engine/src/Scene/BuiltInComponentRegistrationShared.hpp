@@ -52,6 +52,9 @@ namespace Index::BuiltInComponentRegistrationInternal {
 	void Register3D(ComponentRegistry& registry);
 	void RegisterPhysics3D(ComponentRegistry& registry);
 	void RegisterParticles3D(ComponentRegistry& registry);
+	void RegisterAnimation(ComponentRegistry& registry);
+	void RegisterSkinnedMesh3D(ComponentRegistry& registry);
+	void RegisterLocalization(ComponentRegistry& registry);
 
 	// JSON codecs and reference-field helpers shared by the Rendering and both UI slices.
 	inline Json::Value UIColorToJson(const Color& c) {

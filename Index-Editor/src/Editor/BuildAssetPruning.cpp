@@ -56,6 +56,8 @@ namespace Index::BuildAssetPruning {
 				".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tga", ".psd", ".ico", ".webp",
 				".wav", ".mp3", ".ogg", ".opus", ".flac", ".mp4", ".webm", ".mov",
 				".ttf", ".otf", ".ttc", ".dll", ".exe", ".pdb", ".so", ".dylib", ".zip", ".cs",
+				// Binary glTF embeds its buffers; .bin holds a .gltf's geometry.
+				".glb", ".bin",
 			};
 			return k_Opaque.contains(ext);
 		}
@@ -212,7 +214,9 @@ namespace Index::BuildAssetPruning {
 			if (typeName == "Entity") return { ".prefab" };
 			if (typeName == "Font") return { ".ttf", ".otf" };
 			if (typeName == "Material") return { ".material" };
-			if (typeName == "Mesh") return { ".obj" };
+			if (typeName == "Mesh") return { ".obj", ".gltf", ".glb" };
+			if (typeName == "AnimationClip") return { ".anim" };
+			if (typeName == "AnimatorController") return { ".animctrl" };
 			return { ".dataasset" };
 		}
 
@@ -330,6 +334,8 @@ namespace Index::BuildAssetPruning {
 						return false;
 					}
 					ScanText(text);
+					// A .gltf names its buffers and images relative to itself.
+					if (ext == ".gltf") ScanRelativeUris(text, file.Key);
 				}
 				return true;
 			}
@@ -421,6 +427,19 @@ namespace Index::BuildAssetPruning {
 			}
 
 			// Loose data files (level JSON, CSV, ...) may name assets by GUID or quoted path.
+			void ScanRelativeUris(std::string_view text, std::string_view key) {
+				const size_t slash = key.find_last_of('/');
+				const std::string directory = slash == std::string_view::npos ? std::string{} : std::string(key.substr(0, slash + 1));
+				for (size_t i = text.find("\"uri\""); i != std::string_view::npos; i = text.find("\"uri\"", i + 5)) {
+					const size_t open = text.find('"', text.find(':', i + 5));
+					if (open == std::string_view::npos) break;
+					const size_t close = text.find('"', open + 1);
+					if (close == std::string_view::npos) break;
+					const std::string_view uri = text.substr(open + 1, close - open - 1);
+					if (!uri.starts_with("data:")) MatchReference(directory + std::string(uri), false);
+				}
+			}
+
 			void ScanText(std::string_view text) {
 				MatchGuidsIn(text);
 				for (size_t i = text.find('"'); i != std::string_view::npos; ) {
@@ -535,6 +554,8 @@ namespace Index::BuildAssetPruning {
 		}
 		for (const char* logo : { "icon.png", "index64.png" }) reach.KeepKey(builtIn + "textures/" + logo);
 		reach.KeepPrefix(builtIn + "localization/");
+		// The game's string tables: GameLocalization scans the folder, nothing references them by GUID or path.
+		reach.KeepPrefix("localization/");
 		reach.KeepWhere(&IsLicenseNotice);
 		reach.KeepPrefix(ToLower(std::string(k_StreamingAssetsFolder)) + "/");
 

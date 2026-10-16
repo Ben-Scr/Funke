@@ -211,6 +211,14 @@ namespace Index {
 			}
 		};
 
+		// `index` run inside a project has the project as working directory; its Packages/ are project packages.
+		if (!projectRootDir.empty()) {
+			std::error_code ec;
+			std::filesystem::path projectRoot = std::filesystem::weakly_canonical(projectRootDir, ec);
+			if (ec) projectRoot = std::filesystem::path(projectRootDir).lexically_normal();
+			if (projectRoot.has_parent_path() && projectRoot.filename().empty()) projectRoot = projectRoot.parent_path();
+			std::erase(engineRootCandidates, projectRoot);
+		}
 		for (const std::filesystem::path& engineRoot : engineRootCandidates) {
 			appendPackagesFromRoot(engineRoot, true);
 		}

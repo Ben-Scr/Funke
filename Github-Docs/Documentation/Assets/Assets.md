@@ -92,6 +92,16 @@ The same pattern is used across the engine: audio sources store an audio GUID, t
 Scripts use small **reference types** that wrap a GUID, so you can expose an asset slot in the Inspector and assign it by drag-and-drop:
 
 - `TextureRef`, `AudioRef`, `FontRef`, `SceneRef`, … — each holds an asset GUID and knows how to resolve it.
+- `Texture`, `Audio`, `Material` and `Mesh` fields get the same asset slot, filtered to that kind; lists of them (`List<Material>`, `Mesh[]`) work too, e.g. a skin catalog:
+
+```csharp
+public class SkinPicker : EntityScript
+{
+    public List<Material> Skins = new();      // drag .material files onto the list
+    public Mesh? Trophy;                      // an .obj mesh
+    public Entity CoinPrefab;                 // an Entity field also takes a prefab asset
+}
+```
 
 You can also load assets in code through the script `AssetManager`:
 
@@ -153,6 +163,10 @@ The **Asset Browser** is the editor panel where you work with assets directly. F
 - Rename, duplicate, delete, copy/paste, and open files in an external editor.
 - **Slice sprite sheets** — define multiple sprites inside one texture; the slices are stored in that texture's `.meta`.
 - Drop external files into the window to bring them into the project.
+
+### Native-size sprites and pivots
+
+By default a Sprite Renderer stretches its sprite over the entity's scale: scale (1, 1) is a 1×1 unit quad, whatever the texture size. Set the renderer's **Pixels Per Unit** above 0 to draw the sprite at its native size instead — slice width / Pixels Per Unit units wide (times the scale), like Unity's sprite import setting — placed on the slice's **pivot** from the `.meta` (`"pivot": [x, y]`, 0..1 from the bottom-left corner; a whole texture without a slice uses its centre). A tree with a pivot at its trunk then stands on the entity position, and frames of different sizes keep their anchor while an animation swaps them. **Flip X / Flip Y** mirror the sprite around that pivot. Scene keys: `pixelsPerUnit`, `flipX`, `flipY`; C#: `SpriteRenderer.PixelsPerUnit`, `FlipX`, `FlipY` (also on `NativeSpriteRenderer` for ECB and `QueryRef` code).
 
 See [Editor](../Editor/Editor.md) for how the Asset Browser fits with the other panels.
 

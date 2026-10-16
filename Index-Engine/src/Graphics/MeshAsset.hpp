@@ -6,21 +6,28 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 
 namespace Index {
+	struct SkinnedMeshData;
 
 	// Geometry of a mesh asset in its authored units, with its object-space bounds.
 	struct INDEX_API MeshAsset {
 		PrimitiveMeshData Data;
 		glm::vec3 BoundsMin{ 0.0f };
 		glm::vec3 BoundsMax{ 0.0f };
+		// Skeleton, bind pose and clips of an animated model (glTF with skins or node animation); null for static meshes.
+		std::shared_ptr<const SkinnedMeshData> Skin;
 		// Unique per load, so GPU buffers and physics shapes built from Data can tell a reload apart.
 		uint32_t Revision = 0;
 	};
 
 	inline constexpr const char* k_ObjMeshExtension = ".obj";
+
+	// .obj, .gltf, .glb (lower-case extension with dot).
+	INDEX_API bool IsMeshFileExtension(std::string_view extension);
 
 	// Wavefront OBJ: v/vt/vn/f, polygons fan-triangulated, negative indices, all objects and groups merged.
 	// Missing normals are generated smooth per position, missing UVs are 0; V is flipped to the engine's top-left origin.
@@ -42,6 +49,8 @@ namespace Index {
 		static const MeshAsset* Get(uint64_t guid);
 
 		static bool LoadFromFile(const std::string& path, PrimitiveMeshData& outMesh);
+		// Also fills MeshAsset::Skin for animated glTF models; bounds and revision are left to the caller.
+		static bool LoadAssetFromFile(const std::string& path, MeshAsset& outAsset);
 
 		static void Invalidate(uint64_t guid);
 		// Re-reads cached meshes whose file changed outside the engine; returns how many were reloaded.

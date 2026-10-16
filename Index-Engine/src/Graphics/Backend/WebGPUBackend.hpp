@@ -43,6 +43,9 @@ namespace Index::WebGPUBackend {
 	// commands first so earlier draws into the texture are included. Output: tight RGBA8, top row first.
 	bool ReadTextureRGBA8(const wgpu::Texture& texture, wgpu::TextureFormat format,
 		uint32_t width, uint32_t height, std::vector<uint8_t>& outRgba);
+	// The frame about to be presented. False before anything was drawn to the swap chain this frame,
+	// or when the surface doesn't allow copies (then it was configured without CopySrc).
+	bool ReadSwapChainRGBA8(uint32_t& outWidth, uint32_t& outHeight, std::vector<uint8_t>& outRgba);
 
 	// ── Texture2D pool (defined in Graphics/Texture2D_WebGPU.cpp) ────────────
 
@@ -132,6 +135,10 @@ namespace Index::WebGPUBackend {
 	// MUST be called between sequences that share a WriteBuffer target: Dawn collapses multiple WriteBuffer calls
 	// to the same buffer into the last value, so the first pass would read stale data without an explicit flush.
 	void FlushCommands();
+
+	// Bumps on every frame-encoder submit. Lets a renderer sub-allocate one buffer across several passes:
+	// ranges written since the last submit are still pending, so it must not overwrite them until this changes.
+	uint64_t GetFrameSubmitSerial();
 
 	// Hosts that cannot block on WaitAny (the browser) request the adapter and device asynchronously
 	// before the engine starts and hand them over; RenderApi::Init then skips its own requests.

@@ -111,6 +111,25 @@ namespace Index {
 		return std::find(allowed.begin(), allowed.end(), backend) != allowed.end();
 	}
 
+	void IndexBuildProfile::ApplyTo(IndexProject& project) const {
+		if (Configuration) project.ActiveBuildProfile = *Configuration;
+		for (const std::string& define : Defines) {
+			if (define.empty()) continue;
+			if (std::find(project.CustomDefines.begin(), project.CustomDefines.end(), define) == project.CustomDefines.end()) {
+				project.CustomDefines.push_back(define);
+			}
+		}
+		if (ShowRuntimeStats) project.ShowRuntimeStats = ShowRuntimeStats;
+		if (ShowRuntimeLogs) project.ShowRuntimeLogs = ShowRuntimeLogs;
+		if (DevConsole) project.DevConsole = DevConsole;
+		if (IsolatedPrefs) project.PrefsProfile = GetPrefsProfileName();
+	}
+
+	std::string IndexBuildProfile::GetPrefsProfileName() const {
+		std::string name = IndexProject::SanitizePrefsProfileName(Name);
+		return name.empty() ? std::string("Test") : name;
+	}
+
 	bool IndexBuildProfile::Save(const std::string& filePath) const {
 		Json::Value root = Json::Value::MakeObject();
 		root.AddMember("name", Name);
@@ -121,6 +140,20 @@ namespace Index {
 			for (const auto& [key, value] : PlatformOptions) options.AddMember(key, value);
 			root.AddMember("platformOptions", std::move(options));
 		}
+		if (Configuration) {
+			root.AddMember("configuration", std::string(IndexProject::BuildProfileToString(*Configuration)));
+		}
+		if (!Defines.empty()) {
+			Json::Value defines = Json::Value::MakeArray();
+			for (const std::string& define : Defines) {
+				if (!define.empty()) defines.Append(Json::Value(define));
+			}
+			root.AddMember("defines", std::move(defines));
+		}
+		if (ShowRuntimeStats) root.AddMember("showRuntimeStats", *ShowRuntimeStats);
+		if (ShowRuntimeLogs) root.AddMember("showRuntimeLogs", *ShowRuntimeLogs);
+		if (DevConsole) root.AddMember("devConsole", *DevConsole);
+		if (IsolatedPrefs) root.AddMember("isolatedPrefs", true);
 
 		std::error_code ec;
 		const std::filesystem::path target(filePath);
@@ -161,6 +194,30 @@ namespace Index {
 			for (const auto& [key, value] : v->GetObject()) {
 				profile.PlatformOptions.emplace_back(key, value.IsString() ? value.AsStringOr() : Json::Stringify(value));
 			}
+		}
+		if (const Json::Value* v = root.FindMember("configuration"); v && v->IsString()) {
+			const std::string configuration = v->AsStringOr();
+			if (configuration == "Debug" || configuration == "Development" || configuration == "Release") {
+				profile.Configuration = IndexProject::BuildProfileFromString(configuration);
+			} else if (!configuration.empty()) {
+				IDX_WARN_TAG("Build", "Build profile '{}' has unknown configuration '{}' — using the project's.",
+					profile.Name, configuration);
+			}
+		}
+		if (const Json::Value* v = root.FindMember("defines"); v && v->IsArray()) {
+			for (const Json::Value& define : v->GetArray()) {
+				std::string name = define.AsStringOr();
+				if (!name.empty()) profile.Defines.push_back(std::move(name));
+			}
+		}
+		auto readOptionalBool = [&root](const char* key, std::optional<bool>& out) {
+			if (const Json::Value* v = root.FindMember(key); v && v->IsBool()) out = v->AsBoolOr(false);
+		};
+		readOptionalBool("showRuntimeStats", profile.ShowRuntimeStats);
+		readOptionalBool("showRuntimeLogs", profile.ShowRuntimeLogs);
+		readOptionalBool("devConsole", profile.DevConsole);
+		if (const Json::Value* v = root.FindMember("isolatedPrefs"); v && v->IsBool()) {
+			profile.IsolatedPrefs = v->AsBoolOr(false);
 		}
 
 		if (!IsBackendAllowed(profile.Platform, profile.RenderBackend)) {

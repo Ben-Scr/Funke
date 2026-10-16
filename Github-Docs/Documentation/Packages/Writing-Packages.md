@@ -159,13 +159,16 @@ extern "C" INDEX_PACKAGE_API int IndexPackage_OnLoad() {
         /* serialize       */ nullptr,
         /* deserialize     */ nullptr,
         /* category        */ ComponentCategory::Component,
-        /* properties      */ std::move(props));
+        /* properties      */ std::move(props),
+        /* icon            */ "particles");   // optional, see below
 
     return 0;
 }
 ```
 
 Once registered, your component appears in the editor's **Add Component** menu, draws its fields in the Inspector, and saves/loads with scenes automatically. The `props` list is what makes its fields editable — see the inspector documentation for the full set of field types (sliders, asset pickers, enums, references, and so on).
+
+The optional **icon** is the name of an editor icon from `IndexAssets/Textures/Editor/General` without size and extension (`audio_source`, `particles`, `light_point`, `collider_box_3d`, `rigidbody_2d`, `camera`, `grid`, ...). The Inspector shows it in the component's header. `Package::RegisterComponent` takes it as its last argument too, and `Package::SetComponentIcon<MyLootComponent>("particles")` sets it after registration. Without one the editor guesses an icon from the display name.
 
 You can also declare that two components can't coexist:
 
@@ -207,6 +210,33 @@ internal static class Native {
 ```
 
 The names and signatures **must match exactly** on both sides — there's no tool that checks this for you, and a mismatch shows up as a runtime error. If you need pointer/`Span` work, set `allow_unsafe = true` on the csharp layer.
+
+---
+
+## Android: Java code, Maven libraries and manifest entries
+
+A package can bring what an Android SDK needs: Java sources, AARs/JARs from Maven repositories and entries for the game's `AndroidManifest.xml`. Declare them in an `android` table of the manifest; the Android builder picks them up for every game that lists the package (no Gradle involved):
+
+```lua
+android = {
+    java     = { "Android/Java/**.java" },                    -- compiled into the APK (Java 8 syntax)
+    maven    = { "com.example:some-sdk:1.2.3" },              -- plus everything it depends on
+    manifest = "Android/AndroidManifest.xml",                 -- merged into the game's manifest
+    placeholders = { someAppKey = "default-value" },          -- ${someAppKey} in the manifest
+},
+```
+
+- **`maven`** coordinates are resolved from Google's Maven repository and Maven Central, transitive dependencies included (the newest requested version of a library wins, as in Gradle). Pin the result with a lock file and ship it with the package; builds then download exactly those files and check their SHA-256:
+
+  ```sh
+  python <engine>/platforms/Index.Platform.Android/Builder/android_maven.py lock Packages/MyGame.Billing
+  ```
+
+  This writes `Android/maven.lock.json`. Rerun it whenever the `maven` list changes; without a matching lock the build resolves the libraries again and warns. Downloads are cached per user, so only the first build needs internet access.
+- **`manifest`** is a normal `AndroidManifest.xml`: activities, services, providers, `<meta-data>`, permissions and `<queries>` are merged into the game's, like the libraries' own manifests. `${applicationId}` is the game's application ID; every other `${name}` comes from the Android build profile option of that name, or from `placeholders` when the profile does not set it (Release builds warn about that, so a sample key never ships unnoticed).
+- **Calling the Java code from C#:** a Java class exposes `public static String method(String)` methods, C# calls them with `AndroidBridge.Call(className, method, argument)`, and Java answers asynchronously with `dev.index.player.IndexBridge.send(channel, message)`, received by `AndroidBridge.Subscribe(channel, handler)` on the main thread. Strings are typically JSON. `IndexBridge.getActivity()` returns the game's activity; SDK calls that touch views belong on its UI thread. See [Platform Packages](../Editor/Platform-Packages.md#ads-and-other-java-libraries-from-packages).
+
+`Index.Ads` in the package registry is a complete example: a C# API, a Java plugin, AdMob and UMP from Maven, and a manifest entry filled from the build option `admobAppId`.
 
 ---
 

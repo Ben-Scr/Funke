@@ -367,6 +367,18 @@ namespace Index {
 			const ImU32 borderCol = selected ? RGBA(80, 160, 240, 255) : RGBA(240, 200, 60, 255);
 			drawList->AddRectFilled(minPx, maxPx, fillCol);
 			drawList->AddRect(minPx, maxPx, borderCol, 0.0f, 0, selected ? 2.0f : 1.0f);
+			if (!slice.Border.IsZero()) {
+				// 9-slice guides; slice Y grows downwards, so Top is measured from slice.Y.
+				const ImU32 guideCol = RGBA(80, 220, 120, selected ? 255 : 160);
+				const float left = TextureToScreen(ImVec2(static_cast<float>(slice.X + slice.Border.Left), 0.0f)).x;
+				const float right = TextureToScreen(ImVec2(static_cast<float>(slice.X + slice.W - slice.Border.Right), 0.0f)).x;
+				const float top = TextureToScreen(ImVec2(0.0f, static_cast<float>(slice.Y + slice.Border.Top))).y;
+				const float bottom = TextureToScreen(ImVec2(0.0f, static_cast<float>(slice.Y + slice.H - slice.Border.Bottom))).y;
+				if (slice.Border.Left > 0) drawList->AddLine(ImVec2(left, minPx.y), ImVec2(left, maxPx.y), guideCol);
+				if (slice.Border.Right > 0) drawList->AddLine(ImVec2(right, minPx.y), ImVec2(right, maxPx.y), guideCol);
+				if (slice.Border.Top > 0) drawList->AddLine(ImVec2(minPx.x, top), ImVec2(maxPx.x, top), guideCol);
+				if (slice.Border.Bottom > 0) drawList->AddLine(ImVec2(minPx.x, bottom), ImVec2(maxPx.x, bottom), guideCol);
+			}
 
 			// Selection handles for the primary-selected slice only —
 			// drawing 8 handles for every selected slice gets noisy in a
@@ -635,7 +647,7 @@ namespace Index {
 			ImGui::PushID(i);
 			const bool selected = IsSelected(i);
 			if (ImGui::Selectable("##sel", selected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap,
-				ImVec2(0.0f, ImGui::GetFrameHeight() * 3.0f + ImGui::GetStyle().ItemSpacing.y * 2.0f)))
+				ImVec2(0.0f, ImGui::GetFrameHeight() * 4.0f + ImGui::GetStyle().ItemSpacing.y * 3.0f)))
 			{
 				const ImGuiIO& io = ImGui::GetIO();
 				if (io.KeyCtrl) {
@@ -686,6 +698,16 @@ namespace Index {
 				slice.PivotY = pivot[1];
 				m_Dirty = true;
 			}
+			int border[4] = { slice.Border.Left, slice.Border.Bottom, slice.Border.Right, slice.Border.Top };
+			ImGui::SetNextItemWidth(-FLT_MIN);
+			if (ImGui::DragInt4("##border", border, 0.25f, 0, 65535, "%d")) {
+				slice.Border.Left = std::clamp(border[0], 0, slice.W);
+				slice.Border.Right = std::clamp(border[2], 0, slice.W - slice.Border.Left);
+				slice.Border.Top = std::clamp(border[3], 0, slice.H);
+				slice.Border.Bottom = std::clamp(border[1], 0, slice.H - slice.Border.Top);
+				m_Dirty = true;
+			}
+			EditorUI::Tooltip("9-slice border (left, bottom, right, top) in pixels. Sliced and Tiled Images keep it unstretched.");
 			ImGui::EndGroup();
 
 			ImGui::PopID();

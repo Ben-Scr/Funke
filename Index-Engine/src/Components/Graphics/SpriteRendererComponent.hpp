@@ -19,6 +19,13 @@ namespace Index {
 		// Default = use the texture's own (.meta/import) filter; a concrete value
 		// overrides it. The texture's .meta still wins at load time regardless.
 		Filter FilterMode{ Filter::Default };
+		// .material asset whose Sprite2D shader draws this sprite; 0 = the standard sprite shader.
+		uint64_t Material{ 0 };
+		// > 0: native size (slice pixels / PixelsPerUnit, times the transform scale), placed on the slice pivot.
+		// 0: the quad fills the transform scale around the entity position.
+		float PixelsPerUnit{ 0.0f };
+		bool FlipX{ false };
+		bool FlipY{ false };
 
 		std::string SpriteName;
 	};

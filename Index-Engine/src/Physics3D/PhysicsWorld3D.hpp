@@ -58,6 +58,8 @@ namespace Index {
 
 		// Contacts are paired per body, so a compound body touching another reports once.
 		void DispatchContacts(const std::function<void(const Collision3D&, CollisionPhase3D)>& callback);
+		// Every touching body pair with its latest point and normal (debug drawing); the callback must not touch the world.
+		void ForEachActiveContact(const std::function<void(const Vec3& point, const Vec3& normal, bool isTrigger)>& callback) const;
 
 		bool Raycast(const Vec3& origin, const Vec3& direction, float maxDistance, RaycastHit3D& outHit) const;
 

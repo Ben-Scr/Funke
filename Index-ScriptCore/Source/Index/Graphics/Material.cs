@@ -12,8 +12,9 @@ public enum MaterialSurface
 }
 
 /// <summary>
-/// A .material asset. Every MeshRenderer that references it shares one live instance: property changes made
+/// A .material asset. Every renderer that references it shares one live instance: property changes made
 /// here are seen by all of them on the next frame and are not written back to the file.
+/// With a user shader (<see cref="ShaderUUID"/>), its <c>// @property</c> values are read and written by name.
 /// </summary>
 public sealed class Material : IEquatable<Material>
 {
@@ -92,6 +93,67 @@ public sealed class Material : IEquatable<Material>
     {
         get => (MaterialSurface)(int)Read()[15];
         set => Write(v => v[15] = (int)value);
+    }
+
+    /// <summary>GUID of the .wgsl user shader; 0 = the standard PBR shader.</summary>
+    public ulong ShaderUUID
+    {
+        get => InternalCalls.Material_GetShader(UUID);
+        set => InternalCalls.Material_SetShader(UUID, value);
+    }
+
+    // Values of the native ShaderPropertyType.
+    private const int k_Float = 0, k_Vec2 = 1, k_Vec3 = 2, k_Vec4 = 3, k_Color = 4, k_Texture = 5;
+
+    /// <summary>True when the shader declares the property or the material stores a value for it.</summary>
+    public bool HasProperty(string name) => InternalCalls.Material_GetProperty(UUID, name, stackalloc float[4], out _) != 0;
+
+    public void SetFloat(string name, float value) => SetValue(name, k_Float, value, 0, 0, 0);
+    public void SetVector(string name, Vector2 value) => SetValue(name, k_Vec2, value.X, value.Y, 0, 0);
+    public void SetVector(string name, Vector3 value) => SetValue(name, k_Vec3, value.X, value.Y, value.Z, 0);
+    public void SetVector(string name, Vector4 value) => SetValue(name, k_Vec4, value.X, value.Y, value.Z, value.W);
+    public void SetColor(string name, Color value) => SetValue(name, k_Color, value.R, value.G, value.B, value.A);
+
+    /// <summary>Assigns a texture property; null samples the shader's default texture.</summary>
+    public void SetTexture(string name, Texture? texture)
+    {
+        if (!InternalCalls.Material_SetProperty(UUID, name, k_Texture, ReadOnlySpan<float>.Empty, texture?.UUID ?? 0))
+            Log.Warn($"Material {UUID}: '{name}' is not a texture property of its shader");
+    }
+
+    /// <summary>The value the shader sees (its default while the material has none); 0 for unknown names.</summary>
+    public float GetFloat(string name) => GetValue(name)[0];
+
+    public Vector4 GetVector(string name)
+    {
+        float[] v = GetValue(name);
+        return new Vector4(v[0], v[1], v[2], v[3]);
+    }
+
+    public Color GetColor(string name)
+    {
+        float[] v = GetValue(name);
+        return new Color(v[0], v[1], v[2], v[3]);
+    }
+
+    public Texture? GetTexture(string name)
+    {
+        InternalCalls.Material_GetProperty(UUID, name, stackalloc float[4], out ulong texture);
+        return Texture.FromAssetUUID(texture);
+    }
+
+    private void SetValue(string name, int type, float x, float y, float z, float w)
+    {
+        ReadOnlySpan<float> values = stackalloc float[4] { x, y, z, w };
+        if (!InternalCalls.Material_SetProperty(UUID, name, type, values, 0))
+            Log.Warn($"Material {UUID}: '{name}' has another type in its shader");
+    }
+
+    private float[] GetValue(string name)
+    {
+        var values = new float[4];
+        InternalCalls.Material_GetProperty(UUID, name, values, out _);
+        return values;
     }
 
     private float[] Read()

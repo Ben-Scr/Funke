@@ -3,6 +3,7 @@
 #include "Assets/AssetKind.hpp"
 #include "Core/Application.hpp"
 #include "Editor/EditorPreferences.hpp"
+#include "Editor/EditorRestart.hpp"
 #include "Editor/ExternalEditor.hpp"
 #include "Editor/ExternalEditorInfo.hpp"
 #include "Graphics/Text/FontHandle.hpp"
@@ -90,12 +91,6 @@ namespace Index {
 		// No persistent allocations to drop.
 	}
 
-	bool EditorPreferencesPanel::ConsumeRestartRequest() {
-		const bool requested = m_RestartRequested;
-		m_RestartRequested = false;
-		return requested;
-	}
-
 	void EditorPreferencesPanel::Render(bool* pOpen) {
 		if (!pOpen || !*pOpen) {
 			m_WasOpenLastFrame = false;
@@ -166,7 +161,6 @@ namespace Index {
 		// Layout modals are owned by this panel (not the menubar) so the
 		// OpenPopup / BeginPopupModal id-stack match. Render them at the
 		// panel's Begin/End scope, after the tab bar.
-		RenderFontRestartModal();
 		RenderLayoutModals();
 
 		ImGui::End();
@@ -268,7 +262,7 @@ namespace Index {
 				const uint64_t before = EditorPreferences::GetEditorFontAssetId();
 				EditorPreferences::SetEditorFontAssetId(picked != 0 ? picked : k_DefaultFontAssetId);
 				if (EditorPreferences::GetEditorFontAssetId() != before) {
-					m_OpenFontRestartRequest = true;
+					EditorRestart::Request("editor-font", "Editor font changed", EditorRestart::Kind::Restart);
 				}
 			}
 
@@ -293,7 +287,7 @@ namespace Index {
 					const uint64_t before = EditorPreferences::GetEditorFontAssetId();
 					EditorPreferences::SetEditorFontAssetId(k_DefaultFontAssetId);
 					if (EditorPreferences::GetEditorFontAssetId() != before) {
-						m_OpenFontRestartRequest = true;
+						EditorRestart::Request("editor-font", "Editor font changed", EditorRestart::Kind::Restart);
 					}
 				}
 				ImGui::PopID();
@@ -347,31 +341,6 @@ namespace Index {
 		}
 	}
 
-	void EditorPreferencesPanel::RenderFontRestartModal() {
-		if (m_OpenFontRestartRequest) {
-			ImGui::OpenPopup("Restart Editor?");
-			m_OpenFontRestartRequest = false;
-		}
-
-		ImGuiUtils::CenterNextModal();
-		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("Restart Editor?", nullptr,
-			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
-			ImGui::TextWrapped(
-				"The editor font will change after restarting the editor.\n\n"
-				"Restart now?");
-			const int clicked = EditorUI::DialogFooter({ "Restart Now", "Later" }, 0);
-			if (clicked == 0) {
-				ImGui::CloseCurrentPopup();
-				m_RestartRequested = true;
-			}
-			else if (clicked == 1) {
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::EndPopup();
-		}
-	}
-
 	void EditorPreferencesPanel::RenderScriptingTab() {
 		const bool showExternalEditor = PreferenceSectionVisible("External Script Editor", "scripting script editor external ide code visual studio rider");
 		const bool showCompilation = PreferenceSectionVisible("Script Compilation", "scripting recompile recompilation auto file changes play mode exit compile");
@@ -410,6 +379,11 @@ namespace Index {
 					ExternalEditor::RefreshEditors();
 				}
 				ImGui::TextDisabled("The editor used when opening script files.");
+				if (selected >= 0 && selected < static_cast<int>(editors.size())
+					&& editors[selected].Type == ExternalEditorType::IntelliJ) {
+					EditorUI::StatusText(EditorUI::Tone::Warning,
+						"IntelliJ IDEA opens and edits scripts, but has no C# code completion or error checking. JetBrains Rider has both.");
+				}
 			}
 			ImGui::Spacing();
 		}
@@ -574,7 +548,7 @@ namespace Index {
 			}
 			EditorUI::Tooltip(
 				"In prefab edit mode, save the prefab as soon as you release\n"
-				"the active inspector / hierarchy widget — no Ctrl+S needed.\n"
+				"the active inspector / hierarchy widget â€” no Ctrl+S needed.\n"
 				"Drags and text-input debounce naturally; the save fires once\n"
 				"per edit on release. Skipped during Play mode.");
 			ImGui::Spacing();

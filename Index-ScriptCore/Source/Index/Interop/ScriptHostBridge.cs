@@ -108,13 +108,29 @@ internal unsafe struct ManagedCallbacksStruct
 
     // ── 3D contacts (appended for binary compat) ──
     public delegate* unmanaged<int, int, int, ulong, ulong, float, float, float, float, float, float, void> InvokeCollision3D;
+
+    // ── Editor windows from C# (appended for binary compat) ──
+    public delegate* unmanaged<byte*, int, int> GetEditorWindowTypes;
+    public delegate* unmanaged<byte*, int> DrawEditorWindow;
+    public delegate* unmanaged<byte*, void> CloseEditorWindow;
+
+    // ── Dev console (appended for binary compat) ──
+    public delegate* unmanaged<byte*, int, int> GetDevCommands;
+    public delegate* unmanaged<byte*, byte*, int, int> ExecuteDevCommand;
+
+    // ── Script callback mask (appended for binary compat) ──
+    public delegate* unmanaged<int, int> GetScriptCallbackMask;
+
+    // ── Game localization (appended for binary compat) ──
+    public delegate* unmanaged<byte*, int, int> GetSavedLanguage;
+    public delegate* unmanaged<void> RaiseLanguageChanged;
 }
 
 /// <summary>Guards the native/managed function-pointer tables against layout drift before either is touched.</summary>
 internal static class InteropHandshake
 {
     // Bump together with k_ScriptInteropLayoutVersion (ScriptGlue.hpp) on any add/remove/reorder in either table.
-    internal const int LayoutVersion = 15;
+    internal const int LayoutVersion = 30;
 
     // Codes are mirrored in ScriptEngine::LoadCoreAssembly.
     internal const int Ok = 0;
@@ -261,6 +277,14 @@ internal static class ScriptHostBridge
             managedCallbacks->NotifyEntityDestroyed = &ScriptInstanceManager.NotifyEntityDestroyed;
             managedCallbacks->InvokeTrigger2D = &ScriptInstanceManager.InvokeTrigger2D;
             managedCallbacks->InvokeCollision3D = &ScriptInstanceManager.InvokeCollision3D;
+            managedCallbacks->GetEditorWindowTypes = &EditorWindowRegistry.GetEditorWindowTypes;
+            managedCallbacks->DrawEditorWindow = &EditorWindowRegistry.DrawEditorWindow;
+            managedCallbacks->CloseEditorWindow = &EditorWindowRegistry.CloseEditorWindow;
+            managedCallbacks->GetDevCommands = &DevCommandRegistry.GetDevCommands;
+            managedCallbacks->ExecuteDevCommand = &DevCommandRegistry.ExecuteDevCommand;
+            managedCallbacks->GetScriptCallbackMask = &ScriptInstanceManager.GetScriptCallbackMask;
+            managedCallbacks->GetSavedLanguage = &Localization.GetSavedLanguage;
+            managedCallbacks->RaiseLanguageChanged = &Localization.RaiseLanguageChangedFromNative;
 
             ScriptInstanceManager.SetCoreAssembly(typeof(ScriptHostBridge).Assembly);
 

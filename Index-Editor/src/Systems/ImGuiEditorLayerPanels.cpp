@@ -22,8 +22,10 @@
 #include "Graphics/Text/FontManager.hpp"
 #include "Gui/EditorIcons.hpp"
 #include "Gui/EditorUI.hpp"
+#include "Graphics/SpriteUVResolver.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Gui/ImGuiUtils.hpp"
+#include "Inspector/MaterialShaderInspector.hpp"
 #include "Inspector/PropertyDrawer.hpp"
 #include "Inspector/PropertyRegistration.hpp"
 #include "Inspector/ReferencePicker.hpp"
@@ -1374,23 +1376,37 @@ namespace Index {
 			beginCard("##BuildSettingsCard");
 			const float valueX = ImGui::GetCursorPosX() + labelW;
 
-			rowLabel("Build profile");
+			rowLabel("Configuration");
 			ImGui::SetNextItemWidth(-k_CardPad);
-			const char* profileItems[] = { "Development", "Release" };
-			int profileIdx = (project->ActiveBuildProfile == IndexProject::BuildProfile::Release) ? 1 : 0;
-			if (ImGui::Combo("##BuildProfile", &profileIdx, profileItems, IM_ARRAYSIZE(profileItems))) {
-				const auto newProfile = (profileIdx == 1)
-					? IndexProject::BuildProfile::Release
-					: IndexProject::BuildProfile::Development;
-				if (newProfile != project->ActiveBuildProfile) {
-					project->ActiveBuildProfile = newProfile;
-					// Auto-flip overlay defaults to match the new profile.
-					// Release = both off (ship-clean). Development = both on.
-					const bool isDev = (newProfile == IndexProject::BuildProfile::Development);
-					project->ShowRuntimeStats = isDev;
-					project->ShowRuntimeLogs  = isDev;
-					project->Save();
+			constexpr IndexProject::BuildProfile k_Configurations[] = {
+				IndexProject::BuildProfile::Debug,
+				IndexProject::BuildProfile::Development,
+				IndexProject::BuildProfile::Release,
+			};
+			const bool profileSetsConfiguration = active && active->Configuration.has_value();
+			const IndexProject::BuildProfile shownConfiguration = profileSetsConfiguration
+				? *active->Configuration : project->ActiveBuildProfile;
+			ImGui::BeginDisabled(profileSetsConfiguration);
+			if (ImGui::BeginCombo("##BuildConfiguration", IndexProject::BuildProfileToString(shownConfiguration))) {
+				for (const IndexProject::BuildProfile configuration : k_Configurations) {
+					if (ImGui::Selectable(IndexProject::BuildProfileToString(configuration), configuration == shownConfiguration)
+						&& configuration != project->ActiveBuildProfile) {
+						project->ActiveBuildProfile = configuration;
+						// Let the overlays follow the new configuration (Release = off, otherwise on).
+						project->ShowRuntimeStats.reset();
+						project->ShowRuntimeLogs.reset();
+						project->Save();
+					}
 				}
+				ImGui::EndCombo();
+			}
+			ImGui::EndDisabled();
+			if (profileSetsConfiguration) {
+				EditorUI::Tooltip("Set by the active build profile. Change it in Build Profiles.");
+			}
+			else {
+				EditorUI::Tooltip("Debug: debug binaries and symbols for attaching a debugger.\n"
+					"Development: optimized, with overlays and the dev console.\nRelease: the shipped game.");
 			}
 
 			if (active && m_BuildState == 0) {
@@ -1462,6 +1478,14 @@ namespace Index {
 					project->CustomDefines.erase(project->CustomDefines.begin() + removeIdx);
 					project->Save();
 				}
+			}
+			if (active && !active->Defines.empty()) {
+				std::string profileDefines;
+				for (const std::string& define : active->Defines) profileDefines += (profileDefines.empty() ? "" : " ") + define;
+				ImGui::SetCursorPosX(valueX);
+				ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - k_CardPad);
+				ImGui::TextDisabled("Profile adds: %s", profileDefines.c_str());
+				ImGui::PopTextWrapPos();
 			}
 
 			rowLabel("Project");
@@ -1907,11 +1931,6 @@ namespace Index {
 	void ImGuiEditorLayer::RenderSettings_Graphics(IndexProject& project, bool& changed,
 		const std::string& filterLower)
 	{
-		// Static state for the render-backend restart modal. Function-static
-		// is safe — only one Graphics tab can be visible at once.
-		static bool s_RenderBackendChangePopup = false;
-		static IndexProject::RenderBackend s_PendingRenderBackend = IndexProject::RenderBackend::Auto;
-
 		if (SectionVisible(SettingsCategory::Graphics, "Render Backend", filterLower)) {
 		if (SettingsSectionHeader("Render Backend", filterLower)) {
 			ImGui::Indent(8);
@@ -1923,9 +1942,10 @@ namespace Index {
 					const bool supported = IsRenderBackendSupportedOnHost(option.Backend);
 					if (!supported) ImGui::BeginDisabled();
 					if (ImGui::Selectable(option.Label, selected)) {
+						// The editor's reload prompt picks the change up (RenderEditorReloadPrompt).
 						if (supported && option.Backend != project.ActiveRenderBackend) {
-							s_PendingRenderBackend = option.Backend;
-							s_RenderBackendChangePopup = true;
+							project.ActiveRenderBackend = option.Backend;
+							changed = true;
 						}
 					}
 					if (!supported) ImGui::EndDisabled();
@@ -2109,43 +2129,6 @@ namespace Index {
 			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Font Baking")
-
-		// NoSavedSettings prevents a stale imgui.ini Pos= from pinning the dialog off-center.
-		if (s_RenderBackendChangePopup) {
-			ImGui::OpenPopup("Restart Editor");
-			s_RenderBackendChangePopup = false;
-		}
-		ImGuiUtils::CenterNextModal();
-		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("Restart Editor", nullptr,
-			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
-			ImGui::TextWrapped(
-				"Changing the rendering API from %s to %s requires the editor to restart.",
-				RenderBackendLabel(project.ActiveRenderBackend),
-				RenderBackendLabel(s_PendingRenderBackend));
-			const int clicked = EditorUI::DialogFooter({ "Restart Now", "Save For Later", "Cancel" }, 0);
-			if (clicked == 0) {
-				const IndexProject::RenderBackend previousBackend = project.ActiveRenderBackend;
-				project.ActiveRenderBackend = s_PendingRenderBackend;
-				if (project.Save()) {
-					ImGui::CloseCurrentPopup();
-					RequestEditorAction(PendingEditorAction::Restart);
-				}
-				else {
-					project.ActiveRenderBackend = previousBackend;
-					IDX_ERROR_TAG("Editor", "Failed to save the render backend change.");
-				}
-			}
-			else if (clicked == 1) {
-				project.ActiveRenderBackend = s_PendingRenderBackend;
-				changed = true;
-				ImGui::CloseCurrentPopup();
-			}
-			else if (clicked == 2) {
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::EndPopup();
-		}
 	}
 
 	void ImGuiEditorLayer::RenderSettings_Physics(IndexProject& project, bool& changed,
@@ -2670,8 +2653,22 @@ namespace Index {
 		if (SectionVisible(SettingsCategory::Build, "Diagnostics", filterLower)) {
 		if (SettingsSectionHeader("Diagnostics", filterLower)) {
 			ImGui::Indent(8);
-			changed |= ImGuiUtils::Switch("Show runtime stats overlay (F6)", &project.ShowRuntimeStats);
-			changed |= ImGuiUtils::Switch("Show runtime log overlay (F7)", &project.ShowRuntimeLogs);
+			bool showStats = project.ResolveShowRuntimeStats();
+			if (ImGuiUtils::Switch("Show runtime stats overlay (F6)", &showStats)) {
+				project.ShowRuntimeStats = showStats;
+				changed = true;
+			}
+			bool showLogs = project.ResolveShowRuntimeLogs();
+			if (ImGuiUtils::Switch("Show runtime log overlay (F7)", &showLogs)) {
+				project.ShowRuntimeLogs = showLogs;
+				changed = true;
+			}
+			bool devConsole = project.ResolveDevConsole();
+			if (ImGuiUtils::Switch("Dev console (` key, physics debug on F8)", &devConsole)) {
+				project.DevConsole = devConsole;
+				changed = true;
+			}
+			ImGui::TextDisabled("Default: on for Debug and Development builds, off for Release builds.");
 			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Diagnostics")
@@ -3315,6 +3312,7 @@ namespace Index {
 				EditorUI::EmptyState("Material could not be read", "Check the file for JSON errors.");
 				return;
 			}
+			if (MaterialShaderInspector::Draw(guid)) return;
 
 			auto current = [guid]() -> Material {
 				const Material* material = MaterialLibrary::Get(guid);
@@ -3333,6 +3331,10 @@ namespace Index {
 					[current](const Entity&) { return current().Lit; },
 					[edit](Entity&, bool v) { edit([v](Material& m) { m.Lit = v; }); },
 					Properties::Meta::Tooltip("Unlit materials ignore lights, exposure and tone mapping.")),
+				Properties::MakeWith<bool>("Fog", "Fog",
+					[current](const Entity&) { return current().Fog; },
+					[edit](Entity&, bool v) { edit([v](Material& m) { m.Fog = v; }); },
+					Properties::Meta::Tooltip("Fades into the camera's fog with distance. Turn off for a sky dome or other backdrop.")),
 				Properties::MakeWith<MaterialSurface>("Surface", "Surface",
 					[current](const Entity&) { return current().Surface; },
 					[edit](Entity&, MaterialSurface v) { edit([v](Material& m) { m.Surface = v; }); },
@@ -3446,6 +3448,34 @@ namespace Index {
 			return;
 		}
 
+		if (ext == k_AnimationClipExtension || ext == k_AnimatorControllerExtension) {
+			const bool controller = ext == k_AnimatorControllerExtension;
+			ImGui::TextDisabled(controller ? "Animator Controller:" : "Animation Clip:");
+			ImGui::SameLine();
+			ImGuiUtils::TextEllipsis(name);
+			ImGui::Separator();
+			const uint64_t guid = AssetRegistry::GetOrCreateAssetUUID(selectedPath);
+			if (controller) {
+				if (const auto asset = AnimatorControllerLibrary::Get(guid)) {
+					ImGui::Text("%zu states, %zu transitions, %zu parameters", asset->States.size(), asset->Transitions.size(), asset->Parameters.size());
+				}
+				if (EditorUI::Button("Open in Animator", EditorUI::ButtonVariant::Primary)) {
+					m_AnimatorWindow.OpenController(guid);
+					m_ShowAnimatorWindow = true;
+				}
+			}
+			else {
+				if (const auto asset = AnimationClipLibrary::Get(guid)) {
+					ImGui::Text("%.2f s%s, %zu tracks, %zu events", asset->Length, asset->Loop ? ", looping" : "", asset->Tracks.size(), asset->Events.size());
+				}
+				if (EditorUI::Button("Open in Animation", EditorUI::ButtonVariant::Primary)) {
+					m_AnimationWindow.OpenClip(guid);
+					m_ShowAnimationWindow = true;
+				}
+			}
+			return;
+		}
+
 		if (ext == ".dataasset") {
 			ImGui::TextDisabled("Data Asset:");
 			ImGui::SameLine();
@@ -3529,6 +3559,17 @@ namespace Index {
 						updated.Import.WrapV = newWrap;
 						persist(updated);
 					});
+				{
+					// Order matches the .meta array; Images with all-zero borders of their own use it.
+					int border[4] = { meta.Border.Left, meta.Border.Bottom, meta.Border.Right, meta.Border.Top };
+					if (ImGui::InputInt4("Border (L B R T)", border)) {
+						TextureMeta updated = meta;
+						updated.Border = { std::max(border[0], 0), std::max(border[1], 0), std::max(border[2], 0), std::max(border[3], 0) };
+						persist(updated);
+						NotifySpriteSliceEpochBumped();
+					}
+					EditorUI::Tooltip("9-slice border of the whole texture in pixels. Sliced and Tiled Images keep it unstretched.");
+				}
 				ImGui::PopID();
 
 				ImGui::Spacing();
@@ -3613,7 +3654,6 @@ namespace Index {
 			}
 
 			m_PackageManagerPanel.Initialize(&m_PackageManager);
-			m_PackageManagerPanel.SetReloadEditorCallback([this] { RequestEditorAction(PendingEditorAction::Reload); });
 			m_PackageManagerInitialized = true;
 		}
 

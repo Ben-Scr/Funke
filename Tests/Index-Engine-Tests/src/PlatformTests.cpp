@@ -143,3 +143,34 @@ TEST_CASE("Loading a missing shared library reports an error") {
 	CHECK(Platform::GetSharedLibrarySymbol(nullptr, "x") == nullptr);
 	Platform::UnloadSharedLibrary(nullptr);
 }
+
+TEST_CASE("Java bridge queues plugin messages in order and fails calls off Android") {
+	std::string channel, message;
+	while (Platform::PollJavaMessage(channel, message)) {}
+
+	Platform::PushJavaMessage("ads", "{\"event\":\"loaded\"}");
+	Platform::PushJavaMessage("billing", std::string("bytes\0kept", 10));
+	REQUIRE(Platform::PollJavaMessage(channel, message));
+	CHECK(channel == "ads");
+	CHECK(message == "{\"event\":\"loaded\"}");
+	REQUIRE(Platform::PollJavaMessage(channel, message));
+	CHECK(channel == "billing");
+	CHECK(message.size() == 10);
+	CHECK_FALSE(Platform::PollJavaMessage(channel, message));
+
+	// The queue is bounded; the oldest messages give way.
+	for (int i = 0; i < 1100; ++i) Platform::PushJavaMessage("flood", std::to_string(i));
+	int count = 0;
+	std::string first;
+	while (Platform::PollJavaMessage(channel, message)) {
+		if (count++ == 0) first = message;
+	}
+	CHECK(count == 1024);
+	CHECK(first == "76");
+
+#if !defined(IDX_PLATFORM_ANDROID)
+	std::string result = "stale";
+	CHECK_FALSE(Platform::CallJava("dev.index.ads.IndexAds", "initialize", "{}", result));
+	CHECK(result.empty());
+#endif
+}

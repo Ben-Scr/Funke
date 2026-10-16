@@ -951,10 +951,16 @@ namespace Index {
 			if (extension == ".dataasset") {
 				return AssetKind::DataAsset;
 			}
+			if (extension == ".anim") {
+				return AssetKind::AnimationClip;
+			}
+			if (extension == ".animctrl") {
+				return AssetKind::AnimatorController;
+			}
 			if (extension == ".material") {
 				return AssetKind::Material;
 			}
-			if (extension == ".obj") {
+			if (extension == ".obj" || extension == ".gltf" || extension == ".glb") {
 				return AssetKind::Mesh;
 			}
 			if (!extension.empty()) {
@@ -1150,11 +1156,35 @@ namespace Index {
 						slice.PivotX = static_cast<float>(a[0].AsDoubleOr(0.5));
 						slice.PivotY = static_cast<float>(a[1].AsDoubleOr(0.5));
 					}
+					slice.Border = ReadSpriteBorder(spriteValue);
 					meta.Sprites.push_back(std::move(slice));
 				}
 			}
+			meta.Border = ReadSpriteBorder(root);
 
 			return meta;
+		}
+
+		// "border": [left, bottom, right, top]; absent or malformed = no border.
+		static SpriteBorder ReadSpriteBorder(const Json::Value& owner) {
+			SpriteBorder border;
+			const Json::Value* node = owner.FindMember("border");
+			if (!node || !node->IsArray() || node->GetArray().size() < 4) return border;
+			const auto& a = node->GetArray();
+			border.Left = std::max(a[0].AsIntOr(0), 0);
+			border.Bottom = std::max(a[1].AsIntOr(0), 0);
+			border.Right = std::max(a[2].AsIntOr(0), 0);
+			border.Top = std::max(a[3].AsIntOr(0), 0);
+			return border;
+		}
+
+		static Json::Value MakeSpriteBorderValue(const SpriteBorder& border) {
+			Json::Value value = Json::Value::MakeArray();
+			value.Append(Json::Value(border.Left));
+			value.Append(Json::Value(border.Bottom));
+			value.Append(Json::Value(border.Right));
+			value.Append(Json::Value(border.Top));
+			return value;
 		}
 
 		// Merge-write `import` and `sprites` blocks; preserves all other meta fields already on disk.
@@ -1189,9 +1219,18 @@ namespace Index {
 				pivotValue.Append(Json::Value(static_cast<double>(slice.PivotX)));
 				pivotValue.Append(Json::Value(static_cast<double>(slice.PivotY)));
 				spriteValue.AddMember("pivot", std::move(pivotValue));
+				if (!slice.Border.IsZero()) {
+					spriteValue.AddMember("border", MakeSpriteBorderValue(slice.Border));
+				}
 				spritesValue.Append(std::move(spriteValue));
 			}
 			SetOrAddMember(root, "sprites", std::move(spritesValue));
+			if (!meta.Border.IsZero()) {
+				SetOrAddMember(root, "border", MakeSpriteBorderValue(meta.Border));
+			}
+			else {
+				std::erase_if(root.GetObject(), [](const auto& member) { return member.first == "border"; });
+			}
 
 			const bool wrote = File::WriteAllText(metaPath, Json::Stringify(root, true));
 			if (wrote) {
@@ -1213,6 +1252,8 @@ namespace Index {
 			case AssetKind::DataAsset: return "DataAsset";
 			case AssetKind::Material: return "Material";
 			case AssetKind::Mesh: return "Mesh";
+			case AssetKind::AnimationClip: return "AnimationClip";
+			case AssetKind::AnimatorController: return "AnimatorController";
 			case AssetKind::Other: return "Other";
 			case AssetKind::Unknown:
 			default:

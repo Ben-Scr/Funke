@@ -499,9 +499,38 @@ namespace Index {
 			}
 		}
 
+		uint64_t s_UILayoutEpoch = 1;
+
+		// Inputs a layout pass depends on besides the entities themselves; stored in the registry context.
+		struct UILayoutStamp {
+			uint64_t Epoch = 0;
+			int Width = 0, Height = 0;
+			float InsetLeft = 0.0f, InsetRight = 0.0f, InsetTop = 0.0f, InsetBottom = 0.0f;
+			float UIScale = 0.0f;
+
+			bool operator==(const UILayoutStamp&) const = default;
+		};
+
+		void LayoutScene(Scene& scene, bool skipIfCurrent);
+
 	} // namespace
 
+	void InvalidateUILayout() {
+		++s_UILayoutEpoch;
+	}
+
 	void ComputeUILayout(Scene& scene) {
+		LayoutScene(scene, false);
+	}
+
+	void UpdateUILayout(Scene& scene) {
+		// The editor edits rects outside any system, so only the player trusts the epoch.
+		LayoutScene(scene, !Application::IsEditor());
+	}
+
+	namespace {
+
+	void LayoutScene(Scene& scene, bool skipIfCurrent) {
 		entt::registry& registry = scene.GetRegistry();
 		if (registry.view<RectTransform2DComponent>().size() == 0) {
 			return;
@@ -542,12 +571,18 @@ namespace Index {
 			? project->ComputeUIScale(s_SafeMax.x - s_SafeMin.x, s_SafeMax.y - s_SafeMin.y)
 			: 1.0f;
 
+		const UILayoutStamp stamp{ s_UILayoutEpoch, vpW, vpH,
+			insets.Left, insets.Right, insets.Top, insets.Bottom, uiScale };
+		if (skipIfCurrent) {
+			if (const UILayoutStamp* last = registry.ctx().find<UILayoutStamp>(); last && *last == stamp) return;
+		}
+		registry.ctx().insert_or_assign(stamp);
+
 		auto rectView = registry.view<RectTransform2DComponent>();
 		for (auto entity : rectView) {
 			rectView.get<RectTransform2DComponent>(entity).ResolvedValid = false;
 		}
 
-		auto uiView = registry.view<RectTransform2DComponent>();
 		// Root = no RectTransform anywhere above. ResolveHierarchy recurses through plain (rect-less) entities,
 		// so a rect under a plain child of a UI rect is already resolved there; treating it as a root too laid it
 		// out twice, with the EnTT pool order deciding which result won.
@@ -562,8 +597,13 @@ namespace Index {
 			return true;
 		};
 
-		for (auto entity : uiView) {
-			if (!isUIRoot(entity)) continue;
+		thread_local std::vector<EntityHandle> t_Roots;
+		t_Roots.clear();
+		for (auto entity : rectView) {
+			if (isUIRoot(entity)) t_Roots.push_back(entity);
+		}
+
+		for (EntityHandle entity : t_Roots) {
 			FitContentSize(registry, entity);
 		}
 
@@ -571,20 +611,22 @@ namespace Index {
 			(windowMin.x + windowMax.x) * 0.5f,
 			(windowMin.y + windowMax.y) * 0.5f
 		};
-		for (auto entity : uiView) {
-			if (!isUIRoot(entity)) continue;
-
+		for (EntityHandle entity : t_Roots) {
 			// parentPivot=windowCenter so root rotation pivots at screen center; parentScale=uiScale propagates reference-res scaling.
 			ResolveHierarchy(registry, entity, s_SafeMin, s_SafeMax, 0.0f, Vec2{ uiScale, uiScale }, windowCenter);
 		}
 	}
+
+	} // namespace
 
 	void UILayoutSystem::Update(Scene& scene) {
 		if (scene.GetRegistry().view<RectTransform2DComponent>().size() == 0) return;
 		// Scope after the gate — non-zero readings prove the gate fired and
 		// ComputeUILayout actually ran. Stays 0.0 in scenes with no UI.
 		INDEX_PROFILE_SCOPE("UILayout");
-		ComputeUILayout(scene);
+		UpdateUILayout(scene);
+		// Scripts, animators and UI events run after this system; the render pass must lay out again.
+		InvalidateUILayout();
 	}
 
 }

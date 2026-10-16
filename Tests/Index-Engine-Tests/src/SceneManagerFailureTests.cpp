@@ -1104,6 +1104,15 @@ namespace {
 				&& SceneManager::ActivateSuspendedScene(stable)
 				&& SceneManager::CommitSuspendedSceneActivation(stable)
 				&& stable->IsLoaded() && !stable->IsLifecycleSuspended();
+
+			const size_t releaseEntityCount = stable->GetEntityCount();
+			const bool releaseSuspended = SceneManager::SuspendLoadedSceneForRelease(stable);
+			ReleaseSuspensionRolledBack = releaseSuspended && stable->IsLifecycleSuspended()
+				&& SceneManager::RollbackLoadedSceneRecovery(stable)
+				&& stable->GetEntityCount() == releaseEntityCount && stable->GetName() == stableName
+				&& SceneManager::ActivateSuspendedScene(stable, false)
+				&& SceneManager::CommitSuspendedSceneActivation(stable)
+				&& !stable->IsLifecycleSuspended();
 			EventTrace.clear();
 			EventTracingEnabled = true;
 
@@ -1182,6 +1191,7 @@ namespace {
 		bool SuspendedLoadStayedInert = false;
 		bool ActiveReplacementRejected = false;
 		bool LoadedRecoveryTransactionRestored = false;
+		bool ReleaseSuspensionRolledBack = false;
 		bool CrossSceneIdentityCollisionRejected = false;
 		bool RegularActiveSelectionRejected = false;
 		bool RecoverySelectionWorked = false;
@@ -1404,6 +1414,7 @@ TEST_CASE("Suspended scene staging stays inert and retains a recoverable activat
 	CHECK(application.SuspendedLoadStayedInert);
 	CHECK(application.ActiveReplacementRejected);
 	CHECK(application.LoadedRecoveryTransactionRestored);
+	CHECK(application.ReleaseSuspensionRolledBack);
 	CHECK(application.CrossSceneIdentityCollisionRejected);
 	CHECK(application.RegularActiveSelectionRejected);
 	CHECK(application.RecoverySelectionWorked);

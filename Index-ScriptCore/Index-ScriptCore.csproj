@@ -71,8 +71,10 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Source\GlobalUsings.cs" />
+    <Compile Include="Source\Index\Animation\Animator.cs" />
     <Compile Include="Source\Index\Attributes\ClampValueAttribute.cs" />
     <Compile Include="Source\Index\Attributes\CreateDataAssetAttribute.cs" />
+    <Compile Include="Source\Index\Attributes\DevCommandAttribute.cs" />
     <Compile Include="Source\Index\Attributes\EditorIgnoreAttribute.cs" />
     <Compile Include="Source\Index\Attributes\EditorReadOnlyAttribute.cs" />
     <Compile Include="Source\Index\Attributes\EnabledIfAttribute.cs" />
@@ -104,15 +106,18 @@
     <Compile Include="Source\Index\Components\IComponent.cs" />
     <Compile Include="Source\Index\Components\Ref.cs" />
     <Compile Include="Source\Index\Components\TextureHandle.cs" />
+    <Compile Include="Source\Index\Core\AndroidBridge.cs" />
     <Compile Include="Source\Index\Core\Application.cs" />
     <Compile Include="Source\Index\Core\AssetManager.cs" />
     <Compile Include="Source\Index\Core\Cursor.cs" />
     <Compile Include="Source\Index\Core\DataAssetRuntime.cs" />
+    <Compile Include="Source\Index\Core\DevConsole.cs" />
     <Compile Include="Source\Index\Core\Engine.cs" />
     <Compile Include="Source\Index\Core\GlobalUsings.cs" />
     <Compile Include="Source\Index\Core\Input.cs" />
     <Compile Include="Source\Index\Core\InternalCalls.cs" />
     <Compile Include="Source\Index\Core\KeyCodes.cs" />
+    <Compile Include="Source\Index\Core\Localization.cs" />
     <Compile Include="Source\Index\Core\Log.cs" />
     <Compile Include="Source\Index\Core\PlayerPrefs.cs" />
     <Compile Include="Source\Index\Core\SafeAreaInsets.cs" />
@@ -122,6 +127,8 @@
     <Compile Include="Source\Index\Coroutines\Awaiters.cs" />
     <Compile Include="Source\Index\Coroutines\CoroutineScheduler.cs" />
     <Compile Include="Source\Index\Coroutines\IndexSynchronizationContext.cs" />
+    <Compile Include="Source\Index\Editor\EditorGUI.cs" />
+    <Compile Include="Source\Index\Editor\EditorWindow.cs" />
     <Compile Include="Source\Index\Graphics\Font.cs" />
     <Compile Include="Source\Index\Graphics\Gizmo.cs" />
     <Compile Include="Source\Index\Graphics\Material.cs" />
@@ -131,13 +138,17 @@
     <Compile Include="Source\Index\Graphics\RenderSettings.cs" />
     <Compile Include="Source\Index\Graphics\Renderer2D.cs" />
     <Compile Include="Source\Index\Graphics\Texture.cs" />
+    <Compile Include="Source\Index\Interop\DevCommandRegistry.cs" />
     <Compile Include="Source\Index\Interop\DynamicComponentRegistrar.cs" />
+    <Compile Include="Source\Index\Interop\EditorWindowRegistry.cs" />
     <Compile Include="Source\Index\Interop\NativeCallbacks.cs" />
     <Compile Include="Source\Index\Interop\NativeInterop.cs" />
     <Compile Include="Source\Index\Interop\PackageNativeResolver.cs" />
     <Compile Include="Source\Index\Interop\PostProcessingInterop.cs" />
+    <Compile Include="Source\Index\Interop\ScriptExceptionLog.cs" />
     <Compile Include="Source\Index\Interop\ScriptHostBridge.cs" />
     <Compile Include="Source\Index\Interop\ScriptInstanceManager.cs" />
+    <Compile Include="Source\Index\Interop\StructFieldLayout.cs" />
     <Compile Include="Source\Index\Jobs\AtomicBool.cs" />
     <Compile Include="Source\Index\Jobs\AtomicDouble.cs" />
     <Compile Include="Source\Index\Jobs\AtomicFloat.cs" />
@@ -164,6 +175,7 @@
     <Compile Include="Source\Index\Math\Quaternion.cs" />
     <Compile Include="Source\Index\Math\Random.cs" />
     <Compile Include="Source\Index\Math\RandomHandler.cs" />
+    <Compile Include="Source\Index\Math\Ray.cs" />
     <Compile Include="Source\Index\Math\Vector2.cs" />
     <Compile Include="Source\Index\Math\Vector2Int.cs" />
     <Compile Include="Source\Index\Math\Vector3.cs" />

@@ -215,8 +215,14 @@ namespace Index::ImGuiUtils {
 		ImGuiSelectableFlags flags = 0, const ImVec2& size = ImVec2(0.0f, 0.0f), float maxWidth = -1.0f);
 	bool MenuItemEllipsis(const std::string& text, const char* id,
 		const char* shortcut = nullptr, bool selected = false, bool enabled = true, float maxWidth = -1.0f);
+	// icon: editor icon name; empty guesses one from the text like BeginComponentSection.
+	bool IconMenuItemEllipsis(const std::string& text, const char* id, std::string_view icon = {},
+		bool enabled = true, float maxWidth = -1.0f);
 
-	bool BeginComponentSection(const char* label, bool& removeRequested, const std::function<void()>& contextMenu = {});
+	// icon: ComponentInfo::icon; empty guesses one from the label.
+	// overridden: appends the prefab-override "*" to the header label.
+	bool BeginComponentSection(const char* label, bool& removeRequested, const std::function<void()>& contextMenu = {},
+		std::string_view icon = {}, bool overridden = false);
 
 	// X/Y/Z/W tint used for axis letters inside vector fields.
 	ImU32 AxisColor(int axis);

@@ -2,6 +2,8 @@
 #include "Project/ProjectManager.hpp"
 #include "Project/IndexProject.hpp"
 #include "Assets/AssetRegistry.hpp"
+#include "Localization/GameLocalization.hpp"
+#include "Serialization/Path.hpp"
 #if INDEX_WITH_APPLICATION
 #include "Serialization/PrefabTemplateCache.hpp"
 #include "Core/Application.hpp"
@@ -25,6 +27,13 @@ namespace Index {
 		// dirty lets the first lazy consumer — the deferred startup scene load, which runs behind the
 		// splash — trigger the single rebuild, off the pre-window critical path.
 		AssetRegistry::MarkDirty();
+
+		if (s_CurrentProject && !s_CurrentProject->AssetsDirectory.empty()) {
+			GameLocalization::Load(Path::FromUtf8(s_CurrentProject->AssetsDirectory) / "Localization");
+		}
+		else {
+			GameLocalization::Unload();
+		}
 
 #if INDEX_WITH_APPLICATION
 		// Invalidate stale prefab templates and re-point the file watcher at the new project root.

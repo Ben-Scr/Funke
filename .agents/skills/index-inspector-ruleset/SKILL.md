@@ -44,7 +44,7 @@ Every inspectable field maps to exactly one `PropertyType`. The drawer, serializ
 | `TextureRef` | `TextureHandle` | `Texture` / `TextureRef` | Reference picker (filtered to Texture) |
 | `AudioRef` | `AudioHandle` | `Audio` / `AudioRef` | Reference picker (Audio) |
 | `FontRef` | `FontHandle` | `Font` / `FontRef` | Reference picker (Font) |
-| `AssetRef` | `AssetGUID` | (any asset) | Reference picker (filter via metadata) |
+| `AssetRef` | `AssetGUID` | `Material`, `Mesh`, `DataAsset` subclasses (wire tags `material`, `mesh`, `dataasset:<Type>`) | Reference picker (filter via metadata; `ScriptAssetKindForTag` in ScriptComponentInspector.cpp maps the C# tags) |
 | `SceneRef` | `AssetGUID` | Scene asset | Reference picker (Scene) |
 | `EntityRef` | `EntityRuntimeID` (uint64) **or** prefab GUID | `Entity` | Reference picker (Entity, polymorphic — see below) |
 | `PrefabRef` | `AssetGUID` | Prefab asset | Reference picker (Prefab) |

@@ -69,6 +69,23 @@ public class Camera3D : Component
         }
     }
 
+    /// <summary>
+    /// The ray from the camera through a screen point (viewport pixels, origin top-left, as <c>Input.MousePosition</c>
+    /// and touch positions). It starts on the near plane; combine it with <c>Physics3D.Raycast(ray, out hit)</c> to pick.
+    /// </summary>
+    public Ray ScreenPointToRay(Vector2 screenPoint)
+    {
+        InternalCalls.Camera3D_ScreenPointToRay(RequireComponent<Camera3D>(), screenPoint, out Ray ray);
+        return ray;
+    }
+
+    /// <summary>
+    /// Screen position (viewport pixels, origin top-left) of a world point; Z is its distance in front of the camera.
+    /// Returns false when the point is behind the camera.
+    /// </summary>
+    public bool WorldToScreenPoint(Vector3 worldPoint, out Vector3 screenPoint) =>
+        InternalCalls.Camera3D_WorldToScreenPoint(RequireComponent<Camera3D>(), worldPoint, out screenPoint);
+
     public CameraProjection Projection
     {
         get => (CameraProjection)InternalCalls.Camera3D_GetProjection(RequireComponent<Camera3D>());
@@ -145,6 +162,48 @@ public class Camera3D : Component
         set => WriteSky(v => v[14] = value);
     }
 
+    /// <summary>Light meshes with the <see cref="SkyboxMaterial"/>'s colors (gradient colors, averaged panorama or cube faces) instead of the sky colors above.</summary>
+    public bool AmbientFromSkybox
+    {
+        get => ReadSky()[15] >= 0.5f;
+        set => WriteSky(v => v[15] = value ? 1.0f : 0.0f);
+    }
+
+    /// <summary>Distance fog over meshes (materials can opt out, e.g. a sky dome).</summary>
+    public bool FogEnabled
+    {
+        get => ReadSky()[16] >= 0.5f;
+        set => WriteSky(v => v[16] = value ? 1.0f : 0.0f);
+    }
+
+    /// <summary>What distant meshes fade into; match the sky's horizon so they dissolve into it.</summary>
+    public Color FogColor
+    {
+        get => ReadSkyColor(17);
+        set => WriteSky(v => PutColor(v, 17, value));
+    }
+
+    /// <summary>Distance from the camera where the fog begins.</summary>
+    public float FogStart
+    {
+        get => ReadSky()[21];
+        set => WriteSky(v => v[21] = value);
+    }
+
+    /// <summary>Distance from the camera where meshes are fully fogged.</summary>
+    public float FogEnd
+    {
+        get => ReadSky()[22];
+        set => WriteSky(v => v[22] = value);
+    }
+
+    /// <summary>Material whose shader targets Skybox, drawn instead of the gradient when Background is Skybox; null uses the gradient. Sky ambient keeps using the colors above.</summary>
+    public Material? SkyboxMaterial
+    {
+        get => Material.FromAssetUUID(InternalCalls.Camera3D_GetSkyboxMaterial(RequireComponent<Camera3D>()));
+        set => InternalCalls.Camera3D_SetSkyboxMaterial(RequireComponent<Camera3D>(), value?.UUID ?? 0);
+    }
+
     private float[] ReadSky()
     {
         var values = new float[InternalCalls.CameraSkyValueCount];
@@ -182,7 +241,7 @@ public class MeshRenderer : Component
         set => InternalCalls.MeshRenderer_SetMesh(RequireComponent<MeshRenderer>(), (int)value);
     }
 
-    /// <summary>A mesh asset (.obj) drawn instead of the primitive <see cref="Mesh"/>; null draws the primitive.</summary>
+    /// <summary>A mesh asset (.obj, .gltf, .glb) drawn instead of the primitive <see cref="Mesh"/>; null draws the primitive.</summary>
     public global::Index.Mesh? CustomMesh
     {
         get => global::Index.Mesh.FromAssetUUID(InternalCalls.MeshRenderer_GetCustomMesh(RequireComponent<MeshRenderer>()));
@@ -214,6 +273,117 @@ public class MeshRenderer : Component
     {
         get => InternalCalls.MeshRenderer_GetCastShadows(RequireComponent<MeshRenderer>());
         set => InternalCalls.MeshRenderer_SetCastShadows(RequireComponent<MeshRenderer>(), value);
+    }
+}
+
+// ── SkinnedMeshRenderer ─────────────────────────────────────────────
+
+/// <summary>
+/// Draws an animated model (.gltf/.glb with a skin or node animation) and plays its clips,
+/// cross-fading between them. The posed model renders like a <see cref="MeshRenderer"/>.
+/// </summary>
+public class SkinnedMeshRenderer : Component
+{
+    /// <summary>The model asset (.gltf/.glb); a model without a skeleton draws static.</summary>
+    public global::Index.Mesh? Model
+    {
+        get => global::Index.Mesh.FromAssetUUID(InternalCalls.SkinnedMeshRenderer_GetAsset(RequireComponent<SkinnedMeshRenderer>(), 0));
+        set => InternalCalls.SkinnedMeshRenderer_SetAsset(RequireComponent<SkinnedMeshRenderer>(), 0, value?.UUID ?? 0);
+    }
+
+    /// <summary>The .material asset; null draws a white default material tinted by Color.</summary>
+    public Material? Material
+    {
+        get => Material.FromAssetUUID(InternalCalls.SkinnedMeshRenderer_GetAsset(RequireComponent<SkinnedMeshRenderer>(), 1));
+        set => InternalCalls.SkinnedMeshRenderer_SetAsset(RequireComponent<SkinnedMeshRenderer>(), 1, value?.UUID ?? 0);
+    }
+
+    /// <summary>
+    /// Plays <paramref name="clip"/> (a clip name of the model), blending from the current pose over
+    /// <paramref name="crossFade"/> seconds. Calling it again for the clip that is already playing does nothing.
+    /// </summary>
+    public void Play(string clip, float crossFade = 0.2f)
+        => InternalCalls.SkinnedMeshRenderer_Play(RequireComponent<SkinnedMeshRenderer>(), clip, crossFade);
+
+    /// <summary>Freezes the current pose.</summary>
+    public void Pause() => InternalCalls.SkinnedMeshRenderer_Control(RequireComponent<SkinnedMeshRenderer>(), 0);
+    public void Resume() => InternalCalls.SkinnedMeshRenderer_Control(RequireComponent<SkinnedMeshRenderer>(), 1);
+    /// <summary>Stops and shows the clip's first frame.</summary>
+    public void Stop() => InternalCalls.SkinnedMeshRenderer_Control(RequireComponent<SkinnedMeshRenderer>(), 2);
+
+    /// <summary>Name of the clip that plays (the model's first clip while none is set); empty without clips.</summary>
+    public string Clip => InternalCalls.SkinnedMeshRenderer_GetClip(RequireComponent<SkinnedMeshRenderer>());
+
+    /// <summary>False once a non-looping clip reached its end, or after <see cref="Pause"/> / <see cref="Stop"/>.</summary>
+    public bool IsPlaying => Read()[4] != 0.0f;
+
+    /// <summary>Play head in seconds.</summary>
+    public float Time { get => Read()[3]; set => Write(v => v[3] = value); }
+    /// <summary>Playback rate; negative plays backwards.</summary>
+    public float Speed { get => Read()[0]; set => Write(v => v[0] = value); }
+    public bool Loop { get => Read()[1] != 0.0f; set => Write(v => v[1] = value ? 1.0f : 0.0f); }
+    public bool PlayOnAwake { get => Read()[2] != 0.0f; set => Write(v => v[2] = value ? 1.0f : 0.0f); }
+    /// <summary>Only used without a material: false draws the flat color and ignores lights.</summary>
+    public bool Lit { get => Read()[5] != 0.0f; set => Write(v => v[5] = value ? 1.0f : 0.0f); }
+    public bool CastShadows { get => Read()[6] != 0.0f; set => Write(v => v[6] = value ? 1.0f : 0.0f); }
+
+    /// <summary>Tint multiplied into the material's base color.</summary>
+    public Color Color
+    {
+        get { var v = Read(); return new Color(v[7], v[8], v[9], v[10]); }
+        set => Write(v => { v[7] = value.R; v[8] = value.G; v[9] = value.B; v[10] = value.A; });
+    }
+
+    /// <summary>Clip names of the model, in file order.</summary>
+    public string[] ClipNames
+    {
+        get
+        {
+            ulong id = RequireComponent<SkinnedMeshRenderer>();
+            var names = new string[InternalCalls.SkinnedMeshRenderer_GetClipCount(id)];
+            for (int i = 0; i < names.Length; ++i) names[i] = InternalCalls.SkinnedMeshRenderer_GetClipName(id, i);
+            return names;
+        }
+    }
+
+    /// <summary>Length of a clip in seconds; 0 for an unknown name.</summary>
+    public float GetClipLength(string clip)
+    {
+        ulong id = RequireComponent<SkinnedMeshRenderer>();
+        int count = InternalCalls.SkinnedMeshRenderer_GetClipCount(id);
+        for (int i = 0; i < count; ++i)
+        {
+            if (InternalCalls.SkinnedMeshRenderer_GetClipName(id, i) == clip) return InternalCalls.SkinnedMeshRenderer_GetClipDuration(id, i);
+        }
+        return 0.0f;
+    }
+
+    /// <summary>
+    /// World position and axes of a bone (or any other node of the model) in the current pose, e.g. to attach
+    /// a weapon to a hand. False when the model has no node with that name.
+    /// </summary>
+    public bool TryGetBone(string bone, out Vector3 position, out Vector3 forward, out Vector3 up)
+    {
+        System.Span<float> v = stackalloc float[InternalCalls.SkinnedMeshBoneValueCount];
+        bool found = InternalCalls.SkinnedMeshRenderer_GetBone(RequireComponent<SkinnedMeshRenderer>(), bone, v);
+        position = new Vector3(v[0], v[1], v[2]);
+        forward = new Vector3(v[3], v[4], v[5]);
+        up = new Vector3(v[6], v[7], v[8]);
+        return found;
+    }
+
+    private float[] Read()
+    {
+        var values = new float[InternalCalls.SkinnedMeshRendererValueCount];
+        InternalCalls.SkinnedMeshRenderer_Get(RequireComponent<SkinnedMeshRenderer>(), values);
+        return values;
+    }
+
+    private void Write(System.Action<float[]> change)
+    {
+        float[] values = Read();
+        change(values);
+        InternalCalls.SkinnedMeshRenderer_Set(RequireComponent<SkinnedMeshRenderer>(), values);
     }
 }
 

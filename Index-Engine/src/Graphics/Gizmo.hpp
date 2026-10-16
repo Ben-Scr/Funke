@@ -13,14 +13,18 @@
 namespace Index {
 	enum class GizmoLayer : uint8_t {
 		EditorOnly = 1 << 0,
-		Shared = 1 << 1
+		Shared = 1 << 1,
+		// Engine debug overlays in the runtime (physics); unaffected by the script's Gizmo.IsEnabled.
+		Debug = 1 << 2
 	};
 
 	enum class GizmoLayerMask : uint8_t {
 		None = 0,
 		EditorOnly = static_cast<uint8_t>(GizmoLayer::EditorOnly),
 		Shared = static_cast<uint8_t>(GizmoLayer::Shared),
+		Debug = static_cast<uint8_t>(GizmoLayer::Debug),
 		All = static_cast<uint8_t>(GizmoLayer::EditorOnly) | static_cast<uint8_t>(GizmoLayer::Shared)
+			| static_cast<uint8_t>(GizmoLayer::Debug)
 	};
 
 	constexpr GizmoLayerMask operator|(GizmoLayerMask lhs, GizmoLayerMask rhs) {

@@ -1687,7 +1687,8 @@ namespace Index {
 	void Scene::OnRigidBody2DComponentConstruct(entt::registry& registry, EntityHandle entity)
 	{
 		// Body adoption invariant: rigidbody adopts an existing collider's b2BodyId; the destroyer that calls b2DestroyBody MUST zero the sibling's m_BodyId to prevent aliasing on ID recycle.
-		if (m_IsDetached || m_LifecycleSuspended) return;
+		// No physics world while the 2D module is off: the component keeps its data but stays inert.
+		if (m_IsDetached || m_LifecycleSuspended || !PhysicsSystem2D::IsInitialized()) return;
 
 		if (!EnsureTransform2D(registry, entity, "Rigidbody2D")) return;
 
@@ -1761,7 +1762,7 @@ namespace Index {
 	}
 
 	void Scene::OnBoxCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached || m_LifecycleSuspended) return;
+		if (m_IsDetached || m_LifecycleSuspended || !PhysicsSystem2D::IsInitialized()) return;
 		if (!EnsureTransform2D(registry, entity, "BoxCollider2D")) return;
 
 		bool isEnabled = !registry.all_of<DisabledTag>(entity);
@@ -1806,7 +1807,7 @@ namespace Index {
 	}
 
 	void Scene::OnCircleCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached || m_LifecycleSuspended) return;
+		if (m_IsDetached || m_LifecycleSuspended || !PhysicsSystem2D::IsInitialized()) return;
 		if (!EnsureTransform2D(registry, entity, "CircleCollider2D")) return;
 
 		bool isEnabled = !registry.all_of<DisabledTag>(entity);
@@ -1851,7 +1852,7 @@ namespace Index {
 	}
 
 	void Scene::OnPolygonCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached || m_LifecycleSuspended) return;
+		if (m_IsDetached || m_LifecycleSuspended || !PhysicsSystem2D::IsInitialized()) return;
 		if (!EnsureTransform2D(registry, entity, "PolygonCollider2D")) return;
 
 		bool isEnabled = !registry.all_of<DisabledTag>(entity);

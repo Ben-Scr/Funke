@@ -83,13 +83,37 @@ namespace Index::BuiltInComponentRegistrationInternal {
 			return desc;
 		}
 
+		PropertyDescriptor MakeSkyboxMaterialRef() {
+			PropertyDescriptor desc;
+			desc.Name = "SkyboxMaterial";
+			desc.DisplayName = "Skybox Material";
+			desc.Type = PropertyType::AssetRef;
+			desc.Metadata.AssetKindFilter = AssetKind::Material;
+			desc.Metadata.Tooltip = "A .material whose shader targets Skybox (e.g. the built-in Gradient, 6-Sided or Panoramic "
+				"sky shaders). None draws the gradient from the colors below.";
+			desc.Metadata.EnabledIfFn = [](const Entity& e) {
+				return e.GetComponent<Camera3DComponent>().Background == CameraBackground::Skybox;
+			};
+			desc.Get = [](const Entity& e) -> PropertyValue {
+				PropertyValue v;
+				v.Type = PropertyType::AssetRef;
+				v.UIntValue = e.GetComponent<Camera3DComponent>().SkyboxMaterial;
+				return v;
+			};
+			desc.Set = [](Entity& e, const PropertyValue& v) {
+				MaterialLibrary::Invalidate(v.UIntValue);
+				e.GetComponent<Camera3DComponent>().SkyboxMaterial = v.UIntValue;
+			};
+			return desc;
+		}
+
 		PropertyDescriptor MakeCustomMeshRef() {
 			PropertyDescriptor desc;
 			desc.Name = "CustomMesh";
 			desc.DisplayName = "Custom Mesh";
 			desc.Type = PropertyType::AssetRef;
 			desc.Metadata.AssetKindFilter = AssetKind::Mesh;
-			desc.Metadata.Tooltip = "A mesh asset (.obj) drawn instead of the primitive Mesh. None draws the primitive.";
+			desc.Metadata.Tooltip = "A mesh asset (.obj, .gltf, .glb) drawn instead of the primitive Mesh. None draws the primitive.";
 			desc.Get = [](const Entity& e) -> PropertyValue {
 				PropertyValue v;
 				v.Type = PropertyType::AssetRef;
@@ -106,6 +130,10 @@ namespace Index::BuiltInComponentRegistrationInternal {
 
 		bool IsSkybox(const Entity& e) {
 			return e.GetComponent<Camera3DComponent>().Background == CameraBackground::Skybox;
+		}
+
+		bool IsFogOn(const Entity& e) {
+			return e.GetComponent<Camera3DComponent>().FogEnabled;
 		}
 	}
 
@@ -154,9 +182,11 @@ namespace Index::BuiltInComponentRegistrationInternal {
 			Properties::Make("NearClip", "Near Clip", &Camera3DComponent::NearClip, Properties::Meta::Clamp(0.0001, 100000.0, 0.01f)),
 			Properties::Make("FarClip", "Far Clip", &Camera3DComponent::FarClip, Properties::Meta::Clamp(0.001, 1000000.0, 1.0f)),
 			Properties::Make("Background", "Background", &Camera3DComponent::Background,
-				Properties::Meta::Tooltip("Skybox draws a procedural gradient sky; Solid Color clears to Clear Color.")),
+				Properties::Meta::Tooltip("Skybox draws the Skybox Material, or a procedural gradient sky without one; "
+					"Solid Color clears to Clear Color.")),
 			Properties::Make("ClearColor", "Clear Color", &Camera3DComponent::ClearColor,
 				Properties::Meta::EnabledIf([](const Entity& e) { return !IsSkybox(e); })),
+			MakeSkyboxMaterialRef(),
 			Properties::Make("SkyTopColor", "Sky Top", &Camera3DComponent::SkyTopColor,
 				Properties::Meta::EnabledIf(IsSkybox)),
 			Properties::Make("SkyHorizonColor", "Sky Horizon", &Camera3DComponent::SkyHorizonColor,
@@ -169,6 +199,18 @@ namespace Index::BuiltInComponentRegistrationInternal {
 			Properties::Make("SkyAmbient", "Sky Ambient", &Camera3DComponent::SkyAmbient,
 				Properties::Meta::Clamp(0.0, 10.0, 0.01f).WithEnabledIf(IsSkybox)
 					.WithTooltip("How strongly the sky colors light meshes from all directions.")),
+			Properties::Make("AmbientFromSkybox", "Ambient From Skybox", &Camera3DComponent::AmbientFromSkybox,
+				Properties::Meta::Tooltip("Light meshes with the Skybox Material's colors (gradient colors, or the averaged "
+					"panorama / cube faces) instead of Sky Top / Horizon / Ground.")
+					.WithEnabledIf([](const Entity& e) { return IsSkybox(e) && e.GetComponent<Camera3DComponent>().SkyboxMaterial != 0; })),
+			Properties::Make("FogEnabled", "Fog", &Camera3DComponent::FogEnabled,
+				Properties::Meta::Tooltip("Meshes fade into Fog Color with distance; materials can opt out (a sky dome).")),
+			Properties::Make("FogColor", "Fog Color", &Camera3DComponent::FogColor,
+				Properties::Meta::EnabledIf(IsFogOn).WithTooltip("Match the sky's horizon so distant geometry dissolves into it.")),
+			Properties::Make("FogStart", "Fog Start", &Camera3DComponent::FogStart,
+				Properties::Meta::Clamp(0.0, 100000.0, 0.5f).WithEnabledIf(IsFogOn).WithTooltip("Distance where the fog begins.")),
+			Properties::Make("FogEnd", "Fog End", &Camera3DComponent::FogEnd,
+				Properties::Meta::Clamp(0.0, 100000.0, 0.5f).WithEnabledIf(IsFogOn).WithTooltip("Distance where meshes are fully fogged.")),
 		};
 		cameraInfo.serialize = [](Entity e) -> Json::Value {
 			const auto& c = e.GetComponent<Camera3DComponent>();
@@ -185,6 +227,16 @@ namespace Index::BuiltInComponentRegistrationInternal {
 			v.AddMember("skyGround", UIColorToJson(c.SkyGroundColor));
 			v.AddMember("sunSize", Json::Value(c.SunSize));
 			v.AddMember("skyAmbient", Json::Value(c.SkyAmbient));
+			if (c.SkyboxMaterial != 0) {
+				v.AddMember("skyboxMaterial", Json::Value(std::to_string(c.SkyboxMaterial)));
+			}
+			if (c.AmbientFromSkybox) {
+				v.AddMember("ambientFromSkybox", Json::Value(true));
+			}
+			v.AddMember("fog", Json::Value(c.FogEnabled));
+			v.AddMember("fogColor", UIColorToJson(c.FogColor));
+			v.AddMember("fogStart", Json::Value(c.FogStart));
+			v.AddMember("fogEnd", Json::Value(c.FogEnd));
 			return v;
 		};
 		cameraInfo.deserialize = [](Entity e, const Json::Value& v) {
@@ -204,6 +256,13 @@ namespace Index::BuiltInComponentRegistrationInternal {
 			c.SkyGroundColor = ReadColor(v, "skyGround", d.SkyGroundColor);
 			c.SunSize = ReadFloat(v, "sunSize", d.SunSize);
 			c.SkyAmbient = ReadFloat(v, "skyAmbient", d.SkyAmbient);
+			c.SkyboxMaterial = ReadGuid(v, "skyboxMaterial");
+			const Json::Value* ambientFromSkybox = v.FindMember("ambientFromSkybox");
+			c.AmbientFromSkybox = ambientFromSkybox && ambientFromSkybox->AsBoolOr(false);
+			c.FogEnabled = ReadBool(v, "fog", d.FogEnabled);
+			c.FogColor = ReadColor(v, "fogColor", d.FogColor);
+			c.FogStart = ReadFloat(v, "fogStart", d.FogStart);
+			c.FogEnd = ReadFloat(v, "fogEnd", d.FogEnd);
 		};
 		registry.Register<Camera3DComponent>(cameraInfo);
 

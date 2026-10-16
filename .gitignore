@@ -7,6 +7,8 @@
 build/
 bin-int/
 **/build/
+# core.ignorecase makes the rule above also hit source folders like Index-Editor/src/Build.
+!**/src/**/[Bb]uild/
 **/bin-int/
 **/[Bb]in/
 **/[Oo]bj/
@@ -23,6 +25,8 @@ Index-Engine/src/Core/BuildMetadata.generated.hpp
 Index-Engine/src/Core/.BuildMetadata.generated.hpp.*
 Index-Engine/src/Core/BuildIdentity.generated.hpp
 Index-Engine/src/Core/.BuildIdentity.generated.hpp.*
+Index-Engine/src/Core/EngineAbi.generated.hpp
+Index-Engine/src/Core/.EngineAbi.generated.hpp.*
 # Generated configuration folders. Keep source folders like src/Debugging trackable.
 **/[Dd]ebug/
 **/[Dd]ebug-*/
@@ -448,3 +452,7 @@ Index-Editor/mono/
 External/SDL-build/
 vendor/emsdk/
 vendor/dotnet11/
+
+# Sample projects keep their asset metadata (GUIDs) and meshes; the global *.meta / *.obj rules are for build output.
+!Projects/**/Assets/**/*.meta
+!Projects/**/Assets/**/*.obj

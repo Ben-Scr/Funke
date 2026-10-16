@@ -323,6 +323,42 @@ namespace Index::Platform {
 		}
 	}
 
+	void SaveFileAsync(PathPickedFn onPicked, const std::filesystem::path& defaultPath,
+		const std::vector<FileFilter>& filters, const std::string& title)
+	{
+		// SDL reads the filter strings until the callback runs, so they travel with it.
+		struct Request {
+			PathPickedFn OnPicked;
+			std::vector<FileFilter> Filters;
+			std::vector<SDL_DialogFileFilter> SdlFilters;
+		};
+		auto* request = new Request{ std::move(onPicked), filters, {} };
+		for (const FileFilter& filter : request->Filters) request->SdlFilters.push_back({ filter.Name.c_str(), filter.Pattern.c_str() });
+
+		// The Windows dialog splits folder and file name at the last separator and needs native ones.
+		const std::string location = ToUtf8(std::filesystem::path(defaultPath).make_preferred());
+		const SDL_PropertiesID props = SDL_CreateProperties();
+		if (!location.empty()) SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_LOCATION_STRING, location.c_str());
+		if (!title.empty()) SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_TITLE_STRING, title.c_str());
+		if (!request->SdlFilters.empty()) {
+			SDL_SetPointerProperty(props, SDL_PROP_FILE_DIALOG_FILTERS_POINTER, request->SdlFilters.data());
+			SDL_SetNumberProperty(props, SDL_PROP_FILE_DIALOG_NFILTERS_NUMBER, static_cast<Sint64>(request->SdlFilters.size()));
+		}
+		if (SDL_Window* parent = DialogParentWindow()) SDL_SetPointerProperty(props, SDL_PROP_FILE_DIALOG_WINDOW_POINTER, parent);
+		SDL_ShowFileDialogWithProperties(SDL_FILEDIALOG_SAVEFILE,
+			[](void* userData, const char* const* fileList, int) {
+				std::unique_ptr<Request> request(static_cast<Request*>(userData));
+				if (!fileList) {
+					IDX_CORE_WARN_TAG("Platform", "Save dialog failed: {}", SDL_GetError());
+					request->OnPicked(std::nullopt);
+					return;
+				}
+				request->OnPicked(fileList[0] ? std::optional<std::filesystem::path>(FromUtf8(fileList[0])) : std::nullopt);
+			},
+			request, props);
+		SDL_DestroyProperties(props);
+	}
+
 	std::string GetPreferredLocale() {
 		int count = 0;
 		SDL_Locale** locales = SDL_GetPreferredLocales(&count);
@@ -623,6 +659,108 @@ namespace Index::Platform {
 		s_PendingTextAction.store(static_cast<int>(action));
 	}
 
+	namespace {
+		std::mutex s_JavaMessageMutex;
+		std::deque<std::pair<std::string, std::string>> s_JavaMessages;
+		// A stalled main thread must not let a chatty Java plugin grow the queue without bound.
+		constexpr size_t k_MaxJavaMessages = 1024;
+
+#if defined(IDX_PLATFORM_ANDROID)
+		std::string FromJavaBytes(JNIEnv* env, jbyteArray bytes) {
+			if (!bytes) return {};
+			std::string text(static_cast<size_t>(env->GetArrayLength(bytes)), '\0');
+			if (!text.empty()) env->GetByteArrayRegion(bytes, 0, static_cast<jsize>(text.size()), reinterpret_cast<jbyte*>(text.data()));
+			return text;
+		}
+
+		struct JavaBridge {
+			jclass Class = nullptr;
+			jmethodID Call = nullptr;
+		};
+
+		// Loaded through the activity's class loader: FindClass on threads Java did not start only sees system classes.
+		const JavaBridge* GetJavaBridge(JNIEnv* env) {
+			static std::mutex s_Mutex;
+			static JavaBridge s_Bridge;
+			static bool s_Resolved = false;
+			std::lock_guard lock(s_Mutex);
+			if (s_Resolved) return s_Bridge.Class ? &s_Bridge : nullptr;
+			auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+			if (!activity) return nullptr;
+			s_Resolved = true;
+			jclass activityClass = env->GetObjectClass(activity);
+			jmethodID getClassLoader = env->GetMethodID(activityClass, "getClassLoader", "()Ljava/lang/ClassLoader;");
+			jobject loader = getClassLoader ? env->CallObjectMethod(activity, getClassLoader) : nullptr;
+			jclass loaderClass = env->FindClass("java/lang/ClassLoader");
+			jmethodID loadClass = env->GetMethodID(loaderClass, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+			jstring name = env->NewStringUTF("dev.index.player.IndexBridge");
+			auto bridge = loader && loadClass ? static_cast<jclass>(env->CallObjectMethod(loader, loadClass, name)) : nullptr;
+			if (env->ExceptionCheck()) {
+				env->ExceptionClear();
+				bridge = nullptr;
+			}
+			if (bridge) {
+				s_Bridge.Call = env->GetStaticMethodID(bridge, "call", "([B[B[B)[B");
+				if (env->ExceptionCheck()) env->ExceptionClear();
+				if (s_Bridge.Call) s_Bridge.Class = static_cast<jclass>(env->NewGlobalRef(bridge));
+				env->DeleteLocalRef(bridge);
+			}
+			if (!s_Bridge.Class) IDX_CORE_WARN_TAG("Platform", "dev.index.player.IndexBridge is missing from the APK; Java calls are unavailable.");
+			env->DeleteLocalRef(name);
+			env->DeleteLocalRef(loaderClass);
+			if (loader) env->DeleteLocalRef(loader);
+			env->DeleteLocalRef(activityClass);
+			env->DeleteLocalRef(activity);
+			return s_Bridge.Class ? &s_Bridge : nullptr;
+		}
+#endif
+	}
+
+	bool CallJava(const std::string& className, const std::string& method, const std::string& argument, std::string& result) {
+		result.clear();
+#if defined(IDX_PLATFORM_ANDROID)
+		auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+		if (!env || className.empty() || method.empty()) return false;
+		const JavaBridge* bridge = GetJavaBridge(env);
+		if (!bridge) return false;
+		jbyteArray jClass = ToJavaBytes(env, className);
+		jbyteArray jMethod = ToJavaBytes(env, method);
+		jbyteArray jArgument = ToJavaBytes(env, argument);
+		// IndexBridge.call catches the target's exceptions and answers null instead.
+		auto answer = static_cast<jbyteArray>(env->CallStaticObjectMethod(bridge->Class, bridge->Call, jClass, jMethod, jArgument));
+		bool ok = false;
+		if (env->ExceptionCheck()) {
+			env->ExceptionClear();
+		} else if (answer) {
+			result = FromJavaBytes(env, answer);
+			ok = true;
+		}
+		if (answer) env->DeleteLocalRef(answer);
+		env->DeleteLocalRef(jClass);
+		env->DeleteLocalRef(jMethod);
+		env->DeleteLocalRef(jArgument);
+		return ok;
+#else
+		(void)className; (void)method; (void)argument;
+		return false;
+#endif
+	}
+
+	bool PollJavaMessage(std::string& channel, std::string& message) {
+		std::lock_guard lock(s_JavaMessageMutex);
+		if (s_JavaMessages.empty()) return false;
+		channel = std::move(s_JavaMessages.front().first);
+		message = std::move(s_JavaMessages.front().second);
+		s_JavaMessages.pop_front();
+		return true;
+	}
+
+	void PushJavaMessage(std::string channel, std::string message) {
+		std::lock_guard lock(s_JavaMessageMutex);
+		if (s_JavaMessages.size() >= k_MaxJavaMessages) s_JavaMessages.pop_front();
+		s_JavaMessages.emplace_back(std::move(channel), std::move(message));
+	}
+
 	const char* SharedLibraryExtension() {
 #if defined(IDX_PLATFORM_WINDOWS)
 		return ".dll";
@@ -696,5 +834,10 @@ extern "C" JNIEXPORT void JNICALL Java_dev_index_player_IndexAudioService_native
 // A Cut / Copy / Paste / Select all tap in the floating text toolbar, called on the Java UI thread.
 extern "C" JNIEXPORT void JNICALL Java_dev_index_player_IndexActivity_nativeTextAction(JNIEnv*, jclass, jint action) {
 	Index::Platform::PushTextAction(static_cast<Index::Platform::TextAction>(action));
+}
+
+// IndexBridge.send from any Java thread; strings arrive as UTF-8 bytes.
+extern "C" JNIEXPORT void JNICALL Java_dev_index_player_IndexBridge_nativeSend(JNIEnv* env, jclass, jbyteArray channel, jbyteArray message) {
+	Index::Platform::PushJavaMessage(Index::Platform::FromJavaBytes(env, channel), Index::Platform::FromJavaBytes(env, message));
 }
 #endif

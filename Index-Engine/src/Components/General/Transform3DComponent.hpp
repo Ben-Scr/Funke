@@ -20,6 +20,8 @@ namespace Index {
 		void SetLocalRotationQuat(const glm::quat& rotation) { Rotation = glm::degrees(glm::eulerAngles(rotation)); }
 
 		glm::mat4 GetLocalMatrix() const;
+		// Recomputes only when Position/Rotation/Scale changed; the hierarchy pass runs several times per frame.
+		const glm::mat4& GetCachedLocalMatrix();
 
 		Vec3 GetWorldPosition() const { return Vec3(WorldMatrix[3]); }
 		// Right-handed, -Z forward (glm/WebGPU camera convention).
@@ -29,6 +31,13 @@ namespace Index {
 
 		// Splits a matrix into position, Euler degrees and scale (no shear).
 		static void Decompose(const glm::mat4& matrix, Vec3& outPosition, Vec3& outRotationDegrees, Vec3& outScale);
+
+		// Runtime cache for GetCachedLocalMatrix, never serialized.
+		glm::mat4 CachedLocalMatrix{ 1.0f };
+		Vec3 CachedPosition{ 0.0f };
+		Vec3 CachedRotation{ 0.0f };
+		Vec3 CachedScale{ 0.0f };
+		bool CachedLocalValid = false;
 	};
 
 }

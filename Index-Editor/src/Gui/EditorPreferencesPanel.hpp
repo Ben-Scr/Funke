@@ -13,7 +13,6 @@ namespace Index {
 		// other panels. The close-X button on the window's title bar
 		// flips it false; the caller suppresses the call next frame.
 		void Render(bool* pOpen);
-		bool ConsumeRestartRequest();
 
 	private:
 		void RenderAppearanceTab();
@@ -21,7 +20,6 @@ namespace Index {
 		void RenderLayoutsTab();
 		void RenderBehaviorTab();
 
-		void RenderFontRestartModal();
 		void RenderLayoutModals();
 		bool IsPreferenceSearchActive() const;
 		bool PreferenceSectionVisible(const char* section, const char* keywords) const;
@@ -32,10 +30,6 @@ namespace Index {
 		std::string m_PendingDeleteLayoutName;
 		bool m_OpenDeleteLayoutRequest = false;
 
-		// Raised after the editor font asset changes. The typeface is
-		// loaded during ImGui setup, so the user chooses when to reload.
-		bool m_OpenFontRestartRequest = false;
-		bool m_RestartRequested = false;
 		char m_SearchBuffer[256]{};
 
 		// True the frame the panel becomes visible. Used to refresh

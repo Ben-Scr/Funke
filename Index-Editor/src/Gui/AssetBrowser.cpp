@@ -22,6 +22,7 @@
 #include "Gui/HierarchyDragData.hpp"
 #include "Gui/SpriteSliceDragPayload.hpp"
 #include "Gui/ThumbnailCache.hpp"
+#include "Graphics/CustomShader.hpp"
 #include "Graphics/Texture2D.hpp"
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -2574,6 +2575,20 @@ namespace Index {
 				}
 				if (EngineModules::IsActive(EngineModule::ThreeD) && ImGui::MenuItem("Material")) {
 					CreateMaterial(m_CurrentDirectory);
+				}
+				if (ImGui::BeginMenu("Animation")) {
+					if (ImGui::MenuItem("Animation Clip")) CreateAnimationAsset(m_CurrentDirectory, false);
+					if (ImGui::MenuItem("Animator Controller")) CreateAnimationAsset(m_CurrentDirectory, true);
+					ImGui::EndMenu();
+				}
+				// Assign a material using one of these to a Camera 3D's Skybox Material.
+				if (EngineModules::IsActive(EngineModule::ThreeD) && ImGui::BeginMenu("Skybox Shader")) {
+					for (const ShaderTemplate& skyTemplate : GetSkyboxShaderTemplates()) {
+						if (ImGui::MenuItem(skyTemplate.MenuName)) {
+							CreateFile(m_CurrentDirectory, skyTemplate.FileName, ".wgsl", skyTemplate.Source);
+						}
+					}
+					ImGui::EndMenu();
 				}
 				if (ImGui::BeginMenu("File")) {
 					if (ImGui::MenuItem("Empty File")) {

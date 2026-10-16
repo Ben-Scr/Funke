@@ -8,12 +8,22 @@
 #include "Components/Graphics/MeshRendererComponent.hpp"
 #include "Components/Graphics/ParticleSystem3DComponent.hpp"
 #include "Components/Graphics/PointLightComponent.hpp"
+#include "Components/Graphics/SkinnedMeshRendererComponent.hpp"
 #include "Components/Graphics/SpotLightComponent.hpp"
 #include "Graphics/Material.hpp"
 #include "Graphics/MeshAsset.hpp"
+#include "Graphics/SkeletalAnimation.hpp"
+#include "Collections/Viewport.hpp"
+#include "Core/Window.hpp"
 #include "Scene/Scene.hpp"
+#include "Systems/SkinnedMeshAnimationSystem.hpp"
+#include "Systems/Transform3DHierarchySystem.hpp"
 
 #include <algorithm>
+#include <cstring>
+#include <string>
+#include <string_view>
+#include <vector>
 
 // C# bindings for the 3D components. Split from ScriptBindings.cpp so 3D additions don't recompile that TU.
 namespace Index {
@@ -355,7 +365,8 @@ namespace Index {
 		}
 
 		// ── Camera3D sky ────────────────────────────────────────────────
-		// Layout: background, skyTop rgba, skyHorizon rgba, skyGround rgba, sunSize, skyAmbient (15).
+		// Layout: background, skyTop rgba, skyHorizon rgba, skyGround rgba, sunSize, skyAmbient, ambientFromSkybox (16),
+		// fog, fogColor rgba, fogStart, fogEnd (23).
 
 		void Index_Camera3D_GetSky(uint64_t id, float* values, int count) {
 			const auto* c = Resolve<Camera3DComponent>(id);
@@ -364,6 +375,10 @@ namespace Index {
 			out.Put(static_cast<float>(v.Background));
 			out.Put(v.SkyTopColor); out.Put(v.SkyHorizonColor); out.Put(v.SkyGroundColor);
 			out.Put(v.SunSize); out.Put(v.SkyAmbient);
+			out.Put(v.AmbientFromSkybox ? 1.0f : 0.0f);
+			out.Put(v.FogEnabled ? 1.0f : 0.0f);
+			out.Put(v.FogColor);
+			out.Put(v.FogStart); out.Put(v.FogEnd);
 		}
 		void Index_Camera3D_SetSky(uint64_t id, const float* values, int count) {
 			auto* c = Resolve<Camera3DComponent>(id);
@@ -376,6 +391,68 @@ namespace Index {
 			c->SkyGroundColor = in.Get(c->SkyGroundColor);
 			c->SunSize = std::clamp(in.Get(c->SunSize), 0.0f, 45.0f);
 			c->SkyAmbient = std::max(in.Get(c->SkyAmbient), 0.0f);
+			c->AmbientFromSkybox = in.Get(c->AmbientFromSkybox ? 1.0f : 0.0f) >= 0.5f;
+			c->FogEnabled = in.Get(c->FogEnabled ? 1.0f : 0.0f) >= 0.5f;
+			c->FogColor = in.Get(c->FogColor);
+			c->FogStart = std::max(in.Get(c->FogStart), 0.0f);
+			c->FogEnd = std::max(in.Get(c->FogEnd), 0.0f);
+		}
+		uint64_t Index_Camera3D_GetSkyboxMaterial(uint64_t id) {
+			const auto* c = Resolve<Camera3DComponent>(id);
+			return c ? c->SkyboxMaterial : 0;
+		}
+		void Index_Camera3D_SetSkyboxMaterial(uint64_t id, uint64_t materialGuid) {
+			if (auto* c = Resolve<Camera3DComponent>(id)) c->SkyboxMaterial = materialGuid;
+		}
+
+		// The surface script screen points refer to (Input.MousePosition): the game view or aspect-locked region,
+		// otherwise the main viewport.
+		bool ScriptScreenSize(glm::vec2& size) {
+			const Window::UIRegion region = Window::GetUIRegion();
+			if (region.IsActive()) {
+				size = { static_cast<float>(region.Width), static_cast<float>(region.Height) };
+				return true;
+			}
+			const Viewport* viewport = Window::GetMainViewport();
+			if (!viewport || viewport->GetWidth() <= 0 || viewport->GetHeight() <= 0) return false;
+			size = { static_cast<float>(viewport->GetWidth()), static_cast<float>(viewport->GetHeight()) };
+			return true;
+		}
+
+		bool ResolveCamera(uint64_t id, const Camera3DComponent*& camera, glm::mat4& world) {
+			Scene* scene = nullptr;
+			EntityHandle handle = entt::null;
+			if (!ResolveEntityReference(id, scene, handle) || !scene->IsValid(handle) || !scene->HasComponent<Camera3DComponent>(handle)) {
+				return false;
+			}
+			camera = &scene->GetComponent<Camera3DComponent>(handle);
+			// Scripts may have moved the camera this frame; the hierarchy pass runs later.
+			world = Transform3DHierarchySystem::ComputeWorldMatrix(scene->GetRegistry(), handle);
+			return true;
+		}
+
+		int Index_Camera3D_ScreenPointToRay(uint64_t id, float screenX, float screenY, float* values, int count) {
+			if (!values || count < 6) return 0;
+			const Camera3DComponent* camera = nullptr;
+			glm::mat4 world(1.0f);
+			glm::vec2 size(0.0f);
+			if (!ResolveCamera(id, camera, world) || !ScriptScreenSize(size)) return 0;
+			const Camera3DRay ray = Camera3DComponent::ScreenPointToRay(world, *camera, { screenX, screenY }, size);
+			values[0] = ray.Origin.x; values[1] = ray.Origin.y; values[2] = ray.Origin.z;
+			values[3] = ray.Direction.x; values[4] = ray.Direction.y; values[5] = ray.Direction.z;
+			return 1;
+		}
+
+		int Index_Camera3D_WorldToScreenPoint(uint64_t id, float x, float y, float z, float* values, int count) {
+			if (!values || count < 3) return 0;
+			const Camera3DComponent* camera = nullptr;
+			glm::mat4 world(1.0f);
+			glm::vec2 size(0.0f);
+			if (!ResolveCamera(id, camera, world) || !ScriptScreenSize(size)) return 0;
+			glm::vec3 screen(0.0f);
+			const bool inFront = Camera3DComponent::WorldToScreenPoint(world, *camera, { x, y, z }, size, screen);
+			values[0] = screen.x; values[1] = screen.y; values[2] = screen.z;
+			return inFront ? 1 : 0;
 		}
 	}
 
@@ -437,7 +514,14 @@ namespace Index {
 			}
 		}
 		void Index_ParticleSystem3D_Emit(uint64_t id, int count) {
-			if (auto* c = Resolve<ParticleSystem3DComponent>(id); c && count > 0) c->Emit(static_cast<size_t>(count));
+			Scene* scene = nullptr;
+			EntityHandle handle = entt::null;
+			if (count <= 0 || !ResolveEntityReference(id, scene, handle) || !scene->IsValid(handle)) return;
+			auto* c = scene->GetRegistry().try_get<ParticleSystem3DComponent>(handle);
+			if (!c) return;
+			// A script that moved the emitter this frame expects the burst at the new pose, not the last Simulate's.
+			c->SetEmitterWorld(Transform3DHierarchySystem::ComputeWorldMatrix(scene->GetRegistry(), handle));
+			c->Emit(static_cast<size_t>(count));
 		}
 		// Bit 0 = emitting, bit 1 = simulating.
 		int Index_ParticleSystem3D_GetState(uint64_t id, int* particleCount) {
@@ -452,6 +536,130 @@ namespace Index {
 		}
 		void Index_ParticleSystem3D_SetTexture(uint64_t id, uint64_t textureGuid) {
 			if (auto* c = Resolve<ParticleSystem3DComponent>(id)) c->Texture = textureGuid;
+		}
+		// ── SkinnedMeshRenderer ─────────────────────────────────────────
+
+		const SkinnedMeshData* SkinOf(const SkinnedMeshRendererComponent& c) {
+			const MeshAsset* asset = MeshLibrary::Get(c.Model);
+			return asset ? asset->Skin.get() : nullptr;
+		}
+
+		int CopyToBuffer(std::string_view value, char* outBuffer, int capacity) {
+			const int required = static_cast<int>(value.size());
+			if (outBuffer && capacity > 0) {
+				const int count = std::min(required, capacity - 1);
+				if (count > 0) std::memcpy(outBuffer, value.data(), static_cast<size_t>(count));
+				outBuffer[count] = '\0';
+			}
+			return required;
+		}
+
+		// speed, loop, playOnAwake, time, playing, lit, castShadows, color rgba
+		void Index_SkinnedMeshRenderer_Get(uint64_t id, float* values, int count) {
+			const auto* c = Resolve<SkinnedMeshRendererComponent>(id);
+			const SkinnedMeshRendererComponent fallback;
+			const SkinnedMeshRendererComponent& v = c ? *c : fallback;
+			PackedWriter out{ values, count };
+			out.Put(v.Speed); out.Put(v.Loop ? 1.0f : 0.0f); out.Put(v.PlayOnAwake ? 1.0f : 0.0f); out.Put(v.Time);
+			out.Put(v.Playing ? 1.0f : 0.0f); out.Put(v.Lit ? 1.0f : 0.0f); out.Put(v.CastShadows ? 1.0f : 0.0f); out.Put(v.Color);
+		}
+		// Same layout; playing is read-only (Play / Control change it).
+		void Index_SkinnedMeshRenderer_Set(uint64_t id, const float* values, int count) {
+			auto* c = Resolve<SkinnedMeshRendererComponent>(id);
+			if (!c) return;
+			PackedReader in{ values, count };
+			c->Speed = in.Get(c->Speed);
+			c->Loop = in.Get(c->Loop ? 1.0f : 0.0f) != 0.0f;
+			c->PlayOnAwake = in.Get(c->PlayOnAwake ? 1.0f : 0.0f) != 0.0f;
+			const float time = in.Get(c->Time);
+			const SkinnedMeshData* data = SkinOf(*c);
+			const int clip = data ? SkinnedMeshAnimationSystem::ResolveClip(*c, *data) : -1;
+			c->Time = clip >= 0 ? std::clamp(time, 0.0f, data->Clips[static_cast<size_t>(clip)].Duration) : std::max(time, 0.0f);
+			in.Get(0.0f);
+			c->Lit = in.Get(c->Lit ? 1.0f : 0.0f) != 0.0f;
+			c->CastShadows = in.Get(c->CastShadows ? 1.0f : 0.0f) != 0.0f;
+			c->Color = in.Get(c->Color);
+		}
+		// which: 0 = model, 1 = material
+		uint64_t Index_SkinnedMeshRenderer_GetAsset(uint64_t id, int which) {
+			const auto* c = Resolve<SkinnedMeshRendererComponent>(id);
+			if (!c) return 0;
+			return which == 0 ? c->Model : c->Material;
+		}
+		void Index_SkinnedMeshRenderer_SetAsset(uint64_t id, int which, uint64_t guid) {
+			auto* c = Resolve<SkinnedMeshRendererComponent>(id);
+			if (!c) return;
+			if (which == 0) c->Model = guid;
+			else c->Material = guid;
+		}
+		void Index_SkinnedMeshRenderer_Play(uint64_t id, const char* clip, float crossFade) {
+			auto* c = Resolve<SkinnedMeshRendererComponent>(id);
+			if (!c) return;
+			SkinnedMeshAnimationSystem::Play(*c, SkinOf(*c), clip ? std::string(clip) : std::string{}, std::max(crossFade, 0.0f));
+		}
+		// op: 0 = pause, 1 = resume, 2 = stop (back to the clip's start)
+		void Index_SkinnedMeshRenderer_Control(uint64_t id, int op) {
+			auto* c = Resolve<SkinnedMeshRendererComponent>(id);
+			if (!c) return;
+			c->Awoken = true;
+			switch (op) {
+				case 0: c->Playing = false; break;
+				case 1: c->Playing = true; break;
+				case 2:
+					c->Playing = false;
+					c->Time = 0.0f;
+					c->PreviousClip = -1;
+					c->Fade = 1.0f;
+					break;
+				default: break;
+			}
+		}
+		// The clip that plays (the first one when Clip is empty); "" when the model has none.
+		int Index_SkinnedMeshRenderer_GetClip(uint64_t id, char* outBuffer, int capacity) {
+			const auto* c = Resolve<SkinnedMeshRendererComponent>(id);
+			const SkinnedMeshData* data = c ? SkinOf(*c) : nullptr;
+			const int clip = data ? SkinnedMeshAnimationSystem::ResolveClip(*c, *data) : -1;
+			return CopyToBuffer(clip >= 0 ? std::string_view(data->Clips[static_cast<size_t>(clip)].Name) : std::string_view{}, outBuffer, capacity);
+		}
+		int Index_SkinnedMeshRenderer_GetClipCount(uint64_t id) {
+			const auto* c = Resolve<SkinnedMeshRendererComponent>(id);
+			const SkinnedMeshData* data = c ? SkinOf(*c) : nullptr;
+			return data ? static_cast<int>(data->Clips.size()) : 0;
+		}
+		int Index_SkinnedMeshRenderer_GetClipName(uint64_t id, int index, char* outBuffer, int capacity) {
+			const auto* c = Resolve<SkinnedMeshRendererComponent>(id);
+			const SkinnedMeshData* data = c ? SkinOf(*c) : nullptr;
+			const bool valid = data && index >= 0 && static_cast<size_t>(index) < data->Clips.size();
+			return CopyToBuffer(valid ? std::string_view(data->Clips[static_cast<size_t>(index)].Name) : std::string_view{}, outBuffer, capacity);
+		}
+		float Index_SkinnedMeshRenderer_GetClipDuration(uint64_t id, int index) {
+			const auto* c = Resolve<SkinnedMeshRendererComponent>(id);
+			const SkinnedMeshData* data = c ? SkinOf(*c) : nullptr;
+			const bool valid = data && index >= 0 && static_cast<size_t>(index) < data->Clips.size();
+			return valid ? data->Clips[static_cast<size_t>(index)].Duration : 0.0f;
+		}
+		// World position, forward (-Z) and up (+Y) of a bone or any other model node in the current pose:
+		// 9 floats. Returns 0 when the node doesn't exist.
+		int Index_SkinnedMeshRenderer_GetBone(uint64_t id, const char* bone, float* values, int count) {
+			Scene* scene = nullptr;
+			EntityHandle handle = entt::null;
+			if (!bone || !ResolveEntityReference(id, scene, handle) || !scene->IsValid(handle)) return 0;
+			const auto* c = scene->GetRegistry().try_get<SkinnedMeshRendererComponent>(handle);
+			const SkinnedMeshData* data = c ? SkinOf(*c) : nullptr;
+			const int node = data ? data->FindNode(bone) : -1;
+			if (node < 0) return 0;
+			Transform3DHierarchySystem::Propagate(*scene);
+			const auto* transform = scene->GetRegistry().try_get<Transform3DComponent>(handle);
+			std::vector<glm::mat4> nodes;
+			SkeletalAnimation::EvaluatePose(*data, SkinnedMeshAnimationSystem::MakePoseRequest(*c, *data), nodes);
+			const glm::mat4 world = (transform ? transform->WorldMatrix : glm::mat4(1.0f)) * nodes[static_cast<size_t>(node)];
+			const glm::vec3 forward = glm::normalize(-glm::vec3(world[2]));
+			const glm::vec3 up = glm::normalize(glm::vec3(world[1]));
+			PackedWriter out{ values, count };
+			for (int i = 0; i < 3; ++i) out.Put(world[3][i]);
+			for (int i = 0; i < 3; ++i) out.Put(forward[i]);
+			for (int i = 0; i < 3; ++i) out.Put(up[i]);
+			return 1;
 		}
 	}
 
@@ -519,5 +727,20 @@ namespace Index {
 		b.ParticleSystem3D_GetState = IDX_GUARDED_BINDING(Index_ParticleSystem3D_GetState);
 		b.ParticleSystem3D_GetTexture = IDX_GUARDED_BINDING(Index_ParticleSystem3D_GetTexture);
 		b.ParticleSystem3D_SetTexture = IDX_GUARDED_BINDING(Index_ParticleSystem3D_SetTexture);
+		b.Camera3D_GetSkyboxMaterial = IDX_GUARDED_BINDING(Index_Camera3D_GetSkyboxMaterial);
+		b.Camera3D_SetSkyboxMaterial = IDX_GUARDED_BINDING(Index_Camera3D_SetSkyboxMaterial);
+		b.Camera3D_ScreenPointToRay = IDX_GUARDED_BINDING(Index_Camera3D_ScreenPointToRay);
+		b.Camera3D_WorldToScreenPoint = IDX_GUARDED_BINDING(Index_Camera3D_WorldToScreenPoint);
+		b.SkinnedMeshRenderer_Get = IDX_GUARDED_BINDING(Index_SkinnedMeshRenderer_Get);
+		b.SkinnedMeshRenderer_Set = IDX_GUARDED_BINDING(Index_SkinnedMeshRenderer_Set);
+		b.SkinnedMeshRenderer_GetAsset = IDX_GUARDED_BINDING(Index_SkinnedMeshRenderer_GetAsset);
+		b.SkinnedMeshRenderer_SetAsset = IDX_GUARDED_BINDING(Index_SkinnedMeshRenderer_SetAsset);
+		b.SkinnedMeshRenderer_Play = IDX_GUARDED_BINDING(Index_SkinnedMeshRenderer_Play);
+		b.SkinnedMeshRenderer_Control = IDX_GUARDED_BINDING(Index_SkinnedMeshRenderer_Control);
+		b.SkinnedMeshRenderer_GetClip = IDX_GUARDED_BINDING(Index_SkinnedMeshRenderer_GetClip);
+		b.SkinnedMeshRenderer_GetClipCount = IDX_GUARDED_BINDING(Index_SkinnedMeshRenderer_GetClipCount);
+		b.SkinnedMeshRenderer_GetClipName = IDX_GUARDED_BINDING(Index_SkinnedMeshRenderer_GetClipName);
+		b.SkinnedMeshRenderer_GetClipDuration = IDX_GUARDED_BINDING(Index_SkinnedMeshRenderer_GetClipDuration);
+		b.SkinnedMeshRenderer_GetBone = IDX_GUARDED_BINDING(Index_SkinnedMeshRenderer_GetBone);
 	}
 }

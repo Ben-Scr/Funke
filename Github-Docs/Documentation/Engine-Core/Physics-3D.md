@@ -68,7 +68,16 @@ public class Ball : EntityScript
 
 - **Rigidbody3D**: `BodyType`, `Mass`, `LinearDrag`, `AngularDrag`, `GravityScale`, `ContinuousCollision`, `Constraints`, `LinearVelocity`, `AngularVelocity` (radians/s), `AddForce`, `AddForceAtPosition`, `AddTorque` (with `ForceMode3D.Force / Impulse / Acceleration / VelocityChange`), `IsSleeping`, `WakeUp()`, `Sleep()`.
 - **BoxCollider3D / SphereCollider3D / CapsuleCollider3D / MeshCollider3D**: every inspector field.
-- **Physics3D**: `Raycast(origin, direction, out RaycastHit3D hit, maxDistance)` hits the closest non-trigger collider. `RaycastHit3D.Entity` is the entity owning the collider, which can be a child of the Rigidbody 3D. `Physics3D.Gravity` defaults to (0, -9.81, 0) and resets when play restarts.
+- **Physics3D**: `Raycast(origin, direction, out RaycastHit3D hit, maxDistance)` or `Raycast(Ray ray, out hit, maxDistance)` hits the closest non-trigger collider. `RaycastHit3D.Entity` is the entity owning the collider, which can be a child of the Rigidbody 3D. `RaycastFromScreen(screenPoint, out hit)` picks what is under a screen point through `Camera3D.Main`. `Physics3D.Gravity` defaults to (0, -9.81, 0) and resets when play restarts.
+
+### Picking with the mouse or a finger
+
+`Camera3D.ScreenPointToRay(screenPoint)` turns a screen position into a `Ray` (`Origin` on the near plane, normalized `Direction`, `GetPoint(distance)`). Screen positions are viewport pixels with the origin at the top left, the same as `Input.MousePosition` and `Touch.Position`, also inside the editor's Game View. Orthographic cameras give parallel rays. `Camera3D.WorldToScreenPoint(worldPoint, out Vector3 screen)` goes the other way (for labels or markers over 3D objects): `screen.Z` is the distance in front of the camera, and the call returns false for points behind it.
+
+```csharp
+if (Input.GetMouseButtonDown(MouseButton.Left) && Physics3D.RaycastFromScreen(Input.MousePosition, out RaycastHit3D hit))
+    Log.Info($"Clicked {hit.Entity.Name} at {hit.Point}");
+```
 - **Callbacks** (on scripts of the body's entity, i.e. the Rigidbody 3D entity or the static collider's entity): `OnCollisionEnter3D/Stay3D/Exit3D(Collision3D)` and `OnTriggerEnter3D/Stay3D/Exit3D(Collision3D)`. Contacts are reported once per body pair. `Collision3D.Normal` points from `Other` toward `Self`. A body falling asleep doesn't end a contact, and while it sleeps it gets no Stay events. Destroying or disabling a body sends Exit to the other side.
 
 Velocity, forces and raycasts do nothing in edit mode. Scripts run their `OnFixedUpdate` before the physics step, so forces added there apply in the same step.

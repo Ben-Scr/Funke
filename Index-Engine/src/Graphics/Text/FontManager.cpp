@@ -7,6 +7,7 @@
 #include "Serialization/File.hpp"
 #include "Serialization/FileStamp.hpp"
 #include "Serialization/Path.hpp"
+#include "Systems/UILayoutSystem.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -217,6 +218,7 @@ namespace Index {
 			if (!slot.InUse || !slot.Font) continue;
 			if (!slot.Font->IsBakingAsync()) continue;
 			slot.Font->PollAsyncBake();
+			if (!slot.Font->IsBakingAsync()) InvalidateUILayout();  // text measurements change with the new atlas
 			// Just-published atlases haven't been GetFont'd yet this frame; stamp
 			// them so the eviction pass below can't reclaim them the instant they bake.
 			if (slot.Font->IsLoaded()) {

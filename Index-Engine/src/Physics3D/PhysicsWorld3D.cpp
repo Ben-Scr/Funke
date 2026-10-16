@@ -154,14 +154,21 @@ namespace Index {
 			Vec3 Scale{ 1.0f };
 		};
 
+		// DecomposePose(matrix).Scale without the rotation work; Sync needs only the scale for most colliders.
+		Vec3 DecomposeScale(const glm::mat4& matrix) {
+			const Vec3 axes[3] = { Vec3(matrix[0]), Vec3(matrix[1]), Vec3(matrix[2]) };
+			Vec3 scale{ glm::length(axes[0]), glm::length(axes[1]), glm::length(axes[2]) };
+			if (glm::dot(glm::cross(axes[0], axes[1]), axes[2]) < 0.0f) {
+				scale.x = -scale.x;
+			}
+			return scale;
+		}
+
 		Pose DecomposePose(const glm::mat4& matrix) {
 			Pose pose;
 			pose.Position = Vec3(matrix[3]);
 			Vec3 axes[3] = { Vec3(matrix[0]), Vec3(matrix[1]), Vec3(matrix[2]) };
-			pose.Scale = { glm::length(axes[0]), glm::length(axes[1]), glm::length(axes[2]) };
-			if (glm::dot(glm::cross(axes[0], axes[1]), axes[2]) < 0.0f) {
-				pose.Scale.x = -pose.Scale.x;
-			}
+			pose.Scale = DecomposeScale(matrix);
 			for (int i = 0; i < 3; ++i) {
 				if (std::abs(pose.Scale[i]) < 1e-8f) {
 					return pose; // Degenerate basis: keep identity rotation.
@@ -223,6 +230,8 @@ namespace Index {
 			bool HasRigidbody = false;
 			Rigidbody3DComponent Rigidbody{};
 			std::vector<ColliderDesc> Colliders;
+			// Sync pass that last gathered this entry; older entries are gone from the scene.
+			uint32_t SyncStamp = 0;
 		};
 
 		bool SameRigidbody(const Rigidbody3DComponent& a, const Rigidbody3DComponent& b) {
@@ -427,6 +436,8 @@ namespace Index {
 
 		Scene* OwningScene = nullptr;
 		std::unordered_map<EntityHandle, BodyRecord> Bodies;
+		std::unordered_map<EntityHandle, BodyDesc> Desired;
+		uint32_t DesiredStamp = 0;
 		std::unordered_map<JPH::uint32, EntityHandle> Owners;
 
 		std::mutex ContactMutex;
@@ -717,7 +728,7 @@ namespace Index {
 		}
 
 		template <typename TCollider, typename TFill>
-		void GatherColliders(entt::registry& registry, std::unordered_map<EntityHandle, BodyDesc>& desired, ColliderKind kind, TFill&& fill) {
+		void GatherColliders(entt::registry& registry, ColliderKind kind, TFill&& fill) {
 			auto view = registry.view<TCollider, Transform3DComponent>(entt::exclude<DisabledTag, InheritedDisabledTag>);
 			for (auto [entity, collider, transform] : view.each()) {
 				const EntityHandle owner = FindOwner(registry, entity);
@@ -731,7 +742,7 @@ namespace Index {
 				fill(entity, collider, desc);
 
 				if (owner == entity) {
-					desc.Scale = DecomposePose(transform.WorldMatrix).Scale;
+					desc.Scale = DecomposeScale(transform.WorldMatrix);
 				}
 				else {
 					// Body space = the owner's world pose without its scale.
@@ -742,28 +753,39 @@ namespace Index {
 					desc.LocalPosition = relative.Position;
 					desc.LocalRotation = relative.Rotation;
 				}
-				desired[owner].Colliders.push_back(desc);
+				TouchDesired(owner).Colliders.push_back(desc);
 			}
 		}
 
-		std::unordered_map<EntityHandle, BodyDesc> BuildDesiredBodies(entt::registry& registry) {
-			std::unordered_map<EntityHandle, BodyDesc> desired;
+		// Desired is kept across steps so its nodes and collider vectors are reused, not reallocated per step.
+		BodyDesc& TouchDesired(EntityHandle owner) {
+			BodyDesc& desc = Desired[owner];
+			if (desc.SyncStamp != DesiredStamp) {
+				desc.SyncStamp = DesiredStamp;
+				desc.HasRigidbody = false;
+				desc.Colliders.clear();
+			}
+			return desc;
+		}
+
+		void BuildDesiredBodies(entt::registry& registry) {
+			if (++DesiredStamp == 0) DesiredStamp = 1;
 			for (auto [entity, rb, transform] : registry.view<Rigidbody3DComponent, Transform3DComponent>(entt::exclude<DisabledTag, InheritedDisabledTag>).each()) {
-				BodyDesc& desc = desired[entity];
+				BodyDesc& desc = TouchDesired(entity);
 				desc.HasRigidbody = true;
 				desc.Rigidbody = rb;
 			}
-			GatherColliders<BoxCollider3DComponent>(registry, desired, ColliderKind::Box,
+			GatherColliders<BoxCollider3DComponent>(registry, ColliderKind::Box,
 				[](EntityHandle, const BoxCollider3DComponent& c, ColliderDesc& d) { d.Size = c.Size; });
-			GatherColliders<SphereCollider3DComponent>(registry, desired, ColliderKind::Sphere,
+			GatherColliders<SphereCollider3DComponent>(registry, ColliderKind::Sphere,
 				[](EntityHandle, const SphereCollider3DComponent& c, ColliderDesc& d) { d.Radius = c.Radius; });
-			GatherColliders<CapsuleCollider3DComponent>(registry, desired, ColliderKind::Capsule,
+			GatherColliders<CapsuleCollider3DComponent>(registry, ColliderKind::Capsule,
 				[](EntityHandle, const CapsuleCollider3DComponent& c, ColliderDesc& d) {
 					d.Radius = c.Radius;
 					d.Height = c.Height;
 					d.Axis = c.Direction;
 				});
-			GatherColliders<MeshCollider3DComponent>(registry, desired, ColliderKind::Mesh,
+			GatherColliders<MeshCollider3DComponent>(registry, ColliderKind::Mesh,
 				[&registry](EntityHandle entity, const MeshCollider3DComponent& c, ColliderDesc& d) {
 					const MeshRendererComponent* renderer = c.UseMeshRenderer ? registry.try_get<MeshRendererComponent>(entity) : nullptr;
 					d.Mesh = renderer ? renderer->Mesh : c.Mesh;
@@ -771,19 +793,21 @@ namespace Index {
 					if (const MeshAsset* asset = MeshLibrary::Get(d.CustomMesh)) d.CustomMeshRevision = asset->Revision;
 					d.Convex = c.Convex;
 				});
-			for (BodyDesc& desc : desired | std::views::values) {
+			std::erase_if(Desired, [this](const auto& pair) { return pair.second.SyncStamp != DesiredStamp; });
+			for (BodyDesc& desc : Desired | std::views::values) {
+				if (desc.Colliders.size() < 2) continue;
 				std::sort(desc.Colliders.begin(), desc.Colliders.end(), [](const ColliderDesc& a, const ColliderDesc& b) {
 					if (a.Entity != b.Entity) return entt::to_integral(a.Entity) < entt::to_integral(b.Entity);
 					return a.Kind < b.Kind;
 				});
 			}
-			return desired;
 		}
 
 		void Sync(Scene& scene, float dt) {
 			OwningScene = &scene;
 			entt::registry& registry = scene.GetRegistry();
-			std::unordered_map<EntityHandle, BodyDesc> desired = BuildDesiredBodies(registry);
+			BuildDesiredBodies(registry);
+			const std::unordered_map<EntityHandle, BodyDesc>& desired = Desired;
 			JPH::BodyInterface& bodies = System.GetBodyInterface();
 
 			for (auto it = Bodies.begin(); it != Bodies.end();) {
@@ -797,7 +821,7 @@ namespace Index {
 			}
 
 			size_t created = 0;
-			for (auto& [owner, desc] : desired) {
+			for (const auto& [owner, desc] : desired) {
 				const glm::mat4& world = registry.get<Transform3DComponent>(owner).WorldMatrix;
 				auto it = Bodies.find(owner);
 				if (it == Bodies.end() || !SameBody(it->second.Desc, desc)) {
@@ -997,6 +1021,20 @@ namespace Index {
 		}
 		for (const auto& [collision, phase] : resolved) {
 			callback(collision, phase);
+		}
+	}
+
+	void PhysicsWorld3D::ForEachActiveContact(const std::function<void(const Vec3&, const Vec3&, bool)>& callback) const {
+		std::vector<Impl::ActivePair> pairs;
+		{
+			std::lock_guard lock(m_Impl->ContactMutex);
+			pairs.reserve(m_Impl->ActivePairs.size());
+			for (const Impl::ActivePair& pair : m_Impl->ActivePairs | std::views::values) {
+				if (pair.Count > 0) pairs.push_back(pair);
+			}
+		}
+		for (const Impl::ActivePair& pair : pairs) {
+			callback(pair.Point, pair.Normal, pair.IsTrigger);
 		}
 	}
 

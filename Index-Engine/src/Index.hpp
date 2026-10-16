@@ -15,6 +15,7 @@
 #include "Core/MouseButton.hpp"
 #include "Core/Window.hpp"
 
+#include "Components/General/AnimatorComponent.hpp"
 #include "Components/General/General.hpp"
 #include "Components/Tags.hpp"
 

@@ -92,6 +92,7 @@ project "Index-Engine"
             "src/Profiling/GpuTimer.*",
             "src/Scene/EntityPicker.*",
             "src/Systems/GizmosDebugSystem.*",
+            "src/Systems/LocalizedTextSystem.*",
             "src/Systems/ParticleUpdateSystem.*",
             "src/Systems/UIEventSystem.*",
             "src/Systems/UIFocusSystem.*",

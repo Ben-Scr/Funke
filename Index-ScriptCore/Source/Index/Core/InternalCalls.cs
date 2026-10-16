@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Text;
 
 namespace Index.Interop;
@@ -108,6 +109,63 @@ internal static unsafe class InternalCalls
         => ReadNativeString(NativeCallbacks.Bindings.Application_GetVersionBuffer);
     internal static string Application_GetCompany()
         => ReadNativeString(NativeCallbacks.Bindings.Application_GetCompanyBuffer);
+    internal static string Application_GetPrefsProfile()
+        => NativeCallbacks.Bindings.Application_GetPrefsProfileBuffer == null
+            ? "" : ReadNativeString(NativeCallbacks.Bindings.Application_GetPrefsProfileBuffer);
+
+    // ── Dev console ─────────────────────────────────────────────────
+
+    internal static string DevConsole_Execute(string line)
+    {
+        if (NativeCallbacks.Bindings.DevConsole_Execute == null) return "";
+        byte[] input = EncodeUtf8Z(line);
+        // One call only: asking again for a bigger buffer would run the command twice.
+        byte[] output = new byte[16 * 1024];
+        fixed (byte* pIn = input)
+        fixed (byte* pOut = output)
+            NativeCallbacks.Bindings.DevConsole_Execute(pIn, pOut, output.Length);
+        int length = Array.IndexOf(output, (byte)0);
+        return Encoding.UTF8.GetString(output, 0, length < 0 ? output.Length : length);
+    }
+
+    internal static int DevConsole_GetState()
+        => NativeCallbacks.Bindings.DevConsole_GetState == null ? 0 : NativeCallbacks.Bindings.DevConsole_GetState();
+
+    // ── Java bridge ─────────────────────────────────────────────────
+
+    internal static bool Java_Call(string className, string method, string argument, out string result)
+    {
+        result = "";
+        if (NativeCallbacks.Bindings.Java_Call == null) return false;
+        byte[] c = EncodeUtf8Z(className), m = EncodeUtf8Z(method), a = EncodeUtf8Z(argument);
+        int length;
+        fixed (byte* pc = c, pm = m, pa = a) length = NativeCallbacks.Bindings.Java_Call(pc, pm, pa);
+        if (length < 0) return false;
+        result = Encoding.UTF8.GetString(Java_ReadResult(length));
+        return true;
+    }
+
+    internal static bool Java_PollMessage(out string channel, out string message)
+    {
+        channel = message = "";
+        if (NativeCallbacks.Bindings.Java_PollMessage == null) return false;
+        int length = NativeCallbacks.Bindings.Java_PollMessage();
+        if (length < 0) return false;
+        byte[] bytes = Java_ReadResult(length);
+        int separator = Array.IndexOf(bytes, (byte)0);
+        if (separator < 0) separator = bytes.Length;
+        channel = Encoding.UTF8.GetString(bytes, 0, separator);
+        message = separator < bytes.Length ? Encoding.UTF8.GetString(bytes, separator + 1, bytes.Length - separator - 1) : "";
+        return true;
+    }
+
+    private static byte[] Java_ReadResult(int length)
+    {
+        byte[] bytes = new byte[length];
+        if (length > 0)
+            fixed (byte* p = bytes) NativeCallbacks.Bindings.Java_ReadResult(p, length);
+        return bytes;
+    }
     internal static int JobSystem_Reconfigure(int workerCount) => NativeCallbacks.Bindings.JobSystem_Reconfigure(workerCount);
 
     internal static GraphicsSettings RenderSettings_Get()
@@ -232,6 +290,63 @@ internal static unsafe class InternalCalls
 
     // ── Log ─────────────────────────────────────────────────────────
 
+    // ── Editor windows ─────────────────────────────────────────────
+    internal static void EditorGUI_Text(string text, int style)
+    {
+        byte[] buf = EncodeUtf8Z(text);
+        fixed (byte* p = buf) NativeCallbacks.Bindings.EditorGUI_Text(p, style);
+    }
+    internal static bool EditorGUI_Button(string label, float width, float height)
+    {
+        byte[] buf = EncodeUtf8Z(label);
+        fixed (byte* p = buf) return NativeCallbacks.Bindings.EditorGUI_Button(p, width, height) != 0;
+    }
+    internal static bool EditorGUI_Toggle(string label, bool value)
+    {
+        byte[] buf = EncodeUtf8Z(label);
+        fixed (byte* p = buf) return NativeCallbacks.Bindings.EditorGUI_Toggle(p, value ? 1 : 0) != 0;
+    }
+    internal static float EditorGUI_Slider(string label, float value, float min, float max, string? format)
+    {
+        byte[] l = EncodeUtf8Z(label), f = EncodeUtf8Z(format);
+        fixed (byte* pl = l) fixed (byte* pf = f) return NativeCallbacks.Bindings.EditorGUI_Slider(pl, value, min, max, pf);
+    }
+    internal static float EditorGUI_VerticalSlider(string label, float width, float height, float value, float min, float max, string? format)
+    {
+        byte[] l = EncodeUtf8Z(label), f = EncodeUtf8Z(format);
+        fixed (byte* pl = l) fixed (byte* pf = f) return NativeCallbacks.Bindings.EditorGUI_VerticalSlider(pl, width, height, value, min, max, pf);
+    }
+    internal static float EditorGUI_FloatField(string label, float value, float speed)
+    {
+        byte[] buf = EncodeUtf8Z(label);
+        fixed (byte* p = buf) return NativeCallbacks.Bindings.EditorGUI_FloatField(p, value, speed);
+    }
+    internal static bool EditorGUI_TextField(string label, ref string text, int maxBytes)
+    {
+        byte[] l = EncodeUtf8Z(label);
+        int textBytes = Encoding.UTF8.GetByteCount(text);
+        byte[] buffer = new byte[Math.Max(maxBytes, textBytes) + 1];
+        Encoding.UTF8.GetBytes(text, buffer);
+        int changed;
+        fixed (byte* pl = l) fixed (byte* pb = buffer) changed = NativeCallbacks.Bindings.EditorGUI_TextField(pl, pb, buffer.Length);
+        if (changed == 0) return false;
+        int length = Array.IndexOf(buffer, (byte)0);
+        text = Encoding.UTF8.GetString(buffer, 0, length < 0 ? buffer.Length : length);
+        return true;
+    }
+    internal static void EditorGUI_ProgressBar(float fraction, float width, float height, string? overlay)
+    {
+        byte[] buf = EncodeUtf8Z(overlay);
+        fixed (byte* p = buf) NativeCallbacks.Bindings.EditorGUI_ProgressBar(fraction, width, height, p);
+    }
+    internal static void EditorGUI_Layout(int op, float value) => NativeCallbacks.Bindings.EditorGUI_Layout(op, value);
+    internal static void EditorGUI_PushId(string id)
+    {
+        byte[] buf = EncodeUtf8Z(id);
+        fixed (byte* p = buf) NativeCallbacks.Bindings.EditorGUI_PushId(p);
+    }
+    internal static float EditorGUI_Query(int what) => NativeCallbacks.Bindings.EditorGUI_Query(what);
+
     private static byte[] EncodeUtf8Z(string? value)
     {
         value ??= "";
@@ -239,6 +354,23 @@ internal static unsafe class InternalCalls
         byte[] buffer = new byte[len + 1];
         Encoding.UTF8.GetBytes(value, buffer);
         buffer[len] = 0;
+        return buffer;
+    }
+
+    // Component/class/parameter names repeat every frame; caching their bytes saves a GC allocation per binding call.
+    // Callers only pass the buffer as a read-only C string, so sharing it is safe.
+    private static readonly ConcurrentDictionary<string, byte[]> s_Utf8NameCache = new(StringComparer.Ordinal);
+    private const int k_Utf8NameCacheLimit = 4096;
+
+    private static byte[] EncodeUtf8Name(string? value)
+    {
+        value ??= "";
+        if (s_Utf8NameCache.TryGetValue(value, out byte[]? cached))
+            return cached;
+
+        byte[] buffer = EncodeUtf8Z(value);
+        if (s_Utf8NameCache.Count < k_Utf8NameCacheLimit)
+            s_Utf8NameCache.TryAdd(value, buffer);
         return buffer;
     }
 
@@ -344,6 +476,38 @@ internal static unsafe class InternalCalls
     internal static bool Input_GetGamepadButtonUp(int button, int gamepad) => NativeCallbacks.Bindings.Input_GetGamepadButtonUp(button, gamepad) != 0;
     internal static float Input_GetGamepadAxis(int axis, int gamepad) => NativeCallbacks.Bindings.Input_GetGamepadAxis(axis, gamepad);
 
+    internal static Vector3 Input_GetAcceleration()
+    {
+        float x, y, z;
+        NativeCallbacks.Bindings.Input_GetAcceleration(&x, &y, &z);
+        return new Vector3(x, y, z);
+    }
+
+    internal static Vector3 Input_GetGyroscope()
+    {
+        float x, y, z;
+        NativeCallbacks.Bindings.Input_GetGyroscope(&x, &y, &z);
+        return new Vector3(x, y, z);
+    }
+
+    internal static bool Input_IsMotionSensorAvailable(int sensor) => NativeCallbacks.Bindings.Input_IsMotionSensorAvailable(sensor) != 0;
+
+    internal static int Input_GetTouchCount() => NativeCallbacks.Bindings.Input_GetTouchCount();
+
+    internal static bool Input_GetTouch(int index, out Touch touch)
+    {
+        long id;
+        int phase;
+        float* values = stackalloc float[4];
+        if (NativeCallbacks.Bindings.Input_GetTouch(index, &id, &phase, values) == 0)
+        {
+            touch = default;
+            return false;
+        }
+        touch = new Touch(id, new Vector2(values[0], values[1]), new Vector2(values[2], values[3]), (TouchPhase)phase);
+        return true;
+    }
+
     internal static void Physics2D_SetQueryLayerMask(ulong mask) => NativeCallbacks.Bindings.Physics2D_SetQueryLayerMask(mask);
     internal static bool Collider2D_GetSensor(ulong id, int type) => NativeCallbacks.Bindings.Collider2D_GetSensor(id, type) != 0;
     internal static void Collider2D_SetSensor(ulong id, int type, bool sensor) => NativeCallbacks.Bindings.Collider2D_SetSensor(id, type, sensor ? 1 : 0);
@@ -426,14 +590,14 @@ internal static unsafe class InternalCalls
 
     internal static void Scene_SetGlobalSystemEnabled(string className, bool enabled)
     {
-        byte[] buf = EncodeUtf8Z(className);
+        byte[] buf = EncodeUtf8Name(className);
         fixed (byte* ptr = buf) NativeCallbacks.Bindings.Scene_SetGlobalSystemEnabled(ptr, enabled ? 1 : 0);
     }
 
     internal static bool Scene_SetSceneSystemEnabled(string sceneName, string className, bool enabled)
     {
         byte[] sceneBuffer = EncodeUtf8Z(sceneName);
-        byte[] classBuffer = EncodeUtf8Z(className);
+        byte[] classBuffer = EncodeUtf8Name(className);
         fixed (byte* scenePtr = sceneBuffer)
         fixed (byte* classPtr = classBuffer)
         {
@@ -444,7 +608,7 @@ internal static unsafe class InternalCalls
     internal static bool Scene_IsSceneSystemEnabled(string sceneName, string className)
     {
         byte[] sceneBuffer = EncodeUtf8Z(sceneName);
-        byte[] classBuffer = EncodeUtf8Z(className);
+        byte[] classBuffer = EncodeUtf8Name(className);
         fixed (byte* scenePtr = sceneBuffer)
         fixed (byte* classPtr = classBuffer)
         {
@@ -500,57 +664,57 @@ internal static unsafe class InternalCalls
 
     internal static bool Entity_HasComponent(ulong entityID, string componentName)
     {
-        byte[] buf = EncodeUtf8Z(componentName);
+        byte[] buf = EncodeUtf8Name(componentName);
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_HasComponent(entityID, ptr) != 0;
     }
 
     internal static bool Entity_AddComponent(ulong entityID, string componentName)
     {
-        byte[] buf = EncodeUtf8Z(componentName);
+        byte[] buf = EncodeUtf8Name(componentName);
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_AddComponent(entityID, ptr) != 0;
     }
 
     internal static bool Entity_RemoveComponent(ulong entityID, string componentName)
     {
-        byte[] buf = EncodeUtf8Z(componentName);
+        byte[] buf = EncodeUtf8Name(componentName);
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_RemoveComponent(entityID, ptr) != 0;
     }
 
     // ── Script add/has/remove ─────────────────────────────────────────
     internal static bool Entity_AddScript(ulong entityID, string className)
     {
-        byte[] buf = EncodeUtf8Z(className);
+        byte[] buf = EncodeUtf8Name(className);
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_AddScript(entityID, ptr) != 0;
     }
 
     internal static bool Entity_HasScript(ulong entityID, string className)
     {
-        byte[] buf = EncodeUtf8Z(className);
+        byte[] buf = EncodeUtf8Name(className);
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_HasScript(entityID, ptr) != 0;
     }
 
     internal static bool Entity_RemoveScript(ulong entityID, string className)
     {
-        byte[] buf = EncodeUtf8Z(className);
+        byte[] buf = EncodeUtf8Name(className);
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_RemoveScript(entityID, ptr) != 0;
     }
 
     // Layout-size guard in ScriptHostBridge (Entity_GetComponentSize at startup) prevents a stale C# mirror from corrupting memory.
     internal static void* Entity_GetComponentPtr(ulong entityID, string componentName)
     {
-        byte[] buf = EncodeUtf8Z(componentName);
+        byte[] buf = EncodeUtf8Name(componentName);
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_GetComponentPtr(entityID, ptr);
     }
 
     internal static void* Entity_GetComponentPtrReadOnly(ulong entityID, string componentName)
     {
-        byte[] buf = EncodeUtf8Z(componentName);
+        byte[] buf = EncodeUtf8Name(componentName);
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_GetComponentPtrReadOnly(entityID, ptr);
     }
 
     internal static int Entity_GetComponentSize(string componentName)
     {
-        byte[] buf = EncodeUtf8Z(componentName);
+        byte[] buf = EncodeUtf8Name(componentName);
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_GetComponentSize(ptr);
     }
 
@@ -608,7 +772,7 @@ internal static unsafe class InternalCalls
 
     internal static string Entity_GetManagedComponentFields(ulong entityID, string componentName)
     {
-        byte[] buf = EncodeUtf8Z(componentName);
+        byte[] buf = EncodeUtf8Name(componentName);
         fixed (byte* ptr = buf)
         {
             int required = NativeCallbacks.Bindings.Entity_GetManagedComponentFieldsBuffer(entityID, ptr, null, 0);
@@ -638,7 +802,7 @@ internal static unsafe class InternalCalls
     // ── EntityCommandBuffer ─────────────────────────────────────────
     internal static uint Component_GetTypeId(string componentName)
     {
-        byte[] buf = EncodeUtf8Z(componentName);
+        byte[] buf = EncodeUtf8Name(componentName);
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Component_GetTypeId(ptr);
     }
 
@@ -699,6 +863,8 @@ internal static unsafe class InternalCalls
     internal static void SpriteRenderer_SetSortingLayer(ulong id, int layer) => NativeCallbacks.Bindings.SpriteRenderer_SetSortingLayer(id, layer);
     internal static int SpriteRenderer_GetFilter(ulong id) => NativeCallbacks.Bindings.SpriteRenderer_GetFilter(id);
     internal static void SpriteRenderer_SetFilter(ulong id, int filter) => NativeCallbacks.Bindings.SpriteRenderer_SetFilter(id, filter);
+    internal static ulong SpriteRenderer_GetMaterial(ulong id) => NativeCallbacks.Bindings.SpriteRenderer_GetMaterial(id);
+    internal static void SpriteRenderer_SetMaterial(ulong id, ulong materialGuid) => NativeCallbacks.Bindings.SpriteRenderer_SetMaterial(id, materialGuid);
 
     internal static string SpriteRenderer_GetSpriteName(ulong id)
         => ReadNativeString(NativeCallbacks.Bindings.SpriteRenderer_GetSpriteNameBuffer, id);
@@ -1271,10 +1437,28 @@ internal static unsafe class InternalCalls
         => NativeCallbacks.Bindings.Image_SetColor(id, r, g, b, a);
     internal static ulong Image_GetTexture(ulong id) => NativeCallbacks.Bindings.Image_GetTexture(id);
     internal static void Image_SetTexture(ulong id, ulong assetId) => NativeCallbacks.Bindings.Image_SetTexture(id, assetId);
+    internal static string Image_GetSpriteName(ulong id)
+        => ReadNativeString(NativeCallbacks.Bindings.Image_GetSpriteNameBuffer, id);
+    internal static void Image_SetSpriteName(ulong id, string? name)
+    {
+        byte[] buf = EncodeUtf8Z(name ?? string.Empty);
+        fixed (byte* ptr = buf) NativeCallbacks.Bindings.Image_SetSpriteName(id, ptr);
+    }
     internal static int Image_GetSortingOrder(ulong id) => NativeCallbacks.Bindings.Image_GetSortingOrder(id);
     internal static void Image_SetSortingOrder(ulong id, int order) => NativeCallbacks.Bindings.Image_SetSortingOrder(id, order);
     internal static int Image_GetSortingLayer(ulong id) => NativeCallbacks.Bindings.Image_GetSortingLayer(id);
     internal static void Image_SetSortingLayer(ulong id, int layer) => NativeCallbacks.Bindings.Image_SetSortingLayer(id, layer);
+    internal static ulong Image_GetMaterial(ulong id) => NativeCallbacks.Bindings.Image_GetMaterial(id);
+    internal static void Image_SetMaterial(ulong id, ulong materialGuid) => NativeCallbacks.Bindings.Image_SetMaterial(id, materialGuid);
+    internal const int ImageSlicingValueCount = 6;
+    internal static void Image_GetSlicing(ulong id, Span<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.Image_GetSlicing(id, p, values.Length);
+    }
+    internal static void Image_SetSlicing(ulong id, ReadOnlySpan<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.Image_SetSlicing(id, p, values.Length);
+    }
 
     // ── UI: Interactable ─────────────────────────────────────────────
 
@@ -1833,11 +2017,51 @@ internal static unsafe class InternalCalls
     internal static float WidthConstraint_GetMaxWidth(ulong id) => NativeCallbacks.Bindings.WidthConstraint_GetMaxWidth(id);
     internal static void WidthConstraint_SetMaxWidth(ulong id, float v) => NativeCallbacks.Bindings.WidthConstraint_SetMaxWidth(id, v);
 
+    // ── Localization ────────────────────────────────────────────────
+    internal static string Localization_Get(string key)
+    {
+        byte[] keyBytes = EncodeUtf8Z(key);
+        fixed (byte* k = keyBytes)
+        {
+            int required = NativeCallbacks.Bindings.Localization_GetBuffer(k, null, 0);
+            if (required <= 0) return "";
+            byte[] buffer = new byte[required + 1];
+            fixed (byte* p = buffer)
+            {
+                int written = NativeCallbacks.Bindings.Localization_GetBuffer(k, p, buffer.Length);
+                return DecodeNativeString(buffer, written);
+            }
+        }
+    }
+    internal static bool Localization_HasKey(string key)
+    {
+        byte[] buf = EncodeUtf8Z(key);
+        fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Localization_HasKey(ptr) != 0;
+    }
+    // which: 0 = current, 1 = fallback, 2 = OS UI language.
+    internal static string Localization_GetLanguage(int which)
+        => ReadNativeString(NativeCallbacks.Bindings.Localization_GetLanguageBuffer, which);
+    internal static bool Localization_SetLanguage(string code)
+    {
+        byte[] buf = EncodeUtf8Z(code);
+        fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Localization_SetLanguage(ptr) != 0;
+    }
+    internal static string Localization_GetLanguagesJson()
+        => ReadNativeString(NativeCallbacks.Bindings.Localization_GetLanguagesBuffer);
+    internal static uint Localization_GetRevision() => NativeCallbacks.Bindings.Localization_GetRevision();
+
+    // ── UI: LocalizedText ───────────────────────────────────────────
+    internal static string LocalizedText_GetKey(ulong id)
+        => ReadNativeString(NativeCallbacks.Bindings.LocalizedText_GetKeyBuffer, id);
+    internal static void LocalizedText_SetKey(ulong id, string key)
+    {
+        byte[] buf = EncodeUtf8Z(key);
+        fixed (byte* ptr = buf) NativeCallbacks.Bindings.LocalizedText_SetKey(id, ptr);
+    }
+
     // ── Dynamic component registration ───────────────────────────────
-    // Called from DynamicComponentRegistrar after the user assembly loads.
-    // Replaces the build-time codegen pipeline — every [NativeComponent(...,
-    // Generate = true)] struct registers via this entry at runtime, no
-    // engine rebuild required.
+    // Called from DynamicComponentRegistrar after the user assembly loads: every IComponent struct registers here at
+    // runtime, no engine rebuild required.
     internal static uint Component_RegisterDynamic(
         string displayName,
         string serializedName,
@@ -1956,8 +2180,48 @@ internal static unsafe class InternalCalls
     internal const int MeshInfoValueCount = 8;
     internal const int PointLightValueCount = 6;
     internal const int SpotLightValueCount = 8;
-    internal const int CameraSkyValueCount = 15;
+    internal const int CameraSkyValueCount = 23;
     internal const int ParticleSystem3DValueCount = 21;
+    internal const int SkinnedMeshRendererValueCount = 11;
+    internal const int SkinnedMeshBoneValueCount = 9;
+
+    internal static void SkinnedMeshRenderer_Get(ulong id, Span<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.SkinnedMeshRenderer_Get(id, p, values.Length);
+    }
+    internal static void SkinnedMeshRenderer_Set(ulong id, ReadOnlySpan<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.SkinnedMeshRenderer_Set(id, p, values.Length);
+    }
+    internal static ulong SkinnedMeshRenderer_GetAsset(ulong id, int which) => NativeCallbacks.Bindings.SkinnedMeshRenderer_GetAsset(id, which);
+    internal static void SkinnedMeshRenderer_SetAsset(ulong id, int which, ulong guid) => NativeCallbacks.Bindings.SkinnedMeshRenderer_SetAsset(id, which, guid);
+    internal static void SkinnedMeshRenderer_Play(ulong id, string? clip, float crossFade)
+    {
+        byte[] buf = EncodeUtf8Name(clip);
+        fixed (byte* p = buf) NativeCallbacks.Bindings.SkinnedMeshRenderer_Play(id, p, crossFade);
+    }
+    internal static void SkinnedMeshRenderer_Control(ulong id, int op) => NativeCallbacks.Bindings.SkinnedMeshRenderer_Control(id, op);
+    internal static string SkinnedMeshRenderer_GetClip(ulong id) => ReadNativeString(NativeCallbacks.Bindings.SkinnedMeshRenderer_GetClip, id);
+    internal static int SkinnedMeshRenderer_GetClipCount(ulong id) => NativeCallbacks.Bindings.SkinnedMeshRenderer_GetClipCount(id);
+    internal static string SkinnedMeshRenderer_GetClipName(ulong id, int index)
+    {
+        int required = NativeCallbacks.Bindings.SkinnedMeshRenderer_GetClipName(id, index, null, 0);
+        if (required <= 0) return "";
+        byte[] buffer = new byte[required + 1];
+        fixed (byte* p = buffer)
+        {
+            int written = NativeCallbacks.Bindings.SkinnedMeshRenderer_GetClipName(id, index, p, buffer.Length);
+            return DecodeNativeString(buffer, written);
+        }
+    }
+    internal static float SkinnedMeshRenderer_GetClipDuration(ulong id, int index) => NativeCallbacks.Bindings.SkinnedMeshRenderer_GetClipDuration(id, index);
+    internal static bool SkinnedMeshRenderer_GetBone(ulong id, string bone, Span<float> values)
+    {
+        byte[] buf = EncodeUtf8Name(bone);
+        fixed (byte* b = buf)
+        fixed (float* p = values)
+            return NativeCallbacks.Bindings.SkinnedMeshRenderer_GetBone(id, b, p, values.Length) != 0;
+    }
 
     internal static void ParticleSystem3D_Get(ulong id, Span<float> values)
     {
@@ -2009,6 +2273,33 @@ internal static unsafe class InternalCalls
     internal static bool Mesh_IsRuntime(ulong guid) => NativeCallbacks.Bindings.Mesh_IsRuntime(guid) != 0;
     internal static ulong Material_GetTexture(ulong guid) => NativeCallbacks.Bindings.Material_GetTexture(guid);
     internal static void Material_SetTexture(ulong guid, ulong textureGuid) => NativeCallbacks.Bindings.Material_SetTexture(guid, textureGuid);
+    internal static ulong Material_GetShader(ulong guid) => NativeCallbacks.Bindings.Material_GetShader(guid);
+    internal static void Material_SetShader(ulong guid, ulong shaderGuid) => NativeCallbacks.Bindings.Material_SetShader(guid, shaderGuid);
+
+    // Returns the native ShaderPropertyType + 1, or 0 when the property is unknown.
+    internal static int Material_GetProperty(ulong guid, string name, Span<float> values, out ulong texture)
+    {
+        byte[] buf = EncodeUtf8Name(name);
+        ulong textureGuid = 0;
+        int result;
+        fixed (byte* pName = buf)
+        fixed (float* pValues = values)
+        {
+            result = NativeCallbacks.Bindings.Material_GetProperty(guid, pName, pValues, &textureGuid);
+        }
+        texture = textureGuid;
+        return result;
+    }
+
+    internal static bool Material_SetProperty(ulong guid, string name, int type, ReadOnlySpan<float> values, ulong texture)
+    {
+        byte[] buf = EncodeUtf8Name(name);
+        fixed (byte* pName = buf)
+        fixed (float* pValues = values)
+        {
+            return NativeCallbacks.Bindings.Material_SetProperty(guid, pName, type, pValues, texture) != 0;
+        }
+    }
 
     internal static void PointLight_Get(ulong id, Span<float> values)
     {
@@ -2033,5 +2324,75 @@ internal static unsafe class InternalCalls
     internal static void Camera3D_SetSky(ulong id, ReadOnlySpan<float> values)
     {
         fixed (float* p = values) NativeCallbacks.Bindings.Camera3D_SetSky(id, p, values.Length);
+    }
+    internal static ulong Camera3D_GetSkyboxMaterial(ulong id) => NativeCallbacks.Bindings.Camera3D_GetSkyboxMaterial(id);
+    internal static void Camera3D_SetSkyboxMaterial(ulong id, ulong materialGuid) => NativeCallbacks.Bindings.Camera3D_SetSkyboxMaterial(id, materialGuid);
+
+    // ── Animator ───────────────────────────────────────────────
+
+    internal static bool Animator_SetParameter(ulong id, string name, int op, float value)
+    {
+        byte[] buf = EncodeUtf8Name(name);
+        fixed (byte* p = buf) return NativeCallbacks.Bindings.Animator_SetParameter(id, p, op, value) != 0;
+    }
+
+    internal static float Animator_GetParameter(ulong id, string name, int op)
+    {
+        byte[] buf = EncodeUtf8Name(name);
+        fixed (byte* p = buf) return NativeCallbacks.Bindings.Animator_GetParameter(id, p, op);
+    }
+
+    internal static bool Animator_HasParameter(ulong id, string name)
+    {
+        byte[] buf = EncodeUtf8Name(name);
+        fixed (byte* p = buf) return NativeCallbacks.Bindings.Animator_HasParameter(id, p) != 0;
+    }
+
+    internal static bool Animator_Play(ulong id, string state, float normalizedTime, float crossFade)
+    {
+        byte[] buf = EncodeUtf8Name(state);
+        fixed (byte* p = buf) return NativeCallbacks.Bindings.Animator_Play(id, p, normalizedTime, crossFade) != 0;
+    }
+
+    internal static string Animator_GetState(ulong id, int which)
+    {
+        int required = NativeCallbacks.Bindings.Animator_GetStateBuffer(id, which, null, 0);
+        if (required <= 0) return "";
+        byte[] buffer = new byte[required + 1];
+        fixed (byte* p = buffer)
+        {
+            int written = NativeCallbacks.Bindings.Animator_GetStateBuffer(id, which, p, buffer.Length);
+            return DecodeNativeString(buffer, written);
+        }
+    }
+
+    internal static void Animator_GetPlayback(ulong id, Span<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.Animator_GetPlayback(id, p, values.Length);
+    }
+
+    internal static ulong Animator_GetAsset(ulong id, int which) => NativeCallbacks.Bindings.Animator_GetAsset(id, which);
+    internal static void Animator_SetAsset(ulong id, int which, ulong guid) => NativeCallbacks.Bindings.Animator_SetAsset(id, which, guid);
+    internal static float Animator_GetSpeed(ulong id) => NativeCallbacks.Bindings.Animator_GetSpeed(id);
+    internal static void Animator_SetSpeed(ulong id, float speed) => NativeCallbacks.Bindings.Animator_SetSpeed(id, speed);
+
+    internal static bool Camera3D_ScreenPointToRay(ulong id, Vector2 screenPoint, out Ray ray)
+    {
+        float* v = stackalloc float[6];
+        if (NativeCallbacks.Bindings.Camera3D_ScreenPointToRay(id, screenPoint.X, screenPoint.Y, v, 6) == 0)
+        {
+            ray = new Ray(new Vector3(0f), new Vector3(0f, 0f, -1f));
+            return false;
+        }
+        ray = new Ray(new Vector3(v[0], v[1], v[2]), new Vector3(v[3], v[4], v[5]));
+        return true;
+    }
+
+    internal static bool Camera3D_WorldToScreenPoint(ulong id, Vector3 world, out Vector3 screen)
+    {
+        float* v = stackalloc float[3];
+        int inFront = NativeCallbacks.Bindings.Camera3D_WorldToScreenPoint(id, world.X, world.Y, world.Z, v, 3);
+        screen = new Vector3(v[0], v[1], v[2]);
+        return inFront != 0;
     }
 }

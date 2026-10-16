@@ -19,6 +19,11 @@ NATIVE_HEADER = REPO_ROOT / "Index-Engine" / "src" / "Core" / "BuildMetadata.gen
 # Kept apart from NATIVE_HEADER: that one reaches pch.hpp and may only change on a
 # version bump, while the build identity changes with every working-tree edit.
 BUILD_IDENTITY_HEADER = REPO_ROOT / "Index-Engine" / "src" / "Core" / "BuildIdentity.generated.hpp"
+# Hash of every engine header: an executable compiled against other headers than the loaded
+# Index-Engine.dll reports it at startup instead of crashing later (Core/EngineAbi.hpp).
+ENGINE_ABI_HEADER = REPO_ROOT / "Index-Engine" / "src" / "Core" / "EngineAbi.generated.hpp"
+ENGINE_SOURCE_ROOT = REPO_ROOT / "Index-Engine" / "src"
+ENGINE_HEADER_SUFFIXES = {".hpp", ".h", ".inl"}
 MANAGED_PROPS = REPO_ROOT / "build" / "BuildMetadata.props"
 MANAGED_RC = REPO_ROOT / "build" / "ManagedVersion.rc"
 METADATA_JSON = REPO_ROOT / "build" / "BuildMetadata.json"
@@ -109,6 +114,20 @@ def calculate_dirty_fingerprint(status: str) -> str:
             while chunk := stream.read(1024 * 1024):
                 digest.update(chunk)
     return digest.hexdigest()[:12]
+
+
+def calculate_engine_abi() -> str:
+    digest = hashlib.sha256()
+    headers = sorted(
+        path for path in ENGINE_SOURCE_ROOT.rglob("*")
+        if path.suffix in ENGINE_HEADER_SUFFIXES and path.is_file() and ".generated." not in path.name
+    )
+    for path in headers:
+        digest.update(path.relative_to(ENGINE_SOURCE_ROOT).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
+        digest.update(b"\0")
+    return digest.hexdigest()[:16]
 
 
 def read_version() -> tuple[str, int, int, int]:
@@ -234,6 +253,12 @@ def main() -> int:
             f"#define IDX_BUILD_DIRTY {1 if dirty else 0}\n\n"
             "#endif\n"
         )
+        engine_abi = (
+            "#ifndef IDX_ENGINE_ABI_GENERATED\n"
+            "#define IDX_ENGINE_ABI_GENERATED\n\n"
+            f"#define IDX_ENGINE_ABI \"{calculate_engine_abi()}\"\n\n"
+            "#endif\n"
+        )
         managed = (
             "<Project>\n"
             "  <PropertyGroup>\n"
@@ -265,6 +290,7 @@ def main() -> int:
 
         write_if_changed(NATIVE_HEADER, native)
         write_if_changed(BUILD_IDENTITY_HEADER, build_identity)
+        write_if_changed(ENGINE_ABI_HEADER, engine_abi)
         write_if_changed(MANAGED_PROPS, managed)
         write_if_changed(MANAGED_RC, managed_rc)
         write_if_changed(METADATA_JSON, json.dumps(metadata, indent=2) + "\n")

@@ -1,8 +1,10 @@
 #include "pch.hpp"
 #include "Scripting/ScriptEngine.hpp"
+#include "DevTools/DevConsole.hpp"
 #include "Scripting/InspectorEventDispatch.hpp"
 #include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptComponent.hpp"
+#include "Scripting/ScriptInstance.hpp"
 #include "Scripting/DataAssetManager.hpp"
 #if INDEX_WITH_3D
 #include "Graphics/MeshAsset.hpp"
@@ -12,10 +14,15 @@
 #include "Scene/ComponentRegistry.hpp"
 #include "Core/Application.hpp"
 #include "Core/Log.hpp"
+#include "Localization/GameLocalization.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
+#if INDEX_WITH_RENDER
+#include "Systems/UILayoutSystem.hpp"
+#endif
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 
 namespace Index {
@@ -43,6 +50,7 @@ namespace Index {
 		// s_Initialized=false FIRST so reentrant calls from managed OnDestroy hooks bail instead of touching being-destroyed state.
 		s_Initialized = false;
 		s_HasUserAssembly = false;
+		GameLocalization::SetSavedLanguageProvider(nullptr);
 
 		// Move out first: reentrant SetGlobalSystemEnabled calls during OnDestroy must see an empty container.
 		auto local = std::move(s_GlobalSystems);
@@ -149,6 +157,30 @@ namespace Index {
 		s_Callbacks = managedCallbacks;
 		s_Initialized = true;
 		IDX_CORE_INFO_TAG("ScriptEngine", "Core assembly loaded: {}", path);
+
+		// The game's string tables are native; C# keeps the player's choice (PlayerPrefs) and the LanguageChanged event.
+		static bool s_LanguageChangeForwarded = false;
+		if (!s_LanguageChangeForwarded) {
+			s_LanguageChangeForwarded = true;
+			GameLocalization::RegisterChangeCallback([] { ScriptEngine::RaiseLanguageChanged(); });
+		}
+		GameLocalization::SetSavedLanguageProvider([] { return ScriptEngine::GetSavedLanguage(); });
+	}
+
+	std::string ScriptEngine::GetSavedLanguage()
+	{
+		if (!s_Initialized || !s_Callbacks.GetSavedLanguage) return {};
+		const int required = s_Callbacks.GetSavedLanguage(nullptr, 0);
+		if (required <= 1) return {};
+		std::string language(static_cast<size_t>(required), '\0');
+		s_Callbacks.GetSavedLanguage(language.data(), required);
+		language.resize(std::strlen(language.c_str()));
+		return language;
+	}
+
+	void ScriptEngine::RaiseLanguageChanged()
+	{
+		if (s_Initialized && s_Callbacks.RaiseLanguageChanged) s_Callbacks.RaiseLanguageChanged();
 	}
 
 	void* ScriptEngine::GetUnmanagedEntryPoint(const std::filesystem::path& assemblyPath, std::string_view assemblyName,
@@ -352,6 +384,17 @@ namespace Index {
 		s_Callbacks.InvokeStart(static_cast<int32_t>(handle));
 	}
 
+	bool ScriptEngine::WantsCallback(ScriptInstance& instance, uint32_t callback)
+	{
+		uint32_t mask = instance.GetCallbackMask();
+		if (mask == ScriptInstance::k_CallbackMaskUnknown) {
+			if (!s_Initialized || !s_Callbacks.GetScriptCallbackMask || !instance.HasManagedInstance()) return true;
+			mask = static_cast<uint32_t>(s_Callbacks.GetScriptCallbackMask(static_cast<int32_t>(instance.GetGCHandle())));
+			instance.SetCallbackMask(mask);
+		}
+		return (mask & callback) != 0;
+	}
+
 	void ScriptEngine::InvokeUpdate(uint32_t handle)
 	{
 		if (handle == 0 || !s_Callbacks.InvokeUpdate) return;
@@ -435,6 +478,8 @@ namespace Index {
 
 	void ScriptEngine::RaiseKeyDown(int key)
 	{
+		// Typing in the dev console must not drive the game; releases still pass so held keys never stick.
+		if (DevConsole::IsOpen()) return;
 		if (s_Initialized && s_Callbacks.RaiseKeyDown) s_Callbacks.RaiseKeyDown(key);
 	}
 
@@ -445,11 +490,13 @@ namespace Index {
 
 	void ScriptEngine::RaiseEnterChar(uint32_t codepoint)
 	{
+		if (DevConsole::IsOpen()) return;
 		if (s_Initialized && s_Callbacks.RaiseEnterChar) s_Callbacks.RaiseEnterChar(codepoint);
 	}
 
 	void ScriptEngine::RaiseMouseDown(int button)
 	{
+		if (DevConsole::IsOpen()) return;
 		if (s_Initialized && s_Callbacks.RaiseMouseDown) s_Callbacks.RaiseMouseDown(button);
 	}
 
@@ -460,6 +507,7 @@ namespace Index {
 
 	void ScriptEngine::RaiseMouseScroll(float delta)
 	{
+		if (DevConsole::IsOpen()) return;
 		if (s_Initialized && s_Callbacks.RaiseMouseScroll) s_Callbacks.RaiseMouseScroll(delta);
 	}
 
@@ -601,6 +649,10 @@ namespace Index {
 	void ScriptEngine::UpdateGlobalSystems()
 	{
 		if (!s_Initialized || !s_Callbacks.InvokeGlobalSystemUpdate) return;
+		// Runs before the scene systems, so a UI write here must not be skipped by the layout gate.
+#if INDEX_WITH_RENDER
+		if (!s_GlobalSystems.empty()) InvalidateUILayout();
+#endif
 		for (const auto& instance : s_GlobalSystems)
 		{
 			if (instance.Handle != 0 && instance.Enabled) {
@@ -743,6 +795,54 @@ namespace Index {
 			return 0;
 		}
 		return s_Callbacks.GetDataAssetTypes(outBuffer, capacity);
+	}
+
+	std::string ScriptEngine::GetEditorWindowTypes()
+	{
+		if (!s_Initialized || !s_Callbacks.GetEditorWindowTypes) return "[]";
+		std::string buffer(4096, '\0');
+		int needed = s_Callbacks.GetEditorWindowTypes(buffer.data(), static_cast<int>(buffer.size()));
+		if (needed > static_cast<int>(buffer.size())) {
+			buffer.assign(static_cast<size_t>(needed), '\0');
+			needed = s_Callbacks.GetEditorWindowTypes(buffer.data(), static_cast<int>(buffer.size()));
+		}
+		buffer.resize(std::strlen(buffer.c_str()));
+		return buffer.empty() ? "[]" : buffer;
+	}
+
+	int ScriptEngine::DrawEditorWindow(const char* typeName)
+	{
+		if (!s_Initialized || !s_Callbacks.DrawEditorWindow || !typeName) return 0;
+		return s_Callbacks.DrawEditorWindow(typeName);
+	}
+
+	void ScriptEngine::CloseEditorWindow(const char* typeName)
+	{
+		if (s_Initialized && s_Callbacks.CloseEditorWindow && typeName) s_Callbacks.CloseEditorWindow(typeName);
+	}
+
+	std::string ScriptEngine::GetDevCommands()
+	{
+		if (!s_Initialized || !s_Callbacks.GetDevCommands) return "[]";
+		std::string buffer(4096, '\0');
+		int needed = s_Callbacks.GetDevCommands(buffer.data(), static_cast<int>(buffer.size()));
+		if (needed > static_cast<int>(buffer.size())) {
+			buffer.assign(static_cast<size_t>(needed), '\0');
+			needed = s_Callbacks.GetDevCommands(buffer.data(), static_cast<int>(buffer.size()));
+		}
+		buffer.resize(std::strlen(buffer.c_str()));
+		return buffer.empty() ? "[]" : buffer;
+	}
+
+	int ScriptEngine::ExecuteDevCommand(const std::string& command, std::string& outOutput)
+	{
+		outOutput.clear();
+		if (!s_Initialized || !s_Callbacks.ExecuteDevCommand) return 0;
+		std::string buffer(16 * 1024, '\0');
+		const int status = s_Callbacks.ExecuteDevCommand(command.c_str(), buffer.data(), static_cast<int>(buffer.size()));
+		buffer.resize(std::strlen(buffer.c_str()));
+		outOutput = std::move(buffer);
+		return status;
 	}
 
 	void ScriptEngine::PumpCoroutinesUpdate(float deltaTime)

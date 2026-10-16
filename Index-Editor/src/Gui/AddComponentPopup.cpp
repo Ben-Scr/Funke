@@ -251,7 +251,7 @@ namespace Index {
 			std::string conflictName;
 			const bool conflicts = !alreadyAdded && componentConflictsWithSelection(typeId, &conflictName);
 			const bool enabled = !alreadyAdded && !conflicts;
-			if (ImGuiUtils::MenuItemEllipsis(info.displayName, info.displayName.c_str(), nullptr, false, enabled, 260.0f)) {
+			if (ImGuiUtils::IconMenuItemEllipsis(info.displayName, info.displayName.c_str(), info.icon, enabled, 260.0f)) {
 				if (enabled) {
 					addComponentToAll(info);
 					ImGui::CloseCurrentPopup();
@@ -311,7 +311,7 @@ namespace Index {
 
 				const std::string label = BuildScriptMenuLabel(scriptEntry);
 				const std::string path = scriptEntry.Path.string();
-				if (ImGuiUtils::MenuItemEllipsis(label, path.c_str(), nullptr, false, true, 260.0f)) {
+				if (ImGuiUtils::IconMenuItemEllipsis(label, path.c_str(), "script", true, 260.0f)) {
 					bool added = false;
 					for (const Entity& e : entities) {
 						if (scriptEntry.IsManagedComponent) {
@@ -409,7 +409,7 @@ namespace Index {
 						}
 						const std::string label = BuildScriptMenuLabel(scriptEntry);
 						const std::string path = scriptEntry.Path.string();
-						if (ImGuiUtils::MenuItemEllipsis(label, path.c_str(), nullptr, false, !presentOnAll, 260.0f)) {
+						if (ImGuiUtils::IconMenuItemEllipsis(label, path.c_str(), "script", !presentOnAll, 260.0f)) {
 							if (!presentOnAll) {
 								bool added = false;
 								for (const Entity& e : entities) {
@@ -436,7 +436,7 @@ namespace Index {
 						}
 						const std::string label = BuildScriptMenuLabel(scriptEntry);
 						const std::string path = scriptEntry.Path.string();
-						if (ImGuiUtils::MenuItemEllipsis(label, path.c_str(), nullptr, false, true, 260.0f)) {
+						if (ImGuiUtils::IconMenuItemEllipsis(label, path.c_str(), "script", true, 260.0f)) {
 							bool added = false;
 							for (const Entity& e : entities) {
 								added |= AttachScriptToEntity(const_cast<Entity&>(e), scene, scriptEntry);

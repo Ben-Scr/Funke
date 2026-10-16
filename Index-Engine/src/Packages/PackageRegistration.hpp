@@ -21,13 +21,15 @@ namespace Index::Package {
         const char* subcategory                                = "",
         const char* serializedName                             = "",
         void (*drawInspector)(std::span<const Entity>)         = nullptr,
-        ComponentCategory category = ComponentCategory::Component) {
+        ComponentCategory category = ComponentCategory::Component,
+        const char* icon                                       = nullptr) {
 
         ComponentInfo info(displayName, subcategory ? subcategory : "", category);
         if (serializedName && *serializedName) {
             info.serializedName = serializedName;
         }
         info.drawInspector = drawInspector;
+        if (icon) info.icon = icon;
         SceneManager::RegisterComponentType<TComponent>(info);
     }
 
@@ -52,7 +54,8 @@ namespace Index::Package {
         Json::Value (*serialize)(const TComponent&),
         void (*deserialize)(TComponent&, const Json::Value&),
         ComponentCategory category = ComponentCategory::Component,
-        std::vector<PropertyDescriptor> properties = {}) {
+        std::vector<PropertyDescriptor> properties = {},
+        const char* icon = nullptr) {
 
         ComponentInfo info(displayName, subcategory ? subcategory : "", category);
         if (serializedName && *serializedName) {
@@ -60,6 +63,7 @@ namespace Index::Package {
         }
         info.drawInspector = drawInspector;
         info.properties = std::move(properties);
+        if (icon) info.icon = icon;
 
         using Trampoline = ComponentSerializerTrampoline<TComponent>;
         Trampoline::s_Serialize = serialize;
@@ -68,6 +72,16 @@ namespace Index::Package {
         info.deserialize = deserialize ? &Trampoline::DeserializeAdapter : nullptr;
 
         SceneManager::RegisterComponentType<TComponent>(info);
+    }
+
+    // Editor icon by name from IndexAssets/Textures/Editor/General (e.g. "particles"). Call AFTER RegisterComponent.
+    template <typename TComponent>
+    void SetComponentIcon(const char* icon) {
+        ComponentInfo* info = SceneManager::GetComponentRegistry().GetInfo<TComponent>();
+        IDX_CORE_ASSERT(info, IndexErrorCode::InvalidValue,
+            "SetComponentIcon<T>: component type is not registered yet — "
+            "call RegisterComponent / RegisterSerializableComponent first.");
+        if (info) info->icon = icon ? icon : "";
     }
 
     // Call AFTER RegisterComponent; asserts if TComponent isn't registered yet (avoids silently dropping the gizmo).

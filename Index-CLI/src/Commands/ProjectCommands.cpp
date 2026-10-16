@@ -196,8 +196,11 @@ namespace Index::Cli {
 
 		const std::filesystem::path editor = FindSiblingExecutable("Index-Editor", "Index-Editor");
 		if (editor.empty()) return Fail("Index-Editor was not found next to this tool");
-		if (!Process::LaunchDetached({ Path::ToUtf8(editor), "--project=" + project->RootDirectory }, editor.parent_path())) {
-			return Fail("could not start " + Path::ToUtf8(editor));
+		unsigned long editorPid = 0;
+		std::string loaderError;
+		if (!Process::LaunchDetachedChecked({ Path::ToUtf8(editor), "--project=" + project->RootDirectory }, editor.parent_path(),
+				editorPid, loaderError)) {
+			return Fail("could not start " + Path::ToUtf8(editor) + (loaderError.empty() ? std::string() : ": " + loaderError));
 		}
 		LauncherRegistry registry;
 		registry.Load();
@@ -214,6 +217,18 @@ namespace Index::Cli {
 		const std::optional<std::string> seconds = args.Option("seconds");
 		const bool noCompile = args.Flag("no-compile");
 		const bool detach = args.Flag("detach");
+		// Test-run options, handed to the runtime as --name=value.
+		std::vector<std::string> passThrough;
+		for (const char* name : { "prefs-profile", "input-script", "screenshot-at", "screenshot-dir", "fixed-step", "quit-at", "exec" }) {
+			if (const std::optional<std::string> value = args.Option(name)) {
+				std::string resolved = *value;
+				if (std::string_view(name) == "input-script" || std::string_view(name) == "screenshot-dir") {
+					std::error_code ec;
+					resolved = Path::ToUtf8(std::filesystem::absolute(Path::FromUtf8(*value), ec));
+				}
+				passThrough.push_back("--" + std::string(name) + "=" + resolved);
+			}
+		}
 		if (!args.Finish(error)) return Fail(error, k_ExitUsage);
 		if (!project) return Fail(error);
 		if (scene && !std::filesystem::is_regular_file(Path::FromUtf8(project->GetSceneFilePath(*scene)))) {
@@ -234,15 +249,23 @@ namespace Index::Cli {
 		std::vector<std::string> command{ Path::ToUtf8(runtime), "--project=" + project->RootDirectory };
 		if (scene) command.push_back("--scene=" + *scene);
 		if (seconds) command.push_back("--quit-after=" + *seconds);
+		command.insert(command.end(), passThrough.begin(), passThrough.end());
 
 		if (detach) {
-			if (!Process::LaunchDetached(command, runtime.parent_path())) return Fail("could not start the runtime");
+			unsigned long runtimePid = 0;
+			std::string loaderError;
+			if (!Process::LaunchDetachedChecked(command, runtime.parent_path(), runtimePid, loaderError)) {
+				return Fail("could not start the runtime" + (loaderError.empty() ? std::string() : ": " + loaderError));
+			}
 			return k_ExitOk;
 		}
 		Note("Running " + project->Name + (seconds ? " for " + *seconds + "s" : "") + "...");
 		const Process::Result result = Process::Run(command, runtime.parent_path(), std::chrono::milliseconds(0),
 			[](std::string_view chunk) { std::fwrite(chunk.data(), 1, chunk.size(), stderr); });
-		if (!result.Succeeded()) return Fail("the runtime exited with code " + std::to_string(result.ExitCode));
+		if (!result.Succeeded()) {
+			const std::string loaderError = Process::DescribeLoaderFailure(result.ExitCode);
+			return Fail("the runtime exited with code " + std::to_string(result.ExitCode) + (loaderError.empty() ? std::string() : ": " + loaderError));
+		}
 		return k_ExitOk;
 	}
 

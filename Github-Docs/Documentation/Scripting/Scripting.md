@@ -4,6 +4,8 @@ Index uses **C#** as its primary scripting language (running on **.NET 10 LTS**)
 
 Visual Studio IntelliSense for Index game projects requires Visual Studio 2026 (18.0+) because Visual Studio 2022 cannot evaluate `net10.0` projects. VS Code or Rider can use the installed .NET 10 SDK instead.
 
+**Script editor:** Editor Preferences › Scripting › External Script Editor lists every detected Visual Studio, VS Code, JetBrains Rider and IntelliJ IDEA installation (standalone installer, JetBrains Toolbox 1.x and 2.x), each version on its own. Double-clicking a script or a console error opens the file at that line; Rider opens the project's `.sln`, IntelliJ IDEA the project folder. IntelliJ IDEA has no C# language support, so you get editing without code completion; use Rider for that.
+
 If you just want the short version: make a class that inherits from `EntityScript`, override `OnUpdate`, attach it to an entity in the editor, and press Play.
 
 \---
@@ -100,6 +102,8 @@ Triggers fire on both entities involved, so a pickup can react in its own script
 
 All three also receive application events like `OnApplicationPaused`, `OnApplicationQuit`, and `OnFocusChanged(bool focused)`.
 
+Static fields and static classes keep their values across Play sessions in the editor, because scripts are not reloaded when Play stops. Code that keeps state there (a service, a package) resets it in `Application.OnPlayModeExited`, which the editor raises after it has restored the scenes.
+
 > The split between `OnUpdate` and `OnFixedUpdate` matters: put \*\*rendering/input-rate\*\* logic in `OnUpdate`, and \*\*physics\*\* logic in `OnFixedUpdate` (which runs at a steady rate regardless of frame rate). See \[Startup Processes](../Engine-Core/Startup-Processes.md#stage-3--the-main-loop).
 
 \---
@@ -180,12 +184,37 @@ Input.GetKeyDown(KeyCode.Space);    // pressed this frame
 Input.GetAxis();                    // WASD/arrows, else first gamepad's stick/D-pad, -1..1
 Input.MousePosition;
 
+// Mouse look: hide the cursor and read the motion. A locked or hidden cursor stays at the centre of the game view,
+// so UI under the crosshair receives hover and clicks.
+Cursor.Mode = CursorMode.Locked;   // or Cursor.Visible = false
+Vector2 look = Input.GetMouseDelta();
+```
+
+In the editor the game holds the mouse only while the focused Game View plays (Play focuses it). **Escape** or switching apps gives the editor its normal OS cursor back and stops mouse-look; `Cursor.Mode` and `Cursor.Visible` keep returning what the game set. Clicking into the Game View (or focusing it) applies the game's cursor mode and custom cursor again, as does a new lock from the game, e.g. when it closes its pause menu.
+
+```csharp
 // Gamepads (Xbox layout; other pads are mapped automatically). Index 0-3, default 0.
 Input.IsGamepadConnected();
 Input.GetGamepadButtonDown(GamepadButton.A);
 Vector2 move = Input.GetLeftStick();              // deadzone applied (Input.GamepadDeadzone)
 float throttle = Input.GetGamepadTrigger(GamepadAxis.RightTrigger); // 0..1
+
+// Touchscreens: every finger (the mouse only follows the first one). Track fingers by Id, not by index.
+for (int i = 0; i < Input.TouchCount; i++)
+{
+    Touch touch = Input.GetTouch(i);   // Id, Position, StartPosition (viewport pixels), Phase
+    if (touch.Phase == TouchPhase.Began && IsOverJumpButton(touch.Position)) Jump(); // your own hit test
+}
+
+// Phone/tablet motion sensors. Axes follow the rotated screen: +X right, +Y up, +Z out of the screen.
+Vector3 tilt = Input.Acceleration;   // in g, toward gravity: (0, -1, 0) upright, (0, 0, -1) lying face up
+Vector3 spin = Input.Gyroscope;      // rad/s, counter-clockwise positive
+if (Input.IsAccelerometerAvailable) steer = tilt.X; // right edge down → positive
 ```
+
+UI does not need any of this: Buttons, Toggles and other Interactables respond to every finger, so two on-screen buttons can be held at the same time. Sliders, scrollbars, scroll views, input fields and dropdowns follow the first finger.
+
+The sensors are switched on by the first read (so the first frame can still be zero) and report zero on desktop and Web without such a sensor; Android and iOS need no permission.
 
 **Time**:
 
@@ -271,6 +300,18 @@ song.Time = 42f;                                 // seek; Length, IsPlaying, IsA
 song.Dispose();                                  // e.g. in OnDestroy; leaving Play mode closes every stream
 ```
 
+**Music / SFX volume settings** — the **Index.AudioMixer** package (Package Manager) adds volume groups (`Master` → `Music`, `SFX`, plus your own) with mute, fades, snapshots, saved settings and one-line slider binding:
+
+```csharp
+using Index.AudioMixer;
+AudioMixer.Attach(musicSource, AudioMixer.Music);        // AudioSource or AudioStream follows the group
+AudioMixer.PlayOneShot(clip, AudioMixer.Sfx);
+AudioMixer.BindSlider(musicSlider, AudioMixer.Music);    // settings screen; saved to PlayerPrefs
+AudioMixer.TransitionTo("Paused", 0.4f);                 // after DefineSnapshot("Paused", (AudioMixer.Music, 0.3f))
+```
+
+The full API is in the package's [README](https://github.com/Ben-Scr/Index-PackageRegistry/tree/main/packages/Index.AudioMixer).
+
 **Media controls** — for music and podcast apps on Android: a "now playing" notification with cover, previous / play-pause / next and a seek bar, also on the lock screen and for headset buttons. It belongs to the background-audio service, so keep `Audio.PlayInBackground` on while a track is loaded (also when paused) and enable `backgroundAudio` in the Android build profile:
 
 ```csharp
@@ -321,6 +362,33 @@ foreach (ref var t in Scene.QueryRef<NativeTransform2D>())
 **Math** — `Vector2/3/4`, `Quaternion`, `Color`, `Mathf` (sin, cos, clamp, lerp…), and `Random`.
 
 For heavy parallel work over many entities, combine queries with the [Job System](../Engine-Core/Job-System.md).
+
+\---
+
+## Your own components
+
+Data that several scripts share belongs in a component of its own. Both kinds below are added with **Add Component** (or from code) and saved with the scene. Name the `.cs` file like the type; the editor finds them by file name.
+
+**Class components** derive from `Component`: Inspector-editable data with strings, references and lists, but no lifecycle (pair them with an `EntityScript` or `SceneSystem` that reads them).
+
+```csharp
+public class Health : Component { public int Max = 10; [ShowInEditor] private int current; }
+
+var h = Entity.GetComponent<Health>() ?? Entity.AddComponent<Health>();
+```
+
+**Struct components** implement `IComponent`: blittable data in the engine's own component storage, the fastest option for many entities and usable in `Scene.QueryRef<T>()` and jobs. Allowed fields: `bool`, the integer types, `float`, `double`, enums and structs built from those (`Vector2`, `Vector3`).
+
+```csharp
+[StructLayout(LayoutKind.Sequential)]
+public struct Velocity : IComponent { public Vector2 Value; public float Drag; }
+
+Entity.AddNativeComponent<Velocity>();
+ref var v = ref Entity.GetNativeComponent<Velocity>();     // writes go straight to the component
+foreach (ref var vel in Scene.QueryRef<Velocity>()) vel.Value *= 0.99f;
+```
+
+The Inspector edits struct fields in place, also during Play. Struct data is saved as raw bytes, so only **append** fields to a struct that existing scenes already use; reordering or inserting fields shifts saved values.
 
 \---
 

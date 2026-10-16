@@ -81,9 +81,14 @@ namespace Index::EditorRuntime::ImGuiContextSetup {
 			"Failed to init SDL3 for imgui (WebGPU backend)!");
 		// SDL has no callback chaining like GLFW; the engine's event pump forwards every event.
 		g_EventHookId = Window::AddNativeEventHook([](const SDL_Event& event) {
-			if (ImGui::GetCurrentContext() != nullptr) {
-				ImGui_ImplSDL3_ProcessEvent(&event);
+			if (ImGui::GetCurrentContext() == nullptr) return;
+			// A locked cursor's motion carries SDL's summed deltas, which wander across the whole window; ImGui would
+			// hover and click editor panels with it. The editor pins ImGui's pointer to the game's lock point instead.
+			if (event.type == SDL_EVENT_MOUSE_MOTION) {
+				SDL_Window* window = SDL_GetWindowFromID(event.motion.windowID);
+				if (window && SDL_GetWindowRelativeMouseMode(window)) return;
 			}
+			ImGui_ImplSDL3_ProcessEvent(&event);
 		});
 		IDX_VERIFY(ImGuiImplWebGPU::Init(),
 			"Failed to init WebGPU imgui backend (device not ready?)");

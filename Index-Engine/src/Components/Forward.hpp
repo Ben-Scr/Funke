@@ -13,6 +13,7 @@ namespace Index {
 	struct EntityMetaDataComponent;
 	struct PrefabInstanceComponent;
 	struct HierarchyComponent;
+	struct INDEX_API AnimatorComponent;
 
 	// Graphics
 	struct INDEX_API SpriteRendererComponent;
@@ -54,5 +55,6 @@ namespace Index {
 	struct HorizontalLayoutGroupComponent;
 	struct VerticalLayoutGroupComponent;
 	struct GridLayoutGroupComponent;
+	struct INDEX_API LocalizedTextComponent;
 
 }

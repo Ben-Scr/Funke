@@ -8,14 +8,14 @@ Index splits its world features into two optional engine modules. A project list
 
 | Module | Contains |
 |---|---|
-| `Index.2D` | Transform 2D, Sprite Renderer, Camera 2D, Sprite Animator 2D, Particle System 2D, Post Processing 2D, 2D physics (Box2D and Index-Physics: Rigidbody 2D, colliders, `Physics2D`), world-space text on 2D entities, 2D picking |
+| `Index.2D` | Transform 2D, Sprite Renderer, Camera 2D, Sprite Animator 2D, Particle System 2D, 2D physics (Box2D and Index-Physics: Rigidbody 2D, colliders, `Physics2D`), world-space text on 2D entities, 2D picking |
 | `Index.3D` | Transform 3D, Camera 3D with sky, Mesh Renderer, materials and meshes, Directional/Point/Spot lights, Particle System 3D, 3D physics (Jolt: Rigidbody 3D, colliders, `Physics3D`) |
 
-UI (Rect Transform 2D and every UI widget), text, images, audio, scripting, gizmos, input and assets belong to the engine core and are always available. A project may list one module, both, or none (a pure UI app).
+UI (Rect Transform 2D and every UI widget), text, images, Post Processing (on a Camera 2D or Camera 3D), audio, scripting, gizmos, input and assets belong to the engine core and are always available. A project may list one module, both, or none (a pure UI app).
 
 ## In the editor
 
-The **Package Manager** lists the modules under **Engine Modules**, next to the packages: **Install** turns a module on, **Remove** turns it off, and **Reload Editor** in the banner applies the change. Project Settings only shows which modules are on and links there. From the command line, `index package add Index.3D` / `index package remove Index.3D` do the same.
+The **Package Manager** lists the modules under **Engine Modules**, next to the packages: **Install** turns a module on, **Remove** turns it off. The editor then asks in its main window whether to reload now; **Later** keeps a "Reload pending" hint with a **Reload Now** button in the status bar until the reload happens. Project Settings only shows which modules are on and links there. From the command line, `index package add Index.3D` / `index package remove Index.3D` do the same.
 
 Packages declare the modules they build on (`modules = { "Index.2D" }` in `index-package.lua`). Installing such a package turns those modules on as well, including the ones its dependencies need, and a module can't be removed while an installed package needs it. A package whose module is off is not loaded and the build stops with an error that names it.
 

@@ -48,9 +48,6 @@ namespace Index {
 		// CollectAndDraw and refilled by UIDrawOrder::Build — capacity persists
 		// so a stable UI doesn't allocate after the first frame.
 		std::vector<std::pair<EntityHandle, int>> m_DrawOrder;
-		// Reverse map for the input-field overlay pass — entity → DrawIndex.
-		// Same reuse contract: clear() at the top of CollectAndDraw.
-		std::unordered_map<EntityHandle, std::uint32_t> m_DrawIndexByEntity;
 
 		bool m_IsInitialized = false;
 		bool m_SkipBeginFrameRender = false;

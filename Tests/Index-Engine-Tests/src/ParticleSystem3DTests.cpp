@@ -7,7 +7,10 @@
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/Scene.hpp"
+#include "Scripting/ScriptBindings.hpp"
+#include "Scripting/ScriptEngine.hpp"
 #include "Serialization/Json.hpp"
+#include "Core/Application.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -264,4 +267,35 @@ TEST_CASE("ParticleSystem3D depends on Transform3D and conflicts with ParticleSy
 	auto contains = [](const auto& list, const auto& id) { return std::find(list.begin(), list.end(), id) != list.end(); };
 	CHECK(contains(info->dependsOn, transform->typeId));
 	CHECK(contains(info->conflictsWith, particles2D->typeId));
+}
+
+TEST_CASE("ParticleSystem3D Emit binding uses the emitter pose a script just set, including parents") {
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Emit Binding");
+	Entity parent = scene->CreateEntity("Parent");
+	parent.AddComponent<Transform3DComponent>().Position = { 0.0f, 5.0f, 0.0f };
+	Entity emitter = scene->CreateEntity("Emitter");
+	emitter.AddComponent<Transform3DComponent>();
+	emitter.SetParent(parent);
+	auto& ps = emitter.AddComponent<ParticleSystem3DComponent>();
+	ps.Shape = ParticleShape3D::Box;
+	ps.BoxSize = glm::vec3(0.0f);
+	ps.Speed = 0.0f;
+	ps.SimulationSpace = ParticleSpace3D::World;
+	ps.Simulate(0.0f, k_Identity);
+	const uint64_t emitterId = scene->GetEntityPersistentID(emitter.GetHandle());
+	ScriptEngine::SetScene(scene.get());
+
+	NativeBindings b{};
+	ScriptBindings::PopulateNativeBindings(b);
+	REQUIRE(b.ParticleSystem3D_Emit != nullptr);
+	// Moved after the last Simulate, like a script does right before Emit; WorldMatrix is still stale here.
+	emitter.GetComponent<Transform3DComponent>().Position = { 3.0f, 0.0f, 0.0f };
+	b.ParticleSystem3D_Emit(emitterId, 1);
+	ScriptEngine::SetScene(nullptr);
+
+	const auto& emitted = emitter.GetComponent<ParticleSystem3DComponent>();
+	REQUIRE(emitted.GetParticleCount() == 1);
+	CHECK(emitted.GetParticles()[0].Position.x == doctest::Approx(3.0f));
+	CHECK(emitted.GetParticles()[0].Position.y == doctest::Approx(5.0f));
 }

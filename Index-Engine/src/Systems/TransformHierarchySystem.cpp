@@ -40,12 +40,11 @@ namespace Index {
 				}
 			}
 
-			if (registry.all_of<HierarchyComponent>(entity)) {
-				// Snapshot children so a script mutating the hierarchy during the pass doesn't invalidate the iterator.
-				const auto childrenSnapshot = registry.get<HierarchyComponent>(entity).Children;
-				for (EntityHandle child : childrenSnapshot) {
-					ProcessSubtree(registry, child, tr, depth + 1);
-				}
+			// Index + re-fetch instead of copying Children: the copy allocated per parent per pass.
+			for (size_t i = 0;; ++i) {
+				const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(entity);
+				if (!hierarchy || i >= hierarchy->Children.size()) break;
+				ProcessSubtree(registry, hierarchy->Children[i], tr, depth + 1);
 			}
 
 			if (!ownedByPhysics
@@ -86,6 +85,37 @@ namespace Index {
 			return false;
 		}
 
+		bool HasDirtyAncestor(const entt::registry& registry, EntityHandle entity,
+			const std::unordered_set<EntityHandle>& dirty)
+		{
+			int depth = 0;
+			const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(entity);
+			while (hierarchy && hierarchy->Parent != entt::null && depth++ < kMaxHierarchyDepth) {
+				if (dirty.contains(hierarchy->Parent)) return true;
+				hierarchy = registry.try_get<HierarchyComponent>(hierarchy->Parent);
+			}
+			return false;
+		}
+
+		// Re-derives only the subtrees under dirty transforms; the topmost dirty ancestor covers its descendants.
+		void PropagateDirtySubtrees(entt::registry& registry, const std::vector<EntityHandle>& dirtyTransforms) {
+			thread_local std::unordered_set<EntityHandle> t_DirtySet;
+			t_DirtySet.clear();
+			t_DirtySet.insert(dirtyTransforms.begin(), dirtyTransforms.end());
+
+			for (EntityHandle entity : dirtyTransforms) {
+				if (!registry.valid(entity) || HasDirtyAncestor(registry, entity, t_DirtySet)) continue;
+
+				const Transform2DComponent* parentWorld = nullptr;
+				if (const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(entity);
+					hierarchy && hierarchy->Parent != entt::null && registry.valid(hierarchy->Parent))
+				{
+					parentWorld = registry.try_get<Transform2DComponent>(hierarchy->Parent);
+				}
+				ProcessSubtree(registry, entity, parentWorld, 0);
+			}
+		}
+
 		void RunPropagation(Scene& scene) {
 			auto& registry = scene.GetRegistry();
 
@@ -113,6 +143,11 @@ namespace Index {
 						ProcessRootTransform(registry, entity);
 					}
 				}
+				return;
+			}
+
+			if (!dirtyAll && !forceBodyHierarchy) {
+				PropagateDirtySubtrees(registry, dirtyTransforms);
 				return;
 			}
 

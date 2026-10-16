@@ -146,6 +146,8 @@ namespace Index::ReferencePicker {
 				case AssetKind::DataAsset: return "Data Asset";
 				case AssetKind::Material: return "Material";
 				case AssetKind::Mesh: return "Mesh";
+				case AssetKind::AnimationClip: return "Animation Clip";
+				case AssetKind::AnimatorController: return "Animator Controller";
 				case AssetKind::Unknown:
 				case AssetKind::Other:
 				default: return "Asset";

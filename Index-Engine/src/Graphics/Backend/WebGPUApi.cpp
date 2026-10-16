@@ -56,6 +56,7 @@ namespace Index {
 		void*               g_SurfaceNativeHandle = nullptr;
 		uint32_t            g_SurfaceGeneration = 0;
 		wgpu::TextureFormat g_SurfaceFormat = wgpu::TextureFormat::Undefined;
+		bool g_SurfaceCopySrc = false;
 
 		bool g_HasTimestampQuery = false;
 
@@ -80,6 +81,7 @@ namespace Index {
 			bool PresentedSwapChain = false;
 		};
 		FrameState g_Frame;
+		uint64_t   g_FrameSubmitSerial = 0;
 
 		struct TargetState {
 			wgpu::TextureView ColorView;       // null -> use swap chain's per-frame view
@@ -504,6 +506,9 @@ namespace Index {
 			config.device      = g_Device;
 			config.format      = g_SurfaceFormat;
 			config.usage       = wgpu::TextureUsage::RenderAttachment;
+			// CopySrc lets ScreenCapture read the finished frame (screenshot command, --screenshot-at).
+			g_SurfaceCopySrc = (caps.usages & wgpu::TextureUsage::CopySrc) != wgpu::TextureUsage::None;
+			if (g_SurfaceCopySrc) config.usage |= wgpu::TextureUsage::CopySrc;
 			config.width       = width;
 			config.height      = height;
 			config.presentMode = ChoosePresentMode(caps);
@@ -617,6 +622,7 @@ namespace Index {
 			wgpu::CommandBufferDescriptor cbDesc{};
 			wgpu::CommandBuffer cmd = g_Frame.Encoder.Finish(&cbDesc);
 			g_Queue.Submit(1, &cmd);
+			++g_FrameSubmitSerial;
 
 			g_Frame.Encoder    = nullptr;
 			g_Frame.HasEncoder = false;
@@ -694,6 +700,13 @@ namespace Index {
 			return true;
 		}
 
+		bool ReadSwapChainRGBA8(uint32_t& outWidth, uint32_t& outHeight, std::vector<uint8_t>& outRgba) {
+			if (!g_Initialized || !g_SurfaceCopySrc || !g_Frame.HasSurfaceTexture || !g_Frame.SurfaceTexture) return false;
+			outWidth = g_Frame.SurfaceTexture.GetWidth();
+			outHeight = g_Frame.SurfaceTexture.GetHeight();
+			return ReadTextureRGBA8(g_Frame.SurfaceTexture, g_SurfaceFormat, outWidth, outHeight, outRgba);
+		}
+
 		void Present() {
 			if (!g_Initialized) return;
 
@@ -724,6 +737,7 @@ namespace Index {
 				wgpu::CommandBufferDescriptor cbDesc{};
 				wgpu::CommandBuffer cmd = g_Frame.Encoder.Finish(&cbDesc);
 				g_Queue.Submit(1, &cmd);
+				++g_FrameSubmitSerial;
 			}
 
 #if !defined(IDX_PLATFORM_WEB)
@@ -857,6 +871,10 @@ namespace Index {
 
 		void FlushCommands() {
 			FlushFrameCommands();
+		}
+
+		uint64_t GetFrameSubmitSerial() {
+			return g_FrameSubmitSerial;
 		}
 
 		BoundTargetSnapshot SaveBoundTarget() {
@@ -1255,6 +1273,8 @@ namespace Index {
 	}
 
 	void RenderApi::SetVsync(bool enabled) {
+		// Rebuilding the swap chain for the same mode costs a frame (games apply their settings on every scene load).
+		if (g_Initialized && g_Surface && enabled == g_VsyncEnabled) return;
 		g_VsyncEnabled = enabled;
 		if (!g_Initialized || !g_Surface) return;
 		if (g_BackbufferWidth == 0 || g_BackbufferHeight == 0) return;

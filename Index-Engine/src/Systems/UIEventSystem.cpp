@@ -1204,15 +1204,12 @@ namespace Index {
 
 		// Front-most Interactable under mouseUi, using the same (SortingLayer, SortingOrder, DrawIndex) key as GuiRenderer.
 		EntityHandle PickInteractable(entt::registry& registry, const Vec2& mouseUi) {
-			std::vector<std::pair<EntityHandle, int>> uiDrawOrder;
-			uiDrawOrder.reserve(64);
-			UIDrawOrder::Build(registry, uiDrawOrder);
-
-			std::unordered_map<EntityHandle, int> drawIndexByEntity;
-			drawIndexByEntity.reserve(uiDrawOrder.size());
-			for (const auto& [entity, di] : uiDrawOrder) {
-				drawIndexByEntity.emplace(entity, di);
-			}
+			// Picks run several times per frame (hover, each finger); keep the scratch alive between them.
+			thread_local std::vector<std::pair<EntityHandle, int>> t_DrawOrder;
+			thread_local UIDrawOrder::OrderLookup t_DrawIndexByEntity;
+			t_DrawOrder.clear();
+			UIDrawOrder::Build(registry, t_DrawOrder);
+			t_DrawIndexByEntity.Rebuild(t_DrawOrder);
 
 			struct SortKey {
 				int Layer = 0;
@@ -1220,6 +1217,12 @@ namespace Index {
 				int DrawIndex = 0;
 			};
 			auto keyFor = [&](EntityHandle entity, int drawIndex) {
+				// A slider counts as drawn at its front-most part, so a thumb overhanging a later sibling still wins.
+				if (const auto* slider = registry.try_get<SliderComponent>(entity)) {
+					if (const int* handleIndex = t_DrawIndexByEntity.DrawIndexOf(slider->HandleEntity)) {
+						drawIndex = std::max(drawIndex, *handleIndex);
+					}
+				}
 				SortKey k;
 				k.DrawIndex = drawIndex;
 				if (auto* image = registry.try_get<ImageComponent>(entity)) {
@@ -1243,7 +1246,8 @@ namespace Index {
 			auto hitView = registry.view<RectTransform2DComponent, InteractableComponent>(entt::exclude<DisabledTag>);
 			for (auto&& [entity, rect, interact] : hitView.each()) {
 				if (!interact.Interactable) continue;
-				if (!UIDrawOrder::HitTest(registry, entity, rect, mouseUi)) continue;
+				if (!UIDrawOrder::HitTest(registry, entity, rect, mouseUi)
+					&& !UIEventSystem::SliderHandleContains(registry, entity, mouseUi)) continue;
 
 				// CircularSlider: reject bounding-rect hits outside the ring annulus (donut hole and outer edge).
 				if (const auto* cs = registry.try_get<CircularSliderComponent>(entity)) {
@@ -1258,10 +1262,10 @@ namespace Index {
 					if (distSq < innerR * innerR || distSq > outerR * outerR) continue;
 				}
 
-				auto it = drawIndexByEntity.find(entity);
-				if (it == drawIndexByEntity.end()) continue;
+				const int* drawIndex = t_DrawIndexByEntity.DrawIndexOf(entity);
+				if (!drawIndex) continue;
 
-				SortKey key = keyFor(entity, it->second);
+				SortKey key = keyFor(entity, *drawIndex);
 				if (!haveHit || less(bestKey, key)) {
 					hovered = entity;
 					bestKey = key;
@@ -1311,12 +1315,87 @@ namespace Index {
 		return firstHorizontal;
 	}
 
+	bool UIEventSystem::SliderHandleContains(entt::registry& registry, EntityHandle sliderEntity, const Vec2& point) {
+		const auto* slider = registry.try_get<SliderComponent>(sliderEntity);
+		if (!slider || slider->IsReadOnly || !registry.valid(slider->HandleEntity)) return false;
+		if (registry.all_of<DisabledTag>(slider->HandleEntity)) return false;
+		const auto* handleRect = registry.try_get<RectTransform2DComponent>(slider->HandleEntity);
+		return handleRect && UIDrawOrder::HitTest(registry, slider->HandleEntity, *handleRect, point);
+	}
+
 	bool UIEventSystem::CanScrollRectTakeOverPress(const entt::registry& registry, EntityHandle pressed, EntityHandle scrollRect) {
 		if (pressed == scrollRect || !registry.valid(pressed) || !registry.valid(scrollRect)) return false;
 		if (registry.any_of<SliderComponent, ScrollbarComponent, CircularSliderComponent, ScrollRectComponent, InputFieldComponent>(pressed)) {
 			return false;
 		}
 		return IsDescendantOf(registry, pressed, scrollRect);
+	}
+
+	int64_t UIEventSystem::TrackMouseFinger(int64_t current, std::span<const FingerSample> fingers) {
+		if (current != k_NoFinger) {
+			for (const FingerSample& finger : fingers) {
+				if (finger.Id == current) return current;
+			}
+		}
+		for (const FingerSample& finger : fingers) {
+			if (finger.Phase == TouchPhase::Began) return finger.Id;
+		}
+		return k_NoFinger;
+	}
+
+	void UIEventSystem::UpdateFingerPresses(entt::registry& registry, std::span<const FingerSample> fingers,
+		int64_t mouseFinger, EntityHandle mousePressed, const std::function<EntityHandle(Vec2)>& pick,
+		std::vector<FingerPress>& presses, std::vector<EntityHandle>& clicked)
+	{
+		auto heldInteractable = [&](EntityHandle entity) -> InteractableComponent* {
+			if (!registry.valid(entity) || registry.all_of<DisabledTag>(entity)) return nullptr;
+			auto* interact = registry.try_get<InteractableComponent>(entity);
+			return interact && interact->Interactable ? interact : nullptr;
+		};
+		auto release = [&](const FingerPress& press, const FingerSample* finger) {
+			InteractableComponent* interact = heldInteractable(press.Entity);
+			if (!interact) return;
+			interact->IsMouseUp = true;
+			if (press.Entity != mousePressed) interact->IsPressed = false;
+			if (finger && finger->OverSurface && pick(finger->Ui) == press.Entity) {
+				interact->IsClicked = true;
+				clicked.push_back(press.Entity);
+			}
+		};
+
+		// Fingers that vanished without an Ended phase (focus loss, cleared input) let go without a click.
+		std::erase_if(presses, [&](const FingerPress& press) {
+			const bool present = std::any_of(fingers.begin(), fingers.end(), [&](const FingerSample& f) { return f.Id == press.FingerId; });
+			if (!present) release(press, nullptr);
+			return !present;
+		});
+
+		for (const FingerSample& finger : fingers) {
+			if (finger.Id == mouseFinger) continue;
+			auto it = std::find_if(presses.begin(), presses.end(), [&](const FingerPress& p) { return p.FingerId == finger.Id; });
+			if (finger.Phase == TouchPhase::Began) {
+				if (it != presses.end() || !finger.OverSurface) continue;
+				const EntityHandle target = pick(finger.Ui);
+				if (target == entt::null || target == mousePressed) continue;
+				if (registry.any_of<SliderComponent, ScrollbarComponent, CircularSliderComponent, ScrollRectComponent,
+					InputFieldComponent, DropdownComponent>(target)) continue;
+				InteractableComponent* interact = heldInteractable(target);
+				if (!interact) continue;
+				interact->IsMouseDown = true;
+				interact->IsPressed = true;
+				presses.push_back({ finger.Id, target });
+				continue;
+			}
+			if (it == presses.end()) continue;
+			if (finger.Phase == TouchPhase::Ended) {
+				release(*it, &finger);
+				presses.erase(it);
+			}
+			else if (InteractableComponent* interact = heldInteractable(it->Entity)) {
+				// The mouse pass clears IsPressed when the mouse is up; a held finger keeps it.
+				interact->IsPressed = true;
+			}
+		}
 	}
 
 	void UIEventSystem::Update(Scene& scene) {
@@ -1553,6 +1632,30 @@ namespace Index {
 			}
 		}
 
+		// ── 3c. Further fingers (the mouse follows only the first) ─────
+		{
+			std::vector<FingerSample> fingers;
+			const int touchCount = Input::GetTouchCount();
+			fingers.reserve(static_cast<size_t>(touchCount));
+			for (int i = 0; i < touchCount; ++i) {
+				Touch touch;
+				if (!Input::GetTouch(i, touch)) continue;
+				const UiPointer fingerPointer = ResolveUiPointer(touch.Position);
+				fingers.push_back({ touch.Id, touch.Phase, fingerPointer.Ui, fingerPointer.OverSurface });
+			}
+			m_MouseFinger = TrackMouseFinger(m_MouseFinger, fingers);
+			if (popupConsumes) fingers.erase(std::remove_if(fingers.begin(), fingers.end(),
+				[](const FingerSample& f) { return f.Phase == TouchPhase::Began; }), fingers.end());
+			std::vector<EntityHandle> fingerClicks;
+			UpdateFingerPresses(registry, fingers, m_MouseFinger, m_PressedEntity,
+				[&registry](Vec2 ui) { return PickInteractable(registry, ui); }, m_FingerPresses, fingerClicks);
+			for (EntityHandle entity : fingerClicks) {
+				if (auto* btn = registry.try_get<ButtonComponent>(entity); btn && !btn->OnClick.Bindings.empty()) {
+					deferredUiDispatches.push_back({ entity, btn->OnClick.Bindings, false, {} });
+				}
+			}
+		}
+
 		if (mouseUpThisFrame) {
 			m_PressedEntity = entt::null;
 		}
@@ -1736,7 +1839,7 @@ namespace Index {
 					slider.PressMouseAxis = mouseAxis;
 					slider.PressValue = slider.Value;
 					slider.IsDragging = false;
-					if (!handlePressed) {
+					if (!handlePressed && !UIEventSystem::SliderHandleContains(registry, entity, mouseUi)) {
 						const Vec2 bl = rect.GetBottomLeft();
 						const Vec2 tr = rect.GetTopRight();
 						const float start = sliderHorizontal ? bl.x : bl.y;
@@ -2896,6 +2999,8 @@ namespace Index {
 
 	void UIEventSystem::OnDestroy(Scene&) {
 		m_PressedEntity = entt::null;
+		m_MouseFinger = k_NoFinger;
+		m_FingerPresses.clear();
 		m_HoveredEntity = entt::null;
 		// A scene unloaded mid-edit must not leave the on-screen keyboard open.
 		if (Window* window = Application::GetWindow()) window->EndTextEditing(this);

@@ -44,6 +44,8 @@ namespace Index {
 			Scene& scene,
 			const Json::Value& entityValue,
 			EntityOrigin origin = EntityOrigin::Scene);
+		// True for a .prefab/clipboard root holding an entity tree: "Entities" array, "Entity" or legacy "prefab".
+		static bool HasPrefabEntityPayload(const Json::Value& root);
 		// Rebuilds SerializeEntityFull output (root first, children linked by parentUuid) with the
 		// serialized persistent ids kept, e.g. for editor undo. Returns the root or null on failure.
 		static EntityHandle RestoreEntityTree(Scene& scene, const std::vector<Json::Value>& entityValues);

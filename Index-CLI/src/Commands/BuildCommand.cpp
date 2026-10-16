@@ -37,13 +37,16 @@ namespace Index::Cli {
 		IndexProject* project = OpenProject(args, error);
 		const bool release = args.Flag("release");
 		const bool development = args.Flag("development");
+		const bool debug = args.Flag("debug");
 		const std::optional<std::string> platformOption = args.Option("platform");
 		const std::optional<std::string> profileOption = args.Option("profile");
 		const std::optional<std::string> outputOption = args.Option("output", "o");
 		const bool runAfter = args.Flag("run");
 		if (!args.Finish(error)) return Fail(error, k_ExitUsage);
 		if (!project) return Fail(error);
-		if (release && development) return Fail("--release and --development are exclusive", k_ExitUsage);
+		if (int(release) + int(development) + int(debug) > 1) {
+			return Fail("--debug, --development and --release are exclusive", k_ExitUsage);
+		}
 
 		std::optional<BuildPlatform> platform;
 		if (platformOption) {
@@ -59,16 +62,17 @@ namespace Index::Cli {
 
 		// Overrides live in the in-memory project only; GameBuilder stamps them into the shipped project.json.
 		project->ActiveBuildProfileName = profileName;
-		if (release) project->ActiveBuildProfile = IndexProject::BuildProfile::Release;
-		if (development) project->ActiveBuildProfile = IndexProject::BuildProfile::Development;
 
 		GameBuilder::Request request;
+		if (release) request.ConfigurationOverride = IndexProject::BuildProfile::Release;
+		if (development) request.ConfigurationOverride = IndexProject::BuildProfile::Development;
+		if (debug) request.ConfigurationOverride = IndexProject::BuildProfile::Debug;
 		if (!GameBuilder::Prepare(*project, request, error)) return Fail(error);
 		std::error_code fsError;
 		request.OutputDirectory = Path::ToUtf8(std::filesystem::absolute(Path::FromUtf8(outputOption
 			? *outputOption : GameBuilder::DefaultOutputDirectory(*project, profileName)), fsError));
 
-		const char* configuration = IndexProject::BuildProfileToString(project->ActiveBuildProfile);
+		const char* configuration = IndexProject::BuildProfileToString(request.Project.ActiveBuildProfile);
 		Note("Building " + project->Name + " (" + profileName + ", " + IndexBuildProfile::PlatformToString(request.Platform)
 			+ ", " + configuration + ")");
 		int lastPercent = -1;
@@ -93,8 +97,10 @@ namespace Index::Cli {
 		if (runAfter) {
 			if (result.ExecutablePath.empty()) return Fail("--run only works for host desktop builds");
 			const std::filesystem::path executable = Path::FromUtf8(result.ExecutablePath);
-			if (!Process::LaunchDetached({ result.ExecutablePath }, executable.parent_path())) {
-				return Fail("could not start " + result.ExecutablePath);
+			unsigned long gamePid = 0;
+			std::string loaderError;
+			if (!Process::LaunchDetachedChecked({ result.ExecutablePath }, executable.parent_path(), gamePid, loaderError)) {
+				return Fail("could not start " + result.ExecutablePath + (loaderError.empty() ? std::string() : ": " + loaderError));
 			}
 		}
 		return k_ExitOk;

@@ -75,7 +75,7 @@ Scenes are found **by file name** anywhere under `Assets/` (case-insensitive). T
 
 ### World / rendering
 - **`Transform2D`** — `posX` 0, `posY` 0, `rotation` 0 (rad), `scaleX` 1, `scaleY` 1.
-- **`SpriteRenderer`** — `r,g,b,a` 1; `sortOrder` 0; `sortLayer` 0; `textureAsset` (GUID string); `spriteName` (slice name from the texture's .meta; omit = whole texture); `filterMode` 4 (Point=0, Bilinear=1, Trilinear=2, Anisotropic=3, Default=4 → use .meta / Point); `wrapU`/`wrapV` GL constants (Repeat=10497, Clamp=33071 default, Mirror=33648). Size on screen = Transform scale (1 unit per scale 1; there is no pixels-per-unit).
+- **`SpriteRenderer`** — `r,g,b,a` 1; `sortOrder` 0; `sortLayer` 0; `textureAsset` (GUID string); `spriteName` (slice name from the texture's .meta; omit = whole texture); `filterMode` 4 (Point=0, Bilinear=1, Trilinear=2, Anisotropic=3, Default=4 → use .meta / Point); `wrapU`/`wrapV` GL constants (Repeat=10497, Clamp=33071 default, Mirror=33648); `pixelsPerUnit` 0; `flipX`/`flipY` false. Size on screen: with `pixelsPerUnit` 0 the sprite fills the Transform scale (1 unit per scale 1); with `pixelsPerUnit` > 0 it keeps its native size (slice px / pixelsPerUnit × scale) and sits on the slice's `.meta` pivot, like a Unity sprite.
 - **`SpriteAnimator2D`** — `frames` (array of slice names), `fps` 12, `loop` true, `playOnStart` true. Needs a `SpriteRenderer` whose texture has those slices.
 - **`TextRenderer`** — `text`; `fontAsset` (**string** GUID; omit = default font); `fontSize` 32; `r,g,b,a`; `alignment` Left=0/Center=1/Right=2; `valign` Top=0/Middle=1/Bottom=2; `letterSpacing`, `lineSpacing`; `wrapMode` None=0/Word=1/Character=2; `autoSize`; `marginL/T/R/B`; `sortOrder`, `sortLayer`. Two modes, chosen by the transform on the entity:
   - **World text** — with `Transform2D`: lives in the world like a sprite (moves with the camera, follows parent transforms, `rotation`, and `scaleX` as uniform scale). Size: `fontSize` pixels / 100 = world units at scale 1 (`fontSize: 64` ≈ 0.64 units tall). The anchor is the transform position; `alignment` picks left/center/right around it. Drawn **after all sprites** (above them, inside post-processing); `sortOrder`/`sortLayer` only order texts among each other. Use for damage numbers, labels over objects, signs.
@@ -90,6 +90,7 @@ Only **one renderer per entity**: `SpriteRenderer`, `Image`, `ParticleSystem2D`,
 - **`Transform3D`** — `posX/posY/posZ` 0, `rotX/rotY/rotZ` 0 (Euler degrees: pitch, yaw, roll), `scaleX/scaleY/scaleZ` 1. Never together with `Transform2D` or `RectTransform`. Entities default to `Transform2D` only when the key is present; a 3D entity just lists `Transform3D`.
 - **`Camera3D`** — `projection` Perspective=0/Orthographic=1, `fov` 60 (vertical degrees), `orthoSize` 5, `near` 0.1, `far` 1000, `background` Skybox=0/SolidColor=1, `clearColor {r,g,b,a}` (SolidColor only), `skyTop`/`skyHorizon`/`skyGround {r,g,b,a}`, `sunSize` 2 (degrees, 0 hides the sun), `skyAmbient` 0.5. Looks down local −Z; a scene with a Camera3D gets no default Camera2D. **Always write `"background": 0`** for a sky: a `clearColor` without `background` loads as SolidColor (legacy scenes).
 - **`MeshRenderer`** — `mesh` Cube=0/Sphere=1/Plane=2/Cylinder=3 (unit size; Plane lies in XZ facing +Y), `material` "<.material GUID as decimal string>" (omit for the white default), `color {r,g,b,a}` (tint), `lit` true (only without a material), `castShadows` true.
+- **`SkinnedMeshRenderer`** — animated `.glb`/`.gltf` model: `model` "<mesh GUID>", `material`, `color`, `lit`, `castShadows`, `clip` "<clip name>" ("" = first clip), `speed` 1, `loop` true, `playOnAwake` true, `previewInEditMode` false. Conflicts with `MeshRenderer` on the same entity; switch clips from C# with `GetComponent<SkinnedMeshRenderer>().Play("Run", 0.2f)`.
 - **`DirectionalLight`** — `color {r,g,b,a}`, `intensity` 1, `ambient {r,g,b,a}`, `castShadows` true. Shines along local −Z; the first enabled one is the main light (ambient, sun disc, the only shadow caster). Point it down with e.g. `rotX` −50.
 - **`PointLight`** — `color {r,g,b,a}`, `intensity` 4, `range` 10 (falls to zero at range).
 - **`SpotLight`** — `color {r,g,b,a}`, `intensity` 6, `range` 15, `innerAngle` 20, `outerAngle` 30 (half angles in degrees). Shines along local −Z (`rotX` −90 points it down).
@@ -119,6 +120,12 @@ Lightweight AABB physics (`FastBody2D` `type` **Static=0, Dynamic=1, Kinematic=2
 ### Audio
 - **`AudioSource`** — `clipAsset` (GUID string), `volume` 1, `pitch` 1, `loop` false, `playOnAwake` false. Background music: an entity with `AudioSource {loop: true, playOnAwake: true}`.
 
+### Animation
+- **`Animator`** — `controllerAsset` (`.animctrl` GUID string), `clipAsset` (`.anim` GUID string, played on its own when there is no controller), `speed` 1, `updateMode` Normal=0/UnscaledTime=1/Fixed=2, `applyInEditMode` false. Works with 2D, 3D and UI entities; tracks reach children by name path.
+- **`.anim` files** (asset kind AnimationClip): `{"type":"AnimationClip","version":1,"length":1,"loop":true,"sampleRate":60,"tracks":[{"path":"Arm","component":"Transform3D","property":"Rotation.z","keys":[{"t":0,"v":-30},{"t":0.5,"v":30,"interp":"bezier","in":0,"out":0}]},{"path":"","component":"SpriteRenderer","property":"Texture","discrete":[{"t":0,"v":"<sheetGuid>|slice|walk_0"},{"t":0.1,"v":"<sheetGuid>|slice|walk_1"}]}],"events":[{"t":0.5,"function":"OnFootstep","argument":"left"}]}`. `path` = child names joined by `/` from the Animator's entity (`""` = itself); `component` = serialized component name (as in this file) or a C# script class; `property` = Inspector property name with `.x/.y/.z/.w` or `.r/.g/.b/.a` for one channel (`Position.y`, `Color.a`, `Scale.x`; RectTransform2D: `AnchoredPosition`, `SizeDelta`, `Pivot`, `AnchorMin`, `AnchorMax`, `Rotation` degrees, `Scale`). `interp` linear (default)/step/bezier. Asset, string and enum properties use `discrete` keys (asset GUIDs as decimal strings; a sprite-sheet slice as `"<textureGuid>|slice|<sliceName>"` on the `Texture` property of SpriteRenderer/Image; there is no `SpriteName` property). For a plain looping flip-book prefer `SpriteAnimator2D`. Events call a public method (no parameter or one string/int/float/bool) on the Animator entity's scripts.
+- **`.animctrl` files** (asset kind AnimatorController): `{"type":"AnimatorController","version":1,"parameters":[{"name":"IsRunning","type":"bool","default":false},{"name":"Jump","type":"trigger"}],"states":[{"name":"Idle","clip":"<anim guid>","speed":1,"position":[0,0]},{"name":"Run","clip":"<anim guid>","position":[260,0]}],"defaultState":"Idle","transitions":[{"from":"Idle","to":"Run","conditions":[{"parameter":"IsRunning","mode":"if"}],"hasExitTime":false,"duration":0.2},{"fromAny":true,"to":"Idle","conditions":[{"parameter":"Jump","mode":"if"}],"duration":0.1}]}`. Parameter `type` float/int/bool/trigger; condition `mode` greater/less/equals/notEquals (+ `threshold`)/if/ifNot; state `loop` clip (default)/loop/once; `exitTime` is in clip lengths. Transitions name their states; unknown names are dropped on load, so run `index validate`.
+- Script side: `GetComponent<Animator>()` then `SetBool/SetFloat/SetInteger/SetTrigger`, `Play(state)`, `CrossFade(state, seconds)`, `CurrentStateName` (see `index-game-scripting`).
+
 ### UI
 UI entities live under a common root and use **`RectTransform2D`** (no `Transform2D`). Reference resolution comes from `project.json` `uiReferenceWidth/Height` (1920×1080 default).
 
@@ -146,6 +153,7 @@ UI entities live under a common root and use **`RectTransform2D`** (no `Transfor
 - **`HorizontalLayoutGroup` / `VerticalLayoutGroup`** — `paddingLeft/Right/Top/Bottom`, `spacing`, `childAlignment` (UpperLeft=0 … LowerRight=8), `reverseArrangement`, `controlChildWidth/Height`, `useChildScaleWidth/Height`, `childForceExpandWidth/Height`.
 - **`GridLayoutGroup`** — padding keys, `cellSize {x,y}`, `spacing {x,y}`, `startCorner` 0–3, `startAxis` 0/1, `childAlignment`, `constraint` Flexible=0/FixedColumnCount=1/FixedRowCount=2, `constraintCount`.
 - **`ContentSizeFitter`** — `horizontalFit`, `verticalFit`, `paddingLeft/Right/Top/Bottom`. **`WidthConstraint`** — `minWidth`, `maxWidth`.
+- **`LocalizedText`** — `key` (a key of `Assets/Localization/<lang>.json`). Needs a `TextRenderer` on the same entity (not auto-added on load). During play the text becomes the translation and follows `Localization.SetLanguage`; the `TextRenderer.text` you write is only the edit-mode placeholder. `index validate` flags keys missing from `en.json`.
 
 **Event bindings** (`onClick`, `onValueChanged`, `onSubmitted`) — wire UI to script methods in JSON instead of subscribing in code where possible:
 ```json
@@ -211,7 +219,7 @@ UI entities live under a common root and use **`RectTransform2D`** (no `Transfor
 }
 ```
 - **First entity is the root.** All `uuid`s unique and non-zero within the file; every `parentUuid` must point inside the file (string or number OK here). Child order = array order.
-- Template uuids are local to the prefab; small numbers (`"1001"`) are fine. Entity refs between entities of the same prefab **must** carry `"type": "entity"` so they get remapped per instance.
+- Template uuids are local to the prefab; small numbers (`"1001"`) are fine. Entity refs between entities of the same prefab **must** carry `"type": "entity"` so they get remapped per instance. Component refs (`"1002:Sprite Renderer"`, `"type": "component:SpriteRenderer"`) between them are remapped too; both are covered by `SceneSerializerPrefabRefTests.cpp`.
 - `type`/`version` are ignored on read; the prefab's GUID comes from `Enemy.prefab.meta` — create it with `index_game_tool.py meta`.
 - Variant: `{ "PrefabRef": "<base GUID or Assets-relative path>", "Overrides": {...}, "EntityOverrides": {...} }` with no `Entities`.
 
@@ -271,4 +279,5 @@ UI entities live under a common root and use **`RectTransform2D`** (no `Transfor
 - [ ] Every collider whose script uses `OnCollisionEnter2D` (or its partner) has `registerContacts: true`.
 - [ ] Entities that start hidden (`"disabled": true`) carry no logic — the script that enables them sits on an active entity.
 - [ ] `ScriptFields` classes are listed in `Scripts`; all values are strings; entity refs have `"type": "entity"`.
+- [ ] `index validate` is clean: it flags entity/component refs whose target entity or component is missing in the file, and component refs that don't match the field's type.
 - [ ] `python index_game_tool.py validate <project>` reports no errors.

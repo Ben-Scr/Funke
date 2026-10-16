@@ -21,7 +21,9 @@ public static class AssetManager
         DataAsset = 8,
         Other = 9,
         Material = 10,
-        Mesh = 11
+        Mesh = 11,
+        AnimationClip = 12,
+        AnimatorController = 13
     }
 
     public static T? Load<T>(string path) where T : class
@@ -58,6 +60,12 @@ public static class AssetManager
 
         if (type == typeof(Mesh) && kind == AssetKind.Mesh)
             return Mesh.FromAssetUUID(guid) as T;
+
+        if (type == typeof(AnimationClip) && kind == AssetKind.AnimationClip)
+            return AnimationClip.FromAssetUUID(guid) as T;
+
+        if (type == typeof(AnimatorController) && kind == AssetKind.AnimatorController)
+            return AnimatorController.FromAssetUUID(guid) as T;
 
         if (kind == AssetKind.DataAsset && typeof(DataAsset).IsAssignableFrom(type))
             return DataAssetRuntime.LoadByGuid(guid, type) as T;
@@ -109,6 +117,8 @@ public static class AssetManager
         if (type == typeof(Font)) return AssetKind.Font;
         if (type == typeof(Material)) return AssetKind.Material;
         if (type == typeof(Mesh)) return AssetKind.Mesh;
+        if (type == typeof(AnimationClip)) return AssetKind.AnimationClip;
+        if (type == typeof(AnimatorController)) return AssetKind.AnimatorController;
         if (typeof(DataAsset).IsAssignableFrom(type)) return AssetKind.DataAsset;
         return AssetKind.Unknown;
     }

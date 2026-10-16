@@ -40,6 +40,7 @@ Launcher ──create/open──► Project (a folder + project.json)
 | Writing player/enemy/game logic in C#; lifecycle, input, physics, audio, coroutines, scene queries | **`index-game-scripting`** |
 | Understanding the project folder, `project.json`, the `.csproj`, where scripts/scenes/prefabs live, file formats | **`index-project-structure`** |
 | Buttons, sliders, HUD, pause/settings menus, pointer/click handling | **`index-game-ui`** |
+| Translations: `Assets/Localization/<lang>.json`, `LocalizedText` component, C# `Localization` (language picker, saved choice) | **`index-game-ui`** + `Github-Docs/Documentation/Engine-Core/Localization.md` |
 | Sprites, audio, fonts, asset references, `AssetManager`, Data Assets (ScriptableObject equivalent) | **`index-assets-and-content`** |
 | Build profiles, window/splash/icon config, producing a distributable game | **`index-build-and-ship`** |
 | Exposing script fields to the Inspector (`[ShowInEditor]`, `[ClampValue]`, asset slots, …) | **`index-inspector-ruleset`** (existing) |
@@ -85,6 +86,43 @@ Launcher ──create/open──► Project (a folder + project.json)
 - **New projects save `.scene`/`.prefab`/`.dataasset` as JSON** (diff-friendly, editable by tools); builds ship them as binary. Older projects may still be Binary — `index convert --format json` or Project Settings switches them. → `index-project-structure`.
 - **The `index` command-line tool** does the Launcher/Editor jobs without a window: `index create`, `index build [--release]`, `index run`, `index validate`, `index prefab …`, `index sprite slice …`, `index package …` (`Github-Docs/Documentation/Editor/Command-Line.md`).
 - **`SceneSystem`, not `GameSystem`.** The per-scene C# base class is `SceneSystem`. (Some older notes say `GameSystem` — that's stale.)
+- **Only the components an entity needs.** An entity that is never drawn, moved or looked up by name (an `AudioManager`, a `GameState` holder, a spawner that only runs a script) gets no `Transform2D`/`Transform3D`; drop `NameComponent` too when nothing finds it by name. Author such entities in the scene JSON and simply omit `"name"` and the transform (C# `Entity.Create()` always adds a transform; it skips the name when you pass none). The Hierarchy then shows "Unnamed Entity (<id>)", so keep a name on anything a human will look for in the editor.
+- **Own components instead of fat scripts.** Data that several scripts or systems share belongs in a component, not in an `EntityScript` field soup (see *Custom C# components* below).
+
+## Custom C# components
+
+Game code can define its own components; both kinds are added in the editor (**Add Component**) and from code. Name the `.cs` file exactly like the type — the editor discovers them by file name.
+
+**Struct components (`IComponent`)** — blittable data in native ECS storage, fastest for many entities and for `QueryRef`:
+
+```csharp
+using System.Runtime.InteropServices; using Index; using Index.Components;
+[StructLayout(LayoutKind.Sequential)]                  // required, else it is skipped
+public struct Velocity : IComponent { public Vector2 Value; public float Drag; }   // file: Velocity.cs
+
+Entity.AddNativeComponent<Velocity>();
+ref var v = ref Entity.GetNativeComponent<Velocity>();  // ref into storage; Unsafe.IsNullRef(ref v) if missing
+v.Value *= 1f - v.Drag * Time.DeltaTime;
+bool has = Entity.HasNativeComponent<Velocity>(); Entity.RemoveNativeComponent<Velocity>();
+foreach (ref var vel in Scene.QueryRef<Velocity>()) vel.Value *= 0.99f;   // many entities, in place (index-game-scripting)
+```
+- Fields: `bool`, integer types, `float`, `double`, enums and structs made of those (e.g. `Vector2`, `Vector3`). No `string`, `Entity`, arrays or references — the struct is silently skipped.
+- Listed under **Native Components (C#)**; serialized as raw bytes. Only **append** fields later — reordering or inserting shifts saved data.
+- Inspector edits write straight into the component's bytes (saved with the scene); in scene JSON the data is a hex blob, so author values in the editor or in code rather than by hand.
+- Re-fetch the `ref` after adding/removing components on that entity.
+
+**Class components (`Component`)** — managed data with references, strings and Inspector-editable fields, no lifecycle callbacks:
+
+```csharp
+using Index;
+public class Health : Component { public int Max = 10; [ShowInEditor] private int current; }   // file: Health.cs
+
+var h = Entity.GetComponent<Health>() ?? Entity.AddComponent<Health>();
+bool has = Entity.HasComponent<Health>(); Entity.RemoveComponent<Health>();
+```
+- Public fields (or `[ShowInEditor]`) show in the Inspector and are saved in the scene (`"ManagedComponents"` + `"ScriptFields"`, see `index-build-game` → `references/scene-json.md`). Needs a parameterless constructor.
+- Values changed at runtime live only in C# and are not written back to the scene.
+- Logic stays in an `EntityScript`/`SceneSystem` that reads the component; a `Component` gets no `OnUpdate`.
 
 ## Verifying your work
 

@@ -68,6 +68,44 @@ public static class Input
         return new Vector2(x, y);
     }
 
+    // ── Touch ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Number of fingers on a touchscreen this frame (0 on desktop without one). The mouse only follows the first
+    /// finger, so read touches for anything that needs two at once, e.g. a joystick plus a jump button.
+    /// </summary>
+    public static int TouchCount => InternalCalls.Input_GetTouchCount();
+
+    /// <summary>
+    /// Finger <paramref name="index"/> (0..<see cref="TouchCount"/>-1), in the order they went down.
+    /// Track a finger across frames by <see cref="Touch.Id"/>, not by index.
+    /// </summary>
+    public static Touch GetTouch(int index)
+    {
+        if (!InternalCalls.Input_GetTouch(index, out Touch touch))
+            throw new ArgumentOutOfRangeException(nameof(index), $"Touch index {index} is outside 0..{TouchCount - 1}.");
+        return touch;
+    }
+
+    // ── Motion sensors ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Device acceleration in g, pointing toward gravity: about (0, -1, 0) with a phone held upright and (0, 0, -1)
+    /// lying face up; tilting the right edge down makes X positive. Axes follow the screen as currently rotated
+    /// (+X right, +Y up, +Z out of the screen). <see cref="Vector3.Zero"/> without an accelerometer (desktop, most Web).
+    /// The sensor is switched on by the first read, so the first frame may still be zero.
+    /// </summary>
+    public static Vector3 Acceleration => InternalCalls.Input_GetAcceleration();
+
+    /// <summary>
+    /// Device rotation rate in radians per second around the screen axes of <see cref="Acceleration"/>,
+    /// counter-clockwise positive. <see cref="Vector3.Zero"/> without a gyroscope.
+    /// </summary>
+    public static Vector3 Gyroscope => InternalCalls.Input_GetGyroscope();
+
+    public static bool IsAccelerometerAvailable => InternalCalls.Input_IsMotionSensorAvailable(0);
+    public static bool IsGyroscopeAvailable => InternalCalls.Input_IsMotionSensorAvailable(1);
+
     // ── Gamepad ─────────────────────────────────────────────────────
 
     /// <summary>Number of gamepad slots polled by the engine (indices 0..MaxGamepads-1).</summary>
@@ -187,6 +225,34 @@ public enum GamepadButton
     DPadRight = 12,
     DPadDown = 13,
     DPadLeft = 14,
+}
+
+public enum TouchPhase
+{
+    /// <summary>The finger touched down this frame.</summary>
+    Began = 0,
+    Moved = 1,
+    Stationary = 2,
+    /// <summary>The finger was lifted (or the touch was cancelled); it is gone next frame.</summary>
+    Ended = 3,
+}
+
+/// <summary>One finger on a touchscreen. Positions are viewport-local pixels like <see cref="Input.MousePosition"/>.</summary>
+public readonly struct Touch
+{
+    public long Id { get; }
+    public Vector2 Position { get; }
+    /// <summary>Where the finger touched down.</summary>
+    public Vector2 StartPosition { get; }
+    public TouchPhase Phase { get; }
+
+    public Touch(long id, Vector2 position, Vector2 startPosition, TouchPhase phase)
+    {
+        Id = id;
+        Position = position;
+        StartPosition = startPosition;
+        Phase = phase;
+    }
 }
 
 public enum GamepadAxis

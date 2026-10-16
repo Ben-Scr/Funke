@@ -10,6 +10,7 @@
 #include <vector>
 
 struct SDL_Gamepad;
+struct SDL_Sensor;
 
 namespace Index {
     class Application;
@@ -43,6 +44,47 @@ namespace Index {
         RightY       = 3,
         LeftTrigger  = 4,
         RightTrigger = 5,
+    };
+
+    // Values are stable for C#.
+    enum class TouchPhase : std::uint8_t {
+        Began      = 0,
+        Moved      = 1,
+        Stationary = 2,
+        Ended      = 3,
+    };
+
+    // One finger on a touchscreen; positions in the same viewport-local pixels as Input::GetMousePosition.
+    struct Touch {
+        int64_t Id = 0;
+        Vec2 Position{ 0.f, 0.f };
+        Vec2 StartPosition{ 0.f, 0.f };
+        TouchPhase Phase = TouchPhase::Began;
+    };
+
+    // Per-frame finger phases from down/move/up events. A finger lifted in the frame it touched down
+    // reports Began that frame and Ended the next, so short taps are never lost.
+    class INDEX_API TouchTracker {
+    public:
+        // Start of a frame, before its events: ended fingers go, the rest settle to Stationary.
+        void BeginFrame();
+        void OnDown(int64_t id, Vec2 position);
+        void OnMove(int64_t id, Vec2 position);
+        void OnUp(int64_t id, Vec2 position);
+        void Clear() { m_Touches.clear(); }
+
+        int GetCount() const { return static_cast<int>(m_Touches.size()); }
+        // Positions as given to the events.
+        const Touch* Get(int index) const;
+
+    private:
+        struct Entry {
+            Touch Data;
+            bool EndPending = false;
+        };
+        Entry* Find(int64_t id);
+
+        std::vector<Entry> m_Touches;
     };
 
     class INDEX_API Input {
@@ -81,6 +123,23 @@ namespace Index {
         static Vec2 GetMouseDelta();
         static float ScrollValue();
 
+        // Every finger on a touchscreen, in the order they went down. The mouse only follows the first
+        // finger (SDL's touch emulation), so two-thumb controls need these.
+        static int GetTouchCount();
+        static bool GetTouch(int index, Touch& outTouch);
+
+        // Motion sensors (phones, tablets, some 2-in-1s); opened on the first query so idle games don't drain the battery.
+        // Axes follow the screen as currently rotated: +X right, +Y up, +Z out of the screen. Zero without the sensor.
+        // In g, pointing toward gravity: (0, -1, 0) held upright, (0, 0, -1) lying face up.
+        static Vec3 GetAcceleration();
+        // Radians per second, counter-clockwise positive around each axis.
+        static Vec3 GetGyroscope();
+        static bool IsAccelerometerAvailable();
+        static bool IsGyroscopeAvailable();
+        // Sensor axes stay fixed to the device's natural orientation; this rotates them to follow a screen
+        // turned by quarterTurns × 90° (SDL_ORIENTATION_LANDSCAPE relative to portrait = 1).
+        static Vec3 DeviceToScreenAxes(const Vec3& device, int quarterTurns);
+
         // Unicode codepoints typed this frame, in the order they arrived
         // as text-input events. Cleared at the start of every Update.
         // UI input fields read this each frame to append typed characters.
@@ -113,10 +172,15 @@ namespace Index {
         void OnMouseUp(int btn);
         void OnScroll(float delta) { m_ScrollValue += delta; }
         void OnMouseMove(double x, double y);
+        // Locked/hidden cursor: the position stays at the lock point, only the motion adds to the delta.
+        void OnMouseMoveRelative(Vec2 position, Vec2 delta);
         void OnChar(uint32_t codepoint);
         void OnGamepadAdded(uint32_t joystickId);
         void OnGamepadRemoved(uint32_t joystickId);
         void CloseGamepads();
+        void EnsureSensorsOpen();
+        void PollSensors();
+        void CloseSensors();
 
         static constexpr int k_KeyCount = static_cast<int>(KeyCode::Menu) + 1;
         static constexpr int k_MouseCount = 8;
@@ -142,6 +206,12 @@ namespace Index {
         };
         std::array<GamepadState, k_MaxGamepads> m_Gamepads{};
 
+        SDL_Sensor* m_Accelerometer = nullptr;
+        SDL_Sensor* m_Gyroscope = nullptr;
+        bool m_SensorsOpened = false;
+        Vec3 m_Acceleration{ 0.f };
+        Vec3 m_AngularVelocity{ 0.f };
+
         float m_ScrollValue = 0.f;
         Vec2 m_MousePosition = { 0, 0 };
         Vec2 m_MouseDelta = { 0, 0 };
@@ -149,6 +219,9 @@ namespace Index {
         Vec2 m_Axis = { 0, 0 };
 
         std::vector<uint32_t> m_CharsThisFrame;
+
+        // Window coordinates, like m_MousePosition; mapped to the viewport when read.
+        TouchTracker m_Touches;
 
         static Input* s_Current;
     };

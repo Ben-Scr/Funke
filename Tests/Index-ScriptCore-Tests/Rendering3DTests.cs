@@ -38,8 +38,10 @@ public class Rendering3DTests
         Assert.Equal(16, InternalCalls.MaterialValueCount);
         Assert.Equal(6, InternalCalls.PointLightValueCount);
         Assert.Equal(8, InternalCalls.SpotLightValueCount);
-        Assert.Equal(15, InternalCalls.CameraSkyValueCount);
+        Assert.Equal(23, InternalCalls.CameraSkyValueCount);
         Assert.Equal(21, InternalCalls.ParticleSystem3DValueCount);
+        Assert.Equal(11, InternalCalls.SkinnedMeshRendererValueCount);
+        Assert.Equal(9, InternalCalls.SkinnedMeshBoneValueCount);
     }
 
     [Fact]

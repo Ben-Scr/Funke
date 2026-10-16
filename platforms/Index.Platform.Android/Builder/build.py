@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Index.Platform.Android builder (Index Platform Builder protocol v1).
 
-Produces a signed arm64-v8a APK without Gradle: CMake/NDK builds libmain.so (engine, runtime, Mono
-backend), javac + d8 build classes.dex from SDL's Java glue, aapt2 links the manifest and assets,
-then zipalign + apksigner finish the package.
+Produces a signed arm64-v8a APK, and for Release an Android App Bundle for Google Play, without Gradle:
+CMake/NDK builds libmain.so (engine, runtime, Mono backend), the game's packages add Java sources, Maven
+AARs/JARs and manifest entries (android_libraries.py), aapt2 links the merged manifest and resources,
+javac + d8 build the dex files, then zipalign + apksigner finish the APK and bundletool + jarsigner the AAB.
 """
 
 from __future__ import annotations
@@ -54,6 +55,9 @@ from index_platform_sdk.deps import CMakeToolchain, build_dawn, build_sdl3  # no
 from index_platform_sdk.orientation import ANDROID_SCREEN_ORIENTATION, project_orientation  # noqa: E402
 from index_platform_sdk.tools import set_log_file  # noqa: E402
 
+import android_bundle  # noqa: E402
+import android_libraries  # noqa: E402
+import android_manifest  # noqa: E402
 import android_toolchain  # noqa: E402
 
 ABI = "arm64-v8a"
@@ -74,7 +78,7 @@ def describe() -> dict:
         "platform": "Android",
         "displayName": "Android",
         "hosts": ["windows", "macos", "linux"],
-        "artifact": "apk",
+        "artifact": "aab or apk",
         "architectures": [ABI],
         "options": {
             "orientation": "raw android:screenOrientation value; overrides the project's Mobile > Orientation setting",
@@ -89,6 +93,9 @@ def describe() -> dict:
             "versionCode": "integer, derived from the version when empty",
             "aot": "true precompiles C# scripts ahead of time (Mono AOT); default: on for Release, off for Development",
             "aotLlvm": "false skips LLVM optimization of the AOT code (faster first build, slower code); default true",
+            "appBundle": "true also builds the .aab Google Play needs; default: on for Release, off for Development",
+            "bundletoolPath": "bundletool-all.jar to use (downloaded once when empty)",
+            "admobAppId": "Index.Ads: the AdMob app ID (ca-app-pub-...~...); packages may read more options like this",
         },
     }
 
@@ -176,6 +183,8 @@ def _ndk_toolchain(tc: android_toolchain.AndroidToolchain) -> CMakeToolchain:
             f"-DANDROID_ABI={ABI}",
             f"-DANDROID_PLATFORM=android-{android_toolchain.MIN_SDK}",
             "-DANDROID_STL=c++_static",
+            # 16 KB page support: Google Play rejects apps targeting Android 15+ whose libraries lack it.
+            "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
         ],
         generator="Ninja",
         make_program=ninja,
@@ -207,26 +216,44 @@ def _build_native(request: BuildRequest, tc: android_toolchain.AndroidToolchain,
     return lib
 
 
-def _build_dex(tc: android_toolchain.AndroidToolchain, engine_root: Path) -> Path:
+def _build_dex(tc: android_toolchain.AndroidToolchain, engine_root: Path, extra_sources: list[Path],
+               libraries: list[Path]) -> list[Path]:
+    """classes.dex (classes2.dex, ... once the libraries exceed one dex file's 64K method limit)."""
     sources = sorted((engine_root / "External" / "SDL" / "android-project" / "app" / "src" / "main" / "java").rglob("*.java"))
     sources += sorted((PACKAGE_ROOT / "Java").rglob("*.java"))
-    stamp = hashlib.sha256(b"".join(p.read_bytes() for p in sources) + str(tc.platform_jar).encode()).hexdigest()[:16]
-    out = platform_cache("Android", "java", stamp)
-    dex = out / "classes.dex"
-    if dex.is_file():
-        return dex
+    sources += extra_sources
+    digest = hashlib.sha256(str(tc.platform_jar).encode())
+    for source in sources:
+        digest.update(source.read_bytes())
+    for jar in libraries:
+        digest.update(f"{jar}:{jar.stat().st_size}".encode())
+    out = platform_cache("Android", "java", digest.hexdigest()[:16])
+    dex_files = _dex_files(out)
+    if dex_files:
+        return dex_files
     classes = out / "classes"
     shutil.rmtree(classes, ignore_errors=True)
     classes.mkdir(parents=True)
-    run([str(tc.javac), "-nowarn", "-encoding", "UTF-8", "-source", "8", "-target", "8",
-         "-bootclasspath", str(tc.platform_jar), "-classpath", str(tc.platform_jar),
-         "-d", str(classes)] + [str(s) for s in sources], label="javac")
-    class_files = [str(p) for p in classes.rglob("*.class")]
+    # Argument files keep long source and jar lists under the Windows command-line limit.
+    javac_args = out / "javac.args"
+    javac_args.write_text("\n".join('"' + s.as_posix() + '"' for s in sources), encoding="utf-8")
+    classpath = os.pathsep.join(str(p) for p in [tc.platform_jar, *libraries])
+    run([str(tc.javac), "-J-Duser.language=en", "-nowarn", "-encoding", "UTF-8", "-source", "8", "-target", "8",
+         "-Xlint:-options", "-bootclasspath", str(tc.platform_jar), "-classpath", classpath,
+         "-d", str(classes), f"@{javac_args}"], label="javac")
+    # d8 reads one path per line, without quotes.
+    d8_args = out / "d8.args"
+    d8_args.write_text("\n".join(str(p) for p in [*classes.rglob("*.class"), *libraries]), encoding="utf-8")
     run([str(tc.d8), "--release", "--min-api", str(android_toolchain.MIN_SDK), "--lib", str(tc.platform_jar),
-         "--output", str(out)] + class_files, env={"JAVA_HOME": str(tc.jdk)}, label="d8")
-    if not dex.is_file():
+         "--output", str(out), f"@{d8_args}"], env={"JAVA_HOME": str(tc.jdk)}, label="d8")
+    dex_files = _dex_files(out)
+    if not dex_files:
         raise BuilderError("d8 did not produce classes.dex")
-    return dex
+    return dex_files
+
+
+def _dex_files(directory: Path) -> list[Path]:
+    return sorted(directory.glob("classes*.dex"), key=lambda p: int(p.stem[7:] or 1))
 
 
 def _stage_payload(request: BuildRequest, mono_pack, assets_dir: Path) -> None:
@@ -360,19 +387,10 @@ def build(request: BuildRequest) -> Path:
     emit_progress(0.35, "Compiling the engine for Android")
     libmain = _build_native(request, tc, cmake_tc, sdl3, dawn, mono_pack, mono_package)
 
-    emit_progress(0.72, "Java glue (classes.dex)")
-    dex = _build_dex(tc, request.engine_root)
+    emit_progress(0.70, "Android libraries of the game's packages")
+    contributions = android_libraries.collect(request, ABI)
 
-    emit_progress(0.78, "Staging game payload")
-    assets = work / "assets"
-    _stage_payload(request, mono_pack, assets)
-    aot_images = {}
-    if _aot_enabled(request):
-        emit_progress(0.80, "Precompiling C# (Mono AOT)")
-        aot_images = _precompile_scripts(request, tc, assets, work)
-    _write_payload_listing(assets)
-
-    emit_progress(0.84, "Linking the APK")
+    emit_progress(0.72, "Linking resources")
     app_id = _app_id(request)
     manifest_text = (PACKAGE_ROOT / "Template" / "AndroidManifest.xml").read_text(encoding="utf-8")
     replacements = {
@@ -390,11 +408,16 @@ def build(request: BuildRequest) -> Path:
     }
     for key, value in replacements.items():
         manifest_text = manifest_text.replace(key, value)
+    if contributions.manifests:
+        try:
+            manifest_text = android_manifest.merge(manifest_text, contributions.manifests,
+                                                   {"applicationId": app_id, **contributions.placeholders})
+        except android_manifest.ManifestError as error:
+            raise BuilderError(f"Merging the Android manifest failed: {error}")
     manifest = work / "AndroidManifest.xml"
     manifest.write_text(manifest_text, encoding="utf-8")
 
-    link = [str(tc.aapt2), "link", "-o", str(work / "base.apk"), "-I", str(tc.platform_jar),
-            "--manifest", str(manifest), "--auto-add-overlay"]
+    link = [str(tc.aapt2), "link", "-I", str(tc.platform_jar), "--manifest", str(manifest), "--auto-add-overlay"]
     if request.icon_path and request.icon_path.is_file():
         res = work / "res" / "mipmap"
         shutil.rmtree(work / "res", ignore_errors=True)
@@ -403,8 +426,27 @@ def build(request: BuildRequest) -> Path:
         flat = work / "res.zip"
         run([str(tc.aapt2), "compile", "--dir", str(work / "res"), "-o", str(flat)], label="aapt2 compile")
         link.append(str(flat))
-    run(link, label="aapt2 link")
+    # Libraries are overlays in dependency order, so a library overrides the resources of what it builds on.
+    for compiled in android_libraries.compile_resources(tc.aapt2, contributions.libraries):
+        link += ["-R", str(compiled)]
+    symbols = work / "R.txt"
+    run(link + ["-o", str(work / "base.apk"), "--output-text-symbols", str(symbols)], label="aapt2 link")
+    r_sources = android_libraries.write_r_classes(symbols, contributions.libraries, work / "r-gen") \
+        if contributions.libraries else []
 
+    emit_progress(0.75, "Java (dex)")
+    dex_files = _build_dex(tc, request.engine_root, contributions.java_sources + r_sources, contributions.jars)
+
+    emit_progress(0.78, "Staging game payload")
+    assets = work / "assets"
+    _stage_payload(request, mono_pack, assets)
+    aot_images = {}
+    if _aot_enabled(request):
+        emit_progress(0.80, "Precompiling C# (Mono AOT)")
+        aot_images = _precompile_scripts(request, tc, assets, work)
+    _write_payload_listing(assets)
+
+    emit_progress(0.84, "Assembling the APK")
     unsigned = work / "unsigned.apk"
     shutil.copy2(work / "base.apk", unsigned)
     strip = next(tc.ndk.glob("toolchains/llvm/prebuilt/*/bin/llvm-strip*"), None)
@@ -423,16 +465,30 @@ def build(request: BuildRequest) -> Path:
         if path.is_file():
             native_libs[name] = path
     native_libs.update(aot_images)
+    for library in contributions.libraries:
+        for path in library.native_libs:
+            native_libs.setdefault(path.name, path)
+    # "assets/..." -> file. Added here rather than with aapt2 -A, which silently drops dot-files such as .index/
+    # that the payload listing requires.
+    asset_files: dict[str, Path] = {}
+    for library in contributions.libraries:
+        if library.assets:
+            for file in sorted(p for p in library.assets.rglob("*") if p.is_file()):
+                asset_files.setdefault("assets/" + file.relative_to(library.assets).as_posix(), file)
+    for file in sorted(p for p in assets.rglob("*") if p.is_file()):
+        asset_files["assets/" + file.relative_to(assets).as_posix()] = file
+    java_resources = android_libraries.java_resources(contributions.jars)
     with zipfile.ZipFile(unsigned, "a", compression=zipfile.ZIP_DEFLATED) as apk:
-        apk.write(dex, "classes.dex")
+        for index, dex in enumerate(dex_files):
+            apk.write(dex, "classes.dex" if index == 0 else f"classes{index + 1}.dex")
         for name, path in native_libs.items():
             apk.write(path, f"lib/{ABI}/{name}")
-        # Added here rather than with aapt2 -A, which silently drops dot-files such as .index/ that the
-        # payload listing requires.
-        for file in sorted(p for p in assets.rglob("*") if p.is_file()):
-            apk.write(file, "assets/" + file.relative_to(assets).as_posix())
+        for archive_name, path in asset_files.items():
+            apk.write(path, archive_name)
+        for name, data in java_resources.items():
+            apk.writestr(name, data)
 
-    emit_progress(0.92, "Aligning and signing")
+    emit_progress(0.90, "Aligning and signing")
     aligned = work / "aligned.apk"
     run([str(tc.zipalign), "-p", "-f", "4", str(unsigned), str(aligned)], label="zipalign")
     keystore_option = request.option("keystore")
@@ -445,7 +501,8 @@ def build(request: BuildRequest) -> Path:
         if request.is_release:
             emit_log("Release build signed with the debug key; set a keystore in the build options before publishing.", "warn")
         keystore, store_pass, alias, key_pass = _debug_keystore(tc)
-    output = request.output_dir / f"{re.sub(r'[^A-Za-z0-9._-]', '_', request.app_name)}.apk"
+    stem = re.sub(r'[^A-Za-z0-9._-]', '_', request.app_name)
+    output = request.output_dir / f"{stem}.apk"
     # Passwords go through the environment: command lines end up in the build log and process lists.
     run([str(tc.apksigner), "sign", "--ks", str(keystore), "--ks-pass", "env:INDEX_APK_STORE_PASS",
          "--ks-key-alias", alias, "--key-pass", "env:INDEX_APK_KEY_PASS", "--out", str(output), str(aligned)],
@@ -453,7 +510,31 @@ def build(request: BuildRequest) -> Path:
              "INDEX_APK_STORE_PASS": store_pass, "INDEX_APK_KEY_PASS": key_pass},
         label="apksigner")
     emit_log(f"APK: {output} ({output.stat().st_size // (1024 * 1024)} MiB, {app_id})")
-    return output
+    if not _app_bundle_enabled(request):
+        return output
+
+    emit_progress(0.95, "Android App Bundle (.aab) for Google Play")
+    run(link + ["-o", str(work / "base-proto.apk"), "--proto-format"], label="aapt2 link (bundle)")
+    bundle = android_bundle.build_bundle(
+        java=tc.jdk / "bin" / ("java.exe" if os.name == "nt" else "java"),
+        bundletool=android_bundle.find_bundletool(tc.sdk, request.option("bundletoolPath")),
+        proto_apk=work / "base-proto.apk", dex_files=dex_files, native_libs=native_libs, abi=ABI,
+        assets=asset_files, root_files=java_resources, work=work, output=request.output_dir / f"{stem}.aab")
+    android_bundle.sign_bundle(tc.jdk, bundle, keystore, store_pass, alias, key_pass)
+    if not keystore_option:
+        emit_log("The .aab is signed with the generated debug key: Google Play would make it your upload key. "
+                 "Create your own keystore (see Platform Packages > Android) before the first upload.", "warn")
+    emit_log(f"App Bundle for Google Play: {bundle} ({bundle.stat().st_size // (1024 * 1024)} MiB)")
+    return bundle
+
+
+def _app_bundle_enabled(request: BuildRequest) -> bool:
+    value = request.option("appBundle").strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    return request.is_release
 
 
 if __name__ == "__main__":

@@ -5,7 +5,9 @@
 #include "Core/Log.hpp"
 #include "Core/Time.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
+#include "Graphics/CustomShaderGpu.hpp"
 #include "Graphics/Framebuffer.hpp"
+#include "Graphics/Material.hpp"
 
 #include <array>
 #include <cstring>
@@ -13,6 +15,25 @@
 
 
 namespace Index {
+
+	namespace {
+		// Mirrors Params in the "postcomposite" WGSL.
+		struct CompositeUniforms {
+			std::array<float, 4> Flags0;  // bloom, color grading, lens distortion, chromatic aberration
+			std::array<float, 4> Flags1;  // vignette, grain, time, aspect
+			std::array<float, 4> Bloom;
+			std::array<float, 4> ColorFilter;
+			std::array<float, 4> ExposureContrastSaturation;
+			std::array<float, 4> TemperatureTint;
+			std::array<float, 4> Lens;
+			std::array<float, 4> Chromatic;
+			std::array<float, 4> VignetteColor;
+			std::array<float, 4> VignetteCenterSmooth;
+			std::array<float, 4> VignetteRound;
+			std::array<float, 4> Grain;
+		};
+		static_assert(sizeof(CompositeUniforms) == 12 * 16);
+	}
 
 	struct PostProcessor::Impl {
 		// Blit pass (2-binding bgl: texture + sampler).
@@ -26,34 +47,22 @@ namespace Index {
 		wgpu::BindGroupLayout EffectBindGroupLayout;
 		wgpu::PipelineLayout  EffectPipelineLayout;
 
-		wgpu::Buffer          VignetteUniformBuffer;            // 48 bytes
-		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> VignettePipelines;
-
-		wgpu::Buffer          ChromaticUniformBuffer;           // 16 bytes
-		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> ChromaticPipelines;
-
-		wgpu::Buffer          GrainUniformBuffer;               // 16 bytes
-		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> GrainPipelines;
-
-		wgpu::Buffer          LensDistortionUniformBuffer;      // 16 bytes
-		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> LensDistortionPipelines;
-
-		wgpu::Buffer          ColorGradingUniformBuffer;        // 48 bytes
-		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> ColorGradingPipelines;
-
 		// Bloom blur H/V use SEPARATE uniform buffers: Dawn's queue.WriteBuffer collapses successive writes
 		// to the same buffer within one submission — sharing would make both passes read the vertical direction.
 		wgpu::Buffer          BloomThresholdUniformBuffer;      // 16 bytes
 		wgpu::Buffer          BloomBlurUniformBufferH;          // 16 bytes
 		wgpu::Buffer          BloomBlurUniformBufferV;          // 16 bytes
-		wgpu::Buffer          BloomCompositeUniformBuffer;      // 16 bytes
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> BloomThresholdPipelines;
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> BloomBlurPipelines;
-		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> BloomCompositePipelines;
-		wgpu::BindGroupLayout BloomCompositeBgl;
-		wgpu::PipelineLayout  BloomCompositePipelineLayout;
 		Framebuffer           BloomTempA;
 		Framebuffer           BloomTempB;
+
+		// The fused per-pixel pass; one buffer per composite step in a frame (a Gaussian Blur splits the
+		// list into at most two), for the same WriteBuffer-collapsing reason as the blur buffers.
+		std::array<wgpu::Buffer, 2> CompositeUniformBuffers;
+		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> CompositePipelines;
+		wgpu::BindGroupLayout CompositeBgl;
+		wgpu::PipelineLayout  CompositePipelineLayout;
 
 		wgpu::Buffer          PixelatedUniformBuffer;           // 16 bytes
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> PixelatedPipelines;
@@ -61,10 +70,16 @@ namespace Index {
 		wgpu::Buffer          GaussianBlurUniformBufferH;       // 16 bytes
 		wgpu::Buffer          GaussianBlurUniformBufferV;       // 16 bytes
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> GaussianBlurPipelines;
-		Framebuffer           GaussianBlurTemp;                 // full-res RGBA16F
+		Framebuffer           GaussianBlurTemp;                 // half-res RGBA16F
 
 		Framebuffer           PingPongA;
 		Framebuffer           PingPongB;
+
+		// User PostProcess shaders: group 0 = the blit layout (source + sampler), group 1 = the material's.
+		CustomMaterialBindings CustomBindings;
+		// By program id and target format; failed creations stay cached as null.
+		std::unordered_map<uint64_t, wgpu::RenderPipeline> CustomPipelines;
+		std::unordered_map<uint32_t, wgpu::PipelineLayout> CustomPipelineLayouts;
 
 		// Shared.
 		wgpu::Sampler         LinearSampler;
@@ -222,28 +237,20 @@ namespace Index {
 			return device.CreateBuffer(&d);
 		};
 
-		m_Impl->VignetteUniformBuffer        = makeUniformBuffer("postprocess-vignette-uniforms", 48);
-		m_Impl->ChromaticUniformBuffer       = makeUniformBuffer("postprocess-chromatic-uniforms", 16);
-		m_Impl->GrainUniformBuffer           = makeUniformBuffer("postprocess-grain-uniforms", 16);
-		m_Impl->LensDistortionUniformBuffer  = makeUniformBuffer("postprocess-lens-uniforms", 16);
-		m_Impl->ColorGradingUniformBuffer    = makeUniformBuffer("postprocess-colorgrading-uniforms", 48);
 		m_Impl->BloomThresholdUniformBuffer  = makeUniformBuffer("postprocess-bloom-threshold-uniforms", 16);
 		m_Impl->BloomBlurUniformBufferH      = makeUniformBuffer("postprocess-bloom-blur-h-uniforms", 16);
 		m_Impl->BloomBlurUniformBufferV      = makeUniformBuffer("postprocess-bloom-blur-v-uniforms", 16);
-		m_Impl->BloomCompositeUniformBuffer  = makeUniformBuffer("postprocess-bloom-composite-uniforms", 16);
+		m_Impl->CompositeUniformBuffers[0]   = makeUniformBuffer("postprocess-composite-uniforms-0", sizeof(CompositeUniforms));
+		m_Impl->CompositeUniformBuffers[1]   = makeUniformBuffer("postprocess-composite-uniforms-1", sizeof(CompositeUniforms));
 		m_Impl->PixelatedUniformBuffer       = makeUniformBuffer("postprocess-pixelated-uniforms", 16);
 		m_Impl->GaussianBlurUniformBufferH   = makeUniformBuffer("postprocess-gaussian-blur-h-uniforms", 16);
 		m_Impl->GaussianBlurUniformBufferV   = makeUniformBuffer("postprocess-gaussian-blur-v-uniforms", 16);
 
-		if (!m_Impl->VignetteUniformBuffer
-			|| !m_Impl->ChromaticUniformBuffer
-			|| !m_Impl->GrainUniformBuffer
-			|| !m_Impl->LensDistortionUniformBuffer
-			|| !m_Impl->ColorGradingUniformBuffer
-			|| !m_Impl->BloomThresholdUniformBuffer
+		if (!m_Impl->BloomThresholdUniformBuffer
 			|| !m_Impl->BloomBlurUniformBufferH
 			|| !m_Impl->BloomBlurUniformBufferV
-			|| !m_Impl->BloomCompositeUniformBuffer
+			|| !m_Impl->CompositeUniformBuffers[0]
+			|| !m_Impl->CompositeUniformBuffers[1]
 			|| !m_Impl->PixelatedUniformBuffer
 			|| !m_Impl->GaussianBlurUniformBufferH
 			|| !m_Impl->GaussianBlurUniformBufferV)
@@ -252,7 +259,7 @@ namespace Index {
 			return false;
 		}
 
-		// Bloom composite uses 4 bindings (scene + sampler + bloom + uniform) unlike all other effects.
+		// The composite pass uses 4 bindings (scene + sampler + bloom + uniform) unlike all other effects.
 		wgpu::BindGroupLayoutEntry compositeBglEntries[4]{};
 		compositeBglEntries[0].binding = 0;
 		compositeBglEntries[0].visibility = wgpu::ShaderStage::Fragment;
@@ -275,22 +282,22 @@ namespace Index {
 		compositeBglEntries[3].buffer.minBindingSize = 0;
 
 		wgpu::BindGroupLayoutDescriptor compositeBglDesc{};
-		compositeBglDesc.label = "postprocess-bloom-composite-bgl";
+		compositeBglDesc.label = "postprocess-composite-bgl";
 		compositeBglDesc.entryCount = 4;
 		compositeBglDesc.entries = compositeBglEntries;
-		m_Impl->BloomCompositeBgl = device.CreateBindGroupLayout(&compositeBglDesc);
-		if (!m_Impl->BloomCompositeBgl) {
-			IDX_CORE_ERROR_TAG("PostProcessor", "CreateBindGroupLayout (bloom composite) failed");
+		m_Impl->CompositeBgl = device.CreateBindGroupLayout(&compositeBglDesc);
+		if (!m_Impl->CompositeBgl) {
+			IDX_CORE_ERROR_TAG("PostProcessor", "CreateBindGroupLayout (composite) failed");
 			return false;
 		}
 
 		wgpu::PipelineLayoutDescriptor compositePlDesc{};
-		compositePlDesc.label = "postprocess-bloom-composite-pipeline-layout";
+		compositePlDesc.label = "postprocess-composite-pipeline-layout";
 		compositePlDesc.bindGroupLayoutCount = 1;
-		compositePlDesc.bindGroupLayouts = &m_Impl->BloomCompositeBgl;
-		m_Impl->BloomCompositePipelineLayout = device.CreatePipelineLayout(&compositePlDesc);
-		if (!m_Impl->BloomCompositePipelineLayout) {
-			IDX_CORE_ERROR_TAG("PostProcessor", "CreatePipelineLayout (bloom composite) failed");
+		compositePlDesc.bindGroupLayouts = &m_Impl->CompositeBgl;
+		m_Impl->CompositePipelineLayout = device.CreatePipelineLayout(&compositePlDesc);
+		if (!m_Impl->CompositePipelineLayout) {
+			IDX_CORE_ERROR_TAG("PostProcessor", "CreatePipelineLayout (composite) failed");
 			return false;
 		}
 
@@ -305,31 +312,22 @@ namespace Index {
 			return s;
 		};
 
-		m_VignetteShader        = loadShader("postvignette");
-		m_ChromaticShader       = loadShader("postchromatic");
-		m_GrainShader           = loadShader("postgrain");
-		m_LensDistortionShader  = loadShader("postlensdistortion");
-		m_ColorGradingShader    = loadShader("postcolorgrading");
 		m_BloomThresholdShader  = loadShader("postbloomthreshold");
 		m_BloomBlurShader       = loadShader("postbloomblur");
-		m_BloomCompositeShader  = loadShader("postbloomcomposite");
+		m_CompositeShader       = loadShader("postcomposite");
 		m_PixelatedShader       = loadShader("postpixelated");
 
-		if (!m_VignetteShader || !m_ChromaticShader || !m_GrainShader
-			|| !m_LensDistortionShader || !m_ColorGradingShader
-			|| !m_BloomThresholdShader || !m_BloomBlurShader || !m_BloomCompositeShader
-			|| !m_PixelatedShader)
+		if (!m_BloomThresholdShader || !m_BloomBlurShader || !m_CompositeShader || !m_PixelatedShader)
 		{
-			m_VignetteShader.reset();
-			m_ChromaticShader.reset();
-			m_GrainShader.reset();
-			m_LensDistortionShader.reset();
-			m_ColorGradingShader.reset();
 			m_BloomThresholdShader.reset();
 			m_BloomBlurShader.reset();
-			m_BloomCompositeShader.reset();
+			m_CompositeShader.reset();
 			m_PixelatedShader.reset();
 			return false;
+		}
+
+		if (!m_Impl->CustomBindings.Initialize("postprocess-custom")) {
+			IDX_CORE_WARN_TAG("PostProcessor", "Custom effect resources unavailable; custom post effects are skipped");
 		}
 
 		m_Impl->Initialized = true;
@@ -339,32 +337,26 @@ namespace Index {
 	void PostProcessor::Shutdown() {
 		if (!m_Impl) return;
 
-		m_Impl->VignettePipelines.clear();
-		m_Impl->ChromaticPipelines.clear();
-		m_Impl->GrainPipelines.clear();
-		m_Impl->LensDistortionPipelines.clear();
-		m_Impl->ColorGradingPipelines.clear();
+		m_Impl->CustomPipelines.clear();
+		m_Impl->CustomPipelineLayouts.clear();
+		m_Impl->CustomBindings.Shutdown();
+
 		m_Impl->BloomThresholdPipelines.clear();
 		m_Impl->BloomBlurPipelines.clear();
-		m_Impl->BloomCompositePipelines.clear();
+		m_Impl->CompositePipelines.clear();
 		m_Impl->PixelatedPipelines.clear();
 		m_Impl->GaussianBlurPipelines.clear();
 
-		m_Impl->VignetteUniformBuffer = nullptr;
-		m_Impl->ChromaticUniformBuffer = nullptr;
-		m_Impl->GrainUniformBuffer = nullptr;
-		m_Impl->LensDistortionUniformBuffer = nullptr;
-		m_Impl->ColorGradingUniformBuffer = nullptr;
 		m_Impl->BloomThresholdUniformBuffer = nullptr;
 		m_Impl->BloomBlurUniformBufferH = nullptr;
 		m_Impl->BloomBlurUniformBufferV = nullptr;
-		m_Impl->BloomCompositeUniformBuffer = nullptr;
+		m_Impl->CompositeUniformBuffers = {};
 		m_Impl->PixelatedUniformBuffer = nullptr;
 		m_Impl->GaussianBlurUniformBufferH = nullptr;
 		m_Impl->GaussianBlurUniformBufferV = nullptr;
 
-		m_Impl->BloomCompositePipelineLayout = nullptr;
-		m_Impl->BloomCompositeBgl = nullptr;
+		m_Impl->CompositePipelineLayout = nullptr;
+		m_Impl->CompositeBgl = nullptr;
 		m_Impl->BloomTempA.Destroy();
 		m_Impl->BloomTempB.Destroy();
 		m_Impl->GaussianBlurTemp.Destroy();
@@ -384,14 +376,9 @@ namespace Index {
 		m_Impl->Initialized = false;
 
 		m_PixelatedShader.reset();
-		m_BloomCompositeShader.reset();
+		m_CompositeShader.reset();
 		m_BloomBlurShader.reset();
 		m_BloomThresholdShader.reset();
-		m_ColorGradingShader.reset();
-		m_LensDistortionShader.reset();
-		m_GrainShader.reset();
-		m_ChromaticShader.reset();
-		m_VignetteShader.reset();
 		m_BlitShader.reset();
 	}
 
@@ -552,7 +539,8 @@ namespace Index {
 			wgpu::Buffer uniformBuffer,
 			const void* uniformData,
 			size_t uniformSize,
-			const char* passLabel)
+			const char* passLabel,
+			bool clearTarget)
 		{
 			wgpu::Device device = WebGPUBackend::GetDevice();
 			wgpu::Queue  queue  = WebGPUBackend::GetQueue();
@@ -586,8 +574,9 @@ namespace Index {
 
 			wgpu::RenderPassColorAttachment colorAtt{};
 			colorAtt.view       = dstView;
-			colorAtt.loadOp     = wgpu::LoadOp::Load;
+			colorAtt.loadOp     = clearTarget ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
 			colorAtt.storeOp    = wgpu::StoreOp::Store;
+			colorAtt.clearValue = wgpu::Color{ 0.0, 0.0, 0.0, 0.0 };
 			colorAtt.depthSlice = wgpu::kDepthSliceUndefined;
 
 			wgpu::RenderPassDescriptor passDesc{};
@@ -603,16 +592,110 @@ namespace Index {
 			pass.End();
 		}
 
+		wgpu::RenderPipeline GetCustomEffectPipeline(PostProcessor::Impl& impl, const CustomShaderProgram& program, wgpu::TextureFormat dstFormat) {
+			const uint64_t key = (program.Id << 16) ^ static_cast<uint64_t>(dstFormat);
+			if (auto it = impl.CustomPipelines.find(key); it != impl.CustomPipelines.end()) return it->second;
+			// Recompiles leave old ids behind; rebuilding the few live ones is cheap.
+			if (impl.CustomPipelines.size() > 64) impl.CustomPipelines.clear();
+
+			wgpu::BindGroupLayout customLayout = impl.CustomBindings.GetLayout(program.Description);
+			wgpu::PipelineLayout& layout = impl.CustomPipelineLayouts[program.Description.TextureCount];
+			if (!layout && customLayout) {
+				const wgpu::BindGroupLayout layouts[2] = { impl.BindGroupLayout, customLayout };
+				wgpu::PipelineLayoutDescriptor layoutDesc{};
+				layoutDesc.bindGroupLayoutCount = 2;
+				layoutDesc.bindGroupLayouts = layouts;
+				layoutDesc.label = "postprocess-custom-layout";
+				layout = WebGPUBackend::GetDevice().CreatePipelineLayout(&layoutDesc);
+			}
+
+			// Same blend as the built-in effects, so a translucent result composites like theirs.
+			const wgpu::BlendState blend = CustomShaderGpu::MakeBlendState(ShaderBlend::Alpha);
+			wgpu::ColorTargetState colorTarget{};
+			colorTarget.format = dstFormat;
+			colorTarget.blend = &blend;
+			colorTarget.writeMask = wgpu::ColorWriteMask::All;
+
+			wgpu::FragmentState fragment{};
+			fragment.module = program.Module;
+			fragment.entryPoint = "fs_main";
+			fragment.targetCount = 1;
+			fragment.targets = &colorTarget;
+
+			wgpu::RenderPipelineDescriptor desc{};
+			desc.label = "postprocess-custom-pipeline";
+			desc.layout = layout;
+			desc.vertex.module = program.Module;
+			desc.vertex.entryPoint = "vs_main";
+			desc.fragment = &fragment;
+			desc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+			desc.primitive.cullMode = wgpu::CullMode::None;
+			desc.multisample.count = 1;
+			desc.multisample.mask = 0xFFFFFFFFu;
+
+			wgpu::RenderPipeline pipeline = layout ? CustomShaderGpu::CreatePipeline(desc, program) : nullptr;
+			impl.CustomPipelines.emplace(key, pipeline);
+			return pipeline;
+		}
+
+		void RunCustomEffectPass(PostProcessor::Impl& impl, uint64_t materialGuid, const Material* material,
+			const CustomShaderProgram* program, wgpu::TextureView srcView, wgpu::TextureView dstView, wgpu::TextureFormat dstFormat,
+			bool clearTarget)
+		{
+			wgpu::Device device = WebGPUBackend::GetDevice();
+			if (!device || !srcView || !dstView) return;
+			wgpu::RenderPipeline pipeline;
+			wgpu::BindGroup materialGroup;
+			for (int attempt = 0; attempt < 2 && program; ++attempt) {
+				pipeline = GetCustomEffectPipeline(impl, *program, dstFormat);
+				materialGroup = pipeline ? impl.CustomBindings.GetGroup(materialGuid, material, *program) : nullptr;
+				if (pipeline && materialGroup) break;
+				program = program->IsFallback ? nullptr : CustomShaderGpu::GetFallback(ShaderTarget::PostProcess);
+			}
+			if (!pipeline || !materialGroup) return;
+
+			wgpu::BindGroupEntry entries[2]{};
+			entries[0].binding = 0;
+			entries[0].textureView = srcView;
+			entries[1].binding = 1;
+			entries[1].sampler = impl.LinearSampler;
+			wgpu::BindGroupDescriptor bgDesc{};
+			bgDesc.label = "postprocess-custom-source";
+			bgDesc.layout = impl.BindGroupLayout;
+			bgDesc.entryCount = 2;
+			bgDesc.entries = entries;
+			wgpu::BindGroup sourceGroup = device.CreateBindGroup(&bgDesc);
+			wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
+			if (!sourceGroup || !encoder) return;
+
+			wgpu::RenderPassColorAttachment colorAtt{};
+			colorAtt.view       = dstView;
+			colorAtt.loadOp     = clearTarget ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
+			colorAtt.storeOp    = wgpu::StoreOp::Store;
+			colorAtt.clearValue = wgpu::Color{ 0.0, 0.0, 0.0, 0.0 };
+			colorAtt.depthSlice = wgpu::kDepthSliceUndefined;
+
+			wgpu::RenderPassDescriptor passDesc{};
+			passDesc.label = "postprocess-custom";
+			passDesc.colorAttachmentCount = 1;
+			passDesc.colorAttachments = &colorAtt;
+
+			wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
+			pass.SetPipeline(pipeline);
+			pass.SetBindGroup(0, sourceGroup);
+			pass.SetBindGroup(1, materialGroup);
+			pass.Draw(3, 1, 0, 0);
+			pass.End();
+		}
+
 		wgpu::TextureView ViewOf(const Framebuffer& fb) {
 			WebGPUBackend::FramebufferLookup look =
 				WebGPUBackend::LookupFramebufferByFboId(fb.GetBackendId());
 			return look.Valid ? look.ColorView : nullptr;
 		}
 
-		// Clear a target to transparent via an empty load-clear render pass. Effect
-		// passes write with LoadOp::Load + alpha blend, so a ping-pong reused across
-		// frames must be zeroed first — otherwise a transparent (alpha-0) scene
-		// background blends against the previous frame's contents and smears.
+		// Clear a target to transparent via an empty load-clear render pass. Effect passes blend, so a
+		// destination reused across frames must start at zero or a transparent background smears.
 		void ClearViewTransparent(wgpu::TextureView view) {
 			if (!view) return;
 			wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
@@ -642,105 +725,7 @@ namespace Index {
 			return true;
 		}
 
-		void RunVignettePass(PostProcessor::Impl& impl, const Shader& shader,
-			wgpu::TextureView srcView, wgpu::TextureView dstView,
-			wgpu::TextureFormat dstFormat,
-			uint32_t dstWidth, uint32_t dstHeight,
-			const PostProcessing2DComponent::VignetteSettings& v)
-		{
-			wgpu::RenderPipeline pipeline = GetOrCreateEffectPipeline(
-				impl, shader, impl.VignettePipelines, dstFormat,
-				"postprocess-vignette-pipeline");
-			if (!pipeline) return;
-
-			float u[12]{};
-			u[0]  = v.Color.r; u[1] = v.Color.g; u[2] = v.Color.b; u[3] = v.Color.a;
-			u[4]  = v.Center.x; u[5] = v.Center.y; u[6] = v.Intensity; u[7] = v.Smoothness;
-			u[8]  = (dstHeight > 0)
-				? static_cast<float>(dstWidth) / static_cast<float>(dstHeight)
-				: 1.0f;
-			u[9]  = v.Roundness;
-			RunEffectPass(impl, pipeline, srcView, dstView,
-				impl.VignetteUniformBuffer, u, sizeof(u), "postprocess-vignette");
-		}
-
-		void RunChromaticPass(PostProcessor::Impl& impl, const Shader& shader,
-			wgpu::TextureView srcView, wgpu::TextureView dstView,
-			wgpu::TextureFormat dstFormat,
-			const PostProcessing2DComponent::ChromaticAberrationSettings& c)
-		{
-			wgpu::RenderPipeline pipeline = GetOrCreateEffectPipeline(
-				impl, shader, impl.ChromaticPipelines, dstFormat,
-				"postprocess-chromatic-pipeline");
-			if (!pipeline) return;
-
-			float u[4]{};
-			u[0] = c.Intensity;
-			RunEffectPass(impl, pipeline, srcView, dstView,
-				impl.ChromaticUniformBuffer, u, sizeof(u), "postprocess-chromatic");
-		}
-
-		void RunGrainPass(PostProcessor::Impl& impl, const Shader& shader,
-			wgpu::TextureView srcView, wgpu::TextureView dstView,
-			wgpu::TextureFormat dstFormat,
-			const PostProcessing2DComponent::GrainSettings& g, float timeSeconds)
-		{
-			wgpu::RenderPipeline pipeline = GetOrCreateEffectPipeline(
-				impl, shader, impl.GrainPipelines, dstFormat,
-				"postprocess-grain-pipeline");
-			if (!pipeline) return;
-
-			float u[4]{};
-			u[0] = g.Intensity;
-			u[1] = g.Size;
-			u[2] = g.Colored ? 1.0f : 0.0f;
-			u[3] = timeSeconds;
-			RunEffectPass(impl, pipeline, srcView, dstView,
-				impl.GrainUniformBuffer, u, sizeof(u), "postprocess-grain");
-		}
-
-		void RunLensDistortionPass(PostProcessor::Impl& impl, const Shader& shader,
-			wgpu::TextureView srcView, wgpu::TextureView dstView,
-			wgpu::TextureFormat dstFormat,
-			const PostProcessing2DComponent::LensDistortionSettings& l)
-		{
-			wgpu::RenderPipeline pipeline = GetOrCreateEffectPipeline(
-				impl, shader, impl.LensDistortionPipelines, dstFormat,
-				"postprocess-lensdistortion-pipeline");
-			if (!pipeline) return;
-
-			float u[4]{};
-			u[0] = l.Intensity;
-			u[1] = l.Scale;
-			u[2] = l.Center.x;
-			u[3] = l.Center.y;
-			RunEffectPass(impl, pipeline, srcView, dstView,
-				impl.LensDistortionUniformBuffer, u, sizeof(u), "postprocess-lensdistortion");
-		}
-
-		void RunColorGradingPass(PostProcessor::Impl& impl, const Shader& shader,
-			wgpu::TextureView srcView, wgpu::TextureView dstView,
-			wgpu::TextureFormat dstFormat,
-			const PostProcessing2DComponent::ColorGradingSettings& cg)
-		{
-			wgpu::RenderPipeline pipeline = GetOrCreateEffectPipeline(
-				impl, shader, impl.ColorGradingPipelines, dstFormat,
-				"postprocess-colorgrading-pipeline");
-			if (!pipeline) return;
-
-			float u[12]{};
-			// colorFilter
-			u[0] = cg.ColorFilter.r; u[1] = cg.ColorFilter.g;
-			u[2] = cg.ColorFilter.b; u[3] = cg.ColorFilter.a;
-			// exposure / contrast / saturation
-			u[4] = cg.Exposure; u[5] = cg.Contrast; u[6] = cg.Saturation; u[7] = 0.0f;
-			// temperature / tint
-			u[8] = cg.Temperature; u[9] = cg.Tint; u[10] = 0.0f; u[11] = 0.0f;
-			RunEffectPass(impl, pipeline, srcView, dstView,
-				impl.ColorGradingUniformBuffer, u, sizeof(u), "postprocess-colorgrading");
-		}
-
-		wgpu::RenderPipeline BuildBloomCompositePipeline(
+		wgpu::RenderPipeline BuildCompositePipeline(
 			PostProcessor::Impl& impl,
 			const Shader& shader,
 			wgpu::TextureFormat dstFormat)
@@ -751,7 +736,7 @@ namespace Index {
 			WebGPUBackend::ShaderLookup look = WebGPUBackend::LookupShader(shader.GetHandle());
 			if (!look.Valid) {
 				IDX_CORE_ERROR_TAG("PostProcessor",
-					"Bloom composite shader module not resolvable");
+					"Composite shader module not resolvable");
 				return nullptr;
 			}
 
@@ -780,8 +765,8 @@ namespace Index {
 			fragmentState.targets = &colorTarget;
 
 			wgpu::RenderPipelineDescriptor desc{};
-			desc.label = "postprocess-bloom-composite-pipeline";
-			desc.layout = impl.BloomCompositePipelineLayout;
+			desc.label = "postprocess-composite-pipeline";
+			desc.layout = impl.CompositePipelineLayout;
 			desc.vertex = vertexState;
 			desc.fragment = &fragmentState;
 			desc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
@@ -793,25 +778,25 @@ namespace Index {
 			wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&desc);
 			if (!pipeline) {
 				IDX_CORE_ERROR_TAG("PostProcessor",
-					"CreateRenderPipeline (bloom composite) failed for dstFormat={}",
+					"CreateRenderPipeline (composite) failed for dstFormat={}",
 					static_cast<int>(dstFormat));
 			}
 			return pipeline;
 		}
 
-		wgpu::RenderPipeline GetOrCreateBloomCompositePipeline(
+		wgpu::RenderPipeline GetOrCreateCompositePipeline(
 			PostProcessor::Impl& impl,
 			const Shader& shader,
 			wgpu::TextureFormat dstFormat)
 		{
-			auto it = impl.BloomCompositePipelines.find(dstFormat);
-			if (it != impl.BloomCompositePipelines.end()) return it->second;
-			wgpu::RenderPipeline p = BuildBloomCompositePipeline(impl, shader, dstFormat);
-			if (p) impl.BloomCompositePipelines.emplace(dstFormat, p);
+			auto it = impl.CompositePipelines.find(dstFormat);
+			if (it != impl.CompositePipelines.end()) return it->second;
+			wgpu::RenderPipeline p = BuildCompositePipeline(impl, shader, dstFormat);
+			if (p) impl.CompositePipelines.emplace(dstFormat, p);
 			return p;
 		}
 
-		void RunBloomCompositePass(
+		void RunCompositePass(
 			PostProcessor::Impl& impl,
 			wgpu::RenderPipeline pipeline,
 			wgpu::TextureView sceneView,
@@ -819,7 +804,8 @@ namespace Index {
 			wgpu::TextureView dstView,
 			wgpu::Buffer uniformBuffer,
 			const void* uniformData,
-			size_t uniformSize)
+			size_t uniformSize,
+			bool clearTarget)
 		{
 			wgpu::Device device = WebGPUBackend::GetDevice();
 			wgpu::Queue  queue  = WebGPUBackend::GetQueue();
@@ -841,14 +827,14 @@ namespace Index {
 			entries[3].size = uniformSize;
 
 			wgpu::BindGroupDescriptor bgDesc{};
-			bgDesc.label = "postprocess-bloom-composite-bg";
-			bgDesc.layout = impl.BloomCompositeBgl;
+			bgDesc.label = "postprocess-composite-bg";
+			bgDesc.layout = impl.CompositeBgl;
 			bgDesc.entryCount = 4;
 			bgDesc.entries = entries;
 			wgpu::BindGroup bg = device.CreateBindGroup(&bgDesc);
 			if (!bg) {
 				IDX_CORE_WARN_TAG("PostProcessor",
-					"Bloom composite CreateBindGroup failed");
+					"Composite CreateBindGroup failed");
 				return;
 			}
 
@@ -857,12 +843,13 @@ namespace Index {
 
 			wgpu::RenderPassColorAttachment colorAtt{};
 			colorAtt.view = dstView;
-			colorAtt.loadOp = wgpu::LoadOp::Load;
+			colorAtt.loadOp = clearTarget ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
 			colorAtt.storeOp = wgpu::StoreOp::Store;
+			colorAtt.clearValue = wgpu::Color{ 0.0, 0.0, 0.0, 0.0 };
 			colorAtt.depthSlice = wgpu::kDepthSliceUndefined;
 
 			wgpu::RenderPassDescriptor passDesc{};
-			passDesc.label = "postprocess-bloom-composite";
+			passDesc.label = "postprocess-composite";
 			passDesc.colorAttachmentCount = 1;
 			passDesc.colorAttachments = &colorAtt;
 
@@ -873,14 +860,12 @@ namespace Index {
 			pass.End();
 		}
 
-		void RunBloomPass(
+		// Threshold + blur into BloomTempA; returns its view, or null when bloom can't run this frame.
+		wgpu::TextureView RunBloomPrepass(
 			PostProcessor::Impl& impl,
 			const Shader& thresholdShader,
 			const Shader& blurShader,
-			const Shader& compositeShader,
 			wgpu::TextureView srcView,
-			wgpu::TextureView dstView,
-			wgpu::TextureFormat dstFormat,
 			uint32_t dstWidth, uint32_t dstHeight,
 			const PostProcessing2DComponent::BloomSettings& b,
 			int maximumTaps)
@@ -891,14 +876,14 @@ namespace Index {
 			const int fullH = std::max(1, static_cast<int>(dstHeight));
 			const int bloomW = std::max(1, (fullW + 1) / 2);
 			const int bloomH = std::max(1, (fullH + 1) / 2);
-			if (!impl.BloomTempA.Recreate(bloomW, bloomH, TextureFormat::RGBA16F)) return;
-			if (!impl.BloomTempB.Recreate(bloomW, bloomH, TextureFormat::RGBA16F)) return;
+			if (!impl.BloomTempA.Recreate(bloomW, bloomH, TextureFormat::RGBA16F)) return nullptr;
+			if (!impl.BloomTempB.Recreate(bloomW, bloomH, TextureFormat::RGBA16F)) return nullptr;
 
 			WebGPUBackend::FramebufferLookup tempALook =
 				WebGPUBackend::LookupFramebufferByFboId(impl.BloomTempA.GetBackendId());
 			WebGPUBackend::FramebufferLookup tempBLook =
 				WebGPUBackend::LookupFramebufferByFboId(impl.BloomTempB.GetBackendId());
-			if (!tempALook.Valid || !tempBLook.Valid) return;
+			if (!tempALook.Valid || !tempBLook.Valid) return nullptr;
 
 			const wgpu::TextureFormat tempFormat = wgpu::TextureFormat::RGBA16Float;
 
@@ -916,20 +901,20 @@ namespace Index {
 				wgpu::RenderPipeline thresholdPipeline = GetOrCreateEffectPipeline(
 					impl, thresholdShader, impl.BloomThresholdPipelines, tempFormat,
 					"postprocess-bloom-threshold-pipeline");
-				if (!thresholdPipeline) return;
+				if (!thresholdPipeline) return nullptr;
 
 				float u[4]{};
 				u[0] = b.Threshold;
 				RunEffectPass(impl, thresholdPipeline, srcView, tempALook.ColorView,
 					impl.BloomThresholdUniformBuffer, u, sizeof(u),
-					"postprocess-bloom-threshold");
+					"postprocess-bloom-threshold", true);
 			}
 
 			// ── Pass 2: Horizontal blur (BloomTempA -> BloomTempB) ──
 			wgpu::RenderPipeline blurPipeline = GetOrCreateEffectPipeline(
 				impl, blurShader, impl.BloomBlurPipelines, tempFormat,
 				"postprocess-bloom-blur-pipeline");
-			if (!blurPipeline) return;
+			if (!blurPipeline) return nullptr;
 
 			const float scatterMul = 1.0f + 10.0f * b.Scatter;   // [1.0 .. 11.0]
 			const float texelW = scatterMul * stepScale / static_cast<float>(fullW);
@@ -941,7 +926,7 @@ namespace Index {
 				RunEffectPass(impl, blurPipeline,
 					tempALook.ColorView, tempBLook.ColorView,
 					impl.BloomBlurUniformBufferH, u, sizeof(u),
-					"postprocess-bloom-blur-h");
+					"postprocess-bloom-blur-h", true);
 			}
 
 			// ── Pass 3: Vertical blur (BloomTempB -> BloomTempA) ──
@@ -951,22 +936,10 @@ namespace Index {
 				RunEffectPass(impl, blurPipeline,
 					tempBLook.ColorView, tempALook.ColorView,
 					impl.BloomBlurUniformBufferV, u, sizeof(u),
-					"postprocess-bloom-blur-v");
+					"postprocess-bloom-blur-v", true);
 			}
 
-			// ── Pass 4: Composite scene + bloom -> dstView ──
-			wgpu::RenderPipeline compositePipeline = GetOrCreateBloomCompositePipeline(
-				impl, compositeShader, dstFormat);
-			if (!compositePipeline) return;
-
-			float u[4]{};
-			u[0] = b.Tint.r * b.Tint.a;
-			u[1] = b.Tint.g * b.Tint.a;
-			u[2] = b.Tint.b * b.Tint.a;
-			u[3] = b.Intensity;
-			RunBloomCompositePass(impl, compositePipeline,
-				srcView, tempALook.ColorView, dstView,
-				impl.BloomCompositeUniformBuffer, u, sizeof(u));
+			return tempALook.ColorView;
 		}
 
 		void RunGaussianBlurPass(
@@ -977,11 +950,15 @@ namespace Index {
 			wgpu::TextureFormat dstFormat,
 			uint32_t dstWidth, uint32_t dstHeight,
 			const PostProcessing2DComponent::GaussianBlurSettings& g,
-			int maximumTaps)
+			int maximumTaps,
+			bool clearTarget)
 		{
 			const int fullW = std::max(1, static_cast<int>(dstWidth));
 			const int fullH = std::max(1, static_cast<int>(dstHeight));
-			if (!impl.GaussianBlurTemp.Recreate(fullW, fullH, TextureFormat::RGBA16F)) return;
+			// The horizontal pass writes half-res: its bilinear fetches already average 2x2, and the
+			// vertical pass reads it back by UV.
+			if (!impl.GaussianBlurTemp.Recreate(std::max(1, (fullW + 1) / 2), std::max(1, (fullH + 1) / 2),
+				TextureFormat::RGBA16F)) return;
 
 			WebGPUBackend::FramebufferLookup tempLook =
 				WebGPUBackend::LookupFramebufferByFboId(impl.GaussianBlurTemp.GetBackendId());
@@ -996,10 +973,14 @@ namespace Index {
 				"postprocess-gaussianblur-pipeline-dst");
 			if (!pipelineToTemp || !pipelineToDst) return;
 
+			// Same radius, at most 33 taps per direction: the step widens instead, still far below sigma.
+			constexpr int k_MaxBlurHalfKernel = 16;
 			const int tapsClamped = std::max(3, std::min(maximumTaps, g.Taps));
-			const float halfKernel = static_cast<float>(std::max(1, (tapsClamped - 1) / 2));
+			const float requestedHalfKernel = static_cast<float>(std::max(1, (tapsClamped - 1) / 2));
+			const float halfKernel = std::min(requestedHalfKernel, static_cast<float>(k_MaxBlurHalfKernel));
+			const float stepScale = requestedHalfKernel / halfKernel;
 
-			const float radiusMul = 0.5f + 6.0f * g.Radius;
+			const float radiusMul = (0.5f + 6.0f * g.Radius) * stepScale;
 			const float texelW = radiusMul / static_cast<float>(fullW);
 			const float texelH = radiusMul / static_cast<float>(fullH);
 
@@ -1009,7 +990,7 @@ namespace Index {
 				u[0] = 1.0f; u[1] = 0.0f; u[2] = texelW; u[3] = halfKernel;
 				RunEffectPass(impl, pipelineToTemp, srcView, tempLook.ColorView,
 					impl.GaussianBlurUniformBufferH, u, sizeof(u),
-					"postprocess-gaussianblur-h");
+					"postprocess-gaussianblur-h", true);
 			}
 
 			// ── Pass 2: Vertical blur (GaussianBlurTemp -> dstView) ──
@@ -1018,7 +999,7 @@ namespace Index {
 				u[0] = 0.0f; u[1] = 1.0f; u[2] = texelH; u[3] = halfKernel;
 				RunEffectPass(impl, pipelineToDst, tempLook.ColorView, dstView,
 					impl.GaussianBlurUniformBufferV, u, sizeof(u),
-					"postprocess-gaussianblur-v");
+					"postprocess-gaussianblur-v", clearTarget);
 			}
 		}
 
@@ -1026,7 +1007,8 @@ namespace Index {
 			wgpu::TextureView srcView, wgpu::TextureView dstView,
 			wgpu::TextureFormat dstFormat,
 			uint32_t dstWidth, uint32_t dstHeight,
-			const PostProcessing2DComponent::PixelatedSettings& p)
+			const PostProcessing2DComponent::PixelatedSettings& p,
+			bool clearTarget)
 		{
 			wgpu::RenderPipeline pipeline = GetOrCreateEffectPipeline(
 				impl, shader, impl.PixelatedPipelines, dstFormat,
@@ -1043,7 +1025,57 @@ namespace Index {
 				? static_cast<float>(p.PaletteSteps < 2 ? 2 : p.PaletteSteps)
 				: 0.0f;
 			RunEffectPass(impl, pipeline, srcView, dstView,
-				impl.PixelatedUniformBuffer, u, sizeof(u), "postprocess-pixelated");
+				impl.PixelatedUniformBuffer, u, sizeof(u), "postprocess-pixelated", clearTarget);
+		}
+
+		// Which per-pixel effects one composite pass applies.
+		struct CompositeEffects {
+			bool Bloom = false;
+			bool ColorGrading = false;
+			bool LensDistortion = false;
+			bool Chromatic = false;
+			bool Vignette = false;
+			bool Grain = false;
+		};
+
+		void RunCompositeStep(PostProcessor::Impl& impl,
+			const Shader& thresholdShader, const Shader& blurShader, const Shader& compositeShader,
+			wgpu::TextureView srcView, wgpu::TextureView dstView, wgpu::TextureFormat dstFormat,
+			uint32_t dstWidth, uint32_t dstHeight,
+			const PostProcessing2DComponent& settings, const CompositeEffects& effects,
+			int maximumTaps, float timeSeconds, wgpu::Buffer uniformBuffer, bool clearTarget)
+		{
+			wgpu::RenderPipeline pipeline = GetOrCreateCompositePipeline(impl, compositeShader, dstFormat);
+			if (!pipeline) return;
+
+			wgpu::TextureView bloomView = effects.Bloom
+				? RunBloomPrepass(impl, thresholdShader, blurShader, srcView, dstWidth, dstHeight, settings.Bloom, maximumTaps)
+				: nullptr;
+
+			const auto& bloom = settings.Bloom;
+			const auto& cg = settings.ColorGrading;
+			const auto& lens = settings.LensDistortion;
+			const auto& vignette = settings.Vignette;
+			const auto& grain = settings.Grain;
+			auto flag = [](bool on) { return on ? 1.0f : 0.0f; };
+
+			CompositeUniforms u{};
+			u.Flags0 = { flag(bloomView != nullptr), flag(effects.ColorGrading), flag(effects.LensDistortion), flag(effects.Chromatic) };
+			u.Flags1 = { flag(effects.Vignette), flag(effects.Grain), timeSeconds,
+				dstHeight > 0 ? static_cast<float>(dstWidth) / static_cast<float>(dstHeight) : 1.0f };
+			u.Bloom = { bloom.Tint.r * bloom.Tint.a, bloom.Tint.g * bloom.Tint.a, bloom.Tint.b * bloom.Tint.a, bloom.Intensity };
+			u.ColorFilter = { cg.ColorFilter.r, cg.ColorFilter.g, cg.ColorFilter.b, cg.ColorFilter.a };
+			u.ExposureContrastSaturation = { cg.Exposure, cg.Contrast, cg.Saturation, 0.0f };
+			u.TemperatureTint = { cg.Temperature, cg.Tint, 0.0f, 0.0f };
+			u.Lens = { lens.Intensity, lens.Scale, lens.Center.x, lens.Center.y };
+			u.Chromatic = { settings.ChromaticAberration.Intensity, 0.0f, 0.0f, 0.0f };
+			u.VignetteColor = { vignette.Color.r, vignette.Color.g, vignette.Color.b, vignette.Color.a };
+			u.VignetteCenterSmooth = { vignette.Center.x, vignette.Center.y, vignette.Intensity, vignette.Smoothness };
+			u.VignetteRound = { vignette.Roundness, 0.0f, 0.0f, 0.0f };
+			u.Grain = { grain.Intensity, grain.Size, flag(grain.Colored), 0.0f };
+
+			RunCompositePass(impl, pipeline, srcView, bloomView ? bloomView : srcView, dstView,
+				uniformBuffer, &u, sizeof(u), clearTarget);
 		}
 	}
 
@@ -1152,40 +1184,67 @@ namespace Index {
 		}
 		if (clearDestination) ClearViewTransparent(dstView);
 
-		// Effect order: Bloom (needs HDR signal) → ColorGrading → GaussianBlur → Lens → CA → Vignette → Grain → Pixelated.
-		enum class EffectKind : uint8_t {
-			Bloom, ColorGrading, GaussianBlur, LensDistortion, Chromatic, Vignette, Grain, Pixelated
+		// Effect order: Bloom (needs HDR signal) → ColorGrading → GaussianBlur → Lens → CA → Vignette → Grain → Pixelated → custom slots.
+		// Neighbouring per-pixel effects (everything but the blur, Pixelated and custom effects) run as one
+		// composite pass, so a typical Bloom + Color Grading + Vignette stack is a single full-screen pass.
+		struct Step {
+			enum class Kind : uint8_t { Composite, GaussianBlur, Pixelated, Custom };
+			Kind Type = Kind::Composite;
+			CompositeEffects Effects{};
+			size_t CustomSlot = 0;
 		};
-		std::array<EffectKind, 8> enabled{};
-		size_t enabledCount = 0;
-		if (settings->Bloom.Enabled)               enabled[enabledCount++] = EffectKind::Bloom;
-		if (settings->ColorGrading.Enabled)        enabled[enabledCount++] = EffectKind::ColorGrading;
-		if (settings->GaussianBlur.Enabled)        enabled[enabledCount++] = EffectKind::GaussianBlur;
-		if (settings->LensDistortion.Enabled)      enabled[enabledCount++] = EffectKind::LensDistortion;
-		if (settings->ChromaticAberration.Enabled) enabled[enabledCount++] = EffectKind::Chromatic;
-		if (settings->Vignette.Enabled)            enabled[enabledCount++] = EffectKind::Vignette;
-		if (settings->Grain.Enabled)               enabled[enabledCount++] = EffectKind::Grain;
-		if (settings->Pixelated.Enabled)           enabled[enabledCount++] = EffectKind::Pixelated;
+		std::array<Step, 8> steps{};
+		size_t stepCount = 0;
+		auto composite = [&]() -> CompositeEffects& {
+			if (stepCount == 0 || steps[stepCount - 1].Type != Step::Kind::Composite) {
+				steps[stepCount++] = Step{ Step::Kind::Composite };
+			}
+			return steps[stepCount - 1].Effects;
+		};
+		if (settings->Bloom.Enabled)               composite().Bloom = true;
+		if (settings->ColorGrading.Enabled)        composite().ColorGrading = true;
+		if (settings->GaussianBlur.Enabled)        steps[stepCount++] = Step{ Step::Kind::GaussianBlur };
+		if (settings->LensDistortion.Enabled)      composite().LensDistortion = true;
+		if (settings->ChromaticAberration.Enabled) composite().Chromatic = true;
+		if (settings->Vignette.Enabled)            composite().Vignette = true;
+		if (settings->Grain.Enabled)               composite().Grain = true;
+		if (settings->Pixelated.Enabled)           steps[stepCount++] = Step{ Step::Kind::Pixelated };
 
-		if (enabledCount == 0) {
+		struct CustomEffect {
+			uint64_t MaterialGuid = 0;
+			const Material* Material = nullptr;
+			const CustomShaderProgram* Program = nullptr;
+		};
+		std::array<CustomEffect, 4> customEffects{};
+		static_assert(std::tuple_size_v<decltype(settings->CustomEffects)> == 4);
+		if (m_Impl->CustomBindings.IsInitialized()) {
+			for (size_t slot = 0; slot < settings->CustomEffects.size(); ++slot) {
+				const uint64_t guid = settings->CustomEffects[slot];
+				const Material* material = guid != 0 ? MaterialLibrary::Get(guid) : nullptr;
+				if (!material || material->Shader == 0) continue;
+				const CustomShaderProgram* program = CustomShaderGpu::GetProgram(material->Shader, ShaderTarget::PostProcess);
+				if (!program) continue;
+				customEffects[slot] = { guid, material, program };
+				Step step{ Step::Kind::Custom };
+				step.CustomSlot = slot;
+				steps[stepCount++] = step;
+			}
+			if (std::any_of(customEffects.begin(), customEffects.end(), [](const CustomEffect& e) { return e.Program != nullptr; })) {
+				m_Impl->CustomBindings.WriteGlobals(CustomMaterialBindings::MakeGlobals(glm::mat4(1.0f), glm::mat4(1.0f), glm::vec3(0.0f), dstWidth, dstHeight));
+			}
+		}
+
+		if (stepCount == 0) {
 			Blit(src, dstView, dstFormat, dstWidth, dstHeight);
 			return;
 		}
 
-		if (enabledCount > 1) {
-			if (!EnsurePingPongFbos(*m_Impl, dstWidth, dstHeight)) {
-				IDX_CORE_WARN_TAG("PostProcessor",
-					"EnsurePingPongFbos failed at {}x{} — falling back to Blit",
-					dstWidth, dstHeight);
-				Blit(src, dstView, dstFormat, dstWidth, dstHeight);
-				return;
-			}
-			// Ping-pong FBOs persist across frames and are written with LoadOp::Load
-			// + alpha blend; zero them so a transparent scene background (e.g. the
-			// editor's wireframe draw mode) doesn't blend against the previous frame
-			// and accumulate. Opaque scenes overwrite these regardless.
-			ClearViewTransparent(ViewOf(m_Impl->PingPongA));
-			ClearViewTransparent(ViewOf(m_Impl->PingPongB));
+		if (stepCount > 1 && !EnsurePingPongFbos(*m_Impl, dstWidth, dstHeight)) {
+			IDX_CORE_WARN_TAG("PostProcessor",
+				"EnsurePingPongFbos failed at {}x{} — falling back to Blit",
+				dstWidth, dstHeight);
+			Blit(src, dstView, dstFormat, dstWidth, dstHeight);
+			return;
 		}
 
 		const float currentTime = Time::GetRealtimeSinceStartup();
@@ -1202,75 +1261,48 @@ namespace Index {
 		}
 
 		int pp = 0;
-
-		auto dispatch = [&](EffectKind kind,
-			wgpu::TextureView passSrc, wgpu::TextureView passDst,
-			wgpu::TextureFormat passFmt, uint32_t passW, uint32_t passH)
-		{
-			switch (kind) {
-				case EffectKind::Bloom:
-					RunBloomPass(*m_Impl,
-						*m_BloomThresholdShader, *m_BloomBlurShader, *m_BloomCompositeShader,
-						passSrc, passDst, passFmt, passW, passH, settings->Bloom, maximumTaps);
-					break;
-				case EffectKind::ColorGrading:
-					RunColorGradingPass(*m_Impl, *m_ColorGradingShader,
-						passSrc, passDst, passFmt, settings->ColorGrading);
-					break;
-				case EffectKind::LensDistortion:
-					RunLensDistortionPass(*m_Impl, *m_LensDistortionShader,
-						passSrc, passDst, passFmt, settings->LensDistortion);
-					break;
-				case EffectKind::Chromatic:
-					RunChromaticPass(*m_Impl, *m_ChromaticShader,
-						passSrc, passDst, passFmt, settings->ChromaticAberration);
-					break;
-				case EffectKind::Vignette:
-					RunVignettePass(*m_Impl, *m_VignetteShader,
-						passSrc, passDst, passFmt, passW, passH, settings->Vignette);
-					break;
-				case EffectKind::Grain:
-					RunGrainPass(*m_Impl, *m_GrainShader,
-						passSrc, passDst, passFmt, settings->Grain, currentTime);
-					break;
-				case EffectKind::Pixelated:
-					RunPixelatedPass(*m_Impl, *m_PixelatedShader,
-						passSrc, passDst, passFmt, passW, passH, settings->Pixelated);
-					break;
-				case EffectKind::GaussianBlur:
-					RunGaussianBlurPass(*m_Impl, *m_BloomBlurShader,
-						passSrc, passDst, passFmt, passW, passH, settings->GaussianBlur, maximumTaps);
-					break;
-			}
-		};
-
-		for (size_t i = 0; i < enabledCount; ++i) {
-			const bool isLast = (i + 1 == enabledCount);
-
-			wgpu::TextureView passDstView;
-			wgpu::TextureFormat passDstFormat;
-			uint32_t passDstW;
-			uint32_t passDstH;
-
-			if (isLast) {
-				passDstView   = dstView;
-				passDstFormat = dstFormat;
-				passDstW      = dstWidth;
-				passDstH      = dstHeight;
-			} else {
-				Framebuffer& fb = (pp == 0) ? m_Impl->PingPongA : m_Impl->PingPongB;
-				passDstView   = ViewOf(fb);
+		size_t compositeIndex = 0;
+		for (size_t i = 0; i < stepCount; ++i) {
+			const bool isLast = (i + 1 == stepCount);
+			wgpu::TextureView passDstView = dstView;
+			wgpu::TextureFormat passDstFormat = dstFormat;
+			if (!isLast) {
+				passDstView = ViewOf(pp == 0 ? m_Impl->PingPongA : m_Impl->PingPongB);
 				passDstFormat = ppFormat;
-				passDstW      = dstWidth;
-				passDstH      = dstHeight;
 				if (!passDstView) {
 					IDX_CORE_WARN_TAG("PostProcessor",
 						"Ping-pong FBO {} has no color view at pass {}", pp, i);
 					return;
 				}
 			}
+			// Intermediates start transparent each frame (cleared by the pass itself); the destination keeps
+			// what the caller drew or cleared.
+			const bool clearTarget = !isLast;
 
-			dispatch(enabled[i], curSrcView, passDstView, passDstFormat, passDstW, passDstH);
+			const Step& step = steps[i];
+			switch (step.Type) {
+				case Step::Kind::Composite:
+					RunCompositeStep(*m_Impl, *m_BloomThresholdShader, *m_BloomBlurShader, *m_CompositeShader,
+						curSrcView, passDstView, passDstFormat, dstWidth, dstHeight, *settings, step.Effects,
+						maximumTaps, currentTime, m_Impl->CompositeUniformBuffers[std::min<size_t>(compositeIndex++, 1)],
+						clearTarget);
+					break;
+				case Step::Kind::GaussianBlur:
+					RunGaussianBlurPass(*m_Impl, *m_BloomBlurShader,
+						curSrcView, passDstView, passDstFormat, dstWidth, dstHeight, settings->GaussianBlur, maximumTaps,
+						clearTarget);
+					break;
+				case Step::Kind::Pixelated:
+					RunPixelatedPass(*m_Impl, *m_PixelatedShader,
+						curSrcView, passDstView, passDstFormat, dstWidth, dstHeight, settings->Pixelated, clearTarget);
+					break;
+				case Step::Kind::Custom: {
+					const CustomEffect& effect = customEffects[step.CustomSlot];
+					RunCustomEffectPass(*m_Impl, effect.MaterialGuid, effect.Material, effect.Program,
+						curSrcView, passDstView, passDstFormat, clearTarget);
+					break;
+				}
+			}
 
 			if (!isLast) {
 				curSrcView = passDstView;

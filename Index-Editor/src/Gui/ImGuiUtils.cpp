@@ -1081,26 +1081,72 @@ namespace Index::ImGuiUtils {
 	}
 
 	namespace {
+		// Fallback for components registered without ComponentInfo::icon (C# types, older packages).
 		const char* ComponentIconName(std::string_view label) {
 			auto has = [&](std::string_view s) { return label.find(s) != std::string_view::npos; };
+			// C# types first: a script called "AudioManager" is still a script.
+			if (has("(C# Script)") || has("(C# Component)") || has("(C# Native Component)") || label == "Script") return "script";
 			if (has("Rect Transform")) return "bounding_box";
 			if (has("Transform")) return "move";
 			if (has("Camera")) return "camera";
 			if (has("Post Processing")) return "post_processing";
-			if (has("Particle")) return "light_sun";
-			if (has("Circle Collider")) return "circle_dot";
-			if (has("Collider")) return "bounding_box";
-			if (has("Rigidbody")) return "circle_dot";
+			if (has("Particle")) return "particles";
+			if (has("Point Light")) return "light_point";
+			if (has("Spot Light")) return "light_spot";
+			if (has("Directional Light")) return "light_sun";
+			if (has("Box Collider 3D")) return "collider_box_3d";
+			if (has("Sphere Collider 3D")) return "collider_sphere_3d";
+			if (has("Capsule Collider 3D")) return "collider_capsule_3d";
+			if (has("Mesh Collider 3D")) return "collider_mesh_3d";
+			if (has("Circle Collider")) return "collider_circle_2d";
+			if (has("Polygon Collider")) return "collider_polygon_2d";
+			if (has("Collider")) return "collider_box_2d";
+			if (has("Rigidbody 3D")) return "rigidbody_3d";
+			if (has("Rigidbody")) return "rigidbody_2d";
 			if (has("Sprite") || has("Image")) return "eye_open";
 			if (has("Tilemap") || has("Layout")) return "grid";
 			if (has("Text") || has("Label") || has("Input")) return "caret";
-			if (has("Audio")) return "play";
-			if (has("Script")) return "link";
+			if (has("Audio")) return "audio_source";
 			return "entity";
 		}
 	}
 
-	bool BeginComponentSection(const char* label, bool& removeRequested, const std::function<void()>& contextMenu)
+	bool IconMenuItemEllipsis(const std::string& text, const char* id, std::string_view icon,
+		bool enabled, float maxWidth)
+	{
+		if (maxWidth < 0.0f) {
+			maxWidth = ImGui::GetContentRegionAvail().x;
+		}
+
+		// Leading spaces reserve the icon slot so ImGui's own label layout and hit area stay intact.
+		const float iconSize = std::round(ImGui::GetFontSize() * 0.95f);
+		const float spaceW = std::max(1.0f, ImGui::CalcTextSize(" ").x);
+		const int iconSpaces = static_cast<int>(std::ceil((iconSize + 6.0f) / spaceW));
+
+		const ImVec2 textPos = ImGui::GetCursorScreenPos();
+		bool truncated = false;
+		const std::string displayText = Ellipsize(text, maxWidth - iconSpaces * spaceW, &truncated);
+		const std::string label = std::string(static_cast<size_t>(iconSpaces), ' ') + displayText
+			+ "##" + (id ? std::string(id) : text);
+		const bool activated = ImGui::MenuItem(label.c_str(), nullptr, false, enabled);
+		const ImVec2 itemMin = ImGui::GetItemRectMin();
+		const ImVec2 itemMax = ImGui::GetItemRectMax();
+		if (truncated && ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("%s", text.c_str());
+		}
+
+		const std::string iconName = icon.empty() ? std::string(ComponentIconName(text)) : std::string(icon);
+		if (const uint64_t iconTexture = EditorIcons::Get(iconName, static_cast<int>(iconSize))) {
+			const ImVec2 iconPos(textPos.x, itemMin.y + (itemMax.y - itemMin.y - iconSize) * 0.5f);
+			const ImU32 tint = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, enabled ? 1.0f : ImGui::GetStyle().DisabledAlpha));
+			ImGui::GetWindowDrawList()->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(iconTexture)), iconPos,
+				ImVec2(iconPos.x + iconSize, iconPos.y + iconSize), ImVec2(0, 1), ImVec2(1, 0), tint);
+		}
+		return activated;
+	}
+
+	bool BeginComponentSection(const char* label, bool& removeRequested, const std::function<void()>& contextMenu,
+		std::string_view icon, bool overridden)
 	{
 		removeRequested = false;
 
@@ -1122,18 +1168,39 @@ namespace Index::ImGuiUtils {
 		const int iconSpaces = static_cast<int>(std::ceil((iconSize + 6.0f) / spaceW));
 		const float moreW = ImGui::GetFrameHeight();
 
+		constexpr const char* k_OverrideMarker = "*";
+		const float markerW = overridden ? ImGui::CalcTextSize(k_OverrideMarker).x + 2.0f : 0.0f;
+
 		bool truncated = false;
 		const float headerWidth = ImGui::GetContentRegionAvail().x - ImGui::GetStyle().FramePadding.x * 2.0f
-			- iconSpaces * spaceW - moreW - ImGui::GetFontSize();
+			- iconSpaces * spaceW - moreW - ImGui::GetFontSize() - markerW;
 		const std::string displayLabel = Ellipsize(label, headerWidth, &truncated);
-		const std::string headerLabel = std::string(static_cast<size_t>(iconSpaces), ' ') + displayLabel + "##" + label;
+		const std::string visibleLabel = std::string(static_cast<size_t>(iconSpaces), ' ') + displayLabel;
+		const std::string headerLabel = visibleLabel + "##" + label;
 		bool open = ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap);
 		const float headerPadX = ImGui::GetStyle().FramePadding.x;
 		const ImVec2 headerMin = ImGui::GetItemRectMin();
 		const ImVec2 headerMax = ImGui::GetItemRectMax();
 		ImGui::PopStyleVar(2);
 		ImGui::PopStyleColor(3);
-		if (truncated && ImGui::IsItemHovered()) {
+
+		ImDrawList* headerDraw = ImGui::GetWindowDrawList();
+		const float headerH = headerMax.y - headerMin.y;
+		// Same offset ImGui uses for a framed tree node's label (arrow + 3x frame padding).
+		const float textOffsetX = ImGui::GetFontSize() + headerPadX * 3.0f;
+
+		bool markerHovered = false;
+		if (overridden) {
+			const ImVec2 markerPos(headerMin.x + textOffsetX + ImGui::CalcTextSize(visibleLabel.c_str()).x + 2.0f,
+				headerMin.y + (headerH - ImGui::GetFontSize()) * 0.5f);
+			headerDraw->AddText(markerPos, ImGui::GetColorU32(EditorTheme::Colors::OverrideMarker()), k_OverrideMarker);
+			markerHovered = ImGui::IsItemHovered()
+				&& ImGui::IsMouseHoveringRect(markerPos, ImVec2(markerPos.x + markerW, markerPos.y + ImGui::GetFontSize()));
+		}
+		if (markerHovered) {
+			ImGui::SetTooltip("Overrides the source prefab");
+		}
+		else if (truncated && ImGui::IsItemHovered()) {
 			ImGui::SetTooltip("%s", label);
 		}
 
@@ -1148,15 +1215,11 @@ namespace Index::ImGuiUtils {
 			ImGui::EndPopup();
 		}
 
-		ImDrawList* headerDraw = ImGui::GetWindowDrawList();
-		const float headerH = headerMax.y - headerMin.y;
-		// Same offset ImGui uses for a framed tree node's label (arrow + 3x frame padding).
-		const float textOffsetX = ImGui::GetFontSize() + headerPadX * 3.0f;
-		if (const uint64_t icon = EditorIcons::Get(ComponentIconName(label), static_cast<int>(iconSize))) {
+		const std::string iconName = icon.empty() ? std::string(ComponentIconName(label)) : std::string(icon);
+		if (const uint64_t iconTexture = EditorIcons::Get(iconName, static_cast<int>(iconSize))) {
 			const ImVec2 iconPos(headerMin.x + textOffsetX, headerMin.y + (headerH - iconSize) * 0.5f);
-			headerDraw->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(icon)), iconPos,
-				ImVec2(iconPos.x + iconSize, iconPos.y + iconSize), ImVec2(0, 1), ImVec2(1, 0),
-				ImGui::GetColorU32(EditorTheme::Colors::Highlight()));
+			headerDraw->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(iconTexture)), iconPos,
+				ImVec2(iconPos.x + iconSize, iconPos.y + iconSize), ImVec2(0, 1), ImVec2(1, 0));
 		}
 
 		// "..." opens the same context menu as right-clicking the header.

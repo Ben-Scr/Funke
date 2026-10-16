@@ -93,6 +93,9 @@ namespace Index {
 		// ones. When false (default) the gizmo is drawn only for selected entities.
 		bool drawEditorGizmoAlways = false;
 
+		// Editor icon name from IndexAssets/Textures/Editor/General, without extension (e.g. "audio_source"). Empty = guessed from displayName.
+		std::string icon;
+
 		std::vector<PropertyDescriptor> properties;
 
 		// Implicitly symmetric — declaring on either side is enough; HasConflict checks both directions.

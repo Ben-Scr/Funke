@@ -12,12 +12,14 @@ namespace Index;
 /// </summary>
 public enum BuildConfiguration
 {
-    /// <summary>Editor preview / iteration mode.</summary>
-    Debug = 0,
+    /// <summary>Editor play mode (INDEX_EDITOR).</summary>
+    Editor = 0,
     /// <summary>Built game with diagnostics enabled (INDEX_BUILD_DEVELOPMENT).</summary>
     Development = 1,
     /// <summary>Shipped game build (INDEX_BUILD_RELEASE).</summary>
     Release = 2,
+    /// <summary>Built game on debug engine binaries with symbols, for attaching a debugger (INDEX_BUILD_DEBUG).</summary>
+    Debug = 3,
 }
 
 public enum Platform

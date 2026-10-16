@@ -324,3 +324,44 @@ TEST_CASE("Duplicate clipboard source identities roll back the whole entity tree
 	CHECK_FALSE(target->IsDirty());
 	CHECK_FALSE(target->IsUIDirty());
 }
+
+TEST_CASE("Prefab source in the Entities-array layout loads as an entity tree")
+{
+	// Agent/scene-json style: no "Entity"/"prefab" block, only the flat "Entities" list.
+	Json::Value root;
+	REQUIRE(Json::TryParse(R"({
+		"version": 1,
+		"type": "Prefab",
+		"Entities": [
+			{ "uuid": "1001", "name": "Crate", "Transform2D": { "posX": 4, "posY": -2 } },
+			{ "uuid": "1002", "parentUuid": "1001", "name": "Lid" }
+		]
+	})", root));
+	CHECK(SceneSerializer::HasPrefabEntityPayload(root));
+
+	auto scene = Scene::CreateDetachedScene("Entities Prefab Test");
+	const EntityHandle rootHandle = SceneSerializer::DeserializeEntityFromValue(*scene, root);
+	REQUIRE(rootHandle != entt::null);
+	REQUIRE(scene->IsValid(rootHandle));
+
+	Entity crate = scene->GetEntity(rootHandle);
+	CHECK(crate.GetName() == "Crate");
+	CHECK(crate.GetComponent<Transform2DComponent>().LocalPosition.x == doctest::Approx(4.0f));
+	REQUIRE(crate.GetChildren().size() == 1);
+	CHECK(scene->GetEntity(crate.GetChildren().front()).GetName() == "Lid");
+}
+
+TEST_CASE("Prefab payload detection rejects envelopes without an entity tree")
+{
+	Json::Value legacy;
+	REQUIRE(Json::TryParse(R"({ "type": "Prefab", "prefab": { "name": "Old" } })", legacy));
+	CHECK(SceneSerializer::HasPrefabEntityPayload(legacy));
+
+	Json::Value empty;
+	REQUIRE(Json::TryParse(R"({ "version": 1, "type": "Prefab", "Entities": [] })", empty));
+	CHECK_FALSE(SceneSerializer::HasPrefabEntityPayload(empty));
+
+	Json::Value bareEntity;
+	REQUIRE(Json::TryParse(R"({ "name": "Loose", "Transform2D": {} })", bareEntity));
+	CHECK_FALSE(SceneSerializer::HasPrefabEntityPayload(bareEntity));
+}

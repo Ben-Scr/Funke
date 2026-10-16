@@ -813,6 +813,90 @@ namespace Index {
 			}
 			ImGui::PopID();
 		}
+
+		RenderTesting(profile);
+	}
+
+	void BuildProfilesPanel::RenderTesting(IndexBuildProfile& profile) {
+		if (!EditorUI::SectionHeader("Configuration & Testing")) return;
+
+		ImGui::PushID("Configuration");
+		ImGuiUtils::BeginInspectorFieldRow("Configuration");
+		const char* configurationLabel = profile.Configuration
+			? IndexProject::BuildProfileToString(*profile.Configuration) : "Project Default";
+		if (ImGui::BeginCombo("##Value", configurationLabel)) {
+			if (ImGui::Selectable("Project Default", !profile.Configuration) && profile.Configuration) {
+				profile.Configuration.reset();
+				SaveSelected();
+			}
+			for (const IndexProject::BuildProfile configuration : {
+				IndexProject::BuildProfile::Debug, IndexProject::BuildProfile::Development, IndexProject::BuildProfile::Release }) {
+				const bool selected = profile.Configuration == configuration;
+				if (ImGui::Selectable(IndexProject::BuildProfileToString(configuration), selected) && !selected) {
+					profile.Configuration = configuration;
+					SaveSelected();
+				}
+			}
+			ImGui::EndCombo();
+		}
+		EditorUI::Tooltip("Project Default uses the Configuration chosen in the Build window.\n"
+			"Debug ships debug binaries and symbols so a debugger can attach (needs the engine sources).");
+		ImGui::PopID();
+
+		ImGui::PushID("Defines");
+		ImGuiUtils::BeginInspectorFieldRow("Defines");
+		std::string joined;
+		for (const std::string& define : profile.Defines) {
+			if (!joined.empty()) joined += ' ';
+			joined += define;
+		}
+		char definesBuffer[512]{};
+		std::snprintf(definesBuffer, sizeof(definesBuffer), "%s", joined.c_str());
+		ImGui::SetNextItemWidth(-1.0f);
+		if (ImGui::InputTextWithHint("##Value", "e.g. INDEX_TEST DEMO", definesBuffer, sizeof(definesBuffer))) {
+			profile.Defines.clear();
+			std::string current;
+			for (const char* c = definesBuffer;; ++c) {
+				const bool separator = *c == '\0' || *c == ' ' || *c == ',' || *c == ';';
+				if (!separator) { current.push_back(*c); continue; }
+				if (!current.empty()) profile.Defines.push_back(std::move(current));
+				current.clear();
+				if (*c == '\0') break;
+			}
+		}
+		if (ImGui::IsItemDeactivatedAfterEdit()) SaveSelected();
+		EditorUI::Tooltip("C# defines for builds with this profile, added to the project's defines.");
+		ImGui::PopID();
+
+		const auto optionalSwitch = [&](const char* id, const char* label, std::optional<bool>& value, const char* tooltip) {
+			ImGui::PushID(id);
+			ImGuiUtils::BeginInspectorFieldRow(label);
+			const char* current = !value ? "Project Default" : (*value ? "On" : "Off");
+			if (ImGui::BeginCombo("##Value", current)) {
+				if (ImGui::Selectable("Project Default", !value) && value) { value.reset(); SaveSelected(); }
+				if (ImGui::Selectable("On", value == true) && value != true) { value = true; SaveSelected(); }
+				if (ImGui::Selectable("Off", value == false) && value != false) { value = false; SaveSelected(); }
+				ImGui::EndCombo();
+			}
+			EditorUI::Tooltip(tooltip);
+			ImGui::PopID();
+		};
+		optionalSwitch("Stats", "Stats Overlay", profile.ShowRuntimeStats,
+			"F6 frame stats in the game. Project Default: on unless the build is Release.");
+		optionalSwitch("Logs", "Log Overlay", profile.ShowRuntimeLogs,
+			"F7 log window in the game. Project Default: on unless the build is Release.");
+		optionalSwitch("Console", "Dev Console", profile.DevConsole,
+			"Console on the ` key (three-finger tap on touch screens) with built-in and [DevCommand] commands.\n"
+			"Project Default: on unless the build is Release.");
+
+		ImGui::PushID("IsolatedPrefs");
+		ImGuiUtils::BeginInspectorFieldRow("Isolated Player Data");
+		if (ImGuiUtils::Switch("##Value", &profile.IsolatedPrefs)) SaveSelected();
+		const std::string prefsTooltip = "PlayerPrefs and SaveData go to Profiles/" + profile.GetPrefsProfileName()
+			+ " inside the game's data folder, so test runs never touch the player's real saves.";
+		EditorUI::Tooltip(prefsTooltip);
+		ImGui::PopID();
+		ImGui::Spacing();
 	}
 
 	void BuildProfilesPanel::RenderPlatformPackage(IndexBuildProfile& profile) {

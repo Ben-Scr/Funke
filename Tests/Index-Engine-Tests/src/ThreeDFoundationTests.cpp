@@ -125,6 +125,42 @@ TEST_CASE("EntityPicker3D returns the nearest mesh along the ray") {
 	CHECK(EntityPicker3D::Pick(*scene, { 0.0f, 0.2f, 0.0f }, { 0.0f, 0.0f, -1.0f }) == farCube.GetHandle());
 }
 
+TEST_CASE("EntityPicker3D::PickAll lists every hit nearest first") {
+	auto scene = Scene::CreateDetachedScene("ThreeDPickAll");
+	Entity farCube = scene->CreateEmptyEntity();
+	farCube.AddComponent<Transform3DComponent>().Position = { 0.0f, 0.0f, -8.0f };
+	farCube.AddComponent<MeshRendererComponent>();
+	Entity nearCube = scene->CreateEmptyEntity();
+	nearCube.AddComponent<Transform3DComponent>().Position = { 0.0f, 0.0f, -3.0f };
+	nearCube.AddComponent<MeshRendererComponent>();
+	Entity offAxis = scene->CreateEmptyEntity();
+	offAxis.AddComponent<Transform3DComponent>().Position = { 5.0f, 0.0f, -1.0f };
+	offAxis.AddComponent<MeshRendererComponent>();
+	Transform3DHierarchySystem::Propagate(*scene);
+
+	std::vector<EntityHandle> hits;
+	EntityPicker3D::PickAll(*scene, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, -1.0f }, hits);
+	REQUIRE(hits.size() == 2);
+	CHECK(hits[0] == nearCube.GetHandle());
+	CHECK(hits[1] == farCube.GetHandle());
+
+	EntityPicker3D::PickAll(*scene, { 0.0f, 3.0f, 0.0f }, { 0.0f, 0.0f, -1.0f }, hits);
+	CHECK(hits.empty());
+}
+
+TEST_CASE("A rebuilt component registry never repeats the generation of an earlier one") {
+	// Editor reloads rebuild the registry; ComponentInfo pointers memoized by generation must not survive that.
+	uint64_t firstGeneration = 0;
+	{
+		ComponentRegistry first;
+		RegisterBuiltInComponents(first);
+		firstGeneration = first.GetGeneration();
+	}
+	ComponentRegistry second;
+	RegisterBuiltInComponents(second);
+	CHECK(second.GetGeneration() != firstGeneration);
+}
+
 TEST_CASE("3D components register after every 2D component and conflict with 2D transforms") {
 	ComponentRegistry registry;
 	RegisterBuiltInComponents(registry);

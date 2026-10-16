@@ -14,6 +14,8 @@ namespace Index {
 
 		static std::string_view GetVersion() noexcept;
 		static std::string_view GetVersionLong() noexcept;
+		// Hash of the engine headers this DLL was compiled from; see Core/EngineAbi.hpp.
+		static std::string_view GetAbiKey() noexcept;
 
 		static GraphicsApi GetGraphicsApi() noexcept;
 		static std::string_view GetGraphicsApiName() noexcept;

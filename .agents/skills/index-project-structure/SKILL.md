@@ -108,8 +108,8 @@ Written by `BuildProjectJson`, read by `Load`. Field names are exact. (Defaults 
   "modules": ["Index.2D"],
 
   // Runtime behavior
-  "showRuntimeStats": true,               // FPS / frame-time overlay in shipped build
-  "showRuntimeLogs": true,                // log console in shipped build
+  "showRuntimeStats": true,               // FPS / frame-time overlay in shipped build; omit = on for Development, off for Release
+  "showRuntimeLogs": true,                // log console in shipped build; omit = same as above
   "enablePostProcessing": true,
 
   // Serialization & ECS

@@ -28,9 +28,6 @@ namespace Index {
 		// for the shared Win32BuildProgressWindow (editor chrome owns that popup, not the panel).
 		bool GetActiveLoadingPopup(std::string& outTitle, std::string& outStage, float& outProgress);
 
-		// Engine module changes apply on an editor reload; the host decides how to run one (unsaved-work prompt).
-		void SetReloadEditorCallback(std::function<void()> callback) { m_ReloadEditor = std::move(callback); }
-
 	private:
 		// ShowAll = Search tab (Install button for missing); InstalledOnly = Installed tab (skip missing).
 		enum class RowMode { ShowAll, InstalledOnly };
@@ -54,8 +51,6 @@ namespace Index {
 		void RenderEngineModulesSection(RowMode mode);
 		void RenderEngineModuleRow(EngineModule module, const char* idHint);
 		void RenderModuleRequirementLine(const std::vector<std::string>& modules);
-		// Shown while project.json lists other modules than the running editor applied.
-		void RenderModuleReloadBanner();
 		// Newest registry release that fits the engine and every installed dependent, if newer than `manifest`.
 		const RegistryPackageVersion* FindRegistryUpdate(const IndexPackageManifest& manifest) const;
 		// Floating add-package windows opened from the "+" button's drop-down menu.
@@ -92,7 +87,6 @@ namespace Index {
 		void PollAutomationTask();
 
 		std::string m_PendingPostInstallPackageName;
-		std::function<void()> m_ReloadEditor;
 
 		struct AutomationTaskState {
 			std::mutex Mutex;

@@ -43,6 +43,8 @@
 --                          { name = "Index.Foo", version = "^1.2.0" }, or a map entry ["Index.Foo"] = "^1.2.0"
 --   engine        string   optional engine version range, e.g. ">=2026.1.0 <2027.0.0"
 --   modules       table    optional engine modules the package builds on, e.g. { "Index.2D" }
+--   android       table    optional; read by the Android platform builder, not here: java, maven, manifest,
+--                          placeholders (platforms/Index.Platform.Android/Builder/android_libraries.py)
 --
 -- `version` should be MAJOR.MINOR.PATCH (SemVer). Ranges follow npm syntax: ^ ~ x-ranges, comparators,
 -- hyphen ranges and ||. The C++ side (Index-Engine/src/Packages/SemanticVersion.cpp) implements the same rules.

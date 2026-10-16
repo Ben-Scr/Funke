@@ -10,6 +10,7 @@
 #include <entt/entity/registry.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -693,7 +694,13 @@ namespace Index {
         std::unordered_map<uint32_t, std::unique_ptr<DynamicComponentStorage>> m_dynamicStorages;
         uint32_t m_registrationOwner = 0;
         std::optional<EngineModule> m_registrationModule;
-        uint64_t m_generation = 0;
+        // Starts in a range of its own: a registry rebuilt by an in-process reload must never repeat a generation
+        // of the destroyed one, or callers memoizing ComponentInfo pointers by generation keep dangling ones.
+        static uint64_t NextGenerationEpoch() noexcept {
+            static std::atomic<uint64_t> s_Epoch{ 0 };
+            return (s_Epoch.fetch_add(1, std::memory_order_relaxed) + 1) << 32;
+        }
+        uint64_t m_generation = NextGenerationEpoch();
         // Dynamics share typeid(void) — std::type_index can't be synthesized; callers that key by
         // type_index implicitly skip dynamic entries.
         static inline const std::type_index s_VoidTypeIndex{ typeid(void) };

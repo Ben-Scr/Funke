@@ -36,6 +36,28 @@ Describe a course as paths of points `(x, z, topY)` with a width; generate one b
 - **Props sit on a surface:** lamps inside the road edge (not beside it in the air), crates `0.5 + layer` above the top, coins ~0.9 above the road, spaced with a little gap (crate spacing 1.04, not 1.0).
 - Take a screenshot of every bend, ledge and prop group (see §7) before calling a level done.
 
+### Clean courses: generate meshes, not boxes
+
+Boxes per road segment overlap at bends (crossing textures, corner pads, rails with gaps) — it reads as "unfinished". Generate the course as meshes instead (MarbleSky `Tools/meshkit.py` + `road_mesh`/`rail_mesh` in `generate_scenes.py`):
+- One mitred cross-section per path point (the same frames feed the welded collision strip), extruded into top (road material), chamfer + sides + bottom (darker edge material) and end caps. World-space UVs (1 repeat = 4 m) so planks/tiles run on through bends and slopes; give those materials `tiling 1`.
+- Railings: posts every ~2.4 m + round bars whose rings lie in the mitre plane; keep invisible box colliders for the rails. Put them on the deck, inset ~0.2 m from the edge (frames of `width − 2·inset`) — rails placed beside the road float in the air. Give every road and platform rails by default (gaps where paths join), and keep obstacles placed across the road clear of them.
+- Terrain levels (forest, meadow): a height field (function of x, z) sampled every ~2 m → grass triangles + the same quads in the welded collision mesh; draw the dirt path as its own ribbon along the path curve ~5 cm above the grass. Colouring grid cells by "is on the path" gives stair-stepped edges.
+- Decor (trees, rocks) must test against the course footprint before placing, or a tree ends up inside a platform.
+- In-game track editors work with runtime meshes: `Mesh.Create()` + `SetData(positions, indices, normals, uvs)` for the visuals and a `MeshCollider3D` whose `CustomMesh` is a second runtime mesh with the welded road tops (physics rebuilds when the mesh changes). Spawn parts from script-free prefabs and add the scripts with `AddComponent<T>()` right after `Entity.Instantiate`, then set their fields (a script already in the prefab has no instance yet). `Entity.Create` gives a Transform2D in projects with the 2D module: swap it for Transform3D. Scripts that cache references to their parts should do it in `OnStart`, not `OnAwake`.
+- Tap/click picking in 3D: `Physics3D.RaycastFromScreen(Input.MousePosition, out hit)` (or `Camera3D.Main.ScreenPointToRay`); `Camera3D.WorldToScreenPoint` for markers over objects. Treat a press that moved less than ~14 px as a tap, the rest as a camera drag, and ignore presses that start on UI (`UIPointer.HoveredEntity != null`).
+- Endless tracks: generate chunks with the same layout code as the editor, each starting with a landing + checkpoint and ending in a jump, so chunk seams (separate mesh colliders) are never rolled over; keep 3 ahead, destroy the ones behind, and move the cloud floor and kill height with the marble.
+- Ghost runs: record position + scale every 0.05 s of level time and keep the run in `SaveData` (a `float[]`) when it beats the stored one; replay it on a see-through marble without collider.
+- Many levels: once a few hand-made levels play well, turn their proven pieces into a cursor-based builder (MarbleSky `Track`: straight, bend, kicker, pad_up, shuttle, planks, beam, island, switch_bridge, slit, heavy, goal — each with the exact gap/jump sizes of the level it came from) and write new courses as short lists of pieces. Ravines in a height field: drop the grid rows inside (edges on grid lines) and add rock walls on the cut edges. Compute the respawn height from the lowest course point, not the start.
+- Static platforms/steps: bevelled boxes appended to the same per-material level mesh (one OBJ + one entity per material per level = few draw calls) plus an invisible collider.
+
+### Mechanics that make a marble level fun (all small scripts + static events)
+
+- **Floor switch → channel → SwitchMover:** a trigger plate fires `Activated(channel)`; kinematic gates sink / bridges rise by `Travel` over `Duration`. Put plates where the player must aim or jump (on a step, at the edge, between bumpers).
+- **Size portals:** ring trigger sets small/normal/big — `Transform3D.Scale` eased over a few fixed steps (the physics body is rebuilt with velocity kept; lift the marble while growing), mass per size, jump as `VelocityChange` so height doesn't depend on mass. Small fits slits in walls; big (mass ~12) shoves 25 kg blocks and presses heavy plates (`MinMass`). Remember the size at each checkpoint for respawns; pull the camera back for big.
+- **Tilting planks** (kinematic, rotZ sine) for balancing; **hurdles** (0.95 m) and **step blocks** for jumping; coins on top as optional rewards.
+- **Satisfying feedback:** coin combo climbing a scale (8 pitched clips), coin magnet, landing dust + thud + small camera shake (shake the rotation — position is smoothed), FOV kick on boost, a HUD toast ("Checkpoint!", "Mini-Murmel!", "Zu leicht – werde größer!").
+- Verify with an env-var probe: teleport (`tp:x,y,z`), set size, push forward and log position/size/switch events; check the normal marble is blocked where it should be.
+
 ### Texture stretching
 
 Primitive UVs are per face and stretch with scale. A 2×1×10 plank stretches its texture 5× along its length. Keep a material's `tiling` matched to typical piece sizes, use separate materials (and `tiling`) for long pieces, or accept a little stretch on wood-like textures where it reads as grain.
@@ -80,10 +102,12 @@ Targets after the fix: dt σ < 0.3 ms, camera↔player offset change σ < 0.5 mm
 
 - **Materials** (`.material` JSON, PBR): stone/wood with procedural textures (write PNGs with a tiny pure-Python encoder: `zlib` + `struct`), gold `metallic 1, roughness .22`, glassy player `metallic .25, roughness .06` with a little emissive, goal/coins/lamps with `emissiveColor` + `emissiveIntensity` (2–5) so they glow.
 - **Lights:** one shadow-casting sun (`rotX ≈ −40`), small warm `PointLight`s (`intensity 6, range 6`) in lanterns, a coloured point light at the goal.
-- **Sky:** set `skyTop`/`skyHorizon`/`skyGround` on the `Camera3D`. For "high in the sky" games make `skyGround` blue too, otherwise the lower half reads as brown ground.
+- **Sky:** set `skyTop`/`skyHorizon`/`skyGround` on the `Camera3D`. For "high in the sky" games make `skyGround` blue too, otherwise the lower half reads as brown ground, and put a layer of cloud meshes ~30 m below the course so there is something underneath.
+- **Fog:** `Camera3D` `fog: true`, `fogColor` ≈ the horizon color, `fogStart`/`fogEnd` (e.g. 35/110) so the goal is not visible from the start and the course fades into the sky. Sky dome materials get `"fog": false`.
 - **Clouds:** clusters of 3–4 flattened spheres (`scale (s, .55s, .8s)`) with a white, slightly emissive material, below and beside the course.
 
 - **Painted skyboxes:** `Camera3D` only has a gradient sky. For sunset/night/storm themes generate an equirectangular PNG (numpy noise sampled on the unit-sphere direction → seamless) and put it on an inward-facing sphere OBJ (the sphere primitive's UV layout: `v=0` at the zenith) with an **unlit** material (`"lit": false`), scale ~450 (inside `far`), `castShadows false`, and a tiny script that keeps it centred on the camera. Paint the sun/moon at `-forward` of the `DirectionalLight` (`(cos p·sin y, −sin p, cos p·cos y)` for rotation `(p, y)`), and match the camera's `skyTop/skyHorizon/skyGround` (they still drive ambient light), sun color/intensity and cloud material to the theme.
+- **Animated characters:** a rigged `.glb` (skin + clips) on a `SkinnedMeshRenderer`; one small script calls `Play("Idle"/"Run"/"Jump", 0.15f)` from the movement state every frame (re-playing the running clip is a no-op). Attach held items with `TryGetBone`.
 - **Own 3D models:** write OBJ files from a Python generator (`v`/`vt`/`vn`, counter-clockwise front faces, the loader flips `vt.y`): revolve profiles for coins, domes, rings and low-poly rocks/trees, flat normals for a low-poly look. `MeshRenderer {"mesh": 0, "customMesh": "<guid>", "material": …}`.
 
 ## 6b. Effects with Particle System 3D
@@ -115,12 +139,12 @@ Rules that matter:
 - Every UI root and full-screen panel: `RectTransform2D` with `"fillParent": true` (it spans the safe area). Anchor HUD items to corners/edges; keep centred panels ≤ ~900 wide so they fit portrait.
 - **Text above panels:** a `TextRenderer` inside a panel needs a higher `sortOrder` than the panel's `Image` (e.g. panel 15–16, text 17, button 20, button label 21), or it draws behind it.
 - **Touch controls only on mobile:** wrap the decision in `#if INDEX_ANDROID || INDEX_IOS` (the build defines them per platform) and add a `ShowOnDesktop` bool field for testing in the editor. Disabling the controls' own entity in `OnAwake` hides them on PC.
-- The engine reads only the first finger (no multi-touch API yet): a joystick and a jump button can't be pressed at the same time. Tell the user.
+- **Two thumbs = read touches.** UI Buttons/Toggles react to every finger (two can be held at once), but sliders, scroll views and `Input.MousePosition` only see the first finger. For a joystick plus a jump button, loop `Input.GetTouch(i)`: a finger whose `Began` lands on the jump button (hit-test `RectTransform.Position`/`Size`) jumps, the first other finger drives the stick until its `Ended`. Keep a mouse path for desktop testing.
 - Menus: house rule 9 (title + Play/Quit, separate level select with cards, unlock progression via the saved results).
 - **Sprites, not flat rectangles:** there is no 9-slice, so generate each button/panel/card sprite (white, rounded, vertical gradient, darker outline and bottom lip; PIL with 4× supersampling) at the size it is shown and tint it with the `Button` colours / `Image` colour. Icons are white on transparent; coins, stars and the logo are coloured. Put a screen's content in a centred 1200×1200 child so title, grid and back button stay together in portrait.
 - **Shop/skins:** coins banked into a `Wallet` (PlayerPrefs) at the goal; skins listed in a generated catalog; the materials are wired in the scene as disabled children of a "Skin Library" entity (catalog order) and the marble copies `children[i].MeshRenderer.Material` — `Material.FromAssetUUID` in game code is what the lint (rule 2) flags.
 - **Polish:** a `ScreenFader` (full-screen overlay child, switched off when transparent) that `SceneFlow.Load` fades out through; a `PopIn` (scale 0.86 → 1 with overshoot) on every panel; three stars per level (finished / all coins / no falls) on the result panel and the level cards.
-- **Shipping:** set `"showRuntimeStats": false, "showRuntimeLogs": false` in `project.json`, or the built game shows the statistics and log windows (they also cover the pause button on phones).
+- **Shipping:** build with the Release profile (`index build --release`); the statistics and log windows are then off unless `project.json` sets `showRuntimeStats` / `showRuntimeLogs` to `true` (on phones they cover the pause button).
 
 ## 8. Verify like this
 

@@ -97,7 +97,14 @@ TextureManager::IsValid(h);  TextureManager::UnloadTexture(h);
 - Built-ins are embedded as `R"WGSL(...)WGSL"` strings in `Graphics/Shader.cpp`, table `k_BuiltIns`: `sprite`, `text`, `gizmo`, `postblit`, `postvignette`, `postchromatic`, `postgrain`, `postlensdistortion`, `postcolorgrading`, `postbloomthreshold`, `postbloomblur`, `postbloomcomposite`, `postpixelated`. Entry points `vs_main` / `fs_main` (sprite also `fs_wire_main`).
 - `Shader(vsPath, fsPath)`: `fsPath` is ignored; the name is the lowercased stem of `vsPath` minus a `Shader` suffix (`"IndexAssets/Shaders/GizmoShader.vs"` → `gizmo`, `"postblit"` → `postblit`). Lookup: built-in table, else `IndexAssets/Shaders/webgpu/<name>.wgsl`. The `Index-Runtime/IndexAssets/Shader/**/*.glsl` files are legacy and never loaded.
 - `ShaderManager` adds a handle pool with `LoadShader`, `ReloadShader` (keeps the old module on failure), `PurgeUnreferenced`.
+- Game-authored shaders don't go here: they are `.wgsl` assets (see "User shaders" below).
 - New shader: add the WGSL constant + `k_BuiltIns` entry, get the module via `WebGPUBackend::LookupShader(shader.GetHandle())`, and build/cache your `wgpu::RenderPipeline` per target color format (and depth), following `GetSpritePipeline`. `//` inside WGSL strings is shader source, not a C++ comment.
+
+## User shaders (`.wgsl` assets)
+
+- `Graphics/CustomShader.{hpp,cpp}`: `ParseCustomShader` (`// @name/@target/@blend/@cull/@depthWrite/@property` directives, WGSL uniform layout of the properties) and `ComposeCustomShader` (prelude + user source verbatim + entry points; `ComposedShader::ToUserLine` maps Tint lines back). Targets `Mesh3D`, `Sprite2D`, `UI` (parsed only), `PostProcess`. Group 0 belongs to the renderer, group 1 = `globals` (binding 0), property block (1), texture/sampler pairs (2 + 2·slot).
+- `Graphics/CustomShaderLibrary.hpp` (GPU-free: descriptions, diagnostics, `ValidateFile` with a headless device for `index validate`) and `CustomShaderGpu.hpp` (`CustomShaderGpu::GetProgram(guid, target)` → last compiled program or the target's magenta fallback; `CreatePipeline` inside a validation error scope; `CustomMaterialBindings` = group 1 per renderer). Pipelines are cached by `CustomShaderProgram::Id`, which changes on every recompile. Hot reload polls file stamps (editor only); `CustomShaderLibrary::Clear()` runs from the renderers' Shutdown.
+- Consumers: `Renderer3D::RenderMeshes` (`DrawItem::Custom`, `FrameCustoms`), `Renderer2D` submit loop (`Instance44::Material`, runs break on material), `PostProcessor::Run` (`PostProcessing2DComponent::CustomEffects`). `Material::Shader` / `Material::Properties`; `ResolveMaterialProperty` / `PackMaterialProperties` fill the block. User docs: `Github-Docs/Documentation/Engine-Core/Custom-Shaders.md`.
 
 ## Gizmos (`Graphics/Gizmo.hpp`, `GizmoRenderer.{hpp,cpp}`)
 

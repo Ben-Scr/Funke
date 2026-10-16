@@ -135,8 +135,17 @@ namespace Index {
 			std::vector<std::pair<std::string, bool>> ModuleEnabled;
 		} Profiler;
 
-		bool ShowRuntimeStats = true;
-		bool ShowRuntimeLogs = true;
+		// Unset follows the build profile: on for Debug/Development, off for Release.
+		std::optional<bool> ShowRuntimeStats;
+		std::optional<bool> ShowRuntimeLogs;
+		std::optional<bool> DevConsole;
+		bool ResolveShowRuntimeStats() const { return ShowRuntimeStats.value_or(ActiveBuildProfile != BuildProfile::Release); }
+		bool ResolveShowRuntimeLogs() const { return ShowRuntimeLogs.value_or(ActiveBuildProfile != BuildProfile::Release); }
+		bool ResolveDevConsole() const { return DevConsole.value_or(ActiveBuildProfile != BuildProfile::Release); }
+		// Non-empty: the game's PersistentDataPath (PlayerPrefs, SaveData) moves to <data>/Profiles/<name>,
+		// so test runs never touch the player's real saves. `--prefs-profile=<name>` overrides it.
+		std::string PrefsProfile;
+		static std::string SanitizePrefsProfileName(std::string_view name);
 		GraphicsSettings Graphics{};
 
 		// FixedUpdate frequency; bounds mirror Time::SetFixedDeltaTime's clamp.
@@ -203,9 +212,11 @@ namespace Index {
 		int FontBakeStep = 0;
 		int FontAtlasBudgetMB = 128;
 
+		// Stable values ("buildProfile" in project.json, C# Engine.BuildConfiguration maps them).
 		enum class BuildProfile : uint8_t {
 			Development = 0,
 			Release     = 1,
+			Debug       = 2, // Debug engine/runtime binaries + PDBs; needs the Visual C++ debug runtime
 		};
 		BuildProfile ActiveBuildProfile = BuildProfile::Development;
 
@@ -285,6 +296,8 @@ namespace Index {
 		bool WriteManagedDefinesProps(bool* outAddedImport = nullptr) const;
 
 		static std::string GetActiveBuildConfiguration();
+		// Native configuration a game build of this profile ships: Dist, Debug, or the editor's own one.
+		static std::string GetBuildConfigurationFor(BuildProfile profile);
 		static std::string GetActiveBuildDefineConstant();
 		static std::string GetManagedPlatformDefine();
 		// C# define for a build target (INDEX_ANDROID, INDEX_WEB, ...), independent of the editor host.
@@ -326,7 +339,11 @@ namespace Index {
 		};
 		static RegenerateResult RegenerateSolutionForProject(const std::string& projectRootDir);
 
+		// MSBuild 18+: the .NET 10 SDK rejects older MSBuild, so solution builds that include the C# projects need it.
 		static std::string GetMSBuildPath();
+		// For native-only .vcxproj builds (game runtimes): VS 2022, whose v143 headers the engine PCHs are built with.
+		// INDEX_MSBUILD overrides; falls back to GetMSBuildPath().
+		static std::string GetNativeMSBuildPath();
 
 		// IMPORTANT: builds the whole solution; locked DLLs (e.g. Index-Engine.dll already loaded) cause LNK1104. Use BuildSolutionTargets for package-only builds.
 		struct BuildResult {

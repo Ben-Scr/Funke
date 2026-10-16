@@ -73,8 +73,16 @@ namespace Index {
 
 		void SetCursorLocked(bool enabled);
 		void SetCursorHidden(bool enabled);
+		// The mode the game asked for; it reads back unchanged while suspended.
 		void SetCursorMode(int mode);
 		int GetCursorMode() const { return m_CursorMode; }
+		// Editor-only: while suspended the cursor is the editor's (visible, free, not fed to the game) and the game's mode
+		// waits; lifting the suspension applies it again.
+		void SetCursorModeSuspended(bool suspended);
+		bool IsCursorModeSuspended() const { return m_CursorModeSuspended; }
+		int GetAppliedCursorMode() const { return m_CursorModeSuspended ? 0 : m_CursorMode; }
+		// Where a locked or hidden cursor sits, in window coordinates: the centre of the game area (the Game View in the editor).
+		Vec2 GetCursorLockPoint() const;
 
 		// Hotspot = click point in source-image pixels from the top-left. No-op on touch platforms.
 		void SetUICursorImage(const Texture2D* tex2D, Vec2Int hotspot = {});
@@ -275,6 +283,7 @@ namespace Index {
 		Vec2Int GetScreenCenter() const;
 		Vec2 GetWindowCenter() const;
 		void ApplyCursor(SDL_Cursor* cursor) const;
+		void ApplyCursorMode();
 
 		void HandleEvent(const SDL_Event& event);
 		void OnFocusChanged(bool focused);
@@ -294,6 +303,7 @@ namespace Index {
 		// Runtime: always true. Editor: false except while over the Game View.
 		bool m_GameCursorEnabled = true;
 		int m_CursorMode = 0;
+		bool m_CursorModeSuspended = false;
 		uint64_t m_CursorTextureAssetId = 0;
 		// Win32 HICONs at the exact big/small system sizes; SDL would hand Windows one image to scale.
 		void* m_BigIcon = nullptr;

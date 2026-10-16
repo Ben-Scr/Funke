@@ -156,11 +156,48 @@ public class SpriteRenderer : Component
         set => InternalCalls.SpriteRenderer_SetFilter(RequireComponent<SpriteRenderer>(), (int)value);
     }
 
+    /// <summary>Material whose Sprite2D shader draws this sprite; null uses the standard sprite shader.</summary>
+    public Material? Material
+    {
+        get => Material.FromAssetUUID(InternalCalls.SpriteRenderer_GetMaterial(RequireComponent<SpriteRenderer>()));
+        set => InternalCalls.SpriteRenderer_SetMaterial(RequireComponent<SpriteRenderer>(), value?.UUID ?? 0);
+    }
+
     /// <summary>Sprite slice name from the texture's .meta. Empty = full texture. Stale names fall back to full texture with a log warning.</summary>
     public string SpriteName
     {
         get => InternalCalls.SpriteRenderer_GetSpriteName(RequireComponent<SpriteRenderer>());
         set => InternalCalls.SpriteRenderer_SetSpriteName(RequireComponent<SpriteRenderer>(), value);
+    }
+
+    /// <summary>0 stretches the sprite over the transform scale. Above 0 the sprite keeps its native size (slice pixels / this value, times the scale) and sits on the slice pivot from the texture's .meta.</summary>
+    public float PixelsPerUnit
+    {
+        get => NativeData.PixelsPerUnit;
+        set => NativeData.PixelsPerUnit = MathF.Max(0f, value);
+    }
+
+    /// <summary>Mirrors the sprite horizontally around its pivot.</summary>
+    public bool FlipX
+    {
+        get => NativeData.FlipX;
+        set => NativeData.FlipX = value;
+    }
+
+    /// <summary>Mirrors the sprite vertically around its pivot.</summary>
+    public bool FlipY
+    {
+        get => NativeData.FlipY;
+        set => NativeData.FlipY = value;
+    }
+
+    private ref Index.Native.NativeSpriteRenderer NativeData
+    {
+        get
+        {
+            RequireComponent<SpriteRenderer>();
+            return ref Entity.GetRefOrThrow<Index.Native.NativeSpriteRenderer>();
+        }
     }
 }
 

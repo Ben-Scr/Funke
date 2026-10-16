@@ -3,14 +3,15 @@
 
 #include "Assets/AssetRegistry.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
+#include "Components/Graphics/PostProcessing2DComponent.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
+#include "Graphics/Material.hpp"
 #include "Graphics/Text/FontManager.hpp"
 #include "Graphics/TextureManager.hpp"
 
 #if INDEX_WITH_2D
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
-#include "Components/Graphics/PostProcessing2DComponent.hpp"
 #include "Components/Graphics/SpriteAnimator2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Physics/PhysicsTypes.hpp"
@@ -32,27 +33,86 @@ namespace Index::BuiltInComponentRegistrationInternal {
 	}
 
 	namespace {
+		bool IsSlicedImage(const Entity& e) {
+			return e.GetComponent<ImageComponent>().Type != ImageType::Simple;
+		}
+
+		PropertyMetadata SlicedBorderMeta() {
+			return Properties::Meta::Clamp(0.0, 100000.0, 0.5f).WithEnabledIf(IsSlicedImage)
+				.WithTooltip("Texture pixels of the sprite that keep their size when the image stretches. "
+					"All four 0 = the border set on the texture or sprite slice (.meta).");
+		}
+
+		PropertyDescriptor MakeImageMaterialRef() {
+			PropertyDescriptor desc;
+			desc.Name = "Material";
+			desc.DisplayName = "Material";
+			desc.Type = PropertyType::AssetRef;
+			desc.Metadata.AssetKindFilter = AssetKind::Material;
+			desc.Metadata.Tooltip = "A .material whose shader targets UI (or Sprite2D). None draws with the standard shader. "
+				"Images batch only with images of the same material.";
+			desc.Get = [](const Entity& e) -> PropertyValue {
+				PropertyValue v;
+				v.Type = PropertyType::AssetRef;
+				v.UIntValue = e.GetComponent<ImageComponent>().Material;
+				return v;
+			};
+			desc.Set = [](Entity& e, const PropertyValue& v) {
+				// Re-read on assignment so a material created moments ago (or edited on disk) is picked up.
+				MaterialLibrary::Invalidate(v.UIntValue);
+				e.GetComponent<ImageComponent>().Material = v.UIntValue;
+			};
+			return desc;
+		}
+
+#if INDEX_WITH_2D
+		PropertyDescriptor MakeSpriteMaterialRef() {
+			PropertyDescriptor desc;
+			desc.Name = "Material";
+			desc.DisplayName = "Material";
+			desc.Type = PropertyType::AssetRef;
+			desc.Metadata.AssetKindFilter = AssetKind::Material;
+			desc.Metadata.Tooltip = "A .material whose shader targets Sprite2D. None draws with the standard sprite shader. "
+				"Sprites batch only with sprites of the same material.";
+			desc.Get = [](const Entity& e) -> PropertyValue {
+				PropertyValue v;
+				v.Type = PropertyType::AssetRef;
+				v.UIntValue = e.GetComponent<SpriteRendererComponent>().Material;
+				return v;
+			};
+			desc.Set = [](Entity& e, const PropertyValue& v) {
+				// Re-read on assignment so a material created moments ago (or edited on disk) is picked up.
+				MaterialLibrary::Invalidate(v.UIntValue);
+				e.GetComponent<SpriteRendererComponent>().Material = v.UIntValue;
+			};
+			return desc;
+		}
+#endif
+
 		template <typename T, typename HandleAccessor, typename HandleAssign>
 		PropertyDescriptor MakeTextureRefDirect(const std::string& name, const std::string& displayName,
 			HandleAccessor getHandle, HandleAssign setHandle)
 		{
 			return Properties::MakeTextureRef(name, displayName,
-				[getHandle](const Entity& e) -> uint64_t {
+				[getHandle](const Entity& e, std::string& outSlice) -> uint64_t {
 					const auto& component = e.GetComponent<T>();
+					uint64_t assetId = 0;
 					if constexpr (requires { component.GetTextureAssetId(); }) {
-						const uint64_t assetId = static_cast<uint64_t>(component.GetTextureAssetId());
-						if (assetId != 0) {
-							return assetId;
-						}
+						assetId = static_cast<uint64_t>(component.GetTextureAssetId());
 					}
 					else if constexpr (requires { component.TextureAssetId; }) {
-						const uint64_t assetId = static_cast<uint64_t>(component.TextureAssetId);
+						assetId = static_cast<uint64_t>(component.TextureAssetId);
+					}
+					if (assetId == 0) {
+						const auto handle = getHandle(component);
+						assetId = handle.IsValid() ? TextureManager::GetTextureAssetUUID(handle) : 0ull;
+					}
+					if constexpr (requires { component.SpriteName; }) {
 						if (assetId != 0) {
-							return assetId;
+							outSlice = component.SpriteName;
 						}
 					}
-					const auto handle = getHandle(component);
-					return handle.IsValid() ? TextureManager::GetTextureAssetUUID(handle) : 0ull;
+					return assetId;
 				},
 				[setHandle](Entity& e, uint64_t uuid, [[maybe_unused]] const std::string& sliceName) {
 					auto& component = e.GetComponent<T>();
@@ -125,9 +185,18 @@ namespace Index::BuiltInComponentRegistrationInternal {
 							}
 						}
 					}),
+				MakeSpriteMaterialRef(),
+				Properties::Make("PixelsPerUnit", "Pixels Per Unit", &SpriteRendererComponent::PixelsPerUnit,
+					Properties::Meta::Clamp(0.0, 100000.0, 1.0f)
+					.WithTooltip("0 stretches the sprite over the transform scale. Above 0 the sprite keeps its native size "
+						"(slice pixels / this value, times the scale) and sits on the slice pivot from the texture's .meta.")),
+				Properties::Make("FlipX", "Flip X", &SpriteRendererComponent::FlipX,
+					Properties::Meta::Tooltip("Mirrors the sprite horizontally around its pivot.")),
+				Properties::Make("FlipY", "Flip Y", &SpriteRendererComponent::FlipY,
+					Properties::Meta::Tooltip("Mirrors the sprite vertically around its pivot.")),
 			});
 
-		// NativeSpriteRenderer (C#) is the 40-byte POD prefix of
+		// NativeSpriteRenderer (C#) is the POD prefix of
 		// SpriteRendererComponent; the trailing std::string SpriteName makes
 		// the type non-trivially-destructible, so the auto byte-emplacer is
 		// skipped. Register a prefix-aware one so ECB AddComponent of the
@@ -181,6 +250,17 @@ namespace Index::BuiltInComponentRegistrationInternal {
 							tex->SetFilter(v);
 						}
 					}),
+				Properties::Make("Type", "Image Type", &ImageComponent::Type,
+					Properties::Meta::Tooltip("Sliced keeps the borders below at their size while the middle stretches (9-slice), "
+						"for rounded buttons and panels of any size. Tiled keeps the borders too but repeats the edges and the middle.")),
+				Properties::Make("BorderLeft", "Border Left", &ImageComponent::BorderLeft, SlicedBorderMeta()),
+				Properties::Make("BorderRight", "Border Right", &ImageComponent::BorderRight, SlicedBorderMeta()),
+				Properties::Make("BorderTop", "Border Top", &ImageComponent::BorderTop, SlicedBorderMeta()),
+				Properties::Make("BorderBottom", "Border Bottom", &ImageComponent::BorderBottom, SlicedBorderMeta()),
+				Properties::Make("BorderScale", "Border Scale", &ImageComponent::BorderScale,
+					Properties::Meta::Clamp(0.0, 100.0, 0.01f).WithEnabledIf(IsSlicedImage)
+						.WithTooltip("UI units per texture pixel of the borders (2 = twice as thick); for Tiled also the tile size.")),
+				MakeImageMaterialRef(),
 			});
 
 		// Same trailing-std::string layout as SpriteRenderer: register a prefix emplacer so UI
@@ -434,7 +514,10 @@ namespace Index::BuiltInComponentRegistrationInternal {
 					};
 				}
 			});
+		}
+#endif
 
+		// No module scope: Post Processing applies to Camera2D and Camera3D.
 		{
 			using PP = PostProcessing2DComponent;
 
@@ -649,6 +732,31 @@ namespace Index::BuiltInComponentRegistrationInternal {
 				[](Entity& e, float v) { e.GetComponent<PP>().GaussianBlur.Radius = v; },
 				PropertyMetadata{ gbEnabled }.WithClamp(0.0, 1.0).WithDragSpeed(0.005f)));
 
+			// Custom effects
+			for (size_t slot = 0; slot < PP{}.CustomEffects.size(); ++slot) {
+				PropertyDescriptor effect;
+				effect.Name = "Custom_" + std::to_string(slot);
+				effect.DisplayName = "Effect " + std::to_string(slot + 1);
+				effect.Type = PropertyType::AssetRef;
+				effect.Metadata.AssetKindFilter = AssetKind::Material;
+				effect.Metadata.Tooltip = "A .material whose shader targets PostProcess. Effects run in this order, after the built-in ones.";
+				if (slot == 0) {
+					effect.Metadata.HeaderContent = "Custom Effects";
+					effect.Metadata.HeaderSize = 5;
+				}
+				effect.Get = [slot](const Entity& e) -> PropertyValue {
+					PropertyValue v;
+					v.Type = PropertyType::AssetRef;
+					v.UIntValue = e.GetComponent<PP>().CustomEffects[slot];
+					return v;
+				};
+				effect.Set = [slot](Entity& e, const PropertyValue& v) {
+					MaterialLibrary::Invalidate(v.UIntValue);
+					e.GetComponent<PP>().CustomEffects[slot] = v.UIntValue;
+				};
+				ppProps.push_back(std::move(effect));
+			}
+
 			ComponentInfo ppInfo{ "Post Processing", "Rendering", ComponentCategory::Component };
 			ppInfo.serializedName = "PostProcessing2D";
 			ppInfo.properties = std::move(ppProps);
@@ -719,6 +827,13 @@ namespace Index::BuiltInComponentRegistrationInternal {
 				gb.AddMember("taps",    Json::Value(p.GaussianBlur.Taps));
 				v.AddMember("gaussianBlur", std::move(gb));
 
+				// Only when used, so prefabs saved before custom effects existed don't diff against every instance.
+				if (p.HasCustomEffect()) {
+					Json::Value custom = Json::Value::MakeArray();
+					for (uint64_t material : p.CustomEffects) custom.Append(Json::Value(std::to_string(material)));
+					v.AddMember("customEffects", std::move(custom));
+				}
+
 				return v;
 			};
 
@@ -734,7 +849,8 @@ namespace Index::BuiltInComponentRegistrationInternal {
 					&& !v.FindMember("bloom")
 					&& !v.FindMember("lensDistortion")
 					&& !v.FindMember("pixelated")
-					&& !v.FindMember("gaussianBlur");
+					&& !v.FindMember("gaussianBlur")
+					&& !v.FindMember("customEffects");
 				if (isEmptyReset) {
 					p = PP{};
 					return;
@@ -815,12 +931,18 @@ namespace Index::BuiltInComponentRegistrationInternal {
 						p.GaussianBlur.Taps = (q == 0) ? 11 : (q == 2) ? 33 : 21;
 					}
 				}
+
+				p.CustomEffects = {};
+				if (const Json::Value* custom = v.FindMember("customEffects"); custom && custom->IsArray()) {
+					const auto& items = custom->GetArray();
+					for (size_t i = 0; i < items.size() && i < p.CustomEffects.size(); ++i) {
+						p.CustomEffects[i] = items[i].IsNumber() ? items[i].AsUInt64Or(0) : std::strtoull(items[i].AsStringOr().c_str(), nullptr, 10);
+					}
+				}
 			};
 
 			registry.Register<PostProcessing2DComponent>(ppInfo);
 		}
-		}
-#endif
 
 		RegisterComponent<TextRendererComponent>(registry, "Text Renderer",
 			ComponentCategory::Component, "UI", "TextRenderer",

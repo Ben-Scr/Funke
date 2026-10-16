@@ -112,7 +112,7 @@ void Destroy();  void Destroy(float delay);
 `GetComponent<T>()` returns a managed wrapper; set its properties to mutate the entity. The common ones (key members):
 
 - **`Transform2D`** — `Position` (world `Vector2`), `Rotation` (deg, world), `Scale`, `LocalRotation`, `LocalScale`, direction vectors `Up/Down/Right/Left`. `LocalTransform` is local position.
-- **`SpriteRenderer`** — `Texture`, `Color` (`Vector4` RGBA), `SortingOrder`, `SortingLayer`, `FilterMode`, `SpriteName` (slice from the texture's `.meta`; empty = whole texture).
+- **`SpriteRenderer`** — `Texture`, `Color` (`Vector4` RGBA), `SortingOrder`, `SortingLayer`, `FilterMode`, `SpriteName` (slice from the texture's `.meta`; empty = whole texture), `PixelsPerUnit` (0 = fill the transform scale; > 0 = native size on the slice pivot), `FlipX`/`FlipY`.
 - **`TextRenderer`** — `Text`, `Font?`, `FontSize`, `Color`, `LetterSpacing`, `Alignment` (`TextAlignment.Left/Center/Right`), `WrapMode`, sorting.
 - **`Camera2D`** — `OrthographicSize`, `Zoom`, `ClearColor`, `Frustum` (`AABB`), `ScreenToWorld(Vector2)`, `WorldToScreen(Vector2)`, `static Camera2D? Main`.
 - **`Rigidbody2D`** — `LinearVelocity`, `AngularVelocity`, `BodyType` (`Static/Kinematic/Dynamic`), `GravityScale`, `Mass`, `Constraints` (`RigidbodyConstraints2D` flags), `ApplyForce(Vector2, bool wake=true)`, `ApplyImpulse(Vector2, bool wake=true)`.
@@ -135,6 +135,9 @@ bool GetKey(KeyCode);     bool GetKeyDown(KeyCode);  bool GetKeyUp(KeyCode);    
 bool GetMouseButton(MouseButton); GetMouseButtonDown(..); GetMouseButtonUp(..); // Left/Right/Middle/Button4..8
 bool GetAnyKey();
 // events: KeyDown, KeyUp, EnterChar, MouseDown, MouseUp, MouseScroll, MouseMove
+Vector3 Acceleration { get; }  // g, toward gravity, screen axes (+X right, +Y up, +Z out): (0,-1,0) upright; zero without sensor
+Vector3 Gyroscope { get; }     // rad/s, CCW positive, same axes
+bool IsAccelerometerAvailable { get; }  bool IsGyroscopeAvailable { get; }  // first read switches the sensors on
 ```
 `KeyCode` is a stable, platform-independent enum (`W`, `A`, `Space`, `Escape`, `Enter`, `Left/Right/Up/Down`, `F1`..`F12`, `KP0`..`KP9`, `LeftShift`, …).
 
@@ -178,6 +181,24 @@ Three paths:
 - **Fire-and-forget:** `Audio sfx = Audio.FromAssetUUID(guid); sfx.PlayOneShot(volume = 1f);` — or expose a `public Audio? Sfx;` field and assign it in the Inspector.
 - **Background audio:** `Audio.PlayInBackground = true` keeps audio playing and scripts updating (~10 Hz, no rendering) while minimized/backgrounded — on while playing, off when paused. Android needs build profile option `"backgroundAudio": "true"` (foreground media service + notification; request `android.permission.POST_NOTIFICATIONS` on 13+).
 - **Any file on disk (music players, user files):** `AudioStream? s = AudioStream.Open(path);` streams MP3/WAV/FLAC from disk — `Play/Pause/Stop`, `Time` (get = position, set = seek), `Length`, `IsPlaying`, `IsAtEnd`, `Volume`, `Loop`. `Dispose()` it in `OnDestroy`; leaving Play mode closes every stream. On Android, reading shared storage first needs `Application.RequestPermission("android.permission.READ_MEDIA_AUDIO")` (poll `GetPermissionState`) plus the Android build profile option `"platformOptions": {"permissions": "READ_MEDIA_AUDIO, READ_EXTERNAL_STORAGE:32"}`.
+
+## Animation (`Index.Animator`)
+
+Keyframe animation lives in assets, not code: `.anim` clips animate any Inspector property of the entity and its children (and visible script fields); an `.animctrl` controller switches clips with parameters. Author them in JSON (`index-build-game/references/scene-json.md`, *Animation*) or in the editor's Animation / Animator windows. Scripts only drive parameters:
+```csharp
+private Animator? m_Animator;
+public override void OnStart() => m_Animator = GetComponent<Animator>();
+public override void OnUpdate()
+{
+    m_Animator!.SetBool("IsRunning", Input.GetAxis().X != 0f);   // SetFloat / SetInteger / SetBool by name
+    if (Input.GetKeyDown(KeyCode.Space)) m_Animator.SetTrigger("Jump"); // consumed by the transition that uses it
+}
+public void OnFootstep(string foot) { }   // called by an animation event named "OnFootstep" (public, 0 or 1 param)
+```
+- `Play(state, normalizedTime = 0)` jumps, `CrossFade(state, seconds)` blends; `CurrentStateName`, `NextStateName`, `NormalizedTime`, `IsInTransition`, `TransitionProgress`, `Speed`.
+- `Controller` / `Clip` take `AnimatorController` / `AnimationClip` assets; `public AnimatorController? Skin;` fields are Inspector asset slots.
+- Unknown parameter or state names log one warning and do nothing. The Animator runs after scripts each frame, so values set in `OnUpdate` apply the same frame; don't also move an animated property from a script (the Animator overwrites it).
+- Prefer a clip over a coroutine for authored motion (bobbing pickups, door swings, UI pop-ins, flashing colors); keep scripts for gameplay-driven motion.
 
 ## Coroutines (`Index.Coroutines`)
 
@@ -246,6 +267,7 @@ A scene name must be in the project's `buildScenes` to be loadable at runtime (s
 ## Other useful statics
 
 - **`Log`** — `Log.Info/Warn/Error/Trace(string|object)`; output goes to the Console. `Print(x)` on a script == `Log.Print(x)`.
+- **`Localization`** — the game's strings from `Assets/Localization/<code>.json` (`meta` + flat `strings`): `Get(key)`, `Format(key, args)` (.NET `{0}`/`{0:N1}`, language culture), `Has`, `CurrentLanguage`, `FallbackLanguage`, `SystemLanguage`, `AvailableLanguages` (`LanguageInfo(Code, DisplayName)`), `SetLanguage(code)` (stored in PlayerPrefs `Index.Language`, restored next start), event `LanguageChanged`. Static labels: put a `LocalizedText` component (`Key`) next to the `TextRenderer` instead of code. Fonts render ASCII + Latin-1 only.
 - **`Window`** — `Width/Height`, `Size`, `Title`, `IsFullScreen`, `Position`, `Minimize/Maximize/Restore/Focus()`, events `OnResize`, `FocusChanged`.
 - **`Cursor`** — `Mode` (`Default`/`Locked`), `Visible`, `Texture`.
 - **`Gizmo`** (debug draw; visible in editor) — `DrawLine`, `DrawWireSquare`, `DrawWireCircle`, `DrawSquare`, `DrawCircle`, `DrawText`; `Color`, `LineWidth`.
@@ -275,7 +297,7 @@ For measured hot paths, inherit `Index::NativeScript` in `NativeScripts/Source/*
 - **Fields typed as another script are not serialized.** `public PlayerMotor? Player;` maps to "unsupported" (`ScriptInstanceManager.MapFieldType`) and is `null` at runtime no matter what the scene says. Serialize the `Entity` (or a built-in component) and look the script up lazily: `PlayerMotor? Motor => m_Motor ??= PlayerEntity?.GetComponent<PlayerMotor>();`, or give a one-per-scene script a static `Instance` set in `OnAwake` and cleared in `OnDestroy`.
 - **Don't rely on scripts of an entity you just instantiated or enabled in the same frame.** Look them up lazily on use instead of caching in the spawner's same-frame code, and expect their `OnStart` to run on a later frame.
 - **There is no `OnLateUpdate`, and script update order is not guaranteed.** A camera that reads the player's position in its own `OnUpdate` can run before or after the player and then lags a frame, which shows as jitter. Have the leader raise an event after it moves (`public static event Action? Moved;` invoked at the end of its `OnUpdate`) and do the follow work in the handler.
-- **Negative sprite scale with zero rotation is culled.** Its view-culling AABB comes out inverted (`Renderer2D.cpp`, `CreateQuadAABB`), so a mirrored sprite (`Scale.Y = -1`) can vanish. Mirror the texture instead (flip the PNG), or give the sprite a 180° rotation where the art allows it.
+- **Mirror sprites with `FlipX`/`FlipY`**, not a negative scale: flipping keeps the pivot and the sorting bounds. (Engines before 2026-10-16 also culled negative-scale sprites without rotation.)
 
 ## Recipe: fixed-step game physics with smooth rendering
 

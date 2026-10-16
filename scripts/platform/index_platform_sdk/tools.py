@@ -69,7 +69,12 @@ def run(cmd: list[str | os.PathLike], cwd: Path | None = None, env: Mapping[str,
 
 
 def _write(text: str) -> None:
-    sys.stderr.write(text)
+    try:
+        sys.stderr.write(text)
+    except UnicodeEncodeError:
+        # A tool's non-ASCII output must not end the build on a console that cannot show it.
+        encoding = sys.stderr.encoding or "ascii"
+        sys.stderr.write(text.encode(encoding, "replace").decode(encoding))
     if _log_file:
         _log_file.write(text)
         _log_file.flush()

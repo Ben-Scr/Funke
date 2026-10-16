@@ -66,6 +66,12 @@ TEST_CASE("Prefab instantiation remaps a child-to-child entity ref to the instan
 		target.AddMember("value", Value(std::string(k_ChildBUuid)));  // points at the sibling
 		fields.Append(std::move(target));
 
+		Value targetTransform = Value::MakeObject();
+		targetTransform.AddMember("name", Value(std::string("TargetTransform")));
+		targetTransform.AddMember("type", Value(std::string("component:Transform2D")));
+		targetTransform.AddMember("value", Value(std::string(k_ChildBUuid) + ":Transform 2D"));
+		fields.Append(std::move(targetTransform));
+
 		Value fieldsByClass = Value::MakeObject();
 		fieldsByClass.AddMember("TestScript", std::move(fields));
 		childA.AddMember("ScriptFields", std::move(fieldsByClass));
@@ -123,6 +129,11 @@ TEST_CASE("Prefab instantiation remaps a child-to-child entity ref to the instan
 	// THIS instance's ChildB, i.e. its fresh persistent id — not the un-remapped template id.
 	CHECK(fieldIt->second == std::to_string(childBId));
 	CHECK(fieldIt->second != std::string(k_ChildBUuid));
+
+	// Component refs ("<id>:<Component>") are remapped the same way; the component name is kept.
+	const auto componentIt = scriptComponent.PendingFieldValues.find("TestScript.TargetTransform");
+	REQUIRE(componentIt != scriptComponent.PendingFieldValues.end());
+	CHECK(componentIt->second == std::to_string(childBId) + ":Transform 2D");
 
 	std::error_code removeError;
 	std::filesystem::remove(filePath, removeError);

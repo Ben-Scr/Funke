@@ -33,6 +33,7 @@
 #include "Graphics/RenderApi.hpp"
 #include "Graphics/RenderSettings.hpp"
 #include "Core/Version.hpp"
+#include "DevTools/DevConsole.hpp"
 
 #include <algorithm>
 
@@ -362,6 +363,61 @@ namespace Index {
 		return CopyToManagedBuffer(project ? std::string_view(project->BuildCompany) : std::string_view{}, outBuffer, capacity);
 	}
 
+	// Application.PrefsProfile → project.json "prefsProfile", overridden by the runtime's --prefs-profile.
+	static int Index_Application_GetPrefsProfileBuffer(char* outBuffer, int capacity)
+	{
+		const IndexProject* project = ProjectManager::GetCurrentProject();
+		return CopyToManagedBuffer(project ? std::string_view(project->PrefsProfile) : std::string_view{}, outBuffer, capacity);
+	}
+
+	// No size-retry protocol here: a second call would run the command again, so the output is truncated instead.
+	static int Index_DevConsole_Execute(const char* line, char* outBuffer, int capacity)
+	{
+		const DevCommandResult result = DevConsole::Execute(line ? std::string_view(line) : std::string_view{});
+		if (!outBuffer || capacity <= 0) return 0;
+		const int bytes = static_cast<int>(std::min(result.Output.size(), static_cast<size_t>(capacity - 1)));
+		if (bytes > 0) std::memcpy(outBuffer, result.Output.data(), static_cast<size_t>(bytes));
+		outBuffer[bytes] = '\0';
+		return bytes + 1;
+	}
+
+	static int Index_DevConsole_GetState()
+	{
+		return (DevConsole::IsEnabled() ? 1 : 0) | (DevConsole::IsOpen() ? 2 : 0);
+	}
+
+	// Answers are stashed instead of using the size-retry protocol: asking again would call Java twice.
+	static thread_local std::string t_JavaAnswer;
+
+	static int StashJavaAnswer(std::string answer)
+	{
+		t_JavaAnswer = std::move(answer);
+		return static_cast<int>(std::min(t_JavaAnswer.size(), static_cast<size_t>(std::numeric_limits<int>::max())));
+	}
+
+	static int Index_Java_Call(const char* className, const char* method, const char* argument)
+	{
+		std::string answer;
+		if (!Platform::CallJava(className ? className : "", method ? method : "", argument ? argument : "", answer)) return -1;
+		return StashJavaAnswer(std::move(answer));
+	}
+
+	static int Index_Java_PollMessage()
+	{
+		std::string channel, message;
+		if (!Platform::PollJavaMessage(channel, message)) return -1;
+		channel.push_back('\0');
+		return StashJavaAnswer(channel + message);
+	}
+
+	static int Index_Java_ReadResult(char* outBuffer, int capacity)
+	{
+		if (!outBuffer || capacity <= 0) return 0;
+		const int bytes = static_cast<int>(std::min(t_JavaAnswer.size(), static_cast<size_t>(capacity)));
+		if (bytes > 0) std::memcpy(outBuffer, t_JavaAnswer.data(), static_cast<size_t>(bytes));
+		return bytes;
+	}
+
 
 	static int Index_Window_GetWidth()
 	{
@@ -536,9 +592,11 @@ namespace Index {
 
 	static int Index_Engine_GetBuildConfiguration()
 	{
+		// Values of C# BuildConfiguration: Editor 0, Development 1, Release 2, Debug 3.
 		if (Application::IsEditor()) return 0;
 		auto* project = ProjectManager::GetCurrentProject();
 		if (project && project->ActiveBuildProfile == IndexProject::BuildProfile::Release) return 2;
+		if (project && project->ActiveBuildProfile == IndexProject::BuildProfile::Debug) return 3;
 		return 1;
 	}
 
@@ -681,6 +739,37 @@ namespace Index {
 	static float Index_Input_GetGamepadAxis(int axis, int gamepadIndex) {
 		return CanReadScriptInput() ? Input::GetGamepadAxis(static_cast<GamepadAxis>(axis), gamepadIndex) : 0.0f;
 	}
+	static void Index_Input_GetAcceleration(float* outX, float* outY, float* outZ) {
+		const Vec3 v = CanReadScriptInput() ? Input::GetAcceleration() : Vec3{ 0.0f };
+		*outX = v.x; *outY = v.y; *outZ = v.z;
+	}
+	static void Index_Input_GetGyroscope(float* outX, float* outY, float* outZ) {
+		const Vec3 v = CanReadScriptInput() ? Input::GetGyroscope() : Vec3{ 0.0f };
+		*outX = v.x; *outY = v.y; *outZ = v.z;
+	}
+	static int Index_Input_IsMotionSensorAvailable(int sensor) {
+		switch (sensor) {
+			case 0:  return Input::IsAccelerometerAvailable() ? 1 : 0;
+			case 1:  return Input::IsGyroscopeAvailable() ? 1 : 0;
+			default: return 0;
+		}
+	}
+	static int Index_Input_GetTouchCount() {
+		return CanReadScriptInput() ? Input::GetTouchCount() : 0;
+	}
+	static int Index_Input_GetTouch(int index, int64_t* outId, int* outPhase, float* outValues) {
+		Touch touch;
+		if (!CanReadScriptInput() || !Input::GetTouch(index, touch)) return 0;
+		if (outId) *outId = touch.Id;
+		if (outPhase) *outPhase = static_cast<int>(touch.Phase);
+		if (outValues) {
+			outValues[0] = touch.Position.x;
+			outValues[1] = touch.Position.y;
+			outValues[2] = touch.StartPosition.x;
+			outValues[3] = touch.StartPosition.y;
+		}
+		return 1;
+	}
 
 	// ── Entity Bindings ─────────────────────────────────────────────────
 
@@ -784,6 +873,12 @@ namespace Index {
 		b.Application_GetDataPathBuffer = IDX_GUARDED_BINDING(Index_Application_GetDataPathBuffer);
 		b.Application_GetRunInBackground = IDX_GUARDED_BINDING(Index_Application_GetRunInBackground);
 		b.Application_SetRunInBackground = IDX_GUARDED_BINDING(Index_Application_SetRunInBackground);
+		b.Application_GetPrefsProfileBuffer = IDX_GUARDED_BINDING(Index_Application_GetPrefsProfileBuffer);
+		b.DevConsole_Execute = IDX_GUARDED_BINDING(Index_DevConsole_Execute);
+		b.DevConsole_GetState = IDX_GUARDED_BINDING(Index_DevConsole_GetState);
+		b.Java_Call = IDX_GUARDED_BINDING(Index_Java_Call);
+		b.Java_PollMessage = IDX_GUARDED_BINDING(Index_Java_PollMessage);
+		b.Java_ReadResult = IDX_GUARDED_BINDING(Index_Java_ReadResult);
 
 		b.Window_GetWidth = IDX_GUARDED_BINDING(Index_Window_GetWidth);
 		b.Window_GetHeight = IDX_GUARDED_BINDING(Index_Window_GetHeight);
@@ -837,6 +932,11 @@ namespace Index {
 		b.Input_GetGamepadButtonDown = IDX_GUARDED_BINDING(Index_Input_GetGamepadButtonDown);
 		b.Input_GetGamepadButtonUp = IDX_GUARDED_BINDING(Index_Input_GetGamepadButtonUp);
 		b.Input_GetGamepadAxis = IDX_GUARDED_BINDING(Index_Input_GetGamepadAxis);
+		b.Input_GetAcceleration = IDX_GUARDED_BINDING(Index_Input_GetAcceleration);
+		b.Input_GetGyroscope = IDX_GUARDED_BINDING(Index_Input_GetGyroscope);
+		b.Input_IsMotionSensorAvailable = IDX_GUARDED_BINDING(Index_Input_IsMotionSensorAvailable);
+		b.Input_GetTouchCount = IDX_GUARDED_BINDING(Index_Input_GetTouchCount);
+		b.Input_GetTouch = IDX_GUARDED_BINDING(Index_Input_GetTouch);
 
 		b.Entity_IsValid = IDX_GUARDED_BINDING(Index_Entity_IsValid);
 		b.Entity_FindByName = IDX_GUARDED_BINDING(Index_Entity_FindByName);

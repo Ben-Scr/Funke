@@ -875,7 +875,7 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, byte*, void>         SpriteRenderer_SetSpriteName;
 
     // ── Dynamic component registration (appended for binary compat) ──
-    // Called per [NativeComponent(..., Generate=true)] struct at assembly load; no codegen needed. Returns assigned typeId (0 on failure). Category: 0=Component, 1=Tag.
+    // Called per IComponent struct at assembly load; no codegen needed. Returns assigned typeId (0 on failure). Category: 0=Component, 1=Tag.
     public delegate* unmanaged<byte*, byte*, byte*, uint, uint, uint, uint> Component_RegisterDynamic;
     public delegate* unmanaged<void> Component_UnregisterAllDynamic;
 
@@ -1102,6 +1102,101 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, float*, float*, float*, int, uint*, int, int> Mesh_SetData;
     public delegate* unmanaged<ulong, int> Mesh_DestroyRuntime;
     public delegate* unmanaged<ulong, int> Mesh_IsRuntime;
+
+    // ── Motion sensors (appended for binary compat) ──
+    public delegate* unmanaged<float*, float*, float*, void> Input_GetAcceleration;
+    public delegate* unmanaged<float*, float*, float*, void> Input_GetGyroscope;
+    public delegate* unmanaged<int, int> Input_IsMotionSensorAvailable;
+
+    // ── Material shader properties (appended for binary compat) ──
+    public delegate* unmanaged<ulong, ulong> Material_GetShader;
+    public delegate* unmanaged<ulong, ulong, void> Material_SetShader;
+    public delegate* unmanaged<ulong, byte*, float*, ulong*, int> Material_GetProperty;
+    public delegate* unmanaged<ulong, byte*, int, float*, ulong, int> Material_SetProperty;
+    public delegate* unmanaged<ulong, ulong> SpriteRenderer_GetMaterial;
+    public delegate* unmanaged<ulong, ulong, void> SpriteRenderer_SetMaterial;
+
+    // ── Camera3D skybox material (appended for binary compat) ──
+    public delegate* unmanaged<ulong, ulong> Camera3D_GetSkyboxMaterial;
+    public delegate* unmanaged<ulong, ulong, void> Camera3D_SetSkyboxMaterial;
+
+    // ── Image 9-slice (appended for binary compat) ──
+    public delegate* unmanaged<ulong, float*, int, void> Image_GetSlicing;
+    public delegate* unmanaged<ulong, float*, int, void> Image_SetSlicing;
+
+    // ── Touch (appended for binary compat) ──
+    public delegate* unmanaged<int> Input_GetTouchCount;
+    public delegate* unmanaged<int, long*, int*, float*, int> Input_GetTouch;
+
+    // ── Image material (appended for binary compat) ──
+    public delegate* unmanaged<ulong, ulong> Image_GetMaterial;
+    public delegate* unmanaged<ulong, ulong, void> Image_SetMaterial;
+
+    // ── Editor windows from C# (appended for binary compat) ──
+    public delegate* unmanaged<byte*, int, void> EditorGUI_Text;
+    public delegate* unmanaged<byte*, float, float, int> EditorGUI_Button;
+    public delegate* unmanaged<byte*, int, int> EditorGUI_Toggle;
+    public delegate* unmanaged<byte*, float, float, float, byte*, float> EditorGUI_Slider;
+    public delegate* unmanaged<byte*, float, float, float, float, float, byte*, float> EditorGUI_VerticalSlider;
+    public delegate* unmanaged<byte*, float, float, float> EditorGUI_FloatField;
+    public delegate* unmanaged<byte*, byte*, int, int> EditorGUI_TextField;
+    public delegate* unmanaged<float, float, float, byte*, void> EditorGUI_ProgressBar;
+    public delegate* unmanaged<int, float, void> EditorGUI_Layout;
+    public delegate* unmanaged<byte*, void> EditorGUI_PushId;
+    public delegate* unmanaged<int, float> EditorGUI_Query;
+
+    // ── Animator (appended for binary compat) ──
+    public delegate* unmanaged<ulong, byte*, int, float, int> Animator_SetParameter;
+    public delegate* unmanaged<ulong, byte*, int, float> Animator_GetParameter;
+    public delegate* unmanaged<ulong, byte*, int> Animator_HasParameter;
+    public delegate* unmanaged<ulong, byte*, float, float, int> Animator_Play;
+    public delegate* unmanaged<ulong, int, byte*, int, int> Animator_GetStateBuffer;
+    public delegate* unmanaged<ulong, float*, int, void> Animator_GetPlayback;
+    public delegate* unmanaged<ulong, int, ulong> Animator_GetAsset;
+    public delegate* unmanaged<ulong, int, ulong, void> Animator_SetAsset;
+    public delegate* unmanaged<ulong, float> Animator_GetSpeed;
+    public delegate* unmanaged<ulong, float, void> Animator_SetSpeed;
+
+    // ── Camera3D screen <-> world (appended for binary compat) ──
+    public delegate* unmanaged<ulong, float, float, float*, int, int> Camera3D_ScreenPointToRay;
+    public delegate* unmanaged<ulong, float, float, float, float*, int, int> Camera3D_WorldToScreenPoint;
+
+    // ── Dev tools (appended for binary compat) ──
+    public delegate* unmanaged<byte*, int, int> Application_GetPrefsProfileBuffer;
+    public delegate* unmanaged<byte*, byte*, int, int> DevConsole_Execute;
+    public delegate* unmanaged<int> DevConsole_GetState;
+
+    // ── Java bridge (appended for binary compat) ──
+    public delegate* unmanaged<byte*, byte*, byte*, int> Java_Call;
+    public delegate* unmanaged<int> Java_PollMessage;
+    public delegate* unmanaged<byte*, int, int> Java_ReadResult;
+
+    // ── SkinnedMeshRenderer (appended for binary compat) ──
+    public delegate* unmanaged<ulong, float*, int, void> SkinnedMeshRenderer_Get;
+    public delegate* unmanaged<ulong, float*, int, void> SkinnedMeshRenderer_Set;
+    public delegate* unmanaged<ulong, int, ulong> SkinnedMeshRenderer_GetAsset;
+    public delegate* unmanaged<ulong, int, ulong, void> SkinnedMeshRenderer_SetAsset;
+    public delegate* unmanaged<ulong, byte*, float, void> SkinnedMeshRenderer_Play;
+    public delegate* unmanaged<ulong, int, void> SkinnedMeshRenderer_Control;
+    public delegate* unmanaged<ulong, byte*, int, int> SkinnedMeshRenderer_GetClip;
+    public delegate* unmanaged<ulong, int> SkinnedMeshRenderer_GetClipCount;
+    public delegate* unmanaged<ulong, int, byte*, int, int> SkinnedMeshRenderer_GetClipName;
+    public delegate* unmanaged<ulong, int, float> SkinnedMeshRenderer_GetClipDuration;
+    public delegate* unmanaged<ulong, byte*, float*, int, int> SkinnedMeshRenderer_GetBone;
+
+    // ── Game localization (appended for binary compat) ──
+    public delegate* unmanaged<byte*, byte*, int, int> Localization_GetBuffer;
+    public delegate* unmanaged<byte*, int> Localization_HasKey;
+    public delegate* unmanaged<int, byte*, int, int> Localization_GetLanguageBuffer;
+    public delegate* unmanaged<byte*, int> Localization_SetLanguage;
+    public delegate* unmanaged<byte*, int, int> Localization_GetLanguagesBuffer;
+    public delegate* unmanaged<uint> Localization_GetRevision;
+    public delegate* unmanaged<ulong, byte*, int, int> LocalizedText_GetKeyBuffer;
+    public delegate* unmanaged<ulong, byte*, void> LocalizedText_SetKey;
+
+    // ── Image slice (appended for binary compat) ──
+    public delegate* unmanaged<ulong, byte*, int, int> Image_GetSpriteNameBuffer;
+    public delegate* unmanaged<ulong, byte*, void> Image_SetSpriteName;
 }
 
 internal static unsafe class NativeCallbacks

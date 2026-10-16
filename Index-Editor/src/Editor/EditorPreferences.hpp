@@ -23,6 +23,28 @@ namespace Index {
 		Detailed,
 	};
 
+	// Editor View toolbar elements the View Settings menu can hide.
+	enum class EditorViewToolbarItem : uint8_t {
+		GizmoModes = 0, // the whole left pill
+		ViewMode3D,
+		DrawMode,
+		Gizmos,
+		PostProcessing,
+		GridSnap,
+		OptionsPill,    // the whole right pill; its View Settings button stays
+		Count,
+	};
+
+	// Game View toolbar elements its settings menu can hide.
+	enum class GameViewToolbarItem : uint8_t {
+		Aspect = 0,
+		VSync,
+		Stats,
+		Logs,
+		Toolbar,        // the whole bar; Edit > View and the command palette stay
+		Count,
+	};
+
 	class EditorPreferences {
 	public:
 		// Call once during editor OnAttach BEFORE ApplyTheme(). Idempotent.
@@ -164,6 +186,19 @@ namespace Index {
 		static float GetAlignmentSnapThreshold();
 		// Clamped to >= k_MinAlignmentSnapThreshold.
 		static void  SetAlignmentSnapThreshold(float value);
+
+		// ── Editor View toolbar ───────────────────────────────────
+		// Hidden elements stay reachable through the command palette.
+		static bool IsEditorViewToolbarItemVisible(EditorViewToolbarItem item);
+		static void SetEditorViewToolbarItemVisible(EditorViewToolbarItem item, bool visible);
+		static bool IsEditorViewToolbarDefault();
+		static void ResetEditorViewToolbar();
+
+		// ── Game View toolbar ─────────────────────────────────────
+		static bool IsGameViewToolbarItemVisible(GameViewToolbarItem item);
+		static void SetGameViewToolbarItemVisible(GameViewToolbarItem item, bool visible);
+		static bool IsGameViewToolbarDefault();
+		static void ResetGameViewToolbar();
 	};
 
 }

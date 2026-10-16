@@ -7,6 +7,7 @@
 #include "Components/General/PrefabInstanceComponent.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/General/Transform2DComponent.hpp"
+#include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Tags.hpp"
@@ -20,6 +21,7 @@
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/SceneSerializerShared.hpp"
 #include "Systems/TransformHierarchySystem.hpp"
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <chrono>
 #include <algorithm>
@@ -674,6 +676,61 @@ TEST_CASE("Blanket transform dirty marks propagate in scenes without hierarchy")
 
 	CHECK(transform.Position.x == doctest::Approx(5.0f));
 	CHECK(transform.Position.y == doctest::Approx(-3.0f));
+}
+
+TEST_CASE("Dirty transforms propagate only their own subtrees")
+{
+	auto scene = Scene::CreateDetachedScene("Dirty Subtree Scene");
+	Entity parent = scene->CreateEntity("Parent");
+	Entity child = scene->CreateEntity("Child");
+	Entity grandchild = scene->CreateEntity("Grandchild");
+	Entity bystander = scene->CreateEntity("Bystander");
+	child.SetParent(parent);
+	grandchild.SetParent(child);
+	child.GetComponent<Transform2DComponent>().SetPosition({ 1.0f, 0.0f });
+	grandchild.GetComponent<Transform2DComponent>().SetPosition({ 0.0f, 1.0f });
+	TransformHierarchySystem::Propagate(*scene);
+
+	// Written without a dirty mark: a dirty-only pass must leave it alone.
+	auto& bystanderTransform = bystander.GetComponent<Transform2DComponent>();
+	bystanderTransform.LocalPosition = { 9.0f, 9.0f };
+
+	parent.GetComponent<Transform2DComponent>().SetPosition({ 10.0f, 20.0f });
+	TransformHierarchySystem::Propagate(*scene);
+
+	const auto& childTransform = child.GetComponent<Transform2DComponent>();
+	const auto& grandchildTransform = grandchild.GetComponent<Transform2DComponent>();
+	CHECK(childTransform.Position.x == doctest::Approx(11.0f));
+	CHECK(childTransform.Position.y == doctest::Approx(20.0f));
+	CHECK(grandchildTransform.Position.x == doctest::Approx(11.0f));
+	CHECK(grandchildTransform.Position.y == doctest::Approx(21.0f));
+	CHECK(bystanderTransform.Position.x == doctest::Approx(0.0f));
+
+	// A dirty mid-level node re-derives from its clean parent's world transform.
+	child.GetComponent<Transform2DComponent>().SetPosition({ 2.0f, 0.0f });
+	TransformHierarchySystem::Propagate(*scene);
+	CHECK(childTransform.Position.x == doctest::Approx(12.0f));
+	CHECK(grandchildTransform.Position.x == doctest::Approx(12.0f));
+	CHECK(grandchildTransform.Position.y == doctest::Approx(21.0f));
+}
+
+TEST_CASE("Transform3D cached local matrix tracks field writes")
+{
+	Transform3DComponent transform;
+	transform.Position = { 1.0f, 2.0f, 3.0f };
+	transform.Rotation = { 10.0f, 20.0f, 30.0f };
+	transform.Scale = { 2.0f, 3.0f, 4.0f };
+	const glm::mat4 reference = glm::scale(
+		glm::translate(glm::mat4(1.0f), transform.Position) * glm::mat4_cast(transform.GetLocalRotationQuat()),
+		transform.Scale);
+
+	const glm::mat4& cached = transform.GetCachedLocalMatrix();
+	for (int c = 0; c < 4; ++c)
+		for (int r = 0; r < 4; ++r)
+			CHECK(cached[c][r] == doctest::Approx(reference[c][r]).epsilon(1e-5));
+
+	transform.Position.x = -5.0f;
+	CHECK(transform.GetCachedLocalMatrix()[3][0] == doctest::Approx(-5.0f));
 }
 
 TEST_CASE("Runtime single-entity deserialization retargets self references")

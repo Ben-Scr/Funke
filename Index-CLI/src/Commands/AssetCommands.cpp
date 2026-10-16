@@ -2,14 +2,18 @@
 #include "Commands.hpp"
 #include "Commands/CommandHelpers.hpp"
 
+#include "Animation/AnimationClip.hpp"
+#include "Animation/AnimatorController.hpp"
 #include "Assets/AssetRegistry.hpp"
 #include "Build/GameBuilder.hpp"
 #include "Editor/SpriteSlicing.hpp"
+#include "Graphics/CustomShaderLibrary.hpp"
 #include "Graphics/ImageProcessing.hpp"
 #include "Graphics/Text/FontHandle.hpp"
 #include "Project/IndexBuildProfile.hpp"
 #include "Project/IndexProject.hpp"
 #include "Scene/Scene.hpp"
+#include "Scene/SceneManager.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
@@ -18,6 +22,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <iterator>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -70,6 +75,8 @@ namespace Index::Cli {
 				case AssetKind::DataAsset: return "dataasset";
 				case AssetKind::Material:  return "material";
 				case AssetKind::Mesh:      return "mesh";
+				case AssetKind::AnimationClip:      return "animationclip";
+				case AssetKind::AnimatorController: return "animatorcontroller";
 				case AssetKind::Other:     return "other";
 				case AssetKind::Unknown:   break;
 			}
@@ -146,6 +153,9 @@ namespace Index::Cli {
 				CheckBuildProfiles();
 				IndexMetas();
 				CheckSerializedFiles();
+				CheckLocalization();
+				CheckShaders();
+				CheckAnimations();
 				return std::move(m_Issues);
 			}
 
@@ -331,6 +341,17 @@ namespace Index::Cli {
 						else if (key == "PrefabGUID" && *guid != 0 && m_GuidToExtension.count(*guid) && m_GuidToExtension.at(*guid) != ".prefab") {
 							Error(file, where + "PrefabGUID " + std::to_string(*guid) + " is not a .prefab (" + m_GuidToPath.at(*guid) + ")");
 						}
+						else if ((key == "controllerAsset" || key == "clipAsset") && *guid != 0 && m_GuidToExtension.count(*guid)) {
+							// "clipAsset" is an Animator's .anim and an AudioSource's sound.
+							const std::string& extension = m_GuidToExtension.at(*guid);
+							const bool valid = key == "controllerAsset"
+								? extension == ".animctrl"
+								: extension == ".anim" || extension == ".wav" || extension == ".mp3" || extension == ".flac";
+							if (!valid) {
+								const char* expected = key == "controllerAsset" ? ".animctrl" : ".anim or audio";
+								Error(file, where + key + " " + std::to_string(*guid) + " is not a " + expected + " file (" + m_GuidToPath.at(*guid) + ")");
+							}
+						}
 						continue;
 					}
 					CheckReferences(file, member, where);
@@ -369,6 +390,431 @@ namespace Index::Cli {
 						else if (!id || !uuids.count(*id)) Error(file, "entity[" + std::to_string(i) + "]: parentUuid " + parent->AsStringOr() + " matches no entity in this file");
 					}
 					CheckReferences(file, entity, "entity[" + std::to_string(i) + "].");
+					CheckLocalizedText(file, entity, "entity[" + std::to_string(i) + "]");
+				}
+				CheckScriptFieldReferences(file, entities);
+			}
+
+			// Collects Localized Text keys for CheckLocalization, including prefab-instance overrides of the key.
+			void CheckLocalizedText(const std::filesystem::path& file, const Json::Value& entity, const std::string& label) {
+				if (const Json::Value* localized = entity.FindMember("LocalizedText"); localized && localized->IsObject()) {
+					const Json::Value* key = localized->FindMember("key");
+					const std::string keyText = key ? key->AsStringOr() : std::string{};
+					if (keyText.empty()) Warning(file, label + ": Localized Text has no key; the text stays as authored");
+					else m_LocalizedTextKeys.emplace(keyText, file);
+					if (EntityHasComponent(entity, "TextRenderer", FindComponentInfo("TextRenderer")) == Presence::No) {
+						Error(file, label + ": Localized Text needs a Text Renderer on the same entity; nothing shows the translation");
+					}
+				}
+				if (const Json::Value* overrides = entity.FindMember("Overrides"); overrides && overrides->IsObject()) {
+					if (const Json::Value* key = overrides->FindMember("LocalizedText.key"); key && !key->AsStringOr().empty()) {
+						m_LocalizedTextKeys.emplace(key->AsStringOr(), file);
+					}
+				}
+			}
+
+			// Assets/Localization/<code>.json, the way GameLocalization reads them: unreadable files are skipped at runtime,
+			// a key missing from the fallback language shows as the raw key, one missing elsewhere shows the fallback text.
+			void CheckLocalization() {
+				const std::filesystem::path directory = Path::FromUtf8(m_Project.AssetsDirectory) / "Localization";
+				struct Language {
+					std::filesystem::path File;
+					std::set<std::string> Keys;
+				};
+				std::map<std::string, Language> languages;
+				std::error_code fsError;
+				if (std::filesystem::is_directory(directory, fsError)) {
+					for (const std::filesystem::path& file : FilesUnder(directory)) {
+						if (file.parent_path() != directory || ToLower(Path::ToUtf8(file.extension())) != ".json") continue;
+						Json::Value root;
+						std::string parseError;
+						if (!Json::TryParse(File::ReadAllText(Path::ToUtf8(file)), root, &parseError) || !root.IsObject()) {
+							Error(file, "not valid JSON: " + parseError + "; the language is skipped");
+							continue;
+						}
+						const Json::Value* strings = root.FindMember("strings");
+						if (!strings || !strings->IsObject()) {
+							Error(file, "needs a \"strings\" object of key -> text; the language is skipped");
+							continue;
+						}
+						std::string code = Path::ToUtf8(file.stem());
+						if (const Json::Value* meta = root.FindMember("meta"); meta && meta->IsObject()) {
+							if (const Json::Value* value = meta->FindMember("code"); value && !value->AsStringOr().empty()) code = value->AsStringOr();
+							if (!meta->FindMember("displayName")) Warning(file, "meta.displayName is missing; language pickers show '" + code + "'");
+						}
+						else {
+							Warning(file, "no \"meta\" block; the language is '" + code + "' (file name) and pickers show the code");
+						}
+						if (languages.contains(code)) {
+							Error(file, "language '" + code + "' is already declared by " + Path::ToUtf8(languages[code].File.filename()) + "; this file is ignored");
+							continue;
+						}
+						Language& language = languages[code];
+						language.File = file;
+						for (const auto& [key, value] : strings->GetObject()) {
+							if (value.IsString()) language.Keys.insert(key);
+							else Error(file, "strings." + key + " is not a string; it is ignored");
+						}
+					}
+				}
+
+				if (languages.empty()) {
+					if (!m_LocalizedTextKeys.empty()) {
+						const auto& [key, file] = *m_LocalizedTextKeys.begin();
+						Error(file, "Localized Text uses key '" + key + "' but Assets/Localization has no language files; it shows the raw key");
+					}
+					return;
+				}
+
+				const std::string fallback = languages.contains("en") ? "en" : languages.begin()->first;
+				const Language& reference = languages.at(fallback);
+				for (const auto& [key, file] : m_LocalizedTextKeys) {
+					if (!reference.Keys.contains(key)) {
+						Error(file, "Localized Text key '" + key + "' is not in " + Path::ToUtf8(reference.File.filename())
+							+ " (the fallback language); it shows the raw key");
+					}
+				}
+
+				const auto listed = [](const std::vector<std::string>& keys) {
+					std::string text;
+					for (std::size_t i = 0; i < keys.size() && i < 5; ++i) text += (i ? ", " : "") + keys[i];
+					if (keys.size() > 5) text += ", ...";
+					return text;
+				};
+				for (const auto& [code, language] : languages) {
+					if (code == fallback) continue;
+					std::vector<std::string> missing;
+					std::vector<std::string> extra;
+					std::set_difference(reference.Keys.begin(), reference.Keys.end(), language.Keys.begin(), language.Keys.end(), std::back_inserter(missing));
+					std::set_difference(language.Keys.begin(), language.Keys.end(), reference.Keys.begin(), reference.Keys.end(), std::back_inserter(extra));
+					if (!missing.empty()) {
+						Warning(language.File, std::to_string(missing.size()) + " key(s) of " + Path::ToUtf8(reference.File.filename())
+							+ " untranslated (they show the " + fallback + " text): " + listed(missing));
+					}
+					if (!extra.empty()) {
+						Warning(language.File, std::to_string(extra.size()) + " key(s) not in " + Path::ToUtf8(reference.File.filename())
+							+ " (typo or leftover?): " + listed(extra));
+					}
+				}
+			}
+
+			// Entity refs (bare uuid, "type": "entity") and component refs ("<uuid>:<Component>") in ScriptFields;
+			// a wrong uuid or component name otherwise only shows up as null at runtime.
+			void CheckScriptFieldReferences(const std::filesystem::path& file, const std::vector<Json::Value>& entities) {
+				std::unordered_map<uint64_t, const Json::Value*> byUuid;
+				for (const Json::Value& entity : entities) {
+					const Json::Value* uuid = entity.IsObject() ? entity.FindMember("uuid") : nullptr;
+					if (const std::optional<uint64_t> id = uuid ? ParseGuid(*uuid) : std::nullopt; id && *id != 0) byUuid.emplace(*id, &entity);
+				}
+				for (std::size_t i = 0; i < entities.size(); ++i) {
+					const Json::Value* scriptFields = entities[i].IsObject() ? entities[i].FindMember("ScriptFields") : nullptr;
+					if (!scriptFields || !scriptFields->IsObject()) continue;
+					for (const auto& [className, fields] : scriptFields->GetObject()) {
+						if (!fields.IsArray()) continue;
+						for (const Json::Value& field : fields.GetArray()) {
+							const Json::Value* value = field.IsObject() ? field.FindMember("value") : nullptr;
+							if (!value || !value->IsString()) continue;
+							const Json::Value* name = field.FindMember("name");
+							const Json::Value* type = field.FindMember("type");
+							const std::string where = "entity[" + std::to_string(i) + "] ScriptFields." + std::string(className) + "."
+								+ (name && name->IsString() ? name->AsStringOr() : std::string("?")) + ": ";
+							CheckScriptFieldReference(file, where, type && type->IsString() ? type->AsStringOr() : std::string(),
+								value->AsStringOr(), byUuid);
+						}
+					}
+				}
+			}
+
+			void CheckScriptFieldReference(const std::filesystem::path& file, const std::string& where, const std::string& type,
+				const std::string& text, const std::unordered_map<uint64_t, const Json::Value*>& byUuid) {
+				if (text.empty() || text == "0" || text.rfind("prefab:", 0) == 0 || text.find('\n') != std::string::npos) return;
+				const bool componentField = type.rfind("component:", 0) == 0;
+				const std::size_t colon = text.find(':');
+				const std::string idText = colon == std::string::npos ? text : text.substr(0, colon);
+				const bool numericId = !idText.empty() && idText.find_first_not_of("0123456789") == std::string::npos;
+				if (colon != std::string::npos ? !numericId : type != "entity") {
+					if (componentField) Error(file, where + "'" + text + "' is not \"<entity uuid>:<Component>\"");
+					return;
+				}
+				if (!numericId) {
+					Error(file, where + "'" + text + "' is not an entity uuid");
+					return;
+				}
+				const std::optional<uint64_t> id = ParseGuid(Json::Value(idText));
+				if (!id || *id == 0) return;
+				const auto target = byUuid.find(*id);
+				if (target == byUuid.end()) {
+					Error(file, where + "entity " + idText + " matches no entity in this file; the field loads as null");
+					return;
+				}
+				if (colon == std::string::npos) return;
+
+				const std::string component = text.substr(colon + 1);
+				const ComponentInfo* info = FindComponentInfo(component);
+				if (componentField) {
+					const std::string declared = type.substr(std::string_view("component:").size());
+					const ComponentInfo* declaredInfo = FindComponentInfo(declared);
+					if (info && declaredInfo && info != declaredInfo) {
+						Error(file, where + "points at '" + component + "' but the field is a " + declared + "; it loads as null");
+						return;
+					}
+				}
+				switch (EntityHasComponent(*target->second, component, info)) {
+					case Presence::Yes:
+					case Presence::Unknown:
+						break;
+					case Presence::No:
+						if (info) Error(file, where + "entity " + idText + " has no " + component + "; the field loads as null");
+						else Warning(file, where + "'" + component + "' is neither a built-in component nor a script on entity " + idText);
+						break;
+				}
+			}
+
+			enum class Presence { Yes, No, Unknown };
+
+			// Accepts the display name ("Rect Transform 2D"), the serialized key ("RectTransform2D") and the C# class name
+			// ("RectTransform", "NameComponent"), like the runtime does.
+			static const ComponentInfo* FindComponentInfo(const std::string& name) {
+				const auto normalize = [](std::string_view text) {
+					std::string out;
+					for (char c : text) {
+						if (c != ' ') out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+					}
+					return out;
+				};
+				const auto strip = [](const std::string& text, std::string_view suffix) {
+					return text.size() > suffix.size() && text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0
+						? text.substr(0, text.size() - suffix.size()) : text;
+				};
+				const std::string wanted = normalize(name);
+				if (wanted.empty()) return nullptr;
+				const ComponentInfo* found = nullptr;
+				SceneManager::GetComponentRegistryOrBuiltIn().ForEachComponentInfo([&](const std::type_index&, const ComponentInfo& info) {
+					if (found) return;
+					const std::string display = normalize(info.displayName);
+					const std::string serialized = normalize(info.serializedName);
+					if (wanted == display || wanted == serialized || strip(wanted, "component") == display
+						|| (!serialized.empty() && wanted == strip(serialized, "2d"))) {
+						found = &info;
+					}
+				});
+				return found;
+			}
+
+			Presence EntityHasComponent(const Json::Value& entity, const std::string& component, const ComponentInfo* info) {
+				if (info) {
+					if (info->displayName == "Name") return Presence::Yes;
+					std::string compact = info->displayName;
+					compact.erase(std::remove(compact.begin(), compact.end(), ' '), compact.end());
+					for (const std::string& key : { info->serializedName, info->displayName, compact }) {
+						if (!key.empty() && entity.FindMember(key)) return Presence::Yes;
+					}
+				}
+				else {
+					const auto matchesClass = [&](const std::string& className) {
+						return className == component
+							|| (className.size() > component.size() && className.compare(className.size() - component.size(), component.size(), component) == 0
+								&& className[className.size() - component.size() - 1] == '.');
+					};
+					for (const char* listKey : { "Scripts", "ManagedComponents" }) {
+						const Json::Value* list = entity.FindMember(listKey);
+						if (!list || !list->IsArray()) continue;
+						for (const Json::Value& entry : list->GetArray()) {
+							std::string className = entry.IsString() ? entry.AsStringOr() : std::string();
+							if (entry.IsObject()) {
+								const Json::Value* classValue = entry.FindMember("className");
+								if (!classValue) classValue = entry.FindMember("class");
+								if (classValue && classValue->IsString()) className = classValue->AsStringOr();
+							}
+							if (!className.empty() && matchesClass(className)) return Presence::Yes;
+						}
+					}
+					if (entity.FindMember(component)) return Presence::Yes;
+				}
+
+				// A prefab instance stores only overrides; its components live in the prefab's root entity.
+				const Json::Value* prefabGuid = entity.FindMember("PrefabGUID");
+				if (!prefabGuid) return Presence::No;
+				const std::optional<uint64_t> guid = ParseGuid(*prefabGuid);
+				const Json::Value* prefabRoot = guid ? PrefabRootEntity(*guid) : nullptr;
+				if (!prefabRoot) return Presence::Unknown;
+				const Presence inPrefab = EntityHasComponent(*prefabRoot, component, info);
+				if (inPrefab != Presence::No) return inPrefab;
+				// An override path "<Component>.<field>" adds the component to the instance.
+				const Json::Value* overrides = entity.FindMember("Overrides");
+				if (!overrides) return Presence::No;
+				if (!overrides->IsObject()) return Presence::Unknown;
+				for (const auto& [path, value] : overrides->GetObject()) {
+					const std::size_t dot = path.find('.');
+					if (dot == std::string::npos) continue;
+					Json::Value probe = Json::Value::MakeObject();
+					probe.AddMember(std::string(path.substr(0, dot)), Json::Value::MakeObject());
+					if (EntityHasComponent(probe, component, info) == Presence::Yes) return Presence::Yes;
+				}
+				return Presence::No;
+			}
+
+			const Json::Value* PrefabRootEntity(uint64_t guid) {
+				if (auto cached = m_PrefabRoots.find(guid); cached != m_PrefabRoots.end()) {
+					return cached->second.IsObject() ? &cached->second : nullptr;
+				}
+				Json::Value rootEntity;
+				if (auto path = m_GuidToPath.find(guid); path != m_GuidToPath.end()) {
+					Json::Value root;
+					std::string readError;
+					if (SceneSerializerStorage::ReadRootFromFile(path->second, root, &readError) && root.IsObject()) {
+						if (const Json::Value* list = root.FindMember("Entities"); list && list->IsArray() && !list->GetArray().empty()) {
+							rootEntity = list->GetArray().front();
+						}
+						else if (const Json::Value* single = root.FindMember("Entity"); single && single->IsObject()) {
+							rootEntity = *single;
+						}
+					}
+				}
+				const Json::Value& stored = m_PrefabRoots.emplace(guid, std::move(rootEntity)).first->second;
+				return stored.IsObject() ? &stored : nullptr;
+			}
+
+			// User shaders compile here as in the engine (headless device), and materials must point at one.
+			void CheckShaders() {
+				const std::filesystem::path assets = Path::FromUtf8(m_Project.AssetsDirectory);
+				for (const std::filesystem::path& file : FilesUnder(assets)) {
+					const std::string extension = ToLower(Path::ToUtf8(file.extension()));
+					if (extension == ".wgsl") {
+						std::vector<ShaderDiagnostic> diagnostics;
+						CustomShaderLibrary::ValidateFile(Path::ToUtf8(file), diagnostics);
+						for (const ShaderDiagnostic& diagnostic : diagnostics) {
+							std::string message = diagnostic.Line > 0 ? "line " + std::to_string(diagnostic.Line) + ": " : std::string{};
+							message += diagnostic.Message;
+							Add(diagnostic.IsError, file, std::move(message));
+						}
+						continue;
+					}
+					if (extension != ".material") continue;
+					Json::Value root;
+					std::string parseError;
+					if (!Json::TryParse(File::ReadAllText(Path::ToUtf8(file)), root, &parseError) || !root.IsObject()) {
+						Error(file, "not valid JSON: " + parseError);
+						continue;
+					}
+					const Json::Value* shader = root.FindMember("shader");
+					if (!shader) continue;
+					const std::optional<uint64_t> guid = ParseGuid(*shader);
+					if (!guid) {
+						Error(file, "shader: '" + shader->AsStringOr() + "' is not a GUID");
+						continue;
+					}
+					if (*guid == 0) continue;
+					const auto extensionIt = m_GuidToExtension.find(*guid);
+					if (extensionIt == m_GuidToExtension.end()) {
+						Error(file, "shader: GUID " + std::to_string(*guid) + " matches no .meta; the material draws with the fallback shader");
+					}
+					else if (extensionIt->second != ".wgsl") {
+						Error(file, "shader: GUID " + std::to_string(*guid) + " is a " + extensionIt->second + " file, not a .wgsl shader");
+					}
+				}
+			}
+
+			// .anim tracks need a component and property; .animctrl states must point at clips, transitions at states and
+			// conditions at parameters (the loader drops broken entries silently).
+			void CheckAnimations() {
+				const std::filesystem::path assets = Path::FromUtf8(m_Project.AssetsDirectory);
+				for (const std::filesystem::path& file : FilesUnder(assets)) {
+					const std::string extension = ToLower(Path::ToUtf8(file.extension()));
+					if (extension != k_AnimationClipExtension && extension != k_AnimatorControllerExtension) continue;
+					Json::Value root;
+					std::string parseError;
+					if (!Json::TryParse(File::ReadAllText(Path::ToUtf8(file)), root, &parseError) || !root.IsObject()) {
+						Error(file, "not valid JSON: " + parseError);
+						continue;
+					}
+					if (extension == k_AnimationClipExtension) {
+						CheckClip(file, root);
+					}
+					else {
+						CheckController(file, root);
+					}
+				}
+			}
+
+			void CheckClip(const std::filesystem::path& file, const Json::Value& root) {
+				const Json::Value* tracks = root.FindMember("tracks");
+				if (!tracks || !tracks->IsArray()) return;
+				for (size_t i = 0; i < tracks->GetArray().size(); ++i) {
+					const Json::Value& track = tracks->GetArray()[i];
+					const std::string where = "tracks[" + std::to_string(i) + "]: ";
+					const Json::Value* component = track.FindMember("component");
+					const Json::Value* property = track.FindMember("property");
+					if (!component || component->AsStringOr().empty() || !property || property->AsStringOr().empty()) {
+						Error(file, where + "needs \"component\" and \"property\"; the track is skipped");
+						continue;
+					}
+					if (!track.FindMember("keys") && !track.FindMember("discrete")) {
+						Warning(file, where + component->AsStringOr() + "." + property->AsStringOr() + " has no \"keys\" or \"discrete\" keys");
+					}
+				}
+				if (const Json::Value* events = root.FindMember("events"); events && events->IsArray()) {
+					for (size_t i = 0; i < events->GetArray().size(); ++i) {
+						const Json::Value* function = events->GetArray()[i].FindMember("function");
+						if (!function || function->AsStringOr().empty()) Error(file, "events[" + std::to_string(i) + "]: needs a \"function\"");
+					}
+				}
+			}
+
+			void CheckController(const std::filesystem::path& file, const Json::Value& root) {
+				std::set<std::string> states;
+				std::set<std::string> parameters;
+				if (const Json::Value* list = root.FindMember("parameters"); list && list->IsArray()) {
+					for (const Json::Value& p : list->GetArray()) {
+						if (const Json::Value* name = p.FindMember("name")) parameters.insert(name->AsStringOr());
+					}
+				}
+				if (const Json::Value* list = root.FindMember("states"); list && list->IsArray()) {
+					for (const Json::Value& state : list->GetArray()) {
+						const Json::Value* name = state.FindMember("name");
+						const std::string stateName = name ? name->AsStringOr() : std::string{};
+						if (stateName.empty()) {
+							Error(file, "a state has no \"name\"; it is skipped");
+							continue;
+						}
+						if (!states.insert(stateName).second) Error(file, "state '" + stateName + "' appears twice; the second is skipped");
+						const Json::Value* clip = state.FindMember("clip");
+						if (!clip) continue;
+						const std::optional<uint64_t> guid = ParseGuid(*clip);
+						if (!guid) {
+							Error(file, "state '" + stateName + "': clip '" + clip->AsStringOr() + "' is not a GUID");
+						}
+						else if (*guid != 0 && !m_GuidToExtension.count(*guid)) {
+							Error(file, "state '" + stateName + "': clip GUID " + std::to_string(*guid) + " matches no .meta");
+						}
+						else if (*guid != 0 && m_GuidToExtension.at(*guid) != k_AnimationClipExtension) {
+							Error(file, "state '" + stateName + "': clip GUID " + std::to_string(*guid) + " is not an .anim (" + m_GuidToPath.at(*guid) + ")");
+						}
+					}
+				}
+				if (const Json::Value* name = root.FindMember("defaultState"); name && !name->AsStringOr().empty() && !states.count(name->AsStringOr())) {
+					Error(file, "defaultState '" + name->AsStringOr() + "' is not a state");
+				}
+				if (const Json::Value* list = root.FindMember("transitions"); list && list->IsArray()) {
+					for (size_t i = 0; i < list->GetArray().size(); ++i) {
+						const Json::Value& t = list->GetArray()[i];
+						const std::string where = "transitions[" + std::to_string(i) + "]: ";
+						const Json::Value* fromAny = t.FindMember("fromAny");
+						if (!(fromAny && fromAny->AsBoolOr(false))) {
+							const Json::Value* from = t.FindMember("from");
+							if (!from || !states.count(from->AsStringOr())) Error(file, where + "from '" + (from ? from->AsStringOr() : std::string{}) + "' is not a state; the transition is skipped");
+						}
+						const Json::Value* to = t.FindMember("to");
+						if (!to || !states.count(to->AsStringOr())) Error(file, where + "to '" + (to ? to->AsStringOr() : std::string{}) + "' is not a state; the transition is skipped");
+						if (const Json::Value* conditions = t.FindMember("conditions"); conditions && conditions->IsArray()) {
+							for (const Json::Value& c : conditions->GetArray()) {
+								const Json::Value* parameter = c.FindMember("parameter");
+								if (!parameter || !parameters.count(parameter->AsStringOr())) {
+									Error(file, where + "condition on unknown parameter '" + (parameter ? parameter->AsStringOr() : std::string{}) + "' never holds");
+								}
+							}
+						}
+					}
 				}
 			}
 
@@ -444,6 +890,9 @@ namespace Index::Cli {
 			std::vector<Issue> m_Issues;
 			std::unordered_map<uint64_t, std::string> m_GuidToPath;
 			std::unordered_map<uint64_t, std::string> m_GuidToExtension;
+			std::unordered_map<uint64_t, Json::Value> m_PrefabRoots;
+			// Localized Text key -> first file using it.
+			std::map<std::string, std::filesystem::path> m_LocalizedTextKeys;
 			bool m_MissingMetas = false;
 		};
 
@@ -530,7 +979,7 @@ namespace Index::Cli {
 			AssetRegistry::Sync();
 			std::vector<AssetRegistry::Record> records;
 			for (AssetKind kind : { AssetKind::Texture, AssetKind::Audio, AssetKind::Scene, AssetKind::Prefab, AssetKind::Script,
-					AssetKind::Font, AssetKind::Shader, AssetKind::DataAsset, AssetKind::Material, AssetKind::Mesh, AssetKind::Other }) {
+					AssetKind::Font, AssetKind::Shader, AssetKind::DataAsset, AssetKind::Material, AssetKind::Mesh, AssetKind::AnimationClip, AssetKind::AnimatorController, AssetKind::Other }) {
 				std::vector<AssetRegistry::Record> ofKind = AssetRegistry::GetAssetsByKind(kind);
 				records.insert(records.end(), ofKind.begin(), ofKind.end());
 			}
@@ -583,7 +1032,12 @@ namespace Index::Cli {
 			std::string text;
 			for (const SpriteSlice& slice : slices) {
 				text += slice.Name + "  [" + std::to_string(slice.X) + ", " + std::to_string(slice.Y) + ", "
-					+ std::to_string(slice.W) + ", " + std::to_string(slice.H) + "]\n";
+					+ std::to_string(slice.W) + ", " + std::to_string(slice.H) + "]";
+				if (!slice.Border.IsZero()) {
+					text += "  border [" + std::to_string(slice.Border.Left) + ", " + std::to_string(slice.Border.Bottom) + ", "
+						+ std::to_string(slice.Border.Right) + ", " + std::to_string(slice.Border.Top) + "]";
+				}
+				text += "\n";
 			}
 			return text;
 		}
@@ -600,6 +1054,11 @@ namespace Index::Cli {
 				pivot.Append(Json::Value(static_cast<double>(slice.PivotX)));
 				pivot.Append(Json::Value(static_cast<double>(slice.PivotY)));
 				value.AddMember("pivot", std::move(pivot));
+				if (!slice.Border.IsZero()) {
+					Json::Value border = Json::Value::MakeArray();
+					for (int edge : { slice.Border.Left, slice.Border.Bottom, slice.Border.Right, slice.Border.Top }) border.Append(Json::Value(edge));
+					value.AddMember("border", std::move(border));
+				}
 				list.Append(std::move(value));
 			}
 			return Json::Stringify(list, true);
@@ -620,11 +1079,15 @@ namespace Index::Cli {
 		const std::optional<std::string> minSize = args.Option("min-size");
 		const std::optional<std::string> pivot = args.Option("pivot");
 		const std::optional<std::string> stemOption = args.Option("name");
+		const std::optional<std::string> borderOption = args.Option("border");
+		const std::optional<std::string> sliceOption = args.Option("slice");
 		const bool keep = args.Flag("keep");
 		const bool dryRun = args.Flag("dry-run");
 		if (!args.Finish(error)) return Fail(error, k_ExitUsage);
 		if (!project) return Fail(error);
-		if (!action || (*action != "slice" && *action != "list")) return Fail("usage: index sprite slice|list <texture>", k_ExitUsage);
+		if (!action || (*action != "slice" && *action != "list" && *action != "border")) {
+			return Fail("usage: index sprite slice|list|border <texture>", k_ExitUsage);
+		}
 		if (!textureArgument) return Fail("missing texture path", k_ExitUsage);
 
 		const std::filesystem::path texture = TexturePathArgument(*project, *textureArgument);
@@ -635,6 +1098,39 @@ namespace Index::Cli {
 
 		if (*action == "list") {
 			Out(Options().Json ? SlicesToJson(meta.Sprites) : SlicesToText(meta.Sprites));
+			return k_ExitOk;
+		}
+
+		if (*action == "border") {
+			if (!borderOption) return Fail("--border L,B,R,T is required (texture pixels, 0 clears it)", k_ExitUsage);
+			std::vector<int> values;
+			try {
+				std::size_t start = 0;
+				while (true) {
+					const std::size_t comma = borderOption->find(',', start);
+					values.push_back(std::max(std::stoi(borderOption->substr(start, comma == std::string::npos ? std::string::npos : comma - start)), 0));
+					if (comma == std::string::npos) break;
+					start = comma + 1;
+				}
+			}
+			catch (...) {
+				values.clear();
+			}
+			if (values.size() == 1) values.assign(4, values[0]);
+			if (values.size() != 4) return Fail("--border expects L,B,R,T or one value for all four", k_ExitUsage);
+			const SpriteBorder border{ values[0], values[1], values[2], values[3] };
+			if (sliceOption) {
+				const int index = meta.IndexOfName(*sliceOption);
+				if (index < 0) return Fail("no slice named '" + *sliceOption + "' in " + texturePath + ".meta");
+				meta.Sprites[static_cast<std::size_t>(index)].Border = border;
+			}
+			else {
+				meta.Border = border;
+			}
+			if (dryRun) return k_ExitOk;
+			AssetRegistry::GetOrCreateAssetUUID(texturePath);
+			if (!AssetRegistry::WriteTextureMeta(texturePath, meta)) return Fail("could not write " + texturePath + ".meta");
+			Out("border of " + (sliceOption ? "'" + *sliceOption + "'" : std::string("the texture")) + " written to " + texturePath + ".meta");
 			return k_ExitOk;
 		}
 

@@ -17,6 +17,8 @@ namespace Index {
         SpriteUVRect UvRect{};
         // CPU-only GuiRenderer tiebreaker; not read by any shader.
         std::uint32_t DrawIndex{ 0 };
+        // CPU-only: .material GUID with a custom Sprite2D shader; batches never mix materials.
+        std::uint64_t Material{ 0 };
 
         // CPU-only scissor rect for GuiRenderer UI masking; not read by any shader.
         bool HasClip{ false };

@@ -727,14 +727,14 @@ endforeach()
 	}
 
 	static bool IsKnownProjectMember(std::string_view name) {
-		static constexpr std::array<std::string_view, 60> knownMembers = {
+		static constexpr std::array<std::string_view, 62> knownMembers = {
 			"projectFormatVersion", "name", "engineVersion", "startupScene", "lastOpenedScene",
 			"gameViewAspect", "gameViewVsync", "editorView3D", "buildWidth", "buildHeight", "buildMinWidth",
 			"buildMinHeight", "buildMaxWidth", "buildMaxHeight", "buildFullscreen",
 			"buildFullscreenMode", "buildResizable", "buildRunInBackground", "buildAspect",
 			"mobileOrientation", "uiReferenceWidth", "uiReferenceHeight", "uiScaleMode", "uiScaleMatch", "appIcon", "executableName",
 			"buildVersion", "buildCompany", "splashScreen", "buildScenes", "globalSystems",
-			"packages", "profiler", "showRuntimeStats", "showRuntimeLogs", "graphics",
+			"packages", "profiler", "showRuntimeStats", "showRuntimeLogs", "devConsole", "prefsProfile", "graphics",
 			"enablePostProcessing", "physicsTickRate", "autoSaveScenes", "autoSaveIntervalSeconds",
 			"autoRecompileScripts", "recompileScriptsOnPlay", "assetSerializationFormat",
 			"showFileExtensions", "editorEnsureUniqueEntityNames", "editorEntityNameSuffix",
@@ -838,12 +838,12 @@ endforeach()
 			"buildFullscreenMode", "mobileOrientation", "uiScaleMode", "buildAspect", "appIcon", "executableName", "buildVersion",
 			"buildCompany", "assetSerializationFormat", "editorEntityNameSuffix",
 			"editorAssetDuplicateSuffix", "cursorImagePath", "uiInteractableCursorImagePath",
-			"buildProfile", "renderBackend", "activeBuildProfile" }) {
+			"buildProfile", "renderBackend", "activeBuildProfile", "prefsProfile" }) {
 			if (!require(name, [](const Json::Value& value) { return value.IsString(); }, "a string")) return false;
 		}
 		for (std::string_view name : {
 			"gameViewVsync", "editorView3D", "buildFullscreen", "buildResizable", "buildRunInBackground",
-			"showRuntimeStats", "showRuntimeLogs", "enablePostProcessing", "autoSaveScenes",
+			"showRuntimeStats", "showRuntimeLogs", "devConsole", "enablePostProcessing", "autoSaveScenes",
 			"autoRecompileScripts", "recompileScriptsOnPlay", "showFileExtensions",
 			"editorEnsureUniqueEntityNames" }) {
 			if (!require(name, [](const Json::Value& value) { return value.IsBool(); }, "a boolean")) return false;
@@ -1136,11 +1136,17 @@ endforeach()
 			root.AddMember("profiler", std::move(profilerJson));
 		}
 
-		if (!project.ShowRuntimeStats) {
-			root.AddMember("showRuntimeStats", false);
+		if (project.ShowRuntimeStats) {
+			root.AddMember("showRuntimeStats", *project.ShowRuntimeStats);
 		}
-		if (!project.ShowRuntimeLogs) {
-			root.AddMember("showRuntimeLogs", false);
+		if (project.ShowRuntimeLogs) {
+			root.AddMember("showRuntimeLogs", *project.ShowRuntimeLogs);
+		}
+		if (project.DevConsole) {
+			root.AddMember("devConsole", *project.DevConsole);
+		}
+		if (!project.PrefsProfile.empty()) {
+			root.AddMember("prefsProfile", project.PrefsProfile);
 		}
 		if (project.Graphics != GraphicsSettings{}) {
 			Json::Value graphics = Json::Value::MakeObject();
@@ -1325,6 +1331,7 @@ endforeach()
 		switch (ActiveBuildProfile) {
 			case BuildProfile::Release:     return "INDEX_BUILD_RELEASE";
 			case BuildProfile::Development: return "INDEX_BUILD_DEVELOPMENT";
+			case BuildProfile::Debug:       return "INDEX_BUILD_DEBUG";
 		}
 		return "INDEX_BUILD_DEVELOPMENT";
 	}
@@ -1333,13 +1340,39 @@ endforeach()
 		switch (profile) {
 			case BuildProfile::Release:     return "Release";
 			case BuildProfile::Development: return "Development";
+			case BuildProfile::Debug:       return "Debug";
 		}
 		return "Development";
 	}
 
 	IndexProject::BuildProfile IndexProject::BuildProfileFromString(std::string_view value) {
 		if (value == "Release") return BuildProfile::Release;
+		if (value == "Debug") return BuildProfile::Debug;
 		return BuildProfile::Development;
+	}
+
+	std::string IndexProject::GetBuildConfigurationFor(BuildProfile profile) {
+		switch (profile) {
+			case BuildProfile::Release: return "Dist";
+			case BuildProfile::Debug:   return "Debug";
+			case BuildProfile::Development: break;
+		}
+		return GetActiveBuildConfiguration();
+	}
+
+	std::string IndexProject::SanitizePrefsProfileName(std::string_view name) {
+		std::string result;
+		result.reserve(name.size());
+		for (const char c : name) {
+			const bool safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+				|| c == '-' || c == '_' || c == '.';
+			result.push_back(safe ? c : '_');
+		}
+		while (!result.empty() && (result.front() == '.' || result.back() == '.')) {
+			if (result.front() == '.') result.erase(result.begin());
+			else result.pop_back();
+		}
+		return result;
 	}
 
 	const char* IndexProject::RenderBackendToString(RenderBackend backend) {
@@ -2126,10 +2159,14 @@ endforeach()
 						}
 					}
 				}
-				if (const Json::Value* v = root.FindMember("showRuntimeStats"))
+				if (const Json::Value* v = root.FindMember("showRuntimeStats"); v && v->IsBool())
 					project.ShowRuntimeStats = v->AsBoolOr(true);
-				if (const Json::Value* v = root.FindMember("showRuntimeLogs"))
+				if (const Json::Value* v = root.FindMember("showRuntimeLogs"); v && v->IsBool())
 					project.ShowRuntimeLogs = v->AsBoolOr(true);
+				if (const Json::Value* v = root.FindMember("devConsole"); v && v->IsBool())
+					project.DevConsole = v->AsBoolOr(true);
+				if (const Json::Value* v = root.FindMember("prefsProfile"); v && v->IsString())
+					project.PrefsProfile = IndexProject::SanitizePrefsProfileName(v->AsStringOr());
 				bool hasNestedPostProcessingEnabled = false;
 				if (const Json::Value* graphics = root.FindMember("graphics"); graphics && graphics->IsObject()) {
 					if (const Json::Value* v = graphics->FindMember("renderScale"))
@@ -3001,58 +3038,92 @@ public class GameScript : EntityScript
 		return RegeneratePackageWorkspaceForProject(projectRootDir);
 	}
 
-	std::string IndexProject::GetMSBuildPath() {
 #if defined(_WIN32)
-		const std::filesystem::path vswhere = "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe";
-		std::error_code vswhereEc;
-		if (std::filesystem::exists(vswhere, vswhereEc) && !vswhereEc) {
-			Process::Result vswhereResult = Process::Run({
+	namespace {
+		std::string FindMSBuildWithVswhere(const char* versionRange, bool requireCppTools) {
+			const std::filesystem::path vswhere = "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe";
+			std::error_code vswhereEc;
+			if (!std::filesystem::exists(vswhere, vswhereEc) || vswhereEc) return {};
+
+			std::vector<std::string> command{
 				Path::ToUtf8(vswhere),
 				"-latest",
 				"-products", "*",
-				"-version", "[18.0,)",
-				"-requires", "Microsoft.Component.MSBuild",
-				"-find", "MSBuild\\**\\Bin\\MSBuild.exe",
-				"-nologo"
-			}, {}, std::chrono::seconds(30));
-			if (vswhereResult.Succeeded()) {
-				const std::string& out = vswhereResult.Output;
-				const auto newline = out.find_first_of("\r\n");
-				std::string firstLine = (newline == std::string::npos) ? out : out.substr(0, newline);
-				if (firstLine.size() >= 3 && static_cast<unsigned char>(firstLine[0]) == 0xEF
-					&& static_cast<unsigned char>(firstLine[1]) == 0xBB
-					&& static_cast<unsigned char>(firstLine[2]) == 0xBF)
-					firstLine.erase(0, 3);
-				while (!firstLine.empty() && (firstLine.front() == ' ' || firstLine.front() == '\t')) {
-					firstLine.erase(firstLine.begin());
-				}
-				while (!firstLine.empty() && (firstLine.back() == ' ' || firstLine.back() == '\t')) {
-					firstLine.pop_back();
-				}
-				std::error_code existEc;
-				if (!firstLine.empty() && std::filesystem::exists(Path::FromUtf8(firstLine), existEc) && !existEc) {
-					return firstLine;
-				}
+				"-version", versionRange,
+				"-requires", "Microsoft.Component.MSBuild"
+			};
+			if (requireCppTools) command.push_back("Microsoft.VisualStudio.Component.VC.Tools.x86.x64");
+			command.insert(command.end(), { "-find", "MSBuild\\**\\Bin\\MSBuild.exe", "-nologo" });
+
+			Process::Result vswhereResult = Process::Run(command, {}, std::chrono::seconds(30));
+			if (!vswhereResult.Succeeded()) return {};
+
+			const std::string& out = vswhereResult.Output;
+			const auto newline = out.find_first_of("\r\n");
+			std::string firstLine = (newline == std::string::npos) ? out : out.substr(0, newline);
+			if (firstLine.size() >= 3 && static_cast<unsigned char>(firstLine[0]) == 0xEF
+				&& static_cast<unsigned char>(firstLine[1]) == 0xBB
+				&& static_cast<unsigned char>(firstLine[2]) == 0xBF)
+				firstLine.erase(0, 3);
+			while (!firstLine.empty() && (firstLine.front() == ' ' || firstLine.front() == '\t')) {
+				firstLine.erase(firstLine.begin());
 			}
+			while (!firstLine.empty() && (firstLine.back() == ' ' || firstLine.back() == '\t')) {
+				firstLine.pop_back();
+			}
+			std::error_code existEc;
+			if (!firstLine.empty() && std::filesystem::exists(Path::FromUtf8(firstLine), existEc) && !existEc) {
+				return firstLine;
+			}
+			return {};
 		}
 
-		const std::vector<std::string> programFilesRoots = {
+		std::string FindMSBuildUnder(std::initializer_list<const char*> visualStudioRoots) {
+			for (const char* root : visualStudioRoots) {
+				for (const char* edition : { "Community", "Professional", "Enterprise", "BuildTools" }) {
+					const std::filesystem::path candidate = std::filesystem::path(root) / edition
+						/ "MSBuild" / "Current" / "Bin" / "MSBuild.exe";
+					std::error_code error;
+					if (std::filesystem::is_regular_file(candidate, error) && !error)
+						return Path::ToGenericUtf8(candidate);
+				}
+			}
+			return {};
+		}
+	}
+#endif
+
+	std::string IndexProject::GetMSBuildPath() {
+#if defined(_WIN32)
+		if (std::string msbuild = FindMSBuildWithVswhere("[18.0,)", false); !msbuild.empty()) return msbuild;
+		return FindMSBuildUnder({
 			"C:\\Program Files\\Microsoft Visual Studio\\18",
 			"C:\\Program Files\\Microsoft Visual Studio\\2026",
 			"C:\\Program Files (x86)\\Microsoft Visual Studio\\18",
 			"C:\\Program Files (x86)\\Microsoft Visual Studio\\2026"
-		};
-		for (const auto& root : programFilesRoots) {
-			for (const auto& edition : { "Community", "Professional", "Enterprise", "BuildTools" }) {
-				const std::filesystem::path candidate = std::filesystem::path(root) / edition
-					/ "MSBuild" / "Current" / "Bin" / "MSBuild.exe";
-				std::error_code error;
-				if (std::filesystem::is_regular_file(candidate, error) && !error)
-					return Path::ToGenericUtf8(candidate);
-			}
-		}
-#endif
+		});
+#else
 		return {};
+#endif
+	}
+
+	std::string IndexProject::GetNativeMSBuildPath() {
+#if defined(_WIN32)
+		if (const char* overridePath = std::getenv("INDEX_MSBUILD"); overridePath && *overridePath) {
+			std::error_code error;
+			if (std::filesystem::is_regular_file(Path::FromUtf8(overridePath), error) && !error) return overridePath;
+			IDX_WARN_TAG("IndexProject", "INDEX_MSBUILD '{}' does not exist; searching for MSBuild instead.", overridePath);
+		}
+		// VS 18 keeps its own copy of the v143 headers; compiling against PCHs built from VS 2022's copy
+		// includes each header twice (C2375 on intrinsics). Build.ps1 and the vs2022 workspaces use VS 2022.
+		if (std::string msbuild = FindMSBuildWithVswhere("[17.0,18.0)", true); !msbuild.empty()) return msbuild;
+		if (std::string msbuild = FindMSBuildUnder({
+				"C:\\Program Files\\Microsoft Visual Studio\\2022",
+				"C:\\Program Files (x86)\\Microsoft Visual Studio\\2022"
+			}); !msbuild.empty())
+			return msbuild;
+#endif
+		return GetMSBuildPath();
 	}
 
 	IndexProject::BuildResult IndexProject::BuildSolution(const std::string& configuration,

@@ -10,6 +10,7 @@
 #include "Components/UI/UI.hpp"
 #include "Components/Tags.hpp"
 #include "Core/Application.hpp"
+#include "Core/EngineModules.hpp"
 #include "Core/Window.hpp"
 #include "Core/Platform.hpp"
 #include "Core/Platform/Win32BuildProgressWindow.hpp"
@@ -41,6 +42,8 @@
 #include "Packages/GitHubSource.hpp"
 #include "Editor/EditorPreferences.hpp"
 #include "Editor/ExternalEditor.hpp"
+#include "Editor/EditorRestart.hpp"
+#include "Editor/IndexPackageInstaller.hpp"
 #include "Gui/EditorIcons.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Scripting/ScriptSystem.hpp"
@@ -100,6 +103,61 @@ namespace Index {
 			name = "$EditorAssetScene." + std::to_string(++m_EditorSceneDefinitionSerial);
 		} while (SceneManager::HasSceneDefinition(name));
 		return name;
+	}
+
+	void ImGuiEditorLayer::RenderEditorReloadPrompt() {
+		// Module changes come from the Package Manager, package installs and project.json edits alike.
+		if (const IndexProject* project = ProjectManager::GetCurrentProject()) {
+			for (EngineModule module : k_AllEngineModules) {
+				const std::string id(EngineModules::GetId(module));
+				const bool wanted = project->HasModule(id);
+				if (!EngineModules::IsCompiled(module) || wanted == EngineModules::IsActive(module)) {
+					EditorRestart::Withdraw("module:" + id);
+				}
+				else {
+					EditorRestart::Request("module:" + id, (wanted ? "Engine module added: " : "Engine module removed: ") + id);
+				}
+			}
+			// The GPU device picks its backend once; Project Settings, build profiles and project.json edits all change it.
+			if (!m_LaunchRenderBackend) m_LaunchRenderBackend = project->ActiveRenderBackend;
+			if (project->ActiveRenderBackend == *m_LaunchRenderBackend) {
+				EditorRestart::Withdraw("render-backend");
+			}
+			else {
+				EditorRestart::Request("render-backend", std::string("Rendering API: ")
+					+ IndexProject::RenderBackendToString(*m_LaunchRenderBackend) + " -> "
+					+ IndexProject::RenderBackendToString(project->ActiveRenderBackend), EditorRestart::Kind::Restart);
+			}
+		}
+
+		static constexpr const char* k_PopupName = "Reload the editor?";
+		if (EditorRestart::ConsumePromptRequest() && EditorRestart::HasPending() && !ImGui::IsPopupOpen(k_PopupName)) {
+			ImGui::OpenPopup(k_PopupName);
+		}
+		ImGuiUtils::CenterNextModal();
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		if (!ImGui::BeginPopupModal(k_PopupName, nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking)) {
+			return;
+		}
+		ImGui::TextUnformatted("These changes take effect after the editor reloads:");
+		ImGui::Spacing();
+		for (const EditorRestart::Reason& reason : EditorRestart::GetPending()) {
+			ImGui::BulletText("%s", reason.Text.c_str());
+		}
+		ImGui::Spacing();
+		ImGui::TextDisabled("Unsaved scenes are offered for saving first.");
+		ImGui::Spacing();
+		const int choice = EditorUI::DialogFooter({ "Reload Now", "Later" }, 0);
+		if (choice == 0) {
+			ImGui::CloseCurrentPopup();
+			RequestEditorAction(EditorRestart::GetPendingKind() == EditorRestart::Kind::Restart
+				? PendingEditorAction::Restart : PendingEditorAction::Reload);
+		}
+		else if (choice == 1 || !EditorRestart::HasPending()) {
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::EndPopup();
 	}
 
 	bool ImGuiEditorLayer::LoadEditorScene(const std::string& path, bool additive,
@@ -379,11 +437,19 @@ namespace Index {
 				succeeded = true;
 				break;
 			case PendingEditorAction::Reload:
-				Application::Reload();
+				// A pending render-backend or font change needs the window and device rebuilt too.
+				if (EditorRestart::HasPending() && EditorRestart::GetPendingKind() == EditorRestart::Kind::Restart) {
+					Application::Restart();
+				}
+				else {
+					Application::Reload();
+				}
+				EditorRestart::Clear();
 				succeeded = true;
 				break;
 			case PendingEditorAction::Restart:
 				Application::Restart();
+				EditorRestart::Clear();
 				succeeded = true;
 				break;
 			case PendingEditorAction::RebuildEngine:
@@ -457,6 +523,9 @@ namespace Index {
 				Process::ResetCancellation();
 			}
 		}
+
+		// OnUpdate already drains it; this catches frames where the engine skipped OnUpdate.
+		ProcessPendingPlayModeStop();
 
 		if (ProcessPendingEditorAction()) {
 			return;
@@ -567,6 +636,7 @@ namespace Index {
 		}
 
 		RenderExternalSceneConflictDialog();
+		RenderEditorReloadPrompt();
 
 		// Dev tooling: INDEX_EDITOR_AUTOPLAY=1 enters play mode once after startup (scripts/dev/Run.ps1 -Play).
 		static bool s_AutoplayPending = [] {
@@ -576,6 +646,52 @@ namespace Index {
 		if (s_AutoplayPending && Application::IsStartupLoadComplete() && !Application::GetIsPlaying()) {
 			s_AutoplayPending = false;
 			if (Scene* active = SceneManager::GetActiveScene()) BeginPlayModeRequest(*active);
+		}
+		// INDEX_EDITOR_OPEN=build,buildprofiles,projectsettings,... opens those windows once (Run.ps1 -OpenWindow).
+		static bool s_AutoOpenPending = std::getenv("INDEX_EDITOR_OPEN") != nullptr;
+		if (s_AutoOpenPending && Application::IsStartupLoadComplete()) {
+			s_AutoOpenPending = false;
+			const std::string windows = "," + std::string(std::getenv("INDEX_EDITOR_OPEN")) + ",";
+			const auto wants = [&windows](std::string_view name) {
+				return windows.find("," + std::string(name) + ",") != std::string::npos;
+			};
+			m_ShowBuildPanel |= wants("build");
+			m_ShowBuildProfilesPanel |= wants("buildprofiles");
+			m_ShowProjectSettings |= wants("projectsettings");
+			m_ShowEditorPreferences |= wants("preferences");
+			m_ShowPackageManager |= wants("packages");
+			m_ShowProfiler |= wants("profiler");
+		}
+		// INDEX_EDITOR_AUTOSTOP=<seconds> leaves the first play session again after that long (Run.ps1 -StopAfter).
+		static const float s_AutostopSeconds = [] {
+			const char* value = std::getenv("INDEX_EDITOR_AUTOSTOP");
+			return value ? static_cast<float>(std::atof(value)) : 0.0f;
+		}();
+		static float s_AutostopElapsed = 0.0f;
+		if (s_AutostopSeconds > 0.0f && s_AutostopElapsed >= 0.0f && Application::GetIsPlaying()) {
+			s_AutostopElapsed += Time::GetDeltaTimeUnscaled();
+			if (s_AutostopElapsed >= s_AutostopSeconds) {
+				s_AutostopElapsed = -1.0f;
+				RequestPlayModeStop();
+			}
+		}
+		// INDEX_EDITOR_AUTORELOAD=<seconds>[:<module id>] reloads the editor once, optionally after removing that
+		// engine module first (Run.ps1 -ReloadAfter / -RemoveModule). Statics survive the in-process reload.
+		static const std::string s_AutoreloadSpec = [] {
+			const char* value = std::getenv("INDEX_EDITOR_AUTORELOAD");
+			return value ? std::string(value) : std::string();
+		}();
+		static float s_AutoreloadElapsed = 0.0f;
+		if (!s_AutoreloadSpec.empty() && s_AutoreloadElapsed >= 0.0f && Application::IsStartupLoadComplete()) {
+			s_AutoreloadElapsed += Time::GetDeltaTimeUnscaled();
+			const size_t separator = s_AutoreloadSpec.find(':');
+			if (s_AutoreloadElapsed >= static_cast<float>(std::atof(s_AutoreloadSpec.substr(0, separator).c_str()))) {
+				s_AutoreloadElapsed = -1.0f;
+				if (IndexProject* project = ProjectManager::GetCurrentProject(); project && separator != std::string::npos) {
+					IDX_INFO_TAG("Editor", "Autoreload: {}", IndexPackageInstaller::DisableModule(*project, s_AutoreloadSpec.substr(separator + 1)).Message);
+				}
+				RequestEditorAction(PendingEditorAction::Reload);
+			}
 		}
 
 		if (!m_RecoveryChecked && ProjectManager::HasProject() && Application::IsStartupLoadComplete()) {
@@ -760,9 +876,7 @@ namespace Index {
 			std::string pendingLoad = m_AssetBrowser.TakePendingSceneLoad();
 			if (!pendingLoad.empty()) {
 				if (Application::GetIsPlaying()) {
-					if (RestoreEditorSceneAfterPlaymode()) {
-						RequestEditorAction(PendingEditorAction::OpenScene, std::move(pendingLoad));
-					}
+					RequestPlayModeStop(std::move(pendingLoad));
 				}
 				else {
 					RequestEditorAction(PendingEditorAction::OpenScene, std::move(pendingLoad));
@@ -979,7 +1093,7 @@ namespace Index {
 			if (auto* scriptSys = scene.GetSystem<ScriptSystem>();
 				scriptSys && scriptSys->IsRebuilding())
 			{
-				RestoreEditorSceneAfterPlaymode();
+				RequestPlayModeStop();
 			}
 		}
 
@@ -990,9 +1104,11 @@ namespace Index {
 
 		ImGui::BeginDisabled(m_BuildState > 0 || m_ReserializeState > 0);
 
-		RenderEntitiesPanel();
 		// Inspector/editor view target the prefab-edit scene when active; Game View always uses the real active scene.
 		Scene* contextScene = GetContextScene();
+		// Animated values exist only between here and EndFrame, so saves and the play snapshot keep the authored ones.
+		m_AnimationPreview.BeginFrame(contextScene);
+		RenderEntitiesPanel();
 		RenderInspectorPanel(contextScene ? *contextScene : scene);
 		// Also propagate the detached prefab scene — ForeachLoadedScene skips it since it isn't in SceneManager.
 		SceneManager::ForeachLoadedScene([](Scene& s) {
@@ -1005,6 +1121,7 @@ namespace Index {
 		TickParticlePreview(contextScene ? *contextScene : scene);
 		RenderEditorView(contextScene ? *contextScene : scene);
 		RenderGameView(scene);
+		m_AnimationPreview.EndFrame();
 		UpdateProjectThumbnail(scene);
 		RenderProjectPanel();
 		RenderLogPanel();
@@ -1013,9 +1130,6 @@ namespace Index {
 		RenderProjectSettingsPanel();
 		RenderPackageManagerPanel();
 		m_EditorPreferencesPanel.Render(&m_ShowEditorPreferences);
-		if (m_EditorPreferencesPanel.ConsumeRestartRequest()) {
-			RequestEditorAction(PendingEditorAction::Restart);
-		}
 
 		ImGui::EndDisabled();
 
@@ -1029,6 +1143,13 @@ namespace Index {
 			m_ProfilerPanel.Render(&m_ShowProfiler);
 		}
 
+		if (const IndexProject* project = ProjectManager::GetCurrentProject();
+			project && project->RootDirectory != m_ScriptWindowsProjectRoot) {
+			m_ScriptWindowsProjectRoot = project->RootDirectory;
+			m_ScriptWindows.LoadProject(m_ScriptWindowsProjectRoot);
+		}
+		m_ScriptWindows.Render();
+
 		// Drain sprite editor path at render time — opening during inspector build trips ImGui's Begin/End guard.
 		if (!m_PendingSpriteEditorPath.empty()) {
 			m_SpriteEditorPanel.OpenTexture(m_PendingSpriteEditorPath, m_PendingSpriteEditorAssetId);
@@ -1037,6 +1158,30 @@ namespace Index {
 		}
 		if (m_ShowSpriteEditor) {
 			m_SpriteEditorPanel.Render(&m_ShowSpriteEditor);
+		}
+
+		if (m_AssetBrowserInitialized) {
+			const std::string animationPath = m_AssetBrowser.TakePendingAnimationOpen();
+			if (!animationPath.empty()) {
+				const uint64_t guid = AssetRegistry::GetOrCreateAssetUUID(animationPath);
+				if (AssetRegistry::GetKind(guid) == AssetKind::AnimatorController) {
+					m_AnimatorWindow.OpenController(guid);
+					m_ShowAnimatorWindow = true;
+				}
+				else if (guid != 0) {
+					m_AnimationWindow.OpenClip(guid);
+					m_ShowAnimationWindow = true;
+				}
+			}
+		}
+		{
+			Scene* animationScene = GetContextScene();
+			m_AnimatorWindow.Render(&m_ShowAnimatorWindow, animationScene, m_SelectedEntity);
+			if (const uint64_t clip = m_AnimatorWindow.TakeOpenClipRequest()) {
+				m_AnimationWindow.OpenClip(clip);
+				m_ShowAnimationWindow = true;
+			}
+			m_AnimationWindow.Render(&m_ShowAnimationWindow, animationScene, m_SelectedEntity, m_AnimationPreview);
 		}
 		// Applying slice edits writes the texture's .meta (not the image), so the
 		// image-only asset watcher never fires — refresh the Asset Browser here so

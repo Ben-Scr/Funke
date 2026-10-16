@@ -45,6 +45,15 @@ namespace Index::Process {
 	INDEX_API bool LaunchDetached(const std::vector<std::string>& command,
 		const std::filesystem::path& workingDirectory, unsigned long& outProcessId);
 	INDEX_API bool IsProcessRunning(unsigned long processId);
+	// Like LaunchDetached, but waits up to `watch` for the child to die in the OS loader (before main: a missing
+	// DLL, a stale Index-Engine.dll without an export it needs, a wrong-architecture image). Then it returns
+	// false with the cause in outError; a child still running or exiting any other way counts as launched.
+	INDEX_API bool LaunchDetachedChecked(const std::vector<std::string>& command,
+		const std::filesystem::path& workingDirectory, unsigned long& outProcessId, std::string& outError,
+		std::chrono::milliseconds watch = std::chrono::milliseconds(300));
+
+	// Readable cause for an exit code the Windows loader sets before main(); empty for any other code.
+	INDEX_API std::string DescribeLoaderFailure(int exitCode);
 
 	template <typename String,
 		std::enable_if_t<std::is_same_v<std::remove_cvref_t<String>, std::string>, int> = 0>

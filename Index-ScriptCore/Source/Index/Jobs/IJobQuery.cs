@@ -237,7 +237,8 @@ internal sealed class JobQueryPlan
         if (string.IsNullOrEmpty(name))
             throw new InvalidOperationException(
                 $"IJobQuery '{jobType.FullName}' references component type '{componentType.Name}' " +
-                "which has no native registration. Register the component or add [NativeComponent(\"Native Name\")].");
+                "which has no native registration. Make it a [StructLayout(LayoutKind.Sequential)] struct implementing IComponent, " +
+                "or give a hand-written mirror of a built-in an `internal const string NativeName = \"Display Name\";`.");
         return name;
     }
 

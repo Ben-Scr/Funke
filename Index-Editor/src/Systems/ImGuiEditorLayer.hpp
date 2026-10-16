@@ -9,12 +9,16 @@
 #include "Collections/Ids.hpp"
 #include "Collections/Viewport.hpp"
 #include "Core/Log.hpp"
+#include "Editor/AnimationPreview.hpp"
+#include "Gui/AnimationWindow.hpp"
+#include "Gui/AnimatorWindow.hpp"
 #include "Gui/AssetBrowser.hpp"
 #include "Gui/BuildProfilesPanel.hpp"
 #include "Gui/EditorPreferencesPanel.hpp"
 #include "Gui/PackageManagerPanel.hpp"
 #include "Gui/PrefabInspector.hpp"
 #include "Gui/ProfilerPanel.hpp"
+#include "Gui/ScriptEditorWindows.hpp"
 #include "Gui/SpriteEditorPanel.hpp"
 #include "Gui/SplashScreen.hpp"
 #include "Packages/PackageManager.hpp"
@@ -45,6 +49,7 @@
 #include <vector>
 #include <utility>
 #include <chrono>
+#include "Project/IndexProject.hpp"
 #include "Project/PlatformPackages.hpp"
 #include <optional>
 
@@ -307,8 +312,11 @@ namespace Index {
 		bool DrawTransform3DGizmo(Scene& scene, const Camera3DView& view, const Vec2& imageTopLeft, const Vec2& viewportSize);
 		void QueueEditorView3DOverlays(Scene& scene, Renderer3D& renderer);
 		void FrameEditorCamera3D(Scene& scene);
+		void FocusSelectedEntity3D(Scene& scene);
 		void ResolveEditorViewMode();
 		bool IsEditorView3D() const { return m_EditorView3D; }
+		// Remembered per project; ignored unless both the 2D and 3D modules are active.
+		void SetEditorView3D(bool enabled);
 		// Create (Entity) / Camera menu entries follow the Editor View mode.
 		Entity CreateDefaultEntity(Scene& scene, const std::string& name);
 
@@ -505,9 +513,19 @@ namespace Index {
 		Framebuffer m_GameViewFBO;
 		bool m_IsGameViewHovered = false;
 		bool m_IsGameViewFocused = false;
-		bool m_GameViewHidesCursor = false;
+		bool m_WasGameViewFocused = false;
+		bool m_GameViewCanvasClicked = false;
+		bool m_FocusGameViewOnPlay = false;
+		// Escape or leaving the editor window handed the mouse to the editor; focusing the Game View gives it back.
+		bool m_GameCursorReleased = false;
+		int m_CursorModeLastUpdate = 0;
+		// -1 = follow the project's build aspect; otherwise an index into k_AspectRatioPresets.
+		static constexpr int k_GameViewProjectAspectIndex = -1;
+		static constexpr const char* k_GameViewProjectAspectLabel = "Project";
 		int m_GameViewAspectPresetIndex = 0;
 		bool m_GameViewAspectLoaded = false;
+		// 0 = free (fill the panel).
+		float GetGameViewAspect() const;
 		bool m_GameViewVsync = true;
 		bool m_GameViewVsyncLoaded = false;
 		bool m_GameViewHasRendered = false;
@@ -516,8 +534,18 @@ namespace Index {
 		void SaveScenesFromMenu(Scene& scene);
 		void RenderToolbarLeft();
 		void RenderTopBarRight();
+		// Editor View options (3D, draw mode, gizmos, ...) in the viewport's top-right pill and their visibility menu (ImGuiEditorLayerViewport.cpp).
+		bool RenderEditorViewToolbarOptions();
+		void RenderGameViewSettingsMenu();
+		void RenderEditorViewSettingsMenu();
+		// Width of the view options pill last frame; it is right-aligned before it can be measured.
+		float m_EditorViewOptionsPillWidth = 0.0f;
 		void RenderCommandPalette(Scene& scene);
 		void RenderStatusBar(float height);
+		// Main-window prompt for everything queued in EditorRestart (modules, packages, render backend, font).
+		void RenderEditorReloadPrompt();
+		// Backend this editor run's GPU device was created with; set on the first frame with a project.
+		std::optional<IndexProject::RenderBackend> m_LaunchRenderBackend;
 		bool m_OpenCommandPalette = false;
 		char m_CommandPaletteBuffer[128]{};
 		int m_CommandPaletteSelection = 0;
@@ -549,6 +577,8 @@ namespace Index {
 		std::string m_AssetWatcherRoot;
 		// Scenes, audio, fonts and data assets edited outside the editor (other tools, AI agents, git).
 		FileWatcher m_ContentWatcher;
+		// Assets/Localization/*.json: the game's string tables reload in edit and play mode.
+		FileWatcher m_LocalizationWatcher;
 		// Deferred while playing: the Stop restore reloads scenes, so decide afterwards.
 		bool m_ExternalSceneCheckPending = false;
 		// Changed-on-disk scenes that also have unsaved editor edits; auto-save holds off until resolved.
@@ -626,6 +656,8 @@ namespace Index {
 		std::weak_ptr<Scene> m_PlayModeRecompileScene;
 		bool m_PlayModeRecompilePending = false;
 		bool m_PlayModeStopRequested = false;
+		std::chrono::steady_clock::time_point m_PlayModeStopRequestTime{};
+		int m_PlayModeStopFramesToMeasure = 0;
 		std::string m_PlayModeStopOpenScene;
 		bool m_ShowPlayModeRestoreError = false;
 		std::string m_PlayModeRestoreError;
@@ -641,6 +673,13 @@ namespace Index {
 		bool m_ShowPackageManager = false;
 		bool m_ShowProfiler = false;
 		ProfilerPanel m_ProfilerPanel;
+		bool m_ShowAnimationWindow = false;
+		AnimationWindow m_AnimationWindow;
+		bool m_ShowAnimatorWindow = false;
+		AnimatorWindow m_AnimatorWindow;
+		AnimationPreview m_AnimationPreview;
+		ScriptEditorWindows m_ScriptWindows;
+		std::string m_ScriptWindowsProjectRoot;
 
 		// AssetRegistry::GetChangeVersion() the build scene list was last reconciled against; gates the
 		// O(assets) FindAll so opening the Build panel doesn't force a registry rebuild every frame.

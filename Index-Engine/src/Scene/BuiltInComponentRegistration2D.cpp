@@ -68,6 +68,19 @@ namespace Index::BuiltInComponentRegistrationInternal {
 			if (!spriteRenderer.SpriteName.empty()) {
 				spriteValue.AddMember("spriteName", Value(spriteRenderer.SpriteName));
 			}
+			// Only when set, so prefabs saved before materials existed don't diff against every instance.
+			if (spriteRenderer.Material != 0) {
+				spriteValue.AddMember("materialAsset", Value(std::to_string(spriteRenderer.Material)));
+			}
+			if (spriteRenderer.PixelsPerUnit > 0.0f) {
+				spriteValue.AddMember("pixelsPerUnit", Value(spriteRenderer.PixelsPerUnit));
+			}
+			if (spriteRenderer.FlipX) {
+				spriteValue.AddMember("flipX", Value(true));
+			}
+			if (spriteRenderer.FlipY) {
+				spriteValue.AddMember("flipY", Value(true));
+			}
 
 			uint64_t textureAssetId = static_cast<uint64_t>(spriteRenderer.TextureAssetId);
 			if (textureAssetId == 0) {
@@ -121,6 +134,10 @@ namespace Index::BuiltInComponentRegistrationInternal {
 			// SpriteName key is optional. Empty/missing = full texture (the
 			// default behaviour every pre-Phase-D scene relied on).
 			spriteRenderer.SpriteName = GetStringMember(value, "spriteName", std::string{});
+			spriteRenderer.Material = GetUInt64Member(value, "materialAsset", 0);
+			spriteRenderer.PixelsPerUnit = std::max(0.0f, GetFloatMember(value, "pixelsPerUnit", 0.0f));
+			spriteRenderer.FlipX = GetBoolMember(value, "flipX", false);
+			spriteRenderer.FlipY = GetBoolMember(value, "flipY", false);
 		}
 
 		Value SerializeCamera2D(Entity e) {

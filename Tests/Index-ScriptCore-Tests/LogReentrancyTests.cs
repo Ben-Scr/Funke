@@ -12,6 +12,7 @@ namespace IndexScriptCoreTests;
 /// unwind across the reverse-pinvoke boundary and crash the process (the exact failure the
 /// per-entry-point guards exist to prevent). See <c>Log.RaiseLogMessage</c>.
 /// </summary>
+[Collection(LogStateCollection.Name)]
 public class LogReentrancyTests
 {
     [Fact]

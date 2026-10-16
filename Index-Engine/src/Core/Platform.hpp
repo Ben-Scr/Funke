@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // Portable OS services. SDL3 covers most of them; the few Windows paths that
 // stay native (shell "select in Explorer") live behind the same calls.
@@ -53,6 +54,16 @@ namespace Index::Platform {
 	// Blocks the calling (main) thread until the dialog closes, pumping OS events meanwhile.
 	INDEX_API std::optional<std::filesystem::path> PickFolder(const std::filesystem::path& defaultLocation = {},
 		const std::string& title = {});
+
+	// Pattern lists extensions without dots, ';'-separated: "anim", "png;jpg".
+	struct FileFilter {
+		std::string Name;
+		std::string Pattern;
+	};
+	// "Save as" dialog. defaultPath is folder + suggested file name. The OS does not append the filter's extension
+	// everywhere, so callers enforce it.
+	INDEX_API void SaveFileAsync(PathPickedFn onPicked, const std::filesystem::path& defaultPath = {},
+		const std::vector<FileFilter>& filters = {}, const std::string& title = {});
 
 	// ── Environment ─────────────────────────────────────────────────────
 
@@ -104,6 +115,17 @@ namespace Index::Platform {
 	INDEX_API void HideTextActions();
 	INDEX_API TextAction PollTextAction();
 	INDEX_API void PushTextAction(TextAction action);
+
+	// ── Java bridge (Android code that packages ship in the APK) ─────
+
+	// Calls `public static String method(String)` on a Java class through dev.index.player.IndexBridge.
+	// False when the class or method is missing, it threw, or off Android.
+	INDEX_API bool CallJava(const std::string& className, const std::string& method, const std::string& argument,
+		std::string& result);
+	// Messages Java posted with IndexBridge.send(channel, message), oldest first. Main thread.
+	INDEX_API bool PollJavaMessage(std::string& channel, std::string& message);
+	// Called by the platform glue (any thread).
+	INDEX_API void PushJavaMessage(std::string channel, std::string message);
 
 	// ── Dynamic libraries ───────────────────────────────────────────────
 

@@ -18,6 +18,15 @@
     scripts\dev\Run.ps1 -Project bin-int\_agent\My3D -EditorView   # screenshot the Editor View tab instead of the Game View
     scripts\dev\Run.ps1 -App Runtime -Variant 2d -Project <dir>     # module-reduced runtime from premake --without-3d
     scripts\dev\Run.ps1 -App Launcher -LauncherPage templates       # screenshot the Launcher's Templates page
+    scripts\dev\Run.ps1 -OpenWindow build,buildprofiles             # editor with those windows open
+    scripts\dev\Run.ps1 -App Runtime -Project <dir> -ScreenshotAt 2s,5s -FixedStep 60   # engine screenshots at game time
+    scripts\dev\Run.ps1 -App Runtime -Project <dir> -InputScript Tests\level5.json      # scripted input, quits itself
+    scripts\dev\Run.ps1 -App Runtime -Project <dir> -Exec "physics.debug on" -ScreenshotAt 3s
+
+    Runtime runs use the isolated player-data profile "agent" (PlayerPrefs/SaveData under
+    Profiles\agent), so a test never changes the player's saves; -RealPrefs turns that off.
+    With -ScreenshotAt / -InputScript / -QuitAt the game takes its own screenshots
+    (bin-int/_agent/run/shots-<time>-<pid>/at-<time>.png) and quits itself; -Seconds is then only the timeout.
 #>
 [CmdletBinding()]
 param(
@@ -44,14 +53,37 @@ param(
     [switch]$EditorView,
     # Editor only: enter play mode once the startup scene has loaded (INDEX_EDITOR_AUTOPLAY).
     [switch]$Play,
+    # Editor only: leave play mode again after this many seconds (INDEX_EDITOR_AUTOSTOP); implies -Play.
+    [double]$StopAfter = 0,
+    # Editor only: reload the editor in-process once after this many seconds (INDEX_EDITOR_AUTORELOAD).
+    [double]$ReloadAfter = 0,
+    # Editor only, with -ReloadAfter: remove this engine module (e.g. Index.2D) right before the reload.
+    [string]$RemoveModule = "",
+    # Editor only: open these windows once loaded (INDEX_EDITOR_OPEN): build, buildprofiles, projectsettings,
+    # preferences, packages, profiler.
+    [string[]]$OpenWindow = @(),
     # Launcher only: start on this page (INDEX_LAUNCHER_PAGE).
     [ValidateSet("", "templates", "assets")]
     [string]$LauncherPage = "",
+    # Runtime only: engine screenshots at game time ("2s", "2.5") or frame ("120f").
+    [string[]]$ScreenshotAt = @(),
+    # Runtime only: JSON input script (keys, mouse, touch, commands, screenshots, quit); see Editor/Testing.md.
+    [string]$InputScript = "",
+    # Runtime only: every frame advances exactly 1/FixedStep seconds.
+    [double]$FixedStep = 0,
+    # Runtime only: quit at this game time or frame.
+    [string]$QuitAt = "",
+    # Runtime only: dev console commands on the first game frame ("physics.debug on; timescale 2").
+    [string]$Exec = "",
+    # Runtime only: player-data profile; -RealPrefs uses the player's real PlayerPrefs/SaveData.
+    [string]$PrefsProfile = "agent",
+    [switch]$RealPrefs,
     [int]$MaxLogLines = 40
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+. (Join-Path $PSScriptRoot "LoaderExitCodes.ps1")
 $exeName = "Index-$App"
 $outputFolder = if ($Variant) { "$Config-windows-x86_64-$Variant" } else { "$Config-windows-x86_64" }
 $exe = Join-Path $repoRoot "bin\$outputFolder\$exeName\$exeName.exe"
@@ -59,6 +91,23 @@ if (-not (Test-Path -LiteralPath $exe)) { throw "Not built: $exe (run scripts\de
 $outDir = Join-Path $repoRoot "bin-int\_agent\run"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 Get-ChildItem -LiteralPath $outDir -Filter "$App-*.png" -ErrorAction SilentlyContinue | Remove-Item -Force
+# Game screenshots get a folder per run: parallel sessions share bin-int\_agent\run and clean it up.
+$shotDir = Join-Path $outDir ("shots-{0:yyyyMMdd-HHmmss}-{1}" -f (Get-Date), $PID)
+
+$ScreenshotAt = @($ScreenshotAt | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$engineDriven = $App -eq "Runtime" -and ($ScreenshotAt.Count -gt 0 -or $InputScript -or $QuitAt)
+if ($App -ne "Runtime" -and ($ScreenshotAt.Count -gt 0 -or $InputScript -or $QuitAt -or $FixedStep -gt 0 -or $Exec)) {
+    throw "-ScreenshotAt, -InputScript, -QuitAt, -FixedStep and -Exec need -App Runtime"
+}
+# Without an explicit end the game quits shortly after its last screenshot.
+if ($engineDriven -and -not $QuitAt -and -not $InputScript) {
+    $frames = @($ScreenshotAt | Where-Object { $_ -match '^\d+f$' } | ForEach-Object { [int]($_.TrimEnd('f')) })
+    $times = @($ScreenshotAt | Where-Object { $_ -notmatch 'f$' } | ForEach-Object {
+        if ($_ -match '^([\d.]+)ms$') { [double]$Matches[1] / 1000 } else { [double]($_.TrimEnd('s')) } })
+    $invariant = [Globalization.CultureInfo]::InvariantCulture
+    if ($frames.Count -eq 0) { $QuitAt = [string]::Format($invariant, "{0}s", ($times | Measure-Object -Maximum).Maximum + 0.5) }
+    elseif ($times.Count -eq 0) { $QuitAt = [string]::Format($invariant, "{0}f", ($frames | Measure-Object -Maximum).Maximum + 30) }
+}
 
 Add-Type -AssemblyName System.Drawing
 if (-not ("IndexAgent.WindowShot" -as [type])) {
@@ -96,6 +145,27 @@ public static class WindowShot {
 }
 [void][IndexAgent.WindowShot]::SetProcessDPIAware()
 
+function Read-LogHead([string]$path, [int]$length) {
+    $stream = [System.IO.File]::Open($path, "Open", "Read", "ReadWrite")
+    try {
+        $buffer = New-Object byte[] $length
+        $read = $stream.Read($buffer, 0, $buffer.Length)
+        if ($read -le 0) { return $null }
+        return [System.Convert]::ToBase64String($buffer, 0, $read)
+    }
+    finally { $stream.Dispose() }
+}
+
+function Read-LogLines([string]$path, [long]$offset) {
+    $stream = [System.IO.File]::Open($path, "Open", "Read", "ReadWrite")
+    try {
+        if ($offset -gt 0 -and $stream.Length -ge $offset) { [void]$stream.Seek($offset, "Begin") }
+        $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+        return @($reader.ReadToEnd() -split "`r?`n" | Where-Object { $_ })
+    }
+    finally { $stream.Dispose() }
+}
+
 function New-SandboxProject {
     $root = Join-Path $repoRoot "bin-int\_agent\SandboxProject"
     $scenes = Join-Path $root "Assets\Scenes"
@@ -132,12 +202,26 @@ if ($App -ne "Launcher") {
 
 $logPath = Join-Path $env:LOCALAPPDATA "Index\Logs\$exeName.log"
 $logOffset = 0
-if (Test-Path -LiteralPath $logPath) { $logOffset = (Get-Item -LiteralPath $logPath).Length }
+$logHead = $null
+if (Test-Path -LiteralPath $logPath) {
+    $logOffset = (Get-Item -LiteralPath $logPath).Length
+    $logHeadLength = [int][Math]::Min(256, $logOffset)
+    if ($logHeadLength -gt 0) { $logHead = Read-LogHead $logPath $logHeadLength }
+}
 $dumpDir = Join-Path $env:LOCALAPPDATA "Index\CrashDumps"
 $started = Get-Date
 
 $argList = @()
 if ($Project) { $argList += "--project=`"$Project`"" }
+if ($App -eq "Runtime") {
+    if (-not $RealPrefs -and $PrefsProfile) { $argList += "--prefs-profile=$PrefsProfile" }
+    if ($ScreenshotAt.Count -gt 0) { $argList += "--screenshot-at=$($ScreenshotAt -join ',')" }
+    if ($ScreenshotAt.Count -gt 0 -or $InputScript) { $argList += "--screenshot-dir=`"$shotDir`"" }
+    if ($InputScript) { $argList += "--input-script=`"$((Resolve-Path -LiteralPath $InputScript).Path)`"" }
+    if ($FixedStep -gt 0) { $argList += "--fixed-step=$([string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0}', $FixedStep))" }
+    if ($QuitAt) { $argList += "--quit-at=$QuitAt" }
+    if ($Exec) { $argList += "--exec=`"$Exec`"" }
+}
 $argList += @($ExtraArgs | Where-Object { $_ })
 Write-Host "[run] $exeName $($argList -join ' ')"
 # Start-Process rejects an empty -ArgumentList (the Launcher runs without a project).
@@ -145,20 +229,37 @@ $startArgs = @{ FilePath = $exe; WorkingDirectory = (Split-Path $exe -Parent); P
 if ($argList.Count -gt 0) { $startArgs.ArgumentList = $argList }
 $previousFocusView = $env:INDEX_EDITOR_FOCUS_VIEW
 $previousLauncherPage = $env:INDEX_LAUNCHER_PAGE
+$previousOpenWindow = $env:INDEX_EDITOR_OPEN
 $previousAutoplay = $env:INDEX_EDITOR_AUTOPLAY
-if ($Play) { $env:INDEX_EDITOR_AUTOPLAY = "1" }
+$previousAutostop = $env:INDEX_EDITOR_AUTOSTOP
+$previousAutoreload = $env:INDEX_EDITOR_AUTORELOAD
+if ($Play -or $StopAfter -gt 0) { $env:INDEX_EDITOR_AUTOPLAY = "1" }
+if ($StopAfter -gt 0) { $env:INDEX_EDITOR_AUTOSTOP = [string]$StopAfter }
+if ($ReloadAfter -gt 0) { $env:INDEX_EDITOR_AUTORELOAD = if ($RemoveModule) { "${ReloadAfter}:$RemoveModule" } else { [string]$ReloadAfter } }
 if ($EditorView) { $env:INDEX_EDITOR_FOCUS_VIEW = "editor" }
 if ($LauncherPage) { $env:INDEX_LAUNCHER_PAGE = $LauncherPage }
+if ($OpenWindow.Count -gt 0) { $env:INDEX_EDITOR_OPEN = (@($OpenWindow | ForEach-Object { $_ -split ',' }) -join ',') }
 try { $proc = Start-Process @startArgs }
 finally {
     $env:INDEX_EDITOR_FOCUS_VIEW = $previousFocusView
     $env:INDEX_LAUNCHER_PAGE = $previousLauncherPage
+    $env:INDEX_EDITOR_OPEN = $previousOpenWindow
     $env:INDEX_EDITOR_AUTOPLAY = $previousAutoplay
+    $env:INDEX_EDITOR_AUTOSTOP = $previousAutostop
+    $env:INDEX_EDITOR_AUTORELOAD = $previousAutoreload
 }
 
 $shotsTaken = New-Object System.Collections.Generic.List[string]
 $deadline = $started.AddSeconds($Seconds)
-for ($i = 1; $i -le $Shots; $i++) {
+# Engine-driven runs end themselves; wall-clock shots only when asked for explicitly.
+$wallClockShots = if ($engineDriven -and -not $PSBoundParameters.ContainsKey('Shots')) { 0 } else { $Shots }
+if ($engineDriven) {
+    $timeout = [Math]::Max($Seconds, 60)
+    if (-not $proc.WaitForExit([int]($timeout * 1000)) -and $wallClockShots -eq 0) {
+        Write-Host "[run] the game did not quit within ${timeout}s (missing quit step?)" -ForegroundColor Yellow
+    }
+}
+for ($i = 1; $i -le $wallClockShots; $i++) {
     while ((Get-Date) -lt $deadline -and -not $proc.HasExited) { Start-Sleep -Milliseconds 200 }
     if ($proc.HasExited) { break }
     $proc.Refresh()
@@ -179,6 +280,8 @@ if ($KeepOpen) {
 }
 elseif ($proc.HasExited) {
     $exitInfo = "exited on its own with code $($proc.ExitCode)"
+    $loaderFailure = Get-LoaderFailure $proc.ExitCode
+    if ($loaderFailure) { $exitInfo += " before main(): $loaderFailure" }
 }
 else {
     [void]$proc.CloseMainWindow()
@@ -191,16 +294,30 @@ else {
     }
 }
 
-# Log lines written during this run; handles rotation by falling back to the whole file.
+# Log lines written during this run, across spdlog rotations (<exe>.log -> <exe>.1.log -> ... <exe>.3.log),
+# so a log flood can't push the first real error out of the slice.
 $runLog = @()
-if (Test-Path -LiteralPath $logPath) {
-    $stream = [System.IO.File]::Open($logPath, "Open", "Read", "ReadWrite")
-    try {
-        if ($stream.Length -ge $logOffset) { [void]$stream.Seek($logOffset, "Begin") }
-        $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
-        $runLog = $reader.ReadToEnd() -split "`r?`n" | Where-Object { $_ }
+$logFiles = @($logPath) + @(1..3 | ForEach-Object { Join-Path (Split-Path $logPath) "$exeName.$_.log" })
+# The file that was <exe>.log at launch is found by its first bytes; everything newer is read whole.
+$startIndex = -1
+if ($logHead) {
+    for ($i = 0; $i -lt $logFiles.Count; $i++) {
+        if ((Test-Path -LiteralPath $logFiles[$i]) -and (Read-LogHead $logFiles[$i] $logHeadLength) -eq $logHead) { $startIndex = $i; break }
     }
-    finally { $stream.Dispose() }
+}
+if ($startIndex -lt 0) {
+    # No log at launch, or the launch-time file rotated away entirely: take every file written since then.
+    $startIndex = -1
+    for ($i = $logFiles.Count - 1; $i -ge 0; $i--) {
+        if ((Test-Path -LiteralPath $logFiles[$i]) -and (Get-Item -LiteralPath $logFiles[$i]).LastWriteTime -ge $started) { $startIndex = $i; break }
+    }
+    $logOffset = 0
+    if ($logHead) { Write-Host "[run] log rotated past the launch-time file; the earliest lines of this run may be missing" -ForegroundColor Yellow }
+}
+for ($i = $startIndex; $i -ge 0; $i--) {
+    if (-not (Test-Path -LiteralPath $logFiles[$i])) { continue }
+    $offset = if ($i -eq $startIndex -and $logHead) { $logOffset } else { 0 }
+    $runLog += Read-LogLines $logFiles[$i] $offset
 }
 $runLogPath = Join-Path $outDir "$App.log"
 [System.IO.File]::WriteAllLines($runLogPath, [string[]]$runLog)
@@ -220,6 +337,10 @@ if ($problems.Count -gt 0) {
 }
 foreach ($d in $dumps) { Write-Host "[run] CRASH DUMP: $($d.FullName)" -ForegroundColor Red }
 foreach ($s in $shotsTaken) { Write-Host "[run] screenshot: $s" }
+if ($App -eq "Runtime") {
+    Get-ChildItem -LiteralPath $shotDir -Filter "*.png" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime | ForEach-Object { Write-Host "[run] game screenshot: $($_.FullName)" }
+}
 
 $crashed = $dumps.Count -gt 0 -or ($proc.HasExited -and -not $KeepOpen -and $exitInfo -like "exited on its own*" -and $proc.ExitCode -ne 0)
 if ($crashed) { exit 1 } else { exit 0 }

@@ -11,6 +11,7 @@
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem3DComponent.hpp"
+#include "Components/Graphics/SkinnedMeshRendererComponent.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
@@ -23,6 +24,8 @@
 #include "Components/UI/ButtonComponent.hpp"
 #include "Components/UI/InspectorEventBinding.hpp"
 #include "Editor/EditorComponentRegistration.hpp"
+#include "Graphics/MeshAsset.hpp"
+#include "Graphics/SkeletalAnimation.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Gui/EditorUI.hpp"
@@ -463,6 +466,46 @@ namespace Index {
 		if (colOpen && ImGuiUtils::DrawGradientEditor("ColorOverLifetimeGradient3D", ps.ColorOverLifetime, ps.ColorOverLifetimeEnabled)) {
 			ImGuiUtils::MarkSelectionDirty(entities);
 		}
+	}
+
+	void DrawSkinnedMeshRendererInspector(std::span<const Entity> entities)
+	{
+		DrawPropertiesFor<SkinnedMeshRendererComponent>(entities);
+		if (entities.size() != 1) return;
+
+		auto& renderer = const_cast<Entity&>(entities[0]).GetComponent<SkinnedMeshRendererComponent>();
+		const MeshAsset* asset = MeshLibrary::Get(renderer.Model);
+		ImGui::Spacing();
+		if (!asset) {
+			ImGui::TextDisabled(renderer.Model == 0 ? "No model assigned." : "The model could not be loaded (see the Console).");
+			return;
+		}
+		const SkinnedMeshData* data = asset->Skin.get();
+		if (!data) {
+			ImGui::TextDisabled("Static model: no skeleton or animation.");
+			return;
+		}
+
+		if (!data->Clips.empty()) {
+			const int current = data->FindClip(renderer.Clip);
+			const char* preview = renderer.Clip.empty() ? data->Clips.front().Name.c_str()
+				: (current >= 0 ? renderer.Clip.c_str() : "(missing clip)");
+			if (ImGui::BeginCombo("Pick Clip", preview)) {
+				for (size_t i = 0; i < data->Clips.size(); ++i) {
+					const SkeletalClip& clip = data->Clips[i];
+					char label[160];
+					std::snprintf(label, sizeof(label), "%s  (%.2f s)##%zu", clip.Name.c_str(), clip.Duration, i);
+					if (ImGui::Selectable(label, static_cast<int>(i) == current)) {
+						renderer.Clip = clip.Name;
+						renderer.Time = 0.0f;
+						ImGuiUtils::MarkSelectionDirty(entities);
+					}
+				}
+				ImGui::EndCombo();
+			}
+		}
+		ImGui::TextDisabled("%zu vertices, %zu nodes, %zu joints, %zu clip(s)", data->BindVertices.size(), data->Nodes.size(),
+			data->Joints.size(), data->Clips.size());
 	}
 
 	// MUST lock these fields: SliderComponent writes SizeDelta.x each frame and assumes fixed anchor/pivot geometry.

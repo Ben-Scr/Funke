@@ -42,11 +42,20 @@ namespace Index::BuiltInComponentRegistrationInternal {
 		}
 #endif
 
-		// Inspector is fully custom (DrawRectTransform2DInspector) so this
-		// component declares no PropertyDescriptors — they would be ignored
-		// anyway since custom drawInspector wins over properties.
+		// The inspector is custom (DrawRectTransform2DInspector); these descriptors exist for the Animator.
 		RegisterComponent<RectTransform2DComponent>(registry, "Rect Transform 2D",
-			ComponentCategory::Component, "UI", "RectTransform2D");
+			ComponentCategory::Component, "UI", "RectTransform2D",
+			{
+				Properties::Make("AnchoredPosition", "Anchored Position", &RectTransform2DComponent::AnchoredPosition),
+				Properties::Make("SizeDelta", "Size", &RectTransform2DComponent::SizeDelta),
+				Properties::Make("Pivot", "Pivot", &RectTransform2DComponent::Pivot),
+				Properties::Make("AnchorMin", "Anchor Min", &RectTransform2DComponent::AnchorMin),
+				Properties::Make("AnchorMax", "Anchor Max", &RectTransform2DComponent::AnchorMax),
+				Properties::MakeWith<float>("Rotation", "Rotation",
+					[](const Entity& e) { return Degrees(e.GetComponent<RectTransform2DComponent>().LocalRotation); },
+					[](Entity& e, float v) { e.GetComponent<RectTransform2DComponent>().LocalRotation = Radians(v); }),
+				Properties::Make("Scale", "Scale", &RectTransform2DComponent::LocalScale),
+			});
 
 		RegisterComponent<NameComponent>(registry, "Name",
 			ComponentCategory::Component, "General", "name",

@@ -9,6 +9,7 @@
 #include "Components/Graphics/Camera3DComponent.hpp"
 #include "Components/Graphics/DirectionalLightComponent.hpp"
 #include "Components/Graphics/MeshRendererComponent.hpp"
+#include "Components/Graphics/SkinnedMeshRendererComponent.hpp"
 #include "Components/Graphics/ParticleSystem3DComponent.hpp"
 #include "Components/Graphics/PointLightComponent.hpp"
 #include "Components/Graphics/SpotLightComponent.hpp"
@@ -20,11 +21,15 @@
 #include "Graphics/PrimitiveMesh.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Graphics/Renderer3D.hpp"
+#include "Physics3D/PhysicsDebugDraw3D.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
+#include "Scene/EntityPicker.hpp"
 #include "Scene/EntityPicker3D.hpp"
 #include "Scene/Scene.hpp"
 #include "Systems/Transform3DHierarchySystem.hpp"
+#include "Systems/TransformHierarchySystem.hpp"
+#include "Systems/UILayoutSystem.hpp"
 
 #include <imgui.h>
 #include <ImGuizmo.h>
@@ -104,151 +109,6 @@ namespace Index {
 			renderer.DrawWireCircle(center, { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, radius, color);
 			renderer.DrawWireCircle(center, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, radius, color);
 			renderer.DrawWireCircle(center, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, radius, color);
-		}
-
-		const Color k_ColliderColor{ 0.20f, 1.0f, 0.35f, 1.0f };
-		const Color k_TriggerColor{ 0.35f, 0.85f, 1.0f, 1.0f };
-		// Larger meshes draw their bounds instead of every edge.
-		constexpr size_t k_MaxMeshGizmoTriangles = 20000;
-
-		// World pose of a collider the way PhysicsWorld3D builds it: rotation and positive scale of the entity, Center in local space.
-		struct ColliderFrame {
-			glm::vec3 Origin{ 0.0f };
-			glm::vec3 Axes[3]{};
-			glm::vec3 Scale{ 1.0f };
-		};
-
-		bool MakeColliderFrame(const glm::mat4& world, const Vec3& center, ColliderFrame& out) {
-			for (int i = 0; i < 3; ++i) {
-				const glm::vec3 axis(world[i]);
-				out.Scale[i] = glm::length(axis);
-				if (out.Scale[i] < 1e-8f) return false;
-				out.Axes[i] = axis / out.Scale[i];
-			}
-			out.Origin = glm::vec3(world * glm::vec4(center, 1.0f));
-			return true;
-		}
-
-		glm::mat4 FrameMatrix(const ColliderFrame& frame) {
-			glm::mat4 m(1.0f);
-			for (int i = 0; i < 3; ++i) m[i] = glm::vec4(frame.Axes[i], 0.0f);
-			m[3] = glm::vec4(frame.Origin, 1.0f);
-			return m;
-		}
-
-		// Half circle from axisA through axisB to -axisA.
-		void DrawWireArc(Renderer3D& renderer, const glm::vec3& center, const glm::vec3& axisA, const glm::vec3& axisB, float radius, const Color& color) {
-			constexpr int k_Segments = 24;
-			glm::vec3 previous = center + axisA * radius;
-			for (int i = 1; i <= k_Segments; ++i) {
-				const float angle = static_cast<float>(i) / k_Segments * glm::pi<float>();
-				const glm::vec3 point = center + (axisA * std::cos(angle) + axisB * std::sin(angle)) * radius;
-				renderer.DrawLine(previous, point, color);
-				previous = point;
-			}
-		}
-
-		void DrawCapsuleGizmo(Renderer3D& renderer, const ColliderFrame& frame, const CapsuleCollider3DComponent& c, const Color& color) {
-			const int axis = static_cast<int>(c.Direction);
-			const glm::vec3 up = frame.Axes[axis];
-			const glm::vec3 side = frame.Axes[(axis + 1) % 3];
-			const glm::vec3 front = frame.Axes[(axis + 2) % 3];
-			const float radius = std::max(std::abs(c.Radius) * std::max(frame.Scale[(axis + 1) % 3], frame.Scale[(axis + 2) % 3]), 1e-3f);
-			const float halfCylinder = std::max(std::abs(c.Height) * frame.Scale[axis] * 0.5f - radius, 0.0f);
-			const glm::vec3 top = frame.Origin + up * halfCylinder;
-			const glm::vec3 bottom = frame.Origin - up * halfCylinder;
-			renderer.DrawWireCircle(top, side, front, radius, color);
-			renderer.DrawWireCircle(bottom, side, front, radius, color);
-			for (const glm::vec3& offset : { side, -side, front, -front }) {
-				renderer.DrawLine(top + offset * radius, bottom + offset * radius, color);
-			}
-			DrawWireArc(renderer, top, side, up, radius, color);
-			DrawWireArc(renderer, top, front, up, radius, color);
-			DrawWireArc(renderer, bottom, side, -up, radius, color);
-			DrawWireArc(renderer, bottom, front, -up, radius, color);
-		}
-
-		const PrimitiveMeshData& GizmoPrimitiveMesh(PrimitiveMeshType type) {
-			static std::array<PrimitiveMeshData, k_PrimitiveMeshTypeCount> s_Meshes;
-			const size_t index = std::min(static_cast<size_t>(type), k_PrimitiveMeshTypeCount - 1);
-			if (s_Meshes[index].Indices.empty()) s_Meshes[index] = BuildPrimitiveMesh(static_cast<PrimitiveMeshType>(index));
-			return s_Meshes[index];
-		}
-
-		void DrawMeshColliderGizmo(Renderer3D& renderer, const Scene& scene, EntityHandle entity, const glm::mat4& world,
-			const MeshCollider3DComponent& c, const Color& color) {
-			const auto* meshRenderer = c.UseMeshRenderer ? scene.GetRegistry().try_get<MeshRendererComponent>(entity) : nullptr;
-			const uint64_t customMesh = meshRenderer ? meshRenderer->CustomMesh : c.CustomMesh;
-			const PrimitiveMeshType primitive = meshRenderer ? meshRenderer->Mesh : c.Mesh;
-			const PrimitiveMeshData* mesh = nullptr;
-			glm::vec3 boundsMin(-0.5f), boundsMax(0.5f);
-			if (customMesh != 0) {
-				const MeshAsset* asset = MeshLibrary::Get(customMesh);
-				if (!asset) return;
-				mesh = &asset->Data;
-				boundsMin = asset->BoundsMin;
-				boundsMax = asset->BoundsMax;
-			}
-			else {
-				mesh = &GizmoPrimitiveMesh(primitive);
-			}
-
-			// Mesh points live in the entity's space shifted by Center, matching the physics shape.
-			const glm::mat4 meshWorld = world * glm::translate(glm::mat4(1.0f), glm::vec3(c.Center));
-			// A convex Plane collides as a thin box (it has no hull).
-			if (c.Convex && customMesh == 0 && primitive == PrimitiveMeshType::Plane) {
-				renderer.DrawWireBox(meshWorld, { 0.5f, 0.01f, 0.5f }, color);
-				return;
-			}
-			// Jolt builds a custom mesh's convex hull at play time; its bounds are the editor's preview of it.
-			if ((c.Convex && customMesh != 0) || mesh->Indices.size() / 3 > k_MaxMeshGizmoTriangles) {
-				const glm::vec3 half = glm::max((boundsMax - boundsMin) * 0.5f, glm::vec3(0.005f));
-				renderer.DrawWireBox(meshWorld * glm::translate(glm::mat4(1.0f), (boundsMin + boundsMax) * 0.5f), half, color);
-				return;
-			}
-
-			std::unordered_set<uint64_t> drawn;
-			drawn.reserve(mesh->Indices.size());
-			auto point = [&](uint32_t index) {
-				const MeshVertex& v = mesh->Vertices[index];
-				return glm::vec3(meshWorld * glm::vec4(v.Position[0], v.Position[1], v.Position[2], 1.0f));
-			};
-			for (size_t i = 0; i + 2 < mesh->Indices.size(); i += 3) {
-				for (int edge = 0; edge < 3; ++edge) {
-					uint32_t a = mesh->Indices[i + edge];
-					uint32_t b = mesh->Indices[i + (edge + 1) % 3];
-					if (a > b) std::swap(a, b);
-					if (!drawn.insert((static_cast<uint64_t>(a) << 32) | b).second) continue;
-					renderer.DrawLine(point(a), point(b), color);
-				}
-			}
-		}
-
-		// Collider outlines of one entity, drawn see-through so colliders inside or behind meshes stay visible.
-		void DrawColliderGizmos(Renderer3D& renderer, const Scene& scene, EntityHandle entity, const glm::mat4& world) {
-			const auto& registry = scene.GetRegistry();
-			auto colorOf = [](const Collider3DBase& c) { return c.IsTrigger ? k_TriggerColor : k_ColliderColor; };
-			renderer.SetLinesSeeThrough(true);
-			ColliderFrame frame;
-			if (const auto* box = registry.try_get<BoxCollider3DComponent>(entity); box && MakeColliderFrame(world, box->Center, frame)) {
-				renderer.DrawWireBox(FrameMatrix(frame), glm::abs(glm::vec3(box->Size)) * frame.Scale * 0.5f, colorOf(*box));
-			}
-			if (const auto* sphere = registry.try_get<SphereCollider3DComponent>(entity); sphere && MakeColliderFrame(world, sphere->Center, frame)) {
-				const float radius = std::max(std::abs(sphere->Radius) * std::max({ frame.Scale.x, frame.Scale.y, frame.Scale.z }), 1e-3f);
-				for (int i = 0; i < 3; ++i) {
-					renderer.DrawWireCircle(frame.Origin, frame.Axes[i], frame.Axes[(i + 1) % 3], radius, colorOf(*sphere));
-				}
-			}
-			if (const auto* capsule = registry.try_get<CapsuleCollider3DComponent>(entity); capsule && MakeColliderFrame(world, capsule->Center, frame)) {
-				DrawCapsuleGizmo(renderer, frame, *capsule, colorOf(*capsule));
-			}
-			if (const auto* mesh = registry.try_get<MeshCollider3DComponent>(entity)) {
-				// Every edge of a mesh is drawn, so it is lighter than the simple shapes.
-				Color color = colorOf(*mesh);
-				color.a = 0.55f;
-				DrawMeshColliderGizmo(renderer, scene, entity, world, *mesh, color);
-			}
-			renderer.SetLinesSeeThrough(false);
 		}
 
 		// Small bulb for every point light; the range sphere only while selected (it would cover the view otherwise).
@@ -345,6 +205,16 @@ namespace Index {
 		}
 	}
 
+	void ImGuiEditorLayer::SetEditorView3D(bool enabled) {
+		if (!EngineModules::IsActive(EngineModule::TwoD) || !EngineModules::IsActive(EngineModule::ThreeD)) return;
+		if (m_EditorView3D == enabled) return;
+		m_EditorView3D = enabled;
+		if (IndexProject* project = ProjectManager::GetCurrentProject()) {
+			project->EditorView3D = m_EditorView3D;
+			project->Save();
+		}
+	}
+
 	Entity ImGuiEditorLayer::CreateDefaultEntity(Scene& scene, const std::string& name) {
 		if (!m_EditorView3D) {
 			return scene.CreateEntity(name);
@@ -363,8 +233,8 @@ namespace Index {
 		glm::vec3 boundsMax(std::numeric_limits<float>::lowest());
 		bool any = false;
 		const auto& registry = scene.GetRegistry();
-		for (auto [entity, mesh, transform] : registry.view<const MeshRendererComponent, const Transform3DComponent>().each()) {
-			(void)mesh;
+		for (auto [entity, transform] : registry.view<const Transform3DComponent>().each()) {
+			if (!registry.any_of<MeshRendererComponent, SkinnedMeshRendererComponent>(entity)) continue;
 			const LocalBounds3D bounds = EntityPicker3D::GetLocalBounds(scene, entity);
 			const glm::vec3& halfExtents = bounds.HalfExtents;
 			for (int corner = 0; corner < 8; ++corner) {
@@ -380,6 +250,29 @@ namespace Index {
 		if (any) {
 			m_EditorCamera3D.Focus((boundsMin + boundsMax) * 0.5f, glm::length(boundsMax - boundsMin) * 0.5f);
 		}
+	}
+
+	void ImGuiEditorLayer::FocusSelectedEntity3D(Scene& scene) {
+		// F is a fly key's neighbour; ignore it while RMB-flying.
+		if (s_OrbitActive || m_SelectedEntity == entt::null || !scene.IsValid(m_SelectedEntity)) return;
+		Transform3DHierarchySystem::Propagate(scene);
+		const auto* transform = scene.GetRegistry().try_get<Transform3DComponent>(m_SelectedEntity);
+		if (!transform) {
+			// Sprites and UI sit on the z = 0 plane in the 3D view.
+			AABB bounds;
+			if (!TryBuildEntityAABB(scene, m_SelectedEntity, true, bounds)) return;
+			const Vec2 size = bounds.Scale();
+			m_EditorCamera3D.Focus({ (bounds.Min.x + bounds.Max.x) * 0.5f, (bounds.Min.y + bounds.Max.y) * 0.5f, 0.0f },
+				std::max(0.5f, glm::length(glm::vec2(size.x, size.y)) * 0.5f));
+			return;
+		}
+		const LocalBounds3D bounds = EntityPicker3D::GetLocalBounds(scene, m_SelectedEntity);
+		const glm::vec3& halfExtents = bounds.HalfExtents;
+		const glm::vec3 worldExtents(
+			glm::length(glm::vec3(transform->WorldMatrix[0])) * halfExtents.x,
+			glm::length(glm::vec3(transform->WorldMatrix[1])) * halfExtents.y,
+			glm::length(glm::vec3(transform->WorldMatrix[2])) * halfExtents.z);
+		m_EditorCamera3D.Focus(glm::vec3(transform->WorldMatrix * glm::vec4(bounds.Center, 1.0f)), glm::length(worldExtents));
 	}
 
 	void ImGuiEditorLayer::QueueEditorView3DOverlays(Scene& scene, Renderer3D& renderer) {
@@ -414,10 +307,17 @@ namespace Index {
 			if (const auto* transform = registry.try_get<Transform3DComponent>(selected)) {
 				const LocalBounds3D bounds = EntityPicker3D::GetLocalBounds(scene, selected);
 				renderer.DrawWireBox(transform->WorldMatrix * glm::translate(glm::mat4(1.0f), bounds.Center), bounds.HalfExtents * 1.02f, k_SelectionColor);
-				DrawColliderGizmos(renderer, scene, selected, transform->WorldMatrix);
+				PhysicsDebugDraw3D::DrawColliders(renderer, scene, selected, transform->WorldMatrix);
 				if (const auto* particles = registry.try_get<ParticleSystem3DComponent>(selected)) {
 					DrawParticleShapeGizmo(renderer, transform->WorldMatrix, *particles);
 				}
+			}
+			else if (AABB bounds; TryBuildEntityAABB(scene, selected, false, bounds)) {
+				// 2D entity: outline its bounds on the z = 0 plane it is drawn on.
+				const Vec2 size = bounds.Scale();
+				const glm::vec3 center{ (bounds.Min.x + bounds.Max.x) * 0.5f, (bounds.Min.y + bounds.Max.y) * 0.5f, 0.0f };
+				renderer.DrawWireBox(glm::translate(glm::mat4(1.0f), center),
+					{ std::abs(size.x) * 0.5f, std::abs(size.y) * 0.5f, 0.001f }, k_SelectionColor);
 			}
 		}
 	}
@@ -463,20 +363,6 @@ namespace Index {
 			FrameEditorCamera3D(scene);
 		}
 
-		if (hovered && !s_OrbitActive && ImGui::IsKeyPressed(ImGuiKey_F, false)
-			&& m_SelectedEntity != entt::null && scene.IsValid(m_SelectedEntity)) {
-			Transform3DHierarchySystem::Propagate(scene);
-			if (const auto* transform = scene.GetRegistry().try_get<Transform3DComponent>(m_SelectedEntity)) {
-				const LocalBounds3D bounds = EntityPicker3D::GetLocalBounds(scene, m_SelectedEntity);
-				const glm::vec3& halfExtents = bounds.HalfExtents;
-				const glm::vec3 worldExtents(
-					glm::length(glm::vec3(transform->WorldMatrix[0])) * halfExtents.x,
-					glm::length(glm::vec3(transform->WorldMatrix[1])) * halfExtents.y,
-					glm::length(glm::vec3(transform->WorldMatrix[2])) * halfExtents.z);
-				m_EditorCamera3D.Focus(glm::vec3(transform->WorldMatrix * glm::vec4(bounds.Center, 1.0f)), glm::length(worldExtents));
-			}
-		}
-
 		Camera3DView view = m_EditorCamera3D.GetView(viewportSize.x / viewportSize.y);
 		Transform3DHierarchySystem::Propagate(scene);
 		// The scene's main camera decides sky and sky ambient, so the Editor View lights meshes like the game does.
@@ -494,10 +380,12 @@ namespace Index {
 		const AABB everything{ Vec2{ -1.0e9f, -1.0e9f }, Vec2{ 1.0e9f, 1.0e9f } };
 		auto* ppRenderer = app->GetRenderer2D();
 		if (ppRenderer) ppRenderer->SetPostProcessingEnabled(m_ShowPostProcessing);
+		renderer3D->SetPostProcessingEnabled(m_ShowPostProcessing);
 		RenderSceneIntoFBO(m_EditorViewFBO, scene, view.Projection * view.View, everything,
 			false, false, IsInPrefabEditMode() ? prefabClearColor : k_EditorClearColor, IsInPrefabEditMode(), true,
 			m_EditorViewDrawMode, GizmoLayerMask::EditorOnly, &view);
 		if (ppRenderer) ppRenderer->SetPostProcessingEnabled(true);
+		renderer3D->SetPostProcessingEnabled(true);
 
 		ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(m_EditorViewFBO.GetColorTextureBackendId())),
 			ImVec2(viewportSize.x, viewportSize.y));
@@ -521,16 +409,46 @@ namespace Index {
 			nearPoint /= nearPoint.w;
 			farPoint /= farPoint.w;
 
-			const EntityHandle hit = EntityPicker3D::Pick(scene, glm::vec3(nearPoint), glm::normalize(glm::vec3(farPoint - nearPoint)));
+			const glm::vec3 rayOrigin(nearPoint);
+			const glm::vec3 rayDirection = glm::normalize(glm::vec3(farPoint - nearPoint));
+			// Sprites and UI are drawn over the meshes on the z = 0 plane, so their hits come first.
+			std::vector<EntityHandle> stack;
+			if (EngineModules::IsActive(EngineModule::TwoD) && std::abs(rayDirection.z) > 1e-6f) {
+				const float t = -rayOrigin.z / rayDirection.z;
+				if (t > 0.0f) {
+					const glm::vec3 onPlane = rayOrigin + rayDirection * t;
+					TransformHierarchySystem::Propagate(scene);
+					ComputeUILayout(scene);
+					EntityPicker::PickEntitiesAtPoint(scene, Vec2{ onPlane.x, onPlane.y }, stack, /*pixelPrecise*/ true);
+				}
+			}
+			std::vector<EntityHandle> meshHits;
+			EntityPicker3D::PickAll(scene, rayOrigin, rayDirection, meshHits);
+			stack.insert(stack.end(), meshHits.begin(), meshHits.end());
 			const bool hasModifier = io.KeyCtrl || io.KeyShift;
-			if (hit == entt::null) {
+			if (stack.empty()) {
 				if (!hasModifier) ClearEntitySelection();
+				m_PickCycleStack.clear();
 			}
 			else if (hasModifier) {
-				ToggleEntitySelection(hit, -1);
+				ToggleEntitySelection(stack.front(), -1);
+				m_PickCycleStack.clear();
 			}
 			else {
-				SetSingleEntitySelection(hit, -1);
+				// Same cycling as the 2D view: a repeat click on the same spot steps to the next entity behind.
+				EntityHandle pick = stack.front();
+				const float dx = mouse.x - m_PickCycleScreenPos.x;
+				const float dy = mouse.y - m_PickCycleScreenPos.y;
+				constexpr float k_PickCycleTolPx = 3.0f;
+				if (dx * dx + dy * dy <= k_PickCycleTolPx * k_PickCycleTolPx && stack == m_PickCycleStack) {
+					const auto it = std::find(stack.begin(), stack.end(), m_SelectedEntity);
+					if (it != stack.end()) {
+						pick = stack[(static_cast<size_t>(it - stack.begin()) + 1) % stack.size()];
+					}
+				}
+				SetSingleEntitySelection(pick, -1);
+				m_PickCycleScreenPos = Vec2{ mouse.x, mouse.y };
+				m_PickCycleStack = std::move(stack);
 			}
 		}
 

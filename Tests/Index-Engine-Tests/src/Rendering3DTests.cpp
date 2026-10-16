@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/Camera3DComponent.hpp"
@@ -6,17 +7,20 @@
 #include "Components/Graphics/MeshRendererComponent.hpp"
 #include "Components/Graphics/PointLightComponent.hpp"
 #include "Components/Graphics/SpotLightComponent.hpp"
+#include "Core/Application.hpp"
 #include "Core/GraphicsSettings.hpp"
 #include "Graphics/Lighting3D.hpp"
 #include "Graphics/Material.hpp"
 #include "Graphics/MeshAsset.hpp"
 #include "Graphics/Renderer3D.hpp"
+#include "Graphics/SkyAmbient.hpp"
 #include "Project/IndexProject.hpp"
 #include "Scene/BuiltInComponentRegistration.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/Scene.hpp"
 #include "Scripting/ScriptBindings.hpp"
+#include "Scripting/ScriptEngine.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
@@ -90,6 +94,13 @@ TEST_CASE("Material JSON falls back to defaults for missing keys and clamps rang
 
 	CHECK(MaterialFromJson(Json::Parse(R"({"surface": 1})")).Surface == MaterialSurface::Transparent);
 	CHECK(MaterialFromJson(Json::Parse(R"({"surface": 7})")).Surface == MaterialSurface::Opaque);
+
+	// Fog defaults on; only the opt-out is written.
+	CHECK(defaults.Fog);
+	CHECK_FALSE(MaterialToJson(defaults).FindMember("fog"));
+	Material skyDome;
+	skyDome.Fog = false;
+	CHECK_FALSE(MaterialFromJson(Json::Parse(Json::Stringify(MaterialToJson(skyDome)))).Fog);
 }
 
 TEST_CASE("OBJ parser triangulates polygons, shares corners and flips V") {
@@ -506,4 +517,155 @@ TEST_CASE("Camera3DEnvironment copies the camera background and sky") {
 	CHECK(view.Environment.Background == CameraBackground::SolidColor);
 	CHECK(view.Environment.SkyHorizon.g == doctest::Approx(0.25f));
 	CHECK(view.Environment.SkyAmbient == doctest::Approx(2.0f));
+}
+
+TEST_CASE("Camera3D fog reaches the render environment, round-trips and is scriptable") {
+	Camera3DComponent camera;
+	camera.FogEnabled = true;
+	camera.FogColor = Color(0.6f, 0.7f, 0.8f, 1.0f);
+	camera.FogStart = 25.0f;
+	camera.FogEnd = 90.0f;
+	const Camera3DEnvironment environment = Camera3DEnvironment::FromCamera(camera);
+	CHECK(environment.FogEnabled);
+	CHECK(environment.FogColor.g == doctest::Approx(0.7f));
+	CHECK(environment.FogStart == doctest::Approx(25.0f));
+	CHECK(environment.FogEnd == doctest::Approx(90.0f));
+	CHECK_FALSE(Camera3DEnvironment::FromCamera(Camera3DComponent{}).FogEnabled);
+
+	Application app;
+	ComponentRegistry registry;
+	RegisterBuiltInComponents(registry);
+	const ComponentInfo* info = registry.FindBySerializedName("Camera3D");
+	REQUIRE(info);
+	auto scene = Scene::CreateDetachedScene("Fog");
+	Entity src = scene->CreateEntity("Src");
+	src.AddComponent<Camera3DComponent>() = camera;
+	Entity dst = scene->CreateEntity("Dst");
+	dst.AddComponent<Camera3DComponent>();
+	info->deserialize(dst, info->serialize(src));
+	const Camera3DComponent& loaded = dst.GetComponent<Camera3DComponent>();
+	CHECK(loaded.FogEnabled);
+	CHECK(loaded.FogColor.b == doctest::Approx(0.8f));
+	CHECK(loaded.FogEnd == doctest::Approx(90.0f));
+
+	// Script access through the packed sky array (fog sits at 16..22).
+	const uint64_t id = scene->GetEntityPersistentID(dst.GetHandle());
+	ScriptEngine::SetScene(scene.get());
+	NativeBindings b{};
+	ScriptBindings::PopulateNativeBindings(b);
+	float values[23] = {};
+	b.Camera3D_GetSky(id, values, 23);
+	CHECK(values[16] == doctest::Approx(1.0f));
+	CHECK(values[21] == doctest::Approx(25.0f));
+	values[16] = 0.0f;
+	values[22] = 120.0f;
+	b.Camera3D_SetSky(id, values, 23);
+	CHECK_FALSE(dst.GetComponent<Camera3DComponent>().FogEnabled);
+	CHECK(dst.GetComponent<Camera3DComponent>().FogEnd == doctest::Approx(120.0f));
+	ScriptEngine::SetScene(nullptr);
+}
+
+TEST_CASE("Camera3D skybox material binding reads and writes the material GUID") {
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Skybox Binding");
+	Entity camera = scene->CreateEntity("Camera");
+	camera.AddComponent<Camera3DComponent>();
+	Entity bare = scene->CreateEntity("No Camera");
+	const uint64_t cameraId = scene->GetEntityPersistentID(camera.GetHandle());
+	const uint64_t bareId = scene->GetEntityPersistentID(bare.GetHandle());
+	ScriptEngine::SetScene(scene.get());
+
+	NativeBindings b{};
+	ScriptBindings::PopulateNativeBindings(b);
+	REQUIRE(b.Camera3D_GetSkyboxMaterial != nullptr);
+	REQUIRE(b.Camera3D_SetSkyboxMaterial != nullptr);
+
+	CHECK(b.Camera3D_GetSkyboxMaterial(cameraId) == 0);
+	const uint64_t material = 0x8000'0000'0000'1234ull;
+	b.Camera3D_SetSkyboxMaterial(cameraId, material);
+	CHECK(camera.GetComponent<Camera3DComponent>().SkyboxMaterial == material);
+	CHECK(b.Camera3D_GetSkyboxMaterial(cameraId) == material);
+	b.Camera3D_SetSkyboxMaterial(cameraId, 0);
+	CHECK(camera.GetComponent<Camera3DComponent>().SkyboxMaterial == 0);
+
+	b.Camera3D_SetSkyboxMaterial(bareId, material);
+	CHECK(b.Camera3D_GetSkyboxMaterial(bareId) == 0);
+	ScriptEngine::SetScene(nullptr);
+}
+
+TEST_CASE("Sky ambient bands of an equirect panorama follow zenith, horizon and ground") {
+	// 8x10 panorama: blue sky rows, a white horizon band, brown ground rows.
+	std::vector<unsigned char> pixels(8 * 10 * 4, 255);
+	for (int y = 0; y < 10; ++y) {
+		const unsigned char rgb[3] = { static_cast<unsigned char>(y < 4 ? 0 : y < 6 ? 255 : 128), static_cast<unsigned char>(y < 4 ? 0 : y < 6 ? 255 : 64), static_cast<unsigned char>(y < 4 ? 255 : y < 6 ? 255 : 0) };
+		for (int x = 0; x < 8; ++x) {
+			std::copy(rgb, rgb + 3, pixels.begin() + (y * 8 + x) * 4);
+		}
+	}
+	ImageData image(8, 10, std::move(pixels));
+	const SkyAmbient::Colors colors = SkyAmbient::FromEquirect(image);
+	CHECK(colors.Top.b == doctest::Approx(1.0f).epsilon(0.01));
+	CHECK(colors.Top.r == doctest::Approx(0.0f).epsilon(0.01));
+	CHECK(colors.Horizon.g == doctest::Approx(1.0f).epsilon(0.01));
+	CHECK(colors.Ground.r == doctest::Approx(128.0f / 255.0f).epsilon(0.01));
+	CHECK(colors.Ground.b == doctest::Approx(0.0f).epsilon(0.01));
+}
+
+TEST_CASE("Ambient From Skybox keeps the camera colors when the material gives nothing and round-trips") {
+	Camera3DComponent camera;
+	camera.SkyTopColor = Color(0.1f, 0.2f, 0.3f, 1.0f);
+	camera.SkyboxMaterial = 0x7000'0000'0000'0042ull;   // unknown GUID
+	camera.AmbientFromSkybox = true;
+	CHECK(Camera3DEnvironment::FromCamera(camera).SkyTop.g == doctest::Approx(0.2f));
+
+	ComponentRegistry registry;
+	RegisterBuiltInComponents(registry);
+	const ComponentInfo* info = registry.FindBySerializedName("Camera3D");
+	REQUIRE(info);
+	auto scene = Scene::CreateDetachedScene("AmbientFromSkybox");
+	Entity src = scene->CreateEntity("Src");
+	src.AddComponent<Camera3DComponent>() = camera;
+	const Json::Value json = info->serialize(src);
+	CHECK(json.FindMember("ambientFromSkybox"));
+	Entity dst = scene->CreateEntity("Dst");
+	dst.AddComponent<Camera3DComponent>();
+	info->deserialize(dst, json);
+	CHECK(dst.GetComponent<Camera3DComponent>().AmbientFromSkybox);
+	info->deserialize(dst, Json::Parse("{}"));
+	CHECK_FALSE(dst.GetComponent<Camera3DComponent>().AmbientFromSkybox);
+}
+
+TEST_CASE("Camera3D screen points and world points convert both ways") {
+	using namespace Index;
+	Camera3DComponent camera;
+	camera.FieldOfView = 60.0f;
+	const glm::vec2 screen(800.0f, 600.0f);
+	// Camera at (0, 2, 10) looking down -Z.
+	const glm::mat4 world = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 2.0f, 10.0f));
+
+	const Camera3DRay center = Camera3DComponent::ScreenPointToRay(world, camera, screen * 0.5f, screen);
+	CHECK(center.Direction.x == doctest::Approx(0.0f).epsilon(1e-4));
+	CHECK(center.Direction.y == doctest::Approx(0.0f).epsilon(1e-4));
+	CHECK(center.Direction.z == doctest::Approx(-1.0f).epsilon(1e-4));
+	CHECK(center.Origin.z == doctest::Approx(10.0f - camera.NearClip).epsilon(1e-3));
+
+	// A point to the upper left of the view projects into the upper left quarter, and its ray passes through it.
+	const glm::vec3 point(-3.0f, 4.0f, -5.0f);
+	glm::vec3 projected(0.0f);
+	REQUIRE(Camera3DComponent::WorldToScreenPoint(world, camera, point, screen, projected));
+	CHECK(projected.x < screen.x * 0.5f);
+	CHECK(projected.y < screen.y * 0.5f);
+	CHECK(projected.z == doctest::Approx(15.0f).epsilon(1e-3));
+	const Camera3DRay ray = Camera3DComponent::ScreenPointToRay(world, camera, glm::vec2(projected), screen);
+	const float along = glm::dot(point - ray.Origin, ray.Direction);
+	CHECK(glm::length(ray.Origin + ray.Direction * along - point) == doctest::Approx(0.0f).epsilon(1e-3));
+
+	glm::vec3 behind(0.0f);
+	CHECK_FALSE(Camera3DComponent::WorldToScreenPoint(world, camera, glm::vec3(0.0f, 2.0f, 20.0f), screen, behind));
+
+	// Orthographic: every ray runs parallel to the view direction.
+	camera.Projection = CameraProjection::Orthographic;
+	const Camera3DRay corner = Camera3DComponent::ScreenPointToRay(world, camera, glm::vec2(0.0f, 0.0f), screen);
+	CHECK(corner.Direction.z == doctest::Approx(-1.0f).epsilon(1e-4));
+	CHECK(corner.Origin.y == doctest::Approx(2.0f + camera.OrthographicSize).epsilon(1e-3));
 }

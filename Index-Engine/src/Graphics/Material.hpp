@@ -1,12 +1,15 @@
 #pragma once
 #include "Core/Export.hpp"
 #include "Collections/Color.hpp"
+#include "Graphics/CustomShader.hpp"
 #include "Serialization/Json.hpp"
 
 #include <glm/glm.hpp>
 
 #include <cstdint>
+#include <map>
 #include <string>
+#include <vector>
 
 namespace Index {
 
@@ -18,6 +21,16 @@ namespace Index {
 		Transparent = 1
 	};
 	inline constexpr int k_MaterialSurfaceCount = 2;
+
+	// Value of a custom shader property. Texture properties keep the texture asset GUID (0 = the shader's default).
+	struct INDEX_API MaterialPropertyValue {
+		ShaderPropertyType Type = ShaderPropertyType::Float;
+		glm::vec4 Value{ 0.0f };
+		uint64_t Texture = 0;
+
+		static MaterialPropertyValue FromDefault(const ShaderProperty& property);
+		bool operator==(const MaterialPropertyValue&) const = default;
+	};
 
 	// Surface description of a .material asset (JSON, GUID via its .meta). Colors are sRGB as authored.
 	struct INDEX_API Material {
@@ -32,10 +45,22 @@ namespace Index {
 		glm::vec2 Offset{ 0.0f, 0.0f };
 		// Unlit materials ignore lights, exposure and tone mapping and show BaseColor (+ emissive) as is.
 		bool Lit = true;
+		// Takes part in the camera's distance fog; off for things that are the backdrop themselves (a sky dome).
+		bool Fog = true;
 		MaterialSurface Surface = MaterialSurface::Opaque;
+		// User .wgsl shader asset GUID; 0 = the standard PBR shader (and the fields above).
+		uint64_t Shader = 0;
+		// Values for the shader's @property declarations by name. Properties the shader no longer declares are kept, so
+		// switching shaders back and forth loses nothing; missing ones use the shader's default.
+		std::map<std::string, MaterialPropertyValue> Properties;
 
 		bool operator==(const Material&) const = default;
 	};
+
+	// Property value the shader sees: the material's own when its type matches the declaration, else the default.
+	INDEX_API MaterialPropertyValue ResolveMaterialProperty(const Material& material, const ShaderProperty& property);
+	// Fills the property uniform block (description.UniformSize bytes) in the layout of the shader's MaterialProperties.
+	INDEX_API void PackMaterialProperties(const Material& material, const ShaderDescription& description, std::vector<uint8_t>& outBytes);
 
 	inline constexpr int k_MaterialFormatVersion = 1;
 	inline constexpr const char* k_MaterialExtension = ".material";

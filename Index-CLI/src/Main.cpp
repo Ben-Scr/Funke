@@ -3,6 +3,7 @@
 
 #include "Core/Base.hpp"
 #include "Core/Engine.hpp"
+#include "Core/EngineAbi.hpp"
 #include "Core/Log.hpp"
 #include "Core/Version.hpp"
 
@@ -44,11 +45,13 @@ R"(index info [--project <dir>] [--json])", &RunInfo },
 R"(index build [options]
 
 Runs the same pipeline as the editor's Build button, without the editor. project.json is not
-modified; --release/--development and the chosen profile apply to this build only.
+modified; --debug/--development/--release and the chosen profile apply to this build only.
+A profile's "configuration", "defines" and test switches apply unless overridden here.
 
   --project <dir>          Project root (default: the project containing the working directory)
   --release                Release build (Dist binaries, INDEX_BUILD_RELEASE)
-  --development            Development build (default: the project's Build panel setting)
+  --development            Development build (default: the profile's or Build panel setting)
+  --debug                  Debug build (Debug binaries + PDBs, INDEX_BUILD_DEBUG; needs engine sources)
   --platform <name>        Windows, Linux, MacOS, Android, iOS, Web: picks that platform's profile
   --profile <name>         Build profile (BuildProfiles/<name>.build)
   --output <dir>           Output folder (default: <project>/Builds/<profile>)
@@ -62,7 +65,16 @@ R"(index run [options]
   --scene <name>     Start in this scene instead of the startup scene
   --seconds <n>      Quit after n seconds (smoke test); exit code reflects runtime errors
   --no-compile       Skip compiling the C# scripts
-  --detach           Start the runtime and return immediately)", &RunPlay },
+  --detach           Start the runtime and return immediately
+
+Test runs (see Editor/Testing.md):
+  --prefs-profile <name>   PlayerPrefs/SaveData in Profiles/<name>, never the real saves
+  --input-script <file>    Timed keys, mouse, touch, console commands, screenshots, quit (JSON)
+  --screenshot-at <t,...>  PNGs at game time ("2.5s") or frame ("120f")
+  --screenshot-dir <dir>   Where screenshots go (default %LOCALAPPDATA%\Index\Screenshots)
+  --fixed-step <fps>       Every frame advances exactly 1/fps seconds (reproducible runs)
+  --quit-at <t>            Quit at a game time or frame
+  --exec "<cmd>; <cmd>"    Dev console commands on the first game frame)", &RunPlay },
 
 			Command{ "open", "Open the project in the editor",
 R"(index open [--project <dir>])", &RunOpen },
@@ -107,7 +119,11 @@ Writes the slices into the texture's .meta, exactly like the Sprite Editor's sli
   --keep             Append to the existing slices instead of replacing them
   --dry-run          Print the slices without writing
 
-index sprite list <texture> [--json])", &RunSprite },
+index sprite list <texture> [--json]
+index sprite border <texture> --border L,B,R,T [--slice <name>]
+                   9-slice border in pixels for the whole texture or one slice
+                   (one value sets all four; 0 clears it). Sliced/Tiled Images use it
+                   when their own border is 0.)", &RunSprite },
 
 			Command{ "prefab", "Create, apply, revert and unpack prefab instances in a scene",
 R"(index prefab create <scene> <entity> <out.prefab>   Save an entity subtree as a prefab and turn it
@@ -186,6 +202,8 @@ account changes.)", &RunSetupPath },
 		Options().Quiet = args.Flag("quiet", "q");
 		Options().ProjectRoot = args.Option("project", "p");
 		const bool help = args.Flag("help", "h");
+		// stderr only: --json output on stdout stays parseable.
+		ReportEngineAbiMismatch("index.exe");
 
 		if (args.Flag("version")) {
 			Out(std::string(Engine::GetVersionLong()));

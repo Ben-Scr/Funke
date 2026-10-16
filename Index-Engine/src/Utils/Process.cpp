@@ -509,6 +509,55 @@ namespace Index::Process {
 		return LaunchDetached(command, workingDirectory, ignored);
 	}
 
+	std::string DescribeLoaderFailure(int exitCode) {
+		const std::string hint = " Rebuild or reinstall so the executable and the DLLs next to it come from the same build.";
+		switch (static_cast<uint32_t>(exitCode)) {
+		case 0xC0000135u: return "A DLL the executable needs was not found (0xC0000135)." + hint;
+		case 0xC0000138u: return "A DLL next to the executable lacks an ordinal it imports (0xC0000138), usually a stale Index-Engine.dll." + hint;
+		case 0xC0000139u: return "A DLL next to the executable lacks a function it imports (0xC0000139), usually a stale Index-Engine.dll." + hint;
+		case 0xC000007Bu: return "A DLL next to the executable is for another architecture or corrupt (0xC000007B)." + hint;
+		case 0xC0000142u: return "A DLL failed to initialize while the executable started (0xC0000142)." + hint;
+		case 0xC0150002u: return "The executable's side-by-side configuration is broken, e.g. a missing Visual C++ runtime (0xC0150002).";
+		default: return {};
+		}
+	}
+
+	bool LaunchDetachedChecked(const std::vector<std::string>& command, const std::filesystem::path& workingDirectory,
+		unsigned long& outProcessId, std::string& outError, std::chrono::milliseconds watch) {
+		outError.clear();
+#ifdef IDX_PLATFORM_WINDOWS
+		outProcessId = 0;
+		if (command.empty()) return false;
+		std::wstring commandLine = ToWide(BuildCommandLine(command));
+		std::vector<wchar_t> mutableCommandLine(commandLine.begin(), commandLine.end());
+		mutableCommandLine.push_back(L'\0');
+		const std::wstring workingDirectoryWide = workingDirectory.empty() ? std::wstring() : workingDirectory.wstring();
+		STARTUPINFOW startupInfo{};
+		startupInfo.cb = sizeof(startupInfo);
+		PROCESS_INFORMATION processInfo{};
+		if (!CreateProcessW(nullptr, mutableCommandLine.data(), nullptr, nullptr, FALSE, CREATE_NEW_PROCESS_GROUP,
+				nullptr, workingDirectoryWide.empty() ? nullptr : workingDirectoryWide.c_str(), &startupInfo, &processInfo)) {
+			return false;
+		}
+		outProcessId = processInfo.dwProcessId;
+		bool launched = true;
+		// The loader fails within milliseconds; a healthy process just costs the wait.
+		if (WaitForSingleObject(processInfo.hProcess, static_cast<DWORD>(std::max<long long>(watch.count(), 0))) == WAIT_OBJECT_0) {
+			DWORD exitCode = 0;
+			if (GetExitCodeProcess(processInfo.hProcess, &exitCode)) {
+				outError = DescribeLoaderFailure(static_cast<int>(exitCode));
+				launched = outError.empty();
+			}
+		}
+		CloseHandle(processInfo.hProcess);
+		CloseHandle(processInfo.hThread);
+		return launched;
+#else
+		(void)watch;
+		return LaunchDetached(command, workingDirectory, outProcessId);
+#endif
+	}
+
 	bool IsProcessRunning(unsigned long processId) {
 		if (processId == 0) {
 			return false;

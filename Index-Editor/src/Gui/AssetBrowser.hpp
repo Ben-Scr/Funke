@@ -52,6 +52,13 @@ namespace Index {
 			return p;
 		}
 
+		// .anim / .animctrl the user opened; the layer shows it in the Animation / Animator window.
+		std::string TakePendingAnimationOpen() {
+			std::string p = std::move(m_PendingAnimationOpen);
+			m_PendingAnimationOpen.clear();
+			return p;
+		}
+
 		/// Call this when external files are dropped onto the window.
 		void OnExternalFileDrop(const std::vector<std::string>& paths);
 		bool IsImportingAssets() const { return m_ImportActive.load(std::memory_order_acquire); }
@@ -178,6 +185,7 @@ namespace Index {
 		void CreateScene(const std::string& parentDir);
 		void CreateDataAsset(const std::string& parentDir, const std::string& typeName);
 		void CreateMaterial(const std::string& parentDir);
+		void CreateAnimationAsset(const std::string& parentDir, bool controller);
 		void CreateEntityPrefab(const std::string& parentDir, EntityHandle sourceEntity = entt::null);
 		void CreateDefaultTexture(const std::string& parentDir,
 			const std::string& sourceFile, const std::string& displayName);
@@ -246,6 +254,7 @@ namespace Index {
 		bool m_ItemRightClicked = false;
 		std::string m_PendingSceneLoad;
 		std::string m_PendingPrefabEdit;
+		std::string m_PendingAnimationOpen;
 		std::vector<std::string> m_AssetClipboardPaths;
 		bool m_AssetClipboardCut = false;
 

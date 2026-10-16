@@ -15,6 +15,7 @@
 namespace Index {
 	class Scene;
 	class Shader;
+	struct PostProcessing2DComponent;
 
 	// Background and sky-ambient settings of the camera a view renders through.
 	struct INDEX_API Camera3DEnvironment {
@@ -25,6 +26,11 @@ namespace Index {
 		Color SkyGround = Camera3DComponent{}.SkyGroundColor;
 		float SunSize = Camera3DComponent{}.SunSize;
 		float SkyAmbient = Camera3DComponent{}.SkyAmbient;
+		uint64_t SkyboxMaterial = 0;
+		bool FogEnabled = false;
+		Color FogColor = Camera3DComponent{}.FogColor;
+		float FogStart = Camera3DComponent{}.FogStart;
+		float FogEnd = Camera3DComponent{}.FogEnd;
 
 		static Camera3DEnvironment FromCamera(const Camera3DComponent& camera);
 	};
@@ -70,6 +76,14 @@ namespace Index {
 		// Meshes, then particles.
 		void RenderScene(Scene& scene, const Camera3DView& view);
 
+		// Editor View toggle; the Game View and the runtime keep it on.
+		void SetPostProcessingEnabled(bool enabled) { m_PostProcessingEnabled = enabled; }
+		// With an effect enabled in `settings` (the camera's Post Processing), redirects drawing into an
+		// intermediate target cleared to clearColor and returns true; EndPostProcess then runs the effects into
+		// the original target. False = draw straight to the target and skip EndPostProcess.
+		bool BeginPostProcess(const PostProcessing2DComponent* settings, const Color& clearColor);
+		void EndPostProcess();
+
 		// Queued world-space lines, drawn and cleared by FlushLines (editor grid, selection bounds).
 		void DrawLine(const glm::vec3& a, const glm::vec3& b, const Color& color);
 		void DrawWireBox(const glm::mat4& transform, const glm::vec3& halfExtents, const Color& color);
@@ -91,11 +105,13 @@ namespace Index {
 
 	private:
 		struct GpuState;
+		struct PostProcessState;
 
 		void RenderMeshes(Scene& scene, const Camera3DView& view);
 		void RenderParticles(Scene& scene, const Camera3DView& view);
 
 		std::unique_ptr<GpuState> m_Gpu;
+		std::unique_ptr<PostProcessState> m_PostProcess;
 		std::unique_ptr<Shader> m_MeshShader;
 		std::unique_ptr<Shader> m_SkyShader;
 		std::unique_ptr<Shader> m_ShadowShader;
@@ -117,6 +133,7 @@ namespace Index {
 		bool m_LinesSeeThrough = false;
 		bool m_RenderedThisFrame = false;
 		bool m_OwnDepthNeedsClear = true;
+		bool m_PostProcessingEnabled = true;
 	};
 
 }

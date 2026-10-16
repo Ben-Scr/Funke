@@ -19,3 +19,4 @@
 #include "Components/UI/HorizontalLayoutGroupComponent.hpp"
 #include "Components/UI/VerticalLayoutGroupComponent.hpp"
 #include "Components/UI/GridLayoutGroupComponent.hpp"
+#include "Components/UI/LocalizedTextComponent.hpp"

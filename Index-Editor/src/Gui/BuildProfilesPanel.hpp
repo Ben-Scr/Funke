@@ -28,6 +28,7 @@ namespace Index {
 		void RenderInspector();
 		void RenderPlatformTiles(IndexBuildProfile& profile);
 		void RenderPlatformPackage(IndexBuildProfile& profile);
+		void RenderTesting(IndexBuildProfile& profile);
 
 		bool HasSelection() const;
 		bool IsActiveProfile(const std::string& name) const;

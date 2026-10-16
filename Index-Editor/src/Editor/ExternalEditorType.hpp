@@ -7,7 +7,8 @@ namespace Index {
 		VisualStudio,
 		VSCode,
 		Rider,
-		Custom
+		Custom,
+		IntelliJ // IntelliJ IDEA: opens and edits scripts, but has no C# language support (that is Rider)
 	};
 
 } // namespace Index

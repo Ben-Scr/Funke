@@ -9,7 +9,7 @@ Before exporting:
 1. Open **Project Settings** and set the executable name, company, version, window mode, icon, and splash screen.
 2. Add every required scene to **Build Scenes** and choose a valid startup scene.
 3. Select a build profile for your desktop platform (new projects get `Windows`, `Linux` and `macOS` profiles).
-4. Use **Development** while testing and **Release** for distribution.
+4. Use **Development** while testing and **Release** for distribution. **Debug** adds debug binaries and symbols for attaching a debugger. Build profiles can carry their own configuration, defines and test switches; see [Test Builds and Debug Tools](Testing.md).
 5. Choose an empty output directory (outside the project or under its `Builds` folder) and click **Build**.
 
 The output directory defaults to `<project>/Builds/<Platform>`. While its last folder is a platform name (`Windows`, `Linux`, `MacOS`, `Android`, `Web`, ...), it follows the active profile's platform; any other folder name is kept as typed.
@@ -23,6 +23,8 @@ What the build produces:
 | macOS | `<Name>.app`: the executable and libraries in `Contents/MacOS`, the game content in `Contents/Resources`, an `Info.plist` with the app id and version, and the icon as `AppIcon.icns`. The bundle is ad-hoc signed; sign and notarize it with your Developer ID before distributing it outside your own Macs. |
 
 From a source checkout the editor compiles a fresh runtime for the export first (MSBuild on Windows, `make` on Linux and macOS). That runtime contains only the [engine modules](../Engine-Core/Engine-Modules.md) the project enables, so a 2D game ships without the 3D renderer and Jolt and a 3D game without sprites and Box2D. The first export with a new module set compiles the engine once. A build stops when a shipped scene uses a component of a module the project leaves out.
+
+On Windows that runtime is compiled with the MSBuild of Visual Studio 2022 when it is installed, because the engine itself is built with it; otherwise Visual Studio 2026 with the MSVC v143 toolset is used. Set `INDEX_MSBUILD` to the full path of an `MSBuild.exe` to choose one yourself.
 
 The build is fail-closed: invalid paths, missing scenes, incomplete scripting artifacts, package failures, and incomplete runtime payloads stop the export instead of publishing a partial folder. The completed directory is staged first and then moved into place.
 

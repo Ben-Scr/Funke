@@ -55,6 +55,7 @@ IDX_ASSERT(ptr, IndexErrorCode::NullReference, fmt::format("Widget {} was null",
 
 - `IDX_THROW(code, msg)` → `IndexException` (`Core/Exceptions.hpp`). Notable thrower: `Scene::GetComponent<T>` on an invalid entity (`Cannot get component from invalid entity.`) or a missing component (`Component of type '...' not found on entity.`).
 - `Application` wraps layer callbacks and renderer/gizmo/gui begin/end in `INDEX_TRY_CATCH_LOG`, so these usually surface as a core `Exception: <what>` line, not a crash. The frame keeps going with partial work.
+- Exceptions thrown from script callbacks log `Exception in OnUpdate(): ...` in full three times per callback + type + throw site, then a `... repeated N more time(s) in the last 5s` summary (`ScriptExceptionLog.cs`); the first report is the one to read.
 - Native script bindings go through `IDX_GUARDED_BINDING` (`Scripting/ScriptBindingGuard.hpp`): a throw logs `[ScriptBinding] exception in <signature>: ...` and returns a default value to C#.
 
 ## Crash dumps (`Core/CrashReporter.{hpp,cpp}`)

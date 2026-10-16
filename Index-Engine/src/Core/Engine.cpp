@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Core/Engine.hpp"
 #include "Core/BuildIdentity.hpp"
+#include "Core/EngineAbi.hpp"
 
 #if INDEX_WITH_RENDER
 #include "Graphics/RenderApi.hpp"
@@ -283,6 +284,10 @@ namespace Index {
 
 	std::string_view Engine::GetVersionLong() noexcept {
 		return IDX_VERSION_LONG;
+	}
+
+	std::string_view Engine::GetAbiKey() noexcept {
+		return IDX_ENGINE_ABI;
 	}
 
 	GraphicsApi Engine::GetGraphicsApi() noexcept {

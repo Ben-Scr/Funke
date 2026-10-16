@@ -389,38 +389,53 @@ namespace Index {
 			{}, logTag, outRefreshedCount);
 	}
 
-	PrefabInspector::PrefabInspector() = default;
-	PrefabInspector::~PrefabInspector() = default;
-
-	bool PrefabInspector::Open(const std::string& prefabPath) {
+	EntityHandle LoadPrefabSourceIntoDetachedScene(const std::string& prefabPath, const std::string& sceneName,
+		std::string_view logTag, std::unique_ptr<Scene>& outScene) {
 		if (!File::Exists(prefabPath)) {
-			IDX_CORE_WARN_TAG("PrefabInspector", "Prefab file not found: {}", prefabPath);
-			return false;
+			IDX_CORE_WARN_TAG(logTag, "Prefab file not found: {}", prefabPath);
+			return entt::null;
 		}
 
 		Json::Value root;
 		std::string readError;
 		if (!SceneSerializerStorage::ReadRootFromFile(prefabPath, root, &readError) || !root.IsObject()) {
-			IDX_CORE_ERROR_TAG("PrefabInspector", "Failed to parse {}: {}", prefabPath, readError);
-			return false;
+			IDX_CORE_ERROR_TAG(logTag, "Failed to parse {}: {}", prefabPath, readError);
+			return entt::null;
+		}
+		if (!SceneSerializer::HasPrefabEntityPayload(root)) {
+			IDX_CORE_WARN_TAG(logTag, "No Entities/Entity/prefab block in {}", prefabPath);
+			return entt::null;
 		}
 
-		// The .prefab envelope keeps both "Entity" (preferred) and a legacy
-		// "prefab" key with the same payload. Prefer the new key, fall back.
-		const Json::Value* entityValue = root.FindMember("Entity");
-		if (!entityValue) entityValue = root.FindMember("prefab");
-		if (!entityValue || !entityValue->IsObject()) {
-			IDX_CORE_WARN_TAG("PrefabInspector", "No Entity/prefab block in {}", prefabPath);
-			return false;
-		}
-
-		auto stagedScene = Scene::CreateDetachedScene("##PrefabInspector");
+		auto stagedScene = Scene::CreateDetachedScene(sceneName);
 		const EntityHandle stagedRoot = SceneSerializer::DeserializeEntityFromValue(*stagedScene, root);
 		if (stagedRoot == entt::null || !stagedScene->IsValid(stagedRoot)) {
-			IDX_CORE_ERROR_TAG("PrefabInspector", "Failed to deserialize prefab root from {}", prefabPath);
-			return false;
+			IDX_CORE_ERROR_TAG(logTag, "Failed to deserialize prefab root from {}", prefabPath);
+			return entt::null;
 		}
 		stagedScene->ClearDirty();
+		outScene = std::move(stagedScene);
+		return stagedRoot;
+	}
+
+	PrefabInspector::PrefabInspector() = default;
+	PrefabInspector::~PrefabInspector() = default;
+
+	bool PrefabInspector::Open(const std::string& prefabPath) {
+		const FileStamp stamp = FileStamp::Read(prefabPath);
+		if (prefabPath == m_FailedPath && stamp == m_FailedStamp) return false;
+
+		std::unique_ptr<Scene> stagedScene;
+		const EntityHandle stagedRoot = LoadPrefabSourceIntoDetachedScene(prefabPath, "##PrefabInspector",
+			"PrefabInspector", stagedScene);
+		if (stagedRoot == entt::null) {
+			// Callers only switch away from a clean prefab, so dropping it beats showing it under the wrong selection.
+			Close();
+			m_FailedPath = prefabPath;
+			m_FailedStamp = stamp;
+			return false;
+		}
+		m_FailedPath.clear();
 		m_PrefabScene = std::move(stagedScene);
 		m_RootEntity = stagedRoot;
 		m_PrefabPath = prefabPath;
@@ -440,7 +455,8 @@ namespace Index {
 
 	bool PrefabInspector::Render() {
 		if (!m_PrefabScene || m_RootEntity == entt::null || !m_PrefabScene->IsValid(m_RootEntity)) {
-			EditorUI::EmptyState("No prefab loaded.");
+			if (!m_FailedPath.empty()) EditorUI::EmptyState("This prefab could not be loaded.", "See the Console for details.");
+			else EditorUI::EmptyState("No prefab loaded.");
 			return false;
 		}
 
@@ -480,7 +496,7 @@ namespace Index {
 
 			bool removeRequested = false;
 			bool open = ImGuiUtils::BeginComponentSection(info.displayName.c_str(), removeRequested,
-				[]() {});
+				[]() {}, info.icon);
 			if (removeRequested) {
 				pendingRemoval = typeId;
 			}

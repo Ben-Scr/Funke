@@ -2,14 +2,20 @@
 #include "Scene/BuiltInComponentRegistration.hpp"
 #include "Scene/BuiltInComponentRegistrationShared.hpp"
 
+#include "Components/Audio/AudioSourceComponent.hpp"
+#include "Components/General/AnimatorComponent.hpp"
 #include "Components/General/General.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
+#include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Components/UI/UI.hpp"
 #include "Scripting/ScriptComponent.hpp"
+#include "Components/Graphics/PostProcessing2DComponent.hpp"
 
 #if INDEX_WITH_2D
+#include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
+#include "Components/Graphics/SpriteAnimator2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
@@ -27,6 +33,7 @@
 #include "Components/Graphics/MeshRendererComponent.hpp"
 #include "Components/Graphics/ParticleSystem3DComponent.hpp"
 #include "Components/Graphics/PointLightComponent.hpp"
+#include "Components/Graphics/SkinnedMeshRendererComponent.hpp"
 #include "Components/Graphics/SpotLightComponent.hpp"
 #include "Components/Physics3D/Collider3DComponents.hpp"
 #include "Components/Physics3D/Rigidbody3DComponent.hpp"
@@ -55,6 +62,57 @@
 // Conflicts and dependencies stay here because they span categories and must run after
 // every component they mention has been registered.
 namespace Index {
+	namespace {
+		template <typename T>
+		void SetIcon(ComponentRegistry& registry, const char* icon) {
+			if (ComponentInfo* info = registry.GetInfo<T>()) info->icon = icon;
+		}
+
+		// Inspector header / hierarchy icons; names are files in IndexAssets/Textures/Editor/General.
+		void AssignBuiltInIcons(ComponentRegistry& registry) {
+			SetIcon<ScriptComponent>(registry, "script");
+			SetIcon<AnimatorComponent>(registry, "animator");
+			SetIcon<RectTransform2DComponent>(registry, "bounding_box");
+			SetIcon<ImageComponent>(registry, "eye_open");
+			SetIcon<TextRendererComponent>(registry, "caret");
+			SetIcon<InputFieldComponent>(registry, "caret");
+			SetIcon<LocalizedTextComponent>(registry, "caret");
+			SetIcon<HorizontalLayoutGroupComponent>(registry, "grid");
+			SetIcon<VerticalLayoutGroupComponent>(registry, "grid");
+			SetIcon<GridLayoutGroupComponent>(registry, "grid");
+			SetIcon<AudioSourceComponent>(registry, "audio_source");
+			SetIcon<PostProcessing2DComponent>(registry, "post_processing");
+#if INDEX_WITH_2D
+			SetIcon<Transform2DComponent>(registry, "move");
+			SetIcon<Camera2DComponent>(registry, "camera");
+			SetIcon<SpriteRendererComponent>(registry, "eye_open");
+			SetIcon<SpriteAnimator2DComponent>(registry, "eye_open");
+			SetIcon<ParticleSystem2DComponent>(registry, "particles");
+			SetIcon<Rigidbody2DComponent>(registry, "rigidbody_2d");
+			SetIcon<FastBody2DComponent>(registry, "rigidbody_2d");
+			SetIcon<BoxCollider2DComponent>(registry, "collider_box_2d");
+			SetIcon<FastBoxCollider2DComponent>(registry, "collider_box_2d");
+			SetIcon<CircleCollider2DComponent>(registry, "collider_circle_2d");
+			SetIcon<FastCircleCollider2DComponent>(registry, "collider_circle_2d");
+			SetIcon<PolygonCollider2DComponent>(registry, "collider_polygon_2d");
+#endif
+#if INDEX_WITH_3D
+			SetIcon<Transform3DComponent>(registry, "move");
+			SetIcon<Camera3DComponent>(registry, "camera");
+			SetIcon<DirectionalLightComponent>(registry, "light_sun");
+			SetIcon<PointLightComponent>(registry, "light_point");
+			SetIcon<SpotLightComponent>(registry, "light_spot");
+			SetIcon<ParticleSystem3DComponent>(registry, "particles");
+			SetIcon<SkinnedMeshRendererComponent>(registry, "animator");
+			SetIcon<Rigidbody3DComponent>(registry, "rigidbody_3d");
+			SetIcon<BoxCollider3DComponent>(registry, "collider_box_3d");
+			SetIcon<SphereCollider3DComponent>(registry, "collider_sphere_3d");
+			SetIcon<CapsuleCollider3DComponent>(registry, "collider_capsule_3d");
+			SetIcon<MeshCollider3DComponent>(registry, "collider_mesh_3d");
+#endif
+		}
+	}
+
 	void RegisterBuiltInComponents(ComponentRegistry& registry) {
 		using Index::Codegen::RegisterComponent;
 		using Index::Codegen::DeclareConflict;
@@ -144,8 +202,9 @@ namespace Index {
 		RegisterComponent<DeadlyTag>(registry, "Deadly", ComponentCategory::Tag);
 
 #if INDEX_WITH_3D
+		{
 		// ── 3D ──────────────────────────────────────────────────────
-		// Appended after the Tags so no older typeIdU32 shifts; a build without the module simply ends here.
+		// Appended after the Tags so no older typeIdU32 shifts; a build without the module skips this block.
 		Internal::ModuleRegistrationScope module3D(registry, EngineModule::ThreeD);
 		Internal::Register3D(registry);
 #if INDEX_WITH_2D
@@ -178,7 +237,28 @@ namespace Index {
 #if INDEX_WITH_2D
 		DeclareConflict<ParticleSystem3DComponent, ParticleSystem2DComponent>(registry);
 #endif
+		}
 #endif
+
+		// ── Animation ───────────────────────────────────────────────
+		// Core (no module); after the 3D slices for the same typeIdU32 reason.
+		Internal::RegisterAnimation(registry);
+
+#if INDEX_WITH_3D
+		{
+		// ── Skinned Mesh 3D ─────────────────────────────────────────
+		// After Animation for the same typeIdU32 reason.
+		Internal::ModuleRegistrationScope module3D(registry, EngineModule::ThreeD);
+		Internal::RegisterSkinnedMesh3D(registry);
+		DeclareDependency<SkinnedMeshRendererComponent, Transform3DComponent>(registry);
+		DeclareConflict<SkinnedMeshRendererComponent, MeshRendererComponent>(registry);
+		}
+#endif
+
+		// ── Localization ────────────────────────────────────────────
+		// Core (no module); last for the same typeIdU32 reason.
+		Internal::RegisterLocalization(registry);
+		DeclareDependency<LocalizedTextComponent, TextRendererComponent>(registry);
 
 		// ── Module conflicts ────────────────────────────────────────
 		// 2D and 3D components describe different worlds (Transform2D vs Transform3D, Box2D vs Jolt): one entity
@@ -200,6 +280,8 @@ namespace Index {
 			for (const std::type_index& world : twoD) registry.DeclareConflict(world, rect);
 			for (const std::type_index& world : threeD) registry.DeclareConflict(world, rect);
 		}
+
+		AssignBuiltInIcons(registry);
 
 		// Debug check: conflict edges must be symmetric — asymmetry would silently break "Add Component" filtering.
 		registry.ValidateConflictSymmetry();

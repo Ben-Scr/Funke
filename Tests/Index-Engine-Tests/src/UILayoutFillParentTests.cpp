@@ -84,3 +84,22 @@ TEST_CASE("Fill Parent lets a canvas follow a wider screen") {
 		CHECK(barRect.ResolvedMax.y - barRect.ResolvedMin.y == doctest::Approx(270.0f * barRect.Scale.y));
 	}
 }
+
+TEST_CASE("UpdateUILayout skips an unchanged pass until the layout is invalidated") {
+	WideSurfaceScope surface;
+	auto scene = Scene::CreateDetachedScene("Layout Gate");
+	Entity panel = EntityHelper::CreateUIPanel(*scene);
+	auto& rect = panel.GetComponent<RectTransform2DComponent>();
+	rect.SizeDelta = Vec2{ 100.0f, 100.0f };
+
+	UpdateUILayout(*scene);
+	const float width = rect.ResolvedMax.x - rect.ResolvedMin.x;
+	rect.SizeDelta = Vec2{ 300.0f, 100.0f };
+
+	UpdateUILayout(*scene);
+	CHECK(rect.ResolvedMax.x - rect.ResolvedMin.x == doctest::Approx(width));
+
+	InvalidateUILayout();
+	UpdateUILayout(*scene);
+	CHECK(rect.ResolvedMax.x - rect.ResolvedMin.x == doctest::Approx(width * 3.0f));
+}

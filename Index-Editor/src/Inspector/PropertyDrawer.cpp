@@ -332,7 +332,8 @@ namespace Index::PropertyDrawer {
 			return AssetRegistry::GetOrCreateAssetUUID(droppedPath);
 		}
 
-		bool AcceptAssetReferencePayload(AssetKind kind, PropertyValue& outValue)
+		// acceptSlices=false takes a dropped slice as its whole texture (C# texture fields hold no slice).
+		bool AcceptAssetReferencePayload(AssetKind kind, PropertyValue& outValue, bool acceptSlices = true)
 		{
 			// Slice payloads must win over the parent texture payload so the slice name survives.
 			if (kind == AssetKind::Texture) {
@@ -347,7 +348,7 @@ namespace Index::PropertyDrawer {
 							const uint64_t assetId = AssetRegistry::GetOrCreateAssetUUID(texturePath);
 							if (assetId != 0 && AssetRegistry::GetKind(assetId) == AssetKind::Texture) {
 								outValue.UIntValue = assetId;
-								outValue.StringValue = sliceName;
+								outValue.StringValue = acceptSlices ? sliceName : std::string();
 								return true;
 							}
 						}
@@ -1094,14 +1095,19 @@ namespace Index::PropertyDrawer {
 
 			return DrawReference(entities, d, fieldKey, valueType,
 				[kind](const PropertyValue& v, bool& missing, std::string& secondary) {
-					return ReferencePicker::ResolveAssetDisplay(v.UIntValue, kind, missing, &secondary);
+					std::string display = ReferencePicker::ResolveAssetDisplay(v.UIntValue, kind, missing, &secondary);
+					// Same "Sheet > Slice" label as the picker entry.
+					if (!missing && v.Type == PropertyType::TextureRef && !v.StringValue.empty()) {
+						display += " > " + v.StringValue;
+					}
+					return display;
 				},
 				[kind, pickerTitle, style, includeSlices](const std::string& key) {
 					ReferencePicker::OpenForFieldKey(key, pickerTitle,
 						ReferencePicker::CollectAssetsByKind(kind, includeSlices), style);
 				},
-				[kind](PropertyValue& outValue) {
-					return AcceptAssetReferencePayload(kind, outValue);
+				[kind, includeSlices](PropertyValue& outValue) {
+					return AcceptAssetReferencePayload(kind, outValue, includeSlices);
 				},
 				/*showLocateButton=*/true,
 				[kind](const PropertyValue& v) {
@@ -2106,7 +2112,9 @@ namespace Index::PropertyDrawer {
 				PropertyType::AssetRef,
 				d.Metadata.AssetKindFilter == AssetKind::DataAsset ? "Select Data Asset"
 					: d.Metadata.AssetKindFilter == AssetKind::Material ? "Select Material"
-					: d.Metadata.AssetKindFilter == AssetKind::Mesh ? "Select Mesh" : "Select Asset"); break;
+					: d.Metadata.AssetKindFilter == AssetKind::Mesh ? "Select Mesh"
+					: d.Metadata.AssetKindFilter == AssetKind::AnimationClip ? "Select Animation Clip"
+					: d.Metadata.AssetKindFilter == AssetKind::AnimatorController ? "Select Animator Controller" : "Select Asset"); break;
 		case PropertyType::EntityRef:    changed = DrawEntityRef(entities, d, fieldKey); break;
 		case PropertyType::ComponentRef: changed = DrawComponentRef(entities, d, fieldKey); break;
 		case PropertyType::Graph:        changed = DrawGraph(entities, d, fieldKey); break;

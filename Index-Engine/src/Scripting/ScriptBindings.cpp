@@ -3,6 +3,7 @@
 #include "Assets/AssetRegistry.hpp"
 #include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptEngine.hpp"
+#include "Scripting/ScriptEditorGui.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptSystem.hpp"
 #include "Scripting/NativeScriptHost.hpp"
@@ -17,6 +18,8 @@
 #include "Scene/SceneExecutionContext.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/SceneDefinition.hpp"
+#include "Scene/ProjectSceneLoader.hpp"
+#include "DevTools/DevConsole.hpp"
 #include "Systems/UIEventSystem.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/Path.hpp"
@@ -68,7 +71,7 @@
 namespace Index {
 	bool ScriptBindings::IsScriptInputEnabled()
 	{
-		return Application::s_Instance && Application::s_Instance->m_IsScriptInputEnabled;
+		return Application::s_Instance && Application::s_Instance->m_IsScriptInputEnabled && !DevConsole::IsOpen();
 	}
 
 	EntityHandle ToEntityHandle(uint64_t id)
@@ -197,8 +200,12 @@ namespace Index {
 	bool SetParentKeepingWorld2D(Scene& scene, EntityHandle handle, Entity newParent);
 #endif
 	void PopulateNonComponentBindings(NativeBindings& b);
+	void PopulatePostProcessingBindings(NativeBindings& b);
 	void PopulateEcbBindings(NativeBindings& b);
 	void PopulateJobsBindings(NativeBindings& b);
+	void PopulateMaterialBindings(NativeBindings& b);
+	void PopulateAnimationBindings(NativeBindings& b);
+	void PopulateLocalizationBindings(NativeBindings& b);
 
 	// IsValid re-check required: entity may be destroyed between ResolveEntityReference and the registry access.
 	#define GET_COMPONENT(Type, entityID, failReturn) \
@@ -802,60 +809,7 @@ namespace Index {
 	}
 
 	static int LoadSceneByName(const char* sceneName, bool additive) {
-		// Reject empty names before project lookup or registration.
-		if (!sceneName || sceneName[0] == '\0') {
-			IDX_CORE_ERROR_TAG("ScriptBindings", "LoadScene called with an empty name");
-			return 0;
-		}
-
-		std::string name(sceneName);
-		IndexProject* project = ProjectManager::GetCurrentProject();
-		const bool hasDefinition = SceneManager::HasSceneDefinition(name);
-
-		// GetSceneFilePath also rejects traversal/control-byte names via IsValidSceneName.
-		std::string scenePath;
-		if (project) {
-			scenePath = project->GetSceneFilePath(name);
-		}
-		const bool fileResolves = !scenePath.empty() && File::Exists(scenePath);
-
-		if (!hasDefinition && !fileResolves) {
-			IDX_CORE_ERROR_TAG("ScriptBindings",
-				"LoadScene: no scene file resolves for '{}' and no definition is registered", name);
-			return 0;
-		}
-
-		if (!hasDefinition) {
-			auto& definition = SceneManager::RegisterScene(name);
-			definition.OnLoadChecked([scenePath, name](Scene& scene) {
-				if (File::Exists(scenePath)) {
-					return SceneSerializer::LoadFromFile(scene, scenePath);
-				}
-				else {
-					IDX_CORE_ERROR_TAG("ScriptBindings",
-						"LoadScene: '{}' no longer exists at '{}'.",
-						name, scenePath);
-					return false;
-				}
-			});
-		}
-
-		// LoadScene on a scene that is already loaded restarts it from disk (a single load would otherwise be a no-op).
-		const bool restart = !additive && SceneManager::IsSceneLoaded(name);
-		const SceneLoadResult loadResult = restart
-			? SceneManager::TryRestartScene(name)
-			: additive
-				? SceneManager::TryLoadSceneAdditive(name)
-				: SceneManager::TryLoadScene(name);
-		auto scenePtr = loadResult.LoadedScene.lock();
-		if (!loadResult || !scenePtr) {
-			IDX_CORE_ERROR_TAG("ScriptBindings", "Failed to {} scene{} '{}': {}",
-				restart ? "restart" : "load", additive ? " additively" : "", name, loadResult.Message);
-			return 0;
-		}
-
-		IDX_INFO_TAG("ScriptBindings", "{} scene{}: {}", restart ? "Restarted" : "Loaded", additive ? " additively" : "", name);
-		return 1;
+		return ProjectSceneLoader::Load(sceneName ? std::string(sceneName) : std::string(), additive) ? 1 : 0;
 	}
 
 	static int Index_Scene_LoadAdditive(const char* sceneName) {
@@ -2381,6 +2335,14 @@ namespace Index {
 			? TextureManager::LoadTextureByUUID(assetId)
 			: TextureHandle{};
 	}
+	static int Index_Image_GetSpriteNameBuffer(uint64_t entityID, char* outBuffer, int capacity) {
+		GET_COMPONENT(ImageComponent, entityID, CopyCStringToBuffer("", outBuffer, capacity));
+		return CopyStringToBuffer(comp.SpriteName, outBuffer, capacity);
+	}
+	static void Index_Image_SetSpriteName(uint64_t entityID, const char* name) {
+		GET_COMPONENT(ImageComponent, entityID, );
+		comp.SpriteName = name ? name : "";
+	}
 	static int Index_Image_GetSortingOrder(uint64_t entityID) {
 		GET_COMPONENT(ImageComponent, entityID, 0);
 		return comp.SortingOrder;
@@ -2396,6 +2358,29 @@ namespace Index {
 	static void Index_Image_SetSortingLayer(uint64_t entityID, int layer) {
 		GET_COMPONENT(ImageComponent, entityID, );
 		comp.SortingLayer = static_cast<uint8_t>(layer);
+	}
+	static uint64_t Index_Image_GetMaterial(uint64_t entityID) {
+		GET_COMPONENT(ImageComponent, entityID, 0);
+		return comp.Material;
+	}
+	static void Index_Image_SetMaterial(uint64_t entityID, uint64_t materialGuid) {
+		GET_COMPONENT(ImageComponent, entityID, );
+		comp.Material = materialGuid;
+	}
+	static void Index_Image_GetSlicing(uint64_t entityID, float* values, int count) {
+		GET_COMPONENT(ImageComponent, entityID, );
+		const float packed[6] = { static_cast<float>(comp.Type), comp.BorderLeft, comp.BorderBottom, comp.BorderRight, comp.BorderTop, comp.BorderScale };
+		for (int i = 0; i < count && i < 6; ++i) values[i] = packed[i];
+	}
+	static void Index_Image_SetSlicing(uint64_t entityID, const float* values, int count) {
+		GET_COMPONENT(ImageComponent, entityID, );
+		if (count < 6) return;
+		comp.Type = static_cast<ImageType>(std::clamp(static_cast<int>(std::lround(values[0])), 0, static_cast<int>(ImageType::Tiled)));
+		comp.BorderLeft = std::max(values[1], 0.0f);
+		comp.BorderBottom = std::max(values[2], 0.0f);
+		comp.BorderRight = std::max(values[3], 0.0f);
+		comp.BorderTop = std::max(values[4], 0.0f);
+		comp.BorderScale = std::max(values[5], 0.0f);
 	}
 
 	// ── UI: Interactable ────────────────────────────────────────────────
@@ -3092,6 +3077,8 @@ namespace Index {
 	void ScriptBindings::PopulateNativeBindings(NativeBindings& b)
 	{
 		PopulateNonComponentBindings(b);
+		PopulatePostProcessingBindings(b);
+		ScriptEditorGui::PopulateBindings(b);
 		// ECB slots — appended at the end of NativeBindings for binary
 		// compat. Wired here so the managed bindings copy picks them up
 		// in the same initialization step as the rest of the surface.
@@ -3100,6 +3087,9 @@ namespace Index {
 		// the managed Job.Schedule path into the native work-stealing
 		// pool so C# work shares cores cleanly with native systems.
 		PopulateJobsBindings(b);
+		PopulateMaterialBindings(b);
+		PopulateAnimationBindings(b);
+		PopulateLocalizationBindings(b);
 		PopulateModuleBindings(b);
 
 		b.Entity_Clone = IDX_GUARDED_BINDING(Index_Entity_Clone);
@@ -3266,10 +3256,16 @@ namespace Index {
 		b.Image_SetColor        = IDX_GUARDED_BINDING(Index_Image_SetColor);
 		b.Image_GetTexture      = IDX_GUARDED_BINDING(Index_Image_GetTexture);
 		b.Image_SetTexture      = IDX_GUARDED_BINDING(Index_Image_SetTexture);
+		b.Image_GetSpriteNameBuffer = IDX_GUARDED_BINDING(Index_Image_GetSpriteNameBuffer);
+		b.Image_SetSpriteName       = IDX_GUARDED_BINDING(Index_Image_SetSpriteName);
 		b.Image_GetSortingOrder = IDX_GUARDED_BINDING(Index_Image_GetSortingOrder);
 		b.Image_SetSortingOrder = IDX_GUARDED_BINDING(Index_Image_SetSortingOrder);
 		b.Image_GetSortingLayer = IDX_GUARDED_BINDING(Index_Image_GetSortingLayer);
 		b.Image_SetSortingLayer = IDX_GUARDED_BINDING(Index_Image_SetSortingLayer);
+		b.Image_GetSlicing      = IDX_GUARDED_BINDING(Index_Image_GetSlicing);
+		b.Image_SetSlicing      = IDX_GUARDED_BINDING(Index_Image_SetSlicing);
+		b.Image_GetMaterial     = IDX_GUARDED_BINDING(Index_Image_GetMaterial);
+		b.Image_SetMaterial     = IDX_GUARDED_BINDING(Index_Image_SetMaterial);
 
 		b.Interactable_GetInteractable = IDX_GUARDED_BINDING(Index_Interactable_GetInteractable);
 		b.Interactable_SetInteractable = IDX_GUARDED_BINDING(Index_Interactable_SetInteractable);

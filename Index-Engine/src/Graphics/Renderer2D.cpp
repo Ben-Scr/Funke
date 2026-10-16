@@ -12,10 +12,15 @@
 #include "Core/Log.hpp"
 #include "Core/Window.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
+#include "Graphics/CustomShaderGpu.hpp"
+#include "Graphics/CustomSpriteDrawer.hpp"
+#include "Graphics/CustomShaderLibrary.hpp"
+#include "Graphics/Material.hpp"
 #include "Graphics/DynamicRenderData.hpp"
 #include "Graphics/RenderApi.hpp"
 #include "Graphics/ParticleQualityPolicy.hpp"
 #include "Graphics/StaticRenderData.hpp"
+#include "Graphics/SpriteQuad.hpp"
 #include "Graphics/SpriteResources.hpp"
 #include "Graphics/SpriteUVResolver.hpp"
 #include "Graphics/Texture2D.hpp"
@@ -121,6 +126,9 @@ namespace Index {
 		// Shutdown can unregister cleanly. 0 = no listener installed.
 		uint32_t g_TextureDestroyListenerToken = 0;
 
+		// Sprites drawn through a material's Sprite2D shader.
+		std::unique_ptr<CustomSpriteDrawer> g_CustomSprites;
+
 		void OnSpriteRendererDestroyed(entt::registry& registry, EntityHandle entity) {
 			if (registry.all_of<DynamicRenderData>(entity)) {
 				registry.remove<DynamicRenderData>(entity);
@@ -156,70 +164,73 @@ namespace Index {
 		}
 
 		AABB CreateQuadAABB(const Vec2& position, const Vec2& scale, float rotation) {
+			// A negative scale mirrors the quad; its bounds stay the same.
+			const Vec2 halfExtents{ std::abs(scale.x) * 0.5f, std::abs(scale.y) * 0.5f };
 			if (rotation == 0.0f) {
-				const Vec2 halfExtents{ scale.x * 0.5f, scale.y * 0.5f };
 				return { position - halfExtents, position + halfExtents };
 			}
 			if (AABB::IsAxisAligned(rotation)) {
-				return AABB::Create(position, Vec2(scale.x * 0.5f, scale.y * 0.5f));
+				return AABB::Create(position, halfExtents);
 			}
-			return AABB::Create(position, scale * 0.5f, Degrees(rotation));
+			return AABB::Create(position, halfExtents, Degrees(rotation));
 		}
 
-		const AABB& GetStaticSpriteAABB(entt::registry& registry,
-			EntityHandle entity,
-			const Transform2DComponent& transform)
+		// Re-resolves the slice geometry when the sprite's inputs changed, and the quad and its bounds when either
+		// they or the transform did.
+		template <typename Cache>
+		const AABB& RefreshSpriteCache(Cache& cache,
+			const Transform2DComponent& transform,
+			const SpriteRendererComponent& sprite)
 		{
+			const uint64_t key = ComputeSpriteGeometryKey(sprite);
+			const bool geometryChanged = cache.GeometryKey != key;
+			if (geometryChanged) {
+				cache.Geometry = ResolveSpriteGeometry(sprite);
+				cache.GeometryKey = key;
+			}
+			if (geometryChanged
+				|| !cache.Valid
+				|| !Vec2ExactEqual(cache.CachedPosition, transform.Position)
+				|| !Vec2ExactEqual(cache.CachedScale, transform.Scale)
+				|| cache.CachedRotation != transform.Rotation) {
+				cache.Quad = PlaceSpriteQuad(transform, cache.Geometry);
+				cache.CachedAABB = CreateQuadAABB(cache.Quad.Center, cache.Quad.Size, transform.Rotation);
+				cache.CachedPosition = transform.Position;
+				cache.CachedScale = transform.Scale;
+				cache.CachedRotation = transform.Rotation;
+				cache.Valid = true;
+			}
+			return cache.CachedAABB;
+		}
+
+		template <typename Cache>
+		void EmitSpriteInstance(std::vector<Instance44>& outInstances,
+			const Transform2DComponent& transform,
+			const SpriteRendererComponent& sprite,
+			const Cache& cache,
+			uint32_t drawIndex)
+		{
+			outInstances.emplace_back(
+				cache.Quad.Center,
+				cache.Quad.Size,
+				transform.Rotation,
+				sprite.Color,
+				sprite.TextureHandle,
+				sprite.SortingOrder,
+				sprite.SortingLayer,
+				drawIndex);
+			outInstances.back().Material = sprite.Material;
+			outInstances.back().UvRect = cache.Geometry.Uv;
+		}
+
+		StaticRenderData& GetStaticSpriteCache(entt::registry& registry, EntityHandle entity) {
 			StaticRenderData* cache = registry.try_get<StaticRenderData>(entity);
-			if (!cache) {
-				cache = &registry.emplace<StaticRenderData>(entity);
-			}
-
-			if (!cache->Valid
-				|| !Vec2ExactEqual(cache->CachedPosition, transform.Position)
-				|| !Vec2ExactEqual(cache->CachedScale, transform.Scale)
-				|| cache->CachedRotation != transform.Rotation) {
-				cache->CachedAABB = CreateQuadAABB(transform.Position, transform.Scale, transform.Rotation);
-				cache->CachedPosition = transform.Position;
-				cache->CachedScale = transform.Scale;
-				cache->CachedRotation = transform.Rotation;
-				cache->Valid = true;
-			}
-
-			return cache->CachedAABB;
+			return cache ? *cache : registry.emplace<StaticRenderData>(entity);
 		}
 
-		const AABB& GetDynamicSpriteAABB(entt::registry& registry,
-			EntityHandle entity,
-			const Transform2DComponent& transform)
-		{
+		DynamicRenderData& GetDynamicSpriteCache(entt::registry& registry, EntityHandle entity) {
 			DynamicRenderData* cache = registry.try_get<DynamicRenderData>(entity);
-			if (!cache) {
-				cache = &registry.emplace<DynamicRenderData>(entity);
-			}
-
-			if (!cache->Valid
-				|| !Vec2ExactEqual(cache->CachedPosition, transform.Position)
-				|| !Vec2ExactEqual(cache->CachedScale, transform.Scale)
-				|| cache->CachedRotation != transform.Rotation) {
-				cache->CachedAABB = CreateQuadAABB(transform.Position, transform.Scale, transform.Rotation);
-				cache->CachedPosition = transform.Position;
-				cache->CachedScale = transform.Scale;
-				cache->CachedRotation = transform.Rotation;
-				cache->Valid = true;
-			}
-
-			return cache->CachedAABB;
-		}
-
-		AABB GetSpriteAABB(entt::registry& registry,
-			EntityHandle entity,
-			const Transform2DComponent& transform)
-		{
-			if (registry.all_of<StaticTag>(entity)) {
-				return GetStaticSpriteAABB(registry, entity, transform);
-			}
-			return GetDynamicSpriteAABB(registry, entity, transform);
+			return cache ? *cache : registry.emplace<DynamicRenderData>(entity);
 		}
 
 		bool IsFinite(const AABB& bounds) {
@@ -299,10 +310,11 @@ namespace Index {
 				}
 
 				const auto& transform = view.get<Transform2DComponent>(entity);
+				const auto& sprite = view.get<SpriteRendererComponent>(entity);
 				const uint32_t entryIndex = static_cast<uint32_t>(grid.Entries.size());
 				grid.Entries.push_back(StaticSpriteEntry{
 					entity,
-					GetStaticSpriteAABB(registry, entity, transform),
+					RefreshSpriteCache(GetStaticSpriteCache(registry, entity), transform, sprite),
 					currentDrawIndex
 				});
 				AddStaticEntryToGrid(grid, entryIndex);
@@ -317,18 +329,6 @@ namespace Index {
 				RebuildStaticSpriteGrid(scene, grid);
 			}
 			return grid;
-		}
-
-		inline void ApplySpriteSliceTo(Instance44& dst,
-			const SpriteRendererComponent& sprite)
-		{
-			Texture2D* tex = TextureManager::GetTexture(sprite.TextureHandle);
-			if (!tex) return;
-			// Empty name resolves to the full texture; a named sprite to its slice rect.
-			dst.UvRect = ResolveSpriteUVRect(sprite.TextureAssetId,
-				sprite.SpriteName,
-				static_cast<int>(tex->GetWidth()),
-				static_cast<int>(tex->GetHeight()));
 		}
 
 		void AppendStaticSpriteInstance(Scene& scene,
@@ -356,16 +356,10 @@ namespace Index {
 
 			const auto& transform = registry.get<Transform2DComponent>(entry.Entity);
 			const auto& sprite = registry.get<SpriteRendererComponent>(entry.Entity);
-			outInstances.emplace_back(
-				Vec2{ transform.Position.x, transform.Position.y },
-				Vec2{ transform.Scale.x, transform.Scale.y },
-				transform.Rotation,
-				sprite.Color,
-				sprite.TextureHandle,
-				sprite.SortingOrder,
-				sprite.SortingLayer,
-				entry.DrawIndex);
-			ApplySpriteSliceTo(outInstances.back(), sprite);
+			// Grid bounds only follow a rebuild, but a changed slice or flip still shows on the next frame.
+			StaticRenderData& cache = GetStaticSpriteCache(registry, entry.Entity);
+			RefreshSpriteCache(cache, transform, sprite);
+			EmitSpriteInstance(outInstances, transform, sprite, cache, entry.DrawIndex);
 		}
 
 		void CollectStaticSpriteInstances(Scene& scene,
@@ -491,31 +485,10 @@ namespace Index {
 						const auto& spr = group.get<SpriteRendererComponent>(cand.Entity);
 
 						DynamicRenderData& cache = registry.get<DynamicRenderData>(cand.Entity);
-						if (!cache.Valid
-							|| !Vec2ExactEqual(cache.CachedPosition, t.Position)
-							|| !Vec2ExactEqual(cache.CachedScale, t.Scale)
-							|| cache.CachedRotation != t.Rotation) {
-							cache.CachedAABB = CreateQuadAABB(t.Position, t.Scale, t.Rotation);
-							cache.CachedPosition = t.Position;
-							cache.CachedScale    = t.Scale;
-							cache.CachedRotation = t.Rotation;
-							cache.Valid          = true;
-						}
-
-						if (!AABB::Intersects(viewportAABB, cache.CachedAABB)) {
+						if (!AABB::Intersects(viewportAABB, RefreshSpriteCache(cache, t, spr))) {
 							continue;
 						}
-
-						localInst.emplace_back(
-							Vec2{ t.Position.x, t.Position.y },
-							Vec2{ t.Scale.x, t.Scale.y },
-							t.Rotation,
-							spr.Color,
-							spr.TextureHandle,
-							spr.SortingOrder,
-							spr.SortingLayer,
-							cand.DrawIndex);
-						ApplySpriteSliceTo(localInst.back(), spr);
+						EmitSpriteInstance(localInst, t, spr, cache, cand.DrawIndex);
 					}
 				}, /*grainSize*/ 2048);
 
@@ -529,20 +502,11 @@ namespace Index {
 				for (const auto& cand : g_DynamicCandidates) {
 					const auto& t = group.get<Transform2DComponent>(cand.Entity);
 					const auto& s = group.get<SpriteRendererComponent>(cand.Entity);
-					const AABB& bounds = GetDynamicSpriteAABB(registry, cand.Entity, t);
-					if (!AABB::Intersects(viewportAABB, bounds)) {
+					DynamicRenderData& cache = GetDynamicSpriteCache(registry, cand.Entity);
+					if (!AABB::Intersects(viewportAABB, RefreshSpriteCache(cache, t, s))) {
 						continue;
 					}
-					outInstances.emplace_back(
-						Vec2{ t.Position.x, t.Position.y },
-						Vec2{ t.Scale.x, t.Scale.y },
-						t.Rotation,
-						s.Color,
-						s.TextureHandle,
-						s.SortingOrder,
-						s.SortingLayer,
-						cand.DrawIndex);
-					ApplySpriteSliceTo(outInstances.back(), s);
+					EmitSpriteInstance(outInstances, t, s, cache, cand.DrawIndex);
 				}
 			}
 
@@ -855,6 +819,12 @@ namespace Index {
 				"PostProcessor::Initialize failed — scene will render direct to caller (no PP)");
 		}
 
+		g_CustomSprites = std::make_unique<CustomSpriteDrawer>();
+		if (!g_CustomSprites->Initialize("renderer2d-custom")) {
+			IDX_CORE_WARN_TAG("Renderer2D", "Custom shader resources unavailable; sprite materials draw with the standard shader");
+			g_CustomSprites.reset();
+		}
+
 		m_TextRenderer = std::make_unique<TextRenderer>();
 		m_TextRenderer->Initialize();
 		if (!m_TextRenderer->IsInitialized()) {
@@ -893,6 +863,8 @@ namespace Index {
 		m_PostProcessor.Shutdown();
 
 		g_BindGroupCache.clear();
+		g_CustomSprites.reset();
+		CustomShaderLibrary::Clear();
 		g_StaticSpriteGrids.clear();
 		g_DynamicRenderDataObservedRegistries.clear();
 		g_InstanceBuffer         = nullptr;
@@ -1170,6 +1142,7 @@ namespace Index {
 			WebGPUBackend::ApplyCachedViewportToPass(pass);
 
 			pass.SetPipeline(pipeline);
+			wgpu::RenderPipeline boundPipeline = pipeline;
 			pass.SetVertexBuffer(0, WebGPUSpriteResources::GetQuadVertexBuffer());
 			pass.SetVertexBuffer(1, g_InstanceBuffer);
 			pass.SetIndexBuffer(WebGPUSpriteResources::GetQuadIndexBuffer(pipelineMode),
@@ -1192,13 +1165,21 @@ namespace Index {
 					: defaultTexture;
 			};
 			const std::uint32_t indexCount = WebGPUSpriteResources::GetQuadIndexCount(pipelineMode);
+			// Wireframe debug view keeps the standard pipeline for every sprite.
+			const bool anyCustom = !wireframePass && g_CustomSprites && std::any_of(g_InstancesScratch.begin(),
+				g_InstancesScratch.begin() + static_cast<std::ptrdiff_t>(n), [](const Instance44& instance) { return instance.Material != 0; });
+			if (anyCustom) {
+				g_CustomSprites->WriteGlobals(CustomMaterialBindings::MakeGlobals(glm::mat4(1.0f), vp, glm::vec3(0.0f), target.Width, target.Height));
+			}
 
 			size_t i = 0;
 			while (i < n) {
 				const TextureHandle runHandle = resolveHandle(g_TexturesScratch[i]);
 				const TextureHandle runMaskHandle = resolveMaskHandle(g_InstancesScratch[i]);
+				const uint64_t runMaterial = anyCustom ? g_InstancesScratch[i].Material : 0;
 				size_t runEnd = i + 1;
 				while (runEnd < n
+					&& (!anyCustom || g_InstancesScratch[runEnd].Material == runMaterial)
 					&& resolveHandle(g_TexturesScratch[runEnd]).index == runHandle.index
 					&& resolveHandle(g_TexturesScratch[runEnd]).generation == runHandle.generation
 					&& resolveMaskHandle(g_InstancesScratch[runEnd]).index == runMaskHandle.index
@@ -1213,6 +1194,15 @@ namespace Index {
 					i = runEnd;
 					continue;
 				}
+				const CustomSpriteDrawer::Draw custom = anyCustom
+					? g_CustomSprites->Resolve(runMaterial, ShaderTarget::Sprite2D, target.ColorFormat, target.HasDepth)
+					: CustomSpriteDrawer::Draw{};
+				wgpu::RenderPipeline runPipeline = custom.Pipeline ? custom.Pipeline : pipeline;
+				if (runPipeline.Get() != boundPipeline.Get()) {
+					pass.SetPipeline(runPipeline);
+					boundPipeline = runPipeline;
+				}
+				if (custom.Pipeline) pass.SetBindGroup(1, custom.Group);
 				pass.SetBindGroup(0, bg);
 				pass.DrawIndexed(/*indexCount=*/indexCount,
 					/*instanceCount=*/count,
@@ -1269,18 +1259,7 @@ namespace Index {
 
 			// Aspect-locked + effects: RunEffectPass does NOT apply the cached viewport, so route through a sub-rect FBO then Blit (which does).
 			// HasEnabledEffect MUST mirror PostProcessor::Run's effect set — add new effects here or they smear in aspect-locked standalone builds.
-			auto HasEnabledEffect = [](const PostProcessing2DComponent* s) {
-				if (!s) return false;
-				return s->Bloom.Enabled
-					|| s->ColorGrading.Enabled
-					|| s->GaussianBlur.Enabled
-					|| s->LensDistortion.Enabled
-					|| s->ChromaticAberration.Enabled
-					|| s->Vignette.Enabled
-					|| s->Grain.Enabled
-					|| s->Pixelated.Enabled;
-			};
-			const bool hasEnabledEffect = HasEnabledEffect(ppSettings);
+			const bool hasEnabledEffect = ppSettings && ppSettings->HasEnabledEffect();
 			const bool needsEffectFbo = (aspectLocked || scaled) && hasEnabledEffect;
 			const bool routeThroughEffectFbo = needsEffectFbo
 				&& m_PostProcessOutputFbo.Recreate(

@@ -1,3 +1,5 @@
+#include "Animation/AnimationClip.hpp"
+#include "Animation/AnimatorController.hpp"
 #include <pch.hpp>
 #include "Systems/ImGuiEditorLayer.hpp"
 
@@ -8,6 +10,7 @@
 #include "Core/Application.hpp"
 #include "Core/Time.hpp"
 #include "Editor/EditorPreferences.hpp"
+#include "Editor/EditorRestart.hpp"
 #include "Graphics/Material.hpp"
 #include "Graphics/MeshAsset.hpp"
 #include "Graphics/RenderSettings.hpp"
@@ -50,6 +53,10 @@ namespace Index {
 		const size_t materialCount = MaterialLibrary::ReloadChangedFromDisk();
 		if (materialCount > 0) {
 			IDX_INFO_TAG("Editor", "Hot-reloaded {} material(s)", materialCount);
+		}
+		const size_t animationCount = AnimationClipLibrary::ReloadChangedFromDisk() + AnimatorControllerLibrary::ReloadChangedFromDisk();
+		if (animationCount > 0) {
+			IDX_INFO_TAG("Editor", "Hot-reloaded {} animation asset(s)", animationCount);
 		}
 		const size_t meshCount = MeshLibrary::ReloadChangedFromDisk();
 		if (meshCount > 0) {
@@ -322,14 +329,13 @@ namespace Index {
 			ScriptEngine::InitializeGlobalSystems(globalSystems);
 		}
 
-		if (project->ActiveRenderBackend != previous.ActiveRenderBackend) {
-			IDX_WARN_TAG("Editor", "project.json: the render backend change takes effect after an editor restart.");
-		}
+		// Render backend and module changes reach the reload prompt through RenderEditorReloadPrompt.
 		if (project->EntityBits != previous.EntityBits) {
 			IDX_WARN_TAG("Editor", "project.json: entityBits changed to {}; it takes effect after an engine rebuild.", project->EntityBits);
 		}
 		if (project->Packages != previous.Packages) {
-			IDX_WARN_TAG("Editor", "project.json: the package list changed; reopen the project to load or unload packages.");
+			EditorRestart::Request("packages", "Package list changed in project.json");
+			IDX_WARN_TAG("Editor", "project.json: the package list changed; reload the editor to load or unload packages.");
 		}
 		IDX_INFO_TAG("Editor", "Reloaded project settings (project.json changed on disk)");
 	}
