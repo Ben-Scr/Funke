@@ -1,6 +1,6 @@
 # Physics 3D
 
-3D entities are simulated by [Jolt Physics](https://github.com/jrouwe/JoltPhysics), the engine behind *Horizon Forbidden West* and the default 3D physics of Godot. It runs multi-threaded and is statically linked into `Funke-Engine.dll`. 2D physics (Box2D / Index-Physics) is separate and unchanged; the two stacks never interact, because an entity has either a Transform 2D or a Transform 3D.
+3D entities are simulated by [Jolt Physics](https://github.com/jrouwe/JoltPhysics), the engine behind *Horizon Forbidden West* and the default 3D physics of Godot. It runs multi-threaded and is statically linked into `Funke-Engine.dll`. 2D physics (Box2D, plus the optional Funke.Physics package) is separate and unchanged; the two stacks never interact, because an entity has either a Transform 2D or a Transform 3D.
 
 ## Components
 

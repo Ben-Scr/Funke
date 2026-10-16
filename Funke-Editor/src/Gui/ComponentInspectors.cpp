@@ -17,9 +17,6 @@
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
-#include "Components/Physics/FastBody2DComponent.hpp"
-#include "Components/Physics/FastBoxCollider2DComponent.hpp"
-#include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #include "Components/Audio/AudioSourceComponent.hpp"
 #include "Components/UI/ButtonComponent.hpp"
 #include "Components/UI/InspectorEventBinding.hpp"
@@ -287,23 +284,6 @@ namespace Funke {
 	void DrawCamera2DInspector(std::span<const Entity> entities)
 	{
 		DrawPropertiesFor<Camera2DComponent>(entities);
-	}
-
-	void DrawFastBody2DInspector(std::span<const Entity> entities)
-	{
-		DrawPropertiesFor<FastBody2DComponent>(entities);
-
-		if (entities.size() == 1) {
-			const auto& body = entities[0].GetComponent<FastBody2DComponent>();
-			if (body.IsValid()) {
-				ImGui::Separator();
-				ImGui::TextDisabled("Runtime");
-				Vec2 vel = body.GetVelocity();
-				ImGuiUtils::DrawVec2ReadOnly("Velocity", vel);
-				Vec2 pos = body.GetPosition();
-				ImGuiUtils::DrawVec2ReadOnly("Position", pos);
-			}
-		}
 	}
 
 	void DrawParticleSystem2DInspector(std::span<const Entity> entities)

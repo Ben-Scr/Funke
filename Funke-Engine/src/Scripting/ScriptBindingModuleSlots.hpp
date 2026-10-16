@@ -67,18 +67,6 @@
 	X(PolygonCollider2D_GetSize) \
 	X(PolygonCollider2D_SetSize) \
 	X(PolygonCollider2D_SetEnabled) \
-	X(FastBody2D_GetBodyType) \
-	X(FastBody2D_SetBodyType) \
-	X(FastBody2D_GetMass) \
-	X(FastBody2D_SetMass) \
-	X(FastBody2D_GetUseGravity) \
-	X(FastBody2D_SetUseGravity) \
-	X(FastBody2D_GetVelocity) \
-	X(FastBody2D_SetVelocity) \
-	X(FastBoxCollider2D_GetHalfExtents) \
-	X(FastBoxCollider2D_SetHalfExtents) \
-	X(FastCircleCollider2D_GetRadius) \
-	X(FastCircleCollider2D_SetRadius) \
 	X(ParticleSystem2D_Play) \
 	X(ParticleSystem2D_Pause) \
 	X(ParticleSystem2D_Stop) \
@@ -122,15 +110,6 @@
 	X(Physics2D_OverlapPolygonAll) \
 	X(Physics2D_ContainsPoint) \
 	X(Physics2D_ContainsPointAll) \
-	X(FastPhysics2D_Raycast) \
-	X(FastPhysics2D_OverlapCircle) \
-	X(FastPhysics2D_OverlapBox) \
-	X(FastPhysics2D_OverlapPolygon) \
-	X(FastPhysics2D_OverlapCircleAll) \
-	X(FastPhysics2D_OverlapBoxAll) \
-	X(FastPhysics2D_OverlapPolygonAll) \
-	X(FastPhysics2D_ContainsPoint) \
-	X(FastPhysics2D_ContainsPointAll) \
 	X(EntityPicker_TryPickEntity) \
 	X(SpriteRenderer_GetFilter) \
 	X(SpriteRenderer_SetFilter) \

@@ -21,7 +21,10 @@ namespace Funke {
 		void OnPreRender(Application& app) override;
 		void OnPostRender(Application& app) override;
 
-		static void ResetLayoutToBundledDefault();
+		enum class DockLayoutRequest { None, DefaultIfUndocked, Default };
+		// The editor layer owns the dockspace and builds the default layout (see Gui/EditorDockLayout); this only queues it.
+		static void ResetLayoutToDefault();
+		static DockLayoutRequest ConsumeDockLayoutRequest();
 
 		static std::vector<std::string> ListLayoutPresets();
 		static bool SaveLayoutPreset(const std::string& name);

@@ -176,13 +176,25 @@ You can also declare that two components can't coexist:
 Package::DeclareComponentConflict<MyLootComponent, Funke::SomeOtherComponent>();
 ```
 
+### Hooking into scenes and 2D physics
+
+Components that own runtime state outside the registry (a physics body, a cache) need to know when scenes come and go. Register a `SceneExtension` (`Scene/SceneExtensions.hpp`) in `FunkePackage_OnLoad` and remove it in `FunkePackage_OnUnload`:
+
+- `OnSceneCreated(Scene&)`: connect EnTT signals (`on_construct` / `on_destroy`) for your component types.
+- `OnRuntimeStateInitialized(Scene&)`: build state for components that already exist (a staged load resumes, play mode copies the scene).
+- `OnSceneDestroyed(Scene&)`: drop everything keyed by the scene and disconnect the signals. It can run more than once per scene.
+
+The hooks run for every scene, detached ones included, so check `Scene::IsDetached()` / `IsLifecycleSuspended()` where it matters. `SceneExtensions::Register` applies the hooks to scenes that are already loaded.
+
+A package can also add a 2D physics backend next to Box2D with `PhysicsSystem2D::RegisterExtension(PhysicsExtension2D)`: `SyncToPhysics` (push transform edits, runs in edit mode too), `Step`, `SyncFromPhysics` (write positions back, see `PhysicsSystem2D::DecomposeWorldToLocal`), `DispatchCollisions` (raises the usual `OnCollisionEnter2D/Stay2D/Exit2D` script callbacks), `DrawDebug` (the F8 physics overlay) and `Shutdown`. `BodyComponent` is the `entt::type_hash` of your body component; the transform hierarchy leaves entities with it to the backend. `Funke.Physics` in the package registry uses both hooks.
+
 ---
 
 ## Scripts in a C# package
 
 A `csharp` layer can ship `EntityScript`s, `SceneSystem`s and `GlobalSystem`s like a game's own scripts. Scenes and prefabs name them by full class name (`"className": "MyGame.Loot.LootDrop"`), or by class name alone when no other package has a class with that name. Public fields show in the Inspector and are saved like any script field.
 
-The editor's **Add Component** menu lists only scripts under `Assets/` for now. Users of the package add a script through scene/prefab JSON, or by deriving an empty class in their game (`public class Drop : LootDrop { }`).
+The editor lists them once the game's scripts are compiled: **Add Component › Packages › <package>** for scripts and components, the Inspector's script picker, the scene's **Add System** list and **Project Settings › Global Systems**. Only public, non-abstract classes with a parameterless constructor show up. Picking one saves its full class name; a plain `Component` (not an `EntityScript`) is saved by class name, because `GetComponent<T>()` looks it up that way.
 
 ---
 
@@ -217,7 +229,45 @@ internal static class Native {
 }
 ```
 
-The names and signatures **must match exactly** on both sides — there's no tool that checks this for you, and a mismatch shows up as a runtime error. If you need pointer/`Span` work, set `allow_unsafe = true` on the csharp layer.
+The names and signatures **must match exactly** on both sides — there's no tool that checks this for you, and a mismatch shows up as a runtime error. If you need pointer/`Span` work, set `allow_unsafe = true` on the csharp layer. Prefer pointers and `int` over `out`/`ref` and `bool` in these signatures: blittable signatures work unchanged in the Web build.
+
+### C# wrappers for native components
+
+For `entity.GetComponent<LootDrop>()` and `AddComponent<LootDrop>()` on a component registered in C++, derive a wrapper from `Component`. The engine finds the component by the class name when it equals the serialized name; map the wrapper to the component's **display name** once, from a module initializer, so the script core also treats it as a native component (no managed field state) and name lookups such as `"Loot Drop"` resolve:
+
+```csharp
+using System.Runtime.CompilerServices;
+
+public class LootDrop : Component
+{
+    public float DropChance
+    {
+        get => Native.GetDropChance(RequireComponent<LootDrop>());   // RequireComponent returns Entity.ID
+        set => Native.SetDropChance(RequireComponent<LootDrop>(), value);
+    }
+}
+
+internal static class Registration
+{
+    [ModuleInitializer]
+    internal static void Register() => Entity.RegisterNativeComponent<LootDrop>("Loot Drop");
+}
+```
+
+The script core runs a package's module initializer before it looks up a component type, so the mapping is there on first use. Native code that hands entities back to C# returns the script id (`GetEntityScriptId` from `Scripting/ScriptEntityReference.hpp`); `Entity.FromID(id)` turns it into an `Entity`, and `ResolveEntityReference` goes the other way in C++.
+
+---
+
+## Android, iOS and Web: native layers are linked statically
+
+The Android, iOS and Web players cannot load package DLLs. Their builders compile your `native` (or `native_standalone`) layer from source and link it into the player, so the same package works everywhere without extra work. What that relies on:
+
+- **Entry points** are renamed per package at compile time (`FunkePackage_OnLoad` becomes `FunkePackage_OnLoad_MyGame_Loot`), so several packages can link into one binary. Define them exactly as shown above, in a `.cpp` of the native layer.
+- **Every function C# calls is marked `FUNKE_PACKAGE_API`** in a `.cpp` file. The builder scans for that marker to build the table that resolves `[DllImport("Pkg.<Name>.Native")]` on Android and iOS (and keeps those functions from being stripped). On the Web the .NET relink resolves them from the package's `Pkg.<Name>.Native.a` archive.
+- **Globals and helper functions** share one binary with other packages: keep them in your own namespace or an anonymous namespace.
+- Static initializers in your package may not run on these platforms; do setup in `FunkePackage_OnLoad`.
+
+The builder logs `Native package layers linked into the player: …` for every build that includes one.
 
 ---
 
@@ -289,6 +339,7 @@ These trip people up, so internalize them:
 - **Mixing `native` and `native_standalone`** → not allowed; pick one.
 - **Wrong package name format** → must be `PascalCase.PascalCase`. The folder name must match.
 - **P/Invoke name/signature mismatch** → runtime crash. Keep both sides identical.
+- **An export without `FUNKE_PACKAGE_API`** → works on desktop if exported some other way, but Android and iOS can't resolve the `[DllImport]`.
 
 ---
 

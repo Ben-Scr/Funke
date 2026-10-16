@@ -23,9 +23,6 @@
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
-#include "Components/Physics/FastBody2DComponent.hpp"
-#include "Components/Physics/FastBoxCollider2DComponent.hpp"
-#include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #include "Components/Audio/AudioSourceComponent.hpp"
 
 #include <span>
@@ -76,7 +73,6 @@ namespace Funke {
 			Bind<SpriteRendererComponent>(DrawSpriteRendererInspector),
 			Bind<Transform2DComponent>(DrawTransform2DInspector),
 			Bind<Camera2DComponent>(DrawCamera2DInspector),
-			Bind<FastBody2DComponent>(DrawFastBody2DInspector),
 
 			Bind<ButtonComponent>(DrawButtonInspector),
 			Bind<SliderComponent>(DrawSliderInspector),

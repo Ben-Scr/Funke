@@ -150,10 +150,12 @@ extern "C" FUNKE_PACKAGE_API int FunkePackage_OnLoad() {
     return 0;   // non-zero is logged but the module stays loaded
 }
 
-extern "C" FUNKE_PACKAGE_API int FunkePackage_OnUnload() {
-    return 0;   // optional
+extern "C" FUNKE_PACKAGE_API void FunkePackage_OnUnload() {
+    // optional
 }
 ```
+
+`PackageApi.hpp` declares both, so the signatures must match exactly (`void` OnUnload; `int` would be a C2371 redefinition).
 
 `FUNKE_PACKAGE_API` is the cross-DLL export marker — see `Funke-Engine/src/Packages/PackageApi.hpp`. It compiles to `__declspec(dllexport)` on the package side and `__declspec(dllimport)` for engine consumers. Don't substitute `FUNKE_API` for it.
 
@@ -238,9 +240,24 @@ internal static class NativeBindings {
 
 For component wrappers (managed `MyComponent : Component` with native state under the hood), follow the Tilemap2D pattern: per-field Get/Set bindings, pin spans with `fixed` for batch APIs, no parallel state on the managed side.
 
+## Android, iOS, Web: native layers are linked statically
+
+These players can't load package DLLs, so the platform builders compile `native` / `native_standalone` layers into the player (`libmain.so`, the iOS app, the wasm archive set):
+
+- `scripts/platform/funke_platform_sdk/native_packages.py` (`prepare_native_packages`) reads the project's packages (dependencies first), expands the layer's sources/includes, scans `.cpp/.c` files for `FUNKE_PACKAGE_API` functions and writes `native-packages.json` + `FunkeStaticPackages.cpp` (defines `FunkeRegisterStaticPackages()`; on Android/iOS also a symbol table). Offline tests: `python -m unittest scripts.ci.test_native_packages`.
+- `funke_add_native_packages(<target> JSON ...)` in `cmake/FunkeEngine.cmake` makes one STATIC `Pkg.<Name>.Native` per package (archive in `<build>/packages/`) with `-DFunkePackage_OnLoad=FunkePackage_OnLoad_<Name_Id>` (same for OnUnload) so entry points don't collide.
+- The player mains call `FunkeRegisterStaticPackages()` → `Funke::StaticPackages` (`Packages/StaticPackages.hpp`); `PackageHost::LoadAll` runs their OnLoad before DLLs, `UnloadAll` their OnUnload. Mono's `PINVOKE_OVERRIDE` resolves `[DllImport("Pkg.<Name>.Native")]` via `StaticPackages::FindSymbol` (Android, iOS); the Web relink scans `Pkg.<Name>.Native.a` (`ScanForPInvokes`) and generates `pinvoke-table.h` itself.
+- Rules for authors: every C#-called export carries `FUNKE_PACKAGE_API` in a `.cpp`; OnLoad must exist; don't rely on static initializers; keep helpers namespaced (one binary shared by all packages). Blittable P/Invoke signatures (pointers, ints) work everywhere.
+
+## Package components in C# and engine hooks
+
+- A managed wrapper `class Foo : Component` for a natively registered component needs `Entity.RegisterNativeComponent<Foo>("<display name>")`, called from a `[ModuleInitializer]` (`#pragma warning disable CA2255` around the attribute). ScriptCore runs a package module's initializer before a type lookup can miss (`Entity.EnsureModuleInitialized`). Property accessors use `RequireComponent<Foo>()` (returns the entity id).
+- Native side: `Scripting/ScriptEntityReference.hpp` — `ResolveEntityReference(id, scene, handle)` and `GetEntityScriptId(scene, handle)`; C# turns ids back with `Entity.FromID(id)`.
+- Runtime state next to the registry: `SceneExtensions::Register(SceneExtension{Name, OnSceneCreated, OnRuntimeStateInitialized, OnSceneDestroyed})` (`Scene/SceneExtensions.hpp`; hooks run for detached scenes too). A 2D physics backend: `PhysicsSystem2D::RegisterExtension(PhysicsExtension2D{...})` with `BodyComponent = entt::type_hash<Body>::value()`. Unregister both in OnUnload. Reference: `Funke.Physics` in the registry repo.
+
 ## Android contributions (Java, Maven AARs, manifest)
 
-Native package layers are **not** built for Android (the engine is a static lib inside `libmain.so`). Android SDKs (ads, billing, Play Games) come in through a top-level `android` table instead, read only by the Android builder (`platforms/Funke.Platform.Android/Builder/android_libraries.py`; premake and the C++ manifest reader ignore it, but it must stay plain data):
+Besides native layers (above), Android SDKs (ads, billing, Play Games) come in through a top-level `android` table, read only by the Android builder (`platforms/Funke.Platform.Android/Builder/android_libraries.py`; premake and the C++ manifest reader ignore it, but it must stay plain data):
 
 ```lua
 android = {

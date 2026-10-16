@@ -27,7 +27,7 @@ namespace {
 TEST_CASE("FunkeProject round-trips physics tick rate through project.json") {
 	namespace fs = std::filesystem;
 	const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
-	const fs::path root = fs::temp_directory_path() / ("IndexPhysicsRT_" + std::to_string(suffix));
+	const fs::path root = fs::temp_directory_path() / ("FunkePhysicsTickRT_" + std::to_string(suffix));
 	fs::create_directories(root / "Assets");
 	struct Cleanup {
 		fs::path Root;

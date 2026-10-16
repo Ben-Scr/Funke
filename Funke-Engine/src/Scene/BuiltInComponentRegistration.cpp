@@ -19,9 +19,6 @@
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
-#include "Components/Physics/FastBody2DComponent.hpp"
-#include "Components/Physics/FastBoxCollider2DComponent.hpp"
-#include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #endif
@@ -89,11 +86,8 @@ namespace Funke {
 			SetIcon<SpriteAnimator2DComponent>(registry, "eye_open");
 			SetIcon<ParticleSystem2DComponent>(registry, "particles");
 			SetIcon<Rigidbody2DComponent>(registry, "rigidbody_2d");
-			SetIcon<FastBody2DComponent>(registry, "rigidbody_2d");
 			SetIcon<BoxCollider2DComponent>(registry, "collider_box_2d");
-			SetIcon<FastBoxCollider2DComponent>(registry, "collider_box_2d");
 			SetIcon<CircleCollider2DComponent>(registry, "collider_circle_2d");
-			SetIcon<FastCircleCollider2DComponent>(registry, "collider_circle_2d");
 			SetIcon<PolygonCollider2DComponent>(registry, "collider_polygon_2d");
 #endif
 #if FUNKE_WITH_3D
@@ -154,24 +148,12 @@ namespace Funke {
 		// occupy the same role and should not coexist on a single entity.
 		DeclareConflict<Transform2DComponent, RectTransform2DComponent>(registry);
 
-		// Box2D and Index-Physics stacks must not be mixed per-entity.
-		DeclareConflict<Rigidbody2DComponent, FastBody2DComponent>(registry);
-		DeclareConflict<BoxCollider2DComponent, FastBoxCollider2DComponent>(registry);
-		DeclareConflict<BoxCollider2DComponent, FastCircleCollider2DComponent>(registry);
-		DeclareConflict<CircleCollider2DComponent, FastBoxCollider2DComponent>(registry);
-		DeclareConflict<CircleCollider2DComponent, FastCircleCollider2DComponent>(registry);
-		DeclareConflict<PolygonCollider2DComponent, FastBoxCollider2DComponent>(registry);
-		DeclareConflict<PolygonCollider2DComponent, FastCircleCollider2DComponent>(registry);
-
 		// One Box2D shape per entity — the rigidbody adopts whichever collider
 		// is on the entity, and Scene::OnRigidBody2DComponentConstruct only
 		// reaches for one. Layering two would leak a body.
 		DeclareConflict<BoxCollider2DComponent, CircleCollider2DComponent>(registry);
 		DeclareConflict<BoxCollider2DComponent, PolygonCollider2DComponent>(registry);
 		DeclareConflict<CircleCollider2DComponent, PolygonCollider2DComponent>(registry);
-
-		// Within Index-Physics, only one shape per body is supported.
-		DeclareConflict<FastBoxCollider2DComponent, FastCircleCollider2DComponent>(registry);
 #endif
 
 		// Only one layout group per entity — they all rewrite the same

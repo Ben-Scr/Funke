@@ -38,6 +38,8 @@ funke_add_engine(
 
 add_library(main SHARED "${CMAKE_CURRENT_LIST_DIR}/AndroidMain.cpp")
 funke_add_runtime(main)
+# The game packages' native layers (FUNKE_NATIVE_PACKAGES: native-packages.json from the builder).
+funke_add_native_packages(main JSON "${FUNKE_NATIVE_PACKAGES}")
 funke_link_mono(main PACK_NATIVE_DIR "${FUNKE_MONO_PACK_NATIVE}" MODE SHARED)
 target_link_libraries(main PRIVATE android log)
 # SDLActivity resolves SDL_main by name.

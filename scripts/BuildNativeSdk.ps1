@@ -189,7 +189,6 @@ $headerRoots = @(
     "External\dawn\build\gen\include",
     "External\miniaudio",
     "External\box2d\include",
-    "External\Index-Physics\include",
     "External\dotnet",
     "External\imgui",
     "External\ImGuizmo"

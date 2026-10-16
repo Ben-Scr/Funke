@@ -115,7 +115,7 @@ Only **one renderer per entity**: `SpriteRenderer`, `Image`, `ParticleSystem2D`,
 - `OnTriggerEnter2D/Exit` (a collider with `"sensor": true`) work without `registerContacts`. A sensor reports **every** overlapping collider, static walls included — keep trigger volumes clear of level geometry and filter in the script (`if (other.Other.GetComponent<BallLauncher>() == null) return;`). `other.Other` is the entity that entered.
 - A bouncing ball: `Rigidbody2D {bodyType 2, gravityScale 0, freezeRotation true}` + `CircleCollider2D {friction 0, bounciness 1, registerContacts true}`, and give walls/bricks/paddle `friction 0`.
 
-Lightweight AABB physics (`FastBody2D` `type` **Static=0, Dynamic=1, Kinematic=2** — different order!, `mass`, `useGravity`, `boundaryCheck`; `FastBoxCollider2D` `halfX/halfY`; `FastCircleCollider2D` `radius`) conflicts with the Box2D components. Default to Box2D.
+Lightweight AABB physics (`FastBody2D` `type` **Static=0, Dynamic=1, Kinematic=2** — different order!, `mass`, `useGravity`, `boundaryCheck`; `FastBoxCollider2D` `halfX/halfY`; `FastCircleCollider2D` `radius`) comes from the `Funke.Physics` package (`funke package add Funke.Physics`; without it these keys don't load) and conflicts with the Box2D components. Default to Box2D.
 
 ### Audio
 - **`AudioSource`** — `clipAsset` (GUID string), `volume` 1, `pitch` 1, `loop` false, `playOnAwake` false. Background music: an entity with `AudioSource {loop: true, playOnAwake: true}`.

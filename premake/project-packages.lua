@@ -71,35 +71,51 @@ local includeDirs = {
     path.join(engineRoot, "External/glad/include"),
     path.join(engineRoot, "External/miniaudio"),
     path.join(engineRoot, "External/box2d/include"),
-    path.join(engineRoot, "External/Index-Physics/include"),
     path.join(engineRoot, "External/dotnet"),
     path.join(engineRoot, "External/dawn/include"),
     path.join(engineRoot, "External/dawn/include/dawn"),
     path.join(engineRoot, "External/dawn/build/gen/include"),
 }
 
-local engineLibDirs = { path.join(engineRoot, "bin/" .. outputdir .. "/Funke-Engine") }
-for _, directory in ipairs(os.matchdirs(path.join(engineRoot, "bin/*/Funke-Engine"))) do
-    table.insert(engineLibDirs, directory)
+-- Each configuration links its own engine build first; the other builds under bin/ are fallbacks
+-- (an SDK may ship only one configuration). Per configuration because premake drops duplicate
+-- link options, which used to put bin/Debug-* ahead of the matching build and link a stale engine.
+local engineConfigurations = { "Debug", "Release", "Dist" }
+local foundEngineLibDirs = os.matchdirs(path.join(engineRoot, "bin/*/Funke-Engine"))
+
+local function EngineLibDirsFor(configuration)
+    local own = path.join(engineRoot, "bin/" .. configuration .. "-" .. os.target() .. "-" .. FunkeArchitecture .. "/Funke-Engine")
+    local directories = { own }
+    for _, directory in ipairs(foundEngineLibDirs) do
+        if path.normalize(directory):lower() ~= path.normalize(own):lower() then
+            table.insert(directories, directory)
+        end
+    end
+    return directories
 end
 
 local engineIncludeDirsForPremake = includeDirs
 local engineBuildOptions = nil
-local engineLibDirsForPremake = engineLibDirs
-local engineLinkOptions = nil
+local engineLibDirsByConfiguration = {}
+local engineLinkOptionsByConfiguration = {}
+for _, configuration in ipairs(engineConfigurations) do
+    local directories = EngineLibDirsFor(configuration)
+    if os.target() == "windows" then
+        local options = {}
+        for _, directory in ipairs(directories) do
+            table.insert(options, '/LIBPATH:"' .. path.translate(directory, "\\") .. '"')
+        end
+        engineLinkOptionsByConfiguration[configuration] = options
+    else
+        engineLibDirsByConfiguration[configuration] = directories
+    end
+end
 if os.target() == "windows" then
     engineIncludeDirsForPremake = nil
     engineBuildOptions = {}
     for _, directory in ipairs(includeDirs) do
         table.insert(engineBuildOptions,
             '/I"' .. path.translate(directory, "\\") .. '"')
-    end
-
-    engineLibDirsForPremake = nil
-    engineLinkOptions = {}
-    for _, directory in ipairs(engineLibDirs) do
-        table.insert(engineLinkOptions,
-            '/LIBPATH:"' .. path.translate(directory, "\\") .. '"')
     end
 end
 
@@ -109,8 +125,8 @@ Dependency = {
     EditorRuntimeCommon = {
         IncludeDirs = engineIncludeDirsForPremake,
         BuildOptions = engineBuildOptions,
-        LibDirs = engineLibDirsForPremake,
-        LinkOptions = engineLinkOptions,
+        LibDirsByConfiguration = engineLibDirsByConfiguration,
+        LinkOptionsByConfiguration = engineLinkOptionsByConfiguration,
         Links = { "Funke-Engine" },
         Defines = {
             "FUNKE_ALL_MODULES=1",
@@ -129,6 +145,16 @@ function UseDependencySet(dependency)
     if dependency.LinkOptions then linkoptions(dependency.LinkOptions) end
     if dependency.Links then links(dependency.Links) end
     if dependency.Defines then defines(dependency.Defines) end
+    for _, configuration in ipairs(engineConfigurations) do
+        local configLibDirs = dependency.LibDirsByConfiguration and dependency.LibDirsByConfiguration[configuration]
+        local configLinkOptions = dependency.LinkOptionsByConfiguration and dependency.LinkOptionsByConfiguration[configuration]
+        if configLibDirs or configLinkOptions then
+            filter { "configurations:" .. configuration }
+                if configLibDirs then libdirs(configLibDirs) end
+                if configLinkOptions then linkoptions(configLinkOptions) end
+        end
+    end
+    filter {}
 end
 
 local function FirstExistingPath(candidates)

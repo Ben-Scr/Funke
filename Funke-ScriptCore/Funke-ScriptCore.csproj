@@ -143,6 +143,7 @@
     <Compile Include="Source\Funke\Interop\NativeCallbacks.cs" />
     <Compile Include="Source\Funke\Interop\NativeInterop.cs" />
     <Compile Include="Source\Funke\Interop\PackageNativeResolver.cs" />
+    <Compile Include="Source\Funke\Interop\PackageScriptRegistry.cs" />
     <Compile Include="Source\Funke\Interop\PostProcessingInterop.cs" />
     <Compile Include="Source\Funke\Interop\ScriptExceptionLog.cs" />
     <Compile Include="Source\Funke\Interop\ScriptHostBridge.cs" />
@@ -185,7 +186,6 @@
     <Compile Include="Source\Funke\Native\NativeTransform2D.cs" />
     <Compile Include="Source\Funke\Physics\Collision2D.cs" />
     <Compile Include="Source\Funke\Physics\Collision3D.cs" />
-    <Compile Include="Source\Funke\Physics\FastPhysics2D.cs" />
     <Compile Include="Source\Funke\Physics\Physics2D.cs" />
     <Compile Include="Source\Funke\Physics\Physics3D.cs" />
     <Compile Include="Source\Funke\Physics\PhysicsLayers.cs" />

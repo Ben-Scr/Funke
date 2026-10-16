@@ -524,6 +524,7 @@ internal static class ScriptInstanceManager
         Entity.ClearManagedComponentStore();
         EditorWindowRegistry.Clear();
         DevCommandRegistry.Clear();
+        PackageScriptRegistry.Clear();
         AndroidBridge.Clear();
 
         // Static caches keyed by / holding user types root the ALC just like the component store.
@@ -1417,6 +1418,7 @@ internal static class ScriptInstanceManager
                 // A list read before the first load (no game assembly yet) is empty.
                 EditorWindowRegistry.Clear();
                 DevCommandRegistry.Clear();
+                PackageScriptRegistry.Clear();
                 return 1;
             }
 
@@ -1451,6 +1453,7 @@ internal static class ScriptInstanceManager
             DynamicComponentRegistrar.RegisterAll(s_UserAssembly);
             EditorWindowRegistry.Clear();
             DevCommandRegistry.Clear();
+            PackageScriptRegistry.Clear();
             return 1;
         }
         catch (Exception ex)
@@ -3140,7 +3143,7 @@ internal static class ScriptInstanceManager
         return match;
     }
 
-    private static IEnumerable<Assembly> PackageAssemblies()
+    internal static IEnumerable<Assembly> PackageAssemblies()
     {
         Assembly? user = s_UserAssembly;
         if (user == null) yield break;

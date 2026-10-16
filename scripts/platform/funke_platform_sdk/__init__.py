@@ -23,3 +23,4 @@ from .protocol import (  # noqa: F401
 )
 from .cache import cache_root, platform_cache  # noqa: F401
 from .tools import find_cmake, find_ninja, run, which  # noqa: F401
+from .native_packages import NativePackages, prepare_native_packages  # noqa: F401

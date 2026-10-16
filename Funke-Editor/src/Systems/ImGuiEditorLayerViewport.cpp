@@ -34,9 +34,6 @@
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
-#include "Components/Physics/FastBody2DComponent.hpp"
-#include "Components/Physics/FastBoxCollider2DComponent.hpp"
-#include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #include "Collections/AspectRatio.hpp"
 #include "Core/Application.hpp"
 #include "Core/Time.hpp"
@@ -1154,36 +1151,6 @@ namespace Funke {
 						Gizmo::DrawLine(a, b);
 					}
 				}
-			}
-	
-			if (scene.HasComponent<FastBoxCollider2DComponent>(m_SelectedEntity)) {
-				auto& collider = scene.GetComponent<FastBoxCollider2DComponent>(m_SelectedEntity);
-				// GetHalfExtents() returns the live IndexPhys collider's
-				// world-scaled extents (SyncWithTransform already folded
-				// Transform2D.Scale in), so it must NOT be multiplied by scale
-				// again — that double-scaled the gizmo. Only the no-live-
-				// collider fallback returns the raw authored field and needs
-				// the manual scale multiply.
-				const Vec2 he = collider.IsValid()
-					? collider.GetHalfExtents()
-					: Vec2{ collider.HalfExtents.x * transform.Scale.x,
-					        collider.HalfExtents.y * transform.Scale.y };
-				const Vec2 worldSize(std::abs(he.x) * 2.0f, std::abs(he.y) * 2.0f);
-				Gizmo::SetColor(Color(0.10f, 0.85f, 0.85f, 1.0f));
-				Gizmo::SetLineWidth(2.0f);
-				Gizmo::DrawWireSquare(transform.Position, worldSize, rotationDegrees);
-			}
-
-			if (scene.HasComponent<FastCircleCollider2DComponent>(m_SelectedEntity)) {
-				auto& collider = scene.GetComponent<FastCircleCollider2DComponent>(m_SelectedEntity);
-				// Same double-scale fix as the box above: GetRadius() is the
-				// live scaled radius; only the fallback re-applies scale.
-				const float worldRadius = collider.IsValid()
-					? collider.GetRadius()
-					: collider.Radius * std::max(std::abs(transform.Scale.x), std::abs(transform.Scale.y));
-				Gizmo::SetColor(Color(0.10f, 0.85f, 0.85f, 1.0f));
-				Gizmo::SetLineWidth(2.0f);
-				Gizmo::DrawWireCircle(transform.Position, worldRadius);
 			}
 	
 			if (scene.HasComponent<ParticleSystem2DComponent>(m_SelectedEntity)) {

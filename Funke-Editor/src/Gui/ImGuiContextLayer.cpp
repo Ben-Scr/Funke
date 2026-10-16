@@ -17,7 +17,6 @@
 #include <imgui_internal.h>
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -33,6 +32,8 @@ namespace Funke {
 
 		// MUST be consumed at the start of OnPreRender BEFORE NewFrame: mid-frame ClearIniSettings+LoadIniSettingsFromDisk corrupts the dock context, leaving every dockable window floating.
 		std::string s_PendingLayoutReloadPath;
+		// Starts as DefaultIfUndocked so a fresh install, or a layout saved under another dockspace ID, gets the default.
+		ImGuiContextLayer::DockLayoutRequest s_DockLayoutRequest = ImGuiContextLayer::DockLayoutRequest::DefaultIfUndocked;
 
 		// ── Numeric expression input ─────────────────────────────────
 		// Bridges ImGui scalar text entry to the engine expression evaluator so
@@ -115,44 +116,6 @@ namespace Funke {
 			}
 		}
 
-		std::filesystem::path GetCanonicalFileIfExists(const std::filesystem::path& path) {
-			std::error_code ec;
-			if (!std::filesystem::is_regular_file(path, ec) || ec) {
-				return {};
-			}
-
-			std::filesystem::path canonicalPath = std::filesystem::weakly_canonical(path, ec);
-			return ec ? path : canonicalPath;
-		}
-
-		std::filesystem::path FindDefaultEditorIniFile() {
-			std::filesystem::path executableDir;
-			std::error_code ec;
-
-			try {
-				executableDir = Path::ExecutableDir();
-			} catch (...) {
-				executableDir.clear();
-			}
-
-			const std::filesystem::path currentDir = std::filesystem::current_path(ec);
-			const std::array<std::filesystem::path, 4> candidates = {
-				currentDir / "Funke-Editor" / k_ImGuiIniFileName,
-				executableDir / ".." / ".." / ".." / "Funke-Editor" / k_ImGuiIniFileName,
-				currentDir / k_ImGuiIniFileName,
-				executableDir / k_ImGuiIniFileName
-			};
-
-			for (const std::filesystem::path& candidate : candidates) {
-				std::filesystem::path defaultIniFile = GetCanonicalFileIfExists(candidate);
-				if (!defaultIniFile.empty()) {
-					return defaultIniFile;
-				}
-			}
-
-			return {};
-		}
-
 		std::filesystem::path GetEditorUserIniFilePath() {
 			try {
 				return std::filesystem::path(Path::GetSpecialFolderPath(SpecialFolder::LocalAppData)) /
@@ -168,13 +131,6 @@ namespace Funke {
 
 			if (!userIniFile.parent_path().empty()) {
 				std::filesystem::create_directories(userIniFile.parent_path(), ec);
-			}
-
-			if (!std::filesystem::is_regular_file(userIniFile, ec)) {
-				if (std::filesystem::path defaultIniFile = FindDefaultEditorIniFile(); !defaultIniFile.empty()) {
-					ec.clear();
-					std::filesystem::copy_file(defaultIniFile, userIniFile, std::filesystem::copy_options::none, ec);
-				}
 			}
 
 			return userIniFile.make_preferred().string();
@@ -313,6 +269,10 @@ namespace Funke {
 			ImGui::LoadIniSettingsFromDisk(path.c_str());
 			ImGui::GetIO().WantSaveIniSettings = false;
 			m_LastSaveTime = std::chrono::steady_clock::now();
+			// A preset saved before a dockspace ID change docks nothing; fall back to the default instead of floating panels.
+			if (s_DockLayoutRequest == DockLayoutRequest::None) {
+				s_DockLayoutRequest = DockLayoutRequest::DefaultIfUndocked;
+			}
 			FNK_CORE_INFO_TAG("ImGui",
 				"Applied deferred layout reload from '{}'.", path);
 		}
@@ -502,37 +462,13 @@ namespace Funke {
 		return true;
 	}
 
-	void ImGuiContextLayer::ResetLayoutToBundledDefault() {
-		ImGuiIO& io = ImGui::GetIO();
-		if (io.IniFilename == nullptr || *io.IniFilename == '\0') {
-			FNK_CORE_WARN_TAG("ImGui",
-				"Reset Layout requested but no IniFilename is set; ignoring.");
-			return;
-		}
+	void ImGuiContextLayer::ResetLayoutToDefault() {
+		s_DockLayoutRequest = DockLayoutRequest::Default;
+		FNK_CORE_INFO_TAG("ImGui", "Queued reset of the editor layout to the default.");
+	}
 
-		std::filesystem::path defaultIniFile = FindDefaultEditorIniFile();
-		if (defaultIniFile.empty()) {
-			FNK_CORE_WARN_TAG("ImGui",
-				"Reset Layout: bundled default imgui.ini not found in any "
-				"candidate path. Layout left unchanged.");
-			return;
-		}
-
-		std::error_code ec;
-		std::filesystem::copy_file(defaultIniFile, io.IniFilename,
-			std::filesystem::copy_options::overwrite_existing, ec);
-		if (ec) {
-			FNK_CORE_WARN_TAG("ImGui",
-				"Reset Layout: failed to copy bundled default to user ini: {}",
-				ec.message());
-			return;
-		}
-		s_PendingLayoutReloadPath = io.IniFilename;
-
-		FNK_CORE_INFO_TAG("ImGui",
-			"Queued reset of editor layout from bundled default '{}' → '{}'",
-			defaultIniFile.string(),
-			io.IniFilename);
+	ImGuiContextLayer::DockLayoutRequest ImGuiContextLayer::ConsumeDockLayoutRequest() {
+		return std::exchange(s_DockLayoutRequest, DockLayoutRequest::None);
 	}
 
 	void ImGuiContextLayer::ApplyFunkeTheme() {

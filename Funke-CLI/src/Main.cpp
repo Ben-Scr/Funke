@@ -154,7 +154,7 @@ account changes.)", &RunSetupPath },
 
 		void PrintGeneralHelp() {
 			std::string text = std::string(Engine::GetVersionLong()) + " command-line tool\n\n"
-				"usage: index <command> [arguments] [--project <dir>] [--json] [--verbose] [--quiet]\n\n"
+				"usage: funke <command> [arguments] [--project <dir>] [--json] [--verbose] [--quiet]\n\n"
 				"commands:\n";
 			for (const Command& command : k_Commands) {
 				std::string name(command.Name);

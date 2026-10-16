@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/Entity.hpp"
+#include "Scene/SceneExtensions.hpp"
 
 #include "Components/Audio/AudioSourceComponent.hpp"
 
@@ -13,9 +14,6 @@
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
-#include "Components/Physics/FastBody2DComponent.hpp"
-#include "Components/Physics/FastBoxCollider2DComponent.hpp"
-#include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Physics/Box2DWorld.hpp"
 #include "Physics/PhysicsSystem2D.hpp"
@@ -1350,15 +1348,6 @@ namespace Funke {
 				(void)entity;
 				rigidbody.RestoreBodyFromState();
 			}
-			for (EntityHandle entity : m_Registry.view<FastBody2DComponent>()) {
-				OnFastBody2DConstruct(m_Registry, entity);
-			}
-			for (EntityHandle entity : m_Registry.view<FastBoxCollider2DComponent>()) {
-				OnFastBoxCollider2DConstruct(m_Registry, entity);
-			}
-			for (EntityHandle entity : m_Registry.view<FastCircleCollider2DComponent>()) {
-				OnFastCircleCollider2DConstruct(m_Registry, entity);
-			}
 		}
 		for (EntityHandle entity : m_Registry.view<Camera2DComponent>()) {
 			OnCamera2DComponentConstruct(m_Registry, entity);
@@ -1367,6 +1356,7 @@ namespace Funke {
 			OnParticleSystem2DComponentConstruct(m_Registry, entity);
 		}
 #endif
+		SceneExtensions::NotifyRuntimeStateInitialized(*this);
 	}
 
 	void Scene::UpdateSystems() {
@@ -1521,14 +1511,6 @@ namespace Funke {
 		m_Registry.on_destroy<PolygonCollider2DComponent>().connect<&Scene::OnPolygonCollider2DComponentDestroy>(this);
 		m_Registry.on_destroy<Camera2DComponent>().connect<&Scene::OnCamera2DComponentDestruct>(this);
 		m_Registry.on_destroy<ParticleSystem2DComponent>().connect<&Scene::OnParticleSystem2DComponentDestruct>(this);
-
-		// Index-Physics component hooks
-		m_Registry.on_construct<FastBody2DComponent>().connect<&Scene::OnFastBody2DConstruct>(this);
-		m_Registry.on_destroy<FastBody2DComponent>().connect<&Scene::OnFastBody2DDestroy>(this);
-		m_Registry.on_construct<FastBoxCollider2DComponent>().connect<&Scene::OnFastBoxCollider2DConstruct>(this);
-		m_Registry.on_destroy<FastBoxCollider2DComponent>().connect<&Scene::OnFastBoxCollider2DDestroy>(this);
-		m_Registry.on_construct<FastCircleCollider2DComponent>().connect<&Scene::OnFastCircleCollider2DConstruct>(this);
-		m_Registry.on_destroy<FastCircleCollider2DComponent>().connect<&Scene::OnFastCircleCollider2DDestroy>(this);
 #endif
 		m_Registry.on_construct<DisabledTag>().connect<&Scene::OnDisabledTagConstruct>(this);
 		m_Registry.on_construct<StaticTag>().connect<&Scene::OnStaticTagConstruct>(this);
@@ -1537,6 +1519,8 @@ namespace Funke {
 		m_Registry.on_destroy<ScriptComponent>().connect<&Scene::OnScriptComponentDestroy>(this);
 		m_Registry.on_destroy<DisabledTag>().connect<&Scene::OnDisabledTagDestroy>(this);
 		m_Registry.on_destroy<StaticTag>().connect<&Scene::OnStaticTagDestroy>(this);
+
+		SceneExtensions::NotifySceneCreated(*this);
 	}
 
 	Scene::~Scene()
@@ -1549,6 +1533,11 @@ namespace Funke {
 		// detached scenes (prefab inspector) reach this path with live entities.
 		m_TearingDown = true;
 		m_MainCameraEntity = entt::null;
+		try {
+			SceneExtensions::NotifySceneDestroyed(*this);
+		}
+		catch (...) {
+		}
 		try {
 			if (!m_LifecycleSuspended && !m_SuppressEntityDestructionCallbacks) {
 				m_Registry.view<UUIDComponent>().each([this](const UUIDComponent& uuid) {
@@ -2025,72 +2014,6 @@ namespace Funke {
 		ps.m_EmitterEntity = entt::null;
 	}
 
-	void Scene::OnFastBody2DConstruct(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached || m_LifecycleSuspended) return;
-		auto& comp = registry.get<FastBody2DComponent>(entity);
-		auto& indexWorld = PhysicsSystem2D::GetIndexPhysicsWorld();
-
-		comp.m_Body = indexWorld.CreateBody(entity, comp.Type, this);
-		if (comp.m_Body) {
-			comp.m_Body->SetMass(comp.Mass);
-			comp.m_Body->SetGravityEnabled(comp.UseGravity);
-			comp.m_Body->SetBoundaryCheckEnabled(comp.BoundaryCheck);
-
-			// Sync initial position from Transform
-			if (HasComponent<Transform2DComponent>(entity)) {
-				auto& tf = GetComponent<Transform2DComponent>(entity);
-				comp.m_Body->SetPosition({ tf.Position.x, tf.Position.y });
-			}
-		}
-	}
-
-	void Scene::OnFastBody2DDestroy(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached) return;
-		PhysicsSystem2D::GetIndexPhysicsWorld().DestroyBody(entity, this);
-	}
-
-	void Scene::OnFastBoxCollider2DConstruct(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached || m_LifecycleSuspended) return;
-		auto& comp = registry.get<FastBoxCollider2DComponent>(entity);
-		auto& indexWorld = PhysicsSystem2D::GetIndexPhysicsWorld();
-		// Compose initial half-extents with the entity's Transform2D.Scale so
-		// the collider starts at the right size. PhysicsSystem2D's per-frame
-		// SyncWithTransform pass keeps it in sync as the scale changes.
-		Vec2 scale{ 1.0f, 1.0f };
-		if (registry.all_of<Transform2DComponent>(entity)) {
-			scale = registry.get<Transform2DComponent>(entity).Scale;
-		}
-		const Vec2 scaledHalfExtents{ comp.HalfExtents.x * scale.x, comp.HalfExtents.y * scale.y };
-		comp.m_EntityHandle = entity;
-		comp.m_LastAppliedScale = scale;
-		comp.m_Collider = indexWorld.CreateBoxCollider(entity, scaledHalfExtents, this);
-	}
-
-	void Scene::OnFastBoxCollider2DDestroy(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached) return;
-		PhysicsSystem2D::GetIndexPhysicsWorld().DestroyCollider(
-			entity, IndexPhysicsWorld2D::FastColliderKind::Box, this);
-	}
-
-	void Scene::OnFastCircleCollider2DConstruct(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached || m_LifecycleSuspended) return;
-		auto& comp = registry.get<FastCircleCollider2DComponent>(entity);
-		auto& indexWorld = PhysicsSystem2D::GetIndexPhysicsWorld();
-		float scale = 1.0f;
-		if (registry.all_of<Transform2DComponent>(entity)) {
-			const Vec2 tfScale = registry.get<Transform2DComponent>(entity).Scale;
-			scale = std::max(std::abs(tfScale.x), std::abs(tfScale.y));
-		}
-		comp.m_EntityHandle = entity;
-		comp.m_LastAppliedScale = scale;
-		comp.m_Collider = indexWorld.CreateCircleCollider(entity, comp.Radius * scale, this);
-	}
-
-	void Scene::OnFastCircleCollider2DDestroy(entt::registry& registry, EntityHandle entity) {
-		if (m_IsDetached) return;
-		PhysicsSystem2D::GetIndexPhysicsWorld().DestroyCollider(
-			entity, IndexPhysicsWorld2D::FastColliderKind::Circle, this);
-	}
 #endif
 
 	void Scene::ApplyEntityEnabledState(entt::registry& registry, EntityHandle entity, bool enabled)

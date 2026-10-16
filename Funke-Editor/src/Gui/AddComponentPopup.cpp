@@ -12,6 +12,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -23,7 +24,7 @@ namespace Funke {
 
 		std::string BuildScriptMenuLabel(const EditorScriptDiscovery::ScriptEntry& scriptEntry)
 		{
-			return scriptEntry.ClassName + "  " + scriptEntry.Extension;
+			return EditorScriptDiscovery::MenuLabel(scriptEntry);
 		}
 
 		bool AttachScriptToEntity(Entity entity, Scene& scene, const EditorScriptDiscovery::ScriptEntry& scriptEntry)
@@ -310,8 +311,8 @@ namespace Funke {
 				}
 
 				const std::string label = BuildScriptMenuLabel(scriptEntry);
-				const std::string path = scriptEntry.Path.string();
-				if (ImGuiUtils::IconMenuItemEllipsis(label, path.c_str(), "script", true, 260.0f)) {
+				const std::string id = EditorScriptDiscovery::EntryId(scriptEntry);
+				if (ImGuiUtils::IconMenuItemEllipsis(label, id.c_str(), "script", true, 260.0f)) {
 					bool added = false;
 					for (const Entity& e : entities) {
 						if (scriptEntry.IsManagedComponent) {
@@ -387,16 +388,19 @@ namespace Funke {
 			}
 
 			bool hasManagedComponents = false;
+			bool hasScripts = false;
 			for (const auto& scriptEntry : scriptEntries) {
-				if (scriptEntry.IsManagedComponent && !scriptEntry.IsSceneSystem && !scriptEntry.IsGlobalSystem) {
-					hasManagedComponents = true;
-					break;
+				if (scriptEntry.IsPackage() || scriptEntry.IsSceneSystem || scriptEntry.IsGlobalSystem) {
+					continue;
 				}
+				hasManagedComponents |= scriptEntry.IsManagedComponent;
+				hasScripts |= !scriptEntry.IsManagedComponent && !scriptEntry.IsNativeComponent;
 			}
 			if (hasManagedComponents) {
 				if (ImGui::TreeNode("Components (C#)")) {
 					for (const auto& scriptEntry : scriptEntries) {
-						if (!scriptEntry.IsManagedComponent || scriptEntry.IsSceneSystem || scriptEntry.IsGlobalSystem) {
+						if (!scriptEntry.IsManagedComponent || scriptEntry.IsSceneSystem || scriptEntry.IsGlobalSystem
+							|| scriptEntry.IsPackage()) {
 							continue;
 						}
 						bool presentOnAll = !entities.empty();
@@ -427,11 +431,11 @@ namespace Funke {
 				}
 			}
 
-			if (!scriptEntries.empty()) {
+			if (hasScripts) {
 				if (ImGui::TreeNode("Scripts")) {
 					for (const auto& scriptEntry : scriptEntries) {
 						if (scriptEntry.IsManagedComponent || scriptEntry.IsNativeComponent
-							|| scriptEntry.IsSceneSystem || scriptEntry.IsGlobalSystem) {
+							|| scriptEntry.IsSceneSystem || scriptEntry.IsGlobalSystem || scriptEntry.IsPackage()) {
 							continue;
 						}
 						const std::string label = BuildScriptMenuLabel(scriptEntry);
@@ -447,6 +451,49 @@ namespace Funke {
 					}
 					ImGui::TreePop();
 				}
+			}
+
+			// One sub-tree per package; items show the class name, the scene stores ClassName.
+			std::map<std::string, std::vector<const EditorScriptDiscovery::ScriptEntry*>> packages;
+			for (const auto& scriptEntry : scriptEntries) {
+				if (scriptEntry.IsPackage() && !scriptEntry.IsSceneSystem && !scriptEntry.IsGlobalSystem) {
+					packages[scriptEntry.Package].push_back(&scriptEntry);
+				}
+			}
+			if (!packages.empty() && ImGui::TreeNode("Packages")) {
+				for (const auto& [package, packageEntries] : packages) {
+					if (!ImGui::TreeNode(package.c_str(), "%s", EditorScriptDiscovery::PackageDisplayName(package).c_str())) {
+						continue;
+					}
+					for (const EditorScriptDiscovery::ScriptEntry* scriptEntry : packageEntries) {
+						bool presentOnAll = true;
+						for (const Entity& e : entities) {
+							const ScriptComponent* sc = e.HasComponent<ScriptComponent>() ? &e.GetComponent<ScriptComponent>() : nullptr;
+							const bool present = sc && (scriptEntry->IsManagedComponent
+								? sc->HasManagedComponent(scriptEntry->ClassName)
+								: sc->HasScript(scriptEntry->ClassName, scriptEntry->Type));
+							if (!present) {
+								presentOnAll = false;
+								break;
+							}
+						}
+						const std::string id = EditorScriptDiscovery::EntryId(*scriptEntry);
+						if (ImGuiUtils::IconMenuItemEllipsis(EditorScriptDiscovery::ShortClassName(scriptEntry->ClassName),
+							id.c_str(), "script", !presentOnAll, 260.0f) && !presentOnAll) {
+							bool added = false;
+							for (const Entity& e : entities) {
+								added |= scriptEntry->IsManagedComponent
+									? AttachManagedComponentToEntity(const_cast<Entity&>(e), scene, *scriptEntry)
+									: AttachScriptToEntity(const_cast<Entity&>(e), scene, *scriptEntry);
+							}
+							if (added) markChanged();
+							ImGui::CloseCurrentPopup();
+						}
+						EditorUI::Tooltip(presentOnAll ? "Already added" : scriptEntry->ClassName.c_str());
+					}
+					ImGui::TreePop();
+				}
+				ImGui::TreePop();
 			}
 		}
 

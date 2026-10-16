@@ -4,9 +4,6 @@
 #include "Components/General/General.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
-#include "Components/Physics/FastBody2DComponent.hpp"
-#include "Components/Physics/FastBoxCollider2DComponent.hpp"
-#include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Physics/PhysicsTypes.hpp"
@@ -17,7 +14,7 @@
 #include <type_traits>
 #include <vector>
 
-// Both physics stacks: Box2D-backed bodies/colliders and the lightweight Index-Physics AABB set.
+// Box2D-backed bodies and colliders.
 // Split out of BuiltInComponentRegistration.cpp, which owns the call order.
 namespace Funke::BuiltInComponentRegistrationInternal {
 	namespace {
@@ -347,64 +344,6 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 					Properties::Meta::Clamp(0.0, 1.0, 0.01f)),
 				MakeColliderLayerMask<PolygonCollider2DComponent>("LayerMask", "Layer", &Collider2D::GetLayer, &Collider2D::SetLayer),
 				MakeColliderLayerMask<PolygonCollider2DComponent>("CollisionMask", "Collides With", &Collider2D::GetCollisionMask, &Collider2D::SetCollisionMask),
-			});
-
-		// ── Physics (Index-Physics, lightweight AABB) ──────────────
-
-		RegisterComponent<FastBody2DComponent>(registry, "Fast Body 2D",
-			ComponentCategory::Component, "Physics", "FastBody2D",
-			{
-				Properties::MakeWith<IndexPhys::BodyType>("Type", "Body Type",
-					[](const Entity& e) { return e.GetComponent<FastBody2DComponent>().Type; },
-					[](Entity& e, IndexPhys::BodyType v) {
-						auto& body = e.GetComponent<FastBody2DComponent>();
-						body.Type = v;
-						if (body.m_Body) body.m_Body->SetBodyType(v);
-					}),
-				Properties::MakeWith<float>("Mass", "Mass",
-					[](const Entity& e) { return e.GetComponent<FastBody2DComponent>().Mass; },
-					[](Entity& e, float v) {
-						auto& body = e.GetComponent<FastBody2DComponent>();
-						body.Mass = v;
-						if (body.m_Body) body.m_Body->SetMass(v);
-					},
-					Properties::Meta::DragSpeed(0.1f)),
-				Properties::MakeWith<bool>("UseGravity", "Use Gravity",
-					[](const Entity& e) { return e.GetComponent<FastBody2DComponent>().UseGravity; },
-					[](Entity& e, bool v) {
-						auto& body = e.GetComponent<FastBody2DComponent>();
-						body.UseGravity = v;
-						if (body.m_Body) body.m_Body->SetGravityEnabled(v);
-					}),
-				Properties::MakeWith<bool>("BoundaryCheck", "Boundary Check",
-					[](const Entity& e) { return e.GetComponent<FastBody2DComponent>().BoundaryCheck; },
-					[](Entity& e, bool v) {
-						auto& body = e.GetComponent<FastBody2DComponent>();
-						body.BoundaryCheck = v;
-						if (body.m_Body) body.m_Body->SetBoundaryCheckEnabled(v);
-					}),
-			});
-
-		RegisterComponent<FastBoxCollider2DComponent>(registry, "Fast Box Collider 2D",
-			ComponentCategory::Component, "Physics", "FastBoxCollider2D",
-			{
-				Properties::MakeWith<Vec2>("HalfExtents", "Half Extents",
-					[](const Entity& e) { return e.GetComponent<FastBoxCollider2DComponent>().HalfExtents; },
-					[](Entity& e, const Vec2& v) {
-						e.GetComponent<FastBoxCollider2DComponent>().SetHalfExtents(v);
-					},
-					Properties::Meta::DragSpeed(0.05f).WithHideStepperButtons(true)),
-			});
-
-		RegisterComponent<FastCircleCollider2DComponent>(registry, "Fast Circle Collider 2D",
-			ComponentCategory::Component, "Physics", "FastCircleCollider2D",
-			{
-				Properties::MakeWith<float>("Radius", "Radius",
-					[](const Entity& e) { return e.GetComponent<FastCircleCollider2DComponent>().Radius; },
-					[](Entity& e, float v) {
-						e.GetComponent<FastCircleCollider2DComponent>().SetRadius(v);
-					},
-					Properties::Meta::DragSpeed(0.05f)),
 			});
 	}
 }

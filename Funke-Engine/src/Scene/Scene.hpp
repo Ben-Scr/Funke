@@ -435,12 +435,6 @@ namespace Funke {
 		void OnParticleSystem2DComponentConstruct(entt::registry& registry, EntityHandle entity);
 		void OnParticleSystem2DComponentDestruct(entt::registry& registry, EntityHandle entity);
 
-		void OnFastBody2DConstruct(entt::registry& registry, EntityHandle entity);
-		void OnFastBody2DDestroy(entt::registry& registry, EntityHandle entity);
-		void OnFastBoxCollider2DConstruct(entt::registry& registry, EntityHandle entity);
-		void OnFastBoxCollider2DDestroy(entt::registry& registry, EntityHandle entity);
-		void OnFastCircleCollider2DConstruct(entt::registry& registry, EntityHandle entity);
-		void OnFastCircleCollider2DDestroy(entt::registry& registry, EntityHandle entity);
 		void DestroyEntityInternal(EntityHandle nativeEntity, bool markDirty);
 		EntityID AllocateRuntimeEntityID();
 		void RegisterEntityIdentity(EntityHandle entity);

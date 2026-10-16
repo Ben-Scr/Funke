@@ -417,7 +417,7 @@ namespace Funke {
 		}
 		ImGui::SameLine();
 		if (ImGui::Button("Reset to Default")) {
-			ImGuiContextLayer::ResetLayoutToBundledDefault();
+			ImGuiContextLayer::ResetLayoutToDefault();
 		}
 		ImGui::TextDisabled("Stored under %s.", LayoutsFolderDisplay().c_str());
 

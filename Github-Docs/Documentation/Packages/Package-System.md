@@ -147,6 +147,15 @@ instead of a manual rebuild (`PackageHost::FindStaleProjectNativePackages()`).
 This guard detects C++ ABI drift; it does not make the C++ boundary stable.
 Distribute `native` packages as source and rebuild them for each engine SDK/build.
 
+On Android, iOS and the Web there are no package DLLs: the platform builder compiles
+each native layer into the player (`funke_platform_sdk/native_packages.py` and
+`funke_add_native_packages` in `cmake/FunkeEngine.cmake`) together with a generated
+registry. The player calls it before startup, and `LoadAll()` then runs the linked
+packages' `FunkePackage_OnLoad` in dependency order, before any DLL
+(`Packages/StaticPackages.hpp`). Mono resolves `[DllImport("Pkg.<Name>.Native")]`
+through `StaticPackages::FindSymbol` on Android and iOS; the Web relink generates its
+own table from the package archives. See [Writing Packages](Writing-Packages.md#android-ios-and-web-native-layers-are-linked-statically).
+
 ### The package API surface
 
 Inside `FunkePackage_OnLoad`, packages register their content through helpers:
@@ -203,7 +212,7 @@ These break things in ways the error messages don't always explain:
 
 2. **The native import macro is required.** The engine is a shared library; the `native` layer is set up to *import* engine symbols, not export them. The loader configures this automatically; `native_standalone` deliberately doesn't (it links nothing from the engine).
 
-3. **Graphics library paths are per-configuration.** The native layer links the WebGPU/Dawn library, which lives in per-config folders. The loader sets this up per configuration (Dist points at the Release library). A linker error here usually means a configuration mismatch.
+3. **Library paths are per-configuration.** The native layer links the WebGPU/Dawn library and `Funke-Engine.lib`, which live in per-config folders. The loader sets this up per configuration (Dist points at the Release Dawn library; each configuration links its own engine build first). A linker error here usually means a configuration mismatch.
 
 4. **The csharp layer auto-references `Funke-ScriptCore`.** Don't list it in `dependencies` — that field is for *other packages*. Pure-managed packages pay nothing for the reference if they don't use it.
 

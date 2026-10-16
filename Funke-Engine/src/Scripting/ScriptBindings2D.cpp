@@ -13,9 +13,6 @@
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
-#include "Components/Physics/FastBody2DComponent.hpp"
-#include "Components/Physics/FastBoxCollider2DComponent.hpp"
-#include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Components/Tags.hpp"
@@ -23,7 +20,6 @@
 #include "Core/Input.hpp"
 #include "Core/Window.hpp"
 #include "Graphics/TextureManager.hpp"
-#include "Physics/FastPhysics2D.hpp"
 #include "Physics/Physics2D.hpp"
 #include "Scene/EntityPicker.hpp"
 #include "Scene/Scene.hpp"
@@ -820,23 +816,6 @@ namespace Funke {
 		comp.SetEnabled(enabled != 0);
 	}
 
-	// ── Index-Physics ────────────────────────────────────────────────────
-
-	static int Funke_FastBody2D_GetBodyType(uint64_t entityID) { GET_COMPONENT(FastBody2DComponent, entityID, 1); return static_cast<int>(comp.Type); }
-	static void Funke_FastBody2D_SetBodyType(uint64_t entityID, int type) { GET_COMPONENT(FastBody2DComponent, entityID, ); comp.Type = static_cast<IndexPhys::BodyType>(type); if (comp.m_Body) comp.m_Body->SetBodyType(comp.Type); }
-	static float Funke_FastBody2D_GetMass(uint64_t entityID) { GET_COMPONENT(FastBody2DComponent, entityID, 1.0f); return comp.Mass; }
-	static void Funke_FastBody2D_SetMass(uint64_t entityID, float mass) { GET_COMPONENT(FastBody2DComponent, entityID, ); comp.Mass = mass; if (comp.m_Body) comp.m_Body->SetMass(mass); }
-	static int Funke_FastBody2D_GetUseGravity(uint64_t entityID) { GET_COMPONENT(FastBody2DComponent, entityID, 1); return comp.UseGravity ? 1 : 0; }
-	static void Funke_FastBody2D_SetUseGravity(uint64_t entityID, int enabled) { GET_COMPONENT(FastBody2DComponent, entityID, ); comp.UseGravity = enabled != 0; if (comp.m_Body) comp.m_Body->SetGravityEnabled(comp.UseGravity); }
-	static void Funke_FastBody2D_GetVelocity(uint64_t entityID, float* outX, float* outY) { GET_COMPONENT(FastBody2DComponent, entityID, (void)(*outX = 0, *outY = 0)); Vec2 v = comp.GetVelocity(); *outX = v.x; *outY = v.y; }
-	static void Funke_FastBody2D_SetVelocity(uint64_t entityID, float x, float y) { GET_COMPONENT(FastBody2DComponent, entityID, ); comp.SetVelocity({ x, y }); }
-
-	static void Funke_FastBoxCollider2D_GetHalfExtents(uint64_t entityID, float* outX, float* outY) { GET_COMPONENT(FastBoxCollider2DComponent, entityID, (void)(*outX = 0.5f, *outY = 0.5f)); *outX = comp.HalfExtents.x; *outY = comp.HalfExtents.y; }
-	static void Funke_FastBoxCollider2D_SetHalfExtents(uint64_t entityID, float x, float y) { GET_COMPONENT(FastBoxCollider2DComponent, entityID, ); comp.SetHalfExtents({ x, y }); }
-
-	static float Funke_FastCircleCollider2D_GetRadius(uint64_t entityID) { GET_COMPONENT(FastCircleCollider2DComponent, entityID, 0.5f); return comp.Radius; }
-	static void Funke_FastCircleCollider2D_SetRadius(uint64_t entityID, float radius) { GET_COMPONENT(FastCircleCollider2DComponent, entityID, ); comp.SetRadius(radius); }
-
 	// ── ParticleSystem2D ────────────────────────────────────────────────
 
 	static void Funke_ParticleSystem2D_Play(uint64_t entityID) {
@@ -1057,89 +1036,6 @@ namespace Funke {
 			outEntityIDs, maxOut);
 	}
 
-	// ── FastPhysics2D (Index-Physics) ────────────────────────────────────
-	// Same script ABI as Physics2D_*, but routed to the Index-Physics world via
-	// FastPhysics2D. Reuses the shared PhysicsBodyRef2D helpers below.
-
-	static int Funke_FastPhysics2D_Raycast(
-		float originX, float originY, float dirX, float dirY, float distance,
-		uint64_t* hitEntityID, float* hitX, float* hitY, float* hitNormalX, float* hitNormalY, float* hitDistance)
-	{
-		if (!hitEntityID || !hitX || !hitY || !hitNormalX || !hitNormalY || !hitDistance) return 0;
-		*hitEntityID = 0; *hitX = 0; *hitY = 0; *hitNormalX = 0; *hitNormalY = 0; *hitDistance = 0;
-
-		auto result = FastPhysics2D::Raycast({ originX, originY }, { dirX, dirY }, distance);
-		if (result.has_value()) {
-			if (result->scene && result->scene->IsValid(result->entity)) {
-				*hitEntityID = GetEntityScriptId(*result->scene, result->entity);
-			}
-			*hitX = result->point.x; *hitY = result->point.y;
-			*hitNormalX = result->normal.x; *hitNormalY = result->normal.y;
-			*hitDistance = result->distance;
-			return 1;
-		}
-		return 0;
-	}
-
-	static int Funke_FastPhysics2D_OverlapCircle(float originX, float originY, float radius, int mode, uint64_t* entityID) {
-		return WriteOverlapResult(
-			FastPhysics2D::OverlapCircleRef({ originX, originY }, radius, ToOverlapMode(mode)),
-			entityID);
-	}
-
-	static int Funke_FastPhysics2D_OverlapBox(float originX, float originY, float halfX, float halfY, float degrees, int mode, uint64_t* entityID) {
-		return WriteOverlapResult(
-			FastPhysics2D::OverlapBoxRef({ originX, originY }, { halfX, halfY }, degrees, ToOverlapMode(mode)),
-			entityID);
-	}
-
-	static int Funke_FastPhysics2D_OverlapPolygon(float originX, float originY, const float* points, int pointCount, int mode, uint64_t* entityID) {
-		std::vector<Vec2> polygon = ReadPolygonPoints(points, pointCount);
-		if (polygon.empty()) {
-			if (entityID) *entityID = 0;
-			return 0;
-		}
-
-		return WriteOverlapResult(
-			FastPhysics2D::OverlapPolygonRef({ originX, originY }, polygon, ToOverlapMode(mode)),
-			entityID);
-	}
-
-	static int Funke_FastPhysics2D_OverlapCircleAll(float originX, float originY, float radius, uint64_t* outEntityIDs, int maxOut) {
-		return WriteOverlapResults(
-			FastPhysics2D::OverlapCircleAllRefs({ originX, originY }, radius),
-			outEntityIDs, maxOut);
-	}
-
-	static int Funke_FastPhysics2D_OverlapBoxAll(float originX, float originY, float halfX, float halfY, float degrees, uint64_t* outEntityIDs, int maxOut) {
-		return WriteOverlapResults(
-			FastPhysics2D::OverlapBoxAllRefs({ originX, originY }, { halfX, halfY }, degrees),
-			outEntityIDs, maxOut);
-	}
-
-	static int Funke_FastPhysics2D_OverlapPolygonAll(float originX, float originY, const float* points, int pointCount, uint64_t* outEntityIDs, int maxOut) {
-		std::vector<Vec2> polygon = ReadPolygonPoints(points, pointCount);
-		if (polygon.empty()) {
-			return 0;
-		}
-
-		return WriteOverlapResults(
-			FastPhysics2D::OverlapPolygonAllRefs({ originX, originY }, polygon),
-			outEntityIDs, maxOut);
-	}
-
-	static int Funke_FastPhysics2D_ContainsPoint(float originX, float originY, int mode, uint64_t* entityID) {
-		return WriteOverlapResult(
-			FastPhysics2D::ContainsPointRef({ originX, originY }, ToOverlapMode(mode)),
-			entityID);
-	}
-
-	static int Funke_FastPhysics2D_ContainsPointAll(float originX, float originY, uint64_t* outEntityIDs, int maxOut) {
-		return WriteOverlapResults(
-			FastPhysics2D::ContainsPointAllRefs({ originX, originY }),
-			outEntityIDs, maxOut);
-	}
-
 	// ── EntityPicker ────────────────────────────────────────────────────
 
 	static int Funke_EntityPicker_TryPickEntity(float worldX, float worldY, uint64_t* entityID) {
@@ -1226,18 +1122,6 @@ namespace Funke {
 		b.PolygonCollider2D_GetSize = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_GetSize);
 		b.PolygonCollider2D_SetSize = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_SetSize);
 		b.PolygonCollider2D_SetEnabled = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_SetEnabled);
-		b.FastBody2D_GetBodyType = FNK_GUARDED_BINDING(Funke_FastBody2D_GetBodyType);
-		b.FastBody2D_SetBodyType = FNK_GUARDED_BINDING(Funke_FastBody2D_SetBodyType);
-		b.FastBody2D_GetMass = FNK_GUARDED_BINDING(Funke_FastBody2D_GetMass);
-		b.FastBody2D_SetMass = FNK_GUARDED_BINDING(Funke_FastBody2D_SetMass);
-		b.FastBody2D_GetUseGravity = FNK_GUARDED_BINDING(Funke_FastBody2D_GetUseGravity);
-		b.FastBody2D_SetUseGravity = FNK_GUARDED_BINDING(Funke_FastBody2D_SetUseGravity);
-		b.FastBody2D_GetVelocity = FNK_GUARDED_BINDING(Funke_FastBody2D_GetVelocity);
-		b.FastBody2D_SetVelocity = FNK_GUARDED_BINDING(Funke_FastBody2D_SetVelocity);
-		b.FastBoxCollider2D_GetHalfExtents = FNK_GUARDED_BINDING(Funke_FastBoxCollider2D_GetHalfExtents);
-		b.FastBoxCollider2D_SetHalfExtents = FNK_GUARDED_BINDING(Funke_FastBoxCollider2D_SetHalfExtents);
-		b.FastCircleCollider2D_GetRadius = FNK_GUARDED_BINDING(Funke_FastCircleCollider2D_GetRadius);
-		b.FastCircleCollider2D_SetRadius = FNK_GUARDED_BINDING(Funke_FastCircleCollider2D_SetRadius);
 		b.ParticleSystem2D_Play = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_Play);
 		b.ParticleSystem2D_Pause = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_Pause);
 		b.ParticleSystem2D_Stop = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_Stop);
@@ -1281,15 +1165,6 @@ namespace Funke {
 		b.Physics2D_OverlapPolygonAll = FNK_GUARDED_BINDING(Funke_Physics2D_OverlapPolygonAll);
 		b.Physics2D_ContainsPoint = FNK_GUARDED_BINDING(Funke_Physics2D_ContainsPoint);
 		b.Physics2D_ContainsPointAll = FNK_GUARDED_BINDING(Funke_Physics2D_ContainsPointAll);
-		b.FastPhysics2D_Raycast = FNK_GUARDED_BINDING(Funke_FastPhysics2D_Raycast);
-		b.FastPhysics2D_OverlapCircle = FNK_GUARDED_BINDING(Funke_FastPhysics2D_OverlapCircle);
-		b.FastPhysics2D_OverlapBox = FNK_GUARDED_BINDING(Funke_FastPhysics2D_OverlapBox);
-		b.FastPhysics2D_OverlapPolygon = FNK_GUARDED_BINDING(Funke_FastPhysics2D_OverlapPolygon);
-		b.FastPhysics2D_OverlapCircleAll = FNK_GUARDED_BINDING(Funke_FastPhysics2D_OverlapCircleAll);
-		b.FastPhysics2D_OverlapBoxAll = FNK_GUARDED_BINDING(Funke_FastPhysics2D_OverlapBoxAll);
-		b.FastPhysics2D_OverlapPolygonAll = FNK_GUARDED_BINDING(Funke_FastPhysics2D_OverlapPolygonAll);
-		b.FastPhysics2D_ContainsPoint = FNK_GUARDED_BINDING(Funke_FastPhysics2D_ContainsPoint);
-		b.FastPhysics2D_ContainsPointAll = FNK_GUARDED_BINDING(Funke_FastPhysics2D_ContainsPointAll);
 		b.EntityPicker_TryPickEntity = FNK_GUARDED_BINDING(Funke_EntityPicker_TryPickEntity);
 		b.SpriteRenderer_GetFilter = FNK_GUARDED_BINDING(Funke_SpriteRenderer_GetFilter);
 		b.SpriteRenderer_SetFilter = FNK_GUARDED_BINDING(Funke_SpriteRenderer_SetFilter);

@@ -123,6 +123,9 @@ namespace Funke {
 		static int  DrawEditorWindow(const char* typeName);
 		static void CloseEditorWindow(const char* typeName);
 
+		// Scripts, components and systems in package assemblies (see ManagedCallbacks); "[]" before a game assembly loaded.
+		static std::string GetPackageScriptTypes();
+
 		// C# dev console commands (see ManagedCallbacks): JSON list; run one, 0 not found / 1 ok / 2 failed.
 		static std::string GetDevCommands();
 		static int  ExecuteDevCommand(const std::string& command, std::string& outOutput);

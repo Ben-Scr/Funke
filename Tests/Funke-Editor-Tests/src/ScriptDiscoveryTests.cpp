@@ -215,3 +215,57 @@ TEST_CASE("EditorScriptDiscovery::CollectScriptFiles walks a directory tree and 
 	CollectScriptFiles(dir.Root / "missing", none);
 	CHECK(none.empty());
 }
+
+TEST_CASE("EditorScriptDiscovery::AppendPackageScriptEntries classifies package types and keeps project entries") {
+	std::vector<ScriptEntry> entries;
+	AppendScriptEntry(entries, "Funke.Networking.NetworkTransform2D", "Mine.cs", ".cs", ScriptType::Managed);
+
+	AppendPackageScriptEntries(R"([
+		{"name":"Funke.Networking.NetworkObject","kind":"script","assembly":"Pkg.Funke.Networking"},
+		{"name":"Funke.Networking.NetworkTransform2D","kind":"script","assembly":"Pkg.Funke.Networking"},
+		{"name":"Inventory","kind":"component","assembly":"Pkg.Shop"},
+		{"name":"Shop.Spawner","kind":"sceneSystem","assembly":"Pkg.Shop"},
+		{"name":"Shop.Economy","kind":"globalSystem","assembly":"Pkg.Shop"},
+		{"name":"Shop.Unknown","kind":"dataAsset","assembly":"Pkg.Shop"},
+		{"name":"Shop.NoAssembly","kind":"script"},
+		{"kind":"script","assembly":"Pkg.Shop"}
+	])", entries);
+
+	REQUIRE(entries.size() == 5);
+	CHECK_FALSE(entries[0].IsPackage()); // the project's own file wins over the package type of that name
+
+	const ScriptEntry& script = entries[1];
+	CHECK(script.ClassName == "Funke.Networking.NetworkObject");
+	CHECK(script.Package == "Pkg.Funke.Networking");
+	CHECK(script.Type == ScriptType::Managed);
+	CHECK(script.Path.empty());
+	CHECK_FALSE(script.IsManagedComponent);
+	CHECK_FALSE(script.IsSceneSystem);
+	CHECK_FALSE(script.IsGlobalSystem);
+
+	CHECK(entries[2].IsManagedComponent);
+	CHECK(entries[3].IsSceneSystem);
+	CHECK(entries[4].IsGlobalSystem);
+
+	std::vector<ScriptEntry> untouched;
+	AppendPackageScriptEntries("not json", untouched);
+	AppendPackageScriptEntries("{}", untouched);
+	CHECK(untouched.empty());
+}
+
+TEST_CASE("EditorScriptDiscovery labels and ids work for entries without a file") {
+	std::vector<ScriptEntry> entries;
+	AppendScriptEntry(entries, "Player", "Assets/Player.cs", ".cs", ScriptType::Managed);
+	AppendPackageScriptEntries(R"([{"name":"Funke.Networking.NetworkObject","kind":"script","assembly":"Pkg.Funke.Networking"}])", entries);
+	REQUIRE(entries.size() == 2);
+
+	CHECK(MenuLabel(entries[0]) == "Player  .cs");
+	CHECK(MenuLabel(entries[1]) == "Funke.Networking.NetworkObject");
+	CHECK(EntryId(entries[0]) == std::filesystem::path("Assets/Player.cs").string());
+	CHECK(EntryId(entries[1]) == "Pkg.Funke.Networking:Funke.Networking.NetworkObject");
+
+	CHECK(ShortClassName("Funke.Networking.NetworkObject") == "NetworkObject");
+	CHECK(ShortClassName("Player") == "Player");
+	CHECK(PackageDisplayName("Pkg.Funke.Networking") == "Funke.Networking");
+	CHECK(PackageDisplayName("Other") == "Other");
+}

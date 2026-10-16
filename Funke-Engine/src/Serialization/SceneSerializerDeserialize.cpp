@@ -34,9 +34,6 @@
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #if FUNKE_WITH_2D
-#include "Components/Physics/FastBody2DComponent.hpp"
-#include "Components/Physics/FastBoxCollider2DComponent.hpp"
-#include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #endif
 #include "Graphics/TextureManager.hpp"
 #include "Audio/AudioManager.hpp"
@@ -1931,43 +1928,6 @@ namespace Funke {
 			}
 		}
 
-#if FUNKE_WITH_2D
-		if (const Value* bodyValue = GetObjectMember(entityValue, "FastBody2D")) {
-			auto& body = scene.AddComponent<FastBody2DComponent>(entity);
-			body.Type = static_cast<IndexPhys::BodyType>(GetIntMember(*bodyValue, "type", 1));
-			body.Mass = GetFloatMember(*bodyValue, "mass", 1.0f);
-			body.UseGravity = GetBoolMember(*bodyValue, "useGravity", true);
-			body.BoundaryCheck = GetBoolMember(*bodyValue, "boundaryCheck", false);
-
-			if (body.m_Body) {
-				body.m_Body->SetBodyType(body.Type);
-				body.m_Body->SetMass(body.Mass);
-				body.m_Body->SetGravityEnabled(body.UseGravity);
-				body.m_Body->SetBoundaryCheckEnabled(body.BoundaryCheck);
-			}
-		}
-
-		if (const Value* colliderValue = GetObjectMember(entityValue, "FastBoxCollider2D")) {
-			auto& collider = scene.AddComponent<FastBoxCollider2DComponent>(entity);
-			// SetHalfExtents (not a raw m_Collider->SetHalfExtents) so the
-			// scale composed by OnConstruct stays applied — writing the JSON
-			// extents straight onto the IndexPhys collider strips the
-			// Transform2D.Scale and SyncWithTransform's short-circuit then
-			// leaves it stripped because m_LastAppliedScale already equals
-			// the current scale.
-			collider.SetHalfExtents({
-				GetFloatMember(*colliderValue, "halfX", 0.5f),
-				GetFloatMember(*colliderValue, "halfY", 0.5f)
-			});
-		}
-
-		if (const Value* colliderValue = GetObjectMember(entityValue, "FastCircleCollider2D")) {
-			auto& collider = scene.AddComponent<FastCircleCollider2DComponent>(entity);
-			// SetRadius (not raw m_Collider->SetRadius) so OnConstruct's scaled value isn't blown away.
-			collider.SetRadius(GetFloatMember(*colliderValue, "radius", 0.5f));
-		}
-#endif
-
 		if (const Value* rectValue = GetObjectMember(entityValue, "RectTransform2D")) {
 			auto& rectTransform = scene.GetComponent<RectTransform2DComponent>(entity);
 			rectTransform.AnchorMin.x        = GetFloatMember(*rectValue, "anchorMinX", 0.5f);
@@ -2592,45 +2552,6 @@ namespace Funke {
 			audioSource.SetAudioHandle(handle, audioAssetId);
 			return true;
 		}
-
-#if FUNKE_WITH_2D
-		if (component == "FastBody2D") {
-			auto& body = scene.HasComponent<FastBody2DComponent>(entity)
-				? scene.GetComponent<FastBody2DComponent>(entity)
-				: scene.AddComponent<FastBody2DComponent>(entity);
-			body.Type = static_cast<IndexPhys::BodyType>(GetIntMember(componentValue, "type", 1));
-			body.Mass = GetFloatMember(componentValue, "mass", 1.0f);
-			body.UseGravity = GetBoolMember(componentValue, "useGravity", true);
-			body.BoundaryCheck = GetBoolMember(componentValue, "boundaryCheck", false);
-
-			if (body.m_Body) {
-				body.m_Body->SetBodyType(body.Type);
-				body.m_Body->SetMass(body.Mass);
-				body.m_Body->SetGravityEnabled(body.UseGravity);
-				body.m_Body->SetBoundaryCheckEnabled(body.BoundaryCheck);
-			}
-			return true;
-		}
-
-		if (component == "FastBoxCollider2D") {
-			auto& collider = scene.HasComponent<FastBoxCollider2DComponent>(entity)
-				? scene.GetComponent<FastBoxCollider2DComponent>(entity)
-				: scene.AddComponent<FastBoxCollider2DComponent>(entity);
-			collider.SetHalfExtents({
-				GetFloatMember(componentValue, "halfX", 0.5f),
-				GetFloatMember(componentValue, "halfY", 0.5f)
-			});
-			return true;
-		}
-
-		if (component == "FastCircleCollider2D") {
-			auto& collider = scene.HasComponent<FastCircleCollider2DComponent>(entity)
-				? scene.GetComponent<FastCircleCollider2DComponent>(entity)
-				: scene.AddComponent<FastCircleCollider2DComponent>(entity);
-			collider.SetRadius(GetFloatMember(componentValue, "radius", 0.5f));
-			return true;
-		}
-#endif
 
 		if (component == "RectTransform2D") {
 			auto& rectTransform = scene.HasComponent<RectTransform2DComponent>(entity)

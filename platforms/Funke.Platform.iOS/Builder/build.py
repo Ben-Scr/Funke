@@ -52,7 +52,8 @@ def _bootstrap_sdk_path(engine_root: Path | None) -> None:
 _bootstrap_sdk_path(_engine_root_from_argv())
 
 from funke_platform_sdk import (  # noqa: E402
-    BuildRequest, BuilderError, emit_log, emit_progress, find_cmake, find_ninja, platform_cache, run, run_builder,
+    BuildRequest, BuilderError, emit_log, emit_progress, find_cmake, find_ninja, platform_cache,
+    prepare_native_packages, run, run_builder,
 )
 from funke_platform_sdk.deps import CMakeToolchain, build_dawn, build_sdl3  # noqa: E402
 from funke_platform_sdk.orientation import IOS_INTERFACE_ORIENTATIONS, project_orientation  # noqa: E402
@@ -156,8 +157,10 @@ def build(request: BuildRequest) -> Path:
     team = str(request.options.get("developmentTeam") or "")
     project_dir = request.output_dir / f"{re.sub(r'[^A-Za-z0-9._-]', '_', request.app_name)}-Xcode"
     cmake = find_cmake(request.engine_root)
+    native_packages = prepare_native_packages(request, work / "native-packages", symbol_table=True)
     args = [
         "-G", "Xcode",
+        f"-DFUNKE_NATIVE_PACKAGES={native_packages.json_path.as_posix()}",
         "-DCMAKE_SYSTEM_NAME=iOS", "-DCMAKE_OSX_ARCHITECTURES=arm64", f"-DCMAKE_OSX_DEPLOYMENT_TARGET={DEPLOYMENT_TARGET}",
         f"-DFUNKE_ROOT={request.engine_root.as_posix()}",
         f"-DFUNKE_MONO_PACKAGE={mono_package.as_posix()}",

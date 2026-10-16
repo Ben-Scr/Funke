@@ -22,7 +22,7 @@ Funke's philosophy is to keep mandatory dependencies few and focused — each li
 | Library | Role in Funke |
 |---------|---------------|
 | [EnTT](https://github.com/skypjack/entt) | The Entity Component System — how entities and components are stored and iterated. See [ECS](../Engine-Core/ECS.md). |
-| [Box2D](https://github.com/erincatto/box2d) / [Index-Physics](https://github.com/Ben-Scr/Index-Physics) | 2D physics — rigid bodies, colliders, and collision detection. |
+| [Box2D](https://github.com/erincatto/box2d) | 2D physics — rigid bodies, colliders, and collision detection. The lightweight Fast Body 2D physics is the optional Funke.Physics package. |
 | [Jolt Physics](https://github.com/jrouwe/JoltPhysics) | 3D physics — Rigidbody 3D, box/sphere/capsule/mesh colliders, triggers and raycasts. See [Physics 3D](../Engine-Core/Physics-3D.md). |
 
 ---

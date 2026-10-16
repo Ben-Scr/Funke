@@ -2,6 +2,7 @@
 #include "Scripting/ScriptBindingGuard.hpp"
 #include "Assets/AssetRegistry.hpp"
 #include "Scripting/ScriptBindings.hpp"
+#include "Scripting/ScriptEntityReference.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Scripting/ScriptEditorGui.hpp"
 #include "Scripting/ScriptComponent.hpp"

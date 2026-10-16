@@ -519,7 +519,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     "${FUNKE_DIR}/External/SDL/include"
     "${FUNKE_DIR}/External/miniaudio"
     "${FUNKE_DIR}/External/box2d/include"
-    "${FUNKE_DIR}/External/Index-Physics/include"
     "${FUNKE_DIR}/External/dotnet"
 )
 

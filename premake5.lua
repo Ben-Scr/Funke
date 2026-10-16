@@ -115,7 +115,7 @@ workspace "Funke"
 
     filter "system:linux"
         -- Every Linux artifact ultimately links into libIndex-Engine.so, so all
-        -- static deps (ImGui, Box2D, glad, Index-Physics, ...) must be position-
+        -- static deps (ImGui, Box2D, glad, ...) must be position-
         -- independent. Set it workspace-wide so no dependency is missed (Tracy
         -- already sets it locally; this is harmless there).
         pic "On"
@@ -968,7 +968,6 @@ end
 
 if FunkeModules.Physics and FunkeModules.TwoD then
     include "premake/dependencies/box2d.lua"
-    include "premake/dependencies/index_physics.lua"
 end
 if FunkeModules.Physics and FunkeModules.ThreeD then
     include "premake/dependencies/jolt.lua"

@@ -516,6 +516,11 @@ Sofort erledigt (15.10.2026), hier nur zur Einordnung:
 - Der Editor hielt MarbleSky offen, während `Tools/build_game.py` die `project.json` neu schrieb (30 neue Build-Szenen, Version 2.0.0, App-Icon). Beim Schließen (00:12:28) schrieb er seinen alten Stand aus dem Speicher zurück: Build-Szenen Level1–Level25, die es nicht mehr gibt, Version 1.0.0, kein App-Icon. Ein Build danach hätte nur Menü, Builder und Endlos enthalten.
 - Gebraucht: Der FileWatcher lädt eine von außen geänderte `project.json` neu (oder fragt nach). Gespeichert wird nur, was im Editor wirklich geändert wurde, nicht beim Beenden der ganze alte Stand.
 
+## 29. 9-Slice-Ränder folgen nicht der UI-Skalierung (beim Level-Editor-Redesign gefunden, 16.10.)
+
+- `GuiRenderer` rechnet den Rand eines geslicten Images (`Border*` × `BorderScale`) in Bildschirmpixeln, nicht in UI-Einheiten. In einem kleinen Fenster (480 px hoch, UI-Skalierung 0,4) wirken alle geslicten Sprites etwa 2,5-mal runder und dicker als entworfen: Kacheln, Badges, Panels, Pills. Auf dem Pixel 9a (Skalierung ≈ 0,9) fällt es kaum auf.
+- Gebraucht: Ränder mit der UI-Skalierung des Canvas multiplizieren, so wie Positionen und Größen. Dazu ein Test mit zwei Fenstergrößen.
+
 ## Offen im Spiel selbst
 
 - Die Slider-Lösung mit `Mask` ist ungetestet (auf Wunsch). Prüfen, ob die Füllung mitwandert. Mit 9-Slice (Punkt 1) wird sie überflüssig.

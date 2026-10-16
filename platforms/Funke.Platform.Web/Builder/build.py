@@ -55,7 +55,8 @@ def _bootstrap_sdk_path(engine_root: Path | None) -> None:
 _bootstrap_sdk_path(_engine_root_from_argv())
 
 from funke_platform_sdk import (  # noqa: E402
-    BuildRequest, BuilderError, emit_log, emit_progress, find_cmake, platform_cache, run, run_builder, which,
+    BuildRequest, BuilderError, emit_log, emit_progress, find_cmake, platform_cache, prepare_native_packages, run,
+    run_builder, which,
 )
 from funke_platform_sdk.deps import CMakeToolchain, build_sdl3  # noqa: E402
 from funke_platform_sdk.tools import set_log_file  # noqa: E402
@@ -274,7 +275,10 @@ def build(request: BuildRequest) -> Path:
     build_dir = platform_cache(*toolchain.key.split("/"), f"{flavor}-{engine_key}-{request.configuration}-{request.modules_key}")
     includes = [pkg / "webgpu" / "include", pkg / "webgpu_cpp" / "include"]
     port = pkg / "emdawnwebgpu.port.py"
+    # The .NET relink builds the P/Invoke table from the package archives, so no symbol table here.
+    native_packages = prepare_native_packages(request, work / "native-packages", symbol_table=False)
     args = [
+        f"-DFUNKE_NATIVE_PACKAGES={native_packages.json_path.as_posix()}",
         f"-DFUNKE_ROOT={request.engine_root.as_posix()}",
         f"-DFUNKE_SDL3_DIR={sdl3.as_posix()}",
         f"-DFUNKE_EMDAWNWEBGPU_PORT={port.as_posix()}",
@@ -289,7 +293,7 @@ def build(request: BuildRequest) -> Path:
                     else emsdk / "upstream" / "emscripten" / "cache")
     if managed:
         return _build_managed(request, toolchain, cmake, build_dir, args, sdl3, port, sdk, dotnet_wasm,
-                              mono_package, assemblies, work)
+                              mono_package, assemblies, work, native_packages.targets)
 
     shell = work / "shell.html"
     shell.write_text((PACKAGE_ROOT / "Template" / "shell.html").read_text(encoding="utf-8")
@@ -318,7 +322,7 @@ def build(request: BuildRequest) -> Path:
 
 def _build_managed(request: BuildRequest, toolchain: CMakeToolchain, cmake: Path, build_dir: Path, args: list[str],
                    sdl3: Path, port: Path, sdk, dotnet_wasm, mono_package: Path, assemblies: list[Path],
-                   work: Path) -> Path:
+                   work: Path, package_targets: list[str]) -> Path:
     args = args + [
         "-DFUNKE_WEB_MANAGED=ON",
         f"-DFUNKE_MONO_PACKAGE_DIR={mono_package.as_posix()}",
@@ -331,6 +335,8 @@ def _build_managed(request: BuildRequest, toolchain: CMakeToolchain, cmake: Path
 
     archives = [build_dir / "FunkeWeb.a"]
     archives += sorted(p for p in build_dir.glob("*.a") if p.name != "FunkeWeb.a")
+    # Named like their [DllImport] library, so the relink resolves the package's P/Invokes from them.
+    archives += [build_dir / "packages" / f"{target}.a" for target in package_targets]
     archives.append(sdl3 / "lib" / "libSDL3.a")
     missing = [a for a in archives if not a.is_file()]
     if missing:

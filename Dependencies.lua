@@ -3,7 +3,6 @@ IncludeDir["ExternalRoot"] = "External"
 IncludeDir["ImGui"] = "External/imgui"
 IncludeDir["Spdlog"] = "External/spdlog/include"
 IncludeDir["SDL3"] = "External/SDL/include"
-IncludeDir["IndexPhysics"] = "External/Index-Physics/include"
 IncludeDir["Box2D"] = "External/box2d/include"
 IncludeDir["Jolt"] = "External/JoltPhysics"
 IncludeDir["GLM"] = "External/glm"
@@ -137,8 +136,7 @@ Dependency["ExternalIncludes"] =
         "%{IncludeDir.STB}",
         "%{IncludeDir.MagicEnum}",
         "%{IncludeDir.MiniAudio}",
-        "%{IncludeDir.RapidXml}",
-        "%{IncludeDir.IndexPhysics}"
+        "%{IncludeDir.RapidXml}"
     }
 }
 
@@ -234,22 +232,19 @@ Dependency["EngineCorePhysics2D"] =
 {
     IncludeDirs =
     {
-        "%{IncludeDir.Box2D}",
-        "%{IncludeDir.IndexPhysics}"
+        "%{IncludeDir.Box2D}"
     },
 
     LibDirs = {},
 
     DependsOn =
     {
-        "Box2D",
-        "Index-Physics"
+        "Box2D"
     },
 
     Links =
     {
-        "Box2D",
-        "Index-Physics"
+        "Box2D"
     }
 }
 

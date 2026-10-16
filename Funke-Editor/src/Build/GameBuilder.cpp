@@ -1447,10 +1447,7 @@ namespace Funke::GameBuilder {
 			report(0.30f, "C# scripts compiled");
 		}
 
-		if (platformPackageBuild && !engineNativePackageTargets.empty()) {
-			FNK_WARN_TAG("Build", "Native package layers are not built for {} yet; {} native package(s) skipped.",
-				FunkeBuildProfile::PlatformDisplayName(targetPlatform), engineNativePackageTargets.size());
-		}
+		// Platform packages (Android, iOS, Web) compile native package layers into the player themselves.
 		if (!platformPackageBuild && !engineNativePackageTargets.empty()) {
 #if defined(FNK_PLATFORM_WINDOWS)
 			const std::filesystem::path solutionPath =

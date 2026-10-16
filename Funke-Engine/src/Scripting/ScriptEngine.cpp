@@ -810,6 +810,19 @@ namespace Funke {
 		return buffer.empty() ? "[]" : buffer;
 	}
 
+	std::string ScriptEngine::GetPackageScriptTypes()
+	{
+		if (!s_Initialized || !s_Callbacks.GetPackageScriptTypes) return "[]";
+		std::string buffer(4096, '\0');
+		int needed = s_Callbacks.GetPackageScriptTypes(buffer.data(), static_cast<int>(buffer.size()));
+		if (needed > static_cast<int>(buffer.size())) {
+			buffer.assign(static_cast<size_t>(needed), '\0');
+			needed = s_Callbacks.GetPackageScriptTypes(buffer.data(), static_cast<int>(buffer.size()));
+		}
+		buffer.resize(std::strlen(buffer.c_str()));
+		return buffer.empty() ? "[]" : buffer;
+	}
+
 	int ScriptEngine::DrawEditorWindow(const char* typeName)
 	{
 		if (!s_Initialized || !s_Callbacks.DrawEditorWindow || !typeName) return 0;

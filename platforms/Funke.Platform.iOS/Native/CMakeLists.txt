@@ -39,6 +39,8 @@ funke_add_engine(
 
 add_executable(FunkeGame MACOSX_BUNDLE "${CMAKE_CURRENT_LIST_DIR}/iOSMain.mm")
 funke_add_runtime(FunkeGame)
+# The game packages' native layers (FUNKE_NATIVE_PACKAGES: native-packages.json from the builder).
+funke_add_native_packages(FunkeGame JSON "${FUNKE_NATIVE_PACKAGES}")
 funke_link_mono(FunkeGame PACK_NATIVE_DIR "${FUNKE_MONO_PACK_NATIVE}" MODE STATIC)
 target_link_libraries(FunkeGame PRIVATE "-lz" "-liconv" "-lc++")
 

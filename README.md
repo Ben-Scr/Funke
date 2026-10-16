@@ -130,7 +130,7 @@ Guides for building games with Funke live in **[`Github-Docs/Documentation`](Git
 
 - [WebGPU via Dawn](https://dawn.googlesource.com/dawn) — rendering (picks D3D12 / Vulkan / Metal at runtime)
 - [SDL3](https://github.com/libsdl-org/SDL) — windowing, input, gamepads & platform services
-- [Box2D](https://github.com/erincatto/box2d) / [Index-Physics](https://github.com/Ben-Scr/Index-Physics) — 2D physics
+- [Box2D](https://github.com/erincatto/box2d) — 2D physics
 - [EnTT](https://github.com/skypjack/entt) — ECS
 - [Miniaudio](https://github.com/mackron/miniaudio) — audio
 - [GLM](https://github.com/g-truc/glm) / [STB](https://github.com/nothings/stb) — math & image loading

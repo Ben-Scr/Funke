@@ -1,7 +1,9 @@
 #pragma once
 
 #include "Project/ProjectManager.hpp"
+#include "Scripting/ScriptEngine.hpp"
 #include "Scripting/ScriptType.hpp"
+#include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
 
 #include <algorithm>
@@ -30,7 +32,36 @@ namespace Funke::EditorScriptDiscovery {
 		std::string NativeName;
 		bool IsSceneSystem = false;
 		bool IsGlobalSystem = false;
+		// Assembly (Pkg.*) of a class that ships in a package; those have no Path.
+		std::string Package;
+
+		bool IsPackage() const { return !Package.empty(); }
 	};
+
+	inline std::string MenuLabel(const ScriptEntry& entry)
+	{
+		return entry.Extension.empty() ? entry.ClassName : entry.ClassName + "  " + entry.Extension;
+	}
+
+	// ImGui id that stays unique for entries without a file.
+	inline std::string EntryId(const ScriptEntry& entry)
+	{
+		return entry.Path.empty() ? entry.Package + ":" + entry.ClassName : entry.Path.string();
+	}
+
+	// "Funke.Networking.NetworkObject" -> "NetworkObject".
+	inline std::string ShortClassName(const std::string& className)
+	{
+		const std::size_t dot = className.find_last_of('.');
+		return dot == std::string::npos ? className : className.substr(dot + 1);
+	}
+
+	// "Pkg.Funke.Networking" -> "Funke.Networking".
+	inline std::string PackageDisplayName(const std::string& assembly)
+	{
+		constexpr std::string_view prefix = "Pkg.";
+		return assembly.rfind(prefix, 0) == 0 ? assembly.substr(prefix.size()) : assembly;
+	}
 
 	inline std::string ToLowerCopy(std::string value)
 	{
@@ -332,6 +363,39 @@ namespace Funke::EditorScriptDiscovery {
 		});
 	}
 
+	// Parses the managed GetPackageScriptTypes JSON; names the project scan already found are skipped.
+	inline void AppendPackageScriptEntries(const std::string& json, std::vector<ScriptEntry>& entries)
+	{
+		Json::Value root;
+		if (!Json::TryParse(json, root) || !root.IsArray()) {
+			return;
+		}
+
+		for (const Json::Value& item : root.GetArray()) {
+			const Json::Value* name = item.IsObject() ? item.FindMember("name") : nullptr;
+			const Json::Value* kind = item.IsObject() ? item.FindMember("kind") : nullptr;
+			const Json::Value* assembly = item.IsObject() ? item.FindMember("assembly") : nullptr;
+			if (!name || !name->IsString() || !kind || !kind->IsString() || !assembly || !assembly->IsString()) {
+				continue;
+			}
+
+			ScriptEntry entry;
+			entry.ClassName = name->AsStringOr();
+			entry.Package = assembly->AsStringOr();
+			entry.Type = ScriptType::Managed;
+			const std::string kindName = kind->AsStringOr();
+			entry.IsManagedComponent = kindName == "component";
+			entry.IsSceneSystem = kindName == "sceneSystem";
+			entry.IsGlobalSystem = kindName == "globalSystem";
+			const bool knownKind = kindName == "script" || entry.IsManagedComponent || entry.IsSceneSystem || entry.IsGlobalSystem;
+			if (!knownKind || entry.ClassName.empty() || entry.Package.empty()
+				|| ContainsScriptEntry(entries, entry.ClassName, ScriptType::Managed)) {
+				continue;
+			}
+			entries.push_back(std::move(entry));
+		}
+	}
+
 	// 1-second debounce cache for the directory walk (called once per frame from multiple panels). MarkDirty() forces an immediate rebuild on file mutations.
 	namespace detail {
 		inline std::vector<ScriptEntry> s_Cache;
@@ -373,6 +437,8 @@ namespace Funke::EditorScriptDiscovery {
 			CollectScriptFiles(base / ".." / ".." / ".." / "Funke-Sandbox" / "Source", rebuilt);
 			CollectScriptFiles(base / ".." / ".." / ".." / "Funke-NativeScripts" / "Source", rebuilt);
 		}
+		// Package sources aren't in the project, so the loaded assemblies are asked instead.
+		AppendPackageScriptEntries(ScriptEngine::GetPackageScriptTypes(), rebuilt);
 		SortScriptEntries(rebuilt);
 
 		{

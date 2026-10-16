@@ -23,7 +23,7 @@ The custom editor titlebar uses a Win32 window subclass on Windows (snap layouts
 
 - `FNK_PLATFORM_DESKTOP`, `FNK_PLATFORM_MOBILE` and `FNK_PLATFORM_POSIX` (all `0`/`1`).
 - `FNK_PLATFORM_HAS_PROCESSES`: child processes are desktop-only.
-- `FNK_PLATFORM_HAS_DYNAMIC_LIBRARIES`: iOS and the Web link packages statically.
+- `FNK_PLATFORM_HAS_DYNAMIC_LIBRARIES`: `0` on iOS and the Web. Native package layers are linked statically into the Android, iOS and Web players either way (see [Writing Packages](../Packages/Writing-Packages.md)).
 - `FNK_PLATFORM_NAME` and `FNK_ARCH_NAME`, for example `"Windows"` and `"x64"`.
 
 Premake still predefines the Windows, Linux and macOS macros. Other toolchains (Xcode, the Android NDK, Emscripten) rely on the compiler's own target macros. C# scripts get `FUNKE_WINDOWS`, `FUNKE_MACOS`, `FUNKE_LINUX`, `FUNKE_ANDROID`, `FUNKE_IOS` or `FUNKE_WEB` as a define constant.

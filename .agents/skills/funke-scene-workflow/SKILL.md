@@ -55,7 +55,7 @@ Load:
 8. Single load only: all other non-persistent scenes are released.
 Any failure in 1–7 rolls back (OnUnload, `OnDestroy` for awakened systems, entities cleared, physics bodies purged) and returns a status.
 
-Unload (`ReleaseScene`): removed from list and active-scene recomputed → `ScenePreStopEvent` + C# `BeforeSceneUnloaded` → `OnUnload` callbacks → `DestroyScene()` (`OnDestroy`, reverse awaken order) → `ClearEntities()` → Box2D / Index-Physics bodies purged → `ScenePostStopEvent` + C# `SceneUnloaded`.
+Unload (`ReleaseScene`): removed from list and active-scene recomputed → `ScenePreStopEvent` + C# `BeforeSceneUnloaded` → `OnUnload` callbacks → `DestroyScene()` (`OnDestroy`, reverse awaken order) → `ClearEntities()` → Box2D bodies purged + `SceneExtensions::NotifySceneDestroyed` (package backends such as Funke.Physics drop their bodies) → `ScenePostStopEvent` + C# `SceneUnloaded`.
 
 Per-frame ticking (Update only while playing, OnPreRender always): see `funke-add-system`.
 

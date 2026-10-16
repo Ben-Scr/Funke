@@ -35,6 +35,5 @@ Funke is in beta. These gaps are known and planned; plan your project around the
 
 ## Packages
 
-- Scripts that ship in a C# package don't appear in the editor's **Add Component** menu; add them by full class name in scene/prefab JSON, or derive an empty class in the game.
 - Native package dependencies must be listed directly in the project's `packages` array; the runtime does not load transitive native dependencies.
 - Package versions cannot be pinned per project yet.

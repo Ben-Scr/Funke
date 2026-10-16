@@ -111,6 +111,8 @@ The editor is a set of dockable panels. The main ones:
 
 A **toolbar** at the top has the playback controls (Play / Pause / Step / Stop), and a **menu bar** has Save, project tools, preferences, and more.
 
+The **Layout** dropdown at the top right switches between saved layout presets. **Default** restores the standard arrangement: Hierarchy on the left, Inspector on the right, Editor View and Game View in the middle, Asset Browser and Console below. **Manage layouts...** opens Editor Preferences › Layouts, where you save the current arrangement as a preset or delete presets. The editor keeps your layout in its user data folder (`%LOCALAPPDATA%\Funke\Editor\imgui.ini` on Windows) and falls back to the default when that file docks none of the main panels.
+
 ---
 
 ## Core workflows

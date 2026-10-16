@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Scene/SceneManager.hpp"
+#include "Scene/SceneExtensions.hpp"
 #include "Scene/Scene.hpp"
 
 #include <algorithm>
@@ -1059,14 +1060,14 @@ namespace Funke {
 			catch (...) {
 				FNK_CORE_ERROR_TAG("SceneManager", "Rollback Box2D body cleanup for '{}' failed", sceneName);
 			}
-			try {
-				PhysicsSystem2D::GetIndexPhysicsWorld().PurgeBodiesForScene(scene.get());
-			}
-			catch (...) {
-				FNK_CORE_ERROR_TAG("SceneManager", "Rollback IndexPhys body cleanup for '{}' failed", sceneName);
-			}
 		}
 #endif
+		try {
+			SceneExtensions::NotifySceneDestroyed(*scene);
+		}
+		catch (...) {
+			FNK_CORE_ERROR_TAG("SceneManager", "Rollback scene extension cleanup for '{}' failed", sceneName);
+		}
 
 		if (m_ActiveScene == scene.get()) {
 			m_ActiveScene = nullptr;
@@ -1268,14 +1269,14 @@ namespace Funke {
 			catch (...) {
 				FNK_CORE_ERROR_TAG("SceneManager", "Box2D body cleanup for unloaded scene '{}' failed", sceneName);
 			}
-			try {
-				PhysicsSystem2D::GetIndexPhysicsWorld().PurgeBodiesForScene(&scene);
-			}
-			catch (...) {
-				FNK_CORE_ERROR_TAG("SceneManager", "IndexPhys body cleanup for unloaded scene '{}' failed", sceneName);
-			}
 		}
 #endif
+		try {
+			SceneExtensions::NotifySceneDestroyed(scene);
+		}
+		catch (...) {
+			FNK_CORE_ERROR_TAG("SceneManager", "Scene extension cleanup for unloaded scene '{}' failed", sceneName);
+		}
 		if (emitNotifications && !lifecycleWasSuspended) {
 			try {
 				ScenePostStopEvent e(sceneName);

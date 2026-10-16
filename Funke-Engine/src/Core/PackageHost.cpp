@@ -6,6 +6,7 @@
 #include "Core/Platform.hpp"
 #include "Packages/PackageManifest.hpp"
 #include "Packages/PackageResolver.hpp"
+#include "Packages/StaticPackages.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Scene/SceneManager.hpp"
@@ -439,6 +440,36 @@ namespace Funke {
 			}
 		}
 
+		// Native layers the platform builder linked into the player; the builder already resolved and ordered them.
+		size_t LoadStaticPackages() {
+			size_t loadedCount = 0;
+			for (const StaticPackage& package : StaticPackages::GetAll()) {
+				if (!package.Name || PackageHost::IsPackageLoaded(package.Name)) continue;
+
+				const uint32_t ownerId = s_NextOwnerId++;
+				int onLoadResult = 0;
+				if (package.OnLoad) {
+					struct OwnerScope {
+						explicit OwnerScope(uint32_t owner) { SceneManager::SetRegistrationOwner(owner); }
+						~OwnerScope() { SceneManager::SetRegistrationOwner(0); }
+					} ownerScope(ownerId);
+					onLoadResult = package.OnLoad();
+				}
+				if (onLoadResult != 0) {
+					FNK_CORE_WARN_TAG("PackageHost", "Package '{}' FunkePackage_OnLoad returned {} (non-zero).",
+						package.Name, onLoadResult);
+				}
+
+				LoadedPackage loaded;
+				loaded.Name = package.Name;
+				loaded.Version = package.Version ? package.Version : "";
+				loaded.OwnerId = ownerId;
+				s_LoadedPackages.push_back(std::move(loaded));
+				++loadedCount;
+			}
+			return loadedCount;
+		}
+
 		size_t LoadInternal(bool isInitialLoadAll) {
 			std::vector<std::filesystem::path> candidates;
 			const FunkeProject* activeProject = ProjectManager::GetCurrentProject();
@@ -626,7 +657,7 @@ namespace Funke {
 			return;
 		}
 
-		const size_t loaded = LoadInternal(/*isInitialLoadAll=*/true);
+		const size_t loaded = LoadStaticPackages() + LoadInternal(/*isInitialLoadAll=*/true);
 		FNK_CORE_INFO_TAG("PackageHost", "Loaded {} package(s).", loaded);
 
 		// Set the guard AFTER the load loop so a partial init (exception
@@ -655,6 +686,13 @@ namespace Funke {
 				s_LoadedPackages.size(), SceneManager::GetLoadedSceneCount());
 		}
 		for (auto it = s_LoadedPackages.rbegin(); it != s_LoadedPackages.rend(); ++it) {
+			if (!it->ModuleHandle) {
+				// Statically linked: nothing to free, only the unload hook to run.
+				const StaticPackage* linked = StaticPackages::Find(it->Name.c_str());
+				if (linked && linked->OnUnload) linked->OnUnload();
+				SceneManager::UnregisterOwner(it->OwnerId);
+				continue;
+			}
 			bool onUnloadCrashed = false;
 			InvokeOnUnloadGuarded(it->ModuleHandle, &onUnloadCrashed);
 			if (onUnloadCrashed) {

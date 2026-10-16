@@ -14,9 +14,10 @@
 #       WEBGPU_INCLUDE_DIRS <dirs with webgpu/webgpu_cpp.h>
 #       MODULES Funke.2D Funke.3D)           # engine feature modules (Funke-Engine/EngineModules.json); default: all
 #   funke_add_runtime(<target>)              # Funke-Runtime sources (FUNKE_CUSTOM_MAIN) onto an app target
+#   funke_add_native_packages(<target> JSON <native-packages.json>)   # game packages' native layers
 #
-# Targets created: FunkeEngine (STATIC), plus FunkeImGui, and per module FunkeBox2D + IndexPhysics (Funke.2D)
-# and FunkeJolt (Funke.3D).
+# Targets created: FunkeEngine (STATIC), plus FunkeImGui, and per module FunkeBox2D (Funke.2D)
+# and FunkeJolt (Funke.3D); per native package a STATIC Pkg.<Name>.Native.
 
 cmake_minimum_required(VERSION 3.22)
 
@@ -104,12 +105,7 @@ function(funke_add_engine)
         add_library(FunkeBox2D STATIC ${_box2d_sources})
         target_include_directories(FunkeBox2D PUBLIC "${FUNKE_EXTERNAL}/box2d/include" PRIVATE "${FUNKE_EXTERNAL}/box2d/src")
         target_compile_features(FunkeBox2D PRIVATE c_std_17)
-
-        file(GLOB_RECURSE _physics_sources CONFIGURE_DEPENDS "${FUNKE_EXTERNAL}/Index-Physics/src/*.c" "${FUNKE_EXTERNAL}/Index-Physics/src/*.cpp")
-        add_library(IndexPhysics STATIC ${_physics_sources})
-        target_include_directories(IndexPhysics PUBLIC "${FUNKE_EXTERNAL}/Index-Physics/include" "${FUNKE_EXTERNAL}/glm")
-        target_compile_features(IndexPhysics PUBLIC cxx_std_23)
-        list(APPEND _physics_targets FunkeBox2D IndexPhysics)
+        list(APPEND _physics_targets FunkeBox2D)
     endif()
 
     if(_funke_with_3d)
@@ -194,4 +190,68 @@ function(funke_add_runtime target)
     target_compile_definitions(${target} PRIVATE FUNKE_CUSTOM_MAIN)
     _funke_apply_common_options(${target})
     target_link_libraries(${target} PRIVATE FunkeEngine)
+endfunction()
+
+# Items of a JSON array (path given as the remaining arguments) as a CMake list.
+function(_funke_json_list json out_var)
+    string(JSON _count LENGTH "${json}" ${ARGN})
+    set(_items)
+    if(_count GREATER 0)
+        math(EXPR _last "${_count} - 1")
+        foreach(_index RANGE ${_last})
+            string(JSON _item GET "${json}" ${ARGN} ${_index})
+            list(APPEND _items "${_item}")
+        endforeach()
+    endif()
+    set(${out_var} "${_items}" PARENT_SCOPE)
+endfunction()
+
+# The game packages' native layers, linked statically into <target>: these players cannot load package
+# DLLs. The JSON comes from funke_platform_sdk.native_packages. Each package becomes a STATIC library
+# named like its [DllImport] library (Pkg.<Name>.Native, in <build>/packages/) so the Web relink can scan
+# it, compiled with its own FunkePackage_OnLoad/OnUnload names. The registry source it lists defines
+# FunkeRegisterStaticPackages(), which the player calls before the engine starts; without JSON the
+# function is added empty.
+function(funke_add_native_packages target)
+    cmake_parse_arguments(ARG "" "JSON" "" ${ARGN})
+    if(NOT ARG_JSON)
+        set(_registry "${CMAKE_CURRENT_BINARY_DIR}/FunkeStaticPackages.cpp")
+        file(CONFIGURE OUTPUT "${_registry}" CONTENT "// No native packages.\nextern \"C\" void FunkeRegisterStaticPackages() {}\n")
+        target_sources(${target} PRIVATE "${_registry}")
+        return()
+    endif()
+
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ARG_JSON}")
+    file(READ "${ARG_JSON}" _json)
+    string(JSON _registry GET "${_json}" registry)
+    target_sources(${target} PRIVATE "${_registry}")
+    target_include_directories(${target} PRIVATE "${FUNKE_ROOT}/Funke-Engine/src")
+
+    string(JSON _count LENGTH "${_json}" packages)
+    if(_count EQUAL 0)
+        return()
+    endif()
+    math(EXPR _last "${_count} - 1")
+    foreach(_index RANGE ${_last})
+        string(JSON _package GET "${_json}" packages ${_index} target)
+        string(JSON _id GET "${_json}" packages ${_index} id)
+        string(JSON _links_engine GET "${_json}" packages ${_index} engine)
+        _funke_json_list("${_json}" _sources packages ${_index} sources)
+        _funke_json_list("${_json}" _includes packages ${_index} includes)
+
+        add_library(${_package} STATIC ${_sources})
+        set_target_properties(${_package} PROPERTIES
+            PREFIX "" OUTPUT_NAME "${_package}"
+            ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/packages")
+        _funke_apply_common_options(${_package})
+        target_include_directories(${_package} PRIVATE ${_includes})
+        target_compile_definitions(${_package} PRIVATE
+            FunkePackage_OnLoad=FunkePackage_OnLoad_${_id}
+            FunkePackage_OnUnload=FunkePackage_OnUnload_${_id})
+        if(_links_engine)
+            target_link_libraries(${_package} PUBLIC FunkeEngine)
+        endif()
+        target_link_libraries(${target} PRIVATE ${_package})
+        message(STATUS "Funke native package: ${_package} (${_count} total)")
+    endforeach()
 endfunction()

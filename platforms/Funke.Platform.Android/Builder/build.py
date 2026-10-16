@@ -49,7 +49,8 @@ _bootstrap_sdk_path(_engine_root_from_argv())
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from funke_platform_sdk import (  # noqa: E402
-    BuildRequest, BuilderError, emit_log, emit_progress, find_cmake, platform_cache, run, run_builder,
+    BuildRequest, BuilderError, emit_log, emit_progress, find_cmake, platform_cache, prepare_native_packages, run,
+    run_builder,
 )
 from funke_platform_sdk.deps import CMakeToolchain, build_dawn, build_sdl3  # noqa: E402
 from funke_platform_sdk.orientation import ANDROID_SCREEN_ORIENTATION, project_orientation  # noqa: E402
@@ -192,7 +193,7 @@ def _ndk_toolchain(tc: android_toolchain.AndroidToolchain) -> CMakeToolchain:
 
 
 def _build_native(request: BuildRequest, tc: android_toolchain.AndroidToolchain, cmake_tc: CMakeToolchain,
-                  sdl3: Path, dawn, mono_pack, mono_package: Path) -> Path:
+                  sdl3: Path, dawn, mono_pack, mono_package: Path, native_packages: Path) -> Path:
     cmake = find_cmake(request.engine_root)
     engine_key = hashlib.sha256(str(request.engine_root.resolve()).encode()).hexdigest()[:10]
     build_dir = platform_cache("Android", ABI, f"player-{engine_key}-{request.configuration}-{request.modules_key}")
@@ -205,6 +206,7 @@ def _build_native(request: BuildRequest, tc: android_toolchain.AndroidToolchain,
         "-DFUNKE_DAWN_INCLUDE_DIRS=" + ";".join(p.as_posix() for p in dawn.include_dirs),
         f"-DFUNKE_CONFIGURATION={request.configuration}",
         f"-DFUNKE_ENTITY_BITS={request.entity_bits}",
+        f"-DFUNKE_NATIVE_PACKAGES={native_packages.as_posix()}",
         *request.cmake_module_args(),
         "-DCMAKE_BUILD_TYPE=" + ("Release" if request.is_release else "RelWithDebInfo"),
     ]
@@ -385,7 +387,8 @@ def build(request: BuildRequest) -> Path:
     mono_pack = mono_runtime.fetch_runtime_pack(RID)
 
     emit_progress(0.35, "Compiling the engine for Android")
-    libmain = _build_native(request, tc, cmake_tc, sdl3, dawn, mono_pack, mono_package)
+    native_packages = prepare_native_packages(request, work / "native-packages", symbol_table=True)
+    libmain = _build_native(request, tc, cmake_tc, sdl3, dawn, mono_pack, mono_package, native_packages.json_path)
 
     emit_progress(0.70, "Android libraries of the game's packages")
     contributions = android_libraries.collect(request, ABI)

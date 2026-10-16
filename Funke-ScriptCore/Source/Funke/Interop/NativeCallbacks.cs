@@ -229,19 +229,6 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, ulong> AudioSource_GetAudio;
     public delegate* unmanaged<ulong, ulong, void> AudioSource_SetAudio;
 
-    // ── Index-Physics ─────────────────────────────────────────────
-    public delegate* unmanaged<ulong, int> FastBody2D_GetBodyType;
-    public delegate* unmanaged<ulong, int, void> FastBody2D_SetBodyType;
-    public delegate* unmanaged<ulong, float> FastBody2D_GetMass;
-    public delegate* unmanaged<ulong, float, void> FastBody2D_SetMass;
-    public delegate* unmanaged<ulong, int> FastBody2D_GetUseGravity;
-    public delegate* unmanaged<ulong, int, void> FastBody2D_SetUseGravity;
-    public delegate* unmanaged<ulong, float*, float*, void> FastBody2D_GetVelocity;
-    public delegate* unmanaged<ulong, float, float, void> FastBody2D_SetVelocity;
-    public delegate* unmanaged<ulong, float*, float*, void> FastBoxCollider2D_GetHalfExtents;
-    public delegate* unmanaged<ulong, float, float, void> FastBoxCollider2D_SetHalfExtents;
-    public delegate* unmanaged<ulong, float> FastCircleCollider2D_GetRadius;
-    public delegate* unmanaged<ulong, float, void> FastCircleCollider2D_SetRadius;
 
     // ── Scene Query ──────────────────────────────────────────────
     public delegate* unmanaged<byte*, int, int> Scene_GetActiveSceneNameBuffer;
@@ -325,16 +312,6 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<float, float, int, ulong*, int> Physics2D_ContainsPoint;
     public delegate* unmanaged<float, float, ulong*, int, int> Physics2D_ContainsPointAll;
 
-    // ── FastPhysics2D (Index-Physics) ────────────────────────────
-    public delegate* unmanaged<float, float, float, float, float, ulong*, float*, float*, float*, float*, float*, int> FastPhysics2D_Raycast;
-    public delegate* unmanaged<float, float, float, int, ulong*, int> FastPhysics2D_OverlapCircle;
-    public delegate* unmanaged<float, float, float, float, float, int, ulong*, int> FastPhysics2D_OverlapBox;
-    public delegate* unmanaged<float, float, float*, int, int, ulong*, int> FastPhysics2D_OverlapPolygon;
-    public delegate* unmanaged<float, float, float, ulong*, int, int> FastPhysics2D_OverlapCircleAll;
-    public delegate* unmanaged<float, float, float, float, float, ulong*, int, int> FastPhysics2D_OverlapBoxAll;
-    public delegate* unmanaged<float, float, float*, int, ulong*, int, int> FastPhysics2D_OverlapPolygonAll;
-    public delegate* unmanaged<float, float, int, ulong*, int> FastPhysics2D_ContainsPoint;
-    public delegate* unmanaged<float, float, ulong*, int, int> FastPhysics2D_ContainsPointAll;
 
     // ── EntityPicker ─────────────────────────────────────────────
     public delegate* unmanaged<float, float, ulong*, int> EntityPicker_TryPickEntity;

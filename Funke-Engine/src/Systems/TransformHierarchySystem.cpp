@@ -7,7 +7,7 @@
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
-#include "Components/Physics/FastBody2DComponent.hpp"
+#include "Physics/PhysicsSystem2D.hpp"
 #include "Components/Tags.hpp"
 #include "Profiling/Profiler.hpp"
 
@@ -25,7 +25,7 @@ namespace Funke {
 			Transform2DComponent* tr = registry.try_get<Transform2DComponent>(entity);
 			if (!tr) return;
 
-			const bool ownedByPhysics = registry.any_of<Rigidbody2DComponent, FastBody2DComponent>(entity);
+			const bool ownedByPhysics = PhysicsSystem2D::IsTransformOwnedByPhysics(registry, entity);
 			if (!ownedByPhysics) {
 				if (parentWorld) {
 					tr->Position = parentWorld->TransformPoint(tr->LocalPosition);
@@ -58,7 +58,7 @@ namespace Funke {
 			auto* tr = registry.try_get<Transform2DComponent>(entity);
 			if (!tr) return;
 
-			const bool ownedByPhysics = registry.any_of<Rigidbody2DComponent, FastBody2DComponent>(entity);
+			const bool ownedByPhysics = PhysicsSystem2D::IsTransformOwnedByPhysics(registry, entity);
 			if (!ownedByPhysics) {
 				tr->Position = tr->LocalPosition;
 				tr->Rotation = tr->LocalRotation;
@@ -77,9 +77,14 @@ namespace Funke {
 				if (!registry.get<HierarchyComponent>(entity).Children.empty()) return true;
 			}
 
-			auto fastBodyView = registry.view<FastBody2DComponent, HierarchyComponent>(entt::exclude<DisabledTag>);
-			for (auto entity : fastBodyView) {
-				if (!registry.get<HierarchyComponent>(entity).Children.empty()) return true;
+			for (const PhysicsExtension2D& extension : PhysicsSystem2D::GetExtensions()) {
+				const auto* bodies = extension.BodyComponent != 0 ? registry.storage(extension.BodyComponent) : nullptr;
+				if (!bodies) continue;
+				for (const EntityHandle entity : *bodies) {
+					if (registry.all_of<DisabledTag>(entity)) continue;
+					const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(entity);
+					if (hierarchy && !hierarchy->Children.empty()) return true;
+				}
 			}
 
 			return false;

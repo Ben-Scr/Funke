@@ -33,7 +33,7 @@ namespace Funke {
 		switch (module) {
 			case EngineModule::TwoD:
 				return "2D worlds: Transform 2D, sprites and sprite animation, 2D cameras, particles and post-processing, "
-					"2D physics (Box2D and Index-Physics).";
+					"2D physics (Box2D).";
 			case EngineModule::ThreeD:
 				return "3D worlds: Transform 3D, meshes and materials, lights and sky, 3D particles, 3D physics (Jolt).";
 		}

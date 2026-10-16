@@ -221,10 +221,11 @@ def publish_browser_app(sdk: DotnetWasmSdk, work_dir: Path, *, app_name: str, ma
     references = "\n".join(
         f'    <Reference Include="{_xml(a.stem)}"><HintPath>{_xml(str(a))}</HintPath><Private>true</Private></Reference>'
         for a in local_assemblies)
-    # Only FunkeWeb.a holds the [DllImport] targets; the other archives just need linking.
+    # FunkeWeb.a and the packages' Pkg.<Name>.Native.a hold the [DllImport] targets (matched by file name);
+    # the other archives just need linking.
     natives = "\n".join(
         f'    <NativeFileReference Include="{_xml(str(a))}"'
-        + ('' if a.stem == "FunkeWeb" else ' ScanForPInvokes="false"') + " />"
+        + ('' if a.stem == "FunkeWeb" or a.stem.startswith("Pkg.") else ' ScanForPInvokes="false"') + " />"
         for a in native_archives)
     project = f"""<Project Sdk="Microsoft.NET.Sdk.WebAssembly">
   <PropertyGroup>

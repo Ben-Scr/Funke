@@ -254,6 +254,18 @@ anim.FramesPerSecond = 16f;
 if (!anim.IsPlaying) anim.Play();   // Pause() keeps the frame, Stop() rewinds
 ```
 
+**Tweens** — the **Funke.Tween** package (Package Manager) animates positions, rotations, scales, colors, alpha and any value with a getter and setter over time, DOTween-style: Penner easing, sequences, loops (restart, yoyo, incremental), callbacks, unscaled time for pause menus, shakes and punches. Tweens update themselves and die with their entity:
+
+```csharp
+using Funke.Tween;
+transform.MoveTo(new Vector2(3f, 0f), 0.5f).SetEase(Ease.OutBack);
+panel.ScaleTo(1f, 0.25f).From(0.8f).SetEase(Ease.OutBack).SetUnscaledTime();   // UI pop-in, also while paused
+Tween.Sequence().Append(toast.MoveTo(shown, 0.3f)).AppendInterval(2f).Append(background.FadeTo(0f, 0.4f));
+Camera2D.Main!.Shake(0.4f, 0.3f);
+```
+
+The full API is in the package's [README](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Tween).
+
 **Multiplayer** — the **Funke.Networking** package (Package Manager) hosts and joins games on every platform: desktop, Android and iOS over UDP, browsers over WebSocket, all on the same server. Messages are structs implementing `INetMessage`; prefabs spawned by the server appear on every client, and a **NetworkTransform2D** / **NetworkTransform3D** script on them keeps their movement smooth on the other screens:
 
 ```csharp
@@ -265,7 +277,7 @@ NetworkClient.Send(new Chat { Text = "hi" });
 if (NetworkObject.Of(Entity) is { IsOwner: true }) Move();     // scripts run everywhere; only the owner moves
 ```
 
-Scripts that ship in a package are added to scenes and prefabs by their full class name (`"className": "Funke.Networking.NetworkObject"`). The full API, browser hosting (`wss://`) and internet play are in the package's [README](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Networking).
+Scripts that ship in a package are in **Add Component › Packages**; scenes and prefabs store them by their full class name (`"className": "Funke.Networking.NetworkObject"`). The full API, browser hosting (`wss://`) and internet play are in the package's [README](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Networking).
 
 **Post-processing** — add **Post Processing** to the entity with the main **Camera 2D** (its *Post Processing* toggle must stay on). `PostProcessing2D` exposes each effect as a value struct: read it, change fields, assign it back.
 

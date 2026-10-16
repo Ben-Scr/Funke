@@ -29,6 +29,7 @@ project "Funke-Editor-Tests"
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/PlatformBuilder.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/SpriteSlicing.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Gui/AssetSaveDialog.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Gui/EditorDockLayout.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/ScriptWindowTypes.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/EditorCamera.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/EditorCamera3D.cpp"),

@@ -1048,6 +1048,8 @@ namespace Funke {
 			std::string filter = ToLowerCopy(std::string(s_PickerState.Search));
 
 			for (const auto& entry : s_PickerState.Entries) {
+				// Everything here is added as an EntityScript; package components and systems would not run as one.
+				if (entry.IsPackage() && (entry.IsManagedComponent || entry.IsSceneSystem || entry.IsGlobalSystem)) continue;
 				if (!filter.empty()) {
 					std::string lowerName = ToLowerCopy(entry.ClassName);
 					std::string lowerPath = ToLowerCopy(entry.Path.string());
@@ -1056,10 +1058,10 @@ namespace Funke {
 
 				bool truncated = false;
 				const std::string displayLabel = ImGuiUtils::Ellipsize(
-					entry.ClassName + "  " + entry.Extension,
+					EditorScriptDiscovery::MenuLabel(entry),
 					ImGui::GetContentRegionAvail().x,
 					&truncated);
-				std::string label = displayLabel + "##" + entry.Path.string();
+				std::string label = displayLabel + "##" + EditorScriptDiscovery::EntryId(entry);
 				if (ImGui::Selectable(label.c_str(), false)) {
 					Scene* scene = ScriptEngine::GetScene();
 					if (!scene) scene = SceneManager::GetActiveScene();
@@ -1074,9 +1076,11 @@ namespace Funke {
 					s_PickerState.Open = false;
 				}
 
-				if (ImGui::IsItemHovered() && (truncated || !entry.Path.empty())) {
-					const std::string path = Path::ToProjectRelativeDisplay(entry.Path.string());
-					ImGui::SetTooltip("%s", path.c_str());
+				if (ImGui::IsItemHovered() && (truncated || !entry.Path.empty() || entry.IsPackage())) {
+					const std::string where = entry.IsPackage()
+						? entry.ClassName + "  (" + EditorScriptDiscovery::PackageDisplayName(entry.Package) + " package)"
+						: Path::ToProjectRelativeDisplay(entry.Path.string());
+					ImGui::SetTooltip("%s", where.c_str());
 				}
 			}
 

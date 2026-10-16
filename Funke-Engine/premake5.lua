@@ -199,8 +199,7 @@ project "Funke-Engine"
 
     local physicsIncludes =
     {
-        "../External/box2d/include",
-        "../External/Index-Physics/include"
+        "../External/box2d/include"
     }
 
     local scriptingIncludes =

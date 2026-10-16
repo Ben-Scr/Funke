@@ -749,6 +749,9 @@ local function RegisterNativeProject(manifest)
             -- MultiProcessorCompile + /Zc:preprocessor.
             flags { "MultiProcessorCompile" }
             buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
+            -- /Z7 like the engine workspace (premake5.lua): project package workspaces don't
+            -- inherit it, and /Zi routes every cl.exe through mspdbsrv, which can stall a build.
+            debugformat "c7"
             defines { "FNK_PLATFORM_WINDOWS" }
             postbuildcommands { NativeAbiMetadataCommand(hasEngineLinked) }
 

@@ -47,6 +47,9 @@ public class Entity : IEquatable<Entity>
 
     public readonly ulong ID;
 
+    /// <summary>The entity with this <see cref="ID"/>, e.g. a hit returned by a package's native query; Invalid for 0.</summary>
+    public static Entity FromID(ulong id) => id != 0 ? new Entity(id) : Invalid;
+
     internal bool IsPrefabAsset => m_PrefabAssetGUID != 0;
     public ulong RuntimeID => IsPrefabAsset ? 0 : InternalCalls.Entity_GetRuntimeID(ID);
     public ulong SceneGUID => IsPrefabAsset ? 0 : InternalCalls.Entity_GetSceneGUID(ID);
@@ -191,9 +194,6 @@ public class Entity : IEquatable<Entity>
         { typeof(CircleCollider2D),      "Circle Collider 2D" },
         { typeof(PolygonCollider2D),     "Polygon Collider 2D" },
         { typeof(AudioSource),           "Audio Source" },
-        { typeof(FastBody2D),            "Fast Body 2D" },
-        { typeof(FastBoxCollider2D),     "Fast Box Collider 2D" },
-        { typeof(FastCircleCollider2D),  "Fast Circle Collider 2D" },
         { typeof(ParticleSystem2D),      "Particle System 2D" },
         { typeof(SpriteAnimator2D),      "Sprite Animator 2D" },
         { typeof(Animator),              "Animator" },
@@ -240,15 +240,31 @@ public class Entity : IEquatable<Entity>
     {
         if (s_NativeComponentNames.TryGetValue(type, out string? name))
             return name;
+        if (EnsureModuleInitialized(type.Module) && s_NativeComponentNames.TryGetValue(type, out name))
+            return name;
 
         return type.IsSubclassOf(typeof(Component)) ? type.Name : null;
     }
 
-    private static Type? ResolveComponentTypeByName(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-            return null;
+    private static readonly HashSet<Module> s_InitializedModules = new();
 
+    // Package wrappers call RegisterNativeComponent from a [ModuleInitializer], which .NET runs only
+    // on first use of the module; run it before a lookup could miss. True the first time per module.
+    private static bool EnsureModuleInitialized(Module module)
+    {
+        if (module.Assembly == typeof(Entity).Assembly)
+            return false;
+        lock (s_InitializedModules)
+        {
+            if (!s_InitializedModules.Add(module))
+                return false;
+        }
+        RuntimeHelpers.RunModuleConstructor(module.ModuleHandle);
+        return true;
+    }
+
+    private static Type? FindRegisteredComponentType(string name)
+    {
         foreach (var pair in s_NativeComponentNames)
         {
             Type type = pair.Key;
@@ -259,6 +275,26 @@ public class Entity : IEquatable<Entity>
                 return type;
             }
         }
+        return null;
+    }
+
+    private static Type? ResolveComponentTypeByName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return null;
+
+        Type? registered = FindRegisteredComponentType(name);
+        if (registered != null)
+            return registered;
+
+        bool initializedPackage = false;
+        foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            if (assembly.GetName().Name?.StartsWith("Pkg.", StringComparison.Ordinal) == true)
+                initializedPackage |= EnsureModuleInitialized(assembly.ManifestModule);
+        }
+        if (initializedPackage && (registered = FindRegisteredComponentType(name)) != null)
+            return registered;
 
         foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
         {
@@ -296,9 +332,23 @@ public class Entity : IEquatable<Entity>
         => prefabGuid != 0 ? new Entity(0, prefabGuid) : Invalid;
 
     internal static string? GetNativeComponentName<T>() where T : Component, new() => GetNativeName<T>();
+    /// <summary>
+    /// For packages with a native layer: maps the C# wrapper of a package component to the name it
+    /// was registered under natively, so GetComponent/AddComponent treat it like a built-in component.
+    /// Call it once, e.g. from a [ModuleInitializer] in the package assembly.
+    /// </summary>
+    public static void RegisterNativeComponent<T>(string nativeName) where T : Component, new()
+    {
+        if (string.IsNullOrWhiteSpace(nativeName))
+            throw new ArgumentException("A native component name is required.", nameof(nativeName));
+        s_NativeComponentNames[typeof(T)] = nativeName;
+    }
+
     internal static bool TryGetNativeComponentName(Type type, out string? name)
     {
         if (s_NativeComponentNames.TryGetValue(type, out name))
+            return true;
+        if (EnsureModuleInitialized(type.Module) && s_NativeComponentNames.TryGetValue(type, out name))
             return true;
 
         if (type.IsValueType && typeof(IComponent).IsAssignableFrom(type))

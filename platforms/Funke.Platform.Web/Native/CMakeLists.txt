@@ -63,6 +63,8 @@ if(FUNKE_WEB_MANAGED)
         "${CMAKE_CURRENT_LIST_DIR}/WebMain.cpp"
         "${FUNKE_MONO_PACKAGE_DIR}/Native/MonoScriptRuntime.cpp")
     funke_add_runtime(FunkeWeb)
+    # The game packages' native layers; the builder hands their archives to the .NET relink.
+    funke_add_native_packages(FunkeWeb JSON "${FUNKE_NATIVE_PACKAGES}")
     target_compile_definitions(FunkeWeb PRIVATE FUNKE_WEB_MANAGED=1)
     target_include_directories(FunkeWeb PRIVATE "${FUNKE_MONO_INCLUDE_DIR}" "${FUNKE_MONO_PACKAGE_DIR}/Native")
     # The DllImport name in the generated host program is "FunkeWeb"; the .NET SDK matches it against
@@ -73,6 +75,7 @@ endif()
 
 add_executable(index "${CMAKE_CURRENT_LIST_DIR}/WebMain.cpp")
 funke_add_runtime(index)
+funke_add_native_packages(index JSON "${FUNKE_NATIVE_PACKAGES}")
 set_target_properties(index PROPERTIES SUFFIX ".html")
 target_link_options(index PRIVATE
     "--shell-file=${FUNKE_SHELL_FILE}"

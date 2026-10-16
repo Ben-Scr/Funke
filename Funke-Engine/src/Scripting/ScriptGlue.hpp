@@ -4,7 +4,7 @@
 namespace Funke {
 
 	// Bump together with InteropHandshake.LayoutVersion (ScriptHostBridge.cs) on any add/remove/reorder in NativeBindings or ManagedCallbacks.
-	inline constexpr int32_t k_ScriptInteropLayoutVersion = 30;
+	inline constexpr int32_t k_ScriptInteropLayoutVersion = 32;
 
 	/// Layout must match C# NativeBindingsStruct exactly (Sequential, blittable).
 	struct NativeBindings
@@ -244,19 +244,6 @@ namespace Funke {
 		uint64_t (*AudioSource_GetAudio)(uint64_t entityID);
 		void     (*AudioSource_SetAudio)(uint64_t entityID, uint64_t assetId);
 
-		// ── Index-Physics ─────────────────────────────────────────────
-		int   (*FastBody2D_GetBodyType)(uint64_t entityID);
-		void  (*FastBody2D_SetBodyType)(uint64_t entityID, int type);
-		float (*FastBody2D_GetMass)(uint64_t entityID);
-		void  (*FastBody2D_SetMass)(uint64_t entityID, float mass);
-		int   (*FastBody2D_GetUseGravity)(uint64_t entityID);
-		void  (*FastBody2D_SetUseGravity)(uint64_t entityID, int enabled);
-		void  (*FastBody2D_GetVelocity)(uint64_t entityID, float* outX, float* outY);
-		void  (*FastBody2D_SetVelocity)(uint64_t entityID, float x, float y);
-		void  (*FastBoxCollider2D_GetHalfExtents)(uint64_t entityID, float* outX, float* outY);
-		void  (*FastBoxCollider2D_SetHalfExtents)(uint64_t entityID, float x, float y);
-		float (*FastCircleCollider2D_GetRadius)(uint64_t entityID);
-		void  (*FastCircleCollider2D_SetRadius)(uint64_t entityID, float radius);
 
 		// ── Scene ────────────────────────────────────────────────────
 		int         (*Scene_GetActiveSceneNameBuffer)(char* outBuffer, int capacity);
@@ -348,17 +335,6 @@ namespace Funke {
 		int (*Physics2D_ContainsPoint)(float originX, float originY, int mode, uint64_t* entityID);
 		int (*Physics2D_ContainsPointAll)(float originX, float originY, uint64_t* outEntityIDs, int maxOut);
 
-		// ── FastPhysics2D (Index-Physics) ────────────────────────────
-		int (*FastPhysics2D_Raycast)(float originX, float originY, float dirX, float dirY, float distance,
-		                             uint64_t* hitEntityID, float* hitX, float* hitY, float* hitNormalX, float* hitNormalY, float* hitDistance);
-		int (*FastPhysics2D_OverlapCircle)(float originX, float originY, float radius, int mode, uint64_t* entityID);
-		int (*FastPhysics2D_OverlapBox)(float originX, float originY, float halfX, float halfY, float degrees, int mode, uint64_t* entityID);
-		int (*FastPhysics2D_OverlapPolygon)(float originX, float originY, const float* points, int pointCount, int mode, uint64_t* entityID);
-		int (*FastPhysics2D_OverlapCircleAll)(float originX, float originY, float radius, uint64_t* outEntityIDs, int maxOut);
-		int (*FastPhysics2D_OverlapBoxAll)(float originX, float originY, float halfX, float halfY, float degrees, uint64_t* outEntityIDs, int maxOut);
-		int (*FastPhysics2D_OverlapPolygonAll)(float originX, float originY, const float* points, int pointCount, uint64_t* outEntityIDs, int maxOut);
-		int (*FastPhysics2D_ContainsPoint)(float originX, float originY, int mode, uint64_t* entityID);
-		int (*FastPhysics2D_ContainsPointAll)(float originX, float originY, uint64_t* outEntityIDs, int maxOut);
 
 		// ── EntityPicker ─────────────────────────────────────────────
 		int (*EntityPicker_TryPickEntity)(float worldX, float worldY, uint64_t* entityID);
@@ -1439,6 +1415,12 @@ namespace Funke {
 		int         (*GetSavedLanguage)(char* outBuffer, int capacity);
 		// After the game language changed or its tables were reloaded.
 		void        (*RaiseLanguageChanged)();
+
+		// ── Package scripts (appended for binary compat) ──
+		// JSON array of {"name","kind","assembly"} for the scripts, components and systems in package assemblies (Pkg.*.dll);
+		// kind is script, component, sceneSystem or globalSystem and name is what a scene stores. Returns the bytes needed
+		// (incl. terminator), so a too-small buffer can be retried.
+		int         (*GetPackageScriptTypes)(char* outBuffer, int capacity);
 	};
 
 } // namespace Funke

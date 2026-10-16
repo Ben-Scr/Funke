@@ -47,7 +47,7 @@ SCRIPT_CORE_DOCS = "Funke-ScriptCore.xml"
 EXTERNAL_DIRS = (
     "spdlog/include", "glm", "entt/src", "stb", "magic_enum/include", "rapidxml", "SDL/include",
     "glad/include", "dawn/include", "dawn/build/gen/include", "miniaudio", "box2d/include",
-    "Index-Physics/include", "dotnet",
+    "dotnet",
 )
 
 LICENSES = (

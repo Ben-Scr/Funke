@@ -32,9 +32,6 @@
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #if FUNKE_WITH_2D
-#include "Components/Physics/FastBody2DComponent.hpp"
-#include "Components/Physics/FastBoxCollider2DComponent.hpp"
-#include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #endif
 #include "Graphics/TextureManager.hpp"
 #include "Audio/AudioManager.hpp"
@@ -1397,33 +1394,6 @@ namespace Funke {
 			if (registry.all_of<DeadlyTag>(entity)) {
 				entityValue.AddMember("deadly", Value(true));
 			}
-
-#if FUNKE_WITH_2D
-			if (registry.all_of<FastBody2DComponent>(entity)) {
-				const auto& indexBody = registry.get<FastBody2DComponent>(entity);
-				Value bodyValue = Value::MakeObject();
-				bodyValue.AddMember("type", Value(static_cast<int>(indexBody.Type)));
-				bodyValue.AddMember("mass", Value(indexBody.Mass));
-				bodyValue.AddMember("useGravity", Value(indexBody.UseGravity));
-				bodyValue.AddMember("boundaryCheck", Value(indexBody.BoundaryCheck));
-				entityValue.AddMember("FastBody2D", std::move(bodyValue));
-			}
-
-			if (registry.all_of<FastBoxCollider2DComponent>(entity)) {
-				const auto& collider = registry.get<FastBoxCollider2DComponent>(entity);
-				Value colliderValue = Value::MakeObject();
-				colliderValue.AddMember("halfX", Value(collider.HalfExtents.x));
-				colliderValue.AddMember("halfY", Value(collider.HalfExtents.y));
-				entityValue.AddMember("FastBoxCollider2D", std::move(colliderValue));
-			}
-
-			if (registry.all_of<FastCircleCollider2DComponent>(entity)) {
-				const auto& collider = registry.get<FastCircleCollider2DComponent>(entity);
-				Value colliderValue = Value::MakeObject();
-				colliderValue.AddMember("radius", Value(collider.Radius));
-				entityValue.AddMember("FastCircleCollider2D", std::move(colliderValue));
-			}
-#endif
 
 			if (registry.all_of<RectTransform2DComponent>(entity)) {
 				const auto& rectTransform = registry.get<RectTransform2DComponent>(entity);

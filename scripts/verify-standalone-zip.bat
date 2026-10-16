@@ -144,7 +144,6 @@ call :RequireDir "%SDK%\External\SDL\include"
 call :RequireDir "%SDK%\External\glad\include"
 call :RequireDir "%SDK%\External\miniaudio"
 call :RequireDir "%SDK%\External\box2d\include"
-call :RequireDir "%SDK%\External\Index-Physics\include"
 call :RequireDir "%SDK%\External\dotnet"
 for /d %%D in ("%SDK%\External\*") do call :RequireAllowedExternal "%%~nxD"
 for /r "%SDK%" %%G in (.git) do if exist "%%~fG" call :RejectGitMetadata "%%~fG"
@@ -200,7 +199,7 @@ set /a FAIL+=1
 exit /b 0
 
 :RequireAllowedExternal
-for %%A in (spdlog glm entt stb magic_enum rapidxml SDL glad dawn miniaudio box2d Index-Physics dotnet) do if /I "%~1"=="%%A" exit /b 0
+for %%A in (spdlog glm entt stb magic_enum rapidxml SDL glad dawn miniaudio box2d dotnet) do if /I "%~1"=="%%A" exit /b 0
 echo   UNEXPECTED dir:  %SDK%\External\%~1
 set /a FAIL+=1
 exit /b 0

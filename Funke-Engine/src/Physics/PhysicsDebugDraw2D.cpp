@@ -4,11 +4,10 @@
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
-#include "Components/Physics/FastBoxCollider2DComponent.hpp"
-#include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
 #include "Graphics/Gizmo.hpp"
 #include "Math/VectorMath.hpp"
+#include "Physics/PhysicsSystem2D.hpp"
 #include "Scene/Scene.hpp"
 
 #include <box2d/box2d.h>
@@ -23,7 +22,6 @@ namespace Funke::PhysicsDebugDraw2D {
 	namespace {
 		const Color k_ColliderColor{ 0.20f, 1.0f, 0.35f, 1.0f };
 		const Color k_TriggerColor{ 0.35f, 0.85f, 1.0f, 1.0f };
-		const Color k_FastColliderColor{ 0.10f, 0.85f, 0.85f, 1.0f };
 		const Color k_ContactColor{ 1.0f, 0.35f, 0.20f, 1.0f };
 
 		Color ColorOf(const Collider2D& collider) {
@@ -126,19 +124,8 @@ namespace Funke::PhysicsDebugDraw2D {
 			}
 			rememberBody(collider);
 		}
-		Gizmo::SetColor(k_FastColliderColor);
-		for (const EntityHandle entity : registry.view<Transform2DComponent, FastBoxCollider2DComponent>()) {
-			const auto& transform = registry.get<Transform2DComponent>(entity);
-			const auto& collider = registry.get<FastBoxCollider2DComponent>(entity);
-			if (!collider.IsValid()) continue;
-			const Vec2 he = collider.GetHalfExtents();
-			outline.Box(transform.Position, Vec2{ std::abs(he.x) * 2.0f, std::abs(he.y) * 2.0f }, transform.Rotation);
-		}
-		for (const EntityHandle entity : registry.view<Transform2DComponent, FastCircleCollider2DComponent>()) {
-			const auto& transform = registry.get<Transform2DComponent>(entity);
-			const auto& collider = registry.get<FastCircleCollider2DComponent>(entity);
-			if (!collider.IsValid()) continue;
-			outline.Circle(transform.Position, collider.GetRadius());
+		for (const PhysicsExtension2D& extension : PhysicsSystem2D::GetExtensions()) {
+			if (extension.DrawDebug) extension.DrawDebug(scene, outline.Width);
 		}
 
 		for (const uint64_t body : contactBodies) {

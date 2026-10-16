@@ -120,7 +120,7 @@ void Destroy();  void Destroy(float delay);
 - **`AudioSource`** — `Audio?`, `Volume`, `Pitch`, `Loop`, `IsPlaying`, `Play/Pause/Stop/Resume()`.
 - **`ParticleSystem2D`** — `Texture`, `Color`, `LifeTime`, `Speed`, `Scale`, `EmitOverTime`, `PlayOnAwake`, `Play/Pause/Stop()`, `Emit(int)`.
 - **`PostProcessing2D`** (on the main camera entity; display name "Post Processing") — value-struct properties `ColorGrading`, `Vignette`, `ChromaticAberration`, `Grain`, `Bloom`, `LensDistortion`, `Pixelated`, `GaussianBlur` (`PostProcessing2D.BloomSettings` etc., each with `static Default`). Copy, edit, assign back: `var b = pp.Bloom; b.Enabled = true; pp.Bloom = b;`. Setters clamp to the Inspector ranges.
-- **Fast physics** (lightweight AABB path) — `FastBody2D`, `FastBoxCollider2D`, `FastCircleCollider2D`.
+- **Fast physics** (lightweight AABB path, only with the `Funke.Physics` package installed) — `FastBody2D` (`BodyType`, `Mass`, `UseGravity`, `BoundaryCheck`, `Velocity`), `FastBoxCollider2D` (`HalfExtents`), `FastCircleCollider2D` (`Radius`); queries in `Funke.Physics.FastPhysics2D` (same shape as `Physics2D`).
 
 UI components (`Button`, `Slider`, `Toggle`, `Image`, `RectTransform`, …) are in `Funke.UI` — see `funke-game-ui`.
 

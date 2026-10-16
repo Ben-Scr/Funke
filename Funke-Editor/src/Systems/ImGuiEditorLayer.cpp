@@ -31,9 +31,6 @@
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
-#include "Components/Physics/FastBody2DComponent.hpp"
-#include "Components/Physics/FastBoxCollider2DComponent.hpp"
-#include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #include "Core/Application.hpp"
 #include "Core/Time.hpp"
 #include "Core/Window.hpp"
@@ -78,6 +75,7 @@
 #include "Editor/ExternalEditor.hpp"
 #include "Inspector/ReferencePicker.hpp"
 #include "Gui/AddComponentPopup.hpp"
+#include "Gui/EditorDockLayout.hpp"
 #include "Gui/EditorIcons.hpp"
 #include "Gui/Icons.hpp"
 #include "Gui/EditorTheme.hpp"
@@ -240,7 +238,7 @@ namespace Funke {
 
 		std::string BuildScriptMenuLabel(const EditorScriptDiscovery::ScriptEntry& scriptEntry)
 		{
-			return scriptEntry.ClassName + "  " + scriptEntry.Extension;
+			return EditorScriptDiscovery::MenuLabel(scriptEntry);
 		}
 
 		bool AttachScriptToEntity(Entity entity, Scene& scene, const EditorScriptDiscovery::ScriptEntry& scriptEntry)
@@ -1648,8 +1646,17 @@ namespace Funke {
 		const float statusBarH = std::round(ImGui::GetFrameHeight() + 6.0f);
 		ImGuiID dockspaceId = ImGui::GetID("FunkeEditorDockspace");
 		// The spacing before the status bar child counts too, or the bar is pushed below the window.
-		ImGui::DockSpace(dockspaceId, ImVec2(0.0f, -(statusBarH + ImGui::GetStyle().ItemSpacing.y)),
-			ImGuiDockNodeFlags_PassthruCentralNode);
+		const float reservedBelow = statusBarH + ImGui::GetStyle().ItemSpacing.y;
+		const ImVec2 dockspaceSize(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y - reservedBelow);
+		const ImGuiContextLayer::DockLayoutRequest layoutRequest = ImGuiContextLayer::ConsumeDockLayoutRequest();
+		if (layoutRequest == ImGuiContextLayer::DockLayoutRequest::Default) {
+			EditorDockLayout::BuildDefault(dockspaceId, dockspaceSize);
+		}
+		else if (layoutRequest == ImGuiContextLayer::DockLayoutRequest::DefaultIfUndocked && !EditorDockLayout::HasDockedPanels(dockspaceId)) {
+			FNK_CORE_INFO_TAG("ImGui", "Saved editor layout docks no panels into the editor dockspace; applying the default layout.");
+			EditorDockLayout::BuildDefault(dockspaceId, dockspaceSize);
+		}
+		ImGui::DockSpace(dockspaceId, ImVec2(0.0f, -reservedBelow), ImGuiDockNodeFlags_PassthruCentralNode);
 		RenderStatusBar(statusBarH);
 		// End() is in OnPreRender after RenderMainMenu — must stay open for the menubar.
 	}
@@ -1823,7 +1830,7 @@ namespace Funke {
 		ImGui::SetNextItemWidth(layoutW);
 		if (ImGui::BeginCombo("##LayoutPreset", "Layout")) {
 			if (ImGui::Selectable("Default")) {
-				ImGuiContextLayer::ResetLayoutToBundledDefault();
+				ImGuiContextLayer::ResetLayoutToDefault();
 			}
 			const std::vector<std::string> presets = ImGuiContextLayer::ListLayoutPresets();
 			if (!presets.empty()) ImGui::Separator();
@@ -1885,7 +1892,7 @@ namespace Funke {
 			{ "Toggle Profiler", "Ctrl+F6", true, [&]() { m_ShowProfiler = !m_ShowProfiler; } },
 			{ "Animation Window", nullptr, true, [&]() { m_ShowAnimationWindow = true; } },
 			{ "Animator Window", nullptr, true, [&]() { m_ShowAnimatorWindow = true; } },
-			{ "Reset Layout", nullptr, true, [&]() { ImGuiContextLayer::ResetLayoutToBundledDefault(); } },
+			{ "Reset Layout", nullptr, true, [&]() { ImGuiContextLayer::ResetLayoutToDefault(); } },
 			// Editor View toolbar actions stay here so hiding them in Edit > View loses nothing.
 			{ "Gizmo Mode: None", nullptr, true, [&]() { m_GizmoMode = EditorGizmoMode::None; } },
 			{ "Gizmo Mode: Move", nullptr, true, [&]() { m_GizmoMode = EditorGizmoMode::Translate; } },
@@ -5887,8 +5894,8 @@ namespace Funke {
 				}
 
 				const std::string label = BuildScriptMenuLabel(scriptEntry);
-				const std::string path = scriptEntry.Path.string();
-				if (ImGuiUtils::MenuItemEllipsis(label, path.c_str(), nullptr, false, true, 260.0f)) {
+				const std::string id = EditorScriptDiscovery::EntryId(scriptEntry);
+				if (ImGuiUtils::MenuItemEllipsis(label, id.c_str(), nullptr, false, true, 260.0f)) {
 					scene.AddSceneSystem(scriptEntry.ClassName);
 					ImGui::CloseCurrentPopup();
 				}

@@ -3,7 +3,6 @@
 #include "Components/General/PrefabInstanceComponent.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Core/Application.hpp"
-#include "Physics/IndexPhysicsWorld2D.hpp"
 #include "Physics/Collision2D.hpp"
 #include "Scene/DynamicComponentStorage.hpp"
 #include "Scene/Entity.hpp"
@@ -186,48 +185,6 @@ TEST_CASE("Collision participants preserve scene ownership for overlapping handl
 		++visits;
 	});
 	CHECK(visits == 2);
-}
-
-TEST_CASE("Fast physics isolates identical handles from different scenes")
-{
-	auto firstScene = Scene::CreateDetachedScene("First Fast Physics Scene");
-	auto secondScene = Scene::CreateDetachedScene("Second Fast Physics Scene");
-	const Entity first = firstScene->CreateRuntimeEntity();
-	const Entity second = secondScene->CreateRuntimeEntity();
-	const EntityHandle firstEntity = first.GetHandle();
-	const EntityHandle secondEntity = second.GetHandle();
-	REQUIRE(static_cast<uint32_t>(firstEntity) == static_cast<uint32_t>(secondEntity));
-	CHECK(first != second);
-
-	IndexPhysicsWorld2D world;
-	IndexPhys::Body* firstBody = world.CreateBody(
-		firstEntity, IndexPhys::BodyType::Dynamic, firstScene.get());
-	IndexPhys::Body* secondBody = world.CreateBody(
-		secondEntity, IndexPhys::BodyType::Dynamic, secondScene.get());
-
-	REQUIRE(firstBody != nullptr);
-	REQUIRE(secondBody != nullptr);
-	CHECK(firstBody != secondBody);
-	CHECK(world.GetBody(firstEntity, firstScene.get()) == firstBody);
-	CHECK(world.GetBody(secondEntity, secondScene.get()) == secondBody);
-	CHECK(world.GetBodyCount() == 2);
-
-	const EntityHandle firstColliderEntity = firstScene->CreateRuntimeEntity().GetHandle();
-	const EntityHandle secondColliderEntity = secondScene->CreateRuntimeEntity().GetHandle();
-	world.CreateBoxCollider(firstColliderEntity, { 0.5f, 0.5f }, firstScene.get());
-	world.CreateBoxCollider(secondColliderEntity, { 0.5f, 0.5f }, secondScene.get());
-	world.RegisterContactCallback(firstColliderEntity, firstScene.get(), [](const IndexContact2D&) {});
-	world.RegisterContactCallback(secondColliderEntity, secondScene.get(), [](const IndexContact2D&) {});
-	REQUIRE(world.GetColliderCount() == 2);
-	REQUIRE(world.GetContactCallbackCount() == 2);
-
-	world.PurgeBodiesForScene(firstScene.get());
-	CHECK(world.GetBody(firstEntity, firstScene.get()) == nullptr);
-	CHECK(world.GetBody(secondEntity, secondScene.get()) == secondBody);
-	CHECK(world.GetBodyCount() == 1);
-	CHECK(world.GetColliderCount() == 1);
-	CHECK(world.GetContactCallbackCount() == 1);
-	world.Destroy();
 }
 
 TEST_CASE("Cached prefab hydration preserves source identity and snapshot lifetime")
