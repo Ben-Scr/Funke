@@ -855,6 +855,7 @@ namespace Funke {
 		JoinAllShellLaunchThreads();
 #endif
 		m_Thumbnails.Shutdown();
+		m_PrefabThumbnails.Clear();
 	}
 
 	void AssetBrowser::NavigateTo(const std::string& directory) {
@@ -1480,9 +1481,11 @@ namespace Funke {
 		if (!m_PendingThumbnailInvalidates.empty()) {
 			for (const std::string& p : m_PendingThumbnailInvalidates) {
 				m_Thumbnails.Invalidate(p);
+				m_PrefabThumbnails.Invalidate(p);
 			}
 			m_PendingThumbnailInvalidates.clear();
 		}
+		m_PrefabThumbnails.Update();
 
 		ImGui::Begin("Project");
 
@@ -2141,28 +2144,35 @@ namespace Funke {
 			bool drewTexture = false;
 			const char* iconName = nullptr;
 
-			if (type == AssetType::Folder) {
-				iconName = "open_folder";
-			}
-			else if (!entry.IsDirectory) {
-				iconName = GetFileTypeIconName(std::filesystem::path(entry.Path).extension().string());
-				if (!iconName) iconName = "file_fallback";
+			// Rendered prefab preview once it is ready; the file icon until then. Framebuffers are top row first.
+			uint64_t texture = type == AssetType::Prefab ? m_PrefabThumbnails.GetThumbnail(entry.Path) : 0;
+			const bool flipY = texture == 0;
+
+			if (texture == 0) {
+				if (type == AssetType::Folder) {
+					iconName = "open_folder";
+				}
+				else if (!entry.IsDirectory) {
+					iconName = GetFileTypeIconName(std::filesystem::path(entry.Path).extension().string());
+					if (!iconName) iconName = "file_fallback";
+				}
+				if (iconName) {
+					texture = EditorIcons::Get(iconName, (int)m_TileSize);
+				}
 			}
 
-			if (iconName) {
-				uint64_t icon = EditorIcons::Get(iconName, (int)m_TileSize);
-				if (icon) {
-					const float pad = m_TileSize * 0.1f;
-					const float drawSize = m_TileSize - pad * 2.0f;
-					ImGui::SetCursorScreenPos(ImVec2(iconPos.x + pad, iconPos.y + pad));
-					ImGui::Image(
-						static_cast<ImTextureID>(static_cast<intptr_t>(icon)),
-						ImVec2(drawSize, drawSize),
-						ImVec2(0, 1), ImVec2(1, 0)
-					);
-					ImGui::SetCursorScreenPos(ImVec2(iconPos.x, iconPos.y + m_TileSize));
-					drewTexture = true;
-				}
+			if (texture) {
+				const float pad = m_TileSize * 0.1f;
+				const float drawSize = m_TileSize - pad * 2.0f;
+				ImGui::SetCursorScreenPos(ImVec2(iconPos.x + pad, iconPos.y + pad));
+				ImGui::Image(
+					static_cast<ImTextureID>(static_cast<intptr_t>(texture)),
+					ImVec2(drawSize, drawSize),
+					flipY ? ImVec2(0, 1) : ImVec2(0, 0),
+					flipY ? ImVec2(1, 0) : ImVec2(1, 1)
+				);
+				ImGui::SetCursorScreenPos(ImVec2(iconPos.x, iconPos.y + m_TileSize));
+				drewTexture = true;
 			}
 
 			if (!drewTexture) {

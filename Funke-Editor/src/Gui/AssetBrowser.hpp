@@ -1,5 +1,6 @@
 #pragma once
 #include "Assets/TextureMeta.hpp"
+#include "Gui/PrefabThumbnailCache.hpp"
 #include "Gui/ThumbnailCache.hpp"
 #include "Scene/EntityHandle.hpp"
 #include "Serialization/Directory.hpp"
@@ -29,12 +30,19 @@ namespace Funke {
 		// Drop every cached thumbnail. Called by the editor's hot-reload
 		// callback after image files on disk change so the asset-tile
 		// previews re-fetch from the updated files on the next frame.
-		void InvalidateAllThumbnails() { m_Thumbnails.Clear(); }
+		// Prefab previews re-render too: they bake the changed textures in.
+		void InvalidateAllThumbnails() {
+			m_Thumbnails.Clear();
+			m_PrefabThumbnails.MarkAllStale();
+		}
 
 		// Drop one cached thumbnail (keyed by absolute path) so its tile re-creates
 		// with fresh import settings next frame — e.g. after the inspector changes
 		// a texture's Filter Mode (the thumbnail bakes its filter at creation).
-		void InvalidateThumbnail(const std::string& absolutePath) { m_Thumbnails.Invalidate(absolutePath); }
+		void InvalidateThumbnail(const std::string& absolutePath) {
+			m_Thumbnails.Invalidate(absolutePath);
+			m_PrefabThumbnails.Invalidate(absolutePath);
+		}
 
 		/// Returns true when the user is currently naming a new script (rename in progress).
 		bool IsCreatingScript() const { return m_PendingScriptType != PendingScriptType::None; }
@@ -265,6 +273,7 @@ namespace Funke {
 		EntityHandle m_PendingPrefabSourceEntity = entt::null;
 
 		ThumbnailCache m_Thumbnails;
+		PrefabThumbnailCache m_PrefabThumbnails;
 
 		std::unordered_map<std::string, std::vector<SpriteSlice>> m_SliceCache;
 		std::unordered_set<std::string> m_ExpandedTextures;

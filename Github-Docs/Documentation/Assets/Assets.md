@@ -158,6 +158,7 @@ Managers can free assets that nothing is using anymore. Systems that hold refere
 The **Asset Browser** is the editor panel where you work with assets directly. From it you can:
 
 - Browse folders with a breadcrumb trail and a thumbnail grid.
+- See prefabs as preview images: each `.prefab` tile renders the prefab once it has loaded, with its fonts baked. Sprites, world text and UI are framed from the front. Meshes are shown at a three-quarter angle if the project has Funke.3D enabled. Until the preview is ready, and for prefabs that draw nothing or fail to load, the tile keeps the file icon. A preview re-renders when its `.prefab` file changes (also when saved from Prefab edit mode) or when a texture is reloaded.
 - **Create** new scenes, prefabs, scripts, and folders.
 - **Drag and drop** assets onto components (e.g. drop a texture onto a sprite) or onto the scene.
 - Rename, duplicate, delete, copy/paste, and open files in an external editor.
