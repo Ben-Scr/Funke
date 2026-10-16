@@ -265,7 +265,7 @@ NetworkClient.Send(new Chat { Text = "hi" });
 if (NetworkObject.Of(Entity) is { IsOwner: true }) Move();     // scripts run everywhere; only the owner moves
 ```
 
-Scripts that ship in a package are added to scenes and prefabs by their full class name (`"className": "Funke.Networking.NetworkObject"`). The full API, browser hosting (`wss://`) and internet play are in the package's [README](https://github.com/Ben-Scr/Index-PackageRegistry/tree/main/packages/Funke.Networking).
+Scripts that ship in a package are added to scenes and prefabs by their full class name (`"className": "Funke.Networking.NetworkObject"`). The full API, browser hosting (`wss://`) and internet play are in the package's [README](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Networking).
 
 **Post-processing** — add **Post Processing** to the entity with the main **Camera 2D** (its *Post Processing* toggle must stay on). `PostProcessing2D` exposes each effect as a value struct: read it, change fields, assign it back.
 
@@ -323,7 +323,7 @@ AudioMixer.BindSlider(musicSlider, AudioMixer.Music);    // settings screen; sav
 AudioMixer.TransitionTo("Paused", 0.4f);                 // after DefineSnapshot("Paused", (AudioMixer.Music, 0.3f))
 ```
 
-The full API is in the package's [README](https://github.com/Ben-Scr/Index-PackageRegistry/tree/main/packages/Index.AudioMixer).
+The full API is in the package's [README](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.AudioMixer).
 
 **Media controls** — for music and podcast apps on Android: a "now playing" notification with cover, previous / play-pause / next and a seek bar, also on the lock screen and for headset buttons. It belongs to the background-audio service, so keep `Audio.PlayInBackground` on while a track is loaded (also when paused) and enable `backgroundAudio` in the Android build profile:
 

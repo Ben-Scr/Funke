@@ -4647,7 +4647,7 @@ artifacts/
 	namespace {
 
 		constexpr const char* k_DefaultAssetLibraryUrl =
-			"https://raw.githubusercontent.com/Ben-Scr/Index-AssetLibrary/main/index.json";
+			"https://raw.githubusercontent.com/Ben-Scr/Funke-AssetLibrary/main/index.json";
 
 		std::string ResolveAssetLibraryUrl() {
 			if (const char* env = std::getenv("FUNKE_ASSET_LIBRARY_URL"); env && *env) {

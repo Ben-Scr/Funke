@@ -1,6 +1,6 @@
 ---
 name: funke-author-package
-description: Use when authoring a new Funke package (`funke-package.lua` manifest), modifying an existing one, troubleshooting why a package isn't loading, working on the package loader / scaffolder / registry, or wiring code into a package's runtime entry point. Triggers on "funke-package.lua", "new package", "Pkg.<Name>", "Pkg.Funke.", "native layer", "csharp layer", "native_standalone layer", "engine_core layer" (deprecated), "standalone_cpp layer" (deprecated), "package manifest", "pinvoke_dll", "FUNKE_PACKAGE_API", "FunkePackage_OnLoad", "PackageHost", "PackageManager", "PackageManagerPanel", "Index-PackageRegistry", "RegisterSerializableComponent", "DeclareComponentConflict", `scripts/packages/NewPackage.py`, `scripts/packages/RemovePackage.py`, `scripts/packages/BumpPackageVersion.py`, `Funke-PackageTool`, "registry-fetch", "registry-download", `project.json` "packages" field, or any work under `packages/<Name>/`, `<project>/Packages/<Name>/`, `premake/package-loader.lua`, `Funke-Engine/src/Packages/`, or `Funke-Engine/src/Core/PackageHost.*`. Don't guess the schema or the layer rules from memory — they have real validation that fails loud, and several decisions (canonical layer names, EnTT bits, Dawn libdirs, csharp auto-link to Funke-ScriptCore) are non-obvious. Consult this skill any time the user is touching the package boundary.
+description: Use when authoring a new Funke package (`funke-package.lua` manifest), modifying an existing one, troubleshooting why a package isn't loading, working on the package loader / scaffolder / registry, or wiring code into a package's runtime entry point. Triggers on "funke-package.lua", "new package", "Pkg.<Name>", "Pkg.Funke.", "native layer", "csharp layer", "native_standalone layer", "engine_core layer" (deprecated), "standalone_cpp layer" (deprecated), "package manifest", "pinvoke_dll", "FUNKE_PACKAGE_API", "FunkePackage_OnLoad", "PackageHost", "PackageManager", "PackageManagerPanel", "Funke-PackageRegistry", "RegisterSerializableComponent", "DeclareComponentConflict", `scripts/packages/NewPackage.py`, `scripts/packages/RemovePackage.py`, `scripts/packages/BumpPackageVersion.py`, `Funke-PackageTool`, "registry-fetch", "registry-download", `project.json` "packages" field, or any work under `packages/<Name>/`, `<project>/Packages/<Name>/`, `premake/package-loader.lua`, `Funke-Engine/src/Packages/`, or `Funke-Engine/src/Core/PackageHost.*`. Don't guess the schema or the layer rules from memory — they have real validation that fails loud, and several decisions (canonical layer names, EnTT bits, Dawn libdirs, csharp auto-link to Funke-ScriptCore) are non-obvious. Consult this skill any time the user is touching the package boundary.
 ---
 
 # Funke Package System
@@ -255,7 +255,7 @@ android = {
 - The builder links library resources as aapt2 overlays, regenerates each library package's `R` class from the app's `R.txt`, compiles package Java against all jars, dexes with d8 (multidex), copies `jni/arm64-v8a/*.so`, AAR assets and jar Java resources (`META-INF/services` merged).
 - Java ↔ C#: Java exposes `public static String method(String)`; C# `AndroidBridge.Call(class, method, json)` (engine `Platform::CallJava` → `dev.funke.player.FunkeBridge.call`, class loaded via the activity's class loader). Java answers with `FunkeBridge.send(channel, json)` → `Platform::PushJavaMessage` → dispatched to `AndroidBridge.Subscribe` handlers each frame before coroutines. Off Android `Call` returns null; `AndroidBridge.Simulate` feeds handlers for editor stand-ins.
 - Static state survives editor Play sessions; reset it in `Application.OnPlayModeExited`.
-- Reference implementation: `Funke.Ads` in the `Index-PackageRegistry` repo (C# facade + simulated/Android/unsupported backends, `FunkeAds.java`, manifest meta-data from `admobAppId`). Offline tests: `python -m unittest scripts.ci.test_android_builder`.
+- Reference implementation: `Funke.Ads` in the `Funke-PackageRegistry` repo (C# facade + simulated/Android/unsupported backends, `FunkeAds.java`, manifest meta-data from `admobAppId`). Offline tests: `python -m unittest scripts.ci.test_android_builder`.
 
 ## Scaffolding new packages
 
@@ -298,7 +298,7 @@ Sibling scripts: `scripts/packages/RemovePackage.py` (deletes the dir + allow-li
 End users install packages via the editor's Package Manager, which fetches a static `index.json` from the public registry:
 
 ```
-https://raw.githubusercontent.com/Ben-Scr/Index-PackageRegistry/main/index.json
+https://raw.githubusercontent.com/Ben-Scr/Funke-PackageRegistry/main/index.json
 ```
 
 (Hardcoded in [PackageManagerPanel.cpp:42-43](Funke-Editor/src/Gui/PackageManagerPanel.cpp#L42) as `k_FunkeRegistryUrl` for v1; v2 promotes it to an editable Project Settings field.)
@@ -313,7 +313,7 @@ The registry is a separate GitHub repo whose `index.json` lists available packag
 
 Install is atomic: download → verify → extract → move into place. Any failure cleans up the temp zip + extract dir AND rolls back a partially-installed package dir, so re-running install doesn't trip the "Package already installed" check.
 
-To publish a package to the registry: zip the package directory (single top-level folder containing `funke-package.lua`), upload it somewhere fetchable, append an entry to `Index-PackageRegistry/index.json` with the download URL + SHA-256, push. The CDN cache on `raw.githubusercontent.com` is the only deploy step.
+To publish a package to the registry: zip the package directory (single top-level folder containing `funke-package.lua`), upload it somewhere fetchable, append an entry to `Funke-PackageRegistry/index.json` with the download URL + SHA-256, push. The CDN cache on `raw.githubusercontent.com` is the only deploy step.
 
 ## Funke-PackageTool CLI
 
@@ -370,4 +370,4 @@ These break things in ways that aren't obvious from the error messages. Internal
 | Scaffolder | `scripts/packages/NewPackage.py` | Authoritative on layer combos + folder layout + scaffolded entry points. |
 | Remover | `scripts/packages/RemovePackage.py` | Inverse of NewPackage; preserves allow-list integrity. |
 | Version bumper | `scripts/packages/BumpPackageVersion.py` | Rewrites the manifest's `version` field. |
-| Cloud registry (external) | `github.com/Ben-Scr/Index-PackageRegistry` | `index.json` schema; static, no server. |
+| Cloud registry (external) | `github.com/Ben-Scr/Funke-PackageRegistry` | `index.json` schema; static, no server. |

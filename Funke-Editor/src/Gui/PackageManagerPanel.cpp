@@ -34,7 +34,7 @@ namespace Funke {
 	namespace {
 
 		constexpr const char* k_FunkeRegistryUrl =
-			"https://raw.githubusercontent.com/Ben-Scr/Index-PackageRegistry/main/index.json";
+			"https://raw.githubusercontent.com/Ben-Scr/Funke-PackageRegistry/main/index.json";
 
 		std::string ToLower(std::string value) {
 			std::transform(value.begin(), value.end(), value.begin(),
