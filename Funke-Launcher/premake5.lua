@@ -54,7 +54,7 @@ project "Funke-Launcher"
     filter "system:windows"
         -- See Funke-Engine/premake5.lua for the rationale on
         -- MultiProcessorCompile + /Zc:preprocessor.
-        flags { "MultiProcessorCompile" }
+        FunkeMultiProcessorCompile()
         buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
         systemversion "latest"
         defines { "FNK_PLATFORM_WINDOWS" }

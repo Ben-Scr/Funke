@@ -1,6 +1,7 @@
 #include "Editor/EditorPreferences.hpp"
 
 #include "Core/Log.hpp"
+#include "Gui/GlassBackdrop.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Gui/ImGuiFonts.hpp"
 #include "Core/Application.hpp"
@@ -13,9 +14,12 @@
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <array>
 #include <cassert>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -56,6 +60,9 @@ namespace Funke {
 		// per editor process.
 		struct State {
 			EditorThemeMode Theme = EditorThemeMode::SystemDefault;
+			// FUNKE_EDITOR_THEME shows another theme for one session; Save keeps writing the user's own.
+			bool ThemeFromEnvironment = false;
+			EditorThemeMode PersistedTheme = EditorThemeMode::SystemDefault;
 			ImVec4 CustomColors[ImGuiCol_COUNT]{};
 			bool CustomColorsSeeded = false;
 
@@ -118,16 +125,44 @@ namespace Funke {
 				case EditorThemeMode::Light:         return "Light";
 				case EditorThemeMode::SystemDefault: return "SystemDefault";
 				case EditorThemeMode::Custom:        return "Custom";
+				case EditorThemeMode::Glass:         return "Glass";
 			}
 			return "SystemDefault";
 		}
 
 		EditorThemeMode ThemeModeFromString(std::string_view value) {
 			if (value == "Auto")          return EditorThemeMode::SystemDefault;
+			if (value == "Dark")          return EditorThemeMode::Dark;
 			if (value == "Light")         return EditorThemeMode::Light;
 			if (value == "SystemDefault") return EditorThemeMode::SystemDefault;
 			if (value == "Custom")        return EditorThemeMode::Custom;
+			if (value == "Glass")         return EditorThemeMode::Glass;
 			return EditorThemeMode::SystemDefault;
+		}
+
+		// Dev tooling: FUNKE_EDITOR_THEME=auto|dark|light|glass|custom (scripts/dev/Run.ps1 -Theme).
+		void ApplyThemeFromEnvironment() {
+			const char* value = std::getenv("FUNKE_EDITOR_THEME");
+			if (!value || !*value) return;
+			std::string name(value);
+			std::transform(name.begin(), name.end(), name.begin(),
+				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+			EditorThemeMode mode;
+			if (name == "auto")        mode = EditorThemeMode::SystemDefault;
+			else if (name == "dark")   mode = EditorThemeMode::Dark;
+			else if (name == "light")  mode = EditorThemeMode::Light;
+			else if (name == "glass")  mode = EditorThemeMode::Glass;
+			else if (name == "custom") mode = EditorThemeMode::Custom;
+			else {
+				FNK_CORE_WARN_TAG("EditorPrefs", "Ignoring unknown FUNKE_EDITOR_THEME '{}'.", value);
+				return;
+			}
+
+			State& s = S();
+			s.PersistedTheme = s.Theme;
+			s.ThemeFromEnvironment = true;
+			s.Theme = mode;
 		}
 
 		const char* InspectorViewToString(InspectorComponentView view) {
@@ -186,15 +221,16 @@ namespace Funke {
 			return Color(color.x, color.y, color.z, color.w);
 		}
 
-		void ApplyNativeTitlebarFromStyle() {
+		void ApplyNativeTitlebarFromStyle(bool glass = false) {
 			Window* window = Application::GetWindow();
 			if (!window) return;
 
 			const ImGuiStyle& style = ImGui::GetStyle();
 			const bool dark = Luminance(style.Colors[ImGuiCol_WindowBg]) < 0.5f;
 			window->SetTitlebarDarkMode(dark);
-			window->SetTitlebarActiveColor(Color{ 0.0f, 0.0f, 0.0f, 0.0f });
-			window->SetTitlebarInactiveColor(Color{ 0.0f, 0.0f, 0.0f, 0.0f });
+			// Alpha 0 restores the OS default caption.
+			window->SetTitlebarActiveColor(glass ? ToColor(GlassBackdrop::TitlebarColor(true)) : Color{ 0.0f, 0.0f, 0.0f, 0.0f });
+			window->SetTitlebarInactiveColor(glass ? ToColor(GlassBackdrop::TitlebarColor(false)) : Color{ 0.0f, 0.0f, 0.0f, 0.0f });
 			window->SetTitlebarTextColor(Color{ 0.0f, 0.0f, 0.0f, 0.0f });
 		}
 
@@ -235,6 +271,7 @@ namespace Funke {
 		if (!std::filesystem::is_regular_file(path, ec)) {
 			s.FreshlyCreated = true;
 			Save();
+			ApplyThemeFromEnvironment();
 			ScriptSystem::SetAutoRecompileEnabled(s.AutoRecompileScripts);
 			return;
 		}
@@ -242,6 +279,7 @@ namespace Funke {
 		const std::string text = File::ReadAllText(path.string());
 		if (text.empty()) {
 			FNK_CORE_WARN_TAG("EditorPrefs", "EditorPreferences.json was empty; using defaults.");
+			ApplyThemeFromEnvironment();
 			return;
 		}
 
@@ -250,6 +288,7 @@ namespace Funke {
 		if (!root.IsObject()) {
 			FNK_CORE_WARN_TAG("EditorPrefs",
 				"Failed to parse EditorPreferences.json: {}", parseError);
+			ApplyThemeFromEnvironment();
 			return;
 		}
 
@@ -388,6 +427,7 @@ namespace Funke {
 			s.CustomColorsSeeded = true;
 		}
 
+		ApplyThemeFromEnvironment();
 		ImGuiContextLayer::ApplyEditorFontSize();
 		ScriptSystem::SetAutoRecompileEnabled(s.AutoRecompileScripts);
 	}
@@ -403,7 +443,8 @@ namespace Funke {
 		std::filesystem::create_directories(path.parent_path(), ec);
 
 		Json::Value root = Json::Value::MakeObject();
-		root.AddMember("Theme", Json::Value(std::string(ThemeModeToString(s.Theme))));
+		root.AddMember("Theme", Json::Value(std::string(ThemeModeToString(
+			s.ThemeFromEnvironment ? s.PersistedTheme : s.Theme))));
 		root.AddMember("EditorFontAssetId", Json::Value(std::to_string(s.EditorFontAssetId)));
 		root.AddMember("EditorFontZoomPercent", Json::Value(s.EditorFontZoomPercent));
 		root.AddMember("HierarchyRowScale", Json::Value(static_cast<double>(s.HierarchyRowScale)));
@@ -464,8 +505,14 @@ namespace Funke {
 
 	void EditorPreferences::ApplyTheme() {
 		const EditorThemeMode resolved = ResolveTheme(S().Theme);
+		ImGuiContextLayer::ApplyThemeRounding(/*glass=*/resolved == EditorThemeMode::Glass);
 
 		switch (resolved) {
+			case EditorThemeMode::Glass:
+				ImGuiContextLayer::ApplyGlassThemeColors();
+				MarkThemeApplied(resolved);
+				ApplyNativeTitlebarFromStyle(/*glass=*/true);
+				return;
 			case EditorThemeMode::Light:
 				ImGuiContextLayer::ApplyFunkeThemeColors(/*dark=*/false);
 				MarkThemeApplied(resolved);
@@ -518,6 +565,7 @@ namespace Funke {
 
 	void EditorPreferences::SetThemeMode(EditorThemeMode mode) {
 		if (S().Theme == mode) return;
+		S().ThemeFromEnvironment = false;
 
 		if (mode == EditorThemeMode::Custom && !S().CustomColorsSeeded) {
 			SeedCustomColorsFromCurrent();

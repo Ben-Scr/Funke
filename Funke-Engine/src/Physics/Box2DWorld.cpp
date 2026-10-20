@@ -2,6 +2,7 @@
 #include "Box2DWorld.hpp"
 #include "Scene/Scene.hpp"
 #include <Components/General/Transform2DComponent.hpp>
+#include "Physics/PhysicsSystem2D.hpp"
 
 namespace Funke {
 	Box2DWorld::Box2DWorld() {
@@ -26,6 +27,26 @@ namespace Funke {
 		}
 		m_Dispatcher.Clear();
 		m_BodyBindings.clear();
+		m_GroundBody = b2_nullBodyId;
+	}
+
+	b2BodyId Box2DWorld::GetGroundBody() {
+		if (!b2Body_IsValid(m_GroundBody) && b2World_IsValid(m_WorldId)) {
+			b2BodyDef def = b2DefaultBodyDef();
+			def.type = b2_staticBody;
+			m_GroundBody = b2CreateBody(m_WorldId, &def);
+		}
+		return m_GroundBody;
+	}
+
+	Vec2 Box2DWorld::GetGravity() const {
+		if (!b2World_IsValid(m_WorldId)) return Vec2{ 0.0f, 0.0f };
+		const b2Vec2 g = b2World_GetGravity(m_WorldId);
+		return Vec2{ g.x, g.y };
+	}
+
+	void Box2DWorld::SetGravity(const Vec2& gravity) {
+		if (b2World_IsValid(m_WorldId)) b2World_SetGravity(m_WorldId, b2Vec2{ gravity.x, gravity.y });
 	}
 
 	b2BodyId Box2DWorld::CreateBody(EntityHandle nativeEntity, Scene& scene, BodyType bodyType) {
@@ -34,6 +55,10 @@ namespace Funke {
 		if (!scene.TryGetComponent(nativeEntity, tr) || tr == nullptr) {
 			FNK_CORE_WARN_TAG("PhysicsSystem", "CreateBody using default transform because entity {} has no Transform2DComponent", static_cast<uint32_t>(nativeEntity));
 			tr = &defaultTransform;
+		}
+		// A pending local edit (scene/prefab load, instantiation under a moved parent) is not in the world pose yet.
+		else if (tr->IsDirty()) {
+			PhysicsSystem2D::ComposeWorldFromLocalChain(scene.GetRegistry(), nativeEntity, *tr);
 		}
 
 		b2Vec2 box2dPos(tr->Position.x, tr->Position.y);

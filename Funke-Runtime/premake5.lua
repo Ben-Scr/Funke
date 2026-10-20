@@ -81,7 +81,7 @@ project "Funke-Runtime"
     filter "system:windows"
         -- See Funke-Engine/premake5.lua for the rationale on
         -- MultiProcessorCompile + /Zc:preprocessor.
-        flags { "MultiProcessorCompile" }
+        FunkeMultiProcessorCompile()
         buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
         systemversion "latest"
         links { "%{Library.GDI32}" }

@@ -45,7 +45,7 @@ project "Funke-CLI"
     ApplyFunkeProfilerRuntime()
 
     filter "system:windows"
-        flags { "MultiProcessorCompile" }
+        FunkeMultiProcessorCompile()
         buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
         systemversion "latest"
         defines { "FNK_PLATFORM_WINDOWS" }

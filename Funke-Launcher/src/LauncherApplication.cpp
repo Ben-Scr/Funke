@@ -1,8 +1,6 @@
 #include <Funke.hpp>
 
 #include "Core/Application.hpp"
-#include "Scene/SceneDefinition.hpp"
-#include "Scene/SceneManager.hpp"
 #include <Gui/ImGuiContextLayer.hpp>
 #include <Systems/LauncherLayer.hpp>
 #include <Core/Version.hpp>
@@ -31,6 +29,12 @@ public:
 		config.EnableRenderer2D = false;
 		config.EnableTextureManager = false;
 		config.EnablePackageHost = false;
+		// No project is open: the launcher draws only its own ImGui UI and loads its few images itself.
+		config.EnableScenes = false;
+		config.EnableJobSystem = false;
+		config.EnableFrameArenas = false;
+		config.EnableShaderManager = false;
+		config.RegisterBuiltInAssets = false;
 		config.SetWindowIcon = true;
 		config.Vsync = false;
 		config.TargetFrameRate = 144.0f;
@@ -40,11 +44,6 @@ public:
 		// launcher's secondary dialog windows (Settings, Create / Rename).
 		config.EnableFullscreenToggle = false;
 		return config;
-	}
-
-	void ConfigureScenes() override {
-		SceneDefinition& launcherScene = SceneManager::RegisterScene("Launcher");
-		launcherScene.SetAsStartupScene();
 	}
 
 	void ConfigureLayers() override {

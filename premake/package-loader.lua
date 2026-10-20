@@ -654,12 +654,12 @@ local function NativeAbiMetadataCommand(hasEngineLinked)
 end
 
 local function PosixNativeAbiMetadataCommand(hasEngineLinked)
-    local command = 'python3 "' .. path.join(ROOT_DIR, "scripts/packages/WriteNativeAbi.py") ..
+    local command = FunkePython() .. ' "' .. path.join(ROOT_DIR, "scripts/packages/WriteNativeAbi.py") ..
         '" "%{cfg.buildtarget.abspath}"'
     if not hasEngineLinked then
         return command .. " standalone_c"
     end
-    local engineLibrary = os.target() == "macosx" and "libIndex-Engine.dylib" or "libIndex-Engine.so"
+    local engineLibrary = os.target() == "macosx" and "libFunke-Engine.dylib" or "libFunke-Engine.so"
     return command .. ' engine_cpp "' .. path.join(ROOT_DIR, "bin", outputdir, "Funke-Engine", engineLibrary) .. '"'
 end
 
@@ -732,6 +732,8 @@ local function RegisterNativeProject(manifest)
                 filter "configurations:Dist"
                     libdirs { path.join(ROOT_DIR, "External/dawn/build/src/dawn/native/Release") }
                 filter {}
+                -- Make/Ninja (Linux, macOS) build Dawn single-config, straight into native/.
+                libdirs { path.join(ROOT_DIR, "External/dawn/build/src/dawn/native") }
             end
         end
 
@@ -747,7 +749,7 @@ local function RegisterNativeProject(manifest)
             systemversion "latest"
             -- See Funke-Engine/premake5.lua for the rationale on
             -- MultiProcessorCompile + /Zc:preprocessor.
-            flags { "MultiProcessorCompile" }
+            FunkeMultiProcessorCompile()
             buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
             -- /Z7 like the engine workspace (premake5.lua): project package workspaces don't
             -- inherit it, and /Zi routes every cl.exe through mspdbsrv, which can stall a build.

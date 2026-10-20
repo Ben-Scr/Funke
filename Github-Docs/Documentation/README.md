@@ -14,6 +14,8 @@ The foundational systems that make a game run.
 - **[ECS](Engine-Core/ECS.md)** — entities and components, the building blocks of everything in a scene.
 - **[Scenes](Engine-Core/Scenes.md)** — scenes, systems, the scene lifecycle, saving, and prefabs.
 - **[Engine Modules](Engine-Core/Engine-Modules.md)** — the optional `Funke.2D` / `Funke.3D` modules: turning them on in a project, what the editor offers, and how game builds leave unused modules out.
+- **[Terrain Renderer 2D](Engine-Core/Terrain-2D.md)** — hills and roads along a line of points: tiled fill plus an edge strip.
+- **[Physics 2D](Engine-Core/Physics-2D.md)** — Box2D bodies, colliders (concave polygons), revolute/prismatic/weld joints, density and gravity.
 - **[Physics 3D](Engine-Core/Physics-3D.md)** — Jolt-based Rigidbody 3D, Box/Sphere/Capsule/Mesh Collider 3D, triggers, raycasts and the C# API.
 - **[3D](Engine-Core/3D.md)** — Transform 3D, Camera 3D with skybox, Mesh Renderer and materials, directional/point/spot lights, shadows, the 3D renderer and the 3D Editor View.
 - **[Animation](Engine-Core/Animation.md)** — keyframe clips for any component property or script field, Animator Controller state machines with crossfades, the Animation and Animator windows, record mode, events and the C# API.

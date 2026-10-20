@@ -115,12 +115,13 @@ namespace Funke::PhysicsDebugDraw2D {
 			const auto& transform = registry.get<Transform2DComponent>(entity);
 			const auto& collider = registry.get<PolygonCollider2DComponent>(entity);
 			if (!collider.IsValid()) continue;
-			const std::vector<Vec2> points = collider.GetWorldPoints();
-			if (points.size() < 3) continue;
 			Gizmo::SetColor(ColorOf(collider));
-			for (size_t i = 0; i < points.size(); ++i) {
-				outline.Line(transform.Position + Vector::Rotated(points[i], transform.Rotation),
-					transform.Position + Vector::Rotated(points[(i + 1) % points.size()], transform.Rotation));
+			for (const std::vector<Vec2>& points : collider.GetShapePolygons()) {
+				if (points.size() < 3) continue;
+				for (size_t i = 0; i < points.size(); ++i) {
+					outline.Line(transform.Position + Vector::Rotated(points[i], transform.Rotation),
+						transform.Position + Vector::Rotated(points[(i + 1) % points.size()], transform.Rotation));
+				}
 			}
 			rememberBody(collider);
 		}

@@ -14,6 +14,7 @@ local engineRoot = os.realpath(path.join(scriptDir, ".."))
 local projectRoot = os.realpath(requestedProjectRoot)
 local workspaceRoot = path.join(projectRoot, ".funke/build/packages")
 
+dofile(path.join(scriptDir, "compat.lua"))
 dofile(path.join(scriptDir, "fix_csharp_platforms.lua"))
 dofile(path.join(scriptDir, "architecture.lua"))
 

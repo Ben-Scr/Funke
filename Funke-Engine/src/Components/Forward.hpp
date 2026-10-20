@@ -28,6 +28,9 @@ namespace Funke {
 	class FUNKE_API BoxCollider2DComponent;
 	class FUNKE_API CircleCollider2DComponent;
 	class FUNKE_API PolygonCollider2DComponent;
+	struct FUNKE_API RevoluteJoint2DComponent;
+	struct FUNKE_API PrismaticJoint2DComponent;
+	struct FUNKE_API WeldJoint2DComponent;
 	class FUNKE_API Rigidbody2DComponent;
 
 	// Audio

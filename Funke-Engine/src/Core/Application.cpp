@@ -491,7 +491,8 @@ namespace Funke {
 			m_SceneManager = std::make_unique<SceneManager>();
 		}
 
-		{
+		m_Configuration = GetConfiguration();
+		if (m_Configuration.EnableScenes) {
 			using EntityTraits = entt::entt_traits<EntityHandle>;
 			constexpr uint64_t kEntityCap = static_cast<uint64_t>(EntityTraits::entity_mask);
 			constexpr uint64_t kVersionCount = static_cast<uint64_t>(EntityTraits::version_mask) + 1u;
@@ -499,8 +500,6 @@ namespace Funke {
 				"Entity cap: {} live entities, {} versions per slot (entityBits in project.json controls this).",
 				kEntityCap, kVersionCount);
 		}
-
-		m_Configuration = GetConfiguration();
 		m_Configuration.Graphics = ClampGraphicsSettings(m_Configuration.Graphics);
 		m_DefaultGraphicsSettings = m_Configuration.Graphics;
 		if (!m_HasInitializedOnce) {
@@ -537,15 +536,19 @@ namespace Funke {
 #endif
 
 		Timer timer = Timer();
-		JobSystem::Initialize(JobSystemSpec{ m_Configuration.JobSystemWorkerCount });
-		FNK_INFO_TAG("JobSystem", "Initialization took " + StringHelper::ToString(timer));
+		if (m_Configuration.EnableJobSystem) {
+			JobSystem::Initialize(JobSystemSpec{ m_Configuration.JobSystemWorkerCount });
+			FNK_INFO_TAG("JobSystem", "Initialization took " + StringHelper::ToString(timer));
+		}
 
-		timer.Reset();
-		FrameArenas::Initialize(FrameArenasSpec{
-			m_Configuration.FrameArenaCapacityBytes,
-			m_Configuration.PersistentArenaCapacityBytes,
-		});
-		FNK_INFO_TAG("FrameArenas", "Initialization took " + StringHelper::ToString(timer));
+		if (m_Configuration.EnableFrameArenas) {
+			timer.Reset();
+			FrameArenas::Initialize(FrameArenasSpec{
+				m_Configuration.FrameArenaCapacityBytes,
+				m_Configuration.PersistentArenaCapacityBytes,
+			});
+			FNK_INFO_TAG("FrameArenas", "Initialization took " + StringHelper::ToString(timer));
+		}
 
 		if (m_Window && !m_Configuration.EnableWindow) {
 			FNK_WARN_TAG("Application", "EnableWindow=false requires Restart(); preserving the current window for this reload.");
@@ -682,7 +685,7 @@ namespace Funke {
 		}
 
 		// MUST run after FontManager so the default font's hand-picked GUID wins over the auto-scan.
-		{
+		if (m_Configuration.RegisterBuiltInAssets) {
 			timer.Reset();
 			const std::string funkeAssetsRoot = Path::ResolveFunkeAssets("");
 			FNK_INFO_TAG("AssetRegistry", "FunkeAssets root resolved to: '{}'", funkeAssetsRoot);
@@ -712,11 +715,12 @@ namespace Funke {
 			}
 		}
 
-		timer.Reset();
-
-		ConfigureScenes();
-		m_SceneManager->Initialize();
-		FNK_INFO_TAG("SceneManager", "Initialization took " + StringHelper::ToString(timer));
+		if (m_Configuration.EnableScenes) {
+			timer.Reset();
+			ConfigureScenes();
+			m_SceneManager->Initialize();
+			FNK_INFO_TAG("SceneManager", "Initialization took " + StringHelper::ToString(timer));
+		}
 		ConfigureLayers();
 
 		// Render twice before startup scenes load so the splash is visible immediately; first frame initialises ImGui resources, second actually paints.
@@ -784,7 +788,7 @@ namespace Funke {
 			FNK_INFO_TAG("Application", "Startup scene load deferred behind splash.");
 		}
 		else {
-			m_SceneManager->InitializeStartupScenes();
+			if (m_Configuration.EnableScenes) m_SceneManager->InitializeStartupScenes();
 			ScriptEngine::RaiseApplicationStart();
 			m_Time.MarkGameStart();
 			m_StartupLoadComplete = true;
@@ -800,7 +804,7 @@ namespace Funke {
 
 		m_DeferredStartupScenes = false;
 
-		if (m_SceneManager) {
+		if (m_SceneManager && m_Configuration.EnableScenes) {
 			FNK_INFO_TAG("Application", "Loading startup scenes...");
 			m_SceneManager->InitializeStartupScenes();
 		}

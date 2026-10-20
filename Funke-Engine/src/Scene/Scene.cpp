@@ -14,6 +14,7 @@
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
+#include "Components/Physics/Joint2DComponents.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Physics/Box2DWorld.hpp"
 #include "Physics/PhysicsSystem2D.hpp"
@@ -1524,6 +1525,9 @@ namespace Funke {
 		m_Registry.on_destroy<BoxCollider2DComponent>().connect<&Scene::OnBoxCollider2DComponentDestroy>(this);
 		m_Registry.on_destroy<CircleCollider2DComponent>().connect<&Scene::OnCircleCollider2DComponentDestroy>(this);
 		m_Registry.on_destroy<PolygonCollider2DComponent>().connect<&Scene::OnPolygonCollider2DComponentDestroy>(this);
+		m_Registry.on_destroy<RevoluteJoint2DComponent>().connect<&Scene::OnJoint2DComponentDestroy<RevoluteJoint2DComponent>>(this);
+		m_Registry.on_destroy<PrismaticJoint2DComponent>().connect<&Scene::OnJoint2DComponentDestroy<PrismaticJoint2DComponent>>(this);
+		m_Registry.on_destroy<WeldJoint2DComponent>().connect<&Scene::OnJoint2DComponentDestroy<WeldJoint2DComponent>>(this);
 		m_Registry.on_destroy<Camera2DComponent>().connect<&Scene::OnCamera2DComponentDestruct>(this);
 		m_Registry.on_destroy<ParticleSystem2DComponent>().connect<&Scene::OnParticleSystem2DComponentDestruct>(this);
 #endif
@@ -1896,6 +1900,12 @@ namespace Funke {
 				rb.m_BodyId = b2_nullBodyId;
 			}
 		}
+	}
+	template <typename TJoint>
+	void Scene::OnJoint2DComponentDestroy(entt::registry& registry, EntityHandle entity) {
+		if (m_IsDetached) return;
+		auto& joint = registry.get<TJoint>(entity);
+		if (joint.m_Owner == entity) joint.DestroyJoint();
 	}
 #endif
 

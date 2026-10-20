@@ -2952,7 +2952,8 @@ namespace Funke {
 							[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 						const std::string root = ShellQuote(engineRoot.string());
 						const std::string projectRoot = ShellQuote(projectRootDir);
-						const std::string premake = ShellQuote((engineRoot / "vendor" / "bin" / "premake5").string());
+						const std::string premake = ShellQuote(FunkeProject::GetPremakePath());
+						const std::string make = ShellQuote(FunkeProject::GetMakeProgram());
 						const std::string packageGenerator = ShellQuote((engineRoot / "premake" / "project-packages.lua").string());
 						const std::string packageWorkspace = ShellQuote(projectRootDir + "/.funke/build/packages");
 					#if defined(FNK_PLATFORM_MACOS)
@@ -2975,7 +2976,7 @@ namespace Funke {
 							" --nologo -v q -nodeReuse:false -p:UseSharedCompilation=false || fail 'User script build FAILED.'\n"
 							"echo; echo '[2/3] Building the engine (this is the long step)...'\n"
 							"cd " << root << " || fail 'Engine folder missing.'\n"
-							"make config=" << makeConfig << " -j\"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)\" "
+							<< make << " config=" << makeConfig << " -j\"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)\" "
 							"Funke-Engine Funke-Runtime Funke-Editor || fail 'Engine build FAILED.'\n"
 							"echo; echo '[3/3] Rebuilding enabled project packages...'\n"
 							"if [ -d " << ShellQuote(projectRootDir + "/Packages") << " ]; then\n"
@@ -2983,10 +2984,10 @@ namespace Funke {
 							"  IFS='\n'\n"
 							"  " << premake << " --file=" << packageGenerator << " --os=" << premakeSystem << " vs2022 --funke-project=" << projectRoot
 								<< " || fail 'Package workspace generation FAILED.'\n"
-							"  " << premake << " --file=" << packageGenerator << " gmake2 --funke-project=" << projectRoot
+							"  " << premake << " --file=" << packageGenerator << " gmake --funke-project=" << projectRoot
 								<< " || fail 'Package workspace generation FAILED.'\n"
 							"  for project in $(find " << packageWorkspace << "/generated -name '*.vcxproj'); do\n"
-							"    make -C " << packageWorkspace << " config=" << makeConfig << " \"$(basename \"$project\" .vcxproj)\" || fail 'Native package build FAILED.'\n"
+							"    " << make << " -C " << packageWorkspace << " config=" << makeConfig << " \"$(basename \"$project\" .vcxproj)\" || fail 'Native package build FAILED.'\n"
 							"  done\n"
 							"  for project in $(find " << packageWorkspace << "/generated -name '*.csproj'); do\n"
 							"    dotnet build \"$project\" -c " << config << " -p:Platform=x64 --nologo -v q || fail 'Managed package build FAILED.'\n"

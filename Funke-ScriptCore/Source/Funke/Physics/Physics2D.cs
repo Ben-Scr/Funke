@@ -17,6 +17,17 @@ public static class Physics2D
 {
     public static int MaxPolygonVertices = 8;
 
+    /// <summary>World gravity in m/s² (default 0, -9.8). Applies to every 2D body; it is not reset between scenes.</summary>
+    public static Vector2 Gravity
+    {
+        get
+        {
+            InternalCalls.Physics2D_GetGravity(out float x, out float y);
+            return new Vector2(x, y);
+        }
+        set => InternalCalls.Physics2D_SetGravity(value.X, value.Y);
+    }
+
     public static RaycastHit2D Raycast(Vector2 origin, Vector2 direction, float maxDistance = Mathf.Infinity)
     {
         RaycastHit2D result = new();

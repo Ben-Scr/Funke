@@ -1300,6 +1300,10 @@ namespace Funke {
 				rigidbodyValue.AddMember("freezePositionX", Value(rigidbody.GetFreezePositionX()));
 				rigidbodyValue.AddMember("freezePositionY", Value(rigidbody.GetFreezePositionY()));
 				rigidbodyValue.AddMember("freezeRotation", Value(rigidbody.GetFreezeRotation()));
+				// Written only when changed, so older scenes keep their exact bytes.
+				if (std::abs(rigidbody.GetLinearDrag() - 0.1f) > 1e-6f) rigidbodyValue.AddMember("linearDamping", Value(rigidbody.GetLinearDrag()));
+				if (rigidbody.GetAngularDrag() != 0.0f) rigidbodyValue.AddMember("angularDamping", Value(rigidbody.GetAngularDrag()));
+				if (rigidbody.IsBullet()) rigidbodyValue.AddMember("bullet", Value(true));
 				entityValue.AddMember("Rigidbody2D", std::move(rigidbodyValue));
 			}
 
@@ -1332,6 +1336,8 @@ namespace Funke {
 				colliderValue.AddMember("collisionMask", Value(collider.GetCollisionMask()));
 				colliderValue.AddMember("registerContacts", Value(collider.CanRegisterContacts()));
 				colliderValue.AddMember("sensor", Value(collider.IsSensor()));
+				if (collider.GetDensity() != 1.0f) colliderValue.AddMember("density", Value(collider.GetDensity()));
+				if (collider.GetGroupIndex() != 0) colliderValue.AddMember("groupIndex", Value(collider.GetGroupIndex()));
 				entityValue.AddMember("BoxCollider2D", std::move(colliderValue));
 			}
 
@@ -1348,6 +1354,8 @@ namespace Funke {
 				colliderValue.AddMember("collisionMask", Value(collider.GetCollisionMask()));
 				colliderValue.AddMember("registerContacts", Value(collider.CanRegisterContacts()));
 				colliderValue.AddMember("sensor", Value(collider.IsSensor()));
+				if (collider.GetDensity() != 1.0f) colliderValue.AddMember("density", Value(collider.GetDensity()));
+				if (collider.GetGroupIndex() != 0) colliderValue.AddMember("groupIndex", Value(collider.GetGroupIndex()));
 				entityValue.AddMember("CircleCollider2D", std::move(colliderValue));
 			}
 
@@ -1375,6 +1383,21 @@ namespace Funke {
 				colliderValue.AddMember("collisionMask", Value(collider.GetCollisionMask()));
 				colliderValue.AddMember("registerContacts", Value(collider.CanRegisterContacts()));
 				colliderValue.AddMember("sensor", Value(collider.IsSensor()));
+				if (collider.GetDensity() != 1.0f) colliderValue.AddMember("density", Value(collider.GetDensity()));
+				if (collider.GetGroupIndex() != 0) colliderValue.AddMember("groupIndex", Value(collider.GetGroupIndex()));
+				if (collider.IsEdge()) colliderValue.AddMember("edge", Value(true));
+				if (collider.GetPathCount() > 1) {
+					Value pathsArr = Value::MakeArray();
+					for (int pathIndex = 1; pathIndex < collider.GetPathCount(); ++pathIndex) {
+						Value flat = Value::MakeArray();
+						for (const Vec2& p : collider.GetPath(pathIndex)) {
+							flat.Append(Value(p.x));
+							flat.Append(Value(p.y));
+						}
+						pathsArr.Append(std::move(flat));
+					}
+					colliderValue.AddMember("paths", std::move(pathsArr));
+				}
 				entityValue.AddMember("PolygonCollider2D", std::move(colliderValue));
 			}
 #endif

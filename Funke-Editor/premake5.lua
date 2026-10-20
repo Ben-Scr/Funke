@@ -107,7 +107,7 @@ project "Funke-Editor"
         -- Do not reintroduce /Zm: it is a per-cl.exe *reservation*, so it
         -- multiplies with MultiProcessorCompile. See Directory.Build.props for
         -- the CL_MPCount cap that bounds that product.
-        flags { "MultiProcessorCompile" }
+        FunkeMultiProcessorCompile()
         buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
         systemversion "latest"
         defines { "FNK_PLATFORM_WINDOWS" }

@@ -427,6 +427,21 @@ namespace Funke::Cli {
 			return Finish(Send(connection, "open-scene", requestArgs, timeoutOr(60)), PrintState);
 		}
 
+		if (*command == "select") {
+			const std::optional<std::string> entity = args.Positional();
+			const bool clear = args.Flag("clear");
+			if (!Connect(args, connection, exitCode)) return exitCode;
+			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
+			if (!entity && !clear) return Fail("select needs an entity name or id, or --clear", k_ExitUsage);
+			requestArgs.AddMember("entity", clear ? std::string() : *entity);
+			return Finish(Send(connection, "select", requestArgs, timeoutOr(30)), [](const Json::Value& result) {
+				const Json::Value* selected = result.FindMember("selected");
+				const std::string name = selected ? selected->AsStringOr() : std::string();
+				Out(name.empty() ? std::string("selection cleared") : "selected " + name);
+				return k_ExitOk;
+			});
+		}
+
 		if (*command == "save-scene") {
 			if (!Connect(args, connection, exitCode)) return exitCode;
 			if (!args.Finish(error)) return Fail(error, k_ExitUsage);

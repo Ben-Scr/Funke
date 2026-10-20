@@ -42,8 +42,23 @@ namespace Funke {
 		// defaults. Body type is already honored by the construct hook. Mirrors the slow-load setters.
 		void RestoreBodyFromState();
 
+		// Box2D velocity damping; new bodies get 0.1 linear and 0 angular.
 		void SetLinearDrag(float value);
 		void SetAngularDrag(float value);
+		float GetLinearDrag() const;
+		float GetAngularDrag() const;
+		// Continuous collision against other dynamic bodies (fast projectiles, ragdoll limbs).
+		void SetBullet(bool bullet);
+		bool IsBullet() const;
+
+		// Rotational inertia about the centre of mass (kg·m²) and the centre of mass in body and world space.
+		float GetInertia() const;
+		Vec2 GetLocalCenterOfMass() const;
+		Vec2 GetWorldCenterOfMass() const;
+		void ApplyForceAtPoint(const Vec2& force, const Vec2& worldPoint, bool wake);
+		void ApplyImpulseAtPoint(const Vec2& impulse, const Vec2& worldPoint, bool wake);
+		void ApplyTorque(float torque, bool wake);
+		void ApplyAngularImpulse(float impulse, bool wake);
 
 		void SetRotation(float radians);
 		void SetPosition(const Vec2& position);
@@ -83,6 +98,9 @@ namespace Funke {
 		bool m_FreezeX{ false };
 		bool m_FreezeY{ false };
 		bool m_FreezeRot{ false };
+		bool m_Bullet{ false };
+		float m_LinearDamping{ 0.1f };
+		float m_AngularDamping{ 0.0f };
 
 		friend class BoxCollider2DComponent;
 		friend class Collider2D;

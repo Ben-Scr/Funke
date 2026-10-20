@@ -109,7 +109,7 @@ chmod +x scripts/Setup.sh
 ./scripts/Setup.sh
 ```
 
-Setup offers to install missing tools through [Homebrew](https://brew.sh) and opens the Command Line Tools installer when they are missing. Then build Dawn once and the rest:
+Setup offers to install missing tools through [Homebrew](https://brew.sh) and opens the Command Line Tools installer when they are missing. The quickest start is `brew install python3 cmake premake make` first. Setup finds versioned Pythons (`python3.13`), installs the .NET SDK into `~/.dotnet` without administrator rights (the Homebrew cask needs them), and replaces a premake that can't run on Apple Silicon with Homebrew's. Then build Dawn once and the rest:
 
 ```bash
 ./scripts/dawn/SetupDawn.sh
@@ -118,7 +118,7 @@ make config=release -j"$(sysctl -n hw.ncpu)" Funke-Launcher
 ./bin/Release-macosx-arm64/Funke-Launcher/Funke-Launcher
 ```
 
-On Intel Macs the folder is `Release-macosx-x86_64`. `python3 scripts/PackagePosix.py` packs it into `Funke-Editor-<version>-macOS-<arch>.tar.gz`.
+On managed Macs where `make` fails with *Permission denied*, use GNU make (`brew install make`) and write `gmake` instead of `make`; the editor then uses `gmake` too. On Intel Macs the folder is `Release-macosx-x86_64`. `python3 scripts/PackagePosix.py` packs it into `Funke-Editor-<version>-macOS-<arch>.tar.gz`.
 
 </details>
 

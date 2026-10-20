@@ -64,6 +64,45 @@ namespace Funke {
 	using Json::Value;
 	using namespace SceneSerializerShared;
 
+#if FUNKE_WITH_2D
+	namespace {
+		// "points" is path 0; "paths" holds further paths as flat [x0, y0, x1, y1, ...] arrays.
+		void ReadPolygonColliderPaths(const Json::Value& value, PolygonCollider2DComponent& collider, Scene& scene) {
+			constexpr std::size_t k_MaxPoints = static_cast<std::size_t>(PolygonCollider2DComponent::k_MaxPathPoints);
+			std::vector<std::vector<Vec2>> paths;
+			if (const Json::Value* pointsArr = value.FindMember("points"); pointsArr && pointsArr->IsArray()) {
+				const auto& arr = pointsArr->GetArray();
+				if (arr.size() > k_MaxPoints) {
+					FNK_CORE_WARN_TAG("Serialization", "Polygon collider point count {} exceeds max {}; truncating", arr.size(), k_MaxPoints);
+				}
+				const std::size_t take = std::min(arr.size(), k_MaxPoints);
+				std::vector<Vec2> points;
+				points.reserve(take);
+				for (std::size_t i = 0; i < take; ++i) {
+					points.push_back(Vec2{ SceneSerializerShared::GetFloatMember(arr[i], "x", 0.0f), SceneSerializerShared::GetFloatMember(arr[i], "y", 0.0f) });
+				}
+				if (!points.empty()) paths.push_back(std::move(points));
+			}
+			if (const Json::Value* pathsArr = value.FindMember("paths"); pathsArr && pathsArr->IsArray() && !paths.empty()) {
+				for (const Json::Value& flat : pathsArr->GetArray()) {
+					if (!flat.IsArray()) continue;
+					if (paths.size() >= static_cast<std::size_t>(PolygonCollider2DComponent::k_MaxPaths)) break;
+					const auto& coords = flat.GetArray();
+					const std::size_t count = std::min(coords.size() / 2, k_MaxPoints);
+					std::vector<Vec2> path;
+					path.reserve(count);
+					for (std::size_t i = 0; i < count; ++i) {
+						path.push_back(Vec2{ static_cast<float>(coords[i * 2].AsDoubleOr(0.0)), static_cast<float>(coords[i * 2 + 1].AsDoubleOr(0.0)) });
+					}
+					paths.push_back(std::move(path));
+				}
+			}
+			if (!paths.empty()) collider.SetPaths(paths, scene);
+		}
+	}
+#endif
+
+
 	namespace {
 		static constexpr int SCENE_FORMAT_VERSION = 1;
 
@@ -1968,6 +2007,9 @@ namespace Funke {
 			rigidbody.SetFreezePositionX(GetBoolMember(*rigidbodyValue, "freezePositionX", false));
 			rigidbody.SetFreezePositionY(GetBoolMember(*rigidbodyValue, "freezePositionY", false));
 			rigidbody.SetFreezeRotation(GetBoolMember(*rigidbodyValue, "freezeRotation", false));
+			rigidbody.SetLinearDrag(GetFloatMember(*rigidbodyValue, "linearDamping", 0.1f));
+			rigidbody.SetAngularDrag(GetFloatMember(*rigidbodyValue, "angularDamping", 0.0f));
+			rigidbody.SetBullet(GetBoolMember(*rigidbodyValue, "bullet", false));
 		}
 
 		if (const Value* colliderValue = GetObjectMember(entityValue, "BoxCollider2D")) {
@@ -1986,6 +2028,8 @@ namespace Funke {
 			boxCollider.SetSensor(GetBoolMember(*colliderValue, "sensor", false), scene);
 			boxCollider.SetFriction(GetFloatMember(*colliderValue, "friction", boxCollider.GetFriction()));
 			boxCollider.SetBounciness(GetFloatMember(*colliderValue, "bounciness", boxCollider.GetBounciness()));
+			boxCollider.SetDensity(GetFloatMember(*colliderValue, "density", 1.0f));
+			boxCollider.SetGroupIndex(GetIntMember(*colliderValue, "groupIndex", 0));
 			boxCollider.SetCollisionMask(GetUInt64Member(*colliderValue, "collisionMask", boxCollider.GetCollisionMask()));
 			boxCollider.SetLayer(GetUInt64Member(*colliderValue, "layer", boxCollider.GetLayer()));
 			boxCollider.SetRegisterContacts(GetBoolMember(*colliderValue, "registerContacts", boxCollider.CanRegisterContacts()));
@@ -2002,6 +2046,8 @@ namespace Funke {
 			circleCollider.SetSensor(GetBoolMember(*colliderValue, "sensor", false), scene);
 			circleCollider.SetFriction(GetFloatMember(*colliderValue, "friction", circleCollider.GetFriction()));
 			circleCollider.SetBounciness(GetFloatMember(*colliderValue, "bounciness", circleCollider.GetBounciness()));
+			circleCollider.SetDensity(GetFloatMember(*colliderValue, "density", 1.0f));
+			circleCollider.SetGroupIndex(GetIntMember(*colliderValue, "groupIndex", 0));
 			circleCollider.SetCollisionMask(GetUInt64Member(*colliderValue, "collisionMask", circleCollider.GetCollisionMask()));
 			circleCollider.SetLayer(GetUInt64Member(*colliderValue, "layer", circleCollider.GetLayer()));
 			circleCollider.SetRegisterContacts(GetBoolMember(*colliderValue, "registerContacts", circleCollider.CanRegisterContacts()));
@@ -2010,32 +2056,8 @@ namespace Funke {
 		if (const Value* colliderValue = GetObjectMember(entityValue, "PolygonCollider2D")) {
 			auto& polygonCollider = scene.AddComponent<PolygonCollider2DComponent>(entity);
 
-			// Restore custom point list if present, otherwise the default
-			// regular pentagon installed by the constructor stays in place.
-			if (const Value* pointsArr = colliderValue->FindMember("points"); pointsArr && pointsArr->IsArray()) {
-				const auto& arr = pointsArr->GetArray();
-				// Box2D rejects polygons over B2_MAX_POLYGON_VERTICES (8). Cap the
-				// reserve too — without this, a hostile/corrupt prefab with a
-				// 100M-element points array allocates ~1.6 GB before the first
-				// element is read.
-				constexpr std::size_t k_MaxPolygonVertices = 8;
-				if (arr.size() > k_MaxPolygonVertices) {
-					FNK_CORE_WARN_TAG("Serialization", "Polygon collider point count {} exceeds max {}; truncating", arr.size(), k_MaxPolygonVertices);
-				}
-				const std::size_t take = arr.size() < k_MaxPolygonVertices ? arr.size() : k_MaxPolygonVertices;
-				std::vector<Vec2> points;
-				points.reserve(take);
-				for (std::size_t i = 0; i < take; ++i) {
-					const Value& pt = arr[i];
-					points.push_back(Vec2{
-						GetFloatMember(pt, "x", 0.0f),
-						GetFloatMember(pt, "y", 0.0f)
-					});
-				}
-				if (!points.empty()) {
-					polygonCollider.SetPoints(points, scene);
-				}
-			}
+			polygonCollider.SetEdge(GetBoolMember(*colliderValue, "edge", false), scene);
+			ReadPolygonColliderPaths(*colliderValue, polygonCollider, scene);
 
 			polygonCollider.SetSize(Vec2{
 				GetFloatMember(*colliderValue, "sizeX", 1.0f),
@@ -2048,6 +2070,8 @@ namespace Funke {
 			polygonCollider.SetSensor(GetBoolMember(*colliderValue, "sensor", false), scene);
 			polygonCollider.SetFriction(GetFloatMember(*colliderValue, "friction", polygonCollider.GetFriction()));
 			polygonCollider.SetBounciness(GetFloatMember(*colliderValue, "bounciness", polygonCollider.GetBounciness()));
+			polygonCollider.SetDensity(GetFloatMember(*colliderValue, "density", 1.0f));
+			polygonCollider.SetGroupIndex(GetIntMember(*colliderValue, "groupIndex", 0));
 			polygonCollider.SetCollisionMask(GetUInt64Member(*colliderValue, "collisionMask", polygonCollider.GetCollisionMask()));
 			polygonCollider.SetLayer(GetUInt64Member(*colliderValue, "layer", polygonCollider.GetLayer()));
 			polygonCollider.SetRegisterContacts(GetBoolMember(*colliderValue, "registerContacts", polygonCollider.CanRegisterContacts()));
@@ -2563,6 +2587,9 @@ namespace Funke {
 			rigidbody.SetFreezePositionX(GetBoolMember(componentValue, "freezePositionX", false));
 			rigidbody.SetFreezePositionY(GetBoolMember(componentValue, "freezePositionY", false));
 			rigidbody.SetFreezeRotation(GetBoolMember(componentValue, "freezeRotation", false));
+			rigidbody.SetLinearDrag(GetFloatMember(componentValue, "linearDamping", 0.1f));
+			rigidbody.SetAngularDrag(GetFloatMember(componentValue, "angularDamping", 0.0f));
+			rigidbody.SetBullet(GetBoolMember(componentValue, "bullet", false));
 			return true;
 		}
 
@@ -2584,6 +2611,8 @@ namespace Funke {
 			boxCollider.SetSensor(GetBoolMember(componentValue, "sensor", false), scene);
 			boxCollider.SetFriction(GetFloatMember(componentValue, "friction", boxCollider.GetFriction()));
 			boxCollider.SetBounciness(GetFloatMember(componentValue, "bounciness", boxCollider.GetBounciness()));
+			boxCollider.SetDensity(GetFloatMember(componentValue, "density", 1.0f));
+			boxCollider.SetGroupIndex(GetIntMember(componentValue, "groupIndex", 0));
 			boxCollider.SetCollisionMask(GetUInt64Member(componentValue, "collisionMask", boxCollider.GetCollisionMask()));
 			boxCollider.SetLayer(GetUInt64Member(componentValue, "layer", boxCollider.GetLayer()));
 			boxCollider.SetRegisterContacts(GetBoolMember(componentValue, "registerContacts", boxCollider.CanRegisterContacts()));
@@ -2602,6 +2631,8 @@ namespace Funke {
 			circleCollider.SetSensor(GetBoolMember(componentValue, "sensor", false), scene);
 			circleCollider.SetFriction(GetFloatMember(componentValue, "friction", circleCollider.GetFriction()));
 			circleCollider.SetBounciness(GetFloatMember(componentValue, "bounciness", circleCollider.GetBounciness()));
+			circleCollider.SetDensity(GetFloatMember(componentValue, "density", 1.0f));
+			circleCollider.SetGroupIndex(GetIntMember(componentValue, "groupIndex", 0));
 			circleCollider.SetCollisionMask(GetUInt64Member(componentValue, "collisionMask", circleCollider.GetCollisionMask()));
 			circleCollider.SetLayer(GetUInt64Member(componentValue, "layer", circleCollider.GetLayer()));
 			circleCollider.SetRegisterContacts(GetBoolMember(componentValue, "registerContacts", circleCollider.CanRegisterContacts()));
@@ -2613,26 +2644,8 @@ namespace Funke {
 				? scene.GetComponent<PolygonCollider2DComponent>(entity)
 				: scene.AddComponent<PolygonCollider2DComponent>(entity);
 
-			if (const Value* pointsArr = componentValue.FindMember("points"); pointsArr && pointsArr->IsArray()) {
-				constexpr std::size_t k_MaxPolygonVertices = 8;
-				const auto& arr = pointsArr->GetArray();
-				if (arr.size() > k_MaxPolygonVertices) {
-					FNK_CORE_WARN_TAG("Serialization", "Polygon collider point count {} exceeds max {}; truncating", arr.size(), k_MaxPolygonVertices);
-				}
-				const std::size_t take = arr.size() < k_MaxPolygonVertices ? arr.size() : k_MaxPolygonVertices;
-				std::vector<Vec2> points;
-				points.reserve(take);
-				for (std::size_t i = 0; i < take; ++i) {
-					const Value& pt = arr[i];
-					points.push_back(Vec2{
-						GetFloatMember(pt, "x", 0.0f),
-						GetFloatMember(pt, "y", 0.0f)
-					});
-				}
-				if (!points.empty()) {
-					polygonCollider.SetPoints(points, scene);
-				}
-			}
+			polygonCollider.SetEdge(GetBoolMember(componentValue, "edge", false), scene);
+			ReadPolygonColliderPaths(componentValue, polygonCollider, scene);
 
 			polygonCollider.SetSize(Vec2{
 				GetFloatMember(componentValue, "sizeX", 1.0f),
@@ -2645,6 +2658,8 @@ namespace Funke {
 			polygonCollider.SetSensor(GetBoolMember(componentValue, "sensor", false), scene);
 			polygonCollider.SetFriction(GetFloatMember(componentValue, "friction", polygonCollider.GetFriction()));
 			polygonCollider.SetBounciness(GetFloatMember(componentValue, "bounciness", polygonCollider.GetBounciness()));
+			polygonCollider.SetDensity(GetFloatMember(componentValue, "density", 1.0f));
+			polygonCollider.SetGroupIndex(GetIntMember(componentValue, "groupIndex", 0));
 			polygonCollider.SetCollisionMask(GetUInt64Member(componentValue, "collisionMask", polygonCollider.GetCollisionMask()));
 			polygonCollider.SetLayer(GetUInt64Member(componentValue, "layer", polygonCollider.GetLayer()));
 			polygonCollider.SetRegisterContacts(GetBoolMember(componentValue, "registerContacts", polygonCollider.CanRegisterContacts()));

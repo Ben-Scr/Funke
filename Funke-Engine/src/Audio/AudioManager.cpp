@@ -17,6 +17,10 @@
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 
+// Ogg Vorbis: miniaudio only compiles its Vorbis decoder when stb_vorbis's declarations are visible here; the implementation is included at the end of this file.
+#define STB_VORBIS_HEADER_ONLY
+#include <extras/stb_vorbis.c>
+
 #define MINIAUDIO_IMPLEMENTATION
 // Playback only: no encoders, no waveform/noise generators.
 #define MA_NO_ENCODING
@@ -321,11 +325,10 @@ namespace Funke {
 				std::string ext = std::filesystem::path(requestedPath).extension().string();
 				std::transform(ext.begin(), ext.end(), ext.begin(),
 					[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-				if (ext == ".ogg" || ext == ".opus") {
-					// Default miniaudio decodes wav/mp3/flac only — Vorbis/Opus aren't compiled in,
-					// so these fail to load. Surface the real reason instead of a generic error.
-					FNK_CORE_ERROR("[{}] AudioManager: '{}' is {} (Vorbis/Opus), which this build's audio backend cannot decode. Convert it to .wav, .mp3, or .flac.",
-						ErrorCodeToString(FunkeErrorCode::LoadFailed), requestedPath, ext);
+				if (ext == ".opus") {
+					// Opus isn't compiled in; surface the real reason instead of a generic error.
+					FNK_CORE_ERROR("[{}] AudioManager: '{}' is Opus, which this build's audio backend cannot decode. Convert it to .ogg (Vorbis), .wav, .mp3, or .flac.",
+						ErrorCodeToString(FunkeErrorCode::LoadFailed), requestedPath);
 				}
 				else {
 					FNK_CORE_ERROR("[{}] AudioManager: Failed to load audio: {}", ErrorCodeToString(FunkeErrorCode::LoadFailed), requestedPath);
@@ -1108,3 +1111,13 @@ namespace Funke {
 	}
 
 }
+
+#undef STB_VORBIS_HEADER_ONLY
+// stb_vorbis defines short macros (L, R, C, ...), so its implementation goes last.
+#ifdef _MSC_VER
+#pragma warning(push, 0)
+#endif
+#include <extras/stb_vorbis.c>
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif

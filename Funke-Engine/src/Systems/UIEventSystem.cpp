@@ -2233,13 +2233,15 @@ namespace Funke {
 				if (wheel != 0.0f) {
 					// ScrollSensitivity is in whole-number inspector units; * 0.01 converts to calibrated speed (5 = default).
 					const float pixels = wheel * 60.0f * (sr.ScrollSensitivity * 0.01f);
+					// The glide a notch starts is calibrated at 60 fps; dividing by the real frame time made it grow with the frame rate.
+					constexpr float k_WheelGlideSeconds = 1.0f / 60.0f;
 					if (sr.Vertical && maxScrollY > 0.0f) {
 						contentRect.AnchoredPosition.y -= pixels;
-						sr.Velocity.y = -pixels / std::max(0.0001f, Time::GetUnscaledDeltaTime());
+						sr.Velocity.y = -pixels / k_WheelGlideSeconds;
 					}
 					else if (sr.Horizontal && maxScrollX > 0.0f) {
 						contentRect.AnchoredPosition.x += pixels;
-						sr.Velocity.x = pixels / std::max(0.0001f, Time::GetUnscaledDeltaTime());
+						sr.Velocity.x = pixels / k_WheelGlideSeconds;
 					}
 				}
 			}

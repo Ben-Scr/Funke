@@ -20,6 +20,7 @@
 #include "Graphics/GizmoRenderer.hpp"
 #include "Gui/EditorTheme.hpp"
 #include "Gui/EditorUI.hpp"
+#include "Gui/GlassBackdrop.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Graphics/Gizmo.hpp"
@@ -960,6 +961,11 @@ namespace Funke {
 				}
 			}
 		}
+
+		if (EditorTheme::IsTranslucent()) {
+			GlassBackdrop::Draw();
+		}
+		GlassBackdrop::SyncViewportCaptions(EditorPreferences::GetThemeMode() == EditorThemeMode::Glass);
 
 		// MUST precede RenderDockspaceRoot: titlebar publishes its height so the dockspace offsets correctly.
 		{

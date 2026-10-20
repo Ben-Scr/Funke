@@ -11,9 +11,11 @@
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteAnimator2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#include "Components/Graphics/TerrainRenderer2DComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
+#include "Components/Physics/Joint2DComponents.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Core/Application.hpp"
@@ -21,6 +23,7 @@
 #include "Core/Window.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Physics/Physics2D.hpp"
+#include "Physics/PhysicsSystem2D.hpp"
 #include "Scene/EntityPicker.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
@@ -768,7 +771,7 @@ namespace Funke {
 		if (!points) return;
 		GET_COMPONENT(PolygonCollider2DComponent, entityID, );
 		if (pointCount < PolygonCollider2DComponent::k_MinVertices ||
-			pointCount > PolygonCollider2DComponent::k_MaxVertices) {
+			pointCount > PolygonCollider2DComponent::k_MaxPathPoints) {
 			return;
 		}
 
@@ -1054,6 +1057,352 @@ namespace Funke {
 	}
 
 
+	// ── 2D joints ───────────────────────────────────────────────────────
+	// kind: 0 = Revolute, 1 = Prismatic, 2 = Weld (matches C# Joint2D.Kind). Packed fields: the 6 shared ones
+	// (anchor x/y, connected anchor x/y, auto connected anchor, collide connected), then the type's own in
+	// declaration order (see Joint2D.cs).
+
+	constexpr int k_JointSharedValues = 6;
+	constexpr int k_JointMaxValues = 17;
+
+	static Joint2DBase* FindJoint(uint64_t entityID, int kind, Scene*& scene, EntityHandle& handle)
+	{
+		if (!ResolveEntityReference(entityID, scene, handle) || !scene->IsValid(handle)) return nullptr;
+		auto& registry = scene->GetRegistry();
+		switch (kind) {
+		case 0: return registry.try_get<RevoluteJoint2DComponent>(handle);
+		case 1: return registry.try_get<PrismaticJoint2DComponent>(handle);
+		case 2: return registry.try_get<WeldJoint2DComponent>(handle);
+		default: return nullptr;
+		}
+	}
+
+	static int PackJoint(const Joint2DBase& joint, int kind, float* v)
+	{
+		v[0] = joint.Anchor.x;
+		v[1] = joint.Anchor.y;
+		v[2] = joint.ConnectedAnchor.x;
+		v[3] = joint.ConnectedAnchor.y;
+		v[4] = joint.AutoConfigureConnectedAnchor ? 1.0f : 0.0f;
+		v[5] = joint.CollideConnected ? 1.0f : 0.0f;
+		int n = k_JointSharedValues;
+		if (kind == 0) {
+			const auto& j = static_cast<const RevoluteJoint2DComponent&>(joint);
+			v[n++] = j.EnableLimit ? 1.0f : 0.0f; v[n++] = j.LowerAngle; v[n++] = j.UpperAngle;
+			v[n++] = j.EnableMotor ? 1.0f : 0.0f; v[n++] = j.MotorSpeed; v[n++] = j.MaxMotorTorque;
+			v[n++] = j.EnableSpring ? 1.0f : 0.0f; v[n++] = j.SpringHertz; v[n++] = j.SpringDampingRatio;
+		}
+		else if (kind == 1) {
+			const auto& j = static_cast<const PrismaticJoint2DComponent&>(joint);
+			v[n++] = j.Axis.x; v[n++] = j.Axis.y;
+			v[n++] = j.EnableLimit ? 1.0f : 0.0f; v[n++] = j.LowerTranslation; v[n++] = j.UpperTranslation;
+			v[n++] = j.EnableMotor ? 1.0f : 0.0f; v[n++] = j.MotorSpeed; v[n++] = j.MaxMotorForce;
+			v[n++] = j.EnableSpring ? 1.0f : 0.0f; v[n++] = j.SpringHertz; v[n++] = j.SpringDampingRatio;
+		}
+		else if (kind == 2) {
+			const auto& j = static_cast<const WeldJoint2DComponent&>(joint);
+			v[n++] = j.LinearHertz; v[n++] = j.AngularHertz; v[n++] = j.LinearDampingRatio; v[n++] = j.AngularDampingRatio;
+		}
+		return n;
+	}
+
+	static int Funke_Joint2D_Get(uint64_t entityID, int kind, float* values, int count)
+	{
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		const Joint2DBase* joint = FindJoint(entityID, kind, scene, handle);
+		if (!joint || !values || count <= 0) return 0;
+		float packed[k_JointMaxValues] = {};
+		const int n = std::min(PackJoint(*joint, kind, packed), count);
+		std::copy_n(packed, n, values);
+		return n;
+	}
+
+	static void Funke_Joint2D_Set(uint64_t entityID, int kind, const float* values, int count)
+	{
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		Joint2DBase* joint = FindJoint(entityID, kind, scene, handle);
+		if (!joint || !values || count <= 0) return;
+		float v[k_JointMaxValues] = {};
+		const int total = PackJoint(*joint, kind, v);
+		float before[k_JointMaxValues];
+		std::copy_n(v, total, before);
+		std::copy_n(values, std::min(count, total), v);
+
+		joint->Anchor = { v[0], v[1] };
+		joint->ConnectedAnchor = { v[2], v[3] };
+		joint->AutoConfigureConnectedAnchor = v[4] != 0.0f;
+		joint->CollideConnected = v[5] != 0.0f;
+		int structuralEnd = k_JointSharedValues;
+		int n = k_JointSharedValues;
+		if (kind == 0) {
+			auto& j = static_cast<RevoluteJoint2DComponent&>(*joint);
+			j.EnableLimit = v[n++] != 0.0f; j.LowerAngle = v[n++]; j.UpperAngle = v[n++];
+			j.EnableMotor = v[n++] != 0.0f; j.MotorSpeed = v[n++]; j.MaxMotorTorque = v[n++];
+			j.EnableSpring = v[n++] != 0.0f; j.SpringHertz = v[n++]; j.SpringDampingRatio = v[n++];
+		}
+		else if (kind == 1) {
+			auto& j = static_cast<PrismaticJoint2DComponent&>(*joint);
+			j.Axis = { v[n], v[n + 1] };
+			n += 2;
+			structuralEnd = n;
+			j.EnableLimit = v[n++] != 0.0f; j.LowerTranslation = v[n++]; j.UpperTranslation = v[n++];
+			j.EnableMotor = v[n++] != 0.0f; j.MotorSpeed = v[n++]; j.MaxMotorForce = v[n++];
+			j.EnableSpring = v[n++] != 0.0f; j.SpringHertz = v[n++]; j.SpringDampingRatio = v[n++];
+		}
+		else if (kind == 2) {
+			auto& j = static_cast<WeldJoint2DComponent&>(*joint);
+			j.LinearHertz = v[n++]; j.AngularHertz = v[n++]; j.LinearDampingRatio = v[n++]; j.AngularDampingRatio = v[n++];
+		}
+
+		// Motor speed set every frame must not rebuild the joint; only anchor/axis/collide changes do.
+		if (!std::equal(before, before + structuralEnd, v)) joint->MarkStructuralChange();
+		switch (kind) {
+		case 0: static_cast<RevoluteJoint2DComponent&>(*joint).ApplyLive(); break;
+		case 1: static_cast<PrismaticJoint2DComponent&>(*joint).ApplyLive(); break;
+		case 2: static_cast<WeldJoint2DComponent&>(*joint).ApplyLive(); break;
+		default: break;
+		}
+	}
+
+	static uint64_t Funke_Joint2D_GetConnectedBody(uint64_t entityID, int kind)
+	{
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		const Joint2DBase* joint = FindJoint(entityID, kind, scene, handle);
+		if (!joint || joint->ConnectedBody == entt::null || !scene->IsValid(joint->ConnectedBody)) return 0;
+		return GetEntityScriptId(*scene, joint->ConnectedBody);
+	}
+
+	static void Funke_Joint2D_SetConnectedBody(uint64_t entityID, int kind, uint64_t connectedID)
+	{
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		Joint2DBase* joint = FindJoint(entityID, kind, scene, handle);
+		if (!joint) return;
+		EntityHandle connected = entt::null;
+		if (connectedID != 0) {
+			Scene* otherScene = nullptr;
+			if (!ResolveEntityReference(connectedID, otherScene, connected) || otherScene != scene) {
+				FNK_CORE_WARN_TAG("Physics2D", "Joint ConnectedBody must be an entity of the same scene; keeping the old one");
+				return;
+			}
+		}
+		joint->ConnectedBody = connected;
+		joint->MarkStructuralChange();
+	}
+
+	static void Funke_Joint2D_GetState(uint64_t entityID, int kind, float* values, int count)
+	{
+		if (!values || count <= 0) return;
+		std::fill_n(values, count, 0.0f);
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		const Joint2DBase* joint = FindJoint(entityID, kind, scene, handle);
+		if (!joint) return;
+		float v[7] = {};
+		v[0] = joint->IsCreated() ? 1.0f : 0.0f;
+		const Vec2 force = joint->GetReactionForce();
+		v[1] = force.x;
+		v[2] = force.y;
+		v[3] = joint->GetReactionTorque();
+		if (kind == 0) {
+			const auto& j = static_cast<const RevoluteJoint2DComponent&>(*joint);
+			v[4] = j.GetJointAngle(); v[5] = j.GetJointSpeed(); v[6] = j.GetMotorTorque();
+		}
+		else if (kind == 1) {
+			const auto& j = static_cast<const PrismaticJoint2DComponent&>(*joint);
+			v[4] = j.GetJointTranslation(); v[5] = j.GetJointSpeed(); v[6] = j.GetMotorForce();
+		}
+		std::copy_n(v, std::min(count, 7), values);
+	}
+
+	static int Funke_Collider2D_GetGroupIndex(uint64_t entityID, int colliderType)
+	{
+		Scene* scene = nullptr;
+		Collider2D* collider = FindCollider(entityID, colliderType, scene);
+		return collider ? collider->GetGroupIndex() : 0;
+	}
+
+	static void Funke_Collider2D_SetGroupIndex(uint64_t entityID, int colliderType, int group)
+	{
+		Scene* scene = nullptr;
+		if (Collider2D* collider = FindCollider(entityID, colliderType, scene)) collider->SetGroupIndex(group);
+	}
+
+	static float Funke_Collider2D_GetDensity(uint64_t entityID, int colliderType)
+	{
+		Scene* scene = nullptr;
+		Collider2D* collider = FindCollider(entityID, colliderType, scene);
+		return collider ? collider->GetDensity() : 0.0f;
+	}
+
+	static void Funke_Collider2D_SetDensity(uint64_t entityID, int colliderType, float density)
+	{
+		Scene* scene = nullptr;
+		Collider2D* collider = FindCollider(entityID, colliderType, scene);
+		if (!collider) return;
+		collider->SetDensity(density);
+		if (auto* rb = scene->GetRegistry().try_get<Rigidbody2DComponent>(collider->m_EntityHandle)) rb->ApplyMassFromState();
+	}
+
+	static int Funke_PolygonCollider2D_GetPathCount(uint64_t entityID)
+	{
+		GET_COMPONENT(PolygonCollider2DComponent, entityID, 0);
+		return comp.GetPathCount();
+	}
+
+	static int Funke_PolygonCollider2D_GetPath(uint64_t entityID, int index, float* outPoints, int maxPoints)
+	{
+		GET_COMPONENT(PolygonCollider2DComponent, entityID, 0);
+		if (index < 0 || index >= comp.GetPathCount()) return 0;
+		const std::vector<Vec2>& path = comp.GetPath(index);
+		const int n = outPoints ? std::min(static_cast<int>(path.size()), std::max(maxPoints, 0)) : 0;
+		for (int i = 0; i < n; ++i) {
+			outPoints[i * 2] = path[static_cast<size_t>(i)].x;
+			outPoints[i * 2 + 1] = path[static_cast<size_t>(i)].y;
+		}
+		return static_cast<int>(path.size());
+	}
+
+	static void Funke_PolygonCollider2D_SetPaths(uint64_t entityID, const float* points, const int* counts, int pathCount)
+	{
+		GET_COMPONENT(PolygonCollider2DComponent, entityID, );
+		if (!points || !counts || pathCount <= 0) return;
+		std::vector<std::vector<Vec2>> paths;
+		paths.reserve(static_cast<size_t>(std::min(pathCount, PolygonCollider2DComponent::k_MaxPaths)));
+		size_t offset = 0;
+		for (int p = 0; p < pathCount && p < PolygonCollider2DComponent::k_MaxPaths; ++p) {
+			const int count = std::clamp(counts[p], 0, PolygonCollider2DComponent::k_MaxPathPoints);
+			std::vector<Vec2> path;
+			path.reserve(static_cast<size_t>(count));
+			for (int i = 0; i < count; ++i) {
+				path.push_back(Vec2{ points[(offset + i) * 2], points[(offset + i) * 2 + 1] });
+			}
+			offset += static_cast<size_t>(std::max(counts[p], 0));
+			paths.push_back(std::move(path));
+		}
+		comp.SetPaths(paths, *scene);
+	}
+
+	static void Funke_Physics2D_GetGravity(float* outX, float* outY)
+	{
+		const Vec2 g = PhysicsSystem2D::IsInitialized() ? PhysicsSystem2D::GetMainPhysicsWorld().GetGravity() : Vec2{ 0.0f, 0.0f };
+		if (outX) *outX = g.x;
+		if (outY) *outY = g.y;
+	}
+
+	static void Funke_Physics2D_SetGravity(float x, float y)
+	{
+		if (PhysicsSystem2D::IsInitialized()) PhysicsSystem2D::GetMainPhysicsWorld().SetGravity(Vec2{ x, y });
+	}
+
+	// ── Rigidbody2D dynamics ─────────────────────────────────────────────
+
+	static void Funke_Rigidbody2D_GetDynamics(uint64_t entityID, float* values, int count)
+	{
+		if (!values || count <= 0) return;
+		std::fill_n(values, count, 0.0f);
+		GET_COMPONENT(Rigidbody2DComponent, entityID, );
+		const Vec2 local = comp.GetLocalCenterOfMass();
+		const Vec2 world = comp.GetWorldCenterOfMass();
+		const float v[8] = { comp.GetLinearDrag(), comp.GetAngularDrag(), comp.IsBullet() ? 1.0f : 0.0f, comp.GetInertia(),
+			local.x, local.y, world.x, world.y };
+		std::copy_n(v, std::min(count, 8), values);
+	}
+
+	static void Funke_Rigidbody2D_SetDynamics(uint64_t entityID, const float* values, int count)
+	{
+		if (!values || count < 3) return;
+		GET_COMPONENT(Rigidbody2DComponent, entityID, );
+		comp.SetLinearDrag(values[0]);
+		comp.SetAngularDrag(values[1]);
+		comp.SetBullet(values[2] != 0.0f);
+	}
+
+	static void Funke_Rigidbody2D_ApplyAtPoint(uint64_t entityID, int kind, float x, float y, float pointX, float pointY, int wake)
+	{
+		GET_COMPONENT(Rigidbody2DComponent, entityID, );
+		if (kind == 0) comp.ApplyForceAtPoint(Vec2{ x, y }, Vec2{ pointX, pointY }, wake != 0);
+		else comp.ApplyImpulseAtPoint(Vec2{ x, y }, Vec2{ pointX, pointY }, wake != 0);
+	}
+
+	static void Funke_Rigidbody2D_ApplyAngular(uint64_t entityID, int kind, float value, int wake)
+	{
+		GET_COMPONENT(Rigidbody2DComponent, entityID, );
+		if (kind == 0) comp.ApplyTorque(value, wake != 0);
+		else comp.ApplyAngularImpulse(value, wake != 0);
+	}
+
+	// ── TerrainRenderer2D ───────────────────────────────────────────────
+
+	constexpr int k_TerrainValues = 19;
+
+	static void Funke_TerrainRenderer2D_Get(uint64_t entityID, float* values, int count)
+	{
+		if (!values || count <= 0) return;
+		GET_COMPONENT(TerrainRenderer2DComponent, entityID, );
+		const float v[k_TerrainValues] = {
+			comp.FillColor.r, comp.FillColor.g, comp.FillColor.b, comp.FillColor.a,
+			comp.FillTileSize.x, comp.FillTileSize.y, static_cast<float>(comp.FillMapping), comp.FillDepth,
+			comp.EdgeColor.r, comp.EdgeColor.g, comp.EdgeColor.b, comp.EdgeColor.a,
+			comp.EdgeThickness, comp.EdgeOffset, comp.EdgeTileLength,
+			static_cast<float>(comp.SortingLayer), static_cast<float>(comp.SortingOrder), static_cast<float>(comp.EdgeSortingOrder),
+			comp.EdgeTextureOffset };
+		std::copy_n(v, std::min(count, k_TerrainValues), values);
+	}
+
+	static void Funke_TerrainRenderer2D_Set(uint64_t entityID, const float* values, int count)
+	{
+		if (!values || count < k_TerrainValues) return;
+		GET_COMPONENT(TerrainRenderer2DComponent, entityID, );
+		comp.FillColor = Color{ values[0], values[1], values[2], values[3] };
+		comp.FillTileSize = { values[4], values[5] };
+		comp.FillMapping = values[6] >= 0.5f ? TerrainFillMapping::Draped : TerrainFillMapping::World;
+		comp.FillDepth = std::max(values[7], 0.0f);
+		comp.EdgeColor = Color{ values[8], values[9], values[10], values[11] };
+		comp.EdgeThickness = std::max(values[12], 0.0f);
+		comp.EdgeOffset = values[13];
+		comp.EdgeTileLength = values[14];
+		comp.SortingLayer = static_cast<uint8_t>(std::clamp(static_cast<int>(std::lround(values[15])), 0, 255));
+		comp.SortingOrder = static_cast<short>(std::clamp(static_cast<int>(std::lround(values[16])), -32768, 32767));
+		comp.EdgeSortingOrder = static_cast<short>(std::clamp(static_cast<int>(std::lround(values[17])), -32768, 32767));
+		comp.EdgeTextureOffset = values[18];
+	}
+
+	static int Funke_TerrainRenderer2D_GetPoints(uint64_t entityID, float* outPoints, int maxPoints)
+	{
+		GET_COMPONENT(TerrainRenderer2DComponent, entityID, 0);
+		const int n = outPoints ? std::min(static_cast<int>(comp.Points.size()), std::max(maxPoints, 0)) : 0;
+		for (int i = 0; i < n; ++i) {
+			outPoints[i * 2] = comp.Points[static_cast<size_t>(i)].x;
+			outPoints[i * 2 + 1] = comp.Points[static_cast<size_t>(i)].y;
+		}
+		return static_cast<int>(comp.Points.size());
+	}
+
+	static void Funke_TerrainRenderer2D_SetPoints(uint64_t entityID, const float* points, int pointCount)
+	{
+		GET_COMPONENT(TerrainRenderer2DComponent, entityID, );
+		comp.Points.clear();
+		if (!points || pointCount <= 0) return;
+		comp.Points.reserve(static_cast<size_t>(pointCount));
+		for (int i = 0; i < pointCount; ++i) comp.Points.push_back(Vec2{ points[i * 2], points[i * 2 + 1] });
+	}
+
+	static uint64_t Funke_TerrainRenderer2D_GetTexture(uint64_t entityID, int which)
+	{
+		GET_COMPONENT(TerrainRenderer2DComponent, entityID, 0);
+		return which == 0 ? comp.FillTexture : comp.EdgeTexture;
+	}
+
+	static void Funke_TerrainRenderer2D_SetTexture(uint64_t entityID, int which, uint64_t assetId)
+	{
+		GET_COMPONENT(TerrainRenderer2DComponent, entityID, );
+		(which == 0 ? comp.FillTexture : comp.EdgeTexture) = assetId;
+	}
+
 	#undef GET_COMPONENT
 	#undef FNK_BINDING_CATCH_VOID
 	#undef FNK_BINDING_CATCH
@@ -1180,6 +1529,30 @@ namespace Funke {
 		b.Rigidbody2D_SetFreezeRotation  = FNK_GUARDED_BINDING(Funke_Rigidbody2D_SetFreezeRotation);
 		b.ParticleSystem2D_GetTexture = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_GetTexture);
 		b.ParticleSystem2D_SetTexture = FNK_GUARDED_BINDING(Funke_ParticleSystem2D_SetTexture);
+		b.Joint2D_Get = FNK_GUARDED_BINDING(Funke_Joint2D_Get);
+		b.Joint2D_Set = FNK_GUARDED_BINDING(Funke_Joint2D_Set);
+		b.Joint2D_GetConnectedBody = FNK_GUARDED_BINDING(Funke_Joint2D_GetConnectedBody);
+		b.Joint2D_SetConnectedBody = FNK_GUARDED_BINDING(Funke_Joint2D_SetConnectedBody);
+		b.Joint2D_GetState = FNK_GUARDED_BINDING(Funke_Joint2D_GetState);
+		b.Collider2D_GetDensity = FNK_GUARDED_BINDING(Funke_Collider2D_GetDensity);
+		b.Collider2D_SetDensity = FNK_GUARDED_BINDING(Funke_Collider2D_SetDensity);
+		b.PolygonCollider2D_GetPathCount = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_GetPathCount);
+		b.PolygonCollider2D_GetPath = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_GetPath);
+		b.PolygonCollider2D_SetPaths = FNK_GUARDED_BINDING(Funke_PolygonCollider2D_SetPaths);
+		b.Physics2D_GetGravity = FNK_GUARDED_BINDING(Funke_Physics2D_GetGravity);
+		b.Physics2D_SetGravity = FNK_GUARDED_BINDING(Funke_Physics2D_SetGravity);
+		b.TerrainRenderer2D_Get = FNK_GUARDED_BINDING(Funke_TerrainRenderer2D_Get);
+		b.TerrainRenderer2D_Set = FNK_GUARDED_BINDING(Funke_TerrainRenderer2D_Set);
+		b.TerrainRenderer2D_GetPoints = FNK_GUARDED_BINDING(Funke_TerrainRenderer2D_GetPoints);
+		b.TerrainRenderer2D_SetPoints = FNK_GUARDED_BINDING(Funke_TerrainRenderer2D_SetPoints);
+		b.TerrainRenderer2D_GetTexture = FNK_GUARDED_BINDING(Funke_TerrainRenderer2D_GetTexture);
+		b.TerrainRenderer2D_SetTexture = FNK_GUARDED_BINDING(Funke_TerrainRenderer2D_SetTexture);
+		b.Rigidbody2D_GetDynamics = FNK_GUARDED_BINDING(Funke_Rigidbody2D_GetDynamics);
+		b.Rigidbody2D_SetDynamics = FNK_GUARDED_BINDING(Funke_Rigidbody2D_SetDynamics);
+		b.Rigidbody2D_ApplyAtPoint = FNK_GUARDED_BINDING(Funke_Rigidbody2D_ApplyAtPoint);
+		b.Rigidbody2D_ApplyAngular = FNK_GUARDED_BINDING(Funke_Rigidbody2D_ApplyAngular);
+		b.Collider2D_GetGroupIndex = FNK_GUARDED_BINDING(Funke_Collider2D_GetGroupIndex);
+		b.Collider2D_SetGroupIndex = FNK_GUARDED_BINDING(Funke_Collider2D_SetGroupIndex);
 	}
 
 }

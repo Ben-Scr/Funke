@@ -12,10 +12,22 @@ namespace Funke {
 
 	bool Collider2D::IsValid() const { return b2Body_IsValid(m_BodyId) && b2Shape_IsValid(m_ShapeId); }
 
+	namespace {
+		template <typename F>
+		void ForEachExtra(const b2ShapeId* shapes, int count, F&& fn) {
+			for (int i = 0; i < count; ++i) {
+				if (b2Shape_IsValid(shapes[i])) fn(shapes[i]);
+			}
+		}
+	}
+
 	void Collider2D::SetFriction(float friction) {
 		m_Friction = friction;
 		FNK_COLLIDER_SHAPE_GUARD();
 		b2Shape_SetFriction(m_ShapeId, friction);
+		const b2ShapeId* extra = nullptr;
+		const int extraCount = GetExtraShapes(extra);
+		ForEachExtra(extra, extraCount, [&](b2ShapeId s) { b2Shape_SetFriction(s, friction); });
 	}
 	float Collider2D::GetFriction() const {
 		if (!b2Shape_IsValid(m_ShapeId)) return m_Friction;
@@ -25,6 +37,21 @@ namespace Funke {
 		m_Bounciness = bounciness;
 		FNK_COLLIDER_SHAPE_GUARD();
 		b2Shape_SetRestitution(m_ShapeId, bounciness);
+		const b2ShapeId* extra = nullptr;
+		const int extraCount = GetExtraShapes(extra);
+		ForEachExtra(extra, extraCount, [&](b2ShapeId s) { b2Shape_SetRestitution(s, bounciness); });
+	}
+	void Collider2D::SetDensity(float density) {
+		m_Density = std::max(density, 0.0f);
+		FNK_COLLIDER_SHAPE_GUARD();
+		const b2ShapeId* extra = nullptr;
+		const int extraCount = GetExtraShapes(extra);
+		ForEachExtra(extra, extraCount, [&](b2ShapeId s) { b2Shape_SetDensity(s, m_Density, false); });
+		b2Shape_SetDensity(m_ShapeId, m_Density, true);
+	}
+	float Collider2D::GetDensity() const {
+		if (!b2Shape_IsValid(m_ShapeId)) return m_Density;
+		return b2Shape_GetDensity(m_ShapeId);
 	}
 	float Collider2D::GetBounciness() const {
 		if (!b2Shape_IsValid(m_ShapeId)) return m_Bounciness;
@@ -37,7 +64,11 @@ namespace Funke {
 		b2Filter filter = b2Shape_GetFilter(m_ShapeId);
 		filter.categoryBits = layer;
 		filter.maskBits = m_CollisionMask;
+		filter.groupIndex = m_GroupIndex;
 		b2Shape_SetFilter(m_ShapeId, filter);
+		const b2ShapeId* extra = nullptr;
+		const int extraCount = GetExtraShapes(extra);
+		ForEachExtra(extra, extraCount, [&](b2ShapeId s) { b2Shape_SetFilter(s, filter); });
 	}
 	void Collider2D::SetCollisionMask(uint64_t mask) {
 		m_CollisionMask = mask;
@@ -45,6 +76,23 @@ namespace Funke {
 		b2Filter filter = b2Shape_GetFilter(m_ShapeId);
 		filter.maskBits = mask;
 		b2Shape_SetFilter(m_ShapeId, filter);
+		const b2ShapeId* extra = nullptr;
+		const int extraCount = GetExtraShapes(extra);
+		ForEachExtra(extra, extraCount, [&](b2ShapeId s) { b2Shape_SetFilter(s, filter); });
+	}
+	void Collider2D::SetGroupIndex(int group) {
+		m_GroupIndex = group;
+		FNK_COLLIDER_SHAPE_GUARD();
+		b2Filter filter = b2Shape_GetFilter(m_ShapeId);
+		filter.groupIndex = group;
+		b2Shape_SetFilter(m_ShapeId, filter);
+		const b2ShapeId* extra = nullptr;
+		const int extraCount = GetExtraShapes(extra);
+		ForEachExtra(extra, extraCount, [&](b2ShapeId s) { b2Shape_SetFilter(s, filter); });
+	}
+	int Collider2D::GetGroupIndex() const {
+		if (!b2Shape_IsValid(m_ShapeId)) return m_GroupIndex;
+		return b2Shape_GetFilter(m_ShapeId).groupIndex;
 	}
 	uint64_t Collider2D::GetCollisionMask() const {
 		if (!b2Shape_IsValid(m_ShapeId)) return m_CollisionMask;
@@ -83,6 +131,9 @@ namespace Funke {
 		m_RegisterContacts = enabled;
 		FNK_COLLIDER_SHAPE_GUARD();
 		b2Shape_EnableContactEvents(m_ShapeId, enabled);
+		const b2ShapeId* extra = nullptr;
+		const int extraCount = GetExtraShapes(extra);
+		ForEachExtra(extra, extraCount, [&](b2ShapeId s) { b2Shape_EnableContactEvents(s, enabled); });
 	}
 	bool Collider2D::CanRegisterContacts() const {
 		if (!b2Shape_IsValid(m_ShapeId)) return m_RegisterContacts;

@@ -61,7 +61,7 @@ project "Tracy"
         -- evaluation (C2131). The conformant preprocessor expands it to a
         -- proper integer literal. The rest of the engine now sets this flag
         -- too (Funke-Engine/premake5.lua etc.) so all TUs agree.
-        flags { "MultiProcessorCompile" }
+        FunkeMultiProcessorCompile()
         buildoptions { "/FS", "/Zc:preprocessor" }
         systemversion "latest"
         defines { "_CRT_SECURE_NO_WARNINGS" }

@@ -224,6 +224,28 @@ namespace Funke::ImGuiUtils {
 	bool BeginComponentSection(const char* label, bool& removeRequested, const std::function<void()>& contextMenu = {},
 		std::string_view icon = {}, bool overridden = false);
 
+	// Applies to the next BeginComponentSection only. Its header drags a COMPONENT_REF payload
+	// ("<entity id>:<name>", what reference fields accept). With Reorderable, it also gets Move Up /
+	// Move Down in its menu and accepts other sections of the same entity dropped on its header.
+	struct ComponentSectionDrag {
+		std::string Payload;
+		std::string Tooltip;
+		bool Reorderable = false;
+		bool CanMoveUp = false;
+		bool CanMoveDown = false;
+	};
+	void SetNextComponentSectionDrag(ComponentSectionDrag drag);
+
+	// A reorder asked for since the last call: Target is the payload of the section that was used,
+	// Dragged the payload dropped on it (empty for Move Up / Move Down, which set Delta).
+	struct ComponentSectionMove {
+		std::string Target;
+		std::string Dragged;
+		int Delta = 0;
+		bool After = false;
+	};
+	std::optional<ComponentSectionMove> TakeComponentSectionMove();
+
 	// X/Y/Z/W tint used for axis letters inside vector fields.
 	ImU32 AxisColor(int axis);
 	// DragFloat with a coloured axis letter drawn inside the frame (no separate label item).

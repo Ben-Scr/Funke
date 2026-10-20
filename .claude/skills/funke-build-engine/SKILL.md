@@ -24,7 +24,7 @@ scripts\dev\Build.ps1 Engine -Warnings all -Rebuild
 Projects: `Engine`, `EditorRuntime`, `Editor`, `Runtime`, `Launcher`, `EngineTests`, `EditorTests`, `Tests`, `ScriptCore`, `ScriptCompiler`, `All`.
 
 What it does for you:
-- Pins VS2022 MSBuild (VS "18" headers clash with the v143 PCH: `C2375 __builtin_assume_aligned`).
+- Pins VS2022 MSBuild. VS "18" (the user's IDE) builds into its own `bin-int\<cfg>\<project>-vs18.0\` (`FunkeIntDirSuffix`, premake/compat.lua): sharing one PCH between the two installs fails with `C2375 __builtin_assume_aligned` and leaves a stale `.lib` (LNK2019 in consumers).
 - Builds the `.vcxproj` directly (`-t:<proj>` on `Funke.sln` → MSB4057; the sln can't build SDK-style C# → MSB4236). `ScriptCore` and `ScriptCompiler` go through `dotnet build`.
 - Regenerates premake (`vendor\bin\premake5.exe vs2022`) when a `.cpp` under a native project's `src\` (Engine, EditorRuntime, Editor, Runtime, Launcher, CLI, test projects) exists that its `.vcxproj` doesn't list, or a root `*.lua`, `premake/*.lua`, `premake/dependencies/*.lua` or one of those projects' `premake5.lua` changed since the last regen. Files premake deliberately drops via `removefiles` (e.g. `Funke-Engine/src/Diagnostics/*.cpp`) are remembered in `bin-int\_agent\premake-unlisted.txt`. Package sources (`packages/NAME/**`, `funke-package.lua`) are **not** watched: pass `-Regen` after adding a package `.cpp` or editing a manifest.
 - Prints only `error` lines and warnings in git-changed files, as `path(line,col): CODE message`, deduplicated. Full log: `bin-int\_agent\<target>.log`.
@@ -63,6 +63,7 @@ scripts\dev\Run.ps1 -App Runtime -Project <dir> -InputScript run.json -Exec "phy
 scripts\dev\Run.ps1 -Project <dir> -OpenWindow build,buildprofiles   # editor with those windows open (FUNKE_EDITOR_OPEN); also projectsettings (projectsettings:graphics picks the category), preferences, packages, profiler, gamestats (Game View Stats overlay)
 scripts\dev\Run.ps1 -Project <3D project> -EditorView -Select Player   # select + frame that entity (FUNKE_EDITOR_SELECT) — check selection box / gizmo / F
 scripts\dev\Run.ps1 -Project <3D project> -EditorView -DrawMode triangle   # Editor View draw mode triangle|mixed (FUNKE_EDITOR_DRAW_MODE)
+scripts\dev\Run.ps1 -Theme glass -OpenWindow preferences   # editor theme auto|dark|light|glass|custom for this run only (FUNKE_EDITOR_THEME); the user's EditorPreferences.json keeps its theme
 ```
 
 Runtime runs use the isolated player-data profile `agent` (`--prefs-profile=agent`: PlayerPrefs/SaveData under `Profiles\agent`), so a test never changes a game's real saves; `-RealPrefs` opts out. Prefer `-ScreenshotAt` over `-Seconds/-Shots` for games: wall-clock shots drift with load times, game-time shots don't (a fresh `bin-int\_agent\run\shots-<time>-<pid>\` per run, listed at the end, so parallel sessions can't delete each other's). Instead of temporary probes in game code, drive the game with an input script (keys, mouse, touch, `[DevCommand]`s, screenshots, quit). Format: `Github-Docs/Documentation/Editor/Testing.md`.
@@ -106,10 +107,10 @@ Build every consumer of the change → `Test.ps1` → `Run.ps1` for anything vis
 
 ## Linux and macOS
 
-No PowerShell scripts there; use premake's gmake2 workspace directly. Folders are `bin/<Config>-linux-x86_64`, `bin/<Config>-macosx-arm64` (Apple Silicon) or `-macosx-x86_64` (premake/architecture.lua).
+No PowerShell scripts there; use premake's gmake workspace directly (premake 5.0.0-beta5+; `gmake2` is the old name). Folders are `bin/<Config>-linux-x86_64`, `bin/<Config>-macosx-arm64` (Apple Silicon) or `-macosx-x86_64` (premake/architecture.lua).
 
 ```bash
-./scripts/Setup.sh                      # tools (apt/dnf/pacman/zypper or Homebrew), SDL3, libnethost, premake gmake2
+./scripts/Setup.sh                      # tools (apt/dnf/pacman/zypper or Homebrew), SDL3, libnethost, premake gmake
 ./scripts/dawn/SetupDawn.sh             # once: libwebgpu_dawn.so/.dylib (Clang)
 make config=release -j8 Funke-Launcher  # Engine, Funke-Managed (dotnet: ScriptCore, ScriptCompiler, PackageTool), Editor, Runtime, CLI, EngineSDK
 make config=dist Funke-Runtime          # Runtime-Dist for Release exports (before the Launcher)
@@ -117,9 +118,10 @@ make config=release Funke-Engine-Tests Funke-Editor-Tests && ./bin/Release-linux
 python3 scripts/PackagePosix.py         # Funke-Editor-<version>-<Linux|macOS>-<arch>.tar.gz
 ```
 
-- gmake2 can't build SDK-style C#: the `Funke-Managed` Makefile project runs `scripts/BuildManaged.py`; consumers depend on it via `FunkeManagedDependencies()`.
+- gmake can't build SDK-style C#: the `Funke-Managed` Makefile project runs `scripts/BuildManaged.py`; consumers depend on it via `FunkeManagedDependencies()`.
 - The Launcher postbuild is `scripts/CopyEngineSdk.py` (the `.bat`'s POSIX twin). Keep both copy lists in sync.
 - On this Windows machine, WSL Ubuntu can build Linux (`wsl -d Ubuntu`); build in the WSL filesystem, not under `/mnt/c` (9P is slow). Keep `-j` at ~6: more parallel g++ jobs have crashed the WSL VM (out of memory) and left truncated `.o` files that fail to link with "unknown file type".
+- Premake scripts must parse on beta5 and newer premake: use `FunkeMultiProcessorCompile()` / `FunkeNoPCH()` (premake/compat.lua), not `flags { ... }`, and `FunkePython()` for Python commands.
 - macOS can't be built here; CI's `macos-build` job (macos-14, arm64) covers it.
 
 ## Fresh clone / setup

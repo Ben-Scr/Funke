@@ -69,6 +69,8 @@ namespace Funke {
 		static bool IsTransformOwnedByPhysics(const entt::registry& registry, EntityHandle entity);
 		// Inspector edits only touch Local*; compose the world transform before a body reads it.
 		static void ComposeWorldFromLocal(entt::registry& registry, EntityHandle entity, Transform2DComponent& tf);
+		// Same, first composing every dirty ancestor: right after a load no parent has its world transform yet.
+		static void ComposeWorldFromLocalChain(entt::registry& registry, EntityHandle entity, Transform2DComponent& tf);
 		// After a step, rebuild Local* from the physics-driven world transform.
 		static void DecomposeWorldToLocal(entt::registry& registry, EntityHandle entity, Transform2DComponent& tf);
 

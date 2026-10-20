@@ -2,6 +2,7 @@
 #include "Systems/ImGuiEditorLayer.hpp"
 
 #include "Components/Audio/AudioSourceComponent.hpp"
+#include "Components/General/NameComponent.hpp"
 #include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/Camera3DComponent.hpp"
@@ -100,6 +101,39 @@ namespace Funke {
 			outError = "Play mode did not start (script errors, duplicate entity ids or an unsaved project; see `funke editor logs --level warning`)";
 			return false;
 		}
+		return true;
+	}
+
+	bool ImGuiEditorLayer::BridgeSelectEntity(const std::string& nameOrId, std::string& outSelected, std::string& outError) {
+		Scene* scene = GetContextScene();
+		if (!scene) {
+			outError = "no scene is open";
+			return false;
+		}
+		if (nameOrId.empty()) {
+			ClearEntitySelection();
+			return true;
+		}
+		EntityHandle match = entt::null;
+		const bool isId = std::all_of(nameOrId.begin(), nameOrId.end(), [](unsigned char c) { return std::isdigit(c) != 0; });
+		if (isId) {
+			scene->TryResolveEntityRef(std::stoull(nameOrId), match);
+		}
+		if (match == entt::null) {
+			for (auto [entity, name] : scene->GetRegistry().view<const NameComponent>().each()) {
+				if (name.Name == nameOrId) {
+					match = entity;
+					break;
+				}
+			}
+		}
+		if (match == entt::null || !scene->IsValid(match)) {
+			outError = "no entity named '" + nameOrId + "' in scene '" + scene->GetName() + "'";
+			return false;
+		}
+		SelectEntity(match);
+		const NameComponent* name = scene->GetRegistry().try_get<NameComponent>(match);
+		outSelected = name ? name->Name : nameOrId;
 		return true;
 	}
 

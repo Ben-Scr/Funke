@@ -13,6 +13,8 @@ namespace Funke {
 		Dark,
 		Light,
 		Custom,
+		// Translucent panels over the animated backdrop drawn by Gui/GlassBackdrop.
+		Glass,
 	};
 
 	// How the Inspector renders a component's script fields. Detailed additionally

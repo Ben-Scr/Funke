@@ -148,6 +148,23 @@ namespace Funke {
 		std::filesystem::path GetLayoutPresetPath(const std::string& name) {
 			return GetLayoutPresetsDirectory() / (name + ".ini");
 		}
+
+		struct ThemeRounding {
+			float Window, Child, Frame, Popup, Scrollbar, Grab, Tab;
+		};
+		constexpr ThemeRounding k_DefaultRounding{ 6.0f, 4.0f, 4.0f, 6.0f, 8.0f, 3.0f, 4.0f };
+		constexpr ThemeRounding k_GlassRounding{ 12.0f, 8.0f, 6.0f, 10.0f, 9.0f, 6.0f, 6.0f };
+
+		// Truncates like ImGuiStyle::ScaleAllSizes so a theme switch lands on the same values as startup.
+		void SetRounding(ImGuiStyle& style, const ThemeRounding& r, float scale) {
+			style.WindowRounding    = std::trunc(r.Window * scale);
+			style.ChildRounding     = std::trunc(r.Child * scale);
+			style.FrameRounding     = std::trunc(r.Frame * scale);
+			style.PopupRounding     = std::trunc(r.Popup * scale);
+			style.ScrollbarRounding = std::trunc(r.Scrollbar * scale);
+			style.GrabRounding      = std::trunc(r.Grab * scale);
+			style.TabRounding       = std::trunc(r.Tab * scale);
+		}
 	}
 
 	void ImGuiContextLayer::OnAttach(Application& app) {
@@ -484,13 +501,7 @@ namespace Funke {
 		style.ScrollbarSize     = 11.0f;
 		style.GrabMinSize       = 8.0f;
 
-		style.WindowRounding    = 6.0f;
-		style.ChildRounding     = 4.0f;
-		style.FrameRounding     = 4.0f;
-		style.PopupRounding     = 6.0f;
-		style.ScrollbarRounding = 8.0f;
-		style.GrabRounding      = 3.0f;
-		style.TabRounding       = 4.0f;
+		SetRounding(style, k_DefaultRounding, 1.0f);
 		style.DragDropTargetRounding = 4.0f;
 
 		style.WindowBorderSize  = 1.0f;
@@ -610,6 +621,73 @@ namespace Funke {
 		c[ImGuiCol_TableRowBgAlt]        = pick(ImVec4(1, 1, 1, 0.025f), ImVec4(0, 0, 0, 0.030f));
 
 		c[ImGuiCol_ModalWindowDimBg]     = pick(ImVec4(0, 0, 0, 0.55f), ImVec4(0.12f, 0.15f, 0.20f, 0.30f));
+	}
+
+	// Docked panels stack on the dockspace host window, so the backdrop shows through two WindowBg layers (~45%).
+	// Windows in their own OS window get WindowBg/PopupBg forced opaque by ImGui, hence the navy RGB that matches
+	// their tinted caption. Surfaces keep a plausible opaque RGB because some widgets reuse them with their own alpha.
+	void ImGuiContextLayer::ApplyGlassThemeColors() {
+		ApplyFunkeThemeColors(/*dark=*/true);
+
+		ImVec4* c = ImGui::GetStyle().Colors;
+		const ImVec4 accent    = EditorTheme::Colors::AccentFor(true);
+		const ImVec4 highlight = EditorTheme::Colors::HighlightFor(true);
+
+		const ImVec4 surface   (0.36f, 0.42f, 0.56f, 0.22f);
+		const ImVec4 surfaceHi (0.42f, 0.48f, 0.64f, 0.32f);
+		const ImVec4 surfaceAct(0.48f, 0.55f, 0.72f, 0.42f);
+		const ImVec4 chrome    (0.035f, 0.045f, 0.095f, 0.40f);
+		const ImVec4 edge      (0.78f, 0.86f, 1.00f, 0.16f);
+		const ImVec4 clear     (0.0f, 0.0f, 0.0f, 0.0f);
+
+		c[ImGuiCol_WindowBg]             = ImVec4(0.05f, 0.065f, 0.13f, 0.34f);
+		c[ImGuiCol_ChildBg]              = ImVec4(0.55f, 0.62f, 0.80f, 0.03f);
+		c[ImGuiCol_PopupBg]              = ImVec4(0.07f, 0.085f, 0.16f, 0.90f);
+
+		c[ImGuiCol_Border]               = edge;
+		c[ImGuiCol_Separator]            = ImVec4(edge.x, edge.y, edge.z, 0.12f);
+		c[ImGuiCol_TableBorderStrong]    = edge;
+		c[ImGuiCol_TableBorderLight]     = ImVec4(edge.x, edge.y, edge.z, 0.08f);
+
+		c[ImGuiCol_Text]                 = ImVec4(0.93f, 0.94f, 0.96f, 1.00f);
+		c[ImGuiCol_TextDisabled]         = ImVec4(0.60f, 0.64f, 0.72f, 1.00f);
+
+		c[ImGuiCol_FrameBg]              = surface;
+		c[ImGuiCol_FrameBgHovered]       = surfaceHi;
+		c[ImGuiCol_FrameBgActive]        = surfaceAct;
+		c[ImGuiCol_Button]               = surface;
+		c[ImGuiCol_ButtonHovered]        = surfaceHi;
+		c[ImGuiCol_ButtonActive]         = surfaceAct;
+		c[ImGuiCol_Header]               = surface;
+		c[ImGuiCol_HeaderHovered]        = surfaceHi;
+		c[ImGuiCol_HeaderActive]         = surfaceAct;
+
+		c[ImGuiCol_TitleBg]              = chrome;
+		c[ImGuiCol_TitleBgActive]        = chrome;
+		c[ImGuiCol_TitleBgCollapsed]     = ImVec4(chrome.x, chrome.y, chrome.z, 0.30f);
+		c[ImGuiCol_MenuBarBg]            = chrome;
+		c[ImGuiCol_TableHeaderBg]        = ImVec4(0.55f, 0.62f, 0.80f, 0.06f);
+		c[ImGuiCol_TableRowBgAlt]        = ImVec4(1.0f, 1.0f, 1.0f, 0.03f);
+
+		c[ImGuiCol_ScrollbarGrab]        = ImVec4(0.70f, 0.78f, 0.95f, 0.22f);
+		c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.70f, 0.78f, 0.95f, 0.32f);
+		c[ImGuiCol_ScrollbarGrabActive]  = ImVec4(0.70f, 0.78f, 0.95f, 0.42f);
+
+		// Unselected tabs sit on the TitleBg strip; a fill of their own would double its tint.
+		c[ImGuiCol_Tab]                  = clear;
+		c[ImGuiCol_TabHovered]           = surfaceHi;
+		c[ImGuiCol_TabSelected]          = surface;
+		c[ImGuiCol_TabSelectedOverline]  = highlight;
+		c[ImGuiCol_TabDimmed]            = clear;
+		c[ImGuiCol_TabDimmedSelected]    = ImVec4(surface.x, surface.y, surface.z, 0.12f);
+
+		c[ImGuiCol_SliderGrab]           = ImVec4(accent.x, accent.y, accent.z, 0.85f);
+		c[ImGuiCol_DockingEmptyBg]       = ImVec4(0.0f, 0.0f, 0.0f, 0.20f);
+		c[ImGuiCol_ModalWindowDimBg]     = ImVec4(0.02f, 0.03f, 0.06f, 0.50f);
+	}
+
+	void ImGuiContextLayer::ApplyThemeRounding(bool glass) {
+		SetRounding(ImGui::GetStyle(), glass ? k_GlassRounding : k_DefaultRounding, s_DpiScale);
 	}
 
 }

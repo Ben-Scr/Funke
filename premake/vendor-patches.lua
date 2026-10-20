@@ -6,7 +6,7 @@ local function QuoteVendorPatchArgument(value)
 end
 
 function ApplyFunkeVendorPatches()
-    local python = os.host() == "windows" and "python" or "python3"
+    local python = FunkePython()
     local script = path.join(ROOT_DIR, "scripts/vendor_patches.py")
     local command = python .. " " .. QuoteVendorPatchArgument(script) .. " apply"
     local exitCode = os.execute(command)

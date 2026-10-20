@@ -7,6 +7,7 @@
 #include "Components/Graphics/PostProcessing2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
+#include "Components/Graphics/TerrainRenderer2DComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Collections/Viewport.hpp"
 #include "Core/Log.hpp"
@@ -421,6 +422,91 @@ namespace Funke {
 		}
 
 		// ── CPU collect path ────────────────────────────────────────────────
+		TextureHandle ResolveTerrainTexture(uint64_t assetId, uint64_t& resolvedId, TextureHandle& resolved) {
+			if (assetId == 0) return TextureHandle{};
+			if (resolvedId != assetId || !TextureManager::IsValid(resolved)) {
+				// The texture's .meta decides filter and wrap (terrain textures tile with Repeat).
+				resolved = TextureManager::LoadTextureByUUID(assetId, Filter::Default);
+				resolvedId = assetId;
+			}
+			return resolved;
+		}
+
+		// One sheared quad per segment for the fill and one for the edge; neighbours share their vertical edges.
+		void CollectTerrainInstances(Scene& scene, const AABB& viewportAABB, std::vector<Instance44>& outInstances) {
+			constexpr std::uint32_t k_TerrainDrawIndexBase = 0x40000000u;
+			std::uint32_t drawIndex = k_TerrainDrawIndexBase;
+			auto view = scene.GetRegistry().view<TerrainRenderer2DComponent, Transform2DComponent>(entt::exclude<DisabledTag>);
+			for (auto entity : view) {
+				auto& terrain = view.get<TerrainRenderer2DComponent>(entity);
+				const auto& transform = view.get<Transform2DComponent>(entity);
+				const std::vector<Vec2>& points = terrain.Points;
+				if (points.size() < 2) continue;
+				const float sx = transform.Scale.x;
+				const float sy = transform.Scale.y;
+				if (std::abs(sx) < 1e-6f || std::abs(sy) < 1e-6f) continue;
+
+				const TextureHandle fill = ResolveTerrainTexture(terrain.FillTexture, terrain.ResolvedFillId, terrain.ResolvedFill);
+				const TextureHandle edge = ResolveTerrainTexture(terrain.EdgeTexture, terrain.ResolvedEdgeId, terrain.ResolvedEdge);
+				const bool drawFill = terrain.FillTexture != 0 && terrain.FillDepth > 0.0f && terrain.FillColor.a > 0.0f;
+				const bool drawEdge = terrain.EdgeTexture != 0 && terrain.EdgeThickness > 0.0f && terrain.EdgeColor.a > 0.0f;
+				if (!drawFill && !drawEdge) continue;
+
+				const float tileW = std::max(std::abs(terrain.FillTileSize.x), 1e-4f);
+				const float tileH = std::max(std::abs(terrain.FillTileSize.y), 1e-4f);
+				const float edgeTile = std::max(std::abs(terrain.EdgeTileLength), 1e-4f);
+				float arc = terrain.EdgeTextureOffset * edgeTile;
+
+				// Emits the quad between x0 and x1 whose top runs from yTop0 to yTop1 and that is `height` tall.
+				auto emit = [&](float x0, float x1, float yTop0, float yTop1, float height, TextureHandle texture,
+					const Color& color, short order, float u0, float u1, float v0, float v1, float uvShear) {
+					const float w = x1 - x0;
+					const float slope = (yTop1 - yTop0) / w;
+					const Vec2 localCenter{ 0.5f * (x0 + x1), 0.5f * (yTop0 + yTop1) - 0.5f * height };
+					const Vec2 worldCenter = transform.TransformPoint(localCenter);
+					const Vec2 scale{ w * sx, height * sy };
+					const float lowY = std::min(yTop0, yTop1) - height;
+					const float highY = std::max(yTop0, yTop1);
+					const AABB bounds = CreateQuadAABB(worldCenter,
+						Vec2{ std::abs(scale.x), std::abs((highY - lowY) * sy) }, transform.Rotation);
+					if (!AABB::Intersects(viewportAABB, bounds)) return;
+					Instance44 instance(worldCenter, scale, transform.Rotation, color, texture, order, terrain.SortingLayer, drawIndex++);
+					instance.Shear = slope * sy / sx;
+					instance.UvShear = uvShear;
+					instance.UvRect = SpriteUVRect{ u0, v0, u1, v1 };
+					outInstances.push_back(instance);
+				};
+
+				for (size_t i = 0; i + 1 < points.size(); ++i) {
+					const Vec2 a = points[i];
+					const Vec2 b = points[i + 1];
+					const float segmentLength = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+					if (b.x - a.x <= 1e-5f) {
+						arc += segmentLength;
+						continue;
+					}
+					if (drawFill) {
+						const float depth = terrain.FillDepth;
+						if (terrain.FillMapping == TerrainFillMapping::World) {
+							const float v0 = -a.y / tileH;
+							emit(a.x, b.x, a.y, b.y, depth, fill, terrain.FillColor, terrain.SortingOrder,
+								a.x / tileW, b.x / tileW, v0, v0 + depth / tileH, -(b.y - a.y) / tileH);
+						}
+						else {
+							emit(a.x, b.x, a.y, b.y, depth, fill, terrain.FillColor, terrain.SortingOrder,
+								a.x / tileW, b.x / tileW, 0.0f, depth / tileH, 0.0f);
+						}
+					}
+					if (drawEdge) {
+						emit(a.x, b.x, a.y + terrain.EdgeOffset, b.y + terrain.EdgeOffset, terrain.EdgeThickness, edge,
+							terrain.EdgeColor, terrain.EdgeSortingOrder,
+							arc / edgeTile, (arc + segmentLength) / edgeTile, 0.0f, 1.0f, 0.0f);
+					}
+					arc += segmentLength;
+				}
+			}
+		}
+
 		size_t CollectSpriteInstances(Scene& scene,
 			const AABB& viewportAABB,
 			std::vector<Instance44>& outInstances,
@@ -561,6 +647,8 @@ namespace Funke {
 						drawIndex);
 				}
 			}
+
+			CollectTerrainInstances(scene, viewportAABB, outInstances);
 
 			for (const auto& [token, contributor] : g_InstanceContributors) {
 				(void)token;

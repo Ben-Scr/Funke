@@ -37,6 +37,7 @@
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteAnimator2DComponent.hpp"
+#include "Components/Graphics/TerrainRenderer2DComponent.hpp"
 #include "Components/Graphics/PostProcessing2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #endif
@@ -68,6 +69,7 @@
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
+#include "Components/Physics/Joint2DComponents.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 
 #include "Physics/Collision2D.hpp"

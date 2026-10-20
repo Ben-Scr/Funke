@@ -50,6 +50,15 @@
     <UseMultiToolTask Condition="'$(UseMultiToolTask)' == ''">true</UseMultiToolTask>
     <EnforceProcessCountAcrossBuilds Condition="'$(EnforceProcessCountAcrossBuilds)' == ''">true</EnforceProcessCountAcrossBuilds>
     <MultiProcMaxCount Condition="'$(MultiProcMaxCount)' == ''">$(CL_MPCount)</MultiProcMaxCount>
+    <!--
+      Visual Studio 18 and 2022 install byte-identical v143 toolsets in different folders. #pragma once
+      is path-based, so a PCH built by one makes the other's compiles fail (C2375
+      "__builtin_assume_aligned": redefinition in intrin0.inl.h); the project's .lib then stays stale
+      and its consumers report LNK2019. Premake writes IntDir as <objdir>$(FunkeIntDirSuffix)\
+      (premake/compat.lua): VS 2022 (scripts\dev\Build.ps1) keeps bin-int\<cfg>\<project>\, every
+      other Visual Studio gets its own folder next to it. Outputs in bin\ stay shared.
+    -->
+    <FunkeIntDirSuffix Condition="'$(FunkeIntDirSuffix)' == '' and '$(VisualStudioVersion)' != '' and '$(VisualStudioVersion)' != '17.0'">-vs$(VisualStudioVersion)</FunkeIntDirSuffix>
     <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(FunkeVersion)+unknown</InformationalVersion>
     <Win32Resource Condition="'$(OS)' == 'Windows_NT' and Exists('$(MSBuildThisFileDirectory)build\ManagedVersion.res')">$(MSBuildThisFileDirectory)build\ManagedVersion.res</Win32Resource>
   </PropertyGroup>

@@ -161,6 +161,8 @@ namespace Funke {
 		const std::type_index scriptComponentTypeIndex = typeid(ScriptComponent);
 		const std::type_index hierarchyComponentTypeIndex = typeid(HierarchyComponent);
 
+		// A component with heap-owned state just takes the slow (still correct) spawn path: not worth a warning.
+		bool slowPathByDesign = false;
 		for (uint32_t i = 0; i < entityCount; ++i) {
 			if (!tmpl->bakeable) break;  // see post-loop reset; no point walking further
 
@@ -196,6 +198,7 @@ namespace Funke {
 						if (!ScriptComponentIsPureDynamicSeed(
 								scene.GetComponent<ScriptComponent>(h), componentRegistry)) {
 							tmpl->bakeable = false;
+							slowPathByDesign = true;
 							tmpl->unbakeableReason = "prefab entity has a behavior script ('Scripts'); "
 								"behavior scripts can't be baked into the fast-spawn template. Use "
 								"Entity.Instantiate for this prefab, or move the behavior into a system";
@@ -232,6 +235,7 @@ namespace Funke {
 
 					if (info.writeBytes == nullptr || info.typeIdU32 == 0) {
 						tmpl->bakeable = false;
+						slowPathByDesign = true;
 						tmpl->unbakeableReason = "component '" +
 							(info.serializedName.empty() ? info.displayName : info.serializedName) +
 							"' has no writeBytes callback or stable type id; cannot bake "
@@ -260,8 +264,14 @@ namespace Funke {
 			tmpl->entities.clear();
 			tmpl->components.clear();
 			tmpl->payloadBlob.clear();
-			FNK_CORE_WARN_TAG("PrefabTemplateCache",
-				"Marking prefab {} as unbakeable: {}", prefabGuid, tmpl->unbakeableReason);
+			if (slowPathByDesign) {
+				FNK_CORE_INFO_TAG("PrefabTemplateCache",
+					"Prefab {} spawns through the regular path: {}", prefabGuid, tmpl->unbakeableReason);
+			}
+			else {
+				FNK_CORE_WARN_TAG("PrefabTemplateCache",
+					"Marking prefab {} as unbakeable: {}", prefabGuid, tmpl->unbakeableReason);
+			}
 		}
 
 		std::unique_lock lock(m_Mutex);

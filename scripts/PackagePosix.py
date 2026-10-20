@@ -42,7 +42,7 @@ def main() -> int:
     platform_label = "macOS" if IS_MAC else "Linux"
     launcher_dir = REPO_ROOT / "bin" / f"{args.configuration}-{system}-{folder_arch}" / "Funke-Launcher"
 
-    engine_lib = "libIndex-Engine.dylib" if IS_MAC else "libIndex-Engine.so"
+    engine_lib = "libFunke-Engine.dylib" if IS_MAC else "libFunke-Engine.so"
     required = [
         "Funke-Launcher", "Funke-Editor", "Funke-Runtime", engine_lib, "Funke-ScriptCore.dll",
         "Funke-ScriptCore.runtimeconfig.json", "Funke-PackageTool", "FunkeAssets",

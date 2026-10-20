@@ -58,6 +58,7 @@ namespace Funke {
 						? "Auto (Light)"
 						: "Auto (Dark)";
 				case EditorThemeMode::Custom:        return "Custom";
+				case EditorThemeMode::Glass:         return "Liquid Glass";
 			}
 			return "Auto (Dark)";
 		}
@@ -180,7 +181,7 @@ namespace Funke {
 	}
 
 	void EditorPreferencesPanel::RenderAppearanceTab() {
-		const bool showTheme = PreferenceSectionVisible("Theme", "appearance auto dark light custom color colors palette");
+		const bool showTheme = PreferenceSectionVisible("Theme", "appearance auto dark light liquid glass transparent translucent custom color colors palette");
 		const bool showFont = PreferenceSectionVisible("Editor Font", "appearance editor font typeface google sans size zoom");
 		const bool showHierarchy = PreferenceSectionVisible("Entities Hierarchy",
 			"appearance entities hierarchy outliner row size scale height bigger larger smaller");
@@ -195,6 +196,7 @@ namespace Funke {
 						EditorThemeMode::SystemDefault,
 						EditorThemeMode::Dark,
 						EditorThemeMode::Light,
+						EditorThemeMode::Glass,
 						EditorThemeMode::Custom,
 					};
 					for (EditorThemeMode mode : kModes) {
@@ -202,6 +204,9 @@ namespace Funke {
 						if (ImGui::Selectable(ThemeModeLabel(mode), selected)) {
 							EditorPreferences::SetThemeMode(mode);
 							currentMode = mode;
+						}
+						if (mode == EditorThemeMode::Glass) {
+							EditorUI::Tooltip("Translucent panels over a slowly flowing color backdrop.");
 						}
 						if (selected) ImGui::SetItemDefaultFocus();
 					}

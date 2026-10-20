@@ -57,7 +57,9 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 	// sin/cos previously ran once per instance on the CPU during
 	// EncodeInstance44; doing it here parallelises it across the GPU and
 	// keeps the CPU encode path as branch-free struct stores.
-	let scaled = in.position.xy * in.i_data0.zw;
+	let unsheared = in.position.xy * in.i_data0.zw;
+	// i_data2.y shears the quad vertically (terrain segments); 0 for every ordinary sprite.
+	let scaled = vec2<f32>(unsheared.x, unsheared.y + unsheared.x * in.i_data2.y);
 	let r = in.i_data2.x;
 	let c = cos(r);
 	let s = sin(r);
@@ -83,7 +85,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 	// identity — every legacy SpriteRenderer renders exactly as before.
 	out.uv = vec2<f32>(
 		mix(in.i_data3.x, in.i_data3.z, baseUV.x),
-		mix(in.i_data3.y, in.i_data3.w, baseUV.y)
+		mix(in.i_data3.y, in.i_data3.w, baseUV.y) + baseUV.x * in.i_data2.z
 	);
 	return out;
 }

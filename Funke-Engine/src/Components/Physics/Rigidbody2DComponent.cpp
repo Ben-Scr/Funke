@@ -114,16 +114,65 @@ namespace Funke {
 		SetFreezePositionX(m_FreezeX);
 		SetFreezePositionY(m_FreezeY);
 		SetFreezeRotation(m_FreezeRot);
+		SetLinearDrag(m_LinearDamping);
+		SetAngularDrag(m_AngularDamping);
+		SetBullet(m_Bullet);
 		ApplyMassFromState();
 	}
 
 	void Rigidbody2DComponent::SetLinearDrag(float value) {
+		m_LinearDamping = std::max(value, 0.0f);
 		FNK_RB_GUARD();
-		b2Body_SetLinearDamping(m_BodyId, value);
+		b2Body_SetLinearDamping(m_BodyId, m_LinearDamping);
 	}
 	void Rigidbody2DComponent::SetAngularDrag(float value) {
+		m_AngularDamping = std::max(value, 0.0f);
 		FNK_RB_GUARD();
-		b2Body_SetAngularDamping(m_BodyId, value);
+		b2Body_SetAngularDamping(m_BodyId, m_AngularDamping);
+	}
+	float Rigidbody2DComponent::GetLinearDrag() const {
+		return IsValid() ? b2Body_GetLinearDamping(m_BodyId) : m_LinearDamping;
+	}
+	float Rigidbody2DComponent::GetAngularDrag() const {
+		return IsValid() ? b2Body_GetAngularDamping(m_BodyId) : m_AngularDamping;
+	}
+	void Rigidbody2DComponent::SetBullet(bool bullet) {
+		m_Bullet = bullet;
+		FNK_RB_GUARD();
+		b2Body_SetBullet(m_BodyId, bullet);
+	}
+	bool Rigidbody2DComponent::IsBullet() const {
+		return IsValid() ? b2Body_IsBullet(m_BodyId) : m_Bullet;
+	}
+
+	float Rigidbody2DComponent::GetInertia() const {
+		return IsValid() ? b2Body_GetRotationalInertia(m_BodyId) : 0.0f;
+	}
+	Vec2 Rigidbody2DComponent::GetLocalCenterOfMass() const {
+		if (!IsValid()) return Vec2{ 0.0f, 0.0f };
+		const b2Vec2 c = b2Body_GetLocalCenterOfMass(m_BodyId);
+		return Vec2{ c.x, c.y };
+	}
+	Vec2 Rigidbody2DComponent::GetWorldCenterOfMass() const {
+		if (!IsValid()) return Vec2{ 0.0f, 0.0f };
+		const b2Vec2 c = b2Body_GetWorldCenterOfMass(m_BodyId);
+		return Vec2{ c.x, c.y };
+	}
+	void Rigidbody2DComponent::ApplyForceAtPoint(const Vec2& force, const Vec2& worldPoint, bool wake) {
+		FNK_RB_GUARD();
+		b2Body_ApplyForce(m_BodyId, b2Vec2{ force.x, force.y }, b2Vec2{ worldPoint.x, worldPoint.y }, wake);
+	}
+	void Rigidbody2DComponent::ApplyImpulseAtPoint(const Vec2& impulse, const Vec2& worldPoint, bool wake) {
+		FNK_RB_GUARD();
+		b2Body_ApplyLinearImpulse(m_BodyId, b2Vec2{ impulse.x, impulse.y }, b2Vec2{ worldPoint.x, worldPoint.y }, wake);
+	}
+	void Rigidbody2DComponent::ApplyTorque(float torque, bool wake) {
+		FNK_RB_GUARD();
+		b2Body_ApplyTorque(m_BodyId, torque, wake);
+	}
+	void Rigidbody2DComponent::ApplyAngularImpulse(float impulse, bool wake) {
+		FNK_RB_GUARD();
+		b2Body_ApplyAngularImpulse(m_BodyId, impulse, wake);
 	}
 
 	void Rigidbody2DComponent::SetRotation(float radians) {

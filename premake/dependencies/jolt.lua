@@ -38,7 +38,7 @@ project "Jolt"
     }
 
     filter "system:windows"
-        flags { "MultiProcessorCompile" }
+        FunkeMultiProcessorCompile()
         buildoptions { "/FS", "/Zc:preprocessor" }
         systemversion "latest"
 

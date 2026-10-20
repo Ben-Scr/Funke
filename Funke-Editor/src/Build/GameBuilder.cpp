@@ -405,7 +405,7 @@ namespace Funke::GameBuilder {
 #if defined(FNK_PLATFORM_WINDOWS)
 			command.push_back("vs2022");
 #else
-			command.push_back("gmake2");
+			command.push_back("gmake");
 #endif
 			const Process::Result generation = Process::Run(command, engineRoot.string(), std::chrono::minutes(2));
 			if (!generation.Succeeded()) {
@@ -417,13 +417,13 @@ namespace Funke::GameBuilder {
 		}
 
 #if !defined(FNK_PLATFORM_WINDOWS)
-		// The engine's own gmake2 workspace (premake5 gmake2), or a runtime variant's; config names are lower case there.
+		// The engine's own gmake workspace (premake5 gmake), or a runtime variant's; config names are lower case there.
 		Process::Result RunEngineMake(const std::filesystem::path& makeDirectory, std::string_view configuration,
 			const std::vector<std::string>& targets) {
 			std::string config(configuration);
 			std::transform(config.begin(), config.end(), config.begin(),
 				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-			std::vector<std::string> command{ "make", "-C", Path::ToUtf8(makeDirectory), "config=" + config,
+			std::vector<std::string> command{ FunkeProject::GetMakeProgram(), "-C", Path::ToUtf8(makeDirectory), "config=" + config,
 				"-j" + std::to_string(std::max(1u, std::thread::hardware_concurrency() / 2)) };
 			command.insert(command.end(), targets.begin(), targets.end());
 			return Process::Run(command, makeDirectory, std::chrono::minutes(30));
@@ -868,9 +868,9 @@ namespace Funke::GameBuilder {
 #if defined(FNK_PLATFORM_WINDOWS)
 			return "Funke-Engine.dll";
 #elif defined(__APPLE__)
-			return "libIndex-Engine.dylib";
+			return "libFunke-Engine.dylib";
 #else
-			return "libIndex-Engine.so";
+			return "libFunke-Engine.so";
 #endif
 		}
 
@@ -1476,7 +1476,7 @@ namespace Funke::GameBuilder {
 				}
 			}
 			else {
-				FNK_WARN_TAG("Build", "No engine Makefile (premake5 gmake2); staging existing native package binaries.");
+				FNK_WARN_TAG("Build", "No engine Makefile (premake5 gmake); staging existing native package binaries.");
 			}
 #endif
 		}

@@ -52,7 +52,7 @@ Audio and font metas have no import settings (volume/pitch/loop live on `AudioSo
 | Kind | Extensions |
 |---|---|
 | Texture | `.png .jpg .jpeg .bmp .tga` |
-| Audio | `.wav .mp3 .flac` — **`.ogg` is recognized but cannot be decoded** |
+| Audio | `.wav .mp3 .ogg .flac` (`.ogg` = Ogg Vorbis; Opus is not supported) |
 | Font | `.ttf .otf` |
 | Scene / Prefab / Data | `.scene` / `.prefab` / `.dataasset` |
 

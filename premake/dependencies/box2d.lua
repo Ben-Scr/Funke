@@ -26,7 +26,7 @@ project "Box2D"
     filter "system:windows"
         -- See Funke-Engine/premake5.lua for the rationale on
         -- MultiProcessorCompile + /Zc:preprocessor.
-        flags { "MultiProcessorCompile" }
+        FunkeMultiProcessorCompile()
         buildoptions { "/FS", "/Zc:preprocessor" }
         systemversion "latest"
 

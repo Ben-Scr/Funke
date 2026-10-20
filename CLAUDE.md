@@ -51,7 +51,7 @@ Full logs: `%LOCALAPPDATA%\Funke\Logs\<exe>.log` (format `[time] [logger] [level
 
 ## Rules that bite
 
-- Use VS2022 MSBuild (`C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe`); `vswhere -latest` finds VS "18", whose headers clash with the v143 PCHs. Build `.vcxproj` files, not `-t:<proj>` on `Funke.sln` (MSB4057); the sln also can't build the SDK-style C# projects.
+- Use VS2022 MSBuild (`C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe`); `vswhere -latest` finds VS "18" (the user's IDE). VS 18 builds get their own `bin-int\<cfg>\<project>-vs18.0\` (premake/compat.lua + Directory.Build.props), because a PCH built by one install breaks the other's compiles (C2375); keep agent builds on VS2022 so they reuse `bin-int\<cfg>\<project>\`. Build `.vcxproj` files, not `-t:<proj>` on `Funke.sln` (MSB4057); the sln also can't build the SDK-style C# projects.
 - Never include `Core/BuildIdentity.hpp` from a header or PCH (forces full rebuilds); use `Engine::GetVersionLong()`.
 - Don't reintroduce `/Zm` or `/Zi`/`/ZI`; parallel builds depend on `/Z7` and `Directory.Build.props` defaults.
 - Symbols used across the DLL boundary need `FUNKE_API`.

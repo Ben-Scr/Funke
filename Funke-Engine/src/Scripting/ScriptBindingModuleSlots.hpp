@@ -124,7 +124,31 @@
 	X(Rigidbody2D_GetFreezeRotation) \
 	X(Rigidbody2D_SetFreezeRotation) \
 	X(ParticleSystem2D_GetTexture) \
-	X(ParticleSystem2D_SetTexture)
+	X(ParticleSystem2D_SetTexture) \
+	X(Joint2D_Get) \
+	X(Joint2D_Set) \
+	X(Joint2D_GetConnectedBody) \
+	X(Joint2D_SetConnectedBody) \
+	X(Joint2D_GetState) \
+	X(Collider2D_GetDensity) \
+	X(Collider2D_SetDensity) \
+	X(PolygonCollider2D_GetPathCount) \
+	X(PolygonCollider2D_GetPath) \
+	X(PolygonCollider2D_SetPaths) \
+	X(Physics2D_GetGravity) \
+	X(Physics2D_SetGravity) \
+	X(TerrainRenderer2D_Get) \
+	X(TerrainRenderer2D_Set) \
+	X(TerrainRenderer2D_GetPoints) \
+	X(TerrainRenderer2D_SetPoints) \
+	X(TerrainRenderer2D_GetTexture) \
+	X(TerrainRenderer2D_SetTexture) \
+	X(Rigidbody2D_GetDynamics) \
+	X(Rigidbody2D_SetDynamics) \
+	X(Rigidbody2D_ApplyAtPoint) \
+	X(Rigidbody2D_ApplyAngular) \
+	X(Collider2D_GetGroupIndex) \
+	X(Collider2D_SetGroupIndex)
 
 #define FNK_FOR_EACH_3D_BINDING(X) \
 	X(Transform3D_GetPosition) \

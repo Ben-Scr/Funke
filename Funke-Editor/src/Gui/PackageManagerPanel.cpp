@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 
@@ -98,6 +99,7 @@ namespace Funke {
 		m_CloudInstallTask = std::make_shared<CloudInstallTaskState>();
 		m_GitInstallTask = std::make_shared<GitInstallTaskState>();
 		m_NewPackageTask = std::make_shared<NewPackageTaskState>();
+		m_PlatformPickTask = std::make_shared<DiskInstallTaskState>();
 	}
 
 	void PackageManagerPanel::Shutdown() {
@@ -135,6 +137,8 @@ namespace Funke {
 		m_CloudInstallTask.reset();
 		m_GitInstallTask.reset();
 		m_NewPackageTask.reset();
+		m_PlatformPickTask.reset();
+		m_PlatformPackages.clear();
 	}
 
 	void PackageManagerPanel::Render() {
@@ -188,6 +192,7 @@ namespace Funke {
 		PollCloudInstallTask();
 		PollGitInstallTask();
 		PollNewPackageTask();
+		PollPlatformPickTask();
 		RefreshManifestsIfDirty();
 		RefreshRegistryIfDirty();
 
@@ -201,6 +206,12 @@ namespace Funke {
 			if (ImGui::BeginTabItem("In Project")) {
 				m_TabIndex = 1;
 				RenderInstalledPackagesTab();
+				ImGui::EndTabItem();
+			}
+			if (ImGui::BeginTabItem("Platforms")) {
+				if (m_TabIndex != 2) m_PlatformPackagesDirty = true;
+				m_TabIndex = 2;
+				RenderPlatformPackagesTab();
 				ImGui::EndTabItem();
 			}
 			ImGui::EndTabBar();
@@ -238,6 +249,27 @@ namespace Funke {
 			outTitle = m_AutomationTask->Title;
 			outStage = m_AutomationTask->Stage;
 			outProgress = m_AutomationTask->Progress;
+			return true;
+		}
+		// These report no fraction; the bar loops while they run.
+		const float pulse = static_cast<float>(std::fmod(ImGui::GetTime() * 0.4, 1.0));
+		if (m_IsOperating && m_OperationFuture.valid()) {
+			outTitle = (m_OperationWasInstall ? "Installing " : "Removing ") + m_OperationTarget + "...";
+			outStage = m_StatusMessage;
+			outProgress = pulse;
+			return true;
+		}
+		if (m_GitInstallTask && m_GitInstallTask->Running.load(std::memory_order_acquire)) {
+			outTitle = "Installing Package from Git...";
+			outStage = "Cloning repository...";
+			outProgress = pulse;
+			return true;
+		}
+		if (m_NewPackageTask && m_NewPackageTask->Running.load(std::memory_order_acquire)) {
+			std::scoped_lock lock(m_NewPackageTask->Mutex);
+			outTitle = "Creating " + m_NewPackageTask->PackageName + "...";
+			outStage = "Scaffolding the package...";
+			outProgress = pulse;
 			return true;
 		}
 		return false;
@@ -1241,7 +1273,7 @@ namespace Funke {
 				if (result.Success) {
 					m_ManifestsDirty = true;
 					// Uninstall — no package being added, so no rollback check.
-					StartPostInstallAutomation();
+					StartPostInstallAutomation({}, manifest.Name);
 				}
 			}
 			if (!canMutate) ImGui::EndDisabled();
@@ -1360,7 +1392,8 @@ namespace Funke {
 		m_SearchFuture = m_Manager->SearchAsync(m_SelectedSource, m_LastNuGetQuery, 20);
 	}
 
-	void PackageManagerPanel::StartPostInstallAutomation(const std::string& justInstalledPackageName) {
+	void PackageManagerPanel::StartPostInstallAutomation(const std::string& justInstalledPackageName,
+		const std::string& removedPackageName) {
 		FunkeProject* project = ProjectManager::GetCurrentProject();
 		if (!project) return;
 		if (!m_AutomationTask) return;
@@ -1372,9 +1405,9 @@ namespace Funke {
 
 		{
 			std::scoped_lock lock(m_AutomationTask->Mutex);
-			m_AutomationTask->Title = justInstalledPackageName.empty()
-				? std::string("Refreshing Packages...")
-				: ("Installing " + justInstalledPackageName + "...");
+			m_AutomationTask->Title = !justInstalledPackageName.empty() ? "Installing " + justInstalledPackageName + "..."
+				: !removedPackageName.empty() ? "Removing " + removedPackageName + "..."
+				: std::string("Refreshing Packages...");
 			m_AutomationTask->Stage = "Refreshing package state...";
 			m_AutomationTask->Progress = 0.05f;
 			m_AutomationTask->Finished = false;
@@ -1400,8 +1433,12 @@ namespace Funke {
 
 			FunkeProject::AutomateResult automation;
 			try {
-				automation = FunkeProject::AutomateForProject(
-					projectRoot, buildConfiguration, "x64");
+				automation = FunkeProject::AutomateForProject(projectRoot, buildConfiguration, "x64",
+					[&state](float progress, std::string_view stage) {
+						std::scoped_lock lock(state->Mutex);
+						state->Progress = std::max(state->Progress, 0.05f + 0.9f * progress);
+						state->Stage = std::string(stage);
+					});
 			}
 			catch (const std::exception& exception) {
 				std::scoped_lock lock(state->Mutex);
@@ -2099,6 +2136,209 @@ namespace Funke {
 		m_StatusIsError = false;
 		// A just-added package rolls back if its DLL then fails to load (ABI mismatch safety net).
 		StartPostInstallAutomation(addedToProject);
+	}
+
+	// ── Platforms tab ──────────────────────────────────────────────────────────────
+
+	namespace {
+		bool IsInsideDirectory(const std::filesystem::path& path, const std::filesystem::path& root) {
+			if (root.empty()) return false;
+			std::error_code ec;
+			const std::filesystem::path relative = std::filesystem::weakly_canonical(path, ec)
+				.lexically_relative(std::filesystem::weakly_canonical(root, ec));
+			return !ec && !relative.empty() && *relative.begin() != "..";
+		}
+	}
+
+	void PackageManagerPanel::RenderPlatformPackagesTab() {
+		if (m_PlatformPackagesDirty) {
+			m_PlatformPackages = PlatformPackages::Discover(true);
+			m_PlatformPackagesDirty = false;
+		}
+
+		ImGui::TextWrapped("Platform packages add export targets (Android, iOS, Web, ...) to Build Profiles. "
+			"They belong to the editor, not to a project.");
+		const bool picking = m_PlatformPickTask && m_PlatformPickTask->Running.load(std::memory_order_acquire);
+		if (picking) ImGui::BeginDisabled();
+		if (EditorUI::Button("Install from Folder...", EditorUI::ButtonVariant::Primary)) {
+			HandlePlatformFolderInstall();
+		}
+		if (picking) ImGui::EndDisabled();
+		EditorUI::Tooltip("Copies a platform package folder into your Funke user data, where every project finds it.");
+		ImGui::SameLine();
+		if (ImGui::Button("Refresh")) {
+			m_PlatformPackagesDirty = true;
+		}
+		const std::filesystem::path userRoot = PlatformPackages::GetUserInstallRoot();
+		if (!userRoot.empty()) {
+			ImGui::SameLine();
+			if (ImGui::Button(Platform::RevealInFileManagerLabel())) {
+				std::error_code ec;
+				std::filesystem::create_directories(userRoot, ec);
+				Platform::RevealInFileManager(userRoot);
+			}
+			EditorUI::Tooltip(("Install folder: " + Path::ToUtf8(userRoot)).c_str());
+		}
+		ImGui::Spacing();
+
+		if (m_PlatformPackages.empty()) {
+			std::string roots;
+			for (const std::filesystem::path& root : PlatformPackages::GetSearchRoots()) {
+				roots += "\n" + Path::ToUtf8(root);
+			}
+			EditorUI::EmptyState("No platform packages found.",
+				("Install one from a folder, or put it into one of these folders:" + roots).c_str());
+		}
+		for (const PlatformPackageInfo& package : m_PlatformPackages) {
+			RenderPlatformPackageRow(package);
+		}
+
+		if (!m_PlatformRemoveCandidate.empty()) {
+			ImGui::OpenPopup("Remove platform package?");
+		}
+		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		if (ImGui::BeginPopupModal("Remove platform package?", nullptr,
+				ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+			const std::filesystem::path target = userRoot / Path::FromUtf8(m_PlatformRemoveCandidate);
+			ImGui::Text("Delete %s from", m_PlatformRemoveCandidate.c_str());
+			ImGui::TextDisabled("%s", Path::ToUtf8(target).c_str());
+			ImGui::Text("Build profiles for its platform stop working until it is installed again.");
+			ImGui::Spacing();
+			if (EditorUI::Button("Remove", EditorUI::ButtonVariant::Danger)) {
+				std::error_code ec;
+				if (IsInsideDirectory(target, userRoot)) std::filesystem::remove_all(target, ec);
+				m_StatusMessage = ec ? "Could not remove " + m_PlatformRemoveCandidate + ": " + ec.message()
+					: "Removed " + m_PlatformRemoveCandidate + ".";
+				m_StatusIsError = static_cast<bool>(ec);
+				m_PlatformPackagesDirty = true;
+				m_PlatformRemoveCandidate.clear();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel")) {
+				m_PlatformRemoveCandidate.clear();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+	}
+
+	void PackageManagerPanel::RenderPlatformPackageRow(const PlatformPackageInfo& package) {
+		ImGui::PushID(("platform:" + package.Name).c_str());
+		BeginPackageCard();
+
+		ImGui::AlignTextToFramePadding();
+		ImGui::TextColored(EditorTheme::Colors::Info(), "%s", package.Name.c_str());
+		ImGui::SameLine();
+		ImGui::TextDisabled("v%s", package.Version.c_str());
+
+		const std::filesystem::path userRoot = PlatformPackages::GetUserInstallRoot();
+		const bool userInstalled = IsInsideDirectory(package.Directory, userRoot);
+		if (userInstalled) {
+			const float buttonWidth = 90.0f;
+			ImGui::SameLine(CardButtonX(buttonWidth));
+			if (EditorUI::Button("Remove", EditorUI::ButtonVariant::Danger, ImVec2(buttonWidth, 0))) {
+				m_PlatformRemoveCandidate = Path::ToUtf8(package.Directory.filename());
+			}
+		}
+
+		if (package.Platform) {
+			EditorUI::Badge((std::string("platform: ") + FunkeBuildProfile::PlatformDisplayName(*package.Platform)).c_str(),
+				EditorUI::Tone::Info);
+		}
+		else {
+			EditorUI::Badge("build component");
+		}
+		ImGui::SameLine();
+		const std::string engineRoot = FunkeProject::GetEngineRootDir();
+		const bool fromEngine = !engineRoot.empty()
+			&& IsInsideDirectory(package.Directory, Path::FromUtf8(engineRoot) / "platforms");
+		EditorUI::Badge(userInstalled ? "installed" : fromEngine ? "engine" : "FUNKE_PLATFORM_PACKAGES");
+		const char* host = PlatformPackages::CurrentHostName();
+		if (package.Protocol != PlatformPackages::k_SupportedProtocol) {
+			ImGui::SameLine();
+			EditorUI::Badge(("builder protocol " + std::to_string(package.Protocol) + " not supported").c_str(),
+				EditorUI::Tone::Error);
+		}
+		else if (!package.SupportsHost(host)) {
+			ImGui::SameLine();
+			EditorUI::Badge(("needs " + package.Hosts).c_str(), EditorUI::Tone::Warning);
+			EditorUI::Tooltip((std::string("The builder does not run on ") + host + ".").c_str());
+		}
+		else {
+			ImGui::SameLine();
+			EditorUI::Badge("ready", EditorUI::Tone::Success);
+		}
+
+		if (!package.Description.empty()) {
+			ImGui::TextWrapped("%s", package.Description.c_str());
+		}
+		ImGui::TextDisabled("%s", Path::ToUtf8(package.Directory).c_str());
+		EndPackageCard();
+		ImGui::PopID();
+	}
+
+	void PackageManagerPanel::HandlePlatformFolderInstall() {
+		if (!m_PlatformPickTask || m_PlatformPickTask->Running.load(std::memory_order_acquire)) return;
+		{
+			std::scoped_lock lock(m_PlatformPickTask->Mutex);
+			m_PlatformPickTask->Finished = false;
+			m_PlatformPickTask->PickedPath.clear();
+		}
+		m_PlatformPickTask->Running.store(true, std::memory_order_release);
+		auto state = m_PlatformPickTask;
+		Platform::PickFolderAsync([state](std::optional<std::filesystem::path> picked) {
+			std::scoped_lock lock(state->Mutex);
+			state->Running.store(false, std::memory_order_release);
+			state->PickedPath = picked ? Path::ToUtf8(*picked) : std::string();
+			state->Finished = true;
+		});
+	}
+
+	void PackageManagerPanel::PollPlatformPickTask() {
+		if (!m_PlatformPickTask) return;
+		std::string picked;
+		{
+			std::scoped_lock lock(m_PlatformPickTask->Mutex);
+			if (!m_PlatformPickTask->Finished) return;
+			m_PlatformPickTask->Finished = false;
+			picked = std::move(m_PlatformPickTask->PickedPath);
+			m_PlatformPickTask->PickedPath.clear();
+		}
+		if (picked.empty()) return;
+
+		const std::filesystem::path source = Path::FromUtf8(picked);
+		const std::optional<PlatformPackageInfo> manifest = PlatformPackages::ReadManifest(source);
+		if (!manifest) {
+			m_StatusMessage = "No platform package in " + picked + " (needs an funke-package.lua of kind \"platform\" or \"build-component\").";
+			m_StatusIsError = true;
+			return;
+		}
+		const std::filesystem::path userRoot = PlatformPackages::GetUserInstallRoot();
+		const std::filesystem::path destination = userRoot / Path::FromUtf8(manifest->Name);
+		if (userRoot.empty() || IsInsideDirectory(source, destination) || IsInsideDirectory(destination, source)) {
+			m_StatusMessage = "Cannot install " + manifest->Name + " from " + picked + ".";
+			m_StatusIsError = true;
+			return;
+		}
+		std::error_code ec;
+		std::filesystem::remove_all(destination, ec);
+		ec.clear();
+		std::filesystem::create_directories(destination, ec);
+		if (!ec) {
+			std::filesystem::copy(source, destination,
+				std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, ec);
+		}
+		if (ec) {
+			m_StatusMessage = "Installing " + manifest->Name + " failed: " + ec.message();
+			m_StatusIsError = true;
+			return;
+		}
+		m_StatusMessage = "Installed " + manifest->Name + " " + manifest->Version + " to " + Path::ToUtf8(destination) + ".";
+		m_StatusIsError = false;
+		m_PlatformPackagesDirty = true;
 	}
 
 }

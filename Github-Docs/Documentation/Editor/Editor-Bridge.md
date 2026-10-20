@@ -45,6 +45,7 @@ Run the commands in the project folder, or pass `--project <dir>`. With one edit
 | `key <name> [--hold <s>]` | `Space`, `A`, `Enter`, `Esc`, `Left`, `LeftShift`, `F1`, ... |
 | `surface <WxH>`, `surface --clear` | Sets or clears the fixed game surface (also `play --size`) |
 | `open-scene <name \| path.scene> [--save \| --discard]`, `save-scene` | Edit mode only |
+| `select <entity name \| id>`, `select --clear` | Selects the first entity with that name (or persistent id) in the open scene, like a click in the Hierarchy, so the Inspector and selection gizmos show it |
 | `logs [--since <n>] [--level warning] [--tail <n>] [--contains <text>] [--follow]` | Editor and game log lines. Each answer ends with the number to pass to `--since` next time |
 
 Positions are `0..1` of the game surface from the top-left, or pixels with `--px` (the pixels of a screenshot taken at the surface size).

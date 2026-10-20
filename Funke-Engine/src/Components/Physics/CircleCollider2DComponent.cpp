@@ -67,6 +67,7 @@ namespace Funke {
 		SetRadius(localRadius, scene);
 		SetFriction(friction);
 		SetBounciness(bounciness);
+		SetDensity(m_Density);
 		SetLayer(layer);
 		SetRegisterContacts(registerContacts);
 		SetEnabled(enabled);

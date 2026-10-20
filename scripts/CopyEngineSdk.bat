@@ -73,7 +73,7 @@ if errorlevel 8 goto :robofail
 REM --- Project-local package build tooling.
 robocopy "%ROOT%\vendor\bin" "%SDK%" premake5.exe %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
-robocopy "%ROOT%\premake" "%SDK%\premake" project-packages.lua package-loader.lua fix_csharp_platforms.lua %ROBOFLAGS% >nul
+robocopy "%ROOT%\premake" "%SDK%\premake" project-packages.lua package-loader.lua fix_csharp_platforms.lua architecture.lua compat.lua %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 robocopy "%ROOT%\scripts" "%SDK%\scripts" BuildProjectPackages.ps1 %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail

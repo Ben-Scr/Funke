@@ -281,7 +281,7 @@ project "Funke-Engine"
         -- Required by some EnTT and magic_enum constexpr paths and required
         -- by Tracy v0.11+; settling on it engine-wide keeps every TU
         -- consistent.
-        flags { "MultiProcessorCompile" }
+        FunkeMultiProcessorCompile()
         buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
         systemversion "latest"
         defines { "FNK_PLATFORM_WINDOWS" }
@@ -315,7 +315,7 @@ project "Funke-Engine"
     -- the commentary in Dependencies.lua next to %{IncludeDir.RapidXml}.)
 
     filter "files:**/glad.c"
-        flags { "NoPCH" }
+        FunkeNoPCH()
 
     -- Built-in component registration is split one TU per category
     -- (BuiltInComponentRegistration<Category>.cpp); each Register<T> instantiates

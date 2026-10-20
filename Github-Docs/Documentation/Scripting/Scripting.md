@@ -257,7 +257,7 @@ Entity? hitEntity = Physics2D.OverlapCircle(center, radius);
 RaycastHit2D ground = Physics2D.Raycast(origin, Vector2.Down, 2f, PhysicsLayers.Mask(0, 3));
 ```
 
-Each collider has a **Layer** (what it is) and **Collides With** (what it touches), both set in the Inspector or from code via `GetComponent<BoxCollider2D>().Layer` / `.CollisionMask`. Two colliders interact only when each one's Collides With includes the other's Layer. `IsSensor`, `Friction` and `Bounciness` are available on every collider the same way.
+Each collider has a **Layer** (what it is) and **Collides With** (what it touches), both set in the Inspector or from code via `GetComponent<BoxCollider2D>().Layer` / `.CollisionMask`. Two colliders interact only when each one's Collides With includes the other's Layer. `IsSensor`, `Friction`, `Bounciness` and `Density` are available on every collider the same way. `Physics2D.Gravity` sets the world gravity; joints (`RevoluteJoint2D`, `PrismaticJoint2D`, `WeldJoint2D`) and multi-path polygon colliders are described in [Physics 2D](../Engine-Core/Physics-2D.md).
 
 **Sprite animation** — add **Sprite Animator 2D** next to a Sprite Renderer, slice the texture in the Sprite Editor, and list the slice names under **Frames**:
 

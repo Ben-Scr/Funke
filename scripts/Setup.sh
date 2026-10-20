@@ -11,15 +11,24 @@ for arg in "$@"; do
     esac
 done
 
-# True when python3 exists and satisfies the 3.10+ minimum.
-have_python() {
-    command -v python3 >/dev/null 2>&1 || return 1
-    python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1
+# Finds a Python 3.10+ and stores its path in PYTHON_CMD. Homebrew's versioned formulae
+# (python@3.13) only install python3.13, and macOS' own python3 is 3.9.
+PYTHON_CMD=""
+find_python() {
+    local candidate
+    for candidate in python3 python3.15 python3.14 python3.13 python3.12 python3.11 python3.10; do
+        if command -v "$candidate" >/dev/null 2>&1 &&
+            "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+            PYTHON_CMD="$(command -v "$candidate")"
+            return 0
+        fi
+    done
+    return 1
 }
 
 # Echo the package-manager command that installs Python, or return 1.
 detect_python_install_cmd() {
-    if command -v brew >/dev/null 2>&1; then echo "brew install python@3.13"; return 0; fi
+    if command -v brew >/dev/null 2>&1; then echo "brew install python3"; return 0; fi
     if command -v apt-get >/dev/null 2>&1; then echo "apt-get install -y python3"; return 0; fi
     if command -v dnf >/dev/null 2>&1; then echo "dnf install -y python3"; return 0; fi
     if command -v pacman >/dev/null 2>&1; then echo "pacman -S --noconfirm python"; return 0; fi
@@ -48,7 +57,7 @@ install_python() {
     $cmd
 }
 
-if ! have_python; then
+if ! find_python; then
     echo "[Funke Setup] Python 3.10+ was not found."
     do_install=0
     if [ -n "$ASSUME_YES" ]; then
@@ -62,10 +71,19 @@ if ! have_python; then
     if [ "$do_install" -eq 1 ]; then
         install_python || true
     fi
-    if ! have_python; then
+    # Homebrew may have installed into a prefix this shell's PATH does not list yet.
+    for prefix in /opt/homebrew/bin /usr/local/bin; do
+        case ":$PATH:" in
+            *":$prefix:"*) ;;
+            *) if [ -d "$prefix" ]; then PATH="$PATH:$prefix"; fi ;;
+        esac
+    done
+    if ! find_python; then
         echo "[Funke Setup] ERROR: Python 3.10+ is still unavailable. Aborting."
         exit 1
     fi
 fi
 
-python3 "$SCRIPT_DIR/Setup.py" "$@"
+# Premake-time steps and the generated build commands reuse this interpreter (premake/compat.lua).
+export FUNKE_PYTHON="$PYTHON_CMD"
+"$PYTHON_CMD" "$SCRIPT_DIR/Setup.py" "$@"

@@ -24,12 +24,18 @@ namespace Funke {
 		float GetFriction() const;
 		void SetBounciness(float bounciness);
 		float GetBounciness() const;
+		// Mass per area (kg/m²); a Rigidbody2D without a pinned mass sums its colliders' density × area.
+		void SetDensity(float density);
+		float GetDensity() const;
 		// Layers this collider belongs to (Box2D categoryBits).
 		void SetLayer(uint64_t layer);
 		uint64_t GetLayer() const;
 		// Layers this collider collides with (maskBits). Two colliders touch only if each one's mask contains the other's layer.
 		void SetCollisionMask(uint64_t mask);
 		uint64_t GetCollisionMask() const;
+		// Box2D group: colliders with the same negative group never touch, the same positive group always touches.
+		void SetGroupIndex(int group);
+		int GetGroupIndex() const;
 		bool IsEnabled() const;
 		bool IsSensor() const;
 
@@ -91,10 +97,15 @@ namespace Funke {
 		// freshly created shape (see Box2DWorld::CreateShape).
 		float m_Friction{ 0.3f };
 		float m_Bounciness{ 0.0f };
+		float m_Density{ 1.0f };
 		uint64_t m_Layer{ 1 };
 		uint64_t m_CollisionMask{ UINT64_MAX };
+		int m_GroupIndex{ 0 };
 		bool m_Sensor{ false };
 		bool m_RegisterContacts{ false };
+	protected:
+		// Shapes besides m_ShapeId that belong to this collider (a decomposed polygon); setters apply to them too.
+		virtual int GetExtraShapes(const b2ShapeId*& outShapes) const { outShapes = nullptr; return 0; }
 	private:
 		void SetRotation(float radiant);
 		void SetPositionRotation(const Vec2& position, float radiant);
@@ -102,5 +113,6 @@ namespace Funke {
 		void SetTransform(const Transform2DComponent& tr);
 
 		friend class Physics2D;
+		friend class PhysicsSystem2D;
 	};
 }

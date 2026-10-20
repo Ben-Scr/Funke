@@ -68,28 +68,48 @@ namespace Funke {
 			return glm::mat4(1.0f);
 		}
 
-		void DrawCameraMarker(Renderer3D& renderer, const glm::mat4& world, const Camera3DComponent& camera) {
+		// Selected: the real view volume, near to far plane, at the Game View's aspect (what GetProjectionMatrix
+		// covers). Otherwise a short section of it near the camera, with a triangle on top marking its up side.
+		void DrawCameraMarker(Renderer3D& renderer, const glm::mat4& world, const Camera3DComponent& camera,
+			float aspect, bool selected) {
 			const glm::vec3 origin(world[3]);
 			const glm::vec3 right = glm::normalize(glm::vec3(world[0]));
 			const glm::vec3 up = glm::normalize(glm::vec3(world[1]));
 			const glm::vec3 forward = -glm::normalize(glm::vec3(world[2]));
-			constexpr float depth = 1.0f;
-			const float halfHeight = camera.Projection == CameraProjection::Perspective
-				? std::tan(glm::radians(std::clamp(camera.FieldOfView, 1.0f, 179.0f) * 0.5f)) * depth
-				: std::max(camera.OrthographicSize, 0.01f) * 0.25f;
-			const float halfWidth = halfHeight * (16.0f / 9.0f);
-			const glm::vec3 center = origin + forward * depth;
-			const glm::vec3 corners[4] = {
-				center + right * halfWidth + up * halfHeight,
-				center - right * halfWidth + up * halfHeight,
-				center - right * halfWidth - up * halfHeight,
-				center + right * halfWidth - up * halfHeight,
+			const bool perspective = camera.Projection == CameraProjection::Perspective;
+			const float nearClip = std::max(camera.NearClip, 0.0001f);
+			const float farClip = std::max(camera.FarClip, nearClip + 0.001f);
+			const float farDepth = selected ? farClip : std::min(farClip, nearClip + 2.0f);
+			const float tanHalfFov = std::tan(glm::radians(std::clamp(camera.FieldOfView, 1.0f, 179.0f)) * 0.5f);
+			const auto planeCorners = [&](float depth, glm::vec3 (&out)[4]) {
+				const float halfHeight = perspective ? tanHalfFov * depth : std::max(camera.OrthographicSize, 0.001f);
+				const float halfWidth = halfHeight * aspect;
+				const glm::vec3 center = origin + forward * depth;
+				out[0] = center + right * halfWidth + up * halfHeight;
+				out[1] = center - right * halfWidth + up * halfHeight;
+				out[2] = center - right * halfWidth - up * halfHeight;
+				out[3] = center + right * halfWidth - up * halfHeight;
 			};
+			glm::vec3 nearCorners[4];
+			glm::vec3 farCorners[4];
+			planeCorners(nearClip, nearCorners);
+			planeCorners(farDepth, farCorners);
 			for (int i = 0; i < 4; ++i) {
-				renderer.DrawLine(camera.Projection == CameraProjection::Perspective ? origin : corners[i] - forward * depth, corners[i], k_CameraColor);
-				renderer.DrawLine(corners[i], corners[(i + 1) % 4], k_CameraColor);
+				renderer.DrawLine(nearCorners[i], nearCorners[(i + 1) % 4], k_CameraColor);
+				renderer.DrawLine(farCorners[i], farCorners[(i + 1) % 4], k_CameraColor);
+				renderer.DrawLine(perspective && !selected ? origin : nearCorners[i], farCorners[i], k_CameraColor);
 			}
-			renderer.DrawLine(center + up * halfHeight, center + up * (halfHeight * 1.4f), k_CameraColor);
+			if (!selected) {
+				const glm::vec3 topLeft = farCorners[1];
+				const glm::vec3 topRight = farCorners[0];
+				const float width = glm::length(topRight - topLeft);
+				const glm::vec3 baseLeft = glm::mix(topLeft, topRight, 0.3f);
+				const glm::vec3 baseRight = glm::mix(topLeft, topRight, 0.7f);
+				const glm::vec3 apex = glm::mix(topLeft, topRight, 0.5f) + up * (width * 0.2f);
+				renderer.DrawLine(baseLeft, apex, k_CameraColor);
+				renderer.DrawLine(apex, baseRight, k_CameraColor);
+				renderer.DrawLine(baseRight, baseLeft, k_CameraColor);
+			}
 		}
 
 		void DrawLightMarker(Renderer3D& renderer, const glm::mat4& world) {
@@ -283,8 +303,13 @@ namespace Funke {
 
 		const auto& registry = scene.GetRegistry();
 		if (m_ShowGizmos) {
+			float cameraAspect = GetGameViewAspect();
+			if (cameraAspect <= 0.0f && m_GameViewFBO.IsValid() && m_GameViewFBO.GetHeight() > 0) {
+				cameraAspect = static_cast<float>(m_GameViewFBO.GetWidth()) / static_cast<float>(m_GameViewFBO.GetHeight());
+			}
+			if (cameraAspect <= 0.0f) cameraAspect = 16.0f / 9.0f;
 			for (auto [entity, camera, transform] : registry.view<const Camera3DComponent, const Transform3DComponent>().each()) {
-				DrawCameraMarker(renderer, transform.WorldMatrix, camera);
+				DrawCameraMarker(renderer, transform.WorldMatrix, camera, cameraAspect, IsEntitySelected(entity));
 			}
 			for (auto [entity, light, transform] : registry.view<const DirectionalLightComponent, const Transform3DComponent>().each()) {
 				(void)light;

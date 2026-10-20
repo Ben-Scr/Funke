@@ -4,6 +4,7 @@
 
 #include "Components/Audio/AudioSourceComponent.hpp"
 #include "Components/General/AnimatorComponent.hpp"
+#include "Components/General/ComponentOrderComponent.hpp"
 #include "Components/General/General.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
@@ -16,10 +17,12 @@
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteAnimator2DComponent.hpp"
+#include "Components/Graphics/TerrainRenderer2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/PolygonCollider2DComponent.hpp"
+#include "Components/Physics/Joint2DComponents.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #endif
 
@@ -84,11 +87,15 @@ namespace Funke {
 			SetIcon<Camera2DComponent>(registry, "camera");
 			SetIcon<SpriteRendererComponent>(registry, "eye_open");
 			SetIcon<SpriteAnimator2DComponent>(registry, "eye_open");
+			SetIcon<TerrainRenderer2DComponent>(registry, "eye_open");
 			SetIcon<ParticleSystem2DComponent>(registry, "particles");
 			SetIcon<Rigidbody2DComponent>(registry, "rigidbody_2d");
 			SetIcon<BoxCollider2DComponent>(registry, "collider_box_2d");
 			SetIcon<CircleCollider2DComponent>(registry, "collider_circle_2d");
 			SetIcon<PolygonCollider2DComponent>(registry, "collider_polygon_2d");
+			SetIcon<RevoluteJoint2DComponent>(registry, "link");
+			SetIcon<PrismaticJoint2DComponent>(registry, "link");
+			SetIcon<WeldJoint2DComponent>(registry, "link");
 #endif
 #if FUNKE_WITH_3D
 			SetIcon<Transform3DComponent>(registry, "move");
@@ -241,6 +248,30 @@ namespace Funke {
 		// Core (no module); last for the same typeIdU32 reason.
 		Internal::RegisterLocalization(registry);
 		DeclareDependency<LocalizedTextComponent, TextRendererComponent>(registry);
+
+		// ── Inspector order ─────────────────────────────────────────
+		// Hidden data the editor writes when components are reordered by hand; last for the same typeIdU32 reason.
+		{
+			ComponentInfo info{ "Component Order", "General", ComponentCategory::Tag };
+			info.serializedName = "ComponentOrder";
+			info.serialize = [](Entity e) -> Json::Value {
+				Json::Value order = Json::Value::MakeArray();
+				for (const std::string& key : e.GetComponent<ComponentOrderComponent>().Order) order.Append(Json::Value(key));
+				Json::Value value = Json::Value::MakeObject();
+				value.AddMember("order", std::move(order));
+				return value;
+			};
+			info.deserialize = [](Entity e, const Json::Value& value) {
+				auto& component = e.GetComponent<ComponentOrderComponent>();
+				component.Order.clear();
+				const Json::Value* order = value.FindMember("order");
+				if (!order || !order->IsArray()) return;
+				for (const Json::Value& key : order->GetArray()) {
+					if (key.IsString()) component.Order.push_back(key.AsStringOr());
+				}
+			};
+			registry.Register<ComponentOrderComponent>(info);
+		}
 
 		// ── Module conflicts ────────────────────────────────────────
 		// 2D and 3D components describe different worlds (Transform2D vs Transform3D, Box2D vs Jolt): one entity

@@ -289,7 +289,7 @@ jobs:
       # See the windows-build job for why CI builds Dawn. On Linux SetupDawn.sh
       # is single-config: the shared lib lands at .../native/libwebgpu_dawn.so
       # (no Release/ subfolder). Keeping Dawn shared avoids pulling its large
-      # monolithic archive into libIndex-Engine.so during the CI link.
+      # monolithic archive into libFunke-Engine.so during the CI link.
       - name: Restore Dawn cache
         id: cache-dawn
         uses: actions/cache/restore@v4
@@ -376,13 +376,13 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
-          vendor/bin/premake5 --sanitize --no-profiler gmake2
+          vendor/bin/premake5 --sanitize --no-profiler gmake
           make config=debug verbose=1 LDFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fuse-ld=lld" -j"$(nproc)" Funke-Engine-Tests
           ./bin/Debug-linux-x86_64-sanitized/Funke-Engine-Tests/Funke-Engine-Tests
 
       - name: Linux Debug Engine Coverage
         run: |
-          vendor/bin/premake5 --coverage --no-profiler gmake2
+          vendor/bin/premake5 --coverage --no-profiler gmake
           make config=debug verbose=1 LDFLAGS="--coverage -fuse-ld=lld" -j"$(nproc)" Funke-Engine-Tests
           ./bin/Debug-linux-x86_64-coverage/Funke-Engine-Tests/Funke-Engine-Tests
           lcov --capture --directory bin-int/Debug-linux-x86_64-coverage --output-file coverage-raw.info --ignore-errors mismatch
@@ -400,7 +400,7 @@ jobs:
 
       - name: Linux Core-only Engine Validation
         run: |
-          vendor/bin/premake5 --core-validation --module-profile=core gmake2
+          vendor/bin/premake5 --core-validation --module-profile=core gmake
           make -C premake/generated/core config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Funke-Engine
 
   macos-build:

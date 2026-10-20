@@ -7,6 +7,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 MINIMUM_PYTHON = (3, 10)
@@ -107,9 +108,13 @@ LINUX_BUILD_PACKAGES = {
 }
 LINUX_BUILD_TOOLS = ("c++", "make", "clang", "clang++", "pkg-config")
 LINUX_PKGCONFIG_MODULES = ("x11", "xrandr", "xinerama", "xcursor", "xi", "x11-xcb", "glu")
-# Fallback premake build, downloaded only when vendor/bin/premake5 is absent AND
-# premake5 is not on PATH. Bump if the vendored toolchain moves on.
-PREMAKE_FALLBACK_VERSION = "5.0.0-beta2"
+# Fallback premake build, downloaded only when no usable premake5 is vendored or on PATH.
+# Matches vendor/bin/premake5.exe and CI; its macOS build runs natively on Apple Silicon
+# (beta2's was Intel-only and failed with "Bad CPU type in executable").
+PREMAKE_FALLBACK_VERSION = "5.0.0-beta5"
+# Oldest premake whose `gmake` action is the current Makefile generator (older releases call
+# it gmake2 and ship the legacy one as gmake). The editor also generates with `gmake`.
+PREMAKE_MINIMUM_VERSION = (5, 0, 0, 1, 5)
 
 
 def is_interactive() -> bool:
@@ -220,12 +225,30 @@ def brew_install(tool: str) -> bool:
     return subprocess.run(["brew", "install", *packages]).returncode == 0
 
 
+def tool_runs(*cmd: str) -> bool:
+    try:
+        return subprocess.run(list(cmd), capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def ensure_macos_build_deps(install_enabled: bool, assume_yes: bool) -> bool:
     """Check the Xcode Command Line Tools (clang, make, iconutil, codesign); offer to install them."""
     has_clt = subprocess.run(["xcode-select", "-p"], capture_output=True).returncode == 0
-    if has_clt and shutil.which("clang++") and shutil.which("make"):
+    # Managed Macs can block the Command Line Tools' make ("Permission denied"); GNU make from
+    # Homebrew (gmake) builds the same Makefiles.
+    has_make = tool_runs("gmake", "--version") or tool_runs("make", "--version")
+    if has_clt and shutil.which("clang++") and has_make:
         print("  [OK] Xcode Command Line Tools found")
         return True
+    if has_clt and shutil.which("clang++"):
+        print("  [!!] make does not run on this Mac; install GNU make with: brew install make (then build with gmake)")
+        if install_enabled and shutil.which("brew") and prompt_yes_no(
+                "[Funke Setup] Install GNU make via Homebrew now?", assume_yes):
+            if subprocess.run(["brew", "install", "make"]).returncode == 0 and tool_runs("gmake", "--version"):
+                print("  [OK] GNU make ready: build with gmake")
+                return True
+        return False
     print("  [!!] The Xcode Command Line Tools (clang, make) are missing")
     if not install_enabled or not (assume_yes or is_interactive()):
         print("  [!!] Install them with: xcode-select --install")
@@ -295,6 +318,71 @@ def install_premake(repo_root: Path) -> str | None:
     return str(final)
 
 
+USER_DOTNET_ROOT = Path.home() / ".dotnet"
+
+
+def adopt_user_dotnet() -> str | None:
+    """Use an SDK that dotnet-install.sh put in ~/.dotnet for this run, even when PATH lacks it."""
+    exe = USER_DOTNET_ROOT / "dotnet"
+    if not exe.is_file():
+        return None
+    os.environ["DOTNET_ROOT"] = str(USER_DOTNET_ROOT)
+    os.environ["PATH"] = os.pathsep.join(
+        [str(USER_DOTNET_ROOT), str(USER_DOTNET_ROOT / "tools"), os.environ.get("PATH", "")])
+    return str(exe)
+
+
+def offer_dotnet_profile_update(assume_yes: bool) -> None:
+    shell = os.environ.get("SHELL", "")
+    if shell.endswith("zsh"):
+        profile = Path.home() / ".zprofile"
+    elif shell.endswith("bash") and platform.system() == "Darwin":
+        profile = Path.home() / ".bash_profile"
+    else:
+        profile = Path.home() / ".profile"
+    lines = ['export DOTNET_ROOT="$HOME/.dotnet"', 'export PATH="$DOTNET_ROOT:$DOTNET_ROOT/tools:$PATH"']
+    try:
+        if profile.is_file() and "DOTNET_ROOT" in profile.read_text(encoding="utf-8", errors="replace"):
+            return
+    except OSError:
+        pass
+    if prompt_yes_no(f"[Funke Setup] Add ~/.dotnet to PATH in {profile}?", assume_yes):
+        try:
+            with profile.open("a", encoding="utf-8") as handle:
+                handle.write("\n# .NET SDK installed by Funke Setup\n" + "\n".join(lines) + "\n")
+            print(f"  [OK] Updated {profile}; open a new terminal to pick it up")
+            return
+        except OSError as exc:
+            print(f"  [!!] Could not update {profile}: {exc}")
+    print("  [..] Add these lines to your shell profile so terminals find dotnet:")
+    for line in lines:
+        print(f"       {line}")
+
+
+def install_dotnet_user_local(assume_yes: bool) -> bool:
+    """Install the .NET SDK into ~/.dotnet with dotnet-install.sh: no administrator rights, unlike
+    the Homebrew cask (a .pkg installer) and the system packages."""
+    import tempfile
+    import urllib.request
+
+    print(f"  [..] Installing the .NET {TARGET_DOTNET_MAJOR} SDK into {USER_DOTNET_ROOT} (no administrator rights needed)")
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "dotnet-install.sh"
+        try:
+            urllib.request.urlretrieve("https://dot.net/v1/dotnet-install.sh", script)
+        except Exception as exc:  # network, TLS, permissions
+            print(f"  [!!] Downloading dotnet-install.sh failed: {exc}")
+            return False
+        command = ["bash", str(script), "--channel", f"{TARGET_DOTNET_MAJOR}.0", "--install-dir", str(USER_DOTNET_ROOT)]
+        if subprocess.run(command).returncode != 0:
+            print("  [!!] dotnet-install.sh failed")
+            return False
+    if not adopt_user_dotnet():
+        return False
+    offer_dotnet_profile_update(assume_yes)
+    return True
+
+
 def offer_install(tool: str, install_enabled: bool, assume_yes: bool) -> bool:
     """Offer to install *tool* (git/dotnet) via the platform package manager.
     Returns True only if the tool is reachable afterwards."""
@@ -310,8 +398,13 @@ def offer_install(tool: str, install_enabled: bool, assume_yes: bool) -> bool:
         installed = winget_install(package) if package else False
         if installed:
             refresh_windows_path()
+    elif tool == "dotnet" and platform.system() == "Darwin":
+        # Managed Macs often deny the Homebrew cask's .pkg installer (not in sudoers).
+        installed = install_dotnet_user_local(assume_yes) or brew_install(tool)
     elif platform.system() == "Darwin":
         installed = brew_install(tool)
+    elif tool == "dotnet":
+        installed = linux_package_install(tool) or install_dotnet_user_local(assume_yes)
     else:
         installed = linux_package_install(tool)
 
@@ -523,14 +616,81 @@ def setup_dotnet_unix(repo_root: Path) -> bool:
     return True
 
 
+def parse_premake_version(text: str) -> tuple[int, int, int, int, int] | None:
+    """Parse "5.0.0-beta5" style versions into a comparable tuple (alpha=0, beta=1, release=2)."""
+    import re
+
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|dev)(\d*))?", text)
+    if not match:
+        return None
+    major, minor, patch = (int(match.group(i)) for i in (1, 2, 3))
+    stage = match.group(4)
+    if stage is None or stage == "dev":
+        return major, minor, patch, 2, 0
+    return major, minor, patch, 0 if stage == "alpha" else 1, int(match.group(5) or 0)
+
+
+def probe_premake(executable: str) -> tuple[bool, str]:
+    """Run `premake5 --version`. Returns (usable, detail); an Intel-only binary on Apple Silicon
+    without Rosetta raises OSError (Bad CPU type in executable). Runs in the temp folder because
+    premake executes a premake5.lua in its working directory even for --version."""
+    try:
+        result = subprocess.run([executable, "--version"], capture_output=True, text=True, timeout=30,
+                                cwd=tempfile.gettempdir())
+    except OSError as exc:
+        return False, str(exc)
+    except subprocess.TimeoutExpired:
+        return False, "timed out"
+    output = (result.stdout + result.stderr).strip()
+    if result.returncode != 0:
+        return False, output or f"exit code {result.returncode}"
+    version = parse_premake_version(output)
+    if version is None or version < PREMAKE_MINIMUM_VERSION:
+        return False, f"{output} is older than {PREMAKE_FALLBACK_VERSION}"
+    return True, output
+
+
 def resolve_premake_executable(repo_root: Path) -> str | None:
-    if platform.system() == "Windows":
-        vendored = repo_root / "vendor" / "bin" / "premake5.exe"
-    else:
-        vendored = repo_root / "vendor" / "bin" / "premake5"
+    """Return a runnable premake5 (vendored first, then PATH). A vendored binary that can't run
+    on this machine is moved aside so the editor, which only looks in vendor/bin, doesn't pick it."""
+    vendored = repo_root / "vendor" / "bin" / ("premake5.exe" if platform.system() == "Windows" else "premake5")
     if vendored.is_file():
-        return str(vendored)
-    return shutil.which("premake5")
+        usable, detail = probe_premake(str(vendored))
+        if usable:
+            return str(vendored)
+        print(f"  [!!] {vendored} is not usable here: {detail}")
+        if platform.system() != "Windows":
+            unusable = vendored.with_name("premake5.unusable")
+            try:
+                vendored.replace(unusable)
+                print(f"  [..] Moved it to {unusable}")
+            except OSError as exc:
+                print(f"  [!!] Could not move it aside: {exc}")
+                return None
+    on_path = shutil.which("premake5")
+    if on_path and Path(on_path).resolve() != vendored.resolve():
+        usable, detail = probe_premake(on_path)
+        if usable:
+            if platform.system() != "Windows" and not vendored.exists():
+                vendored.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(on_path, vendored)
+                vendored.chmod(0o755)
+                print(f"  [..] Copied {on_path} to {vendored} for the editor's package and game builds")
+                return str(vendored)
+            return on_path
+        print(f"  [!!] {on_path} is not usable: {detail}")
+    return None
+
+
+def premake_makefile_action(premake_path: str) -> str:
+    """`gmake` on premake 5.0.0-beta5+; gmake2 for older builds passed via --generator users."""
+    try:
+        help_text = subprocess.run([premake_path, "--help"], capture_output=True, text=True, timeout=30,
+                                   cwd=tempfile.gettempdir()).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return "gmake"
+    actions = {line.split()[0] for line in help_text.splitlines() if line.startswith(" ") and line.split()}
+    return "gmake2" if "gmake2" in actions and "gmakelegacy" not in actions else "gmake"
 
 
 def describe_premake_expectation(repo_root: Path) -> str:
@@ -797,7 +957,14 @@ def main() -> int:
             )
         ):
             premake_path = install_premake(repo_root)
+            if premake_path:
+                usable, detail = probe_premake(premake_path)
+                if not usable:
+                    print(f"  [!!] The downloaded premake does not run here: {detail}")
+                    premake_path = None
         if not premake_path:
+            if platform.system() == "Darwin":
+                print("  [!!] Install a native premake with: brew install premake")
             required_missing.append("premake5")
 
     is_windows = platform.system() == "Windows"
@@ -833,6 +1000,7 @@ def main() -> int:
                 soft_missing.append("dotnet-host-pack")
     else:
         # Non-Windows: dotnet is still required for scripting/Funke-ScriptCore.
+        dotnet_exe = dotnet_exe or adopt_user_dotnet()
         if dotnet_exe:
             print(f"  [OK] dotnet found: {dotnet_exe}")
         else:
@@ -957,8 +1125,11 @@ def main() -> int:
         "Generating build identity metadata",
     )
 
-    action = args.generator or ("vs2022" if is_windows else "gmake2")
+    action = args.generator or ("vs2022" if is_windows else premake_makefile_action(premake_path))
     premake_args = build_premake_args(args)
+    if not is_windows:
+        # premake/compat.lua bakes this interpreter into the vendor-patch step and the build commands.
+        os.environ["FUNKE_PYTHON"] = sys.executable
     run_step([premake_path, *premake_args, action], repo_root, f"Generating {action} files via Premake")
 
     # .NET 10 projects must be restored by the dotnet SDK. The native solution
@@ -989,7 +1160,8 @@ def main() -> int:
         dawn_library = "libwebgpu_dawn.dylib" if platform.system() == "Darwin" else "libwebgpu_dawn.so"
         if not (repo_root / "External" / "dawn" / "build" / "src" / "dawn" / "native" / dawn_library).is_file():
             print("[Funke Setup] Next: build Dawn once (WebGPU, ~15-30 min):  ./scripts/dawn/SetupDawn.sh")
-        print("[Funke Setup] Then build:  make config=release -j$(getconf _NPROCESSORS_ONLN) Funke-Launcher")
+        make_tool = "gmake" if platform.system() == "Darwin" and shutil.which("gmake") else "make"
+        print(f"[Funke Setup] Then build:  {make_tool} config=release -j$(getconf _NPROCESSORS_ONLN) Funke-Launcher")
     return 0
 
 

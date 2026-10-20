@@ -335,6 +335,14 @@ namespace Funke {
 			if (!m_Editor.BridgeOpenScene(ArgString(args, "scene"), ArgBool(args, "save"), ArgBool(args, "discard"), error)) return fail(error);
 			return Reply(ticket, id, BuildStatus());
 		}
+		if (command == "select") {
+			std::string selected;
+			std::string error;
+			if (!m_Editor.BridgeSelectEntity(ArgString(args, "entity"), selected, error)) return fail(error);
+			Json::Value result = Json::Value::MakeObject();
+			result.AddMember("selected", selected);
+			return Reply(ticket, id, result);
+		}
 		if (command == "save-scene") {
 			std::vector<std::string> saved;
 			std::string error;

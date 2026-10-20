@@ -113,6 +113,8 @@ A **toolbar** at the top has the playback controls (Play / Pause / Step / Stop),
 
 The **Layout** dropdown at the top right switches between saved layout presets. **Default** restores the standard arrangement: Hierarchy on the left, Inspector on the right, Editor View and Game View in the middle, Asset Browser and Console below. **Manage layouts...** opens Editor Preferences › Layouts, where you save the current arrangement as a preset or delete presets. The editor keeps your layout in its user data folder (`%LOCALAPPDATA%\Funke\Editor\imgui.ini` on Windows) and falls back to the default when that file docks none of the main panels.
 
+**Editor Preferences › Appearance › Theme** picks the editor's look: **Auto** (follows the Windows light/dark setting), **Dark**, **Light**, **Liquid Glass** or **Custom**. Liquid Glass makes the panels, menus and windows translucent over a slowly flowing color backdrop, with rounder controls; the Editor View and Game View stay opaque, so the scene looks exactly as in the other themes. The backdrop is drawn by the editor itself, so the desktop behind the window does not show through. **Custom** lets you change every color (the first time, it starts from the theme that was active); giving the window background some transparency there brings back the Liquid Glass backdrop.
+
 ---
 
 ## Core workflows
@@ -122,6 +124,10 @@ The **Layout** dropdown at the top right switches between saved layout presets. 
 1. Click an entity in the **Hierarchy** (or click it directly in the **Viewport**).
 2. The **Inspector** shows its components.
 3. Edit values — move it, change its sprite, tweak script fields, toggle it on/off.
+
+The Inspector's header (icon, name, enabled switch and options) stays at the top while the components below scroll. The name field renames as you type; the whole edit is one undo step, and **Esc** restores the old name.
+
+Components are listed with the transform first, then the built-in components in a fixed order, then scripts. To rearrange them, drag a component's header onto another one (the line shows where it lands), or use **Move Up** / **Move Down** in its **...** menu. Scripts and C# components move like any other component; the transform always stays on top. The order is saved with the entity (in scenes and prefabs, also as a prefab override), applies to every selected entity, and is one undo step. Components added later appear at the bottom. Dragging a header still drops a reference to that component into reference fields.
 
 The scene is marked **unsaved** (a dot/asterisk) as soon as you change something.
 
@@ -176,7 +182,7 @@ The toolbar controls let you test the game inside the editor:
 - **Step** — while paused, advance a single frame (great for debugging).
 - **Stop** — ends play and **restores the snapshot**, discarding anything that changed during play. Scenes that had unsaved edits before Play are still marked unsaved afterwards.
 
-That last point is important: changes you make to entities *while playing* are intentionally thrown away when you stop. See [Scenes › Play mode](../Engine-Core/Scenes.md#play-mode-in-the-editor).
+That last point is important: changes you make to entities *while playing* are intentionally thrown away when you stop, script fields edited in the Inspector included. See [Scenes › Play mode](../Engine-Core/Scenes.md#play-mode-in-the-editor).
 
 ### Saving
 

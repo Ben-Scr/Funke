@@ -187,7 +187,7 @@ def main() -> int:
     # --- Project-local package build tooling.
     copy_file(root / "vendor" / "bin" / f"premake5{EXE}", sdk / f"premake5{EXE}")
     copy_files(root / "premake", sdk / "premake",
-               ("project-packages.lua", "package-loader.lua", "fix_csharp_platforms.lua", "architecture.lua"))
+               ("project-packages.lua", "package-loader.lua", "fix_csharp_platforms.lua", "architecture.lua", "compat.lua"))
     copy_files(root / "scripts" / "packages", sdk / "scripts" / "packages",
                ("NewPackage.py", "RemovePackage.py", "BumpPackageVersion.py", "WriteNativeAbi.py"))
 

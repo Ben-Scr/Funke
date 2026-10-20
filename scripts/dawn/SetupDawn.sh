@@ -94,6 +94,11 @@ if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
 else
     echo "      Compiler: CMake default (Clang not found; Dawn may fail under GCC)."
 fi
+# Managed Macs can block the Command Line Tools' make ("Permission denied"); use GNU make then.
+if ! make --version >/dev/null 2>&1 && command -v gmake >/dev/null 2>&1; then
+    echo "      Make: $(command -v gmake) (make does not run here)"
+    CMAKE_ARGS+=(-DCMAKE_MAKE_PROGRAM="$(command -v gmake)")
+fi
 cmake "${CMAKE_ARGS[@]}"
 
 # --- Build -------------------------------------------------------------------
@@ -112,6 +117,6 @@ else
     echo "Library : ${DAWN_BUILD_DIR}/src/dawn/native/libwebgpu_dawn.so"
 fi
 echo
-echo "Next: regenerate the engine project files with --rhi=webgpu, e.g."
-echo "  premake5 gmake2 --rhi=webgpu"
+echo "Next: regenerate the engine Makefiles, e.g."
+echo "  ./scripts/Setup.sh   (or: ./vendor/bin/premake5 gmake)"
 echo

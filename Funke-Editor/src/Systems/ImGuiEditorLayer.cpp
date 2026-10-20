@@ -20,6 +20,7 @@
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
 #include "Components/Graphics/Camera2DComponent.hpp"
+#include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/Camera3DComponent.hpp"
 #include "Components/Graphics/DirectionalLightComponent.hpp"
 #include "Components/Graphics/PointLightComponent.hpp"
@@ -48,6 +49,8 @@
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/ComponentRegistry.hpp"
+#include "Scene/ComponentOrder.hpp"
+#include "Components/General/ComponentOrderComponent.hpp"
 #include <Scene/EntityHelper.hpp>
 
 #include "Graphics/TextureManager.hpp"
@@ -107,6 +110,92 @@
 
 namespace Funke {
 	namespace {
+		// Transforms first, scripts last, the rest in registration order: the registry's map order is a hash order
+		// that put e.g. Box Collider 3D above Transform 3D.
+		template <typename F>
+		void ForEachComponentInInspectorOrder(const ComponentRegistry& registry, F&& fn) {
+			std::vector<const ComponentInfo*> infos;
+			registry.ForEachComponentInfoInRegistrationOrder([&](const ComponentInfo& info) { infos.push_back(&info); });
+			const auto rank = [](const ComponentInfo& info) {
+				if (info.typeId == typeid(Transform2DComponent) || info.typeId == typeid(RectTransform2DComponent)
+					|| info.typeId == typeid(Transform3DComponent)) return 0;
+				return info.isDynamic || info.displayName == "Scripts" ? 2 : 1;
+			};
+			std::stable_sort(infos.begin(), infos.end(),
+				[&](const ComponentInfo* a, const ComponentInfo* b) { return rank(*a) < rank(*b); });
+			for (const ComponentInfo* info : infos) {
+				fn(info->isDynamic ? std::type_index(typeid(void)) : info->typeId, *info);
+			}
+		}
+
+		// One Inspector section: a built-in component, or one C# component / script of the ScriptComponent.
+		struct InspectorSection {
+			std::string Key;      // ComponentOrderComponent key
+			std::string RefName;  // name in COMPONENT_REF payloads: display name, or the class
+			const ComponentInfo* Info = nullptr;
+			std::type_index TypeId = typeid(void);
+			int ScriptKind = 0;   // 1 = ScriptComponent::ManagedComponents, 2 = ScriptComponent::Scripts
+			std::size_t ScriptIndex = 0;
+			bool WholeScriptBlock = false;  // multi-selection with different scripts: drawn as one block, not reorderable
+		};
+
+		struct InspectorSectionList {
+			std::vector<InspectorSection> Items;
+			std::size_t Pinned = 0;  // leading transforms; they stay on top
+		};
+
+		bool IsInspectorTransform(const ComponentInfo& info) {
+			return info.typeId == typeid(Transform2DComponent) || info.typeId == typeid(RectTransform2DComponent)
+				|| info.typeId == typeid(Transform3DComponent);
+		}
+
+		// has picks the components to list (the selection's common ones, or one entity's own); scripts non-null
+		// lists each C# component and script as its own section. saved is the hand-made order to apply.
+		template <typename HasFn>
+		InspectorSectionList CollectInspectorSections(const ComponentRegistry& registry, const ScriptComponent* scripts,
+			const std::vector<std::string>* saved, HasFn&& has) {
+			InspectorSectionList list;
+			ForEachComponentInInspectorOrder(registry, [&](const std::type_index& typeId, const ComponentInfo& info) {
+				if (info.category != ComponentCategory::Component) return;
+				if (info.displayName == "Name") return; // Shown in entity header
+				if (!has(typeId, info)) return;
+				if (info.displayName == "Scripts") {
+					if (!scripts) {
+						list.Items.push_back({ info.displayName, info.displayName, &info, typeId, 0, 0, true });
+						return;
+					}
+					for (std::size_t i = 0; i < scripts->ManagedComponents.size(); ++i) {
+						const std::string& className = scripts->ManagedComponents[i];
+						list.Items.push_back({ ComponentOrder::ManagedComponentKey(className), className, &info, typeId, 1, i });
+					}
+					for (std::size_t i = 0; i < scripts->Scripts.size(); ++i) {
+						const std::string& className = scripts->Scripts[i].GetClassName();
+						list.Items.push_back({ ComponentOrder::ScriptKey(className), className, &info, typeId, 2, i });
+					}
+					return;
+				}
+				// Dynamic components with no drawInspector/properties render as empty sections; their fields appear in the paired ScriptComponent.Scripts entry.
+				if (info.isDynamic && !info.drawInspector && info.properties.empty()) return;
+				if (IsInspectorTransform(info)) ++list.Pinned;
+				list.Items.push_back({ info.serializedName.empty() ? "~" + info.displayName : info.serializedName,
+					info.displayName, &info, typeId });
+			});
+			if (saved && !saved->empty()) {
+				std::vector<std::string> keys;
+				keys.reserve(list.Items.size());
+				for (const InspectorSection& item : list.Items) keys.push_back(item.Key);
+				std::vector<InspectorSection> arranged;
+				arranged.reserve(list.Items.size());
+				for (const std::string& key : ComponentOrder::Arrange(keys, *saved, list.Pinned)) {
+					const auto it = std::find_if(list.Items.begin(), list.Items.end(),
+						[&](const InspectorSection& item) { return item.Key == key; });
+					if (it != list.Items.end()) arranged.push_back(std::move(*it));
+				}
+				list.Items = std::move(arranged);
+			}
+			return list;
+		}
+
 		// Local "HH:MM:SS" stamp for a console entry, captured at log-receipt time.
 		std::string FormatLogClockTimestamp() {
 			const std::time_t now = std::time(nullptr);
@@ -1658,7 +1747,15 @@ namespace Funke {
 			FNK_CORE_INFO_TAG("ImGui", "Saved editor layout docks no panels into the editor dockspace; applying the default layout.");
 			EditorDockLayout::BuildDefault(dockspaceId, dockspaceSize);
 		}
+		// A translucent theme would otherwise stack the dockspace's own WindowBg fill between the host and every panel.
+		const bool translucent = EditorTheme::IsTranslucent();
+		if (translucent) {
+			ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+		}
 		ImGui::DockSpace(dockspaceId, ImVec2(0.0f, -reservedBelow), ImGuiDockNodeFlags_PassthruCentralNode);
+		if (translucent) {
+			ImGui::PopStyleColor();
+		}
 		RenderStatusBar(statusBarH);
 		// End() is in OnPreRender after RenderMainMenu — must stay open for the menubar.
 	}
@@ -2712,7 +2809,7 @@ namespace Funke {
 			}
 		}
 
-		CaptureScriptFieldOverrides(/*merge=*/true);
+		// No capture here: values edited in the inspector during play are discarded like every other play-time change.
 		struct StagedScene {
 			std::string Name;
 			std::string DefinitionName;
@@ -5907,6 +6004,24 @@ namespace Funke {
 
 	}
 
+	std::vector<std::string> ImGuiEditorLayer::CurrentEntityNames(Scene& scene, std::span<const EntityHandle> handles) {
+		std::vector<std::string> names;
+		names.reserve(handles.size());
+		for (EntityHandle h : handles) {
+			const NameComponent* name = scene.IsValid(h) ? scene.GetRegistry().try_get<NameComponent>(h) : nullptr;
+			names.push_back(name ? name->Name : std::string{});
+		}
+		return names;
+	}
+
+	void ImGuiEditorLayer::FinishInspectorRename(Scene& scene) {
+		if (!m_InspectorRename) return;
+		if (m_InspectorRename->Recorder && CurrentEntityNames(scene, m_InspectorRename->Handles) != m_InspectorRename->NamesBefore) {
+			PushStructureUndo(scene, m_InspectorRename->Recorder->Finish(scene, m_InspectorRename->Handles));
+		}
+		m_InspectorRename.reset();
+	}
+
 	void ImGuiEditorLayer::RenderInspectorPanel(Scene& scene) {
 		ImGui::Begin("Inspector");
 
@@ -5924,6 +6039,10 @@ namespace Funke {
 			m_InspectorCache.Version = m_SelectionVersion;
 		}
 		const std::vector<EntityHandle>& selectedHandles = m_InspectorCache.Handles;
+		// The name field is no longer drawn for that selection, so its deactivation never arrives.
+		if (m_InspectorRename && m_InspectorRename->Handles != selectedHandles) {
+			FinishInspectorRename(scene);
+		}
 		if (selectedHandles.empty()) {
 			m_SelectedEntity = entt::null;
 			if (m_IsSceneNodeSelected) {
@@ -5984,9 +6103,9 @@ namespace Funke {
 			const char* nameHint = nameUniform ? "Entity" : "-";
 			const float switchW = std::round(std::round(frameH * 0.62f) * 1.8f);
 			ImGui::SetNextItemWidth(std::max(40.0f, ImGui::GetContentRegionAvail().x - switchW - frameH - style.ItemSpacing.x * 2.0f));
-			const bool nameSubmitted = ImGui::InputTextWithHint(
-				"##EntityName", nameHint, nameBuf, sizeof(nameBuf),
-				ImGuiInputTextFlags_EnterReturnsTrue);
+			const bool nameEdited = ImGui::InputTextWithHint("##EntityName", nameHint, nameBuf, sizeof(nameBuf));
+			const bool nameActivated = ImGui::IsItemActivated();
+			const bool nameDeactivated = ImGui::IsItemDeactivated();
 
 			// Shows authored state, not effective in-hierarchy: InheritedDisabledTag doesn't flip the switch.
 			ImGui::SameLine();
@@ -6031,16 +6150,21 @@ namespace Funke {
 			}
 
 			std::vector<EntityHandle> headerHandles;
-			std::optional<StructureEditRecorder> headerRecorder;
-			const bool nameChanged = nameSubmitted
-				&& (!m_InspectorCache.NameUniform || m_InspectorCache.FirstName != std::string_view(nameBuf));
-			if (nameChanged || enabledChanged || staticChanged) {
-				for (Entity& e : selectedEntities) headerHandles.push_back(e.GetHandle());
-				headerRecorder.emplace(scene, headerHandles,
-					nameChanged ? "Rename" : enabledChanged ? (isEnabled ? "Enable" : "Disable") : "Toggle Static");
+			for (Entity& e : selectedEntities) headerHandles.push_back(e.GetHandle());
+			if (nameActivated || (nameEdited && ImGui::IsItemActive() && !m_InspectorRename)) {
+				FinishInspectorRename(scene);
+				m_InspectorRename.emplace();
+				m_InspectorRename->Handles = headerHandles;
+				m_InspectorRename->NamesBefore = CurrentEntityNames(scene, headerHandles);
+				m_InspectorRename->Recorder.emplace(scene, headerHandles, "Rename");
 			}
-
-			if (nameSubmitted) {
+			// On the deactivation frame ImGui writes the typed text back into the buffer, which by then may be
+			// seeded from another selection (the click that ended the edit selected a different entity).
+			const bool renameTargetsSelection = m_InspectorRename && m_InspectorRename->Handles == headerHandles;
+			// A mixed-name selection shows an empty field; leaving it empty keeps every name.
+			const bool nameChanged = nameEdited && renameTargetsSelection
+				&& !(nameBuf[0] == '\0' && !m_InspectorCache.NameUniform);
+			if (nameChanged) {
 				std::string newName(nameBuf);
 				for (Entity& e : selectedEntities) {
 					if (newName.empty()) {
@@ -6059,6 +6183,15 @@ namespace Funke {
 				// NameComponent can be added/removed and FirstName changes; the
 				// next inspector frame must rebuild its cached header strings.
 				++m_SelectionVersion;
+			}
+			if (nameDeactivated) {
+				FinishInspectorRename(scene);
+			}
+
+			std::optional<StructureEditRecorder> headerRecorder;
+			if (enabledChanged || staticChanged) {
+				headerRecorder.emplace(scene, headerHandles,
+					enabledChanged ? (isEnabled ? "Enable" : "Disable") : "Toggle Static");
 			}
 			if (enabledChanged) {
 				for (Entity& e : selectedEntities) {
@@ -6198,6 +6331,9 @@ namespace Funke {
 			ImGui::Separator();
 		}
 
+		// The entity header and prefab bar stay pinned; only the components scroll.
+		ImGui::BeginChild("##InspectorBody", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_None);
+
 		// Bucket override paths by component name once per frame for O(1) per-component lookup (was O(components × paths) per render).
 		std::unordered_map<std::string, std::vector<std::string>> overridesByComponent;
 		if (prefabSourceResolvable) {
@@ -6221,7 +6357,7 @@ namespace Funke {
 
 		// Latch: a Revert destroys+recreates `entity`; remaining ForEachComponentInfo iterations this frame must be no-ops to avoid use-after-destroy.
 		bool selectionInvalidatedByRevert = false;
-		registry.ForEachComponentInfo([&](const std::type_index& typeId, const ComponentInfo& info) {
+		const auto drawComponentSection = [&](const std::type_index& typeId, const ComponentInfo& info) {
 			if (selectionInvalidatedByRevert) return;
 			if (info.category != ComponentCategory::Component) return;
 			if (info.displayName == "Name") return; // Shown in entity header
@@ -6299,21 +6435,6 @@ namespace Funke {
 					}
 				}
 			}, info.icon, thisComponentOverridden);
-
-			// Embed persistent UUID (not RuntimeID): the drop target writes it to disk; RuntimeIDs are reallocated on reload.
-			if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-				uint64_t persistentId = 0;
-				if (Scene* scene = entity.GetScene()) {
-					persistentId = scene->GetEntityPersistentID(entity.GetHandle());
-				}
-				if (persistentId == 0) {
-					persistentId = entity.GetRuntimeID(); // fallback for entities with no UUIDComponent
-				}
-				std::string refStr = std::to_string(persistentId) + ":" + info.displayName;
-				ImGui::SetDragDropPayload("COMPONENT_REF", refStr.c_str(), refStr.size() + 1);
-				ImGui::Text("Ref: %s.%s", entity.GetName().c_str(), info.displayName.c_str());
-				ImGui::EndDragDropSource();
-			}
 
 			if (removeRequested) {
 				pendingRemoval = typeId;
@@ -6404,14 +6525,89 @@ namespace Funke {
 				DispatchComponentInspector(info, entitySpan);
 				ImGuiUtils::EndComponentSection();
 			}
-		});
+		};
+
+		// Each C# component and script gets its own section among the built-ins, unless the selection's scripts differ.
+		ScriptSectionPass scriptPass;
+		const bool scriptSectionsActive = BeginScriptSections(entitySpan, scriptPass) && scriptPass.MultiEdit;
+		const ComponentOrderComponent* savedOrder = entity.HasComponent<ComponentOrderComponent>()
+			? &entity.GetComponent<ComponentOrderComponent>() : nullptr;
+		const InspectorSectionList sections = CollectInspectorSections(registry,
+			scriptSectionsActive ? &entity.GetComponent<ScriptComponent>() : nullptr,
+			savedOrder ? &savedOrder->Order : nullptr,
+			[&](const std::type_index& typeId, const ComponentInfo&) {
+				return m_InspectorCache.CommonComponentTypes.contains(typeId);
+			});
+
+		// COMPONENT_REF payloads carry the persistent UUID (not RuntimeID): reference fields write it to disk, RuntimeIDs are reallocated on reload.
+		uint64_t refEntityId = scene.GetEntityPersistentID(entity.GetHandle());
+		if (refEntityId == 0) refEntityId = entity.GetRuntimeID(); // fallback for entities with no UUIDComponent
+		const std::string refPrefix = std::to_string(refEntityId) + ":";
+		for (std::size_t i = 0; i < sections.Items.size() && !selectionInvalidatedByRevert; ++i) {
+			const InspectorSection& section = sections.Items[i];
+			if (!section.WholeScriptBlock) {
+				ImGuiUtils::SetNextComponentSectionDrag({
+					refPrefix + section.RefName,
+					"Ref: " + entity.GetName() + "." + section.RefName,
+					true,
+					i > sections.Pinned,
+					i >= sections.Pinned && i + 1 < sections.Items.size() });
+			}
+			if (section.ScriptKind == 1) DrawManagedComponentSection(scriptPass, section.ScriptIndex);
+			else if (section.ScriptKind == 2) DrawScriptSection(scriptPass, section.ScriptIndex);
+			else drawComponentSection(section.TypeId, *section.Info);
+		}
 		if (selectionInvalidatedByRevert) {
+			ImGui::EndChild();
 			ImGui::End();
 			return;
 		}
+		if (scriptSectionsActive) EndScriptSections(scriptPass);
 
 		// Copy: the inspector cache behind selectedHandles is rebuilt when components change.
 		const std::vector<EntityHandle> undoHandles = selectedHandles;
+
+		if (std::optional<ImGuiUtils::ComponentSectionMove> move = ImGuiUtils::TakeComponentSectionMove()) {
+			const auto indexOf = [&](const std::string& payload) -> std::ptrdiff_t {
+				for (std::size_t i = 0; i < sections.Items.size(); ++i) {
+					if (refPrefix + sections.Items[i].RefName == payload) return static_cast<std::ptrdiff_t>(i);
+				}
+				return -1;
+			};
+			const std::ptrdiff_t target = indexOf(move->Target);
+			const std::ptrdiff_t moved = move->Dragged.empty() ? target : indexOf(move->Dragged);
+			// Move Up / Move Down go past the neighbouring section shown here (entities of a multi-selection may have more).
+			const std::ptrdiff_t anchor = move->Dragged.empty() ? target + move->Delta : target;
+			const bool after = move->Dragged.empty() ? move->Delta > 0 : move->After;
+			const std::ptrdiff_t count = static_cast<std::ptrdiff_t>(sections.Items.size());
+			if (target >= 0 && moved >= 0 && anchor >= 0 && anchor < count && moved != anchor) {
+				const std::string& movedKey = sections.Items[moved].Key;
+				const std::string& anchorKey = sections.Items[anchor].Key;
+				StructureEditRecorder recorder(scene, undoHandles, "Reorder Components");
+				bool changed = false;
+				for (const Entity& e : selectedEntities) {
+					Entity subject = e;
+					const ComponentOrderComponent* own = subject.HasComponent<ComponentOrderComponent>()
+						? &subject.GetComponent<ComponentOrderComponent>() : nullptr;
+					const InspectorSectionList ownSections = CollectInspectorSections(registry,
+						subject.HasComponent<ScriptComponent>() ? &subject.GetComponent<ScriptComponent>() : nullptr,
+						own ? &own->Order : nullptr,
+						[&](const std::type_index&, const ComponentInfo& info) { return info.has && info.has(subject); });
+					std::vector<std::string> keys;
+					for (const InspectorSection& item : ownSections.Items) keys.push_back(item.Key);
+					std::vector<std::string> reordered = ComponentOrder::Move(keys, movedKey, anchorKey, after, ownSections.Pinned);
+					if (reordered == keys) continue;
+					if (!subject.HasComponent<ComponentOrderComponent>()) subject.AddComponent<ComponentOrderComponent>();
+					subject.GetComponent<ComponentOrderComponent>().Order = std::move(reordered);
+					changed = true;
+				}
+				if (changed) {
+					scene.MarkDirty();
+					PushStructureUndo(scene, recorder.Finish(scene, undoHandles));
+					++m_SelectionVersion;
+				}
+			}
+		}
 
 		if (pendingRemoval != typeid(void)) {
 			StructureEditRecorder recorder(scene, undoHandles, "Remove Component");
@@ -6490,6 +6686,7 @@ namespace Funke {
 		if (addComponentChanged || scriptDroppedSomething) {
 			++m_SelectionVersion;
 		}
+		ImGui::EndChild();
 
 		// IsAnyItemActive fires on focus/click; ActiveIdHasBeenEditedThisFrame only fires on real value edits (drag step, keystroke).
 		if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) {

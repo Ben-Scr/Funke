@@ -65,6 +65,7 @@ function IsFunkeFeatureModuleEnabled(moduleId)
     error("Unknown engine feature module '" .. tostring(moduleId) .. "'")
 end
 
+include "premake/compat.lua"
 include "premake/architecture.lua"
 
 workspace "Funke"
@@ -114,7 +115,7 @@ workspace "Funke"
         buildoptions { "-Wno-changes-meaning" }
 
     filter "system:linux"
-        -- Every Linux artifact ultimately links into libIndex-Engine.so, so all
+        -- Every Linux artifact ultimately links into libFunke-Engine.so, so all
         -- static deps (ImGui, Box2D, glad, ...) must be position-
         -- independent. Set it workspace-wide so no dependency is missed (Tracy
         -- already sets it locally; this is harmless there).
@@ -643,7 +644,7 @@ if os.target() == "windows" then
         '" "%{cfg.targetdir}/EngineSDK" "' .. ROOT_DIR ..
         '" "' .. path.join(ROOT_DIR, "bin/" .. outputdir) .. '"'
 else
-    CopyEngineSdk = 'python3 "' .. path.join(ROOT_DIR, "scripts/CopyEngineSdk.py") ..
+    CopyEngineSdk = FunkePython() .. ' "' .. path.join(ROOT_DIR, "scripts/CopyEngineSdk.py") ..
         '" "%{cfg.targetdir}/EngineSDK" "' .. ROOT_DIR ..
         '" "' .. path.join(ROOT_DIR, "bin/" .. outputdir) .. '"'
 end
@@ -885,10 +886,14 @@ if FunkeModules.Render then
 
         UseDependencySet(Dependency.ImGui)
 
+        -- The WebGPU backend's surface helper uses Cocoa / CAMetalLayer on macOS.
+        filter { "system:macosx", "files:**/imgui_impl_wgpu.cpp" }
+            compileas "Objective-C++"
+
         filter "system:windows"
             -- See Funke-Engine/premake5.lua for the rationale on
             -- MultiProcessorCompile + /Zc:preprocessor.
-            flags { "MultiProcessorCompile" }
+            FunkeMultiProcessorCompile()
             buildoptions { "/FS", "/Zc:preprocessor" }
             systemversion "latest"
 
@@ -939,7 +944,7 @@ if FunkeModules.Editor and not FunkeVariantRoot then
         }
 
         filter "system:windows"
-            flags { "MultiProcessorCompile" }
+            FunkeMultiProcessorCompile()
             buildoptions { "/FS", "/Zc:preprocessor" }
             systemversion "latest"
 
@@ -999,7 +1004,7 @@ elseif not FunkeCoreValidationRoot and FunkeModules.Scripting then
         targetdir ("bin/" .. outputdir .. "/%{prj.name}")
         objdir ("bin-int/" .. outputdir .. "/%{prj.name}")
         buildcommands {
-            'python3 "' .. path.join(ROOT_DIR, "scripts/BuildManaged.py") .. '" --configuration %{cfg.buildcfg}'
+            FunkePython() .. ' "' .. path.join(ROOT_DIR, "scripts/BuildManaged.py") .. '" --configuration %{cfg.buildcfg}'
                 .. ' --output-dir "' .. path.join(ROOT_DIR, "bin/" .. outputdir) .. '"'
                 .. ' --intermediate-dir "' .. path.join(ROOT_DIR, "bin-int/" .. outputdir) .. '"'
         }

@@ -1200,6 +1200,36 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<int> Application_IsAutomatedRun;
     public delegate* unmanaged<ulong, float*, int, void> TextRenderer_GetEffects;
     public delegate* unmanaged<ulong, float*, int, void> TextRenderer_SetEffects;
+
+    // ── 2D joints, collider density, polygon paths, gravity (appended for binary compat) ──
+    public delegate* unmanaged<ulong, int, float*, int, int> Joint2D_Get;
+    public delegate* unmanaged<ulong, int, float*, int, void> Joint2D_Set;
+    public delegate* unmanaged<ulong, int, ulong> Joint2D_GetConnectedBody;
+    public delegate* unmanaged<ulong, int, ulong, void> Joint2D_SetConnectedBody;
+    public delegate* unmanaged<ulong, int, float*, int, void> Joint2D_GetState;
+    public delegate* unmanaged<ulong, int, float> Collider2D_GetDensity;
+    public delegate* unmanaged<ulong, int, float, void> Collider2D_SetDensity;
+    public delegate* unmanaged<ulong, int> PolygonCollider2D_GetPathCount;
+    public delegate* unmanaged<ulong, int, float*, int, int> PolygonCollider2D_GetPath;
+    public delegate* unmanaged<ulong, float*, int*, int, void> PolygonCollider2D_SetPaths;
+    public delegate* unmanaged<float*, float*, void> Physics2D_GetGravity;
+    public delegate* unmanaged<float, float, void> Physics2D_SetGravity;
+
+    // ── Terrain renderer 2D (appended for binary compat) ──
+    public delegate* unmanaged<ulong, float*, int, void> TerrainRenderer2D_Get;
+    public delegate* unmanaged<ulong, float*, int, void> TerrainRenderer2D_Set;
+    public delegate* unmanaged<ulong, float*, int, int> TerrainRenderer2D_GetPoints;
+    public delegate* unmanaged<ulong, float*, int, void> TerrainRenderer2D_SetPoints;
+    public delegate* unmanaged<ulong, int, ulong> TerrainRenderer2D_GetTexture;
+    public delegate* unmanaged<ulong, int, ulong, void> TerrainRenderer2D_SetTexture;
+
+    // ── Rigidbody2D dynamics (appended for binary compat) ──
+    public delegate* unmanaged<ulong, float*, int, void> Rigidbody2D_GetDynamics;
+    public delegate* unmanaged<ulong, float*, int, void> Rigidbody2D_SetDynamics;
+    public delegate* unmanaged<ulong, int, float, float, float, float, int, void> Rigidbody2D_ApplyAtPoint;
+    public delegate* unmanaged<ulong, int, float, int, void> Rigidbody2D_ApplyAngular;
+    public delegate* unmanaged<ulong, int, int> Collider2D_GetGroupIndex;
+    public delegate* unmanaged<ulong, int, int, void> Collider2D_SetGroupIndex;
 }
 
 internal static unsafe class NativeCallbacks

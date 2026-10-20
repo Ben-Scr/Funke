@@ -78,6 +78,15 @@ namespace Funke {
 		bool EnableTextureManager = FUNKE_DEFAULT_ENABLE_TEXTURE_MANAGER != 0;
 		bool EnableShaderManager = FUNKE_DEFAULT_ENABLE_SHADER_MANAGER != 0;
 		bool EnablePackageHost = FUNKE_DEFAULT_ENABLE_PACKAGE_HOST != 0;
+		// Off: no SceneManager initialization, component registry or startup scenes; ConfigureScenes isn't called.
+		// For hosts that only draw their own UI (launcher).
+		bool EnableScenes = true;
+		// Off: no worker threads; JobSystem::Enqueue then runs jobs inline on the caller.
+		bool EnableJobSystem = true;
+		// Off: no frame/persistent arenas (only the scene renderers and gizmos allocate from them).
+		bool EnableFrameArenas = true;
+		// Off: built-in FunkeAssets aren't registered by GUID, so funke: assets and asset pickers can't resolve them.
+		bool RegisterBuiltInAssets = true;
 		bool AutoCreateDefaultCamera2D = true;
 		bool SetWindowIcon = FUNKE_DEFAULT_SET_WINDOW_ICON != 0;
 		bool Vsync = FUNKE_DEFAULT_ENABLE_VSYNC != 0;

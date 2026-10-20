@@ -1145,10 +1145,46 @@ namespace Funke::ImGuiUtils {
 		return activated;
 	}
 
+	namespace {
+		std::optional<ComponentSectionDrag> s_NextSectionDrag;
+		std::optional<ComponentSectionMove> s_SectionMove;
+		// Set while a dragged section hovers the lower half of a header: the insertion line goes under that
+		// whole section, so it is drawn where the section ends.
+		bool s_DrawDropLineAtSectionEnd = false;
+
+		std::string_view PayloadEntityPart(std::string_view payload) {
+			const size_t separator = payload.find(':');
+			return separator == std::string_view::npos ? std::string_view{} : payload.substr(0, separator);
+		}
+
+		void DrawSectionDropLine(float y) {
+			const ImVec2 min = ImGui::GetWindowPos();
+			const float left = min.x + ImGui::GetWindowContentRegionMin().x;
+			const float right = min.x + ImGui::GetWindowContentRegionMax().x;
+			ImGui::GetWindowDrawList()->AddLine(ImVec2(left, y), ImVec2(right, y),
+				ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);
+		}
+
+		void FinishSectionDropLine() {
+			if (!s_DrawDropLineAtSectionEnd) return;
+			s_DrawDropLineAtSectionEnd = false;
+			DrawSectionDropLine(ImGui::GetCursorScreenPos().y - ImGui::GetStyle().ItemSpacing.y * 0.5f);
+		}
+	}
+
+	void SetNextComponentSectionDrag(ComponentSectionDrag drag) {
+		s_NextSectionDrag = std::move(drag);
+	}
+
+	std::optional<ComponentSectionMove> TakeComponentSectionMove() {
+		return std::exchange(s_SectionMove, std::nullopt);
+	}
+
 	bool BeginComponentSection(const char* label, bool& removeRequested, const std::function<void()>& contextMenu,
 		std::string_view icon, bool overridden)
 	{
 		removeRequested = false;
+		const std::optional<ComponentSectionDrag> drag = std::exchange(s_NextSectionDrag, std::nullopt);
 
 		ImGui::PushID(label);
 
@@ -1184,6 +1220,32 @@ namespace Funke::ImGuiUtils {
 		ImGui::PopStyleVar(2);
 		ImGui::PopStyleColor(3);
 
+		bool dropLineAtEnd = false;
+		if (drag && !drag->Payload.empty()) {
+			if (ImGui::BeginDragDropSource()) {
+				ImGui::SetDragDropPayload("COMPONENT_REF", drag->Payload.c_str(), drag->Payload.size() + 1);
+				ImGui::TextUnformatted(drag->Tooltip.empty() ? label : drag->Tooltip.c_str());
+				ImGui::EndDragDropSource();
+			}
+			if (drag->Reorderable && ImGui::BeginDragDropTarget()) {
+				const ImGuiPayload* peek = ImGui::GetDragDropPayload();
+				std::string dragged = peek && peek->IsDataType("COMPONENT_REF")
+					? std::string(static_cast<const char*>(peek->Data), static_cast<size_t>(peek->DataSize)) : std::string();
+				if (!dragged.empty() && dragged.back() == '\0') dragged.pop_back();
+				if (!dragged.empty() && dragged != drag->Payload
+					&& PayloadEntityPart(dragged) == PayloadEntityPart(drag->Payload)) {
+					const bool after = ImGui::GetMousePos().y > (headerMin.y + headerMax.y) * 0.5f;
+					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("COMPONENT_REF",
+							ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
+						if (after) dropLineAtEnd = true;
+						else DrawSectionDropLine(headerMin.y - ImGui::GetStyle().ItemSpacing.y * 0.5f);
+						if (payload->IsDelivery()) s_SectionMove = ComponentSectionMove{ drag->Payload, dragged, 0, after };
+					}
+				}
+				ImGui::EndDragDropTarget();
+			}
+		}
+
 		ImDrawList* headerDraw = ImGui::GetWindowDrawList();
 		const float headerH = headerMax.y - headerMin.y;
 		// Same offset ImGui uses for a framed tree node's label (arrow + 3x frame padding).
@@ -1205,6 +1267,15 @@ namespace Funke::ImGuiUtils {
 		}
 
 		if (ImGui::BeginPopupContextItem("ComponentContext")) {
+			if (drag && drag->Reorderable) {
+				if (ImGui::MenuItem("Move Up", nullptr, false, drag->CanMoveUp)) {
+					s_SectionMove = ComponentSectionMove{ drag->Payload, {}, -1, false };
+				}
+				if (ImGui::MenuItem("Move Down", nullptr, false, drag->CanMoveDown)) {
+					s_SectionMove = ComponentSectionMove{ drag->Payload, {}, 1, false };
+				}
+				ImGui::Separator();
+			}
 			if (contextMenu) {
 				contextMenu();
 				ImGui::Separator();
@@ -1245,6 +1316,7 @@ namespace Funke::ImGuiUtils {
 			ImGui::SetCursorScreenPos(resume);
 		}
 
+		s_DrawDropLineAtSectionEnd = dropLineAtEnd;
 		if (open) {
 			ImGui::Dummy(ImVec2(0.0f, 2.0f));
 			ImGui::Indent(8.0f);
@@ -1252,6 +1324,7 @@ namespace Funke::ImGuiUtils {
 		else {
 			EditorUI::EndCard(headerMax.y);
 			ImGui::Dummy(ImVec2(0.0f, 2.0f));
+			FinishSectionDropLine();
 			ImGui::PopID();
 		}
 
@@ -1264,6 +1337,7 @@ namespace Funke::ImGuiUtils {
 		ImGui::Dummy(ImVec2(0.0f, 2.0f));
 		EditorUI::EndCard();
 		ImGui::Spacing();
+		FinishSectionDropLine();
 		ImGui::PopID();
 	}
 }

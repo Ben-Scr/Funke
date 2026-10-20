@@ -1131,26 +1131,15 @@ namespace Funke {
 	
 			if (scene.HasComponent<PolygonCollider2DComponent>(m_SelectedEntity)) {
 				auto& collider = scene.GetComponent<PolygonCollider2DComponent>(m_SelectedEntity);
-				// A live shape gives hull vertices in entity-local space; a detached
-				// prefab-edit scene has none (GetWorldPoints() empty), so rebuild the local
-				// outline from the authored points exactly as RebuildPolygon does
-				// (points * transform.scale * localSize + center) so the gizmo still draws.
-				std::vector<Vec2> worldPoints = collider.GetWorldPoints();
-				if (worldPoints.empty()) {
-					const std::vector<Vec2>& localPoints = collider.GetLocalPoints();
-					const Vec2 localSize = collider.GetSize();
-					const Vec2 center = collider.GetCenter();
-					worldPoints.reserve(localPoints.size());
-					for (const Vec2& p : localPoints) {
-						worldPoints.push_back(Vec2{
-							p.x * transform.Scale.x * localSize.x + center.x,
-							p.y * transform.Scale.y * localSize.y + center.y });
-					}
-				}
-				if (worldPoints.size() >= 3) {
-					Gizmo::SetColor(Color(0.20f, 1.0f, 0.35f, 1.0f));
-					Gizmo::SetLineWidth(2.0f);
-					const float rot = transform.Rotation;
+				// A live shape gives its convex pieces in entity-local space; a detached
+				// prefab-edit scene has none, so decompose the authored paths the same way.
+				std::vector<std::vector<Vec2>> pieces = collider.GetShapePolygons();
+				if (pieces.empty()) pieces = collider.ComputeLocalPieces(transform.Scale);
+				Gizmo::SetColor(Color(0.20f, 1.0f, 0.35f, 1.0f));
+				Gizmo::SetLineWidth(2.0f);
+				const float rot = transform.Rotation;
+				for (const std::vector<Vec2>& worldPoints : pieces) {
+					if (worldPoints.size() < 3) continue;
 					for (size_t i = 0; i < worldPoints.size(); ++i) {
 						const Vec2 a = transform.Position + Vector::Rotated(worldPoints[i], rot);
 						const Vec2 b = transform.Position + Vector::Rotated(worldPoints[(i + 1) % worldPoints.size()], rot);

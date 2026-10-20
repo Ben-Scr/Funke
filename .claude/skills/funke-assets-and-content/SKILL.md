@@ -14,7 +14,7 @@ Content in Funke is **discovered, not imported**: drop a file into the project's
   | Kind | Extensions | Use |
   |---|---|---|
   | Texture | `.png .jpg .jpeg .bmp .tga` | sprites/images |
-  | Audio | `.wav .mp3 .flac` (`.ogg` is recognized but can't be decoded) | sfx/music |
+  | Audio | `.wav .mp3 .ogg .flac` (Ogg Vorbis; Opus can't be decoded) | sfx/music |
   | Font | `.ttf .otf` | text |
   | Scene | `.scene` | a level/screen |
   | Prefab | `.prefab` | reusable entity |

@@ -26,7 +26,9 @@ namespace Funke {
 			if (!tr) return;
 
 			const bool ownedByPhysics = PhysicsSystem2D::IsTransformOwnedByPhysics(registry, entity);
-			if (!ownedByPhysics) {
+			// A body's pending local edit (load, instantiation under a moved parent) gets its world pose now so scripts
+			// read it before the physics sync; the dirty flag stays set for that sync to move the body.
+			if (!ownedByPhysics || tr->IsDirty()) {
 				if (parentWorld) {
 					tr->Position = parentWorld->TransformPoint(tr->LocalPosition);
 					tr->Rotation = parentWorld->Rotation + tr->LocalRotation;

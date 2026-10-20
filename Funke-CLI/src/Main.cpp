@@ -111,6 +111,8 @@ working directory's project) open, the only one running, or --pid <n>.
   key <name> [--hold <s>]       Space, A, Enter, Left, F1, ...
   open-scene <name|path.scene> [--save | --discard]
   save-scene
+  select <entity name|id> | select --clear
+                                Selects an entity like a Hierarchy click (Inspector, gizmos)
   surface <WxH> | surface --clear
   logs [--since <n>] [--level warning] [--tail <n>] [--contains <text>] [--follow]
 

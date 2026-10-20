@@ -165,13 +165,13 @@ Per-module flags (only meaningful with `--module-profile=custom`, or implicitly 
 
 - `--with-render` — Selects Dawn/WebGPU, `Graphics/`, `Gui/GuiRenderer`, and particle/gizmo systems. Partial custom profiles are not currently supported, so this must be combined with `--with-editor`.
 - `--with-audio` — Selects miniaudio, `Audio/`, `Components/Audio/`, and `AudioUpdateSystem`. Partial custom profiles are not currently supported, so this must be combined with `--with-editor`.
-- `--with-physics` — Selects Box2D, Index-Physics, `Physics/`, and `Components/Physics/`. Partial custom profiles are not currently supported, so this must be combined with `--with-editor`.
+- `--with-physics` — Selects Box2D, Jolt, `Physics/`, and `Components/Physics/`. Partial custom profiles are not currently supported, so this must be combined with `--with-editor`.
 - `--with-scripting` — Selects the .NET host, `Scripting/`, `Funke-ScriptCore`, and `Funke-Sandbox` projects. Custom profiles must also pass `--with-editor`.
 - `--with-editor` — ImGui static lib. Implicitly turns on render, audio, physics, and scripting (the editor depends on all of them).
 
 Engine feature modules (`Funke.2D`, `Funke.3D`; source lists in [`EngineModules.json`](EngineModules.json), also read by `cmake/FunkeEngine.cmake`) are switched off per runtime variant rather than per profile:
 
-- `--without-2d`, `--without-3d` — Generate an isolated workspace in `premake/generated/variant-<modules>` (Engine, EditorRuntime, Runtime and their dependencies only) that builds into `bin/<cfg>-<system>-<arch>-<modules>` with `FUNKE_WITH_2D=0` / `FUNKE_WITH_3D=0`, without the module's sources and without Box2D/Index-Physics (2D) or Jolt (3D). The game builder generates and builds these for projects that leave a module out; see [Engine Modules](../Github-Docs/Documentation/Engine-Core/Engine-Modules.md).
+- `--without-2d`, `--without-3d` — Generate an isolated workspace in `premake/generated/variant-<modules>` (Engine, EditorRuntime, Runtime and their dependencies only) that builds into `bin/<cfg>-<system>-<arch>-<modules>` with `FUNKE_WITH_2D=0` / `FUNKE_WITH_3D=0`, without the module's sources and without Box2D (2D) or Jolt (3D). The game builder generates and builds these for projects that leave a module out; see [Engine Modules](../Github-Docs/Documentation/Engine-Core/Engine-Modules.md).
 
 Other build-shaping flags:
 

@@ -97,6 +97,7 @@ Funke ships a large set of components, grouped by area. Here are the main ones:
 **Physics**
 - `Rigidbody2D` — makes an entity participate in physics.
 - `BoxCollider2D`, `CircleCollider2D`, `PolygonCollider2D` — collision shapes.
+- `RevoluteJoint2D`, `PrismaticJoint2D`, `WeldJoint2D` — connect two bodies (see [Physics 2D](Physics-2D.md)).
 - `Rigidbody3D`, `BoxCollider3D`, `SphereCollider3D`, `CapsuleCollider3D`, `MeshCollider3D` — the 3D equivalents (Jolt Physics, see [Physics 3D](Physics-3D.md)).
 
 **UI**

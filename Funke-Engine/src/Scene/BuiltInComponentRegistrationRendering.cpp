@@ -14,6 +14,7 @@
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteAnimator2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#include "Components/Graphics/TerrainRenderer2DComponent.hpp"
 #include "Physics/PhysicsTypes.hpp"
 #endif
 
@@ -33,6 +34,22 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 	}
 
 	namespace {
+		Json::Value ColorToJsonArray(const Color& c) {
+			Json::Value a = Json::Value::MakeArray();
+			a.Append(Json::Value(c.r));
+			a.Append(Json::Value(c.g));
+			a.Append(Json::Value(c.b));
+			a.Append(Json::Value(c.a));
+			return a;
+		}
+
+		Color ColorFromJsonArray(const Json::Value& v, const Color& fallback) {
+			if (!v.IsArray() || v.GetArray().size() < 4) return fallback;
+			const auto& a = v.GetArray();
+			return Color{ static_cast<float>(a[0].AsDoubleOr(fallback.r)), static_cast<float>(a[1].AsDoubleOr(fallback.g)),
+				static_cast<float>(a[2].AsDoubleOr(fallback.b)), static_cast<float>(a[3].AsDoubleOr(fallback.a)) };
+		}
+
 		bool IsSlicedImage(const Entity& e) {
 			return e.GetComponent<ImageComponent>().Type != ImageType::Simple;
 		}
@@ -496,6 +513,110 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 					animator.PlayOnStart = playOnStart ? playOnStart->AsBoolOr(true) : true;
 				};
 			});
+
+		{
+			using T = TerrainRenderer2DComponent;
+			const auto textureRef = [](const char* name, const char* display, uint64_t T::* member) {
+				PropertyMetadata meta;
+				meta.SuppressTextureSlices = true;
+				return Properties::MakeTextureRef(name, display,
+					[member](const Entity& e) { return e.GetComponent<T>().*member; },
+					[member](Entity& e, uint64_t id) { e.GetComponent<T>().*member = id; },
+					std::move(meta));
+			};
+			ComponentInfo info{ "Terrain Renderer 2D", "Rendering", ComponentCategory::Component };
+			info.serializedName = "TerrainRenderer2D";
+			info.properties = {
+				Properties::MakeWith<int>("PointCount", "Points",
+					[](const Entity& e) { return static_cast<int>(e.GetComponent<T>().Points.size()); },
+					[](Entity&, int) {},
+					Properties::Meta::ReadOnly().WithTooltip("Surface points, set by a generator (scene file) or from C# (SetPoints).")),
+				textureRef("FillTexture", "Fill Texture", &T::FillTexture),
+				Properties::Make("FillColor", "Fill Color", &T::FillColor),
+				Properties::Make("FillTileSize", "Fill Tile Size", &T::FillTileSize, Properties::Meta::DragSpeed(0.05f)),
+				Properties::Make("FillMapping", "Fill Mapping", &T::FillMapping),
+				Properties::Make("FillDepth", "Fill Depth", &T::FillDepth, Properties::Meta::DragSpeed(0.1f).WithDragMin(0.0)),
+				textureRef("EdgeTexture", "Edge Texture", &T::EdgeTexture),
+				Properties::Make("EdgeColor", "Edge Color", &T::EdgeColor),
+				Properties::Make("EdgeThickness", "Edge Thickness", &T::EdgeThickness, Properties::Meta::DragSpeed(0.01f).WithDragMin(0.0)),
+				Properties::Make("EdgeOffset", "Edge Offset", &T::EdgeOffset, Properties::Meta::DragSpeed(0.01f)),
+				Properties::Make("EdgeTileLength", "Edge Tile Length", &T::EdgeTileLength, Properties::Meta::DragSpeed(0.05f).WithDragMin(0.001)),
+				Properties::Make("EdgeTextureOffset", "Edge Texture Offset", &T::EdgeTextureOffset, Properties::Meta::DragSpeed(0.01f)),
+				Properties::Make("SortingLayer", "Sorting Layer", &T::SortingLayer),
+				Properties::Make("SortingOrder", "Sorting Order", &T::SortingOrder),
+				Properties::Make("EdgeSortingOrder", "Edge Sorting Order", &T::EdgeSortingOrder),
+			};
+			info.serialize = [](Entity e) -> Json::Value {
+				const auto& t = e.GetComponent<T>();
+				Json::Value v = Json::Value::MakeObject();
+				Json::Value points = Json::Value::MakeArray();
+				for (const Vec2& p : t.Points) {
+					points.Append(Json::Value(p.x));
+					points.Append(Json::Value(p.y));
+				}
+				v.AddMember("points", std::move(points));
+				v.AddMember("fillTexture", Json::Value(std::to_string(t.FillTexture)));
+				v.AddMember("fillColor", ColorToJsonArray(t.FillColor));
+				v.AddMember("fillTileX", Json::Value(t.FillTileSize.x));
+				v.AddMember("fillTileY", Json::Value(t.FillTileSize.y));
+				v.AddMember("fillMapping", Json::Value(static_cast<int>(t.FillMapping)));
+				v.AddMember("fillDepth", Json::Value(t.FillDepth));
+				v.AddMember("edgeTexture", Json::Value(std::to_string(t.EdgeTexture)));
+				v.AddMember("edgeColor", ColorToJsonArray(t.EdgeColor));
+				v.AddMember("edgeThickness", Json::Value(t.EdgeThickness));
+				v.AddMember("edgeOffset", Json::Value(t.EdgeOffset));
+				v.AddMember("edgeTileLength", Json::Value(t.EdgeTileLength));
+				if (t.EdgeTextureOffset != 0.0f) v.AddMember("edgeTextureOffset", Json::Value(t.EdgeTextureOffset));
+				v.AddMember("sortLayer", Json::Value(static_cast<int>(t.SortingLayer)));
+				v.AddMember("sortOrder", Json::Value(static_cast<int>(t.SortingOrder)));
+				v.AddMember("edgeSortOrder", Json::Value(static_cast<int>(t.EdgeSortingOrder)));
+				return v;
+			};
+			info.deserialize = [](Entity e, const Json::Value& v) {
+				auto& t = e.GetComponent<T>();
+				const T d{};
+				const auto num = [&v](const char* key, double fallback) {
+					const Json::Value* m = v.FindMember(key);
+					return m ? m->AsDoubleOr(fallback) : fallback;
+				};
+				const auto guid = [&v](const char* key) -> uint64_t {
+					const Json::Value* m = v.FindMember(key);
+					if (!m) return 0;
+					if (m->IsString()) {
+						try { return std::stoull(m->AsStringOr("0")); } catch (...) { return 0; }
+					}
+					return static_cast<uint64_t>(m->AsDoubleOr(0.0));
+				};
+				t.Points.clear();
+				if (const Json::Value* points = v.FindMember("points"); points && points->IsArray()) {
+					const auto& arr = points->GetArray();
+					const size_t count = std::min<size_t>(arr.size() / 2, 1u << 20);
+					t.Points.reserve(count);
+					for (size_t i = 0; i < count; ++i) {
+						t.Points.push_back(Vec2{ static_cast<float>(arr[i * 2].AsDoubleOr(0.0)), static_cast<float>(arr[i * 2 + 1].AsDoubleOr(0.0)) });
+					}
+				}
+				t.FillTexture = guid("fillTexture");
+				t.FillColor = d.FillColor;
+				if (const Json::Value* m = v.FindMember("fillColor")) t.FillColor = ColorFromJsonArray(*m, d.FillColor);
+				t.FillTileSize = { static_cast<float>(num("fillTileX", d.FillTileSize.x)), static_cast<float>(num("fillTileY", d.FillTileSize.y)) };
+				t.FillMapping = static_cast<int>(num("fillMapping", 0)) == 1 ? TerrainFillMapping::Draped : TerrainFillMapping::World;
+				t.FillDepth = static_cast<float>(num("fillDepth", d.FillDepth));
+				t.EdgeTexture = guid("edgeTexture");
+				t.EdgeColor = d.EdgeColor;
+				if (const Json::Value* m = v.FindMember("edgeColor")) t.EdgeColor = ColorFromJsonArray(*m, d.EdgeColor);
+				t.EdgeThickness = static_cast<float>(num("edgeThickness", d.EdgeThickness));
+				t.EdgeOffset = static_cast<float>(num("edgeOffset", d.EdgeOffset));
+				t.EdgeTileLength = static_cast<float>(num("edgeTileLength", d.EdgeTileLength));
+				t.EdgeTextureOffset = static_cast<float>(num("edgeTextureOffset", d.EdgeTextureOffset));
+				t.SortingLayer = static_cast<uint8_t>(std::clamp(static_cast<int>(num("sortLayer", d.SortingLayer)), 0, 255));
+				t.SortingOrder = static_cast<short>(std::clamp(static_cast<int>(num("sortOrder", d.SortingOrder)), -32768, 32767));
+				t.EdgeSortingOrder = static_cast<short>(std::clamp(static_cast<int>(num("edgeSortOrder", d.EdgeSortingOrder)), -32768, 32767));
+				t.ResolvedFillId = 0;
+				t.ResolvedEdgeId = 0;
+			};
+			registry.Register<T>(info);
+		}
 
 		// Custom copyTo: default value-copy would carry source entity's cached scene/entity pointers; RebindEmitter re-points the copy at its own entity.
 		registry.ForEachComponentInfo(

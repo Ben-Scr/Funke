@@ -11,6 +11,7 @@
 #include "Physics/PhysicsSystem2D.hpp"
 #include "Physics/Box2DWorld.hpp"
 #include "Physics/Collision2D.hpp"
+#include "Physics/Joints2D.hpp"
 
 #include "Core/Application.hpp"
 #include "Profiling/Profiler.hpp"
@@ -76,6 +77,23 @@ namespace Funke {
 		tf.Rotation = parentTf->Rotation + tf.LocalRotation;
 		tf.Scale = { parentTf->Scale.x * tf.LocalScale.x,
 					 parentTf->Scale.y * tf.LocalScale.y };
+	}
+
+	void PhysicsSystem2D::ComposeWorldFromLocalChain(entt::registry& registry, EntityHandle entity, Transform2DComponent& tf) {
+		constexpr int k_MaxDepth = 1024;
+		std::vector<std::pair<EntityHandle, Transform2DComponent*>> chain;
+		EntityHandle current = entity;
+		Transform2DComponent* currentTf = &tf;
+		while (currentTf && static_cast<int>(chain.size()) < k_MaxDepth) {
+			chain.emplace_back(current, currentTf);
+			const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(current);
+			current = hierarchy ? hierarchy->Parent : entt::null;
+			currentTf = current != entt::null ? registry.try_get<Transform2DComponent>(current) : nullptr;
+			if (currentTf && !currentTf->IsDirty()) break;          // a clean parent already holds its world pose
+		}
+		for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+			ComposeWorldFromLocal(registry, it->first, *it->second);
+		}
 	}
 
 	void PhysicsSystem2D::DecomposeWorldToLocal(entt::registry& registry, EntityHandle entity, Transform2DComponent& tf) {
@@ -148,21 +166,29 @@ namespace Funke {
 				}
 			}
 
-			// Clear dirty for collider-only entities (no body sync touched them).
-			for (auto [ent, box, tf] : registry.view<BoxCollider2DComponent, Transform2DComponent>(entt::exclude<DisabledTag, Rigidbody2DComponent>).each()) {
-				if (tf.IsDirty()) {
-					tf.ClearDirty();
+			// A collider without a Rigidbody2D owns a static body: it follows its transform (prefabs spawned at a
+			// position, moved parents, scripts), then the dirty flag is consumed.
+			const auto moveStaticBody = [&registry](EntityHandle ent, Collider2D& collider, Transform2DComponent& tf) {
+				if (!tf.IsDirty()) return;
+				if (collider.IsValid()) {
+					ComposeWorldFromLocalChain(registry, ent, tf);
+					collider.SetTransform(tf);
 				}
+				tf.ClearDirty();
+			};
+			for (auto [ent, box, tf] : registry.view<BoxCollider2DComponent, Transform2DComponent>(entt::exclude<DisabledTag, Rigidbody2DComponent>).each()) {
+				moveStaticBody(ent, box, tf);
 			}
 			for (auto [ent, circle, tf] : registry.view<CircleCollider2DComponent, Transform2DComponent>(entt::exclude<DisabledTag, Rigidbody2DComponent>).each()) {
-				if (tf.IsDirty()) {
-					tf.ClearDirty();
-				}
+				moveStaticBody(ent, circle, tf);
 			}
 			for (auto [ent, poly, tf] : registry.view<PolygonCollider2DComponent, Transform2DComponent>(entt::exclude<DisabledTag, Rigidbody2DComponent>).each()) {
-				if (tf.IsDirty()) {
-					tf.ClearDirty();
-				}
+				moveStaticBody(ent, poly, tf);
+			}
+
+			// Joints only exist during play: their reference poses come from the bodies when they are built.
+			if (Application::GetIsPlaying() && s_MainWorld) {
+				Joints2D::Sync(scene, *s_MainWorld);
 			}
 		});
 	}

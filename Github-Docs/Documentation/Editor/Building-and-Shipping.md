@@ -19,7 +19,7 @@ What the build produces:
 | Platform | Output |
 |---|---|
 | Windows | `<Name>.exe` with `Funke-Engine.dll`, `SDL3.dll`, `nethost.dll` and the game content next to it. |
-| Linux | `<Name>` (executable) with `libIndex-Engine.so`, `libSDL3.so.0`, `libwebgpu_dawn.so` and the game content next to it. Ship the folder, e.g. as a `.tar.gz`. |
+| Linux | `<Name>` (executable) with `libFunke-Engine.so`, `libSDL3.so.0`, `libwebgpu_dawn.so` and the game content next to it. Ship the folder, e.g. as a `.tar.gz`. |
 | macOS | `<Name>.app`: the executable and libraries in `Contents/MacOS`, the game content in `Contents/Resources`, an `Info.plist` with the app id and version, and the icon as `AppIcon.icns`. The bundle is ad-hoc signed; sign and notarize it with your Developer ID before distributing it outside your own Macs. |
 
 From a source checkout the editor compiles a fresh runtime for the export first (MSBuild on Windows, `make` on Linux and macOS). That runtime contains only the [engine modules](../Engine-Core/Engine-Modules.md) the project enables, so a 2D game ships without the 3D renderer and Jolt and a 3D game without sprites and Box2D. The first export with a new module set compiles the engine once. A build stops when a shipped scene uses a component of a module the project leaves out.

@@ -10,6 +10,10 @@ namespace Funke {
         Vec2 Position{};
         Vec2 Scale{ 1.0f, 1.0f };
         float Rotation{ 0.0f };
+        // Vertical shear before rotation (y += x * Shear, in scaled units) and the matching V shift across the quad;
+        // TerrainRenderer2D draws its segments as sheared quads so neighbours share their edges.
+        float Shear{ 0.0f };
+        float UvShear{ 0.0f };
         Color Color{};
         TextureHandle TextureHandle{};
         short SortingOrder{ 0 };

@@ -1054,6 +1054,68 @@ internal static unsafe class InternalCalls
     {
         fixed (float* p = values) NativeCallbacks.Bindings.TextRenderer_GetEffects(id, p, values.Length);
     }
+    internal static int Joint2D_Get(ulong id, int kind, Span<float> values)
+    {
+        fixed (float* p = values) return NativeCallbacks.Bindings.Joint2D_Get(id, kind, p, values.Length);
+    }
+    internal static void Joint2D_Set(ulong id, int kind, ReadOnlySpan<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.Joint2D_Set(id, kind, p, values.Length);
+    }
+    internal static ulong Joint2D_GetConnectedBody(ulong id, int kind) => NativeCallbacks.Bindings.Joint2D_GetConnectedBody(id, kind);
+    internal static void Joint2D_SetConnectedBody(ulong id, int kind, ulong connected) => NativeCallbacks.Bindings.Joint2D_SetConnectedBody(id, kind, connected);
+    internal static void Joint2D_GetState(ulong id, int kind, Span<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.Joint2D_GetState(id, kind, p, values.Length);
+    }
+    internal static float Collider2D_GetDensity(ulong id, int type) => NativeCallbacks.Bindings.Collider2D_GetDensity(id, type);
+    internal static void Collider2D_SetDensity(ulong id, int type, float v) => NativeCallbacks.Bindings.Collider2D_SetDensity(id, type, v);
+    internal static int PolygonCollider2D_GetPathCount(ulong id) => NativeCallbacks.Bindings.PolygonCollider2D_GetPathCount(id);
+    internal static int PolygonCollider2D_GetPath(ulong id, int index, Span<float> outPoints)
+    {
+        fixed (float* p = outPoints) return NativeCallbacks.Bindings.PolygonCollider2D_GetPath(id, index, p, outPoints.Length / 2);
+    }
+    internal static void PolygonCollider2D_SetPaths(ulong id, ReadOnlySpan<float> points, ReadOnlySpan<int> counts)
+    {
+        fixed (float* p = points)
+        fixed (int* c = counts)
+            NativeCallbacks.Bindings.PolygonCollider2D_SetPaths(id, p, c, counts.Length);
+    }
+    internal static void Physics2D_GetGravity(out float x, out float y) { float ox, oy; NativeCallbacks.Bindings.Physics2D_GetGravity(&ox, &oy); x = ox; y = oy; }
+    internal static void Physics2D_SetGravity(float x, float y) => NativeCallbacks.Bindings.Physics2D_SetGravity(x, y);
+    internal static void TerrainRenderer2D_Get(ulong id, Span<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.TerrainRenderer2D_Get(id, p, values.Length);
+    }
+    internal static void TerrainRenderer2D_Set(ulong id, ReadOnlySpan<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.TerrainRenderer2D_Set(id, p, values.Length);
+    }
+    internal static int TerrainRenderer2D_GetPoints(ulong id, Span<float> outPoints)
+    {
+        fixed (float* p = outPoints) return NativeCallbacks.Bindings.TerrainRenderer2D_GetPoints(id, p, outPoints.Length / 2);
+    }
+    internal static void TerrainRenderer2D_SetPoints(ulong id, ReadOnlySpan<float> points)
+    {
+        fixed (float* p = points) NativeCallbacks.Bindings.TerrainRenderer2D_SetPoints(id, p, points.Length / 2);
+    }
+    internal static ulong TerrainRenderer2D_GetTexture(ulong id, int which) => NativeCallbacks.Bindings.TerrainRenderer2D_GetTexture(id, which);
+    internal static void TerrainRenderer2D_SetTexture(ulong id, int which, ulong assetId) => NativeCallbacks.Bindings.TerrainRenderer2D_SetTexture(id, which, assetId);
+    internal static void Rigidbody2D_GetDynamics(ulong id, Span<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.Rigidbody2D_GetDynamics(id, p, values.Length);
+    }
+    internal static void Rigidbody2D_SetDynamics(ulong id, ReadOnlySpan<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.Rigidbody2D_SetDynamics(id, p, values.Length);
+    }
+    internal static void Rigidbody2D_ApplyAtPoint(ulong id, int kind, float x, float y, float px, float py, bool wake)
+        => NativeCallbacks.Bindings.Rigidbody2D_ApplyAtPoint(id, kind, x, y, px, py, wake ? 1 : 0);
+    internal static void Rigidbody2D_ApplyAngular(ulong id, int kind, float value, bool wake)
+        => NativeCallbacks.Bindings.Rigidbody2D_ApplyAngular(id, kind, value, wake ? 1 : 0);
+    internal static int Collider2D_GetGroupIndex(ulong id, int type) => NativeCallbacks.Bindings.Collider2D_GetGroupIndex(id, type);
+    internal static void Collider2D_SetGroupIndex(ulong id, int type, int group) => NativeCallbacks.Bindings.Collider2D_SetGroupIndex(id, type, group);
+
     internal static void TextRenderer_SetEffects(ulong id, ReadOnlySpan<float> values)
     {
         fixed (float* p = values) NativeCallbacks.Bindings.TextRenderer_SetEffects(id, p, values.Length);

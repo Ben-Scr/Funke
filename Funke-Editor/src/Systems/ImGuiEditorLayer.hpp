@@ -102,6 +102,8 @@ namespace Funke {
 		void SetPlayModePaused(bool paused);
 		bool BridgeOpenScene(const std::string& sceneNameOrPath, bool saveFirst, bool discardChanges, std::string& outError);
 		bool BridgeSaveScenes(std::vector<std::string>& outSaved, std::string& outError);
+		// Selects the first entity with this name (or persistent id) like a Hierarchy click; empty clears the selection.
+		bool BridgeSelectEntity(const std::string& nameOrId, std::string& outSelected, std::string& outError);
 		// The game camera rendered offscreen at width x height with the UI laid out for that size; RGBA8, top row first.
 		bool BridgeRenderGameView(int width, int height, std::vector<uint8_t>& outRgba, std::string& outError);
 		// Non-zero: the Game View renders at exactly this size (letterboxed in the panel), so the game is laid out for it.
@@ -211,8 +213,8 @@ namespace Funke {
 		void ProcessPendingPlayModeStop();
 		// Snapshot inspector-authored script field overrides for the play/stop round-trip
 		// so component references survive even when the scene-file round-trip drops them.
-		// merge=false (play-entry) captures the edit-mode baseline; merge=true (play-exit,
-		// pre-reload) overlays values edited in the inspector during play. See m_PlayModeScriptFields.
+		// merge=false (play-entry) captures the edit-mode baseline; merge=true overlays the values a
+		// recompile right before play produced. See m_PlayModeScriptFields.
 		void CaptureScriptFieldOverrides(bool merge);
 		// Re-apply the captured overrides onto the reloaded entities (play-exit, post-reload).
 		void ReapplyScriptFieldOverrides(const std::vector<std::shared_ptr<Scene>>& scenes);
@@ -230,6 +232,8 @@ namespace Funke {
 
 		void RebuildSelectionSet();
 		void RecomputeInspectorSelectionCache(Scene& scene);
+		static std::vector<std::string> CurrentEntityNames(Scene& scene, std::span<const EntityHandle> handles);
+		void FinishInspectorRename(Scene& scene);
 		void DrainPendingLogEntries();
 		void RunAutoSaveTick(Application& app, float dt);
 		void RunPrefabAutoSaveTick();
@@ -377,6 +381,13 @@ namespace Funke {
 			bool StaticFirst = false;
 		};
 		InspectorSelectionCache m_InspectorCache;
+		// Inspector name field renames live while typing; one undo step from activation to deactivation.
+		struct InspectorRenameEdit {
+			std::vector<EntityHandle> Handles;
+			std::vector<std::string> NamesBefore;
+			std::optional<StructureEditRecorder> Recorder;
+		};
+		std::optional<InspectorRenameEdit> m_InspectorRename;
 		EventId m_LogSubscriptionId{};
 		std::vector<LogEntry> m_LogEntries;
 		std::shared_ptr<LogDispatchState> m_LogDispatchState;

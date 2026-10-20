@@ -56,6 +56,13 @@ def target_dir_name(target: str, arch: str) -> str:
     return f"{target}-{arch}"
 
 
+def tool_runs(*cmd: str) -> bool:
+    try:
+        return subprocess.run(list(cmd), capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def find_cmake() -> str | None:
     vendored = REPO_ROOT / "vendor" / "cmake" / "bin" / ("cmake.exe" if os.name == "nt" else "cmake")
     if vendored.is_file():
@@ -136,6 +143,12 @@ def configure_args(args: argparse.Namespace, build_dir: Path, install_dir: Path)
         cmake_args += ["-G", args.generator or "Ninja"]
     elif args.generator:
         cmake_args += ["-G", args.generator]
+
+    if args.target in ("macos", "linux") and not args.generator:
+        # Managed Macs can block the Command Line Tools' make ("Permission denied"); use GNU make then.
+        gmake = shutil.which("gmake")
+        if gmake and not tool_runs("make", "--version"):
+            cmake_args.append(f"-DCMAKE_MAKE_PROGRAM={gmake}")
 
     if args.target not in ("windows", "ios"):
         cmake_args.append(f"-DCMAKE_BUILD_TYPE={args.config}")

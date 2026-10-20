@@ -380,8 +380,8 @@ namespace Funke::WebGPUSpriteResources {
 		dst.Color[3] = src.Color.a;
 		// Raw radians forwarded to GPU so the shader computes sin/cos per-vertex; removed the per-instance std::sin+std::cos pair that dominated this hot loop.
 		dst.Rot[0] = src.Rotation;
-		dst.Rot[1] = 0.0f;
-		dst.Rot[2] = 0.0f;
+		dst.Rot[1] = src.Shear;
+		dst.Rot[2] = src.UvShear;
 		dst.Rot[3] = 0.0f;
 		dst.Uv[0] = src.UvRect.U0;
 		dst.Uv[1] = src.UvRect.V0;

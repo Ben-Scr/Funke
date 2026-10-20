@@ -38,6 +38,10 @@ namespace Funke {
 		static void ApplyFunkeTheme();
 		// Colors-only variant: leaves DPI-scaled sizing intact when called from theme switch.
 		static void ApplyFunkeThemeColors(bool dark = true);
+		// Liquid Glass: the dark palette with translucent surfaces; needs GlassBackdrop drawn behind it.
+		static void ApplyGlassThemeColors();
+		// Writes DPI-scaled rounding, so call only after OnAttach's ScaleAllSizes.
+		static void ApplyThemeRounding(bool glass);
 
 		static void ApplyEditorFontSize();
 

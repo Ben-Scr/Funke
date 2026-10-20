@@ -19,7 +19,9 @@ The editor looks in these folders, first match per platform wins:
 2. `<user data>/Funke/Platforms/<Name>/` — where installed packages go (`%LOCALAPPDATA%\Funke\Platforms` on Windows, `~/Library/Application Support/Funke/Platforms` on macOS, `~/.local/share/Funke/Platforms` on Linux).
 3. `<engine>/platforms/<Name>/` — the first-party packages of an engine checkout.
 
-A package only shows up when its builder supports the machine the editor runs on (`hosts`), so the iOS package is listed only on macOS.
+A platform only becomes available in Build Profiles when its builder supports the machine the editor runs on (`hosts`), so iOS builds need a Mac.
+
+**Package Manager › Platforms** lists every platform package the editor found, with its version, platform, where it was found (**installed**, **engine** or `FUNKE_PLATFORM_PACKAGES`) and whether it runs on this computer (**ready**, or **needs** the hosts it supports). **Install from Folder...** copies a package folder into the user data folder above (replacing an older copy), the button next to it opens that folder, and **Remove** deletes an installed copy. Packages from the engine checkout can't be removed there.
 
 ## Using a platform
 

@@ -203,11 +203,13 @@
     <Compile Include="Source\Funke\Scene\EntityRef.cs" />
     <Compile Include="Source\Funke\Scene\EntityScript.cs" />
     <Compile Include="Source\Funke\Scene\GlobalSystem.cs" />
+    <Compile Include="Source\Funke\Scene\Joint2D.cs" />
     <Compile Include="Source\Funke\Scene\QueryRef.cs" />
     <Compile Include="Source\Funke\Scene\QueryRefWithEntity.cs" />
     <Compile Include="Source\Funke\Scene\SceneManager.cs" />
     <Compile Include="Source\Funke\Scene\SceneQuery.cs" />
     <Compile Include="Source\Funke\Scene\SceneSystem.cs" />
+    <Compile Include="Source\Funke\Scene\TerrainRenderer2D.cs" />
     <Compile Include="Source\Funke\UI\UIComponents.cs" />
     <Compile Include="Source\Funke\UI\UIEnums.cs" />
     <Compile Include="Source\Funke\UI\UIEventDispatcher.cs" />

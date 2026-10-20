@@ -519,6 +519,51 @@ public class Rigidbody2D : Component
 
     public void ApplyImpulse(Vector2 impulse, bool wake = true)
         => InternalCalls.Rigidbody2D_ApplyImpulse(RequireComponent<Rigidbody2D>(), impulse.X, impulse.Y, wake);
+
+    /// <summary>Force at a world point: also turns the body when the point is off its centre of mass.</summary>
+    public void ApplyForceAtPoint(Vector2 force, Vector2 worldPoint, bool wake = true)
+        => InternalCalls.Rigidbody2D_ApplyAtPoint(RequireComponent<Rigidbody2D>(), 0, force.X, force.Y, worldPoint.X, worldPoint.Y, wake);
+
+    public void ApplyImpulseAtPoint(Vector2 impulse, Vector2 worldPoint, bool wake = true)
+        => InternalCalls.Rigidbody2D_ApplyAtPoint(RequireComponent<Rigidbody2D>(), 1, impulse.X, impulse.Y, worldPoint.X, worldPoint.Y, wake);
+
+    public void ApplyTorque(float torque, bool wake = true)
+        => InternalCalls.Rigidbody2D_ApplyAngular(RequireComponent<Rigidbody2D>(), 0, torque, wake);
+
+    public void ApplyAngularImpulse(float impulse, bool wake = true)
+        => InternalCalls.Rigidbody2D_ApplyAngular(RequireComponent<Rigidbody2D>(), 1, impulse, wake);
+
+    private float Dynamic(int index)
+    {
+        Span<float> values = stackalloc float[8];
+        InternalCalls.Rigidbody2D_GetDynamics(RequireComponent<Rigidbody2D>(), values);
+        return values[index];
+    }
+
+    private void SetDynamic(int index, float value)
+    {
+        ulong id = RequireComponent<Rigidbody2D>();
+        Span<float> values = stackalloc float[8];
+        InternalCalls.Rigidbody2D_GetDynamics(id, values);
+        values[index] = value;
+        InternalCalls.Rigidbody2D_SetDynamics(id, values.Slice(0, 3));
+    }
+
+    /// <summary>Velocity damping (default 0.1).</summary>
+    public float LinearDamping { get => Dynamic(0); set => SetDynamic(0, value); }
+
+    /// <summary>Angular velocity damping (default 0).</summary>
+    public float AngularDamping { get => Dynamic(1); set => SetDynamic(1, value); }
+
+    /// <summary>Continuous collision against other moving bodies, for fast objects.</summary>
+    public bool IsBullet { get => Dynamic(2) != 0f; set => SetDynamic(2, value ? 1f : 0f); }
+
+    /// <summary>Rotational inertia about the centre of mass (kg·m²); 0 before the body exists.</summary>
+    public float Inertia => Dynamic(3);
+
+    public Vector2 LocalCenterOfMass => new(Dynamic(4), Dynamic(5));
+
+    public Vector2 WorldCenterOfMass => new(Dynamic(6), Dynamic(7));
 }
 
 // ── BoxCollider2D ───────────────────────────────────────────────────
@@ -561,6 +606,20 @@ public abstract class Collider2D : Component
     {
         get => InternalCalls.Collider2D_GetBounciness(RequireSelf(), ColliderType);
         set => InternalCalls.Collider2D_SetBounciness(RequireSelf(), ColliderType, value);
+    }
+
+    /// <summary>Box2D collision group: the same negative group never touches, the same positive group always touches, 0 lets the layers decide.</summary>
+    public int GroupIndex
+    {
+        get => InternalCalls.Collider2D_GetGroupIndex(RequireSelf(), ColliderType);
+        set => InternalCalls.Collider2D_SetGroupIndex(RequireSelf(), ColliderType, value);
+    }
+
+    /// <summary>Mass per area (kg/m², default 1). A Rigidbody2D without a pinned mass weighs the sum of its colliders' density × area.</summary>
+    public float Density
+    {
+        get => InternalCalls.Collider2D_GetDensity(RequireSelf(), ColliderType);
+        set => InternalCalls.Collider2D_SetDensity(RequireSelf(), ColliderType, value);
     }
 }
 
@@ -672,23 +731,66 @@ public class PolygonCollider2D : Collider2D
     public void SetSides(int sides)
         => InternalCalls.PolygonCollider2D_SetSides(RequireComponent<PolygonCollider2D>(), sides);
 
+    /// <summary>Most points one path may have.</summary>
+    public const int MaxPathPoints = 16384;
+
+    /// <summary>
+    /// Replaces path 0. Up to <see cref="MaxVertices"/> points that form a convex outline (or are unordered) become their
+    /// convex hull; a longer or concave outline in order is split into convex pieces automatically.
+    /// </summary>
     public void SetPoints(ReadOnlySpan<Vector2> points)
     {
-        if (points.Length < MinVertices || points.Length > MaxVertices)
+        if (points.Length < MinVertices || points.Length > MaxPathPoints)
         {
-            Log.Error($"PolygonCollider2D.SetPoints requires {MinVertices}..{MaxVertices} points, got {points.Length}");
+            Log.Error($"PolygonCollider2D.SetPoints requires {MinVertices}..{MaxPathPoints} points, got {points.Length}");
             return;
         }
 
-        // Pack into interleaved (x, y) floats — the native side reads it back
-        // as Vec2[]. Stack alloc keeps the call allocation-free.
-        Span<float> packed = stackalloc float[points.Length * 2];
+        // Interleaved (x, y) floats, read back natively as Vec2[]. Large outlines go to the heap.
+        float[]? rented = points.Length > 256 ? new float[points.Length * 2] : null;
+        Span<float> packed = rented != null ? rented : stackalloc float[points.Length * 2];
         for (int i = 0; i < points.Length; ++i)
         {
             packed[i * 2 + 0] = points[i].X;
             packed[i * 2 + 1] = points[i].Y;
         }
         InternalCalls.PolygonCollider2D_SetPoints(RequireComponent<PolygonCollider2D>(), packed, points.Length);
+    }
+
+    /// <summary>Number of outlines; every one collides (concave ones are split into convex pieces).</summary>
+    public int PathCount => InternalCalls.PolygonCollider2D_GetPathCount(RequireComponent<PolygonCollider2D>());
+
+    /// <summary>The authored points of one path, before scale, size and offset.</summary>
+    public Vector2[] GetPath(int index)
+    {
+        ulong id = RequireComponent<PolygonCollider2D>();
+        int count = InternalCalls.PolygonCollider2D_GetPath(id, index, Span<float>.Empty);
+        if (count <= 0) return Array.Empty<Vector2>();
+        var packed = new float[count * 2];
+        InternalCalls.PolygonCollider2D_GetPath(id, index, packed);
+        var result = new Vector2[count];
+        for (int i = 0; i < count; ++i) result[i] = new Vector2(packed[i * 2], packed[i * 2 + 1]);
+        return result;
+    }
+
+    /// <summary>Replaces every path (e.g. a concave car body as several outlines). An empty list restores the default pentagon.</summary>
+    public void SetPaths(params Vector2[][] paths)
+    {
+        int total = 0;
+        foreach (Vector2[] path in paths) total += path.Length;
+        var packed = new float[total * 2];
+        var counts = new int[paths.Length];
+        int offset = 0;
+        for (int p = 0; p < paths.Length; ++p)
+        {
+            counts[p] = paths[p].Length;
+            foreach (Vector2 point in paths[p])
+            {
+                packed[offset++] = point.X;
+                packed[offset++] = point.Y;
+            }
+        }
+        InternalCalls.PolygonCollider2D_SetPaths(RequireComponent<PolygonCollider2D>(), packed, counts);
     }
 
     public int GetWorldPoints(Span<Vector2> outPoints)

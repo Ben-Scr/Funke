@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent.parent          # <Project>/Tools/funke_kit.py
@@ -41,7 +42,14 @@ def write_bytes(path: Path, data: bytes) -> bool:
         return False
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_bytes(data)
-    os.replace(tmp, path)
+    for attempt in range(20):                              # an open Editor or a virus scanner can hold the file briefly
+        try:
+            os.replace(tmp, path)
+            return True
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.25)
     return True
 
 
@@ -110,6 +118,9 @@ def f_audio(guid): return ("audio", str(guid))
 def f_scene(guid): return ("scene", str(guid))
 def f_data(type_name, guid): return (f"dataasset:{type_name}", str(guid))
 def f_list(values): return ("list", enc_list([v[1] if isinstance(v, tuple) else v for v in values]))
+# List<Entity> / List<SomeComponent>: the element type lets prefab instances remap the ids to their own entities.
+def f_entity_list(uuids): return ("list", enc_list([str(u) for u in uuids]), {"itemType": "entity"})
+def f_component_list(refs): return ("list", enc_list([f"{u}:{c}" for u, c in refs]), {"itemType": f"component:{refs[0][1]}" if refs else "entity"})
 
 
 # ----------------------------------------------------------------------------- components
@@ -241,7 +252,7 @@ class _EntityList:
             if not isinstance(v, tuple):
                 v = f_bool(v) if isinstance(v, bool) else f_float(v) if isinstance(v, float) else \
                     f_int(v) if isinstance(v, int) else f_str(v)
-            rows.append({"name": name, "type": v[0], "value": v[1]})
+            rows.append({"name": name, "type": v[0], "value": v[1], **(v[2] if len(v) > 2 else {})})
         e.setdefault("ScriptFields", {})[cls] = rows
 
 

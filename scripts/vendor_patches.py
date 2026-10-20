@@ -242,7 +242,7 @@ def verify_one(spec: VendorPatch, mode: str, require_applied: bool) -> str:
 
     details = ", ".join(
         f"{file.path}={actual} (base {file.base_blob}, patched {file.patched_blob})"
-        for file, actual in zip(spec.files, actual_blobs, strict=True)
+        for file, actual in zip(spec.files, actual_blobs)
     )
     raise VendorPatchError(f"Vendor patch drift in {spec.submodule}: {details}")
 
@@ -273,9 +273,9 @@ def main() -> int:
         if args.mode == "apply":
             states = [
                 verify_one(spec, "apply", False) if state == "ready" else state
-                for spec, state in zip(PATCHES, states, strict=True)
+                for spec, state in zip(PATCHES, states)
             ]
-        for spec, state in zip(PATCHES, states, strict=True):
+        for spec, state in zip(PATCHES, states):
             print(f"[vendor-patches] {spec.name}: {state}")
     except VendorPatchError as error:
         print(f"[vendor-patches] ERROR: {error}", file=sys.stderr)

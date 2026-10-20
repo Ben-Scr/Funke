@@ -19,7 +19,8 @@ namespace Funke::Win32Titlebar {
     int  GetTitlebarHeightPhysical(void* hwnd);
 
     void SetDarkMode(void* hwnd, bool enabled);
-    void SetColors(void* hwnd, Color caption, Color text, Color border);
+    // Alpha 0 restores the DWM default for that slot. Exported for the editor's secondary viewport windows.
+    FUNKE_API void SetColors(void* hwnd, Color caption, Color text, Color border);
 
 #else
 

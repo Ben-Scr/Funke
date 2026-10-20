@@ -449,8 +449,6 @@ class AssetTable:
             rel = f.relative_to(project).as_posix()
             kind = classify(f)
             meta = f.with_name(f.name + ".meta")
-            if kind == "Audio" and f.suffix.lower() == ".ogg":
-                report.error(f, ".ogg cannot be decoded by Funke - convert to .wav/.mp3/.flac")
             if f.parent == assets:
                 report.warn(f, "file directly in Assets/ - move it into its folder (rule 4)")
             else:

@@ -1103,16 +1103,17 @@ namespace Funke {
 		}
 	}
 
-	void DrawScriptComponentInspector(std::span<const Entity> entities)
+	bool BeginScriptSections(std::span<const Entity> entities, ScriptSectionPass& pass)
 	{
-		if (entities.empty()) return;
+		pass = {};
+		if (entities.empty()) return false;
 
 		// Selection may not uniformly carry ScriptComponent (mid-edit add/remove, stale undo); bail rather than trip EnTT's assertion.
 		const Entity& primary = entities[0];
 		if (!primary.HasComponent<ScriptComponent>()) {
-			return;
+			return false;
 		}
-		auto& scriptComp = const_cast<Entity&>(primary).GetComponent<ScriptComponent>();
+		const auto& scriptComp = primary.GetComponent<ScriptComponent>();
 		bool shapeUniform = true;
 		for (std::size_t i = 1; i < entities.size(); ++i) {
 			if (!entities[i].HasComponent<ScriptComponent>()) {
@@ -1125,95 +1126,107 @@ namespace Funke {
 				break;
 			}
 		}
-		if (entities.size() > 1 && !shapeUniform) {
-			ImGui::TextDisabled("Multi-edit limited - script set differs across selection");
-		}
-		const bool multiEditEnabled = shapeUniform;
-		const std::span<const Entity> propagationSpan = multiEditEnabled
-			? entities
-			: std::span<const Entity>(&primary, 1);
+		pass.Entities = entities;
+		pass.MultiEdit = shapeUniform;
+		pass.Propagation = shapeUniform ? entities : std::span<const Entity>(&primary, 1);
+		return true;
+	}
 
-		size_t removeIndex = SIZE_MAX;
-		size_t removeManagedComponentIndex = SIZE_MAX;
+	void DrawManagedComponentSection(ScriptSectionPass& pass, std::size_t i)
+	{
+		if (pass.Entities.empty() || !pass.Entities[0].HasComponent<ScriptComponent>()) return;
+		auto& scriptComp = const_cast<Entity&>(pass.Entities[0]).GetComponent<ScriptComponent>();
+		if (i >= scriptComp.ManagedComponents.size()) return;
 
-		for (size_t i = 0; i < scriptComp.ManagedComponents.size(); i++) {
-			const std::string& className = scriptComp.ManagedComponents[i];
-			std::string label = className.empty() ? "C# Component" : className + " (C# Component)";
+		const std::string& className = scriptComp.ManagedComponents[i];
+		std::string label = className.empty() ? "C# Component" : className + " (C# Component)";
 
-			ImGui::PushID(("managed-component-" + std::to_string(i)).c_str());
+		ImGui::PushID(("managed-component-" + std::to_string(i)).c_str());
 
-			bool removeRequested = false;
-			bool open = ImGuiUtils::BeginComponentSection(label.c_str(), removeRequested, {}, "script");
-			if (removeRequested) removeManagedComponentIndex = i;
+		bool removeRequested = false;
+		bool open = ImGuiUtils::BeginComponentSection(label.c_str(), removeRequested, {}, "script");
+		if (removeRequested) pass.RemoveManagedIndex = i;
 
-			if (open) {
-				DrawOpenScriptButton(className,
-					[](const EditorScriptDiscovery::ScriptEntry& e) {
-						return e.Type == ScriptType::Managed;
-					},
-					className);
+		if (open) {
+			DrawOpenScriptButton(className,
+				[](const EditorScriptDiscovery::ScriptEntry& e) {
+					return e.Type == ScriptType::Managed;
+				},
+				className);
 
-				if (ScriptEngine::IsInitialized()) {
-					RenderFieldsForManagedComponent(scriptComp, className, i, propagationSpan, multiEditEnabled);
-				}
-				else {
-					ImGui::TextDisabled("Script engine not initialized");
-				}
-				ImGuiUtils::EndComponentSection();
-			}
-			ImGui::PopID();
-		}
-
-		for (size_t i = 0; i < scriptComp.Scripts.size(); i++) {
-			auto& instance = scriptComp.Scripts[i];
-			// Distinguish EntityScript ("C# Script") from :IComponent struct ("C# Native Component") by checking ComponentRegistry::isDynamic.
-			std::string label;
-			if (instance.GetClassName().empty()) {
-				label = "Script";
+			if (ScriptEngine::IsInitialized()) {
+				RenderFieldsForManagedComponent(scriptComp, className, i, pass.Propagation, pass.MultiEdit);
 			}
 			else {
-				const ComponentInfo* dynamicInfo = SceneManager::GetComponentRegistry()
-					.FindBySerializedName(instance.GetClassName());
-				const bool isNativeComponent = dynamicInfo && dynamicInfo->isDynamic;
-				label = instance.GetClassName()
-					+ (isNativeComponent ? " (C# Native Component)" : " (C# Script)");
+				ImGui::TextDisabled("Script engine not initialized");
 			}
+			ImGuiUtils::EndComponentSection();
+		}
+		ImGui::PopID();
+	}
 
-			ImGui::PushID(static_cast<int>(i));
+	void DrawScriptSection(ScriptSectionPass& pass, std::size_t i)
+	{
+		if (pass.Entities.empty() || !pass.Entities[0].HasComponent<ScriptComponent>()) return;
+		auto& scriptComp = const_cast<Entity&>(pass.Entities[0]).GetComponent<ScriptComponent>();
+		if (i >= scriptComp.Scripts.size()) return;
 
-			bool removeRequested = false;
-			bool open = ImGuiUtils::BeginComponentSection(label.c_str(), removeRequested, {}, "script");
-			if (removeRequested) removeIndex = i;
-
-			if (open) {
-				const ScriptType instanceType = instance.GetType();
-				DrawOpenScriptButton(instance.GetClassName(),
-					[instanceType](const EditorScriptDiscovery::ScriptEntry& e) {
-						return e.Type == instanceType;
-					},
-					label);
-
-				if (instance.GetType() != ScriptType::Native && ScriptEngine::IsInitialized()) {
-					RenderScriptFieldsForInstance(scriptComp, instance, i, propagationSpan, multiEditEnabled);
-				}
-				ImGuiUtils::EndComponentSection();
-			}
-			ImGui::PopID();
+		auto& instance = scriptComp.Scripts[i];
+		// Distinguish EntityScript ("C# Script") from :IComponent struct ("C# Native Component") by checking ComponentRegistry::isDynamic.
+		std::string label;
+		if (instance.GetClassName().empty()) {
+			label = "Script";
+		}
+		else {
+			const ComponentInfo* dynamicInfo = SceneManager::GetComponentRegistry()
+				.FindBySerializedName(instance.GetClassName());
+			const bool isNativeComponent = dynamicInfo && dynamicInfo->isDynamic;
+			label = instance.GetClassName()
+				+ (isNativeComponent ? " (C# Native Component)" : " (C# Script)");
 		}
 
-		if (removeIndex != SIZE_MAX) {
-			if (multiEditEnabled) {
+		ImGui::PushID(static_cast<int>(i));
+
+		bool removeRequested = false;
+		bool open = ImGuiUtils::BeginComponentSection(label.c_str(), removeRequested, {}, "script");
+		if (removeRequested) pass.RemoveScriptIndex = i;
+
+		if (open) {
+			const ScriptType instanceType = instance.GetType();
+			DrawOpenScriptButton(instance.GetClassName(),
+				[instanceType](const EditorScriptDiscovery::ScriptEntry& e) {
+					return e.Type == instanceType;
+				},
+				label);
+
+			if (instance.GetType() != ScriptType::Native && ScriptEngine::IsInitialized()) {
+				RenderScriptFieldsForInstance(scriptComp, instance, i, pass.Propagation, pass.MultiEdit);
+			}
+			ImGuiUtils::EndComponentSection();
+		}
+		ImGui::PopID();
+	}
+
+	void EndScriptSections(ScriptSectionPass& pass)
+	{
+		if (pass.Entities.empty() || !pass.Entities[0].HasComponent<ScriptComponent>()) return;
+		const Entity& primary = pass.Entities[0];
+		auto& scriptComp = const_cast<Entity&>(primary).GetComponent<ScriptComponent>();
+		const std::span<const Entity> entities = pass.Entities;
+
+		if (pass.RemoveScriptIndex != SIZE_MAX) {
+			if (pass.MultiEdit) {
 				for (const Entity& e : entities) {
-					ScriptSystem::RemoveScript(const_cast<Entity&>(e), removeIndex);
+					ScriptSystem::RemoveScript(const_cast<Entity&>(e), pass.RemoveScriptIndex);
 				}
 			}
 			else {
-				ScriptSystem::RemoveScript(const_cast<Entity&>(primary), removeIndex);
+				ScriptSystem::RemoveScript(const_cast<Entity&>(primary), pass.RemoveScriptIndex);
 			}
 		}
-		if (removeManagedComponentIndex != SIZE_MAX && removeManagedComponentIndex < scriptComp.ManagedComponents.size()) {
-			const std::string className = scriptComp.ManagedComponents[removeManagedComponentIndex];
-			if (multiEditEnabled) {
+		if (pass.RemoveManagedIndex != SIZE_MAX && pass.RemoveManagedIndex < scriptComp.ManagedComponents.size()) {
+			const std::string className = scriptComp.ManagedComponents[pass.RemoveManagedIndex];
+			if (pass.MultiEdit) {
 				for (const Entity& e : entities) {
 					auto& sc = const_cast<Entity&>(e).GetComponent<ScriptComponent>();
 					if (sc.RemoveManagedComponent(className)) {
@@ -1230,6 +1243,19 @@ namespace Funke {
 
 		RenderScriptPicker();
 		// NOTE: ReferencePicker::RenderPopup() intentionally NOT called here — the outer loop already renders it once; calling it again duplicates IDs and triggers ImGui's conflicting-ID assertion.
+	}
+
+	void DrawScriptComponentInspector(std::span<const Entity> entities)
+	{
+		ScriptSectionPass pass;
+		if (!BeginScriptSections(entities, pass)) return;
+		if (!pass.MultiEdit) {
+			ImGui::TextDisabled("Multi-edit limited - script set differs across selection");
+		}
+		const auto& scriptComp = entities[0].GetComponent<ScriptComponent>();
+		for (std::size_t i = 0; i < scriptComp.ManagedComponents.size(); ++i) DrawManagedComponentSection(pass, i);
+		for (std::size_t i = 0; i < scriptComp.Scripts.size(); ++i) DrawScriptSection(pass, i);
+		EndScriptSections(pass);
 	}
 
 	void DrawSceneSystemFields(Scene& scene, const std::string& className)

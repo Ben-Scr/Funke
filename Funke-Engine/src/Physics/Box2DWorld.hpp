@@ -2,6 +2,7 @@
 #include "Physics/CollisionDispatcher.hpp"
 #include "Scene/EntityHandle.hpp"
 #include "Physics/PhysicsTypes.hpp"
+#include "Collections/Vec2.hpp"
 #include <box2d/box2d.h>
 #include <cstdint>
 #include <unordered_map>
@@ -37,6 +38,11 @@ namespace Funke {
         // raycast resolves cannot return a Scene* that has just been freed.
         void DestroyAllBodiesForScene(Scene* scene);
 
+        // Static body at the origin that joints without a connected body attach to; made on first use.
+        b2BodyId GetGroundBody();
+        Vec2 GetGravity() const;
+        void SetGravity(const Vec2& gravity);
+
         CollisionDispatcher& GetDispatcher();
         b2WorldId GetWorldID() { return m_WorldId; }
         void Destroy();
@@ -47,6 +53,7 @@ namespace Funke {
         };
 
         b2WorldId m_WorldId = b2_nullWorldId;
+        b2BodyId m_GroundBody = b2_nullBodyId;
         CollisionDispatcher m_Dispatcher{};
         std::unordered_map<uint64_t, BodyBinding> m_BodyBindings;
     };

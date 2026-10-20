@@ -3163,6 +3163,31 @@ public class GameScript : EntityScript
 		return root.empty() ? std::string{} : Path::ToGenericUtf8(root);
 	}
 
+#if !defined(_WIN32)
+	namespace {
+		std::filesystem::path FindExecutableOnPath(std::string_view name) {
+			const char* searchPath = std::getenv("PATH");
+			std::string_view remaining = searchPath ? searchPath : "";
+			while (!remaining.empty()) {
+				const size_t separator = remaining.find(':');
+				const std::string_view directory = remaining.substr(0, separator);
+				if (!directory.empty()) {
+					const std::filesystem::path candidate = std::filesystem::path(std::string(directory)) / std::string(name);
+					std::error_code ec;
+					const auto permissions = std::filesystem::status(candidate, ec).permissions();
+					if (!ec && std::filesystem::is_regular_file(candidate, ec)
+						&& (permissions & std::filesystem::perms::owner_exec) != std::filesystem::perms::none) {
+						return candidate;
+					}
+				}
+				if (separator == std::string_view::npos) break;
+				remaining.remove_prefix(separator + 1);
+			}
+			return {};
+		}
+	}
+#endif
+
 	std::string FunkeProject::GetPremakePath() {
 		const std::filesystem::path engineRoot = ResolveEngineRoot();
 		if (engineRoot.empty()) {
@@ -3188,7 +3213,23 @@ public class GameScript : EntityScript
 				return Path::ToGenericUtf8(candidate);
 			}
 		}
+#if !defined(_WIN32)
+		// The repo only vendors premake5.exe; Linux and macOS clones may rely on Homebrew's or the distro's.
+		if (const std::filesystem::path onPath = FindExecutableOnPath(exeName); !onPath.empty()) {
+			return Path::ToGenericUtf8(onPath);
+		}
+#endif
 		return {};
+	}
+
+	std::string FunkeProject::GetMakeProgram() {
+#if defined(__APPLE__)
+		// Managed Macs can block the Command Line Tools' make ("Permission denied"); Homebrew's GNU make runs the same Makefiles.
+		if (const std::filesystem::path gmake = FindExecutableOnPath("gmake"); !gmake.empty()) {
+			return Path::ToUtf8(gmake);
+		}
+#endif
+		return "make";
 	}
 
 	FunkeProject::RegenerateResult FunkeProject::RegenerateSolutionForProject(const std::string& projectRootDir) {
@@ -3450,13 +3491,13 @@ public class GameScript : EntityScript
 #if defined(_WIN32)
 		const std::vector<std::vector<std::string>> actions = { { "vs2022" } };
 #else
-		// vs2022 still emits the .csproj files dotnet builds C# packages from; gmake2 builds the native layers.
+		// vs2022 still emits the .csproj files dotnet builds C# packages from; gmake builds the native layers.
 	#if defined(__APPLE__)
 		const std::string hostSystem = "--os=macosx";
 	#else
 		const std::string hostSystem = "--os=linux";
 	#endif
-		const std::vector<std::vector<std::string>> actions = { { hostSystem, "vs2022" }, { "gmake2" } };
+		const std::vector<std::vector<std::string>> actions = { { hostSystem, "vs2022" }, { "gmake" } };
 #endif
 		for (const std::vector<std::string>& action : actions) {
 			std::vector<std::string> command{ premakePath, "--file=" + Path::ToGenericUtf8(generator) };
@@ -3478,7 +3519,7 @@ public class GameScript : EntityScript
 	}
 
 	FunkeProject::BuildResult FunkeProject::BuildProjectPackages(const std::string& projectRootDir,
-		const std::string& configuration, const std::string& platform) {
+		const std::string& configuration, const std::string& platform, const CreateProgressCallback& progressCallback) {
 		BuildResult result;
 		if (!IsSafeBuildPathToken(configuration, false) || !IsSafeBuildPathToken(platform, false)) {
 			result.Output = "Invalid package build configuration or platform.";
@@ -3518,6 +3559,16 @@ public class GameScript : EntityScript
 			if (!result.Output.empty()) result.Output += "\n";
 			result.Output += "[" + Path::ToUtf8(projectPath.filename()) + "]\n" + processResult.Output;
 		};
+		// Generated projects are named Pkg.<Package>.Native / Pkg.<Package>.
+		const size_t totalSteps = std::max<size_t>(1, nativeProjects.size() + managedProjects.size());
+		size_t stepsDone = 0;
+		const auto reportStep = [&](const std::filesystem::path& projectPath, std::string_view layer) {
+			std::string name = Path::ToUtf8(projectPath.stem());
+			if (name.rfind("Pkg.", 0) == 0) name.erase(0, 4);
+			if (const size_t native = name.rfind(".Native"); native != std::string::npos && native + 7 == name.size()) name.erase(native);
+			ReportCreateProgress(progressCallback, static_cast<float>(stepsDone) / static_cast<float>(totalSteps),
+				"Building " + name + " (" + std::string(layer) + ")...");
+		};
 
 		if (!nativeProjects.empty()) {
 #if defined(_WIN32)
@@ -3527,6 +3578,7 @@ public class GameScript : EntityScript
 				return result;
 			}
 			for (const auto& projectPath : nativeProjects) {
+				reportStep(projectPath, "C++");
 				const Process::Result processResult = Process::Run({
 					msbuild, Path::ToGenericUtf8(projectPath),
 					"-p:Configuration=" + configuration,
@@ -3542,13 +3594,15 @@ public class GameScript : EntityScript
 					FNK_ERROR_TAG("FunkeProject", "Native project package build failed: {}", result.Output);
 					return result;
 				}
+				++stepsDone;
 			}
 #else
-			// The gmake2 workspace from RegeneratePackageWorkspaceForProject; targets share the .vcxproj names.
-			std::vector<std::string> command{ "make", "-C", Path::ToUtf8(workspaceRoot),
+			// The gmake workspace from RegeneratePackageWorkspaceForProject; targets share the .vcxproj names.
+			std::vector<std::string> command{ GetMakeProgram(), "-C", Path::ToUtf8(workspaceRoot),
 				"config=" + ToLowerAscii(configuration),
 				"-j" + std::to_string(std::max(1u, std::thread::hardware_concurrency())) };
 			for (const auto& projectPath : nativeProjects) command.push_back(Path::ToUtf8(projectPath.stem()));
+			ReportCreateProgress(progressCallback, 0.0f, "Building native package layers...");
 			const Process::Result processResult = Process::Run(command, workspaceRoot, std::chrono::minutes(20));
 			appendOutput(workspaceRoot / "Makefile", processResult);
 			if (!processResult.Succeeded()) {
@@ -3556,10 +3610,12 @@ public class GameScript : EntityScript
 				FNK_ERROR_TAG("FunkeProject", "Native project package build failed: {}", result.Output);
 				return result;
 			}
+			stepsDone += nativeProjects.size();
 #endif
 		}
 
 		for (const auto& projectPath : managedProjects) {
+			reportStep(projectPath, "C#");
 			std::vector<std::string> command{ "dotnet", "build", Path::ToGenericUtf8(projectPath), "-c", configuration };
 			for (std::string& argument : ManagedPlatformArguments(platform)) command.push_back(std::move(argument));
 			command.insert(command.end(), { "--nologo", "-v", "minimal", "-nodeReuse:false", "-p:UseSharedCompilation=false" });
@@ -3570,8 +3626,10 @@ public class GameScript : EntityScript
 				FNK_ERROR_TAG("FunkeProject", "Managed project package build failed: {}", result.Output);
 				return result;
 			}
+			++stepsDone;
 		}
 
+		ReportCreateProgress(progressCallback, 1.0f, "Package build complete");
 		result.ExitCode = 0;
 		result.Succeeded = true;
 		return result;
@@ -3626,13 +3684,21 @@ public class GameScript : EntityScript
 	}
 
 	FunkeProject::AutomateResult FunkeProject::AutomateForProject(const std::string& projectRootDir,
-		const std::string& configuration, const std::string& platform) {
+		const std::string& configuration, const std::string& platform, const CreateProgressCallback& progressCallback) {
 		AutomateResult result;
+		ReportCreateProgress(progressCallback, 0.05f, "Generating package workspace...");
 		result.Regenerate = RegeneratePackageWorkspaceForProject(projectRootDir);
 
 		if (!result.Regenerate.Succeeded) return result;
 
-		result.Build = BuildProjectPackages(projectRootDir, configuration, platform);
+		// Workspace generation ~15%, the package builds the rest.
+		CreateProgressCallback buildProgress;
+		if (progressCallback) {
+			buildProgress = [&progressCallback](float progress, std::string_view stage) {
+				progressCallback(0.15f + 0.85f * progress, stage);
+			};
+		}
+		result.Build = BuildProjectPackages(projectRootDir, configuration, platform, buildProgress);
 		result.RanBuild = true;
 		return result;
 	}

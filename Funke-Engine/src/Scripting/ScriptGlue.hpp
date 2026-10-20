@@ -4,7 +4,7 @@
 namespace Funke {
 
 	// Bump together with InteropHandshake.LayoutVersion (ScriptHostBridge.cs) on any add/remove/reorder in NativeBindings or ManagedCallbacks.
-	inline constexpr int32_t k_ScriptInteropLayoutVersion = 37;
+	inline constexpr int32_t k_ScriptInteropLayoutVersion = 38;
 
 	/// Layout must match C# NativeBindingsStruct exactly (Sequential, blittable).
 	struct NativeBindings
@@ -1314,6 +1314,48 @@ namespace Funke {
 		// values: outlineWidth, outline r g b a, shadowOffsetX, shadowOffsetY, shadow r g b a.
 		void     (*TextRenderer_GetEffects)(uint64_t entityID, float* values, int count);
 		void     (*TextRenderer_SetEffects)(uint64_t entityID, const float* values, int count);
+
+		// ── 2D joints, collider density, polygon paths, gravity (appended for binary compat) ──
+		// kind: 0 = Revolute, 1 = Prismatic, 2 = Weld. Packed field order: Joint2D.cs. Get returns the count written.
+		int      (*Joint2D_Get)(uint64_t entityID, int kind, float* values, int count);
+		void     (*Joint2D_Set)(uint64_t entityID, int kind, const float* values, int count);
+		uint64_t (*Joint2D_GetConnectedBody)(uint64_t entityID, int kind);
+		void     (*Joint2D_SetConnectedBody)(uint64_t entityID, int kind, uint64_t connectedID);
+		// values: created (0/1), reaction force x, y, reaction torque, angle or translation, speed, motor torque or force.
+		void     (*Joint2D_GetState)(uint64_t entityID, int kind, float* values, int count);
+		float    (*Collider2D_GetDensity)(uint64_t entityID, int colliderType);
+		void     (*Collider2D_SetDensity)(uint64_t entityID, int colliderType, float density);
+		int      (*PolygonCollider2D_GetPathCount)(uint64_t entityID);
+		// Returns the path's point count; writes at most maxPoints x,y pairs.
+		int      (*PolygonCollider2D_GetPath)(uint64_t entityID, int index, float* outPoints, int maxPoints);
+		// points: every path back to back as x,y pairs; counts: points per path.
+		void     (*PolygonCollider2D_SetPaths)(uint64_t entityID, const float* points, const int* counts, int pathCount);
+		void     (*Physics2D_GetGravity)(float* outX, float* outY);
+		void     (*Physics2D_SetGravity)(float x, float y);
+
+		// ── Terrain renderer 2D (appended for binary compat) ──
+		// values: fill r g b a, fill tile x y, fill mapping, fill depth, edge r g b a, edge thickness, edge offset,
+		// edge tile length, sorting layer, sorting order, edge sorting order (18).
+		void     (*TerrainRenderer2D_Get)(uint64_t entityID, float* values, int count);
+		void     (*TerrainRenderer2D_Set)(uint64_t entityID, const float* values, int count);
+		// Returns the point count; writes at most maxPoints x,y pairs.
+		int      (*TerrainRenderer2D_GetPoints)(uint64_t entityID, float* outPoints, int maxPoints);
+		void     (*TerrainRenderer2D_SetPoints)(uint64_t entityID, const float* points, int pointCount);
+		// which: 0 = fill, 1 = edge.
+		uint64_t (*TerrainRenderer2D_GetTexture)(uint64_t entityID, int which);
+		void     (*TerrainRenderer2D_SetTexture)(uint64_t entityID, int which, uint64_t assetId);
+
+		// ── Rigidbody2D dynamics (appended for binary compat) ──
+		// values: linear damping, angular damping, bullet (0/1), inertia, local centre x y, world centre x y (8).
+		void     (*Rigidbody2D_GetDynamics)(uint64_t entityID, float* values, int count);
+		// values: linear damping, angular damping, bullet (0/1).
+		void     (*Rigidbody2D_SetDynamics)(uint64_t entityID, const float* values, int count);
+		// kind: 0 = force, 1 = impulse; at a world point.
+		void     (*Rigidbody2D_ApplyAtPoint)(uint64_t entityID, int kind, float x, float y, float pointX, float pointY, int wake);
+		// kind: 0 = torque, 1 = angular impulse.
+		void     (*Rigidbody2D_ApplyAngular)(uint64_t entityID, int kind, float value, int wake);
+		int      (*Collider2D_GetGroupIndex)(uint64_t entityID, int colliderType);
+		void     (*Collider2D_SetGroupIndex)(uint64_t entityID, int colliderType, int group);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.

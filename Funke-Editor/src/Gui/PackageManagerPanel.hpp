@@ -4,6 +4,7 @@
 #include "Packages/PackageManager.hpp"
 #include "Packages/PackageRegistryIndex.hpp"
 #include "Packages/PackageResolver.hpp"
+#include "Project/PlatformPackages.hpp"
 
 #include "Core/EngineModules.hpp"
 
@@ -81,7 +82,9 @@ namespace Funke {
 		bool IsDependencyOnly(const std::string& name) const;
 
 		// Native installs roll back when the built library cannot load; managed-only installs do not enter PackageHost.
-		void StartPostInstallAutomation(const std::string& justInstalledPackageName = {});
+		// removedPackageName only titles the progress window ("Removing X...").
+		void StartPostInstallAutomation(const std::string& justInstalledPackageName = {},
+			const std::string& removedPackageName = {});
 
 		// Per-frame poll for the async automate worker; pulls completed results.
 		void PollAutomationTask();
@@ -173,6 +176,16 @@ namespace Funke {
 		std::shared_ptr<NewPackageTaskState> m_NewPackageTask;
 		std::thread m_NewPackageWorker;
 		void PollNewPackageTask();
+
+		// Platforms tab: export-target packages (kind "platform" / "build-component", see PlatformPackages).
+		void RenderPlatformPackagesTab();
+		void RenderPlatformPackageRow(const PlatformPackageInfo& package);
+		void HandlePlatformFolderInstall();
+		void PollPlatformPickTask();
+		std::shared_ptr<DiskInstallTaskState> m_PlatformPickTask;
+		std::vector<PlatformPackageInfo> m_PlatformPackages;
+		bool m_PlatformPackagesDirty = true;
+		std::string m_PlatformRemoveCandidate;
 
 		bool m_OpenInstallErrorPopup = false;
 		std::string m_InstallErrorMessage;

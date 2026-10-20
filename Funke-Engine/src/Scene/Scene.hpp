@@ -439,6 +439,8 @@ namespace Funke {
 		void OnCircleCollider2DComponentDestroy(entt::registry& registry, EntityHandle entity);
 		void OnPolygonCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity);
 		void OnPolygonCollider2DComponentDestroy(entt::registry& registry, EntityHandle entity);
+		template <typename TJoint>
+		void OnJoint2DComponentDestroy(entt::registry& registry, EntityHandle entity);
 		void OnAudioSourceComponentDestroy(entt::registry& registry, EntityHandle entity);
 		void OnScriptComponentDestroy(entt::registry& registry, EntityHandle entity);
 

@@ -434,14 +434,15 @@ struct FnkVaryings {
 
 @vertex
 fn vs_main(in: FnkVertexInput) -> FnkVaryings {
-	let scaled = in.position.xy * in.i_data0.zw;
+	let unsheared = in.position.xy * in.i_data0.zw;
+	let scaled = vec2<f32>(unsheared.x, unsheared.y + unsheared.x * in.i_data2.y);
 	let c = cos(in.i_data2.x);
 	let s = sin(in.i_data2.x);
 	let rotated = vec2<f32>(scaled.x * c - scaled.y * s, scaled.x * s + scaled.y * c);
 	let quadUV = vec2<f32>(in.position.x + 0.5, 0.5 - in.position.y);
 	var v: VertexData;
 	v.worldPosition = rotated + in.i_data0.xy;
-	v.uv = vec2<f32>(mix(in.i_data3.x, in.i_data3.z, quadUV.x), mix(in.i_data3.y, in.i_data3.w, quadUV.y));
+	v.uv = vec2<f32>(mix(in.i_data3.x, in.i_data3.z, quadUV.x), mix(in.i_data3.y, in.i_data3.w, quadUV.y) + quadUV.x * in.i_data2.z);
 	v.quadUV = quadUV;
 	v.color = in.i_data1;
 	FNK_VERTEX_CALL

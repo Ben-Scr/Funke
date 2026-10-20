@@ -349,6 +349,8 @@ namespace Funke {
 
 		static std::string GetEngineRootDir();
 		static std::string GetPremakePath();
+		// make for the gmake workspaces on Linux / macOS: GNU make (gmake) when installed on macOS, else make.
+		static std::string GetMakeProgram();
 
 		struct RegenerateResult {
 			bool   Succeeded = false;
@@ -376,9 +378,11 @@ namespace Funke {
 			const std::string& configuration = "Debug",
 			const std::string& platform = "x64");
 		static RegenerateResult RegeneratePackageWorkspaceForProject(const std::string& projectRootDir);
+		// progressCallback gets 0..1 and the package layer being built.
 		static BuildResult BuildProjectPackages(const std::string& projectRootDir,
 			const std::string& configuration = "Debug",
-			const std::string& platform = "x64");
+			const std::string& platform = "x64",
+			const CreateProgressCallback& progressCallback = {});
 		static std::string GetProjectPackageOutputDirectory(const std::string& projectRootDir,
 			const std::string& packageTarget, const std::string& configuration = "Debug");
 		static std::string GetProjectNativePackageLibraryPath(const std::string& projectRootDir,
@@ -393,7 +397,8 @@ namespace Funke {
 		};
 		static AutomateResult AutomateForProject(const std::string& projectRootDir,
 			const std::string& configuration = "Debug",
-			const std::string& platform = "x64");
+			const std::string& platform = "x64",
+			const CreateProgressCallback& progressCallback = {});
 	};
 
 } // namespace Funke
