@@ -133,7 +133,7 @@ internal unsafe struct ManagedCallbacksStruct
 internal static class InteropHandshake
 {
     // Bump together with k_ScriptInteropLayoutVersion (ScriptGlue.hpp) on any add/remove/reorder in either table.
-    internal const int LayoutVersion = 32;
+    internal const int LayoutVersion = 37;
 
     // Codes are mirrored in ScriptEngine::LoadCoreAssembly.
     internal const int Ok = 0;

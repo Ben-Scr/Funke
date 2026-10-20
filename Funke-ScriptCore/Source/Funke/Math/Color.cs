@@ -87,4 +87,63 @@ public struct Color : System.IEquatable<Color>
         return new Color(a.R + (b.R - a.R) * t, a.G + (b.G - a.G) * t,
                          a.B + (b.B - a.B) * t, a.A + (b.A - a.A) * t);
     }
+
+    // ── Hex ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Color from <c>"#RRGGBB"</c>, <c>"#RRGGBBAA"</c>, <c>"#RGB"</c> or <c>"#RGBA"</c> (the # is optional), as written
+    /// in palettes and design sheets. Throws <see cref="System.FormatException"/> for anything else.
+    /// </summary>
+    public static Color FromHex(string hex)
+        => TryFromHex(hex, out Color color) ? color : throw new System.FormatException($"'{hex}' is not a hex color (#RRGGBB, #RRGGBBAA, #RGB or #RGBA).");
+
+    /// <summary><see cref="FromHex"/> that returns false instead of throwing.</summary>
+    public static bool TryFromHex(string? hex, out Color color)
+    {
+        color = White;
+        if (hex == null) return false;
+        System.ReadOnlySpan<char> s = hex.AsSpan().Trim();
+        if (s.Length > 0 && s[0] == '#') s = s[1..];
+
+        bool shortForm = s.Length is 3 or 4;
+        if (!shortForm && s.Length is not (6 or 8)) return false;
+        int channels = shortForm ? s.Length : s.Length / 2;
+        System.Span<float> c = stackalloc float[4] { 1f, 1f, 1f, 1f };
+        for (int i = 0; i < channels; i++)
+        {
+            int value;
+            if (shortForm)
+            {
+                int digit = HexDigit(s[i]);
+                if (digit < 0) return false;
+                value = digit * 17;
+            }
+            else
+            {
+                int hi = HexDigit(s[i * 2]), lo = HexDigit(s[i * 2 + 1]);
+                if (hi < 0 || lo < 0) return false;
+                value = hi * 16 + lo;
+            }
+            c[i] = value / 255f;
+        }
+        color = new Color(c[0], c[1], c[2], c[3]);
+        return true;
+    }
+
+    /// <summary><c>"#RRGGBB"</c>, or <c>"#RRGGBBAA"</c> with <paramref name="includeAlpha"/>; channels are clamped to 0..1.</summary>
+    public string ToHex(bool includeAlpha = false)
+    {
+        static int Byte(float v) => (int)System.MathF.Round(Mathf.Clamp01(v) * 255f);
+        return includeAlpha
+            ? $"#{Byte(R):X2}{Byte(G):X2}{Byte(B):X2}{Byte(A):X2}"
+            : $"#{Byte(R):X2}{Byte(G):X2}{Byte(B):X2}";
+    }
+
+    private static int HexDigit(char c) => c switch
+    {
+        >= '0' and <= '9' => c - '0',
+        >= 'a' and <= 'f' => c - 'a' + 10,
+        >= 'A' and <= 'F' => c - 'A' + 10,
+        _ => -1,
+    };
 }

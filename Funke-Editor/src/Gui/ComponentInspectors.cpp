@@ -448,44 +448,59 @@ namespace Funke {
 		}
 	}
 
+	namespace {
+		void DrawSkinnedClipPicker(std::span<const Entity> entities)
+		{
+			if (entities.size() != 1) return;
+
+			auto& renderer = const_cast<Entity&>(entities[0]).GetComponent<SkinnedMeshRendererComponent>();
+			const MeshAsset* asset = MeshLibrary::Get(renderer.Model);
+			ImGui::Spacing();
+			if (!asset) {
+				ImGui::TextDisabled(renderer.Model == 0 ? "No model assigned." : "The model could not be loaded (see the Console).");
+				return;
+			}
+			const SkinnedMeshData* data = asset->Skin.get();
+			if (!data) {
+				ImGui::TextDisabled("Static model: no skeleton or animation.");
+				return;
+			}
+
+			if (!data->Clips.empty()) {
+				const int current = data->FindClip(renderer.Clip);
+				const char* preview = renderer.Clip.empty() ? data->Clips.front().Name.c_str()
+					: (current >= 0 ? renderer.Clip.c_str() : "(missing clip)");
+				if (ImGui::BeginCombo("Pick Clip", preview)) {
+					for (size_t i = 0; i < data->Clips.size(); ++i) {
+						const SkeletalClip& clip = data->Clips[i];
+						char label[160];
+						std::snprintf(label, sizeof(label), "%s  (%.2f s)##%zu", clip.Name.c_str(), clip.Duration, i);
+						if (ImGui::Selectable(label, static_cast<int>(i) == current)) {
+							renderer.Clip = clip.Name;
+							renderer.Time = 0.0f;
+							ImGuiUtils::MarkSelectionDirty(entities);
+						}
+					}
+					ImGui::EndCombo();
+				}
+			}
+			ImGui::TextDisabled("%zu vertices, %zu nodes, %zu joints, %zu clip(s)", data->BindVertices.size(), data->Nodes.size(),
+				data->Joints.size(), data->Clips.size());
+		}
+	} // namespace
+
 	void DrawSkinnedMeshRendererInspector(std::span<const Entity> entities)
 	{
-		DrawPropertiesFor<SkinnedMeshRendererComponent>(entities);
-		if (entities.size() != 1) return;
-
-		auto& renderer = const_cast<Entity&>(entities[0]).GetComponent<SkinnedMeshRendererComponent>();
-		const MeshAsset* asset = MeshLibrary::Get(renderer.Model);
-		ImGui::Spacing();
-		if (!asset) {
-			ImGui::TextDisabled(renderer.Model == 0 ? "No model assigned." : "The model could not be loaded (see the Console).");
-			return;
-		}
-		const SkinnedMeshData* data = asset->Skin.get();
-		if (!data) {
-			ImGui::TextDisabled("Static model: no skeleton or animation.");
-			return;
-		}
-
-		if (!data->Clips.empty()) {
-			const int current = data->FindClip(renderer.Clip);
-			const char* preview = renderer.Clip.empty() ? data->Clips.front().Name.c_str()
-				: (current >= 0 ? renderer.Clip.c_str() : "(missing clip)");
-			if (ImGui::BeginCombo("Pick Clip", preview)) {
-				for (size_t i = 0; i < data->Clips.size(); ++i) {
-					const SkeletalClip& clip = data->Clips[i];
-					char label[160];
-					std::snprintf(label, sizeof(label), "%s  (%.2f s)##%zu", clip.Name.c_str(), clip.Duration, i);
-					if (ImGui::Selectable(label, static_cast<int>(i) == current)) {
-						renderer.Clip = clip.Name;
-						renderer.Time = 0.0f;
-						ImGuiUtils::MarkSelectionDirty(entities);
-					}
-				}
-				ImGui::EndCombo();
-			}
-		}
-		ImGui::TextDisabled("%zu vertices, %zu nodes, %zu joints, %zu clip(s)", data->BindVertices.size(), data->Nodes.size(),
-			data->Joints.size(), data->Clips.size());
+		const auto* info = SceneManager::GetComponentRegistry().GetInfo<SkinnedMeshRendererComponent>();
+		if (!info || info->properties.empty()) return;
+		// The clip picker belongs to the Animation group, so the Optimization fields follow it.
+		const std::span<const PropertyDescriptor> properties = info->properties;
+		const auto optimization = std::find_if(properties.begin(), properties.end(),
+			[](const PropertyDescriptor& descriptor) { return descriptor.Name == "CullingMode"; });
+		const size_t split = static_cast<size_t>(optimization - properties.begin());
+		PropertyDrawer::DrawAll(entities, properties.first(split), info->displayName);
+		DrawSkinnedClipPicker(entities);
+		if (split < properties.size()) PropertyDrawer::DrawAll(entities, properties.subspan(split), info->displayName);
 	}
 
 	// MUST lock these fields: SliderComponent writes SizeDelta.x each frame and assumes fixed anchor/pivot geometry.

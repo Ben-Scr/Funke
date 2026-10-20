@@ -506,6 +506,11 @@ Sofort erledigt (15.10.2026), hier nur zur Einordnung:
 
 ## 27. `SetEnabled(true)` lässt ausgeschaltete Kinder aus (beim UI-Redesign gefunden, 15.10.)
 
+**Erledigt (16.10.2026):** `Entity::SetEnabled(true)` unter einem ausgeschalteten Elternteil macht aus der eigenen Deaktivierung eine geerbte (`InheritedDisabledTag`), die Kaskade schaltet das Kind dann mit ein. Semantik wie Unity: `IsEnabled` = activeSelf, `IsEnabledInHierarchy` = activeInHierarchy (Doku *Scripting*). Doctest in `EntityTests.cpp`. Der `--quit-after`-Watchdog war schon da.
+
+**Nachtrag (16.10.2026): Selbst-Ausschalten in `OnEnable`.** Im Runtime bestätigt (Sandbox `bin-int/_agent/SelfDisableSandbox`, direkt, über die Kaskade des Elternteils und beim Wieder-Einschalten einer bestehenden Instanz): EnTT ruft `on_destroy<DisabledTag>` vor dem Entfernen des Tags auf, und `OnDisabledTagDestroy` rief `OnEnable` darin synchron auf. In `OnEnable` lasen `IsEnabled` und `IsEnabledInHierarchy` deshalb `false`, und `Entity.IsEnabled = false` auf sich selbst war ein No-op (die Entity galt als schon aus); sie blieb an. Behoben: Die Hooks führen nur noch die Tag-Kaskade aus und reihen die Callbacks ein (`Scene::EnabledStateBatch`, geöffnet von `Entity::SetEnabled`/`SetParent`); sie laufen, wenn der äußerste Batch endet, also nach dem Entfernen. Ein Gegen-Wechsel vor dem Lauf hebt den eingereihten auf, deshalb bekommen Kinder, die im selben Schritt wieder ausgehen, weder `OnEnable` noch `OnDisable`. Neu: `Scene::OnEntityEnabledChanged` (C++-Event pro Kante). Doctest „Enable callbacks see the entity enabled and can switch it off again“. Nicht abgedeckt: eine rohe `registry.remove<DisabledTag>` ohne Batch ruft die Callbacks weiter vor dem Entfernen auf (kein Laufzeitpfad nutzt das). Offen bleibt der MyLevelsSheet-Fall: Kind-Skripte existieren im `OnEnable` des Elternteils noch nicht (`GetScript` → null), weil sie erst bei ihrer eigenen Kante angelegt werden.
+
+
 - `Entity::SetEnabled(true)` (`Funke-Engine/src/Scene/Entity.cpp`, ca. Z. 166–187) überspringt ein im Editor ausgeschaltetes Kind, wenn dessen Elternobjekt in dem Moment noch aus ist; der Kommentar am C#-Binding verspricht anderes. Folge: Panels mit vorab ausgeschalteten Unterelementen zeigen nach dem Einschalten Teile nicht an.
 - Workaround im Spiel: Menü-Skripte aktualisieren sich beim ersten OnUpdate noch einmal; LevelCompletePanel schaltet erst das Panel, dann die Kinder ein.
 - Gebraucht: klare, dokumentierte Semantik (activeSelf vs. activeInHierarchy wie in Unity) und ein Test dazu.
@@ -518,8 +523,35 @@ Sofort erledigt (15.10.2026), hier nur zur Einordnung:
 
 ## 29. 9-Slice-Ränder folgen nicht der UI-Skalierung (beim Level-Editor-Redesign gefunden, 16.10.)
 
+**Erledigt (16.10.2026):** `GuiRenderer` multipliziert `BorderScale` mit der aufgelösten Rect-Skalierung (Canvas-UI-Skalierung × LocalScale, je Achse; `ResolveBorderScale` in `Gui/NineSlice.hpp`). Doctest mit 1920×1080 und 768×432 in `NineSliceTests.cpp`.
+
+
 - `GuiRenderer` rechnet den Rand eines geslicten Images (`Border*` × `BorderScale`) in Bildschirmpixeln, nicht in UI-Einheiten. In einem kleinen Fenster (480 px hoch, UI-Skalierung 0,4) wirken alle geslicten Sprites etwa 2,5-mal runder und dicker als entworfen: Kacheln, Badges, Panels, Pills. Auf dem Pixel 9a (Skalierung ≈ 0,9) fällt es kaum auf.
 - Gebraucht: Ränder mit der UI-Skalierung des Canvas multiplizieren, so wie Positionen und Größen. Dazu ein Test mit zwei Fenstergrößen.
+
+## 30. Alte Build-Ordner nach der Umbenennung „nicht Funke-eigen“ (beim ersten Funke-Android-Build gefunden, 16.10.)
+
+**Erledigt (16.10.2026):** `BuildOutputSafety` akzeptiert `.index-build-output` als Eigentumsnachweis; der neue Staging-Ordner schreibt `.funke-build-output`, damit ist die alte Datei nach dem nächsten Build weg. Ordner ohne Markierung werden auch an `Index-Engine.dll` erkannt. Doctests in `BuildOutputSafetyTests.cpp`. Die ABI-Meldung verschwindet mit einem gemeinsamen Neubau von Engine, CLI und Runtime.
+
+
+- `funke build` bricht mit „Unsafe output directory … not owned by Funke“ ab. Grund: Im Ausgabeordner liegt noch die Markierung `.index-build-output` aus der Index-Zeit; `BuildOutputSafety` erwartet `.funke-build-output`. In MarbleSky habe ich die Datei von Hand umbenannt.
+- Gebraucht: `.index-build-output` als Eigentumsnachweis weiter akzeptieren (und beim nächsten Build ersetzen), oder die Projekt-Migration benennt die Datei mit um.
+- Außerdem meldet jeder Lauf von `funke.exe`/`Funke-Runtime.exe`, sie seien gegen andere Engine-Header gebaut als die geladene `Funke-Engine.dll`. Engine, CLI und Runtime gemeinsam neu bauen.
+
+## 31. Große Weltkoordinaten: kein Floating Origin, kein kamerarelatives Rendern (beim Endlosmodus gefunden, 16.10.)
+
+- Im Endlosmodus lag die Strecke bei 5000 m über 4 km vom Ursprung entfernt. Flache Deko auf dem Boden (Sandflecken, Inseln) und koplanare Flächen flimmerten dann ineinander. Mit gleichem Seed sah es am Ursprung sauber aus und 4,5 km weiter draußen zerfranst. Der Renderer rechnet `Projection * View` in Weltkoordinaten, und Jolt ist ohne `JPH_DOUBLE_PRECISION` gebaut. Ab 4096 m beträgt die Float-Auflösung nur noch etwa 0,5 mm. Dazu kommt, dass die Spiel-Shader mit Weltpositionen rechnen (Wellen, Dünen, Neon).
+- Im Spiel gelöst: Die Endlosstrecke folgt jetzt einem 500-m-Kreis um den Ursprung und bleibt so unter 650 m.
+- Gebraucht für offene Welten: kamerarelatives Rendern (Kameraposition vor der Multiplikation abziehen, Model-Matrix relativ zur Kamera hochladen) und/oder ein Floating Origin. Der Floating Origin müsste Szene, Physik (Bodies teleportieren), Partikel im Weltraum und Skripte informieren, die sich Weltpositionen merken (Event `OriginShifted`).
+
+## 32. Szenen-Feldwerte überschreiben Laufzeitwerte eines eben eingeschalteten Skripts (beim Spiralen-Bug gefunden, 16.10.)
+
+**Erledigt (16.10.2026):** Wird eine Entity im Play-Modus eingeschaltet, legt `ScriptSystem::SetScriptsEnabled` fehlende Skript-Instanzen sofort an (Szenenwerte, `OnAwake`, `OnEnable`; `OnStart` vor dem ersten `OnUpdate`). `GetComponent<T>()` direkt nach `IsEnabled = true` liefert damit die Instanz, und danach gesetzte Werte bleiben. Geprüft im Runtime mit `bin-int/_agent/EnableSandbox`.
+
+
+- Ablauf: Eine Entity startet in der Szene ausgeschaltet. Ein anderes Skript schaltet sie ein und setzt sofort ein öffentliches Feld ihres Skripts (`respawn.KillHeight = …`). Danach übernimmt die Engine die Werte aus der Szene („Applied N pending field value(s) for MarbleRespawn“) und überschreibt den gerade gesetzten Wert.
+- Folge in MarbleSky: Die Murmel im Level-Builder „fiel“ in der ersten Testrunde jeder Sitzung bei der Todeshöhe −20 m aus der Szene, obwohl die Bahn (viele Spiralen) tiefer lag. Im Spiel umgangen: Der Builder setzt die Todeshöhe jetzt jedes Frame während eines Laufs.
+- Gebraucht: Szenenwerte anwenden, bevor das Skript für andere Skripte erreichbar ist (beim Erzeugen der Instanz), oder Felder nicht mehr überschreiben, die seit dem Erzeugen per Skript gesetzt wurden. Dazu ein Test.
 
 ## Offen im Spiel selbst
 

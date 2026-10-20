@@ -29,5 +29,6 @@ namespace Funke::Cli {
 	int RunPrefab(Args& args);
 	int RunPackage(Args& args);
 	int RunSetupPath(Args& args);
+	int RunEditor(Args& args);
 
 } // namespace Funke::Cli

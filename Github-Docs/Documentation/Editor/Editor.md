@@ -149,7 +149,11 @@ The **Editor View** is your 2D workspace:
 - **Click** a sprite to select it; hold **Ctrl/Shift** to multi-select.
 - With **Gizmos** enabled, drag the on-screen handles to **move, rotate, and scale** the selected entity.
 
-There are also display toggles (wireframe vs. filled, post-processing on/off) to help you see what you're doing.
+There are also display toggles (draw mode, post-processing on/off) to help you see what you're doing. The draw mode works in the 2D and the 3D Editor View:
+
+- **Default** draws the scene normally.
+- **Triangle** draws sprites and meshes as black triangle edges only, including edges hidden behind other meshes.
+- **Mixed** draws the normal scene with the triangle edges on top; in 3D only the visible edges.
 
 #### View Settings
 

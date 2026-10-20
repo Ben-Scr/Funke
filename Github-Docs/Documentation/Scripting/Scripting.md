@@ -96,6 +96,19 @@ public override void OnTriggerExit2D(Collision2D other) { }
 
 Triggers fire on both entities involved, so a pickup can react in its own script (`other.Other` is the entity that touched it). At least one of the two needs a Rigidbody2D, as with collisions.
 
+An entity that starts disabled has no script instances yet. When it is enabled during play (`entity.IsEnabled = true`, or its parent turns on), its scripts are created on the spot: scene field values first, then `OnAwake` and `OnEnable`; `OnStart` follows before its first `OnUpdate`. So code that enables an entity can use `GetComponent<MyScript>()` right away, and values it sets there are not overwritten by the scene.
+
+The same holds for spawning: when `Entity.Instantiate(prefab, position, ...)` returns, the new entity and its children already have their script instances with the prefab's field values, and `OnAwake` and `OnEnable` have run after the clone was placed and parented (so `OnAwake` sees the spawn position). The spawner can configure the copy at once, and `OnStart` still runs before the copy's first `OnUpdate`, so it sees those values:
+
+```csharp
+Entity enemy = Entity.Instantiate(EnemyPrefab, spawnPoint, 0f);
+enemy.GetComponent<EnemyAI>()!.Target = player;   // not null, also in the same frame
+```
+
+`IsEnabled` is the entity's own switch (the Inspector checkbox, Unity's `activeSelf`); `IsEnabledInHierarchy` tells whether it is actually active, i.e. it and all its parents are enabled (`activeInHierarchy`). Enabling a child while its parent is still off keeps the child off until the parent is enabled, so a panel's parts can be switched on before or after the panel itself.
+
+`OnEnable` and `OnDisable` run after the whole hierarchy has switched: inside `OnEnable` both `IsEnabled` and `IsEnabledInHierarchy` read `true`, and in a parent's `OnDisable` its children already read `IsEnabledInHierarchy == false`. A script may switch its own entity off again in `OnEnable` (for example a list row with nothing to show): `Entity.IsEnabled = false` there takes effect, `OnDisable` follows, and children that were switched on in the same step are switched off again before their own `OnEnable` runs.
+
 **SceneSystem** (per scene) has the same `OnAwake` / `OnStart` / `OnUpdate` / `OnFixedUpdate` / `OnDestroy` / `OnEnable` / `OnDisable`, plus a `Scene` property for querying entities — but no collision callbacks.
 
 **GlobalSystem** (whole app) starts with `OnInitialize()` instead of Awake/Start, then `OnUpdate` / `OnFixedUpdate`. It is created at startup and persists across scene loads.
@@ -171,7 +184,7 @@ Entity.Transform.Position += Vector2.Up \* Time.DeltaTime;
 **Hierarchy** — parenting lives on the entity, not the transform:
 
 ```csharp
-Entity.SetParent(other);          // 'other' is an Entity — keeps world position (default)
+Entity.SetParent(other);          // 'other' is an Entity — keeps world position, rotation and scale (default; 2D and 3D)
 Entity.SetParent(other, false);   // adopt the parent's frame instead (local transform kept)
 Entity.SetParent(null);           // detach to the scene root
 ```
@@ -314,7 +327,29 @@ Writes are atomic: a crash while saving leaves the previous file intact.
 ```csharp
 Audio sfx = Audio.FromAssetUUID(clipGuid);
 sfx.PlayOneShot();
+Audio.MasterVolume = 0.8f;   // 0..1, everything the game plays (a settings menu's master slider)
 ```
+
+Automated runs (`--input-script`, `--screenshot-at`, `--quit-at`, `--exec`, `--fixed-step`, `--background` or `--prefs-profile=<name>`, see [Testing](../Editor/Testing.md)) are muted by the engine whatever `MasterVolume` says; `--sound` keeps them audible. `Application.IsAutomatedRun` tells a game it runs under such a test, e.g. to skip an intro or an ad.
+
+**3D sound** — sounds that come from a place in the world. Turn on **Spatial** in an Audio Source's **3D Sound** section: the source then plays from its entity's position (Transform 3D, or Transform 2D at z 0), gets quieter with the distance to the listener and moves to the side it is on. The listener is the main Camera 3D (in 2D games the main Camera 2D), so a sound left of the view is heard on the left. Audio Sources are 2D by default, so existing scenes sound as before.
+
+| Field | Does |
+|---|---|
+| **Min Distance** | Full volume up to this distance |
+| **Max Distance** | **Linear**: silent from here on. **Logarithmic**: the fade stops here |
+| **Rolloff** | **Logarithmic** (default): `min / distance` like real sound, half as loud at twice the distance. **Linear**: evenly from full at Min Distance to silent at Max Distance |
+| **Panning** | 0 = no left/right, 1 = a sound straight to the side is silent on the other ear (default 0.8) |
+| **Doppler Level** | Pitch shift when the source or the listener moves (0 = off, the default) |
+
+```csharp
+blast.PlayOneShotAt(center, volume: 1f, minDistance: 8f, maxDistance: 64f);       // a one-shot from a point, Logarithmic
+creak.PlayOneShotAt(door, 0.7f, minDistance: 2f, maxDistance: 16f, rolloff: AudioRolloff.Linear);
+Audio.PlayOneShotAt(clip, position);                                               // does nothing for a null clip
+source.Spatial = true;                                                             // MinDistance, MaxDistance, Rolloff, Panning, DopplerLevel
+```
+
+A one-shot that would be silent (Linear, beyond Max Distance) isn't started. To check sounds without listening, for example in muted test runs, the console command `audio.spatial` lists the listener and every playing 3D sound with its distance, gain, pan and left/right volume, and `audio.spatial x y z [min] [max] [log|linear] [panning]` tells how a sound at that point would be heard, without playing it.
 
 **Music and files outside the project** — `AudioStream` plays an MP3, WAV or FLAC file from any path (a music folder, a download) and streams it from disk instead of loading it whole:
 
@@ -384,7 +419,19 @@ foreach (ref var t in Scene.QueryRef<NativeTransform2D>())
     t.LocalRotation += Time.DeltaTime;      // spin everything
 ```
 
-**Math** — `Vector2/3/4`, `Quaternion`, `Color`, `Mathf` (sin, cos, clamp, lerp…), and `Random`.
+**Math** — `Vector2/3/4`, `Quaternion`, `Color`, `Mathf` (sin, cos, clamp, lerp…), and `Random`. Palette colors go in as written: `Color.FromHex("#3A7BD5")` (also `#RRGGBBAA`, `#RGB`, `#RGBA`; `TryFromHex` doesn't throw, `ToHex()` writes one back).
+
+**Text outline and shadow** — a Text Renderer's **Effects** draw an outline and a drop shadow under the glyphs, for world and UI text, sized in text pixels (Font Size units):
+
+```csharp
+var label = GetComponent<TextRenderer>()!;
+label.OutlineWidth = 3f;                         // 0 = none
+label.OutlineColor = Color.FromHex("#1A1026");
+label.ShadowOffset = new Vector2(2f, -2f);       // +Y up: down-right; (0, 0) = none
+label.ShadowColor = new Color(0f, 0f, 0f, 0.5f);
+```
+
+In scene files the keys are `outlineWidth`, `outlineR/G/B/A`, `shadowX`, `shadowY`, `shadowR/G/B/A`. Both effects fade with the text color's alpha.
 
 For heavy parallel work over many entities, combine queries with the [Job System](../Engine-Core/Job-System.md).
 

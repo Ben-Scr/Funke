@@ -102,8 +102,10 @@ namespace Funke {
 	std::vector<std::unique_ptr<AudioManager::SoundInstance>> AudioManager::s_soundInstances;
 	std::vector<uint32_t> AudioManager::s_freeInstanceIndices;
 	float AudioManager::s_masterVolume = 1.0f;
+	bool AudioManager::s_Muted = false;
 	bool AudioManager::s_PlayInBackground = false;
 	std::string AudioManager::s_RootPath = Path::Combine("FunkeAssets", "Audio");
+	AudioListenerState AudioManager::s_Listener;
 
 	uint32_t AudioManager::s_maxConcurrentSounds = MAX_CONCURRENT_SOUNDS;
 	uint32_t AudioManager::s_maxSoundsPerFrame = MAX_SOUNDS_PER_FRAME;
@@ -146,6 +148,8 @@ namespace Funke {
 		UpdateListener();
 
 		s_IsInitialized = true;
+		// A volume or mute set before the backend existed (startup code, --mute) would otherwise be lost.
+		s_Backend->SetMasterVolume(s_Muted ? 0.0f : s_masterVolume);
 		return true;
 	}
 
@@ -236,7 +240,7 @@ namespace Funke {
 				continue; // skip but don't burn the start-budget
 			}
 
-			if (StartOneShotInstance(request.Handle, request.Volume)) {
+			if (StartOneShotInstance(request.Handle, request.Volume, request.Spatial ? &request : nullptr)) {
 				s_soundsPlayedThisFrame++;
 				ThrottleSound(request.Handle);
 				inFlightStarts++;
@@ -544,7 +548,7 @@ namespace Funke {
 			ma_sound_set_volume(&instance->Sound, source.GetVolume());
 			ma_sound_set_pitch(&instance->Sound, source.GetPitch());
 			ma_sound_set_looping(&instance->Sound, source.IsLooping());
-			ma_sound_set_positioning(&instance->Sound, ma_positioning_relative);
+			ApplySpatial(*instance, source.IsSpatial(), source.GetSpatialSettings(), source.GetWorldPosition(), source.GetVelocity());
 
 
 			ma_result result = ma_sound_start(&instance->Sound);
@@ -600,7 +604,16 @@ namespace Funke {
 		s_masterVolume = Max(0.0f, Min(1.0f, volume));
 
 		if (s_IsInitialized && s_Backend) {
-			s_Backend->SetMasterVolume(s_masterVolume);
+			s_Backend->SetMasterVolume(s_Muted ? 0.0f : s_masterVolume);
+		}
+	}
+
+	void AudioManager::SetMuted(bool muted) {
+		FNK_CORE_ASSERT(Application::IsMainThread(), FunkeErrorCode::Undefined, "AudioManager::SetMuted must be called on the main thread");
+		s_Muted = muted;
+
+		if (s_IsInitialized && s_Backend) {
+			s_Backend->SetMasterVolume(s_Muted ? 0.0f : s_masterVolume);
 		}
 	}
 
@@ -642,16 +655,107 @@ namespace Funke {
 		request.Volume = volume;
 		request.Priority = 1.0f;
 		request.RequestTime = std::chrono::steady_clock::now();
+		RequestOneShot(request);
+	}
 
-		if (IsThrottled(audioHandle) || !CanPlaySound(audioHandle, request.Priority)) {
+	void AudioManager::PlayOneShotAt(const AudioHandle& audioHandle, const glm::vec3& position, float volume, const AudioSpatialSettings& settings) {
+		FNK_CORE_ASSERT(Application::IsMainThread(), FunkeErrorCode::Undefined, "AudioManager::PlayOneShotAt must be called on the main thread");
+		if (!s_IsInitialized || !audioHandle.IsValid()) {
+			return;
+		}
+
+		SoundRequest request{};
+		request.Handle = audioHandle;
+		request.Volume = volume;
+		request.Priority = 1.0f;
+		request.Position = position;
+		request.RequestTime = std::chrono::steady_clock::now();
+		request.Spatial = true;
+		request.Settings = AudioSpatial::Sanitize(settings);
+		// A voice spent on silence would push audible sounds out of the concurrency budget.
+		if (volume * AudioSpatial::Attenuation(glm::distance(position, s_Listener.Position), request.Settings) < 0.001f) {
+			return;
+		}
+		RequestOneShot(request);
+	}
+
+	void AudioManager::RequestOneShot(const SoundRequest& request) {
+		if (IsThrottled(request.Handle) || !CanPlaySound(request.Handle, request.Priority)) {
 			s_soundQueue.push(request);
 			return;
 		}
 
-		if (StartOneShotInstance(audioHandle, volume)) {
+		if (StartOneShotInstance(request.Handle, request.Volume, request.Spatial ? &request : nullptr)) {
 			s_soundsPlayedThisFrame++;
-			ThrottleSound(audioHandle);
+			ThrottleSound(request.Handle);
 		}
+	}
+
+	void AudioManager::SetListener(const AudioListenerState& listener) {
+		s_Listener = listener;
+		UpdateListener();
+	}
+
+	void AudioManager::ApplySpatial(SoundInstance& instance, bool spatial, const AudioSpatialSettings& settings,
+		const glm::vec3& position, const glm::vec3& velocity) {
+		ma_sound* sound = &instance.Sound;
+		instance.Spatial = spatial;
+		if (!spatial) {
+			// A plain 2D sound: wherever the listener goes, it plays as authored.
+			ma_sound_set_spatialization_enabled(sound, MA_FALSE);
+			ma_sound_set_pan(sound, 0.0f);
+			return;
+		}
+		instance.Settings = AudioSpatial::Sanitize(settings);
+		instance.Position = position;
+		ma_sound_set_spatialization_enabled(sound, MA_TRUE);
+		ma_sound_set_positioning(sound, ma_positioning_absolute);
+		ma_sound_set_position(sound, position.x, position.y, position.z);
+		ma_sound_set_velocity(sound, velocity.x, velocity.y, velocity.z);
+		ma_sound_set_attenuation_model(sound, instance.Settings.Rolloff == AudioRolloff::Linear ? ma_attenuation_model_linear : ma_attenuation_model_inverse);
+		ma_sound_set_rolloff(sound, 1.0f);
+		ma_sound_set_min_distance(sound, instance.Settings.MinDistance);
+		ma_sound_set_max_distance(sound, instance.Settings.MaxDistance);
+		// miniaudio's own directional panning plays a sound in front at half volume; the balance pan below doesn't.
+		ma_sound_set_directional_attenuation_factor(sound, 0.0f);
+		ma_sound_set_doppler_factor(sound, instance.Settings.DopplerLevel);
+		ma_sound_set_pan(sound, AudioSpatial::Pan(s_Listener, position, instance.Settings.Panning));
+	}
+
+	void AudioManager::UpdateSourceSpatial(const AudioSourceComponent& source) {
+		if (!s_IsInitialized || source.GetInstanceId() == 0) {
+			return;
+		}
+		SoundInstance* instance = GetSoundInstance(source.GetInstanceId());
+		if (!instance || !instance->IsValid) {
+			return;
+		}
+		if (instance->Spatial != source.IsSpatial() || (source.IsSpatial() && !(instance->Settings == source.GetSpatialSettings()))) {
+			ApplySpatial(*instance, source.IsSpatial(), source.GetSpatialSettings(), source.GetWorldPosition(), source.GetVelocity());
+			return;
+		}
+		if (!instance->Spatial) {
+			return;
+		}
+		const glm::vec3& position = source.GetWorldPosition();
+		const glm::vec3& velocity = source.GetVelocity();
+		instance->Position = position;
+		ma_sound_set_position(&instance->Sound, position.x, position.y, position.z);
+		ma_sound_set_velocity(&instance->Sound, velocity.x, velocity.y, velocity.z);
+	}
+
+	std::vector<AudioManager::SpatialSoundInfo> AudioManager::GetSpatialSounds() {
+		std::vector<SpatialSoundInfo> sounds;
+		for (const auto& slot : s_soundInstances) {
+			if (!slot || !slot->IsValid || !slot->Spatial || !ma_sound_is_playing(&slot->Sound)) continue;
+			SpatialSoundInfo info;
+			info.Name = std::filesystem::path(GetAudioName(slot->AudioHandle)).filename().string();
+			info.Position = slot->Position;
+			info.Volume = ma_sound_get_volume(&slot->Sound);
+			info.Heard = AudioSpatial::Evaluate(s_Listener, slot->Position, slot->Settings);
+			sounds.push_back(std::move(info));
+		}
+		return sounds;
 	}
 
 	bool AudioManager::RegisterAudioData(const Audio& audio) {
@@ -945,14 +1049,25 @@ namespace Funke {
 	}
 
 	void AudioManager::UpdateListener() {
-		if (!s_IsInitialized) {
+		ma_engine* engine = GetActiveMiniaudioEngine();
+		if (!engine) {
 			return;
 		}
+		const AudioListenerState& l = s_Listener;
+		ma_engine_listener_set_position(engine, 0, l.Position.x, l.Position.y, l.Position.z);
+		ma_engine_listener_set_direction(engine, 0, l.Forward.x, l.Forward.y, l.Forward.z);
+		ma_engine_listener_set_world_up(engine, 0, l.Up.x, l.Up.y, l.Up.z);
+		ma_engine_listener_set_velocity(engine, 0, l.Velocity.x, l.Velocity.y, l.Velocity.z);
 	}
 
 	void AudioManager::UpdateSoundInstances() {
 		if (!s_IsInitialized) {
 			return;
+		}
+		// The listener turns and moves; the side a sound comes from changes with it.
+		for (const auto& slot : s_soundInstances) {
+			if (!slot || !slot->IsValid || !slot->Spatial) continue;
+			ma_sound_set_pan(&slot->Sound, AudioSpatial::Pan(s_Listener, slot->Position, slot->Settings.Panning));
 		}
 	}
 
@@ -965,7 +1080,7 @@ namespace Funke {
 		}
 	}
 
-	bool AudioManager::StartOneShotInstance(const AudioHandle& audioHandle, float volume) {
+	bool AudioManager::StartOneShotInstance(const AudioHandle& audioHandle, float volume, const SoundRequest* spatial) {
 		const uint32_t instanceId = CreateSoundInstance(audioHandle);
 		if (instanceId == 0) {
 			FNK_CORE_WARN("[{}] Failed to create one-shot sound instance", ErrorCodeToString(FunkeErrorCode::LoadFailed));
@@ -980,6 +1095,8 @@ namespace Funke {
 		}
 
 		ma_sound_set_volume(&instance->Sound, volume);
+		if (spatial) ApplySpatial(*instance, true, spatial->Settings, spatial->Position, glm::vec3(0.0f));
+		else ApplySpatial(*instance, false, {}, glm::vec3(0.0f), glm::vec3(0.0f));
 		const ma_result result = ma_sound_start(&instance->Sound);
 		if (result != MA_SUCCESS) {
 			FNK_CORE_WARN("[{}] Failed to start one-shot sound. Error: {}", ErrorCodeToString(FunkeErrorCode::LoadFailed), static_cast<int>(result));

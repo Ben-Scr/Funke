@@ -6,6 +6,7 @@
 #include "Core/Platform/SDLInputMapping.hpp"
 #include "Core/Platform/TitlebarRegions.hpp"
 #include "Core/Platform/Win32Titlebar.hpp"
+#include "DevTools/RunAutomation.hpp"
 #include "Graphics/ImageProcessing.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/RenderApi.hpp"
@@ -77,6 +78,16 @@ namespace Funke {
 		SDL_DisplayID DisplayForWindow(SDL_Window* window) {
 			SDL_DisplayID display = window ? SDL_GetDisplayForWindow(window) : 0;
 			return display != 0 ? display : SDL_GetPrimaryDisplay();
+		}
+
+		// Background runs: SW_MAXIMIZE activates the window, so it covers the work area like a maximized one instead.
+		void FillWorkArea(SDL_Window* window) {
+			SDL_Rect area{};
+			if (!SDL_GetDisplayUsableBounds(DisplayForWindow(window), &area)) return;
+			int top = 0;
+			SDL_GetWindowBordersSize(window, &top, nullptr, nullptr, nullptr);
+			SDL_SetWindowSize(window, area.w, area.h - top);
+			SDL_SetWindowPosition(window, area.x, area.y + top);
 		}
 
 		void AppendUtf8Codepoints(const char* text, std::vector<uint32_t>& out) {
@@ -487,6 +498,36 @@ namespace Funke {
 		}
 	}
 
+	void Window::InjectKey(int keyCode, bool pressed) {
+		if (s_ActiveWindow && keyCode >= 0) s_ActiveWindow->OnKey(keyCode, pressed, false);
+	}
+
+	void Window::InjectMouseButton(int button, bool pressed) {
+		if (s_ActiveWindow && button >= 0) s_ActiveWindow->OnMouseButton(button, pressed);
+	}
+
+	void Window::InjectMouseMove(Vec2 windowPosition) {
+		Application* app = Application::GetInstance();
+		if (!s_ActiveWindow || !app) return;
+		// Unlike OnCursorMoved, a cursor lock the editor suspended doesn't hold injected motion back.
+		s_ActiveWindow->m_VirtualCursor = windowPosition;
+		app->m_Input.OnMouseMove(windowPosition.x, windowPosition.y);
+		const Vec2 viewportPosition = ToViewportLocalPosition(windowPosition);
+		ScriptEngine::RaiseMouseMove(viewportPosition.x, viewportPosition.y);
+		if (s_ActiveWindow->m_EventCallback) {
+			MouseMovedEvent e(viewportPosition.x, viewportPosition.y);
+			s_ActiveWindow->m_EventCallback(e);
+		}
+	}
+
+	void Window::InjectTouch(int64_t fingerId, Vec2 windowPosition, int phase) {
+		Application* app = Application::GetInstance();
+		if (!app) return;
+		if (phase == 0) app->m_Input.m_Touches.OnDown(fingerId, windowPosition);
+		else if (phase == 1) app->m_Input.m_Touches.OnMove(fingerId, windowPosition);
+		else app->m_Input.m_Touches.OnUp(fingerId, windowPosition);
+	}
+
 	void Window::OnFramebufferResized() {
 		SyncViewportFromFramebuffer();
 		UpdateViewport();
@@ -556,6 +597,7 @@ namespace Funke {
 			SDL_SetHint(SDL_HINT_ORIENTATIONS, orientations);
 		}
 #endif
+		const bool background = RunAutomation::IsBackground();
 		SDL_WindowFlags flags = SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN;
 		if (props.Resizeable) flags |= SDL_WINDOW_RESIZABLE;
 		if (!props.Decorated || props.CustomTitlebar) flags |= SDL_WINDOW_BORDERLESS;
@@ -602,6 +644,10 @@ namespace Funke {
 			if (mode == FullscreenMode::Exclusive && props.Windowed) {
 				mode = FullscreenMode::Maximized;
 			}
+			// Exclusive fullscreen would take the display away from the user.
+			if (background && mode == FullscreenMode::Exclusive) {
+				mode = FullscreenMode::BorderlessWindowed;
+			}
 			switch (mode) {
 				case FullscreenMode::Exclusive:
 					SetFullScreen(true);
@@ -616,7 +662,8 @@ namespace Funke {
 					break;
 				}
 				case FullscreenMode::Maximized:
-					SDL_MaximizeWindow(m_Window);
+					if (background) FillWorkArea(m_Window);
+					else SDL_MaximizeWindow(m_Window);
 					break;
 			}
 		}
@@ -624,6 +671,12 @@ namespace Funke {
 			CenterWindow();
 		}
 
+#ifdef FNK_PLATFORM_WINDOWS
+		// Behind every other window; PrintWindow (PW_RENDERFULLCONTENT) and engine screenshots still capture it.
+		if (background) {
+			::SetWindowPos(static_cast<HWND>(GetPlatformHandle()), HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+		}
+#endif
 		SDL_ShowWindow(m_Window);
 #if defined(FNK_PLATFORM_WEB)
 		// The canvas fills the page and follows browser resizes; real fullscreen needs a user gesture. Set
@@ -858,6 +911,8 @@ namespace Funke {
 			static_cast<int>(SDL_WINDOWPOS_CENTERED_DISPLAY(display)));
 	}
 	void Window::Focus() {
+		// Even without activation a raise would cover the user's window.
+		if (RunAutomation::IsBackground()) return;
 		SDL_RaiseWindow(m_Window);
 	}
 	void Window::MaximizeWindow(bool reset) {
@@ -887,6 +942,10 @@ namespace Funke {
 		if (FNK_PLATFORM_MOBILE) return;
 		if (IsFullScreen() == enabled)
 			return;
+		if (enabled && RunAutomation::IsBackground()) {
+			FNK_CORE_INFO_TAG("Window", "Background run: staying windowed instead of entering fullscreen");
+			return;
+		}
 
 		if (enabled) {
 			const SDL_DisplayID display = DisplayForWindow(m_Window);

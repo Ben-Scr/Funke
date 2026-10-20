@@ -20,6 +20,7 @@ namespace Funke {
 			wgpu::TextureFormat ColorFormat = wgpu::TextureFormat::Undefined;
 			uint32_t            Width  = 0;
 			uint32_t            Height = 0;
+			uint32_t            SampleCount = 1;
 			uint32_t            ColorTextureId = 0;  // back-pointer for cleanup
 		};
 
@@ -45,14 +46,13 @@ namespace Funke {
 		}
 
 		// Map the engine's backend-neutral TextureFormat enum to a wgpu format.
-		// Four supported formats (RGBA8 / R8 / Depth24Stencil8 / RGBA16F);
-		// anything else is a hard error rather than a silent substitution.
 		wgpu::TextureFormat ToWgpuFormat(TextureFormat f) noexcept {
 			switch (f) {
 				case TextureFormat::RGBA8:           return wgpu::TextureFormat::RGBA8Unorm;
 				case TextureFormat::R8:              return wgpu::TextureFormat::R8Unorm;
 				case TextureFormat::Depth24Stencil8: return wgpu::TextureFormat::Depth24PlusStencil8;
 				case TextureFormat::RGBA16F:         return wgpu::TextureFormat::RGBA16Float;
+				case TextureFormat::BGRA8:           return wgpu::TextureFormat::BGRA8Unorm;
 			}
 			return wgpu::TextureFormat::RGBA8Unorm;
 		}
@@ -70,6 +70,7 @@ namespace Funke {
 			out.ColorFormat = fb->ColorFormat;
 			out.Width       = fb->Width;
 			out.Height      = fb->Height;
+			out.SampleCount = fb->SampleCount;
 			out.Valid       = true;
 			return out;
 		}
@@ -99,6 +100,7 @@ namespace Funke {
 		, m_DepthRenderbuffer(other.m_DepthRenderbuffer)
 		, m_Viewport(other.m_Viewport)
 		, m_ColorFormat(other.m_ColorFormat)
+		, m_SampleCount(other.m_SampleCount)
 	{
 		other.m_BackendId         = 0;
 		other.m_ColorTextureId    = 0;
@@ -113,6 +115,7 @@ namespace Funke {
 		m_ColorTextureId    = other.m_ColorTextureId;
 		m_DepthRenderbuffer = other.m_DepthRenderbuffer;
 		m_ColorFormat       = other.m_ColorFormat;
+		m_SampleCount       = other.m_SampleCount;
 		m_Viewport          = other.m_Viewport;
 		other.m_BackendId         = 0;
 		other.m_ColorTextureId    = 0;
@@ -127,24 +130,37 @@ namespace Funke {
 
 	bool Framebuffer::ReadPixelsRGBA8(std::vector<uint8_t>& outRgba) const {
 		const GpuFramebuffer* fb = TryLookupFb(m_BackendId);
-		if (!fb || !fb->ColorTexture) return false;
+		if (!fb || !fb->ColorTexture || fb->SampleCount > 1) return false;
 		return WebGPUBackend::ReadTextureRGBA8(fb->ColorTexture, fb->ColorFormat, fb->Width, fb->Height, outRgba);
 	}
 
 	bool Framebuffer::Recreate(int width, int height,
-		TextureFormat colorFormat, TextureFilter /*filter*/)
+		TextureFormat colorFormat, TextureFilter filter)
+	{
+		return Recreate(width, height, colorFormat, filter, 1);
+	}
+
+	bool Framebuffer::Recreate(int width, int height,
+		TextureFormat colorFormat, TextureFilter /*filter*/, uint32_t sampleCount)
 	{
 		if (width <= 0 || height <= 0) return false;
+		// Dawn hands back an error texture (not null) for unsupported counts; 1 and 4 work on every backend.
+		if (sampleCount != 1 && sampleCount != 4) {
+			FNK_CORE_ERROR_TAG("Framebuffer", "Unsupported sample count {} (use 1 or 4)", sampleCount);
+			return false;
+		}
 
 		const bool sizeMatches = m_Viewport.GetWidth() == width
 			&& m_Viewport.GetHeight() == height;
-		if (m_BackendId != 0 && sizeMatches && m_ColorFormat == colorFormat) {
+		if (m_BackendId != 0 && sizeMatches && m_ColorFormat == colorFormat && m_SampleCount == sampleCount) {
 			return true;
 		}
 
 		Destroy();
 		m_Viewport.SetSize(width, height);
 		m_ColorFormat = colorFormat;
+		m_SampleCount = sampleCount;
+		const bool multisampled = sampleCount > 1;
 
 		if (!WebGPUBackend::IsInitialized()) {
 			FNK_CORE_ERROR_TAG("Framebuffer",
@@ -159,10 +175,10 @@ namespace Funke {
 		colorDesc.dimension       = wgpu::TextureDimension::e2D;
 		colorDesc.size            = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
 		colorDesc.format          = colorWgpuFormat;
-		colorDesc.usage           = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding
-			| wgpu::TextureUsage::CopySrc;
+		colorDesc.usage           = multisampled ? wgpu::TextureUsage::RenderAttachment
+			: wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopySrc;
 		colorDesc.mipLevelCount   = 1;
-		colorDesc.sampleCount     = 1;
+		colorDesc.sampleCount     = sampleCount;
 		colorDesc.viewFormatCount = 0;
 
 		wgpu::Texture color = device.CreateTexture(&colorDesc);
@@ -180,7 +196,7 @@ namespace Funke {
 		depthDesc.format          = wgpu::TextureFormat::Depth24PlusStencil8;
 		depthDesc.usage           = wgpu::TextureUsage::RenderAttachment;
 		depthDesc.mipLevelCount   = 1;
-		depthDesc.sampleCount     = 1;
+		depthDesc.sampleCount     = sampleCount;
 		depthDesc.viewFormatCount = 0;
 
 		wgpu::Texture depth = device.CreateTexture(&depthDesc);
@@ -221,6 +237,7 @@ namespace Funke {
 		entry.ColorFormat    = colorWgpuFormat;
 		entry.Width          = static_cast<uint32_t>(width);
 		entry.Height         = static_cast<uint32_t>(height);
+		entry.SampleCount    = sampleCount;
 		entry.ColorTextureId = 0;  // legacy field, no longer used as a pool key
 
 		g_Framebuffers.emplace(fbId, std::move(entry));

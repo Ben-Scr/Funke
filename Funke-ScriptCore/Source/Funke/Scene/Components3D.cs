@@ -334,6 +334,28 @@ public class SkinnedMeshRenderer : Component
         set => Write(v => { v[7] = value.R; v[8] = value.G; v[9] = value.B; v[10] = value.A; });
     }
 
+    /// <summary>What the renderer does while it is outside the game camera's view.</summary>
+    public AnimationCullingMode CullingMode
+    {
+        get => (AnimationCullingMode)(int)Read()[11];
+        set => Write(v => v[11] = (float)value);
+    }
+
+    /// <summary>
+    /// Skins a new pose only every 2nd / 4th frame far from the camera. <see cref="Time"/> and <see cref="IsPlaying"/>
+    /// stay exact; <see cref="TryGetBone"/> follows the drawn pose.
+    /// </summary>
+    public AnimationDistanceRate DistanceRate
+    {
+        get => (AnimationDistanceRate)(int)Read()[12];
+        set => Write(v => v[12] = (float)value);
+    }
+
+    /// <summary>With <see cref="AnimationDistanceRate.Custom"/>: world units from the camera from which the pose updates every 2nd frame.</summary>
+    public float HalfRateDistance { get => Read()[13]; set => Write(v => v[13] = value); }
+    /// <summary>With <see cref="AnimationDistanceRate.Custom"/>: world units from the camera from which the pose updates every 4th frame.</summary>
+    public float QuarterRateDistance { get => Read()[14]; set => Write(v => v[14] = value); }
+
     /// <summary>Clip names of the model, in file order.</summary>
     public string[] ClipNames
     {
@@ -359,7 +381,7 @@ public class SkinnedMeshRenderer : Component
     }
 
     /// <summary>
-    /// World position and axes of a bone (or any other node of the model) in the current pose, e.g. to attach
+    /// World position and axes of a bone (or any other node of the model) in the drawn pose, e.g. to attach
     /// a weapon to a hand. False when the model has no node with that name.
     /// </summary>
     public bool TryGetBone(string bone, out Vector3 position, out Vector3 forward, out Vector3 up)

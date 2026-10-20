@@ -268,6 +268,14 @@ namespace Funke {
 		}
 		static Vec2 ToViewportLocalPosition(Vec2 windowPosition);
 
+		// Synthetic input that bypasses the OS and ImGui (the Editor Bridge): Input, the C# input events and the
+		// event callback see it like real input. Positions are window coordinates, as Input stores them.
+		static void InjectKey(int keyCode, bool pressed);
+		static void InjectMouseButton(int button, bool pressed);
+		static void InjectMouseMove(Vec2 windowPosition);
+		// phase: 0 down, 1 move, 2 up.
+		static void InjectTouch(int64_t fingerId, Vec2 windowPosition, int phase);
+
 		static void SetTitlebarCaptionRect(int x, int y, int w, int h);
 		static void AddTitlebarNonClientRect(int x, int y, int w, int h);
 		static void ResetTitlebarNonClientRects();

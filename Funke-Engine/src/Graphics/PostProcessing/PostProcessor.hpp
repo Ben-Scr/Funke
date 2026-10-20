@@ -47,6 +47,15 @@ namespace Funke {
 			PostProcessingQualityLevel quality = PostProcessingQualityLevel::High,
 			bool clearDestination = false);
 
+		// FXAA reading src at its own resolution. finalTarget: draws like Blit (cached viewport, composited over the
+		// destination), which must then match src's size; otherwise dstView is a src-sized intermediate it clears.
+		// False when it did not run (no shader or pipeline), so the caller keeps using src.
+		bool RunAntiAliasing(const Framebuffer& src,
+			wgpu::TextureView dstView,
+			wgpu::TextureFormat dstFormat,
+			AntiAliasingQualityLevel quality,
+			bool finalTarget);
+
 		// Public only so anonymous-namespace pipeline-cache builders in PostProcessor.cpp can take Impl& params.
 		struct Impl;
 
@@ -60,6 +69,8 @@ namespace Funke {
 		// Bloom composite, color grading, lens distortion, chromatic aberration, vignette and grain in one pass.
 		std::unique_ptr<Shader> m_CompositeShader;
 		std::unique_ptr<Shader> m_PixelatedShader;
+		// Optional: without it anti-aliasing is skipped and the effects still run.
+		std::unique_ptr<Shader> m_FxaaShader;
 	};
 
 } // namespace Funke

@@ -13,6 +13,11 @@ internal static class UIEventDispatcher
     private static readonly HashSet<ulong> s_PrevFocused = new();
     private static readonly HashSet<ulong> s_PrevFocusedInputFields = new();
     private static readonly Dictionary<ulong, string> s_LastInputFieldText = new();
+    // This frame's sets, cleared and refilled each tick so dispatch allocates nothing.
+    private static readonly HashSet<ulong> s_NowHovered = new();
+    private static readonly HashSet<ulong> s_NowFocused = new();
+    private static readonly HashSet<ulong> s_SeenInputFields = new();
+    private static readonly HashSet<ulong> s_NowFocusedInputFields = new();
 
     // Reusable buffers — UI rarely has thousands of widgets, so a
     // single per-component-type list keeps allocations off the hot path.
@@ -65,16 +70,13 @@ internal static class UIEventDispatcher
             return;
         }
 
-        var nowHovered = new HashSet<ulong>();
-        var nowFocused = new HashSet<ulong>();
+        HashSet<ulong> nowHovered = s_NowHovered, nowFocused = s_NowFocused;
+        nowHovered.Clear();
+        nowFocused.Clear();
 
         for (int i = 0; i < count; i++)
         {
             ulong id = s_QueryBuffer[i];
-
-            Entity entity = new Entity(id);
-            Interactable? interactable = entity.GetComponent<Interactable>();
-            if (interactable == null) continue;
 
             bool hovered = InternalCalls.Interactable_GetIsHovered(id);
             bool pressed = InternalCalls.Interactable_GetIsPressed(id);
@@ -82,6 +84,13 @@ internal static class UIEventDispatcher
             bool mouseDown = InternalCalls.Interactable_GetIsMouseDown(id);
             bool mouseUp = InternalCalls.Interactable_GetIsMouseUp(id);
             bool focused = InternalCalls.Interactable_GetIsFocused(id);
+            // Idle widgets raise and track nothing: skip the managed wrapper (a new Entity plus its component cache)
+            // that used to be built for every Interactable every frame.
+            if (!hovered && !pressed && !clicked && !mouseDown && !mouseUp && !focused && !s_PrevFocused.Contains(id))
+                continue;
+
+            Interactable? interactable = new Entity(id).GetComponent<Interactable>();
+            if (interactable == null) continue;
 
             if (hovered)
             {
@@ -245,8 +254,9 @@ internal static class UIEventDispatcher
         // Track which entities we saw this frame so we can prune cache
         // entries for destroyed input fields without a separate validity
         // ping per entry.
-        var seen = new HashSet<ulong>();
-        var nowFocused = new HashSet<ulong>();
+        HashSet<ulong> seen = s_SeenInputFields, nowFocused = s_NowFocusedInputFields;
+        seen.Clear();
+        nowFocused.Clear();
 
         for (int i = 0; i < count; i++)
         {

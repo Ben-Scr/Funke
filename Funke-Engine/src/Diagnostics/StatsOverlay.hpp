@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Graphics/RenderStatistics.hpp"
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -15,8 +17,10 @@ namespace Funke::Diagnostics {
 			float Fps              = 0.0f;
 			float CpuMainMs        = 0.0f;
 			float RenderThreadMs   = 0.0f;
-			std::size_t Tris       = 0;
-			std::size_t Verts      = 0;
+			// Per frame: 2D sprites and particles plus 3D meshes and particles; shadow passes separately.
+			std::uint64_t Tris       = 0;
+			std::uint64_t Verts      = 0;
+			std::uint64_t ShadowTris = 0;
 			int   ScreenWidth      = 0;
 			int   ScreenHeight     = 0;
 			// Whole-process OS totals include DLLs and drivers, not just engine allocations.
@@ -26,7 +30,9 @@ namespace Funke::Diagnostics {
 			std::size_t Entities         = 0;
 		};
 
-		bool RefreshIfDue(int screenWidth, int screenHeight);
+		// frameGeometry: what one frame of this view drew (the editor's Game View measures its own render).
+		// Null: the whole application's average per frame since the previous refresh.
+		bool RefreshIfDue(int screenWidth, int screenHeight, const RenderGeometryStats* frameGeometry = nullptr);
 
 		const Snapshot& GetCached() const { return m_Cached; }
 
@@ -39,6 +45,8 @@ namespace Funke::Diagnostics {
 
 		Snapshot m_Cached{};
 		std::chrono::steady_clock::time_point m_LastRefresh{};
+		RenderGeometryStats m_LastGeometryTotals{};
+		int m_LastGeometryFrame = -1;
 	};
 
 } // namespace Funke::Diagnostics

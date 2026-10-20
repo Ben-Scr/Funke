@@ -61,6 +61,20 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 				Properties::Meta::Tooltip("Normal follows Time.TimeScale, Unscaled Time ignores it, Fixed steps with physics.")),
 			Properties::Make("ApplyInEditMode", "Apply In Edit Mode", &AnimatorComponent::ApplyInEditMode,
 				Properties::Meta::Tooltip("Previews the animation in the editor without Play. The scene keeps its authored values.")),
+			WithEnumLabels(Properties::Make("CullingMode", "Culling Mode", &AnimatorComponent::CullingMode,
+				Properties::Meta::Header("Optimization").WithTooltip("When no renderer below the Animator is in the game camera's view: "
+					"Always Animate keeps going, Cull Pose runs only the clock, transitions and events, Cull Completely pauses.")),
+				{ "Always Animate", "Cull Pose", "Cull Completely" }),
+			WithEnumLabels(Properties::Make("DistanceRate", "Distance Rate", &AnimatorComponent::DistanceRate,
+				Properties::Meta::Tooltip("Updates every 2nd / 4th frame far from the game camera; the skipped time is added to the next "
+					"update. Project Setting follows Project Settings > Graphics > Animation. Not in Fixed update mode.")),
+				{ "Project Setting", "Off", "Custom" }),
+			Properties::Make("HalfRateDistance", "Half Rate From", &AnimatorComponent::HalfRateDistance,
+				Properties::Meta::DragSpeed(0.5f).WithDragMin(0.0).WithTooltip("World units from the camera from which it updates every 2nd frame.")
+					.WithEnabledIf([](const Entity& e) { return e.GetComponent<AnimatorComponent>().DistanceRate == AnimationDistanceRate::Custom; })),
+			Properties::Make("QuarterRateDistance", "Quarter Rate From", &AnimatorComponent::QuarterRateDistance,
+				Properties::Meta::DragSpeed(0.5f).WithDragMin(0.0).WithTooltip("World units from the camera from which it updates every 4th frame.")
+					.WithEnabledIf([](const Entity& e) { return e.GetComponent<AnimatorComponent>().DistanceRate == AnimationDistanceRate::Custom; })),
 		};
 		info.serialize = [](Entity e) -> Json::Value {
 			const auto& a = e.GetComponent<AnimatorComponent>();
@@ -70,6 +84,12 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			v.AddMember("speed", Json::Value(a.Speed));
 			v.AddMember("updateMode", Json::Value(static_cast<int>(a.UpdateMode)));
 			if (a.ApplyInEditMode) v.AddMember("applyInEditMode", Json::Value(true));
+			// Only when changed: an older prefab without the keys would otherwise show every instance as overridden.
+			const AnimatorComponent d{};
+			if (a.CullingMode != d.CullingMode) v.AddMember("cullingMode", Json::Value(static_cast<int>(a.CullingMode)));
+			if (a.DistanceRate != d.DistanceRate) v.AddMember("distanceRate", Json::Value(static_cast<int>(a.DistanceRate)));
+			if (a.HalfRateDistance != d.HalfRateDistance) v.AddMember("halfRateDistance", Json::Value(a.HalfRateDistance));
+			if (a.QuarterRateDistance != d.QuarterRateDistance) v.AddMember("quarterRateDistance", Json::Value(a.QuarterRateDistance));
 			return v;
 		};
 		info.deserialize = [](Entity e, const Json::Value& v) {
@@ -82,6 +102,16 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			const int mode = (m = v.FindMember("updateMode")) ? m->AsIntOr(0) : 0;
 			a.UpdateMode = mode >= 0 && mode <= static_cast<int>(AnimatorUpdateMode::Fixed) ? static_cast<AnimatorUpdateMode>(mode) : d.UpdateMode;
 			a.ApplyInEditMode = (m = v.FindMember("applyInEditMode")) ? m->AsBoolOr(false) : d.ApplyInEditMode;
+			const int culling = (m = v.FindMember("cullingMode")) ? m->AsIntOr(0) : 0;
+			a.CullingMode = culling >= 0 && culling <= static_cast<int>(AnimationCullingMode::CullCompletely)
+				? static_cast<AnimationCullingMode>(culling) : d.CullingMode;
+			const int rate = (m = v.FindMember("distanceRate")) ? m->AsIntOr(0) : 0;
+			a.DistanceRate = rate >= 0 && rate <= static_cast<int>(AnimationDistanceRate::Custom)
+				? static_cast<AnimationDistanceRate>(rate) : d.DistanceRate;
+			a.HalfRateDistance = (m = v.FindMember("halfRateDistance"))
+				? std::max(static_cast<float>(m->AsDoubleOr(d.HalfRateDistance)), 0.0f) : d.HalfRateDistance;
+			a.QuarterRateDistance = (m = v.FindMember("quarterRateDistance"))
+				? std::max(static_cast<float>(m->AsDoubleOr(d.QuarterRateDistance)), 0.0f) : d.QuarterRateDistance;
 			// Loaded data replaces whatever was playing.
 			a.Runtime.Reset();
 		};

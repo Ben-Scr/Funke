@@ -75,6 +75,15 @@ namespace Funke {
         // EmitText short-circuits the rotation step when zero, keeping the common axis-aligned path fast.
         float Rotation = 0.0f;
         Vec2 Pivot{};
+
+        // In cmd units (X/Y space); see SetEffects.
+        float OutlineWidth = 0.0f;
+        Color OutlineColor{};
+        Vec2 ShadowOffset{};
+        Color ShadowColor{};
+
+        // Takes the component's outline and shadow; unitsPerTextPixel converts its text pixels into X/Y units.
+        void SetEffects(const TextRendererComponent& text, float unitsPerTextPixel);
     };
 
     class FUNKE_API TextRenderer {

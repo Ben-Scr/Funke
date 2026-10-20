@@ -62,6 +62,8 @@ Files your code finds through a computed path (`"Level" + i + ".json"`, a path f
 
 The app id is `com.<company>.<name>`, built from **Company** and the project name as lowercase letters and digits, e.g. `com.benscr.geometrydash`. Without a company it is `com.funke.<name>`.
 
+To show players another name than the project name, set `"productName"` in `project.json` (e.g. `"Marble Run"`, spaces allowed). It becomes the app's label on Android, iOS and macOS and the window title. The project name stays the identity: app id, save-data folder and file names do not change, so a game can be renamed after release without becoming a new app or losing saves.
+
 **Branding › Cursors** sets the default cursor and the cursor over Interactable UI elements. Each has a **Hotspot**: the click point in image pixels, measured from the top-left corner (**Center** for crosshairs). The image keeps its aspect ratio and is 32 px on its longest side at 100 % display scaling. Larger scaling uses sharp images up to 400 %, so source images of 128 px or more look best. On Android and iOS cursor settings are ignored. From C#: `Cursor.SetTexture(texture, new Vector2(x, y))`.
 
 ## Player prerequisites

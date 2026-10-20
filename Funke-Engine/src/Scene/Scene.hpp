@@ -5,6 +5,7 @@
 #include "Components/General/EntityMetaDataComponent.hpp"
 #include "Core/Export.hpp"
 #include "Core/UUID.hpp"
+#include "Utils/Event.hpp"
 // Scene stores an entt::registry by value and its template members call
 // view()/get(), so the complete type is required here.
 #include <entt/entity/registry.hpp>
@@ -127,6 +128,22 @@ namespace Funke {
 		};
 
 		bool IsConstructHooksSuppressed() const { return m_SuppressConstructHooks; }
+
+		// Holds enabled-state callbacks (OnEnable/OnDisable, audio, physics, camera, OnEntityEnabledChanged) until the
+		// outermost batch ends, so they run after the DisabledTag cascade and EnTT's tag removal: a callback reads the
+		// final state and may toggle it again. Entity::SetEnabled and SetParent open one; nested batches join it.
+		class FUNKE_API EnabledStateBatch {
+		public:
+			explicit EnabledStateBatch(Scene* scene);
+			~EnabledStateBatch();
+			EnabledStateBatch(const EnabledStateBatch&) = delete;
+			EnabledStateBatch& operator=(const EnabledStateBatch&) = delete;
+		private:
+			Scene* m_Scene;
+		};
+
+		// One call per enabled-in-hierarchy edge once its batch ends; an edge undone before then never fires.
+		Event<Entity, bool>& OnEntityEnabledChanged() { return m_OnEntityEnabledChanged; }
 
 		bool IsValid(EntityHandle nativeEntity) const {
 			return m_Registry.valid(nativeEntity);
@@ -443,6 +460,8 @@ namespace Funke {
 		void UntrackEntityDestruction(EntityHandle entity);
 		bool IsEntityBeingDestroyed(EntityHandle entity) const;
 		void ApplyEntityEnabledState(entt::registry& registry, EntityHandle entity, bool enabled);
+		void QueueEnabledStateEdge(EntityHandle entity, bool enabled);
+		void FlushEnabledStateEdges();
 		void RefreshMainCameraSelection(entt::registry& registry, EntityHandle preferred = entt::null, EntityHandle excluded = entt::null);
 
 		void RunLifecycleSystems(const std::function<void(SceneSystem&)>& func, size_t* enteredSystemCount = nullptr);
@@ -507,5 +526,12 @@ namespace Funke {
 		std::vector<DeferredConstructHook> m_DeferredConstructHooks;
 		// Prevents hooks from re-enqueuing themselves during the flush replay.
 		bool m_FlushingDeferredHooks = false;
+
+		std::vector<std::pair<EntityHandle, bool>> m_PendingEnabledEdges;
+		// Index of each entity's unfired edge: the opposite edge cancels it instead of queueing a no-op pair.
+		std::unordered_map<EntityHandle, size_t> m_PendingEnabledEdgeIndex;
+		int m_EnabledStateBatchDepth = 0;
+		bool m_FlushingEnabledEdges = false;
+		Event<Entity, bool> m_OnEntityEnabledChanged;
 	};
 }

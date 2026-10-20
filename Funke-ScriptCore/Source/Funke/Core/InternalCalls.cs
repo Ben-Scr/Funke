@@ -30,6 +30,8 @@ internal static unsafe class InternalCalls
     internal static float Application_GetTimeScale() => NativeCallbacks.Bindings.Application_GetTimeScale();
     internal static void Application_SetTimeScale(float scale) => NativeCallbacks.Bindings.Application_SetTimeScale(scale);
     internal static bool Application_IsEditor() => NativeCallbacks.Bindings.Application_IsEditor() != 0;
+    internal static int Application_GetPlatform() => NativeCallbacks.Bindings.Application_GetPlatform();
+    internal static bool Application_IsAutomatedRun() => NativeCallbacks.Bindings.Application_IsAutomatedRun() != 0;
 
     internal static string Application_GetClipboardString()
         => ReadNativeString(NativeCallbacks.Bindings.Application_GetClipboardStringBuffer);
@@ -190,6 +192,19 @@ internal static unsafe class InternalCalls
         settings.MaxLights = maxLights;
         settings.Exposure = exposure;
         settings.ToneMapping = (ToneMappingMode)toneMapping;
+
+        int textureQuality, anisotropicFiltering, antiAliasing, antiAliasingQuality;
+        NativeCallbacks.Bindings.RenderSettings_GetQuality(&textureQuality, &anisotropicFiltering, &antiAliasing, &antiAliasingQuality);
+        settings.TextureQuality = (TextureQualityLevel)textureQuality;
+        settings.AnisotropicFiltering = (AnisotropicFilteringLevel)anisotropicFiltering;
+        settings.AntiAliasing = (AntiAliasingMode)antiAliasing;
+        settings.AntiAliasingQuality = (AntiAliasingQualityLevel)antiAliasingQuality;
+
+        float* animation = stackalloc float[3];
+        NativeCallbacks.Bindings.RenderSettings_GetAnimation(animation, 3);
+        settings.AnimationDistanceRateEnabled = animation[0] != 0f;
+        settings.AnimationHalfRateDistance = animation[1];
+        settings.AnimationQuarterRateDistance = animation[2];
         return settings;
     }
 
@@ -211,7 +226,22 @@ internal static unsafe class InternalCalls
             (int)settings.ToneMapping);
         if (status3D != GraphicsApplyStatus.Applied && status3D != GraphicsApplyStatus.Unchanged)
             return status3D;
+        var statusQuality = (GraphicsApplyStatus)NativeCallbacks.Bindings.RenderSettings_ApplyQuality(
+            (int)settings.TextureQuality,
+            (int)settings.AnisotropicFiltering,
+            (int)settings.AntiAliasing,
+            (int)settings.AntiAliasingQuality);
+        if (statusQuality != GraphicsApplyStatus.Applied && statusQuality != GraphicsApplyStatus.Unchanged)
+            return statusQuality;
+        float* animation = stackalloc float[3];
+        animation[0] = settings.AnimationDistanceRateEnabled ? 1f : 0f;
+        animation[1] = settings.AnimationHalfRateDistance;
+        animation[2] = settings.AnimationQuarterRateDistance;
+        var statusAnimation = (GraphicsApplyStatus)NativeCallbacks.Bindings.RenderSettings_ApplyAnimation(animation, 3);
+        if (statusAnimation != GraphicsApplyStatus.Applied && statusAnimation != GraphicsApplyStatus.Unchanged)
+            return statusAnimation;
         return status2D == GraphicsApplyStatus.Applied || status3D == GraphicsApplyStatus.Applied
+            || statusQuality == GraphicsApplyStatus.Applied || statusAnimation == GraphicsApplyStatus.Applied
             ? GraphicsApplyStatus.Applied
             : GraphicsApplyStatus.Unchanged;
     }
@@ -650,6 +680,9 @@ internal static unsafe class InternalCalls
     internal static ulong Entity_InstantiatePrefab(ulong prefabGuid)
         => NativeCallbacks.Bindings.Entity_InstantiatePrefab(prefabGuid);
 
+    internal static void Entity_CreateScriptInstances(ulong entityID)
+        => NativeCallbacks.Bindings.Entity_CreateScriptInstances(entityID);
+
     internal static int Entity_GetOrigin(ulong entityID)
         => NativeCallbacks.Bindings.Entity_GetOrigin(entityID);
 
@@ -1010,6 +1043,25 @@ internal static unsafe class InternalCalls
     internal static void AudioSource_SetLoop(ulong id, bool loop) => NativeCallbacks.Bindings.AudioSource_SetLoop(id, loop ? 1 : 0);
     internal static bool AudioSource_IsPlaying(ulong id) => NativeCallbacks.Bindings.AudioSource_IsPlaying(id) != 0;
     internal static bool AudioSource_IsPaused(ulong id) => NativeCallbacks.Bindings.AudioSource_IsPaused(id) != 0;
+
+    // spatial (0/1), minDistance, maxDistance, rolloff, panning, dopplerLevel
+    internal const int AudioSourceSpatialValueCount = 6;
+    internal static void AudioSource_GetSpatial(ulong id, Span<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.AudioSource_GetSpatial(id, p, values.Length);
+    }
+    internal static void TextRenderer_GetEffects(ulong id, Span<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.TextRenderer_GetEffects(id, p, values.Length);
+    }
+    internal static void TextRenderer_SetEffects(ulong id, ReadOnlySpan<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.TextRenderer_SetEffects(id, p, values.Length);
+    }
+    internal static void AudioSource_SetSpatial(ulong id, ReadOnlySpan<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.AudioSource_SetSpatial(id, p, values.Length);
+    }
     internal static ulong AudioSource_GetAudio(ulong id) => NativeCallbacks.Bindings.AudioSource_GetAudio(id);
     internal static void AudioSource_SetAudio(ulong id, ulong assetId) => NativeCallbacks.Bindings.AudioSource_SetAudio(id, assetId);
 
@@ -1017,7 +1069,7 @@ internal static unsafe class InternalCalls
 
     internal static int Scene_QueryEntities(string componentNames, Span<ulong> outEntityIDs)
     {
-        byte[] buf = EncodeUtf8Z(componentNames);
+        byte[] buf = EncodeUtf8Name(componentNames);
         fixed (byte* namePtr = buf)
         fixed (ulong* idPtr = outEntityIDs)
         {
@@ -1152,6 +1204,14 @@ internal static unsafe class InternalCalls
 
     internal static bool Audio_LoadAsset(ulong assetId) => assetId != 0 && NativeCallbacks.Bindings.Audio_LoadAsset(assetId) != 0;
     internal static void Audio_PlayOneShotAsset(ulong assetId, float volume) => NativeCallbacks.Bindings.Audio_PlayOneShotAsset(assetId, volume);
+
+    // x, y, z, volume, minDistance, maxDistance, rolloff, panning, dopplerLevel
+    internal static void Audio_PlayOneShotAt(ulong assetId, ReadOnlySpan<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.Audio_PlayOneShotAt(assetId, p, values.Length);
+    }
+    internal static float Audio_GetMasterVolume() => NativeCallbacks.Bindings.Audio_GetMasterVolume();
+    internal static void Audio_SetMasterVolume(float volume) => NativeCallbacks.Bindings.Audio_SetMasterVolume(volume);
 
     internal static bool Font_LoadAsset(ulong assetId) => assetId != 0 && NativeCallbacks.Bindings.Font_LoadAsset(assetId) != 0;
 
@@ -2088,7 +2148,7 @@ internal static unsafe class InternalCalls
     internal const int SpotLightValueCount = 8;
     internal const int CameraSkyValueCount = 23;
     internal const int ParticleSystem3DValueCount = 21;
-    internal const int SkinnedMeshRendererValueCount = 11;
+    internal const int SkinnedMeshRendererValueCount = 15;
     internal const int SkinnedMeshBoneValueCount = 9;
 
     internal static void SkinnedMeshRenderer_Get(ulong id, Span<float> values)
@@ -2281,6 +2341,17 @@ internal static unsafe class InternalCalls
     internal static void Animator_SetAsset(ulong id, int which, ulong guid) => NativeCallbacks.Bindings.Animator_SetAsset(id, which, guid);
     internal static float Animator_GetSpeed(ulong id) => NativeCallbacks.Bindings.Animator_GetSpeed(id);
     internal static void Animator_SetSpeed(ulong id, float speed) => NativeCallbacks.Bindings.Animator_SetSpeed(id, speed);
+
+    // cullingMode, distanceRate, halfRateDistance, quarterRateDistance
+    internal const int AnimatorCullingValueCount = 4;
+    internal static void Animator_GetCulling(ulong id, Span<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.Animator_GetCulling(id, p, values.Length);
+    }
+    internal static void Animator_SetCulling(ulong id, ReadOnlySpan<float> values)
+    {
+        fixed (float* p = values) NativeCallbacks.Bindings.Animator_SetCulling(id, p, values.Length);
+    }
 
     internal static bool Camera3D_ScreenPointToRay(ulong id, Vector2 screenPoint, out Ray ray)
     {

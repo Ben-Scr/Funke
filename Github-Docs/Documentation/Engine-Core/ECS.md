@@ -89,7 +89,7 @@ Funke ships a large set of components, grouped by area. Here are the main ones:
 - `SpriteRenderer` — draws a texture/sprite.
 - `Camera2D` — a 2D camera (what the player sees).
 - `TextRenderer` — draws text with a font.
-- `Image` — a UI image. **Image Type = Sliced** (9-slice) keeps **Border Left/Right/Top/Bottom** (texture pixels, scaled by **Border Scale**) at their size while the middle stretches, so one rounded-rectangle sprite fits buttons and panels of any size. **Image Type = Tiled** keeps the corners as well but repeats the edges and the middle at **Border Scale** UI units per texture pixel instead of stretching them (without a border the whole sprite repeats). When all four borders are 0, the image uses the border stored with its texture: the texture Inspector's **Border** for a whole image, or the Sprite Editor's per-slice border for a sprite slice (`.meta`: `"border": [left, bottom, right, top]`; `funke sprite border` sets it from the command line). **Material** takes a `.material` whose shader targets `UI` (see *Custom Shaders*). Scene keys: `imageType` (1 = Sliced, 2 = Tiled), `border` `[left, bottom, right, top]`, `borderScale`, `materialAsset`. C#: `Image.Type`, `Image.Border` (X left, Y bottom, Z right, W top), `Image.BorderScale`, `Image.Material`.
+- `Image` — a UI image. **Image Type = Sliced** (9-slice) keeps **Border Left/Right/Top/Bottom** (texture pixels, scaled by **Border Scale**) at their size while the middle stretches, so one rounded-rectangle sprite fits buttons and panels of any size. Border Scale gives UI units, so the borders follow the UI scale (reference resolution) and the rect's own scale just like its size: a sliced panel looks the same in a small window and on a large screen. **Image Type = Tiled** keeps the corners as well but repeats the edges and the middle at **Border Scale** UI units per texture pixel instead of stretching them (without a border the whole sprite repeats). When all four borders are 0, the image uses the border stored with its texture: the texture Inspector's **Border** for a whole image, or the Sprite Editor's per-slice border for a sprite slice (`.meta`: `"border": [left, bottom, right, top]`; `funke sprite border` sets it from the command line). **Material** takes a `.material` whose shader targets `UI` (see *Custom Shaders*). Scene keys: `imageType` (1 = Sliced, 2 = Tiled), `border` `[left, bottom, right, top]`, `borderScale`, `materialAsset`. C#: `Image.Type`, `Image.Border` (X left, Y bottom, Z right, W top), `Image.BorderScale`, `Image.Material`.
 - `ParticleSystem2D` — particle effects.
 - `ParticleSystem3D` — 3D billboard particle effects (see [3D](3D.md#particles)).
 - `PostProcessing2D` — screen effects like bloom or vignette.
@@ -103,7 +103,7 @@ Funke ships a large set of components, grouped by area. Here are the main ones:
 - `Button`, `Slider`, `Toggle`, `InputField`, `Dropdown`, `ScrollRect`, layout groups, and more.
 
 **Audio**
-- `AudioSource` — plays a sound from an entity.
+- `AudioSource` — plays a sound from an entity, flat (2D) or as 3D sound from the entity's position.
 
 You add any of these in the editor through the **Add Component** menu, or in code with `AddComponent<T>()`.
 

@@ -1,6 +1,6 @@
 ---
 name: funke-engine-scripting
-description: Use when working on the ENGINE side of Funke scripting — the .NET (CoreCLR/hostfxr) host, the C++ <-> C# function-pointer bridge, script bindings, the ScriptSystem hot-reload pipeline, or native C++ scripts. Triggers on "ScriptBindings", "ScriptBindings.cpp / ScriptBindingsScene.cpp / ScriptBindingsEcb.cpp / ScriptBindingsJobs.cpp", "PopulateNativeBindings", "PopulateNonComponentBindings", "FNK_GUARDED_BINDING", "ScriptBindingGuard", "NativeBindings", "ManagedCallbacks", "ScriptGlue.hpp", "NativeBindingsStruct", "ManagedCallbacksStruct", "NativeCallbacks.cs", "InternalCalls.cs", "ScriptHostBridge", "InteropHandshake", "k_ScriptInteropLayoutVersion", "interop mismatch", "add a C# binding", "expose X to C#", "new InternalCall", "DotNetHost", "hostfxr", "runtimeconfig.json", "ScriptEngine", "ScriptSystem", "ScriptInstanceManager", "ScriptAssemblyLoadContext", "hot reload", "script recompile", "user assembly", "Funke-ScriptCore", "NativeScript", "REGISTER_SCRIPT", "NativeScriptHost", "NativeScriptRegistry", "NativeEngineAPI", "NativeScriptExports.cpp", "FunkeCreateScript", "NativeScripts/CMakeLists.txt", or work in `Funke-Engine/src/Scripting/` and `Funke-ScriptCore/Source/Funke/Interop/`. For the game-author C# API (EntityScript, Input, Physics2D, …) use `funke-game-scripting` instead.
+description: Use when working on the ENGINE side of Funke scripting — the .NET host (ScriptRuntimeHost, hostfxr/CoreCLR, DotNetHost), the C++ ↔ C# function-pointer bridge, script bindings, the ScriptSystem hot-reload pipeline, or native C++ scripts. Triggers on "add a C# binding", "expose X to C#", "new InternalCall", "interop mismatch", ScriptBindings*.cpp, PopulateNativeBindings, ScriptBindingModuleSlots, FNK_GUARDED_BINDING, ScriptGlue.hpp, NativeBindings, ManagedCallbacks, NativeCallbacks.cs, InternalCalls.cs, ScriptHostBridge, InteropHandshake, k_ScriptInteropLayoutVersion, ScriptEngine, ScriptSystem, ScriptInstanceManager, ScriptAssemblyLoadContext, hot reload, Funke-ScriptCompiler, Funke-ScriptCore, NativeScript, REGISTER_SCRIPT, NativeScriptHost, FunkeCreateScript, NativeScripts/CMakeLists.txt, or work in Funke-Engine/src/Scripting/ and Funke-ScriptCore/Source/Funke/Interop/. For the game-author C# API use funke-game-scripting instead.
 ---
 
 # Funke Engine Scripting (host, bridge, bindings, hot reload)
@@ -11,13 +11,16 @@ How the engine hosts .NET, how C++ and C# call each other, and how to add a bind
 
 | Side | File | Role |
 |---|---|---|
-| C++ | `Funke-Engine/src/Scripting/DotNetHost.{hpp,cpp}` | Loads hostfxr, inits CoreCLR from `<asm>.runtimeconfig.json`, `LoadAssemblyAndGetFunction` |
+| C++ | `Funke-Engine/src/Scripting/ScriptRuntimeHost.{hpp,cpp}` | Runtime backend interface (`Initialize`, `GetUnmanagedEntryPoint`); `ScriptRuntimeHosts::CreatePreferred()` picks the highest-priority registered backend (`FUNKE_SCRIPT_RUNTIME` overrides), else desktop `HostFxrScriptRuntime`; Android/iOS/Web link one from a package (Funke.ScriptRuntime.Mono) |
+| C++ | `Funke-Engine/src/Scripting/DotNetHost.{hpp,cpp}` | Used by the hostfxr backend: loads hostfxr, inits CoreCLR from `<stem>.runtimeconfig.json` next to the core DLL, `LoadAssemblyAndGetFunction` |
 | C++ | `Funke-Engine/src/Scripting/ScriptEngine.{hpp,cpp}` | Static facade: `LoadCoreAssembly`, `LoadUserAssembly`, instance create/invoke wrappers over `ManagedCallbacks`, global systems, data assets |
 | C++ | `Funke-Engine/src/Scripting/ScriptGlue.hpp` | `NativeBindings` (C++ fns C# calls) + `ManagedCallbacks` (C# fns C++ calls) + `k_ScriptInteropLayoutVersion` |
 | C++ | `Funke-Engine/src/Scripting/ScriptBindings.hpp` | `ScriptBindings::PopulateNativeBindings(NativeBindings&)` (`FUNKE_SCRIPTING_API`) |
-| C++ | `Funke-Engine/src/Scripting/ScriptBindings.cpp` | Component bindings (Transform2D, SpriteRenderer, Rigidbody2D, UI widgets, …), entity helpers, `GET_COMPONENT` macro, `PopulateNativeBindings` |
-| C++ | `Funke-Engine/src/Scripting/ScriptBindingsScene.cpp` | Non-component bindings (Application, Window, Engine, Time, Log, Input, Scene, Gizmos, Physics2D, …) → `PopulateNonComponentBindings` |
-| C++ | `Funke-Engine/src/Scripting/ScriptBindingsEcb.cpp` / `ScriptBindingsJobs.cpp` | EntityCommandBuffer playback / JobSystem → `PopulateEcbBindings` / `PopulateJobsBindings` |
+| C++ | `Funke-Engine/src/Scripting/ScriptBindings.cpp` | Core component bindings (UI widgets, audio, …), entity, scene and gizmo bindings, `GET_COMPONENT` macro, `PopulateNativeBindings` (calls every `Populate*` below) |
+| C++ | `Funke-Engine/src/Scripting/ScriptBindingsScene.cpp` | Application, Window, Engine, Time, Log, Input, … → `PopulateNonComponentBindings` |
+| C++ | `Funke-Engine/src/Scripting/ScriptBindings2D.cpp` / `ScriptBindings3D.cpp` / `ScriptBindingsPhysics3D.cpp` | Funke.2D (Transform2D, sprites, Camera2D, Rigidbody2D, Physics2D, …) / Funke.3D bindings → `Populate2DBindings` / `Populate3DBindings` / `PopulatePhysics3DBindings`, called from `ScriptBindings::PopulateModuleBindings` |
+| C++ | `Funke-Engine/src/Scripting/ScriptBindingModuleSlots.hpp` + `ScriptBindingsModuleStubs.cpp` | `FNK_FOR_EACH_2D_BINDING` / `FNK_FOR_EACH_3D_BINDING` slot lists; inactive modules get signature-matched stubs (`FindUnstubbedModuleSlots` backs the EngineModules test) |
+| C++ | `Funke-Engine/src/Scripting/ScriptBindingsEcb.cpp`, `…Jobs`, `…Material`, `…Animation`, `…Localization`, `…PostProcessing.cpp`, `ScriptEditorGui.cpp` | ECB playback, JobSystem, materials, animation, localization, post-processing, editor GUI → `PopulateEcbBindings`, `PopulateJobsBindings`, … `ScriptEditorGui::PopulateBindings` |
 | C++ | `Funke-Engine/src/Scripting/ScriptBindingGuard.hpp` | `FNK_GUARDED_BINDING(fn)` noexcept thunk |
 | C++ | `Funke-Engine/src/Scripting/ScriptSystem.{hpp,cpp}` | `SceneSystem` that boots scripting, watches + rebuilds C#/C++, dispatches lifecycle |
 | C++ | `Funke-Engine/src/Scripting/NativeScript*.hpp`, `NativeScriptHost.cpp`, `NativeEngineAPI.hpp` | Native C++ scripts |
@@ -32,7 +35,7 @@ How the engine hosts .NET, how C++ and C# call each other, and how to add a bind
 
 1. `SceneManager.cpp` adds `ScriptSystem` to every scene definition (`definition.AddSystem<ScriptSystem>()`); `ScriptSystem::Awake` boots scripting once per process.
 2. `ScriptEngine::Init()`, then the core DLL is found via `ScriptCoreArtifact::FindFirstCompleteDll({ exeDir, exeDir/../Funke-ScriptCore })`.
-3. `ScriptEngine::LoadCoreAssembly`: `DotNetHost::Initialize(<asm>.runtimeconfig.json)` → get `Funke.Interop.ScriptHostBridge, Funke-ScriptCore` :: `Initialize` (`FUNKE_DOTNET_UNMANAGEDCALLERSONLY_METHOD`) → `PopulateNativeBindings` → `initFn(&native, &managed, sizeof(NativeBindings), sizeof(ManagedCallbacks), k_ScriptInteropLayoutVersion)`.
+3. `ScriptEngine::LoadCoreAssembly`: `s_Host = ScriptRuntimeHosts::CreatePreferred()` → `s_Host->Initialize(coreDll)` (hostfxr backend: `DotNetHost::Initialize(<stem>.runtimeconfig.json)`) → `s_Host->GetUnmanagedEntryPoint(coreDll, "Funke-ScriptCore", "Funke.Interop.ScriptHostBridge", "Initialize")` (hostfxr: `FUNKE_DOTNET_UNMANAGEDCALLERSONLY_METHOD`) → `PopulateNativeBindings` → `initFn(&native, &managed, sizeof(NativeBindings), sizeof(ManagedCallbacks), k_ScriptInteropLayoutVersion)`.
 4. Managed side runs `InteropHandshake.Validate` first: `-2` layout version, `-3` NativeBindings size, `-4` ManagedCallbacks size mismatch → native logs "Funke-ScriptCore interop mismatch … Rebuild Funke-Engine and Funke-ScriptCore together. Scripting is disabled." On success it copies the native table, fills every `ManagedCallbacks` slot, runs `ComponentTypes.RunAllStaticInitializers()`, installs `FunkeSynchronizationContext`.
 5. User assembly: `project->GetUserAssemblyOutputPath()` = `<project>/bin/<Config>/<Name>.dll` (falls back to a `bin/` scan); no project → `Funke-Sandbox.dll`. `ScriptEngine::LoadUserAssembly` → managed `LoadUserAssembly` loads it **from bytes** (+ `.pdb`) into a collectible `ScriptAssemblyLoadContext` ("FunkeUserScripts") — no file lock, so it can be rebuilt while loaded. Then `DataAssetManager::ReloadAll()` and dynamic-component restore.
 
@@ -45,22 +48,22 @@ Type lookup (`ScriptInstanceManager.FindType`) tries `Funke.<name>`, `Funke.Comp
 - **`NativeBindings`** (`ScriptGlue.hpp`) ⇄ **`NativeBindingsStruct`** (`NativeCallbacks.cs`): C++ function pointers C# calls. `[StructLayout(Sequential)]`, `delegate* unmanaged<…>` fields.
 - **`ManagedCallbacks`** (`ScriptGlue.hpp`) ⇄ **`ManagedCallbacksStruct`** (`ScriptHostBridge.cs`): C# `[UnmanagedCallersOnly]` methods (in `ScriptInstanceManager`) C++ calls via `ScriptEngine::GetCallbacks()` / `s_Callbacks`.
 
-Both are **positional**. The guard is the size check plus `k_ScriptInteropLayoutVersion` / `InteropHandshake.LayoutVersion` (currently `1`). Every slot is a pointer, so *reordering or swapping* two slots keeps the size identical and is caught only if the version was bumped — otherwise C# silently calls the wrong function. **Always append at the end of the struct**, under a `// ── <Group> (appended for binary compat) ──` header, in both files.
+Both are **positional**. The guard is the size check plus `k_ScriptInteropLayoutVersion` (`ScriptGlue.hpp`) / `InteropHandshake.LayoutVersion` (`ScriptHostBridge.cs`), bumped together on any add/remove/reorder. Every slot is a pointer, so *reordering or swapping* two slots keeps the size identical and is caught only if the version was bumped — otherwise C# silently calls the wrong function. **Always append at the end of the struct**, under a `// ── <Group> (appended for binary compat) ──` header, in both files.
 
 ## Add a C# → C++ binding (end to end)
 
 Worked example already in the tree: `Application.IsEditor`.
 
 1. **Implement** a `static` free function named `Funke_<Group>_<Action>` in the right file:
-   - engine-module component/API (Transform2D, sprites, Camera2D, Physics2D… / Transform3D, meshes, lights, Physics3D…) → `ScriptBindings2D.cpp` / `ScriptBindings3D.cpp` (`ScriptBindingsPhysics3D.cpp`), assigned in `Populate2DBindings` / `Populate3DBindings`, AND add `X(Slot)` to `FNK_FOR_EACH_2D_BINDING` / `FNK_FOR_EACH_3D_BINDING` in `Scripting/ScriptBindingModuleSlots.hpp` — builds/projects without the module fill those slots with signature-matched stubs (the EngineModules doctest fails on a missing entry)
-   - component accessor → `ScriptBindings.cpp`, using `GET_COMPONENT(Type, entityID, failReturn);` (resolves via `ResolveEntityReference`, re-checks `IsValid` + `HasComponent`, binds `comp`)
-   - Application/Window/Engine/Time/Log/Input/Scene/Gizmo/Physics → `ScriptBindingsScene.cpp`
-   - ECB → `ScriptBindingsEcb.cpp`; jobs → `ScriptBindingsJobs.cpp`
+   - engine-module component/API (Transform2D, sprites, Camera2D, Physics2D… / Transform3D, meshes, lights, Physics3D…) → `ScriptBindings2D.cpp` / `ScriptBindings3D.cpp` (`ScriptBindingsPhysics3D.cpp`), assigned in `Populate2DBindings` / `Populate3DBindings` / `PopulatePhysics3DBindings`, AND add `X(Slot)` to `FNK_FOR_EACH_2D_BINDING` / `FNK_FOR_EACH_3D_BINDING` in `Scripting/ScriptBindingModuleSlots.hpp` — builds/projects without the module fill those slots with signature-matched stubs (the EngineModules doctest fails on a missing entry)
+   - core (module-free) component accessor, e.g. UI widgets or audio → `ScriptBindings.cpp`, using `GET_COMPONENT(Type, entityID, failReturn);` (resolves via `ResolveEntityReference`, re-checks `IsValid` + `HasComponent`, binds `comp`; `ScriptBindings2D.cpp` has its own copy)
+   - Application/Window/Engine/Time/Log/Input → `ScriptBindingsScene.cpp`; Scene/Entity/Gizmo → `ScriptBindings.cpp`
+   - ECB, jobs, materials, animation, localization, post-processing → the matching `ScriptBindings<Area>.cpp`
    ```cpp
    static int Funke_Application_IsEditor() {            // ScriptBindingsScene.cpp
        return Application::IsEditor() ? 1 : 0;
    }
-   static int Funke_SpriteAnimator2D_GetFrame(uint64_t entityID) {   // ScriptBindings.cpp
+   static int Funke_SpriteAnimator2D_GetFrame(uint64_t entityID) {   // ScriptBindings2D.cpp + X(SpriteAnimator2D_GetFrame) in ScriptBindingModuleSlots.hpp
        GET_COMPONENT(SpriteAnimator2DComponent, entityID, 0);
        return comp.CurrentFrame;
    }

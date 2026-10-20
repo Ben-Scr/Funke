@@ -7,6 +7,25 @@
 // Audio sources.
 // Split out of BuiltInComponentRegistration.cpp, which owns the call order.
 namespace Funke::BuiltInComponentRegistrationInternal {
+	namespace {
+		bool IsSpatial(const Entity& e) {
+			return e.GetComponent<AudioSourceComponent>().IsSpatial();
+		}
+
+		PropertyDescriptor MakeSpatialFloat(const char* name, const char* displayName, float AudioSpatialSettings::* field,
+			double min, double max, float dragSpeed, const char* tooltip) {
+			return Properties::MakeWith<float>(name, displayName,
+				[field](const Entity& e) { return e.GetComponent<AudioSourceComponent>().GetSpatialSettings().*field; },
+				[field](Entity& e, float v) {
+					auto& src = e.GetComponent<AudioSourceComponent>();
+					AudioSpatialSettings s = src.GetSpatialSettings();
+					s.*field = v;
+					src.SetSpatialSettings(s);
+				},
+				Properties::Meta::Clamp(min, max, dragSpeed).WithTooltip(tooltip).WithEnabledIf(IsSpatial));
+		}
+	}
+
 	void RegisterAudio(ComponentRegistry& registry) {
 		using Funke::Codegen::RegisterComponent;
 
@@ -50,6 +69,29 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 							: AudioHandle{};
 						src.SetAudioHandle(h, UUID(uuid));
 					}),
+				Properties::MakeWith<bool>("Spatial", "Spatial",
+					[](const Entity& e) { return e.GetComponent<AudioSourceComponent>().IsSpatial(); },
+					[](Entity& e, bool v) { e.GetComponent<AudioSourceComponent>().SetSpatial(v); },
+					Properties::Meta::Header("3D Sound").WithTooltip("Plays from this entity's position: quieter with distance "
+						"from the main camera and panned to its side. Off = a plain 2D sound.")),
+				MakeSpatialFloat("MinDistance", "Min Distance", &AudioSpatialSettings::MinDistance, 0.0, 10000.0, 0.1f,
+					"Full volume up to this distance."),
+				MakeSpatialFloat("MaxDistance", "Max Distance", &AudioSpatialSettings::MaxDistance, 0.0, 10000.0, 0.5f,
+					"Linear rolloff is silent from here; logarithmic rolloff stops getting quieter here."),
+				Properties::MakeWith<AudioRolloff>("Rolloff", "Rolloff",
+					[](const Entity& e) { return e.GetComponent<AudioSourceComponent>().GetSpatialSettings().Rolloff; },
+					[](Entity& e, AudioRolloff v) {
+						auto& src = e.GetComponent<AudioSourceComponent>();
+						AudioSpatialSettings s = src.GetSpatialSettings();
+						s.Rolloff = v;
+						src.SetSpatialSettings(s);
+					},
+					Properties::Meta::Tooltip("Logarithmic: volume Min Distance / distance, the natural falloff. "
+						"Linear: from full volume at Min Distance to silence at Max Distance.").WithEnabledIf(IsSpatial)),
+				MakeSpatialFloat("Panning", "Panning", &AudioSpatialSettings::Panning, 0.0, 1.0, 0.01f,
+					"How far a sound to the side moves to that ear: 0 = not at all, 1 = silent on the other ear."),
+				MakeSpatialFloat("DopplerLevel", "Doppler Level", &AudioSpatialSettings::DopplerLevel, 0.0, 10.0, 0.01f,
+					"Pitch shift while the sound and the camera move towards or away from each other; 0 = off, 1 = physical."),
 			});
 	}
 }

@@ -27,6 +27,7 @@
 #include "Graphics/SkyAmbient.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
+#include "Graphics/TextureSampling.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Scene/Scene.hpp"
 #include "Systems/SkinnedMeshAnimationSystem.hpp"
@@ -187,6 +188,33 @@ namespace Funke {
 			attribute.shaderLocation = location;
 		}
 
+		// Vertex streams of the "mesh" WGSL and custom mesh shaders: MeshVertex in slot 0, MeshInstance in slot 1.
+		struct MeshVertexStreams {
+			wgpu::VertexAttribute VertexAttributes[3] = {};
+			wgpu::VertexAttribute InstanceAttributes[k_InstanceVec4Count] = {};
+			wgpu::VertexBufferLayout Buffers[2] = {};
+
+			MeshVertexStreams() {
+				SetAttribute(VertexAttributes[0], wgpu::VertexFormat::Float32x3, offsetof(MeshVertex, Position), 0);
+				SetAttribute(VertexAttributes[1], wgpu::VertexFormat::Float32x3, offsetof(MeshVertex, Normal), 1);
+				SetAttribute(VertexAttributes[2], wgpu::VertexFormat::Float32x2, offsetof(MeshVertex, UV), 2);
+				for (uint32_t i = 0; i < k_InstanceVec4Count; ++i) {
+					SetAttribute(InstanceAttributes[i], wgpu::VertexFormat::Float32x4, static_cast<uint64_t>(i) * 16u, 3u + i);
+				}
+				Buffers[0].arrayStride = sizeof(MeshVertex);
+				Buffers[0].stepMode = wgpu::VertexStepMode::Vertex;
+				Buffers[0].attributeCount = 3;
+				Buffers[0].attributes = VertexAttributes;
+				Buffers[1].arrayStride = sizeof(MeshInstance);
+				Buffers[1].stepMode = wgpu::VertexStepMode::Instance;
+				Buffers[1].attributeCount = k_InstanceVec4Count;
+				Buffers[1].attributes = InstanceAttributes;
+			}
+			// Buffers point into this object.
+			MeshVertexStreams(const MeshVertexStreams&) = delete;
+			MeshVertexStreams& operator=(const MeshVertexStreams&) = delete;
+		};
+
 		uint32_t PackRgba(const Color& c) {
 			auto u8 = [](float v) {
 				v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
@@ -201,6 +229,41 @@ namespace Funke {
 			return format == wgpu::TextureFormat::BGRA8UnormSrgb || format == wgpu::TextureFormat::RGBA8UnormSrgb;
 		}
 
+		// Cache key of a pipeline that draws into the scene target; variant tells apart pipelines of one kind.
+		uint64_t ScenePipelineKey(wgpu::TextureFormat colorFormat, uint32_t sampleCount, uint64_t variant = 0) {
+			return static_cast<uint64_t>(static_cast<uint32_t>(colorFormat)) | (static_cast<uint64_t>(sampleCount & 0xFFu) << 32)
+				| (variant << 40);
+		}
+
+		// Formats a multisampled Framebuffer can take so it resolves straight into the target; others go through RGBA16F.
+		std::optional<TextureFormat> ToFramebufferFormat(wgpu::TextureFormat format) {
+			switch (format) {
+				case wgpu::TextureFormat::RGBA8Unorm: return TextureFormat::RGBA8;
+				case wgpu::TextureFormat::BGRA8Unorm: return TextureFormat::BGRA8;
+				case wgpu::TextureFormat::RGBA16Float: return TextureFormat::RGBA16F;
+				default: return std::nullopt;
+			}
+		}
+
+		// An empty pass whose store resolves the multisampled colour into destination (same size and format).
+		void ResolveMultisampled(const Framebuffer& source, const wgpu::TextureView& destination) {
+			const auto look = WebGPUBackend::LookupFramebufferByFboId(source.GetBackendId());
+			wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
+			if (!look.Valid || look.SampleCount <= 1 || !destination || !encoder) return;
+			wgpu::RenderPassColorAttachment attachment{};
+			attachment.view = look.ColorView;
+			attachment.resolveTarget = destination;
+			attachment.loadOp = wgpu::LoadOp::Load;
+			attachment.storeOp = wgpu::StoreOp::Discard;
+			attachment.depthSlice = wgpu::kDepthSliceUndefined;
+
+			wgpu::RenderPassDescriptor desc{};
+			desc.label = "renderer3d-msaa-resolve";
+			desc.colorAttachmentCount = 1;
+			desc.colorAttachments = &attachment;
+			encoder.BeginRenderPass(&desc).End();
+		}
+
 		wgpu::Buffer CreateBufferWithData(wgpu::Device device, wgpu::BufferUsage usage, const void* data, size_t size, const char* label) {
 			wgpu::BufferDescriptor desc{};
 			desc.size = (size + 3) & ~size_t(3);
@@ -212,6 +275,17 @@ namespace Funke {
 			std::memcpy(buffer.GetMappedRange(), data, size);
 			buffer.Unmap();
 			return buffer;
+		}
+
+		// LineList indices for the editor wireframe: the three edges of every triangle. Shared edges draw twice.
+		std::vector<uint32_t> BuildWireIndices(const std::vector<uint32_t>& triangles) {
+			std::vector<uint32_t> lines;
+			lines.reserve(triangles.size() * 2);
+			for (size_t i = 0; i + 2 < triangles.size(); i += 3) {
+				const uint32_t a = triangles[i], b = triangles[i + 1], c = triangles[i + 2];
+				lines.insert(lines.end(), { a, b, b, c, c, a });
+			}
+			return lines;
 		}
 
 		bool EnsureBuffer(wgpu::Device device, wgpu::Buffer& buffer, uint64_t& capacity, uint64_t needed, wgpu::BufferUsage usage, const char* label) {
@@ -278,7 +352,9 @@ namespace Funke {
 			return device.CreatePipelineLayout(&desc);
 		}
 
-		wgpu::Sampler CreateRepeatSampler(wgpu::Device device, wgpu::FilterMode filter, const char* label) {
+		// sampling: texture quality and anisotropy; linear filtering only (the point sampler keeps every mip and no anisotropy).
+		wgpu::Sampler CreateRepeatSampler(wgpu::Device device, wgpu::FilterMode filter, const char* label,
+			const TextureSamplingQuality& sampling = {}) {
 			wgpu::SamplerDescriptor desc{};
 			desc.addressModeU = wgpu::AddressMode::Repeat;
 			desc.addressModeV = wgpu::AddressMode::Repeat;
@@ -286,7 +362,9 @@ namespace Funke {
 			desc.magFilter = filter;
 			desc.minFilter = filter;
 			desc.mipmapFilter = filter == wgpu::FilterMode::Linear ? wgpu::MipmapFilterMode::Linear : wgpu::MipmapFilterMode::Nearest;
-			desc.maxAnisotropy = 1;
+			const bool linear = filter == wgpu::FilterMode::Linear;
+			desc.lodMinClamp = linear ? sampling.LodMinClamp : 0.0f;
+			desc.maxAnisotropy = linear ? std::max<uint16_t>(sampling.MaxAnisotropy, 1) : 1;
 			desc.label = label;
 			return device.CreateSampler(&desc);
 		}
@@ -411,13 +489,19 @@ namespace Funke {
 			wgpu::Buffer Vertices;
 			wgpu::Buffer Indices;
 			uint32_t IndexCount = 0;
+			uint32_t VertexCount = 0;  // for the Tris/Verts statistics
+			// LineList edges, built on the first wireframe draw.
+			wgpu::Buffer WireIndices;
+			uint32_t WireIndexCount = 0;
 		};
 
 		struct CustomMeshEntry {
 			MeshBuffers Buffers;
 			uint32_t Revision = 0;
+			uint32_t WireRevision = 0;
 			uint64_t VertexCapacity = 0;
 			uint64_t IndexCapacity = 0;
+			uint64_t WireIndexCapacity = 0;
 		};
 
 		// One posed copy of an animated model per (scene, entity); re-skinned only when the pose or the model changed.
@@ -468,13 +552,14 @@ namespace Funke {
 		wgpu::PipelineLayout SkyPipelineLayout;
 		wgpu::PipelineLayout ShadowPipelineLayout;
 		wgpu::PipelineLayout LinePipelineLayout;
+		wgpu::PipelineLayout WirePipelineLayout;
 		wgpu::BindGroupLayout ParticleLayout;
 		wgpu::PipelineLayout ParticlePipelineLayout;
 		wgpu::Buffer ParticleUniformBuffer;
 		wgpu::BindGroup ParticleBindGroup;
 		wgpu::Buffer ParticleInstanceBuffer;
 		uint64_t ParticleInstanceCapacity = 0;
-		std::unordered_map<uint32_t, wgpu::RenderPipeline> ParticlePipelines;
+		std::unordered_map<uint64_t, wgpu::RenderPipeline> ParticlePipelines;
 		std::vector<ParticleInstance> ParticleInstances;
 		std::vector<ParticleBatch> ParticleBatches;
 		std::vector<std::pair<float, uint32_t>> ParticleOrder;
@@ -491,8 +576,12 @@ namespace Funke {
 		wgpu::BindGroup LineBindGroup;
 
 		wgpu::Sampler ShadowSampler;
+		// Bilinear textures; Trilinear and Anisotropic ones also get the anisotropy setting. Both follow the texture quality.
 		wgpu::Sampler LinearRepeatSampler;
+		wgpu::Sampler AnisotropicRepeatSampler;
 		wgpu::Sampler PointRepeatSampler;
+		TextureQualityLevel SamplerTextureQuality = TextureQualityLevel::Full;
+		AnisotropicFilteringLevel SamplerAnisotropy = AnisotropicFilteringLevel::Off;
 		wgpu::Texture ShadowTexture;
 		wgpu::TextureView ShadowView;
 		uint32_t ShadowResolution = 0;
@@ -513,9 +602,11 @@ namespace Funke {
 		std::vector<glm::mat4> PoseJoints;
 		std::vector<const MeshBuffers*> FrameMeshes;
 		std::unordered_map<uint64_t, uint32_t> FrameMeshSlots;
-		std::unordered_map<uint32_t, wgpu::RenderPipeline> MeshPipelines;
-		std::unordered_map<uint32_t, wgpu::RenderPipeline> SkyPipelines;
-		std::unordered_map<uint32_t, wgpu::RenderPipeline> LinePipelines;
+		// Keyed by ScenePipelineKey: the MSAA scene target needs its own variants.
+		std::unordered_map<uint64_t, wgpu::RenderPipeline> MeshPipelines;
+		std::unordered_map<uint64_t, wgpu::RenderPipeline> SkyPipelines;
+		std::unordered_map<uint64_t, wgpu::RenderPipeline> LinePipelines;
+		std::unordered_map<uint64_t, wgpu::RenderPipeline> WirePipelines;
 		wgpu::RenderPipeline ShadowPipeline;
 		std::unordered_map<uint64_t, CachedMaterialGroup> MaterialGroups;
 
@@ -528,7 +619,7 @@ namespace Funke {
 			const CustomShaderProgram* Program = nullptr;
 		};
 		std::unordered_map<uint64_t, FrameMaterial> FrameMaterials;
-		// By program id and color format; failed creations stay cached as null.
+		// By program id, color format and sample count; failed creations stay cached as null.
 		std::unordered_map<uint64_t, wgpu::RenderPipeline> CustomPipelines;
 		std::unordered_map<uint32_t, wgpu::PipelineLayout> CustomPipelineLayouts;
 		std::unordered_map<uint64_t, wgpu::RenderPipeline> CustomShadowPipelines;
@@ -615,13 +706,27 @@ namespace Funke {
 			return FrameBindGroup;
 		}
 
+		// Rebuilds the linear samplers when the texture settings changed; cached material groups still hold the old ones.
+		void ApplyTextureSampling(wgpu::Device device, TextureQualityLevel quality, AnisotropicFilteringLevel anisotropy) {
+			if (LinearRepeatSampler && quality == SamplerTextureQuality && anisotropy == SamplerAnisotropy) return;
+			LinearRepeatSampler = CreateRepeatSampler(device, wgpu::FilterMode::Linear, "renderer3d-linear-repeat",
+				ResolveTextureSampling(Filter::Bilinear, quality, anisotropy));
+			AnisotropicRepeatSampler = CreateRepeatSampler(device, wgpu::FilterMode::Linear, "renderer3d-anisotropic-repeat",
+				ResolveTextureSampling(Filter::Anisotropic, quality, anisotropy));
+			SamplerTextureQuality = quality;
+			SamplerAnisotropy = anisotropy;
+			MaterialGroups.clear();
+		}
+
 		wgpu::BindGroup GetMaterialBindGroup(wgpu::Device device, TextureHandle handle) {
 			Texture2D* texture = TextureManager::GetTexture(handle);
 			if (!texture || !texture->IsValid()) return nullptr;
 			const auto lookup = WebGPUBackend::LookupTexture2D(texture->GetHandle());
 			if (!lookup.Valid || !lookup.View) return nullptr;
-			const bool point = texture->GetFilter() == Filter::Point;
-			const uint64_t key = (texture->GetHandle() << 1) | (point ? 1u : 0u);
+			const Filter filter = texture->GetFilter();
+			const uint64_t samplerIndex = filter == Filter::Point ? 1u
+				: filter == Filter::Trilinear || filter == Filter::Anisotropic ? 2u : 0u;
+			const uint64_t key = (texture->GetHandle() << 2) | samplerIndex;
 
 			if (auto it = MaterialGroups.find(key); it != MaterialGroups.end()) {
 				if (it->second.View.Get() == lookup.View.Get()) return it->second.Group;
@@ -632,7 +737,8 @@ namespace Funke {
 			entries[0].binding = 0;
 			entries[0].textureView = lookup.View;
 			entries[1].binding = 1;
-			entries[1].sampler = point ? PointRepeatSampler : LinearRepeatSampler;
+			entries[1].sampler = samplerIndex == 1 ? PointRepeatSampler
+				: samplerIndex == 2 ? AnisotropicRepeatSampler : LinearRepeatSampler;
 
 			wgpu::BindGroupDescriptor desc{};
 			desc.layout = MaterialLayout;
@@ -645,8 +751,23 @@ namespace Funke {
 		}
 
 		// GPU copy of a mesh asset, re-uploaded when MeshLibrary reloaded it; nullptr when the upload failed.
-		const MeshBuffers* ResolveCustomMesh(wgpu::Device device, uint64_t guid, const MeshAsset& asset) {
+		const MeshBuffers* ResolveCustomMesh(wgpu::Device device, uint64_t guid, const MeshAsset& asset, bool wireframe) {
 			CustomMeshEntry& entry = CustomMeshes[guid];
+			if (wireframe && entry.WireRevision != asset.Revision) {
+				const std::vector<uint32_t> lines = BuildWireIndices(asset.Data.Indices);
+				const uint64_t lineBytes = lines.size() * sizeof(uint32_t);
+				bool uploaded = false;
+				if (IsRuntimeMeshGuid(guid)) {
+					uploaded = EnsureBuffer(device, entry.Buffers.WireIndices, entry.WireIndexCapacity, lineBytes, wgpu::BufferUsage::Index, "renderer3d-runtime-mesh-wire-ib");
+					if (uploaded) device.GetQueue().WriteBuffer(entry.Buffers.WireIndices, 0, lines.data(), lineBytes);
+				}
+				else {
+					entry.Buffers.WireIndices = CreateBufferWithData(device, wgpu::BufferUsage::Index, lines.data(), lineBytes, "renderer3d-custom-mesh-wire-ib");
+					uploaded = static_cast<bool>(entry.Buffers.WireIndices);
+				}
+				entry.Buffers.WireIndexCount = uploaded ? static_cast<uint32_t>(lines.size()) : 0;
+				entry.WireRevision = asset.Revision;
+			}
 			if (entry.Revision != asset.Revision) {
 				const PrimitiveMeshData& data = asset.Data;
 				const uint64_t vertexBytes = data.Vertices.size() * sizeof(MeshVertex);
@@ -666,6 +787,7 @@ namespace Funke {
 					entry.Buffers.Indices = CreateBufferWithData(device, wgpu::BufferUsage::Index, data.Indices.data(), indexBytes, "renderer3d-custom-mesh-ib");
 				}
 				entry.Buffers.IndexCount = static_cast<uint32_t>(data.Indices.size());
+				entry.Buffers.VertexCount = static_cast<uint32_t>(data.Vertices.size());
 				entry.Revision = asset.Revision;
 			}
 			return entry.Buffers.Vertices && entry.Buffers.Indices ? &entry.Buffers : nullptr;
@@ -677,7 +799,7 @@ namespace Funke {
 			SkinnedEntry& entry = SkinnedMeshes[key];
 			entry.LastUsed = now;
 			const SkinnedMeshData& data = *asset.Skin;
-			const SkeletalPoseRequest pose = SkinnedMeshAnimationSystem::MakePoseRequest(renderer, data);
+			const SkeletalPoseRequest pose = SkinnedMeshAnimationSystem::GetDrawnPose(renderer, data);
 			if (!entry.Buffers.Vertices || entry.Revision != asset.Revision || !(entry.Pose == pose)) {
 				FUNKE_PROFILE_SCOPE("Renderer3D.Skinning");
 				SkeletalAnimation::EvaluatePose(data, pose, PoseNodes);
@@ -693,6 +815,9 @@ namespace Funke {
 			}
 			entry.Buffers.Indices = shared.Indices;
 			entry.Buffers.IndexCount = shared.IndexCount;
+			entry.Buffers.VertexCount = static_cast<uint32_t>(entry.Vertices.size());
+			entry.Buffers.WireIndices = shared.WireIndices;
+			entry.Buffers.WireIndexCount = shared.WireIndexCount;
 			return &entry.Buffers;
 		}
 
@@ -711,31 +836,13 @@ namespace Funke {
 		}
 
 		// Transparent: straight-alpha blending, depth tested but not written so later transparent surfaces still show.
-		wgpu::RenderPipeline GetMeshPipeline(wgpu::Device device, wgpu::TextureFormat colorFormat, bool transparent) {
-			const uint32_t key = static_cast<uint32_t>(colorFormat) | (transparent ? 0x80000000u : 0u);
+		wgpu::RenderPipeline GetMeshPipeline(wgpu::Device device, wgpu::TextureFormat colorFormat, uint32_t sampleCount, bool transparent) {
+			const uint64_t key = ScenePipelineKey(colorFormat, sampleCount, transparent ? 1u : 0u);
 			if (auto it = MeshPipelines.find(key); it != MeshPipelines.end()) {
 				return it->second;
 			}
 
-			wgpu::VertexAttribute vertexAttributes[3] = {};
-			SetAttribute(vertexAttributes[0], wgpu::VertexFormat::Float32x3, offsetof(MeshVertex, Position), 0);
-			SetAttribute(vertexAttributes[1], wgpu::VertexFormat::Float32x3, offsetof(MeshVertex, Normal), 1);
-			SetAttribute(vertexAttributes[2], wgpu::VertexFormat::Float32x2, offsetof(MeshVertex, UV), 2);
-
-			wgpu::VertexAttribute instanceAttributes[k_InstanceVec4Count] = {};
-			for (uint32_t i = 0; i < k_InstanceVec4Count; ++i) {
-				SetAttribute(instanceAttributes[i], wgpu::VertexFormat::Float32x4, static_cast<uint64_t>(i) * 16u, 3u + i);
-			}
-
-			wgpu::VertexBufferLayout buffers[2] = {};
-			buffers[0].arrayStride = sizeof(MeshVertex);
-			buffers[0].stepMode = wgpu::VertexStepMode::Vertex;
-			buffers[0].attributeCount = 3;
-			buffers[0].attributes = vertexAttributes;
-			buffers[1].arrayStride = sizeof(MeshInstance);
-			buffers[1].stepMode = wgpu::VertexStepMode::Instance;
-			buffers[1].attributeCount = k_InstanceVec4Count;
-			buffers[1].attributes = instanceAttributes;
+			const MeshVertexStreams streams;
 
 			wgpu::BlendState blend{};
 			blend.color.operation = wgpu::BlendOperation::Add;
@@ -768,13 +875,13 @@ namespace Funke {
 			desc.vertex.module = MeshModule;
 			desc.vertex.entryPoint = "vs_main";
 			desc.vertex.bufferCount = 2;
-			desc.vertex.buffers = buffers;
+			desc.vertex.buffers = streams.Buffers;
 			desc.fragment = &fragment;
 			desc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
 			desc.primitive.frontFace = wgpu::FrontFace::CCW;
 			desc.primitive.cullMode = wgpu::CullMode::Back;
 			desc.depthStencil = &depth;
-			desc.multisample.count = 1;
+			desc.multisample.count = sampleCount;
 			desc.multisample.mask = 0xFFFFFFFF;
 
 			wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&desc);
@@ -782,9 +889,51 @@ namespace Funke {
 			return pipeline;
 		}
 
+		// Editor wireframe: the mesh streams as black lines over MeshBuffers::WireIndices. Group 0 only.
+		wgpu::RenderPipeline GetWirePipeline(wgpu::Device device, wgpu::TextureFormat colorFormat, uint32_t sampleCount) {
+			const uint64_t key = ScenePipelineKey(colorFormat, sampleCount);
+			if (auto it = WirePipelines.find(key); it != WirePipelines.end()) return it->second;
+			if (!WirePipelineLayout) return nullptr;
+
+			const MeshVertexStreams streams;
+
+			wgpu::ColorTargetState colorTarget{};
+			colorTarget.format = colorFormat;
+			colorTarget.writeMask = wgpu::ColorWriteMask::All;
+
+			wgpu::FragmentState fragment{};
+			fragment.module = MeshModule;
+			fragment.entryPoint = "fs_wire";
+			fragment.targetCount = 1;
+			fragment.targets = &colorTarget;
+
+			wgpu::DepthStencilState depth{};
+			depth.format = k_DepthFormat;
+			depth.depthWriteEnabled = true;
+			depth.depthCompare = wgpu::CompareFunction::LessEqual;
+
+			wgpu::RenderPipelineDescriptor desc{};
+			desc.label = "renderer3d-wire-pipeline";
+			desc.layout = WirePipelineLayout;
+			desc.vertex.module = MeshModule;
+			desc.vertex.entryPoint = "vs_wire";
+			desc.vertex.bufferCount = 2;
+			desc.vertex.buffers = streams.Buffers;
+			desc.fragment = &fragment;
+			desc.primitive.topology = wgpu::PrimitiveTopology::LineList;
+			desc.primitive.cullMode = wgpu::CullMode::None;
+			desc.depthStencil = &depth;
+			desc.multisample.count = sampleCount;
+			desc.multisample.mask = 0xFFFFFFFF;
+
+			wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&desc);
+			if (pipeline) WirePipelines.emplace(key, pipeline);
+			return pipeline;
+		}
+
 		// User shader: same vertex streams as "mesh", group 0 = frame, group 1 = the shader's globals/properties/textures.
-		wgpu::RenderPipeline GetCustomPipeline(wgpu::TextureFormat colorFormat, const CustomShaderProgram& program) {
-			const uint64_t key = (program.Id << 16) ^ static_cast<uint64_t>(colorFormat);
+		wgpu::RenderPipeline GetCustomPipeline(wgpu::TextureFormat colorFormat, uint32_t sampleCount, const CustomShaderProgram& program) {
+			const uint64_t key = ScenePipelineKey(colorFormat, sampleCount, program.Id);
 			if (auto it = CustomPipelines.find(key); it != CustomPipelines.end()) return it->second;
 			// Recompiles leave old ids behind; rebuilding the few live ones is cheap.
 			if (CustomPipelines.size() > 128) CustomPipelines.clear();
@@ -798,23 +947,7 @@ namespace Funke {
 				layout = CreatePipelineLayout(WebGPUBackend::GetDevice(), layouts, 2, "renderer3d-custom-layout");
 			}
 
-			wgpu::VertexAttribute vertexAttributes[3] = {};
-			SetAttribute(vertexAttributes[0], wgpu::VertexFormat::Float32x3, offsetof(MeshVertex, Position), 0);
-			SetAttribute(vertexAttributes[1], wgpu::VertexFormat::Float32x3, offsetof(MeshVertex, Normal), 1);
-			SetAttribute(vertexAttributes[2], wgpu::VertexFormat::Float32x2, offsetof(MeshVertex, UV), 2);
-			wgpu::VertexAttribute instanceAttributes[k_InstanceVec4Count] = {};
-			for (uint32_t i = 0; i < k_InstanceVec4Count; ++i) {
-				SetAttribute(instanceAttributes[i], wgpu::VertexFormat::Float32x4, static_cast<uint64_t>(i) * 16u, 3u + i);
-			}
-			wgpu::VertexBufferLayout buffers[2] = {};
-			buffers[0].arrayStride = sizeof(MeshVertex);
-			buffers[0].stepMode = wgpu::VertexStepMode::Vertex;
-			buffers[0].attributeCount = 3;
-			buffers[0].attributes = vertexAttributes;
-			buffers[1].arrayStride = sizeof(MeshInstance);
-			buffers[1].stepMode = wgpu::VertexStepMode::Instance;
-			buffers[1].attributeCount = k_InstanceVec4Count;
-			buffers[1].attributes = instanceAttributes;
+			const MeshVertexStreams streams;
 
 			const wgpu::BlendState blend = CustomShaderGpu::MakeBlendState(description.Blend);
 			wgpu::ColorTargetState colorTarget{};
@@ -839,13 +972,13 @@ namespace Funke {
 			desc.vertex.module = program.Module;
 			desc.vertex.entryPoint = "vs_main";
 			desc.vertex.bufferCount = 2;
-			desc.vertex.buffers = buffers;
+			desc.vertex.buffers = streams.Buffers;
 			desc.fragment = &fragment;
 			desc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
 			desc.primitive.frontFace = wgpu::FrontFace::CCW;
 			desc.primitive.cullMode = CustomShaderGpu::ToCullMode(description.Cull);
 			desc.depthStencil = &depth;
-			desc.multisample.count = 1;
+			desc.multisample.count = sampleCount;
 			desc.multisample.mask = 0xFFFFFFFF;
 
 			wgpu::RenderPipeline pipeline = layout ? CustomShaderGpu::CreatePipeline(desc, program) : nullptr;
@@ -911,11 +1044,11 @@ namespace Funke {
 		}
 
 		// Pipeline and material group for each custom slot; a slot whose shader cannot draw switches to the fallback.
-		void ResolveFrameCustoms(wgpu::TextureFormat colorFormat) {
+		void ResolveFrameCustoms(wgpu::TextureFormat colorFormat, uint32_t sampleCount) {
 			for (FrameCustom& custom : FrameCustoms) {
 				custom.ShadowPipeline = nullptr;
 				for (int attempt = 0; attempt < 2 && custom.Program; ++attempt) {
-					custom.Pipeline = GetCustomPipeline(colorFormat, *custom.Program);
+					custom.Pipeline = GetCustomPipeline(colorFormat, sampleCount, *custom.Program);
 					custom.Group = custom.Pipeline ? CustomBindings.GetGroup(custom.MaterialGuid, custom.Material, *custom.Program) : nullptr;
 					if (custom.Pipeline && custom.Group) break;
 					custom.Program = custom.Program->IsFallback ? nullptr : CustomShaderGpu::GetFallback(ShaderTarget::Mesh3D);
@@ -927,9 +1060,10 @@ namespace Funke {
 		}
 
 		// Unlit billboards: depth tested against the meshes but never written, so overlapping particles all show.
-		wgpu::RenderPipeline GetParticlePipeline(wgpu::Device device, wgpu::TextureFormat colorFormat, ParticleBlendMode3D blendMode) {
+		wgpu::RenderPipeline GetParticlePipeline(wgpu::Device device, wgpu::TextureFormat colorFormat, uint32_t sampleCount,
+			ParticleBlendMode3D blendMode) {
 			const bool additive = blendMode == ParticleBlendMode3D::Additive;
-			const uint32_t key = static_cast<uint32_t>(colorFormat) | (additive ? 0x80000000u : 0u);
+			const uint64_t key = ScenePipelineKey(colorFormat, sampleCount, additive ? 1u : 0u);
 			if (auto it = ParticlePipelines.find(key); it != ParticlePipelines.end()) {
 				return it->second;
 			}
@@ -980,7 +1114,7 @@ namespace Funke {
 			desc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
 			desc.primitive.cullMode = wgpu::CullMode::None;
 			desc.depthStencil = &depth;
-			desc.multisample.count = 1;
+			desc.multisample.count = sampleCount;
 			desc.multisample.mask = 0xFFFFFFFF;
 
 			wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&desc);
@@ -1032,8 +1166,8 @@ namespace Funke {
 			return ShadowPipeline;
 		}
 
-		wgpu::RenderPipeline GetSkyPipeline(wgpu::Device device, wgpu::TextureFormat colorFormat) {
-			const uint32_t key = static_cast<uint32_t>(colorFormat);
+		wgpu::RenderPipeline GetSkyPipeline(wgpu::Device device, wgpu::TextureFormat colorFormat, uint32_t sampleCount) {
+			const uint64_t key = ScenePipelineKey(colorFormat, sampleCount);
 			if (auto it = SkyPipelines.find(key); it != SkyPipelines.end()) {
 				return it->second;
 			}
@@ -1056,7 +1190,7 @@ namespace Funke {
 			desc.fragment = &fragment;
 			desc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
 			desc.primitive.cullMode = wgpu::CullMode::None;
-			desc.multisample.count = 1;
+			desc.multisample.count = sampleCount;
 			desc.multisample.mask = 0xFFFFFFFF;
 
 			wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&desc);
@@ -1068,8 +1202,8 @@ namespace Funke {
 		std::unordered_map<uint64_t, wgpu::RenderPipeline> CustomSkyPipelines;
 		std::unordered_map<uint32_t, wgpu::PipelineLayout> CustomSkyPipelineLayouts;
 
-		wgpu::RenderPipeline GetCustomSkyPipeline(wgpu::TextureFormat colorFormat, const CustomShaderProgram& program) {
-			const uint64_t key = (program.Id << 16) ^ static_cast<uint64_t>(colorFormat);
+		wgpu::RenderPipeline GetCustomSkyPipeline(wgpu::TextureFormat colorFormat, uint32_t sampleCount, const CustomShaderProgram& program) {
+			const uint64_t key = ScenePipelineKey(colorFormat, sampleCount, program.Id);
 			if (auto it = CustomSkyPipelines.find(key); it != CustomSkyPipelines.end()) return it->second;
 			if (CustomSkyPipelines.size() > 64) CustomSkyPipelines.clear();
 
@@ -1098,7 +1232,7 @@ namespace Funke {
 			desc.fragment = &fragment;
 			desc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
 			desc.primitive.cullMode = wgpu::CullMode::None;
-			desc.multisample.count = 1;
+			desc.multisample.count = sampleCount;
 			desc.multisample.mask = 0xFFFFFFFF;
 
 			wgpu::RenderPipeline pipeline = layout ? CustomShaderGpu::CreatePipeline(desc, program) : nullptr;
@@ -1106,8 +1240,8 @@ namespace Funke {
 			return pipeline;
 		}
 
-		wgpu::RenderPipeline GetLinePipeline(wgpu::Device device, wgpu::TextureFormat colorFormat, bool depthTested) {
-			const uint32_t key = (static_cast<uint32_t>(colorFormat) << 1) | (depthTested ? 1u : 0u);
+		wgpu::RenderPipeline GetLinePipeline(wgpu::Device device, wgpu::TextureFormat colorFormat, uint32_t sampleCount, bool depthTested) {
+			const uint64_t key = ScenePipelineKey(colorFormat, sampleCount, depthTested ? 1u : 0u);
 			if (auto it = LinePipelines.find(key); it != LinePipelines.end()) {
 				return it->second;
 			}
@@ -1157,7 +1291,7 @@ namespace Funke {
 			desc.primitive.topology = wgpu::PrimitiveTopology::LineList;
 			desc.primitive.cullMode = wgpu::CullMode::None;
 			desc.depthStencil = &depth;
-			desc.multisample.count = 1;
+			desc.multisample.count = sampleCount;
 			desc.multisample.mask = 0xFFFFFFFF;
 
 			wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&desc);
@@ -1167,18 +1301,74 @@ namespace Funke {
 	};
 
 	struct Renderer3D::PostProcessState {
+		struct MsaaTarget {
+			Framebuffer Fbo;
+			uint64_t LastUse = 0;
+		};
+
 		PostProcessor Processor;
 		Framebuffer SceneFbo;
+		// FXAA result when camera effects still follow it.
+		Framebuffer AntiAliasFbo;
+		// MSAA4x draws into one of these; the editor's Editor View and Game View each keep theirs instead of resizing one.
+		std::array<MsaaTarget, 2> MsaaTargets;
+		uint64_t MsaaUseCounter = 0;
 		WebGPUBackend::BoundTargetSnapshot Caller;
 		// The snapshot has no view for the swap chain (acquired lazily); the effects write here.
 		WebGPUBackend::CurrentTargetInfo CallerTarget;
+		// Null when only anti-aliasing runs.
 		const PostProcessing2DComponent* Settings = nullptr;
+		// The multisampled target of this pass, resolved into SceneFbo (Intermediate) or straight into the caller.
+		Framebuffer* Msaa = nullptr;
+		// SceneFbo holds the scene for FXAA and the effects.
+		bool Intermediate = false;
+		bool AntiAlias = false;
 		bool Active = false;
 		bool InitFailed = false;
+
+		Framebuffer* AcquireMsaaTarget(int width, int height, TextureFormat format) {
+			MsaaTarget* pick = nullptr;
+			for (MsaaTarget& target : MsaaTargets) {
+				if (target.Fbo.IsValid() && target.Fbo.GetWidth() == width && target.Fbo.GetHeight() == height
+					&& target.Fbo.GetColorFormat() == format) {
+					pick = &target;
+					break;
+				}
+			}
+			if (!pick) {
+				pick = &*std::min_element(MsaaTargets.begin(), MsaaTargets.end(),
+					[](const MsaaTarget& a, const MsaaTarget& b) { return a.LastUse < b.LastUse; });
+				if (!pick->Fbo.Recreate(width, height, format, TextureFilter::Linear, GetMultisampleCount(AntiAliasingMode::MSAA4x))) {
+					return nullptr;
+				}
+			}
+			pick->LastUse = ++MsaaUseCounter;
+			return &pick->Fbo;
+		}
+
+		void ReleaseMsaaTargets() {
+			for (MsaaTarget& target : MsaaTargets) {
+				target.Fbo.Destroy();
+				target.LastUse = 0;
+			}
+		}
 	};
 
 	Renderer3D::Renderer3D() = default;
 	Renderer3D::~Renderer3D() = default;
+
+	void Renderer3D::SetGraphicsSettings(const GraphicsSettings& settings) {
+		m_Settings = ClampGraphicsSettings(settings);
+		if (m_Gpu) {
+			if (wgpu::Device device = WebGPUBackend::GetDevice()) {
+				m_Gpu->ApplyTextureSampling(device, m_Settings.TextureQuality, m_Settings.AnisotropicFiltering);
+			}
+		}
+		// A 4x target at 1080p holds about 65 MB of colour and depth.
+		if (m_PostProcess && !m_PostProcess->Active && GetMultisampleCount(m_Settings.AntiAliasing) == 1) {
+			m_PostProcess->ReleaseMsaaTargets();
+		}
+	}
 
 	bool Renderer3D::Initialize() {
 		if (m_IsInitialized) return true;
@@ -1255,6 +1445,7 @@ namespace Funke {
 		gpu.SkyPipelineLayout = CreatePipelineLayout(device, &gpu.SkyLayout, 1, "renderer3d-sky-layout");
 		gpu.ShadowPipelineLayout = CreatePipelineLayout(device, &gpu.ShadowLayout, 1, "renderer3d-shadow-layout");
 		gpu.LinePipelineLayout = CreatePipelineLayout(device, &gpu.LineLayout, 1, "renderer3d-line-layout");
+		gpu.WirePipelineLayout = CreatePipelineLayout(device, &gpu.FrameLayout, 1, "renderer3d-wire-layout");
 
 		gpu.FrameUniformBuffer = CreateUniformBuffer(device, sizeof(FrameUniforms), "renderer3d-frame-ubo");
 		gpu.LightBuffer = CreateUniformBuffer(device, sizeof(LightUniforms), "renderer3d-lights-ubo");
@@ -1273,14 +1464,15 @@ namespace Funke {
 			desc.label = "renderer3d-shadow-sampler";
 			gpu.ShadowSampler = device.CreateSampler(&desc);
 		}
-		gpu.LinearRepeatSampler = CreateRepeatSampler(device, wgpu::FilterMode::Linear, "renderer3d-linear-repeat");
+		gpu.ApplyTextureSampling(device, m_Settings.TextureQuality, m_Settings.AnisotropicFiltering);
 		gpu.PointRepeatSampler = CreateRepeatSampler(device, wgpu::FilterMode::Nearest, "renderer3d-point-repeat");
 		gpu.DummyShadowTexture = gpu.CreateShadowTexture(device, 1, "renderer3d-shadow-dummy");
 		gpu.DummyShadowView = gpu.DummyShadowTexture ? gpu.DummyShadowTexture.CreateView() : nullptr;
 
 		if (!gpu.MeshPipelineLayout || !gpu.SkyPipelineLayout || !gpu.ShadowPipelineLayout || !gpu.LinePipelineLayout
 			|| !gpu.FrameUniformBuffer || !gpu.LightBuffer || !gpu.SkyUniformBuffer || !gpu.ShadowUniformBuffer || !gpu.LineUniformBuffer
-			|| !gpu.ShadowSampler || !gpu.LinearRepeatSampler || !gpu.PointRepeatSampler || !gpu.DummyShadowView) {
+			|| !gpu.ShadowSampler || !gpu.LinearRepeatSampler || !gpu.AnisotropicRepeatSampler || !gpu.PointRepeatSampler
+			|| !gpu.DummyShadowView) {
 			FNK_CORE_ERROR_TAG("Renderer3D", "Failed to create GPU layouts, buffers or samplers");
 			m_Gpu.reset();
 			return false;
@@ -1316,6 +1508,10 @@ namespace Funke {
 			mesh.Vertices = CreateBufferWithData(device, wgpu::BufferUsage::Vertex, data.Vertices.data(), data.Vertices.size() * sizeof(MeshVertex), "renderer3d-mesh-vb");
 			mesh.Indices = CreateBufferWithData(device, wgpu::BufferUsage::Index, data.Indices.data(), data.Indices.size() * sizeof(uint32_t), "renderer3d-mesh-ib");
 			mesh.IndexCount = static_cast<uint32_t>(data.Indices.size());
+			mesh.VertexCount = static_cast<uint32_t>(data.Vertices.size());
+			const std::vector<uint32_t> lines = BuildWireIndices(data.Indices);
+			mesh.WireIndices = CreateBufferWithData(device, wgpu::BufferUsage::Index, lines.data(), lines.size() * sizeof(uint32_t), "renderer3d-mesh-wire-ib");
+			mesh.WireIndexCount = mesh.WireIndices ? static_cast<uint32_t>(lines.size()) : 0;
 			glm::vec3 boundsMin(std::numeric_limits<float>::max());
 			glm::vec3 boundsMax(std::numeric_limits<float>::lowest());
 			for (const MeshVertex& vertex : data.Vertices) {
@@ -1356,6 +1552,8 @@ namespace Funke {
 		if (m_PostProcess) {
 			m_PostProcess->Processor.Shutdown();
 			m_PostProcess->SceneFbo.Destroy();
+			m_PostProcess->AntiAliasFbo.Destroy();
+			m_PostProcess->ReleaseMsaaTargets();
 			m_PostProcess.reset();
 		}
 		m_Gpu.reset();
@@ -1402,32 +1600,48 @@ namespace Funke {
 	}
 
 	bool Renderer3D::BeginPostProcess(const PostProcessing2DComponent* settings, const Color& clearColor) {
-		if (!m_IsInitialized || !settings || !m_PostProcessingEnabled || !m_Settings.PostProcessingEnabled
-			|| !settings->HasEnabledEffect()) {
-			return false;
-		}
+		if (!m_IsInitialized || !m_PostProcessingEnabled) return false;
+		const bool effects = settings && m_Settings.PostProcessingEnabled && settings->HasEnabledEffect();
+		const bool fxaa = m_Settings.AntiAliasing == AntiAliasingMode::FXAA;
+		const bool msaa = GetMultisampleCount(m_Settings.AntiAliasing) > 1;
+		if (!effects && !fxaa && !msaa) return false;
 		if (!m_PostProcess) m_PostProcess = std::make_unique<PostProcessState>();
 		PostProcessState& state = *m_PostProcess;
 		if (state.Active) return false;
-		if (!state.Processor.IsInitialized()) {
-			if (state.InitFailed) return false;
-			if (!state.Processor.Initialize()) {
-				state.InitFailed = true;
-				FNK_CORE_WARN_TAG("Renderer3D", "PostProcessor unavailable; 3D cameras render without post-processing");
-				return false;
-			}
-		}
 		const auto caller = WebGPUBackend::BeginRenderToCurrentTarget();
-		if (!caller.Valid || caller.Width == 0 || caller.Height == 0) return false;
-		if (!state.SceneFbo.Recreate(static_cast<int>(caller.Width), static_cast<int>(caller.Height), TextureFormat::RGBA16F)) {
-			return false;
+		if (!caller.Valid || caller.Width == 0 || caller.Height == 0 || caller.SampleCount > 1) return false;
+		const int width = static_cast<int>(caller.Width);
+		const int height = static_cast<int>(caller.Height);
+
+		// MSAA alone resolves straight into the caller: going through the RGBA16F intermediate would round pixel-art
+		// texels differently than drawing without anti-aliasing.
+		const std::optional<TextureFormat> callerFormat = ToFramebufferFormat(caller.ColorFormat);
+		const bool intermediate = effects || fxaa || !callerFormat;
+		if (intermediate) {
+			if (!state.Processor.IsInitialized()) {
+				if (state.InitFailed) return false;
+				if (!state.Processor.Initialize()) {
+					state.InitFailed = true;
+					FNK_CORE_WARN_TAG("Renderer3D", "PostProcessor unavailable; 3D cameras render without post-processing");
+					return false;
+				}
+			}
+			if (!state.SceneFbo.Recreate(width, height, TextureFormat::RGBA16F)) return false;
 		}
+		Framebuffer* msaaTarget = msaa
+			? state.AcquireMsaaTarget(width, height, intermediate ? TextureFormat::RGBA16F : *callerFormat) : nullptr;
+		if (!intermediate && !msaaTarget) return false;
+
 		state.Caller = WebGPUBackend::SaveBoundTarget();
 		state.CallerTarget = caller;
-		state.Settings = settings;
+		state.Settings = effects ? settings : nullptr;
+		state.AntiAlias = fxaa;
+		state.Msaa = msaaTarget;
+		state.Intermediate = intermediate;
 		state.Active = true;
-		RenderApi::BindFramebuffer(state.SceneFbo);
-		RenderApi::SetViewport(0, 0, static_cast<int>(caller.Width), static_cast<int>(caller.Height));
+		RenderApi::BindFramebuffer(msaaTarget ? *msaaTarget : state.SceneFbo);
+		// A direct resolve keeps the caller's viewport (letterbox) so the image lands where it would without MSAA.
+		if (intermediate) RenderApi::SetViewport(0, 0, width, height);
 		const Color savedClear = RenderApi::GetClearColor();
 		RenderApi::SetClearColor(clearColor);
 		RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
@@ -1440,11 +1654,38 @@ namespace Funke {
 		if (!m_PostProcess || !m_PostProcess->Active) return;
 		PostProcessState& state = *m_PostProcess;
 		state.Active = false;
+		const WebGPUBackend::CurrentTargetInfo target = state.CallerTarget;
+		if (state.Msaa) {
+			const wgpu::TextureView destination = state.Intermediate
+				? WebGPUBackend::LookupFramebufferByFboId(state.SceneFbo.GetBackendId()).ColorView : target.ColorView;
+			ResolveMultisampled(*state.Msaa, destination);
+			state.Msaa = nullptr;
+		}
 		// Flushes the 3D passes so the effects read the finished intermediate.
 		WebGPUBackend::FlushCommands();
-		const WebGPUBackend::CurrentTargetInfo target = state.CallerTarget;
-		state.Processor.Run(state.SceneFbo, target.ColorView, target.ColorFormat, target.Width, target.Height,
-			state.Settings, m_Settings.PostProcessingQuality, true);
+		if (state.Intermediate) {
+			// FXAA first, on the tone-mapped scene: straight into the target without effects, else into an intermediate.
+			const Framebuffer* sceneSource = &state.SceneFbo;
+			bool antiAliasedToTarget = false;
+			if (state.AntiAlias) {
+				const AntiAliasingQualityLevel aaQuality = m_Settings.AntiAliasingQuality;
+				if (!state.Settings) {
+					antiAliasedToTarget = state.Processor.RunAntiAliasing(state.SceneFbo, target.ColorView, target.ColorFormat,
+						aaQuality, true);
+				}
+				else if (state.AntiAliasFbo.Recreate(state.SceneFbo.GetWidth(), state.SceneFbo.GetHeight(), TextureFormat::RGBA16F)) {
+					const auto aaLook = WebGPUBackend::LookupFramebufferByFboId(state.AntiAliasFbo.GetBackendId());
+					if (aaLook.Valid && state.Processor.RunAntiAliasing(state.SceneFbo, aaLook.ColorView, aaLook.ColorFormat,
+						aaQuality, false)) {
+						sceneSource = &state.AntiAliasFbo;
+					}
+				}
+			}
+			if (!antiAliasedToTarget) {
+				state.Processor.Run(*sceneSource, target.ColorView, target.ColorFormat, target.Width, target.Height,
+					state.Settings, m_Settings.PostProcessingQuality, true);
+			}
+		}
 		WebGPUBackend::RestoreBoundTarget(state.Caller);
 		state.Settings = nullptr;
 		state.CallerTarget = {};
@@ -1518,7 +1759,7 @@ namespace Funke {
 			const CustomShaderProgram* program = material && material->Shader != 0
 				? CustomShaderGpu::GetProgram(material->Shader, ShaderTarget::Skybox) : nullptr;
 			for (int attempt = 0; attempt < 2 && program && gpu.CustomBindings.IsInitialized(); ++attempt) {
-				pipeline = gpu.GetCustomSkyPipeline(target.ColorFormat, *program);
+				pipeline = gpu.GetCustomSkyPipeline(target.ColorFormat, target.SampleCount, *program);
 				customGroup = pipeline ? gpu.CustomBindings.GetGroup(environment.SkyboxMaterial, material, *program) : nullptr;
 				if (pipeline && customGroup) break;
 				pipeline = nullptr;
@@ -1531,7 +1772,7 @@ namespace Funke {
 		}
 		if (!pipeline) {
 			customGroup = nullptr;
-			pipeline = gpu.GetSkyPipeline(device, target.ColorFormat);
+			pipeline = gpu.GetSkyPipeline(device, target.ColorFormat, target.SampleCount);
 		}
 		if (!pipeline) return;
 
@@ -1586,7 +1827,8 @@ namespace Funke {
 		FUNKE_PROFILE_SCOPE("Renderer3D.RenderScene");
 		Transform3DHierarchySystem::Propagate(scene);
 		RenderMeshes(scene, view);
-		RenderParticles(scene, view);
+		// Particle billboards would cover the edges.
+		if (RenderApi::GetPolygonMode() != PolygonMode::Wireframe) RenderParticles(scene, view);
 	}
 
 	void Renderer3D::RenderMeshes(Scene& scene, const Camera3DView& view) {
@@ -1594,6 +1836,8 @@ namespace Funke {
 		const entt::registry& registry = scene.GetRegistry();
 		wgpu::Device device = WebGPUBackend::GetDevice();
 		if (!device) return;
+		// Editor Triangle/Mixed draw modes: black edges instead of shaded surfaces, depth tested against what is already drawn.
+		const bool wireframe = RenderApi::GetPolygonMode() == PolygonMode::Wireframe;
 
 		gpu.Instances.clear();
 		gpu.DrawItems.clear();
@@ -1624,7 +1868,7 @@ namespace Funke {
 		auto customMeshSlot = [&](uint64_t guid, const MeshAsset& asset) -> std::optional<size_t> {
 			auto slot = gpu.FrameMeshSlots.find(guid);
 			if (slot == gpu.FrameMeshSlots.end()) {
-				const auto* buffers = gpu.ResolveCustomMesh(device, guid, asset);
+				const auto* buffers = gpu.ResolveCustomMesh(device, guid, asset, wireframe);
 				if (!buffers) return std::nullopt;
 				slot = gpu.FrameMeshSlots.emplace(guid, static_cast<uint32_t>(gpu.FrameMeshes.size())).first;
 				gpu.FrameMeshes.push_back(buffers);
@@ -1781,7 +2025,7 @@ namespace Funke {
 		// Shadow pass for the main directional light.
 		const uint32_t shadowResolution = std::min(GetShadowMapResolution(m_Settings.ShadowQuality), WebGPUBackend::GetMaxTextureDimension2D());
 		wgpu::TextureView shadowView = gpu.DummyShadowView;
-		if (shadowResolution > 0 && lighting.ShadowedLight >= 0 && anyCaster) {
+		if (!wireframe && shadowResolution > 0 && lighting.ShadowedLight >= 0 && anyCaster) {
 			wgpu::TextureView map = gpu.EnsureShadowMap(device, shadowResolution);
 			wgpu::RenderPipeline shadowPipeline = gpu.GetShadowPipeline(device);
 			if (map && shadowPipeline) {
@@ -1836,12 +2080,14 @@ namespace Funke {
 		});
 
 		wgpu::TextureView depthView = target.HasDepth ? target.DepthView : gpu.EnsureOwnDepth(device, target.Width, target.Height);
-		wgpu::RenderPipeline pipeline = gpu.GetMeshPipeline(device, target.ColorFormat, false);
-		wgpu::RenderPipeline transparentPipeline = transparentBegin < gpu.DrawItems.size()
-			? gpu.GetMeshPipeline(device, target.ColorFormat, true) : nullptr;
+		wgpu::RenderPipeline pipeline = wireframe
+			? gpu.GetWirePipeline(device, target.ColorFormat, target.SampleCount)
+			: gpu.GetMeshPipeline(device, target.ColorFormat, target.SampleCount, false);
+		wgpu::RenderPipeline transparentPipeline = !wireframe && transparentBegin < gpu.DrawItems.size()
+			? gpu.GetMeshPipeline(device, target.ColorFormat, target.SampleCount, true) : nullptr;
 		if (!depthView || !pipeline) return;
-		if (!gpu.FrameCustoms.empty()) {
-			gpu.ResolveFrameCustoms(target.ColorFormat);
+		if (!wireframe && !gpu.FrameCustoms.empty()) {
+			gpu.ResolveFrameCustoms(target.ColorFormat, target.SampleCount);
 			gpu.CustomBindings.WriteGlobals(CustomMaterialBindings::MakeGlobals(view.View, view.Projection, view.Position, target.Width, target.Height));
 		}
 		gpu.InstanceUpload.clear();
@@ -1906,6 +2152,7 @@ namespace Funke {
 					shadowPass.SetIndexBuffer(buffers.Indices, wgpu::IndexFormat::Uint32);
 					shadowPass.DrawIndexed(buffers.IndexCount, static_cast<uint32_t>(end - begin), 0, 0, static_cast<uint32_t>(begin));
 					++m_DrawCalls;
+					m_GeometryTotals.AddShadowMesh(buffers.IndexCount, static_cast<uint32_t>(end - begin));
 				}
 				begin = end;
 			}
@@ -1943,51 +2190,75 @@ namespace Funke {
 		size_t boundMesh = std::numeric_limits<size_t>::max();
 		wgpu::RenderPipeline boundPipeline;
 		uint32_t drawnInstances = 0;
-		for (size_t begin = 0; begin < gpu.DrawItems.size();) {
-			const uint64_t key = gpu.DrawItems[begin].Key;
-			const uint32_t custom = gpu.DrawItems[begin].Custom;
-			const size_t mesh = KeyMesh(key);
-			const uint32_t slot = KeyTextureSlot(key);
-			// Batches never straddle the opaque/transparent boundary: the pipeline switches there.
-			const size_t rangeEnd = begin < transparentBegin ? transparentBegin : gpu.DrawItems.size();
-			size_t end = begin + 1;
-			const bool hidden = KeyHidden(key);
-			while (end < rangeEnd && gpu.DrawItems[end].Custom == custom && KeyMesh(gpu.DrawItems[end].Key) == mesh
-				&& KeyTextureSlot(gpu.DrawItems[end].Key) == slot && KeyHidden(gpu.DrawItems[end].Key) == hidden) {
-				++end;
-			}
-			if (hidden) {
-				begin = end;
-				continue;
-			}
-			drawnInstances += static_cast<uint32_t>(end - begin);
-			wgpu::RenderPipeline itemPipeline = begin < transparentBegin ? pipeline : transparentPipeline;
-			wgpu::BindGroup materialGroup;
-			if (custom != 0) {
-				const FrameCustom& frameCustom = gpu.FrameCustoms[custom - 1];
-				itemPipeline = frameCustom.Pipeline;
-				materialGroup = frameCustom.Group;
-			}
-			else {
-				materialGroup = gpu.GetMaterialBindGroup(device, gpu.FrameTextures[slot]);
-				if (!materialGroup) materialGroup = gpu.GetMaterialBindGroup(device, whiteTexture);
-			}
-			const auto& buffers = *gpu.FrameMeshes[mesh];
-			if (itemPipeline && materialGroup && buffers.Vertices && buffers.Indices) {
-				if (itemPipeline.Get() != boundPipeline.Get()) {
-					pass.SetPipeline(itemPipeline);
-					boundPipeline = itemPipeline;
+		if (wireframe) {
+			// One pipeline and no material group, so batches only split per mesh.
+			pass.SetPipeline(pipeline);
+			for (size_t begin = 0; begin < gpu.DrawItems.size();) {
+				const size_t mesh = KeyMesh(gpu.DrawItems[begin].Key);
+				const bool hidden = KeyHidden(gpu.DrawItems[begin].Key);
+				size_t end = begin + 1;
+				while (end < gpu.DrawItems.size() && KeyMesh(gpu.DrawItems[end].Key) == mesh && KeyHidden(gpu.DrawItems[end].Key) == hidden) {
+					++end;
 				}
-				if (boundMesh != mesh) {
+				const auto& buffers = *gpu.FrameMeshes[mesh];
+				if (!hidden && buffers.Vertices && buffers.WireIndices && buffers.WireIndexCount > 0) {
 					pass.SetVertexBuffer(0, buffers.Vertices);
-					pass.SetIndexBuffer(buffers.Indices, wgpu::IndexFormat::Uint32);
-					boundMesh = mesh;
+					pass.SetIndexBuffer(buffers.WireIndices, wgpu::IndexFormat::Uint32);
+					pass.DrawIndexed(buffers.WireIndexCount, static_cast<uint32_t>(end - begin), 0, 0, static_cast<uint32_t>(begin));
+					drawnInstances += static_cast<uint32_t>(end - begin);
+					++m_DrawCalls;
 				}
-				pass.SetBindGroup(1, materialGroup);
-				pass.DrawIndexed(buffers.IndexCount, static_cast<uint32_t>(end - begin), 0, 0, static_cast<uint32_t>(begin));
-				++m_DrawCalls;
+				begin = end;
 			}
-			begin = end;
+		}
+		else {
+			for (size_t begin = 0; begin < gpu.DrawItems.size();) {
+				const uint64_t key = gpu.DrawItems[begin].Key;
+				const uint32_t custom = gpu.DrawItems[begin].Custom;
+				const size_t mesh = KeyMesh(key);
+				const uint32_t slot = KeyTextureSlot(key);
+				// Batches never straddle the opaque/transparent boundary: the pipeline switches there.
+				const size_t rangeEnd = begin < transparentBegin ? transparentBegin : gpu.DrawItems.size();
+				size_t end = begin + 1;
+				const bool hidden = KeyHidden(key);
+				while (end < rangeEnd && gpu.DrawItems[end].Custom == custom && KeyMesh(gpu.DrawItems[end].Key) == mesh
+					&& KeyTextureSlot(gpu.DrawItems[end].Key) == slot && KeyHidden(gpu.DrawItems[end].Key) == hidden) {
+					++end;
+				}
+				if (hidden) {
+					begin = end;
+					continue;
+				}
+				drawnInstances += static_cast<uint32_t>(end - begin);
+				wgpu::RenderPipeline itemPipeline = begin < transparentBegin ? pipeline : transparentPipeline;
+				wgpu::BindGroup materialGroup;
+				if (custom != 0) {
+					const FrameCustom& frameCustom = gpu.FrameCustoms[custom - 1];
+					itemPipeline = frameCustom.Pipeline;
+					materialGroup = frameCustom.Group;
+				}
+				else {
+					materialGroup = gpu.GetMaterialBindGroup(device, gpu.FrameTextures[slot]);
+					if (!materialGroup) materialGroup = gpu.GetMaterialBindGroup(device, whiteTexture);
+				}
+				const auto& buffers = *gpu.FrameMeshes[mesh];
+				if (itemPipeline && materialGroup && buffers.Vertices && buffers.Indices) {
+					if (itemPipeline.Get() != boundPipeline.Get()) {
+						pass.SetPipeline(itemPipeline);
+						boundPipeline = itemPipeline;
+					}
+					if (boundMesh != mesh) {
+						pass.SetVertexBuffer(0, buffers.Vertices);
+						pass.SetIndexBuffer(buffers.Indices, wgpu::IndexFormat::Uint32);
+						boundMesh = mesh;
+					}
+					pass.SetBindGroup(1, materialGroup);
+					pass.DrawIndexed(buffers.IndexCount, static_cast<uint32_t>(end - begin), 0, 0, static_cast<uint32_t>(begin));
+					++m_DrawCalls;
+					m_GeometryTotals.AddMesh(buffers.IndexCount, buffers.VertexCount, static_cast<uint32_t>(end - begin));
+				}
+				begin = end;
+			}
 		}
 		pass.End();
 		m_RenderedMeshes += drawnInstances;
@@ -2102,7 +2373,7 @@ namespace Funke {
 		pass.SetVertexBuffer(0, gpu.ParticleInstanceBuffer);
 		wgpu::RenderPipeline boundPipeline;
 		for (const ParticleBatch& batch : gpu.ParticleBatches) {
-			wgpu::RenderPipeline pipeline = gpu.GetParticlePipeline(device, target.ColorFormat, batch.Blend);
+			wgpu::RenderPipeline pipeline = gpu.GetParticlePipeline(device, target.ColorFormat, target.SampleCount, batch.Blend);
 			wgpu::BindGroup textureGroup = TextureManager::IsValid(batch.Texture) ? gpu.GetMaterialBindGroup(device, batch.Texture) : nullptr;
 			if (!textureGroup) textureGroup = gpu.GetMaterialBindGroup(device, whiteTexture);
 			if (!pipeline || !textureGroup) continue;
@@ -2114,6 +2385,7 @@ namespace Funke {
 			pass.Draw(6, batch.Count, 0, batch.First);
 			++m_DrawCalls;
 			m_RenderedParticles += batch.Count;
+			m_GeometryTotals.AddQuads(batch.Count);
 		}
 		pass.End();
 		if (!target.HasDepth) m_OwnDepthNeedsClear = false;
@@ -2210,9 +2482,10 @@ namespace Funke {
 		const uint32_t seeThroughCount = static_cast<uint32_t>(m_SeeThroughLines.size());
 
 		wgpu::TextureView depthView = target.HasDepth ? target.DepthView : gpu.EnsureOwnDepth(device, target.Width, target.Height);
-		wgpu::RenderPipeline pipeline = gpu.GetLinePipeline(device, target.ColorFormat, depthTested);
-		wgpu::RenderPipeline hiddenPipeline = seeThroughCount > 0 ? gpu.GetLinePipeline(device, target.ColorFormat, false) : nullptr;
-		wgpu::RenderPipeline visiblePipeline = seeThroughCount > 0 ? gpu.GetLinePipeline(device, target.ColorFormat, true) : nullptr;
+		const uint32_t samples = target.SampleCount;
+		wgpu::RenderPipeline pipeline = gpu.GetLinePipeline(device, target.ColorFormat, samples, depthTested);
+		wgpu::RenderPipeline hiddenPipeline = seeThroughCount > 0 ? gpu.GetLinePipeline(device, target.ColorFormat, samples, false) : nullptr;
+		wgpu::RenderPipeline visiblePipeline = seeThroughCount > 0 ? gpu.GetLinePipeline(device, target.ColorFormat, samples, true) : nullptr;
 		const uint64_t bytes = m_LineUpload.size() * sizeof(PosColorVertex);
 		if (!depthView || !pipeline || (seeThroughCount > 0 && (!hiddenPipeline || !visiblePipeline))
 			|| !EnsureBuffer(device, gpu.LineVertexBuffer, gpu.LineVertexCapacity, bytes, wgpu::BufferUsage::Vertex, "renderer3d-lines")) {

@@ -148,6 +148,49 @@ TEST_CASE("EntityPicker3D::PickAll lists every hit nearest first") {
 	CHECK(hits.empty());
 }
 
+TEST_CASE("EntityPicker3D hierarchy bounds cover the meshes of every enabled descendant") {
+	auto scene = Scene::CreateDetachedScene("ThreeDHierarchyBounds");
+	Entity root = scene->CreateEmptyEntity();
+	root.AddComponent<Transform3DComponent>().Position = { 10.0f, 0.0f, 0.0f };
+	Transform3DHierarchySystem::Propagate(*scene);
+	// Nothing drawn: the proxy box lights and empties are picked by.
+	CHECK(Near(EntityPicker3D::GetHierarchyBounds(*scene, root.GetHandle()).HalfExtents, glm::vec3(0.25f)));
+
+	Entity body = scene->CreateEmptyEntity();
+	body.AddComponent<Transform3DComponent>().Position = { 0.0f, 1.0f, 0.0f };
+	body.AddComponent<MeshRendererComponent>();
+	body.SetParent(root);
+	Entity head = scene->CreateEmptyEntity();
+	auto& headTransform = head.AddComponent<Transform3DComponent>();
+	headTransform.Position = { 0.0f, 1.0f, 0.0f };
+	headTransform.Scale = { 0.5f, 0.5f, 0.5f };
+	head.AddComponent<MeshRendererComponent>();
+	head.SetParent(body);
+	Transform3DHierarchySystem::Propagate(*scene);
+
+	// Body cube spans y 0.5..1.5 in root space, the half-size head 1.75..2.25.
+	LocalBounds3D bounds = EntityPicker3D::GetHierarchyBounds(*scene, root.GetHandle());
+	CHECK(Near(bounds.Center, { 0.0f, 1.375f, 0.0f }));
+	CHECK(Near(bounds.HalfExtents, { 0.5f, 0.875f, 0.5f }));
+	// The picking box stays the entity's own.
+	CHECK(Near(EntityPicker3D::GetLocalBounds(*scene, root.GetHandle()).HalfExtents, glm::vec3(0.25f)));
+
+	// The box lives in the root's object space, so scaling and turning the root leaves it unchanged.
+	root.GetComponent<Transform3DComponent>().Scale = { 2.0f, 2.0f, 2.0f };
+	root.GetComponent<Transform3DComponent>().Rotation = { 0.0f, 30.0f, 0.0f };
+	Transform3DHierarchySystem::Propagate(*scene);
+	bounds = EntityPicker3D::GetHierarchyBounds(*scene, root.GetHandle());
+	CHECK(Near(bounds.Center, { 0.0f, 1.375f, 0.0f }));
+	CHECK(Near(bounds.HalfExtents, { 0.5f, 0.875f, 0.5f }));
+
+	head.SetEnabled(false);
+	bounds = EntityPicker3D::GetHierarchyBounds(*scene, root.GetHandle());
+	CHECK(Near(bounds.Center, { 0.0f, 1.0f, 0.0f }));
+	CHECK(Near(bounds.HalfExtents, glm::vec3(0.5f)));
+	// Selected on its own, a disabled entity still shows its box.
+	CHECK(Near(EntityPicker3D::GetHierarchyBounds(*scene, head.GetHandle()).HalfExtents, glm::vec3(0.5f)));
+}
+
 TEST_CASE("A rebuilt component registry never repeats the generation of an earlier one") {
 	// Editor reloads rebuild the registry; ComponentInfo pointers memoized by generation must not survive that.
 	uint64_t firstGeneration = 0;

@@ -4,6 +4,7 @@
 #include "Core/Log.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
 #include "Graphics/ImageData.hpp"
+#include "Graphics/TextureSampling.hpp"
 
 #include <webgpu/webgpu_cpp.h>
 
@@ -30,6 +31,7 @@ namespace Funke {
 			wgpu::Texture     Texture;
 			wgpu::TextureView View;
 			wgpu::Sampler     Sampler;
+			wgpu::Sampler     SceneSampler;
 			uint32_t          Width  = 0;
 			uint32_t          Height = 0;
 			uint32_t          MipLevelCount = 1;
@@ -273,6 +275,24 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 			return WebGPUBackend::CreateSampler(
 				ToBackendFilter(f), ToBackendWrap(u), ToBackendWrap(v));
 		}
+
+		TextureQualityLevel g_SceneTextureQuality = GraphicsSettings{}.TextureQuality;
+		AnisotropicFilteringLevel g_SceneAnisotropy = GraphicsSettings{}.AnisotropicFiltering;
+
+		// Shares the texture's own sampler when the settings leave it alone.
+		void AssignSceneSampler(GpuTexture& slot) {
+			const TextureSamplingQuality scene = ResolveTextureSampling(slot.CachedFilter, g_SceneTextureQuality, g_SceneAnisotropy);
+			const uint16_t ownAnisotropy = slot.CachedFilter == Filter::Anisotropic ? 16 : 1;
+			slot.SceneSampler = scene.LodMinClamp == 0.0f && scene.MaxAnisotropy == ownAnisotropy
+				? slot.Sampler
+				: WebGPUBackend::CreateSampler(ToBackendFilter(slot.CachedFilter), ToBackendWrap(slot.CachedWrapU),
+					ToBackendWrap(slot.CachedWrapV), scene.LodMinClamp, scene.MaxAnisotropy);
+		}
+
+		void AssignSamplers(GpuTexture& slot) {
+			slot.Sampler = MakeSamplerFor(slot.CachedFilter, slot.CachedWrapU, slot.CachedWrapV);
+			AssignSceneSampler(slot);
+		}
 	}
 
 
@@ -284,6 +304,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 			TextureLookup out;
 			out.View   = slot->View;
 			out.Sampler= slot->Sampler;
+			out.SceneSampler = slot->SceneSampler;
 			out.Width  = slot->Width;
 			out.Height = slot->Height;
 			out.Valid  = true;
@@ -291,6 +312,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		}
 
 		wgpu::Sampler CreateSampler(FilterMode filter, WrapMode wrapU, WrapMode wrapV) {
+			return CreateSampler(filter, wrapU, wrapV, 0.0f, filter == FilterMode::Anisotropic ? 16 : 1);
+		}
+
+		wgpu::Sampler CreateSampler(FilterMode filter, WrapMode wrapU, WrapMode wrapV, float lodMinClamp, uint16_t maxAnisotropy) {
 			wgpu::Device device = GetDevice();
 			if (!device) return nullptr;
 
@@ -321,22 +346,17 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 					desc.magFilter    = wgpu::FilterMode::Linear;
 					desc.minFilter    = wgpu::FilterMode::Linear;
 					desc.mipmapFilter = wgpu::MipmapFilterMode::Nearest;
+					desc.lodMinClamp  = lodMinClamp;
 					desc.maxAnisotropy = 1;
 					break;
 				case FilterMode::Trilinear:
-					desc.magFilter    = wgpu::FilterMode::Linear;
-					desc.minFilter    = wgpu::FilterMode::Linear;
-					desc.mipmapFilter = wgpu::MipmapFilterMode::Linear;
-					desc.maxAnisotropy = 1;
-					break;
 				case FilterMode::Anisotropic:
-					// maxAnisotropy > 1 requires linear filtering on all axes
-					// per the spec; the renderer's actual aniso level can be
-					// project-driven later (Stage 5 settings panel).
+					// maxAnisotropy > 1 requires linear filtering on all axes per the spec.
 					desc.magFilter    = wgpu::FilterMode::Linear;
 					desc.minFilter    = wgpu::FilterMode::Linear;
 					desc.mipmapFilter = wgpu::MipmapFilterMode::Linear;
-					desc.maxAnisotropy = 16;
+					desc.lodMinClamp  = lodMinClamp;
+					desc.maxAnisotropy = std::max<uint16_t>(maxAnisotropy, 1);
 					break;
 			}
 
@@ -506,13 +526,13 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		GpuTexture slot;
 		slot.Texture      = std::move(texture);
 		slot.View         = std::move(view);
-		slot.Sampler      = MakeSamplerFor(m_Filter, m_WrapU, m_WrapV);
 		slot.Width        = static_cast<uint32_t>(w);
 		slot.Height       = static_cast<uint32_t>(h);
 		slot.MipLevelCount = mipLevelCount;
 		slot.CachedFilter = m_Filter;
 		slot.CachedWrapU  = m_WrapU;
 		slot.CachedWrapV  = m_WrapV;
+		AssignSamplers(slot);
 
 		m_Tex      = RegisterTexture(std::move(slot));
 		m_Width    = w;
@@ -589,12 +609,12 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		GpuTexture slot;
 		slot.Texture      = std::move(texture);
 		slot.View         = std::move(view);
-		slot.Sampler      = MakeSamplerFor(m_Filter, m_WrapU, m_WrapV);
 		slot.Width        = static_cast<uint32_t>(width);
 		slot.Height       = static_cast<uint32_t>(height);
 		slot.CachedFilter = m_Filter;
 		slot.CachedWrapU  = m_WrapU;
 		slot.CachedWrapV  = m_WrapV;
+		AssignSamplers(slot);
 
 		m_Tex      = RegisterTexture(std::move(slot));
 		m_Width    = width;
@@ -642,38 +662,45 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
 	// WebGPU samplers are immutable; SetFilter/SetWrapU/V replace the pool entry sampler rather than modifying it.
 	void Texture2D::SetFilter(Filter filter) {
-		m_Filter = filter;
-		if (GpuTexture* slot = TryLookup(m_Tex)) {
-			slot->Sampler = MakeSamplerFor(m_Filter, m_WrapU, m_WrapV);
-			slot->CachedFilter = m_Filter;
-		}
+		SetSampler(filter, m_WrapU, m_WrapV);
 	}
 	void Texture2D::SetWrapU(Wrap u) {
-		m_WrapU = u;
-		if (GpuTexture* slot = TryLookup(m_Tex)) {
-			slot->Sampler = MakeSamplerFor(m_Filter, m_WrapU, m_WrapV);
-			slot->CachedWrapU = m_WrapU;
-		}
+		SetSampler(m_Filter, u, m_WrapV);
 	}
 	void Texture2D::SetWrapV(Wrap v) {
-		m_WrapV = v;
-		if (GpuTexture* slot = TryLookup(m_Tex)) {
-			slot->Sampler = MakeSamplerFor(m_Filter, m_WrapU, m_WrapV);
-			slot->CachedWrapV = m_WrapV;
-		}
+		SetSampler(m_Filter, m_WrapU, v);
 	}
 	void Texture2D::SetSampler(Filter filter, Wrap u, Wrap v) {
 		m_Filter = filter;
 		m_WrapU  = u;
 		m_WrapV  = v;
 		if (GpuTexture* slot = TryLookup(m_Tex)) {
-			slot->Sampler = MakeSamplerFor(m_Filter, m_WrapU, m_WrapV);
 			slot->CachedFilter = m_Filter;
 			slot->CachedWrapU  = m_WrapU;
 			slot->CachedWrapV  = m_WrapV;
+			AssignSamplers(*slot);
 		}
 	}
 	void Texture2D::ApplySamplerParams() const {}
+
+	bool Texture2D::SetSceneSampling(TextureQualityLevel quality, AnisotropicFilteringLevel anisotropy) {
+		if (quality == g_SceneTextureQuality && anisotropy == g_SceneAnisotropy) return false;
+		g_SceneTextureQuality = quality;
+		g_SceneAnisotropy = anisotropy;
+		// Bind groups compare sampler handles, so the renderers rebuild theirs on the next draw.
+		for (auto& [id, slot] : g_Textures) {
+			AssignSceneSampler(slot);
+		}
+		return true;
+	}
+
+	TextureQualityLevel Texture2D::GetSceneTextureQuality() {
+		return g_SceneTextureQuality;
+	}
+
+	AnisotropicFilteringLevel Texture2D::GetSceneAnisotropy() {
+		return g_SceneAnisotropy;
+	}
 
 	std::unique_ptr<ImageData> Texture2D::GetImageData() const {
 		if (m_SourcePath.empty()) return nullptr;

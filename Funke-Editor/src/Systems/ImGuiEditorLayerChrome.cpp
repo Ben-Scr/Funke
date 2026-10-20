@@ -647,7 +647,8 @@ namespace Funke {
 			s_AutoplayPending = false;
 			if (Scene* active = SceneManager::GetActiveScene()) BeginPlayModeRequest(*active);
 		}
-		// FUNKE_EDITOR_OPEN=build,buildprofiles,projectsettings,... opens those windows once (Run.ps1 -OpenWindow).
+		// FUNKE_EDITOR_OPEN=build,buildprofiles,projectsettings,... opens those windows once (Run.ps1 -OpenWindow);
+		// projectsettings:graphics (or :build, :physics, ...) also picks the settings category.
 		static bool s_AutoOpenPending = std::getenv("FUNKE_EDITOR_OPEN") != nullptr;
 		if (s_AutoOpenPending && Application::IsStartupLoadComplete()) {
 			s_AutoOpenPending = false;
@@ -658,9 +659,37 @@ namespace Funke {
 			m_ShowBuildPanel |= wants("build");
 			m_ShowBuildProfilesPanel |= wants("buildprofiles");
 			m_ShowProjectSettings |= wants("projectsettings");
+			constexpr std::pair<std::string_view, SettingsCategory> k_SettingsCategories[] = {
+				{ "display", SettingsCategory::Display }, { "graphics", SettingsCategory::Graphics },
+				{ "branding", SettingsCategory::Branding }, { "build", SettingsCategory::Build },
+				{ "editor", SettingsCategory::Editor }, { "systems", SettingsCategory::Systems },
+				{ "physics", SettingsCategory::Physics },
+			};
+			for (const auto& [name, category] : k_SettingsCategories) {
+				if (wants("projectsettings:" + std::string(name))) {
+					m_ShowProjectSettings = true;
+					m_SelectedSettingsCategory = category;
+				}
+			}
 			m_ShowEditorPreferences |= wants("preferences");
 			m_ShowPackageManager |= wants("packages");
 			m_ShowProfiler |= wants("profiler");
+			m_ShowGameViewStats |= wants("gamestats");
+		}
+		// FUNKE_EDITOR_SELECT=<entity name> selects and frames the first entity with that name once (Run.ps1 -Select).
+		static bool s_AutoSelectPending = std::getenv("FUNKE_EDITOR_SELECT") != nullptr;
+		if (s_AutoSelectPending && Application::IsStartupLoadComplete()) {
+			s_AutoSelectPending = false;
+			if (Scene* active = SceneManager::GetActiveScene()) {
+				const std::string_view wanted = std::getenv("FUNKE_EDITOR_SELECT");
+				for (auto [entity, name] : active->GetRegistry().view<const NameComponent>().each()) {
+					if (name.Name == wanted) {
+						SetSingleEntitySelection(entity, -1);
+						m_EditorCamera3DFocusSelectionPending = true;
+						break;
+					}
+				}
+			}
 		}
 		// FUNKE_EDITOR_AUTOSTOP=<seconds> leaves the first play session again after that long (Run.ps1 -StopAfter).
 		static const float s_AutostopSeconds = [] {

@@ -131,10 +131,10 @@ namespace Funke {
 		m_BindingsDirty = false;
 	}
 
-	void AnimatorRuntime::Update(Scene& scene, Entity owner, float dt, bool fireEvents) {
+	void AnimatorRuntime::Update(Scene& scene, Entity owner, float dt, bool fireEvents, bool writePose) {
 		if (!m_Controller) return;
 		m_Machine.Update(*m_Controller, m_ClipInfos, dt);
-		Apply(scene, owner);
+		if (writePose) Apply(scene, owner);
 		if (fireEvents) FireEvents(scene, owner);
 	}
 

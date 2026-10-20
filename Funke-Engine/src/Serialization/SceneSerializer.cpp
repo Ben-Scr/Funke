@@ -1264,6 +1264,23 @@ namespace Funke {
 				textValue.AddMember("marginB", Value(text.Margin.w));
 				textValue.AddMember("sortOrder", Value(static_cast<int>(text.SortingOrder)));
 				textValue.AddMember("sortLayer", Value(static_cast<int>(text.SortingLayer)));
+				// Effects only when set, so files of plain text stay as they were.
+				const TextRendererComponent defaults;
+				if (text.OutlineWidth != defaults.OutlineWidth || text.OutlineColor != defaults.OutlineColor) {
+					textValue.AddMember("outlineWidth", Value(text.OutlineWidth));
+					textValue.AddMember("outlineR", Value(text.OutlineColor.r));
+					textValue.AddMember("outlineG", Value(text.OutlineColor.g));
+					textValue.AddMember("outlineB", Value(text.OutlineColor.b));
+					textValue.AddMember("outlineA", Value(text.OutlineColor.a));
+				}
+				if (text.ShadowOffset != defaults.ShadowOffset || text.ShadowColor != defaults.ShadowColor) {
+					textValue.AddMember("shadowX", Value(text.ShadowOffset.x));
+					textValue.AddMember("shadowY", Value(text.ShadowOffset.y));
+					textValue.AddMember("shadowR", Value(text.ShadowColor.r));
+					textValue.AddMember("shadowG", Value(text.ShadowColor.g));
+					textValue.AddMember("shadowB", Value(text.ShadowColor.b));
+					textValue.AddMember("shadowA", Value(text.ShadowColor.a));
+				}
 				entityValue.AddMember("TextRenderer", std::move(textValue));
 			}
 
@@ -1381,6 +1398,7 @@ namespace Funke {
 				if (audioAssetId != 0) {
 					audioValue.AddMember("clipAsset", Value(std::to_string(audioAssetId)));
 				}
+				SceneSerializerShared::WriteAudioSpatial(audioValue, audioSource);
 
 				entityValue.AddMember("AudioSource", std::move(audioValue));
 			}

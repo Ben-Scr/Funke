@@ -86,6 +86,23 @@ public static class Application
     public static bool IsEditor => InternalCalls.Application_IsEditor();
 
     /// <summary>
+    /// True when a test or an agent started this run: <c>--input-script</c>, <c>--screenshot-at</c>, <c>--quit-at</c>,
+    /// <c>--exec</c>, <c>--fixed-step</c>, <c>--background</c> or <c>--prefs-profile=&lt;name&gt;</c> on the command line.
+    /// The engine mutes such runs itself (<c>--sound</c> keeps the sound); use this to skip intros, ads or tutorials.
+    /// </summary>
+    public static bool IsAutomatedRun => InternalCalls.Application_IsAutomatedRun();
+
+    /// <summary>
+    /// Platform the game scripts run as: in a built game the one it runs on, in the editor the platform of the
+    /// active build profile, matching the FUNKE_WINDOWS / FUNKE_ANDROID / ... define the scripts were compiled with.
+    /// <see cref="Engine.Platform"/> always reports the machine itself.
+    /// </summary>
+    public static Platform Platform => (Funke.Platform)InternalCalls.Application_GetPlatform();
+
+    /// <summary>True in the editor while it plays the scripts as another platform than its own (see <see cref="Platform"/>).</summary>
+    public static bool IsSimulatingPlatform => IsEditor && Platform != Engine.Platform;
+
+    /// <summary>
     /// Asks for an Android runtime permission such as <c>"android.permission.READ_MEDIA_AUDIO"</c>. The answer arrives
     /// asynchronously; poll <see cref="GetPermissionState"/>. Every other platform grants immediately. The permission
     /// must also be listed in the Android build profile's <c>permissions</c> option.

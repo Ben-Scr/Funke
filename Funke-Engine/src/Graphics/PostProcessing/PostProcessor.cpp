@@ -75,6 +75,9 @@ namespace Funke {
 		Framebuffer           PingPongA;
 		Framebuffer           PingPongB;
 
+		// By (format, quality); one fragment entry point per quality level, blit layout.
+		std::unordered_map<uint32_t, wgpu::RenderPipeline> FxaaPipelines;
+
 		// User PostProcess shaders: group 0 = the blit layout (source + sampler), group 1 = the material's.
 		CustomMaterialBindings CustomBindings;
 		// By program id and target format; failed creations stay cached as null.
@@ -325,8 +328,10 @@ namespace Funke {
 			m_PixelatedShader.reset();
 			return false;
 		}
+		m_FxaaShader = loadShader("postfxaa");
 
-		if (!m_Impl->CustomBindings.Initialize("postprocess-custom")) {
+		// Screen-space effects: their textures (LUTs, noise) keep full detail at every texture quality.
+		if (!m_Impl->CustomBindings.Initialize("postprocess-custom", false)) {
 			FNK_CORE_WARN_TAG("PostProcessor", "Custom effect resources unavailable; custom post effects are skipped");
 		}
 
@@ -346,6 +351,7 @@ namespace Funke {
 		m_Impl->CompositePipelines.clear();
 		m_Impl->PixelatedPipelines.clear();
 		m_Impl->GaussianBlurPipelines.clear();
+		m_Impl->FxaaPipelines.clear();
 
 		m_Impl->BloomThresholdUniformBuffer = nullptr;
 		m_Impl->BloomBlurUniformBufferH = nullptr;
@@ -375,6 +381,7 @@ namespace Funke {
 		m_Impl->BindGroupLayout = nullptr;
 		m_Impl->Initialized = false;
 
+		m_FxaaShader.reset();
 		m_PixelatedShader.reset();
 		m_CompositeShader.reset();
 		m_BloomBlurShader.reset();
@@ -450,6 +457,57 @@ namespace Funke {
 			}
 
 			pipelines.emplace(dstFormat, pipeline);
+			return pipeline;
+		}
+
+		wgpu::RenderPipeline GetOrCreateFxaaPipeline(
+			PostProcessor::Impl& impl,
+			const Shader& fxaaShader,
+			wgpu::TextureFormat dstFormat,
+			AntiAliasingQualityLevel quality)
+		{
+			const uint32_t key = static_cast<uint32_t>(dstFormat) | (static_cast<uint32_t>(quality) << 24);
+			if (auto it = impl.FxaaPipelines.find(key); it != impl.FxaaPipelines.end()) return it->second;
+
+			wgpu::Device device = WebGPUBackend::GetDevice();
+			WebGPUBackend::ShaderLookup look = WebGPUBackend::LookupShader(fxaaShader.GetHandle());
+			if (!device || !look.Valid) return nullptr;
+
+			// Premultiplied over, like Blit: an intermediate is cleared first, so there it is a plain copy.
+			wgpu::BlendState blend{};
+			blend.color.srcFactor = wgpu::BlendFactor::One;
+			blend.color.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+			blend.color.operation = wgpu::BlendOperation::Add;
+			blend.alpha = blend.color;
+
+			wgpu::ColorTargetState colorTarget{};
+			colorTarget.format = dstFormat;
+			colorTarget.blend = &blend;
+			colorTarget.writeMask = wgpu::ColorWriteMask::All;
+
+			wgpu::FragmentState fragmentState{};
+			fragmentState.module = look.Module;
+			fragmentState.entryPoint = quality == AntiAliasingQualityLevel::Low ? "fs_low"
+				: quality == AntiAliasingQualityLevel::Medium ? "fs_medium" : "fs_high";
+			fragmentState.targetCount = 1;
+			fragmentState.targets = &colorTarget;
+
+			wgpu::RenderPipelineDescriptor desc{};
+			desc.label = "postprocess-fxaa-pipeline";
+			desc.layout = impl.PipelineLayout;
+			desc.vertex.module = look.Module;
+			desc.vertex.entryPoint = "vs_main";
+			desc.fragment = &fragmentState;
+			desc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+			desc.primitive.cullMode = wgpu::CullMode::None;
+			desc.multisample.count = 1;
+			desc.multisample.mask = 0xFFFFFFFFu;
+
+			wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&desc);
+			if (!pipeline) {
+				FNK_CORE_ERROR_TAG("PostProcessor", "FXAA CreateRenderPipeline failed for dstFormat={}", static_cast<int>(dstFormat));
+			}
+			impl.FxaaPipelines.emplace(key, pipeline);
 			return pipeline;
 		}
 
@@ -1158,6 +1216,56 @@ namespace Funke {
 		pass.SetBindGroup(0, bindGroup);
 		pass.Draw(/*vertexCount=*/3, /*instanceCount=*/1, /*firstVertex=*/0, /*firstInstance=*/0);
 		pass.End();
+	}
+
+	bool PostProcessor::RunAntiAliasing(const Framebuffer& src,
+		wgpu::TextureView dstView,
+		wgpu::TextureFormat dstFormat,
+		AntiAliasingQualityLevel quality,
+		bool finalTarget)
+	{
+		if (!IsInitialized() || !m_FxaaShader || !src.IsValid() || !dstView) return false;
+		wgpu::Device device = WebGPUBackend::GetDevice();
+		wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
+		const wgpu::TextureView srcView = ViewOf(src);
+		if (!device || !encoder || !srcView) return false;
+
+		wgpu::RenderPipeline pipeline = GetOrCreateFxaaPipeline(*m_Impl, *m_FxaaShader, dstFormat, quality);
+		if (!pipeline) return false;
+
+		// Bilinear: the edge walk reads between two texels to average across the edge.
+		wgpu::BindGroupEntry entries[2]{};
+		entries[0].binding = 0;
+		entries[0].textureView = srcView;
+		entries[1].binding = 1;
+		entries[1].sampler = m_Impl->LinearSampler;
+		wgpu::BindGroupDescriptor bgDesc{};
+		bgDesc.label = "postprocess-fxaa-bg";
+		bgDesc.layout = m_Impl->BindGroupLayout;
+		bgDesc.entryCount = 2;
+		bgDesc.entries = entries;
+		wgpu::BindGroup bindGroup = device.CreateBindGroup(&bgDesc);
+		if (!bindGroup) return false;
+
+		wgpu::RenderPassColorAttachment colorAtt{};
+		colorAtt.view       = dstView;
+		colorAtt.loadOp     = finalTarget ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear;
+		colorAtt.storeOp    = wgpu::StoreOp::Store;
+		colorAtt.clearValue = wgpu::Color{ 0.0, 0.0, 0.0, 0.0 };
+		colorAtt.depthSlice = wgpu::kDepthSliceUndefined;
+
+		wgpu::RenderPassDescriptor passDesc{};
+		passDesc.label = "postprocess-fxaa";
+		passDesc.colorAttachmentCount = 1;
+		passDesc.colorAttachments = &colorAtt;
+
+		wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
+		if (finalTarget) WebGPUBackend::ApplyCachedViewportToPass(pass);
+		pass.SetPipeline(pipeline);
+		pass.SetBindGroup(0, bindGroup);
+		pass.Draw(3, 1, 0, 0);
+		pass.End();
+		return true;
 	}
 
 	void PostProcessor::Run(const Framebuffer& src,

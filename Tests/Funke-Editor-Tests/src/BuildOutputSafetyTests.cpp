@@ -78,6 +78,29 @@ TEST_CASE("Build output only replaces empty or Funke-owned directories") {
 	CHECK(ValidateOutputPath(directory.Root, directory.Root / "Assets", output).IsValid());
 }
 
+TEST_CASE("Build output accepts the ownership marker from before the Funke rename") {
+	ScopedBuildOutputDirectory directory;
+	const auto output = directory.Root / "Builds" / "Android";
+	std::filesystem::create_directories(output);
+	std::ofstream(output / "Marble_Run.apk") << "apk";
+
+	CHECK(ValidateOutputPath(directory.Root, directory.Root / "Assets", output).Error
+		== OutputPathError::UnownedExistingDirectory);
+	std::ofstream(output / std::string(LegacyOwnershipMarkerFilename)) << "Index build output";
+	CHECK(ValidateExistingOutput(output) == OutputPathError::None);
+	CHECK(ValidateOutputPath(directory.Root, directory.Root / "Assets", output).IsValid());
+}
+
+TEST_CASE("Build output recognizes pre-marker Index builds") {
+	ScopedBuildOutputDirectory directory;
+	const auto output = directory.Root / "Builds" / "Windows";
+	std::filesystem::create_directories(output / "Assets");
+	std::ofstream(output / "project.json") << "{}";
+	std::ofstream(output / "Index-Engine.dll") << "binary";
+
+	CHECK(LooksLikeLegacyFunkeBuildOutput(output));
+}
+
 TEST_CASE("Build output recognizes pre-marker Funke builds") {
 	ScopedBuildOutputDirectory directory;
 	const auto output = directory.Root / "Builds" / "Windows";

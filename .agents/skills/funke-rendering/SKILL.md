@@ -1,6 +1,6 @@
 ---
 name: funke-rendering
-description: Use when working on Funke's 2D rendering pipeline or anything that touches the GPU. Triggers on "Renderer2D", "RenderSceneWithVP", "RenderApi", "WebGPU", "Dawn", "wgpu", "WebGPUBackend", "render backend", "D3D12 / Vulkan / D3D11 / Metal", "OpenGL" (legacy name — there is no GL backend), "shader", "WGSL", "ShaderManager", "pipeline", "bind group", "render pass", "Framebuffer", "FBO", "render target", "editor viewport", "Game View / Editor View", "ImGui::Image", "TextureManager", "TextureHandle", "Texture2D", "default texture", "Filter / Wrap", "runtime texture", "Instance44", "SpriteRendererComponent", "sorting layer / sorting order", "batches / draw calls", "frustum culling", "StaticTag", "InstanceContributor", "GizmoRenderer2D", "Gizmo::Draw", "Camera2DComponent", "letterbox", "post-processing", "PostProcessing2DComponent", "PostProcessor", "bloom / vignette", "RenderScale / GraphicsSettings / RenderSettings", "GuiRenderer", "TextRenderer", "FontManager", "WebGPU validation error", or work in `Funke-Engine/src/Graphics/`, `Funke-Engine/src/Gui/GuiRenderer.*` and the editor viewport code in `Funke-Editor/src/Systems/ImGuiEditorLayerViewport.cpp`. Explains the WebGPU/Dawn backend and its selection, the frame flow, how RenderSceneWithVP collects/sorts/batches sprites, render targets and the editor FBO path, the texture/shader/font managers, gizmos, cameras, post-processing, and how to add a new renderable or pass without breaking Dawn's rules.
+description: Use when working on Funke's rendering pipeline or anything that touches the GPU — Renderer2D/RenderSceneWithVP (collect, sort, batch, Instance44, InstanceContributor, sorting layers, draw calls), the WebGPU/Dawn backend (RenderApi, WebGPUBackend, D3D12/Vulkan/Metal selection; no OpenGL backend), WGSL shaders, ShaderManager, pipelines, bind groups, Framebuffer/FBO render targets, the editor Game/Editor View, TextureManager/Texture2D and samplers, GizmoRenderer2D, Camera2DComponent and letterboxing, PostProcessing2DComponent/PostProcessor (bloom, vignette, FXAA), GraphicsSettings/RenderSettings/RenderScale, GuiRenderer, TextRenderer/FontManager, WebGPU validation errors, or work in Funke-Engine/src/Graphics/, Gui/GuiRenderer.* and Funke-Editor/src/Systems/ImGuiEditorLayerViewport*.cpp. Explains the frame flow (incl. Renderer3D compose-over), the texture/shader/font managers, and how to add a renderable, pass or post effect without breaking Dawn's rules.
 ---
 
 # Funke Rendering
@@ -12,8 +12,8 @@ description: Use when working on Funke's 2D rendering pipeline or anything that 
 - **Layers:**
   - `Graphics/RenderApi.hpp` — backend-neutral static facade: `Init/Shutdown/Present`, `Clear(ClearFlags)`, `SetClearColor`, `SetViewport`, `SetScissor`, `BindFramebuffer`/`BindDefaultFramebuffer`, `SetPolygonMode`, `SetBlendMode`, `SetColorMask`, `GetGraphicsApi`… Enums in `RenderApiTypes.hpp` (must never include backend headers). Editor code uses only this — no backend calls in `Funke-Editor`.
   - `Graphics/Backend/WebGPUBackend.hpp` — internal device/queue/encoder/pass plumbing for engine resource TUs. Implemented in `WebGPUApi.cpp` plus the resource `.cpp`s (`Texture2D.cpp`, `Framebuffer.cpp`, `Shader.cpp`, `Text/Font.cpp`); the header's mentions of `*_WebGPU.cpp` files are stale.
-  - Renderers owned by `Application`: `Renderer2D` (sprites + particles, implements `IRenderer`; `Application::GetRenderer2D()`), `GuiRenderer` (`Funke-Engine/src/Gui/`, UI), `GizmoRenderer2D` (debug shapes). Toggled by `ApplicationConfig::EnableRenderer2D / EnableGuiRenderer / EnableGizmoRenderer / EnableTextureManager / EnableShaderManager`; `EnableWindow=false` (headless) disables all graphics.
-- **Dead stubs — don't extend them:** `SpriteShaderProgram`, `QuadMesh` (all no-ops), `Renderer2D::RenderScene`, `RenderScenes`, `CollectAndRenderInstances` (empty), `Renderer2D::m_TextRenderer` (never created). The real sprite GPU resources are `Funke::WebGPUSpriteResources` in `Graphics/SpriteResources.{hpp,cpp}`.
+  - Renderers owned by `Application`: `Renderer2D` (sprites, particles, world text; implements `IRenderer`; `Application::GetRenderer2D()`), `Renderer3D` (3D module only; `GetRenderer3D()`), `GuiRenderer` (`Funke-Engine/src/Gui/`, UI), `GizmoRenderer2D` (debug shapes). Toggled by `ApplicationConfig::EnableRenderer2D / EnableGuiRenderer / EnableGizmoRenderer / EnableTextureManager / EnableShaderManager`; `EnableWindow=false` (headless) disables all graphics.
+- **Dead stubs — don't extend them:** `SpriteShaderProgram`, `QuadMesh` (all no-ops), `Renderer2D::RenderScene`, `RenderScenes`, `CollectAndRenderInstances` (empty). The real sprite GPU resources are `Funke::WebGPUSpriteResources` in `Graphics/SpriteResources.{hpp,cpp}`.
 
 ## Init order (`Application::Initialize`)
 
@@ -24,19 +24,21 @@ Window → `RenderApi::Init` → `Window::ResyncViewportAfterRenderApiInit` → 
 ```
 Application::BeginFrame
   UpdateScenes → OnPreRenderScenes → Layer::OnPreRender     (editor renders its FBO views here)
-  Renderer2D::BeginFrame     skip if SetSkipBeginFrameRender(true); main camera = Camera2DComponent::GetMain()
-                             → BindDefaultFramebuffer, clear to camera clear color (black first if letterboxed)
+  Renderer3D::BeginFrame     3D module; true when a main Camera3D cleared + drew the swap chain
+  Renderer2D::BeginFrame     SetComposeOverTarget(rendered3D) first; skip if SetSkipBeginFrameRender(true); main camera = Camera2DComponent::GetMain()
+                             → BindDefaultFramebuffer, clear to camera clear color (black first if letterboxed; no clear when composing over 3D)
                              → RenderSceneWithVP(scene, cam VP, cam world AABB) for every loaded scene
   GuiRenderer::BeginFrame    UI for every loaded scene (also skippable)
   GizmoRenderer2D::BeginFrame
 Application::EndFrame → RenderPipelineOnly
   Renderer2D::EndFrame       FUNKE_PROFILE_VALUE Batches / Rendered Sprites, GpuTimer::PollAndPublish
+  GizmoRenderer2D            RenderWithVP(main cam VP, Shared | Debug) only if Gizmo::GetShowInRuntime() — before OnPostRender so ImGui overlays stay on top
   Layer::OnPostRender
-  GuiRenderer::EndFrame      (no-op)
-  GizmoRenderer2D            RenderWithVP(main cam VP, GizmoLayerMask::Shared) only if Gizmo::GetShowInRuntime(); EndFrame
+  GuiRenderer::EndFrame      (no-op); GizmoRenderer2D::EndFrame
+  ScreenCapture::ProcessPending
   Window::SwapBuffers        → RenderApi::Present (submit + present; touch-clears if nothing drew)
   Renderer2D::OnAfterPresent GpuTimer MapAsync — must be after Present
-  FrameArenas::OnEndFrame
+FrameArenas::OnEndFrame      (end of Application::EndFrame)
 ```
 
 ## Inside `Renderer2D::RenderSceneWithVP(scene, vp, viewportAABB)`
@@ -48,9 +50,9 @@ Application::EndFrame → RenderPipelineOnly
    - Every registered `InstanceContributor`.
    - Everything is AABB-culled against `viewportAABB` and emitted as `Instance44` (`Graphics/Instance44.hpp`: Position, Scale, Rotation (radians), Color, TextureHandle, `short SortingOrder`, `uint8_t SortingLayer`, UvRect, DrawIndex, optional clip rect and texture mask).
 2. **Sort** (`Renderer2D.Sort`): by `SortingLayer`, then `SortingOrder`, then `DrawIndex` (stable tiebreak). Early-out if already sorted; `std::sort` below 4096 instances, radix sort on a packed 64-bit key above.
-3. **Post-process decision:** an intermediate `m_SceneFbo` (RGBA16F) is used when effects run (`PostProcessor` initialized && `Renderer2D::IsPostProcessingEnabled()` && `GraphicsSettings::PostProcessingEnabled` && main camera `IsPostProcessingEnabled()`), when the main viewport is letterboxed, or when `RenderScale < 1`. Otherwise sprites draw straight into the caller's target.
+3. **Post-process decision:** an intermediate `m_SceneFbo` (RGBA16F) is used when effects run (`PostProcessor` initialized && `Renderer2D::IsPostProcessingEnabled()` && `GraphicsSettings::PostProcessingEnabled` && main camera `IsPostProcessingEnabled()`), when the main viewport is letterboxed, when `RenderScale < 1`, or when `GraphicsSettings::AntiAliasing` is FXAA (gated by `IsPostProcessingEnabled()` only; MSAA4x is 3D-only and leaves sprites alone). Otherwise sprites draw straight into the caller's target. FXAA (`PostProcessor::RunAntiAliasing`) runs first, at render resolution: straight into the target when no effect or upscale follows, else into `m_AntiAliasFbo`, which the rest of the chain reads instead of `m_SceneFbo`.
 4. **Upload** (`Renderer2D.Upload`): 64-byte view-proj uniform + instance buffer (`WebGPUSpriteResources::SpriteInstance`, encoded by `EncodeInstance44`; must match `i_data0..i_data6` in the sprite WGSL). Buffers grow geometrically and persist.
-5. **Submit** (`Renderer2D.Submit`): one pass `renderer2d-sprites` with `LoadOp::Load`, pipeline from `GetSpritePipeline(colorFormat, hasDepth, Filled|Wireframe)`. Consecutive instances sharing (texture, mask) form a run → one instanced `DrawIndexed` per run = one "batch". Invalid texture handles fall back to `DefaultTexture::Square`. Bind groups are cached by texture pool id and cleared through a `TextureManager::AddDestroyListener` callback.
+5. **Submit** (`Renderer2D.Submit`): one pass `renderer2d-sprites` with `LoadOp::Load`, pipeline from `GetSpritePipeline(colorFormat, hasDepth, Filled|Wireframe)`. Consecutive instances sharing (texture, mask) form a run → one instanced `DrawIndexed` per run = one "batch". Invalid texture handles fall back to `DefaultTexture::Square`. Bind groups are cached by texture pool id and cleared through a `TextureManager::AddDestroyListener` callback. Then world text (`TextRendererComponent` on a `Transform2D` entity) via `m_TextRenderer->RenderScene` into the same target, so post-processing and letterboxing apply to it.
 6. **Finish:** PP path → `PostProcessor::Run`/`Blit` to the caller target, then `RestoreBoundTarget`; non-PP path → `WebGPUBackend::FlushCommands()` so the next scene's `WriteBuffer` doesn't clobber this one. `MarkSwapChainRendered()` when the caller target is the swap chain.
 
 Stats: `GetRenderedInstancesCount()`, `GetDrawCallsCount()`, `GetRenderLoopDuration()` (also pushed as profiler `"Rendering"`).
@@ -70,8 +72,8 @@ SceneManager::ForeachLoadedScene([&](Scene& s) { renderer->RenderSceneWithVP(s, 
 ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(fbo.GetColorTextureBackendId())), size);
 ```
 
-  The Editor View wraps the pass in `renderer->SetPostProcessingEnabled(m_ShowPostProcessing)` … `SetPostProcessingEnabled(true)`, and restores global `RenderApi` state (polygon mode, color mask) with a guard. Only the sprite pipeline honours `PolygonMode::Wireframe`.
-- **`Framebuffer`** (`Graphics/Framebuffer.hpp`): `Framebuffer(w, h, TextureFormat = RGBA8, TextureFilter = Linear)`, `Recreate(...)` (cheap when size and format are unchanged), move-only, `Destroy()` is deferred two frames because ImGui may still hold the view. `GetColorTextureBackendId()` is the raw `WGPUTextureView` pointer — valid as `ImTextureID`. `ReadPixelsRGBA8` is a blocking readback (RGBA8 targets only).
+  With the 3D module, Renderer3D draws first (`BeginPostProcess` → `RenderSky` → `RenderScene` → `EndPostProcess`) and Renderer2D composes over it via `SetComposeOverTarget(true)`. The Editor View wraps the pass in `renderer->SetPostProcessingEnabled(m_ShowPostProcessing)` … `SetPostProcessingEnabled(true)`, and a guard restores polygon mode, color mask and compose-over. Only the sprite pipeline and Renderer3D's wire pipeline honour `PolygonMode::Wireframe`.
+- **`Framebuffer`** (`Graphics/Framebuffer.hpp`): `Framebuffer(w, h, TextureFormat = RGBA8, TextureFilter = Linear)`, `Recreate(...)` (cheap when size and format are unchanged), move-only, `Destroy()` is deferred two frames because ImGui may still hold the view. `GetColorTextureBackendId()` is the raw `WGPUTextureView` pointer — valid as `ImTextureID`. `ReadPixelsRGBA8` is a blocking readback (RGBA8 targets only). `Recreate(w, h, format, filter, 4)` makes multisampled colour + depth to render into only (no ImGui, no readback); a pass with a `resolveTarget` resolves it into a single-sampled view of the same size and format (`TextureFormat::BGRA8` matches the usual swap chain).
 
 ## Textures (`Graphics/TextureManager.hpp`)
 
@@ -86,6 +88,7 @@ TextureManager::IsValid(h);  TextureManager::UnloadTexture(h);
 - Pool of slots with `uint16_t index` + `generation`; stale handles return null / fail `IsValid`.
 - `DefaultTexture`: `Square, Pixel, Circle, Capsule, IsometricDiamond, HexagonFlatTop, HexagonPointedTop, _9Sliced, Invisible`, loaded from `FunkeAssets/Textures/Default/` (resolved next to the exe or one level up), never evicted.
 - `Filter { Point, Bilinear, Trilinear, Anisotropic, Default }` — `Default` is a component-side sentinel meaning "use the texture's .meta filter". `Wrap { Repeat, Clamp, Mirror, Border }` holds GL constant values because they are serialized; don't renumber either enum.
+- Every pool texture has two samplers (`WebGPUBackend::LookupTexture2D`): `Sampler` (its own filter/wrap; UI, text, ImGui, post-process materials) and `SceneSampler` (plus `GraphicsSettings::TextureQuality` as `lodMinClamp` and `AnisotropicFiltering` as `maxAnisotropy`, rules in `Graphics/TextureSampling.hpp`: Point never changes, Bilinear gets only the mip limit). World renderers (Renderer2D sprites, `CustomMaterialBindings` with `sceneSamplers = true`) bind `SceneSampler`; `Texture2D::SetSceneSampling` (called from `Application::CommitGraphicsSettings`) rebuilds them and bind-group caches notice through the sampler handle they compare. Renderer3D's standard materials use its own repeat samplers (`ApplyTextureSampling`, rebuilt in `SetGraphicsSettings`).
 - The same path can be loaded with different samplers → `GetTextureHandle(name, filter, u, v)`; the sampler-less overload is deprecated.
 - `PurgeUnreferenced()` frees every slot not referenced by a scene component or a registered `AddReferenceProvider` — anything that holds handles outside components must register a provider. `AddDestroyListener` fires before a slot is destroyed (handle still valid).
 - Runtime/procedural textures: `CreateRuntimeTexture(w, h, rgba, ...)` → synthetic UUID usable as a texture asset id; `UpdateRuntimeTexture`, `DestroyRuntimeTexture`.
@@ -94,7 +97,7 @@ TextureManager::IsValid(h);  TextureManager::UnloadTexture(h);
 
 ## Shaders (WGSL only)
 
-- Built-ins are embedded as `R"WGSL(...)WGSL"` strings in `Graphics/Shader.cpp`, table `k_BuiltIns`: `sprite`, `text`, `gizmo`, `postblit`, `postvignette`, `postchromatic`, `postgrain`, `postlensdistortion`, `postcolorgrading`, `postbloomthreshold`, `postbloomblur`, `postbloomcomposite`, `postpixelated`. Entry points `vs_main` / `fs_main` (sprite also `fs_wire_main`).
+- Built-ins are embedded as `R"WGSL(...)WGSL"` strings in `Graphics/Shader.cpp`, table `k_BuiltIns`: `sprite`, `text`, `gizmo`; `mesh`, `sky`, `shadow3d`, `particle3d` (`FUNKE_WITH_3D` only); `postblit`, `postbloomthreshold`, `postbloomblur`, `postcomposite` (bloom composite, color grading, lens distortion, chromatic aberration, vignette and grain in one pass), `postpixelated`, `postfxaa`. Entry points `vs_main` / `fs_main` (sprite also `fs_wire_main`, mesh `fs_wire`; `postfxaa` has `fs_low` / `fs_medium` / `fs_high`).
 - `Shader(vsPath, fsPath)`: `fsPath` is ignored; the name is the lowercased stem of `vsPath` minus a `Shader` suffix (`"FunkeAssets/Shaders/GizmoShader.vs"` → `gizmo`, `"postblit"` → `postblit`). Lookup: built-in table, else `FunkeAssets/Shaders/webgpu/<name>.wgsl`. The `Funke-Runtime/FunkeAssets/Shader/**/*.glsl` files are legacy and never loaded.
 - `ShaderManager` adds a handle pool with `LoadShader`, `ReloadShader` (keeps the old module on failure), `PurgeUnreferenced`.
 - Game-authored shaders don't go here: they are `.wgsl` assets (see "User shaders" below).
@@ -117,7 +120,7 @@ Gizmo::DrawThickLine(a, b, worldWidth);            // triangles; use when width 
 Gizmo::DrawText("label", position, degrees, 28.0f);
 ```
 
-- Layers: `GizmoLayer::EditorOnly` (component gizmos) and `Shared` (user/script). `Gizmo::SetEnabled(false)` hides only `Shared` gizmos. Runtime builds draw `Shared` gizmos only when `Gizmo::SetShowInRuntime(true)`.
+- Layers: `GizmoLayer::EditorOnly` (component gizmos), `Shared` (user/script) and `Debug` (engine overlays such as physics). `Gizmo::SetEnabled(false)` hides only `Shared` gizmos. Runtime builds draw `Shared` + `Debug` gizmos only when `Gizmo::SetShowInRuntime(true)`.
 - Budget: `Gizmo::SetMaxVertices` (default 100 000); over budget, gizmos nearest the view center are kept. Geometry spans come from frame arenas — never cache them.
 - Per-component editor gizmos are registered through the component registry (`drawEditorGizmo` / `SetEditorGizmo`, see `funke-inspector-ruleset`); C# uses `Gizmo.Draw*` (`funke-game-scripting`).
 
@@ -128,13 +131,14 @@ A class, not a POD: `GetMain()` (active scene's first camera without `DisabledTa
 ## Post-processing and graphics settings
 
 - `PostProcessing2DComponent` on the **main camera's entity**: `Bloom`, `ColorGrading`, `GaussianBlur`, `LensDistortion`, `ChromaticAberration`, `Vignette`, `Grain`, `Pixelated` (each with `.Enabled`). Executed by `Graphics/PostProcessing/PostProcessor.{hpp,cpp}` (`Run` for effects, `Blit` for passthrough/upscale).
-- Adding an effect touches: the WGSL built-in, `PostProcessor` (shader member + pass + `Run` dispatch), the component + serialization (`funke-serialize-field`), **and** the `HasEnabledEffect` lambda in `Renderer2D::RenderSceneWithVP`, which must mirror `Run`'s effect set or aspect-locked builds smear.
-- `GraphicsSettings` (`Core/GraphicsSettings.hpp`): `RenderScale` [0.25, 1], `UpscaleFilter`, `PostProcessingEnabled`, `PostProcessingQuality`, `ParticleQuality`. Change at runtime through `RenderSettings` (`Graphics/RenderSettings.hpp`, main thread only, applied at the next frame boundary via `Application::CommitGraphicsSettings` → `Renderer2D::SetGraphicsSettings`). Project defaults live under `"graphics"` in `project.json`.
+- Adding an effect touches: the settings struct on the component + serialization (`funke-serialize-field`); **`PostProcessing2DComponent::HasEnabledEffect()`**, which must mirror `Run`'s effect set (Renderer2D and Renderer3D both use it) or aspect-locked builds smear; the shader — a per-pixel effect extends `postcomposite` and its `CompositeUniforms` mirror in `PostProcessor.cpp`, a multi-pass one needs its own built-in + `PostProcessor` shader member and pass; the `Run` dispatch; and for C# access `Scripting/PostProcessingInterop.hpp` ↔ `Funke-ScriptCore/Source/Funke/Interop/PostProcessingInterop.cs` (append to `Effect` + blittable struct) plus the switch in `ScriptBindingsPostProcessing.cpp`.
+- `GraphicsSettings` (`Core/GraphicsSettings.hpp`): `RenderScale` [0.25, 1], `UpscaleFilter`, `PostProcessingEnabled`, `PostProcessingQuality`, `ParticleQuality`, the 3D values, `TextureQuality` (Full/Half/Quarter), `AnisotropicFiltering` (Off…X16), `AntiAliasing` (Off/FXAA/MSAA4x) and `AntiAliasingQuality` (FXAA only). Enums are serialized by name in project.json: append only, and extend `ClampGraphicsSettings`. Change at runtime through `RenderSettings` (`Graphics/RenderSettings.hpp`, main thread only, applied at the next frame boundary via `Application::CommitGraphicsSettings` → `Texture2D::SetSceneSampling`, `Renderer2D/3D::SetGraphicsSettings`). Project defaults live under `"graphics"` in `project.json`. User docs: `Github-Docs/Documentation/Engine-Core/Graphics-Settings.md`.
+- Renderer3D runs FXAA in `EndPostProcess`; `BeginPostProcess` now also redirects into its scene FBO when only anti-aliasing is on (the camera's `PostProcessing2DComponent` may be absent). With MSAA4x it binds a 4x `Framebuffer` (cached per view size, two slots for Editor View + Game View) in the caller's format and `EndPostProcess` resolves it straight into the caller, keeping its viewport; with FXAA or effects it is RGBA16F and resolves into the scene FBO first. Every Renderer3D pipeline that draws into the current target (mesh, wire, custom, sky, custom sky, particles, lines) puts `target.SampleCount` into `multisample.count` and its cache key (`ScenePipelineKey`).
 
 ## UI and text
 
 - `GuiRenderer` draws `RectTransform2DComponent` UI (`ImageComponent`, `TextRendererComponent`, widgets) screen-space, or in world space for the editor (`RenderScene(scene, worldVP, pixelToWorldScale)`). Game UI authoring: `funke-game-ui`.
-- Text: `Graphics/Text/TextRenderer` + `FontManager` (`LoadFont`, `LoadFontByUUID[Async]`, `PollAsync`, bake-step quantization, atlas memory budget). Text is drawn by `GuiRenderer` (TextRendererComponent needs a RectTransform2D) and by `GizmoRenderer2D` for `Gizmo::DrawText`. `TextRenderer::RenderScene` currently has no callers.
+- Text: `Graphics/Text/TextRenderer` + `FontManager` (`LoadFont`, `LoadFontByUUID[Async]`, `PollAsync`, bake-step quantization, atlas memory budget). Text is drawn by `GuiRenderer` (UI: `TextRendererComponent` + `RectTransform2D`), by Renderer2D for world text (`TextRendererComponent` + `Transform2D`, `TextRenderer::RenderScene` inside `RenderSceneWithVP`) and by `GizmoRenderer2D` for `Gizmo::DrawText`.
 - ImGui backend: `Funke-Engine/src/Gui/ImGuiImplWebGPU.{hpp,cpp}` (multi-viewport windows get their own surfaces, Windows only).
 
 ## Adding a new renderable
@@ -156,7 +160,7 @@ A class, not a POD: `GetMain()` (active scene's first camera without `DisabledTa
 
 ## Dawn/WebGPU rules (each one is a past bug)
 
-- Open passes on `WebGPUBackend::BeginRenderToCurrentTarget()`; if `.Valid` is false, skip the pass entirely.
+- Open passes on `WebGPUBackend::BeginRenderToCurrentTarget()`; if `.Valid` is false, skip the pass entirely. Its `SampleCount` is 4 inside Renderer3D's MSAA scene pass: a pipeline drawing there needs that `multisample.count` (and the count in its cache key), or the frame's submission fails validation.
 - Call `WebGPUBackend::ApplyCachedViewportToPass(pass)` right after every engine `BeginRenderPass` (viewport is per pass); never in ImGui passes.
 - Use `LoadOp::Load` so an earlier `RenderApi::Clear` survives; encode into `WebGPUBackend::GetFrameEncoder()`.
 - Dawn coalesces all `queue.WriteBuffer` calls of a submit ahead of its passes: if two passes write the same buffer, call `WebGPUBackend::FlushCommands()` in between.

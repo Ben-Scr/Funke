@@ -5,7 +5,7 @@ description: Read the Funke engine's own log files and crash dumps instead of as
 
 # Funke logs for agents
 
-The old Axiom JSONL logs (`.axiom/logs`, `AXIOM_AI_LOGS`) no longer exist. Funke writes plain text:
+Funke writes plain-text logs:
 
 | What | Where |
 |---|---|

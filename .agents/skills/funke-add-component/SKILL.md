@@ -1,6 +1,6 @@
 ---
 name: funke-add-component
-description: Use when adding a new built-in ECS component to the Funke engine (C++), or auditing whether an existing one is wired everywhere. Triggers on "add a component", "new component", "create a Health component", "built-in component", "RegisterComponent", "ComponentInfo", "ComponentRegistry", "BuiltInComponentRegistration", "serializedName", "DeclareConflict", "DeclareDependency", "on_construct hook", "ComponentCategory::Tag", "C# component wrapper", "s_NativeComponentNames", or work in `Funke-Engine/src/Components/`, `Funke-Engine/src/Scene/BuiltInComponentRegistration*.cpp`, `Scene/ComponentInfo.hpp`. Covers the full pipeline: struct, per-category registration slice, serialization (registry-driven vs the three hand-written ladders), prefab/clone/ECB concerns, Scene construct/destroy hooks, C# exposure, tests and premake regen. For changing fields on an existing component use `funke-serialize-field`; for inspector rows use `funke-inspector-ruleset`; for package-owned components use `funke-author-package`.
+description: Use when adding a new built-in ECS component to the Funke engine (C++) or auditing whether an existing one is wired everywhere. Triggers on "add a component", "new component", "built-in component", "RegisterComponent", "ComponentInfo", "ComponentRegistry", "BuiltInComponentRegistration", "serializedName", "DeclareConflict", "DeclareDependency", "on_construct hook", "ComponentCategory::Tag", "s_NativeComponentNames", "C# component wrapper", or work in `Funke-Engine/src/Components/`, `Funke-Engine/src/Scene/BuiltInComponentRegistration*.cpp`, `Scene/ComponentInfo.hpp`. Covers the full pipeline — struct, per-category registration slice, serialization (registry-driven vs the three hand-written ladders), prefab/clone/ECB concerns, Scene construct/destroy hooks, C# exposure, tests and build. For fields on an existing component use `funke-serialize-field`; for inspector rows `funke-inspector-ruleset`; for package-owned components `funke-author-package`.
 ---
 
 # Add a Built-in Component
@@ -37,7 +37,7 @@ namespace Funke {
 
 ## 2. Register (per-category slice)
 
-`Funke-Engine/src/Scene/BuiltInComponentRegistration<Category>.cpp` (`General`, `Rendering`, `Physics`, `Audio`, `UIWidgets`, `UILayout`). `BuiltInComponentRegistration.cpp` owns the call order of the slices plus all `DeclareConflict` / `DeclareDependency` / tag registrations. Append your component at the end of its slice; keep the `Internal::Register*` order stable (registration order assigns `typeIdU32`, used in-process by the ECB wire format and prefab templates; never persisted).
+`Funke-Engine/src/Scene/BuiltInComponentRegistration<Category>.cpp`, one TU per slice: `General`, `Rendering`, `Physics`, `Audio`, `UIWidgets`, `UILayout`, `3D`, `Physics3D`, `Particles3D`, `Animation`, `SkinnedMesh3D`, `Localization` (`2D` only attaches serialization to 2D components registered by General/Rendering). The authoritative list, in call order, is the declarations in `BuiltInComponentRegistrationShared.hpp`. `BuiltInComponentRegistration.cpp` owns the call order of the slices plus all `DeclareConflict` / `DeclareDependency` / tag registrations. Append your component at the end of its slice; keep the `Internal::Register*` order stable (registration order assigns `typeIdU32`, used in-process by the ECB wire format and prefab templates; never persisted).
 
 A component that belongs to an engine module (2D world: Transform2D, sprites, Box2D…; 3D: Transform3D, meshes, lights, Jolt…) registers inside `Internal::ModuleRegistrationScope scope(registry, EngineModule::TwoD|ThreeD);` and under `#if FUNKE_WITH_2D|3D`, its files go into `Funke-Engine/EngineModules.json`, and its C# bindings into `ScriptBindings2D.cpp` / `ScriptBindings3D.cpp` plus an `X(Slot)` line in `Scripting/ScriptBindingModuleSlots.hpp`. UI and other core components need none of that.
 
@@ -76,7 +76,7 @@ Many in-tree UI registrations fall back to the *current* value (`AsDoubleOr(c.X)
 - `has`/`add`/`remove`/`copyTo`/`getRaw`/`defaultEmplace` are synthesized by `ComponentRegistry::Register<T>` (`Scene/ComponentRegistry.hpp`) — don't write them.
 - `serializedName` empty = never saved, and Copy/Paste/Reset Component are disabled in the inspector.
 - `ComponentCategory::Tag` hides it from Add Component (use for internal/identity data and empty marker structs; `Scene::AddComponent<TTag>` requires `std::is_empty_v`). `ComponentCategory::System` is not for components.
-- **3D and later slices:** after the Tags come `Register3D`, `RegisterPhysics3D`, `RegisterParticles3D`, each in its own TU. Do **not** append to an earlier slice such as `Register3D` (it would shift every Physics3D/Particles3D id); add a new slice function at the end of `RegisterBuiltInComponents` (declare it in `BuiltInComponentRegistrationShared.hpp`; the premake glob picks up the new `BuiltInComponentRegistration<Name>.cpp`).
+- **New slice:** slices added after the original six (3D, Physics3D, Particles3D, Animation, SkinnedMesh3D, Localization) are appended after the Tags so older ids keep their order. If no slice fits, add yours after the last `Internal::Register*` call in `RegisterBuiltInComponents` (before the module-conflict block and `AssignBuiltInIcons`), declare it in `BuiltInComponentRegistrationShared.hpp`; the premake glob picks up the new `BuiltInComponentRegistration<Name>.cpp` (module slices also go into `EngineModules.json`).
 - Conflicts ("one renderer per entity") and dependencies (Button pulls in Interactable) go in `RegisterBuiltInComponents` via `DeclareConflict<A,B>` / `DeclareDependency<Dependent,Dependency>`, after every mentioned type is registered. `onAdd` (smart defaults) only fires through `AddWithDependencies` (editor Add Component), never on load.
 - Inspector/hierarchy icon: add `SetIcon<T>(registry, "<name>")` to `AssignBuiltInIcons` in `BuiltInComponentRegistration.cpp` (`ComponentInfo::icon`, a file stem from `Funke-Runtime/FunkeAssets/Textures/Editor/General/`, e.g. `light_point`). Without one the editor guesses from the display name; `ComponentIconTests.cpp` checks every icon exists. Entity icons in the Hierarchy follow the priority list in `EntityTypeIconName` (`ImGuiEditorLayer.cpp`).
 - Inspector fields, custom drawers (`Funke-Editor/src/Editor/EditorComponentRegistration.cpp`), gizmos, variants, refs: **defer to `funke-inspector-ruleset`**. Property `name` should match the C# field name; prefer `drawInspector = nullptr`.
@@ -87,7 +87,7 @@ Many in-tree UI registrations fall back to the *current* value (`AsDoubleOr(c.X)
 
 - `ComponentInfo::serializeArchive` exists but is **not consumed** by `SceneSerializer` today, despite the "SCHEDULED FOR REMOVAL" comment on the legacy pair. Use `serialize`/`deserialize`.
 - The alternative is the hand-written ladders (how colliders, Rigidbody2D, AudioSource, RectTransform2D, Image, Text are still done; Transform2D, SpriteRenderer, Camera2D and ParticleSystem2D moved to the registry in `BuiltInComponentRegistration2D.cpp`): `SerializeEntity` in `Serialization/SceneSerializer.cpp`, `DeserializeFullEntity` **and** `DeserializeComponent` in `Serialization/SceneSerializerDeserialize.cpp`. All three must agree, or data is lost on one path (this caused the ParticleSystem2D bursts regression). Don't add new components there.
-- Registry-driven serialization only runs when an `Application` with a `SceneManager` exists (`SceneManager::GetComponentRegistry()`); a bare `Scene::CreateDetachedScene` in a test won't serialize it.
+- Without a live `SceneManager` (CLI, doctest, headless tools) the serializer uses `SceneManager::GetComponentRegistryOrBuiltIn()`, a registry holding only the built-in components: built-ins still round-trip in a bare `Scene::CreateDetachedScene`, package and C# components are skipped.
 - `EntityOrigin::Runtime` entities are never saved; play-mode survival is automatic once serialization works (see `funke-scene-workflow`).
 
 ## 4. Scene hooks (only if add/remove must touch a subsystem)
@@ -110,7 +110,7 @@ Native name lookup (`FindComponentByName` in `ScriptBindings.cpp`) accepts the s
 
 ## 6. Tests (`Tests/Funke-Engine-Tests/src`, doctest)
 
-- Serialization round-trip: extend `SceneSerializerRoundTripTests.cpp` (full-entity `SerializeEntityFull` → `DeserializeEntityFromValue`, plus component-level `SerializeComponent` → `DeserializeComponent`). Registry-driven components need a headless `Application` (pattern: `MakeSceneTestConfiguration()` in `SceneManagerFailureTests.cpp`, assertions collected in `Start()`, then `Application::Quit()`).
+- Serialization round-trip: extend `SceneSerializerRoundTripTests.cpp` (full-entity `SerializeEntityFull` → `DeserializeEntityFromValue`, plus component-level `SerializeComponent` → `DeserializeComponent`). Built-in components (registry-driven or ladder) round-trip in a plain detached scene; only package/C# components need a headless `Application` (pattern: `MakeSceneTestConfiguration()` in `SceneManagerFailureTests.cpp`, assertions collected in `Start()`, then `Application::Quit()`).
 - Entity refs / clone remap: `SceneSerializerClipboardTests.cpp`; prefab internal refs: `SceneSerializerPrefabRefTests.cpp`.
 - Behavior: expose a static pure step function on the system and unit-test it (`SpriteAnimationTests.cpp` → `SpriteAnimationSystem::Step`).
 - If the component is public API, add a `static_assert(std::is_default_constructible_v<...>)` line to `UmbrellaHeaderTests.cpp`.
@@ -122,7 +122,7 @@ New `.hpp`/`.cpp` or test files require regenerating project files (`vendor\bin\
 
 ## 8. Docs
 
-User-facing components: `CHANGELOG.md`, `Github-Docs/Documentation/`, and the component key list in `.claude/skills/funke-build-game/references/scene-json.md` (and its `.agents` copy).
+User-facing components: `CHANGELOG.md`, `Github-Docs/Documentation/`, and the component key list in `.claude/skills/funke-make-a-game/references/scene-json.md` (and its `.agents` copy).
 
 ## Pitfalls
 

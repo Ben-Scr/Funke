@@ -26,6 +26,8 @@ namespace Funke::BuildOutputSafety {
 	};
 
 	inline constexpr std::string_view OwnershipMarkerFilename = ".funke-build-output";
+	// Written before the Index → Funke rename; a fresh staging directory replaces it on the next build.
+	inline constexpr std::string_view LegacyOwnershipMarkerFilename = ".index-build-output";
 
 	struct OutputPathValidation {
 		std::filesystem::path CanonicalOutput;
@@ -240,11 +242,13 @@ namespace Funke::BuildOutputSafety {
 		if (error) return OutputPathError::ResolutionFailed;
 		if (isEmpty) return OutputPathError::None;
 
-		const std::filesystem::path marker = outputDirectory / std::string(OwnershipMarkerFilename);
-		if (!std::filesystem::is_regular_file(marker, error) || error) {
-			return OutputPathError::UnownedExistingDirectory;
+		for (const std::string_view markerName : { OwnershipMarkerFilename, LegacyOwnershipMarkerFilename }) {
+			error.clear();
+			if (std::filesystem::is_regular_file(outputDirectory / std::string(markerName), error) && !error) {
+				return OutputPathError::None;
+			}
 		}
-		return OutputPathError::None;
+		return OutputPathError::UnownedExistingDirectory;
 	}
 
 	inline bool LooksLikeLegacyFunkeBuildOutput(const std::filesystem::path& outputDirectory) {
@@ -252,7 +256,8 @@ namespace Funke::BuildOutputSafety {
 		if (!std::filesystem::is_regular_file(outputDirectory / "project.json", error) || error) return false;
 		if (!std::filesystem::is_directory(outputDirectory / "Assets", error) || error) return false;
 		for (const char* engineLibrary : {
-			"Funke-Engine.dll", "libIndex-Engine.so", "libIndex-Engine.dylib" }) {
+			"Funke-Engine.dll", "libFunke-Engine.so", "libFunke-Engine.dylib",
+			"Index-Engine.dll", "libIndex-Engine.so", "libIndex-Engine.dylib" }) {
 			error.clear();
 			if (std::filesystem::is_regular_file(outputDirectory / engineLibrary, error) && !error) {
 				return true;

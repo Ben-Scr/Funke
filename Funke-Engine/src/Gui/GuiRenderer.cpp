@@ -646,9 +646,12 @@ namespace Funke {
 
 		// Replaces `whole` by 9-slice or tiled quads sharing its sort keys and clip; false = draw it as one quad.
 		std::vector<NineSliceQuad> tiles;
-		auto emitSlicedOrTiled = [&](const Instance44& whole, const ImageComponent& image, Vec2 size) {
+		auto emitSlicedOrTiled = [&](const Instance44& whole, const ImageComponent& image,
+			const RectTransform2DComponent& rect, Vec2 size) {
 			const Texture2D* tex = TextureManager::GetTexture(image.TextureHandle);
 			if (!tex) return false;
+			const Vec2 borderScale = ResolveBorderScale(image.BorderScale,
+				rect.ResolvedValid ? rect.Scale : rect.LocalScale);
 			NineSliceBorder border{ image.BorderLeft, image.BorderBottom, image.BorderRight, image.BorderTop };
 			if (border.Left == 0.0f && border.Bottom == 0.0f && border.Right == 0.0f && border.Top == 0.0f) {
 				const SpriteBorder fromMeta = ResolveSpriteBorder(image.TextureAssetId, image.SpriteName);
@@ -660,11 +663,11 @@ namespace Funke {
 			const NineSliceQuad* quads = nullptr;
 			std::array<NineSliceQuad, 9> nine;
 			if (image.Type == ImageType::Tiled) {
-				count = BuildTiled(size, spritePixels, border, image.BorderScale, whole.UvRect, tiles);
+				count = BuildTiled(size, spritePixels, border, borderScale, whole.UvRect, tiles);
 				quads = tiles.data();
 			}
 			else {
-				count = BuildNineSlice(size, spritePixels, border, image.BorderScale, whole.UvRect, nine);
+				count = BuildNineSlice(size, spritePixels, border, borderScale, whole.UvRect, nine);
 				quads = nine.data();
 			}
 			if (count == 0) return false;
@@ -720,7 +723,7 @@ namespace Funke {
 			ApplyImageSliceToInstance(inst, image);
 			inst.Material = image.Material;
 			ApplyMaskClipToInstance(ClipForEntity(entity), inst);
-			if (image.Type != ImageType::Simple && emitSlicedOrTiled(inst, image, size)) continue;
+			if (image.Type != ImageType::Simple && emitSlicedOrTiled(inst, image, rect, size)) continue;
 			m_InstancesScratch.push_back(inst);
 		}
 
@@ -914,6 +917,7 @@ namespace Funke {
 			ApplyMaskClipToText(ClipForEntity(entity), cmd);
 			cmd.Rotation = rect.Rotation;
 			cmd.Pivot = rect.ResolvedPivot;
+			cmd.SetEffects(text, uniformScale);
 			auto ifIt = inputFieldTextChildren.find(entity);
 			const InputFieldComponent* ifField = (ifIt != inputFieldTextChildren.end()) ? ifIt->second : nullptr;
 			bool clipToField = false;
@@ -1349,7 +1353,7 @@ namespace Funke {
 			[](const Instance44& instance) { return instance.Material != 0; });
 		if (anyCustom && !state.CustomImages && !state.CustomImagesFailed) {
 			state.CustomImages = std::make_unique<CustomSpriteDrawer>();
-			if (!state.CustomImages->Initialize("guirenderer-custom")) {
+			if (!state.CustomImages->Initialize("guirenderer-custom", false)) {
 				FNK_CORE_WARN_TAG("GuiRenderer", "Custom shader resources unavailable; image materials draw with the standard shader");
 				state.CustomImages.reset();
 				state.CustomImagesFailed = true;

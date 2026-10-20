@@ -46,7 +46,8 @@ namespace Funke {
 		CustomMaterialBindings(const CustomMaterialBindings&) = delete;
 		CustomMaterialBindings& operator=(const CustomMaterialBindings&) = delete;
 
-		bool Initialize(const char* label);
+		// sceneSamplers: textures follow the texture quality and anisotropy settings (false for UI).
+		bool Initialize(const char* label, bool sceneSamplers = true);
 		void Shutdown();
 		bool IsInitialized() const { return static_cast<bool>(m_GlobalsBuffer); }
 
@@ -66,6 +67,7 @@ namespace Funke {
 			wgpu::Buffer Uniforms;
 			std::vector<uint8_t> Bytes;
 			std::vector<WGPUTextureView> Views;
+			std::vector<WGPUSampler> Samplers;
 			std::chrono::steady_clock::time_point LastUsed{};
 		};
 		struct TextureEntry {
@@ -85,6 +87,7 @@ namespace Funke {
 		uint32_t m_ReferenceToken = 0;
 		uint32_t m_DestroyToken = 0;
 		std::string m_Label;
+		bool m_SceneSamplers = true;
 	};
 
 }

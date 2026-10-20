@@ -1,13 +1,13 @@
 ---
 name: funke-add-profiler
-description: Use when instrumenting Funke code with the profiler — scoping work with FUNKE_PROFILE_* macros, adding or registering a profiler module, naming threads for Tracy, timing GPU work, connecting the Tracy viewer, or extending the Profiler panel. Triggers on "FUNKE_PROFILE_SCOPE", "FUNKE_PROFILE_FRAME", "FUNKE_PROFILE_VALUE", "FUNKE_PROFILE_THREAD_NAME", "FUNKE_PROFILER_ENABLED", "--no-profiler", "Profiler::Register", "Profiler::PushSample", "Profiler::PushValue", "ProfilerModule", "Tracy", "TRACY_ON_DEMAND", "GpuTimer", "GPU timing", "timestamp query", "profiler module", "Profiler panel", "ProfilerPanel", "Ctrl+F6", "Track in Background", "Sampling Hz", "Tracking Span", "profiler shows 0", "enableInRuntime", or work in `Funke-Engine/src/Profiling/` and `Funke-Editor/src/Gui/ProfilerPanel.cpp`. Explains the dual-layer design (Tracy zones + in-engine ring buffers), the compile gate and its Dist/--no-profiler behavior, the built-in module list, why samples only land during Play, and how to make a new module show up in the panel (the panel uses a hard-coded category layout).
+description: Use when instrumenting Funke code with the profiler — FUNKE_PROFILE_* macros, adding or registering a profiler module, naming threads for Tracy, timing GPU work, connecting the Tracy viewer, or extending the Profiler panel. Triggers on "FUNKE_PROFILE_SCOPE", "FUNKE_PROFILE_VALUE", "FUNKE_PROFILE_THREAD_NAME", "FUNKE_PROFILER_ENABLED", "--no-profiler", "Profiler::Register", "Profiler::PushSample", "ProfilerModule", "Tracy", "TRACY_ON_DEMAND", "GpuTimer", "GPU timing", "timestamp query", "Profiler panel", "Ctrl+F6", "Track in Background", "Sampling Hz", "profiler shows 0", "enableInRuntime", or work in `Funke-Engine/src/Profiling/` and `Funke-Editor/src/Gui/ProfilerPanel.cpp`. Explains the dual-layer design (Tracy zones + in-engine ring buffers), the compile gate (Dist and --no-profiler strip it), the built-in modules, why samples only land during Play, and how to make a new module show up in the panel (hard-coded category layout).
 ---
 
 # Funke Profiler
 
 Two layers fed by the same macros (`Funke-Engine/src/Profiling/Profiler.hpp`):
 
-1. **Tracy** (v0.11.1, `External/tracy`, built as a shared `Tracy` DLL, `TRACY_ON_DEMAND`): every scope/value/frame mark, whether or not a module exists. Connect the matching Tracy viewer over TCP to see it.
+1. **Tracy** (`External/tracy` submodule, built as a shared `Tracy` DLL, `TRACY_ON_DEMAND`): every scope/value/frame mark, whether or not a module exists. Connect a Tracy viewer over TCP to see it; its version must match the submodule's (`External/tracy/public/common/TracyVersion.hpp`, 0.13.x at the time of writing — the "v0.11.1" in `premake/dependencies/tracy.lua` is stale), otherwise the viewer refuses the connection.
 2. **In-engine ring buffers** (`ProfilerModule`): per-name sample history that the editor/runtime **Profiler panel** draws. A push only lands if the name is a registered module and every gate passes (see below).
 
 ## Compile gate
@@ -47,6 +47,7 @@ FUNKE_PROFILE_THREAD_NAME("FileWatcher");           // names the current thread 
 | Rendering | `Batches`, `Triangles`, `Vertices`, `Rendered Sprites` |
 | Memory | `Total Memory`, `Texture Memory`, `Entity Count` |
 | Audio | `Playing Sources` |
+| Animation | `Animator`, `SkinnedMeshAnimation` (ms), `Animator Poses`, `Skinned Poses` (how many animations wrote a pose this frame — culling / distance rate) |
 | GPU | `GPU` (published by `GpuTimer`; not in the panel layout) |
 | Frame breakdown | `UpdateScenes`, `OnPreRenderScenes`, `Renderer2D.Begin/End/Collect/Sort/Upload/Submit`, `GuiRenderer.Begin/End`, `GizmoRenderer.Begin/End`, `Layer.OnUpdate/OnPreRender/OnPostRender`, `SwapBuffers` |
 | Gate diagnostics | `Editor.HierarchyRebuild`, `TransformHierarchy`, `UILayout`, `UIEvent.Update/RefResolve/HitTest/Visuals/Widgets`, `ParticleUpdate`, `UIFocus`, `ManagedSceneSystem` |

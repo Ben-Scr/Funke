@@ -30,7 +30,8 @@ public enum Platform
     MacOS,
     Android,
     iOS,
-    WebGL
+    WebGL,
+    VisionOS
 }
 
 public enum GraphicsApi
@@ -85,7 +86,7 @@ public static class Engine
     public static BuildConfiguration BuildConfiguration
         => (BuildConfiguration)InternalCalls.Engine_GetBuildConfiguration();
 
-    /// <summary>Current operating system.</summary>
+    /// <summary>Operating system the process runs on; in the editor its own, not the simulated <see cref="Application.Platform"/>.</summary>
     public static Platform Platform => ParsePlatform(PlatformName);
     public static string PlatformName => InternalCalls.Engine_GetPlatform();
 

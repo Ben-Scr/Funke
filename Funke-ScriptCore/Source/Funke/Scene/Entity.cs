@@ -68,7 +68,7 @@ public class Entity : IEquatable<Entity>
         }
     }
 
-    // Authored "Enabled" — inspector checkbox; true even when an ancestor is disabled. Toggles user intent (authored-disabled children stay off even after parent re-enables).
+    // Own "Enabled" flag (inspector checkbox, Unity's activeSelf): stays true while an ancestor is disabled. Set while an ancestor is off, it takes effect when that ancestor turns on.
     public bool IsEnabled
     {
         get => !IsPrefabAsset && InternalCalls.Entity_GetIsEnabled(ID);
@@ -79,7 +79,7 @@ public class Entity : IEquatable<Entity>
         }
     }
 
-    // Effective active flag — true only when this entity and all ancestors are enabled; matches DisabledTag filtering used by engine systems.
+    // Effective state (Unity's activeInHierarchy): true only when this entity and all ancestors are enabled; matches DisabledTag filtering used by engine systems.
     public bool IsEnabledInHierarchy
         => !IsPrefabAsset && InternalCalls.Entity_GetIsEnabledInHierarchy(ID);
 
@@ -885,6 +885,13 @@ public class Entity : IEquatable<Entity>
         return id != 0 ? new Entity(id) : Invalid;
     }
 
+    // Placed and parented first, so OnAwake sees the spawn position; OnStart still runs before the next OnUpdate.
+    private static Entity Spawned(ulong id)
+    {
+        InternalCalls.Entity_CreateScriptInstances(id);
+        return new Entity(id);
+    }
+
     public static Entity Instantiate(Entity source)
     {
         if (source is null || source == Invalid)
@@ -894,7 +901,7 @@ public class Entity : IEquatable<Entity>
             ? InternalCalls.Entity_InstantiatePrefab(source.PrefabGUID)
             : InternalCalls.Entity_Clone(source.ID);
 
-        return id != 0 ? new Entity(id) : Invalid;
+        return id != 0 ? Spawned(id) : Invalid;
     }
 
     public static Entity Instantiate(Entity source, Vector3 position, float rotation, Entity? parent)
@@ -916,7 +923,7 @@ public class Entity : IEquatable<Entity>
         InternalCalls.Transform2D_SetPosition(id, position.X, position.Y);
         InternalCalls.Transform2D_SetRotation(id, rotation * Mathf.Deg2Rad);
 
-        return new Entity(id);
+        return Spawned(id);
     }
 
     public static Entity Instantiate(Entity source, Vector3 position, float rotation)
@@ -934,7 +941,7 @@ public class Entity : IEquatable<Entity>
         InternalCalls.Transform2D_SetPosition(id, position.X, position.Y);
         InternalCalls.Transform2D_SetRotation(id, rotation * Mathf.Deg2Rad);
 
-        return new Entity(id);
+        return Spawned(id);
     }
 
     public static Entity Instantiate(Entity source, Vector3 position)
@@ -951,7 +958,7 @@ public class Entity : IEquatable<Entity>
 
         InternalCalls.Transform2D_SetPosition(id, position.X, position.Y);
 
-        return new Entity(id);
+        return Spawned(id);
     }
 
     public static Entity Instantiate(Entity source, float rotation)
@@ -968,7 +975,7 @@ public class Entity : IEquatable<Entity>
 
         InternalCalls.Transform2D_SetRotation(id, rotation * Mathf.Deg2Rad);
 
-        return new Entity(id);
+        return Spawned(id);
     }
 
     public static Entity Instantiate(Entity source, Entity? parent)
@@ -986,7 +993,7 @@ public class Entity : IEquatable<Entity>
         if (parent != null && parent != Invalid)
             InternalCalls.Entity_SetParent(id, parent.ID, worldPositionStays: false);
 
-        return new Entity(id);
+        return Spawned(id);
     }
 
     public static Entity Create(Entity source) => Instantiate(source);

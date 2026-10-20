@@ -11,6 +11,7 @@
 #include "Graphics/PostProcessing/PostProcessor.hpp"
 
 #include <glm/glm.hpp>
+#include <cstdint>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -41,10 +42,10 @@ namespace Funke {
 		void SetEnabled(bool enabled) { m_IsEnabled = enabled; }
 		bool IsEnabled() const { return m_IsEnabled; }
 
-		// Master gate for the post-processing chain. The editor flips this off while
-		// rendering the Editor View so scene editing isn't tinted by bloom / vignette
-		// / etc.; Game View and the runtime leave it on. Restored to true after the
-		// Editor-View pass each frame.
+		// Master gate for the post-processing chain (anti-aliasing included). The editor
+		// flips this off while rendering the Editor View so scene editing isn't tinted by
+		// bloom / vignette / etc.; Game View and the runtime leave it on. Restored to true
+		// after the Editor-View pass each frame.
 		void SetPostProcessingEnabled(bool enabled) { m_PostProcessingEnabled = enabled; }
 		bool IsPostProcessingEnabled() const { return m_PostProcessingEnabled; }
 		bool IsInitialized() const override { return m_IsInitialized; }
@@ -69,6 +70,8 @@ namespace Funke {
 		bool IsComposingOverTarget() const { return m_ComposeOverTarget; }
 
 		size_t GetRenderedInstancesCount() const { return m_RenderedInstancesCount; }
+		// Running total of drawn sprite and particle quads since startup (see CaptureRenderGeometryTotals).
+		uint64_t GetRenderedInstancesTotal() const { return m_RenderedInstancesTotal; }
 		size_t GetDrawCallsCount() const { return m_DrawCallsCount; }
 		float GetRenderLoopDuration() const { return m_RenderLoopDuration; }
 
@@ -86,6 +89,7 @@ namespace Funke {
 		void CollectAndRenderInstances(Scene& scene, const glm::mat4& vp, const AABB& viewportAABB);
 
 		size_t m_RenderedInstancesCount = 0;
+		uint64_t m_RenderedInstancesTotal = 0;
 		size_t m_DrawCallsCount = 0;
 		float m_RenderLoopDuration = 0.0f;
 		bool m_IsInitialized = false;
@@ -111,6 +115,8 @@ namespace Funke {
 
 		Framebuffer    m_SceneFbo;
 		Framebuffer    m_PostProcessOutputFbo;
+		// FXAA result when effects or upscaling still follow it.
+		Framebuffer    m_AntiAliasFbo;
 		PostProcessor  m_PostProcessor;
 
 		SceneProvider m_SceneProvider;

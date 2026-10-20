@@ -20,6 +20,7 @@
 #include "Systems/Transform3DHierarchySystem.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -554,7 +555,8 @@ namespace Funke {
 			return required;
 		}
 
-		// speed, loop, playOnAwake, time, playing, lit, castShadows, color rgba
+		// speed, loop, playOnAwake, time, playing, lit, castShadows, color rgba, cullingMode, distanceRate,
+		// halfRateDistance, quarterRateDistance
 		void Funke_SkinnedMeshRenderer_Get(uint64_t id, float* values, int count) {
 			const auto* c = Resolve<SkinnedMeshRendererComponent>(id);
 			const SkinnedMeshRendererComponent fallback;
@@ -562,6 +564,8 @@ namespace Funke {
 			PackedWriter out{ values, count };
 			out.Put(v.Speed); out.Put(v.Loop ? 1.0f : 0.0f); out.Put(v.PlayOnAwake ? 1.0f : 0.0f); out.Put(v.Time);
 			out.Put(v.Playing ? 1.0f : 0.0f); out.Put(v.Lit ? 1.0f : 0.0f); out.Put(v.CastShadows ? 1.0f : 0.0f); out.Put(v.Color);
+			out.Put(static_cast<float>(v.CullingMode)); out.Put(static_cast<float>(v.DistanceRate));
+			out.Put(v.HalfRateDistance); out.Put(v.QuarterRateDistance);
 		}
 		// Same layout; playing is read-only (Play / Control change it).
 		void Funke_SkinnedMeshRenderer_Set(uint64_t id, const float* values, int count) {
@@ -579,6 +583,10 @@ namespace Funke {
 			c->Lit = in.Get(c->Lit ? 1.0f : 0.0f) != 0.0f;
 			c->CastShadows = in.Get(c->CastShadows ? 1.0f : 0.0f) != 0.0f;
 			c->Color = in.Get(c->Color);
+			c->CullingMode = static_cast<AnimationCullingMode>(std::clamp(static_cast<int>(in.Get(static_cast<float>(c->CullingMode))), 0, 2));
+			c->DistanceRate = static_cast<AnimationDistanceRate>(std::clamp(static_cast<int>(in.Get(static_cast<float>(c->DistanceRate))), 0, 2));
+			c->HalfRateDistance = std::max(in.Get(c->HalfRateDistance), 0.0f);
+			c->QuarterRateDistance = std::max(in.Get(c->QuarterRateDistance), 0.0f);
 		}
 		// which: 0 = model, 1 = material
 		uint64_t Funke_SkinnedMeshRenderer_GetAsset(uint64_t id, int which) {
@@ -651,7 +659,8 @@ namespace Funke {
 			Transform3DHierarchySystem::Propagate(*scene);
 			const auto* transform = scene->GetRegistry().try_get<Transform3DComponent>(handle);
 			std::vector<glm::mat4> nodes;
-			SkeletalAnimation::EvaluatePose(*data, SkinnedMeshAnimationSystem::MakePoseRequest(*c, *data), nodes);
+			// The drawn pose, so attachments stay on a model whose pose is held back far away or off screen.
+			SkeletalAnimation::EvaluatePose(*data, SkinnedMeshAnimationSystem::GetDrawnPose(*c, *data), nodes);
 			const glm::mat4 world = (transform ? transform->WorldMatrix : glm::mat4(1.0f)) * nodes[static_cast<size_t>(node)];
 			const glm::vec3 forward = glm::normalize(-glm::vec3(world[2]));
 			const glm::vec3 up = glm::normalize(glm::vec3(world[1]));
@@ -661,6 +670,31 @@ namespace Funke {
 			for (int i = 0; i < 3; ++i) out.Put(up[i]);
 			return 1;
 		}
+	}
+
+	// Entity.SetParent(worldPositionStays): keeps the Transform3D world pose across the reparent.
+	bool SetParentKeepingWorld3D(Scene& scene, EntityHandle handle, Entity newParent)
+	{
+		if (!scene.HasComponent<Transform3DComponent>(handle)) return false;
+		// Not WorldMatrix: that is the last Propagate's cache and misses moves the script made since.
+		const entt::registry& registry = scene.GetRegistry();
+		const glm::mat4 world = Transform3DHierarchySystem::ComputeWorldMatrix(registry, handle);
+
+		Entity entity = scene.GetEntity(handle);
+		entity.SetParent(newParent);
+
+		// The parent SetParent actually kept: it refuses cycles and foreign scenes.
+		const Entity parent = entity.GetParent();
+		const glm::mat4 parentWorld = parent.IsValid()
+			? Transform3DHierarchySystem::ComputeWorldMatrix(registry, parent.GetHandle())
+			: glm::mat4(1.0f);
+		// A zero-scaled parent has no inverse; keep the local transform rather than writing NaNs.
+		if (std::abs(glm::determinant(glm::mat3(parentWorld))) < 1e-12f) return true;
+
+		auto& transform = scene.GetComponent<Transform3DComponent>(handle);
+		Transform3DComponent::Decompose(glm::inverse(parentWorld) * world, transform.Position, transform.Rotation, transform.Scale);
+		transform.WorldMatrix = world;
+		return true;
 	}
 
 	void Populate3DBindings(NativeBindings& b) {

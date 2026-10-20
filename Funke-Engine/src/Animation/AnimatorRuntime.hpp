@@ -1,6 +1,8 @@
 #pragma once
 #include "Animation/AnimationBinding.hpp"
 #include "Animation/AnimationClip.hpp"
+#include "Animation/AnimationCulling.hpp"
+#include "Animation/AnimationViewer.hpp"
 #include "Animation/AnimatorController.hpp"
 #include "Animation/AnimatorStateMachine.hpp"
 #include "Core/Export.hpp"
@@ -24,8 +26,9 @@ namespace Funke {
 		// Picks up the component's assets (first use, GUID change, hot reload). False when nothing can play.
 		bool Sync(const AnimatorComponent& component);
 
-		// Advances by dt (already scaled by the component speed) and writes the animated values.
-		void Update(Scene& scene, Entity owner, float dt, bool fireEvents);
+		// Advances by dt (already scaled by the component speed) and writes the animated values; without writePose only
+		// the state machine and events advance (culled off screen).
+		void Update(Scene& scene, Entity owner, float dt, bool fireEvents, bool writePose = true);
 		// Writes the pose of the current state without advancing (after Play from script, editor preview).
 		void Apply(Scene& scene, Entity owner);
 		// Writes one state's clip at clipTime (clamped to the clip, no looping): the Animation window's scrubbing.
@@ -55,6 +58,14 @@ namespace Funke {
 		// Track problems of the loaded clips ("Arm/Hand: no child entity ..."), for the editor.
 		const std::vector<std::string>& GetBindingErrors() const { return m_BindingErrors; }
 		void InvalidateBindings() { m_BindingsDirty = true; }
+
+		// AnimatorSystem's culling and distance rate: time the skipped frames owe, and where the hierarchy draws.
+		struct CullingState {
+			AnimationStepClock Clock;
+			AnimationBounds Bounds;
+			bool BoundsValid = false;
+		};
+		CullingState& GetCulling() { return m_Culling; }
 
 	private:
 		struct TrackBinding {
@@ -92,6 +103,7 @@ namespace Funke {
 
 		std::vector<AnimatorPlaybackSample> m_Samples;
 		std::vector<Accumulator> m_Accumulators;
+		CullingState m_Culling;
 		std::unordered_set<std::string> m_Warned;
 		// Script class -> method name -> argument kind, from the managed side's invokable list.
 		std::unordered_map<std::string, std::unordered_map<std::string, uint8_t>> m_EventMethods;

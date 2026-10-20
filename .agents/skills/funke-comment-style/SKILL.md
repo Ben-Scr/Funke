@@ -1,6 +1,6 @@
 ---
 name: funke-comment-style
-description: Use when writing, editing, compressing, or reviewing comments in the Funke engine (C++ or C#) — including doc comments, XML-doc summary comments, inline notes, and "should this comment exist at all" decisions. Triggers on "comment", "// why", "doc comment", "XML doc", "verbose comments", "comment cleanup", "explain this code", "trim comments", or any time you are about to write a `//` / `/* */` block in `Funke-Engine/`, `Funke-Editor/`, `Funke-Runtime/`, `Funke-Launcher/`, `Funke-ScriptCore/`, or a package layer. Encodes Funke's terse "why-not-what" comment philosophy: default to no comment, one line when a comment earns its place, delete narration and banners. Complements the `code-style` skill (which covers naming / formatting). Consult this BEFORE writing a multi-line comment block.
+description: Use when writing, editing, compressing, or reviewing comments in the Funke engine (C++ or C#) — including doc comments, XML-doc summary comments, inline notes, and "should this comment exist at all" decisions. Triggers on "comment", "// why", "doc comment", "XML doc", "verbose comments", "comment cleanup", "explain this code", "trim comments", or any time you are about to write a `//` / `/* */` block in `Funke-Engine/`, `Funke-Editor/`, `Funke-Runtime/`, `Funke-Launcher/`, `Funke-ScriptCore/`, or a package layer. Encodes Funke's terse "why-not-what" comment philosophy — default to no comment, one line when a comment earns its place, delete narration and banners. Complements `funke-code-style` (naming / formatting). Consult this BEFORE writing a multi-line comment block.
 ---
 
 # Skill: Funke Comment Style
@@ -67,7 +67,7 @@ Reason: when this comment is later edited or compressed (by a person or a tool w
 - **Never delete or alter a line of real code** while editing a comment. Comment-only edits must keep the file compiling.
 - Never leave a dangling `/*` or `*/`. Don't touch `//` or `/* */` that live **inside string literals** (e.g. WGSL shader source in `R"WGSL(...)"`, glob patterns like `"Source/*.cpp"`) — those aren't comments.
 - Commented-out code: delete it if it's clearly dead; leave it only if it's an intentional reference/toggle.
-- After any bulk comment change, **build** (`build-engine` skill) — a torn comment or an accidentally-eaten code line only shows up at compile time. A `/* */` balance check catches unterminated blocks but not single-line `//` tears.
+- After any bulk comment change, **build** (`funke-build-engine` skill) — a torn comment or an accidentally-eaten code line only shows up at compile time. A `/* */` balance check catches unterminated blocks but not single-line `//` tears.
 
 ## Before / after (real engine examples)
 

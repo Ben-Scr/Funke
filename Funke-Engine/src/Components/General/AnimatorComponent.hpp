@@ -1,4 +1,5 @@
 #pragma once
+#include "Animation/AnimationCulling.hpp"
 #include "Core/Export.hpp"
 
 #include <cstdint>
@@ -47,8 +48,18 @@ namespace Funke {
 		AnimatorUpdateMode UpdateMode = AnimatorUpdateMode::Normal;
 		// Editor only: plays the animation in edit mode as a preview; the authored values come back afterwards.
 		bool ApplyInEditMode = false;
+		// Off screen (renderers below the Animator outside the game camera's view): keep animating, keep only the
+		// clock, or pause.
+		AnimationCullingMode CullingMode = AnimationCullingMode::AlwaysAnimate;
+		// Fewer updates far from the camera (every 2nd / 4th frame); ignored in Fixed update mode.
+		AnimationDistanceRate DistanceRate = AnimationDistanceRate::ProjectSetting;
+		// With DistanceRate Custom: world units from the camera from which it updates every 2nd / 4th frame.
+		float HalfRateDistance = 20.0f;
+		float QuarterRateDistance = 40.0f;
 
 		// Runtime state; not serialized, so every Play session starts in the default state.
 		AnimatorRuntimeHandle Runtime;
+
+		AnimationCullingSettings GetCulling() const { return { CullingMode, DistanceRate, HalfRateDistance, QuarterRateDistance }; }
 	};
 }

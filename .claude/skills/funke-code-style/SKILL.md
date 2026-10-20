@@ -1,6 +1,6 @@
 ---
 name: funke-code-style
-description: Use when writing or reviewing C++ code in the Funke engine, or when naming/style/structure decisions come up. Triggers on "code style", "naming conventions", "should this be m_/s_/k_/g_", "FNK_ macros", "FUNKE_ macros", "FUNKE_API", "dllexport", "LNK2019 from the editor", "PCH", "pch.hpp", "EditorPch.hpp", "include order", "FUNKE_WITH_RENDER", "FNK_PLATFORM_WINDOWS", "FNK_ASSERT vs FNK_THROW", "error handling", "unique_ptr vs Scope", or any time you're authoring new files in `Funke-Engine/`, `Funke-Editor/`, `Funke-Runtime/`, `Funke-Launcher/`, `Funke-EditorRuntime/` or a package's native layer. Encodes the engine's conventions: PascalCase methods, `m_/s_/k_/g_/t_` prefixes, the FNK_ vs FUNKE_ macro families, header + PCH rules per project, the DLL export boundary, module/platform gates, and assert/throw/log error-handling rules. Comment rules live in `funke-comment-style`, not here.
+description: Use when writing or reviewing C++ code in the Funke engine, or when naming/style/structure decisions come up. Triggers on "code style", "naming conventions", "should this be m_/s_/k_/g_", "FNK_ macros", "FUNKE_ macros", "FUNKE_API", "dllexport", "LNK2019 from the editor", "PCH", "pch.hpp", "EditorPch.hpp", "include order", "FUNKE_WITH_RENDER", "FUNKE_WITH_2D", "FNK_PLATFORM_WINDOWS / ANDROID / WEB", "FNK_ASSERT vs FNK_THROW", "error handling", "unique_ptr vs Scope", or any time you're authoring new files in `Funke-Engine/`, `Funke-Editor/`, `Funke-Runtime/`, `Funke-Launcher/`, `Funke-EditorRuntime/` or a package's native layer. Encodes the engine's conventions — PascalCase methods, `m_/s_/k_/g_/t_` prefixes, the FNK_ vs FUNKE_ macro families, header + PCH rules per project, the DLL export boundary, module/platform gates, and assert/throw/log error-handling rules. Comment rules live in `funke-comment-style`, not here.
 ---
 
 # Funke C++ Code Style
@@ -30,7 +30,7 @@ Getters `Get*()` / `Is*()` / `Has*()`, setters `Set*()`. No `get_`/`set_`. Dawn'
 
 - `FNK_` — core engine macros: logging (`FNK_CORE_WARN_TAG`), asserts (`FNK_ASSERT`, `FNK_VERIFY`), `FNK_THROW`, platform/config (`FNK_PLATFORM_WINDOWS`, `FNK_DEBUG`/`FNK_RELEASE`/`FNK_DIST`), build (`FNK_BUILD_DLL`, `FNK_IMPORT_DLL`, `FNK_BUILD_ID`), helpers (`FNK_FORCE_INLINE`, `FNK_BIND_EVENT_FN`, `FNK_GUARDED_BINDING`).
 - `FUNKE_` — export/API and feature/module gates: `FUNKE_API` (+ aliases `FUNKE_RENDER_API`, `FUNKE_AUDIO_API`, … all identical to `FUNKE_API`), `FUNKE_WITH_RENDER`/`_AUDIO`/`_PHYSICS`/`_SCRIPTING`/`_APPLICATION`/`_EDITOR`, `FUNKE_PROFILER_ENABLED`, `FUNKE_PROFILE_*`, `FUNKE_TRY_CATCH_LOG`, `FUNKE_ENTITY_BITS`.
-- Old `AIM_`/`AXIOM_` names are gone; never write them.
+- Old `IDX_`/`INDEX_` (pre-2026-10-16 "Index" name) and `AIM_`/`AXIOM_` names are gone; never write them.
 
 ## Files, headers, PCH
 
@@ -58,7 +58,7 @@ namespace Funke {
 | `Funke-Editor` | `EditorPch.hpp` via `forceincludes` | Nothing — it's force-included (existing files still start with `#include <pch.hpp>`, harmless) |
 | `Funke-Runtime`, `Funke-Launcher`, `Funke-EditorRuntime` | none | Include what you use |
 
-`Funke-Engine/src/pch.hpp` deliberately stops at STL + `Core/` (`Assert`, `Base`, `Log`, `Exceptions`, `Version`; `<Windows.h>` with `NOMINMAX` on Windows). Don't add `<imgui.h>`, `Core/Application.hpp`, `magic_enum`, or anything that changes per build (build identity / dirty fingerprint) — the file's own comment records why. New source files need a premake regen (`scripts\Setup.bat`); see `funke-build-engine`.
+`Funke-Engine/src/pch.hpp` deliberately stops at STL + `Core/` (`Assert`, `Base`, `Log`, `Exceptions`, `Version`; `<Windows.h>` with `NOMINMAX` on Windows). Don't add `<imgui.h>`, `Core/Application.hpp`, `magic_enum`, or anything that changes per build (build identity / dirty fingerprint) — the file's own comment records why. New source files: `scripts\dev\Build.ps1` regenerates premake automatically (`scripts\Setup.bat` is the full, interactive first-time setup, not a regen step); see `funke-build-engine`.
 
 ## DLL boundary (`FUNKE_API`)
 
@@ -73,7 +73,8 @@ namespace Funke {
 ```cpp
 #if FUNKE_WITH_RENDER          // module gates are 0/1 — use #if, never #ifdef
 #ifdef FUNKE_PROFILER_ENABLED  // profiler is defined/undefined — use #ifdef (see funke-add-profiler)
-#ifdef FNK_PLATFORM_WINDOWS    // also FNK_PLATFORM_LINUX; Base.hpp #errors on anything else
+#ifdef FNK_PLATFORM_WINDOWS    // exactly one of _WINDOWS/_LINUX/_MACOS/_ANDROID/_IOS/_WEB is defined (Core/PlatformDetection.hpp) — give every platform a branch or fallback
+#if FNK_PLATFORM_MOBILE        // 0/1 helpers, use #if: _MOBILE, _DESKTOP, _POSIX, _HAS_PROCESSES, _HAS_DYNAMIC_LIBRARIES, _HAS_THREADS
 #if defined(FNK_DEBUG) || defined(FNK_RELEASE)   // dev builds; FNK_DIST = shipped
 ```
 

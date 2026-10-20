@@ -48,6 +48,7 @@ namespace Funke {
 		R8,
 		Depth24Stencil8,
 		RGBA16F,
+		BGRA8,  // the usual swap-chain format
 	};
 
 	enum class TextureFilter : uint8_t {

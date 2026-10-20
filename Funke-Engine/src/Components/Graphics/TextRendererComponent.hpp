@@ -1,5 +1,6 @@
 #pragma once
 #include "Collections/Color.hpp"
+#include "Collections/Vec2.hpp"
 #include "Collections/Vec4.hpp"
 #include "Core/Export.hpp"
 #include "Core/UUID.hpp"
@@ -76,6 +77,13 @@ namespace Funke {
 
         // Screen-pixel insets: x=left, y=top, z=right (narrows wrap width), w=bottom (reserved). World-space text only honours x/y today.
         Vec4 Margin{ 0.0f, 0.0f, 0.0f, 0.0f };
+
+        // Drawn under the glyphs, sized in text pixels (FontSize units) and faded with Color's alpha.
+        // Outline: copies of the text in a ring of OutlineWidth, 0 = off. Shadow: one copy at ShadowOffset (+y up), (0,0) = off.
+        float OutlineWidth = 0.0f;
+        Funke::Color OutlineColor{ 0.0f, 0.0f, 0.0f, 1.0f };
+        Vec2 ShadowOffset{ 0.0f, 0.0f };
+        Funke::Color ShadowColor{ 0.0f, 0.0f, 0.0f, 0.5f };
 
         // Sort batch — same semantics as SpriteRendererComponent. Text
         // batches independently from sprites today; the sort key only

@@ -464,8 +464,9 @@ namespace Funke {
 
 			// Graphics (RenderSettings_Graphics)
 			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Render Backend",  "render backend rendering api dawn webgpu vulkan d3d11 d3d12 opengl metal auto" },
-			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Runtime Quality", "render scale upscale filter post processing post-processing particles quality performance" },
+			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Runtime Quality", "render scale upscale filter post processing post-processing particles quality performance texture quality mipmap mip anisotropic anisotropy filtering anti-aliasing antialiasing aliasing fxaa jaggies edges" },
 			{ ImGuiEditorLayer::SettingsCategory::Graphics, "3D Rendering", "3d shadows shadow quality distance lights max lights exposure tone mapping aces reinhard hdr" },
+			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Animation",       "animation animator skinned mesh distance rate update rate lod level of detail far frames fps culling performance" },
 			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Default Font",    "default font typeface text font asset" },
 			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Font Baking",     "font baking atlas memory budget step granularity bake size lru cache vram ram" },
 
@@ -2012,6 +2013,47 @@ namespace Funke {
 				graphicsChanged = true;
 			}
 
+			const char* textureQualityLabels[] = { "Full", "Half", "Quarter" };
+			int textureQuality = static_cast<int>(project.Graphics.TextureQuality);
+			if (ImGui::Combo("Texture Quality", &textureQuality,
+				textureQualityLabels, IM_ARRAYSIZE(textureQualityLabels))) {
+				project.Graphics.TextureQuality = static_cast<TextureQualityLevel>(textureQuality);
+				graphicsChanged = true;
+			}
+			EditorUI::Tooltip("Half and Quarter skip the top mip levels of scene textures.\n"
+				"Point-filtered textures (pixel art) and UI always stay at full resolution.");
+
+			const char* anisotropyLabels[] = { "Off", "2x", "4x", "8x", "16x" };
+			int anisotropy = static_cast<int>(project.Graphics.AnisotropicFiltering);
+			if (ImGui::Combo("Anisotropic Filtering", &anisotropy,
+				anisotropyLabels, IM_ARRAYSIZE(anisotropyLabels))) {
+				project.Graphics.AnisotropicFiltering = static_cast<AnisotropicFilteringLevel>(anisotropy);
+				graphicsChanged = true;
+			}
+			EditorUI::Tooltip("Keeps textures sharp on surfaces seen at a grazing angle.\n"
+				"Applies to textures whose filter is Trilinear or Anisotropic.");
+
+			const char* antiAliasingLabels[] = { "Off", "FXAA", "MSAA 4x" };
+			int antiAliasing = static_cast<int>(project.Graphics.AntiAliasing);
+			if (ImGui::Combo("Anti-Aliasing", &antiAliasing,
+				antiAliasingLabels, IM_ARRAYSIZE(antiAliasingLabels))) {
+				project.Graphics.AntiAliasing = static_cast<AntiAliasingMode>(antiAliasing);
+				graphicsChanged = true;
+			}
+			EditorUI::Tooltip("Smooths jagged edges of the scene; UI and gizmos stay as drawn.\n"
+				"FXAA: 2D and 3D, also softens hard edges inside textures a little.\n"
+				"MSAA 4x: edges of 3D geometry only; textures (pixel art) stay exactly as they are.");
+
+			ImGui::BeginDisabled(project.Graphics.AntiAliasing != AntiAliasingMode::FXAA);
+			const char* antiAliasingQualityLabels[] = { "Low", "Medium", "High" };
+			int antiAliasingQuality = static_cast<int>(project.Graphics.AntiAliasingQuality);
+			if (ImGui::Combo("Anti-Aliasing Quality", &antiAliasingQuality,
+				antiAliasingQualityLabels, IM_ARRAYSIZE(antiAliasingQualityLabels))) {
+				project.Graphics.AntiAliasingQuality = static_cast<AntiAliasingQualityLevel>(antiAliasingQuality);
+				graphicsChanged = true;
+			}
+			ImGui::EndDisabled();
+
 			if (graphicsChanged) {
 				changed = true;
 				RenderSettings::Apply(project.Graphics);
@@ -2058,6 +2100,28 @@ namespace Funke {
 			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("3D Rendering")
+
+		if (SectionVisible(SettingsCategory::Graphics, "Animation", filterLower)) {
+		if (SettingsSectionHeader("Animation", filterLower)) {
+			ImGui::Indent(8);
+			bool graphicsChanged = ImGuiUtils::Switch("Distance Rate", &project.Graphics.AnimationDistanceRateEnabled);
+			EditorUI::Tooltip("Animators and Skinned Mesh Renderers whose Distance Rate is Project Setting update less often far "
+				"from the game camera; the skipped time is added to their next update.");
+			ImGui::BeginDisabled(!project.Graphics.AnimationDistanceRateEnabled);
+			graphicsChanged |= ImGui::DragFloat("Half Rate From", &project.Graphics.AnimationHalfRateDistance, 0.5f,
+				0.0f, GraphicsSettings::MaxAnimationRateDistance, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+			EditorUI::Tooltip("World units from the camera from which animations update every 2nd frame (30 of 60 fps).");
+			graphicsChanged |= ImGui::DragFloat("Quarter Rate From", &project.Graphics.AnimationQuarterRateDistance, 0.5f,
+				0.0f, GraphicsSettings::MaxAnimationRateDistance, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+			EditorUI::Tooltip("World units from the camera from which animations update every 4th frame.");
+			ImGui::EndDisabled();
+			if (graphicsChanged) {
+				changed = true;
+				RenderSettings::Apply(project.Graphics);
+			}
+			ImGui::Unindent(8);
+		}
+		}  // end SectionVisible("Animation")
 
 		if (SectionVisible(SettingsCategory::Graphics, "Default Font", filterLower)) {
 		if (SettingsSectionHeader("Default Font", filterLower)) {

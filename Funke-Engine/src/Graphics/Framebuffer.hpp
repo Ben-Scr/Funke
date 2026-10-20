@@ -30,6 +30,9 @@ namespace Funke {
 		bool Recreate(int width, int height,
 			TextureFormat colorFormat = TextureFormat::RGBA8,
 			TextureFilter filter = TextureFilter::Linear);
+		// sampleCount > 1: multisampled colour and depth to render into only (no ImGui::Image, no readback);
+		// a pass resolves them into a single-sampled target of the same size and format.
+		bool Recreate(int width, int height, TextureFormat colorFormat, TextureFilter filter, uint32_t sampleCount);
 
 		// Dawn resources are NOT freed immediately — moved to a two-frame deferred-destroy queue so ImGui frames still holding the WGPUTextureView pointer finish before the handle releases.
 		void Destroy();
@@ -54,6 +57,8 @@ namespace Funke {
 		int GetWidth() const { return m_Viewport.GetWidth(); }
 		int GetHeight() const { return m_Viewport.GetHeight(); }
 		const Viewport& GetViewport() const { return m_Viewport; }
+		TextureFormat GetColorFormat() const { return m_ColorFormat; }
+		uint32_t GetSampleCount() const { return m_SampleCount; }
 
 	private:
 		// m_ColorTextureId stores raw WGPUTextureView pointer (uint64_t) so ImGui passes it straight to imgui_impl_wgpu without a pool lookup. m_BackendId is a 32-bit Framebuffer_WebGPU.cpp pool key.
@@ -62,6 +67,7 @@ namespace Funke {
 		uint32_t m_DepthRenderbuffer = 0;
 		// Tracked so Recreate's same-size fast-path also catches FORMAT changes (e.g. RGBA8 -> RGBA16F at equal size).
 		TextureFormat m_ColorFormat = TextureFormat::RGBA8;
+		uint32_t m_SampleCount = 1;
 
 		Viewport m_Viewport{ 0, 0 };
 	};

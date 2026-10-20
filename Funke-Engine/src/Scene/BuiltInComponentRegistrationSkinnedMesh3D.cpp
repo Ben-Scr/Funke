@@ -8,6 +8,7 @@
 #include "Graphics/MeshAsset.hpp"
 #include "Serialization/SceneSerializerShared.hpp"
 
+#include <algorithm>
 #include <string>
 
 // SkinnedMeshRenderer. Its own slice, registered after Animation so no older typeIdU32 shifts.
@@ -16,6 +17,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 		using Json::Value;
 		using SceneSerializerShared::GetBoolMember;
 		using SceneSerializerShared::GetFloatMember;
+		using SceneSerializerShared::GetIntMember;
 		using SceneSerializerShared::GetStringMember;
 		using SceneSerializerShared::GetUInt64Member;
 		using SMR = SkinnedMeshRendererComponent;
@@ -55,6 +57,12 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			v.AddMember("loop", Value(c.Loop));
 			v.AddMember("playOnAwake", Value(c.PlayOnAwake));
 			v.AddMember("previewInEditMode", Value(c.PreviewInEditMode));
+			// Only when changed: an older prefab without the keys would otherwise show every instance as overridden.
+			const SMR d{};
+			if (c.CullingMode != d.CullingMode) v.AddMember("cullingMode", Value(static_cast<int>(c.CullingMode)));
+			if (c.DistanceRate != d.DistanceRate) v.AddMember("distanceRate", Value(static_cast<int>(c.DistanceRate)));
+			if (c.HalfRateDistance != d.HalfRateDistance) v.AddMember("halfRateDistance", Value(c.HalfRateDistance));
+			if (c.QuarterRateDistance != d.QuarterRateDistance) v.AddMember("quarterRateDistance", Value(c.QuarterRateDistance));
 			return v;
 		}
 
@@ -72,6 +80,14 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			c.Loop = GetBoolMember(v, "loop", d.Loop);
 			c.PlayOnAwake = GetBoolMember(v, "playOnAwake", d.PlayOnAwake);
 			c.PreviewInEditMode = GetBoolMember(v, "previewInEditMode", d.PreviewInEditMode);
+			const int culling = GetIntMember(v, "cullingMode", static_cast<int>(d.CullingMode));
+			c.CullingMode = culling >= 0 && culling <= static_cast<int>(AnimationCullingMode::CullCompletely)
+				? static_cast<AnimationCullingMode>(culling) : d.CullingMode;
+			const int rate = GetIntMember(v, "distanceRate", static_cast<int>(d.DistanceRate));
+			c.DistanceRate = rate >= 0 && rate <= static_cast<int>(AnimationDistanceRate::Custom)
+				? static_cast<AnimationDistanceRate>(rate) : d.DistanceRate;
+			c.HalfRateDistance = std::max(GetFloatMember(v, "halfRateDistance", d.HalfRateDistance), 0.0f);
+			c.QuarterRateDistance = std::max(GetFloatMember(v, "quarterRateDistance", d.QuarterRateDistance), 0.0f);
 		}
 	}
 
@@ -98,6 +114,21 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			Properties::Make("PlayOnAwake", "Play On Awake", &SMR::PlayOnAwake),
 			Properties::Make("PreviewInEditMode", "Preview In Edit Mode", &SMR::PreviewInEditMode,
 				Properties::Meta::Tooltip("Plays the clip in the editor outside Play mode.")),
+
+			WithEnumLabels(Properties::Make("CullingMode", "Culling Mode", &SMR::CullingMode,
+				Properties::Meta::Header("Optimization").WithTooltip("Outside the game camera's view: Always Animate keeps going, "
+					"Cull Pose keeps the play head running but skins no new pose, Cull Completely pauses.")),
+				{ "Always Animate", "Cull Pose", "Cull Completely" }),
+			WithEnumLabels(Properties::Make("DistanceRate", "Distance Rate", &SMR::DistanceRate,
+				Properties::Meta::Tooltip("Skins a new pose only every 2nd / 4th frame far from the game camera; the play head keeps its "
+					"exact time. Project Setting follows Project Settings > Graphics > Animation.")),
+				{ "Project Setting", "Off", "Custom" }),
+			Properties::Make("HalfRateDistance", "Half Rate From", &SMR::HalfRateDistance,
+				Properties::Meta::DragSpeed(0.5f).WithDragMin(0.0).WithTooltip("World units from the camera from which the pose updates every 2nd frame.")
+					.WithEnabledIf([](const Entity& e) { return e.GetComponent<SMR>().DistanceRate == AnimationDistanceRate::Custom; })),
+			Properties::Make("QuarterRateDistance", "Quarter Rate From", &SMR::QuarterRateDistance,
+				Properties::Meta::DragSpeed(0.5f).WithDragMin(0.0).WithTooltip("World units from the camera from which the pose updates every 4th frame.")
+					.WithEnabledIf([](const Entity& e) { return e.GetComponent<SMR>().DistanceRate == AnimationDistanceRate::Custom; })),
 		};
 		info.serialize = Serialize;
 		info.deserialize = Deserialize;

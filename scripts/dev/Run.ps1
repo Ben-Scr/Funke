@@ -16,12 +16,16 @@
     scripts\dev\Run.ps1 -App Runtime -Project C:\Games\Foo -Seconds 5 -Shots 3
     scripts\dev\Run.ps1 -Recent -KeepOpen
     scripts\dev\Run.ps1 -Project bin-int\_agent\My3D -EditorView   # screenshot the Editor View tab instead of the Game View
+    scripts\dev\Run.ps1 -Project bin-int\_agent\My3D -EditorView -DrawMode triangle   # Editor View in the Triangle draw mode
     scripts\dev\Run.ps1 -App Runtime -Variant 2d -Project <dir>     # module-reduced runtime from premake --without-3d
     scripts\dev\Run.ps1 -App Launcher -LauncherPage templates       # screenshot the Launcher's Templates page
     scripts\dev\Run.ps1 -OpenWindow build,buildprofiles             # editor with those windows open
     scripts\dev\Run.ps1 -App Runtime -Project <dir> -ScreenshotAt 2s,5s -FixedStep 60   # engine screenshots at game time
     scripts\dev\Run.ps1 -App Runtime -Project <dir> -InputScript Tests\level5.json      # scripted input, quits itself
     scripts\dev\Run.ps1 -App Runtime -Project <dir> -Exec "physics.debug on" -ScreenshotAt 3s
+
+    Windows start with --background: they never take focus, open behind the user's windows and keep
+    running unfocused (fullscreen/maximized become a plain window filling the screen). -Foreground opts out.
 
     Runtime runs use the isolated player-data profile "agent" (PlayerPrefs/SaveData under
     Profiles\agent), so a test never changes the player's saves; -RealPrefs turns that off.
@@ -49,8 +53,12 @@ param(
 
     [string[]]$ExtraArgs = @(),
     [switch]$KeepOpen,
+    # Let the window take focus and come to the front (default: --background, it opens behind the user's windows).
+    [switch]$Foreground,
     # Editor only: bring the Editor View tab to the front (FUNKE_EDITOR_FOCUS_VIEW).
     [switch]$EditorView,
+    # Editor only: bring the Game View tab to the front (FUNKE_EDITOR_FOCUS_VIEW=game).
+    [switch]$GameView,
     # Editor only: enter play mode once the startup scene has loaded (FUNKE_EDITOR_AUTOPLAY).
     [switch]$Play,
     # Editor only: leave play mode again after this many seconds (FUNKE_EDITOR_AUTOSTOP); implies -Play.
@@ -60,8 +68,14 @@ param(
     # Editor only, with -ReloadAfter: remove this engine module (e.g. Funke.2D) right before the reload.
     [string]$RemoveModule = "",
     # Editor only: open these windows once loaded (FUNKE_EDITOR_OPEN): build, buildprofiles, projectsettings,
-    # preferences, packages, profiler.
+    # preferences, packages, profiler, gamestats (the Game View's Stats overlay). projectsettings:graphics (display,
+    # branding, build, ...) also picks the category.
     [string[]]$OpenWindow = @(),
+    # Editor only: select the first entity with this name once loaded and frame it in the 3D Editor View (FUNKE_EDITOR_SELECT).
+    [string]$Select = "",
+    # Editor only: start the Editor View in this draw mode (FUNKE_EDITOR_DRAW_MODE).
+    [ValidateSet("", "triangle", "mixed")]
+    [string]$DrawMode = "",
     # Launcher only: start on this page (FUNKE_LAUNCHER_PAGE).
     [ValidateSet("", "templates", "assets")]
     [string]$LauncherPage = "",
@@ -213,6 +227,7 @@ $started = Get-Date
 
 $argList = @()
 if ($Project) { $argList += "--project=`"$Project`"" }
+if (-not $Foreground) { $argList += "--background" }
 if ($App -eq "Runtime") {
     if (-not $RealPrefs -and $PrefsProfile) { $argList += "--prefs-profile=$PrefsProfile" }
     if ($ScreenshotAt.Count -gt 0) { $argList += "--screenshot-at=$($ScreenshotAt -join ',')" }
@@ -233,10 +248,15 @@ $previousOpenWindow = $env:FUNKE_EDITOR_OPEN
 $previousAutoplay = $env:FUNKE_EDITOR_AUTOPLAY
 $previousAutostop = $env:FUNKE_EDITOR_AUTOSTOP
 $previousAutoreload = $env:FUNKE_EDITOR_AUTORELOAD
+$previousSelect = $env:FUNKE_EDITOR_SELECT
+$previousDrawMode = $env:FUNKE_EDITOR_DRAW_MODE
+if ($Select) { $env:FUNKE_EDITOR_SELECT = $Select }
+if ($DrawMode) { $env:FUNKE_EDITOR_DRAW_MODE = $DrawMode }
 if ($Play -or $StopAfter -gt 0) { $env:FUNKE_EDITOR_AUTOPLAY = "1" }
 if ($StopAfter -gt 0) { $env:FUNKE_EDITOR_AUTOSTOP = [string]$StopAfter }
 if ($ReloadAfter -gt 0) { $env:FUNKE_EDITOR_AUTORELOAD = if ($RemoveModule) { "${ReloadAfter}:$RemoveModule" } else { [string]$ReloadAfter } }
 if ($EditorView) { $env:FUNKE_EDITOR_FOCUS_VIEW = "editor" }
+elseif ($GameView) { $env:FUNKE_EDITOR_FOCUS_VIEW = "game" }
 if ($LauncherPage) { $env:FUNKE_LAUNCHER_PAGE = $LauncherPage }
 if ($OpenWindow.Count -gt 0) { $env:FUNKE_EDITOR_OPEN = (@($OpenWindow | ForEach-Object { $_ -split ',' }) -join ',') }
 try { $proc = Start-Process @startArgs }
@@ -247,6 +267,8 @@ finally {
     $env:FUNKE_EDITOR_AUTOPLAY = $previousAutoplay
     $env:FUNKE_EDITOR_AUTOSTOP = $previousAutostop
     $env:FUNKE_EDITOR_AUTORELOAD = $previousAutoreload
+    $env:FUNKE_EDITOR_SELECT = $previousSelect
+    $env:FUNKE_EDITOR_DRAW_MODE = $previousDrawMode
 }
 
 $shotsTaken = New-Object System.Collections.Generic.List[string]

@@ -8,7 +8,11 @@ namespace Funke {
 			return true;
 		}
 
-		const ma_result result = ma_engine_init(nullptr, &m_Engine);
+		ma_engine_config headless = ma_engine_config_init();
+		headless.noDevice = MA_TRUE;
+		headless.channels = 2;
+		headless.sampleRate = 48000;
+		const ma_result result = ma_engine_init(m_Headless ? &headless : nullptr, &m_Engine);
 		if (result != MA_SUCCESS) {
 			FNK_CORE_ERROR("[{}] MiniaudioBackend: ma_engine_init failed. Error: {}",
 				ErrorCodeToString(FunkeErrorCode::LoadFailed), static_cast<int>(result));
@@ -26,6 +30,16 @@ namespace Funke {
 
 		ma_engine_uninit(&m_Engine);
 		m_Initialized = false;
+	}
+
+	uint64_t MiniaudioBackend::ReadFrames(float* interleaved, uint64_t frameCount) {
+		if (!m_Initialized || !m_Headless) {
+			return 0;
+		}
+
+		ma_uint64 read = 0;
+		ma_engine_read_pcm_frames(&m_Engine, interleaved, frameCount, &read);
+		return read;
 	}
 
 	void MiniaudioBackend::SetMasterVolume(float volume) {

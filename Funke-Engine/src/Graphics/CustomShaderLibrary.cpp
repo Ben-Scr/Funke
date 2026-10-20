@@ -443,11 +443,12 @@ namespace Funke {
 		Shutdown();
 	}
 
-	bool CustomMaterialBindings::Initialize(const char* label) {
+	bool CustomMaterialBindings::Initialize(const char* label, bool sceneSamplers) {
 		if (m_GlobalsBuffer) return true;
 		wgpu::Device device = WebGPUBackend::GetDevice();
 		if (!device) return false;
 		m_Label = label ? label : "custom-shader";
+		m_SceneSamplers = sceneSamplers;
 		wgpu::BufferDescriptor desc{};
 		desc.size = sizeof(ShaderGlobals);
 		desc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
@@ -577,6 +578,7 @@ namespace Funke {
 		std::array<wgpu::TextureView, k_MaxShaderTextureProperties> views;
 		std::array<wgpu::Sampler, k_MaxShaderTextureProperties> samplers;
 		std::vector<WGPUTextureView> viewKeys(textureCount, nullptr);
+		std::vector<WGPUSampler> samplerKeys(textureCount, nullptr);
 		for (const ShaderProperty& property : description.Properties) {
 			if (property.Type != ShaderPropertyType::Texture || property.TextureSlot >= textureCount) continue;
 			const uint64_t textureGuid = ResolveMaterialProperty(values, property).Texture;
@@ -584,10 +586,12 @@ namespace Funke {
 			if (!TextureManager::IsValid(handle)) handle = GetDefaultTexture(property.DefaultTexture);
 			Texture2D* texture = TextureManager::GetTexture(handle);
 			const auto lookup = texture && texture->IsValid() ? WebGPUBackend::LookupTexture2D(texture->GetHandle()) : WebGPUBackend::TextureLookup{};
-			if (!lookup.Valid || !lookup.View || !lookup.Sampler) return nullptr;
+			const wgpu::Sampler& sampler = m_SceneSamplers ? lookup.SceneSampler : lookup.Sampler;
+			if (!lookup.Valid || !lookup.View || !sampler) return nullptr;
 			views[property.TextureSlot] = lookup.View;
-			samplers[property.TextureSlot] = lookup.Sampler;
+			samplers[property.TextureSlot] = sampler;
 			viewKeys[property.TextureSlot] = lookup.View.Get();
+			samplerKeys[property.TextureSlot] = sampler.Get();
 		}
 
 		// Keyed by both ids: one material can be drawn through its shader and a fallback in the same frame.
@@ -595,7 +599,8 @@ namespace Funke {
 		GroupEntry& entry = m_Groups[key];
 		const Clock::time_point now = Clock::now();
 		entry.LastUsed = now;
-		const bool rebuild = !entry.Group || !entry.Uniforms || entry.Bytes.size() != m_Scratch.size() || entry.Views != viewKeys;
+		const bool rebuild = !entry.Group || !entry.Uniforms || entry.Bytes.size() != m_Scratch.size() || entry.Views != viewKeys
+			|| entry.Samplers != samplerKeys;
 		if (rebuild) {
 			if (!entry.Uniforms || entry.Bytes.size() != m_Scratch.size()) {
 				wgpu::BufferDescriptor bufferDesc{};
@@ -627,6 +632,7 @@ namespace Funke {
 			desc.label = groupLabel.c_str();
 			entry.Group = entry.Uniforms ? device.CreateBindGroup(&desc) : nullptr;
 			entry.Views = viewKeys;
+			entry.Samplers = samplerKeys;
 		}
 		if (entry.Uniforms && entry.Bytes != m_Scratch) {
 			WebGPUBackend::GetQueue().WriteBuffer(entry.Uniforms, 0, m_Scratch.data(), m_Scratch.size());

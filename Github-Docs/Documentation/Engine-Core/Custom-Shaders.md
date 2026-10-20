@@ -156,6 +156,8 @@ struct SurfaceOutput {
 
 The result is lit like the standard material: every directional, point and spot light, the shadow of the main directional light, sky ambient, exposure, tone mapping and the camera's distance fog. Set the material's `"fog": false` for surfaces that fade on their own (clouds, a sky dome).
 
+**Atlases and MSAA 4x.** With [MSAA 4x](Graphics-Settings.md#anti-aliasing) a pixel on a triangle's edge is shaded at its center, which can lie just outside the triangle, so `uv` runs a little past the edge there. A shader that derives an atlas tile from `uv` with `floor()` then picks the neighbouring tile on those pixels and draws dotted seams along the edges. Keep each face's UVs a few texels inside its tile (padded atlas cells) so the tile pick has a margin. Sampling a texture needs nothing extra: texels inside a surface stay exactly as without anti-aliasing.
+
 Optional vertex stage. Change any field and return it:
 
 ```wgsl

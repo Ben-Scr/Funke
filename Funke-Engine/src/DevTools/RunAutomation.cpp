@@ -34,9 +34,13 @@ namespace Funke {
 			std::vector<bool> Done;
 			std::vector<PendingRelease> Releases;
 			float FixedStep = 0.0f;
+			float FixedStepOverride = 0.0f;
+			// The finger SDL's touch-to-mouse emulation would follow; -1 while no finger is down.
+			int64_t MouseFinger = -1;
 			double ClockSeconds = 0.0;
 			int64_t ClockFrame = 0;
 			bool Active = false;
+			bool Background = false;
 			bool FrameActive = false;
 			bool ExecRan = false;
 			bool WarnedHeadless = false;
@@ -56,13 +60,6 @@ namespace Funke {
 			return result.ec == std::errc{} && result.ptr == end;
 		}
 
-		bool ParseFixedStep(std::string_view text, float& out) {
-			double value = 0.0;
-			if (!ParseDouble(text, value) || value <= 0.0) return false;
-			// >= 1 reads as frames per second ("60"), below as seconds per frame ("0.0166").
-			out = static_cast<float>(value >= 1.0 ? 1.0 / value : value);
-			return true;
-		}
 
 		bool IsDue(const RunAutomation::Moment& at) {
 			if (at.Frame >= 0) return g_State.ClockFrame >= at.Frame;
@@ -144,6 +141,18 @@ namespace Funke {
 			event.tfinger.y = std::clamp(normalized.y, 0.0f, 1.0f);
 			event.tfinger.pressure = type == SDL_EVENT_FINGER_UP ? 0.0f : 1.0f;
 			SDL_PushEvent(&event);
+
+			// A real touch screen's first finger also drives the mouse (SDL's touch emulation), which is what UI
+			// buttons and scroll views listen to; pushed finger events skip that emulation, so mirror it here.
+			if (type == SDL_EVENT_FINGER_DOWN && g_State.MouseFinger < 0) g_State.MouseFinger = finger;
+			if (finger != g_State.MouseFinger) return;
+			const Vec2 clamped{ std::clamp(normalized.x, 0.0f, 1.0f), std::clamp(normalized.y, 0.0f, 1.0f) };
+			PushMouseMove(window, clamped);
+			if (type == SDL_EVENT_FINGER_DOWN) PushMouseButton(window, 0, clamped, true);
+			else if (type == SDL_EVENT_FINGER_UP) {
+				PushMouseButton(window, 0, clamped, false);
+				g_State.MouseFinger = -1;
+			}
 		}
 
 		void RunStep(const RunAutomation::Step& step) {
@@ -299,6 +308,17 @@ namespace Funke {
 		return -1;
 	}
 
+	bool RunAutomation::ParseFixedStep(std::string_view text, float& outSecondsPerFrame) {
+		double value = 0.0;
+		if (!ParseDouble(text, value) || value <= 0.0) return false;
+		outSecondsPerFrame = static_cast<float>(value >= 1.0 ? 1.0 / value : value);
+		return true;
+	}
+
+	void RunAutomation::SetFixedStepOverride(float secondsPerFrame) {
+		g_State.FixedStepOverride = std::max(secondsPerFrame, 0.0f);
+	}
+
 	bool RunAutomation::ParseScript(std::string_view json, Script& out, std::string& outError) {
 		out = Script{};
 		Json::Value root;
@@ -436,7 +456,13 @@ namespace Funke {
 			if (!argv[i]) continue;
 			const std::string_view arg(argv[i]);
 			std::string value;
-			if (valueOf(arg, "--input-script", value)) options.InputScriptPath = value;
+			if (arg == "--background") options.Background = true;
+			else if (arg == "--sound") options.Sound = true;
+			else if (arg == "--mute") options.Mute = true;
+			// An empty --prefs-profile= turns a build's isolated profile off: that is a player's run.
+			else if (valueOf(arg, "--prefs-profile", value)) options.PrefsProfile = !value.empty();
+			else if (arg == "--prefs-profile" && i + 1 < argc && argv[i + 1] && *argv[i + 1]) options.PrefsProfile = true;
+			else if (valueOf(arg, "--input-script", value)) options.InputScriptPath = value;
 			else if (valueOf(arg, "--screenshot-dir", value)) options.ScreenshotDirectory = value;
 			else if (valueOf(arg, "--exec", value)) options.Exec = value;
 			else if (valueOf(arg, "--fixed-step", value)) {
@@ -499,9 +525,17 @@ namespace Funke {
 		}
 		g_State.Done.assign(g_State.Steps.size(), false);
 		g_State.Active = !g_State.Steps.empty() || g_State.FixedStep > 0.0f || !options.Exec.empty();
-		if (g_State.Active) {
+		g_State.Background = options.Background;
+		if (g_State.Background) {
+			SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+			SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_RAISED, "0");
+			FNK_CORE_INFO_TAG("Automation", "Background run: windows open behind the others and never take focus");
+		}
+		if (g_State.Active || g_State.Background) {
 			// A fullscreen test run that loses focus (another window opens) would minimize, pause and stall its clock.
 			SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
+		}
+		if (g_State.Active) {
 			FNK_CORE_INFO_TAG("Automation", "{} scripted step(s), {}, screenshots in {}", g_State.Steps.size(),
 				g_State.FixedStep > 0.0f ? fmt::format("fixed step {:.5f}s", g_State.FixedStep) : std::string("real-time steps"),
 				ScreenCapture::GetDirectory());
@@ -509,7 +543,10 @@ namespace Funke {
 	}
 
 	bool RunAutomation::IsActive() { return g_State.Active; }
-	float RunAutomation::GetFixedStep() { return g_State.FixedStep; }
+	bool RunAutomation::IsBackground() { return g_State.Background; }
+	bool RunAutomation::IsAutomatedRun() { return g_State.Active || g_State.Background || g_State.Options.PrefsProfile; }
+	bool RunAutomation::IsMuted() { return g_State.Options.Mute || (IsAutomatedRun() && !g_State.Options.Sound); }
+	float RunAutomation::GetFixedStep() { return g_State.FixedStepOverride > 0.0f ? g_State.FixedStepOverride : g_State.FixedStep; }
 	double RunAutomation::GetClockSeconds() { return g_State.ClockSeconds; }
 	int64_t RunAutomation::GetClockFrame() { return g_State.ClockFrame; }
 

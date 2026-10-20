@@ -29,6 +29,20 @@ namespace Funke {
 			return Application::s_Instance ? Application::s_Instance->m_IsScriptInputEnabled : true;
 		}
 
+		// A minimized window pauses the engine. The Editor Bridge clears the flag while it works so a minimized editor
+		// keeps updating and rendering offscreen; the window's own minimize/restore events still set it.
+		static bool IsMinimizedPauseActive()
+		{
+			return Application::s_Instance ? Application::s_Instance->m_IsMinimized.load() : false;
+		}
+
+		static void SetMinimizedPauseActive(bool minimized)
+		{
+			if (Application::s_Instance) {
+				Application::s_Instance->m_IsMinimized = minimized;
+			}
+		}
+
 		// Application.Quit() in the editor raises this flag instead of closing the process; poll+consume each frame via the normal stop-play path.
 		static bool ConsumeQuitStopPlayRequest()
 		{

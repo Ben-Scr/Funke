@@ -1174,6 +1174,32 @@ internal unsafe struct NativeBindingsStruct
     // ── Image slice (appended for binary compat) ──
     public delegate* unmanaged<ulong, byte*, int, int> Image_GetSpriteNameBuffer;
     public delegate* unmanaged<ulong, byte*, void> Image_SetSpriteName;
+
+    // ── Texture quality and anti-aliasing settings (appended for binary compat) ──
+    public delegate* unmanaged<int*, int*, int*, int*, void> RenderSettings_GetQuality;
+    public delegate* unmanaged<int, int, int, int, int> RenderSettings_ApplyQuality;
+
+    // ── Animation culling (appended for binary compat) ──
+    public delegate* unmanaged<ulong, float*, int, void> Animator_GetCulling;
+    public delegate* unmanaged<ulong, float*, int, void> Animator_SetCulling;
+    public delegate* unmanaged<float*, int, void> RenderSettings_GetAnimation;
+    public delegate* unmanaged<float*, int, int> RenderSettings_ApplyAnimation;
+
+    // ── Script platform (appended for binary compat) ──
+    public delegate* unmanaged<int> Application_GetPlatform;
+
+    // ── Spatial audio (appended for binary compat) ──
+    public delegate* unmanaged<ulong, float*, int, void> AudioSource_GetSpatial;
+    public delegate* unmanaged<ulong, float*, int, void> AudioSource_SetSpatial;
+    public delegate* unmanaged<ulong, float*, int, void> Audio_PlayOneShotAt;
+
+    // ── Spawn-time scripts, master volume, automated runs, text effects (appended for binary compat) ──
+    public delegate* unmanaged<ulong, void> Entity_CreateScriptInstances;
+    public delegate* unmanaged<float> Audio_GetMasterVolume;
+    public delegate* unmanaged<float, void> Audio_SetMasterVolume;
+    public delegate* unmanaged<int> Application_IsAutomatedRun;
+    public delegate* unmanaged<ulong, float*, int, void> TextRenderer_GetEffects;
+    public delegate* unmanaged<ulong, float*, int, void> TextRenderer_SetEffects;
 }
 
 internal static unsafe class NativeCallbacks

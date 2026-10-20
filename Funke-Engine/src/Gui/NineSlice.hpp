@@ -25,10 +25,17 @@ namespace Funke {
 		float Top = 0.0f;
 	};
 
-	// Splits a rect into up to 9 quads whose corners keep `border * scale` UI units while the middle stretches.
-	// spritePixels is the sprite's size in texture pixels. Borders wider than the rect shrink proportionally so
-	// opposite corners meet instead of overlapping. Returns the number of non-empty quads written to `out`.
-	inline int BuildNineSlice(Vec2 rectSize, Vec2 spritePixels, const NineSliceBorder& border, float scale,
+	// BorderScale turns texture pixels into UI units; the rect's resolved scale (canvas UI scale × local scales)
+	// turns those into screen units, so borders grow and shrink with the UI like positions and sizes do.
+	inline Vec2 ResolveBorderScale(float borderScale, Vec2 rectScale) {
+		return Vec2{ borderScale * std::abs(rectScale.x), borderScale * std::abs(rectScale.y) };
+	}
+
+	// Splits a rect into up to 9 quads whose corners keep `border * scale` rect units while the middle stretches;
+	// scale.x applies to the left/right borders, scale.y to top/bottom. spritePixels is the sprite's size in texture
+	// pixels. Borders wider than the rect shrink proportionally so opposite corners meet instead of overlapping.
+	// Returns the number of non-empty quads written to `out`.
+	inline int BuildNineSlice(Vec2 rectSize, Vec2 spritePixels, const NineSliceBorder& border, Vec2 scale,
 		const SpriteUVRect& uv, std::array<NineSliceQuad, 9>& out)
 	{
 		if (rectSize.x <= 0.0f || rectSize.y <= 0.0f || spritePixels.x <= 0.0f || spritePixels.y <= 0.0f) return 0;
@@ -37,8 +44,9 @@ namespace Funke {
 		const float t = std::clamp(border.Top, 0.0f, spritePixels.y);
 		const float b = std::clamp(border.Bottom, 0.0f, spritePixels.y - t);
 
-		scale = std::max(scale, 0.0f);
-		float screenL = l * scale, screenR = r * scale, screenT = t * scale, screenB = b * scale;
+		const float sx = std::max(scale.x, 0.0f);
+		const float sy = std::max(scale.y, 0.0f);
+		float screenL = l * sx, screenR = r * sx, screenT = t * sy, screenB = b * sy;
 		if (screenL + screenR > rectSize.x) {
 			const float f = rectSize.x / (screenL + screenR);
 			screenL *= f; screenR *= f;
@@ -73,11 +81,17 @@ namespace Funke {
 		return count;
 	}
 
+	inline int BuildNineSlice(Vec2 rectSize, Vec2 spritePixels, const NineSliceBorder& border, float scale,
+		const SpriteUVRect& uv, std::array<NineSliceQuad, 9>& out)
+	{
+		return BuildNineSlice(rectSize, spritePixels, border, Vec2{ scale, scale }, uv, out);
+	}
+
 	// Tiled: the corners stay as in BuildNineSlice, the edges and the middle repeat their part of the sprite at
 	// `scale` UI units per texture pixel instead of stretching. Tiles start at the bottom-left of each part; the last
 	// tile of a row/column is cropped. Without a border the whole sprite repeats. Tiles grow uniformly once more than
 	// maxQuads would be needed. Returns the number of quads written to `out` (cleared first).
-	inline int BuildTiled(Vec2 rectSize, Vec2 spritePixels, const NineSliceBorder& border, float scale,
+	inline int BuildTiled(Vec2 rectSize, Vec2 spritePixels, const NineSliceBorder& border, Vec2 scale,
 		const SpriteUVRect& uv, std::vector<NineSliceQuad>& out, int maxQuads = 4096)
 	{
 		out.clear();
@@ -90,10 +104,9 @@ namespace Funke {
 		const float r = std::clamp(border.Right, 0.0f, spritePixels.x - l);
 		const float t = std::clamp(border.Top, 0.0f, spritePixels.y);
 		const float b = std::clamp(border.Bottom, 0.0f, spritePixels.y - t);
-		scale = std::max(scale, 1e-4f);
 		// A cell repeats along an axis only when it is the middle part on that axis.
-		const float middleW = (spritePixels.x - l - r) * scale;
-		const float middleH = (spritePixels.y - t - b) * scale;
+		const float middleW = (spritePixels.x - l - r) * std::max(scale.x, 1e-4f);
+		const float middleH = (spritePixels.y - t - b) * std::max(scale.y, 1e-4f);
 		const float midU0 = uv.U0 + (uv.U1 - uv.U0) * (l / spritePixels.x);
 		const float midU1 = uv.U1 - (uv.U1 - uv.U0) * (r / spritePixels.x);
 		const float midV0 = uv.V0 + (uv.V1 - uv.V0) * (t / spritePixels.y);
@@ -162,6 +175,12 @@ namespace Funke {
 			}
 		}
 		return static_cast<int>(out.size());
+	}
+
+	inline int BuildTiled(Vec2 rectSize, Vec2 spritePixels, const NineSliceBorder& border, float scale,
+		const SpriteUVRect& uv, std::vector<NineSliceQuad>& out, int maxQuads = 4096)
+	{
+		return BuildTiled(rectSize, spritePixels, border, Vec2{ scale, scale }, uv, out, maxQuads);
 	}
 
 }

@@ -20,9 +20,12 @@
 #include "Core/Application.hpp"
 #include "Core/Time.hpp"
 #include "Profiling/Profiler.hpp"
+#include "Serialization/File.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/PrefabTemplateCache.hpp"
 #include "Serialization/Json.hpp"
+#include "Project/FunkeBuildProfile.hpp"
+#include "Project/FunkeProject.hpp"
 #include "Project/ProjectManager.hpp"
 
 #include <algorithm>
@@ -539,6 +542,22 @@ namespace Funke {
 			}
 
 			return latestInputWriteTime > artifactWriteTime;
+		}
+
+		// "<assembly>.defines" holds the C# defines the editor built that assembly with.
+		std::string ReadScriptDefinesStamp(const std::string& assemblyPath)
+		{
+			if (assemblyPath.empty()) return {};
+			const std::string stampPath = assemblyPath + ".defines";
+			return File::Exists(stampPath) ? File::ReadAllText(stampPath) : std::string();
+		}
+
+		void WriteScriptDefinesStamp(const std::string& assemblyPath, const std::string& defines)
+		{
+			if (assemblyPath.empty() || defines.empty()) return;
+			if (!File::WriteAllText(assemblyPath + ".defines", defines)) {
+				FNK_WARN_TAG("ScriptSystem", "Could not write the script defines stamp next to '{}'.", assemblyPath);
+			}
 		}
 
 		template <typename TFunc>
@@ -1083,8 +1102,14 @@ namespace Funke {
 					GetManagedWatchPatterns(),
 					[this]() { RebuildAndReloadScripts(); });
 
+				// Without a stamp the assembly was built the old way, for the editor's own platform.
+				m_ScriptDefines = ReadScriptDefinesStamp(m_UserAssemblyPath);
+				if (m_ScriptDefines.empty()) m_ScriptDefines = FunkeProject::BuildManagedDefineConstants("FUNKE_EDITOR", false);
 				if (BuildArtifactIsStale(managedWatchTargets, GetManagedWatchPatterns(), Path::FromUtf8(m_UserAssemblyPath))) {
 					RebuildAndReloadScripts();
+				}
+				else {
+					PollScriptDefines();
 				}
 			}
 		}
@@ -1214,6 +1239,26 @@ namespace Funke {
 		}
 	}
 
+	void ScriptSystem::PollScriptDefines()
+	{
+		if (!Application::IsEditor() || m_SandboxProjectPath.empty() || m_RebuildTask) return;
+		const auto now = std::chrono::steady_clock::now();
+		if (now - m_LastDefinesPoll < std::chrono::seconds(1)) return;
+		m_LastDefinesPoll = now;
+		const FunkeProject* project = ProjectManager::GetCurrentProject();
+		if (!project) return;
+		const std::string defines = FunkeProject::BuildManagedDefineConstants("FUNKE_EDITOR");
+		if (defines == m_ScriptDefines) return;
+
+		// IntelliSense follows too; a profile edited in the Build Profiles panel does not save project.json.
+		(void)project->WriteManagedDefinesProps();
+		const FunkeProject::EditorScriptTarget target = project->GetEditorScriptTarget();
+		FNK_INFO_TAG("ScriptSystem", "C# defines changed: scripts now compile as {}{}.",
+			FunkeBuildProfile::PlatformDisplayName(target.Platform),
+			target.ProfileName.empty() ? std::string() : " (build profile '" + target.ProfileName + "')");
+		RebuildAndReloadScripts();
+	}
+
 	void ScriptSystem::RebuildAndReloadScripts()
 	{
 		// Drop rebuilds during shutdown — late watcher events would lock the .dll mid-teardown.
@@ -1228,6 +1273,7 @@ namespace Funke {
 		if (m_SandboxProjectPath.empty()) {
 			m_RebuildQueued = false;
 			m_LastRebuildFailed = true;
+			m_LastRebuildOutput = "Cannot rebuild C# scripts: managed project path is not configured.";
 			FNK_ERROR_TAG("ScriptSystem", "Cannot rebuild C# scripts: managed project path is not configured.");
 			return;
 		}
@@ -1245,8 +1291,10 @@ namespace Funke {
 			m_ManagedBuildOutputPath = m_UserAssemblyPath;
 		}
 		const char* primarySymbol = Application::IsEditor() ? "FUNKE_EDITOR" : "FUNKE_BUILD";
-		const std::string defineConstantsArg =
-			"-p:DefineConstants=" + FunkeProject::BuildManagedDefineConstants(primarySymbol);
+		const std::string defineConstants = FunkeProject::BuildManagedDefineConstants(primarySymbol);
+		m_ScriptDefines = defineConstants;
+		m_BuildingScriptDefines = defineConstants;
+		const std::string defineConstantsArg = "-p:DefineConstants=" + defineConstants;
 		// FunkeCodegenEnabled=false: hot-reload must not regenerate CodegenComponents.cpp — the running engine has the old C++ layout and a size mismatch would crash on next ComponentTypes<T> init.
 		const char* codegenArg = "-p:FunkeCodegenEnabled=false";
 		const bool inProcess = ManagedScriptCompiler::EnsureLoaded();
@@ -1391,6 +1439,16 @@ namespace Funke {
 	bool ScriptSystem::IsRebuilding() const
 	{
 		return m_RebuildTask != nullptr || m_NativeRebuildTask != nullptr;
+	}
+
+	std::string ScriptSystem::GetLastRebuildOutput()
+	{
+		return m_LastRebuildOutput;
+	}
+
+	uint64_t ScriptSystem::GetCompletedRebuildCount()
+	{
+		return m_CompletedRebuildCount;
 	}
 
 	bool ScriptSystem::ReloadManagedAssemblies()
@@ -1570,8 +1628,35 @@ namespace Funke {
 
 		ScriptSceneScope sceneScope(*scene);
 		const EntityHandle entityHandle = entity.GetHandle();
+		// An entity that was disabled since load has no instances yet. Create them now (scene field values, OnAwake,
+		// OnEnable) instead of on the next ScriptSystem pass, so a caller that enables the entity and then sets a field
+		// through GetComponent<T>() gets a live instance whose value the scene data no longer overwrites.
+		const bool createMissing = enabled && Application::GetIsPlaying() && scene->IsSystemEnabled<ScriptSystem>();
 		ForEachScriptOnEntitySafe(*scene, entityHandle,
-			[enabled](ScriptComponent&, ScriptInstance& instance, size_t) -> bool {
+			[&](ScriptComponent& scriptComp, ScriptInstance& instance, size_t) -> bool {
+			if (createMissing && !instance.HasAnyInstance()
+				&& (instance.GetType() == ScriptType::Managed || instance.GetType() == ScriptType::Unknown)
+				&& !instance.GetClassName().empty()
+				&& ScriptEngine::ClassExists(instance.GetClassName()))
+			{
+				if (!instance.IsBound()) {
+					instance.Bind(entityHandle);
+				}
+				const uint32_t created = ScriptEngine::CreateScriptInstance(instance.GetClassName(), entityHandle);
+				if (created == 0) {
+					return true;
+				}
+				instance.SetGCHandle(created);
+				// Setters and OnAwake can add or remove scripts, which reallocates Scripts and dangles `instance`.
+				ApplyPendingFieldValues(scriptComp, instance);
+				ScriptEngine::InvokeAwake(created);
+				ScriptInstance* live = FindManagedScriptInstance(*scene, entityHandle, created);
+				if (live && !live->HasEnabled()) {
+					live->MarkEnabled();
+					ScriptEngine::InvokeOnEnable(created);
+				}
+				return true;
+			}
 			if (!instance.HasManagedInstance()) {
 				return true;
 			}
@@ -1587,6 +1672,71 @@ namespace Funke {
 			}
 			return true;
 		});
+	}
+
+	void ScriptSystem::CreateScriptInstancesNow(Scene& scene, EntityHandle root)
+	{
+		if (!Application::GetIsPlaying() || !ScriptEngine::IsInitialized() || m_TeardownInProgress
+			|| !scene.IsValid(root) || !scene.IsSystemEnabled<ScriptSystem>()) {
+			return;
+		}
+
+		// Disabled entities stay asleep until enabled (SetScriptsEnabled), as in the scene-start pass.
+		std::vector<EntityHandle> entities;
+		std::vector<EntityHandle> pending{ root };
+		while (!pending.empty()) {
+			const EntityHandle entity = pending.back();
+			pending.pop_back();
+			if (!scene.IsValid(entity) || scene.HasComponent<DisabledTag>(entity)) continue;
+			if (scene.HasComponent<ScriptComponent>(entity)) entities.push_back(entity);
+			for (EntityHandle child : scene.GetEntity(entity).GetChildren()) pending.push_back(child);
+		}
+		if (entities.empty()) return;
+
+		ScriptSceneScope sceneScope(scene);
+		struct Created { EntityHandle Entity; uint32_t Handle; };
+		std::vector<Created> created;
+		// Every instance exists before any field is applied: a field pointing at another script of the subtree
+		// resolves through GetComponent and would read null otherwise.
+		for (EntityHandle entity : entities) {
+			ForEachScriptOnEntitySafe(scene, entity,
+				[&](ScriptComponent&, ScriptInstance& instance, size_t) -> bool {
+				if (instance.HasAnyInstance() || instance.GetClassName().empty()
+					|| (instance.GetType() != ScriptType::Managed && instance.GetType() != ScriptType::Unknown)
+					|| !ScriptEngine::ClassExists(instance.GetClassName())) {
+					return true;
+				}
+				if (!instance.IsBound()) {
+					instance.Bind(entity);
+				}
+				const uint32_t handle = ScriptEngine::CreateScriptInstance(instance.GetClassName(), entity);
+				if (handle != 0) {
+					instance.SetGCHandle(handle);
+					created.push_back({ entity, handle });
+				}
+				return true;
+			});
+		}
+
+		// Re-find each instance after user code (setters, OnAwake) ran: it may have added scripts or destroyed entities.
+		for (const Created& c : created) {
+			if (ScriptInstance* instance = FindManagedScriptInstance(scene, c.Entity, c.Handle)) {
+				ApplyPendingFieldValues(scene.GetComponent<ScriptComponent>(c.Entity), *instance);
+			}
+		}
+		for (const Created& c : created) {
+			if (FindManagedScriptInstance(scene, c.Entity, c.Handle)) {
+				ScriptEngine::InvokeAwake(c.Handle);
+			}
+		}
+		for (const Created& c : created) {
+			if (!scene.IsValid(c.Entity) || scene.HasComponent<DisabledTag>(c.Entity)) continue;
+			ScriptInstance* live = FindManagedScriptInstance(scene, c.Entity, c.Handle);
+			if (live && !live->HasEnabled()) {
+				live->MarkEnabled();
+				ScriptEngine::InvokeOnEnable(c.Handle);
+			}
+		}
 	}
 
 #if FUNKE_WITH_2D
@@ -1726,6 +1876,7 @@ namespace Funke {
 		if (!m_SuppressRecompile && m_AutoRecompileEnabled) {
 			m_ScriptWatcher.Poll(1.0f);
 			m_NativeWatcher.Poll(1.0f);
+			PollScriptDefines();
 		}
 
 		bool anyRebuilding = false;
@@ -1753,6 +1904,7 @@ namespace Funke {
 						InitializeRegisteredGlobalSystems();
 						// Managed reload can invalidate cached component layouts.
 						PrefabTemplateCache::Get().InvalidateAll();
+						if (Application::IsEditor()) WriteScriptDefinesStamp(m_UserAssemblyPath, m_BuildingScriptDefines);
 						FNK_INFO_TAG("ScriptSystem", "C# scripts rebuilt and reloaded from '{}'", m_UserAssemblyPath);
 					}
 					else {
@@ -1769,6 +1921,10 @@ namespace Funke {
 					FNK_ERROR_TAG("ScriptSystem", "Compiler output:\n{}", result.Output);
 				}
 			}
+			m_LastRebuildOutput = m_LastRebuildFailed
+				? (result.Output.empty() ? "C# build failed (exit code " + std::to_string(result.ExitCode) + "); see the log" : result.Output)
+				: std::string();
+			++m_CompletedRebuildCount;
 
 			if (m_RebuildQueued) {
 				if (!m_TeardownInProgress.load(std::memory_order_acquire)) {
@@ -1816,7 +1972,9 @@ namespace Funke {
 				if (!result.Output.empty()) {
 					FNK_ERROR_TAG("ScriptSystem", "{}", result.Output);
 				}
+				m_LastRebuildOutput = result.Output.empty() ? "Native build failed; see the log" : result.Output;
 			}
+			++m_CompletedRebuildCount;
 
 			if (m_NativeRebuildQueued) {
 				// See managed branch above — same teardown race rationale.

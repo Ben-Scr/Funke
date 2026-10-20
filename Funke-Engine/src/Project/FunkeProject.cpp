@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Project/FunkeProject.hpp"
+#include "Project/BuildPlatformSupport.hpp"
 #include "Project/FunkeBuildProfile.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Project/ProjectTemplate.hpp"
@@ -98,6 +99,70 @@ namespace Funke {
 			if (value == "None") return ToneMappingMode::None;
 			if (value == "Reinhard") return ToneMappingMode::Reinhard;
 			return ToneMappingMode::ACES;
+		}
+
+		const char* TextureQualityToString(TextureQualityLevel value) {
+			switch (value) {
+				case TextureQualityLevel::Full: return "Full";
+				case TextureQualityLevel::Half: return "Half";
+				case TextureQualityLevel::Quarter: return "Quarter";
+			}
+			return "Full";
+		}
+
+		TextureQualityLevel TextureQualityFromString(std::string_view value) {
+			if (value == "Half") return TextureQualityLevel::Half;
+			if (value == "Quarter") return TextureQualityLevel::Quarter;
+			return TextureQualityLevel::Full;
+		}
+
+		const char* AnisotropicFilteringToString(AnisotropicFilteringLevel value) {
+			switch (value) {
+				case AnisotropicFilteringLevel::Off: return "Off";
+				case AnisotropicFilteringLevel::X2: return "X2";
+				case AnisotropicFilteringLevel::X4: return "X4";
+				case AnisotropicFilteringLevel::X8: return "X8";
+				case AnisotropicFilteringLevel::X16: return "X16";
+			}
+			return "X16";
+		}
+
+		AnisotropicFilteringLevel AnisotropicFilteringFromString(std::string_view value) {
+			if (value == "Off") return AnisotropicFilteringLevel::Off;
+			if (value == "X2") return AnisotropicFilteringLevel::X2;
+			if (value == "X4") return AnisotropicFilteringLevel::X4;
+			if (value == "X8") return AnisotropicFilteringLevel::X8;
+			return AnisotropicFilteringLevel::X16;
+		}
+
+		const char* AntiAliasingToString(AntiAliasingMode value) {
+			switch (value) {
+				case AntiAliasingMode::Off: return "Off";
+				case AntiAliasingMode::FXAA: return "FXAA";
+				case AntiAliasingMode::MSAA4x: return "MSAA4x";
+			}
+			return "Off";
+		}
+
+		AntiAliasingMode AntiAliasingFromString(std::string_view value) {
+			if (value == "FXAA") return AntiAliasingMode::FXAA;
+			if (value == "MSAA4x") return AntiAliasingMode::MSAA4x;
+			return AntiAliasingMode::Off;
+		}
+
+		const char* AntiAliasingQualityToString(AntiAliasingQualityLevel value) {
+			switch (value) {
+				case AntiAliasingQualityLevel::Low: return "Low";
+				case AntiAliasingQualityLevel::Medium: return "Medium";
+				case AntiAliasingQualityLevel::High: return "High";
+			}
+			return "High";
+		}
+
+		AntiAliasingQualityLevel AntiAliasingQualityFromString(std::string_view value) {
+			if (value == "Low") return AntiAliasingQualityLevel::Low;
+			if (value == "Medium") return AntiAliasingQualityLevel::Medium;
+			return AntiAliasingQualityLevel::High;
 		}
 
 		// Reject scene/icon strings that try to escape the project tree or carry
@@ -726,13 +791,13 @@ endforeach()
 	}
 
 	static bool IsKnownProjectMember(std::string_view name) {
-		static constexpr std::array<std::string_view, 62> knownMembers = {
+		static constexpr std::array<std::string_view, 63> knownMembers = {
 			"projectFormatVersion", "name", "engineVersion", "startupScene", "lastOpenedScene",
 			"gameViewAspect", "gameViewVsync", "editorView3D", "buildWidth", "buildHeight", "buildMinWidth",
 			"buildMinHeight", "buildMaxWidth", "buildMaxHeight", "buildFullscreen",
 			"buildFullscreenMode", "buildResizable", "buildRunInBackground", "buildAspect",
 			"mobileOrientation", "uiReferenceWidth", "uiReferenceHeight", "uiScaleMode", "uiScaleMatch", "appIcon", "executableName",
-			"buildVersion", "buildCompany", "splashScreen", "buildScenes", "globalSystems",
+			"productName", "buildVersion", "buildCompany", "splashScreen", "buildScenes", "globalSystems",
 			"packages", "profiler", "showRuntimeStats", "showRuntimeLogs", "devConsole", "prefsProfile", "graphics",
 			"enablePostProcessing", "physicsTickRate", "autoSaveScenes", "autoSaveIntervalSeconds",
 			"autoRecompileScripts", "recompileScriptsOnPlay", "assetSerializationFormat",
@@ -761,9 +826,11 @@ endforeach()
 			return std::find(members.begin(), members.end(), name) != members.end();
 		}
 		if (parent == "graphics") {
-			static constexpr std::array<std::string_view, 10> members = {
+			static constexpr std::array<std::string_view, 17> members = {
 				"renderScale", "upscaleFilter", "postProcessingEnabled", "postProcessingQuality",
-				"particleQuality", "shadowQuality", "shadowDistance", "maxLights", "exposure", "toneMapping"
+				"particleQuality", "shadowQuality", "shadowDistance", "maxLights", "exposure", "toneMapping",
+				"animationDistanceRate", "animationHalfRateDistance", "animationQuarterRateDistance",
+				"textureQuality", "anisotropicFiltering", "antiAliasing", "antiAliasingQuality"
 			};
 			return std::find(members.begin(), members.end(), name) != members.end();
 		}
@@ -834,7 +901,7 @@ endforeach()
 
 		for (std::string_view name : {
 			"name", "engineVersion", "startupScene", "lastOpenedScene", "gameViewAspect",
-			"buildFullscreenMode", "mobileOrientation", "uiScaleMode", "buildAspect", "appIcon", "executableName", "buildVersion",
+			"buildFullscreenMode", "mobileOrientation", "uiScaleMode", "buildAspect", "appIcon", "executableName", "productName", "buildVersion",
 			"buildCompany", "assetSerializationFormat", "editorEntityNameSuffix",
 			"editorAssetDuplicateSuffix", "cursorImagePath", "uiInteractableCursorImagePath",
 			"buildProfile", "renderBackend", "activeBuildProfile", "prefsProfile" }) {
@@ -928,14 +995,17 @@ endforeach()
 				[](const Json::Value& value) { return value.IsNumber(); }, "a number")) return false;
 			if (!requireNested(*graphics, "graphics", "postProcessingEnabled",
 				[](const Json::Value& value) { return value.IsBool(); }, "a boolean")) return false;
-			for (std::string_view member : { "upscaleFilter", "postProcessingQuality", "particleQuality", "shadowQuality", "toneMapping" }) {
+			for (std::string_view member : { "upscaleFilter", "postProcessingQuality", "particleQuality", "shadowQuality", "toneMapping",
+				"textureQuality", "anisotropicFiltering", "antiAliasing", "antiAliasingQuality" }) {
 				if (!requireNested(*graphics, "graphics", member,
 					[](const Json::Value& value) { return value.IsString(); }, "a string")) return false;
 			}
-			for (std::string_view member : { "shadowDistance", "maxLights", "exposure" }) {
+			for (std::string_view member : { "shadowDistance", "maxLights", "exposure", "animationHalfRateDistance", "animationQuarterRateDistance" }) {
 				if (!requireNested(*graphics, "graphics", member,
 					[](const Json::Value& value) { return value.IsNumber(); }, "a number")) return false;
 			}
+			if (!requireNested(*graphics, "graphics", "animationDistanceRate",
+				[](const Json::Value& value) { return value.IsBool(); }, "a boolean")) return false;
 		}
 
 		if (const Json::Value* scenes = root.FindMember("buildScenes")) {
@@ -1033,6 +1103,9 @@ endforeach()
 		}
 		if (!project.ExecutableName.empty()) {
 			root.AddMember("executableName", project.ExecutableName);
+		}
+		if (!project.ProductName.empty()) {
+			root.AddMember("productName", project.ProductName);
 		}
 		root.AddMember("buildVersion", project.BuildVersion);
 		root.AddMember("buildCompany", project.BuildCompany);
@@ -1159,6 +1232,13 @@ endforeach()
 			graphics.AddMember("maxLights", project.Graphics.MaxLights);
 			graphics.AddMember("exposure", project.Graphics.Exposure);
 			graphics.AddMember("toneMapping", std::string(ToneMappingToString(project.Graphics.ToneMapping)));
+			graphics.AddMember("animationDistanceRate", project.Graphics.AnimationDistanceRateEnabled);
+			graphics.AddMember("animationHalfRateDistance", project.Graphics.AnimationHalfRateDistance);
+			graphics.AddMember("animationQuarterRateDistance", project.Graphics.AnimationQuarterRateDistance);
+			graphics.AddMember("textureQuality", std::string(TextureQualityToString(project.Graphics.TextureQuality)));
+			graphics.AddMember("anisotropicFiltering", std::string(AnisotropicFilteringToString(project.Graphics.AnisotropicFiltering)));
+			graphics.AddMember("antiAliasing", std::string(AntiAliasingToString(project.Graphics.AntiAliasing)));
+			graphics.AddMember("antiAliasingQuality", std::string(AntiAliasingQualityToString(project.Graphics.AntiAliasingQuality)));
 			root.AddMember("graphics", std::move(graphics));
 		}
 		if (project.PhysicsTickRate != 50) {
@@ -1288,7 +1368,7 @@ endforeach()
 #endif
 	}
 
-	std::string FunkeProject::BuildManagedDefineConstants(std::string_view primarySymbol) {
+	std::string FunkeProject::BuildManagedDefineConstants(std::string_view primarySymbol, bool editorScriptTarget) {
 		std::string defineConstants;
 		if (!primarySymbol.empty()) {
 			defineConstants.assign(primarySymbol);
@@ -1310,13 +1390,22 @@ endforeach()
 			if (!defineConstants.empty()) defineConstants += "%3B";
 			defineConstants += profileDefine;
 		}
-		const std::string platformDefine = GetManagedPlatformDefine();
+		// The editor compiles for the active build profile's platform, so platform-specific code can be played here.
+		const bool simulate = editorScriptTarget && project && primarySymbol == "FUNKE_EDITOR";
+		const EditorScriptTarget target = simulate ? project->GetEditorScriptTarget() : EditorScriptTarget{};
+		const std::string platformDefine = simulate ? GetManagedPlatformDefine(target.Platform) : GetManagedPlatformDefine();
 		if (!platformDefine.empty()) {
 			if (!defineConstants.empty()) defineConstants += "%3B";
 			defineConstants += platformDefine;
 		}
 		if (project) {
-			for (const std::string& custom : project->CustomDefines) {
+			std::vector<std::string> customDefines = project->CustomDefines;
+			for (const std::string& define : target.ProfileDefines) {
+				if (std::find(customDefines.begin(), customDefines.end(), define) == customDefines.end()) {
+					customDefines.push_back(define);
+				}
+			}
+			for (const std::string& custom : customDefines) {
 				if (custom.empty()) continue;
 				if (!defineConstants.empty()) defineConstants += "%3B";
 				defineConstants += custom;
@@ -1535,6 +1624,50 @@ endforeach()
 		return Path::Combine(RootDirectory, "BuildProfiles");
 	}
 
+	FunkeProject::EditorScriptTarget FunkeProject::GetEditorScriptTarget() const {
+		const std::optional<BuildPlatform> host = BuildPlatformSupport::HostDesktopPlatform();
+		EditorScriptTarget hostTarget;
+		hostTarget.Platform = host.value_or(BuildPlatform::Windows);
+		if (ActiveBuildProfileName.empty() || RootDirectory.empty()) return hostTarget;
+
+		// The toolbar badge and script bindings ask every frame: re-stat the file twice a second, re-parse on change.
+		struct Cache {
+			std::mutex Mutex;
+			std::string ProfilePath;
+			std::filesystem::file_time_type WriteTime{};
+			std::chrono::steady_clock::time_point CheckedAt{};
+			EditorScriptTarget Target;
+		};
+		static Cache s_Cache;
+
+		const std::string path = Path::Combine(GetBuildProfilesDirectory(),
+			ActiveBuildProfileName + std::string(FunkeBuildProfile::FileExtension));
+		const auto now = std::chrono::steady_clock::now();
+		std::lock_guard lock(s_Cache.Mutex);
+		const bool samePath = s_Cache.ProfilePath == path && s_Cache.CheckedAt != std::chrono::steady_clock::time_point{};
+		if (samePath && now - s_Cache.CheckedAt < std::chrono::milliseconds(500)) return s_Cache.Target;
+
+		std::error_code ec;
+		const std::filesystem::path filePath = Path::FromUtf8(path);
+		const bool exists = std::filesystem::is_regular_file(filePath, ec);
+		const std::filesystem::file_time_type writeTime = exists ? std::filesystem::last_write_time(filePath, ec)
+			: std::filesystem::file_time_type{};
+		s_Cache.CheckedAt = now;
+		if (samePath && s_Cache.WriteTime == writeTime) return s_Cache.Target;
+
+		s_Cache.ProfilePath = path;
+		s_Cache.WriteTime = writeTime;
+		s_Cache.Target = hostTarget;
+		if (exists) {
+			const FunkeBuildProfile profile = FunkeBuildProfile::Load(path);
+			s_Cache.Target.Platform = profile.Platform;
+			s_Cache.Target.Simulated = !host || *host != profile.Platform;
+			s_Cache.Target.ProfileName = ActiveBuildProfileName;
+			s_Cache.Target.ProfileDefines = profile.Defines;
+		}
+		return s_Cache.Target;
+	}
+
 	std::string FunkeProject::GetNativeDllPath(std::string_view configuration) const {
 		const std::string libraryFilename = GetNativeLibraryFilename(Name);
 		const std::string buildConfig = configuration.empty()
@@ -1705,12 +1838,20 @@ endforeach()
 			defines += ';';
 			defines += profile;
 		}
-		const std::string platform = GetManagedPlatformDefine();
+		// Same platform and profile defines as the editor's script compile (BuildManagedDefineConstants).
+		const EditorScriptTarget target = GetEditorScriptTarget();
+		const std::string platform = GetManagedPlatformDefine(target.Platform);
 		if (!platform.empty()) {
 			defines += ';';
 			defines += platform;
 		}
-		for (const std::string& custom : CustomDefines) {
+		std::vector<std::string> customDefines = CustomDefines;
+		for (const std::string& profileDefine : target.ProfileDefines) {
+			if (std::find(customDefines.begin(), customDefines.end(), profileDefine) == customDefines.end()) {
+				customDefines.push_back(profileDefine);
+			}
+		}
+		for (const std::string& custom : customDefines) {
 			if (custom.empty()) continue;
 			defines += ';';
 			defines += custom;
@@ -1995,6 +2136,9 @@ endforeach()
 				if (const Json::Value* exeNameValue = root.FindMember("executableName")) {
 					{ const std::string exeName = exeNameValue->AsStringOr(); if (exeName.empty() || IsValidSceneName(exeName)) project.ExecutableName = exeName; else FNK_CORE_WARN_TAG("FunkeProject", "Project '{}': ignoring invalid executableName '{}' (no path separators or traversal allowed)", configPath, exeName); }
 				}
+				if (const Json::Value* v = root.FindMember("productName")) {
+					project.ProductName = v->AsStringOr(project.ProductName);
+				}
 				if (const Json::Value* v = root.FindMember("buildVersion")) {
 					project.BuildVersion = v->AsStringOr(project.BuildVersion);
 				}
@@ -2193,6 +2337,20 @@ endforeach()
 						project.Graphics.Exposure = static_cast<float>(v->AsDoubleOr(project.Graphics.Exposure));
 					if (const Json::Value* v = graphics->FindMember("toneMapping"))
 						project.Graphics.ToneMapping = ToneMappingFromString(v->AsStringOr("ACES"));
+					if (const Json::Value* v = graphics->FindMember("animationDistanceRate"))
+						project.Graphics.AnimationDistanceRateEnabled = v->AsBoolOr(false);
+					if (const Json::Value* v = graphics->FindMember("animationHalfRateDistance"))
+						project.Graphics.AnimationHalfRateDistance = static_cast<float>(v->AsDoubleOr(project.Graphics.AnimationHalfRateDistance));
+					if (const Json::Value* v = graphics->FindMember("animationQuarterRateDistance"))
+						project.Graphics.AnimationQuarterRateDistance = static_cast<float>(v->AsDoubleOr(project.Graphics.AnimationQuarterRateDistance));
+					if (const Json::Value* v = graphics->FindMember("textureQuality"))
+						project.Graphics.TextureQuality = TextureQualityFromString(v->AsStringOr("Full"));
+					if (const Json::Value* v = graphics->FindMember("anisotropicFiltering"))
+						project.Graphics.AnisotropicFiltering = AnisotropicFilteringFromString(v->AsStringOr("X16"));
+					if (const Json::Value* v = graphics->FindMember("antiAliasing"))
+						project.Graphics.AntiAliasing = AntiAliasingFromString(v->AsStringOr("Off"));
+					if (const Json::Value* v = graphics->FindMember("antiAliasingQuality"))
+						project.Graphics.AntiAliasingQuality = AntiAliasingQualityFromString(v->AsStringOr("High"));
 					project.Graphics = ClampGraphicsSettings(project.Graphics);
 				}
 				if (!hasNestedPostProcessingEnabled) {

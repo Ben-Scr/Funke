@@ -4,6 +4,7 @@
 #include "Core/Application.hpp"
 #include "Core/Log.hpp"
 #include "Core/Window.hpp"
+#include "DevTools/RunAutomation.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
 #include "Packages/PackageImGuiBridge.hpp"
 
@@ -374,6 +375,9 @@ namespace Funke::ImGuiImplWebGPU {
 
 		// Hooks Platform_ShowWindow: re-strips WS_EX_APPWINDOW / WS_EX_TOOLWINDOW (upstream adds them) and gives keyboard focus to dialogs.
 		void MultiViewport_ShowWindow(ImGuiViewport* viewport) {
+			// Background runs: imgui_impl_sdl3 resets the global activate-when-shown hint from this flag.
+			const bool background = RunAutomation::IsBackground();
+			if (background) viewport->Flags |= ImGuiViewportFlags_NoFocusOnAppearing;
 			// Chain to imgui_impl_sdl3 first — it actually shows the SDL
 			// window (and re-applies the ex-styles we're about to undo).
 			if (g_OriginalPlatformShowWindow) {
@@ -392,7 +396,10 @@ namespace Funke::ImGuiImplWebGPU {
 
 			const bool noFocusOnAppearing =
 				(viewport->Flags & ImGuiViewportFlags_NoFocusOnAppearing) != 0;
-			if (!noFocusOnAppearing) {
+			if (background) {
+				SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+			}
+			else if (!noFocusOnAppearing) {
 				SetForegroundWindow(hwnd);
 				SetFocus(hwnd);
 			}

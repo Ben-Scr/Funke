@@ -11,15 +11,20 @@
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Tags.hpp"
+#include "Core/Application.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/Scene.hpp"
 #include "Scripting/NativeScript.hpp"
+#include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptComponent.hpp"
+#include "Scripting/ScriptEngine.hpp"
+#include "Scripting/ScriptGlue.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/SceneSerializerShared.hpp"
+#include "Systems/Transform3DHierarchySystem.hpp"
 #include "Systems/TransformHierarchySystem.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -216,6 +221,110 @@ TEST_CASE("Parent enable preserves child authored disabled state")
 	CHECK_FALSE(parent.HasComponent<DisabledTag>());
 	CHECK(child.HasComponent<DisabledTag>());
 	CHECK_FALSE(child.HasComponent<InheritedDisabledTag>());
+}
+
+TEST_CASE("Enabling a disabled child under a disabled parent turns it on with the parent")
+{
+	auto scene = Scene::CreateDetachedScene("Enable Under Disabled Parent");
+
+	Entity panel = scene->CreateEntity("Panel");
+	Entity child = scene->CreateEntity("Child");
+	Entity grandchild = scene->CreateEntity("Grandchild");
+	child.SetParent(panel);
+	grandchild.SetParent(child);
+	child.SetEnabled(false);
+	panel.SetEnabled(false);
+	REQUIRE(grandchild.HasComponent<InheritedDisabledTag>());
+
+	// Children first, then the panel: the order a menu script uses to show a prepared panel.
+	child.SetEnabled(true);
+	CHECK(child.HasComponent<DisabledTag>());
+	CHECK(child.HasComponent<InheritedDisabledTag>());
+
+	panel.SetEnabled(true);
+	CHECK_FALSE(panel.HasComponent<DisabledTag>());
+	CHECK_FALSE(child.HasComponent<DisabledTag>());
+	CHECK_FALSE(child.HasComponent<InheritedDisabledTag>());
+	CHECK_FALSE(grandchild.HasComponent<DisabledTag>());
+
+	// Disabling it again under a disabled parent restores the authored disable.
+	panel.SetEnabled(false);
+	child.SetEnabled(false);
+	CHECK(child.HasComponent<DisabledTag>());
+	CHECK_FALSE(child.HasComponent<InheritedDisabledTag>());
+	panel.SetEnabled(true);
+	CHECK(child.HasComponent<DisabledTag>());
+}
+
+TEST_CASE("Enable callbacks see the entity enabled and can switch it off again")
+{
+	auto scene = Scene::CreateDetachedScene("Self Disable On Enable");
+
+	Entity parent = scene->CreateEntity("Parent");
+	Entity self = scene->CreateEntity("Self");
+	Entity child = scene->CreateEntity("Child");
+	self.SetParent(parent);
+	child.SetParent(self);
+
+	std::vector<std::pair<EntityHandle, bool>> edges;
+	bool selfReadEnabled = false;
+	bool switchOffSelf = true;
+	const EventId listener = scene->OnEntityEnabledChanged().Add([&](Entity entity, bool enabled) {
+		edges.emplace_back(entity.GetHandle(), enabled);
+		if (switchOffSelf && enabled && entity.GetHandle() == self.GetHandle()) {
+			selfReadEnabled = !entity.HasComponent<DisabledTag>();
+			entity.SetEnabled(false);
+		}
+	});
+
+	SUBCASE("enabled directly") {
+		self.SetEnabled(false);
+		edges.clear();
+
+		self.SetEnabled(true);
+		CHECK(selfReadEnabled);
+		CHECK(self.HasComponent<DisabledTag>());
+		CHECK_FALSE(self.HasComponent<InheritedDisabledTag>());
+		CHECK(child.HasComponent<InheritedDisabledTag>());
+		// The child's enable was undone before it ran, so it reports nothing.
+		CHECK(edges == std::vector<std::pair<EntityHandle, bool>>{
+			{ self.GetHandle(), true }, { self.GetHandle(), false } });
+	}
+
+	SUBCASE("enabled by the parent's cascade") {
+		parent.SetEnabled(false);
+		REQUIRE(self.HasComponent<InheritedDisabledTag>());
+		edges.clear();
+
+		parent.SetEnabled(true);
+		CHECK(selfReadEnabled);
+		CHECK_FALSE(parent.HasComponent<DisabledTag>());
+		CHECK(self.HasComponent<DisabledTag>());
+		CHECK_FALSE(self.HasComponent<InheritedDisabledTag>());
+		CHECK(child.HasComponent<InheritedDisabledTag>());
+		CHECK(edges == std::vector<std::pair<EntityHandle, bool>>{
+			{ parent.GetHandle(), true }, { self.GetHandle(), true }, { self.GetHandle(), false } });
+	}
+
+	SUBCASE("re-enabled from its own disable callback") {
+		switchOffSelf = false;
+		bool reenabled = false;
+		const EventId reenable = scene->OnEntityEnabledChanged().Add([&](Entity entity, bool enabled) {
+			if (!reenabled && !enabled && entity.GetHandle() == self.GetHandle()) {
+				reenabled = true;
+				entity.SetEnabled(true);
+			}
+		});
+
+		self.SetEnabled(false);
+		CHECK_FALSE(self.HasComponent<DisabledTag>());
+		CHECK_FALSE(child.HasComponent<DisabledTag>());
+		CHECK(edges == std::vector<std::pair<EntityHandle, bool>>{
+			{ self.GetHandle(), false }, { self.GetHandle(), true } });
+		scene->OnEntityEnabledChanged().Remove(reenable);
+	}
+
+	scene->OnEntityEnabledChanged().Remove(listener);
 }
 
 TEST_CASE("Parent enable clears inherited disabled state")
@@ -731,6 +840,82 @@ TEST_CASE("Transform3D cached local matrix tracks field writes")
 
 	transform.Position.x = -5.0f;
 	CHECK(transform.GetCachedLocalMatrix()[3][0] == doctest::Approx(-5.0f));
+}
+
+TEST_CASE("Entity.SetParent with worldPositionStays keeps a 3D child's world pose")
+{
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Reparent 3D");
+	const auto make3D = [&](const Vec3& position, const Vec3& rotation, const Vec3& scale) {
+		Entity entity = scene->CreateEmptyEntity();
+		auto& transform = entity.AddComponent<Transform3DComponent>();
+		transform.Position = position;
+		transform.Rotation = rotation;
+		transform.Scale = scale;
+		return entity;
+	};
+	const auto checkMatrix = [](const glm::mat4& actual, const glm::mat4& expected) {
+		for (int c = 0; c < 4; ++c)
+			for (int r = 0; r < 4; ++r)
+				CHECK(actual[c][r] == doctest::Approx(expected[c][r]).epsilon(1e-4));
+	};
+
+	Entity oldParent = make3D({ 2.0f, -1.0f, 4.0f }, { 30.0f, 45.0f, -20.0f }, { 2.0f, 2.0f, 2.0f });
+	Entity rig = make3D({ -6.0f, 0.0f, 1.0f }, { 0.0f, -35.0f, 0.0f }, { 1.0f, 1.0f, 1.0f });
+	Entity newParent = make3D({ -3.0f, 5.0f, 0.0f }, { 0.0f, 90.0f, 15.0f }, { 0.5f, 0.5f, 0.5f });
+	newParent.SetParent(rig);
+	Entity child = make3D({ 1.0f, 2.0f, 3.0f }, { 10.0f, -25.0f, 60.0f }, { 1.5f, 0.5f, 2.0f });
+	child.SetParent(oldParent);
+	Transform3DHierarchySystem::Propagate(*scene);
+
+	// Moved after the last Propagate, like a script right before SetParent: WorldMatrix is stale here.
+	child.GetComponent<Transform3DComponent>().Position = { -1.0f, 0.5f, 2.0f };
+	const glm::mat4 world = Transform3DHierarchySystem::ComputeWorldMatrix(scene->GetRegistry(), child.GetHandle());
+
+	const uint64_t childId = scene->GetEntityPersistentID(child.GetHandle());
+	const uint64_t oldParentId = scene->GetEntityPersistentID(oldParent.GetHandle());
+	const uint64_t newParentId = scene->GetEntityPersistentID(newParent.GetHandle());
+	// Cleared even when a REQUIRE below throws, so later tests don't resolve ids against a dead scene.
+	struct ScriptSceneScope {
+		explicit ScriptSceneScope(Scene* active) { ScriptEngine::SetScene(active); }
+		~ScriptSceneScope() { ScriptEngine::SetScene(nullptr); }
+	} scriptScene(scene.get());
+	NativeBindings b{};
+	ScriptBindings::PopulateNativeBindings(b);
+	REQUIRE(b.Entity_SetParent != nullptr);
+
+	SUBCASE("reparent under another rotated, scaled parent") {
+		REQUIRE(b.Entity_SetParent(childId, newParentId, 1) == 1);
+		CHECK(child.GetParent() == newParent);
+		checkMatrix(child.GetComponent<Transform3DComponent>().WorldMatrix, world);
+		Transform3DHierarchySystem::Propagate(*scene);
+		checkMatrix(child.GetComponent<Transform3DComponent>().WorldMatrix, world);
+	}
+
+	SUBCASE("detach to the scene root") {
+		REQUIRE(b.Entity_SetParent(childId, 0, 1) == 1);
+		CHECK_FALSE(child.GetParent().IsValid());
+		const auto& transform = child.GetComponent<Transform3DComponent>();
+		CHECK(transform.Position.x == doctest::Approx(world[3][0]));
+		CHECK(transform.Position.y == doctest::Approx(world[3][1]));
+		CHECK(transform.Position.z == doctest::Approx(world[3][2]));
+		CHECK(transform.Scale.x == doctest::Approx(3.0f));
+		CHECK(transform.Scale.y == doctest::Approx(1.0f));
+		CHECK(transform.Scale.z == doctest::Approx(4.0f));
+		Transform3DHierarchySystem::Propagate(*scene);
+		checkMatrix(transform.WorldMatrix, world);
+	}
+
+	SUBCASE("without worldPositionStays the local transform is kept") {
+		REQUIRE(b.Entity_SetParent(childId, 0, 1) == 1);
+		const Transform3DComponent before = child.GetComponent<Transform3DComponent>();
+		REQUIRE(b.Entity_SetParent(childId, oldParentId, 0) == 1);
+		const auto& transform = child.GetComponent<Transform3DComponent>();
+		CHECK(child.GetParent() == oldParent);
+		CHECK((transform.Position == before.Position));
+		CHECK((transform.Rotation == before.Rotation));
+		CHECK((transform.Scale == before.Scale));
+	}
 }
 
 TEST_CASE("Runtime single-entity deserialization retargets self references")

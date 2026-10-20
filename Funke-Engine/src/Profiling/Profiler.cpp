@@ -183,7 +183,13 @@ namespace Funke {
 			"UIEvent.RefResolve",
 			"UIEvent.HitTest",
 			"UIEvent.Visuals",
-			"UIEvent.Widgets"
+			"UIEvent.Widgets",
+
+			// Animation category: time, and how many animations wrote / held their pose this frame (culling, distance rate).
+			"Animator",
+			"Animator Poses",
+			"SkinnedMeshAnimation",
+			"Skinned Poses"
 		};
 		for (const char* name : names) {
 			auto m = std::make_unique<ProfilerModule>();

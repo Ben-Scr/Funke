@@ -1,6 +1,6 @@
 ---
 name: funke-inspector-ruleset
-description: Use when exposing fields to the Funke editor inspector — for native C++ components (`PropertyDescriptor` / `Properties::Make` / `Properties::Meta`) or for C# scripts (`[ShowInEditor]`, `[ClampValue]`, `[EnabledIf]`, etc.). Triggers on "PropertyType", "PropertyDescriptor", "PropertyMetadata", "Properties::Make", "Properties::Meta", "PropertyDrawer", "ReferencePicker", "ShowInEditor", "[ShowInEditor]", "[ClampValue]", "[EnabledIf]", "[Header]", "[ToolTip]", "[Space]", "[EditorReadOnly]", "[EditorIgnore]", "[HideFromEditor]", "inspector field", "Inspector row", "multi-select inspector", "mixed value", "tri-state checkbox", "asset picker", "texture picker", "audio picker", "font picker", "entity reference", "prefab reference", "component reference", "EntityRef", "PrefabRef", "ComponentRef", "TextureRef", "AudioRef", "FontRef", "SceneRef", "AssetRef", "flag enum inspector", "FlagEnum", "MakeFlagEnum", "MakeTextureRef", "MakeAudioRef", "MakeEntityRef", "MakeList", "MakeListWith", "MakeStringList", "MakeVariant", "MakeVariantWith", "variant field", "component conflict", "conflictsWith", "DeclareComponentConflict", "Add Component popup", "drawInspector", "drawEditorGizmo", "SetEditorGizmo", or any work in `Funke-Engine/src/Inspector/`, `Funke-Editor/src/Inspector/`, or `Funke-ScriptCore/Source/Funke/Attributes/`. Don't guess the field-type-to-PropertyType mapping or the multi-select semantics from memory — they're enforced by a single dispatch table and getting them wrong shows up as silent mixed-state corruption or asset-picker filters pointing at the wrong AssetKind. Read this skill any time someone is adding, changing, or auditing an inspector field.
+description: Use when exposing fields to the Funke editor inspector — native C++ components (`PropertyDescriptor`, `Properties::Make*`, `Properties::Meta`) or C# script fields (`[ShowInEditor]`, `[ClampValue]`, `[EnabledIf]`, `[Header]`, `[EditorIgnore]`). Triggers on "PropertyType", "PropertyDrawer", "ReferencePicker", "inspector field", "multi-select inspector", "mixed value", "asset picker", "entity reference", "EntityRef", "ComponentRef", "AssetRef", "FlagEnum", "MakeTextureRef", "MakeEntityRef", "MakeVariant", "DeclareComponentConflict", "SetEditorGizmo", or work in `Funke-Engine/src/Inspector/`, `Funke-Editor/src/Inspector/`, `Funke-ScriptCore/Source/Funke/Attributes/`. Covers the field-type-to-PropertyType table, multi-select rules, reference pickers and the EntityRef entity/prefab split, lists, variants, metadata, C# attributes, conflicts and gizmos. Don't guess these from memory — mistakes cause silent mixed-state corruption or wrong picker filters.
 ---
 
 # Funke Inspector Ruleset
@@ -34,21 +34,22 @@ Every inspectable field maps to exactly one `PropertyType`. The drawer, serializ
 | `Float` | `float` | `float` | DragFloat |
 | `Double` | `double` | `double` | DragScalar (Double) |
 | `String` | `std::string` | `string` | InputText (or multi-line if metadata set) |
-| `StringList` | (via `MakeStringList`) | `List<string>` | Row-per-entry text input + add/remove |
-| `List` | `std::vector<TItem>` (via `MakeList`) | `List<T>` | Row-per-item primitive widget + add/remove |
+| `StringList` | (via `MakeStringList`) | — (C# `List<string>` maps to `List`) | Row-per-entry text input + add/remove |
+| `List` | `std::vector<TItem>` (via `MakeList`) | `List<T>` / `T[]` (incl. `List<string>`) | Row-per-item primitive widget + add/remove |
 | `Vec2` / `Vec3` / `Vec4` | `glm::vec2/3/4` | `Vector2/3/4` | 2/3/4-channel DragFloat |
 | `IntVec2` / `IntVec3` / `IntVec4` | `glm::ivec2/3/4` | `Vector2Int/3Int/4Int` | 2/3/4-channel DragInt |
 | `Color` | `Color` | `Color` | ColorEdit4 |
 | `Enum` | `enum class` | `enum` | Combo (single value) |
 | `FlagEnum` | `enum class` (bitflags) | `[Flags] enum` | Multi-checkbox combo |
-| `TextureRef` | `TextureHandle` | `Texture` / `TextureRef` | Reference picker (filtered to Texture) |
-| `AudioRef` | `AudioHandle` | `Audio` / `AudioRef` | Reference picker (Audio) |
-| `FontRef` | `FontHandle` | `Font` / `FontRef` | Reference picker (Font) |
-| `AssetRef` | `AssetGUID` | `Material`, `Mesh`, `DataAsset` subclasses (wire tags `material`, `mesh`, `dataasset:<Type>`) | Reference picker (filter via metadata; `ScriptAssetKindForTag` in ScriptComponentInspector.cpp maps the C# tags) |
-| `SceneRef` | `AssetGUID` | Scene asset | Reference picker (Scene) |
-| `EntityRef` | `EntityRuntimeID` (uint64) **or** prefab GUID | `Entity` | Reference picker (Entity, polymorphic — see below) |
-| `PrefabRef` | `AssetGUID` | Prefab asset | Reference picker (Prefab) |
-| `ComponentRef` | `"<entityId>:<typeName>"` | `Component` subclass | Reference picker (Component) |
+| `TextureRef` | asset GUID as `uint64_t` (via `MakeTextureRef`) | `Texture` | Reference picker (filtered to Texture) |
+| `AudioRef` | asset GUID (via `MakeAudioRef`) | `Audio` | Reference picker (Audio) |
+| `FontRef` | asset GUID (via `MakeFontRef`) | — (no C# field support) | Reference picker (Font) |
+| `AssetRef` | asset GUID (hand-built descriptor + `Metadata.AssetKindFilter`) | `Material`, `Mesh`, `AnimationClip`, `AnimatorController`, `DataAsset` subclasses (wire tags `material`, `mesh`, `animationclip`, `animatorcontroller`, `dataasset:<Type>`) | Reference picker (filtered by kind; `ScriptAssetKindForTag` in `Funke-Editor/src/Scripting/ScriptComponentInspector.cpp` maps the C# tags) |
+| `SceneRef` | asset GUID (hand-built) | `Scene` | Reference picker (Scene) |
+| `EntityRef` | persistent entity id (`Scene::GetEntityPersistentID`, uint64) **or** prefab GUID | `Entity` (also holds prefabs) | Reference picker (Entity, polymorphic — see below) |
+| `PrefabRef` | asset GUID (hand-built) | — (C# prefab refs are `Entity` fields → `EntityRef`) | Reference picker (Prefab) |
+| `ComponentRef` | `"<entityId>:<typeName>"` | `Component` subclass (wire tag `component:<displayName>`) | Reference picker (Component) |
+| `Graph` | — (no native helper) | `Graph` (`Funke.Graph`) | Inline curve editor (keys ride in `StringValue`) |
 
 **The display label for empty / cleared reference fields is `(None)`** (`k_NoneLabel` in `PropertyType.hpp`). Re-themed in one place if needed — don't hardcode the string elsewhere.
 
@@ -68,7 +69,7 @@ std::vector<PropertyDescriptor> props = {
 };
 ```
 
-The first argument is the **serialised name** (matches the C# field name when serialised). The second is the **display label** in the inspector. Pass empty for `displayName` to reuse `name`.
+The first argument is the stable property **name** — the inspector key, the Animator property path (`AnimationBinding.cpp`) and, by convention, the C# field name. It is **not** the scene JSON key: a native component's JSON keys come only from its `serialize`/`deserialize` (Transform2D's `Position` descriptor is stored as `posX`/`posY`). The second is the **display label** in the inspector. Pass empty for `displayName` to reuse `name`.
 
 ### Getter/setter (`MakeWith`)
 
@@ -95,7 +96,7 @@ The drawer renders a multi-checkbox combo so individual bits can be toggled. Eac
 
 ### Reference fields
 
-Each asset kind has an explicit helper so the picker knows which kind to filter for. **Don't store asset references as raw `Make<...>(&Component::SomeHandle)`** — the deducer doesn't know it's a reference and would treat the handle as a `UInt64`, giving you a number widget instead of a picker.
+Each asset kind has an explicit helper so the picker knows which kind to filter for. **Don't register references with plain `Make`**: handle/GUID types (`TextureHandle`, `AudioHandle`, `FontHandle`, `UUID`/`AssetGUID`) deduce to `PropertyType::None` and fail `Make`'s `static_assert`, and a raw `uint64_t` GUID member compiles but deduces to `UInt64` — a number widget instead of a picker.
 
 ```cpp
 Properties::MakeTextureRef("Sprite", "Sprite",
@@ -107,7 +108,7 @@ Properties::MakeFontRef ("Font", "Font", /* getter */, /* setter */);
 Properties::MakeEntityRef("Target", "Follow Target", /* getter */, /* setter */);
 ```
 
-The getter must return a `uint64_t` (the asset GUID or runtime entity ID). The setter receives the new ID and is responsible for whatever side-effects loading or attaching the reference requires.
+The getter must return a `uint64_t`: the asset GUID, or for `MakeEntityRef` the **persistent** entity id (`Scene::GetEntityPersistentID`, resolved back with `Scene::TryResolveEntityRef`) — never a runtime/entt id; the picker, drag-drop and display all use persistent ids. `MakeUiEntityRef` in `Scene/BuiltInComponentRegistrationShared.hpp` is the pattern to copy. The setter receives the new ID and is responsible for whatever side-effects loading or attaching the reference requires.
 
 There's no `MakeAssetRef` / `MakeSceneRef` / `MakePrefabRef` / `MakeComponentRef` helper today — for those, build the `PropertyDescriptor` directly with `Type = PropertyType::AssetRef` (etc.) and populate the lambdas by hand. Set `PropertyMetadata::ComponentTypeName` for `ComponentRef` so the picker can filter to compatible components.
 
@@ -256,7 +257,7 @@ All reference types share the same picker UX (`Funke-Editor/src/Inspector/Refere
 
 ### EntityRef polymorphism (entity vs prefab)
 
-`EntityRef` is the one polymorphic type. The value may be either a **live entity ID** or a **prefab asset reference**:
+`EntityRef` is the one polymorphic type. The value may be either a **persistent entity id** or a **prefab asset reference**:
 
 - `PropertyValue::UIntValue` stores the integer (entity ID or prefab GUID).
 - `PropertyValue::StringValue == "prefab"` is the tag that flags the value as a prefab reference. When unset, it's an entity ID.
@@ -282,11 +283,13 @@ Funke::Package::RegisterSerializableComponent<HealthComponent>(
     /* subcategory    */ "Gameplay",                     // Add Component popup section
     /* serializedName */ "HealthComponent",              // JSON key in .scene / .prefab
     /* drawInspector  */ nullptr,                        // null = unified auto-drawer
-    /* serialize      */ nullptr,                        // optional; see funke-serialize-field
-    /* deserialize    */ nullptr,
+    /* serialize      */ &SerializeHealth,               // Json::Value(const HealthComponent&)
+    /* deserialize    */ &DeserializeHealth,             // void(HealthComponent&, const Json::Value&)
     /* category       */ ComponentCategory::Component,
     /* properties     */ std::move(props));
 ```
+
+`properties` only drive the inspector and Animator; nothing is persisted from them. With `serialize`/`deserialize` = nullptr the component is never written to `.scene`/`.prefab` and vanishes on save and Play→Stop. Field rules: `funke-serialize-field`.
 
 **Always pass `drawInspector = nullptr`** unless you have a genuine reason to bypass the auto-drawer. The auto-drawer respects multi-selection, undo, prefab overrides, EnabledIf gates, and every metadata feature — a custom drawer skips all of that unless you reimplement it. The two legitimate reasons to write a custom drawer are: (1) the field shape genuinely doesn't fit any PropertyType (rare — add a new PropertyType instead), or (2) the inspector needs interactive widgets that aren't field edits (gizmo buttons, "Bake" buttons, etc.) — and even then, prefer adding those as actions outside the property list.
 
@@ -309,7 +312,8 @@ A component can install a per-entity gizmo drawer that runs in the editor viewpo
 ```cpp
 Funke::Package::SetEditorGizmo<MyComponent>(+[](Entity e) {
     const auto& c = e.GetComponent<MyComponent>();
-    GizmoRenderer::DrawCircle(c.Position, c.Radius, Color::Green());
+    Gizmo::SetColor(Color::Green());                      // Graphics/Gizmo.hpp
+    Gizmo::DrawWireCircle(c.Position, c.Radius);
 });
 ```
 
@@ -332,11 +336,11 @@ The preset runs the registry's `AddWithDependencies` for the component so any re
 
 ## Common pitfalls
 
-1. **Asset handles look like `uint64`s, so plain `Make` deduces them as `UInt64`.** Always use the explicit `MakeTextureRef` / `MakeAudioRef` / `MakeFontRef` / `MakeEntityRef` helpers — `Make(&Component::TextureHandle)` will silently give you a number widget. There's no compile-time check for "this should have been a reference."
+1. **References need the explicit `MakeTextureRef` / `MakeAudioRef` / `MakeFontRef` / `MakeEntityRef` helpers.** `Make(&Component::TextureHandle)` fails to compile (handle types deduce to `None`), but a raw `uint64_t` GUID member silently becomes a `UInt64` number widget — no compile-time check catches that one.
 
 2. **Editing a Vec3 in multi-select edits only the touched channel.** This is the contract — don't write a custom drawer that bulk-overwrites all channels of all entities, or you'll clobber per-entity per-channel state on the untouched axes.
 
-3. **`EntityRef` is polymorphic between live entity IDs and prefab GUIDs.** Reading `UIntValue` directly without checking `StringValue == "prefab"` mis-resolves prefab refs as entity IDs. Always go through the drawer / picker, or check both fields if you must read the raw value.
+3. **`EntityRef` is polymorphic between persistent entity ids and prefab GUIDs.** Reading `UIntValue` directly without checking `StringValue == "prefab"` mis-resolves prefab refs as entity IDs. Always go through the drawer / picker, or check both fields if you must read the raw value.
 
 4. **Enums use magic_enum — names matter at runtime.** `Properties::Make` on an `enum class` builds the `EnumDescriptor` from `magic_enum::enum_values<T>()` and `magic_enum::enum_name(v)`. If you rename an enum value, every saved scene / prefab keeps the old integer but the new name appears in the combo — old saves still load (integer-based), but `serializedName` on the *component* doesn't help you here; rename carefully.
 
@@ -346,7 +350,7 @@ The preset runs the registry's `AddWithDependencies` for the component so any re
 
 7. **C# `[EnabledIf]` matches against the editor wire representation, not the runtime value.** A `float` field compared with `[EnabledIf(nameof(Speed), 0)]` checks against the `Float` wire (a double). Integer / enum literals work; complex types (vectors, colors, references) do not — use the predicate form on the native side instead.
 
-8. **Don't write `displayName` and assume it's stable in serialization.** The `name` passed to `Properties::Make` is the serialised key. The `displayName` is only the inspector label and can be renamed freely. **Don't rename `name`** without a migration.
+8. **`name` is stable, `displayName` is cosmetic.** The `displayName` is only the inspector label and can be renamed freely. Renaming `name` breaks Animator clips that target the property path (scene JSON is unaffected — its keys live in `serialize`/`deserialize`), so don't rename it without migrating clips.
 
 9. **`drawInspector = nullptr` is almost always correct.** Writing a custom inspector bypasses multi-select, undo, prefab overrides, EnabledIf gates, and the metadata system. Unless the field genuinely doesn't fit a PropertyType, leave it null.
 
@@ -369,4 +373,4 @@ The preset runs the registry's `AddWithDependencies` for the component so any re
 | Reference picker modal + drag-drop validation | `Funke-Editor/src/Inspector/ReferencePicker.{hpp,cpp}` |
 | `RegisterSerializableComponent`, `DeclareComponentConflict`, `SetEditorGizmo`, `RegisterEntityPreset` | `Funke-Engine/src/Packages/PackageRegistration.hpp` |
 | C# inspector attributes | `Funke-ScriptCore/Source/Funke/Attributes/*Attribute.cs` |
-| Built-in engine component registration (good pattern reference) | `Funke-Engine/src/Scene/BuiltInComponentRegistration<Category>.cpp` (one TU per category: General, Rendering, Physics, Audio, UIWidgets, UILayout); `BuiltInComponentRegistration.cpp` owns the call order, which sets `typeIdU32`, plus the cross-category conflicts/dependencies |
+| Built-in engine component registration (good pattern reference) | `Funke-Engine/src/Scene/BuiltInComponentRegistration<Category>.cpp` (one TU per slice, listed in call order in `BuiltInComponentRegistrationShared.hpp`; see `funke-add-component`); `BuiltInComponentRegistration.cpp` owns the call order, which sets `typeIdU32`, plus the cross-category conflicts/dependencies |

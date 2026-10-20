@@ -1,6 +1,6 @@
 ---
 name: funke-assets-and-content
-description: Use when working with GAME CONTENT in a Funke project — sprites/textures, audio, fonts, and the asset system that ties them together, plus Data Assets (Funke's ScriptableObject equivalent for shared game data). Triggers on "asset", "GUID / asset id", ".meta file", "import settings", "sprite slice", "AssetManager", "AssetManager.Load / LoadByGUID / FindAll / GetGUID", "Texture / Texture.FromAssetUUID / runtime texture / SetPixel", "Audio / Audio.FromAssetUUID / PlayOneShot", "Font", "TextureRef / AudioRef / FontRef", "asset slot in inspector", "reference a texture/audio from a script", "Data Asset", "DataAsset", "[CreateDataAsset]", "OnValidate", ".dataasset", "item/stats/loot/dialogue data", "ScriptableObject equivalent", "shared game data", or how content is found, referenced, loaded, cached, and shipped. Source of truth: `Funke-ScriptCore/Source/Funke/Core/AssetManager.cs`, `Graphics/Texture.cs`, `Audio/Audio.cs`, `Scene/DataAsset.cs`, and the docs under `Github-Docs/Documentation/Assets/`. For exposing asset fields in the Inspector see `funke-inspector-ruleset`; for on-disk format/location see `funke-project-structure`.
+description: Use when working with GAME CONTENT in a Funke project — textures and sprites, audio, fonts, materials, meshes, animation assets, the GUID-based asset system that ties them together, and Data Assets (Funke's ScriptableObject equivalent for shared game data). Triggers on "asset", "GUID", ".meta file", "sprite slice", "AssetManager.Load / LoadByGUID / FindAll / GetGUID", "Texture.FromAssetUUID / runtime texture / SetPixel", "Audio.FromAssetUUID / PlayOneShot", "asset slot in inspector", "Data Asset", "[CreateDataAsset]", "OnValidate", ".dataasset", "item/stats/loot/dialogue data", or how content is found, referenced, loaded, cached and shipped. The source of truth is `Funke-ScriptCore/Source/Funke/Core/AssetManager.cs`, `Graphics/Texture.cs`, `Audio/Audio.cs`, `Scene/DataAsset.cs` and `Github-Docs/Documentation/Assets/`. Inspector field rules are in `funke-inspector-ruleset`, on-disk layout in `funke-project-structure`.
 ---
 
 # Funke Assets & Content
@@ -14,13 +14,17 @@ Content in Funke is **discovered, not imported**: drop a file into the project's
   | Kind | Extensions | Use |
   |---|---|---|
   | Texture | `.png .jpg .jpeg .bmp .tga` | sprites/images |
-  | Audio | `.wav .mp3 .ogg .flac` | sfx/music |
+  | Audio | `.wav .mp3 .flac` (`.ogg` is recognized but can't be decoded) | sfx/music |
   | Font | `.ttf .otf` | text |
   | Scene | `.scene` | a level/screen |
   | Prefab | `.prefab` | reusable entity |
   | Script | `.cs` (+ C/C++) | game logic |
   | Shader | `.wgsl .vert .frag …` | custom rendering |
   | Data Asset | `.dataasset` | shared game data |
+  | Material | `.material` | shader + parameters |
+  | Mesh | `.obj .gltf .glb` | 3D models |
+  | AnimationClip | `.anim` | keyframe animation |
+  | AnimatorController | `.animctrl` | animation state machine |
   | Other | anything else | tracked, unhandled |
 
 - **GUID + `.meta`.** Each asset gets a 64-bit GUID stored in a `<file>.meta` JSON sidecar (GUID + import settings like texture filter/wrap and sprite slices). **Keep and commit `.meta` files; move them with their asset.** A regenerated `.meta` gets a *new* GUID and breaks existing references.
@@ -38,7 +42,6 @@ public class Pickup : EntityScript
 {
     public Texture? Icon;      // texture picker
     public Audio?   PickupSfx; // audio picker
-    public Font?    LabelFont; // font picker
 
     public override void OnStart()
     {
@@ -61,7 +64,7 @@ Texture? tex = AssetManager.Load<Texture>("Sprites/player.png");
 var allItems = AssetManager.FindAll<ItemData>();              // great for building catalogs at startup
 ```
 
-Under the hood everything is GUID-based; the path form just looks up the GUID. References saved in scenes/prefabs/components are always GUIDs.
+Under the hood everything is GUID-based; the path form just looks up the GUID. References saved in scenes/prefabs/components are always GUIDs. Paths are relative to `Assets/`. `T` can be `Texture`, `Audio`, `Font`, `Material`, `Mesh`, `AnimationClip`, `AnimatorController`, a `DataAsset` subclass, or `Entity` for a prefab; anything else returns `null` / empty.
 
 ## Asset classes (`Funke.*`)
 
@@ -123,7 +126,7 @@ public class ItemData : DataAsset
 ```
 - Base class: `public abstract class DataAsset` (in `Funke-ScriptCore/Source/Funke/Scene/DataAsset.cs`); override `OnValidate()`.
 - `[CreateDataAsset(menuPath)]` (`menuPath` is slash-separated; default `""`). Without it the class still works but won't appear in the create menu.
-- **Field types** = the same set as script fields: primitives, `string`, enums, `Vector2/3/4`, `Color`, `Texture`/`Audio`/`Font`, and **other `DataAsset` subclasses**. Inspector attributes apply (`[ClampValue]`, `[Header]`, `[ToolTip]`, …).
+- **Field types** = the same set as script fields: primitives, `string`, enums, `Vector2/3/4`, `Color`, `Graph`, `Texture`/`Audio`/`Material`/`Mesh`/`Scene`, prefabs (`Entity`), **other `DataAsset` subclasses**, lists of those and `List<PlainClass>` inline objects. `Font`, `Dictionary` and other generic types are silently not serialized. Inspector attributes apply (`[ClampValue]`, `[Header]`, `[ToolTip]`, …).
 
 ### Create & reference
 
@@ -133,6 +136,8 @@ public class ItemData : DataAsset
 
 ### On disk
 A `.dataasset` stores the class `type` name, a format `version`, and the field values (JSON or binary per the project's `assetSerializationFormat`). Hot reload re-creates instances from disk and replays field values (creating all first, so cross-references resolve).
+
+File format, list encodings, generator helpers and patterns (enemy types, waves, levels, catalogs): `funke-make-a-game` → `references/data-driven.md`.
 
 **Data Asset vs alternatives:** shared data decoupled from entities → **Data Asset**; a reusable *entity* with components/children → **Prefab**; per-instance values on one entity → **plain script fields**.
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AudioHandle.hpp"
+#include "Audio/AudioSpatial.hpp"
 #include "Core/Export.hpp"
 
 #include <miniaudio.h>
@@ -54,6 +55,9 @@ namespace Funke {
 
 		static void SetMasterVolume(float volume);
 		static float GetMasterVolume() { return s_masterVolume; }
+		// Silences the output but keeps the master volume a game sets (automated runs, --mute).
+		static void SetMuted(bool muted);
+		static bool IsMuted() { return s_Muted; }
 
 		/// Global suspend/resume of all audio output, used when the application is background-paused.
 		/// Freezes every playing sound in place; ResumeAll continues from the same point (a pause, not a stop).
@@ -68,6 +72,25 @@ namespace Funke {
 
 
 		static void PlayOneShot(const AudioHandle& audioHandle, float volume = 1.0f);
+		// From a world position: quieter with distance from the listener and panned to its side. Not started when it
+		// would be silent there (beyond MaxDistance with Linear rolloff).
+		static void PlayOneShotAt(const AudioHandle& audioHandle, const glm::vec3& position, float volume = 1.0f,
+			const AudioSpatialSettings& settings = {});
+
+		// Spatial sounds are heard from here; AudioUpdateSystem follows the main camera every frame.
+		static void SetListener(const AudioListenerState& listener);
+		static const AudioListenerState& GetListener() { return s_Listener; }
+		// Brings a playing source's sound in line with the component: spatial on/off, settings, position.
+		static void UpdateSourceSpatial(const AudioSourceComponent& source);
+
+		struct SpatialSoundInfo {
+			std::string Name;
+			glm::vec3 Position{ 0.0f };
+			float Volume = 1.0f;
+			AudioSpatial::Result Heard;
+		};
+		// Playing spatial sounds with what the listener hears of them (the audio.spatial console command).
+		static std::vector<SpatialSoundInfo> GetSpatialSounds();
 
 		static void SetMaxConcurrentSounds(uint32_t maxSounds);
 		static void SetMaxSoundsPerFrame(uint32_t maxPerFrame);
@@ -88,6 +111,10 @@ namespace Funke {
 			uint32_t Generation = 0;
 			bool HasDataSource = false;
 			bool IsValid = false;
+			// Spatial sounds re-pan every frame from this position as the listener moves.
+			bool Spatial = false;
+			glm::vec3 Position{ 0.0f };
+			AudioSpatialSettings Settings;
 		};
 
 		static SoundInstance* GetSoundInstance(uint32_t instanceId);
@@ -108,6 +135,8 @@ namespace Funke {
 			float Priority;
 			glm::vec3 Position;
 			std::chrono::steady_clock::time_point RequestTime;
+			bool Spatial = false;
+			AudioSpatialSettings Settings;
 
 			bool operator<(const SoundRequest& other) const {
 				return Priority < other.Priority;
@@ -147,8 +176,10 @@ namespace Funke {
 
 
 		static float s_masterVolume;
+		static bool s_Muted;
 		static bool s_PlayInBackground;
 		static std::string s_RootPath;
+		static AudioListenerState s_Listener;
 
 
 		static AudioHandle::HandleType GenerateHandle();
@@ -161,7 +192,11 @@ namespace Funke {
 		static void RecycleSoundInstance(uint32_t index);
 		static void CleanupFinishedSounds();
 		static void RecalculateActiveSoundCount();
-		static bool StartOneShotInstance(const AudioHandle& audioHandle, float volume);
+		// spatial: the request's position and settings; null = a plain 2D one-shot.
+		static bool StartOneShotInstance(const AudioHandle& audioHandle, float volume, const SoundRequest* spatial = nullptr);
+		static void RequestOneShot(const SoundRequest& request);
+		static void ApplySpatial(SoundInstance& instance, bool spatial, const AudioSpatialSettings& settings,
+			const glm::vec3& position, const glm::vec3& velocity);
 
 		static void UpdateListener();
 		static void UpdateSoundInstances();

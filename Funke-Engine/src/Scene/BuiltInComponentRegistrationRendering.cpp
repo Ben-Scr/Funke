@@ -1017,6 +1017,21 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 					[](Entity& e, uint8_t v) {
 						e.GetComponent<TextRendererComponent>().SortingLayer = v;
 					}),
+				Properties::MakeWith<float>("OutlineWidth", "Outline Width",
+					[](const Entity& e) { return e.GetComponent<TextRendererComponent>().OutlineWidth; },
+					[](Entity& e, float v) {
+						e.GetComponent<TextRendererComponent>().OutlineWidth = std::max(v, 0.0f);
+					},
+					Properties::Meta::Clamp(0.0, 16.0, 0.05f).WithHeader("Effects")
+						.WithTooltip("Outline around the glyphs in text pixels (Font Size units); 0 = none.")),
+				Properties::Make("OutlineColor", "Outline Color", &TextRendererComponent::OutlineColor),
+				Properties::MakeWith<Vec2>("ShadowOffset", "Shadow Offset",
+					[](const Entity& e) { return e.GetComponent<TextRendererComponent>().ShadowOffset; },
+					[](Entity& e, const Vec2& v) {
+						e.GetComponent<TextRendererComponent>().ShadowOffset = v;
+					},
+					Properties::Meta::Tooltip("Drop shadow offset in text pixels, +Y up: (2, -2) falls down-right. (0, 0) = none.")),
+				Properties::Make("ShadowColor", "Shadow Color", &TextRendererComponent::ShadowColor),
 			});
 
 		DeclareConflict<ImageComponent, TextRendererComponent>(registry);

@@ -356,6 +356,21 @@ namespace Funke {
 		m_Scene.m_FlushingDeferredHooks = false;
 	}
 
+	Scene::EnabledStateBatch::EnabledStateBatch(Scene* scene)
+		: m_Scene(scene)
+	{
+		if (m_Scene) {
+			++m_Scene->m_EnabledStateBatchDepth;
+		}
+	}
+
+	Scene::EnabledStateBatch::~EnabledStateBatch()
+	{
+		if (m_Scene && --m_Scene->m_EnabledStateBatchDepth == 0) {
+			m_Scene->FlushEnabledStateEdges();
+		}
+	}
+
 	void Scene::ReserveForLoadRuntime(std::size_t entityCount,
 		std::span<const std::pair<uint32_t, std::size_t>> /*perTypeCounts*/)
 	{
@@ -1938,8 +1953,9 @@ namespace Funke {
 			return;
 		}
 
+		EnabledStateBatch batch(this);
 		MarkStaticRenderDataDirtyIfStatic(registry, entity);
-		ApplyEntityEnabledState(registry, entity, false);
+		QueueEnabledStateEdge(entity, false);
 
 		// Snapshot children before iterating (emplace may reorder pool). InheritedDisabledTag tracks which DisabledTags this cascade owns.
 		if (registry.all_of<HierarchyComponent>(entity)) {
@@ -1959,12 +1975,15 @@ namespace Funke {
 			return;
 		}
 
+		// EnTT drops the tag only after this hook returns. Without an outer batch (a raw registry removal) the
+		// callbacks still see the tag; Entity::SetEnabled and SetParent batch around the removal.
+		EnabledStateBatch batch(this);
 		MarkStaticRenderDataDirtyIfStatic(registry, entity);
 		if (registry.all_of<InheritedDisabledTag>(entity)) {
 			registry.remove<InheritedDisabledTag>(entity);
 		}
 
-		ApplyEntityEnabledState(registry, entity, true);
+		QueueEnabledStateEdge(entity, true);
 
 		if (registry.all_of<HierarchyComponent>(entity)) {
 			std::vector<EntityHandle> children = registry.get<HierarchyComponent>(entity).Children;
@@ -2015,6 +2034,61 @@ namespace Funke {
 	}
 
 #endif
+
+	void Scene::QueueEnabledStateEdge(EntityHandle entity, bool enabled)
+	{
+		if (m_LifecycleSuspended || m_TearingDown) {
+			return;
+		}
+
+		if (auto it = m_PendingEnabledEdgeIndex.find(entity); it != m_PendingEnabledEdgeIndex.end()) {
+			// Switched back before its callbacks ran: neither edge fires.
+			if (m_PendingEnabledEdges[it->second].second != enabled) {
+				m_PendingEnabledEdges[it->second].first = entt::null;
+				m_PendingEnabledEdgeIndex.erase(it);
+			}
+			return;
+		}
+
+		m_PendingEnabledEdgeIndex.emplace(entity, m_PendingEnabledEdges.size());
+		m_PendingEnabledEdges.emplace_back(entity, enabled);
+	}
+
+	void Scene::FlushEnabledStateEdges()
+	{
+		// Callbacks that toggle enabled state queue further edges; this loop runs them instead of recursing.
+		if (m_FlushingEnabledEdges) {
+			return;
+		}
+
+		m_FlushingEnabledEdges = true;
+		for (size_t index = 0; index < m_PendingEnabledEdges.size(); ++index) {
+			const auto [entity, enabled] = m_PendingEnabledEdges[index];
+			if (entity == entt::null) {
+				continue;
+			}
+
+			m_PendingEnabledEdgeIndex.erase(entity);
+			if (!m_Registry.valid(entity)) {
+				continue;
+			}
+
+			try {
+				ApplyEntityEnabledState(m_Registry, entity, enabled);
+				if (m_Registry.valid(entity) && m_OnEntityEnabledChanged.HasListeners()) {
+					m_OnEntityEnabledChanged.Invoke(Entity(entity, *this), enabled);
+				}
+			}
+			catch (const std::exception& e) {
+				// The remaining edges must still run, or their entities keep a stale enabled state.
+				FNK_CORE_ERROR_TAG("Scene", "Enabled-state callback for entity {} threw: {}", static_cast<uint32_t>(entity), e.what());
+			}
+		}
+
+		m_PendingEnabledEdges.clear();
+		m_PendingEnabledEdgeIndex.clear();
+		m_FlushingEnabledEdges = false;
+	}
 
 	void Scene::ApplyEntityEnabledState(entt::registry& registry, EntityHandle entity, bool enabled)
 	{

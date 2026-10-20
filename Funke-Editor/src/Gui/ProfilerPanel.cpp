@@ -121,6 +121,15 @@ namespace Funke {
 					}
 				},
 				{
+					"Animation",
+					{
+						{ "Animator",             "Animator",               "ms" },
+						{ "Animator Poses",       "Animator Poses",         "" },
+						{ "SkinnedMeshAnimation", "Skinned Mesh Animation", "ms" },
+						{ "Skinned Poses",        "Skinned Poses",          "" },
+					}
+				},
+				{
 					"Frame Breakdown",
 					{
 						{ "Layer.OnUpdate",      "Layers Update",       "ms" },

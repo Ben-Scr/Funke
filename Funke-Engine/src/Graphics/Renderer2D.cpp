@@ -743,7 +743,7 @@ namespace Funke {
 
 			const auto lookup = WebGPUBackend::LookupTexture2D(poolId);
 			const auto maskLookup = WebGPUBackend::LookupTexture2D(maskPoolId);
-			if (!lookup.Valid || !lookup.View || !lookup.Sampler
+			if (!lookup.Valid || !lookup.View || !lookup.SceneSampler
 				|| !maskLookup.Valid || !maskLookup.View || !maskLookup.Sampler) {
 				return nullptr;
 			}
@@ -752,15 +752,15 @@ namespace Funke {
 			auto cacheIt = g_BindGroupCache.find(key);
 			if (cacheIt != g_BindGroupCache.end()) {
 				const CachedBindGroup& cached = cacheIt->second;
-				if (cached.Sampler.Get() == lookup.Sampler.Get()
+				if (cached.Sampler.Get() == lookup.SceneSampler.Get()
 					&& cached.View.Get() == lookup.View.Get()
 					&& cached.MaskSampler.Get() == maskLookup.Sampler.Get()
 					&& cached.MaskView.Get() == maskLookup.View.Get()) {
 					return cached.Group;
 				}
-				// Sampler or view rebuilt under us (filter change, hot
-				// reload) — drop the stale group so we recreate one
-				// against the current handles.
+				// Sampler or view rebuilt under us (filter change, texture
+				// quality setting, hot reload) — drop the stale group so we
+				// recreate one against the current handles.
 				g_BindGroupCache.erase(cacheIt);
 			}
 
@@ -772,7 +772,7 @@ namespace Funke {
 			entries[1].binding     = 1;
 			entries[1].textureView = lookup.View;
 			entries[2].binding = 2;
-			entries[2].sampler = lookup.Sampler;
+			entries[2].sampler = lookup.SceneSampler;
 			entries[3].binding     = 3;
 			entries[3].textureView = maskLookup.View;
 			entries[4].binding = 4;
@@ -787,7 +787,7 @@ namespace Funke {
 			wgpu::BindGroup bg = device.CreateBindGroup(&desc);
 			if (!bg) return nullptr;
 			g_BindGroupCache.emplace(key, CachedBindGroup{
-				bg, lookup.Sampler, lookup.View, maskLookup.Sampler, maskLookup.View });
+				bg, lookup.SceneSampler, lookup.View, maskLookup.Sampler, maskLookup.View });
 			return bg;
 		}
 	}
@@ -860,6 +860,7 @@ namespace Funke {
 		}
 		m_SceneFbo.Destroy();
 		m_PostProcessOutputFbo.Destroy();
+		m_AntiAliasFbo.Destroy();
 		m_PostProcessor.Shutdown();
 
 		g_BindGroupCache.clear();
@@ -1004,18 +1005,22 @@ namespace Funke {
 		const int fboHeight = scaled
 			? std::max(1, static_cast<int>(std::lround(targetHeight * m_GraphicsSettings.RenderScale)))
 			: targetHeight;
-		bool usePostProcess = runEffects || aspectLocked || scaled;
+		bool hasWorldText = false;
+		if (m_TextRenderer) {
+			auto worldText = scene.GetRegistry().view<TextRendererComponent, Transform2DComponent>(entt::exclude<DisabledTag>);
+			hasWorldText = worldText.begin() != worldText.end();
+		}
+
+		// Nothing drawn (a UI-only screen) means no edges: skip the two full-screen passes.
+		// MSAA4x is for 3D geometry only; sprites keep their edges as with Off.
+		const bool antiAlias = m_PostProcessor.IsInitialized() && m_PostProcessingEnabled
+			&& m_GraphicsSettings.AntiAliasing == AntiAliasingMode::FXAA && (n > 0 || hasWorldText);
+		bool usePostProcess = runEffects || aspectLocked || scaled || antiAlias;
 
 		if (usePostProcess) {
 			if (!m_SceneFbo.Recreate(fboWidth, fboHeight, TextureFormat::RGBA16F)) {
 				usePostProcess = false;
 			}
-		}
-
-		bool hasWorldText = false;
-		if (m_TextRenderer) {
-			auto worldText = scene.GetRegistry().view<TextRendererComponent, Transform2DComponent>(entt::exclude<DisabledTag>);
-			hasWorldText = worldText.begin() != worldText.end();
 		}
 
 		// Composing over 3D with nothing to draw: an empty intermediate would only add a blit.
@@ -1210,6 +1215,8 @@ namespace Funke {
 					/*baseVertex=*/0,
 					/*firstInstance=*/static_cast<uint32_t>(i));
 				++m_DrawCallsCount;
+				// The editor's wireframe overlay redraws the same sprites as lines.
+				if (!wireframePass) m_RenderedInstancesTotal += count;
 
 				i = runEnd;
 			}
@@ -1261,16 +1268,39 @@ namespace Funke {
 			// HasEnabledEffect MUST mirror PostProcessor::Run's effect set — add new effects here or they smear in aspect-locked standalone builds.
 			const bool hasEnabledEffect = ppSettings && ppSettings->HasEnabledEffect();
 			const bool needsEffectFbo = (aspectLocked || scaled) && hasEnabledEffect;
+
+			// FXAA reads the scene at render resolution: straight into the target when nothing follows it,
+			// otherwise into an intermediate the rest of the chain reads instead of the scene.
+			const Framebuffer* sceneSource = &m_SceneFbo;
+			bool antiAliasedToTarget = false;
+			if (antiAlias) {
+				const AntiAliasingQualityLevel aaQuality = m_GraphicsSettings.AntiAliasingQuality;
+				if (!hasEnabledEffect && !scaled) {
+					antiAliasedToTarget = m_PostProcessor.RunAntiAliasing(m_SceneFbo,
+						callerInfo.ColorView, callerInfo.ColorFormat, aaQuality, true);
+				}
+				else if (m_AntiAliasFbo.Recreate(fboWidth, fboHeight, TextureFormat::RGBA16F)) {
+					const auto aaLook = WebGPUBackend::LookupFramebufferByFboId(m_AntiAliasFbo.GetBackendId());
+					if (aaLook.Valid && m_PostProcessor.RunAntiAliasing(m_SceneFbo,
+						aaLook.ColorView, aaLook.ColorFormat, aaQuality, false)) {
+						sceneSource = &m_AntiAliasFbo;
+					}
+				}
+			}
+
 			const bool routeThroughEffectFbo = needsEffectFbo
 				&& m_PostProcessOutputFbo.Recreate(
 					fboWidth, fboHeight,
 					TextureFormat::RGBA16F);
 
-			if (routeThroughEffectFbo) {
+			if (antiAliasedToTarget) {
+				// Done: FXAA wrote the target.
+			}
+			else if (routeThroughEffectFbo) {
 				const auto outLook = WebGPUBackend::LookupFramebufferByFboId(
 					m_PostProcessOutputFbo.GetBackendId());
 				if (outLook.Valid) {
-					m_PostProcessor.Run(m_SceneFbo,
+					m_PostProcessor.Run(*sceneSource,
 						outLook.ColorView,
 						outLook.ColorFormat,
 						static_cast<uint32_t>(fboWidth), static_cast<uint32_t>(fboHeight),
@@ -1285,7 +1315,7 @@ namespace Funke {
 						m_GraphicsSettings.UpscaleFilter);
 				}
 				else {
-					m_PostProcessor.Blit(m_SceneFbo,
+					m_PostProcessor.Blit(*sceneSource,
 						callerInfo.ColorView,
 						callerInfo.ColorFormat,
 						callerInfo.Width, callerInfo.Height,
@@ -1293,14 +1323,14 @@ namespace Funke {
 				}
 			}
 			else if (needsEffectFbo) {
-				m_PostProcessor.Blit(m_SceneFbo,
+				m_PostProcessor.Blit(*sceneSource,
 					callerInfo.ColorView,
 					callerInfo.ColorFormat,
 					callerInfo.Width, callerInfo.Height,
 					m_GraphicsSettings.UpscaleFilter);
 			}
 			else if (hasEnabledEffect) {
-				m_PostProcessor.Run(m_SceneFbo,
+				m_PostProcessor.Run(*sceneSource,
 					callerInfo.ColorView,
 					callerInfo.ColorFormat,
 					dstW, dstH,
@@ -1308,7 +1338,7 @@ namespace Funke {
 					m_GraphicsSettings.PostProcessingQuality);
 			}
 			else {
-				m_PostProcessor.Blit(m_SceneFbo,
+				m_PostProcessor.Blit(*sceneSource,
 					callerInfo.ColorView,
 					callerInfo.ColorFormat,
 					callerInfo.Width, callerInfo.Height,

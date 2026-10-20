@@ -286,6 +286,37 @@ public class TextRenderer : Component
         get => InternalCalls.TextRenderer_GetSortingLayer(RequireComponent<TextRenderer>());
         set => InternalCalls.TextRenderer_SetSortingLayer(RequireComponent<TextRenderer>(), value);
     }
+
+    /// <summary>Outline around the glyphs in text pixels (Font Size units); 0 = none. Fades with the text color's alpha.</summary>
+    public float OutlineWidth
+    {
+        get { Span<float> v = stackalloc float[k_EffectValues]; ReadEffects(v); return v[0]; }
+        set { Span<float> v = stackalloc float[k_EffectValues]; ReadEffects(v); v[0] = value; WriteEffects(v); }
+    }
+
+    public Funke.Color OutlineColor
+    {
+        get { Span<float> v = stackalloc float[k_EffectValues]; ReadEffects(v); return new Funke.Color(v[1], v[2], v[3], v[4]); }
+        set { Span<float> v = stackalloc float[k_EffectValues]; ReadEffects(v); v[1] = value.R; v[2] = value.G; v[3] = value.B; v[4] = value.A; WriteEffects(v); }
+    }
+
+    /// <summary>Drop shadow offset in text pixels, +Y up: (2, -2) falls down-right. Zero = no shadow.</summary>
+    public Vector2 ShadowOffset
+    {
+        get { Span<float> v = stackalloc float[k_EffectValues]; ReadEffects(v); return new Vector2(v[5], v[6]); }
+        set { Span<float> v = stackalloc float[k_EffectValues]; ReadEffects(v); v[5] = value.X; v[6] = value.Y; WriteEffects(v); }
+    }
+
+    public Funke.Color ShadowColor
+    {
+        get { Span<float> v = stackalloc float[k_EffectValues]; ReadEffects(v); return new Funke.Color(v[7], v[8], v[9], v[10]); }
+        set { Span<float> v = stackalloc float[k_EffectValues]; ReadEffects(v); v[7] = value.R; v[8] = value.G; v[9] = value.B; v[10] = value.A; WriteEffects(v); }
+    }
+
+    // Outline width + rgba, shadow offset xy + rgba, in TextRenderer_GetEffects order.
+    private const int k_EffectValues = 11;
+    private void ReadEffects(Span<float> values) => InternalCalls.TextRenderer_GetEffects(RequireComponent<TextRenderer>(), values);
+    private void WriteEffects(ReadOnlySpan<float> values) => InternalCalls.TextRenderer_SetEffects(RequireComponent<TextRenderer>(), values);
 }
 
 // ── Camera2D ────────────────────────────────────────────────────────
@@ -715,6 +746,42 @@ public class AudioSource : Component
     public void Pause() => InternalCalls.AudioSource_Pause(RequireComponent<AudioSource>());
     public void Stop() => InternalCalls.AudioSource_Stop(RequireComponent<AudioSource>());
     public void Resume() => InternalCalls.AudioSource_Resume(RequireComponent<AudioSource>());
+
+    /// <summary>
+    /// Plays from the entity's position: quieter with distance from the listener (the main camera) and panned to its
+    /// side. False (default) = a plain 2D sound the camera never affects.
+    /// </summary>
+    public bool Spatial
+    {
+        get => ReadSpatial(0) != 0f;
+        set => WriteSpatial(0, value ? 1f : 0f);
+    }
+
+    /// <summary>Full volume up to this distance.</summary>
+    public float MinDistance { get => ReadSpatial(1); set => WriteSpatial(1, value); }
+    /// <summary>Silent from here with <see cref="AudioRolloff.Linear"/>; the logarithmic falloff stops getting quieter here.</summary>
+    public float MaxDistance { get => ReadSpatial(2); set => WriteSpatial(2, value); }
+    public AudioRolloff Rolloff { get => (AudioRolloff)(int)ReadSpatial(3); set => WriteSpatial(3, (float)value); }
+    /// <summary>0 = no left/right panning, 1 = a sound to the side is silent on the other ear (default 0.8).</summary>
+    public float Panning { get => ReadSpatial(4); set => WriteSpatial(4, value); }
+    /// <summary>Pitch shift when source and listener move towards or away from each other; 0 = off, 1 = physical.</summary>
+    public float DopplerLevel { get => ReadSpatial(5); set => WriteSpatial(5, value); }
+
+    private float ReadSpatial(int index)
+    {
+        Span<float> values = stackalloc float[InternalCalls.AudioSourceSpatialValueCount];
+        InternalCalls.AudioSource_GetSpatial(RequireComponent<AudioSource>(), values);
+        return values[index];
+    }
+
+    private void WriteSpatial(int index, float value)
+    {
+        ulong id = RequireComponent<AudioSource>();
+        Span<float> values = stackalloc float[InternalCalls.AudioSourceSpatialValueCount];
+        InternalCalls.AudioSource_GetSpatial(id, values);
+        values[index] = value;
+        InternalCalls.AudioSource_SetSpatial(id, values);
+    }
 }
 
 // ── ParticleSystem2D ──────────────────────────────────────────────────

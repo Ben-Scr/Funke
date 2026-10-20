@@ -1,11 +1,11 @@
 ---
 name: funke-game-scripting
-description: Use when writing C# GAME LOGIC with the Funke engine — player/enemy/gameplay behavior, the script lifecycle, reading input, moving entities, physics, audio, coroutines, timers, scene switching, and querying many entities. Triggers on "EntityScript", "SceneSystem", "GlobalSystem", "OnUpdate / OnStart / OnFixedUpdate / OnAwake", "OnCollisionEnter2D", "write a script", "player controller", "move the entity", "Entity.GetComponent / AddComponent / Instantiate / Destroy", "Transform / Transform2D", "Input.GetKey / GetAxis / MousePosition", "Time.DeltaTime / TimeScale", "Physics2D.Raycast / OverlapCircle", "Rigidbody2D", "Audio.PlayOneShot / AudioSource", "coroutine / WaitForSeconds", "Scene.Query / QueryRef", "SceneManager.LoadScene", "Vector2 / Color / Mathf / Random", "Log.Info / Print", "Gizmo.Draw", "Window / Cursor", or any `.cs` file under a project's `Assets/`. This is the API a game creator calls; the source of truth is `Funke-ScriptCore/Source/Funke/`. For exposing fields in the Inspector use `funke-inspector-ruleset`; for project layout use `funke-project-structure`; for UI scripting use `funke-game-ui`; for assets/Data Assets use `funke-assets-and-content`.
+description: Use when writing C# GAME LOGIC for a Funke game — the EntityScript / SceneSystem / GlobalSystem lifecycle, player and enemy behavior, input, moving and spawning entities, 2D physics with collision and trigger callbacks, audio, coroutines, scene switching, entity queries, or any `.cs` file under a project's `Assets/`. Triggers on "EntityScript", "SceneSystem", "GlobalSystem", "OnUpdate / OnStart", "OnCollisionEnter2D / OnTriggerEnter2D", "player controller", "Entity.GetComponent / Instantiate / SetParent", "Transform2D", "Input.GetKey / GetAxis", "Time.DeltaTime", "Physics2D.Raycast", "Rigidbody2D", "AudioSource", "WaitForSeconds", "Scene.Query / QueryRef", "SceneManager.LoadScene", "Mathf", "Gizmo". The source of truth is `Funke-ScriptCore/Source/Funke/`. Inspector fields go to `funke-inspector-ruleset`, UI to `funke-game-ui`, assets and Data Assets to `funke-assets-and-content`, the 3D API to `funke-make-a-game` (references/3d-games.md).
 ---
 
 # Funke Game Scripting (C#)
 
-Game logic is C# on **.NET 10**, referencing `Funke-ScriptCore.dll`. Everything lives in namespace `Funke` (with sub-namespaces `Funke.Physics`, `Funke.Coroutines`, `Funke.UI`, `Funke.Native`, `Funke.Graphics`). A `.cs` file anywhere under the project's `Assets/` is compiled into the game assembly.
+Game logic is C# on **.NET 10**, referencing `Funke-ScriptCore.dll`. Everything lives in namespace `Funke` (with sub-namespaces `Funke.Physics`, `Funke.Coroutines`, `Funke.UI`, `Funke.Native`, `Funke.Graphics` for `Gizmo`). The game `.csproj` has no implicit usings, so write `using System;`, `using Funke.Physics;` etc. yourself. A `.cs` file anywhere under the project's `Assets/` is compiled into the game assembly.
 
 All signatures below are taken from `Funke-ScriptCore/Source/Funke/` — they are exact. When in doubt, read the file; don't invent members.
 
@@ -39,19 +39,21 @@ public virtual void OnFocusChanged(bool focused) {}
 public virtual void OnCollisionEnter2D(Collision2D c) {}   // needs Rigidbody2D + collider
 public virtual void OnCollisionStay2D(Collision2D c) {}
 public virtual void OnCollisionExit2D(Collision2D c) {}
+public virtual void OnTriggerEnter2D(Collision2D other) {} // sensor overlap (a collider with IsSensor = true); + OnTriggerStay2D / OnTriggerExit2D
+// 3D: OnCollisionEnter3D/Stay3D/Exit3D and OnTriggerEnter3D/Stay3D/Exit3D(Collision3D)
 ```
 
 Built-in members (no `GetComponent` needed):
 - `Entity Entity` — the entity this script is on (inherited from `Component`).
-- `Transform2D Transform` — **throws** if the entity has no `Transform2D`; use `Entity.Transform` (nullable) on tag entities.
-- `protected void Print(object?)` — logs to the Console (shorthand for `Log.Print`).
+- `Transform2D? Transform` — same as `Entity.Transform`: `null` when the entity has no `Transform2D` (tag entities).
+- `protected void Print(object?)` — logs to the Console (same as `Log.Info`; `Log.Print` is internal).
 - Component helpers: `GetComponent<T>()`, `GetComponent(string)`, `GetScript(string)`, `AddComponent<T>()`, `RemoveComponent<T>()`, `AddNativeComponent<T>()`, `ref T GetNativeComponent<T>()`.
 - Entity helpers: `FindEntityByName(string)`, `Create(string?)`, `Create(Entity source)`, `Instantiate(Entity)`, `Instantiate(Entity, Vector3 position, float rotation = 0, Entity? parent = null)`.
 - Coroutines: `protected void RunCoroutine(Func<Task>)`, `protected CancellationToken DestroyToken` (cancelled before `OnDestroy`).
 
 ### `SceneSystem`
 
-`public abstract class SceneSystem`. Same lifecycle as EntityScript **minus** collision callbacks and `OnApplicationStart`. Extras:
+`public abstract class SceneSystem`. Same lifecycle as EntityScript **minus** collision/trigger callbacks and `OnApplicationStart`. Extras:
 - `Scene Scene { get; }` — the owning scene, for queries.
 - `bool Enabled { get; set; }`.
 - `Query<T1..T8>()` — typed managed query (see Scene queries below).
@@ -101,8 +103,8 @@ ref Native.NativeTransform2D TransformRef { get; }
 
 // Hierarchy (parenting is on the Entity, not the Transform)
 Transform2D? Transform { get; }         // nullable
-Entity? Parent { get; set; }  int ChildCount;
-Entity[] GetChildren();  Entity? GetChildAt(int);  bool SetParent(Entity? newParent);
+Entity? Parent { get; }  int ChildCount;   // Parent is read-only: reparent with SetParent
+Entity[] GetChildren();  Entity? GetChildAt(int);  bool SetParent(Entity? newParent, bool worldPositionStays = true);
 
 void Destroy();  void Destroy(float delay);
 ```
@@ -116,19 +118,19 @@ void Destroy();  void Destroy(float delay);
 - **`TextRenderer`** — `Text`, `Font?`, `FontSize`, `Color`, `LetterSpacing`, `Alignment` (`TextAlignment.Left/Center/Right`), `WrapMode`, sorting.
 - **`Camera2D`** — `OrthographicSize`, `Zoom`, `ClearColor`, `Frustum` (`AABB`), `ScreenToWorld(Vector2)`, `WorldToScreen(Vector2)`, `static Camera2D? Main`.
 - **`Rigidbody2D`** — `LinearVelocity`, `AngularVelocity`, `BodyType` (`Static/Kinematic/Dynamic`), `GravityScale`, `Mass`, `Constraints` (`RigidbodyConstraints2D` flags), `ApplyForce(Vector2, bool wake=true)`, `ApplyImpulse(Vector2, bool wake=true)`.
-- **Colliders** — `BoxCollider2D` (`Center`, `Scale`), `CircleCollider2D` (`Radius`, `Center`), `PolygonCollider2D` (`SetSides(int)`, `SetPoints(ReadOnlySpan<Vector2>)`, `GetWorldPoints(Span<Vector2>)`). Each has write-only `Enabled`.
-- **`AudioSource`** — `Audio?`, `Volume`, `Pitch`, `Loop`, `IsPlaying`, `Play/Pause/Stop/Resume()`.
+- **Colliders** — `BoxCollider2D` (`Center`, `Scale`), `CircleCollider2D` (`Radius`, `Center`), `PolygonCollider2D` (`SetSides(int)`, `SetPoints(ReadOnlySpan<Vector2>)`, `GetWorldPoints(Span<Vector2>)`). Each has write-only `Enabled`; the `Collider2D` base adds `IsSensor` (overlaps raise `OnTrigger*2D` instead of collisions), `Layer` / `CollisionMask` (bits from `PhysicsLayers.Mask(...)`), `Friction`, `Bounciness`.
+- **`AudioSource`** — `Audio?`, `Volume`, `Pitch`, `Loop`, `IsPlaying`, `Play/Pause/Stop/Resume()`; 3D sound: `Spatial`, `MinDistance`, `MaxDistance`, `Rolloff`, `Panning`, `DopplerLevel`.
 - **`ParticleSystem2D`** — `Texture`, `Color`, `LifeTime`, `Speed`, `Scale`, `EmitOverTime`, `PlayOnAwake`, `Play/Pause/Stop()`, `Emit(int)`.
 - **`PostProcessing2D`** (on the main camera entity; display name "Post Processing") — value-struct properties `ColorGrading`, `Vignette`, `ChromaticAberration`, `Grain`, `Bloom`, `LensDistortion`, `Pixelated`, `GaussianBlur` (`PostProcessing2D.BloomSettings` etc., each with `static Default`). Copy, edit, assign back: `var b = pp.Bloom; b.Enabled = true; pp.Bloom = b;`. Setters clamp to the Inspector ranges.
 - **Fast physics** (lightweight AABB path, only with the `Funke.Physics` package installed) — `FastBody2D` (`BodyType`, `Mass`, `UseGravity`, `BoundaryCheck`, `Velocity`), `FastBoxCollider2D` (`HalfExtents`), `FastCircleCollider2D` (`Radius`); queries in `Funke.Physics.FastPhysics2D` (same shape as `Physics2D`).
 
-UI components (`Button`, `Slider`, `Toggle`, `Image`, `RectTransform`, …) are in `Funke.UI` — see `funke-game-ui`.
+UI components (`Button`, `Slider`, `Toggle`, `Image`, `RectTransform`, …) are in `Funke.UI` — see `funke-game-ui`. 3D (`Transform3D`, `Camera3D`, `MeshRenderer`, `Rigidbody3D`, `Collider3D`s, `Funke.Physics.Physics3D`) — see `funke-make-a-game/references/3d-games.md`.
 
 ## Input (`Funke.Input`, static)
 
 ```csharp
 Vector2 MousePosition { get; }
-Vector2 GetAxis();        // smoothed WASD/arrows, components in [-1,1]
+Vector2 GetAxis();        // WASD/arrows as -1/0/1 (no smoothing); with no key held, the first gamepad's D-pad or left stick
 Vector2 GetAxisRaw();     // -1/0/1
 Vector2 GetMouseDelta();  float GetScrollWheelDelta();
 bool GetKey(KeyCode);     bool GetKeyDown(KeyCode);  bool GetKeyUp(KeyCode);     // held / pressed-this-frame / released
@@ -147,7 +149,8 @@ bool IsAccelerometerAvailable { get; }  bool IsGyroscopeAvailable { get; }  // f
 float DeltaTime;            // scaled; multiply per-frame movement by this
 float UnscaledDeltaTime;    // ignores TimeScale
 float FixedDeltaTime;       // physics step (settable, clamped [1/240, 1])
-float ElapsedTime;          // since scene load (scaled)
+float ElapsedTime;          // wallclock since the app process started (unscaled, not reset on scene load or Play)
+float TimeSinceStartup;     // since game start (scaled), reset on each Play
 float RealtimeSinceStartup; // since game start (unscaled)
 float TimeScale;            // 0 = pause game time, 0.5 = slow-mo
 int FrameCount;
@@ -172,19 +175,21 @@ Entity[] OverlapCircleAll(…);                          // + …BoxAll / …Pol
 bool OverlapCircleCheck(…);                            // fast bool-only variants for each shape
 ```
 `RaycastHit2D`: `Entity? Entity`, `Vector2 Point`, `Vector2 Normal`, `float Distance`, `bool Hit`.
-`Collision2D` (collision callbacks): `Entity Self`, `Entity Other`, `Vector2 ContactPoint`.
+`Collision2D` (collision and trigger callbacks): `Entity Self`, `Entity Other`, `Vector2 ContactPoint` (zero for triggers), `bool IsTrigger`.
 
 ## Audio (`Funke.Audio`)
 
 Three paths:
 - **Component:** add an `AudioSource`, set `Audio`, call `Play()`.
 - **Fire-and-forget:** `Audio sfx = Audio.FromAssetUUID(guid); sfx.PlayOneShot(volume = 1f);` — or expose a `public Audio? Sfx;` field and assign it in the Inspector.
+- **Master volume:** `Audio.MasterVolume` (0..1) scales everything the game plays. Automated runs (`Application.IsAutomatedRun`: `--input-script`, `--screenshot-at`, `--quit-at`, `--exec`, `--fixed-step`, `--background`, `--prefs-profile=<name>`) are muted by the engine on top of it (`--sound` keeps them audible), so games need no mute switch of their own.
+- **3D sound:** `source.Spatial = true` (Inspector: Audio Source › 3D Sound) plays it from the entity's Transform3D (Transform2D at z 0): quieter with distance from the main Camera3D (2D games: Camera2D) and panned to its side. `MinDistance`, `MaxDistance`, `Rolloff` (`AudioRolloff.Logarithmic` = min/distance, default; `Linear` = silent at max), `Panning` (0..1, default 0.8), `DopplerLevel` (0 = off). One-shots from a point: `clip.PlayOneShotAt(position, volume, minDistance, maxDistance, rolloff, panning)` or `Audio.PlayOneShotAt(clip, position)`; silent ones aren't started. Sources are 2D by default. Check sounds in muted test runs from the log: console `audio.spatial` (listener + playing 3D sounds with gain/pan) or `audio.spatial x y z [min] [max] [log|linear] [panning]` (how a sound there would be heard, nothing plays).
 - **Background audio:** `Audio.PlayInBackground = true` keeps audio playing and scripts updating (~10 Hz, no rendering) while minimized/backgrounded — on while playing, off when paused. Android needs build profile option `"backgroundAudio": "true"` (foreground media service + notification; request `android.permission.POST_NOTIFICATIONS` on 13+).
 - **Any file on disk (music players, user files):** `AudioStream? s = AudioStream.Open(path);` streams MP3/WAV/FLAC from disk — `Play/Pause/Stop`, `Time` (get = position, set = seek), `Length`, `IsPlaying`, `IsAtEnd`, `Volume`, `Loop`. `Dispose()` it in `OnDestroy`; leaving Play mode closes every stream. On Android, reading shared storage first needs `Application.RequestPermission("android.permission.READ_MEDIA_AUDIO")` (poll `GetPermissionState`) plus the Android build profile option `"platformOptions": {"permissions": "READ_MEDIA_AUDIO, READ_EXTERNAL_STORAGE:32"}`.
 
 ## Animation (`Funke.Animator`)
 
-Keyframe animation lives in assets, not code: `.anim` clips animate any Inspector property of the entity and its children (and visible script fields); an `.animctrl` controller switches clips with parameters. Author them in JSON (`funke-build-game/references/scene-json.md`, *Animation*) or in the editor's Animation / Animator windows. Scripts only drive parameters:
+Keyframe animation lives in assets, not code: `.anim` clips animate any Inspector property of the entity and its children (and visible script fields); an `.animctrl` controller switches clips with parameters. Author them in JSON (`funke-make-a-game/references/scene-json.md`, *Animation*) or in the editor's Animation / Animator windows. Scripts only drive parameters:
 ```csharp
 private Animator? m_Animator;
 public override void OnStart() => m_Animator = GetComponent<Animator>();
@@ -199,6 +204,7 @@ public void OnFootstep(string foot) { }   // called by an animation event named 
 - `Controller` / `Clip` take `AnimatorController` / `AnimationClip` assets; `public AnimatorController? Skin;` fields are Inspector asset slots.
 - Unknown parameter or state names log one warning and do nothing. The Animator runs after scripts each frame, so values set in `OnUpdate` apply the same frame; don't also move an animated property from a script (the Animator overwrites it).
 - Prefer a clip over a coroutine for authored motion (bobbing pickups, door swings, UI pop-ins, flashing colors); keep scripts for gameplay-driven motion.
+- Many characters: `CullingMode` (`AlwaysAnimate` / `CullPose` / `CullCompletely`, what happens off screen) and `DistanceRate` (`ProjectSetting` / `Off` / `Custom` with `HalfRateDistance`, `QuarterRateDistance`) exist on `Animator` and `SkinnedMeshRenderer`; `RenderSettings.AnimationDistanceRateEnabled` (or `"animationDistanceRate": true` in `project.json` `graphics`) turns the rate on for every component left on `ProjectSetting`. Far or culled animations then write their pose only every 2nd / 4th frame (time is caught up), so don't drive gameplay from an animated property of a distant entity.
 
 ## Coroutines (`Funke.Coroutines`)
 
@@ -229,10 +235,11 @@ private async Task SpawnWaves()
 
 Two flavors, both off `Scene` (use from a `SceneSystem`, where `Scene` is a property):
 
-**Managed tuple query** — ergonomic, returns wrapper components:
+**Managed query** — ergonomic, yields wrapper components (a tuple for 2+ types); `.WithEntity()` adds the entity:
 ```csharp
-foreach (var (entity, sprite) in Scene.Query<SpriteRenderer>())
+foreach (var sprite in Scene.Query<SpriteRenderer>())
     sprite.Color = Color.Red;
+foreach (var (entity, sprite) in Scene.Query<SpriteRenderer>().WithEntity()) { … }
 ```
 
 **Native ref query** (`QueryRef`) — zero-copy `ref` to the underlying native struct, for hot loops; uses `Funke.Native` structs (`NativeTransform2D`, `NativeSpriteRenderer`):
@@ -266,15 +273,15 @@ A scene name must be in the project's `buildScenes` to be loadable at runtime (s
 
 ## Other useful statics
 
-- **`Log`** — `Log.Info/Warn/Error/Trace(string|object)`; output goes to the Console. `Print(x)` on a script == `Log.Print(x)`.
+- **`Log`** — `Log.Info/Warn/Error/Trace(string|object)`; output goes to the Console. `Print(x)` on a script == `Log.Info(x)` (`Log.Print` is internal).
 - **`Localization`** — the game's strings from `Assets/Localization/<code>.json` (`meta` + flat `strings`): `Get(key)`, `Format(key, args)` (.NET `{0}`/`{0:N1}`, language culture), `Has`, `CurrentLanguage`, `FallbackLanguage`, `SystemLanguage`, `AvailableLanguages` (`LanguageInfo(Code, DisplayName)`), `SetLanguage(code)` (stored in PlayerPrefs `Funke.Language`, restored next start), event `LanguageChanged`. Static labels: put a `LocalizedText` component (`Key`) next to the `TextRenderer` instead of code. Fonts render ASCII + Latin-1 only.
 - **`Window`** — `Width/Height`, `Size`, `Title`, `IsFullScreen`, `Position`, `Minimize/Maximize/Restore/Focus()`, events `OnResize`, `FocusChanged`.
 - **`Cursor`** — `Mode` (`Default`/`Locked`), `Visible`, `Texture`.
-- **`Gizmo`** (debug draw; visible in editor) — `DrawLine`, `DrawWireSquare`, `DrawWireCircle`, `DrawSquare`, `DrawCircle`, `DrawText`; `Color`, `LineWidth`.
+- **`Gizmo`** (namespace `Funke.Graphics`; debug draw, visible in editor) — `DrawLine`, `DrawWireSquare`, `DrawWireCircle`, `DrawSquare`, `DrawCircle`, `DrawText`; `Color`, `LineWidth`.
 
 ## Exposing fields in the Inspector
 
-Public fields can be edited in the Editor with attributes (`[ShowInEditor]`, `[ClampValue]`, `[Header]`, `[ToolTip]`, `[Space]`, `[EnabledIf]`, `[EditorReadOnly]`, `[HideFromEditor]`, `[EditorIgnore]`). Asset slots are just typed fields: `public Texture? Icon; public Audio? Hit; public Font? Font;`. **Full rules + the field-type→inspector mapping are in `funke-inspector-ruleset`** — consult it rather than guessing.
+Public fields can be edited in the Editor with attributes (`[ShowInEditor]`, `[ClampValue]`, `[Header]`, `[ToolTip]`, `[Space]`, `[EnabledIf]`, `[EditorReadOnly]`, `[HideFromEditor]`, `[EditorIgnore]`). Asset slots are just typed fields: `public Texture? Icon; public Audio? Hit;` (also `Material`, `Mesh`, `AnimationClip`, `AnimatorController`, `Scene`, `Entity`, Data Assets). **`Font` fields are not supported** (`ScriptInstanceManager.MapFieldType` skips them, so they stay `null`): set the font on the `TextRenderer` or `AssetManager.Load<Font>(path)`. **Full rules + the field-type→inspector mapping are in `funke-inspector-ruleset`** — consult it rather than guessing.
 
 ## Native C++ scripts (rare)
 
@@ -287,15 +294,15 @@ For measured hot paths, inherit `Funke::NativeScript` in `NativeScripts/Source/*
 
 ## Common pitfalls
 
-- **`Transform` throws on tag entities.** If a script might run on an entity without `Transform2D`, use the nullable `Entity.Transform`.
+- **`Transform` is `null` on tag entities.** Null-check it when a script might run on an entity without `Transform2D`; use `Transform!` only where one is guaranteed.
 - **`OnUpdate` vs `OnFixedUpdate`.** Move with `Time.DeltaTime` in `OnUpdate`; do physics (forces/velocities) in `OnFixedUpdate`.
 - **Runtime-spawned entities don't persist** across scene reload — by design.
 - **Don't mutate ECS structure mid-query.** Collect targets, then add/remove/destroy.
-- **Component color properties are `Vector4`** (`SpriteRenderer.Color`, `TextRenderer.Color`, `Camera2D.ClearColor`). The `Color` struct (with presets like `Color.White`, used by `Gizmo` and Data Asset fields) is a *separate* type — convert deliberately.
+- **Component color properties are `Vector4`** (`SpriteRenderer.Color`, `TextRenderer.Color`, `Camera2D.ClearColor`). The `Color` struct (with presets like `Color.White` and `Color.FromHex("#3A7BD5")`, used by `Gizmo`, Data Asset fields and `TextRenderer.OutlineColor` / `ShadowColor`) is a *separate* type — convert deliberately.
 - **It's `SceneSystem`, not `GameSystem`.**
 - **Reference assets via Inspector slots** (typed fields), not hard-coded paths, so the engine stores a stable GUID.
 - **Fields typed as another script are not serialized.** `public PlayerMotor? Player;` maps to "unsupported" (`ScriptInstanceManager.MapFieldType`) and is `null` at runtime no matter what the scene says. Serialize the `Entity` (or a built-in component) and look the script up lazily: `PlayerMotor? Motor => m_Motor ??= PlayerEntity?.GetComponent<PlayerMotor>();`, or give a one-per-scene script a static `Instance` set in `OnAwake` and cleared in `OnDestroy`.
-- **Don't rely on scripts of an entity you just instantiated or enabled in the same frame.** Look them up lazily on use instead of caching in the spawner's same-frame code, and expect their `OnStart` to run on a later frame.
+- **Scripts of an entity you just instantiated or enabled are live at once:** `GetComponent<MyScript>()` works right after `Instantiate` / `IsEnabled = true`, with field values applied and `OnAwake` + `OnEnable` done (`OnAwake` sees the spawn position). Their `OnStart` runs on a later frame, before their first `OnUpdate`, so values the spawner sets are there in `OnStart`.
 - **There is no `OnLateUpdate`, and script update order is not guaranteed.** A camera that reads the player's position in its own `OnUpdate` can run before or after the player and then lags a frame, which shows as jitter. Have the leader raise an event after it moves (`public static event Action? Moved;` invoked at the end of its `OnUpdate`) and do the follow work in the handler.
 - **Mirror sprites with `FlipX`/`FlipY`**, not a negative scale: flipping keeps the pivot and the sorting bounds. (Engines before 2026-10-16 also culled negative-scale sprites without rotation.)
 
@@ -332,4 +339,4 @@ public Vector2 RenderPosition
 }
 ```
 
-Reset `m_PrevX/Y` to the spawn position whenever you teleport, or the first frame interpolates across the jump. Because the step is fixed and the math is plain `double`, an offline simulator can mirror `Step()` operation for operation. That lets a tool solve and validate levels and record input replays without playing them by hand (see "Testing without clicking" in `funke-make-a-game`).
+Reset `m_PrevX/Y` to the spawn position whenever you teleport, or the first frame interpolates across the jump. Because the step is fixed and the math is plain `double`, an offline simulator can mirror `Step()` operation for operation. That lets a tool solve and validate levels and record input replays without playing them by hand (see `funke-make-a-game/references/testing.md`).

@@ -50,7 +50,6 @@ public sealed class ActionSheet : EntityScript, IBackHandler
 
     public void Show(string title, string subtitle, IReadOnlyList<Option> options)
     {
-        // Enable the sheet before its rows: enabling a parent restores the children's authored (disabled) state.
         Ui.Show(Entity, true);
         m_Options.Clear();
         for (int i = 0; i < options.Count && i < k_MaxOptions; ++i) m_Options.Add(options[i]);

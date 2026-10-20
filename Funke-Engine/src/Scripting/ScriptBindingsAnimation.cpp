@@ -133,6 +133,25 @@ namespace Funke {
 		void Funke_Animator_SetSpeed(uint64_t entityID, float speed) {
 			if (AnimatorComponent* animator = FindAnimator(entityID)) animator->Speed = speed;
 		}
+
+		// values: cullingMode, distanceRate, halfRateDistance, quarterRateDistance
+		void Funke_Animator_GetCulling(uint64_t entityID, float* values, int count) {
+			if (!values) return;
+			const AnimatorComponent* animator = FindAnimator(entityID);
+			const AnimatorComponent fallback;
+			const AnimatorComponent& a = animator ? *animator : fallback;
+			const float packed[4] = { static_cast<float>(a.CullingMode), static_cast<float>(a.DistanceRate), a.HalfRateDistance, a.QuarterRateDistance };
+			for (int i = 0; i < count && i < 4; ++i) values[i] = packed[i];
+		}
+
+		void Funke_Animator_SetCulling(uint64_t entityID, const float* values, int count) {
+			AnimatorComponent* animator = FindAnimator(entityID);
+			if (!animator || !values) return;
+			if (count > 0) animator->CullingMode = static_cast<AnimationCullingMode>(std::clamp(static_cast<int>(values[0]), 0, 2));
+			if (count > 1) animator->DistanceRate = static_cast<AnimationDistanceRate>(std::clamp(static_cast<int>(values[1]), 0, 2));
+			if (count > 2) animator->HalfRateDistance = std::max(values[2], 0.0f);
+			if (count > 3) animator->QuarterRateDistance = std::max(values[3], 0.0f);
+		}
 	}
 
 	void PopulateAnimationBindings(NativeBindings& b) {
@@ -146,6 +165,8 @@ namespace Funke {
 		b.Animator_SetAsset = FNK_GUARDED_BINDING(Funke_Animator_SetAsset);
 		b.Animator_GetSpeed = FNK_GUARDED_BINDING(Funke_Animator_GetSpeed);
 		b.Animator_SetSpeed = FNK_GUARDED_BINDING(Funke_Animator_SetSpeed);
+		b.Animator_GetCulling = FNK_GUARDED_BINDING(Funke_Animator_GetCulling);
+		b.Animator_SetCulling = FNK_GUARDED_BINDING(Funke_Animator_SetCulling);
 	}
 
 }

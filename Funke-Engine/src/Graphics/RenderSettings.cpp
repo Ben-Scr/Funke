@@ -139,4 +139,74 @@ namespace Funke {
 		});
 	}
 
+	TextureQualityLevel RenderSettings::GetTextureQuality() {
+		return Get().TextureQuality;
+	}
+
+	GraphicsApplyStatus RenderSettings::SetTextureQuality(TextureQualityLevel quality) {
+		return ModifyRequestedSettings([quality](GraphicsSettings& settings) {
+			settings.TextureQuality = quality;
+		});
+	}
+
+	AnisotropicFilteringLevel RenderSettings::GetAnisotropicFiltering() {
+		return Get().AnisotropicFiltering;
+	}
+
+	GraphicsApplyStatus RenderSettings::SetAnisotropicFiltering(AnisotropicFilteringLevel level) {
+		return ModifyRequestedSettings([level](GraphicsSettings& settings) {
+			settings.AnisotropicFiltering = level;
+		});
+	}
+
+	AntiAliasingMode RenderSettings::GetAntiAliasing() {
+		return Get().AntiAliasing;
+	}
+
+	GraphicsApplyStatus RenderSettings::SetAntiAliasing(AntiAliasingMode mode) {
+		return ModifyRequestedSettings([mode](GraphicsSettings& settings) {
+			settings.AntiAliasing = mode;
+		});
+	}
+
+	AntiAliasingQualityLevel RenderSettings::GetAntiAliasingQuality() {
+		return Get().AntiAliasingQuality;
+	}
+
+	GraphicsApplyStatus RenderSettings::SetAntiAliasingQuality(AntiAliasingQualityLevel quality) {
+		return ModifyRequestedSettings([quality](GraphicsSettings& settings) {
+			settings.AntiAliasingQuality = quality;
+		});
+	}
+
+	bool RenderSettings::IsAnimationDistanceRateEnabled() {
+		return Get().AnimationDistanceRateEnabled;
+	}
+
+	GraphicsApplyStatus RenderSettings::SetAnimationDistanceRateEnabled(bool enabled) {
+		return ModifyRequestedSettings([enabled](GraphicsSettings& settings) {
+			settings.AnimationDistanceRateEnabled = enabled;
+		});
+	}
+
+	float RenderSettings::GetAnimationHalfRateDistance() {
+		return Get().AnimationHalfRateDistance;
+	}
+
+	GraphicsApplyStatus RenderSettings::SetAnimationHalfRateDistance(float distance) {
+		return ModifyRequestedSettings([distance](GraphicsSettings& settings) {
+			settings.AnimationHalfRateDistance = distance;
+		});
+	}
+
+	float RenderSettings::GetAnimationQuarterRateDistance() {
+		return Get().AnimationQuarterRateDistance;
+	}
+
+	GraphicsApplyStatus RenderSettings::SetAnimationQuarterRateDistance(float distance) {
+		return ModifyRequestedSettings([distance](GraphicsSettings& settings) {
+			settings.AnimationQuarterRateDistance = distance;
+		});
+	}
+
 } // namespace Funke

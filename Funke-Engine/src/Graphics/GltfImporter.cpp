@@ -501,6 +501,7 @@ namespace Funke {
 				SkeletalAnimation::EvaluatePose(*m_Data, {}, nodeModel);
 				SkeletalAnimation::ComputeJointMatrices(*m_Data, nodeModel, joints);
 				SkeletalAnimation::SkinVertices(*m_Data, joints, out.Data.Vertices);
+				SkeletalAnimation::ComputeJointBounds(*m_Data);
 				out.Data.Indices = std::move(m_Indices);
 				// Static models need no skeleton at runtime.
 				if (!m_SkinBase.empty() || !m_Data->Clips.empty()) out.Skin = std::move(m_Data);

@@ -23,6 +23,8 @@ Create clips and controllers from the Project panel (**Create > Animation > Anim
 | **Speed** | Playback speed multiplier. 0 freezes the pose. |
 | **Update Mode** | **Normal** follows `Time.TimeScale`; **Unscaled Time** keeps playing while the game is paused; **Fixed** steps in the fixed update, in sync with physics. |
 | **Apply In Edit Mode** | Plays the animation in the editor without pressing Play. The scene keeps its authored values: saving never stores an animated value. |
+| **Culling Mode** | What happens outside the game camera's view: **Always Animate** (default), **Cull Pose** or **Cull Completely**. See [Culling and distance rate](#culling-and-distance-rate). |
+| **Distance Rate** | Fewer updates far from the camera: **Project Setting** (default), **Off** or **Custom** with the component's own **Half Rate From** and **Quarter Rate From**. |
 
 The Animator runs after the scripts each frame, so parameters a script sets in `OnUpdate` take effect in the same frame, and before 3D physics reads kinematic bodies.
 
@@ -117,8 +119,45 @@ public class Player : EntityScript
 | `NormalizedTime` | Time in the current state in clip lengths (1.5 = halfway through the second loop). |
 | `IsInTransition`, `TransitionProgress` | The running crossfade and its 0..1 progress. |
 | `Speed`, `Controller`, `Clip` | The component's fields; `Controller` / `Clip` take `AnimatorController` / `AnimationClip` assets. |
+| `CullingMode`, `DistanceRate`, `HalfRateDistance`, `QuarterRateDistance` | See [Culling and distance rate](#culling-and-distance-rate) (`AnimationCullingMode`, `AnimationDistanceRate`). |
 
 Script fields of type `AnimationClip` and `AnimatorController` show as asset slots in the Inspector, so a script can swap controllers (e.g. per character skin): `GetComponent<Animator>().Controller = Skins[i];`. `AssetManager.LoadByGUID<AnimationClip>(guid)` and `FindAll<AnimatorController>(...)` work as for other assets.
+
+## Culling and distance rate
+
+Animated characters cost time every frame, also when they are off screen or far away. Two options on the Animator, and the same two on the [Skinned Mesh Renderer](3D.md#skeletal-animation), let them skip that work. Both are off by default, so existing scenes animate exactly as before.
+
+**Culling Mode** decides what happens while the animation is outside the game camera's view:
+
+| Mode | Off screen |
+|---|---|
+| **Always Animate** (default) | Animates as usual. |
+| **Cull Pose** | The clock, transitions and animation events keep running (at most every 4th frame), but no pose is written and no bones are computed. Back in view, the current pose is written at once, as if it had played all along. |
+| **Cull Completely** | Pauses. Back in view it continues where it stopped. |
+
+"In view" means that a renderer on the Animator's entity or its children (Mesh Renderer, Skinned Mesh Renderer, Sprite Renderer) is inside the view of the main camera: the first Camera 3D of the loaded scenes for 3D entities, the main Camera 2D for 2D entities. The test uses the renderers' bounds plus a margin for limbs that swing out between two checks, and it is repeated every few frames. An Animator without such a renderer below it (UI, lights) always counts as visible.
+
+**Distance Rate** updates animations less often the farther they are from the camera:
+
+| Distance from the camera (world units) | Updates |
+|---|---|
+| below **Half Rate From** | every frame |
+| **Half Rate From** (default 20) up to **Quarter Rate From** | every 2nd frame (30 per second at 60 fps) |
+| **Quarter Rate From** (default 40) and farther | every 4th frame |
+
+- The time of the skipped frames is added to the next update, so the tempo, transition times and exit times stay the same, and no animation event is lost: an event that falls between two updates fires with the next one.
+- The updates are spread over the frames, so far animations don't all update in the same frame.
+- **Project Setting** (the default) follows **Project Settings > Graphics > Animation**: the **Distance Rate** switch (off by default) and its two distances (20 and 40 units). **Off** always updates every frame. **Custom** uses the component's own **Half Rate From** and **Quarter Rate From**.
+- Animators in **Fixed** update mode ignore the distance rate: fewer, larger steps would change how the bodies they move behave in physics.
+
+Tips:
+
+- Turn the project's **Distance Rate** on for games with many animated characters, or from a quality menu: `RenderSettings.AnimationDistanceRateEnabled = true;`.
+- Keep **Always Animate** where an animation matters off screen: a character whose shadow falls into view, a platform a physics body stands on, an Animator that moves the camera.
+- In the editor the game camera decides, also while you watch the scene in the Editor View.
+- The Profiler's **Animation** rows show the time of the Animators and Skinned Mesh Renderers and how many of them updated their pose in a frame.
+
+The Sprite Animator 2D has no such options: a flip-book step costs about 40 nanoseconds, so a thousand animated sprites take a few hundredths of a millisecond per frame, and sprites outside the view are not drawn anyway. Sprite animations played by an Animator (Texture tracks) do use its culling and distance rate.
 
 ## File formats
 
@@ -160,7 +199,7 @@ Both are JSON with a GUID in their `.meta`, like other assets, and can be writte
 - State `loop`: `clip` (default, use the clip's Loop), `loop`, `once`.
 - Transitions reference states by name; `"fromAny": true` makes an Any State transition.
 
-In a scene the component is written as `"Animator": { "controllerAsset": "<guid>", "clipAsset": "<guid>", "speed": 1, "updateMode": 0, "applyInEditMode": false }`. Game builds ship the clips and controllers that scenes, controllers and scripts reference.
+In a scene the component is written as `"Animator": { "controllerAsset": "<guid>", "clipAsset": "<guid>", "speed": 1, "updateMode": 0, "applyInEditMode": false }`. `cullingMode` (0 Always Animate, 1 Cull Pose, 2 Cull Completely), `distanceRate` (0 Project Setting, 1 Off, 2 Custom), `halfRateDistance` and `quarterRateDistance` are only written when they differ from the defaults. Game builds ship the clips and controllers that scenes, controllers and scripts reference.
 
 ## Limits
 

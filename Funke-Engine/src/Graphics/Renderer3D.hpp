@@ -4,6 +4,7 @@
 #include "Collections/Color.hpp"
 #include "Components/Graphics/Camera3DComponent.hpp"
 #include "Graphics/PosColorVertex.hpp"
+#include "Graphics/RenderStatistics.hpp"
 
 #include <glm/glm.hpp>
 
@@ -59,7 +60,8 @@ namespace Funke {
 		void Shutdown();
 		bool IsInitialized() const { return m_IsInitialized; }
 
-		void SetGraphicsSettings(const GraphicsSettings& settings) { m_Settings = ClampGraphicsSettings(settings); }
+		// Rebuilds the material samplers when the texture quality or anisotropy changed.
+		void SetGraphicsSettings(const GraphicsSettings& settings);
 		const GraphicsSettings& GetGraphicsSettings() const { return m_Settings; }
 
 		// Runtime path: clears the swap chain to the main Camera3D's background and draws every loaded scene through it.
@@ -73,14 +75,15 @@ namespace Funke {
 		// Fills the bound target with the view's procedural sky when its background is Skybox; the sun disc follows
 		// the main DirectionalLight of lightScene. Call after the clear and before RenderScene.
 		void RenderSky(const Camera3DView& view, Scene* lightScene);
-		// Meshes, then particles.
+		// Meshes, then particles. Under RenderApi's PolygonMode::Wireframe: black mesh edges only (editor Triangle/Mixed).
 		void RenderScene(Scene& scene, const Camera3DView& view);
 
-		// Editor View toggle; the Game View and the runtime keep it on.
+		// Editor View toggle (also gates anti-aliasing); the Game View and the runtime keep it on.
 		void SetPostProcessingEnabled(bool enabled) { m_PostProcessingEnabled = enabled; }
-		// With an effect enabled in `settings` (the camera's Post Processing), redirects drawing into an
-		// intermediate target cleared to clearColor and returns true; EndPostProcess then runs the effects into
-		// the original target. False = draw straight to the target and skip EndPostProcess.
+		// With an effect enabled in `settings` (the camera's Post Processing) or anti-aliasing on, redirects drawing
+		// into an intermediate target cleared to clearColor and returns true; EndPostProcess then runs anti-aliasing
+		// and the effects into the original target. False = draw straight to the target and skip EndPostProcess.
+		// MSAA4x draws into a 4x target that EndPostProcess resolves (straight into the original target without effects).
 		bool BeginPostProcess(const PostProcessing2DComponent* settings, const Color& clearColor);
 		void EndPostProcess();
 
@@ -97,6 +100,8 @@ namespace Funke {
 		uint32_t GetRenderedMeshCount() const { return m_RenderedMeshes; }
 		uint32_t GetLightCount() const { return m_LightCount; }
 		uint32_t GetRenderedParticleCount() const { return m_RenderedParticles; }
+		// Running totals since startup, not reset per frame (see CaptureRenderGeometryTotals).
+		const RenderGeometryStats& GetGeometryTotals() const { return m_GeometryTotals; }
 
 		static Camera3DView MakeView(const glm::mat4& cameraWorld, const Camera3DComponent& camera, float aspect);
 		// Aspect of the viewport passes are clipped to (letterbox-aware), falling back to the bound target.
@@ -128,6 +133,7 @@ namespace Funke {
 		uint32_t m_RenderedMeshes = 0;
 		uint32_t m_LightCount = 0;
 		uint32_t m_RenderedParticles = 0;
+		RenderGeometryStats m_GeometryTotals;
 		bool m_IsInitialized = false;
 		bool m_SkipBeginFrameRender = false;
 		bool m_LinesSeeThrough = false;

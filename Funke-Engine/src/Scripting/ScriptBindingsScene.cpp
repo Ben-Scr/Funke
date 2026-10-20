@@ -16,6 +16,7 @@
 #include "Serialization/Path.hpp"
 #include "Serialization/File.hpp"
 #include "Project/ProjectManager.hpp"
+#include "Project/FunkeBuildProfile.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Scripting/ScriptSystem.hpp"
 #include <Systems/AudioUpdateSystem.hpp>
@@ -34,6 +35,7 @@
 #include "Graphics/RenderSettings.hpp"
 #include "Core/Version.hpp"
 #include "DevTools/DevConsole.hpp"
+#include "DevTools/RunAutomation.hpp"
 
 #include <algorithm>
 
@@ -164,8 +166,95 @@ namespace Funke {
 		return static_cast<int>(RenderSettings::ResetToDefaults());
 	}
 
+	static void Funke_RenderSettings_GetQuality(int* textureQuality, int* anisotropicFiltering, int* antiAliasing,
+		int* antiAliasingQuality) {
+		const GraphicsSettings settings = RenderSettings::Get();
+		if (textureQuality) *textureQuality = static_cast<int>(settings.TextureQuality);
+		if (anisotropicFiltering) *anisotropicFiltering = static_cast<int>(settings.AnisotropicFiltering);
+		if (antiAliasing) *antiAliasing = static_cast<int>(settings.AntiAliasing);
+		if (antiAliasingQuality) *antiAliasingQuality = static_cast<int>(settings.AntiAliasingQuality);
+	}
+
+	static int Funke_RenderSettings_ApplyQuality(int textureQuality, int anisotropicFiltering, int antiAliasing,
+		int antiAliasingQuality) {
+		GraphicsSettings settings = RenderSettings::Get();
+		settings.TextureQuality = static_cast<TextureQualityLevel>(std::clamp(textureQuality, 0, 2));
+		settings.AnisotropicFiltering = static_cast<AnisotropicFilteringLevel>(std::clamp(anisotropicFiltering, 0, 4));
+		settings.AntiAliasing = static_cast<AntiAliasingMode>(std::clamp(antiAliasing, 0, static_cast<int>(AntiAliasingMode::MSAA4x)));
+		settings.AntiAliasingQuality = static_cast<AntiAliasingQualityLevel>(std::clamp(antiAliasingQuality, 0, 2));
+		return static_cast<int>(RenderSettings::Apply(settings));
+	}
+
+	// values: distanceRateEnabled (0/1), halfRateDistance, quarterRateDistance
+	static void Funke_RenderSettings_GetAnimation(float* values, int count) {
+		if (!values) return;
+		const GraphicsSettings settings = RenderSettings::Get();
+		const float packed[3] = { settings.AnimationDistanceRateEnabled ? 1.0f : 0.0f, settings.AnimationHalfRateDistance,
+			settings.AnimationQuarterRateDistance };
+		for (int i = 0; i < count && i < 3; ++i) values[i] = packed[i];
+	}
+
+	static int Funke_RenderSettings_ApplyAnimation(const float* values, int count) {
+		GraphicsSettings settings = RenderSettings::Get();
+		if (values && count > 0) settings.AnimationDistanceRateEnabled = values[0] != 0.0f;
+		if (values && count > 1) settings.AnimationHalfRateDistance = values[1];
+		if (values && count > 2) settings.AnimationQuarterRateDistance = values[2];
+		return static_cast<int>(RenderSettings::Apply(settings));
+	}
+
 	static int Funke_Application_IsEditor() {
 		return Application::IsEditor() ? 1 : 0;
+	}
+
+	int ScriptBindings::ToManagedPlatform(BuildPlatform platform) {
+		switch (platform) {
+			case BuildPlatform::Windows:  return 1;
+			case BuildPlatform::Linux:    return 2;
+			case BuildPlatform::MacOS:    return 3;
+			case BuildPlatform::Android:  return 4;
+			case BuildPlatform::IOS:      return 5;
+			case BuildPlatform::Web:      return 6;
+			case BuildPlatform::VisionOS: return 7;
+		}
+		return 0;
+	}
+
+	// The editor plays scripts as its active build profile's platform; a game reports the one it runs on.
+	static int Funke_Application_GetPlatform() {
+		std::optional<BuildPlatform> platform;
+		if (Application::IsEditor()) {
+			if (const FunkeProject* project = ProjectManager::GetCurrentProject()) {
+				platform = project->GetEditorScriptTarget().Platform;
+			}
+		}
+		if (!platform) {
+#if defined(FNK_PLATFORM_WINDOWS)
+			platform = BuildPlatform::Windows;
+#elif defined(FNK_PLATFORM_LINUX)
+			platform = BuildPlatform::Linux;
+#elif defined(FNK_PLATFORM_MACOS)
+			platform = BuildPlatform::MacOS;
+#elif defined(FNK_PLATFORM_ANDROID)
+			platform = BuildPlatform::Android;
+#elif defined(FNK_PLATFORM_IOS)
+			platform = BuildPlatform::IOS;
+#elif defined(FNK_PLATFORM_WEB)
+			platform = BuildPlatform::Web;
+#endif
+		}
+		return platform ? ScriptBindings::ToManagedPlatform(*platform) : 0;
+	}
+
+	static int Funke_Application_IsAutomatedRun() {
+		return RunAutomation::IsAutomatedRun() ? 1 : 0;
+	}
+
+	static float Funke_Audio_GetMasterVolume() {
+		return AudioManager::GetMasterVolume();
+	}
+
+	static void Funke_Audio_SetMasterVolume(float volume) {
+		AudioManager::SetMasterVolume(std::isfinite(volume) ? volume : 1.0f);
 	}
 
 	static void Funke_Application_RequestPermission(const char* permission) {
@@ -835,6 +924,14 @@ namespace Funke {
 		b.RenderSettings_ResetToDefaults = FNK_GUARDED_BINDING(Funke_RenderSettings_ResetToDefaults);
 		b.RenderSettings_Get3D = FNK_GUARDED_BINDING(Funke_RenderSettings_Get3D);
 		b.RenderSettings_Apply3D = FNK_GUARDED_BINDING(Funke_RenderSettings_Apply3D);
+		b.RenderSettings_GetQuality = FNK_GUARDED_BINDING(Funke_RenderSettings_GetQuality);
+		b.RenderSettings_ApplyQuality = FNK_GUARDED_BINDING(Funke_RenderSettings_ApplyQuality);
+		b.Application_GetPlatform = FNK_GUARDED_BINDING(Funke_Application_GetPlatform);
+		b.Application_IsAutomatedRun = FNK_GUARDED_BINDING(Funke_Application_IsAutomatedRun);
+		b.Audio_GetMasterVolume = FNK_GUARDED_BINDING(Funke_Audio_GetMasterVolume);
+		b.Audio_SetMasterVolume = FNK_GUARDED_BINDING(Funke_Audio_SetMasterVolume);
+		b.RenderSettings_GetAnimation = FNK_GUARDED_BINDING(Funke_RenderSettings_GetAnimation);
+		b.RenderSettings_ApplyAnimation = FNK_GUARDED_BINDING(Funke_RenderSettings_ApplyAnimation);
 		b.Application_RequestPermission = FNK_GUARDED_BINDING(Funke_Application_RequestPermission);
 		b.Application_GetPermissionState = FNK_GUARDED_BINDING(Funke_Application_GetPermissionState);
 		b.AudioStream_Open = FNK_GUARDED_BINDING(Funke_AudioStream_Open);

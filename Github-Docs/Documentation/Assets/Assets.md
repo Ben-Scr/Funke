@@ -51,6 +51,8 @@ The `.meta` is a small JSON file that stores:
 - the asset's **GUID** (so it stays the same forever), and
 - **import settings** for that asset (for a texture: filter mode, wrap mode, and any sprite slices you've defined).
 
+A texture's filter mode also decides which [graphics settings](../Engine-Core/Graphics-Settings.md) reach it: **Point** (pixel art) stays crisp at every setting, **Bilinear** follows *Texture Quality*, and **Trilinear** / **Anisotropic** follow *Texture Quality* and *Anisotropic Filtering*.
+
 > **Keep `.meta` files.** When you move or copy an asset, move its `.meta` too, and commit them to version control. The `.meta` is what preserves the asset's identity and its import settings. If a `.meta` goes missing, the engine generates a new one — but the new GUID won't match old references.
 
 ### Two kinds of GUID

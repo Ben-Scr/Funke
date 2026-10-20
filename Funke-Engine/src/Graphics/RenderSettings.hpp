@@ -52,6 +52,29 @@ namespace Funke {
 
 		static ToneMappingMode GetToneMapping();
 		static GraphicsApplyStatus SetToneMapping(ToneMappingMode mode);
+
+		// Mip levels skipped by every non-Point texture in the scene; UI keeps full resolution.
+		static TextureQualityLevel GetTextureQuality();
+		static GraphicsApplyStatus SetTextureQuality(TextureQualityLevel quality);
+
+		// For textures filtered Trilinear or Anisotropic.
+		static AnisotropicFilteringLevel GetAnisotropicFiltering();
+		static GraphicsApplyStatus SetAnisotropicFiltering(AnisotropicFilteringLevel level);
+
+		static AntiAliasingMode GetAntiAliasing();
+		static GraphicsApplyStatus SetAntiAliasing(AntiAliasingMode mode);
+
+		static AntiAliasingQualityLevel GetAntiAliasingQuality();
+		static GraphicsApplyStatus SetAntiAliasingQuality(AntiAliasingQualityLevel quality);
+
+		// Animators and Skinned Mesh Renderers whose Distance Rate is Project Setting update less often far away.
+		static bool IsAnimationDistanceRateEnabled();
+		static GraphicsApplyStatus SetAnimationDistanceRateEnabled(bool enabled);
+		// World units from the camera from which they update every 2nd / 4th frame; clamped to [0, 100000].
+		static float GetAnimationHalfRateDistance();
+		static GraphicsApplyStatus SetAnimationHalfRateDistance(float distance);
+		static float GetAnimationQuarterRateDistance();
+		static GraphicsApplyStatus SetAnimationQuarterRateDistance(float distance);
 	};
 
 } // namespace Funke

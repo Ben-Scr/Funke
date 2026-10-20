@@ -325,6 +325,28 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 	return out;
 }
 
+// Editor wireframe (LineList). Edges are pulled slightly towards the camera so they pass the depth test against the
+// surfaces they outline in the Mixed draw mode.
+const WIRE_PULL: f32 = 0.003;
+
+@vertex
+fn vs_wire(in: VertexInput) -> @builtin(position) vec4<f32> {
+	let model = mat4x4<f32>(in.model0, in.model1, in.model2, in.model3);
+	let world = (model * vec4<f32>(in.position, 1.0)).xyz;
+	// An orthographic view-projection has (0, 0, 0, 1) as its last row; its rays are parallel, so pull in depth only.
+	if (abs(frame.viewProj[0].w) + abs(frame.viewProj[1].w) + abs(frame.viewProj[2].w) > 0.0) {
+		return frame.viewProj * vec4<f32>(mix(world, frame.cameraPos.xyz, WIRE_PULL), 1.0);
+	}
+	var clip = frame.viewProj * vec4<f32>(world, 1.0);
+	clip.z = clip.z * (1.0 - WIRE_PULL);
+	return clip;
+}
+
+@fragment
+fn fs_wire() -> @location(0) vec4<f32> {
+	return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+}
+
 // Distance fog blended over the display-range color (after tone mapping), so FogColor shows as configured.
 fn applyFog(color: vec3<f32>, worldPos: vec3<f32>, fogged: f32) -> vec3<f32> {
 	if (frame.fogColor.w < 0.5 || fogged < 0.5) {
@@ -977,6 +999,182 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
+		// FXAA (edge-walking luma anti-aliasing) at the source's own resolution; fs_low / fs_medium / fs_high are the
+		// quality levels. Colors are premultiplied and filtered with alpha, so a transparent scene composites cleanly.
+		constexpr const char* k_PostFxaaWGSL = R"WGSL(
+@group(0) @binding(0) var t_src: texture_2d<f32>;
+@group(0) @binding(1) var s_src: sampler;
+
+struct VertexOutput {
+	@builtin(position) clip_position: vec4<f32>,
+	@location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
+	var pos = array<vec2<f32>, 3>(
+		vec2<f32>(-1.0, -1.0), vec2<f32>( 3.0, -1.0), vec2<f32>(-1.0,  3.0));
+	var uv = array<vec2<f32>, 3>(
+		vec2<f32>(0.0, 1.0), vec2<f32>(2.0, 1.0), vec2<f32>(0.0, -1.0));
+	var out: VertexOutput;
+	out.clip_position = vec4<f32>(pos[idx], 0.0, 1.0);
+	out.uv = uv[idx];
+	return out;
+}
+
+fn sampleAt(uv: vec2<f32>) -> vec4<f32> {
+	// Level 0 explicitly: the edge walk below is non-uniform control flow.
+	return textureSampleLevel(t_src, s_src, uv, 0.0);
+}
+
+fn luma(c: vec4<f32>) -> f32 {
+	return dot(c.rgb, vec3<f32>(0.299, 0.587, 0.114));
+}
+
+fn lumaAt(uv: vec2<f32>) -> f32 {
+	return luma(sampleAt(uv));
+}
+
+fn fxaa(uv: vec2<f32>, quality: u32) -> vec4<f32> {
+	// Search steps along the edge (in texels, the later ones jump), local contrast thresholds and how strongly
+	// single-pixel features are softened.
+	var stepCount = 12;
+	var steps = array<f32, 12>(1.0, 1.0, 1.0, 1.0, 1.0, 1.5, 2.0, 2.0, 2.0, 2.0, 4.0, 8.0);
+	var edgeThreshold = 0.125;
+	var edgeThresholdMin = 0.0312;
+	var subpixel = 0.75;
+	if (quality == 0u) {
+		stepCount = 5;
+		steps = array<f32, 12>(1.0, 1.5, 2.0, 4.0, 12.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+		edgeThreshold = 0.25;
+		edgeThresholdMin = 0.0833;
+		subpixel = 0.5;
+	} else if (quality == 1u) {
+		stepCount = 8;
+		steps = array<f32, 12>(1.0, 1.5, 2.0, 2.0, 2.0, 2.0, 4.0, 8.0, 0.0, 0.0, 0.0, 0.0);
+		edgeThreshold = 0.166;
+		edgeThresholdMin = 0.0625;
+	}
+
+	let texel = 1.0 / vec2<f32>(textureDimensions(t_src, 0));
+	let center = sampleAt(uv);
+	let lumaM = luma(center);
+	let lumaN = lumaAt(uv + vec2<f32>(0.0, -texel.y));
+	let lumaS = lumaAt(uv + vec2<f32>(0.0, texel.y));
+	let lumaW = lumaAt(uv + vec2<f32>(-texel.x, 0.0));
+	let lumaE = lumaAt(uv + vec2<f32>(texel.x, 0.0));
+
+	let lumaMax = max(lumaM, max(max(lumaN, lumaS), max(lumaW, lumaE)));
+	let lumaMin = min(lumaM, min(min(lumaN, lumaS), min(lumaW, lumaE)));
+	let lumaRange = lumaMax - lumaMin;
+	if (lumaRange < max(edgeThresholdMin, lumaMax * edgeThreshold)) {
+		return center;
+	}
+
+	let lumaNW = lumaAt(uv + vec2<f32>(-texel.x, -texel.y));
+	let lumaNE = lumaAt(uv + vec2<f32>(texel.x, -texel.y));
+	let lumaSW = lumaAt(uv + vec2<f32>(-texel.x, texel.y));
+	let lumaSE = lumaAt(uv + vec2<f32>(texel.x, texel.y));
+	let lumaNS = lumaN + lumaS;
+	let lumaWE = lumaW + lumaE;
+	let lumaWestCorners = lumaNW + lumaSW;
+	let lumaEastCorners = lumaNE + lumaSE;
+	let lumaNorthCorners = lumaNW + lumaNE;
+	let lumaSouthCorners = lumaSW + lumaSE;
+
+	// A horizontal edge changes along y: compare the second differences of the three columns and rows.
+	let edgeHorizontal = abs(lumaWestCorners - 2.0 * lumaW) + 2.0 * abs(lumaNS - 2.0 * lumaM)
+		+ abs(lumaEastCorners - 2.0 * lumaE);
+	let edgeVertical = abs(lumaNorthCorners - 2.0 * lumaN) + 2.0 * abs(lumaWE - 2.0 * lumaM)
+		+ abs(lumaSouthCorners - 2.0 * lumaS);
+	let isHorizontal = edgeHorizontal >= edgeVertical;
+
+	// Neighbours across the edge on the negative (1) and positive (2) side; blend towards the steeper one.
+	let luma1 = select(lumaW, lumaN, isHorizontal);
+	let luma2 = select(lumaE, lumaS, isHorizontal);
+	let gradient1 = luma1 - lumaM;
+	let gradient2 = luma2 - lumaM;
+	let is1Steepest = abs(gradient1) >= abs(gradient2);
+	let gradientScaled = 0.25 * max(abs(gradient1), abs(gradient2));
+	var stepLength = select(texel.x, texel.y, isHorizontal);
+	var lumaLocalAverage = 0.5 * (luma2 + lumaM);
+	if (is1Steepest) {
+		stepLength = -stepLength;
+		lumaLocalAverage = 0.5 * (luma1 + lumaM);
+	}
+
+	// Walk both ways along the edge, half a texel towards the steeper side, until the luma leaves the edge.
+	var edgeUv = uv;
+	if (isHorizontal) {
+		edgeUv.y += 0.5 * stepLength;
+	} else {
+		edgeUv.x += 0.5 * stepLength;
+	}
+	let along = select(vec2<f32>(0.0, texel.y), vec2<f32>(texel.x, 0.0), isHorizontal);
+	var uv1 = edgeUv;
+	var uv2 = edgeUv;
+	var lumaEnd1 = 0.0;
+	var lumaEnd2 = 0.0;
+	var reached1 = false;
+	var reached2 = false;
+	for (var i = 0; i < stepCount; i++) {
+		if (!reached1) {
+			uv1 -= along * steps[i];
+			lumaEnd1 = lumaAt(uv1) - lumaLocalAverage;
+			reached1 = abs(lumaEnd1) >= gradientScaled;
+		}
+		if (!reached2) {
+			uv2 += along * steps[i];
+			lumaEnd2 = lumaAt(uv2) - lumaLocalAverage;
+			reached2 = abs(lumaEnd2) >= gradientScaled;
+		}
+		if (reached1 && reached2) {
+			break;
+		}
+	}
+
+	// Pixels near the closer end of the edge shift the most; only when that end's luma moves the other way.
+	let distance1 = select(uv.y - uv1.y, uv.x - uv1.x, isHorizontal);
+	let distance2 = select(uv2.y - uv.y, uv2.x - uv.x, isHorizontal);
+	let isDirection1 = distance1 < distance2;
+	let distanceFinal = min(distance1, distance2);
+	let edgeLength = distance1 + distance2;
+	let pixelOffset = 0.5 - distanceFinal / edgeLength;
+	let isLumaMSmaller = lumaM < lumaLocalAverage;
+	let correctVariation = (select(lumaEnd2, lumaEnd1, isDirection1) < 0.0) != isLumaMSmaller;
+	var finalOffset = select(0.0, pixelOffset, correctVariation);
+
+	// Single-pixel features: blend towards the 3x3 average.
+	let lumaAverage = (2.0 * (lumaNS + lumaWE) + lumaWestCorners + lumaEastCorners) / 12.0;
+	let subpixelBlend = clamp(abs(lumaAverage - lumaM) / lumaRange, 0.0, 1.0);
+	let subpixelSmooth = (3.0 - 2.0 * subpixelBlend) * subpixelBlend * subpixelBlend;
+	finalOffset = max(finalOffset, subpixelSmooth * subpixelSmooth * subpixel);
+
+	var finalUv = uv;
+	if (isHorizontal) {
+		finalUv.y += finalOffset * stepLength;
+	} else {
+		finalUv.x += finalOffset * stepLength;
+	}
+	return sampleAt(finalUv);
+}
+
+@fragment
+fn fs_low(in: VertexOutput) -> @location(0) vec4<f32> {
+	return fxaa(in.uv, 0u);
+}
+
+@fragment
+fn fs_medium(in: VertexOutput) -> @location(0) vec4<f32> {
+	return fxaa(in.uv, 1u);
+}
+
+@fragment
+fn fs_high(in: VertexOutput) -> @location(0) vec4<f32> {
+	return fxaa(in.uv, 2u);
+}
+)WGSL";
+
 		constexpr BuiltIn k_BuiltIns[] = {
 			{ "sprite",              k_SpriteWGSL              },
 			{ "text",                k_TextWGSL                },
@@ -992,6 +1190,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 			{ "postbloomblur",       k_PostBloomBlurWGSL       },
 			{ "postcomposite",       k_PostCompositeWGSL       },
 			{ "postpixelated",       k_PostPixelatedWGSL       },
+			{ "postfxaa",            k_PostFxaaWGSL            },
 		};
 
 		struct GpuShader {

@@ -56,6 +56,18 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 	void RegisterSkinnedMesh3D(ComponentRegistry& registry);
 	void RegisterLocalization(ComponentRegistry& registry);
 
+	// Inspector labels for an enum property's values in value order ("Always Animate" instead of "AlwaysAnimate").
+	inline PropertyDescriptor WithEnumLabels(PropertyDescriptor desc, std::initializer_list<const char*> labels) {
+		if (!desc.Metadata.Enum) return desc;
+		auto labelled = std::make_shared<EnumDescriptor>(*desc.Metadata.Enum);
+		size_t index = 0;
+		for (const char* label : labels) {
+			if (index < labelled->Options.size()) labelled->Options[index++].Name = label;
+		}
+		desc.Metadata.Enum = std::move(labelled);
+		return desc;
+	}
+
 	// JSON codecs and reference-field helpers shared by the Rendering and both UI slices.
 	inline Json::Value UIColorToJson(const Color& c) {
 		Json::Value v = Json::Value::MakeObject();

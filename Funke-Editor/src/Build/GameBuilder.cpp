@@ -517,8 +517,8 @@ namespace Funke::GameBuilder {
 				"\t<key>CFBundleExecutable</key><string>" + XmlEscape(executableName) + "</string>\n"
 				"\t<key>CFBundleIdentifier</key><string>" + XmlEscape(project.GetApplicationIdentifier()) + "</string>\n"
 				"\t<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>\n"
-				"\t<key>CFBundleName</key><string>" + XmlEscape(project.Name) + "</string>\n"
-				"\t<key>CFBundleDisplayName</key><string>" + XmlEscape(project.Name) + "</string>\n"
+				"\t<key>CFBundleName</key><string>" + XmlEscape(project.DisplayName()) + "</string>\n"
+				"\t<key>CFBundleDisplayName</key><string>" + XmlEscape(project.DisplayName()) + "</string>\n"
 				"\t<key>CFBundlePackageType</key><string>APPL</string>\n"
 				"\t<key>CFBundleShortVersionString</key><string>" + XmlEscape(version) + "</string>\n"
 				"\t<key>CFBundleVersion</key><string>" + XmlEscape(version) + "</string>\n"
@@ -2013,7 +2013,7 @@ namespace Funke::GameBuilder {
 				FNK_INFO_TAG("Build", "{} has no Debug runtime; packaging the Development runtime with Debug scripts.",
 					FunkeBuildProfile::PlatformDisplayName(request.Platform));
 			}
-			platformRequest.AppName = project->Name;
+			platformRequest.AppName = project->DisplayName();
 			platformRequest.Version = project->BuildVersion.empty() ? std::string("1.0.0") : project->BuildVersion;
 			platformRequest.Company = project->BuildCompany;
 			platformRequest.EntityBits = project->EntityBits;

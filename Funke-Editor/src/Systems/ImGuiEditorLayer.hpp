@@ -91,6 +91,23 @@ namespace Funke {
 		bool DidLastBuildSucceed() const { return m_BuildSucceeded.load(std::memory_order_relaxed); }
 		const std::string& GetLastBuildOutputDirectory() const { return m_BuildOutputDir; }
 		const std::string& GetLastBuiltExecutablePath() const { return m_BuiltExecutablePath; }
+
+		// Editor Bridge (`funke editor ...`, Bridge/EditorBridgeLayer). Main thread only.
+		// Non-empty while commands that change the editor must wait (loading, building, a modal dialog).
+		std::string GetBridgeBusyReason() const;
+		bool IsPlayModeEntryPending() const { return m_PlayModeRecompilePending; }
+		bool BridgeRequestPlay(std::string& outError);
+		void BridgeRequestStop() { RequestPlayModeStop(); }
+		// Same as the toolbar's Pause / Continue, including the paused AudioSources.
+		void SetPlayModePaused(bool paused);
+		bool BridgeOpenScene(const std::string& sceneNameOrPath, bool saveFirst, bool discardChanges, std::string& outError);
+		bool BridgeSaveScenes(std::vector<std::string>& outSaved, std::string& outError);
+		// The game camera rendered offscreen at width x height with the UI laid out for that size; RGBA8, top row first.
+		bool BridgeRenderGameView(int width, int height, std::vector<uint8_t>& outRgba, std::string& outError);
+		// Non-zero: the Game View renders at exactly this size (letterboxed in the panel), so the game is laid out for it.
+		void SetBridgeSurfaceSize(int width, int height) { m_BridgeSurfaceWidth = width; m_BridgeSurfaceHeight = height; }
+		// The Game View image size: as last drawn, or what its hidden tab would show. False before it was ever laid out.
+		bool GetGameViewSurfaceSize(int& outWidth, int& outHeight) const;
 	private:
 		enum class PendingEditorAction : uint8_t {
 			None = 0,
@@ -137,6 +154,8 @@ namespace Funke {
 		void RenderDockspaceRoot();
 		void RenderMainMenu(Scene& scene);
 		void RenderToolbar();
+		// Pill next to Play while scripts compile and play as another platform (the active build profile's).
+		void RenderSimulatedPlatformBadge();
 
 		void LaunchStandalone();
 		void RenderEntitiesPanel();
@@ -422,6 +441,8 @@ namespace Funke {
 		EditorCamera3D m_EditorCamera3D;
 		// By name, not pointer: Play/Stop swap the Scene instance but must not reframe.
 		std::string m_EditorCamera3DFramedScene;
+		// Dev tooling (FUNKE_EDITOR_SELECT): frame the selection once the scene's own first framing is done.
+		bool m_EditorCamera3DFocusSelectionPending = false;
 		// Initialised from the project's modules on first draw; the toolbar toggle flips it.
 		bool m_EditorView3D = false;
 		bool m_EditorViewModeResolved = false;
@@ -529,6 +550,9 @@ namespace Funke {
 		bool m_GameViewVsync = true;
 		bool m_GameViewVsyncLoaded = false;
 		bool m_GameViewHasRendered = false;
+		int m_BridgeSurfaceWidth = 0;
+		int m_BridgeSurfaceHeight = 0;
+		Vec2 m_HiddenGameViewSize{ 0.0f, 0.0f };
 
 		// Top bar / status bar / command palette (ImGuiEditorLayer.cpp).
 		void SaveScenesFromMenu(Scene& scene);
@@ -563,6 +587,8 @@ namespace Funke {
 		bool m_ShowGameViewStats = false;
 		bool m_ShowGameViewLogs  = false;
 		Funke::Diagnostics::StatsOverlay m_GameViewStatsOverlay;
+		// What the last Game View render drew; the renderers' totals also hold the Editor View.
+		RenderGeometryStats m_GameViewGeometry;
 		// unique_ptr: lazily constructed to avoid subscribing to Log::OnLog before Application::Initialize.
 		std::unique_ptr<Funke::Diagnostics::LogOverlay> m_GameViewLogOverlay;
 

@@ -26,7 +26,7 @@ Projects: `Engine`, `EditorRuntime`, `Editor`, `Runtime`, `Launcher`, `EngineTes
 What it does for you:
 - Pins VS2022 MSBuild (VS "18" headers clash with the v143 PCH: `C2375 __builtin_assume_aligned`).
 - Builds the `.vcxproj` directly (`-t:<proj>` on `Funke.sln` → MSB4057; the sln can't build SDK-style C# → MSB4236). `ScriptCore` and `ScriptCompiler` go through `dotnet build`.
-- Regenerates premake (`vendor\bin\premake5.exe vs2022`) when a `.cpp` exists that no project lists, or any `premake5.lua`/`Dependencies.lua`/`premake/*.lua` changed since the last regen. Files premake deliberately drops via `removefiles` (e.g. `Funke-Engine/src/Diagnostics/*.cpp`) are remembered in `bin-int\_agent\premake-unlisted.txt`. Force with `-Regen`.
+- Regenerates premake (`vendor\bin\premake5.exe vs2022`) when a `.cpp` under a native project's `src\` (Engine, EditorRuntime, Editor, Runtime, Launcher, CLI, test projects) exists that its `.vcxproj` doesn't list, or a root `*.lua`, `premake/*.lua`, `premake/dependencies/*.lua` or one of those projects' `premake5.lua` changed since the last regen. Files premake deliberately drops via `removefiles` (e.g. `Funke-Engine/src/Diagnostics/*.cpp`) are remembered in `bin-int\_agent\premake-unlisted.txt`. Package sources (`packages/NAME/**`, `funke-package.lua`) are **not** watched: pass `-Regen` after adding a package `.cpp` or editing a manifest.
 - Prints only `error` lines and warnings in git-changed files, as `path(line,col): CODE message`, deduplicated. Full log: `bin-int\_agent\<target>.log`.
 - After each build copies `bin\<cfg>\Funke-Engine\Funke-Engine.dll` (+pdb) into Funke-Editor, Funke-Launcher, Funke-Runtime, Funke-CLI and the test folders. Without this the editor keeps running the old engine and fixes "don't work". `-NoDeploy` disables it.
 - Warns when a Funke app from the same config is running (DLLs locked → copy/postbuild fail). A deploy that stays stale fails the build: `DEPLOY FAILED` lists the copies, exit code 1 (a stale `Funke-Engine.dll` next to a fresh exe dies before `main` with `0xC0000138` and no output).
@@ -45,7 +45,7 @@ scripts\dev\Test.ps1 -List                        # list test cases
 
 Engine log spam (it logs to stdout) is filtered; only doctest lines and failures remain. Full output: `bin-int\_agent\test-<Suite>.log`. Tests live in `Tests/Funke-Engine-Tests/src/*Tests.cpp` (doctest, `TEST_CASE`/`CHECK`), `Tests/Funke-Editor-Tests/src`, `Tests/Funke-ScriptCore-Tests/*.cs`. A new test `.cpp` is picked up by Build.ps1's automatic regen.
 
-CI equivalent (what a PR must pass): `scripts\RunTests.bat --release` and `dotnet test Tests\Funke-ScriptCore-Tests\Funke-ScriptCore-Tests.csproj -c Release`, then smoke tests in `scripts/ci/` (`application_smoke_test.py`, `runtime_smoke_test.py`, `project_package_smoke_test.ps1`).
+CI equivalent (what a PR must pass): `scripts\RunTests.bat --release` and `dotnet test Tests\Funke-ScriptCore-Tests\Funke-ScriptCore-Tests.csproj -c Release`, then smoke tests in `scripts/ci/` (`application_smoke_test.py`, `runtime_smoke_test.py`, `project_package_smoke_test.ps1`). Locally use `Test.ps1`, not `RunTests.bat`: it resolves MSBuild via `vswhere -latest` (VS "18" here → PCH clash) and builds serially.
 
 ## Run & verify — `scripts\dev\Run.ps1`
 
@@ -53,14 +53,16 @@ CI equivalent (what a PR must pass): `scripts\RunTests.bat --release` and `dotne
 scripts\dev\Run.ps1                                     # Editor, sandbox project, 1 screenshot after 8 s, then close
 scripts\dev\Run.ps1 -App Runtime -Project C:\path\to\GameProject -Seconds 5 -Shots 3 -Interval 1
 scripts\dev\Run.ps1 -Recent                             # the project the Launcher opened last (user's real project — only when asked)
-scripts\dev\Run.ps1 -KeepOpen                           # leave it running, e.g. to continue with computer-use
+scripts\dev\Run.ps1 -KeepOpen -Foreground               # leave it running in front, e.g. to continue with computer-use
 scripts\dev\Run.ps1 -ExtraArgs "--ci-smoke-test"
-scripts\dev\Run.ps1 -Project <3D project> -EditorView     # screenshot the Editor View tab (default is whatever tab the layout selected)
+scripts\dev\Run.ps1 -Project <3D project> -EditorView     # screenshot the Editor View tab (default is whatever tab the layout selected); -GameView: the Game View tab, e.g. with -Play -OpenWindow gamestats
 scripts\dev\Run.ps1 -App Runtime -Variant 2d -Project <dir> # engine-module runtime variant (bin\<cfg>-windows-x86_64-2d)
 scripts\dev\Run.ps1 -Project <dir> -Play                    # editor enters play mode after load (FUNKE_EDITOR_AUTOPLAY) — repro play-mode crashes
 scripts\dev\Run.ps1 -App Runtime -Project <dir> -ScreenshotAt 2s,5s -FixedStep 60          # engine screenshots at GAME time, then quits
 scripts\dev\Run.ps1 -App Runtime -Project <dir> -InputScript run.json -Exec "physics.debug on"  # scripted keys/mouse/touch/commands
-scripts\dev\Run.ps1 -Project <dir> -OpenWindow build,buildprofiles   # editor with those windows open (FUNKE_EDITOR_OPEN); also projectsettings, preferences, packages, profiler
+scripts\dev\Run.ps1 -Project <dir> -OpenWindow build,buildprofiles   # editor with those windows open (FUNKE_EDITOR_OPEN); also projectsettings (projectsettings:graphics picks the category), preferences, packages, profiler, gamestats (Game View Stats overlay)
+scripts\dev\Run.ps1 -Project <3D project> -EditorView -Select Player   # select + frame that entity (FUNKE_EDITOR_SELECT) — check selection box / gizmo / F
+scripts\dev\Run.ps1 -Project <3D project> -EditorView -DrawMode triangle   # Editor View draw mode triangle|mixed (FUNKE_EDITOR_DRAW_MODE)
 ```
 
 Runtime runs use the isolated player-data profile `agent` (`--prefs-profile=agent`: PlayerPrefs/SaveData under `Profiles\agent`), so a test never changes a game's real saves; `-RealPrefs` opts out. Prefer `-ScreenshotAt` over `-Seconds/-Shots` for games: wall-clock shots drift with load times, game-time shots don't (a fresh `bin-int\_agent\run\shots-<time>-<pid>\` per run, listed at the end, so parallel sessions can't delete each other's). Instead of temporary probes in game code, drive the game with an input script (keys, mouse, touch, `[DevCommand]`s, screenshots, quit). Format: `Github-Docs/Documentation/Editor/Testing.md`.
@@ -69,7 +71,21 @@ Engine-module variants (`Funke.2D`/`Funke.3D` left out) build in their own works
 
 Outputs: `bin-int\_agent\run\<App>-<n>.png` (Read them — this is how you see UI/rendering changes), `bin-int\_agent\run\<App>.log` (only this run's log lines, also across spdlog rotations `<exe>.1.log`…`<exe>.3.log`, so a log flood can't push the first error out). The summary lists `[warning]`/`[error]`/`[critical]` lines and any new crash dump in `%LOCALAPPDATA%\Funke\CrashDumps`. Exit code 1 on crash or non-zero exit.
 
-The sandbox project is `bin-int\_agent\SandboxProject` (project.json + empty `SampleScene`). Put fixture scenes/assets there for an experiment; delete the folder to reset. Screenshots use `PrintWindow(PW_RENDERFULLCONTENT)` so they work while the window is covered; only the main window is captured.
+The sandbox project is `bin-int\_agent\SandboxProject` (project.json + empty `SampleScene`). Put fixture scenes/assets there for an experiment; delete the folder to reset. Screenshots use `PrintWindow(PW_RENDERFULLCONTENT)` so they work while the window is covered; only the main window is captured. Every run passes `--background` (`RunAutomation::IsBackground()`): the window never takes focus, opens behind the user's windows (`HWND_BOTTOM`), doesn't background-pause, and fullscreen/maximized become a plain window filling the work area. Keep it that way so tests never steal the user's focus; `-Foreground` only when something must be in front (computer-use).
+
+### Drive an open editor — `funke editor` (Editor Bridge)
+
+For several checks in a row, keep one editor open (`Run.ps1 -Project <dir> -KeepOpen`) and drive it instead of relaunching; scripts hot-reload in between. `scripts\dev\Editor.ps1 <command>` runs the repo's own `funke.exe editor`:
+
+```powershell
+scripts\dev\Editor.ps1 status -Project <dir>                  # scene, edit/play, script build + errors, game surface
+scripts\dev\Editor.ps1 play --size 1080x2400 -Project <dir>   # Play mode, game laid out for that screen
+scripts\dev\Editor.ps1 screenshot bin-int\_agent\run\p.png    # offscreen render of the game camera (works minimized)
+scripts\dev\Editor.ps1 tap 0.5 0.4 ; ... key Space ; ... drag 0.5 0.7 0.5 0.4 ; ... input run.json
+scripts\dev\Editor.ps1 exec "physics.debug on" ; ... recompile ; ... logs --level warning ; ... stop
+```
+
+Nothing on the desktop changes (no focus/move, no OS input). Exit codes: 1 failed, 3 busy/timeout, 4 no editor. With several editors open, `--project`/`-Project` picks one; never drive the user's own editor unless asked (`funke editor list`). Source: `Funke-Engine/src/DevTools/EditorBridge*` (protocol, pipe), `Funke-Editor/src/Bridge/EditorBridgeLayer.*` (commands), `Funke-CLI/src/Commands/EditorCommand.cpp`. Doc: `Github-Docs/Documentation/Editor/Editor-Bridge.md`.
 
 ## Definition of done
 
@@ -84,7 +100,7 @@ Build every consumer of the change → `Test.ps1` → `Run.ps1` for anything vis
 | `LNK2019` from Editor/Runtime for an engine symbol | Missing `FUNKE_API` (`Funke-Engine/src/Core/Export.hpp`). |
 | Every edit rebuilds the whole engine | Something in `pch.hpp` changes per build. Never include `Core/BuildIdentity.hpp` from headers/PCH; use `Engine::GetVersionLong()`. |
 | `C1060` out of heap / `C2471` PDB | Historical; fixed by `/Z7` + `CL_MPCount`/`UseMultiToolTask` in `Directory.Build.props`. Don't add `/Zm`, `/Zi`, `/ZI`. |
-| New `.cpp` not compiled | Premake regen (Build.ps1 does it). Package sources: regen too. |
+| New `.cpp` not compiled | Premake regen (Build.ps1 does it for native project sources). Package `.cpp` / `funke-package.lua`: `Build.ps1 -Regen`. |
 | Measuring build times | Never point `-p:IntDir` at `%TEMP%` (FileTracker ignores it → always full rebuild). |
 | C4251 / C4275 warnings | Permanent DLL-interface noise; filtered. |
 

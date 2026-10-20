@@ -1,6 +1,6 @@
 ---
 name: funke-add-system
-description: Use when adding a native C++ per-scene system to the Funke engine, or deciding where per-frame engine logic should live. Triggers on "add a system", "new SceneSystem", "create a MovementSystem", "ISystem" (old name), "AddSystem<T>", "AddStandardSceneSystems", "system execution order", "EnableSystem / DisableSystem / GetSystem", "OnPreRender", "FixedUpdate vs Update", "system runs in edit mode", or work in `Funke-Engine/src/Systems/`, `Funke-Engine/src/Scene/SceneSystem.hpp`, `SceneDefinition.hpp`, or an app's `ConfigureScenes()`. Covers the `SceneSystem` hooks, registration (standard set vs per-definition), real frame order (Update/FixedUpdate/OnPreRender vs physics, layers, C# systems), editor edit-vs-play behavior, enable/disable, exceptions, tests and premake regen. For game logic in C# (EntityScript / SceneSystem / GlobalSystem) use `funke-game-scripting`; for editor UI use `funke-add-editor-panel`.
+description: Use when adding a native C++ per-scene system to the Funke engine, or deciding where per-frame engine logic should live. Triggers on "add a system", "new SceneSystem", "AddSystem", "AddStandardSceneSystems", "system execution order", "EnableSystem / DisableSystem / GetSystem", "OnPreRender", "FixedUpdate vs Update", "system runs in edit mode", "ISystem" (old name), or work in `Funke-Engine/src/Systems/`, `Scene/SceneSystem.hpp`, `SceneDefinition.hpp` or an app's `ConfigureScenes()`. Covers the `SceneSystem` hooks, registration (standard set vs per-definition), Funke.2D/Funke.3D module gating, real frame order (Update/FixedUpdate/OnPreRender vs 2D and 3D physics, layers, C# systems), editor edit-vs-play behavior, enable/disable, exceptions and tests. For C# game logic (EntityScript / SceneSystem / GlobalSystem) use `funke-game-scripting`; for editor UI use `funke-add-editor-panel`.
 ---
 
 # Add a Native Scene System
@@ -15,7 +15,7 @@ Native systems derive from `Funke::SceneSystem` (`Funke-Engine/src/Scene/SceneSy
 | Gameplay logic for a project | C# `SceneSystem` / `GlobalSystem` / `EntityScript` (`funke-game-scripting`) — no engine rebuild |
 | App-wide, not scene-bound (overlays, tooling, frame hooks, input routing) | `Layer` (`Core/Layer.hpp`: `OnAttach/OnUpdate/OnFixedUpdate/OnPreRender/OnPostRender/OnEvent`), pushed in `ConfigureLayers()`. `GizmosDebugSystem` is a Layer on purpose |
 | ImGui / editor UI | Editor panel (`funke-add-editor-panel`). There is no `OnGui` hook on systems |
-| Physics stepping | Owned by `Application` (`Physics/PhysicsSystem2D`), not a scene system |
+| Physics stepping | 2D: owned by `Application` (`Physics/PhysicsSystem2D`), not a scene system. 3D: `PhysicsSystem3D` (steps in `FixedUpdate`) and `PhysicsInterpolationSystem3D` (`Update`) are standard scene systems (`Physics3D/PhysicsSystem3D.hpp`) |
 
 ## 1. Header + source
 
@@ -72,7 +72,7 @@ Canonical example: `Systems/SpriteAnimationSystem.{hpp,cpp}` + `Tests/Funke-Engi
 | `Awake` | Scene load, after `OnInitialize`/`OnLoad` callbacks and `ScenePreStartEvent`, before `Start`. Only enabled systems; order recorded for teardown |
 | `Start` | Right after all `Awake` calls, same load |
 | `Update` | Every frame **only while gameplay is active** (`Application::GetIsPlaying()` and not gameplay-paused) |
-| `FixedUpdate` | Each fixed step while playing, **before** the physics step |
+| `FixedUpdate` | Each fixed step while playing, **before** the 2D physics step (3D physics steps inside this pass, in `PhysicsSystem3D`) |
 | `OnPreRender` | Every frame after Update and physics sync, before rendering — **also in edit mode** |
 | `OnEnable` / `OnDisable` | Only on enable-state transitions via `EnableSystem<T>/DisableSystem<T>` (not on load) |
 | `OnDestroy` | Scene unload/rollback, in reverse awaken order; also for systems added after Awake |
@@ -81,7 +81,7 @@ Every hook runs inside a `SceneExecutionScope`, so implicit-scene APIs (`Entity:
 
 ## 3. Register
 
-**Every scene (engine built-in):** add it to `AddStandardSceneSystems` in `Funke-Engine/src/Scene/SceneManager.cpp`, which `SceneManager::RegisterScene` calls for every definition (editor working/asset scenes, runtime build scenes, C#-loaded scenes). Current order: `TransformHierarchySystem` (first; everyone sees fresh world transforms) → `UILayoutSystem` → `ParticleUpdateSystem`, `SpriteAnimationSystem` → `ScriptSystem` → `AudioUpdateSystem` → `UIFocusSystem` → `UIEventSystem` (focus must precede event). Gate on `ApplicationConfig` (`EnableRenderer2D`, `EnableScripting`, `EnableAudio`) like the neighbors. Placement relative to `ScriptSystem` decides whether scripts see your results this frame.
+**Every scene (engine built-in):** add it to `AddStandardSceneSystems` in `Funke-Engine/src/Scene/SceneManager.cpp`, which `SceneManager::RegisterScene` calls for every definition (editor working/asset scenes, runtime build scenes, C#-loaded scenes). Current order ([2D]/[3D] = only while that engine module is active): [2D] `TransformHierarchySystem` / [3D] `Transform3DHierarchySystem`, `PhysicsInterpolationSystem3D` (first; everyone sees fresh world transforms) → `UILayoutSystem` → [2D] `ParticleUpdateSystem`, `SpriteAnimationSystem` → [3D] `Particle3DUpdateSystem`, `SkinnedMeshAnimationSystem` → `ScriptSystem` → `AnimatorSystem` → [3D] `PhysicsSystem3D` → `AudioUpdateSystem` → `UIFocusSystem` → `UIEventSystem`, `LocalizedTextSystem` (focus must precede event). Gate on `ApplicationConfig` (`EnableRenderer2D`, `EnableScripting`, `EnableAudio`) like the neighbors. A system using Funke.2D/Funke.3D types also needs the module gate: its include and `AddSystem` inside `#if FUNKE_WITH_2D` / `FUNKE_WITH_3D`, plus the `with2D`/`with3D` check (`EngineModules::IsActive`) — otherwise the `--without-2d|3d` runtime variants stop compiling. Placement relative to `ScriptSystem` decides whether scripts see your results this frame.
 
 **One scene (app-specific):** in the app's `ConfigureScenes()` (`Funke-Runtime/src/RuntimeApplication.cpp`, `Funke-Editor/src/EditorApplication.cpp`, `Funke-Launcher/src/LauncherApplication.cpp`, tests):
 ```cpp
@@ -93,10 +93,10 @@ SceneManager::RegisterScene("Main")
 
 ## Execution order per frame
 
-Fixed steps (0–8 per frame, accumulator-driven) run first: `Application::FixedUpdate()` → per scene `FixedUpdate` (playing only) → `PhysicsSystem2D::FixedUpdate` → C# `GlobalSystem` fixed update → `Layer::OnFixedUpdate`. Then the frame: C# global systems update (playing) → `Application::Update()` → `Layer::OnUpdate` → per scene `UpdateSystems` (playing; drains delayed destroys first) → `PhysicsSystem2D::Update` (Transform→physics sync, also in edit mode) → per scene `OnPreRender` → `Layer::OnPreRender` → render.
+Fixed steps (accumulator-driven, catch-up capped) run first: `Application::FixedUpdate()` → per scene `FixedUpdate` (playing only; includes the `PhysicsSystem3D` step) → `PhysicsSystem2D::FixedUpdate` → C# `GlobalSystem` fixed update → `Layer::OnFixedUpdate`. Then the frame: C# global systems update (playing) → `Application::Update()` → `Layer::OnUpdate` → per scene `UpdateSystems` (playing; drains delayed destroys first) → `PhysicsSystem2D::Update` (Transform→physics sync, also in edit mode) → per scene `OnPreRender` → `Layer::OnPreRender` → render.
 
 - Scenes tick in loaded-list order (`SceneManager::MoveLoadedScene` changes it); systems in registration order; C# scene systems (`ManagedSceneSystem`, from the scene file's `systems`) are appended after native ones.
-- Need post-physics results? Read them in the next `Update`, not in `FixedUpdate` (physics steps after scene FixedUpdate).
+- Need post-physics results? 2D: read them in `Update`, not `FixedUpdate` (Box2D steps after every scene's FixedUpdate). 3D: systems after `PhysicsSystem3D` (every `AddSystem` one) already see this step in `FixedUpdate`.
 
 ## Edit mode vs play mode (editor)
 
@@ -127,4 +127,4 @@ Disabled systems are skipped by every hook (including `Awake`/`Start` on a later
 
 ## Build
 
-New files require `vendor\bin\premake5.exe vs2022` (project files list sources explicitly). Check `Funke-Engine/premake5.lua` module gating: systems needing the renderer belong in the `RemoveFilesIfModuleDisabled(FunkeModules.Render, ...)` list, like `ParticleUpdateSystem`/`UI*System`. Build and deploy per `funke-build-engine`.
+Project files list sources explicitly; `scripts\dev\Build.ps1` regenerates premake automatically when it finds a new `.cpp`. File gating: systems needing the renderer belong in `Funke-Engine/premake5.lua`'s `RemoveFilesIfModuleDisabled(FunkeModules.Render, ...)` list (like `UI*System`); Funke.2D/Funke.3D systems in that module's `sources` in `Funke-Engine/EngineModules.json` (like `SpriteAnimationSystem`, `Particle3DUpdateSystem`). Build and deploy per `funke-build-engine`.

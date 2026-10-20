@@ -48,10 +48,12 @@
 #include <cmath>
 #include <cctype>
 #include <algorithm>
+#include <charconv>
 #include <filesystem>
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -1211,6 +1213,144 @@ namespace Funke {
 				}
 			}
 		}
+
+		void ReadTextEffects(const Value& textValue, TextRendererComponent& text) {
+			const TextRendererComponent d;
+			text.OutlineWidth = std::max(GetFloatMember(textValue, "outlineWidth", d.OutlineWidth), 0.0f);
+			text.OutlineColor = Color{
+				GetFloatMember(textValue, "outlineR", d.OutlineColor.r), GetFloatMember(textValue, "outlineG", d.OutlineColor.g),
+				GetFloatMember(textValue, "outlineB", d.OutlineColor.b), GetFloatMember(textValue, "outlineA", d.OutlineColor.a) };
+			text.ShadowOffset = Vec2{
+				GetFloatMember(textValue, "shadowX", d.ShadowOffset.x), GetFloatMember(textValue, "shadowY", d.ShadowOffset.y) };
+			text.ShadowColor = Color{
+				GetFloatMember(textValue, "shadowR", d.ShadowColor.r), GetFloatMember(textValue, "shadowG", d.ShadowColor.g),
+				GetFloatMember(textValue, "shadowB", d.ShadowColor.b), GetFloatMember(textValue, "shadowA", d.ShadowColor.a) };
+		}
+
+		// A script field that stores entity ids, so a clone or prefab instance retargets them onto its own entities.
+		struct ScriptEntityRefField {
+			std::string Key;
+			bool List = false;    // List<T> / T[]: '\n'-marked elements
+			bool BareIds = false; // "<id>" refs (Entity) besides "<id>:<Component>" ones
+			// Object lists: per inner field 0 = no ref, 1 = entity, 2 = component.
+			std::vector<uint8_t> ObjectFieldRefs;
+		};
+
+		// The list codec of ScriptInstanceManager.EncodeListString / DecodeListString, byte for byte.
+		std::vector<std::string> DecodeScriptFieldList(std::string_view text) {
+			std::vector<std::string> items;
+			if (text.empty()) return items;
+			std::string current;
+			for (std::size_t i = text[0] == '\n' ? 1 : 0; i < text.size(); ++i) {
+				const char c = text[i];
+				if (c == '\\' && i + 1 < text.size() && (text[i + 1] == 'n' || text[i + 1] == '\\')) {
+					current += text[++i] == 'n' ? '\n' : '\\';
+					continue;
+				}
+				if (c == '\n') {
+					items.push_back(std::move(current));
+					current.clear();
+					continue;
+				}
+				current += c;
+			}
+			items.push_back(std::move(current));
+			return items;
+		}
+
+		std::string EncodeScriptFieldList(const std::vector<std::string>& items) {
+			std::string out;
+			for (const std::string& item : items) {
+				out += '\n';
+				for (const char c : item) {
+					if (c == '\\') out += "\\\\";
+					else if (c == '\n') out += "\\n";
+					else out += c;
+				}
+			}
+			return out;
+		}
+
+		// "<id>:<Component>" always, a bare "<id>" only when bareIds; "0" and "prefab:<guid>" (an asset) stay.
+		bool RemapScriptEntityRef(const Scene& scene, std::string& value, bool bareIds) {
+			if (value.empty() || value == "0" || value.rfind("prefab:", 0) == 0) return false;
+			const std::size_t colon = value.find(':');
+			if (colon == std::string::npos && !bareIds) return false;
+			const std::string_view idPart = std::string_view(value).substr(0, colon);
+			uint64_t id = 0;
+			const auto [end, ec] = std::from_chars(idPart.data(), idPart.data() + idPart.size(), id);
+			if (ec != std::errc{} || end != idPart.data() + idPart.size() || id == 0) return false;
+			const uint64_t mapped = scene.TranslateEntityRef(id);
+			if (mapped == id) return false;
+			value = std::to_string(mapped) + (colon == std::string::npos ? std::string() : value.substr(colon));
+			return true;
+		}
+
+		void RemapScriptEntityRefField(const Scene& scene, const ScriptEntityRefField& field, std::string& value) {
+			if (!field.List) {
+				RemapScriptEntityRef(scene, value, field.BareIds);
+				return;
+			}
+			std::vector<std::string> items = DecodeScriptFieldList(value);
+			bool changed = false;
+			for (std::string& item : items) {
+				if (field.ObjectFieldRefs.empty()) {
+					changed |= RemapScriptEntityRef(scene, item, field.BareIds);
+					continue;
+				}
+				std::vector<std::string> inner = DecodeScriptFieldList(item);
+				bool innerChanged = false;
+				for (std::size_t i = 0; i < inner.size() && i < field.ObjectFieldRefs.size(); ++i) {
+					if (field.ObjectFieldRefs[i] != 0) {
+						innerChanged |= RemapScriptEntityRef(scene, inner[i], field.ObjectFieldRefs[i] == 1);
+					}
+				}
+				if (innerChanged) {
+					item = EncodeScriptFieldList(inner);
+					changed = true;
+				}
+			}
+			if (changed) value = EncodeScriptFieldList(items);
+		}
+
+		// Null when the stored value can hold no entity ref. Lists need "type": "list"; a bare id needs an
+		// entity type ("entity", or "itemType": "entity" for a list) since a plain number looks the same.
+		std::optional<ScriptEntityRefField> DescribeScriptEntityRefField(const Value& fieldValue,
+			const std::string& key, const std::string& stored) {
+			if (stored.empty() || stored == "0" || stored.rfind("prefab:", 0) == 0) return std::nullopt;
+			ScriptEntityRefField field;
+			field.Key = key;
+			const std::string type = GetStringMember(fieldValue, "type");
+			if (type == "list") {
+				field.List = true;
+				const std::string itemType = GetStringMember(fieldValue, "itemType");
+				if (itemType == "object") {
+					const Value* itemFields = fieldValue.FindMember("itemFields");
+					if (!itemFields || !itemFields->IsArray()) return std::nullopt;
+					bool anyRef = false;
+					for (const Value& itemField : itemFields->GetArray()) {
+						const std::string itemFieldType = itemField.IsObject() ? GetStringMember(itemField, "type") : std::string();
+						const uint8_t kind = itemFieldType == "entity" ? 1 : itemFieldType.rfind("component:", 0) == 0 ? 2 : 0;
+						anyRef |= kind != 0;
+						field.ObjectFieldRefs.push_back(kind);
+					}
+					return anyRef ? std::optional(std::move(field)) : std::nullopt;
+				}
+				// Without an itemType only "<id>:<Component>" elements are recognizable.
+				if (!itemType.empty() && itemType != "entity" && itemType.rfind("component:", 0) != 0) return std::nullopt;
+				field.BareIds = itemType == "entity";
+				return field;
+			}
+			const std::size_t colon = stored.find(':');
+			if (colon == std::string::npos) {
+				if (type != "entity") return std::nullopt;
+				field.BareIds = true;
+				return field;
+			}
+			const std::string_view idPart = std::string_view(stored).substr(0, colon);
+			if (idPart.empty() || idPart.find_first_not_of("0123456789") != std::string_view::npos) return std::nullopt;
+			return field;
+		}
 	} // namespace
 
 	bool SceneSerializer::LoadFromFile(Scene& scene, const std::string& path) {
@@ -1808,6 +1948,7 @@ namespace Funke {
 			text.Margin.w = GetFloatMember(*textValue, "marginB", text.Margin.w);
 			text.SortingOrder = static_cast<int16_t>(GetIntMember(*textValue, "sortOrder", text.SortingOrder));
 			text.SortingLayer = static_cast<uint8_t>(GetIntMember(*textValue, "sortLayer", text.SortingLayer));
+			ReadTextEffects(*textValue, text);
 			text.ResolvedFont = FontHandle{};
 		}
 
@@ -1919,6 +2060,7 @@ namespace Funke {
 			audioSource.SetPitch(GetFloatMember(*audioValue, "pitch", 1.0f));
 			audioSource.SetLoop(GetBoolMember(*audioValue, "loop", false));
 			audioSource.SetPlayOnAwake(GetBoolMember(*audioValue, "playOnAwake", false));
+			ReadAudioSpatial(*audioValue, audioSource);
 
 			UUID audioAssetId = UUID(0);
 			const AudioHandle handle = LoadAudioFromValue(*audioValue, "clipAsset", "clip", &audioAssetId);
@@ -2053,9 +2195,9 @@ namespace Funke {
 				auto& fieldsComponent = getOrCreateScriptComponent();
 				int populated = 0;
 				int skippedNoScript = 0;
-				// Clone/paste: script entity-ref fields are stored as id strings and resolved in C# at bind
-				// time (remap gone), so collect the entity-typed keys for a deferred remap translation.
-				std::vector<std::string> entityRefFieldKeys;
+				// Clone/paste/prefab instance: script entity-ref fields are stored as id strings and resolved in C# at
+				// bind time (remap gone), so collect the entity-typed fields for a deferred remap translation.
+				std::vector<ScriptEntityRefField> entityRefFields;
 				for (const auto& [className, fieldsValue] : fieldsByClass->GetObject()) {
 					if ((!fieldsComponent.HasScript(className) && !fieldsComponent.HasManagedComponent(className))
 						|| !fieldsValue.IsArray()) {
@@ -2083,22 +2225,9 @@ namespace Funke {
 						fieldsComponent.PendingFieldValues[key] = stored;
 						++populated;
 
-						// Entity refs are a bare decimal id ([type]=="entity") or "<id>:<ComponentName>"
-						// (component ref); "prefab:<guid>" is an asset ref and must never be remapped.
-						if (scene.IsEntityRefRemapActive() && !stored.empty() && stored != "0"
-							&& stored.rfind("prefab:", 0) != 0) {
-							const std::size_t colon = stored.find(':');
-							bool isEntityRef = false;
-							if (colon != std::string::npos) {
-								const std::string idPart = stored.substr(0, colon);
-								isEntityRef = !idPart.empty()
-									&& idPart.find_first_not_of("0123456789") == std::string::npos;
-							}
-							else {
-								isEntityRef = GetStringMember(fieldValue, "type") == "entity";
-							}
-							if (isEntityRef) {
-								entityRefFieldKeys.push_back(key);
+						if (scene.IsEntityRefRemapActive()) {
+							if (auto refField = DescribeScriptEntityRefField(fieldValue, key, stored)) {
+								entityRefFields.push_back(std::move(*refField));
 							}
 						}
 					}
@@ -2110,31 +2239,15 @@ namespace Funke {
 						name, populated, skippedNoScript);
 				}
 
-				if (scene.IsEntityRefRemapActive() && !entityRefFieldKeys.empty()) {
+				if (scene.IsEntityRefRemapActive() && !entityRefFields.empty()) {
 					Scene* scenePtr = &scene;
 					ScriptComponent* scPtr = &fieldsComponent;
-					scene.DeferEntityRefFixup([scenePtr, scPtr, keys = std::move(entityRefFieldKeys)]() {
-						for (const std::string& k : keys) {
-							auto it = scPtr->PendingFieldValues.find(k);
-							if (it == scPtr->PendingFieldValues.end()) {
-								continue;
+					scene.DeferEntityRefFixup([scenePtr, scPtr, fields = std::move(entityRefFields)]() {
+						for (const ScriptEntityRefField& field : fields) {
+							const auto it = scPtr->PendingFieldValues.find(field.Key);
+							if (it != scPtr->PendingFieldValues.end()) {
+								RemapScriptEntityRefField(*scenePtr, field, it->second);
 							}
-							std::string& val = it->second;
-							if (val.empty() || val == "0" || val.rfind("prefab:", 0) == 0) {
-								continue;
-							}
-							const std::size_t colon = val.find(':');
-							try {
-								if (colon != std::string::npos) {
-									const uint64_t id = std::stoull(val.substr(0, colon));
-									if (id != 0) val = std::to_string(scenePtr->TranslateEntityRef(id)) + val.substr(colon);
-								}
-								else {
-									const uint64_t id = std::stoull(val);
-									if (id != 0) val = std::to_string(scenePtr->TranslateEntityRef(id));
-								}
-							}
-							catch (...) {}
 						}
 					});
 				}
@@ -2432,6 +2545,7 @@ namespace Funke {
 			text.Margin.w = GetFloatMember(componentValue, "marginB", text.Margin.w);
 			text.SortingOrder = static_cast<int16_t>(GetIntMember(componentValue, "sortOrder", text.SortingOrder));
 			text.SortingLayer = static_cast<uint8_t>(GetIntMember(componentValue, "sortLayer", text.SortingLayer));
+			ReadTextEffects(componentValue, text);
 			text.ResolvedFont = FontHandle{};
 			return true;
 		}
@@ -2546,6 +2660,7 @@ namespace Funke {
 			audioSource.SetPitch(GetFloatMember(componentValue, "pitch", 1.0f));
 			audioSource.SetLoop(GetBoolMember(componentValue, "loop", false));
 			audioSource.SetPlayOnAwake(GetBoolMember(componentValue, "playOnAwake", false));
+			ReadAudioSpatial(componentValue, audioSource);
 
 			UUID audioAssetId = UUID(0);
 			const AudioHandle handle = LoadAudioFromValue(componentValue, "clipAsset", "clip", &audioAssetId);

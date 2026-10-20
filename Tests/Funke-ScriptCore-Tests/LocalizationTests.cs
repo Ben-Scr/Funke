@@ -78,7 +78,7 @@ public unsafe class LocalizationTests : IDisposable
         // Without ICU (invariant globalization) every culture is invariant; otherwise German grouping applies.
         if (german.Name == "de") Assert.Equal("Punkte: 1.234,5", Localization.Format("hud.score", 1234.5));
         Assert.Equal("Value {0", Localization.Format("broken", 1));
-        Assert.Equal("Play", Localization.Format("menu.play"));
+        Assert.Equal("Spielen", Localization.Format("menu.play"));
     }
 
     [Fact]

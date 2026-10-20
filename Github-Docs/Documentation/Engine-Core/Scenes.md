@@ -147,6 +147,8 @@ A **prefab** is a saved entity (with its children and components) stored as a `.
 
 Editing the prefab asset updates every instance (except the parts an instance has deliberately overridden). The editor has dedicated support for creating, editing, and instantiating prefabs — see [Editor](../Editor/Editor.md#prefabs).
 
+Script fields that point at the prefab's own entities follow each instance: an `Entity` field, a component field (`Image`, `Transform2D`, …) and also lists and arrays of them (`List<Entity> Slots`, `Image[] Icons`, inline objects with such fields) refer to that instance's children, not to the template's or another instance's. The same happens when entities are duplicated, pasted or cloned with `Entity.Instantiate(entity)`.
+
 ---
 
 ## Play mode (in the editor)

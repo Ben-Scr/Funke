@@ -1,6 +1,6 @@
 ---
 name: funke-debug
-description: Use when debugging Funke engine code, reading logs, instrumenting with logging/assertions, diagnosing crashes or crash dumps, or chasing a one-off performance problem. Triggers on "why is this crashing", "the editor crashed", "check the logs", "where are the logs", "crash dump", ".dmp", "CrashReporter", "minidump", "add logging", "FNK_CORE_WARN_TAG", "FNK_ASSERT", "FNK_VERIFY", "FNK_THROW", "FunkeException", "Exception: ... in the log", "WebGPU validation error", "Device lost", "black screen", "nothing renders", "null camera", "invalid entity handle", "memory leak", "FPS dropped", "attach debugger", "--project=", "debug C# scripts", "my fix has no effect", "ScopedTimer", "F6 stats overlay", "F7 log overlay". Covers where every log line lands (%LOCALAPPDATA%\Funke\Logs\<exe>.log, stdout, editor Console, runtime overlays), the FNK_* logging macros, assert behavior per config (asserts are live even in Release/Dist), exceptions and binding guards, CrashReporter minidumps in %LOCALAPPDATA%\Funke\CrashDumps\, common failure modes, memory tracking, Timer/ScopedTimer, and the Visual Studio debugger flow. For systematic profiler instrumentation use `funke-add-profiler`; for render-pipeline internals use `funke-rendering`.
+description: Use when debugging Funke engine code — reading logs, adding logging or assertions, diagnosing crashes and crash dumps, or chasing a one-off performance problem. Triggers on "why is this crashing", "the editor crashed", "where are the logs", "crash dump", ".dmp", ".crash.txt", "CrashReporter", "add logging", "FNK_CORE_WARN_TAG", "FNK_ASSERT", "FNK_THROW", "FunkeException", "WebGPU validation error", "Device lost", "black screen", "nothing renders", "invalid entity handle", "memory leak", "attach debugger", "debug C# scripts", "ScopedTimer", "F6/F7 overlay". Covers where log lines land (Funke\Logs file, stdout, editor Console, runtime overlays), the FNK_* logging macros, assert behavior per config (live even in Release/Dist), exceptions and binding guards, CrashReporter dumps, common failure modes, memory tracking, Timer/ScopedTimer and the Visual Studio debugger. For profiler instrumentation use `funke-add-profiler`; for render-pipeline internals use `funke-rendering`.
 ---
 
 # Debugging Funke
@@ -15,10 +15,9 @@ Read the log first; most failures are already explained there.
 | stdout (console) | Same as the file, colored. |
 | Editor **Console** panel | Client (`APP`) and `EDITOR` loggers only. **`FNK_CORE_*` never appears there** (filtered by the `Log::OnLog` subscriber in `ImGuiEditorLayer::OnAttach`). |
 | Shipped runtime | F7 log overlay (`Funke-Runtime/src/RuntimeLogLayer.cpp`, when `showRuntimeLogs`), F6 stats overlay, Ctrl+F6 profiler (when `profiler.enableInRuntime`). |
+| `funke editor logs` (Editor Bridge) | The last 4000 lines of **one open editor** (core + game), per process: `--level warning`, `--contains <text>`, `--since <n>` (number from the previous answer), `--follow`. The shared `Funke-Editor.log` mixes every editor instance; this doesn't. Reproduce in that editor with `funke editor play` / `input` / `exec` (`funke-build-engine`). |
 
 File line format: `[HH:MM:SS] [FUNKE] [level] [Tag] message` — logger names `FUNKE` (core), `APP` (client), `EDITOR`; level is `trace|debug|info|warning|error|critical` (console omits the level and colors it instead). Problems only: pattern `\] \[(warning|error|critical)\] `. To reproduce and capture a clean slice of the log plus a screenshot, use `scripts\dev\Run.ps1` (see `funke-build-engine`). As an agent, `Grep` the log file instead of asking the user to paste console output, e.g. pattern `\[WebGPUApi\]|\[CrashReporter\]|ASSERT failed|Exception:` on `C:\Users\<user>\AppData\Local\Funke\Logs\Funke-Editor.log`.
-
-> The `ai-debug-logs` JSONL convention (`.axiom/logs/*.jsonl`, `AXIOM_AI_LOGS`) is **not implemented** in the current engine — the spdlog file above is the only on-disk log.
 
 ## Logging macros (`Core/Log.hpp`)
 
@@ -64,8 +63,8 @@ FNK_ASSERT(ptr, FunkeErrorCode::NullReference, fmt::format("Widget {} was null",
 - Windows: unhandled SEH exceptions, `std::terminate`, pure-virtual calls, CRT invalid-parameter and `SIGABRT` all write a minidump (data segs + indirectly referenced memory + thread info) to
   `%LOCALAPPDATA%\Funke\CrashDumps\<exe-stem>_<FNK_BUILD_ID>_<timestamp>.dmp`
   and log `[CrashReporter] Wrote minidump to <path>` (FATAL) before flushing. Only the first crashing thread writes a dump. `FNK_BUILD_ID` (e.g. `2026.1.0-beta.1+29bd8b4d6bdb.dirty.<hash>`) names the commit the binary came from.
-- Linux: signal handler only prints `[Funke] fatal signal: ...` to stderr; no dump.
-- Open a `.dmp` in Visual Studio (File > Open), "Debug with Native Only", symbol path = the matching `bin\<Config>-windows-x86_64\<Project>\` folder. Debug/Release have PDBs; **Dist builds with symbols off**, so reproduce Dist crashes on Release to get stacks.
+- Linux/macOS: fatal signals (`SIGSEGV`, `SIGABRT`, `SIGFPE`, `SIGILL`, `SIGBUS`, on an alternate stack) and `std::terminate` print `[Funke] fatal signal: ...` / `[Funke] std::terminate called` to stderr and write a text report `<exe-stem>-<timestamp>.crash.txt` (version, commit, reason, symbolized backtrace) into the same `Funke/CrashDumps` folder under the platform's local-app-data dir. No minidump. Other platforms only get the stderr line.
+- Open a `.dmp` in Visual Studio (File > Open), "Debug with Native Only", symbol path = the matching `bin\<Config>-windows-x86_64\<Project>\` folder. Debug/Release always have PDBs; in Dist only `Funke-Engine` and `Funke-Runtime` (the shipped game) keep symbols, Editor/Launcher Dist don't.
 - The editor also autosaves unsaved scenes every 30 s to `<project>/.funke/Recovery` and offers Restore on next open.
 
 ## Common failure modes
@@ -105,6 +104,6 @@ For anything that should stay in the code or show in the Profiler panel / Tracy,
 ## Debugger
 
 1. Open `Funke.sln` in VS2022. Startup project `Funke-Editor`; Debugging > Command Arguments: `--project="C:\path\to\MyGame"` (without it the editor logs `No project specified` and runs on fallback paths). `Funke-Runtime` takes the same `--project=`; `Funke-Launcher` needs none.
-2. Debug = unoptimized; Release = optimized **with** symbols (best for perf issues); Dist = no symbols.
+2. Debug = unoptimized; Release = optimized **with** symbols (best for perf issues); Dist = fully optimized, symbols only for Engine/Runtime.
 3. C# scripts run on CoreCLR inside the editor process: attach to `Funke-Editor.exe` with the **Managed (.NET Core)** code type (or Native + Managed for mixed stacks).
-4. Repro in tests where possible: `scripts\RunTests.bat [--release|--dist]` (builds + runs `Funke-Engine-Tests` and `Funke-Editor-Tests`), `dotnet test Tests\Funke-ScriptCore-Tests\Funke-ScriptCore-Tests.csproj -c Release`.
+4. Repro in tests where possible: `scripts\dev\Test.ps1 [-Filter "*Name*"] [-Suite CSharp|All]` (`funke-build-engine`). Not `scripts\RunTests.bat` locally: it picks MSBuild via `vswhere -latest`, which is VS "18" on this machine (PCH clash with v143), and builds serially; it's the CI entry point.

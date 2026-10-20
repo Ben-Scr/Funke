@@ -36,6 +36,15 @@ namespace Funke::Diagnostics {
 			return std::string(buf);
 		}
 
+		// Thousands separators keep seven-digit triangle counts readable.
+		std::string FormatCount(std::uint64_t value) {
+			std::string digits = std::to_string(value);
+			for (std::ptrdiff_t i = static_cast<std::ptrdiff_t>(digits.size()) - 3; i > 0; i -= 3) {
+				digits.insert(static_cast<std::size_t>(i), 1, ',');
+			}
+			return digits;
+		}
+
 		std::size_t CountLoadedEntities() {
 			std::size_t count = 0;
 			SceneManager::ForeachLoadedScene([&](const Scene& scene) {
@@ -45,7 +54,7 @@ namespace Funke::Diagnostics {
 		}
 	}
 
-	bool StatsOverlay::RefreshIfDue(int screenWidth, int screenHeight) {
+	bool StatsOverlay::RefreshIfDue(int screenWidth, int screenHeight, const RenderGeometryStats* frameGeometry) {
 		const auto now = std::chrono::steady_clock::now();
 		constexpr auto k_RefreshInterval = std::chrono::milliseconds(33); // ~30 Hz
 		const bool firstCall = m_LastRefresh.time_since_epoch().count() == 0;
@@ -69,16 +78,33 @@ namespace Funke::Diagnostics {
 #if FUNKE_WITH_2D
 		if (auto* renderer = app ? app->GetRenderer2D() : nullptr) {
 			m_Cached.RenderThreadMs = renderer->GetRenderLoopDuration();
-			const std::size_t inst = renderer->GetRenderedInstancesCount();
-			m_Cached.Tris  = inst * 2u; // 2 triangles per instanced quad
-			m_Cached.Verts = inst * 4u; // 4 vertices per instanced quad
 		}
 		else
 #endif
 		{
 			m_Cached.RenderThreadMs = 0.0f;
-			m_Cached.Tris  = 0;
-			m_Cached.Verts = 0;
+		}
+
+		if (frameGeometry) {
+			m_Cached.Tris       = frameGeometry->Triangles;
+			m_Cached.Verts      = frameGeometry->Vertices;
+			m_Cached.ShadowTris = frameGeometry->ShadowTriangles;
+		}
+		else {
+			// The renderers count across frames: average the frames since the last refresh. A frame that has not
+			// advanced (first refresh, paused loop) keeps the previous numbers.
+			const RenderGeometryStats totals = CaptureRenderGeometryTotals();
+			const int frame = Time::GetFrameCount();
+			if (m_LastGeometryFrame >= 0 && frame > m_LastGeometryFrame) {
+				const RenderGeometryStats perFrame = (totals - m_LastGeometryTotals).PerFrame(static_cast<std::uint64_t>(frame - m_LastGeometryFrame));
+				m_Cached.Tris       = perFrame.Triangles;
+				m_Cached.Verts      = perFrame.Vertices;
+				m_Cached.ShadowTris = perFrame.ShadowTriangles;
+			}
+			if (frame != m_LastGeometryFrame) {
+				m_LastGeometryTotals = totals;
+				m_LastGeometryFrame = frame;
+			}
 		}
 
 		m_Cached.ScreenWidth  = screenWidth;
@@ -113,8 +139,11 @@ namespace Funke::Diagnostics {
 		ImGui::Text("FPS:             %.1f", s.Fps);
 		ImGui::Text("CPU main:        %.1f ms", s.CpuMainMs);
 		ImGui::Text("Render thread:   %.1f ms", s.RenderThreadMs);
-		ImGui::Text("Tris:            %zu", s.Tris);
-		ImGui::Text("Verts:           %zu", s.Verts);
+		ImGui::Text("Tris:            %s", FormatCount(s.Tris).c_str());
+		ImGui::Text("Verts:           %s", FormatCount(s.Verts).c_str());
+		if (s.ShadowTris > 0) {
+			ImGui::Text("Shadow tris:     %s", FormatCount(s.ShadowTris).c_str());
+		}
 		ImGui::Separator();
 		ImGui::Text("Screen:          %d x %d", s.ScreenWidth, s.ScreenHeight);
 		ImGui::Separator();

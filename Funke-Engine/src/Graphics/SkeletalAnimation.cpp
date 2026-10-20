@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace Funke {
 	namespace {
@@ -149,6 +150,46 @@ namespace Funke {
 				out.UV[0] = source.UV[0];
 				out.UV[1] = source.UV[1];
 			}
+		}
+
+		void ComputeJointBounds(SkinnedMeshData& data) {
+			for (SkinJoint& joint : data.Joints) {
+				joint.BoundsMin = glm::vec3(std::numeric_limits<float>::max());
+				joint.BoundsMax = glm::vec3(std::numeric_limits<float>::lowest());
+			}
+			const size_t count = std::min({ data.BindVertices.size(), data.VertexJoints.size(), data.VertexWeights.size() });
+			for (size_t v = 0; v < count; ++v) {
+				const MeshVertex& vertex = data.BindVertices[v];
+				const glm::vec3 p(vertex.Position[0], vertex.Position[1], vertex.Position[2]);
+				for (int k = 0; k < 4; ++k) {
+					const uint16_t index = data.VertexJoints[v][k];
+					if (data.VertexWeights[v][k] == 0.0f || index >= data.Joints.size()) continue;
+					SkinJoint& joint = data.Joints[index];
+					joint.BoundsMin = glm::min(joint.BoundsMin, p);
+					joint.BoundsMax = glm::max(joint.BoundsMax, p);
+				}
+			}
+		}
+
+		bool PosedBounds(const SkinnedMeshData& data, const std::vector<glm::mat4>& joints, glm::vec3& outMin, glm::vec3& outMax) {
+			outMin = glm::vec3(std::numeric_limits<float>::max());
+			outMax = glm::vec3(std::numeric_limits<float>::lowest());
+			bool any = false;
+			const size_t count = std::min(data.Joints.size(), joints.size());
+			for (size_t i = 0; i < count; ++i) {
+				const SkinJoint& joint = data.Joints[i];
+				if (joint.BoundsMin.x > joint.BoundsMax.x) continue;
+				// Box of the transformed box: centre moves with the matrix, extent grows by |M| per axis.
+				const glm::vec3 center = (joint.BoundsMin + joint.BoundsMax) * 0.5f;
+				const glm::vec3 half = (joint.BoundsMax - joint.BoundsMin) * 0.5f;
+				const glm::mat4& m = joints[i];
+				const glm::vec3 posedCenter(m * glm::vec4(center, 1.0f));
+				const glm::vec3 posedHalf = glm::abs(glm::vec3(m[0])) * half.x + glm::abs(glm::vec3(m[1])) * half.y + glm::abs(glm::vec3(m[2])) * half.z;
+				outMin = glm::min(outMin, posedCenter - posedHalf);
+				outMax = glm::max(outMax, posedCenter + posedHalf);
+				any = true;
+			}
+			return any;
 		}
 
 		void EvaluatePose(const SkinnedMeshData& data, const SkeletalPoseRequest& request, std::vector<glm::mat4>& outNodeModel) {

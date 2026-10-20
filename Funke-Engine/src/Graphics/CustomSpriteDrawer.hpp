@@ -19,7 +19,8 @@ namespace Funke {
 			wgpu::BindGroup Group;
 		};
 
-		bool Initialize(const char* label);
+		// sceneSamplers: see CustomMaterialBindings::Initialize.
+		bool Initialize(const char* label, bool sceneSamplers = true);
 		void Shutdown();
 		bool IsInitialized() const { return m_Bindings.IsInitialized(); }
 

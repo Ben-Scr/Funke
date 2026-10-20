@@ -42,6 +42,29 @@ public enum AnimatorUpdateMode
 }
 
 /// <summary>
+/// What an <see cref="Animator"/> or <see cref="SkinnedMeshRenderer"/> does while it is outside the game camera's view.
+/// Values must match the native AnimationCullingMode.
+/// </summary>
+public enum AnimationCullingMode
+{
+    AlwaysAnimate = 0,
+    /// <summary>The clock, transitions and events keep running, but no pose is written (no skinning).</summary>
+    CullPose = 1,
+    /// <summary>Pauses until it is back in view.</summary>
+    CullCompletely = 2,
+}
+
+/// <summary>Whether an animation updates less often far from the camera. Values must match the native AnimationDistanceRate.</summary>
+public enum AnimationDistanceRate
+{
+    /// <summary>Follows <see cref="RenderSettings.AnimationDistanceRateEnabled"/> and its distances.</summary>
+    ProjectSetting = 0,
+    Off = 1,
+    /// <summary>Uses the component's own HalfRateDistance and QuarterRateDistance.</summary>
+    Custom = 2,
+}
+
+/// <summary>
 /// Plays keyframe animations on this entity and its children. With a <see cref="Controller"/>, parameters drive the
 /// transitions between its states; without one, <see cref="Clip"/> loops on its own.
 /// Animation events call public methods of the scripts on this entity by name.
@@ -68,6 +91,37 @@ public class Animator : Component
     {
         get => InternalCalls.Animator_GetSpeed(RequireComponent<Animator>());
         set => InternalCalls.Animator_SetSpeed(RequireComponent<Animator>(), value);
+    }
+
+    /// <summary>What the Animator does while no renderer below it is in the game camera's view.</summary>
+    public AnimationCullingMode CullingMode
+    {
+        get => (AnimationCullingMode)(int)ReadCulling(0);
+        set => WriteCulling(0, (float)value);
+    }
+
+    /// <summary>
+    /// Every 2nd / 4th frame far from the camera; the skipped time is added to the next update, so tempo, transitions
+    /// and events stay right. Ignored in <see cref="AnimatorUpdateMode.Fixed"/>.
+    /// </summary>
+    public AnimationDistanceRate DistanceRate
+    {
+        get => (AnimationDistanceRate)(int)ReadCulling(1);
+        set => WriteCulling(1, (float)value);
+    }
+
+    /// <summary>With <see cref="AnimationDistanceRate.Custom"/>: world units from the camera from which it updates every 2nd frame.</summary>
+    public float HalfRateDistance
+    {
+        get => ReadCulling(2);
+        set => WriteCulling(2, value);
+    }
+
+    /// <summary>With <see cref="AnimationDistanceRate.Custom"/>: world units from the camera from which it updates every 4th frame.</summary>
+    public float QuarterRateDistance
+    {
+        get => ReadCulling(3);
+        set => WriteCulling(3, value);
     }
 
     public void SetFloat(string name, float value) => InternalCalls.Animator_SetParameter(RequireComponent<Animator>(), name, k_Float, value);
@@ -111,5 +165,21 @@ public class Animator : Component
         Span<float> values = stackalloc float[3];
         InternalCalls.Animator_GetPlayback(RequireComponent<Animator>(), values);
         return values[index];
+    }
+
+    private float ReadCulling(int index)
+    {
+        Span<float> values = stackalloc float[InternalCalls.AnimatorCullingValueCount];
+        InternalCalls.Animator_GetCulling(RequireComponent<Animator>(), values);
+        return values[index];
+    }
+
+    private void WriteCulling(int index, float value)
+    {
+        ulong id = RequireComponent<Animator>();
+        Span<float> values = stackalloc float[InternalCalls.AnimatorCullingValueCount];
+        InternalCalls.Animator_GetCulling(id, values);
+        values[index] = value;
+        InternalCalls.Animator_SetCulling(id, values);
     }
 }

@@ -38,6 +38,47 @@ public enum ToneMappingMode
     ACES = 2,
 }
 
+/// <summary>
+/// Texture detail in the scene: Half and Quarter skip the top one or two mip levels of every texture that is not
+/// Point-filtered. Point textures (pixel art) and UI always keep full resolution.
+/// </summary>
+public enum TextureQualityLevel
+{
+    Full = 0,
+    Half = 1,
+    Quarter = 2,
+}
+
+/// <summary>Anisotropic filtering of textures filtered Trilinear or Anisotropic (sharp at grazing angles).</summary>
+public enum AnisotropicFilteringLevel
+{
+    Off = 0,
+    X2 = 1,
+    X4 = 2,
+    X8 = 3,
+    X16 = 4,
+}
+
+/// <summary>Anti-aliasing of the scene image; UI and gizmos are not affected.</summary>
+public enum AntiAliasingMode
+{
+    Off = 0,
+    /// <summary>Fast approximate anti-aliasing: one screen pass, also softens hard texture edges a little.</summary>
+    FXAA = 1,
+    /// <summary>
+    /// 4x multisampling of the 3D scene: smooths the edges of meshes, particles and lines and leaves textures exactly as
+    /// they are (pixel art stays sharp). 2D sprites are not smoothed.
+    /// </summary>
+    MSAA4x = 2,
+}
+
+public enum AntiAliasingQualityLevel
+{
+    Low = 0,
+    Medium = 1,
+    High = 2,
+}
+
 public enum GraphicsApplyStatus
 {
     Applied = 0,
@@ -71,6 +112,13 @@ public struct GraphicsSettings
         MaxLights = 16;
         Exposure = 1.0f;
         ToneMapping = ToneMappingMode.ACES;
+        TextureQuality = TextureQualityLevel.Full;
+        AnisotropicFiltering = AnisotropicFilteringLevel.X16;
+        AntiAliasing = AntiAliasingMode.Off;
+        AntiAliasingQuality = AntiAliasingQualityLevel.High;
+        AnimationDistanceRateEnabled = false;
+        AnimationHalfRateDistance = 20.0f;
+        AnimationQuarterRateDistance = 40.0f;
     }
 
     public GraphicsSettings(float renderScale, UpscaleFilterMode upscaleFilter,
@@ -87,6 +135,13 @@ public struct GraphicsSettings
         MaxLights = 16;
         Exposure = 1.0f;
         ToneMapping = ToneMappingMode.ACES;
+        TextureQuality = TextureQualityLevel.Full;
+        AnisotropicFiltering = AnisotropicFilteringLevel.X16;
+        AntiAliasing = AntiAliasingMode.Off;
+        AntiAliasingQuality = AntiAliasingQualityLevel.High;
+        AnimationDistanceRateEnabled = false;
+        AnimationHalfRateDistance = 20.0f;
+        AnimationQuarterRateDistance = 40.0f;
     }
 
     public float RenderScale;
@@ -104,6 +159,23 @@ public struct GraphicsSettings
     /// <summary>Linear multiplier applied to lit 3D color before tone mapping.</summary>
     public float Exposure;
     public ToneMappingMode ToneMapping;
+
+    // Textures and anti-aliasing (2D and 3D)
+    public TextureQualityLevel TextureQuality;
+    public AnisotropicFilteringLevel AnisotropicFiltering;
+    public AntiAliasingMode AntiAliasing;
+    public AntiAliasingQualityLevel AntiAliasingQuality;
+
+    // Animation
+    /// <summary>
+    /// Animators and SkinnedMeshRenderers whose <see cref="AnimationDistanceRate"/> is ProjectSetting update every 2nd
+    /// frame from <see cref="AnimationHalfRateDistance"/> and every 4th from <see cref="AnimationQuarterRateDistance"/>.
+    /// </summary>
+    public bool AnimationDistanceRateEnabled;
+    /// <summary>World units from the camera from which project-rate animations update every 2nd frame.</summary>
+    public float AnimationHalfRateDistance;
+    /// <summary>World units from the camera from which project-rate animations update every 4th frame.</summary>
+    public float AnimationQuarterRateDistance;
 }
 
 public static class RenderSettings
@@ -213,5 +285,84 @@ public static class RenderSettings
     {
         get => GetParticleQuality();
         set => SetParticleQuality(value);
+    }
+
+    public static TextureQualityLevel GetTextureQuality() => Get().TextureQuality;
+    public static GraphicsApplyStatus SetTextureQuality(TextureQualityLevel value)
+    {
+        var settings = Get();
+        settings.TextureQuality = value;
+        return Apply(settings);
+    }
+
+    public static AnisotropicFilteringLevel GetAnisotropicFiltering() => Get().AnisotropicFiltering;
+    public static GraphicsApplyStatus SetAnisotropicFiltering(AnisotropicFilteringLevel value)
+    {
+        var settings = Get();
+        settings.AnisotropicFiltering = value;
+        return Apply(settings);
+    }
+
+    public static AntiAliasingMode GetAntiAliasing() => Get().AntiAliasing;
+    public static GraphicsApplyStatus SetAntiAliasing(AntiAliasingMode value)
+    {
+        var settings = Get();
+        settings.AntiAliasing = value;
+        return Apply(settings);
+    }
+
+    public static AntiAliasingQualityLevel GetAntiAliasingQuality() => Get().AntiAliasingQuality;
+    public static GraphicsApplyStatus SetAntiAliasingQuality(AntiAliasingQualityLevel value)
+    {
+        var settings = Get();
+        settings.AntiAliasingQuality = value;
+        return Apply(settings);
+    }
+
+    /// <summary>Applied at the next frame; samplers are rebuilt then. See <see cref="TextureQualityLevel"/>.</summary>
+    public static TextureQualityLevel TextureQuality
+    {
+        get => GetTextureQuality();
+        set => SetTextureQuality(value);
+    }
+
+    public static AnisotropicFilteringLevel AnisotropicFiltering
+    {
+        get => GetAnisotropicFiltering();
+        set => SetAnisotropicFiltering(value);
+    }
+
+    public static AntiAliasingMode AntiAliasing
+    {
+        get => GetAntiAliasing();
+        set => SetAntiAliasing(value);
+    }
+
+    public static AntiAliasingQualityLevel AntiAliasingQuality
+    {
+        get => GetAntiAliasingQuality();
+        set => SetAntiAliasingQuality(value);
+    }
+
+    /// <summary>
+    /// Fewer updates for Animators and SkinnedMeshRenderers far from the camera (their DistanceRate set to
+    /// ProjectSetting); e.g. off on fast PCs and on for phones.
+    /// </summary>
+    public static bool AnimationDistanceRateEnabled
+    {
+        get => Get().AnimationDistanceRateEnabled;
+        set { var settings = Get(); settings.AnimationDistanceRateEnabled = value; Apply(settings); }
+    }
+
+    public static float AnimationHalfRateDistance
+    {
+        get => Get().AnimationHalfRateDistance;
+        set { var settings = Get(); settings.AnimationHalfRateDistance = value; Apply(settings); }
+    }
+
+    public static float AnimationQuarterRateDistance
+    {
+        get => Get().AnimationQuarterRateDistance;
+        set { var settings = Get(); settings.AnimationQuarterRateDistance = value; Apply(settings); }
     }
 }

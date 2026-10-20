@@ -424,7 +424,8 @@ def build(request: BuildRequest) -> Path:
     if request.icon_path and request.icon_path.is_file():
         res = work / "res" / "mipmap"
         shutil.rmtree(work / "res", ignore_errors=True)
-        res.mkdir(parents=True)
+        # A virus scanner can keep the old folder alive for a moment; it only ever holds the launcher icon.
+        res.mkdir(parents=True, exist_ok=True)
         shutil.copy2(request.icon_path, res / "ic_launcher.png")
         flat = work / "res.zip"
         run([str(tc.aapt2), "compile", "--dir", str(work / "res"), "-o", str(flat)], label="aapt2 compile")

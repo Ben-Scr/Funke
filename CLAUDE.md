@@ -26,11 +26,15 @@ scripts\dev\Build.ps1 Editor,ScriptCore         # Tests | Runtime | Launcher | C
 scripts\dev\Build.ps1 -File Funke-Engine\src\Scene\Scene.cpp   # compile one TU only (seconds)
 scripts\dev\Test.ps1                            # build + run engine/editor doctest, failures only
 scripts\dev\Test.ps1 -Filter "*Prefab*"         # doctest test-case filter; -Suite CSharp|All
-scripts\dev\Run.ps1                             # launch Editor on a sandbox project, screenshot, close, report log warnings/errors + crash dumps
+scripts\dev\Run.ps1                             # launch Editor on a sandbox project, screenshot, close, report log warnings/errors + crash dumps (--background: never focused, behind other windows; -Foreground opts out)
 scripts\dev\Run.ps1 -App Runtime -Project <dir> -Seconds 5 -Shots 3
 scripts\dev\Run.ps1 -App Runtime -Project <dir> -ScreenshotAt 2s,5s -FixedStep 60   # game-time shots; -InputScript for scripted input
+funke editor status --project <dir>             # Editor Bridge: drive an editor that is already open (Funke-CLI\funke.exe)
+funke editor play --size 1080x2400; funke editor tap 0.5 0.4; funke editor screenshot shot.png   # offscreen, works minimized
+funke editor exec "<console cmd>"; funke editor recompile; funke editor logs --level warning; funke editor stop
 ```
 
+- `funke editor` (doc: `Github-Docs/Documentation/Editor/Editor-Bridge.md`) never moves/focuses windows or sends OS input; screenshots render offscreen. Only drive editors you launched yourself (`Run.ps1 -KeepOpen`) or the user asked you to; `funke editor list` shows which ones run. Exit codes: 3 busy/timeout, 4 no editor. `scripts\dev\Editor.ps1 <command> ...` runs the repo's freshly built `funke editor`.
 - `Build.ps1` regenerates premake automatically when a new `.cpp` or a changed `*.lua` needs it, and after building it copies `Funke-Engine.dll` (and, for `ScriptCore`, `Funke-ScriptCore.dll`) into every consumer output (Editor/Launcher/Runtime/tests) — a stale DLL there silently hides fixes, including in game builds staged from the editor.
 - Default config is **Release**: the user runs the Release editor (`bin\Release-windows-x86_64\Funke-Editor\`).
 - Warnings are shown only for files changed in git (`-Warnings all|none` to change). C4251/C4275 are permanent noise.
@@ -61,4 +65,4 @@ Commit only when asked. Commits are authored as `Ben Schneider <benscr.email@gma
 
 ## Skills
 
-`.claude/skills/` (mirrored in `.agents/skills/`) covers engine work (`funke-add-component`, `funke-serialize-field`, `funke-add-system`, `funke-scene-workflow`, `funke-engine-scripting`, `funke-rendering`, `funke-add-editor-panel`, `funke-add-profiler`, `funke-debug`, `funke-code-style`, `funke-author-package`, `funke-inspector-ruleset`, `funke-build-engine`) and game-making with Funke (`funke-make-a-game` is the entry point; phone apps that aren't games: `funke-make-a-mobile-app`). Keep both mirrors identical: `scripts\dev\SyncSkills.ps1`.
+`.claude/skills/` (mirrored in `.agents/skills/`) covers engine work (`funke-add-component`, `funke-serialize-field`, `funke-add-system`, `funke-scene-workflow`, `funke-engine-scripting`, `funke-rendering`, `funke-add-editor-panel`, `funke-add-profiler`, `funke-debug`, `funke-code-style`, `funke-author-package`, `funke-inspector-ruleset`, `funke-build-engine`) and game-making with Funke (`funke-make-a-game` is the entry point, incl. pre-production and Data Assets; art, pixel art and UI art: `funke-game-art`; phone apps that aren't games: `funke-make-a-mobile-app`). Keep both mirrors identical: `scripts\dev\SyncSkills.ps1`.

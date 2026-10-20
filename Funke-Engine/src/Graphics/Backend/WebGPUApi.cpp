@@ -90,6 +90,7 @@ namespace Funke {
 			bool IsSwapChain = true;
 			uint32_t Width  = 0;
 			uint32_t Height = 0;
+			uint32_t SampleCount = 1;
 		};
 		TargetState g_CurrentTarget;
 
@@ -857,6 +858,7 @@ namespace Funke {
 				out.IsSwapChain = false;
 				out.Width       = g_CurrentTarget.Width;
 				out.Height      = g_CurrentTarget.Height;
+				out.SampleCount = g_CurrentTarget.SampleCount;
 			}
 
 			EndActivePassIfAny();
@@ -884,6 +886,7 @@ namespace Funke {
 			snap.ColorFormat = g_CurrentTarget.ColorFormat;
 			snap.Width       = g_CurrentTarget.Width;
 			snap.Height      = g_CurrentTarget.Height;
+			snap.SampleCount = g_CurrentTarget.SampleCount;
 			snap.IsSwapChain = g_CurrentTarget.IsSwapChain;
 			return snap;
 		}
@@ -897,6 +900,7 @@ namespace Funke {
 			g_CurrentTarget.ColorFormat = snap.ColorFormat;
 			g_CurrentTarget.Width       = snap.Width;
 			g_CurrentTarget.Height      = snap.Height;
+			g_CurrentTarget.SampleCount = snap.SampleCount;
 			g_CurrentTarget.IsSwapChain = snap.IsSwapChain;
 		}
 
@@ -1343,6 +1347,7 @@ namespace Funke {
 		g_CurrentTarget.IsSwapChain = false;
 		g_CurrentTarget.Width       = lookup.Width;
 		g_CurrentTarget.Height      = lookup.Height;
+		g_CurrentTarget.SampleCount = lookup.SampleCount;
 	}
 
 	void RenderApi::BindDefaultFramebuffer() {

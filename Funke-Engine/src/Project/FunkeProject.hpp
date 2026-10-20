@@ -80,6 +80,11 @@ namespace Funke {
 		// Empty = use project Name. Stored without extension; build step appends the platform extension.
 		std::string ExecutableName;
 
+		// The name players see (app label on Android/iOS/macOS, window title). Empty = Name, which stays the project's
+		// identity: application id, save-data folder, file names.
+		std::string ProductName;
+		const std::string& DisplayName() const { return ProductName.empty() ? Name : ProductName; }
+
 		// Free-form display strings surfaced to scripting via Application.Version / Application.Company.
 		std::string BuildVersion = "1.0.0";
 		std::string BuildCompany;
@@ -235,6 +240,17 @@ namespace Funke {
 
 		std::string GetBuildProfilesDirectory() const;
 
+		// What the editor compiles and plays game scripts as: the active build profile's platform and defines, so
+		// `#if FUNKE_ANDROID` code runs in Play mode. Without an active profile file: the editor's own platform.
+		struct EditorScriptTarget {
+			BuildPlatform Platform{};
+			bool Simulated = false;  // Platform is not the one the editor runs on
+			std::string ProfileName;
+			std::vector<std::string> ProfileDefines;
+		};
+		// Reads the profile file at most twice a second; safe to call every frame.
+		EditorScriptTarget GetEditorScriptTarget() const;
+
 		struct SplashScreenSettings {
 			bool Enabled = true;
 			float DurationSeconds = 0.7f;
@@ -302,7 +318,9 @@ namespace Funke {
 		static std::string GetManagedPlatformDefine();
 		// C# define for a build target (FUNKE_ANDROID, FUNKE_WEB, ...), independent of the editor host.
 		static std::string GetManagedPlatformDefine(BuildPlatform platform);
-		static std::string BuildManagedDefineConstants(std::string_view primarySymbol);
+		// FUNKE_EDITOR compiles use the current project's EditorScriptTarget (platform + profile defines) unless
+		// editorScriptTarget is false, which gives the editor's own platform as before.
+		static std::string BuildManagedDefineConstants(std::string_view primarySymbol, bool editorScriptTarget = true);
 
 		// Scene JSON written as the startup scene of a new project without a template: an empty scene with a camera.
 		static Json::Value BuildStarterScene(const std::string& sceneName);

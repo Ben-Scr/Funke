@@ -830,6 +830,14 @@ namespace Funke {
 
 	// ── Submit path ─────────────────────────────────────────────────────────
 
+	void TextDrawCmd::SetEffects(const TextRendererComponent& text, float unitsPerTextPixel)
+	{
+		OutlineWidth = std::max(text.OutlineWidth, 0.0f) * unitsPerTextPixel;
+		OutlineColor = text.OutlineColor;
+		ShadowOffset = text.ShadowOffset * unitsPerTextPixel;
+		ShadowColor = text.ShadowColor;
+	}
+
 	void TextRenderer::RenderInstances(std::span<const TextDrawCmd> commands, const glm::mat4& mvp,
 		unsigned short /*viewId*/, unsigned short /*scissorCache*/)
 	{
@@ -937,13 +945,35 @@ namespace Funke {
 					cmd.HasClip, cmd.ClipMin, cmd.ClipMax))
 					break;
 
-				EmitText(*cmd.FontPtr, cmd.Text, cmd.X, cmd.Y, cmd.Scale,
-					cmd.Tint, cmd.Align, cmd.VAlign, cmd.LetterSpacing, cmd.LineSpacing,
-					cmd.Wrap, cmd.WrapWidthPixels,
-					cmd.Rotation, cmd.Pivot,
-					cmd.HasTextureMask, cmd.MaskTextureHandle, cmd.MaskUvRect,
-					cmd.MaskRectMin, cmd.MaskRectMax, cmd.MaskPivot,
-					cmd.MaskRotation);
+				auto emit = [&](float dx, float dy, const Color& color) {
+					EmitText(*cmd.FontPtr, cmd.Text, cmd.X + dx, cmd.Y + dy, cmd.Scale,
+						color, cmd.Align, cmd.VAlign, cmd.LetterSpacing, cmd.LineSpacing,
+						cmd.Wrap, cmd.WrapWidthPixels,
+						cmd.Rotation, cmd.Pivot,
+						cmd.HasTextureMask, cmd.MaskTextureHandle, cmd.MaskUvRect,
+						cmd.MaskRectMin, cmd.MaskRectMax, cmd.MaskPivot,
+						cmd.MaskRotation);
+				};
+				// Effects first so the text paints over them; they fade with the text.
+				if (cmd.ShadowColor.a > 0.0f && (cmd.ShadowOffset.x != 0.0f || cmd.ShadowOffset.y != 0.0f)) {
+					Color shadow = cmd.ShadowColor;
+					shadow.a *= cmd.Tint.a;
+					emit(cmd.ShadowOffset.x, cmd.ShadowOffset.y, shadow);
+				}
+				if (cmd.OutlineWidth > 0.0f && cmd.OutlineColor.a > 0.0f) {
+					Color outline = cmd.OutlineColor;
+					outline.a *= cmd.Tint.a;
+					constexpr float k_Diagonal = 0.70710678f;
+					static constexpr float k_Ring[8][2] = {
+						{ 1.0f, 0.0f }, { -1.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, -1.0f },
+						{ k_Diagonal, k_Diagonal }, { -k_Diagonal, k_Diagonal },
+						{ k_Diagonal, -k_Diagonal }, { -k_Diagonal, -k_Diagonal },
+					};
+					for (const auto& direction : k_Ring) {
+						emit(direction[0] * cmd.OutlineWidth, direction[1] * cmd.OutlineWidth, outline);
+					}
+				}
+				emit(0.0f, 0.0f, cmd.Tint);
 				++j;
 			}
 			r.VertexCount = m_Vertices.size() - r.VertexStart;
@@ -1082,6 +1112,7 @@ namespace Funke {
 			cmd.SortingLayer = text.SortingLayer;
 			cmd.Rotation = tr.Rotation;
 			cmd.Pivot = tr.Position;
+			cmd.SetEffects(text, tr.Scale.x / k_TextPixelsPerWorldUnit);
 			m_PendingDrawCmds.push_back(cmd);
 		}
 

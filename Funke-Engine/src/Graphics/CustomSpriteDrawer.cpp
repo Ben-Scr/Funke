@@ -7,9 +7,9 @@
 
 namespace Funke {
 
-	bool CustomSpriteDrawer::Initialize(const char* label) {
+	bool CustomSpriteDrawer::Initialize(const char* label, bool sceneSamplers) {
 		m_Label = label ? label : "custom-sprite";
-		return m_Bindings.Initialize(m_Label.c_str());
+		return m_Bindings.Initialize(m_Label.c_str(), sceneSamplers);
 	}
 
 	void CustomSpriteDrawer::Shutdown() {

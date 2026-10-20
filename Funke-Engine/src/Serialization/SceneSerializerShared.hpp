@@ -3,6 +3,7 @@
 #include "Core/Export.hpp"
 #include "Assets/AssetRegistry.hpp"
 #include "Audio/AudioManager.hpp"
+#include "Components/Audio/AudioSourceComponent.hpp"
 #include "Core/Log.hpp"
 #include "Core/UUID.hpp"
 #include "Graphics/TextureManager.hpp"
@@ -233,6 +234,32 @@ namespace Funke::SceneSerializerShared {
 		}
 
 		return handle;
+	}
+
+	// AudioSource spatial keys, only when changed: an older prefab without them would otherwise show every
+	// instance as overridden.
+	inline void WriteAudioSpatial(Value& audioValue, const AudioSourceComponent& source) {
+		const AudioSpatialSettings defaults{};
+		const AudioSpatialSettings& s = source.GetSpatialSettings();
+		if (source.IsSpatial()) audioValue.AddMember("spatial", Value(true));
+		if (s.MinDistance != defaults.MinDistance) audioValue.AddMember("minDistance", Value(s.MinDistance));
+		if (s.MaxDistance != defaults.MaxDistance) audioValue.AddMember("maxDistance", Value(s.MaxDistance));
+		if (s.Rolloff != defaults.Rolloff) audioValue.AddMember("rolloff", Value(static_cast<int>(s.Rolloff)));
+		if (s.Panning != defaults.Panning) audioValue.AddMember("panning", Value(s.Panning));
+		if (s.DopplerLevel != defaults.DopplerLevel) audioValue.AddMember("dopplerLevel", Value(s.DopplerLevel));
+	}
+
+	inline void ReadAudioSpatial(const Value& audioValue, AudioSourceComponent& source) {
+		const AudioSpatialSettings defaults{};
+		AudioSpatialSettings s;
+		s.MinDistance = GetFloatMember(audioValue, "minDistance", defaults.MinDistance);
+		s.MaxDistance = GetFloatMember(audioValue, "maxDistance", defaults.MaxDistance);
+		const int rolloff = GetIntMember(audioValue, "rolloff", static_cast<int>(defaults.Rolloff));
+		s.Rolloff = rolloff >= 0 && rolloff <= static_cast<int>(AudioRolloff::Linear) ? static_cast<AudioRolloff>(rolloff) : defaults.Rolloff;
+		s.Panning = GetFloatMember(audioValue, "panning", defaults.Panning);
+		s.DopplerLevel = GetFloatMember(audioValue, "dopplerLevel", defaults.DopplerLevel);
+		source.SetSpatialSettings(s);
+		source.SetSpatial(GetBoolMember(audioValue, "spatial", false));
 	}
 
 	inline std::string ValueToFieldString(const Value& value) {

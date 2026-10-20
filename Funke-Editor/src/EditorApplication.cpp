@@ -5,6 +5,7 @@
 #include "Scene/EntityHelper.hpp"
 #include "Scene/SceneDefinition.hpp"
 #include "Scene/SceneManager.hpp"
+#include <Bridge/EditorBridgeLayer.hpp>
 #include <Gui/ImGuiContextLayer.hpp>
 #include <Systems/ImGuiEditorLayer.hpp>
 #include <Systems/GizmosDebugSystem.hpp>
@@ -198,6 +199,8 @@ public:
 		// ImGui::NewFrame and ImGui::Render around the other layers' UI work.
 		PushLayer<ImGuiContextLayer>();
 		m_EditorLayer = &PushLayer<ImGuiEditorLayer>();
+		// After the editor layer: bridge input reaches the game once the editor's shortcuts have run.
+		m_BridgeLayer = &PushLayer<EditorBridgeLayer>(*m_EditorLayer);
 		PushOverlay<GizmosDebugSystem>();
 	}
 
@@ -226,7 +229,9 @@ public:
 			project->Name, active->GetName());
 	}
 	void FixedUpdate() override {}
-	void OnPaused() override {}
+	void OnPaused() override {
+		if (m_BridgeLayer) m_BridgeLayer->OnEnginePaused();
+	}
 
 	void OnQuit() override {
 		// A clean exit has already resolved unsaved work (saved or discarded on purpose).
@@ -334,6 +339,7 @@ private:
 	std::string m_BuildProfileArg;
 	std::string m_BuildOutputArg;
 	ImGuiEditorLayer* m_EditorLayer = nullptr;
+	EditorBridgeLayer* m_BridgeLayer = nullptr;
 };
 
 Funke::Application* Funke::CreateApplication() {

@@ -30,6 +30,9 @@ namespace Funke {
 		static bool RemoveScript(Entity entity, size_t index);
 		static void RemoveAllScripts(Entity entity);
 		static void SetScriptsEnabled(Entity entity, bool enabled);
+		// For a subtree spawned during play: managed instances with their field values, OnAwake and OnEnable now,
+		// so the spawner's GetComponent<MyScript>() works at once. OnStart still runs on the next Update.
+		static void CreateScriptInstancesNow(Scene& scene, EntityHandle root);
 		static void DispatchCollisionEnter2D(const Collision2D& collision);
 		static void DispatchCollisionStay2D(const Collision2D& collision);
 		static void DispatchCollisionExit2D(const Collision2D& collision);
@@ -53,6 +56,10 @@ namespace Funke {
 		static bool ReloadManagedAssemblies();
 		bool IsRebuilding() const;
 		bool DidLastRebuildSucceed() const { return !m_LastRebuildFailed; }
+		// Compiler output of the last finished build that failed; empty after a success.
+		static std::string GetLastRebuildOutput();
+		// Counts finished C# and native rebuilds, successful or not, so callers can wait for "the next one".
+		static uint64_t GetCompletedRebuildCount();
 
 		// Editor overlay introspection — exposed so editor UI can render a
 		// "compiling..." overlay without the engine pulling in ImGui itself.
@@ -65,6 +72,8 @@ namespace Funke {
 	private:
 		void RebuildAndReloadScripts();
 		void RebuildAndReloadNativeScripts();
+		// Editor: rebuilds when the C# defines change (another build profile platform, profile or custom defines).
+		void PollScriptDefines();
 		static void TeardownManagedScripts(Scene& scene);
 		void TeardownNativeScripts(Scene& scene);
 
@@ -85,6 +94,13 @@ namespace Funke {
 		static inline std::shared_ptr<ScriptSystemProcessTaskState> m_RebuildTask;
 		static inline bool m_RebuildQueued = false;
 		static inline bool m_LastRebuildFailed = false;
+		static inline std::string m_LastRebuildOutput;
+		static inline uint64_t m_CompletedRebuildCount = 0;
+		// Defines of the last C# build started (failed ones too, so a broken #if branch is not rebuilt in a loop)
+		// and of the one running; the latter goes into the <assembly>.defines stamp when it loads.
+		static inline std::string m_ScriptDefines;
+		static inline std::string m_BuildingScriptDefines;
+		static inline std::chrono::steady_clock::time_point m_LastDefinesPoll{};
 
 		// C++ native scripts
 		static inline NativeScriptHost m_NativeHost;

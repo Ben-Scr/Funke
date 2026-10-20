@@ -40,10 +40,12 @@
 #include "Core/Window.hpp"
 #include "Diagnostics/StatsOverlay.hpp"
 #include "Editor/ApplicationEditorAccess.hpp"
+#include "Editor/GameView2DLayer.hpp"
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/GizmoRenderer.hpp"
 #include "Graphics/Gizmo.hpp"
 #include "Graphics/RenderApi.hpp"
+#include "Graphics/RenderStatistics.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Graphics/SpriteUVResolver.hpp"
 #include "Graphics/Texture2D.hpp"
@@ -682,20 +684,15 @@ namespace Funke {
 
 		const int savedW = cameraViewport ? cameraViewport->GetWidth() : 0;
 		const int savedH = cameraViewport ? cameraViewport->GetHeight() : 0;
-		glm::mat4 vp = view3D ? view3D->Projection * view3D->View : glm::mat4(1.0f);
-		AABB viewAABB{ Vec2{ -1.0e9f, -1.0e9f }, Vec2{ 1.0e9f, 1.0e9f } };
 		if (cameraViewport) {
 			cameraViewport->SetSize(thumbWidth, thumbHeight);
 			camera->UpdateViewport();
-			if (!view3D) {
-				vp = camera->GetViewProjectionMatrix();
-				viewAABB = camera->GetViewportAABB();
-			}
 		}
+		const GameView2DLayer layer2D = ResolveGameView2DLayer(cameraViewport ? camera : nullptr, view3D ? &*view3D : nullptr);
 		const Color clearColor = view3D
 			? scene.GetRegistry().get<Camera3DComponent>(camera3DEntity).ClearColor
 			: camera->GetClearColor();
-		RenderSceneIntoFBO(fbo, scene, vp, viewAABB, /*withGizmos=*/false, /*sharedGizmosOnly=*/true, clearColor,
+		RenderSceneIntoFBO(fbo, scene, layer2D.ViewProjection, layer2D.ViewAABB, /*withGizmos=*/false, /*sharedGizmosOnly=*/true, clearColor,
 			false, false, EditorViewDrawMode::Default, GizmoLayerMask::Shared, view3D ? &*view3D : nullptr);
 		if (cameraViewport) {
 			cameraViewport->SetSize(savedW, savedH);
@@ -773,13 +770,22 @@ namespace Funke {
 			}
 			const bool postProcess = renderer3D->BeginPostProcess(postProcessing, clearColor);
 			renderer3D->RenderSky(*view3D, &scene);
-			if (onlyPassedScene) {
-				renderer3D->RenderScene(scene, *view3D);
-			}
-			else {
-				SceneManager::ForeachLoadedScene([&](Scene& s) {
-					renderer3D->RenderScene(s, *view3D);
-					});
+			auto renderScenes3D = [&]() {
+				if (onlyPassedScene) {
+					renderer3D->RenderScene(scene, *view3D);
+				}
+				else {
+					SceneManager::ForeachLoadedScene([&](Scene& s) {
+						renderer3D->RenderScene(s, *view3D);
+						});
+				}
+			};
+			if (drawMode != EditorViewDrawMode::Triangle) renderScenes3D();
+			// Mixed: the edges depth-test against the shaded meshes drawn just before.
+			if (drawMode != EditorViewDrawMode::Default) {
+				RenderApi::SetPolygonMode(PolygonMode::Wireframe);
+				renderScenes3D();
+				RenderApi::SetPolygonMode(PolygonMode::Filled);
 			}
 			// Editor grid and selection outlines are depth-tested against the meshes, so they join the intermediate.
 			renderer3D->FlushLines(*view3D, true);
@@ -1636,6 +1642,16 @@ namespace Funke {
 		if (s_FocusFramesFromEnvironment > 0) {
 			ImGui::SetNextWindowFocus();
 			--s_FocusFramesFromEnvironment;
+		}
+		// Dev tooling: FUNKE_EDITOR_DRAW_MODE=triangle|mixed starts the Editor View in that draw mode (Run.ps1 -DrawMode).
+		static bool s_DrawModeFromEnvironmentPending = true;
+		if (s_DrawModeFromEnvironmentPending) {
+			s_DrawModeFromEnvironmentPending = false;
+			if (const char* value = std::getenv("FUNKE_EDITOR_DRAW_MODE")) {
+				const std::string_view mode(value);
+				if (mode == "triangle") m_EditorViewDrawMode = EditorViewDrawMode::Triangle;
+				else if (mode == "mixed") m_EditorViewDrawMode = EditorViewDrawMode::Mixed;
+			}
 		}
 		m_IsEditorViewActive = ImGui::Begin("Editor View", nullptr,
 			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -2734,9 +2750,20 @@ namespace Funke {
 	void ImGuiEditorLayer::RenderGameView(Scene& scene) {
 		// Play starts focused on the game, as in Unity, so its input and cursor lock apply without an extra click.
 		if (std::exchange(m_FocusGameViewOnPlay, false)) ImGui::SetNextWindowFocus();
+		// Dev tooling: FUNKE_EDITOR_FOCUS_VIEW=game, the Game View counterpart of =editor (Run.ps1 -GameView).
+		static int s_FocusFramesFromEnvironment = [] {
+			const char* value = std::getenv("FUNKE_EDITOR_FOCUS_VIEW");
+			return value && std::string_view(value) == "game" ? 300 : 0;
+		}();
+		if (s_FocusFramesFromEnvironment > 0) {
+			ImGui::SetNextWindowFocus();
+			--s_FocusFramesFromEnvironment;
+		}
 		m_IsGameViewActive = ImGui::Begin("Game View");
 
 		if (!m_IsGameViewActive) {
+			// A hidden tab keeps its dock size; the Editor Bridge sizes the unseen game from it.
+			m_HiddenGameViewSize = Vec2{ ImGui::GetWindowSize().x, ImGui::GetWindowSize().y };
 			ImGui::End();
 			m_IsGameViewFocused = false;
 			m_IsGameViewHovered = false;
@@ -2846,7 +2873,11 @@ namespace Funke {
 		}
 
 		const ImVec2 viewportSize = ImGui::GetContentRegionAvail();
-		const float targetAspect = GetGameViewAspect();
+		// The Editor Bridge's fixed surface (`funke editor play --size WxH`) wins over the aspect preset.
+		const bool bridgeSurface = m_BridgeSurfaceWidth > 0 && m_BridgeSurfaceHeight > 0;
+		const float targetAspect = bridgeSurface
+			? static_cast<float>(m_BridgeSurfaceWidth) / static_cast<float>(m_BridgeSurfaceHeight)
+			: GetGameViewAspect();
 
 		ImVec2 renderSize = viewportSize;
 		if (targetAspect > 0.0f && viewportSize.x > 0.0f && viewportSize.y > 0.0f) {
@@ -2859,8 +2890,8 @@ namespace Funke {
 			}
 		}
 
-		const int fbW = std::max(1, static_cast<int>(std::round(renderSize.x)));
-		const int fbH = std::max(1, static_cast<int>(std::round(renderSize.y)));
+		const int fbW = bridgeSurface ? m_BridgeSurfaceWidth : std::max(1, static_cast<int>(std::round(renderSize.x)));
+		const int fbH = bridgeSurface ? m_BridgeSurfaceHeight : std::max(1, static_cast<int>(std::round(renderSize.y)));
 
 		// After Escape the Game View stays focused, so a click into the game is what takes the mouse back.
 		auto trackCanvasClick = [this]() {
@@ -2910,7 +2941,9 @@ namespace Funke {
 
 				float statsRenderedHeight = 0.0f;
 				if (m_ShowGameViewStats) {
-					m_GameViewStatsOverlay.RefreshIfDue(fbW, fbH);
+					// Nothing renders without a camera.
+					const RenderGeometryStats nothingDrawn{};
+					m_GameViewStatsOverlay.RefreshIfDue(fbW, fbH, &nothingDrawn);
 					statsRenderedHeight = m_GameViewStatsOverlay.RenderInRect(imageMin, imageMax);
 				}
 				if (m_ShowGameViewLogs) {
@@ -2959,17 +2992,13 @@ namespace Funke {
 						registry.get<Camera3DComponent>(camera3DEntity), static_cast<float>(fbW) / static_cast<float>(fbH));
 				}
 
-				glm::mat4 vp = gameView3D ? gameView3D->Projection * gameView3D->View : glm::mat4(1.0f);
-				// 3D-only games still draw world sprites; nothing is culled because the perspective frustum has no 2D box.
-				AABB viewAABB{ Vec2{ -1.0e9f, -1.0e9f }, Vec2{ 1.0e9f, 1.0e9f } };
 				if (hasCamera2D) {
 					savedViewport->SetSize(fbW, fbH);
 					gameCam->UpdateViewport();
-					if (!gameView3D) {
-						vp = gameCam->GetViewProjectionMatrix();
-						viewAABB = gameCam->GetViewportAABB();
-					}
 				}
+				const GameView2DLayer layer2D = ResolveGameView2DLayer(hasCamera2D ? gameCam : nullptr, gameView3D ? &*gameView3D : nullptr);
+				const glm::mat4& vp = layer2D.ViewProjection;
+				const AABB& viewAABB = layer2D.ViewAABB;
 				const Color gameClearColor = gameView3D
 					? scene.GetRegistry().get<Camera3DComponent>(camera3DEntity).ClearColor
 					: gameCam->GetClearColor();
@@ -3009,15 +3038,27 @@ namespace Funke {
 
 				// MUST precede RenderSceneIntoFBO: UIRegion pins layout/event coords to the panel rect; subtract mainViewportPos to convert ImGui desktop coords to window-client space (avoids Y-drift when window is not at desktop Y=0).
 				const ImVec2 mainViewportPos = ImGui::GetMainViewport()->Pos;
-				Window::SetUIRegion(
-					static_cast<int>(imageMin.x - mainViewportPos.x),
-					static_cast<int>(imageMin.y - mainViewportPos.y),
-					static_cast<int>(renderSize.x),
-					static_cast<int>(renderSize.y));
+				if (bridgeSurface) {
+					// The image is scaled to fit the panel; the region maps window pixels onto the fixed surface.
+					const Vec2 scale{ static_cast<float>(fbW) / std::max(renderSize.x, 1.0f), static_cast<float>(fbH) / std::max(renderSize.y, 1.0f) };
+					Window::SetUIRegion(
+						static_cast<int>(std::round((imageMin.x - mainViewportPos.x) * scale.x)),
+						static_cast<int>(std::round((imageMin.y - mainViewportPos.y) * scale.y)),
+						fbW, fbH, scale);
+				}
+				else {
+					Window::SetUIRegion(
+						static_cast<int>(imageMin.x - mainViewportPos.x),
+						static_cast<int>(imageMin.y - mainViewportPos.y),
+						static_cast<int>(renderSize.x),
+						static_cast<int>(renderSize.y));
+				}
 
 				if (renderFrame) {
+					const RenderGeometryStats geometryBefore = CaptureRenderGeometryTotals();
 					RenderSceneIntoFBO(m_GameViewFBO, scene, vp, viewAABB, true, true, gameClearColor,
 						false, false, EditorViewDrawMode::Default, GizmoLayerMask::All, gameView3D ? &*gameView3D : nullptr);
+					m_GameViewGeometry = CaptureRenderGeometryTotals() - geometryBefore;
 					m_LastGameViewRenderTime = now;
 					m_LastGameViewFbW = fbW;
 					m_LastGameViewFbH = fbH;
@@ -3042,7 +3083,7 @@ namespace Funke {
 
 				float statsRenderedHeight = 0.0f;
 				if (m_ShowGameViewStats) {
-					m_GameViewStatsOverlay.RefreshIfDue(fbW, fbH);
+					m_GameViewStatsOverlay.RefreshIfDue(fbW, fbH, &m_GameViewGeometry);
 					statsRenderedHeight = m_GameViewStatsOverlay.RenderInRect(imageMin, imageMax);
 				}
 

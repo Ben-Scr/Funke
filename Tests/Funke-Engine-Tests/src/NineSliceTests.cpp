@@ -2,19 +2,26 @@
 
 #include "Assets/AssetRegistry.hpp"
 #include "Assets/TextureMeta.hpp"
+#include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
 #include "Core/Application.hpp"
+#include "Core/Window.hpp"
 #include "Gui/NineSlice.hpp"
+#include "Project/FunkeProject.hpp"
+#include "Project/ProjectManager.hpp"
 #include "Scene/Entity.hpp"
+#include "Scene/EntityHelper.hpp"
 #include "Scene/Scene.hpp"
 #include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/SceneSerializer.hpp"
+#include "Systems/UILayoutSystem.hpp"
 
 #include <array>
 #include <filesystem>
+#include <memory>
 #include <vector>
 
 using namespace Funke;
@@ -62,6 +69,60 @@ TEST_CASE("9-slice shrinks borders that don't fit and honours the border scale")
 	REQUIRE(BuildNineSlice({ 100.0f, 50.0f }, { 64.0f, 64.0f }, {}, 1.0f, k_Full, quads) == 1);
 	CHECK(quads[0].Size.x == doctest::Approx(100.0f));
 	CHECK(quads[0].Center.x == doctest::Approx(0.0f));
+}
+
+TEST_CASE("9-slice borders follow the UI scale across window sizes") {
+	struct Restore {
+		Window::UIRegion Previous = Window::GetUIRegion();
+		~Restore() {
+			ProjectManager::SetCurrentProject(std::unique_ptr<FunkeProject>());
+			if (Previous.Source == Window::UIRegionSource::Editor) {
+				Window::SetUIRegion(Previous.OffsetX, Previous.OffsetY, Previous.Width, Previous.Height,
+					Previous.WindowToRegionScale);
+			}
+			else if (Previous.Source == Window::UIRegionSource::AspectLock) {
+				Window::PublishAspectLockUIRegion(1.0f, Previous);
+			}
+			else {
+				Window::ClearUIRegion();
+			}
+		}
+	} restore;
+
+	auto project = std::make_unique<FunkeProject>();
+	project->UIReferenceWidth = 1920;
+	project->UIReferenceHeight = 1080;
+	project->UIScaling = FunkeProject::UIScaleMode::Fit;
+	ProjectManager::SetCurrentProject(std::move(project));
+
+	auto scene = Scene::CreateDetachedScene("NineSliceScale");
+	Entity panel = EntityHelper::CreateUIPanel(*scene);
+	auto& rect = panel.GetComponent<RectTransform2DComponent>();
+	rect.SizeDelta = Vec2{ 500.0f, 80.0f };
+
+	// Corner size relative to the rect: the sliced panel must look the same at any window size.
+	auto cornerFraction = [&](int width, int height) {
+		Window::SetUIRegion(0, 0, width, height);
+		ComputeUILayout(*scene);
+		REQUIRE(rect.ResolvedValid);
+		const Vec2 size = rect.GetSize();
+		std::array<NineSliceQuad, 9> quads;
+		REQUIRE(BuildNineSlice(size, { 64.0f, 64.0f }, k_Border24, ResolveBorderScale(1.0f, rect.Scale),
+			k_Full, quads) == 9);
+		return Vec2{ quads[0].Size.x / size.x, quads[0].Size.y / size.y };
+	};
+	const Vec2 large = cornerFraction(1920, 1080);
+	CHECK(large.x == doctest::Approx(24.0f / 500.0f));
+	CHECK(large.y == doctest::Approx(24.0f / 80.0f));
+	const Vec2 small = cornerFraction(768, 432);
+	CHECK(rect.Scale.x == doctest::Approx(0.4f));
+	CHECK(small.x == doctest::Approx(large.x));
+	CHECK(small.y == doctest::Approx(large.y));
+
+	// A scaled rect scales its borders on that axis only.
+	const Vec2 stretched = ResolveBorderScale(2.0f, Vec2{ 0.5f, -3.0f });
+	CHECK(stretched.x == doctest::Approx(1.0f));
+	CHECK(stretched.y == doctest::Approx(6.0f));
 }
 
 TEST_CASE("Sliced Image round-trips through scene JSON and the C# binding") {

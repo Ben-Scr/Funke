@@ -26,6 +26,9 @@ namespace Funke {
 	struct SkinJoint {
 		uint32_t Node = 0;
 		glm::mat4 InverseBind{ 1.0f };
+		// Bind-space box of the vertices this joint moves (filled by ComputeJointBounds); Min > Max when it moves none.
+		glm::vec3 BoundsMin{ 1.0f };
+		glm::vec3 BoundsMax{ -1.0f };
 	};
 
 	enum class KeyframeInterpolation : uint8_t { Linear, Step, CubicSpline };
@@ -87,6 +90,12 @@ namespace Funke {
 		FUNKE_API void ComputeNodeMatrices(const SkinnedMeshData& data, const std::vector<NodePose>& pose, std::vector<glm::mat4>& outModel);
 		FUNKE_API void ComputeJointMatrices(const SkinnedMeshData& data, const std::vector<glm::mat4>& nodeModel, std::vector<glm::mat4>& outJoints);
 		FUNKE_API void SkinVertices(const SkinnedMeshData& data, const std::vector<glm::mat4>& joints, std::vector<MeshVertex>& outVertices);
+
+		FUNKE_API void ComputeJointBounds(SkinnedMeshData& data);
+		// Model-space box that contains the skinned mesh for these joint matrices, without skinning a vertex:
+		// each vertex is a weighted average of its joints' transforms, so it lies inside their posed boxes.
+		// Exact in the bind pose. False when no joint has bounds.
+		FUNKE_API bool PosedBounds(const SkinnedMeshData& data, const std::vector<glm::mat4>& joints, glm::vec3& outMin, glm::vec3& outMax);
 
 		// Rest pose, clip sampling and cross-fade in one call; out-of-range clips sample as the rest pose.
 		FUNKE_API void EvaluatePose(const SkinnedMeshData& data, const SkeletalPoseRequest& request, std::vector<glm::mat4>& outNodeModel);

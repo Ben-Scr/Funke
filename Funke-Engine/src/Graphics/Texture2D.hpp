@@ -1,6 +1,7 @@
 #pragma once
 #include "Collections/Vec2.hpp"
 #include "Core/Export.hpp"
+#include "Core/GraphicsSettings.hpp"
 #include "Graphics/Filter.hpp"
 #include "Graphics/ImageData.hpp"
 #include "Graphics/Wrap.hpp"
@@ -71,6 +72,12 @@ namespace Funke {
 		Filter GetFilter() const { return m_Filter; }
 		Wrap GetWrapU() const { return m_WrapU; }
 		Wrap GetWrapV() const { return m_WrapV; }
+
+		// Texture quality and anisotropy of the scene samplers (TextureLookup::SceneSampler) of every texture, now and
+		// later; UI keeps each texture's own sampler. True when the values changed.
+		static bool SetSceneSampling(TextureQualityLevel quality, AnisotropicFilteringLevel anisotropy);
+		static TextureQualityLevel GetSceneTextureQuality();
+		static AnisotropicFilteringLevel GetSceneAnisotropy();
 
 		bool IsValid() const { return m_Tex != 0; }
 

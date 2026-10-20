@@ -21,6 +21,7 @@
 #include "Scene/SceneDefinition.hpp"
 #include "Scene/ProjectSceneLoader.hpp"
 #include "DevTools/DevConsole.hpp"
+#include "Systems/AudioUpdateSystem.hpp"
 #include "Systems/UIEventSystem.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/Path.hpp"
@@ -199,6 +200,9 @@ namespace Funke {
 
 #if FUNKE_WITH_2D
 	bool SetParentKeepingWorld2D(Scene& scene, EntityHandle handle, Entity newParent);
+#endif
+#if FUNKE_WITH_3D
+	bool SetParentKeepingWorld3D(Scene& scene, EntityHandle handle, Entity newParent);
 #endif
 	void PopulateNonComponentBindings(NativeBindings& b);
 	void PopulatePostProcessingBindings(NativeBindings& b);
@@ -717,6 +721,15 @@ namespace Funke {
 
 		const EntityHandle instance = SceneSerializer::InstantiatePrefab(*targetScene, prefabGuid);
 		return instance != entt::null ? GetEntityScriptId(*targetScene, instance) : 0;
+	}
+
+	// Called by Entity.Instantiate once the clone is parented and placed, so OnAwake sees the spawn position.
+	static void Funke_Entity_CreateScriptInstances(uint64_t entityID)
+	{
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		if (!ResolveEntityReference(entityID, scene, handle)) return;
+		ScriptSystem::CreateScriptInstancesNow(*scene, handle);
 	}
 
 	int Funke_Entity_GetOrigin(uint64_t entityID)
@@ -1665,9 +1678,11 @@ namespace Funke {
 
 #if FUNKE_WITH_2D
 		if (worldPositionStays != 0 && SetParentKeepingWorld2D(*scene, handle, newParent)) return 1;
-#else
-		(void)worldPositionStays;
 #endif
+#if FUNKE_WITH_3D
+		if (worldPositionStays != 0 && SetParentKeepingWorld3D(*scene, handle, newParent)) return 1;
+#endif
+		(void)worldPositionStays;
 		entity.SetParent(newParent);
 		return 1;
 	}
@@ -1844,6 +1859,28 @@ namespace Funke {
 		comp.LineSpacing = spacing;
 	}
 
+	// values: outlineWidth, outline r g b a, shadowOffsetX, shadowOffsetY, shadow r g b a.
+	static void Funke_TextRenderer_GetEffects(uint64_t entityID, float* values, int count)
+	{
+		if (!values || count <= 0) return;
+		GET_COMPONENT(TextRendererComponent, entityID, );
+		const float all[] = {
+			comp.OutlineWidth, comp.OutlineColor.r, comp.OutlineColor.g, comp.OutlineColor.b, comp.OutlineColor.a,
+			comp.ShadowOffset.x, comp.ShadowOffset.y, comp.ShadowColor.r, comp.ShadowColor.g, comp.ShadowColor.b, comp.ShadowColor.a,
+		};
+		std::copy_n(all, std::min<int>(count, static_cast<int>(std::size(all))), values);
+	}
+
+	static void Funke_TextRenderer_SetEffects(uint64_t entityID, const float* values, int count)
+	{
+		if (!values || count < 11) return;
+		GET_COMPONENT(TextRendererComponent, entityID, );
+		comp.OutlineWidth = std::isfinite(values[0]) ? std::max(values[0], 0.0f) : 0.0f;
+		comp.OutlineColor = Color{ values[1], values[2], values[3], values[4] };
+		comp.ShadowOffset = Vec2{ values[5], values[6] };
+		comp.ShadowColor = Color{ values[7], values[8], values[9], values[10] };
+	}
+
 	static int Funke_TextRenderer_GetHAlign(uint64_t entityID)
 	{
 		GET_COMPONENT(TextRendererComponent, entityID, 0);
@@ -1910,7 +1947,12 @@ namespace Funke {
 
 	// ── AudioSource ─────────────────────────────────────────────────────
 
-	static void Funke_AudioSource_Play(uint64_t entityID) { GET_COMPONENT(AudioSourceComponent, entityID, ); AudioManager::PlayAudioSource(comp); }
+	static void Funke_AudioSource_Play(uint64_t entityID) {
+		GET_COMPONENT(AudioSourceComponent, entityID, );
+		// Started from a script: begins at the entity now, not where the system saw it last frame.
+		if (comp.IsSpatial()) AudioUpdateSystem::SyncPosition(scene->GetRegistry(), handle, comp, 0.0f);
+		AudioManager::PlayAudioSource(comp);
+	}
 	static void Funke_AudioSource_Pause(uint64_t entityID) { GET_COMPONENT(AudioSourceComponent, entityID, ); AudioManager::PauseAudioSource(comp); }
 	static void Funke_AudioSource_Stop(uint64_t entityID) { GET_COMPONENT(AudioSourceComponent, entityID, ); AudioManager::StopAudioSource(comp); }
 	static void Funke_AudioSource_Resume(uint64_t entityID) { GET_COMPONENT(AudioSourceComponent, entityID, ); AudioManager::ResumeAudioSource(comp); }
@@ -1923,6 +1965,52 @@ namespace Funke {
 	static void  Funke_AudioSource_SetLoop(uint64_t entityID, int loop) { GET_COMPONENT(AudioSourceComponent, entityID, ); comp.SetLoop(loop != 0); }
 	static int   Funke_AudioSource_IsPlaying(uint64_t entityID) { GET_COMPONENT(AudioSourceComponent, entityID, 0); return comp.IsPlaying() ? 1 : 0; }
 	static int   Funke_AudioSource_IsPaused(uint64_t entityID) { GET_COMPONENT(AudioSourceComponent, entityID, 0); return comp.IsPaused() ? 1 : 0; }
+
+	// values: spatial (0/1), minDistance, maxDistance, rolloff, panning, dopplerLevel
+	static void Funke_AudioSource_GetSpatial(uint64_t entityID, float* values, int count) {
+		if (!values) return;
+		const AudioSourceComponent fallback;
+		const AudioSourceComponent* source = &fallback;
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		if (ResolveEntityReference(entityID, scene, handle) && scene->IsValid(handle) && scene->HasComponent<AudioSourceComponent>(handle)) {
+			source = &scene->GetComponent<AudioSourceComponent>(handle);
+		}
+		const AudioSpatialSettings& s = source->GetSpatialSettings();
+		const float packed[6] = { source->IsSpatial() ? 1.0f : 0.0f, s.MinDistance, s.MaxDistance, static_cast<float>(s.Rolloff), s.Panning, s.DopplerLevel };
+		for (int i = 0; i < count && i < 6; ++i) values[i] = packed[i];
+	}
+
+	static void Funke_AudioSource_SetSpatial(uint64_t entityID, const float* values, int count) {
+		GET_COMPONENT(AudioSourceComponent, entityID, );
+		if (!values) return;
+		AudioSpatialSettings s = comp.GetSpatialSettings();
+		if (count > 1) s.MinDistance = values[1];
+		if (count > 2) s.MaxDistance = values[2];
+		if (count > 3) s.Rolloff = static_cast<AudioRolloff>(std::clamp(static_cast<int>(values[3]), 0, 1));
+		if (count > 4) s.Panning = values[4];
+		if (count > 5) s.DopplerLevel = values[5];
+		comp.SetSpatialSettings(s);
+		if (count > 0 && (values[0] != 0.0f) != comp.IsSpatial()) {
+			if (values[0] != 0.0f) AudioUpdateSystem::SyncPosition(scene->GetRegistry(), handle, comp, 0.0f);
+			comp.SetSpatial(values[0] != 0.0f);
+		}
+	}
+
+	// values: x, y, z, volume, minDistance, maxDistance, rolloff, panning, dopplerLevel
+	static void Funke_Audio_PlayOneShotAt(uint64_t assetId, const float* values, int count) {
+		if (!values || count < 3) return;
+		const AudioHandle audio = AudioManager::LoadAudioByUUID(assetId);
+		if (!audio.IsValid()) return;
+		AudioSpatialSettings s;
+		const float volume = count > 3 ? values[3] : 1.0f;
+		if (count > 4) s.MinDistance = values[4];
+		if (count > 5) s.MaxDistance = values[5];
+		if (count > 6) s.Rolloff = static_cast<AudioRolloff>(std::clamp(static_cast<int>(values[6]), 0, 1));
+		if (count > 7) s.Panning = values[7];
+		if (count > 8) s.DopplerLevel = values[8];
+		AudioManager::PlayOneShotAt(audio, glm::vec3(values[0], values[1], values[2]), std::max(volume, 0.0f), s);
+	}
 
 	static uint64_t Funke_AudioSource_GetAudio(uint64_t entityID)
 	{
@@ -3095,6 +3183,7 @@ namespace Funke {
 
 		b.Entity_Clone = FNK_GUARDED_BINDING(Funke_Entity_Clone);
 		b.Entity_InstantiatePrefab = FNK_GUARDED_BINDING(Funke_Entity_InstantiatePrefab);
+		b.Entity_CreateScriptInstances = FNK_GUARDED_BINDING(Funke_Entity_CreateScriptInstances);
 		b.Entity_GetOrigin = FNK_GUARDED_BINDING(Funke_Entity_GetOrigin);
 		b.Entity_GetRuntimeID = FNK_GUARDED_BINDING(Funke_Entity_GetRuntimeID);
 		b.Entity_GetSceneGUID = FNK_GUARDED_BINDING(Funke_Entity_GetSceneGUID);
@@ -3135,6 +3224,8 @@ namespace Funke {
 		b.TextRenderer_SetLetterSpacing = FNK_GUARDED_BINDING(Funke_TextRenderer_SetLetterSpacing);
 		b.TextRenderer_GetLineSpacing = FNK_GUARDED_BINDING(Funke_TextRenderer_GetLineSpacing);
 		b.TextRenderer_SetLineSpacing = FNK_GUARDED_BINDING(Funke_TextRenderer_SetLineSpacing);
+		b.TextRenderer_GetEffects = FNK_GUARDED_BINDING(Funke_TextRenderer_GetEffects);
+		b.TextRenderer_SetEffects = FNK_GUARDED_BINDING(Funke_TextRenderer_SetEffects);
 		b.TextRenderer_GetHAlign = FNK_GUARDED_BINDING(Funke_TextRenderer_GetHAlign);
 		b.TextRenderer_SetHAlign = FNK_GUARDED_BINDING(Funke_TextRenderer_SetHAlign);
 		b.TextRenderer_GetVAlign = FNK_GUARDED_BINDING(Funke_TextRenderer_GetVAlign);
@@ -3165,6 +3256,8 @@ namespace Funke {
 		b.AudioSource_SetLoop = FNK_GUARDED_BINDING(Funke_AudioSource_SetLoop);
 		b.AudioSource_IsPlaying = FNK_GUARDED_BINDING(Funke_AudioSource_IsPlaying);
 		b.AudioSource_IsPaused = FNK_GUARDED_BINDING(Funke_AudioSource_IsPaused);
+		b.AudioSource_GetSpatial = FNK_GUARDED_BINDING(Funke_AudioSource_GetSpatial);
+		b.AudioSource_SetSpatial = FNK_GUARDED_BINDING(Funke_AudioSource_SetSpatial);
 		b.AudioSource_GetAudio = FNK_GUARDED_BINDING(Funke_AudioSource_GetAudio);
 		b.AudioSource_SetAudio = FNK_GUARDED_BINDING(Funke_AudioSource_SetAudio);
 
@@ -3206,6 +3299,7 @@ namespace Funke {
 		b.Texture_IsRuntime = FNK_GUARDED_BINDING(Funke_Texture_IsRuntime);
 		b.Audio_LoadAsset = FNK_GUARDED_BINDING(Funke_Audio_LoadAsset);
 		b.Audio_PlayOneShotAsset = FNK_GUARDED_BINDING(Funke_Audio_PlayOneShotAsset);
+		b.Audio_PlayOneShotAt = FNK_GUARDED_BINDING(Funke_Audio_PlayOneShotAt);
 		b.Font_LoadAsset = FNK_GUARDED_BINDING(Funke_Font_LoadAsset);
 
 

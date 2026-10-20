@@ -137,4 +137,20 @@ namespace Funke {
 			Play();
 		}
 	}
+
+	void AudioSourceComponent::SetSpatial(bool spatial) {
+		m_Spatial = spatial;
+		AudioManager::UpdateSourceSpatial(*this);
+	}
+
+	void AudioSourceComponent::SetSpatialSettings(const AudioSpatialSettings& settings) {
+		m_SpatialSettings = AudioSpatial::Sanitize(settings);
+		AudioManager::UpdateSourceSpatial(*this);
+	}
+
+	void AudioSourceComponent::SetWorldPosition(const glm::vec3& position, const glm::vec3& velocity) {
+		m_WorldPosition = position;
+		m_Velocity = velocity;
+		m_HasWorldPosition = true;
+	}
 }

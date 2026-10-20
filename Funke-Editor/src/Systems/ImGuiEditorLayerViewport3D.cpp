@@ -266,7 +266,7 @@ namespace Funke {
 				std::max(0.5f, glm::length(glm::vec2(size.x, size.y)) * 0.5f));
 			return;
 		}
-		const LocalBounds3D bounds = EntityPicker3D::GetLocalBounds(scene, m_SelectedEntity);
+		const LocalBounds3D bounds = EntityPicker3D::GetHierarchyBounds(scene, m_SelectedEntity);
 		const glm::vec3& halfExtents = bounds.HalfExtents;
 		const glm::vec3 worldExtents(
 			glm::length(glm::vec3(transform->WorldMatrix[0])) * halfExtents.x,
@@ -305,7 +305,7 @@ namespace Funke {
 
 		for (EntityHandle selected : GetSelectedEntities(scene)) {
 			if (const auto* transform = registry.try_get<Transform3DComponent>(selected)) {
-				const LocalBounds3D bounds = EntityPicker3D::GetLocalBounds(scene, selected);
+				const LocalBounds3D bounds = EntityPicker3D::GetHierarchyBounds(scene, selected);
 				renderer.DrawWireBox(transform->WorldMatrix * glm::translate(glm::mat4(1.0f), bounds.Center), bounds.HalfExtents * 1.02f, k_SelectionColor);
 				PhysicsDebugDraw3D::DrawColliders(renderer, scene, selected, transform->WorldMatrix);
 				if (const auto* particles = registry.try_get<ParticleSystem3DComponent>(selected)) {
@@ -361,6 +361,10 @@ namespace Funke {
 		if (m_EditorCamera3DFramedScene != scene.GetName()) {
 			m_EditorCamera3DFramedScene = scene.GetName();
 			FrameEditorCamera3D(scene);
+		}
+		if (m_EditorCamera3DFocusSelectionPending) {
+			m_EditorCamera3DFocusSelectionPending = false;
+			FocusSelectedEntity3D(scene);
 		}
 
 		Camera3DView view = m_EditorCamera3D.GetView(viewportSize.x / viewportSize.y);

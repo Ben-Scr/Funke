@@ -296,32 +296,42 @@ namespace Funke {
 			const float spacingX = layout.Spacing.x * s;
 			const float spacingY = layout.Spacing.y * s;
 
-			// Decide column / row counts from the constraint.
-			int cols = 0;
-			int rows = 0;
+			// Grid capacity from the constraint (a Flexible grid holds as many cells as fit).
+			int cellsX = 1;
+			int cellsY = 1;
 			switch (layout.Constraint) {
 			case GridLayoutConstraint::FixedColumnCount:
-				cols = std::max(1, layout.ConstraintCount);
-				rows = (n + cols - 1) / cols;
+				cellsX = std::max(1, layout.ConstraintCount);
+				if (n > cellsX) cellsY = (n + cellsX - 1) / cellsX;
 				break;
 			case GridLayoutConstraint::FixedRowCount:
-				rows = std::max(1, layout.ConstraintCount);
-				cols = (n + rows - 1) / rows;
+				cellsY = std::max(1, layout.ConstraintCount);
+				if (n > cellsY) cellsX = (n + cellsY - 1) / cellsY;
 				break;
 			case GridLayoutConstraint::Flexible:
 			default:
-				if (layout.StartAxis == GridLayoutStartAxis::Horizontal) {
-					cols = std::max(1, static_cast<int>((frameWidth + spacingX) / (cellW + spacingX)));
-					rows = (n + cols - 1) / cols;
-				}
-				else {
-					rows = std::max(1, static_cast<int>((frameHeight + spacingY) / (cellH + spacingY)));
-					cols = (n + rows - 1) / rows;
-				}
+				cellsX = std::max(1, static_cast<int>(std::floor((frameWidth + spacingX + 0.001f) / (cellW + spacingX))));
+				cellsY = std::max(1, static_cast<int>(std::floor((frameHeight + spacingY + 0.001f) / (cellH + spacingY))));
 				break;
 			}
-			cols = std::max(1, cols);
-			rows = std::max(1, rows);
+
+			// Like Unity's GridLayoutGroup, alignment places the occupied cells, not the empty capacity: one
+			// child in a two-column grid is centred, not pinned to the left column.
+			const bool horizontal = layout.StartAxis == GridLayoutStartAxis::Horizontal;
+			const int cellsPerLine = horizontal ? cellsX : cellsY;
+			const int lines = (n + cellsPerLine - 1) / cellsPerLine;
+			int cols = 0;
+			int rows = 0;
+			if (horizontal) {
+				cols = std::clamp(cellsX, 1, n);
+				rows = layout.Constraint == GridLayoutConstraint::FixedRowCount
+					? std::min(cellsY, n) : std::clamp(cellsY, 1, lines);
+			}
+			else {
+				rows = std::clamp(cellsY, 1, n);
+				cols = layout.Constraint == GridLayoutConstraint::FixedColumnCount
+					? std::min(cellsX, n) : std::clamp(cellsX, 1, lines);
+			}
 
 			const float usedWidth  = static_cast<float>(cols) * cellW + static_cast<float>(std::max(0, cols - 1)) * spacingX;
 			const float usedHeight = static_cast<float>(rows) * cellH + static_cast<float>(std::max(0, rows - 1)) * spacingY;
@@ -344,13 +354,13 @@ namespace Funke {
 			for (int i = 0; i < n; ++i) {
 				int col = 0;
 				int row = 0;
-				if (layout.StartAxis == GridLayoutStartAxis::Horizontal) {
-					col = i % cols;
-					row = i / cols;
+				if (horizontal) {
+					col = i % cellsPerLine;
+					row = i / cellsPerLine;
 				}
 				else {
-					row = i % rows;
-					col = i / rows;
+					row = i % cellsPerLine;
+					col = i / cellsPerLine;
 				}
 				if (flipX) col = (cols - 1) - col;
 				if (flipY) row = (rows - 1) - row;

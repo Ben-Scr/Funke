@@ -165,4 +165,39 @@ public class ColorTests
         var s = new Color(1f, 0f, 0f, 1f).ToString();
         Assert.Contains("Color(", s);
     }
+
+    [Theory]
+    [InlineData("#FF8000", 1f, 128f / 255f, 0f, 1f)]
+    [InlineData("ff800080", 1f, 128f / 255f, 0f, 128f / 255f)]
+    [InlineData("#f80", 1f, 136f / 255f, 0f, 1f)]
+    [InlineData("  #F808 ", 1f, 136f / 255f, 0f, 136f / 255f)]
+    public void FromHex_ParsesLongAndShortForms(string hex, float r, float g, float b, float a)
+    {
+        var c = Color.FromHex(hex);
+        Assert.Equal(r, c.R, 5);
+        Assert.Equal(g, c.G, 5);
+        Assert.Equal(b, c.B, 5);
+        Assert.Equal(a, c.A, 5);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("#")]
+    [InlineData("#12345")]
+    [InlineData("#GG0000")]
+    [InlineData("#1234567890")]
+    public void FromHex_RejectsMalformedInput(string hex)
+    {
+        Assert.False(Color.TryFromHex(hex, out _));
+        Assert.Throws<System.FormatException>(() => Color.FromHex(hex));
+    }
+
+    [Fact]
+    public void ToHex_RoundTripsThroughFromHex()
+    {
+        var c = Color.FromHex("#3A7BD5CC");
+        Assert.Equal("#3A7BD5", c.ToHex());
+        Assert.Equal("#3A7BD5CC", c.ToHex(includeAlpha: true));
+        Assert.Equal("#FF0000", new Color(2f, -1f, 0f).ToHex());
+    }
 }

@@ -48,7 +48,7 @@ public:
 #endif
 
 		std::string title = project
-			? project->Name + " - " + buildConfig
+			? project->DisplayName() + " - " + buildConfig
 			: "Funke Runtime Application " + std::string(FNK_VERSION);
 
 		if (project) {

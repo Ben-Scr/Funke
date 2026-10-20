@@ -1,6 +1,6 @@
 ---
 name: funke-scene-workflow
-description: Use when working with Funke scenes in engine/editor C++ — defining, loading, reloading, switching, saving, multi-scene setups, the load/unload lifecycle, scene events, or editor play-mode snapshot/restore. Triggers on "RegisterScene", "SceneDefinition", "ConfigureScenes", "OnInitialize / OnLoad / OnLoadChecked / OnUnload", "SetAsStartupScene", "SetPersistent", "WithoutDefaultCamera2D", "LoadScene", "TryLoadScene", "SceneLoadResult", "SceneLoadStatus", "LoadSceneAdditive", "ReloadScene", "UnloadScene", "SetActiveScene", "GetActiveScene", "SceneSerializer::LoadFromFile / SaveToFile", "staged swap", "detached scene", "CreateDetachedScene", "lifecycle suspended", "scene events", "ScenePreStartEvent / ScenePostStartEvent / ScenePreStopEvent / ScenePostStopEvent", "SubscribeEvent", "play mode", "Stop restores scene", "PreparePlayModeSnapshot", "RestoreEditorSceneAfterPlaymode", "EntityOrigin", "runtime entity not saved", "default camera", or work in `Funke-Engine/src/Scene/` and the editor's scene handling in `Funke-Editor/src/Systems/ImGuiEditorLayer*.cpp`. For C# `SceneManager.LoadScene` from game code see `funke-game-scripting`; for scene file fields see `funke-serialize-field`.
+description: Use when working with Funke scenes in engine/editor C++ — defining, loading, reloading, restarting, switching, saving, multi-scene setups, the load/unload lifecycle, scene events, or editor play-mode snapshot/restore. Triggers on "RegisterScene", "SceneDefinition", "OnLoadChecked", "SetAsStartupScene", "SetPersistent", "WithoutDefaultCamera2D", "TryLoadScene", "SceneLoadStatus", "LoadSceneAdditive", "ReloadScene / TryRestartScene", "ProjectSceneLoader", "SetActiveScene", "SceneSerializer LoadFromFile / SaveToFile", "staged swap", "CreateDetachedScene", "lifecycle suspended", "ScenePreStartEvent / ScenePostStopEvent", "play mode", "PreparePlayModeSnapshot", "RestoreEditorSceneAfterPlaymode", "EntityOrigin", "default camera", or work in `Funke-Engine/src/Scene/` and the editor's scene handling in `Funke-Editor/src/Systems/ImGuiEditorLayer*.cpp`. For C# `SceneManager.LoadScene` from game code see `funke-game-scripting`; for scene file fields see `funke-serialize-field`.
 ---
 
 # Scene Workflow
@@ -21,7 +21,7 @@ def.AddSystem<MySystem>()                                       // see funke-add
    .SetPersistent(true)          // survives non-additive loads / UnloadAllScenes(false)
    .WithoutDefaultCamera2D();    // opt out of the auto "Main Camera"
 ```
-Registering an existing name returns the existing definition (warning). Real sites: `Funke-Runtime/src/RuntimeApplication.cpp` (one definition per `buildScenes` entry, `OnLoadChecked` → `LoadFromFile(project->GetSceneFilePath(name))`), `Funke-Editor/src/EditorApplication.cpp` (`$EditorWorkingScene`), `ImGuiEditorLayer::LoadEditorScene` (`$EditorAssetScene.N`), and `LoadSceneByName` in `Scripting/ScriptBindings.cpp` (C# `SceneManager.LoadScene` registers a definition on demand from `Assets/**/<name>.scene`).
+Registering an existing name returns the existing definition (warning). Real sites: `Funke-Runtime/src/RuntimeApplication.cpp` (one definition per `buildScenes` entry, `OnLoadChecked` → `LoadFromFile(project->GetSceneFilePath(name))`), `Funke-Editor/src/EditorApplication.cpp` (`$EditorWorkingScene`), `ImGuiEditorLayer::LoadEditorScene` (`$EditorAssetScene.N`), and `ProjectSceneLoader::Load` (`Scene/ProjectSceneLoader.cpp`, behind C# `SceneManager.LoadScene`: registers a definition on demand from `Assets/**/<name>.scene`; a single load of an already-loaded scene restarts it via `TryRestartScene`).
 
 ## Load / switch / unload
 
@@ -31,7 +31,8 @@ SceneLoadResult a = SceneManager::TryLoadSceneAdditive("HUD");   // keeps the re
 if (!r) FNK_CORE_ERROR_TAG("Game", "{}", r.Message);             // r.Status: NotRegistered, LoadCallbackFailed, AwakeFailed, ...
 std::shared_ptr<Scene> s = r.LoadedScene.lock();
 
-SceneManager::TryReloadScene("Level2");   // snapshot via SerializeScene -> fresh instance -> swap (same list index)
+SceneManager::TryReloadScene("Level2");   // keeps live state: SerializeScene snapshot -> fresh instance -> swap (same list index)
+SceneManager::TryRestartScene("Level2");  // discards live state: fresh instance from the definition (file on disk), like a level restart
 SceneManager::SetActiveScene("HUD");      // target for implicit entity creation outside lifecycle hooks; ensures a camera
 SceneManager::UnloadScene("HUD");
 SceneManager::UnloadAllScenes(/*includePersistent*/ false);
@@ -66,7 +67,7 @@ Types in `Funke-Engine/src/Events/Scene*Event.hpp` (aggregate `Events/SceneEvent
 auto sub = app.SubscribeEventScoped<ScenePostStartEvent>([](ScenePostStartEvent& e) { /* e.GetSceneName() */ });
 EventId id = app.SubscribeEvent<ScenePreStopEvent>(...);  app.UnsubscribeEvent(id);
 ```
-Not emitted for suspended loads, `ReloadScene`, or editor recovery activations.
+Not emitted for suspended loads, `ReloadScene`, or editor recovery activations (`TryRestartScene` does emit them).
 
 ## Saving and loading files
 
@@ -96,7 +97,7 @@ Consequence: anything not serialized is lost on Stop, and anything that relies o
 
 ## Tests (`Tests/Funke-Engine-Tests/src`, doctest)
 
-`SceneManagerFailureTests.cpp` (load statuses, rollback, reentrancy, persistent scenes, wrong-thread), `SceneExecutionContextTests.cpp` (implicit scene, enable/disable), `SceneIsolationTests.cpp`, `SceneManagerDefaultCameraTests.cpp`, `ApplicationLifecycleTests.cpp`, `SceneSerializerRoundTripTests.cpp` (file round-trips, rejected formats/headers). Pattern: headless `Application` subclass (`ApplicationConfig::Headless()`), `ConfigureScenes()`, assertions captured in `Start()`, `Application::Quit()`, checks after `Run()`. New test files need `vendor\bin\premake5.exe vs2022`.
+`SceneManagerFailureTests.cpp` (load statuses, rollback, reentrancy, persistent scenes, wrong-thread), `SceneExecutionContextTests.cpp` (implicit scene, enable/disable), `SceneIsolationTests.cpp`, `SceneManagerDefaultCameraTests.cpp`, `ApplicationLifecycleTests.cpp`, `SceneSerializerRoundTripTests.cpp` (file round-trips, rejected formats/headers). Pattern: headless `Application` subclass (`ApplicationConfig::Headless()`), `ConfigureScenes()`, assertions captured in `Start()`, `Application::Quit()`, checks after `Run()`. New test files: `scripts\dev\Test.ps1` builds via `Build.ps1`, which regenerates premake automatically.
 
 ## Pitfalls
 

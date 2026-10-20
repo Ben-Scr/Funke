@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Scene/EntityPicker3D.hpp"
 
+#include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/MeshRendererComponent.hpp"
 #include "Components/Graphics/SkinnedMeshRendererComponent.hpp"
@@ -8,7 +9,9 @@
 #include "Graphics/CustomShaderLibrary.hpp"
 #include "Graphics/Material.hpp"
 #include "Graphics/MeshAsset.hpp"
+#include "Graphics/SkeletalAnimation.hpp"
 #include "Scene/Scene.hpp"
+#include "Systems/SkinnedMeshAnimationSystem.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -19,6 +22,11 @@ namespace Funke {
 		constexpr glm::vec3 k_ProxyHalfExtents{ 0.25f, 0.25f, 0.25f };
 		// The plane is flat; give it a sliver of thickness so edge-on clicks still land.
 		constexpr float k_PlaneHalfThickness = 0.01f;
+
+		// Flat meshes get the same sliver of thickness as the plane.
+		LocalBounds3D FromMinMax(const glm::vec3& minPoint, const glm::vec3& maxPoint) {
+			return { (maxPoint + minPoint) * 0.5f, glm::max((maxPoint - minPoint) * 0.5f, glm::vec3(k_PlaneHalfThickness)) };
+		}
 	}
 
 	bool EntityPicker3D::IntersectRayBox(const glm::vec3& origin, const glm::vec3& direction, const glm::vec3& halfExtents, float& outT) {
@@ -54,8 +62,7 @@ namespace Funke {
 		if (!mesh && !skinned) {
 			return { glm::vec3(0.0f), k_ProxyHalfExtents };
 		}
-		// Skinned models use their rest-pose box; animation may reach a little beyond it.
-		LocalBounds3D bounds = mesh ? MeshBounds(mesh) : AssetBounds(skinned->Model);
+		LocalBounds3D bounds = mesh ? MeshBounds(mesh) : SkinnedBounds(*skinned);
 		// A shader's fn vertex moves the drawn surface by up to its @displacement.
 		if (const Material* material = MaterialLibrary::Get(mesh ? mesh->Material : skinned->Material); material && material->Shader != 0) {
 			if (const ShaderDescription* description = CustomShaderLibrary::GetDescription(material->Shader);
@@ -66,14 +73,68 @@ namespace Funke {
 		return bounds;
 	}
 
+	LocalBounds3D EntityPicker3D::GetHierarchyBounds(const Scene& scene, EntityHandle entity) {
+		const auto& registry = scene.GetRegistry();
+		const auto* root = registry.try_get<Transform3DComponent>(entity);
+		if (!root || std::abs(glm::determinant(root->WorldMatrix)) < 1e-12f) {
+			return GetLocalBounds(scene, entity);
+		}
+		const glm::mat4 toRoot = glm::inverse(root->WorldMatrix);
+		// A disabled selection still shows its whole extent; under an enabled one, disabled children draw nothing.
+		const bool skipDisabled = !registry.all_of<DisabledTag>(entity);
+		glm::vec3 minPoint(std::numeric_limits<float>::max());
+		glm::vec3 maxPoint(std::numeric_limits<float>::lowest());
+		bool any = false;
+		std::vector<EntityHandle> pending{ entity };
+		while (!pending.empty()) {
+			const EntityHandle current = pending.back();
+			pending.pop_back();
+			if (!registry.valid(current) || (current != entity && skipDisabled && registry.all_of<DisabledTag>(current))) continue;
+			if (const auto* hierarchy = registry.try_get<HierarchyComponent>(current)) {
+				pending.insert(pending.end(), hierarchy->Children.begin(), hierarchy->Children.end());
+			}
+			const auto* transform = registry.try_get<Transform3DComponent>(current);
+			if (!transform || !registry.any_of<MeshRendererComponent, SkinnedMeshRendererComponent>(current)) continue;
+
+			const LocalBounds3D local = GetLocalBounds(scene, current);
+			const glm::mat4 m = current == entity ? glm::mat4(1.0f) : toRoot * transform->WorldMatrix;
+			const glm::vec3 center(m * glm::vec4(local.Center, 1.0f));
+			const glm::vec3 half = glm::abs(glm::vec3(m[0])) * local.HalfExtents.x + glm::abs(glm::vec3(m[1])) * local.HalfExtents.y
+				+ glm::abs(glm::vec3(m[2])) * local.HalfExtents.z;
+			minPoint = glm::min(minPoint, center - half);
+			maxPoint = glm::max(maxPoint, center + half);
+			any = true;
+		}
+		if (!any) {
+			return GetLocalBounds(scene, entity);
+		}
+		return { (minPoint + maxPoint) * 0.5f, (maxPoint - minPoint) * 0.5f };
+	}
+
 	LocalBounds3D EntityPicker3D::AssetBounds(uint64_t meshGuid) {
 		const MeshAsset* asset = MeshLibrary::Get(meshGuid);
 		if (!asset) {
 			return { glm::vec3(0.0f), k_ProxyHalfExtents };
 		}
-		// Flat meshes get the same sliver of thickness as the plane.
-		const glm::vec3 half = glm::max((asset->BoundsMax - asset->BoundsMin) * 0.5f, glm::vec3(k_PlaneHalfThickness));
-		return { (asset->BoundsMax + asset->BoundsMin) * 0.5f, half };
+		return FromMinMax(asset->BoundsMin, asset->BoundsMax);
+	}
+
+	LocalBounds3D EntityPicker3D::SkinnedBounds(const SkinnedMeshRendererComponent& skinned) {
+		const MeshAsset* asset = MeshLibrary::Get(skinned.Model);
+		if (!asset || !asset->Skin) {
+			return AssetBounds(skinned.Model);
+		}
+		// The rest-pose box misses limbs once a clip moves them, including the clip frame edit mode shows.
+		const SkinnedMeshData& data = *asset->Skin;
+		thread_local std::vector<glm::mat4> t_Nodes;
+		thread_local std::vector<glm::mat4> t_Joints;
+		SkeletalAnimation::EvaluatePose(data, SkinnedMeshAnimationSystem::GetDrawnPose(skinned, data), t_Nodes);
+		SkeletalAnimation::ComputeJointMatrices(data, t_Nodes, t_Joints);
+		glm::vec3 minPoint, maxPoint;
+		if (!SkeletalAnimation::PosedBounds(data, t_Joints, minPoint, maxPoint)) {
+			return AssetBounds(skinned.Model);
+		}
+		return FromMinMax(minPoint, maxPoint);
 	}
 
 	LocalBounds3D EntityPicker3D::MeshBounds(const MeshRendererComponent* mesh) {

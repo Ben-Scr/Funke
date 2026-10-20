@@ -4,7 +4,7 @@
 namespace Funke {
 
 	// Bump together with InteropHandshake.LayoutVersion (ScriptHostBridge.cs) on any add/remove/reorder in NativeBindings or ManagedCallbacks.
-	inline constexpr int32_t k_ScriptInteropLayoutVersion = 32;
+	inline constexpr int32_t k_ScriptInteropLayoutVersion = 37;
 
 	/// Layout must match C# NativeBindingsStruct exactly (Sequential, blittable).
 	struct NativeBindings
@@ -1282,6 +1282,38 @@ namespace Funke {
 		// ── Image slice (appended for binary compat) ──
 		int      (*Image_GetSpriteNameBuffer)(uint64_t entityID, char* outBuffer, int capacity);
 		void     (*Image_SetSpriteName)(uint64_t entityID, const char* name);
+
+		// ── Texture quality and anti-aliasing settings (appended for binary compat) ──
+		void     (*RenderSettings_GetQuality)(int* textureQuality, int* anisotropicFiltering, int* antiAliasing, int* antiAliasingQuality);
+		int      (*RenderSettings_ApplyQuality)(int textureQuality, int anisotropicFiltering, int antiAliasing, int antiAliasingQuality);
+
+		// ── Animation culling (appended for binary compat) ──
+		// values: cullingMode, distanceRate, halfRateDistance, quarterRateDistance.
+		void     (*Animator_GetCulling)(uint64_t entityID, float* values, int count);
+		void     (*Animator_SetCulling)(uint64_t entityID, const float* values, int count);
+		// values: distanceRateEnabled (0/1), halfRateDistance, quarterRateDistance.
+		void     (*RenderSettings_GetAnimation)(float* values, int count);
+		int      (*RenderSettings_ApplyAnimation)(const float* values, int count);
+
+		// ── Script platform (appended for binary compat) ──
+		// Funke.Platform value; in the editor the active build profile's platform.
+		int      (*Application_GetPlatform)();
+
+		// ── Spatial audio (appended for binary compat) ──
+		// values: spatial (0/1), minDistance, maxDistance, rolloff, panning, dopplerLevel.
+		void     (*AudioSource_GetSpatial)(uint64_t entityID, float* values, int count);
+		void     (*AudioSource_SetSpatial)(uint64_t entityID, const float* values, int count);
+		// values: x, y, z, volume, minDistance, maxDistance, rolloff, panning, dopplerLevel.
+		void     (*Audio_PlayOneShotAt)(uint64_t assetId, const float* values, int count);
+
+		// ── Spawn-time scripts, master volume, automated runs, text effects (appended for binary compat) ──
+		void     (*Entity_CreateScriptInstances)(uint64_t entityID);
+		float    (*Audio_GetMasterVolume)();
+		void     (*Audio_SetMasterVolume)(float volume);
+		int      (*Application_IsAutomatedRun)();
+		// values: outlineWidth, outline r g b a, shadowOffsetX, shadowOffsetY, shadow r g b a.
+		void     (*TextRenderer_GetEffects)(uint64_t entityID, float* values, int count);
+		void     (*TextRenderer_SetEffects)(uint64_t entityID, const float* values, int count);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.

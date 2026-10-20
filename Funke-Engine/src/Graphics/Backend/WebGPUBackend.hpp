@@ -53,6 +53,8 @@ namespace Funke::WebGPUBackend {
 	struct TextureLookup {
 		wgpu::TextureView View;
 		wgpu::Sampler     Sampler;
+		// Sampler plus the texture quality and anisotropy settings, for world rendering; UI keeps Sampler.
+		wgpu::Sampler     SceneSampler;
 		uint32_t          Width  = 0;
 		uint32_t          Height = 0;
 		bool              Valid  = false;
@@ -67,6 +69,7 @@ namespace Funke::WebGPUBackend {
 		wgpu::TextureFormat ColorFormat = wgpu::TextureFormat::Undefined;
 		uint32_t          Width  = 0;
 		uint32_t          Height = 0;
+		uint32_t          SampleCount = 1;
 		bool              Valid  = false;
 	};
 	FramebufferLookup LookupFramebufferByFboId(uint32_t fboBackendId);
@@ -77,6 +80,8 @@ namespace Funke::WebGPUBackend {
 	enum class FilterMode : uint8_t { Point, Bilinear, Trilinear, Anisotropic };
 	enum class WrapMode   : uint8_t { Repeat, Clamp, Mirror, Border };
 	wgpu::Sampler CreateSampler(FilterMode filter, WrapMode wrapU, WrapMode wrapV);
+	// Point ignores both; maxAnisotropy only applies to Trilinear and Anisotropic (WebGPU needs linear mip filtering for it).
+	wgpu::Sampler CreateSampler(FilterMode filter, WrapMode wrapU, WrapMode wrapV, float lodMinClamp, uint16_t maxAnisotropy);
 
 	// ── Shader pool (defined in Graphics/Shader_WebGPU.cpp) ──────────────────
 
@@ -98,6 +103,8 @@ namespace Funke::WebGPUBackend {
 		wgpu::TextureFormat ColorFormat = wgpu::TextureFormat::Undefined;
 		uint32_t            Width      = 0;
 		uint32_t            Height     = 0;
+		// > 1 on a multisampled Framebuffer: pipelines drawing into it need the same multisample.count.
+		uint32_t            SampleCount = 1;
 		bool                IsSwapChain= true;
 		bool                HasDepth   = false;
 		bool                Valid      = false; // false = backend can't render this frame; caller must skip submit.
@@ -122,6 +129,7 @@ namespace Funke::WebGPUBackend {
 		wgpu::TextureFormat ColorFormat = wgpu::TextureFormat::Undefined;
 		uint32_t            Width       = 0;
 		uint32_t            Height      = 0;
+		uint32_t            SampleCount = 1;
 		bool                IsSwapChain = true;
 	};
 	BoundTargetSnapshot SaveBoundTarget();

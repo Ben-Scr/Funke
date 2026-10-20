@@ -79,6 +79,47 @@ Test runs (see Editor/Testing.md):
 			Command{ "open", "Open the project in the editor",
 R"(funke open [--project <dir>])", &RunOpen },
 
+			Command{ "editor", "Drive the running editor: play, input, screenshots, console, logs",
+R"(funke editor <command> [options]
+
+Talks to an editor that is already open, over a local channel only your user account can use.
+Nothing on the desktop changes: no window is moved, focused or resized and no OS input is sent; the
+editor may be in the background or minimized. The editor is the one with --project <dir> (or the
+working directory's project) open, the only one running, or --pid <n>.
+
+  status                        Project, open scene, edit/play/paused, script build state, surface
+  list                          Running editors
+  play [--scene <name>]         Enter Play mode and wait until it runs (compiles scripts first if needed)
+       [--size WxH]             Lay the game out for exactly this screen, e.g. 1080x2400 (until Play stops)
+       [--fixed-step <fps>]     Every frame advances exactly 1/fps seconds (until Play stops)
+       [--seconds <s> | --frames <n>]   Then let the game run that long before returning
+       [--save | --discard]     With --scene: what to do with unsaved scene changes
+       [--no-wait]
+  stop | pause | resume
+  step [--frames <n>]           Run n frames, then pause
+  wait (--seconds <s> | --frames <n>)   Game time in Play mode (pauses don't count), else real time
+  exec "<console command>"      Dev console line (also [DevCommand]s); prints its output
+  recompile [--no-wait]         Rebuild the C# scripts and report errors. In Play mode the editor
+                                leaves Play first when "Exit Play Mode On Recompilation" is on
+  screenshot <out.png> [--width W --height H | --size WxH]
+                                Renders the game camera offscreen; default size: the game's surface
+  input <script.json> [--fixed-step <fps>] [--screenshot-dir <dir>]
+                                Runs an input script (same format as --input-script) in Play mode
+  tap <x> <y> [--hold <s>]      Touch at 0..1 of the game surface (or pixels with --px)
+  click <x> <y> [--button left|right|middle] [--hold <s>] [--px]
+  drag <x1> <y1> <x2> <y2> [--duration <s>] [--mouse] [--px]
+  key <name> [--hold <s>]       Space, A, Enter, Left, F1, ...
+  open-scene <name|path.scene> [--save | --discard]
+  save-scene
+  surface <WxH> | surface --clear
+  logs [--since <n>] [--level warning] [--tail <n>] [--contains <text>] [--follow]
+
+  --timeout <s>   Give up after s seconds (each command has a sensible default)
+  --json          The editor's answer as JSON on stdout (errors too)
+
+Exit codes: 0 ok, 1 failed, 2 usage, 3 busy (loading, building, a dialog is open) or timed out,
+4 no editor reachable.)", &RunEditor },
+
 			Command{ "convert", "Convert scenes, prefabs and data assets between JSON and binary",
 R"(funke convert --format json|binary [paths...] [options]
 

@@ -59,6 +59,24 @@ Besides platform and rendering API, a build profile (`BuildProfiles/<Name>.build
 
 `project.json` itself accepts `devConsole` (true/false) and `prefsProfile` (a name) for every build. **Project Settings › Build › Diagnostics** has a switch for the console.
 
+## Platform-specific code in the editor
+
+The editor compiles and plays your C# scripts as the platform of the **active build profile** (the one chosen in the Build window or with **Set Active** in Build Profiles). With an Android profile active, scripts get `FUNKE_ANDROID` instead of `FUNKE_WINDOWS`, so code like this runs in Play mode and can be debugged there:
+
+```csharp
+#if FUNKE_ANDROID
+    ShowTouchControls();
+#else
+    ShowKeyboardHints();
+#endif
+```
+
+- **Which defines.** The platform define of the profile (`FUNKE_WINDOWS`, `FUNKE_LINUX`, `FUNKE_MACOS`, `FUNKE_ANDROID`, `FUNKE_IOS`, `FUNKE_VISIONOS`, `FUNKE_WEB`) and the profile's `defines`, besides `FUNKE_EDITOR`, `FUNKE_BUILD_DEVELOPMENT` and the project's custom defines. Without an active profile the editor uses its own platform.
+- **Switching.** Changing the active profile, its platform or its defines recompiles the scripts within a second. `Packages/FunkeDefines.props` follows, so Visual Studio and Rider grey out the right `#if` branches.
+- **Shown in the toolbar.** While the editor plays another platform than its own, a **Simulating Android** (or iOS, Web, …) badge sits next to the Play button. Clicking it opens Build Profiles.
+- **At runtime.** `Application.Platform` is the platform the scripts run as: the simulated one in the editor, the real one in a built game. `Application.IsSimulatingPlatform` is true while the editor simulates. `Engine.Platform` always reports the machine itself.
+- **Only scripts change.** The engine keeps running as the editor's own platform: its native code, input devices, file paths and graphics backend are the desktop ones. Calls that need the real device (for example `AndroidBridge` or permissions) behave as on the desktop. Test those in a build.
+
 ## Developer console
 
 Development and Debug builds have a console. To open it, press **`** (the key left of 1, `^` on German keyboards) or tap the screen with three fingers. **Esc** closes it.
@@ -74,6 +92,7 @@ While the console is open, it takes the game's keyboard and mouse input. **Tab**
 | `physics.contacts [on\|off]` | Contact points and normals in that overlay |
 | `stats [on\|off]`, `logs [on\|off]` | The F6/F7 overlays, even in builds that start without them |
 | `screenshot [file]` | Saves the next frame as PNG |
+| `audio.spatial [x y z ...]` | The audio listener and every playing 3D sound (distance, gain, pan, left/right volume); with a position, how a sound there would be heard. See *Scripting › 3D sound* |
 | `prefs.clear`, `prefs.path` | Deletes the PlayerPrefs, or shows the data folder in use |
 | `echo <text>`, `clear`, `quit` | Prints text, clears the console, quits |
 
@@ -112,6 +131,15 @@ DevConsole.Register("player.teleport", args => { Teleport(args[0]); return "ok";
 
 `DevConsole.Execute("timescale 0.5")` runs any command from code, in every build. You can use it for debug menus that reuse the same commands. `DevConsole.IsAvailable` and `DevConsole.IsOpen` tell you whether the console is shown.
 
+## Stats overlay
+
+**F6** in a running game, or **Stats** in the Game View toolbar, shows the frame rate and frame time, memory, playing sounds, entities and the geometry drawn per frame:
+
+- **Tris** and **Verts** count Mesh Renderers and Skinned Mesh Renderers (every instance), 3D particles, 2D sprites and 2D particles. A sprite or particle is 2 triangles and 4 vertices; a mesh adds its own triangles and vertices once per instance. UI, text and gizmos are not counted.
+- **Shadow tris** appears while a light casts shadows: the triangles the shadow map draws again for the shadow casters. They are not part of **Tris**, so **Tris** matches what the cameras show.
+
+In a game, the numbers include every camera and are averaged over the frames since the last refresh (about 30 times per second). The Game View shows only what its own render drew, without the Editor View. The Profiler's **Triangles** and **Vertices** rows show everything drawn in a frame, in the editor including the Editor View.
+
 ## Physics overlay
 
 **F8**, or `physics.debug on` in the console, draws over the running game:
@@ -146,6 +174,11 @@ The runtime and every built game read these command-line options:
 | `--quit-at=<t>` | Quit at a game time or frame |
 | `--exec="<cmd>; <cmd>"` | Console commands on the first game frame, e.g. `"physics.debug on; timescale 2"` |
 | `--prefs-profile=<name>` | Isolated player data (see above) |
+| `--background` | The window never takes focus: it opens behind your other windows and keeps running while unfocused, even with **Run in background** off. Fullscreen and maximized windows become a plain window filling the screen, and `Window.Focus()` does nothing. The editor and launcher accept it too |
+| `--sound` | Keep the sound of an automated run on (see below) |
+| `--mute` | Silence any run, automated or not |
+
+**Automated runs are silent.** A run with any of the options above except `--screenshot-dir`, `--sound` and `--mute` (a `--prefs-profile` only with a name) counts as automated: the engine mutes its sound, so several test windows next to your work stay quiet, and the log says `Sound muted: automated run`. Pass `--sound` to listen anyway. Scripts can ask with `Application.IsAutomatedRun`, e.g. to skip an intro, an ad or a tutorial; the game's own volume settings (`Audio.MasterVolume`) don't unmute such a run.
 
 **How game time is counted:**
 
@@ -190,6 +223,10 @@ Scripted input goes through the same path as real input. `Input.GetKey`, the C# 
 
 A broken script stops nothing: the log names the step and the problem, and the game runs without it.
 
+A touch's first finger also moves and clicks the mouse, as on a real touch screen, so `tap` and `touch` drags reach UI buttons and scroll views.
+
+The same scripts run in an open editor with `funke editor input <script.json>`, without building or starting the runtime ([Editor Bridge](Editor-Bridge.md)).
+
 ### From the command line and `Run.ps1`
 
 ```powershell
@@ -201,6 +238,7 @@ scripts\dev\Run.ps1 -App Runtime -Project <dir> -InputScript Tests\level5.json -
 
 Engine contributors and agents can drive runs from `scripts\dev\Run.ps1`:
 
+- Every run starts with `--background`, so test windows never pull focus from what you are doing; `-Foreground` turns that off.
 - Its runtime runs use the player-data profile `agent` unless `-RealPrefs` is passed.
 - With `-ScreenshotAt`, `-InputScript` or `-QuitAt` the game takes its own screenshots into a new `bin-int\_agent\run\shots-<time>-<pid>\` folder and quits by itself.
 - Without a quit step, it quits half a second after the last screenshot.

@@ -1,6 +1,9 @@
 #include "pch.hpp"
 #include "DevTools/DevConsole.hpp"
 
+#if FUNKE_WITH_AUDIO
+#include "Audio/AudioManager.hpp"
+#endif
 #include "Core/Application.hpp"
 #include "Core/Log.hpp"
 #include "Core/Time.hpp"
@@ -17,6 +20,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <format>
 #include <map>
 #include <mutex>
 
@@ -333,6 +337,43 @@ namespace Funke {
 			[](const std::vector<std::string>& args) {
 				return OnOffCommand(args, PhysicsDebugOverlay::GetShowContacts(), &PhysicsDebugOverlay::SetShowContacts, "physics.contacts");
 			});
+#if FUNKE_WITH_AUDIO
+		Register("audio.spatial", "[x y z [min] [max] [log|linear] [panning]]",
+			"The listener and every playing spatial sound: distance, gain, pan and the left/right gains heard. With a position: how a sound there would be heard (nothing plays).",
+			[](const std::vector<std::string>& args) {
+				const AudioListenerState& l = AudioManager::GetListener();
+				std::string out = std::format("listener ({:.2f}, {:.2f}, {:.2f}) forward ({:.2f}, {:.2f}, {:.2f})",
+					l.Position.x, l.Position.y, l.Position.z, l.Forward.x, l.Forward.y, l.Forward.z);
+				if (!args.empty()) {
+					// Lets muted test runs check what a sound would do.
+					glm::vec3 position{ 0.0f };
+					AudioSpatialSettings settings;
+					bool ok = args.size() >= 3 && ParseFloat(args[0], position.x) && ParseFloat(args[1], position.y) && ParseFloat(args[2], position.z);
+					if (ok && args.size() > 3) ok = ParseFloat(args[3], settings.MinDistance);
+					if (ok && args.size() > 4) ok = ParseFloat(args[4], settings.MaxDistance);
+					if (ok && args.size() > 5) {
+						const std::string rolloff = ToLower(args[5]);
+						if (rolloff == "linear" || rolloff == "1") settings.Rolloff = AudioRolloff::Linear;
+						else if (rolloff == "log" || rolloff == "logarithmic" || rolloff == "0") settings.Rolloff = AudioRolloff::Logarithmic;
+						else ok = false;
+					}
+					if (ok && args.size() > 6) ok = ParseFloat(args[6], settings.Panning);
+					if (!ok) return DevCommandResult::Error("Expected audio.spatial <x> <y> <z> [min] [max] [log|linear] [panning], e.g. audio.spatial 4 0 -2 1 16 linear");
+					const AudioSpatial::Result h = AudioSpatial::Evaluate(l, position, AudioSpatial::Sanitize(settings));
+					out += std::format("\nprobe at ({:.2f}, {:.2f}, {:.2f}): distance {:.2f}, gain {:.3f}, pan {:+.2f}, left {:.3f}, right {:.3f}",
+						position.x, position.y, position.z, h.Distance, h.Gain, h.Pan, h.Left, h.Right);
+					return DevCommandResult::Ok(out);
+				}
+				const std::vector<AudioManager::SpatialSoundInfo> sounds = AudioManager::GetSpatialSounds();
+				if (sounds.empty()) out += "\nno spatial sound playing";
+				for (const AudioManager::SpatialSoundInfo& sound : sounds) {
+					const AudioSpatial::Result& h = sound.Heard;
+					out += std::format("\n{} at ({:.2f}, {:.2f}, {:.2f}): distance {:.2f}, gain {:.3f}, pan {:+.2f}, left {:.3f}, right {:.3f}, volume {:.2f}",
+						sound.Name, sound.Position.x, sound.Position.y, sound.Position.z, h.Distance, h.Gain, h.Pan, h.Left, h.Right, sound.Volume);
+				}
+				return DevCommandResult::Ok(out);
+			});
+#endif
 	}
 
 	void DevConsole::ResetForTests() {

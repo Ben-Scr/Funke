@@ -1,6 +1,6 @@
 ---
 name: funke-add-editor-panel
-description: Use when adding or changing an ImGui editor panel / window in Funke-Editor. Triggers on "add an editor panel", "new panel", "editor window", "editor UI", "ImGui panel", "tool window", "Tools menu", "command palette entry", "ProfilerPanel", "PackageManagerPanel", "BuildProfilesPanel", "EditorPreferencesPanel", "SpriteEditorPanel", "ImGuiEditorLayer", "OnAttach / OnDetach / OnPreRender", "m_Show…", "EditorUI", "SetNextWindowAsNativeDialog", "NextWindowDefaultSize", "EmptyState", "worker thread in a panel", "panel freezes the editor", or work in `Funke-Editor/src/Gui/*Panel.{hpp,cpp}` and `Funke-Editor/src/Systems/ImGuiEditorLayer*.{hpp,cpp}`. Covers the panel class shape (Initialize / Render(bool* pOpen) / Shutdown), window setup conventions, the integration sites in ImGuiEditorLayer (header member + flag, OnAttach, OnDetach, the render call in OnPreRender, menu + command palette), lazy-init panels, and the async worker pattern (shared_ptr state + mutex + atomic + std::thread + main-thread poll).
+description: Use when adding or changing an ImGui editor panel / window in Funke-Editor. Triggers on "add an editor panel", "new panel", "editor window", "tool window", "Tools menu", "command palette entry", "ImGuiEditorLayer", "OnAttach / OnDetach / OnPreRender", "m_Show…", "EditorUI", "SetNextWindowAsNativeDialog", "NextWindowDefaultSize", "EmptyState", "ProfilerPanel / PackageManagerPanel / BuildProfilesPanel / EditorPreferencesPanel / SpriteEditorPanel", "worker thread in a panel", "panel freezes the editor", or work in `Funke-Editor/src/Gui/*Panel.{hpp,cpp}` and `Funke-Editor/src/Systems/ImGuiEditorLayer*.{hpp,cpp}`. Covers the panel class shape (Initialize / Render(bool* pOpen) / Shutdown), window setup conventions, the ImGuiEditorLayer integration sites (member + flag, OnAttach, OnDetach, the render call in OnPreRender, menu + command palette), lazy-init panels, and the async worker pattern (shared_ptr state + mutex + atomic + std::thread + main-thread poll).
 ---
 
 # Add an Editor Panel
@@ -11,7 +11,7 @@ Editor panels are plain classes in `Funke-Editor/src/Gui/`, owned by value in `I
 |---|---|
 | `Gui/ProfilerPanel.{hpp,cpp}` | Pure view over engine state; `Initialize/Render(bool*)/Shutdown`; compiled stub when `FUNKE_PROFILER_ENABLED` is off |
 | `Gui/BuildProfilesPanel.{hpp,cpp}` | Lazy-initialized on first open; dirty-flag rescans; status strip; deferred popup opens |
-| `Gui/EditorPreferencesPanel.{hpp,cpp}` | First-frame-open hook (`m_WasOpenLastFrame`); `ConsumeRestartRequest()` hand-off to the layer |
+| `Gui/EditorPreferencesPanel.{hpp,cpp}` | First-frame-open hook (`m_WasOpenLastFrame`); deferred modal opens (`m_OpenSaveLayoutRequest`/`m_OpenDeleteLayoutRequest`); search-filtered sections (`PreferenceSectionVisible`) |
 | `Gui/SpriteEditorPanel.{hpp,cpp}` | Opened with data (`OpenTexture`), result handed back (`TakeSlicesApplied()`) |
 | `Gui/PackageManagerPanel.{hpp,cpp}` | Async workers; `Render()` without `pOpen` — the layer wraps `Begin/End` |
 
@@ -139,7 +139,7 @@ if (m_ShowMyPanel) {
 - **Main menu** — `RenderMainMenu`: menus are `Application`, `Project` (Build, Build Profiles…, Project Settings, Package Manager), `Edit` (Undo/Redo, Preferences...), `Tools` (`ImGui::MenuItem("Profiler", "Ctrl+F6", &m_ShowProfiler);`). Gate project-dependent items with `hasProject`.
 - **Command palette** (Ctrl+K) — `RenderCommandPalette`: add `{ "My Panel", nullptr, hasProject, [&]() { m_ShowMyPanel = true; } },` to the `commands[]` array.
 
-Missing site 4 is the classic bug: it compiles, the menu flips the bool, nothing appears. New `.cpp/.hpp` files under `Funke-Editor/src/` are picked up by the `src/**.cpp` glob, but you must **regenerate premake** before MSBuild sees them (`funke-build-engine`).
+Missing site 4 is the classic bug: it compiles, the menu flips the bool, nothing appears. New `.cpp/.hpp` files under `Funke-Editor/src/` are picked up by the `src/**.cpp` glob once premake regenerates; `scripts\dev\Build.ps1 Editor` does that automatically (`funke-build-engine`).
 
 ## Async work — the long-task pattern
 

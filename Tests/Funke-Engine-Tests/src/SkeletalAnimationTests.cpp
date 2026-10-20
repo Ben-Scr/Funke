@@ -201,6 +201,37 @@ TEST_CASE("Skinning follows the animated joint with linear and spherical interpo
 	CheckNear(PositionOf(Skin(data, fade)[2]), { -s, 1.0f + s, 0.0f });
 }
 
+TEST_CASE("Posed bounds follow the animated joints") {
+	const TestModel model;
+	const std::string json = model.EmbeddedJson();
+	MeshAsset asset;
+	REQUIRE(ParseGltf(AsBytes(json), nullptr, asset));
+	const SkinnedMeshData& data = *asset.Skin;
+	std::vector<glm::mat4> nodes, joints;
+	glm::vec3 minPoint, maxPoint;
+
+	// Rest pose == bind pose here, where the joint boxes are exact.
+	SkeletalAnimation::EvaluatePose(data, {}, nodes);
+	SkeletalAnimation::ComputeJointMatrices(data, nodes, joints);
+	REQUIRE(SkeletalAnimation::PosedBounds(data, joints, minPoint, maxPoint));
+	CheckNear(minPoint, { 0.0f, 0.0f, 0.0f });
+	CheckNear(maxPoint, { 1.0f, 2.0f, 0.0f });
+
+	// Bent 90 degrees the top vertex swings to (-1, 1).
+	SkeletalPoseRequest end;
+	end.Clip = 0;
+	end.Time = 1.0f;
+	SkeletalAnimation::EvaluatePose(data, end, nodes);
+	SkeletalAnimation::ComputeJointMatrices(data, nodes, joints);
+	REQUIRE(SkeletalAnimation::PosedBounds(data, joints, minPoint, maxPoint));
+	CheckNear(minPoint, { -1.0f, 0.0f, 0.0f });
+	CheckNear(maxPoint, { 1.0f, 1.0f, 0.0f });
+
+	SkinnedMeshData unbounded = data;
+	for (SkinJoint& joint : unbounded.Joints) joint = { joint.Node, joint.InverseBind };
+	CHECK_FALSE(SkeletalAnimation::PosedBounds(unbounded, joints, minPoint, maxPoint));
+}
+
 TEST_CASE("glTF import reads .glb containers and external buffers") {
 	const TestModel model;
 	MeshAsset fromGlb;

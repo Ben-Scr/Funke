@@ -58,6 +58,8 @@
 #include "Gui/ImGuiUtils.hpp"
 #include "Serialization/Path.hpp"
 #include "Localization/GameLocalization.hpp"
+#include "Project/BuildPlatformSupport.hpp"
+#include "Project/FunkeBuildProfile.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/SceneSerializerShared.hpp"
@@ -2378,33 +2380,13 @@ namespace Funke {
 		else {
 			if (isPaused) {
 				if (IconButton("##Continue", "play", iconSize, btnSize)) {
-					ApplicationEditorAccess::SetPlaymodePaused(false);
-					Scene* active = SceneManager::GetActiveScene();
-					if (active) {
-						for (auto ent : m_EditorPausedAudioEntities) {
-							if (active->IsValid(ent) && active->HasComponent<AudioSourceComponent>(ent)) {
-								auto& audio = active->GetComponent<AudioSourceComponent>(ent);
-								if (audio.IsPaused()) audio.Resume();
-							}
-						}
-					}
-					m_EditorPausedAudioEntities.clear();
+					SetPlayModePaused(false);
 				}
 				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Continue");
 			}
 			else {
 				if (IconButton("##Pause", "pause", iconSize, btnSize)) {
-					ApplicationEditorAccess::SetPlaymodePaused(true);
-					m_EditorPausedAudioEntities.clear();
-					Scene* active = SceneManager::GetActiveScene();
-					if (active) {
-						for (auto [ent, audio] : active->GetRegistry().view<AudioSourceComponent>().each()) {
-							if (audio.IsPlaying()) {
-								audio.Pause();
-								m_EditorPausedAudioEntities.push_back(ent);
-							}
-						}
-					}
+					SetPlayModePaused(true);
 				}
 				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pause");
 			}
@@ -2460,6 +2442,7 @@ namespace Funke {
 			ImGui::AlignTextToFramePadding();
 			ImGui::TextDisabled("Waiting for script compilation...");
 		}
+		RenderSimulatedPlatformBadge();
 
 		// Live playing flag (not the top-of-function snapshot): keeps us from
 		// pausing if a handler earlier in this frame already left playmode.
@@ -2479,6 +2462,25 @@ namespace Funke {
 				}
 			}
 		}
+	}
+
+	void ImGuiEditorLayer::RenderSimulatedPlatformBadge() {
+		const FunkeProject* project = ProjectManager::GetCurrentProject();
+		if (!project) return;
+		const FunkeProject::EditorScriptTarget target = project->GetEditorScriptTarget();
+		if (!target.Simulated) return;
+
+		const std::string platformName = FunkeBuildProfile::PlatformDisplayName(target.Platform);
+		ImGui::SameLine(0.0f, 10.0f);
+		EditorUI::Badge(("Simulating " + platformName).c_str(), EditorUI::Tone::Info);
+		const std::optional<BuildPlatform> host = BuildPlatformSupport::HostDesktopPlatform();
+		const std::string tooltip = "Scripts compile and play as " + platformName + " ("
+			+ FunkeProject::GetManagedPlatformDefine(target.Platform) + ", Application.Platform) because the active build profile '"
+			+ target.ProfileName + "' targets it.\nThe engine itself still runs as "
+			+ (host ? FunkeBuildProfile::PlatformDisplayName(*host) : "this computer's platform")
+			+ ".\nClick to open Build Profiles.";
+		EditorUI::Tooltip(tooltip.c_str());
+		if (ImGui::IsItemClicked()) m_ShowBuildProfilesPanel = true;
 	}
 
 	void ImGuiEditorLayer::LaunchStandalone() {

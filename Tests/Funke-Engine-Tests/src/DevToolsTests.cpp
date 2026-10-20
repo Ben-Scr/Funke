@@ -216,8 +216,12 @@ TEST_CASE("RunAutomation pulls its flags out of the command line") {
 	const char* argv[] = {
 		"Game.exe", "--project=C:/Game", "--screenshot-at=2s,120f,bad", "--fixed-step=60",
 		"--quit-at=10s", "--exec=\"physics.debug on; timescale 2\"", "--input-script=run.json", "--screenshot-dir=out",
+		"--background",
 	};
 	const RunAutomation::Options options = RunAutomation::ParseOptions(static_cast<int>(std::size(argv)), argv);
+	CHECK(options.Background);
+	const char* plainArgv[] = { "Game.exe", "--background=1", "--backgrounds" };
+	CHECK_FALSE(RunAutomation::ParseOptions(static_cast<int>(std::size(plainArgv)), plainArgv).Background);
 	REQUIRE(options.ScreenshotAt.size() == 2);
 	CHECK(options.ScreenshotAt[0].Seconds == doctest::Approx(2.0));
 	CHECK(options.ScreenshotAt[1].Frame == 120);
@@ -270,6 +274,54 @@ TEST_CASE("RunAutomation fires steps on the game clock, presses for one frame an
 	CHECK(RunAutomation::GetClockSeconds() == doctest::Approx(0.4));
 	RunAutomation::Reset();
 	CHECK_FALSE(RunAutomation::IsActive());
+}
+
+TEST_CASE("RunAutomation --background alone keeps the game clock real-time") {
+	RunAutomation::Options options;
+	options.Background = true;
+	RunAutomation::Configure(options);
+	CHECK(RunAutomation::IsBackground());
+	CHECK_FALSE(RunAutomation::IsActive());
+	CHECK(RunAutomation::GetFixedStep() == 0.0f);
+	RunAutomation::Reset();
+	CHECK_FALSE(RunAutomation::IsBackground());
+}
+
+TEST_CASE("RunAutomation marks test and agent runs as automated and mutes them unless --sound") {
+	auto configure = [](std::initializer_list<const char*> args) {
+		std::vector<const char*> argv{ "Game.exe" };
+		argv.insert(argv.end(), args.begin(), args.end());
+		RunAutomation::Configure(RunAutomation::ParseOptions(static_cast<int>(argv.size()), argv.data()));
+	};
+
+	configure({ "--project=C:/Game" });
+	CHECK_FALSE(RunAutomation::IsAutomatedRun());
+	CHECK_FALSE(RunAutomation::IsMuted());
+
+	for (const char* flag : { "--quit-at=5s", "--fixed-step=60", "--exec=echo hi", "--screenshot-at=1s",
+		"--background", "--prefs-profile=agent" }) {
+		CAPTURE(flag);
+		configure({ flag });
+		CHECK(RunAutomation::IsAutomatedRun());
+		CHECK(RunAutomation::IsMuted());
+	}
+
+	configure({ "--prefs-profile", "agent" });
+	CHECK(RunAutomation::IsAutomatedRun());
+	// An empty profile switches a build's isolated saves off: a player's run.
+	configure({ "--prefs-profile=" });
+	CHECK_FALSE(RunAutomation::IsAutomatedRun());
+
+	configure({ "--background", "--sound" });
+	CHECK(RunAutomation::IsAutomatedRun());
+	CHECK_FALSE(RunAutomation::IsMuted());
+
+	configure({ "--mute" });
+	CHECK_FALSE(RunAutomation::IsAutomatedRun());
+	CHECK(RunAutomation::IsMuted());
+
+	RunAutomation::Reset();
+	CHECK_FALSE(RunAutomation::IsAutomatedRun());
 }
 
 TEST_CASE("ScreenCapture resolves bare names into its folder and adds .png") {

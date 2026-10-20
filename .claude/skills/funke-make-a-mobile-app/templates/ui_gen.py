@@ -93,7 +93,8 @@ def _canvas(w, h):
 
 
 def rr(w, h, r):
-    """Rounded rectangle at exactly w x h (Funke Images don't 9-slice, so every size gets its own texture)."""
+    """Rounded rectangle texture at exactly w x h, one per size. Alternative: a 9-sliced Image ("imageType": 1,
+    "border": [r, r, r, r]) stretches one small rounded sprite to any size."""
     name = f"RR_{w}x{h}_{r}"
     if os.path.exists(os.path.join(TEXTURES, name + ".png")):
         return meta(f"Textures/{name}.png")

@@ -42,6 +42,8 @@ funke run --input-script Tests\level5.json --fixed-step 60 --prefs-profile qa   
 
 `funke run` passes `--prefs-profile`, `--input-script`, `--screenshot-at`, `--screenshot-dir`, `--fixed-step`, `--quit-at` and `--exec` to the runtime. They are described in [Test Builds and Debug Tools](Testing.md).
 
+To test in an editor that is already open instead, without restarting anything, use `funke editor` ([Editor Bridge](Editor-Bridge.md)): `funke editor play --size 1080x2400`, `funke editor tap 0.5 0.4`, `funke editor screenshot shot.png`, `funke editor recompile`, `funke editor logs`.
+
 `create` does everything the Launcher does:
 
 1. Writes an empty 2D project (a scene with a camera and an empty `GameScript.cs`).

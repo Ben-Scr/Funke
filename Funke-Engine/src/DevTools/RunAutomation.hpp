@@ -16,6 +16,9 @@ namespace Funke {
 	//   --fixed-step=<fps>             every frame advances exactly 1/fps seconds, whatever the wall clock does
 	//   --quit-at=<t>                  quit at a game time or frame
 	//   --exec="<cmd>; <cmd>"          console commands on the first game frame
+	//   --background                   never take focus: opens behind other windows, keeps running unfocused,
+	//                                  fullscreen and maximize become a plain window filling the screen
+	//   --sound / --mute               keep an automated run audible / silence any run
 	// The clock starts on the first frame after the startup scenes loaded (after the splash).
 	class FUNKE_API RunAutomation {
 	public:
@@ -49,6 +52,10 @@ namespace Funke {
 			float FixedStep = 0.0f;
 			std::optional<Moment> QuitAt;
 			std::string Exec;
+			bool Background = false;
+			bool PrefsProfile = false; // --prefs-profile=<name>: a run kept off the real saves
+			bool Sound = false;
+			bool Mute = false;
 		};
 
 		static bool ParseMoment(std::string_view text, Moment& out);
@@ -57,12 +64,22 @@ namespace Funke {
 		static int ParseKeyName(std::string_view name);
 		// 0 left, 1 right, 2 middle; -1 when unknown.
 		static int ParseMouseButton(std::string_view name);
+		// ">= 1" reads as frames per second ("60"), below as seconds per frame ("0.0166").
+		static bool ParseFixedStep(std::string_view text, float& outSecondsPerFrame);
+		// Fixed frame step set from outside the command line (the Editor Bridge); 0 hands back to --fixed-step.
+		static void SetFixedStepOverride(float secondsPerFrame);
 		// Pulls the automation flags out of argv; unrelated arguments are ignored.
 		static Options ParseOptions(int argc, const char* const* argv);
 
 		// Application hooks. Configure reads the options and loads the script, logging problems.
 		static void Configure(const Options& options);
 		static bool IsActive();
+		// --background: windows must neither take focus nor come to the front.
+		static bool IsBackground();
+		// Started by a test or an agent: any flag above, --background or --prefs-profile=<name> (C# Application.IsAutomatedRun).
+		static bool IsAutomatedRun();
+		// Automated runs are silent unless --sound; --mute silences any run.
+		static bool IsMuted();
 		static float GetFixedStep();
 		// Before input polling: pushes this frame's synthetic input and runs its commands.
 		static void BeginFrame(bool gameStarted);

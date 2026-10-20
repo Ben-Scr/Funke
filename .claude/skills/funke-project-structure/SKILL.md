@@ -1,6 +1,6 @@
 ---
 name: funke-project-structure
-description: Use when working with the on-disk structure of a Funke GAME project — the folder layout, `project.json`, the game's `.csproj` / C# script assembly, where scripts / scenes / prefabs / data-assets / `.meta` files live, the scene & prefab file formats, or how a project is created and how its scenes register at runtime. Triggers on "project.json", "project structure", "folder layout", "where do scripts go", "where do scenes go", ".csproj", "script assembly", "Funke-ScriptCore reference", "startup scene", "buildScenes", "globalSystems", ".scene file format", ".prefab format", ".meta file", ".dataasset", "assetSerializationFormat", "binary vs json scenes", "create a new project", "Launcher template", "GameScript.cs", "Assets/Scripts", "Assets/Scenes", "Packages/Funke-ScriptCore", "BuildProfiles", "NativeScripts", "entityBits", or any question about what a project folder contains and why. This is about a game project made WITH Funke, not the Funke engine repo itself. Ground truth lives in `Funke-Engine/src/Project/FunkeProject.{hpp,cpp}` — when this skill and that file disagree, the file wins.
+description: Use when working with the on-disk structure of a Funke GAME project — the folder layout, `project.json`, the game's `.csproj` and C# script assembly, where scripts, scenes, prefabs, Data Assets and `.meta` files live, the scene and prefab file formats, how a project is created or duplicated, and how its scenes register at runtime. Triggers on "project.json", "project structure", "folder layout", "where do scripts go", ".csproj", "script assembly", "Funke-ScriptCore reference", "startupScene / buildScenes", "globalSystems", ".scene / .prefab format", ".meta file", "assetSerializationFormat", "binary vs json scenes", "create a new project", "project template", "GameScript.cs", "Packages/Funke-ScriptCore", "BuildProfiles", "NativeScripts", "entityBits". This is about a game project made WITH Funke, not the engine repo. Ground truth is `Funke-Engine/src/Project/FunkeProject.{hpp,cpp}`; when it disagrees with this skill, the code wins.
 ---
 
 # Funke Game Project Structure
@@ -110,7 +110,7 @@ Written by `BuildProjectJson`, read by `Load`. Field names are exact. (Defaults 
   // Runtime behavior
   "showRuntimeStats": true,               // FPS / frame-time overlay in shipped build; omit = on for Development, off for Release
   "showRuntimeLogs": true,                // log console in shipped build; omit = same as above
-  "enablePostProcessing": true,
+  "graphics": { "postProcessingEnabled": true, "renderScale": 1.0, … },  // quality defaults; written only when non-default (legacy top-level "enablePostProcessing" is still read)
 
   // Serialization & ECS
   "assetSerializationFormat": "Json",     // Json | Binary — applies to .scene/.prefab/.dataasset
@@ -118,7 +118,7 @@ Written by `BuildProjectJson`, read by `Load`. Field names are exact. (Defaults 
 
   // Build profile & rendering (see funke-build-and-ship)
   "activeBuildProfile": "",               // active named profile
-  "buildProfile": "Development",          // Development | Release
+  "buildProfile": "Development",          // Development | Release | Debug (written only when not Development)
   "renderBackend": "Auto",                // Auto|Vulkan|Direct3D11|Direct3D12|OpenGL|Metal|OpenGLES
   "customDefines": [],                    // extra #define constants baked into the C# assembly
 
@@ -219,11 +219,11 @@ The Runtime (`Funke-Runtime`, `RuntimeApplication::ConfigureScenes`) reads `proj
 2. Marks the `startupScene` as the startup scene (falling back to `lastOpenedScene`, then `"SampleScene"`). If the startup scene isn't in `buildScenes`, it's registered anyway.
 3. Only the startup scene auto-loads; the rest load on demand via `SceneManager` (from C#: `SceneManager.LoadScene("Name")` — see `funke-game-scripting`).
 
-So `buildScenes` is the authoritative ship list: a scene file that exists on disk but isn't listed won't be loadable in the built game.
+`SceneManager.LoadScene` also loads a shipped `.scene` that isn't listed (`ProjectSceneLoader` registers it on first use), but the build's asset pruning leaves unlisted scenes out unless a script names them in a string literal — so treat `buildScenes` as the ship list. Entries can be `{ "name": "…", "enabled": false }` objects; disabled scenes count as unlisted (`GetEnabledBuildScenes`).
 
 ## Creating / duplicating a project
 
-`FunkeProject::Create(name, parentDir[, directoryName])` runs: create dir tree → copy `Funke-ScriptCore.dll/.pdb` into `Packages/Funke-ScriptCore/` → write default build profiles → copy engine `FunkeAssets/` → write `project.json` → write starter `SampleScene` → write `<Name>.csproj` + `.sln` → write starter `Assets/Scripts/GameScript.cs` → write `.vscode/settings.json` → generate native-script CMake files → write `.gitignore`. `Duplicate(...)` deep-copies with GUID remapping. Humans normally trigger this from the **Launcher**.
+`FunkeProject::Create(name, parentDir[, directoryName])` runs: create dir tree → copy `Funke-ScriptCore.dll/.pdb` into `Packages/Funke-ScriptCore/` → write default build profiles → copy engine `FunkeAssets/` → write `project.json` → write starter `SampleScene` → write `<Name>.csproj` + `.sln` → write starter `Assets/Scripts/GameScript.cs` → write `.vscode/settings.json` → generate native-script CMake files → write `.gitignore`. `Duplicate(...)` copies the project folder as-is (skipping `bin/`, `obj/`, `.vs/`, `.git/`, `Builds/`, `NativeScripts/build/`, `*.user`), renames the `.csproj`/`.sln` and rewrites `project.json` with the new name — asset GUIDs are **not** remapped, so references stay valid inside the copy. Humans normally trigger this from the **Launcher**.
 
 `Create(name, parentDir, directoryName, const ProjectTemplate*, progress)` uses a project template instead of the built-in starter: the template's `Assets/` replaces the starter scene and scripts (scenes converted to the project format, `{{ProjectName}}` / `{{ProjectIdentifier}}` expanded) and its `modules` go into `project.json`. Templates live in `<engine root>/templates/<Id>/template.json` (`Funke.Empty2D`, `Funke.Empty3D`) and in `%LOCALAPPDATA%/Funke/Templates` (user templates from `ProjectTemplates::CreateFromProject`, the Launcher's **Save as Template...** / Templates page; `UpdateUserTemplate` and `RefreshFromSourceProject` edit them, `FUNKE_USER_TEMPLATES_DIR` overrides the folder for tests). A template's optional `project.json`, `BuildProfiles/`, `NativeScripts/Source/` and `Packages/<local>/` carry settings, profiles, native scripts and local packages into new projects; see `Project/ProjectTemplate.hpp`.
 

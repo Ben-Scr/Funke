@@ -5,6 +5,7 @@
 #include "Core/Window.hpp"
 #include "Graphics/GLInitSpecifications.hpp"
 #include "Graphics/RenderApi.hpp"
+#include "Graphics/RenderStatistics.hpp"
 #include "Graphics/IRenderer.hpp"
 #include "Physics/IPhysicsEngine.hpp"
 #if FUNKE_WITH_2D
@@ -111,6 +112,7 @@ namespace Funke {
 		if (!m_GraphicsSettingsPending) return;
 		m_EffectiveGraphicsSettings = m_RequestedGraphicsSettings;
 		m_GraphicsSettingsPending = false;
+		Texture2D::SetSceneSampling(m_EffectiveGraphicsSettings.TextureQuality, m_EffectiveGraphicsSettings.AnisotropicFiltering);
 #if FUNKE_WITH_2D
 		if (Renderer2D* renderer = GetRenderer2D()) {
 			renderer->SetGraphicsSettings(m_EffectiveGraphicsSettings);
@@ -421,6 +423,16 @@ namespace Funke {
 
 			FUNKE_PROFILE_VALUE("Playing Sources", float(AudioManager::GetActiveSoundCount()));
 
+			{
+				// Everything drawn since the previous frame ended, whichever view drew it.
+				static RenderGeometryStats s_PreviousGeometryTotals;
+				const RenderGeometryStats geometryTotals = CaptureRenderGeometryTotals();
+				const RenderGeometryStats frameGeometry = geometryTotals - s_PreviousGeometryTotals;
+				s_PreviousGeometryTotals = geometryTotals;
+				FUNKE_PROFILE_VALUE("Triangles", float(frameGeometry.Triangles));
+				FUNKE_PROFILE_VALUE("Vertices", float(frameGeometry.Vertices));
+			}
+
 			// "Others" residual: Frame Time minus the four named CPU buckets.
 			{
 				const float frameMs    = Profiler::GetCurrentValue("Frame Time");
@@ -586,6 +598,8 @@ namespace Funke {
 			FNK_INFO_TAG("Application", "Running headless (EnableWindow=false): no window, no graphics backend.");
 		}
 
+		Texture2D::SetSceneSampling(m_EffectiveGraphicsSettings.TextureQuality, m_EffectiveGraphicsSettings.AnisotropicFiltering);
+
 		// MUST precede Renderer2D: Renderer2D::Initialize hard-asserts the default Square texture is registered (done in TextureManager::Initialize -> LoadDefaultTextures).
 		if (m_Configuration.EnableTextureManager) {
 			timer.Reset();
@@ -686,6 +700,11 @@ namespace Funke {
 			timer.Reset();
 			if (AudioManager::Initialize()) {
 				FNK_INFO_TAG("AudioManager", "Initialization took " + StringHelper::ToString(timer));
+				if (RunAutomation::IsMuted()) {
+					AudioManager::SetMuted(true);
+					FNK_INFO_TAG("AudioManager", "Sound muted: {}", RunAutomation::IsAutomatedRun()
+						? "automated run (--sound keeps it on)" : "--mute");
+				}
 			}
 			else {
 				FNK_ERROR_TAG("AudioManager", "Initialization failed. Continuing without audio.");
@@ -1223,7 +1242,7 @@ namespace Funke {
 		m_IsBackgroundPaused = false;
 #else
 		// Scripted test runs keep going behind other windows; their game clock would stall otherwise.
-		m_IsBackgroundPaused = !m_RunInBackground && !m_WindowHasFocus && !RunAutomation::IsActive();
+		m_IsBackgroundPaused = !m_RunInBackground && !m_WindowHasFocus && !RunAutomation::IsActive() && !RunAutomation::IsBackground();
 #endif
 	}
 

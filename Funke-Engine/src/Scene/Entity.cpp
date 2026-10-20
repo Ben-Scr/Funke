@@ -166,14 +166,14 @@ namespace Funke {
 	void Entity::SetEnabled(bool enabled) {
 		if (!IsValid()) return;
 
+		// OnEnable runs once the tags have settled, so it reads IsEnabled true and can switch the entity off again.
+		Scene::EnabledStateBatch batch(m_Scene);
 		const bool parentDisabled = HasParent() && GetParent().HasComponent<DisabledTag>();
 		if (enabled) {
 			if (parentDisabled) {
-				// Preserve authored-disabled intent: only add inherited tags if the child isn't already explicitly disabled.
-				if (!HasComponent<DisabledTag>()) {
-					AddComponent<InheritedDisabledTag>();
-					AddComponent<DisabledTag>();
-				}
+				// Enabled itself, still off through the parent: an inherited disable, which the parent's enable cascade lifts.
+				if (!HasComponent<InheritedDisabledTag>()) AddComponent<InheritedDisabledTag>();
+				if (!HasComponent<DisabledTag>()) AddComponent<DisabledTag>();
 				return;
 			}
 
@@ -250,6 +250,8 @@ namespace Funke {
 			FNK_WARN_TAG("Entity", "SetParent refused: would create a cycle");
 			return;
 		}
+
+		Scene::EnabledStateBatch batch(m_Scene);
 
 		// Ensure both ends have a HierarchyComponent.
 		if (!HasComponent<HierarchyComponent>()) {

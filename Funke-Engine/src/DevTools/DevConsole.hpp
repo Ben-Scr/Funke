@@ -61,7 +61,7 @@ namespace Funke {
 		static void Print(std::string text, bool error = false);
 		static void ClearHistory();
 
-		// help, clear, echo, timescale, scene, quit, screenshot, physics.debug. Safe to call more than once.
+		// help, clear, echo, timescale, scene, quit, screenshot, physics.debug, audio.spatial. Safe to call more than once.
 		static void RegisterBuiltInCommands();
 		static void ResetForTests();
 	};
