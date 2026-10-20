@@ -61,10 +61,19 @@ namespace Funke {
 		return Time::GetElapsedTime();
 	}
 
+	// The surface Input.MousePosition, touches and UI layout refer to: the editor's Game View (whose main viewport
+	// is the whole editor window), an aspect-locked sub-rect, otherwise the main viewport.
+	static Vec2Int GetScriptScreenSize()
+	{
+		const Window::UIRegion region = Window::GetUIRegion();
+		if (region.IsActive()) return { region.Width, region.Height };
+		auto* window = Application::GetWindow();
+		return window ? window->GetSize() : Vec2Int{ 0, 0 };
+	}
+
 	static int Funke_Application_GetScreenWidth()
 	{
-		auto* window = Application::GetWindow();
-		return window ? window->GetWidth() : 0;
+		return GetScriptScreenSize().x;
 	}
 
 	static void Funke_Application_GetSafeAreaInsets(float* left, float* top, float* right, float* bottom)
@@ -78,8 +87,7 @@ namespace Funke {
 
 	static int Funke_Application_GetScreenHeight()
 	{
-		auto* window = Application::GetWindow();
-		return window ? window->GetHeight() : 0;
+		return GetScriptScreenSize().y;
 	}
 
 	static float Funke_Application_GetTargetFrameRate() { return Application::GetTargetFramerate(); }

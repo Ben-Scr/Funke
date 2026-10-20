@@ -1,8 +1,12 @@
 #include <doctest/doctest.h>
 
+#include "Components/Graphics/Camera2DComponent.hpp"
 #include "Core/Application.hpp"
 #include "Core/Window.hpp"
+#include "Scene/Entity.hpp"
+#include "Scene/Scene.hpp"
 #include "Scripting/ScriptBindings.hpp"
+#include "Scripting/ScriptEngine.hpp"
 
 using namespace Funke;
 
@@ -123,4 +127,46 @@ TEST_CASE("Managed mouse position binding preserves native viewport coordinates"
 	float managedY = 0.0f;
 	bindings.Input_GetMousePosition(&managedX, &managedY);
 	CheckPosition({ managedX, managedY }, nativePosition.x, nativePosition.y);
+}
+
+TEST_CASE("Managed screen size is the surface mouse positions refer to") {
+	const UIRegionScope restoreRegion;
+	Application app;
+	NativeBindings bindings{};
+	ScriptBindings::PopulateNativeBindings(bindings);
+	REQUIRE(bindings.Application_GetScreenWidth != nullptr);
+	REQUIRE(bindings.Application_GetScreenHeight != nullptr);
+
+	// The editor's Game View: the main viewport is the whole editor window, the game sees the panel.
+	Window::SetUIRegion(100, 50, 1331, 858);
+	CHECK(bindings.Application_GetScreenWidth() == 1331);
+	CHECK(bindings.Application_GetScreenHeight() == 858);
+
+	Window::PublishAspectLockUIRegion(16.0f / 9.0f, Window::UIRegion{ 0, 60, 1280, 720 });
+	CHECK(bindings.Application_GetScreenWidth() == 1280);
+	CHECK(bindings.Application_GetScreenHeight() == 720);
+}
+
+TEST_CASE("Managed Camera2D viewport size is the surface mouse positions refer to") {
+	const UIRegionScope restoreRegion;
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Camera2D Viewport Bindings");
+	Entity camera = scene->CreateEntity("Camera");
+	camera.AddComponent<Camera2DComponent>();
+	const uint64_t cameraId = scene->GetEntityPersistentID(camera.GetHandle());
+	REQUIRE(cameraId != 0);
+	struct SceneScope {
+		explicit SceneScope(Scene* scene) { ScriptEngine::SetScene(scene); }
+		~SceneScope() { ScriptEngine::SetScene(nullptr); }
+	} sceneScope(scene.get());
+
+	NativeBindings bindings{};
+	ScriptBindings::PopulateNativeBindings(bindings);
+	REQUIRE(bindings.Camera2D_GetViewportWidth != nullptr);
+	REQUIRE(bindings.Camera2D_GetViewportHeight != nullptr);
+
+	// In the editor the camera's viewport is the editor window while scripts run; the game sees the Game View.
+	Window::SetUIRegion(100, 50, 1331, 858);
+	CHECK(bindings.Camera2D_GetViewportWidth(cameraId) == doctest::Approx(1331.0f));
+	CHECK(bindings.Camera2D_GetViewportHeight(cameraId) == doctest::Approx(858.0f));
 }

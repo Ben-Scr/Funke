@@ -205,6 +205,8 @@ Vector2 look = Input.GetMouseDelta();
 
 In the editor the game holds the mouse only while the focused Game View plays (Play focuses it). **Escape** or switching apps gives the editor its normal OS cursor back and stops mouse-look; `Cursor.Mode` and `Cursor.Visible` keep returning what the game set. Clicking into the Game View (or focusing it) applies the game's cursor mode and custom cursor again, as does a new lock from the game, e.g. when it closes its pause menu.
 
+`Input.MousePosition` and touch positions are pixels of the game's screen, origin top-left. `Application.ScreenWidth` and `ScreenHeight` are that screen's size: in the editor the Game View, not the editor window. To map the pointer onto UI, prefer a RectTransform's resolved `Position` (its centre on that screen) and `Scale` (reference points to pixels) over rebuilding the UI scaling yourself; they include the safe area and the scale mode.
+
 ```csharp
 // Gamepads (Xbox layout; other pads are mapped automatically). Index 0-3, default 0.
 Input.IsGamepadConnected();

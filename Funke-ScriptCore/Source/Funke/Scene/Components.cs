@@ -384,6 +384,7 @@ public class Camera2D : Component
             (1.0f - ndcY) * 0.5f * viewportHeight);
     }
 
+    /// <summary>Pixel size of the screen the camera draws to, the one <see cref="Input.MousePosition"/> refers to (the Game View in the editor).</summary>
     public float ViewportWidth => InternalCalls.Camera2D_GetViewportWidth(RequireComponent<Camera2D>());
     public float ViewportHeight => InternalCalls.Camera2D_GetViewportHeight(RequireComponent<Camera2D>());
 

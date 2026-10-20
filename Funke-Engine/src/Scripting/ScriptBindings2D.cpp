@@ -429,16 +429,20 @@ namespace Funke {
 		*outX = world.x; *outY = world.y;
 	}
 
+	// While scripts run, the editor's camera viewport is the whole editor window; screen points (Input.MousePosition)
+	// refer to the Game View, like ScreenToWorld.
 	static float Funke_Camera2D_GetViewportWidth(uint64_t entityID)
 	{
 		GET_COMPONENT(Camera2DComponent, entityID, 0.0f);
-		return comp.ViewportWidth();
+		const Window::UIRegion region = Window::GetUIRegion();
+		return region.IsActive() ? static_cast<float>(region.Width) : comp.ViewportWidth();
 	}
 
 	static float Funke_Camera2D_GetViewportHeight(uint64_t entityID)
 	{
 		GET_COMPONENT(Camera2DComponent, entityID, 0.0f);
-		return comp.ViewportHeight();
+		const Window::UIRegion region = Window::GetUIRegion();
+		return region.IsActive() ? static_cast<float>(region.Height) : comp.ViewportHeight();
 	}
 
 	static uint64_t Funke_Camera2D_GetMainEntity()

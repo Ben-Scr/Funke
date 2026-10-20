@@ -65,7 +65,12 @@ public static class Application
     public static string TemporaryCachePath => EnsureDirectory(
         BuildGameDataPath(Path.GetTempPath(), Company, Name));
 
+    /// <summary>
+    /// Width in pixels of the game's screen: the surface <see cref="Input.MousePosition"/>, touches and the UI use,
+    /// so in the editor the Game View, not the editor window.
+    /// </summary>
     public static int ScreenWidth => InternalCalls.Application_GetScreenWidth();
+    /// <summary>Height in pixels of the game's screen (see <see cref="ScreenWidth"/>).</summary>
     public static int ScreenHeight => InternalCalls.Application_GetScreenHeight();
     public static float AspectRatio => ScreenHeight > 0 ? (float)ScreenWidth / ScreenHeight : 1.0f;
 
