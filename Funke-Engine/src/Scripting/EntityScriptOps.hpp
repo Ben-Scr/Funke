@@ -4,6 +4,7 @@
 // Cycle-safe: intentionally avoids including Scene.hpp or NativeScript.hpp to prevent a circular dependency via Entity.hpp.
 
 #include "Scene/EntityHandle.hpp"
+#include "Core/Export.hpp"
 #include "Scripting/NativeScriptRegistry.hpp"
 
 #include <type_traits>
@@ -15,10 +16,10 @@ namespace Funke {
 }
 
 namespace Funke::EntityScriptOps::detail {
-	NativeScript* AddScriptByName(Scene* scene, EntityHandle entity, const char* name);
-	NativeScript* GetNativeScriptOnEntity(Scene* scene, EntityHandle entity, const char* name);
-	bool HasNativeScriptOnEntity(Scene* scene, EntityHandle entity, const char* name);
-	bool RemoveNativeScriptOnEntity(Scene* scene, EntityHandle entity, const char* name);
+	FUNKE_API NativeScript* AddScriptByName(Scene* scene, EntityHandle entity, const char* name);
+	FUNKE_API NativeScript* GetNativeScriptOnEntity(Scene* scene, EntityHandle entity, const char* name);
+	FUNKE_API bool HasNativeScriptOnEntity(Scene* scene, EntityHandle entity, const char* name);
+	FUNKE_API bool RemoveNativeScriptOnEntity(Scene* scene, EntityHandle entity, const char* name);
 }
 
 namespace Funke::EntityScriptOps {

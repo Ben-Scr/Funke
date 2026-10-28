@@ -104,6 +104,23 @@ TEST_CASE("GameBuilder resolves the requested, active or first matching build pr
 	CHECK(GameBuilder::ResolveProfileName(temp.Project, "", BuildPlatform::IOS, error).empty());
 }
 
+TEST_CASE("GameBuilder refuses unsupported native script targets instead of silently omitting their code") {
+	TempProject temp;
+	std::filesystem::create_directories(temp.Root / "Assets");
+	temp.Project.AssetsDirectory = Path::ToUtf8(temp.Root / "Assets");
+	temp.Project.NativeScriptsDir = Path::ToUtf8(temp.Root / "NativeScripts");
+	temp.Project.NativeSourceDir = Path::ToUtf8(temp.Root / "NativeScripts" / "Source");
+	REQUIRE(File::WriteAllText(Path::ToUtf8(temp.Root / "Assets" / "Player.cpp"), "REGISTER_SCRIPT(Player)\n"));
+	GameBuilder::Request request;
+	request.Project = temp.Project;
+	request.Platform = BuildPlatform::Android;
+	request.OutputDirectory = Path::ToUtf8(temp.Root / "Builds" / "Android");
+	const auto result = GameBuilder::Build(std::move(request), {});
+	CHECK_FALSE(result.Succeeded);
+	CHECK(result.Stage == "Native scripts need a host desktop target");
+	CHECK_FALSE(std::filesystem::exists(temp.Root / "Builds" / "Android"));
+}
+
 TEST_CASE("GameBuilder converts scenes, prefabs and data assets between JSON and binary") {
 	TempProject temp;
 	const std::filesystem::path assets = temp.Root / "Assets";

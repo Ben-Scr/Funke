@@ -351,35 +351,71 @@ namespace Funke {
     }
 
     const ComponentInfo* ComponentRegistry::FindConflict(Entity entity, std::type_index proposed) const {
+        const entt::registry* registry = entity.GetRegistry();
+        if (registry == nullptr || !registry->valid(entity.GetHandle())) return nullptr;
         const auto proposedIt = m_map.find(proposed);
         if (proposedIt != m_map.end()) {
-            // Conflicts are declared on both sides, so the proposed component's list is complete; this
-            // keeps the check proportional to its few conflicts (ECB playback calls it per add).
-            for (const std::type_index& conflict : proposedIt->second.conflictsWith) {
-                const auto existing = m_map.find(conflict);
-                if (existing != m_map.end() && existing->second.has && existing->second.has(entity)) {
-                    return &existing->second;
-                }
-            }
-            return nullptr;
+            return FindConflict(*registry, entity.GetHandle(), proposedIt->second);
         }
         for (const auto& [existingId, existingInfo] : m_map) {
-            if (!existingInfo.has || !existingInfo.has(entity)) continue;
             for (const std::type_index& conflict : existingInfo.conflictsWith) {
-                if (conflict == proposed) return &existingInfo;
+                if (conflict != proposed || !existingInfo.has) continue;
+                const auto* storage = registry->storage(existingInfo.storageHash);
+                if (storage != nullptr && storage->contains(entity.GetHandle())) return &existingInfo;
             }
         }
         return nullptr;
     }
 
+    const ComponentInfo* ComponentRegistry::FindConflict(const entt::registry& registry, EntityHandle entity,
+        const ComponentInfo& proposed) const {
+        if (proposed.conflictsWith.empty() || !registry.valid(entity)) return nullptr;
+        struct ResolvedConflicts {
+            std::vector<std::type_index> Types;
+            std::vector<const ComponentInfo*> Components;
+        };
+        struct ConflictCache {
+            const ComponentRegistry* Owner = nullptr;
+            uint64_t Generation = 0;
+            std::vector<ResolvedConflicts> Entries;
+        };
+        static thread_local ConflictCache s_Cache;
+        if (s_Cache.Owner != this || s_Cache.Generation != m_generation) {
+            s_Cache.Entries.clear();
+            s_Cache.Entries.resize(m_byTypeId.size() + 1);
+            s_Cache.Generation = m_generation;
+            s_Cache.Owner = this;
+        }
+        const size_t index = proposed.typeIdU32 < m_byTypeId.size() ? proposed.typeIdU32 : m_byTypeId.size();
+        ResolvedConflicts& resolved = s_Cache.Entries[index];
+        // Mutable component descriptors can change conflicts without bumping the registration generation.
+        if (resolved.Types != proposed.conflictsWith) {
+            ResolvedConflicts replacement;
+            replacement.Types = proposed.conflictsWith;
+            replacement.Components.reserve(replacement.Types.size());
+            for (const std::type_index& conflict : replacement.Types) {
+                const auto existing = m_map.find(conflict);
+                if (existing != m_map.end()) replacement.Components.push_back(&existing->second);
+            }
+            resolved = std::move(replacement);
+        }
+        for (const ComponentInfo* existing : resolved.Components) {
+            if (!existing->has) continue;
+            const auto* storage = registry.storage(existing->storageHash);
+            if (storage != nullptr && storage->contains(entity)) return existing;
+        }
+        return nullptr;
+    }
+
     std::pair<const ComponentInfo*, const ComponentInfo*> ComponentRegistry::FindConflictingPair(Entity entity) const {
+        const entt::registry* registry = entity.GetRegistry();
+        if (registry == nullptr || !registry->valid(entity.GetHandle())) return { nullptr, nullptr };
         for (const auto& [id, info] : m_map) {
-            if (info.conflictsWith.empty() || !info.has || !info.has(entity)) continue;
-            for (const std::type_index& conflict : info.conflictsWith) {
-                const auto other = m_map.find(conflict);
-                if (other != m_map.end() && other->second.has && other->second.has(entity)) {
-                    return { &info, &other->second };
-                }
+            if (info.conflictsWith.empty() || !info.has) continue;
+            const auto* storage = registry->storage(info.storageHash);
+            if (storage == nullptr || !storage->contains(entity.GetHandle())) continue;
+            if (const ComponentInfo* conflict = FindConflict(*registry, entity.GetHandle(), info)) {
+                return { &info, conflict };
             }
         }
         return { nullptr, nullptr };
@@ -398,9 +434,38 @@ namespace Funke {
         }
     }
 
-    bool ComponentRegistry::AddWithDependencies(Entity entity, std::type_index type) const {
+    bool ComponentRegistry::AddWithDependencies(const Entity& entity, std::type_index type) const {
+        const auto it = m_map.find(type);
+        if (it == m_map.end()) return false;
         std::unordered_set<std::type_index> visited;
-        return AddWithDependenciesImpl(entity, type, visited, /*isRoot=*/true);
+        return AddWithDependenciesImpl(entity, it->second, visited, /*isRoot=*/true);
+    }
+
+    bool ComponentRegistry::AddWithDependencies(const Entity& entity, const ComponentInfo& info) const {
+        std::unordered_set<std::type_index> visited;
+        return AddWithDependenciesImpl(entity, info, visited, /*isRoot=*/true);
+    }
+
+    void ComponentRegistry::AddDependencies(const Entity& entity, std::type_index type) const {
+        const auto it = m_map.find(type);
+        if (it == m_map.end() || it->second.dependsOn.empty()) return;
+        std::unordered_set<std::type_index> visited{ type };
+        const uint32_t typeId = it->second.typeIdU32;
+        const ComponentInfo* root = &it->second;
+        uint64_t generation = m_generation;
+        for (size_t index = 0; index < root->dependsOn.size(); ++index) {
+            const std::type_index dependency = root->dependsOn[index];
+            const auto dependencyIt = m_map.find(dependency);
+            if (dependencyIt != m_map.end()) {
+                AddWithDependenciesImpl(entity, dependencyIt->second, visited, /*isRoot=*/false);
+                if (!entity.IsValid()) return;
+                if (generation != m_generation) {
+                    root = GetByTypeId(typeId);
+                    if (root == nullptr) return;
+                    generation = m_generation;
+                }
+            }
+        }
     }
 
     bool ComponentRegistry::TypesConflict(std::type_index a, std::type_index b) const {
@@ -420,18 +485,35 @@ namespace Funke {
         return false;
     }
 
-    bool ComponentRegistry::AddWithDependenciesImpl(Entity entity, std::type_index type,
+    bool ComponentRegistry::AddWithDependenciesImpl(const Entity& entity, const ComponentInfo& info,
         std::unordered_set<std::type_index>& visited, bool isRoot) const {
-        if (!visited.insert(type).second) return true;
+        if (!info.add || !info.has || !info.IsModuleActive()) return false;
+        entt::registry* registry = const_cast<entt::registry*>(entity.GetRegistry());
+        const EntityHandle handle = entity.GetHandle();
+        if (registry == nullptr || !registry->valid(handle)) return false;
+        const uint32_t typeId = info.typeIdU32;
+        uint64_t generation = m_generation;
+        const ComponentInfo* current = &info;
+        const auto refresh = [&]() {
+            if (generation != m_generation) {
+                current = GetByTypeId(typeId);
+                generation = m_generation;
+            }
+            return current != nullptr && current->has && current->add && current->IsModuleActive();
+        };
+        if (const auto has = current->has.RegistryCallback()) {
+            if (has(*registry, handle)) return true;
+        }
+        else {
+            const bool present = current->has(entity);
+            if (!entity.IsValid() || !refresh()) return false;
+            if (present) return true;
+        }
+        // Leaf components cannot form cycles and need no per-add visited-set allocation.
+        if (!current->dependsOn.empty() && !visited.insert(current->typeId).second) return true;
 
-        const auto it = m_map.find(type);
-        if (it == m_map.end() || !it->second.add || !it->second.has) return false;
-        const ComponentInfo& info = it->second;
-
-        if (info.has(entity)) return true;
-
-        if (const ComponentInfo* conflict = FindConflict(entity, type)) {
-            const std::string& name = info.displayName.empty() ? info.serializedName : info.displayName;
+        if (const ComponentInfo* conflict = FindConflict(*registry, handle, *current)) {
+            const std::string& name = current->displayName.empty() ? current->serializedName : current->displayName;
             const std::string& conflictName = conflict->displayName.empty() ? conflict->serializedName : conflict->displayName;
             if (isRoot) {
                 FNK_CORE_WARN_TAG("ComponentRegistry", "Cannot add '{}': the entity has '{}', which it can't be combined with",
@@ -444,13 +526,25 @@ namespace Funke {
             return false;
         }
 
-        for (const std::type_index& dep : info.dependsOn) {
-            AddWithDependenciesImpl(entity, dep, visited, /*isRoot=*/false);
+        for (size_t index = 0; index < current->dependsOn.size(); ++index) {
+            const std::type_index dep = current->dependsOn[index];
+            const auto dependency = m_map.find(dep);
+            if (dependency != m_map.end()) {
+                AddWithDependenciesImpl(entity, dependency->second, visited, /*isRoot=*/false);
+                if (!entity.IsValid() || !refresh()) return false;
+            }
         }
 
-        info.add(entity);
-        if (info.onAdd) {
-            info.onAdd(entity);
+        if (const auto add = current->add.RegistryCallback()) {
+            add(*registry, handle);
+        }
+        else {
+            current->add(entity);
+        }
+        if (!refresh()) return false;
+        if (current->onAdd) {
+            if (!entity.IsValid()) return false;
+            current->onAdd(entity);
         }
         return true;
     }

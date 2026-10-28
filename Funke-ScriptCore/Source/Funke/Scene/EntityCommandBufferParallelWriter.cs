@@ -66,40 +66,60 @@ public sealed partial class EntityCommandBuffer
                 enabled);
         }
 
-        /// <summary>Records a component add into this thread's sub-buffer. <paramref name="e"/> MUST originate from <see cref="Create"/> on this same thread; a cross-thread ref silently corrupts the batch.</summary>
+        /// <summary>Copies a component into this worker's stream; local refs must belong to this worker, while live refs can be shared.</summary>
         public unsafe void AddComponent<T>(EntityRef e, in T data) where T : unmanaged, IComponent
         {
             int payloadSize = sizeof(T);
-            if (payloadSize > ushort.MaxValue)
+            if (payloadSize > ushort.MaxValue - (e.IsSceneEntity ? sizeof(ulong) : 0))
             {
                 throw new ArgumentException(
-                    $"Component '{typeof(T).Name}' sizeof = {payloadSize} exceeds the ECB's u16 payload limit.",
+                    $"Component '{typeof(T).Name}' plus its entity reference exceeds the ECB's u16 payload limit.",
                     nameof(data));
             }
 
             WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
-            if (!e.IsCommandBufferEntity || e.Index >= slot.EntityCount)
-            {
-                // Catches the common cross-thread misuse: an EntityRef
-                // created on thread A is passed to thread B, whose slot
-                // hasn't reserved that index. Cannot catch the case where
-                // thread B coincidentally has enough entities of its own
-                // — see the contract note on ParallelWriter.
-                throw new ArgumentException(
-                    $"EntityRef index {e.Index} is out of range for this worker slot " +
-                    $"(thread {slot.ManagedThreadId} entityCount = {slot.EntityCount}). " +
-                    "Did you pass an EntityRef across worker threads, or call Create on a different ECB?",
-                    nameof(e));
-            }
+            ValidateComponentEntity(slot, e);
 
             EcbWire.WriteAddComponentRecord(
                 ref slot.Commands,
                 ref slot.CommandsLen,
                 ref slot.CommandCount,
-                e.Index,
+                e,
                 ComponentTypes<T>.NativeId,
                 (ushort)payloadSize,
                 Unsafe.AsPointer(ref Unsafe.AsRef(in data)));
+        }
+
+        public void AddComponent<T>(Entity entity, in T data) where T : unmanaged, IComponent
+            => AddComponent(ToLiveRef(entity), in data);
+
+        /// <summary>Adds native defaults at playback without resetting an existing component.</summary>
+        public void AddComponent<T>(EntityRef entity) where T : unmanaged, IComponent
+            => RecordDefaultConstruct<T>(entity);
+
+        public void AddComponent<T>(Entity entity) where T : unmanaged, IComponent
+            => AddComponent<T>(ToLiveRef(entity));
+
+        /// <summary>Removes the component at playback; local refs must belong to this worker.</summary>
+        public void RemoveComponent<T>(EntityRef entity) where T : unmanaged, IComponent
+        {
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            ValidateComponentEntity(slot, entity);
+            EcbWire.WriteRemoveComponentRecord(
+                ref slot.Commands, ref slot.CommandsLen, ref slot.CommandCount,
+                entity, ComponentTypes<T>.NativeId);
+        }
+
+        public void RemoveComponent<T>(Entity entity) where T : unmanaged, IComponent
+            => RemoveComponent<T>(ToLiveRef(entity));
+
+        private static void ValidateComponentEntity(WorkerSlot slot, EntityRef entity)
+        {
+            if (entity.IsCommandBufferEntity && entity.Index >= slot.EntityCount)
+                throw new ArgumentException(
+                    $"EntityRef index {entity.Index} is out of range for worker {slot.ManagedThreadId} " +
+                    $"(entityCount = {slot.EntityCount}); local refs cannot be passed between workers.",
+                    nameof(entity));
         }
 
         /// <summary>Records a prefab instantiation into this thread's sub-buffer and returns the root EntityRef (children created at playback). Same per-thread locality contract as <see cref="Create"/>.</summary>
@@ -143,20 +163,13 @@ public sealed partial class EntityCommandBuffer
         private void RecordDefaultConstruct<T>(EntityRef e) where T : unmanaged, IComponent
         {
             WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
-            if (!e.IsCommandBufferEntity || e.Index >= slot.EntityCount)
-            {
-                throw new ArgumentException(
-                    $"EntityRef index {e.Index} is out of range for this worker slot " +
-                    $"(thread {slot.ManagedThreadId} entityCount = {slot.EntityCount}). " +
-                    "Did you pass an EntityRef across worker threads, or call Create on a different ECB?",
-                    nameof(e));
-            }
+            ValidateComponentEntity(slot, e);
 
             EcbWire.WriteDefaultConstructRecord(
                 ref slot.Commands,
                 ref slot.CommandsLen,
                 ref slot.CommandCount,
-                e.Index,
+                e,
                 ComponentTypes<T>.NativeId);
         }
 

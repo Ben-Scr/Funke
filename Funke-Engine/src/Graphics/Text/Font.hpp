@@ -13,6 +13,7 @@ namespace Funke {
     // (and out of every TU that touches Font). Defined inside Font.cpp.
     struct FontAsyncBakeState;
     struct FontUnicodeCache;
+    struct FontPreparedData;
 
     // Per-glyph metrics + UV rect into the font's atlas texture.
     // All measurements are in pixels at the font's baked size — callers
@@ -52,6 +53,11 @@ namespace Funke {
         bool LoadFromBuffer(const std::string& sourcePath,
             std::shared_ptr<const std::vector<uint8_t>> ttfBuffer, float pixelSize);
 
+        // Worker-safe: reads and rasterizes without touching manager or GPU state.
+        static std::shared_ptr<const FontPreparedData> PrepareFromFile(const std::string& path, float pixelSize = 32.0f);
+        // Main thread only; the prepared data may be released after publication.
+        bool LoadPrepared(const std::shared_ptr<const FontPreparedData>& prepared);
+
         bool BeginAsyncBake(const std::string& sourcePath,
             std::shared_ptr<const std::vector<uint8_t>> ttfBuffer, float pixelSize);
 
@@ -88,6 +94,8 @@ namespace Funke {
         float GetKerning(uint32_t a, uint32_t b) const;
 
     private:
+        friend class FontManager;
+        static float GetPreparedPixelSize(const std::shared_ptr<const FontPreparedData>& prepared);
         void Cleanup();
         // Shared body of LoadFromFile/LoadFromBuffer once m_TtfBuffer +
         // m_Filepath are populated: stbtt init, range bake, atlas upload.

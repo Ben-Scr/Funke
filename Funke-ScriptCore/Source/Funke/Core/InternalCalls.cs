@@ -726,6 +726,19 @@ internal static unsafe class InternalCalls
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_HasComponent(entityID, ptr) != 0;
     }
 
+    internal static bool Entity_HasComponentByTypeId(ulong entityID, uint typeId)
+        => typeId != 0 && NativeCallbacks.Bindings.Entity_HasComponentByTypeId(entityID, typeId) != 0;
+
+    internal static bool Entity_AddComponentByTypeId(ulong entityID, uint typeId)
+        => typeId != 0 && NativeCallbacks.Bindings.Entity_AddComponentByTypeId(entityID, typeId) != 0;
+
+    internal static bool Entity_RemoveComponentByTypeId(ulong entityID, uint typeId)
+    {
+        bool removed = typeId != 0 && NativeCallbacks.Bindings.Entity_RemoveComponentByTypeId(entityID, typeId) != 0;
+        if (removed) Entity.OnNativeComponentRemoved(entityID, typeId);
+        return removed;
+    }
+
     internal static bool Entity_AddComponent(ulong entityID, string componentName)
     {
         byte[] buf = EncodeUtf8Name(componentName);
@@ -853,6 +866,7 @@ internal static unsafe class InternalCalls
 
     internal static ulong Entity_Create(string? name)
     {
+        if (string.IsNullOrEmpty(name)) return NativeCallbacks.Bindings.Entity_Create(null);
         byte[] buf = EncodeUtf8Z(name);
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_Create(ptr);
     }
@@ -867,6 +881,14 @@ internal static unsafe class InternalCalls
     internal static int Ecb_Playback(byte* buffer, int length, ulong* outRuntimeIds, int maxOut)
     {
         return NativeCallbacks.Bindings.Ecb_Playback(buffer, length, outRuntimeIds, maxOut);
+    }
+
+    internal static int Ecb_Playback(byte* buffer, int length, ulong* outRuntimeIds, int maxOut,
+        EntityCommandBufferPlaybackMode mode)
+    {
+        return mode == EntityCommandBufferPlaybackMode.Automatic
+            ? NativeCallbacks.Bindings.Ecb_Playback(buffer, length, outRuntimeIds, maxOut)
+            : NativeCallbacks.Bindings.Ecb_PlaybackWithMode(buffer, length, outRuntimeIds, maxOut, (int)mode);
     }
 
     // ── NameComponent ───────────────────────────────────────────────
@@ -1258,6 +1280,11 @@ internal static unsafe class InternalCalls
             }
         }
     }
+
+    internal static ulong Asset_BeginLoadAsync(ulong assetId) => NativeCallbacks.Bindings.Asset_BeginLoadAsync(assetId);
+    internal static int Asset_GetLoadStatus(ulong operationId) => NativeCallbacks.Bindings.Asset_GetLoadStatus(operationId);
+    internal static bool Asset_CancelLoadAsync(ulong operationId) => NativeCallbacks.Bindings.Asset_CancelLoadAsync(operationId) != 0;
+    internal static void Asset_ReleaseLoad(ulong operationId) => NativeCallbacks.Bindings.Asset_ReleaseLoad(operationId);
 
     internal static bool Texture_LoadAsset(ulong assetId) => assetId != 0 && NativeCallbacks.Bindings.Texture_LoadAsset(assetId) != 0;
     internal static int Texture_GetWidth(ulong assetId) => NativeCallbacks.Bindings.Texture_GetWidth(assetId);

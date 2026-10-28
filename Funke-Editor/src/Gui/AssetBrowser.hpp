@@ -186,6 +186,7 @@ namespace Funke {
 		void CopyPathToClipboard(const std::string& path);
 		void CreateFolder(const std::string& parentDir);
 		void CreateScript(const std::string& parentDir);
+		void CreateCppScript(const std::string& parentDir);
 		void CreateManagedCSharpComponent(const std::string& parentDir);
 		void CreateNativeCSharpComponent(const std::string& parentDir);
 		void CreateSceneSystem(const std::string& parentDir);
@@ -281,7 +282,7 @@ namespace Funke {
 		bool m_AssetClipboardCut = false;
 
 		// Deferred script creation - boilerplate/project script is written after rename is committed.
-		enum class PendingScriptType { None, CSharp, CSharpEmpty, CSharpComponent, CSharpNativeComponent, CSharpSceneSystem, CSharpGlobalSystem, CSharpDataAsset, EntityPrefab };
+		enum class PendingScriptType { None, CSharp, CSharpEmpty, CSharpComponent, CSharpNativeComponent, CSharpSceneSystem, CSharpGlobalSystem, CSharpDataAsset, Cpp, EntityPrefab };
 		PendingScriptType m_PendingScriptType = PendingScriptType::None;
 		std::string m_PendingScriptDir;  // parent directory for the new script
 		EntityHandle m_PendingPrefabSourceEntity = entt::null;

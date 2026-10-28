@@ -37,6 +37,7 @@
 #include "Graphics/Text/FontManager.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Jobs/JobSystem.hpp"
+#include "Assets/AssetLoader.hpp"
 #include "Memory/FrameArenas.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Scene/Scene.hpp"
@@ -199,6 +200,7 @@ namespace Funke {
 	bool Application::StartRunCycle()
 	{
 		FNK_INFO_TAG("Application", "Initializing...");
+		AssetLoader::Initialize();
 		Timer timer = Timer();
 		try {
 			Initialize();
@@ -823,6 +825,7 @@ namespace Funke {
 		FUNKE_PROFILE_SCOPE("Application::BeginFrame");
 		CommitGraphicsSettings();
 		ScriptEngine::PumpSceneLoadRequests();
+		AssetLoader::Pump();
 		if (m_SceneManager) m_SceneManager->PumpAsyncSceneLoads();
 		if (enginePaused != m_WasEnginePaused) {
 			// Suspend the audio device while the engine is paused (background-pause/minimize) so playback
@@ -1341,6 +1344,7 @@ namespace Funke {
 			ptr.reset();  // null even on throw so render path can't reach a half-torn object
 		};
 
+		guardedShutdownStatic("AssetLoader", [] { AssetLoader::Shutdown(); });
 		// Order matters: subsystems that hold package callbacks tear down BEFORE PackageHost::UnloadAll.
 		if (m_SceneManager) {
 			guardedShutdownStatic("SceneManager", [&]{ m_SceneManager->Shutdown(); });

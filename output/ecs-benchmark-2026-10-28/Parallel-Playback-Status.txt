@@ -1,0 +1,23 @@
+Parallel ECB – Stand beim angeforderten Commit
+
+Weitere Optimierungen und Benchmark-Läufe wurden auf Benutzerwunsch gestoppt.
+
+Implementiert:
+- Automatic/Sequential/Parallel Playback-Modi, Interop-Version 44.
+- Zertifizierte parallele native Komponentenarbeit mit seriellen Lifecycle- und Identitätsoperationen.
+- Erstellen: unabhängige Komponenten-Pools werden exklusiv von einzelnen Workern aufgebaut.
+- Add/Remove/Destroy: vorbereitete Speicheroperationen mit disjunkten Worker-Bereichen.
+- Geordneter Fallback für nicht geeignete Batches; reproduzierbarer EnTT-Vendor-Patch.
+
+Validierung:
+- 553 C#-Tests bestanden.
+- 142 Editor-Tests / 2016 Assertions bestanden.
+- Vor der letzten Create-Änderung: 726 von 727 nativen Tests bestanden; einziger Fehler war ein vom Linker zusammengefalteter identischer Test-Callback. Test-Callback wurde differenziert, aber der Test anschließend noch nicht erneut ausgeführt.
+- Hosted Runtime: explizites Parallel-Playback mit 8192 Entities, Wrapper-Invalidierung, Remove/Re-add und Destroy bestand.
+- Separater Diagnoselauf bestätigte Arbeit auf 16 nativen Workern.
+- Letzte native Quellen kompilierten, Linken scheiterte mit LNK1201 beim Schreiben der Engine-PDB. Der laufende Editor meldet gesperrte Ausgaben; der letzte Stand ist daher noch nicht vollständig gebaut/getestet.
+
+Messungen:
+- parallel3-probe-* und parallel3-serial-kernels-probe-* sind Zwischenstände vor der letzten Umstellung des Create-Pfads und der Automatic-Schwellen.
+- Diese Zahlen sind kein abschließender Benchmark des Commit-Stands.
+- native2-release-* bleiben die unveränderte vorherige Referenz.

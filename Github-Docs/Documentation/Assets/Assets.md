@@ -118,6 +118,55 @@ sfx.PlayOneShot();
 
 Under the hood these always end up working with GUIDs — the path form is just a convenience that looks up the GUID for you. See [Scripting](../Scripting/Scripting.md) for the full API and the Inspector attributes that create asset slots.
 
+### Asynchronous loading
+
+Use `LoadAsync<T>` to prepare an asset while gameplay continues. Start the call on the engine's main thread; normal `await` continuations return through the engine's synchronization context.
+
+```csharp
+Texture? texture = await AssetManager.LoadAsync<Texture>("Sprites/player.png", token);
+Audio? audio = await AssetManager.LoadByGUIDAsync<Audio>(audioGuid, token);
+Mesh? mesh = await AssetManager.LoadByGUIDAsync<Mesh>(meshGuidString, token);
+```
+
+`token` is an optional `CancellationToken`. `LoadByGUIDAsync<T>` accepts either a `ulong` or a GUID string, using the same parsing rules as `LoadByGUID<T>`.
+
+| Type | Prepared in the background |
+|------|----------------------------|
+| `Texture` | File reading and image decoding |
+| `Audio` | File reading and audio decoding |
+| `Font` | File reading and rasterizing the 32 px font cache bucket |
+| `Mesh` | File reading and mesh parsing |
+
+GUID/path resolution and import metadata access still run on the main thread. Workers prepare owned CPU data; the main thread publishes it into the existing managers and performs GPU uploads. Completion means that publication has finished. Fonts at other sizes and additional Unicode glyphs retain their normal on-demand behavior.
+
+Missing assets, mismatched kinds, decoding failures and rejected requests return `null`. Unsupported generic types, such as `Material`, `Entity` or a `DataAsset` subclass, throw `NotSupportedException`; a build without the necessary asset module or thread support also reports that exception. Starting a load outside the engine synchronization context throws `InvalidOperationException`.
+
+Cancellation produces a cancelled task, so awaiting it throws `OperationCanceledException`. It affects only that request; another request for the same asset can still complete. Once publication succeeds, a later cancellation does not undo it. Cancellation discards an unused result without interrupting a decoder in the middle of its work. Changes to the requested asset, its import metadata, its mesh dependencies or the current project can also cancel pending requests, as can clearing the relevant asset cache. Unrelated registry changes preserve the request.
+
+The loader shares pending work for the same asset, runs at most **two preparations concurrently**, and accepts at most **256 unreleased requests**. C# releases native requests automatically after completion or cancellation. Cache eviction and ordinary asset ownership rules still apply after loading; an async result does not pin an asset permanently.
+
+### Native asynchronous requests
+
+Include `Assets/AssetLoader.hpp` and call `AssetLoader::LoadAsync(assetId)` on the main thread. It returns an operation ID, or `0` when the request is rejected. `Application` initializes the loader and calls `Pump()` once per frame; a custom host must call `Initialize()`, `Pump()` and `Shutdown()` itself on the same thread.
+
+```cpp
+uint64_t operation = AssetLoader::LoadAsync(assetId);
+
+// Poll during a later update; do not block the frame waiting for completion.
+if (operation != 0) {
+    const AssetLoadResult result = AssetLoader::GetResult(operation);
+    if (result.Status != AssetLoadStatus::Pending) {
+        if (result.Succeeded()) {
+            texture = TextureManager::LoadTextureByUUID(result.AssetId);
+        }
+        AssetLoader::Release(operation);
+        operation = 0;
+    }
+}
+```
+
+`GetResult()` supplies the asset ID, status and an error message when available. Call `Release()` for every accepted request, including failed or cancelled ones; releasing pending work cancels that observer. `Cancel()` marks a pending request cancelled without releasing its result. `Shutdown()` cancels pending requests and waits for CPU preparation to finish before asset managers and the renderer are destroyed; workers never publish resources during teardown.
+
 ---
 
 ## Loading, caching, and handles

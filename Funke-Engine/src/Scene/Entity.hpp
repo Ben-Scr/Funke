@@ -16,6 +16,7 @@ namespace Funke {
 	// Forward-declared to break the cycle Entity.hpp→EntityScriptOps.hpp→Scene.hpp→Entity.hpp;
 	// full definition arrives via the EntityScriptOps.hpp include at the bottom of this file.
 	class NativeScript;
+	template<typename TComponent> class ComponentRef;
 
 	// Forward decls needed at parse time; full bodies in EntityScriptOps.hpp (included below the class).
 	namespace EntityScriptOps {
@@ -75,7 +76,12 @@ namespace Funke {
 		// to dispatch scene-scoped logic through an Entity API but have no real handle.
 		static Entity MakeScenePlaceholder(Scene& scene);
 
-		// Component references are borrowed and may be invalidated by structural registry changes or Scene destruction.
+		// Raw references are borrowed; use ComponentRef when keeping access across structural changes or frames.
+		template<typename TComponent>
+		ComponentRef<TComponent> GetComponentRef();
+
+		template<typename TComponent>
+		ComponentRef<const TComponent> GetComponentRef() const;
 
 		// ── Component branch (ECS data — Transform2D, SpriteRenderer, …) ───
 		template<typename TComponent, typename... Args>
@@ -271,3 +277,5 @@ namespace Funke {
 	}
 
 }
+
+#include "Scene/ComponentRef.hpp"

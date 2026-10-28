@@ -8,6 +8,11 @@ submodule commit, file path, blob ID, staged change, or untracked file.
 CI first runs the non-mutating `verify` mode against a fresh checkout and checks
 the applied blob IDs again after Premake generation.
 
+The EnTT patch includes the configurable entity/version bit split, staged bulk
+storage operations for trusted parallel ECB adapters, and exact sole-listener
+inspection. Bulk storage bypasses lifecycle signals; callers certify the hooks
+and join all nonthrowing payload work before exposing the storage again.
+
 When upgrading a patched submodule:
 
 1. Update the submodule pin and port the existing change locally.

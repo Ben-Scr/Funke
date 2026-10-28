@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Scripting/ScriptBindingGuard.hpp"
 #include "Scripting/EntityCommandBufferWire.hpp"
+#include "Scripting/EntityCommandBufferParallel.hpp"
 #include "Scripting/ScriptGlue.hpp"
 #include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptComponent.hpp"
@@ -10,6 +11,7 @@
 #include "Scene/SceneManager.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Components/General/EntityMetaDataComponent.hpp"
+#include "Components/General/UUIDComponent.hpp"
 #include "Components/General/HierarchyComponent.hpp"
 #if FUNKE_WITH_2D
 #include "Components/General/Transform2DComponent.hpp"
@@ -20,11 +22,55 @@
 #include "Core/Application.hpp"
 #include "Core/Log.hpp"
 
+#include <array>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace Funke {
+
+	class EcbPhaseTimings {
+	public:
+		EcbPhaseTimings(uint32_t entities, uint32_t commands) : m_Entities(entities), m_Commands(commands) {
+			static const bool enabled = [] {
+#ifdef FNK_PLATFORM_WINDOWS
+				char* value = nullptr;
+				size_t length = 0;
+				_dupenv_s(&value, &length, "FUNKE_ECB_TIMINGS");
+				const bool result = value && value[0] == '1';
+				std::free(value);
+				return result;
+#else
+				const char* value = std::getenv("FUNKE_ECB_TIMINGS");
+				return value && value[0] == '1';
+#endif
+			}();
+			m_Enabled = enabled;
+			if (m_Enabled) m_Last = Clock::now();
+		}
+		void Mark(size_t phase) {
+			if (!m_Enabled) return;
+			const auto now = Clock::now();
+			m_Phases[phase] = std::chrono::duration<double, std::milli>(now - m_Last).count();
+			m_Last = now;
+		}
+		~EcbPhaseTimings() {
+			if (!m_Enabled) return;
+			Mark(6);
+			FNK_CORE_INFO_TAG("EcbTiming", "entities={} commands={} preflight_ms={:.6f} prepare_ms={:.6f} allocate_ms={:.6f} metadata_ms={:.6f} execute_ms={:.6f} finalize_ms={:.6f} deferred_ms={:.6f}",
+				m_Entities, m_Commands, m_Phases[0], m_Phases[1], m_Phases[2], m_Phases[3], m_Phases[4], m_Phases[5], m_Phases[6]);
+		}
+	private:
+		using Clock = std::chrono::steady_clock;
+		Clock::time_point m_Last;
+		std::array<double, 7> m_Phases{};
+		uint32_t m_Entities;
+		uint32_t m_Commands;
+		bool m_Enabled = false;
+	};
 
 	static Scene* EcbResolveScene()
 	{
@@ -35,14 +81,6 @@ namespace Funke {
 			return scene;
 		}
 		return ResolveImplicitScene();
-	}
-
-	// memcpy to dodge unaligned-load UB: ECB stream is byte-packed, fields land on odd boundaries; compiler folds to a single load on x86/x64.
-	template<typename T>
-	static T EcbReadLE(const uint8_t* src) {
-		T value;
-		std::memcpy(&value, src, sizeof(T));
-		return value;
 	}
 
 	static uint32_t Funke_Component_GetTypeId(const char* componentName)
@@ -75,14 +113,26 @@ namespace Funke {
 		return found;
 	}
 
-	// Reused scratch vector: avoids per-call alloc in steady-state spawn loops. ECB playback is main-thread only.
-	static std::vector<EntityHandle>& EcbHandleScratch()
-	{
-		static std::vector<EntityHandle> scratch;
-		return scratch;
-	}
+	class EcbPlaybackHandles {
+	public:
+		EcbPlaybackHandles() : m_OwnsShared(!s_InUse) {
+			if (m_OwnsShared) s_InUse = true;
+		}
+		~EcbPlaybackHandles() {
+			if (m_OwnsShared) s_InUse = false;
+		}
+		EcbPlaybackHandles(const EcbPlaybackHandles&) = delete;
+		EcbPlaybackHandles& operator=(const EcbPlaybackHandles&) = delete;
+		std::vector<EntityHandle>& Get() { return m_OwnsShared ? s_Handles : m_Local; }
+	private:
+		// Callbacks may nest main-thread playback; only the outer call may reuse shared storage.
+		inline static std::vector<EntityHandle> s_Handles;
+		inline static bool s_InUse = false;
+		std::vector<EntityHandle> m_Local;
+		bool m_OwnsShared;
+	};
 
-	static int EcbValidateCommands(const uint8_t* cursor, const uint8_t* bufferEnd, const EcbHeader& header)
+	static int EcbValidateCommands(const uint8_t* cursor, const uint8_t* bufferEnd, const EcbHeader& header, bool& hasPrefabs)
 	{
 		const ComponentRegistry& components = SceneManager::GetComponentRegistry();
 		for (uint32_t command = 0; command < header.commandCount; ++command) {
@@ -98,16 +148,21 @@ namespace Funke {
 			switch (opcode) {
 			case Ecb_AddComponent:
 			case Ecb_SetComponent:
-			case Ecb_DefaultConstructComponent: {
-				if (!localEntity) return kEcbErrorTruncated;
+			case Ecb_DefaultConstructComponent:
+			case Ecb_RemoveComponent: {
+				if (!localEntity && !liveEntity) return kEcbErrorTruncated;
+				const size_t identitySize = liveEntity ? sizeof(uint64_t) : 0;
+				if (payloadSize < identitySize) return kEcbErrorTruncated;
+				const size_t componentSize = payloadSize - identitySize;
 				const uint32_t typeId = EcbReadLE<uint32_t>(cursor + 5);
 				const ComponentInfo* info = components.GetByTypeId(typeId);
 				const bool useDefault = opcode == Ecb_DefaultConstructComponent;
-				if (!info || (useDefault ? !info->defaultEmplace : !info->emplaceFromBytes)) {
+				const bool remove = opcode == Ecb_RemoveComponent;
+				if (!info || !info->IsModuleActive() || (remove ? !info->remove : useDefault ? !info->defaultEmplace : !info->emplaceFromBytes)) {
 					return kEcbErrorUnknownComponent;
 				}
-				if ((useDefault && payloadSize != 0)
-					|| (!useDefault && info->bytePayloadSize != 0 && payloadSize != info->bytePayloadSize)) {
+				if (((useDefault || remove) && componentSize != 0)
+					|| (!useDefault && !remove && info->bytePayloadSize != 0 && componentSize != info->bytePayloadSize)) {
 					FNK_CORE_WARN_TAG("Ecb", "Component payload size mismatch at command {} (typeId={}, size={})",
 						command, typeId, payloadSize);
 					return kEcbErrorTruncated;
@@ -116,6 +171,7 @@ namespace Funke {
 			}
 			case Ecb_InstantiatePrefab:
 				if (!localEntity || payloadSize != sizeof(uint64_t)) return kEcbErrorTruncated;
+				hasPrefabs = true;
 				break;
 			case Ecb_DestroyEntity:
 				if (!(localEntity && payloadSize == 0) && !(liveEntity && payloadSize == sizeof(uint64_t))) {
@@ -137,8 +193,9 @@ namespace Funke {
 	}
 
 	static int Funke_Ecb_PlaybackImpl(const uint8_t* buffer, int length,
-		uint64_t* outRuntimeIds, int maxOut)
+		uint64_t* outRuntimeIds, int maxOut, int mode)
 	{
+		if (mode < 0 || mode > 2) return kEcbErrorInvalidMode;
 		if (buffer == nullptr || length < static_cast<int>(sizeof(EcbHeader))) {
 			return kEcbErrorTruncated;
 		}
@@ -149,6 +206,7 @@ namespace Funke {
 
 		EcbHeader header;
 		std::memcpy(&header, buffer, sizeof(EcbHeader));
+		EcbPhaseTimings timings(header.entityCount, header.commandCount);
 
 		// Verify the entity table fits before we trust entityCount.
 		if (header.entityCount > (static_cast<std::size_t>(length) - sizeof(EcbHeader)) / sizeof(uint32_t)) {
@@ -172,7 +230,9 @@ namespace Funke {
 		const uint8_t* commandStreamPtr = entityTablePtr + entityTableBytes;
 		const uint8_t* bufferEnd = buffer + length;
 		// Validate before prefab baking, which can create temporary entities and invoke scene callbacks.
-		if (const int error = EcbValidateCommands(commandStreamPtr, bufferEnd, header); error != 0) return error;
+		bool hasPrefabs = false;
+		if (const int error = EcbValidateCommands(commandStreamPtr, bufferEnd, header, hasPrefabs); error != 0) return error;
+		timings.Mark(0);
 
 		// Keep prefab templates in command order for the execute pass.
 		PrefabTemplateCache& prefabCache = PrefabTemplateCache::Get();
@@ -185,7 +245,7 @@ namespace Funke {
 		std::vector<PrefabSpawn> prefabSpawns;
 		uint64_t totalExtraChildren = 0;
 
-		{
+		if (hasPrefabs) {
 			const uint8_t* cursor = commandStreamPtr;
 			for (uint32_t cmdIdx = 0; cmdIdx < header.commandCount; ++cmdIdx) {
 				const uint8_t  opcode      = cursor[0];
@@ -245,13 +305,20 @@ namespace Funke {
 			return kEcbErrorEntityCapExceeded;
 		}
 		const uint32_t totalEntityCount = static_cast<uint32_t>(totalEntityCount64);
+		timings.Mark(1);
+		if (!hasPrefabs && EcbTryParallelPlayback(*scene, header, commandStreamPtr, outRuntimeIds, mode)) {
+			timings.Mark(4);
+			return static_cast<int>(header.entityCount);
+		}
 
 		// Root slots [0, entityCount); prefab children [entityCount, totalEntityCount). Only roots are surfaced to managed code.
 		scene->ReserveForLoadRuntime(totalEntityCount, {});
 
-		std::vector<EntityHandle>& handles = EcbHandleScratch();
+		EcbPlaybackHandles handleScratch;
+		std::vector<EntityHandle>& handles = handleScratch.Get();
 		handles.resize(totalEntityCount);
 		scene->CreateEntitiesBulk(totalEntityCount, handles);
+		timings.Mark(2);
 
 		// Assign each prefab spawn its child block now that the layout
 		// is known.
@@ -271,15 +338,13 @@ namespace Funke {
 			isPrefabRoot[spawn.rootEntityIndex] = 1;
 		}
 		std::vector<uint8_t> destroyedRoot(header.entityCount, 0);
-		for (uint32_t i = 0; i < header.entityCount; ++i) {
-			if (isPrefabRoot[i] == 0) {
-				scene->SetEntityMetaDataNoFlags(handles[i], EntityOrigin::Runtime);
-			}
-		}
+		scene->SetRuntimeEntityMetaDataBulk(std::span<const EntityHandle>(handles.data(), header.entityCount), isPrefabRoot);
 
 		const ComponentRegistry& componentRegistry = SceneManager::GetComponentRegistry();
+		timings.Mark(3);
 
 		std::vector<EntityHandle> prefabSlotScratch;
+		std::vector<EntityHandle> liveTransformWrites;
 		std::size_t nextPrefabSpawn = 0;
 
 		// Raw emplaces skip AddWithDependencies, so conflicts (e.g. a 3D component on a 2D entity) are checked here;
@@ -287,9 +352,7 @@ namespace Funke {
 		bool warnedConflict = false;
 		auto refusesConflictingAdd = [&](const ComponentInfo& info, EntityHandle handle) {
 			if (info.conflictsWith.empty() || info.isDynamic || !info.has) return false;
-			const Entity entity = scene->GetEntity(handle);
-			if (info.has(entity)) return false;
-			const ComponentInfo* conflict = componentRegistry.FindConflict(entity, info.typeId);
+			const ComponentInfo* conflict = componentRegistry.FindConflict(scene->GetRegistry(), handle, info);
 			if (!conflict) return false;
 			if (!warnedConflict) {
 				warnedConflict = true;
@@ -300,11 +363,15 @@ namespace Funke {
 		};
 
 		// Dynamic IComponent adds must seed a ScriptComponent.Scripts entry so the inspector renders it; idempotent.
-		auto seedScriptsEntryForDynamic = [&](const ComponentInfo* info, EntityHandle handle) {
-			if (!info->isDynamic) return;
+		auto seedScriptsEntryForDynamic = [&](uint32_t typeId, EntityHandle handle) {
+			const ComponentInfo* info = componentRegistry.GetByTypeId(typeId);
+			if (!info || !info->isDynamic || !info->IsModuleActive()) return;
 			Entity entity = scene->GetEntity(handle);
 			if (!entity.HasComponent<ScriptComponent>()) {
 				entity.AddComponent<ScriptComponent>();
+				if (!entity.IsValid() || !entity.HasComponent<ScriptComponent>()) return;
+				info = componentRegistry.GetByTypeId(typeId);
+				if (!info || !info->isDynamic || !info->IsModuleActive()) return;
 			}
 			auto& sc = entity.GetComponent<ScriptComponent>();
 			if (!sc.HasScript(info->serializedName, ScriptType::Managed)) {
@@ -327,49 +394,86 @@ namespace Funke {
 			}
 			cursor = payload + payloadSize;
 
-			const bool targetsLiveEntity =
-				(opcode == Ecb_DestroyEntity || opcode == Ecb_SetEntityEnabled)
-				&& entityIndex == kEcbNoName;
+			const bool targetsLiveEntity = entityIndex == kEcbNoName;
 			if (!targetsLiveEntity && entityIndex >= header.entityCount) {
 				FNK_CORE_WARN_TAG("Ecb", "Skipping command with out-of-range entityIndex {}", entityIndex);
 				continue;
 			}
 
-			if (opcode == Ecb_AddComponent || opcode == Ecb_SetComponent) {
-				if (destroyedRoot[entityIndex] != 0) {
+			if (opcode == Ecb_AddComponent || opcode == Ecb_SetComponent ||
+				opcode == Ecb_DefaultConstructComponent || opcode == Ecb_RemoveComponent) {
+				EntityHandle handle = entt::null;
+				const uint8_t* componentBytes = payload;
+				size_t componentSize = payloadSize;
+				if (targetsLiveEntity) {
+					if (!scene->TryResolveEntityRef(EcbReadLE<uint64_t>(payload), handle)) continue;
+					componentBytes += sizeof(uint64_t);
+					componentSize -= sizeof(uint64_t);
+				}
+				else {
+					if (destroyedRoot[entityIndex] != 0) continue;
+					handle = handles[entityIndex];
+				}
+				if (!scene->IsValid(handle)) continue;
+				const ComponentInfo* info = componentRegistry.GetByTypeId(typeId);
+				const auto commandAvailable = [&](const ComponentInfo* component) {
+					if (!component || !component->IsModuleActive()) return false;
+					if (opcode == Ecb_RemoveComponent) return static_cast<bool>(component->remove);
+					if (opcode == Ecb_DefaultConstructComponent) return static_cast<bool>(component->defaultEmplace);
+					return component->emplaceFromBytes
+						&& (component->bytePayloadSize == 0 || componentSize == component->bytePayloadSize);
+				};
+				if (!commandAvailable(info)) continue;
+				if (opcode == Ecb_RemoveComponent) {
+					ScriptBindings::RemoveComponent(scene->GetEntity(handle), *info);
 					continue;
 				}
-				const ComponentInfo* info = componentRegistry.GetByTypeId(typeId);
-				if (info == nullptr || info->emplaceFromBytes == nullptr) {
-					FNK_CORE_WARN_TAG("Ecb",
-						"AddComponent for typeId {} cannot proceed: no registered "
-						"component or component has no emplaceFromBytes callback "
-						"(component holds non-memcpy-safe state and needs a "
-						"custom emplacer — see ComponentRegistry contract).",
-						typeId);
-					return kEcbErrorUnknownComponent;
-				}
-				if (refusesConflictingAdd(*info, handles[entityIndex])) continue;
-				info->emplaceFromBytes(scene->GetRegistry(), handles[entityIndex],
-					payload, payloadSize);
-				seedScriptsEntryForDynamic(info, handles[entityIndex]);
-			}
-			else if (opcode == Ecb_DefaultConstructComponent) {
-				if (destroyedRoot[entityIndex] != 0) {
+				if (targetsLiveEntity && opcode == Ecb_DefaultConstructComponent) {
+					ScriptBindings::AddComponent(scene->GetEntity(handle), *info);
 					continue;
 				}
-				const ComponentInfo* info = componentRegistry.GetByTypeId(typeId);
-				if (info == nullptr || info->defaultEmplace == nullptr) {
-					FNK_CORE_WARN_TAG("Ecb",
-						"DefaultConstructComponent for typeId {} cannot proceed: no "
-						"registered component or component is not default-constructible "
-						"(use the value or patch overload of AddComponent instead).",
-						typeId);
-					return kEcbErrorUnknownComponent;
+				bool present;
+				if (info->isDynamic) {
+					present = info->has && info->has(scene->GetEntity(handle));
+					if (!scene->IsValid(handle)) continue;
+					info = componentRegistry.GetByTypeId(typeId);
+					if (!commandAvailable(info)) continue;
 				}
-				if (refusesConflictingAdd(*info, handles[entityIndex])) continue;
-				info->defaultEmplace(scene->GetRegistry(), handles[entityIndex]);
-				seedScriptsEntryForDynamic(info, handles[entityIndex]);
+				else {
+					const auto* pool = std::as_const(scene->GetRegistry()).storage(info->storageHash);
+					present = pool && pool->contains(handle);
+				}
+				if (opcode == Ecb_DefaultConstructComponent && present) continue;
+				if (!present) {
+					if (refusesConflictingAdd(*info, handle)) continue;
+					if (!info->dependsOn.empty()) {
+						componentRegistry.AddDependencies(scene->GetEntity(handle), info->typeId);
+						if (!scene->IsValid(handle)) continue;
+						info = componentRegistry.GetByTypeId(typeId);
+						if (!commandAvailable(info)) continue;
+						if (opcode == Ecb_DefaultConstructComponent && !info->isDynamic) {
+							const auto* pool = std::as_const(scene->GetRegistry()).storage(info->storageHash);
+							if (pool && pool->contains(handle)) continue;
+						}
+					}
+				}
+				const bool dynamic = info->isDynamic;
+				[[maybe_unused]] const entt::id_type storageHash = info->storageHash;
+				if (opcode == Ecb_DefaultConstructComponent) info->defaultEmplace(scene->GetRegistry(), handle);
+				else info->emplaceFromBytes(scene->GetRegistry(), handle, componentBytes, componentSize);
+				if (!scene->IsValid(handle)) continue;
+				if (dynamic) {
+					seedScriptsEntryForDynamic(typeId, handle);
+					if (!scene->IsValid(handle)) continue;
+				}
+#if FUNKE_WITH_2D
+				if (storageHash == entt::type_hash<Transform2DComponent>::value()) {
+					if (auto* transform = scene->GetRegistry().try_get<Transform2DComponent>(handle)) {
+						transform->BindOwner(scene, handle);
+						if (targetsLiveEntity) liveTransformWrites.push_back(handle);
+					}
+				}
+#endif
 			}
 			else if (opcode == Ecb_InstantiatePrefab) {
 				if (nextPrefabSpawn >= prefabSpawns.size()) {
@@ -428,11 +532,9 @@ namespace Funke {
 					scene->GetEntity(handles[entityIndex]).SetEnabled(enabled);
 				}
 			}
-				// Unknown opcodes: skip (forwards-compat). We already advanced
-			// `cursor` past the record's payload, so the stream stays
-			// aligned for the next iteration.
 		}
 
+		timings.Mark(4);
 #if FUNKE_WITH_2D
 		// A Transform2D written by the ECB to place a spawned prefab (e.g.
 		// ecb.AddComponent(root, new NativeTransform2D{Position})) is a raw byte copy. m_Dirty is set in
@@ -445,12 +547,15 @@ namespace Funke {
 		// so the spawn position takes effect immediately.
 		{
 			entt::registry& reg = scene->GetRegistry();
-			for (uint32_t i = 0; i < totalEntityCount; ++i) {
-				const EntityHandle h = handles[i];
+			auto* transforms = const_cast<entt::registry::storage_for_type<Transform2DComponent>*>(std::as_const(reg).storage<Transform2DComponent>());
+			const auto* hierarchies = std::as_const(reg).storage<HierarchyComponent>();
+			auto* rigidbodies = const_cast<entt::registry::storage_for_type<Rigidbody2DComponent>*>(std::as_const(reg).storage<Rigidbody2DComponent>());
+			for (size_t i = 0; i < handles.size() + liveTransformWrites.size(); ++i) {
+				const EntityHandle h = i < handles.size() ? handles[i] : liveTransformWrites[i - handles.size()];
 				if (!scene->IsValid(h)) {
 					continue;
 				}
-				Transform2DComponent* tr = reg.try_get<Transform2DComponent>(h);
+				Transform2DComponent* tr = transforms && transforms->contains(h) ? &transforms->get(h) : nullptr;
 				if (tr == nullptr) {
 					continue;
 				}
@@ -458,9 +563,9 @@ namespace Funke {
 				tr->MarkDirty();
 				// Only roots have world == local now (child world transforms are composed later by the
 				// hierarchy pass), so only teleport their body straight to the transform.
-				const HierarchyComponent* hc = reg.try_get<HierarchyComponent>(h);
+				const HierarchyComponent* hc = hierarchies && hierarchies->contains(h) ? &hierarchies->get(h) : nullptr;
 				const bool isRoot = (hc == nullptr) || hc->Parent == entt::null;
-				if (Rigidbody2DComponent* rb = reg.try_get<Rigidbody2DComponent>(h); rb != nullptr) {
+				if (Rigidbody2DComponent* rb = rigidbodies && rigidbodies->contains(h) ? &rigidbodies->get(h) : nullptr; rb != nullptr) {
 					if (isRoot && rb->IsValid()) {
 						rb->SetTransform(*tr);
 					}
@@ -469,25 +574,27 @@ namespace Funke {
 		}
 #endif
 
+		const auto* identities = std::as_const(scene->GetRegistry()).storage<UUIDComponent>();
 		for (uint32_t i = 0; i < header.entityCount; ++i) {
-			outRuntimeIds[i] = destroyedRoot[i] != 0
-				? 0
-				: scene->GetEntityPersistentID(handles[i]);
+			outRuntimeIds[i] = destroyedRoot[i] == 0 && identities && identities->contains(handles[i])
+				? static_cast<uint64_t>(identities->get(handles[i]).Id)
+				: 0;
 		}
 
 		// Pulse lives outside the guard scope so it isn't double-counted by a later MarkAllDirtyOnce().
 		scene->MarkAllDirtyOnce();
+		timings.Mark(5);
 		return static_cast<int>(header.entityCount);
 	}
 
 	// Boundary guard: Ecb_Playback is reached via [UnmanagedCallersOnly]; an exception unwinding
 	// into CoreCLR is UB / fatal. Playback allocates heavily (prefab bake, scratch vectors) and can
 	// throw std::bad_alloc, so swallow here and surface as an error code the C# side already handles.
-	static int Funke_Ecb_Playback(const uint8_t* buffer, int length,
-		uint64_t* outRuntimeIds, int maxOut)
+	static int Funke_Ecb_PlaybackWithMode(const uint8_t* buffer, int length,
+		uint64_t* outRuntimeIds, int maxOut, int mode)
 	{
 		try {
-			return Funke_Ecb_PlaybackImpl(buffer, length, outRuntimeIds, maxOut);
+			return Funke_Ecb_PlaybackImpl(buffer, length, outRuntimeIds, maxOut, mode);
 		}
 		catch (const std::exception& e) {
 			FNK_CORE_ERROR_TAG("ScriptBinding", "exception in Funke_Ecb_Playback: {}", e.what());
@@ -499,10 +606,17 @@ namespace Funke {
 		}
 	}
 
+	static int Funke_Ecb_Playback(const uint8_t* buffer, int length,
+		uint64_t* outRuntimeIds, int maxOut)
+	{
+		return Funke_Ecb_PlaybackWithMode(buffer, length, outRuntimeIds, maxOut, 0);
+	}
+
 	void PopulateEcbBindings(NativeBindings& b)
 	{
 		b.Component_GetTypeId = FNK_GUARDED_BINDING(Funke_Component_GetTypeId);
 		b.Ecb_Playback        = FNK_GUARDED_BINDING(Funke_Ecb_Playback);
+		b.Ecb_PlaybackWithMode = FNK_GUARDED_BINDING(Funke_Ecb_PlaybackWithMode);
 	}
 
 } // namespace Funke

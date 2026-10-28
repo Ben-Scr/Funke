@@ -17,6 +17,7 @@
 #include <stb_image.h>
 
 #include <cstring>
+#include <limits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -439,7 +440,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 	bool Texture2D::Load(const char* path, bool generateMipmaps, bool srgb, bool flipVertical) {
 		Destroy();
 		m_FlippedY = flipVertical;
-		(void)srgb;  // Stage 2 follow-up — wgpu::TextureFormat::RGBA8UnormSrgb when wired
+		if (path == nullptr || *path == '\0') return false;
 
 		if (!WebGPUBackend::IsInitialized()) {
 			FNK_CORE_WARN_TAG("Texture2D",
@@ -447,20 +448,33 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 			return false;
 		}
 
-		stbi_set_flip_vertically_on_load(flipVertical);
-		int w = 0, h = 0, n = 0;
-		unsigned char* pixels = stbi_load(path, &w, &h, &n, 4);
-		stbi_set_flip_vertically_on_load(false);
-		if (!pixels) {
+		auto image = DecodeFileToCpu(path, flipVertical);
+		if (!image) {
 			FNK_CORE_WARN_TAG("Texture2D", "Failed to load texture: {}", path);
 			return false;
 		}
+		return LoadFromImage(*image, path, generateMipmaps, srgb, flipVertical);
+	}
+
+	bool Texture2D::LoadFromImage(const ImageData& image, const std::string& sourcePath,
+		bool generateMipmaps, bool srgb, bool flipVertical)
+	{
+		Destroy();
+		m_FlippedY = flipVertical;
+		(void)srgb;
+		const int w = image.Width;
+		const int h = image.Height;
+		if (w <= 0 || h <= 0 || !image.Pixels) return false;
+		if (static_cast<size_t>(w) > std::numeric_limits<size_t>::max() / 4u / static_cast<size_t>(h)) return false;
+		const size_t byteCount = static_cast<size_t>(w) * static_cast<size_t>(h) * 4u;
+		if (!image.OwnedPixels.empty() && image.OwnedPixels.size() < byteCount) return false;
+		if (!WebGPUBackend::IsInitialized()) return false;
+
 		// Over the device limit Dawn hands back an error texture, and every pass sampling it drops the frame.
 		const uint32_t maxDimension = WebGPUBackend::GetMaxTextureDimension2D();
 		if (static_cast<uint32_t>(w) > maxDimension || static_cast<uint32_t>(h) > maxDimension) {
-			stbi_image_free(pixels);
 			FNK_CORE_ERROR_TAG("Texture2D", "Texture {}x{} exceeds the GPU limit of {}px per side: {}",
-				w, h, maxDimension, path);
+				w, h, maxDimension, sourcePath);
 			return false;
 		}
 
@@ -487,12 +501,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
 		wgpu::Texture texture = device.CreateTexture(&texDesc);
 		if (!texture) {
-			stbi_image_free(pixels);
-			FNK_CORE_WARN_TAG("Texture2D", "wgpu::Device::CreateTexture failed: {}", path);
+			FNK_CORE_WARN_TAG("Texture2D", "wgpu::Device::CreateTexture failed: {}", sourcePath);
 			return false;
 		}
 
-		// Dawn mid-2025 rename: ImageCopyTexture -> TexelCopyTextureInfo, TextureDataLayout -> TexelCopyBufferLayout (layout unchanged). stbi pixels freed immediately after WriteTexture (Dawn has its own staging buffer).
 		wgpu::TexelCopyTextureInfo dst{};
 		dst.texture  = texture;
 		dst.mipLevel = 0;
@@ -505,13 +517,11 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		layout.rowsPerImage  = static_cast<uint32_t>(h);
 
 		wgpu::Extent3D writeSize{ static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1 };
-		const size_t byteCount = static_cast<size_t>(w) * static_cast<size_t>(h) * 4;
 
-		queue.WriteTexture(&dst, pixels, byteCount, &layout, &writeSize);
-		stbi_image_free(pixels);
+		queue.WriteTexture(&dst, image.Pixels, byteCount, &layout, &writeSize);
 
 		if (!GenerateMipChain(texture, format, mipLevelCount)) {
-			FNK_CORE_WARN_TAG("Texture2D", "Mip generation failed, sampling level 0 only: {}", path);
+			FNK_CORE_WARN_TAG("Texture2D", "Mip generation failed, sampling level 0 only: {}", sourcePath);
 			mipLevelCount = 1;  // the view below hides the never-written levels
 		}
 
@@ -537,10 +547,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		m_Tex      = RegisterTexture(std::move(slot));
 		m_Width    = w;
 		m_Height   = h;
-		m_Channels = n;
+		m_Channels = 4;
 		m_HasMips  = mipLevelCount > 1;
-		m_SourcePath = path ? path : "";
-		return true;
+		m_SourcePath = sourcePath;
+		return m_Tex != 0;
 	}
 
 	bool Texture2D::CreateFromPixels(int width, int height, const uint8_t* rgba,
@@ -712,18 +722,19 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 	{
 		if (path == nullptr || *path == '\0') return nullptr;
 
-		stbi_set_flip_vertically_on_load(flipVertical);
 		int w = 0, h = 0, n = 0;
-		unsigned char* pixels = stbi_load(path, &w, &h, &n, 4);
-		stbi_set_flip_vertically_on_load(false);
-		if (!pixels) return nullptr;
+		std::unique_ptr<unsigned char, decltype(&stbi_image_free)> pixels(
+			stbi_load(path, &w, &h, &n, 4), &stbi_image_free);
+		if (!pixels || w <= 0 || h <= 0) return nullptr;
+		if (static_cast<size_t>(w) > std::numeric_limits<size_t>::max() / 4u / static_cast<size_t>(h)) return nullptr;
 
 		const size_t byteCount = static_cast<size_t>(w) * static_cast<size_t>(h) * 4u;
 		std::vector<unsigned char> owned(byteCount);
-		std::memcpy(owned.data(), pixels, byteCount);
-		stbi_image_free(pixels);
+		std::memcpy(owned.data(), pixels.get(), byteCount);
 
-		return std::make_unique<ImageData>(w, h, std::move(owned));
+		auto image = std::make_unique<ImageData>(w, h, std::move(owned));
+		if (flipVertical) image->FlipVerticalRGBA();
+		return image;
 	}
 
 }  // namespace Funke

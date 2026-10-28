@@ -1,0 +1,447 @@
+{
+  "camera": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "audio_source": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "animator": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "script": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "particles": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "light_point": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "light_spot": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "light_sun": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "prefab": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "prefab_missing": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "collider_box_2d": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "collider_circle_2d": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "collider_polygon_2d": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "rigidbody_2d": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "open_folder": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 256,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "collider_box_3d": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "collider_sphere_3d": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "collider_capsule_3d": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "collider_mesh_3d": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ],
+  "rigidbody_3d": [
+    {
+      "size": 16,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 32,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 64,
+      "alphaMin": 0,
+      "alphaMax": 255
+    },
+    {
+      "size": 128,
+      "alphaMin": 0,
+      "alphaMax": 255
+    }
+  ]
+}

@@ -299,6 +299,7 @@ namespace Funke {
 		// Factor from reference-resolution UI units to pixels for a UI surface of the given size.
 		float ComputeUIScale(float surfaceWidth, float surfaceHeight) const;
 
+		std::string GetNativeScriptTargetName() const;
 		std::string GetNativeDllPath(std::string_view configuration = {}) const;
 		std::string GetSceneFilePath(const std::string& sceneName) const;
 		void EnsureNativeScriptBootstrapFiles() const;

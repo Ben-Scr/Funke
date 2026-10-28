@@ -172,6 +172,96 @@ for (auto entity : view) {
 
 For details on **systems** (the C++ side, with `Awake`/`Start`/`Update`) see [Scenes](Scenes.md#systems). For **scripts** (the C# side) see [Scripting](../Scripting/Scripting.md). For running queries across many threads, see the [Job System](Job-System.md).
 
+### Batched structural changes in C#
+
+`EntityCommandBuffer` records entity creation, destruction, and component additions/removals. Call `Playback()` on the **main thread** in the executing scene; it returns after the entire batch has finished. Supported native data operations can use workers during that call. Recording does not change the scene.
+
+Component operations use **unmanaged `IComponent` structs**: built-in types such as `Funke.Native.NativeTransform2D` and `NativeSpriteRenderer`, or registered custom structs. Managed wrapper classes such as `Transform2D` and `SpriteRenderer` do not satisfy this constraint.
+
+```csharp
+using Funke;
+using Funke.Native;
+
+public static class EcbExample
+{
+    public static Entity Apply(Entity addTo, Entity removeFrom, Entity destroy)
+    {
+        using var ecb = new EntityCommandBuffer();
+        EntityRef spawned = ecb.CreateWith<NativeTransform2D, NativeSpriteRenderer>();
+
+        ecb.AddComponent<NativeSpriteRenderer>(addTo);
+        EntityRef live = addTo.ToCommandBufferRef();
+        var sprite = new NativeSpriteRenderer { Color = new Color(1f, 0.5f, 0f, 1f) };
+        ecb.AddComponent(live, in sprite);
+        ecb.RemoveComponent<NativeSpriteRenderer>(removeFrom);
+        ecb.Destroy(destroy.ToCommandBufferRef());
+
+        ecb.Playback();
+        return ecb.GetCreatedEntity((int)spawned.Index);
+    }
+}
+```
+
+Both `AddComponent` overloads and `RemoveComponent` accept a live `Entity` or an `EntityRef`. Local refs from `Create()` / `CreateWith<...>()` work too; `Destroy` accepts an `EntityRef`. Live references are resolved at playback, and references to entities already destroyed or outside the executing scene are skipped. Removing an absent component does nothing.
+
+The default and payload forms have different initialization rules:
+
+| Operation | Initialization at playback |
+|-----------|----------------------------|
+| `CreateWith<T>()` or `AddComponent<T>(localRef)` | Uses native member defaults and registered dependencies/conflicts, without the root component's smart-default callback. |
+| `AddComponent<T>(liveEntityOrRef)` | Uses the normal registered add path, including dependencies, conflicts, and smart defaults. An existing component keeps its value. |
+| `AddComponent(entityOrRef, in data)` | Copies `data` when recorded, then adds or replaces the value at playback. Root smart defaults do not overwrite that payload. Constructors and initializers run before recording; `default(T)` zeroes fields. |
+
+`Playback()` returns the number of recorded entity creations, so a batch that only modifies existing entities returns `0`. Reuse a buffer with `Clear()` before recording the next batch; playback does not clear it. Native component references must be reacquired after structural changes. A managed wrapper for a removed component becomes invalid; fetch a new wrapper after re-adding it.
+
+Choose playback execution with `ecb.Playback(EntityCommandBufferPlaybackMode.Parallel)` or the equivalent mode argument on `PlaybackInto(destination, mode)`:
+
+| Mode | Behavior |
+|------|----------|
+| `Automatic` | Default. Selects native parallel playback for sufficiently large supported batches. |
+| `Sequential` | Uses the ordered serial playback path. Useful when comparing performance. |
+| `Parallel` | Requests the supported native parallel path. Unsupported batches still fall back; small kernels or unavailable workers may execute inline. |
+
+The staged native path supports creation and eligible additions/removals of `NativeTransform2D` and `NativeSpriteRenderer`, plus destruction of entities containing only supported components. UUID candidate generation, component initialization, and disjoint payload moves/destruction can run on workers. Entity-handle allocation, storage bookkeeping, identity-index commits, and lifecycle callbacks remain serial on the main thread.
+
+Batches requiring prefab loading, hierarchy or script lifecycle handling, custom component logic, extra callbacks, or ordering between mixed operations use the ordered path. Playback is synchronous in every mode. Finish all jobs that access the scene before playback; native parallel playback does not make direct entity/component structural calls thread-safe.
+
+### Recording from parallel jobs
+
+`AsParallelWriter()` exposes the same creation, destruction, and component operations to workers. Prepare live refs before scheduling, finish all writers, then call `Playback()` on the main thread:
+
+```csharp
+using Funke;
+using Funke.Jobs;
+using Funke.Native;
+
+public static class ParallelEcbExample
+{
+    private struct RemoveSpritesJob : IJobParallelFor
+    {
+        public EntityCommandBuffer.ParallelWriter Writer;
+        public EntityRef[] Entities;
+
+        public void Execute(int index)
+            => Writer.RemoveComponent<NativeSpriteRenderer>(Entities[index]);
+    }
+
+    public static void RemoveSprites(Entity[] entities)
+    {
+        var refs = new EntityRef[entities.Length];
+        for (int i = 0; i < entities.Length; ++i)
+            refs[i] = entities[i].ToCommandBufferRef();
+
+        using var ecb = new EntityCommandBuffer();
+        var job = new RemoveSpritesJob { Writer = ecb.AsParallelWriter(), Entities = refs };
+        Job.ScheduleParallelFor(job, refs.Length, batchSize: 256).Complete();
+        ecb.Playback();
+    }
+}
+```
+
+Live refs can be shared between workers. A local ref returned by a worker's `Create()` / `CreateWith<...>()` belongs to that worker and must stay there. Commands retain order within each recorder; do not rely on ordering between workers. Keep dependent operations such as remove-then-add for one entity in the same recorder. Call `Clear()` or `Dispose()` only after all writers have finished.
+
 ---
 
 ## Summary

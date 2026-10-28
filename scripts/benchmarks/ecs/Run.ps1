@@ -1,12 +1,13 @@
 param(
     [string]$Tag = "main",
     [string]$Sizes = "10000",
-    [ValidateSet("all", "structural", "query", "custom", "history")][string]$Group = "all",
+    [ValidateSet("all", "structural", "query", "custom", "history", "validation", "mixed", "playback")][string]$Group = "all",
     [int]$Warmups = 3,
     [int]$Samples = 9,
     [string]$Filter = "",
     [switch]$Wait,
-    [switch]$PrepareOnly
+    [switch]$PrepareOnly,
+    [switch]$UsePreparedRuntime
 )
 $ErrorActionPreference = "Stop"
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
@@ -23,10 +24,18 @@ foreach ($folder in @($runtime, $project, $results, "$project/Assets/Scenes", "$
 }
 $runtimeSource = Join-Path $repo "bin/Release-windows-x86_64/Funke-Runtime"
 foreach ($file in @("Funke-Runtime.exe", "Funke-Engine.dll", "nethost.dll", "SDL3.dll", "Tracy.dll")) {
-    Copy-Item -LiteralPath (Join-Path $runtimeSource $file) -Destination $runtime
+    if ($UsePreparedRuntime) {
+        if (!(Test-Path -LiteralPath (Join-Path $runtime $file))) { throw "Prepared runtime is missing $file" }
+    } else {
+        Copy-Item -LiteralPath (Join-Path $runtimeSource $file) -Destination $runtime
+    }
 }
 foreach ($file in @("Funke-ScriptCore.dll", "Funke-ScriptCore.deps.json", "Funke-ScriptCore.runtimeconfig.json")) {
-    Copy-Item -LiteralPath (Join-Path $repo "bin/Release-windows-x86_64/Funke-ScriptCore/$file") -Destination $runtime
+    if ($UsePreparedRuntime) {
+        if (!(Test-Path -LiteralPath (Join-Path $runtime $file))) { throw "Prepared runtime is missing $file" }
+    } else {
+        Copy-Item -LiteralPath (Join-Path $repo "bin/Release-windows-x86_64/Funke-ScriptCore/$file") -Destination $runtime
+    }
 }
 if (!(Test-Path -LiteralPath "$runtime/FunkeAssets")) {
     New-Item -ItemType Junction -Path "$runtime/FunkeAssets" -Target "$runtimeSource/FunkeAssets" | Out-Null
@@ -62,12 +71,15 @@ $csproj.Replace("__SOURCE__", $PSScriptRoot) | Set-Content -LiteralPath "$projec
 if ($LASTEXITCODE -ne 0) { throw "Benchmark build failed" }
 $machine = @{
     Timestamp=(Get-Date).ToString("o"); Cpu=(Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed);
-    Memory=(Get-CimInstance Win32_PhysicalMemory | Select-Object Capacity,Speed,ConfiguredClockSpeed,Manufacturer,PartNumber);
+    Memory=(Get-CimInstance Win32_PhysicalMemory | Select-Object Capacity,Speed,ConfiguredClockSpeed,SMBIOSMemoryType,Manufacturer,PartNumber);
     OS=(Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,FreePhysicalMemory);
     GPU=(Get-CimInstance Win32_VideoController | Select-Object Name);
     Binaries=@(Get-FileHash -LiteralPath "$runtime/Funke-Runtime.exe","$runtime/Funke-Engine.dll","$runtime/Funke-ScriptCore.dll","$project/bin/Release/EcsBenchmark.dll" -Algorithm SHA256);
     Sources=@(Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.cs' | Get-FileHash -Algorithm SHA256);
     PowerScheme=(& powercfg /getactivescheme | Out-String).Trim();
+    EcbSerialKernels=$env:FUNKE_ECB_SERIAL_KERNELS;
+    EcbParallelDiagnostics=$env:FUNKE_ECB_PARALLEL_DIAGNOSTICS;
+    EcbTimings=$env:FUNKE_ECB_TIMINGS;
     GitHead=(& git -C $repo rev-parse HEAD | Out-String).Trim();
     Dirty=$true
 }

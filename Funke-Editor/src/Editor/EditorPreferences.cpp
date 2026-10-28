@@ -83,6 +83,8 @@ namespace Funke {
 			bool ConfirmOnDeleteEntity = true;
 			bool ConfirmOnDeleteAsset = true;
 
+			EditorCamera3DSettings Camera3D;
+
 			bool GridSnapEnabled = false;
 			float GridSizeX = EditorPreferences::k_DefaultGridSize;
 			float GridSizeY = EditorPreferences::k_DefaultGridSize;
@@ -360,6 +362,38 @@ namespace Funke {
 		if (const Json::Value* v = root.FindMember("ConfirmOnDeleteAsset")) {
 			s.ConfirmOnDeleteAsset = v->AsBoolOr(true);
 		}
+		if (const Json::Value* camera = root.FindMember("Camera3D"); camera && camera->IsObject()) {
+			EditorCamera3DSettings settings;
+			if (const Json::Value* mode = camera->FindMember("Mode"); mode && mode->IsString()) {
+				settings.NavigationMode = mode->AsStringOr() == "Fly"
+					? EditorCamera3DNavigationMode::Fly : EditorCamera3DNavigationMode::Orbit;
+			}
+			auto readFloat = [&](const char* key, float& value, float minimum, float maximum) {
+				if (const Json::Value* member = camera->FindMember(key); member && member->IsNumber()) {
+					const double number = member->AsDoubleOr(value);
+					if (std::isfinite(number)) {
+						value = static_cast<float>(std::clamp(number, static_cast<double>(minimum), static_cast<double>(maximum)));
+					}
+				}
+			};
+			auto readBool = [&](const char* key, bool& value) {
+				if (const Json::Value* member = camera->FindMember(key); member && member->IsBool()) {
+					value = member->AsBoolOr(value);
+				}
+			};
+			readFloat("MoveSpeed", settings.MoveSpeed, EditorCamera3DSettings::k_MinMoveSpeed, EditorCamera3DSettings::k_MaxMoveSpeed);
+			readFloat("BoostMultiplier", settings.BoostMultiplier, EditorCamera3DSettings::k_MinBoostMultiplier, EditorCamera3DSettings::k_MaxBoostMultiplier);
+			readFloat("LookSensitivity", settings.LookSensitivity, EditorCamera3DSettings::k_MinSensitivity, EditorCamera3DSettings::k_MaxSensitivity);
+			readFloat("PanSensitivity", settings.PanSensitivity, EditorCamera3DSettings::k_MinSensitivity, EditorCamera3DSettings::k_MaxSensitivity);
+			readFloat("ZoomSensitivity", settings.ZoomSensitivity, EditorCamera3DSettings::k_MinSensitivity, EditorCamera3DSettings::k_MaxSensitivity);
+			readFloat("FieldOfView", settings.FieldOfView, EditorCamera3DSettings::k_MinFieldOfView, EditorCamera3DSettings::k_MaxFieldOfView);
+			readBool("ScaleSpeedWithDistance", settings.ScaleSpeedWithDistance);
+			readBool("InvertLookX", settings.InvertLookX);
+			readBool("InvertLookY", settings.InvertLookY);
+			readBool("FlyWorldUp", settings.FlyWorldUp);
+			settings.Sanitize();
+			s.Camera3D = settings;
+		}
 		if (const Json::Value* v = root.FindMember("GridSnapEnabled")) {
 			s.GridSnapEnabled = v->AsBoolOr(false);
 		}
@@ -459,6 +493,22 @@ namespace Funke {
 		root.AddMember("AutoReloadExternalSceneChanges", Json::Value(s.AutoReloadExternalSceneChanges));
 		root.AddMember("ConfirmOnDeleteEntity", Json::Value(s.ConfirmOnDeleteEntity));
 		root.AddMember("ConfirmOnDeleteAsset", Json::Value(s.ConfirmOnDeleteAsset));
+		{
+			const EditorCamera3DSettings& settings = s.Camera3D;
+			Json::Value camera = Json::Value::MakeObject();
+			camera.AddMember("Mode", Json::Value(std::string(settings.NavigationMode == EditorCamera3DNavigationMode::Fly ? "Fly" : "Orbit")));
+			camera.AddMember("MoveSpeed", Json::Value(static_cast<double>(settings.MoveSpeed)));
+			camera.AddMember("BoostMultiplier", Json::Value(static_cast<double>(settings.BoostMultiplier)));
+			camera.AddMember("LookSensitivity", Json::Value(static_cast<double>(settings.LookSensitivity)));
+			camera.AddMember("PanSensitivity", Json::Value(static_cast<double>(settings.PanSensitivity)));
+			camera.AddMember("ZoomSensitivity", Json::Value(static_cast<double>(settings.ZoomSensitivity)));
+			camera.AddMember("FieldOfView", Json::Value(static_cast<double>(settings.FieldOfView)));
+			camera.AddMember("ScaleSpeedWithDistance", Json::Value(settings.ScaleSpeedWithDistance));
+			camera.AddMember("InvertLookX", Json::Value(settings.InvertLookX));
+			camera.AddMember("InvertLookY", Json::Value(settings.InvertLookY));
+			camera.AddMember("FlyWorldUp", Json::Value(settings.FlyWorldUp));
+			root.AddMember("Camera3D", std::move(camera));
+		}
 		root.AddMember("GridSnapEnabled", Json::Value(s.GridSnapEnabled));
 		root.AddMember("GridSizeX", Json::Value(static_cast<double>(s.GridSizeX)));
 		root.AddMember("GridSizeY", Json::Value(static_cast<double>(s.GridSizeY)));
@@ -751,6 +801,22 @@ namespace Funke {
 		if (S().ConfirmOnDeleteAsset == value) return;
 		S().ConfirmOnDeleteAsset = value;
 		Save();
+	}
+
+	EditorCamera3DSettings EditorPreferences::GetCamera3DSettings() {
+		return S().Camera3D;
+	}
+
+	void EditorPreferences::SetCamera3DSettings(const EditorCamera3DSettings& settings) {
+		EditorCamera3DSettings sanitized = settings;
+		sanitized.Sanitize();
+		if (S().Camera3D == sanitized) return;
+		S().Camera3D = sanitized;
+		Save();
+	}
+
+	void EditorPreferences::ResetCamera3DSettings() {
+		SetCamera3DSettings(EditorCamera3DSettings{});
 	}
 
 	bool EditorPreferences::GetGridSnapEnabled() {

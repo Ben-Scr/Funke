@@ -78,6 +78,9 @@ namespace Funke {
 
 		// Native→managed: drop cached C# component wrappers for a destroyed entity (UUID). No-op when scripting is uninitialized.
 		static void NotifyEntityDestroyed(uint64_t entityID);
+		static void NotifyComponentRemoved(uint64_t entityID, uint32_t typeId);
+		static bool CanBatchEntityInvalidation();
+		static bool CanBatchComponentInvalidation();
 
 		// The player's language choice from PlayerPrefs ("" when none or scripting is down).
 		static std::string GetSavedLanguage();

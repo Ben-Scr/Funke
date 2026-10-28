@@ -63,3 +63,182 @@ index 7123b780f5cea6b1fa88d94c0f13424589639091..06c6e2887e8c209bb1aeeab12e032f79
  };
  
  template<>
+diff --git a/src/entt/entity/storage.hpp b/src/entt/entity/storage.hpp
+index f6e52dccd40ddeb879e22c7550dba6a04a379f6a..44792fe4f8c9588c469c05280415a5fd6c1b1fde 100644
+--- a/src/entt/entity/storage.hpp
++++ b/src/entt/entity/storage.hpp
+@@ -5,7 +5,10 @@
+ #include <concepts>
+ #include <cstddef>
+ #include <iterator>
++#include <limits>
+ #include <memory>
++#include <numeric>
++#include <stdexcept>
+ #include <tuple>
+ #include <type_traits>
+ #include <utility>
+@@ -677,6 +680,127 @@ public:
+         }
+     }
+ 
++    // Trusted bulk adapters only: skips signals and requires unique absent entities and exclusive storage access.
++    // The executor joins all work without throwing; the initializer constructs each uninitialized row without throwing.
++    template<std::forward_iterator It, typename Executor, typename Initializer>
++    void bulk_insert(It first, It last, Executor &&execute, Initializer &&initialize) {
++        static_assert(storage_policy == deletion_policy::swap_and_pop, "Bulk insertion requires swap-and-pop storage");
++        static_assert(std::is_nothrow_invocable_v<Initializer &, value_type *, size_type>, "Bulk initialization must not throw");
++
++        const auto count = static_cast<size_type>(std::distance(first, last));
++        if(count == 0u) {
++            return;
++        }
++
++        const auto offset = base_type::size();
++        if(count > std::numeric_limits<size_type>::max() - offset) {
++            ENTT_THROW std::length_error{"Bulk storage size overflow"};
++            return;
++        }
++        reserve(offset + count);
++
++        ENTT_TRY {
++            for(; first != last; ++first) {
++                base_type::try_emplace(*first, true);
++            }
++        }
++        ENTT_CATCH {
++            // No payload lifetime has started, so rollback must bypass the virtual component pop.
++            while(base_type::size() != offset) {
++                base_type::swap_and_pop(base_type::data()[base_type::size() - 1u]);
++            }
++            ENTT_THROW;
++        }
++
++        auto construct = [this, offset, &initialize](const size_type index) noexcept {
++            const auto pos = offset + index;
++            initialize(stl::to_address(payload[pos / traits_type::page_size] + fast_mod(pos, traits_type::page_size)), index);
++        };
++        static_assert(std::is_nothrow_invocable_v<Executor &, size_type, decltype(construct) &>, "Bulk execution must join without throwing");
++        execute(count, construct);
++    }
++
++    class bulk_remove_plan {
++        friend class basic_storage;
++        const basic_storage *owner{};
++        size_type previous{};
++        std::vector<entity_type> entities;
++        std::vector<size_type> origins;
++
++    public:
++        bulk_remove_plan() = default;
++        bulk_remove_plan(const bulk_remove_plan &) = delete;
++        bulk_remove_plan &operator=(const bulk_remove_plan &) = delete;
++        bulk_remove_plan(bulk_remove_plan &&) noexcept = default;
++        bulk_remove_plan &operator=(bulk_remove_plan &&) noexcept = default;
++    };
++
++    // Allocates before lifecycle hooks can expose a partially removed batch; the pool must stay unchanged until execution.
++    template<std::forward_iterator It>
++    [[nodiscard]] bulk_remove_plan prepare_bulk_remove(It first, It last) const {
++        static_assert(storage_policy == deletion_policy::swap_and_pop, "Bulk removal requires swap-and-pop storage");
++        static_assert(std::is_nothrow_move_assignable_v<value_type> && std::is_nothrow_destructible_v<value_type>, "Bulk removal must not throw");
++
++        bulk_remove_plan plan;
++        plan.owner = this;
++        plan.previous = base_type::size();
++        plan.entities.assign(first, last);
++        ENTT_ASSERT(plan.entities.size() <= plan.previous, "Invalid bulk removal range");
++        plan.origins.resize(!plan.entities.empty() && plan.entities.size() != plan.previous ? plan.previous : 0u);
++        std::iota(plan.origins.begin(), plan.origins.end(), size_type{});
++        return plan;
++    }
++
++    // Trusted bulk adapters only: skips signals and requires unique present entities and thread-safe payload operations.
++    // No observer may inspect the storage until the synchronous, nonthrowing executor has joined both payload phases.
++    template<typename Executor>
++    void bulk_remove(bulk_remove_plan &plan, Executor &&execute) noexcept {
++        ENTT_ASSERT(plan.owner == this && plan.previous == base_type::size(), "Invalidated bulk removal plan");
++        const auto &entities = plan.entities;
++        auto &origins = plan.origins;
++        const auto previous = plan.previous;
++        plan.owner = nullptr;
++        if(entities.empty()) {
++            return;
++        }
++        const auto remaining = previous - entities.size();
++
++        for(const auto entt: entities) {
++            ENTT_ASSERT(base_type::contains(entt), "Bulk removal requires unique present entities");
++            if(remaining) {
++                origins[base_type::index(entt)] = origins[base_type::size() - 1u];
++            }
++            base_type::swap_and_pop(entt);
++        }
++
++        auto relocate = [this, &origins, remaining](const size_type index) noexcept {
++            if(origins[index] != index) {
++                // Every surviving relocated row comes from the old tail, disjoint from all prefix destinations.
++                ENTT_ASSERT(origins[index] >= remaining, "Overlapping bulk relocation");
++                element_at(index) = std::move(element_at(origins[index]));
++            }
++        };
++        static_assert(std::is_nothrow_invocable_v<Executor &, size_type, decltype(relocate) &>, "Bulk execution must join without throwing");
++        if(remaining) {
++            execute(remaining, relocate);
++        }
++
++        if constexpr(!std::is_trivially_destructible_v<value_type>) {
++            auto destroy = [this, remaining](const size_type index) noexcept {
++                allocator_type allocator{get_allocator()};
++                alloc_traits::destroy(allocator, std::addressof(element_at(remaining + index)));
++            };
++            static_assert(std::is_nothrow_invocable_v<Executor &, size_type, decltype(destroy) &>, "Bulk execution must join without throwing");
++            execute(entities.size(), destroy);
++        }
++    }
++
++    template<std::forward_iterator It, typename Executor>
++    void bulk_remove(It first, It last, Executor &&execute) {
++        auto plan = prepare_bulk_remove(first, last);
++        bulk_remove(plan, std::forward<Executor>(execute));
++    }
++
+     /**
+      * @brief Updates the instance assigned to a given entity in-place.
+      * @tparam Func Types of the function objects to invoke.
+diff --git a/src/entt/signal/sigh.hpp b/src/entt/signal/sigh.hpp
+index 87eff724bc86518290e7d82fdcd9477a54e37f83..9c586afa85573891a41c3a756e4103a146c80f90 100644
+--- a/src/entt/signal/sigh.hpp
++++ b/src/entt/signal/sigh.hpp
+@@ -407,6 +407,31 @@ public:
+         return signal_or_assert().calls.empty();
+     }
+ 
++    // Full delegate equality includes the bound instance; callback counts alone cannot identify trusted listeners.
++    template<auto Candidate>
++    [[nodiscard]] bool only() const noexcept {
++        delegate_type call{};
++        call.template connect<Candidate>();
++        const auto &calls = signal_or_assert().calls;
++        return calls.size() == 1u && calls.front() == call;
++    }
++
++    template<auto Candidate, typename Type>
++    [[nodiscard]] bool only(Type &value_or_instance) const noexcept {
++        delegate_type call{};
++        call.template connect<Candidate>(value_or_instance);
++        const auto &calls = signal_or_assert().calls;
++        return calls.size() == 1u && calls.front() == call;
++    }
++
++    template<auto Candidate, typename Type>
++    [[nodiscard]] bool only(Type *value_or_instance) const noexcept {
++        delegate_type call{};
++        call.template connect<Candidate>(value_or_instance);
++        const auto &calls = signal_or_assert().calls;
++        return calls.size() == 1u && calls.front() == call;
++    }
++
+     /**
+      * @brief Connects a free function or an unbound member to a signal.
+      * @tparam Candidate Function or member to connect to the signal.

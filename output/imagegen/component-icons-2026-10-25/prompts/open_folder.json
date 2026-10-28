@@ -1,0 +1,13 @@
+{
+  "name": "open_folder",
+  "mode": "built-in image_gen",
+  "useCase": "stylized-concept",
+  "source": "C:\\Users\\benso\\.codex\\generated_images\\01a1702d-69c5-7321-880e-7b93f512fe0d\\exec-7986d975-2e79-4393-810d-e7c748372042.png",
+  "transparentBackground": true,
+  "prompt": "Use case: stylized-concept.\nAsset type: one standalone editor component icon, satin plastic 3D app icon on genuinely transparent square PNG.\nStyle reference: match the previously viewed blue puzzle piece and yellow zip-folder only in smooth satin-plastic material, chunky forms, soft bevels and upper-left lighting. Do not copy their subjects.\nComposition: one centered icon, maximum extent about 88% of the square canvas, fully in frame with clean transparent padding.\nSmall-size clarity: the icon will display at 16–20 pixels. Use extremely simple, bold geometry and wide substantial structural strokes. No fine detail, grain, speckle, hairline strokes, extra objects, decorative particles, floor, background plane, external shadow, document backing, labels, letters, numbers, or watermark.\nMaterial: warm golden-yellow satin plastic, pale warm yellow upper-left bevel highlight, golden amber lower-right bevel. Soft shallow bevels, large clean forms, no glossy glare. Background and all openings must be genuine alpha transparency.\nSubject: a single plain golden-yellow open file folder, recognizable upper-left tab on the upright back panel, lower front panel slightly angled open toward the viewer. Match the previously viewed yellow zip-folder in satin-plastic bevel style and overall chunky rounded silhouette, but entirely plain, with absolutely no zipper, contents, document, badge, symbol or marking. Broad uncluttered front face. Slight three-dimensional depth at the front lip, mostly front-facing. Clean simple strong folder silhouette, no handle, no external shadow.",
+  "styleReferences": [
+    "output/imagegen/file-icons-complete-2026-10-25/masters/file_prefab.png",
+    "output/imagegen/file-icons-complete-2026-10-25/masters/folder_zip.png"
+  ],
+  "created": "2026-10-25"
+}

@@ -1,0 +1,20 @@
+{
+  "date": "2026-10-28",
+  "tool": "built-in image_gen",
+  "style": "Smooth dimensional raster icons, matching the production C# icon; not pixel art.",
+  "export": "Each RGBA master is independently resampled at 16, 32, 64, 128 and 256 pixels with high-quality bicubic filtering. Preserve the square canvas, alpha and transparent padding.",
+  "images": [
+    {
+      "master": "file_cpp.png",
+      "reference": "Funke-Runtime/FunkeAssets/Textures/Editor/FileIcons/file_cs/file_cs_256.png",
+      "runtime": "Funke-Runtime/FunkeAssets/Textures/Editor/FileIcons/file_cpp/file_cpp_{size}.png",
+      "prompt": "Use case: precise-object-edit. Asset type: production Funke editor C++ source-file icon, one icon. Input image is the existing production C# file icon and is the edit target/style reference. Create its C++ companion: change the green document to saturated classic C++ azure/cobalt blue, including blue shaded edges, blue pale folded corner and blue-tinted shadow; replace the large cream raised 'C#' lettering with exactly 'C++', all three glyphs side by side, bold cream/ivory beveled sans serif. Match the original tightly: exact same upright rounded document silhouette, top-right folded corner, front-on camera, smooth subtly dimensional miniaturized material, top-left lighting, edge bevel, centered weight and same transparent padding. Center the C++ label in the same lower-middle region; it must stay large, crisp and recognizable at 32px. Make the two plus signs generously sized and clearly separated from each other and the C. Keep only the document and lettering, no other badges, labels, symbols or backdrop. Transparent background with actual alpha; no white square, no checkerboard. Export one square high-resolution image. This is a smooth dimensional icon, not pixel art. Do not introduce any green or any extra shapes."
+    },
+    {
+      "master": "file_header.png",
+      "reference": "file_cpp.png",
+      "runtime": "Funke-Runtime/FunkeAssets/Textures/Editor/FileIcons/file_header/file_header_{size}.png",
+      "prompt": "Use case: precise-object-edit. Asset type: production Funke editor C++ header-file icon, one icon. Input image is the completed blue C++ source icon, EDIT TARGET. Preserve exactly the blue upright folded document, silhouette, corner fold, size, cream raised 'C++' lettering, lighting, transparent padding and smooth dimensional style. Make ONE localized addition: in the empty upper-left part of the document (well above the C++ lettering and well left of the folded corner) add a compact ivory rounded-square header badge with a bold dark navy capital 'H'. The square is approximately 22% of the document's width, with comfortable inset from the top and left edges; its H is generously sized, simple, upright and clear. The badge should resemble a small raised label with a subtle bevel and shadow matching the existing cream lettering. The cream H badge shape must visibly distinguish this header icon even when the icon is only 16 or 32 pixels tall. Keep the original main 'C++' label exactly intact. No additional text; no changes to the document colour, main label, geometry or framing. Actual transparent alpha background, no background square or checkerboard. Single square high-resolution image. This is a smooth dimensional icon, not pixel art."
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "mode": "built-in image_gen",
+  "prompt": "Use case: stylized-concept.\nAsset type: production file-type icon for Wavefront .obj 3D model files in the Funke editor.\nInput images: the two images are STYLE REFERENCES ONLY, not edit targets. Match their smooth satin-plastic volume, gently rounded bevels, warm ivory accents and top-left studio light, but create a different subject.\nSubject: ONE standalone compact isometric 3D mesh cube, warm copper-orange body. Show three solid clearly shaded faces. A few bold warm-ivory edge lines and a single diagonal across each visible face express triangulated polygon topology. The diagonals must terminate neatly at the cube corners; do not draw a dense wireframe. Recognizable simple 3D object silhouette, not a package box (no lid, tape, flap).\nComposition: centered on a square genuinely transparent canvas, maximum extent about 88 percent, balanced margin, front three-quarter orthographic view, no perspective distortion.\nMaterials: solid softly beveled orange faces, slightly raised broad ivory mesh edges, simple shading like the approved icons.\nConstraints: readable at 16px, large clear forms, strong silhouette. NO page/document backdrop, NO text or OBJ lettering, NO labels, NO floor, NO stand, NO scene, NO extra objects, NO external drop shadow or glow, NO particles. Keep the exterior fully transparent with clean anti-aliased edges. Smooth UI artwork, not pixel art.",
+  "source": "C:/Users/benso/.codex/generated_images/01a16ff5-97eb-7be3-a946-8a48a4e30f29/exec-03a3977b-66fd-4076-9d79-4eec414d0853.png",
+  "exports": "file_model_<size>.png",
+  "sizes": [
+    16,
+    32,
+    64,
+    128,
+    256
+  ]
+}

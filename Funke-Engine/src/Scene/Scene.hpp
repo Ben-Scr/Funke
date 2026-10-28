@@ -10,6 +10,7 @@
 // Scene stores an entt::registry by value and its template members call
 // view()/get(), so the complete type is required here.
 #include <entt/entity/registry.hpp>
+#include <entt/container/dense_map.hpp>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -111,6 +112,20 @@ namespace Funke {
 			AssetGUID prefabGuid = AssetGUID(0),
 			AssetGUID sceneGuid = AssetGUID(0),
 			EntityID runtimeId = 0);
+		// Preserves dirty flags; nonzero skip entries leave those handles and their identities untouched.
+		void SetRuntimeEntityMetaDataBulk(std::span<const EntityHandle> entities,
+			std::span<const uint8_t> skip = {});
+		// Fresh runtime metadata/UUID rows hold candidate IDs; collision resolution updates both rows and the span.
+		void CommitRuntimeEntityIdentities(std::span<const EntityHandle> entities, std::span<uint64_t> candidateIds);
+		void RollbackParallelEcbCreatedEntities(std::span<const EntityHandle> entities) noexcept;
+		bool CanUseParallelEcbComponent(entt::id_type storageHash);
+		void NotifyParallelEcbComponentConstructed(entt::id_type storageHash, EntityHandle entity);
+		void NotifyParallelEcbComponentDestroying(entt::id_type storageHash, EntityHandle entity);
+		bool CanUseParallelEcbDestroy(std::span<const EntityHandle> entities);
+		// Main-thread preparation precedes worker removal; finalization requires every component removed.
+		void PrepareParallelEcbDestroy(EntityHandle entity);
+		void PrepareParallelEcbDestroy(std::span<const EntityHandle> entities);
+		void FinalizeParallelEcbDestroy(EntityHandle entity);
 
 		void MarkAllDirtyOnce();
 
@@ -505,7 +520,7 @@ namespace Funke {
 		bool m_TransformHierarchyDirty = true;
 		bool m_TransformDirtyAll = true;
 		std::vector<EntityHandle> m_DirtyTransformEntities;
-		std::unordered_set<EntityHandle> m_DirtyTransformEntitySet;
+		std::vector<EntityHandle> m_DirtyTransformEntityMarks;
 		uint64_t m_StaticRenderDataVersion = 1;
 		uint64_t m_HierarchyVersion = 1;
 
@@ -517,9 +532,10 @@ namespace Funke {
 		bool m_UIDirty = true;
 		bool m_IsDetached = false;
 		bool m_SuppressEntityDestructionCallbacks = false;
-		std::unordered_map<EntityID, EntityHandle> m_RuntimeIdToEntity;
-		std::unordered_map<uint64_t, EntityHandle> m_SceneGuidToEntity;
-		std::unordered_set<uint32_t> m_EntitiesBeingDestroyed;
+		entt::dense_map<EntityID, EntityHandle> m_RuntimeIdToEntity;
+		entt::dense_map<uint64_t, EntityHandle> m_SceneGuidToEntity;
+		// Active guards must survive ClearEntities invoked from an on_destroy callback.
+		std::vector<EntityHandle> m_EntityDestructionMarks;
 		struct DestructionChildren {
 			std::unordered_map<EntityHandle, size_t> Positions;
 			size_t Size = 0;

@@ -45,8 +45,8 @@ namespace Funke {
 			auto& scriptComponent = entity.GetComponent<ScriptComponent>();
 			const bool alreadyHadScript = scriptComponent.HasScript(scriptEntry.ClassName, scriptEntry.Type);
 
-			if (!alreadyHadScript) {
-				scriptComponent.AddScript(scriptEntry.ClassName, scriptEntry.Type);
+			if (!alreadyHadScript && !scriptComponent.AddScript(scriptEntry.ClassName, scriptEntry.Type)) {
+				return false;
 			}
 
 			// MUST also seed DynamicComponentStorage; without it inspector renders fine but
@@ -86,11 +86,10 @@ namespace Funke {
 			}
 
 			auto& scriptComponent = entity.GetComponent<ScriptComponent>();
-			if (scriptComponent.HasManagedComponent(scriptEntry.ClassName)) {
+			if (!scriptComponent.AddManagedComponent(scriptEntry.ClassName)) {
 				return false;
 			}
 
-			scriptComponent.AddManagedComponent(scriptEntry.ClassName);
 			scene.MarkDirty();
 			return true;
 		}

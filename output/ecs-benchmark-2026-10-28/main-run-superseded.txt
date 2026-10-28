@@ -1,0 +1,1 @@
+Diagnostic run superseded: all samples in one frame accumulated native dirty-transform state; direct no-wrapper destroy also inherited wrapper-dictionary history. Use final-* outputs for comparison.

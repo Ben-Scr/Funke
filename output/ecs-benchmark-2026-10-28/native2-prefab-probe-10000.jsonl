@@ -1,0 +1,9 @@
+{"Operation":"InstantiatePrefab2Components","Mode":"Direct","Count":10000,"Sample":0,"TotalMs":8.5722,"RecordMs":0,"PlaybackMs":0,"AllocatedBytes":560000,"Gen0":0,"Gen1":0,"Gen2":0}
+{"Operation":"InstantiatePrefab2Components","Mode":"Direct","Count":10000,"Sample":1,"TotalMs":8.4885,"RecordMs":0,"PlaybackMs":0,"AllocatedBytes":560000,"Gen0":0,"Gen1":0,"Gen2":0}
+{"Operation":"InstantiatePrefab2Components","Mode":"Direct","Count":10000,"Sample":2,"TotalMs":8.4096,"RecordMs":0,"PlaybackMs":0,"AllocatedBytes":560000,"Gen0":0,"Gen1":0,"Gen2":0}
+{"Operation":"InstantiatePrefab2Components","Mode":"Direct","Count":10000,"Sample":3,"TotalMs":8.3745,"RecordMs":0,"PlaybackMs":0,"AllocatedBytes":560000,"Gen0":0,"Gen1":0,"Gen2":0}
+{"Operation":"InstantiatePrefab2Components","Mode":"Direct","Count":10000,"Sample":4,"TotalMs":8.5409,"RecordMs":0,"PlaybackMs":0,"AllocatedBytes":560000,"Gen0":0,"Gen1":0,"Gen2":0}
+{"Operation":"InstantiatePrefab2Components","Mode":"Direct","Count":10000,"Sample":5,"TotalMs":9.0163,"RecordMs":0,"PlaybackMs":0,"AllocatedBytes":560000,"Gen0":0,"Gen1":0,"Gen2":0}
+{"Operation":"InstantiatePrefab2Components","Mode":"Direct","Count":10000,"Sample":6,"TotalMs":8.2594,"RecordMs":0,"PlaybackMs":0,"AllocatedBytes":560000,"Gen0":0,"Gen1":0,"Gen2":0}
+{"Operation":"InstantiatePrefab2Components","Mode":"Direct","Count":10000,"Sample":7,"TotalMs":8.5247,"RecordMs":0,"PlaybackMs":0,"AllocatedBytes":560000,"Gen0":0,"Gen1":0,"Gen2":0}
+{"Operation":"InstantiatePrefab2Components","Mode":"Direct","Count":10000,"Sample":8,"TotalMs":8.2403,"RecordMs":0,"PlaybackMs":0,"AllocatedBytes":560000,"Gen0":0,"Gen1":0,"Gen2":0}

@@ -1228,6 +1228,14 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, int> Scene_CancelLoadAsync;
     public delegate* unmanaged<byte*, int, byte*, int, int> EditorGUI_Popup;
     public delegate* unmanaged<byte*, int, int> EditorGUI_Selectable;
+    public delegate* unmanaged<ulong, uint, int> Entity_AddComponentByTypeId;
+    public delegate* unmanaged<ulong, uint, int> Entity_RemoveComponentByTypeId;
+    public delegate* unmanaged<ulong, uint, int> Entity_HasComponentByTypeId;
+    public delegate* unmanaged<ulong, ulong> Asset_BeginLoadAsync;
+    public delegate* unmanaged<ulong, int> Asset_GetLoadStatus;
+    public delegate* unmanaged<ulong, int> Asset_CancelLoadAsync;
+    public delegate* unmanaged<ulong, void> Asset_ReleaseLoad;
+    public delegate* unmanaged<byte*, int, ulong*, int, int, int> Ecb_PlaybackWithMode;
 }
 
 internal static unsafe class NativeCallbacks

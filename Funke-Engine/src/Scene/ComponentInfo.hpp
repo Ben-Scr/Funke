@@ -15,6 +15,8 @@
 #include <span>
 #include <string>
 #include <typeindex>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace Funke::Serialization { class IArchive; }
@@ -22,6 +24,146 @@ namespace Funke::Serialization { class IArchive; }
 namespace Funke {
 
 	class DynamicComponentStorage;
+	class ComponentRegistry;
+	namespace Codegen {
+		template <typename T> void RegisterPrefixByteEmplacer(ComponentRegistry&, std::size_t);
+	}
+
+	template <typename Signature>
+	class NativeComponentCallback;
+
+	// Certification follows the callable, so replacing a registered emplacer disables bulk bypasses.
+	template <typename TResult, typename... TArgs>
+	class NativeComponentCallback<TResult(TArgs...)> {
+	public:
+		NativeComponentCallback() noexcept = default;
+		NativeComponentCallback(std::nullptr_t) noexcept {}
+		NativeComponentCallback(const NativeComponentCallback&) = default;
+		NativeComponentCallback& operator=(const NativeComponentCallback&) = default;
+		NativeComponentCallback(NativeComponentCallback&& other) noexcept
+			: m_Callback(std::move(other.m_Callback)),
+			  m_NativeType(std::exchange(other.m_NativeType, typeid(void))),
+			  m_NativePrefixSize(std::exchange(other.m_NativePrefixSize, 0)) {}
+		NativeComponentCallback& operator=(NativeComponentCallback&& other) noexcept {
+			if (this != &other) {
+				m_Callback = std::move(other.m_Callback);
+				m_NativeType = std::exchange(other.m_NativeType, typeid(void));
+				m_NativePrefixSize = std::exchange(other.m_NativePrefixSize, 0);
+			}
+			return *this;
+		}
+		template <typename F>
+			requires (!std::is_same_v<std::decay_t<F>, NativeComponentCallback>
+				&& std::is_invocable_r_v<TResult, std::decay_t<F>&, TArgs...>)
+		NativeComponentCallback(F&& callback) : m_Callback(std::forward<F>(callback)) {}
+		template <typename F>
+			requires (!std::is_same_v<std::decay_t<F>, NativeComponentCallback>
+				&& std::is_invocable_r_v<TResult, std::decay_t<F>&, TArgs...>)
+		NativeComponentCallback& operator=(F&& callback) {
+			m_NativeType = typeid(void);
+			m_NativePrefixSize = 0;
+			m_Callback = std::forward<F>(callback);
+			return *this;
+		}
+		NativeComponentCallback& operator=(std::nullptr_t) noexcept {
+			m_Callback = nullptr;
+			m_NativeType = typeid(void);
+			m_NativePrefixSize = 0;
+			return *this;
+		}
+		TResult operator()(TArgs... args) const { return m_Callback(std::forward<TArgs>(args)...); }
+		explicit operator bool() const noexcept { return static_cast<bool>(m_Callback); }
+		friend bool operator==(const NativeComponentCallback& callback, std::nullptr_t) noexcept { return !callback; }
+		std::type_index NativeType() const noexcept { return m_Callback ? m_NativeType : typeid(void); }
+		std::size_t NativePrefixSize() const noexcept { return m_Callback ? m_NativePrefixSize : 0; }
+		template <typename T> bool IsNative() const noexcept { return m_Callback && m_NativeType == typeid(T); }
+		template <typename T> bool IsNative(std::size_t prefixSize) const noexcept {
+			return IsNative<T>() && m_NativePrefixSize == prefixSize;
+		}
+
+	private:
+		friend class ComponentRegistry;
+		template <typename T> friend void Codegen::RegisterPrefixByteEmplacer(ComponentRegistry&, std::size_t);
+		template <typename T, typename F>
+		void SetNative(F&& callback, std::size_t prefixSize = 0) {
+			m_Callback = std::forward<F>(callback);
+			m_NativeType = typeid(T);
+			m_NativePrefixSize = prefixSize;
+		}
+		InlineFunction<TResult(TArgs...)> m_Callback;
+		std::type_index m_NativeType{ typeid(void) };
+		std::size_t m_NativePrefixSize = 0;
+	};
+
+	// Ordinary callback replacement disables only that operation's registry fast path.
+	template <typename TResult, typename TRegistry = entt::registry>
+	class ComponentCallback {
+	public:
+		using RegistryCallbackType = TResult (*)(TRegistry&, EntityHandle);
+
+		ComponentCallback() noexcept = default;
+		ComponentCallback(std::nullptr_t) noexcept {}
+		ComponentCallback(const ComponentCallback&) = default;
+		ComponentCallback& operator=(const ComponentCallback&) = default;
+
+		ComponentCallback(ComponentCallback&& other) noexcept
+			: m_Callback(std::move(other.m_Callback)),
+			  m_RegistryCallback(std::exchange(other.m_RegistryCallback, nullptr)),
+			  m_NativeType(std::exchange(other.m_NativeType, typeid(void))) {}
+
+		ComponentCallback& operator=(ComponentCallback&& other) noexcept {
+			if (this != &other) {
+				m_Callback = std::move(other.m_Callback);
+				m_RegistryCallback = std::exchange(other.m_RegistryCallback, nullptr);
+				m_NativeType = std::exchange(other.m_NativeType, typeid(void));
+			}
+			return *this;
+		}
+
+		template <typename F>
+			requires (!std::is_same_v<std::decay_t<F>, ComponentCallback>
+				&& std::is_invocable_r_v<TResult, std::decay_t<F>&, Entity>)
+		ComponentCallback(F&& callback) : m_Callback(std::forward<F>(callback)) {}
+
+		template <typename F>
+			requires (!std::is_same_v<std::decay_t<F>, ComponentCallback>
+				&& std::is_invocable_r_v<TResult, std::decay_t<F>&, Entity>)
+		ComponentCallback& operator=(F&& callback) {
+			m_RegistryCallback = nullptr;
+			m_NativeType = typeid(void);
+			m_Callback = std::forward<F>(callback);
+			return *this;
+		}
+
+		ComponentCallback& operator=(std::nullptr_t) noexcept {
+			m_RegistryCallback = nullptr;
+			m_NativeType = typeid(void);
+			m_Callback = nullptr;
+			return *this;
+		}
+
+		TResult operator()(Entity entity) const { return m_Callback(std::move(entity)); }
+		explicit operator bool() const noexcept { return static_cast<bool>(m_Callback); }
+		friend bool operator==(const ComponentCallback& callback, std::nullptr_t) noexcept { return !callback; }
+
+		// Requires a live registry and valid handle; add/remove remain safe for duplicate/missing components.
+		RegistryCallbackType RegistryCallback() const noexcept { return m_Callback ? m_RegistryCallback : nullptr; }
+		std::type_index NativeType() const noexcept { return m_Callback ? m_NativeType : typeid(void); }
+		template <typename T> bool IsNative() const noexcept { return m_Callback && m_NativeType == typeid(T); }
+
+	private:
+		friend class ComponentRegistry;
+		template <typename T, typename F>
+		void SetNative(F&& callback, RegistryCallbackType registryCallback) {
+			m_Callback = std::forward<F>(callback);
+			m_RegistryCallback = registryCallback;
+			m_NativeType = typeid(T);
+		}
+
+		InlineFunction<TResult(Entity)> m_Callback;
+		RegistryCallbackType m_RegistryCallback = nullptr;
+		std::type_index m_NativeType{ typeid(void) };
+	};
 
 	struct ComponentInfo {
 		std::string displayName;
@@ -43,10 +185,10 @@ namespace Funke {
 		// FNV-1a 64-bit hash of serializedName; stable across builds so it can be embedded in binary assets. Zero = not yet hashed.
 		uint64_t serializedNameHash = 0;
 
-		// InlineFunction (not raw ptr) so dynamic registrations can capture their DynamicComponentStorage; non-capturing lambdas from Register<T> stay inline with no vtable/RTTI per lambda.
-		InlineFunction<bool(Entity)> has;
-		InlineFunction<void(Entity)> add;
-		InlineFunction<void(Entity)> remove;
+		// Dynamic registrations capture their storage; native registrations also supply direct registry callbacks.
+		ComponentCallback<bool, const entt::registry> has;
+		ComponentCallback<void> add;
+		ComponentCallback<void> remove;
 		InlineFunction<void(Entity src, Entity dst)> copyTo;
 
 		// Raw component pointer for the ScriptCore ref API (C# reads/writes fields via void* with no P/Invoke). Invalidated by the next add/remove on the pool — do not cache across frames.
@@ -68,13 +210,13 @@ namespace Funke {
 		DynamicComponentStorage* dynamicStorage = nullptr;
 
 		// ECB playback writes the raw payload in one call. Components with scene-bound runtime state (e.g. ParticleSystem2DComponent) must override to rebind, same as copyTo.
-		InlineFunction<void(entt::registry& registry, EntityHandle entity,
+		NativeComponentCallback<void(entt::registry& registry, EntityHandle entity,
 			const void* bytes, size_t size)> emplaceFromBytes;
 		// Exact payload size for preflight validation; zero leaves sizing to a custom emplacer.
 		size_t bytePayloadSize = 0;
 
 		// Default-constructs via registry.emplace<T>, firing C++ default-initializers (e.g. Scale={1,1}). MUST NOT route through emplaceFromBytes — managed default(T) is all-zero and would clobber those defaults.
-		InlineFunction<void(entt::registry& registry, EntityHandle entity)> defaultEmplace;
+		NativeComponentCallback<void(entt::registry& registry, EntityHandle entity)> defaultEmplace;
 
 		// Appends bytes to `out`; used by PrefabTemplateCache to bake a memcpy-ready blob.
 		// InlineFunction (not a raw pointer) so helpers like RegisterPrefixByteEmplacer can capture a

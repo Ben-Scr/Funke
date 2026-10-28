@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -68,7 +69,7 @@ public sealed class BenchHarness
     }
 
     public static double Milliseconds(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
-    public static void Require(bool condition, string message)
+    public static void Require([DoesNotReturnIf(false)] bool condition, string message)
     {
         if (!condition) throw new InvalidOperationException(message);
     }
@@ -110,6 +111,9 @@ public sealed class BenchHarness
             ProcessorCount = Environment.ProcessorCount, Workers = JobSystem.WorkerCount,
             StopwatchFrequency = Stopwatch.Frequency, ServerGC = GCSettings.IsServerGC,
             TieredCompilation = Environment.GetEnvironmentVariable("DOTNET_TieredCompilation"),
+            EcbSerialKernels = Environment.GetEnvironmentVariable("FUNKE_ECB_SERIAL_KERNELS"),
+            EcbParallelDiagnostics = Environment.GetEnvironmentVariable("FUNKE_ECB_PARALLEL_DIAGNOSTICS"),
+            EcbTimings = Environment.GetEnvironmentVariable("FUNKE_ECB_TIMINGS"),
             Warmups, Repetitions, Samples
         }, new JsonSerializerOptions { WriteIndented = true }));
         using var csv = new StreamWriter(Output + ".csv");
@@ -139,11 +143,14 @@ public sealed class EcsBenchmarkSystem : SceneSystem
             string group = Environment.GetEnvironmentVariable("ECS_BENCH_GROUP") ?? "all";
             int[] sizes = (Environment.GetEnvironmentVariable("ECS_BENCH_SIZES") ?? "1000,10000,100000").Split(',').Select(int.Parse).ToArray();
             Log.Info($"[ECSBENCH] Runtime={Environment.Version} CPUs={Environment.ProcessorCount} workers={JobSystem.WorkerCount} warmups={harness.Warmups} samples={harness.Repetitions}");
+            if (group == "validation") EcbMutationValidation.Validate(Scene);
             foreach (int n in sizes)
             {
                 if (group is "all" or "structural") await StructuralBenchmarks.Run(n, harness);
                 if (group is "all" or "query") await QueryBenchmarks.Run(Scene, n, harness);
                 if (group is "all" or "custom") await CustomComponentBenchmarks.Run(Scene, n, harness);
+                if (group is "all" or "mixed") await MixedStressBenchmarks.Run(n, harness, Scene);
+                if (group == "playback") await PlaybackBenchmarks.Run(n, harness, Scene);
                 if (group == "history") await HistoryBenchmarks.Run(Scene, n, harness);
             }
             harness.Finish();

@@ -172,6 +172,10 @@ namespace Funke {
 		}
 
 		std::filesystem::path ResolveNativeScriptMirrorPath(const std::string& path, bool ensureProjectFiles = false) {
+			// Project C++ assets are compiled in place; only the legacy standalone sandbox uses mirrors.
+			if (ProjectManager::GetCurrentProject()) {
+				return {};
+			}
 			const std::filesystem::path sourcePath(path);
 			if (!IsNativeScriptSourceExtension(sourcePath.extension().string())) {
 				return {};
@@ -620,7 +624,7 @@ namespace Funke {
 			const bool isGlobalSystem = m_PendingScriptType == PendingScriptType::CSharpGlobalSystem;
 			const bool isEmpty = m_PendingScriptType == PendingScriptType::CSharpEmpty;
 			const bool isDataAsset = m_PendingScriptType == PendingScriptType::CSharpDataAsset;
-			std::string ext = isCSharp ? ".cs" : (isComponent ? ".hpp" : ".cpp");
+			std::string ext = isCSharp ? ".cs" : ".cpp";
 
 			if (!className.empty() && className.find('.') == std::string::npos) {
 			}
@@ -773,36 +777,22 @@ namespace Funke {
 				}
 			}
 			else {
-				std::string boilerplate = isComponent
-					? "#pragma once\n"
-					  "\n"
-					  "struct " + className + "\n"
-					  "{\n"
-					  "    float Value = 0.0f;\n"
-					  "};\n"
-					: "#include <Scripting/NativeScript.hpp>\n"
-					  "\n"
-					  "class " + className + " : public Funke::NativeScript {\n"
-					  "public:\n"
-					  "    void Start() override\n"
-					  "    {\n"
-					  "    }\n"
-					  "\n"
-					  "    void Update(float dt) override\n"
-					  "    {\n"
-					  "    }\n"
-					  "\n"
-					  "    void OnDestroy() override\n"
-					  "    {\n"
-					  "    }\n"
-					  "};\n"
-					  "REGISTER_SCRIPT(" + className + ")\n";
+				const std::string boilerplate = EditorScriptDiscovery::BuildNativeScriptSource(className);
 
 				std::ofstream file(finalPath);
-				if (file.is_open()) { file << boilerplate; file.close(); }
+				file << boilerplate;
+				file.close();
+				if (!file) {
+					FNK_ERROR_TAG("AssetBrowser", "Failed to write C++ script '{}'", finalPath);
+					CancelRename();
+					return;
+				}
 
-				std::filesystem::path nativeDir = GetNativeSourceDirectory(true);
-				if (!nativeDir.empty()) {
+				FunkeProject* project = ProjectManager::GetCurrentProject();
+				if (project) {
+					project->EnsureNativeScriptProjectFiles();
+				}
+				else if (std::filesystem::path nativeDir = GetNativeSourceDirectory(true); !nativeDir.empty()) {
 					std::error_code ec;
 					std::filesystem::create_directories(nativeDir, ec);
 					auto dst = nativeDir / finalFileName;
@@ -813,6 +803,7 @@ namespace Funke {
 			}
 
 			AssetRegistry::ImportAssetPathIncremental(finalPath);
+			EditorScriptDiscovery::MarkDirty();
 			m_SelectedPath = finalPath;
 			m_PendingScriptType = PendingScriptType::None;
 			m_PendingScriptDir.clear();
@@ -886,6 +877,7 @@ namespace Funke {
 
 		if (Directory::Delete(path)) {
 			ForgetRegistryAssetPaths(deletedAssetPaths);
+			EditorScriptDiscovery::MarkDirty();
 			if (!nativeMirrorPath.empty()) {
 				std::error_code ec;
 				std::filesystem::remove(nativeMirrorPath, ec);
@@ -945,6 +937,7 @@ namespace Funke {
 		CollectRegistryAssetPaths(path, renamedAssetPaths);
 
 		if (Directory::Rename(path, newName)) {
+			EditorScriptDiscovery::MarkDirty();
 			std::filesystem::path p(path);
 			std::string newPath = (p.parent_path() / newName).string();
 			ForgetRegistryAssetPaths(renamedAssetPaths);
@@ -966,7 +959,7 @@ namespace Funke {
 
 			std::filesystem::path projectSourceDir;
 			FunkeProject* project = ProjectManager::GetCurrentProject();
-			if (oldIsNativeScript || newIsNativeScript)
+			if ((oldIsNativeScript || newIsNativeScript) && !project)
 			{
 				projectSourceDir = GetNativeSourceDirectory(newIsNativeScript);
 			}
@@ -1237,6 +1230,23 @@ namespace Funke {
 		CreateAssetWithCollisionCheck(preferred,
 			[this, parentDir](const std::filesystem::path& finalPath) {
 				m_PendingScriptType = PendingScriptType::CSharp;
+				m_PendingScriptDir = parentDir;
+				m_NeedsRefresh = true;
+				Refresh();
+				m_SelectedPath = finalPath.string();
+				BeginRename(finalPath.string(), finalPath.stem().string());
+			});
+	}
+
+	void AssetBrowser::CreateCppScript(const std::string& parentDir) {
+		if (!ProjectManager::GetCurrentProject()) {
+			FNK_WARN_TAG("AssetBrowser", "Open or create a project to add C++ scripts.");
+			return;
+		}
+		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewNativeScript.cpp";
+		CreateAssetWithCollisionCheck(preferred,
+			[this, parentDir](const std::filesystem::path& finalPath) {
+				m_PendingScriptType = PendingScriptType::Cpp;
 				m_PendingScriptDir = parentDir;
 				m_NeedsRefresh = true;
 				Refresh();
@@ -2308,6 +2318,7 @@ namespace Funke {
 		}
 
 		ForgetRegistryAssetPaths(forgetAssetPaths);
+		EditorScriptDiscovery::MarkDirty();
 
 		for (const std::string& error : errors) {
 			FNK_CORE_WARN_TAG("AssetBrowser", "{}", error);

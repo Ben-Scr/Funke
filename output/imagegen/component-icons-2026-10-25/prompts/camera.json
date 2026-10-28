@@ -1,0 +1,14 @@
+{
+  "name": "camera",
+  "tool": "built-in image_gen",
+  "intent": "generate",
+  "transparent_background": true,
+  "source": "C:\\Users\\benso\\.codex\\generated_images\\01a1702d-2bf3-7b00-abae-832d5b894652\\exec-ca857988-4838-4f8d-83d3-1c76b083b07d.png",
+  "master": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\imagegen\\component-icons-2026-10-25\\masters\\camera.png",
+  "prompt": "Use case: stylized-concept. Asset type: production component icon for a game-engine editor, displayed at only 16 to 20 pixels. Create ONE centered icon on a truly transparent square canvas. Match the approved style seen in the references: softly dimensional smooth satin plastic, chunky clear silhouette, modest rounded bevels, gentle broad highlight from top-left, slightly deeper color at lower-right, clean soft material, bold simple massing. Design a standalone symbol, NOT a paper document. Large simple forms, high readability when tiny. Front-facing or nearly front-facing. Maximum silhouette extent 88% of square, comfortable transparent margin. No exterior drop shadow, no ground plane, no colored background, no glow, no text labels, no border, no watermark, no thin outlines, no microdetails or scattered flecks. Preserve real alpha transparency.\nSubject: a cyan rounded camera body with a small top ridge. Front view, recognizable compact camera silhouette, nearly square in overall mass. One single large central dark-blue circular lens with a thick warm-ivory ring. Lens must occupy most of the camera body. Smooth cyan satin surface and only these essential simple forms. No tiny buttons, markings, reflections of scenes, secondary lenses, or straps.",
+  "styleReferences": [
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\imagegen\\file-icons-complete-2026-10-25\\masters\\file_prefab.png",
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\imagegen\\file-icons-complete-2026-10-25\\masters\\file_audio.png",
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\imagegen\\file-icons-complete-2026-10-25\\masters\\file_shader.png"
+  ]
+}

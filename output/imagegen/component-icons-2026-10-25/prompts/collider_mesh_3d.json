@@ -1,0 +1,13 @@
+{
+  "name": "collider_mesh_3d",
+  "mode": "built-in image_gen",
+  "useCase": "stylized-concept",
+  "source": "C:\\Users\\benso\\.codex\\generated_images\\01a1702d-69c5-7321-880e-7b93f512fe0d\\exec-64b0f9f4-f3bc-4928-a6c9-e1d193374a33.png",
+  "transparentBackground": true,
+  "prompt": "Use case: stylized-concept.\nAsset type: one standalone editor component icon, satin plastic 3D app icon on genuinely transparent square PNG.\nStyle reference: match the previously viewed blue puzzle piece and yellow zip-folder only in smooth satin-plastic material, chunky forms, soft bevels and upper-left lighting. Do not copy their subjects.\nComposition: one centered icon, maximum extent about 88% of the square canvas, fully in frame with clean transparent padding.\nSmall-size clarity: the icon will display at 16–20 pixels. Use extremely simple, bold geometry and wide substantial structural strokes. No fine detail, grain, speckle, hairline strokes, extra objects, decorative particles, floor, background plane, external shadow, document backing, labels, letters, numbers, or watermark.\nMaterial: fresh saturated leaf-green satin plastic, light lime upper-left bevel highlight, darker green lower-right bevel. Soft shallow bevels, large clean forms, no glossy glare. Background and all openings must be genuine alpha transparency.\nSubject: a green triangular low-poly pyramid cage / tetrahedron mesh icon. Pointed top apex, triangular base in isometric perspective, only six thick substantial rounded green rods form its triangular edges, joined cleanly at four corners. Transparent triangular faces and open interior. Very simple pyramid wireframe immediately readable at tiny size, not a sphere or lattice. No extra mesh subdivisions, nodes, axes or crossbars.",
+  "styleReferences": [
+    "output/imagegen/file-icons-complete-2026-10-25/masters/file_prefab.png",
+    "output/imagegen/file-icons-complete-2026-10-25/masters/folder_zip.png"
+  ],
+  "created": "2026-10-25"
+}

@@ -19,6 +19,8 @@ namespace Funke {
 
         static FontHandle LoadFont(std::string_view path, float pixelSize);
         static FontHandle LoadFontByUUID(uint64_t assetId, float pixelSize);
+        static FontHandle FindLoadedFontByUUID(uint64_t assetId, float pixelSize);
+        static FontHandle LoadPreparedFont(uint64_t assetId, const std::shared_ptr<const FontPreparedData>& prepared);
 
         // Returns immediately; handle is invalid until the bake publishes. Re-uses an existing slot for the same (uuid, pixelSize) bucket so repeated frame calls don't spawn duplicate workers.
         static FontHandle LoadFontByUUIDAsync(uint64_t assetId, float pixelSize);

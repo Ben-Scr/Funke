@@ -1,0 +1,12 @@
+{
+  "UtcTime": "2026-10-28T16:22:29.7265306Z",
+  "Runtime": "10.0.11",
+  "ProcessorCount": 24,
+  "Workers": 16,
+  "StopwatchFrequency": 10000000,
+  "ServerGC": false,
+  "TieredCompilation": "0",
+  "Warmups": 3,
+  "Repetitions": 9,
+  "Samples": []
+}

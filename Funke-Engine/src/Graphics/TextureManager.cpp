@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Graphics/TextureManager.hpp"
 
+#include "Assets/AssetLoader.hpp"
 #include "Assets/AssetRegistry.hpp"
 #include "Assets/TextureMeta.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
@@ -178,6 +179,22 @@ namespace Funke {
 		// slot-0/generation-0 texture (the first one ever loaded), duplicating it.
 		if (IsValid(existing)) return existing;
 
+		auto image = Texture2D::DecodeFileToCpu(pathStr.c_str(), false);
+		if (!image) {
+			FNK_CORE_WARN_TAG("TextureManager", "Failed to decode texture: {}", pathStr);
+			return TextureHandle{};
+		}
+		return LoadTextureFromImage(pathStr, *image, filter, u, v);
+	}
+
+	TextureHandle TextureManager::LoadTextureFromImage(const std::string& path, const ImageData& image,
+		Filter filter, Wrap u, Wrap v)
+	{
+		if (!s_IsInitialized || path.empty()) return TextureHandle{};
+		if (filter == Filter::Default) filter = Filter::Point;
+		const TextureHandle existing = FindTextureByPath(path, filter, u, v);
+		if (IsValid(existing)) return existing;
+
 		uint16_t idx;
 		if (!s_FreeIndices.empty()) {
 			idx = s_FreeIndices.front();
@@ -186,30 +203,29 @@ namespace Funke {
 		else {
 			// TextureHandle::index is uint16_t — refuse rather than truncate and corrupt a live slot.
 			if (s_Textures.size() >= 0xFFFFu) {
-				FNK_CORE_ERROR_TAG("TextureManager", "Texture slot capacity exceeded (>= 65535); cannot load '{}'", pathStr);
+				FNK_CORE_ERROR_TAG("TextureManager", "Texture slot capacity exceeded (>= 65535); cannot load '{}'", path);
 				return TextureHandle{};
 			}
 			idx = static_cast<uint16_t>(s_Textures.size());
 			s_Textures.emplace_back();
 		}
 		TextureEntry& slot = s_Textures[idx];
-		// flipVertical=false: WebGPU UV origin is top-left (matches stb default); flipping would double-flip and render upside-down.
-		if (!slot.Texture.Load(pathStr.c_str(), /*generateMipmaps=*/true,
-			/*srgb=*/false, /*flipVertical=*/false))
+		// Decoded manager textures retain the top-left WebGPU pixel origin.
+		if (!slot.Texture.LoadFromImage(image, path, true, false, false))
 		{
 			s_FreeIndices.push(idx);
 			return TextureHandle{};
 		}
 		slot.Texture.SetSampler(filter, u, v);
-		slot.Name = pathStr;
+		slot.Name = path;
 		slot.SamplerFilter = filter;
 		slot.WrapU = u;
 		slot.WrapV = v;
 		slot.IsValid = true;
-		g_PathIndex[HashLookupKey(pathStr, filter, u, v)] =
+		g_PathIndex[HashLookupKey(path, filter, u, v)] =
 			static_cast<std::uint32_t>(idx) + 1u;
 		EnsureCanonicalKeyCapacity(s_Textures.size());
-		g_CanonicalKeys[idx] = CanonicalPathKey(pathStr);
+		g_CanonicalKeys[idx] = CanonicalPathKey(path);
 		return TextureHandle{ idx, slot.Generation };
 	}
 
@@ -401,6 +417,7 @@ namespace Funke {
 	}
 
 	void TextureManager::UnloadAll(bool /*defaultTextures*/) {
+		AssetLoader::Invalidate(AssetKind::Texture);
 		for (size_t i = 0; i < s_Textures.size(); ++i) {
 			TextureEntry& slot = s_Textures[i];
 			if (slot.IsValid) {

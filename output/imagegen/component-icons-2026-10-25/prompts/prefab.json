@@ -1,0 +1,14 @@
+{
+  "name": "prefab",
+  "tool": "built-in image_gen",
+  "intent": "generate",
+  "transparent_background": true,
+  "source": "C:\\Users\\benso\\.codex\\generated_images\\01a1702d-2bf3-7b00-abae-832d5b894652\\exec-ba4ab052-fae7-4eb2-a6ef-a1eeed6afa5c.png",
+  "master": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\imagegen\\component-icons-2026-10-25\\masters\\prefab.png",
+  "prompt": "Use case: stylized-concept. Asset type: production component icon for a game-engine editor, displayed at only 16 to 20 pixels. Create ONE centered icon on a truly transparent square canvas. Match the approved style seen in the references: softly dimensional smooth satin plastic, chunky clear silhouette, modest rounded bevels, gentle broad highlight from top-left, slightly deeper color at lower-right, clean soft material, bold simple massing. Design a standalone symbol, NOT a paper document. Large simple forms, high readability when tiny. Front-facing or nearly front-facing. Maximum silhouette extent 88% of square, comfortable transparent margin. No exterior drop shadow, no ground plane, no colored background, no glow, no text labels, no border, no watermark, no thin outlines, no microdetails or scattered flecks. Preserve real alpha transparency.\nSubject: one simple cyan satin jigsaw puzzle piece representing a reusable prefab unit. Rounded square main body, one broad round protruding tab centered on the top and one on the right, one broad round inward socket centered on the left and one on the bottom. Bold connected chunky mass, front view, no markings. Match the smooth cyan puzzle-piece reference in material and saturation while making a fresh component icon rendering. No badges, no outline, no text, no paper.",
+  "styleReferences": [
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\imagegen\\file-icons-complete-2026-10-25\\masters\\file_prefab.png",
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\imagegen\\file-icons-complete-2026-10-25\\masters\\file_audio.png",
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\imagegen\\file-icons-complete-2026-10-25\\masters\\file_shader.png"
+  ]
+}

@@ -37,6 +37,8 @@ namespace Funke {
 
 		static AudioHandle LoadAudio(const std::string_view& path);
 		static AudioHandle LoadAudioByUUID(uint64_t assetId);
+		static AudioHandle FindLoadedAudio(std::string_view path);
+		static AudioHandle LoadDecodedAudio(std::unique_ptr<Audio> audio);
 		static void UnloadAudio(const AudioHandle& audioHandle);
 		static void UnloadAllAudio();
 

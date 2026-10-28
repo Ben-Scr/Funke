@@ -1,4 +1,5 @@
 #pragma once
+#include "Core/Log.hpp"
 #include "Scripting/ScriptInstance.hpp"
 #include <string>
 #include <vector>
@@ -19,12 +20,18 @@ namespace Funke {
 
 		ScriptComponent() = default;
 
-		void AddScript(const std::string& className, ScriptType type = ScriptType::Managed) {
+		bool AddScript(const std::string& className, ScriptType type = ScriptType::Managed) {
 			if (className.empty() || HasScript(className, type)) {
-				return;
+				return false;
+			}
+			if (HasScript(className) || HasManagedComponent(className)) {
+				FNK_WARN_TAG("ScriptComponent", "Cannot attach '{}': this entity already has a script or component with that class name. "
+					"Use a unique class name or namespace so saved fields remain unambiguous.", className);
+				return false;
 			}
 
 			Scripts.emplace_back(className, type);
+			return true;
 		}
 
 		bool HasScript(const std::string& className) const {
@@ -41,12 +48,18 @@ namespace Funke {
 			return false;
 		}
 
-		void AddManagedComponent(const std::string& className) {
+		bool AddManagedComponent(const std::string& className) {
 			if (className.empty() || HasManagedComponent(className)) {
-				return;
+				return false;
+			}
+			if (HasScript(className)) {
+				FNK_WARN_TAG("ScriptComponent", "Cannot attach '{}': this entity already has a script with that class name. "
+					"Use a unique class name or namespace so saved fields remain unambiguous.", className);
+				return false;
 			}
 
 			ManagedComponents.push_back(className);
+			return true;
 		}
 
 		bool HasManagedComponent(const std::string& className) const {

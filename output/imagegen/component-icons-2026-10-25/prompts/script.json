@@ -1,0 +1,14 @@
+{
+  "name": "script",
+  "tool": "built-in image_gen",
+  "intent": "generate",
+  "transparent_background": true,
+  "source": "C:\\Users\\benso\\.codex\\generated_images\\01a1702d-2bf3-7b00-abae-832d5b894652\\exec-6e0fd49e-8d22-4abd-bb6a-4000b751718f.png",
+  "master": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\imagegen\\component-icons-2026-10-25\\masters\\script.png",
+  "prompt": "Use case: stylized-concept. Asset type: production component icon for a game-engine editor, displayed at only 16 to 20 pixels. Create ONE centered icon on a truly transparent square canvas. Match the approved style seen in the references: softly dimensional smooth satin plastic, chunky clear silhouette, modest rounded bevels, gentle broad highlight from top-left, slightly deeper color at lower-right, clean soft material, bold simple massing. Design a standalone symbol, NOT a paper document. Large simple forms, high readability when tiny. Front-facing or nearly front-facing. Maximum silhouette extent 88% of square, comfortable transparent margin. No exterior drop shadow, no ground plane, no colored background, no glow, no text labels, no border, no watermark, no thin outlines, no microdetails or scattered flecks. Preserve real alpha transparency.\nSubject: two bold standalone green curly braces facing inward, surrounding one single short thick warm-ivory horizontal dash. Exactly the symbol { - } rendered as three chunky satin objects. The curly braces are wide heavy strokes with generously rounded corners and clear pointed middle bends. Near-square overall composition with tall chunky braces and ample transparent gaps. Emerald green satin material for both braces, warm ivory dash. No page, no panel, no enclosing disc, no code lines, no letters, no labels, no additional symbols.",
+  "styleReferences": [
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\imagegen\\file-icons-complete-2026-10-25\\masters\\file_prefab.png",
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\imagegen\\file-icons-complete-2026-10-25\\masters\\file_audio.png",
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\imagegen\\file-icons-complete-2026-10-25\\masters\\file_shader.png"
+  ]
+}

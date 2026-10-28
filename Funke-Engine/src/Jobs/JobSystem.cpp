@@ -201,7 +201,10 @@ namespace Funke {
 			ExecuteJob(std::move(work));
 			return;
 		}
-		s_Queue.enqueue(std::move(work));
+		if (!s_Queue.enqueue(std::move(work))) {
+			ExecuteJob(std::move(work));
+			return;
+		}
 
 		// Re-check: Shutdown may have flipped after the first load; workers' drain loop may have already exited, so drain inline here to avoid losing the enqueue.
 		if (s_State.load(std::memory_order_acquire) != PoolState::Running) {

@@ -147,7 +147,7 @@ namespace Funke {
 		}
 
 		static void Sync() {
-			EnsureUpToDate();
+			EnsureUpToDate(true);
 		}
 
 		// Standalone runtimes set this true: their Assets/ never changes on disk, so the registry
@@ -530,8 +530,12 @@ namespace Funke {
 		}
 
 	private:
-		static std::string GetAssetsRoot() {
+		static std::string GetAssetsRoot(bool forceRefresh = false) {
 			if (FunkeProject* project = ProjectManager::GetCurrentProject()) {
+				// Dirty notifications and explicit Sync recheck filesystem aliases; relative roots never match.
+				if (!forceRefresh && !State().Dirty && project->AssetsDirectory == State().TrackedRoot) {
+					return State().TrackedRoot;
+				}
 				return NormalizePath(project->AssetsDirectory);
 			}
 
@@ -543,23 +547,30 @@ namespace Funke {
 			return NormalizePath(fallback);
 		}
 
-		static void EnsureUpToDate() {
-			const std::string root = GetAssetsRoot();
-			if (root != State().TrackedRoot) {
-				State().TrackedRoot = root;
-				State().Dirty = true;
-				State().ImmutableTrustedLoaded = false;
-				State().ImmutableFullScanned = false;
+		static void EnsureUpToDate(bool forceRootRefresh = false) {
+			auto& state = State();
+			if (!forceRootRefresh && !state.Dirty) {
+				if (const auto* project = ProjectManager::GetCurrentProject();
+					project && project->AssetsDirectory == state.TrackedRoot) {
+					return;
+				}
+			}
+			const std::string root = GetAssetsRoot(forceRootRefresh);
+			if (root != state.TrackedRoot) {
+				state.TrackedRoot = root;
+				state.Dirty = true;
+				state.ImmutableTrustedLoaded = false;
+				state.ImmutableFullScanned = false;
 			}
 
-			if (!State().Dirty) {
+			if (!state.Dirty) {
 				return;
 			}
 
 			// Immutable assets can't change on disk, so once a full authoritative walk has run a
 			// per-miss recovery (ResolvePath/GetKind set State().Dirty) is pointless — short-circuit it.
-			if (State().AssetsImmutable && State().ImmutableFullScanned) {
-				State().Dirty = false;
+			if (state.AssetsImmutable && state.ImmutableFullScanned) {
+				state.Dirty = false;
 				return;
 			}
 
@@ -939,7 +950,9 @@ namespace Funke {
 			if (extension == ".prefab") {
 				return AssetKind::Prefab;
 			}
-			if (extension == ".cs" || extension == ".cpp" || extension == ".c" || extension == ".hpp" || extension == ".h") {
+			if (extension == ".cs" || extension == ".cpp" || extension == ".cc" || extension == ".cxx" || extension == ".c"
+				|| extension == ".h" || extension == ".hh" || extension == ".hpp" || extension == ".hxx"
+				|| extension == ".inl" || extension == ".ipp") {
 				return AssetKind::Script;
 			}
 			if (extension == ".ttf" || extension == ".otf") {

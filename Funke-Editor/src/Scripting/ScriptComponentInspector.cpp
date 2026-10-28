@@ -655,6 +655,57 @@ namespace Funke {
 			return className + "#" + std::to_string(scriptIndex) + "." + fieldName;
 		}
 
+		void RenderNativeScriptFields(const ScriptInstance& instance, std::size_t scriptIndex,
+			std::span<const Entity> entities)
+		{
+			const std::string className = instance.GetClassName();
+			auto& host = ScriptSystem::GetNativeHost();
+			if (!host.IsLoaded() || !host.HasClass(className)) {
+				ImGui::TextDisabled("Compile C++ scripts to show their fields.");
+				return;
+			}
+			for (const auto& field : host.GetFieldDefinitions(className)) {
+				PropertyDescriptor descriptor;
+				descriptor.Name = field.Name;
+				descriptor.DisplayName = field.DisplayName;
+				descriptor.Type = field.Type;
+				descriptor.Metadata.ReadOnly = field.ReadOnly;
+				descriptor.Metadata.Tooltip = field.Tooltip;
+				descriptor.Metadata.HasClamp = field.HasClamp;
+				descriptor.Metadata.ClampMin = field.ClampMin;
+				descriptor.Metadata.ClampMax = field.ClampMax;
+				descriptor.Metadata.Enum = field.Enum;
+				descriptor.Get = [className, scriptIndex, name = field.Name, fallback = field.DefaultValue, type = field.Type]
+					(const Entity& entity) -> PropertyValue {
+						std::string value = fallback;
+						if (entity.HasComponent<ScriptComponent>()) {
+							const auto& scripts = entity.GetComponent<ScriptComponent>();
+							if (scriptIndex < scripts.Scripts.size()) {
+								const auto& script = scripts.Scripts[scriptIndex];
+								if (script.GetClassName() == className && script.GetType() == ScriptType::Native) {
+									if (const auto saved = scripts.PendingFieldValues.find(className + "." + name);
+										saved != scripts.PendingFieldValues.end()) value = saved->second;
+									if (script.HasNativeInstance()) ScriptSystem::GetNativeHost().GetFieldValue(script.GetNativePtr(), name, value);
+								}
+							}
+						}
+						return PropertyValue::FromString(type, value);
+					};
+				descriptor.Set = [className, scriptIndex, name = field.Name](Entity& entity, const PropertyValue& value) {
+					if (!entity.HasComponent<ScriptComponent>()) return;
+					auto& scripts = entity.GetComponent<ScriptComponent>();
+					if (scriptIndex >= scripts.Scripts.size()) return;
+					const auto& script = scripts.Scripts[scriptIndex];
+					if (script.GetClassName() != className || script.GetType() != ScriptType::Native) return;
+					const std::string text = value.ToString();
+					if (script.HasNativeInstance() && !ScriptSystem::GetNativeHost().SetFieldValue(script.GetNativePtr(), name, text)) return;
+					scripts.PendingFieldValues[className + "." + name] = text;
+					if (Scene* scene = entity.GetScene()) scene->MarkDirty();
+				};
+				PropertyDrawer::Draw(entities, descriptor, MakeFieldKey(scriptIndex, className, field.Name));
+			}
+		}
+
 		// ── Nested struct/class grouping ─────────────────────────────
 		// C# flattens a plain struct/class field into dotted records
 		// ("P" -> "P.X", "P.Y"). Rebuild that shape as collapsible groups;
@@ -1199,7 +1250,10 @@ namespace Funke {
 				},
 				label);
 
-			if (instance.GetType() != ScriptType::Native && ScriptEngine::IsInitialized()) {
+			if (instance.GetType() == ScriptType::Native) {
+				RenderNativeScriptFields(instance, i, pass.Propagation);
+			}
+			else if (ScriptEngine::IsInitialized()) {
 				RenderScriptFieldsForInstance(scriptComp, instance, i, pass.Propagation, pass.MultiEdit);
 			}
 			ImGuiUtils::EndComponentSection();

@@ -10,6 +10,7 @@
 #include <memory>
 #include <cstddef>
 #include <chrono>
+#include <vector>
 
 namespace Funke {
 	struct ScriptSystemProcessTaskState;
@@ -55,7 +56,7 @@ namespace Funke {
 		// they get recreated against the new assembly, and global systems are restarted.
 		static bool ReloadManagedAssemblies();
 		bool IsRebuilding() const;
-		bool DidLastRebuildSucceed() const { return !m_LastRebuildFailed; }
+		bool DidLastRebuildSucceed() const { return m_ManagedRebuildError.empty() && m_NativeRebuildError.empty(); }
 		// Compiler output of the last finished build that failed; empty after a success.
 		static std::string GetLastRebuildOutput();
 		// Counts finished C# and native rebuilds, successful or not, so callers can wait for "the next one".
@@ -67,7 +68,11 @@ namespace Funke {
 		bool IsNativeRebuildRunning() const;
 		float GetActiveRebuildElapsedSeconds() const;
 
-		static NativeScriptHost& GetNativeHost() { return m_NativeHost; }
+		static NativeScriptHost& GetNativeHost();
+		static Process::Result BuildNativeScripts(const std::string& projectDirectory,
+			const std::string& targetName, const std::string& configuration,
+			const std::string& profile = "DEVELOPMENT", const std::string& buildFolder = "build",
+			const std::vector<std::string>& configureOptions = {});
 
 	private:
 		void RebuildAndReloadScripts();
@@ -93,8 +98,8 @@ namespace Funke {
 		static inline FileWatcher m_ScriptWatcher;
 		static inline std::shared_ptr<ScriptSystemProcessTaskState> m_RebuildTask;
 		static inline bool m_RebuildQueued = false;
-		static inline bool m_LastRebuildFailed = false;
-		static inline std::string m_LastRebuildOutput;
+		static inline std::string m_ManagedRebuildError;
+		static inline std::string m_NativeRebuildError;
 		static inline uint64_t m_CompletedRebuildCount = 0;
 		// Defines of the last C# build started (failed ones too, so a broken #if branch is not rebuilt in a loop)
 		// and of the one running; the latter goes into the <assembly>.defines stamp when it loads.
@@ -103,7 +108,7 @@ namespace Funke {
 		static inline std::chrono::steady_clock::time_point m_LastDefinesPoll{};
 
 		// C++ native scripts
-		static inline NativeScriptHost m_NativeHost;
+		static NativeScriptHost m_NativeHost;
 		static inline FileWatcher m_NativeWatcher;
 		static inline std::string m_NativeSourceDirectory;
 		static inline std::string m_NativeDLLPath;

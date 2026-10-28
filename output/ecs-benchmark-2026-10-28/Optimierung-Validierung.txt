@@ -1,0 +1,30 @@
+ECS-Optimierung - Validierung, 28.10.2026
+
+Release x64: Engine, ScriptCore und EngineTests erfolgreich gebaut.
+Runtime fuer die aktuelle Interop-Struktur gebaut; Engine und ScriptCore danach synchronisiert.
+
+Native Tests:
+  scripts/dev/Test.ps1 -Suite Engine -Config Release -NoBuild -Filter '*ECB*,*conflict*,*dependenc*,*Scene load guards*,*Fresh runtime metadata*,*structural onAdd*'
+  29/29 Testfaelle, 1883/1883 Assertions bestanden.
+
+C# Tests:
+  scripts/dev/Test.ps1 -Suite CSharp -Config Release -NoBuild
+  539/539 Tests bestanden.
+
+Echte Runtime:
+  optimized-validation-verified.done = PASS
+  Prueft lokale und bestehende Entities, Default- und Payload-Add, Remove/Re-add,
+  ParallelWriter, zerstoerte Referenzen, native/custom Komponenten, reine verwaltete
+  Component-Klassen, Wrapper-Invalidierung und Cleanup ohne Entity-Leaks.
+
+Finale Performance-Laeufe:
+  optimized-verified-1000
+  optimized-verified-10000
+  optimized-verified-100000
+  optimized-verified-history-10000
+  Jeweils 3 Warm-ups + 9 Messungen; gleiche isolierte Runtime-Binaries.
+  Ausgabe: Optimierungsbericht.txt und optimized-summary.csv/json.
+  Vorherige optimize-/optimized-final-Laeufe sind Zwischenstaende.
+
+Aenderungen im AssetLoader und anderen gleichzeitig bearbeiteten Bereichen gehoeren
+nicht zur ECS-Optimierung. Keine fremden Aenderungen zurueckgesetzt.

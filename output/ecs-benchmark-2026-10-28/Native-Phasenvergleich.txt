@@ -1,0 +1,42 @@
+﻿FUNKE — NATIVER PHASENVERGLEICH (DIAGNOSE)
+
+N = 100000. Genau 12 Aktionsmessungen je Operation; die ersten 3 sind Warm-ups.
+Angegeben ist pro Phase der Median der letzten 9 Messungen in Millisekunden pro Charge.
+START/RESULT begrenzen die Abschnitte. Create: entities=100000, commands=200000.
+Add/Remove: entities=0, commands=100000; jede zweite passende Zeile ist Cleanup
+und wird ausgeschlossen. Anzahl und Reihenfolge von Setup/Aktion/Cleanup sind validiert.
+Native Timing-Ausgabe und Logging beeinflussen den Lauf. Die Phasen sind erklaerend;
+Gesamtzeiten dieses Profiling-Laufs sind nicht mit den normalen Benchmark-Laeufen vergleichbar.
+Phasenmediane lassen sich nicht zu einem gemessenen Gesamtmedian addieren.
+Vorher: C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-profile-before-stdout.log
+Nachher: C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-profile-release-stdout.log
+
+CreatePlus2Components / ECB_DefaultConstruct
+Phase               Vorher ms   Nachher ms     Delta ms     Faktor
+preflight_ms         0.575700     0.535800    -0.039900     1.074x
+prepare_ms           0.417500     0.000400    -0.417100  1043.750x
+allocate_ms          0.591300     0.617100     0.025800     0.958x
+metadata_ms         14.872300     7.144900    -7.727400     2.082x
+execute_ms          14.073800    15.188800     1.115000     0.927x
+finalize_ms          7.802400     1.888700    -5.913700     4.131x
+deferred_ms          5.143700     3.934500    -1.209200     1.307x
+
+AddComponentExisting / ECB
+Phase               Vorher ms   Nachher ms     Delta ms     Faktor
+preflight_ms         0.287000     0.253700    -0.033300     1.131x
+prepare_ms           0.208200     0.000400    -0.207800   520.500x
+allocate_ms          0.001100     0.000400    -0.000700     2.750x
+metadata_ms          0.000400     0.000500     0.000100     0.800x
+execute_ms          32.025200    23.701800    -8.323400     1.351x
+finalize_ms          0.000500     0.000500     0.000000     1.000x
+deferred_ms          1.457900     1.468300     0.010400     0.993x
+
+RemoveComponentExisting / ECB
+Phase               Vorher ms   Nachher ms     Delta ms     Faktor
+preflight_ms         0.251800     0.253300     0.001500     0.994x
+prepare_ms           0.208700     0.000300    -0.208400   695.667x
+allocate_ms          0.001200     0.000400    -0.000800     3.000x
+metadata_ms          0.000300     0.000500     0.000200     0.600x
+execute_ms          21.188900    13.847900    -7.341000     1.530x
+finalize_ms          0.000600     0.000700     0.000100     0.857x
+deferred_ms          0.000300     0.000500     0.000200     0.600x

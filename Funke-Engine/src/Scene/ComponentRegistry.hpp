@@ -46,9 +46,32 @@ namespace Funke {
             const std::type_index id = typeid(T);
             const ComponentInfo* existing = PrepareRegistration(id, info);
             info.storageHash = entt::type_hash<T>::value();
-            info.has = [](Entity e) { return e.HasComponent<T>(); };
-            info.add = [](Entity e) { e.AddComponent<T>(); };
-            info.remove = [](Entity e) { e.RemoveComponent<T>(); };
+            if constexpr (!std::is_base_of_v<NativeScript, T>) {
+                info.has.SetNative<T>([](Entity e) { return e.HasComponent<T>(); },
+                    [](const entt::registry& registry, EntityHandle entity) {
+                        return registry.all_of<T>(entity);
+                    });
+                info.add.SetNative<T>([](Entity e) { e.AddComponent<T>(); },
+                    [](entt::registry& registry, EntityHandle entity) {
+                        auto& storage = registry.storage<T>();
+                        if (storage.contains(entity)) return;
+                        if constexpr (!std::is_empty_v<T> && std::is_constructible_v<T, EntityHandle>) {
+                            storage.emplace(entity, entity);
+                        }
+                        else {
+                            storage.emplace(entity);
+                        }
+                    });
+                info.remove.SetNative<T>([](Entity e) { e.RemoveComponent<T>(); },
+                    [](entt::registry& registry, EntityHandle entity) {
+                        registry.remove<T>(entity);
+                    });
+            }
+            else {
+                info.has = [](Entity e) { return e.HasComponent<T>(); };
+                info.add = [](Entity e) { e.AddComponent<T>(); };
+                info.remove = [](Entity e) { e.RemoveComponent<T>(); };
+            }
 
             // Skip empty tag types — no addressable payload in EnTT's empty-type storage.
             if constexpr (!std::is_empty_v<T>) {
@@ -78,7 +101,7 @@ namespace Funke {
                 if constexpr (std::is_trivially_destructible_v<T>) {
                     if (info.emplaceFromBytes == nullptr) {
                         info.bytePayloadSize = sizeof(T);
-                        info.emplaceFromBytes = [](entt::registry& r, EntityHandle e,
+                        info.emplaceFromBytes.SetNative<T>([](entt::registry& r, EntityHandle e,
                                                    const void* bytes, size_t size) {
                             if (size != sizeof(T)) {
                                 FNK_THROW(FunkeErrorCode::InvalidValue,
@@ -95,15 +118,15 @@ namespace Funke {
                             T value;
                             std::memcpy(&value, bytes, sizeof(T));
                             r.emplace_or_replace<T>(e, std::move(value));
-                        };
+                        }, sizeof(T));
                     }
                 }
 
                 if (info.defaultEmplace == nullptr) {
                     if constexpr (std::is_default_constructible_v<T>) {
-                        info.defaultEmplace = [](entt::registry& r, EntityHandle e) {
+                        info.defaultEmplace.SetNative<T>([](entt::registry& r, EntityHandle e) {
                             r.emplace<T>(e);
-                        };
+                        });
                     }
                 }
 
@@ -255,6 +278,8 @@ namespace Funke {
 
         // The component already on the entity that `proposed` conflicts with, or null.
         FUNKE_API const ComponentInfo* FindConflict(Entity entity, std::type_index proposed) const;
+        FUNKE_API const ComponentInfo* FindConflict(const entt::registry& registry, EntityHandle entity,
+            const ComponentInfo& proposed) const;
 
         bool HasConflict(Entity entity, std::type_index proposed) const {
             return FindConflict(entity, proposed) != nullptr;
@@ -267,7 +292,10 @@ namespace Funke {
         FUNKE_API void DeclareConflict(std::type_index a, std::type_index b);
 
         /// Adds component + transitive dependsOn chain. Cycle-safe. Conflicting deps are skipped with a warning.
-        FUNKE_API bool AddWithDependencies(Entity entity, std::type_index type) const;
+        FUNKE_API bool AddWithDependencies(const Entity& entity, std::type_index type) const;
+        FUNKE_API bool AddWithDependencies(const Entity& entity, const ComponentInfo& info) const;
+        // Keeps the root absent even when a dependency cycle reaches it; callers apply the root payload afterward.
+        FUNKE_API void AddDependencies(const Entity& entity, std::type_index type) const;
 
         /// Validates conflict symmetry (A↔B both declared). O(N*M), debug-only.
 #ifdef FNK_DEBUG
@@ -297,7 +325,7 @@ namespace Funke {
         FUNKE_API const ComponentInfo* PrepareRegistration(std::type_index id, ComponentInfo& info);
         FUNKE_API void FinishRegistration(std::type_index id, ComponentInfo&& info, const ComponentInfo* existing);
 
-        FUNKE_API bool AddWithDependenciesImpl(Entity entity, std::type_index type,
+        FUNKE_API bool AddWithDependenciesImpl(const Entity& entity, const ComponentInfo& info,
             std::unordered_set<std::type_index>& visited, bool isRoot) const;
 
         std::unordered_map<std::type_index, ComponentInfo> m_map;

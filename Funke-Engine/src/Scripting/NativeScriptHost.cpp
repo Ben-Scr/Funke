@@ -11,7 +11,9 @@
 #endif
 
 #include <chrono>
+#include <cstring>
 #include <exception>
+#include <unordered_set>
 
 namespace Funke {
 
@@ -80,6 +82,19 @@ namespace Funke {
 		using NativeDestroyFn = void (*)(NativeScript*);
 		using NativeHasFn = int (*)(const char*);
 		using NativeInitFn = void (*)(void* engineAPI);
+		using NativeAbiFn = uint32_t (*)();
+		constexpr uint32_t k_MaxNativeFields = 4096;
+		constexpr uint32_t k_MaxNativeFieldBytes = 4 * 1024 * 1024;
+
+		bool ReadNativeField(const NativeScriptField& field, const NativeScript* script, std::string& out) {
+			if (!field.Get) return false;
+			const uint32_t required = field.Get(script, nullptr, 0);
+			if (required == 0 || required > k_MaxNativeFieldBytes) return false;
+			std::vector<char> buffer(required, '\0');
+			if (field.Get(script, buffer.data(), required) != required || buffer.back() != '\0') return false;
+			out.assign(buffer.data(), required - 1);
+			return true;
+		}
 
 		std::filesystem::path NormalizeLibraryPath(const std::string& dllPath)
 		{
@@ -147,6 +162,10 @@ namespace Funke {
 
 	bool NativeScriptHost::LoadDLL(const std::string& dllPath)
 	{
+		if (m_CallbackDepth != 0 || m_DestroyingAll) {
+			FNK_CORE_WARN_TAG("NativeScriptHost", "Cannot reload native scripts from a native script constructor or teardown callback.");
+			return false;
+		}
 		const std::filesystem::path sourcePath = NormalizeLibraryPath(dllPath);
 		if (!std::filesystem::exists(sourcePath))
 		{
@@ -208,6 +227,13 @@ namespace Funke {
 		NativeCreateFn newCreateFn = reinterpret_cast<NativeCreateFn>(getSymbol("FunkeCreateScript"));
 		NativeDestroyFn newDestroyFn = reinterpret_cast<NativeDestroyFn>(getSymbol("FunkeDestroyScript"));
 		NativeHasFn newHasFn = reinterpret_cast<NativeHasFn>(getSymbol("FunkeHasScript"));
+		NativeAbiFn abiFn = reinterpret_cast<NativeAbiFn>(getSymbol("FunkeNativeScriptAbiVersion"));
+		if (!abiFn || abiFn() != k_NativeScriptAbiVersion) {
+			FNK_CORE_ERROR_TAG("NativeScriptHost", "Native script ABI mismatch in '{}'. Recompile the C++ scripts with this engine.", sourcePath.string());
+			UnloadLibraryHandle(newDllHandle);
+			RemoveShadowCopy(shadowPath);
+			return false;
+		}
 
 		if (!newCreateFn || !newDestroyFn)
 		{
@@ -238,7 +264,9 @@ namespace Funke {
 
 	void NativeScriptHost::UnloadDLL()
 	{
+		if (m_CallbackDepth != 0 || m_DestroyingAll) return;
 		DestroyAllInstances();
+		m_FieldDefinitions.clear();
 
 		UnloadLibraryHandle(m_DllHandle);
 		RemoveShadowCopy(m_LoadedDllPath);
@@ -258,9 +286,17 @@ namespace Funke {
 	NativeScript* NativeScriptHost::CreateInstance(
 		const std::string& className, EntityHandle entity, Scene* scene)
 	{
-		if (!m_CreateFn) return nullptr;
-
-		NativeScript* script = m_CreateFn(className.c_str());
+		if (!m_CreateFn || m_DestroyingAll) return nullptr;
+		NativeScript* script = nullptr;
+		++m_CallbackDepth;
+		try {
+			script = m_CreateFn(className.c_str());
+		} catch (const std::exception& error) {
+			FNK_CORE_ERROR_TAG("NativeScriptHost", "Native script '{}' constructor failed: {}", className, error.what());
+		} catch (...) {
+			FNK_CORE_ERROR_TAG("NativeScriptHost", "Native script '{}' constructor failed with an unknown exception", className);
+		}
+		--m_CallbackDepth;
 		if (!script) return nullptr;
 
 		script->m_EntityID = static_cast<uint32_t>(entity);
@@ -276,8 +312,9 @@ namespace Funke {
 
 		// Erase BEFORE OnDestroy: re-entrant calls (DestroyAllInstances, Reload) from within OnDestroy would otherwise double-destroy this pointer.
 		auto it = std::find(m_LiveInstances.begin(), m_LiveInstances.end(), script);
-		if (it != m_LiveInstances.end())
-			m_LiveInstances.erase(it);
+		if (it == m_LiveInstances.end()) return;
+		m_LiveInstances.erase(it);
+		++m_CallbackDepth;
 
 		TryInvokeOnDestroy(script);
 
@@ -287,23 +324,16 @@ namespace Funke {
 
 		if (m_DestroyFn)
 			m_DestroyFn(script);
+		--m_CallbackDepth;
 	}
 
 	void NativeScriptHost::DestroyAllInstances()
 	{
-		// Move out BEFORE any OnDestroy: re-entrant DestroyInstance calls erase from m_LiveInstances and would corrupt iteration over it.
-		std::vector<NativeScript*> snapshot = std::move(m_LiveInstances);
-		m_LiveInstances.clear();
-
-		for (auto* script : snapshot)
-		{
-			if (!script) continue;
-			TryInvokeOnDestroy(script);
-			script->m_EntityID = 0;
-			script->m_Entity = entt::null;
-			script->m_Scene = nullptr;
-			if (m_DestroyFn) m_DestroyFn(script);
-		}
+		if (m_DestroyingAll) return;
+		m_DestroyingAll = true;
+		// Callbacks may remove themselves or another live script; resolve each entry after the callback returns.
+		while (!m_LiveInstances.empty()) DestroyInstance(m_LiveInstances.back());
+		m_DestroyingAll = false;
 	}
 
 	bool NativeScriptHost::HasClass(const std::string& className)
@@ -315,6 +345,102 @@ namespace Funke {
 		if (!test) return false;
 		if (m_DestroyFn) m_DestroyFn(test);
 		return true;
+	}
+
+	std::vector<NativeScriptFieldInfo> NativeScriptHost::GetFieldDefinitions(const std::string& className)
+	{
+		if (const auto found = m_FieldDefinitions.find(className); found != m_FieldDefinitions.end()) return found->second;
+		if (!m_CreateFn || !m_DestroyFn) return {};
+		std::vector<NativeScriptFieldInfo> result;
+		NativeScript* defaults = nullptr;
+		++m_CallbackDepth;
+		try {
+			defaults = m_CreateFn(className.c_str());
+			if (!defaults) {
+				--m_CallbackDepth;
+				return {};
+			}
+			uint32_t count = 0;
+			const NativeScriptField* fields = defaults->GetFields(&count);
+			std::unordered_set<std::string> names;
+			if (fields && count <= k_MaxNativeFields) {
+				for (uint32_t i = 0; i < count; ++i) {
+					const auto& field = fields[i];
+					if (!field.Name || !*field.Name || field.Type == PropertyType::None || !names.emplace(field.Name).second) continue;
+					NativeScriptFieldInfo info;
+					info.Name = field.Name;
+					info.DisplayName = field.DisplayName && *field.DisplayName ? field.DisplayName : field.Name;
+					info.Tooltip = field.Tooltip ? field.Tooltip : "";
+					info.Type = field.Type;
+					info.ReadOnly = field.ReadOnly || !field.Set;
+					info.HasClamp = field.HasClamp;
+					info.ClampMin = field.ClampMin;
+					info.ClampMax = field.ClampMax;
+					if (!ReadNativeField(field, defaults, info.DefaultValue)) continue;
+					if (field.GetEnumOption) {
+						info.Enum = std::make_shared<EnumDescriptor>();
+						for (uint32_t index = 0; index < k_MaxNativeFields; ++index) {
+							int64_t value = 0;
+							const char* name = field.GetEnumOption(index, &value);
+							if (!name) break;
+							info.Enum->Options.push_back({ name, value });
+						}
+					}
+					result.push_back(std::move(info));
+				}
+			}
+		} catch (const std::exception& error) {
+			FNK_CORE_ERROR_TAG("NativeScriptHost", "Cannot inspect native script '{}': {}", className, error.what());
+		} catch (...) {
+			FNK_CORE_ERROR_TAG("NativeScriptHost", "Cannot inspect native script '{}'", className);
+		}
+		// Metadata-only instances never enter Start/OnDestroy or the host's live-instance list.
+		if (defaults) m_DestroyFn(defaults);
+		--m_CallbackDepth;
+		m_FieldDefinitions[className] = result;
+		return result;
+	}
+
+	bool NativeScriptHost::GetFieldValue(const NativeScript* script, const std::string& name, std::string& out) const
+	{
+		if (!script || !m_DllHandle) return false;
+		uint32_t count = 0;
+		const auto* fields = script->GetFields(&count);
+		if (!fields || count > k_MaxNativeFields) return false;
+		for (uint32_t i = 0; i < count; ++i) {
+			if (fields[i].Name && name == fields[i].Name) return ReadNativeField(fields[i], script, out);
+		}
+		return false;
+	}
+
+	bool NativeScriptHost::SetFieldValue(NativeScript* script, const std::string& name, const std::string& value) const
+	{
+		if (!script || !m_DllHandle || value.size() >= k_MaxNativeFieldBytes) return false;
+		uint32_t count = 0;
+		const auto* fields = script->GetFields(&count);
+		if (!fields || count > k_MaxNativeFields) return false;
+		for (uint32_t i = 0; i < count; ++i) {
+			const auto& field = fields[i];
+			if (field.Name && name == field.Name) return !field.ReadOnly && field.Set
+				&& field.Set(script, value.data(), static_cast<uint32_t>(value.size()));
+		}
+		return false;
+	}
+
+	std::unordered_map<std::string, std::string> NativeScriptHost::GetFieldValues(const NativeScript* script) const
+	{
+		std::unordered_map<std::string, std::string> values;
+		if (!script || !m_DllHandle) return values;
+		uint32_t count = 0;
+		const auto* fields = script->GetFields(&count);
+		if (!fields || count > k_MaxNativeFields) return values;
+		for (uint32_t i = 0; i < count; ++i) {
+			std::string value;
+			if (fields[i].Name && !fields[i].ReadOnly && ReadNativeField(fields[i], script, value)) {
+				values[fields[i].Name] = std::move(value);
+			}
+		}
+		return values;
 	}
 
 } // namespace Funke

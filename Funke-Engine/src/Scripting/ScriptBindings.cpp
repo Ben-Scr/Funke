@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Scripting/ScriptBindingGuard.hpp"
 #include "Assets/AssetRegistry.hpp"
+#include "Assets/AssetLoader.hpp"
 #include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptEntityReference.hpp"
 #include "Scripting/ScriptEngine.hpp"
@@ -69,6 +70,7 @@
 #include <cstring>
 #include <limits>
 #include <string_view>
+#include <utility>
 
 namespace Funke {
 	bool ScriptBindings::IsScriptInputEnabled()
@@ -312,7 +314,7 @@ namespace Funke {
 		}
 		auto& scriptComponent = scene.GetComponent<ScriptComponent>(handle);
 		if (scriptComponent.HasManagedComponent(className)) return true;
-		scriptComponent.AddManagedComponent(className);
+		if (!scriptComponent.AddManagedComponent(className)) return false;
 		scene.MarkDirty();
 		return true;
 	}
@@ -456,6 +458,95 @@ namespace Funke {
 
 		const ComponentInfo* info = FindComponentByName(componentName);
 		if (!info || !info->has) return HasManagedComponent(*scene, handle, componentName ? componentName : "") ? 1 : 0;
+		if (const auto has = info->has.RegistryCallback()) return has(scene->GetRegistry(), handle) ? 1 : 0;
+		return info->has(scene->GetEntity(handle)) ? 1 : 0;
+	}
+
+	bool ScriptBindings::AddComponent(const Entity& entity, const ComponentInfo& info)
+	{
+		if (!entity.IsValid() || !info.add || !info.IsModuleActive()) return false;
+		if (!info.isDynamic) {
+			const entt::id_type storageHash = info.storageHash;
+			if (!SceneManager::GetComponentRegistry().AddWithDependencies(entity, info) || !entity.IsValid()) return false;
+			const auto* storage = std::as_const(*entity.GetRegistry()).storage(storageHash);
+			return storage != nullptr && storage->contains(entity.GetHandle());
+		}
+		const uint32_t typeId = info.typeIdU32;
+		if (info.has && info.has(entity)) return entity.IsValid();
+		if (!entity.IsValid()) return false;
+		const ComponentInfo* currentInfo = SceneManager::GetComponentRegistry().GetByTypeId(typeId);
+		if (!currentInfo || !currentInfo->add || !currentInfo->IsModuleActive()) return false;
+		const std::string serializedName = currentInfo->serializedName;
+		currentInfo->add(entity);
+		if (!entity.IsValid()) return false;
+		Entity mutableEntity = entity;
+		if (!entity.HasComponent<ScriptComponent>()) mutableEntity.AddComponent<ScriptComponent>();
+		if (!entity.IsValid() || !entity.HasComponent<ScriptComponent>()) return false;
+		auto& scripts = mutableEntity.GetComponent<ScriptComponent>();
+		if (!scripts.HasScript(serializedName, ScriptType::Managed)) {
+			scripts.AddScript(serializedName, ScriptType::Managed);
+		}
+		currentInfo = SceneManager::GetComponentRegistry().GetByTypeId(typeId);
+		return currentInfo != nullptr && currentInfo->has && currentInfo->has(entity);
+	}
+
+	bool ScriptBindings::RemoveComponent(const Entity& entity, const ComponentInfo& info, bool notifyManaged)
+	{
+		if (!entity.IsValid() || !info.remove || !info.IsModuleActive()) return false;
+		const uint32_t typeId = info.typeIdU32;
+		const ComponentInfo* currentInfo = &info;
+		if (const auto has = info.has.RegistryCallback()) {
+			if (!has(*entity.GetRegistry(), entity.GetHandle())) return false;
+		}
+		else if (info.has) {
+			if (!info.has(entity) || !entity.IsValid()) return false;
+			currentInfo = SceneManager::GetComponentRegistry().GetByTypeId(typeId);
+			if (!currentInfo || !currentInfo->remove || !currentInfo->IsModuleActive()) return false;
+		}
+		const uint64_t entityId = notifyManaged ? entity.GetScene()->GetEntityPersistentID(entity.GetHandle()) : 0;
+		if (currentInfo->isDynamic && entity.HasComponent<ScriptComponent>()) {
+			auto& scripts = entity.GetComponent<ScriptComponent>();
+			for (size_t i = 0; i < scripts.Scripts.size(); ++i) {
+				if (scripts.Scripts[i].GetClassName() == currentInfo->serializedName &&
+					scripts.Scripts[i].GetType() == ScriptType::Managed) {
+					ScriptSystem::RemoveScript(entity, i);
+					if (notifyManaged) ScriptEngine::NotifyComponentRemoved(entityId, typeId);
+					return true;
+				}
+			}
+		}
+		if (const auto remove = currentInfo->remove.RegistryCallback()) remove(*const_cast<entt::registry*>(entity.GetRegistry()), entity.GetHandle());
+		else currentInfo->remove(entity);
+		if (notifyManaged) ScriptEngine::NotifyComponentRemoved(entityId, typeId);
+		return true;
+	}
+
+	static int Funke_Entity_AddComponentByTypeId(uint64_t entityID, uint32_t typeId)
+	{
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		if (!ResolveEntityReference(entityID, scene, handle)) return 0;
+		const ComponentInfo* info = SceneManager::GetComponentRegistry().GetByTypeId(typeId);
+		return info && ScriptBindings::AddComponent(scene->GetEntity(handle), *info) ? 1 : 0;
+	}
+
+	static int Funke_Entity_RemoveComponentByTypeId(uint64_t entityID, uint32_t typeId)
+	{
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		if (!ResolveEntityReference(entityID, scene, handle)) return 0;
+		const ComponentInfo* info = SceneManager::GetComponentRegistry().GetByTypeId(typeId);
+		return info && ScriptBindings::RemoveComponent(scene->GetEntity(handle), *info, false) ? 1 : 0;
+	}
+
+	static int Funke_Entity_HasComponentByTypeId(uint64_t entityID, uint32_t typeId)
+	{
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		if (!ResolveEntityReference(entityID, scene, handle)) return 0;
+		const ComponentInfo* info = SceneManager::GetComponentRegistry().GetByTypeId(typeId);
+		if (!info || !info->IsModuleActive() || !info->has) return 0;
+		if (const auto has = info->has.RegistryCallback()) return has(scene->GetRegistry(), handle) ? 1 : 0;
 		return info->has(scene->GetEntity(handle)) ? 1 : 0;
 	}
 
@@ -469,25 +560,7 @@ namespace Funke {
 			const ComponentInfo* info = FindComponentByName(componentName);
 			if (!info || !info->add) return AddManagedComponent(*scene, handle, componentName ? componentName : "") ? 1 : 0;
 
-			Entity entity = scene->GetEntity(handle);
-			if (info->has && info->has(entity)) return 1;
-
-			// Dynamic components bypass AddWithDependencies (keyed on type_index in m_map, not m_dynamicMap);
-			// also must seed a ScriptComponent.Scripts Managed entry so the inspector field renderer finds it.
-			if (info->isDynamic) {
-				info->add(entity);
-				if (!entity.HasComponent<ScriptComponent>()) {
-					entity.AddComponent<ScriptComponent>();
-				}
-				auto& sc = entity.GetComponent<ScriptComponent>();
-				if (!sc.HasScript(componentName, ScriptType::Managed)) {
-					sc.AddScript(componentName, ScriptType::Managed);
-				}
-				return 1;
-			}
-
-			// 0 when refused because the entity has a conflicting component (the registry logs which one).
-			return SceneManager::GetComponentRegistry().AddWithDependencies(entity, info->typeId) ? 1 : 0;
+			return ScriptBindings::AddComponent(scene->GetEntity(handle), *info) ? 1 : 0;
 		} FNK_BINDING_CATCH(0)
 	}
 
@@ -500,30 +573,7 @@ namespace Funke {
 		const ComponentInfo* info = FindComponentByName(componentName);
 		if (!info || !info->remove) return RemoveManagedComponent(*scene, handle, componentName ? componentName : "") ? 1 : 0;
 
-		Entity entity = scene->GetEntity(handle);
-		if (info->has && !info->has(entity)) return 0;
-
-		// Dynamic components are dual-attached; tear down via ScriptSystem::RemoveScript so both the storage row and Scripts entry drop together.
-		if (info->isDynamic) {
-			if (entity.HasComponent<ScriptComponent>()) {
-				auto& sc = entity.GetComponent<ScriptComponent>();
-				for (size_t i = 0; i < sc.Scripts.size(); ++i) {
-					if (sc.Scripts[i].GetClassName() == componentName &&
-						sc.Scripts[i].GetType() == ScriptType::Managed) {
-						ScriptSystem::RemoveScript(entity, i);
-						return 1;
-					}
-				}
-			}
-			// No paired Scripts entry (pre-Fix1 runtime state). Drop the
-			// storage row directly so the C# call still has the documented
-			// effect.
-			info->remove(entity);
-			return 1;
-		}
-
-		info->remove(entity);
-		return 1;
+		return ScriptBindings::RemoveComponent(scene->GetEntity(handle), *info) ? 1 : 0;
 	}
 
 	// ── Entity_AddScript / HasScript / RemoveScript ─────────────────
@@ -539,10 +589,10 @@ namespace Funke {
 			scene->AddComponent<ScriptComponent>(handle);
 		}
 		auto& scriptComponent = scene->GetComponent<ScriptComponent>(handle);
-		if (scriptComponent.HasScript(className)) {
+		if (scriptComponent.HasScript(className, ScriptType::Managed)) {
 			return 1;
 		}
-		scriptComponent.AddScript(className, ScriptType::Managed);
+		if (!scriptComponent.AddScript(className, ScriptType::Managed)) return 0;
 		scene->MarkDirty();
 
 		// Synchronous bind + Awake so the returned C# wrapper is already live; without this, AddComponent<MyScript>() would return null until the next ScriptSystem tick.
@@ -1124,6 +1174,11 @@ namespace Funke {
 	{
 		return AudioManager::LoadAudioByUUID(assetId).IsValid() ? 1 : 0;
 	}
+
+	static uint64_t Funke_Asset_BeginLoadAsync(uint64_t assetId) { return AssetLoader::LoadAsync(assetId); }
+	static int Funke_Asset_GetLoadStatus(uint64_t operationId) { return static_cast<int>(AssetLoader::GetResult(operationId).Status); }
+	static int Funke_Asset_CancelLoadAsync(uint64_t operationId) { return AssetLoader::Cancel(operationId) ? 1 : 0; }
+	static void Funke_Asset_ReleaseLoad(uint64_t operationId) { AssetLoader::Release(operationId); }
 
 	static int Funke_Font_LoadAsset(uint64_t assetId)
 	{
@@ -3195,6 +3250,9 @@ namespace Funke {
 		b.Entity_HasComponent = FNK_GUARDED_BINDING(Funke_Entity_HasComponent);
 		b.Entity_AddComponent = FNK_GUARDED_BINDING(Funke_Entity_AddComponent);
 		b.Entity_RemoveComponent = FNK_GUARDED_BINDING(Funke_Entity_RemoveComponent);
+		b.Entity_AddComponentByTypeId = FNK_GUARDED_BINDING(Funke_Entity_AddComponentByTypeId);
+		b.Entity_RemoveComponentByTypeId = FNK_GUARDED_BINDING(Funke_Entity_RemoveComponentByTypeId);
+		b.Entity_HasComponentByTypeId = FNK_GUARDED_BINDING(Funke_Entity_HasComponentByTypeId);
 		b.Entity_AddScript = FNK_GUARDED_BINDING(Funke_Entity_AddScript);
 		b.Entity_HasScript = FNK_GUARDED_BINDING(Funke_Entity_HasScript);
 		b.Entity_RemoveScript = FNK_GUARDED_BINDING(Funke_Entity_RemoveScript);
@@ -3288,6 +3346,10 @@ namespace Funke {
 
 		b.Asset_IsValid = FNK_GUARDED_BINDING(Funke_Asset_IsValid);
 		b.Asset_GetOrCreateUUIDFromPath = FNK_GUARDED_BINDING(Funke_Asset_GetOrCreateUUIDFromPath);
+		b.Asset_BeginLoadAsync = FNK_GUARDED_BINDING(Funke_Asset_BeginLoadAsync);
+		b.Asset_GetLoadStatus = FNK_GUARDED_BINDING(Funke_Asset_GetLoadStatus);
+		b.Asset_CancelLoadAsync = FNK_GUARDED_BINDING(Funke_Asset_CancelLoadAsync);
+		b.Asset_ReleaseLoad = FNK_GUARDED_BINDING(Funke_Asset_ReleaseLoad);
 		b.Asset_GetPathBuffer = FNK_GUARDED_BINDING(Funke_Asset_GetPathBuffer);
 		b.Asset_GetDisplayNameBuffer = FNK_GUARDED_BINDING(Funke_Asset_GetDisplayNameBuffer);
 		b.Asset_GetKind = FNK_GUARDED_BINDING(Funke_Asset_GetKind);

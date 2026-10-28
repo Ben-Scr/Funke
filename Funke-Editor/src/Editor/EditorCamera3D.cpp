@@ -19,34 +19,51 @@ namespace Funke {
 		}
 	}
 
+	void EditorCamera3D::SetSettings(const EditorCamera3DSettings& settings) {
+		m_Settings = settings;
+		m_Settings.Sanitize();
+	}
+
 	void EditorCamera3D::Update(float deltaTime, const Input& input) {
+		const glm::vec3 position = GetPosition();
+		if (input.Look) {
+			const float sensitivity = k_OrbitDegreesPerPixel * m_Settings.LookSensitivity;
+			m_YawDegrees -= input.MouseDelta.x * sensitivity * (m_Settings.InvertLookX ? -1.0f : 1.0f);
+			m_PitchDegrees = std::clamp(m_PitchDegrees - input.MouseDelta.y * sensitivity
+				* (m_Settings.InvertLookY ? -1.0f : 1.0f), -89.0f, 89.0f);
+		}
+
 		const glm::quat orientation = Orientation(m_YawDegrees, m_PitchDegrees);
 		const glm::vec3 right = orientation * glm::vec3(1.0f, 0.0f, 0.0f);
 		const glm::vec3 up = orientation * glm::vec3(0.0f, 1.0f, 0.0f);
 		const glm::vec3 forward = orientation * glm::vec3(0.0f, 0.0f, -1.0f);
 
-		if (input.Orbit) {
-			m_YawDegrees -= input.MouseDelta.x * k_OrbitDegreesPerPixel;
-			m_PitchDegrees = std::clamp(m_PitchDegrees - input.MouseDelta.y * k_OrbitDegreesPerPixel, -89.0f, 89.0f);
-
-			if (glm::dot(input.Fly, input.Fly) > 0.0f) {
-				const float speed = std::max(m_Distance, 1.0f) * (input.Fast ? 3.0f : 1.0f);
-				m_Focus += (right * input.Fly.x + up * input.Fly.y + forward * input.Fly.z) * speed * deltaTime;
+		if (input.Look) {
+			if (m_Settings.NavigationMode == EditorCamera3DNavigationMode::Fly) {
+				// Keep the eye fixed while the focus follows the new viewing direction.
+				m_Focus = position + forward * m_Distance;
+			}
+			const glm::vec3 flyUp = m_Settings.FlyWorldUp ? glm::vec3(0.0f, 1.0f, 0.0f) : up;
+			const glm::vec3 direction = right * input.Fly.x + flyUp * input.Fly.y + forward * input.Fly.z;
+			if (glm::dot(direction, direction) > 0.0f) {
+				const float distanceScale = m_Settings.ScaleSpeedWithDistance ? std::max(m_Distance, 1.0f) / 10.0f : 1.0f;
+				const float speed = m_Settings.MoveSpeed * distanceScale * (input.Fast ? m_Settings.BoostMultiplier : 1.0f);
+				m_Focus += glm::normalize(direction) * speed * std::max(deltaTime, 0.0f);
 			}
 		}
 		else if (input.Pan) {
-			const float scale = m_Distance * k_PanPerPixel;
+			const float scale = m_Distance * k_PanPerPixel * m_Settings.PanSensitivity;
 			m_Focus += (-right * input.MouseDelta.x + up * input.MouseDelta.y) * scale;
 		}
 
 		if (input.Scroll != 0.0f) {
-			m_Distance = std::clamp(m_Distance * std::pow(0.88f, input.Scroll), k_MinDistance, k_MaxDistance);
+			m_Distance = std::clamp(m_Distance * std::pow(0.88f, input.Scroll * m_Settings.ZoomSensitivity), k_MinDistance, k_MaxDistance);
 		}
 	}
 
 	void EditorCamera3D::Focus(const glm::vec3& target, float radius) {
 		m_Focus = target;
-		const float halfFov = glm::radians(m_FieldOfView * 0.5f);
+		const float halfFov = glm::radians(m_Settings.FieldOfView * 0.5f);
 		m_Distance = std::clamp(std::max(radius, 0.25f) / std::sin(halfFov) * 1.2f, k_MinDistance, k_MaxDistance);
 	}
 
@@ -67,7 +84,7 @@ namespace Funke {
 		view.View = glm::inverse(world);
 		// Near plane follows the zoom so close-ups don't clip and wide shots keep depth precision.
 		const float nearClip = std::clamp(m_Distance * 0.01f, 0.01f, 1.0f);
-		view.Projection = glm::perspectiveRH_ZO(glm::radians(m_FieldOfView), aspect > 0.0f ? aspect : 1.0f, nearClip, nearClip * 100000.0f);
+		view.Projection = glm::perspectiveRH_ZO(glm::radians(m_Settings.FieldOfView), aspect > 0.0f ? aspect : 1.0f, nearClip, nearClip * 100000.0f);
 		view.Position = glm::vec3(world[3]);
 		return view;
 	}

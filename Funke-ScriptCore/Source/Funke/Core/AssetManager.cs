@@ -1,13 +1,27 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Globalization;
+using System.Linq;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Funke.Coroutines;
 using Funke.Interop;
 
 namespace Funke;
 
 public static class AssetManager
 {
+    private sealed class PendingLoad
+    {
+        public required Action<int> Complete;
+        public CancellationTokenRegistration Cancellation;
+    }
+
+    private static readonly Dictionary<ulong, PendingLoad> s_PendingLoads = new();
+    private static readonly ConcurrentQueue<ulong> s_CancelRequests = new();
+
     private enum AssetKind
     {
         Unknown = 0,
@@ -30,6 +44,100 @@ public static class AssetManager
     {
         ulong guid = GetGUID(path);
         return LoadByGUID<T>(guid);
+    }
+
+    /// <summary>Call on the engine thread; prepares Texture, Audio, Font (32px) or Mesh in the background, then publishes on the engine thread. Failure returns null.</summary>
+    public static Task<T?> LoadAsync<T>(string path, CancellationToken cancellationToken = default) where T : class
+    {
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<T?>(cancellationToken);
+        RequireAsyncThread();
+        RequireAsyncType<T>();
+        if (string.IsNullOrWhiteSpace(path)) return Task.FromResult<T?>(null);
+        return LoadByGUIDAsync<T>(GetGUID(path), cancellationToken);
+    }
+
+    /// <summary>Same loading contract as LoadAsync; cancellation affects this request only, until publication completes.</summary>
+    public static Task<T?> LoadByGUIDAsync<T>(string guid, CancellationToken cancellationToken = default) where T : class
+        => LoadByGUIDAsync<T>(ParseGUID(guid), cancellationToken);
+
+    /// <summary>Call on the engine thread; supports Texture, Audio, Font and Mesh. Other types throw NotSupportedException; failure returns null.</summary>
+    public static Task<T?> LoadByGUIDAsync<T>(ulong guid, CancellationToken cancellationToken = default) where T : class
+    {
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<T?>(cancellationToken);
+        RequireAsyncThread();
+        RequireAsyncType<T>();
+        if (guid == 0 || !InternalCalls.Asset_IsValid(guid)
+            || (AssetKind)InternalCalls.Asset_GetKind(guid) != KindForType(typeof(T)))
+            return Task.FromResult<T?>(null);
+
+        ulong operationId = InternalCalls.Asset_BeginLoadAsync(guid);
+        if (operationId == 0) return Task.FromResult<T?>(null);
+        var completion = new TaskCompletionSource<T?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new PendingLoad
+        {
+            Complete = status =>
+            {
+                if (status == 4) completion.TrySetCanceled(cancellationToken);
+                else if (status == 5) completion.TrySetException(new NotSupportedException("Asynchronous loading is unavailable in this engine build."));
+                else completion.TrySetResult(status == 2 ? CreateLoadedReference<T>(guid) : null);
+            }
+        };
+        s_PendingLoads.Add(operationId, pending);
+        pending.Cancellation = cancellationToken.Register(static state => s_CancelRequests.Enqueue((ulong)state!), operationId);
+        return completion.Task;
+    }
+
+    private static void RequireAsyncThread()
+    {
+        if (SynchronizationContext.Current != FunkeSynchronizationContext.Instance)
+            throw new InvalidOperationException("Start asynchronous asset loads on the engine thread.");
+    }
+
+    private static void RequireAsyncType<T>()
+    {
+        Type type = typeof(T);
+        if (type != typeof(Texture) && type != typeof(Audio) && type != typeof(Font) && type != typeof(Mesh))
+            throw new NotSupportedException($"Asynchronous asset loading does not support {type.Name}.");
+    }
+
+    private static T? CreateLoadedReference<T>(ulong guid) where T : class
+    {
+        object? asset = typeof(T) == typeof(Texture) ? new Texture(guid)
+            : typeof(T) == typeof(Audio) ? new Audio(guid)
+            : typeof(T) == typeof(Font) ? new Font(guid)
+            : typeof(T) == typeof(Mesh) ? new Mesh(guid) : null;
+        return asset as T;
+    }
+
+    internal static void PumpAssetLoadRequests()
+    {
+        while (s_CancelRequests.TryDequeue(out ulong operationId))
+        {
+            if (s_PendingLoads.ContainsKey(operationId)) InternalCalls.Asset_CancelLoadAsync(operationId);
+        }
+        foreach (var entry in s_PendingLoads.ToArray())
+        {
+            int status = InternalCalls.Asset_GetLoadStatus(entry.Key);
+            if (status == 1) continue;
+            s_PendingLoads.Remove(entry.Key);
+            entry.Value.Cancellation.Unregister();
+            InternalCalls.Asset_ReleaseLoad(entry.Key);
+            entry.Value.Complete(status);
+        }
+    }
+
+    internal static void CancelPendingLoads()
+    {
+        var pendingLoads = s_PendingLoads.ToArray();
+        s_PendingLoads.Clear();
+        foreach (var entry in pendingLoads)
+        {
+            entry.Value.Cancellation.Unregister();
+            InternalCalls.Asset_CancelLoadAsync(entry.Key);
+            InternalCalls.Asset_ReleaseLoad(entry.Key);
+            entry.Value.Complete(4);
+        }
+        s_CancelRequests.Clear();
     }
 
     public static T? LoadByGUID<T>(string guid) where T : class

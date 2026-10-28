@@ -5,55 +5,84 @@
 #include "Scripting/NativeScript.hpp"
 #include "Scripting/NativeScriptHost.hpp"
 #include "Scripting/ScriptComponent.hpp"
+#include "Scripting/ScriptEngine.hpp"
 #include "Scripting/ScriptInstance.hpp"
 #include "Scripting/ScriptSystem.hpp"
 
 namespace Funke::EntityScriptOps::detail {
+	namespace {
+		ScriptInstance* FindInstance(Scene& scene, EntityHandle entity, const std::string& name) {
+			if (!scene.IsValid(entity)) return nullptr;
+			auto* component = scene.GetRegistry().try_get<ScriptComponent>(entity);
+			if (!component) return nullptr;
+			for (auto& instance : component->Scripts) {
+				if (instance.GetType() == ScriptType::Native && instance.GetClassName() == name) return &instance;
+			}
+			return nullptr;
+		}
+
+		struct NativeSceneScope {
+			explicit NativeSceneScope(Scene& scene) : Execution(scene), Previous(ScriptEngine::GetScene()) {
+				ScriptEngine::SetScene(&scene);
+			}
+			~NativeSceneScope() { ScriptEngine::SetScene(Previous); }
+			SceneExecutionScope Execution;
+			Scene* Previous;
+		};
+	}
 
 	NativeScript* AddScriptByName(Scene* scene, EntityHandle entity, const char* name) {
-		if (!scene || entity == entt::null || !name) return nullptr;
+		if (!scene || entity == entt::null || !name || !*name) return nullptr;
 		entt::registry& registry = scene->GetRegistry();
 		if (!registry.valid(entity)) return nullptr;
+		const std::string className = name;
+		NativeSceneScope sceneScope(*scene);
 
 		ScriptComponent& sc = registry.all_of<ScriptComponent>(entity)
 			? registry.get<ScriptComponent>(entity)
 			: registry.emplace<ScriptComponent>(entity);
 
-		// Return the existing native instance if one is already
-		// attached. The caller dynamic_casts to the requested T to
-		// confirm the concrete derived type matches.
-		for (auto& inst : sc.Scripts) {
-			if (inst.GetType() != ScriptType::Native) continue;
-			if (inst.GetClassName() != name) continue;
-			return inst.GetNativePtr();
-		}
-
-		sc.AddScript(name, ScriptType::Native);
-		ScriptInstance* added = nullptr;
-		for (auto& inst : sc.Scripts) {
-			if (inst.GetClassName() == name && inst.GetType() == ScriptType::Native) {
-				added = &inst;
-				break;
-			}
-		}
+		sc.AddScript(className, ScriptType::Native);
+		ScriptInstance* added = FindInstance(*scene, entity, className);
 		if (!added) return nullptr;
+		if (added->HasNativeInstance()) return added->GetNativePtr();
 
 		added->Bind(entity);
-		NativeScript* native = ScriptSystem::GetNativeHost().CreateInstance(name, entity, scene);
+		auto& host = ScriptSystem::GetNativeHost();
+		NativeScript* native = host.CreateInstance(className, entity, scene);
 		if (!native) return nullptr;
-		added->SetNativePtr(native);
-
-		// Run Start() inline so the caller sees a live script immediately
-		// after AddComponent returns. ScriptSystem::Update honours
-		// MarkStarted() so this Start() won't run again.
-		try {
-			native->Start();
+		added = FindInstance(*scene, entity, className);
+		if (!added) {
+			host.DestroyInstance(native);
+			return nullptr;
 		}
-		catch (...) {
-			// Swallow — same policy as ScriptSystem's lifecycle sweep.
+		added->SetNativePtr(native);
+		const std::string prefix = className + ".";
+		for (const auto& [key, value] : scene->GetComponent<ScriptComponent>(entity).PendingFieldValues) {
+			if (key.size() > prefix.size() && key.rfind(prefix, 0) == 0) host.SetFieldValue(native, key.substr(prefix.size()), value);
 		}
 		added->MarkStarted();
-		return native;
+
+		// Start can add scripts or remove this entity; never retain a vector element across user code.
+		bool started = false;
+		try {
+			native->Start();
+			started = true;
+		}
+		catch (const std::exception& error) {
+			FNK_CORE_ERROR_TAG("NativeScriptHost", "Native script '{}' failed during Start: {}", className, error.what());
+		}
+		catch (...) {
+			FNK_CORE_ERROR_TAG("NativeScriptHost", "Native script '{}' failed during Start", className);
+		}
+		if (!started) host.DestroyInstance(native);
+		added = FindInstance(*scene, entity, className);
+		if (!added || added->GetNativePtr() != native) return nullptr;
+		if (!started) {
+			added->Unbind();
+			return nullptr;
+		}
+		return added->GetNativePtr();
 	}
 
 	NativeScript* GetNativeScriptOnEntity(Scene* scene, EntityHandle entity, const char* name) {
@@ -80,15 +109,10 @@ namespace Funke::EntityScriptOps::detail {
 		if (!registry.valid(entity)) return false;
 		auto* sc = registry.try_get<ScriptComponent>(entity);
 		if (!sc) return false;
-		for (auto it = sc->Scripts.begin(); it != sc->Scripts.end(); ++it) {
-			if (it->GetType() != ScriptType::Native) continue;
-			if (it->GetClassName() != name) continue;
-			NativeScript* ns = it->GetNativePtr();
-			if (ns) {
-				ScriptSystem::GetNativeHost().DestroyInstance(ns);
-			}
-			sc->Scripts.erase(it);
-			return true;
+		for (size_t index = 0; index < sc->Scripts.size(); ++index) {
+			if (sc->Scripts[index].GetType() != ScriptType::Native) continue;
+			if (sc->Scripts[index].GetClassName() != name) continue;
+			return ScriptSystem::RemoveScript(scene->GetEntity(entity), index);
 		}
 		return false;
 	}

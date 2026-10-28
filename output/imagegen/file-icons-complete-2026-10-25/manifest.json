@@ -1,0 +1,27 @@
+{
+  "mode": "built-in image_gen",
+  "style": "Approved Funke soft beveled satin icons, top-left lighting, warm ivory glyphs, transparent background",
+  "referenceDirectory": "../file-icons-concepts-2026-10-25/production",
+  "preserved": ["file_cs", "file_txt", "file_scene"],
+  "generated": {
+    "file_json": "Amber document with curly braces",
+    "file_xml": "Lavender document with XML brackets",
+    "file_bin": "Slate blue document with binary 01",
+    "file_font": "Coral document with Aa",
+    "file_audio": "Pink musical notes",
+    "file_anim": "Purple keyframe timeline",
+    "file_prefab": "Cyan reusable puzzle piece",
+    "file_dataasset": "Teal data stack",
+    "file_shader": "Violet shaded sphere with ivory glint",
+    "file_fallback": "Neutral blank document",
+    "folder_zip": "Golden folder with zipper"
+  },
+  "masters": "masters/<icon>.png",
+  "prompts": "prompts/<icon>.json",
+  "exports": "exports/<icon>/<icon>_<size>.png",
+  "sizes": [16, 32, 64, 128, 256],
+  "sizeExceptions": { "file_prefab": [16, 32, 64, 128] },
+  "exportMethod": "Proportional Lanczos3 resizing of the transparent master on a square canvas; no artwork redrawing",
+  "validation": "validation.json",
+  "overview": "all-file-icons.png"
+}

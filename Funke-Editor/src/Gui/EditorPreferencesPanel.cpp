@@ -127,6 +127,7 @@ namespace Funke {
 					RenderScriptingTab();
 					RenderLayoutsTab();
 					RenderBehaviorTab();
+					RenderCameraTab();
 				}
 				ImGui::EndChild();
 			}
@@ -149,6 +150,11 @@ namespace Funke {
 				}
 				if (EditorUI::BeginTabItem("Behavior")) {
 					if (ImGui::BeginChild("##BehaviorScroll", ImVec2(0, 0), false)) RenderBehaviorTab();
+					ImGui::EndChild();
+					EditorUI::EndTabItem();
+				}
+				if (EditorUI::BeginTabItem("Camera")) {
+					if (ImGui::BeginChild("##CameraScroll", ImVec2(0, 0), false)) RenderCameraTab();
 					ImGui::EndChild();
 					EditorUI::EndTabItem();
 				}
@@ -600,6 +606,97 @@ namespace Funke {
 				"Textures, audio, fonts and data assets always reload.");
 			EditorUI::EndSection();
 		}
+	}
+
+	void EditorPreferencesPanel::RenderCameraTab() {
+		const bool showNavigation = PreferenceSectionVisible("Camera Navigation",
+			"camera 3d scene viewport navigation mode orbit fly fps focus controls");
+		const bool showMovement = PreferenceSectionVisible("Camera Movement",
+			"camera 3d scene viewport movement speed fly boost shift distance scale pan world up vertical qe");
+		const bool showLook = PreferenceSectionVisible("Camera Look & Zoom",
+			"camera 3d scene viewport look sensitivity mouse rotation invert x y zoom wheel field of view fov");
+		const bool showReset = PreferenceSectionVisible("Reset Camera Defaults", "camera 3d scene viewport reset defaults");
+		if (!showNavigation && !showMovement && !showLook && !showReset) return;
+
+		EditorCamera3DSettings settings = EditorPreferences::GetCamera3DSettings();
+		bool changed = false;
+		const bool searchActive = IsPreferenceSearchActive();
+		EditorUI::StatusText(EditorUI::Tone::Neutral, "3D scene camera. Changes apply immediately in every project.");
+
+		auto floatRow = [&changed](const char* label, float& value, float step, float minimum, float maximum,
+			const char* format, const char* tooltip) {
+			EditorUI::BeginSettingsRow(label, ImGui::GetFontSize() * 8.0f);
+			changed |= ImGui::DragFloat("##Value", &value, step, minimum, maximum, format, ImGuiSliderFlags_AlwaysClamp);
+			EditorUI::EndSettingsRow();
+			EditorUI::Tooltip(tooltip);
+		};
+
+		const char* navigationLabel = settings.NavigationMode == EditorCamera3DNavigationMode::Fly ? "Fly (FPS)" : "Orbit";
+		if (showNavigation && EditorUI::BeginSection("Camera Navigation", navigationLabel, true, searchActive)) {
+			EditorUI::BeginSettingsRow("Navigation mode");
+			if (ImGui::BeginCombo("##NavigationMode", navigationLabel)) {
+				constexpr EditorCamera3DNavigationMode k_Modes[] = {
+					EditorCamera3DNavigationMode::Orbit, EditorCamera3DNavigationMode::Fly
+				};
+				for (EditorCamera3DNavigationMode mode : k_Modes) {
+					const bool selected = settings.NavigationMode == mode;
+					if (ImGui::Selectable(mode == EditorCamera3DNavigationMode::Fly ? "Fly (FPS)" : "Orbit", selected)) {
+						settings.NavigationMode = mode;
+						changed = true;
+					}
+					if (selected) ImGui::SetItemDefaultFocus();
+				}
+				ImGui::EndCombo();
+			}
+			EditorUI::EndSettingsRow();
+			EditorUI::Tooltip("Orbit rotates around the focus point. Fly looks around from the camera's position.");
+			EditorUI::StatusText(EditorUI::Tone::Neutral,
+				"Hold right mouse to look and move with WASD / Q E. Hold Shift to boost. "
+				"Middle mouse pans, the wheel moves closer or farther, and F frames the selection.");
+			EditorUI::EndSection();
+		}
+
+		char movementSummary[64];
+		std::snprintf(movementSummary, sizeof(movementSummary), "%.2f units/s / %.1fx boost", settings.MoveSpeed, settings.BoostMultiplier);
+		if (showMovement && EditorUI::BeginSection("Camera Movement", movementSummary, true, searchActive)) {
+			floatRow("Move speed", settings.MoveSpeed, 0.1f,
+				EditorCamera3DSettings::k_MinMoveSpeed, EditorCamera3DSettings::k_MaxMoveSpeed, "%.2f units/s",
+				"WASD / Q E movement speed. With distance scaling enabled, this is the speed at a focus distance of 10 units.");
+			floatRow("Shift boost", settings.BoostMultiplier, 0.1f,
+				EditorCamera3DSettings::k_MinBoostMultiplier, EditorCamera3DSettings::k_MaxBoostMultiplier, "%.2fx",
+				"Multiplies movement speed while Shift is held.");
+			changed |= EditorUI::SettingsSwitch("Scale move speed with distance", &settings.ScaleSpeedWithDistance);
+			EditorUI::Tooltip("Move faster farther from the focus point and slower in close-ups. Turn off for a constant speed.");
+			changed |= EditorUI::SettingsSwitch("Q / E use world up", &settings.FlyWorldUp);
+			EditorUI::Tooltip("Move Q / E along the world's vertical axis. When off, movement follows the camera's up direction.");
+			floatRow("Pan sensitivity", settings.PanSensitivity, 0.01f,
+				EditorCamera3DSettings::k_MinSensitivity, EditorCamera3DSettings::k_MaxSensitivity, "%.2fx",
+				"Speed of middle-mouse dragging. Panning also scales with the distance to the focus point.");
+			EditorUI::EndSection();
+		}
+
+		char lookSummary[64];
+		std::snprintf(lookSummary, sizeof(lookSummary), "%.2fx look / %.0f deg FOV", settings.LookSensitivity, settings.FieldOfView);
+		if (showLook && EditorUI::BeginSection("Camera Look & Zoom", lookSummary, true, searchActive)) {
+			floatRow("Look sensitivity", settings.LookSensitivity, 0.01f,
+				EditorCamera3DSettings::k_MinSensitivity, EditorCamera3DSettings::k_MaxSensitivity, "%.2fx",
+				"Mouse rotation speed in both Orbit and Fly modes.");
+			changed |= EditorUI::SettingsSwitch("Invert horizontal look", &settings.InvertLookX);
+			EditorUI::Tooltip("Reverse horizontal mouse rotation.");
+			changed |= EditorUI::SettingsSwitch("Invert vertical look", &settings.InvertLookY);
+			EditorUI::Tooltip("Reverse vertical mouse rotation.");
+			floatRow("Zoom sensitivity", settings.ZoomSensitivity, 0.01f,
+				EditorCamera3DSettings::k_MinSensitivity, EditorCamera3DSettings::k_MaxSensitivity, "%.2fx",
+				"How far each mouse-wheel step moves the camera closer to or farther from its focus point.");
+			floatRow("Field of view", settings.FieldOfView, 0.5f,
+				EditorCamera3DSettings::k_MinFieldOfView, EditorCamera3DSettings::k_MaxFieldOfView, "%.1f deg",
+				"Vertical field of view of the 3D scene camera. A larger angle shows more of the scene.");
+			EditorUI::EndSection();
+		}
+
+		if (changed) EditorPreferences::SetCamera3DSettings(settings);
+		if (showReset && EditorUI::Button("Reset Camera Defaults")) EditorPreferences::ResetCamera3DSettings();
+		if (showReset) EditorUI::Tooltip("Restore all 3D scene camera preferences to their defaults.");
 	}
 
 	void EditorPreferencesPanel::RenderLayoutModals() {

@@ -1,5 +1,6 @@
 #pragma once
 #include "Core/Export.hpp"
+#include "Editor/EditorCamera3DSettings.hpp"
 #include "Graphics/Text/FontHandle.hpp"
 
 #include <cstdint>
@@ -142,6 +143,10 @@ namespace Funke {
 
 		static bool GetConfirmOnDeleteAsset();
 		static void SetConfirmOnDeleteAsset(bool value);
+
+		static EditorCamera3DSettings GetCamera3DSettings();
+		static void SetCamera3DSettings(const EditorCamera3DSettings& settings);
+		static void ResetCamera3DSettings();
 
 		// ── Viewport / Snapping ───────────────────────────────────
 		// When enabled, entities dragged in the Editor View snap their world

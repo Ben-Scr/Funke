@@ -1,0 +1,59 @@
+{
+  "Dirty": true,
+  "PowerScheme": "GUID des Energieschemas: 381b4222-f694-41f0-9685-ff5bb260df2e  (Ausbalanciert)",
+  "OS": {
+    "Caption": "Microsoft Windows 11 Pro",
+    "Version": "10.0.26200",
+    "BuildNumber": "26200",
+    "FreePhysicalMemory": 9793636
+  },
+  "Binaries": [
+    {
+      "Algorithm": "SHA256",
+      "Hash": "5BB0740B5B35BEB6FABFBC8B0E0FB723367F99D7BBB8C123FC48FDE1DA6DDEE9",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsBenchmark-20261028\\runtime\\Funke-Runtime.exe"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "A64C6571B767EBFF83FEE2519CFE47C5EE7BE13ABE4E423C19A963F2921A2AD0",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsBenchmark-20261028\\runtime\\Funke-Engine.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "885E548B2A593A33E0832747B665A6B2331F392B2685D04988496EC8E192A7B8",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsBenchmark-20261028\\runtime\\Funke-ScriptCore.dll"
+    }
+  ],
+  "Cpu": {
+    "Name": "AMD Ryzen 9 7900X 12-Core Processor            ",
+    "NumberOfCores": 12,
+    "NumberOfLogicalProcessors": 24,
+    "MaxClockSpeed": 4701
+  },
+  "Timestamp": "2026-10-28T15:19:55.8924469+01:00",
+  "Memory": [
+    {
+      "Capacity": 17179869184,
+      "Speed": 4800,
+      "ConfiguredClockSpeed": 6000,
+      "Manufacturer": "Kingston",
+      "PartNumber": "KF560C30-16                   "
+    },
+    {
+      "Capacity": 17179869184,
+      "Speed": 4800,
+      "ConfiguredClockSpeed": 6000,
+      "Manufacturer": "Kingston",
+      "PartNumber": "KF560C30-16                   "
+    }
+  ],
+  "GPU": [
+    {
+      "Name": "AMD  Radeon RX 7800 XT"
+    },
+    {
+      "Name": "AMD Radeon(TM) Graphics"
+    }
+  ],
+  "GitHead": "0f47fe792e9e3185a034f8f44c28840e4a2c1b98"
+}

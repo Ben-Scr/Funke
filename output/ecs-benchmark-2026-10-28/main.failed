@@ -1,0 +1,6 @@
+System.FormatException: The input string '1000 10000 100000' was not in a correct format.
+   at System.Number.ThrowFormatException[TChar](ReadOnlySpan`1 value)
+   at System.Int32.Parse(String s)
+   at System.Linq.Enumerable.ArraySelectIterator`2.Fill(ReadOnlySpan`1 source, Span`1 destination, Func`2 func)
+   at System.Linq.Enumerable.ArraySelectIterator`2.ToArray()
+   at EcsBenchmarkSystem.OnUpdate() in C:\Users\benso\source\repos\Pending\Index\scripts\benchmarks\ecs\BenchHarness.cs:line 127

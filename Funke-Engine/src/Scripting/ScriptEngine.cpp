@@ -26,6 +26,10 @@
 #include <filesystem>
 
 namespace Funke {
+	namespace {
+		void (*g_TrustedEntityInvalidation)(uint64_t) = nullptr;
+		void (*g_TrustedComponentInvalidation)(uint64_t, uint32_t) = nullptr;
+	}
 
 	bool        ScriptEngine::s_Initialized = false;
 	Scene*      ScriptEngine::s_CurrentScene = nullptr;
@@ -49,6 +53,8 @@ namespace Funke {
 	{
 		// s_Initialized=false FIRST so reentrant calls from managed OnDestroy hooks bail instead of touching being-destroyed state.
 		s_Initialized = false;
+		g_TrustedEntityInvalidation = nullptr;
+		g_TrustedComponentInvalidation = nullptr;
 		s_HasUserAssembly = false;
 		GameLocalization::SetSavedLanguageProvider(nullptr);
 
@@ -90,6 +96,8 @@ namespace Funke {
 			return;
 		}
 
+		g_TrustedEntityInvalidation = nullptr;
+		g_TrustedComponentInvalidation = nullptr;
 		s_CoreAssemblyPath = path;
 
 		if (!std::filesystem::exists(path))
@@ -155,6 +163,8 @@ namespace Funke {
 		}
 
 		s_Callbacks = managedCallbacks;
+		g_TrustedEntityInvalidation = managedCallbacks.NotifyEntityDestroyed;
+		g_TrustedComponentInvalidation = managedCallbacks.NotifyComponentRemoved;
 		s_Initialized = true;
 		FNK_CORE_INFO_TAG("ScriptEngine", "Core assembly loaded: {}", path);
 
@@ -571,6 +581,24 @@ namespace Funke {
 	{
 		if (!s_Initialized || entityID == 0 || !s_Callbacks.NotifyEntityDestroyed) return;
 		s_Callbacks.NotifyEntityDestroyed(entityID);
+	}
+
+	void ScriptEngine::NotifyComponentRemoved(uint64_t entityID, uint32_t typeId)
+	{
+		if (!s_Initialized || entityID == 0 || !s_Callbacks.NotifyComponentRemoved) return;
+		s_Callbacks.NotifyComponentRemoved(entityID, typeId);
+	}
+
+	bool ScriptEngine::CanBatchEntityInvalidation()
+	{
+		return !s_Initialized || !s_Callbacks.NotifyEntityDestroyed
+			|| s_Callbacks.NotifyEntityDestroyed == g_TrustedEntityInvalidation;
+	}
+
+	bool ScriptEngine::CanBatchComponentInvalidation()
+	{
+		return !s_Initialized || !s_Callbacks.NotifyComponentRemoved
+			|| s_Callbacks.NotifyComponentRemoved == g_TrustedComponentInvalidation;
 	}
 
 	uint32_t ScriptEngine::CreateSceneSystemInstance(const std::string& className, const std::string& sceneName)

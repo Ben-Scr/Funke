@@ -1468,7 +1468,8 @@ namespace Funke {
 			if (EditorUI::ToggleButton("3D##EditorViewMode", m_EditorView3D)) {
 				SetEditorView3D(!m_EditorView3D);
 			}
-			EditorUI::Tooltip("3D scene camera: RMB orbit (+WASD/QE fly), MMB pan, wheel zoom, F focus. Off: 2D camera.");
+			EditorUI::Tooltip("3D scene camera: RMB look/orbit + WASD/QE, Shift boost, MMB pan, wheel zoom, F focus. "
+				"Configure navigation in Edit > Preferences > Camera. Off: 2D camera.");
 		}
 
 		if (beginElement(EditorViewToolbarItem::DrawMode)) {

@@ -1,0 +1,13 @@
+{
+  "name": "collider_capsule_3d",
+  "mode": "built-in image_gen",
+  "useCase": "stylized-concept",
+  "source": "C:\\Users\\benso\\.codex\\generated_images\\01a1702d-69c5-7321-880e-7b93f512fe0d\\exec-710b20fa-27a4-43d3-b795-6aff0a8e9769.png",
+  "transparentBackground": true,
+  "prompt": "Use case: stylized-concept.\nAsset type: one standalone editor component icon, satin plastic 3D app icon on genuinely transparent square PNG.\nStyle reference: match the previously viewed blue puzzle piece and yellow zip-folder only in smooth satin-plastic material, chunky forms, soft bevels and upper-left lighting. Do not copy their subjects.\nComposition: one centered icon, maximum extent about 88% of the square canvas, fully in frame with clean transparent padding.\nSmall-size clarity: the icon will display at 16–20 pixels. Use extremely simple, bold geometry and wide substantial structural strokes. No fine detail, grain, speckle, hairline strokes, extra objects, decorative particles, floor, background plane, external shadow, document backing, labels, letters, numbers, or watermark.\nMaterial: fresh saturated leaf-green satin plastic, light lime upper-left bevel highlight, darker green lower-right bevel. Soft shallow bevels, large clean forms, no glossy glare. Background and all openings must be genuine alpha transparency.\nSubject: a vertical pill-shaped capsule cage icon: one thick leaf-green outer capsule outline with semicircular top and bottom joined by straight vertical sides. Height about 1.6 times width. Two large clean transparent interior openings, divided at the center by a single gently curved warm-ivory horizontal equator band joining the left and right green sides. A simple three-dimensional cage impression from satin bevels and slight equator curvature. No other internal vertical or horizontal lines, no filled glass or solid pill, no medical cross.",
+  "styleReferences": [
+    "output/imagegen/file-icons-complete-2026-10-25/masters/file_prefab.png",
+    "output/imagegen/file-icons-complete-2026-10-25/masters/folder_zip.png"
+  ],
+  "created": "2026-10-25"
+}

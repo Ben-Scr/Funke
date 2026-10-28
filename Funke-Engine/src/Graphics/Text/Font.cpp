@@ -24,6 +24,24 @@
 
 namespace Funke {
 
+	struct FontPreparedData {
+		std::vector<uint8_t> Bitmap;
+		std::vector<stbtt_packedchar> Packed;
+		std::vector<uint8_t> StbFontInfoStorage;
+		std::shared_ptr<const std::vector<uint8_t>> TtfBuffer;
+		std::string Filepath;
+		int AtlasSide = 0;
+		float PixelSize = 0.0f;
+		float Ascent = 0.0f;
+		float Descent = 0.0f;
+		float LineHeight = 0.0f;
+		float StbScale = 0.0f;
+		std::vector<int16_t> AsciiKerning;
+		std::vector<int> GlyphIndices;
+		bool HasKerning = false;
+		bool Ok = false;
+	};
+
 	namespace {
 		struct CodepointRange { uint32_t First; uint32_t Last; };
 		constexpr CodepointRange k_BakedRanges[] = {
@@ -80,23 +98,7 @@ namespace Funke {
 			return (it == g_Atlases.end()) ? nullptr : &it->second;
 		}
 
-		struct CpuBakeResult {
-			std::vector<uint8_t> Bitmap;
-			std::vector<stbtt_packedchar> Packed;
-			std::vector<uint8_t> StbFontInfoStorage;  // raw bytes, copied back into Font
-			std::shared_ptr<const std::vector<uint8_t>> TtfBuffer;  // shared with Font; read-only on the worker
-			std::string Filepath;
-			int   AtlasSide = 0;
-			float PixelSize = 0.0f;
-			float Ascent = 0.0f;
-			float Descent = 0.0f;
-			float LineHeight = 0.0f;
-			float StbScale = 0.0f;
-			std::vector<int16_t> AsciiKerning;
-			std::vector<int> GlyphIndices;
-			bool  HasKerning = false;
-			bool  Ok = false;  // worker sets to true on successful pack
-		};
+		using CpuBakeResult = FontPreparedData;
 
 		// Pairs are bounded by k_KernSpan² GPOS lookups, cheap next to rasterizing the atlas.
 		void BakeKerning(const stbtt_fontinfo* font, CpuBakeResult& out) {
@@ -127,7 +129,7 @@ namespace Funke {
 		bool RasterizeAtlasCpu(const std::vector<uint8_t>& ttfBuffer,
 			float pixelSize, CpuBakeResult& out)
 		{
-			if (ttfBuffer.empty() || pixelSize <= 0.0f) return false;
+			if (ttfBuffer.size() < 12 || !std::isfinite(pixelSize) || pixelSize <= 0.0f || pixelSize > k_AtlasMaxSide) return false;
 
 			out.StbFontInfoStorage.assign(sizeof(stbtt_fontinfo), 0);
 			stbtt_fontinfo* font = reinterpret_cast<stbtt_fontinfo*>(out.StbFontInfoStorage.data());
@@ -352,6 +354,19 @@ namespace Funke {
 		return BakeAtlas(pixelSize);
 	}
 
+	std::shared_ptr<const FontPreparedData> Font::PrepareFromFile(const std::string& path, float pixelSize) {
+		if (path.empty() || !std::isfinite(pixelSize) || pixelSize <= 0.0f || pixelSize > k_AtlasMaxSide) return nullptr;
+		auto result = std::make_shared<FontPreparedData>();
+		result->Filepath = path;
+		result->TtfBuffer = std::make_shared<const std::vector<uint8_t>>(File::ReadAllBytes(path));
+		if (!RasterizeAtlasCpu(*result->TtfBuffer, pixelSize, *result)) return nullptr;
+		return result;
+	}
+
+	float Font::GetPreparedPixelSize(const std::shared_ptr<const FontPreparedData>& prepared) {
+		return prepared && prepared->Ok ? prepared->PixelSize : 0.0f;
+	}
+
 	namespace {
 		bool PublishAtlasGpu(const CpuBakeResult& result,
 			unsigned& outAtlasTexture, int& outAtlasSide)
@@ -464,15 +479,22 @@ namespace Funke {
 			return false;
 		}
 
-		CpuBakeResult result;
-		result.Filepath = m_Filepath;
-		if (!RasterizeAtlasCpu(*m_TtfBuffer, pixelSize, result)) {
+		auto result = std::make_shared<FontPreparedData>();
+		result->Filepath = m_Filepath;
+		result->TtfBuffer = m_TtfBuffer;
+		if (!RasterizeAtlasCpu(*m_TtfBuffer, pixelSize, *result)) {
 			FNK_CORE_ERROR_TAG("Font", "Atlas pack failed (max {}px): {}", k_AtlasMaxSide, m_Filepath);
 			m_StbFontInfoStorage.clear();
 			m_TtfBuffer.reset();
 			return false;
 		}
+		return LoadPrepared(result);
+	}
 
+	bool Font::LoadPrepared(const std::shared_ptr<const FontPreparedData>& prepared) {
+		if (!prepared || !prepared->Ok || !prepared->TtfBuffer || !WebGPUBackend::IsInitialized()) return false;
+		Cleanup();
+		const auto& result = *prepared;
 		unsigned atlasTexture = 0;
 		int      atlasSide    = 0;
 		if (!PublishAtlasGpu(result, atlasTexture, atlasSide)) {
@@ -481,6 +503,8 @@ namespace Funke {
 			return false;
 		}
 
+		m_TtfBuffer          = result.TtfBuffer;
+		m_Filepath           = result.Filepath;
 		m_AtlasWidth         = atlasSide;
 		m_AtlasHeight        = atlasSide;
 		m_PixelSize          = result.PixelSize;
@@ -488,10 +512,10 @@ namespace Funke {
 		m_Descent            = result.Descent;
 		m_LineHeight         = result.LineHeight;
 		m_StbScale           = result.StbScale;
-		m_StbFontInfoStorage = std::move(result.StbFontInfoStorage);
+		m_StbFontInfoStorage = result.StbFontInfoStorage;
 		PopulateGlyphTable(result.Packed, atlasSide, atlasTexture, m_Glyphs);
-		m_AsciiKerning       = std::move(result.AsciiKerning);
-		m_GlyphIndices       = std::move(result.GlyphIndices);
+		m_AsciiKerning       = result.AsciiKerning;
+		m_GlyphIndices       = result.GlyphIndices;
 		m_HasKerning         = result.HasKerning;
 		m_AtlasTexture       = atlasTexture;  // last: makes IsLoaded() flip true
 		return true;
@@ -546,26 +570,7 @@ namespace Funke {
 			return true;  // bake is "done" — failed, but no longer pending
 		}
 
-		unsigned atlasTexture = 0;
-		int      atlasSide    = 0;
-		if (!PublishAtlasGpu(*result, atlasTexture, atlasSide)) {
-			return true;
-		}
-
-		m_TtfBuffer          = std::move(result->TtfBuffer);
-		m_AtlasWidth         = atlasSide;
-		m_AtlasHeight        = atlasSide;
-		m_PixelSize          = result->PixelSize;
-		m_Ascent             = result->Ascent;
-		m_Descent            = result->Descent;
-		m_LineHeight         = result->LineHeight;
-		m_StbScale           = result->StbScale;
-		m_StbFontInfoStorage = std::move(result->StbFontInfoStorage);
-		PopulateGlyphTable(result->Packed, atlasSide, atlasTexture, m_Glyphs);
-		m_AsciiKerning       = std::move(result->AsciiKerning);
-		m_GlyphIndices       = std::move(result->GlyphIndices);
-		m_HasKerning         = result->HasKerning;
-		m_AtlasTexture       = atlasTexture;  // last: flips IsLoaded() true
+		LoadPrepared(result);
 		return true;
 	}
 

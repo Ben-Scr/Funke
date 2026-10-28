@@ -8,6 +8,7 @@
 #include "Scene/Scene.hpp"
 #include "Scripting/NativeEngineAPI.hpp"
 #include "Scripting/NativeScriptRegistry.hpp"
+#include "Scripting/NativeScriptField.hpp"
 
 #include <cstdint>
 #include <type_traits>
@@ -23,11 +24,30 @@ namespace Funke {
 		virtual void Update(float deltaTime) {}
 		virtual void FixedUpdate(float fixedDeltaTime) {}
 		virtual void OnDestroy() {}
+		virtual const NativeScriptField* GetFields(uint32_t* count) const noexcept {
+			if (count) *count = 0;
+			return nullptr;
+		}
 
 		uint32_t GetEntityID() const { return m_EntityID; }
 		EntityHandle GetEntityHandle() const { return m_Entity; }
 		Scene* GetScene() const { return m_Scene; }
 		entt::registry* GetRegistry() const { return m_Scene ? &m_Scene->GetRegistry() : nullptr; }
+
+		template<typename TComponent>
+		ComponentRef<TComponent> GetComponentRef() {
+			const entt::registry* registry = GetRegistry();
+			if (!registry || m_Entity == entt::null || !registry->valid(m_Entity)) return {};
+			return m_Scene->GetEntity(m_Entity).GetComponentRef<TComponent>();
+		}
+
+		template<typename TComponent>
+		ComponentRef<const TComponent> GetComponentRef() const {
+			const entt::registry* registry = GetRegistry();
+			if (!registry || m_Entity == entt::null || !registry->valid(m_Entity)) return {};
+			const Entity entity = m_Scene->GetEntity(m_Entity);
+			return entity.GetComponentRef<TComponent>();
+		}
 
 		template<typename TComponent, typename... Args>
 			requires (!std::is_empty_v<TComponent>)
@@ -112,10 +132,13 @@ namespace Funke {
 #define FNK_NATIVE_LOG_WARN(msg)  do { if (Funke::g_EngineAPI && Funke::g_EngineAPI->LogWarn) Funke::g_EngineAPI->LogWarn(msg); } while(0)
 #define FNK_NATIVE_LOG_ERROR(msg) do { if (Funke::g_EngineAPI && Funke::g_EngineAPI->LogError) Funke::g_EngineAPI->LogError(msg); } while(0)
 
-#define REGISTER_SCRIPT(ClassName) \
-	static struct ClassName##_AutoReg { \
-		ClassName##_AutoReg() { \
+#define FNK_NATIVE_JOIN_IMPL(a, b) a##b
+#define FNK_NATIVE_JOIN(a, b) FNK_NATIVE_JOIN_IMPL(a, b)
+#define FNK_REGISTER_SCRIPT_IMPL(ClassName, Id) \
+	namespace { struct FNK_NATIVE_JOIN(NativeAutoReg_, Id) { \
+		FNK_NATIVE_JOIN(NativeAutoReg_, Id)() { \
 			Funke::NativeScriptRegistry::Register(#ClassName, []() -> Funke::NativeScript* { return new ClassName(); }); \
 			Funke::NativeScriptRegistry::RegisterType(typeid(ClassName), #ClassName); \
 		} \
-	} s_##ClassName##_autoreg;
+	} FNK_NATIVE_JOIN(s_NativeAutoReg_, Id); }
+#define REGISTER_SCRIPT(ClassName) FNK_REGISTER_SCRIPT_IMPL(ClassName, __COUNTER__)

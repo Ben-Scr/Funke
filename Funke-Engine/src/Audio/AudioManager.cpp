@@ -1,6 +1,7 @@
 #include "pch.hpp"
 
 #include "Assets/AssetRegistry.hpp"
+#include "Assets/AssetLoader.hpp"
 #include "AudioManager.hpp"
 #include "Audio.hpp"
 #include "Audio/AudioStreams.hpp"
@@ -338,8 +339,38 @@ namespace Funke {
 			}
 		}
 
+		const AudioHandle handle = LoadDecodedAudio(std::move(audio));
+		if (handle.IsValid()) s_audioRawPathToHandle[requestedPath] = handle.GetHandle();
+		return handle;
+	}
+
+	AudioHandle AudioManager::FindLoadedAudio(std::string_view path) {
+		if (!Application::IsMainThread() || !s_IsInitialized || path.empty()) return {};
+		const std::string requestedPath(path);
+		if (const AudioHandle existing = FindAudioByRawPath(requestedPath); existing.IsValid()) return existing;
+		const std::string fullPath = NormalizeAudioPath(std::filesystem::path(requestedPath));
+		AudioHandle existing = FindAudioByPath(fullPath);
+		if (!existing.IsValid()) {
+			const std::string rootPath = NormalizeAudioPath(std::filesystem::path(Path::Combine(s_RootPath, requestedPath)));
+			if (rootPath != fullPath) existing = FindAudioByPath(rootPath);
+		}
+		if (existing.IsValid()) s_audioRawPathToHandle[requestedPath] = existing.GetHandle();
+		return existing;
+	}
+
+	AudioHandle AudioManager::LoadDecodedAudio(std::unique_ptr<Audio> audio) {
+		if (!Application::IsMainThread() || !s_IsInitialized || !audio || !audio->IsLoaded()) return {};
+		const std::string requestedPath = audio->GetFilepath();
+		if (requestedPath.empty()) return {};
+		const std::string resolvedPath = NormalizeAudioPath(std::filesystem::path(requestedPath));
+		if (const AudioHandle existing = FindAudioByPath(resolvedPath); existing.IsValid()) {
+			s_audioRawPathToHandle[requestedPath] = existing.GetHandle();
+			return existing;
+		}
+
+		audio->m_Filepath = resolvedPath;
 		KnownFileStamps::Record(resolvedPath);
-		AudioHandle::HandleType id = GenerateHandle();
+		const AudioHandle::HandleType id = GenerateHandle();
 		if (!RegisterAudioData(*audio)) {
 			FNK_CORE_WARN_TAG("AudioManager", "Falling back to on-demand audio loading for '{}'", resolvedPath);
 		}
@@ -404,6 +435,7 @@ namespace Funke {
 
 	void AudioManager::UnloadAllAudio() {
 		FNK_CORE_ASSERT(Application::IsMainThread(), FunkeErrorCode::Undefined, "AudioManager::UnloadAllAudio must be called on the main thread");
+		AssetLoader::Invalidate(AssetKind::Audio);
 
 		for (size_t i = 0; i < s_soundInstances.size(); ++i) {
 			auto& slot = s_soundInstances[i];

@@ -494,26 +494,78 @@ public class SpinSystem : SceneSystem
 
 ## Native C++ scripts
 
-For performance-critical code, you can write a **native script** in C++ instead. A native script inherits from `NativeScript` and registers itself with a macro:
+Create a native script with **Asset Browser → Create → Scripting → C++ Script**. The `.cpp` file lives in the selected `Assets/` folder. Double-click it to edit that same file in your configured external editor. Save it, wait for the native compilation indicator to finish, then attach its class with **Add Component** or drag the file onto an entity's Inspector. Press Play to run it. Compiler errors appear in the Console.
+
+A native script inherits from `NativeScript` and registers its class with `REGISTER_SCRIPT`. The creation template also includes an Inspector field:
 
 ```cpp
+#include <Scripting/NativeScript.hpp>
+
 class MyScript : public Funke::NativeScript {
 public:
-    void Start() override { /\* ... \*/ }
-    void Update(float deltaTime) override { /\* ... \*/ }
-    void OnDestroy() override { /\* ... \*/ }
+    float Speed = 1.0f;
+    FNK_NATIVE_FIELDS(
+        Funke::NativeFields::Make<&MyScript::Speed>("Speed", "Movement Speed")
+            .WithClamp(0.0, 100.0).WithTooltip("Units per second"))
+
+    void Start() override {}
+    void Update(float deltaTime) override {}
+    void FixedUpdate(float fixedDeltaTime) override {}
+    void OnDestroy() override {}
 };
 
-REGISTER\_SCRIPT(MyScript);   // makes it selectable like a C# script
+REGISTER_SCRIPT(MyScript)
 ```
 
-Differences from C#:
+`FNK_NATIVE_FIELDS(...)` takes one or more `NativeFields::Make<&Class::Member>("stableName", "Display Name")` descriptors. Exposed values can be edited in the Inspector and saved with scenes and prefabs. Keep the stable name when renaming a C++ member to preserve saved values. Supported member types include booleans, integers, floating-point numbers, `std::string`, enums, GLM float/integer vectors and `Funke::Color`. Use `.AsReadOnly()` for a displayed value that should not be edited. Fields are registered explicitly; arbitrary C++ members are not reflected automatically.
 
-* **Compiled, not hot-reloaded** — changing a native script means rebuilding.
-* **Faster** — direct memory access, no garbage collection.
-* **Smaller lifecycle** — `Start`, `Update(deltaTime)`, and `OnDestroy` (no collision/enable/application hooks).
+Saving native source or header changes triggers an incremental CMake build and DLL reload when automatic recompilation is enabled. The Editor Bridge command `funke editor recompile --project <project>` also rebuilds both C# and C++ scripts. A successful reload recreates script instances; `Start()` runs again in Play mode. Registered field values can be restored, but other C++ object state is recreated. A failed build leaves the previous library available and reports the error. Renaming or moving a `.cpp` asset keeps its registered class name, so existing scene attachments remain valid.
 
-Use C# for almost everything; drop to native scripts only when you've measured a real need.
+C++ scripts provide `Start`, `Update`, `FixedUpdate` and `OnDestroy`; C# collision, enable/disable and application callbacks are not part of this native lifecycle. Put scene access, resource acquisition and other game initialization in `Start()`. The editor may construct a temporary instance to inspect its fields without invoking lifecycle callbacks.
+
+For component access kept between calls, use `ComponentRef<T>`. Raw pointers and references returned by `GetComponent`, `TryGetComponent` or `AddComponent` can become invalid after structural changes. EnTT owning groups may move components when another component is added, even while the original entity remains alive. A cached transform pointer can then refer to a different entity's transform.
+
+`ComponentRef<T>` stores the entity and resolves its component on every access. This example acquires the handle **before** adding the sprite component and safely uses it afterwards:
+
+```cpp
+#include <Scripting/NativeScript.hpp>
+#include <Components/Graphics/SpriteRendererComponent.hpp>
+
+class SpawnSprite : public Funke::NativeScript {
+public:
+    void Start() override {
+        auto spawned = GetScene()->CreateRuntimeEntity("Mein Objekt");
+        m_Transform = spawned.GetComponentRef<Funke::Transform2DComponent>();
+        spawned.AddComponent<Funke::SpriteRendererComponent>();
+        m_Transform->SetPosition({2.0f, 2.0f});
+    }
+
+    void Update(float deltaTime) override {
+        if (m_Transform) m_Transform->SetPosition({2.0f, 2.0f});
+    }
+
+    void OnDestroy() override {
+        auto spawned = m_Transform.GetEntity();
+        if (spawned.IsValid()) spawned.Destroy();
+        m_Transform.Reset();
+    }
+
+private:
+    Funke::ComponentRef<Funke::Transform2DComponent> m_Transform;
+};
+
+REGISTER_SCRIPT(SpawnSprite)
+```
+
+Use handles for nonempty ECS component types; `NativeScript` subclasses and empty tag components are excluded. The handle starts empty. Construct one explicitly from an `Entity`, use `entity.GetComponentRef<T>()`, or call `GetComponentRef<T>()` in a native script for its own entity. `IsValid()` and `operator bool` test whether the entity and component still exist. `TryGet()` returns a nullable pointer; `Get()`, `operator->` and `operator*` throw `FunkeException` with `InvalidHandle` when access is invalid. `GetEntity()` returns the owning entity and `Reset()` clears the handle. Removing the component makes access invalid; adding that type back to the same live entity makes it valid again. Destroying the entity or its scene invalidates access, and recycling an entity slot does not retarget the handle.
+
+Use these handles on the runtime main thread; they do not provide synchronization or keep an entity or scene alive. A pointer borrowed from `TryGet()` or reference from `Get()` still expires on a structural change, so keep the handle between frames. A `const ComponentRef<T>` behaves like a const pointer variable and still permits modifying `T`; use `ComponentRef<const T>` for read-only component access. Calling `GetComponentRef<T>()` on a const entity or const native script returns a read-only handle. There is no implicit conversion to a raw pointer. Handles are runtime state and cannot be registered with `FNK_NATIVE_FIELDS` or saved as Inspector fields. The example destroys its spawned entity in `OnDestroy()` so a script reload does not leave another copy behind.
+
+Script and managed-component class names must be unique on each entity, including across C# and C++. Conflicting attachments are rejected with a Console warning because their saved field keys would overlap. Use distinct class names or qualified namespaces, such as `REGISTER_SCRIPT(NativeGame::Player)`.
+
+Native builds require CMake, a compatible desktop C++ compiler and matching Funke engine headers/libraries. `FUNKE_DIR` selects the engine root when it cannot be found from the project. On Windows the editor can also find CMake bundled with Visual Studio's C++ tools; `FUNKE_CMAKE_PATH` can override its location. `NativeScripts/Source/` remains available for manually maintained sources, while newly created assets compile directly from `Assets/` without a second editable copy. The native library uses the same build configuration as its engine.
+
+Desktop game builds compile and include the native-script library. Mobile and Web exports with native scripts are currently rejected with an explicit error; they require a different static integration path.
 
 \---
 

@@ -427,6 +427,16 @@ namespace Funke {
 
 			for (const ScriptInstance& instance : scriptComponent.Scripts) {
 				if (instance.GetType() == ScriptType::Native) {
+					const std::string prefix = instance.GetClassName() + ".";
+					Value fields = Value::MakeArray();
+					for (const auto& [key, value] : scriptComponent.PendingFieldValues) {
+						if (key.size() <= prefix.size() || key.rfind(prefix, 0) != 0) continue;
+						Value field = Value::MakeObject();
+						field.AddMember("name", key.substr(prefix.size()));
+						field.AddMember("value", value);
+						fields.Append(std::move(field));
+					}
+					if (!fields.GetArray().empty()) fieldsByClass.AddMember(instance.GetClassName(), std::move(fields));
 					continue;
 				}
 

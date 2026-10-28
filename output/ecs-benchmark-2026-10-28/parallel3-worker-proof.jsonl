@@ -1,0 +1,4 @@
+{"Operation":"PlaybackCreateDefault2","Mode":"Parallel","Count":100000,"Sample":0,"TotalMs":29.4093,"RecordMs":0.0219,"PlaybackMs":29.3874,"AllocatedBytes":3400056,"Gen0":0,"Gen1":0,"Gen2":0}
+{"Operation":"PlaybackAddExisting","Mode":"Parallel","Count":100000,"Sample":0,"TotalMs":17.8133,"RecordMs":0.0196,"PlaybackMs":17.7937,"AllocatedBytes":1900056,"Gen0":0,"Gen1":0,"Gen2":0}
+{"Operation":"PlaybackRemoveExisting","Mode":"Parallel","Count":100000,"Sample":0,"TotalMs":11.0074,"RecordMs":0.0014,"PlaybackMs":11.006,"AllocatedBytes":1900056,"Gen0":0,"Gen1":0,"Gen2":0}
+{"Operation":"PlaybackDestroyExisting","Mode":"Parallel","Count":100000,"Sample":0,"TotalMs":24.1461,"RecordMs":0.0512,"PlaybackMs":24.0949,"AllocatedBytes":1900056,"Gen0":0,"Gen1":0,"Gen2":0}

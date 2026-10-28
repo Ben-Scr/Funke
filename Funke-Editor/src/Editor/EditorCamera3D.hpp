@@ -1,23 +1,24 @@
 #pragma once
+#include "Editor/EditorCamera3DSettings.hpp"
 #include "Graphics/Renderer3D.hpp"
 
 #include <glm/glm.hpp>
 
 namespace Funke {
 
-	// Editor View camera for 3D scenes: orbits a focus point (RMB), pans (MMB), dollies (wheel), flies with RMB + WASD/QE.
 	class EditorCamera3D {
 	public:
 		struct Input {
 			glm::vec2 MouseDelta{ 0.0f };
 			float Scroll = 0.0f;
-			bool Orbit = false;
+			bool Look = false;
 			bool Pan = false;
-			// Local fly direction while orbiting: x = right, y = up, z = forward.
+			// x = right, y = up, z = forward; settings select local or world up.
 			glm::vec3 Fly{ 0.0f };
 			bool Fast = false;
 		};
 
+		void SetSettings(const EditorCamera3DSettings& settings);
 		void Update(float deltaTime, const Input& input);
 		void Focus(const glm::vec3& target, float radius);
 
@@ -32,7 +33,7 @@ namespace Funke {
 		float m_YawDegrees = -30.0f;
 		float m_PitchDegrees = -25.0f;
 		float m_Distance = 10.0f;
-		float m_FieldOfView = 60.0f;
+		EditorCamera3DSettings m_Settings;
 	};
 
 }

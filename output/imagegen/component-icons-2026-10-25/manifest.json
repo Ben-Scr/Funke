@@ -1,0 +1,14 @@
+{
+  "mode": "built-in image_gen",
+  "description": "19 regenerated component symbols and an open folder matching the approved satin file-icon family",
+  "masters": "masters/<name>.png",
+  "prompts": "prompts/<name>.json",
+  "exports": "exports/<name>/<name>_<size>.png",
+  "componentSizes": [16, 32, 64, 128],
+  "folderSizes": [16, 32, 64, 128, 256],
+  "exportMethod": "Proportional Lanczos3 resizing on a square transparent canvas, preserving generated alpha",
+  "canonicalDirectory": "../../../Funke-Runtime/FunkeAssets/Textures/Editor/General",
+  "darkPreview": "components-dark.png",
+  "lightPreview": "components-light.png",
+  "validation": "validation.json"
+}

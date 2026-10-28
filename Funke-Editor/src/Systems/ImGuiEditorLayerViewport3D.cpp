@@ -50,7 +50,7 @@ namespace Funke {
 		const Color k_CameraColor{ 0.85f, 0.85f, 0.85f, 0.9f };
 		const Color k_LightColor{ 1.0f, 0.86f, 0.35f, 0.9f };
 
-		bool s_OrbitActive = false;
+		bool s_LookActive = false;
 		bool s_PanActive = false;
 
 		// Children inherit the nearest ancestor that has a Transform3D (see Transform3DHierarchySystem).
@@ -274,7 +274,7 @@ namespace Funke {
 
 	void ImGuiEditorLayer::FocusSelectedEntity3D(Scene& scene) {
 		// F is a fly key's neighbour; ignore it while RMB-flying.
-		if (s_OrbitActive || m_SelectedEntity == entt::null || !scene.IsValid(m_SelectedEntity)) return;
+		if (s_LookActive || m_SelectedEntity == entt::null || !scene.IsValid(m_SelectedEntity)) return;
 		Transform3DHierarchySystem::Propagate(scene);
 		const auto* transform = scene.GetRegistry().try_get<Transform3DComponent>(m_SelectedEntity);
 		if (!transform) {
@@ -362,17 +362,17 @@ namespace Funke {
 		// Camera input: a drag begun inside the view keeps steering even when the cursor leaves it.
 		const ImGuiIO& io = ImGui::GetIO();
 		const bool hovered = m_IsEditorViewHovered && !overlayHovered;
-		if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && hovered) s_OrbitActive = true;
-		if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) s_OrbitActive = false;
+		if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && hovered) s_LookActive = true;
+		if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) s_LookActive = false;
 		if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle) && hovered) s_PanActive = true;
 		if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle)) s_PanActive = false;
 
 		EditorCamera3D::Input cameraInput;
-		cameraInput.Orbit = s_OrbitActive;
-		cameraInput.Pan = s_PanActive && !s_OrbitActive;
-		cameraInput.MouseDelta = (cameraInput.Orbit || cameraInput.Pan) ? glm::vec2(io.MouseDelta.x, io.MouseDelta.y) : glm::vec2(0.0f);
+		cameraInput.Look = s_LookActive;
+		cameraInput.Pan = s_PanActive && !s_LookActive;
+		cameraInput.MouseDelta = (cameraInput.Look || cameraInput.Pan) ? glm::vec2(io.MouseDelta.x, io.MouseDelta.y) : glm::vec2(0.0f);
 		cameraInput.Scroll = hovered ? io.MouseWheel : 0.0f;
-		if (s_OrbitActive) {
+		if (s_LookActive) {
 			cameraInput.Fly = {
 				(ImGui::IsKeyDown(ImGuiKey_D) ? 1.0f : 0.0f) - (ImGui::IsKeyDown(ImGuiKey_A) ? 1.0f : 0.0f),
 				(ImGui::IsKeyDown(ImGuiKey_E) ? 1.0f : 0.0f) - (ImGui::IsKeyDown(ImGuiKey_Q) ? 1.0f : 0.0f),
@@ -380,6 +380,7 @@ namespace Funke {
 			};
 			cameraInput.Fast = io.KeyShift;
 		}
+		m_EditorCamera3D.SetSettings(EditorPreferences::GetCamera3DSettings());
 		m_EditorCamera3D.Update(Time::GetDeltaTimeUnscaled(), cameraInput);
 
 		// First look at a scene frames its meshes, like a 2D scene opening on its camera.

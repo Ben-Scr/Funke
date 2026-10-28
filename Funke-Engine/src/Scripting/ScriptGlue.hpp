@@ -4,7 +4,7 @@
 namespace Funke {
 
 	// Bump together with InteropHandshake.LayoutVersion (ScriptHostBridge.cs) on any add/remove/reorder in NativeBindings or ManagedCallbacks.
-	inline constexpr int32_t k_ScriptInteropLayoutVersion = 41;
+	inline constexpr int32_t k_ScriptInteropLayoutVersion = 44;
 
 	/// Layout must match C# NativeBindingsStruct exactly (Sequential, blittable).
 	struct NativeBindings
@@ -1353,6 +1353,15 @@ namespace Funke {
 		int      (*Scene_CancelLoadAsync)(uint64_t operationId);
 		int      (*EditorGUI_Popup)(const char* label, int selectedIndex, const char* options, int optionsBytes);
 		int      (*EditorGUI_Selectable)(const char* label, int selected);
+		int      (*Entity_AddComponentByTypeId)(uint64_t entityID, uint32_t typeId);
+		int      (*Entity_RemoveComponentByTypeId)(uint64_t entityID, uint32_t typeId);
+		int      (*Entity_HasComponentByTypeId)(uint64_t entityID, uint32_t typeId);
+		uint64_t (*Asset_BeginLoadAsync)(uint64_t assetId);
+		int      (*Asset_GetLoadStatus)(uint64_t operationId);
+		int      (*Asset_CancelLoadAsync)(uint64_t operationId);
+		void     (*Asset_ReleaseLoad)(uint64_t operationId);
+		int      (*Ecb_PlaybackWithMode)(const uint8_t* buffer, int length,
+			uint64_t* outRuntimeIds, int maxOut, int mode);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.
@@ -1494,6 +1503,7 @@ namespace Funke {
 		int         (*GetPackageScriptTypes)(char* outBuffer, int capacity);
 		void        (*SceneLoadCompleted)(uint64_t operationId, int status, const char* sceneName, uint64_t sceneGuid);
 		void        (*PumpSceneLoadRequests)();
+		void        (*NotifyComponentRemoved)(uint64_t entityID, uint32_t typeId);
 	};
 
 } // namespace Funke

@@ -79,7 +79,12 @@ TEST_CASE("EditorScriptDiscovery::IsValidRegisteredScriptToken accepts identifie
 	CHECK(IsValidRegisteredScriptToken("PlayerController"));
 	CHECK(IsValidRegisteredScriptToken("My::Namespaced::Script"));
 	CHECK(IsValidRegisteredScriptToken("_underscore9"));
+	CHECK(IsValidRegisteredScriptToken("::Game::Player"));
 	CHECK_FALSE(IsValidRegisteredScriptToken(""));
+	CHECK_FALSE(IsValidRegisteredScriptToken("9Player"));
+	CHECK_FALSE(IsValidRegisteredScriptToken("Game:"));
+	CHECK_FALSE(IsValidRegisteredScriptToken("Game::"));
+	CHECK_FALSE(IsValidRegisteredScriptToken("Game:::Player"));
 	CHECK_FALSE(IsValidRegisteredScriptToken("has space"));
 	CHECK_FALSE(IsValidRegisteredScriptToken("has-dash"));
 }
@@ -142,6 +147,54 @@ TEST_CASE("EditorScriptDiscovery::ExtractRegisteredNativeScriptClasses pulls REG
 	CHECK(classes[0] == "PlayerController");
 	CHECK(classes[1] == "EnemyAI");
 	CHECK(classes[2] == "Game::Boss");
+}
+
+TEST_CASE("EditorScriptDiscovery native registration ignores comments literals and unrelated identifiers") {
+	ScopedTempDir dir;
+	const auto path = dir.Write("Player.cpp", R"test(
+// REGISTER_SCRIPT(CommentedOut)
+/* REGISTER_SCRIPT(BlockComment) */
+const char* text = "REGISTER_SCRIPT(InString)";
+const char* raw = R"doc(quote " REGISTER_SCRIPT(InRawString))doc";
+#define REGISTER_SCRIPT(ClassName) Register(ClassName)
+PREFIX_REGISTER_SCRIPT(NotTheMacro)
+REGISTER_SCRIPT_SUFFIX(NotTheMacroEither)
+int count = 1'000;
+REGISTER_SCRIPT /* comment */ (Player)
+REGISTER_SCRIPT(Game::Enemy)
+)test");
+	const auto classes = ExtractRegisteredNativeScriptClasses(path);
+	REQUIRE(classes.size() == 2);
+	CHECK(classes[0] == "Player");
+	CHECK(classes[1] == "Game::Enemy");
+}
+
+TEST_CASE("EditorScriptDiscovery native asset rename preserves registered script identity") {
+	ScopedTempDir dir;
+	const auto source = dir.Write("Player.cpp", BuildNativeScriptSource("Player"));
+	const auto renamed = dir.Root / "Movement.cpp";
+	std::filesystem::rename(source, renamed);
+	std::vector<ScriptEntry> entries;
+	CollectScriptFiles(dir.Root, entries);
+	REQUIRE(entries.size() == 1);
+	CHECK(entries[0].Type == ScriptType::Native);
+	CHECK(entries[0].ClassName == "Player");
+	CHECK(entries[0].Path == renamed);
+	std::filesystem::remove(renamed);
+	entries.clear();
+	CollectScriptFiles(dir.Root, entries);
+	CHECK(entries.empty());
+}
+
+TEST_CASE("EditorScriptDiscovery native scripts sharing a translation unit have unique menu ids") {
+	ScopedTempDir dir;
+	const auto source = dir.Write("Actors.cxx", "REGISTER_SCRIPT(Player)\nREGISTER_SCRIPT(Enemy)\n");
+	std::vector<ScriptEntry> entries;
+	CollectScriptFile(source, entries);
+	REQUIRE(entries.size() == 2);
+	CHECK(entries[0].Type == ScriptType::Native);
+	CHECK(entries[1].Type == ScriptType::Native);
+	CHECK(EntryId(entries[0]) != EntryId(entries[1]));
 }
 
 TEST_CASE("EditorScriptDiscovery::ExtractNativeComponentAttributeName reads the attribute string literal") {

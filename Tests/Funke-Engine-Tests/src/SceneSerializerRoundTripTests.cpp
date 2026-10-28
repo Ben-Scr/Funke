@@ -428,6 +428,39 @@ TEST_CASE("Staged scene load keeps script field values while the script engine i
 	CHECK(scriptEntities == 1);
 }
 
+TEST_CASE("Native script fields survive scene staging and entity cloning without a loaded DLL")
+{
+	auto scene = Scene::CreateDetachedScene("Native field round trip");
+	Entity source = scene->CreateEntity("Native player");
+	auto& scripts = source.AddComponent<ScriptComponent>();
+	scripts.AddScript("Player", ScriptType::Native);
+	scripts.PendingFieldValues["Player.Speed"] = "3.5";
+	scripts.PendingFieldValues["Player.Label"] = "A \"native\" player";
+	scripts.PendingFieldValues["Player.Enabled"] = "true";
+
+	const Json::Value serialized = SceneSerializer::SerializeEntityFull(*scene, source.GetHandle());
+	REQUIRE(serialized.FindMember("ScriptFields") != nullptr);
+	const EntityHandle clone = SceneSerializer::DeserializeEntityFromValue(*scene, serialized);
+	REQUIRE(clone != entt::null);
+	const auto& restored = scene->GetComponent<ScriptComponent>(clone);
+	REQUIRE(restored.Scripts.size() == 1);
+	CHECK(restored.Scripts.front().GetType() == ScriptType::Native);
+	CHECK(restored.PendingFieldValues.at("Player.Speed") == "3.5");
+	CHECK(restored.PendingFieldValues.at("Player.Label") == "A \"native\" player");
+	CHECK(restored.PendingFieldValues.at("Player.Enabled") == "true");
+
+	auto loaded = Scene::CreateDetachedScene("Native field staged target");
+	REQUIRE(SceneSerializer::DeserializeScene(*loaded, SceneSerializer::SerializeScene(*scene)));
+	int count = 0;
+	for (auto [handle, component] : loaded->GetRegistry().view<ScriptComponent>().each()) {
+		(void)handle;
+		++count;
+		CHECK(component.PendingFieldValues.at("Player.Speed") == "3.5");
+		CHECK(component.Scripts.front().GetType() == ScriptType::Native);
+	}
+	CHECK(count == 2);
+}
+
 TEST_CASE("Malformed scene header is rejected without replacing current content")
 {
 	Json::Value root = Json::Value::MakeObject();

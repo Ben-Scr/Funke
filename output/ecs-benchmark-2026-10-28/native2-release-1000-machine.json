@@ -1,0 +1,101 @@
+{
+  "Binaries": [
+    {
+      "Algorithm": "SHA256",
+      "Hash": "FDC37565D88D62B2E9B4DC7BC317321D369013CEED3FAF5D5F5899C7994331DB",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsBenchmark-20261028\\runtime\\Funke-Runtime.exe"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "D0FABBF015E65226B1FEE3B188AA1AE6B545A93B9B8A2420395FC8E25C198C21",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsBenchmark-20261028\\runtime\\Funke-Engine.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "4500699A3789C1FE4B58CAE780D1537B0DAE18A2FC30A5C963FBA06ED9CB9015",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsBenchmark-20261028\\runtime\\Funke-ScriptCore.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "05A3ED9F39222D3144FB729124D13A7298E1DFADB8E6F9C69E53B3B73D1EB88D",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsBenchmark-20261028\\project\\bin\\Release\\EcsBenchmark.dll"
+    }
+  ],
+  "Sources": [
+    {
+      "Algorithm": "SHA256",
+      "Hash": "AEA92DD076F14C01878D577C44D3A692E54D224B958C178EAC9AAD99F437576F",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs\\BenchHarness.cs"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "C0D82D0F88B0C32AEE62517A100C9BEE3B465C85E5BA2EBEF8FBF9C63A4A54E8",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs\\CustomComponentBenchmarks.cs"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "5D74BFC8264D598995201D6020239010ED8684F37DC9368EF2E89388AA8DC2AC",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs\\EcbMutationValidation.cs"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "2E9F5933F60EA73FA69ED7B5D1266E31D7DA71965D039453FFB831781B299A88",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs\\HistoryBenchmarks.cs"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "9EF8D5B9814D360DF1CF42B4B0E5B3E022B2EEAE5DE751B855A8A823EE6CB6D5",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs\\MixedStressBenchmarks.cs"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "84405CA4B4550F6100E771105FDB0AA49AA863FD832450373320EFEBEFC6622B",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs\\QueryBenchmarks.cs"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "FAF2000A7EBB7C58F54AF8230581BA5B9BC3BAA11AF9D7E3AE7DF2D7186D41D0",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs\\StructuralBenchmarks.cs"
+    }
+  ],
+  "GitHead": "623c21809f28d6ced35b02745f8c43a976a3f967",
+  "Cpu": {
+    "Name": "AMD Ryzen 9 7900X 12-Core Processor            ",
+    "NumberOfCores": 12,
+    "NumberOfLogicalProcessors": 24,
+    "MaxClockSpeed": 4701
+  },
+  "OS": {
+    "Caption": "Microsoft Windows 11 Pro",
+    "Version": "10.0.26200",
+    "BuildNumber": "26200",
+    "FreePhysicalMemory": 8253096
+  },
+  "PowerScheme": "GUID des Energieschemas: 381b4222-f694-41f0-9685-ff5bb260df2e  (Ausbalanciert)",
+  "Timestamp": "2026-10-28T18:12:47.7818104+01:00",
+  "Dirty": true,
+  "Memory": [
+    {
+      "Capacity": 17179869184,
+      "Speed": 4800,
+      "ConfiguredClockSpeed": 6000,
+      "Manufacturer": "Kingston",
+      "PartNumber": "KF560C30-16                   "
+    },
+    {
+      "Capacity": 17179869184,
+      "Speed": 4800,
+      "ConfiguredClockSpeed": 6000,
+      "Manufacturer": "Kingston",
+      "PartNumber": "KF560C30-16                   "
+    }
+  ],
+  "GPU": [
+    {
+      "Name": "AMD  Radeon RX 7800 XT"
+    },
+    {
+      "Name": "AMD Radeon(TM) Graphics"
+    }
+  ]
+}

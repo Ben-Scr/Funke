@@ -22,10 +22,12 @@ public class Entity : IEquatable<Entity>
 {
     public static readonly Entity Invalid = new(0);
 
-    // Shared store keyed by (entityID, type) — load-bearing for UI components (Button/Slider) which carry per-instance event subscriptions; UIEventDispatcher creates fresh Entity wrappers each frame and must resolve the same Component object the user's script subscribed to.
-    private static readonly Dictionary<(ulong EntityID, Type ComponentType), Component> s_ManagedComponentStore = new();
+    // Entity wrappers share component instances so UI subscriptions survive fresh Entity handles.
+    private static readonly Dictionary<ulong, Dictionary<Type, Component>> s_ManagedComponentStore = new();
+    private static ulong s_ManagedComponentStoreVersion;
 
-    private readonly Dictionary<Type, Component> m_ComponentCache = new();
+    private Dictionary<Type, Component>? m_ComponentCache;
+    private ulong m_ComponentCacheVersion;
     private readonly ulong m_PrefabAssetGUID;
     private Transform2D? m_TransformComponent;
 
@@ -98,7 +100,8 @@ public class Entity : IEquatable<Entity>
     {
         get
         {
-            if (m_TransformComponent == null)
+            EnsureComponentCacheCurrent();
+            if (m_TransformComponent is null || ((Component)m_TransformComponent).Entity.ID == 0)
                 m_TransformComponent = GetComponent<Transform2D>();
             return m_TransformComponent;
         }
@@ -242,6 +245,7 @@ public class Entity : IEquatable<Entity>
     private sealed class ComponentMetadata
     {
         public readonly ConcurrentDictionary<Type, string> NativeNames = new();
+        public readonly ConcurrentDictionary<Type, uint> NativeTypeIds = new();
         public readonly HashSet<Module> InitializedModules = new();
         public bool Unloaded;
 
@@ -251,6 +255,7 @@ public class Entity : IEquatable<Entity>
             {
                 Unloaded = true;
                 NativeNames.Clear();
+                NativeTypeIds.Clear();
                 InitializedModules.Clear();
             }
         }
@@ -416,10 +421,26 @@ public class Entity : IEquatable<Entity>
         if (string.IsNullOrWhiteSpace(nativeName))
             throw new ArgumentException("A native component name is required.", nameof(nativeName));
         ComponentMetadata metadata = GetComponentMetadata(typeof(T).Assembly);
+        bool renamed = false;
         lock (metadata)
         {
             if (!metadata.Unloaded)
+            {
+                renamed = metadata.NativeNames.TryGetValue(typeof(T), out string? previousName)
+                    && !string.Equals(previousName, nativeName, StringComparison.Ordinal);
                 metadata.NativeNames[typeof(T)] = nativeName;
+                metadata.NativeTypeIds.TryRemove(typeof(T), out _);
+            }
+        }
+        if (renamed)
+        {
+            foreach (var pair in s_ManagedComponentStore)
+            {
+                if (pair.Value.Remove(typeof(T), out Component? component))
+                    component.Invalidate();
+                if (pair.Value.Count == 0)
+                    s_ManagedComponentStore.Remove(pair.Key);
+            }
         }
     }
 
@@ -440,9 +461,18 @@ public class Entity : IEquatable<Entity>
         return false;
     }
 
+    private void EnsureComponentCacheCurrent()
+    {
+        if (m_ComponentCacheVersion == s_ManagedComponentStoreVersion)
+            return;
+        m_ComponentCache = null;
+        m_TransformComponent = null;
+        m_ComponentCacheVersion = s_ManagedComponentStoreVersion;
+    }
+
     private void InvalidateCachedComponent(Type type)
     {
-        if (m_ComponentCache.Remove(type, out Component? cached))
+        if (m_ComponentCache != null && m_ComponentCache.Remove(type, out Component? cached))
             cached.Invalidate();
 
         if (type == typeof(Transform2D))
@@ -453,60 +483,86 @@ public class Entity : IEquatable<Entity>
 
     private void InvalidateAllCachedComponents()
     {
-        foreach (Component component in m_ComponentCache.Values)
-            component.Invalidate();
-
-        m_ComponentCache.Clear();
-        m_TransformComponent = null;
         InvalidateManagedComponents(ID);
+        if (m_ComponentCache != null)
+        {
+            foreach (var pair in m_ComponentCache)
+                pair.Value.Invalidate();
+            m_ComponentCache.Clear();
+        }
+
+        m_TransformComponent = null;
     }
 
     private static void InvalidateManagedComponent(ulong entityID, Type type)
     {
-        if (s_ManagedComponentStore.Remove((entityID, type), out Component? component))
+        if (!s_ManagedComponentStore.TryGetValue(entityID, out Dictionary<Type, Component>? components))
+            return;
+        if (components.Remove(type, out Component? component))
             component.Invalidate();
+        if (components.Count == 0)
+            s_ManagedComponentStore.Remove(entityID);
     }
 
     private static void InvalidateManagedComponents(ulong entityID)
     {
-        List<(ulong EntityID, Type ComponentType)> keysToRemove = new();
-        foreach (var key in s_ManagedComponentStore.Keys)
-        {
-            if (key.EntityID == entityID)
-                keysToRemove.Add(key);
-        }
-
-        foreach (var key in keysToRemove)
-        {
-            if (s_ManagedComponentStore.Remove(key, out Component? component))
-                component.Invalidate();
-        }
+        if (!s_ManagedComponentStore.Remove(entityID, out Dictionary<Type, Component>? components))
+            return;
+        foreach (var pair in components)
+            pair.Value.Invalidate();
+        components.Clear();
     }
 
-    // Native→managed bridge (ScriptInstanceManager.NotifyEntityDestroyed): the engine
-    // destroyed this entity without going through a C# path, so its cached wrappers would
-    // otherwise linger until assembly unload. Empty-store fast path keeps bulk teardown
-    // O(1) per entity (the store is empty for the vast majority of entities).
     internal static void OnNativeEntityDestroyed(ulong entityID)
     {
-        if (s_ManagedComponentStore.Count == 0)
-            return;
         InvalidateManagedComponents(entityID);
     }
 
-    // MUST clear on assembly unload: s_ManagedComponentStore roots user Component subclasses, preventing the AssemblyLoadContext from unloading until every entry is removed.
-    // invalidate=false (play-exit): the scene reload already rebuilt the live entities and re-applied
-    // authored values onto fresh wrappers, so drop the store (forcing future GetComponent<T> to re-fetch)
-    // but DON'T invalidate — invalidating orphans the just-restored component refs still held by live
-    // script fields, so the inspector reads them back as "(None)". Unload invalidates: all is going away.
+    internal static uint GetNativeComponentTypeId(Type type)
+    {
+        ComponentMetadata metadata = GetComponentMetadata(type.Assembly);
+        if (metadata.NativeTypeIds.TryGetValue(type, out uint typeId))
+            return typeId;
+        string? name = GetComponentName(type);
+        if (name == null)
+            return 0;
+        typeId = InternalCalls.Component_GetTypeId(name);
+        if (typeId != 0)
+            metadata.NativeTypeIds.TryAdd(type, typeId);
+        return typeId;
+    }
+
+    internal static void OnNativeComponentRemoved(ulong entityID, uint nativeTypeId)
+    {
+        if (nativeTypeId == 0 || !s_ManagedComponentStore.TryGetValue(entityID, out Dictionary<Type, Component>? components))
+            return;
+        foreach (var pair in components)
+        {
+            if (GetNativeComponentTypeId(pair.Key) != nativeTypeId)
+                continue;
+            pair.Value.Invalidate();
+            components.Remove(pair.Key);
+        }
+        if (components.Count == 0)
+            s_ManagedComponentStore.Remove(entityID);
+    }
+
+    // Play-exit keeps existing field references live; assembly unload invalidates them.
     internal static void ClearManagedComponentStore(bool invalidate = true)
     {
         if (invalidate)
         {
-            foreach (var component in s_ManagedComponentStore.Values)
-                component.Invalidate();
+            foreach (var entity in s_ManagedComponentStore)
+            {
+                foreach (var component in entity.Value)
+                    component.Value.Invalidate();
+                entity.Value.Clear();
+            }
         }
         s_ManagedComponentStore.Clear();
+        s_ManagedComponentStoreVersion++;
+        foreach (var entry in s_ComponentMetadata)
+            entry.Value.NativeTypeIds.Clear();
     }
 
     public T? AddComponent<T>() where T : Component, new()
@@ -514,21 +570,21 @@ public class Entity : IEquatable<Entity>
         if (IsPrefabAsset)
             return null;
 
-            if (typeof(EntityScript).IsAssignableFrom(typeof(T)))
+        if (typeof(EntityScript).IsAssignableFrom(typeof(T)))
         {
             if (!InternalCalls.Entity_AddScript(ID, typeof(T).Name))
                 return null;
             return ScriptInstanceManager.GetScriptInstance(ID, typeof(T)) as T;
         }
 
-        string? nativeName = GetNativeName<T>();
-        if (nativeName == null)
+        uint nativeTypeId = GetNativeComponentTypeId(typeof(T));
+        bool added = nativeTypeId != 0
+            ? InternalCalls.Entity_AddComponentByTypeId(ID, nativeTypeId)
+            : GetNativeName<T>() is string name && InternalCalls.Entity_AddComponent(ID, name);
+        if (!added)
             return null;
 
-        if (!InternalCalls.Entity_AddComponent(ID, nativeName))
-            return null;
-
-        return GetComponent<T>();
+        return GetOrCreateComponentByType(typeof(T)) as T;
     }
 
     // IComponent variant — distinct name (not overload) because C# overload resolution ignores generic constraints (CS0111); use EntityCommandBuffer for bulk creation.
@@ -537,7 +593,7 @@ public class Entity : IEquatable<Entity>
         if (IsPrefabAsset)
             return false;
 
-        return InternalCalls.Entity_AddComponent(ID, ComponentTypes<T>.NativeName);
+        return InternalCalls.Entity_AddComponentByTypeId(ID, ComponentTypes<T>.NativeId);
     }
 
     public bool HasComponent<T>() where T : Component, new()
@@ -549,8 +605,10 @@ public class Entity : IEquatable<Entity>
         if (typeof(EntityScript).IsAssignableFrom(typeof(T)))
             return InternalCalls.Entity_HasScript(ID, typeof(T).Name);
 
-        string? nativeName = GetNativeName<T>();
-        return nativeName != null && InternalCalls.Entity_HasComponent(ID, nativeName);
+        uint nativeTypeId = GetNativeComponentTypeId(typeof(T));
+        return nativeTypeId != 0
+            ? InternalCalls.Entity_HasComponentByTypeId(ID, nativeTypeId)
+            : GetNativeName<T>() is string name && InternalCalls.Entity_HasComponent(ID, name);
     }
 
     /// Native (`IComponent`) variant — see <see cref="AddNativeComponent{T}"/>
@@ -560,7 +618,7 @@ public class Entity : IEquatable<Entity>
         if (IsPrefabAsset)
             return false;
 
-        return InternalCalls.Entity_HasComponent(ID, ComponentTypes<T>.NativeName);
+        return InternalCalls.Entity_HasComponentByTypeId(ID, ComponentTypes<T>.NativeId);
     }
 
     public bool RemoveComponent<T>() where T : Component, new()
@@ -572,10 +630,10 @@ public class Entity : IEquatable<Entity>
         if (typeof(EntityScript).IsAssignableFrom(typeof(T)))
             return InternalCalls.Entity_RemoveScript(ID, typeof(T).Name);
 
-        string? nativeName = GetNativeName<T>();
-        if (nativeName == null) return false;
-
-        bool removed = InternalCalls.Entity_RemoveComponent(ID, nativeName);
+        uint nativeTypeId = GetNativeComponentTypeId(typeof(T));
+        bool removed = nativeTypeId != 0
+            ? InternalCalls.Entity_RemoveComponentByTypeId(ID, nativeTypeId)
+            : GetNativeName<T>() is string name && InternalCalls.Entity_RemoveComponent(ID, name);
         if (removed || !HasComponent<T>())
             InvalidateCachedComponent(typeof(T));
 
@@ -587,7 +645,7 @@ public class Entity : IEquatable<Entity>
         if (IsPrefabAsset)
             return false;
 
-        return InternalCalls.Entity_RemoveComponent(ID, ComponentTypes<T>.NativeName);
+        return InternalCalls.Entity_RemoveComponentByTypeId(ID, ComponentTypes<T>.NativeId);
     }
 
     public T? GetComponent<T>() where T : Component, new()
@@ -744,23 +802,31 @@ public class Entity : IEquatable<Entity>
         if (typeof(EntityScript).IsAssignableFrom(type))
             return ScriptInstanceManager.GetScriptInstance(ID, type);
 
-        string? nativeName = GetComponentName(type);
-        if (nativeName == null)
-            return null;
-
-        if (!InternalCalls.Entity_HasComponent(ID, nativeName))
+        uint nativeTypeId = GetNativeComponentTypeId(type);
+        bool hasComponent = nativeTypeId != 0
+            ? InternalCalls.Entity_HasComponentByTypeId(ID, nativeTypeId)
+            : GetComponentName(type) is string name && InternalCalls.Entity_HasComponent(ID, name);
+        if (!hasComponent)
         {
             InvalidateCachedComponent(type);
             return null;
         }
 
-        if (m_ComponentCache.TryGetValue(type, out Component? cached))
+        return GetOrCreateComponentByType(type);
+    }
+
+    private Component GetOrCreateComponentByType(Type type)
+    {
+        EnsureComponentCacheCurrent();
+
+        if (m_ComponentCache != null && m_ComponentCache.TryGetValue(type, out Component? cached) && cached.Entity.ID != 0)
             return cached;
 
-        if (s_ManagedComponentStore.TryGetValue((ID, type), out Component? storedComponent))
+        if (s_ManagedComponentStore.TryGetValue(ID, out Dictionary<Type, Component>? components))
         {
-            m_ComponentCache[type] = storedComponent;
-            return storedComponent;
+            m_ComponentCache = components;
+            if (components.TryGetValue(type, out Component? storedComponent) && storedComponent.Entity.ID != 0)
+                return storedComponent;
         }
 
         var component = (Component)Activator.CreateInstance(type)!;
@@ -768,7 +834,8 @@ public class Entity : IEquatable<Entity>
         if (!TryGetRegisteredNativeName(type, out _))
             ApplyManagedFieldValues(component, InternalCalls.Entity_GetManagedComponentFields(ID, type.Name));
 
-        s_ManagedComponentStore[(ID, type)] = component;
+        m_ComponentCache ??= new Dictionary<Type, Component>();
+        s_ManagedComponentStore[ID] = m_ComponentCache;
         m_ComponentCache[type] = component;
         return component;
     }

@@ -1,0 +1,12 @@
+{
+  "name": "file_prefab",
+  "mode": "built-in",
+  "use_case": "stylized-concept",
+  "transparent_background": true,
+  "referenced_image_paths": [
+    "C:/Users/benso/source/repos/Pending/Index/output/imagegen/file-icons-concepts-2026-10-25/production/file_cs/file_cs_master.png",
+    "C:/Users/benso/source/repos/Pending/Index/output/imagegen/file-icons-concepts-2026-10-25/production/file_scene/file_scene_master.png"
+  ],
+  "source_image": "C:\\Users\\benso\\.codex\\generated_images\\01a17025-73a4-7310-a800-e8bfd01abbb7\\exec-ce778673-ed48-489a-91bf-d1ce265e324a.png",
+  "prompt": "Use case: stylized-concept\nAsset type: production file-type icon for a desktop game editor, matching a cohesive icon family.\nInput images: reference 1 green C# document and reference 2 blue clapperboard are STYLE-ONLY references. Match their soft satin plastic, chunky modest bevels, warm ivory accents, top-left soft lighting and internal occlusion shadows. Do not copy their document shape, letters or clapperboard.\nScene/backdrop: truly transparent RGBA background.\nStyle/medium: clean high-quality stylized 3D icon, smooth satin plastic with modest rounded bevels, strong simple silhouette readable at 16px. Not pixel art.\nComposition/framing: one centered standalone symbol on a square canvas, substantial visual mass, maximum extent 87.5% of the canvas, uniform empty transparent margin, nearly front-facing orthographic view with only enough depth to show the bevel. Soft top-left lighting and shadowing only within the symbol.\nConstraints: exactly one isolated icon. Preserve transparent background. No paper or file silhouette, no floor or plane, no external cast shadow, no detached shadow, no particles, no sparkles, no glow, no backdrop, no outline stroke, no labels, no text, no watermarks, no extra symbols.\nPrimary request: one cyan-blue chunky beveled jigsaw puzzle piece, broad compact silhouette. One rounded outward knob at the top, one rounded outward knob at the right, one open round inward socket on the left, and one open round inward socket on the bottom. Thick cyan satin plastic body and modest soft bevel with brighter cyan top-left edges and deeper blue lower-right edges. Clear single reusable building-block symbol for both 2D and 3D games. No extra pieces, no cube."
+}

@@ -186,6 +186,50 @@ public static class StructuralBenchmarks
                 },
                 () => BenchHarness.DestroyEntities(entities));
         }
+
+        foreach (bool add in new[] { true, false })
+        foreach (bool parallel in new[] { false, true })
+        {
+            Entity[] entities = Array.Empty<Entity>();
+            EntityRef[] refs = Array.Empty<EntityRef>();
+            int created = -1;
+            using var ecb = new EntityCommandBuffer(Math.Max(1024, n * 24));
+            await h.MeasurePhased(add ? "AddComponentExisting" : "RemoveComponentExisting", parallel ? "ECB_Parallel" : "ECB", n,
+                () =>
+                {
+                    entities = BenchHarness.CreateEntities(n, true, !add);
+                    refs = new EntityRef[n];
+                    for (int i = 0; i < n; i++) refs[i] = entities[i].ToCommandBufferRef();
+                    created = -1;
+                },
+                () =>
+                {
+                    ecb.Clear();
+                    if (parallel)
+                        Job.ScheduleParallelFor(new EcbMutationValidation.LiveComponentMutationJob
+                        {
+                            Writer = ecb.AsParallelWriter(), Refs = refs, Add = add
+                        }, n, batchSize: 256).Complete();
+                    else
+                        foreach (var entity in refs)
+                        {
+                            if (add) ecb.AddComponent<NativeSpriteRenderer>(entity);
+                            else ecb.RemoveComponent<NativeSpriteRenderer>(entity);
+                        }
+                },
+                () => { created = ecb.Playback(); },
+                () =>
+                {
+                    BenchHarness.Require(created == 0 && ecb.CommandCount == n, "ECB add/remove result count");
+                    foreach (var entity in entities)
+                    {
+                        BenchHarness.Require(entity && entity.HasNativeComponent<NativeSpriteRenderer>() == add, "ECB add/remove component state");
+                        if (add)
+                            BenchHarness.Require(entity.GetNativeComponentReadOnly<NativeSpriteRenderer>().Color.A == 1f, "ECB add native defaults");
+                    }
+                },
+                () => BenchHarness.DestroyEntities(entities));
+        }
     }
 
     private static async Task Clone(int n, BenchHarness h)

@@ -1,0 +1,98 @@
+FUNKE – KORREKTUREN UND VALIDIERUNG, 25.10.2026
+
+Bezug: output/funke-bug-audit-2026-10-25.txt, Befunde 01–15 und T1/T2.
+Die bereits vorhandenen lokalen Änderungen wurden erhalten. Kein Commit erstellt.
+
+KORREKTUREN
+
+01 Recovery behält die letzte gute Sicherung auch nach einem Schreibfehler.
+   Regression erzwingt den Fehler, vergleicht die Originalbytes und prüft erneutes
+   Sichern sowie das spätere Entfernen der Sicherung einer sauberen Szene.
+02 Runtime und Editor rendern additive 2D-Szenen in ein gemeinsames Zwischenbild.
+   Einmaliges Leeren/Postprocessing; Sprite-/Text-Reihenfolge pro Szene bleibt erhalten.
+03 Job-Ausnahmen erhalten bereits vor dem Scheduling einen eindeutigen Schlüssel.
+   Regressionen prüfen frühe/späte Callbacks, Einzel-/Paralleljobs, Pool-Wiederverwendung
+   und mehrfaches Complete().
+04 Parameterlose Frame-/FixedUpdate-Awaiter übernehmen das Owner-Abbruchtoken.
+05 Veränderte Elterntransformationen markieren betroffene Collider-Kinder als dirty.
+   Regression prüft reale Körperpositionen, Rotation und Shape-Größen.
+06 Gecachte Box-/Circle-Prefabs übertragen ihre Dichte auf die nativen Shapes.
+   Regression prüft Dichte und automatische Masse nach Hydrate.
+07 Text-, Image- und Collider-Reset verwendet frische Standardwerte.
+08 Rigidbody-Paste/Reset stellt automatische, aus Shapes berechnete Masse wieder her.
+09 SceneSystem-Phasen enden bei Entladen/Suspendierung der eigenen Szene.
+   Regressionen für Update, FixedUpdate, OnPreRender und Suspendierung.
+10 Texturcache vergleicht vollständige UUID-/Sampler-Schlüssel.
+   Regression prüft alle 80 Filter-/Wrap-Kombinationen und verschiedene UUIDs.
+11 Materialtexturen werden über aktuelle Szenenreferenzen gehalten; historische
+   Renderer-/Shader-Caches verhindern das Freigeben nicht mehr. Lebende 3D-Partikel
+   behalten ihre Texturen. Regressionen prüfen Entfernen/Ändern dieser Referenzen.
+12 Mesh-Hot-Reload überwacht externe glTF-Puffer pro Mesh, einschließlich gemeinsam
+   verwendeter und zunächst fehlender Dateien. Beide Fälle sind regressionsgetestet.
+13 Abgekoppelte/ungültige Gamepads liefern Triggerwert 0.
+14 Native ParallelFor-Bindungen verwenden einen nullbasierten Bereich plus signed Offset.
+   Regressionen umfassen negative Bereiche, Nullüberschreitung und int-Grenzwerte.
+15 Asset-Pruning parst glTF-URIs, dekodiert sie einmal und normalisiert relative Pfade.
+   Regressionen prüfen ../, ./, Leerzeichen sowie wörtlich prozentkodierte Dateinamen.
+T1 Release-Test prüft das Fehler-Loglevel statt eines veralteten Log-Wortlauts.
+T2 Run.ps1 löst System.Drawing-Referenzen passend zur aktuellen PowerShell-Runtime auf.
+   Der Capture-Helper wird unter Windows PowerShell 5.1 und PowerShell 7.6.5 kompiliert.
+
+BUILD UND AUTOMATISIERTE TESTS
+
+Inkrementeller Release-Build mit scripts/dev/Build.ps1, Projektdateien regeneriert:
+Engine, EditorRuntime, ScriptCore, EngineTests, EditorTests, Editor, Runtime, CLI,
+Launcher sowie dessen PackageTool-Abhängigkeit: erfolgreich.
+Aktuelle Engine-/ScriptCore-DLLs wurden in die betroffenen Anwendungsausgaben verteilt.
+Nach der letzten Header-Ergänzung wurden auch die nativen Programme nochmals gegen
+die finale Signatur gebaut. CLI --version läuft ohne Signaturwarnung. Danach wurden
+Engine-, Editor- und C#-Suite auf den finalen Binaries vollständig erneut ausgeführt.
+
+Engine: 579/579 Tests, 108736/108736 Assertions bestanden.
+Editor: 106/106 Tests, 562/562 Assertions bestanden.
+C#: 432/432 Tests bestanden.
+Python/CI-Werkzeuge: 37/37 Tests bestanden.
+Insgesamt: 1154 Tests bestanden, 26 zusätzliche Fälle gegenüber dem Auditstand.
+git diff --check: erfolgreich.
+Launcher: CI-Start-/Beenden-Prüfung mit Exitcode 0 bestanden.
+
+Ein neuer Physiktest griff zunächst direkt aus der Test-EXE auf Box2D-Zustand der
+Engine-DLL zu und stürzte ab. Die Assertion verwendet jetzt den exportierten
+CircleCollider2D-Getter, der dieselbe native Shape-Größe innerhalb der DLL liest.
+Der anschließend vollständig wiederholte Engine-Lauf ist erfolgreich.
+
+GRAFIK-/LAUFZEITPRÜFUNG
+
+Bestanden: je 15 Bilder aus Runtime und Editor, jeweils 960 x 540 Pixel.
+Matrix: Hauptszene allein, mit leerer additiver Szene und mit zusätzlicher
+Sprite-/Text-Szene; jeweils ohne Effekte, mit Postprocessing, FXAA, RenderScale 0.5
+und mit allen drei Einstellungen gemeinsam.
+
+Alle 10 Hauptszene-/Leerszene-Paare sind pixelidentisch. Alle 15 entsprechenden
+Runtime-/Editor-Bilder sind ebenfalls pixelidentisch. Farb- und Pixelprüfungen
+bestätigen beide Sprites, Alphaüberlappung, beide Texte und deren Reihenfolge.
+Die Bilder wurden zusätzlich visuell geprüft. Effekte verändern das Bild wie erwartet.
+
+Echte C#-Jobs über die native Engine in Runtime und Editor: jeweils 32/32 erwartete
+Ausnahmen abgefangen; ParallelForRange(-2, 2) besucht 4 Werte mit Summe -2.
+Echte Fensteraufnahmen mit Run.ps1: PowerShell 7.6.5/Runtime und Windows
+PowerShell 5.1/Editor erfolgreich. Eigene Testanwendungen regulär beendet.
+Der bereits laufende Dist-Editor des Nutzers wurde nicht verändert oder beendet.
+Keine neuen Fehler-/WebGPU-Validierungsmeldungen der Testläufe; optionale CJK-Schrift
+nicht installiert. Die gemeinsam verwendeten Anwendungslogs enthalten auch Meldungen
+separater Nutzerprozesse; die Bewertung verwendet Fixture-Marker und Editor-Bridge-Logs.
+
+ARTEFAKTE UND GRENZEN
+
+Build- und Testprotokolle: bin-int/_agent/fix-audit-20261025/
+Grafik-Fixture und Prüfskript: bin-int/_agent/fix-audit-20261025/rendering/
+Exakte Laufzeit-Reprokommandos und Ergebnisse: rendering/results.txt.
+Finale Bilder und Pixelbericht: rendering/evidence/runtime-final/,
+rendering/evidence/editor-final/ und rendering/evidence/pixel-verification.json.
+Native Regressionen: AuditScenePhysicsTests.cpp, GraphicsAssetRegressionTests.cpp,
+JobTests.cpp, SceneRecoveryTests.cpp und BuildAssetPruningTests.cpp.
+Managed Regressionen: JobDispatchTests.cs sowie Coroutine-/Input-Tests.
+
+Validiert wird der lokale Windows-x64-Release-Stand. Andere Betriebssysteme,
+Mobil-/Web-Targets, reale Controller und Langzeit-Speicher-Stresstests wurden nicht
+ausgeführt. Erfolgreiche Tests sind kein Nachweis allgemeiner Fehlerfreiheit.

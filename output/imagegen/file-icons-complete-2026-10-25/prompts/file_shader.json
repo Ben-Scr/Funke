@@ -1,0 +1,11 @@
+{
+  "asset": "file_shader",
+  "tool": "built-in image_gen",
+  "intent": "generate using style reference images",
+  "transparent_background": true,
+  "referenced_image_paths": [
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\imagegen\\file-icons-concepts-2026-10-25\\production\\file_txt\\file_txt_master.png",
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\imagegen\\file-icons-concepts-2026-10-25\\production\\file_scene\\file_scene_master.png"
+  ],
+  "prompt": "Use case: stylized-concept.\nAsset type: final production Funke editor file browser icon, smooth raster 3D icon.\nInput images: Image 1 is a STYLE REFERENCE for the satin silver-gray folded document and its soft modest bevel. Image 2 is a STYLE REFERENCE for a standalone blue clapperboard symbol in the same family. Neither is an edit target; create the requested new icon only.\nStyle: match these references' simple chunky geometry, restrained soft rounded bevel, satin plastic finish, dimensional highlights and gentle internal contact shadows. Clean polished large color regions. Top-left lighting.\nComposition: single isolated centered icon on a square truly transparent RGBA canvas. The maximum silhouette extent should fill approximately 87.5% of the square, fully inside generous equal transparent margins. Nearly frontal camera, modest depth like the references. Strong simple silhouette that remains recognizable at 16 pixels.\nAvoid: background of any color, gradient backdrop, checkerboard painted into image, floor, ground shadow, drop shadow outside silhouette, haze, glow, flecks, floating decorations, watermark, border, text.\nSubject: a single standalone violet/purple polished shaded sphere symbol for a shader/material surface. Make the sphere bold, smoothly shaded in rich violet with subtle lavender top-left light and deeper purple lower-right shading. Place ONE strong raised warm-ivory FOUR-POINT glint on its upper-right face, integrated as a chunky beveled emblem with broad readable points. The glint is a solid ivory shape, not emitted light. Compact composition. No other stars. No document/page backdrop, no code, no letters, no wireframe, no pedestal."
+}

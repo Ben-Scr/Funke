@@ -48,9 +48,18 @@ public unsafe class SceneQueryTests
     [UnmanagedCallersOnly]
     private static int HasComponent(ulong id, byte* name) => s_Removed.Contains(id) ? 0 : 1;
 
+    [UnmanagedCallersOnly]
+    private static int HasComponentByTypeId(ulong id, uint typeId)
+        => typeId == 1 && !s_Removed.Contains(id) ? 1 : 0;
+
+    [UnmanagedCallersOnly]
+    private static uint GetTypeId(byte* name)
+        => MemoryMarshal.CreateReadOnlySpanFromNullTerminated(name).SequenceEqual("Name"u8) ? 1u : 0u;
+
     private static void WithScene(Action<Scene, Scene> body)
     {
         NativeBindingsStruct previous = NativeCallbacks.Bindings;
+        Entity.ClearManagedComponentStore();
         try
         {
             s_Target.Clear();
@@ -64,11 +73,14 @@ public unsafe class SceneQueryTests
             bindings.Scene_QueryEntitiesFilteredInScene = &FilteredQuery;
             bindings.Scene_GetEntityCount = &GetEntityCount;
             bindings.Entity_HasComponent = &HasComponent;
+            bindings.Entity_HasComponentByTypeId = &HasComponentByTypeId;
+            bindings.Component_GetTypeId = &GetTypeId;
             NativeCallbacks.Bindings = bindings;
             body(new Scene { Name = "Target" }, new Scene { Name = "Other" });
         }
         finally
         {
+            Entity.ClearManagedComponentStore();
             NativeCallbacks.Bindings = previous;
             s_Removed.Clear();
         }

@@ -48,6 +48,10 @@
 #endif
 
 namespace Funke {
+	NativeScriptHost ScriptSystem::m_NativeHost;
+
+	NativeScriptHost& ScriptSystem::GetNativeHost() { return m_NativeHost; }
+
 	struct ScriptSystemProcessTaskState {
 		std::mutex Mutex;
 		std::optional<Process::Result> Result;
@@ -337,7 +341,9 @@ namespace Funke {
 				".hpp",
 				".hxx",
 				".inl",
-				".ipp"
+				".ipp",
+				".cmake",
+				"CMakeLists.txt"
 			};
 		}
 
@@ -391,7 +397,8 @@ namespace Funke {
 
 		std::vector<std::string> BuildNativeWatchTargets(
 			const std::filesystem::path& projectDirectory,
-			const std::filesystem::path& sourceDirectory = {})
+			const std::filesystem::path& sourceDirectory = {},
+			const std::filesystem::path& assetsDirectory = {})
 		{
 			std::vector<std::string> targets;
 			auto appendTarget = [&targets](const std::filesystem::path& path) {
@@ -401,7 +408,10 @@ namespace Funke {
 			};
 
 			appendTarget(sourceDirectory);
+			appendTarget(assetsDirectory);
 			appendTarget(projectDirectory / "Include");
+			appendTarget(projectDirectory / "CMakeLists.txt");
+			appendTarget(projectDirectory / "FunkeNativeScripts.cmake");
 
 			if (targets.empty()) {
 				appendTarget(projectDirectory);
@@ -578,7 +588,7 @@ namespace Funke {
 			}
 
 			for (const ScriptInstance& instance : scriptComp.Scripts) {
-				if (instance.GetClassName() == className && instance.GetType() != ScriptType::Native) {
+				if (instance.GetClassName() == className) {
 					return;
 				}
 			}
@@ -805,22 +815,17 @@ namespace Funke {
 				return true;
 			}
 
-			const std::filesystem::path cmakeListsPath = nativeProjectDirectory / "CMakeLists.txt";
-			if (!std::filesystem::exists(cmakeListsPath, ec) || ec) {
-				return false;
-			}
-
 			const auto cacheWriteTime = std::filesystem::last_write_time(cachePath, ec);
 			if (ec) {
 				return true;
 			}
 
-			const auto cmakeWriteTime = std::filesystem::last_write_time(cmakeListsPath, ec);
-			if (ec) {
-				return false;
+			for (const char* name : { "CMakeLists.txt", "FunkeNativeScripts.cmake" }) {
+				ec.clear();
+				const auto writeTime = std::filesystem::last_write_time(nativeProjectDirectory / name, ec);
+				if (!ec && writeTime > cacheWriteTime) return true;
 			}
-
-			return cmakeWriteTime > cacheWriteTime;
+			return false;
 		}
 
 		void AbandonTask(std::shared_ptr<ProcessTaskState>& task, std::string_view description)
@@ -933,6 +938,15 @@ namespace Funke {
 		}
 
 		void ApplyPendingFieldValues(ScriptComponent& scriptComp, ScriptInstance& instance) {
+			if (instance.HasNativeInstance()) {
+				const std::string prefix = instance.GetClassName() + ".";
+				for (const auto& [key, value] : scriptComp.PendingFieldValues) {
+					if (key.size() > prefix.size() && key.rfind(prefix, 0) == 0) {
+						ScriptSystem::GetNativeHost().SetFieldValue(instance.GetNativePtr(), key.substr(prefix.size()), value);
+					}
+				}
+				return;
+			}
 			if (!instance.HasManagedInstance()) return;
 			auto& callbacks = ScriptEngine::GetCallbacks();
 			if (!callbacks.SetScriptField) return;
@@ -1137,7 +1151,7 @@ namespace Funke {
 		if (project)
 		{
 			const bool hasNativeScriptSources = project->HasNativeScriptSources();
-			if (hasNativeScriptSources) {
+			if (Application::IsEditor() && hasNativeScriptSources) {
 				project->EnsureNativeScriptProjectFiles();
 			}
 
@@ -1145,15 +1159,16 @@ namespace Funke {
 			m_NativeSourceDirectory = Path::ToUtf8(NormalizeNativePath(Path::FromUtf8(project->NativeSourceDir)));
 			const std::filesystem::path nativeDll = ResolveProjectNativeDLLPath(*project);
 			m_NativeDLLPath = Path::ToUtf8(nativeDll);
-			m_NativeTargetName = project->Name + "-NativeScripts";
-			if (hasNativeScriptSources && std::filesystem::exists(nativeDll))
+			m_NativeTargetName = project->GetNativeScriptTargetName();
+			if (std::filesystem::exists(nativeDll))
 			{
 				m_NativeHost.LoadDLL(m_NativeDLLPath);
 			}
 			if (Application::IsEditor() && !m_NativeProjectDirectory.empty())
 			{
 				std::vector<std::string> nativeWatchTargets =
-					BuildNativeWatchTargets(Path::FromUtf8(m_NativeProjectDirectory), Path::FromUtf8(m_NativeSourceDirectory));
+					BuildNativeWatchTargets(Path::FromUtf8(m_NativeProjectDirectory), Path::FromUtf8(m_NativeSourceDirectory),
+						Path::FromUtf8(project->AssetsDirectory));
 				m_NativeWatcher.Watch(
 					nativeWatchTargets,
 					GetNativeWatchPatterns(),
@@ -1175,7 +1190,7 @@ namespace Funke {
 			const std::filesystem::path nativeDll = ResolveStandaloneNativeDLLPath(exeDir);
 			m_NativeDLLPath = Path::ToUtf8(nativeDll);
 			m_NativeTargetName = "Funke-NativeScripts";
-			if (hasNativeScriptSources && std::filesystem::exists(nativeDll))
+			if (std::filesystem::exists(nativeDll))
 			{
 				m_NativeHost.LoadDLL(m_NativeDLLPath);
 			}
@@ -1272,14 +1287,17 @@ namespace Funke {
 		}
 		if (m_SandboxProjectPath.empty()) {
 			m_RebuildQueued = false;
-			m_LastRebuildFailed = true;
-			m_LastRebuildOutput = "Cannot rebuild C# scripts: managed project path is not configured.";
+			if (ProjectManager::GetCurrentProject()) {
+				m_ManagedRebuildError.clear();
+				return;
+			}
+			m_ManagedRebuildError = "Cannot rebuild C# scripts: managed project path is not configured.";
 			FNK_ERROR_TAG("ScriptSystem", "Cannot rebuild C# scripts: managed project path is not configured.");
 			return;
 		}
 
 		FNK_INFO_TAG("ScriptSystem", "Rebuilding C# scripts...");
-		m_LastRebuildFailed = false;
+		m_ManagedRebuildError.clear();
 		const std::string sandboxProjectPath = m_SandboxProjectPath;
 		// Snapshot FunkeProject statics on the main thread so the worker
 		// can't race with a project reload that mutates them mid-build (M9).
@@ -1333,6 +1351,58 @@ namespace Funke {
 		});
 	}
 
+	Process::Result ScriptSystem::BuildNativeScripts(const std::string& projectDirectory,
+		const std::string& targetName, const std::string& configuration, const std::string& profile,
+		const std::string& buildFolder, const std::vector<std::string>& configureOptions)
+	{
+		const std::filesystem::path buildDirectory = Path::FromUtf8(projectDirectory) / buildFolder;
+		const auto cmake = ResolveCMakeExecutable();
+		if (!cmake) {
+			Process::Result result{};
+			result.Output = "CMake was not found. Install the Visual Studio C++ CMake tools, add cmake to PATH, or set FUNKE_CMAKE_PATH.";
+			return result;
+		}
+		Process::Result configureResult{};
+		if (!configureOptions.empty() || NativeBuildNeedsConfigure(Path::FromUtf8(projectDirectory), buildDirectory)) {
+			std::vector<std::string> command = {
+				*cmake, "-B", Path::ToUtf8(buildDirectory), "-S", projectDirectory,
+				"-DCMAKE_BUILD_TYPE=" + configuration, "-DFUNKE_BUILD_PROFILE=" + profile
+			};
+#ifdef FNK_PLATFORM_WINDOWS
+			if (!std::filesystem::exists(buildDirectory / "CMakeCache.txt") && !std::getenv("CMAKE_GENERATOR")) {
+				if (const char* programFiles = std::getenv("ProgramFiles(x86)")) {
+					const auto vswhere = Path::FromUtf8(programFiles) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe";
+					if (std::filesystem::exists(vswhere)) {
+						const auto visualStudio = Process::Run({ Path::ToUtf8(vswhere), "-latest", "-products", "*",
+							"-version", "[17.0,18.0)", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+							"-property", "installationPath" }, {}, std::chrono::seconds(15));
+						if (visualStudio.Succeeded() && !TrimWhitespace(visualStudio.Output).empty()) {
+							command.insert(command.end(), { "-G", "Visual Studio 17 2022", "-T", "v143", "-A",
+#if defined(_M_ARM64)
+								"ARM64"
+#else
+								"x64"
+#endif
+							});
+						}
+					}
+				}
+			}
+#endif
+			command.insert(command.end(), configureOptions.begin(), configureOptions.end());
+			configureResult = Process::Run(command, projectDirectory, std::chrono::minutes(5));
+			if (!configureResult.Succeeded()) return configureResult;
+		}
+		std::vector<std::string> command = { *cmake, "--build", Path::ToUtf8(buildDirectory), "--config", configuration };
+		if (!targetName.empty()) {
+			command.push_back("--target");
+			command.push_back(targetName);
+		}
+		Process::Result result = Process::Run(command, projectDirectory, std::chrono::minutes(5));
+		result.Output = configureResult.Output + result.Output;
+		return result;
+	}
+
 	void ScriptSystem::RebuildAndReloadNativeScripts()
 	{
 		// See RebuildAndReloadScripts — same shutdown-window race.
@@ -1355,7 +1425,7 @@ namespace Funke {
 			: HasNativeScriptSourceFiles(Path::FromUtf8(m_NativeSourceDirectory));
 
 		if (!hasNativeScriptSources) {
-			m_LastRebuildFailed = false;
+			m_NativeRebuildError.clear();
 			if (m_NativeHost.IsLoaded()) {
 				ForEachLoadedScene([this](Scene& loadedScene) { TeardownNativeScripts(loadedScene); });
 				m_NativeHost.UnloadDLL();
@@ -1368,69 +1438,24 @@ namespace Funke {
 			project->EnsureNativeScriptProjectFiles();
 			m_NativeProjectDirectory = Path::ToUtf8(NormalizeNativePath(Path::FromUtf8(project->NativeScriptsDir)));
 			m_NativeSourceDirectory = Path::ToUtf8(NormalizeNativePath(Path::FromUtf8(project->NativeSourceDir)));
-			m_NativeTargetName = project->Name + "-NativeScripts";
+			m_NativeTargetName = project->GetNativeScriptTargetName();
 		}
 
 		FNK_INFO_TAG("ScriptSystem", "Rebuilding native scripts...");
-		m_LastRebuildFailed = false;
+		m_NativeRebuildError.clear();
 		const std::string nativeProjectDirectory = m_NativeProjectDirectory;
 		const std::string buildConfig = GetActiveNativeBuildConfig();
 		const std::string nativeTargetName = m_NativeTargetName;
 		m_NativeRebuildTask = LaunchTask([nativeProjectDirectory, buildConfig, nativeTargetName]() {
-			const std::filesystem::path buildDirectory = Path::FromUtf8(nativeProjectDirectory) / "build";
-			const std::optional<std::string> cmakeExecutable = ResolveCMakeExecutable();
-			if (!cmakeExecutable) {
-				Process::Result result{};
-				result.Output =
-					"CMake executable was not found. Install CMake, install the Visual Studio C++ CMake tools, "
-					"add cmake.exe to PATH, or set FUNKE_CMAKE_PATH to the cmake.exe location.";
-				return result;
-			}
-
-			Process::Result configureResult{};
-			if (NativeBuildNeedsConfigure(nativeProjectDirectory, buildDirectory)) {
-				std::vector<std::string> configureCommand = {
-					*cmakeExecutable,
-					"-B", Path::ToUtf8(buildDirectory),
-					"-S", nativeProjectDirectory,
-					"-DCMAKE_BUILD_TYPE=" + buildConfig,
-					// Editor hot-reload always uses DEVELOPMENT; Build panel overrides for ship builds.
-					"-DFUNKE_BUILD_PROFILE=DEVELOPMENT"
-				};
-
-				configureResult = Process::Run(configureCommand, nativeProjectDirectory);
-				if (!configureResult.Succeeded()) {
-					return configureResult;
-				}
-			}
-
-			std::vector<std::string> buildCommand = {
-				*cmakeExecutable,
-				"--build", Path::ToUtf8(buildDirectory),
-				"--config", buildConfig
-			};
-			if (!nativeTargetName.empty()) {
-				buildCommand.push_back("--target");
-				buildCommand.push_back(nativeTargetName);
-			}
-
-			Process::Result buildResult = Process::Run(buildCommand, nativeProjectDirectory);
-			if (!configureResult.Output.empty()) {
-				buildResult.Output = configureResult.Output + buildResult.Output;
-			}
-			return buildResult;
+			return BuildNativeScripts(nativeProjectDirectory, nativeTargetName, buildConfig);
 		});
 	}
 
 	bool ScriptSystem::RequestRebuildAndReloadAll()
 	{
 		const bool wasRebuilding = IsRebuilding();
-		m_LastRebuildFailed = false;
 
 		RebuildAndReloadScripts();
-		if (m_LastRebuildFailed) {
-			return false;
-		}
 		RebuildAndReloadNativeScripts();
 
 		return IsRebuilding() || wasRebuilding;
@@ -1443,7 +1468,9 @@ namespace Funke {
 
 	std::string ScriptSystem::GetLastRebuildOutput()
 	{
-		return m_LastRebuildOutput;
+		if (m_ManagedRebuildError.empty()) return m_NativeRebuildError;
+		if (m_NativeRebuildError.empty()) return m_ManagedRebuildError;
+		return m_ManagedRebuildError + "\n" + m_NativeRebuildError;
 	}
 
 	uint64_t ScriptSystem::GetCompletedRebuildCount()
@@ -1884,6 +1911,7 @@ namespace Funke {
 		Process::Result result;
 		if (TryTakeTaskResult(m_RebuildTask, result))
 		{
+			m_ManagedRebuildError.clear();
 			if (result.Succeeded())
 			{
 				const std::filesystem::path outputPath = Path::FromUtf8(m_ManagedBuildOutputPath);
@@ -1892,7 +1920,7 @@ namespace Funke {
 					|| !std::filesystem::is_regular_file(outputPath, outputEc)
 					|| outputEc)
 				{
-					m_LastRebuildFailed = true;
+					m_ManagedRebuildError = "C# build succeeded, but the assembly was not found: " + m_ManagedBuildOutputPath;
 					FNK_ERROR_TAG("ScriptSystem", "C# build succeeded, but assembly was not found at '{}'.", m_ManagedBuildOutputPath);
 				}
 				else
@@ -1908,22 +1936,19 @@ namespace Funke {
 						FNK_INFO_TAG("ScriptSystem", "C# scripts rebuilt and reloaded from '{}'", m_UserAssemblyPath);
 					}
 					else {
-						m_LastRebuildFailed = true;
+						m_ManagedRebuildError = "C# build succeeded, but the rebuilt assembly could not be loaded.";
 						FNK_ERROR_TAG("ScriptSystem", "C# build succeeded, but the rebuilt assembly could not be loaded.");
 					}
 				}
 			}
 			else
 			{
-				m_LastRebuildFailed = true;
+				m_ManagedRebuildError = result.Output.empty() ? "C# build failed; see the log" : result.Output;
 				FNK_ERROR_TAG("ScriptSystem", "C# build failed (exit code {})", result.ExitCode);
 				if (!result.Output.empty()) {
 					FNK_ERROR_TAG("ScriptSystem", "Compiler output:\n{}", result.Output);
 				}
 			}
-			m_LastRebuildOutput = m_LastRebuildFailed
-				? (result.Output.empty() ? "C# build failed (exit code " + std::to_string(result.ExitCode) + "); see the log" : result.Output)
-				: std::string();
 			++m_CompletedRebuildCount;
 
 			if (m_RebuildQueued) {
@@ -1936,6 +1961,7 @@ namespace Funke {
 
 		if (TryTakeTaskResult(m_NativeRebuildTask, result))
 		{
+			m_NativeRebuildError.clear();
 			if (result.Succeeded())
 			{
 				const std::filesystem::path exeDir = Path::FromUtf8(Path::ExecutableDir());
@@ -1947,16 +1973,29 @@ namespace Funke {
 				}
 
 				if (!std::filesystem::exists(Path::FromUtf8(m_NativeDLLPath))) {
-					m_LastRebuildFailed = true;
 					FNK_ERROR_TAG("ScriptSystem", "Native scripts built, but DLL was not found at '{}'", m_NativeDLLPath);
+					m_NativeRebuildError = "Native scripts built, but the library was not found at: " + m_NativeDLLPath;
 				}
 				else {
 					// Swap only after the replacement DLL exists so failed rebuilds keep the previous host alive.
-					ForEachLoadedScene([this](Scene& loadedScene) { TeardownNativeScripts(loadedScene); });
+					ForEachLoadedScene([this](Scene& loadedScene) {
+						for (auto [entity, component] : loadedScene.GetRegistry().view<ScriptComponent>().each()) {
+							(void)entity;
+							if (Application::GetIsPlaying()) continue;
+							for (const ScriptInstance& instance : component.Scripts) {
+								if (!instance.HasNativeInstance()) continue;
+								const std::string prefix = instance.GetClassName() + ".";
+								for (const auto& [name, value] : m_NativeHost.GetFieldValues(instance.GetNativePtr())) {
+									component.PendingFieldValues[prefix + name] = value;
+								}
+							}
+						}
+						TeardownNativeScripts(loadedScene);
+					});
 
 					if (!m_NativeHost.LoadDLL(m_NativeDLLPath)) {
-						m_LastRebuildFailed = true;
 						FNK_ERROR_TAG("ScriptSystem", "Native scripts built, but failed to load '{}'", m_NativeDLLPath);
+						m_NativeRebuildError = "Native scripts built, but the library could not be loaded: " + m_NativeDLLPath;
 						FNK_WARN_TAG("ScriptSystem", "Keeping the previous native script DLL loaded; instances will be recreated on the next update.");
 					}
 					else {
@@ -1967,12 +2006,11 @@ namespace Funke {
 			}
 			else
 			{
-				m_LastRebuildFailed = true;
 				FNK_ERROR_TAG("ScriptSystem", "Native build failed (exit code {})", result.ExitCode);
 				if (!result.Output.empty()) {
 					FNK_ERROR_TAG("ScriptSystem", "{}", result.Output);
 				}
-				m_LastRebuildOutput = result.Output.empty() ? "Native build failed; see the log" : result.Output;
+				m_NativeRebuildError = result.Output.empty() ? "Native build failed; see the log" : result.Output;
 			}
 			++m_CompletedRebuildCount;
 
@@ -2224,6 +2262,8 @@ namespace Funke {
 		m_NativeSourceDirectory.clear();
 		m_NativeDLLPath.clear();
 		m_NativeTargetName.clear();
+		m_ManagedRebuildError.clear();
+		m_NativeRebuildError.clear();
 		m_SuppressRecompile = false;
 		m_PollingOwner = nullptr;
 	}

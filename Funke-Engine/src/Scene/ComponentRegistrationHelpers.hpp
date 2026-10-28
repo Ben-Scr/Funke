@@ -47,12 +47,20 @@ namespace Funke::Codegen {
         registry.ForEachComponentInfo(
             [targetId, prefixSize](const std::type_index& id, ComponentInfo& info) {
                 if (id != targetId) return;
-                info.emplaceFromBytes = [prefixSize](entt::registry& registry, EntityHandle entity,
+                info.bytePayloadSize = prefixSize;
+                info.emplaceFromBytes.SetNative<T>([prefixSize](entt::registry& registry, EntityHandle entity,
                                                      const void* bytes, std::size_t size) {
+                    if (registry.all_of<T>(entity)) {
+                        // Live prefix writes must preserve native-only fields such as the selected sprite slice.
+                        registry.patch<T>(entity, [bytes, size, prefixSize](T& component) {
+                            std::memcpy(&component, bytes, std::min(size, prefixSize));
+                        });
+                        return;
+                    }
                     T component;  // constructs trailing non-POD members (e.g. std::string)
                     std::memcpy(&component, bytes, std::min(size, prefixSize));
                     registry.emplace_or_replace<T>(entity, std::move(component));
-                };
+                }, prefixSize);
                 // Symmetric bake side. Without it the component has no writeBytes and every prefab
                 // containing it is rejected as unbakeable by PrefabTemplateCache. Capture only the POD
                 // prefix (never the trailing std::string's bytes — those are heap pointers that would

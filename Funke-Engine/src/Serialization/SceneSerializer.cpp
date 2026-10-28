@@ -1035,6 +1035,7 @@ namespace Funke {
 
 			for (const ScriptInstance& instance : scriptComponent.Scripts) {
 				if (instance.GetType() == ScriptType::Native) {
+					addPendingOnly(instance.GetClassName());
 					continue;
 				}
 

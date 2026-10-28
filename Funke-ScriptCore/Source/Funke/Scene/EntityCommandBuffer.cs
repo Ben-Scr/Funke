@@ -7,8 +7,16 @@ using Funke.Interop;
 
 namespace Funke;
 
+/// <summary>Parallel execution applies only to supported batches; callbacks and unsupported mutations retain sequential execution.</summary>
+public enum EntityCommandBufferPlaybackMode
+{
+    Automatic = 0,
+    Sequential = 1,
+    Parallel = 2
+}
+
 /// <summary>
-/// Batch-records entity creation and component additions, then replays the whole batch in one P/Invoke (typically 50–100× faster than per-entity calls).
+/// Records structural changes for main-thread playback; live entity references are resolved when the batch executes.
 /// Components must be unmanaged IComponent structs with layouts matching their C++ counterparts; components with scene-bound runtime state need a native emplaceFromBytes callback.
 /// Single-threaded by default; use <see cref="AsParallelWriter"/> for job-worker parallel recording.
 /// </summary>
@@ -104,7 +112,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
     }
 
     /// <summary>
-    /// Records "enable/disable entity" — applied at <see cref="Playback"/> via the same path as <see cref="Entity.IsEnabled"/>, so disabling cascades to children and fires OnEnable/OnDisable.
+    /// Records "enable/disable entity" — applied at <see cref="Playback()"/> via the same path as <see cref="Entity.IsEnabled"/>, so disabling cascades to children and fires OnEnable/OnDisable.
     /// Works on ECB refs (incl. <see cref="Instantiate(ulong)"/> roots: records after Instantiate to spawn disabled) and on live scene refs (<see cref="Entity.ToCommandBufferRef"/> or a query row's <c>Entity</c>).
     /// </summary>
     public void SetEnabled(EntityRef entity, bool enabled)
@@ -125,39 +133,66 @@ public sealed partial class EntityCommandBuffer : IDisposable
             enabled);
     }
 
-    /// <summary>Records "attach component T with the given value to entity e"; bytes are copied immediately so the source struct can be reused.</summary>
+    /// <summary>Copies the component value now; attaches it to a local or live entity at playback.</summary>
     public unsafe void AddComponent<T>(EntityRef e, in T data) where T : unmanaged, IComponent
     {
         int payloadSize = sizeof(T);
-        // The wire format reserves a u16 for payloadSize, so 65535 is
-        // the hard upper bound — defensive even though no real built-in
-        // component approaches that size.
-        if (payloadSize > ushort.MaxValue)
+        if (payloadSize > ushort.MaxValue - (e.IsSceneEntity ? sizeof(ulong) : 0))
         {
             throw new ArgumentException(
-                $"Component '{typeof(T).Name}' sizeof = {payloadSize} exceeds the ECB's u16 payload limit.",
+                $"Component '{typeof(T).Name}' plus its entity reference exceeds the ECB's u16 payload limit.",
                 nameof(data));
         }
-        if (!e.IsCommandBufferEntity || e.Index >= m_EntityCount)
-        {
-            throw new ArgumentException(
-                $"EntityRef index {e.Index} is out of range for this ECB (entityCount = {m_EntityCount}). " +
-                "Did you call Create on a different ECB?",
-                nameof(e));
-        }
+        ValidateComponentEntity(e);
 
         EcbWire.WriteAddComponentRecord(
             ref m_Commands,
             ref m_CommandsLen,
             ref m_CommandCount,
-            e.Index,
+            e,
             ComponentTypes<T>.NativeId,
             (ushort)payloadSize,
             Unsafe.AsPointer(ref Unsafe.AsRef(in data)));
     }
 
+    public void AddComponent<T>(Entity entity, in T data) where T : unmanaged, IComponent
+        => AddComponent(ToLiveRef(entity), in data);
+
+    /// <summary>Adds a component with native defaults at playback; an existing component keeps its value.</summary>
+    public void AddComponent<T>(EntityRef entity) where T : unmanaged, IComponent
+        => RecordDefaultConstruct<T>(entity);
+
+    public void AddComponent<T>(Entity entity) where T : unmanaged, IComponent
+        => AddComponent<T>(ToLiveRef(entity));
+
+    /// <summary>Removes the component from a local or live entity at playback.</summary>
+    public void RemoveComponent<T>(EntityRef entity) where T : unmanaged, IComponent
+    {
+        ValidateComponentEntity(entity);
+        EcbWire.WriteRemoveComponentRecord(
+            ref m_Commands, ref m_CommandsLen, ref m_CommandCount,
+            entity, ComponentTypes<T>.NativeId);
+    }
+
+    public void RemoveComponent<T>(Entity entity) where T : unmanaged, IComponent
+        => RemoveComponent<T>(ToLiveRef(entity));
+
+    private void ValidateComponentEntity(EntityRef entity)
+    {
+        if (entity.IsCommandBufferEntity && entity.Index >= m_EntityCount)
+            throw new ArgumentException(
+                $"EntityRef index {entity.Index} is out of range for this ECB (entityCount = {m_EntityCount}).",
+                nameof(entity));
+    }
+
+    private static EntityRef ToLiveRef(Entity entity)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+        return entity.ToCommandBufferRef();
+    }
+
     /// <summary>
-    /// Records a prefab spawn and returns an <see cref="EntityRef"/> for its root. Children are reachable only AFTER <see cref="Playback"/>.
+    /// Records a prefab spawn and returns an <see cref="EntityRef"/> for its root. Children are reachable only AFTER <see cref="Playback()"/>.
     /// First spawn bakes a memcpy-ready template; subsequent spawns are 50–200× faster. Prefabs with internal entity references fall back to a slow path in v1.
     /// </summary>
     public unsafe EntityRef Instantiate(ulong prefabGuid)
@@ -200,19 +235,13 @@ public sealed partial class EntityCommandBuffer : IDisposable
 
     private void RecordDefaultConstruct<T>(EntityRef e) where T : unmanaged, IComponent
     {
-        if (!e.IsCommandBufferEntity || e.Index >= m_EntityCount)
-        {
-            throw new ArgumentException(
-                $"EntityRef index {e.Index} is out of range for this ECB (entityCount = {m_EntityCount}). " +
-                "Did you call Create on a different ECB?",
-                nameof(e));
-        }
+        ValidateComponentEntity(e);
 
         EcbWire.WriteDefaultConstructRecord(
             ref m_Commands,
             ref m_CommandsLen,
             ref m_CommandCount,
-            e.Index,
+            e,
             ComponentTypes<T>.NativeId);
     }
 
@@ -501,8 +530,8 @@ public sealed partial class EntityCommandBuffer : IDisposable
     }
 
     /// <summary>
-    /// Returns a per-thread sub-buffer writer; the ECB merges all workers at <see cref="Playback"/> time.
-    /// MUST be quiescent before Playback. An <see cref="EntityRef"/> from one worker is valid ONLY in that same worker's AddComponent calls.
+    /// Returns a per-thread sub-buffer writer; the ECB merges all workers at <see cref="Playback()"/> time.
+    /// MUST be quiescent before Playback. Local refs belong to their producing worker; live scene refs can be shared.
     /// </summary>
     public ParallelWriter AsParallelWriter()
     {
@@ -511,8 +540,12 @@ public sealed partial class EntityCommandBuffer : IDisposable
     }
 
     /// <summary>Ships the batch to the active scene. Returns entity count; IDs available via <see cref="GetCreatedEntityId"/> indexed by EntityRef order (main first, then workers by ascending thread ID).</summary>
-    public unsafe int Playback()
+    public int Playback() => Playback(EntityCommandBufferPlaybackMode.Automatic);
+
+    /// <summary>Completes synchronously on the main thread; parallel mode may fall back to preserve command and callback ordering.</summary>
+    public unsafe int Playback(EntityCommandBufferPlaybackMode mode)
     {
+        ValidatePlaybackMode(mode);
         PlaybackTotals totals = ComputeTotals();
         if (totals.EntityCount == 0 && totals.CommandCount == 0)
         {
@@ -525,7 +558,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
         int created;
         fixed (ulong* outIds = m_CreatedIds)
         {
-            created = PlaybackDispatch(outIds, m_CreatedIds.Length, totals);
+            created = PlaybackDispatch(outIds, m_CreatedIds.Length, totals, mode);
         }
 
         m_CreatedCount = created;
@@ -533,11 +566,16 @@ public sealed partial class EntityCommandBuffer : IDisposable
     }
 
     /// <summary>
-    /// Variant of <see cref="Playback"/> that writes IDs into a caller-owned span, avoiding the internal m_CreatedIds allocation.
-    /// Does NOT update m_CreatedCount, so <see cref="GetCreatedEntityId"/> still reflects the last <see cref="Playback"/> call.
+    /// Variant of <see cref="Playback()"/> that writes IDs into a caller-owned span, avoiding the internal m_CreatedIds allocation.
+    /// Does NOT update m_CreatedCount, so <see cref="GetCreatedEntityId"/> still reflects the last <see cref="Playback()"/> call.
     /// </summary>
-    public unsafe int PlaybackInto(Span<ulong> destination)
+    public int PlaybackInto(Span<ulong> destination)
+        => PlaybackInto(destination, EntityCommandBufferPlaybackMode.Automatic);
+
+    /// <summary>Completes synchronously on the main thread without changing the IDs retained by Playback.</summary>
+    public unsafe int PlaybackInto(Span<ulong> destination, EntityCommandBufferPlaybackMode mode)
     {
+        ValidatePlaybackMode(mode);
         PlaybackTotals totals = ComputeTotals();
         if (totals.EntityCount == 0 && totals.CommandCount == 0)
         {
@@ -555,9 +593,15 @@ public sealed partial class EntityCommandBuffer : IDisposable
         int created;
         fixed (ulong* outIds = destination)
         {
-            created = PlaybackDispatch(outIds, destination.Length, totals);
+            created = PlaybackDispatch(outIds, destination.Length, totals, mode);
         }
         return created;
+    }
+
+    private static void ValidatePlaybackMode(EntityCommandBufferPlaybackMode mode)
+    {
+        if ((uint)mode > (uint)EntityCommandBufferPlaybackMode.Parallel)
+            throw new ArgumentOutOfRangeException(nameof(mode));
     }
 
     private struct PlaybackTotals
@@ -590,14 +634,14 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return t;
     }
 
-    private unsafe int PlaybackDispatch(ulong* outIds, int maxOut, PlaybackTotals totals)
+    private unsafe int PlaybackDispatch(ulong* outIds, int maxOut, PlaybackTotals totals, EntityCommandBufferPlaybackMode mode)
     {
         return totals.Slots == null
-            ? PlaybackMainOnlyImpl(outIds, maxOut, totals)
-            : PlaybackMergedImpl(outIds, maxOut, totals);
+            ? PlaybackMainOnlyImpl(outIds, maxOut, totals, mode)
+            : PlaybackMergedImpl(outIds, maxOut, totals, mode);
     }
 
-    private unsafe int PlaybackMainOnlyImpl(ulong* outIds, int maxOut, PlaybackTotals totals)
+    private unsafe int PlaybackMainOnlyImpl(ulong* outIds, int maxOut, PlaybackTotals totals, EntityCommandBufferPlaybackMode mode)
     {
         int entityTableBytes = (int)totals.EntityCount * sizeof(uint);
         int totalBytes = HEADER_BYTES + entityTableBytes + totals.CommandsLen;
@@ -627,14 +671,14 @@ public sealed partial class EntityCommandBuffer : IDisposable
                     (uint)totals.CommandsLen);
             }
 
-            created = InternalCalls.Ecb_Playback(wirePtr, totalBytes, outIds, maxOut);
+            created = InternalCalls.Ecb_Playback(wirePtr, totalBytes, outIds, maxOut, mode);
         }
 
         ThrowOnPlaybackError(created);
         return created;
     }
 
-    private unsafe int PlaybackMergedImpl(ulong* outIds, int maxOut, PlaybackTotals totals)
+    private unsafe int PlaybackMergedImpl(ulong* outIds, int maxOut, PlaybackTotals totals, EntityCommandBufferPlaybackMode mode)
     {
         WorkerSlot[] slots = totals.Slots!;
         int entityTableBytes = (int)totals.EntityCount * sizeof(uint);
@@ -670,13 +714,14 @@ public sealed partial class EntityCommandBuffer : IDisposable
                 WorkerSlot s = slots[i];
                 if (s.CommandsLen > 0)
                 {
-                    EcbWire.CopyAndRemapCommands(cmdDst, s.Commands, s.CommandsLen, baseOffset);
+                    EcbWire.CopyAndRemapCommands(cmdDst, s.Commands, s.CommandsLen,
+                        s.EntityCount == 0 ? 0 : baseOffset);
                     cmdDst += s.CommandsLen;
                 }
                 baseOffset += s.EntityCount;
             }
 
-            created = InternalCalls.Ecb_Playback(wirePtr, totalBytes, outIds, maxOut);
+            created = InternalCalls.Ecb_Playback(wirePtr, totalBytes, outIds, maxOut, mode);
         }
 
         ThrowOnPlaybackError(created);
@@ -691,12 +736,10 @@ public sealed partial class EntityCommandBuffer : IDisposable
             -1 => "wire buffer was truncated",
             -2 => "no active scene to play back into",
             -3 => "output ID buffer was too small (internal bug — please report)",
-            -4 => "an AddComponent referenced a component type id with no native " +
-                  "emplacer registered. Either the component isn't registered on the " +
-                  "native side, or it holds non-memcpy-safe state (smart pointers / " +
-                  "owning containers / scene-bound handles) and needs a custom " +
-                  "ComponentInfo::emplaceFromBytes registered at engine startup. See " +
-                  "the engine log for the offending typeId",
+            -4 => "a component operation referenced an unregistered type or a type " +
+                  "without the required native callback. Payload-based adds require " +
+                  "ComponentInfo::emplaceFromBytes; default adds and removals require " +
+                  "their corresponding callbacks. See the engine log for the typeId",
             -5 => "the batch would exceed the EnTT entity cap configured for this " +
                   "build. Open Project Settings > Entity ID bits, raise the value " +
                   "(24 -> 16M, 28 -> 268M), then regenerate project files and " +
@@ -713,6 +756,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
                   "unscanned .prefab/.meta, or a stale/zero GUID). This is NOT a bake limitation: " +
                   "Entity.Instantiate(prefab) would fail the same way. Verify the prefab asset " +
                   "exists and the reference is wired. See the engine log for the offending GUID",
+            -9 => "the playback mode is invalid",
             _ => $"native error code {created}",
         };
         throw new InvalidOperationException(
@@ -765,7 +809,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return arr;
     }
 
-    /// <summary>Runtime ID of the i-th entity from the most recent <see cref="Playback"/>; throws if out of range or before any playback.</summary>
+    /// <summary>Runtime ID of the i-th entity from the most recent <see cref="Playback()"/>; throws if out of range or before any playback.</summary>
     public ulong GetCreatedEntityId(int index)
     {
         if ((uint)index >= (uint)m_CreatedCount || m_CreatedIds == null)
@@ -787,7 +831,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
         m_CreatedCount = 0;
         if (m_ParallelSlots != null)
         {
-            foreach (WorkerSlot s in m_ParallelSlots.Values)
+            foreach (WorkerSlot s in SortedSlotSnapshot())
             {
                 s.CommandsLen = 0;
                 s.CommandCount = 0;
@@ -804,6 +848,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
         m_CreatedIds = null;
         m_WireBuffer = null;
         m_ParallelSlots = null;
+        m_CachedSortedSlots = null;
     }
 
     // ── Parallel-writer plumbing (called from ParallelWriter) ────────
@@ -849,6 +894,7 @@ internal static class EcbWire
     public const byte OP_DESTROY_ENTITY = 5;
     // Local entity: payload u8 enabled. Live scene entity (entityIndex == NO_NAME): payload u8 enabled + u64 persistent id. Routes to Entity::SetEnabled at playback (DisabledTag cascade + OnEnable/OnDisable).
     public const byte OP_SET_ENTITY_ENABLED = 6;
+    public const byte OP_REMOVE_COMPONENT = 7;
 
     // Sentinel "no name" matching kEcbNoName on the native side.
     public const uint NO_NAME = 0xFFFFFFFFu;
@@ -866,12 +912,14 @@ internal static class EcbWire
         ref byte[] commands,
         ref int commandsLen,
         ref int commandCount,
-        uint entityIndex,
+        EntityRef entity,
         uint typeId,
         ushort payloadSize,
         void* payload)
     {
-        int recordSize = COMMAND_PREFIX_BYTES + payloadSize;
+        ushort wirePayloadSize = checked((ushort)(payloadSize + (entity.IsSceneEntity ? sizeof(ulong) : 0)));
+        uint entityIndex = entity.IsSceneEntity ? NO_NAME : entity.Index;
+        int recordSize = COMMAND_PREFIX_BYTES + wirePayloadSize;
         EnsureCapacity(ref commands, commandsLen + recordSize);
 
         fixed (byte* basePtr = commands)
@@ -880,7 +928,12 @@ internal static class EcbWire
             *w = OP_ADD_COMPONENT; w += 1;
             Unsafe.CopyBlockUnaligned(w, &entityIndex, 4); w += 4;
             Unsafe.CopyBlockUnaligned(w, &typeId, 4); w += 4;
-            Unsafe.CopyBlockUnaligned(w, &payloadSize, 2); w += 2;
+            Unsafe.CopyBlockUnaligned(w, &wirePayloadSize, 2); w += 2;
+            if (entity.IsSceneEntity)
+            {
+                ulong entityId = entity.ID;
+                Unsafe.CopyBlockUnaligned(w, &entityId, sizeof(ulong)); w += sizeof(ulong);
+            }
             if (payloadSize > 0)
             {
                 Unsafe.CopyBlockUnaligned(w, payload, payloadSize);
@@ -891,26 +944,49 @@ internal static class EcbWire
         commandCount++;
     }
 
-    // No payload; native default-constructs T via the registered defaultEmplace callback. Same 11-byte prefix as other opcodes so the remap walker needs no branch.
     public static unsafe void WriteDefaultConstructRecord(
         ref byte[] commands,
         ref int commandsLen,
         ref int commandCount,
-        uint entityIndex,
+        EntityRef entity,
+        uint typeId)
+        => WriteComponentTypeRecord(ref commands, ref commandsLen, ref commandCount,
+            OP_DEFAULT_CONSTRUCT_COMPONENT, entity, typeId);
+
+    public static unsafe void WriteRemoveComponentRecord(
+        ref byte[] commands,
+        ref int commandsLen,
+        ref int commandCount,
+        EntityRef entity,
+        uint typeId)
+        => WriteComponentTypeRecord(ref commands, ref commandsLen, ref commandCount,
+            OP_REMOVE_COMPONENT, entity, typeId);
+
+    private static unsafe void WriteComponentTypeRecord(
+        ref byte[] commands,
+        ref int commandsLen,
+        ref int commandCount,
+        byte opcode,
+        EntityRef entity,
         uint typeId)
     {
-        const int recordSize = COMMAND_PREFIX_BYTES;
+        uint entityIndex = entity.IsSceneEntity ? NO_NAME : entity.Index;
+        ushort payloadSize = entity.IsSceneEntity ? (ushort)sizeof(ulong) : (ushort)0;
+        int recordSize = COMMAND_PREFIX_BYTES + payloadSize;
         EnsureCapacity(ref commands, commandsLen + recordSize);
 
         fixed (byte* basePtr = commands)
         {
             byte* w = basePtr + commandsLen;
-            *w = OP_DEFAULT_CONSTRUCT_COMPONENT; w += 1;
+            *w = opcode; w += 1;
             Unsafe.CopyBlockUnaligned(w, &entityIndex, 4); w += 4;
             Unsafe.CopyBlockUnaligned(w, &typeId, 4); w += 4;
-            // payloadSize = 0 — no bytes follow.
-            ushort payloadSize = 0;
-            Unsafe.CopyBlockUnaligned(w, &payloadSize, 2);
+            Unsafe.CopyBlockUnaligned(w, &payloadSize, 2); w += 2;
+            if (entity.IsSceneEntity)
+            {
+                ulong entityId = entity.ID;
+                Unsafe.CopyBlockUnaligned(w, &entityId, sizeof(ulong));
+            }
         }
 
         commandsLen += recordSize;
@@ -1033,35 +1109,17 @@ internal static class EcbWire
 
         fixed (byte* srcPtr = src)
         {
-            byte* r = srcPtr;
-            byte* end = srcPtr + srcLen;
-            byte* w = dst;
+            Unsafe.CopyBlockUnaligned(dst, srcPtr, (uint)srcLen);
+            if (baseOffset == 0) return;
 
-            while (r < end)
+            byte* cursor = dst;
+            byte* end = dst + srcLen;
+            while (cursor < end)
             {
-                byte op = *r;
-                uint entityIndex;
-                Unsafe.CopyBlockUnaligned(&entityIndex, r + 1, 4);
-                uint typeId;
-                Unsafe.CopyBlockUnaligned(&typeId, r + 5, 4);
-                ushort payloadSize;
-                Unsafe.CopyBlockUnaligned(&payloadSize, r + 9, 2);
-                int recordSize = COMMAND_PREFIX_BYTES + payloadSize;
-
-                uint remappedIndex = entityIndex == NO_NAME
-                    ? NO_NAME
-                    : entityIndex + baseOffset;
-                *w = op;
-                Unsafe.CopyBlockUnaligned(w + 1, &remappedIndex, 4);
-                Unsafe.CopyBlockUnaligned(w + 5, &typeId, 4);
-                Unsafe.CopyBlockUnaligned(w + 9, &payloadSize, 2);
-                if (payloadSize > 0)
-                {
-                    Unsafe.CopyBlockUnaligned(w + 11, r + 11, payloadSize);
-                }
-
-                r += recordSize;
-                w += recordSize;
+                uint entityIndex = Unsafe.ReadUnaligned<uint>(cursor + 1);
+                if (entityIndex != NO_NAME)
+                    Unsafe.WriteUnaligned(cursor + 1, entityIndex + baseOffset);
+                cursor += COMMAND_PREFIX_BYTES + Unsafe.ReadUnaligned<ushort>(cursor + 9);
             }
         }
     }

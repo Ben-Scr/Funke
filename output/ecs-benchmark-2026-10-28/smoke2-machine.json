@@ -1,0 +1,59 @@
+{
+  "Cpu": {
+    "Name": "AMD Ryzen 9 7900X 12-Core Processor            ",
+    "NumberOfCores": 12,
+    "NumberOfLogicalProcessors": 24,
+    "MaxClockSpeed": 4701
+  },
+  "PowerScheme": "GUID des Energieschemas: 381b4222-f694-41f0-9685-ff5bb260df2e  (Ausbalanciert)",
+  "Timestamp": "2026-10-28T15:20:59.1973003+01:00",
+  "Binaries": [
+    {
+      "Algorithm": "SHA256",
+      "Hash": "43A82FDCDED0228A41554990D5AB292946464C5CC1CED8D4E104F393F7654FDB",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsBenchmark-20261028\\runtime\\Funke-Runtime.exe"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "A64C6571B767EBFF83FEE2519CFE47C5EE7BE13ABE4E423C19A963F2921A2AD0",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsBenchmark-20261028\\runtime\\Funke-Engine.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "885E548B2A593A33E0832747B665A6B2331F392B2685D04988496EC8E192A7B8",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsBenchmark-20261028\\runtime\\Funke-ScriptCore.dll"
+    }
+  ],
+  "Memory": [
+    {
+      "Capacity": 17179869184,
+      "Speed": 4800,
+      "ConfiguredClockSpeed": 6000,
+      "Manufacturer": "Kingston",
+      "PartNumber": "KF560C30-16                   "
+    },
+    {
+      "Capacity": 17179869184,
+      "Speed": 4800,
+      "ConfiguredClockSpeed": 6000,
+      "Manufacturer": "Kingston",
+      "PartNumber": "KF560C30-16                   "
+    }
+  ],
+  "GitHead": "0f47fe792e9e3185a034f8f44c28840e4a2c1b98",
+  "OS": {
+    "Caption": "Microsoft Windows 11 Pro",
+    "Version": "10.0.26200",
+    "BuildNumber": "26200",
+    "FreePhysicalMemory": 10268980
+  },
+  "Dirty": true,
+  "GPU": [
+    {
+      "Name": "AMD  Radeon RX 7800 XT"
+    },
+    {
+      "Name": "AMD Radeon(TM) Graphics"
+    }
+  ]
+}

@@ -54,6 +54,39 @@
 
 namespace Funke {
 	namespace {
+		size_t CheckedReservationSize(size_t current, size_t additional)
+		{
+			if (additional > (std::numeric_limits<size_t>::max)() - current) {
+				FNK_THROW(FunkeErrorCode::OutOfRange, "Scene reservation size overflow");
+			}
+			return current + additional;
+		}
+
+		size_t GrowingCapacity(size_t current, size_t requested, size_t maximum)
+		{
+			return std::max(requested, current > maximum / 2 ? maximum : current * 2);
+		}
+
+		template<typename TContainer>
+		void ReserveGeometrically(TContainer& container, size_t requested)
+		{
+			const size_t capacity = container.capacity();
+			if (requested <= capacity) return;
+			size_t maximum = (std::numeric_limits<size_t>::max)();
+			if constexpr (requires { container.max_size(); }) maximum = container.max_size();
+			container.reserve(GrowingCapacity(capacity, requested, maximum));
+		}
+
+		template<typename TMap>
+		void ReserveIdentityCapacity(TMap& identities, size_t requested)
+		{
+			const size_t maximum = identities.max_size();
+			const long double available = static_cast<long double>(identities.bucket_count()) * identities.max_load_factor();
+			const size_t capacity = available >= static_cast<long double>(maximum)
+				? maximum : static_cast<size_t>(available);
+			if (requested > capacity) identities.reserve(GrowingCapacity(capacity, requested, maximum));
+		}
+
 		// C# component wrappers are keyed by entity UUID. A scene restart loads the new copy before releasing
 		// the old one, so both hold the same UUIDs; the old copy must not invalidate wrappers the new one uses.
 		bool IsPersistentIdLiveInOtherScene(const Scene& self, uint64_t persistentId)
@@ -350,11 +383,18 @@ namespace Funke {
 
 		// Move-out so hooks triggered during flush append to a fresh vector instead of mutating the one we're iterating.
 		auto hooks = std::move(m_Scene.m_DeferredConstructHooks);
-		m_Scene.m_FlushingDeferredHooks = true;
+		const bool wasFlushing = std::exchange(m_Scene.m_FlushingDeferredHooks, true);
 		for (auto& h : hooks) {
-			(m_Scene.*h.fn)(m_Scene.m_Registry, h.entity);
+			if (m_Scene.m_Registry.valid(h.entity)) {
+				(m_Scene.*h.fn)(m_Scene.m_Registry, h.entity);
+			}
 		}
-		m_Scene.m_FlushingDeferredHooks = false;
+		m_Scene.m_FlushingDeferredHooks = wasFlushing;
+		if (m_Scene.m_DeferredConstructHooks.empty()
+			&& m_Scene.m_DeferredConstructHooks.capacity() < hooks.capacity()) {
+			hooks.clear();
+			m_Scene.m_DeferredConstructHooks.swap(hooks);
+		}
 	}
 
 	Scene::EnabledStateBatch::EnabledStateBatch(Scene* scene)
@@ -375,9 +415,15 @@ namespace Funke {
 	void Scene::ReserveForLoadRuntime(std::size_t entityCount,
 		std::span<const std::pair<uint32_t, std::size_t>> /*perTypeCounts*/)
 	{
-		m_Registry.storage<EntityHandle>().reserve(entityCount);
-		m_RuntimeIdToEntity.reserve(m_RuntimeIdToEntity.size() + entityCount);
-		m_SceneGuidToEntity.reserve(m_SceneGuidToEntity.size() + entityCount);
+		if (entityCount == 0) return;
+		auto& entities = m_Registry.storage<EntityHandle>();
+		const size_t liveCount = CheckedReservationSize(entities.free_list(), entityCount);
+		const size_t identityCount = CheckedReservationSize(m_RuntimeIdToEntity.size(), entityCount);
+		const size_t dirtyCount = CheckedReservationSize(m_DirtyTransformEntities.size(), entityCount);
+		ReserveGeometrically(entities, liveCount);
+		ReserveIdentityCapacity(m_RuntimeIdToEntity, identityCount);
+		ReserveGeometrically(m_DirtyTransformEntities, dirtyCount);
+		ReserveGeometrically(m_DirtyTransformEntityMarks, std::max(entities.size(), liveCount));
 		// Per-component reservation is omitted: our stable u32 ID doesn't map back to entt::id_type;
 		// use the templated ReserveForLoad<T...> overload for statically-typed fast path.
 	}
@@ -403,6 +449,230 @@ namespace Funke {
 		m_UIDirty = true;
 	}
 
+	void Scene::SetRuntimeEntityMetaDataBulk(std::span<const EntityHandle> entities,
+		std::span<const uint8_t> skip)
+	{
+		if ((!entities.empty() && entities.data() == nullptr)
+			|| (!skip.empty() && (skip.size() != entities.size() || skip.data() == nullptr))) {
+			FNK_THROW(FunkeErrorCode::InvalidArgument,
+				"Scene::SetRuntimeEntityMetaDataBulk: invalid entity span or skip mask");
+		}
+		const size_t count = skip.empty() ? entities.size()
+			: static_cast<size_t>(std::count(skip.begin(), skip.end(), uint8_t{ 0 }));
+		if (count == 0) return;
+		auto* metadata = &m_Registry.storage<EntityMetaDataComponent>();
+		auto* legacyIds = &m_Registry.storage<UUIDComponent>();
+		const auto* prefabs = std::as_const(m_Registry).storage<PrefabInstanceComponent>();
+		ReserveGeometrically(*metadata, CheckedReservationSize(metadata->size(), count));
+		ReserveGeometrically(*legacyIds, CheckedReservationSize(legacyIds->size(), count));
+		ReserveIdentityCapacity(m_RuntimeIdToEntity, CheckedReservationSize(m_RuntimeIdToEntity.size(), count));
+		bool hasConstructListeners = !metadata->on_construct().empty() || !legacyIds->on_construct().empty();
+		for (size_t index = 0; index < entities.size(); ++index) {
+			if (!skip.empty() && skip[index] != 0) continue;
+			const EntityHandle entity = entities[index];
+			if (!m_Registry.valid(entity)) continue;
+			if (hasConstructListeners || metadata->contains(entity) || legacyIds->contains(entity)
+				|| (prefabs != nullptr && prefabs->contains(entity))) {
+				SetEntityMetaDataNoFlags(entity, EntityOrigin::Runtime);
+				metadata = &m_Registry.storage<EntityMetaDataComponent>();
+				legacyIds = &m_Registry.storage<UUIDComponent>();
+				prefabs = std::as_const(m_Registry).storage<PrefabInstanceComponent>();
+				hasConstructListeners = !metadata->on_construct().empty() || !legacyIds->on_construct().empty();
+				continue;
+			}
+			EntityID runtimeId = 0;
+			try {
+				do {
+					runtimeId = static_cast<uint64_t>(UUID());
+				} while (runtimeId == 0 || m_SceneGuidToEntity.contains(runtimeId)
+					|| !m_RuntimeIdToEntity.try_emplace(runtimeId, entity).second);
+				// With no construction listeners, provisional indexing is unobservable and saves a second hash lookup.
+				metadata->emplace(entity, EntityMetaDataComponent{
+					EntityMetaData{ runtimeId, AssetGUID(0), AssetGUID(0), EntityOrigin::Runtime } });
+				legacyIds->emplace(entity, runtimeId);
+			}
+			catch (...) {
+				const auto provisional = m_RuntimeIdToEntity.find(runtimeId);
+				if (provisional != m_RuntimeIdToEntity.end() && provisional->second == entity) {
+					m_RuntimeIdToEntity.erase(provisional);
+				}
+				throw;
+			}
+		}
+	}
+
+	void Scene::CommitRuntimeEntityIdentities(std::span<const EntityHandle> entities, std::span<uint64_t> candidateIds)
+	{
+		if (entities.size() != candidateIds.size()
+			|| (!entities.empty() && (!entities.data() || !candidateIds.data()))) {
+			FNK_THROW(FunkeErrorCode::InvalidArgument, "Runtime identity batch has mismatched or null spans");
+		}
+		auto* metadata = const_cast<entt::registry::storage_for_type<EntityMetaDataComponent>*>(
+			std::as_const(m_Registry).storage<EntityMetaDataComponent>());
+		auto* legacyIds = const_cast<entt::registry::storage_for_type<UUIDComponent>*>(
+			std::as_const(m_Registry).storage<UUIDComponent>());
+		for (size_t index = 0; index < entities.size(); ++index) {
+			const EntityHandle entity = entities[index];
+			if (!m_Registry.valid(entity) || !metadata || !metadata->contains(entity)
+				|| !legacyIds || !legacyIds->contains(entity)) {
+				FNK_THROW(FunkeErrorCode::InvalidArgument, "Runtime identity batch requires prepared identity rows");
+			}
+			const auto& data = metadata->get(entity).MetaData;
+			const auto indexed = m_RuntimeIdToEntity.find(data.RuntimeID);
+			if (data.Origin != EntityOrigin::Runtime || data.RuntimeID != candidateIds[index]
+				|| static_cast<uint64_t>(legacyIds->get(entity).Id) != candidateIds[index]
+				|| (indexed != m_RuntimeIdToEntity.end() && indexed->second == entity)) {
+				FNK_THROW(FunkeErrorCode::InvalidArgument, "Runtime identity batch requires fresh matching identity rows");
+			}
+		}
+		ReserveIdentityCapacity(m_RuntimeIdToEntity, CheckedReservationSize(m_RuntimeIdToEntity.size(), entities.size()));
+		size_t committed = 0;
+		try {
+			for (; committed < entities.size(); ++committed) {
+				uint64_t runtimeId = candidateIds[committed];
+				while (runtimeId == 0 || m_SceneGuidToEntity.contains(runtimeId)
+					|| !m_RuntimeIdToEntity.try_emplace(runtimeId, entities[committed]).second) {
+					runtimeId = static_cast<uint64_t>(UUID());
+				}
+				candidateIds[committed] = runtimeId;
+				metadata->get(entities[committed]).MetaData.RuntimeID = runtimeId;
+				legacyIds->get(entities[committed]).Id = UUID(runtimeId);
+			}
+		}
+		catch (...) {
+			for (size_t index = 0; index < committed; ++index) m_RuntimeIdToEntity.erase(candidateIds[index]);
+			throw;
+		}
+	}
+
+	void Scene::RollbackParallelEcbCreatedEntities(std::span<const EntityHandle> entities) noexcept
+	{
+		const bool wasSuppressed = std::exchange(m_SuppressEntityDestructionCallbacks, true);
+		for (EntityHandle entity : entities) {
+			try {
+				if (m_Registry.valid(entity)) DestroyEntityInternal(entity, false);
+			}
+			catch (const std::exception& error) {
+				FNK_CORE_ERROR_TAG("Scene", "Parallel ECB entity rollback failed: {}", error.what());
+			}
+			catch (...) {
+				FNK_CORE_ERROR_TAG("Scene", "Parallel ECB entity rollback failed");
+			}
+		}
+		m_SuppressEntityDestructionCallbacks = wasSuppressed;
+	}
+
+	bool Scene::CanUseParallelEcbComponent(entt::id_type storageHash)
+	{
+		const auto noSignals = [](auto* storage) {
+			return !storage || (storage->on_construct().empty() && storage->on_destroy().empty()
+				&& storage->on_update().empty());
+		};
+		if (storageHash == entt::type_hash<EntityHandle>::value()) return noSignals(&m_Registry.storage<EntityHandle>());
+		if (storageHash == entt::type_hash<EntityMetaDataComponent>::value()) {
+			return noSignals(const_cast<entt::registry::storage_for_type<EntityMetaDataComponent>*>(
+				std::as_const(m_Registry).storage<EntityMetaDataComponent>()));
+		}
+		if (storageHash == entt::type_hash<UUIDComponent>::value()) {
+			return noSignals(const_cast<entt::registry::storage_for_type<UUIDComponent>*>(
+				std::as_const(m_Registry).storage<UUIDComponent>()));
+		}
+#if FUNKE_WITH_2D
+		if (storageHash == entt::type_hash<Transform2DComponent>::value()) {
+			auto& storage = m_Registry.storage<Transform2DComponent>();
+			return storage.on_construct().only<&Scene::OnTransform2DComponentConstruct>(this)
+				&& storage.on_destroy().only<&Scene::OnTransform2DComponentDestroy>(this)
+				&& storage.on_update().empty();
+		}
+		if (storageHash == entt::type_hash<SpriteRendererComponent>::value()) {
+			auto& storage = m_Registry.storage<SpriteRendererComponent>();
+			return storage.on_construct().only<&Scene::OnSpriteRendererComponentConstruct>(this)
+				&& storage.on_destroy().only<&Scene::OnSpriteRendererComponentDestroy>(this)
+				&& storage.on_update().empty();
+		}
+#endif
+		return false;
+	}
+
+	void Scene::NotifyParallelEcbComponentConstructed(entt::id_type storageHash, EntityHandle entity)
+	{
+		if (!m_Registry.valid(entity)) return;
+#if FUNKE_WITH_2D
+		if (storageHash == entt::type_hash<Transform2DComponent>::value()) OnTransform2DComponentConstruct(m_Registry, entity);
+		else if (storageHash == entt::type_hash<SpriteRendererComponent>::value()) OnSpriteRendererComponentConstruct(m_Registry, entity);
+#endif
+	}
+
+	void Scene::NotifyParallelEcbComponentDestroying(entt::id_type storageHash, EntityHandle entity)
+	{
+		if (!m_Registry.valid(entity)) return;
+#if FUNKE_WITH_2D
+		if (storageHash == entt::type_hash<Transform2DComponent>::value()) OnTransform2DComponentDestroy(m_Registry, entity);
+		else if (storageHash == entt::type_hash<SpriteRendererComponent>::value()) OnSpriteRendererComponentDestroy(m_Registry, entity);
+#endif
+	}
+
+	bool Scene::CanUseParallelEcbDestroy(std::span<const EntityHandle> entities)
+	{
+		if (!m_LifecycleSuspended && !m_SuppressEntityDestructionCallbacks
+			&& !ScriptEngine::CanBatchEntityInvalidation()) return false;
+		if (!CanUseParallelEcbComponent(entt::type_hash<EntityHandle>::value())) return false;
+		for (EntityHandle entity : entities) {
+			if (!m_Registry.valid(entity) || IsEntityBeingDestroyed(entity)) return false;
+		}
+		for (auto [hash, storage] : m_Registry.storage()) {
+			if (storage.size() == 0) continue;
+			if (CanUseParallelEcbComponent(hash)) continue;
+			for (EntityHandle entity : entities) if (storage.contains(entity)) return false;
+		}
+		if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
+			bool hasDynamic = false;
+			SceneManager::GetComponentRegistry().ForEachComponentInfo([&](const std::type_index&, const ComponentInfo& info) {
+				if (hasDynamic || !info.dynamicStorage) return;
+				const auto view = info.dynamicStorage->GetSceneView(m_Registry);
+				if (view.Size() == 0) return;
+				for (EntityHandle entity : entities) {
+					if (view.Contains(entity)) { hasDynamic = true; return; }
+				}
+			});
+			if (hasDynamic) return false;
+		}
+		return true;
+	}
+
+	void Scene::PrepareParallelEcbDestroy(EntityHandle entity)
+	{
+		if (!m_Registry.valid(entity) || IsEntityBeingDestroyed(entity)) return;
+		TrackEntityDestruction(entity);
+		m_PendingDestroys.Cancel(entity);
+		if (m_IsDetached || !Application::GetIsPlaying()) m_Dirty = true;
+		m_UIDirty = true;
+		if (!m_LifecycleSuspended && !m_SuppressEntityDestructionCallbacks) NotifyScriptsEntityDestroyed(*this, GetEntityPersistentID(entity));
+		UnregisterEntityIdentity(entity);
+#if FUNKE_WITH_2D
+		if (m_Registry.all_of<Transform2DComponent>(entity)) OnTransform2DComponentDestroy(m_Registry, entity);
+		if (m_Registry.all_of<SpriteRendererComponent>(entity)) OnSpriteRendererComponentDestroy(m_Registry, entity);
+#endif
+	}
+
+	void Scene::PrepareParallelEcbDestroy(std::span<const EntityHandle> entities)
+	{
+		size_t required = m_EntityDestructionMarks.size();
+		for (EntityHandle entity : entities) {
+			if (m_Registry.valid(entity)) required = std::max(required, static_cast<size_t>(entt::to_entity(entity)) + 1);
+		}
+		m_EntityDestructionMarks.resize(required, entt::null);
+		for (EntityHandle entity : entities) PrepareParallelEcbDestroy(entity);
+	}
+
+	void Scene::FinalizeParallelEcbDestroy(EntityHandle entity)
+	{
+		if (!m_Registry.valid(entity) || !IsEntityBeingDestroyed(entity)) return;
+		m_Registry.storage<EntityHandle>().erase(entity);
+		if (m_EntityCount > 0) --m_EntityCount;
+		UntrackEntityDestruction(entity);
+	}
+
 	void Scene::CreateEntitiesBulk(std::size_t n, std::span<EntityHandle> out) {
 		if (n == 0) {
 			return;
@@ -419,8 +689,8 @@ namespace Funke {
 			FNK_THROW(FunkeErrorCode::InvalidArgument,
 				"Scene::CreateEntitiesBulk: output span is smaller than the requested count or null");
 		}
-		m_Registry.storage<EntityHandle>().reserve(
-			m_Registry.storage<EntityHandle>().size() + n);
+		auto& entities = m_Registry.storage<EntityHandle>();
+		ReserveGeometrically(entities, CheckedReservationSize(entities.free_list(), n));
 		m_Registry.create(out.begin(), out.begin() + n);
 		m_EntityCount += n;
 	}
@@ -493,11 +763,11 @@ namespace Funke {
 			return;
 		}
 
-		UnregisterEntityIdentity(entity);
-
 		EntityMetaData metaData;
-		if (m_Registry.all_of<EntityMetaDataComponent>(entity)) {
-			metaData = m_Registry.get<EntityMetaDataComponent>(entity).MetaData;
+		const auto* existing = m_Registry.try_get<EntityMetaDataComponent>(entity);
+		if (existing != nullptr) {
+			metaData = existing->MetaData;
+			UnregisterEntityIdentity(entity);
 		}
 
 		metaData.RuntimeID = runtimeId != 0 ? runtimeId : (metaData.RuntimeID != 0 ? metaData.RuntimeID : AllocateRuntimeEntityID());
@@ -507,7 +777,12 @@ namespace Funke {
 			? (static_cast<uint64_t>(sceneGuid) != 0 ? sceneGuid : AssetGUID(UUID()))
 			: AssetGUID(0);
 
-		m_Registry.emplace_or_replace<EntityMetaDataComponent>(entity, EntityMetaDataComponent{ metaData });
+		if (existing != nullptr) {
+			m_Registry.replace<EntityMetaDataComponent>(entity, EntityMetaDataComponent{ metaData });
+		}
+		else {
+			m_Registry.emplace<EntityMetaDataComponent>(entity, EntityMetaDataComponent{ metaData });
+		}
 
 		UUID legacyId = UUID(metaData.RuntimeID);
 		if (metaData.Origin == EntityOrigin::Scene && static_cast<uint64_t>(metaData.SceneGUID) != 0) {
@@ -858,7 +1133,7 @@ namespace Funke {
 		m_TransformHierarchyDirty = true;
 		m_TransformDirtyAll = true;
 		m_DirtyTransformEntities.clear();
-		m_DirtyTransformEntitySet.clear();
+		m_DirtyTransformEntityMarks.clear();
 		m_PendingDestroys.Clear();
 		// Fixups hold raw pointers into component storage that was just destroyed.
 		m_PendingEntityRefFixups.clear();
@@ -1317,15 +1592,24 @@ namespace Funke {
 	}
 
 	void Scene::TrackEntityDestruction(EntityHandle entity) {
-		m_EntitiesBeingDestroyed.insert(static_cast<uint32_t>(entity));
+		const size_t index = static_cast<size_t>(entt::to_entity(entity));
+		if (index >= m_EntityDestructionMarks.size()) {
+			m_EntityDestructionMarks.resize(index + 1, entt::null);
+		}
+		m_EntityDestructionMarks[index] = entity;
 	}
 
 	void Scene::UntrackEntityDestruction(EntityHandle entity) {
-		m_EntitiesBeingDestroyed.erase(static_cast<uint32_t>(entity));
+		const size_t index = static_cast<size_t>(entt::to_entity(entity));
+		if (index < m_EntityDestructionMarks.size() && m_EntityDestructionMarks[index] == entity) {
+			m_EntityDestructionMarks[index] = entt::null;
+		}
 	}
 
 	bool Scene::IsEntityBeingDestroyed(EntityHandle entity) const {
-		return m_EntitiesBeingDestroyed.contains(static_cast<uint32_t>(entity));
+		const size_t index = static_cast<size_t>(entt::to_entity(entity));
+		return entity != entt::null && index < m_EntityDestructionMarks.size()
+			&& m_EntityDestructionMarks[index] == entity;
 	}
 
 	void Scene::RunLifecycleSystems(const std::function<void(SceneSystem&)>& func, size_t* enteredSystemCount) {
@@ -1596,8 +1880,13 @@ namespace Funke {
 			return;
 		}
 
-		if (m_DirtyTransformEntitySet.insert(entity).second) {
+		const size_t index = static_cast<size_t>(entt::to_entity(entity));
+		if (index >= m_DirtyTransformEntityMarks.size()) {
+			m_DirtyTransformEntityMarks.resize(index + 1, entt::null);
+		}
+		if (m_DirtyTransformEntityMarks[index] != entity) {
 			m_DirtyTransformEntities.push_back(entity);
+			m_DirtyTransformEntityMarks[index] = entity;
 		}
 
 		if (m_Registry.all_of<StaticTag>(entity)) {
@@ -1609,7 +1898,9 @@ namespace Funke {
 	{
 		m_TransformHierarchyDirty = false;
 		m_TransformDirtyAll = false;
-		m_DirtyTransformEntitySet.clear();
+		for (EntityHandle entity : m_DirtyTransformEntities) {
+			m_DirtyTransformEntityMarks[static_cast<size_t>(entt::to_entity(entity))] = entt::null;
+		}
 
 		std::vector<EntityHandle> dirty;
 		dirty.swap(m_DirtyTransformEntities);
@@ -1672,9 +1963,10 @@ namespace Funke {
 			m_DeferredConstructHooks.push_back({ &Scene::OnTransform2DComponentConstruct, entity });
 			return;
 		}
-		auto& transform = registry.get<Transform2DComponent>(entity);
-		transform.BindOwner(this, entity);
-		transform.MarkDirty();
+		auto* transform = registry.try_get<Transform2DComponent>(entity);
+		if (transform == nullptr) return;
+		transform->BindOwner(this, entity);
+		transform->MarkDirty();
 		MarkStaticRenderDataDirtyIfStatic(registry, entity);
 	}
 
@@ -2038,9 +2330,10 @@ namespace Funke {
 			m_DeferredConstructHooks.push_back({ &Scene::OnParticleSystem2DComponentConstruct, entity });
 			return;
 		}
-		auto& ps = registry.get<ParticleSystem2DComponent>(entity);
-		ps.m_EmitterScene = this;
-		ps.m_EmitterEntity = entity;
+		auto* ps = registry.try_get<ParticleSystem2DComponent>(entity);
+		if (ps == nullptr) return;
+		ps->m_EmitterScene = this;
+		ps->m_EmitterEntity = entity;
 	}
 
 	void Scene::OnParticleSystem2DComponentDestruct(entt::registry& registry, EntityHandle entity) {

@@ -44,7 +44,7 @@ PATCHES = (
         ),
     ),
     VendorPatch(
-        name="EnTT entity bit split",
+        name="EnTT entity bit split and staged bulk storage",
         submodule="External/entt",
         pinned_commit="1333fa53129e7cfded5a9640c4336a254049917b",
         patch_file="entt-funke-entity-bits.patch",
@@ -53,6 +53,16 @@ PATCHES = (
                 "src/entt/entity/entity.hpp",
                 "7123b780f5cea6b1fa88d94c0f13424589639091",
                 "06c6e2887e8c209bb1aeeab12e032f7908f53174",
+            ),
+            PatchedFile(
+                "src/entt/entity/storage.hpp",
+                "f6e52dccd40ddeb879e22c7550dba6a04a379f6a",
+                "44792fe4f8c9588c469c05280415a5fd6c1b1fde",
+            ),
+            PatchedFile(
+                "src/entt/signal/sigh.hpp",
+                "87eff724bc86518290e7d82fdcd9477a54e37f83",
+                "9c586afa85573891a41c3a756e4103a146c80f90",
             ),
         ),
     ),

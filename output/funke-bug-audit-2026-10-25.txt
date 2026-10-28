@@ -1,0 +1,280 @@
+FUNKE – BUG-AUDIT, 25.10.2026
+
+Prüfstand: Commit 0f47fe79 plus bereits vorhandene lokale Änderungen.
+Prüfart: Breiter Quellcode-Audit mit vier parallelen Prüfbereichen, vorhandenen
+Tests, zwei gezielten Reproduktionen und isolierten Start-/Beenden-Prüfungen.
+Produktionsdateien wurden nicht verändert. Keine Bugs wurden in diesem Auftrag
+behoben. Neue Dateien enthalten ausschließlich Bericht und Prüfartefakte.
+
+ERGEBNIS
+
+15 konkrete funktionale Bugbefunde: 2 mit gezielten Reproduktionen am unverändert
+eingebundenen C#-Quellcode bestätigt, 13 durch Kontroll-/Datenfluss belegt.
+Zusätzlich 2 reproduzierte Probleme im Test-/Entwicklungswerkzeug.
+P1 = vorrangig beheben; P2 = regulärer funktionaler Fehler.
+
+Dies ist kein Nachweis vollständiger Fehlerfreiheit und keine lückenlose Prüfung
+jeder Quellcodezeile. Nicht abgedeckt: vollständige Spiele-/Editor-Interaktion,
+Langzeit-/Speicher-Stresstests, alle GPU-Backends, reale Controller, Android/iOS/
+Web/Linux/macOS-Laufzeit und sämtliche externen Bibliotheken. Statische Befunde
+sind ausdrücklich nicht als ausgeführte End-to-End-Reproduktionen bezeichnet.
+
+BEFUNDE
+
+01 [P1] Fehlgeschlagene Recovery-Sicherung löscht die letzte gute Sicherung
+Datei: C:/Users/benso/source/repos/Pending/Index/Funke-Editor/src/Editor/SceneRecovery.cpp:40
+Weitere relevante Zeilen: 42, 47–49.
+Auslöser: Eine schmutzige Szene besitzt bereits eine Recovery-Datei; die nächste
+Sicherung schlägt beispielsweise wegen eines Schreibfehlers fehl.
+Ursache: Nur erfolgreich geschriebene Dateien gelangen in keep. Die anschließende
+Bereinigung entfernt alle anderen Dateien, einschließlich der bisherigen guten
+Sicherung derselben weiterhin ungespeicherten Szene. File::WriteAllText bewahrt
+bei fehlgeschlagenem atomaren Schreiben zunächst das Original; dieser Schutz wird
+durch die nachfolgende Bereinigung aufgehoben.
+Folge: Nach einem anschließenden Absturz fehlen auch die zuvor gesicherten Änderungen.
+Korrektur: Bestehende Sicherung jeder weiterhin schmutzigen Szene unabhängig vom
+Erfolg des neuen Schreibversuchs behalten; fehlgeschlagene Sicherungen melden.
+Nachweis: Statische Prüfung von SnapshotDirtyScenes, SaveToFile und File-Schreiben.
+
+02 [P1] Additive 2D-Szenen überdecken bereits gerenderte Szenen
+Datei: C:/Users/benso/source/repos/Pending/Index/Funke-Engine/src/Graphics/Renderer2D.cpp:1120
+Weitere relevante Zeilen: 1017–1019, 1068–1076, 1115, 1123–1129, 1428 ff.
+Auslöser: Hauptszene mit Kamera und Sprites, zusätzliche Szene, Standard-
+Postprocessing aktiviert, keine Komposition über ein 3D-Ziel.
+Ursache: Jede Szene leert dasselbe Zwischenbild erneut mit undurchsichtiger
+Kamerafarbe. Das anschließende Alpha-Blit ersetzt dadurch das vorige Szenenbild.
+Selbst eine leere zusätzliche Szene läuft bei aktiviertem Postprocessing bis zum Blit.
+Folge: Frühere Szenen verschwinden; eine leere additive Szene kann das Bild leeren.
+Korrektur: Alle Szenen in ein einmal geleertes Zwischenbild rendern und danach
+einmal gemeinsam postprocessen und ausgeben.
+Nachweis: Statischer Renderpfad einschließlich Blending in PostProcessor.cpp:419–424.
+Keine dynamische Mehrszenen-/GPU-Reproduktion durchgeführt.
+
+03 [P2] Job-Ausnahmen gehen vor Veröffentlichung der Handle-ID verloren
+Datei: C:/Users/benso/source/repos/Pending/Index/Funke-ScriptCore/Source/Funke/Jobs/Internal/JobNativeDispatch.cs:113
+Weitere relevante Zeilen: 113–118 und 133–139.
+Auslöser: Ein Job wirft, bevor der native Scheduling-Aufruf zurückkehrt.
+Ursache: box.NativeHandle wird erst danach gesetzt. Der Exception-Handler speichert
+unter Handle 0, das die Registry verwirft; gepoolte Boxen können eine alte ID tragen.
+Folge: Complete() kann Erfolg signalisieren, obwohl der Job fehlgeschlagen ist.
+Korrektur: Jobzustand und Fehlerablage vor Veröffentlichung initialisieren; Fehler
+zunächst im Jobzustand halten oder die ID bereits vor Scheduling verbindlich vergeben.
+Nachweis: Original-Dispatcher und Original-Registry mit kontrolliertem nativen
+Callback-Stub. Früher Callback: exception observed=False; später Callback: True.
+Der echte native Pfad veröffentlicht Jobs ebenfalls vor Rückgabe der ID.
+
+04 [P2] Parameterlose Frame-Awaiter übernehmen den Owner-Abbruch nicht
+Datei: C:/Users/benso/source/repos/Pending/Index/Funke-ScriptCore/Source/Funke/Coroutines/Awaiters.cs:69
+Weitere relevante Zeilen: 69–72 und 98–101.
+Auslöser: await new WaitForNextFrame() oder await new WaitForFixedUpdate() in einer
+Routine, deren Entity/System während des Wartens zerstört wird.
+Ursache: Bei diesen Structs verwendet new T() den impliziten parameterlosen
+Konstruktor statt des Konstruktors mit optionalem CancellationToken. Die Auflösung
+des ambienten Owner-Tokens findet nicht statt.
+Folge: Routine läuft nach Owner-Zerstörung weiter; insbesondere Frame-Schleifen
+können auf bereits zerstörte Spielobjekte zugreifen.
+Korrektur: Explizite parameterlose Konstruktoren oder Tokenauflösung in GetAwaiter().
+Nachweis: Originalquellcode eingebunden. Nach Owner-Abbruch: beide Tasks
+RanToCompletion; Kontrollfall WaitForFrames(1): Canceled.
+
+05 [P2] Bewegte Eltern lassen statische 2D-Collider zurück
+Datei: C:/Users/benso/source/repos/Pending/Index/Funke-Engine/src/Systems/TransformHierarchySystem.cpp:31
+Weitere relevante Zeilen: 31–42; PhysicsSystem2D.cpp:139 ff. und 171–177.
+Auslöser: Collider-Kind einmal synchronisieren, danach ausschließlich den Parent
+verschieben, drehen oder skalieren.
+Ursache: Die Hierarchie schreibt Weltwerte des Kindes direkt, setzt dessen
+Dirty-Flag aber nicht. Physik und Form-Synchronisation verlangen dieses Flag.
+Folge: Sichtbare Geometrie bewegt sich; Kollisionen beziehungsweise Collidergröße
+bleiben am alten Stand.
+Korrektur: Geänderte Welttransformationen physikalischer Nachfahren invalidieren.
+Nachweis: Statischer Pfad; TransformPoint enthält keine versteckte Invalidierung.
+
+06 [P2] Gecachte Prefab-Spawns verlieren nicht standardmäßige Collider-Dichte
+Datei: C:/Users/benso/source/repos/Pending/Index/Funke-Engine/src/Components/Physics/BoxCollider2DComponent.cpp:165
+Zusatz: C:/Users/benso/source/repos/Pending/Index/Funke-Engine/src/Components/Physics/CircleCollider2DComponent.cpp:132
+Auslöser: Nicht-Sensor-Prefab mit Collider-Dichte etwa 5 und automatischer
+Rigidbody-Masse über den schnellen Prefab-Cache instanziieren.
+Ursache: RestoreShapeFromState überträgt Größe, Reibung usw., aber keine Dichte.
+Das native Shape wurde mit Dichte 1 erzeugt; die kopierte logische Dichte allein
+ändert diesen nativen Wert nicht.
+Folge: Langsamer Erstspawn und schnelle Folgespawns können verschiedene Massen haben.
+Korrektur: SetDensity(m_Density) bei Shape-Wiederherstellung anwenden.
+Nachweis: Statischer Pfad PrefabTemplateCache::HydrateInto → RestoreShapeFromState
+→ Box2DWorld::CreateShape; kein nativer Regressionstest hinzugefügt.
+
+07 [P2] Komponenten-Reset stellt mehrere Standardwerte nicht wieder her
+Datei: C:/Users/benso/source/repos/Pending/Index/Funke-Engine/src/Serialization/SceneSerializerDeserialize.cpp:2553
+Weitere relevante Zeilen: 2544–2562 und ResetComponent 2781–2783.
+Auslöser: TextRenderer-Schriftgröße/Farbe/Text ändern und im Inspector Reset wählen.
+Ursache: Reset deserialisiert ein leeres Objekt; fehlende Felder verwenden vielfach
+die aktuellen Werte als Fallback statt der Werte einer Standardkomponente.
+Folge: Text, Schriftgröße, Farbe, Font und Ausrichtung bleiben teilweise erhalten.
+Das Muster betrifft auch Collider-Material-/Layerwerte und Image-Sortierung/Filter.
+Korrektur: Reset aus frischen Standardwerten herstellen und separat testen.
+Nachweis: Statischer Deserializer- und Inspector-Aufrufpfad.
+
+08 [P2] Rigidbody-Paste/Reset schaltet manuelle Masse nicht auf Automatik zurück
+Datei: C:/Users/benso/source/repos/Pending/Index/Funke-Engine/src/Serialization/SceneSerializerDeserialize.cpp:2584
+Relevanter Bereich: 2584–2586.
+Auslöser: Ziel-Rigidbody mit SetMass(100); Auto-Mass-Komponente hinein kopieren
+oder Reset ausführen.
+Ursache: massOverridden=true ruft SetMass auf, false besitzt keinen Gegenpfad.
+Folge: Das Ziel behält das Override und verhält sich anders als die Quellkomponente.
+Korrektur: Explizites Zurücksetzen auf dichtebasierte Masse implementieren/anwenden.
+Nachweis: Statisch; bestehender Roundtrip-Test deckt nur false → true ab.
+
+09 [P2] SceneSystems laufen nach OnDestroy weiter
+Datei: C:/Users/benso/source/repos/Pending/Index/Funke-Engine/src/Scene/Scene.cpp:1415
+Relevanter Bereich: 1415–1422.
+Auslöser: Erstes natives SceneSystem entlädt während Update seine eigene Szene;
+ein späteres System benutzt Ressourcen, die sein OnDestroy bereits freigegeben hat.
+Ursache: ForeachEnabledSystem kontrolliert zwischen Callbacks weder geladenen
+Zustand noch Lifecycle-Suspendierung. ReleaseScene führt OnDestroy unmittelbar aus.
+Folge: Update nach OnDestroy, bis hin zu Zugriffen auf freigegebene Ressourcen.
+Korrektur: Laufende Phase nach Unload/Suspendierung abbrechen und Callback-Reihenfolge
+mit zwei Systemen absichern.
+Nachweis: Statischer Pfad bis SceneManager::ReleaseScene:1194,1243 ff.; äußere
+shared_ptr hält nur die Szene selbst, nicht ihre bereits freigegebenen Ressourcen.
+
+10 [P2] UUID-Texturcache verwechselt Point- und Bilinear-Sampling
+Datei: C:/Users/benso/source/repos/Pending/Index/Funke-Engine/src/Graphics/TextureManager.cpp:81
+Relevanter Bereich: 81–84; Cache-Trefferprüfung 240–242.
+Auslöser: Dieselbe UUID zuerst mit Point, danach mit Bilinear laden; gewöhnliche
+Metadatei ohne Import-Sampler-Override, Clamp-Wrapping.
+Ursache: OR-Verknüpfung von Filter- und Wrap-Werten überlappt Bitbereiche. Beide
+Sampler ergeben 0x81AF2F vor der gemeinsamen Asset-ID-Verknüpfung.
+Folge: Die zweite Anfrage erhält den falschen Sampler, abhängig von der Ladereihenfolge.
+Korrektur: Zusammengesetzten Schlüssel mit vollständigem Gleichheitsvergleich nutzen.
+Nachweis: Schlüssel rechnerisch geprüft und Trefferpfad gelesen; kein GPU-Test.
+
+11 [P2] 3D-Materialtexturen bleiben über Szenenwechsel hinweg geladen
+Datei: C:/Users/benso/source/repos/Pending/Index/Funke-Engine/src/Graphics/Renderer3D.cpp:1681
+Relevanter Bereich: 1681–1684; Einfügen 973–983.
+Auslöser: Mehrere 3D-Level mit unterschiedlichen Materialtexturen nacheinander laden.
+Ursache: ReferenceProvider markiert sämtliche historischen MaterialTextures-
+Cache-Einträge als lebend. Unbenutzte Einträge werden bis Shutdown nicht entfernt.
+Folge: PurgeAssetsAfterSceneUnload kann diese Texturen nicht freigeben; GPU-Speicher
+akkumuliert. Gleiches Muster bei CustomShaderLibrary.cpp:460–463.
+Korrektur: Referenzen aus tatsächlich verwendeten Materialien ermitteln oder
+unbenutzte Cache-Einträge vor dem Purge entfernen.
+Nachweis: Statischer Referenz-/Purge-Pfad; kein Langzeit-Speicherprofil.
+
+12 [P2] Externe glTF-Geometriepuffer lösen kein Hot-Reload aus
+Datei: C:/Users/benso/source/repos/Pending/Index/Funke-Engine/src/Graphics/MeshAsset.cpp:324
+Relevanter Bereich: 324–326; externes Laden 299–303.
+Auslöser: Nur die zu einer .gltf gehörende .bin-Datei wird aktualisiert.
+Ursache: ReloadChangedFromDisk prüft ausschließlich den Zeitstempel der Hauptdatei.
+Externe Puffer werden zwar gelesen und registriert, aber dem Cache nicht als
+reloadpflichtige Abhängigkeit zugeordnet.
+Folge: Darstellung und daraus erzeugte Kollisionsgeometrie behalten alte Daten.
+Korrektur: Alle externen Puffer pro Mesh erfassen und bei Änderungen neu laden.
+Nachweis: Statischer Lade-/Reload-Pfad inklusive Editor-Aufrufer.
+
+13 [P2] GetGamepadTrigger liefert ohne Controller 0,5
+Datei: C:/Users/benso/source/repos/Pending/Index/Funke-ScriptCore/Source/Funke/Core/Input.cs:144
+Relevanter Bereich: 144–148.
+Auslöser: Trigger eines nicht verbundenen oder ungültigen Gamepads abfragen.
+Ursache: Native Input.cpp:156–161 liefert 0; die C#-Umrechnung (axis+1)/2 macht 0,5 daraus.
+Folge: Gas-/Feuerlogik kann ohne Controller eine halbe Betätigung erkennen.
+Korrektur: Verbindung prüfen oder den Trigger-Ruhezustand -1 für fehlende Geräte liefern.
+Nachweis: Statischer nativer/verwalteter Aufrufpfad und direkte Rechnung; kein Hardwaretest.
+
+14 [P2] ParallelForRange überspringt signierte Bereiche über Null
+Datei: C:/Users/benso/source/repos/Pending/Index/Funke-Engine/src/Scripting/ScriptBindingsJobs.cpp:89
+Relevanter Bereich: 89–95.
+Auslöser: ScheduleParallelForRange(-2, 2, ...) im nativen Dispatch-Pfad.
+Ursache: Öffentlich geprüft wird nur end >= begin. Native Konvertierung von begin
+nach size_t macht daraus einen großen positiven Wert; ParallelForAsync behandelt
+den Bereich deshalb als leer.
+Folge: Kein Callback wird ausgeführt; der Task-/Dependency-Pfad verhält sich anders.
+Korrektur: Nullbasierten Bereich dispatchen und signierten Startoffset zurückaddieren
+oder die öffentliche API konsistent auf nichtnegative Indizes einschränken.
+Nachweis: Statischer Pfad Job.cs:712–717 → Bindung → ParallelFor.hpp:37.
+
+15 [P2] Asset-Pruning entfernt gültige externe glTF-Puffer aus Spiel-Builds
+Datei: C:/Users/benso/source/repos/Pending/Index/Funke-Editor/src/Editor/BuildAssetPruning.cpp:438
+Relevanter Bereich: 430–439; NormalizeReference 98 ff.
+Auslöser: Assets/Meshes/Ship/ship.gltf referenziert ../Buffers/ship.bin; tatsächliche
+Datei ist Assets/Meshes/Buffers/ship.bin und ansonsten nicht referenziert.
+Ursache: Scanner verbindet Verzeichnis und URI als Text, normalisiert aber weder
+../ beziehungsweise ./ innerhalb des Pfads noch Prozentkodierung. Sein Suchschlüssel
+meshes/ship/../buffers/ship.bin passt nicht zum Index meshes/buffers/ship.bin.
+Der normale Importer löst diesen Pfad dagegen auf und dekodiert Prozentkodierung.
+Folge: Mesh funktioniert im Editor, im pruned Export fehlt die Geometrie-Datei.
+Korrektur: URI wie im Importer dekodieren, relativ zum Modell auflösen, normalisieren
+und danach innerhalb des Asset-Baums auf Referenzen prüfen.
+Nachweis: Statischer Vergleich Scanner/Indexer mit MeshAsset.cpp:298–303 und
+GltfImporter.cpp:149–150. Kein vollständiger Exportlauf durchgeführt.
+
+TEST-/ENTWICKLUNGSWERKZEUG
+
+T1 [P2] Release-Skripttest schlägt wegen veraltetem Log-Wortlaut fehl
+Datei: C:/Users/benso/source/repos/Pending/Index/scripts/ci/test_release_scripts.py:109
+Test verlangt exakt 'dotnet build output:', ScriptSystem protokolliert denselben
+Fehler mittlerweile als 'Compiler output:' weiterhin auf Error-Level. Die fachliche
+Eigenschaft ist vorhanden, trotzdem schlägt der in .github/workflows/ci.yml:60
+aufgerufene Test fehl. Erwartung aktualisieren oder die fachliche Eigenschaft prüfen.
+Nachweis: python -m unittest discover -s scripts/ci -p 'test_*.py' -q
+Ergebnis: 36 Tests, 35 bestanden, 1 fehlgeschlagen.
+
+T2 [P2] Run.ps1 startet unter PowerShell 7 nicht
+Datei: C:/Users/benso/source/repos/Pending/Index/scripts/dev/Run.ps1:132
+Add-Type -ReferencedAssemblies System.Drawing kann Bitmap nicht auflösen, weil
+der Typ nach System.Drawing.Common weitergeleitet ist. Abbruch vor Programmstart
+mit CS1069 in der hier verwendeten Standardshell. Windows PowerShell 5.1 funktioniert.
+Korrektur: Passende Assemblyreferenzen für die aktuelle PowerShell-Runtime verwenden
+oder die benötigte Shell ausdrücklich erzwingen/dokumentieren.
+
+VALIDIERUNG
+
+Ausgeführt: scripts/dev/Test.ps1 -Suite All -NoBuild, Release.
+Engine: 568/568 Testfälle; 108512/108512 Assertions bestanden.
+Editor: 104/104 Testfälle; 525/525 Assertions bestanden.
+C#: 420/420 Testfälle bestanden.
+Python: 35/36 Tests bestanden; einziger Fehler T1.
+
+Kein nativer Neuaufbau: Audit ohne Produktionsänderungen; vorhandene Release-
+Binaries wurden genutzt. Grüne Tests beweisen deshalb ausschließlich diesen
+Binärstand, keinen vollständigen frischen Build aller lokalen Änderungen.
+Gezielte Repro: eigenes kleines .NET-Projekt mit Compile-Links auf Originalquellen,
+einschließlich kontrollierter Interop-Stubs; kein vollständiger Engine-Prozess.
+
+Runtime-/Editor-Prüfung: eigenes Projekt unter bin-int/_agent/audit-20261025/smoke.
+Beide Programme starten und schließen mit Exitcode 0. Runtime nach Ergänzung einer
+Kamera mit grünem Sprite visuell geprüft. Editor-Startbild visuell geprüft.
+Einzige Warnung beim normalen Lauf: nicht installierte optionale CJK-Schrift.
+Die eingebaute Runtime-Screenshotfunktion konnte auf dem gewählten Backend nicht
+kopieren; Fensteraufnahme über Run.ps1 funktionierte. Dies wurde nicht als
+nachgewiesener Engine-Defekt gezählt. Keine neuen Crash-Dumps gemeldet.
+
+984 NativeBindings-Namen stimmen zwischen C++ und C# positionsweise überein.
+Historische Scissor-/CommandBuffer-Validierungsfehler im Editorlog wurden gelesen,
+aber mangels aktueller Reproduktion keiner neuen bestätigten Ursache zugeordnet.
+
+PRÜFBEREICHE
+
+Scene-/Entity-Lebenszyklen, Hierarchien, Delayed Destruction, Load/Unload/Rollback,
+Systemausführung, Referenz-Fixups, Undo, Clipboard/Prefab, Serialisierung/Reset,
+Recovery, 2D-Physik/Joints, ausgewählte 3D-Physics-/Kontaktpfade, C#-Coroutinen,
+Jobs/Pooling/Exceptions, native/managed Bindings, Input, Audio-Streaming, EventBus,
+ausgewählte Collections, 2D-/3D-Rendering, Postprocessing, WebGPU-Ziele, Skinning,
+SkeletalAnimation, glTF/OBJ, Texture-/Shader-/Fontmanager, Material-/Mesh-Caches,
+Package-Auflösung sowie ausgewählte Editor-/Launcher-/Build-/Exportpfade.
+
+ARTEFAKTE
+
+Basis: C:/Users/benso/source/repos/Pending/Index/bin-int/_agent/audit-20261025/
+- job-race/JobRace.csproj und Program.cs: ausführbare Reproduktion 03/04
+- job-race/results.txt: Repro-Ausgaben
+- engine-tests.log und editor-tests.log: native Testergebnisse
+- python-tests.log: vollständiger Python-Testfehler
+- runtime-smoke.log und runtime-smoke.png: Runtime-Prüfung
+- editor-smoke.log und editor-smoke.png: Editor-Startprüfung
+
+Repro-Befehl aus dem Repository:
+dotnet run --project bin-int/_agent/audit-20261025/job-race/JobRace.csproj -c Release --nologo
+
+Empfohlene Reihenfolge: Recovery-Datenverlust und additive Darstellung zuerst;
+danach Coroutine-/Job-/System-Lebenszyklen und Collider-Synchronisation; anschließend
+Serialisierung, Textur-/Mesh-Caches, Export und Tooling. Jeder Fix braucht eine
+gezielte Regression für den hier beschriebenen Auslöser.

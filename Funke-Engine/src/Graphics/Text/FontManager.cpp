@@ -2,6 +2,7 @@
 #include "Graphics/Text/FontManager.hpp"
 
 #include "Assets/AssetRegistry.hpp"
+#include "Assets/AssetLoader.hpp"
 #include "Core/Log.hpp"
 #include "Core/Time.hpp"
 #include "Serialization/File.hpp"
@@ -210,6 +211,26 @@ namespace Funke {
 		return CreateSlot(std::move(font), assetId, pixelSize);
 	}
 
+	FontHandle FontManager::FindLoadedFontByUUID(uint64_t assetId, float pixelSize) {
+		if (!s_IsInitialized || assetId == 0 || !std::isfinite(pixelSize) || pixelSize <= 0.0f) return FontHandle::Invalid();
+		const FontHandle handle = FindExisting(assetId, pixelSize);
+		if (!GetFont(handle)) return FontHandle::Invalid();
+		return handle;
+	}
+
+	FontHandle FontManager::LoadPreparedFont(uint64_t assetId, const std::shared_ptr<const FontPreparedData>& prepared) {
+		if (!s_IsInitialized || assetId == 0 || !prepared) return FontHandle::Invalid();
+		const float pixelSize = Font::GetPreparedPixelSize(prepared);
+		if (pixelSize <= 0.0f) return FontHandle::Invalid();
+		const FontHandle existing = FindLoadedFontByUUID(assetId, pixelSize);
+		if (existing.IsValid()) return existing;
+		auto font = std::make_unique<Font>();
+		if (!font->LoadPrepared(prepared)) return FontHandle::Invalid();
+		KnownFileStamps::Record(font->GetFilepath());
+		s_TtfBufferCache[assetId] = TtfBufferEntry{ font->m_TtfBuffer, font->GetFilepath() };
+		return CreateSlot(std::move(font), assetId, pixelSize);
+	}
+
 	void FontManager::PollAsync() {
 		if (!s_IsInitialized) return;
 		const int frame = CurrentFrame();
@@ -255,6 +276,7 @@ namespace Funke {
 	}
 
 	void FontManager::UnloadAll() {
+		AssetLoader::Invalidate(AssetKind::Font);
 		for (Slot& slot : s_Slots) {
 			if (slot.InUse) {
 				slot.Font.reset();

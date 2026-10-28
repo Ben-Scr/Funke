@@ -483,6 +483,8 @@ internal static class ScriptInstanceManager
     {
         try { SceneManager.PumpSceneLoadRequests(); }
         catch (Exception ex) { ScriptExceptionLog.Report("SceneManager.LoadSceneAsync cancellation", ex); }
+        try { AssetManager.PumpAssetLoadRequests(); }
+        catch (Exception ex) { ScriptExceptionLog.Report("AssetManager.LoadAsync", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -595,6 +597,7 @@ internal static class ScriptInstanceManager
         try
         {
             SceneManager.CancelPendingLoads();
+            AssetManager.CancelPendingLoads();
             ScriptExceptionLog.Flush();
             PlayerPrefs.SaveQuietly();
 
@@ -636,6 +639,13 @@ internal static class ScriptInstanceManager
     {
         try { Entity.OnNativeEntityDestroyed(entityID); }
         catch (Exception ex) { Log.Error($"NotifyEntityDestroyed failed: {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void NotifyComponentRemoved(ulong entityID, uint typeId)
+    {
+        try { Entity.OnNativeComponentRemoved(entityID, typeId); }
+        catch (Exception ex) { Log.Error($"NotifyComponentRemoved failed: {ex}"); }
     }
 
     // AssemblyUnload: strip all user-assembly handlers. PlayModeExit: strip only EntityScript/SceneSystem handlers; GlobalSystem subscriptions remain valid.
@@ -1548,6 +1558,7 @@ internal static class ScriptInstanceManager
     private static void CancelAllInstanceCoroutines()
     {
         SceneManager.CancelPendingLoads();
+        AssetManager.CancelPendingLoads();
         foreach (var data in s_Instances.Values)
         {
             try { data.Instance._CancelPendingCoroutines(); }

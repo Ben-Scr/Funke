@@ -17,6 +17,7 @@
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
+#include "Scripting/ScriptSystem.hpp"
 #include "Utils/Process.hpp"
 
 #include <algorithm>
@@ -1165,6 +1166,15 @@ namespace Funke::GameBuilder {
 			failBuild("Project Assets missing");
 			return result;
 		}
+		const bool hasNativeScripts = project->HasNativeScriptSources();
+		if (hasNativeScripts) {
+			if (platformPackageBuild || BuildPlatformSupport::HostDesktopPlatform() != targetPlatform) {
+				FNK_ERROR_TAG("Build", "Native C++ scripts currently require a build for the host desktop platform.");
+				failBuild("Native scripts need a host desktop target");
+				return result;
+			}
+			project->EnsureNativeScriptProjectFiles();
+		}
 		const BuildOutputSafety::DirectoryFingerprint assetInputFingerprint =
 			BuildOutputSafety::CaptureDirectoryFingerprint(project->AssetsDirectory);
 		if (!assetInputFingerprint.Succeeded()) {
@@ -1583,16 +1593,15 @@ namespace Funke::GameBuilder {
 					: project->ActiveBuildProfile == FunkeProject::BuildProfile::Debug ? "Runtime-Debug"
 					: "Runtime-Development";
 				// A Debug build must not silently ship optimized binaries from the Dist fallbacks below.
-				if (project->ActiveBuildProfile == FunkeProject::BuildProfile::Debug) {
+				if (project->ActiveBuildProfile == FunkeProject::BuildProfile::Debug || hasNativeScripts) {
 					runtimeOutputDirectory = BuildOutputSafety::FindFirstCompleteArtifactDirectory({
 						developmentRuntimeDirectory,
 						engineRoot.empty() ? std::filesystem::path{} : engineRoot / bundledRuntimeName,
 						exeDir / bundledRuntimeName,
 					}, { runtimeExecutable, engineLibrary });
 					if (runtimeOutputDirectory.empty()) {
-						FNK_ERROR_TAG("Build", "Debug builds need the engine sources (Funke-Runtime.vcxproj) or a "
-							"Runtime-Debug folder next to the editor; neither was found.");
-						failBuild("Debug runtime unavailable");
+						FNK_ERROR_TAG("Build", "This build needs matching {} runtime artifacts; none were found.", buildConfiguration);
+						failBuild("Matching runtime unavailable");
 						return result;
 					}
 				}
@@ -1614,6 +1623,31 @@ namespace Funke::GameBuilder {
 				FNK_INFO_TAG("Build", "Using prebuilt runtime artifacts from {}",
 					runtimeOutputDirectory.string());
 			}
+		}
+
+		std::filesystem::path nativeScriptArtifact;
+		if (hasNativeScripts) {
+			report(0.52f, "Compiling C++ scripts");
+			const std::filesystem::path nativeOutputRoot = Path::FromUtf8(project->NativeScriptsDir) / "build-export" / "artifacts";
+			std::vector<std::string> options = {
+				"-DFUNKE_NATIVE_OUTPUT_ROOT=" + Path::ToUtf8(nativeOutputRoot),
+				std::string("-DFUNKE_WITH_2D=") + (!runtimeVariant || project->HasModule("Funke.2D") ? "ON" : "OFF"),
+				std::string("-DFUNKE_WITH_3D=") + (!runtimeVariant || project->HasModule("Funke.3D") ? "ON" : "OFF")
+			};
+			const auto engineLinkDirectory = runtimeOutputDirectory.parent_path() / "Funke-Engine";
+			if (std::filesystem::is_directory(engineLinkDirectory)) {
+				options.push_back("-DFUNKE_ENGINE_LIBRARY_DIR=" + Path::ToUtf8(engineLinkDirectory));
+			}
+			const std::string nativeTarget = project->GetNativeScriptTargetName();
+			const Process::Result nativeBuild = ScriptSystem::BuildNativeScripts(
+				project->NativeScriptsDir, nativeTarget, buildConfiguration,
+				buildConfiguration == "Dist" ? "RELEASE" : "DEVELOPMENT", "build-export", options);
+			if (!nativeBuild.Succeeded()) {
+				FNK_ERROR_TAG("Build", "C++ script compilation failed: {}", nativeBuild.Output);
+				failBuild("C++ compilation failed");
+				return result;
+			}
+			nativeScriptArtifact = nativeOutputRoot / runtimeOutputFolder / nativeTarget / SharedLibraryFilename(nativeTarget);
 		}
 
 		report(0.55f, "Copying runtime binaries");
@@ -1648,6 +1682,12 @@ namespace Funke::GameBuilder {
 			failBuild("Required artifact staging failed");
 			return false;
 		};
+
+		if (hasNativeScripts) {
+			const std::string nativeTarget = project->GetNativeScriptTargetName();
+			const auto destination = contentDir / "bin" / runtimeOutputFolder / nativeTarget / nativeScriptArtifact.filename();
+			if (!copyRequiredFile(nativeScriptArtifact, destination, "C++ script library")) return result;
+		}
 
 		const std::string runtimeExecutableFilename = GetRuntimeExecutableFilename();
 		const std::string outputExecutableStem = project->ExecutableName.empty()

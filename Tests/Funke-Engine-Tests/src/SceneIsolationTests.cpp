@@ -1,7 +1,10 @@
 #include <doctest/doctest.h>
+#include <entt/signal/sigh.hpp>
 
 #include "Components/General/PrefabInstanceComponent.hpp"
 #include "Components/General/Transform2DComponent.hpp"
+#include "Components/General/UUIDComponent.hpp"
+#include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Core/Application.hpp"
 #include "Physics/Collision2D.hpp"
@@ -18,11 +21,14 @@
 #include "Serialization/PrefabTemplateCache.hpp"
 #include "Systems/TransformHierarchySystem.hpp"
 
+#include <array>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 using namespace Funke;
@@ -649,4 +655,374 @@ TEST_CASE("Entity command buffer rolls back a capture that fails construction")
 		CHECK(destroyed == 0);
 	}
 	CHECK(destroyed == 1);
+}
+
+TEST_CASE("Scene load guards tolerate removed components and destroyed entities before flush")
+{
+	auto scene = Scene::CreateDetachedScene("Deferred structural mutations");
+	Entity removed = scene->CreateEmptyEntity();
+	Entity destroyed = Entity::Null;
+	Entity replacement = Entity::Null;
+	{
+		Scene::LoadGuard outer(*scene);
+		removed.AddComponent<Transform2DComponent>();
+		removed.AddComponent<ParticleSystem2DComponent>();
+		removed.RemoveComponent<Transform2DComponent>();
+		removed.RemoveComponent<ParticleSystem2DComponent>();
+		destroyed = scene->CreateRuntimeEntity();
+		destroyed.AddComponent<ParticleSystem2DComponent>();
+		scene->DestroyEntity(destroyed);
+		{
+			Scene::LoadGuard inner(*scene);
+			replacement = scene->CreateRuntimeEntity();
+			replacement.AddComponent<ParticleSystem2DComponent>();
+			replacement.RemoveComponent<Transform2DComponent>();
+			replacement.AddComponent<Transform2DComponent>();
+			replacement.RemoveComponent<ParticleSystem2DComponent>();
+			replacement.AddComponent<ParticleSystem2DComponent>();
+		}
+		CHECK(scene->IsConstructHooksSuppressed());
+	}
+	CHECK_FALSE(scene->IsConstructHooksSuppressed());
+	CHECK_FALSE(removed.HasComponent<Transform2DComponent>());
+	CHECK_FALSE(removed.HasComponent<ParticleSystem2DComponent>());
+	CHECK_FALSE(destroyed.IsValid());
+	REQUIRE(replacement.IsValid());
+	auto& transform = replacement.GetComponent<Transform2DComponent>();
+	CHECK(replacement.GetComponent<ParticleSystem2DComponent>().TryGetEmitterTransform() == &transform);
+	TransformHierarchySystem::Propagate(*scene);
+	CHECK_FALSE(scene->HasDirtyTransforms());
+	transform.SetPosition({ 7.0f, -3.0f });
+	CHECK(scene->HasDirtyTransforms());
+	TransformHierarchySystem::Propagate(*scene);
+	CHECK(transform.Position.x == doctest::Approx(7.0f));
+	CHECK(transform.Position.y == doctest::Approx(-3.0f));
+	{
+		Scene::LoadGuard reused(*scene);
+		replacement.RemoveComponent<Transform2DComponent>();
+		replacement.AddComponent<Transform2DComponent>();
+	}
+	CHECK(replacement.GetComponent<ParticleSystem2DComponent>().TryGetEmitterTransform()
+		== &replacement.GetComponent<Transform2DComponent>());
+}
+
+TEST_CASE("Fresh runtime metadata preserves identity updates and no-flags batches")
+{
+	auto scene = Scene::CreateDetachedScene("Runtime identities");
+	std::vector<EntityHandle> handles(128);
+	scene->CreateEntitiesBulk(handles.size(), handles);
+	scene->ClearDirty();
+	scene->ClearUIDirty();
+	std::unordered_set<EntityID> identities;
+	for (EntityHandle handle : handles) {
+		scene->SetEntityMetaDataNoFlags(handle, EntityOrigin::Runtime);
+		const EntityID runtimeId = scene->GetRuntimeID(handle);
+		CHECK(runtimeId != 0);
+		CHECK(identities.insert(runtimeId).second);
+		CHECK(scene->GetEntityPersistentID(handle) == runtimeId);
+		CHECK(static_cast<uint64_t>(scene->GetSceneEntityGUID(handle)) == 0);
+		CHECK(static_cast<uint64_t>(scene->GetPrefabGUID(handle)) == 0);
+		EntityHandle resolved = entt::null;
+		CHECK(scene->TryResolveRuntimeID(runtimeId, resolved));
+		CHECK(resolved == handle);
+	}
+	CHECK_FALSE(scene->IsDirty());
+	CHECK_FALSE(scene->IsUIDirty());
+	const EntityHandle handle = handles.front();
+	const EntityID originalRuntimeId = scene->GetRuntimeID(handle);
+	EntityID replacementRuntimeId = 1;
+	while (identities.contains(replacementRuntimeId)) ++replacementRuntimeId;
+	EntityHandle resolved = entt::null;
+	scene->SetEntityMetaData(handle, EntityOrigin::Prefab, AssetGUID(601), AssetGUID(0), replacementRuntimeId);
+	CHECK_FALSE(scene->TryResolveRuntimeID(originalRuntimeId, resolved));
+	CHECK(scene->TryResolveRuntimeID(replacementRuntimeId, resolved));
+	CHECK(resolved == handle);
+	CHECK(scene->HasComponent<PrefabInstanceComponent>(handle));
+	scene->ClearDirty();
+	scene->ClearUIDirty();
+	scene->SetEntityMetaDataNoFlags(handle, EntityOrigin::Scene, AssetGUID(0), AssetGUID(602));
+	CHECK(scene->GetRuntimeID(handle) == replacementRuntimeId);
+	CHECK(scene->GetEntityPersistentID(handle) == 602);
+	CHECK(scene->TryResolveSceneGUID(AssetGUID(602), resolved));
+	CHECK(resolved == handle);
+	CHECK_FALSE(scene->HasComponent<PrefabInstanceComponent>(handle));
+	CHECK_FALSE(scene->IsDirty());
+	CHECK_FALSE(scene->IsUIDirty());
+	scene->SetEntityMetaDataNoFlags(handle, EntityOrigin::Runtime);
+	CHECK_FALSE(scene->TryResolveSceneGUID(AssetGUID(602), resolved));
+	CHECK(scene->GetEntityPersistentID(handle) == replacementRuntimeId);
+	CHECK(scene->TryResolveRuntimeID(replacementRuntimeId, resolved));
+	CHECK(resolved == handle);
+}
+
+TEST_CASE("Bulk runtime identities preserve skipped slots existing metadata and scene isolation")
+{
+	auto scene = Scene::CreateDetachedScene("Bulk Runtime Identities");
+	std::array<EntityHandle, 4> handles{};
+	scene->CreateEntitiesBulk(handles.size(), handles);
+	const std::array<uint8_t, 4> skip{ 0, 1, 0, 0 };
+	scene->ClearDirty();
+	scene->ClearUIDirty();
+	scene->SetRuntimeEntityMetaDataBulk(handles, skip);
+	for (size_t index = 0; index < handles.size(); ++index) {
+		CHECK(scene->HasComponent<EntityMetaDataComponent>(handles[index]) == (skip[index] == 0));
+		CHECK(scene->HasComponent<UUIDComponent>(handles[index]) == (skip[index] == 0));
+	}
+	CHECK_FALSE(scene->IsDirty());
+	CHECK_FALSE(scene->IsUIDirty());
+	const EntityID firstId = scene->GetRuntimeID(handles[0]);
+	REQUIRE(firstId != 0);
+	scene->SetEntityMetaData(handles[0], EntityOrigin::Prefab, AssetGUID(801));
+	scene->SetEntityMetaData(handles[1], EntityOrigin::Scene, AssetGUID(0), AssetGUID(802));
+	scene->ClearDirty();
+	scene->ClearUIDirty();
+	scene->SetRuntimeEntityMetaDataBulk(handles, skip);
+	CHECK(scene->GetRuntimeID(handles[0]) == firstId);
+	CHECK(scene->GetEntityOrigin(handles[0]) == EntityOrigin::Runtime);
+	CHECK_FALSE(scene->HasComponent<PrefabInstanceComponent>(handles[0]));
+	CHECK(scene->GetEntityOrigin(handles[1]) == EntityOrigin::Scene);
+	CHECK(scene->GetEntityPersistentID(handles[1]) == 802);
+	CHECK_FALSE(scene->IsDirty());
+	CHECK_FALSE(scene->IsUIDirty());
+	const std::array<uint8_t, 1> invalidSkip{ 0 };
+	CHECK_THROWS(scene->SetRuntimeEntityMetaDataBulk(handles, invalidSkip));
+	CHECK(scene->GetRuntimeID(handles[0]) == firstId);
+	CHECK(scene->GetEntityPersistentID(handles[1]) == 802);
+	auto other = Scene::CreateDetachedScene("Other Bulk Runtime Identities");
+	std::array<EntityHandle, 4> otherHandles{};
+	other->CreateEntitiesBulk(otherHandles.size(), otherHandles);
+	other->SetRuntimeEntityMetaDataBulk(otherHandles);
+	EntityHandle resolved = entt::null;
+	CHECK_FALSE(other->TryResolveRuntimeID(firstId, resolved));
+	CHECK_FALSE(scene->TryResolveRuntimeID(other->GetRuntimeID(otherHandles[0]), resolved));
+	CHECK(scene->TryResolveRuntimeID(firstId, resolved));
+	CHECK(resolved == handles[0]);
+}
+
+TEST_CASE("Bulk runtime identity fallback preserves construction ordering and dirty flags")
+{
+	struct IdentityObserver {
+		Scene& Target;
+		std::vector<uint8_t> Events;
+		bool UnindexedDuringConstruction = true;
+		bool LegacyMissingDuringMetadata = true;
+		bool CleanAtEntityStart = true;
+		bool DirtyDuringLegacy = true;
+		void OnMetadata(entt::registry& registry, EntityHandle entity) {
+			Events.push_back(0);
+			EntityHandle resolved = entt::null;
+			UnindexedDuringConstruction &= !Target.TryResolveRuntimeID(Target.GetRuntimeID(entity), resolved);
+			LegacyMissingDuringMetadata &= !registry.all_of<UUIDComponent>(entity);
+			CleanAtEntityStart &= !Target.IsDirty() && !Target.IsUIDirty();
+			Target.MarkDirty();
+			Target.MarkUIDirty();
+		}
+		void OnLegacy(entt::registry&, EntityHandle entity) {
+			Events.push_back(1);
+			EntityHandle resolved = entt::null;
+			UnindexedDuringConstruction &= !Target.TryResolveRuntimeID(Target.GetRuntimeID(entity), resolved);
+			DirtyDuringLegacy &= Target.IsDirty() && Target.IsUIDirty();
+		}
+	};
+	auto scene = Scene::CreateDetachedScene("Bulk Identity Listeners");
+	std::array<EntityHandle, 4> handles{};
+	scene->CreateEntitiesBulk(handles.size(), handles);
+	IdentityObserver observer{ *scene };
+	entt::scoped_connection metadataConnection = scene->GetRegistry().on_construct<EntityMetaDataComponent>()
+		.connect<&IdentityObserver::OnMetadata>(&observer);
+	entt::scoped_connection legacyConnection = scene->GetRegistry().on_construct<UUIDComponent>()
+		.connect<&IdentityObserver::OnLegacy>(&observer);
+	scene->ClearDirty();
+	scene->ClearUIDirty();
+	{
+		Scene::LoadGuard outer(*scene);
+		Scene::LoadGuard inner(*scene);
+		scene->SetRuntimeEntityMetaDataBulk(handles);
+		CHECK(scene->IsConstructHooksSuppressed());
+	}
+	REQUIRE(observer.Events.size() == handles.size() * 2);
+	for (size_t index = 0; index < observer.Events.size(); ++index) CHECK(observer.Events[index] == index % 2);
+	CHECK(observer.UnindexedDuringConstruction);
+	CHECK(observer.LegacyMissingDuringMetadata);
+	CHECK(observer.CleanAtEntityStart);
+	CHECK(observer.DirtyDuringLegacy);
+	CHECK_FALSE(scene->IsDirty());
+	CHECK_FALSE(scene->IsUIDirty());
+	for (EntityHandle handle : handles) {
+		EntityHandle resolved = entt::null;
+		CHECK(scene->TryResolveRuntimeID(scene->GetRuntimeID(handle), resolved));
+		CHECK(resolved == handle);
+	}
+}
+
+TEST_CASE("Runtime identity indices remain correct after bulk growth removal and handle reuse")
+{
+	auto scene = Scene::CreateDetachedScene("Dense Runtime Identities");
+	std::vector<EntityHandle> handles(512);
+	scene->CreateEntitiesBulk(handles.size(), handles);
+	scene->SetRuntimeEntityMetaDataBulk(handles);
+	std::vector<EntityID> previousIds;
+	for (EntityHandle handle : handles) previousIds.push_back(scene->GetRuntimeID(handle));
+	for (size_t index = 0; index < handles.size(); index += 2) scene->DestroyEntity(handles[index]);
+	std::vector<EntityHandle> replacements(256);
+	scene->CreateEntitiesBulk(replacements.size(), replacements);
+	scene->SetRuntimeEntityMetaDataBulk(replacements);
+	for (size_t index = 0; index < previousIds.size(); ++index) {
+		EntityHandle resolved = entt::null;
+		CHECK(scene->TryResolveRuntimeID(previousIds[index], resolved) == (index % 2 != 0));
+		if (index % 2 != 0) CHECK(resolved == handles[index]);
+	}
+	for (EntityHandle handle : replacements) {
+		EntityHandle resolved = entt::null;
+		CHECK(scene->TryResolveRuntimeID(scene->GetRuntimeID(handle), resolved));
+		CHECK(resolved == handle);
+	}
+}
+
+TEST_CASE("Transform dirty deduplication preserves entity versions and scene boundaries")
+{
+	auto scene = Scene::CreateDetachedScene("Versioned Dirty Marks");
+	auto other = Scene::CreateDetachedScene("Other Dirty Marks");
+	Entity old = scene->CreateEmptyEntity();
+	Entity isolated = other->CreateEmptyEntity();
+	scene->ConsumeDirtyTransformEntities();
+	other->ConsumeDirtyTransformEntities();
+	scene->MarkTransformDirty(old.GetHandle());
+	scene->MarkTransformDirty(old.GetHandle());
+	scene->DestroyEntity(old);
+	Entity replacement = scene->CreateEmptyEntity();
+	REQUIRE(entt::to_entity(old.GetHandle()) == entt::to_entity(replacement.GetHandle()));
+	REQUIRE(old.GetHandle() != replacement.GetHandle());
+	scene->MarkTransformDirty(replacement.GetHandle());
+	scene->MarkTransformDirty(replacement.GetHandle());
+	other->MarkTransformDirty(isolated.GetHandle());
+	const auto dirty = scene->ConsumeDirtyTransformEntities();
+	REQUIRE(dirty.size() == 2);
+	CHECK(dirty[0] == old.GetHandle());
+	CHECK(dirty[1] == replacement.GetHandle());
+	CHECK(scene->ConsumeDirtyTransformEntities().empty());
+	const auto isolatedDirty = other->ConsumeDirtyTransformEntities();
+	REQUIRE(isolatedDirty.size() == 1);
+	CHECK(isolatedDirty[0] == isolated.GetHandle());
+	scene->MarkTransformDirty(replacement.GetHandle());
+	CHECK(scene->ConsumeDirtyTransformEntities().size() == 1);
+	scene->ClearEntities();
+	Entity afterClear = scene->CreateEmptyEntity();
+	scene->MarkTransformDirty(afterClear.GetHandle());
+	const auto afterClearDirty = scene->ConsumeDirtyTransformEntities();
+	REQUIRE(afterClearDirty.size() == 1);
+	CHECK(afterClearDirty[0] == afterClear.GetHandle());
+}
+
+TEST_CASE("Destruction marks survive reentrant clearing callback spawns and scene boundaries")
+{
+	struct DestroyObserved { int Value = 0; };
+	struct DestroyObserver {
+		Scene& Target;
+		Scene& Other;
+		EntityHandle Root;
+		EntityHandle Isolated;
+		EntityHandle Spawned = entt::null;
+		std::vector<EntityHandle> Destroyed;
+		void OnDestroy(entt::registry&, EntityHandle entity) {
+			Destroyed.push_back(entity);
+			Target.DestroyEntity(entity);
+			if (entity == Root && Destroyed.size() == 1) {
+				Other.DestroyEntity(Isolated);
+				Target.ClearEntities();
+				Entity spawned = Target.CreateEmptyEntity();
+				Spawned = spawned.GetHandle();
+				spawned.AddComponent<DestroyObserved>();
+				Target.DestroyEntity(Spawned);
+				Target.DestroyEntity(Root);
+			}
+		}
+	};
+	auto scene = Scene::CreateDetachedScene("Reentrant Destruction Marks");
+	auto other = Scene::CreateDetachedScene("Isolated Destruction Marks");
+	Entity root = scene->CreateEmptyEntity();
+	Entity victim = scene->CreateEmptyEntity();
+	Entity isolated = other->CreateEmptyEntity();
+	root.AddComponent<DestroyObserved>();
+	victim.AddComponent<DestroyObserved>();
+	isolated.AddComponent<DestroyObserved>();
+	REQUIRE(root.GetHandle() == isolated.GetHandle());
+	DestroyObserver observer{ *scene, *other, root.GetHandle(), isolated.GetHandle() };
+	entt::scoped_connection connection = scene->GetRegistry().on_destroy<DestroyObserved>()
+		.connect<&DestroyObserver::OnDestroy>(&observer);
+	scene->DestroyEntity(root);
+	CHECK_FALSE(root.IsValid());
+	CHECK_FALSE(victim.IsValid());
+	CHECK_FALSE(isolated.IsValid());
+	CHECK_FALSE(scene->IsValid(observer.Spawned));
+	CHECK(scene->GetEntityCount() == 0);
+	CHECK(other->GetEntityCount() == 0);
+	REQUIRE(observer.Destroyed.size() == 3);
+	CHECK(observer.Destroyed[0] == root.GetHandle());
+	CHECK(observer.Destroyed[1] == victim.GetHandle());
+	CHECK(observer.Destroyed[2] == observer.Spawned);
+	CHECK(entt::to_entity(observer.Spawned) == entt::to_entity(victim.GetHandle()));
+	CHECK(observer.Spawned != victim.GetHandle());
+}
+
+TEST_CASE("Destruction marks unwind after a throwing component callback")
+{
+	struct DestroyThrows { int Value = 0; };
+	struct ThrowOnce {
+		int Calls = 0;
+		void OnDestroy(entt::registry&, EntityHandle) {
+			if (++Calls == 1) throw std::runtime_error("destruction interrupted");
+		}
+	};
+	auto scene = Scene::CreateDetachedScene("Throwing Destruction Marks");
+	Entity entity = scene->CreateEmptyEntity();
+	entity.AddComponent<DestroyThrows>();
+	ThrowOnce observer;
+	entt::scoped_connection connection = scene->GetRegistry().on_destroy<DestroyThrows>()
+		.connect<&ThrowOnce::OnDestroy>(&observer);
+	CHECK_THROWS_AS(scene->DestroyEntity(entity), std::runtime_error);
+	CHECK(entity.IsValid());
+	scene->DestroyEntity(entity);
+	CHECK_FALSE(entity.IsValid());
+	CHECK(observer.Calls == 2);
+	CHECK(scene->GetEntityCount() == 0);
+}
+
+TEST_CASE("Singleton runtime reservations grow geometrically and reuse retired entity slots")
+{
+	auto scene = Scene::CreateDetachedScene("Singleton Reservation Growth");
+	auto& entities = scene->GetRegistry().storage<EntityHandle>();
+	size_t capacityChanges = 0;
+	size_t capacity = entities.capacity();
+	constexpr size_t count = 257;
+	for (size_t index = 0; index < count; ++index) {
+		std::array<EntityHandle, 1> handle{};
+		scene->ReserveForLoadRuntime(1, {});
+		scene->CreateEntitiesBulk(1, handle);
+		scene->SetRuntimeEntityMetaDataBulk(handle);
+		scene->MarkTransformDirty(handle[0]);
+		if (entities.capacity() != capacity) {
+			++capacityChanges;
+			capacity = entities.capacity();
+		}
+		EntityHandle resolved = entt::null;
+		CHECK(scene->TryResolveRuntimeID(scene->GetRuntimeID(handle[0]), resolved));
+		CHECK(resolved == handle[0]);
+	}
+	CHECK(capacityChanges <= 10);
+	CHECK(entities.capacity() >= 512);
+	const auto dirty = scene->ConsumeDirtyTransformEntities();
+	CHECK(dirty.size() == count);
+	CHECK(dirty.capacity() >= 512);
+	scene->ClearEntities();
+	const size_t retiredCapacity = entities.capacity();
+	std::array<EntityHandle, 256> replacements{};
+	scene->ReserveForLoadRuntime(replacements.size(), {});
+	scene->CreateEntitiesBulk(replacements.size(), replacements);
+	scene->SetRuntimeEntityMetaDataBulk(replacements);
+	CHECK(entities.capacity() == retiredCapacity);
+	CHECK(scene->GetEntityCount() == replacements.size());
+	CHECK_THROWS(scene->ReserveForLoadRuntime((std::numeric_limits<size_t>::max)(), {}));
+	CHECK(entities.capacity() == retiredCapacity);
+	CHECK(scene->GetEntityCount() == replacements.size());
 }

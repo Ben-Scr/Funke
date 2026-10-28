@@ -3,9 +3,6 @@ namespace Funke;
 
 public static class TransformUtility
 {
-    private const float FullCircleDegrees = 360.0f;
-    private const float HalfCircleDegrees = 180.0f;
-
     public static float LookAt2D(Transform2D origin, Vector2 target, float lerp)
     {
         if (origin == null) throw new ArgumentNullException(nameof(origin));
@@ -109,8 +106,8 @@ public static class TransformUtility
     /// </summary>
     public static float DeltaAngleDegrees(float current, float target)
     {
-        float delta = Repeat(target - current, FullCircleDegrees);
-        if (delta > HalfCircleDegrees) delta -= FullCircleDegrees;
+        float delta = Repeat(target - current, 360f);
+        if (delta > 180f) delta -= 360f;
         return delta;
     }
 

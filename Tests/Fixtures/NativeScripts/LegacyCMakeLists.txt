@@ -1,0 +1,101 @@
+cmake_minimum_required(VERSION 3.20)
+project(@PROJECT_NAME@-NativeScripts LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_CONFIGURATION_TYPES "Debug;Release;Dist" CACHE STRING "" FORCE)
+endif()
+
+set(CMAKE_CXX_FLAGS_DIST "${CMAKE_CXX_FLAGS_RELEASE}" CACHE STRING "Flags used by the C++ compiler for Dist builds." FORCE)
+set(CMAKE_SHARED_LINKER_FLAGS_DIST "${CMAKE_SHARED_LINKER_FLAGS_RELEASE}" CACHE STRING "Flags used by the shared linker for Dist builds." FORCE)
+
+function(fnk_normalize_native_arch out_var raw_arch)
+    string(TOLOWER "${raw_arch}" raw_arch_lower)
+    if(raw_arch_lower STREQUAL "amd64" OR raw_arch_lower STREQUAL "x86_64" OR raw_arch_lower STREQUAL "x64")
+        set(${out_var} "x86_64" PARENT_SCOPE)
+    elseif(raw_arch_lower STREQUAL "arm64" OR raw_arch_lower STREQUAL "aarch64")
+        set(${out_var} "arm64" PARENT_SCOPE)
+    else()
+        message(FATAL_ERROR "Unsupported native script architecture: ${raw_arch}")
+    endif()
+endfunction()
+
+set(FUNKE_DIR "$ENV{FUNKE_DIR}" CACHE PATH "Path to the Funke repository root")
+if(NOT FUNKE_DIR)
+    get_filename_component(FUNKE_DIR "${CMAKE_CURRENT_LIST_DIR}/@ENGINE_ROOT_RELATIVE@" ABSOLUTE)
+endif()
+
+if(NOT FUNKE_DIR OR NOT EXISTS "${FUNKE_DIR}/Funke-Engine/src")
+    message(FATAL_ERROR "Funke engine sources not found. Set FUNKE_DIR to the Funke repository root before configuring native scripts.")
+endif()
+
+
+file(GLOB_RECURSE NATIVE_SOURCES CONFIGURE_DEPENDS "Source/*.cpp" "Source/*.h" "Source/*.hpp")
+add_library(${PROJECT_NAME} SHARED ${NATIVE_SOURCES})
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+    "${FUNKE_DIR}/Funke-Engine/src"
+    "${FUNKE_DIR}/External/spdlog/include"
+    "${FUNKE_DIR}/External/glm"
+    "${FUNKE_DIR}/External/entt/src"
+    "${FUNKE_DIR}/External/stb"
+    "${FUNKE_DIR}/External/magic_enum/include"
+    "${FUNKE_DIR}/External/rapidxml"
+    "${FUNKE_DIR}/External/SDL/include"
+    "${FUNKE_DIR}/External/miniaudio"
+    "${FUNKE_DIR}/External/box2d/include"
+    "${FUNKE_DIR}/External/dotnet"
+)
+
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    FUNKE_ALL_MODULES=1
+    $<$<CONFIG:Debug>:FNK_DEBUG;_DEBUG>
+    $<$<CONFIG:Release>:FNK_RELEASE;NDEBUG>
+    $<$<CONFIG:Dist>:FNK_DIST;NDEBUG>
+)
+
+# FUNKE_BUILD_DEVELOPMENT/RELEASE — mirrors the C# define so native scripts can use #ifdef.
+if(NOT DEFINED FUNKE_BUILD_PROFILE)
+    set(FUNKE_BUILD_PROFILE "DEVELOPMENT")
+endif()
+target_compile_definitions(${PROJECT_NAME} PRIVATE FUNKE_BUILD_${FUNKE_BUILD_PROFILE})
+
+# Project custom defines — same list as C# <DefineConstants>, baked at save time.
+
+if(WIN32)
+    fnk_normalize_native_arch(FNK_NATIVE_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+    set(FNK_NATIVE_PLATFORM "windows-${FNK_NATIVE_ARCH}")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE FNK_PLATFORM_WINDOWS)
+elseif(APPLE AND NOT IOS)
+    fnk_normalize_native_arch(FNK_NATIVE_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+    set(FNK_NATIVE_PLATFORM "macosx-${FNK_NATIVE_ARCH}")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE FNK_PLATFORM_MACOS)
+elseif(UNIX AND NOT APPLE AND NOT ANDROID)
+    fnk_normalize_native_arch(FNK_NATIVE_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+    set(FNK_NATIVE_PLATFORM "linux-${FNK_NATIVE_ARCH}")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE FNK_PLATFORM_LINUX)
+else()
+    message(FATAL_ERROR "Unsupported platform for native scripts")
+endif()
+
+target_link_directories(${PROJECT_NAME} PRIVATE
+    "$<$<CONFIG:Debug>:${FUNKE_DIR}/bin/Debug-${FNK_NATIVE_PLATFORM}/Funke-Engine>"
+    "$<$<CONFIG:Release>:${FUNKE_DIR}/bin/Release-${FNK_NATIVE_PLATFORM}/Funke-Engine>"
+    "$<$<CONFIG:Dist>:${FUNKE_DIR}/bin/Dist-${FNK_NATIVE_PLATFORM}/Funke-Engine>"
+)
+target_link_libraries(${PROJECT_NAME} PRIVATE Funke-Engine)
+
+if(MSVC)
+    target_compile_options(${PROJECT_NAME} PRIVATE /utf-8)
+endif()
+
+set(NATIVE_OUTPUT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../bin")
+foreach(config Debug Release Dist)
+    string(TOUPPER "${config}" config_upper)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${NATIVE_OUTPUT_ROOT}/${config}-${FNK_NATIVE_PLATFORM}/${PROJECT_NAME}"
+        LIBRARY_OUTPUT_DIRECTORY_${config_upper} "${NATIVE_OUTPUT_ROOT}/${config}-${FNK_NATIVE_PLATFORM}/${PROJECT_NAME}"
+    )
+endforeach()

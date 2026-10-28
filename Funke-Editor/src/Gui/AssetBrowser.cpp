@@ -750,7 +750,9 @@ namespace Funke {
 		std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
 		if (ext == ".cs")                                                    return "file_cs";
-		if (ext == ".cpp" || ext == ".c" || ext == ".h" || ext == ".hpp")    return "file_fallback";
+		if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c")    return "file_cpp";
+		if (ext == ".h" || ext == ".hh" || ext == ".hpp" || ext == ".hxx"
+			|| ext == ".inl" || ext == ".ipp")                              return "file_header";
 		if (ext == ".scene" || ext == ".funke")                               return "file_scene";
 		if (ext == ".prefab")                                                return "file_prefab";
 		if (ext == ".obj")                                                   return "file_model";
@@ -2613,6 +2615,13 @@ namespace Funke {
 				if (ImGui::BeginMenu("Scripting")) {
 					if (ImGui::MenuItem("EntityScript")) {
 						CreateScript(m_CurrentDirectory);
+					}
+					const bool canCreateCppScript = ProjectManager::GetCurrentProject() != nullptr;
+					if (ImGui::MenuItem("C++ Script", nullptr, false, canCreateCppScript)) {
+						CreateCppScript(m_CurrentDirectory);
+					}
+					if (!canCreateCppScript && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+						ImGui::SetTooltip("Open or create a project to add C++ scripts.");
 					}
 					if (ImGui::MenuItem("SceneSystem")) {
 						CreateSceneSystem(m_CurrentDirectory);

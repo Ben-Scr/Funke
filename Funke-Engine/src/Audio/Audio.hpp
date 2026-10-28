@@ -1,4 +1,5 @@
 #pragma once
+#include "Core/Export.hpp"
 #include <miniaudio.h>
 
 #include <cstdint>
@@ -7,7 +8,7 @@
 
 namespace Funke {
 
-    class Audio {
+    class FUNKE_API Audio {
     public:
         Audio() = default;
         ~Audio();
@@ -40,5 +41,7 @@ namespace Funke {
         std::string m_Filepath;
 
         void Cleanup();
+
+        friend class AudioManager;
     };
 }

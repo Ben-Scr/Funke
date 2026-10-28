@@ -46,7 +46,8 @@ namespace Funke::EditorScriptDiscovery {
 	// ImGui id that stays unique for entries without a file.
 	inline std::string EntryId(const ScriptEntry& entry)
 	{
-		return entry.Path.empty() ? entry.Package + ":" + entry.ClassName : entry.Path.string();
+		if (entry.Path.empty()) return entry.Package + ":" + entry.ClassName;
+		return entry.Type == ScriptType::Native ? entry.Path.string() + ":" + entry.ClassName : entry.Path.string();
 	}
 
 	// "Funke.Networking.NetworkObject" -> "NetworkObject".
@@ -105,19 +106,48 @@ namespace Funke::EditorScriptDiscovery {
 
 	inline bool IsValidRegisteredScriptToken(const std::string& token)
 	{
-		if (token.empty()) {
-			return false;
-		}
-
-		for (char ch : token) {
-			const unsigned char uch = static_cast<unsigned char>(ch);
-			if (std::isalnum(uch) != 0 || ch == '_' || ch == ':') {
-				continue;
+		std::size_t offset = token.starts_with("::") ? 2 : 0;
+		while (offset < token.size()) {
+			const unsigned char first = static_cast<unsigned char>(token[offset]);
+			if (std::isalpha(first) == 0 && first != '_') return false;
+			while (++offset < token.size()) {
+				const unsigned char ch = static_cast<unsigned char>(token[offset]);
+				if (std::isalnum(ch) == 0 && ch != '_') break;
 			}
-			return false;
+			if (offset == token.size()) return true;
+			if (token.compare(offset, 2, "::") != 0) return false;
+			offset += 2;
 		}
+		return false;
+	}
 
-		return true;
+	inline std::string BuildNativeScriptSource(const std::string& className)
+	{
+		return "#include <Scripting/NativeScript.hpp>\n"
+			"\n"
+			"class " + className + " : public Funke::NativeScript {\n"
+			"public:\n"
+			"    float Speed = 1.0f;\n"
+			"    FNK_NATIVE_FIELDS(Funke::NativeFields::Make<&" + className + "::Speed>(\"Speed\", \"Speed\"))\n"
+			"\n"
+			"    void Start() override\n"
+			"    {\n"
+			"    }\n"
+			"\n"
+			"    void Update(float deltaTime) override\n"
+			"    {\n"
+			"    }\n"
+			"\n"
+			"    void FixedUpdate(float fixedDeltaTime) override\n"
+			"    {\n"
+			"    }\n"
+			"\n"
+			"    void OnDestroy() override\n"
+			"    {\n"
+			"    }\n"
+			"};\n"
+			"\n"
+			"REGISTER_SCRIPT(" + className + ")\n";
 	}
 
 	inline std::string SanitizeIdentifier(const std::string& input, const std::string& fallback)
@@ -251,6 +281,61 @@ namespace Funke::EditorScriptDiscovery {
 		return {};
 	}
 
+	inline std::string NativeSourceWithoutCommentsAndLiterals(const std::string& source)
+	{
+		std::string code = source;
+		for (std::size_t i = 0; i < source.size();) {
+			const std::size_t start = i;
+			if (source[i] == '\'' && i > 0 && i + 1 < source.size()
+				&& std::isxdigit(static_cast<unsigned char>(source[i - 1])) != 0
+				&& std::isxdigit(static_cast<unsigned char>(source[i + 1])) != 0) {
+				std::size_t numberStart = i - 1;
+				while (numberStart > 0 && (std::isalnum(static_cast<unsigned char>(source[numberStart - 1])) != 0
+					|| source[numberStart - 1] == '\'' || source[numberStart - 1] == '_')) --numberStart;
+				if (std::isdigit(static_cast<unsigned char>(source[numberStart])) != 0) { ++i; continue; }
+			}
+			if (source.compare(i, 2, "//") == 0 || source[i] == '#') {
+				i = source.find('\n', i);
+				while (i != std::string::npos && i > start && (source[i - 1] == '\\'
+					|| (i > start + 1 && source[i - 1] == '\r' && source[i - 2] == '\\'))) {
+					i = source.find('\n', i + 1);
+				}
+				if (i == std::string::npos) i = source.size();
+			}
+			else if (source.compare(i, 2, "/*") == 0) {
+				const std::size_t end = source.find("*/", i + 2);
+				i = end == std::string::npos ? source.size() : end + 2;
+			}
+			else if (source.compare(i, 2, "R\"") == 0) {
+				const std::size_t delimiterEnd = source.find('(', i + 2);
+				if (delimiterEnd != std::string::npos && delimiterEnd - i <= 18) {
+					const std::string terminator = ")" + source.substr(i + 2, delimiterEnd - i - 2) + "\"";
+					const std::size_t end = source.find(terminator, delimiterEnd + 1);
+					i = end == std::string::npos ? source.size() : end + terminator.size();
+				}
+				else {
+					++i;
+					continue;
+				}
+			}
+			else if (source[i] == '"' || source[i] == '\'') {
+				const char quote = source[i++];
+				while (i < source.size()) {
+					if (source[i] == '\\' && i + 1 < source.size()) { i += 2; continue; }
+					if (source[i++] == quote) break;
+				}
+			}
+			else {
+				++i;
+				continue;
+			}
+			for (std::size_t j = start; j < i; ++j) {
+				if (code[j] != '\n') code[j] = ' ';
+			}
+		}
+		return code;
+	}
+
 	inline std::vector<std::string> ExtractRegisteredNativeScriptClasses(const std::filesystem::path& filePath)
 	{
 		std::ifstream input(filePath, std::ios::binary);
@@ -258,8 +343,12 @@ namespace Funke::EditorScriptDiscovery {
 			return {};
 		}
 
-		const std::string source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+		const std::string source = NativeSourceWithoutCommentsAndLiterals(
+			std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>()));
 		constexpr std::string_view token = "REGISTER_SCRIPT";
+		const auto isIdentifierChar = [](char ch) {
+			return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+		};
 
 		std::vector<std::string> classes;
 		std::size_t searchOffset = 0;
@@ -269,9 +358,15 @@ namespace Funke::EditorScriptDiscovery {
 				break;
 			}
 
-			const std::size_t openParen = source.find('(', tokenPosition + token.size());
-			if (openParen == std::string::npos) {
-				break;
+			searchOffset = tokenPosition + token.size();
+			if ((tokenPosition > 0 && isIdentifierChar(source[tokenPosition - 1]))
+				|| (searchOffset < source.size() && isIdentifierChar(source[searchOffset]))) {
+				continue;
+			}
+			std::size_t openParen = searchOffset;
+			while (openParen < source.size() && std::isspace(static_cast<unsigned char>(source[openParen])) != 0) ++openParen;
+			if (openParen == source.size() || source[openParen] != '(') {
+				continue;
 			}
 
 			const std::size_t closeParen = source.find(')', openParen + 1);

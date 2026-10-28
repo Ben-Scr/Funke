@@ -8,11 +8,15 @@
 
 namespace Funke {
 	enum class BuildPlatform : uint8_t;
+	class Entity;
+	struct ComponentInfo;
 
 	class FUNKE_SCRIPTING_API ScriptBindings {
 	public:
 		static void PopulateNativeBindings(NativeBindings& bindings);
 		static bool IsScriptInputEnabled();
+		static bool AddComponent(const Entity& entity, const ComponentInfo& info);
+		static bool RemoveComponent(const Entity& entity, const ComponentInfo& info, bool notifyManaged = true);
 		// C# Funke.Platform value: Windows 1, Linux 2, MacOS 3, Android 4, iOS 5, WebGL 6, VisionOS 7.
 		static int ToManagedPlatform(BuildPlatform platform);
 

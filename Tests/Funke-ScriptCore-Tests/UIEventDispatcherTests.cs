@@ -32,9 +32,17 @@ public unsafe class UIEventDispatcherTests
     [UnmanagedCallersOnly]
     private static int HasComponent(ulong id, byte* name) => 1;
 
+    [UnmanagedCallersOnly]
+    private static int HasComponentByTypeId(ulong id, uint typeId) => typeId == 1 ? 1 : 0;
+
+    [UnmanagedCallersOnly]
+    private static uint GetTypeId(byte* name)
+        => MemoryMarshal.CreateReadOnlySpanFromNullTerminated(name).SequenceEqual("Interactable"u8) ? 1u : 0u;
+
     private static void WithWidgets(Action body)
     {
         NativeBindingsStruct previous = NativeCallbacks.Bindings;
+        Entity.ClearManagedComponentStore();
         try
         {
             NativeBindingsStruct bindings = previous;
@@ -46,11 +54,14 @@ public unsafe class UIEventDispatcherTests
             bindings.Interactable_GetIsMouseUp = &Never;
             bindings.Interactable_GetIsFocused = &Never;
             bindings.Entity_HasComponent = &HasComponent;
+            bindings.Entity_HasComponentByTypeId = &HasComponentByTypeId;
+            bindings.Component_GetTypeId = &GetTypeId;
             NativeCallbacks.Bindings = bindings;
             body();
         }
         finally
         {
+            Entity.ClearManagedComponentStore();
             NativeCallbacks.Bindings = previous;
             s_Hovered = 0;
         }

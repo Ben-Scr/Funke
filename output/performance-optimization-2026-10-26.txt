@@ -1,0 +1,218 @@
+Funke Engine – umgesetzte Performance-Optimierungen, 26.10.2026
+
+Arbeitsbaum: C:/Users/benso/source/repos/Pending/Index
+Ausgangspunkt: output/performance-audit-2026-10-26.txt
+Umsetzung und unabhängige Gegenprüfungen mit drei Agenten.
+
+Ergebnis
+--------
+Die unnötige vollständige 2D-Propagation bei Physik-Eltern wurde beseitigt.
+Kamera- und Sonnenabfragen in 3D benötigen keinen vollständigen Szenenscan
+mehr. Der 2D-Renderer vermeidet den Effekt-Zwischenpuffer ohne aktive Effekte.
+Textlayouts werden wiederverwendet, Glyphen indexiert gezeichnet und
+unsichtbare UI-Geometrie vor dem Upload verworfen. 3D-Partikel werden vor
+Sortierung/Upload gegen das Frustum geprüft. Große 2D-Physikwelten nutzen
+den vorhandenen Job-Pool. Engine, Tests, Runtime und Editor bauen erfolgreich.
+
+Dies ist kein gemessener FPS-Gewinn für ein vollständiges Spiel. Die folgenden
+CPU-Messungen grenzen die jeweiligen Operationen ein. GPU-Gesamtzeiten und
+Frame-P95/P99 wurden nicht erhoben.
+
+1. Transform-Verarbeitung
+-------------------------
+2D sammelt jetzt Physik-Eltern und explizit schmutzige Teilbäume. Doppelte
+Wurzeln und bereits durch einen Vorfahren abgedeckte Teilbäume werden nur
+einmal verarbeitet. Ein expliziter Dirty-All-Durchlauf bleibt erhalten.
+Physik-Erweiterungen und deaktivierte Bodies sind berücksichtigt.
+
+Isolierter Propagate-Aufruf, ein Rigidbody-Elternobjekt mit einem Kind:
+  Transforme             Vorher              Nachher
+      10.000            0,211734 ms          0,000125 ms
+     100.000            2,053729 ms          0,000126 ms
+
+Median aus sieben Batches, 100 Aufrufe je Batch, Szenenaufbau nicht gemessen.
+AMD Ryzen 9 7900X, MSVC /O2. Identisches Probeprogramm gegen gesicherte
+vorhandene Release-DLL bzw. neu gebaute Release-DLL. Der Arbeitsbaum hatte
+bereits zahlreiche fremde Änderungen; dies ist kein vollständig kontrollierter
+Buildvergleich jedes Engine-Moduls. Aussagekräftig ist der beseitigte O(N)-
+Durchlauf, nicht eine riesige Speedup-Zahl aus der winzigen Nachherzeit.
+
+3D verwendet für Kamera, Sonnenrichtung und ausgewählte Editor-Vorschauen
+ComputeWorldMatrix entlang der jeweiligen Elternkette. Die vollständige
+Propagation im eigentlichen Szenenrendering bleibt erhalten, damit direkte
+öffentliche Transform-/Hierarchiefeldänderungen weiterhin erkannt werden.
+
+Kameraabfrage unter drei Eltern, beide Varianten in derselben aktuellen DLL:
+  Transforme       Propagate + Weltmatrix lesen       Gezielte Abfrage
+      10.000                 0,185102 ms                0,000205 ms
+     100.000                 1,859202 ms                0,000202 ms
+
+Median sieben Batches, 100 Vollscans bzw. 100.000 gezielte Aufrufe. Maximaler
+Matrixunterschied 4,77e-7, auch nach direkter Elternänderung. Unterschiedliche
+Multiplikationsreihenfolge erklärt die kleine Rundungsabweichung.
+Die vollständige 3D-Propagation selbst wurde nicht beschleunigt: sie scannt
+weiter N Transforme. Der isolierte Nachherlauf lag bei rund 1,82 ms/100.000;
+die gesicherte Vorher-DLL bei 1,54 ms. Die gezielte Abfrage entfernt überflüssige
+Aufrufe dieses Pfads, nicht dessen verbleibende lineare Kosten.
+
+Quellen:
+  Funke-Engine/src/Systems/TransformHierarchySystem.cpp
+  Funke-Engine/src/Graphics/Renderer3D.cpp
+  Funke-Editor/src/Systems/ImGuiEditorLayerViewport.cpp
+
+2. Rendering, UI und Text
+------------------------
+2D prüft HasEnabledEffect vor der Entscheidung über den HDR-Zwischenpuffer.
+FXAA, RenderScale, Letterboxing und tatsächlich aktive Effekte behalten ihre
+benötigten Zwischenpässe. Der vermiedene Pass wurde visuell geprüft; seine
+GPU-Millisekunden wurden nicht gemessen.
+
+Der Textlayout-Cache enthält maximal 512 Einträge und ein Budget von 8 MiB
+für Text-/Glyphendaten; temporäre Layouts und Verwaltungsdaten kommen hinzu.
+Der Schlüssel umfasst Atlas-ID, exakten Text, Umbruch, Ausrichtung und Abstände.
+Schatten, acht Outline-Richtungen und Füllung teilen dasselbe Layout.
+Position, Farbe, Rotation und Masken bleiben dynamisch.
+
+Vier statt sechs Vertices pro Glyphe reduzieren die laufenden Vertexdaten
+von 480 auf 320 Byte pro sichtbarer Glyphe/Effekt: ein Drittel weniger.
+Ein wachsender, wiederverwendeter Indexbuffer kommt hinzu. Sichtbare Effekte
+werden weiterhin getrennt gezeichnet; dies ist keine Shader-Outline.
+
+Konservative Sichtbarkeitstests beachten tatsächliche Glyphengrenzen statt
+nur den Text-Rect. Überlauf, Schatten, Rotation und Viewport/Scissor bleiben
+erhalten. Unsichtbare Standardbilder werden vor Tessellation und Upload
+verworfen; eigene Vertexshader umgehen das geometrische Bild-Culling.
+Komplett sichtbare Texte benötigen keine einzelnen Glyphen-Clippingtests.
+
+CPU-Probe des aktuellen TextLayout::Build gegenüber Cache::Get, synthetische
+Glyphmetriken, Median aus sieben Batches, Zeit pro Textkommando:
+  Layout                         Frisch berechnet       Cache
+  87-Byte-Text, warm                 0,588 us             0,102 us
+  346-Byte-Text mit Umbruch, warm    2,773 us             0,304 us
+  87-Byte-Text, stets Cache-Miss     0,603 us             1,259 us
+  Text mit Umbruch, stets Miss      3,027 us             4,089 us
+
+65.536 exakte Geometrievergleiche bestanden. Diese Zahlen enthalten keine
+Vertexemission, echten Fontzugriffe oder GPU-Arbeit. Dauernd neue Texte bzw.
+ein Arbeitsset über der Cachegröße können den Einzelpass verteuern; die
+Wiederverwendung über Effektdurchläufe hilft auch bei solchen Misses. Eine
+unabhängige Probe gegen extrahierte Vorher-Layoutlogik bestätigt beide Effekte.
+
+3D-Partikel erhalten konservative Billboard-Bounds einschließlich Rotation
+und lokaler Emittertransformation. Unsichtbare Partikel verlassen den Pfad
+vor Distanzsortierung, Texturauflösung und Upload; die Zeichenreihenfolge
+der verbleibenden Partikel bleibt erhalten.
+
+Neue Hilfsheader:
+  Funke-Engine/src/Graphics/Text/TextLayout.hpp
+  Funke-Engine/src/Graphics/QuadVisibility.hpp
+  Funke-Engine/src/Graphics/Frustum.hpp
+
+3. Box2D-Worker und Determinismus
+-------------------------------
+Die Bridge nutzt den vorhandenen JobSystem-Pool. Ab 1.024 wachen Bodies
+werden bis zu vier Box2D-Worker verwendet; unter 512 geht sie wieder auf
+einen Worker zurück. Die Hysterese vermeidet häufiges Umkonfigurieren.
+Ohne Pool sowie bei ausgeschöpftem Task-Speicher läuft der Callback inline.
+Die fünf Substeps bleiben unverändert. Es werden keine zusätzlichen
+Poolthreads erzeugt. Vier Solver-Slots sind nicht gleichbedeutend mit vier
+CPU-Threads insgesamt: der aufrufende Thread kann koordinieren und weitere
+Baum-/Split-Aufgaben können den bestehenden Pool nutzen.
+
+Separate Simulation mit aktueller Release-Box2D.lib und Engine-JobSystem:
+  Bodies                1 Worker          2 Worker          4 Worker
+     128               0,030388 ms       0,058500 ms       0,096597 ms
+   1.024               0,243790 ms       0,185472 ms       0,130842 ms
+   4.096               1,409193 ms       0,853093 ms       0,574918 ms
+
+Fallende Boxen auf Boden, Schlafen für den Benchmark deaktiviert, fünf
+Substeps, drei Welten pro Fall, 60 Aufwärm- und 120 Messschritte; Median der
+drei durchschnittlichen Schrittzeiten. Ergebnischecksummen stimmen je Bodyzahl für
+alle Workerzahlen in der Ausgabe überein. Diese isolierte Simulation misst
+keinen gesamten Scene-FixedUpdate und garantiert keinen universellen Vorteil.
+Die kleinen Szenen zeigen, warum der Produktionspfad seriell bleibt.
+
+Die Gegenprüfung fand im vorhandenen Box2D-Solver einen lokalen Tie-Break-
+Fehler: Bei gleicher Sleep-Time konnte ein Worker einen Kandidaten verwerfen,
+den der globale Merge bevorzugt hätte. Lokal gilt nun dieselbe Regel wie
+global: die größte Island-ID gewinnt. Eine echte Simulation mit zwei Islands
+und entfernten Distance-Joints reproduziert den Fehler in acht Fällen
+(1/4 Worker, verschiedene Größen und Erstellungsreihenfolgen):
+  Vorher: 8/8 FAIL. Mit Patch: 8/8 PASS.
+Der Vergleich benutzt die gesicherte alte Dist-Lib bzw. neue Release-Lib und
+dient ausschließlich der Korrektheit, nicht einem Performancevergleich.
+
+Der Fix ist reproduzierbar über das bestehende Vendor-Patch-System:
+  premake/patches/vendor/box2d-split-island-tie-break.patch
+  scripts/vendor_patches.py
+  External/box2d/src/solver.c
+Alle vier registrierten Vendor-Patches wurden als angewendet verifiziert.
+
+4. Validierung
+---------------
+Inkrementeller Release-Build mit VS2022:
+  scripts/dev/Build.ps1 -Project @('Engine','EngineTests','Runtime','Editor')
+    -Config Release -NoRegenCheck -NoDeploy
+Ergebnis: alle vier Ziele erfolgreich. Engine-DLLs in Engine, EngineTests,
+Runtime und Editor haben denselben SHA256 (final-binaries.json).
+
+Vollständige Engine-Testsuite nach dem letzten Vendor-Fix:
+  scripts/dev/Test.ps1 -Suite Engine -NoBuild
+  644/644 Testfälle, 113.259/113.259 Assertions erfolgreich.
+Neue Regressionen prüfen Teilbäume/Physik-Eltern, direkte Kamera-/Eltern-
+Änderungen, Worker-Lifecycle, Textcache/UTF-8/Umbruch, Clip-/Billboard-Grenzen.
+Gezielte unabhängige Reviews prüften Text-Indexoffsets, Buffer-Lebensdauer,
+Zeichenreihenfolge, Masken sowie Box2D-Tasks, Wartepfade und Worker-Kontexte.
+
+Runtime unter Direct3D12: Plain, FXAA, RenderScale 0,75 und Vignette jeweils
+mit reproduzierbarem Screenshot bei Frame 120. Geprüft wurden u.a. Outline,
+Schatten, Umlaute, Umbruch, Rotation, Textüberlauf und maskierte Listen.
+Vergleich von jeweils 1.440.000 Pixeln:
+  Plain:   1.759 geänderte Pixel, maximale Kanaldifferenz 1/255.
+  FXAA:      437 geänderte Pixel, maximal 5/255 an einem Pixel.
+  Scaled:    462 geänderte Pixel, maximale Kanaldifferenz 1/255.
+  Vignette:  433 geänderte Pixel, maximale Kanaldifferenz 1/255.
+Die Vorherbilder stammen aus der gesicherten Engine-DLL mit älterer Runtime
+(ABI-Fingerprint-Warnung). Nachherbilder benutzen passend neu gebaute Binaries
+ohne diese Warnung. Der Bildvergleich ist eine zusätzliche Sichtprüfung und
+kein Nachweis vollständig identischer Vorher-Build-Eingaben.
+
+3D-Runtime mit Meshes, Feuer/Rauch/Sparks sowie Editor-GameView im Play-Modus
+erfolgreich gestartet, Bilder geprüft und sauber beendet. Keine neuen
+Render-/Validierungsfehler. Erwartete Fixture-Warnungen: fehlender CJK-Font
+und Konvexhülle eines dynamischen 3D-Mesh-Colliders.
+Fixed-Step wurde ausschließlich für reproduzierbare Bilder verwendet,
+nicht zur Ableitung von FPS. Keine Linux-/macOS-/Mobil-GPU-Verifikation.
+
+5. Bewusst verbleibende Engpässe
+------------------------------
+Der experimentelle allgemeine UILayout-Snapshotcache wurde vollständig auf
+den gesicherten Ausgangsstand zurückgesetzt. Er verteuerte einfache Layouts
+und konnte ContentSizeFitter/LayoutGroup-Konvergenz verhindern. Ein Nachlauf
+bestätigt wieder die vorherigen Layoutkosten (10.000 einfache Rects rund
+0,32 ms, gruppiert rund 0,90 ms). Für diesen Bereich braucht es belastbare
+Mutations-/Teilbaumversionen. Der separate Textlayout-Cache bleibt erhalten.
+
+Nicht umgesetzt sind Multi-Texture-Batching, vollständige Listenvirtualisierung,
+Shader-Outlines, früheres allgemeines Mesh-Culling, Zusammenlegung von
+Queue-Submissions, Thumbnail-Pipeline und vollständige GPU-/Frameprofilierung.
+Multi-Texture-Batching erfordert u.a. einen gemeinsamen Instanz-/Shader-/
+Samplervertrag; eine globale Textursortierung würde Alpha-Zeichenreihenfolge
+verletzen. Diese Punkte bleiben als konkrete Folgearbeiten des Audits offen.
+
+Reproduktionsmaterial
+---------------------
+Alle Probes, Compiler-Response-Dateien, Rohmessungen, Screenshots und Logs:
+  bin-int/_agent/perf-optimization-20261026/
+Relevante Dateien:
+  hierarchy-before-final.txt / hierarchy-after-final.txt
+  camera_lookup_probe.cpp / camera-lookup-results.txt
+  box2d_worker_probe.cpp / box2d-worker-results-release.txt
+  box2d_split_probe.cpp / box2d_split_access.c
+  box2d-split-before.txt / box2d-split-after.txt
+  text_layout_probe.cpp / text-layout-results.txt / text-layout-method.txt
+  text_layout_bench.cpp / text-layout-bench.txt
+  layout-before-final.txt / layout-after-final.txt
+  engine-tests-final.log / screenshot-comparison.json / final-binaries.json
+  baseline/ (gesicherte Dateien vor dieser Optimierungsrunde)
+Der ursprüngliche Hierarchie-Probe liegt unter perf-audit-20261026/.

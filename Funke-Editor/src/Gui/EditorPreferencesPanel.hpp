@@ -19,6 +19,7 @@ namespace Funke {
 		void RenderScriptingTab();
 		void RenderLayoutsTab();
 		void RenderBehaviorTab();
+		void RenderCameraTab();
 
 		void RenderLayoutModals();
 		bool IsPreferenceSearchActive() const;

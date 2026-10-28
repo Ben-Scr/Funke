@@ -1,10 +1,19 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 
 // ECB wire format: shared by managed recorder and native playback (ScriptBindingsEcb.cpp). Little-endian byte-packed.
 
 namespace Funke {
+
+	// Commands are byte-packed, so their fields need not be aligned.
+	template<typename T>
+	T EcbReadLE(const uint8_t* source) {
+		T value;
+		std::memcpy(&value, source, sizeof(T));
+		return value;
+	}
 
 	struct EcbHeader {
 		uint32_t entityCount;
@@ -33,6 +42,9 @@ namespace Funke {
 		// Live scene entity: entityIndex is kEcbNoName, payload is u8 enabled + uint64 persistent id (9 bytes).
 		// Routes to Entity::SetEnabled at playback, so the DisabledTag cascade and OnEnable/OnDisable fire.
 		Ecb_SetEntityEnabled = 6,
+
+		// Component commands use a leading uint64 ID for live targets (entityIndex == kEcbNoName).
+		Ecb_RemoveComponent = 7,
 	};
 
 	// Sentinel "no name" in the entity table.
@@ -56,5 +68,6 @@ namespace Funke {
 	// Ecb_InstantiatePrefab referenced a GUID that doesn't resolve to a loadable Prefab asset
 	// (vs kEcbErrorBadPrefab, where the prefab WAS found but its components can't be baked).
 	constexpr int kEcbErrorUnknownPrefab = -8;
+	constexpr int kEcbErrorInvalidMode = -9;
 
 } // namespace Funke

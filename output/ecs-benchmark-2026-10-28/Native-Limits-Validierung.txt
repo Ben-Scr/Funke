@@ -1,0 +1,89 @@
+FUNKE ECS — NATIVE OPTIMIERUNG, RUNDE 2
+28.10.2026
+
+IMPLEMENTIERUNG
+- Runtime-Identitaeten werden fuer frische ECB-Entities gesammelt initialisiert.
+  Komponenten-Pools bleiben waehrend dieser Phase aufgeloest; bei vorhandenen
+  Metadaten oder Konstruktor-Callbacks greift der kompatible Einzelpfad.
+- Gepackte EnTT-Maps ersetzen die node-basierten Maps fuer Runtime- und Scene-IDs.
+- Versionssichere Handle-Arrays ersetzen Hash-Sets fuer Dirty-Transforms und den
+  Schutz gegen rekursives Zerstoeren. Es entsteht kein Hash-Knoten pro Entity.
+- Registrierte native Komponenten bieten direkte Registry-Callbacks. Benutzerdefinierte
+  Callback-Zuweisungen deaktivieren nur den jeweiligen Fast Path; mutable Callback-
+  Zustaende, Abhaengigkeiten, Konflikte und EnTT-Signale bleiben erhalten.
+- ECB ueberspringt den Prefab-Vorlauf ohne Prefab-Befehle, verwendet Bulk-Metadaten
+  und wiederverwendet aufgeloeste Pools fuer Transform-Nacharbeit und Rueckgabe-IDs.
+- Der parallele managed ECB-Merge kopiert Befehlsbloecke und korrigiert nur lokale
+  Entity-Indizes. Warmes Clear vermeidet Dictionary-Snapshot-Allokationen.
+- Reservierungen wachsen geometrisch und verwenden bereits freie Entity-Slots.
+  Viele einzelne Spawns erzwingen damit kein wiederholtes Umkopieren wachsender
+  Entity-, Metadaten- und Dirty-Puffer. Ein Test prueft Kapazitaetswachstum und Overflow.
+- Asset-Kind-Lookups vermeiden fuer saubere, unveraenderte absolute Projektwurzeln
+  Dateisystem-Kanonisierung und Pfadkopien. Das beschleunigt direkte Prefab-Spawns.
+  Dirty-Meldungen, Sync, Projektwechsel, relative Pfade und Aliase behalten ihre Pruefungen.
+- ECB prueft nach strukturellen Callbacks, ob Entity und Komponentenregistrierung
+  noch vorhanden und verwendbar sind. Registrierungsaenderungen waehrend des
+  Playbacks duerfen keine veralteten Deskriptoren dereferenzieren.
+
+VALIDIERUNG
+Release x64 inkrementell gebaut: Engine, ScriptCore, Runtime, EngineTests, Editor,
+Launcher, CLI, EditorRuntime und EditorTests. Gemeinsame native Header wurden bei
+den betroffenen Verbrauchern mitgebaut.
+
+Native Engine: 701 Testfaelle / 117232 Assertions bestanden.
+Protokoll: native2-release-engine-tests.log
+Editor: 142 Testfaelle / 2016 Assertions bestanden.
+Protokoll: native2-release-editor-tests.log
+Managed ScriptCore: 544 Tests bestanden. Die Aenderungen danach betreffen nur
+native Scene- und AssetRegistry-Pfade; ScriptCore und die managed Tests bleiben unveraendert.
+
+Neue Regressionen pruefen u.a. Alias-Invalidierung, Callback-Ueberschreibungen,
+mutable Callback-Zustaende, Konstruktoren/Signale, entfallene Deskriptoren,
+Dependency-Callbacks, rekursives Destroy, Clear aus einem Destroy-Callback,
+Handle-Wiederverwendung, Ausnahmebehandlung, Szenentrennung und ECB-Merge-Bytes.
+Asset-Regressionen pruefen Projekt-/Root-Wechsel, geloeschte Assets, relative Pfade
+bei CWD-Wechseln sowie Dirty-/Sync-Invalidierung von Verzeichnisaliasen.
+
+MESSMETHODE UND GRENZEN
+Ryzen 9 7900X, 12 Kerne / 24 Threads, 32 GiB DDR5 bei konfigurierten 6000 MT/s.
+Release x64, .NET 10.0.11, 16 Job-Worker. Je Fall 3 Warm-ups und 9 Messungen.
+Die normalen Benchmarks verwenden kein FUNKE_ECB_TIMINGS-Logging.
+Eine Entity-Anzahl je frischem Runtime-Prozess; unveraendertes vorbereitetes
+Runtime-/Engine-/ScriptCore-Paar fuer die verifizierte Messreihe.
+
+Gemessen wird die C#-API einschliesslich nativer Engine-Arbeit. Setup, Validierung,
+Cleanup und der trennende Engine-Frame liegen ausserhalb des Messfensters.
+ECB-Zeiten enthalten Aufzeichnung, gegebenenfalls Merge und natives Playback.
+Parallel sind Aufzeichnung/Jobs; strukturelles Playback bleibt auf dem Hauptthread.
+Managed-Allokationen beschreiben keine nativen Allokationen.
+
+Der Test MixedStructuralLiveAndLocal kombiniert N vorhandene und N lokal erzeugte
+Entities mit geshuffelten Live-Referenzen, Payload-/Default-Adds, Remove/Re-Add,
+Destroy und nachfolgenden No-ops. Der gesamte Endzustand wird geprueft.
+
+Der Millionentest prueft fuenf ausgewaehlte strukturelle ECB-Faelle. Bei den derzeit
+kompilierten 20 Entity-Indexbits liegt die Kapazitaet bei 1048575 lebenden Entities;
+eine Million liegt nahe dieser Grenze. Dies ist kein Test einer Million aktiver
+Gameplay-Entities mit Physik, Rendering und komplexen Skripten pro Frame.
+
+Die gesonderte Datei Native-Phasenvergleich.txt wertet instrumentierte Diagnose-
+Laeufe aus. Diese Phasen erklaeren die Einsparungen; ihre Gesamtzeiten werden nicht
+als normale Benchmark-Ergebnisse verwendet.
+
+WEITERE KOSTEN
+Native registry.destroy prueft vorhandene Komponenten-Pools. Ein Batch-Destroy,
+das diese Schleifen umordnet, wuerde Callback-Reihenfolgen veraendern.
+Dynamische C#-IComponents benoetigen zusaetzlich dynamischen Storage und benannte
+ScriptComponent-Anhaenge fuer Inspector, Serialisierung und Lebenszyklus. Diese
+Pfade duerfen nicht mit einer Messung nur zweier eingebauter Komponenten verwechselt
+werden. Die Implementierung wurde nicht gegen andere ECS-Engines benchmarked.
+
+VERBINDLICHE ERGEBNISSE
+Native-Limits-Bericht.txt, native2-summary.csv und native2-summary.json verweisen
+auf die erfolgreichen native2-release-*-Rohmessungen und ihre Hardware-/Hashdateien.
+Vergleichsbasis ist der bereits optimierte Stand aus optimized-summary.json;
+fuer den neuen Mixed-Test dient native2-mixed-before als zusaetzliche Baseline.
+Native-Originalvergleich.txt verwendet separat den urspruenglichen Stand, auch fuer
+Prefab-, Query- und Custom-Component-Faelle ohne Referenz aus der ersten Optimierung.
+Fruehere native2-final-*, native2-verified-* und Probe-Dateien sind Zwischenstaende.
+Die Berichte der ersten Optimierungsrunde wurden nicht ueberschrieben.

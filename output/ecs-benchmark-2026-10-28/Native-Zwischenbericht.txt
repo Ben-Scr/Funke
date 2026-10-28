@@ -1,0 +1,303 @@
+﻿FUNKE C# SCRIPTCORE / ECS — OPTIMIERUNGSVERGLEICH
+
+METHODE UND VERGLEICHBARKEIT
+Baseline und optimierte Laeufe: 3 Warm-ups, danach 9 Messungen je Kombination.
+Alle Zeitangaben sind Millisekunden fuer die komplette Charge mit N Entities, nicht pro Entity.
+Setup, Zustandspruefung und Cleanup liegen ausserhalb des Messfensters. Zwischen den
+Proben verarbeitet ein Engine-Frame die nach dem Cleanup verbleibenden Dirty-Daten.
+ECB und Puffer werden wiederverwendet. Record umfasst Clear und bei Jobs Schedule+Complete.
+Parallelisiert wird die Aufzeichnung. Playback erfolgt weiterhin auf einem Hauptthread
+und enthaelt bei paralleler Aufzeichnung auch das Zusammenfuehren der Befehlsstreams.
+Total umfasst Record und Playback; die Phasenmediane muessen sich nicht zum Totalmedian addieren.
+Direkte Aufrufe haben keine getrennten Record-/Playback-Phasen; deren 0-Werte bedeuten nicht null Arbeit.
+Allokationen sind prozessweite verwaltete Bytes im Messfenster, keine nativen Allokationen.
+Nur erfolgreich mit PASS abgeschlossene Laeufe werden ausgewertet; fehlende Daten brechen ab.
+
+Speedup = Baseline-Median / optimierter Median fuer identische Operation, Modus und Entity-Anzahl.
+Werte ueber 1 bedeuten schneller, unter 1 langsamer. Ohne passende Baseline bleibt das Feld leer.
+Entscheidend ist die gewaehlte Baseline: Nur dort ebenfalls gemessene Kombinationen erhalten einen Speedup.
+Ein Vergleich verschiedener API-Modi ist kein Vorher/Nachher-Gewinn desselben Modus.
+CreatePlus2Components/Direct liefert einen Entity-Wrapper und zwei Komponentenwrapper.
+ECB_Materialized misst dieselben Wrapper-Ausgaben und ist dafuer der faire Vergleich.
+ECB und ECB_Parallel ohne Materialisierung messen weniger verwaltete Rueckgabeobjekte.
+ECB_DefaultConstruct verwendet native Defaults; Payload-Adds uebertragen explizite Struct-Werte.
+Add/RemoveExisting betrifft SpriteRenderer auf vorhandenen Transform-Entities; Live-Refs
+werden im Setup vorbereitet. Die Wrapper-Variante von Add liefert zusaetzlich einen Wrapper.
+
+Die Ergebnisse gelten fuer diese API-Workloads und die protokollierte Hardware. Es gibt
+keine Vergleichsmessung gegen andere ECS-Engines und keine daraus abgeleitete Rangfolge.
+9 Proben beschreiben Streuung in diesem Lauf, keine belastbare Statistik seltener Ausreisser.
+Desktop-Hintergrundlast, Energieprofil und Laufzeitumgebung koennen Unterschiede beeinflussen.
+Ein gesamter Frame hat bei 60 FPS 16,67 ms und bei 120 FPS 8,33 ms; diese Batch-Zeiten
+sind kein vollstaendiger Gameplay-Frame mit Rendering, Physik und weiteren Systemen.
+
+OPTIMIERTE LAEUFE UND HARDWARE
+native2-final-1000: .NET 10.0.11; logische Prozessoren 24; Job-Worker 16; UTC 2026-10-28T16:24:23.7877429Z.
+CPU: AMD Ryzen 9 7900X 12-Core Processor; Kerne 12; Threads 24.
+RAM: 32 GiB; konfigurierte Speicherraten laut System: 6000.
+Energieprofil: GUID des Energieschemas: 381b4222-f694-41f0-9685-ff5bb260df2e  (Ausbalanciert)
+Metadaten mit Hardware, Git-Stand und Datei-Hashes: C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-1000-machine.json
+
+native2-final-10000: .NET 10.0.11; logische Prozessoren 24; Job-Worker 16; UTC 2026-10-28T16:24:59.1609485Z.
+CPU: AMD Ryzen 9 7900X 12-Core Processor; Kerne 12; Threads 24.
+RAM: 32 GiB; konfigurierte Speicherraten laut System: 6000.
+Energieprofil: GUID des Energieschemas: 381b4222-f694-41f0-9685-ff5bb260df2e  (Ausbalanciert)
+Metadaten mit Hardware, Git-Stand und Datei-Hashes: C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-10000-machine.json
+
+native2-final-100000: .NET 10.0.11; logische Prozessoren 24; Job-Worker 16; UTC 2026-10-28T16:29:27.5178695Z.
+CPU: AMD Ryzen 9 7900X 12-Core Processor; Kerne 12; Threads 24.
+RAM: 32 GiB; konfigurierte Speicherraten laut System: 6000.
+Energieprofil: GUID des Energieschemas: 381b4222-f694-41f0-9685-ff5bb260df2e  (Ausbalanciert)
+Metadaten mit Hardware, Git-Stand und Datei-Hashes: C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-100000-machine.json
+
+native2-final-history-10000: .NET 10.0.11; logische Prozessoren 24; Job-Worker 16; UTC 2026-10-28T16:29:39.0020886Z.
+CPU: AMD Ryzen 9 7900X 12-Core Processor; Kerne 12; Threads 24.
+RAM: 32 GiB; konfigurierte Speicherraten laut System: 6000.
+Energieprofil: GUID des Energieschemas: 381b4222-f694-41f0-9685-ff5bb260df2e  (Ausbalanciert)
+Metadaten mit Hardware, Git-Stand und Datei-Hashes: C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-history-10000-machine.json
+
+MIXED-FIXTURE
+N bezeichnet vorhandene Entities; pro Charge werden zusaetzlich N lokale Entities aufgezeichnet.
+Deterministisch durchmischte Live-Refs, Add/Remove/Re-add und Destroy testen Befehlsreihenfolge.
+Jede bestehende Entity, jeder lokale Ueberlebende, verworfene IDs und die Szenenanzahl werden geprueft.
+
+ERGEBNISSE: 191 Kombinationen, 1719 Messproben.
+
+N = 1000
+Operation / Modus                                                          Median ms      Min ms      Max ms   Record ms  Playback ms  Alloc Bytes  Baseline ms    Speedup
+AddComponentExisting / ECB                                                    0.2033      0.1981      0.2327      0.0057       0.1975            0       0.2388     1.175x
+AddComponentExisting / ECB_Parallel                                           0.2481      0.2386      0.2760      0.0427       0.2042          136       0.3037     1.224x
+AddComponentExisting / NativeStruct                                           0.2204      0.2183      0.2399      0.0000       0.0000            0       0.2753     1.249x
+AddComponentExisting / Wrapper                                                0.3945      0.3875      0.4004      0.0000       0.0000       240000       0.4522     1.146x
+CreateDefaultTransform / Direct                                               0.2126      0.2040      0.2311      0.0000       0.0000        56000       0.2631     1.238x
+CreateDefaultTransform / ECB                                                  0.2032      0.1961      0.2125      0.0123       0.1909            0       0.2882     1.418x
+CreateDefaultTransform / ECB_DefaultConstruct                                 0.1887      0.1850      0.1959      0.0063       0.1823            0       0.2587     1.371x
+CreateDefaultTransform / ECB_Materialized                                     0.2125      0.1944      0.2152      0.0122       0.2002        56000       0.2865     1.348x
+CreateDefaultTransform / ECB_Parallel                                         0.2442      0.2407      0.2530      0.0476       0.1960          136       0.3102     1.270x
+CreatePlus2Components / Direct                                                1.0048      0.9351      1.1473      0.0000       0.0000       320000       1.0556     1.051x
+CreatePlus2Components / ECB                                                   0.3446      0.3239      0.4566      0.0305       0.3077            0       0.4329     1.256x
+CreatePlus2Components / ECB_DefaultConstruct                                  0.2960      0.2840      0.4666      0.0112       0.2825            0       0.3970     1.341x
+CreatePlus2Components / ECB_Materialized                                      0.7451      0.7152      0.7696      0.0301       0.7124       320000       0.9189     1.233x
+CreatePlus2Components / ECB_Parallel                                          0.3549      0.3451      0.3728      0.0512       0.3037          136       0.4618     1.301x
+CreateTransformPlusCustom4Float / DirectNative                                0.7569      0.7386      1.2326      0.0000       0.0000        56000           --         --
+CreateTransformPlusCustom4Float / ECB                                         0.5475      0.5132      0.9347      0.0129       0.5343            0           --         --
+CreateTransformPlusCustom4Float / ECB_Parallel                                0.7443      0.6132      0.9137      0.0473       0.6943          136           --         --
+Custom4FloatAddExisting / Native                                              0.3881      0.3740      0.6436      0.0000       0.0000            0           --         --
+Custom4FloatGetComponent / NativeRefReadOnly                                  0.1124      0.1105      0.1693      0.0000       0.0000            0           --         --
+Custom4FloatHasComponent / Native                                             0.0842      0.0832      0.0915      0.0000       0.0000            0           --         --
+Custom4FloatQuery / IJobQueryParallel256                                      0.0440      0.0370      0.0566      0.0000       0.0000         1152           --         --
+Custom4FloatQuery / IJobQuerySingle                                           0.0286      0.0256      0.0364      0.0000       0.0000         1064           --         --
+Custom4FloatQuery / QueryRef                                                  0.0071      0.0058      0.0098      0.0000       0.0000          176           --         --
+Custom4FloatReadWrite / GetNativeRef                                          0.1134      0.1126      0.1151      0.0000       0.0000            0           --         --
+Custom4FloatRemoveExisting / Native                                           0.2740      0.2699      0.2981      0.0000       0.0000            0           --         --
+Destroy2ComponentsCachedWrappers / Direct                                     0.3487      0.3426      0.3763      0.0000       0.0000            0       0.3568     1.023x
+Destroy2ComponentsCachedWrappers / ECB                                        0.3038      0.3004      0.4110      0.0074       0.2976            0       0.3082     1.014x
+Destroy2ComponentsCachedWrappers / ECB_Parallel                               0.4520      0.3320      0.5658      0.0431       0.4057          136       0.3545     0.784x
+Destroy2ComponentsNoWrappers / Direct                                         0.2995      0.2905      0.3238      0.0000       0.0000            0       0.3111     1.039x
+Destroy2ComponentsNoWrappers / ECB                                            0.2615      0.2538      0.3097      0.0057       0.2562            0       0.2720     1.040x
+Destroy2ComponentsNoWrappers / ECB_Parallel                                   0.3046      0.2879      0.4097      0.0460       0.2586          136       0.3096     1.016x
+Disable2Components / Direct                                                   0.2278      0.2254      0.2459      0.0000       0.0000            0           --         --
+Disable2Components / ECB                                                      0.1951      0.1925      0.2065      0.0061       0.1890            0           --         --
+Disable2Components / ECB_Parallel                                             0.2399      0.2300      0.2537      0.0425       0.1938          136           --         --
+GetComponent / NativeRef                                                      0.1371      0.1320      0.2396      0.0000       0.0000            0           --         --
+GetComponent / WrapperCached                                                  0.1370      0.1348      0.1834      0.0000       0.0000            0           --         --
+HasComponent / Native                                                         0.0608      0.0593      0.0667      0.0000       0.0000            0           --         --
+HasComponent / Wrapper                                                        0.1248      0.1228      0.1304      0.0000       0.0000            0           --         --
+InstantiateLiveEntity2Components / Direct                                     9.6477      9.1830     10.1091      0.0000       0.0000        56000           --         --
+InstantiatePrefab2Components / Direct                                        47.8748     44.5054     49.7103      0.0000       0.0000        56000           --         --
+InstantiatePrefab2Components / ECB                                            0.2969      0.2834      0.6437      0.0046       0.2923            0           --         --
+InstantiatePrefab2Components / ECB_Materialized                               0.3221      0.2908      0.4428      0.0047       0.3169        56000           --         --
+InstantiatePrefab2Components / ECB_Parallel                                   0.3384      0.3257      0.3418      0.0414       0.2956          136           --         --
+MixedStructuralLiveAndLocal / ECB                                             0.9385      0.9369      0.9470      0.0532       0.8852            0           --         --
+MixedStructuralLiveAndLocal / ECB_Parallel                                    0.9969      0.9757      1.3655      0.0771       0.9162          136           --         --
+QueryHeavy64 / IJobQueryParallel256                                           0.3358      0.3295      0.3769      0.0000       0.0000         1152           --         --
+QueryHeavy64 / IJobQuerySingle                                                0.9483      0.9416      0.9660      0.0000       0.0000         1088           --         --
+QueryHeavy64 / QueryRef                                                       0.9186      0.9161      0.9388      0.0000       0.0000          176           --         --
+QueryHeavy64 / Wrapper                                                        1.6189      1.6038      1.6323      0.0000       0.0000        56528           --         --
+QueryLight / IJobQueryParallel256                                             0.0430      0.0369      0.0530      0.0000       0.0000         1152           --         --
+QueryLight / IJobQuerySingle                                                  0.0346      0.0268      0.0527      0.0000       0.0000         1088           --         --
+QueryLight / QueryRef                                                         0.0065      0.0052      0.0068      0.0000       0.0000          176           --         --
+QueryLight / Wrapper                                                          0.6786      0.6635      0.7865      0.0000       0.0000        56528           --         --
+QueryTwoComponents / IJobQueryParallel256                                     0.0588      0.0509      0.0636      0.0000       0.0000         1168           --         --
+QueryTwoComponents / IJobQuerySingle                                          0.0436      0.0349      0.0641      0.0000       0.0000         1104           --         --
+QueryTwoComponents / QueryRef                                                 0.0149      0.0135      0.0196      0.0000       0.0000          184           --         --
+QueryTwoComponents / Wrapper                                                  1.1116      1.0900      1.1872      0.0000       0.0000        56688           --         --
+RemoveComponentExisting / ECB                                                 0.1061      0.1030      0.1300      0.0054       0.1008            0       0.1539     1.451x
+RemoveComponentExisting / ECB_Parallel                                        0.1481      0.1401      0.2225      0.0419       0.1043          136       0.1982     1.338x
+RemoveComponentExisting / NativeStruct                                        0.1187      0.1129      0.1397      0.0000       0.0000            0       0.1647     1.388x
+RemoveComponentExisting / Wrapper                                             0.1895      0.1871      0.2188      0.0000       0.0000            0       0.2526     1.333x
+TransformReadWrite / CachedWrapper                                            0.4137      0.4084      0.4187      0.0000       0.0000            0           --         --
+TransformReadWrite / GetNativeRef                                             0.1354      0.1321      0.1446      0.0000       0.0000            0           --         --
+TransformReadWrite / GetWrapper                                               0.5534      0.5471      0.5788      0.0000       0.0000            0           --         --
+
+N = 10000
+Operation / Modus                                                          Median ms      Min ms      Max ms   Record ms  Playback ms  Alloc Bytes  Baseline ms    Speedup
+AddComponentExisting / ECB                                                    2.1043      2.0697      2.4818      0.0512       2.0540            0       2.4986     1.187x
+AddComponentExisting / ECB_Parallel                                           2.2404      2.1909      2.5054      0.1260       2.1086          136       2.6232     1.171x
+AddComponentExisting / NativeStruct                                           2.3710      2.3441      2.5161      0.0000       0.0000            0       2.8074     1.184x
+AddComponentExisting / Wrapper                                                4.1719      4.0159      5.0980      0.0000       0.0000      2400224       4.8384     1.160x
+CreateDefaultTransform / Direct                                               1.8350      1.8036      1.9500      0.0000       0.0000       560000       2.5967     1.415x
+CreateDefaultTransform / ECB                                                  1.8821      1.8521      1.9485      0.1160       1.7526            0       2.8792     1.530x
+CreateDefaultTransform / ECB_DefaultConstruct                                 1.7648      1.7347      1.8104      0.0557       1.7090            0       2.7254     1.544x
+CreateDefaultTransform / ECB_Materialized                                     1.9267      1.9154      2.0238      0.1146       1.8138       560000       3.1007     1.609x
+CreateDefaultTransform / ECB_Parallel                                         1.9824      1.9222      2.8936      0.1432       1.8413       131232       3.1013     1.564x
+CreatePlus2Components / Direct                                               10.0584      9.8282     12.0866      0.0000       0.0000      3200448      11.6260     1.156x
+CreatePlus2Components / ECB                                                   3.2776      3.2327      3.3886      0.3699       2.9025            0       4.4242     1.350x
+CreatePlus2Components / ECB_DefaultConstruct                                  2.8562      2.8170      2.9654      0.1035       2.7535            0       3.8738     1.356x
+CreatePlus2Components / ECB_Materialized                                      7.7352      7.5001      9.0886      0.3656       7.3604      3200000       8.7834     1.136x
+CreatePlus2Components / ECB_Parallel                                          3.1124      3.0004      3.8418      0.1314       2.9693          136       4.2181     1.355x
+CreateTransformPlusCustom4Float / DirectNative                                8.3452      8.0796      9.3806      0.0000       0.0000       560000           --         --
+CreateTransformPlusCustom4Float / ECB                                         5.6778      5.5096      6.5310      0.1523       5.4936            0           --         --
+CreateTransformPlusCustom4Float / ECB_Parallel                                5.6705      5.5623      6.7436      0.1414       5.5172          136           --         --
+Custom4FloatAddExisting / Native                                              4.6985      4.3752      5.2404      0.0000       0.0000            0           --         --
+Custom4FloatGetComponent / NativeRefReadOnly                                  1.2146      1.1889      1.4189      0.0000       0.0000            0           --         --
+Custom4FloatHasComponent / Native                                             0.9928      0.9452      1.4596      0.0000       0.0000            0           --         --
+Custom4FloatQuery / IJobQueryParallel256                                      0.1800      0.1671      0.1899      0.0000       0.0000         1112           --         --
+Custom4FloatQuery / IJobQuerySingle                                           0.1236      0.1195      0.1723      0.0000       0.0000         1088           --         --
+Custom4FloatQuery / QueryRef                                                  0.0554      0.0534      0.0857      0.0000       0.0000          176           --         --
+Custom4FloatReadWrite / GetNativeRef                                          1.2096      1.1826      1.2616      0.0000       0.0000            0           --         --
+Custom4FloatRemoveExisting / Native                                           3.7667      3.5868      4.0843      0.0000       0.0000            0           --         --
+Destroy2ComponentsCachedWrappers / Direct                                     4.4052      3.9584      4.9798      0.0000       0.0000            0       4.1203     0.935x
+Destroy2ComponentsCachedWrappers / ECB                                        3.4426      3.3244      3.5140      0.0512       3.3916            0       3.6670     1.065x
+Destroy2ComponentsCachedWrappers / ECB_Parallel                               3.5995      3.5273      4.2464      0.1213       3.4887          136       3.6431     1.012x
+Destroy2ComponentsNoWrappers / Direct                                         3.2429      3.0970      3.3814      0.0000       0.0000            0       3.5499     1.095x
+Destroy2ComponentsNoWrappers / ECB                                            2.7572      2.7089      3.7006      0.0507       2.7068            0       2.9874     1.083x
+Destroy2ComponentsNoWrappers / ECB_Parallel                                   2.8847      2.7460      3.4060      0.1170       2.7682          136       3.2229     1.117x
+DestroyNoWrappersAfterCacheHistory / Direct                                   3.3875      3.1968      4.7254      0.0000       0.0000            0       3.4395     1.015x
+DestroyNoWrappersFreshProcess / Direct                                        3.1708      3.0210      3.6099      0.0000       0.0000            0       3.6370     1.147x
+Disable2Components / Direct                                                   2.3216      2.2653      2.3627      0.0000       0.0000            0           --         --
+Disable2Components / ECB                                                      1.9832      1.9634      2.0272      0.0536       1.9308            0           --         --
+Disable2Components / ECB_Parallel                                             2.0886      2.0485      2.3135      0.1204       1.9722          136           --         --
+GetComponent / NativeRef                                                      1.3766      1.3579      1.3876      0.0000       0.0000            0           --         --
+GetComponent / WrapperCached                                                  1.4211      1.3825      1.6359      0.0000       0.0000            0           --         --
+HasComponent / Native                                                         0.6420      0.6317      0.6537      0.0000       0.0000            0           --         --
+HasComponent / Wrapper                                                        1.2971      1.2567      1.3667      0.0000       0.0000            0           --         --
+InstantiateLiveEntity2Components / Direct                                    96.5527     92.9025     99.8128      0.0000       0.0000       560000           --         --
+InstantiatePrefab2Components / Direct                                       507.5691    482.5001    540.0004      0.0000       0.0000       560000           --         --
+InstantiatePrefab2Components / ECB                                            2.9599      2.9155      3.0648      0.0411       2.9188            0           --         --
+InstantiatePrefab2Components / ECB_Materialized                               3.0538      2.9998      4.2005      0.0409       3.0128       560000           --         --
+InstantiatePrefab2Components / ECB_Parallel                                   3.1236      3.0394      4.2952      0.1244       3.0080          136           --         --
+MixedStructuralLiveAndLocal / ECB                                            12.0670     11.3930     13.3272      0.6679      11.3939            0      14.1148     1.170x
+MixedStructuralLiveAndLocal / ECB_Parallel                                   11.7947     10.8715     16.6493      0.2537      11.5617       262304      13.1883     1.118x
+QueryHeavy64 / IJobQueryParallel256                                           0.8446      0.7539      0.9495      0.0000       0.0000         1152           --         --
+QueryHeavy64 / IJobQuerySingle                                                9.2656      9.2392      9.5930      0.0000       0.0000         1088           --         --
+QueryHeavy64 / QueryRef                                                       9.1741      9.0980      9.2037      0.0000       0.0000          176           --         --
+QueryHeavy64 / Wrapper                                                       16.6242     16.3980     18.7603      0.0000       0.0000       560528           --         --
+QueryLight / IJobQueryParallel256                                             0.1659      0.1617      0.1744      0.0000       0.0000         1112           --         --
+QueryLight / IJobQuerySingle                                                  0.1165      0.1081      0.1928      0.0000       0.0000         1088           --         --
+QueryLight / QueryRef                                                         0.0467      0.0397      0.0495      0.0000       0.0000          176           --         --
+QueryLight / Wrapper                                                          6.9720      6.8615      9.0379      0.0000       0.0000       560528           --         --
+QueryTwoComponents / IJobQueryParallel256                                     0.4312      0.3738      0.5310      0.0000       0.0000         1128           --         --
+QueryTwoComponents / IJobQuerySingle                                          0.4176      0.3639      0.5153      0.0000       0.0000         1104           --         --
+QueryTwoComponents / QueryRef                                                 0.2678      0.2088      0.3249      0.0000       0.0000          184           --         --
+QueryTwoComponents / Wrapper                                                 11.5458     11.2417     12.2277      0.0000       0.0000       560688           --         --
+RemoveComponentExisting / ECB                                                 1.1369      1.0824      1.7063      0.0529       1.0842            0       1.7182     1.511x
+RemoveComponentExisting / ECB_Parallel                                        1.4451      1.2378      1.8870      0.1320       1.3212          136       2.0930     1.448x
+RemoveComponentExisting / NativeStruct                                        1.2703      1.2286      1.6080      0.0000       0.0000            0       1.9466     1.532x
+RemoveComponentExisting / Wrapper                                             1.9320      1.9058      2.1886      0.0000       0.0000            0       2.6802     1.387x
+TransformReadWrite / CachedWrapper                                            4.2025      4.1527      4.3480      0.0000       0.0000            0           --         --
+TransformReadWrite / GetNativeRef                                             1.3848      1.3674      1.4759      0.0000       0.0000            0           --         --
+TransformReadWrite / GetWrapper                                               5.5368      5.4529      5.6431      0.0000       0.0000            0           --         --
+
+N = 100000
+Operation / Modus                                                          Median ms      Min ms      Max ms   Record ms  Playback ms  Alloc Bytes  Baseline ms    Speedup
+AddComponentExisting / ECB                                                   25.0137     24.3702     28.3958      0.5198      24.4939            0      33.0867     1.323x
+AddComponentExisting / ECB_Parallel                                          25.4473     24.6328     26.6141      0.9699      24.5183          136      35.0094     1.376x
+AddComponentExisting / NativeStruct                                          27.3775     26.4416     28.8650      0.0000       0.0000            0      37.7539     1.379x
+AddComponentExisting / Wrapper                                               74.2391     61.3090     93.7522      0.0000       0.0000     24002048      86.8289     1.170x
+CreateDefaultTransform / Direct                                              23.3174     21.7193     26.2099      0.0000       0.0000      5600000      43.0122     1.845x
+CreateDefaultTransform / ECB                                                 21.9486     21.3540     22.8982      1.1612      20.8106            0      39.5704     1.803x
+CreateDefaultTransform / ECB_DefaultConstruct                                20.8164     19.7170     24.2196      0.5628      20.2619            0      41.0828     1.974x
+CreateDefaultTransform / ECB_Materialized                                    22.5724     21.9248     24.6127      1.1502      21.4330      5600000      42.6908     1.891x
+CreateDefaultTransform / ECB_Parallel                                        21.9294     21.1806     22.3612      0.9871      20.9423          136      44.1491     2.013x
+CreatePlus2Components / Direct                                              123.0233    115.3527    130.4650      0.0000       0.0000     32001344     153.1565     1.245x
+CreatePlus2Components / ECB                                                  33.9511     33.5115     34.2304      2.7201      31.2073            0      50.1915     1.478x
+CreatePlus2Components / ECB_DefaultConstruct                                 31.9900     30.0351     33.0393      1.0490      30.3506            0      46.5149     1.454x
+CreatePlus2Components / ECB_Materialized                                     97.8041     91.0231    112.9542      2.7470      94.9917     32001344     124.1284     1.269x
+CreatePlus2Components / ECB_Parallel                                         33.6780     33.1268     34.6652      0.7270      32.9778          136      50.2064     1.491x
+CreateTransformPlusCustom4Float / DirectNative                               98.7383     94.7900    105.5744      0.0000       0.0000      5600000           --         --
+CreateTransformPlusCustom4Float / ECB                                        65.6241     62.3456     70.4090      1.2219      64.3951            0           --         --
+CreateTransformPlusCustom4Float / ECB_Parallel                               67.0753     63.7270     70.0321      0.9679      66.6175          136           --         --
+Custom4FloatAddExisting / Native                                             57.7973     55.2007     60.5174      0.0000       0.0000            0           --         --
+Custom4FloatGetComponent / NativeRefReadOnly                                 14.7428     14.0557     16.0642      0.0000       0.0000            0           --         --
+Custom4FloatHasComponent / Native                                            11.4732     10.6102     11.9961      0.0000       0.0000            0           --         --
+Custom4FloatQuery / IJobQueryParallel256                                      1.4890      1.4275      1.6647      0.0000       0.0000         1112           --         --
+Custom4FloatQuery / IJobQuerySingle                                           0.9198      0.8946      1.0164      0.0000       0.0000         1088           --         --
+Custom4FloatQuery / QueryRef                                                  0.5288      0.5123      0.5420      0.0000       0.0000          176           --         --
+Custom4FloatReadWrite / GetNativeRef                                         14.8012     13.9231     16.2369      0.0000       0.0000            0           --         --
+Custom4FloatRemoveExisting / Native                                          45.8921     44.5064     50.9318      0.0000       0.0000            0           --         --
+Destroy2ComponentsNoWrappers / Direct                                        38.4838     37.7389     39.9962      0.0000       0.0000            0      45.3573     1.179x
+Destroy2ComponentsNoWrappers / ECB                                           34.3896     32.8752     34.7579      0.5068      33.8800            0      38.8045     1.128x
+Destroy2ComponentsNoWrappers / ECB_Parallel                                  36.0272     35.2581     38.8026      0.9360      35.1017          136      42.1922     1.171x
+Disable2Components / Direct                                                  28.3558     26.8364     29.6428      0.0000       0.0000            0           --         --
+Disable2Components / ECB                                                     23.5889     22.9156     25.0802      0.5255      23.0630            0           --         --
+Disable2Components / ECB_Parallel                                            24.1801     23.4389     24.8573      0.9537      23.1952          136           --         --
+GetComponent / NativeRef                                                     17.1829     16.3244     18.8853      0.0000       0.0000            0           --         --
+GetComponent / WrapperCached                                                 17.8346     16.9257     19.1704      0.0000       0.0000            0           --         --
+HasComponent / Native                                                         8.9953      8.1892     10.1869      0.0000       0.0000            0           --         --
+HasComponent / Wrapper                                                       15.6500     15.3044     17.4083      0.0000       0.0000            0           --         --
+InstantiateLiveEntity2Components / Direct                                   939.6412    921.7103    965.0045      0.0000       0.0000      5606872           --         --
+InstantiatePrefab2Components / Direct                                      5087.9536   4925.5444   5369.4304      0.0000       0.0000      5600000           --         --
+InstantiatePrefab2Components / ECB                                           36.3090     35.3977     36.8929      0.3981      35.9109            0           --         --
+InstantiatePrefab2Components / ECB_Materialized                              38.8434     37.1878     42.5106      0.4072      38.4376      5600000           --         --
+InstantiatePrefab2Components / ECB_Parallel                                  38.3371     36.5932     41.1657      0.9278      37.4844          136           --         --
+MixedStructuralLiveAndLocal / ECB                                           193.4267    170.1049    214.3207      7.3121     185.9014            0           --         --
+MixedStructuralLiveAndLocal / ECB_Parallel                                  172.5137    155.5374    194.9873      1.1435     171.3996          136           --         --
+QueryHeavy64 / IJobQueryParallel256                                           6.0988      5.9965      6.2860      0.0000       0.0000         1112           --         --
+QueryHeavy64 / IJobQuerySingle                                               91.9147     91.3998     94.9718      0.0000       0.0000         1088           --         --
+QueryHeavy64 / QueryRef                                                      92.3048     91.2016     94.5424      0.0000       0.0000          176           --         --
+QueryHeavy64 / Wrapper                                                      185.3833    175.6213    197.1870      0.0000       0.0000      5600528           --         --
+QueryLight / IJobQueryParallel256                                             1.4183      1.3219      1.6195      0.0000       0.0000         1112           --         --
+QueryLight / IJobQuerySingle                                                  0.8995      0.8733      1.1312      0.0000       0.0000         1088           --         --
+QueryLight / QueryRef                                                         0.6238      0.5851      0.6636      0.0000       0.0000          176           --         --
+QueryLight / Wrapper                                                         82.5992     77.8554    101.6794      0.0000       0.0000      5600528           --         --
+QueryTwoComponents / IJobQueryParallel256                                     1.2057      1.1122      1.4159      0.0000       0.0000         1128           --         --
+QueryTwoComponents / IJobQuerySingle                                          0.9563      0.9085      1.1376      0.0000       0.0000         1104           --         --
+QueryTwoComponents / QueryRef                                                 0.7291      0.6820      0.7923      0.0000       0.0000          184           --         --
+QueryTwoComponents / Wrapper                                                131.4455    128.0826    145.2031      0.0000       0.0000      5600688           --         --
+RemoveComponentExisting / ECB                                                15.7670     14.0176     16.9133      0.5136      15.1477            0      26.7765     1.698x
+RemoveComponentExisting / ECB_Parallel                                       15.3176     14.8834     16.7573      0.9146      14.3640          136      29.7483     1.942x
+RemoveComponentExisting / NativeStruct                                       17.9096     16.8227     19.2733      0.0000       0.0000            0      28.1573     1.572x
+RemoveComponentExisting / Wrapper                                            25.5811     23.4449     28.4024      0.0000       0.0000            0      37.1496     1.452x
+TransformReadWrite / CachedWrapper                                           49.2671     47.0296     55.2612      0.0000       0.0000            0           --         --
+TransformReadWrite / GetNativeRef                                            17.5233     16.8533     19.9707      0.0000       0.0000            0           --         --
+TransformReadWrite / GetWrapper                                              63.2806     61.6353     64.7623      0.0000       0.0000            0           --         --
+
+QUELLEN / ALLE ROHMESSUNGEN
+Baseline-Zusammenfassung: C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\optimized-summary.json
+Baseline: optimized-verified-1000
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\optimized-verified-1000.json
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\optimized-verified-1000.jsonl
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\optimized-verified-1000.csv
+Baseline: optimized-verified-10000
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\optimized-verified-10000.json
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\optimized-verified-10000.jsonl
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\optimized-verified-10000.csv
+Baseline: optimized-verified-100000
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\optimized-verified-100000.json
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\optimized-verified-100000.jsonl
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\optimized-verified-100000.csv
+Baseline: optimized-verified-history-10000
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\optimized-verified-history-10000.json
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\optimized-verified-history-10000.jsonl
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\optimized-verified-history-10000.csv
+Baseline: native2-mixed-before
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-mixed-before.json
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-mixed-before.jsonl
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-mixed-before.csv
+Optimiert: native2-final-1000
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-1000.json
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-1000.jsonl
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-1000.csv
+Optimiert: native2-final-10000
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-10000.json
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-10000.jsonl
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-10000.csv
+Optimiert: native2-final-100000
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-100000.json
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-100000.jsonl
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-100000.csv
+Optimiert: native2-final-history-10000
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-history-10000.json
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-history-10000.jsonl
+  C:\Users\benso\source\repos\Pending\Index\output\ecs-benchmark-2026-10-28\native2-final-history-10000.csv

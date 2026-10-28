@@ -55,6 +55,11 @@ namespace {
 
 		std::string PathTo(const char* name) const { return Path::ToUtf8(Root / "Assets" / name); }
 
+		static bool WriteAsset(const std::filesystem::path& path, uint64_t id) {
+			return File::WriteAllText(Path::ToUtf8(path), "{}")
+				&& File::WriteAllText(Path::ToUtf8(path) + ".meta", "{\"AssetGUID\":\"" + std::to_string(id) + "\"}");
+		}
+
 		bool WriteBuffer(float height) const {
 			const float vertices[] = { 0, 0, 0, 1, 0, 0, 0, height, 0 };
 			std::vector<uint8_t> bytes(sizeof(vertices));
@@ -78,6 +83,96 @@ namespace {
 		MaterialLibrary::CollectTextureReferences(scene, [&](uint64_t guid) { references.insert(guid); });
 		return references;
 	}
+}
+
+TEST_CASE("Asset registry clean lookups retain project switching root edits and deletion") {
+	GraphicsAssetProject fixture;
+	constexpr uint64_t originalId = 0x7138000000000001ull;
+	constexpr uint64_t replacementId = originalId + 1;
+	const auto original = fixture.Root / "Assets" / "original.prefab";
+	const auto replacementRoot = fixture.Root / "ReplacementAssets";
+	std::filesystem::create_directories(replacementRoot);
+	REQUIRE(GraphicsAssetProject::WriteAsset(original, originalId));
+	REQUIRE(GraphicsAssetProject::WriteAsset(replacementRoot / "replacement.prefab", replacementId));
+	AssetRegistry::Sync();
+	REQUIRE_FALSE(AssetRegistry::IsDirty());
+	CHECK(AssetRegistry::GetKind(originalId) == AssetKind::Prefab);
+	CHECK(AssetRegistry::GetKind(originalId) == AssetKind::Prefab);
+
+	SUBCASE("Editing the active project's assets root is detected without a dirty notification") {
+		ProjectManager::GetCurrentProject()->AssetsDirectory = Path::ToUtf8(replacementRoot);
+		CHECK(AssetRegistry::GetKind(originalId) == AssetKind::Unknown);
+		CHECK(AssetRegistry::GetKind(replacementId) == AssetKind::Prefab);
+	}
+	SUBCASE("Switching projects invalidates the previous root") {
+		auto replacement = std::make_unique<FunkeProject>(*ProjectManager::GetCurrentProject());
+		replacement->AssetsDirectory = Path::ToUtf8(replacementRoot);
+		ProjectManager::SetCurrentProject(std::move(replacement));
+		CHECK(AssetRegistry::GetKind(originalId) == AssetKind::Unknown);
+		CHECK(AssetRegistry::GetKind(replacementId) == AssetKind::Prefab);
+	}
+	SUBCASE("Deletion is reflected after a dirty notification") {
+		REQUIRE(std::filesystem::remove(original));
+		AssetRegistry::MarkDirty();
+		CHECK(AssetRegistry::GetKind(originalId) == AssetKind::Unknown);
+		CHECK(AssetRegistry::ResolvePath(originalId).empty());
+	}
+}
+
+TEST_CASE("Asset registry relative roots follow the current working directory") {
+	GraphicsAssetProject fixture;
+	struct RestoreDirectory {
+		std::filesystem::path Previous = std::filesystem::current_path();
+		~RestoreDirectory() {
+			std::error_code ec;
+			std::filesystem::current_path(Previous, ec);
+		}
+	} restore;
+	constexpr uint64_t originalId = 0x7138000000000011ull;
+	constexpr uint64_t replacementId = originalId + 1;
+	const auto replacementParent = fixture.Root / "Replacement";
+	std::filesystem::create_directories(replacementParent / "Assets");
+	REQUIRE(GraphicsAssetProject::WriteAsset(fixture.Root / "Assets" / "original.prefab", originalId));
+	REQUIRE(GraphicsAssetProject::WriteAsset(replacementParent / "Assets" / "replacement.prefab", replacementId));
+	ProjectManager::GetCurrentProject()->AssetsDirectory = "Assets";
+	std::filesystem::current_path(fixture.Root);
+	AssetRegistry::Sync();
+	REQUIRE(AssetRegistry::GetKind(originalId) == AssetKind::Prefab);
+	REQUIRE_FALSE(AssetRegistry::IsDirty());
+	std::filesystem::current_path(replacementParent);
+	CHECK(AssetRegistry::GetKind(originalId) == AssetKind::Unknown);
+	CHECK(AssetRegistry::GetKind(replacementId) == AssetKind::Prefab);
+}
+
+TEST_CASE("Asset registry root aliases refresh on dirty notifications and explicit sync") {
+	GraphicsAssetProject fixture;
+	constexpr uint64_t originalId = 0x7138000000000021ull;
+	constexpr uint64_t replacementId = originalId + 1;
+	const auto assets = fixture.Root / "Assets";
+	const auto originalRoot = fixture.Root / "OriginalAssets";
+	const auto replacementRoot = fixture.Root / "ReplacementAssets";
+	std::filesystem::create_directories(replacementRoot);
+	REQUIRE(GraphicsAssetProject::WriteAsset(assets / "original.prefab", originalId));
+	REQUIRE(GraphicsAssetProject::WriteAsset(replacementRoot / "replacement.prefab", replacementId));
+	AssetRegistry::Sync();
+	REQUIRE(AssetRegistry::GetKind(originalId) == AssetKind::Prefab);
+	REQUIRE_FALSE(AssetRegistry::IsDirty());
+	std::filesystem::rename(assets, originalRoot);
+	std::error_code ec;
+	std::filesystem::create_directory_symlink(replacementRoot, assets, ec);
+	if (ec) {
+		WARN_MESSAGE(false, "Directory symlinks are unavailable: ", ec.message());
+		return;
+	}
+	SUBCASE("Dirty notification") { AssetRegistry::MarkDirty(); }
+	SUBCASE("Explicit sync without a dirty notification") { AssetRegistry::Sync(); }
+	CHECK(AssetRegistry::GetKind(originalId) == AssetKind::Unknown);
+	CHECK(AssetRegistry::GetKind(replacementId) == AssetKind::Prefab);
+	REQUIRE_FALSE(AssetRegistry::IsDirty());
+	REQUIRE(std::filesystem::remove(assets));
+	std::filesystem::create_directory_symlink(originalRoot, assets);
+	CHECK(AssetRegistry::GetKind(replacementId) == AssetKind::Unknown);
+	CHECK(AssetRegistry::GetKind(originalId) == AssetKind::Prefab);
 }
 
 TEST_CASE("Texture UUID cache distinguishes every filter and wrap combination") {

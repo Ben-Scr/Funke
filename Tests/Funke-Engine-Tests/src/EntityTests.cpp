@@ -17,6 +17,7 @@
 #include "Project/FunkeProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Scene/ComponentRegistry.hpp"
+#include "Scene/ComponentRef.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneDefinition.hpp"
@@ -45,6 +46,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -52,8 +54,301 @@ using namespace Funke;
 
 namespace {
 	class ComponentAccessScript final : public NativeScript {};
+	namespace NativeFieldTests {
+		enum class Motion { Idle = 0, Moving = 2 };
+		class ReflectedScript final : public NativeScript {
+		public:
+			float Speed = 3.5f;
+			uint8_t Count = 7;
+			bool Active = true;
+			std::string Caption = "Player";
+			glm::vec3 Direction{ 1.0f, 2.0f, 3.0f };
+			glm::ivec2 Cell{ 4, 5 };
+			Color Tint{ 0.1f, 0.2f, 0.3f, 1.0f };
+			Motion State = Motion::Idle;
+			const int Version = 5;
+
+			FNK_NATIVE_FIELDS(
+				NativeFields::Make<&ReflectedScript::Speed>("Speed", "Move Speed").WithClamp(0.0, 20.0).WithTooltip("Units per second"),
+				NativeFields::Make<&ReflectedScript::Count>("Count"),
+				NativeFields::Make<&ReflectedScript::Active>("Active"),
+				NativeFields::Make<&ReflectedScript::Caption>("Caption"),
+				NativeFields::Make<&ReflectedScript::Direction>("Direction"),
+				NativeFields::Make<&ReflectedScript::Cell>("Cell"),
+				NativeFields::Make<&ReflectedScript::Tint>("Tint"),
+				NativeFields::Make<&ReflectedScript::State>("State"),
+				NativeFields::Make<&ReflectedScript::Version>("Version"))
+		};
+	}
+	REGISTER_SCRIPT(NativeFieldTests::ReflectedScript)
 	struct ByteEmplaceTestComponent { uint64_t Value = 0; };
 	struct HierarchyTestBodyTag {};
+}
+
+TEST_CASE("Native script fields expose defaults and copy values into caller buffers")
+{
+	std::unique_ptr<NativeScript> script(NativeScriptRegistry::Create("NativeFieldTests::ReflectedScript"));
+	REQUIRE(script != nullptr);
+	uint32_t count = 0;
+	const auto* fields = script->GetFields(&count);
+	REQUIRE(fields != nullptr);
+	REQUIRE(count == 9);
+	CHECK(std::string(fields[0].DisplayName) == "Move Speed");
+	CHECK(fields[0].Type == PropertyType::Float);
+	CHECK(fields[0].HasClamp);
+	CHECK(fields[0].ClampMax == 20.0);
+	CHECK(std::string(fields[0].Tooltip) == "Units per second");
+	const uint32_t required = fields[0].Get(script.get(), nullptr, 0);
+	REQUIRE(required == 4);
+	std::array<char, 2> small{ 'x', 'x' };
+	CHECK(fields[0].Get(script.get(), small.data(), static_cast<uint32_t>(small.size())) == required);
+	CHECK(small[0] == 'x');
+	std::vector<char> buffer(required);
+	CHECK(fields[0].Get(script.get(), buffer.data(), required) == required);
+	CHECK(std::string(buffer.data()) == "3.5");
+	CHECK(fields[8].ReadOnly);
+	CHECK(fields[8].Set == nullptr);
+	int64_t enumValue = -1;
+	REQUIRE(fields[7].GetEnumOption != nullptr);
+	CHECK(std::string(fields[7].GetEnumOption(1, &enumValue)) == "Moving");
+	CHECK(enumValue == 2);
+	CHECK(fields[7].GetEnumOption(2, &enumValue) == nullptr);
+}
+
+TEST_CASE("Native script field edits round-trip strings vectors and reject malformed values atomically")
+{
+	NativeFieldTests::ReflectedScript script;
+	uint32_t count = 0;
+	const auto* fields = script.GetFields(&count);
+	const auto set = [&](uint32_t index, const std::string& value) {
+		return fields[index].Set(&script, value.data(), static_cast<uint32_t>(value.size()));
+	};
+	CHECK(set(0, "8.25"));
+	CHECK(script.Speed == 8.25f);
+	CHECK_FALSE(set(0, "nan"));
+	CHECK_FALSE(set(0, "12bad"));
+	CHECK(script.Speed == 8.25f);
+	CHECK_FALSE(set(1, "256"));
+	CHECK_FALSE(set(1, "-1"));
+	CHECK(script.Count == 7);
+	CHECK(set(2, "false"));
+	CHECK_FALSE(script.Active);
+	CHECK_FALSE(set(2, "perhaps"));
+	const std::string caption("line\n\"quoted\"\0tail", 18);
+	CHECK(set(3, caption));
+	CHECK(script.Caption == caption);
+	std::vector<char> buffer(fields[3].Get(&script, nullptr, 0));
+	fields[3].Get(&script, buffer.data(), static_cast<uint32_t>(buffer.size()));
+	CHECK(std::string(buffer.data(), buffer.size() - 1) == caption);
+	CHECK(set(4, "5,6,7"));
+	CHECK((script.Direction == glm::vec3(5.0f, 6.0f, 7.0f)));
+	CHECK_FALSE(set(4, "8,wrong,9"));
+	CHECK_FALSE(set(4, "8,9"));
+	CHECK_FALSE(set(4, "8,9,10,11"));
+	CHECK((script.Direction == glm::vec3(5.0f, 6.0f, 7.0f)));
+	CHECK(set(5, "-9,12"));
+	CHECK((script.Cell == glm::ivec2(-9, 12)));
+	CHECK(set(6, "0.4,0.5,0.6,0.7"));
+	CHECK(script.Tint.a == doctest::Approx(0.7f));
+	CHECK(set(7, "2"));
+	CHECK(script.State == NativeFieldTests::Motion::Moving);
+}
+
+namespace {
+	using TransformRef = ComponentRef<Transform2DComponent>;
+	using ReadOnlyTransformRef = ComponentRef<const Transform2DComponent>;
+	static_assert(std::is_same_v<decltype(std::declval<const TransformRef&>().TryGet()), Transform2DComponent*>);
+	static_assert(std::is_same_v<decltype(std::declval<const TransformRef&>().Get()), Transform2DComponent&>);
+	static_assert(std::is_same_v<decltype(std::declval<const TransformRef&>().operator->()), Transform2DComponent*>);
+	static_assert(std::is_same_v<decltype(*std::declval<const TransformRef&>()), Transform2DComponent&>);
+	static_assert(std::is_same_v<decltype(std::declval<const ReadOnlyTransformRef&>().TryGet()), const Transform2DComponent*>);
+	static_assert(std::is_same_v<decltype(std::declval<const ReadOnlyTransformRef&>().Get()), const Transform2DComponent&>);
+	static_assert(std::is_same_v<decltype(std::declval<const ReadOnlyTransformRef&>().operator->()), const Transform2DComponent*>);
+	static_assert(std::is_same_v<decltype(*std::declval<const ReadOnlyTransformRef&>()), const Transform2DComponent&>);
+	static_assert(std::is_same_v<decltype(std::declval<Entity&>().GetComponentRef<Transform2DComponent>()), TransformRef>);
+	static_assert(std::is_same_v<decltype(std::declval<const Entity&>().GetComponentRef<Transform2DComponent>()), ReadOnlyTransformRef>);
+	static_assert(std::is_same_v<decltype(std::declval<NativeScript&>().GetComponentRef<Transform2DComponent>()), TransformRef>);
+	static_assert(std::is_same_v<decltype(std::declval<const NativeScript&>().GetComponentRef<Transform2DComponent>()), ReadOnlyTransformRef>);
+	static_assert(!std::is_convertible_v<Entity, TransformRef>);
+	static_assert(!std::is_convertible_v<TransformRef, Transform2DComponent*>);
+	static_assert(std::is_copy_constructible_v<TransformRef>);
+
+	struct ForwardDeclaredRefComponent;
+	struct ForwardDeclaredRefHolder { ComponentRef<ForwardDeclaredRefComponent> Value; };
+	static_assert(sizeof(ForwardDeclaredRefHolder) > 0);
+	struct ForwardDeclaredRefComponent { int Value = 0; };
+
+	template<typename TComponent>
+	void CheckInvalidComponentRef(const ComponentRef<TComponent>& reference) {
+		CHECK_FALSE(reference.IsValid());
+		CHECK_FALSE(static_cast<bool>(reference));
+		CHECK(reference.TryGet() == nullptr);
+		CHECK_THROWS_AS(static_cast<void>(reference.operator->()), FunkeException);
+		CHECK_THROWS_AS(static_cast<void>(*reference), FunkeException);
+		bool rejected = false;
+		try {
+			(void)reference.Get();
+		}
+		catch (const FunkeException& error) {
+			rejected = true;
+			CHECK(error.Code() == FunkeErrorCode::InvalidHandle);
+		}
+		CHECK(rejected);
+	}
+}
+
+TEST_CASE("ComponentRef resolves owning sprite group swaps without moving the camera")
+{
+	auto scene = Scene::CreateDetachedScene("ComponentRef owning sprite group");
+	Entity camera = scene->CreateEmptyEntity();
+	camera.AddComponent<Transform2DComponent>().SetPosition({ 11.0f, 13.0f });
+	Entity sprite = scene->CreateEmptyEntity();
+	sprite.AddComponent<Transform2DComponent>().SetPosition({ 0.0f, 0.0f });
+	TransformRef transform = sprite.GetComponentRef<Transform2DComponent>();
+	Transform2DComponent* borrowedBeforeMembership = transform.TryGet();
+	REQUIRE(borrowedBeforeMembership != nullptr);
+	auto& registry = scene->GetRegistry();
+
+	SUBCASE("adding SpriteRenderer enters an already existing renderer group") {
+		auto group = registry.group<Transform2DComponent, SpriteRendererComponent>(
+			entt::get<>, entt::exclude<DisabledTag, StaticTag>);
+		REQUIRE(group.empty());
+		sprite.AddComponent<SpriteRendererComponent>();
+		REQUIRE(group.contains(sprite.GetHandle()));
+	}
+	SUBCASE("first renderer group creation reorders an already attached sprite") {
+		sprite.AddComponent<SpriteRendererComponent>();
+		REQUIRE(transform.TryGet() == borrowedBeforeMembership);
+		auto group = registry.group<Transform2DComponent, SpriteRendererComponent>(
+			entt::get<>, entt::exclude<DisabledTag, StaticTag>);
+		REQUIRE(group.contains(sprite.GetHandle()));
+	}
+
+	REQUIRE(transform.TryGet() != borrowedBeforeMembership);
+	CHECK(borrowedBeforeMembership == &camera.GetComponent<Transform2DComponent>());
+	CHECK(transform.TryGet() == &sprite.GetComponent<Transform2DComponent>());
+	transform->SetPosition({ 2.0f, 2.0f });
+	CHECK((sprite.GetComponent<Transform2DComponent>().LocalPosition == Vec2(2.0f, 2.0f)));
+	CHECK((camera.GetComponent<Transform2DComponent>().LocalPosition == Vec2(11.0f, 13.0f)));
+	CHECK(transform.GetEntity() == sprite);
+}
+
+TEST_CASE("ComponentRef follows swap and pop after an unrelated entity is destroyed")
+{
+	auto scene = Scene::CreateDetachedScene("ComponentRef swap and pop");
+	Entity earlier = scene->CreateEmptyEntity();
+	earlier.AddComponent<Transform2DComponent>().SetPosition({ 10.0f, 20.0f });
+	Entity target = scene->CreateEmptyEntity();
+	target.AddComponent<Transform2DComponent>().SetPosition({ 3.0f, 4.0f });
+	const TransformRef reference(target);
+	Transform2DComponent* oldAddress = reference.TryGet();
+
+	scene->DestroyEntity(earlier);
+	REQUIRE(target.IsValid());
+	REQUIRE(reference.TryGet() != oldAddress);
+	CHECK(reference.TryGet() == &target.GetComponent<Transform2DComponent>());
+	reference->SetPosition({ 5.0f, 6.0f });
+	CHECK((target.GetComponent<Transform2DComponent>().LocalPosition == Vec2(5.0f, 6.0f)));
+	CHECK(&reference.Get() == reference.TryGet());
+	CHECK(&*reference == reference.TryGet());
+}
+
+TEST_CASE("ComponentRef defaults reset and const access preserve pointer-like semantics")
+{
+	TransformRef empty;
+	CheckInvalidComponentRef(empty);
+	CHECK_FALSE(empty.GetEntity().IsValid());
+
+	auto scene = Scene::CreateDetachedScene("ComponentRef defaults");
+	Entity entity = scene->CreateEmptyEntity();
+	entity.AddComponent<Transform2DComponent>();
+	TransformRef reference(entity);
+	TransformRef copy = reference;
+	const TransformRef constHandle = reference;
+	REQUIRE(static_cast<bool>(reference));
+	constHandle->SetPosition({ 7.0f, 8.0f });
+	const Entity& constEntity = entity;
+	auto readOnly = constEntity.GetComponentRef<Transform2DComponent>();
+	CHECK(readOnly.TryGet() == &entity.GetComponent<Transform2DComponent>());
+	CHECK((readOnly->LocalPosition == Vec2(7.0f, 8.0f)));
+	reference.Reset();
+	CheckInvalidComponentRef(reference);
+	CHECK_FALSE(reference.GetEntity().IsValid());
+	CHECK(copy.IsValid());
+	CHECK(copy.GetEntity() == entity);
+}
+
+TEST_CASE("ComponentRef rebinds a removed component on the same entity")
+{
+	auto scene = Scene::CreateDetachedScene("ComponentRef component replacement");
+	Entity entity = scene->CreateEmptyEntity();
+	TransformRef reference = entity.GetComponentRef<Transform2DComponent>();
+	CheckInvalidComponentRef(reference);
+	CHECK(reference.GetEntity().IsValid());
+
+	entity.AddComponent<Transform2DComponent>().SetPosition({ 1.0f, 2.0f });
+	REQUIRE(reference.IsValid());
+	entity.RemoveComponent<Transform2DComponent>();
+	CheckInvalidComponentRef(reference);
+	REQUIRE(entity.IsValid());
+	entity.AddComponent<Transform2DComponent>().SetPosition({ 9.0f, 10.0f });
+	REQUIRE(reference.IsValid());
+	CHECK(reference.TryGet() == &entity.GetComponent<Transform2DComponent>());
+	CHECK((reference->LocalPosition == Vec2(9.0f, 10.0f)));
+}
+
+TEST_CASE("ComponentRef rejects a destroyed entity when its slot is recycled")
+{
+	auto scene = Scene::CreateDetachedScene("ComponentRef recycled entity");
+	Entity original = scene->CreateEmptyEntity();
+	original.AddComponent<Transform2DComponent>();
+	const EntityHandle originalHandle = original.GetHandle();
+	TransformRef reference(original);
+
+	scene->DestroyEntity(original);
+	CheckInvalidComponentRef(reference);
+	Entity replacement = scene->CreateEmptyEntity();
+	replacement.AddComponent<Transform2DComponent>().SetPosition({ 17.0f, 19.0f });
+	REQUIRE(entt::to_entity(replacement.GetHandle()) == entt::to_entity(originalHandle));
+	REQUIRE(replacement.GetHandle() != originalHandle);
+	CheckInvalidComponentRef(reference);
+	CHECK((replacement.GetComponent<Transform2DComponent>().LocalPosition == Vec2(17.0f, 19.0f)));
+	CHECK(replacement.GetComponentRef<Transform2DComponent>().IsValid());
+}
+
+TEST_CASE("ComponentRef expires after scene clear and scene destruction")
+{
+	TransformRef reference;
+	auto scene = Scene::CreateDetachedScene("ComponentRef scene lifetime");
+	Entity entity = scene->CreateEmptyEntity();
+	entity.AddComponent<Transform2DComponent>();
+	reference = entity.GetComponentRef<Transform2DComponent>();
+
+	SUBCASE("clearing and repopulating the same scene does not revive an old reference") {
+		scene->ClearEntities();
+		Entity replacement = scene->CreateEmptyEntity();
+		replacement.AddComponent<Transform2DComponent>();
+		REQUIRE(replacement.GetComponentRef<Transform2DComponent>().IsValid());
+	}
+	SUBCASE("destroying the scene releases the reference without prolonging its lifetime") {
+		scene.reset();
+		auto replacementScene = Scene::CreateDetachedScene("Replacement scene");
+		Entity replacement = replacementScene->CreateEmptyEntity();
+		replacement.AddComponent<Transform2DComponent>();
+		REQUIRE(replacement.GetComponentRef<Transform2DComponent>().IsValid());
+		CHECK(reference.GetEntity().GetScene() == nullptr);
+	}
+	CheckInvalidComponentRef(reference);
+}
+
+TEST_CASE("ComponentRef from an unbound NativeScript is safely empty")
+{
+	ComponentAccessScript script;
+	auto reference = script.GetComponentRef<Transform2DComponent>();
+	CheckInvalidComponentRef(reference);
+	const ComponentAccessScript& constScript = script;
+	auto readOnly = constScript.GetComponentRef<Transform2DComponent>();
+	CheckInvalidComponentRef(readOnly);
 }
 
 TEST_CASE("Scene bulk creation rejects invalid output and entity caps without mutation")
@@ -786,6 +1081,35 @@ TEST_CASE("Refreshing a prefab child instance does not corrupt the live instance
 	CHECK(gameScene->GetComponent<NameComponent>(newChild).Name == "ChildEntity");
 	CHECK(countBySourceId(rootSourceId) == 1);
 	CHECK(countBySourceId(childSourceId) == 1);
+}
+
+TEST_CASE("ScriptComponent rejects conflicting class names without changing saved fields")
+{
+	ScriptComponent scripts;
+	REQUIRE(scripts.AddScript("Player", ScriptType::Managed));
+	scripts.PendingFieldValues["Player.Speed"] = "7";
+	CHECK_FALSE(scripts.AddScript("Player", ScriptType::Managed));
+	CHECK_FALSE(scripts.AddScript("Player", ScriptType::Native));
+	CHECK_FALSE(scripts.AddManagedComponent("Player"));
+	REQUIRE(scripts.Scripts.size() == 1);
+	CHECK(scripts.Scripts.front().GetType() == ScriptType::Managed);
+	CHECK(scripts.ManagedComponents.empty());
+	CHECK(scripts.PendingFieldValues.at("Player.Speed") == "7");
+	CHECK(scripts.AddScript("Native::Player", ScriptType::Native));
+	CHECK(scripts.AddManagedComponent("PlayerStats"));
+	CHECK_FALSE(scripts.AddManagedComponent("PlayerStats"));
+	CHECK_FALSE(scripts.AddScript("PlayerStats", ScriptType::Native));
+	CHECK_FALSE(scripts.AddScript("PlayerStats", ScriptType::Managed));
+	CHECK(scripts.Scripts.size() == 2);
+	CHECK(scripts.ManagedComponents.size() == 1);
+
+	ScriptComponent nativeFirst;
+	REQUIRE(nativeFirst.AddScript("Player", ScriptType::Native));
+	CHECK_FALSE(nativeFirst.AddScript("Player", ScriptType::Managed));
+	CHECK_FALSE(nativeFirst.AddManagedComponent("Player"));
+	CHECK_FALSE(nativeFirst.AddScript(""));
+	CHECK_FALSE(nativeFirst.AddManagedComponent(""));
+	CHECK(nativeFirst.Scripts.size() == 1);
 }
 
 TEST_CASE("Cloning copies authoring state without live component ownership")

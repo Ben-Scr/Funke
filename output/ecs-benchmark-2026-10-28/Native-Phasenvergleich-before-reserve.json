@@ -1,0 +1,275 @@
+{
+  "unit": "ms per complete batch",
+  "diagnostic_only": true,
+  "note": "Native Diagnosemessung mit Logging; Phasenmediane erklaeren Kostenanteile, keine normalen Benchmark-Gesamtzeiten.",
+  "before_log": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\ecs-benchmark-2026-10-28\\native2-profile-before-stdout.log",
+  "after_log": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\ecs-benchmark-2026-10-28\\native2-profile-verified-stdout.log",
+  "before_run_json": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\ecs-benchmark-2026-10-28\\native2-profile-before.json",
+  "after_run_json": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\ecs-benchmark-2026-10-28\\native2-profile-verified.json",
+  "comparisons": [
+    {
+      "operation": "CreatePlus2Components",
+      "mode": "ECB_DefaultConstruct",
+      "count": 100000,
+      "action_samples": 12,
+      "discarded_warmups": 3,
+      "measured_samples": 9,
+      "before_measured_log_lines": [
+        69,
+        71,
+        73,
+        75,
+        77,
+        79,
+        81,
+        83,
+        85
+      ],
+      "after_measured_log_lines": [
+        69,
+        71,
+        73,
+        75,
+        77,
+        79,
+        81,
+        83,
+        85
+      ],
+      "phases": [
+        {
+          "phase": "preflight_ms",
+          "before_median_ms": 0.5757,
+          "after_median_ms": 0.5692,
+          "delta_ms": -0.00649999999999995,
+          "change_pct": -1.12906027444849,
+          "phase_speedup": 1.0114195361911453
+        },
+        {
+          "phase": "prepare_ms",
+          "before_median_ms": 0.4175,
+          "after_median_ms": 0.0002,
+          "delta_ms": -0.4173,
+          "change_pct": -99.95209580838323,
+          "phase_speedup": 2087.5
+        },
+        {
+          "phase": "allocate_ms",
+          "before_median_ms": 0.5913,
+          "after_median_ms": 0.6278,
+          "delta_ms": 0.03649999999999998,
+          "change_pct": 6.172839506172845,
+          "phase_speedup": 0.9418604651162791
+        },
+        {
+          "phase": "metadata_ms",
+          "before_median_ms": 14.8723,
+          "after_median_ms": 6.3368,
+          "delta_ms": -8.535499999999999,
+          "change_pct": -57.39192996375812,
+          "phase_speedup": 2.3469732357025626
+        },
+        {
+          "phase": "execute_ms",
+          "before_median_ms": 14.0738,
+          "after_median_ms": 14.9961,
+          "delta_ms": 0.9222999999999999,
+          "change_pct": 6.553311827651376,
+          "phase_speedup": 0.9384973426424204
+        },
+        {
+          "phase": "finalize_ms",
+          "before_median_ms": 7.8024,
+          "after_median_ms": 1.875,
+          "delta_ms": -5.9274,
+          "change_pct": -75.96893263611196,
+          "phase_speedup": 4.16128
+        },
+        {
+          "phase": "deferred_ms",
+          "before_median_ms": 5.1437,
+          "after_median_ms": 3.9009,
+          "delta_ms": -1.2428,
+          "change_pct": -24.161595738476194,
+          "phase_speedup": 1.318593145171627
+        }
+      ]
+    },
+    {
+      "operation": "AddComponentExisting",
+      "mode": "ECB",
+      "count": 100000,
+      "action_samples": 12,
+      "discarded_warmups": 3,
+      "measured_samples": 9,
+      "before_measured_log_lines": [
+        99,
+        102,
+        105,
+        108,
+        111,
+        114,
+        117,
+        120,
+        123
+      ],
+      "after_measured_log_lines": [
+        99,
+        102,
+        105,
+        108,
+        111,
+        114,
+        117,
+        120,
+        123
+      ],
+      "phases": [
+        {
+          "phase": "preflight_ms",
+          "before_median_ms": 0.287,
+          "after_median_ms": 0.2708,
+          "delta_ms": -0.016199999999999992,
+          "change_pct": -5.644599303135889,
+          "phase_speedup": 1.0598227474150665
+        },
+        {
+          "phase": "prepare_ms",
+          "before_median_ms": 0.2082,
+          "after_median_ms": 0.0004,
+          "delta_ms": -0.20779999999999998,
+          "change_pct": -99.80787704130644,
+          "phase_speedup": 520.5
+        },
+        {
+          "phase": "allocate_ms",
+          "before_median_ms": 0.0011,
+          "after_median_ms": 0.0004,
+          "delta_ms": -0.0007000000000000001,
+          "change_pct": -63.63636363636363,
+          "phase_speedup": 2.75
+        },
+        {
+          "phase": "metadata_ms",
+          "before_median_ms": 0.0004,
+          "after_median_ms": 0.0005,
+          "delta_ms": 9.999999999999999e-05,
+          "change_pct": 25.0,
+          "phase_speedup": 0.8
+        },
+        {
+          "phase": "execute_ms",
+          "before_median_ms": 32.0252,
+          "after_median_ms": 22.8467,
+          "delta_ms": -9.1785,
+          "change_pct": -28.660242558984805,
+          "phase_speedup": 1.4017429212971677
+        },
+        {
+          "phase": "finalize_ms",
+          "before_median_ms": 0.0005,
+          "after_median_ms": 0.0005,
+          "delta_ms": 0.0,
+          "change_pct": 0.0,
+          "phase_speedup": 1.0
+        },
+        {
+          "phase": "deferred_ms",
+          "before_median_ms": 1.4579,
+          "after_median_ms": 1.4662,
+          "delta_ms": 0.008299999999999974,
+          "change_pct": 0.5693120241443195,
+          "phase_speedup": 0.9943391078979675
+        }
+      ]
+    },
+    {
+      "operation": "RemoveComponentExisting",
+      "mode": "ECB",
+      "count": 100000,
+      "action_samples": 12,
+      "discarded_warmups": 3,
+      "measured_samples": 9,
+      "before_measured_log_lines": [
+        137,
+        140,
+        143,
+        146,
+        149,
+        152,
+        155,
+        158,
+        161
+      ],
+      "after_measured_log_lines": [
+        137,
+        140,
+        143,
+        146,
+        149,
+        152,
+        155,
+        158,
+        161
+      ],
+      "phases": [
+        {
+          "phase": "preflight_ms",
+          "before_median_ms": 0.2518,
+          "after_median_ms": 0.2539,
+          "delta_ms": 0.0020999999999999908,
+          "change_pct": 0.8339952343129342,
+          "phase_speedup": 0.9917290271760536
+        },
+        {
+          "phase": "prepare_ms",
+          "before_median_ms": 0.2087,
+          "after_median_ms": 0.0004,
+          "delta_ms": -0.20829999999999999,
+          "change_pct": -99.8083373263057,
+          "phase_speedup": 521.75
+        },
+        {
+          "phase": "allocate_ms",
+          "before_median_ms": 0.0012,
+          "after_median_ms": 0.0005,
+          "delta_ms": -0.0006999999999999999,
+          "change_pct": -58.33333333333333,
+          "phase_speedup": 2.4
+        },
+        {
+          "phase": "metadata_ms",
+          "before_median_ms": 0.0003,
+          "after_median_ms": 0.0005,
+          "delta_ms": 0.00020000000000000004,
+          "change_pct": 66.66666666666667,
+          "phase_speedup": 0.6
+        },
+        {
+          "phase": "execute_ms",
+          "before_median_ms": 21.1889,
+          "after_median_ms": 13.7607,
+          "delta_ms": -7.4282,
+          "change_pct": -35.057034579426016,
+          "phase_speedup": 1.5398126548794757
+        },
+        {
+          "phase": "finalize_ms",
+          "before_median_ms": 0.0006,
+          "after_median_ms": 0.0006,
+          "delta_ms": 0.0,
+          "change_pct": 0.0,
+          "phase_speedup": 1.0
+        },
+        {
+          "phase": "deferred_ms",
+          "before_median_ms": 0.0003,
+          "after_median_ms": 0.0004,
+          "delta_ms": 0.00010000000000000005,
+          "change_pct": 33.33333333333335,
+          "phase_speedup": 0.7499999999999999
+        }
+      ]
+    }
+  ]
+}

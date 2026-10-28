@@ -1,0 +1,219 @@
+Funke Engine – Performance-Audit, 26.10.2026
+
+Untersuchter Stand: aktueller Arbeitsbaum in C:/Users/benso/source/repos/Pending/Index.
+Umfang: native Engine, Rendering/WebGPU, Szene/Transforms/Physik, Scripting,
+Game-UI/Text und ausgewählte Editor-/Assetpfade. Keine Engine-Änderungen.
+
+Einordnung
+----------
+Die stärksten nachgewiesenen CPU-Skalierungsprobleme liegen in der wiederholten
+Transform-Verarbeitung. Weitere klar belegte Mehrarbeit entsteht durch einen
+unnötigen 2D-Vollbildpass, UI-Layout, unsichtbare UI-Inhalte und Text-Effekte.
+Die Reihenfolge unten ist eine Optimierungspriorität aus Messung, Verbreitung
+und Aufwand; sie ist keine gemessene Rangfolge einer konkreten Spielszene.
+GPU-Zeiten, Frame-P95/P99 und die Wirkung der vorgeschlagenen Änderungen wurden
+nicht gemessen. Projektspezifische Fluid-Benchmarks in vorhandenen Logs sind
+kein repräsentativer Engine-Gesamtbenchmark.
+
+Messmethode und Ergebnisse
+-------------------------
+CPU: AMD Ryzen 9 7900X, 12 Kerne / 24 logische Prozessoren.
+Separates C++-Probeprogramm, MSVC /O2, gegen vorhandene Release-Engine-DLL.
+DLL-Zeitstempel: 26.10.2026 15:51:32; kein Engine-Neubuild. Der geprüfte
+Transform2D-Quelltext ist älter als die DLL. Dies ersetzt keinen vollständigen
+Nachweis identischer Build-Eingaben für den gesamten schmutzigen Arbeitsbaum.
+Detached-Szenen ohne Application, Rendering und Physiksimulation; Entities
+direkt in der Registry erzeugt. Ein Aufwärmlauf vor den Messungen. Median aus
+sieben Batches, jeweils 100 Durchläufe für die teuren Pfade und 1.000 für den
+2D-Early-out. Zahlen sind Zeit pro Propagate-Aufruf, keine Framezeiten.
+
+Entities   2D idle, ohne Body   2D ein Body mit Kind   3D unverändert
+ 10.000         ~0,000015 ms          0,212840 ms          0,152475 ms
+100.000         ~0,000015 ms          2,083370 ms          1,570342 ms
+
+In 3D bestätigt der vorhandene Zähler: jeweils N Transforms gescannt, null
+Weltmatrizen neu berechnet. Die 2D-Szene unterscheidet sich nur durch eine
+zusätzlich gesetzte Rigidbody-Komponente am bereits vorhandenen Elternobjekt.
+Die extrem kleine Early-out-Zeit ist keine belastbare Speedup-Basis; relevant
+sind die absoluten Millisekunden des erzwungenen Gesamtdurchlaufs.
+
+Reproduktionsdateien:
+  bin-int/_agent/perf-audit-20261026/hierarchy_probe.cpp
+  bin-int/_agent/perf-audit-20261026/compile.cmd
+  bin-int/_agent/perf-audit-20261026/compile.rsp
+  bin-int/_agent/perf-audit-20261026/hierarchy-results.txt
+  bin-int/_agent/perf-audit-20261026/environment.json
+
+1. Transform-Verarbeitung: volle Szenenscans trotz minimaler Änderungen
+---------------------------------------------------------------------
+2D: Ein aktiviertes Rigidbody2D mit mindestens einem Kind aktiviert
+forceBodyHierarchy. Der Test berücksichtigt weder Schlafzustand noch eine
+tatsächliche Poseänderung. Dadurch werden auch alle unbeteiligten Wurzeln der
+Szene verarbeitet; der inkrementelle Dirty-Subtree-Pfad wird umgangen.
+Update und OnPreRender rufen dies beide auf. Bei 100.000 Entities entsprechen
+zwei Mikrobenchmark-Aufrufe rechnerisch 4,17 ms. Das ist keine gemessene
+Framezeit, zeigt aber einen erheblichen Anteil eines 16,67-ms-Framebudgets.
+Belege: Funke-Engine/src/Systems/TransformHierarchySystem.cpp:84, :134, :164,
+:169, :190, :194.
+
+3D: Der Cache vermeidet Matrixneuberechnungen, scannt jedoch bei jedem Aufruf
+alle Transform- und Hierarchiedaten, um direkte öffentliche Feldänderungen
+zu erkennen. Zusätzlich zu Update und OnPreRender propagiert Renderer3D bei
+Kamerasuche, Szenenrendering und beim Standard-Sky mit SunSize > 0 erneut.
+Für eine entsprechende einzelne Runtime-Szene sind fünf Aufrufe möglich.
+PhysicsSystem3D kann pro FixedUpdate einen weiteren Aufruf hinzufügen.
+5 x 1,570342 ms = 7,85 ms ist ausschließlich eine rechnerische Hochrechnung.
+Belege: Funke-Engine/src/Systems/Transform3DHierarchySystem.cpp:77, :174, :224,
+:228; Funke-Engine/src/Graphics/Renderer3D.cpp:1883, :1962, :2002;
+Funke-Engine/src/Physics3D/PhysicsSystem3D.cpp:44.
+
+Ansatz: Geänderte Physik-Teilbäume verfolgen; 3D-Mutationen versionieren und
+Propagation pro erforderlicher Phase teilen. Direkte Feldänderungen,
+Physikinterpolation und zwischenzeitliche Scriptänderungen müssen weiterhin
+korrekt erkannt werden; Propagate-Aufrufe nicht blind entfernen.
+Evidenz: Code und isolierte Release-Messung. Höchste Priorität bei großen Szenen.
+
+2. 2D-Renderer: HDR-Zwischenpuffer ohne aktive Effekte
+--------------------------------------------------
+runEffects prüft zunächst nur Renderer-, Projekt- und Kamera-Schalter, deren
+Defaults true sind. Es entsteht ein RGBA16F-FBO, bevor HasEnabledEffect geprüft
+wird. Fehlt der Effekt, wird am Ende dennoch ein Vollbild-Blit ausgeführt.
+Bei 3840 x 2160 benötigt allein die zusätzliche RGBA16F-Farbfläche rechnerisch
+63,3 MiB; Tiefe und tatsächliche Treiberbelegung kommen gegebenenfalls hinzu.
+Relevant für hohe Auflösung, mobile/iGPU-Geräte und mehrere Editoransichten.
+Belege: Funke-Engine/src/Graphics/Renderer2D.cpp:1099, :1129, :1132, :1388, :1460;
+Funke-Engine/src/Core/GraphicsSettings.hpp:101;
+Funke-Engine/src/Components/Graphics/Camera2DComponent.hpp:77.
+Ansatz: Effektkonfiguration vor der FBO-Entscheidung prüfen. Ohne Effekte,
+FXAA, RenderScale oder Letterboxing direkt ins Ziel rendern.
+Evidenz: hoher Code-Nachweis; GPU-Kosten noch ungemessen. Kleiner, breiter Hebel.
+
+3. UI-Layout bleibt auch bei unveränderter Oberfläche aktiv
+---------------------------------------------------------
+UILayoutSystem invalidiert nach jedem Update global die Layout-Epoche. Der
+Renderer benötigt dadurch auch bei ruhiger Runtime-UI mindestens einen vollen
+Layoutlauf je Frame. Im Editor ist der Cache-Skip ausgeschaltet; weitere
+Ansichten und die Auswahl eines UI-Elements können zusätzliche Läufe erzeugen.
+Ein Lauf invalidiert alle Rects, sammelt Wurzeln und berechnet Content-Fitting
+und Hierarchielayout. Die Runtime vermeidet bereits manche Doppelaufrufe;
+"immer zwei vollständige Läufe" wäre daher eine falsche Beschreibung.
+Belege: Funke-Engine/src/Systems/UILayoutSystem.cpp:536, :584, :591, :612, :632;
+Funke-Engine/src/Gui/GuiRenderer.cpp:583, :598;
+Funke-Editor/src/Systems/ImGuiEditorLayerViewport.cpp:965.
+Ansatz: szenen-/teilbaumbezogene Dirty-Versionen für tatsächliche Änderungen
+an Text, Größe, Hierarchie und Viewport. Draw-Order zwischen Input und Renderer
+teilen: sie wird derzeit ebenfalls mehrfach aufgebaut.
+Evidenz: hoher Code-Nachweis; noch keine Layout-Millisekunden gemessen.
+
+4. Scroll-UI und Text: Arbeit wächst mit gesamten statt sichtbaren Inhalten
+------------------------------------------------------------------------
+GuiRenderer sammelt auch außerhalb des sichtbaren Maskenbereichs liegende
+Einträge. Die Clip-Information wird weitergereicht; Glyphenaufbau und Upload
+finden vor dem GPU-Scissor statt. Lange Listen kosten deshalb auch dann CPU-
+und Vertexarbeit, wenn nur wenige Zeilen sichtbar sind.
+Belege: Funke-Engine/src/Gui/GuiRenderer.cpp:674, :759, :842;
+Funke-Engine/src/Graphics/Text/TextRenderer.cpp:983, :1024.
+
+Zusätzlich wird Textgeometrie bei jedem Renderaufruf neu aufgebaut. Eine
+Outline führt acht zusätzliche vollständige EmitText-Aufrufe aus, Schatten
+einen weiteren. Jeder wiederholt Umbruch, Vermessung und Glypheniteration.
+Pro gezeichneter Glyphe werden sechs Vertices zu je 80 Bytes erzeugt.
+10.000 Glyphen mit Outline und Schatten ergeben rechnerisch 48 MB Vertexdaten
+pro Aufruf bzw. 2,88 GB/s bei 60 Aufrufen/s. Das ist Datenmengen-Arithmetik,
+keine gemessene Speicherbandbreite oder Aussage über zehnfache Framezeit.
+Belege: Funke-Engine/src/Graphics/Text/TextRenderer.cpp:730, :750, :808, :919,
+:937, :977; Funke-Engine/src/Graphics/Text/TextRenderer.hpp:26.
+Ansatz: Unsichtbare Einträge vor Geometrieaufbau verwerfen, lange Listen
+virtualisieren, Textlayout/Geometrie cachen, Outline im Shader oder über
+wiederverwendete instanzierte Geometrie darstellen. Effektüberhang und
+gedrehte Rects bei konservativen Culling-Grenzen berücksichtigen.
+Evidenz: hoher Code-Nachweis; besonders relevant für große UI-Listen.
+
+5. 2D-Batching: wechselnde Texturen erzeugen viele Draw Calls
+----------------------------------------------------------
+Sortierung erhält Layer/Order/DrawIndex. Nur unmittelbar aufeinanderfolgende
+gleiche Texture-/Mask-/Materialkombinationen bilden einen instanzierten Batch.
+10.000 sichtbare, in dieser Reihenfolge alternierende A/B-Sprites können somit
+10.000 Draw Calls erzeugen. Bind-Group-Caching existiert, behebt aber die Zahl
+der Draws nicht. Eine globale Textursortierung wäre bei Alpha-Inhalten falsch.
+Belege: Funke-Engine/src/Graphics/Renderer2D.cpp:684, :1293, :1324.
+Ansatz: gemeinsame Atlanten, Texture Arrays oder Multi-Texture-Batches unter
+Erhalt der Zeichenreihenfolge. Zuerst tatsächliche Batchzahl messen.
+Evidenz: hoher Code-Nachweis; Wirkung stark vom Sprite-Mix abhängig.
+
+6. 3D-Partikel: kein Frustum-Culling vor Sortierung und Upload
+----------------------------------------------------------
+Alle Partikeldistanzen werden berechnet. Alpha-Emitter werden über sämtliche
+Partikel sortiert; anschließend werden nur Größe <= 0 und Alpha <= 0 verworfen.
+Auch komplett unsichtbare Emitter verursachen O(P log P)-Sortierung, Upload und
+Vertexarbeit. GPU-Clipping beseitigt diese CPU-Kosten nicht.
+Belege: Funke-Engine/src/Graphics/Renderer3D.cpp:2483, :2495, :2533, :2572.
+Ansatz: konservative Emitter-Bounds und sichtbare Partikel vor Sortierung filtern.
+Evidenz: hoher Code-Nachweis; relevant für große Effekt-/Wetterwelten.
+
+Weitere relevante Kandidaten
+----------------------------
+* 2D-Physik nutzt einen Box2D-Worker und fest fünf Substeps. Box2DWorld setzt
+  weder workerCount noch Task-Callbacks; die lokale Box2D-Quelle fällt dadurch
+  auf einen Worker zurück. Für viele aktive Kontakte kann das dominieren.
+  Worker-Anbindung und Substep-Qualitätsstufen mit Stabilitätstests vergleichen;
+  mehr Threads helfen kleinen Szenen nicht automatisch.
+  Belege: Funke-Engine/src/Physics/Box2DWorld.cpp:9, :20;
+  External/box2d/src/types.c:13; External/box2d/src/physics_world.c:285, :306.
+* 3D-Physik übernimmt auch schlafende Dynamic-Bodies weiter in PoseUpdates,
+  sortiert sie und wendet Posen an. Der Schlaf-Test setzt nur die Interpolation
+  auf die Ruhepose zurück. Bei großen ruhenden Physikwelten Active-/Dirty-Sets
+  prüfen, einschließlich bewegter Eltern und Sleep/Wake-Übergängen.
+  Belege: Funke-Engine/src/Physics3D/PhysicsWorld3D.cpp:1044, :1066, :1091.
+* 3D-Mesh-Culling erfolgt nach Material-/Shaderauflösung und Normalmatrixaufbau.
+  Das spart Draws, aber nicht die gesamte CPU-Vorbereitung unsichtbarer Meshes.
+  Frühere Bounds-Prüfung und statische Instance-Caches prüfen, getrennt von
+  Shadow-Castern. Belege: Funke-Engine/src/Graphics/Renderer3D.cpp:2056, :2076,
+  :2117, :2225, :2299.
+* Viele Queue.Submit-Aufrufe: Sky, Meshes, Partikel und Linien flushen separat;
+  Target-Wechsel können weitere Submissions auslösen. Das sind mögliche
+  CPU-/Treiberkosten, KEIN belegtes synchrones GPU-Warten. Flushes schützen
+  aktuell wiederverwendete Buffer vor Überschreiben; erst nach Einführung
+  getrennter Frame-/View-Bufferbereiche zusammenfassen.
+  Belege: Funke-Engine/src/Graphics/Backend/WebGPUApi.cpp:619;
+  Funke-Engine/src/Graphics/Renderer3D.cpp:1993, :2455, :2580, :2726.
+* Editor-Thumbnails: Cache-Misses laden/dekodieren Originalbilder synchron und
+  laden deren volle Auflösung hoch. 256 Einträge sind das Limit, kein Bytebudget.
+  256 x 4096² RGBA8 entsprächen theoretisch 16 GiB Texturdaten. Das betrifft
+  Ruckler beim Öffnen/Scrollen bildreicher Ordner, nicht bereits gecachte Tiles.
+  Ansatz: kleine vorgebackene Thumbnails, Worker-Decoding und Upload-/Bytebudget.
+  Belege: Funke-Editor/src/Gui/AssetBrowser.cpp:2117;
+  Funke-Editor/src/Gui/ThumbnailCache.cpp:74, ThumbnailCache.hpp:18;
+  Funke-Engine/src/Graphics/Texture2D.cpp:452, :478, :508.
+
+Grenzen der vorhandenen Profileranzeige
+------------------------------------
+Das eingebaute GPU-Timing hängt am 2D-Sprite-Pass. Es erfasst damit nicht die
+vollständige GPU-Zeit für 3D, GUI und Postprocessing.
+Beleg: Funke-Engine/src/Graphics/Renderer2D.cpp:1248, :1340.
+CPU-Samples werden pro Modul zeitlich begrenzt und als Einzelwerte gespeichert,
+nicht über sämtliche Aufrufe eines Frames aufsummiert. Mehrere Views, Szenen
+oder FixedUpdates können dadurch in der Anzeige unterrepräsentiert sein.
+Beleg: Funke-Engine/src/Profiling/Profiler.cpp:59, :262, :277.
+"Frame Time" stammt aus dem Simulationsdelta; --fixed-step setzt dieses explizit
+fest und eignet sich deshalb nicht zur FPS-Messung über diesen Wert.
+Beleg: Funke-Engine/src/Core/Application.cpp:303, :318.
+Für eine belastbare Gesamt-Rangfolge: Tracy-Frame-Spannen plus vollständige
+GPU-Pass-Timestamps, echte Wall-Clock-Framezeiten, Warm-up, VSync-/Cap-Kontrolle
+und repräsentative Szenen. UI- und Hierarchiearbeit getrennt pro View zählen.
+
+Bereits vorhandene Optimierungen wurden berücksichtigt
+-----------------------------------------------------
+2D Spatial Grid, parallele Sammlung großer dynamischer Sprite-Mengen, Radixsort,
+persistente GPU-Buffer/Bind Groups und gemeinsame additive 2D-Szenen; 3D Mesh-
+und Shadow-Culling sowie GPU-Skinning; Dirty-Teilbäume in der 2D-Hierarchie;
+AssetBrowser-ListClipper und asynchrone Suche; asynchrones initiales Font-Baking.
+Diese Funktionen sind vorhanden und werden hier nicht als fehlend bewertet.
+
+Empfohlene Reihenfolge
+---------------------
+Zuerst Transform-Invalidierung und redundante Propagation, parallel den kleinen
+2D-Postprocessing-Gate-Fix. Danach UI-Dirty-Layout, Listen-Culling und Textcache.
+Textur-Batching, Partikel-Culling und Physik-Worker anhand des Zielspiels
+priorisieren. Jede Änderung mit gleicher Szene vor/nachher messen; GPU- und
+CPU-Zeit, P95/P99, Speicher und Bild-/Physikkorrektheit vergleichen.

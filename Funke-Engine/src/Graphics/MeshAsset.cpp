@@ -2,6 +2,7 @@
 #include "Graphics/MeshAsset.hpp"
 
 #include "Assets/AssetRegistry.hpp"
+#include "Assets/AssetLoader.hpp"
 #include "Graphics/GltfImporter.hpp"
 #include "Graphics/SkeletalAnimation.hpp"
 #include "Serialization/File.hpp"
@@ -281,6 +282,36 @@ namespace Funke {
 		return it->second.Valid ? &it->second.Value : nullptr;
 	}
 
+	const MeshAsset* MeshLibrary::FindLoaded(uint64_t guid) {
+		const auto it = Entries().find(guid);
+		if (it == Entries().end() || !it->second.Valid) return nullptr;
+		it->second.LastUsed = std::chrono::steady_clock::now();
+		it->second.UsedSincePurge = true;
+		return &it->second.Value;
+	}
+
+	const MeshAsset* MeshLibrary::StoreLoadedAsset(uint64_t guid, const std::string& path, MeshAsset&& asset) {
+		if (guid == 0 || IsRuntimeMeshGuid(guid) || path.empty()) return nullptr;
+		if (const MeshAsset* existing = FindLoaded(guid)) return existing;
+		if (asset.Data.Vertices.empty() || asset.Data.Indices.empty()) return nullptr;
+		for (uint32_t index : asset.Data.Indices) {
+			if (index >= asset.Data.Vertices.size()) return nullptr;
+		}
+
+		Entry& entry = Entries()[guid];
+		entry = Entry{};
+		entry.Path = path;
+		entry.Dependencies = std::move(asset.SourceDependencies);
+		if (entry.Dependencies.empty()) entry.Dependencies[path] = FileStamp::Read(path);
+		entry.Value = std::move(asset);
+		UpdateBounds(entry.Value);
+		entry.Value.Revision = NextRevision();
+		entry.Valid = true;
+		entry.LastAttempt = entry.LastUsed = std::chrono::steady_clock::now();
+		entry.UsedSincePurge = true;
+		return &entry.Value;
+	}
+
 	bool IsMeshFileExtension(std::string_view extension) {
 		return extension == k_ObjMeshExtension || extension == k_GltfMeshExtension || extension == k_GlbMeshExtension;
 	}
@@ -293,7 +324,10 @@ namespace Funke {
 	}
 
 	bool MeshLibrary::LoadAssetFromFile(const std::string& path, MeshAsset& outAsset) {
-		return LoadMeshAsset(path, outAsset, nullptr);
+		std::unordered_map<std::string, FileStamp> dependencies;
+		const bool loaded = LoadMeshAsset(path, outAsset, &dependencies);
+		outAsset.SourceDependencies = std::move(dependencies);
+		return loaded;
 	}
 
 	namespace {
@@ -366,6 +400,7 @@ namespace Funke {
 	}
 
 	void MeshLibrary::Clear() {
+		AssetLoader::Invalidate(AssetKind::Mesh);
 		std::erase_if(Entries(), [](const auto& pair) { return !pair.second.Runtime; });
 	}
 

@@ -330,7 +330,8 @@ namespace Funke {
 	bool ExternalEditor::s_Detected = false;
 
 	bool ExternalEditor::IsScriptExtension(const std::string& ext) {
-		return ext == ".cs" || ext == ".cpp" || ext == ".c" || ext == ".h" || ext == ".hpp"
+		return ext == ".cs" || ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c"
+			|| ext == ".h" || ext == ".hh" || ext == ".hpp" || ext == ".hxx" || ext == ".inl" || ext == ".ipp"
 			|| ext == ".lua" || ext == ".py" || ext == ".js" || ext == ".ts"
 			|| ext == ".json" || ext == ".xml" || ext == ".yaml" || ext == ".yml"
 			|| ext == ".txt" || ext == ".md" || ext == ".cfg" || ext == ".ini"
@@ -571,9 +572,10 @@ namespace Funke {
 		}
 
 		// C++ native scripts → NativeScripts .sln
-		if (ext == ".cpp" || ext == ".c" || ext == ".h" || ext == ".hpp") {
+		if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c"
+			|| ext == ".h" || ext == ".hh" || ext == ".hpp" || ext == ".hxx" || ext == ".inl" || ext == ".ipp") {
 			auto nativeSln = std::filesystem::path(project->NativeScriptsDir)
-				/ "build" / (project->Name + "-NativeScripts.sln");
+				/ "build" / (project->GetNativeScriptTargetName() + ".sln");
 			if (std::filesystem::exists(nativeSln))
 				return std::filesystem::canonical(nativeSln).string();
 		}

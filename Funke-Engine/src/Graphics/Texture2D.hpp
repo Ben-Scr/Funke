@@ -38,6 +38,10 @@ namespace Funke {
 			bool srgb = false,
 			bool flipVertical = true);
 
+		// Main thread only; flipVertical describes the already-decoded pixel orientation.
+		bool LoadFromImage(const ImageData& image, const std::string& sourcePath,
+			bool generateMipmaps = true, bool srgb = false, bool flipVertical = false);
+
 		// floor(log2(max(w,h))) + 1; 0 for an empty extent.
 		static constexpr uint32_t ComputeMipLevelCount(uint32_t width, uint32_t height) noexcept {
 			uint32_t largest = width > height ? width : height;
@@ -83,6 +87,7 @@ namespace Funke {
 
 		std::unique_ptr<ImageData> GetImageData() const;
 
+		// Worker-safe; does not access GPU state or change stb's global decode settings.
 		static std::unique_ptr<ImageData> DecodeFileToCpu(const char* path,
 			bool flipVertical = false);
 		// Drops the cached mip-generation pipelines (and their device ref); called from RenderApi::Shutdown.
