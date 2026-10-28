@@ -195,6 +195,8 @@ Before tagging a public release:
        -RequireSignature
    ```
 
-CI repeats the automated portions for pull requests. A public tag should be created only after the clean-machine engine and exported-game checks pass.
+CI runs on pushes, pull requests and manual dispatch. Python tooling tests and C# ScriptCore tests run independently on Windows, Linux and Apple Silicon macOS; the C# jobs use AnyCPU and upload TRX results without waiting for Dawn or native builds. Native jobs build and test the desktop engine, and runtime smoke tests cover Release/Dist on macOS, Release/Debug/Dist on Linux, and the packaged Windows applications and installer. A draft release requires all desktop jobs and the managed-test matrix to pass.
+
+Android helper tests, iOS/Web export orchestration tests and Web preview tests run in the Python matrix. The export tests substitute external compilers and downloads: they do not compile APKs, sign iOS apps or execute WebAssembly in a browser. Device and browser export checks remain part of release validation. A public tag should be created only after the clean-machine engine and exported-game checks pass.
 
 CI regenerates `--module-profile=core` into `premake/generated/core` and builds the isolated Engine on Windows and Linux. Linux CI also runs the Debug engine tests in separate `--sanitize` and `--coverage` variants. AddressSanitizer and UndefinedBehaviorSanitizer fail the job on runtime defects; lcov publishes the engine coverage report. The core, sanitizer, and coverage object directories are distinct, so none of these gates can reuse full-profile or uninstrumented objects.

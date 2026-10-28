@@ -23,11 +23,14 @@ FORBIDDEN_MARKERS = (
 def log_snapshot(binary: Path) -> tuple[Path | None, int]:
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA")
+    elif sys.platform == "darwin":
+        home = os.environ.get("HOME")
+        base = str(Path(home) / "Library" / "Application Support") if home else None
     else:
-        base = os.environ.get("XDG_CONFIG_HOME")
+        base = os.environ.get("XDG_DATA_HOME")
         if not base:
             home = os.environ.get("HOME")
-            base = str(Path(home) / ".config") if home else None
+            base = str(Path(home) / ".local" / "share") if home else None
     if not base:
         return None, 0
     path = Path(base) / "Funke" / "Logs" / f"{binary.stem}.log"

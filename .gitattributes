@@ -9,6 +9,8 @@
 # Force LF everywhere. SetupDawn.sh runs under bash, so keep it LF too.
 scripts/dawn/dawn-revision.txt text eol=lf
 scripts/dawn/SetupDawn.sh text eol=lf
+# Dawn keeps its sources LF, so patch context must stay LF on Windows as well.
+scripts/dawn/patches/*.patch text eol=lf whitespace=-blank-at-eol
 premake/patches/vendor/*.patch text eol=lf whitespace=-blank-at-eol
 scripts/vendor_patches.py text eol=lf
 

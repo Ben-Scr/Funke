@@ -3,6 +3,14 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   script-tests:
@@ -12,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2022, ubuntu-24.04, macos-14]
+        os: [windows-2022, ubuntu-24.04, macos-15]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,6 +32,37 @@ jobs:
 
       - name: Release, platform builder, packaging and Web preview tests
         run: python -m unittest discover -s scripts/ci -p "test_*.py"
+
+  managed-tests:
+    name: C# tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-24.04, macos-15]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      # These tests use managed binding stubs and need no native engine or GPU.
+      # Override only PlatformTarget so ARM64 macOS can run them while retaining
+      # ScriptCore's Release|x64 configuration properties.
+      - name: C# ScriptCore Tests
+        run: dotnet test Tests/Funke-ScriptCore-Tests/Funke-ScriptCore-Tests.csproj -c Release -p:PlatformTarget=AnyCPU --nologo --logger trx --results-directory test-results
+
+      - name: Upload C# Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-CSharp-Tests-${{ matrix.os }}
+          path: test-results/*.trx
+          if-no-files-found: warn
 
   windows-build:
     needs: script-tests
@@ -144,10 +183,6 @@ jobs:
         shell: pwsh
         run: scripts/RunTests.bat
 
-      - name: C# ScriptCore Tests
-        shell: pwsh
-        run: dotnet test Tests/Funke-ScriptCore-Tests/Funke-ScriptCore-Tests.csproj -c Release --nologo
-
       - name: Project-local Package Smoke Test
         shell: pwsh
         run: scripts/ci/project_package_smoke_test.ps1 -Configuration Release
@@ -218,7 +253,9 @@ jobs:
         run: |
           $bundle = 'bin/Release-windows-x86_64/Funke-Launcher'
           python scripts/ci/application_smoke_test.py --binary "$bundle/Funke-Launcher.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/ci/application_smoke_test.py --binary "$bundle/Funke-Editor.exe" --editor-project
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Archived Launcher + Editor + Dist Runtime Smoke Tests
         shell: pwsh
@@ -233,9 +270,12 @@ jobs:
           $launcher = Join-Path $stage 'Funke-Launcher.exe'
           $editor = Join-Path $stage 'Funke-Editor.exe'
           python scripts/ci/application_smoke_test.py --binary $launcher
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/ci/application_smoke_test.py --binary $editor --editor-project
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $runtime = Join-Path $stage 'EngineSDK/Runtime-Dist/Funke-Runtime.exe'
           python scripts/ci/runtime_smoke_test.py --binary $runtime --require-scripting
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify Release Checksum and Signature
         shell: pwsh
@@ -312,10 +352,10 @@ jobs:
           # (scripts/sdl/SetupSDL.py, run by Setup). pkg-config: Dawn's CMake dep probing when
           # building webgpu_dawn from source. xvfb: headless runtime smoke test.
           # clang: Dawn's build is Clang-oriented and fails to compile under GCC 13.
-          # lld: GNU ld is memory-hungry when linking the engine .so against
-          # Dawn's large monolithic static archive; lld keeps the CI link stable.
+          # Keep GCC's default GNU linker: Dist uses GCC LTO, which LLD cannot read.
+          # Dawn is shared, so its former static-archive linker memory issue no longer applies.
           # libx11-xcb-dev: Dawn's X11 backend needs X11/Xlib-xcb.h (not in xorg-dev).
-          sudo apt-get install -y xorg-dev libglu1-mesa-dev xvfb pkg-config clang lld libx11-xcb-dev lcov \
+          sudo apt-get install -y xorg-dev libglu1-mesa-dev xvfb pkg-config clang libx11-xcb-dev lcov \
             libwayland-dev libxkbcommon-dev wayland-protocols libdbus-1-dev libudev-dev
 
       - name: Install Premake
@@ -381,8 +421,8 @@ jobs:
       # the Launcher's postbuild bundles everything into EngineSDK (scripts/CopyEngineSdk.py).
       - name: Build Linux Targets
         run: |
-          make config=dist verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Funke-Runtime
-          make config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Funke-Engine Funke-Managed Funke-Runtime Funke-Editor Funke-CLI Funke-Launcher
+          make config=dist verbose=1 -j"$(nproc)" Funke-Runtime
+          make config=release verbose=1 -j"$(nproc)" Funke-Engine Funke-Managed Funke-Runtime Funke-Editor Funke-CLI Funke-Launcher
 
       - name: Package Linux Bundle
         run: python3 scripts/PackagePosix.py --configuration Release --output-dir dist-posix
@@ -396,12 +436,12 @@ jobs:
 
       - name: Linux Engine + Editor Tests
         run: |
-          make config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Funke-Engine-Tests Funke-Editor-Tests
+          make config=release verbose=1 -j"$(nproc)" Funke-Engine-Tests Funke-Editor-Tests
           ./bin/Release-linux-x86_64/Funke-Engine-Tests/Funke-Engine-Tests
           ./bin/Release-linux-x86_64/Funke-Editor-Tests/Funke-Editor-Tests
 
       - name: Build Linux Debug Targets
-        run: make config=debug verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Funke-Engine Funke-Runtime Funke-Editor
+        run: make config=debug verbose=1 -j"$(nproc)" Funke-Engine Funke-Runtime Funke-Editor
 
       - name: Linux Runtime Smoke Test
         run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Release-linux-x86_64/Funke-Runtime/Funke-Runtime
@@ -409,9 +449,12 @@ jobs:
       - name: Linux Debug Runtime Smoke Test
         run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Debug-linux-x86_64/Funke-Runtime/Funke-Runtime
 
+      - name: Linux Dist Runtime Smoke Test
+        run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Dist-linux-x86_64/Funke-Runtime/Funke-Runtime --require-scripting
+
       - name: Linux Debug Engine + Editor Tests
         run: |
-          make config=debug verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Funke-Engine-Tests Funke-Editor-Tests
+          make config=debug verbose=1 -j"$(nproc)" Funke-Engine-Tests Funke-Editor-Tests
           ./bin/Debug-linux-x86_64/Funke-Engine-Tests/Funke-Engine-Tests
           ./bin/Debug-linux-x86_64/Funke-Editor-Tests/Funke-Editor-Tests
 
@@ -421,13 +464,13 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
           vendor/bin/premake5 --sanitize --no-profiler gmake
-          make config=debug verbose=1 LDFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fuse-ld=lld" -j"$(nproc)" Funke-Engine-Tests
+          make config=debug verbose=1 LDFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all" -j"$(nproc)" Funke-Engine-Tests
           ./bin/Debug-linux-x86_64-sanitized/Funke-Engine-Tests/Funke-Engine-Tests
 
       - name: Linux Debug Engine Coverage
         run: |
           vendor/bin/premake5 --coverage --no-profiler gmake
-          make config=debug verbose=1 LDFLAGS="--coverage -fuse-ld=lld" -j"$(nproc)" Funke-Engine-Tests
+          make config=debug verbose=1 LDFLAGS="--coverage" -j"$(nproc)" Funke-Engine-Tests
           ./bin/Debug-linux-x86_64-coverage/Funke-Engine-Tests/Funke-Engine-Tests
           lcov --capture --directory bin-int/Debug-linux-x86_64-coverage --output-file coverage-raw.info --ignore-errors mismatch
           lcov --remove coverage-raw.info '*/External/*' '*/vendor/*' '*/Tests/*' '/usr/*' --output-file coverage.info --ignore-errors unused
@@ -445,13 +488,14 @@ jobs:
       - name: Linux Core-only Engine Validation
         run: |
           vendor/bin/premake5 --core-validation --module-profile=core gmake
-          make -C premake/generated/core config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Funke-Engine
+          make -C premake/generated/core config=release verbose=1 -j"$(nproc)" Funke-Engine
 
   macos-build:
     needs: script-tests
     # Apple Silicon. Builds the engine, editor, launcher and CLI natively (Dawn on Metal) and runs the
     # doctest suites; the bundle is uploaded for manual checks until macOS releases are signed and notarized.
-    runs-on: macos-14
+    # macOS 15 supplies Clang 17; Dawn's aggregate CTAD needs that compiler generation.
+    runs-on: macos-15
 
     steps:
       - name: Checkout
@@ -493,7 +537,7 @@ jobs:
             External/dawn/third_party/**/LICENSE*
             External/dawn/third_party/**/NOTICE*
             External/dawn/third_party/**/COPYING*
-          key: dawn-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/dawn/dawn-revision.txt', 'scripts/dawn/SetupDawn.sh', 'scripts/dawn/patches/**') }}
+          key: dawn-v4-macos-15-${{ runner.arch }}-${{ hashFiles('scripts/dawn/dawn-revision.txt', 'scripts/dawn/SetupDawn.sh', 'scripts/dawn/patches/**') }}
 
       - name: Build Dawn (cache miss only)
         if: steps.cache-dawn.outputs.cache-hit != 'true'
@@ -534,6 +578,11 @@ jobs:
           ./bin/Release-macosx-arm64/Funke-Engine-Tests/Funke-Engine-Tests
           ./bin/Release-macosx-arm64/Funke-Editor-Tests/Funke-Editor-Tests
 
+      - name: macOS Runtime Smoke Tests
+        run: |
+          python3 scripts/ci/runtime_smoke_test.py --binary bin/Release-macosx-arm64/Funke-Runtime/Funke-Runtime --require-scripting
+          python3 scripts/ci/runtime_smoke_test.py --binary bin/Dist-macosx-arm64/Funke-Runtime/Funke-Runtime --require-scripting
+
       - name: Package macOS Bundle
         run: python3 scripts/PackagePosix.py --configuration Release --output-dir dist-posix
 
@@ -548,7 +597,7 @@ jobs:
   # after the clean-machine checks in Building-and-Shipping.md.
   publish-release:
     if: github.ref_type == 'tag'
-    needs: [windows-build, linux-build, macos-build]
+    needs: [managed-tests, windows-build, linux-build, macos-build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
