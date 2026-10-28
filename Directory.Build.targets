@@ -2,18 +2,17 @@
   <PropertyGroup>
     <FunkePythonExe Condition="'$(FunkePythonExe)' == ''">python</FunkePythonExe>
     <FunkeBuildMetadataScript>$(MSBuildThisFileDirectory)scripts\generate_build_metadata.py</FunkeBuildMetadataScript>
+    <FunkeBuildMetadataScope Condition="'$(FunkeBuildMetadataScope)' == '' and '$(Configuration)' != 'Dist' and '$(ContinuousIntegrationBuild)' != 'true'">engine</FunkeBuildMetadataScope>
+    <FunkeBuildMetadataScope Condition="'$(FunkeBuildMetadataScope)' == ''">repository</FunkeBuildMetadataScope>
   </PropertyGroup>
   <!--
-    Keeps the local build identity fresh; CI and BuildWindows.ps1 run the script
-    themselves with release checks. It costs 1.5-5 s (git status walks every
-    submodule), so it runs only in Funke-Engine: that is where the generated
-    headers live and every other native project builds after it. Hooking
-    BuildGenerateSources instead of PrepareForBuild keeps it out of the
-    GetProjectInfoForReference queries that dependent projects issue.
+    Local iteration fingerprints engine inputs so editor, documentation and asset
+    edits do not relink the DLL. CI and BuildWindows.ps1 retain repository-wide
+    identity. BuildGenerateSources keeps this out of reference-information queries.
   -->
   <Target Name="GenerateFunkeBuildMetadata"
           BeforeTargets="BuildGenerateSources"
           Condition="'$(DesignTimeBuild)' != 'true' and '$(MSBuildProjectName)' == 'Funke-Engine' and Exists('$(FunkeBuildMetadataScript)')">
-    <Exec Command="&quot;$(FunkePythonExe)&quot; &quot;$(FunkeBuildMetadataScript)&quot;" />
+    <Exec Command="&quot;$(FunkePythonExe)&quot; &quot;$(FunkeBuildMetadataScript)&quot; --identity-scope $(FunkeBuildMetadataScope)" />
   </Target>
 </Project>

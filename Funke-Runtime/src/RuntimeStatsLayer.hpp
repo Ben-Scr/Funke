@@ -6,7 +6,7 @@
 
 namespace Funke {
 
-	// Runtime stats overlay layer (showRuntimeStats=true). F6 toggles visibility; distinct from Ctrl+F6 (profiler) so both can be open simultaneously.
+	// Requires showRuntimeStats; keyboard defaults live in PlatformShortcuts.
 	class RuntimeStatsLayer : public Layer {
 	public:
 		using Layer::Layer; // inherit "explicit Layer(const std::string& name)"

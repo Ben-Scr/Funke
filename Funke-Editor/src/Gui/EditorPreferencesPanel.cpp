@@ -7,6 +7,7 @@
 #include "Editor/ExternalEditor.hpp"
 #include "Editor/ExternalEditorInfo.hpp"
 #include "Graphics/Text/FontHandle.hpp"
+#include "Gui/EditorShortcuts.hpp"
 #include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Gui/ImGuiFonts.hpp"
@@ -19,6 +20,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cfloat>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -113,55 +115,51 @@ namespace Funke {
 			return;
 		}
 
-		EditorUI::SearchField("##EditorPrefsSearch", m_SearchBuffer, sizeof(m_SearchBuffer), "Search preferences...");
-		ImGui::Spacing();
+		if (ImGui::BeginChild("##PreferencesContent", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
+			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground)) {
+			EditorUI::SearchField("##EditorPrefsSearch", m_SearchBuffer, sizeof(m_SearchBuffer), "Search preferences...");
+			ImGui::Spacing();
 
-		if (IsPreferenceSearchActive()) {
-			ImGui::BeginChild("##EditorPrefsSearchResults", ImVec2(0, 0), false,
-				ImGuiWindowFlags_AlwaysVerticalScrollbar);
-			RenderAppearanceTab();
-			RenderScriptingTab();
-			RenderLayoutsTab();
-			RenderBehaviorTab();
-			ImGui::EndChild();
+			if (IsPreferenceSearchActive()) {
+				if (ImGui::BeginChild("##EditorPrefsSearchResults", ImVec2(0, 0), false,
+					ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
+					RenderAppearanceTab();
+					RenderScriptingTab();
+					RenderLayoutsTab();
+					RenderBehaviorTab();
+				}
+				ImGui::EndChild();
+			}
+			else if (EditorUI::BeginTabBar("##EditorPrefsTabs", ImGuiTabBarFlags_None)) {
+				// Independent scroll regions keep search and tabs pinned.
+				if (EditorUI::BeginTabItem("Appearance")) {
+					if (ImGui::BeginChild("##AppearanceScroll", ImVec2(0, 0), false)) RenderAppearanceTab();
+					ImGui::EndChild();
+					EditorUI::EndTabItem();
+				}
+				if (EditorUI::BeginTabItem("Scripting")) {
+					if (ImGui::BeginChild("##ScriptingScroll", ImVec2(0, 0), false)) RenderScriptingTab();
+					ImGui::EndChild();
+					EditorUI::EndTabItem();
+				}
+				if (EditorUI::BeginTabItem("Layouts")) {
+					if (ImGui::BeginChild("##LayoutsScroll", ImVec2(0, 0), false)) RenderLayoutsTab();
+					ImGui::EndChild();
+					EditorUI::EndTabItem();
+				}
+				if (EditorUI::BeginTabItem("Behavior")) {
+					if (ImGui::BeginChild("##BehaviorScroll", ImVec2(0, 0), false)) RenderBehaviorTab();
+					ImGui::EndChild();
+					EditorUI::EndTabItem();
+				}
+				EditorUI::EndTabBar();
+			}
 		}
-		else if (ImGui::BeginTabBar("##EditorPrefsTabs", ImGuiTabBarFlags_None)) {
-			// Each tab's body lives in a scrolling child so the search bar and
-			// the tab bar stay pinned at the top while a long tab scrolls.
-			if (ImGui::BeginTabItem("Appearance")) {
-				ImGui::BeginChild("##AppearanceScroll", ImVec2(0, 0), false);
-				RenderAppearanceTab();
-				ImGui::EndChild();
-				ImGui::EndTabItem();
-			}
-			if (ImGui::BeginTabItem("Scripting")) {
-				ImGui::BeginChild("##ScriptingScroll", ImVec2(0, 0), false);
-				RenderScriptingTab();
-				ImGui::EndChild();
-				ImGui::EndTabItem();
-			}
-			if (ImGui::BeginTabItem("Layouts")) {
-				ImGui::BeginChild("##LayoutsScroll", ImVec2(0, 0), false);
-				RenderLayoutsTab();
-				ImGui::EndChild();
-				ImGui::EndTabItem();
-			}
-			if (ImGui::BeginTabItem("Behavior")) {
-				ImGui::BeginChild("##BehaviorScroll", ImVec2(0, 0), false);
-				RenderBehaviorTab();
-				ImGui::EndChild();
-				ImGui::EndTabItem();
-			}
-			ImGui::EndTabBar();
-		}
+		ImGui::EndChild();
 
-		// Reference picker popup for the editor-font selector. Must run
-		// inside the same ImGui::Begin scope as the button that opens it.
 		ReferencePicker::RenderPopup();
 
-		// Layout modals are owned by this panel (not the menubar) so the
-		// OpenPopup / BeginPopupModal id-stack match. Render them at the
-		// panel's Begin/End scope, after the tab bar.
+		// Deferred modal open/close calls share the panel's ID scope.
 		RenderLayoutModals();
 
 		ImGui::End();
@@ -182,15 +180,16 @@ namespace Funke {
 
 	void EditorPreferencesPanel::RenderAppearanceTab() {
 		const bool showTheme = PreferenceSectionVisible("Theme", "appearance auto dark light liquid glass transparent translucent custom color colors palette");
-		const bool showFont = PreferenceSectionVisible("Editor Font", "appearance editor font typeface google sans size zoom");
+		const bool showFont = PreferenceSectionVisible("Editor Font", "appearance editor font typeface ibm plex sans condensed size zoom text scale");
 		const bool showHierarchy = PreferenceSectionVisible("Entities Hierarchy",
 			"appearance entities hierarchy outliner row size scale height bigger larger smaller");
 		if (!showTheme && !showFont && !showHierarchy) return;
 
 		if (showTheme) {
 			EditorThemeMode currentMode = EditorPreferences::GetThemeMode();
-			if (EditorUI::SectionHeader("Theme")) {
-				ImGui::SetNextItemWidth(220.0f);
+			if (EditorUI::BeginSection("Theme", ThemeModeLabel(currentMode), true, IsPreferenceSearchActive())) {
+				EditorUI::BeginSettingsRow("Editor theme");
+				ImGui::SetNextItemWidth(-FLT_MIN);
 				if (ImGui::BeginCombo("##EditorThemeCombo", ThemeModeLabel(currentMode))) {
 					constexpr EditorThemeMode kModes[] = {
 						EditorThemeMode::SystemDefault,
@@ -212,27 +211,28 @@ namespace Funke {
 					}
 					ImGui::EndCombo();
 				}
+				EditorUI::EndSettingsRow();
 				EditorUI::Tooltip("The theme of the editor ui");
-				ImGui::Spacing();
+				EditorUI::EndSection();
 			}
 
 			const bool customActive = (currentMode == EditorThemeMode::Custom);
-			if (EditorUI::SectionHeader("Custom Colors")) {
+			if (EditorUI::BeginSection("Custom Colors", customActive ? "Custom theme active" : "Custom theme only",
+				customActive, IsPreferenceSearchActive())) {
 				ImGui::BeginDisabled(!customActive);
 
 				if (ImGui::Button("Reset to Default##ResetCustomColors")) {
 					EditorPreferences::ResetCustomColorsToDefault();
-					// Re-apply so the swatches snap back to the just-seeded values.
+					// Refresh live swatches after reseeding the palette.
 					EditorPreferences::ApplyTheme();
 				}
 				if (customActive) {
 					EditorUI::Tooltip("Resets the custom theme back to it's default");
 				}
 
-				// Scrollable region so the long ImGuiCol_ list doesn't push the
-				// rest of the tab off-screen on smaller windows.
+				// Keep the long palette list from displacing the remaining sections.
 				ImGui::BeginChild("##CustomColorsScroll",
-					ImVec2(0, 280.0f),
+					ImVec2(0, ImGui::GetFontSize() * 18.0f),
 					ImGuiChildFlags_Borders,
 					ImGuiWindowFlags_None);
 
@@ -241,22 +241,22 @@ namespace Funke {
 					if (!name) continue;
 					ImVec4& color = EditorPreferences::CustomColor(i);
 					ImGui::PushID(i);
-					if (ImGui::ColorEdit4(name, &color.x,
+					EditorUI::BeginSettingsRow(name, ImGui::GetFrameHeight());
+					if (ImGui::ColorEdit4("##Color", &color.x,
 							ImGuiColorEditFlags_AlphaBar |
-							ImGuiColorEditFlags_NoInputs)) {
+							ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
 						if (customActive) {
-							// Push directly into the live style so the change is
-							// visible mid-frame, and persist so it survives restart.
 							ImGui::GetStyle().Colors[i] = color;
 							EditorPreferences::Save();
 						}
 					}
+					EditorUI::EndSettingsRow();
 					ImGui::PopID();
 				}
 
 				ImGui::EndChild();
 				ImGui::EndDisabled();
-				ImGui::Spacing();
+				EditorUI::EndSection();
 			}
 		}
 
@@ -271,15 +271,19 @@ namespace Funke {
 				}
 			}
 
-			if (EditorUI::SectionHeader("Editor Font")) {
-				bool fontMissing = false;
-				std::string fontSecondary;
-				const uint64_t fontId = EditorPreferences::GetEditorFontAssetId();
-				const std::string fontDisplay = ReferencePicker::ResolveAssetDisplay(
-					fontId, AssetKind::Font, fontMissing, &fontSecondary);
+			bool fontMissing = false;
+			std::string fontSecondary;
+			const uint64_t fontId = EditorPreferences::GetEditorFontAssetId();
+			const std::string fontDisplay = ReferencePicker::ResolveAssetDisplay(
+				fontId, AssetKind::Font, fontMissing, &fontSecondary);
+			const std::string fontSummary = fontDisplay + " / " + FontZoomLabel(EditorPreferences::GetEditorFontZoomPercent());
+			if (EditorUI::BeginSection("Editor Font", fontSummary.c_str(), true, IsPreferenceSearchActive())) {
+				const float resetWidth = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2.0f;
 
 				ImGui::PushID("EditorFontPicker");
-				if (ImGui::Button(fontDisplay.c_str(), ImVec2(280.0f, 0.0f))) {
+				EditorUI::BeginSettingsRow("Font");
+				const float pickerWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x - resetWidth - ImGui::GetStyle().ItemSpacing.x);
+				if (ImGui::Button(fontDisplay.c_str(), ImVec2(pickerWidth, 0.0f))) {
 					ReferencePicker::OpenForFieldKey(k_FontPickerKey, "Select Editor Font",
 						ReferencePicker::CollectAssetsByKind(AssetKind::Font),
 						ReferencePicker::Style::Plain);
@@ -295,13 +299,14 @@ namespace Funke {
 						EditorRestart::Request("editor-font", "Editor font changed", EditorRestart::Kind::Restart);
 					}
 				}
+				EditorUI::EndSettingsRow();
 				ImGui::PopID();
-				ImGui::Spacing();
 
 				ImGui::PushID("EditorFontZoom");
 				int fontZoom = EditorPreferences::GetEditorFontZoomPercent();
-				ImGui::SetNextItemWidth(280.0f);
-				if (ImGui::BeginCombo("Font Size", FontZoomLabel(fontZoom))) {
+				EditorUI::BeginSettingsRow("Text scale");
+				ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x - resetWidth - ImGui::GetStyle().ItemSpacing.x));
+				if (ImGui::BeginCombo("##FontSize", FontZoomLabel(fontZoom))) {
 					for (int percent = EditorPreferences::k_MinEditorFontZoomPercent;
 						percent <= EditorPreferences::k_MaxEditorFontZoomPercent;
 						percent += EditorPreferences::k_EditorFontZoomStepPercent)
@@ -320,16 +325,21 @@ namespace Funke {
 					EditorPreferences::SetEditorFontZoomPercent(
 						EditorPreferences::k_DefaultEditorFontZoomPercent);
 				}
+				EditorUI::EndSettingsRow();
 				ImGui::PopID();
-				ImGui::Spacing();
+				EditorUI::EndSection();
 			}
 		}
 
-		if (showHierarchy && EditorUI::SectionHeader("Entities Hierarchy")) {
+		char hierarchySummary[32];
+		std::snprintf(hierarchySummary, sizeof(hierarchySummary), "%.2fx row height", EditorPreferences::GetHierarchyRowScale());
+		if (showHierarchy && EditorUI::BeginSection("Entities Hierarchy", hierarchySummary, true, IsPreferenceSearchActive())) {
 			ImGui::PushID("HierarchyRowScale");
 			float rowScale = EditorPreferences::GetHierarchyRowScale();
-			ImGui::SetNextItemWidth(280.0f);
-			if (ImGui::SliderFloat("Row Size", &rowScale,
+			EditorUI::BeginSettingsRow("Row size");
+			const float resetWidth = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+			ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x - resetWidth - ImGui::GetStyle().ItemSpacing.x));
+			if (ImGui::SliderFloat("##RowSize", &rowScale,
 					EditorPreferences::k_MinHierarchyRowScale,
 					EditorPreferences::k_MaxHierarchyRowScale,
 					"%.2fx", ImGuiSliderFlags_AlwaysClamp)) {
@@ -341,8 +351,9 @@ namespace Funke {
 				EditorPreferences::SetHierarchyRowScale(
 					EditorPreferences::k_DefaultHierarchyRowScale);
 			}
+			EditorUI::EndSettingsRow();
 			ImGui::PopID();
-			ImGui::Spacing();
+			EditorUI::EndSection();
 		}
 	}
 
@@ -351,8 +362,11 @@ namespace Funke {
 		const bool showCompilation = PreferenceSectionVisible("Script Compilation", "scripting recompile recompilation auto file changes play mode exit compile");
 		if (!showExternalEditor && !showCompilation) return;
 
-		if (showExternalEditor && EditorUI::SectionHeader("External Script Editor")) {
-			const auto& editors = ExternalEditor::GetAvailableEditors();
+		const auto& editors = ExternalEditor::GetAvailableEditors();
+		const int selected = ExternalEditor::GetSelectedIndex();
+		const char* preview = (selected >= 0 && selected < static_cast<int>(editors.size()))
+			? editors[selected].DisplayName.c_str() : "None detected";
+		if (showExternalEditor && EditorUI::BeginSection("External Script Editor", preview, true, IsPreferenceSearchActive())) {
 			if (editors.empty()) {
 				EditorUI::EmptyState("No supported editors detected on this system.");
 				// Centred under the empty-state text.
@@ -363,12 +377,9 @@ namespace Funke {
 				}
 			}
 			else {
-				const int selected = ExternalEditor::GetSelectedIndex();
-				const char* preview = (selected >= 0 && selected < static_cast<int>(editors.size()))
-					? editors[selected].DisplayName.c_str()
-					: "(none)";
-
-				ImGui::SetNextItemWidth(320.0f);
+				EditorUI::BeginSettingsRow("Open scripts with");
+				const float redetectWidth = ImGui::CalcTextSize("Re-detect").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+				ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x - redetectWidth - ImGui::GetStyle().ItemSpacing.x));
 				if (ImGui::BeginCombo("##ExternalEditorCombo", preview)) {
 					for (int i = 0; i < static_cast<int>(editors.size()); i++) {
 						const bool isSelected = (i == selected);
@@ -383,48 +394,54 @@ namespace Funke {
 				if (ImGui::Button("Re-detect##ScriptEditorRedetect")) {
 					ExternalEditor::RefreshEditors();
 				}
-				ImGui::TextDisabled("The editor used when opening script files.");
+				EditorUI::EndSettingsRow();
+				EditorUI::Tooltip("The editor used when opening script files.");
 				if (selected >= 0 && selected < static_cast<int>(editors.size())
 					&& editors[selected].Type == ExternalEditorType::IntelliJ) {
 					EditorUI::StatusText(EditorUI::Tone::Warning,
 						"IntelliJ IDEA opens and edits scripts, but has no C# code completion or error checking. JetBrains Rider has both.");
 				}
 			}
-			ImGui::Spacing();
+			EditorUI::EndSection();
 		}
 
-		if (showCompilation && EditorUI::SectionHeader("Script Compilation")) {
+		const char* compilationSummary = EditorPreferences::GetAutoRecompileScripts()
+			? "On file changes" : (EditorPreferences::GetRecompileScriptsOnPlay() ? "Before Play Mode" : "Manual compilation");
+		if (showCompilation && EditorUI::BeginSection("Script Compilation", compilationSummary, true, IsPreferenceSearchActive())) {
 			bool autoRecompile = EditorPreferences::GetAutoRecompileScripts();
-			if (ImGuiUtils::Switch("Auto-recompile on file changes", &autoRecompile)) {
+			if (EditorUI::SettingsSwitch("Auto-recompile on file changes", &autoRecompile)) {
 				EditorPreferences::SetAutoRecompileScripts(autoRecompile);
 			}
 
 			bool recompileOnPlay = EditorPreferences::GetRecompileScriptsOnPlay();
-			if (ImGuiUtils::Switch("Recompile before Play Mode", &recompileOnPlay)) {
+			if (EditorUI::SettingsSwitch("Recompile before Play Mode", &recompileOnPlay)) {
 				EditorPreferences::SetRecompileScriptsOnPlay(recompileOnPlay);
 			}
 
 			bool exitOnRecompile = EditorPreferences::GetExitPlayModeOnRecompilation();
-			if (ImGuiUtils::Switch("Exit Play Mode on Recompilation", &exitOnRecompile)) {
+			if (EditorUI::SettingsSwitch("Exit Play Mode on Recompilation", &exitOnRecompile)) {
 				EditorPreferences::SetExitPlayModeOnRecompilation(exitOnRecompile);
 			}
-			ImGui::Spacing();
+			EditorUI::EndSection();
 		}
 	}
 
 	void EditorPreferencesPanel::RenderLayoutsTab() {
 		if (!PreferenceSectionVisible("Layout Presets", "layout layouts preset save load reset delete")) return;
-		if (!EditorUI::SectionHeader("Layout Presets")) return;
+		if (!EditorUI::BeginSection("Layout Presets", nullptr, true, IsPreferenceSearchActive())) return;
 
+		const float actionPadding = ImGui::GetStyle().FramePadding.x * 4.0f + ImGui::GetStyle().ItemSpacing.x;
+		const bool actionsFit = ImGui::CalcTextSize("Save Current Layout As...").x
+			+ ImGui::CalcTextSize("Reset to Default").x + actionPadding <= ImGui::GetContentRegionAvail().x;
 		if (ImGui::Button("Save Current Layout As...")) {
 			m_SaveLayoutBuffer[0] = '\0';
 			m_OpenSaveLayoutRequest = true;
 		}
-		ImGui::SameLine();
+		if (actionsFit) ImGui::SameLine();
 		if (ImGui::Button("Reset to Default")) {
 			ImGuiContextLayer::ResetLayoutToDefault();
 		}
-		ImGui::TextDisabled("Stored under %s.", LayoutsFolderDisplay().c_str());
+		EditorUI::StatusText(EditorUI::Tone::Neutral, ("Stored under " + LayoutsFolderDisplay() + '.').c_str());
 
 		ImGui::Spacing();
 
@@ -432,21 +449,23 @@ namespace Funke {
 			ImGuiContextLayer::ListLayoutPresets();
 		if (presets.empty()) {
 			EditorUI::EmptyState("No saved layout presets.", "Use \"Save Current Layout As...\" to create one.");
+			EditorUI::EndSection();
 			return;
 		}
 
 		if (ImGui::BeginTable("##LayoutPresetsTable", 3,
 				ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
 			ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
-			ImGui::TableSetupColumn("##Load", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-			ImGui::TableSetupColumn("##Delete", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+			const float actionWidth = ImGui::CalcTextSize("Delete").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+			ImGui::TableSetupColumn("##Load", ImGuiTableColumnFlags_WidthFixed, actionWidth);
+			ImGui::TableSetupColumn("##Delete", ImGuiTableColumnFlags_WidthFixed, actionWidth);
 
 			for (const std::string& name : presets) {
 				ImGui::PushID(name.c_str());
 				ImGui::TableNextRow();
 				ImGui::TableSetColumnIndex(0);
 				ImGui::AlignTextToFramePadding();
-				ImGui::TextUnformatted(name.c_str());
+				ImGui::TextWrapped("%s", name.c_str());
 
 				ImGui::TableSetColumnIndex(1);
 				if (ImGui::Button("Load", ImVec2(-FLT_MIN, 0))) {
@@ -462,6 +481,7 @@ namespace Funke {
 			}
 			ImGui::EndTable();
 		}
+		EditorUI::EndSection();
 	}
 
 	void EditorPreferencesPanel::RenderBehaviorTab() {
@@ -472,9 +492,13 @@ namespace Funke {
 		const bool showExternalChanges = PreferenceSectionVisible("External Changes", "behavior external changes changed disk reload hot reload scene file watcher ai agent git conflict");
 		if (!showAssetBrowser && !showAutoSave && !showEditing && !showViewport && !showExternalChanges) return;
 
-		if (showEditing && EditorUI::SectionHeader("Editing")) {
+		const int confirmationCount = static_cast<int>(EditorPreferences::GetConfirmOnDeleteEntity())
+			+ static_cast<int>(EditorPreferences::GetConfirmOnDeleteAsset());
+		const char* editingSummary = confirmationCount == 0 ? "Confirmations off"
+			: (confirmationCount == 1 ? "1 confirmation enabled" : "2 confirmations enabled");
+		if (showEditing && EditorUI::BeginSection("Editing", editingSummary, true, IsPreferenceSearchActive())) {
 			bool confirmOnDeleteEntity = EditorPreferences::GetConfirmOnDeleteEntity();
-			if (ImGuiUtils::Switch("Confirm before deleting entity", &confirmOnDeleteEntity)) {
+			if (EditorUI::SettingsSwitch("Confirm before deleting entity", &confirmOnDeleteEntity)) {
 				EditorPreferences::SetConfirmOnDeleteEntity(confirmOnDeleteEntity);
 			}
 			EditorUI::Tooltip(
@@ -483,19 +507,22 @@ namespace Funke {
 				"without a prompt.");
 
 			bool confirmOnDeleteAsset = EditorPreferences::GetConfirmOnDeleteAsset();
-			if (ImGuiUtils::Switch("Confirm before deleting asset", &confirmOnDeleteAsset)) {
+			if (EditorUI::SettingsSwitch("Confirm before deleting asset", &confirmOnDeleteAsset)) {
 				EditorPreferences::SetConfirmOnDeleteAsset(confirmOnDeleteAsset);
 			}
 			EditorUI::Tooltip(
 				"Ask for confirmation before deleting an asset in the\n"
 				"Project panel. Turn off to delete immediately\n"
 				"without a prompt.");
-			ImGui::Spacing();
+			EditorUI::EndSection();
 		}
 
-		if (showViewport && EditorUI::SectionHeader("Viewport")) {
+		char viewportSummary[48];
+		std::snprintf(viewportSummary, sizeof(viewportSummary), "Guides %s / %.0f px",
+			EditorPreferences::GetAlignmentGuidesEnabled() ? "on" : "off", EditorPreferences::GetAlignmentSnapThreshold());
+		if (showViewport && EditorUI::BeginSection("Viewport", viewportSummary, true, IsPreferenceSearchActive())) {
 			bool alignGuides = EditorPreferences::GetAlignmentGuidesEnabled();
-			if (ImGuiUtils::Switch("UI alignment guides", &alignGuides)) {
+			if (EditorUI::SettingsSwitch("UI alignment guides", &alignGuides)) {
 				EditorPreferences::SetAlignmentGuidesEnabled(alignGuides);
 			}
 			EditorUI::Tooltip(
@@ -505,31 +532,34 @@ namespace Funke {
 
 			if (alignGuides) {
 				float threshold = EditorPreferences::GetAlignmentSnapThreshold();
-				ImGui::SetNextItemWidth(160.0f);
-				if (ImGui::InputFloat("Snap distance (pixels)", &threshold, 1.0f, 4.0f, "%.0f")) {
+				if (EditorUI::SettingsFloat("Snap distance", &threshold, "%.0f px", 1.0f, 4.0f)) {
 					EditorPreferences::SetAlignmentSnapThreshold(threshold);
 				}
 				EditorUI::Tooltip(
 					"How close (in screen pixels) a dragged edge must be to\n"
 					"another element's edge before it snaps.");
 			}
-			ImGui::Spacing();
+			EditorUI::EndSection();
 		}
 
-		if (showAssetBrowser && EditorUI::SectionHeader("Asset Browser")) {
+		const char* assetSummary = EditorPreferences::GetShowFileExtensions() ? "Extensions visible" : "Extensions hidden";
+		if (showAssetBrowser && EditorUI::BeginSection("Asset Browser", assetSummary, true, IsPreferenceSearchActive())) {
 			bool showExt = EditorPreferences::GetShowFileExtensions();
-			if (ImGuiUtils::Switch("Show file extensions", &showExt)) {
+			if (EditorUI::SettingsSwitch("Show file extensions", &showExt)) {
 				EditorPreferences::SetShowFileExtensions(showExt);
 			}
 			EditorUI::Tooltip(
 				"When off, asset names render\n"
 				"without their extension.");
-			ImGui::Spacing();
+			EditorUI::EndSection();
 		}
 
-		if (showAutoSave && EditorUI::SectionHeader("Auto-Save")) {
+		char autoSaveSummary[48];
+		std::snprintf(autoSaveSummary, sizeof(autoSaveSummary), "Scenes %s / Prefabs %s",
+			EditorPreferences::GetAutoSaveScenes() ? "on" : "off", EditorPreferences::GetAutoSavePrefabs() ? "on" : "off");
+		if (showAutoSave && EditorUI::BeginSection("Auto-Save", autoSaveSummary, true, IsPreferenceSearchActive())) {
 			bool autoSave = EditorPreferences::GetAutoSaveScenes();
-			if (ImGuiUtils::Switch("Auto-save scenes", &autoSave)) {
+			if (EditorUI::SettingsSwitch("Auto-save scenes", &autoSave)) {
 				EditorPreferences::SetAutoSaveScenes(autoSave);
 			}
 			EditorUI::Tooltip(
@@ -539,29 +569,27 @@ namespace Funke {
 
 			if (autoSave) {
 				float interval = EditorPreferences::GetAutoSaveIntervalSeconds();
-				ImGui::SetNextItemWidth(160.0f);
-				if (ImGui::InputFloat("Interval (seconds)", &interval, 5.0f, 30.0f, "%.0f")) {
+				if (EditorUI::SettingsFloat("Interval", &interval, "%.0f s", 5.0f, 30.0f)) {
 					EditorPreferences::SetAutoSaveIntervalSeconds(interval);
 				}
 			}
 
-			ImGui::Spacing();
-
 			bool autoSavePrefabs = EditorPreferences::GetAutoSavePrefabs();
-			if (ImGuiUtils::Switch("Auto-save prefabs", &autoSavePrefabs)) {
+			if (EditorUI::SettingsSwitch("Auto-save prefabs", &autoSavePrefabs)) {
 				EditorPreferences::SetAutoSavePrefabs(autoSavePrefabs);
 			}
 			EditorUI::Tooltip(
 				"In prefab edit mode, save the prefab as soon as you release\n"
-				"the active inspector / hierarchy widget â€” no Ctrl+S needed.\n"
+				+ std::string("the active inspector / hierarchy widget - no ") + EditorShortcuts::k_SaveLabel + " needed.\n"
 				"Drags and text-input debounce naturally; the save fires once\n"
 				"per edit on release. Skipped during Play mode.");
-			ImGui::Spacing();
+			EditorUI::EndSection();
 		}
 
-		if (showExternalChanges && EditorUI::SectionHeader("External Changes")) {
+		const char* externalSummary = EditorPreferences::GetAutoReloadExternalSceneChanges() ? "Reload enabled" : "Ask before reloading";
+		if (showExternalChanges && EditorUI::BeginSection("External Changes", externalSummary, true, IsPreferenceSearchActive())) {
 			bool autoReload = EditorPreferences::GetAutoReloadExternalSceneChanges();
-			if (ImGuiUtils::Switch("Reload scenes changed on disk", &autoReload)) {
+			if (EditorUI::SettingsSwitch("Reload scenes changed on disk", &autoReload)) {
 				EditorPreferences::SetAutoReloadExternalSceneChanges(autoReload);
 			}
 			EditorUI::Tooltip(
@@ -570,7 +598,7 @@ namespace Funke {
 				"Scenes with unsaved editor changes always ask first, and are\n"
 				"not auto-saved until you decide. When off, every change asks.\n"
 				"Textures, audio, fonts and data assets always reload.");
-			ImGui::Spacing();
+			EditorUI::EndSection();
 		}
 	}
 

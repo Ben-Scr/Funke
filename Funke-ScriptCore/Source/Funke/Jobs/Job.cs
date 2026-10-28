@@ -46,10 +46,10 @@ public readonly struct JobHandle
         m_NativeState = null;
     }
 
-    internal JobHandle(ulong nativeHandle)
+    internal JobHandle(ulong nativeHandle, ulong exceptionKey)
     {
         m_Task = null;
-        m_NativeState = nativeHandle == 0 ? null : new NativeJobState(nativeHandle);
+        m_NativeState = nativeHandle == 0 ? null : new NativeJobState(nativeHandle, exceptionKey);
     }
 
     internal Task? InnerTask => m_Task;
@@ -93,15 +93,17 @@ public readonly struct JobHandle
 internal sealed class NativeJobState
 {
     private readonly ulong m_Handle;
+    private readonly ulong m_ExceptionKey;
     private readonly ManualResetEventSlim m_Completed = new(false);
     private readonly object m_TaskLock = new();
     private Task? m_Task;
     private ExceptionDispatchInfo? m_Exception;
     private int m_CompletionStarted;
 
-    internal NativeJobState(ulong handle)
+    internal NativeJobState(ulong handle, ulong exceptionKey)
     {
         m_Handle = handle;
+        m_ExceptionKey = exceptionKey;
     }
 
     internal ulong Handle => m_Handle;
@@ -120,11 +122,14 @@ internal sealed class NativeJobState
 
     internal void Complete()
     {
+        // Native waiting may run a queued callback that completes this same handle.
+        if (!m_Completed.IsSet) Job.WaitNativeHandle(m_Handle);
+
         if (Interlocked.CompareExchange(ref m_CompletionStarted, 1, 0) == 0)
         {
             try
             {
-                Job.WaitNativeHandle(m_Handle);
+                Job.CompleteNativeHandle(m_Handle, m_ExceptionKey);
             }
             catch (Exception ex)
             {
@@ -481,21 +486,20 @@ public static class Job
     internal static unsafe void WaitNativeHandle(ulong nativeHandle)
     {
         if (nativeHandle == 0) return;
-        ref NativeBindingsStruct b = ref NativeCallbacks.Bindings;
-        if (b.JobSystem_Wait != null)
-        {
-            b.JobSystem_Wait(nativeHandle);
-        }
+        var wait = NativeCallbacks.Bindings.JobSystem_Wait;
+        if (wait != null) wait(nativeHandle);
+    }
+
+    internal static unsafe void CompleteNativeHandle(ulong nativeHandle, ulong exceptionKey)
+    {
         try
         {
-            JobExceptionRegistry.RethrowIfPresent(nativeHandle);
+            JobExceptionRegistry.RethrowIfPresent(exceptionKey);
         }
         finally
         {
-            if (b.JobSystem_Release != null)
-            {
-                b.JobSystem_Release(nativeHandle);
-            }
+            var release = NativeCallbacks.Bindings.JobSystem_Release;
+            if (release != null) release(nativeHandle);
         }
     }
 

@@ -2,6 +2,7 @@
 #include "Components/General/EntityMetaDataComponent.hpp"
 #include "Core/Export.hpp"
 #include "Scene/EntityHandle.hpp"
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -35,6 +36,8 @@ namespace Funke {
 		static bool SaveToFile(Scene& scene, const std::string& path, SceneSerializationFormat format);
 		static bool SaveToFile(Scene& scene, const std::string& path, SceneSerializationFormat format, bool logSuccess);
 		static bool LoadFromFile(Scene& scene, const std::string& path);
+		// Worker-safe file read and parse; apply the result with DeserializeScene on the main thread.
+		static bool PrepareFile(const std::string& path, Json::Value& outRoot, std::string* outError = nullptr);
 
 		// Prefab support: save/load single entities
 		static Json::Value SerializeEntityFull(Scene& scene, EntityHandle entity);
@@ -77,6 +80,9 @@ namespace Funke {
 		static std::vector<ExternalPrefabChange> TakeExternallyChangedPrefabs();
 		// For writers other than SaveEntityToFile, so their own write is not reported as external.
 		static void ForgetCachedPrefabRoot(const std::string& path);
+		// Main-thread maintenance; force bypasses the periodic collection interval.
+		static std::size_t PurgeUnusedCachedPrefabRoots(bool force = false);
+		static void ClearCachedPrefabRoots();
 
 		// outOverrides is filled with dot-path keys e.g. "Transform2D.posX". Returns false for non-instances and orphans (source GUID not in AssetRegistry).
 		static bool ComputeInstanceOverrides(Scene& scene, EntityHandle entity, Json::Value& outOverrides);
@@ -91,6 +97,9 @@ namespace Funke {
 		static bool HasPrefabInstanceOverrides(Scene& scene, EntityHandle entity);
 
 	private:
+		friend class PrefabTemplateCache;
+		static void TrackPrefabCacheScene(Scene& scene);
+
 		// Shared by the whole-DOM load (DeserializeScene) and the streaming binary load: the
 		// parent-link / child-order fixups deferred until every entity exists.
 		struct SceneLoadState {

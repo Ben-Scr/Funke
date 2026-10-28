@@ -33,8 +33,7 @@ project "Funke-Engine-Tests"
     postbuildcommands
     {
         CopyFunkeEngineDll,
-        CopySDL3SharedLib,
-        CopyGladDll
+        CopySDL3SharedLib
     }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
     ApplyFunkeProfilerRuntime()

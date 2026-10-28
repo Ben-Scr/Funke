@@ -17,18 +17,7 @@
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 
-// Ogg Vorbis: miniaudio only compiles its Vorbis decoder when stb_vorbis's declarations are visible here; the implementation is included at the end of this file.
-#define STB_VORBIS_HEADER_ONLY
-#include <extras/stb_vorbis.c>
-
-#define MINIAUDIO_IMPLEMENTATION
-// Playback only: no encoders, no waveform/noise generators.
-#define MA_NO_ENCODING
-#define MA_NO_GENERATION
-// miniaudio CoInitializes the calling (main) thread; its MTA default makes OleInitialize fail there, which breaks DoDragDrop. 0x2 = COINIT_APARTMENTTHREADED.
-#define MA_COINIT_VALUE 0x2
-#include <miniaudio.h>
-
+#include <algorithm>
 #include <filesystem>
 #include <unordered_set>
 
@@ -115,7 +104,7 @@ namespace Funke {
 	uint32_t AudioManager::s_maxSoundsPerFrame = MAX_SOUNDS_PER_FRAME;
 	uint32_t AudioManager::s_soundsPlayedThisFrame = 0;
 	uint32_t AudioManager::s_activeSoundCount = 0;
-	std::priority_queue<AudioManager::SoundRequest> AudioManager::s_soundQueue;
+	std::vector<AudioManager::SoundRequest> AudioManager::s_soundQueue;
 	std::unordered_map<AudioHandle::HandleType, AudioManager::SoundLimitData> AudioManager::s_soundLimits;
 
 
@@ -173,7 +162,7 @@ namespace Funke {
 		s_soundLimits.clear();
 		s_activeSoundCount = 0;
 		s_soundsPlayedThisFrame = 0;
-		s_soundQueue = {};
+		std::vector<SoundRequest>().swap(s_soundQueue);
 		s_audioPathToHandle.clear();
 		s_audioRawPathToHandle.clear();
 
@@ -215,39 +204,46 @@ namespace Funke {
 		return true;
 	}
 
+	void AudioManager::PruneSoundQueue(std::chrono::steady_clock::time_point now) {
+		const size_t removed = std::erase_if(s_soundQueue, [now](const SoundRequest& request) {
+			return now - request.RequestTime > std::chrono::milliseconds(200) || !IsAudioLoaded(request.Handle);
+		});
+		if (removed != 0) std::make_heap(s_soundQueue.begin(), s_soundQueue.end());
+	}
+
+	void AudioManager::QueueSound(const SoundRequest& request) {
+		if (s_soundQueue.size() >= MAX_QUEUED_SOUNDS) {
+			PruneSoundQueue(request.RequestTime);
+		}
+		if (s_soundQueue.size() >= MAX_QUEUED_SOUNDS) {
+			const auto lowestPriority = std::min_element(s_soundQueue.begin(), s_soundQueue.end());
+			if (!(*lowestPriority < request)) return;
+			*lowestPriority = request;
+			std::make_heap(s_soundQueue.begin(), s_soundQueue.end());
+			return;
+		}
+		s_soundQueue.push_back(request);
+		std::push_heap(s_soundQueue.begin(), s_soundQueue.end());
+	}
+
 	void AudioManager::ProcessSoundQueue() {
-		// Stale (>200ms) and throttled requests skip the start-budget; only successful starts count against maxStartsPerFrame.
+		// Expiry must run even while every voice is occupied or the start budget is zero.
+		PruneSoundQueue(std::chrono::steady_clock::now());
 		const uint32_t maxStartsPerFrame = 4;
 		uint32_t startsThisCall = 0;
-		uint32_t requeueGuard = 0;
-		const uint32_t requeueGuardLimit = static_cast<uint32_t>(s_soundQueue.size()) + 16;
-
-		// inFlightStarts is loop-bound only; do NOT mutate s_activeSoundCount here — RecalculateActiveSoundCount is the single source of truth.
-		uint32_t inFlightStarts = 0;
 
 		while (!s_soundQueue.empty() && startsThisCall < maxStartsPerFrame &&
 			s_soundsPlayedThisFrame < s_maxSoundsPerFrame &&
-			(s_activeSoundCount + inFlightStarts) < s_maxConcurrentSounds) {
+			s_activeSoundCount < s_maxConcurrentSounds) {
+			std::pop_heap(s_soundQueue.begin(), s_soundQueue.end());
+			SoundRequest request = s_soundQueue.back();
+			s_soundQueue.pop_back();
 
-			if (++requeueGuard > requeueGuardLimit) break;
-
-			SoundRequest request = s_soundQueue.top();
-			s_soundQueue.pop();
-
-			auto now = std::chrono::steady_clock::now();
-			auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - request.RequestTime);
-			if (age.count() > 200) {
-				continue; // dropped — too stale to bother
-			}
-
-			if (IsThrottled(request.Handle)) {
-				continue; // skip but don't burn the start-budget
-			}
+			if (IsThrottled(request.Handle)) continue;
 
 			if (StartOneShotInstance(request.Handle, request.Volume, request.Spatial ? &request : nullptr)) {
 				s_soundsPlayedThisFrame++;
 				ThrottleSound(request.Handle);
-				inFlightStarts++;
 				startsThisCall++;
 			}
 		}
@@ -283,7 +279,12 @@ namespace Funke {
 	}
 
 	uint32_t AudioManager::GetActiveSoundCount() {
+		RecalculateActiveSoundCount();
 		return s_activeSoundCount;
+	}
+
+	uint32_t AudioManager::GetQueuedSoundCount() {
+		return static_cast<uint32_t>(s_soundQueue.size());
 	}
 
 	AudioHandle AudioManager::LoadAudio(const std::string_view& path) {
@@ -422,7 +423,7 @@ namespace Funke {
 		s_audioRawPathToHandle.clear();
 		s_nextHandle = 1;
 		s_soundLimits.clear();
-		s_soundQueue = {};
+		std::vector<SoundRequest>().swap(s_soundQueue);
 		s_activeSoundCount = 0;
 	}
 
@@ -683,8 +684,10 @@ namespace Funke {
 	}
 
 	void AudioManager::RequestOneShot(const SoundRequest& request) {
+		// Sources can start, pause or finish between the frame update and this request.
+		RecalculateActiveSoundCount();
 		if (IsThrottled(request.Handle) || !CanPlaySound(request.Handle, request.Priority)) {
-			s_soundQueue.push(request);
+			QueueSound(request);
 			return;
 		}
 
@@ -1107,17 +1110,8 @@ namespace Funke {
 			return false;
 		}
 
+		++s_activeSoundCount;
 		return true;
 	}
 
 }
-
-#undef STB_VORBIS_HEADER_ONLY
-// stb_vorbis defines short macros (L, R, C, ...), so its implementation goes last.
-#ifdef _MSC_VER
-#pragma warning(push, 0)
-#endif
-#include <extras/stb_vorbis.c>
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif

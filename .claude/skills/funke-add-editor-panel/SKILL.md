@@ -90,7 +90,7 @@ namespace Funke {
 Conventions:
 - **PCH:** `Funke-Editor/premake5.lua` force-includes `EditorPch.hpp` (ImGui, Vec2, Scene/entt are already in it). Include your own header first; don't add churny headers to `EditorPch.hpp` (rule in its header comment).
 - **Look:** compose from `Gui/EditorUI.hpp` (`Button(label, ButtonVariant)`, `SearchField`, `BeginToolbar/EndToolbar`, `BeginCard/EndCard`, `Badge`, `EmptyState`, `StatusText(Tone, …)`, `DialogFooter`, `Tooltip`) and `Gui/ImGuiUtils.hpp` (`ToggleSwitch`, `Switch`, …). Colours come from `EditorTheme` — never hardcode them in a panel.
-- **Native dialog:** `ImGuiImplWebGPU::SetNextWindowAsNativeDialog()` (`Funke-Engine/src/Gui/ImGuiImplWebGPU.hpp`) must be the call **immediately before** `Begin`/`BeginPopupModal`. Used by Profiler, Build Profiles, Preferences, Package Manager. Dockable views (Sprite Editor, Log) skip it.
+- **Native dialog:** `ImGuiImplWebGPU::SetNextWindowAsNativeDialog()` (`Funke-Engine/src/Gui/ImGuiImplWebGPU.hpp`) sets the next window's class. Call it before the matching `Begin`/`BeginPopupModal`, with no intervening window begin; other setup such as `EditorUI::NextWindowDefaultSize()` may follow it. Used by Profiler, Build Profiles, Preferences, Package Manager. Dockable views (Sprite Editor, Log) skip it.
 - **Always pair `Begin` with `End`**, including the early-return path where `Begin` returned false.
 - Per-frame cost: cache + dirty flag (`m_Dirty`, `m_ManifestsDirty` in `PackageManagerPanel`) instead of scanning disk each frame. Instrument with the profiler if a panel drops frames (`funke-add-profiler`).
 
@@ -197,7 +197,7 @@ Rules (from `PackageManagerPanel`):
 ## Pitfalls
 
 - **ImGui calls in `Initialize`/`Shutdown`** — run outside a frame; defer to `Render`.
-- **`SetNextWindowAsNativeDialog` not immediately before `Begin`** — another `SetNextWindow*`-consuming call in between eats it.
+- **Another window begins after `SetNextWindowAsNativeDialog`** — that window consumes the pending class; keep the call with its intended `Begin`/`BeginPopupModal` setup.
 - **Window title collisions** — the ImGui title is the ID and the `imgui.ini` key; keep it unique and stable (rename = users lose saved docking for it). Use `"Title##id"` to disambiguate.
 - **Worker captures `this`** — races panel destruction. Capture the `shared_ptr` state.
 - **Forgetting `Shutdown`** in `OnDetach` — hang or `std::terminate` on editor close.

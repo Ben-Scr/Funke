@@ -41,8 +41,8 @@ The tool never overwrites an existing valid `.meta` (it prints the existing GUID
   ]
 }
 ```
-- `filter`: `Point` (pixel art) | `Bilinear` | `Trilinear` | `Anisotropic`. `wrapU/V`: `Repeat` | `Clamp` | `Mirror` | `Border` (case-sensitive). Without an `import` block a `SpriteRenderer` samples Point and an `Image` Bilinear (Clamp). Pixel art: save it 4× nearest and import `Bilinear` (`funke-game-art` → "sharp bilinear").
-- `sprites`: named slices, `rect` = `[x, y, w, h]` in pixels from the **top-left**, `w`/`h` > 0. Select a slice with `"spriteName"` on `SpriteRenderer`/`Image`; animate with `SpriteAnimator2D.frames` (list of slice names). `pivot` = `[x, y]`, 0..1 from the slice's **bottom-left**.
+- `filter`: `Point` (pixel art) | `Bilinear` | `Trilinear` | `Anisotropic`. `wrapU/V`: `Repeat` | `Clamp` | `Mirror` | `Border` (case-sensitive). Without an `import` block a `SpriteRenderer` samples Point and an `Image` Bilinear (Clamp). For pixel art, choose Point with aligned whole-number display scaling, or the 4× nearest + Bilinear tradeoff for fractional scaling; inspect the final-size assets (`funke-game-art`).
+- `sprites`: named slices, `rect` = `[x, y, w, h]` in pixels from the **top-left**, `w`/`h` > 0. Select a slice with `"spriteName"` on `SpriteRenderer`/`Image`; animate with an `Animator` `.anim` clip using discrete `SpriteRenderer.Texture` keys (`"<textureGuid>|slice|<sliceName>"`). `pivot` = `[x, y]`, 0..1 from the slice's **bottom-left**.
 - By default on-screen size = `Transform2D` scale (scale 1 = 1 world unit; set scale to the sprite's aspect ratio). A `SpriteRenderer` with `"pixelsPerUnit"` > 0 instead draws the slice at its native size (px / pixelsPerUnit × scale) on its pivot — use that for Unity-style art where frames differ in size or stand on a foot pivot.
 
 Audio and font metas have no import settings (volume/pitch/loop live on `AudioSource`, size on `TextRenderer.fontSize`).

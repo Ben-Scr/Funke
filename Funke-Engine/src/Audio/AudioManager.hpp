@@ -9,7 +9,6 @@
 
 #include <chrono>
 #include <memory>
-#include <queue>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -25,6 +24,7 @@ namespace Funke {
 	public:
 		static constexpr uint32_t MAX_CONCURRENT_SOUNDS = 64;
 		static constexpr uint32_t MAX_SOUNDS_PER_FRAME = 8;
+		static constexpr uint32_t MAX_QUEUED_SOUNDS = 256;
 		static constexpr float MIN_SOUND_INTERVAL = 0.1f;
 
 		static bool Initialize();
@@ -71,6 +71,7 @@ namespace Funke {
 		static bool GetPlayInBackground() { return s_PlayInBackground; }
 
 
+		// Deferred one-shots expire after 200 ms; overflow keeps the highest-priority, oldest requests.
 		static void PlayOneShot(const AudioHandle& audioHandle, float volume = 1.0f);
 		// From a world position: quieter with distance from the listener and panned to its side. Not started when it
 		// would be silent there (beyond MaxDistance with Linear rolloff).
@@ -95,6 +96,7 @@ namespace Funke {
 		static void SetMaxConcurrentSounds(uint32_t maxSounds);
 		static void SetMaxSoundsPerFrame(uint32_t maxPerFrame);
 		static uint32_t GetActiveSoundCount();
+		static uint32_t GetQueuedSoundCount();
 
 
 		static bool IsInitialized() { return s_IsInitialized; }
@@ -139,7 +141,7 @@ namespace Funke {
 			AudioSpatialSettings Settings;
 
 			bool operator<(const SoundRequest& other) const {
-				return Priority < other.Priority;
+				return Priority == other.Priority ? RequestTime > other.RequestTime : Priority < other.Priority;
 			}
 		};
 
@@ -155,12 +157,14 @@ namespace Funke {
 		static uint32_t s_activeSoundCount;
 
 
-		static std::priority_queue<SoundRequest> s_soundQueue;
+		static std::vector<SoundRequest> s_soundQueue;
 		static std::unordered_map<AudioHandle::HandleType, SoundLimitData> s_soundLimits;
 
 
 		static bool CanPlaySound(const AudioHandle& audioHandle, float priority);
 		static void ProcessSoundQueue();
+		static void PruneSoundQueue(std::chrono::steady_clock::time_point now);
+		static void QueueSound(const SoundRequest& request);
 		static void ThrottleSound(const AudioHandle& audioHandle);
 		static bool IsThrottled(const AudioHandle& audioHandle);
 

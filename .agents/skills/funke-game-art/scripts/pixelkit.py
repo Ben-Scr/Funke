@@ -379,9 +379,9 @@ def bleed(img: Image.Image, passes: int = 4) -> Image.Image:
 def save_texture(path: Path | str, img: Image.Image, project: Path | None = None, upscale: int = 4,
                  filter: str = "Bilinear", sprites: list[dict] | None = None,
                  border: tuple[int, int, int, int] | None = None, guid: int | None = None) -> int:
-    """Save art drawn at its native size. Defaults = "sharp bilinear", the setup that stays crisp at any scale in
-    Funke: the PNG is stored `upscale`x nearest-neighbour and imported Bilinear (blur limited to 1/upscale art px,
-    no shimmer, no uneven pixels at non-integer UI/camera scales, no distortion from the half-texel slice inset).
+    """Save native-grid art, by default with integer nearest-neighbour enlargement and Bilinear import.
+    This limits the source-space filtering footprint but does not guarantee pixel accuracy at fractional screen
+    scales. Inspect the final-size silhouette, thin details and edges; recover existing art's native grid first.
     `sprites` rects and `border` ([l, b, r, t]) are given in ART pixels and scaled here. For smooth (non-pixel) UI
     art pass upscale=1; its transparent edge is colour-bled. Writes the .meta first, then the PNG (atomic, only on
     change). Returns the GUID. World sprites: SpriteRenderer.pixelsPerUnit = art px per unit * upscale."""
@@ -406,8 +406,8 @@ def save_texture(path: Path | str, img: Image.Image, project: Path | None = None
 def pack_sheet(frames: list[tuple[str, Image.Image]], cols: int | None = None, extrude: int = 1,
                pivot: tuple[float, float] = (0.5, 0.5)) -> tuple[Image.Image, list[dict]]:
     """Grid-pack equally sized frames. Returns the sheet and the `.meta` "sprites" list (rect = [x, y, w, h] from
-    the top-left, pivot 0..1 from the slice's bottom-left) — reference a slice by name in spriteName /
-    SpriteAnimator2D frames. Every frame gets `extrude` art px of its own edge pixels around it: Bilinear
+    the top-left, pivot 0..1 from the slice's bottom-left) — reference a slice by name in spriteName or
+    an Animator Texture track. Every frame gets `extrude` art px of its own edge pixels around it: Bilinear
     sampling at a slice border would otherwise pick up the neighbouring frame and draw a thin line between
     tiles (seen in an eval run with tightly packed tiles)."""
     if not frames:

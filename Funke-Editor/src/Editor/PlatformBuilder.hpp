@@ -38,6 +38,13 @@ namespace Funke::PlatformBuilder {
 		std::string Error;
 	};
 
+	struct WebPreview {
+		std::filesystem::path Entry;
+		std::string Url;
+		unsigned long ProcessId = 0;
+		std::string Error;
+	};
+
 	struct CheckIssue {
 		std::string Severity;  // "error" | "warn"
 		std::string Message;
@@ -68,5 +75,7 @@ namespace Funke::PlatformBuilder {
 	CheckResult Check(const PlatformPackageInfo& package);
 	Description Describe(const PlatformPackageInfo& package);
 	BuildResult Build(const PlatformPackageInfo& package, const BuildRequest& request, const ProgressFn& onProgress);
+	WebPreview StartWebPreview(const std::filesystem::path& script, const std::filesystem::path& entry,
+		const WebPreview& previous = {});
 
 }

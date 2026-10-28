@@ -6,6 +6,7 @@
 #include "Editor/SpriteSlicing.hpp"
 #include "Graphics/SpriteUVResolver.hpp"
 #include "Graphics/Texture2D.hpp"
+#include "Gui/EditorShortcuts.hpp"
 #include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Graphics/TextureManager.hpp"
@@ -127,13 +128,11 @@ namespace Funke {
 		RenderSliceList();
 		ImGui::EndChild();
 
-		// Delete selected slices via Entf or the numpad Del/comma key — works
-		// whether the canvas or the slice list is focused. Skipped while a field
-		// (e.g. a name InputText) is active so it doesn't eat that keypress.
+		// Keep deletion out of active text fields in either child panel.
 		if (!m_Selection.empty()
 			&& !ImGui::IsAnyItemActive()
 			&& ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
-			&& (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadDecimal, false)))
+			&& EditorShortcuts::IsDeletePressed())
 		{
 			DeleteSelected();
 		}
@@ -720,6 +719,7 @@ namespace Funke {
 		if (EditorUI::Button("Delete Selected", EditorUI::ButtonVariant::Danger, ImVec2(-FLT_MIN, 0.0f))) {
 			DeleteSelected();
 		}
+		EditorUI::Tooltip(EditorShortcuts::k_DeleteLabel);
 		if (!canDelete) ImGui::EndDisabled();
 	}
 

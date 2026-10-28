@@ -58,6 +58,7 @@ Built-in members (no `GetComponent` needed):
 - `bool Enabled { get; set; }`.
 - `Query<T1..T8>()` — typed managed query (see Scene queries below).
 - `protected void Print(object?)`.
+- `protected void RunCoroutine(Func<Task>)` and `protected CancellationToken DestroyToken`, cancelled when the system is torn down.
 
 A SceneSystem runs by being named in the scene's `systems` array (resolved by simple class name). In the Editor you add it via the scene's system list.
 
@@ -72,6 +73,7 @@ public virtual void OnEnable() {} / OnDisable() {}
 public virtual void OnApplicationPaused/Quit() {}  /  OnFocusChanged(bool) {}
 ```
 Register in `project.json` → `globalSystems`. Toggle from code: `SceneManager.EnableGlobalSystem<T>()` / `DisableGlobalSystem<T>()`.
+`RunCoroutine(Func<Task>)` and `DestroyToken` are also available here; the token is cancelled during global-system teardown. `GlobalSystem` has no `OnDestroy` override.
 
 ## Entity API (`Funke.Entity`)
 
@@ -129,7 +131,7 @@ UI components (`Button`, `Slider`, `Toggle`, `Image`, `RectTransform`, …) are 
 ## Input (`Funke.Input`, static)
 
 ```csharp
-Vector2 MousePosition { get; }
+Vector2 MousePosition { get; } // viewport-local pixels, origin at the visible game viewport's top-left
 Vector2 GetAxis();        // WASD/arrows as -1/0/1 (no smoothing); with no key held, the first gamepad's D-pad or left stick
 Vector2 GetAxisRaw();     // -1/0/1
 Vector2 GetMouseDelta();  float GetScrollWheelDelta();
@@ -208,7 +210,7 @@ public void OnFootstep(string foot) { }   // called by an animation event named 
 
 ## Coroutines (`Funke.Coroutines`)
 
-Start from an EntityScript with `RunCoroutine(async () => { … })`. Awaiters (each takes an optional `CancellationToken`):
+Start from an `EntityScript`, `SceneSystem`, or `GlobalSystem` with `RunCoroutine(async () => { … })`. Awaiters (each takes an optional `CancellationToken`):
 ```csharp
 await new WaitForSeconds(1.5f);     // scaled time
 await new WaitForNextFrame();
@@ -216,7 +218,7 @@ await new WaitForFrames(10);
 await new WaitForFixedUpdate();
 await new WaitUntil(() => done);
 ```
-`RunCoroutine` ties the coroutine to `DestroyToken`, so it auto-cancels on `OnDestroy` (swallows `OperationCanceledException`).
+Funke awaiters inherit the `DestroyToken` from `RunCoroutine`; teardown cancels them and the runner swallows `OperationCanceledException`. A supplied token with `CanBeCanceled == true` replaces the inherited token; `default` and `CancellationToken.None` still inherit it. Pass `DestroyToken` explicitly to external async APIs such as `Task.Delay`. Cancellation does not stop arbitrary work that ignores it.
 
 ```csharp
 public override void OnStart() => RunCoroutine(SpawnWaves);
@@ -269,7 +271,7 @@ Scene? active = SceneManager.GetActiveScene();
 bool exists = SceneManager.DoesSceneExist("Boss");                 // scene file present?
 // events: SceneLoaded, BeforeSceneLoaded, BeforeSceneUnloaded, SceneUnloaded
 ```
-A scene name must be in the project's `buildScenes` to be loadable at runtime (see `funke-project-structure`).
+List intended shipping scenes in `buildScenes` so the build retains them. `ProjectSceneLoader` can also register and load an unlisted scene if its file was shipped; pruning can retain it through reachable asset references or C# literals, but cannot infer arbitrary computed names (see `funke-project-structure`). The current `LoadSceneAsync` wrapper still performs the load synchronously before returning a completed task; it does not move scene loading to a background thread.
 
 ## Other useful statics
 
@@ -289,8 +291,8 @@ For measured hot paths, inherit `Funke::NativeScript` in `NativeScripts/Source/*
 
 ## Hot reload & Play mode
 
-- Editing a C# script and rebuilding swaps the new code in **without restarting** the editor; matching script classes keep their instances, fields reset to saved/default values. The engine's own `Funke-ScriptCore` can't reload mid-session (a .NET limit) — that needs a restart.
-- Scripts only run in **Play mode**. Pressing Play saves+reloads scenes from disk; Stop reloads from disk, discarding runtime changes. So state you mutate while playing does **not** persist — persist via Data Assets or your own save system (`funke-assets-and-content`).
+- Editing a C# script and rebuilding swaps the new code in **without restarting** the editor. Managed instances are torn down and recreated. In Edit mode, exposed field values are captured and reapplied; Play-mode reload does not preserve arbitrary live runtime state. The engine's own `Funke-ScriptCore` needs an editor restart.
+- Gameplay lifecycle callbacks run in **Play mode**; managed instances also exist in Edit mode for inspector fields. Pressing Play captures the loaded edit-mode scenes, writing unsaved edits to private snapshots under `.funke/PlayMode/` without saving over the scene assets. Stop restores that scene set, its selection and prior dirty state, discarding Play-mode mutations. A failed restore can leave Play active or retain recoverable staged scenes in Edit mode; inspect the reported error before saving (`funke-scene-workflow`). Persist intentional game progress via your save system (`funke-assets-and-content`).
 
 ## Common pitfalls
 

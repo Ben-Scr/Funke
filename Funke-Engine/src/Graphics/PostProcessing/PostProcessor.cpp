@@ -534,7 +534,8 @@ namespace Funke {
 			vertexState.buffers = nullptr;
 
 			wgpu::BlendState blend{};
-			blend.color.srcFactor = wgpu::BlendFactor::SrcAlpha;
+			// Scene intermediates already contain premultiplied color.
+			blend.color.srcFactor = wgpu::BlendFactor::One;
 			blend.color.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
 			blend.color.operation = wgpu::BlendOperation::Add;
 			blend.alpha.srcFactor = wgpu::BlendFactor::One;

@@ -9,6 +9,24 @@
 
 namespace Funke {
 
+	NativeEntityCommandBuffer::NativeEntityCommandBuffer(NativeEntityCommandBuffer&& other)
+		: m_Commands(std::move(other.m_Commands))
+		, m_CreatedHandles(std::move(other.m_CreatedHandles))
+		, m_CommandCount(std::exchange(other.m_CommandCount, 0))
+		, m_EntityCount(std::exchange(other.m_EntityCount, 0)) {
+	}
+
+	NativeEntityCommandBuffer& NativeEntityCommandBuffer::operator=(NativeEntityCommandBuffer&& other) noexcept {
+		if (this != &other) {
+			Clear();
+			m_Commands.swap(other.m_Commands);
+			m_CreatedHandles = std::move(other.m_CreatedHandles);
+			m_CommandCount = std::exchange(other.m_CommandCount, 0);
+			m_EntityCount = std::exchange(other.m_EntityCount, 0);
+		}
+		return *this;
+	}
+
 	NativeEntityCommandBuffer::~NativeEntityCommandBuffer() {
 		// Clear() handles destructor invocation for any still-pending commands.
 		Clear();
@@ -33,8 +51,7 @@ namespace Funke {
 				}
 				EntityHandle newRoot = SceneSerializer::InstantiatePrefab(scene, guid);
 				handleSlot = newRoot;
-			},
-			nullptr);
+			});
 		static_assert(sizeof(uint64_t) <= kInlineStorageBytes,
 			"prefab GUID payload must fit in the inline command storage");
 		::new (cmd.Storage) uint64_t(prefabGuid);
@@ -57,13 +74,13 @@ namespace Funke {
 
 	NativeEntityCommandBuffer::Command& NativeEntityCommandBuffer::AppendCommand(
 		uint32_t entityIndex,
-		void (*apply)(void*, Scene&, EntityHandle&),
-		void (*destroy)(void*))
+		void (*apply)(void*, Scene&, EntityHandle&))
 	{
-		Command& cmd = m_Commands.emplace_back();
+		if (m_CommandCount == m_Commands.size()) m_Commands.emplace_back();
+		Command& cmd = m_Commands[m_CommandCount++];
 		cmd.EntityIndex = entityIndex;
 		cmd.Apply = apply;
-		cmd.Destroy = destroy;
+		cmd.Destroy = nullptr;
 		// Storage stays uninitialized — the caller placement-news into it.
 		return cmd;
 	}
@@ -90,7 +107,8 @@ namespace Funke {
 			scene.SetEntityMetaDataNoFlags(m_CreatedHandles[i], EntityOrigin::Runtime);
 		}
 
-		for (Command& cmd : m_Commands) {
+		for (std::size_t i = 0; i < m_CommandCount; ++i) {
+			Command& cmd = m_Commands[i];
 			if (cmd.EntityIndex < m_EntityCount) {
 				cmd.Apply(cmd.Storage, scene, m_CreatedHandles[cmd.EntityIndex]);
 			}
@@ -102,12 +120,13 @@ namespace Funke {
 	}
 
 	void NativeEntityCommandBuffer::Clear() {
-		for (Command& cmd : m_Commands) {
+		for (std::size_t i = 0; i < m_CommandCount; ++i) {
+			Command& cmd = m_Commands[i];
 			if (cmd.Destroy != nullptr) {
 				cmd.Destroy(cmd.Storage);
 			}
 		}
-		m_Commands.clear();      // capacity retained
+		m_CommandCount = 0;
 		m_EntityCount = 0;
 		// m_CreatedHandles is kept sized to its peak so the next Playback
 		// at the same scale doesn't realloc.

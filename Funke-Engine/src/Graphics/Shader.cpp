@@ -49,6 +49,7 @@ struct VertexOutput {
 	@location(3) maskRect: vec4<f32>,
 	@location(4) maskRot: vec4<f32>,
 	@location(5) maskUv: vec4<f32>,
+	@location(6) @interpolate(flat) arc: vec4<f32>,
 };
 
 @vertex
@@ -87,13 +88,37 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 		mix(in.i_data3.x, in.i_data3.z, baseUV.x),
 		mix(in.i_data3.y, in.i_data3.w, baseUV.y) + baseUV.x * in.i_data2.z
 	);
+	out.arc = vec4<f32>(0.0);
+	if (in.i_data2.w > 0.5) {
+		out.uv = in.position.xy * 2.0;
+		out.arc = in.i_data3; // Midline radius, half thickness, signed sweep; normalized to quad half-size.
+	}
 	return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 	let texel = textureSample(t_albedo, s_albedo, in.uv);
+	let pixelWidth = max(length(fwidth(in.uv)) * 0.70710678, 0.00001);
 	var color = texel * in.color;
+	if (in.arc.y > 0.0) {
+		let tau = 6.28318530718;
+		let sweep = abs(in.arc.z);
+		let p = vec2<f32>(in.uv.x, in.uv.y * sign(in.arc.z));
+		let rawAngle = atan2(p.y, p.x);
+		let angle = select(rawAngle, rawAngle + tau, rawAngle < 0.0);
+		var distance = abs(length(p) - in.arc.x) - in.arc.y;
+		if (sweep >= tau - 0.00001 && in.arc.x <= in.arc.y) {
+			distance = length(p) - in.arc.x - in.arc.y;
+		}
+		if (sweep < tau - 0.00001 && angle > sweep) {
+			let start = vec2<f32>(in.arc.x, 0.0);
+			let end = vec2<f32>(cos(sweep), sin(sweep)) * in.arc.x;
+			distance = min(length(p - start), length(p - end)) - in.arc.y;
+		}
+		let coverage = 1.0 - smoothstep(-pixelWidth * 0.5, pixelWidth * 0.5, distance);
+		color = vec4<f32>(in.color.rgb, in.color.a * coverage);
+	}
 
 	if (in.maskRect.z != 0.0 && in.maskRect.w != 0.0) {
 		let delta = in.world - in.maskRot.xy;

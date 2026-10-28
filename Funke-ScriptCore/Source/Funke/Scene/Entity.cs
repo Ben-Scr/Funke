@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.Loader;
 using System.Text.Json;
 using Funke.Components;
 using Funke.Interop;
@@ -182,7 +184,7 @@ public class Entity : IEquatable<Entity>
         return InternalCalls.Entity_SetParent(ID, parentId, worldPositionStays);
     }
 
-    private static readonly Dictionary<Type, string> s_NativeComponentNames = new()
+    private static readonly Dictionary<Type, string> s_BuiltInComponentNames = new()
     {
         { typeof(NameComponent),         "Name" },
         { typeof(Transform2D),           "Transform 2D" },
@@ -199,7 +201,6 @@ public class Entity : IEquatable<Entity>
         { typeof(TerrainRenderer2D),     "Terrain Renderer 2D" },
         { typeof(AudioSource),           "Audio Source" },
         { typeof(ParticleSystem2D),      "Particle System 2D" },
-        { typeof(SpriteAnimator2D),      "Sprite Animator 2D" },
         { typeof(Animator),              "Animator" },
         { typeof(PostProcessing2D),      "Post Processing" },
         { typeof(Transform3D),           "Transform 3D" },
@@ -238,45 +239,104 @@ public class Entity : IEquatable<Entity>
         { typeof(Funke.UI.LocalizedText),         "Localized Text" },
     };
 
+    private sealed class ComponentMetadata
+    {
+        public readonly ConcurrentDictionary<Type, string> NativeNames = new();
+        public readonly HashSet<Module> InitializedModules = new();
+        public bool Unloaded;
+
+        public void Unload(AssemblyLoadContext context)
+        {
+            lock (this)
+            {
+                Unloaded = true;
+                NativeNames.Clear();
+                InitializedModules.Clear();
+            }
+        }
+    }
+
+    // A context owns its metadata until unload; the registry must not own the context.
+    private static readonly ConditionalWeakTable<AssemblyLoadContext, ComponentMetadata> s_ComponentMetadata = new();
+
+    private static ComponentMetadata GetComponentMetadata(Assembly assembly)
+    {
+        AssemblyLoadContext context = AssemblyLoadContext.GetLoadContext(assembly)!;
+        if (s_ComponentMetadata.TryGetValue(context, out ComponentMetadata? metadata))
+            return metadata;
+
+        lock (s_ComponentMetadata)
+        {
+            if (s_ComponentMetadata.TryGetValue(context, out metadata))
+                return metadata;
+            metadata = new ComponentMetadata();
+            if (context == AssemblyLoadContext.GetLoadContext(typeof(Entity).Assembly))
+            {
+                foreach (var pair in s_BuiltInComponentNames)
+                    metadata.NativeNames.TryAdd(pair.Key, pair.Value);
+            }
+            context.Unloading += metadata.Unload;
+            s_ComponentMetadata.Add(context, metadata);
+            return metadata;
+        }
+    }
+
+    private static bool TryGetRegisteredNativeName(Type type, out string? name)
+    {
+        ComponentMetadata metadata = GetComponentMetadata(type.Assembly);
+        return metadata.NativeNames.TryGetValue(type, out name);
+    }
+
     private static string? GetNativeName<T>() where T : Component, new() => GetComponentName(typeof(T));
 
     private static string? GetComponentName(Type type)
     {
-        if (s_NativeComponentNames.TryGetValue(type, out string? name))
+        if (TryGetRegisteredNativeName(type, out string? name))
             return name;
-        if (EnsureModuleInitialized(type.Module) && s_NativeComponentNames.TryGetValue(type, out name))
+        if (EnsureModuleInitialized(type.Module) && TryGetRegisteredNativeName(type, out name))
             return name;
 
         return type.IsSubclassOf(typeof(Component)) ? type.Name : null;
     }
 
-    private static readonly HashSet<Module> s_InitializedModules = new();
-
-    // Package wrappers call RegisterNativeComponent from a [ModuleInitializer], which .NET runs only
-    // on first use of the module; run it before a lookup could miss. True the first time per module.
+    // Package module initializers must register their wrappers before lookup completes.
     private static bool EnsureModuleInitialized(Module module)
     {
         if (module.Assembly == typeof(Entity).Assembly)
             return false;
-        lock (s_InitializedModules)
+        ComponentMetadata metadata = GetComponentMetadata(module.Assembly);
+        lock (metadata)
         {
-            if (!s_InitializedModules.Add(module))
+            if (metadata.Unloaded || metadata.InitializedModules.Contains(module))
                 return false;
         }
         RuntimeHelpers.RunModuleConstructor(module.ModuleHandle);
+        lock (metadata)
+        {
+            if (metadata.Unloaded)
+                return false;
+            metadata.InitializedModules.Add(module);
+        }
         return true;
     }
 
     private static Type? FindRegisteredComponentType(string name)
     {
-        foreach (var pair in s_NativeComponentNames)
+        GetComponentMetadata(typeof(Entity).Assembly);
+        foreach (var entry in s_ComponentMetadata)
         {
-            Type type = pair.Key;
-            if (string.Equals(pair.Value, name, StringComparison.Ordinal)
-                || string.Equals(type.Name, name, StringComparison.Ordinal)
-                || string.Equals(type.FullName, name, StringComparison.Ordinal))
+            lock (entry.Value)
             {
-                return type;
+                foreach (var pair in entry.Value.NativeNames)
+                {
+                    Type type = pair.Key;
+                    if (string.Equals(pair.Value, name, StringComparison.Ordinal)
+                        || string.Equals(type.Name, name, StringComparison.Ordinal)
+                        || string.Equals(type.FullName, name, StringComparison.Ordinal))
+                    {
+                        return type;
+                    }
+                }
             }
         }
         return null;
@@ -302,6 +362,16 @@ public class Entity : IEquatable<Entity>
 
         foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
         {
+            AssemblyLoadContext context = AssemblyLoadContext.GetLoadContext(assembly)!;
+            if (s_ComponentMetadata.TryGetValue(context, out ComponentMetadata? metadata))
+            {
+                lock (metadata)
+                {
+                    if (metadata.Unloaded)
+                        continue;
+                }
+            }
+
             Type[] types;
             try { types = assembly.GetTypes(); }
             catch (ReflectionTypeLoadException ex)
@@ -345,14 +415,19 @@ public class Entity : IEquatable<Entity>
     {
         if (string.IsNullOrWhiteSpace(nativeName))
             throw new ArgumentException("A native component name is required.", nameof(nativeName));
-        s_NativeComponentNames[typeof(T)] = nativeName;
+        ComponentMetadata metadata = GetComponentMetadata(typeof(T).Assembly);
+        lock (metadata)
+        {
+            if (!metadata.Unloaded)
+                metadata.NativeNames[typeof(T)] = nativeName;
+        }
     }
 
     internal static bool TryGetNativeComponentName(Type type, out string? name)
     {
-        if (s_NativeComponentNames.TryGetValue(type, out name))
+        if (TryGetRegisteredNativeName(type, out name))
             return true;
-        if (EnsureModuleInitialized(type.Module) && s_NativeComponentNames.TryGetValue(type, out name))
+        if (EnsureModuleInitialized(type.Module) && TryGetRegisteredNativeName(type, out name))
             return true;
 
         if (type.IsValueType && typeof(IComponent).IsAssignableFrom(type))
@@ -690,7 +765,7 @@ public class Entity : IEquatable<Entity>
 
         var component = (Component)Activator.CreateInstance(type)!;
         component.Entity = this;
-        if (!s_NativeComponentNames.ContainsKey(type))
+        if (!TryGetRegisteredNativeName(type, out _))
             ApplyManagedFieldValues(component, InternalCalls.Entity_GetManagedComponentFields(ID, type.Name));
 
         s_ManagedComponentStore[(ID, type)] = component;

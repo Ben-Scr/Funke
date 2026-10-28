@@ -520,12 +520,13 @@ local function NormaliseVersioning(manifest)
     end
 end
 
-local function LoadManifestsFromRoot(searchRoot, manifests, byName)
+local function LoadManifestsFromRoot(searchRoot, manifests, byName, asFallback)
     if not os.isdir(searchRoot) then
         return
     end
 
     local entries = os.matchdirs(path.join(searchRoot, "*"))
+    local namesInRoot = {}
     for _, entry in ipairs(entries) do
         local manifestPath = path.join(entry, "funke-package.lua")
         if os.isfile(manifestPath) then
@@ -534,18 +535,20 @@ local function LoadManifestsFromRoot(searchRoot, manifests, byName)
             -- validator / dispatcher reads them. Warns on rewrite.
             NormaliseLayerNames(manifest)
             ValidateManifest(manifest, manifestPath)
-            NormaliseVersioning(manifest)
-
-            if byName[manifest.name] then
+            if namesInRoot[manifest.name] or (byName[manifest.name] and not asFallback) then
                 PackageError("Duplicate package name '" .. manifest.name ..
-                    "' (first at '" .. byName[manifest.name].PackageDir ..
+                    "' (first at '" .. (namesInRoot[manifest.name] or byName[manifest.name].PackageDir) ..
                     "', second at '" .. entry .. "').")
             end
+            namesInRoot[manifest.name] = entry
 
-            manifest.PackageDir = entry
-            manifest.ManifestPath = manifestPath
-            table.insert(manifests, manifest)
-            byName[manifest.name] = manifest
+            if not asFallback or not byName[manifest.name] then
+                NormaliseVersioning(manifest)
+                manifest.PackageDir = entry
+                manifest.ManifestPath = manifestPath
+                table.insert(manifests, manifest)
+                byName[manifest.name] = manifest
+            end
         end
     end
 end
@@ -1039,8 +1042,8 @@ function PackageSystem.ResolveProjectPackages(projectRootDir)
 
     local manifests = {}
     local byName = {}
-    LoadManifestsFromRoot(path.join(ROOT_DIR, "packages"), manifests, byName)
     LoadManifestsFromRoot(path.join(projectRootDir, "Packages"), manifests, byName)
+    LoadManifestsFromRoot(path.join(ROOT_DIR, "packages"), manifests, byName, true)
 
     local allowList = ReadProjectPackagesAllowList(projectRootDir)
     manifests, byName = FilterManifestsByAllowList(manifests, byName, allowList or {})

@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 
 #include "Core/Application.hpp"
+#include "Jobs/JobSystem.hpp"
+#include "Memory/FrameArenas.hpp"
 
 using namespace Funke;
 
@@ -67,6 +69,53 @@ namespace {
 
 		int UpdateCount = 0;
 	};
+
+	class MinimalLifecycleTestApplication final : public Application {
+	public:
+		ApplicationConfig GetConfiguration() const override {
+			ApplicationConfig config = ApplicationConfig::Minimal();
+			config.EnableWindow = false;
+			config.EnableTextureManager = false;
+			config.SetWindowIcon = false;
+			config.UseTargetFrameRateForMainLoop = false;
+			return config;
+		}
+
+		void ConfigureScenes() override { ++ConfigureScenesCount; }
+		void Start() override {
+			++StartCount;
+			ObserveSubsystems();
+		}
+		void Update() override {
+			++UpdateCount;
+			ObserveSubsystems();
+			if (UpdateCount == 3) Application::Quit();
+		}
+		void OnQuit() override { ++QuitCount; }
+
+		int ConfigureScenesCount = 0;
+		int StartCount = 0;
+		int UpdateCount = 0;
+		int QuitCount = 0;
+		bool BackgroundSystemsStayedDisabled = true;
+
+	private:
+		void ObserveSubsystems() {
+			BackgroundSystemsStayedDisabled = BackgroundSystemsStayedDisabled
+				&& !JobSystem::IsInitialized() && JobSystem::GetWorkerCount() == 0
+				&& !FrameArenas::IsInitialized();
+		}
+	};
+}
+
+TEST_CASE("Application minimal lifecycle skips scenes workers and frame arenas") {
+	MinimalLifecycleTestApplication application;
+	CHECK(application.Run() == 0);
+	CHECK(application.ConfigureScenesCount == 0);
+	CHECK(application.StartCount == 1);
+	CHECK(application.UpdateCount == 3);
+	CHECK(application.QuitCount == 1);
+	CHECK(application.BackgroundSystemsStayedDisabled);
 }
 
 TEST_CASE("Application reload requests rerun the lifecycle") {

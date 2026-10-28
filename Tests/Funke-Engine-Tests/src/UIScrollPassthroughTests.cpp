@@ -2,8 +2,11 @@
 
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
+#include "Components/Tags.hpp"
 #include "Components/UI/ButtonComponent.hpp"
+#include "Components/UI/CircularSliderComponent.hpp"
 #include "Components/UI/InputFieldComponent.hpp"
+#include "Components/UI/MaskComponent.hpp"
 #include "Components/UI/ScrollRectComponent.hpp"
 #include "Components/UI/SliderComponent.hpp"
 #include "Systems/UIEventSystem.hpp"
@@ -86,6 +89,34 @@ TEST_CASE("A slider thumb overhanging the track still grabs the slider")
 	// A read-only slider (progress bar) never takes input through its handle.
 	registry.get<SliderComponent>(slider).IsReadOnly = true;
 	CHECK_FALSE(UIEventSystem::SliderHandleContains(registry, slider, Vec2{ 210.0f, 5.0f }));
+}
+
+TEST_CASE("A circular slider thumb outside its ring remains draggable and respects clipping")
+{
+	entt::registry registry;
+	const EntityHandle slider = MakeChild(registry, entt::null);
+	auto& track = registry.emplace<RectTransform2DComponent>(slider);
+	track.SizeDelta = Vec2{ 200.0f, 200.0f };
+	const EntityHandle handle = MakeChild(registry, slider);
+	auto& thumb = registry.emplace<RectTransform2DComponent>(handle);
+	thumb.AnchoredPosition = Vec2{ 90.0f, 0.0f };
+	thumb.SizeDelta = Vec2{ 40.0f, 40.0f };
+	registry.emplace<CircularSliderComponent>(slider).HandleEntity = handle;
+
+	CHECK(UIEventSystem::SliderHandleContains(registry, slider, Vec2{ 105.0f, 0.0f }));
+	CHECK(UIEventSystem::SliderHandleContains(registry, slider, Vec2{ 75.0f, 0.0f }));
+	CHECK_FALSE(UIEventSystem::SliderHandleContains(registry, slider, Vec2{ 0.0f, 0.0f }));
+
+	registry.emplace<MaskComponent>(slider);
+	CHECK_FALSE(UIEventSystem::SliderHandleContains(registry, slider, Vec2{ 105.0f, 0.0f }));
+	CHECK(UIEventSystem::SliderHandleContains(registry, slider, Vec2{ 95.0f, 0.0f }));
+	registry.remove<MaskComponent>(slider);
+
+	registry.emplace<DisabledTag>(handle);
+	CHECK_FALSE(UIEventSystem::SliderHandleContains(registry, slider, Vec2{ 95.0f, 0.0f }));
+	registry.remove<DisabledTag>(handle);
+	registry.get<CircularSliderComponent>(slider).IsReadOnly = true;
+	CHECK_FALSE(UIEventSystem::SliderHandleContains(registry, slider, Vec2{ 95.0f, 0.0f }));
 }
 
 TEST_CASE("A long-press selects the word under the finger")

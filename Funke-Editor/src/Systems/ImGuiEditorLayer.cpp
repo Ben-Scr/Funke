@@ -1,9 +1,11 @@
 #include <pch.hpp>
 #include "ImGuiEditorLayer.hpp"
+#include "Gui/EditorShortcuts.hpp"
 #include "Core/EngineModules.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <SDL3/SDL.h>
 // glad include retired with the legacy GL backend (2026-05); the editor
 // no longer makes raw GL calls, all drawing routes through engine renderers.
 
@@ -35,6 +37,7 @@
 #include "Core/Application.hpp"
 #include "Core/Time.hpp"
 #include "Core/Window.hpp"
+#include "DevTools/RunAutomation.hpp"
 #include "Events/EventDispatcher.hpp"
 #include "Events/SceneEvents.hpp"
 #include "Events/WindowFocusEvent.hpp"
@@ -79,6 +82,7 @@
 #include "Editor/EditorRestart.hpp"
 #include "Editor/ExternalEditor.hpp"
 #include "Inspector/ReferencePicker.hpp"
+#include "Inspector/PropertyDrawer.hpp"
 #include "Gui/AddComponentPopup.hpp"
 #include "Gui/EditorDockLayout.hpp"
 #include "Gui/EditorIcons.hpp"
@@ -953,8 +957,44 @@ namespace Funke {
 			: m_GizmoMode == EditorGizmoMode::Bounds ? "Resize" : "Move";
 		auto command = std::make_unique<TransformEditCommand>(std::move(entries), label);
 		if (command->HasChange()) {
-			m_UndoStack.Push(std::move(command));
+			GetUndoStack(scene).Push(std::move(command));
 		}
+	}
+
+	UndoStack& ImGuiEditorLayer::GetUndoStack(Scene& scene) {
+		UndoStack* stack = &m_DetachedUndoStack;
+		for (const auto& weak : SceneManager::GetLoadedScenes()) {
+			if (const auto owner = weak.lock(); owner && owner.get() == &scene) {
+				stack = &m_SceneUndoHistory.ForScene(owner);
+				break;
+			}
+		}
+		if (m_UndoStackSceneId != &scene || m_ActiveUndoStack != stack) {
+			if (m_ActiveUndoStack) InspectorUndoRecorder::Flush(*m_ActiveUndoStack, true);
+			InspectorUndoRecorder::Reset();
+			if (stack == &m_DetachedUndoStack) m_DetachedUndoStack.Clear();
+			m_UndoStackSceneId = &scene;
+			m_ActiveUndoStack = stack;
+		}
+		return *stack;
+	}
+
+	void ImGuiEditorLayer::ClearUndoHistory() {
+		InspectorUndoRecorder::Reset();
+		m_ActiveUndoStack = nullptr;
+		m_UndoStackSceneId = nullptr;
+		m_SceneUndoHistory.Clear();
+		m_DetachedUndoStack.Clear();
+	}
+
+	void ImGuiEditorLayer::ForgetUndoHistory(const Scene* scene) {
+		if (m_UndoStackSceneId == scene) {
+			InspectorUndoRecorder::Reset();
+			m_ActiveUndoStack = nullptr;
+			m_UndoStackSceneId = nullptr;
+		}
+		m_SceneUndoHistory.Forget(scene);
+		if (scene == m_PrefabEditScene.get()) m_DetachedUndoStack.Clear();
 	}
 
 	void ImGuiEditorLayer::PerformUndoRedo(Scene& scene, bool redo) {
@@ -963,7 +1003,9 @@ namespace Funke {
 		const uint64_t primaryId = (m_SelectedEntity != entt::null && scene.IsValid(m_SelectedEntity))
 			? scene.GetEntityPersistentID(m_SelectedEntity) : 0;
 
-		const std::string action = redo ? m_UndoStack.Redo(scene) : m_UndoStack.Undo(scene);
+		UndoStack& history = GetUndoStack(scene);
+		InspectorUndoRecorder::Flush(history, true);
+		const std::string action = redo ? history.Redo(scene) : history.Undo(scene);
 		if (action.empty()) return;
 
 		// Structural steps rebuild entities with new handles; re-resolve the selection by persistent id.
@@ -1138,7 +1180,9 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::OnDetach(Application& app) {
+		PropertyDrawer::ClearTransientState();
 		(void)app;
+		ClearUndoHistory();
 		// Drain the async workers first — their lambdas write member state (the progress mutexes) that
 		// the imminent destructor would otherwise free out from under a still-running thread. The future
 		// destructors already block for the same duration; this just joins while the members are alive.
@@ -1381,29 +1425,20 @@ namespace Funke {
 				std::chrono::steady_clock::now() - m_PlayModeStopRequestTime).count());
 		}
 
-		Input& input = app.GetInput();
 		Scene* activeScene = app.GetSceneManager() ? SceneManager::GetActiveScene() : nullptr;
 		if (!activeScene) {
+			ClearUndoHistory();
 			return;
 		}
-
-		Scene& scene = *activeScene;
 
 		// CRITICAL: validate against GetContextScene(), not activeScene — in prefab-edit mode the selection lives in the detached prefab registry; using activeScene would clear the selection every frame.
 		Scene* selectionContextScene = GetContextScene();
 		if (!selectionContextScene) selectionContextScene = activeScene;
 		Scene& selectionScene = *selectionContextScene;
 
-		// Drop the undo history when the editing context changes (scene switch,
-		// prefab-edit enter/exit) — its commands reference the previous scene.
-		if (m_UndoStackSceneId != selectionContextScene) {
-			m_UndoStack.Clear();
-			InspectorUndoRecorder::Reset();
-			m_UndoStackSceneId = selectionContextScene;
-		}
-
-		// Commit any inspector edit gesture that ended this frame (one step per drag).
-		InspectorUndoRecorder::Flush(m_UndoStack);
+		UndoStack& history = GetUndoStack(selectionScene);
+		m_SceneUndoHistory.Retain(SceneManager::GetLoadedScenes());
+		InspectorUndoRecorder::Flush(history);
 
 		// Advance the undo/redo toast fade (fade-in 0.15 + hold 1.3 + fade-out 0.5).
 		if (m_UndoToastActive) {
@@ -1437,7 +1472,7 @@ namespace Funke {
 		const bool hasEntitySelection = !GetSelectedEntities(shortcutScene).empty();
 
 		if (!io.WantTextInput && !ImGui::IsAnyItemActive()
-			&& input.GetKeyDown(KeyCode::F) && hasShortcutFocus && hasEntitySelection) {
+			&& ImGui::IsKeyChordPressed(ImGuiKey_F) && hasShortcutFocus && hasEntitySelection) {
 			FocusSelectedEntity(shortcutScene);
 		}
 
@@ -1471,7 +1506,8 @@ namespace Funke {
 		}
 
 		// Arrow-key hierarchy navigation follows the currently rendered row list.
-		if (m_IsEntitiesPanelFocused && hasEntitySelection && !m_VisibleEntityOrder.empty()) {
+		if (m_IsEntitiesPanelFocused && hasEntitySelection && !m_VisibleEntityOrder.empty()
+			&& !io.KeyCtrl && !io.KeySuper && !io.KeyAlt) {
 			const int direction = ImGui::IsKeyPressed(ImGuiKey_DownArrow, true) ? 1
 				: (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true) ? -1 : 0);
 			if (direction != 0) {
@@ -1532,10 +1568,10 @@ namespace Funke {
 		if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) {
 			DuplicateSelectedEntity(shortcutScene);
 		}
-		if (input.GetKeyDown(KeyCode::Delete) || input.GetKeyDown(KeyCode::KpDecimal)) {
+		if (EditorShortcuts::IsDeletePressed()) {
 			RequestDeleteSelectedEntity(shortcutScene);
 		}
-		if (input.GetKeyDown(KeyCode::F2)) {
+		if (EditorShortcuts::IsRenamePressed()) {
 			BeginRenameSelectedEntity(shortcutScene);
 		}
 	}
@@ -1710,7 +1746,6 @@ namespace Funke {
 		ImGui::Begin("EditorDockspace", nullptr, flags);
 		ImGui::PopStyleVar(3);
 
-		// Toolbar row under the menu bar: scene info (left), play controls (centre), search + layout (right).
 		{
 			const float padY = 6.0f;
 			ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetStyleColorVec4(ImGuiCol_MenuBarBg));
@@ -1729,7 +1764,6 @@ namespace Funke {
 			ImGui::BeginDisabled(m_BuildState > 0 || m_ReserializeState > 0);
 			RenderToolbarLeft();
 			RenderToolbar();
-			RenderTopBarRight();
 			ImGui::EndDisabled();
 			ImGui::EndChild();
 		}
@@ -1760,6 +1794,32 @@ namespace Funke {
 		// End() is in OnPreRender after RenderMainMenu — must stay open for the menubar.
 	}
 
+	void ImGuiEditorLayer::OpenPanel(const char* windowName, bool& showPanel) {
+		showPanel = true;
+		m_PendingPanelFocus = windowName;
+	}
+
+	void ImGuiEditorLayer::ApplyPanelFocusRequest() {
+		if (m_PendingPanelFocus.empty()) return;
+		ImGuiWindow* window = ImGui::FindWindowByName(m_PendingPanelFocus.c_str());
+		m_PendingPanelFocus.clear();
+		if (!window || !window->Active || ImGui::FindBlockingModal(window)) return;
+
+		ImGui::SetWindowCollapsed(window, false, ImGuiCond_Always);
+		ImGui::FocusWindow(window, ImGuiFocusRequestFlags_RestoreFocusedChild);
+
+		// ImGui focus does not raise an existing platform window.
+		ImGuiViewport* viewport = window->Viewport;
+		ImGuiPlatformIO& platformIO = ImGui::GetPlatformIO();
+		if (RunAutomation::IsBackground() || !viewport || !viewport->PlatformUserData
+			|| !viewport->PlatformHandle || !platformIO.Platform_SetWindowFocus) return;
+		if (SDL_Window* nativeWindow = SDL_GetWindowFromID(static_cast<SDL_WindowID>(reinterpret_cast<uintptr_t>(viewport->PlatformHandle)));
+			nativeWindow && (SDL_GetWindowFlags(nativeWindow) & SDL_WINDOW_MINIMIZED)) {
+			SDL_RestoreWindow(nativeWindow);
+		}
+		platformIO.Platform_SetWindowFocus(viewport);
+	}
+
 	void ImGuiEditorLayer::RenderMainMenu(Scene& scene) {
 		if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_K)) {
 			m_OpenCommandPalette = true;
@@ -1772,15 +1832,24 @@ namespace Funke {
 
 
 		if (ImGui::BeginMenu("Application")) {
-			if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, !Application::GetIsPlaying())) {
+			if (ImGui::MenuItem("Save Scene", EditorShortcuts::k_SaveLabel, false, !Application::GetIsPlaying())) {
 				SaveScenesFromMenu(scene);
 			}
 
 			if (ImGui::MenuItem("Quit")) {
 				Application::RequestQuit();
 			}
-			if (ImGui::MenuItem("Reload App")) {
-				RequestEditorAction(PendingEditorAction::Reload);
+			const bool reloadPending = EditorRestart::HasPending();
+			if (ImGui::MenuItem(reloadPending ? "Reload App (pending)" : "Reload App")) {
+				RequestEditorAction(reloadPending && EditorRestart::GetPendingKind() == EditorRestart::Kind::Restart
+					? PendingEditorAction::Restart : PendingEditorAction::Reload);
+			}
+			if (reloadPending && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+				std::string reasons;
+				for (const EditorRestart::Reason& reason : EditorRestart::GetPending()) {
+					reasons += (reasons.empty() ? "" : "\n") + reason.Text;
+				}
+				ImGui::SetTooltip("%s", reasons.c_str());
 			}
 			ImGui::EndMenu();
 		}
@@ -1791,7 +1860,7 @@ namespace Funke {
 		if (ImGui::BeginMenu("Project")) {
 			bool hasProject = ProjectManager::HasProject();
 			if (ImGui::MenuItem("Build", nullptr, false, hasProject && !Application::GetIsPlaying())) {
-				m_ShowBuildPanel = true;
+				OpenPanel("Build", m_ShowBuildPanel);
 				if (m_BuildOutputDir.empty()) {
 					FunkeProject* project = ProjectManager::GetCurrentProject();
 					if (project) {
@@ -1801,14 +1870,14 @@ namespace Funke {
 				}
 			}
 			if (ImGui::MenuItem("Build Profiles…", nullptr, false, hasProject)) {
-				m_ShowBuildProfilesPanel = true;
+				OpenPanel("Build Profiles", m_ShowBuildProfilesPanel);
 			}
 			if (ImGui::MenuItem("Project Settings", nullptr, false, hasProject)) {
-				m_ShowProjectSettings = true;
+				OpenPanel("Project Settings", m_ShowProjectSettings);
 			}
 			ImGui::Separator();
 			if (ImGui::MenuItem("Package Manager", nullptr, false, hasProject)) {
-				m_ShowPackageManager = true;
+				OpenPanel("Package Manager", m_ShowPackageManager);
 			}
 
 			ImGui::EndMenu();
@@ -1822,10 +1891,10 @@ namespace Funke {
 			// keyboard handler in OnUpdate. Disabled during play.
 			Scene* undoScene = GetContextScene();
 			const bool canEditHistory = undoScene && !Application::GetIsPlaying();
-			if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canEditHistory && m_UndoStack.CanUndo())) {
+			if (ImGui::MenuItem("Undo", EditorShortcuts::k_UndoLabel, false, canEditHistory && GetUndoStack(*undoScene).CanUndo())) {
 				PerformUndoRedo(*undoScene, false);
 			}
-			if (ImGui::MenuItem("Redo", "Ctrl+Y", false, canEditHistory && m_UndoStack.CanRedo())) {
+			if (ImGui::MenuItem("Redo", EditorShortcuts::k_RedoLabel, false, canEditHistory && GetUndoStack(*undoScene).CanRedo())) {
 				PerformUndoRedo(*undoScene, true);
 			}
 			ImGui::Separator();
@@ -1835,14 +1904,35 @@ namespace Funke {
 				RenderGameViewSettingsMenu();
 				ImGui::EndMenu();
 			}
+			if (ImGui::BeginMenu("Layout")) {
+				if (ImGui::MenuItem("Default")) {
+					ImGuiContextLayer::ResetLayoutToDefault();
+				}
+				const std::vector<std::string> presets = ImGuiContextLayer::ListLayoutPresets();
+				if (!presets.empty()) ImGui::Separator();
+				for (const std::string& preset : presets) {
+					if (ImGui::MenuItem(preset.c_str())) {
+						ImGuiContextLayer::LoadLayoutPreset(preset);
+					}
+				}
+				ImGui::Separator();
+				if (ImGui::MenuItem("Manage layouts...")) {
+					OpenPanel("Editor Preferences", m_ShowEditorPreferences);
+				}
+				ImGui::EndMenu();
+			}
 			if (ImGui::MenuItem("Preferences...")) {
-				m_ShowEditorPreferences = true;
+				OpenPanel("Editor Preferences", m_ShowEditorPreferences);
 			}
 			ImGui::EndMenu();
 		}
 
 		if (ImGui::BeginMenu("Tools")) {
-			ImGui::MenuItem("Profiler", "Ctrl+F6", &m_ShowProfiler);
+			if (ImGui::MenuItem("Search Commands...", EditorShortcuts::k_CommandPaletteLabel)) {
+				m_OpenCommandPalette = true;
+			}
+			ImGui::Separator();
+			ImGui::MenuItem("Profiler", EditorShortcuts::k_ProfilerLabel, &m_ShowProfiler);
 			ImGui::MenuItem("Animation", nullptr, &m_ShowAnimationWindow);
 			ImGui::MenuItem("Animator", nullptr, &m_ShowAnimatorWindow);
 			// Windows written in C# by the game or its packages (Funke.Editor.EditorWindow).
@@ -1911,43 +2001,6 @@ namespace Funke {
 		}
 	}
 
-	void ImGuiEditorLayer::RenderTopBarRight() {
-		const float searchW = std::round(ImGui::GetFontSize() * 15.0f);
-		const float layoutW = std::round(ImGui::GetFontSize() * 7.5f);
-		const ImGuiStyle& style = ImGui::GetStyle();
-		const float rightX = ImGui::GetWindowWidth() - style.WindowPadding.x - searchW - layoutW - style.ItemSpacing.x;
-		ImGui::SameLine();
-		if (rightX <= ImGui::GetCursorPosX()) return;
-
-		ImGui::SetCursorPosX(rightX);
-		if (EditorUI::SearchLauncher("##CommandSearch", "Search commands", "Ctrl+K", ImVec2(searchW, ImGui::GetFrameHeight()))) {
-			m_OpenCommandPalette = true;
-		}
-
-		ImGui::SameLine();
-		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, style.FramePadding);
-		ImGui::SetNextItemWidth(layoutW);
-		if (ImGui::BeginCombo("##LayoutPreset", "Layout")) {
-			if (ImGui::Selectable("Default")) {
-				ImGuiContextLayer::ResetLayoutToDefault();
-			}
-			const std::vector<std::string> presets = ImGuiContextLayer::ListLayoutPresets();
-			if (!presets.empty()) ImGui::Separator();
-			for (const std::string& preset : presets) {
-				if (ImGui::Selectable(preset.c_str())) {
-					ImGuiContextLayer::LoadLayoutPreset(preset);
-				}
-			}
-			ImGui::Separator();
-			if (ImGui::Selectable("Manage layouts...")) {
-				m_ShowEditorPreferences = true;
-			}
-			ImGui::EndCombo();
-		}
-		ImGui::PopStyleVar();
-		EditorUI::Tooltip("Editor layout");
-	}
-
 	void ImGuiEditorLayer::RenderCommandPalette(Scene& scene) {
 		constexpr const char* k_PaletteId = "##CommandPalette";
 		const bool justOpened = m_OpenCommandPalette;
@@ -1977,18 +2030,18 @@ namespace Funke {
 		const bool canEditHistory = undoScene && !playing;
 		const bool canSwitchViewMode = EngineModules::IsActive(EngineModule::TwoD) && EngineModules::IsActive(EngineModule::ThreeD);
 		std::vector<Command> commands = {
-			{ "Save Scene", "Ctrl+S", !playing, [&]() { SaveScenesFromMenu(scene); } },
+			{ "Save Scene", EditorShortcuts::k_SaveLabel, !playing, [&]() { SaveScenesFromMenu(scene); } },
 			{ "Enter Play Mode", nullptr, !playing && !m_PlayModeRecompilePending, [&]() {
 				if (Scene* active = SceneManager::GetActiveScene()) BeginPlayModeRequest(*active);
 			} },
-			{ "Undo", "Ctrl+Z", canEditHistory && m_UndoStack.CanUndo(), [&]() { PerformUndoRedo(*undoScene, false); } },
-			{ "Redo", "Ctrl+Y", canEditHistory && m_UndoStack.CanRedo(), [&]() { PerformUndoRedo(*undoScene, true); } },
-			{ "Build...", nullptr, hasProject && !playing, [&]() { m_ShowBuildPanel = true; } },
-			{ "Build Profiles", nullptr, hasProject, [&]() { m_ShowBuildProfilesPanel = true; } },
-			{ "Project Settings", nullptr, hasProject, [&]() { m_ShowProjectSettings = true; } },
-			{ "Package Manager", nullptr, hasProject, [&]() { m_ShowPackageManager = true; } },
-			{ "Preferences", nullptr, true, [&]() { m_ShowEditorPreferences = true; } },
-			{ "Toggle Profiler", "Ctrl+F6", true, [&]() { m_ShowProfiler = !m_ShowProfiler; } },
+			{ "Undo", EditorShortcuts::k_UndoLabel, canEditHistory && GetUndoStack(*undoScene).CanUndo(), [&]() { PerformUndoRedo(*undoScene, false); } },
+			{ "Redo", EditorShortcuts::k_RedoLabel, canEditHistory && GetUndoStack(*undoScene).CanRedo(), [&]() { PerformUndoRedo(*undoScene, true); } },
+			{ "Build...", nullptr, hasProject && !playing, [&]() { OpenPanel("Build", m_ShowBuildPanel); } },
+			{ "Build Profiles", nullptr, hasProject, [&]() { OpenPanel("Build Profiles", m_ShowBuildProfilesPanel); } },
+			{ "Project Settings", nullptr, hasProject, [&]() { OpenPanel("Project Settings", m_ShowProjectSettings); } },
+			{ "Package Manager", nullptr, hasProject, [&]() { OpenPanel("Package Manager", m_ShowPackageManager); } },
+			{ "Preferences", nullptr, true, [&]() { OpenPanel("Editor Preferences", m_ShowEditorPreferences); } },
+			{ "Toggle Profiler", EditorShortcuts::k_ProfilerLabel, true, [&]() { m_ShowProfiler = !m_ShowProfiler; } },
 			{ "Animation Window", nullptr, true, [&]() { m_ShowAnimationWindow = true; } },
 			{ "Animator Window", nullptr, true, [&]() { m_ShowAnimatorWindow = true; } },
 			{ "Reset Layout", nullptr, true, [&]() { ImGuiContextLayer::ResetLayoutToDefault(); } },
@@ -2101,67 +2154,12 @@ namespace Funke {
 		const ImVec2 wp = ImGui::GetWindowPos();
 		ImGui::GetWindowDrawList()->AddLine(wp, ImVec2(wp.x + ImGui::GetWindowWidth(), wp.y), ImGui::GetColorU32(ImGuiCol_Border));
 
-		auto statusIcon = [](const char* iconName, const ImVec4& tint) {
-			const float size = std::round(ImGui::GetFontSize() * 0.9f);
-			if (const uint64_t icon = EditorIcons::Get(iconName, static_cast<int>(size))) {
-				ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (ImGui::GetFrameHeight() - size) * 0.5f);
-				ImGui::ImageWithBg(static_cast<ImTextureID>(static_cast<intptr_t>(icon)), ImVec2(size, size),
-					ImVec2(0, 1), ImVec2(1, 0), ImVec4(0, 0, 0, 0), tint);
-				ImGui::SameLine(0.0f, 4.0f);
-			}
-		};
-		auto separator = []() {
-			ImGui::SameLine(0.0f, 14.0f);
-		};
-
-		Scene* scene = SceneManager::GetActiveScene();
-		if (scene) {
-			const bool dirty = scene->IsDirty() || (IsInPrefabEditMode() && m_PrefabEditDirty);
-			statusIcon(dirty ? "warning" : "success", ImVec4(1, 1, 1, 1));
-			ImGui::AlignTextToFramePadding();
-			if (dirty) EditorUI::StatusText(EditorUI::Tone::Warning, "Unsaved changes");
-			else ImGui::TextDisabled("Saved");
-			separator();
-			ImGui::AlignTextToFramePadding();
-			ImGui::TextDisabled("%s  -  %zu entities", scene->GetName().c_str(), scene->GetEntityCount());
-			if (!m_SelectedEntities.empty()) {
-				separator();
-				ImGui::AlignTextToFramePadding();
-				ImGui::TextDisabled("%zu selected", m_SelectedEntities.size());
-			}
-		}
-
-		// After "Later": the pending reload stays visible until it happens.
-		if (EditorRestart::HasPending()) {
-			if (scene) separator();
-			ImGui::AlignTextToFramePadding();
-			EditorUI::StatusText(EditorUI::Tone::Warning, "Reload pending");
-			if (ImGui::IsItemHovered()) {
-				std::string reasons;
-				for (const EditorRestart::Reason& reason : EditorRestart::GetPending()) {
-					reasons += (reasons.empty() ? "" : "\n") + reason.Text;
-				}
-				ImGui::SetTooltip("%s", reasons.c_str());
-			}
-			ImGui::SameLine(0.0f, 6.0f);
-			if (ImGui::SmallButton("Reload Now##StatusBarReload")) {
-				RequestEditorAction(EditorRestart::GetPendingKind() == EditorRestart::Kind::Restart
-					? PendingEditorAction::Restart : PendingEditorAction::Reload);
-			}
-		}
-
-		// Right side: script state, play state, frame rate.
-		const ScriptSystem* scripts = scene && scene->HasSystem<ScriptSystem>() ? scene->GetSystem<ScriptSystem>() : nullptr;
-		const bool compiling = (scripts && scripts->IsRebuilding()) || m_PlayModeRecompilePending;
-		char right[128];
-		std::snprintf(right, sizeof(right), "%s     %.0f FPS",
-			compiling ? "Compiling scripts..." : (Application::GetIsPlaying() ? "Playing" : "Scripts ready"),
-			ImGui::GetIO().Framerate);
-		const float rightW = ImGui::CalcTextSize(right).x;
-		ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 20.0f, ImGui::GetWindowWidth() - rightW - 12.0f));
+		char frameRate[32];
+		std::snprintf(frameRate, sizeof(frameRate), "%.0f FPS", ImGui::GetIO().Framerate);
+		const float frameRateWidth = ImGui::CalcTextSize(frameRate).x;
+		ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetContentRegionMax().x - frameRateWidth));
 		ImGui::AlignTextToFramePadding();
-		if (compiling) EditorUI::StatusText(EditorUI::Tone::Info, right);
-		else ImGui::TextDisabled("%s", right);
+		ImGui::TextDisabled("%s", frameRate);
 
 		ImGui::EndChild();
 	}
@@ -2288,6 +2286,7 @@ namespace Funke {
 					FNK_ERROR_TAG("PlayMode", "Failed to snapshot scene '{}'. Play Mode was not started.", loadedScene.GetName());
 					return;
 				}
+				loadedScene.MarkDirty();
 				dirtySceneNames.insert(loadedScene.GetName());
 			}
 			if (!File::Exists(snapshotPath)) {
@@ -2325,6 +2324,8 @@ namespace Funke {
 		CaptureScriptFieldOverrides(/*merge=*/false);
 
 		m_LogEntries.clear();
+		m_SelectedLogIndex = -1;
+		m_LogScrollToEnd = m_LogAutoScroll;
 		ApplicationEditorAccess::SetPlaymodePaused(false);
 
 		ScriptSystem* scriptSys = scene.HasSystem<ScriptSystem>() ? scene.GetSystem<ScriptSystem>() : nullptr;
@@ -2357,14 +2358,14 @@ namespace Funke {
 		m_PlayModeRecompilePending = false;
 		m_PlayModeRecompileScene.reset();
 		m_PlayModeSelection = CaptureLoadedSceneSelection();
-		m_UndoStack.Clear();
-		InspectorUndoRecorder::Reset();
+		ClearUndoHistory();
 		// Step counter is panel-frame state, not playmode state — without a reset
 		// here a Step that didn't finish draining before the previous Stop would
 		// trip the bottom-of-RenderToolbar auto-pause on this fresh session's first
 		// frame, freezing the new Play instantly.
 		m_StepFrames = 0;
 		ApplicationEditorAccess::SetPlaymodePaused(false);
+		SceneManager::ForeachLoadedScene([](Scene& loadedScene) { loadedScene.ClearDirty(); });
 		Application::SetIsPlaying(true);
 		m_FocusGameViewOnPlay = true;
 		// Reset Time.TimeSinceStartup / Time.RealtimeSinceStartup so each
@@ -2577,7 +2578,7 @@ namespace Funke {
 			+ (host ? FunkeBuildProfile::PlatformDisplayName(*host) : "this computer's platform")
 			+ ".\nClick to open Build Profiles.";
 		EditorUI::Tooltip(tooltip.c_str());
-		if (ImGui::IsItemClicked()) m_ShowBuildProfilesPanel = true;
+		if (ImGui::IsItemClicked()) OpenPanel("Build Profiles", m_ShowBuildProfilesPanel);
 	}
 
 	void ImGuiEditorLayer::LaunchStandalone() {
@@ -3096,9 +3097,7 @@ namespace Funke {
 
 		m_EditorOwnedSceneDefinitions.swap(restoredDefinitions);
 		m_EditorSceneDefinitionsBySceneName.swap(restoredDefinitionsByName);
-		m_UndoStack.Clear();
-		m_UndoStackSceneId = nullptr;
-		InspectorUndoRecorder::Reset();
+		ClearUndoHistory();
 		m_GizmoDragActive = false;
 		m_GizmoDragBefore.clear();
 		m_EditorPausedAudioEntities.clear();
@@ -3637,7 +3636,7 @@ namespace Funke {
 
 	void ImGuiEditorLayer::PushStructureUndo(Scene& scene, std::unique_ptr<EditCommand> command) {
 		if (!command || &scene != GetContextScene()) return;
-		m_UndoStack.Push(std::move(command));
+		GetUndoStack(scene).Push(std::move(command));
 	}
 
 	void ImGuiEditorLayer::RecordCreatedEntities(Scene& scene, std::span<const EntityHandle> created, std::string label) {
@@ -4640,6 +4639,7 @@ namespace Funke {
 		if (save && !SavePrefabEditChanges()) {
 			return false;
 		}
+		ForgetUndoHistory(m_PrefabEditScene.get());
 
 		ClearEntitySelection();
 		m_EntityOrder.clear(); m_EntityOrderDirty = true;
@@ -4680,8 +4680,9 @@ namespace Funke {
 	}
 
 	bool ImGuiEditorLayer::HasEntityShortcutFocus() const {
+		if (ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)) return false;
 		if ((m_ShowAnimationWindow && m_AnimationWindow.IsFocused()) || (m_ShowAnimatorWindow && m_AnimatorWindow.IsFocused())) return false;
-		return m_IsEditorViewActive || m_IsEditorViewFocused || m_IsEntitiesPanelFocused || m_IsInspectorPanelFocused;
+		return m_IsEditorViewFocused || m_IsEntitiesPanelFocused || m_IsInspectorPanelFocused;
 	}
 
 
@@ -4823,8 +4824,7 @@ namespace Funke {
 				ImGuiTreeNodeFlags sceneFlags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_OpenOnArrow
 					| ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_Framed;
 				const std::string fullSceneLabel = scene.IsDirty() ? scene.GetName() + " *" : scene.GetName();
-				bool sceneLabelTruncated = false;
-				const std::string sceneLabel = ImGuiUtils::Ellipsize(fullSceneLabel, ImGui::GetContentRegionAvail().x, &sceneLabelTruncated);
+				const std::string sceneLabel = ImGuiUtils::Ellipsize(fullSceneLabel, ImGui::GetContentRegionAvail().x);
 				// Use stable str_id (not the label) so the fold state survives the
 				// dirty-asterisk toggle that flips on save. Label is supplied via fmt.
 				// Neutral frame: the accent Header color is reserved for entity selection.
@@ -4833,8 +4833,9 @@ namespace Funke {
 				ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImGui::GetStyleColorVec4(ImGuiCol_FrameBgActive));
 				sceneOpen = ImGui::TreeNodeEx("##scene_node", sceneFlags, "%s", sceneLabel.c_str());
 				ImGui::PopStyleColor(3);
-				if (sceneLabelTruncated && ImGui::IsItemHovered()) {
-					ImGui::SetTooltip("%s", fullSceneLabel.c_str());
+				if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+					const size_t entityCount = scene.GetEntityCount();
+					ImGui::SetTooltip("%s\n%zu %s", fullSceneLabel.c_str(), entityCount, entityCount == 1 ? "entity" : "entities");
 				}
 				// Capture immediately after TreeNodeEx; subsequent calls would shift the "last item" rect.
 				const ImVec2 sceneItemRectMin = ImGui::GetItemRectMin();
@@ -5228,10 +5229,13 @@ namespace Funke {
 							}
 							const ImU32 arrowColor = ImGui::GetColorU32(
 								ImGui::IsItemHovered() ? EditorTheme::Colors::Highlight() : ImGui::GetStyleColorVec4(ImGuiCol_Text));
-							ImGui::RenderArrow(ImGui::GetWindowDrawList(), arrowTopLeft,
+							constexpr float k_ArrowScale = 0.7f;
+							const ImVec2 arrowPos(arrowTopLeft.x,
+								arrowTopLeft.y + (arrowSize - ImGui::GetFontSize() * k_ArrowScale) * 0.5f);
+							ImGui::RenderArrow(ImGui::GetWindowDrawList(), arrowPos,
 								arrowColor,
 								isCollapsed ? ImGuiDir_Right : ImGuiDir_Down,
-								0.7f);
+								k_ArrowScale);
 						}
 						else {
 							ImGui::Dummy(ImVec2(arrowSize, arrowSize));
@@ -5626,22 +5630,22 @@ namespace Funke {
 							if (!IsInPrefabEditMode()) m_LastInteractedSceneName = scene.GetName();
 						}
 
-						if (ImGui::MenuItem("Delete", "Del"))
+						if (ImGui::MenuItem("Delete", EditorShortcuts::k_DeleteLabel))
 						{
 							RequestDeleteSelectedEntity(scene);
 						}
 
-						if (ImGui::MenuItem("Cut", "Ctrl + X"))
+						if (ImGui::MenuItem("Cut", EditorShortcuts::k_CutLabel))
 						{
 							CutSelectedEntities(scene);
 						}
 
-						if (ImGui::MenuItem("Duplicate", "Ctrl + D"))
+						if (ImGui::MenuItem("Duplicate", EditorShortcuts::k_DuplicateLabel))
 						{
 							DuplicateSelectedEntity(scene);
 						}
 
-						if (ImGui::MenuItem("Rename", "F2"))
+						if (ImGui::MenuItem("Rename", EditorShortcuts::k_RenameLabel))
 						{
 							BeginRenameSelectedEntity(scene);
 						}
@@ -6348,6 +6352,7 @@ namespace Funke {
 
 		// Lambda: do any override paths fall under this component's serializedName?
 		auto componentHasOverrides = [&](const std::string& serializedName) -> bool {
+			if (Application::GetIsPlaying() && !scene.IsDetached()) return false;
 			if (!prefabSourceResolvable || serializedName.empty()) return false;
 			auto it = overridesByComponent.find(serializedName);
 			return it != overridesByComponent.end() && !it->second.empty();

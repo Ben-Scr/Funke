@@ -84,7 +84,6 @@ namespace Funke {
 		std::unordered_map<uint64_t, TextureEntry> m_Textures;
 		uint64_t m_DefaultTextures[4] = {};
 		std::vector<uint8_t> m_Scratch;
-		uint32_t m_ReferenceToken = 0;
 		uint32_t m_DestroyToken = 0;
 		std::string m_Label;
 		bool m_SceneSamplers = true;

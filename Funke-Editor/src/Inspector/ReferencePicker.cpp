@@ -168,7 +168,7 @@ namespace Funke::ReferencePicker {
 			// registration so scenes referencing k_DefaultFontAssetId resolve).
 			const std::string fontDir = Path::ResolveFunkeAssets("Fonts");
 			if (!fontDir.empty()) {
-				const std::string fontPath = Path::Combine(fontDir, "GoogleSans-Regular.ttf");
+				const std::string fontPath = Path::Combine(fontDir, "IBMPlexSansCondensed-Regular.ttf");
 				if (std::filesystem::exists(fontPath)) {
 					std::error_code ec;
 					std::string canonical = std::filesystem::weakly_canonical(
@@ -462,22 +462,22 @@ namespace Funke::ReferencePicker {
 		}
 		ImGui::Separator();
 		if (s_State.UseEntityTabs) {
-			if (ImGui::BeginTabBar("##EntityReferenceTabs")) {
-				if (ImGui::BeginTabItem("Scene")) {
+			if (EditorUI::BeginTabBar("##EntityReferenceTabs")) {
+				if (EditorUI::BeginTabItem("Scene")) {
 					if (s_State.ActiveEntityTab != EntryGroup::Scene) {
 						s_State.ActiveEntityTab = EntryGroup::Scene;
 						s_State.VisibleEntriesDirty = true;
 					}
-					ImGui::EndTabItem();
+					EditorUI::EndTabItem();
 				}
-				if (ImGui::BeginTabItem("Assets")) {
+				if (EditorUI::BeginTabItem("Assets")) {
 					if (s_State.ActiveEntityTab != EntryGroup::Assets) {
 						s_State.ActiveEntityTab = EntryGroup::Assets;
 						s_State.VisibleEntriesDirty = true;
 					}
-					ImGui::EndTabItem();
+					EditorUI::EndTabItem();
 				}
-				ImGui::EndTabBar();
+				EditorUI::EndTabBar();
 			}
 		}
 

@@ -11,6 +11,7 @@
 #include "Graphics/MeshAsset.hpp"
 #include "Graphics/PrimitiveMesh.hpp"
 #include "Scene/Scene.hpp"
+#include "Systems/Transform3DHierarchySystem.hpp"
 
 #include <Jolt/Jolt.h>
 #include <Jolt/Core/Factory.h>
@@ -230,8 +231,13 @@ namespace Funke {
 			bool HasRigidbody = false;
 			Rigidbody3DComponent Rigidbody{};
 			std::vector<ColliderDesc> Colliders;
-			// Sync pass that last gathered this entry; older entries are gone from the scene.
-			uint32_t SyncStamp = 0;
+			uint64_t SyncStamp = 0;
+			uint64_t RigidbodyStamp = 0;
+			uint64_t Revision = 0;
+			bool Dirty = true;
+			bool FrameValid = false;
+			glm::mat4 FrameWorld{ 1.0f };
+			glm::mat4 InverseFrame{ 1.0f };
 		};
 
 		bool SameRigidbody(const Rigidbody3DComponent& a, const Rigidbody3DComponent& b) {
@@ -436,8 +442,27 @@ namespace Funke {
 
 		Scene* OwningScene = nullptr;
 		std::unordered_map<EntityHandle, BodyRecord> Bodies;
+		struct BodyPoseUpdate {
+			EntityHandle Owner;
+			BodyRecord* Record;
+			int HierarchyDepth;
+		};
+		std::vector<BodyPoseUpdate> PoseUpdates;
 		std::unordered_map<EntityHandle, BodyDesc> Desired;
-		uint32_t DesiredStamp = 0;
+		uint64_t DesiredStamp = 0;
+		PhysicsSyncStats3D SyncStats;
+		struct ColliderSnapshot {
+			EntityHandle Entity = entt::null;
+			EntityHandle Owner = entt::null;
+			BodyDesc* Body = nullptr;
+			ColliderDesc Desc;
+			glm::mat4 World{ 1.0f };
+			glm::mat4 OwnerWorld{ 1.0f };
+			glm::mat4 Relative{ 1.0f };
+		};
+		std::array<std::vector<ColliderSnapshot>, 4> ColliderSnapshots;
+		std::vector<std::pair<EntityHandle, EntityHandle>> HierarchySnapshots;
+		std::vector<EntityHandle> RigidbodyOwners;
 		std::unordered_map<JPH::uint32, EntityHandle> Owners;
 
 		std::mutex ContactMutex;
@@ -727,11 +752,73 @@ namespace Funke {
 			return entity;
 		}
 
+		bool RefreshOwnership(entt::registry& registry) {
+			bool changed = false;
+			size_t index = 0;
+			for (auto [entity, hierarchy] : registry.view<HierarchyComponent>().each()) {
+				const std::pair snapshot{ entity, hierarchy.Parent };
+				if (index == HierarchySnapshots.size()) {
+					HierarchySnapshots.push_back(snapshot);
+					changed = true;
+				} else if (HierarchySnapshots[index] != snapshot) {
+					HierarchySnapshots[index] = snapshot;
+					changed = true;
+				}
+				++index;
+			}
+			changed = changed || index != HierarchySnapshots.size();
+			HierarchySnapshots.resize(index);
+			index = 0;
+			for (auto entity : registry.view<Rigidbody3DComponent, Transform3DComponent>(entt::exclude<DisabledTag, InheritedDisabledTag>)) {
+				if (index == RigidbodyOwners.size()) {
+					RigidbodyOwners.push_back(entity);
+					changed = true;
+				} else if (RigidbodyOwners[index] != entity) {
+					RigidbodyOwners[index] = entity;
+					changed = true;
+				}
+				++index;
+			}
+			changed = changed || index != RigidbodyOwners.size();
+			RigidbodyOwners.resize(index);
+			return changed;
+		}
+
+		void InvalidateOwner(EntityHandle owner) {
+			if (const auto found = Desired.find(owner); found != Desired.end()) found->second.Dirty = true;
+		}
+
+		const glm::mat4& GetInverseFrame(BodyDesc& body, const glm::mat4& world) {
+			if (!body.FrameValid || body.FrameWorld != world) {
+				const Pose pose = DecomposePose(world);
+				body.InverseFrame = glm::inverse(glm::translate(glm::mat4(1.0f), pose.Position) * glm::mat4_cast(pose.Rotation));
+				body.FrameWorld = world;
+				body.FrameValid = true;
+				++SyncStats.OwnerFramesRecomputed;
+			}
+			return body.InverseFrame;
+		}
+
 		template <typename TCollider, typename TFill>
-		void GatherColliders(entt::registry& registry, ColliderKind kind, TFill&& fill) {
+		void GatherColliders(entt::registry& registry, ColliderKind kind, bool ownershipChanged, TFill&& fill) {
+			auto& snapshots = ColliderSnapshots[static_cast<size_t>(kind)];
+			size_t index = 0;
 			auto view = registry.view<TCollider, Transform3DComponent>(entt::exclude<DisabledTag, InheritedDisabledTag>);
 			for (auto [entity, collider, transform] : view.each()) {
-				const EntityHandle owner = FindOwner(registry, entity);
+				if (index == snapshots.size()) snapshots.emplace_back();
+				auto& cached = snapshots[index++];
+				const bool newEntity = cached.Entity != entity;
+				EntityHandle owner = cached.Owner;
+				if (newEntity || ownershipChanged) {
+					owner = FindOwner(registry, entity);
+					++SyncStats.OwnerSearches;
+				}
+				BodyDesc& body = TouchDesired(owner);
+				const bool newOwner = newEntity || cached.Owner != owner;
+				if (newOwner) {
+					InvalidateOwner(cached.Owner);
+					body.Dirty = true;
+				}
 				ColliderDesc desc;
 				desc.Entity = entity;
 				desc.Kind = kind;
@@ -740,52 +827,74 @@ namespace Funke {
 				desc.Friction = collider.Friction;
 				desc.Bounciness = collider.Bounciness;
 				fill(entity, collider, desc);
+				desc.Scale = cached.Desc.Scale;
+				desc.LocalPosition = cached.Desc.LocalPosition;
+				desc.LocalRotation = cached.Desc.LocalRotation;
 
+				const glm::mat4& ownerWorld = registry.get<Transform3DComponent>(owner).WorldMatrix;
 				if (owner == entity) {
-					desc.Scale = DecomposeScale(transform.WorldMatrix);
+					if (newOwner || glm::mat3(cached.World) != glm::mat3(transform.WorldMatrix)) {
+						desc.Scale = DecomposeScale(transform.WorldMatrix);
+						desc.LocalPosition = Vec3(0.0f);
+						desc.LocalRotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+						++SyncStats.ColliderPosesRecomputed;
+					}
+				} else if (newOwner || cached.World != transform.WorldMatrix || cached.OwnerWorld != ownerWorld) {
+					const glm::mat4 relative = GetInverseFrame(body, ownerWorld) * transform.WorldMatrix;
+					// Rigid motion moves every child together and leaves its body-space shape unchanged.
+					if (newOwner || !Near(relative, cached.Relative)) {
+						const Pose pose = DecomposePose(relative);
+						desc.Scale = pose.Scale;
+						desc.LocalPosition = pose.Position;
+						desc.LocalRotation = pose.Rotation;
+						cached.Relative = relative;
+						++SyncStats.ColliderPosesRecomputed;
+					}
 				}
-				else {
-					// Body space = the owner's world pose without its scale.
-					const Pose ownerPose = DecomposePose(registry.get<Transform3DComponent>(owner).WorldMatrix);
-					const glm::mat4 bodyFrame = glm::translate(glm::mat4(1.0f), ownerPose.Position) * glm::mat4_cast(ownerPose.Rotation);
-					const Pose relative = DecomposePose(glm::inverse(bodyFrame) * transform.WorldMatrix);
-					desc.Scale = relative.Scale;
-					desc.LocalPosition = relative.Position;
-					desc.LocalRotation = relative.Rotation;
+				if (newOwner || !SameCollider(cached.Desc, desc)) {
+					cached.Desc = desc;
+					body.Dirty = true;
 				}
-				TouchDesired(owner).Colliders.push_back(desc);
+				cached.Entity = entity;
+				cached.Owner = owner;
+				cached.Body = &body;
+				cached.World = transform.WorldMatrix;
+				cached.OwnerWorld = ownerWorld;
 			}
+			for (size_t removed = index; removed < snapshots.size(); ++removed) InvalidateOwner(snapshots[removed].Owner);
+			snapshots.resize(index);
 		}
 
-		// Desired is kept across steps so its nodes and collider vectors are reused, not reallocated per step.
 		BodyDesc& TouchDesired(EntityHandle owner) {
 			BodyDesc& desc = Desired[owner];
-			if (desc.SyncStamp != DesiredStamp) {
-				desc.SyncStamp = DesiredStamp;
-				desc.HasRigidbody = false;
-				desc.Colliders.clear();
-			}
+			desc.SyncStamp = DesiredStamp;
 			return desc;
 		}
 
 		void BuildDesiredBodies(entt::registry& registry) {
-			if (++DesiredStamp == 0) DesiredStamp = 1;
-			for (auto [entity, rb, transform] : registry.view<Rigidbody3DComponent, Transform3DComponent>(entt::exclude<DisabledTag, InheritedDisabledTag>).each()) {
+			++DesiredStamp;
+			const bool ownershipChanged = RefreshOwnership(registry);
+			for (EntityHandle entity : RigidbodyOwners) {
+				const auto& rb = registry.get<Rigidbody3DComponent>(entity);
 				BodyDesc& desc = TouchDesired(entity);
-				desc.HasRigidbody = true;
-				desc.Rigidbody = rb;
+				desc.RigidbodyStamp = DesiredStamp;
+				if (!desc.HasRigidbody || !SameRigidbody(desc.Rigidbody, rb)) {
+					desc.HasRigidbody = true;
+					desc.Rigidbody = rb;
+					desc.Dirty = true;
+				}
 			}
-			GatherColliders<BoxCollider3DComponent>(registry, ColliderKind::Box,
+			GatherColliders<BoxCollider3DComponent>(registry, ColliderKind::Box, ownershipChanged,
 				[](EntityHandle, const BoxCollider3DComponent& c, ColliderDesc& d) { d.Size = c.Size; });
-			GatherColliders<SphereCollider3DComponent>(registry, ColliderKind::Sphere,
+			GatherColliders<SphereCollider3DComponent>(registry, ColliderKind::Sphere, ownershipChanged,
 				[](EntityHandle, const SphereCollider3DComponent& c, ColliderDesc& d) { d.Radius = c.Radius; });
-			GatherColliders<CapsuleCollider3DComponent>(registry, ColliderKind::Capsule,
+			GatherColliders<CapsuleCollider3DComponent>(registry, ColliderKind::Capsule, ownershipChanged,
 				[](EntityHandle, const CapsuleCollider3DComponent& c, ColliderDesc& d) {
 					d.Radius = c.Radius;
 					d.Height = c.Height;
 					d.Axis = c.Direction;
 				});
-			GatherColliders<MeshCollider3DComponent>(registry, ColliderKind::Mesh,
+			GatherColliders<MeshCollider3DComponent>(registry, ColliderKind::Mesh, ownershipChanged,
 				[&registry](EntityHandle entity, const MeshCollider3DComponent& c, ColliderDesc& d) {
 					const MeshRendererComponent* renderer = c.UseMeshRenderer ? registry.try_get<MeshRendererComponent>(entity) : nullptr;
 					d.Mesh = renderer ? renderer->Mesh : c.Mesh;
@@ -795,15 +904,39 @@ namespace Funke {
 				});
 			std::erase_if(Desired, [this](const auto& pair) { return pair.second.SyncStamp != DesiredStamp; });
 			for (BodyDesc& desc : Desired | std::views::values) {
+				if (desc.HasRigidbody && desc.RigidbodyStamp != DesiredStamp) {
+					desc.HasRigidbody = false;
+					desc.Dirty = true;
+				}
+				if (desc.Dirty) desc.Colliders.clear();
+			}
+			for (const auto& snapshots : ColliderSnapshots) {
+				for (const auto& cached : snapshots) {
+					if (cached.Body->Dirty) cached.Body->Colliders.push_back(cached.Desc);
+				}
+			}
+			for (BodyDesc& desc : Desired | std::views::values) {
+				if (!desc.Dirty) continue;
+				desc.Dirty = false;
+				desc.Revision = DesiredStamp;
+				++SyncStats.BodyDescriptionsRebuilt;
 				if (desc.Colliders.size() < 2) continue;
 				std::sort(desc.Colliders.begin(), desc.Colliders.end(), [](const ColliderDesc& a, const ColliderDesc& b) {
 					if (a.Entity != b.Entity) return entt::to_integral(a.Entity) < entt::to_integral(b.Entity);
 					return a.Kind < b.Kind;
 				});
+				++SyncStats.CompoundSorts;
 			}
 		}
 
 		void Sync(Scene& scene, float dt) {
+			SyncStats = {};
+			if (OwningScene != &scene) {
+				Desired.clear();
+				for (auto& snapshots : ColliderSnapshots) snapshots.clear();
+				HierarchySnapshots.clear();
+				RigidbodyOwners.clear();
+			}
 			OwningScene = &scene;
 			entt::registry& registry = scene.GetRegistry();
 			BuildDesiredBodies(registry);
@@ -824,7 +957,7 @@ namespace Funke {
 			for (const auto& [owner, desc] : desired) {
 				const glm::mat4& world = registry.get<Transform3DComponent>(owner).WorldMatrix;
 				auto it = Bodies.find(owner);
-				if (it == Bodies.end() || !SameBody(it->second.Desc, desc)) {
+				if (it == Bodies.end() || (it->second.Desc.Revision != desc.Revision && !SameBody(it->second.Desc, desc))) {
 					JPH::Vec3 linear = JPH::Vec3::sZero();
 					JPH::Vec3 angular = JPH::Vec3::sZero();
 					bool hadBody = false;
@@ -848,6 +981,7 @@ namespace Funke {
 				}
 
 				BodyRecord& record = it->second;
+				record.Desc.Revision = desc.Revision;
 				if (Near(record.LastWorld, world) || (record.Presented && Near(record.PresentedWorld, world))) {
 					if (record.KinematicMoving) {
 						bodies.SetLinearAndAngularVelocity(record.Id, JPH::Vec3::sZero(), JPH::Vec3::sZero());
@@ -874,50 +1008,69 @@ namespace Funke {
 			}
 		}
 
-		// Writes a world pose into the owner's local Transform3D (through its Transform3D parent, if any).
+		// Physics ancestors must already have their new locals; intermediate nodes may still have stale world caches.
 		static void ApplyWorldPose(entt::registry& registry, EntityHandle owner, Transform3DComponent& transform,
 			const Vec3& worldPosition, const glm::quat& worldRotation)
 		{
-			const glm::mat4* parentWorld = nullptr;
 			const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(owner);
-			for (int depth = 0; hierarchy && hierarchy->Parent != entt::null && depth < 1024; ++depth) {
-				if (!registry.valid(hierarchy->Parent)) break;
-				if (const auto* parentTransform = registry.try_get<Transform3DComponent>(hierarchy->Parent)) {
-					parentWorld = &parentTransform->WorldMatrix;
-					break;
-				}
-				hierarchy = registry.try_get<HierarchyComponent>(hierarchy->Parent);
-			}
-
-			if (!parentWorld) {
+			if (!hierarchy || !registry.valid(hierarchy->Parent)) {
 				transform.Position = worldPosition;
 				transform.SetLocalRotationQuat(worldRotation);
 				transform.WorldMatrix = transform.GetLocalMatrix();
 				return;
 			}
+			const glm::mat4 parentWorld = Transform3DHierarchySystem::ComputeWorldMatrix(registry, hierarchy->Parent);
 			const Vec3 worldScale = DecomposePose(transform.WorldMatrix).Scale;
 			const glm::mat4 world = glm::scale(glm::translate(glm::mat4(1.0f), worldPosition) * glm::mat4_cast(worldRotation), worldScale);
 			Vec3 localPosition, localRotation, localScale;
-			Transform3DComponent::Decompose(glm::inverse(*parentWorld) * world, localPosition, localRotation, localScale);
+			Transform3DComponent::Decompose(glm::inverse(parentWorld) * world, localPosition, localRotation, localScale);
 			transform.Position = localPosition;
 			transform.Rotation = localRotation;
-			transform.WorldMatrix = *parentWorld * transform.GetLocalMatrix();
+			transform.WorldMatrix = parentWorld * transform.GetLocalMatrix();
+		}
+
+		void QueuePoseUpdate(const entt::registry& registry, EntityHandle owner, BodyRecord& record) {
+			int depth = 0;
+			EntityHandle ancestor = owner;
+			while (depth < 1024 && registry.valid(ancestor)) {
+				const auto* hierarchy = registry.try_get<HierarchyComponent>(ancestor);
+				if (!hierarchy || !registry.valid(hierarchy->Parent)) break;
+				ancestor = hierarchy->Parent;
+				++depth;
+			}
+			PoseUpdates.push_back({ owner, &record, depth });
+		}
+
+		void ApplyPoseUpdates(entt::registry& registry, bool presenting, float alpha = 1.0f) {
+			std::sort(PoseUpdates.begin(), PoseUpdates.end(), [](const BodyPoseUpdate& a, const BodyPoseUpdate& b) {
+				return a.HierarchyDepth < b.HierarchyDepth;
+			});
+			for (const BodyPoseUpdate& update : PoseUpdates) {
+				BodyRecord& record = *update.Record;
+				auto& transform = registry.get<Transform3DComponent>(update.Owner);
+				const bool interpolate = presenting && record.Interpolate;
+				const Vec3 position = interpolate ? glm::mix(record.PreviousPosition, record.CurrentPosition, alpha) : record.CurrentPosition;
+				const glm::quat rotation = interpolate ? glm::slerp(record.PreviousRotation, record.CurrentRotation, alpha) : record.CurrentRotation;
+				ApplyWorldPose(registry, update.Owner, transform, position, rotation);
+				if (presenting) {
+					record.PresentedWorld = transform.WorldMatrix;
+					record.Presented = true;
+				}
+				else {
+					record.LastWorld = transform.WorldMatrix;
+					record.Presented = false;
+				}
+			}
 		}
 
 		void WriteBack(Scene& scene) {
 			entt::registry& registry = scene.GetRegistry();
 			const JPH::BodyInterface& bodies = System.GetBodyInterface();
+			PoseUpdates.clear();
 			for (auto& [owner, record] : Bodies) {
 				if (record.Motion != JPH::EMotionType::Dynamic || !registry.valid(owner)) continue;
 				auto* transform = registry.try_get<Transform3DComponent>(owner);
 				if (!transform) continue;
-				if (!bodies.IsActive(record.Id)) {
-					// Asleep: settle the interpolation onto the resting pose.
-					record.PreviousPosition = record.CurrentPosition;
-					record.PreviousRotation = record.CurrentRotation;
-					continue;
-				}
-
 				JPH::RVec3 position;
 				JPH::Quat rotation;
 				bodies.GetPositionAndRotation(record.Id, position, rotation);
@@ -925,28 +1078,30 @@ namespace Funke {
 				record.PreviousRotation = record.CurrentRotation;
 				record.CurrentPosition = FromJolt(JPH::Vec3(position));
 				record.CurrentRotation = glm::normalize(FromJolt(rotation));
-				record.Presented = false;
-
-				ApplyWorldPose(registry, owner, *transform, record.CurrentPosition, record.CurrentRotation);
-				record.LastWorld = transform->WorldMatrix;
+				if (!bodies.IsActive(record.Id)) {
+					// Asleep: settle the interpolation onto the final resting pose.
+					record.PreviousPosition = record.CurrentPosition;
+					record.PreviousRotation = record.CurrentRotation;
+				}
+				QueuePoseUpdate(registry, owner, record);
 			}
+			ApplyPoseUpdates(registry, false);
 		}
 
 		void Present(Scene& scene, float alpha) {
 			entt::registry& registry = scene.GetRegistry();
 			alpha = std::clamp(alpha, 0.0f, 1.0f);
+			PoseUpdates.clear();
 			for (auto& [owner, record] : Bodies) {
-				if (!record.Interpolate || !registry.valid(owner)) continue;
+				if (record.Motion != JPH::EMotionType::Dynamic || !registry.valid(owner)) continue;
 				auto* transform = registry.try_get<Transform3DComponent>(owner);
 				if (!transform) continue;
 				// A script moved it since the last step: show that, don't blend over it.
 				if (!Near(record.LastWorld, transform->WorldMatrix) && !(record.Presented && Near(record.PresentedWorld, transform->WorldMatrix))) continue;
-				const Vec3 position = glm::mix(record.PreviousPosition, record.CurrentPosition, alpha);
-				const glm::quat rotation = glm::slerp(record.PreviousRotation, record.CurrentRotation, alpha);
-				ApplyWorldPose(registry, owner, *transform, position, rotation);
-				record.PresentedWorld = transform->WorldMatrix;
-				record.Presented = true;
+				// Non-interpolating children must keep their physics pose while an ancestor interpolates.
+				QueuePoseUpdate(registry, owner, record);
 			}
+			ApplyPoseUpdates(registry, true, alpha);
 		}
 
 		const BodyRecord* FindRecord(EntityHandle owner) const {
@@ -973,6 +1128,10 @@ namespace Funke {
 
 	void PhysicsWorld3D::SyncFromScene(Scene& scene, float dt) {
 		m_Impl->Sync(scene, dt);
+	}
+
+	PhysicsSyncStats3D PhysicsWorld3D::GetLastSyncStats() const {
+		return m_Impl->SyncStats;
 	}
 
 	void PhysicsWorld3D::Step(float dt) {

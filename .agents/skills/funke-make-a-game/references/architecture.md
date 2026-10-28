@@ -241,7 +241,7 @@ An entity that is never drawn, moved or looked up by name (an `AudioManager`, a 
 - `AssetManager.Load("…/x.png")`, `Texture.FromAssetUUID(123…)` or `FindByName("Player")` where a serialized field would do.
 - Subscribing to a static event without the matching unsubscribe.
 - Static mutable game state (`static int Score`).
-- Re-implementing what a built-in component does (manual AABB collision instead of colliders, manual sprite flipping through frames instead of `SpriteAnimator2D`, hand-rolled button hit-testing instead of `Button`) without an explicit request.
+- Re-implementing what a built-in component does (manual AABB collision instead of colliders, manual sprite flipping through frames instead of `Animator` clips, hand-rolled button hit-testing instead of `Button`) without an explicit request.
 - One giant `GameEvents` class holding every event of the game.
 
 Seen across the agent-made games in `C:\Users\benso\Index\Projects` (audit 2026-10-19). Each one worked, and each one made the project harder to change:

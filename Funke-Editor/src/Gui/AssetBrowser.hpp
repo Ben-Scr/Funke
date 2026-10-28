@@ -1,5 +1,6 @@
 #pragma once
 #include "Assets/TextureMeta.hpp"
+#include "Gui/AssetRenameInput.hpp"
 #include "Gui/PrefabThumbnailCache.hpp"
 #include "Gui/ThumbnailCache.hpp"
 #include "Scene/EntityHandle.hpp"
@@ -164,6 +165,7 @@ namespace Funke {
 		bool RevealAssetInBrowser(const std::string& path);
 
 		void ClearAssetSelection();
+		void ResetBoxSelection(bool restoreSelection = false);
 		bool IsPathSelected(const std::string& path) const;
 		bool IsPathInCutClipboard(const std::string& path) const;
 		std::vector<std::string> GetSelectedPaths() const;
@@ -212,6 +214,18 @@ namespace Funke {
 		std::string m_SelectedPath;
 		std::vector<std::string> m_SelectedPaths;
 		int m_LastSelectionIndex = -1;
+		struct BoxSelection {
+			uint32_t ActiveId = 0;
+			bool Active = false;
+			bool Additive = false;
+			bool Toggle = false;
+			float StartX = 0.0f;
+			float StartY = 0.0f;
+			std::vector<std::string> InitialPaths;
+			std::string InitialPath;
+			int InitialIndex = -1;
+		};
+		BoxSelection m_BoxSelection;
 		std::string m_PressedPath;
 		std::string m_PendingScrollToPath;
 #ifdef FNK_PLATFORM_WINDOWS
@@ -227,7 +241,7 @@ namespace Funke {
 		bool m_IsRenaming = false;
 		std::string m_RenamePath;
 		char m_RenameBuffer[256]{};
-		int m_RenameFrameCounter = 0;
+		AssetRenameInput m_RenameInput;
 
 		// Asset search filter (case-insensitive substring on file name). When
 		// non-empty the grid shows m_SearchResults — matches from the whole

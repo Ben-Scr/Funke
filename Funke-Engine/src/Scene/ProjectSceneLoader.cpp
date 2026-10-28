@@ -2,6 +2,7 @@
 #include "Scene/ProjectSceneLoader.hpp"
 
 #include "Core/Log.hpp"
+#include "Core/Application.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Scene/SceneDefinition.hpp"
@@ -11,14 +12,15 @@
 
 namespace Funke::ProjectSceneLoader {
 
-	bool Load(const std::string& name, bool additive) {
+	static bool EnsureSceneDefinition(const std::string& name) {
+		if (!Application::IsMainThread()) return false;
 		if (name.empty()) {
 			FNK_CORE_ERROR_TAG("SceneManager", "LoadScene called with an empty name");
 			return false;
 		}
 
+		if (SceneManager::HasSceneDefinition(name)) return true;
 		FunkeProject* project = ProjectManager::GetCurrentProject();
-		const bool hasDefinition = SceneManager::HasSceneDefinition(name);
 
 		// GetSceneFilePath also rejects traversal/control-byte names via IsValidSceneName.
 		std::string scenePath;
@@ -27,22 +29,23 @@ namespace Funke::ProjectSceneLoader {
 		}
 		const bool fileResolves = !scenePath.empty() && File::Exists(scenePath);
 
-		if (!hasDefinition && !fileResolves) {
+		if (!fileResolves) {
 			FNK_CORE_ERROR_TAG("SceneManager",
 				"LoadScene: no scene file resolves for '{}' and no definition is registered", name);
 			return false;
 		}
 
-		if (!hasDefinition) {
-			auto& definition = SceneManager::RegisterScene(name);
-			definition.OnLoadChecked([scenePath, name](Scene& scene) {
-				if (File::Exists(scenePath)) {
-					return SceneSerializer::LoadFromFile(scene, scenePath);
-				}
-				FNK_CORE_ERROR_TAG("SceneManager", "LoadScene: '{}' no longer exists at '{}'.", name, scenePath);
-				return false;
-			});
-		}
+		SceneManager::RegisterScene(name).OnLoadFromFile(scenePath);
+		return true;
+	}
+
+	uint64_t LoadAsync(const std::string& name, bool additive, SceneManager::SceneLoadCompletion completion) {
+		if (!EnsureSceneDefinition(name)) return 0;
+		return SceneManager::LoadSceneAsync(name, additive, std::move(completion));
+	}
+
+	bool Load(const std::string& name, bool additive) {
+		if (!EnsureSceneDefinition(name)) return false;
 
 		// LoadScene on a scene that is already loaded restarts it from disk (a single load would otherwise be a no-op).
 		const bool restart = !additive && SceneManager::IsSceneLoaded(name);

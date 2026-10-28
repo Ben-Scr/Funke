@@ -6,9 +6,12 @@
 #include "Gui/ImGuiUtils.hpp"
 
 #include <Gui/Icons.hpp>
+#include <imgui_internal.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <memory>
 #include <vector>
 
 namespace Funke::EditorUI {
@@ -29,6 +32,144 @@ namespace Funke::EditorUI {
 			ImGuiID HeightId;
 		};
 		std::vector<CardFrame> s_Cards;
+
+		struct SectionFrame {
+			ImGuiWindow* Window = nullptr;
+			ImDrawListSplitter Splitter;
+			ImVec2 Min;
+			float Width = 0.0f;
+			float HeaderBottom = 0.0f;
+			float Padding = 0.0f;
+			float Rounding = 0.0f;
+			ImRect WorkRect;
+			ImRect ContentRect;
+			ImVec4 HeaderColor;
+			int Rows = 0;
+		};
+		std::vector<std::unique_ptr<SectionFrame>> s_Sections;
+		size_t s_SectionDepth = 0;
+
+		struct SettingsRowFrame {
+			ImGuiWindow* Window;
+			ImVec2 Min;
+			float Width;
+			float Height;
+			float Padding;
+			ImRect WorkRect;
+			ImRect ContentRect;
+			bool LabelClicked = false;
+		};
+		std::vector<SettingsRowFrame> s_SettingsRows;
+
+		float SwitchWidth() {
+			return std::round(std::round(ImGui::GetFrameHeight() * 0.62f) * 1.8f);
+		}
+
+		bool SectionSwitch(const char* id, bool* value, bool mixed = false) {
+			const float frameHeight = ImGui::GetFrameHeight();
+			const float height = std::round(frameHeight * 0.62f);
+			const float width = SwitchWidth();
+			const ImVec2 p = ImGui::GetCursorScreenPos();
+			const bool clicked = ImGui::InvisibleButton(id, ImVec2(width, frameHeight), ImGuiButtonFlags_EnableNav);
+			if (clicked) {
+				*value = mixed || !*value;
+				ImGui::MarkItemEdited(ImGui::GetItemID());
+			}
+			const ImGuiID itemId = ImGui::GetItemID();
+			ImGuiStorage* storage = ImGui::GetStateStorage();
+			const float target = mixed ? 0.5f : (*value ? 1.0f : 0.0f);
+			float position = storage->GetFloat(itemId, target);
+			position += (target - position) * std::min(1.0f, ImGui::GetIO().DeltaTime * 18.0f);
+			storage->SetFloat(itemId, position);
+			ImVec4 track = Lerp(ImGui::GetStyleColorVec4(ImGuiCol_FrameBgActive), EditorTheme::Colors::Accent(), position);
+			if (ImGui::IsItemHovered()) track = Lighten(track, 0.05f);
+			const ImVec2 min(p.x, p.y + (frameHeight - height) * 0.5f);
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			dl->AddRectFilled(min, ImVec2(min.x + width, min.y + height), ImGui::GetColorU32(track), height * 0.5f);
+			const ImVec2 center(min.x + height * 0.5f + position * (width - height), min.y + height * 0.5f);
+			const float radius = std::max(1.0f, height * 0.5f - ImGui::GetFontSize() * 0.13f);
+			dl->AddCircleFilled(center, radius, ImGui::GetColorU32(ImVec4(1, 1, 1, 1)));
+			if (mixed) {
+				dl->AddLine(ImVec2(center.x - radius * 0.45f, center.y), ImVec2(center.x + radius * 0.45f, center.y),
+					ImGui::GetColorU32(ImGuiCol_FrameBgActive), std::max(1.0f, height * 0.09f));
+			}
+			return clicked;
+		}
+
+		bool DrawSectionHeader(const char* label, const char* summary, bool defaultOpen, bool forceOpen,
+			bool grouped, bool* enabled, bool* enabledChanged, bool enabledMixed, ImVec4* headerColor) {
+			ImGuiWindow* window = ImGui::GetCurrentWindow();
+			const ImGuiStyle& style = ImGui::GetStyle();
+			const ImVec2 min = ImGui::GetCursorScreenPos();
+			const float width = ImGui::GetContentRegionAvail().x;
+			const float font = ImGui::GetFontSize();
+			const float paddingX = std::round(font * (grouped ? 0.65f : 0.45f));
+			const float paddingY = std::round(font * (grouped ? 0.65f : 0.40f));
+			const float height = font + paddingY * 2.0f;
+			const float switchWidth = enabled ? SwitchWidth() : 0.0f;
+			const float reserved = enabled ? switchWidth + paddingX * 2.0f : 0.0f;
+			const ImVec4 base = grouped ? Lerp(style.Colors[ImGuiCol_WindowBg], style.Colors[ImGuiCol_FrameBg], 0.75f)
+				: style.Colors[ImGuiCol_FrameBg];
+			if (!grouped) {
+				window->DrawList->AddRectFilled(min, ImVec2(min.x + width, min.y + height), ImGui::GetColorU32(base), style.FrameRounding);
+			}
+			const bool off = enabled && !*enabled && !enabledMixed;
+			const float workRight = window->WorkRect.Max.x;
+			const float windowPaddingX = window->WindowPadding.x;
+			window->WorkRect.Max.x = min.x + std::max(font, width - reserved);
+			window->WindowPadding.x = 0.0f;
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(paddingX, paddingY));
+			ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+			ImGui::PushStyleColor(ImGuiCol_Header, grouped ? ImVec4(0, 0, 0, 0) : base);
+			ImGui::PushStyleColor(ImGuiCol_HeaderHovered, grouped ? ImVec4(0, 0, 0, 0) : style.Colors[ImGuiCol_FrameBgHovered]);
+			ImGui::PushStyleColor(ImGuiCol_HeaderActive, grouped ? ImVec4(0, 0, 0, 0) : style.Colors[ImGuiCol_FrameBgActive]);
+			if (off) ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
+			if (forceOpen) {
+				ImGui::PushID(label);
+				const ImGuiID forcedId = ImGui::GetID("##SearchExpanded");
+				ImGui::PopID();
+				ImGui::SetNextItemStorageID(forcedId);
+				ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+			}
+			ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_SpanAvailWidth
+				| ImGuiTreeNodeFlags_NoTreePushOnOpen;
+			if (defaultOpen) flags |= ImGuiTreeNodeFlags_DefaultOpen;
+			if (forceOpen) ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+			const bool open = ImGui::TreeNodeEx(label, flags);
+			if (forceOpen) ImGui::PopItemFlag();
+			const bool hovered = ImGui::IsItemHovered();
+			const bool held = ImGui::IsItemActive();
+			if (headerColor) *headerColor = hovered ? style.Colors[held ? ImGuiCol_FrameBgActive : ImGuiCol_FrameBgHovered] : base;
+			if (off) ImGui::PopStyleColor();
+			ImGui::PopStyleColor(3);
+			ImGui::PopStyleVar(2);
+			window->WorkRect.Max.x = workRight;
+			window->WindowPadding.x = windowPaddingX;
+
+			if (!open && summary && *summary) {
+				const float titleEnd = min.x + font + paddingX * 3.0f + ImGui::CalcTextSize(label, nullptr, true).x;
+				const float right = min.x + width - reserved - paddingX;
+				const float left = std::max(titleEnd + font, min.x + width * 0.48f);
+				if (right - left >= font * 2.0f) {
+					const ImVec2 size = ImGui::CalcTextSize(summary);
+					const float x = std::max(left, right - size.x);
+					const ImVec2 textMin(x, min.y + (height - font) * 0.5f);
+					ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
+					ImGui::RenderTextEllipsis(window->DrawList, textMin, ImVec2(right, min.y + height), right, summary, nullptr, &size);
+					ImGui::PopStyleColor();
+					if (hovered && size.x > right - left) ImGui::SetTooltip("%s", summary);
+				}
+			}
+			if (enabled) {
+				const ImVec2 resume = ImGui::GetCursorScreenPos();
+				ImGui::SetCursorScreenPos(ImVec2(min.x + width - switchWidth - paddingX, min.y + (height - ImGui::GetFrameHeight()) * 0.5f));
+				ImGui::PushID(label);
+				if (SectionSwitch("##SectionEnabled", enabled, enabledMixed) && enabledChanged) *enabledChanged = true;
+				ImGui::PopID();
+				ImGui::SetCursorScreenPos(resume);
+			}
+			return open;
+		}
 	}
 
 	ImVec4 ToneColor(Tone tone) {
@@ -208,6 +349,90 @@ namespace Funke::EditorUI {
 		return false;
 	}
 
+	bool CompactSlider(const char* label, float* value, float minimum, float maximum, float step,
+		float width, const char* format)
+	{
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float height = ImGui::GetFrameHeight();
+		const float gap = style.ItemInnerSpacing.x;
+		const float radius = std::max(4.0f, ImGui::GetFontSize() * 0.3f);
+		char maximumText[32];
+		std::snprintf(maximumText, sizeof(maximumText), format, maximum);
+		const float valueWidth = ImGui::CalcTextSize(maximumText).x + style.FramePadding.x;
+		const float sliderWidth = std::max(radius * 4.0f,
+			width - height * 2.0f - valueWidth - gap * 3.0f);
+		const float previous = *value;
+
+		ImGui::PushID(label);
+		ImGui::BeginGroup();
+		PushButtonColors(ButtonVariant::Ghost);
+		ImGui::BeginDisabled(*value <= minimum);
+		if (IconButton("##decrease", "minus", "Decrease", false, false, height, "-")) {
+			*value = std::max(minimum, *value - step);
+		}
+		ImGui::EndDisabled();
+		PopButtonColors(ButtonVariant::Ghost);
+
+		ImGui::SameLine(0.0f, gap);
+		ImGui::SetNextItemWidth(sliderWidth);
+		ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, radius * 2.0f);
+		ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+		for (const ImGuiCol color : { ImGuiCol_FrameBg, ImGuiCol_FrameBgHovered, ImGuiCol_FrameBgActive,
+			ImGuiCol_SliderGrab, ImGuiCol_SliderGrabActive, ImGuiCol_Text }) {
+			ImGui::PushStyleColor(color, ImVec4(0, 0, 0, 0));
+		}
+		// Keep ImGui's drag and navigation behavior while drawing the rail separately.
+		if (ImGui::SliderFloat("##slider", value, minimum, maximum, "%.0f",
+			ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput)) {
+			*value = std::round(*value);
+		}
+		const bool active = ImGui::IsItemActive();
+		const bool hovered = ImGui::IsItemHovered();
+		const ImVec2 itemMin = ImGui::GetItemRectMin();
+		const ImVec2 itemMax = ImGui::GetItemRectMax();
+		ImGui::PopStyleColor(6);
+		ImGui::PopStyleVar(2);
+		Tooltip(label);
+
+		const float left = itemMin.x + 2.0f + radius;
+		const float right = itemMax.x - 2.0f - radius;
+		const float centerY = (itemMin.y + itemMax.y) * 0.5f;
+		const float fraction = maximum > minimum ? std::clamp((*value - minimum) / (maximum - minimum), 0.0f, 1.0f) : 0.0f;
+		const ImVec2 thumb(left + (right - left) * fraction, centerY);
+		const float thickness = std::max(2.0f, ImGui::GetFontSize() * 0.18f);
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+		const ImU32 accent = ImGui::GetColorU32(EditorTheme::Colors::Accent());
+		dl->AddLine(ImVec2(left, centerY), ImVec2(right, centerY), ImGui::GetColorU32(ImGuiCol_FrameBgHovered), thickness);
+		dl->AddLine(ImVec2(left, centerY), thumb, accent, thickness);
+		if (hovered || active) {
+			dl->AddCircleFilled(thumb, radius + 3.0f,
+				ImGui::GetColorU32(WithAlpha(EditorTheme::Colors::Accent(), active ? 0.24f : 0.14f)));
+		}
+		dl->AddCircleFilled(thumb, radius, ImGui::GetColorU32(ImGuiCol_Text));
+		dl->AddCircle(thumb, radius, accent, 0, 1.0f);
+
+		ImGui::SameLine(0.0f, gap);
+		PushButtonColors(ButtonVariant::Ghost);
+		ImGui::BeginDisabled(*value >= maximum);
+		if (IconButton("##increase", "plus", "Increase", false, false, height, "+")) {
+			*value = std::min(maximum, *value + step);
+		}
+		ImGui::EndDisabled();
+		PopButtonColors(ButtonVariant::Ghost);
+
+		ImGui::SameLine(0.0f, gap);
+		char valueText[32];
+		std::snprintf(valueText, sizeof(valueText), format, *value);
+		const ImVec2 valuePos = ImGui::GetCursorScreenPos();
+		const ImVec2 textSize = ImGui::CalcTextSize(valueText);
+		dl->AddText(ImVec2(valuePos.x + (valueWidth - textSize.x) * 0.5f, valuePos.y + (height - textSize.y) * 0.5f),
+			ImGui::GetColorU32(ImGuiCol_TextDisabled), valueText);
+		ImGui::Dummy(ImVec2(valueWidth, height));
+		ImGui::EndGroup();
+		ImGui::PopID();
+		return *value != previous;
+	}
+
 	bool SearchLauncher(const char* id, const char* hint, const char* shortcut, const ImVec2& size) {
 		const ImGuiStyle& style = ImGui::GetStyle();
 		const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -231,6 +456,100 @@ namespace Funke::EditorUI {
 	}
 
 	// ── Layout ──────────────────────────────────────────────────────
+
+	bool NavigationItem(const char* label, bool selected, const char* iconName) {
+		ImGuiWindow* window = ImGui::GetCurrentWindow();
+		if (window->SkipItems) return false;
+		const float font = ImGui::GetFontSize();
+		const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+		const float height = std::round(font * 2.4f);
+		ImGui::PushID(label);
+		ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
+		ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0));
+		ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0, 0, 0, 0));
+		ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
+		const bool pressed = ImGui::Selectable("##Navigation", selected,
+			ImGuiSelectableFlags_SelectOnNav | ImGuiSelectableFlags_NoAutoClosePopups | ImGuiSelectableFlags_NoPadWithHalfSpacing,
+			ImVec2(width, height));
+		ImGui::PopStyleColor(4);
+		ImGui::PopID();
+		if (!ImGui::IsItemVisible()) return pressed;
+
+		const ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+		const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_NoNavOverride);
+		const float rounding = font / 3.0f;
+		ImDrawList* dl = window->DrawList;
+		if (selected) {
+			dl->AddRectFilled(rect.Min, rect.Max,
+				ImGui::GetColorU32(WithAlpha(EditorTheme::Colors::Accent(), EditorTheme::IsDark() ? 0.14f : 0.10f)), rounding);
+		}
+		if (hovered) {
+			ImVec4 fill = ImGui::GetStyleColorVec4(ImGuiCol_FrameBgHovered);
+			if (selected) fill.w *= 0.18f;
+			dl->AddRectFilled(rect.Min, rect.Max, ImGui::GetColorU32(fill), rounding);
+		}
+		if (selected) {
+			const float inset = std::round(font * 0.6f);
+			const float marker = std::max(1.0f, font * (2.0f / 15.0f));
+			dl->AddRectFilled(ImVec2(rect.Min.x, rect.Min.y + inset), ImVec2(rect.Min.x + marker, rect.Max.y - inset),
+				ImGui::GetColorU32(EditorTheme::Colors::Accent()), marker * 0.5f);
+		}
+		const float padding = std::round(font * 0.8f);
+		float textX = rect.Min.x + padding;
+		dl->PushClipRect(rect.Min, rect.Max, true);
+		if (iconName && *iconName) {
+			const float iconSize = std::round(font);
+			const uint64_t texture = EditorIcons::Get(iconName, static_cast<int>(iconSize));
+			if (texture) {
+				const ImVec2 iconMin(textX, rect.Min.y + (height - iconSize) * 0.5f);
+				const ImVec4 tint = selected ? EditorTheme::Colors::Highlight() : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+				dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(texture)), iconMin,
+					ImVec2(iconMin.x + iconSize, iconMin.y + iconSize), ImVec2(0, 1), ImVec2(1, 0), ImGui::GetColorU32(tint));
+			}
+			textX += iconSize + std::round(font * 0.6f);
+		}
+		const char* labelEnd = ImGui::FindRenderedTextEnd(label);
+		const ImVec2 textSize = ImGui::CalcTextSize(label, labelEnd);
+		const float right = std::max(textX, rect.Max.x - padding);
+		const ImVec2 textMin(textX, rect.Min.y + (height - font) * 0.5f);
+		ImGui::RenderTextEllipsis(dl, textMin, ImVec2(right, rect.Max.y), right, label, labelEnd, &textSize);
+		dl->PopClipRect();
+		ImGui::RenderNavCursor(rect, ImGui::GetItemID(), ImGuiNavRenderCursorFlags_Compact);
+		if (textSize.x > right - textX && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) {
+			ImGui::SetTooltip("%.*s", static_cast<int>(labelEnd - label), label);
+		}
+		return pressed;
+	}
+
+	bool BeginTabBar(const char* id, ImGuiTabBarFlags flags) {
+		const float font = ImGui::GetFontSize();
+		if ((flags & ImGuiTabBarFlags_FittingPolicyMask_) == 0) flags |= ImGuiTabBarFlags_FittingPolicyScroll;
+		flags |= ImGuiTabBarFlags_DrawSelectedOverline | ImGuiTabBarFlags_TabListPopupButton;
+		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(std::round(font * 0.85f), font * (19.0f / 30.0f)));
+		const bool open = ImGui::BeginTabBar(id, flags);
+		ImGui::PopStyleVar();
+		return open;
+	}
+
+	void EndTabBar() {
+		ImGuiTabBar* bar = GImGui->CurrentTabBar;
+		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, bar ? bar->FramePadding : ImGui::GetStyle().FramePadding);
+		ImGui::EndTabBar();
+		ImGui::PopStyleVar();
+	}
+
+	bool BeginTabItem(const char* label, bool* open, ImGuiTabItemFlags flags) {
+		ImGuiTabBar* bar = GImGui->CurrentTabBar;
+		// Native size/overflow calculations still read live padding despite the tab bar's cached label padding.
+		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, bar ? bar->FramePadding : ImGui::GetStyle().FramePadding);
+		const bool visible = ImGui::BeginTabItem(label, open, flags);
+		ImGui::PopStyleVar();
+		return visible;
+	}
+
+	void EndTabItem() {
+		ImGui::EndTabItem();
+	}
 
 	void NextWindowDefaultSize(float screenFraction, float aspect) {
 		const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -274,42 +593,151 @@ namespace Funke::EditorUI {
 
 	bool SectionHeader(const char* label, bool defaultOpen, bool* enabled, bool* enabledChanged, bool enabledMixed) {
 		if (enabledChanged) *enabledChanged = false;
-
-		// Plain cursor offset, not Dummy: submitting an item would consume a caller's SetNextItemOpen.
-		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.0f);
-		const ImVec2 lineA = ImGui::GetCursorScreenPos();
-		ImGui::GetWindowDrawList()->AddLine(lineA,
-			ImVec2(lineA.x + ImGui::GetContentRegionAvail().x, lineA.y), ImGui::GetColorU32(ImGuiCol_Border));
-
-		const bool off = enabled && !*enabled && !enabledMixed;
-		ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0));
-		ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0, 0, 0, 0));
-		if (off) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-		ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_AllowOverlap
-			| ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_FramePadding;
-		if (defaultOpen) flags |= ImGuiTreeNodeFlags_DefaultOpen;
-		const bool open = ImGui::TreeNodeEx(label, flags);
-		if (off) ImGui::PopStyleColor();
-		ImGui::PopStyleColor(2);
-
-		if (enabled) {
-			const ImVec2 resume = ImGui::GetCursorScreenPos();
-			const ImVec2 rowMin = ImGui::GetItemRectMin();
-			const ImVec2 rowMax = ImGui::GetItemRectMax();
-			const float frameH = ImGui::GetFrameHeight();
-			const float switchW = std::round(std::round(frameH * 0.62f) * 1.8f);
-			ImGui::SetCursorScreenPos(ImVec2(rowMax.x - switchW - 4.0f, rowMin.y + (rowMax.y - rowMin.y - frameH) * 0.5f));
-			ImGui::PushID(label);
-			bool value = enabledMixed ? false : *enabled;
-			if (ImGuiUtils::ToggleSwitch("##SectionEnabled", &value, enabledMixed)) {
-				*enabled = enabledMixed ? true : value;
-				if (enabledChanged) *enabledChanged = true;
-			}
-			ImGui::PopID();
-			ImGui::SetCursorScreenPos(resume);
-		}
-
+		if (ImGui::GetCurrentWindow()->SkipItems) return false;
+		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetFontSize() * 0.15f);
+		const bool open = DrawSectionHeader(label, nullptr, defaultOpen, false, false, enabled, enabledChanged, enabledMixed, nullptr);
 		return open && (!enabled || *enabled || enabledMixed);
+	}
+
+	bool BeginSection(const char* label, const char* summary, bool defaultOpen, bool forceOpen) {
+		ImGuiWindow* window = ImGui::GetCurrentWindow();
+		if (window->SkipItems) return false;
+		if (s_SectionDepth == s_Sections.size()) s_Sections.push_back(std::make_unique<SectionFrame>());
+		SectionFrame& section = *s_Sections[s_SectionDepth++];
+		section.Window = window;
+		section.Min = ImGui::GetCursorScreenPos();
+		section.Width = ImGui::GetContentRegionAvail().x;
+		section.Padding = std::round(ImGui::GetFontSize() * 0.8f);
+		section.Rounding = std::max(ImGui::GetStyle().FrameRounding, ImGui::GetFontSize() * 0.45f);
+		section.WorkRect = window->WorkRect;
+		section.ContentRect = window->ContentRegionRect;
+		section.Rows = 0;
+		section.Splitter.Split(window->DrawList, 2);
+		section.Splitter.SetCurrentChannel(window->DrawList, 1);
+		ImGui::BeginGroup();
+		const bool open = DrawSectionHeader(label, summary, defaultOpen, forceOpen, true, nullptr, nullptr, false, &section.HeaderColor);
+		section.HeaderBottom = ImGui::GetItemRectMax().y;
+		if (!open) {
+			ImGui::SetCursorScreenPos(ImVec2(section.Min.x, section.HeaderBottom + ImGui::GetFontSize() * 0.25f));
+			ImGui::Dummy(ImVec2(section.Width, 0.0f));
+			ImGui::EndGroup();
+			section.Splitter.SetCurrentChannel(window->DrawList, 0);
+			window->DrawList->AddRectFilled(section.Min, ImVec2(section.Min.x + section.Width, section.HeaderBottom),
+				ImGui::GetColorU32(section.HeaderColor), section.Rounding);
+			window->DrawList->AddRect(section.Min, ImVec2(section.Min.x + section.Width, section.HeaderBottom),
+				ImGui::GetColorU32(ImGuiCol_Border), section.Rounding);
+			section.Splitter.Merge(window->DrawList);
+			--s_SectionDepth;
+			return false;
+		}
+		ImGui::Indent(section.Padding);
+		window->WorkRect.Min.x = section.Min.x + section.Padding;
+		window->WorkRect.Max.x = section.Min.x + section.Width - section.Padding;
+		window->ContentRegionRect.Min.x = window->WorkRect.Min.x;
+		window->ContentRegionRect.Max.x = window->WorkRect.Max.x;
+		ImGui::SetCursorScreenPos(ImVec2(section.Min.x + section.Padding, section.HeaderBottom + section.Padding * 0.5f));
+		ImGui::PushItemWidth(-FLT_MIN);
+		return true;
+	}
+
+	void EndSection() {
+		IM_ASSERT(s_SectionDepth > 0);
+		SectionFrame& section = *s_Sections[s_SectionDepth - 1];
+		ImGuiWindow* window = ImGui::GetCurrentWindow();
+		IM_ASSERT(section.Window == window);
+		const float bottom = std::max(section.HeaderBottom + section.Padding, window->DC.CursorMaxPos.y + section.Padding * 0.5f);
+		ImGui::PopItemWidth();
+		ImGui::Unindent(section.Padding);
+		window->WorkRect = section.WorkRect;
+		window->ContentRegionRect = section.ContentRect;
+		ImGui::SetCursorScreenPos(ImVec2(section.Min.x, bottom + ImGui::GetFontSize() * 0.25f));
+		ImGui::Dummy(ImVec2(section.Width, 0.0f));
+		ImGui::EndGroup();
+		section.Splitter.SetCurrentChannel(window->DrawList, 0);
+		const ImVec2 max(section.Min.x + section.Width, bottom);
+		const ImGuiStyle& style = ImGui::GetStyle();
+		window->DrawList->AddRectFilled(section.Min, max,
+			ImGui::GetColorU32(Lerp(style.Colors[ImGuiCol_WindowBg], style.Colors[ImGuiCol_FrameBg], 0.20f)), section.Rounding);
+		window->DrawList->AddRectFilled(section.Min, ImVec2(max.x, section.HeaderBottom),
+			ImGui::GetColorU32(section.HeaderColor), section.Rounding, ImDrawFlags_RoundCornersTop);
+		window->DrawList->AddLine(ImVec2(section.Min.x, section.HeaderBottom), ImVec2(max.x, section.HeaderBottom), ImGui::GetColorU32(ImGuiCol_Border));
+		window->DrawList->AddRect(section.Min, max, ImGui::GetColorU32(ImGuiCol_Border), section.Rounding);
+		section.Splitter.Merge(window->DrawList);
+		--s_SectionDepth;
+	}
+
+	void BeginSettingsRow(const char* label, float controlWidth) {
+		ImGuiWindow* window = ImGui::GetCurrentWindow();
+		const ImVec2 min = ImGui::GetCursorScreenPos();
+		const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+		const float font = ImGui::GetFontSize();
+		const float gap = font * 1.2f;
+		controlWidth = std::min(width, controlWidth > 0.0f ? controlWidth : std::min(font * 18.0f, width * 0.45f));
+		const bool stacked = width - controlWidth - gap < font * 8.0f && controlWidth > font * 5.0f;
+		SettingsRowFrame row{ window, min, width, font * 2.7f, font * 0.25f, window->WorkRect, window->ContentRegionRect };
+		if (s_SectionDepth > 0) {
+			SectionFrame& section = *s_Sections[s_SectionDepth - 1];
+			if (section.Window == window && section.Rows++ > 0) {
+				const float y = min.y - ImGui::GetStyle().ItemSpacing.y * 0.5f;
+				window->DrawList->AddLine(ImVec2(min.x, y), ImVec2(min.x + width, y),
+					ImGui::GetColorU32(ImGuiCol_Border));
+			}
+		}
+		ImGui::PushID(label);
+		ImGui::BeginGroup();
+		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + row.Padding);
+		const float labelWidth = std::max(1.0f, stacked ? width : width - controlWidth - gap);
+		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + labelWidth);
+		ImGui::AlignTextToFramePadding();
+		ImGui::TextUnformatted(label, ImGui::FindRenderedTextEnd(label));
+		ImGui::PopTextWrapPos();
+		row.LabelClicked = ImGui::IsItemClicked() && !(GImGui->CurrentItemFlags & ImGuiItemFlags_Disabled);
+		const float controlX = stacked ? min.x : min.x + width - controlWidth;
+		const float controlY = stacked ? ImGui::GetItemRectMax().y + row.Padding : min.y + row.Padding;
+		window->WorkRect.Min.x = controlX;
+		window->WorkRect.Max.x = min.x + width;
+		window->ContentRegionRect.Min.x = controlX;
+		window->ContentRegionRect.Max.x = min.x + width;
+		if (controlX > min.x) ImGui::Indent(controlX - min.x);
+		ImGui::SetCursorScreenPos(ImVec2(controlX, controlY));
+		ImGui::PushItemWidth(-FLT_MIN);
+		s_SettingsRows.push_back(row);
+	}
+
+	void EndSettingsRow() {
+		IM_ASSERT(!s_SettingsRows.empty());
+		const SettingsRowFrame row = s_SettingsRows.back();
+		s_SettingsRows.pop_back();
+		ImGuiWindow* window = ImGui::GetCurrentWindow();
+		IM_ASSERT(row.Window == window);
+		const float bottom = std::max(row.Min.y + row.Height, window->DC.CursorMaxPos.y + row.Padding);
+		ImGui::PopItemWidth();
+		window->WorkRect = row.WorkRect;
+		window->ContentRegionRect = row.ContentRect;
+		ImGui::SetCursorScreenPos(ImVec2(row.Min.x, bottom));
+		ImGui::Dummy(ImVec2(row.Width, 0.0f));
+		ImGui::EndGroup();
+		ImGui::PopID();
+	}
+
+	bool SettingsSwitch(const char* label, bool* value) {
+		BeginSettingsRow(label, SwitchWidth());
+		const bool labelClicked = s_SettingsRows.back().LabelClicked;
+		bool changed = SectionSwitch("##Value", value);
+		if (labelClicked && !changed) {
+			*value = !*value;
+			changed = true;
+			ImGui::MarkItemEdited(ImGui::GetItemID());
+		}
+		EndSettingsRow();
+		return changed;
+	}
+
+	bool SettingsFloat(const char* label, float* value, const char* format, float step, float fastStep) {
+		BeginSettingsRow(label, ImGui::GetFontSize() * 8.0f);
+		const bool changed = ImGui::InputFloat("##Value", value, step, fastStep, format);
+		EndSettingsRow();
+		return changed;
 	}
 
 	void BeginCard(const char* id) {

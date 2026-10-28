@@ -293,7 +293,7 @@ def funke_assets_dirs(project: Path | None) -> list[Path]:
 
 
 def builtin_assets(project: Path | None) -> dict[int, tuple[str, str]]:
-    result: dict[int, tuple[str, str]] = {DEFAULT_FONT_GUID: ("Font", "Fonts/GoogleSans-Regular.ttf (default font)")}
+    result: dict[int, tuple[str, str]] = {DEFAULT_FONT_GUID: ("Font", "Fonts/IBMPlexSansCondensed-Regular.ttf (default font)")}
     for name in BUILTIN_TEXTURE_FILES:
         rel = f"Textures/Default/{name}.png"
         result[builtin_guid(rel)] = ("Texture", rel)
@@ -531,8 +531,8 @@ def validate_entities(path: Path, entities: list, is_prefab: bool, report: Repor
 
         parent = ent.get("parentUuid")
         if parent is not None:
-            if not is_prefab and not isinstance(parent, str):
-                report.error(where, "parentUuid must be a JSON string in scenes (numbers are silently ignored)")
+            if not isinstance(parent, str):
+                report.warn(where, "write parentUuid as a decimal string to preserve uint64 precision across tools")
             pid = parse_u64(parent)
             if pid is None or pid not in uuids:
                 report.error(where, f"parentUuid {parent!r} does not match any uuid in this file")
@@ -541,7 +541,7 @@ def validate_entities(path: Path, entities: list, is_prefab: bool, report: Repor
 
         origin = ent.get("Origin")
         if origin is not None and str(origin).lower() not in ("scene", "prefab"):
-            report.error(where, f"Origin '{origin}' is invalid - whole file fails to load")
+            report.warn(where, f"Origin '{origin}' is unknown; use Scene or Prefab")
         if origin is not None and str(origin).lower() == "prefab":
             pg = ent.get("PrefabGUID")
             pr = ent.get("PrefabRef")
@@ -561,8 +561,6 @@ def validate_entities(path: Path, entities: list, is_prefab: bool, report: Repor
         has_t, has_rt = "Transform2D" in ent, "RectTransform2D" in ent
         if has_t and has_rt:
             report.error(where, "Transform2D and RectTransform2D conflict - world entities use Transform2D, UI uses RectTransform2D")
-        elif not has_t and not has_rt and "Transform3D" not in ent:
-            report.warn(where, "no Transform2D/RectTransform2D/Transform3D - the entity will have no transform")
         for tkey in ("Transform2D", "RectTransform2D"):
             t = ent.get(tkey)
             if isinstance(t, dict) and isinstance(t.get("rotation"), (int, float)) and abs(t["rotation"]) > 6.3:

@@ -29,6 +29,7 @@ namespace Funke {
 		float GetGravityScale() const;
 
 		void SetMass(float mass);
+		void ResetMass();
 		float GetMass() const;
 		bool IsMassOverridden() const { return m_MassOverridden; }
 		// Re-assert an explicit mass after shapes attach. Box2D recomputes a body's

@@ -18,6 +18,7 @@ import fnmatch
 import os
 import platform
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -46,7 +47,7 @@ SCRIPT_CORE_DOCS = "Funke-ScriptCore.xml"
 
 EXTERNAL_DIRS = (
     "spdlog/include", "glm", "entt/src", "stb", "magic_enum/include", "rapidxml", "SDL/include",
-    "glad/include", "dawn/include", "dawn/build/gen/include", "miniaudio", "box2d/include",
+    "dawn/include", "dawn/build/gen/include", "miniaudio", "box2d/include",
     "dotnet",
 )
 
@@ -75,6 +76,39 @@ DAWN_LICENSE_PATTERNS = ("LICENSE*", "NOTICE*", "COPYING*", "ThirdPartyNotices.t
 
 class SdkError(RuntimeError):
     pass
+
+
+def prune_retired_dependencies(sdk: Path) -> None:
+    sdk = sdk.resolve()
+    external = sdk / "External"
+    retired = [external / "Index-Physics", external / "Funke-Physics", external / "glad", sdk / "Index-Engine"]
+
+    def validate(path: Path) -> None:
+        resolved = path.resolve()
+        if not resolved.is_relative_to(sdk) or resolved == sdk:
+            raise SdkError(f"retired dependency escapes SDK: {path}")
+        attributes = path.lstat()
+        if path.is_symlink() or getattr(attributes, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise SdkError(f"refusing to traverse linked SDK dependency: {path}")
+
+    try:
+        if os.path.lexists(external):
+            validate(external)
+        targets = [path for path in retired if os.path.lexists(path)]
+        for target in targets:
+            pending = [target]
+            while pending:
+                path = pending.pop()
+                validate(path)
+                if path.is_dir():
+                    pending.extend(path.iterdir())
+        for target in targets:
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+    except OSError as error:
+        raise SdkError(f"could not remove retired SDK dependency: {error}") from error
 
 
 def copy_file(source: Path, destination: Path, required: bool = True) -> bool:
@@ -160,6 +194,7 @@ def main() -> int:
     root = Path(sys.argv[2]).resolve()
     bin_dir = Path(sys.argv[3]).resolve()
     launcher_dir = sdk.parent
+    prune_retired_dependencies(sdk)
 
     # --- Flat host applications next to the Launcher.
     copy_file(bin_dir / "Funke-Editor" / f"Funke-Editor{EXE}", launcher_dir / f"Funke-Editor{EXE}")

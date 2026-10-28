@@ -41,7 +41,7 @@ Generate the whole UI kit from `Design/palette.json` in one script (`Tools/art_u
 ```
 - `imageType` Simple=0 / Sliced=1 / Tiled=2. `border` is `[left, bottom, right, top]` in **texture** px (all 0 → taken from the texture's `.meta` `border`). `borderScale` defaults to 1. These keys are written only when the type isn't Simple. C# names: `Image.Type`, `Image.Border` (Vector4), `Image.BorderScale`.
 - The corners show at `border × borderScale × UI scale`. Borders wider than the rect shrink proportionally.
-- `Image` defaults to `filterMode` 1 (Bilinear) **and pushes that onto the shared texture**. That matches the sharp-bilinear setup. A Point-filtered pixel UI would need `"filterMode": 0` on every Image of that texture.
+- `Image` defaults to `filterMode` 1 (Bilinear) and calls `SetFilter` on the resolved texture. Set `"filterMode": 4` to follow the `.meta` (including a Point import); explicit overrides may affect other components sharing that texture handle.
 - Button states: `transitionMode` ColorSwap=0 (tint `normal/hovered/pressed/disabled` colours) or SpriteSwap=1 (`normalSprite`, `pressedSprite`, … GUIDs). Baked pressed sprites need SpriteSwap, and a "press down" also moves the label (a small `ButtonDepth` script or an `.anim`).
 
 ## Text
@@ -56,7 +56,7 @@ Generate the whole UI kit from `Design/palette.json` in one script (`Tools/art_u
 ## UI scale and layout
 
 - `project.json`: `uiReferenceWidth`/`uiReferenceHeight` (1920×1080 default; 1200×1200 + `"uiScaleMode": "Fit"` works for PC and portrait phones), `uiScaleMode` `MatchWidthOrHeight` | `Fit` | `Fill`, `uiScaleMatch`. The resulting scale is rarely a whole number, which is why pixel UI uses sharp bilinear.
-- `RectTransform2D` sizes are absolute reference units and anchors don't stretch, except with `"fillParent": true` (full-screen roots and panels, spans the safe area). Corner HUD items anchor and pivot on the same corner.
+- `RectTransform2D` sizes are absolute reference units and anchors don't stretch. `"fillWidth": true` / `"fillHeight": true` span one parent axis; `"fillParent": true` spans both (the safe area for roots). `ignoreSafeArea` allows edge backgrounds to extend to the screen. Corner HUD items anchor and pivot on the same corner.
 - A spacing grid (8 or 12 units), outer margin ≥ 48, one primary action per screen, touch targets ≥ 96 units on phones.
 
 ## Motion
@@ -65,6 +65,6 @@ Panels pop in (`Funke.Tween` `ScaleTo` 0.9 → 1, `Ease.OutBack`, 0.18 s), scree
 
 ## Review
 
-1. Contact sheet of the kit (all pieces, all states) → Read it.
+1. Contact sheet of the kit (all pieces, all states) → inspect it with `view_image`.
 2. In-game screenshots of every screen at the reference size **and** at a different aspect (portrait phone for mobile games) → check crisp edges, text contrast, nothing overlapping, the same density everywhere.
 3. `pixelkit.py check` on pixel UI textures (`--scale 4`).

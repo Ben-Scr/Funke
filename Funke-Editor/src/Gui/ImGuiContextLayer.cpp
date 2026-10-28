@@ -7,6 +7,7 @@
 #include "Editor/EditorPreferences.hpp"
 #include "Events/FunkeEvent.hpp"
 #include "Graphics/Text/FontHandle.hpp"
+#include "Gui/ColorPickerEyedropper.hpp"
 #include "Gui/ImGuiContextSetup.hpp"
 #include "Gui/EditorTheme.hpp"
 #include "Gui/ImGuiFonts.hpp"
@@ -182,6 +183,7 @@ namespace Funke {
 
 		// Numeric fields accept arithmetic ("5/2", "/2", …) via this evaluator hook.
 		ImGui::SetScalarExpressionHook(&ScalarExpressionHook);
+		ColorPickerEyedropper::Initialize();
 
 		EditorRuntime::ImGuiContextSetup::PublishImGuiContextToPackages();
 
@@ -267,6 +269,7 @@ namespace Funke {
 				exists ? "ok" : "WRITE FAILED — path not writable?");
 		}
 
+		ColorPickerEyedropper::Shutdown();
 		EditorRuntime::ImGuiContextSetup::ShutdownBackends();
 		m_IniFilePath.clear();
 
@@ -585,15 +588,14 @@ namespace Funke {
 
 		c[ImGuiCol_InputTextCursor]      = text;
 
-		// Tabs sit on the chrome color; the selected one merges with its panel and gets an amber overline.
-		// Selected tab is a lighter rounded "folder tab" on the darker tab strip.
+		// Keep the selected panel identifiable after keyboard focus moves elsewhere.
 		c[ImGuiCol_Tab]                  = chrome;
 		c[ImGuiCol_TabHovered]           = surfaceHi;
-		c[ImGuiCol_TabSelected]          = surface;
-		c[ImGuiCol_TabSelectedOverline]  = highlight;
+		c[ImGuiCol_TabSelected]          = bg;
+		c[ImGuiCol_TabSelectedOverline]  = accent;
 		c[ImGuiCol_TabDimmed]            = chrome;
-		c[ImGuiCol_TabDimmedSelected]    = ImVec4((bg.x + surface.x) * 0.5f, (bg.y + surface.y) * 0.5f, (bg.z + surface.z) * 0.5f, 1.0f);
-		c[ImGuiCol_TabDimmedSelectedOverline] = withAlpha(highlight, 0.0f);
+		c[ImGuiCol_TabDimmedSelected]    = bg;
+		c[ImGuiCol_TabDimmedSelectedOverline] = withAlpha(accent, 0.55f);
 
 		c[ImGuiCol_DockingPreview]       = withAlpha(accent, 0.40f);
 		c[ImGuiCol_DockingEmptyBg]       = pick(ImVec4(0.070f, 0.075f, 0.086f, 1.00f), ImVec4(0.850f, 0.863f, 0.886f, 1.00f));
@@ -631,7 +633,6 @@ namespace Funke {
 
 		ImVec4* c = ImGui::GetStyle().Colors;
 		const ImVec4 accent    = EditorTheme::Colors::AccentFor(true);
-		const ImVec4 highlight = EditorTheme::Colors::HighlightFor(true);
 
 		const ImVec4 surface   (0.36f, 0.42f, 0.56f, 0.22f);
 		const ImVec4 surfaceHi (0.42f, 0.48f, 0.64f, 0.32f);
@@ -677,9 +678,10 @@ namespace Funke {
 		c[ImGuiCol_Tab]                  = clear;
 		c[ImGuiCol_TabHovered]           = surfaceHi;
 		c[ImGuiCol_TabSelected]          = surface;
-		c[ImGuiCol_TabSelectedOverline]  = highlight;
+		c[ImGuiCol_TabSelectedOverline]  = accent;
 		c[ImGuiCol_TabDimmed]            = clear;
 		c[ImGuiCol_TabDimmedSelected]    = ImVec4(surface.x, surface.y, surface.z, 0.12f);
+		c[ImGuiCol_TabDimmedSelectedOverline] = ImVec4(accent.x, accent.y, accent.z, 0.55f);
 
 		c[ImGuiCol_SliderGrab]           = ImVec4(accent.x, accent.y, accent.z, 0.85f);
 		c[ImGuiCol_DockingEmptyBg]       = ImVec4(0.0f, 0.0f, 0.0f, 0.20f);

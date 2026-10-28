@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 
 namespace Funke {
@@ -24,6 +25,7 @@ namespace Funke {
 
 		void UnwindTo(const StackDepth& target) {
 			StackDepth& depth = CurrentDepth();
+			for (; depth.Disabled > target.Disabled; --depth.Disabled) ImGui::EndDisabled();
 			while (depth.Indents.size() > target.Indents.size()) {
 				ImGui::Unindent(depth.Indents.back());
 				depth.Indents.pop_back();
@@ -56,6 +58,30 @@ namespace Funke {
 			bool on = value != 0;
 			ImGui::Checkbox(label, &on);
 			return on ? 1 : 0;
+		}
+		int Popup(const char* label, int selectedIndex, const char* options, int optionsBytes) {
+			std::vector<const char*> items;
+			const char* end = options + optionsBytes;
+			for (const char* item = options; item < end;) {
+				const auto* terminator = static_cast<const char*>(std::memchr(item, 0, end - item));
+				if (!terminator) return selectedIndex;
+				items.push_back(item);
+				item = terminator + 1;
+			}
+			const char* preview = selectedIndex >= 0 && selectedIndex < static_cast<int>(items.size()) ? items[selectedIndex] : "Select...";
+			if (ImGui::BeginCombo(label, preview)) {
+				for (int index = 0; index < static_cast<int>(items.size()); ++index) {
+					ImGui::PushID(index);
+					if (ImGui::Selectable(items[index], selectedIndex == index)) selectedIndex = index;
+					if (selectedIndex == index) ImGui::SetItemDefaultFocus();
+					ImGui::PopID();
+				}
+				ImGui::EndCombo();
+			}
+			return selectedIndex;
+		}
+		int Selectable(const char* label, int selected) {
+			return ImGui::Selectable(label, selected != 0) ? 1 : 0;
 		}
 		float Slider(const char* label, float value, float min, float max, const char* format) {
 			ImGui::SliderFloat(label, &value, min, max, OrDefault(format, "%.3f"));
@@ -96,6 +122,10 @@ namespace Funke {
 			case EditorGuiLayoutOp::PopId:
 				if (depth.Ids > 0) { ImGui::PopID(); --depth.Ids; }
 				break;
+			case EditorGuiLayoutOp::BeginDisabled: ImGui::BeginDisabled(value != 0.0f); ++depth.Disabled; break;
+			case EditorGuiLayoutOp::EndDisabled:
+				if (depth.Disabled > 0) { ImGui::EndDisabled(); --depth.Disabled; }
+				break;
 			}
 		}
 		void PushId(const char* id) {
@@ -112,7 +142,7 @@ namespace Funke {
 		}
 
 		const EditorGuiBackend k_Backend{ &Text, &Button, &Toggle, &Slider, &VerticalSlider, &FloatField, &TextField,
-			&ProgressBar, &Layout, &PushId, &Query };
+			&ProgressBar, &Layout, &PushId, &Query, &Popup, &Selectable };
 
 		double NowSeconds() {
 			using Clock = std::chrono::steady_clock;

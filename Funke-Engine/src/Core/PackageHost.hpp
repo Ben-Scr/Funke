@@ -61,6 +61,8 @@ namespace Funke {
 
 		// Manifests under <engine root>/packages/ and <project>/Packages/; unreadable ones are logged and skipped.
 		FUNKE_API std::vector<PackageManifest> DiscoverPackageManifests(const FunkeProject& project);
+		FUNKE_API std::vector<PackageManifest> DiscoverPackageManifests(const FunkeProject& project,
+			const std::filesystem::path& enginePackagesRoot);
 		// Native load order: resolved packages dependencies-first, then listed packages that have no manifest
 		// (shipped games stage only the DLLs) in project.json order. Blocked packages are left out.
 		FUNKE_API std::vector<std::string> BuildNativeLoadOrder(const PackageResolution& resolution,

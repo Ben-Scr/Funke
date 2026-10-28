@@ -34,6 +34,7 @@
 #include "Undo/Transform3DEditCommand.hpp"
 #include "Undo/StructureEditCommand.hpp"
 #include "Editor/SceneRecovery.hpp"
+#include "Editor/PlatformBuilder.hpp"
 
 
 #include <atomic>
@@ -155,6 +156,8 @@ namespace Funke {
 
 		void RenderDockspaceRoot();
 		void RenderMainMenu(Scene& scene);
+		void OpenPanel(const char* windowName, bool& showPanel);
+		void ApplyPanelFocusRequest();
 		void RenderToolbar();
 		// Pill next to Play while scripts compile and play as another platform (the active build profile's).
 		void RenderSimulatedPlatformBadge();
@@ -258,6 +261,9 @@ namespace Funke {
 		// Structural undo: only the context scene owns history, edits elsewhere stay unrecorded.
 		void PushStructureUndo(Scene& scene, std::unique_ptr<EditCommand> command);
 		void PerformUndoRedo(Scene& scene, bool redo);
+		UndoStack& GetUndoStack(Scene& scene);
+		void ClearUndoHistory();
+		void ForgetUndoHistory(const Scene* scene);
 		void RecordCreatedEntities(Scene& scene, std::span<const EntityHandle> created, std::string label);
 		// User-facing delete entry point: opens the confirmation dialog when
 		// enabled in preferences, otherwise deletes immediately.
@@ -394,6 +400,9 @@ namespace Funke {
 		bool m_ShowLogInfo = true;
 		bool m_ShowLogWarn = true;
 		bool m_ShowLogError = true;
+		bool m_LogAutoScroll = true;
+		bool m_LogScrollToEnd = false;
+		bool m_LogDetailsExpanded = true;
 		// Index into m_LogEntries of the click-selected log row, or -1. Stable across filter
 		// toggles (keyed by absolute index); reset on Clear.
 		int m_SelectedLogIndex = -1;
@@ -470,10 +479,9 @@ namespace Funke {
 		// derive the per-frame factor applied to the selection. Reset between drags.
 		Vec2 m_GizmoGroupScalePrev{ 1.0f, 1.0f };
 
-		// Editor undo/redo. Commands are recorded already-applied. The history is
-		// dropped whenever the context scene changes (tracked by m_UndoStackSceneId)
-		// and at play-mode boundaries — its commands reference the prior scene.
-		UndoStack m_UndoStack;
+		SceneUndoHistory m_SceneUndoHistory;
+		UndoStack m_DetachedUndoStack;
+		UndoStack* m_ActiveUndoStack = nullptr;
 		const Scene* m_UndoStackSceneId = nullptr;
 
 		// Crash recovery: periodic copies of dirty scenes, offered back after an abnormal exit.
@@ -568,7 +576,6 @@ namespace Funke {
 		// Top bar / status bar / command palette (ImGuiEditorLayer.cpp).
 		void SaveScenesFromMenu(Scene& scene);
 		void RenderToolbarLeft();
-		void RenderTopBarRight();
 		// Editor View options (3D, draw mode, gizmos, ...) in the viewport's top-right pill and their visibility menu (ImGuiEditorLayerViewport.cpp).
 		bool RenderEditorViewToolbarOptions();
 		void RenderGameViewSettingsMenu();
@@ -704,6 +711,7 @@ namespace Funke {
 		std::string m_AutoSaveLastScenePath;
 
 		bool m_ShowBuildPanel = false;
+		std::string m_PendingPanelFocus;
 		bool m_ShowBuildProfilesPanel = false;
 		BuildProfilesPanel m_BuildProfilesPanel;
 		bool m_BuildProfilesPanelInitialized = false;
@@ -735,6 +743,8 @@ namespace Funke {
 		};
 	private:
 		SettingsCategory m_SelectedSettingsCategory = SettingsCategory::Display;
+		SettingsCategory m_SettingsCategoryBeforeSearch = SettingsCategory::Display;
+		bool m_ProjectSettingsSearchActive = false;
 		bool m_ShowEditorPreferences = false;
 		EditorPreferencesPanel m_EditorPreferencesPanel;
 
@@ -752,6 +762,9 @@ namespace Funke {
 		PackageManagerPanel m_PackageManagerPanel;
 		std::string m_BuildOutputDir;
 		std::string m_BuiltExecutablePath;
+		PlatformBuilder::WebPreview m_WebPreview;
+		std::string m_BuildPlayUrl;
+		std::string m_BuildLaunchError;
 		char m_BuildOutputDirBuffer[512]{};
 		char m_CustomDefineEntryBuffer[128]{}; // Build panel custom-define text input
 		int m_BuildState = 0; // 0=idle, 1=pending, 2=launch worker, 3=running

@@ -7,7 +7,7 @@
 
 namespace Funke {
 
-	// In-game profiler panel (profiler.enableInRuntime=true). Ctrl+F6 toggles visibility.
+	// Requires profiler.enableInRuntime; keyboard defaults live in PlatformShortcuts.
 	// Stays compiled under --no-profiler so RuntimeApplication.cpp needs no #ifdef around the layer push.
 	class RuntimeProfilerLayer : public Layer {
 	public:

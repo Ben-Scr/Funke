@@ -17,6 +17,8 @@ namespace Funke {
 		Indent = 5,
 		Unindent = 6,
 		PopId = 7,
+		BeginDisabled = 8,
+		EndDisabled = 9,
 	};
 
 	enum class EditorGuiQuery : int {
@@ -47,6 +49,8 @@ namespace Funke {
 		void  (*Layout)(int op, float value) = nullptr;
 		void  (*PushId)(const char* id) = nullptr;
 		float (*Query)(int what) = nullptr;
+		int   (*Popup)(const char* label, int selectedIndex, const char* options, int optionsBytes) = nullptr;
+		int   (*Selectable)(const char* label, int selected) = nullptr;
 	};
 
 	class FUNKE_API ScriptEditorGui {

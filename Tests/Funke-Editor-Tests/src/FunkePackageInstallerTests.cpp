@@ -190,3 +190,46 @@ return {
 	CHECK(std::count_if(manifests.begin(), manifests.end(),
 		[](const Funke::FunkePackageManifest& manifest) { return manifest.Name == "Game.Ads"; }) == 1);
 }
+
+TEST_CASE("Project package versions override bundled engine packages") {
+	ScopedPackageProject engine;
+	ScopedPackageProject project;
+	engine.Write("packages/Game.Shared/funke-package.lua",
+		R"(return { name = "Game.Shared", version = "1.0.0", layers = { csharp = { sources = { "Source/**.cs" } } } })");
+	project.Write("Packages/Game.Shared/funke-package.lua",
+		R"(return { name = "Game.Shared", version = "2.0.0", layers = { csharp = { sources = { "Source/**.cs" } } } })");
+	const std::filesystem::path previous = std::filesystem::current_path();
+	std::filesystem::current_path(engine.Root);
+	const auto manifests = Funke::FunkePackageInstaller::EnumerateAll(project.Root.generic_string());
+	std::filesystem::current_path(previous);
+	const auto found = std::find_if(manifests.begin(), manifests.end(),
+		[](const Funke::FunkePackageManifest& manifest) { return manifest.Name == "Game.Shared"; });
+	REQUIRE(found != manifests.end());
+	CHECK_FALSE(found->IsEngine);
+	CHECK(found->Version == "2.0.0");
+	CHECK(std::count_if(manifests.begin(), manifests.end(),
+		[](const Funke::FunkePackageManifest& manifest) { return manifest.Name == "Game.Shared"; }) == 1);
+}
+
+TEST_CASE("Package resolver conversion preserves project overrides and duplicate diagnostics") {
+	Funke::FunkePackageManifest engine;
+	engine.Name = "Game.Shared";
+	engine.Version = "1.0.0";
+	engine.IsEngine = true;
+	engine.PackageDir = "engine/packages/Game.Shared";
+	Funke::FunkePackageManifest project = engine;
+	project.Version = "2.0.0";
+	project.IsEngine = false;
+	project.PackageDir = "project/Packages/Game.Shared";
+	const auto converted = Funke::FunkePackageInstaller::ToPackageManifests({ engine, project });
+	REQUIRE(converted.size() == 1);
+	CHECK(converted.front().VersionText == "2.0.0");
+	CHECK(converted.front().PackageDir == project.PackageDir);
+
+	Funke::FunkePackageManifest duplicate = project;
+	duplicate.PackageDir = "project/Packages/Game.OtherFolder";
+	const auto duplicates = Funke::FunkePackageInstaller::ToPackageManifests({ engine, project, duplicate });
+	REQUIRE(duplicates.size() == 2);
+	const auto resolution = Funke::ResolvePackages(duplicates, { "Game.Shared" }, Funke::GetEngineCompatibilityVersion());
+	CHECK_FALSE(resolution.GetMessages("Game.Shared").empty());
+}

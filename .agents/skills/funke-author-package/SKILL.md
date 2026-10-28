@@ -23,7 +23,7 @@ A package declares one or more layers under `manifest.layers`. **Canonical names
 
 **Deprecated aliases** (still loaded but warned): `engine_core` → `native`, `standalone_cpp` → `native_standalone`. The loader normalises them before validation. Rename old manifests, don't add new ones with the old names.
 
-**Hard rule:** `native` and `native_standalone` **cannot coexist** in the same package. They would merge into a single `Pkg.<Name>.Native` DLL, but `native` links the engine and `native_standalone` is the explicit "no engine link" path — combining them silently links the engine into "standalone" sources and defeats the whole point. The loader fails loud (`PackageError` in [package-loader.lua:148](premake/package-loader.lua)). `NewPackage.py` rejects the combo upfront too.
+**Hard rule:** `native` and `native_standalone` **cannot coexist** in the same package. They would merge into a single `Pkg.<Name>.Native` DLL, but `native` links the engine and `native_standalone` is the explicit "no engine link" path — combining them silently links the engine into "standalone" sources and defeats the whole point. The loader fails loud (`PackageError` in [package-loader.lua](../../../premake/package-loader.lua)). `NewPackage.py` rejects the combo upfront too.
 
 ## Manifest schema
 
@@ -64,10 +64,10 @@ Manifests are parsed by Lua (premake) **and** by a literal-only reader in C++ (`
 
 **Validation rules enforced by the loader** (all fail-loud with `[Funke Packages]` prefix):
 
-- `name` must match `^[A-Z][A-Za-z0-9]+(\.[A-Z][A-Za-z0-9]+)+$` — PascalCase segments separated by dots, at least one dot. So `Funke.Foo` ✓, `Foo` ✗, `index.foo` ✗, `Funke.foo` ✗, `MyGame.Loot.Combat` ✓.
+- `name` needs dot-separated alphanumeric segments, each starting uppercase, with at least one dot. `NewPackage.py` additionally requires at least two characters per segment (`^[A-Z][A-Za-z0-9]+(\.[A-Z][A-Za-z0-9]+)+$`); the Lua loader accepts single-letter segments. Use names accepted by both, such as `Funke.Foo` or `MyGame.Loot.Combat`.
 - Layer names must be `native` / `native_standalone` / `csharp` (or the deprecated aliases).
 - Every layer must declare a non-empty `sources` list.
-- `pinvoke_dll` on the csharp layer requires a sibling native layer.
+- `pinvoke_dll` on the csharp layer requires a sibling native layer and must equal `Pkg.<manifest.name>.Native` exactly.
 - `nuget` entries must be `"PackageId:Version"` strings.
 - `dependencies` entries need valid names and ranges, no self-reference, no duplicates. The loader topologically sorts; cyclic deps, missing deps and an installed version outside a declared range fail loud. A non-SemVer `version` only warns, but any dependent with a range on it then fails.
 - `modules` must be a list of known module ids (`Funke.2D`, `Funke.3D`); module ids are not package names, so never put them in `dependencies`. `NewPackage.py --modules Funke.2D` scaffolds it.
@@ -140,7 +140,7 @@ Configurations: `Debug` / `Release` / `Dist`. The Dist config strips symbols and
 
 ### The native entry point
 
-Every `native` (or `native_standalone`) package needs one of these — the loader will not find a package without it:
+Provide this entry point when the package initializes engine state. Desktop DLL loading accepts a missing `FunkePackage_OnLoad` and logs that no initialization export exists; the Android/iOS/Web static-package builder requires it in the native sources:
 
 ```cpp
 #include "Packages/PackageApi.hpp"
@@ -158,7 +158,7 @@ extern "C" FUNKE_PACKAGE_API void FunkePackage_OnUnload() {
 
 `PackageApi.hpp` declares both, so the signatures must match exactly (`void` OnUnload; `int` would be a C2371 redefinition).
 
-`FUNKE_PACKAGE_API` is the cross-DLL export marker — see `Funke-Engine/src/Packages/PackageApi.hpp`. It compiles to `__declspec(dllexport)` on the package side and `__declspec(dllimport)` for engine consumers. Don't substitute `FUNKE_API` for it.
+`FUNKE_PACKAGE_API` is the package export marker — see `Funke-Engine/src/Packages/PackageApi.hpp`. It is always `__declspec(dllexport)` on Windows and default symbol visibility elsewhere; it has no import-mode switch. `PackageHost` resolves desktop exports dynamically. Don't substitute `FUNKE_API` for it.
 
 For `native_standalone` packages, `FNK_*_TAG` logging is **unavailable** (no engine link). Use `std::printf` or a self-contained logger.
 
@@ -319,7 +319,7 @@ End users install packages via the editor's Package Manager, which fetches a sta
 https://raw.githubusercontent.com/Ben-Scr/Funke-PackageRegistry/main/index.json
 ```
 
-(Hardcoded in [PackageManagerPanel.cpp:42-43](Funke-Editor/src/Gui/PackageManagerPanel.cpp#L42) as `k_FunkeRegistryUrl` for v1; v2 promotes it to an editable Project Settings field.)
+Hardcoded as `k_FunkeRegistryUrl` in `Funke-Editor/src/Gui/PackageManagerPanel.cpp`.
 
 The registry is a separate GitHub repo whose `index.json` lists available packages with download URLs and SHA-256 hashes. The editor:
 
@@ -335,14 +335,14 @@ To publish a package to the registry: zip the package directory (single top-leve
 
 ## Funke-PackageTool CLI
 
-`Funke-PackageTool/Program.cs` is a stateless .NET 10 CLI invoked by the engine via `_popen()`. All commands write JSON to stdout, errors to stderr.
+`Funke-PackageTool/Program.cs` is a stateless .NET 10 CLI. Current editor callers use `Process::Run` with the executable resolved by `Utils/PackageToolPath.hpp`. Commands write JSON to stdout, errors to stderr.
 
 | Command | Purpose |
 |---|---|
 | `nuget-search <query> [--take N]` | Search nuget.org via the v3 search endpoint, return JSON array of results. |
 | `nuget-versions <packageId>` | List versions of a NuGet package (newest first, max 30). |
 | `github-index <url>` | Fetch arbitrary JSON from a URL (used for GitHub-hosted package indexes). |
-| `github-download <url> <outputPath>` | Stream a file to disk in 64KB chunks, emit `{event:"progress"}` JSON lines every ~100ms. |
+| `github-download <url> <outputPath> [expectedSha256]` | Stream a file to disk in 64KB chunks, emit `{event:"progress"}` JSON lines every ~100ms; verify SHA-256 when supplied. |
 | `unzip <archive> <outDir>` | Extract a zip. Refuses to overwrite existing files. |
 | `zip <projectDir> <outZip>` | Pack a project for the asset library (excludes `bin/`, `obj/`, `.vs/`, `.vscode/`, `__pycache__/`, `.idea/`, `*.user`, `*.suo`, `.DS_Store`, `Thumbs.db`). Refuses to overwrite output. |
 | `registry-fetch <registryUrl> <outputJsonPath>` | Download the registry index.json with atomic write. |
@@ -356,7 +356,7 @@ These break things in ways that aren't obvious from the error messages. Internal
 
 1. **EnTT entity bits MUST match across DLLs.** The `native` layer auto-defines `FUNKE_ENTITY_BITS=<value>` and adds `FunkeEntityBitsConfigIncludeDir` to the include path so transitively-included EnTT headers see the same `entt_traits` specialization as the engine. Skipping this is an ODR violation that surfaces as memory corruption when entities cross the package boundary. The editor's Rebuild Engine flow rewrites `FunkeEntityBitsConfig.h` to override the `-D` value without a premake regen; the EnTT patch in `entity.hpp` picks it up via `__has_include`. If you're hand-writing a `Pkg.<Name>.Native` premake project (don't), you need both the define AND the include dir.
 
-2. **Dawn libdirs are per-configuration.** `EditorRuntimeCommon` pulls in `EngineCoreRender` which links `webgpu_dawn.lib`. The lib lives under per-config `Debug/Release` folders, so the `native` layer must set `libdirs` per-config — Dist points at the Release dir. See [package-loader.lua:334-340](premake/package-loader.lua#L334). LNK2038 means you forgot.
+2. **Dawn libdirs are per-configuration.** `EditorRuntimeCommon` pulls in `EngineCoreRender` which links `webgpu_dawn.lib`. The lib lives under per-config `Debug/Release` folders, so the `native` layer must set `libdirs` per-config — Dist points at the Release dir. See [package-loader.lua](../../../premake/package-loader.lua). LNK2038 can indicate a configuration mismatch.
 
 3. **`FNK_IMPORT_DLL` is required on the native side.** Engine is a SharedLib; without this define, `FUNKE_API` resolves to `dllexport` in the package and you get unresolved-external errors against engine symbols. The loader sets it automatically for `native` (not `native_standalone`).
 

@@ -941,14 +941,6 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, int, float> Collider2D_GetBounciness;
     public delegate* unmanaged<ulong, int, float, void> Collider2D_SetBounciness;
 
-    // ── SpriteAnimator2D (appended for binary compat) ──
-    public delegate* unmanaged<ulong, int, void> SpriteAnimator2D_Command;
-    public delegate* unmanaged<ulong, int> SpriteAnimator2D_IsPlaying;
-    public delegate* unmanaged<ulong, int> SpriteAnimator2D_GetFrame;
-    public delegate* unmanaged<ulong, int, void> SpriteAnimator2D_SetFrame;
-    public delegate* unmanaged<ulong, float> SpriteAnimator2D_GetFramesPerSecond;
-    public delegate* unmanaged<ulong, float, void> SpriteAnimator2D_SetFramesPerSecond;
-
     // ── PostProcessing2D (appended for binary compat) ──
     public delegate* unmanaged<ulong, int, void*, int, int> PostProcessing2D_GetEffect;
     public delegate* unmanaged<ulong, int, void*, int, int> PostProcessing2D_SetEffect;
@@ -1230,6 +1222,12 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, int, float, int, void> Rigidbody2D_ApplyAngular;
     public delegate* unmanaged<ulong, int, int> Collider2D_GetGroupIndex;
     public delegate* unmanaged<ulong, int, int, void> Collider2D_SetGroupIndex;
+
+    public delegate* unmanaged<byte*, int, ulong> Scene_BeginLoadAsync;
+    public delegate* unmanaged<ulong, int, ulong> Scene_BeginLoadByGuidAsync;
+    public delegate* unmanaged<ulong, int> Scene_CancelLoadAsync;
+    public delegate* unmanaged<byte*, int, byte*, int, int> EditorGUI_Popup;
+    public delegate* unmanaged<byte*, int, int> EditorGUI_Selectable;
 }
 
 internal static unsafe class NativeCallbacks

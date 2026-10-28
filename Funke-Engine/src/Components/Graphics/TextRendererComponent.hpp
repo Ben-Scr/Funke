@@ -40,7 +40,7 @@ namespace Funke {
     struct FUNKE_API TextRendererComponent {
         std::string Text = "Hello, World!";
 
-        // Defaults to GoogleSans-Regular GUID; without this, UUID() rolls a random id that resolves to nothing and the inspector shows "(Missing Asset)".
+        // Defaults to IBMPlexSans GUID; without this, UUID() rolls a random id that resolves to nothing and the inspector shows "(Missing Asset)".
         UUID FontAssetId{ k_DefaultFontAssetId };
 
         // Cached resolved handle — populated by the renderer so the

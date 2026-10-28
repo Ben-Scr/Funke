@@ -11,7 +11,6 @@
 #include "Core/Base.hpp"
 #include "Core/Application.hpp"
 #include "Core/EngineAbi.hpp"
-#include "Localization/Localization.hpp"
 
 #include <cstdio>
 #include <exception>
@@ -136,8 +135,6 @@ namespace Funke {
 			shutdownGuard.Initialized = true;
 			CheckEngineAbi(argc, argv);
 
-			Localization::Initialize();
-
 #ifdef FNK_PLATFORM_WINDOWS
 			Detail::CommandLineStorage& commandLineStorage = Detail::GetCommandLineStorage();
 			if (!commandLineStorage.SetFromWindowsCommandLine()) {
@@ -194,7 +191,6 @@ Funke::Application* FunkeRuntimeBegin(int argc, char** argv)
 	try {
 		Funke::InitializeCore();
 		Funke::CheckEngineAbi(argc, argv);
-		Funke::Localization::Initialize();
 		Funke::Application::SetCommandLineArgs(argc, argv);
 		g_SteppedApplication = Funke::CreateApplication();
 		if (g_SteppedApplication && g_SteppedApplication->BeginRun()) return g_SteppedApplication;

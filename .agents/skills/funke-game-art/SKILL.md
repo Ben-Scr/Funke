@@ -17,7 +17,7 @@ Read `Design/DesignLanguage.md` and `Design/palette.json` in the project. They f
 |---|---|---|
 | **Text-grid sprites** (`pixelkit.from_grid`) | characters, enemies, items, icons, small props up to ~32 px | Draw each sprite as a text grid with palette letters, in a generator. Every pixel is placed deliberately, it diffs well, and it is easy to recolour and animate frame by frame. |
 | **Procedural with rules** (`pixelkit` helpers + PIL) | UI frames and buttons, tiles with structure (bricks, planks, grass edges), gradients, glows, particle sprites, palette swatches | Shapes plus ramps plus bevels, never raw noise. Write the generator once and regenerate whenever the palette changes. |
-| **AI image generation** (the user runs Codex `$imagegen` or similar from a brief you write) | painted backgrounds, illustrations, many varied sprites | Write a precise brief (`references/pixel-art.md` → AI briefs), then an importer that snaps the result to the pixel grid and the palette. Never claim AI output exists before you have checked the folder. |
+| **AI image generation** (use the available `imagegen` skill/tool) | painted backgrounds, illustrations, many varied sprites | Write a precise brief (`references/pixel-art.md` → AI briefs). Inspect the output, recover the native grid per element and align it to the project's grid and palette before use. |
 | **CC0 asset packs** (Kenney, etc.) | fast prototypes, fonts, sound | Only with the user's OK. Keep `LICENSE.txt` next to the files, then re-palette the pack so it matches the rest. |
 | **Built-in shapes** (`Square`, `Circle`, … tinted) | the very first playable greybox | Placeholders only. Replace them before calling the game done. |
 
@@ -33,6 +33,7 @@ When an asset family would take more than an hour, or the user cares about the l
 6. **No pillow shading, no noise.** Shade from the light direction, not from the edges inward. Texture means placed clusters (cracks, planks, blades of grass), not random noise. Random per-pixel noise is the most common sign of generated art.
 7. **Signature colours.** Each thing the player must learn (hazard, pickup, checkpoint, enemy type) keeps one colour everywhere: sprite, particles, UI icon.
 8. **Animation:** 2–4 frames for idle/bob, 4–8 for walk/run, held keys on impact. Squash and stretch on landing and jumping, a white hit flash, and frames that stay on the grid.
+9. **Resizing existing art:** recover its native grid before changing size. Resample or reconstruct individual elements on aligned cells; use whole-number nearest-neighbour upscaling where possible. Do not downscale a finished sheet by an arbitrary non-integer factor. Nearest-neighbour alone does not prove that outlines, symmetry, thin details or the silhouette survived.
 
 Details, frame counts, tile edge rules, the AI brief template and import settings: `references/pixel-art.md`.
 
@@ -51,16 +52,16 @@ Engine keys (Image `Type`/borders/`BorderScale`, sprite states on buttons), pixe
 
 - **Files:** `Assets/Textures/<Family>/…` (`Characters`, `Environment`, `Items`, `UI`, `VFX`), fonts in `Assets/Fonts/` with their licence. One generator per family in `Tools/` (`Tools/art_characters.py`, `Tools/art_ui.py`), all reading `Design/palette.json`, and one `Tools/build_art.py` that runs them all.
 - **Write the `.meta` before the PNG** (`pixelkit.save_texture` does both, atomically and only on change). An open Editor imports a new PNG immediately and gives it a random GUID. If the scene already references your planned GUID, the sprite renders magenta or empty and logs no error.
-- **Save pixel art "sharp bilinear":** draw at native size, store it 4× nearest-upscaled, import `Bilinear` (the `save_texture` default). Funke has no pixel snapping, UI and camera scales are rarely whole numbers, and named slices are inset by half a texel. Plain 1× `Point` sheets therefore show uneven pixels, shimmer and squeezed frames; 4× + Bilinear stays crisp at any scale. Smooth UI art: `upscale=1`, Bilinear, colour-bled edges.
-- **Don't set `filterMode` on renderers.** Any value other than the SpriteRenderer default (4 = use the `.meta`) changes the filter of the shared texture for every user, and `Image` pushes Bilinear by default. Let the `.meta` decide.
-- **Sheets:** pack frames with `pixelkit.pack_sheet` and save them with `sprites=` (named slices go into the `.meta`, rects scaled with the upscale), or slice with `funke sprite slice <png> --grid 64x64` after writing your own `.meta`. Reference a slice with `spriteName`, and animate with `SpriteAnimator2D.frames` or an `Animator` `.anim` clip.
+- **Choose filtering for the target view:** `Point` with whole-number screen scaling and an aligned camera preserves hard pixels. For fractional UI/camera scales, the helper defaults to native art stored 4× nearest-upscaled with `Bilinear`; this reduces filtering softness and the effect of half-texel slice insets, but is not pixel-perfect at arbitrary scales. Inspect both the native art and the actual final-size result. Smooth UI art: `upscale=1`, Bilinear, colour-bled edges.
+- **Let `.meta` own the filter:** SpriteRenderer defaults to `filterMode: 4` (Default); explicitly set `Image.filterMode: 4` too when it should follow the import setting, because Image defaults to Bilinear. Non-default component filters call `SetFilter` on the resolved texture and can affect other users sharing its handle.
+- **Sheets:** pack frames with `pixelkit.pack_sheet` and save them with `sprites=` (named slices go into the `.meta`, rects scaled with the upscale), or slice with `funke sprite slice <png> --grid 64x64` after writing your own `.meta`. Reference a slice with `spriteName`, and animate with an `Animator` `.anim` clip using discrete `SpriteRenderer.Texture` keys.
 - **Size in the world:** `SpriteRenderer.pixelsPerUnit` = art px per tile × upscale (16 px tiles saved 4× → 64) with `Transform2D` scale 1. Every sprite keeps its native pixel size and pivot, so one density holds by construction.
 - **9-slice UI:** `"Image": {"imageType": 1, "border": [l, b, r, t], "borderScale": …}` (Tiled = 2 for structured pixel frames). Fonts ship in `Assets/Fonts/` and cover ASCII + Latin-1 only; outlines and drop shadows are Text Renderer keys (`outlineWidth`, `shadowX/Y` + colors), no duplicate label. Details: `references/ui-art.md`.
 
 ## 5. Verify
 
 1. `python <skill>/scripts/pixelkit.py check Assets/Textures/Characters/*.png … --project . --scale 4` (pixel art saved 4×) reports colours outside the palette, soft alpha edges and a wrong pixel grid.
-2. Look at every generated sheet with the Read tool, at 100 % and upscaled.
+2. Open every generated sheet with `view_image`, at native and actual final size plus an integer enlargement. Check thin details, outlines, symmetry, silhouette and transparency; lint cannot judge these.
 3. Take an **in-game** screenshot (`funke-make-a-game` → `references/testing.md`) at the target resolution and judge it there. Lighting, ambient light, UI scale and filtering change how art looks. Compare it with `Design/style-sample.png`.
 4. Check every screen for: one density, crisp pixels (no blur, no shimmer when moving), text readable on its background, nothing overlapping, no placeholder shapes left.
 

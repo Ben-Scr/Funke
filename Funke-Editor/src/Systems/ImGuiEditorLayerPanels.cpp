@@ -1,4 +1,5 @@
 #include <pch.hpp>
+#include "Core/PlatformShortcuts.hpp"
 #include "Core/EngineModules.hpp"
 #include "Systems/ImGuiEditorLayer.hpp"
 
@@ -21,6 +22,7 @@
 #include "Graphics/TextureManager.hpp"
 #include "Graphics/Text/FontManager.hpp"
 #include "Gui/EditorIcons.hpp"
+#include "Gui/EditorTheme.hpp"
 #include "Gui/EditorUI.hpp"
 #include "Graphics/SpriteUVResolver.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
@@ -283,13 +285,57 @@ namespace Funke {
 			return EditorUI::ToneColor(EditorUI::Tone::Error);
 		}
 
-		ImVec4 GetLogLinkColor() {
-			return EditorUI::ToneColor(EditorUI::Tone::Info);
-		}
-
 		// Log console view state. File-static so the panel's look can evolve without touching the layer header.
 		std::string s_LogFilter;
 		bool s_LogCollapse = false;
+
+		struct LogMessageParts {
+			std::string_view Source;
+			std::string_view Body;
+		};
+
+		LogMessageParts SplitLogMessage(std::string_view message) {
+			if (!message.empty() && message.front() == '[') {
+				const size_t end = message.find(']');
+				if (end > 1 && end < 64 && message.substr(0, end).find('\n') == std::string_view::npos) {
+					size_t bodyStart = end + 1;
+					while (bodyStart < message.size() && message[bodyStart] == ' ') ++bodyStart;
+					return { message.substr(1, end - 1), message.substr(bodyStart) };
+				}
+			}
+			return { {}, message };
+		}
+
+		void DrawLogCell(std::string_view text, float width, const ImVec4& color) {
+			text = text.substr(0, text.find_first_of("\r\n"));
+			if (text.empty() || width <= 0.0f) return;
+			const ImVec2 pos = ImGui::GetCursorScreenPos();
+			ImDrawList* drawList = ImGui::GetWindowDrawList();
+			drawList->PushClipRect(pos, ImVec2(pos.x + width, pos.y + ImGui::GetTextLineHeight()), true);
+			const char* end = text.data() + text.size();
+			const bool truncated = ImGui::CalcTextSize(text.data(), end).x > width;
+			if (truncated) {
+				const float ellipsisWidth = ImGui::CalcTextSize("...").x;
+				ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), std::max(1.0f, width - ellipsisWidth),
+					0.0f, text.data(), end, &end);
+				const float textWidth = ImGui::CalcTextSize(text.data(), end).x;
+				drawList->AddText(ImVec2(pos.x + textWidth, pos.y), ImGui::GetColorU32(color), "...");
+			}
+			drawList->AddText(pos, ImGui::GetColorU32(color), text.data(), end);
+			drawList->PopClipRect();
+		}
+
+		void DrawLogSeverity(Log::Level level) {
+			const float size = ImGui::GetTextLineHeight();
+			const uint64_t icon = EditorIcons::Get(GetLogLevelIconName(level), static_cast<int>(size));
+			if (icon) {
+				ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(icon)), ImVec2(size, size),
+					ImVec2(0, 1), ImVec2(1, 0));
+			}
+			else {
+				ImGui::TextColored(GetLogLevelColor(level), "%s", level <= Log::Level::Info ? "i" : "!");
+			}
+		}
 
 		// `needleLower` must already be lowercase; empty needle matches everything.
 		bool ContainsCaseInsensitive(std::string_view haystack, std::string_view needleLower) {
@@ -332,133 +378,16 @@ namespace Funke {
 			EditorUI::Tooltip(tooltip);
 		}
 
-		// Word-wraps `text` to `wrapWidth` px. When `draw`, renders it via the window draw list at
-		// the current cursor: bytes in [linkStart, linkEnd) become an underlined, double-click-to-open
-		// link in `linkColor`, bytes in [0, dimEnd) (the timestamp) in `dimColor`, the rest in `textColor`.
-		// Honors embedded '\n'. Returns the wrapped block's pixel height. Measure (draw=false) and draw
-		// share one path, so a row's Selectable height always matches what is drawn beneath it.
-		float DrawWrappedLogMessage(
-			std::string_view text,
-			size_t linkStart,
-			size_t linkEnd,
-			const std::string& filePath,
-			int linkLine,
-			const ImVec4& textColor,
-			const ImVec4& linkColor,
-			float wrapWidth,
-			bool draw,
-			size_t dimEnd = 0,
-			const ImVec4& dimColor = ImVec4(0, 0, 0, 0))
-		{
-			ImFont* font = ImGui::GetFont();
-			const float fontSize = ImGui::GetFontSize();
-			const float lineHeight = ImGui::GetTextLineHeight();
-			if (wrapWidth < 1.0f) wrapWidth = 1.0f;
-
-			ImDrawList* drawList = draw ? ImGui::GetWindowDrawList() : nullptr;
-			const ImVec2 origin = draw ? ImGui::GetCursorScreenPos() : ImVec2(0.0f, 0.0f);
-			const ImU32 textCol = draw ? ImGui::GetColorU32(textColor) : 0u;
-			const ImU32 linkCol = draw ? ImGui::GetColorU32(linkColor) : 0u;
-			const ImU32 dimCol = draw ? ImGui::GetColorU32(dimColor) : 0u;
-			const bool hasLink = draw && !filePath.empty()
-				&& linkEnd > linkStart && linkEnd <= text.size();
-			// AllowWhenBlockedByActiveItem: the full-row Selectable grabs ActiveId on the second mouse-down,
-			// which makes a plain IsWindowHovered() return false on the exact frame IsMouseDoubleClicked() fires.
-			// The IsMouseHoveringRect test below still scopes the action to the link's glyphs.
-			const bool windowHovered = draw && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
-
-			const char* const base = text.data();
-			const char* const textEnd = base + text.size();
-			float y = 0.0f;
-
-			// 0 = body, 1 = link, 2 = dimmed prefix.
-			auto spanKind = [&](size_t idx) -> int {
-				if (hasLink && idx >= linkStart && idx < linkEnd) return 1;
-				return idx < dimEnd ? 2 : 0;
-			};
-
-			// Draws one visual (already-wrapped) line [lineBegin, lineEnd), splitting runs at the
-			// link/prefix boundaries so those bytes get their own color (and the link its underline + hover rect).
-			auto drawVisualLine = [&](const char* lineBegin, const char* lineEnd) {
-				if (!draw || lineBegin >= lineEnd) return;
-				float penX = 0.0f;
-				const char* p = lineBegin;
-				while (p < lineEnd) {
-					const int kind = spanKind(static_cast<size_t>(p - base));
-					const bool inLink = kind == 1;
-					const char* runEnd = p;
-					while (runEnd < lineEnd && spanKind(static_cast<size_t>(runEnd - base)) == kind) {
-						++runEnd;
-					}
-
-					const ImVec2 pos(origin.x + penX, origin.y + y);
-					drawList->AddText(pos, inLink ? linkCol : (kind == 2 ? dimCol : textCol), p, runEnd);
-					const float advance = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, p, runEnd).x;
-
-					if (inLink) {
-						drawList->AddLine(
-							ImVec2(pos.x, pos.y + lineHeight - 1.0f),
-							ImVec2(pos.x + advance, pos.y + lineHeight - 1.0f),
-							linkCol, 1.0f);
-						if (windowHovered
-							&& ImGui::IsMouseHoveringRect(pos, ImVec2(pos.x + advance, pos.y + lineHeight))) {
-							ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-							ImGui::SetTooltip("Double-click to open");
-							if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-								ExternalEditor::OpenFile(filePath, linkLine);
-							}
-						}
-					}
-
-					penX += advance;
-					p = runEnd;
-				}
-			};
-
-			const char* lineStart = base;
-			while (true) {
-				const char* nl = static_cast<const char*>(
-					std::memchr(lineStart, '\n', static_cast<size_t>(textEnd - lineStart)));
-				const char* logicalEnd = nl ? nl : textEnd;
-
-				if (lineStart == logicalEnd) {
-					y += lineHeight; // blank line preserves vertical gap
-				}
-				else {
-					const char* p = lineStart;
-					while (p < logicalEnd) {
-						const char* wrapAt = font->CalcWordWrapPosition(fontSize, p, logicalEnd, wrapWidth);
-						if (wrapAt <= p) {
-							// Degenerate: one glyph wider than the whole wrap width. Step a full UTF-8
-							// code point (skip continuation bytes) so we force progress without splitting it.
-							wrapAt = p + 1;
-							while (wrapAt < logicalEnd && (static_cast<unsigned char>(*wrapAt) & 0xC0) == 0x80) ++wrapAt;
-						}
-						drawVisualLine(p, wrapAt);
-						y += lineHeight;
-						p = wrapAt;
-						while (p < logicalEnd && (*p == ' ' || *p == '\t')) ++p; // ImGui drops blanks after a wrap
-					}
-				}
-
-				if (!nl) break;
-				lineStart = nl + 1;
-				if (lineStart == textEnd) { y += lineHeight; break; } // trailing '\n' -> trailing blank line
-			}
-
-			return y < lineHeight ? lineHeight : y;
-		}
-
-		// EVERY EditorUI::SectionHeader inside a RenderSettings_* helper MUST have a matching k_SettingsIndex entry — SectionVisible() fails closed for unlisted (category, section) pairs.
+		// SectionVisible fails closed for sections missing from this index.
 		struct SettingsIndexEntry {
 			ImGuiEditorLayer::SettingsCategory Category;
-			const char* Section;   // EXACTLY as passed to EditorUI::SectionHeader.
+			const char* Section;
 			const char* Keywords;  // Space-separated extra terms (lowercase).
 		};
 
 		constexpr SettingsIndexEntry k_SettingsIndex[] = {
 			// Display (RenderSettings_Display)
-			{ ImGuiEditorLayer::SettingsCategory::Display,  "Window",          "width height fullscreen resizable resolution window size run background" },
+			{ ImGuiEditorLayer::SettingsCategory::Display,  "Window",          "width height fullscreen resizable resolution window size run background vsync v-sync vertical sync startup" },
 			{ ImGuiEditorLayer::SettingsCategory::Display,  "Mobile",          "mobile android ios phone tablet orientation landscape portrait rotation rotate upside down" },
 			{ ImGuiEditorLayer::SettingsCategory::Display,  "UI Scaling",      "ui scaling reference resolution canvas scaler scale mode fit fill expand match width height layout" },
 
@@ -555,206 +484,337 @@ namespace Funke {
 			return false;
 		}
 
-		// Sections are forced open while a search filter is active. SectionHeader's leading spacer consumes
-		// SetNextItemOpen, so write the tree-node open state (same ID TreeNodeEx uses) directly instead.
-		bool SettingsSectionHeader(const char* section, const std::string& filterLower) {
-			if (!filterLower.empty()) ImGui::GetStateStorage()->SetInt(ImGui::GetID(section), 1);
-			return EditorUI::SectionHeader(section, true);
+		class SettingsSection {
+		public:
+			SettingsSection(const char* label, const std::string& filterLower, const std::string& summary = {})
+				: m_Open(EditorUI::BeginSection(label, summary.empty() ? nullptr : summary.c_str(), true, !filterLower.empty())) {}
+
+			~SettingsSection() { if (m_Open) EditorUI::EndSection(); }
+			SettingsSection(const SettingsSection&) = delete;
+			SettingsSection& operator=(const SettingsSection&) = delete;
+			explicit operator bool() const { return m_Open; }
+
+		private:
+			bool m_Open;
+		};
+
+		bool SettingsInt(const char* label, int* value) {
+			EditorUI::BeginSettingsRow(label, ImGui::GetFontSize() * 8.0f);
+			const bool changed = ImGui::InputInt("##Value", value, 0, 0);
+			EditorUI::EndSettingsRow();
+			return changed;
+		}
+
+		bool SettingsCombo(const char* label, int* value, const char* const items[], int count) {
+			EditorUI::BeginSettingsRow(label);
+			const bool changed = ImGui::Combo("##Value", value, items, count);
+			EditorUI::EndSettingsRow();
+			return changed;
+		}
+
+		bool SettingsSliderFloat(const char* label, float* value, float minimum, float maximum,
+			const char* format, ImGuiSliderFlags flags = ImGuiSliderFlags_None) {
+			EditorUI::BeginSettingsRow(label);
+			const bool changed = ImGui::SliderFloat("##Value", value, minimum, maximum, format, flags);
+			EditorUI::EndSettingsRow();
+			return changed;
+		}
+
+		bool SettingsSliderInt(const char* label, int* value, int minimum, int maximum,
+			const char* format, ImGuiSliderFlags flags = ImGuiSliderFlags_None) {
+			EditorUI::BeginSettingsRow(label);
+			const bool changed = ImGui::SliderInt("##Value", value, minimum, maximum, format, flags);
+			EditorUI::EndSettingsRow();
+			return changed;
+		}
+
+		bool SettingsDragFloat(const char* label, float* value, float speed, float minimum, float maximum,
+			const char* format, ImGuiSliderFlags flags = ImGuiSliderFlags_None) {
+			EditorUI::BeginSettingsRow(label, ImGui::GetFontSize() * 8.0f);
+			const bool changed = ImGui::DragFloat("##Value", value, speed, minimum, maximum, format, flags);
+			EditorUI::EndSettingsRow();
+			return changed;
+		}
+
+		bool SettingsColor(const char* label, float color[3]) {
+			EditorUI::BeginSettingsRow(label);
+			const bool changed = ImGui::ColorEdit3("##Value", color);
+			EditorUI::EndSettingsRow();
+			return changed;
 		}
 	}
 
 	void ImGuiEditorLayer::RenderLogPanel() {
 		DrainPendingLogEntries();
-		ImGui::Begin("Log");
+		if (!ImGui::Begin("Log")) {
+			ImGui::End();
+			return;
+		}
 
+		const ImGuiStyle& style = ImGui::GetStyle();
+		const float fontSize = ImGui::GetFontSize();
+		const float frameHeight = ImGui::GetFrameHeight();
+		const float gap = style.ItemSpacing.x;
+		const float followWidth = std::round(std::round(frameHeight * 0.62f) * 1.8f)
+			+ style.ItemInnerSpacing.x + ImGui::CalcTextSize("Auto-scroll").x;
+		const ImVec4 muted = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+		const ImVec4 bodyColor = ImGui::GetStyleColorVec4(ImGuiCol_Text);
 		int infoCount = 0, warnCount = 0, errorCount = 0;
 		for (const auto& entry : m_LogEntries) {
-			if (entry.Level <= Log::Level::Info) infoCount++;
-			else if (entry.Level == Log::Level::Warn) warnCount++;
-			else errorCount++;
+			if (entry.Level <= Log::Level::Info) ++infoCount;
+			else if (entry.Level == Log::Level::Warn) ++warnCount;
+			else ++errorCount;
 		}
 
+		auto copyEntry = [&](const LogEntry& entry) {
+			const std::string text = (entry.Timestamp.empty() ? "" : "[" + entry.Timestamp + "] ")
+				+ GetLogLevelPrefix(entry.Level) + entry.Message;
+			ImGui::SetClipboardText(text.c_str());
+		};
+		auto countWidth = [&](int count) {
+			return ImGui::CalcTextSize(count > 999 ? "999+" : std::to_string(count).c_str()).x;
+		};
+		bool scrollToEnd = m_LogScrollToEnd;
+		m_LogScrollToEnd = false;
+		bool copyVisible = false;
 		EditorUI::BeginToolbar("##LogToolbar");
-		if (EditorUI::Button("Clear")) {
-			ClearLogEntries();
+		const float toolbarWidth = ImGui::GetContentRegionAvail().x;
+		const float levelsWidth = frameHeight * 3.0f + 9.0f + countWidth(infoCount)
+			+ countWidth(warnCount) + countWidth(errorCount) + gap * 3.0f;
+		const float actionsWidth = ImGui::CalcTextSize("Collapse").x + style.FramePadding.x * 2.0f
+			+ frameHeight + gap * 3.0f + 7.0f;
+		const bool showFollow = toolbarWidth > followWidth + frameHeight * 3.0f + gap * 2.0f;
+		const float followReservedWidth = showFollow ? followWidth + gap : 0.0f;
+		const bool showLevels = toolbarWidth > levelsWidth + followReservedWidth + frameHeight + gap + fontSize * 9.0f;
+		const bool showActions = showLevels && toolbarWidth > levelsWidth + actionsWidth + followReservedWidth
+			+ frameHeight + gap + fontSize * 12.0f;
+		const float reservedWidth = frameHeight + gap + (showLevels ? levelsWidth : 0.0f)
+			+ (showActions ? actionsWidth : 0.0f) + followReservedWidth;
+		EditorUI::SearchField("##LogFilter", s_LogFilter, "Filter messages...",
+			std::max(frameHeight, toolbarWidth - reservedWidth));
+		if (showLevels) {
+			ImGui::SameLine();
+			LogLevelToggle("##FilterInfo", "info", "Info", infoCount, m_ShowLogInfo, Log::Level::Info);
+			ImGui::SameLine();
+			LogLevelToggle("##FilterWarn", "warning", "Warnings", warnCount, m_ShowLogWarn, Log::Level::Warn);
+			ImGui::SameLine();
+			LogLevelToggle("##FilterError", "error", "Errors", errorCount, m_ShowLogError, Log::Level::Error);
 		}
-		EditorUI::ToolbarSeparator();
-
-		LogLevelToggle("##FilterInfo", "info", "Info", infoCount, m_ShowLogInfo, Log::Level::Info);
-		ImGui::SameLine(0.0f, 8.0f);
-		LogLevelToggle("##FilterWarn", "warning", "Warnings", warnCount, m_ShowLogWarn, Log::Level::Warn);
-		ImGui::SameLine(0.0f, 8.0f);
-		LogLevelToggle("##FilterError", "error", "Errors", errorCount, m_ShowLogError, Log::Level::Error);
-		EditorUI::ToolbarSeparator();
-
-		if (EditorUI::ToggleButton("Collapse", s_LogCollapse, "Merge consecutive identical messages")) {
-			s_LogCollapse = !s_LogCollapse;
+		if (showActions) {
+			EditorUI::ToolbarSeparator();
+			if (EditorUI::ToggleButton("Collapse", s_LogCollapse, "Merge consecutive identical messages")) {
+				s_LogCollapse = !s_LogCollapse;
+			}
+		}
+		if (showFollow) {
+			ImGui::SameLine();
+			if (ImGuiUtils::Switch("Auto-scroll##LogToolbar", &m_LogAutoScroll)) {
+				scrollToEnd = m_LogAutoScroll;
+			}
+			EditorUI::Tooltip("Follow new messages");
+		}
+		if (showActions) {
+			ImGui::SameLine();
+			if (EditorUI::IconButton("##ClearLog", "delete", "Clear messages")) ClearLogEntries();
 		}
 		ImGui::SameLine();
-		EditorUI::SearchField("##LogFilter", s_LogFilter, "Filter messages...");
+		if (EditorUI::Button("...##LogOptions", EditorUI::ButtonVariant::Ghost, ImVec2(frameHeight, frameHeight))) {
+			ImGui::OpenPopup("##LogOptionsMenu");
+		}
+		EditorUI::Tooltip("Console options");
+		if (ImGui::BeginPopup("##LogOptionsMenu")) {
+			ImGui::MenuItem("Info", nullptr, &m_ShowLogInfo);
+			ImGui::MenuItem("Warnings", nullptr, &m_ShowLogWarn);
+			ImGui::MenuItem("Errors", nullptr, &m_ShowLogError);
+			ImGui::Separator();
+			ImGui::MenuItem("Collapse repeats", nullptr, &s_LogCollapse);
+			if (ImGui::MenuItem("Auto-scroll", nullptr, &m_LogAutoScroll)) scrollToEnd = m_LogAutoScroll;
+			ImGui::MenuItem("Expand message details", nullptr, &m_LogDetailsExpanded);
+			ImGui::Separator();
+			copyVisible = ImGui::MenuItem("Copy all visible");
+			if (ImGui::MenuItem("Clear messages")) ClearLogEntries();
+			ImGui::EndPopup();
+		}
 		EditorUI::EndToolbar();
 
 		const std::string filterLower = ToLowerAscii(s_LogFilter);
-		auto passesFilters = [&](const LogEntry& e) {
-			return IsLogEntryVisible(e.Level, m_ShowLogInfo, m_ShowLogWarn, m_ShowLogError)
-				&& ContainsCaseInsensitive(e.Message, filterLower);
+		auto passesFilters = [&](const LogEntry& entry) {
+			return IsLogEntryVisible(entry.Level, m_ShowLogInfo, m_ShowLogWarn, m_ShowLogError)
+				&& ContainsCaseInsensitive(entry.Message, filterLower);
 		};
-
-		ImGui::BeginChild("##LogEntries", ImVec2(-1.0f, -1.0f), true);
-
-		const bool wasAtBottom = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4.0f;
-		constexpr float kLogIconSize = 14.0f;
-		constexpr float kIconAdvance = kLogIconSize + 5.0f; // icon width + the SameLine spacing below
-		const ImVec4 linkColor = GetLogLinkColor();
-		const ImVec4 timestampColor = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
-		// Wrap the message to the panel width minus the icon gutter. Captured once from the child's
-		// inner width so every row — and the measure/draw passes within a row — wrap identically.
-		const float contentWidth = ImGui::GetContentRegionAvail().x;
-		const float wrapWidth = std::max(1.0f, contentWidth - kIconAdvance);
-		const ImVec2 itemSpacing = ImGui::GetStyle().ItemSpacing;
-		const ImU32 altRowColor = ImGui::GetColorU32(ImGuiCol_Text, 0.035f);
-		int visibleRows = 0;
-
-		for (size_t i = 0; i < m_LogEntries.size(); ++i) {
+		struct VisibleLogRow { int Index; int LastIndex; int Count; };
+		std::vector<VisibleLogRow> rows;
+		rows.reserve(m_LogEntries.size());
+		for (int i = 0; i < static_cast<int>(m_LogEntries.size()); ++i) {
 			const LogEntry& entry = m_LogEntries[i];
-			if (!passesFilters(entry)) {
-				continue;
-			}
-
-			// Collapse absorbs the following visible duplicates. The row is addressed by the run's first
-			// entry, so its index (selection, ID) stays stable while new repeats append to the run.
-			size_t runEnd = i;
-			int repeatCount = 1;
-			if (s_LogCollapse) {
-				for (size_t j = i + 1; j < m_LogEntries.size(); ++j) {
-					const LogEntry& next = m_LogEntries[j];
-					if (!passesFilters(next)) continue;
-					if (next.Level != entry.Level || next.Message != entry.Message) break;
-					runEnd = j;
-					++repeatCount;
+			if (!passesFilters(entry)) continue;
+			if (s_LogCollapse && !rows.empty()) {
+				VisibleLogRow& previous = rows.back();
+				const LogEntry& previousEntry = m_LogEntries[previous.Index];
+				if (entry.Level == previousEntry.Level && entry.Message == previousEntry.Message) {
+					previous.LastIndex = i;
+					++previous.Count;
+					continue;
 				}
 			}
-
-			// "[HH:MM:SS] " precedes the message (level is conveyed by the row icon + color); the source-link byte span shifts by its length.
-			const std::string displayPrefix = entry.Timestamp.empty() ? std::string() : "[" + entry.Timestamp + "] ";
-			const ImVec4 levelColor = GetLogLevelColor(entry.Level);
-			const std::string fullText = displayPrefix + entry.Message;
-
-			const bool hasInlineLink = !entry.SourceFilePath.empty()
-				&& entry.SourceLinkEnd > entry.SourceLinkStart
-				&& entry.SourceLinkEnd <= entry.Message.size();
-			const size_t linkStart = hasInlineLink ? entry.SourceLinkStart + displayPrefix.size() : 0;
-			const size_t linkEnd = hasInlineLink ? entry.SourceLinkEnd + displayPrefix.size() : 0;
-
-			char repeatText[16] = {};
-			float badgeWidth = 0.0f;
-			if (repeatCount > 1) {
-				std::snprintf(repeatText, sizeof(repeatText), "%d", repeatCount);
-				badgeWidth = ImGui::CalcTextSize(repeatText).x + 12.0f; // Badge's 6px side padding
-			}
-			// The repeat badge sits at the right edge; text wraps short of it.
-			const float rowWrapWidth = badgeWidth > 0.0f ? std::max(1.0f, wrapWidth - badgeWidth - itemSpacing.x) : wrapWidth;
-
-			// Row height = the wrapped text height (measure pass; matches the draw pass exactly),
-			// never shorter than the severity icon.
-			const float textHeight = DrawWrappedLogMessage(fullText, linkStart, linkEnd,
-				entry.SourceFilePath, entry.SourceLine, levelColor, linkColor, rowWrapWidth, /*draw=*/false);
-			const float rowHeight = std::max(textHeight, kLogIconSize);
-
-			// Zebra stripe over the same rect the Selectable highlights (it extends by half the item spacing).
-			if (visibleRows++ % 2 == 1) {
-				const ImVec2 s = ImGui::GetCursorScreenPos();
-				ImGui::GetWindowDrawList()->AddRectFilled(
-					ImVec2(s.x - itemSpacing.x * 0.5f, s.y - itemSpacing.y * 0.5f),
-					ImVec2(s.x + contentWidth + itemSpacing.x * 0.5f, s.y + rowHeight + itemSpacing.y * 0.5f),
-					altRowColor);
-			}
-
-			ImGui::PushID(static_cast<int>(i));
-
-			// A full-width Selectable underneath gives each row its own click/selection + highlight
-			// that spans the entire wrapped block; the icon and message draw on top. AllowOverlap
-			// keeps the inline source link's hover/click working through the selectable.
-			const ImVec2 rowStart = ImGui::GetCursorPos();
-			const bool rowSelected = m_SelectedLogIndex >= static_cast<int>(i)
-				&& m_SelectedLogIndex <= static_cast<int>(runEnd);
-			if (ImGui::Selectable("##logrow", rowSelected,
-				ImGuiSelectableFlags_AllowOverlap, ImVec2(0.0f, rowHeight))) {
-				m_SelectedLogIndex = static_cast<int>(i);
-			}
-			if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-				m_SelectedLogIndex = static_cast<int>(i);
-			}
-			const ImVec2 rowEnd = ImGui::GetCursorPos();
-
-			if (repeatCount > 1) {
-				// Badge centres itself in a frame-height line; lift it so it centres on the first text line.
-				const float lift = (ImGui::GetFrameHeight() - ImGui::GetTextLineHeight()) * 0.5f;
-				ImGui::SetCursorPos(ImVec2(rowStart.x + contentWidth - badgeWidth, rowStart.y - lift));
-				EditorUI::Badge(repeatText, GetLogLevelTone(entry.Level));
-			}
-
-			// Overlay the severity icon then the wrapped message, starting back at the row's origin.
-			ImGui::SetCursorPos(rowStart);
-			const uint64_t levelIcon = EditorIcons::Get(GetLogLevelIconName(entry.Level), 16);
-			if (levelIcon) {
-				ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(levelIcon)),
-					ImVec2(kLogIconSize, kLogIconSize), ImVec2(0, 1), ImVec2(1, 0));
-			}
-			else {
-				// No icon (atlas load failure): still reserve the gutter so the message origin
-				// matches wrapWidth's kIconAdvance budget and text stays aligned across rows.
-				ImGui::Dummy(ImVec2(kLogIconSize, kLogIconSize));
-			}
-			ImGui::SameLine(0.0f, 5.0f);
-
-			DrawWrappedLogMessage(fullText, linkStart, linkEnd, entry.SourceFilePath,
-				entry.SourceLine, levelColor, linkColor, rowWrapWidth, /*draw=*/true,
-				displayPrefix.size(), timestampColor);
-
-			// Resume below the row regardless of how tall the overlaid content turned out.
-			ImGui::SetCursorPos(rowEnd);
-			ImGui::PopID();
-
-			i = runEnd;
+			rows.push_back({ i, i, 1 });
 		}
 
-		// The last row's SetCursorPos() isn't followed by an item, so ImGui won't grow the
-		// child's content/scroll region to it — submit a zero-size item to claim the extent.
-		ImGui::Dummy(ImVec2(0.0f, 0.0f));
-
-		if (visibleRows == 0) {
-			EditorUI::EmptyState(m_LogEntries.empty() ? "No messages" : "No messages match the filter");
-		}
-
-		if (wasAtBottom) {
-			ImGui::SetScrollHereY(1.0f);
-		}
-
-		if (ImGui::BeginPopupContextWindow("##LogTextCtx")) {
-			const bool hasSelection = m_SelectedLogIndex >= 0
-				&& m_SelectedLogIndex < static_cast<int>(m_LogEntries.size());
-			if (ImGui::MenuItem("Copy Selected", nullptr, false, hasSelection)) {
-				const LogEntry& sel = m_LogEntries[m_SelectedLogIndex];
-				std::string text;
-				if (!sel.Timestamp.empty()) text += "[" + sel.Timestamp + "] ";
-				text += std::string(GetLogLevelPrefix(sel.Level)) + sel.Message;
-				ImGui::SetClipboardText(text.c_str());
-			}
-			if (ImGui::MenuItem("Copy All Visible")) {
-				std::string all;
-				for (const auto& visibleEntry : m_LogEntries) {
-					if (!passesFilters(visibleEntry)) {
-						continue;
+		const bool hasSelection = m_SelectedLogIndex >= 0 && m_SelectedLogIndex < static_cast<int>(m_LogEntries.size())
+			&& passesFilters(m_LogEntries[m_SelectedLogIndex]);
+		const float availableHeight = ImGui::GetContentRegionAvail().y;
+		const float separatorHeight = std::max(style.SeparatorSize, 1.0f);
+		const float detailHeight = hasSelection && availableHeight > frameHeight * 6.0f
+			? (m_LogDetailsExpanded ? std::min(fontSize * 8.0f, availableHeight * 0.42f) : frameHeight + style.ItemSpacing.y + separatorHeight)
+			: 0.0f;
+		const float listHeight = std::max(1.0f, availableHeight
+			- (detailHeight > 0.0f ? detailHeight + style.ItemSpacing.y : 0.0f));
+		const float listWidth = ImGui::GetContentRegionAvail().x;
+		const bool showTime = listWidth >= fontSize * 24.0f;
+		const bool showSource = listWidth >= fontSize * 34.0f;
+		const ImGuiTableFlags tableFlags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg
+			| ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingStretchProp;
+		ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(fontSize * 0.4f, fontSize * 0.35f));
+		ImGui::PushStyleColor(ImGuiCol_Header, EditorTheme::Colors::RowSelection());
+		if (ImGui::BeginTable("##LogEntries", 4, tableFlags, ImVec2(0.0f, listHeight))) {
+			ImGui::TableSetupColumn("##Severity", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, fontSize * 1.5f);
+			ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed | (showTime ? 0 : ImGuiTableColumnFlags_Disabled), fontSize * 5.0f);
+			ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed | (showSource ? 0 : ImGuiTableColumnFlags_Disabled), fontSize * 6.5f);
+			ImGui::TableSetupColumn("Message", ImGuiTableColumnFlags_WidthStretch);
+			ImGui::TableSetupScrollFreeze(0, 1);
+			ImGui::PushStyleColor(ImGuiCol_Text, muted);
+			ImGui::TableHeadersRow();
+			ImGui::PopStyleColor();
+			const bool wasAtBottom = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - style.CellPadding.y;
+			const bool scrollKey = ImGui::IsWindowFocused() && (ImGui::IsKeyPressed(ImGuiKey_PageUp)
+				|| ImGui::IsKeyPressed(ImGuiKey_Home) || ImGui::IsKeyPressed(ImGuiKey_UpArrow));
+			const bool scrollbarPressed = ImGui::IsMouseDown(ImGuiMouseButton_Left)
+				&& ImGui::GetIO().MousePos.x >= ImGui::GetWindowPos().x + ImGui::GetWindowSize().x - style.ScrollbarSize;
+			const bool scrollingAway = ImGui::GetScrollMaxY() > 0.0f && (scrollKey
+				|| (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)
+					&& (ImGui::GetIO().MouseWheel > 0.0f || (scrollbarPressed && !wasAtBottom))));
+			if (scrollingAway) m_LogAutoScroll = false;
+			ImGuiListClipper clipper;
+			clipper.Begin(static_cast<int>(rows.size()));
+			while (clipper.Step()) {
+				for (int rowIndex = clipper.DisplayStart; rowIndex < clipper.DisplayEnd; ++rowIndex) {
+					const VisibleLogRow& row = rows[rowIndex];
+					const LogEntry& entry = m_LogEntries[row.Index];
+					const LogMessageParts parts = SplitLogMessage(entry.Message);
+					const bool selected = hasSelection && m_SelectedLogIndex >= row.Index && m_SelectedLogIndex <= row.LastIndex;
+					ImGui::PushID(row.Index);
+					ImGui::TableNextRow();
+					ImGui::TableSetColumnIndex(0);
+					const ImVec2 rowStart = ImGui::GetCursorScreenPos();
+					const float iconOffset = std::max(0.0f, (ImGui::GetContentRegionAvail().x - ImGui::GetTextLineHeight()) * 0.5f);
+					if (ImGui::Selectable("##LogRow", selected, ImGuiSelectableFlags_SpanAllColumns
+						| ImGuiSelectableFlags_AllowOverlap | ImGuiSelectableFlags_AllowDoubleClick,
+						ImVec2(0.0f, ImGui::GetTextLineHeight()))) {
+						m_SelectedLogIndex = row.Index;
+						if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !entry.SourceFilePath.empty()) {
+							ExternalEditor::OpenFile(entry.SourceFilePath, entry.SourceLine);
+						}
 					}
-					if (!visibleEntry.Timestamp.empty()) all += "[" + visibleEntry.Timestamp + "] ";
-					all += std::string(GetLogLevelPrefix(visibleEntry.Level)) + visibleEntry.Message + "\n";
+					if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) m_SelectedLogIndex = row.Index;
+					if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+						ImGui::BeginTooltip();
+						ImGui::PushTextWrapPos(fontSize * 40.0f);
+						ImGui::TextUnformatted(entry.Message.c_str());
+						ImGui::PopTextWrapPos();
+						ImGui::EndTooltip();
+					}
+					ImGui::SetCursorScreenPos(ImVec2(rowStart.x + iconOffset, rowStart.y));
+					DrawLogSeverity(entry.Level);
+					if (selected) {
+						ImGui::GetWindowDrawList()->AddRectFilled(
+							ImVec2(rowStart.x - style.CellPadding.x, rowStart.y - style.CellPadding.y),
+							ImVec2(rowStart.x - style.CellPadding.x + std::max(2.0f, fontSize * 0.13f), rowStart.y + fontSize + style.CellPadding.y),
+							ImGui::GetColorU32(EditorTheme::Colors::Highlight()));
+					}
+					if (ImGui::TableSetColumnIndex(1)) DrawLogCell(entry.Timestamp, ImGui::GetContentRegionAvail().x, muted);
+					if (ImGui::TableSetColumnIndex(2)) DrawLogCell(parts.Source, ImGui::GetContentRegionAvail().x, muted);
+					ImGui::TableSetColumnIndex(3);
+					const float messageWidth = ImGui::GetContentRegionAvail().x;
+					const std::string repeats = row.Count > 1 ? "x" + std::to_string(row.Count) : std::string();
+					const float repeatWidth = repeats.empty() ? 0.0f : ImGui::CalcTextSize(repeats.c_str()).x;
+					DrawLogCell(showSource ? parts.Body : std::string_view(entry.Message),
+						messageWidth - (repeats.empty() ? 0.0f : repeatWidth + gap), bodyColor);
+					if (!repeats.empty()) {
+						ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, messageWidth - repeatWidth));
+						ImGui::TextColored(muted, "%s", repeats.c_str());
+					}
+					ImGui::PopID();
 				}
-				ImGui::SetClipboardText(all.c_str());
 			}
-			ImGui::EndPopup();
+			if (rows.empty()) {
+				ImGui::TableNextRow();
+				ImGui::TableSetColumnIndex(3);
+				ImGui::TextColored(muted, "%s", m_LogEntries.empty() ? "No messages" : "No messages match the filter");
+			}
+			if (scrollToEnd || (m_LogAutoScroll && !scrollingAway)) ImGui::SetScrollY(ImGui::GetCursorPosY());
+			if (ImGui::BeginPopupContextWindow("##LogTextCtx")) {
+				const bool canCopy = m_SelectedLogIndex >= 0 && m_SelectedLogIndex < static_cast<int>(m_LogEntries.size());
+				if (ImGui::MenuItem("Copy Selected", nullptr, false, canCopy)) copyEntry(m_LogEntries[m_SelectedLogIndex]);
+				if (ImGui::MenuItem("Copy All Visible")) copyVisible = true;
+				ImGui::EndPopup();
+			}
+			ImGui::EndTable();
 		}
-		ImGui::EndChild();
+		ImGui::PopStyleColor();
+		ImGui::PopStyleVar();
+
+		if (detailHeight > 0.0f && m_SelectedLogIndex >= 0) {
+			LogEntry& selected = m_LogEntries[m_SelectedLogIndex];
+			ImGui::BeginChild("##LogDetails", ImVec2(0.0f, detailHeight), ImGuiChildFlags_None);
+			ImGui::Separator();
+			const float right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+			if (ImGui::ArrowButton("##ExpandLogDetails", m_LogDetailsExpanded ? ImGuiDir_Down : ImGuiDir_Right)) {
+				m_LogDetailsExpanded = !m_LogDetailsExpanded;
+			}
+			EditorUI::Tooltip(m_LogDetailsExpanded ? "Collapse message details" : "Expand message details");
+			ImGui::SameLine();
+			ImGui::AlignTextToFramePadding();
+			ImGui::TextUnformatted("Message details");
+			const bool hasSource = !selected.SourceFilePath.empty();
+			const float detailActionsWidth = frameHeight * (hasSource ? 3.0f : 2.0f) + gap * (hasSource ? 2.0f : 1.0f);
+			ImGui::SameLine(std::max(ImGui::GetCursorPosX(), right - detailActionsWidth));
+			if (hasSource) {
+				if (EditorUI::IconButton("##OpenLogSource", "link", "Open source file")) {
+					ExternalEditor::OpenFile(selected.SourceFilePath, selected.SourceLine);
+				}
+				ImGui::SameLine();
+			}
+			if (EditorUI::IconButton("##CopyLogDetails", "copy", "Copy message")) copyEntry(selected);
+			ImGui::SameLine();
+			const bool closeDetails = EditorUI::IconButton("##CloseLogDetails", "clear", "Close message details");
+			if (m_LogDetailsExpanded) {
+				DrawLogSeverity(selected.Level);
+				ImGui::SameLine();
+				ImGui::TextColored(muted, "%s", selected.Timestamp.c_str());
+				ImGui::PushID(m_SelectedLogIndex);
+				ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
+				ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+				ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, style.FramePadding.y));
+				ImGui::InputTextMultiline("##MessageText", selected.Message.data(), selected.Message.size() + 1,
+					ImVec2(-1.0f, std::max(frameHeight, ImGui::GetContentRegionAvail().y)),
+					ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_WordWrap);
+				ImGui::PopStyleVar(2);
+				ImGui::PopStyleColor();
+				ImGui::PopID();
+			}
+			ImGui::EndChild();
+			if (closeDetails) m_SelectedLogIndex = -1;
+		}
+
+		if (copyVisible) {
+			std::string text;
+			for (const LogEntry& entry : m_LogEntries) {
+				if (!passesFilters(entry)) continue;
+				if (!entry.Timestamp.empty()) text += "[" + entry.Timestamp + "] ";
+				text += std::string(GetLogLevelPrefix(entry.Level)) + entry.Message + "\n";
+			}
+			ImGui::SetClipboardText(text.c_str());
+		}
 		ImGui::End();
 	}
 
@@ -825,6 +885,8 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::ExecuteBuildAsync() {
+		m_BuildPlayUrl.clear();
+		m_BuildLaunchError.clear();
 		{
 			std::lock_guard<std::mutex> lk(m_BuildProgressMutex);
 			m_BuildProgress = 0.0f;
@@ -901,11 +963,23 @@ namespace Funke {
 		request.OutputDirectory = m_BuildOutputDirBuffer;
 		m_BuildStartTime = std::chrono::steady_clock::now();
 		m_BuiltExecutablePath.clear();
-		m_BuildFuture = std::async(std::launch::async, [this, request = std::move(request)]() mutable {
+		const bool playAfterBuild = m_BuildAndPlay;
+		m_BuildFuture = std::async(std::launch::async, [this, request = std::move(request), playAfterBuild]() mutable {
 			const GameBuilder::Result result = GameBuilder::Build(std::move(request),
 				[this](float progress, std::string_view stage) { ReportBuildProgress(progress, stage); });
 			m_BuildOutputDir = result.OutputDirectory;
 			m_BuiltExecutablePath = result.ExecutablePath;
+			if (result.Succeeded && playAfterBuild && !result.WebEntryPath.empty()) {
+				ReportBuildProgress(1.0f, "Starting Web preview");
+				const PlatformBuilder::WebPreview preview = PlatformBuilder::StartWebPreview(
+					Path::FromUtf8(result.WebPreviewScript), Path::FromUtf8(result.WebEntryPath), m_WebPreview);
+				m_BuildLaunchError = preview.Error;
+				if (preview.Error.empty()) {
+					m_WebPreview = preview;
+					m_BuildPlayUrl = preview.Url;
+				}
+				ReportBuildProgress(1.0f, "Build complete");
+			}
 			m_BuildSucceeded.store(result.Succeeded, std::memory_order_relaxed);
 		});
 	}
@@ -1343,7 +1417,7 @@ namespace Funke {
 			}
 			ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
 			if (ImGui::Button("Manage…")) {
-				m_ShowBuildProfilesPanel = true;
+				OpenPanel("Build Profiles", m_ShowBuildProfilesPanel);
 			}
 			EditorUI::Tooltip("Open the Build Profiles window.");
 
@@ -1491,7 +1565,7 @@ namespace Funke {
 
 			rowLabel("Project");
 			if (EditorUI::Button("Open Project Settings")) {
-				m_ShowProjectSettings = true;
+				OpenPanel("Project Settings", m_ShowProjectSettings);
 			}
 			endCard();
 
@@ -1563,6 +1637,9 @@ namespace Funke {
 				if (lastStage.empty()) {
 					statusLine(EditorUI::Tone::Neutral, "Ready to build.");
 				}
+				else if (!m_BuildLaunchError.empty()) {
+					statusLine(EditorUI::Tone::Warning, "Build complete; play failed: " + m_BuildLaunchError);
+				}
 				else if (m_BuildSucceeded.load(std::memory_order_relaxed)) {
 					statusLine(EditorUI::Tone::Success, "Last build complete: " + m_BuildOutputDir);
 				}
@@ -1627,19 +1704,25 @@ namespace Funke {
 			return;
 		}
 
-		constexpr const char* k_CategoryLabels[] = {
-			"Display",
-			"Graphics",
-			"Branding",
-			"Build",
-			"Editor",
-			"Systems",
-			"Physics",
+		struct CategoryInfo {
+			const char* Label;
+			const char* Description;
+			const char* Icon;
 		};
-		static_assert(IM_ARRAYSIZE(k_CategoryLabels)
+		constexpr CategoryInfo k_Categories[] = {
+			{ "Display", "Window size, orientation, and UI scaling.", "monitor" },
+			{ "Graphics", "Rendering quality, animation, and fonts.", "image" },
+			{ "Branding", "Splash screen, app icon, and cursors.", "flag" },
+			{ "Build", "Engine modules, executable, and diagnostics.", "hammer" },
+			{ "Editor", "Project editing, naming, serialization, and scripts.", "settings" },
+			{ "Systems", "Global systems enabled for this project.", "systems" },
+			{ "Physics", "Fixed timestep for physics and simulation.", "physics" },
+		};
+		static_assert(IM_ARRAYSIZE(k_Categories)
 			== static_cast<int>(SettingsCategory::Physics) + 1,
-			"k_CategoryLabels out of sync with SettingsCategory enum");
+			"k_Categories out of sync with SettingsCategory enum");
 
+		const SettingsCategory previousCategory = m_SelectedSettingsCategory;
 		EditorUI::SearchField("##SettingsSearch", m_ProjectSettingsSearchBuffer,
 			sizeof(m_ProjectSettingsSearchBuffer), "Search settings...");
 
@@ -1647,59 +1730,114 @@ namespace Funke {
 		std::transform(filterLower.begin(), filterLower.end(), filterLower.begin(),
 			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 		const bool filterActive = !filterLower.empty();
+		if (filterActive && !m_ProjectSettingsSearchActive) {
+			m_SettingsCategoryBeforeSearch = m_SelectedSettingsCategory;
+		}
+		else if (!filterActive && m_ProjectSettingsSearchActive) {
+			m_SelectedSettingsCategory = m_SettingsCategoryBeforeSearch;
+		}
+		m_ProjectSettingsSearchActive = filterActive;
 
-		if (filterActive && !CategoryHasMatches(m_SelectedSettingsCategory, filterLower)) {
-			for (int i = 0; i < IM_ARRAYSIZE(k_CategoryLabels); ++i) {
-				auto cat = static_cast<SettingsCategory>(i);
-				if (CategoryHasMatches(cat, filterLower)) {
-					m_SelectedSettingsCategory = cat;
-					break;
-				}
+		std::array<int, IM_ARRAYSIZE(k_Categories)> visibleCategories{};
+		int visibleCount = 0;
+		for (int i = 0; i < IM_ARRAYSIZE(k_Categories); ++i) {
+			if (CategoryHasMatches(static_cast<SettingsCategory>(i), filterLower)) {
+				visibleCategories[visibleCount++] = i;
 			}
+		}
+
+		if (visibleCount > 0 && !CategoryHasMatches(m_SelectedSettingsCategory, filterLower)) {
+			m_SelectedSettingsCategory = static_cast<SettingsCategory>(visibleCategories[0]);
 		}
 
 		ImGui::Separator();
 
-		const float listColumnWidth = ImGui::GetContentRegionAvail().x * 0.22f;
-		const float listW = std::max(160.0f, listColumnWidth);
+		const float font = ImGui::GetFontSize();
+		float longestLabel = 0.0f;
+		for (const auto& category : k_Categories) {
+			longestLabel = std::max(longestLabel, ImGui::CalcTextSize(category.Label).x);
+		}
+		const float navWidth = std::clamp(longestLabel + font * 4.0f, font * 12.0f, font * 15.0f);
+		const float columnGap = font * 1.0f;
+		const ImVec2 available = ImGui::GetContentRegionAvail();
+		const bool compactLayout = available.x < navWidth + columnGap + font * 26.0f;
 
-		bool anyVisible = false;
-		ImGui::BeginChild("##SettingsNav", ImVec2(listW, 0), /*border*/ true);
-		for (int i = 0; i < IM_ARRAYSIZE(k_CategoryLabels); ++i) {
-			auto cat = static_cast<SettingsCategory>(i);
-			if (filterActive && !CategoryHasMatches(cat, filterLower)) continue;
-			anyVisible = true;
-			const bool selected = static_cast<int>(m_SelectedSettingsCategory) == i;
-			if (ImGui::Selectable(k_CategoryLabels[i], selected)) {
-				m_SelectedSettingsCategory = cat;
+		if (compactLayout) {
+			ImGui::TextDisabled("Category");
+			ImGui::SetNextItemWidth(-FLT_MIN);
+			ImGui::BeginDisabled(visibleCount == 0);
+			const char* preview = visibleCount > 0
+				? k_Categories[static_cast<int>(m_SelectedSettingsCategory)].Label : "No matches";
+			if (ImGui::BeginCombo("##SettingsCategory", preview)) {
+				for (int n = 0; n < visibleCount; ++n) {
+					const int i = visibleCategories[n];
+					const bool selected = static_cast<int>(m_SelectedSettingsCategory) == i;
+					if (ImGui::Selectable(k_Categories[i].Label, selected)) {
+						m_SelectedSettingsCategory = static_cast<SettingsCategory>(i);
+					}
+					if (selected) ImGui::SetItemDefaultFocus();
+				}
+				ImGui::EndCombo();
 			}
+			ImGui::EndDisabled();
+			ImGui::Spacing();
 		}
-		if (filterActive && !anyVisible) {
-			EditorUI::EmptyState("No matches");
+		else {
+			const ImVec2 navMin = ImGui::GetCursorScreenPos();
+			if (ImGui::BeginChild("##SettingsNav", ImVec2(navWidth, 0), ImGuiChildFlags_None,
+				ImGuiWindowFlags_NoBackground)) {
+				int focusCategory = -1;
+				if (visibleCount > 0 && ImGui::IsWindowFocused()) {
+					if (ImGui::IsKeyPressed(ImGuiKey_Home, false)) focusCategory = visibleCategories[0];
+					else if (ImGui::IsKeyPressed(ImGuiKey_End, false)) focusCategory = visibleCategories[visibleCount - 1];
+					if (focusCategory >= 0) m_SelectedSettingsCategory = static_cast<SettingsCategory>(focusCategory);
+				}
+				for (int n = 0; n < visibleCount; ++n) {
+					const int i = visibleCategories[n];
+					if (focusCategory == i) ImGui::SetKeyboardFocusHere();
+					const bool selected = static_cast<int>(m_SelectedSettingsCategory) == i;
+					if (EditorUI::NavigationItem(k_Categories[i].Label, selected, k_Categories[i].Icon)) {
+						m_SelectedSettingsCategory = static_cast<SettingsCategory>(i);
+					}
+				}
+				if (visibleCount == 0) ImGui::TextDisabled("No matching categories");
+			}
+			ImGui::EndChild();
+			const float dividerX = navMin.x + navWidth + columnGap * 0.5f;
+			ImGui::GetWindowDrawList()->AddLine(ImVec2(dividerX, navMin.y),
+				ImVec2(dividerX, navMin.y + std::max(0.0f, available.y)), ImGui::GetColorU32(ImGuiCol_Separator));
+			ImGui::SameLine(0.0f, columnGap);
 		}
-		ImGui::EndChild();
-
-		ImGui::SameLine();
 
 		bool changed = false;
 		bool globalSystemsChanged = false;
 
-		ImGui::BeginChild("##SettingsContent", ImVec2(0, 0));
-		if (filterActive && !anyVisible) {
-			const std::string noMatch = std::string("No settings match \"") + m_ProjectSettingsSearchBuffer + "\"";
-			EditorUI::EmptyState(noMatch.c_str(), "Try a different search term.");
-		}
-		else {
-			switch (m_SelectedSettingsCategory) {
-				case SettingsCategory::Display:  RenderSettings_Display(*project, changed, filterLower);  break;
-				case SettingsCategory::Graphics: RenderSettings_Graphics(*project, changed, filterLower); break;
-				case SettingsCategory::Branding: RenderSettings_Branding(*project, changed, filterLower); break;
-				case SettingsCategory::Build:    RenderSettings_Build(*project, changed, filterLower);    break;
-				case SettingsCategory::Editor:   RenderSettings_Editor(*project, changed, filterLower);   break;
-				case SettingsCategory::Systems:
-					RenderSettings_Systems(*project, changed, globalSystemsChanged, filterLower);
-					break;
-				case SettingsCategory::Physics: RenderSettings_Physics(*project, changed, filterLower); break;
+		if (ImGui::BeginChild("##SettingsContent", ImVec2(0, 0))) {
+			if (m_SelectedSettingsCategory != previousCategory) ImGui::SetScrollY(0.0f);
+			if (visibleCount == 0) {
+				const std::string noMatch = std::string("No settings match \"") + m_ProjectSettingsSearchBuffer + "\"";
+				EditorUI::EmptyState(noMatch.c_str(), "Try a different search term.");
+			}
+			else {
+				const auto& category = k_Categories[static_cast<int>(m_SelectedSettingsCategory)];
+				ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.25f);
+				ImGui::TextUnformatted(category.Label);
+				ImGui::PopFont();
+				ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+				ImGui::TextWrapped("%s", category.Description);
+				ImGui::PopStyleColor();
+				ImGui::Spacing();
+				switch (m_SelectedSettingsCategory) {
+					case SettingsCategory::Display:  RenderSettings_Display(*project, changed, filterLower);  break;
+					case SettingsCategory::Graphics: RenderSettings_Graphics(*project, changed, filterLower); break;
+					case SettingsCategory::Branding: RenderSettings_Branding(*project, changed, filterLower); break;
+					case SettingsCategory::Build:    RenderSettings_Build(*project, changed, filterLower);    break;
+					case SettingsCategory::Editor:   RenderSettings_Editor(*project, changed, filterLower);   break;
+					case SettingsCategory::Systems:
+						RenderSettings_Systems(*project, changed, globalSystemsChanged, filterLower);
+						break;
+					case SettingsCategory::Physics: RenderSettings_Physics(*project, changed, filterLower); break;
+				}
 			}
 		}
 		ImGui::EndChild();
@@ -1727,18 +1865,19 @@ namespace Funke {
 		const std::string& filterLower)
 	{
 		if (SectionVisible(SettingsCategory::Display, "Window", filterLower)) {
-			if (SettingsSectionHeader("Window", filterLower)) {
-				ImGui::Indent(8);
+			if (SettingsSection section{"Window", filterLower,
+				std::to_string(project.BuildWidth) + " x " + std::to_string(project.BuildHeight)
+					+ (project.BuildFullscreen ? " · Fullscreen" : " · Windowed")}; section) {
 
 				ImGui::TextDisabled("Startup");
 				ImGui::Separator();
 
-				changed |= ImGui::InputInt("Width", &project.BuildWidth, 0, 0);
-				changed |= ImGui::InputInt("Height", &project.BuildHeight, 0, 0);
+				changed |= SettingsInt("Width", &project.BuildWidth);
+				changed |= SettingsInt("Height", &project.BuildHeight);
 				if (project.BuildWidth < 320) project.BuildWidth = 320;
 				if (project.BuildHeight < 240) project.BuildHeight = 240;
 
-				changed |= ImGuiUtils::Switch("Fullscreen", &project.BuildFullscreen);
+				changed |= EditorUI::SettingsSwitch("Fullscreen", &project.BuildFullscreen);
 
 				struct FullscreenModeOption {
 					const char* Label;
@@ -1758,8 +1897,8 @@ namespace Funke {
 						break;
 					}
 				}
-				ImGui::SetNextItemWidth(220.0f);
-				if (ImGui::BeginCombo("Fullscreen Mode", currentLabel)) {
+				EditorUI::BeginSettingsRow("Fullscreen Mode");
+				if (ImGui::BeginCombo("##Value", currentLabel)) {
 					for (const auto& opt : k_FullscreenModeOptions) {
 						const bool selected = (opt.Mode == project.BuildFullscreenMode);
 						if (ImGui::Selectable(opt.Label, selected)) {
@@ -1770,6 +1909,7 @@ namespace Funke {
 					}
 					ImGui::EndCombo();
 				}
+				EditorUI::EndSettingsRow();
 				if (!fullscreenEnabled) ImGui::EndDisabled();
 				EditorUI::Tooltip(
 					"How the runtime realises fullscreen at launch:\n"
@@ -1781,19 +1921,22 @@ namespace Funke {
 					"Disabled when 'Fullscreen' is off — the value is\n"
 					"ignored in windowed launches.");
 
+				changed |= EditorUI::SettingsSwitch("VSync", &project.BuildVsync);
+				EditorUI::Tooltip("Enable vertical synchronization when the built application starts.");
+
 				ImGui::Spacing();
 				ImGui::TextDisabled("Runtime");
 				ImGui::Separator();
 
-				changed |= ImGuiUtils::Switch("Resizable", &project.BuildResizable);
-				changed |= ImGuiUtils::Switch("Run in background", &project.BuildRunInBackground);
+				changed |= EditorUI::SettingsSwitch("Resizable", &project.BuildResizable);
+				changed |= EditorUI::SettingsSwitch("Run in background", &project.BuildRunInBackground);
 
 				ImGui::Spacing();
 				ImGui::TextDisabled("Resize Limits (0 = unbounded)");
-				changed |= ImGui::InputInt("Min Width",  &project.BuildMinWidth, 0, 0);
-				changed |= ImGui::InputInt("Min Height", &project.BuildMinHeight, 0, 0);
-				changed |= ImGui::InputInt("Max Width",  &project.BuildMaxWidth, 0, 0);
-				changed |= ImGui::InputInt("Max Height", &project.BuildMaxHeight, 0, 0);
+				changed |= SettingsInt("Min Width", &project.BuildMinWidth);
+				changed |= SettingsInt("Min Height", &project.BuildMinHeight);
+				changed |= SettingsInt("Max Width", &project.BuildMaxWidth);
+				changed |= SettingsInt("Max Height", &project.BuildMaxHeight);
 				if (project.BuildMinWidth  < 0) project.BuildMinWidth  = 0;
 				if (project.BuildMinHeight < 0) project.BuildMinHeight = 0;
 				if (project.BuildMaxWidth  < 0) project.BuildMaxWidth  = 0;
@@ -1805,8 +1948,8 @@ namespace Funke {
 
 				ImGui::Spacing();
 				int aspectIndex = AspectRatioPresetIndexFromLabel(project.BuildAspect);
-				ImGui::SetNextItemWidth(220.0f);
-				if (ImGui::BeginCombo("Aspect Ratio", k_AspectRatioPresets[aspectIndex].Label)) {
+				EditorUI::BeginSettingsRow("Aspect Ratio");
+				if (ImGui::BeginCombo("##Value", k_AspectRatioPresets[aspectIndex].Label)) {
 					for (int i = 0; i < static_cast<int>(k_AspectRatioPresets.size()); ++i) {
 						const bool selected = (i == aspectIndex);
 						if (ImGui::Selectable(k_AspectRatioPresets[i].Label, selected)) {
@@ -1817,6 +1960,7 @@ namespace Funke {
 					}
 					ImGui::EndCombo();
 				}
+				EditorUI::EndSettingsRow();
 				EditorUI::Tooltip(
 					"Locks the shipped game to this aspect ratio.\n"
 					"When the window's aspect doesn't match, the renderer\n"
@@ -1825,13 +1969,11 @@ namespace Funke {
 					"\n"
 					"Independent of the editor's Game View aspect.\n"
 					"Select 'Free Aspect' to disable and fill the full window.");
-				ImGui::Unindent(8);
 			}
 		}
 
 		if (SectionVisible(SettingsCategory::Display, "Mobile", filterLower)) {
-			if (SettingsSectionHeader("Mobile", filterLower)) {
-				ImGui::Indent(8);
+			if (SettingsSection section{"Mobile", filterLower}; section) {
 				struct OrientationOption {
 					const char* Label;
 					ScreenOrientation Value;
@@ -1851,8 +1993,8 @@ namespace Funke {
 				for (const auto& option : k_OrientationOptions) {
 					if (option.Value == project.MobileOrientation) currentLabel = option.Label;
 				}
-				ImGui::SetNextItemWidth(260.0f);
-				if (ImGui::BeginCombo("Orientation", currentLabel)) {
+				EditorUI::BeginSettingsRow("Orientation");
+				if (ImGui::BeginCombo("##Value", currentLabel)) {
 					for (const auto& option : k_OrientationOptions) {
 						const bool selected = option.Value == project.MobileOrientation;
 						if (ImGui::Selectable(option.Label, selected)) {
@@ -1863,21 +2005,21 @@ namespace Funke {
 					}
 					ImGui::EndCombo();
 				}
+				EditorUI::EndSettingsRow();
 				EditorUI::Tooltip(
 					"Which way up the game may be held on Android and iOS.\n"
 					"Left/Right name the side the top of the device points to.\n"
 					"Options with more than one direction turn with the device.\n"
 					"Auto uses landscape when the window is wider than tall.\n"
 					"Desktop and Web builds ignore this.");
-				ImGui::Unindent(8);
 			}
 		}
 
 		if (SectionVisible(SettingsCategory::Display, "UI Scaling", filterLower)) {
-			if (SettingsSectionHeader("UI Scaling", filterLower)) {
-				ImGui::Indent(8);
-				changed |= ImGui::InputInt("Reference Width##UIRef", &project.UIReferenceWidth, 0, 0);
-				changed |= ImGui::InputInt("Reference Height##UIRef", &project.UIReferenceHeight, 0, 0);
+			if (SettingsSection section{"UI Scaling", filterLower,
+				std::to_string(project.UIReferenceWidth) + " x " + std::to_string(project.UIReferenceHeight)}; section) {
+				changed |= SettingsInt("Reference Width##UIRef", &project.UIReferenceWidth);
+				changed |= SettingsInt("Reference Height##UIRef", &project.UIReferenceHeight);
 				if (project.UIReferenceWidth  < 1) project.UIReferenceWidth  = 1;
 				if (project.UIReferenceHeight < 1) project.UIReferenceHeight = 1;
 
@@ -1895,8 +2037,8 @@ namespace Funke {
 				for (const auto& option : k_ScaleModeOptions) {
 					if (option.Value == project.UIScaling) currentScaleLabel = option.Label;
 				}
-				ImGui::SetNextItemWidth(260.0f);
-				if (ImGui::BeginCombo("Scale Mode##UIRef", currentScaleLabel)) {
+				EditorUI::BeginSettingsRow("Scale Mode##UIRef");
+				if (ImGui::BeginCombo("##Value", currentScaleLabel)) {
 					for (const auto& option : k_ScaleModeOptions) {
 						const bool selected = option.Value == project.UIScaling;
 						if (ImGui::Selectable(option.Label, selected)) {
@@ -1907,6 +2049,7 @@ namespace Funke {
 					}
 					ImGui::EndCombo();
 				}
+				EditorUI::EndSettingsRow();
 				EditorUI::Tooltip(
 					"How the reference resolution is scaled to the screen.\n"
 					"Fit: the whole reference area stays visible on every aspect ratio\n"
@@ -1915,7 +2058,7 @@ namespace Funke {
 					"Match Width or Height: blend set by the slider below.");
 
 				if (project.UIScaling == UIScaleMode::MatchWidthOrHeight) {
-					changed |= ImGui::SliderFloat("Match Width / Height", &project.UIScaleMatch, 0.0f, 1.0f, "%.2f");
+					changed |= SettingsSliderFloat("Match Width / Height", &project.UIScaleMatch, 0.0f, 1.0f, "%.2f");
 					EditorUI::Tooltip(
 						"0 = scale UI by window WIDTH only.\n"
 						"1 = scale UI by window HEIGHT only.\n"
@@ -1924,7 +2067,6 @@ namespace Funke {
 						"Move toward 1 if your UI hugs the top/bottom edges,\n"
 						"toward 0 if it hugs the left/right edges.");
 				}
-				ImGui::Unindent(8);
 			}
 		}
 	}
@@ -1933,11 +2075,10 @@ namespace Funke {
 		const std::string& filterLower)
 	{
 		if (SectionVisible(SettingsCategory::Graphics, "Render Backend", filterLower)) {
-		if (SettingsSectionHeader("Render Backend", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"Render Backend", filterLower, RenderBackendLabel(project.ActiveRenderBackend)}; section) {
 
-			ImGui::SetNextItemWidth(220.0f);
-			if (ImGui::BeginCombo("Rendering API", RenderBackendLabel(project.ActiveRenderBackend))) {
+			EditorUI::BeginSettingsRow("Rendering API");
+			if (ImGui::BeginCombo("##Value", RenderBackendLabel(project.ActiveRenderBackend))) {
 				for (const RenderBackendOption& option : k_RenderBackendOptions) {
 					const bool selected = option.Backend == project.ActiveRenderBackend;
 					const bool supported = IsRenderBackendSupportedOnHost(option.Backend);
@@ -1957,6 +2098,7 @@ namespace Funke {
 				}
 				ImGui::EndCombo();
 			}
+			EditorUI::EndSettingsRow();
 			EditorUI::Tooltip(
 				"Which native API Dawn (WebGPU) uses at runtime. The\n"
 				"choice is applied when the engine requests its GPU\n"
@@ -1972,15 +2114,13 @@ namespace Funke {
 				"    at startup; the log line says exactly which\n"
 				"    backend was requested.");
 
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Render Backend")
 
 		if (SectionVisible(SettingsCategory::Graphics, "Runtime Quality", filterLower)) {
-		if (SettingsSectionHeader("Runtime Quality", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"Runtime Quality", filterLower}; section) {
 			bool graphicsChanged = false;
-			graphicsChanged |= ImGui::SliderFloat(
+			graphicsChanged |= SettingsSliderFloat(
 				"Render Scale", &project.Graphics.RenderScale,
 				GraphicsSettings::MinRenderScale, GraphicsSettings::MaxRenderScale, "%.2f",
 				ImGuiSliderFlags_AlwaysClamp);
@@ -1988,17 +2128,17 @@ namespace Funke {
 
 			const char* upscaleLabels[] = { "Point", "Linear" };
 			int upscale = static_cast<int>(project.Graphics.UpscaleFilter);
-			if (ImGui::Combo("Upscale Filter", &upscale, upscaleLabels, IM_ARRAYSIZE(upscaleLabels))) {
+			if (SettingsCombo("Upscale Filter", &upscale, upscaleLabels, IM_ARRAYSIZE(upscaleLabels))) {
 				project.Graphics.UpscaleFilter = static_cast<UpscaleFilterMode>(upscale);
 				graphicsChanged = true;
 			}
 
-			graphicsChanged |= ImGuiUtils::Switch(
+			graphicsChanged |= EditorUI::SettingsSwitch(
 				"Enable Post-Processing", &project.Graphics.PostProcessingEnabled);
 
 			const char* postQualityLabels[] = { "Low", "Medium", "High" };
 			int postQuality = static_cast<int>(project.Graphics.PostProcessingQuality);
-			if (ImGui::Combo("Post-Processing Quality", &postQuality,
+			if (SettingsCombo("Post-Processing Quality", &postQuality,
 				postQualityLabels, IM_ARRAYSIZE(postQualityLabels))) {
 				project.Graphics.PostProcessingQuality =
 					static_cast<PostProcessingQualityLevel>(postQuality);
@@ -2007,7 +2147,7 @@ namespace Funke {
 
 			const char* particleQualityLabels[] = { "Off", "Low", "Medium", "High" };
 			int particleQuality = static_cast<int>(project.Graphics.ParticleQuality);
-			if (ImGui::Combo("Particle Quality", &particleQuality,
+			if (SettingsCombo("Particle Quality", &particleQuality,
 				particleQualityLabels, IM_ARRAYSIZE(particleQualityLabels))) {
 				project.Graphics.ParticleQuality = static_cast<ParticleQualityLevel>(particleQuality);
 				graphicsChanged = true;
@@ -2015,7 +2155,7 @@ namespace Funke {
 
 			const char* textureQualityLabels[] = { "Full", "Half", "Quarter" };
 			int textureQuality = static_cast<int>(project.Graphics.TextureQuality);
-			if (ImGui::Combo("Texture Quality", &textureQuality,
+			if (SettingsCombo("Texture Quality", &textureQuality,
 				textureQualityLabels, IM_ARRAYSIZE(textureQualityLabels))) {
 				project.Graphics.TextureQuality = static_cast<TextureQualityLevel>(textureQuality);
 				graphicsChanged = true;
@@ -2025,7 +2165,7 @@ namespace Funke {
 
 			const char* anisotropyLabels[] = { "Off", "2x", "4x", "8x", "16x" };
 			int anisotropy = static_cast<int>(project.Graphics.AnisotropicFiltering);
-			if (ImGui::Combo("Anisotropic Filtering", &anisotropy,
+			if (SettingsCombo("Anisotropic Filtering", &anisotropy,
 				anisotropyLabels, IM_ARRAYSIZE(anisotropyLabels))) {
 				project.Graphics.AnisotropicFiltering = static_cast<AnisotropicFilteringLevel>(anisotropy);
 				graphicsChanged = true;
@@ -2035,7 +2175,7 @@ namespace Funke {
 
 			const char* antiAliasingLabels[] = { "Off", "FXAA", "MSAA 4x" };
 			int antiAliasing = static_cast<int>(project.Graphics.AntiAliasing);
-			if (ImGui::Combo("Anti-Aliasing", &antiAliasing,
+			if (SettingsCombo("Anti-Aliasing", &antiAliasing,
 				antiAliasingLabels, IM_ARRAYSIZE(antiAliasingLabels))) {
 				project.Graphics.AntiAliasing = static_cast<AntiAliasingMode>(antiAliasing);
 				graphicsChanged = true;
@@ -2047,7 +2187,7 @@ namespace Funke {
 			ImGui::BeginDisabled(project.Graphics.AntiAliasing != AntiAliasingMode::FXAA);
 			const char* antiAliasingQualityLabels[] = { "Low", "Medium", "High" };
 			int antiAliasingQuality = static_cast<int>(project.Graphics.AntiAliasingQuality);
-			if (ImGui::Combo("Anti-Aliasing Quality", &antiAliasingQuality,
+			if (SettingsCombo("Anti-Aliasing Quality", &antiAliasingQuality,
 				antiAliasingQualityLabels, IM_ARRAYSIZE(antiAliasingQualityLabels))) {
 				project.Graphics.AntiAliasingQuality = static_cast<AntiAliasingQualityLevel>(antiAliasingQuality);
 				graphicsChanged = true;
@@ -2058,37 +2198,35 @@ namespace Funke {
 				changed = true;
 				RenderSettings::Apply(project.Graphics);
 			}
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Runtime Quality")
 
 		if (EngineModules::IsActive(EngineModule::ThreeD) && SectionVisible(SettingsCategory::Graphics, "3D Rendering", filterLower)) {
-		if (SettingsSectionHeader("3D Rendering", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"3D Rendering", filterLower}; section) {
 			bool graphicsChanged = false;
 
 			const char* shadowLabels[] = { "Off", "Low (1024)", "Medium (2048)", "High (4096)" };
 			int shadowQuality = static_cast<int>(project.Graphics.ShadowQuality);
-			if (ImGui::Combo("Shadow Quality", &shadowQuality, shadowLabels, IM_ARRAYSIZE(shadowLabels))) {
+			if (SettingsCombo("Shadow Quality", &shadowQuality, shadowLabels, IM_ARRAYSIZE(shadowLabels))) {
 				project.Graphics.ShadowQuality = static_cast<ShadowQualityLevel>(shadowQuality);
 				graphicsChanged = true;
 			}
 			EditorUI::Tooltip("Shadow map resolution of the main Directional Light.");
 
-			graphicsChanged |= ImGui::DragFloat("Shadow Distance", &project.Graphics.ShadowDistance, 0.5f,
+			graphicsChanged |= SettingsDragFloat("Shadow Distance", &project.Graphics.ShadowDistance, 0.5f,
 				GraphicsSettings::MinShadowDistance, GraphicsSettings::MaxShadowDistance, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 			EditorUI::Tooltip("World units from the camera that receive directional shadows; smaller is sharper.");
 
-			graphicsChanged |= ImGui::SliderInt("Max Lights", &project.Graphics.MaxLights,
+			graphicsChanged |= SettingsSliderInt("Max Lights", &project.Graphics.MaxLights,
 				GraphicsSettings::MinMaxLights, GraphicsSettings::MaxMaxLights, "%d", ImGuiSliderFlags_AlwaysClamp);
 			EditorUI::Tooltip("Lights per frame: directional lights first, then the point and spot lights nearest the camera.");
 
-			graphicsChanged |= ImGui::DragFloat("Exposure", &project.Graphics.Exposure, 0.01f,
+			graphicsChanged |= SettingsDragFloat("Exposure", &project.Graphics.Exposure, 0.01f,
 				GraphicsSettings::MinExposure, GraphicsSettings::MaxExposure, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 
 			const char* toneMappingLabels[] = { "None", "Reinhard", "ACES" };
 			int toneMapping = static_cast<int>(project.Graphics.ToneMapping);
-			if (ImGui::Combo("Tone Mapping", &toneMapping, toneMappingLabels, IM_ARRAYSIZE(toneMappingLabels))) {
+			if (SettingsCombo("Tone Mapping", &toneMapping, toneMappingLabels, IM_ARRAYSIZE(toneMappingLabels))) {
 				project.Graphics.ToneMapping = static_cast<ToneMappingMode>(toneMapping);
 				graphicsChanged = true;
 			}
@@ -2097,21 +2235,20 @@ namespace Funke {
 				changed = true;
 				RenderSettings::Apply(project.Graphics);
 			}
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("3D Rendering")
 
 		if (SectionVisible(SettingsCategory::Graphics, "Animation", filterLower)) {
-		if (SettingsSectionHeader("Animation", filterLower)) {
-			ImGui::Indent(8);
-			bool graphicsChanged = ImGuiUtils::Switch("Distance Rate", &project.Graphics.AnimationDistanceRateEnabled);
+		if (SettingsSection section{"Animation", filterLower,
+			project.Graphics.AnimationDistanceRateEnabled ? "Distance rate enabled" : "Every frame"}; section) {
+			bool graphicsChanged = EditorUI::SettingsSwitch("Distance Rate", &project.Graphics.AnimationDistanceRateEnabled);
 			EditorUI::Tooltip("Animators and Skinned Mesh Renderers whose Distance Rate is Project Setting update less often far "
 				"from the game camera; the skipped time is added to their next update.");
 			ImGui::BeginDisabled(!project.Graphics.AnimationDistanceRateEnabled);
-			graphicsChanged |= ImGui::DragFloat("Half Rate From", &project.Graphics.AnimationHalfRateDistance, 0.5f,
+			graphicsChanged |= SettingsDragFloat("Half Rate From", &project.Graphics.AnimationHalfRateDistance, 0.5f,
 				0.0f, GraphicsSettings::MaxAnimationRateDistance, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 			EditorUI::Tooltip("World units from the camera from which animations update every 2nd frame (30 of 60 fps).");
-			graphicsChanged |= ImGui::DragFloat("Quarter Rate From", &project.Graphics.AnimationQuarterRateDistance, 0.5f,
+			graphicsChanged |= SettingsDragFloat("Quarter Rate From", &project.Graphics.AnimationQuarterRateDistance, 0.5f,
 				0.0f, GraphicsSettings::MaxAnimationRateDistance, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 			EditorUI::Tooltip("World units from the camera from which animations update every 4th frame.");
 			ImGui::EndDisabled();
@@ -2119,13 +2256,11 @@ namespace Funke {
 				changed = true;
 				RenderSettings::Apply(project.Graphics);
 			}
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Animation")
 
 		if (SectionVisible(SettingsCategory::Graphics, "Default Font", filterLower)) {
-		if (SettingsSectionHeader("Default Font", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"Default Font", filterLower}; section) {
 			constexpr const char* k_DefaultFontPickerKey = "ProjectSettings.DefaultFont";
 			if (auto pending = ReferencePicker::ConsumeSelection(k_DefaultFontPickerKey); pending) {
 				uint64_t pickedId = ParsePickerAssetId(*pending);
@@ -2153,19 +2288,16 @@ namespace Funke {
 				changed = true;
 			}
 
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Default Font")
 
 		if (SectionVisible(SettingsCategory::Graphics, "Font Baking", filterLower)) {
-		if (SettingsSectionHeader("Font Baking", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"Font Baking", filterLower}; section) {
 
 			// Bake-step: 0 = adaptive ladder, N = snap every N px. Applied live so
 			// the change takes effect without a restart.
 			int bakeStep = project.FontBakeStep;
-			ImGui::SetNextItemWidth(220.0f);
-			if (ImGui::SliderInt("Bake size step", &bakeStep, 0, 32,
+			if (SettingsSliderInt("Bake size step", &bakeStep, 0, 32,
 				bakeStep == 0 ? "Adaptive" : "%d px", ImGuiSliderFlags_AlwaysClamp)) {
 				project.FontBakeStep = bakeStep;
 				FontManager::SetBakeStep(bakeStep);
@@ -2178,8 +2310,7 @@ namespace Funke {
 				"but in-between sizes are scaled from the nearest baked size.");
 
 			int budgetMB = project.FontAtlasBudgetMB;
-			ImGui::SetNextItemWidth(220.0f);
-			if (ImGui::SliderInt("Atlas memory budget", &budgetMB, 0, 512,
+			if (SettingsSliderInt("Atlas memory budget", &budgetMB, 0, 512,
 				budgetMB == 0 ? "Unlimited" : "%d MB", ImGuiSliderFlags_AlwaysClamp)) {
 				project.FontAtlasBudgetMB = budgetMB;
 				FontManager::SetAtlasMemoryBudgetMB(budgetMB);
@@ -2190,7 +2321,6 @@ namespace Funke {
 				"least-recently-used baked sizes are evicted (and re-baked on demand).\n"
 				"0 = unlimited (atlases accumulate until the scene reloads).");
 
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Font Baking")
 	}
@@ -2199,13 +2329,11 @@ namespace Funke {
 		const std::string& filterLower)
 	{
 		if (SectionVisible(SettingsCategory::Physics, "Physics World", filterLower)) {
-		if (SettingsSectionHeader("Physics World", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"Physics World", filterLower, std::to_string(project.PhysicsTickRate) + " Hz"}; section) {
 
 			// Apply immediately while persisting the per-run default; shared bounds match Time's clamp.
 			int hz = project.PhysicsTickRate;
-			ImGui::SetNextItemWidth(220.0f);
-			if (ImGui::SliderInt("Tick rate", &hz,
+			if (SettingsSliderInt("Tick rate", &hz,
 				FunkeProject::k_MinPhysicsHz, FunkeProject::k_MaxPhysicsHz,
 				"%d Hz", ImGuiSliderFlags_AlwaysClamp)) {
 				project.PhysicsTickRate = hz;
@@ -2221,7 +2349,6 @@ namespace Funke {
 				"Play; scripts can still override it at runtime via\n"
 				"Time.fixedDeltaTime.");
 
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Physics World")
 	}
@@ -2230,8 +2357,7 @@ namespace Funke {
 		const std::string& filterLower)
 	{
 		if (SectionVisible(SettingsCategory::Branding, "Splash Screen", filterLower)) {
-		if (SettingsSectionHeader("Splash Screen", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"Splash Screen", filterLower, project.SplashScreen.Enabled ? "Enabled" : "Disabled"}; section) {
 			constexpr const char* k_SplashPickerKey = "ProjectSettings.SplashImage";
 
 			if (auto pending = ReferencePicker::ConsumeSelection(k_SplashPickerKey); pending) {
@@ -2252,16 +2378,16 @@ namespace Funke {
 				}
 			}
 
-			changed |= ImGuiUtils::Switch("Enabled##Splash", &project.SplashScreen.Enabled);
+			changed |= EditorUI::SettingsSwitch("Enabled##Splash", &project.SplashScreen.Enabled);
 			EditorUI::Tooltip("When off, the runtime loads the startup scene immediately with no splash.");
 
 			if (project.SplashScreen.Enabled) {
 				ImGui::Spacing();
-				changed |= ImGui::SliderFloat("Duration (s)##Splash",
+				changed |= SettingsSliderFloat("Duration (s)##Splash",
 					&project.SplashScreen.DurationSeconds, 0.5f, 10.0f, "%.2f");
-				changed |= ImGui::SliderFloat("Fade In (s)##Splash",
+				changed |= SettingsSliderFloat("Fade In (s)##Splash",
 					&project.SplashScreen.FadeInSeconds, 0.0f, 3.0f, "%.2f");
-				changed |= ImGui::SliderFloat("Fade Out (s)##Splash",
+				changed |= SettingsSliderFloat("Fade Out (s)##Splash",
 					&project.SplashScreen.FadeOutSeconds, 0.0f, 3.0f, "%.2f");
 
 				ImGui::Spacing();
@@ -2270,7 +2396,7 @@ namespace Funke {
 					project.SplashScreen.BackgroundG,
 					project.SplashScreen.BackgroundB,
 				};
-				if (ImGui::ColorEdit3("Background##Splash", bg)) {
+				if (SettingsColor("Background##Splash", bg)) {
 					project.SplashScreen.BackgroundR = bg[0];
 					project.SplashScreen.BackgroundG = bg[1];
 					project.SplashScreen.BackgroundB = bg[2];
@@ -2282,13 +2408,13 @@ namespace Funke {
 					project.SplashScreen.FontColorG,
 					project.SplashScreen.FontColorB,
 				};
-				if (ImGui::ColorEdit3("Font Color##Splash", fontColor)) {
+				if (SettingsColor("Font Color##Splash", fontColor)) {
 					project.SplashScreen.FontColorR = fontColor[0];
 					project.SplashScreen.FontColorG = fontColor[1];
 					project.SplashScreen.FontColorB = fontColor[2];
 					changed = true;
 				}
-				if (ImGui::DragFloat("Font Size##Splash", &project.SplashScreen.FontSize,
+				if (SettingsDragFloat("Font Size##Splash", &project.SplashScreen.FontSize,
 						0.5f, 6.0f, 96.0f, "%.0f px")) {
 					if (project.SplashScreen.FontSize < 1.0f) project.SplashScreen.FontSize = 1.0f;
 					changed = true;
@@ -2403,13 +2529,11 @@ namespace Funke {
 					"settings, drawn on top of the editor for the\n"
 					"FadeIn + Duration + FadeOut window.");
 			}
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Splash Screen")
 
 		if (SectionVisible(SettingsCategory::Branding, "App Icon", filterLower)) {
-		if (SettingsSectionHeader("App Icon", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"App Icon", filterLower, project.AppIconPath.empty() ? "Funke default" : "Custom icon"}; section) {
 
 			constexpr const char* k_AppIconPickerKey = "ProjectSettings.AppIcon";
 
@@ -2504,13 +2628,11 @@ namespace Funke {
 				ImGui::EndGroup();
 			}
 
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("App Icon")
 
 		if (SectionVisible(SettingsCategory::Branding, "Cursors", filterLower)) {
-		if (SettingsSectionHeader("Cursors", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"Cursors", filterLower}; section) {
 
 			auto resolveProjectRelativeCursor = [&](const std::string& rel) -> std::string {
 				std::filesystem::path p(rel);
@@ -2646,7 +2768,6 @@ namespace Funke {
 				"with an Interactable component (Button / Slider / etc.).\n"
 				"Falls back to the default cursor when unset.");
 
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Cursors")
 	}
@@ -2655,8 +2776,7 @@ namespace Funke {
 		const std::string& filterLower)
 	{
 		if (SectionVisible(SettingsCategory::Build, "Engine Modules", filterLower)) {
-		if (SettingsSectionHeader("Engine Modules", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"Engine Modules", filterLower}; section) {
 			// Managed next to packages so a package that needs a module can enable it; shown here read-only.
 			std::string enabled;
 			for (EngineModule module : k_AllEngineModules) {
@@ -2667,15 +2787,14 @@ namespace Funke {
 			ImGui::TextUnformatted(("Enabled: " + (enabled.empty() ? std::string("none (UI only)") : enabled)).c_str());
 			ImGui::TextDisabled("Add or remove Funke.2D and Funke.3D in the Package Manager.");
 			if (ImGui::Button("Open Package Manager")) {
-				m_ShowPackageManager = true;
+				OpenPanel("Package Manager", m_ShowPackageManager);
 			}
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Engine Modules")
 
 		if (SectionVisible(SettingsCategory::Build, "Executable", filterLower)) {
-		if (SettingsSectionHeader("Executable", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"Executable", filterLower,
+			project.ExecutableName.empty() ? project.Name : project.ExecutableName}; section) {
 			ImGui::TextUnformatted("Output Name:");
 			char exeBuf[256];
 			std::string current = project.ExecutableName.empty() ? project.Name : project.ExecutableName;
@@ -2710,36 +2829,32 @@ namespace Funke {
 				changed = true;
 			}
 			ImGui::TextDisabled("Surfaced to scripts as Application.Company.");
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Executable")
 
 		if (SectionVisible(SettingsCategory::Build, "Diagnostics", filterLower)) {
-		if (SettingsSectionHeader("Diagnostics", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"Diagnostics", filterLower}; section) {
 			bool showStats = project.ResolveShowRuntimeStats();
-			if (ImGuiUtils::Switch("Show runtime stats overlay (F6)", &showStats)) {
+			if (EditorUI::SettingsSwitch((std::string("Show runtime stats overlay (") + PlatformShortcuts::k_StatsLabel + ")").c_str(), &showStats)) {
 				project.ShowRuntimeStats = showStats;
 				changed = true;
 			}
 			bool showLogs = project.ResolveShowRuntimeLogs();
-			if (ImGuiUtils::Switch("Show runtime log overlay (F7)", &showLogs)) {
+			if (EditorUI::SettingsSwitch((std::string("Show runtime log overlay (") + PlatformShortcuts::k_LogsLabel + ")").c_str(), &showLogs)) {
 				project.ShowRuntimeLogs = showLogs;
 				changed = true;
 			}
 			bool devConsole = project.ResolveDevConsole();
-			if (ImGuiUtils::Switch("Dev console (` key, physics debug on F8)", &devConsole)) {
+			if (EditorUI::SettingsSwitch((std::string("Dev console (` key, physics debug on ") + PlatformShortcuts::k_PhysicsDebugLabel + ")").c_str(), &devConsole)) {
 				project.DevConsole = devConsole;
 				changed = true;
 			}
 			ImGui::TextDisabled("Default: on for Debug and Development builds, off for Release builds.");
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Diagnostics")
 
 		if (SectionVisible(SettingsCategory::Build, "ECS Entity Bits", filterLower)) {
-		if (SettingsSectionHeader("ECS Entity Bits", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"ECS Entity Bits", filterLower}; section) {
 			ImGui::TextUnformatted("Entity ID bits:");
 			const char* entityBitsLabels[] = {
 				"16 bits  (65,535 entities / 65,536 versions)",
@@ -3034,7 +3149,6 @@ namespace Funke {
 				ImGui::EndPopup();
 			}
 
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("ECS Entity Bits")
 	}
@@ -3043,8 +3157,7 @@ namespace Funke {
 		const std::string& filterLower)
 	{
 		if (SectionVisible(SettingsCategory::Editor, "Asset Browser", filterLower)) {
-		if (SettingsSectionHeader("Asset Browser", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"Asset Browser", filterLower}; section) {
 			constexpr const char* k_AssetSuffixLabels[] = {
 				"Asset 1",
 				"Asset (1)",
@@ -3055,20 +3168,18 @@ namespace Funke {
 			if (assetSuffixIndex < 0 || assetSuffixIndex >= IM_ARRAYSIZE(k_AssetSuffixLabels)) {
 				assetSuffixIndex = static_cast<int>(FunkeProject::EditorEntityNameSuffixStyle::ParenthesizedNumber);
 			}
-			ImGui::SetNextItemWidth(180.0f);
-			if (ImGui::Combo("Duplicate suffix##AssetDuplicateSuffix", &assetSuffixIndex, k_AssetSuffixLabels, IM_ARRAYSIZE(k_AssetSuffixLabels))) {
+			if (SettingsCombo("Duplicate suffix##AssetDuplicateSuffix", &assetSuffixIndex, k_AssetSuffixLabels, IM_ARRAYSIZE(k_AssetSuffixLabels))) {
 				project.EditorAssetDuplicateSuffix =
 					static_cast<FunkeProject::EditorEntityNameSuffixStyle>(assetSuffixIndex);
 				changed = true;
 			}
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Asset Browser")
 
 		if (SectionVisible(SettingsCategory::Editor, "Entities", filterLower)) {
-		if (SettingsSectionHeader("Entities", filterLower)) {
-			ImGui::Indent(8);
-			changed |= ImGuiUtils::Switch("Ensure unique editor-created names", &project.EditorEnsureUniqueEntityNames);
+		if (SettingsSection section{"Entities", filterLower,
+			project.EditorEnsureUniqueEntityNames ? "Unique names" : "Duplicate names allowed"}; section) {
+			changed |= EditorUI::SettingsSwitch("Ensure unique editor-created names", &project.EditorEnsureUniqueEntityNames);
 			EditorUI::Tooltip(
 				"When on, entities created through editor UI actions,\n"
 				"shortcuts, paste, duplicate, and asset drops get a\n"
@@ -3085,25 +3196,22 @@ namespace Funke {
 			if (suffixIndex < 0 || suffixIndex >= IM_ARRAYSIZE(k_StyleLabels)) {
 				suffixIndex = static_cast<int>(FunkeProject::EditorEntityNameSuffixStyle::ParenthesizedNumber);
 			}
-			ImGui::SetNextItemWidth(180.0f);
-			if (ImGui::Combo("Duplicate suffix##EntityNameSuffix", &suffixIndex, k_StyleLabels, IM_ARRAYSIZE(k_StyleLabels))) {
+			if (SettingsCombo("Duplicate suffix##EntityNameSuffix", &suffixIndex, k_StyleLabels, IM_ARRAYSIZE(k_StyleLabels))) {
 				project.EditorEntityNameSuffix =
 					static_cast<FunkeProject::EditorEntityNameSuffixStyle>(suffixIndex);
 				changed = true;
 			}
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Entities")
 
 		if (SectionVisible(SettingsCategory::Editor, "Serialization", filterLower)) {
-		if (SettingsSectionHeader("Serialization", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"Serialization", filterLower,
+			project.AssetSerializationFormat == FunkeProject::ProjectAssetSerializationFormat::Binary ? "Binary" : "JSON"}; section) {
 			constexpr const char* k_FormatLabels[] = { "JSON", "Binary" };
 			int formatIndex = project.AssetSerializationFormat == FunkeProject::ProjectAssetSerializationFormat::Binary ? 1 : 0;
-			ImGui::SetNextItemWidth(180.0f);
 			// Disabled mid-conversion so the format can't be flipped again while the worker is running.
 			ImGui::BeginDisabled(m_ReserializeState != 0);
-			if (ImGui::Combo("Asset format", &formatIndex, k_FormatLabels, IM_ARRAYSIZE(k_FormatLabels))) {
+			if (SettingsCombo("Asset format", &formatIndex, k_FormatLabels, IM_ARRAYSIZE(k_FormatLabels))) {
 				const auto nextFormat = formatIndex == 1
 					? FunkeProject::ProjectAssetSerializationFormat::Binary
 					: FunkeProject::ProjectAssetSerializationFormat::Json;
@@ -3121,13 +3229,11 @@ namespace Funke {
 				"Controls how scene and prefab assets are written on disk.\n"
 				"Changing this rewrites existing .scene and .prefab files\n"
 				"only when the selected format actually changes.");
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Serialization")
 
 		if (SectionVisible(SettingsCategory::Editor, "Scripting", filterLower)) {
-		if (SettingsSectionHeader("Scripting", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"Scripting", filterLower}; section) {
 			Scene* activeScene = SceneManager::GetActiveScene();
 			ScriptSystem* scriptSys = (activeScene && activeScene->HasSystem<ScriptSystem>())
 				? activeScene->GetSystem<ScriptSystem>()
@@ -3146,7 +3252,6 @@ namespace Funke {
 				ImGui::SameLine();
 				ImGui::TextDisabled("Compiling...");
 			}
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Scripting")
 	}
@@ -3155,8 +3260,7 @@ namespace Funke {
 		bool& outGlobalSystemsChanged, const std::string& filterLower)
 	{
 		if (SectionVisible(SettingsCategory::Systems, "Global Systems", filterLower)) {
-		if (SettingsSectionHeader("Global Systems", filterLower)) {
-			ImGui::Indent(8);
+		if (SettingsSection section{"Global Systems", filterLower}; section) {
 			EditorUI::SearchField("##GlobalSystemSearch", m_GlobalSystemSearchBuffer,
 				sizeof(m_GlobalSystemSearchBuffer), "Search global systems...");
 
@@ -3187,7 +3291,7 @@ namespace Funke {
 						return registration.ClassName == scriptEntry.ClassName;
 					});
 				bool active = it != project.GlobalSystems.end() ? it->Active : false;
-				if (ImGuiUtils::Switch(scriptEntry.ClassName.c_str(), &active)) {
+				if (EditorUI::SettingsSwitch(scriptEntry.ClassName.c_str(), &active)) {
 					if (it == project.GlobalSystems.end()) {
 						project.GlobalSystems.push_back({ scriptEntry.ClassName, active });
 					}
@@ -3205,14 +3309,13 @@ namespace Funke {
 				}
 				bool active = registration.Active;
 				std::string label = registration.ClassName + " (missing)";
-				if (ImGuiUtils::Switch(label.c_str(), &active)) {
+				if (EditorUI::SettingsSwitch(label.c_str(), &active)) {
 					registration.Active = active;
 					changed = true;
 					outGlobalSystemsChanged = true;
 				}
 			}
 
-			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Global Systems")
 	}

@@ -47,7 +47,7 @@ project "Funke-Launcher"
     dependson(FunkeManagedDependencies({ "Funke-ScriptCore", "Funke-PackageTool" }))
     if os.target() ~= "windows" then dependson { "Funke-CLI" } end
 
-    postbuildcommands { CopyFunkeAssets, CopyFunkeEngineDll, CopySDL3SharedLib, CopyGladDll, CopyEngineSdk }
+    postbuildcommands { CopyFunkeAssets, CopyFunkeEngineDll, CopySDL3SharedLib, CopyEngineSdk }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
     ApplyFunkeProfilerRuntime()
 

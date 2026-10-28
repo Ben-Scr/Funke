@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "registry": "https://raw.githubusercontent.com/Ben-Scr/Funke-PackageRegistry/main/index.json",
+  "packages": [
+    {
+      "name": "Funke.AudioMixer",
+      "version": "1.1.1",
+      "description": "Volume groups (Master, Music, SFX and your own) with mute, fades, snapshots, saved settings and slider binding.",
+      "downloadUrl": "https://github.com/Ben-Scr/Funke-PackageRegistry/releases/download/Funke.AudioMixer-1.1.1/Funke.AudioMixer-1.1.1.zip",
+      "sha256": "04ce34765c7cf5c0f7e8c7cc6d88ad167e258a9606585281e8dc733de6e8dcf5",
+      "sizeBytes": 28160,
+      "license": "MIT",
+      "layers": [
+        "csharp"
+      ],
+      "dependencies": [],
+      "id": "audio_mixer"
+    },
+    {
+      "name": "Funke.Cryptography",
+      "version": "0.1.0",
+      "description": "Authenticated AES-GCM encryption, PBKDF2 password keys, hashing/HMAC, and a bias-free secure RNG.",
+      "downloadUrl": "https://github.com/Ben-Scr/Funke-PackageRegistry/releases/download/Funke.Cryptography-0.1.0/Funke.Cryptography-0.1.0.zip",
+      "sha256": "1998a922608f192abf12d39bb16bce88394160543a3dc788b2a1252386ef01cb",
+      "sizeBytes": 29155,
+      "license": "MIT",
+      "layers": [
+        "csharp"
+      ],
+      "dependencies": [],
+      "id": "cryptography"
+    },
+    {
+      "name": "Funke.Serialization",
+      "version": "0.1.1",
+      "description": "JSON / encrypted JSON / ZIP helpers under the Funke.Serialization namespace.",
+      "downloadUrl": "https://github.com/Ben-Scr/Funke-PackageRegistry/releases/download/Funke.Serialization-0.1.1/Funke.Serialization-0.1.1.zip",
+      "sha256": "26511fbda37425211bd7bfb17b9791407e1e57de8f2b25af6823ac8ed6a7e991",
+      "sizeBytes": 3864,
+      "license": "MIT",
+      "layers": [
+        "csharp"
+      ],
+      "dependencies": [],
+      "id": "serialization"
+    },
+    {
+      "name": "Funke.Tween",
+      "version": "1.0.0",
+      "description": "DOTween-style tweens: move, rotate, scale, fade and color with easing, sequences, loops, callbacks, shakes and punches.",
+      "downloadUrl": "https://github.com/Ben-Scr/Funke-PackageRegistry/releases/download/Funke.Tween-1.0.0/Funke.Tween-1.0.0.zip",
+      "sha256": "aa75f9ccd470648fa2eb5019f615d24785ad25e1484b3c3313a7dfe51f44433f",
+      "sizeBytes": 30004,
+      "license": "MIT",
+      "layers": [
+        "csharp"
+      ],
+      "dependencies": [],
+      "id": "tween"
+    },
+    {
+      "name": "Funke.Networking",
+      "version": "1.0.0",
+      "description": "Multiplayer for every platform: host/server/client over UDP and WebSocket (browsers), typed messages, LAN discovery, networked objects and interpolated transforms.",
+      "downloadUrl": "https://github.com/Ben-Scr/Funke-PackageRegistry/releases/download/Funke.Networking-1.0.0/Funke.Networking-1.0.0.zip",
+      "sha256": "dbf998c5af625076f2c99f9f08b932d110d7169c66ec4673a93b39512c83c956",
+      "sizeBytes": 152772,
+      "license": "MIT",
+      "layers": [
+        "csharp"
+      ],
+      "dependencies": [],
+      "id": "networking"
+    }
+  ]
+}

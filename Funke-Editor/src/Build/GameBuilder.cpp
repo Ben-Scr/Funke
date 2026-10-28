@@ -1295,6 +1295,7 @@ namespace Funke::GameBuilder {
 			FunkePackageInstaller::EnumerateAll(project->RootDirectory);
 		std::vector<std::string> engineNativePackageTargets;
 		std::vector<const FunkePackageManifest*> projectLocalPackageManifests;
+		bool hasManagedPackages = false;
 		for (const std::string& packageName : project->Packages) {
 			if (!BuildOutputSafety::IsSafePathSegment(packageName)) {
 				FNK_ERROR_TAG("Build", "Unsafe package identifier '{}'.", packageName);
@@ -1312,6 +1313,7 @@ namespace Funke::GameBuilder {
 			if (!manifest->IsEngine) {
 				projectLocalPackageManifests.push_back(&*manifest);
 			}
+			hasManagedPackages = hasManagedPackages || manifest->HasCSharpLayer;
 			if (manifest->IsEngine && (manifest->HasNativeLayer || manifest->HasNativeStandaloneLayer)) {
 				engineNativePackageTargets.push_back("Pkg." + packageName + ".Native");
 			}
@@ -1371,7 +1373,8 @@ namespace Funke::GameBuilder {
 		}
 #endif
 
-		if (!projectLocalPackageManifests.empty()) {
+		// Bundled C# packages also need workspace outputs for the export's configuration.
+		if (!projectLocalPackageManifests.empty() || hasManagedPackages) {
 			report(0.09f, "Compiling project packages");
 			const FunkeProject::RegenerateResult packageGeneration =
 				FunkeProject::RegeneratePackageWorkspaceForProject(project->RootDirectory);
@@ -1815,12 +1818,7 @@ namespace Funke::GameBuilder {
 		{
 			if (!funkeAssetsSrc.empty() && std::filesystem::exists(funkeAssetsSrc)) {
 				const auto shipsBuiltIn = [&](const std::filesystem::path& rel) {
-					if (assetPlan.Valid) return assetPlan.KeepsBuiltInFile(rel);
-					std::string key = Path::ToUtf8(rel);
-					std::replace(key.begin(), key.end(), '\\', '/');
-					std::transform(key.begin(), key.end(), key.begin(),
-						[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-					return !key.starts_with("textures/editor/");
+					return assetPlan.KeepsBuiltInFile(rel);
 				};
 				const FilteredCopyResult funkeAssetsCopy = CopyDirIncrementalFiltered(funkeAssetsSrc, contentDir / "FunkeAssets", shipsBuiltIn);
 				if (!funkeAssetsCopy.Succeeded()) {
@@ -2035,6 +2033,10 @@ namespace Funke::GameBuilder {
 			std::filesystem::remove_all(contentDir, contentError);
 			std::filesystem::path artifactRelative = platformResult.Artifact.lexically_relative(outDir);
 			if (artifactRelative.empty() || *artifactRelative.begin() == "..") artifactRelative = platformResult.Artifact.filename();
+			if (targetPlatform == BuildPlatform::Web) {
+				result.WebEntryPath = Path::ToUtf8(finalOutDir / artifactRelative);
+				result.WebPreviewScript = Path::ToUtf8(platformPackage->Builder.parent_path() / "preview.py");
+			}
 			FNK_INFO_TAG("Build", "{} artifact: {}", FunkeBuildProfile::PlatformDisplayName(targetPlatform),
 				Path::ToUtf8(finalOutDir / artifactRelative));
 		}

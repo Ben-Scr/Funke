@@ -916,6 +916,28 @@ namespace Funke {
 		return LoadSceneByName(sceneName.c_str(), true);
 	}
 
+	static uint64_t BeginSceneLoadAsync(const std::string& name, bool additive, uint64_t guid = 0) {
+		return ProjectSceneLoader::LoadAsync(name, additive,
+			[name, guid](uint64_t operationId, const SceneLoadResult& result) {
+				const auto scene = result.LoadedScene.lock();
+				const int status = result.Status == SceneLoadStatus::Cancelled ? -1 : result && scene ? 1 : 0;
+				ScriptEngine::RaiseSceneLoadCompleted(operationId, status, scene ? scene->GetName().c_str() : name.c_str(), guid);
+			});
+	}
+
+	static uint64_t Funke_Scene_BeginLoadAsync(const char* sceneName, int additive) {
+		return BeginSceneLoadAsync(sceneName ? sceneName : "", additive != 0);
+	}
+
+	static uint64_t Funke_Scene_BeginLoadByGuidAsync(uint64_t sceneGuid, int additive) {
+		const std::string name = ResolveSceneNameForGuid(sceneGuid);
+		return name.empty() ? 0 : BeginSceneLoadAsync(name, additive != 0, sceneGuid);
+	}
+
+	static int Funke_Scene_CancelLoadAsync(uint64_t operationId) {
+		return SceneManager::CancelSceneLoad(operationId) ? 1 : 0;
+	}
+
 	static void Funke_Scene_UnloadByGuid(uint64_t sceneGuid) {
 		const std::string sceneName = ResolveSceneNameForGuid(sceneGuid);
 		if (sceneName.empty()) {
@@ -964,62 +986,12 @@ namespace Funke {
 		return scene && scene->IsLoaded() ? scene.get() : nullptr;
 	}
 
+	static int QueryEntitiesFilteredInScene(
+		Scene* scene, const char* withComponents, const char* withoutComponents,
+		const char* mustHaveComponents, int enableFilter, uint64_t* outEntityIDs, int maxOut);
+
 	static int QueryEntitiesInScene(Scene* scene, const char* componentNames, uint64_t* outEntityIDs, int maxOut) {
-		if (!scene || !componentNames || !outEntityIDs || maxOut <= 0) return 0;
-		if (!scene->IsLoaded()) return 0;
-
-		// string_view walk avoids the two-heap-allocations-per-token cost of the old std::string + substr approach in this hot per-frame path.
-		std::vector<QueryComponentRequirement> requirements;
-		const std::string_view names(componentNames);
-		size_t start = 0;
-		while (start <= names.size()) {
-			size_t end = names.find('|', start);
-			if (end == std::string_view::npos) end = names.size();
-			const std::string_view token = names.substr(start, end - start);
-			if (!token.empty()) {
-				QueryComponentRequirement requirement;
-				if (!BuildComponentRequirement(token, requirement)) return 0;
-				requirements.push_back(std::move(requirement));
-			}
-			if (end == names.size()) break;
-			start = end + 1;
-		}
-		if (requirements.empty()) return 0;
-
-		int count = 0;
-		auto& registry = scene->GetRegistry();
-
-		// Fast path for single native component: iterate its typed storage (O(matchingEntities)) instead of the registry-wide walk (O(totalEntities × types)).
-		if (requirements.size() == 1
-			&& requirements[0].Native
-			&& requirements[0].Native->storageHash != 0)
-		{
-			const auto* storage = registry.storage(requirements[0].Native->storageHash);
-			if (!storage) return 0;
-			for (auto entityHandle : *storage) {
-				if (count < maxOut)
-					outEntityIDs[count] = GetEntityScriptId(*scene, entityHandle);
-				count++;
-			}
-			return count;
-		}
-
-		auto view = registry.view<entt::entity>();
-		for (EntityHandle entityHandle : view) {
-			if (!registry.valid(entityHandle)) continue;
-
-			Entity entity = scene->GetEntity(entityHandle);
-			bool match = true;
-			for (const auto& requirement : requirements) {
-				if (!requirement.Has(*scene, entityHandle, entity)) { match = false; break; }
-			}
-			if (match) {
-				if (count < maxOut)
-					outEntityIDs[count] = GetEntityScriptId(*scene, entityHandle);
-				count++;
-			}
-		}
-		return count;
+		return QueryEntitiesFilteredInScene(scene, componentNames, nullptr, nullptr, 0, outEntityIDs, maxOut);
 	}
 
 	static int Funke_Scene_QueryEntities(const char* componentNames, uint64_t* outEntityIDs, int maxOut) {
@@ -1203,41 +1175,73 @@ namespace Funke {
 		if (!ParseComponentNames(mustHaveComponents, mustHaveInfos)) return 0;
 		if (withInfos.empty() && mustHaveInfos.empty()) return 0;
 
-		int count = 0;
 		auto& registry = scene->GetRegistry();
-		auto view = registry.view<entt::entity>();
+		const entt::sparse_set* driverStorage = nullptr;
+		DynamicComponentStorage::SceneView driverDynamicView;
+		size_t driverSize = 0;
+		bool hasDriver = false;
 
-		for (auto entityHandle : view) {
-			if (!registry.valid(entityHandle)) continue;
+		auto considerStorage = [&](const entt::sparse_set* storage) {
+			if (!storage || storage->empty()) return false;
+			if (!hasDriver || storage->size() < driverSize) {
+				driverStorage = storage;
+				driverSize = storage->size();
+				hasDriver = true;
+			}
+			return true;
+		};
+		auto considerRequirements = [&](const std::vector<QueryComponentRequirement>& requirements) {
+			for (const auto& requirement : requirements) {
+				const ComponentInfo* info = requirement.Native;
+				if (!info) {
+					if (!considerStorage(registry.storage(entt::type_hash<ScriptComponent>::value()))) return false;
+				} else if (info->dynamicStorage) {
+					// Dynamic registrations have a hash, but their rows live outside EnTT.
+					auto view = info->dynamicStorage->GetSceneView(registry);
+					if (view.Size() == 0) return false;
+					if (!hasDriver || view.Size() < driverSize) {
+						driverStorage = nullptr;
+						driverSize = view.Size();
+						driverDynamicView = std::move(view);
+						hasDriver = true;
+					}
+				} else if (info->storageHash != 0) {
+					if (!considerStorage(registry.storage(info->storageHash))) return false;
+				}
+			}
+			return true;
+		};
+		if (!considerRequirements(withInfos) || !considerRequirements(mustHaveInfos)) return 0;
+		if (enableFilter == 2 && !considerStorage(registry.storage(entt::type_hash<DisabledTag>::value()))) return 0;
+
+		int count = 0;
+		auto collect = [&](EntityHandle entityHandle) {
+			if (!registry.valid(entityHandle)) return;
+			if (enableFilter == 1 && registry.all_of<DisabledTag>(entityHandle)) return;
+			if (enableFilter == 2 && !registry.all_of<DisabledTag>(entityHandle)) return;
 
 			Entity entity = scene->GetEntity(entityHandle);
-
-			// Enable filter: 1 = enabled only, 2 = disabled only
-			if (enableFilter == 1 && registry.all_of<DisabledTag>(entityHandle)) continue;
-			if (enableFilter == 2 && !registry.all_of<DisabledTag>(entityHandle)) continue;
-
-			// WITH: entity must have all these components
-			bool match = true;
 			for (const auto& requirement : withInfos) {
-				if (!requirement.Has(*scene, entityHandle, entity)) { match = false; break; }
+				if (!requirement.Has(*scene, entityHandle, entity)) return;
 			}
-			if (!match) continue;
-
-			// MUST HAVE (With<>): entity must have these too
 			for (const auto& requirement : mustHaveInfos) {
-				if (!requirement.Has(*scene, entityHandle, entity)) { match = false; break; }
+				if (!requirement.Has(*scene, entityHandle, entity)) return;
 			}
-			if (!match) continue;
-
-			// WITHOUT: entity must NOT have any of these
 			for (const auto& requirement : withoutInfos) {
-				if (requirement.Has(*scene, entityHandle, entity)) { match = false; break; }
+				if (requirement.Has(*scene, entityHandle, entity)) return;
 			}
-			if (!match) continue;
-
 			if (count < maxOut)
 				outEntityIDs[count] = GetEntityScriptId(*scene, entityHandle);
 			count++;
+		};
+
+		if (driverStorage) {
+			for (EntityHandle handle : *driverStorage) collect(handle);
+		} else if (hasDriver) {
+			for (EntityHandle handle : driverDynamicView.Entities()) collect(handle);
+		} else {
+			// Custom requirements without an exposed pool still use their membership predicate.
+			for (EntityHandle handle : registry.view<entt::entity>()) collect(handle);
 		}
 		return count;
 	}
@@ -3820,6 +3824,9 @@ namespace Funke {
 		// ── Scene load-by-GUID (appended for binary compat) ──
 		b.Scene_LoadByGuid           = FNK_GUARDED_BINDING(Funke_Scene_LoadByGuid);
 		b.Scene_LoadAdditiveByGuid   = FNK_GUARDED_BINDING(Funke_Scene_LoadAdditiveByGuid);
+		b.Scene_BeginLoadAsync       = FNK_GUARDED_BINDING(Funke_Scene_BeginLoadAsync);
+		b.Scene_BeginLoadByGuidAsync = FNK_GUARDED_BINDING(Funke_Scene_BeginLoadByGuidAsync);
+		b.Scene_CancelLoadAsync      = FNK_GUARDED_BINDING(Funke_Scene_CancelLoadAsync);
 		b.Scene_UnloadByGuid         = FNK_GUARDED_BINDING(Funke_Scene_UnloadByGuid);
 		b.Scene_SetActiveByGuid      = FNK_GUARDED_BINDING(Funke_Scene_SetActiveByGuid);
 		b.Scene_ReloadByGuid         = FNK_GUARDED_BINDING(Funke_Scene_ReloadByGuid);

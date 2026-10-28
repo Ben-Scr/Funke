@@ -2019,14 +2019,6 @@ namespace Funke {
 
 		const float dt = Time::GetDeltaTime();
 
-		// Drain pending coroutine continuations BEFORE user OnUpdate runs.
-		// An `await WaitForSeconds(0.1f)` whose timer expired last frame
-		// resumes here, in the same logical slot as OnUpdate, matching
-		// Unity's Update-then-Yield ordering.
-		if (managedRuntimeReady) {
-			ScriptEngine::PumpCoroutinesUpdate(dt);
-		}
-
 		// Snapshot: user Update() may add/remove ScriptComponents and entities.
 		const auto entities = CollectScriptEntities(scene);
 
@@ -2160,11 +2152,6 @@ namespace Funke {
 		ScriptSceneScope sceneScope(scene);
 		const bool managedRuntimeReady = ScriptEngine::IsInitialized();
 		const float fixedDt = Application::GetInstance() ? Time::GetFixedDeltaTime() : 0.0f;
-
-		// Drain WaitForFixedUpdate continuations before user OnFixedUpdate.
-		if (managedRuntimeReady) {
-			ScriptEngine::PumpCoroutinesFixedUpdate();
-		}
 
 		const auto entities = CollectScriptEntities(scene);
 		for (EntityHandle entity : entities)

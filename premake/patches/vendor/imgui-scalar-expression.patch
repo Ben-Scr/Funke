@@ -26,18 +26,19 @@ index cb73b8dcbbfa4f7dfcc91108561e3c84af08ce2f..1160dcb24d7ac83289af67113cd0ce2c
              viewport->LastNameHash = 0;
              viewport->LastPlatformPos = viewport->LastPlatformSize = ImVec2(FLT_MAX, FLT_MAX); // By clearing those we'll enforce a call to Platform_SetWindowPos/Size below, before Platform_ShowWindow (FIXME: Is that necessary?)
 diff --git a/imgui.h b/imgui.h
-index c32a6baf15dea7332cffda09721d272a4a23f673..d4db17b9b0e8118d83d8e57f79cc27b98b294ece 100644
+index c32a6baf15dea7332cffda09721d272a4a23f673..32bc6b723606e3e0779cabd00e3631b4bdb7e13c 100644
 --- a/imgui.h
 +++ b/imgui.h
-@@ -292,6 +292,7 @@ typedef int     (*ImGuiInputTextCallback)(ImGuiInputTextCallbackData* data);
+@@ -292,6 +292,8 @@ typedef int     (*ImGuiInputTextCallback)(ImGuiInputTextCallbackData* data);
  typedef void    (*ImGuiSizeCallback)(ImGuiSizeCallbackData* data);              // Callback function for ImGui::SetNextWindowSizeConstraints()
  typedef void*   (*ImGuiMemAllocFunc)(size_t sz, void* user_data);               // Function signature for ImGui::SetAllocatorFunctions()
  typedef void    (*ImGuiMemFreeFunc)(void* ptr, void* user_data);                // Function signature for ImGui::SetAllocatorFunctions()
 +typedef bool    (*ImGuiScalarExpressionFn)(const char* buf, ImGuiDataType data_type, void* p_data); // [Funke patch] Signature for ImGui::SetScalarExpressionHook()
++typedef bool    (*ImGuiColorPickerFooterFn)(float* col, ImGuiColorEditFlags flags); // [Funke patch] Return true when the footer changes the color; col is valid only during the callback.
  
  // ImVec2: 2D vector used to store positions, sizes etc. [Compile-time configurable type]
  // - This is a frequently used type in the API. Consider using IM_VEC2_CLASS_EXTRA to create implicit cast from/to our preferred type.
-@@ -1081,6 +1082,12 @@ namespace ImGui
+@@ -1081,6 +1083,13 @@ namespace ImGui
      IMGUI_API void          SetStateStorage(ImGuiStorage* storage);                             // replace current window storage with our own (if you want to manipulate it yourself, typically clear subsection of it)
      IMGUI_API ImGuiStorage* GetStateStorage();
  
@@ -46,12 +47,13 @@ index c32a6baf15dea7332cffda09721d272a4a23f673..d4db17b9b0e8118d83d8e57f79cc27b9
 +    // numeric parsing; return true (and write *p_data) to override parsing, false to fall back.
 +    // ImGuiScalarExpressionFn is declared at global scope alongside ImGuiMemAllocFunc.
 +    IMGUI_API void          SetScalarExpressionHook(ImGuiScalarExpressionFn fn);
++    IMGUI_API void          SetColorPickerFooterHook(ImGuiColorPickerFooterFn fn);              // [Funke patch] Register/unregister with the host context lifetime; NULL removes the footer.
 +
      // Text Utilities
      IMGUI_API ImVec2        CalcTextSize(const char* text, const char* text_end = NULL, bool hide_text_after_double_hash = false, float wrap_width = -1.0f);
  
 diff --git a/imgui_widgets.cpp b/imgui_widgets.cpp
-index abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9..ca15cf9066d4c2fdda0e17feca5b7fb06bc5a38b 100644
+index abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9..01f5956656b0bbea6f49f0bbf5fdf318bd9ee516 100644
 --- a/imgui_widgets.cpp
 +++ b/imgui_widgets.cpp
 @@ -2359,6 +2359,11 @@ void ImGui::DataTypeApplyOp(ImGuiDataType data_type, int op, void* output, const
@@ -79,3 +81,29 @@ index abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9..ca15cf9066d4c2fdda0e17feca5b7fb0
      while (ImCharIsBlankA(*buf))
          buf++;
      if (!buf[0])
+@@ -6043,6 +6054,9 @@ bool ImGui::ColorEdit4(const char* label, float col[4], ImGuiColorEditFlags flag
+     return value_changed;
+ }
+ 
++static ImGuiColorPickerFooterFn GColorPickerFooterHook = NULL;
++void ImGui::SetColorPickerFooterHook(ImGuiColorPickerFooterFn fn) { GColorPickerFooterHook = fn; }
++
+ bool ImGui::ColorPicker3(const char* label, float col[3], ImGuiColorEditFlags flags)
+ {
+     float col4[4] = { col[0], col[1], col[2], 1.0f };
+@@ -6312,6 +6326,15 @@ bool ImGui::ColorPicker4(const char* label, float col[4], ImGuiColorEditFlags fl
+         }
+     }
+ 
++    const ImGuiColorEditFlags preview_flags = ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoOptions;
++    if (GColorPickerFooterHook && (flags & preview_flags) != preview_flags)
++    {
++        SetCursorScreenPos(ImVec2(picker_pos.x, window->DC.CursorPos.y));
++        BeginDisabled(is_readonly);
++        value_changed |= GColorPickerFooterHook(col, flags);
++        EndDisabled();
++    }
++
+     if (value_changed)
+     {
+         if (flags & ImGuiColorEditFlags_InputRGB)

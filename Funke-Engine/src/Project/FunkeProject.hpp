@@ -74,6 +74,7 @@ namespace Funke {
 		ScreenOrientation MobileOrientation = ScreenOrientation::Auto;
 		bool BuildResizable = true;
 		bool BuildRunInBackground = true;
+		bool BuildVsync = true;
 
 		std::string BuildAspect = "Free Aspect";
 
@@ -114,7 +115,7 @@ namespace Funke {
 			return scenes;
 		}
 
-		// Empty == legacy "scan everything" mode.
+		// Empty disables optional packages.
 		std::vector<std::string> Packages;
 
 		// Engine feature modules the project uses ("Funke.2D", "Funke.3D"). The editor offers only these

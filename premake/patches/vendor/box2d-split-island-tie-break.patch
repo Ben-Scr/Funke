@@ -1,0 +1,17 @@
+diff --git a/src/solver.c b/src/solver.c
+index 03f0e80e71d6bf9d14b64b87e6bb39bfb466c8e6..759cadc28da742c5261e6fc19a3ba433e35d30ed 100644
+--- a/src/solver.c
++++ b/src/solver.c
+@@ -675,9 +675,10 @@ static void b2FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
+ 		else if ( island->constraintRemoveCount > 0 )
+ 		{
+ 			// body wants to sleep but its island needs splitting first
+-			if ( body->sleepTime > taskContext->splitSleepTime )
++			if ( body->sleepTime > taskContext->splitSleepTime ||
++				 ( body->sleepTime == taskContext->splitSleepTime && body->islandId > taskContext->splitIslandId ) )
+ 			{
+-				// pick the sleepiest candidate
++				// Match the global tie-break before work stealing can discard an equal-time candidate.
+ 				taskContext->splitIslandId = body->islandId;
+ 				taskContext->splitSleepTime = body->sleepTime;
+ 			}

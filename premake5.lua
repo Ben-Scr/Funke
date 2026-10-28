@@ -116,7 +116,7 @@ workspace "Funke"
 
     filter "system:linux"
         -- Every Linux artifact ultimately links into libFunke-Engine.so, so all
-        -- static deps (ImGui, Box2D, glad, ...) must be position-
+        -- static deps (ImGui, Box2D, ...) must be position-
         -- independent. Set it workspace-wide so no dependency is missed (Tracy
         -- already sets it locally; this is harmless there).
         pic "On"
@@ -662,12 +662,6 @@ end
 -- of its global state. Each consumer ships it alongside its binary.
 CopySDL3SharedLib = CopySharedLibFile(path.join(ROOT_DIR, SDL3Layout.SharedLibPath),
     "%{cfg.targetdir}/" .. SDL3Layout.SharedLibFileName)
-
--- Glad has been removed from the engine build (the render backend
--- handles its own GPU context). CopyGladDll stays defined as a no-op so
--- consumer postbuild lists referencing it don't have to be edited in
--- lockstep.
-CopyGladDll = ""
 
 -- Tracy is process-wide and ships only beside profiler-enabled development binaries.
 if FunkeProfiler and FunkeProfiler.Enabled then

@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "Gui/EditorDockLayout.hpp"
+#include "Gui/EditorShortcuts.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -121,4 +122,132 @@ TEST_CASE("EditorDockLayout sees saved docking before the panels exist") {
 	CHECK_FALSE(EditorDockLayout::HasDockedPanels(dockspaceId));
 	ImGui::LoadIniSettingsFromMemory(ini.c_str(), ini.size());
 	CHECK(EditorDockLayout::HasDockedPanels(dockspaceId));
+}
+
+TEST_CASE("EditorShortcuts use Command for ImGui shortcuts on macOS") {
+	HeadlessImGui imgui;
+	ImGuiIO& io = ImGui::GetIO();
+	io.ConfigMacOSXBehaviors = true;
+	bool command = true;
+	SUBCASE("Physical Command activates the primary shortcut modifier") {}
+	SUBCASE("Physical Control does not activate Command shortcuts") { command = false; }
+	io.AddKeyEvent(command ? ImGuiMod_Super : ImGuiMod_Ctrl, true);
+	io.AddKeyEvent(command ? ImGuiKey_LeftSuper : ImGuiKey_LeftCtrl, true);
+	io.AddKeyEvent(ImGuiKey_S, true);
+	imgui.Frame("Shortcuts");
+	CHECK(io.KeyCtrl == command);
+	CHECK(io.KeySuper == !command);
+	CHECK(ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S) == command);
+}
+
+TEST_CASE("EditorShortcuts distinguish rename open delete and navigation") {
+	struct KeyCase {
+		ImGuiKey Key;
+		ImGuiKey Mod;
+		bool Rename = false;
+		bool Open = false;
+		bool Delete = false;
+		bool NavigateUp = false;
+		bool Profiler = false;
+		bool Shift = false;
+	};
+#ifdef FNK_PLATFORM_MACOS
+	constexpr KeyCase cases[] = {
+		{ ImGuiKey_Enter, ImGuiKey_None, true },
+		{ ImGuiKey_KeypadEnter, ImGuiKey_None, true },
+		{ ImGuiKey_DownArrow, ImGuiMod_Super, false, true },
+		{ ImGuiKey_Backspace, ImGuiMod_Super, false, false, true },
+		{ ImGuiKey_UpArrow, ImGuiMod_Super, false, false, false, true },
+		{ ImGuiKey_P, ImGuiMod_Super, false, false, false, false, true, true },
+		{ ImGuiKey_Enter, ImGuiMod_Super },
+		{ ImGuiKey_Backspace, ImGuiKey_None },
+		{ ImGuiKey_Backspace, ImGuiMod_Ctrl },
+		{ ImGuiKey_F2, ImGuiKey_None },
+		{ ImGuiKey_Delete, ImGuiKey_None, false, false, true },
+		{ ImGuiKey_KeypadDecimal, ImGuiKey_None, false, false, true },
+	};
+#else
+	constexpr KeyCase cases[] = {
+		{ ImGuiKey_F2, ImGuiKey_None, true },
+		{ ImGuiKey_Enter, ImGuiKey_None, false, true },
+		{ ImGuiKey_KeypadEnter, ImGuiKey_None, false, true },
+		{ ImGuiKey_Delete, ImGuiKey_None, false, false, true },
+		{ ImGuiKey_KeypadDecimal, ImGuiKey_None, false, false, true },
+		{ ImGuiKey_Backspace, ImGuiKey_None, false, false, false, true },
+		{ ImGuiKey_F6, ImGuiMod_Ctrl, false, false, false, false, true },
+		{ ImGuiKey_Enter, ImGuiMod_Ctrl },
+		{ ImGuiKey_F2, ImGuiMod_Shift },
+		{ ImGuiKey_Delete, ImGuiMod_Ctrl },
+	};
+#endif
+	for (const KeyCase& keyCase : cases) {
+		CAPTURE(static_cast<int>(keyCase.Key));
+		CAPTURE(static_cast<int>(keyCase.Mod));
+		CAPTURE(keyCase.Shift);
+		HeadlessImGui imgui;
+		ImGuiIO& io = ImGui::GetIO();
+#ifdef FNK_PLATFORM_MACOS
+		io.ConfigMacOSXBehaviors = true;
+#else
+		io.ConfigMacOSXBehaviors = false;
+#endif
+		if (keyCase.Mod != ImGuiKey_None) io.AddKeyEvent(keyCase.Mod, true);
+		if (keyCase.Shift) io.AddKeyEvent(ImGuiMod_Shift, true);
+		io.AddKeyEvent(keyCase.Key, true);
+		imgui.Frame("Shortcuts");
+		CHECK(EditorShortcuts::IsRenamePressed() == keyCase.Rename);
+		CHECK(EditorShortcuts::IsOpenAssetPressed() == keyCase.Open);
+		CHECK(EditorShortcuts::IsDeletePressed() == keyCase.Delete);
+		CHECK(ImGui::IsKeyChordPressed(EditorShortcuts::k_NavigateUp) == keyCase.NavigateUp);
+		CHECK(ImGui::IsKeyChordPressed(EditorShortcuts::k_Profiler) == keyCase.Profiler);
+		io.DeltaTime = io.KeyRepeatDelay + io.KeyRepeatRate;
+		imgui.Frame("Shortcuts");
+		CHECK(ImGui::IsKeyPressed(keyCase.Key, true));
+		CHECK_FALSE(EditorShortcuts::IsRenamePressed());
+		CHECK_FALSE(EditorShortcuts::IsOpenAssetPressed());
+		CHECK_FALSE(EditorShortcuts::IsDeletePressed());
+	}
+}
+
+TEST_CASE("EditorShortcuts rename opens an input before Enter commits the new name") {
+	HeadlessImGui imgui;
+	ImGuiIO& io = ImGui::GetIO();
+#ifdef FNK_PLATFORM_MACOS
+	io.ConfigMacOSXBehaviors = true;
+#else
+	io.ConfigMacOSXBehaviors = false;
+#endif
+	char name[64] = "Old Name";
+	bool renaming = false;
+	bool active = false;
+	auto frame = [&]() {
+		ImGui::NewFrame();
+		ImGui::Begin("Rename");
+		if (!renaming && !io.WantTextInput && !ImGui::IsAnyItemActive()
+			&& EditorShortcuts::IsRenamePressed()) {
+			renaming = true;
+			ImGui::SetKeyboardFocusHere();
+		}
+		bool committed = false;
+		if (renaming) {
+			committed = ImGui::InputText("##name", name, sizeof(name),
+				ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+			active = ImGui::IsItemActive();
+		}
+		ImGui::End();
+		ImGui::EndFrame();
+		return committed;
+	};
+	frame();
+	io.AddKeyEvent(static_cast<ImGuiKey>(EditorShortcuts::k_Rename), true);
+	CHECK_FALSE(frame());
+	REQUIRE(renaming);
+	io.AddKeyEvent(static_cast<ImGuiKey>(EditorShortcuts::k_Rename), false);
+	CHECK_FALSE(frame());
+	REQUIRE(active);
+	io.AddInputCharactersUTF8("New Name");
+	CHECK_FALSE(frame());
+	CHECK(std::string(name) == "New Name");
+	io.AddKeyEvent(ImGuiKey_Enter, true);
+	CHECK(frame());
 }

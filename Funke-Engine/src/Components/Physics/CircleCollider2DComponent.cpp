@@ -133,6 +133,7 @@ namespace Funke {
 		SetRadius(m_LocalRadius, scene);
 		SetFriction(m_Friction);
 		SetBounciness(m_Bounciness);
+		SetDensity(m_Density);
 		SetLayer(m_Layer);
 		SetRegisterContacts(m_RegisterContacts);
 		SetSensor(m_Sensor, scene);

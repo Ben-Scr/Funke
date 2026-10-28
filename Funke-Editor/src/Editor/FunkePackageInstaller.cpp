@@ -12,6 +12,7 @@
 #include <chrono>
 #include <filesystem>
 #include <sstream>
+#include <unordered_set>
 
 namespace Funke {
 
@@ -227,6 +228,14 @@ namespace Funke {
 			appendPackagesFromRoot(std::filesystem::path(projectRootDir), false);
 		}
 
+		std::unordered_set<std::string> projectPackageNames;
+		for (const FunkePackageManifest& manifest : all) {
+			if (!manifest.IsEngine) projectPackageNames.insert(manifest.Name);
+		}
+		std::erase_if(all, [&](const FunkePackageManifest& manifest) {
+			return manifest.IsEngine && projectPackageNames.contains(manifest.Name);
+		});
+
 		std::sort(all.begin(), all.end(), [](const FunkePackageManifest& a, const FunkePackageManifest& b) {
 			if (a.IsEngine != b.IsEngine) {
 				return a.IsEngine > b.IsEngine;
@@ -234,7 +243,9 @@ namespace Funke {
 			return a.Name < b.Name;
 		});
 		all.erase(std::unique(all.begin(), all.end(), [](const FunkePackageManifest& a, const FunkePackageManifest& b) {
-			return a.Name == b.Name && a.IsEngine == b.IsEngine;
+			if (a.Name != b.Name || a.IsEngine != b.IsEngine) return false;
+			std::error_code ec;
+			return std::filesystem::equivalent(Path::FromUtf8(a.PackageDir), Path::FromUtf8(b.PackageDir), ec) && !ec;
 		}), all.end());
 
 		return all;
@@ -731,10 +742,9 @@ namespace Funke {
 		std::vector<PackageManifest> converted;
 		converted.reserve(manifests.size());
 		for (const FunkePackageManifest& manifest : manifests) {
-			// EnumerateAll lists engine packages first; the loader treats a name in both roots as one package.
-			const bool seen = std::any_of(converted.begin(), converted.end(),
-				[&](const PackageManifest& existing) { return existing.Name == manifest.Name; });
-			if (!seen) converted.push_back(manifest.ToPackageManifest());
+			const bool overridden = manifest.IsEngine && std::any_of(manifests.begin(), manifests.end(),
+				[&](const FunkePackageManifest& candidate) { return !candidate.IsEngine && candidate.Name == manifest.Name; });
+			if (!overridden) converted.push_back(manifest.ToPackageManifest());
 		}
 		return converted;
 	}

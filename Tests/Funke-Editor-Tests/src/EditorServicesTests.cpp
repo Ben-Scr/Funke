@@ -5,6 +5,7 @@
 #include "Editor/EditorRestart.hpp"
 #include "Editor/ExternalEditor.hpp"
 #include "Scripting/StructFieldBytes.hpp"
+#include "Inspector/ListSelectionCache.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -111,3 +112,35 @@ TEST_CASE("JetBrains IDEs are found in Toolbox 2.x and 1.x installs with their p
 	std::filesystem::remove_all(root);
 }
 #endif
+
+TEST_CASE("Inspector list selection follows visible fields and releases abandoned selections") {
+	PropertyDrawer::ListSelectionCache cache;
+	cache.BeginFrame();
+	auto& selected = cache.Get("scene1/entity1/field");
+	selected.Selected.insert(7);
+	selected.LastClicked = 7;
+	cache.BeginFrame();
+	CHECK(cache.Get("scene1/entity1/field").Selected.contains(7));
+	CHECK(cache.Get("scene1/entity1/field").LastClicked == 7);
+	CHECK(cache.Get("scene2/entity1/field").Selected.empty());
+	CHECK(cache.Size() == 2);
+
+	cache.BeginFrame();
+	cache.Get("scene2/entity1/field");
+	cache.BeginFrame();
+	CHECK(cache.Size() == 1);
+	CHECK(cache.Get("scene1/entity1/field").Selected.empty());
+	CHECK(cache.Get("scene1/entity1/field").LastClicked == -1);
+
+	for (int i = 0; i < 1000; ++i) {
+		cache.BeginFrame();
+		cache.Get("entity/" + std::to_string(i)).Selected.insert(i);
+		CHECK(cache.Size() <= 3);
+	}
+	cache.BeginFrame();
+	cache.BeginFrame();
+	CHECK(cache.Size() == 0);
+	cache.Get("final").Selected.insert(1);
+	cache.Clear();
+	CHECK(cache.Size() == 0);
+}

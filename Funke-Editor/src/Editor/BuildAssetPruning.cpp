@@ -235,7 +235,7 @@ namespace Funke::BuildAssetPruning {
 						m_ByGuid[guid].push_back(it->second);
 					}
 				}
-				if (const auto it = m_ByExactKey.find(std::string(k_BuiltInPrefix) + "fonts/googlesans-regular.ttf");
+				if (const auto it = m_ByExactKey.find(std::string(k_BuiltInPrefix) + "fonts/ibmplexsanscondensed-regular.ttf");
 					it != m_ByExactKey.end()) {
 					m_ByGuid[k_DefaultFontAssetId].push_back(it->second);
 				}
@@ -368,7 +368,7 @@ namespace Funke::BuildAssetPruning {
 					std::error_code entryEc;
 					const std::string rel = RelKey(it->path().lexically_relative(root));
 					if (it->is_directory(entryEc)) {
-						if (where == Domain::BuiltIn && rel == "textures/editor") it.disable_recursion_pending();
+						if (where == Domain::BuiltIn && (rel == "textures/editor" || rel == "localization")) it.disable_recursion_pending();
 						else m_Directories.insert(prefix + rel);
 						continue;
 					}
@@ -426,17 +426,38 @@ namespace Funke::BuildAssetPruning {
 				}
 			}
 
-			// Loose data files (level JSON, CSV, ...) may name assets by GUID or quoted path.
 			void ScanRelativeUris(std::string_view text, std::string_view key) {
-				const size_t slash = key.find_last_of('/');
-				const std::string directory = slash == std::string_view::npos ? std::string{} : std::string(key.substr(0, slash + 1));
-				for (size_t i = text.find("\"uri\""); i != std::string_view::npos; i = text.find("\"uri\"", i + 5)) {
-					const size_t open = text.find('"', text.find(':', i + 5));
-					if (open == std::string_view::npos) break;
-					const size_t close = text.find('"', open + 1);
-					if (close == std::string_view::npos) break;
-					const std::string_view uri = text.substr(open + 1, close - open - 1);
-					if (!uri.starts_with("data:")) MatchReference(directory + std::string(uri), false);
+				Json::Value root;
+				if (!Json::TryParse(text, root) || !root.IsObject()) return;
+				const auto directory = Path::FromUtf8(key).parent_path();
+				for (const char* memberName : { "buffers", "images" }) {
+					const Json::Value* members = root.FindMember(memberName);
+					if (!members || !members->IsArray()) continue;
+					for (const Json::Value& member : members->GetArray()) {
+						const Json::Value* value = member.FindMember("uri");
+						if (!value || !value->IsString()) continue;
+						const std::string uri = value->AsStringOr();
+						if (uri.empty() || uri.starts_with("data:")) continue;
+						std::string decoded;
+						for (size_t i = 0; i < uri.size(); ++i) {
+							if (uri[i] == '%' && i + 2 < uri.size()) {
+								unsigned int byte = 0;
+								const char* end = uri.data() + i + 3;
+								const auto parsed = std::from_chars(uri.data() + i + 1, end, byte, 16);
+								if (parsed.ec == std::errc{} && parsed.ptr == end) {
+									decoded.push_back(static_cast<char>(byte));
+									i += 2;
+									continue;
+								}
+							}
+							decoded.push_back(uri[i]);
+						}
+						const auto relative = Path::FromUtf8(decoded);
+						if (relative.has_root_path()) continue;
+						const auto resolved = (directory / relative).lexically_normal();
+						if (resolved.empty() || *resolved.begin() == "..") continue;
+						MatchReference(Path::ToUtf8(resolved), false);
+					}
 				}
 			}
 
@@ -536,7 +557,9 @@ namespace Funke::BuildAssetPruning {
 	}
 
 	bool Plan::KeepsBuiltInFile(const std::filesystem::path& relative) const {
-		return BuiltInFiles.contains(RelKey(relative));
+		const std::string key = RelKey(relative);
+		if (key.starts_with("textures/editor/") || key.starts_with("localization/")) return false;
+		return !Valid || BuiltInFiles.contains(key);
 	}
 
 	Plan ComputeShippedAssets(const Inputs& inputs) {
@@ -544,16 +567,15 @@ namespace Funke::BuildAssetPruning {
 		Reachability reach;
 		if (!reach.IndexFiles(inputs, plan.Error)) return plan;
 
-		// Loaded by fixed path, never by GUID (FontManager, ImGuiFonts, TextureManager, splash, Localization).
+		// Loaded by fixed path, never by GUID (FontManager, ImGuiFonts, TextureManager, splash).
 		const std::string builtIn(k_BuiltInPrefix);
-		reach.KeepKey(builtIn + "fonts/googlesans-regular.ttf");
+		reach.KeepKey(builtIn + "fonts/ibmplexsanscondensed-regular.ttf");
 		reach.KeepPrefix(builtIn + "fonts/notosanscjk/");
 		for (const char* name : { "square", "pixel", "circle", "capsule", "isometricdiamond",
 			"hexagonflattop", "hexagonpointedtop", "9sliced", "invisible" }) {
 			reach.KeepKey(builtIn + "textures/default/" + name + ".png");
 		}
 		for (const char* logo : { "icon.png", "funke64.png" }) reach.KeepKey(builtIn + "textures/" + logo);
-		reach.KeepPrefix(builtIn + "localization/");
 		// The game's string tables: GameLocalization scans the folder, nothing references them by GUID or path.
 		reach.KeepPrefix("localization/");
 		reach.KeepWhere(&IsLicenseNotice);

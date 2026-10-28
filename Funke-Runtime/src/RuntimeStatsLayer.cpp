@@ -2,6 +2,7 @@
 #include "RuntimeImGuiHost.hpp"
 
 #include "Core/Application.hpp"
+#include "Core/PlatformShortcuts.hpp"
 #include "Core/Window.hpp"
 #include "Collections/Viewport.hpp"
 
@@ -30,11 +31,7 @@ namespace Funke {
 	void RuntimeStatsLayer::OnUpdate(Application&, float) {
 		if (!m_ImGuiAcquired || !RuntimeImGuiHost::IsInitialized()) return;
 
-		// F6: bare key (no modifier) — keeps the binding distinct from
-		// Ctrl+F6 used by the runtime profiler panel so power users can
-		// have both open simultaneously without clobbering each other.
-		ImGuiIO& io = ImGui::GetIO();
-		if (!io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F6, false)) {
+		if (PlatformShortcuts::IsPressed(PlatformShortcuts::k_Stats)) {
 			m_Show = !m_Show;
 		}
 	}

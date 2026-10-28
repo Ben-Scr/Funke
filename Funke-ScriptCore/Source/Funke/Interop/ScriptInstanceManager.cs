@@ -472,6 +472,20 @@ internal static class ScriptInstanceManager
     }
 
     [UnmanagedCallersOnly]
+    public static unsafe void SceneLoadCompleted(ulong operationId, int status, byte* sceneName, ulong sceneGuid)
+    {
+        try { SceneManager.CompleteAsyncLoad(operationId, status, PtrToString(sceneName), sceneGuid); }
+        catch (Exception ex) { ScriptExceptionLog.Report("SceneManager.LoadSceneAsync completion", ex); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void PumpSceneLoadRequests()
+    {
+        try { SceneManager.PumpSceneLoadRequests(); }
+        catch (Exception ex) { ScriptExceptionLog.Report("SceneManager.LoadSceneAsync cancellation", ex); }
+    }
+
+    [UnmanagedCallersOnly]
     public static unsafe void RaiseBeforeSceneUnloaded(byte* sceneName)
     {
         try { SceneManager.RaiseBeforeSceneUnloaded(PtrToString(sceneName)); }
@@ -580,6 +594,7 @@ internal static class ScriptInstanceManager
     {
         try
         {
+            SceneManager.CancelPendingLoads();
             ScriptExceptionLog.Flush();
             PlayerPrefs.SaveQuietly();
 
@@ -1086,8 +1101,9 @@ internal static class ScriptInstanceManager
     {
         try
         {
-            s_SceneSystems.TryRemove(handle, out _);
             s_SceneSystemAwoken.TryRemove(handle, out _);
+            if (s_SceneSystems.TryRemove(handle, out var system))
+                system._CancelPendingCoroutines();
         }
         catch (Exception ex)
         {
@@ -1150,6 +1166,8 @@ internal static class ScriptInstanceManager
     public static void InvokeSceneSystemDestroy(int handle)
     {
         if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
+        try { system._CancelPendingCoroutines(); }
+        catch (Exception ex) { Log.Error($"Exception cancelling scene system coroutines: {ex}"); }
         try { system.OnDestroy(); }
         catch (Exception ex) { ScriptExceptionLog.Report("SceneSystem.OnDestroy()", ex); }
     }
@@ -1191,7 +1209,15 @@ internal static class ScriptInstanceManager
     }
 
     [UnmanagedCallersOnly]
-    public static void DestroyGlobalSystemInstance(int handle) => s_GlobalSystems.TryRemove(handle, out _);
+    public static void DestroyGlobalSystemInstance(int handle)
+    {
+        try
+        {
+            if (s_GlobalSystems.TryRemove(handle, out var system))
+                system._CancelPendingCoroutines();
+        }
+        catch (Exception ex) { Log.Error($"Exception cancelling global system coroutines: {ex}"); }
+    }
 
     [UnmanagedCallersOnly]
     public static void InvokeGlobalSystemInitialize(int handle)
@@ -1521,10 +1547,21 @@ internal static class ScriptInstanceManager
     // Cancel all coroutines before unload so captured user-ALC types are released for the GC dance in UnloadCurrentUserAssemblyContext.
     private static void CancelAllInstanceCoroutines()
     {
+        SceneManager.CancelPendingLoads();
         foreach (var data in s_Instances.Values)
         {
             try { data.Instance._CancelPendingCoroutines(); }
             catch (Exception ex) { Log.Error($"Exception cancelling coroutines during reload: {ex}"); }
+        }
+        foreach (var system in s_SceneSystems.Values)
+        {
+            try { system._CancelPendingCoroutines(); }
+            catch (Exception ex) { Log.Error($"Exception cancelling scene system coroutines during reload: {ex}"); }
+        }
+        foreach (var system in s_GlobalSystems.Values)
+        {
+            try { system._CancelPendingCoroutines(); }
+            catch (Exception ex) { Log.Error($"Exception cancelling global system coroutines during reload: {ex}"); }
         }
         CoroutineScheduler.Reset();
     }

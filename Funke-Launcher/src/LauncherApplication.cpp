@@ -1,6 +1,7 @@
 #include <Funke.hpp>
 
 #include "Core/Application.hpp"
+#include "Localization/Localization.hpp"
 #include <Gui/ImGuiContextLayer.hpp>
 #include <Systems/LauncherLayer.hpp>
 #include <Core/Version.hpp>
@@ -61,6 +62,7 @@ public:
 };
 
 Funke::Application* Funke::CreateApplication() {
+	Localization::Initialize();
 	return new LauncherApplication();
 }
 

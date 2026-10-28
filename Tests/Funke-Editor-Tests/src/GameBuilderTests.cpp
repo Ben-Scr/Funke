@@ -1,11 +1,13 @@
 #include <doctest/doctest.h>
 
 #include "Build/GameBuilder.hpp"
+#include "Editor/PlatformBuilder.hpp"
 #include "Project/FunkeBuildProfile.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/SceneSerializer.hpp"
+#include "Utils/Process.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -123,4 +125,57 @@ TEST_CASE("GameBuilder converts scenes, prefabs and data assets between JSON and
 	CHECK(GameBuilder::ConvertSerializedAssets(assets, SceneSerializationFormat::Json) == 2);
 	CHECK_FALSE(SceneSerializer::IsBinarySerializedFile(data));
 	CHECK(File::ReadAllText(data).find("\"Health\"") != std::string::npos);
+}
+
+TEST_CASE("Web preview serves the published entry and reuses its server after a rebuild") {
+	TempProject temp;
+	const std::filesystem::path site = temp.Root / Path::FromUtf8("Web preview Caf\xc3\xa9");
+	std::filesystem::create_directories(site);
+	const std::filesystem::path entry = site / "index.html";
+	REQUIRE(File::WriteAllText(Path::ToUtf8(entry), "first build"));
+	const std::filesystem::path helper = Path::FromUtf8(FunkeProject::GetEngineRootDir())
+		/ "platforms/Funke.Platform.Web/Builder/preview.py";
+	const PlatformBuilder::WebPreview preview = PlatformBuilder::StartWebPreview(helper, entry);
+	INFO(preview.Error);
+	REQUIRE(preview.Error.empty());
+	REQUIRE_FALSE(preview.Url.empty());
+	REQUIRE(Process::IsProcessRunning(preview.ProcessId));
+
+	struct StopPreview {
+		unsigned long Pid;
+		~StopPreview() {
+			std::vector<std::string> command = PlatformBuilder::FindPython();
+			command.insert(command.end(), { "-c", "import os, signal, sys; os.kill(int(sys.argv[1]), signal.SIGTERM)",
+				std::to_string(Pid) });
+			Process::Run(command);
+		}
+	} stop{ preview.ProcessId };
+
+	auto fetch = [&](const std::string& url) {
+		std::vector<std::string> command = PlatformBuilder::FindPython();
+		command.insert(command.end(), { "-c", "import sys, urllib.request; "
+			"print(urllib.request.urlopen(sys.argv[1], timeout=5).read().decode(), end='')", url });
+		return Process::Run(command, {}, std::chrono::seconds(10));
+	};
+	const Process::Result first = fetch(preview.Url);
+	CHECK(first.Succeeded());
+	CHECK(first.Output == "first build");
+
+	REQUIRE(File::WriteAllText(Path::ToUtf8(entry), "rebuilt game"));
+	const PlatformBuilder::WebPreview again = PlatformBuilder::StartWebPreview(helper, entry, preview);
+	CHECK(again.Error.empty());
+	CHECK(again.ProcessId == preview.ProcessId);
+	CHECK(again.Url == preview.Url);
+	const Process::Result rebuilt = fetch(again.Url);
+	CHECK(rebuilt.Succeeded());
+	CHECK(rebuilt.Output == "rebuilt game");
+}
+
+TEST_CASE("Web preview reports a missing entry or platform helper") {
+	TempProject temp;
+	const std::filesystem::path entry = temp.Root / "index.html";
+	const std::filesystem::path helper = temp.Root / "missing-preview.py";
+	CHECK_FALSE(PlatformBuilder::StartWebPreview(helper, entry).Error.empty());
+	REQUIRE(File::WriteAllText(Path::ToUtf8(entry), "game"));
+	CHECK_FALSE(PlatformBuilder::StartWebPreview(helper, entry).Error.empty());
 }

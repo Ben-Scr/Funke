@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <future>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -38,7 +39,6 @@
 #include "Physics/Box2DWorld.hpp"
 #include "Physics/PhysicsSystem2D.hpp"
 #include "Systems/ParticleUpdateSystem.hpp"
-#include "Systems/SpriteAnimationSystem.hpp"
 #include "Systems/TransformHierarchySystem.hpp"
 #endif
 #if FUNKE_WITH_3D
@@ -51,6 +51,22 @@
 
 
 namespace Funke {
+	struct SceneManager::AsyncSceneLoad {
+		struct PreparedFiles {
+			std::vector<Json::Value> Roots;
+			std::string Error;
+		};
+		uint64_t Id = 0;
+		std::string Name;
+		bool Additive = false;
+		bool Cancelled = false;
+		bool Started = false;
+		SceneLoadCompletion Completion;
+		std::vector<SceneDefinition::LoadStep> Steps;
+		std::future<PreparedFiles> Worker;
+		PreparedFiles Prepared;
+	};
+
 	namespace SceneManagerDetail {
 		bool TryCreateDefaultCamera2D(Scene& scene,
 			bool rendererAvailable,
@@ -85,6 +101,7 @@ namespace Funke {
 	}
 
 	namespace {
+		uint64_t g_NextSceneLoadId = 1;
 		template<typename TAction>
 		class ScopeExit {
 		public:
@@ -137,7 +154,6 @@ namespace Funke {
 #if FUNKE_WITH_2D
 			if (config.EnableRenderer2D && with2D) {
 				definition.AddSystem<ParticleUpdateSystem>();
-				definition.AddSystem<SpriteAnimationSystem>();
 			}
 #endif
 #if FUNKE_WITH_3D
@@ -176,6 +192,7 @@ namespace Funke {
 		}
 
 		void PurgeAssetsAfterSceneUnload() {
+			SceneSerializer::PurgeUnusedCachedPrefabRoots(true);
 			// Baked templates hold raw texture/audio handles; the purges below can free them, and a stale handle renders white.
 			PrefabTemplateCache::Get().InvalidateAll();
 
@@ -322,6 +339,116 @@ namespace Funke {
 			return { SceneLoadStatus::NotInitialized, {}, "SceneManager is not available" };
 		}
 		return manager->TryLoadSceneImpl(name);
+	}
+
+	uint64_t SceneManager::LoadSceneAsync(const std::string& name, bool additive, SceneLoadCompletion completion) {
+		if (!Application::IsMainThread()) return 0;
+		SceneManager* manager = TryGet();
+		if (!manager || !manager->m_IsInitialized || manager->m_ShuttingDown) return 0;
+		auto operation = std::make_shared<AsyncSceneLoad>();
+		operation->Id = g_NextSceneLoadId++;
+		operation->Name = name;
+		operation->Additive = additive;
+		operation->Completion = std::move(completion);
+		if (const auto* definition = manager->GetSceneDefinition(name)) {
+			operation->Steps = definition->m_LoadCallbacks;
+			for (const auto& step : operation->Steps) {
+				if (!step.Callback && step.FilePath.empty()) operation->Prepared.Error = "Scene file path is empty";
+			}
+		}
+		else {
+			operation->Prepared.Error = "Scene definition is not registered";
+		}
+		manager->m_AsyncSceneLoads.push_back(operation);
+		return operation->Id;
+	}
+
+	bool SceneManager::CancelSceneLoad(uint64_t operationId) {
+		if (!Application::IsMainThread()) return false;
+		SceneManager* manager = TryGet();
+		if (!manager) return false;
+		for (const auto& operation : manager->m_AsyncSceneLoads) {
+			if (operation->Id == operationId) {
+				operation->Cancelled = true;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void SceneManager::PumpAsyncSceneLoads() {
+		if (m_AsyncSceneLoads.empty() || m_ShuttingDown || m_LoadInProgress || m_ReleaseDepth != 0) return;
+		const auto operation = m_AsyncSceneLoads.front();
+		auto complete = [&](SceneLoadResult result) {
+			std::erase(m_AsyncSceneLoads, operation);
+			if (!operation->Completion) return;
+			try {
+				operation->Completion(operation->Id, result);
+			}
+			catch (const std::exception& e) {
+				FNK_CORE_ERROR_TAG("SceneManager", "Async scene completion failed: {}", e.what());
+			}
+			catch (...) {
+				FNK_CORE_ERROR_TAG("SceneManager", "Async scene completion failed");
+			}
+		};
+		// Keep an in-flight future alive until ready; its destructor would otherwise block this frame.
+		if (operation->Worker.valid() && operation->Worker.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+		if (operation->Cancelled) {
+			complete({ SceneLoadStatus::Cancelled, {}, "Scene loading was cancelled" });
+			return;
+		}
+		if (!operation->Started && operation->Prepared.Error.empty()) {
+			operation->Started = true;
+			std::vector<std::string> paths;
+			for (const auto& step : operation->Steps) paths.push_back(step.Callback ? std::string{} : step.FilePath);
+			const bool hasFile = std::any_of(operation->Steps.begin(), operation->Steps.end(),
+				[](const auto& step) { return !step.Callback; });
+			if (!hasFile) {
+				operation->Prepared.Roots.resize(paths.size());
+				return;
+			}
+#if FNK_PLATFORM_HAS_THREADS
+			try {
+				operation->Worker = std::async(std::launch::async, [paths = std::move(paths)] {
+					AsyncSceneLoad::PreparedFiles prepared;
+					prepared.Roots.resize(paths.size());
+					for (size_t i = 0; i < paths.size(); ++i) {
+						if (!paths[i].empty() && !SceneSerializer::PrepareFile(paths[i], prepared.Roots[i], &prepared.Error)) break;
+					}
+					return prepared;
+				});
+			}
+			catch (const std::exception& e) { operation->Prepared.Error = e.what(); }
+#else
+			operation->Prepared.Error = "Asynchronous scene file loading requires thread support";
+#endif
+			return;
+		}
+		if (operation->Worker.valid()) {
+			try { operation->Prepared = operation->Worker.get(); }
+			catch (const std::exception& e) { operation->Prepared.Error = e.what(); }
+			catch (...) { operation->Prepared.Error = "Scene file preparation failed"; }
+		}
+		if (!operation->Prepared.Error.empty()) {
+			FNK_CORE_ERROR_TAG("SceneManager", "Failed to prepare scene '{}': {}", operation->Name, operation->Prepared.Error);
+			complete({ SceneLoadStatus::LoadCallbackFailed, {}, operation->Prepared.Error });
+			return;
+		}
+		// Remove before activation: script teardown can cancel other requests while this scene is committing.
+		std::erase(m_AsyncSceneLoads, operation);
+		try {
+			const auto result = !operation->Additive && IsSceneLoadedImpl(operation->Name)
+				? TryReloadSceneImpl(operation->Name, false, operation.get())
+				: LoadSceneInternal(operation->Name, operation->Additive, {}, false, std::nullopt, true, false, operation.get());
+			complete(result);
+		}
+		catch (const std::exception& e) { complete({ SceneLoadStatus::LoadCallbackFailed, {}, e.what() }); }
+		catch (...) { complete({ SceneLoadStatus::LoadCallbackFailed, {}, "Asynchronous scene activation failed" }); }
+	}
+
+	void SceneManager::CancelAllAsyncSceneLoads() {
+		for (const auto& operation : m_AsyncSceneLoads) operation->Cancelled = true;
 	}
 
 	SceneLoadResult SceneManager::TryLoadSceneAdditive(const std::string& name) {
@@ -633,6 +760,7 @@ namespace Funke {
 		}
 
 		m_IsInitialized = true;
+		m_ShuttingDown = false;
 		RegisterCoreComponents();
 	}
 
@@ -646,6 +774,16 @@ namespace Funke {
 	}
 
 	void SceneManager::Shutdown() {
+		m_ShuttingDown = true;
+		CancelAllAsyncSceneLoads();
+		auto operations = std::move(m_AsyncSceneLoads);
+		for (const auto& operation : operations) {
+			if (operation->Worker.valid()) operation->Worker.wait();
+			if (operation->Completion) {
+				FUNKE_TRY_CATCH_LOG(operation->Completion(operation->Id,
+					SceneLoadResult{ SceneLoadStatus::Cancelled, {}, "SceneManager is shutting down" }));
+			}
+		}
 		UnloadAllScenesInternal(true, false);
 		m_SuspendedRecoveryStates.clear();
 		m_SceneDefinitions.clear();
@@ -687,7 +825,8 @@ namespace Funke {
 		bool makeActive,
 		std::optional<size_t> insertIndex,
 		bool emitNotifications,
-		bool suspendLifecycle) {
+		bool suspendLifecycle,
+		const AsyncSceneLoad* preparedLoad) {
 		if (!m_IsInitialized) {
 			FNK_CORE_ERROR_TAG("SceneManager", "LoadScene called before SceneManager initialization");
 			return { SceneLoadStatus::NotInitialized, {}, "SceneManager is not initialized" };
@@ -776,9 +915,17 @@ namespace Funke {
 		};
 
 		try {
-			const auto loadCallbacks = definition->m_LoadCallbacks;
-			for (const auto& callback : loadCallbacks) {
-				callback(*newScene);
+			const auto loadCallbacks = preparedLoad ? preparedLoad->Steps : definition->m_LoadCallbacks;
+			for (size_t i = 0; i < loadCallbacks.size(); ++i) {
+				const auto& step = loadCallbacks[i];
+				if (step.Callback) {
+					step.Callback(*newScene);
+				}
+				else if (!(preparedLoad
+					? SceneSerializer::DeserializeScene(*newScene, preparedLoad->Prepared.Roots[i], step.FilePath)
+					: SceneSerializer::LoadFromFile(*newScene, step.FilePath))) {
+					return failStagedLoad(SceneLoadStatus::LoadCallbackFailed, "Failed to load scene file '" + step.FilePath + "'");
+				}
 			}
 		}
 		catch (const std::exception& e) {
@@ -912,7 +1059,7 @@ namespace Funke {
 		return { SceneLoadStatus::Success, newScene, {} };
 	}
 
-	SceneLoadResult SceneManager::TryReloadSceneImpl(const std::string& name, bool restoreLiveState) {
+	SceneLoadResult SceneManager::TryReloadSceneImpl(const std::string& name, bool restoreLiveState, const AsyncSceneLoad* preparedLoad) {
 		auto it = FindLoadedSceneIterator(name);
 		if (it == m_LoadedScenes.end()) {
 			FNK_CORE_WARN_TAG("SceneManager", "ReloadScene: scene '{}' is not loaded", name);
@@ -964,7 +1111,7 @@ namespace Funke {
 		// A restart is a real load from the game's point of view, so it raises the scene events; a reload stays silent.
 		const bool emitNotifications = !restoreLiveState;
 		SceneLoadResult result = LoadSceneInternal(name, true, std::move(restoreSnapshot), wasActive, reloadIndex,
-			emitNotifications);
+			emitNotifications, false, preparedLoad);
 		if (!result) {
 			result.LoadedScene = scene;
 			return result;
@@ -1123,6 +1270,9 @@ namespace Funke {
 			return;
 		}
 		const SceneDefinition* definition = it->second.get();
+		for (const auto& operation : m_AsyncSceneLoads) {
+			if (operation->Name == name) operation->Cancelled = true;
+		}
 		for (;;) {
 			auto loadedIt = std::find_if(m_LoadedScenes.begin(), m_LoadedScenes.end(), [definition](const std::shared_ptr<Scene>& scene) {
 				return scene && scene->m_Definition == definition;
@@ -1303,6 +1453,7 @@ namespace Funke {
 			FNK_CORE_WARN_TAG("SceneManager", "Cannot unload scenes from a scene unload callback");
 			return;
 		}
+		CancelAllAsyncSceneLoads();
 		UnloadAllScenesInternal(includePersistent, true);
 	}
 

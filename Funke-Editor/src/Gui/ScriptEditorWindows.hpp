@@ -49,6 +49,7 @@ namespace Funke {
 		struct StackDepth {
 			int Groups = 0;
 			int Ids = 0;
+			int Disabled = 0;
 			std::vector<float> Indents;
 		};
 		StackDepth& CurrentDepth();

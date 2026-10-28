@@ -81,10 +81,9 @@ namespace Funke::InspectorUndoRecorder {
 		}
 	}
 
-	void Flush(UndoStack& stack) {
+	void Flush(UndoStack& stack, bool finishGesture) {
 		State& s = Get();
-		// A pending gesture with no active widget has been released — commit it.
-		if (s.Active && !ImGui::IsAnyItemActive()) {
+		if (s.Active && (finishGesture || !ImGui::IsAnyItemActive())) {
 			Finalize();
 		}
 		for (auto& cmd : s.Queue) {

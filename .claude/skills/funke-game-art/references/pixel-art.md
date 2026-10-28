@@ -43,20 +43,20 @@ frame = pk.from_grid(IDLE_0, LEGEND, pal)
 
 **Rule-based procedural (tiles, UI, props with structure).** Build from ramps and shapes, never from per-pixel random noise: planks are rectangles with a highlight line and a shadow line plus 2–3 placed knots, and bricks are offset rows with a mortar ramp step. Grass is a top band with a hand-made blade pattern repeated with offsets. Use seeded randomness only to *choose* between hand-made variants. Tiles must be seamless: check a 3×3 repeat of every tile in a contact sheet.
 
-**AI image generation (illustrations, many varied sprites).** The user runs the generator (e.g. Codex `$imagegen`), and you write the brief and the importer. What worked in Mindcraft:
-- The brief has one exact output path and size, a shared style paragraph repeated verbatim in every brief, an exact grid with one element per cell, ≥ 40 px of pure magenta `#FF00FF` between elements, no text, no drop shadows or glow halos, no magenta inside elements, and a 1-big-pixel ink outline (it is used to measure the pixel size). Long items lie diagonally. A mockup comes first and serves as the reference for every later sheet. Each brief ends with a "Check:" line.
-- The importer keys out magenta (and the magenta fringe), measures the big-pixel size from the outline, re-pixelates each cell to the target grid (most frequent colour per cell, ignoring a 1/5 margin, alpha by majority), snaps colours to the palette, adds the outline in code, and **falls back to the hand-made generator** when a sheet is missing. That way the build never depends on generated files.
-- AI output drifts in pixel size and has soft edges. Draw rectangular UI frames in code (using the mockup's colours) and use AI only for icons and organic shapes. Regenerate a failed image once, then fix it in code.
+**AI image generation (illustrations, many varied sprites).** Use the available `imagegen` skill/tool for generation and image edits. The following brief and import techniques are useful when preparing generated sprites:
+- The brief specifies the intended size, a shared style paragraph, one element per cell with enough transparent padding, no text or glow halos, and a consistent one-art-pixel outline. If a keyed background is specifically needed, keep its colour out of the elements. Long items lie diagonally. A mockup comes first and serves as the reference for every later sheet. Each brief ends with a "Check:" line.
+- Prefer an actual transparent background when supported. For existing keyed sheets, recover the native grid from each element before removing the key colour or reconstructing cells. Preserve the silhouette and thin features; a majority-colour reduction can erase them. Do not arbitrarily shrink a finished sheet. Use aligned cells and whole-number nearest-neighbour upscales, then inspect the actual final-size assets, including outlines, symmetry and transparency.
+- AI output can drift in pixel size and have soft edges. Code-generated rectangular frames are useful for exact UI geometry. Use the image-editing tool for generated-image revisions unless the user explicitly requests another editing method; inspect the result after each revision.
 - Cache every generation with its prompt (`ArtSource/ai/<name>.png` + `.json`) and never regenerate silently. Never claim an AI sheet exists before you have checked the folder.
 
 **Asset packs.** CC0 packs (Kenney, etc.) only with the user's OK, with the licence file next to them. Re-palette them (`pixelkit check` shows the colours that are off), and keep their pixel density or redraw them to yours. Never mix two packs' styles.
 
 ## Saving and importing
 
-The default that works at any scale in Funke is **sharp bilinear**: draw at native size, save the PNG **4× nearest-neighbour upscaled**, and import it with `"filter": "Bilinear"`. `pixelkit.save_texture()` does exactly that by default (`upscale=4, filter="Bilinear"`) and writes the `.meta` first. Why:
+`pixelkit.save_texture()` defaults to **sharp bilinear**: draw at native size, save the PNG **4× nearest-neighbour upscaled**, and import it with `"filter": "Bilinear"` (`upscale=4, filter="Bilinear"`). It writes the `.meta` first. This is a rendering tradeoff for fractional scales, not proof of pixel accuracy:
 
-- Funke has no pixel snapping, and UI and camera scales are rarely whole numbers. Plain `Point` filtering then gives uneven pixel widths and shimmer while scrolling, whereas bilinear on a 4× texture only blurs a quarter of an art pixel at each edge.
-- **Named slices are inset by half a texel** (`SpriteUVResolver.cpp`) to stop bleeding. On a 1× Point sheet that squeezes every frame by one texel and makes the outer pixel rows half-width. At 4× the inset is 1/8 of an art pixel, which is invisible.
+- Funke has no built-in pixel snapping. At fractional scales, `Point` can give uneven pixel widths and shimmer while scrolling; bilinear on a 4× texture limits the source-space filtering footprint but still needs checking at the intended screen size.
+- **Named slices are inset by half a texel** (`SpriteUVResolver.cpp`) to stop bleeding. At 4× storage the inset is 1/8 of an art pixel per edge. Its visible effect depends on the destination scale; check edge rows and thin details in the final-size sprite.
 - `Point` stays fine for whole-number scales with a pixel-snapped camera, or for one-PNG-per-sprite (whole textures aren't inset). Point never uses mips, so art shown smaller than 1:1 aliases.
 
 `.meta` for a sheet (written by `pixelkit.save_texture(..., sprites=…)`, rects in texture px from the **top-left**, pivot 0..1 from the slice's **bottom-left**):
@@ -65,8 +65,8 @@ The default that works at any scale in Funke is **sharp bilinear**: draw at nati
   "import": { "filter": "Bilinear", "wrapU": "Clamp", "wrapV": "Clamp" },
   "sprites": [ { "name": "slime_idle_0", "rect": [0, 0, 64, 64], "pivot": [0.5, 0.0] } ] }
 ```
-- `filter` is `Point` | `Bilinear` | `Trilinear` | `Anisotropic` (case-sensitive), and `wrapU/V` is `Repeat` | `Clamp` | `Mirror` | `Border`. There are no mip, PPU or sRGB keys. Textures are uploaded as UNORM, so the PNG's hex values reach the screen unchanged.
-- Without an `import` block a `SpriteRenderer` samples with Point and an `Image` with Bilinear. **A `filterMode` other than 4 on any SpriteRenderer/Image changes the filter of the shared texture for every user.** Leave `filterMode` out (SpriteRenderer default 4 = use the `.meta`) and let the `.meta` decide.
+- `filter` is `Point` | `Bilinear` | `Trilinear` | `Anisotropic` (case-sensitive), and `wrapU/V` is `Repeat` | `Clamp` | `Mirror` | `Border`. There are no mip, PPU or sRGB keys. Textures are uploaded as UNORM; final screen colours still depend on tint, filtering, lighting and post-processing.
+- Without an `import` block a `SpriteRenderer` samples with Point and an `Image` with Bilinear. A non-default component `filterMode` calls `SetFilter` on the resolved texture and can affect components sharing its handle. Leave SpriteRenderer at its default 4 and set `Image.filterMode: 4` explicitly when the `.meta` should decide.
 - Write your own `.meta` (GUID) **before** running `funke sprite slice` or saving the PNG while an Editor is open, because both roll a random GUID otherwise. Never copy `.meta` files.
 - **Seams between tiles** (thin dark lines at every tile border) mean a slice is bigger than its art (a transparent column) or a neighbour in the atlas bleeds in. `pixelkit.pack_sheet` keeps each slice at its frame's own size and extrudes edge pixels by 1 art px. Check the slice rects in the `.meta` (64×64 for a 16 px tile saved 4×) and zoom into an in-game screenshot at a tile border.
 - Foot pivots (`[0.5, 0]`) for characters standing on the ground, centre pivots for projectiles and pickups.
@@ -76,10 +76,10 @@ The default that works at any scale in Funke is **sharp bilinear**: draw at nati
 
 ```json
 "SpriteRenderer": { "textureAsset": "7300000000000000001", "spriteName": "slime_idle_0", "pixelsPerUnit": 64 },
-"SpriteAnimator2D": { "frames": ["slime_idle_0", "slime_idle_1", "slime_idle_2", "slime_idle_1"], "fps": 6, "loop": true, "playOnStart": true }
+"Animator": { "clipAsset": "7300000000000000002" }
 ```
 - `pixelsPerUnit` = art px per tile × upscale (16 px tiles saved 4× → 64). The slice then keeps its native size and sits on its pivot, with `Transform2D` scale 1. Flip with `flipX` (it mirrors around the pivot) instead of drawing left-facing frames.
-- `SpriteAnimator2D` plays one frame list (C# can't swap the list). For idle/run/jump/hurt use an `Animator` with `.anim` clips whose `SpriteRenderer.Texture` track has discrete keys `"<textureGuid>|slice|slime_run_0"` and an `.animctrl` with parameters (`funke-make-a-game` → `scene-json.md` → Animation).
+- `clipAsset` points to the GUID of a looping `.anim` clip whose `SpriteRenderer.Texture` track has discrete keys `"<textureGuid>|slice|slime_idle_0"`, `"<textureGuid>|slice|slime_idle_1"`, etc. For idle/run/jump/hurt, assign an `.animctrl` through `controllerAsset` and use parameters to switch clips (`funke-make-a-game` → `scene-json.md` → Animation).
 - Frame counts and timing: idle 2–4 frames at 4–6 fps, walk/run 4–8 at 10–12 fps, attack anticipation (1–2 frames held) → strike (1 frame) → recovery, hurt = 1 white-flash frame + knockback, death 4–6 frames or a particle burst.
 - Camera: `orthoSize = screenHeight / (2 · tilePx · k)`. See `funke-make-a-game` → `references/2d-games.md` for the pixel camera script and position rounding.
 - `project.json` `graphics`: keep `antiAliasing` Off or MSAA (FXAA blurs pixel art). For a deliberately low-res world use `renderScale` 0.5 + `upscaleFilter` Point; the UI stays at full resolution. `PostProcessing2D.pixelated` fakes a low-res look but doesn't replace real pixel art.
@@ -95,4 +95,4 @@ Tools/
 ├── art_ui.py             # frames, buttons, icons (see ui-art.md)
 └── out/                  # contact sheets for review (not in Assets/)
 ```
-Every generator reads `Design/palette.json`, writes through `pixelkit.save_texture` (atomic, only on change, stable GUIDs) and renders a contact sheet into `Tools/out/` that you open with the Read tool before running the game.
+Every generator reads `Design/palette.json`, writes through `pixelkit.save_texture` (atomic, only on change, stable GUIDs) and renders a contact sheet into `Tools/out/` that you open with `view_image` before running the game.

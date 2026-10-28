@@ -124,6 +124,7 @@ function Invoke-NativeBuild {
             "/m:1", "/nr:false", "/p:CL_MPCount=1",
             "/p:UseMultiToolTask=false", "/p:Configuration=$BuildConfiguration",
             "/p:Platform=x64", "/p:PreferredToolArchitecture=x64",
+            "/p:FunkeBuildMetadataScope=repository",
             "/v:minimal", "/nologo"
         )
         if ($EmitSymbols) {

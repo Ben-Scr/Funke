@@ -2,8 +2,7 @@ using Funke;
 using Funke.UI;
 
 // One level card: name, lock, stars. References point at children of the card prefab, wired in its JSON.
-// Stars: one StarRow entity whose children are the star Images. Lists of entity/component references are
-// not remapped per prefab instance (single references are), so a container + its children is the safe shape.
+// Stars are the Image children of StarRow, in authored order.
 public sealed class LevelCard : EntityScript
 {
     public TextRenderer? Title;

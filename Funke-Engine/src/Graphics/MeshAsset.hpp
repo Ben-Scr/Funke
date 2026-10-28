@@ -4,6 +4,7 @@
 
 #include <glm/glm.hpp>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -46,6 +47,7 @@ namespace Funke {
 		MeshLibrary() = delete;
 
 		// nullptr for 0, unknown GUIDs, unreadable files (retried at most once per second) and runtime meshes without triangles.
+		// Borrowed until invalidation, Clear, or a later end-of-frame purge after the mesh stops being accessed.
 		static const MeshAsset* Get(uint64_t guid);
 
 		static bool LoadFromFile(const std::string& path, PrimitiveMeshData& outMesh);
@@ -55,6 +57,8 @@ namespace Funke {
 		static void Invalidate(uint64_t guid);
 		// Re-reads cached meshes whose file changed outside the engine; returns how many were reloaded.
 		static size_t ReloadChangedFromDisk();
+		// Call once after all frame consumers finish; meshes accessed since the previous purge are retained.
+		static size_t PurgeUnused(std::chrono::milliseconds maxIdle = std::chrono::seconds(2));
 		// Drops file-backed meshes; runtime meshes stay alive until destroyed.
 		static void Clear();
 

@@ -16,6 +16,7 @@ Everything here describes a **game project folder** (what the Launcher creates a
 ├── project.json                 # project config (see schema below)
 ├── <Name>.csproj                # the game's C# script assembly (SDK-style, net10.0)
 ├── <Name>.sln                   # VS solution wrapping the .csproj
+├── global.json                 # .NET SDK version/roll-forward policy
 ├── .gitignore                   # bin/ obj/ .vs/ *.user NativeScripts/build/ Packages/
 ├── .vscode/settings.json        # OmniSharp + dotnet.defaultSolution
 │
@@ -50,13 +51,14 @@ Written by `BuildProjectJson`, read by `Load`. Field names are exact. (Defaults 
 ```jsonc
 {
   // Identity
+  "projectFormatVersion": 1,        // current schema; requires a valid engineVersion
   "name": "MyGame",
   "engineVersion": "…",              // FNK_VERSION at create time
 
   // Scenes
   "startupScene": "SampleScene",     // scene loaded first at runtime
   "lastOpenedScene": "SampleScene",  // editor convenience
-  "buildScenes": ["SampleScene"],    // scenes that SHIP (authoritative; unlisted scenes don't load at runtime)
+  "buildScenes": ["SampleScene"],    // shipping roots; the builder uses the first enabled entry as startup
 
   // Global C# systems instantiated at startup (persist across scene loads)
   "globalSystems": [
@@ -73,12 +75,14 @@ Written by `BuildProjectJson`, read by `Load`. Field names are exact. (Defaults 
   "buildMinWidth": 0, "buildMinHeight": 0, "buildMaxWidth": 0, "buildMaxHeight": 0,
   "buildFullscreen": true,
   "buildFullscreenMode": "Exclusive",     // Exclusive | BorderlessWindowed | Maximized
+  "mobileOrientation": "Auto",           // Auto | Landscape[Left/Right] | Portrait[UpsideDown/Any] | AnyExceptUpsideDown | Any
   "buildResizable": true,
   "buildRunInBackground": true,
   "buildAspect": "Free Aspect",
 
   // Executable & branding
   "executableName": "",                   // empty → derive from name + platform ext
+  "productName": "",                      // display label; empty → name (does not change project identity)
   "buildVersion": "1.0.0",
   "buildCompany": "",
   "appIcon": "",                          // project-relative path to icon image
@@ -110,6 +114,9 @@ Written by `BuildProjectJson`, read by `Load`. Field names are exact. (Defaults 
   // Runtime behavior
   "showRuntimeStats": true,               // FPS / frame-time overlay in shipped build; omit = on for Development, off for Release
   "showRuntimeLogs": true,                // log console in shipped build; omit = same as above
+  "devConsole": true,                     // omit = on for Debug/Development, off for Release
+  "prefsProfile": "",                     // non-empty isolates PlayerPrefs/SaveData under Profiles/<name>
+  "physicsTickRate": 50,                  // fixed updates per second, clamped to 1–240
   "graphics": { "postProcessingEnabled": true, "renderScale": 1.0, … },  // quality defaults; written only when non-default (legacy top-level "enablePostProcessing" is still read)
 
   // Serialization & ECS
@@ -124,6 +131,8 @@ Written by `BuildProjectJson`, read by `Load`. Field names are exact. (Defaults 
 
   // Default font asset GUID (as a uint64 string)
   "defaultFontAsset": "…",
+  "fontBakeStep": 0,                      // 0 = adaptive size ladder, >0 = multiples of N pixels
+  "fontAtlasBudgetMb": 128,               // 0 = unlimited; otherwise LRU atlas budget
 
   // Optional profiler block in shipped builds
   "profiler": { "enableInRuntime": false, "trackInBackground": false, "samplingHz": 60, "trackingSpan": 200, "modules": {} },
@@ -204,7 +213,7 @@ A scene file holds: a format `version`, the scene `name` (+ id), a `systems` arr
 
 Important behaviors:
 - **Only authored entities are saved.** Entities you spawn at runtime (`Entity.Create`, `Instantiate`) vanish on scene reload — by design.
-- **Round-trip is exact.** What you save is what you load.
+- **Saving writes the supported serialized state.** Unknown component keys and runtime-only data are not preserved as an arbitrary JSON round trip; compile scripts before saving authored script fields.
 - **Asset references are GUIDs**, never paths (resolved via `.meta`).
 - A **prefab** is a saved entity tree (`.prefab`); instances track their source prefab and may carry per-instance overrides.
 
@@ -219,7 +228,7 @@ The Runtime (`Funke-Runtime`, `RuntimeApplication::ConfigureScenes`) reads `proj
 2. Marks the `startupScene` as the startup scene (falling back to `lastOpenedScene`, then `"SampleScene"`). If the startup scene isn't in `buildScenes`, it's registered anyway.
 3. Only the startup scene auto-loads; the rest load on demand via `SceneManager` (from C#: `SceneManager.LoadScene("Name")` — see `funke-game-scripting`).
 
-`SceneManager.LoadScene` also loads a shipped `.scene` that isn't listed (`ProjectSceneLoader` registers it on first use), but the build's asset pruning leaves unlisted scenes out unless a script names them in a string literal — so treat `buildScenes` as the ship list. Entries can be `{ "name": "…", "enabled": false }` objects; disabled scenes count as unlisted (`GetEnabledBuildScenes`).
+`SceneManager.LoadScene` also loads a shipped `.scene` that isn't listed (`ProjectSceneLoader` registers it on first use). Asset pruning starts with enabled build scenes and follows reachable GUID/path/name references in serialized assets and C# literals; these can retain additional scenes. Computed names alone cannot ensure inclusion, so list every intended shipping scene explicitly. Entries can be `{ "name": "…", "enabled": false }` objects; disabled entries are not build roots (`GetEnabledBuildScenes`) but another reachable reference may still retain them.
 
 ## Creating / duplicating a project
 

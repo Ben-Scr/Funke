@@ -26,7 +26,13 @@ def.SetAsStartupScene();   // this is the scene the game starts on
 
 In practice, when you make scenes in the editor, the runtime wires all of this up for you from your project's scene list — you don't usually write registration code by hand.
 
-Use `OnLoad` for setup that cannot fail. File-backed or validated setup should use `OnLoadChecked` and return whether the scene is usable:
+Use `OnLoadFromFile` for a `.scene` file. This makes its file read and parsing available to asynchronous loads:
+
+```cpp
+def.OnLoadFromFile("Assets/Scenes/Level1.scene");
+```
+
+Use `OnLoad` for setup that cannot fail. Other validated setup should use `OnLoadChecked` and return whether the scene is usable:
 
 ```cpp
 def.OnLoadChecked([](Scene& scene) {
@@ -112,7 +118,7 @@ if (!result) {
 }
 ```
 
-`Succeeded()` is true for `Success` and `AlreadyLoaded`. Failure statuses are `ReentrantLoad`, `NotInitialized`, `NotRegistered`, `NotLoaded`, `InstantiationFailed`, `LoadCallbackFailed`, `SetupFailed`, `BeforeStartFailed`, `AwakeFailed`, `StartFailed`, `CommitFailed`, `AfterStartFailed`, `SnapshotFailed`, and `WrongThread`. `Message` carries the error context, while `LoadedScene` is expired when no usable scene was produced. A failed `TryReloadScene` can return the preserved original scene there, so always check the result before treating it as reload success. The legacy `LoadScene`, `LoadSceneAdditive`, and `ReloadScene` methods remain available and return an expired pointer on failure.
+`Succeeded()` is true for `Success` and `AlreadyLoaded`. Failure statuses are `ReentrantLoad`, `NotInitialized`, `NotRegistered`, `NotLoaded`, `InstantiationFailed`, `LoadCallbackFailed`, `SetupFailed`, `BeforeStartFailed`, `AwakeFailed`, `StartFailed`, `CommitFailed`, `AfterStartFailed`, `SnapshotFailed`, `WrongThread`, and `Cancelled`. `Message` carries the error context, while `LoadedScene` is expired when no usable scene was produced. A failed `TryReloadScene` can return the preserved original scene there, so always check the result before treating it as reload success. The legacy `LoadScene`, `LoadSceneAdditive`, and `ReloadScene` methods remain available and return an expired pointer on failure.
 
 Raw C++ `SceneManager` APIs are main-thread-only. Off the main thread, the structured load methods return `WrongThread`; legacy loads and queries return empty, null, false, or zero results; and unload-style void methods do nothing. Registration and mutable-reference APIs throw a catchable `FunkeException` instead of asserting or touching live scene state. Marshal scene work back to the application thread before retrying it.
 
@@ -121,6 +127,50 @@ A non-additive load stages and validates its replacement through load callbacks 
 `TryReloadScene` replaces the scene atomically but keeps the same logical scene identity, so it does not emit scene loaded/unloaded events for the internal instance swap.
 
 From a C# script you typically switch scenes through the scripting `SceneManager` API; see [Scripting](../Scripting/Scripting.md).
+
+### Asynchronous loading
+
+`SceneManager.LoadSceneAsync` returns a `Task<Scene?>`. Start it from the engine thread and `await` it so the application can keep updating and rendering while the scene file is prepared:
+
+```csharp
+Scene? level = await SceneManager.LoadSceneAsync("Level2", LoadSceneMode.Single);
+if (level == null)
+    Log.Error("Level2 could not be loaded.");
+```
+
+The name and asset GUID overloads both support `Single` and `Additive`. A successful task completes after activation; a load failure returns `null` and preserves the previous scenes. `Single` restarts an already loaded scene from its authored data, as the synchronous API does. Do not block the engine thread with `.Wait()` or `.Result`: activation needs a later frame.
+
+For cancellation, pass a `CancellationToken` as the third argument:
+
+```csharp
+try
+{
+    Scene? level = await SceneManager.LoadSceneAsync(
+        "Level2", LoadSceneMode.Single, cancellationToken);
+}
+catch (OperationCanceledException)
+{
+    // The existing scenes remain loaded.
+}
+```
+
+Cancellation is cooperative until activation starts. An in-flight file read or parse is allowed to finish before the operation completes as canceled; cancellation does not interrupt system startup or roll back a successful activation.
+
+The worker reads and parses the `.scene` file, including JSON or binary decoding and header validation. Entity creation, component deserialization, asset resolution, GPU uploads, scene events and system lifecycle hooks run on the main thread at activation. Large scenes, uncached assets and expensive startup hooks can therefore still cause an activation hitch. There is no progress counter, preload-only phase or background asset streaming in this API. File preparation requires a platform with thread support; current threadless Web builds report a load failure.
+
+Native callers register file stages explicitly and receive a completion callback on the main thread:
+
+```cpp
+SceneManager::RegisterScene("Level2")
+    .OnLoadFromFile("Assets/Scenes/Level2.scene");
+
+const uint64_t operation = SceneManager::LoadSceneAsync("Level2", false,
+    [](uint64_t, const SceneLoadResult& result) {
+        if (!result) FNK_CORE_ERROR("Scene load failed: {}", result.Message);
+    });
+```
+
+`CancelSceneLoad(operation)` requests cancellation before activation. Both native calls are main-thread APIs. Ordinary `OnLoad` and `OnLoadChecked` callbacks always run on the main thread; wrapping `LoadFromFile` inside such a callback keeps that file read synchronous. Project scenes registered by the runtime and scripting API use `OnLoadFromFile` automatically.
 
 ---
 

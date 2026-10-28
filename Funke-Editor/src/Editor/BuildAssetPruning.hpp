@@ -24,7 +24,7 @@ namespace Funke::BuildAssetPruning {
 	// Reachable set starting at the build scenes and project.json, followed through GUIDs, asset paths
 	// and scene names in serialized content, plus string literals and FindAll calls in C# sources.
 	struct Plan {
-		// False when the project could not be scanned completely; the build then ships everything.
+		// An incomplete scan disables unused-asset stripping; host-only built-in assets stay excluded.
 		bool Valid = false;
 		std::string Error;
 		// Lowercase generic paths relative to AssetsRoot / FunkeAssetsRoot.
@@ -33,6 +33,7 @@ namespace Funke::BuildAssetPruning {
 
 		// .meta sidecars follow their asset.
 		bool KeepsProjectFile(const std::filesystem::path& relative) const;
+		// Falls back to runtime assets when Valid is false.
 		bool KeepsBuiltInFile(const std::filesystem::path& relative) const;
 	};
 

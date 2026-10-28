@@ -190,11 +190,11 @@ A canvas with a fixed size (for example 1920×1080) then sits as a 16:9 box in t
 
 Tapping an Input Field on a phone or tablet opens the system keyboard; the system moves the picture up when the keyboard would cover the field. The keyboard matches the field: a number pad for *Integer Number* and *Decimal Number*, a hidden-text keyboard for secret fields. Closing the keyboard (back gesture or hide key) ends editing, the same as tapping outside the field (anywhere that isn't another input field, including buttons and lists).
 
-Cut, copy and paste work like in other apps: holding a finger on the text selects the word under it, and dragging selects a range. Android then shows its own floating toolbar (*Cut*, *Copy*, *Paste*, *Select all*, in the phone's language); a long-press on an empty field offers *Paste*. Secret fields never offer *Cut* or *Copy*. On the desktop the same actions are Ctrl+X, Ctrl+C, Ctrl+V and Ctrl+A.
+Cut, copy and paste work like in other apps: holding a finger on the text selects the word under it, and dragging selects a range. Android then shows its own floating toolbar (*Cut*, *Copy*, *Paste*, *Select all*, in the phone's language); a long-press on an empty field offers *Paste*. Secret fields never offer *Cut* or *Copy*. On the desktop the same actions are Ctrl+X, Ctrl+C, Ctrl+V and Ctrl+A; macOS uses Cmd instead of Ctrl.
 
 ## Debug overlays on phones and tablets
 
-On the desktop, F6 and F7 toggle the runtime stats and log overlays. Phones and tablets have no F-keys, so on Android and iOS both overlays are always visible while they are enabled (Project Settings › Build › Diagnostics). Unless set there or in `project.json` (`showRuntimeStats`, `showRuntimeLogs`), they are on for the Development profile and off for Release, including `funke build --release`.
+On Windows and Linux, F6 and F7 toggle the runtime stats and log overlays; macOS uses Cmd+Shift+6 and Cmd+Shift+7. Phones and tablets have no F-keys, so on Android and iOS both overlays are always visible while they are enabled (Project Settings › Build › Diagnostics). Unless set there or in `project.json` (`showRuntimeStats`, `showRuntimeLogs`), they are on for the Development profile and off for Release, including `funke build --release`.
 
 ## C# on Android, iOS and Web
 

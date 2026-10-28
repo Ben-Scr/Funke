@@ -7,6 +7,10 @@
 #include "Undo/UndoStack.hpp"
 #include "Undo/TransformEditCommand.hpp"
 #include "Undo/InspectorEditCommand.hpp"
+#include "Undo/InspectorUndoRecorder.hpp"
+
+#include <imgui.h>
+#include <imgui_internal.h>
 
 #include "Scene/Scene.hpp"
 #include "Scene/Entity.hpp"
@@ -130,6 +134,68 @@ TEST_CASE("UndoStack: oldest entries drop past the depth cap") {
 	}
 	CHECK(undone == kMaxDepth);
 	CHECK(undos == kMaxDepth);
+}
+
+TEST_CASE("SceneUndoHistory: switching scenes preserves independent undo and redo branches") {
+	std::shared_ptr<Scene> first = Scene::CreateDetachedScene("Shared name");
+	std::shared_ptr<Scene> second = Scene::CreateDetachedScene("Shared name");
+	second->SetSceneId(first->GetSceneId());
+	SceneUndoHistory history;
+	int firstUndos = 0, firstRedos = 0, secondUndos = 0, secondRedos = 0;
+
+	history.ForScene(first).Push(MakeCounting(&firstUndos, &firstRedos));
+	history.ForScene(first).Undo(*first);
+	history.ForScene(second).Push(MakeCounting(&secondUndos, &secondRedos));
+
+	CHECK(history.ForScene(first).CanRedo());
+	CHECK_FALSE(history.ForScene(first).CanUndo());
+	CHECK(history.ForScene(second).CanUndo());
+	CHECK_FALSE(history.ForScene(second).CanRedo());
+	history.ForScene(first).Redo(*first);
+	history.ForScene(second).Undo(*second);
+	CHECK(firstUndos == 1);
+	CHECK(firstRedos == 1);
+	CHECK(secondUndos == 1);
+	CHECK(secondRedos == 0);
+}
+
+TEST_CASE("SceneUndoHistory: closing a scene discards only its history even while an owner remains") {
+	std::shared_ptr<Scene> first = Scene::CreateDetachedScene("First");
+	std::shared_ptr<Scene> second = Scene::CreateDetachedScene("Second");
+	SceneUndoHistory history;
+	int undos = 0, redos = 0;
+	history.ForScene(first).Push(MakeCounting(&undos, &redos));
+	history.ForScene(second).Push(MakeCounting(&undos, &redos));
+
+	const std::vector<std::weak_ptr<Scene>> loaded{ second };
+	history.Retain(loaded);
+	CHECK_FALSE(history.ForScene(first).CanUndo());
+	CHECK(history.ForScene(second).CanUndo());
+
+	history.Forget(second.get());
+	CHECK_FALSE(history.ForScene(second).CanUndo());
+}
+
+TEST_CASE("SceneUndoHistory: replacement scenes cannot inherit stale commands or retain scene ownership") {
+	SceneUndoHistory history;
+	int undos = 0, redos = 0;
+	std::weak_ptr<Scene> lifetime;
+	{
+		std::shared_ptr<Scene> original = Scene::CreateDetachedScene("Reloaded");
+		lifetime = original;
+		history.ForScene(original).Push(MakeCounting(&undos, &redos));
+	}
+	CHECK(lifetime.expired());
+
+	std::shared_ptr<Scene> replacement = Scene::CreateDetachedScene("Reloaded");
+	CHECK_FALSE(history.ForScene(replacement).CanUndo());
+	const std::vector<std::weak_ptr<Scene>> loaded{ replacement };
+	history.Retain(loaded);
+	history.ForScene(replacement).Push(MakeCounting(&undos, &redos));
+	history.Clear();
+	CHECK_FALSE(history.ForScene(replacement).CanUndo());
+	CHECK_FALSE(history.ForScene(replacement).CanRedo());
+	CHECK(undos == 0);
 }
 
 TEST_CASE("TransformEditCommand::HasChange is false only when nothing moved") {
@@ -337,4 +403,47 @@ TEST_CASE("UndoStack::Undo/Redo return the affected command's label") {
 	CHECK(stack.Redo(*scene) == "Move");
 	CHECK(stack.Undo(*scene) == "Move");
 	CHECK(stack.Undo(*scene).empty()); // nothing left
+}
+
+TEST_CASE("InspectorUndoRecorder: switching context commits an unfinished gesture to its original scene") {
+	struct Context {
+		ImGuiContext* Value = ImGui::CreateContext();
+		~Context() {
+			InspectorUndoRecorder::Reset();
+			ImGui::DestroyContext(Value);
+		}
+	} context;
+	ImGui::GetIO().IniFilename = nullptr;
+	ImGui::SetActiveID(42, nullptr);
+	InspectorUndoRecorder::Reset();
+
+	std::shared_ptr<Scene> first = Scene::CreateDetachedScene("Inspector first");
+	std::shared_ptr<Scene> second = Scene::CreateDetachedScene("Inspector second");
+	Entity entity = first->CreateEntity("Edited");
+	PropertyDescriptor descriptor;
+	descriptor.Name = "Position.x";
+	descriptor.Type = PropertyType::Float;
+	descriptor.Get = [](const Entity& value) {
+		return FloatValue(value.GetComponent<Transform2DComponent>().Position.x);
+	};
+	descriptor.Set = [](Entity& value, const PropertyValue& property) {
+		value.GetComponent<Transform2DComponent>().Position.x = static_cast<float>(property.FloatValue);
+	};
+	SceneUndoHistory history;
+	const std::span<const Entity> selection(&entity, 1);
+	InspectorUndoRecorder::CaptureBefore(selection, descriptor);
+	entity.GetComponent<Transform2DComponent>().Position.x = 12.0f;
+	InspectorUndoRecorder::CaptureAfter(selection, descriptor);
+	InspectorUndoRecorder::Flush(history.ForScene(first));
+	CHECK_FALSE(history.ForScene(first).CanUndo());
+
+	InspectorUndoRecorder::Flush(history.ForScene(first), true);
+	InspectorUndoRecorder::Reset();
+	InspectorUndoRecorder::Flush(history.ForScene(second), true);
+	REQUIRE(history.ForScene(first).CanUndo());
+	CHECK_FALSE(history.ForScene(second).CanUndo());
+	history.ForScene(first).Undo(*first);
+	CHECK(entity.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(0.0f));
+	history.ForScene(first).Redo(*first);
+	CHECK(entity.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(12.0f));
 }

@@ -2,7 +2,7 @@
 
 The **Animator** component plays keyframe animations on an entity and its children. A clip can animate any component property the Inspector shows (position, rotation, scale, colors, light intensity, UI rects, sprites ...) and the visible fields of C# scripts. An **Animator Controller** switches between clips with a state machine driven by parameters that scripts set.
 
-For simple flip-book sprite animation the [Sprite Animator 2D](../Scripting/Scripting.md) component is still the lighter option.
+For flip-book sprite animation, assign a looping clip directly to the Animator and switch slices with a discrete **Sprite Renderer > Texture** track.
 
 ## The pieces
 
@@ -32,7 +32,7 @@ The Animator runs after the scripts each frame, so parameters a script sets in `
 
 - **Component properties:** every property with a field in the Inspector. Numbers, booleans, vectors and colors use curves, and each vector or color channel is its own track (`Position.x`, `Color.a`). Booleans and integers step from key to key.
 - **Assets, text and enums** (a sprite texture, a material, a text) use **discrete keys** that switch the value at each key time.
-- **Sprite-sheet slices:** the **Texture** property of a Sprite Renderer or Image holds the texture together with its slice, so a Texture track switches between slices of one sheet. With **Record** on, pick another slice in the Inspector's Texture field (it shows `Sheet > Slice`); each pick becomes a key. For a plain looping flip-book the Sprite Animator 2D is simpler.
+- **Sprite-sheet slices:** the **Texture** property of a Sprite Renderer or Image holds the texture together with its slice, so a Texture track switches between slices of one sheet. With **Record** on, pick another slice in the Inspector's Texture field (it shows `Sheet > Slice`); each pick becomes a key.
 - **Rect Transform 2D:** Anchored Position, Size, Pivot, anchors, Rotation (degrees) and Scale.
 - **C# script fields:** the public or `[ShowInEditor]` fields of scripts on the animated entities (`float`, `int`, `bool`, `Vector2/3/4`, `Color`). The script must be on the entity when the Animator starts.
 - **Rotations** are animated as Euler angles in degrees, per axis.
@@ -56,7 +56,7 @@ Tracks address their entity by a path of child names from the Animator's entity 
 
 **Curves** shows the curves of the selected tracks, or all of them when no track is selected. Drag keys in time and value. Drag a smooth key's tangent handles to shape it; hold Ctrl to break the two tangents apart. **F** frames everything. The mouse wheel zooms time, Shift+wheel zooms values, and the middle mouse button pans.
 
-**Navigation:** Ctrl+wheel zooms the dopesheet, Shift+wheel scrolls in time, a click on the ruler moves the playhead, `,` / `.` step one frame, and Home / End jump to the start / end. Ctrl+Z / Ctrl+Y undo and redo clip edits while the window has focus. Every edit is saved to the `.anim` file at once.
+**Navigation:** Ctrl+wheel (Cmd+wheel on macOS) zooms the dopesheet, Shift+wheel scrolls in time, a click on the ruler moves the playhead, `,` / `.` step one frame, and Home / End jump to the start / end. Ctrl+Z / Ctrl+Y (Cmd+Z / Cmd+Shift+Z on macOS) undo and redo clip edits while the window has focus. Every edit is saved to the `.anim` file at once.
 
 ### Animation events
 
@@ -89,7 +89,7 @@ The method may take no parameter or one `string`, `int`, `float` or `bool`; the 
 - **Parameters** (left): **+** adds Float, Int, Bool or Trigger; the value next to each is its start value. Renaming a parameter updates the conditions that use it; deleting it removes them.
 - In Play mode, select the playing entity: the window marks the active state with its progress, highlights a running transition, and the parameter column shows live values you can change.
 
-Drag nodes to arrange them, drag the empty canvas (or use the middle mouse button) to pan, use the wheel to zoom, and press **F** to frame everything. **Delete** removes the selection; Ctrl+Z / Ctrl+Y undo and redo.
+Drag nodes to arrange them, drag the empty canvas (or use the middle mouse button) to pan, use the wheel to zoom, and press **F** to frame everything. **Delete** or **Backspace** removes the selection; Ctrl+Z / Ctrl+Y (Cmd+Z / Cmd+Shift+Z on macOS) undo and redo.
 
 ## Scripting
 
@@ -157,7 +157,7 @@ Tips:
 - In the editor the game camera decides, also while you watch the scene in the Editor View.
 - The Profiler's **Animation** rows show the time of the Animators and Skinned Mesh Renderers and how many of them updated their pose in a frame.
 
-The Sprite Animator 2D has no such options: a flip-book step costs about 40 nanoseconds, so a thousand animated sprites take a few hundredths of a millisecond per frame, and sprites outside the view are not drawn anyway. Sprite animations played by an Animator (Texture tracks) do use its culling and distance rate.
+Sprite animations played by an Animator (Texture tracks) also use its culling and distance rate.
 
 ## File formats
 

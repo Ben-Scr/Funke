@@ -12,6 +12,7 @@ namespace Funke {
     // Forward-declared so <thread>/<mutex>/<atomic> stay out of this header
     // (and out of every TU that touches Font). Defined inside Font.cpp.
     struct FontAsyncBakeState;
+    struct FontUnicodeCache;
 
     // Per-glyph metrics + UV rect into the font's atlas texture.
     // All measurements are in pixels at the font's baked size — callers
@@ -30,6 +31,7 @@ namespace Funke {
 
         // Horizontal advance to apply to the pen after this glyph.
         float XAdvance = 0.0f;
+        unsigned AtlasTexture = 0;
     };
 
     class FUNKE_API Font {
@@ -44,9 +46,7 @@ namespace Funke {
         Font(Font&&) noexcept;
         Font& operator=(Font&&) noexcept;
 
-        // Load the .ttf at `path`, bake an ASCII (32..126) atlas at the
-        // requested pixel height, upload to GPU. Returns false on any
-        // failure; on failure no GL state is left allocated.
+        // Uploads a small initial atlas; other glyphs are cached on first use.
         bool LoadFromFile(const std::string& path, float pixelSize);
 
         bool LoadFromBuffer(const std::string& sourcePath,
@@ -64,7 +64,7 @@ namespace Funke {
 
         bool IsLoaded() const { return m_AtlasTexture != 0; }
 
-        // Returns nullptr if the codepoint isn't in the baked range.
+        // Main thread only: first use rasterizes missing atlas entries; unavailable characters use a visible fallback.
         const GlyphMetrics* GetGlyph(uint32_t codepoint) const;
 
         // Vertical metrics in pixels, scaled to the baked size.
@@ -73,16 +73,13 @@ namespace Funke {
         float GetLineHeight() const { return m_LineHeight; }
         float GetPixelSize() const { return m_PixelSize; }
 
-        // GL handles / dimensions.
+        // Initial atlas only; each GlyphMetrics identifies its own atlas page.
         unsigned GetAtlasTexture() const { return m_AtlasTexture; }
         int GetAtlasWidth() const { return m_AtlasWidth; }
         int GetAtlasHeight() const { return m_AtlasHeight; }
 
-        // Resident atlas size in bytes (R8 coverage = 1 byte/texel). Used by the
-        // FontManager's LRU budget. 0 until the bake publishes.
-        size_t GetAtlasByteSize() const {
-            return static_cast<size_t>(m_AtlasWidth) * static_cast<size_t>(m_AtlasHeight);
-        }
+        // All resident R8 atlas pages, including lazy Unicode pages, count toward the LRU budget.
+        size_t GetAtlasByteSize() const;
 
         const std::string& GetFilepath() const { return m_Filepath; }
 
@@ -102,7 +99,7 @@ namespace Funke {
         // in m_StbFontInfoStorage points INTO these bytes for kerning, so the buffer
         // must outlive this Font — the shared_ptr guarantees that.
         std::shared_ptr<const std::vector<uint8_t>> m_TtfBuffer;
-        // Indexed by codepoint; every baked range lies below k_GlyphTableSize.
+        // Direct lookup for the initial ASCII/Latin-1 atlas.
         std::vector<GlyphMetrics> m_Glyphs;
         // Kerning in font units for ASCII pairs, baked once so text layout skips
         // stbtt's GPOS/kern table walk; empty when the font has no kerning data.
@@ -126,6 +123,7 @@ namespace Funke {
         std::string m_Filepath;
 
         std::unique_ptr<FontAsyncBakeState> m_AsyncBake;
+        mutable std::unique_ptr<FontUnicodeCache> m_UnicodeCache;
     };
 
 }

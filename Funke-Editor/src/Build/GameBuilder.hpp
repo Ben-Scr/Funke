@@ -38,6 +38,8 @@ namespace Funke::GameBuilder {
 		std::string OutputDirectory;
 		// Host-desktop builds only.
 		std::string ExecutablePath;
+		std::string WebEntryPath;
+		std::string WebPreviewScript;
 	};
 
 	// Every .build profile of the project, sorted by name.

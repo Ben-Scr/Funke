@@ -105,7 +105,7 @@ TEST_CASE("Time::SetTimeScale clamps to [0, 100]") {
 	CHECK(Time::GetTimeScale() == 0.0f);
 }
 
-TEST_CASE("FunkeProject round-trips a non-default build resolution through project.json") {
+TEST_CASE("FunkeProject round-trips build display settings through project.json") {
 	namespace fs = std::filesystem;
 	const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
 	const fs::path root = fs::temp_directory_path() / ("FunkeDisplayRT_" + std::to_string(suffix));
@@ -121,11 +121,21 @@ TEST_CASE("FunkeProject round-trips a non-default build resolution through proje
 	project.ProjectFilePath = Path::Combine(root.string(), "project.json");
 	project.BuildWidth = 3440;
 	project.BuildHeight = 1440;
+	project.BuildVsync = false;
 	REQUIRE(project.Save());
 
 	const FunkeProject loaded = FunkeProject::Load(root.string());
 	CHECK(loaded.BuildWidth == 3440);
 	CHECK(loaded.BuildHeight == 1440);
+	CHECK_FALSE(loaded.BuildVsync);
+	CHECK(loaded.GameViewVsync);
+
+	project.BuildVsync = true;
+	project.GameViewVsync = false;
+	REQUIRE(project.Save());
+	const FunkeProject updated = FunkeProject::Load(root.string());
+	CHECK(updated.BuildVsync);
+	CHECK_FALSE(updated.GameViewVsync);
 }
 
 TEST_CASE("FunkeProject persists the Editor View 3D toggle only once it was set") {
@@ -240,6 +250,11 @@ TEST_CASE("FunkeProject rejects unreadable and newer project formats") {
 		"\"graphics\":{\"renderScale\":\"fast\"}}"));
 	CHECK_FALSE(FunkeProject::TryLoad(root.string(), loaded, &error));
 	CHECK(error.find("graphics.renderScale") != std::string::npos);
+	REQUIRE(File::WriteAllText(projectFile.string(),
+		"{\"projectFormatVersion\":1,\"name\":\"Invalid\",\"engineVersion\":\"old\","
+		"\"buildVsync\":\"false\"}"));
+	CHECK_FALSE(FunkeProject::TryLoad(root.string(), loaded, &error));
+	CHECK(error.find("buildVsync") != std::string::npos);
 
 	const std::string newerJson =
 		"{\"projectFormatVersion\":"
@@ -348,6 +363,7 @@ TEST_CASE("FunkeProject can read legacy runtime data without mutating the packag
 	std::string error;
 	REQUIRE(FunkeProject::TryLoad(root.string(), project, &error, false));
 	CHECK(project.ProjectFormatVersion == 0);
+	CHECK(project.BuildVsync);
 	CHECK(File::ReadAllText(projectFile.string()) == legacyJson);
 	CHECK_FALSE(File::Exists((root / "project.json.pre-v0.bak").string()));
 }

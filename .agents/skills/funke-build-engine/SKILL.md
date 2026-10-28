@@ -5,7 +5,7 @@ description: Use when building, testing or running the Funke ENGINE itself (not 
 
 # Build, test, run the engine
 
-Always go through `scripts/dev/*.ps1`. They encode every pitfall below; raw MSBuild calls re-discover them the slow way.
+For Windows engine builds, tests and launches, prefer `scripts/dev/*.ps1`; they handle toolchain selection, diagnostics and output deployment. Start with the smallest verification that proves the change: documentation/skill edits need no compilation, managed-only changes need only the affected managed project, and native changes need a targeted incremental build. Preserve existing outputs and configuration; use `-Rebuild` only for demonstrated stale/corrupt build outputs or an explicit request.
 
 ## Build — `scripts\dev\Build.ps1`
 
@@ -18,10 +18,10 @@ scripts\dev\Build.ps1 Launcher                     # builds Funke-PackageTool fi
 scripts\dev\Build.ps1 ScriptCompiler               # editor's in-process Roslyn hot-reload compiler -> Funke-Editor\ScriptCompiler\
 scripts\dev\Build.ps1 CLI                          # funke.exe (Funke-CLI): compiles the editor's UI-free build sources too
 scripts\dev\Build.ps1 -File Funke-Engine\src\Scene\Scene.cpp,Funke-Editor\src\Gui\AssetBrowser.cpp   # compile TUs only
-scripts\dev\Build.ps1 Engine -Warnings all -Rebuild
+scripts\dev\Build.ps1 Engine -Warnings all
 ```
 
-Projects: `Engine`, `EditorRuntime`, `Editor`, `Runtime`, `Launcher`, `EngineTests`, `EditorTests`, `Tests`, `ScriptCore`, `ScriptCompiler`, `All`.
+Projects: `Engine`, `EditorRuntime`, `Editor`, `Runtime`, `Launcher`, `CLI`, `EngineTests`, `EditorTests`, `Tests`, `ScriptCore`, `ScriptCompiler`, `PackageTool`, `All`.
 
 What it does for you:
 - Pins VS2022 MSBuild. VS "18" (the user's IDE) builds into its own `bin-int\<cfg>\<project>-vs18.0\` (`FunkeIntDirSuffix`, premake/compat.lua): sharing one PCH between the two installs fails with `C2375 __builtin_assume_aligned` and leaves a stale `.lib` (LNK2019 in consumers).
@@ -31,13 +31,14 @@ What it does for you:
 - After each build copies `bin\<cfg>\Funke-Engine\Funke-Engine.dll` (+pdb) into Funke-Editor, Funke-Launcher, Funke-Runtime, Funke-CLI and the test folders. Without this the editor keeps running the old engine and fixes "don't work". `-NoDeploy` disables it.
 - Warns when a Funke app from the same config is running (DLLs locked → copy/postbuild fail). A deploy that stays stale fails the build: `DEPLOY FAILED` lists the copies, exit code 1 (a stale `Funke-Engine.dll` next to a fresh exe dies before `main` with `0xC0000138` and no output).
 
-Timing on this machine: Engine incremental ~5 s, single TU 2–7 s, EngineTests ~50 s from cold, Editor ~20 s.
+`Build.ps1` regenerates with plain `premake5 vs2022`; it does not preserve custom generation options. For a workspace generated with module/profiler/profile options, regenerate explicitly with those same options when needed, then use `-NoRegenCheck` to avoid replacing them. Package and module-variant workspaces need their own targeted build path.
 
 ## Test — `scripts\dev\Test.ps1`
 
 ```powershell
 scripts\dev\Test.ps1                              # build + run Engine and Editor doctest suites
 scripts\dev\Test.ps1 -Filter "*Prefab*"           # doctest --test-case filter (wildcards, comma = OR)
+scripts\dev\Test.ps1 -Suite Engine -Filter "*Prefab*"  # only the affected native suite
 scripts\dev\Test.ps1 -Suite CSharp -Filter Vector3   # xUnit, plain word = FullyQualifiedName~word
 scripts\dev\Test.ps1 -Suite All -NoBuild
 scripts\dev\Test.ps1 -List                        # list test cases
@@ -58,6 +59,8 @@ scripts\dev\Run.ps1 -ExtraArgs "--ci-smoke-test"
 scripts\dev\Run.ps1 -Project <3D project> -EditorView     # screenshot the Editor View tab (default is whatever tab the layout selected); -GameView: the Game View tab, e.g. with -Play -OpenWindow gamestats
 scripts\dev\Run.ps1 -App Runtime -Variant 2d -Project <dir> # engine-module runtime variant (bin\<cfg>-windows-x86_64-2d)
 scripts\dev\Run.ps1 -Project <dir> -Play                    # editor enters play mode after load (FUNKE_EDITOR_AUTOPLAY) — repro play-mode crashes
+scripts\dev\Run.ps1 -Project <dir> -StopAfter 3             # enter Play and stop after 3 s; verify teardown
+scripts\dev\Run.ps1 -Project <dir> -ReloadAfter 3           # reload the editor in-process after 3 s
 scripts\dev\Run.ps1 -App Runtime -Project <dir> -ScreenshotAt 2s,5s -FixedStep 60          # engine screenshots at GAME time, then quits
 scripts\dev\Run.ps1 -App Runtime -Project <dir> -InputScript run.json -Exec "physics.debug on"  # scripted keys/mouse/touch/commands
 scripts\dev\Run.ps1 -Project <dir> -OpenWindow build,buildprofiles   # editor with those windows open (FUNKE_EDITOR_OPEN); also projectsettings (projectsettings:graphics picks the category), preferences, packages, profiler, gamestats (Game View Stats overlay)
@@ -90,7 +93,7 @@ Nothing on the desktop changes (no focus/move, no OS input). Exit codes: 1 faile
 
 ## Definition of done
 
-Build every consumer of the change → `Test.ps1` → `Run.ps1` for anything visible at runtime → look at the screenshot and the warning list. If you couldn't run something, say so instead of claiming it works.
+Build the smallest affected consumer when compilation adds evidence; select the relevant `Test.ps1 -Suite` and filter for behavior changes. For UI/rendering/runtime changes, reproduce with `Run.ps1` or the Editor Bridge and inspect the resulting screenshots and log warnings. Documentation-only edits need document/reference checks. Report what was checked and anything that could not be verified.
 
 ## Pitfalls
 

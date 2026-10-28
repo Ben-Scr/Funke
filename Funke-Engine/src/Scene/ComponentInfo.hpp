@@ -70,6 +70,8 @@ namespace Funke {
 		// ECB playback writes the raw payload in one call. Components with scene-bound runtime state (e.g. ParticleSystem2DComponent) must override to rebind, same as copyTo.
 		InlineFunction<void(entt::registry& registry, EntityHandle entity,
 			const void* bytes, size_t size)> emplaceFromBytes;
+		// Exact payload size for preflight validation; zero leaves sizing to a custom emplacer.
+		size_t bytePayloadSize = 0;
 
 		// Default-constructs via registry.emplace<T>, firing C++ default-initializers (e.g. Scale={1,1}). MUST NOT route through emplaceFromBytes — managed default(T) is all-zero and would clobber those defaults.
 		InlineFunction<void(entt::registry& registry, EntityHandle entity)> defaultEmplace;

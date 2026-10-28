@@ -5,7 +5,7 @@ description: Use when adding a new built-in ECS component to the Funke engine (C
 
 # Add a Built-in Component
 
-A built-in component touches up to eight sites. Missing one fails silently (data lost on save, play/stop, paste, prefab spawn, or invisible to C#), so walk the whole list. Reference implementations: `SpriteAnimator2DComponent` (newest, data + system + C#), `WidthConstraintComponent` / `MaskComponent` (minimal registry-driven serialization).
+A built-in component touches up to eight sites. Missing one fails silently (data lost on save, play/stop, paste, prefab spawn, or invisible to C#), so walk the whole list. Reference implementations: `LocalizedTextComponent` (data + system + C#), `WidthConstraintComponent` / `MaskComponent` (minimal registry-driven serialization).
 
 ## 1. Struct
 
@@ -76,7 +76,7 @@ Many in-tree UI registrations fall back to the *current* value (`AsDoubleOr(c.X)
 - `has`/`add`/`remove`/`copyTo`/`getRaw`/`defaultEmplace` are synthesized by `ComponentRegistry::Register<T>` (`Scene/ComponentRegistry.hpp`) — don't write them.
 - `serializedName` empty = never saved, and Copy/Paste/Reset Component are disabled in the inspector.
 - `ComponentCategory::Tag` hides it from Add Component (use for internal/identity data and empty marker structs; `Scene::AddComponent<TTag>` requires `std::is_empty_v`). `ComponentCategory::System` is not for components.
-- **New slice:** slices added after the original six (3D, Physics3D, Particles3D, Animation, SkinnedMesh3D, Localization) are appended after the Tags so older ids keep their order. If no slice fits, add yours after the last `Internal::Register*` call in `RegisterBuiltInComponents` (before the module-conflict block and `AssignBuiltInIcons`), declare it in `BuiltInComponentRegistrationShared.hpp`; the premake glob picks up the new `BuiltInComponentRegistration<Name>.cpp` (module slices also go into `EngineModules.json`).
+- **New slice:** slices added after the original six (3D, Physics3D, Particles3D, Animation, SkinnedMesh3D, Localization) are appended after the Tags so older ids keep their order. If no slice fits, add yours after all existing registrations in `RegisterBuiltInComponents`, including the `ComponentOrderComponent` block (before the module-conflict block and `AssignBuiltInIcons`), and declare it in `BuiltInComponentRegistrationShared.hpp`; the premake glob picks up the new `BuiltInComponentRegistration<Name>.cpp` (module slices also go into `EngineModules.json`).
 - Conflicts ("one renderer per entity") and dependencies (Button pulls in Interactable) go in `RegisterBuiltInComponents` via `DeclareConflict<A,B>` / `DeclareDependency<Dependent,Dependency>`, after every mentioned type is registered. `onAdd` (smart defaults) only fires through `AddWithDependencies` (editor Add Component), never on load.
 - Inspector/hierarchy icon: add `SetIcon<T>(registry, "<name>")` to `AssignBuiltInIcons` in `BuiltInComponentRegistration.cpp` (`ComponentInfo::icon`, a file stem from `Funke-Runtime/FunkeAssets/Textures/Editor/General/`, e.g. `light_point`). Without one the editor guesses from the display name; `ComponentIconTests.cpp` checks every icon exists. Entity icons in the Hierarchy follow the priority list in `EntityTypeIconName` (`ImGuiEditorLayer.cpp`).
 - Inspector fields, custom drawers (`Funke-Editor/src/Editor/EditorComponentRegistration.cpp`), gizmos, variants, refs: **defer to `funke-inspector-ruleset`**. Property `name` should match the C# field name; prefer `drawInspector = nullptr`.
@@ -92,7 +92,7 @@ Many in-tree UI registrations fall back to the *current* value (`AsDoubleOr(c.X)
 
 ## 4. Scene hooks (only if add/remove must touch a subsystem)
 
-`Funke-Engine/src/Scene/Scene.cpp` constructor (`Scene::Scene`, ~line 1440): `m_Registry.on_construct<T>().connect<&Scene::OnTConstruct>(this)` / `on_destroy`. Declare the private handlers in `Scene.hpp` next to the others.
+`Funke-Engine/src/Scene/Scene.cpp` constructor (`Scene::Scene`): `m_Registry.on_construct<T>().connect<&Scene::OnTConstruct>(this)` / `on_destroy`. Declare the private handlers in `Scene.hpp` next to the others.
 
 - `on_construct` fires at emplace, **before** a loader fills the fields. Idempotent hooks that read component data must defer while `m_SuppressConstructHooks` is set (push to `m_DeferredConstructHooks`; see `OnSpriteRendererComponentConstruct`). `Scene::LoadGuard` flushes them.
 - Hooks that touch global worlds (physics, audio, scripting) must early-out on `m_IsDetached || m_LifecycleSuspended` (detached scenes back the prefab inspector, staged loads and tests) and must also be replayed in `Scene::InitializeRuntimeComponentState()` for suspended scenes being activated.
@@ -112,7 +112,7 @@ Native name lookup (`FindComponentByName` in `ScriptBindings.cpp`) accepts the s
 
 - Serialization round-trip: extend `SceneSerializerRoundTripTests.cpp` (full-entity `SerializeEntityFull` → `DeserializeEntityFromValue`, plus component-level `SerializeComponent` → `DeserializeComponent`). Built-in components (registry-driven or ladder) round-trip in a plain detached scene; only package/C# components need a headless `Application` (pattern: `MakeSceneTestConfiguration()` in `SceneManagerFailureTests.cpp`, assertions collected in `Start()`, then `Application::Quit()`).
 - Entity refs / clone remap: `SceneSerializerClipboardTests.cpp`; prefab internal refs: `SceneSerializerPrefabRefTests.cpp`.
-- Behavior: expose a static pure step function on the system and unit-test it (`SpriteAnimationTests.cpp` → `SpriteAnimationSystem::Step`).
+- Behavior: expose a static per-entity function on the system and unit-test it (`GameLocalizationTests.cpp` → `LocalizedTextSystem::Apply`).
 - If the component is public API, add a `static_assert(std::is_default_constructible_v<...>)` line to `UmbrellaHeaderTests.cpp`.
 - C# wrapper changes: `Tests/Funke-ScriptCore-Tests` (xUnit, e.g. `InteropHandshakeTests.cs`).
 

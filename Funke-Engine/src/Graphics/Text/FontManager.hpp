@@ -25,6 +25,7 @@ namespace Funke {
 
         static void PollAsync();
 
+        // Also discards pending/failed bakes; stale generations never unload a reused slot.
         static void UnloadFont(const FontHandle& handle);
         static void UnloadAll();
 

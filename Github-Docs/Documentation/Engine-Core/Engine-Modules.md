@@ -8,7 +8,7 @@ Funke splits its world features into two optional engine modules. A project list
 
 | Module | Contains |
 |---|---|
-| `Funke.2D` | Transform 2D, Sprite Renderer, Camera 2D, Sprite Animator 2D, Particle System 2D, 2D physics (Box2D: Rigidbody 2D, colliders, `Physics2D`), world-space text on 2D entities, 2D picking |
+| `Funke.2D` | Transform 2D, Sprite Renderer, Camera 2D, Particle System 2D, 2D physics (Box2D: Rigidbody 2D, colliders, `Physics2D`), world-space text on 2D entities, 2D picking |
 | `Funke.3D` | Transform 3D, Camera 3D with sky, Mesh Renderer, materials and meshes, Directional/Point/Spot lights, Particle System 3D, 3D physics (Jolt: Rigidbody 3D, colliders, `Physics3D`) |
 
 UI (Rect Transform 2D and every UI widget), text, images, Post Processing (on a Camera 2D or Camera 3D), audio, scripting, gizmos, input and assets belong to the engine core and are always available. A project may list one module, both, or none (a pure UI app).

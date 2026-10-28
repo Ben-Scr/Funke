@@ -1,6 +1,7 @@
 #pragma once
 #include "Scene/Entity.hpp"
 #include "Scene/SceneSystem.hpp"
+#include "Scene/DelayedEntityDestruction.hpp"
 #include "Collections/Ids.hpp"
 #include "Components/General/EntityMetaDataComponent.hpp"
 #include "Core/Export.hpp"
@@ -455,6 +456,7 @@ namespace Funke {
 		void OnParticleSystem2DComponentDestruct(entt::registry& registry, EntityHandle entity);
 
 		void DestroyEntityInternal(EntityHandle nativeEntity, bool markDirty);
+		void DetachDestroyedEntity(EntityHandle entity);
 		EntityID AllocateRuntimeEntityID();
 		void RegisterEntityIdentity(EntityHandle entity);
 		void UnregisterEntityIdentity(EntityHandle entity);
@@ -507,7 +509,7 @@ namespace Funke {
 		uint64_t m_StaticRenderDataVersion = 1;
 		uint64_t m_HierarchyVersion = 1;
 
-		std::vector<std::pair<EntityHandle, float>> m_PendingDestroys;
+		DelayedEntityDestruction m_PendingDestroys;
 
 		std::vector<std::function<void()>> m_PendingEntityRefFixups;
 		std::unordered_map<uint64_t, uint64_t> m_EntityRefRemap;
@@ -518,6 +520,13 @@ namespace Funke {
 		std::unordered_map<EntityID, EntityHandle> m_RuntimeIdToEntity;
 		std::unordered_map<uint64_t, EntityHandle> m_SceneGuidToEntity;
 		std::unordered_set<uint32_t> m_EntitiesBeingDestroyed;
+		struct DestructionChildren {
+			std::unordered_map<EntityHandle, size_t> Positions;
+			size_t Size = 0;
+			uint64_t HierarchyVersion = 0;
+			bool Unique = true;
+		};
+		std::unordered_map<EntityHandle, DestructionChildren> m_DestructionChildren;
 
 		bool m_SuppressConstructHooks = false;
 

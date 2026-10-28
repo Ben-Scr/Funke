@@ -67,7 +67,8 @@ internal static class CoroutineContext
 public readonly struct WaitForNextFrame
 {
     private readonly CancellationToken m_Token;
-    public WaitForNextFrame(CancellationToken token = default) { m_Token = CoroutineContext.Resolve(token); }
+    public WaitForNextFrame() : this(default) { }
+    public WaitForNextFrame(CancellationToken token) { m_Token = CoroutineContext.Resolve(token); }
     public CoroutineAwaiter GetAwaiter()
         => new CoroutineAwaiter(WaitKind.Frames, 0f, 1, null, m_Token);
 }
@@ -96,7 +97,8 @@ public readonly struct WaitForSeconds
 public readonly struct WaitForFixedUpdate
 {
     private readonly CancellationToken m_Token;
-    public WaitForFixedUpdate(CancellationToken token = default) { m_Token = CoroutineContext.Resolve(token); }
+    public WaitForFixedUpdate() : this(default) { }
+    public WaitForFixedUpdate(CancellationToken token) { m_Token = CoroutineContext.Resolve(token); }
     public CoroutineAwaiter GetAwaiter()
         => new CoroutineAwaiter(WaitKind.FixedUpdate, 0f, 0, null, m_Token);
 }

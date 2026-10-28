@@ -138,11 +138,11 @@ namespace Funke {
 
 	Entity EntityHelper::CreateUISlider(Scene& scene) {
 		Entity entity = CreateWith<RectTransform2DComponent, ImageComponent,
-			SliderComponent>(scene);
+			InteractableComponent, SliderComponent>(scene);
 		entity.AddComponent<NameComponent>(NameComponent("Slider"));
 		auto& rect = entity.GetComponent<RectTransform2DComponent>();
-		rect.SizeDelta = Vec2{ 220.0f, 20.0f };
-		entity.GetComponent<ImageComponent>().Color = Color{ 0.18f, 0.20f, 0.24f, 1.0f };
+		rect.SizeDelta = Vec2{ 220.0f, 10.0f };
+		entity.GetComponent<ImageComponent>().Color = Color{ 0.18f, 0.22f, 0.29f, 1.0f };
 
 		Entity fill = CreateWith<RectTransform2DComponent, ImageComponent>(scene);
 		fill.AddComponent<NameComponent>(NameComponent("Fill"));
@@ -151,16 +151,19 @@ namespace Funke {
 		fillRect.AnchorMax = Vec2{ 0.0f, 0.5f };
 		fillRect.Pivot = Vec2{ 0.0f, 0.5f };
 		fillRect.AnchoredPosition = Vec2{ 0.0f, 0.0f };
-		fillRect.SizeDelta = Vec2{ 0.0f, 20.0f };
-		fill.GetComponent<ImageComponent>().Color = Color{ 0.30f, 0.55f, 0.95f, 1.0f };
+		fillRect.SizeDelta = Vec2{ 0.0f, 10.0f };
+		fill.GetComponent<ImageComponent>().Color = Color{ 0.16f, 0.67f, 0.98f, 1.0f };
 		fill.SetParent(entity);
 
 		Entity handle = CreateWith<RectTransform2DComponent, ImageComponent,
 			InteractableComponent>(scene);
 		handle.AddComponent<NameComponent>(NameComponent("Handle"));
 		auto& handleRect = handle.GetComponent<RectTransform2DComponent>();
-		handleRect.SizeDelta = Vec2{ 18.0f, 28.0f };
-		handle.GetComponent<ImageComponent>().Color = Color{ 0.95f, 0.95f, 0.95f, 1.0f };
+		handleRect.SizeDelta = Vec2{ 32.0f, 32.0f };
+		auto& handleImg = handle.GetComponent<ImageComponent>();
+		handleImg.Color = Color{ 1.0f, 1.0f, 1.0f, 1.0f };
+		handleImg.TextureHandle = TextureManager::GetDefaultTexture(DefaultTexture::Circle);
+		handleImg.TextureAssetId = UUID{ TextureManager::GetTextureAssetUUID(handleImg.TextureHandle) };
 		handle.SetParent(entity);
 
 		auto& slider = entity.GetComponent<SliderComponent>();
@@ -227,7 +230,10 @@ namespace Funke {
 
 		auto& cs = entity.GetComponent<CircularSliderComponent>();
 		cs.Value = 0.5f;
-		cs.RingThickness = 20.0f;
+		cs.RingThickness = 10.0f;
+		cs.BackgroundColor = Color{ 0.18f, 0.22f, 0.29f, 1.0f };
+		cs.FillColor = Color{ 0.16f, 0.67f, 0.98f, 1.0f };
+		cs.NormalColor = Color{ 1.0f, 1.0f, 1.0f, 1.0f };
 
 		Entity handle = CreateWith<RectTransform2DComponent, ImageComponent, InteractableComponent>(scene);
 		handle.AddComponent<NameComponent>(NameComponent("Handle"));
@@ -235,11 +241,11 @@ namespace Funke {
 		handleRect.AnchorMin = Vec2{ 0.5f, 0.5f };
 		handleRect.AnchorMax = Vec2{ 0.5f, 0.5f };
 		handleRect.Pivot = Vec2{ 0.5f, 0.5f };
-		handleRect.SizeDelta = Vec2{ 20.0f, 20.0f };
+		handleRect.SizeDelta = Vec2{ 32.0f, 32.0f };
 		auto& handleImg = handle.GetComponent<ImageComponent>();
 		handleImg.Color = cs.NormalColor;
-		// TextureAssetId left unset; runtime only needs TextureHandle and the inspector shows "(None)" until explicitly set.
 		handleImg.TextureHandle = TextureManager::GetDefaultTexture(DefaultTexture::Circle);
+		handleImg.TextureAssetId = UUID{ TextureManager::GetTextureAssetUUID(handleImg.TextureHandle) };
 		handle.SetParent(entity);
 		cs.HandleEntity = handle.GetHandle();
 
@@ -321,7 +327,7 @@ namespace Funke {
 		checkRect.AnchoredPosition = Vec2{ 0.0f, 0.0f };
 		// 4px inset on each side: toggle is 28x28, checkmark 20x20.
 		checkRect.SizeDelta = Vec2{ 20.0f, 20.0f };
-		check.GetComponent<ImageComponent>().Color = Color{ 0.30f, 0.65f, 0.30f, 1.0f };
+		check.GetComponent<ImageComponent>().Color = Color{ 0.16f, 0.67f, 0.98f, 1.0f };
 		check.AddComponent<DisabledTag>();
 		check.SetParent(entity);
 

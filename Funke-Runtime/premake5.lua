@@ -71,8 +71,7 @@ project "Funke-Runtime"
     {
         CopyFunkeAssets,
         CopyFunkeEngineDll,
-        CopySDL3SharedLib,
-        CopyGladDll
+        CopySDL3SharedLib
     }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
     postbuildcommands(CopyScriptCoreArtifacts)

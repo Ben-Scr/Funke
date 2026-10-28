@@ -5,8 +5,9 @@ The script deliberately keeps preview and asset writing separate:
     python scripts/assets/generate_editor_icons.py --preview all
     python scripts/assets/generate_editor_icons.py --write
 
-Every shipped size is rendered from the 24 unit geometry independently.  The
-preview command only writes contact sheets under tmp/ and never touches assets.
+Generated sizes are rendered from the 24 unit geometry independently. Custom
+raster icons are preserved and loaded from the shipped PNGs for previews.
+The preview command only writes contact sheets under tmp/ and never touches assets.
 """
 
 from __future__ import annotations
@@ -24,9 +25,21 @@ FILE_ICONS = ROOT / "Funke-Runtime" / "FunkeAssets" / "Textures" / "Editor" / "F
 PREVIEW_DIR = ROOT / "tmp"
 SIZES = (16, 32, 64, 128)
 FILE_SIZES = (16, 32, 64, 128, 256)
+CUSTOM_FILE_ICONS = {
+    "file_anim", "file_audio", "file_bin", "file_cs", "file_dataasset",
+    "file_fallback", "file_font", "file_json", "file_model", "file_prefab", "file_scene",
+    "file_shader", "file_txt", "file_xml", "folder_zip",
+}
+CUSTOM_COMPONENT_ICONS = {
+    "animator", "audio_source", "camera", "collider_box_2d", "collider_box_3d",
+    "collider_capsule_3d", "collider_circle_2d", "collider_mesh_3d", "collider_polygon_2d",
+    "collider_sphere_3d", "light_point", "light_spot", "light_sun", "particles",
+    "prefab", "prefab_missing", "rigidbody_2d", "rigidbody_3d", "script",
+}
+CUSTOM_GLYPHS = {"open_folder"}
 FILE_256_NAMES = {
     "file_anim", "file_audio", "file_bin", "file_cs", "file_dataasset",
-    "file_fallback", "file_font", "file_json", "file_scene", "file_shader",
+    "file_fallback", "file_font", "file_json", "file_model", "file_scene", "file_shader",
     "file_txt", "file_xml", "folder_zip",
 }
 SUPERSAMPLE = 4
@@ -48,7 +61,7 @@ FILE_COLORS = {
     "file_audio": AUDIO, "file_prefab": PREFAB, "file_scene": "#3E80BA",
     "file_dataasset": "#4CB8A8", "file_json": "#F2B33D", "file_xml": "#8A86E8",
     "file_font": "#F26B66", "file_txt": "#A0A4AD", "file_bin": "#A0A4AD",
-    "file_fallback": "#A0A4AD",
+    "file_fallback": "#A0A4AD", "file_model": "#F0A44B",
 }
 
 GLYPHS = [
@@ -58,6 +71,7 @@ GLYPHS = [
     "minus", "move", "pause", "pen", "pin", "play", "plus", "post_processing",
     "redo", "reset", "rotation", "save", "scale", "search", "settings", "settings_gear",
     "step_forward", "stop", "undo", "zoom_in", "zoom_out", "open_folder",
+    "monitor", "image", "flag", "hammer", "systems", "physics",
 ]
 COMPONENTS = [
     "animator", "audio_source", "camera", "collider_box_2d", "collider_box_3d", "collider_capsule_3d",
@@ -135,7 +149,32 @@ def chevron(c: Canvas, direction: str, color: str):
 
 def glyph(c: Canvas, name: str):
     q = GREY
-    if name.startswith("arrow_"):
+    if name == "monitor":
+        c.rect((3, 4, 21, 16), q, radius=2)
+        c.line([(12, 16), (12, 20)], q)
+        c.line([(8, 20), (16, 20)], q)
+    elif name == "image":
+        c.rect((3, 4, 21, 20), q, radius=2)
+        c.circle((8, 9), 1.3, q, fill=q)
+        c.line([(4, 17), (10, 12), (14, 16), (17, 13), (20, 16)], q)
+    elif name == "flag":
+        c.line([(5, 20), (5, 4)], q)
+        c.poly([(5, 4), (12, 4), (14, 6), (20, 6), (20, 15), (13, 15), (11, 13), (5, 13)], q)
+    elif name == "hammer":
+        c.poly([(4, 17), (12, 9), (15, 12), (7, 20)], q)
+        c.poly([(9, 6), (12, 3), (21, 12), (18, 15)], q)
+    elif name == "systems":
+        c.line([(12, 9), (12, 12)], q)
+        c.line([(6, 15), (6, 12), (18, 12), (18, 15)], q)
+        c.rect((9, 3, 15, 9), q, radius=1)
+        c.rect((3, 15, 9, 21), q, radius=1)
+        c.rect((15, 15, 21, 21), q, radius=1)
+    elif name == "physics":
+        c.circle((8, 7), 4, q)
+        c.line([(17, 4), (17, 16)], q)
+        c.line([(14, 13), (17, 16), (20, 13)], q)
+        c.line([(4, 20), (20, 20)], q)
+    elif name.startswith("arrow_"):
         chevron(c, name.split("_")[1], q)
     elif name in {"plus", "minus"}:
         c.line([(6, 12), (18, 12)], q)
@@ -309,7 +348,20 @@ def file_icon(c: Canvas, name: str):
         for y in (10,13,16): c.line([(8, y),(17,y)],WHITE,1)
 
 
+def is_custom(name: str, family: str):
+    return (family == "file" and name in CUSTOM_FILE_ICONS
+            or family == "component" and name in CUSTOM_COMPONENT_ICONS
+            or family == "glyph" and name in CUSTOM_GLYPHS)
+
+
 def render(name: str, family: str, size: int):
+    if is_custom(name, family):
+        root = FILE_ICONS if family == "file" else GENERAL
+        path = root / name / f"{name}_{size}.png"
+        with Image.open(path) as image:
+            if image.size != (size, size):
+                raise ValueError(f"Unexpected icon size: {path}")
+            return image.convert("RGBA")
     c = Canvas(size)
     if family == "glyph": glyph(c, name)
     elif family == "component": component(c, name)
@@ -335,11 +387,11 @@ def preview(names, family: str, title: str, destination: Path):
         d.rounded_rectangle((x,y,x+186,y+116),radius=6,fill="#2A2C30")
         icon_family = ("status" if name in STATUSES else "file") if family == "status-files" else family
         main=render(name,icon_family,64)
-        if icon_family == "glyph": main=tint(main,"#EBECEF")
+        if icon_family == "glyph" and name not in CUSTOM_GLYPHS: main=tint(main,"#EBECEF")
         sheet.alpha_composite(main,(x+14,y+10))
         small=render(name,icon_family,16)
-        dark=tint(small,"#EBECEF") if icon_family=="glyph" else small
-        light=tint(small,"#1E2025") if icon_family=="glyph" else small
+        dark=tint(small,"#EBECEF") if icon_family=="glyph" and name not in CUSTOM_GLYPHS else small
+        light=tint(small,"#1E2025") if icon_family=="glyph" and name not in CUSTOM_GLYPHS else small
         sheet.alpha_composite(dark,(x+92,y+22));
         light_panel=Image.new("RGBA",(32,32),"#F2F3F5"); light_panel.alpha_composite(light,(8,8)); sheet.alpha_composite(light_panel,(x+124,y+14))
         d.text((x+8,y+88),name,fill="#BFC3CA",font=font)
@@ -348,6 +400,9 @@ def preview(names, family: str, title: str, destination: Path):
 
 def write_family(family: str, names: list[str], root: Path, sizes: tuple[int, ...]):
     for name in names:
+        if is_custom(name, family):
+            print(f"preserved custom {family} icon: {name}")
+            continue
         folder=root/name; folder.mkdir(parents=True,exist_ok=True)
         for size in sizes: render(name,family,size).save(folder/f"{name}_{size}.png",optimize=True)
         print(f"wrote {family}: {name}")
@@ -358,6 +413,9 @@ def write_assets():
     write_family("component", COMPONENTS, GENERAL, SIZES)
     write_family("status", STATUSES, GENERAL, SIZES)
     for name in FILES:
+        if name in CUSTOM_FILE_ICONS:
+            print(f"preserved custom file icon: {name}")
+            continue
         file_sizes = FILE_SIZES if name in FILE_256_NAMES else SIZES
         write_family("file", [name], FILE_ICONS, file_sizes)
 

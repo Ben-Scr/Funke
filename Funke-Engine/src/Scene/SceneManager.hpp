@@ -40,7 +40,8 @@ namespace Funke {
 		CommitFailed,
 		AfterStartFailed,
 		SnapshotFailed,
-		WrongThread
+		WrongThread,
+		Cancelled
 	};
 
 	struct FUNKE_API SceneLoadResult {
@@ -92,6 +93,10 @@ namespace Funke {
 		// Failed non-additive loads preserve the previously loaded scene set.
 		static SceneLoadResult TryLoadScene(const std::string& name);
 		static SceneLoadResult TryLoadSceneAdditive(const std::string& name);
+		using SceneLoadCompletion = std::function<void(uint64_t, const SceneLoadResult&)>;
+		// Main-thread API. Completion runs at a later frame boundary; file preparation runs on a worker.
+		static uint64_t LoadSceneAsync(const std::string& name, bool additive = false, SceneLoadCompletion completion = {});
+		static bool CancelSceneLoad(uint64_t operationId);
 		// Loads without scene notifications or system Awake/Start and never makes the instance active.
 		static SceneLoadResult TryLoadSceneAdditiveSuspended(const std::string& name);
 		// Keeps the live state: snapshots the loaded scene and restores it into a fresh instance.
@@ -180,6 +185,8 @@ namespace Funke {
 		void Shutdown();
 
 		void UpdateScenes();
+		void PumpAsyncSceneLoads();
+		void CancelAllAsyncSceneLoads();
 		void OnPreRenderScenes();
 		void FixedUpdateScenes();
 		void InitializeStartupScenes();
@@ -188,7 +195,9 @@ namespace Funke {
 		SceneLoadResult TryLoadSceneImpl(const std::string& name);
 		SceneLoadResult TryLoadSceneAdditiveImpl(const std::string& name);
 		SceneLoadResult TryLoadSceneAdditiveSuspendedImpl(const std::string& name);
-		SceneLoadResult TryReloadSceneImpl(const std::string& name, bool restoreLiveState = true);
+		struct AsyncSceneLoad;
+		SceneLoadResult TryReloadSceneImpl(const std::string& name, bool restoreLiveState = true,
+			const AsyncSceneLoad* preparedLoad = nullptr);
 		void UnloadSceneImpl(const std::string& name);
 		void UnloadAllScenesImpl(bool includePersistent);
 		void UnregisterSceneImpl(const std::string& name);
@@ -215,7 +224,8 @@ namespace Funke {
 			bool makeActive = false,
 			std::optional<size_t> insertIndex = std::nullopt,
 			bool emitNotifications = true,
-			bool suspendLifecycle = false);
+			bool suspendLifecycle = false,
+			const AsyncSceneLoad* preparedLoad = nullptr);
 		SceneDefinition* GetSceneDefinition(const std::string& name);
 		const SceneDefinition* GetSceneDefinition(const std::string& name) const;
 		LoadedSceneList::iterator FindLoadedSceneIterator(const std::string& name);
@@ -243,6 +253,8 @@ namespace Funke {
 		};
 
 		SceneDefinitionMap m_SceneDefinitions;
+		std::vector<std::shared_ptr<AsyncSceneLoad>> m_AsyncSceneLoads;
+		bool m_ShuttingDown = false;
 		bool m_LoadInProgress = false;
 		std::vector<std::string> m_SceneDefinitionOrder;
 		LoadedSceneList m_LoadedScenes;

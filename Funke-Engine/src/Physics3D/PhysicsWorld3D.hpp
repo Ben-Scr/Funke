@@ -36,6 +36,14 @@ namespace Funke {
 
 	enum class CollisionPhase3D : int { Enter = 0, Stay = 1, Exit = 2 };
 
+	struct PhysicsSyncStats3D {
+		size_t OwnerSearches = 0;
+		size_t OwnerFramesRecomputed = 0;
+		size_t ColliderPosesRecomputed = 0;
+		size_t BodyDescriptionsRebuilt = 0;
+		size_t CompoundSorts = 0;
+	};
+
 	// One Jolt world per scene. Entities stay the source of truth: Simulate() rebuilds bodies whose
 	// Rigidbody3D/collider fields or scale changed, teleports bodies whose Transform3D was moved from
 	// outside, steps, and writes dynamic bodies back into Transform3D.
@@ -67,6 +75,7 @@ namespace Funke {
 		void SetGravity(const Vec3& gravity);
 
 		size_t GetBodyCount() const;
+		PhysicsSyncStats3D GetLastSyncStats() const;
 		// The entity owning the body that holds `entity`'s colliders (itself or a Rigidbody3D ancestor).
 		EntityHandle FindBodyOwner(Scene& scene, EntityHandle entity) const;
 		// Creates or refreshes the entity's body now, so script calls before the first step aren't lost.

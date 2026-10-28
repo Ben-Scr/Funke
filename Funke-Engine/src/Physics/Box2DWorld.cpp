@@ -3,11 +3,51 @@
 #include "Scene/Scene.hpp"
 #include <Components/General/Transform2DComponent.hpp>
 #include "Physics/PhysicsSystem2D.hpp"
+#include "Jobs/Job.hpp"
+#include "Jobs/JobSystem.hpp"
+
+#include <box2d/constants.h>
+#include <algorithm>
+#include <array>
 
 namespace Funke {
+	namespace {
+		constexpr int k_ParallelBodyThreshold = 1024;
+		constexpr int k_SerialBodyThreshold = 512;
+		constexpr int k_MaxPhysicsWorkers = 4;
+
+		struct StepTasks {
+			std::array<JobHandle, B2_MAX_TASKS> Handles;
+			size_t Count = 0;
+			bool Parallel = false;
+		};
+
+		thread_local StepTasks* t_StepTasks = nullptr;
+
+		void* EnqueuePhysicsTask(b2TaskCallback* callback, void* context, void*) {
+			StepTasks* tasks = t_StepTasks;
+			if (!tasks || !tasks->Parallel || !JobSystem::IsInitialized() || tasks->Count >= tasks->Handles.size()) {
+				callback(context);
+				return nullptr;
+			}
+			auto& handle = tasks->Handles[tasks->Count++];
+			handle = Job::Schedule([callback, context] { callback(context); });
+			return &handle;
+		}
+
+		void FinishPhysicsTask(void* task, void*) {
+			auto& handle = *static_cast<JobHandle*>(task);
+			Job::Wait(handle);
+			handle = {};
+		}
+	}
+
 	Box2DWorld::Box2DWorld() {
 		b2WorldDef def = b2DefaultWorldDef();
 		def.enableSleep = true;
+		def.workerCount = 1;
+		def.enqueueTask = EnqueuePhysicsTask;
+		def.finishTask = FinishPhysicsTask;
 
 		def.gravity = b2Vec2{ 0, -9.8f };
 		m_WorldId = b2CreateWorld(&def);
@@ -17,7 +57,26 @@ namespace Funke {
 	}
 
 	void Box2DWorld::Step(float dt) {
+		const int availableWorkers = JobSystem::IsInitialized() ? JobSystem::GetWorkerCount() : 0;
+		const int currentWorkers = b2World_GetWorkerCount(m_WorldId);
+		// Hysteresis avoids reallocating Box2D worker contexts as bodies wake and sleep near the threshold.
+		const int threshold = currentWorkers > 1 ? k_SerialBodyThreshold : k_ParallelBodyThreshold;
+		const int workers = availableWorkers > 1 && b2World_GetAwakeBodyCount(m_WorldId) >= threshold
+			? std::min(availableWorkers, k_MaxPhysicsWorkers) : 1;
+		b2World_SetWorkerCount(m_WorldId, workers);
+		StepTasks tasks;
+		tasks.Parallel = workers > 1;
+		// Box2D enqueues on the step's caller; nested worlds need independent handle storage.
+		struct TaskScope {
+			StepTasks* Previous = t_StepTasks;
+			explicit TaskScope(StepTasks& current) { t_StepTasks = &current; }
+			~TaskScope() { t_StepTasks = Previous; }
+		} taskScope{ tasks };
 		b2World_Step(m_WorldId, dt, 5);
+	}
+
+	int Box2DWorld::GetWorkerCount() const {
+		return b2World_IsValid(m_WorldId) ? b2World_GetWorkerCount(m_WorldId) : 0;
 	}
 
 	void Box2DWorld::Destroy() {

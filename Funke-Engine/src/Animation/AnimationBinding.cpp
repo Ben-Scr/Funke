@@ -303,8 +303,14 @@ namespace Funke {
 		AnimationTarget& t = m_Targets[static_cast<size_t>(target)];
 		if (!scene.GetRegistry().valid(t.EntityId)) return false;
 		if (t.TargetKind == AnimationTarget::Kind::ScriptField) {
+			const ScriptInstance* script = FindScript(scene, t.EntityId, t.ScriptClass);
+			if (!script || script->GetGCHandle() != t.ScriptHandle) return false;
+			std::string tag, text;
+			if (!ReadScriptFieldText(t.ScriptHandle, t.Property, tag, text) || ScriptTagToType(tag) != t.ScriptType) return false;
+			t.Cached = PropertyValue::FromString(t.ScriptType, text);
+			t.HasCached = true;
 			outValue = t.Cached;
-			return t.HasCached;
+			return true;
 		}
 		Entity entity = scene.GetEntity(t.EntityId);
 		if (!t.Info->has(entity)) return false;
@@ -321,7 +327,6 @@ namespace Funke {
 		if (t.TargetKind == AnimationTarget::Kind::ScriptField) {
 			const ScriptInstance* script = FindScript(scene, t.EntityId, t.ScriptClass);
 			if (!script || script->GetGCHandle() != t.ScriptHandle) return false;
-			if (t.HasCached && t.Cached == value) return true;
 			const auto& callbacks = ScriptEngine::GetCallbacks();
 			if (!callbacks.SetScriptField) return false;
 			callbacks.SetScriptField(static_cast<int32_t>(t.ScriptHandle), t.Property.c_str(), value.ToString().c_str());

@@ -1,6 +1,7 @@
 #include <pch.hpp>
 #include "Gui/EditorTheme.hpp"
 #include "Gui/EditorUI.hpp"
+#include "Gui/EditorShortcuts.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Systems/ImGuiEditorLayer.hpp"
 #include "Core/EngineModules.hpp"
@@ -149,7 +150,7 @@ namespace Funke {
 			if (ImGui::MenuItem("Reset to Default", nullptr, false, !EditorPreferences::IsEditorViewToolbarDefault())) {
 				EditorPreferences::ResetEditorViewToolbar();
 			}
-			ImGui::TextDisabled("Hidden tools stay in the command palette (Ctrl+K).");
+			ImGui::TextDisabled("Hidden tools stay in the command palette (%s).", EditorShortcuts::k_CommandPaletteLabel);
 		}
 
 		constexpr const char* k_GameViewSettingsPopup = "##GameViewSettings";
@@ -675,9 +676,8 @@ namespace Funke {
 
 		std::optional<Camera3DView> view3D;
 		if (hasCamera3D) {
-			Transform3DHierarchySystem::Propagate(scene);
 			const auto& registry = scene.GetRegistry();
-			view3D = Renderer3D::MakeView(registry.get<Transform3DComponent>(camera3DEntity).WorldMatrix,
+			view3D = Renderer3D::MakeView(Transform3DHierarchySystem::ComputeWorldMatrix(registry, camera3DEntity),
 				registry.get<Camera3DComponent>(camera3DEntity),
 				static_cast<float>(thumbWidth) / static_cast<float>(thumbHeight));
 		}
@@ -800,9 +800,9 @@ namespace Funke {
 				renderer->RenderSceneWithVP(scene, vp, viewportAABB);
 			}
 			else {
-				SceneManager::ForeachLoadedScene([&](Scene& s) {
-					renderer->RenderSceneWithVP(s, vp, viewportAABB);
-					});
+				renderer->RenderScenesWithVP([](const auto& render) {
+					SceneManager::ForeachLoadedScene(render);
+				}, vp, viewportAABB);
 			}
 		};
 
@@ -1097,10 +1097,7 @@ namespace Funke {
 	
 			if (scene.HasComponent<BoxCollider2DComponent>(m_SelectedEntity)) {
 				auto& collider = scene.GetComponent<BoxCollider2DComponent>(m_SelectedEntity);
-				// A detached prefab-edit scene has no live b2 shape, so IsValid() is false
-				// and GetScale() returns 0. Fall back to the authored logical size
-				// (transform-scaled) so the collider gizmo still draws while editing the
-				// prefab — same shape as the FastBox no-live-collider fallback below.
+				// Detached prefab scenes have no live Box2D shape; use the authored size for their gizmos.
 				const Vec2 localScale = collider.GetLocalScale(scene);
 				const Vec2 worldSize = collider.IsValid()
 					? collider.GetScale()
@@ -1385,11 +1382,12 @@ namespace Funke {
 			renderScene->GetComponent<ParticleSystem2DComponent>(m_SelectedEntity).PreviewUpdate(dt);
 			return;
 		}
-		Transform3DHierarchySystem::Propagate(*renderScene);
-		const auto* transform = renderScene->GetRegistry().try_get<Transform3DComponent>(m_SelectedEntity);
+		const auto& registry = renderScene->GetRegistry();
+		const glm::mat4 emitterWorld = registry.all_of<Transform3DComponent>(m_SelectedEntity)
+			? Transform3DHierarchySystem::ComputeWorldMatrix(registry, m_SelectedEntity) : glm::mat4(1.0f);
 		const Application* app = Application::GetInstance();
 		renderScene->GetComponent<ParticleSystem3DComponent>(m_SelectedEntity).Simulate(dt,
-			transform ? transform->WorldMatrix : glm::mat4(1.0f),
+			emitterWorld,
 			app ? app->GetEffectiveGraphicsSettings().ParticleQuality : ParticleQualityLevel::High);
 	}
 
@@ -2975,9 +2973,8 @@ namespace Funke {
 
 				std::optional<Camera3DView> gameView3D;
 				if (hasCamera3D) {
-					Transform3DHierarchySystem::Propagate(scene);
 					const auto& registry = scene.GetRegistry();
-					gameView3D = Renderer3D::MakeView(registry.get<Transform3DComponent>(camera3DEntity).WorldMatrix,
+					gameView3D = Renderer3D::MakeView(Transform3DHierarchySystem::ComputeWorldMatrix(registry, camera3DEntity),
 						registry.get<Camera3DComponent>(camera3DEntity), static_cast<float>(fbW) / static_cast<float>(fbH));
 				}
 

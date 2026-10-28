@@ -10,6 +10,9 @@ internal sealed class FunkeSynchronizationContext : SynchronizationContext
 
     private readonly object m_Lock = new();
     private Queue<Continuation> m_Queue = new();
+    private Queue<Continuation> m_Work = new();
+    private int m_Generation;
+    private bool m_Pumping;
 
     private readonly struct Continuation
     {
@@ -33,33 +36,42 @@ internal sealed class FunkeSynchronizationContext : SynchronizationContext
     // Pending continuations capture user state machines; drop before the user ALC unloads.
     public void Clear()
     {
-        lock (m_Lock) { m_Queue = new Queue<Continuation>(); }
+        lock (m_Lock)
+        {
+            ++m_Generation;
+            m_Queue.Clear();
+        }
     }
 
     /// <summary>Drain queued continuations on the engine main thread; OperationCanceledException is swallowed (expected from cancelled async void).</summary>
     public void Pump()
     {
-        Queue<Continuation> batch;
+        int generation;
         lock (m_Lock)
         {
-            if (m_Queue.Count == 0) return;
-            batch = m_Queue;
-            m_Queue = new Queue<Continuation>();
+            if (m_Pumping || m_Queue.Count == 0) return;
+            m_Pumping = true;
+            generation = m_Generation;
+            (m_Queue, m_Work) = (m_Work, m_Queue);
         }
-
-        while (batch.TryDequeue(out var c))
+        try
         {
-            try
+            while (generation == Volatile.Read(ref m_Generation) && m_Work.TryDequeue(out var c))
             {
-                c.Callback(c.State);
+                try { c.Callback(c.State); }
+                catch (System.OperationCanceledException) { }
+                catch (System.Exception ex)
+                {
+                    Log.Error($"[Coroutine] Unhandled exception in continuation: {ex}");
+                }
             }
-            catch (System.OperationCanceledException)
+        }
+        finally
+        {
+            lock (m_Lock)
             {
-                // expected for cancelled awaits in async void
-            }
-            catch (System.Exception ex)
-            {
-                Log.Error($"[Coroutine] Unhandled exception in continuation: {ex}");
+                m_Work.Clear();
+                m_Pumping = false;
             }
         }
     }

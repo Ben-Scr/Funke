@@ -17,6 +17,11 @@ namespace Funke {
 		// No rendering in Minimal -> no shaders to cache.
 		config.EnableShaderManager = false;
 		config.EnablePackageHost = false;
+		config.EnableScenes = false;
+		config.EnableJobSystem = false;
+		config.EnableFrameArenas = false;
+		config.RegisterBuiltInAssets = false;
+		config.AutoCreateDefaultCamera2D = false;
 		// Window-icon and vsync are not subsystem toggles — leave them alone.
 		return config;
 	}

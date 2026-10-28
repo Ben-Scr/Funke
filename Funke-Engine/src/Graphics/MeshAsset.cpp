@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <limits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Funke {
@@ -76,10 +77,15 @@ namespace Funke {
 		struct Entry {
 			MeshAsset Value;
 			std::string Path;
+			std::unordered_map<std::string, FileStamp> Dependencies;
 			bool Valid = false;
 			bool Runtime = false;
 			std::chrono::steady_clock::time_point LastAttempt{};
+			std::chrono::steady_clock::time_point LastUsed{};
+			bool UsedSincePurge = false;
 		};
+
+		bool LoadMeshAsset(const std::string& path, MeshAsset& outAsset, std::unordered_map<std::string, FileStamp>* dependencies);
 
 		std::unordered_map<uint64_t, Entry>& Entries() {
 			static std::unordered_map<uint64_t, Entry> s_Entries;
@@ -111,7 +117,8 @@ namespace Funke {
 			entry.LastAttempt = std::chrono::steady_clock::now();
 			entry.Path = AssetRegistry::ResolvePath(guid);
 			entry.Value = MeshAsset{};
-			entry.Valid = !entry.Path.empty() && MeshLibrary::LoadAssetFromFile(entry.Path, entry.Value);
+			entry.Dependencies.clear();
+			entry.Valid = !entry.Path.empty() && LoadMeshAsset(entry.Path, entry.Value, &entry.Dependencies);
 			if (!entry.Valid) return false;
 
 			UpdateBounds(entry.Value);
@@ -269,6 +276,8 @@ namespace Funke {
 		else if (!it->second.Valid && std::chrono::steady_clock::now() - it->second.LastAttempt > std::chrono::seconds(1)) {
 			LoadEntry(guid, it->second);
 		}
+		it->second.LastUsed = std::chrono::steady_clock::now();
+		it->second.UsedSincePurge = true;
 		return it->second.Valid ? &it->second.Value : nullptr;
 	}
 
@@ -284,34 +293,42 @@ namespace Funke {
 	}
 
 	bool MeshLibrary::LoadAssetFromFile(const std::string& path, MeshAsset& outAsset) {
-		outAsset = MeshAsset{};
-		if (!File::Exists(path)) return false;
-		// Recorded even when parsing fails, so fixing the file on disk triggers a reload.
-		KnownFileStamps::Record(path);
-		std::string error;
-		const std::filesystem::path nativePath = Path::FromUtf8(path);
-		std::string extension = Path::ToUtf8(nativePath.extension());
-		std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-		bool loaded = false;
-		if (extension == k_GltfMeshExtension || extension == k_GlbMeshExtension) {
-			const std::vector<uint8_t> bytes = File::ReadAllBytes(path);
-			const std::filesystem::path directory = nativePath.parent_path();
-			loaded = ParseGltf(bytes, [&](const std::string& uri, std::vector<uint8_t>& out) {
-				const std::string external = Path::ToUtf8(directory / Path::FromUtf8(uri));
-				if (!File::Exists(external)) return false;
-				out = File::ReadAllBytes(external);
-				KnownFileStamps::Record(external);
-				return true;
-			}, outAsset, &error);
+		return LoadMeshAsset(path, outAsset, nullptr);
+	}
+
+	namespace {
+		bool LoadMeshAsset(const std::string& path, MeshAsset& outAsset, std::unordered_map<std::string, FileStamp>* dependencies) {
+			outAsset = MeshAsset{};
+			if (dependencies) (*dependencies)[path] = FileStamp::Read(path);
+			if (!File::Exists(path)) return false;
+			// Recorded even when parsing fails, so fixing the file on disk triggers a reload.
+			KnownFileStamps::Record(path);
+			std::string error;
+			const std::filesystem::path nativePath = Path::FromUtf8(path);
+			std::string extension = Path::ToUtf8(nativePath.extension());
+			std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			bool loaded = false;
+			if (extension == k_GltfMeshExtension || extension == k_GlbMeshExtension) {
+				const std::vector<uint8_t> bytes = File::ReadAllBytes(path);
+				const std::filesystem::path directory = nativePath.parent_path();
+				loaded = ParseGltf(bytes, [&](const std::string& uri, std::vector<uint8_t>& out) {
+					const std::string external = Path::ToUtf8((directory / Path::FromUtf8(uri)).lexically_normal());
+					if (dependencies) (*dependencies)[external] = FileStamp::Read(external);
+					if (!File::Exists(external)) return false;
+					out = File::ReadAllBytes(external);
+					KnownFileStamps::Record(external);
+					return true;
+				}, outAsset, &error);
+			}
+			else {
+				loaded = ParseObjMesh(File::ReadAllText(path), outAsset.Data, &error);
+			}
+			if (!loaded) {
+				FNK_CORE_WARN_TAG("Mesh", "Could not load mesh '{}': {}", path, error);
+				return false;
+			}
+			return true;
 		}
-		else {
-			loaded = ParseObjMesh(File::ReadAllText(path), outAsset.Data, &error);
-		}
-		if (!loaded) {
-			FNK_CORE_WARN_TAG("Mesh", "Could not load mesh '{}': {}", path, error);
-			return false;
-		}
-		return true;
 	}
 
 	void MeshLibrary::Invalidate(uint64_t guid) {
@@ -322,11 +339,30 @@ namespace Funke {
 	size_t MeshLibrary::ReloadChangedFromDisk() {
 		size_t reloaded = 0;
 		for (auto& [guid, entry] : Entries()) {
-			if (entry.Path.empty() || !KnownFileStamps::HasChangedOnDisk(entry.Path)) continue;
+			if (entry.Path.empty() || !std::any_of(entry.Dependencies.begin(), entry.Dependencies.end(), [](const auto& dependency) {
+				return FileStamp::Read(dependency.first) != dependency.second;
+			})) continue;
 			LoadEntry(guid, entry);
 			++reloaded;
 		}
 		return reloaded;
+	}
+
+	size_t MeshLibrary::PurgeUnused(std::chrono::milliseconds maxIdle) {
+		const auto now = std::chrono::steady_clock::now();
+		auto& entries = Entries();
+		const size_t before = entries.size();
+		for (auto it = entries.begin(); it != entries.end();) {
+			Entry& entry = it->second;
+			const bool used = std::exchange(entry.UsedSincePurge, false);
+			if (!entry.Runtime && !used && now - entry.LastUsed >= maxIdle) {
+				it = entries.erase(it);
+			}
+			else {
+				++it;
+			}
+		}
+		return before - entries.size();
 	}
 
 	void MeshLibrary::Clear() {

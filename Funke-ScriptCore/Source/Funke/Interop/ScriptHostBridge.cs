@@ -127,13 +127,15 @@ internal unsafe struct ManagedCallbacksStruct
 
     // ── Package scripts (appended for binary compat) ──
     public delegate* unmanaged<byte*, int, int> GetPackageScriptTypes;
+    public delegate* unmanaged<ulong, int, byte*, ulong, void> SceneLoadCompleted;
+    public delegate* unmanaged<void> PumpSceneLoadRequests;
 }
 
 /// <summary>Guards the native/managed function-pointer tables against layout drift before either is touched.</summary>
 internal static class InteropHandshake
 {
     // Bump together with k_ScriptInteropLayoutVersion (ScriptGlue.hpp) on any add/remove/reorder in either table.
-    internal const int LayoutVersion = 38;
+    internal const int LayoutVersion = 41;
 
     // Codes are mirrored in ScriptEngine::LoadCoreAssembly.
     internal const int Ok = 0;
@@ -289,6 +291,8 @@ internal static class ScriptHostBridge
             managedCallbacks->GetSavedLanguage = &Localization.GetSavedLanguage;
             managedCallbacks->RaiseLanguageChanged = &Localization.RaiseLanguageChangedFromNative;
             managedCallbacks->GetPackageScriptTypes = &PackageScriptRegistry.GetPackageScriptTypes;
+            managedCallbacks->SceneLoadCompleted = &ScriptInstanceManager.SceneLoadCompleted;
+            managedCallbacks->PumpSceneLoadRequests = &ScriptInstanceManager.PumpSceneLoadRequests;
 
             ScriptInstanceManager.SetCoreAssembly(typeof(ScriptHostBridge).Assembly);
 

@@ -2,6 +2,8 @@
 
 #include "Core/PackageHost.hpp"
 #include "Core/Platform.hpp"
+#include "Packages/PackageManifest.hpp"
+#include "Packages/PackageResolver.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Scene/ComponentRegistry.hpp"
 
@@ -195,6 +197,35 @@ TEST_CASE("PackageHost reports never-built project source packages as stale") {
 		== std::vector<std::string>{ "Game.Tools" });
 	CHECK(Funke::PackageHostDetail::FindStaleProjectNativePackages(project, "Release", {})
 		== std::vector<std::string>{ "Game.Tools" });
+}
+
+TEST_CASE("PackageHost uses project manifests before bundled engine packages") {
+	ScopedTempDirectory temp;
+	const auto enginePackages = temp.Path / "EngineSDK" / "packages";
+	const Funke::FunkeProject project = MakeSourcePackageProject(temp.Path / "Project");
+	WriteManifest(enginePackages, "Game.Tools", "csharp = { sources = { \"Source/**.cs\" } }");
+	WriteManifest(enginePackages, "Game.Fallback", "csharp = { sources = { \"Source/**.cs\" } }");
+	const auto manifests = Funke::PackageHostDetail::DiscoverPackageManifests(project, enginePackages);
+	REQUIRE(manifests.size() == 2);
+	CHECK(manifests.front().Name == "Game.Tools");
+	CHECK(manifests.front().HasNativeLayer);
+	CHECK_FALSE(manifests.front().HasCSharpLayer);
+	CHECK(manifests.back().Name == "Game.Fallback");
+	const auto resolution = Funke::ResolvePackages(manifests, { "Game.Tools", "Game.Fallback" }, Funke::GetEngineCompatibilityVersion());
+	CHECK(resolution.Issues.empty());
+}
+
+TEST_CASE("PackageHost retains duplicate names inside one package root for diagnostics") {
+	ScopedTempDirectory temp;
+	const Funke::FunkeProject project = MakeSourcePackageProject(temp.Path);
+	const auto duplicate = temp.Path / "Packages" / "Game.Duplicate";
+	std::filesystem::create_directories(duplicate);
+	std::filesystem::copy_file(temp.Path / "Packages" / "Game.Tools" / "funke-package.lua",
+		duplicate / "funke-package.lua");
+	const auto manifests = Funke::PackageHostDetail::DiscoverPackageManifests(project, {});
+	REQUIRE(manifests.size() == 2);
+	const auto resolution = Funke::ResolvePackages(manifests, { "Game.Tools" }, Funke::GetEngineCompatibilityVersion());
+	CHECK_FALSE(resolution.GetMessages("Game.Tools").empty());
 }
 
 TEST_CASE("PackageHost reports project packages built against another engine as stale") {

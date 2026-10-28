@@ -240,9 +240,11 @@ namespace Funke {
 
 	void Entity::SetParent(Entity parent) {
 		if (!IsValid()) return;
+		if (m_Scene && m_Scene->IsEntityBeingDestroyed(m_EntityHandle)) return;
 
 		const EntityHandle parentHandle = parent.m_EntityHandle;
 		if (parentHandle != entt::null && (!parent.IsValid() || !HasSameSceneLifetime(parent))) return;
+		if (parentHandle != entt::null && m_Scene && m_Scene->IsEntityBeingDestroyed(parentHandle)) return;
 		if (parentHandle == m_EntityHandle) return; // can't parent to self
 
 		// Cycle check: refuse if `parent` is a descendant of `this`.
@@ -250,6 +252,16 @@ namespace Funke {
 			FNK_WARN_TAG("Entity", "SetParent refused: would create a cycle");
 			return;
 		}
+
+#if FUNKE_WITH_2D
+		const auto* previousHierarchy = m_Registry->try_get<HierarchyComponent>(m_EntityHandle);
+		const EntityHandle previousParent = previousHierarchy ? previousHierarchy->Parent : entt::null;
+		if (previousParent != parentHandle) {
+			if (auto* transform = m_Registry->try_get<Transform2DComponent>(m_EntityHandle)) {
+				transform->MarkDirty();
+			}
+		}
+#endif
 
 		Scene::EnabledStateBatch batch(m_Scene);
 

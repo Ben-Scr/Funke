@@ -457,20 +457,16 @@ namespace Funke {
 		m_GlobalsBuffer = device.CreateBuffer(&desc);
 		if (!m_GlobalsBuffer) return false;
 
-		m_ReferenceToken = TextureManager::AddReferenceProvider([this](const TextureManager::ReferenceEmitter& emit) {
-			for (const auto& [guid, entry] : m_Textures) {
-				if (TextureManager::IsValid(entry.Handle)) emit(entry.Handle);
-			}
-		});
 		// Bind groups hold texture views; drop them before a view dies.
-		m_DestroyToken = TextureManager::AddDestroyListener([this](TextureHandle) { m_Groups.clear(); });
+		m_DestroyToken = TextureManager::AddDestroyListener([this](TextureHandle handle) {
+			m_Groups.clear();
+			std::erase_if(m_Textures, [handle](const auto& pair) { return pair.second.Handle == handle; });
+		});
 		return true;
 	}
 
 	void CustomMaterialBindings::Shutdown() {
-		if (m_ReferenceToken != 0) TextureManager::RemoveReferenceProvider(m_ReferenceToken);
 		if (m_DestroyToken != 0) TextureManager::RemoveDestroyListener(m_DestroyToken);
-		m_ReferenceToken = 0;
 		m_DestroyToken = 0;
 		m_Groups.clear();
 		m_Layouts.clear();

@@ -6,6 +6,7 @@
 #include "Scripting/ScriptEngine.hpp"
 #include "Serialization/Json.hpp"
 #include "Gui/AssetBrowser.hpp"
+#include "Gui/EditorShortcuts.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Serialization/Path.hpp"
 #include "Project/ProjectManager.hpp"
@@ -752,6 +753,7 @@ namespace Funke {
 		if (ext == ".cpp" || ext == ".c" || ext == ".h" || ext == ".hpp")    return "file_fallback";
 		if (ext == ".scene" || ext == ".funke")                               return "file_scene";
 		if (ext == ".prefab")                                                return "file_prefab";
+		if (ext == ".obj")                                                   return "file_model";
 		if (ext == ".dataasset")                                             return "file_dataasset";
 		if (ext == ".anim")                                                  return "file_anim";
 		if (ext == ".shader")                                                return "file_shader";
@@ -860,6 +862,7 @@ namespace Funke {
 
 	void AssetBrowser::NavigateTo(const std::string& directory) {
 		m_CurrentDirectory = directory;
+		m_PendingScrollToPath.clear();
 		ClearAssetSelection();
 		CancelRename();
 		m_SearchBuffer[0] = '\0';
@@ -879,6 +882,7 @@ namespace Funke {
 	}
 
 	void AssetBrowser::Refresh() {
+		ResetBoxSelection();
 		if (m_SkipRegistrySyncOnNextRefresh) {
 			m_SkipRegistrySyncOnNextRefresh = false;
 		}
@@ -895,6 +899,7 @@ namespace Funke {
 	}
 
 	void AssetBrowser::QueueSearchRebuild() {
+		ResetBoxSelection();
 		m_SearchResults.clear();
 		m_SearchTruncated = false;
 		if (m_SearchBuffer[0] == '\0') {
@@ -979,6 +984,7 @@ namespace Funke {
 		m_SearchWorkerActive.store(false, std::memory_order_release);
 
 		if (std::string(m_SearchBuffer) == completedQuery) {
+			ResetBoxSelection();
 			m_SearchResults = std::move(results);
 			m_SearchTruncated = truncated;
 		}
@@ -1090,6 +1096,7 @@ namespace Funke {
 	}
 
 	void AssetBrowser::ClearAssetSelection() {
+		ResetBoxSelection();
 		m_SelectedPath.clear();
 		m_SelectedPaths.clear();
 		m_LastSelectionIndex = -1;
@@ -1099,6 +1106,20 @@ namespace Funke {
 #endif
 		m_SelectionActivated = false;
 		CancelRename();
+	}
+
+	void AssetBrowser::ResetBoxSelection(bool restoreSelection) {
+		if (m_BoxSelection.ActiveId == 0) return;
+		if (restoreSelection) {
+			m_SelectedPaths = std::move(m_BoxSelection.InitialPaths);
+			m_SelectedPath = std::move(m_BoxSelection.InitialPath);
+			m_LastSelectionIndex = m_BoxSelection.InitialIndex;
+			m_SelectionActivated = true;
+		}
+		if (ImGui::GetCurrentContext() && ImGui::GetActiveID() == m_BoxSelection.ActiveId) {
+			ImGui::ClearActiveID();
+		}
+		m_BoxSelection = {};
 	}
 
 	bool AssetBrowser::IsPathSelected(const std::string& path) const {
@@ -1286,28 +1307,17 @@ namespace Funke {
 			CreateFolder(m_CurrentDirectory);
 			return;
 		}
-		if (!io.KeyCtrl && !io.KeyShift && !io.KeyAlt && !io.KeySuper
-			&& (ImGui::IsKeyPressed(ImGuiKey_Delete, false)
-				|| ImGui::IsKeyPressed(ImGuiKey_KeypadDecimal, false))) {
+		if (EditorShortcuts::IsDeletePressed()) {
 			RequestDeleteSelectedAssets();
 			return;
 		}
 
-		// Backspace: navigate up one directory. NavigateUp already guards
-		// against escaping the project's Assets root, so pressing Backspace
-		// while there is a no-op (no need for a separate root check here).
-		if (!io.KeyCtrl && !io.KeyShift && !io.KeyAlt && !io.KeySuper
-			&& ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
+		if (ImGui::IsKeyChordPressed(EditorShortcuts::k_NavigateUp)) {
 			NavigateUp();
 			return;
 		}
 
-		// Enter: open the currently selected asset (same path as double-click).
-		// Folders navigate into; files route through OpenAssetExternal which
-		// scenes/prefabs/scripts all hook for their specialised open flow.
-		if (!io.KeyCtrl && !io.KeyShift && !io.KeyAlt && !io.KeySuper
-			&& (ImGui::IsKeyPressed(ImGuiKey_Enter, false)
-				|| ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) {
+		if (EditorShortcuts::IsOpenAssetPressed()) {
 			if (!m_SelectedPath.empty()) {
 				OpenAssetPath(m_SelectedPath);
 			}
@@ -1528,7 +1538,8 @@ namespace Funke {
 		RenderSearchBar();
 		RenderBreadcrumb();
 		if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
-			&& ImGui::IsKeyPressed(ImGuiKey_F2)
+			&& EditorShortcuts::IsRenamePressed()
+			&& !m_IsRenaming
 			&& !ImGui::GetIO().WantTextInput
 			&& !ImGui::IsAnyItemActive()) {
 			BeginRenameSelected();
@@ -1596,8 +1607,12 @@ namespace Funke {
 			// re-computes which segments fit.
 			const ImGuiStyle& style = ImGui::GetStyle();
 			const float refreshButtonWidth = ImGui::GetFrameHeight();
-			const float tileSliderWidth = 90.0f;
-			const float rightGroupReserved = tileSliderWidth + style.ItemSpacing.x
+			const float sizeControlWidth = ImGui::GetFontSize() * 13.0f;
+			const float compactSizeWidth = ImGui::CalcTextSize("128 px").x + style.FramePadding.x * 2.0f;
+			const bool inlineSizeControl = ImGui::GetContentRegionAvail().x >= sizeControlWidth
+				+ refreshButtonWidth + ImGui::GetFontSize() * 8.0f + style.ItemSpacing.x * 3.0f;
+			const float tileControlWidth = inlineSizeControl ? sizeControlWidth : compactSizeWidth;
+			const float rightGroupReserved = tileControlWidth + style.ItemSpacing.x
 				+ refreshButtonWidth + style.ItemSpacing.x;
 			const float available = std::max(0.0f,
 				ImGui::GetContentRegionAvail().x - rightGroupReserved);
@@ -1716,15 +1731,24 @@ namespace Funke {
 				}
 			}
 
-			// Tile-size slider + refresh button, right-aligned on the breadcrumb row.
+			// Narrow panes keep the full size control in a popup instead of squeezing the rail.
 			const float rightEdge = ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX();
-			ImGui::SameLine(std::max(0.0f, rightEdge - refreshButtonWidth - style.ItemSpacing.x - tileSliderWidth));
-			ImGui::SetNextItemWidth(tileSliderWidth);
-			if (ImGui::SliderFloat("##AssetTileSize", &m_TileSize, k_MinTileSize, k_MaxTileSize, "%.0f",
-				ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput)) {
-				m_TileSize = std::round(m_TileSize); // integer sizes keep tile/selection rects pixel-aligned
+			ImGui::SameLine(std::max(0.0f, rightEdge - refreshButtonWidth - style.ItemSpacing.x - tileControlWidth));
+			if (inlineSizeControl) {
+				EditorUI::CompactSlider("Thumbnail size", &m_TileSize, k_MinTileSize, k_MaxTileSize, 8.0f, sizeControlWidth, "%.0f px");
 			}
-			EditorUI::Tooltip("Tile size");
+			else {
+				const std::string label = std::to_string(static_cast<int>(m_TileSize)) + " px##AssetTileSize";
+				if (EditorUI::Button(label.c_str(), EditorUI::ButtonVariant::Ghost, ImVec2(compactSizeWidth, 0.0f))) {
+					ImGui::OpenPopup("##AssetTileSizePopup");
+				}
+				EditorUI::Tooltip("Thumbnail size");
+				if (ImGui::BeginPopup("##AssetTileSizePopup")) {
+					ImGui::TextDisabled("Thumbnail size");
+					EditorUI::CompactSlider("Thumbnail size", &m_TileSize, k_MinTileSize, k_MaxTileSize, 8.0f, sizeControlWidth, "%.0f px");
+					ImGui::EndPopup();
+				}
+			}
 			ImGui::SameLine(std::max(0.0f, rightEdge - refreshButtonWidth));
 			if (EditorUI::IconButton("##Refresh", "reset", "Refresh")) {
 				m_NeedsRefresh = true;
@@ -1814,23 +1838,11 @@ namespace Funke {
 			NavigateTo(path); // same path the breadcrumb uses; applied before the grid renders
 		}
 
-		// Unlike grid tiles, the tree exposes the source's own parent and descendants; refuse those
-		// drops up front so they neither highlight nor run a no-op/failing Move.
-		bool acceptDrop = true;
-		if (const ImGuiPayload* dragged = ImGui::GetDragDropPayload();
-			dragged && dragged->Data && dragged->IsDataType("ASSET_BROWSER_ITEM")) {
-			const std::string sourceKey = MakeFolderTreeKey(static_cast<const char*>(dragged->Data));
-			const std::string sourceParentKey = MakeFolderTreeKey(
-				Path::ToUtf8(Path::FromUtf8(sourceKey).parent_path()));
-			acceptDrop = key != sourceKey && key != sourceParentKey && !IsFolderTreeAncestor(sourceKey, key);
-		}
-		if (acceptDrop) {
-			DirectoryEntry dropEntry;
-			dropEntry.Path = path;
-			dropEntry.Name = label;
-			dropEntry.IsDirectory = true;
-			HandleDropTarget(dropEntry);
-		}
+		DirectoryEntry dropEntry;
+		dropEntry.Path = path;
+		dropEntry.Name = label;
+		dropEntry.IsDirectory = true;
+		HandleDropTarget(dropEntry);
 
 		if (isCurrent && m_FolderTreeRevealPending && !ImGui::IsItemVisible()) {
 			ImGui::SetScrollHereY(0.5f);
@@ -1885,7 +1897,11 @@ namespace Funke {
 	}
 
 	void AssetBrowser::RenderGrid() {
-		ImGui::BeginChild("AssetGrid", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_None);
+		if (!ImGui::BeginChild("AssetGrid", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_None)) {
+			ResetBoxSelection();
+			ImGui::EndChild();
+			return;
+		}
 
 		// Snapshot full child rect for the panel-wide HIERARCHY_ENTITY drop target — covers tile gaps and empty rows that BeginDragDropTarget() would miss.
 		ImGuiWindow* const gridWindow = ImGui::GetCurrentWindow();
@@ -1898,13 +1914,6 @@ namespace Funke {
 
 		m_ItemRightClicked = false;
 
-		if (ImGui::IsWindowHovered()
-			&& ImGui::IsMouseReleased(ImGuiMouseButton_Left)
-			&& !IsLeftMouseDragPastClickThreshold()
-			&& !ImGui::IsAnyItemHovered()) {
-			ClearAssetSelection();
-		}
-
 		// Avoid copying m_Entries (can be thousands of entries) every frame; only the
 		// rare pending-rename case needs a mutable copy with one synthetic entry. m_Entries
 		// is mutated only by Refresh() (not mid-render), so referencing it is safe here.
@@ -1913,12 +1922,16 @@ namespace Funke {
 		if (m_PendingScriptType != PendingScriptType::None
 			&& m_PendingScriptDir == m_CurrentDirectory
 			&& !m_RenamePath.empty()) {
-			DirectoryEntry pendingEntry;
-			pendingEntry.Path = m_RenamePath;
-			pendingEntry.Name = std::filesystem::path(m_RenamePath).filename().string();
-			pendingEntry.IsDirectory = false;
 			entriesWithPending = m_Entries;
-			entriesWithPending.push_back(std::move(pendingEntry));
+			if (std::none_of(m_Entries.begin(), m_Entries.end(), [this](const DirectoryEntry& entry) {
+				return entry.Path == m_RenamePath;
+			})) {
+				DirectoryEntry pendingEntry;
+				pendingEntry.Path = m_RenamePath;
+				pendingEntry.Name = std::filesystem::path(m_RenamePath).filename().string();
+				pendingEntry.IsDirectory = false;
+				entriesWithPending.push_back(std::move(pendingEntry));
+			}
 			visibleEntriesPtr = &entriesWithPending;
 		}
 
@@ -1946,7 +1959,15 @@ namespace Funke {
 
 		std::vector<GridTile> tiles;
 		tiles.reserve(visibleEntries.size());
+		int scrollToTileIndex = -1;
+		int renameTileIndex = -1;
 		for (int i = 0; i < static_cast<int>(visibleEntries.size()); ++i) {
+			if (!m_PendingScrollToPath.empty() && visibleEntries[static_cast<std::size_t>(i)].Path == m_PendingScrollToPath) {
+				scrollToTileIndex = static_cast<int>(tiles.size());
+			}
+			if (IsRenamingEntry(visibleEntries[static_cast<std::size_t>(i)].Path)) {
+				renameTileIndex = static_cast<int>(tiles.size());
+			}
 			tiles.push_back(GridTile{ i, -1 });
 
 			auto sliceIt = m_SliceCache.find(visibleEntries[static_cast<std::size_t>(i)].Path);
@@ -1965,9 +1986,128 @@ namespace Funke {
 			: 0;
 		const float rowStartX = ImGui::GetCursorPosX();
 		const float rowStartY = ImGui::GetCursorPosY();
+		const ImVec2 contentOrigin = ImGui::GetCursorScreenPos();
+		const ImRect clipRect = gridWindow->InnerClipRect;
+		const ImGuiIO& io = ImGui::GetIO();
+		const ImGuiID boxSelectionId = ImGui::GetID("##AssetBoxSelection");
+		const float tileHeight = m_TileSize + ImGui::GetTextLineHeightWithSpacing();
+		const auto tileRect = [&](int tileIndex) {
+			const ImVec2 min((tileIndex % columns) * cellSize, (tileIndex / columns) * rowHeight);
+			return ImRect(min, ImVec2(min.x + m_TileSize, min.y + tileHeight));
+		};
+
+		if (m_BoxSelection.ActiveId != 0) {
+			ImGui::KeepAliveID(boxSelectionId);
+			if (ImGui::GetActiveID() != boxSelectionId || io.AppFocusLost
+				|| (ImGui::GetCurrentContext()->CurrentItemFlags & ImGuiItemFlags_Disabled)
+				|| ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+				ResetBoxSelection(true);
+			}
+		}
+
+		if (ImGui::IsWindowHovered() && clipRect.Contains(io.MousePos)
+			&& ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsAnyItemActive()
+			&& !m_IsRenaming && !ImGui::GetDragDropPayload()
+			&& !(ImGui::GetCurrentContext()->CurrentItemFlags & ImGuiItemFlags_Disabled)) {
+			const ImVec2 mouse(io.MousePos.x - contentOrigin.x, io.MousePos.y - contentOrigin.y);
+			bool overTile = false;
+			for (int i = 0; i < static_cast<int>(tiles.size()); ++i) {
+				if (tileRect(i).Contains(mouse)) {
+					overTile = true;
+					break;
+				}
+			}
+			if (!overTile) {
+				m_BoxSelection.ActiveId = boxSelectionId;
+				m_BoxSelection.Additive = io.KeyShift;
+				m_BoxSelection.Toggle = io.KeyCtrl;
+				m_BoxSelection.StartX = mouse.x;
+				m_BoxSelection.StartY = mouse.y;
+				m_BoxSelection.InitialPaths = GetSelectedPaths();
+				m_BoxSelection.InitialPath = m_SelectedPath;
+				m_BoxSelection.InitialIndex = m_LastSelectionIndex;
+				m_PressedPath.clear();
+#ifdef FNK_PLATFORM_WINDOWS
+				ClearExternalFileDrag();
+#endif
+				ImGui::SetActiveID(boxSelectionId, gridWindow);
+				ImGui::GetCurrentContext()->ActiveIdMouseButton = ImGuiMouseButton_Left;
+				ImGui::SetKeyOwner(ImGuiKey_MouseLeft, boxSelectionId);
+				ImGui::FocusWindow(gridWindow);
+			}
+		}
+
+		ImRect selectionRect;
+		bool drawSelectionRect = false;
+		if (m_BoxSelection.ActiveId != 0) {
+			m_BoxSelection.Active |= IsLeftMouseDragPastClickThreshold();
+			if (m_BoxSelection.Active && ImGui::IsMousePosValid()) {
+				const ImVec2 mouse(
+					std::clamp(io.MousePos.x, clipRect.Min.x, clipRect.Max.x) - contentOrigin.x,
+					std::clamp(io.MousePos.y, clipRect.Min.y, clipRect.Max.y) - contentOrigin.y);
+				selectionRect = ImRect(
+					ImVec2(std::min(m_BoxSelection.StartX, mouse.x), std::min(m_BoxSelection.StartY, mouse.y)),
+					ImVec2(std::max(m_BoxSelection.StartX, mouse.x), std::max(m_BoxSelection.StartY, mouse.y)));
+				std::vector<std::string> hits;
+				for (int i = 0; i < static_cast<int>(tiles.size()); ++i) {
+					const GridTile& tile = tiles[static_cast<std::size_t>(i)];
+					if (tile.SliceIndex < 0 && selectionRect.Overlaps(tileRect(i))) {
+						hits.push_back(visibleEntries[static_cast<std::size_t>(tile.EntryIndex)].Path);
+					}
+				}
+				std::vector<std::string> selection;
+				if (m_BoxSelection.Additive || m_BoxSelection.Toggle) {
+					const std::unordered_set<std::string> hitSet(hits.begin(), hits.end());
+					const std::unordered_set<std::string> initialSet(
+						m_BoxSelection.InitialPaths.begin(), m_BoxSelection.InitialPaths.end());
+					for (const std::string& path : m_BoxSelection.InitialPaths) {
+						if (!m_BoxSelection.Toggle || hitSet.find(path) == hitSet.end()) selection.push_back(path);
+					}
+					for (const std::string& path : hits) {
+						if (initialSet.find(path) == initialSet.end()) selection.push_back(path);
+					}
+				}
+				else {
+					selection = std::move(hits);
+				}
+				if (selection != m_SelectedPaths) {
+					m_SelectedPaths = std::move(selection);
+					m_SelectedPath = m_SelectedPaths.empty() ? std::string() : m_SelectedPaths.back();
+					const auto anchor = std::find(m_VisibleEntryPaths.begin(), m_VisibleEntryPaths.end(), m_SelectedPath);
+					m_LastSelectionIndex = anchor == m_VisibleEntryPaths.end()
+						? -1 : static_cast<int>(anchor - m_VisibleEntryPaths.begin());
+					m_SelectionActivated = true;
+				}
+
+				selectionRect.Translate(contentOrigin);
+				drawSelectionRect = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+				if (drawSelectionRect && io.MousePos.x >= clipRect.Min.x && io.MousePos.x <= clipRect.Max.x) {
+					const float overflow = io.MousePos.y < clipRect.Min.y ? io.MousePos.y - clipRect.Min.y
+						: (io.MousePos.y > clipRect.Max.y ? io.MousePos.y - clipRect.Max.y : 0.0f);
+					if (overflow != 0.0f) {
+						const float speed = std::clamp(overflow / rowHeight, -3.0f, 3.0f) * rowHeight * 8.0f;
+						ImGui::SetScrollY(std::clamp(ImGui::GetScrollY() + speed * io.DeltaTime, 0.0f, ImGui::GetScrollMaxY()));
+					}
+				}
+			}
+			if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+				if (!m_BoxSelection.Active && !m_BoxSelection.Additive && !m_BoxSelection.Toggle) {
+					ClearAssetSelection();
+				}
+				ResetBoxSelection();
+			}
+		}
 
 		ImGuiListClipper clipper;
 		clipper.Begin(rowCount, rowHeight);
+		if (scrollToTileIndex >= 0) {
+			// The target tile must be submitted before its deferred scroll can run.
+			clipper.IncludeItemByIndex(scrollToTileIndex / columns);
+		}
+		if (renameTileIndex >= 0) {
+			// Keep the input alive when scrolling or refreshing moves its tile outside the viewport.
+			clipper.IncludeItemByIndex(renameTileIndex / columns);
+		}
 		while (clipper.Step()) {
 			for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
 				ImGui::SetCursorPos(ImVec2(rowStartX, rowStartY + row * rowHeight));
@@ -1976,9 +2116,8 @@ namespace Funke {
 					if (tileIndex >= static_cast<int>(tiles.size())) {
 						break;
 					}
-					if (column > 0) {
-						ImGui::SameLine();
-					}
+					// Fixed origins keep hit testing aligned even when thumbnail or label widths differ.
+					ImGui::SetCursorPos(ImVec2(rowStartX + column * cellSize, rowStartY + row * rowHeight));
 
 					const GridTile& tile = tiles[static_cast<std::size_t>(tileIndex)];
 					const DirectoryEntry& entry = visibleEntries[static_cast<std::size_t>(tile.EntryIndex)];
@@ -2020,6 +2159,16 @@ namespace Funke {
 			EditorUI::StatusText(EditorUI::Tone::Neutral, "Too many matches - showing a subset. Refine your search.");
 		}
 
+		if (drawSelectionRect) {
+			ImDrawList* drawList = ImGui::GetWindowDrawList();
+			drawList->PushClipRect(clipRect.Min, clipRect.Max, true);
+			drawList->AddRectFilled(selectionRect.Min, selectionRect.Max,
+				ImGui::GetColorU32(EditorTheme::Colors::AssetTileSelection()));
+			drawList->AddRect(selectionRect.Min, selectionRect.Max,
+				ImGui::GetColorU32(EditorTheme::Colors::AssetTileSelectionBorder()));
+			drawList->PopClipRect();
+		}
+
 		RenderGridContextMenu();
 
 		// Panel-wide drop target via custom rect: BeginDragDropTarget() would only cover the last tile; IsAnyItemHovered() prevents overriding a tile-level target.
@@ -2044,7 +2193,7 @@ namespace Funke {
 	}
 
 	void AssetBrowser::RenderAssetTile(const DirectoryEntry& entry, int index) {
-		ImGui::PushID(index);
+		ImGui::PushID(entry.Path.c_str());
 
 		const bool isSelected = IsPathSelected(entry.Path);
 		const bool isCut = IsPathInCutClipboard(entry.Path);
@@ -2182,27 +2331,14 @@ namespace Funke {
 		}
 
 		if (IsRenamingEntry(entry.Path)) {
-			m_RenameFrameCounter++;
-
 			ImGui::PushItemWidth(m_TileSize);
-
-			if (m_RenameFrameCounter == 1) {
-				ImGui::SetKeyboardFocusHere();
-			}
-
-			bool committed = ImGui::InputText("##rename", m_RenameBuffer, sizeof(m_RenameBuffer),
-				ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
-
-			if (committed) {
+			const auto result = m_RenameInput.Render("##rename", m_RenameBuffer, sizeof(m_RenameBuffer));
+			if (result == AssetRenameInput::Result::Commit) {
 				CommitRename();
 			}
-			else if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+			else if (result == AssetRenameInput::Result::Cancel) {
 				CancelRename();
 			}
-			else if (m_RenameFrameCounter > 2 && !ImGui::IsItemActive()) {
-				CommitRename();
-			}
-
 			ImGui::PopItemWidth();
 		}
 		else {
@@ -2426,7 +2562,7 @@ namespace Funke {
 
 		if (ImGui::BeginPopup("##AssetGridCtx")) {
 			if (!m_AssetClipboardPaths.empty()) {
-				if (ImGui::MenuItem("Paste Asset", "Ctrl+V")) {
+				if (ImGui::MenuItem("Paste Asset", EditorShortcuts::k_PasteLabel)) {
 					PasteAssets();
 				}
 				ImGui::Separator();
@@ -2649,14 +2785,14 @@ namespace Funke {
 				SetSingleSelection(entry.Path, index);
 			}
 
-			if (ImGui::MenuItem("Copy", "Ctrl+C")) {
+			if (ImGui::MenuItem("Copy", EditorShortcuts::k_CopyLabel)) {
 				CopySelectedAssets(false);
 			}
 						if (ImGui::MenuItem("Copy Path")) {
 				CopyPathToClipboard(entry.Path);
 			}
 
-			if (ImGui::MenuItem("Open")) {
+			if (ImGui::MenuItem("Open", EditorShortcuts::k_OpenAssetLabel)) {
 				OpenAssetPath(entry.Path);
 				ImGui::EndPopup();
 				return;
@@ -2666,15 +2802,15 @@ namespace Funke {
 			}
 			ImGui::Separator();
 
-			if (ImGui::MenuItem("Delete", "Del")) {
+			if (ImGui::MenuItem("Delete", EditorShortcuts::k_DeleteLabel)) {
 				RequestDeleteSelectedAssets();
 				ImGui::EndPopup();
 				return;
 			}
-			if (ImGui::MenuItem("Rename", "F2", false, GetSelectedPaths().size() == 1)) {
+			if (ImGui::MenuItem("Rename", EditorShortcuts::k_RenameLabel, false, GetSelectedPaths().size() == 1)) {
 				BeginRename(entry.Path, entry.Name);
 			}
-			if (ImGui::MenuItem("Duplicate", "Ctrl+D")) {
+			if (ImGui::MenuItem("Duplicate", EditorShortcuts::k_DuplicateLabel)) {
 				DuplicateSelectedAssets();
 			}
 
@@ -2804,13 +2940,33 @@ namespace Funke {
 	}
 
 	void AssetBrowser::HandleDropTarget(const DirectoryEntry& entry) {
-		if (ImGui::BeginDragDropTarget()) {
-			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
-				std::string sourcePath(static_cast<const char*>(payload->Data));
+		std::vector<std::string> sourcePaths;
+		if (const ImGuiPayload* dragged = ImGui::GetDragDropPayload();
+			dragged && dragged->Data && dragged->IsDataType("ASSET_BROWSER_ITEM")) {
+			const std::string draggedPath(static_cast<const char*>(dragged->Data));
+			sourcePaths = IsPathSelected(draggedPath)
+				? GetSelectedPaths()
+				: std::vector<std::string>{ draggedPath };
+			const std::string targetKey = MakeFolderTreeKey(entry.Path);
+			for (const std::string& sourcePath : sourcePaths) {
+				const std::string sourceKey = MakeFolderTreeKey(sourcePath);
+				if (sourceKey == targetKey || IsFolderTreeAncestor(sourceKey, targetKey)) {
+					return;
+				}
+			}
+			std::erase_if(sourcePaths, [&](const std::string& sourcePath) {
+				return MakeFolderTreeKey(Path::ToUtf8(Path::FromUtf8(sourcePath).parent_path())) == targetKey;
+			});
+			if (sourcePaths.empty()) {
+				return;
+			}
+		}
 
-				if (sourcePath != entry.Path) {
+		if (ImGui::BeginDragDropTarget()) {
+			if (ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
+				for (const std::string& sourcePath : sourcePaths) {
 					if (Directory::Move(sourcePath, entry.Path)) {
-						m_Thumbnails.Invalidate(sourcePath);
+						m_PendingThumbnailInvalidates.push_back(sourcePath);
 						if (m_SelectedPath == sourcePath) {
 							m_SelectedPath.clear();
 						}
@@ -2822,6 +2978,9 @@ namespace Funke {
 						}
 						m_NeedsRefresh = true;
 					}
+				}
+				if (m_SelectedPath.empty() && !m_SelectedPaths.empty()) {
+					m_SelectedPath = m_SelectedPaths.back();
 				}
 			}
 			// Hierarchy entity dropped directly onto a folder tile — save the

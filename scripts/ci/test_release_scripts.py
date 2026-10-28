@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -105,18 +107,43 @@ class EditorScriptToolingSourceTests(unittest.TestCase):
 
     def test_failed_dotnet_output_is_not_trace_only(self) -> None:
         source = SCRIPT_SYSTEM.read_text(encoding="utf-8")
-
-        self.assertIn(
-            'FNK_ERROR_TAG("ScriptSystem", "dotnet build output:\\n{}", result.Output);',
-            source,
+        start = source.index("if (TryTakeTaskResult(m_RebuildTask, result))")
+        end = source.index("if (TryTakeTaskResult(m_NativeRebuildTask, result))", start)
+        managed_completion = source[start:end]
+        self.assertRegex(
+            managed_completion,
+            r'FNK_ERROR_TAG\("ScriptSystem", "(?:[^"\\]|\\.)*", result\.Output\);',
         )
-        self.assertNotIn('FNK_TRACE_TAG("ScriptSystem", "dotnet build output:', source)
+        self.assertNotRegex(
+            managed_completion,
+            r'FNK_TRACE_TAG\("ScriptSystem", "(?:[^"\\]|\\.)*", result\.Output\);',
+        )
 
     def test_file_watcher_decodes_utf8_targets(self) -> None:
         source = FILE_WATCHER_SOURCE.read_text(encoding="utf-8")
 
         self.assertIn("const std::filesystem::path path = Path::FromUtf8(pathString);", source)
         self.assertNotIn("const std::filesystem::path path(pathString);", source)
+
+
+class DevelopmentRunnerTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "Windows window capture")
+    def test_window_capture_compiles_in_available_powershell_hosts(self) -> None:
+        source = (REPO_ROOT / "scripts/dev/Run.ps1").read_text(encoding="utf-8")
+        start = source.index("Add-Type -AssemblyName System.Drawing")
+        end = source.index("[void][FunkeAgent.WindowShot]::SetProcessDPIAware()", start)
+        probe = "$ErrorActionPreference = 'Stop'\n" + source[start:end]
+        probe += "\nif (-not ('FunkeAgent.WindowShot' -as [type])) { throw 'Capture helper missing' }\n"
+        encoded = base64.b64encode(probe.encode("utf-16le")).decode("ascii")
+        hosts = [path for name in ("powershell.exe", "pwsh.exe") if (path := shutil.which(name))]
+        self.assertTrue(hosts, "No PowerShell host found")
+        for host in hosts:
+            with self.subTest(host=host):
+                result = subprocess.run(
+                    [host, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                    capture_output=True, text=True, timeout=60,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class BuildMetadataTests(unittest.TestCase):
@@ -137,7 +164,25 @@ class BuildMetadataTests(unittest.TestCase):
             "# Changelog\n\n## [2026.1.0-rc.1]\n\n- Candidate.\n",
             encoding="utf-8",
         )
+        (self.root / ".gitignore").write_text(
+            "build/\n*.generated.hpp\n.*.generated.hpp.*\n*.vcxproj\n",
+            encoding="utf-8",
+        )
+        for filename in (
+            "Funke-Engine/src/Core/Example.cpp",
+            "Funke-Engine/src/Core/Example.hpp",
+            "Funke-Engine/premake5.lua",
+            "Funke-Editor/src/Example.cpp",
+            "Funke-Engine/README.md",
+            "Funke-Runtime/FunkeAssets/example.txt",
+            "External/example/header.hpp",
+            "premake/patches/vendor/example.patch",
+        ):
+            path = self.root / filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("original\n", encoding="utf-8")
         self._git("init")
+        self._git("config", "core.autocrlf", "false")
         self._git("config", "user.email", "ci@example.invalid")
         self._git("config", "user.name", "CI")
         self._git("add", ".")
@@ -146,12 +191,14 @@ class BuildMetadataTests(unittest.TestCase):
 
         self.original_paths = {
             name: getattr(metadata_script, name)
-            for name in ("REPO_ROOT", "VERSION_PROPS", "NATIVE_HEADER", "BUILD_IDENTITY_HEADER", "MANAGED_PROPS", "MANAGED_RC", "METADATA_JSON", "CHANGELOG")
+            for name in ("REPO_ROOT", "VERSION_PROPS", "NATIVE_HEADER", "BUILD_IDENTITY_HEADER", "ENGINE_ABI_HEADER", "ENGINE_SOURCE_ROOT", "MANAGED_PROPS", "MANAGED_RC", "METADATA_JSON", "CHANGELOG")
         }
         metadata_script.REPO_ROOT = self.root
         metadata_script.VERSION_PROPS = self.root / "Version.props"
         metadata_script.NATIVE_HEADER = self.root / "Funke-Engine/src/Core/BuildMetadata.generated.hpp"
         metadata_script.BUILD_IDENTITY_HEADER = self.root / "Funke-Engine/src/Core/BuildIdentity.generated.hpp"
+        metadata_script.ENGINE_ABI_HEADER = self.root / "Funke-Engine/src/Core/EngineAbi.generated.hpp"
+        metadata_script.ENGINE_SOURCE_ROOT = self.root / "Funke-Engine/src"
         metadata_script.MANAGED_PROPS = self.root / "build/BuildMetadata.props"
         metadata_script.MANAGED_RC = self.root / "build/ManagedVersion.rc"
         metadata_script.METADATA_JSON = self.root / "build/BuildMetadata.json"
@@ -165,14 +212,18 @@ class BuildMetadataTests(unittest.TestCase):
     def _git(self, *arguments: str) -> None:
         subprocess.run(["git", *arguments], cwd=self.root, check=True, capture_output=True)
 
-    def _run(self, *arguments: str) -> int:
+    def _run(self, *arguments: str, environment: dict[str, str] | None = None) -> int:
+        environment = {"CI": "", "GITHUB_ACTIONS": "", "TF_BUILD": "", **(environment or {})}
         with (
             mock.patch.object(sys, "argv", [str(SCRIPT_PATH), *arguments]),
-            mock.patch.dict(os.environ, {"FUNKE_BUILD_COMMIT": ""}, clear=False),
+            mock.patch.dict(os.environ, environment, clear=False),
             redirect_stdout(StringIO()),
             redirect_stderr(StringIO()),
         ):
             return metadata_script.main()
+
+    def _metadata(self) -> dict:
+        return json.loads(metadata_script.METADATA_JSON.read_text(encoding="utf-8"))
 
     def test_matching_prerelease_tag_generates_consistent_identity(self) -> None:
         self.assertEqual(self._run("--tag", "v2026.1.0-rc.1", "--require-clean"), 0)
@@ -222,6 +273,143 @@ class BuildMetadataTests(unittest.TestCase):
             stream.write("\n")
         status = metadata_script.run_git("status", "--porcelain=v1")
         self.assertTrue(status.startswith(" M Version.props"), status)
+
+    def test_engine_identity_ignores_editor_documentation_and_asset_edits(self) -> None:
+        self.assertEqual(self._run("--identity-scope", "engine"), 0)
+        identity = metadata_script.BUILD_IDENTITY_HEADER.read_bytes()
+        for filename in (
+            "Funke-Editor/src/Example.cpp",
+            "Funke-Engine/README.md",
+            "Funke-Runtime/FunkeAssets/example.txt",
+            "new-notes.txt",
+        ):
+            with self.subTest(filename=filename):
+                (self.root / filename).write_text("changed\n", encoding="utf-8")
+                self.assertEqual(self._run("--identity-scope", "engine"), 0)
+                self.assertEqual(metadata_script.BUILD_IDENTITY_HEADER.read_bytes(), identity)
+                self.assertEqual(self._metadata()["identityScope"], "engine")
+                self.assertIn(".dev.engine", self._metadata()["buildId"])
+
+    def test_engine_identity_follows_source_vendor_and_build_input_edits(self) -> None:
+        self.assertEqual(self._run("--identity-scope", "engine"), 0)
+        previous = self._metadata()["buildId"]
+        for filename in (
+            "Funke-Engine/src/Core/Example.cpp",
+            "External/example/header.hpp",
+            "Funke-Engine/premake5.lua",
+            "premake/patches/vendor/example.patch",
+            "Funke-Engine/src/Core/New.cpp",
+        ):
+            for content in ("first edit\n", "second edit\n"):
+                with self.subTest(filename=filename, content=content):
+                    (self.root / filename).write_text(content, encoding="utf-8")
+                    self.assertEqual(self._run("--identity-scope", "engine"), 0)
+                    current = self._metadata()["buildId"]
+                    self.assertNotEqual(current, previous)
+                    self.assertTrue(self._metadata()["dirty"])
+                    previous = current
+
+    def test_engine_identity_survives_unrelated_commits(self) -> None:
+        self.assertEqual(self._run("--identity-scope", "engine"), 0)
+        original = self._metadata()
+        identity = metadata_script.BUILD_IDENTITY_HEADER.read_bytes()
+        (self.root / "Funke-Engine/README.md").write_text("documentation\n", encoding="utf-8")
+        self._git("add", "Funke-Engine/README.md")
+        self._git("commit", "-m", "documentation only")
+        self.assertEqual(self._run("--identity-scope", "engine"), 0)
+        self.assertEqual(metadata_script.BUILD_IDENTITY_HEADER.read_bytes(), identity)
+        self.assertEqual(self._metadata()["commit"], original["commit"])
+        self.assertNotEqual(self._metadata()["repositoryCommit"], original["repositoryCommit"])
+        (self.root / "Funke-Engine/src/Core/Example.cpp").write_text("engine\n", encoding="utf-8")
+        self._git("add", "Funke-Engine/src/Core/Example.cpp")
+        self._git("commit", "-m", "engine change")
+        self.assertEqual(self._run("--identity-scope", "engine"), 0)
+        self.assertNotEqual(self._metadata()["buildId"], original["buildId"])
+        self.assertEqual(self._metadata()["commit"], self._metadata()["repositoryCommit"])
+
+    def test_ignored_outputs_do_not_change_engine_identity(self) -> None:
+        self.assertEqual(self._run("--identity-scope", "engine"), 0)
+        original = self._metadata()["buildId"]
+        (self.root / "Funke-Engine/src/Core/Other.generated.hpp").write_text("generated\n", encoding="utf-8")
+        (self.root / "Funke-Engine/Funke-Engine.vcxproj").write_text("generated\n", encoding="utf-8")
+        self.assertEqual(self._run("--identity-scope", "engine"), 0)
+        self.assertEqual(self._metadata()["buildId"], original)
+
+    def test_engine_scope_preserves_header_abi_tracking(self) -> None:
+        self.assertEqual(self._run("--identity-scope", "engine"), 0)
+        original_abi = metadata_script.ENGINE_ABI_HEADER.read_bytes()
+        (self.root / "Funke-Engine/src/Core/Example.hpp").write_text("changed layout\n", encoding="utf-8")
+        self.assertEqual(self._run("--identity-scope", "engine"), 0)
+        self.assertNotEqual(metadata_script.ENGINE_ABI_HEADER.read_bytes(), original_abi)
+
+    def test_unchanged_generation_preserves_output_timestamps(self) -> None:
+        for scope in ("repository", "engine"):
+            with self.subTest(scope=scope):
+                self.assertEqual(self._run("--identity-scope", scope), 0)
+                paths = (
+                    metadata_script.NATIVE_HEADER, metadata_script.BUILD_IDENTITY_HEADER,
+                    metadata_script.ENGINE_ABI_HEADER, metadata_script.MANAGED_PROPS,
+                    metadata_script.MANAGED_RC, metadata_script.METADATA_JSON,
+                )
+                for path in paths:
+                    os.utime(path, ns=(1_500_000_000_000_000_000, 1_500_000_000_000_000_000))
+                timestamps = {path: path.stat().st_mtime_ns for path in paths}
+                self.assertEqual(self._run("--identity-scope", scope), 0)
+                self.assertEqual({path: path.stat().st_mtime_ns for path in paths}, timestamps)
+
+    def test_default_identity_still_tracks_the_whole_repository(self) -> None:
+        self.assertEqual(self._run(), 0)
+        previous = self._metadata()["buildId"]
+        for filename in ("Funke-Editor/src/Example.cpp", "new-notes.txt"):
+            for content in ("first edit\n", "second edit\n"):
+                with self.subTest(filename=filename, content=content):
+                    (self.root / filename).write_text(content, encoding="utf-8")
+                    self.assertEqual(self._run(), 0)
+                    self.assertEqual(self._metadata()["identityScope"], "repository")
+                    current = self._metadata()["buildId"]
+                    self.assertNotEqual(current, previous)
+                    previous = current
+
+    def test_ci_and_release_arguments_override_engine_scope(self) -> None:
+        for arguments, environment in (
+            (("--tag", "v2026.1.0-rc.1"), {}),
+            (("--require-clean",), {}),
+            (("--github-output", str(self.root / "build/github-output.txt")), {}),
+            ((), {"CI": "true"}),
+            ((), {"GITHUB_ACTIONS": "true"}),
+            ((), {"TF_BUILD": "True"}),
+        ):
+            with self.subTest(arguments=arguments, environment=environment):
+                self.assertEqual(self._run("--identity-scope", "engine", *arguments, environment=environment), 0)
+                self.assertEqual(self._metadata()["identityScope"], "repository")
+                self.assertNotIn(".dev.engine", self._metadata()["buildId"])
+        (self.root / "new-notes.txt").write_text("dirty\n", encoding="utf-8")
+        self.assertEqual(self._run("--identity-scope", "engine", "--require-clean"), 1)
+
+    def test_switching_scope_replaces_the_previous_identity(self) -> None:
+        (self.root / "new-notes.txt").write_text("dirty\n", encoding="utf-8")
+        for scope in ("repository", "engine", "repository"):
+            with self.subTest(scope=scope):
+                self.assertEqual(self._run("--identity-scope", scope), 0)
+                metadata = self._metadata()
+                self.assertEqual(metadata["identityScope"], scope)
+                self.assertIn(metadata["buildId"], metadata_script.BUILD_IDENTITY_HEADER.read_text(encoding="utf-8"))
+                self.assertIn(metadata["buildId"], metadata_script.MANAGED_PROPS.read_text(encoding="utf-8"))
+                self.assertEqual(".dev.engine" in metadata["buildId"], scope == "engine")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows release verification")
+    def test_release_verifier_rejects_clean_engine_scope(self) -> None:
+        self.assertEqual(self._run("--identity-scope", "engine"), 0)
+        self.assertFalse(self._metadata()["dirty"])
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-File",
+             str(REPO_ROOT / "scripts/ci/verify_windows_release.ps1"),
+             "-BundleDirectory", str(self.root), "-MetadataPath", str(metadata_script.METADATA_JSON),
+             "-RequireReleaseIdentity"],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("development-scoped build metadata", result.stderr)
 
 
 class RuntimeSmokeStagingTests(unittest.TestCase):

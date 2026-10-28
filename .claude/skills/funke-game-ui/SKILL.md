@@ -1,11 +1,11 @@
 ---
 name: funke-game-ui
-description: Use when building GAME UI with the Funke engine — menus, HUDs, pause and settings screens, buttons, sliders, toggles, text input, dropdowns, scroll views, layout, and wiring their behavior from C#. Triggers on "UI", "menu", "HUD", "pause menu", "settings screen", "Button", "Slider", "Toggle", "InputField", "Dropdown", "ScrollRect", "Image", "RectTransform", "anchors / pivot", "fillParent / safe area", "HorizontalLayoutGroup / VerticalLayoutGroup / GridLayoutGroup", "Interactable", "OnClicked / OnValueChanged", "UIPointer", "click through UI", or work in `Funke-ScriptCore/Source/Funke/UI/` or `Funke-Engine/src/Systems/UIEventSystem`. Funke UI is component-based (RectTransform plus UI components on entities, namespace Funke.UI) with C# Action events you subscribe to; the source of truth is `UIComponents.cs` and `UIPointer.cs`. Script lifecycle is in `funke-game-scripting`, inspector fields in `funke-inspector-ruleset`, UI art in `funke-game-art`.
+description: Use when building GAME UI with the Funke engine — menus, HUDs, pause and settings screens, buttons, sliders, toggles, text input, dropdowns, scroll views, layout, and wiring their behavior from C#. Triggers on "UI", "menu", "HUD", "pause menu", "settings screen", "Button", "Slider", "Toggle", "InputField", "Dropdown", "ScrollRect", "Image", "RectTransform", "anchors / pivot", "fillParent / safe area", "HorizontalLayoutGroup / VerticalLayoutGroup / GridLayoutGroup", "Interactable", "OnClicked / OnValueChanged", "UIPointer", "click through UI", or work in `Funke-ScriptCore/Source/Funke/UI/` or `Funke-Engine/src/Systems/UIEventSystem.{hpp,cpp}`. Funke UI is component-based (RectTransform plus UI components on entities, namespace Funke.UI) with C# Action events you subscribe to; the source of truth is `UIComponents.cs` and `UIPointer.cs`. Script lifecycle is in `funke-game-scripting`, inspector fields in `funke-inspector-ruleset`, UI art in `funke-game-art`.
 ---
 
 # Funke Game UI
 
-Funke UI is **ECS UI**: a UI element is an entity carrying a `RectTransform` plus UI components (`Image`, `Button`, `Slider`, …). You lay it out in the Editor and drive behavior from C# by subscribing to each component's `event`s. All UI types live in **`namespace Funke.UI`** (`using Funke.UI;`). The native side that turns pointer input into events is `Funke-Engine/src/Systems/UIEventSystem`. Source of truth: `Funke-ScriptCore/Source/Funke/UI/UIComponents.cs`.
+Funke UI is **ECS UI**: a UI element is an entity carrying a `RectTransform` plus UI components (`Image`, `Button`, `Slider`, …). You lay it out in the Editor and drive behavior from C# by subscribing to each component's `event`s. All UI types live in **`namespace Funke.UI`** (`using Funke.UI;`). The native side that turns pointer input into events is `Funke-Engine/src/Systems/UIEventSystem.{hpp,cpp}`. Source of truth: `Funke-ScriptCore/Source/Funke/UI/UIComponents.cs`.
 
 ## Layout: `RectTransform`
 
@@ -30,14 +30,14 @@ Anchors are the core idea: anchor a HUD element to a screen corner so it tracks 
 ## Display: `Image`
 
 ```csharp
-Color   Color;                    // tint
+Vector4 Color;                    // RGBA tint
 Texture? Texture;                 // sprite/background; null = solid color
 string  SpriteName;               // slice of Texture from its .meta; "" = whole texture
 int     SortingOrder, SortingLayer;
 ImageType Type;                   // Simple | Sliced (9-slice) | Tiled (edges + middle repeat)
 Vector4 Border;                   // Sliced/Tiled: unstretched edges in texture px, X left, Y bottom, Z right, W top; all 0 = the texture's .meta border
 float   BorderScale;              // UI units per border pixel (Tiled: also the tile size)
-Material? Material;               // .material with a `@target UI` shader; null = standard shader
+Material? Material;               // .material with a `@target UI` or `Sprite2D` shader; null = standard shader
 ```
 Use `Image` for backgrounds, panels, icons. For rounded buttons and panels use **one** small rounded sprite with `Type = Sliced` and its corner radius as Border instead of generating a sprite per size (scene JSON: `"imageType": 1, "border": [24, 24, 24, 24]`). Better: store the border once with the texture (`funke sprite border Assets/Textures/Panel.png --border 24`, or `--slice <name>` for a sprite-sheet slice) and leave the Image's border at 0, so every Image using it slices the same way. Text uses the `TextRenderer` component (see `funke-game-scripting`).
 

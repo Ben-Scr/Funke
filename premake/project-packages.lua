@@ -69,7 +69,6 @@ local includeDirs = {
     path.join(engineRoot, "External/magic_enum/include"),
     path.join(engineRoot, "External/rapidxml"),
     path.join(engineRoot, "External/SDL/include"),
-    path.join(engineRoot, "External/glad/include"),
     path.join(engineRoot, "External/miniaudio"),
     path.join(engineRoot, "External/box2d/include"),
     path.join(engineRoot, "External/dotnet"),

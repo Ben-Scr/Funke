@@ -9,6 +9,7 @@
 #include "Components/Graphics/SpotLightComponent.hpp"
 #include "Core/Application.hpp"
 #include "Core/GraphicsSettings.hpp"
+#include "Graphics/Frustum.hpp"
 #include "Graphics/Lighting3D.hpp"
 #include "Graphics/Material.hpp"
 #include "Graphics/MeshAsset.hpp"
@@ -60,6 +61,58 @@ namespace {
 		const Json::Value json = info.serialize(source);
 		info.deserialize(target, Json::Parse(Json::Stringify(json)));
 		return json;
+	}
+}
+
+TEST_CASE("Billboard bounds contain shader corners for every rotation and camera basis") {
+	const glm::vec3 rights[] = { { 1, 0, 0 }, { 0.6f, 0.3f, -0.8f }, { 2, -0.5f, 0.25f } };
+	const glm::vec3 ups[] = { { 0, 1, 0 }, { -0.2f, 0.9f, 0.3f }, { 1, 0.25f, -2 } };
+	for (size_t basis = 0; basis < 3; ++basis) {
+		const glm::vec3 extent = BillboardBoundsExtent(rights[basis], ups[basis]);
+		for (int degrees = 0; degrees < 360; degrees += 5) {
+			const float angle = glm::radians(static_cast<float>(degrees));
+			for (float x : { -0.5f, 0.5f }) {
+				for (float y : { -0.5f, 0.5f }) {
+					const glm::vec2 rotated(x * std::cos(angle) - y * std::sin(angle), x * std::sin(angle) + y * std::cos(angle));
+					const glm::vec3 corner = rights[basis] * rotated.x + ups[basis] * rotated.y;
+					for (int axis = 0; axis < 3; ++axis) CHECK(std::abs(corner[axis]) <= extent[axis] + 1e-6f);
+				}
+			}
+		}
+	}
+}
+
+TEST_CASE("Particle frustum bounds preserve rotated edge billboards and reject offscreen emitters") {
+	for (CameraProjection projection : { CameraProjection::Orthographic, CameraProjection::Perspective }) {
+		Camera3DComponent camera;
+		camera.Projection = projection;
+		camera.FieldOfView = 90.0f;
+		camera.OrthographicSize = 1.0f;
+		camera.NearClip = 0.1f;
+		camera.FarClip = 50.0f;
+		const glm::mat4 view = glm::lookAtRH(glm::vec3(4, 3, 2), glm::vec3(-1, 1, -4), glm::vec3(0, 1, 0));
+		const glm::mat4 inverseView = glm::inverse(view);
+		const glm::mat4 viewProjection = camera.GetProjectionMatrix(1.0f) * view;
+		const FrustumPlanes frustum = ExtractFrustum(viewProjection);
+		const glm::vec3 right(view[0][0], view[1][0], view[2][0]);
+		const glm::vec3 up(view[0][1], view[1][1], view[2][1]);
+		const glm::vec3 extent = BillboardBoundsExtent(right, up);
+		const float edge = projection == CameraProjection::Orthographic ? 1.0f : 5.0f;
+		const glm::vec3 center = glm::vec3(inverseView * glm::vec4(edge + 0.6f, 0, -5, 1));
+		const glm::vec3 visibleCorner = center - right * std::sqrt(0.5f);
+		const glm::vec4 clip = viewProjection * glm::vec4(visibleCorner, 1);
+		REQUIRE(std::abs(clip.x) < clip.w);
+		REQUIRE(std::abs(clip.y) < clip.w);
+		REQUIRE(clip.z > 0.0f);
+		REQUIRE(clip.z < clip.w);
+		CHECK(IntersectsFrustum(frustum, center, extent));
+
+		const glm::mat4 emitter = glm::scale(glm::translate(glm::mat4(1), glm::vec3(30, -20, 10)), glm::vec3(-3, 0.25f, 2));
+		const glm::vec3 local = glm::vec3(glm::inverse(emitter) * glm::vec4(center, 1));
+		CHECK(IntersectsFrustum(frustum, glm::vec3(emitter * glm::vec4(local, 1)), extent));
+		CHECK_FALSE(IntersectsFrustum(frustum, glm::vec3(inverseView * glm::vec4(100, 0, -5, 1)), extent));
+		CHECK_FALSE(IntersectsFrustum(frustum, glm::vec3(inverseView * glm::vec4(0, 0, 60, 1)), extent));
+		CHECK_FALSE(IntersectsFrustum(frustum, glm::vec3(inverseView * glm::vec4(0, 0, -60, 1)), extent));
 	}
 }
 

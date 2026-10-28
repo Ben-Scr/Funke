@@ -9,7 +9,7 @@ internal static unsafe class JobNativeDispatch
 {
     internal interface IJobBox
     {
-        ulong NativeHandle { get; set; }
+        ulong ExceptionKey { get; set; }
 
         void Invoke();
         void OnRelease();
@@ -17,7 +17,7 @@ internal static unsafe class JobNativeDispatch
 
     internal interface IJobRangeBox
     {
-        ulong NativeHandle { get; set; }
+        ulong ExceptionKey { get; set; }
 
         // Invoked concurrently across worker threads; implementations MUST copy the TJob struct locally to avoid concurrent partition trampling.
         void InvokeRange(int lo, int hi);
@@ -39,7 +39,7 @@ internal static unsafe class JobNativeDispatch
         }
         catch (Exception ex)
         {
-            JobExceptionRegistry.Stash(box.NativeHandle, ex);
+            JobExceptionRegistry.Stash(box.ExceptionKey, ex);
         }
     }
 
@@ -57,7 +57,7 @@ internal static unsafe class JobNativeDispatch
         }
         catch (Exception ex)
         {
-            JobExceptionRegistry.Stash(box.NativeHandle, ex);
+            JobExceptionRegistry.Stash(box.ExceptionKey, ex);
         }
     }
 
@@ -75,19 +75,19 @@ internal static unsafe class JobNativeDispatch
         // An exception escaping an [UnmanagedCallersOnly] method kills the process, and skipping Free leaks the box.
         try
         {
-            ulong nh = 0;
+            ulong exceptionKey = 0;
             switch (gch.Target)
             {
                 case IJobBox singleBox:
-                    nh = singleBox.NativeHandle;
+                    exceptionKey = singleBox.ExceptionKey;
                     singleBox.OnRelease();
                     break;
                 case IJobRangeBox rangeBox:
-                    nh = rangeBox.NativeHandle;
+                    exceptionKey = rangeBox.ExceptionKey;
                     rangeBox.OnRelease();
                     break;
             }
-            JobExceptionRegistry.DrainOrLog(nh);
+            JobExceptionRegistry.DrainOrLog(exceptionKey);
         }
         catch (Exception ex)
         {
@@ -104,19 +104,19 @@ internal static unsafe class JobNativeDispatch
         ref NativeBindingsStruct b = ref NativeCallbacks.Bindings;
         if (b.JobSystem_Enqueue == null)
         {
-            box.NativeHandle = 0;
+            box.ExceptionKey = 0;
             try { box.Invoke(); }
             finally { box.OnRelease(); }
             return default;
         }
 
+        ulong exceptionKey = box.ExceptionKey = JobExceptionRegistry.CreateKey();
         GCHandle gch = GCHandle.Alloc(box);
         ulong nh = b.JobSystem_Enqueue(
             &JobEntrypoint,
             (void*)GCHandle.ToIntPtr(gch),
             &ReleaseContext);
-        box.NativeHandle = nh;
-        return new JobHandle(nh);
+        return new JobHandle(nh, exceptionKey);
     }
 
     internal static JobHandle ScheduleParallelFor(IJobRangeBox box, int begin, int end, int batchSize)
@@ -124,19 +124,19 @@ internal static unsafe class JobNativeDispatch
         ref NativeBindingsStruct b = ref NativeCallbacks.Bindings;
         if (b.JobSystem_ParallelFor == null)
         {
-            box.NativeHandle = 0;
+            box.ExceptionKey = 0;
             try { box.InvokeRange(begin, end); }
             finally { box.OnRelease(); }
             return default;
         }
 
+        ulong exceptionKey = box.ExceptionKey = JobExceptionRegistry.CreateKey();
         GCHandle gch = GCHandle.Alloc(box);
         ulong nh = b.JobSystem_ParallelFor(
             begin, end, batchSize,
             &JobRangeEntrypoint,
             (void*)GCHandle.ToIntPtr(gch),
             &ReleaseContext);
-        box.NativeHandle = nh;
-        return new JobHandle(nh);
+        return new JobHandle(nh, exceptionKey);
     }
 }

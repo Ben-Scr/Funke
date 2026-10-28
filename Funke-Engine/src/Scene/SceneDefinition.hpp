@@ -63,17 +63,22 @@ namespace Funke {
 
 
         SceneDefinition& OnLoad(std::function<void(Scene&)> callback) {
-            m_LoadCallbacks.push_back(std::move(callback));
+            m_LoadCallbacks.push_back({ std::move(callback), {} });
+            return *this;
+        }
+
+        // File stages can be prepared on a worker; other callbacks always run on the main thread.
+        SceneDefinition& OnLoadFromFile(std::string path) {
+            m_LoadCallbacks.push_back({ {}, std::move(path) });
             return *this;
         }
 
         SceneDefinition& OnLoadChecked(std::function<bool(Scene&)> callback) {
-            m_LoadCallbacks.emplace_back([callback = std::move(callback)](Scene& scene) {
+            return OnLoad([callback = std::move(callback)](Scene& scene) {
                 if (!callback(scene)) {
                     FNK_THROW(FunkeErrorCode::LoadFailed, "Scene load callback rejected the scene");
                 }
             });
-            return *this;
         }
 
         SceneDefinition& OnUnload(std::function<void(Scene&)> callback) {
@@ -108,7 +113,11 @@ namespace Funke {
         std::vector<std::type_index> m_SystemTypes;
 
         std::vector<std::function<void(Scene&)>> m_InitializeCallbacks;
-        std::vector<std::function<void(Scene&)>> m_LoadCallbacks;
+        struct LoadStep {
+            std::function<void(Scene&)> Callback;
+            std::string FilePath;
+        };
+        std::vector<LoadStep> m_LoadCallbacks;
         std::vector<std::function<void(Scene&)>> m_UnloadCallbacks;
 
         bool m_IsStartupScene = false;

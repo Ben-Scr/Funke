@@ -9,7 +9,6 @@
 #include "Components/General/UUIDComponent.hpp"
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
-#include "Components/Graphics/SpriteAnimator2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Graphics/TerrainRenderer2DComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
@@ -33,6 +32,7 @@
 #include <cstring>
 #include <limits>
 #include <string_view>
+#include <vector>
 
 // C# bindings for the Funke.2D module (transforms, sprites, cameras, particles, post-processing, 2D physics,
 // picking). Split from ScriptBindings.cpp so a build without the module compiles none of it; the slots
@@ -124,13 +124,38 @@ namespace Funke {
 		return local;
 	}
 
+	static Transform2DComponent ComputeWorldTransform2D(const Scene& scene, EntityHandle entity)
+	{
+		const auto& registry = scene.GetRegistry();
+		std::vector<const Transform2DComponent*> ancestors;
+		Transform2DComponent world;
+		for (int depth = 0; depth < 1024 && registry.valid(entity); ++depth) {
+			const auto* transform = registry.try_get<Transform2DComponent>(entity);
+			if (!transform) break;
+			// A clean physics body owns its world pose independently of its ancestors.
+			if (!transform->IsDirty() && PhysicsSystem2D::IsTransformOwnedByPhysics(registry, entity)) {
+				world.Position = transform->Position;
+				world.Rotation = transform->Rotation;
+				world.Scale = transform->Scale;
+				break;
+			}
+			ancestors.push_back(transform);
+			const auto* hierarchy = registry.try_get<HierarchyComponent>(entity);
+			entity = hierarchy ? hierarchy->Parent : entt::null;
+		}
+		for (auto it = ancestors.rbegin(); it != ancestors.rend(); ++it) {
+			world.Position = world.TransformPoint((*it)->LocalPosition);
+			world.Rotation += (*it)->LocalRotation;
+			world.Scale = Hadamard(world.Scale, (*it)->LocalScale);
+		}
+		return world;
+	}
+
 	// Entity.SetParent(worldPositionStays): keeps the Transform2D world pose across the reparent.
 	bool SetParentKeepingWorld2D(Scene& scene, EntityHandle handle, Entity newParent)
 	{
 		if (!scene.HasComponent<Transform2DComponent>(handle)) return false;
-		// SetParent only swaps the parent, so the local transform — and with it the world pose — would
-		// shift into the new parent's frame; snapshot the world pose and re-derive the locals.
-		const Transform2DComponent& before = scene.GetComponent<Transform2DComponent>(handle);
+		const Transform2DComponent before = ComputeWorldTransform2D(scene, handle);
 		const Vec2 worldPosition = before.Position;
 		const Vec2 worldScale = before.Scale;
 		const float worldRotation = before.Rotation;
@@ -139,7 +164,13 @@ namespace Funke {
 
 		// Re-fetch: SetParent may toggle DisabledTag, which reorders Transform2D storage through the renderer's owning group.
 		Transform2DComponent& childTransform = scene.GetComponent<Transform2DComponent>(handle);
-		const Transform2DComponent* parentTransform = GetParentTransform(scene, handle);
+		Transform2DComponent parentWorld;
+		const Transform2DComponent* parentTransform = nullptr;
+		const Entity parent = scene.GetEntity(handle).GetParent();
+		if (parent.IsValid() && parent.HasComponent<Transform2DComponent>()) {
+			parentWorld = ComputeWorldTransform2D(scene, parent.GetHandle());
+			parentTransform = &parentWorld;
+		}
 		childTransform.LocalPosition = WorldPositionToLocal(parentTransform, worldPosition);
 		childTransform.LocalScale = WorldScaleToLocal(parentTransform, worldScale);
 		childTransform.LocalRotation = parentTransform ? worldRotation - parentTransform->Rotation : worldRotation;
@@ -672,46 +703,6 @@ namespace Funke {
 	static void Funke_Physics2D_SetQueryLayerMask(uint64_t layerMask)
 	{
 		Physics2D::SetQueryLayerMask(layerMask);
-	}
-
-	// ── SpriteAnimator2D ────────────────────────────────────────────────
-
-	static void Funke_SpriteAnimator2D_Command(uint64_t entityID, int command)
-	{
-		GET_COMPONENT(SpriteAnimator2DComponent, entityID, );
-		switch (command) {
-		case 0: comp.Play(); break;
-		case 1: comp.Pause(); break;
-		case 2: comp.Stop(); break;
-		default: break;
-		}
-	}
-	static int Funke_SpriteAnimator2D_IsPlaying(uint64_t entityID)
-	{
-		GET_COMPONENT(SpriteAnimator2DComponent, entityID, 0);
-		return comp.Playing ? 1 : 0;
-	}
-	static int Funke_SpriteAnimator2D_GetFrame(uint64_t entityID)
-	{
-		GET_COMPONENT(SpriteAnimator2DComponent, entityID, 0);
-		return comp.CurrentFrame;
-	}
-	static void Funke_SpriteAnimator2D_SetFrame(uint64_t entityID, int frame)
-	{
-		GET_COMPONENT(SpriteAnimator2DComponent, entityID, );
-		const int last = std::max(0, static_cast<int>(comp.Frames.size()) - 1);
-		comp.CurrentFrame = std::clamp(frame, 0, last);
-		comp.FrameTime = 0.0f;
-	}
-	static float Funke_SpriteAnimator2D_GetFramesPerSecond(uint64_t entityID)
-	{
-		GET_COMPONENT(SpriteAnimator2DComponent, entityID, 0.0f);
-		return comp.FramesPerSecond;
-	}
-	static void Funke_SpriteAnimator2D_SetFramesPerSecond(uint64_t entityID, float fps)
-	{
-		GET_COMPONENT(SpriteAnimator2DComponent, entityID, );
-		comp.FramesPerSecond = std::max(0.0f, fps);
 	}
 
 	// ── CircleCollider2D ────────────────────────────────────────────────
@@ -1504,12 +1495,6 @@ namespace Funke {
 		b.Collider2D_SetFriction = FNK_GUARDED_BINDING(Funke_Collider2D_SetFriction);
 		b.Collider2D_GetBounciness = FNK_GUARDED_BINDING(Funke_Collider2D_GetBounciness);
 		b.Collider2D_SetBounciness = FNK_GUARDED_BINDING(Funke_Collider2D_SetBounciness);
-		b.SpriteAnimator2D_Command = FNK_GUARDED_BINDING(Funke_SpriteAnimator2D_Command);
-		b.SpriteAnimator2D_IsPlaying = FNK_GUARDED_BINDING(Funke_SpriteAnimator2D_IsPlaying);
-		b.SpriteAnimator2D_GetFrame = FNK_GUARDED_BINDING(Funke_SpriteAnimator2D_GetFrame);
-		b.SpriteAnimator2D_SetFrame = FNK_GUARDED_BINDING(Funke_SpriteAnimator2D_SetFrame);
-		b.SpriteAnimator2D_GetFramesPerSecond = FNK_GUARDED_BINDING(Funke_SpriteAnimator2D_GetFramesPerSecond);
-		b.SpriteAnimator2D_SetFramesPerSecond = FNK_GUARDED_BINDING(Funke_SpriteAnimator2D_SetFramesPerSecond);
 		b.Physics2D_OverlapCircle = FNK_GUARDED_BINDING(Funke_Physics2D_OverlapCircle);
 		b.Physics2D_OverlapBox = FNK_GUARDED_BINDING(Funke_Physics2D_OverlapBox);
 		b.Physics2D_OverlapPolygon = FNK_GUARDED_BINDING(Funke_Physics2D_OverlapPolygon);

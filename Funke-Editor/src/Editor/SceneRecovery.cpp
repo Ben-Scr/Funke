@@ -36,9 +36,10 @@ namespace Funke::SceneRecovery {
 			if (!scene || !scene->IsLoaded() || scene->IsLifecycleSuspended() || !scene->IsDirty()) continue;
 
 			const std::string fileName = scene->GetName() + k_Extension;
+			keep.insert(fileName);
 			std::filesystem::create_directories(directory, ec);
 			if (SceneSerializer::SaveToFile(*scene, Path::ToUtf8(directory / Path::FromUtf8(fileName)), false)) {
-				keep.insert(fileName);
+				scene->MarkDirty();
 			}
 		}
 

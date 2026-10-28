@@ -64,14 +64,14 @@ Adding a module:
 
 1. the module exists and `Enabled` (panel toggle; disabling also clears its buffer),
 2. the panel is visible (`Profiler::SetPanelVisible`, driven by `ProfilerPanel::Render`) **or** background tracking is on (`SetBackgroundTracking`),
-3. **the application is playing and not paused** (`Application::GetIsPlaying()` / `IsPaused()`) — in edit mode the panel stays empty by design,
+3. **the application is playing and not paused** (`Application::GetIsPlaying()` / `IsPaused()`) — in edit mode the panel stays empty by design; tests without an `Application` skip this gate,
 4. the per-module rate gate passed: at most `SamplingHz` samples/s per module (`SetSamplingHz`, default 60; `<= 0` = unlimited).
 
 `SetTrackingSpan(n)` (default 200) sets ring-buffer length. Tracy ignores all of these gates.
 
 ## GPU timing
 
-`Profiling/GpuTimer.{hpp,cpp}`: WebGPU timestamp queries (`wgpu::FeatureName::TimestampQuery`), 3-slot ring, results pushed to the `"GPU"` module in ms. Owned by `Renderer2D` (`m_GpuTimer`) and attached to the sprite pass via `PassTimestampWrites`. Lifecycle is order-sensitive: `BeginFrameWrites()` before `BeginRenderPass`, `ResolveCurrentFrame(encoder)` after `pass.End()`, `PollAndPublish()` in `EndFrame`, `OnFrameStart()` only from `Renderer2D::OnAfterPresent()` (issuing `MapAsync` earlier races the frame's Submit and Dawn rejects it). Unavailable when `WebGPUBackend::HasTimestampQuery()` is false (Metal / older Vulkan). Reuse it; don't hand-roll query sets. `GpuTimer::QueryGpuMemoryMb()` returns -1 (no portable WebGPU query).
+`Profiling/GpuTimer.{hpp,cpp}`: WebGPU timestamp queries (`wgpu::FeatureName::TimestampQuery`), 3-slot ring, results pushed to the `"GPU"` module in ms. Owned by `Renderer2D` (`m_GpuTimer`) and attached to the sprite pass via `PassTimestampWrites`. Lifecycle is order-sensitive: `BeginFrameWrites()` before `BeginRenderPass`, `ResolveCurrentFrame(encoder)` after `pass.End()`, `PollAndPublish()` in `EndFrame`, `OnFrameStart()` only from `Renderer2D::OnAfterPresent()` (issuing `MapAsync` earlier races the frame's Submit and Dawn rejects it). Availability depends on `WebGPUBackend::HasTimestampQuery()` for the selected device; don't infer it from the backend name alone. Reuse it; don't hand-roll query sets. `GpuTimer::QueryGpuMemoryMb()` returns -1 (no portable WebGPU query).
 
 ## Profiler panel
 

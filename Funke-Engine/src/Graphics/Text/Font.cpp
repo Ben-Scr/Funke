@@ -4,6 +4,8 @@
 #include "Core/Log.hpp"
 #include "Core/PlatformDetection.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
+#include "Graphics/Text/FontGlyphRaster.hpp"
+#include "Graphics/Text/TextEncoding.hpp"
 #include "Serialization/File.hpp"
 
 #include <webgpu/webgpu_cpp.h>
@@ -13,6 +15,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <thread>
 #include <unordered_map>
@@ -51,6 +54,7 @@ namespace Funke {
 
 		constexpr int k_AtlasInitialSide = 256;
 		constexpr int k_AtlasMaxSide     = 4096;
+		constexpr size_t k_MaxUnicodeCachedGlyphs = 65536;
 
 		// ── Pool ────────────────────────────────────────────────────────────
 		struct GpuFontAtlas {
@@ -194,6 +198,58 @@ namespace Funke {
 		std::atomic<bool>                 Ready{ false };
 	};
 
+	struct FontUnicodeCache {
+		struct Page {
+			unsigned Atlas = 0;
+			FontRaster::AtlasShelf Shelf;
+		};
+		std::unordered_map<uint32_t, GlyphMetrics> Glyphs;
+		std::vector<Page> Pages;
+		size_t Bytes = 0;
+		bool AtCapacity = false;
+
+		~FontUnicodeCache() {
+			for (const Page& page : Pages) DeregisterAtlas(page.Atlas);
+		}
+	};
+
+	bool FontRaster::Rasterize(std::span<const uint8_t> bytes, float pixelSize, uint32_t codepoint, Glyph& out) {
+		out = {};
+		if (bytes.size() < 12 || !std::isfinite(pixelSize) || pixelSize <= 0.0f || pixelSize > k_AtlasMaxSide) return false;
+		const int offset = stbtt_GetFontOffsetForIndex(bytes.data(), 0);
+		stbtt_fontinfo font{};
+		if (offset < 0 || static_cast<size_t>(offset) >= bytes.size() || !stbtt_InitFont(&font, bytes.data(), offset)) return false;
+		if (!TextEncoding::IsScalar(codepoint)) codepoint = TextEncoding::k_ReplacementCodepoint;
+		int glyph = stbtt_FindGlyphIndex(&font, static_cast<int>(codepoint));
+		if (glyph == 0) {
+			codepoint = TextEncoding::k_ReplacementCodepoint;
+			glyph = stbtt_FindGlyphIndex(&font, static_cast<int>(codepoint));
+			if (glyph == 0) {
+				codepoint = '?';
+				glyph = stbtt_FindGlyphIndex(&font, static_cast<int>(codepoint));
+			}
+		}
+		out.Codepoint = codepoint;
+		const float scale = stbtt_ScaleForPixelHeight(&font, pixelSize);
+		int advance = 0;
+		stbtt_GetGlyphHMetrics(&font, glyph, &advance, nullptr);
+		out.Metrics.XAdvance = advance * scale;
+		int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+		stbtt_GetGlyphBitmapBox(&font, glyph, scale, scale, &x0, &y0, &x1, &y1);
+		out.Width = x1 - x0;
+		out.Height = y1 - y0;
+		if (out.Width < 0 || out.Height < 0 || out.Width > k_AtlasMaxSide - 2 || out.Height > k_AtlasMaxSide - 2) return false;
+		out.Metrics.Width = static_cast<float>(out.Width);
+		out.Metrics.Height = static_cast<float>(out.Height);
+		out.Metrics.XOffset = static_cast<float>(x0);
+		out.Metrics.YOffset = static_cast<float>(y0);
+		if (out.Width != 0 && out.Height != 0) {
+			out.Bitmap.resize(static_cast<size_t>(out.Width) * out.Height);
+			stbtt_MakeGlyphBitmap(&font, out.Bitmap.data(), out.Width, out.Height, out.Width, scale, scale, glyph);
+		}
+		return true;
+	}
+
 	namespace WebGPUBackend {
 		wgpu::TextureView LookupFontAtlas(unsigned atlasId) {
 			GpuFontAtlas* slot = TryLookupAtlas(atlasId);
@@ -224,6 +280,7 @@ namespace Funke {
 		, m_StbFontInfoStorage(std::move(other.m_StbFontInfoStorage))
 		, m_Filepath(std::move(other.m_Filepath))
 		, m_AsyncBake(std::move(other.m_AsyncBake))
+		, m_UnicodeCache(std::move(other.m_UnicodeCache))
 	{
 		other.m_AtlasTexture = 0;
 		other.m_AtlasWidth = 0;
@@ -256,6 +313,7 @@ namespace Funke {
 		m_StbFontInfoStorage = std::move(other.m_StbFontInfoStorage);
 		m_Filepath = std::move(other.m_Filepath);
 		m_AsyncBake = std::move(other.m_AsyncBake);
+		m_UnicodeCache = std::move(other.m_UnicodeCache);
 		other.m_AtlasTexture = 0;
 		other.m_AtlasWidth = 0;
 		other.m_AtlasHeight = 0;
@@ -371,7 +429,7 @@ namespace Funke {
 		// Translate stb's packed[] table into a Font's glyph table. Shared
 		// between the sync and async publish paths.
 		void PopulateGlyphTable(const std::vector<stbtt_packedchar>& packed,
-			int atlasSide, std::vector<GlyphMetrics>& outGlyphs)
+			int atlasSide, unsigned atlasTexture, std::vector<GlyphMetrics>& outGlyphs)
 		{
 			outGlyphs.assign(Font::k_GlyphTableSize, GlyphMetrics{});
 			int packedIndex = 0;
@@ -390,6 +448,7 @@ namespace Funke {
 					m.XOffset  = pc.xoff;
 					m.YOffset  = pc.yoff;
 					m.XAdvance = pc.xadvance;
+					m.AtlasTexture = atlasTexture;
 					outGlyphs[cr.First + uint32_t(i)] = m;
 				}
 			}
@@ -430,7 +489,7 @@ namespace Funke {
 		m_LineHeight         = result.LineHeight;
 		m_StbScale           = result.StbScale;
 		m_StbFontInfoStorage = std::move(result.StbFontInfoStorage);
-		PopulateGlyphTable(result.Packed, atlasSide, m_Glyphs);
+		PopulateGlyphTable(result.Packed, atlasSide, atlasTexture, m_Glyphs);
 		m_AsciiKerning       = std::move(result.AsciiKerning);
 		m_GlyphIndices       = std::move(result.GlyphIndices);
 		m_HasKerning         = result.HasKerning;
@@ -502,7 +561,7 @@ namespace Funke {
 		m_LineHeight         = result->LineHeight;
 		m_StbScale           = result->StbScale;
 		m_StbFontInfoStorage = std::move(result->StbFontInfoStorage);
-		PopulateGlyphTable(result->Packed, atlasSide, m_Glyphs);
+		PopulateGlyphTable(result->Packed, atlasSide, atlasTexture, m_Glyphs);
 		m_AsciiKerning       = std::move(result->AsciiKerning);
 		m_GlyphIndices       = std::move(result->GlyphIndices);
 		m_HasKerning         = result->HasKerning;
@@ -515,19 +574,116 @@ namespace Funke {
 	}
 
 	const GlyphMetrics* Font::GetGlyph(uint32_t codepoint) const {
-		if (codepoint >= m_Glyphs.size() || !IsBakedCodepoint(codepoint)) return nullptr;
-		return &m_Glyphs[codepoint];
+		if (m_StbFontInfoStorage.empty() || codepoint < 32 || (codepoint >= 127 && codepoint < 160)) return nullptr;
+		if (codepoint < m_Glyphs.size() && IsBakedCodepoint(codepoint) && m_GlyphIndices[codepoint] != 0) return &m_Glyphs[codepoint];
+		if (!TextEncoding::IsScalar(codepoint)) codepoint = TextEncoding::k_ReplacementCodepoint;
+		if (m_UnicodeCache) {
+			if (const auto found = m_UnicodeCache->Glyphs.find(codepoint); found != m_UnicodeCache->Glyphs.end()) return &found->second;
+		}
+		const auto* font = reinterpret_cast<const stbtt_fontinfo*>(m_StbFontInfoStorage.data());
+		const int index = codepoint < m_GlyphIndices.size() ? m_GlyphIndices[codepoint]
+			: stbtt_FindGlyphIndex(font, static_cast<int>(codepoint));
+		if (index == 0) {
+			// Cache the replacement once, never aliases for every unsupported codepoint.
+			codepoint = stbtt_FindGlyphIndex(font, TextEncoding::k_ReplacementCodepoint) != 0
+				? TextEncoding::k_ReplacementCodepoint : '?';
+		}
+		if (codepoint < m_Glyphs.size() && IsBakedCodepoint(codepoint)) return &m_Glyphs[codepoint];
+		if (!m_UnicodeCache) m_UnicodeCache = std::make_unique<FontUnicodeCache>();
+		auto& cache = *m_UnicodeCache;
+		if (const auto found = cache.Glyphs.find(codepoint); found != cache.Glyphs.end()) return &found->second;
+		const GlyphMetrics* fallback = m_Glyphs.size() > '?' ? &m_Glyphs['?'] : nullptr;
+		constexpr size_t k_MaxUnicodeAtlasBytes = 16 * 1024 * 1024;
+		if (cache.AtCapacity || cache.Glyphs.size() >= k_MaxUnicodeCachedGlyphs || !m_TtfBuffer) return fallback;
+		FontRaster::Glyph glyph;
+		if (!FontRaster::Rasterize(*m_TtfBuffer, m_PixelSize, codepoint, glyph)) return fallback;
+		if (!glyph.Bitmap.empty()) {
+			wgpu::Device device = WebGPUBackend::GetDevice();
+			wgpu::Queue queue = WebGPUBackend::GetQueue();
+			if (!device || !queue) return fallback;
+			FontUnicodeCache::Page* page = nullptr;
+			int x = 0, y = 0;
+			for (auto& candidate : cache.Pages) {
+				if (candidate.Shelf.Place(glyph.Width, glyph.Height, x, y)) {
+					page = &candidate;
+					break;
+				}
+			}
+			if (!page) {
+				int side = 512;
+				while (side < glyph.Width + 2 || side < glyph.Height + 2) side *= 2;
+				const size_t bytes = static_cast<size_t>(side) * side;
+				if (bytes > k_MaxUnicodeAtlasBytes - cache.Bytes) {
+					cache.AtCapacity = true;
+					FNK_CORE_WARN_TAG("Font", "Unicode atlas capacity reached for {} at {}px", m_Filepath, m_PixelSize);
+					return fallback;
+				}
+				CpuBakeResult blank;
+				blank.Ok = true;
+				blank.Filepath = m_Filepath;
+				blank.AtlasSide = side;
+				blank.Bitmap.assign(bytes, 0);
+				unsigned atlas = 0;
+				int publishedSide = 0;
+				if (!PublishAtlasGpu(blank, atlas, publishedSide)) return fallback;
+				cache.Pages.push_back({ atlas, FontRaster::AtlasShelf(publishedSide) });
+				cache.Bytes += bytes;
+				page = &cache.Pages.back();
+				if (!page->Shelf.Place(glyph.Width, glyph.Height, x, y)) return fallback;
+			}
+			auto* atlas = TryLookupAtlas(page->Atlas);
+			if (!atlas) return fallback;
+			const int pitch = (glyph.Width + 255) & ~255;
+			std::vector<uint8_t> upload(static_cast<size_t>(pitch) * glyph.Height, 0);
+			for (int row = 0; row < glyph.Height; ++row) {
+				std::memcpy(upload.data() + static_cast<size_t>(row) * pitch,
+					glyph.Bitmap.data() + static_cast<size_t>(row) * glyph.Width, glyph.Width);
+			}
+			wgpu::TexelCopyTextureInfo destination{};
+			destination.texture = atlas->Texture;
+			destination.origin = { static_cast<uint32_t>(x), static_cast<uint32_t>(y), 0 };
+			wgpu::TexelCopyBufferLayout layout{};
+			layout.bytesPerRow = static_cast<uint32_t>(pitch);
+			layout.rowsPerImage = static_cast<uint32_t>(glyph.Height);
+			wgpu::Extent3D size{ static_cast<uint32_t>(glyph.Width), static_cast<uint32_t>(glyph.Height), 1 };
+			queue.WriteTexture(&destination, upload.data(), upload.size(), &layout, &size);
+			const float side = static_cast<float>(page->Shelf.GetSide());
+			glyph.Metrics.U0 = x / side;
+			glyph.Metrics.V0 = y / side;
+			glyph.Metrics.U1 = (x + glyph.Width) / side;
+			glyph.Metrics.V1 = (y + glyph.Height) / side;
+			glyph.Metrics.AtlasTexture = page->Atlas;
+		}
+		return &cache.Glyphs.emplace(codepoint, glyph.Metrics).first->second;
+	}
+
+	size_t Font::GetAtlasByteSize() const {
+		return static_cast<size_t>(m_AtlasWidth) * m_AtlasHeight
+			+ (m_UnicodeCache ? m_UnicodeCache->Bytes : 0);
 	}
 
 	float Font::GetKerning(uint32_t a, uint32_t b) const {
 		if (!m_HasKerning || m_StbFontInfoStorage.empty() || m_StbScale == 0.0f) return 0.0f;
-		if (a - k_KernFirst < k_KernSpan && b - k_KernFirst < k_KernSpan) {
+		if (a - k_KernFirst < k_KernSpan && b - k_KernFirst < k_KernSpan
+			&& m_GlyphIndices[a] != 0 && m_GlyphIndices[b] != 0) {
 			if (m_AsciiKerning.empty()) return 0.0f;
 			return m_AsciiKerning[size_t(a - k_KernFirst) * k_KernSpan + (b - k_KernFirst)] * m_StbScale;
 		}
 		const stbtt_fontinfo* font = reinterpret_cast<const stbtt_fontinfo*>(m_StbFontInfoStorage.data());
-		const int ga = a < m_GlyphIndices.size() ? m_GlyphIndices[a] : stbtt_FindGlyphIndex(font, int(a));
-		const int gb = b < m_GlyphIndices.size() ? m_GlyphIndices[b] : stbtt_FindGlyphIndex(font, int(b));
+		auto resolveGlyph = [&](uint32_t codepoint) {
+			if (!TextEncoding::IsScalar(codepoint)) codepoint = TextEncoding::k_ReplacementCodepoint;
+			int index = codepoint < m_GlyphIndices.size() ? m_GlyphIndices[codepoint] : stbtt_FindGlyphIndex(font, int(codepoint));
+			if (index == 0) {
+				codepoint = TextEncoding::k_ReplacementCodepoint;
+				index = stbtt_FindGlyphIndex(font, static_cast<int>(codepoint));
+			}
+			if (m_UnicodeCache && (m_UnicodeCache->AtCapacity || m_UnicodeCache->Glyphs.size() >= k_MaxUnicodeCachedGlyphs)
+				&& !IsBakedCodepoint(codepoint)
+				&& !m_UnicodeCache->Glyphs.contains(codepoint)) return m_GlyphIndices['?'];
+			return index != 0 ? index : m_GlyphIndices['?'];
+		};
+		const int ga = resolveGlyph(a);
+		const int gb = resolveGlyph(b);
 		return stbtt_GetGlyphKernAdvance(font, ga, gb) * m_StbScale;
 	}
 
@@ -541,6 +697,7 @@ namespace Funke {
 			DeregisterAtlas(m_AtlasTexture);
 			m_AtlasTexture = 0;
 		}
+		m_UnicodeCache.reset();
 		m_TtfBuffer.reset();
 		m_Glyphs.clear();
 		m_AsciiKerning.clear();

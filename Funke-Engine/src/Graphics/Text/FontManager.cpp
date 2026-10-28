@@ -112,7 +112,7 @@ namespace Funke {
 		if (fontDir.empty()) {
 			fontDir = Path::Combine(Path::ExecutableDir(), "FunkeAssets", "Fonts");
 		}
-		const std::string defaultFontPath = Path::Combine(fontDir, "GoogleSans-Regular.ttf");
+		const std::string defaultFontPath = Path::Combine(fontDir, "IBMPlexSansCondensed-Regular.ttf");
 		if (std::filesystem::exists(defaultFontPath)) {
 			std::error_code ec;
 			const std::string canonical = std::filesystem::weakly_canonical(
@@ -226,8 +226,7 @@ namespace Funke {
 				slot.LastAccessTick = ++s_AccessTick;
 			}
 			else if (!slot.Font->IsBakingAsync()) {
-				// Bake failed: free the slot so it isn't handed out forever (and the next request can retry);
-				// EnforceMemoryBudget skips unloaded fonts, so nothing else would reclaim it.
+				// Failed slots are not eligible for atlas-budget eviction.
 				FNK_CORE_WARN_TAG("FontManager", "Async font bake failed for asset {}", slot.AssetUUID);
 				s_FailedAsyncBakes.insert(FailedBakeKey(slot.AssetUUID, slot.QuantizedSize));
 				UnloadFont(FontHandle{ static_cast<uint16_t>(i), slot.Generation });
@@ -238,8 +237,9 @@ namespace Funke {
 	}
 
 	void FontManager::UnloadFont(const FontHandle& handle) {
-		if (!IsValid(handle)) return;
+		if (!s_IsInitialized || !handle.IsValid() || handle.index >= s_Slots.size()) return;
 		Slot& slot = s_Slots[handle.index];
+		if (!slot.InUse || slot.Generation != handle.generation) return;
 		// Use the bucket the slot was registered under, not a recomputed one —
 		// SetBakeStep may have changed the quantization since this slot was created.
 		const LookupKey key{ slot.AssetUUID, slot.QuantizedSize };
@@ -282,19 +282,10 @@ namespace Funke {
 		for (const uint64_t assetId : changed) {
 			s_TtfBufferCache.erase(assetId);
 			// Dropping every baked size is enough: holders see an invalid handle next frame and re-bake from disk.
-			// Not via UnloadFont: it skips in-flight bakes (IsValid needs a loaded font), which would publish stale glyphs.
 			for (size_t i = 0; i < s_Slots.size(); ++i) {
 				Slot& slot = s_Slots[i];
 				if (!slot.InUse || slot.AssetUUID != assetId) continue;
-				const auto lookup = s_Lookup.find(LookupKey{ slot.AssetUUID, slot.QuantizedSize });
-				if (lookup != s_Lookup.end() && lookup->second == i) {
-					s_Lookup.erase(lookup);
-				}
-				slot.Font.reset();
-				slot.AssetUUID = 0;
-				slot.PixelSize = 0.0f;
-				slot.InUse = false;
-				++slot.Generation;
+				UnloadFont(FontHandle{ static_cast<uint16_t>(i), slot.Generation });
 			}
 		}
 		if (!changed.empty()) {

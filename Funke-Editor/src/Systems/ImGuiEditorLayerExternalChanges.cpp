@@ -129,6 +129,7 @@ namespace Funke {
 		}
 		const bool wasActive = SceneManager::GetActiveScene() == oldScene.get();
 		const bool inPrefabEdit = IsInPrefabEditMode();
+		const bool wasEditingScene = GetContextScene() == oldScene.get();
 		const LoadedSceneSelectionSnapshot selection = CaptureLoadedSceneSelection();
 
 		// Staged suspended beside the old instance (same name and entity IDs), so a file that fails to load changes nothing.
@@ -181,11 +182,8 @@ namespace Funke {
 		m_EditorOwnedSceneDefinitions.insert(stagedDefinition);
 		m_EditorSceneDefinitionsBySceneName[sceneName] = stagedDefinition;
 
-		// Undo commands and the drag/cut state reference entities of the released instance.
-		if (!inPrefabEdit) {
-			m_UndoStack.Clear();
-			m_UndoStackSceneId = nullptr;
-			InspectorUndoRecorder::Reset();
+		ForgetUndoHistory(oldScene.get());
+		if (!inPrefabEdit && wasEditingScene) {
 			m_GizmoDragActive = false;
 			m_GizmoDragBefore.clear();
 			m_ShowEntityDeleteConfirm = false;

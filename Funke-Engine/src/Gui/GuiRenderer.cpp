@@ -8,6 +8,7 @@
 #endif
 #include "Components/Graphics/ImageComponent.hpp"
 #include "Gui/NineSlice.hpp"
+#include "Gui/CircularSliderGeometry.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Components/UI/CircularSliderComponent.hpp"
@@ -22,6 +23,7 @@
 #include "Core/Window.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
 #include "Graphics/Instance44.hpp"
+#include "Graphics/QuadVisibility.hpp"
 #include "Graphics/SpriteResources.hpp"
 #include "Graphics/SpriteUVResolver.hpp"
 #include "Graphics/CustomSpriteDrawer.hpp"
@@ -29,6 +31,7 @@
 #include "Graphics/Text/Font.hpp"
 #include "Graphics/Text/FontManager.hpp"
 #include "Graphics/Text/TextRenderer.hpp"
+#include "Graphics/Text/TextEncoding.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Gui/UIDrawOrder.hpp"
 #include "Scene/Scene.hpp"
@@ -55,23 +58,7 @@ namespace Funke {
 
 	namespace {
 		bool Utf8DecodeAt(std::string_view s, int idx, uint32_t& outCp, int& outLen) {
-			if (idx < 0 || idx >= static_cast<int>(s.size())) {
-				outCp = 0; outLen = 0; return false;
-			}
-			const unsigned char b = static_cast<unsigned char>(s[idx]);
-			if (b < 0x80) { outCp = b; outLen = 1; return true; }
-			int len; uint32_t cp;
-			if ((b & 0xE0) == 0xC0)      { len = 2; cp = b & 0x1F; }
-			else if ((b & 0xF0) == 0xE0) { len = 3; cp = b & 0x0F; }
-			else if ((b & 0xF8) == 0xF0) { len = 4; cp = b & 0x07; }
-			else { outCp = b; outLen = 1; return true; }
-			if (idx + len > static_cast<int>(s.size())) {
-				outCp = b; outLen = 1; return true;
-			}
-			for (int i = 1; i < len; ++i) {
-				cp = (cp << 6) | (static_cast<unsigned char>(s[idx + i]) & 0x3F);
-			}
-			outCp = cp; outLen = len; return true;
+			return TextEncoding::DecodeUtf8(s, static_cast<size_t>(idx), outCp, outLen);
 		}
 
 		float MeasureUpToByteUI(const Font& font, std::string_view text, int targetByte,
@@ -289,6 +276,7 @@ namespace Funke {
 		// Per-pass scratch shared by both GuiRenderers; CollectAndDraw is not re-entrant.
 		UIDrawOrder::OrderLookup s_OrderLookup;
 		std::vector<UIMaskClip> s_ClipByOrder;
+		std::unordered_map<uint32_t, glm::vec4> s_ArcByDrawIndex;
 
 		// Clip of every entry in `order`, inherited from its nearest drawn rect ancestor (already resolved: the
 		// order is a pre-order DFS) instead of walking every ancestor per entity.
@@ -635,6 +623,32 @@ namespace Funke {
 		UIDrawOrder::Build(registry, m_DrawOrder);
 		s_OrderLookup.Rebuild(m_DrawOrder);
 		BuildClipTable(registry, m_DrawOrder);
+		if (m_DrawOrder.empty()) return;
+		auto target = WebGPUBackend::BeginRenderToCurrentTarget();
+		if (!target.Valid) return;
+		uint32_t viewportX = 0, viewportY = 0, viewportWidth = target.Width, viewportHeight = target.Height;
+		WebGPUBackend::GetCachedViewport(viewportX, viewportY, viewportWidth, viewportHeight);
+		auto imageVisible = [&](const Instance44& instance) {
+			QuadVisibility::Clip clip;
+			if (instance.HasClip) {
+				const ScissorPx sc = ComputeScissor(mvp, instance.ClipMin, instance.ClipMax, target.Width, target.Height);
+				if (!sc.Valid) return false;
+				clip = QuadVisibility::FromScissor(sc.X, sc.Y, sc.W, sc.H,
+					viewportX, viewportY, viewportWidth, viewportHeight);
+			}
+			// Custom vertex shaders can move geometry outside the authored rectangle.
+			if (instance.Material != 0) return true;
+			const float c = std::cos(instance.Rotation);
+			const float s = std::sin(instance.Rotation);
+			auto corner = [&](float x, float y) -> Vec2 {
+				x *= instance.Scale.x;
+				y = y * instance.Scale.y + x * instance.Shear;
+				return { instance.Position.x + c * x - s * y, instance.Position.y + s * x + c * y };
+			};
+			const std::array<Vec2, 4> corners{ corner(-0.5f, -0.5f), corner(0.5f, -0.5f),
+				corner(0.5f, 0.5f), corner(-0.5f, 0.5f) };
+			return QuadVisibility::IsVisible(corners, mvp, clip);
+		};
 
 		int counter = m_DrawOrder.empty()
 			? 0
@@ -723,101 +737,40 @@ namespace Funke {
 			ApplyImageSliceToInstance(inst, image);
 			inst.Material = image.Material;
 			ApplyMaskClipToInstance(ClipForEntity(entity), inst);
+			if (!imageVisible(inst)) continue;
 			if (image.Type != ImageType::Simple && emitSlicedOrTiled(inst, image, rect, size)) continue;
 			m_InstancesScratch.push_back(inst);
 		}
 
-		// ── 2b. Circular slider background + fill ───────────────────
-		const TextureHandle defaultWhite  = TextureManager::GetDefaultTexture(DefaultTexture::Square);
-		const TextureHandle defaultCircle = TextureManager::GetDefaultTexture(DefaultTexture::Circle);
-		const TextureHandle bgTexture     = defaultCircle.IsValid() ? defaultCircle : defaultWhite;
-
-		auto emitFillSlice = [&](const Vec2& centre, float parentRot,
-			const Color& color, float startRad, float sweepRad,
-			float outerRadius, int segments,
-			std::uint32_t drawIndex, std::int16_t sortOrder, std::uint8_t sortLayer,
-			const UIMaskClip& clip)
-		{
-			if (segments < 2) segments = 2;
-			if (outerRadius <= 0.0f) return;
-			if (std::abs(sweepRad) < 1e-4f) return;
-
-			const float segAngle = sweepRad / static_cast<float>(segments);
-			const float chord = 2.0f * outerRadius * std::sin(0.5f * std::abs(segAngle));
-			const float quadWidth = chord * 1.02f;
-
-			for (int i = 0; i < segments; ++i) {
-				const float midAngle = startRad + (static_cast<float>(i) + 0.5f) * segAngle + parentRot;
-				const float midRadius = outerRadius * 0.5f;
-				const float dx = std::cos(midAngle) * midRadius;
-				const float dy = std::sin(midAngle) * midRadius;
-				Instance44 inst(
-					Vec2{ centre.x + dx, centre.y + dy },
-					Vec2{ quadWidth, outerRadius },
-					0.0f,
-					color,
-					defaultWhite,
-					sortOrder,
-					sortLayer,
-					drawIndex);
-				inst.Rotation = midAngle + 1.5707963267948966f;
-				ApplyMaskClipToInstance(clip, inst);
-				m_InstancesScratch.push_back(inst);
-			}
-		};
-
+		s_ArcByDrawIndex.clear();
+		uint32_t arcViewportX = 0, arcViewportY = 0, arcViewportWidth = 0, arcViewportHeight = 0;
+		WebGPUBackend::GetCachedViewport(arcViewportX, arcViewportY, arcViewportWidth, arcViewportHeight);
+		const float arcPixelsPerUnit = std::min(
+			std::hypot(mvp[0][0] * arcViewportWidth, mvp[0][1] * arcViewportHeight),
+			std::hypot(mvp[1][0] * arcViewportWidth, mvp[1][1] * arcViewportHeight)) * 0.5f;
+		const float arcPadding = arcPixelsPerUnit > 0.0f ? 2.0f / arcPixelsPerUnit : 2.0f;
+		const TextureHandle defaultWhite = TextureManager::GetDefaultTexture(DefaultTexture::Square);
 		for (const auto& [entity, drawIndex] : m_DrawOrder) {
 			if (!registry.all_of<RectTransform2DComponent, CircularSliderComponent>(entity)) continue;
 			const auto& rect = registry.get<RectTransform2DComponent>(entity);
-			const auto& cs   = registry.get<CircularSliderComponent>(entity);
+			const auto& cs = registry.get<CircularSliderComponent>(entity);
+			const auto shape = CircularSliderGeometry::Resolve(cs, rect);
+			if (shape.OuterRadius <= 0.0f || shape.Thickness <= 0.0f || shape.SweepRadians == 0.0f) continue;
 
-			const Vec2 size = rect.GetSize();
-			const float outerRadius = std::min(size.x, size.y) * 0.5f;
-			if (outerRadius <= 0.0f) continue;
-
-			const Vec2 centre = rect.GetCenter();
-			const float parentRot = rect.Rotation;
-
-			constexpr float kDeg2Rad = 3.14159265358979323846f / 180.0f;
-			const float startRad = cs.StartAngleDegrees * kDeg2Rad;
-			const float sweepRad = cs.SweepDegrees * kDeg2Rad
-				* (cs.Clockwise ? -1.0f : 1.0f);
-
-			const float range = cs.MaxValue - cs.MinValue;
-			const float t = (range != 0.0f)
-				? std::clamp((cs.Value - cs.MinValue) / range, 0.0f, 1.0f)
-				: 0.0f;
-
+			// The antialiasing fringe needs screen pixels even when the editor zooms out.
+			const float extent = shape.OuterRadius + arcPadding;
 			const UIMaskClip& clip = ClipForEntity(entity);
-
-			{
-				Instance44 bg(
-					centre,
-					Vec2{ outerRadius * 2.0f, outerRadius * 2.0f },
-					parentRot,
-					cs.BackgroundColor,
-					bgTexture,
-					cs.SortingOrder, cs.SortingLayer,
-					static_cast<std::uint32_t>(drawIndex));
-				ApplyMaskClipToInstance(clip, bg);
-				m_InstancesScratch.push_back(bg);
-			}
-
-			if (t > 0.0f) {
-				// Cap matches the inspector range (8..256). The fill is a fan of chord-wide
-				// quads from the centre, so a low count leaves a blocky pinwheel at the apex;
-				// honouring the configured RingSegments lets the user smooth it out (the old
-				// hard cap of 32 ignored anything higher).
-				const int totalSegments = std::max(8, std::min(cs.RingSegments, 256));
-				const int fillSegments = std::max(1,
-					static_cast<int>(std::round(static_cast<float>(totalSegments) * t)));
-				emitFillSlice(centre, parentRot, cs.FillColor,
-					startRad, sweepRad * t, outerRadius, fillSegments,
-					static_cast<std::uint32_t>(drawIndex) + 1u,
-					// Same sort key as the background; the +1 drawIndex above keeps the fill on top.
-					cs.SortingOrder, cs.SortingLayer,
-					clip);
-			}
+			auto emitArc = [&](const Color& color, float sweep, uint32_t index) {
+				if (color.a <= 0.0f || std::abs(sweep) < 1e-6f) return;
+				Instance44 arc(shape.Center, Vec2{ extent * 2.0f, extent * 2.0f },
+					shape.StartRadians, color, defaultWhite, cs.SortingOrder, cs.SortingLayer, index);
+				ApplyMaskClipToInstance(clip, arc);
+				m_InstancesScratch.push_back(arc);
+				s_ArcByDrawIndex.emplace(index,
+					glm::vec4{ shape.Radius / extent, shape.Thickness * 0.5f / extent, sweep, 0.0f });
+			};
+			emitArc(cs.BackgroundColor, shape.SweepRadians, static_cast<uint32_t>(drawIndex) + 1u);
+			emitArc(cs.FillColor, shape.SweepRadians * shape.NormalizedValue, static_cast<uint32_t>(drawIndex) + 2u);
 		}
 
 		// ── 3. UI text instances (collect into m_TextScratch; submitted later in the merge walk) ──
@@ -1276,6 +1229,7 @@ namespace Funke {
 		}
 
 		// ── 5. Sort image and text instances by unified key ──────────
+		std::erase_if(m_InstancesScratch, [&](const Instance44& instance) { return !imageVisible(instance); });
 		std::sort(m_InstancesScratch.begin(), m_InstancesScratch.end(),
 			[](const Instance44& a, const Instance44& b) {
 				if (a.SortingLayer != b.SortingLayer)
@@ -1306,8 +1260,6 @@ namespace Funke {
 			state.LastClearFrameCount = currentFrame;
 		}
 
-		auto target = WebGPUBackend::BeginRenderToCurrentTarget();
-		if (!target.Valid) return;
 		if (!WebGPUSpriteResources::IsReady()) return;
 
 		wgpu::Device device = WebGPUBackend::GetDevice();
@@ -1332,6 +1284,11 @@ namespace Funke {
 				state.EncodedScratch.resize(n);
 				for (size_t k = 0; k < n; ++k) {
 					WebGPUSpriteResources::EncodeInstance44(m_InstancesScratch[k], state.EncodedScratch[k]);
+					if (const auto arc = s_ArcByDrawIndex.find(m_InstancesScratch[k].DrawIndex); arc != s_ArcByDrawIndex.end()) {
+						// UI arcs reuse the UV payload; ordinary sprites keep the shared instance layout.
+						state.EncodedScratch[k].Rot[3] = 1.0f;
+						std::memcpy(state.EncodedScratch[k].Uv, glm::value_ptr(arc->second), sizeof(float) * 4);
+					}
 				}
 				queue.WriteBuffer(state.InstanceBuffer, 0,
 					state.EncodedScratch.data(),

@@ -1,13 +1,14 @@
 #pragma once
 #include "Undo/EditCommand.hpp"
+#include <map>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace Funke {
 	class Scene;
 
-	// Per-context-scene undo/redo history. The owner clears it when the editing
-	// context changes (scene switch, prefab-edit toggle, play-mode boundaries).
+	// Commands are recorded after their changes have been applied.
 	class UndoStack {
 	public:
 		void Push(std::unique_ptr<EditCommand> command);
@@ -27,5 +28,17 @@ namespace Funke {
 
 		std::vector<std::unique_ptr<EditCommand>> m_Undo;
 		std::vector<std::unique_ptr<EditCommand>> m_Redo;
+	};
+
+	class SceneUndoHistory {
+	public:
+		UndoStack& ForScene(const std::shared_ptr<Scene>& scene);
+		void Retain(std::span<const std::weak_ptr<Scene>> scenes);
+		void Forget(const Scene* scene);
+		void Clear();
+
+	private:
+		// Ownership distinguishes replacement scenes even when names, IDs or addresses are reused.
+		std::map<std::weak_ptr<Scene>, UndoStack, std::owner_less<std::weak_ptr<Scene>>> m_Stacks;
 	};
 }

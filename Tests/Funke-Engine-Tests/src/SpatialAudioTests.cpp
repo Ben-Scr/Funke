@@ -17,10 +17,12 @@
 #include "Systems/Transform3DHierarchySystem.hpp"
 #endif
 
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <thread>
 #include <vector>
 
 using namespace Funke;
@@ -58,6 +60,217 @@ namespace {
 		out.Right /= static_cast<float>(frames / 2);
 		return out;
 	}
+
+	struct AudioConcurrencyScope {
+		MiniaudioBackend* Backend = nullptr;
+		std::vector<std::filesystem::path> Files;
+		float PreviousVolume = AudioManager::GetMasterVolume();
+		bool PreviouslyMuted = AudioManager::IsMuted();
+
+		AudioConcurrencyScope() {
+			auto backend = std::make_unique<MiniaudioBackend>(true);
+			Backend = backend.get();
+			AudioManager::SetBackend(std::move(backend));
+			AudioManager::SetMasterVolume(1.0f);
+			AudioManager::SetMuted(false);
+			AudioManager::SetMaxConcurrentSounds(1);
+			AudioManager::SetMaxSoundsPerFrame(16);
+		}
+
+		~AudioConcurrencyScope() {
+			if (AudioManager::IsInitialized()) AudioManager::Shutdown();
+			AudioManager::SetMaxConcurrentSounds(AudioManager::MAX_CONCURRENT_SOUNDS);
+			AudioManager::SetMaxSoundsPerFrame(AudioManager::MAX_SOUNDS_PER_FRAME);
+			AudioManager::SetMasterVolume(PreviousVolume);
+			AudioManager::SetMuted(PreviouslyMuted);
+			std::error_code ec;
+			for (const auto& file : Files) std::filesystem::remove(file, ec);
+		}
+
+		AudioHandle Load(const char* name, uint32_t frames) {
+			Files.push_back(WriteConstantWav(name, frames));
+			return AudioManager::LoadAudio(Files.back().string());
+		}
+	};
+}
+
+TEST_CASE("Audio decodes Ogg Vorbis clips through the headless backend") {
+	const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+	const auto fixture = root / "External" / "miniaudio" / "data" / "48000-stereo.ogg";
+	REQUIRE(std::filesystem::is_regular_file(fixture));
+
+	AudioConcurrencyScope audio;
+	REQUIRE(AudioManager::Initialize());
+	const AudioHandle clip = AudioManager::LoadAudio(fixture.string());
+	REQUIRE(clip.IsValid());
+	REQUIRE(AudioManager::IsAudioLoaded(clip));
+	AudioManager::PlayOneShot(clip);
+	REQUIRE(AudioManager::GetActiveSoundCount() == 1);
+
+	constexpr uint32_t k_Frames = 48000;
+	std::vector<float> mixed(static_cast<size_t>(k_Frames) * 2, 0.0f);
+	REQUIRE(audio.Backend->ReadFrames(mixed.data(), k_Frames) == k_Frames);
+	double energy = 0.0;
+	for (float sample : mixed) energy += static_cast<double>(sample) * sample;
+	CHECK(std::isfinite(energy));
+	CHECK(energy > 0.001);
+}
+
+TEST_CASE("Audio one-shot concurrency limit holds across immediate starts") {
+	AudioConcurrencyScope audio;
+	REQUIRE(AudioManager::Initialize());
+	constexpr uint32_t k_Frames = 8192;
+	const AudioHandle first = audio.Load("FunkeAudioLimitImmediateA.wav", k_Frames);
+	const AudioHandle second = audio.Load("FunkeAudioLimitImmediateB.wav", k_Frames);
+	REQUIRE(first.IsValid());
+	REQUIRE(second.IsValid());
+
+	AudioManager::PlayOneShot(first);
+	AudioManager::PlayOneShot(second);
+	CHECK(AudioManager::GetActiveSoundCount() == 1);
+	const Speakers heard = Mix(*audio.Backend, k_Frames);
+	CHECK(heard.Left == doctest::Approx(0.5f).epsilon(0.001));
+	CHECK(heard.Right == doctest::Approx(0.5f).epsilon(0.001));
+}
+
+TEST_CASE("Audio one-shot concurrency limit counts queued starts before new requests") {
+	AudioConcurrencyScope audio;
+	REQUIRE(AudioManager::Initialize());
+	constexpr uint32_t k_Frames = 8192;
+	const AudioHandle blocker = audio.Load("FunkeAudioLimitBlocker.wav", k_Frames);
+	const AudioHandle queued = audio.Load("FunkeAudioLimitQueued.wav", k_Frames);
+	const AudioHandle immediate = audio.Load("FunkeAudioLimitAfterQueue.wav", k_Frames);
+	REQUIRE(blocker.IsValid());
+	REQUIRE(queued.IsValid());
+	REQUIRE(immediate.IsValid());
+	AudioSourceComponent source(blocker);
+	source.Play();
+	AudioManager::Update();
+	AudioManager::PlayOneShot(queued);
+	source.Stop();
+	AudioManager::Update();
+	AudioManager::PlayOneShot(immediate);
+	CHECK(AudioManager::GetActiveSoundCount() == 1);
+	const Speakers heard = Mix(*audio.Backend, k_Frames);
+	CHECK(heard.Left == doctest::Approx(0.5f).epsilon(0.001));
+	CHECK(heard.Right == doctest::Approx(0.5f).epsilon(0.001));
+}
+
+TEST_CASE("Audio one-shot concurrency limit uses current AudioSource playback state") {
+	AudioConcurrencyScope audio;
+	REQUIRE(AudioManager::Initialize());
+	constexpr uint32_t k_Frames = 8192;
+	const AudioHandle sourceAudio = audio.Load("FunkeAudioLimitSource.wav", k_Frames);
+	const AudioHandle oneShot = audio.Load("FunkeAudioLimitSourceOneShot.wav", k_Frames);
+	REQUIRE(sourceAudio.IsValid());
+	REQUIRE(oneShot.IsValid());
+	AudioSourceComponent source(sourceAudio);
+	source.SetVolume(0.25f);
+	float expected = 0.125f;
+
+	SUBCASE("a source started this frame occupies the only voice") {
+		source.Play();
+	}
+	SUBCASE("a source resumed this frame occupies the only voice") {
+		source.Play();
+		source.Pause();
+		AudioManager::Update();
+		source.Resume();
+	}
+	SUBCASE("pausing a source releases its voice immediately") {
+		source.Play();
+		AudioManager::Update();
+		source.Pause();
+		expected = 0.5f;
+	}
+	SUBCASE("stopping a source releases its voice immediately") {
+		source.Play();
+		AudioManager::Update();
+		source.Stop();
+		expected = 0.5f;
+	}
+	SUBCASE("a finished source releases its voice before the next frame update") {
+		source.Play();
+		AudioManager::Update();
+		Mix(*audio.Backend, k_Frames + 1024);
+		REQUIRE_FALSE(source.IsPlaying());
+		expected = 0.5f;
+	}
+
+	AudioManager::PlayOneShot(oneShot);
+	CHECK(AudioManager::GetActiveSoundCount() == 1);
+	const Speakers heard = Mix(*audio.Backend, k_Frames);
+	CHECK(heard.Left == doctest::Approx(expected).epsilon(0.001));
+	CHECK(heard.Right == doctest::Approx(expected).epsilon(0.001));
+}
+
+TEST_CASE("Audio queued one-shots expire while playback is blocked") {
+	AudioConcurrencyScope audio;
+	REQUIRE(AudioManager::Initialize());
+	const AudioHandle clip = audio.Load("FunkeAudioQueueExpiry.wav", 8192);
+	REQUIRE(clip.IsValid());
+	AudioSourceComponent source(clip);
+	source.SetLoop(true);
+	source.Play();
+
+	SUBCASE("all voices are occupied") {}
+	SUBCASE("the frame start budget is zero") {
+		AudioManager::SetMaxConcurrentSounds(2);
+		AudioManager::SetMaxSoundsPerFrame(0);
+	}
+	SUBCASE("the voice budget is zero") {
+		AudioManager::SetMaxConcurrentSounds(0);
+	}
+
+	for (uint32_t i = 0; i < AudioManager::MAX_QUEUED_SOUNDS * 8; ++i) {
+		AudioManager::PlayOneShot(clip);
+	}
+	CHECK(AudioManager::GetQueuedSoundCount() <= AudioManager::MAX_QUEUED_SOUNDS);
+	REQUIRE(AudioManager::GetQueuedSoundCount() > 0);
+	std::this_thread::sleep_for(std::chrono::milliseconds(250));
+	AudioManager::Update();
+	CHECK(AudioManager::GetQueuedSoundCount() == 0);
+	CHECK(AudioManager::GetActiveSoundCount() == 1);
+}
+
+TEST_CASE("Audio queue overflow preserves the earliest equal-priority sound") {
+	AudioConcurrencyScope audio;
+	REQUIRE(AudioManager::Initialize());
+	constexpr uint32_t k_Frames = 8192;
+	const AudioHandle blocker = audio.Load("FunkeAudioQueueOverflowBlocker.wav", k_Frames);
+	const AudioHandle queued = audio.Load("FunkeAudioQueueOverflow.wav", k_Frames);
+	REQUIRE(blocker.IsValid());
+	REQUIRE(queued.IsValid());
+	AudioSourceComponent source(blocker);
+	source.Play();
+	AudioManager::PlayOneShot(queued, 0.25f);
+	for (uint32_t i = 0; i < AudioManager::MAX_QUEUED_SOUNDS * 8; ++i) {
+		AudioManager::PlayOneShot(queued);
+	}
+	CHECK(AudioManager::GetQueuedSoundCount() == AudioManager::MAX_QUEUED_SOUNDS);
+	source.Stop();
+	AudioManager::Update();
+	CHECK(AudioManager::GetActiveSoundCount() == 1);
+	const Speakers heard = Mix(*audio.Backend, k_Frames);
+	CHECK(heard.Left == doctest::Approx(0.125f).epsilon(0.001));
+	CHECK(heard.Right == doctest::Approx(0.125f).epsilon(0.001));
+}
+
+TEST_CASE("Audio queue releases requests for unloaded clips while voices are occupied") {
+	AudioConcurrencyScope audio;
+	REQUIRE(AudioManager::Initialize());
+	const AudioHandle blocker = audio.Load("FunkeAudioQueueUnloadBlocker.wav", 8192);
+	const AudioHandle queued = audio.Load("FunkeAudioQueueUnload.wav", 8192);
+	REQUIRE(blocker.IsValid());
+	REQUIRE(queued.IsValid());
+	AudioSourceComponent source(blocker);
+	source.Play();
+	AudioManager::PlayOneShot(queued);
+	REQUIRE(AudioManager::GetQueuedSoundCount() == 1);
+	AudioManager::UnloadAudio(queued);
+	AudioManager::Update();
+	CHECK(AudioManager::GetQueuedSoundCount() == 0);
+	CHECK(AudioManager::GetActiveSoundCount() == 1);
 }
 
 TEST_CASE("Spatial audio fades like miniaudio's inverse and linear models") {

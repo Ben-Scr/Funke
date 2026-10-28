@@ -26,6 +26,7 @@ namespace Funke {
 
 	class FUNKE_API Renderer2D : public IRenderer {
 	public:
+		using SceneProvider = std::function<void(const std::function<void(Scene&)>&)>;
 		Renderer2D();
 		~Renderer2D() override;
 		Renderer2D(const Renderer2D&) = delete;
@@ -62,6 +63,7 @@ namespace Funke {
 
 		void RenderScene(Scene& scene);
 		void RenderSceneWithVP(Scene& scene, const glm::mat4& vp, const AABB& viewportAABB);
+		void RenderScenesWithVP(const SceneProvider& scenes, const glm::mat4& vp, const AABB& viewportAABB);
 
 		void SetSkipBeginFrameRender(bool skip) { m_SkipBeginFrameRender = skip; }
 		// Set when 3D content already sits in the target: BeginFrame skips its clear and the
@@ -75,7 +77,6 @@ namespace Funke {
 		size_t GetDrawCallsCount() const { return m_DrawCallsCount; }
 		float GetRenderLoopDuration() const { return m_RenderLoopDuration; }
 
-		using SceneProvider = std::function<void(const std::function<void(Scene&)>&)>;
 		void SetSceneProvider(SceneProvider provider) { m_SceneProvider = std::move(provider); }
 
 		using InstanceContributor = std::function<void(const Scene& scene, const AABB& viewportAABB, std::vector<Instance44>& outInstances)>;

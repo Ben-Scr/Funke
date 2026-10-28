@@ -10,12 +10,19 @@
 #include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Core/Application.hpp"
+#include "Physics/PhysicsSystem2D.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Project/ProjectManager.hpp"
+#include "Scene/ComponentRegistry.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/Scene.hpp"
+#include "Scene/SceneDefinition.hpp"
+#include "Scene/SceneExecutionContext.hpp"
+#include "Scene/SceneManager.hpp"
+#include "Scripting/EntityCommandBufferWire.hpp"
 #include "Scripting/NativeScript.hpp"
 #include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptComponent.hpp"
@@ -30,15 +37,199 @@
 
 #include <chrono>
 #include <algorithm>
+#include <array>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 using namespace Funke;
 
 namespace {
 	class ComponentAccessScript final : public NativeScript {};
+	struct ByteEmplaceTestComponent { uint64_t Value = 0; };
+	struct HierarchyTestBodyTag {};
+}
+
+TEST_CASE("Scene bulk creation rejects invalid output and entity caps without mutation")
+{
+	auto scene = Scene::CreateDetachedScene("Bulk Creation Validation");
+	Entity existing = scene->CreateEmptyEntity();
+	std::array<EntityHandle, 3> output{ existing.GetHandle(), entt::null, existing.GetHandle() };
+	const auto originalOutput = output;
+	const auto storageSize = scene->GetRegistry().storage<EntityHandle>().size();
+	const auto storageCapacity = scene->GetRegistry().storage<EntityHandle>().capacity();
+	scene->ClearDirty();
+	scene->ClearUIDirty();
+
+	const auto rejects = [&](size_t count, std::span<EntityHandle> destination, FunkeErrorCode expected) {
+		bool rejected = false;
+		try {
+			scene->CreateEntitiesBulk(count, destination);
+		} catch (const FunkeException& error) {
+			rejected = true;
+			CHECK(error.Code() == expected);
+		}
+		CHECK(rejected);
+		CHECK(scene->GetEntityCount() == 1);
+		CHECK(scene->GetRegistry().storage<EntityHandle>().size() == storageSize);
+		CHECK(scene->GetRegistry().storage<EntityHandle>().capacity() == storageCapacity);
+		CHECK(existing.IsValid());
+		CHECK(output == originalOutput);
+		CHECK_FALSE(scene->IsDirty());
+		CHECK_FALSE(scene->IsUIDirty());
+	};
+
+	rejects(2, std::span<EntityHandle>(output).first(1), FunkeErrorCode::InvalidArgument);
+	rejects(1, {}, FunkeErrorCode::InvalidArgument);
+	constexpr size_t maxEntities = entt::entt_traits<EntityHandle>::entity_mask;
+	rejects(maxEntities, output, FunkeErrorCode::OutOfRange);
+	rejects(std::numeric_limits<size_t>::max(), output, FunkeErrorCode::OutOfRange);
+	CHECK_NOTHROW(scene->CreateEntitiesBulk(0, {}));
+	CHECK(scene->GetEntityCount() == 1);
+
+	scene->CreateEntitiesBulk(2, output);
+	CHECK(scene->GetEntityCount() == 3);
+	CHECK(scene->IsValid(output[0]));
+	CHECK(scene->IsValid(output[1]));
+	CHECK(output[0] != output[1]);
+	CHECK(output[0] != existing.GetHandle());
+	CHECK(output[2] == existing.GetHandle());
+}
+
+TEST_CASE("ComponentRegistry byte emplacement rejects malformed input without mutation")
+{
+	for (bool dynamic : { false, true }) {
+		INFO("dynamic component: " << dynamic);
+		ComponentRegistry components;
+		const ComponentInfo* info = nullptr;
+		if (dynamic) {
+			const uint32_t typeId = components.RegisterDynamic("Byte Validation", "ByteValidation", "",
+				ComponentCategory::Component, sizeof(ByteEmplaceTestComponent), alignof(ByteEmplaceTestComponent));
+			info = components.GetByTypeId(typeId);
+		} else {
+			ComponentInfo registration("Byte Validation", ComponentCategory::Component);
+			registration.serializedName = "ByteValidation";
+			components.Register<ByteEmplaceTestComponent>(registration);
+			components.Register<ByteEmplaceTestComponent>(registration);
+			info = components.GetInfo<ByteEmplaceTestComponent>();
+		}
+		REQUIRE(info != nullptr);
+		REQUIRE(info->emplaceFromBytes != nullptr);
+		CHECK(info->bytePayloadSize == sizeof(ByteEmplaceTestComponent));
+
+		entt::registry registry;
+		const EntityHandle entity = registry.create();
+		const EntityHandle stale = registry.create();
+		registry.destroy(stale);
+		const ByteEmplaceTestComponent original{ 41 };
+		const ByteEmplaceTestComponent replacement{ 99 };
+		const auto storedCount = [&]() {
+			return dynamic ? info->dynamicStorage->GetSceneView(registry).Size()
+				: registry.storage<ByteEmplaceTestComponent>().size();
+		};
+		CHECK_THROWS_AS(info->emplaceFromBytes(registry, entity, &replacement, sizeof(replacement) - 1), FunkeException);
+		CHECK_THROWS_AS(info->emplaceFromBytes(registry, entity, nullptr, sizeof(replacement)), FunkeException);
+		CHECK(storedCount() == 0);
+		info->emplaceFromBytes(registry, entity, &original, sizeof(original));
+		REQUIRE(storedCount() == 1);
+
+		for (size_t size : { size_t{0}, sizeof(replacement) - 1, sizeof(replacement) + 1 }) {
+			CHECK_THROWS_AS(info->emplaceFromBytes(registry, entity, &replacement, size), FunkeException);
+		}
+		CHECK_THROWS_AS(info->emplaceFromBytes(registry, entity, nullptr, sizeof(replacement)), FunkeException);
+		CHECK_THROWS_AS(info->emplaceFromBytes(registry, entt::null, &replacement, sizeof(replacement)), FunkeException);
+		CHECK_THROWS_AS(info->emplaceFromBytes(registry, stale, &replacement, sizeof(replacement)), FunkeException);
+		CHECK(storedCount() == 1);
+		ByteEmplaceTestComponent stored;
+		const void* bytes = dynamic ? info->dynamicStorage->Get(registry, entity)
+			: &registry.get<ByteEmplaceTestComponent>(entity);
+		REQUIRE(bytes != nullptr);
+		std::memcpy(&stored, bytes, sizeof(stored));
+		CHECK(stored.Value == original.Value);
+	}
+}
+
+TEST_CASE("ECB preflight rejects malformed component commands before scene mutation")
+{
+	Application app;
+	auto scene = Scene::CreateDetachedScene("ECB Payload Validation");
+	SceneExecutionScope scope(*scene);
+	Entity existing = scene->CreateEmptyEntity();
+	const uint64_t existingId = scene->GetEntityPersistentID(existing.GetHandle());
+	ComponentRegistry& components = SceneManager::GetComponentRegistry();
+	components.Register<ByteEmplaceTestComponent>(ComponentInfo("Byte Validation", ComponentCategory::Component));
+	const ComponentInfo* native = components.GetInfo<ByteEmplaceTestComponent>();
+	REQUIRE(native != nullptr);
+	const uint32_t dynamicId = components.RegisterDynamic("Dynamic Byte Validation", "DynamicByteValidation", "",
+		ComponentCategory::Component, sizeof(ByteEmplaceTestComponent), alignof(ByteEmplaceTestComponent));
+	REQUIRE(dynamicId != 0);
+	NativeBindings bindings{};
+	ScriptBindings::PopulateNativeBindings(bindings);
+	REQUIRE(bindings.Ecb_Playback != nullptr);
+	scene->ClearDirty();
+	scene->ClearUIDirty();
+	const auto storageCapacity = scene->GetRegistry().storage<EntityHandle>().capacity();
+
+	const auto makeBuffer = [&](uint32_t typeId, uint8_t opcode, uint16_t size, bool prefabFirst = false) {
+		std::vector<uint8_t> buffer(sizeof(EcbHeader) + sizeof(uint32_t));
+		const EcbHeader header{ 1, 2 };
+		std::memcpy(buffer.data(), &header, sizeof(header));
+		std::memcpy(buffer.data() + sizeof(header), &kEcbNoName, sizeof(kEcbNoName));
+		const auto append = [&](uint8_t operation, uint32_t entityIndex, uint32_t component, const void* bytes, uint16_t byteCount) {
+			const size_t offset = buffer.size();
+			buffer.resize(offset + 11 + byteCount);
+			buffer[offset] = operation;
+			std::memcpy(buffer.data() + offset + 1, &entityIndex, sizeof(entityIndex));
+			std::memcpy(buffer.data() + offset + 5, &component, sizeof(component));
+			std::memcpy(buffer.data() + offset + 9, &byteCount, sizeof(byteCount));
+			if (byteCount && bytes) std::memcpy(buffer.data() + offset + 11, bytes, byteCount);
+		};
+		append(prefabFirst ? Ecb_InstantiatePrefab : Ecb_DestroyEntity,
+			prefabFirst ? 0 : kEcbNoName, 0, &existingId, sizeof(existingId));
+		append(opcode, 0, typeId, nullptr, size);
+		return buffer;
+	};
+	const auto rejects = [&](const std::vector<uint8_t>& buffer) {
+		uint64_t output = 12345;
+		CHECK(bindings.Ecb_Playback(buffer.data(), static_cast<int>(buffer.size()), &output, 1) == kEcbErrorTruncated);
+		CHECK(output == 12345);
+		CHECK(existing.IsValid());
+		CHECK(scene->GetEntityCount() == 1);
+		CHECK(scene->GetRegistry().storage<EntityHandle>().capacity() == storageCapacity);
+		CHECK_FALSE(scene->IsDirty());
+		CHECK_FALSE(scene->IsUIDirty());
+	};
+	for (uint32_t typeId : { native->typeIdU32, dynamicId }) {
+		for (uint8_t opcode : { uint8_t{Ecb_AddComponent}, uint8_t{Ecb_SetComponent} }) {
+			for (uint16_t size : { uint16_t{0}, uint16_t{7}, uint16_t{9} }) {
+				rejects(makeBuffer(typeId, opcode, size));
+			}
+		}
+		rejects(makeBuffer(typeId, Ecb_DefaultConstructComponent, 1));
+	}
+	rejects(makeBuffer(native->typeIdU32, Ecb_AddComponent, 7, true));
+
+	ComponentInfo custom("Byte Validation", ComponentCategory::Component);
+	custom.emplaceFromBytes = [](entt::registry& registry, EntityHandle entity, const void* bytes, size_t size) {
+		REQUIRE(size == 1);
+		registry.emplace_or_replace<ByteEmplaceTestComponent>(entity,
+			ByteEmplaceTestComponent{ *static_cast<const uint8_t*>(bytes) });
+	};
+	components.Register<ByteEmplaceTestComponent>(custom);
+	CHECK(components.GetInfo<ByteEmplaceTestComponent>()->bytePayloadSize == 0);
+	const auto customBuffer = makeBuffer(native->typeIdU32, Ecb_AddComponent, 1);
+	uint64_t customOutput = 0;
+	CHECK(bindings.Ecb_Playback(customBuffer.data(), static_cast<int>(customBuffer.size()), &customOutput, 1) == 1);
+	CHECK(customOutput != 0);
+	CHECK_FALSE(existing.IsValid());
+	CHECK(scene->GetEntityCount() == 1);
+	CHECK(scene->GetRegistry().view<ByteEmplaceTestComponent>().size() == 1);
 }
 
 TEST_CASE("Entity null component access is guarded")
@@ -823,6 +1014,148 @@ TEST_CASE("Dirty transforms propagate only their own subtrees")
 	CHECK(grandchildTransform.Position.y == doctest::Approx(21.0f));
 }
 
+TEST_CASE("Physics-driven Transform2D subtrees leave unrelated entities untouched")
+{
+	auto scene = Scene::CreateDetachedScene("Physics subtree propagation");
+	Entity body = scene->CreateEntity("Body");
+	body.AddComponent<Rigidbody2DComponent>();
+	Entity child = scene->CreateEntity("Child");
+	child.SetParent(body);
+	child.GetComponent<Transform2DComponent>().SetPosition({ 2.0f, 3.0f });
+	Entity bystander = Entity::Null;
+	for (int i = 0; i < 256; ++i) bystander = scene->CreateEntity();
+	TransformHierarchySystem::Propagate(*scene);
+	auto& bodyTransform = body.GetComponent<Transform2DComponent>();
+	bodyTransform.ClearDirty();
+	REQUIRE_FALSE(scene->HasDirtyTransforms());
+
+	bodyTransform.Position = { 10.0f, 20.0f };
+	bodyTransform.LocalPosition = bodyTransform.Position;
+	auto& bystanderTransform = bystander.GetComponent<Transform2DComponent>();
+	bystanderTransform.LocalPosition = { 99.0f, 99.0f };
+	TransformHierarchySystem::Propagate(*scene);
+	CHECK(child.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(12.0f));
+	CHECK(child.GetComponent<Transform2DComponent>().Position.y == doctest::Approx(23.0f));
+	CHECK(bystanderTransform.Position.x == doctest::Approx(0.0f));
+	CHECK(TransformHierarchySystem::GetLastPropagationStats(*scene).TransformsVisited == 2);
+	CHECK_FALSE(TransformHierarchySystem::GetLastPropagationStats(*scene).FullTraversal);
+
+	bodyTransform.SetPosition({ 30.0f, 40.0f });
+	TransformHierarchySystem::Propagate(*scene);
+	CHECK(child.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(32.0f));
+	CHECK(bodyTransform.IsDirty());
+	CHECK(TransformHierarchySystem::GetLastPropagationStats(*scene).TransformsVisited == 2);
+
+	scene->MarkTransformDirty(entt::null);
+	TransformHierarchySystem::Propagate(*scene);
+	CHECK(bystanderTransform.Position.x == doctest::Approx(99.0f));
+	CHECK(TransformHierarchySystem::GetLastPropagationStats(*scene).FullTraversal);
+	CHECK(TransformHierarchySystem::GetLastPropagationStats(*scene).TransformsVisited == 258);
+}
+
+TEST_CASE("Dirty ancestors and nested physics bodies propagate each Transform2D once")
+{
+	auto scene = Scene::CreateDetachedScene("Nested physics propagation");
+	Entity root = scene->CreateEntity("Root");
+	Entity body = scene->CreateEntity("Body");
+	body.AddComponent<Rigidbody2DComponent>();
+	body.SetParent(root);
+	Entity middle = scene->CreateEntity("Middle");
+	middle.SetParent(body);
+	middle.GetComponent<Transform2DComponent>().SetPosition({ 2.0f, 0.0f });
+	Entity nestedBody = scene->CreateEntity("Nested body");
+	nestedBody.AddComponent<Rigidbody2DComponent>();
+	nestedBody.SetParent(middle);
+	Entity leaf = scene->CreateEntity("Leaf");
+	leaf.SetParent(nestedBody);
+	TransformHierarchySystem::Propagate(*scene);
+	auto& bodyTransform = body.GetComponent<Transform2DComponent>();
+	auto& nestedTransform = nestedBody.GetComponent<Transform2DComponent>();
+	bodyTransform.ClearDirty();
+	nestedTransform.ClearDirty();
+	bodyTransform.Position = { 10.0f, 0.0f };
+	nestedTransform.Position = { 25.0f, 0.0f };
+	root.GetComponent<Transform2DComponent>().SetPosition({ 5.0f, 0.0f });
+	leaf.GetComponent<Transform2DComponent>().SetPosition({ 3.0f, 0.0f });
+	TransformHierarchySystem::Propagate(*scene);
+	CHECK(bodyTransform.Position.x == doctest::Approx(10.0f));
+	CHECK(middle.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(12.0f));
+	CHECK(nestedTransform.Position.x == doctest::Approx(25.0f));
+	CHECK(leaf.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(28.0f));
+	CHECK(TransformHierarchySystem::GetLastPropagationStats(*scene).TransformsVisited == 5);
+}
+
+TEST_CASE("Physics extension bodies propagate only their Transform2D descendants")
+{
+	constexpr const char* extensionName = "HierarchyTestBody";
+	PhysicsExtension2D extension;
+	extension.Name = extensionName;
+	extension.BodyComponent = entt::type_hash<HierarchyTestBodyTag>::value();
+	PhysicsSystem2D::RegisterExtension(std::move(extension));
+	struct UnregisterExtension {
+		const char* Name;
+		~UnregisterExtension() { PhysicsSystem2D::UnregisterExtension(Name); }
+	} cleanup{ extensionName };
+	auto scene = Scene::CreateDetachedScene("Extension subtree propagation");
+	Entity body = scene->CreateEntity("Extension body");
+	scene->GetRegistry().emplace<HierarchyTestBodyTag>(body.GetHandle());
+	Entity child = scene->CreateEntity("Child");
+	child.SetParent(body);
+	child.GetComponent<Transform2DComponent>().SetPosition({ 2.0f, 0.0f });
+	Entity bystander = scene->CreateEntity("Bystander");
+	TransformHierarchySystem::Propagate(*scene);
+	auto& bodyTransform = body.GetComponent<Transform2DComponent>();
+	bodyTransform.ClearDirty();
+	bodyTransform.Position = { 10.0f, 0.0f };
+	bystander.GetComponent<Transform2DComponent>().LocalPosition.x = 99.0f;
+	TransformHierarchySystem::Propagate(*scene);
+	CHECK(child.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(12.0f));
+	CHECK(bystander.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(0.0f));
+	CHECK(TransformHierarchySystem::GetLastPropagationStats(*scene).TransformsVisited == 2);
+
+	body.SetEnabled(false);
+	TransformHierarchySystem::Propagate(*scene);
+	TransformHierarchySystem::Propagate(*scene);
+	CHECK(TransformHierarchySystem::GetLastPropagationStats(*scene).TransformsVisited == 0);
+}
+
+TEST_CASE("Transform3D camera and light world queries see edits without scene propagation")
+{
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Targeted 3D world transforms");
+	Entity root = scene->CreateEmptyEntity();
+	root.AddComponent<Transform3DComponent>().Position = { 10.0f, 20.0f, 30.0f };
+	Entity plain = scene->CreateEmptyEntity();
+	plain.SetParent(root);
+	Entity camera = scene->CreateEmptyEntity();
+	camera.AddComponent<Transform3DComponent>().Position = { 1.0f, 2.0f, 3.0f };
+	camera.SetParent(plain);
+	Entity light = scene->CreateEmptyEntity();
+	light.AddComponent<Transform3DComponent>().Rotation = { 20.0f, 30.0f, 40.0f };
+	light.SetParent(root);
+	Transform3DHierarchySystem::Propagate(*scene);
+	const glm::mat4 oldCameraWorld = camera.GetComponent<Transform3DComponent>().WorldMatrix;
+
+	auto& rootTransform = root.GetComponent<Transform3DComponent>();
+	rootTransform.Position = { -5.0f, 4.0f, 7.0f };
+	rootTransform.Rotation = { 10.0f, 90.0f, 0.0f };
+	rootTransform.Scale = { 2.0f, 3.0f, 4.0f };
+	const glm::mat4 expectedCamera = rootTransform.GetLocalMatrix() * camera.GetComponent<Transform3DComponent>().GetLocalMatrix();
+	const glm::mat4 expectedLight = rootTransform.GetLocalMatrix() * light.GetComponent<Transform3DComponent>().GetLocalMatrix();
+	const auto& registry = scene->GetRegistry();
+	const glm::mat4 cameraWorld = Transform3DHierarchySystem::ComputeWorldMatrix(registry, camera.GetHandle());
+	const glm::mat4 lightWorld = Transform3DHierarchySystem::ComputeWorldMatrix(registry, light.GetHandle());
+	for (int column = 0; column < 4; ++column) {
+		for (int row = 0; row < 4; ++row) {
+			CHECK(cameraWorld[column][row] == doctest::Approx(expectedCamera[column][row]));
+			CHECK(lightWorld[column][row] == doctest::Approx(expectedLight[column][row]));
+		}
+	}
+	CHECK(camera.GetComponent<Transform3DComponent>().WorldMatrix == oldCameraWorld);
+	Transform3DHierarchySystem::Propagate(*scene);
+	CHECK(camera.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(cameraWorld[3].x));
+}
+
 TEST_CASE("Transform3D cached local matrix tracks field writes")
 {
 	Transform3DComponent transform;
@@ -840,6 +1173,173 @@ TEST_CASE("Transform3D cached local matrix tracks field writes")
 
 	transform.Position.x = -5.0f;
 	CHECK(transform.GetCachedLocalMatrix()[3][0] == doctest::Approx(-5.0f));
+}
+
+TEST_CASE("Transform3D propagation only recomputes changed subtrees")
+{
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Sparse 3D transforms");
+	const auto make3D = [&](float x) {
+		Entity entity = scene->CreateEmptyEntity();
+		entity.AddComponent<Transform3DComponent>().Position.x = x;
+		return entity;
+	};
+	Entity root = make3D(10.0f);
+	Entity plain = scene->CreateEmptyEntity();
+	plain.SetParent(root);
+	Entity child = make3D(2.0f);
+	child.SetParent(plain);
+	Entity leaf = make3D(3.0f);
+	leaf.SetParent(child);
+	Entity otherRoot = make3D(20.0f);
+	Entity otherChild = make3D(4.0f);
+	otherChild.SetParent(otherRoot);
+	Entity standalone = make3D(30.0f);
+	Transform3DHierarchySystem::Propagate(*scene);
+	CHECK(leaf.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(15.0f));
+	CHECK(Transform3DHierarchySystem::GetLastPropagationStats(*scene).WorldMatricesRecomputed == 6);
+
+	for (int i = 0; i < 5; ++i) {
+		Transform3DHierarchySystem::Propagate(*scene);
+		const auto stats = Transform3DHierarchySystem::GetLastPropagationStats(*scene);
+		CHECK(stats.TransformsScanned == 6);
+		CHECK(stats.HierarchyNodesVisited == 0);
+		CHECK(stats.WorldMatricesRecomputed == 0);
+		CHECK_FALSE(stats.TopologyRebuilt);
+	}
+
+	child.GetComponent<Transform3DComponent>().Position.x = 4.0f;
+	child.GetComponent<Transform3DComponent>().GetCachedLocalMatrix();
+	leaf.GetComponent<Transform3DComponent>().Position.x = 5.0f;
+	Transform3DHierarchySystem::Propagate(*scene);
+	CHECK(leaf.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(19.0f));
+	CHECK(Transform3DHierarchySystem::GetLastPropagationStats(*scene).WorldMatricesRecomputed == 2);
+	CHECK(Transform3DHierarchySystem::GetLastPropagationStats(*scene).HierarchyNodesVisited == 0);
+	CHECK(otherChild.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(24.0f));
+
+	root.GetComponent<Transform3DComponent>().Position.x = 7.0f;
+	Transform3DHierarchySystem::Propagate(*scene);
+	CHECK(leaf.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(16.0f));
+	CHECK(Transform3DHierarchySystem::GetLastPropagationStats(*scene).WorldMatricesRecomputed == 3);
+
+	leaf.GetComponent<Transform3DComponent>().WorldMatrix = glm::mat4(0.0f);
+	Transform3DHierarchySystem::Propagate(*scene);
+	CHECK(leaf.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(16.0f));
+	CHECK(Transform3DHierarchySystem::GetLastPropagationStats(*scene).WorldMatricesRecomputed == 1);
+
+	standalone.GetComponent<Transform3DComponent>().Position.x = 31.0f;
+	Transform3DHierarchySystem::Propagate(*scene);
+	CHECK(standalone.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(31.0f));
+	CHECK(Transform3DHierarchySystem::GetLastPropagationStats(*scene).WorldMatricesRecomputed == 1);
+}
+
+TEST_CASE("Transform3D propagation detects topology and storage edits")
+{
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Mutable 3D hierarchy");
+	auto& registry = scene->GetRegistry();
+	Entity root = scene->CreateEmptyEntity();
+	root.AddComponent<Transform3DComponent>().Position.x = 10.0f;
+	Entity other = scene->CreateEmptyEntity();
+	other.AddComponent<Transform3DComponent>().Position.x = 20.0f;
+	registry.emplace<HierarchyComponent>(other.GetHandle());
+	REQUIRE(other.GetComponent<HierarchyComponent>().Parent == entt::null);
+	Entity child = scene->CreateEmptyEntity();
+	child.AddComponent<Transform3DComponent>().Position.x = 2.0f;
+	child.SetParent(root);
+	Entity spare = scene->CreateEmptyEntity();
+	Transform3DHierarchySystem::Propagate(*scene);
+	CHECK(child.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(12.0f));
+
+	SUBCASE("reparent through the entity API") {
+		child.SetParent(other);
+		Transform3DHierarchySystem::Propagate(*scene);
+		CHECK(child.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(22.0f));
+		CHECK(Transform3DHierarchySystem::GetLastPropagationStats(*scene).TopologyRebuilt);
+	}
+
+	SUBCASE("direct parent and child-list writes without a hierarchy version change") {
+		const uint64_t version = scene->GetHierarchyVersion();
+		root.GetComponent<HierarchyComponent>().Children.clear();
+		other.GetComponent<HierarchyComponent>().Children.push_back(child.GetHandle());
+		child.GetComponent<HierarchyComponent>().Parent = other.GetHandle();
+		CHECK(scene->GetHierarchyVersion() == version);
+		Transform3DHierarchySystem::Propagate(*scene);
+		CHECK(child.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(22.0f));
+		CHECK(Transform3DHierarchySystem::GetLastPropagationStats(*scene).TopologyRebuilt);
+	}
+
+	SUBCASE("same-count transform removal and insertion changes the contributing ancestor") {
+		const uint64_t version = scene->GetHierarchyVersion();
+		registry.remove<Transform3DComponent>(root.GetHandle());
+		registry.emplace<Transform3DComponent>(spare.GetHandle()).Position.x = 40.0f;
+		CHECK(scene->GetHierarchyVersion() == version);
+		Transform3DHierarchySystem::Propagate(*scene);
+		CHECK(child.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(2.0f));
+		CHECK(spare.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(40.0f));
+		CHECK(Transform3DHierarchySystem::GetLastPropagationStats(*scene).TopologyRebuilt);
+	}
+
+	SUBCASE("same-entity transform replacement invalidates the world snapshot") {
+		registry.remove<Transform3DComponent>(root.GetHandle());
+		registry.emplace<Transform3DComponent>(root.GetHandle()).Position.x = 30.0f;
+		Transform3DHierarchySystem::Propagate(*scene);
+		CHECK(child.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(32.0f));
+	}
+
+	SUBCASE("entity destruction and handle reuse cannot reuse another generation's snapshot") {
+		const EntityHandle oldHandle = other.GetHandle();
+		registry.destroy(oldHandle);
+		const EntityHandle replacement = registry.create();
+		registry.emplace<Transform3DComponent>(replacement).Position.x = 50.0f;
+		Transform3DHierarchySystem::Propagate(*scene);
+		CHECK(registry.get<Transform3DComponent>(replacement).GetWorldPosition().x == doctest::Approx(50.0f));
+		CHECK(Transform3DHierarchySystem::GetLastPropagationStats(*scene).TopologyRebuilt);
+	}
+}
+
+TEST_CASE("Transform3D flat scenes skip unchanged matrix copies")
+{
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Flat 3D cache");
+	Entity last = Entity::Null;
+	for (int i = 0; i < 256; ++i) {
+		last = scene->CreateEmptyEntity();
+		last.AddComponent<Transform3DComponent>().Position.x = static_cast<float>(i);
+	}
+	Transform3DHierarchySystem::Propagate(*scene);
+	Transform3DHierarchySystem::Propagate(*scene);
+	CHECK(Transform3DHierarchySystem::GetLastPropagationStats(*scene).TransformsScanned == 256);
+	CHECK(Transform3DHierarchySystem::GetLastPropagationStats(*scene).WorldMatricesRecomputed == 0);
+	CHECK(Transform3DHierarchySystem::GetLastPropagationStats(*scene).HierarchyNodesVisited == 0);
+	last.GetComponent<Transform3DComponent>().Position.x = -1.0f;
+	Transform3DHierarchySystem::Propagate(*scene);
+	CHECK(last.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(-1.0f));
+	CHECK(Transform3DHierarchySystem::GetLastPropagationStats(*scene).WorldMatricesRecomputed == 1);
+}
+
+TEST_CASE("Transform3D propagation keeps detached scene caches independent")
+{
+	Application app;
+	auto first = Scene::CreateDetachedScene("First 3D cache");
+	auto second = Scene::CreateDetachedScene("Second 3D cache");
+	Entity firstEntity = first->CreateEmptyEntity();
+	firstEntity.AddComponent<Transform3DComponent>().Position.x = 1.0f;
+	Entity secondEntity = second->CreateEmptyEntity();
+	secondEntity.AddComponent<Transform3DComponent>().Position.x = 2.0f;
+	Transform3DHierarchySystem::Propagate(*first);
+	Transform3DHierarchySystem::Propagate(*second);
+	Transform3DHierarchySystem::Propagate(*first);
+	CHECK(Transform3DHierarchySystem::GetLastPropagationStats(*first).WorldMatricesRecomputed == 0);
+	CHECK(firstEntity.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(1.0f));
+	CHECK(secondEntity.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(2.0f));
+
+	first->GetRegistry().clear();
+	Entity replacement = first->CreateEmptyEntity();
+	replacement.AddComponent<Transform3DComponent>().Position.x = 3.0f;
+	Transform3DHierarchySystem::Propagate(*first);
+	CHECK(replacement.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(3.0f));
+	CHECK(secondEntity.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(2.0f));
 }
 
 TEST_CASE("Entity.SetParent with worldPositionStays keeps a 3D child's world pose")
@@ -972,3 +1472,94 @@ TEST_CASE("Spawning dynamic sprites does not invalidate the static sprite grid")
 	floor.AddComponent<SpriteRendererComponent>();
 	CHECK(scene->GetStaticRenderDataVersion() != versionAfterStatic);
 }
+
+#if FUNKE_WITH_2D
+namespace {
+	class RigidbodyReparentApplication final : public Application {
+	public:
+		explicit RigidbodyReparentApplication(std::function<void(Scene&)> test) : m_Test(std::move(test)) {}
+
+		ApplicationConfig GetConfiguration() const override {
+			ApplicationConfig config = ApplicationConfig::Headless();
+			config.EnablePhysics2D = true;
+			config.EnableAudio = false;
+			config.EnableScripting = false;
+			config.EnablePackageHost = false;
+			config.JobSystemWorkerCount = 1;
+			return config;
+		}
+
+		void ConfigureScenes() override {
+			SceneManager::RegisterScene("Rigidbody Reparent").WithoutDefaultCamera2D().SetAsStartupScene();
+		}
+
+		void Start() override {
+			struct QuitOnExit { ~QuitOnExit() { Application::Quit(); } } quit;
+			Application::SetIsPlaying(false);
+			Scene* scene = SceneManager::GetActiveScene();
+			REQUIRE(scene != nullptr);
+			m_Test(*scene);
+		}
+
+	private:
+		std::function<void(Scene&)> m_Test;
+	};
+}
+
+TEST_CASE("Entity.SetParent without worldPositionStays moves synchronized Rigidbody2D bodies")
+{
+	RigidbodyReparentApplication app([](Scene& scene) {
+		Entity parent = scene.CreateEntity("Parent");
+		parent.GetComponent<Transform2DComponent>().SetPosition({ 10.0f, 0.0f });
+		Entity child = scene.CreateEntity("Body");
+		child.GetComponent<Transform2DComponent>().SetPosition({ 2.0f, 0.0f });
+		child.AddComponent<Rigidbody2DComponent>().SetBodyType(BodyType::Static);
+		REQUIRE(child.GetComponent<Rigidbody2DComponent>().IsValid());
+
+		PhysicsSystem2D physics;
+		TransformHierarchySystem::Propagate(scene);
+		physics.Update();
+		REQUIRE_FALSE(child.GetComponent<Transform2DComponent>().IsDirty());
+		REQUIRE(child.GetComponent<Rigidbody2DComponent>().GetPosition().x == doctest::Approx(2.0f));
+
+		struct ScriptSceneScope {
+			explicit ScriptSceneScope(Scene* active) { ScriptEngine::SetScene(active); }
+			~ScriptSceneScope() { ScriptEngine::SetScene(nullptr); }
+		} scriptScene(&scene);
+		NativeBindings bindings{};
+		ScriptBindings::PopulateNativeBindings(bindings);
+		REQUIRE(bindings.Entity_SetParent != nullptr);
+		const uint64_t childId = scene.GetEntityPersistentID(child.GetHandle());
+		const uint64_t parentId = scene.GetEntityPersistentID(parent.GetHandle());
+
+		const auto checkPosition = [&](float worldX) {
+			TransformHierarchySystem::Propagate(scene);
+			physics.Update();
+			CHECK(child.GetComponent<Rigidbody2DComponent>().GetPosition().x == doctest::Approx(worldX));
+			physics.FixedUpdate(1.0f / 60.0f);
+			const auto& transform = child.GetComponent<Transform2DComponent>();
+			CHECK(transform.Position.x == doctest::Approx(worldX));
+			CHECK(transform.LocalPosition.x == doctest::Approx(2.0f));
+			CHECK_FALSE(transform.IsDirty());
+		};
+
+		REQUIRE(bindings.Entity_SetParent(childId, parentId, 0) == 1);
+		CHECK(child.GetParent() == parent);
+		checkPosition(12.0f);
+
+		child.SetParent(parent);
+		CHECK_FALSE(child.GetComponent<Transform2DComponent>().IsDirty());
+		child.SetParent(child);
+		CHECK(child.GetParent() == parent);
+		CHECK_FALSE(child.GetComponent<Transform2DComponent>().IsDirty());
+
+		REQUIRE(bindings.Entity_SetParent(childId, 0, 0) == 1);
+		CHECK_FALSE(child.HasParent());
+		checkPosition(2.0f);
+
+		child.SetParent(Entity::Null);
+		CHECK_FALSE(child.GetComponent<Transform2DComponent>().IsDirty());
+	});
+	CHECK(app.Run() == 0);
+}
+#endif

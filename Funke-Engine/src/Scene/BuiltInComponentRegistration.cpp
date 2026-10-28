@@ -16,7 +16,6 @@
 #if FUNKE_WITH_2D
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
-#include "Components/Graphics/SpriteAnimator2DComponent.hpp"
 #include "Components/Graphics/TerrainRenderer2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
@@ -86,7 +85,6 @@ namespace Funke {
 			SetIcon<Transform2DComponent>(registry, "move");
 			SetIcon<Camera2DComponent>(registry, "camera");
 			SetIcon<SpriteRendererComponent>(registry, "eye_open");
-			SetIcon<SpriteAnimator2DComponent>(registry, "eye_open");
 			SetIcon<TerrainRenderer2DComponent>(registry, "eye_open");
 			SetIcon<ParticleSystem2DComponent>(registry, "particles");
 			SetIcon<Rigidbody2DComponent>(registry, "rigidbody_2d");

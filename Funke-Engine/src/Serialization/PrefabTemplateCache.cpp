@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Serialization/PrefabTemplateCache.hpp"
+#include "Serialization/SceneSerializer.hpp"
 
 #include "Core/Log.hpp"
 #include "Components/General/NameComponent.hpp"
@@ -320,6 +321,7 @@ namespace Funke {
 		if (componentRegistryPtr == nullptr) {
 			return entt::null;
 		}
+		SceneSerializer::TrackPrefabCacheScene(scene);
 		entt::registry& registry = scene.GetRegistry();
 		const ComponentRegistry& componentRegistry = *componentRegistryPtr;
 

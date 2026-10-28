@@ -28,9 +28,10 @@ namespace {
 			FunkeAssets = Root / "FunkeAssets";
 			Project = Root / "Project";
 			Assets = Project / "Assets";
-			for (const char* file : { "Fonts/GoogleSans-Regular.ttf", "Fonts/Creepster-Regular.ttf", "Fonts/LICENSES.md",
+			for (const char* file : { "Fonts/IBMPlexSansCondensed-Regular.ttf", "Fonts/Creepster-Regular.ttf", "Fonts/LICENSES.md",
 				"Textures/Default/Square.png", "Textures/Default/Spike.png", "Textures/Editor/Play/play_32.png",
-				"Localization/en.json", "Shader/2D/sprite.vert.glsl" }) {
+				"Localization/en.json", "Localization/de.json", "Localization/languages.json", "Localization/README.md",
+				"Shader/2D/sprite.vert.glsl" }) {
 				Write(FunkeAssets / file, "x");
 			}
 			Write(Project / "project.json", R"({ "name": "Test", "buildScenes": ["Main"] })");
@@ -163,6 +164,36 @@ TEST_CASE("StreamingAssets always ships") {
 	CHECK(plan.KeepsProjectFile("StreamingAssets/Levels/1.txt"));
 }
 
+TEST_CASE("glTF dependencies resolve relative segments and encoded filenames") {
+	const std::vector<std::pair<std::string, std::string>> cases{
+		{ "../Buffers/ship.bin", "Meshes/Buffers/ship.bin" },
+		{ "../Buffers/./ship.bin", "Meshes/Buffers/ship.bin" },
+		{ "./ship.bin", "Meshes/Ship/ship.bin" },
+		{ "../Buffers/ship%20data.bin", "Meshes/Buffers/ship data.bin" },
+		{ "../Buffers/ship%2520.bin", "Meshes/Buffers/ship%20.bin" },
+	};
+	for (const auto& [uri, path] : cases) {
+		CAPTURE(uri);
+		ScopedPruningFixture f;
+		Json::Value buffer = Json::Value::MakeObject();
+		buffer.AddMember("uri", uri);
+		Json::Value buffers = Json::Value::MakeArray();
+		buffers.Append(std::move(buffer));
+		Json::Value model = Json::Value::MakeObject();
+		model.AddMember("buffers", std::move(buffers));
+		const auto guid = f.AddAsset("Meshes/Ship/ship.gltf", 129001ull, Json::Stringify(model));
+		f.AddAsset(path, 129002ull);
+		f.AddAsset("Meshes/Buffers/unused.bin", 129003ull);
+		f.Write(f.Assets / "Scenes" / "Main.scene", R"({ "meshAsset": ")" + guid + R"(" })");
+		const auto plan = f.Compute();
+		REQUIRE(plan.Valid);
+		CHECK(plan.KeepsProjectFile("Meshes/Ship/ship.gltf"));
+		CHECK(plan.KeepsProjectFile(path));
+		CHECK(plan.KeepsProjectFile(path + ".meta"));
+		CHECK_FALSE(plan.KeepsProjectFile("Meshes/Buffers/unused.bin"));
+	}
+}
+
 TEST_CASE("Game language files always ship") {
 	ScopedPruningFixture f;
 	f.AddAsset("Localization/en.json", 7777777777777777777ull, R"({ "strings": { "menu.play": "Play" } })");
@@ -173,6 +204,10 @@ TEST_CASE("Game language files always ship") {
 	CHECK(plan.KeepsProjectFile("Localization/en.json"));
 	CHECK(plan.KeepsProjectFile("Localization/de.json.meta"));
 	CHECK_FALSE(plan.KeepsProjectFile("Data/Unused.json"));
+	CHECK_FALSE(plan.KeepsBuiltInFile("Localization/en.json"));
+	CHECK_FALSE(plan.KeepsBuiltInFile("Localization/de.json"));
+	CHECK_FALSE(plan.KeepsBuiltInFile("Localization/languages.json"));
+	CHECK_FALSE(plan.KeepsBuiltInFile("Localization/README.md"));
 }
 
 TEST_CASE("Built-in assets ship when loaded by fixed path or referenced") {
@@ -182,11 +217,11 @@ TEST_CASE("Built-in assets ship when loaded by fixed path or referenced") {
 
 	const BuildAssetPruning::Plan plan = f.Compute();
 	REQUIRE(plan.Valid);
-	CHECK(plan.KeepsBuiltInFile("Fonts/GoogleSans-Regular.ttf"));
+	CHECK(plan.KeepsBuiltInFile("Fonts/IBMPlexSansCondensed-Regular.ttf"));
 	CHECK(plan.KeepsBuiltInFile("Fonts/Creepster-Regular.ttf"));
 	CHECK(plan.KeepsBuiltInFile("Fonts/LICENSES.md"));
 	CHECK(plan.KeepsBuiltInFile("Textures/Default/Square.png"));
-	CHECK(plan.KeepsBuiltInFile("Localization/en.json"));
+	CHECK_FALSE(plan.KeepsBuiltInFile("Localization/en.json"));
 	CHECK_FALSE(plan.KeepsBuiltInFile("Textures/Default/Spike.png"));
 	CHECK_FALSE(plan.KeepsBuiltInFile("Textures/Editor/Play/play_32.png"));
 	CHECK_FALSE(plan.KeepsBuiltInFile("Shader/2D/sprite.vert.glsl"));
@@ -204,6 +239,17 @@ TEST_CASE("Project settings paths and index: references ship") {
 	CHECK(plan.KeepsBuiltInFile("Textures/Default/Spike.png"));
 }
 
+TEST_CASE("Launcher language files stay excluded when referenced") {
+	ScopedPruningFixture f;
+	f.Write(f.Assets / "Scenes" / "Main.scene",
+		R"({ "languageAsset": ")" + f.BuiltInGuid("Localization/en.json") + R"(" })");
+	f.Write(f.Assets / "Scripts" / "Languages.cs", R"(var path = "funke:Localization";)");
+	const BuildAssetPruning::Plan plan = f.Compute();
+	REQUIRE(plan.Valid);
+	CHECK_FALSE(plan.KeepsBuiltInFile("Localization/en.json"));
+	CHECK_FALSE(plan.KeepsBuiltInFile("Localization/README.md"));
+}
+
 TEST_CASE("Old build outputs are not treated as references") {
 	ScopedPruningFixture f;
 	f.Write(f.Assets / "Maps" / "A.json", "{}");
@@ -218,7 +264,16 @@ TEST_CASE("Old build outputs are not treated as references") {
 TEST_CASE("An unscannable project ships everything") {
 	ScopedPruningFixture f;
 	f.BuildScenes = { "Missing" };
-	CHECK_FALSE(f.Compute().Valid);
+	const BuildAssetPruning::Plan plan = f.Compute();
+	REQUIRE_FALSE(plan.Valid);
+	CHECK(plan.KeepsBuiltInFile("Fonts/IBMPlexSansCondensed-Regular.ttf"));
+	CHECK(plan.KeepsBuiltInFile("Textures/Default/Spike.png"));
+	CHECK_FALSE(plan.KeepsBuiltInFile("Textures/Editor/Play/play_32.png"));
+	CHECK_FALSE(plan.KeepsBuiltInFile("Localization/en.json"));
+	CHECK_FALSE(plan.KeepsBuiltInFile("LOCALIZATION\\de.json"));
+	CHECK_FALSE(plan.KeepsBuiltInFile("Localization/languages.json"));
+	CHECK_FALSE(plan.KeepsBuiltInFile("Localization/README.md"));
+	CHECK_FALSE(plan.KeepsBuiltInFile("Localization/en.json.meta"));
 
 	ScopedPruningFixture g;
 	std::filesystem::remove(g.Project / "project.json");

@@ -12,7 +12,6 @@
 #if FUNKE_WITH_2D
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
-#include "Components/Graphics/SpriteAnimator2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Graphics/TerrainRenderer2DComponent.hpp"
 #include "Physics/PhysicsTypes.hpp"
@@ -461,58 +460,6 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 		RegisterComponent<ParticleSystem2DComponent>(registry, "Particle System 2D",
 			ComponentCategory::Component, "Rendering", "ParticleSystem2D",
 			std::move(particleProperties));
-
-		RegisterComponent<SpriteAnimator2DComponent>(registry, "Sprite Animator 2D",
-			ComponentCategory::Component, "Rendering", "SpriteAnimator2D",
-			{
-				Properties::MakeStringList("Frames", "Frames",
-					[](const Entity& e) { return e.GetComponent<SpriteAnimator2DComponent>().Frames; },
-					[](Entity& e, const std::vector<std::string>& frames) {
-						e.GetComponent<SpriteAnimator2DComponent>().Frames = frames;
-					},
-					Properties::Meta::Tooltip("Sprite-sheet slice names on this entity's Sprite Renderer texture, in playback order.")),
-				Properties::MakeWith<float>("FramesPerSecond", "Frames Per Second",
-					[](const Entity& e) { return e.GetComponent<SpriteAnimator2DComponent>().FramesPerSecond; },
-					[](Entity& e, float fps) { e.GetComponent<SpriteAnimator2DComponent>().FramesPerSecond = std::max(0.0f, fps); },
-					Properties::Meta::Clamp(0.0, 120.0, 0.1f)),
-				Properties::MakeWith<bool>("Loop", "Loop",
-					[](const Entity& e) { return e.GetComponent<SpriteAnimator2DComponent>().Loop; },
-					[](Entity& e, bool loop) { e.GetComponent<SpriteAnimator2DComponent>().Loop = loop; }),
-				Properties::MakeWith<bool>("PlayOnStart", "Play On Start",
-					[](const Entity& e) { return e.GetComponent<SpriteAnimator2DComponent>().PlayOnStart; },
-					[](Entity& e, bool play) { e.GetComponent<SpriteAnimator2DComponent>().PlayOnStart = play; }),
-			});
-		// Registry-driven serialization: the scene serializer calls these for every component with a serializedName.
-		registry.ForEachComponentInfo(
-			[](const std::type_index& id, ComponentInfo& info) {
-				if (id != std::type_index(typeid(SpriteAnimator2DComponent))) return;
-				info.serialize = [](Entity e) {
-					const auto& animator = e.GetComponent<SpriteAnimator2DComponent>();
-					Json::Value value = Json::Value::MakeObject();
-					Json::Value frames = Json::Value::MakeArray();
-					for (const std::string& frame : animator.Frames) frames.Append(Json::Value(frame));
-					value.AddMember("frames", std::move(frames));
-					value.AddMember("fps", Json::Value(static_cast<double>(animator.FramesPerSecond)));
-					value.AddMember("loop", Json::Value(animator.Loop));
-					value.AddMember("playOnStart", Json::Value(animator.PlayOnStart));
-					return value;
-				};
-				info.deserialize = [](Entity e, const Json::Value& value) {
-					auto& animator = e.GetComponent<SpriteAnimator2DComponent>();
-					animator.Frames.clear();
-					if (const Json::Value* frames = value.FindMember("frames"); frames && frames->IsArray()) {
-						for (const Json::Value& frame : frames->GetArray()) {
-							if (frame.IsString()) animator.Frames.push_back(frame.AsStringOr());
-						}
-					}
-					const Json::Value* fps = value.FindMember("fps");
-					const Json::Value* loop = value.FindMember("loop");
-					const Json::Value* playOnStart = value.FindMember("playOnStart");
-					animator.FramesPerSecond = std::max(0.0f, fps ? static_cast<float>(fps->AsDoubleOr(12.0)) : 12.0f);
-					animator.Loop = loop ? loop->AsBoolOr(true) : true;
-					animator.PlayOnStart = playOnStart ? playOnStart->AsBoolOr(true) : true;
-				};
-			});
 
 		{
 			using T = TerrainRenderer2DComponent;

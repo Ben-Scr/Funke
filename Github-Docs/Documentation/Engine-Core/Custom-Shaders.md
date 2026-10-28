@@ -69,7 +69,7 @@ Directives are `//` comments that start with `@`, so the file stays plain WGSL. 
 | Directive | Values | Default |
 |---|---|---|
 | `// @name <text>` | Any text, shown in the Inspector | file name |
-| `// @target <target>` | `Mesh3D`, `Sprite2D`, `UI`, `PostProcess` | `Mesh3D` |
+| `// @target <target>` | `Mesh3D`, `Sprite2D`, `UI`, `PostProcess`, `Skybox` | `Mesh3D` |
 | `// @blend <mode>` | `Opaque`, `Alpha`, `Additive` | `Opaque` for Mesh3D, `Alpha` for Sprite2D/UI |
 | `// @cull <mode>` | `Back`, `Front`, `None` | `Back` for Mesh3D, `None` otherwise |
 | `// @depthWrite <bool>` | `true`, `false` | `true` for Opaque, `false` otherwise |

@@ -50,7 +50,6 @@ call :RequireFile "%LAUNCHER%\BuildMetadata.json"
 call :RequireAbsent "%LAUNCHER%\Funke-Launcher.pdb"
 call :RequireDir  "%LAUNCHER%\FunkeAssets"
 call :RequireDir  "%LAUNCHER%\FunkeAssets\Fonts"
-call :RequireDir  "%LAUNCHER%\FunkeAssets\Shader"
 
 REM ---- EngineSDK folder must exist with the expected layout
 call :RequireDir  "%SDK%"
@@ -76,6 +75,11 @@ call :RequireFile "%SDK%\bin\Dist-%PLATFORM%\Funke-Engine\Funke-Engine.lib"
 call :RequireFile "%SDK%\bin\Dist-%PLATFORM%\Funke-Engine\Funke-Engine.dll"
 call :RequireFile "%SDK%\External\dawn\include\webgpu\webgpu_cpp.h"
 call :RequireFile "%SDK%\External\dawn\build\gen\include\dawn\webgpu_cpp_print.h"
+
+REM ---- Fast physics belongs to the optional package; reject stale core SDK copies.
+call :RequireAbsent "%SDK%\Index-Engine"
+for %%F in (FastPhysics2D.hpp FastPhysics2D.cpp IndexPhysicsWorld2D.hpp IndexPhysicsWorld2D.cpp IndexPhysicsInterop.hpp IndexContact2D.hpp) do call :RequireAbsent "%SDK%\Funke-Engine\src\Physics\%%F"
+for %%F in (FastBody2DComponent.hpp FastBody2DComponent.cpp FastBoxCollider2DComponent.hpp FastBoxCollider2DComponent.cpp FastCircleCollider2DComponent.hpp FastCircleCollider2DComponent.cpp) do call :RequireAbsent "%SDK%\Funke-Engine\src\Components\Physics\%%F"
 
 REM ---- Redistribution notices must be self-contained; source-tree links are not enough.
 call :RequireFile "%SDK%\Licenses\Funke\LICENSE.txt"
@@ -141,7 +145,6 @@ call :RequireDir "%SDK%\External\stb"
 call :RequireDir "%SDK%\External\magic_enum\include"
 call :RequireDir "%SDK%\External\rapidxml"
 call :RequireDir "%SDK%\External\SDL\include"
-call :RequireDir "%SDK%\External\glad\include"
 call :RequireDir "%SDK%\External\miniaudio"
 call :RequireDir "%SDK%\External\box2d\include"
 call :RequireDir "%SDK%\External\dotnet"
@@ -194,12 +197,12 @@ exit /b 0
 
 :RequireAbsent
 if not exist "%~1" exit /b 0
-echo   UNEXPECTED file: %~1
+echo   UNEXPECTED path: %~1
 set /a FAIL+=1
 exit /b 0
 
 :RequireAllowedExternal
-for %%A in (spdlog glm entt stb magic_enum rapidxml SDL glad dawn miniaudio box2d dotnet) do if /I "%~1"=="%%A" exit /b 0
+for %%A in (spdlog glm entt stb magic_enum rapidxml SDL dawn miniaudio box2d dotnet) do if /I "%~1"=="%%A" exit /b 0
 echo   UNEXPECTED dir:  %SDK%\External\%~1
 set /a FAIL+=1
 exit /b 0

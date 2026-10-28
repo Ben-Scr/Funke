@@ -494,7 +494,7 @@ namespace Funke {
 			if (!transform) return;
 			const Transform3DEditCommand::State after{ transform->Position, transform->Rotation, transform->Scale };
 			if (!(after == m_Gizmo3DDragBefore)) {
-				m_UndoStack.Push(std::make_unique<Transform3DEditCommand>(m_Gizmo3DDragEntityId, m_Gizmo3DDragBefore, after));
+				GetUndoStack(scene).Push(std::make_unique<Transform3DEditCommand>(m_Gizmo3DDragEntityId, m_Gizmo3DDragBefore, after));
 			}
 		};
 

@@ -36,7 +36,6 @@
 #if FUNKE_WITH_2D
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
-#include "Components/Graphics/SpriteAnimator2DComponent.hpp"
 #include "Components/Graphics/TerrainRenderer2DComponent.hpp"
 #include "Components/Graphics/PostProcessing2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"

@@ -5,31 +5,31 @@ description: Use when building a MOBILE APP (not a game) with the Funke engine �
 
 # Making a Mobile App with Funke
 
-Funke is a 2D game engine, but its ECS UI (RectTransform + Image/TextRenderer/Button/ScrollRect/InputField…) plus C# scripting is enough for real phone apps. This skill is the playbook distilled from building a Spotify-style music player end to end: what to generate, which architecture survives, and the traps that only show up on a device.
+Funke is a 2D/3D engine with core ECS UI (RectTransform + Image/TextRenderer/Button/ScrollRect/InputField…) and C# scripting for phone apps. This skill covers scene generation, navigation, lists and device verification.
 
 **You build the app like `funke-make-a-game` builds a game: write the scene as JSON with a generator script, keep C# for behaviour, verify by running.** Never hand-place hundreds of UI entities in the Editor.
 
 ## Workflow
 
-1. **Create the project**: `bin\Release-windows-x86_64\Funke-CLI\funke.exe create <Name> --path <dir>`. In this engine repo the user's apps go to `C:\Users\benso\Index\Projects`; agent test projects go under `bin-int\_agent\` with `--no-register` (without `--path`: `%USERPROFILE%\Funke\Projects`). Delete the starter `SampleScene.scene` and `GameScript.cs`.
+1. **Create the project**: `bin\Release-windows-x86_64\Funke-CLI\funke.exe create <Name> --path <dir>`. By default, create user projects at `~/Funke/Projects/<Name>` (`%USERPROFILE%\Funke\Projects\<Name>` on Windows). Respect an explicitly requested location. Agent test projects go under `bin-int\_agent\` with `--no-register`. Delete the starter `SampleScene.scene` and `GameScript.cs`.
 2. **Copy the kit** from this skill's `templates/`:
    - `ui_gen.py` → `<project>/Tools/` (scene kit), `gen_example.py` as the starting point for `Tools/gen_scene.py`.
    - `Scripts/UI/*.cs` → `<project>/Assets/Scripts/UI/` (Ui, Label, IBackHandler, FitHeight, Router, VirtualList, ActionSheet, InputDialog, Toast).
    - `Scripts/Example/Notes.cs` only as reference; it is the example app's logic.
-3. **Fonts**: put OFL fonts in `Assets/Fonts/` and set `ui.FONT_REGULAR` / `ui.FONT_BOLD = ui.meta("Fonts/…")` in the generator. Inter Regular/SemiBold/Bold are on this machine under `C:\Users\benso\source\repos\External\Avalonia\src\Avalonia.Fonts.Inter\Assets\` (OFL; also ship the license text, outside `Assets/`). Bold weights matter for modern app looks.
+3. **Fonts**: put OFL fonts in `Assets/Fonts/` and set `ui.FONT_REGULAR` / `ui.FONT_BOLD = ui.meta("Fonts/…")` in the generator. Choose available font files or obtain them from their official distribution; verify the licence and ship it with the font. Do not depend on a font path from an unrelated local checkout. Bold weights matter for modern app looks.
 4. **Write the generator** (`Tools/gen_scene.py`): theme colours → `ui.camera` → `ui.root_canvas` (Router + app scripts) → one `ui.page` per tab/page → `ui.tab_bar` → overlays (`action_sheet`, `input_dialog`, `toast`) → `s.save()` → `ui.mobile_project_settings(scene, android_options)`. Run it after every layout change; GUIDs and entity uuids are stable.
 5. **Scripts**: one small script per page/overlay, data in plain static classes or services (see Architecture).
 6. **Compile**: `dotnet build <Name>.csproj -c Release`. The project compiles against `<project>/Packages/Funke-ScriptCore/`, which the editor, the runtime and every `funke` command refresh (dll + pdb) from the engine build when they load the project. After changing engine C# APIs, rebuild ScriptCore and load the project once (e.g. `funke info`) before a plain `dotnet build`.
-7. **Desktop check**: `scripts\dev\Run.ps1 -App Runtime -Project <dir> -Seconds 4 -Shots 1` (portrait 540×1000 window). Add env-var test hooks (`<APP>_SCREEN=settings` opens a page, `<APP>_FOLDER=…` points at test data) so every screen can be screenshotted without clicking. With the project open in an editor, `funke editor play --size 1080x2400` lays the app out for a phone screen; then `funke editor screenshot shot.png`, `funke editor tap 540 1800 --px`, `funke editor drag 0.5 0.7 0.5 0.3` (scrolls lists), `funke editor key Esc` (back) — no rebuild, no window focus (*Editor > Editor Bridge*).
+7. **Desktop check**: `scripts\dev\Run.ps1 -App Runtime -Project <dir> -Seconds 4 -Shots 1` (portrait 540×1000 window). Add `[DevCommand]` test hooks (for example `ui.open settings`) and use `-Exec` or an input script to reach screens; pass fixture paths through explicit test configuration. With the project open in an editor, `funke editor play --size 1080x2400` lays the app out for a phone screen; then `funke editor screenshot shot.png`, `funke editor tap 540 1800 --px`, `funke editor drag 0.5 0.7 0.5 0.3` (scrolls lists), `funke editor key Esc` (back) — no rebuild, no window focus (*Editor > Editor Bridge*).
 8. **APK**: `funke.exe build --platform Android --release` from the project folder (needs the `Funke.Platform.Android` package and an SDK/NDK; output `Builds/Android/<Name>.apk`). On failure rerun with `--verbose`; the real compiler error is in the `Build log:` file it names.
-9. **Device**: `python <skill>/scripts/device.py install|launch|shot|tap|mem|log|crash|heap …` (see Device testing). Ask before touching the user's phone.
+9. **Device**: `python <skill>/scripts/device.py install|launch|shot|tap|mem|log|crash|heap …` (see Device testing). Use the device when the user's request authorizes it; otherwise ask before installing or interacting with their phone.
 
 ## Project settings (done by `mobile_project_settings`)
 
 - `mobileOrientation: Portrait`, `gameViewAspect: 9:16`, desktop window 540×1000.
 - **`uiScaleMode: MatchWidthOrHeight`, `uiScaleMatch: 0`** (width-driven). The canvas is always 1080 units wide, edge to edge; height varies per phone. `Fit` shrinks the whole UI on phones whose safe area is shorter than the reference height — the UI then floats with side margins.
 - `showRuntimeStats/showRuntimeLogs: false` — those overlays are debug layers, and they are what F6/F7 toggle.
-- Android profile `platformOptions`: `permissions` ("READ_MEDIA_AUDIO, READ_EXTERNAL_STORAGE:32" — bare names get `android.permission.`, `:N` = maxSdkVersion) and `backgroundAudio: "true"` (declares the foreground media service). Without a keystore the APK is debug-signed (fine for sideloading).
+- Android profile `platformOptions` (the generator preserves the existing profile and merges supplied options): `permissions` ("READ_MEDIA_AUDIO, READ_EXTERNAL_STORAGE:32" — bare names get `android.permission.`, `:N` = maxSdkVersion) and `backgroundAudio: "true"` (declares the foreground media service). Without a keystore the APK is debug-signed (fine for sideloading).
 - The project has its own copy of `FunkeAssets/` (splash icon, fonts, localization) made at `funke create`. After engine branding changes, diff it against `Funke-Runtime/FunkeAssets` and copy the newer files, or the APK keeps the old splash logo.
 
 ## Layout rules
@@ -94,7 +94,7 @@ python device.py crash                         # crash buffer: OOM aborts, nativ
 python device.py heap <pkg> <unstripped libmain.so>   # heapprofd: live native allocations by call stack
 ```
 
-- **Ask before using the user's phone**, and look at the status bar first — if they're on a call, don't start audio.
+- **Respect existing device authorization.** An explicit request to install/test on the phone already authorizes those steps; ask only if that scope is missing or unclear. Check the visible device state before an audible test.
 - `tap` presses for 120 ms; `adb shell input tap` presses and releases within one engine frame and Funke never sees the click.
 - Coordinates are device pixels; read them off a screenshot (Read the PNG, scale by its original size).
 - Wireless debugging drops when the screen locks or the network changes; if `devices` is empty, ask the user to re-enable it or plug in USB.
@@ -107,7 +107,7 @@ python device.py heap <pkg> <unstripped libmain.so>   # heapprofd: live native a
 - **UI narrower than the screen on phones** → `Fit` scale and/or safe-area side insets. Use width matching; the engine's Android activity reports only bars and cutouts as insets (gesture zones are not obstructions).
 - **App killed after ~20 s on Mali GPUs** → driver leak under Vulkan dynamic rendering; the engine disables it on Android. If a similar climb shows up, profile with `heap` before guessing.
 - **Desktop screenshots show someone else's app** → other sessions share `bin-int\_agent\run\`; check the window title in the PNG.
-- **`dotnet build -p:DefineConstants=FUNKE_ANDROID` poisons later desktop builds** (shared `obj/`); compile-check Android code with `-o <temp dir>` and rebuild desktop with `--no-incremental`.
+- **Manual platform-define checks need isolated intermediates.** `-o` changes only the output directory; it still shares `obj/`. Prefer the active build profile, or use a temporary project with its own `obj/` and `bin/` when checking Android-only code.
 - **New `.cs` file in `Funke-ScriptCore` silently missing from the DLL** → the csproj lists sources explicitly (`<Compile Include=…>`); add the file there.
 - **Engine C# API added but the project doesn't see it** → rebuild ScriptCore, then load the project in the editor or any `funke` command so `Packages/Funke-ScriptCore` is refreshed; "interop mismatch" in the log means engine and ScriptCore were built from different binding layouts — rebuild both.
 - **Android-only compile errors** (e.g. `std::from_chars` for floats is deleted in the NDK's libc++) only appear in the APK build's log file.

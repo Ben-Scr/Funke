@@ -31,6 +31,19 @@ class VendorPatch:
 
 PATCHES = (
     VendorPatch(
+        name="Box2D deterministic split-island candidate",
+        submodule="External/box2d",
+        pinned_commit="8c65dcb91a5e8fbce53492c169cb4460b53b0b54",
+        patch_file="box2d-split-island-tie-break.patch",
+        files=(
+            PatchedFile(
+                "src/solver.c",
+                "03f0e80e71d6bf9d14b64b87e6bb39bfb466c8e6",
+                "759cadc28da742c5261e6fc19a3ba433e35d30ed",
+            ),
+        ),
+    ),
+    VendorPatch(
         name="EnTT entity bit split",
         submodule="External/entt",
         pinned_commit="1333fa53129e7cfded5a9640c4336a254049917b",
@@ -57,12 +70,12 @@ PATCHES = (
             PatchedFile(
                 "imgui.h",
                 "c32a6baf15dea7332cffda09721d272a4a23f673",
-                "d4db17b9b0e8118d83d8e57f79cc27b98b294ece",
+                "32bc6b723606e3e0779cabd00e3631b4bdb7e13c",
             ),
             PatchedFile(
                 "imgui_widgets.cpp",
                 "abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9",
-                "ca15cf9066d4c2fdda0e17feca5b7fb06bc5a38b",
+                "01f5956656b0bbea6f49f0bbf5fdf318bd9ee516",
             ),
         ),
     ),

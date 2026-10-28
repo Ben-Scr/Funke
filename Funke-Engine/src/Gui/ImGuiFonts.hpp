@@ -23,11 +23,11 @@ namespace Funke {
 		primaryCfg.PixelSnapH = true;
 
 		ImFont* primary = nullptr;
-		const std::string googleSansPath = Path::Combine(
-			Path::ResolveFunkeAssets("Fonts"), "GoogleSans-Regular.ttf");
-		if (std::filesystem::exists(googleSansPath)) {
+		const std::string ibmSansPath = Path::Combine(
+			Path::ResolveFunkeAssets("Fonts"), "IBMPlexSansCondensed-Regular.ttf");
+		if (std::filesystem::exists(ibmSansPath)) {
 			primary = io.Fonts->AddFontFromFileTTF(
-				googleSansPath.c_str(), fontSize, &primaryCfg,
+				ibmSansPath.c_str(), fontSize, &primaryCfg,
 				io.Fonts->GetGlyphRangesDefault());
 		}
 

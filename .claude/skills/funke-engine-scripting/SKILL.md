@@ -48,7 +48,7 @@ Type lookup (`ScriptInstanceManager.FindType`) tries `Funke.<name>`, `Funke.Comp
 - **`NativeBindings`** (`ScriptGlue.hpp`) ⇄ **`NativeBindingsStruct`** (`NativeCallbacks.cs`): C++ function pointers C# calls. `[StructLayout(Sequential)]`, `delegate* unmanaged<…>` fields.
 - **`ManagedCallbacks`** (`ScriptGlue.hpp`) ⇄ **`ManagedCallbacksStruct`** (`ScriptHostBridge.cs`): C# `[UnmanagedCallersOnly]` methods (in `ScriptInstanceManager`) C++ calls via `ScriptEngine::GetCallbacks()` / `s_Callbacks`.
 
-Both are **positional**. The guard is the size check plus `k_ScriptInteropLayoutVersion` (`ScriptGlue.hpp`) / `InteropHandshake.LayoutVersion` (`ScriptHostBridge.cs`), bumped together on any add/remove/reorder. Every slot is a pointer, so *reordering or swapping* two slots keeps the size identical and is caught only if the version was bumped — otherwise C# silently calls the wrong function. **Always append at the end of the struct**, under a `// ── <Group> (appended for binary compat) ──` header, in both files.
+Both are **positional**. The guard is the size check plus `k_ScriptInteropLayoutVersion` (`ScriptGlue.hpp`) / `InteropHandshake.LayoutVersion` (`ScriptHostBridge.cs`), bumped together on any add/remove/reorder. Every slot is a pointer, so *reordering or swapping* two slots keeps the size identical and is caught only if the version was bumped — otherwise C# silently calls the wrong function. **Append new slots at the end of both structs**, preserving identical order; use a short group comment only where useful (`funke-comment-style`). Appending still requires rebuilding both sides because the size/version handshake changes.
 
 ## Add a C# → C++ binding (end to end)
 
@@ -63,9 +63,9 @@ Worked example already in the tree: `Application.IsEditor`.
    static int Funke_Application_IsEditor() {            // ScriptBindingsScene.cpp
        return Application::IsEditor() ? 1 : 0;
    }
-   static int Funke_SpriteAnimator2D_GetFrame(uint64_t entityID) {   // ScriptBindings2D.cpp + X(SpriteAnimator2D_GetFrame) in ScriptBindingModuleSlots.hpp
-       GET_COMPONENT(SpriteAnimator2DComponent, entityID, 0);
-       return comp.CurrentFrame;
+   static int Funke_SpriteRenderer_GetSortingOrder(uint64_t entityID) {   // ScriptBindings2D.cpp + X(SpriteRenderer_GetSortingOrder) in ScriptBindingModuleSlots.hpp
+       GET_COMPONENT(SpriteRendererComponent, entityID, 0);
+       return comp.SortingOrder;
    }
    ```
    Blittable signatures only: `int` (bools as `0/1`), `float`, `uint32_t`, `uint64_t` entity IDs, `uint8_t`, `const char*` UTF-8 in, out-pointers (`float* x, float* y`). Strings out use the buffer contract `int X_GetFooBuffer(char* outBuffer, int capacity)` returning the **required byte count** (C# calls with `null, 0` first, then allocates) — helpers `CopyStringToBuffer` (ScriptBindings.cpp) / `CopyToManagedBuffer` (ScriptBindingsScene.cpp).
@@ -95,6 +95,7 @@ Worked example already in the tree: `Application.IsEditor`.
 - `m_ScriptWatcher` watches `Assets/` + `.csproj` + `.sln` for `.cs .csproj .props .targets .sln`; polled from `ScriptSystem::OnPreRender` via `Poll(1.0f)`. Suppress with `SetRecompileSuppressed(true)` (script create/rename) or `ScriptSystem::SetAutoRecompileEnabled(false)`.
 - `RebuildAndReloadScripts` runs async on a worker thread. First choice is **in-process Roslyn** (`ManagedScriptCompiler` → `Funke-ScriptCompiler/`, see below); on `Fallback` it runs `dotnet build <csproj> -c <FunkeProject::GetActiveBuildConfiguration()> --nologo -v q -nodeReuse:false -p:UseSharedCompilation=false -p:FunkeCodegenEnabled=false -p:DefineConstants=<BuildManagedDefineConstants("FUNKE_EDITOR")>` (5-minute timeout). A second change while building sets `m_RebuildQueued`.
 - On success (`OnPreRender`): `TeardownManagedScripts` for every loaded scene → `ScriptEngine::LoadUserAssembly` → `InitializeRegisteredGlobalSystems` → `PrefabTemplateCache::Get().InvalidateAll()`. Failures log the compiler output (`Compiler output:`) under `ScriptSystem` and set `DidLastRebuildSucceed() == false`.
+- Teardown destroys managed instances; Edit-mode reload first captures exposed field values into `PendingFieldValues`. `SnapshotManagedFieldsToPending` deliberately skips Play mode, so do not promise preservation of live runtime state or object identity. Callback loops snapshot handles and revalidate scene/entity/component state because user callbacks can mutate the registry.
 
 **In-process compiler** (`Funke-ScriptCompiler/Source/*.cs`, native side `Scripting/ManagedScriptCompiler.{hpp,cpp}`):
 - Editor-only assembly loaded from `<exe>/ScriptCompiler/Funke-ScriptCompiler.dll` (a private copy; `Build.ps1 ScriptCompiler` builds and deploys it, the Editor postbuild and `CopyEngineSdk.bat` copy it when present) via `ScriptEngine::GetUnmanagedEntryPoint` into the editor's CoreCLR. Entry points `CompilerHost.Compile(byte* requestJson) → byte* responseJson` and `FreeResult`. Missing DLL or `FUNKE_SCRIPT_COMPILER=dotnet` → plain `dotnet build`.

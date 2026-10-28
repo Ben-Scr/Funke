@@ -25,10 +25,13 @@
 #include "Core/Time.hpp"
 #include "Core/UUID.hpp"
 #include "Core/Platform.hpp"
+#include "Core/PlatformShortcuts.hpp"
 #include "Core/Window.hpp"
 #include "Graphics/Text/Font.hpp"
 #include "Graphics/Text/TextRenderer.hpp"
+#include "Graphics/Text/TextEncoding.hpp"
 #include "Graphics/TextureManager.hpp"
+#include "Gui/CircularSliderGeometry.hpp"
 #include "Gui/UIDrawOrder.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Scene/Scene.hpp"
@@ -165,55 +168,20 @@ namespace Funke {
 			scene.GetEntity(entity).SetEnabled(enabled);
 		}
 
-		// Byte length of the codepoint that starts at `s[idx]`. Treats a
-		// stray continuation byte (10xxxxxx) as length 1 so callers always
-		// make forward progress.
 		int Utf8CodepointLength(std::string_view s, int idx) {
-			if (idx < 0 || idx >= static_cast<int>(s.size())) return 0;
-			const unsigned char c = static_cast<unsigned char>(s[idx]);
-			if (c < 0x80) return 1;
-			if ((c & 0xE0) == 0xC0) return 2;
-			if ((c & 0xF0) == 0xE0) return 3;
-			if ((c & 0xF8) == 0xF0) return 4;
-			return 1;
+			uint32_t codepoint;
+			int length;
+			TextEncoding::DecodeUtf8(s, static_cast<size_t>(idx), codepoint, length);
+			return length;
 		}
 
-		// Decode the codepoint starting at `s[idx]`. Returns false past the
-		// end. Handles malformed bytes by yielding one byte and treating it
-		// as a Latin-1 codepoint.
 		bool Utf8Decode(std::string_view s, int idx, uint32_t& outCp, int& outLen) {
-			if (idx < 0 || idx >= static_cast<int>(s.size())) {
-				outCp = 0; outLen = 0; return false;
-			}
-			const unsigned char b = static_cast<unsigned char>(s[idx]);
-			if (b < 0x80) { outCp = b; outLen = 1; return true; }
-			int len; uint32_t cp;
-			if ((b & 0xE0) == 0xC0)      { len = 2; cp = b & 0x1F; }
-			else if ((b & 0xF0) == 0xE0) { len = 3; cp = b & 0x0F; }
-			else if ((b & 0xF8) == 0xF0) { len = 4; cp = b & 0x07; }
-			else { outCp = b; outLen = 1; return true; }
-			if (idx + len > static_cast<int>(s.size())) {
-				outCp = b; outLen = 1; return true;
-			}
-			for (int i = 1; i < len; ++i) {
-				cp = (cp << 6) | (static_cast<unsigned char>(s[idx + i]) & 0x3F);
-			}
-			outCp = cp; outLen = len; return true;
+			return TextEncoding::DecodeUtf8(s, static_cast<size_t>(idx), outCp, outLen);
 		}
 
-		// Move one codepoint to the left, walking past continuation bytes
-		// (10xxxxxx). Returns 0 when already at the start.
 		int Utf8PrevByte(std::string_view s, int byteIdx) {
-			const int n = static_cast<int>(s.size());
 			if (byteIdx <= 0) return 0;
-			if (byteIdx > n) byteIdx = n;
-			--byteIdx;
-			while (byteIdx > 0) {
-				const unsigned char c = static_cast<unsigned char>(s[byteIdx]);
-				if ((c & 0xC0) != 0x80) break;
-				--byteIdx;
-			}
-			return byteIdx;
+			return static_cast<int>(TextEncoding::PreviousByte(s, static_cast<size_t>(byteIdx)));
 		}
 
 		// Move one codepoint to the right.
@@ -1023,6 +991,34 @@ namespace Funke {
 			}
 		}
 
+		void ApplyCircularSliderVisuals(entt::registry& registry,
+			CircularSliderComponent& slider, const RectTransform2DComponent& rect)
+		{
+			slider.Value = std::clamp(slider.Value,
+				std::min(slider.MinValue, slider.MaxValue), std::max(slider.MinValue, slider.MaxValue));
+			if (!registry.valid(slider.HandleEntity)) return;
+			auto* handleRect = registry.try_get<RectTransform2DComponent>(slider.HandleEntity);
+			if (!handleRect) return;
+			const auto shape = CircularSliderGeometry::Resolve(slider, rect);
+			const float angle = shape.StartRadians - rect.Rotation + shape.SweepRadians * shape.NormalizedValue;
+			const Vec2 scale = rect.ResolvedValid ? rect.Scale : rect.LocalScale;
+			handleRect->AnchorMin = handleRect->AnchorMax = handleRect->Pivot = Vec2{ 0.5f, 0.5f };
+			// Layout reapplies the parent's scale; divide per axis to keep the thumb on the circular track.
+			handleRect->AnchoredPosition = {
+				scale.x != 0.0f ? std::cos(angle) * shape.Radius / scale.x : 0.0f,
+				scale.y != 0.0f ? std::sin(angle) * shape.Radius / scale.y : 0.0f
+			};
+		}
+
+		void ResolveCircularSliderHandles(entt::registry& registry) {
+			for (auto&& [entity, slider] : registry.view<CircularSliderComponent>().each()) {
+				if (!registry.valid(slider.HandleEntity)) {
+					slider.HandleEntity = FindFirstChildByNameOrPredicate(registry, entity, "Handle",
+						[&registry](EntityHandle child) { return registry.all_of<RectTransform2DComponent, ImageComponent>(child); });
+				}
+			}
+		}
+
 		void ResolveSliderChildrenForPreview(entt::registry& registry)
 		{
 			const auto childHasImage = [&registry](EntityHandle e) {
@@ -1246,21 +1242,13 @@ namespace Funke {
 			auto hitView = registry.view<RectTransform2DComponent, InteractableComponent>(entt::exclude<DisabledTag>);
 			for (auto&& [entity, rect, interact] : hitView.each()) {
 				if (!interact.Interactable) continue;
-				if (!UIDrawOrder::HitTest(registry, entity, rect, mouseUi)
-					&& !UIEventSystem::SliderHandleContains(registry, entity, mouseUi)) continue;
-
-				// CircularSlider: reject bounding-rect hits outside the ring annulus (donut hole and outer edge).
+				const bool handleHit = UIEventSystem::SliderHandleContains(registry, entity, mouseUi);
 				if (const auto* cs = registry.try_get<CircularSliderComponent>(entity)) {
-					const Vec2 size = rect.GetSize();
-					const float outerR = std::min(size.x, size.y) * 0.5f;
-					const float innerR = std::max(0.0f, outerR - cs->RingThickness);
-					// Use geometric centre (not pivot): renderer paints the disc at centre regardless of pivot.
-					const Vec2 c = rect.GetCenter();
-					const float dx = mouseUi.x - c.x;
-					const float dy = mouseUi.y - c.y;
-					const float distSq = dx * dx + dy * dy;
-					if (distSq < innerR * innerR || distSq > outerR * outerR) continue;
+					const bool ringHit = CircularSliderGeometry::Contains(CircularSliderGeometry::Resolve(*cs, rect), mouseUi)
+						&& UIDrawOrder::PassesAncestorMasks(registry, entity, mouseUi);
+					if (!ringHit && !handleHit) continue;
 				}
+				else if (!UIDrawOrder::HitTest(registry, entity, rect, mouseUi) && !handleHit) continue;
 
 				const int* drawIndex = t_DrawIndexByEntity.DrawIndexOf(entity);
 				if (!drawIndex) continue;
@@ -1316,11 +1304,18 @@ namespace Funke {
 	}
 
 	bool UIEventSystem::SliderHandleContains(entt::registry& registry, EntityHandle sliderEntity, const Vec2& point) {
-		const auto* slider = registry.try_get<SliderComponent>(sliderEntity);
-		if (!slider || slider->IsReadOnly || !registry.valid(slider->HandleEntity)) return false;
-		if (registry.all_of<DisabledTag>(slider->HandleEntity)) return false;
-		const auto* handleRect = registry.try_get<RectTransform2DComponent>(slider->HandleEntity);
-		return handleRect && UIDrawOrder::HitTest(registry, slider->HandleEntity, *handleRect, point);
+		EntityHandle handle = entt::null;
+		if (const auto* slider = registry.try_get<SliderComponent>(sliderEntity)) {
+			if (slider->IsReadOnly) return false;
+			handle = slider->HandleEntity;
+		}
+		else if (const auto* circularSlider = registry.try_get<CircularSliderComponent>(sliderEntity)) {
+			if (circularSlider->IsReadOnly) return false;
+			handle = circularSlider->HandleEntity;
+		}
+		if (!registry.valid(handle) || registry.all_of<DisabledTag>(handle)) return false;
+		const auto* handleRect = registry.try_get<RectTransform2DComponent>(handle);
+		return handleRect && UIDrawOrder::HitTest(registry, handle, *handleRect, point);
 	}
 
 	bool UIEventSystem::CanScrollRectTakeOverPress(const entt::registry& registry, EntityHandle pressed, EntityHandle scrollRect) {
@@ -1457,6 +1452,8 @@ namespace Funke {
 					slider.FillEntity, slider.HandleEntity);
 			}
 		}
+
+		ResolveCircularSliderHandles(registry);
 
 		// Scrollbars: HandleEntity (image, named "Handle" by default —
 		// resolves the same way the slider's Handle does).
@@ -1910,7 +1907,6 @@ namespace Funke {
 		{
 			constexpr float k_CircularSliderDragThresholdRad = 0.005f; // ~0.3°
 			constexpr float k_Pi = 3.14159265358979323846f;
-			constexpr float k_Deg2Rad = k_Pi / 180.0f;
 			auto circularView = registry.view<CircularSliderComponent, RectTransform2DComponent, InteractableComponent>(entt::exclude<DisabledTag>);
 			for (auto&& [entity, cs, rect, interact] : circularView.each()) {
 				cs.ValueChangedThisFrame = false;
@@ -1928,16 +1924,16 @@ namespace Funke {
 
 				// Handle press OR ring press both start drag: handle hovering suppresses ring's annulus hit, leaving thumb inert otherwise.
 				InteractableComponent* handleInteract = nullptr;
-				if (cs.HandleEntity != entt::null && registry.valid(cs.HandleEntity)) {
+				if (registry.valid(cs.HandleEntity) && !registry.all_of<DisabledTag>(cs.HandleEntity)) {
 					handleInteract = registry.try_get<InteractableComponent>(cs.HandleEntity);
 				}
 				const bool handlePressed = handleInteract && handleInteract->Interactable && handleInteract->IsPressed;
 				const bool ringPressed   = interact.Interactable && interact.IsPressed;
-				const bool isPressed     = handlePressed || ringPressed;
+				const bool isPressed     = interact.Interactable && (handlePressed || ringPressed);
 				const bool isMouseDown   = (handleInteract && handleInteract->IsMouseDown) || interact.IsMouseDown;
 
-				// Use geometric centre (not pivot): non-(0.5,0.5) pivot would offset cursor angles from the visible disc.
-				const Vec2 centre = rect.GetCenter();
+				const auto shape = CircularSliderGeometry::Resolve(cs, rect);
+				const Vec2 centre = shape.Center;
 				const float dx = mouseUi.x - centre.x;
 				const float dy = mouseUi.y - centre.y;
 				const float cursorAngle = std::atan2(dy, dx);
@@ -1969,7 +1965,7 @@ namespace Funke {
 						cs.IsDragging = true;
 					}
 					if (cs.IsDragging) {
-						const float sweepRad = cs.SweepDegrees * k_Deg2Rad;
+						const float sweepRad = std::abs(shape.SweepRadians);
 						if (sweepRad > 0.0f) {
 							const float range = cs.MaxValue - cs.MinValue;
 							const float signedDelta = cs.Clockwise ? -cs.DragAccumAngle : cs.DragAccumAngle;
@@ -1980,7 +1976,7 @@ namespace Funke {
 							if (cs.WholeNumbers) {
 								newValue = std::round(newValue);
 							}
-							cs.Value = newValue;
+							cs.Value = std::clamp(newValue, lo, hi);
 						}
 					}
 				}
@@ -1988,33 +1984,7 @@ namespace Funke {
 					cs.IsDragging = false;
 				}
 
-				if (cs.HandleEntity != entt::null
-					&& registry.valid(cs.HandleEntity)
-					&& registry.all_of<RectTransform2DComponent>(cs.HandleEntity))
-				{
-					const float range = cs.MaxValue - cs.MinValue;
-					const float t = (range != 0.0f)
-						? std::clamp((cs.Value - cs.MinValue) / range, 0.0f, 1.0f)
-						: 0.0f;
-					const float startRad = cs.StartAngleDegrees * k_Deg2Rad;
-					const float sweepRad = cs.SweepDegrees * k_Deg2Rad
-						* (cs.Clockwise ? -1.0f : 1.0f);
-					const float angle = startRad + sweepRad * t;
-					// Derive the radius from the authored SizeDelta, not rect.GetSize() (the
-					// resolved screen size). AnchoredPosition is authored-local and UILayoutSystem
-					// re-multiplies it by the parent's world scale, so using the already-scaled
-					// screen size double-applies the canvas UI-scale and the handle drifts off the
-					// ring at any non-reference resolution (game view, resized/non-fullscreen window).
-					const Vec2 size = rect.SizeDelta;
-					const float outerRadius = std::min(size.x, size.y) * 0.5f;
-					const float thickness   = std::min(cs.RingThickness, outerRadius);
-					const float meanRadius  = outerRadius - thickness * 0.5f;
-					auto& hr = registry.get<RectTransform2DComponent>(cs.HandleEntity);
-					hr.AnchoredPosition = Vec2{
-						std::cos(angle) * meanRadius,
-						std::sin(angle) * meanRadius
-					};
-				}
+				ApplyCircularSliderVisuals(registry, cs, rect);
 
 				if (cs.Value != cs.LastObservedValue) {
 					cs.ValueChangedThisFrame = true;
@@ -2416,7 +2386,7 @@ namespace Funke {
 		// ── 8. Input fields ──────────────────────────────────────────
 		auto inputView = registry.view<InteractableComponent, InputFieldComponent>(entt::exclude<DisabledTag>);
 		const float dt = Time::GetUnscaledDeltaTime();
-		const bool ctrlDown = input.GetKey(KeyCode::LeftControl) || input.GetKey(KeyCode::RightControl);
+		const bool shortcutDown = PlatformShortcuts::IsPrimaryDown();
 		const bool shiftDown = input.GetKey(KeyCode::LeftShift) || input.GetKey(KeyCode::RightShift);
 
 		// First pass: figure out which field (if any) was just clicked.
@@ -2536,12 +2506,12 @@ namespace Funke {
 				const size_t textSizeBefore = field.Text.size();
 				bool didVerticalNav = false;
 
-				// Ctrl shortcuts and the phone's text toolbar share one path.
+				// Keyboard shortcuts and the phone's text toolbar share one path.
 				const Platform::TextAction fieldAction = entity == m_TextActionsField ? textAction : Platform::TextAction::None;
-				const bool wantSelectAll = (ctrlDown && input.GetKeyDown(KeyCode::A)) || fieldAction == Platform::TextAction::SelectAll;
-				const bool wantCut = (ctrlDown && input.GetKeyDown(KeyCode::X)) || fieldAction == Platform::TextAction::Cut;
-				const bool wantCopy = (ctrlDown && input.GetKeyDown(KeyCode::C)) || fieldAction == Platform::TextAction::Copy || wantCut;
-				const bool wantPaste = (ctrlDown && input.GetKeyDown(KeyCode::V)) || fieldAction == Platform::TextAction::Paste;
+				const bool wantSelectAll = (shortcutDown && input.GetKeyDown(KeyCode::A)) || fieldAction == Platform::TextAction::SelectAll;
+				const bool wantCut = (shortcutDown && input.GetKeyDown(KeyCode::X)) || fieldAction == Platform::TextAction::Cut;
+				const bool wantCopy = (shortcutDown && input.GetKeyDown(KeyCode::C)) || fieldAction == Platform::TextAction::Copy || wantCut;
+				const bool wantPaste = (shortcutDown && input.GetKeyDown(KeyCode::V)) || fieldAction == Platform::TextAction::Paste;
 				{
 				if (wantSelectAll) {
 					field.SelectionAnchorBytePos = 0;
@@ -2802,7 +2772,7 @@ namespace Funke {
 			}
 
 			// ── Typed characters ──────────────────────────────────
-			if (!typedText.empty() && !ctrlDown && !field.IsReadOnly) {
+			if (!typedText.empty() && !shortcutDown && !field.IsReadOnly) {
 				auto [lo, hi] = SelectionRange(field);
 				std::string existingAfterDelete = field.Text;
 				int caretAfterDelete = field.CaretBytePos;
@@ -3025,6 +2995,7 @@ namespace Funke {
 		auto& registry = scene.GetRegistry();
 
 		if (registry.view<SliderComponent>().size() == 0
+			&& registry.view<CircularSliderComponent>().size() == 0
 			&& registry.view<ToggleComponent>().size() == 0
 			&& registry.view<DropdownComponent>().size() == 0
 			&& registry.view<InputFieldComponent>().size() == 0
@@ -3044,6 +3015,7 @@ namespace Funke {
 		};
 
 		ResolveSliderChildrenForPreview(registry);
+		ResolveCircularSliderHandles(registry);
 		for (auto&& [entity, toggle] : registry.view<ToggleComponent>().each()) {
 			if (toggle.CheckmarkEntity == entt::null || !registry.valid(toggle.CheckmarkEntity)) {
 				toggle.CheckmarkEntity = FindFirstChildByNameOrPredicate(
@@ -3069,14 +3041,8 @@ namespace Funke {
 			ApplySliderVisuals(registry, slider, rect);
 		}
 
-		// Circular sliders aren't processed by Update in edit mode; clamp their Value
-		// here too so the inspector can't hold a value outside [Min, Max].
-		auto circularPreview = registry.view<CircularSliderComponent>(entt::exclude<DisabledTag>);
-		for (auto csEntity : circularPreview) {
-			auto& cs = circularPreview.get<CircularSliderComponent>(csEntity);
-			cs.Value = std::clamp(cs.Value,
-				std::min(cs.MinValue, cs.MaxValue),
-				std::max(cs.MinValue, cs.MaxValue));
+		for (auto&& [entity, slider, rect] : registry.view<CircularSliderComponent, RectTransform2DComponent>(entt::exclude<DisabledTag>).each()) {
+			ApplyCircularSliderVisuals(registry, slider, rect);
 		}
 
 		// ── Scrollbars: Handle position + size from Value / Size ──

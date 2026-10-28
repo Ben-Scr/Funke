@@ -24,6 +24,24 @@ BUILD_IDENTITY_HEADER = REPO_ROOT / "Funke-Engine" / "src" / "Core" / "BuildIden
 ENGINE_ABI_HEADER = REPO_ROOT / "Funke-Engine" / "src" / "Core" / "EngineAbi.generated.hpp"
 ENGINE_SOURCE_ROOT = REPO_ROOT / "Funke-Engine" / "src"
 ENGINE_HEADER_SUFFIXES = {".hpp", ".h", ".inl"}
+ENGINE_IDENTITY_PATHS = (
+    "Funke-Engine/src",
+    "Funke-Engine/version.rc",
+    "Funke-Engine/premake5.lua",
+    "Funke-Engine/EngineModules.json",
+    "External",
+    "Dependencies.lua",
+    "premake5.lua",
+    "premake",
+    "cmake",
+    "Directory.Build.props",
+    "Directory.Build.targets",
+    "Version.props",
+    "scripts/generate_build_metadata.py",
+    "scripts/vendor_patches.py",
+    "scripts/dawn",
+    "scripts/sdl",
+)
 MANAGED_PROPS = REPO_ROOT / "build" / "BuildMetadata.props"
 MANAGED_RC = REPO_ROOT / "build" / "ManagedVersion.rc"
 METADATA_JSON = REPO_ROOT / "build" / "BuildMetadata.json"
@@ -47,6 +65,12 @@ def parse_args() -> argparse.Namespace:
         "--require-clean",
         action="store_true",
         help="Fail when tracked or untracked repository files are dirty.",
+    )
+    parser.add_argument(
+        "--identity-scope",
+        choices=("repository", "engine"),
+        default="repository",
+        help="Use engine inputs for local iteration; CI and release arguments always use the whole repository.",
     )
     parser.add_argument(
         "--github-output",
@@ -87,8 +111,8 @@ def run_git_bytes(*arguments: str) -> bytes:
     return result.stdout
 
 
-def repository_status() -> str:
-    status = run_git("status", "--porcelain=v1", "--untracked-files=all")
+def repository_status(paths: tuple[str, ...] = ()) -> str:
+    status = run_git("status", "--porcelain=v1", "--untracked-files=all", "--", *paths)
     visible_lines: list[str] = []
     for line in status.splitlines():
         path = line[3:] if len(line) > 3 else ""
@@ -98,11 +122,11 @@ def repository_status() -> str:
     return "\n".join(visible_lines)
 
 
-def calculate_dirty_fingerprint(status: str) -> str:
+def calculate_dirty_fingerprint(status: str, paths: tuple[str, ...] = ()) -> str:
     digest = hashlib.sha256()
     digest.update(status.encode("utf-8"))
-    digest.update(run_git_bytes("diff", "--binary", "--no-ext-diff", "--ignore-submodules=dirty", "HEAD"))
-    untracked = run_git_bytes("ls-files", "--others", "--exclude-standard", "-z")
+    digest.update(run_git_bytes("diff", "--binary", "--no-ext-diff", "--ignore-submodules=dirty", "HEAD", "--", *paths))
+    untracked = run_git_bytes("ls-files", "--others", "--exclude-standard", "-z", "--", *paths)
     for raw_path in sorted(path for path in untracked.split(b"\0") if path):
         digest.update(b"\0path\0")
         digest.update(raw_path)
@@ -196,12 +220,19 @@ def main() -> int:
     args = parse_args()
     try:
         version, major, minor, patch = read_version()
-        commit = run_git("rev-parse", "HEAD")
+        repository_commit = run_git("rev-parse", "HEAD")
+        ci_build = any(os.environ.get(name, "").lower() in {"true", "1"} for name in ("CI", "GITHUB_ACTIONS", "TF_BUILD"))
+        identity_scope = "repository" if ci_build or args.tag or args.require_clean or args.github_output else args.identity_scope
+        identity_paths = ENGINE_IDENTITY_PATHS if identity_scope == "engine" else ()
+        commit = (
+            run_git("log", "-1", "--format=%H", "HEAD", "--", *identity_paths)
+            if identity_paths else repository_commit
+        )
         if not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
             raise RuntimeError(f"Build commit must be a full Git object ID; found {commit!r}")
         commit = commit.lower()
 
-        status = repository_status()
+        status = repository_status(identity_paths)
         dirty = bool(status)
         if args.require_clean and dirty:
             raise RuntimeError("Release metadata requires a clean repository checkout.")
@@ -227,9 +258,11 @@ def main() -> int:
         short_commit = commit[:12]
         separator = "." if "+" in version else "+"
         build_id = f"{version}{separator}{short_commit}"
+        if identity_scope == "engine":
+            build_id += ".dev.engine"
         dirty_fingerprint = ""
         if dirty:
-            dirty_fingerprint = calculate_dirty_fingerprint(status)
+            dirty_fingerprint = calculate_dirty_fingerprint(status, identity_paths)
             build_id += f".dirty.{dirty_fingerprint}"
 
         archive_name = f"Funke-Editor-{version}-Windows-x64.zip"
@@ -282,6 +315,8 @@ def main() -> int:
             "version": version,
             "buildId": build_id,
             "commit": commit,
+            "identityScope": identity_scope,
+            "repositoryCommit": repository_commit,
             "dirty": dirty,
             "dirtyFingerprint": dirty_fingerprint or None,
             "archiveName": archive_name,

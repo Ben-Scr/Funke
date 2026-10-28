@@ -14,7 +14,7 @@ namespace Funke {
 	namespace InspectorUndoRecorder {
 		void CaptureBefore(std::span<const Entity> entities, const PropertyDescriptor& descriptor);
 		void CaptureAfter(std::span<const Entity> entities, const PropertyDescriptor& descriptor);
-		void Flush(UndoStack& stack);
+		void Flush(UndoStack& stack, bool finishGesture = false);
 		void Reset();
 	}
 }

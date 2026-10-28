@@ -225,7 +225,7 @@ MyGame/
 - Only `*.json` files directly in that folder count. `meta.code` names the language; without it the file name is used (`fr.json` → `fr`), and without `meta.displayName` pickers show the code. `fallback` and `schemaVersion` are optional here.
 - The **fallback** language is `en` when the game has an `en.json`, otherwise its first language by code. Lookups go **current language → fallback → the key itself**, and a missing key is logged once (tag `Localization`).
 - The files load when the project opens — in the editor, the built game and `funke.exe` — and **always ship** in builds (the build's asset pruning keeps the whole folder). The editor reloads them as soon as you save one, also during Play.
-- Text is drawn with the Text Renderer's font, and fonts are baked for **ASCII and Latin-1 only** (codepoints 32–126 and 160–255). That covers English, German, French, Spanish, Portuguese, Italian and the Nordic languages; other characters (Polish, Czech, Cyrillic, Greek, CJK, and typographic punctuation such as `–` or `…`) are skipped. See [Known Limitations](../Known-Limitations.md).
+- Text Renderers load Unicode glyphs on demand from their assigned font. Choose a font containing the characters in your translations: the bundled IBM Plex fonts cover Latin Extended, but Greek, Cyrillic and CJK require another font. Missing characters use the font's replacement glyph or `?`; malformed UTF-8 also renders as replacement characters. There is no automatic fallback-font chain or complex-script shaping/bidirectional layout. This game-text path is separate from the Launcher's ImGui font atlas and its CJK-font restart requirement. See [Known Limitations](../Known-Limitations.md) and [font caching](../Assets/Assets.md#loading-caching-and-handles).
 
 ### Which language the game starts in
 
@@ -293,11 +293,11 @@ Call it from the main thread (scripts, systems), not from jobs.
 - The active language is read from **`%LocalAppData%/Funke/locale.json`**, can auto-detect the **system language**, and switches **live** via `SetLanguage` — except the CJK font, which **requires a restart** because the font atlas is baked at startup.
 - Read strings with **`FNK_TR(key)`** / `Localization::Get`, use **`GetFallback`** for pre-font-load UI, format with **`Localization::Format(key, args...)`**, and pump **`Poll()`** each frame. These engine tables serve the **Launcher**.
 - **Add a language** by dropping a `<code>.json` with a `meta` block into the bundled or user `Localization` folder — it auto-appears, with the user dir overriding bundled.
-- **Games** keep their own tables in **`Assets/Localization/<code>.json`** (fallback `en` or the first language), read them from C# with **`Localization.Get` / `Format`**, let the **Localized Text** component fill Text Renderers, and switch with **`Localization.SetLanguage`**, which remembers the choice in **PlayerPrefs**; the game otherwise starts in the OS language when it has it. Fonts cover ASCII and Latin-1 only.
+- **Games** keep their own tables in **`Assets/Localization/<code>.json`** (fallback `en` or the first language), read them from C# with **`Localization.Get` / `Format`**, let the **Localized Text** component fill Text Renderers, and switch with **`Localization.SetLanguage`**, which remembers the choice in **PlayerPrefs**; the game otherwise starts in the OS language when it has it. Unicode text needs a font containing the requested glyphs; game Text Renderers load them on demand.
 
 ## Related pages
 
 - [Assets](../Assets/Assets.md) — the locale JSON files are content shipped next to each binary, like other engine assets.
 - [Startup Processes](Startup-Processes.md) — the engine boot sequence, where `Localization::Initialize()` runs.
 - [Third-Party Libraries](../Reference/Third-Party-Libraries.md) — the bundled OFL fonts and the on-demand Noto Sans CJK font.
-- [Known Limitations](../Known-Limitations.md) — what game localization doesn't cover yet (glyph ranges, editor tooling).
+- [Known Limitations](../Known-Limitations.md) — remaining font, text-shaping and localization-editor limits.

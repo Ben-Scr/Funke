@@ -53,6 +53,15 @@ namespace Funke {
 			const auto* b = Backend();
 			return b && b->Query ? b->Query(what) : 0.0f;
 		}
+		int Funke_EditorGUI_Popup(const char* label, int selectedIndex, const char* options, int optionsBytes) {
+			const auto* b = Backend();
+			return b && b->Popup && label && options && optionsBytes > 0
+				? b->Popup(label, selectedIndex, options, optionsBytes) : selectedIndex;
+		}
+		int Funke_EditorGUI_Selectable(const char* label, int selected) {
+			const auto* b = Backend();
+			return b && b->Selectable && label ? b->Selectable(label, selected) : 0;
+		}
 	}
 
 	void ScriptEditorGui::SetBackend(const EditorGuiBackend* backend) {
@@ -75,6 +84,8 @@ namespace Funke {
 		b.EditorGUI_Layout = FNK_GUARDED_BINDING(Funke_EditorGUI_Layout);
 		b.EditorGUI_PushId = FNK_GUARDED_BINDING(Funke_EditorGUI_PushId);
 		b.EditorGUI_Query = FNK_GUARDED_BINDING(Funke_EditorGUI_Query);
+		b.EditorGUI_Popup = FNK_GUARDED_BINDING(Funke_EditorGUI_Popup);
+		b.EditorGUI_Selectable = FNK_GUARDED_BINDING(Funke_EditorGUI_Selectable);
 	}
 
 }

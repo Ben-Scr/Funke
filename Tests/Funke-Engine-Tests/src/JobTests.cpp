@@ -1,8 +1,11 @@
 #include <doctest/doctest.h>
 
 #include "Funke/Core.hpp"
+#include "Scripting/ScriptBindings.hpp"
+#include "Scripting/ScriptGlue.hpp"
 
 #include <atomic>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -112,6 +115,36 @@ TEST_CASE("Jobs scheduled after Shutdown run inline and complete") {
 
 	CHECK(handle.IsComplete());
 	CHECK(value.load(std::memory_order_acquire) == 7);
+}
+
+TEST_CASE("Managed parallel range bindings preserve signed bounds") {
+	ScopedJobSystem jobs;
+	NativeBindings bindings{};
+	ScriptBindings::PopulateNativeBindings(bindings);
+	const int ranges[][2] = {
+		{ -2, 2 }, { -8, -3 }, { 3, 8 },
+		{ std::numeric_limits<int>::min(), std::numeric_limits<int>::min() + 3 },
+		{ std::numeric_limits<int>::max() - 3, std::numeric_limits<int>::max() }
+	};
+	for (const auto& range : ranges) {
+		struct Counts {
+			std::atomic<int> Visits{ 0 };
+			std::atomic<int64_t> Sum{ 0 };
+		} counts;
+		const uint64_t handle = bindings.JobSystem_ParallelFor(range[0], range[1], 1,
+			[](void* context, int lo, int hi) {
+				auto& result = *static_cast<Counts*>(context);
+				for (int i = lo; i < hi; ++i) {
+					result.Visits.fetch_add(1);
+					result.Sum.fetch_add(i);
+				}
+			}, &counts, nullptr);
+		bindings.JobSystem_Wait(handle);
+		bindings.JobSystem_Release(handle);
+		const int64_t length = static_cast<int64_t>(range[1]) - range[0];
+		CHECK(counts.Visits.load() == length);
+		CHECK(counts.Sum.load() == length * (static_cast<int64_t>(range[0]) + range[1] - 1) / 2);
+	}
 }
 
 TEST_CASE("An OnLog listener can log without deadlocking") {

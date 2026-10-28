@@ -528,7 +528,8 @@ namespace Funke {
 		m_IsRenaming = true;
 		m_RenamePath = path;
 		m_PressedPath.clear();
-		m_RenameFrameCounter = 0;
+		m_PendingScrollToPath = path;
+		m_RenameInput.Reset();
 
 		// Strip extension from display name when ShowFileExtensions is off; CommitRename re-appends it on commit.
 		const bool showExt = EditorPreferences::GetShowFileExtensions();
@@ -850,7 +851,7 @@ namespace Funke {
 
 		m_IsRenaming = false;
 		m_RenamePath.clear();
-		m_RenameFrameCounter = 0;
+		m_RenameInput.Reset();
 	}
 
 	bool AssetBrowser::IsRenamingEntry(const std::string& path) const {

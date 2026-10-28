@@ -32,18 +32,26 @@ local function Manifest(name, version, extra)
 end
 
 -- Every package under <root>/Packages, allow-listed in project.json; returns ok, sortedNamesOrError.
-local function Resolve(packages, allowList)
+local function Resolve(packages, allowList, enginePackages)
     local root = path.join(os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp", "funke-loader-test-" .. tostring(os.time()) .. "-" .. tostring(math.random(1, 1000000)))
     for name, source in pairs(packages) do
         WriteFile(path.join(root, "Packages", name, "funke-package.lua"), source)
     end
     WriteFile(path.join(root, "project.json"), "{ \"packages\": [\"" .. table.concat(allowList, "\", \"") .. "\"] }")
+    local previousRoot = ROOT_DIR
+    if enginePackages then
+        ROOT_DIR = path.join(root, "Engine")
+        for name, source in pairs(enginePackages) do
+            WriteFile(path.join(ROOT_DIR, "packages", name, "funke-package.lua"), source)
+        end
+    end
     local ok, result = pcall(Packages.ResolveProjectPackages, root)
+    ROOT_DIR = previousRoot
     os.rmdir(root)
     if not ok then return false, tostring(result) end
     local names = {}
     for _, manifest in ipairs(result) do table.insert(names, manifest.name) end
-    return true, names
+    return true, names, result
 end
 
 newaction {
@@ -83,6 +91,28 @@ newaction {
 
         ok, result = Resolve({ ["Game.Bad"] = Manifest("Game.Bad", "1.0.0", "dependencies = { \"Game.X@^nope\" },") }, { "Game.Bad" })
         Check(not ok and result:find("invalid version range", 1, true), "invalid dependency range rejected: " .. tostring(result))
+
+        local resolved
+        ok, result, resolved = Resolve({
+            ["Game.Shared"] = Manifest("Game.Shared", "2.0.0"),
+        }, { "Game.Shared", "Game.Fallback" }, {
+            ["Game.Shared"] = Manifest("Game.Shared", "1.0.0", "engine = \"<1.0.0\","),
+            ["Game.Fallback"] = Manifest("Game.Fallback", "1.0.0", "dependencies = { \"Game.Shared@^2.0.0\" },"),
+        })
+        Check(ok and #resolved == 2 and resolved[1].version == "2.0.0",
+            "project version overrides bundled version: " .. tostring(result))
+
+        ok, result = Resolve({
+            ["Game.Shared"] = Manifest("Game.Shared", "2.0.0"),
+            ["Game.OtherFolder"] = Manifest("Game.Shared", "3.0.0"),
+        }, { "Game.Shared" })
+        Check(not ok and result:find("Duplicate package name", 1, true), "duplicate project names still fail")
+
+        ok, result = Resolve({ ["Game.Shared"] = Manifest("Game.Shared", "2.0.0") }, { "Game.Shared" }, {
+            ["Game.Shared"] = Manifest("Game.Shared", "1.0.0"),
+            ["Game.OtherFolder"] = Manifest("Game.Shared", "1.1.0"),
+        })
+        Check(not ok and result:find("Duplicate package name", 1, true), "duplicate engine names still fail")
 
         if failures > 0 then
             error(failures .. " package-loader check(s) failed", 0)

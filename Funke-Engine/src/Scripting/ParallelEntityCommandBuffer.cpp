@@ -76,7 +76,8 @@ namespace Funke {
 		uint32_t base = 0;
 		for (auto& sub : m_Subs) {
 			const uint32_t subCount = sub.m_EntityCount;
-			for (auto& cmd : sub.m_Commands) {
+			for (std::size_t i = 0; i < sub.m_CommandCount; ++i) {
+				auto& cmd = sub.m_Commands[i];
 				if (cmd.EntityIndex < subCount) {
 					cmd.Apply(cmd.Storage, scene, m_CreatedHandles[base + cmd.EntityIndex]);
 				}

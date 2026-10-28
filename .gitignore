@@ -61,6 +61,7 @@ Funke-Engine/src/Core/.EngineAbi.generated.hpp.*
 .agents/*
 !.agents/skills/
 .scratch/
+scripts/funke-build-env.bat
 
 # User-specific files
 *.rsuser

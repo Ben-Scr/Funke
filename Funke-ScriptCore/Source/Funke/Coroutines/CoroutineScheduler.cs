@@ -4,9 +4,7 @@ using System.Threading;
 
 namespace Funke.Coroutines;
 
-/// <summary>
-/// Owns pending coroutine queues; pumped each frame by ScriptSystem. Register is thread-safe; pump is main-thread-only. Cancelled entries fire their continuation so the async state machine unwinds and the ALC can unload.
-/// </summary>
+/// <summary>Registration is thread-safe; Application pumps once per gameplay tick on the main thread.</summary>
 internal static class CoroutineScheduler
 {
     private sealed class FrameEntry
@@ -41,6 +39,14 @@ internal static class CoroutineScheduler
     private static List<SecondsEntry> s_SecondsEntries = new();
     private static List<ConditionEntry> s_ConditionEntries = new();
     private static List<FixedEntry> s_FixedEntries = new();
+
+    private static List<FrameEntry> s_FrameWork = new();
+    private static List<SecondsEntry> s_SecondsWork = new();
+    private static List<ConditionEntry> s_ConditionWork = new();
+    private static List<FixedEntry> s_FixedWork = new();
+    private static int s_Generation;
+    private static bool s_PumpingUpdate;
+    private static bool s_PumpingFixed;
 
     public static void RegisterFrame(Action continuation, CancellationToken token, int framesRemaining)
     {
@@ -97,48 +103,74 @@ internal static class CoroutineScheduler
 
     public static void PumpUpdate(float deltaTime)
     {
-        FunkeSynchronizationContext.Instance.Pump();
-
-        List<FrameEntry> frame;
-        List<SecondsEntry> seconds;
-        List<ConditionEntry> conditions;
         lock (s_Lock)
         {
-            frame = s_FrameEntries;
-            seconds = s_SecondsEntries;
-            conditions = s_ConditionEntries;
-            s_FrameEntries = new List<FrameEntry>();
-            s_SecondsEntries = new List<SecondsEntry>();
-            s_ConditionEntries = new List<ConditionEntry>();
+            if (s_PumpingUpdate) return;
+            s_PumpingUpdate = true;
         }
+        try
+        {
+            FunkeSynchronizationContext.Instance.Pump();
+            int generation;
+            lock (s_Lock)
+            {
+                generation = s_Generation;
+                (s_FrameEntries, s_FrameWork) = (s_FrameWork, s_FrameEntries);
+                (s_SecondsEntries, s_SecondsWork) = (s_SecondsWork, s_SecondsEntries);
+                (s_ConditionEntries, s_ConditionWork) = (s_ConditionWork, s_ConditionEntries);
+            }
 
-        ProcessFrameEntries(frame);
-        ProcessSecondsEntries(seconds, deltaTime);
-        ProcessConditionEntries(conditions);
-
-        FunkeSynchronizationContext.Instance.Pump();
+            ProcessFrameEntries(generation);
+            ProcessSecondsEntries(generation, deltaTime);
+            ProcessConditionEntries(generation);
+            FunkeSynchronizationContext.Instance.Pump();
+        }
+        finally
+        {
+            lock (s_Lock)
+            {
+                s_FrameWork.Clear();
+                s_SecondsWork.Clear();
+                s_ConditionWork.Clear();
+                s_PumpingUpdate = false;
+            }
+        }
     }
 
     public static void PumpFixedUpdate()
     {
-        List<FixedEntry> fixedEntries;
+        int generation;
         lock (s_Lock)
         {
-            fixedEntries = s_FixedEntries;
-            s_FixedEntries = new List<FixedEntry>();
+            if (s_PumpingFixed) return;
+            s_PumpingFixed = true;
+            generation = s_Generation;
+            (s_FixedEntries, s_FixedWork) = (s_FixedWork, s_FixedEntries);
         }
-
-        foreach (var entry in fixedEntries)
+        try
         {
-            FireOrCancel(entry.Continuation);
+            foreach (var entry in s_FixedWork)
+            {
+                if (generation != Volatile.Read(ref s_Generation)) break;
+                FireOrCancel(entry.Continuation);
+            }
+        }
+        finally
+        {
+            lock (s_Lock)
+            {
+                s_FixedWork.Clear();
+                s_PumpingFixed = false;
+            }
         }
     }
 
-    // MUST be called before ALC unload; releases captured user types so the GC dance succeeds.
+    // Running batches observe the generation before invoking or retaining another user callback.
     public static void Reset()
     {
         lock (s_Lock)
         {
+            ++s_Generation;
             s_FrameEntries.Clear();
             s_SecondsEntries.Clear();
             s_ConditionEntries.Clear();
@@ -146,95 +178,72 @@ internal static class CoroutineScheduler
         }
     }
 
-    private static void ProcessFrameEntries(List<FrameEntry> entries)
+    private static void ProcessFrameEntries(int generation)
     {
-        List<FrameEntry>? keepers = null;
-        foreach (var entry in entries)
+        int keep = 0;
+        for (int i = 0; i < s_FrameWork.Count; ++i)
         {
-            if (entry.Token.IsCancellationRequested)
-            {
+            var entry = s_FrameWork[i];
+            if (generation != Volatile.Read(ref s_Generation)) break;
+            if (entry.Token.IsCancellationRequested || --entry.FramesRemaining <= 0)
                 FireOrCancel(entry.Continuation);
-                continue;
-            }
-
-            entry.FramesRemaining--;
-            if (entry.FramesRemaining <= 0)
-            {
-                FireOrCancel(entry.Continuation);
-            }
             else
-            {
-                keepers ??= new List<FrameEntry>();
-                keepers.Add(entry);
-            }
+                s_FrameWork[keep++] = entry;
         }
-        if (keepers != null)
-        {
-            lock (s_Lock) { s_FrameEntries.AddRange(keepers); }
-        }
+        Retain(s_FrameWork, s_FrameEntries, keep, generation);
     }
 
-    private static void ProcessSecondsEntries(List<SecondsEntry> entries, float deltaTime)
+    private static void ProcessSecondsEntries(int generation, float deltaTime)
     {
-        List<SecondsEntry>? keepers = null;
-        foreach (var entry in entries)
+        int keep = 0;
+        for (int i = 0; i < s_SecondsWork.Count; ++i)
         {
-            if (entry.Token.IsCancellationRequested)
-            {
-                FireOrCancel(entry.Continuation);
-                continue;
-            }
-
+            var entry = s_SecondsWork[i];
+            if (generation != Volatile.Read(ref s_Generation)) break;
             entry.SecondsRemaining -= deltaTime;
-            if (entry.SecondsRemaining <= 0f)
-            {
+            if (entry.Token.IsCancellationRequested || entry.SecondsRemaining <= 0f)
                 FireOrCancel(entry.Continuation);
-            }
             else
-            {
-                keepers ??= new List<SecondsEntry>();
-                keepers.Add(entry);
-            }
+                s_SecondsWork[keep++] = entry;
         }
-        if (keepers != null)
-        {
-            lock (s_Lock) { s_SecondsEntries.AddRange(keepers); }
-        }
+        Retain(s_SecondsWork, s_SecondsEntries, keep, generation);
     }
 
-    private static void ProcessConditionEntries(List<ConditionEntry> entries)
+    private static void ProcessConditionEntries(int generation)
     {
-        List<ConditionEntry>? keepers = null;
-        foreach (var entry in entries)
+        int keep = 0;
+        for (int i = 0; i < s_ConditionWork.Count; ++i)
         {
+            var entry = s_ConditionWork[i];
+            if (generation != Volatile.Read(ref s_Generation)) break;
             if (entry.Token.IsCancellationRequested)
             {
                 FireOrCancel(entry.Continuation);
                 continue;
             }
 
-            bool predicateResult;
-            try { predicateResult = entry.Predicate(); }
+            bool ready;
+            try { ready = entry.Predicate(); }
             catch (Exception ex)
             {
                 Log.Error($"[Coroutine] WaitUntil predicate threw: {ex}");
-                FireOrCancel(entry.Continuation);
-                continue;
+                ready = true;
             }
-
-            if (predicateResult)
-            {
+            if (generation != Volatile.Read(ref s_Generation)) break;
+            if (ready)
                 FireOrCancel(entry.Continuation);
-            }
             else
-            {
-                keepers ??= new List<ConditionEntry>();
-                keepers.Add(entry);
-            }
+                s_ConditionWork[keep++] = entry;
         }
-        if (keepers != null)
+        Retain(s_ConditionWork, s_ConditionEntries, keep, generation);
+    }
+
+    private static void Retain<T>(List<T> work, List<T> pending, int count, int generation)
+    {
+        lock (s_Lock)
         {
-            lock (s_Lock) { s_ConditionEntries.AddRange(keepers); }
+            if (generation != s_Generation) return;
+            for (int i = 0; i < count; ++i) pending.Add(work[i]);
         }
     }
 

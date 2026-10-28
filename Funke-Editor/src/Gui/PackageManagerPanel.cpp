@@ -197,24 +197,24 @@ namespace Funke {
 		RefreshRegistryIfDirty();
 
 		// Tab bar without BeginChild: ImGui 1.92 collapsed child content to zero height inside docked tabs.
-		if (ImGui::BeginTabBar("##PackageManagerTabs")) {
-			if (ImGui::BeginTabItem("Search Packages")) {
+		if (EditorUI::BeginTabBar("##PackageManagerTabs")) {
+			if (EditorUI::BeginTabItem("Search Packages")) {
 				m_TabIndex = 0;
 				RenderSearchPackagesTab();
-				ImGui::EndTabItem();
+				EditorUI::EndTabItem();
 			}
-			if (ImGui::BeginTabItem("In Project")) {
+			if (EditorUI::BeginTabItem("In Project")) {
 				m_TabIndex = 1;
 				RenderInstalledPackagesTab();
-				ImGui::EndTabItem();
+				EditorUI::EndTabItem();
 			}
-			if (ImGui::BeginTabItem("Platforms")) {
+			if (EditorUI::BeginTabItem("Platforms")) {
 				if (m_TabIndex != 2) m_PlatformPackagesDirty = true;
 				m_TabIndex = 2;
 				RenderPlatformPackagesTab();
-				ImGui::EndTabItem();
+				EditorUI::EndTabItem();
 			}
-			ImGui::EndTabBar();
+			EditorUI::EndTabBar();
 		}
 
 		// Status strip — pinned to the bottom of the panel.

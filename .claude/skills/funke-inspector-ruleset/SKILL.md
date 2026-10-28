@@ -8,7 +8,7 @@ description: Use when exposing fields to the Funke editor inspector — native C
 The Funke editor inspector is **declarative and unified**. Both native C++ components and C# scripts feed the same `PropertyDescriptor` shape through the same `PropertyDrawer`. There are no per-type drawer implementations — adding a new supported type is a single change to `PropertyType` plus a switch arm in `PropertyDrawer.cpp` / `PropertyValue.cpp`. So the API is small, but the rules around it (multi-select, mixed values, reference filtering, variants, lists) are exact and non-obvious. This skill is the ruleset.
 
 Source of truth lives in:
-- `Funke-Engine/src/Inspector/PropertyType.hpp` — the canonical type list + multi-select rules.
+- `Funke-Engine/src/Inspector/PropertyType.hpp` — the canonical type list and wire tags; multi-select behavior lives in `PropertyDrawer.cpp`.
 - `Funke-Engine/src/Inspector/PropertyRegistration.hpp` — the `Properties::Make*` and `Properties::Meta::*` helpers.
 - `Funke-Engine/src/Inspector/PropertyMetadata.hpp` — clamp / tooltip / header / enabled-if / etc.
 - `Funke-Editor/src/Inspector/PropertyDrawer.cpp` — the per-type widget dispatch.
@@ -63,9 +63,8 @@ The 95% case. Works for `bool`, all integer / float types, `std::string`, `glm::
 
 ```cpp
 std::vector<PropertyDescriptor> props = {
-    Properties::Make("Health",   "Health",    &HealthComponent::Health),
-    Properties::Make("Position", "Position",  &TransformComponent::Position),
-    Properties::Make("Mode",     "Play Mode", &AudioSourceComponent::Mode),   // enum auto-handled
+    Properties::Make("SortingOrder", "Sorting Order", &SpriteRendererComponent::SortingOrder),
+    Properties::Make("Filter", "Filter", &SpriteRendererComponent::FilterMode), // enum auto-handled
 };
 ```
 
@@ -99,9 +98,9 @@ The drawer renders a multi-checkbox combo so individual bits can be toggled. Eac
 Each asset kind has an explicit helper so the picker knows which kind to filter for. **Don't register references with plain `Make`**: handle/GUID types (`TextureHandle`, `AudioHandle`, `FontHandle`, `UUID`/`AssetGUID`) deduce to `PropertyType::None` and fail `Make`'s `static_assert`, and a raw `uint64_t` GUID member compiles but deduces to `UInt64` — a number widget instead of a picker.
 
 ```cpp
-Properties::MakeTextureRef("Sprite", "Sprite",
-    [](const Entity& e) -> uint64_t { return e.GetComponent<SpriteRendererComponent>().TextureGuid; },
-    [](Entity& e, uint64_t guid) { e.GetComponent<SpriteRendererComponent>().SetTexture(guid); });
+Properties::MakeTextureRef("Texture", "Texture",
+    [](const Entity& e) -> uint64_t { return e.GetComponent<ParticleSystem3DComponent>().Texture; },
+    [](Entity& e, uint64_t guid) { e.GetComponent<ParticleSystem3DComponent>().Texture = guid; });
 
 Properties::MakeAudioRef("Clip", "Clip", /* getter */, /* setter */);
 Properties::MakeFontRef ("Font", "Font", /* getter */, /* setter */);
@@ -109,6 +108,8 @@ Properties::MakeEntityRef("Target", "Follow Target", /* getter */, /* setter */)
 ```
 
 The getter must return a `uint64_t`: the asset GUID, or for `MakeEntityRef` the **persistent** entity id (`Scene::GetEntityPersistentID`, resolved back with `Scene::TryResolveEntityRef`) — never a runtime/entt id; the picker, drag-drop and display all use persistent ids. `MakeUiEntityRef` in `Scene/BuiltInComponentRegistrationShared.hpp` is the pattern to copy. The setter receives the new ID and is responsible for whatever side-effects loading or attaching the reference requires.
+
+For sprite slices, `MakeTextureRef` also accepts a getter `(const Entity&, std::string& outSlice)` and setter `(Entity&, uint64_t, const std::string&)`. Use both together so comparison, animation recording, and preview restoration retain the slice. Copy `MakeTextureRefDirect` in `BuiltInComponentRegistrationRendering.cpp` for SpriteRenderer/Image: it maintains `TextureAssetId`, `TextureHandle`, and `SpriteName` together and rejects failed texture loads.
 
 There's no `MakeAssetRef` / `MakeSceneRef` / `MakePrefabRef` / `MakeComponentRef` helper today — for those, build the `PropertyDescriptor` directly with `Type = PropertyType::AssetRef` (etc.) and populate the lambdas by hand. Set `PropertyMetadata::ComponentTypeName` for `ComponentRef` so the picker can filter to compatible components.
 
@@ -157,7 +158,9 @@ Properties::MakeVariant<EmitterComponent, EmitterShape>(
 Each helper returns a fresh `PropertyMetadata` configured with one common shape; the `PropertyMetadata::With*` chain methods compose more on top.
 
 ```cpp
-Properties::Make("Volume", "Volume", &AudioSourceComponent::Volume,
+Properties::MakeWith<float>("Volume", "Volume",
+    [](const Entity& e) { return e.GetComponent<AudioSourceComponent>().GetVolume(); },
+    [](Entity& e, float v) { e.GetComponent<AudioSourceComponent>().SetVolume(v); },
     Properties::Meta::Clamp(0.0, 1.0).WithDragSpeed(0.01f).WithTooltip("Linear gain."));
 
 Properties::Make("Gravity", "Gravity Vector", &Settings::Gravity,
@@ -167,7 +170,7 @@ Properties::Make("Description", "Description", &NpcComponent::Description,
     Properties::Meta::MultiLine(8));
 ```
 
-Available helpers (full list in `Properties::Meta` in `PropertyRegistration.hpp:154-219`):
+Available helpers (full list in `Properties::Meta` in `PropertyRegistration.hpp`):
 
 | Helper | Purpose |
 |---|---|
@@ -176,6 +179,7 @@ Available helpers (full list in `Properties::Meta` in `PropertyRegistration.hpp:
 | `DragSpeed(speed)` | Drag-speed alone (no clamp). |
 | `Tooltip(text)` | Hover tooltip. |
 | `ReadOnly()` | Render disabled, edits ignored. |
+| `NoSteppers()` | Hide the numeric stepper buttons. |
 | `Header(content, size=5)` | Section header drawn ABOVE this row. |
 | `Space(h)` | Vertical spacer above the row. |
 | `MultiLine(rows=4)` | `String` only — render as a resizable multi-line text box. |
@@ -188,7 +192,7 @@ For section reset support (right-click "Reset to defaults" on a section header),
 
 ## C# side: attributes
 
-Managed scripts (`EntityScript`, `GameSystem`, `GlobalSystem`, and any other `Component` subclass) use attributes from `Funke-ScriptCore/Source/Funke/Attributes/` to surface fields. The same `PropertyDrawer` renders them — the JSON wire format between the C# reflection pass and the editor is the `PropertyType` string from `ToString(PropertyType)` (e.g. `"float"`, `"vector2"`, `"texture"`).
+Managed scripts (`EntityScript`, `SceneSystem`, `GlobalSystem`, and any other `Component` subclass) use attributes from `Funke-ScriptCore/Source/Funke/Attributes/` to surface fields. The same `PropertyDrawer` renders them — the JSON wire format between the C# reflection pass and the editor is the `PropertyType` string from `ToString(PropertyType)` (e.g. `"float"`, `"vector2"`, `"texture"`).
 
 ### The attribute table
 
@@ -208,7 +212,7 @@ Managed scripts (`EntityScript`, `GameSystem`, `GlobalSystem`, and any other `Co
 
 ### Field visibility default
 
-For a managed script, public fields and public auto-properties are shown automatically — `[ShowInEditor]` is only required to surface private / protected / internal fields. Use `[EditorIgnore]` (equivalently `[HideFromEditor]`) on a public field to hide it.
+For a managed script, public fields and properties with a public getter are shown automatically, including computed properties. Properties without a public setter appear read-only; indexers and write-only properties are skipped. `[ShowInEditor]` surfaces non-public members. Use `[EditorIgnore]` (equivalently `[HideFromEditor]`) to hide a member that would otherwise be shown. `CollectEditorMembers` and `IsMemberEditorVisible` in `Interop/ScriptInstanceManager.cs` define these rules.
 
 ### Cross-field gating semantics (`EnabledIf`)
 
@@ -225,7 +229,7 @@ When `expectedValue` is null (single-arg form), the gate passes for any truthy v
 
 ## Multi-selection rules
 
-The drawer always operates on a **span of entities**, even when only one is selected (the single-select case is just `size == 1`). When the selection contains more than one entity, the drawer follows these rules — encoded in `PropertyType.hpp:54-72`:
+The drawer always operates on a **span of entities**, even when only one is selected (the single-select case is just `size == 1`). When the selection contains more than one entity, `PropertyDrawer.cpp` follows these rules:
 
 - **Scalars (Bool, integers, Float, Double, String, Enum):**
   - All entities equal → widget shows the value normally.
@@ -332,7 +336,7 @@ Funke::Package::RegisterComponentEntityPreset<TilemapComponent>(
     /* defaultName */ "Tilemap");
 ```
 
-The preset runs the registry's `AddWithDependencies` for the component so any required sibling components (declared via the component's `requires` list at registration time) are added together. For non-trivial presets, use the raw `RegisterEntityPreset(menuPath, label, defaultName, createLambda)` form and assemble the entity yourself.
+The preset runs the registry's `AddWithDependencies` for the component so any required sibling components (declared via `ComponentInfo::dependsOn`, or `Codegen::DeclareDependency`) are added together. For non-trivial presets, use the raw `RegisterEntityPreset(menuPath, label, defaultName, createLambda)` form and assemble the entity yourself.
 
 ## Common pitfalls
 
@@ -364,12 +368,12 @@ The preset runs the registry's `AddWithDependencies` for the component so any re
 
 | Concern | File |
 |---|---|
-| Canonical PropertyType enum + multi-select rules | `Funke-Engine/src/Inspector/PropertyType.hpp` |
+| Canonical PropertyType enum + wire tags | `Funke-Engine/src/Inspector/PropertyType.hpp` |
 | PropertyDescriptor struct + variant branches | `Funke-Engine/src/Inspector/PropertyDescriptor.hpp` |
 | PropertyMetadata struct (clamp / tooltip / etc.) + `With*` builders | `Funke-Engine/src/Inspector/PropertyMetadata.hpp` |
 | `Properties::Make*` + `Properties::Meta::*` (the registration API) | `Funke-Engine/src/Inspector/PropertyRegistration.hpp` |
 | PropertyValue (the boxed value passed through Get/Set) | `Funke-Engine/src/Inspector/PropertyValue.{hpp,cpp}` |
-| Per-type widget dispatch | `Funke-Editor/src/Inspector/PropertyDrawer.cpp` |
+| Per-type widget dispatch + multi-select behavior | `Funke-Editor/src/Inspector/PropertyDrawer.cpp` |
 | Reference picker modal + drag-drop validation | `Funke-Editor/src/Inspector/ReferencePicker.{hpp,cpp}` |
 | `RegisterSerializableComponent`, `DeclareComponentConflict`, `SetEditorGizmo`, `RegisterEntityPreset` | `Funke-Engine/src/Packages/PackageRegistration.hpp` |
 | C# inspector attributes | `Funke-ScriptCore/Source/Funke/Attributes/*Attribute.cs` |

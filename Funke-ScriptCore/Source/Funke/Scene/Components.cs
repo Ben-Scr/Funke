@@ -889,30 +889,6 @@ public class AudioSource : Component
 
 // ── ParticleSystem2D ──────────────────────────────────────────────────
 
-/// <summary>Flip-book animation over sprite-sheet slices; frames, rate and looping are set in the Inspector.</summary>
-public class SpriteAnimator2D : Component
-{
-    public bool IsPlaying => InternalCalls.SpriteAnimator2D_IsPlaying(RequireComponent<SpriteAnimator2D>());
-
-    /// <summary>Index into the Frames list. Setting it restarts the timer of that frame.</summary>
-    public int Frame
-    {
-        get => InternalCalls.SpriteAnimator2D_GetFrame(RequireComponent<SpriteAnimator2D>());
-        set => InternalCalls.SpriteAnimator2D_SetFrame(RequireComponent<SpriteAnimator2D>(), value);
-    }
-
-    public float FramesPerSecond
-    {
-        get => InternalCalls.SpriteAnimator2D_GetFramesPerSecond(RequireComponent<SpriteAnimator2D>());
-        set => InternalCalls.SpriteAnimator2D_SetFramesPerSecond(RequireComponent<SpriteAnimator2D>(), value);
-    }
-
-    public void Play() => InternalCalls.SpriteAnimator2D_Command(RequireComponent<SpriteAnimator2D>(), 0);
-    public void Pause() => InternalCalls.SpriteAnimator2D_Command(RequireComponent<SpriteAnimator2D>(), 1);
-    /// <summary>Stops and rewinds to the first frame.</summary>
-    public void Stop() => InternalCalls.SpriteAnimator2D_Command(RequireComponent<SpriteAnimator2D>(), 2);
-}
-
 public class ParticleSystem2D : Component
 {
     public bool PlayOnAwake

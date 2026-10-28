@@ -84,13 +84,13 @@ namespace Funke {
 			return id;
 		}
 
-		// The native ParallelForAsync expects the body signature
-		// fn(size_t lo, size_t hi). Wrap to bridge int <-> size_t.
+		const size_t length = static_cast<size_t>(static_cast<int64_t>(end) - begin);
 		JobHandle handle = ParallelForAsync(
-			static_cast<size_t>(begin),
-			static_cast<size_t>(end),
-			[work, context](size_t lo, size_t hi) {
-				work(context, static_cast<int>(lo), static_cast<int>(hi));
+			0, length,
+			[work, context, begin](size_t lo, size_t hi) {
+				work(context,
+					static_cast<int>(static_cast<int64_t>(begin) + static_cast<int64_t>(lo)),
+					static_cast<int>(static_cast<int64_t>(begin) + static_cast<int64_t>(hi)));
 			},
 			static_cast<size_t>(batchSize < 0 ? 0 : batchSize));
 

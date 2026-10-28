@@ -18,6 +18,9 @@
 
 namespace Funke {
 
+    namespace TextLayout { struct Layout; }
+    namespace QuadVisibility { struct Clip; }
+
     class Scene;
     class Shader;
     class Font;
@@ -143,21 +146,9 @@ namespace Funke {
         };
 
         void EnsureGpuCapacity(size_t requiredBytes);
-        void EmitText(Font& font, std::string_view text,
-            float worldX, float worldY,
-            float scale, const Color& color,
-            TextAlignment alignment, TextVerticalAlignment verticalAlignment,
-            float letterSpacing, float lineSpacing,
-            TextWrapMode wrapMode = TextWrapMode::None,
-            float wrapWidthPixels = 0.0f,
-            float rotation = 0.0f, Vec2 pivot = Vec2{ 0.0f, 0.0f },
-            bool hasTextureMask = false,
-            TextureHandle maskTextureHandle = TextureHandle{},
-            SpriteUVRect maskUvRect = SpriteUVRect{},
-            Vec2 maskRectMin = Vec2{ 0.0f, 0.0f },
-            Vec2 maskRectMax = Vec2{ 0.0f, 0.0f },
-            Vec2 maskPivot = Vec2{ 0.0f, 0.0f },
-            float maskRotation = 0.0f);
+        void EmitText(const TextLayout::Layout& layout, const TextDrawCmd& command,
+            float offsetX, float offsetY, const Color& color,
+            const glm::mat4& mvp, const QuadVisibility::Clip& clip);
 
         bool m_IsInitialized = false;
 
@@ -168,9 +159,7 @@ namespace Funke {
         // Reused across frames so we don't allocate in the hot path.
         std::vector<TextVertex> m_Vertices;
         std::vector<GlyphRun> m_Runs;
-        // Visual-line ranges produced by EmitText's wrap pass. (begin,
-        // end) byte-offsets into the source string; persists across
-        // calls so the wrap loop doesn't churn the heap.
+        // Retained scratch for cache misses; hits reuse the complete glyph layout.
         std::vector<std::pair<size_t, size_t>> m_WrapScratch;
         std::vector<TextDrawCmd> m_PendingDrawCmds; // capacity persists across frames
         std::vector<size_t> m_Order;

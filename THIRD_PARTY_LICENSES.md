@@ -26,7 +26,6 @@ The font bundle has its own attribution file:
 | Tracy (client) | 3-clause BSD | Copyright (c) 2017-2026 Bartosz Taudul | [External/tracy/LICENSE](External/tracy/LICENSE) |
 | Dawn (WebGPU) | BSD 3-clause | Copyright 2017-2023 The Dawn & Tint Authors | [External/dawn/LICENSE](External/dawn/LICENSE) |
 | concurrentqueue | BSD 2-clause / Boost Software License | Copyright (c) 2013-2016 Cameron Desrochers | [External/concurrentqueue/LICENSE.md](External/concurrentqueue/LICENSE.md) |
-| glad | Apache 2.0 / MIT (generated from public Khronos OpenGL specs) | Copyright (c) 2013-2022 David Herberth | [External/glad](External/glad) |
 
 ### Dawn transitive dependencies
 

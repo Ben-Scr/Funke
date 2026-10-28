@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <new>
 #include <span>
 #include <type_traits>
@@ -32,8 +33,8 @@ namespace Funke {
 
 		NativeEntityCommandBuffer(const NativeEntityCommandBuffer&) = delete;
 		NativeEntityCommandBuffer& operator=(const NativeEntityCommandBuffer&) = delete;
-		NativeEntityCommandBuffer(NativeEntityCommandBuffer&&) noexcept = default;
-		NativeEntityCommandBuffer& operator=(NativeEntityCommandBuffer&&) noexcept = default;
+		NativeEntityCommandBuffer(NativeEntityCommandBuffer&& other);
+		NativeEntityCommandBuffer& operator=(NativeEntityCommandBuffer&& other) noexcept;
 
 		// Records the creation of a fresh runtime-origin entity and returns
 		// a handle that subsequent AddComponent calls reference. The handle
@@ -78,7 +79,7 @@ namespace Funke {
 		int EntityCount() const { return static_cast<int>(m_EntityCount); }
 
 		// Number of recorded AddComponent commands so far.
-		int CommandCount() const { return static_cast<int>(m_Commands.size()); }
+		int CommandCount() const { return static_cast<int>(m_CommandCount); }
 
 		EntityHandle GetCreatedEntity(int i) const;
 
@@ -96,15 +97,28 @@ namespace Funke {
 		};
 		static_assert(sizeof(Command) <= 64, "Command must fit in one cache line");
 
-		// Reuses storage across Clear() cycles — per-frame spawn loops stay
-		// allocation-free once the buffer reaches steady-state size.
-		std::vector<Command>      m_Commands;
+		// Inline captures need stable addresses; inactive slots are retained for reuse after Clear().
+		std::deque<Command>       m_Commands;
 		std::vector<EntityHandle> m_CreatedHandles;
+		std::size_t               m_CommandCount = 0;
 		uint32_t                  m_EntityCount = 0;
 
 		Command& AppendCommand(uint32_t entityIndex,
-			void (*apply)(void*, Scene&, EntityHandle&),
-			void (*destroy)(void*));
+			void (*apply)(void*, Scene&, EntityHandle&));
+
+		template <typename T, typename Value>
+		void ConstructPayload(Command& command, Value&& value) {
+			try {
+				::new (command.Storage) T(std::forward<Value>(value));
+			}
+			catch (...) {
+				--m_CommandCount;
+				throw;
+			}
+			if constexpr (!std::is_trivially_destructible_v<T>) {
+				command.Destroy = [](void* state) { std::launder(reinterpret_cast<T*>(state))->~T(); };
+			}
+		}
 
 		// Lets ParallelEntityCommandBuffer reach into the merge details
 		// (entity count and command list) without exposing them publicly.
@@ -127,8 +141,7 @@ namespace Funke {
 						"Use the value or patch overload for components without a "
 						"default constructor.");
 				}
-			},
-			nullptr);
+			});
 	}
 
 	template <typename T>
@@ -145,13 +158,8 @@ namespace Funke {
 			[](void* state, Scene& scene, EntityHandle& handle) {
 				T* held = std::launder(reinterpret_cast<T*>(state));
 				scene.GetRegistry().emplace<T>(handle, std::move(*held));
-			},
-			std::is_trivially_destructible_v<T>
-				? nullptr
-				: +[](void* state) {
-					std::launder(reinterpret_cast<T*>(state))->~T();
-				});
-		::new (cmd.Storage) T(std::move(value));
+			});
+		ConstructPayload<T>(cmd, std::move(value));
 	}
 
 	template <typename T, typename Configure>
@@ -177,13 +185,8 @@ namespace Funke {
 				Patch* patch = std::launder(reinterpret_cast<Patch*>(state));
 				T& component = scene.GetRegistry().emplace<T>(handle);
 				(*patch)(component);
-			},
-			std::is_trivially_destructible_v<Patch>
-				? nullptr
-				: +[](void* state) {
-					std::launder(reinterpret_cast<Patch*>(state))->~Patch();
-				});
-		::new (cmd.Storage) Patch(std::forward<Configure>(configure));
+			});
+		ConstructPayload<Patch>(cmd, std::forward<Configure>(configure));
 	}
 
 	template <typename T>
@@ -192,8 +195,7 @@ namespace Funke {
 		AppendCommand(e.Index,
 			[](void*, Scene& scene, EntityHandle& handle) {
 				scene.GetRegistry().emplace<T>(handle);
-			},
-			nullptr);
+			});
 	}
 
 	template <typename... Ts>

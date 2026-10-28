@@ -68,6 +68,15 @@ Create and verify the standalone engine bundle:
 .\scripts\BuildWindows.ps1 -PublishBundle
 ```
 
+Create the Windows setup with selectable packages, templates and command-line tools:
+
+```powershell
+.\scripts\BuildInstaller.ps1 -DownloadCompiler
+```
+
+See [Installer development](installer/README.md) for build and signing options, and
+[Install Funke on Windows](Github-Docs/Documentation/Editor/Installer.md) for the setup workflow.
+
 See [Building and Shipping](Github-Docs/Documentation/Editor/Building-and-Shipping.md) for game exports, prerequisites, and the clean-machine release checklist.
 
 </details>

@@ -26,6 +26,7 @@ project "Funke-Editor-Tests"
     {
         path.join(ROOT_DIR, "Funke-Editor/src/Build/GameBuilder.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/BuildAssetPruning.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Editor/SceneRecovery.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/PlatformBuilder.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/SpriteSlicing.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Gui/AssetSaveDialog.cpp"),
@@ -41,6 +42,7 @@ project "Funke-Editor-Tests"
         path.join(ROOT_DIR, "Funke-Editor/src/Undo/UndoStack.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Undo/TransformEditCommand.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Undo/InspectorEditCommand.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Undo/InspectorUndoRecorder.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Undo/StructureEditCommand.cpp")
     }
 
@@ -63,8 +65,7 @@ project "Funke-Editor-Tests"
     postbuildcommands
     {
         CopyFunkeEngineDll,
-        CopySDL3SharedLib,
-        CopyGladDll
+        CopySDL3SharedLib
     }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
     ApplyFunkeProfilerRuntime()

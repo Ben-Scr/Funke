@@ -1,3 +1,6 @@
+using System.Collections.Concurrent;
+using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Funke;
@@ -5,6 +8,16 @@ public enum LoadSceneMode { Single, Additive }
 
 public static class SceneManager
 {
+    private sealed class PendingLoad
+    {
+        public readonly TaskCompletionSource<Scene?> Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public CancellationToken Token;
+        public CancellationTokenRegistration Cancellation;
+    }
+
+    private static readonly Dictionary<ulong, PendingLoad> s_PendingLoads = new();
+    private static readonly ConcurrentQueue<ulong> s_CancelRequests = new();
+
     public static event Action<Scene>? SceneLoaded;
     public static event Action<Scene>? BeforeSceneLoaded;
     public static event Action<Scene>? BeforeSceneUnloaded;
@@ -71,20 +84,69 @@ public static class SceneManager
         return success ? Scene.FromAssetUUID(sceneGuid) : null;
     }
 
-    /// <summary>
-    /// Async version of LoadScene.
-    /// </summary>
-    public static async Task<Scene?> LoadSceneAsync(string name, LoadSceneMode mode = LoadSceneMode.Single)
+    /// <summary>Call on the engine thread; file preparation runs in the background and activation completes on the engine thread.</summary>
+    public static Task<Scene?> LoadSceneAsync(string name, LoadSceneMode mode = LoadSceneMode.Single)
+        => LoadSceneAsync(name, mode, default);
+
+    /// <summary>Cancellation is cooperative until activation begins; failure returns null and preserves the loaded scenes.</summary>
+    public static Task<Scene?> LoadSceneAsync(string name, LoadSceneMode mode, CancellationToken cancellationToken)
     {
-        return await Task.FromResult(LoadScene(name, mode));
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<Scene?>(cancellationToken);
+        if (string.IsNullOrWhiteSpace(name)) return Task.FromResult<Scene?>(null);
+        return TrackLoad(InternalCalls.Scene_BeginLoadAsync(name, mode == LoadSceneMode.Additive), cancellationToken);
     }
 
-    /// <summary>
-    /// Async version of LoadScene that takes a scene GUID.
-    /// </summary>
-    public static async Task<Scene?> LoadSceneAsync(ulong sceneGuid, LoadSceneMode mode = LoadSceneMode.Single)
+    /// <summary>Call on the engine thread; file preparation runs in the background and activation completes on the engine thread.</summary>
+    public static Task<Scene?> LoadSceneAsync(ulong sceneGuid, LoadSceneMode mode = LoadSceneMode.Single)
+        => LoadSceneAsync(sceneGuid, mode, default);
+
+    /// <summary>Cancellation is cooperative until activation begins; failure returns null and preserves the loaded scenes.</summary>
+    public static Task<Scene?> LoadSceneAsync(ulong sceneGuid, LoadSceneMode mode, CancellationToken cancellationToken)
     {
-        return await Task.FromResult(LoadScene(sceneGuid, mode));
+        if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<Scene?>(cancellationToken);
+        if (sceneGuid == 0) return Task.FromResult<Scene?>(null);
+        return TrackLoad(InternalCalls.Scene_BeginLoadByGuidAsync(sceneGuid, mode == LoadSceneMode.Additive), cancellationToken);
+    }
+
+    private static Task<Scene?> TrackLoad(ulong operationId, CancellationToken token)
+    {
+        if (operationId == 0) return Task.FromResult<Scene?>(null);
+        var pending = new PendingLoad { Token = token };
+        s_PendingLoads.Add(operationId, pending);
+        pending.Cancellation = token.Register(static state => s_CancelRequests.Enqueue((ulong)state!), operationId);
+        return pending.Completion.Task;
+    }
+
+    internal static void PumpSceneLoadRequests()
+    {
+        while (s_CancelRequests.TryDequeue(out ulong operationId))
+        {
+            if (s_PendingLoads.ContainsKey(operationId))
+                InternalCalls.Scene_CancelLoadAsync(operationId);
+        }
+    }
+
+    internal static void CompleteAsyncLoad(ulong operationId, int status, string name, ulong sceneGuid)
+    {
+        if (!s_PendingLoads.Remove(operationId, out PendingLoad? pending)) return;
+        pending.Cancellation.Unregister();
+        if (status == -1)
+            pending.Completion.TrySetCanceled(pending.Token);
+        else
+            pending.Completion.TrySetResult(status == 1 ? new Scene { Name = name, AssetUUID = sceneGuid } : null);
+    }
+
+    internal static void CancelPendingLoads()
+    {
+        var pendingLoads = s_PendingLoads.ToArray();
+        s_PendingLoads.Clear();
+        foreach (var entry in pendingLoads)
+        {
+            entry.Value.Cancellation.Unregister();
+            InternalCalls.Scene_CancelLoadAsync(entry.Key);
+            entry.Value.Completion.TrySetCanceled();
+        }
+        s_CancelRequests.Clear();
     }
 
     /// <summary>

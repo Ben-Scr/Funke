@@ -18,7 +18,15 @@ sealed class RoslynSession
 {
     const int k_MaxReportedDiagnostics = 200;
 
-    static readonly ConcurrentDictionary<(string Path, DateTime Stamp), PortableExecutableReference> s_References = new();
+    sealed class ReferenceCacheEntry
+    {
+        public DateTime Stamp;
+        public long Length;
+        public PortableExecutableReference? Reference;
+    }
+
+    static readonly ConcurrentDictionary<string, ReferenceCacheEntry> s_References =
+        new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
     static readonly GeneratorAssemblyLoader s_GeneratorLoader = new();
 
     readonly CSharpCommandLineArguments m_Arguments;
@@ -41,7 +49,7 @@ sealed class RoslynSession
         m_References = m_Arguments.MetadataReferences.Select(r =>
         {
             string path = Path.GetFullPath(r.Reference, m_Arguments.BaseDirectory!);
-            var reference = s_References.GetOrAdd((path, File.GetLastWriteTimeUtc(path)), key => MetadataReference.CreateFromFile(key.Path));
+            var reference = GetReference(path);
             return (MetadataReference)reference.WithProperties(r.Properties);
         }).ToImmutableArray();
 
@@ -74,6 +82,24 @@ sealed class RoslynSession
             var additionalTexts = m_Arguments.AdditionalFiles.Select(f => (AdditionalText)new FileAdditionalText(f.Path)).ToImmutableArray();
             m_Driver = CSharpGeneratorDriver.Create(generators, additionalTexts, m_Arguments.ParseOptions,
                 new GeneratorOptionsProvider(config), new GeneratorDriverOptions(IncrementalGeneratorOutputKind.None));
+        }
+    }
+
+    static PortableExecutableReference GetReference(string path)
+    {
+        ReferenceCacheEntry entry = s_References.GetOrAdd(path, static _ => new ReferenceCacheEntry());
+        lock (entry)
+        {
+            var info = new FileInfo(path);
+            if (entry.Reference == null || entry.Stamp != info.LastWriteTimeUtc || entry.Length != info.Length)
+            {
+                var reference = MetadataReference.CreateFromFile(path);
+                entry.Stamp = info.LastWriteTimeUtc;
+                entry.Length = info.Length;
+                // Existing sessions retain their own reference until their compilation is released.
+                entry.Reference = reference;
+            }
+            return entry.Reference;
         }
     }
 

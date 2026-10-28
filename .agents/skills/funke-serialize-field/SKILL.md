@@ -21,10 +21,10 @@ Everything Funke persists is an `Funke::Json::Value` tree (`Funke-Engine/src/Ser
 ## Component field: find which ladder owns the component
 
 ```
-grep -n '"<SerializedName>"' Funke-Engine/src/Serialization/*.cpp Funke-Engine/src/Scene/BuiltInComponentRegistration*.cpp
+rg -n '"<SerializedName>"' Funke-Engine/src/Serialization Funke-Engine/src/Scene -g '*.cpp'
 ```
 
-**A. Registry-driven** (Transform2D, SpriteRenderer, Camera2D, ParticleSystem2D in `BuiltInComponentRegistration2D.cpp`; UI widgets/layout, SpriteAnimator2D, PostProcessing2D, Mask, all 3D components, package components next to their registration): edit the `serialize` and `deserialize` functions. One place; `SceneSerializer` calls them for save, load, paste, reset and prefab diff. Without an `Application` (CLI, doctest, headless tools) the serializer falls back to a registry holding only the built-in components (`SceneManager::GetComponentRegistryOrBuiltIn`), so package and C# components are skipped there. Files list registry components in registration order (`typeIdU32`). `ComponentInfo::serializeFirst` writes and reads a component before every hand-written one; Transform2D sets it because collider loading reads the transform's scale.
+**A. Registry-driven** (Transform2D, SpriteRenderer, Camera2D, ParticleSystem2D in `BuiltInComponentRegistration2D.cpp`; UI widgets/layout, PostProcessing2D, Mask, all 3D components, package components next to their registration): edit the `serialize` and `deserialize` functions. One place; `SceneSerializer` calls them for save, load, paste, reset and prefab diff. Without an `Application` (CLI, doctest, headless tools) the serializer falls back to a registry holding only the built-in components (`SceneManager::GetComponentRegistryOrBuiltIn`), so package and C# components are skipped there. Files list registry components in registration order (`typeIdU32`). `ComponentInfo::serializeFirst` writes and reads a component before every hand-written one; Transform2D sets it because collider loading reads the transform's scale.
 
 **B. Hand-written** (TextRenderer, Rigidbody2D, Box/Circle/Polygon colliders, AudioSource, RectTransform2D, Image, Scripts, tags `static`/`disabled`/`deadly`; the Fast* bodies moved to the Funke.Physics package and serialize via its registration): edit **all three** in the same change:
 1. `SerializeEntity` — `Funke-Engine/src/Serialization/SceneSerializer.cpp` (anonymous namespace, `if (registry.all_of<T>(entity)) { ... entityValue.AddMember("<Name>", ...) }`).
@@ -39,7 +39,7 @@ Read helpers for B: `SceneSerializerShared::GetFloatMember/GetIntMember/GetUInt6
 - **Missing key = type default**, never an error, never the current value. Old files must load; `ResetComponent` relies on it. Only write optional keys when non-default if absence already means default (e.g. `spriteName`).
 - **Key names**: short lowerCamel JSON keys (`playOnAwake`, `clipAsset`). They show up verbatim in the inspector's prefab "Revert Field" menu and in `Overrides` dot-paths (`AudioSource.volume`). Renaming a key = reading both old and new on load (legacy fallback, as `DeserializeComponent` does with `filterMode`/`filter`).
 - **Numbers**: `Json::Value(float)` stores a double; read with `static_cast<float>(m->AsDoubleOr(d))`. Enums as `int`, validated/clamped on read.
-- **64-bit ids** (asset GUIDs, entity persistent ids): write as decimal **strings** (`std::to_string(id)`), read with `GetUInt64Member` / `UIUuidFromJson` (accept string or number). Doubles lose precision above 2^53.
+- **64-bit ids** (asset GUIDs, entity persistent ids): write as decimal **strings** (`std::to_string(id)`). `GetUInt64Member` accepts string or number; `UIUuidFromJson` accepts strings only and otherwise returns its fallback. Doubles lose precision above 2^53.
 - **Asset references**: persist the asset GUID (`UUID`/`AssetGUID`), never `TextureHandle`/`AudioHandle`/`FontHandle` (runtime-only). Resolve on load through `TextureManager::LoadTextureByUUID`, `AudioManager::LoadAudioByUUID`, or `LoadTextureFromValue(obj, "textureAsset", "texture", ...)` which also honors legacy path keys.
 - **Entity references**: write `scene->GetEntityPersistentID(handle)` (never `RuntimeID`, never `entt` ids). On load resolve with `Scene::TryResolveEntityRef`; if not yet resolvable or `IsEntityRefRemapActive()` (duplicate/paste/prefab spawn), defer with `Scene::DeferEntityRefFixup` so clones retarget to their own children — copy `UIEntityHandleFromJson`. Store the ref in pointer-stable component storage only.
 - **Runtime-only state** (timers, play flags, cached pointers): don't serialize; comment it as such in the struct.
@@ -62,7 +62,7 @@ Edit-mode state survives Play→Stop only through serialization: on Play the edi
 `Funke-Engine/src/Project/FunkeProject.{hpp,cpp}` (real JSON, validated):
 1. Member with default in `FunkeProject.hpp`.
 2. Write in `BuildProjectJson`.
-3. Read in the load block (`root.FindMember("<key>")`, ~`FunkeProject.cpp:1665+`), defaulting if absent.
+3. Read in the load block (`root.FindMember("<key>")` in `FunkeProject.cpp`), defaulting if absent.
 4. Add the key to `IsKnownProjectMember` (or `IsKnownNestedProjectMember` for `splashScreen`/`profiler`/`graphics` children); the lists are fixed-size `std::array`s, so bump the element count too or it won't compile. Unknown keys are preserved verbatim on save (`PreserveUnknownProjectMembers`), so a missing entry here keeps a stale copy around after you stop writing it.
 5. Add a type check to `ValidateProjectJsonStructure`; invalid types make load and save refuse.
 6. `projectFormatVersion` / `k_CurrentProjectFormatVersion` only for breaking changes (needs a migration; newer formats are refused).
@@ -81,4 +81,4 @@ If the field affects the build, check `RuntimeApplication` and the Build panel t
 - Reading a uint64 id with `AsDoubleOr`/`AsIntOr` → silently wrong GUID.
 - Resolving an entity ref immediately during duplicate/paste → clone points at the original's child.
 - Storing a path instead of a GUID → breaks on asset rename/move.
-- Calling `SceneSerializer::LoadFromFile` on a loaded, active scene → refused ("requires an owner-level staged swap"); load inside an `OnLoad`/`OnLoadChecked` callback instead (`funke-scene-workflow`).
+- Calling `SceneSerializer::LoadFromFile` on any loaded, non-suspended scene → refused ("requires an owner-level staged swap"); load inside an `OnLoad`/`OnLoadChecked` callback instead (`funke-scene-workflow`).

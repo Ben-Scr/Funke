@@ -65,6 +65,9 @@ namespace Funke {
 		std::vector<std::array<uint16_t, 4>> VertexJoints;
 		std::vector<glm::vec4> VertexWeights;
 		std::vector<SkeletalClip> Clips;
+		bool JointBoundsValid = false;
+		float BoundsWeightSumMin = 1.0f;
+		float BoundsWeightSumMax = 1.0f;
 
 		int FindClip(std::string_view name) const;
 		int FindNode(std::string_view name) const;
@@ -92,13 +95,13 @@ namespace Funke {
 		FUNKE_API void SkinVertices(const SkinnedMeshData& data, const std::vector<glm::mat4>& joints, std::vector<MeshVertex>& outVertices);
 
 		FUNKE_API void ComputeJointBounds(SkinnedMeshData& data);
-		// Model-space box that contains the skinned mesh for these joint matrices, without skinning a vertex:
-		// each vertex is a weighted average of its joints' transforms, so it lies inside their posed boxes.
-		// Exact in the bind pose. False when no joint has bounds.
+		// False when bounds cannot safely cover the pose; callers must then disable culling.
 		FUNKE_API bool PosedBounds(const SkinnedMeshData& data, const std::vector<glm::mat4>& joints, glm::vec3& outMin, glm::vec3& outMax);
 
 		// Rest pose, clip sampling and cross-fade in one call; out-of-range clips sample as the rest pose.
 		FUNKE_API void EvaluatePose(const SkinnedMeshData& data, const SkeletalPoseRequest& request, std::vector<glm::mat4>& outNodeModel);
+		FUNKE_API void EvaluatePose(const SkinnedMeshData& data, const SkeletalPoseRequest& request, std::vector<glm::mat4>& outNodeModel,
+			std::vector<NodePose>& poseScratch, std::vector<NodePose>& previousScratch);
 
 		// Advances a looping or clamped play head; returns false once a non-looping clip has reached its end.
 		FUNKE_API bool AdvanceTime(float& time, float delta, float duration, bool loop);

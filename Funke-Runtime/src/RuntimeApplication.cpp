@@ -1,5 +1,6 @@
 #include <Funke.hpp>
 #include "Core/Application.hpp"
+#include "Core/PlatformShortcuts.hpp"
 #include "DevTools/DevConsole.hpp"
 #include "RuntimeConsoleLayer.hpp"
 #include "RuntimeLogLayer.hpp"
@@ -69,6 +70,7 @@ public:
 			// which the Window treats as "no lock".
 			config.WindowSpecification.AspectLock = AspectRatioFromLabel(project->BuildAspect);
 			config.RunInBackground = project->BuildRunInBackground;
+			config.Vsync = project->BuildVsync;
 		} else {
 			config.WindowSpecification = WindowSpecification(800, 800, title, true, true, false);
 		}
@@ -98,9 +100,7 @@ public:
 
 			if (project) {
 				std::string scenePath = project->GetSceneFilePath(sceneName);
-				def.OnLoadChecked([scenePath](Scene& scene) {
-					return File::Exists(scenePath) && SceneSerializer::LoadFromFile(scene, scenePath);
-				});
+				def.OnLoadFromFile(scenePath);
 			}
 			return def;
 		};
@@ -168,7 +168,7 @@ public:
 
 	// The overlays exist only when the build enabled them at start; the commands create them on demand.
 	void RegisterRuntimeCommands() {
-		DevConsole::Register("stats", "[on|off|toggle]", "Frame stats overlay (also F6).", [this](const std::vector<std::string>& args) {
+		DevConsole::Register("stats", "[on|off|toggle]", std::string("Frame stats overlay (also ") + PlatformShortcuts::k_StatsLabel + ").", [this](const std::vector<std::string>& args) {
 			if (!m_StatsLayer) m_StatsLayer = &PushLayer<RuntimeStatsLayer>("RuntimeStats");
 			bool show = !m_StatsLayer->IsVisible();
 			if (!args.empty() && args[0] != "toggle" && !DevConsole::ParseBool(args[0], show)) {
@@ -177,7 +177,7 @@ public:
 			m_StatsLayer->SetVisible(show);
 			return DevCommandResult::Ok(show ? "stats on" : "stats off");
 		});
-		DevConsole::Register("logs", "[on|off|toggle]", "Log overlay (also F7).", [this](const std::vector<std::string>& args) {
+		DevConsole::Register("logs", "[on|off|toggle]", std::string("Log overlay (also ") + PlatformShortcuts::k_LogsLabel + ").", [this](const std::vector<std::string>& args) {
 			if (!m_LogLayer) m_LogLayer = &PushLayer<RuntimeLogLayer>("RuntimeLogs");
 			bool show = !m_LogLayer->IsVisible();
 			if (!args.empty() && args[0] != "toggle" && !DevConsole::ParseBool(args[0], show)) {

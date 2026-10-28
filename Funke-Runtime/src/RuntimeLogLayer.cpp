@@ -3,6 +3,7 @@
 #include "RuntimeStatsLayer.hpp"
 
 #include "Core/Application.hpp"
+#include "Core/PlatformShortcuts.hpp"
 #include "Core/Window.hpp"
 #include "Collections/Viewport.hpp"
 
@@ -33,10 +34,7 @@ namespace Funke {
 
 	void RuntimeLogLayer::OnUpdate(Application&, float) {
 		if (!m_ImGuiAcquired || !RuntimeImGuiHost::IsInitialized()) return;
-		// F7: bare key (no modifier) — sibling to F6 stats. Both can be on
-		// at the same time; the log overlay stacks below the stats overlay.
-		ImGuiIO& io = ImGui::GetIO();
-		if (!io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F7, false)) {
+		if (PlatformShortcuts::IsPressed(PlatformShortcuts::k_Logs)) {
 			m_Show = !m_Show;
 		}
 	}

@@ -526,6 +526,18 @@ namespace Funke {
 		if (s_Initialized && s_Callbacks.RaiseSceneLoaded) s_Callbacks.RaiseSceneLoaded(sceneName.c_str());
 	}
 
+	void ScriptEngine::RaiseSceneLoadCompleted(uint64_t operationId, int status, const std::string& sceneName, uint64_t sceneGuid)
+	{
+		if (s_Initialized && s_Callbacks.SceneLoadCompleted)
+			s_Callbacks.SceneLoadCompleted(operationId, status, sceneName.c_str(), sceneGuid);
+	}
+
+	void ScriptEngine::PumpSceneLoadRequests()
+	{
+		if (s_Initialized && s_Callbacks.PumpSceneLoadRequests)
+			s_Callbacks.PumpSceneLoadRequests();
+	}
+
 	void ScriptEngine::RaiseBeforeSceneUnloaded(const std::string& sceneName)
 	{
 		if (s_Initialized && s_Callbacks.RaiseBeforeSceneUnloaded) s_Callbacks.RaiseBeforeSceneUnloaded(sceneName.c_str());

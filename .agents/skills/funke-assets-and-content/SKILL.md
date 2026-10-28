@@ -29,7 +29,7 @@ Content in Funke is **discovered, not imported**: drop a file into the project's
 
 - **GUID + `.meta`.** Each asset gets a 64-bit GUID stored in a `<file>.meta` JSON sidecar (GUID + import settings like texture filter/wrap and sprite slices). **Keep and commit `.meta` files; move them with their asset.** A regenerated `.meta` gets a *new* GUID and breaks existing references.
 - **Built-in engine assets** (default font, default white/circle/etc. textures) have fixed stable GUIDs identical on every machine.
-- **Loose files at runtime.** There is no cook/pack step. The shipped game reads PNGs/WAVs from `Assets/` on disk, loaded on demand and cached behind cheap handles. (Build details: `funke-build-and-ship`.)
+- **File-based runtime assets.** Textures/audio are loaded on demand and cached behind handles. The build stages project content, can prune unused assets, and converts staged scenes, prefabs and Data Assets to binary; platform packaging may then bundle those files (for example, inside an Android APK). The source assets remain editable. Build details: `funke-build-and-ship`.
 
 ## Referencing content from C#
 
@@ -144,7 +144,7 @@ File format, list encodings, generator helpers and patterns (enemy types, waves,
 ## Hot reload & purging (editor)
 
 - Editing a `.png`/`.ttf`/`.wav` on disk re-decodes and re-uploads it live; Asset Browser thumbnails refresh. The shipped runtime reads files once (no hot reload).
-- Managers cache loaded assets behind generation-checked handles; a `PurgeUnreferenced()` pass frees anything no reference provider still needs.
+- Managers cache loaded assets behind generation-checked handles. Texture purging preserves built-ins, runtime textures, direct scene references, indirect material/3D-particle texture references, and registered reference providers. Runtime textures remain owned by their script `Texture` objects and must be disposed explicitly.
 
 ## Pitfalls
 
@@ -155,4 +155,4 @@ File format, list encodings, generator helpers and patterns (enemy types, waves,
 - **`SpriteRenderer.Color` is a `Vector4`**, but `Color` (struct, with presets like `Color.White`) is what most APIs and Data Asset fields use — convert deliberately.
 
 ## Related skills
-`funke-game-scripting` (using assets at runtime), `funke-inspector-ruleset` (asset-slot attributes), `funke-project-structure` (on-disk layout & formats), `funke-build-and-ship` (assets ship as loose files).
+`funke-game-scripting` (using assets at runtime), `funke-inspector-ruleset` (asset-slot attributes), `funke-project-structure` (on-disk layout & formats), `funke-build-and-ship` (staging, pruning and platform packaging).

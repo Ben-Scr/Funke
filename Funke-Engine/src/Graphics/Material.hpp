@@ -7,11 +7,13 @@
 #include <glm/glm.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
 
 namespace Funke {
+	class Scene;
 
 	// Serialized as its integer value; append only.
 	enum class MaterialSurface : uint8_t {
@@ -89,6 +91,7 @@ namespace Funke {
 		static void Invalidate(uint64_t guid);
 		// Re-reads cached materials whose file changed outside the engine; returns how many were reloaded.
 		static size_t ReloadChangedFromDisk();
+		static void CollectTextureReferences(const Scene& scene, const std::function<void(uint64_t)>& emit);
 		static void Clear();
 	};
 

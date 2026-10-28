@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections;
 using System.Collections.Generic;
 using Funke.Interop;
@@ -158,15 +159,15 @@ public class Scene
         if (string.IsNullOrEmpty(compName))
             return false;
 
-        ulong[] ids = ExecuteQuery(Name, compName);
-        if (ids.Length == 0)
+        using QuerySnapshot ids = ExecuteQuery(Name, compName);
+        if (ids.Count == 0)
         {
             if (warnOnMissing)
                 Log.Error($"Singleton component '{typeof(T).Name}' not found in scene '{Name}'");
             return false;
         }
-        if (ids.Length > 1 && warnOnMultiple)
-            Log.Warn($"Multiple ({ids.Length}) instances of singleton component '{typeof(T).Name}' in scene '{Name}', returning first");
+        if (ids.Count > 1 && warnOnMultiple)
+            Log.Warn($"Multiple ({ids.Count}) instances of singleton component '{typeof(T).Name}' in scene '{Name}', returning first");
 
         id = ids[0];
         return true;
@@ -202,49 +203,77 @@ public class Scene
     internal static string GetNativeNameOrEmpty<T>() where T : Component, new()
         => Entity.GetNativeComponentName<T>() ?? "";
 
-    internal static ulong[] ExecuteQuery(string sceneName, string queryString)
+    internal sealed class QuerySnapshot : IDisposable
+    {
+        internal static readonly QuerySnapshot Empty = new(null, 0);
+        private ulong[]? m_Buffer;
+
+        internal QuerySnapshot(ulong[]? buffer, int count)
+        {
+            m_Buffer = buffer;
+            Count = count;
+        }
+
+        internal int Count { get; }
+        internal ulong this[int index] => m_Buffer![index];
+
+        public void Dispose()
+        {
+            ulong[]? buffer = m_Buffer;
+            m_Buffer = null;
+            if (buffer != null)
+                ArrayPool<ulong>.Shared.Return(buffer);
+        }
+    }
+
+    internal static QuerySnapshot ExecuteQuery(string sceneName, string queryString)
     {
         if (string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(queryString))
-            return Array.Empty<ulong>();
+            return QuerySnapshot.Empty;
 
         return ExecuteQueryWithRetry(buffer => InternalCalls.Scene_QueryEntities(sceneName, queryString, buffer));
     }
 
 
-    internal static ulong[] ExecuteFilteredQuery(
+    internal static QuerySnapshot ExecuteFilteredQuery(
         string sceneName, string withComponents, string withoutComponents,
         string mustHaveComponents, int enableFilter)
     {
         if (string.IsNullOrEmpty(sceneName) || string.IsNullOrEmpty(withComponents))
-            return Array.Empty<ulong>();
+            return QuerySnapshot.Empty;
 
         return ExecuteQueryWithRetry(buffer => InternalCalls.Scene_QueryEntitiesFiltered(
             sceneName, withComponents, withoutComponents, mustHaveComponents,
             enableFilter, buffer));
     }
 
-    private static ulong[] ExecuteQueryWithRetry(QueryExecutor nativeQuery)
+    private static QuerySnapshot ExecuteQueryWithRetry(QueryExecutor nativeQuery)
     {
-        int capacity = Math.Max(64, InternalCalls.Scene_GetEntityCount());
-        ulong[] buffer = new ulong[capacity];
-
-        while (true)
+        ulong[]? buffer = ArrayPool<ulong>.Shared.Rent(64);
+        try
         {
-            int count = nativeQuery(buffer);
-            if (count <= 0)
-                return Array.Empty<ulong>();
-
-            if (count <= buffer.Length)
+            while (true)
             {
-                if (count == buffer.Length)
-                    return buffer;
+                int count = nativeQuery(buffer);
+                if (count <= 0)
+                    return QuerySnapshot.Empty;
 
-                ulong[] result = new ulong[count];
-                Array.Copy(buffer, result, count);
-                return result;
+                if (count <= buffer.Length)
+                {
+                    var snapshot = new QuerySnapshot(buffer, count);
+                    buffer = null;
+                    return snapshot;
+                }
+
+                ulong[] largerBuffer = ArrayPool<ulong>.Shared.Rent(count);
+                ArrayPool<ulong>.Shared.Return(buffer);
+                buffer = largerBuffer;
             }
-
-            buffer = new ulong[count];
+        }
+        finally
+        {
+            if (buffer != null)
+                ArrayPool<ulong>.Shared.Return(buffer);
         }
     }
 
@@ -407,7 +436,7 @@ internal struct QueryFilter
         Conditions.Add(condition);
     }
 
-    internal ulong[] Execute()
+    internal Scene.QuerySnapshot Execute()
     {
         return Scene.ExecuteFilteredQuery(SceneName, WithNames, WithoutNames, MustHaveNames, EnableFilter);
     }
@@ -471,8 +500,10 @@ public struct QueryBuilder<T1> : IEnumerable<T1>
 
     public IEnumerator<T1> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1)) continue;
@@ -490,8 +521,10 @@ public struct EntityQueryResult<T1> : IEnumerable<(Entity Entity, T1 C1)>
 
     public IEnumerator<(Entity, T1)> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1)) continue;
@@ -549,8 +582,10 @@ public struct QueryBuilder<T1, T2> : IEnumerable<(T1 C1, T2 C2)>
 
     public IEnumerator<(T1, T2)> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1, out T2? c2)) continue;
@@ -569,8 +604,10 @@ public struct EntityQueryResult<T1, T2> : IEnumerable<(Entity Entity, T1 C1, T2 
 
     public IEnumerator<(Entity, T1, T2)> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1, out T2? c2)) continue;
@@ -629,8 +666,10 @@ public struct QueryBuilder<T1, T2, T3> : IEnumerable<(T1 C1, T2 C2, T3 C3)>
 
     public IEnumerator<(T1, T2, T3)> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1, out T2? c2, out T3? c3)) continue;
@@ -650,8 +689,10 @@ public struct EntityQueryResult<T1, T2, T3> : IEnumerable<(Entity Entity, T1 C1,
 
     public IEnumerator<(Entity, T1, T2, T3)> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1, out T2? c2, out T3? c3)) continue;
@@ -712,8 +753,10 @@ public struct QueryBuilder<T1, T2, T3, T4> : IEnumerable<(T1 C1, T2 C2, T3 C3, T
 
     public IEnumerator<(T1, T2, T3, T4)> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1, out T2? c2, out T3? c3, out T4? c4)) continue;
@@ -734,8 +777,10 @@ public struct EntityQueryResult<T1, T2, T3, T4> : IEnumerable<(Entity Entity, T1
 
     public IEnumerator<(Entity, T1, T2, T3, T4)> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1, out T2? c2, out T3? c3, out T4? c4)) continue;
@@ -795,8 +840,10 @@ public struct QueryBuilder<T1, T2, T3, T4, T5> : IEnumerable<(T1 C1, T2 C2, T3 C
 
     public IEnumerator<(T1, T2, T3, T4, T5)> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1, out T2? c2, out T3? c3, out T4? c4, out T5? c5)) continue;
@@ -818,8 +865,10 @@ public struct EntityQueryResult<T1, T2, T3, T4, T5> : IEnumerable<(Entity Entity
 
     public IEnumerator<(Entity, T1, T2, T3, T4, T5)> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1, out T2? c2, out T3? c3, out T4? c4, out T5? c5)) continue;
@@ -880,8 +929,10 @@ public struct QueryBuilder<T1, T2, T3, T4, T5, T6> : IEnumerable<(T1 C1, T2 C2, 
 
     public IEnumerator<(T1, T2, T3, T4, T5, T6)> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1, out T2? c2, out T3? c3, out T4? c4, out T5? c5, out T6? c6)) continue;
@@ -904,8 +955,10 @@ public struct EntityQueryResult<T1, T2, T3, T4, T5, T6> : IEnumerable<(Entity En
 
     public IEnumerator<(Entity, T1, T2, T3, T4, T5, T6)> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1, out T2? c2, out T3? c3, out T4? c4, out T5? c5, out T6? c6)) continue;
@@ -968,8 +1021,10 @@ public struct QueryBuilder<T1, T2, T3, T4, T5, T6, T7> : IEnumerable<(T1 C1, T2 
 
     public IEnumerator<(T1, T2, T3, T4, T5, T6, T7)> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1, out T2? c2, out T3? c3, out T4? c4, out T5? c5, out T6? c6, out T7? c7)) continue;
@@ -993,8 +1048,10 @@ public struct EntityQueryResult<T1, T2, T3, T4, T5, T6, T7> : IEnumerable<(Entit
 
     public IEnumerator<(Entity, T1, T2, T3, T4, T5, T6, T7)> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1, out T2? c2, out T3? c3, out T4? c4, out T5? c5, out T6? c6, out T7? c7)) continue;
@@ -1058,8 +1115,10 @@ public struct QueryBuilder<T1, T2, T3, T4, T5, T6, T7, T8> : IEnumerable<(T1 C1,
 
     public IEnumerator<(T1, T2, T3, T4, T5, T6, T7, T8)> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1, out T2? c2, out T3? c3, out T4? c4, out T5? c5, out T6? c6, out T7? c7, out T8? c8)) continue;
@@ -1084,8 +1143,10 @@ public struct EntityQueryResult<T1, T2, T3, T4, T5, T6, T7, T8> : IEnumerable<(E
 
     public IEnumerator<(Entity, T1, T2, T3, T4, T5, T6, T7, T8)> GetEnumerator()
     {
-        foreach (ulong id in _filter.Execute())
+        using Scene.QuerySnapshot ids = _filter.Execute();
+        for (int i = 0; i < ids.Count; i++)
         {
+            ulong id = ids[i];
             var entity = new Entity(id);
             if (!_filter.PassesConditions(entity)) continue;
             if (!Scene.TryGetComponents(entity, out T1? c1, out T2? c2, out T3? c3, out T4? c4, out T5? c5, out T6? c6, out T7? c7, out T8? c8)) continue;

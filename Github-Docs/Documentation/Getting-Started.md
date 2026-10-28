@@ -87,7 +87,7 @@ Some small next steps, each using one new feature:
 
 1. **Add more coins.** Select the Coin, press **Ctrl+D** to duplicate it, and drag the copies around the Viewport. **Ctrl+Z** undoes any step.
 2. **Turn the coin into a prefab.** Drag the Coin from the Hierarchy into the Asset Browser. Changes to the prefab then apply to every instance.
-3. **Add art.** Drop a `.png` into `Assets/`, then drag it onto the Player's **Sprite Renderer › Texture** slot. For a sprite sheet, slice it in the **Sprite Editor** and add a **Sprite Animator 2D** listing the slice names to animate it.
+3. **Add art.** Drop a `.png` into `Assets/`, then drag it onto the Player's **Sprite Renderer › Texture** slot. For a sprite sheet, slice it in the **Sprite Editor** and add an **Animator** with a looping clip that records the slices on the **Sprite Renderer > Texture** track; see [Animation](Engine-Core/Animation.md).
 4. **Add walls.** Create an entity with a `BoxCollider2D` (no Rigidbody needed for static walls). The player bumps into it because the wall's collider is not a sensor.
 5. **Keep score on screen.** Right-click the Hierarchy, choose **Create › UI › Text**, and update its text from the Coin script.
 

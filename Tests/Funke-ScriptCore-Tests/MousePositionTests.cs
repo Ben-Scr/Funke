@@ -14,6 +14,39 @@ public sealed class NativeCallbacksCollection
 [Collection(NativeCallbacksCollection.Name)]
 public unsafe class MousePositionTests
 {
+    private static bool s_GamepadConnected;
+    private static float s_TriggerAxis;
+
+    [UnmanagedCallersOnly]
+    private static int IsGamepadConnected(int gamepad) => gamepad == 0 && s_GamepadConnected ? 1 : 0;
+
+    [UnmanagedCallersOnly]
+    private static float GetGamepadAxis(int axis, int gamepad) => gamepad == 0 && s_GamepadConnected ? s_TriggerAxis : 0f;
+
+    [Theory]
+    [InlineData(false, 0, 0f, 0f)]
+    [InlineData(false, -1, 0f, 0f)]
+    [InlineData(true, 4, 0f, 0f)]
+    [InlineData(true, 0, -1f, 0f)]
+    [InlineData(true, 0, 0f, 0.5f)]
+    [InlineData(true, 0, 1f, 1f)]
+    public void TriggerPressureIsZeroWithoutAConnectedGamepad(bool connected, int gamepad, float rawAxis, float expected)
+    {
+        NativeBindingsStruct previous = NativeCallbacks.Bindings;
+        try
+        {
+            s_GamepadConnected = connected;
+            s_TriggerAxis = rawAxis;
+            NativeBindingsStruct bindings = previous;
+            bindings.Input_IsGamepadConnected = &IsGamepadConnected;
+            bindings.Input_GetGamepadAxis = &GetGamepadAxis;
+            NativeCallbacks.Bindings = bindings;
+            Assert.Equal(expected, Input.GetGamepadTrigger(GamepadAxis.LeftTrigger, gamepad));
+            Assert.Equal(expected, Input.GetGamepadTrigger(GamepadAxis.RightTrigger, gamepad));
+        }
+        finally { NativeCallbacks.Bindings = previous; }
+    }
+
     [UnmanagedCallersOnly]
     private static void ReturnViewportPosition(float* outX, float* outY)
     {

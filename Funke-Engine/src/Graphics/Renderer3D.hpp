@@ -8,6 +8,8 @@
 
 #include <glm/glm.hpp>
 
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -59,6 +61,8 @@ namespace Funke {
 		bool Initialize();
 		void Shutdown();
 		bool IsInitialized() const { return m_IsInitialized; }
+		// Call after frame submission, when no render pass still reads cached mesh pointers.
+		size_t PurgeUnusedMeshes(std::chrono::milliseconds maxIdle = std::chrono::seconds(2));
 
 		// Rebuilds the material samplers when the texture quality or anisotropy changed.
 		void SetGraphicsSettings(const GraphicsSettings& settings);

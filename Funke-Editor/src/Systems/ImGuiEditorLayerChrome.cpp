@@ -1,5 +1,6 @@
 #include <pch.hpp>
 #include "Systems/ImGuiEditorLayer.hpp"
+#include "Gui/EditorShortcuts.hpp"
 
 #include <imgui.h>
 
@@ -20,6 +21,7 @@
 #include "Graphics/GizmoRenderer.hpp"
 #include "Gui/EditorTheme.hpp"
 #include "Gui/EditorUI.hpp"
+#include "Inspector/PropertyDrawer.hpp"
 #include "Gui/GlassBackdrop.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Profiling/Profiler.hpp"
@@ -481,6 +483,7 @@ namespace Funke {
 
 	void ImGuiEditorLayer::OnPreRender(Application& app) {
 		FUNKE_PROFILE_SCOPE("Editor PreRender");
+		PropertyDrawer::BeginFrame();
 		(void)app;
 
 		EditorPreferences::ApplySystemThemeIfNeeded();
@@ -532,8 +535,8 @@ namespace Funke {
 			return;
 		}
 
-		// MUST drain before the active-scene early-return: prefab-edit is valid with no active scene; gating it on the scene check silently no-ops double-click/right-click→Open in that case.
-		if (!Application::GetIsPlaying() && m_AssetBrowserInitialized && m_BuildState == 0 && m_ReserializeState == 0) {
+		// Detached prefab editing is valid during play and without an active scene, so drain before the scene check.
+		if (m_AssetBrowserInitialized && m_BuildState == 0 && m_ReserializeState == 0) {
 			std::string earlyPendingPrefabEdit = m_AssetBrowser.TakePendingPrefabEdit();
 			if (!earlyPendingPrefabEdit.empty()) {
 				FNK_INFO_TAG("PrefabEdit", "Opening prefab from asset browser: {}", earlyPendingPrefabEdit);
@@ -795,15 +798,27 @@ namespace Funke {
 			m_BuildState = 0;
 
 			// Shell opens must run on the UI thread: they can pop modal dialogs on their calling thread.
-			if (!quitInProgress && !m_CommandLineBuild && m_BuildSucceeded.load(std::memory_order_relaxed) && !m_BuildOutputDir.empty()) {
+			if (!quitInProgress && !m_CommandLineBuild && m_BuildPlayUrl.empty()
+				&& m_BuildSucceeded.load(std::memory_order_relaxed) && !m_BuildOutputDir.empty()) {
 				Platform::OpenPath(Path::FromUtf8(m_BuildOutputDir));
 			}
 
 			// Launch the built game if "Build and Play" was clicked
 			if (!quitInProgress && m_BuildAndPlay && m_BuildSucceeded.load(std::memory_order_relaxed)) {
 				m_BuildAndPlay = false;
-				FunkeProject* project = ProjectManager::GetCurrentProject();
-				if (project && !m_BuiltExecutablePath.empty()) {
+				if (!m_BuildLaunchError.empty()) {
+					FNK_ERROR_TAG("Build", "Build complete, but could not start the game: {}", m_BuildLaunchError);
+				}
+				else if (!m_BuildPlayUrl.empty()) {
+					if (Platform::OpenUrl(m_BuildPlayUrl)) {
+						FNK_INFO_TAG("Build", "Opened Web preview: {}", m_BuildPlayUrl);
+					}
+					else {
+						m_BuildLaunchError = "Could not open the browser. Open " + m_BuildPlayUrl;
+						FNK_ERROR_TAG("Build", "{}", m_BuildLaunchError);
+					}
+				}
+				else if (!m_BuiltExecutablePath.empty()) {
 					const std::filesystem::path exePath = Path::FromUtf8(m_BuiltExecutablePath);
 					if (std::filesystem::exists(exePath)) {
 						const std::filesystem::path canonicalExe = std::filesystem::canonical(exePath);
@@ -1139,11 +1154,12 @@ namespace Funke {
 
 		ImGui::BeginDisabled(m_BuildState > 0 || m_ReserializeState > 0);
 
+		// Hierarchy navigation can destroy the prefab scene, so resolve the panel context afterwards.
+		RenderEntitiesPanel();
 		// Inspector/editor view target the prefab-edit scene when active; Game View always uses the real active scene.
 		Scene* contextScene = GetContextScene();
 		// Animated values exist only between here and EndFrame, so saves and the play snapshot keep the authored ones.
 		m_AnimationPreview.BeginFrame(contextScene);
-		RenderEntitiesPanel();
 		RenderInspectorPanel(contextScene ? *contextScene : scene);
 		// Also propagate the detached prefab scene — ForeachLoadedScene skips it since it isn't in SceneManager.
 		SceneManager::ForeachLoadedScene([](Scene& s) {
@@ -1170,8 +1186,7 @@ namespace Funke {
 
 		TickSplashPreview();
 
-		// Profiler panel — Ctrl+F6 toggle. Panel manages its own visibility-gating internally.
-		if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_F6)) {
+		if (ImGui::IsKeyChordPressed(EditorShortcuts::k_Profiler)) {
 			m_ShowProfiler = !m_ShowProfiler;
 		}
 		if (m_ShowProfiler) {
@@ -1269,5 +1284,6 @@ namespace Funke {
 
 		ImGui::End(); // Close dockspace opened in RenderDockspaceRoot.
 		EditorRuntime::RenderBuildProgressOverlay();
+		ApplyPanelFocusRequest();
 	}
 }

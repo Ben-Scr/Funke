@@ -84,6 +84,13 @@ namespace Funke {
 		ApplyMassFromState();
 	}
 
+	void Rigidbody2DComponent::ResetMass() {
+		m_Mass = 1.0f;
+		m_MassOverridden = false;
+		FNK_RB_GUARD();
+		b2Body_ApplyMassFromShapes(m_BodyId);
+	}
+
 	void Rigidbody2DComponent::ApplyMassFromState() {
 		if (!m_MassOverridden) return; // auto mass: leave Box2D's density*area result in place
 		FNK_RB_GUARD();

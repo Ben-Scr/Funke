@@ -16,6 +16,7 @@
 #include "Graphics/CustomShaderGpu.hpp"
 #include "Graphics/CustomShaderLibrary.hpp"
 #include "Graphics/Framebuffer.hpp"
+#include "Graphics/Frustum.hpp"
 #include "Graphics/Lighting3D.hpp"
 #include "Graphics/Material.hpp"
 #include "Graphics/MeshAsset.hpp"
@@ -24,6 +25,7 @@
 #include "Graphics/RenderApi.hpp"
 #include "Graphics/Shader.hpp"
 #include "Graphics/SkeletalAnimation.hpp"
+#include "Graphics/SkinningCompute.hpp"
 #include "Graphics/SkyAmbient.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
@@ -45,6 +47,7 @@
 #include <limits>
 #include <optional>
 #include <unordered_map>
+#include <utility>
 
 namespace Funke {
 	namespace {
@@ -156,30 +159,6 @@ namespace Funke {
 		constexpr uint64_t k_KeyHiddenBit = uint64_t(1) << 33;
 		bool KeyHidden(uint64_t key) { return (key & k_KeyHiddenBit) != 0; }
 
-		// Planes (xyz normal, w distance) of a view-projection's clip volume, inside where dot >= 0. The near
-		// plane uses -w <= z, which also holds for 0..1 depth, so the test errs towards drawing.
-		struct FrustumPlanes { glm::vec4 Planes[6]; };
-
-		FrustumPlanes ExtractFrustum(const glm::mat4& viewProjection) {
-			const glm::mat4 m = glm::transpose(viewProjection);
-			FrustumPlanes f;
-			f.Planes[0] = m[3] + m[0];
-			f.Planes[1] = m[3] - m[0];
-			f.Planes[2] = m[3] + m[1];
-			f.Planes[3] = m[3] - m[1];
-			f.Planes[4] = m[3] + m[2];
-			f.Planes[5] = m[3] - m[2];
-			return f;
-		}
-
-		bool IntersectsFrustum(const FrustumPlanes& frustum, const glm::vec3& center, const glm::vec3& extent) {
-			for (const glm::vec4& plane : frustum.Planes) {
-				const float distance = plane.x * center.x + plane.y * center.y + plane.z * center.z + plane.w;
-				const float radius = std::abs(plane.x) * extent.x + std::abs(plane.y) * extent.y + std::abs(plane.z) * extent.z;
-				if (distance < -radius) return false;
-			}
-			return true;
-		}
 		uint32_t KeyTextureSlot(uint64_t key) { return static_cast<uint32_t>(key & 0xFFFFFFFFu); }
 
 		void SetAttribute(wgpu::VertexAttribute& attribute, wgpu::VertexFormat format, uint64_t offset, uint32_t location) {
@@ -450,7 +429,7 @@ namespace Funke {
 		bool FindMainDirectionalLight(const entt::registry& registry, glm::vec3& outDirection, Color& outColor) {
 			const auto view = registry.view<const DirectionalLightComponent, const Transform3DComponent>(entt::exclude<DisabledTag>);
 			for (EntityHandle entity : view) {
-				const glm::vec3 forward = -glm::vec3(view.get<const Transform3DComponent>(entity).WorldMatrix[2]);
+				const glm::vec3 forward = -glm::vec3(Transform3DHierarchySystem::ComputeWorldMatrix(registry, entity)[2]);
 				if (glm::dot(forward, forward) <= 1e-8f) return false;
 				outDirection = glm::normalize(forward);
 				outColor = view.get<const DirectionalLightComponent>(entity).Color;
@@ -497,11 +476,15 @@ namespace Funke {
 
 		struct CustomMeshEntry {
 			MeshBuffers Buffers;
+			wgpu::Buffer SkinSource;
+			uint32_t SkinRevision = 0;
 			uint32_t Revision = 0;
 			uint32_t WireRevision = 0;
 			uint64_t VertexCapacity = 0;
 			uint64_t IndexCapacity = 0;
 			uint64_t WireIndexCapacity = 0;
+			std::chrono::steady_clock::time_point LastUsed{};
+			bool UsedSincePurge = false;
 		};
 
 		// One posed copy of an animated model per (scene, entity); re-skinned only when the pose or the model changed.
@@ -518,10 +501,29 @@ namespace Funke {
 		struct SkinnedEntry {
 			MeshBuffers Buffers;
 			uint64_t VertexCapacity = 0;
+			wgpu::Buffer JointBuffer;
+			wgpu::Buffer SkinSource;
+			wgpu::BindGroup SkinGroup;
+			uint64_t JointCapacity = 0;
+			uint64_t GroupVertexBytes = 0;
+			uint64_t GroupJointBytes = 0;
+			std::vector<glm::mat4> Joints;
 			std::vector<MeshVertex> Vertices;
 			SkeletalPoseRequest Pose;
+			uint64_t Model = 0;
 			uint32_t Revision = 0;
+			glm::vec3 BoundsMin{ 0.0f };
+			glm::vec3 BoundsMax{ 0.0f };
+			bool Cullable = false;
+			bool PoseValid = false;
+			bool VerticesDirty = true;
+			bool StorageOutput = false;
 			std::chrono::steady_clock::time_point LastUsed{};
+			bool UsedSincePurge = false;
+		};
+		struct SkinnedWork {
+			const MeshAsset* Asset = nullptr;
+			SkinnedEntry* Entry = nullptr;
 		};
 
 		struct CachedMaterialGroup {
@@ -599,7 +601,15 @@ namespace Funke {
 		std::unordered_map<uint64_t, CustomMeshEntry> CustomMeshes;
 		std::unordered_map<SkinnedKey, SkinnedEntry, SkinnedKeyHash> SkinnedMeshes;
 		std::vector<glm::mat4> PoseNodes;
-		std::vector<glm::mat4> PoseJoints;
+		std::vector<NodePose> PoseScratch;
+		std::vector<NodePose> PreviousPoseScratch;
+		std::vector<SkinnedWork> FrameSkinning;
+		std::vector<SkinningCompute::Vertex> SkinSourceUpload;
+		wgpu::BindGroupLayout SkinLayout;
+		wgpu::ComputePipeline SkinPipeline;
+		wgpu::Limits SkinLimits{};
+		bool SkinPipelineAttempted = false;
+		bool SkinDispatchLogged = false;
 		std::vector<const MeshBuffers*> FrameMeshes;
 		std::unordered_map<uint64_t, uint32_t> FrameMeshSlots;
 		// Keyed by ScenePipelineKey: the MSAA scene target needs its own variants.
@@ -631,9 +641,8 @@ namespace Funke {
 		uint32_t OwnDepthWidth = 0;
 		uint32_t OwnDepthHeight = 0;
 
-		// Base-color textures by asset GUID; reported to TextureManager so PurgeUnreferenced keeps them.
+		// Loaded scene materials own these textures; cached handles can expire on a purge.
 		std::unordered_map<uint64_t, TextureEntry> MaterialTextures;
-		uint32_t TextureReferenceToken = 0;
 		uint32_t TextureDestroyToken = 0;
 
 		std::vector<MeshInstance> Instances;
@@ -753,6 +762,8 @@ namespace Funke {
 		// GPU copy of a mesh asset, re-uploaded when MeshLibrary reloaded it; nullptr when the upload failed.
 		const MeshBuffers* ResolveCustomMesh(wgpu::Device device, uint64_t guid, const MeshAsset& asset, bool wireframe) {
 			CustomMeshEntry& entry = CustomMeshes[guid];
+			entry.LastUsed = std::chrono::steady_clock::now();
+			entry.UsedSincePurge = true;
 			if (wireframe && entry.WireRevision != asset.Revision) {
 				const std::vector<uint32_t> lines = BuildWireIndices(asset.Data.Indices);
 				const uint64_t lineBytes = lines.size() * sizeof(uint32_t);
@@ -793,32 +804,153 @@ namespace Funke {
 			return entry.Buffers.Vertices && entry.Buffers.Indices ? &entry.Buffers : nullptr;
 		}
 
-		// Vertices posed on the CPU into a per-entity grow-only buffer; indices are the model's shared ones.
-		const MeshBuffers* ResolveSkinnedMesh(wgpu::Device device, const SkinnedKey& key, const SkinnedMeshRendererComponent& renderer,
+		SkinnedEntry& ResolveSkinnedPose(const SkinnedKey& key, const SkinnedMeshRendererComponent& renderer,
 			const MeshAsset& asset, const MeshBuffers& shared, std::chrono::steady_clock::time_point now) {
 			SkinnedEntry& entry = SkinnedMeshes[key];
 			entry.LastUsed = now;
+			entry.UsedSincePurge = true;
 			const SkinnedMeshData& data = *asset.Skin;
 			const SkeletalPoseRequest pose = SkinnedMeshAnimationSystem::GetDrawnPose(renderer, data);
-			if (!entry.Buffers.Vertices || entry.Revision != asset.Revision || !(entry.Pose == pose)) {
-				FUNKE_PROFILE_SCOPE("Renderer3D.Skinning");
-				SkeletalAnimation::EvaluatePose(data, pose, PoseNodes);
-				SkeletalAnimation::ComputeJointMatrices(data, PoseNodes, PoseJoints);
-				SkeletalAnimation::SkinVertices(data, PoseJoints, entry.Vertices);
-				const uint64_t bytes = entry.Vertices.size() * sizeof(MeshVertex);
-				if (bytes == 0 || !EnsureBuffer(device, entry.Buffers.Vertices, entry.VertexCapacity, bytes, wgpu::BufferUsage::Vertex, "renderer3d-skinned-vb")) {
-					return nullptr;
+			if (!entry.PoseValid || entry.Model != renderer.Model || entry.Revision != asset.Revision || !(entry.Pose == pose)) {
+				FUNKE_PROFILE_SCOPE("Renderer3D.SkinningPose");
+				SkeletalAnimation::EvaluatePose(data, pose, PoseNodes, PoseScratch, PreviousPoseScratch);
+				SkeletalAnimation::ComputeJointMatrices(data, PoseNodes, entry.Joints);
+				entry.Cullable = SkeletalAnimation::PosedBounds(data, entry.Joints, entry.BoundsMin, entry.BoundsMax);
+				if (!entry.Cullable) {
+					entry.BoundsMin = asset.BoundsMin;
+					entry.BoundsMax = asset.BoundsMax;
 				}
-				device.GetQueue().WriteBuffer(entry.Buffers.Vertices, 0, entry.Vertices.data(), bytes);
+				entry.Model = renderer.Model;
 				entry.Revision = asset.Revision;
 				entry.Pose = pose;
+				entry.PoseValid = true;
+				entry.VerticesDirty = true;
 			}
 			entry.Buffers.Indices = shared.Indices;
 			entry.Buffers.IndexCount = shared.IndexCount;
-			entry.Buffers.VertexCount = static_cast<uint32_t>(entry.Vertices.size());
+			entry.Buffers.VertexCount = static_cast<uint32_t>(data.BindVertices.size());
 			entry.Buffers.WireIndices = shared.WireIndices;
 			entry.Buffers.WireIndexCount = shared.WireIndexCount;
-			return &entry.Buffers;
+			return entry;
+		}
+
+		bool EnsureSkinPipeline(wgpu::Device device) {
+			if (SkinPipelineAttempted) return static_cast<bool>(SkinPipeline);
+			SkinPipelineAttempted = true;
+			if (device.GetLimits(&SkinLimits) != wgpu::Status::Success || SkinLimits.maxStorageBuffersPerShaderStage < 3
+				|| SkinLimits.maxComputeInvocationsPerWorkgroup < SkinningCompute::k_WorkgroupSize
+				|| SkinLimits.maxComputeWorkgroupSizeX < SkinningCompute::k_WorkgroupSize) return false;
+			wgpu::ShaderSourceWGSL source{};
+			source.code = SkinningCompute::k_Shader;
+			wgpu::ShaderModuleDescriptor moduleDesc{};
+			moduleDesc.nextInChain = &source;
+			moduleDesc.label = "renderer3d-skinning";
+			const wgpu::ShaderModule module = device.CreateShaderModule(&moduleDesc);
+			if (!WebGPUBackend::ShaderModuleCompiled(module)) return false;
+			wgpu::BindGroupLayoutEntry entries[3]{};
+			for (uint32_t i = 0; i < 3; ++i) {
+				entries[i].binding = i;
+				entries[i].visibility = wgpu::ShaderStage::Compute;
+				entries[i].buffer.type = i == 2 ? wgpu::BufferBindingType::Storage : wgpu::BufferBindingType::ReadOnlyStorage;
+			}
+			SkinLayout = CreateLayout(device, entries, 3, "renderer3d-skinning-layout");
+			wgpu::PipelineLayoutDescriptor layoutDesc{};
+			layoutDesc.bindGroupLayoutCount = 1;
+			layoutDesc.bindGroupLayouts = &SkinLayout;
+			wgpu::ComputePipelineDescriptor desc{};
+			desc.layout = device.CreatePipelineLayout(&layoutDesc);
+			desc.compute.module = module;
+			desc.compute.entryPoint = "skin";
+			desc.label = "renderer3d-skinning";
+			SkinPipeline = device.CreateComputePipeline(&desc);
+			return static_cast<bool>(SkinPipeline);
+		}
+
+		bool SkinOnGpu(wgpu::Device device, wgpu::CommandEncoder encoder, wgpu::ComputePassEncoder& pass,
+			SkinnedEntry& entry, const SkinnedMeshData& data) {
+			if (!EnsureSkinPipeline(device) || !SkinningCompute::FitsLimits(data.BindVertices.size(), entry.Joints.size(),
+				SkinLimits.maxStorageBufferBindingSize, SkinLimits.maxBufferSize, SkinLimits.maxComputeWorkgroupsPerDimension)) return false;
+			CustomMeshEntry& model = CustomMeshes[entry.Model];
+			if (!model.SkinSource || model.SkinRevision != entry.Revision) {
+				if (!SkinningCompute::PackVertices(data, SkinSourceUpload)) return false;
+				model.SkinSource = CreateBufferWithData(device, wgpu::BufferUsage::Storage, SkinSourceUpload.data(),
+					SkinSourceUpload.size() * sizeof(SkinningCompute::Vertex), "renderer3d-skinning-source");
+				model.SkinRevision = entry.Revision;
+			}
+			if (!model.SkinSource) return false;
+			const uint64_t vertexBytes = data.BindVertices.size() * sizeof(MeshVertex);
+			const uint64_t jointBytes = entry.Joints.size() * sizeof(glm::mat4);
+			if (!entry.StorageOutput) {
+				entry.Buffers.Vertices = nullptr;
+				entry.VertexCapacity = 0;
+				entry.SkinGroup = nullptr;
+			}
+			const auto oldVertices = entry.Buffers.Vertices.Get();
+			const auto oldJoints = entry.JointBuffer.Get();
+			if (!EnsureBuffer(device, entry.Buffers.Vertices, entry.VertexCapacity, vertexBytes,
+				wgpu::BufferUsage::Vertex | wgpu::BufferUsage::Storage, "renderer3d-skinned-vb")
+				|| !EnsureBuffer(device, entry.JointBuffer, entry.JointCapacity, jointBytes, wgpu::BufferUsage::Storage, "renderer3d-skinning-joints")) return false;
+			entry.StorageOutput = true;
+			if (!entry.SkinGroup || entry.SkinSource.Get() != model.SkinSource.Get() || oldVertices != entry.Buffers.Vertices.Get()
+				|| oldJoints != entry.JointBuffer.Get() || entry.GroupVertexBytes != vertexBytes || entry.GroupJointBytes != jointBytes) {
+				wgpu::BindGroupEntry bindings[3]{};
+				bindings[0].buffer = model.SkinSource;
+				bindings[0].size = data.BindVertices.size() * sizeof(SkinningCompute::Vertex);
+				bindings[1].buffer = entry.JointBuffer;
+				bindings[1].size = jointBytes;
+				bindings[2].buffer = entry.Buffers.Vertices;
+				bindings[2].size = vertexBytes;
+				for (uint32_t i = 0; i < 3; ++i) bindings[i].binding = i;
+				wgpu::BindGroupDescriptor desc{};
+				desc.layout = SkinLayout;
+				desc.entries = bindings;
+				desc.entryCount = 3;
+				desc.label = "renderer3d-skinning";
+				entry.SkinGroup = device.CreateBindGroup(&desc);
+				entry.SkinSource = model.SkinSource;
+				entry.GroupVertexBytes = vertexBytes;
+				entry.GroupJointBytes = jointBytes;
+			}
+			if (!entry.SkinGroup) return false;
+			// Palettes belong to entities: queued uploads cannot overwrite another dispatch's pose.
+			device.GetQueue().WriteBuffer(entry.JointBuffer, 0, entry.Joints.data(), jointBytes);
+			if (!pass) {
+				wgpu::ComputePassDescriptor desc{};
+				desc.label = "renderer3d-skinning";
+				pass = encoder.BeginComputePass(&desc);
+				pass.SetPipeline(SkinPipeline);
+			}
+			pass.SetBindGroup(0, entry.SkinGroup);
+			pass.DispatchWorkgroups(static_cast<uint32_t>((data.BindVertices.size() + SkinningCompute::k_WorkgroupSize - 1) / SkinningCompute::k_WorkgroupSize));
+			if (!SkinDispatchLogged) {
+				FNK_CORE_INFO_TAG("Renderer3D", "GPU skinning active (compute, {} vertices in first dispatch)", data.BindVertices.size());
+				SkinDispatchLogged = true;
+			}
+			return true;
+		}
+
+		void UpdateSkinnedVertices(wgpu::Device device, wgpu::CommandEncoder encoder, wgpu::ComputePassEncoder& pass, const SkinnedWork& work) {
+			SkinnedEntry& entry = *work.Entry;
+			if (!entry.VerticesDirty && entry.Buffers.Vertices) return;
+			const SkinnedMeshData& data = *work.Asset->Skin;
+			if (!SkinOnGpu(device, encoder, pass, entry, data)) {
+				FUNKE_PROFILE_SCOPE("Renderer3D.SkinningFallback");
+				SkeletalAnimation::SkinVertices(data, entry.Joints, entry.Vertices);
+				const uint64_t bytes = entry.Vertices.size() * sizeof(MeshVertex);
+				const auto oldVertices = entry.Buffers.Vertices.Get();
+				if (bytes == 0 || !EnsureBuffer(device, entry.Buffers.Vertices, entry.VertexCapacity, bytes, wgpu::BufferUsage::Vertex, "renderer3d-skinned-vb")) {
+					entry.Buffers.Vertices = nullptr;
+					entry.VertexCapacity = 0;
+					entry.StorageOutput = false;
+					return;
+				}
+				if (entry.Buffers.Vertices.Get() != oldVertices) {
+					entry.StorageOutput = false;
+					entry.SkinGroup = nullptr;
+				}
+				device.GetQueue().WriteBuffer(entry.Buffers.Vertices, 0, entry.Vertices.data(), bytes);
+			}
+			entry.VerticesDirty = false;
 		}
 
 		TextureHandle ResolveMaterialTexture(uint64_t textureGuid) {
@@ -1529,14 +1661,10 @@ namespace Funke {
 		}
 
 		GpuState* state = m_Gpu.get();
-		gpu.TextureReferenceToken = TextureManager::AddReferenceProvider([state](const TextureManager::ReferenceEmitter& emit) {
-			for (const auto& [guid, entry] : state->MaterialTextures) {
-				if (TextureManager::IsValid(entry.Handle)) emit(entry.Handle);
-			}
-		});
 		// Bind groups hold texture views; drop them before the view dies.
-		gpu.TextureDestroyToken = TextureManager::AddDestroyListener([state](TextureHandle) {
+		gpu.TextureDestroyToken = TextureManager::AddDestroyListener([state](TextureHandle handle) {
 			state->MaterialGroups.clear();
+			std::erase_if(state->MaterialTextures, [handle](const auto& pair) { return pair.second.Handle == handle; });
 		});
 
 		m_IsInitialized = true;
@@ -1545,7 +1673,6 @@ namespace Funke {
 
 	void Renderer3D::Shutdown() {
 		if (m_Gpu) {
-			if (m_Gpu->TextureReferenceToken != 0) TextureManager::RemoveReferenceProvider(m_Gpu->TextureReferenceToken);
 			if (m_Gpu->TextureDestroyToken != 0) TextureManager::RemoveDestroyListener(m_Gpu->TextureDestroyToken);
 		}
 		// Dawn objects must die before RenderApi::Shutdown.
@@ -1566,6 +1693,30 @@ namespace Funke {
 		MaterialLibrary::Clear();
 		CustomShaderLibrary::Clear();
 		m_IsInitialized = false;
+	}
+
+	size_t Renderer3D::PurgeUnusedMeshes(std::chrono::milliseconds maxIdle) {
+		if (!m_Gpu) return 0;
+		GpuState& gpu = *m_Gpu;
+		gpu.FrameMeshes.clear();
+		gpu.FrameSkinning.clear();
+		const auto now = std::chrono::steady_clock::now();
+		const size_t before = gpu.CustomMeshes.size() + gpu.SkinnedMeshes.size();
+		for (auto it = gpu.SkinnedMeshes.begin(); it != gpu.SkinnedMeshes.end();) {
+			auto& entry = it->second;
+			const bool used = std::exchange(entry.UsedSincePurge, false);
+			if (!used && now - entry.LastUsed >= maxIdle) it = gpu.SkinnedMeshes.erase(it);
+			else ++it;
+		}
+		for (auto it = gpu.CustomMeshes.begin(); it != gpu.CustomMeshes.end();) {
+			auto& entry = it->second;
+			const bool used = std::exchange(entry.UsedSincePurge, false);
+			const bool expired = IsRuntimeMeshGuid(it->first)
+				? !MeshLibrary::IsLiveRuntime(it->first) : now - entry.LastUsed >= maxIdle;
+			if (!used && expired) it = gpu.CustomMeshes.erase(it);
+			else ++it;
+		}
+		return before - gpu.CustomMeshes.size() - gpu.SkinnedMeshes.size();
 	}
 
 	uint32_t Renderer3D::GetShadowMapResolution(ShadowQualityLevel quality) {
@@ -1706,7 +1857,6 @@ namespace Funke {
 		EntityHandle cameraEntity = entt::null;
 		m_SceneProvider([&](Scene& scene) {
 			if (cameraScene) return;
-			Transform3DHierarchySystem::Propagate(scene);
 			const EntityHandle found = Camera3DComponent::FindMain(scene);
 			if (found != entt::null) {
 				cameraScene = &scene;
@@ -1717,14 +1867,14 @@ namespace Funke {
 
 		const auto& registry = cameraScene->GetRegistry();
 		const auto& camera = registry.get<Camera3DComponent>(cameraEntity);
-		const auto& transform = registry.get<Transform3DComponent>(cameraEntity);
+		const glm::mat4 cameraWorld = Transform3DHierarchySystem::ComputeWorldMatrix(registry, cameraEntity);
 
 		RenderApi::BindDefaultFramebuffer();
 		RenderApi::SetClearColor(camera.ClearColor);
 		RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
 		m_OwnDepthNeedsClear = true;
 
-		const Camera3DView view = MakeView(transform.WorldMatrix, camera, GetCurrentTargetAspect());
+		const Camera3DView view = MakeView(cameraWorld, camera, GetCurrentTargetAspect());
 		const auto* postProcessing = registry.try_get<PostProcessing2DComponent>(cameraEntity);
 		const bool postProcess = BeginPostProcess(postProcessing, camera.ClearColor);
 		RenderSky(view, cameraScene);
@@ -1785,7 +1935,6 @@ namespace Funke {
 		Color lightColor(1.0f, 1.0f, 1.0f, 1.0f);
 		bool hasSun = false;
 		if (lightScene && environment.SunSize > 0.0f) {
-			Transform3DHierarchySystem::Propagate(*lightScene);
 			hasSun = FindMainDirectionalLight(lightScene->GetRegistry(), lightDirection, lightColor);
 		}
 		const float sunRadius = glm::radians(std::clamp(environment.SunSize, 0.0f, 45.0f));
@@ -1844,15 +1993,11 @@ namespace Funke {
 		gpu.FrameTextures.clear();
 		gpu.FrameTextureSlots.clear();
 		gpu.FrameMeshes.clear();
+		gpu.FrameSkinning.clear();
 		gpu.FrameMeshSlots.clear();
 		gpu.FrameCustoms.clear();
 		gpu.FrameCustomSlots.clear();
 		gpu.FrameMaterials.clear();
-		std::erase_if(gpu.CustomMeshes, [](const auto& pair) { return IsRuntimeMeshGuid(pair.first) && !MeshLibrary::IsLiveRuntime(pair.first); });
-		// Posed copies of entities that stopped drawing (destroyed, disabled, scene unloaded).
-		std::erase_if(gpu.SkinnedMeshes, [now = std::chrono::steady_clock::now()](const auto& pair) {
-			return now - pair.second.LastUsed > std::chrono::seconds(2);
-		});
 		for (const auto& primitive : gpu.Meshes) gpu.FrameMeshes.push_back(&primitive);
 		bool anyCaster = false;
 		const TextureHandle whiteTexture = TextureManager::GetDefaultTexture(DefaultTexture::Pixel);
@@ -1978,16 +2123,22 @@ namespace Funke {
 			const std::optional<size_t> shared = asset ? customMeshSlot(renderer.Model, *asset) : std::nullopt;
 			if (!shared) continue;
 			size_t meshIndex = *shared;
+			glm::vec3 localMin = asset->BoundsMin;
+			glm::vec3 localMax = asset->BoundsMax;
+			bool cullable = true;
 			if (asset->Skin) {
 				const GpuState::SkinnedKey key{ &scene, static_cast<uint32_t>(entity) };
-				const auto* buffers = gpu.ResolveSkinnedMesh(device, key, renderer, *asset, *gpu.FrameMeshes[*shared], now);
-				if (!buffers) continue;
+				auto& entry = gpu.ResolveSkinnedPose(key, renderer, *asset, *gpu.FrameMeshes[*shared], now);
 				meshIndex = gpu.FrameMeshes.size();
-				gpu.FrameMeshes.push_back(buffers);
+				gpu.FrameMeshes.push_back(&entry.Buffers);
+				gpu.FrameSkinning.resize(gpu.FrameMeshes.size());
+				gpu.FrameSkinning[meshIndex] = { asset, &entry };
+				localMin = entry.BoundsMin;
+				localMax = entry.BoundsMax;
+				cullable = entry.Cullable;
 			}
-			// Bind-pose bounds don't hold once animated, so skinned meshes always draw.
-			submit(meshIndex, asset->BoundsMin, asset->BoundsMax, skinned.get<const Transform3DComponent>(entity).WorldMatrix,
-				renderer.Material, renderer.Color, renderer.Lit, renderer.CastShadows, false);
+			submit(meshIndex, localMin, localMax, skinned.get<const Transform3DComponent>(entity).WorldMatrix,
+				renderer.Material, renderer.Color, renderer.Lit, renderer.CastShadows, cullable);
 		}
 		if (gpu.Instances.empty()) return;
 
@@ -2100,6 +2251,20 @@ namespace Funke {
 			return;
 		}
 
+		wgpu::BindGroup frameGroup = gpu.GetFrameBindGroup(device, shadowView);
+		if (!frameGroup) return;
+		{
+			FUNKE_PROFILE_SCOPE("Renderer3D.SkinningDispatch");
+			wgpu::ComputePassEncoder skinPass;
+			for (const DrawItem& item : gpu.DrawItems) {
+				const size_t mesh = KeyMesh(item.Key);
+				if (mesh < gpu.FrameSkinning.size() && gpu.FrameSkinning[mesh].Entry) {
+					gpu.UpdateSkinnedVertices(device, encoder, skinPass, gpu.FrameSkinning[mesh]);
+				}
+			}
+			if (skinPass) skinPass.End();
+		}
+
 		if (environment.FogEnabled) {
 			frame.FogColor = glm::vec4(Lighting3D::SrgbToLinear(environment.FogColor), 1.0f);
 			frame.FogParams = glm::vec4(environment.FogStart, std::max(environment.FogEnd, environment.FogStart + 0.01f), 0.0f, 0.0f);
@@ -2158,9 +2323,6 @@ namespace Funke {
 			}
 			shadowPass.End();
 		}
-
-		wgpu::BindGroup frameGroup = gpu.GetFrameBindGroup(device, shadowView);
-		if (!frameGroup) return;
 
 		const bool clearOwnDepth = !target.HasDepth && m_OwnDepthNeedsClear;
 		wgpu::RenderPassColorAttachment colorAttachment{};
@@ -2279,6 +2441,11 @@ namespace Funke {
 		if (systems.begin() == systems.end()) return;
 		FUNKE_PROFILE_SCOPE("Renderer3D.Particles");
 
+		const glm::mat4 viewProjection = view.Projection * view.View;
+		const FrustumPlanes frustum = ExtractFrustum(viewProjection);
+		const glm::vec3 cameraRight(view.View[0][0], view.View[1][0], view.View[2][0]);
+		const glm::vec3 cameraUp(view.View[0][1], view.View[1][1], view.View[2][1]);
+		const glm::vec3 unitExtent = BillboardBoundsExtent(cameraRight, cameraUp);
 		gpu.ParticleInstances.clear();
 		gpu.ParticleBatches.clear();
 		for (EntityHandle entity : systems) {
@@ -2289,25 +2456,27 @@ namespace Funke {
 			const auto* transform = registry.try_get<Transform3DComponent>(entity);
 			const glm::mat4 emitterWorld = transform ? transform->WorldMatrix : glm::mat4(1.0f);
 			const bool local = system.SimulationSpace == ParticleSpace3D::Local;
-			const TextureHandle texture = system.Texture != 0 ? gpu.ResolveMaterialTexture(system.Texture) : TextureHandle{};
-			const float softDot = TextureManager::IsValid(texture) ? 0.0f : 1.0f;
-
 			// Alpha blending needs back-to-front order inside the system; additive output is order independent.
 			gpu.ParticleOrder.clear();
 			for (uint32_t i = 0; i < particles.size(); ++i) {
-				const glm::vec3 position = local ? glm::vec3(emitterWorld * glm::vec4(particles[i].Position, 1.0f)) : particles[i].Position;
+				const auto& particle = particles[i];
+				if (particle.Size <= 0.0f || particle.Color.a <= 0.0f) continue;
+				const glm::vec3 position = local ? glm::vec3(emitterWorld * glm::vec4(particle.Position, 1.0f)) : particle.Position;
+				if (!IntersectsFrustum(frustum, position, unitExtent * particle.Size)) continue;
 				const glm::vec3 toCamera = position - view.Position;
 				gpu.ParticleOrder.emplace_back(glm::dot(toCamera, toCamera), i);
 			}
+			if (gpu.ParticleOrder.empty()) continue;
 			if (system.BlendMode == ParticleBlendMode3D::Alpha) {
 				std::sort(gpu.ParticleOrder.begin(), gpu.ParticleOrder.end(),
 					[](const auto& a, const auto& b) { return a.first > b.first; });
 			}
 
+			const TextureHandle texture = system.Texture != 0 ? gpu.ResolveMaterialTexture(system.Texture) : TextureHandle{};
+			const float softDot = TextureManager::IsValid(texture) ? 0.0f : 1.0f;
 			ParticleBatch batch{ static_cast<uint32_t>(gpu.ParticleInstances.size()), 0, texture, system.BlendMode, 0.0f };
 			for (const auto& [distanceSq, index] : gpu.ParticleOrder) {
 				const ParticleSystem3DComponent::Particle& particle = particles[index];
-				if (particle.Size <= 0.0f || particle.Color.a <= 0.0f) continue;
 				const glm::vec3 position = local ? glm::vec3(emitterWorld * glm::vec4(particle.Position, 1.0f)) : particle.Position;
 				gpu.ParticleInstances.push_back({ glm::vec4(position, particle.Size), ToVec4(particle.Color),
 					glm::vec4(glm::radians(particle.Rotation), softDot, 0.0f, 0.0f) });
@@ -2337,10 +2506,10 @@ namespace Funke {
 		}
 
 		ParticleFrameUniforms frame{};
-		frame.ViewProjection = view.Projection * view.View;
+		frame.ViewProjection = viewProjection;
 		// Rows of the view matrix are the camera's world axes.
-		frame.CameraRight = glm::vec4(view.View[0][0], view.View[1][0], view.View[2][0], 0.0f);
-		frame.CameraUp = glm::vec4(view.View[0][1], view.View[1][1], view.View[2][1], 0.0f);
+		frame.CameraRight = glm::vec4(cameraRight, 0.0f);
+		frame.CameraUp = glm::vec4(cameraUp, 0.0f);
 		frame.Params = glm::vec4(IsSrgbFormat(target.ColorFormat) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 		queue.WriteBuffer(gpu.ParticleUniformBuffer, 0, &frame, sizeof(frame));
 		queue.WriteBuffer(gpu.ParticleInstanceBuffer, 0, gpu.ParticleInstances.data(), instanceBytes);

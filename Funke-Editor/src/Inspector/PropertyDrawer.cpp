@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Inspector/PropertyDrawer.hpp"
+#include "Inspector/ListSelectionCache.hpp"
 
 #include "Assets/AssetRegistry.hpp"
 #include "Collections/Curve.hpp"
@@ -1361,14 +1362,7 @@ namespace Funke::PropertyDrawer {
 			return changed;
 		}
 
-		// Persistent multi-selection for a list field's rows (keyed by fieldKey),
-		// driving the Remove-selected button plus Ctrl-toggle and Shift-range picks.
-		// Survives across frames; stale indices are pruned/guarded at use.
-		struct ListSelectionState {
-			std::unordered_set<int> Selected;
-			int LastClicked = -1;
-		};
-		std::unordered_map<std::string, ListSelectionState> s_ListSelection;
+		ListSelectionCache s_ListSelection;
 
 		// Square, icon-only button (UV-flipped like the rest of the editor). Returns
 		// true on click; greys out and swallows clicks when !enabled.
@@ -1685,21 +1679,21 @@ namespace Funke::PropertyDrawer {
 					ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen);
 				ImGui::PopStyleColor(3);
 
+			// Entity handles can coincide across scenes.
+			std::size_t entityHash = entities.size();
+			for (const Entity& e : entities) {
+				const Scene* scene = e.GetScene();
+				entityHash = entityHash * 1099511628211ull
+					^ (scene ? static_cast<uint64_t>(scene->GetSceneId()) : 0);
+				entityHash = entityHash * 1099511628211ull
+					^ static_cast<std::size_t>(static_cast<uint32_t>(e.GetHandle()));
+			}
+			ListSelectionState& sel = s_ListSelection.Get(fieldKey + "@" + std::to_string(entityHash));
 			if (!fieldOpen) {
 				ImGui::PopID();
 				return false;
 			}
 
-			// Selection is per (field, inspected-entity-set): fieldKey alone is reused
-			// across entities (same script class + slot), so without the entity
-			// identity a selection — and a Remove — would carry onto the wrong
-			// entity's list when the inspected entity changes.
-			std::size_t entityHash = entities.size();
-			for (const Entity& e : entities) {
-				entityHash = entityHash * 1099511628211ull
-					^ static_cast<std::size_t>(static_cast<uint32_t>(e.GetHandle()));
-			}
-			ListSelectionState& sel = s_ListSelection[fieldKey + "@" + std::to_string(entityHash)];
 			// Prune selection to the current row range (the list may have shrunk since
 			// last frame, or this field key may be reused for a shorter list).
 			std::erase_if(sel.Selected, [&](int k) { return k < 0 || k >= static_cast<int>(items.size()); });
@@ -2150,6 +2144,15 @@ namespace Funke::PropertyDrawer {
 		}
 
 		return changed;
+	}
+
+	void BeginFrame() {
+		s_ListSelection.BeginFrame();
+	}
+
+	void ClearTransientState() {
+		s_ListSelection.Clear();
+		s_ListClipboard = {};
 	}
 
 	bool DrawWithPrefix(std::span<const Entity> entities, const PropertyDescriptor& d,

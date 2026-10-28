@@ -1,4 +1,5 @@
 #pragma once
+#include "Core/Export.hpp"
 #include "Physics/CollisionDispatcher.hpp"
 #include "Scene/EntityHandle.hpp"
 #include "Physics/PhysicsTypes.hpp"
@@ -45,6 +46,7 @@ namespace Funke {
 
         CollisionDispatcher& GetDispatcher();
         b2WorldId GetWorldID() { return m_WorldId; }
+		FUNKE_API int GetWorkerCount() const;
         void Destroy();
     private:
         struct BodyBinding {

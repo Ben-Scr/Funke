@@ -62,6 +62,8 @@ namespace Funke {
 		// Per-frame CPU scratch (persistent so the heap doesn't churn).
 		std::vector<Instance44>     g_InstancesScratch;
 		std::vector<TextureHandle>  g_TexturesScratch;
+		std::vector<Instance44>     g_CombinedInstancesScratch;
+		std::vector<TextureHandle>  g_CombinedTexturesScratch;
 		std::vector<SpriteInstance> g_GpuInstanceScratch;
 		std::vector<size_t>         g_SortIndexScratch;
 		std::vector<std::pair<uint32_t, Renderer2D::InstanceContributor>> g_InstanceContributors;
@@ -1014,9 +1016,7 @@ namespace Funke {
 
 		const glm::mat4 vp = cam->GetViewProjectionMatrix();
 		const AABB viewAABB = cam->GetViewportAABB();
-		m_SceneProvider([&](Scene& scene) {
-			RenderSceneWithVP(scene, vp, viewAABB);
-		});
+		RenderScenesWithVP(m_SceneProvider, vp, viewAABB);
 	}
 
 	void Renderer2D::EndFrame() {
@@ -1045,7 +1045,13 @@ namespace Funke {
 	void Renderer2D::RenderSceneWithVP(Scene& scene,
 		const glm::mat4& vp, const AABB& viewportAABB)
 	{
-		if (!m_IsInitialized || !m_IsEnabled) return;
+		RenderScenesWithVP([&](const auto& render) { render(scene); }, vp, viewportAABB);
+	}
+
+	void Renderer2D::RenderScenesWithVP(const SceneProvider& scenes,
+		const glm::mat4& vp, const AABB& viewportAABB)
+	{
+		if (!m_IsInitialized || !m_IsEnabled || !scenes) return;
 		if (!WebGPUSpriteResources::IsReady()) return;
 
 		const auto renderStart = std::chrono::steady_clock::now();
@@ -1055,12 +1061,33 @@ namespace Funke {
 			Profiler::PushSample("Rendering", m_RenderLoopDuration);
 			};
 
-		const size_t n = CollectSpriteInstances(scene, viewportAABB, g_InstancesScratch, g_TexturesScratch,
-			m_GraphicsSettings.ParticleQuality);
+		g_CombinedInstancesScratch.clear();
+		g_CombinedTexturesScratch.clear();
+		struct SceneDraw {
+			Scene* Value;
+			size_t Begin;
+			size_t End;
+			bool HasText;
+		};
+		std::vector<SceneDraw> sceneDraws;
+		scenes([&](Scene& scene) {
+			const size_t begin = g_CombinedInstancesScratch.size();
+			const size_t sceneCount = CollectSpriteInstances(scene, viewportAABB, g_InstancesScratch, g_TexturesScratch,
+				m_GraphicsSettings.ParticleQuality);
+			SortInstancesInPlace(sceneCount);
+			g_CombinedInstancesScratch.insert(g_CombinedInstancesScratch.end(), g_InstancesScratch.begin(), g_InstancesScratch.end());
+			g_CombinedTexturesScratch.insert(g_CombinedTexturesScratch.end(), g_TexturesScratch.begin(), g_TexturesScratch.end());
+			bool hasText = false;
+			if (m_TextRenderer) {
+				auto text = scene.GetRegistry().view<TextRendererComponent, Transform2DComponent>(entt::exclude<DisabledTag>);
+				hasText = text.begin() != text.end();
+			}
+			sceneDraws.push_back({ &scene, begin, g_CombinedInstancesScratch.size(), hasText });
+		});
+		g_InstancesScratch.swap(g_CombinedInstancesScratch);
+		g_TexturesScratch.swap(g_CombinedTexturesScratch);
+		const size_t n = g_InstancesScratch.size();
 		m_RenderedInstancesCount = n;
-		if (n > 0) {
-			SortInstancesInPlace(n);
-		}
 
 		const auto callerSnap = WebGPUBackend::SaveBoundTarget();
 		const auto callerInfo = WebGPUBackend::BeginRenderToCurrentTarget();
@@ -1069,14 +1096,20 @@ namespace Funke {
 			return;
 		}
 
-		bool runEffects = m_PostProcessor.IsInitialized()
-			&& m_PostProcessingEnabled
-			&& m_GraphicsSettings.PostProcessingEnabled;
-		if (runEffects) {
+		const PostProcessing2DComponent* ppSettings = nullptr;
+		if (m_PostProcessor.IsInitialized() && m_PostProcessingEnabled && m_GraphicsSettings.PostProcessingEnabled) {
 			if (Camera2DComponent* mainCam = Camera2DComponent::GetMain()) {
-				runEffects = mainCam->IsPostProcessingEnabled();
+				if (mainCam->IsPostProcessingEnabled()) {
+					if (Scene* camScene = mainCam->GetOwnerScene()) {
+						const EntityHandle camEntity = mainCam->GetOwnerEntity();
+						if (camEntity != entt::null) {
+							ppSettings = camScene->GetRegistry().try_get<PostProcessing2DComponent>(camEntity);
+						}
+					}
+				}
 			}
 		}
+		const bool hasEnabledEffect = ppSettings && ppSettings->HasEnabledEffect();
 		Viewport* mvp = Window::GetMainViewport();
 		const bool aspectLocked = callerInfo.IsSwapChain && mvp && mvp->HasLetterbox()
 			&& m_PostProcessor.IsInitialized();
@@ -1093,17 +1126,13 @@ namespace Funke {
 		const int fboHeight = scaled
 			? std::max(1, static_cast<int>(std::lround(targetHeight * m_GraphicsSettings.RenderScale)))
 			: targetHeight;
-		bool hasWorldText = false;
-		if (m_TextRenderer) {
-			auto worldText = scene.GetRegistry().view<TextRendererComponent, Transform2DComponent>(entt::exclude<DisabledTag>);
-			hasWorldText = worldText.begin() != worldText.end();
-		}
+		const bool hasWorldText = std::any_of(sceneDraws.begin(), sceneDraws.end(), [](const auto& draw) { return draw.HasText; });
 
 		// Nothing drawn (a UI-only screen) means no edges: skip the two full-screen passes.
 		// MSAA4x is for 3D geometry only; sprites keep their edges as with Off.
 		const bool antiAlias = m_PostProcessor.IsInitialized() && m_PostProcessingEnabled
 			&& m_GraphicsSettings.AntiAliasing == AntiAliasingMode::FXAA && (n > 0 || hasWorldText);
-		bool usePostProcess = runEffects || aspectLocked || scaled || antiAlias;
+		bool usePostProcess = hasEnabledEffect || aspectLocked || scaled || antiAlias;
 
 		if (usePostProcess) {
 			if (!m_SceneFbo.Recreate(fboWidth, fboHeight, TextureFormat::RGBA16F)) {
@@ -1133,16 +1162,17 @@ namespace Funke {
 		// Sprite pass — only when there are sprites to draw. When n == 0
 		// with PP enabled we fall through to the PostProcessor below so
 		// effects still apply to the cleared intermediate background.
-		if (n > 0) {
+		bool instancesUploaded = false;
+		bool spritePassFailed = false;
+		auto renderSprites = [&](size_t firstInstance, size_t endInstance) {
+			if (firstInstance == endInstance) return;
 			auto target = WebGPUBackend::BeginRenderToCurrentTarget();
 			if (!target.Valid) {
-				if (usePostProcess) WebGPUBackend::RestoreBoundTarget(callerSnap);
-				finishTiming();
+				spritePassFailed = true;
 				return;
 			}
 			auto abortSpritePass = [&]() {
-				if (usePostProcess) WebGPUBackend::RestoreBoundTarget(callerSnap);
-				finishTiming();
+				spritePassFailed = true;
 			};
 
 			wgpu::Device device = WebGPUBackend::GetDevice();
@@ -1166,7 +1196,7 @@ namespace Funke {
 				return;
 			}
 
-			{
+			if (!instancesUploaded) {
 				FUNKE_PROFILE_SCOPE("Renderer2D.Upload");
 				if (!EnsureUniformBuffer(device)) {
 					abortSpritePass();
@@ -1185,6 +1215,7 @@ namespace Funke {
 				queue.WriteBuffer(g_InstanceBuffer, 0,
 					g_GpuInstanceScratch.data(),
 					n * sizeof(SpriteInstance));
+				instancesUploaded = true;
 			}
 
 			wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
@@ -1194,7 +1225,7 @@ namespace Funke {
 			}
 
 			FUNKE_PROFILE_SCOPE("Renderer2D.Submit");
-				wgpu::RenderPassColorAttachment colorAtt{};
+			wgpu::RenderPassColorAttachment colorAtt{};
 			colorAtt.view       = target.ColorView;
 			colorAtt.loadOp     = wgpu::LoadOp::Load;
 			colorAtt.storeOp    = wgpu::StoreOp::Store;
@@ -1265,13 +1296,13 @@ namespace Funke {
 				g_CustomSprites->WriteGlobals(CustomMaterialBindings::MakeGlobals(glm::mat4(1.0f), vp, glm::vec3(0.0f), target.Width, target.Height));
 			}
 
-			size_t i = 0;
-			while (i < n) {
+			size_t i = firstInstance;
+			while (i < endInstance) {
 				const TextureHandle runHandle = resolveHandle(g_TexturesScratch[i]);
 				const TextureHandle runMaskHandle = resolveMaskHandle(g_InstancesScratch[i]);
 				const uint64_t runMaterial = anyCustom ? g_InstancesScratch[i].Material : 0;
 				size_t runEnd = i + 1;
-				while (runEnd < n
+				while (runEnd < endInstance
 					&& (!anyCustom || g_InstancesScratch[runEnd].Material == runMaterial)
 					&& resolveHandle(g_TexturesScratch[runEnd]).index == runHandle.index
 					&& resolveHandle(g_TexturesScratch[runEnd]).generation == runHandle.generation
@@ -1316,30 +1347,22 @@ namespace Funke {
 				m_GpuTimer->ResolveCurrentFrame(encoder);
 			}
 #endif
-		}
+		};
 
-		// World text (TextRenderer on a Transform2D entity) draws over the sprites into the same target,
-		// so post-processing and letterboxing apply to it too. UI text (RectTransform2D) is GuiRenderer's.
-		if (hasWorldText) {
-			FUNKE_PROFILE_SCOPE("Renderer2D.WorldText");
-			m_TextRenderer->RenderScene(scene, vp, viewportAABB);
+		for (const SceneDraw& draw : sceneDraws) {
+			renderSprites(draw.Begin, draw.End);
+			if (spritePassFailed) {
+				if (usePostProcess) WebGPUBackend::RestoreBoundTarget(callerSnap);
+				finishTiming();
+				return;
+			}
+			if (draw.HasText) {
+				FUNKE_PROFILE_SCOPE("Renderer2D.WorldText");
+				m_TextRenderer->RenderScene(*draw.Value, vp, viewportAABB);
+			}
 		}
 
 		if (usePostProcess) {
-			// ppSettings=nullptr forces passthrough Blit (no effects) — needed when usePostProcess is on for letterbox but runEffects is off.
-			const PostProcessing2DComponent* ppSettings = nullptr;
-			if (runEffects) {
-				if (Camera2DComponent* mainCam = Camera2DComponent::GetMain()) {
-					if (Scene* camScene = mainCam->GetOwnerScene()) {
-						const EntityHandle camEnt = mainCam->GetOwnerEntity();
-						if (camEnt != entt::null
-							&& camScene->HasComponent<PostProcessing2DComponent>(camEnt))
-						{
-							ppSettings = &camScene->GetComponent<PostProcessing2DComponent>(camEnt);
-						}
-					}
-				}
-			}
 			// MUST set viewport to sub-rect BEFORE Run so Blit clips to the letterbox sub-rect and leaves the surrounding bars black.
 			uint32_t dstW = static_cast<uint32_t>(targetWidth);
 			uint32_t dstH = static_cast<uint32_t>(targetHeight);
@@ -1354,7 +1377,6 @@ namespace Funke {
 
 			// Aspect-locked + effects: RunEffectPass does NOT apply the cached viewport, so route through a sub-rect FBO then Blit (which does).
 			// HasEnabledEffect MUST mirror PostProcessor::Run's effect set — add new effects here or they smear in aspect-locked standalone builds.
-			const bool hasEnabledEffect = ppSettings && ppSettings->HasEnabledEffect();
 			const bool needsEffectFbo = (aspectLocked || scaled) && hasEnabledEffect;
 
 			// FXAA reads the scene at render resolution: straight into the target when nothing follows it,

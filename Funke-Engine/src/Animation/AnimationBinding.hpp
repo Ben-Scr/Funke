@@ -54,7 +54,7 @@ namespace Funke {
 		std::string ScriptClass;
 		uint32_t ScriptHandle = 0;
 		PropertyType ScriptType = PropertyType::None;
-		// Script fields are only read back through JSON, so the last value written is kept here.
+		// Refreshed from the managed instance before preserving unanimated channels.
 		PropertyValue Cached;
 		bool HasCached = false;
 	};

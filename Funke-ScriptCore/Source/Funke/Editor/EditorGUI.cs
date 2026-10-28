@@ -8,7 +8,8 @@ namespace Funke.Editor;
 public static class EditorGUI
 {
     // Values match the native EditorGuiLayoutOp / EditorGuiQuery / EditorGuiTextStyle.
-    private const int k_Separator = 0, k_SameLine = 1, k_Spacing = 2, k_BeginGroup = 3, k_EndGroup = 4, k_Indent = 5, k_Unindent = 6, k_PopId = 7;
+    private const int k_Separator = 0, k_SameLine = 1, k_Spacing = 2, k_BeginGroup = 3, k_EndGroup = 4, k_Indent = 5, k_Unindent = 6, k_PopId = 7,
+        k_BeginDisabled = 8, k_EndDisabled = 9;
     private const int k_QueryIsPlaying = 0, k_QueryAvailableWidth = 1, k_QueryLineHeight = 2;
 
     /// <summary>True while the editor is in Play mode.</summary>
@@ -32,6 +33,16 @@ public static class EditorGUI
     public static bool Button(string label, float width = 0f, float height = 0f) => InternalCalls.EditorGUI_Button(label, width, height);
 
     public static bool Toggle(string label, bool value) => InternalCalls.EditorGUI_Toggle(label, value);
+
+    /// <summary>Returns the selected index; empty options leave it unchanged. A negative index displays no selection.</summary>
+    public static int Popup(string label, int selectedIndex, string[] options)
+        => InternalCalls.EditorGUI_Popup(label, selectedIndex, options);
+
+    public static bool Selectable(string label, bool selected = false) => InternalCalls.EditorGUI_Selectable(label, selected);
+
+    /// <summary>Disables the enclosed controls; always pair with EndDisabled, including when disabled is false.</summary>
+    public static void BeginDisabled(bool disabled = true) => InternalCalls.EditorGUI_Layout(k_BeginDisabled, disabled ? 1f : 0f);
+    public static void EndDisabled() => InternalCalls.EditorGUI_Layout(k_EndDisabled, 0f);
 
     /// <summary><paramref name="format"/> is printf-style, e.g. "%.1f dB"; "%.3f" when null.</summary>
     public static float Slider(string label, float value, float min, float max, string? format = null)

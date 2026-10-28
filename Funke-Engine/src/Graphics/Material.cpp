@@ -2,6 +2,17 @@
 #include "Graphics/Material.hpp"
 
 #include "Assets/AssetRegistry.hpp"
+#include "Components/Graphics/ImageComponent.hpp"
+#include "Components/Graphics/PostProcessing2DComponent.hpp"
+#if FUNKE_WITH_2D
+#include "Components/Graphics/SpriteRendererComponent.hpp"
+#endif
+#if FUNKE_WITH_3D
+#include "Components/Graphics/Camera3DComponent.hpp"
+#include "Components/Graphics/MeshRendererComponent.hpp"
+#include "Components/Graphics/SkinnedMeshRendererComponent.hpp"
+#endif
+#include "Scene/Scene.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/FileStamp.hpp"
 
@@ -9,6 +20,7 @@
 #include <cstring>
 #include <chrono>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace Funke {
 	namespace {
@@ -288,6 +300,32 @@ namespace Funke {
 			++reloaded;
 		}
 		return reloaded;
+	}
+
+	void MaterialLibrary::CollectTextureReferences(const Scene& scene, const std::function<void(uint64_t)>& emit) {
+		if (!emit) return;
+		std::unordered_set<uint64_t> materials;
+		const auto& registry = scene.GetRegistry();
+		for (auto [entity, image] : registry.view<const ImageComponent>().each()) materials.insert(image.Material);
+#if FUNKE_WITH_2D
+		for (auto [entity, sprite] : registry.view<const SpriteRendererComponent>().each()) materials.insert(sprite.Material);
+#endif
+#if FUNKE_WITH_3D
+		for (auto [entity, mesh] : registry.view<const MeshRendererComponent>().each()) materials.insert(mesh.Material);
+		for (auto [entity, mesh] : registry.view<const SkinnedMeshRendererComponent>().each()) materials.insert(mesh.Material);
+		for (auto [entity, camera] : registry.view<const Camera3DComponent>().each()) materials.insert(camera.SkyboxMaterial);
+#endif
+		for (auto [entity, effects] : registry.view<const PostProcessing2DComponent>().each()) {
+			materials.insert(effects.CustomEffects.begin(), effects.CustomEffects.end());
+		}
+		for (uint64_t guid : materials) {
+			const Material* material = Get(guid);
+			if (!material) continue;
+			if (material->BaseColorTexture != 0) emit(material->BaseColorTexture);
+			for (const auto& [name, property] : material->Properties) {
+				if (property.Type == ShaderPropertyType::Texture && property.Texture != 0) emit(property.Texture);
+			}
+		}
 	}
 
 	void MaterialLibrary::Clear() {

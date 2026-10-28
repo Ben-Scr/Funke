@@ -63,6 +63,8 @@ namespace Funke {
 		static void RaiseMouseMove(float x, float y);
 		static void RaiseBeforeSceneLoaded(const std::string& sceneName);
 		static void RaiseSceneLoaded(const std::string& sceneName);
+		static void RaiseSceneLoadCompleted(uint64_t operationId, int status, const std::string& sceneName, uint64_t sceneGuid);
+		static void PumpSceneLoadRequests();
 		static void RaiseBeforeSceneUnloaded(const std::string& sceneName);
 		static void RaiseSceneUnloaded(const std::string& sceneName);
 		static void RaiseUiEventDispatch();

@@ -24,6 +24,9 @@ if "%SDK%"=="" goto :missingSdk
 if "%ROOT%"=="" goto :missingRoot
 if "%BIN%"=="" goto :missingBin
 
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0PruneRetiredSdkDependencies.ps1" -SdkDirectory "%SDK%"
+if errorlevel 1 goto :fail
+
 set "ROBOFLAGS=/NJH /NJS /NDL /NP /NS /NC /XD .git /XF .git"
 
 REM --- A missing source folder would only surface as robocopy errorlevel 16, and
@@ -99,8 +102,6 @@ call :CopyExternalDir rapidxml
 if errorlevel 1 goto :robofail
 call :CopyExternalDir SDL\include
 if errorlevel 1 goto :robofail
-call :CopyExternalDir glad\include
-if errorlevel 1 goto :robofail
 call :CopyExternalDir dawn\include
 if errorlevel 1 goto :robofail
 call :CopyExternalDir dawn\build\gen\include
@@ -108,7 +109,6 @@ if errorlevel 1 goto :robofail
 call :CopyExternalDir miniaudio
 if errorlevel 1 goto :robofail
 call :CopyExternalDir box2d\include
-if errorlevel 1 goto :robofail
 if errorlevel 1 goto :robofail
 call :CopyExternalDir dotnet
 if errorlevel 1 goto :robofail

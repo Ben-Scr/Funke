@@ -5,7 +5,7 @@ description: Use when turning a Funke GAME project into a distributable build or
 
 # Building & Shipping a Funke Game
 
-A shipped Funke game is the **`Funke-Runtime`** executable plus your project's **`Assets/`** as **loose files** (no cook/pack). The Editor's **Build** panel produces a distributable folder; **build profiles** pick the platform + render backend; `project.json` carries the window/branding/runtime settings the game boots with.
+A shipped desktop Funke game is the **`Funke-Runtime`** executable plus your project's **`Assets/`** as **loose files**. The build converts serialized scene/prefab/data assets to binary but does not bundle them into an asset archive. Platform builders may package this content into an APK, app bundle or Web payload. The Editor's **Build** panel produces the output; **build profiles** pick the platform + render backend; `project.json` carries the window/branding/runtime settings the game boots with.
 
 ## Build profiles (`.build`)
 
@@ -35,16 +35,16 @@ Manage profiles in the editor's **Build Profiles** panel (create / duplicate / d
 
 ## What a build produces
 
-From the **Build** panel: choose a profile, set the **scene list** (`buildScenes`) + **startup scene**, pick an output folder, **Build** (or **Build & Run**). The editor then:
+From the **Build** panel: choose a profile, set the **scene list** (`buildScenes`, first enabled entry becomes the shipped startup scene), pick an output folder, **Build** (or **Build & Run**). The editor then:
 
 1. **Compiles the C# script assembly** (`<Name>.dll`) with `FUNKE_BUILD` defines (below). Configuration follows the profile (`FunkeProject::GetBuildConfigurationFor`): **`Release` → `Dist`**; **`Debug` → `Debug`** (debug runtime + PDBs of runtime, engine, ScriptCore and the user assembly; needs engine sources or a `Runtime-Debug` folder, links the non-redistributable debug CRT); **`Development` → the editor's own configuration** (`FunkeProject::GetActiveBuildConfiguration()` = `FNK_BUILD_CONFIG_NAME`).
-2. **Copies the `Funke-Runtime` executable** for the target platform (`Runtime-Dist` for Release, `Runtime-Development` otherwise, when no freshly built runtime is found).
+2. **Copies the `Funke-Runtime` executable** for the target platform (`Runtime-Dist` for Release, `Runtime-Debug` for Debug, `Runtime-Development` for Development, when no freshly built runtime is found).
 3. **Copies the reachable part of `Assets/`** (and `FunkeAssets/`) as **loose files** beside the exe. `Editor/BuildAssetPruning.cpp` follows GUIDs, asset paths and scene names out of the enabled build scenes and `project.json`, plus path literals and `AssetManager.FindAll<T>` calls in `.cs` sources. Unreferenced assets, `.cs` files and scenes not in the build list are left out. `Assets/StreamingAssets/` always ships, so files only loaded through computed paths go there. If the scan fails, the build ships everything and logs a warning.
-4. **Writes the boot config** the runtime reads (the project settings: scene list, startup scene, window/splash/branding).
+4. **Converts serialized assets to binary** in the staged copy, then **writes the boot config** the runtime reads (scene list, startup scene, window/splash/branding). The project's source assets keep their format.
 
 The output is a runnable, distributable folder. Because assets are loose, the player's machine reads PNG/WAV/`.scene` files directly from disk on demand (`funke-assets-and-content`).
 
-**Without clicking (CI, agents):** `Funke-Editor.exe --project=<root> --build [--build-profile=<Name>] [--build-output=<dir>]` runs the same pipeline once the project has loaded and quits with exit code `0`/`1` (`EditorApplication.cpp` → `ImGuiEditorLayer::RequestCommandLineBuild`). Default profile: the active one, else the first Windows `.build`; default output `<root>/Builds/<Profile>`. No Explorer window opens and no modal dialog blocks. Keep the output path short — Dawn's license tree exceeds Windows' 260-char limit under long paths. Built games accept `--scene=<Name>`, `--quit-after=<seconds>` (wall clock), and the game-clock test options `--input-script=`, `--screenshot-at=`, `--screenshot-dir=`, `--fixed-step=`, `--quit-at=`, `--exec=` and `--prefs-profile=` (`DevTools/RunAutomation.hpp`).
+**Without clicking (CI, agents):** `Funke-Editor.exe --project=<root> --build [--build-profile=<Name>] [--build-output=<dir>]` runs the same pipeline once the project has loaded and quits with exit code `0`/`1` (`EditorApplication.cpp` → `ImGuiEditorLayer::RequestCommandLineBuild`). Default profile: the active one, else the first profile for the host desktop platform; default output `<root>/Builds/<Profile>`. No Explorer window opens and no modal dialog blocks. Keep the output path short — Dawn's license tree can exceed Windows' 260-char limit under long paths. Built games accept `--scene=<Name>`, `--quit-after=<seconds>` (wall clock), and the game-clock test options `--input-script=`, `--screenshot-at=`, `--screenshot-dir=`, `--fixed-step=`, `--quit-at=`, `--exec=` and `--prefs-profile=` (`DevTools/RunAutomation.hpp`).
 
 ### Android, iOS, Web: platform packages
 
@@ -53,14 +53,14 @@ Only the editor's own desktop platform builds natively (`BuildPlatformSupport::I
 - Per-platform settings: `"platformOptions": { ... }` in the `.build` file → `options` in the build request (keystore, `orientation`, `developmentTeam`, `dotnetSdk`, `debugSymbols`, ...). `env:NAME` reads a value from the environment — use it for passwords. Each builder's `describe` lists its options; the Build Profiles panel shows them plus the builder's `check` results.
 - A package-platform profile's `renderBackend` goes only into the staged project.json; it must not change the live project, whose backend the editor uses for itself.
 - C# off-desktop runs on Mono (`platforms/Funke.ScriptRuntime.Mono`, a `build-component`). Android Release builds AOT-compile the game assemblies, Funke-ScriptCore and their direct framework references (Mono AOT + LLVM, `Builder/mono_aot.py`, cached in `PlatformCache/Android/aot`); options `aot` / `aotLlvm`; the player log says `Mono runtime started (android-arm64, AOT: N ...)`. Web + C# needs the .NET 11 SDK with `wasm-tools`: the engine is compiled to `FunkeWeb.a` with that SDK's Emscripten and `dotnet publish` relinks it with the runtime. `Builder/WasmCalliSignatures` turns every `delegate* unmanaged` / `[UnmanagedCallersOnly]` signature into a placeholder `[DllImport]` so the SDK generates the wasm trampolines — a new function-pointer signature needs no manual step.
-- Android targets API 36 (Google Play's requirement since 2026-08-31) and links everything for 16 KB pages (`ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES`). Release also writes `<Game>.aab` for Play (`Builder/android_bundle.py`: aapt2 `--proto-format` → base module → bundletool 1.18.3 → jarsigner with the profile keystore); option `appBundle` forces it on/off. A Play upload needs the user's own keystore (`keystore`, `keyAlias`, `keystorePassword: "env:..."`) and a growing `versionCode`; the debug key only warns.
+- The Android builder currently targets API 36 (`Builder/android_toolchain.py::TARGET_SDK`) and links for 16 KB pages (`ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES`). Check current store requirements when preparing a publication. Release also writes `<Game>.aab` for Play (`Builder/android_bundle.py`: aapt2 `--proto-format` → base module → bundletool → jarsigner with the profile keystore); option `appBundle` forces it on/off. A Play upload needs the user's own keystore (`keystore`, `keyAlias`, `keystorePassword: "env:..."`) and a growing `versionCode`; the debug key only warns.
 - Packages contribute Android code through `android = { java, maven, manifest, placeholders }` in `funke-package.lua` (`Builder/android_libraries.py`, `android_maven.py` with `Android/maven.lock.json`, `android_manifest.py`); scripts call it via `AndroidBridge.Call` / `Subscribe`. Ads: the `Funke.Ads` registry package (AdMob + UMP consent, simulated in the editor), app ID = profile option `admobAppId`. Details in `funke-author-package`.
 - First build per platform compiles SDL3/Dawn and caches them in `%LOCALAPPDATA%\Funke\PlatformCache`. Builder logs: `PlatformCache\<Platform>\work\<hash>\build.log`.
-- Testing a Web build: serve the folder over HTTP (not `file://`). Browsers cache `_framework/*.js` aggressively; use a no-store server or a new origin when comparing builds.
+- Testing a Web build: serve the folder over HTTP (not `file://`). The editor's Web preview (`platforms/Funke.Platform.Web/Builder/preview.py`) serves on loopback with `Cache-Control: no-store`; use equivalent cache behavior when serving manually.
 
 User docs: `Github-Docs/Documentation/Editor/Platform-Packages.md`.
 
-At runtime, `Funke-Runtime` reads the project's `buildScenes` + `startupScene` and registers/loads scenes exactly as in `funke-project-structure` → *How scenes register at runtime*. Put every scene the game uses in `buildScenes` — those are pre-registered and validated by the build. (`SceneManager.LoadScene` from C# also resolves other `.scene` files by name, but the build only ships scenes outside `buildScenes` if a script names them in a string literal.)
+At runtime, `Funke-Runtime` reads the project's `buildScenes` + `startupScene` and registers/loads scenes as in `funke-project-structure` → *How scenes register at runtime*. List every intended shipping scene explicitly. `SceneManager.LoadScene` can also register other shipped `.scene` files by name; pruning follows reachable GUID/path/name references in serialized assets and C# literals, so those references can retain additional scenes. Arbitrary computed names do not ensure inclusion.
 
 ## Shipped-game settings (in `project.json`)
 
@@ -68,7 +68,7 @@ These control how the built game looks and behaves (full list + defaults in `fun
 
 | Field | Effect |
 |---|---|
-| `buildScenes` / `startupScene` | which scenes ship; which loads first |
+| `buildScenes` / `startupScene` | shipping roots and startup; the builder sets startup to the first enabled scene |
 | `buildWidth` / `buildHeight` (+ min/max) | window size |
 | `buildFullscreen` / `buildFullscreenMode` | `Exclusive` \| `BorderlessWindowed` \| `Maximized` |
 | `buildResizable` / `buildRunInBackground` | window behavior |
@@ -79,7 +79,7 @@ These control how the built game looks and behaves (full list + defaults in `fun
 | `showRuntimeLogs` | log console in the shipped build (unset = on for Development, off for Release) |
 | `graphics { postProcessingEnabled, renderScale, … }` | quality defaults (block written only when non-default; a top-level `enablePostProcessing` is legacy, read only when `graphics.postProcessingEnabled` is absent) |
 | `renderBackend` | the editor's own backend (`Auto` = engine picks); a build overwrites it in the shipped copy with the profile's backend |
-| `assetSerializationFormat` | `Json` (new projects) \| `Binary` (compact; also what a missing key means) |
+| `assetSerializationFormat` | source-project save format: `Json` (new projects) \| `Binary` (also the missing-key default); shipped serialized assets are converted to binary |
 | `profiler.enableInRuntime` | include the profiler panel in the shipped build |
 
 For a public release set `buildProfile: "Release"` (or `funke build --release`); the overlays are then off unless `project.json` sets them explicitly.
@@ -99,8 +99,8 @@ The C# `-p:DefineConstants=` value is assembled by `FunkeProject::BuildManagedDe
 | Compile context | Primary | Config | Profile | Platform | Custom |
 |---|---|---|---|---|---|
 | Editor hot-reload (`ScriptSystem`), package restore (`PackageManager`), Launcher new-project starter-script compile | `FUNKE_EDITOR` | `FNK_<editor cfg>` | **always** `FUNKE_BUILD_DEVELOPMENT` | the **active build profile's** platform (`FUNKE_ANDROID`, …; `FunkeProject::GetEditorScriptTarget`), else the editor's own | `customDefines` + the active profile's `defines` |
-| Build panel ship build | `FUNKE_BUILD` | `FNK_DIST` (Release) or `FNK_<editor cfg>` | project's `FUNKE_BUILD_DEVELOPMENT` / `FUNKE_BUILD_RELEASE` / `FUNKE_BUILD_DEBUG` | same | `customDefines` + the profile's `defines` |
-| Launcher "launch runtime" | `FUNKE_BUILD` | `FNK_<launcher cfg>` | project's profile define | same | `customDefines` |
+| Build panel ship build | `FUNKE_BUILD` | `FNK_DIST` (Release), `FNK_DEBUG` (Debug), or `FNK_<editor cfg>` (Development) | effective build snapshot's `FUNKE_BUILD_DEVELOPMENT` / `FUNKE_BUILD_RELEASE` / `FUNKE_BUILD_DEBUG` | selected build profile's target platform | `customDefines` + the profile's `defines` |
+| Launcher "launch runtime" | `FUNKE_BUILD` | `FNK_<launcher cfg>` | project's profile define | host platform | `customDefines` |
 
 Editor preview **never** sees `FUNKE_BUILD_RELEASE`, whatever the project profile — Release-only code is only exercised by a real build.
 
@@ -151,7 +151,7 @@ The script `.csproj` defines `Debug` / `Release` / `Dist` (`funke-project-struct
 
 ## Pitfalls
 
-- **Scene not in the game?** It isn't in `buildScenes` (or is disabled there). The runtime loads any shipped `.scene` by name (`ProjectSceneLoader`), but build pruning leaves out unlisted scenes unless a script names them in a string literal — list every scene the game loads.
+- **Scene not in the game?** Check the staged file and pruning report. Enabled `buildScenes` entries are build roots; reachable asset references and C# literals can retain additional scenes, while computed names cannot. List every intended shipping scene explicitly.
 - **Assets are loose** — the output folder *is* the distributable; zip the whole folder, don't expect a single packed file. Keep `Assets/` (and its `.meta` files) next to the exe.
 - **Backend coercion** — an invalid platform/backend pair (or `Auto`) in a `.build` is replaced by the first allowed backend when the profile loads, with only a log warning; verify the profile shows what you intended.
 - **`Packages/` is git-ignored**, but the *build* still needs the compiled assembly + `Funke-ScriptCore`; build from the editor (which restores them) rather than from a bare clone.

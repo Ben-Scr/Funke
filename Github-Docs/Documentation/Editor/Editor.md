@@ -119,6 +119,29 @@ The **Layout** dropdown at the top right switches between saved layout presets. 
 
 ## Core workflows
 
+### Picking colors from the screen
+
+On Windows, every editor color window includes a pipette button labeled **Pick screen color**. Activate it, then click any visible screen pixel to copy its RGB color. A swatch and hex value preview the sampled color. **Escape** or **right-click** cancels without changing the value. Sampling keeps the field's existing alpha; Inspector edits support the usual undo/redo. The pipette is currently disabled on Linux and macOS.
+
+### Keyboard shortcuts
+
+The engine and editor select their shortcuts for the platform they are built for. A macOS build uses **Cmd** for standard editing shortcuts and provides alternatives to function keys; changing a game's active build profile does not change the editor's keyboard controls.
+
+| Action | Windows / Linux | macOS |
+|---|---|---|
+| Save | Ctrl+S | Cmd+S |
+| Undo / redo | Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) | Cmd+Z / Cmd+Shift+Z |
+| Cut / copy / paste | Ctrl+X / Ctrl+C / Ctrl+V | Cmd+X / Cmd+C / Cmd+V |
+| Duplicate | Ctrl+D | Cmd+D |
+| Rename selected entity or asset | F2 | Return |
+| Delete selected entity or asset | Delete | Cmd+Backspace (the Mac Delete key) |
+| Open selected asset or folder | Enter | Cmd+Down |
+| Go to parent asset folder | Backspace | Cmd+Up |
+| Command palette | Ctrl+K | Cmd+K |
+| Toggle Profiler | Ctrl+F6 | Cmd+Shift+P |
+
+Selection shortcuts apply to the focused panel. While editing a name or other text, Return confirms the text instead of starting another rename. For shortcuts in a built game, see [Test Builds and Debug Tools](Testing.md#runtime-keyboard-shortcuts).
+
 ### Selecting and editing an entity
 
 1. Click an entity in the **Hierarchy** (or click it directly in the **Viewport**).
@@ -142,7 +165,7 @@ In the **Hierarchy** panel:
 - **Right-click** empty space to create entities — empty objects, sprites, physics bodies, UI elements, particles, cameras, and so on.
 - **Drag** one entity onto another to make it a **child** (it keeps its on-screen position).
 - **Drag** to reorder siblings.
-- Select and press **Delete** to remove an entity and its children.
+- Select and press **Delete** (**Cmd+Backspace** on macOS) to remove an entity and its children.
 
 Children follow their parent's transform — see [ECS](../Engine-Core/ECS.md#hierarchy-parents-and-children).
 
@@ -152,7 +175,7 @@ The **Editor View** is your 2D workspace:
 
 - **Pan** with the middle mouse button, **zoom** with the scroll wheel.
 - **Focus** the camera on the selected entity (frames it in view).
-- **Click** a sprite to select it; hold **Ctrl/Shift** to multi-select.
+- **Click** a sprite to select it; hold **Ctrl/Shift** (**Cmd/Shift** on macOS) to multi-select.
 - With **Gizmos** enabled, drag the on-screen handles to **move, rotate, and scale** the selected entity.
 
 There are also display toggles (draw mode, post-processing on/off) to help you see what you're doing. The draw mode works in the 2D and the 3D Editor View:
@@ -169,7 +192,7 @@ The gizmo modes float over the top-left corner of the Editor View. The view opti
 - Untick any element to hide it. **Gizmo Modes** hides the left toolbar; **Show View Options** hides the whole right one.
 - **Reset to Default** shows everything again.
 
-The choice is saved per user (in the editor preferences, not in the project), so it survives restarts and applies to every project. Hidden actions are still in the command palette (**Ctrl+K**): *Gizmo Mode: None / Move / Rotate / Scale / Rect*, *Toggle 3D Editor View*, *Draw Mode: …*, *Toggle Gizmos*, *Toggle Post Processing in Editor View*, *Toggle Grid Snap*, *Reset Editor View Toolbar*.
+The choice is saved per user (in the editor preferences, not in the project), so it survives restarts and applies to every project. Hidden actions are still in the command palette (**Ctrl+K**, or **Cmd+K** on macOS): *Gizmo Mode: None / Move / Rotate / Scale / Rect*, *Toggle 3D Editor View*, *Draw Mode: …*, *Toggle Gizmos*, *Toggle Post Processing in Editor View*, *Toggle Grid Snap*, *Reset Editor View Toolbar*.
 
 The **Game View** toolbar (aspect ratio, VSync, Stats, Logs) has the same kind of menu in **Edit › View** (or a right-click on the toolbar): hide single elements or the whole toolbar, and **Reset Game View Toolbar** brings everything back. The command palette keeps *Toggle Game View Stats*, *Toggle Game View Logs*, *Toggle Game View VSync* and *Toggle Game View Toolbar*.
 
@@ -190,7 +213,7 @@ Save the current scene from the menu (or with the usual save shortcut). Scenes a
 
 ### Undo and redo
 
-**Ctrl+Z** / **Ctrl+Y** (or **Edit › Undo/Redo**) cover inspector field edits, gizmo moves/rotations/scales, creating, deleting, duplicating, pasting and cutting entities, reparenting and reordering in the Hierarchy, adding/removing components and scripts, renaming, enabling/disabling, the Static flag and unpacking prefabs. The history belongs to the scene you are editing: it is cleared when you switch scenes, enter or leave prefab editing, and at Play/Stop. Changes made while playing are not recorded.
+**Ctrl+Z** / **Ctrl+Y** (**Cmd+Z** / **Cmd+Shift+Z** on macOS, or **Edit › Undo/Redo**) cover inspector field edits, gizmo moves/rotations/scales, creating, deleting, duplicating, pasting and cutting entities, reparenting and reordering in the Hierarchy, adding/removing components and scripts, renaming, enabling/disabling, the Static flag and unpacking prefabs. The history belongs to the scene you are editing: it is cleared when you switch scenes, enter or leave prefab editing, and at Play/Stop. Changes made while playing are not recorded.
 
 ### Crash recovery
 

@@ -52,12 +52,12 @@ Scenes are found **by file name** anywhere under `Assets/` (case-insensitive). T
 |---|---|
 | `uuid` | **Always set.** Non-zero uint64 as a **decimal string**, unique within the file. It's the stable identity that `ScriptFields` entity refs, `parentUuid`, UI `targetGraphic`/`onClick` etc. point at. Without it a random id is generated every load and nothing can reference the entity. Generate with `funke_game_tool.py guid`. |
 | `name` | String. Omit → no name. Give every entity a clear name. |
-| `parentUuid` | Parent's uuid. **Must be a JSON string in scenes** — a number is silently ignored and the entity becomes a root. Unresolved parent → silently root. |
+| `parentUuid` | Parent's uuid; the loader accepts decimal strings or numeric uint64 values. Prefer strings to preserve precision across tools. Unresolved or malformed parent → root. |
 | `childIndex` | Order among siblings (scenes only). |
 | `disabled` | `true` = inactive. There is no `active`/`enabled` key. |
 | `static`, `deadly` | Optional boolean tags. |
 | `ComponentOrder` | Optional `{ "order": ["Camera3D", "script:Player", ...] }`: the Inspector order the Editor writes when components are reordered by hand (serialized names, `script:<Class>` for scripts, `managed:<Class>` for C# components). Editor-only, safe to omit. |
-| `Origin` | Omit for normal entities. `"Prefab"` only for prefab instances (below). Anything else fails the load. |
+| `Origin` | Omit or use `"Scene"` for normal entities; `"Prefab"` for prefab instances (below). Unsupported values log a warning and load as scene content. |
 | Don't write | `SceneGUID`, `RuntimeID`, `SourceEntityId`, `sourceUuid` (identity plumbing the Editor writes) |
 
 - **No `Transform2D` key → the entity has no transform.** World entities need at least `"Transform2D": {}`. UI entities use `RectTransform2D` instead — the two conflict.
@@ -69,7 +69,7 @@ Scenes are found **by file name** anywhere under `Assets/` (case-insensitive). T
 - Keys are case-sensitive. Enums are integers. Booleans must be `true`/`false` (`1` is rejected → default).
 - Vectors are usually flat keys (`posX`/`posY`); a few are `{x,y}` objects (noted below).
 - Colors: flat `r,g,b,a` on Sprite/Text/Camera; `{r,g,b,a}` objects on UI widgets and PostProcessing.
-- **64-bit ids/GUIDs as strings** everywhere. Some keys accept numbers, but `parentUuid`, `fontAsset`, UI entity refs, UI sprite GUIDs and all `ScriptFields` values **require** strings.
+- **Author 64-bit ids/GUIDs as strings** everywhere to preserve precision. `uuid` and `parentUuid` accept numeric uint64 values too; `fontAsset`, UI entity refs, UI sprite GUIDs and all `ScriptFields` values use strings.
 - Missing keys keep the component default (listed below).
 
 ## Built-in components (JSON key → fields, default)
@@ -77,7 +77,6 @@ Scenes are found **by file name** anywhere under `Assets/` (case-insensitive). T
 ### World / rendering
 - **`Transform2D`** — `posX` 0, `posY` 0, `rotation` 0 (rad), `scaleX` 1, `scaleY` 1.
 - **`SpriteRenderer`** — `r,g,b,a` 1; `sortOrder` 0; `sortLayer` 0; `textureAsset` (GUID string); `spriteName` (slice name from the texture's .meta; omit = whole texture); `filterMode` 4 (Point=0, Bilinear=1, Trilinear=2, Anisotropic=3, Default=4 → use .meta / Point); `wrapU`/`wrapV` GL constants (Repeat=10497, Clamp=33071 default, Mirror=33648); `pixelsPerUnit` 0; `flipX`/`flipY` false. Size on screen: with `pixelsPerUnit` 0 the sprite fills the Transform scale (1 unit per scale 1); with `pixelsPerUnit` > 0 it keeps its native size (slice px / pixelsPerUnit × scale) and sits on the slice's `.meta` pivot, like a Unity sprite.
-- **`SpriteAnimator2D`** — `frames` (array of slice names), `fps` 12, `loop` true, `playOnStart` true. Needs a `SpriteRenderer` whose texture has those slices.
 - **`TextRenderer`** — `text`; `fontAsset` (**string** GUID; omit = default font); `fontSize` 32; `r,g,b,a`; `alignment` Left=0/Center=1/Right=2; `valign` Top=0/Middle=1/Bottom=2; `letterSpacing`, `lineSpacing`; `wrapMode` None=0/Word=1/Character=2; `autoSize`; `marginL/T/R/B`; `sortOrder`, `sortLayer`; effects drawn under the glyphs in text pixels (Font Size units): `outlineWidth` 0 (off) + `outlineR/G/B/A` (0,0,0,1), `shadowX`/`shadowY` 0 (off; +Y up, `2, -2` = down-right) + `shadowR/G/B/A` (0,0,0,0.5) — no duplicated child label for outlines or shadows. Two modes, chosen by the transform on the entity:
   - **World text** — with `Transform2D`: lives in the world like a sprite (moves with the camera, follows parent transforms, `rotation`, and `scaleX` as uniform scale). Size: `fontSize` pixels / 100 = world units at scale 1 (`fontSize: 64` ≈ 0.64 units tall). The anchor is the transform position; `alignment` picks left/center/right around it. Drawn **after all sprites** (above them, inside post-processing); `sortOrder`/`sortLayer` only order texts among each other. Use for damage numbers, labels over objects, signs.
   - **UI text** — with `RectTransform2D`: screen-space, laid out in the UI rect (HUD, menus).
@@ -100,7 +99,7 @@ Only **one renderer per entity**: `SpriteRenderer`, `Image`, `ParticleSystem2D`,
 - **`.material` files** (asset kind Material, needs a `.meta` like any asset): `{"type":"Material","version":1,"lit":true,"baseColor":{r,g,b,a},"baseColorTexture":"<texture GUID or 0>","metallic":0,"roughness":0.5,"emissiveColor":{r,g,b,a},"emissiveIntensity":1,"tiling":{"x":1,"y":1},"offset":{"x":0,"y":0}}`; missing keys take these defaults. Further keys: `surface` Opaque=0/Transparent=1 (alpha blended, drawn after opaque meshes), `fog` true (false for sky domes), `shader` "<.wgsl GUID>" for a custom shader, `properties` {name: value} for its uniforms (`Github-Docs/Documentation/Engine-Core/Custom-Shaders.md`).
 
 ### Physics 3D (Jolt; needs `Transform3D`)
-- **`Rigidbody3D`** — `type` **Static=0, Kinematic=1, Dynamic=2** (default 2), `mass` 1, `linearDrag` .05, `angularDrag` .05, `gravityScale` 1, `continuous` false (swept collision for fast bodies), `interpolate` true (smooth rendering between 50 Hz steps), `freezePosX/Y/Z`, `freezeRotX/Y/Z` false.
+- **`Rigidbody3D`** — `type` **Static=0, Kinematic=1, Dynamic=2** (default 2), `mass` 1, `linearDrag` .05, `angularDrag` .05, `gravityScale` 1, `continuous` false (swept collision for fast bodies), `interpolate` true (smooth rendering between fixed steps; project `physicsTickRate` defaults to 50 Hz), `freezePosX/Y/Z`, `freezeRotX/Y/Z` false.
 - Shared collider keys: `center {x,y,z}` (local offset), `isTrigger` false, `friction` .5, `bounciness` 0. Sizes are local; the entity's scale applies on top.
 - **`BoxCollider3D`** — `size {x,y,z}` 1. **`SphereCollider3D`** — `radius` .5 (largest scale axis). **`CapsuleCollider3D`** — `radius` .5, `height` 2 (end to end), `direction` X=0/Y=1/Z=2.
 - **`MeshCollider3D`** — `useMeshRenderer` true (take the MeshRenderer's mesh), `mesh` 0–3 primitive otherwise, `customMesh` (mesh asset GUID string, 0 = primitive), `convex` false. Concave meshes only collide as static/kinematic; dynamic bodies fall back to the convex hull.
@@ -125,7 +124,7 @@ Lightweight AABB physics (`FastBody2D` `type` **Static=0, Dynamic=1, Kinematic=2
 
 ### Animation
 - **`Animator`** — `controllerAsset` (`.animctrl` GUID string), `clipAsset` (`.anim` GUID string, played on its own when there is no controller), `speed` 1, `updateMode` Normal=0/UnscaledTime=1/Fixed=2, `applyInEditMode` false, `cullingMode` / `distanceRate` / `halfRateDistance` / `quarterRateDistance` as on `SkinnedMeshRenderer`. Works with 2D, 3D and UI entities; tracks reach children by name path.
-- **`.anim` files** (asset kind AnimationClip): `{"type":"AnimationClip","version":1,"length":1,"loop":true,"sampleRate":60,"tracks":[{"path":"Arm","component":"Transform3D","property":"Rotation.z","keys":[{"t":0,"v":-30},{"t":0.5,"v":30,"interp":"bezier","in":0,"out":0}]},{"path":"","component":"SpriteRenderer","property":"Texture","discrete":[{"t":0,"v":"<sheetGuid>|slice|walk_0"},{"t":0.1,"v":"<sheetGuid>|slice|walk_1"}]}],"events":[{"t":0.5,"function":"OnFootstep","argument":"left"}]}`. `path` = child names joined by `/` from the Animator's entity (`""` = itself); `component` = serialized component name (as in this file) or a C# script class; `property` = Inspector property name with `.x/.y/.z/.w` or `.r/.g/.b/.a` for one channel (`Position.y`, `Color.a`, `Scale.x`; RectTransform2D: `AnchoredPosition`, `SizeDelta`, `Pivot`, `AnchorMin`, `AnchorMax`, `Rotation` degrees, `Scale`). `interp` linear (default)/step/bezier. Asset, string and enum properties use `discrete` keys (asset GUIDs as decimal strings; a sprite-sheet slice as `"<textureGuid>|slice|<sliceName>"` on the `Texture` property of SpriteRenderer/Image; there is no `SpriteName` property). For a plain looping flip-book prefer `SpriteAnimator2D`. Events call a public method (no parameter or one string/int/float/bool) on the Animator entity's scripts.
+- **`.anim` files** (asset kind AnimationClip): `{"type":"AnimationClip","version":1,"length":1,"loop":true,"sampleRate":60,"tracks":[{"path":"Arm","component":"Transform3D","property":"Rotation.z","keys":[{"t":0,"v":-30},{"t":0.5,"v":30,"interp":"bezier","in":0,"out":0}]},{"path":"","component":"SpriteRenderer","property":"Texture","discrete":[{"t":0,"v":"<sheetGuid>|slice|walk_0"},{"t":0.1,"v":"<sheetGuid>|slice|walk_1"}]}],"events":[{"t":0.5,"function":"OnFootstep","argument":"left"}]}`. `path` = child names joined by `/` from the Animator's entity (`""` = itself); `component` = serialized component name (as in this file) or a C# script class; `property` = Inspector property name with `.x/.y/.z/.w` or `.r/.g/.b/.a` for one channel (`Position.y`, `Color.a`, `Scale.x`; RectTransform2D: `AnchoredPosition`, `SizeDelta`, `Pivot`, `AnchorMin`, `AnchorMax`, `Rotation` degrees, `Scale`). `interp` linear (default)/step/bezier. Asset, string and enum properties use `discrete` keys (asset GUIDs as decimal strings; a sprite-sheet slice as `"<textureGuid>|slice|<sliceName>"` on the `Texture` property of SpriteRenderer/Image; there is no `SpriteName` property). For a plain looping flip-book, assign the clip to the Animator's `clipAsset` without a controller. Events call a public method (no parameter or one string/int/float/bool) on the Animator entity's scripts.
 - **`.animctrl` files** (asset kind AnimatorController): `{"type":"AnimatorController","version":1,"parameters":[{"name":"IsRunning","type":"bool","default":false},{"name":"Jump","type":"trigger"}],"states":[{"name":"Idle","clip":"<anim guid>","speed":1,"position":[0,0]},{"name":"Run","clip":"<anim guid>","position":[260,0]}],"defaultState":"Idle","transitions":[{"from":"Idle","to":"Run","conditions":[{"parameter":"IsRunning","mode":"if"}],"hasExitTime":false,"duration":0.2},{"fromAny":true,"to":"Idle","conditions":[{"parameter":"Jump","mode":"if"}],"duration":0.1}]}`. Parameter `type` float/int/bool/trigger; condition `mode` greater/less/equals/notEquals (+ `threshold`)/if/ifNot; state `loop` clip (default)/loop/once; `exitTime` is in clip lengths. Transitions name their states; unknown names are dropped on load, so run `funke validate`.
 - Script side: `GetComponent<Animator>()` then `SetBool/SetFloat/SetInteger/SetTrigger`, `Play(state)`, `CrossFade(state, seconds)`, `CurrentStateName` (see `funke-game-scripting`).
 
@@ -137,11 +136,11 @@ UI entities live under a common root and use **`RectTransform2D`** (no `Transfor
 **Layout rules — this is NOT Unity's RectTransform** (`Funke-Engine/src/Systems/UILayoutSystem.cpp` `ResolveRect`):
 - `sizeX`/`sizeY` is **always the absolute size** in reference pixels. A parent's size never propagates; there is no stretching. `anchorMin ≠ anchorMax` does **not** stretch — it only moves the reference point to the centre of the anchor rect.
 - Position: pivot = centre of the anchor rect inside the parent + `posX/posY`. Then the rect extends `size × pivot` around that point.
-- So a **full-screen UI root** is: anchors 0.5/0.5, pivot 0.5, pos 0, `sizeX`/`sizeY` = `uiReferenceWidth`/`uiReferenceHeight` (1920×1080). A root with `sizeX: 0` collapses to a point and all its anchored children pile up in the screen centre. The one exception to "no stretching": `"fillParent": true` on a `RectTransform2D` makes it span its parent (the safe area for a root). Use it for full-screen roots, overlays and panels that must cover every aspect ratio.
+- So a **full-screen UI root** is: anchors 0.5/0.5, pivot 0.5, pos 0, `sizeX`/`sizeY` = `uiReferenceWidth`/`uiReferenceHeight` (1920×1080). A root with `sizeX: 0` collapses to a point and all its anchored children pile up in the screen centre. `"fillWidth": true` / `"fillHeight": true` span one parent axis; `"fillParent": true` spans both (the safe area for a root). Use these for responsive roots, bars and overlays; `ignoreSafeArea` extends edge backgrounds to the screen.
 - Corner placement: anchor + pivot on the same corner, e.g. top-left label = anchors `(0,1)`, pivot `(0,1)`, `posX: 40, posY: -30`. Y grows upwards (negative `posY` moves down from a top anchor).
 - Only `rotation`/`scale` propagate to children.
 - **Check HUD elements against the world before placing them.** With a full-screen 1920×1080 root and `Camera2D.orthoSize = h` (16:9): world `y` → UI pixels from the bottom = `(y + h) / (2h) × 1080`, world `x` → pixels from the left = `(x + h·16/9) / (2·h·16/9) × 1920`. Example: paddle at `y = -5`, `h = 6` → ~90 px from the bottom, so a bottom-anchored hint must sit at `posY ≥ ~200`, not 40.
-- **`Image`** — `r,g,b,a`, `textureAsset`, `spriteName`, `filterMode` (default **1** Bilinear; any explicit value is pushed onto the shared texture for every user), `sortOrder`, `sortLayer`, `materialAsset`; 9-slice: `imageType` Simple=0/Sliced=1/Tiled=2, `border` `[left, bottom, right, top]` in texture px (all 0 → the texture `.meta`'s `border`), `borderScale` 1 (multiplied by the UI scale). Recipes: `funke-game-art` → `references/ui-art.md`.
+- **`Image`** — `r,g,b,a`, `textureAsset`, `spriteName`, `filterMode` (default **1** Bilinear; **4** follows `.meta`; non-default values call `SetFilter` and can affect users sharing the resolved texture handle), `sortOrder`, `sortLayer`, `materialAsset`; 9-slice: `imageType` Simple=0/Sliced=1/Tiled=2, `border` `[left, bottom, right, top]` in texture px (all 0 → the texture `.meta`'s `border`), `borderScale` 1 (multiplied by the UI scale). Recipes: `funke-game-art` → `references/ui-art.md`.
 - **`Interactable`** — `interactable` true, `focusable` false.
 - **`Button`**, **`Slider`**, **`Toggle`**, **`InputField`**, **`Dropdown`**, **`Scrollbar`**, **`CircularSlider`** — **dependencies are NOT auto-added on load**: each needs `RectTransform2D` + `Interactable` (+ usually `Image`) on the same entity.
   - Shared: `transitionMode` ColorSwap=0/SpriteSwap=1/None=2; colors `normal`, `hovered`, `pressed`, `disabled`, `focused` as `{r,g,b,a}`; sprites `normalSprite`… as GUID strings (`"0"` none).
@@ -234,10 +233,10 @@ UI entities live under a common root and use **`RectTransform2D`** (no `Transfor
   "Overrides": { "Transform2D.posX": 3.0, "Transform2D.posY": 2.0, "EnemyChase.Speed": "2.5" },
   "EntityOverrides": { "1002": { "SpriteRenderer.g": 0.5 } } }
 ```
-- Only the instance root is stored; children come from the prefab (and get fresh ids each load — reference the instance **root** uuid, not its children).
+- Only the instance root is stored; children come from the prefab. Current loaders derive their persistent ids from the instance root id and the template child id, so references to instance children can survive reloads. Let the engine author these derived ids instead of copying template ids into scene references.
 - `Overrides` = dot-path → value on the root. `Class.Field` hits a script field only if the prefab entity already has a `ScriptFields` array for that class → in the prefab, write every tunable field once (even with its default).
 - `EntityOverrides` keyed by the child's **template** uuid.
-- `parentUuid` works on instances too. Missing prefab → the whole scene fails to load.
+- `parentUuid` works on instances too. An unresolved prefab asset becomes a `Missing Prefab` placeholder preserving the instance JSON (identity, parent and overrides); read the warning and repair the asset reference. Missing/zero prefab identity still fails the instance load.
 
 ## Minimal complete scene
 
@@ -276,10 +275,10 @@ UI entities live under a common root and use **`RectTransform2D`** (no `Transfor
 ## Checklist before you finish a file
 - [ ] Valid strict JSON; `entities` array present.
 - [ ] Every entity has a unique decimal-string `uuid`; all `parentUuid`s are strings and exist.
-- [ ] World entities have `Transform2D`, UI entities `RectTransform2D`, never both.
+- [ ] World entities have `Transform2D` or `Transform3D`, UI entities `RectTransform2D`; never mix those transforms on one entity.
 - [ ] Every GUID you reference exists in a `.meta` (or is a built-in from `assets-and-meta.md`).
 - [ ] Colliders have non-zero `layer`; only one renderer and one collider per entity.
-- [ ] UI widgets have `RectTransform2D` + `Interactable`; the UI root is 1920×1080 (absolute size, no stretch anchors).
+- [ ] UI widgets have `RectTransform2D` + `Interactable`; the UI root uses the project reference size or `fillParent` (anchors alone do not stretch).
 - [ ] Every collider whose script uses `OnCollisionEnter2D` (or its partner) has `registerContacts: true`.
 - [ ] Entities that start hidden (`"disabled": true`) carry no logic — the script that enables them sits on an active entity.
 - [ ] `ScriptFields` classes are listed in `Scripts`; all values are strings; entity refs have `"type": "entity"`.

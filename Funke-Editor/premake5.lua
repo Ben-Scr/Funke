@@ -77,7 +77,7 @@ project "Funke-Editor"
     -- copy lets a zipped Editor folder work standalone. The managed C# project
     -- is built by the solution on Windows and by Funke-Managed elsewhere (see root premake5.lua).
     dependson(FunkeManagedDependencies({ "Funke-ScriptCore" }))
-    postbuildcommands { CopyFunkeAssets, CopyFunkeEngineDll, CopySDL3SharedLib, CopyGladDll }
+    postbuildcommands { CopyFunkeAssets, CopyFunkeEngineDll, CopySDL3SharedLib }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
     postbuildcommands(CopyScriptCoreArtifacts)
     postbuildcommands(CopyScriptCompilerArtifacts)

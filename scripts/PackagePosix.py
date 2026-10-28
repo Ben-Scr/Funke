@@ -17,10 +17,25 @@ import json
 import platform
 import sys
 import tarfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 IS_MAC = platform.system() == "Darwin"
+OBSOLETE_CORE_SDK_PATHS = (
+    "EngineSDK/Index-Engine",
+    "EngineSDK/Funke-Engine/src/Components/Physics/FastBody2DComponent.hpp",
+    "EngineSDK/Funke-Engine/src/Components/Physics/FastBody2DComponent.cpp",
+    "EngineSDK/Funke-Engine/src/Components/Physics/FastBoxCollider2DComponent.hpp",
+    "EngineSDK/Funke-Engine/src/Components/Physics/FastBoxCollider2DComponent.cpp",
+    "EngineSDK/Funke-Engine/src/Components/Physics/FastCircleCollider2DComponent.hpp",
+    "EngineSDK/Funke-Engine/src/Components/Physics/FastCircleCollider2DComponent.cpp",
+    "EngineSDK/Funke-Engine/src/Physics/FastPhysics2D.hpp",
+    "EngineSDK/Funke-Engine/src/Physics/FastPhysics2D.cpp",
+    "EngineSDK/Funke-Engine/src/Physics/IndexPhysicsWorld2D.hpp",
+    "EngineSDK/Funke-Engine/src/Physics/IndexPhysicsWorld2D.cpp",
+    "EngineSDK/Funke-Engine/src/Physics/IndexPhysicsInterop.hpp",
+    "EngineSDK/Funke-Engine/src/Physics/IndexContact2D.hpp",
+)
 
 
 def architecture() -> tuple[str, str]:
@@ -54,6 +69,13 @@ def main() -> int:
         print("[PackagePosix] Build first: make config=release Funke-Launcher (and config=dist Funke-Runtime "
               "for Release exports).", file=sys.stderr)
         return 1
+    stale = [name for name in OBSOLETE_CORE_SDK_PATHS
+             if (launcher_dir / name).exists() or (launcher_dir / name).is_symlink()]
+    if stale:
+        print(f"[PackagePosix] error: {launcher_dir} contains obsolete core SDK files: {', '.join(stale)}",
+              file=sys.stderr)
+        print("[PackagePosix] Rerun launcher staging (scripts/CopyEngineSdk.py) before packaging.", file=sys.stderr)
+        return 1
     if not (launcher_dir / "EngineSDK" / "Runtime-Dist").is_dir():
         print("[PackagePosix] warning: EngineSDK/Runtime-Dist is missing; Release-profile exports will need a "
               "source tree. Build `make config=dist Funke-Runtime` before the Launcher.", file=sys.stderr)
@@ -70,9 +92,15 @@ def main() -> int:
 
     # Files a local run leaves behind must not ship.
     skipped = {"imgui.ini", "funke-project.json"}
+    # A reused launcher folder may still contain SDK headers from before the package split.
+    obsolete_sdk_paths = {
+        PurePosixPath(root_name) / "EngineSDK" / "External" / name
+        for name in ("Index-Physics", "Funke-Physics")
+    }
 
     def keep(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
-        if Path(info.name).name in skipped:
+        archive_path = PurePosixPath(info.name)
+        if archive_path.name in skipped or archive_path in obsolete_sdk_paths:
             return None
         info.uid = info.gid = 0
         info.uname = info.gname = ""

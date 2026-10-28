@@ -8,6 +8,9 @@
 
 namespace Funke::PropertyDrawer {
 
+	void BeginFrame();
+	void ClearTransientState();
+
 	// `fieldKey` disambiguates reference-picker callbacks across frames; use "<componentDisplayName>.<fieldName>" for native components.
 	// Returns true if the user changed the value this frame.
 	bool Draw(std::span<const Entity> entities, const PropertyDescriptor& descriptor,

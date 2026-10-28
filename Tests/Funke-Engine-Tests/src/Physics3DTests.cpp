@@ -1,8 +1,12 @@
 #include <doctest/doctest.h>
 
+#include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/Transform3DComponent.hpp"
+#include "Components/Graphics/MeshRendererComponent.hpp"
 #include "Components/Physics3D/Collider3DComponents.hpp"
 #include "Components/Physics3D/Rigidbody3DComponent.hpp"
+#include "Components/Tags.hpp"
+#include "Graphics/MeshAsset.hpp"
 #include "Physics3D/PhysicsWorld3D.hpp"
 #include "Scene/BuiltInComponentRegistration.hpp"
 #include "Scene/ComponentRegistry.hpp"
@@ -294,4 +298,297 @@ TEST_CASE("Physics3D: components register after the 3D slice and round-trip thro
 	CHECK(restoredBody.Mass == doctest::Approx(7.5f));
 	CHECK(restoredBody.FreezeRotationY);
 	CHECK_FALSE(restoredBody.FreezeRotationX);
+}
+
+TEST_CASE("Physics3D: unchanged compounds reuse ownership and descriptions") {
+	auto scene = Scene::CreateDetachedScene("Physics3DSyncCache");
+	Entity root = scene->CreateEmptyEntity();
+	root.AddComponent<Transform3DComponent>();
+	root.AddComponent<Rigidbody3DComponent>().Type = BodyType::Static;
+	std::vector<Entity> children;
+	for (int i = 0; i < 96; ++i) {
+		Entity child = CreateBox(*scene, { static_cast<float>(i) * 2.0f, 0.0f, 0.0f });
+		child.SetParent(root);
+		children.push_back(child);
+		CreateBox(*scene, { static_cast<float>(i) * 2.0f, 0.0f, -10.0f });
+	}
+	PhysicsWorld3D world;
+	auto sync = [&] {
+		Transform3DHierarchySystem::Propagate(*scene);
+		world.SyncFromScene(*scene, k_Dt);
+		return world.GetLastSyncStats();
+	};
+	CHECK(sync().BodyDescriptionsRebuilt == 97);
+	for (int step = 0; step < 3; ++step) {
+		const auto stats = sync();
+		CHECK(stats.OwnerSearches == 0);
+		CHECK(stats.OwnerFramesRecomputed == 0);
+		CHECK(stats.ColliderPosesRecomputed == 0);
+		CHECK(stats.BodyDescriptionsRebuilt == 0);
+		CHECK(stats.CompoundSorts == 0);
+	}
+	children[10].GetComponent<BoxCollider3DComponent>().Size.y = 3.0f;
+	const auto edited = sync();
+	CHECK(edited.OwnerSearches == 0);
+	CHECK(edited.ColliderPosesRecomputed == 0);
+	CHECK(edited.BodyDescriptionsRebuilt == 1);
+	CHECK(edited.CompoundSorts == 1);
+	RaycastHit3D hit;
+	REQUIRE(world.Raycast({ 20.0f, 10.0f, 0.0f }, { 0.0f, -1.0f, 0.0f }, 20.0f, hit));
+	CHECK(hit.Entity == children[10].GetHandle());
+	CHECK(hit.Point.y == doctest::Approx(1.5f));
+	CHECK(sync().BodyDescriptionsRebuilt == 0);
+}
+
+TEST_CASE("Physics3D: moving compounds reuse shapes and direct child edits refresh them") {
+	auto scene = Scene::CreateDetachedScene("Physics3DMovingCache");
+	Entity root = scene->CreateEmptyEntity();
+	root.AddComponent<Transform3DComponent>();
+	root.AddComponent<Rigidbody3DComponent>().Type = BodyType::Static;
+	Entity child = CreateBox(*scene, { 2.0f, 0.0f, 0.0f });
+	child.SetParent(root);
+	Entity other = CreateBox(*scene, { -2.0f, 0.0f, 0.0f });
+	other.SetParent(root);
+	PhysicsWorld3D world;
+	auto sync = [&] {
+		Transform3DHierarchySystem::Propagate(*scene);
+		world.SyncFromScene(*scene, k_Dt);
+		return world.GetLastSyncStats();
+	};
+	sync();
+	auto& transform = root.GetComponent<Transform3DComponent>();
+	transform.Position = { 10.0f, 3.0f, 2.0f };
+	transform.Rotation.y = 37.0f;
+	const auto moved = sync();
+	CHECK(moved.OwnerSearches == 0);
+	CHECK(moved.OwnerFramesRecomputed == 1);
+	CHECK(moved.ColliderPosesRecomputed == 0);
+	CHECK(moved.BodyDescriptionsRebuilt == 0);
+	CHECK(moved.CompoundSorts == 0);
+	child.GetComponent<Transform3DComponent>().Position.y = 4.0f;
+	const auto childEdited = sync();
+	CHECK(childEdited.ColliderPosesRecomputed == 1);
+	CHECK(childEdited.BodyDescriptionsRebuilt == 1);
+	transform.Scale = { 2.0f, 3.0f, 4.0f };
+	CHECK(sync().ColliderPosesRecomputed == 2);
+	const Vec3 childWorld = Vec3(child.GetComponent<Transform3DComponent>().WorldMatrix[3]);
+	RaycastHit3D hit;
+	REQUIRE(world.Raycast(childWorld + Vec3(0.0f, 10.0f, 0.0f), { 0.0f, -1.0f, 0.0f }, 20.0f, hit));
+	CHECK(hit.Entity == child.GetHandle());
+	CHECK(hit.Point.y == doctest::Approx(childWorld.y + 1.5f));
+}
+
+TEST_CASE("Physics3D: cached owners detect raw parent and eligibility edits") {
+	auto scene = Scene::CreateDetachedScene("Physics3DOwnerCache");
+	Entity first = scene->CreateEmptyEntity();
+	first.AddComponent<Transform3DComponent>();
+	first.AddComponent<Rigidbody3DComponent>().Type = BodyType::Static;
+	Entity second = scene->CreateEmptyEntity();
+	second.AddComponent<Transform3DComponent>();
+	second.AddComponent<Rigidbody3DComponent>().Type = BodyType::Static;
+	scene->GetRegistry().emplace<HierarchyComponent>(second.GetHandle());
+	CHECK(second.GetComponent<HierarchyComponent>().Parent == entt::null);
+	Entity child = CreateBox(*scene, { 0.0f, 0.0f, 0.0f });
+	child.SetParent(first);
+	PhysicsWorld3D world;
+	auto sync = [&] {
+		Transform3DHierarchySystem::Propagate(*scene);
+		world.SyncFromScene(*scene, k_Dt);
+	};
+	sync();
+	first.GetComponent<HierarchyComponent>().Children.clear();
+	second.GetComponent<HierarchyComponent>().Children.push_back(child.GetHandle());
+	child.GetComponent<HierarchyComponent>().Parent = second.GetHandle();
+	sync();
+	CHECK(world.GetLastSyncStats().OwnerSearches == 1);
+	CHECK(world.GetLastSyncStats().BodyDescriptionsRebuilt == 2);
+	CHECK(world.FindBodyOwner(*scene, child.GetHandle()) == second.GetHandle());
+	second.AddComponent<DisabledTag>();
+	sync();
+	CHECK(world.FindBodyOwner(*scene, child.GetHandle()) == child.GetHandle());
+	CHECK(child.HasComponent<InheritedDisabledTag>());
+	CHECK(world.GetBodyCount() == 1);
+	second.RemoveComponent<DisabledTag>();
+	sync();
+	CHECK_FALSE(child.HasComponent<InheritedDisabledTag>());
+	CHECK(world.FindBodyOwner(*scene, child.GetHandle()) == second.GetHandle());
+	CHECK(world.GetBodyCount() == 2);
+	second.RemoveComponent<Transform3DComponent>();
+	sync();
+	CHECK(world.FindBodyOwner(*scene, child.GetHandle()) == child.GetHandle());
+	second.AddComponent<Transform3DComponent>();
+	sync();
+	CHECK(world.FindBodyOwner(*scene, child.GetHandle()) == second.GetHandle());
+	const EntityHandle oldHandle = child.GetHandle();
+	scene->DestroyEntity(oldHandle);
+	Entity replacement = CreateBox(*scene, { 7.0f, 0.0f, 0.0f });
+	replacement.SetParent(first);
+	sync();
+	CHECK(world.FindBodyOwner(*scene, replacement.GetHandle()) == first.GetHandle());
+	CHECK(world.GetBodyCount() == 2);
+	RaycastHit3D hit;
+	REQUIRE(world.Raycast({ 7.0f, 10.0f, 0.0f }, { 0.0f, -1.0f, 0.0f }, 20.0f, hit));
+	CHECK(hit.Entity == replacement.GetHandle());
+}
+
+TEST_CASE("Physics3D: mesh cache detects runtime revisions and renderer selection") {
+	auto scene = Scene::CreateDetachedScene("Physics3DMeshCache");
+	Entity entity = scene->CreateEmptyEntity();
+	entity.AddComponent<Transform3DComponent>();
+	const uint64_t mesh = MeshLibrary::CreateRuntime();
+	REQUIRE(MeshLibrary::SetRuntimeData(mesh, BuildPrimitiveMesh(PrimitiveMeshType::Cube)));
+	entity.AddComponent<MeshRendererComponent>().CustomMesh = mesh;
+	entity.AddComponent<MeshCollider3DComponent>();
+	PhysicsWorld3D world;
+	Transform3DHierarchySystem::Propagate(*scene);
+	world.SyncFromScene(*scene, k_Dt);
+	world.SyncFromScene(*scene, k_Dt);
+	CHECK(world.GetLastSyncStats().BodyDescriptionsRebuilt == 0);
+	auto enlarged = BuildPrimitiveMesh(PrimitiveMeshType::Cube);
+	for (auto& vertex : enlarged.Vertices) vertex.Position[1] *= 4.0f;
+	REQUIRE(MeshLibrary::SetRuntimeData(mesh, std::move(enlarged)));
+	world.SyncFromScene(*scene, k_Dt);
+	CHECK(world.GetLastSyncStats().BodyDescriptionsRebuilt == 1);
+	RaycastHit3D hit;
+	REQUIRE(world.Raycast({ 0.0f, 10.0f, 0.0f }, { 0.0f, -1.0f, 0.0f }, 20.0f, hit));
+	CHECK(hit.Point.y == doctest::Approx(2.0f));
+	entity.GetComponent<MeshCollider3DComponent>().UseMeshRenderer = false;
+	world.SyncFromScene(*scene, k_Dt);
+	CHECK(world.GetLastSyncStats().BodyDescriptionsRebuilt == 1);
+	REQUIRE(world.Raycast({ 0.0f, 10.0f, 0.0f }, { 0.0f, -1.0f, 0.0f }, 20.0f, hit));
+	CHECK(hit.Point.y == doctest::Approx(0.5f));
+	CHECK(MeshLibrary::DestroyRuntime(mesh));
+}
+
+TEST_CASE("Physics3D: independent child bodies retain their world pose under moving ancestors") {
+	for (bool childCreatedFirst : { false, true }) {
+		for (bool childSleeping : { false, true }) {
+			CAPTURE(childCreatedFirst);
+			CAPTURE(childSleeping);
+			auto scene = Scene::CreateDetachedScene("Physics3DIndependentChild");
+			Entity first = CreateBox(*scene, Vec3(0.0f));
+			Entity second = CreateBox(*scene, Vec3(0.0f));
+			Entity parent = childCreatedFirst ? second : first;
+			Entity child = childCreatedFirst ? first : second;
+			child.GetComponent<Transform3DComponent>().Position.x = 10.0f;
+			Entity middle = scene->CreateEmptyEntity();
+			middle.AddComponent<Transform3DComponent>();
+			middle.SetParent(parent);
+			child.SetParent(middle);
+			for (Entity entity : { parent, child }) {
+				auto& rigidbody = entity.AddComponent<Rigidbody3DComponent>();
+				rigidbody.GravityScale = 0.0f;
+				rigidbody.LinearDrag = 0.0f;
+				rigidbody.Interpolate = false;
+			}
+
+			PhysicsWorld3D world;
+			Transform3DHierarchySystem::Propagate(*scene);
+			world.SyncFromScene(*scene, k_Dt);
+			REQUIRE(world.GetBodyCount() == 2);
+			world.SetLinearVelocity(parent.GetHandle(), { 6.0f, 0.0f, 0.0f });
+			if (childSleeping) world.Sleep(child.GetHandle());
+			for (int step = 1; step <= 3; ++step) {
+				world.Step(k_Dt);
+				world.WriteBackToScene(*scene);
+				Transform3DHierarchySystem::Propagate(*scene);
+				const float parentX = 6.0f * k_Dt * static_cast<float>(step);
+				CHECK(parent.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(parentX));
+				CHECK(child.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(10.0f));
+				CHECK(child.GetComponent<Transform3DComponent>().Position.x == doctest::Approx(10.0f - parentX));
+				if (childSleeping) CHECK(world.IsSleeping(child.GetHandle()));
+				world.SyncFromScene(*scene, k_Dt);
+				RaycastHit3D hit;
+				REQUIRE(world.Raycast({ 12.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f }, 3.0f, hit));
+				CHECK(hit.Entity == child.GetHandle());
+				CHECK(hit.Point.x == doctest::Approx(10.5f));
+			}
+		}
+	}
+}
+
+TEST_CASE("Physics3D: interpolation preserves independent child bodies through intermediate transforms") {
+	for (bool childCreatedFirst : { false, true }) {
+		for (bool childInterpolates : { false, true }) {
+			CAPTURE(childCreatedFirst);
+			CAPTURE(childInterpolates);
+			auto scene = Scene::CreateDetachedScene("Physics3DIndependentChildInterpolation");
+			Entity first = CreateBox(*scene, Vec3(0.0f));
+			Entity second = CreateBox(*scene, Vec3(0.0f));
+			Entity parent = childCreatedFirst ? second : first;
+			Entity child = childCreatedFirst ? first : second;
+			child.GetComponent<Transform3DComponent>().Position.x = 10.0f;
+			Entity middle = scene->CreateEmptyEntity();
+			middle.AddComponent<Transform3DComponent>();
+			middle.SetParent(parent);
+			child.SetParent(middle);
+			for (Entity entity : { parent, child }) {
+				auto& rigidbody = entity.AddComponent<Rigidbody3DComponent>();
+				rigidbody.GravityScale = 0.0f;
+				rigidbody.LinearDrag = 0.0f;
+			}
+			child.GetComponent<Rigidbody3DComponent>().Interpolate = childInterpolates;
+
+			PhysicsWorld3D world;
+			Transform3DHierarchySystem::Propagate(*scene);
+			world.SyncFromScene(*scene, k_Dt);
+			world.SetLinearVelocity(parent.GetHandle(), { 6.0f, 0.0f, 0.0f });
+			Run(*scene, world, 2);
+			Transform3DHierarchySystem::Propagate(*scene);
+			for (float alpha : { 0.5f, 0.75f }) {
+				world.Present(*scene, alpha);
+				Transform3DHierarchySystem::Propagate(*scene);
+				CHECK(parent.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx((1.0f + alpha) * 6.0f * k_Dt));
+				CHECK(child.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(10.0f));
+			}
+			Run(*scene, world, 1);
+			Transform3DHierarchySystem::Propagate(*scene);
+			CHECK(parent.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(18.0f * k_Dt));
+			CHECK(child.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(10.0f));
+			CHECK(world.GetLinearVelocity(child.GetHandle()).x == doctest::Approx(0.0f));
+		}
+	}
+}
+
+TEST_CASE("Physics3D: independent child bodies preserve rotation and scale under rotating ancestors") {
+	auto scene = Scene::CreateDetachedScene("Physics3DIndependentChildRotation");
+	Entity parent = CreateBox(*scene, Vec3(0.0f), Vec3(2.0f));
+	parent.GetComponent<Transform3DComponent>().Rotation.y = 30.0f;
+	Entity middle = scene->CreateEmptyEntity();
+	middle.AddComponent<Transform3DComponent>().Scale = Vec3(0.5f);
+	middle.SetParent(parent);
+	const Vec3 childScale{ 1.5f, 0.75f, 2.0f };
+	Entity child = CreateBox(*scene, { 10.0f, 0.0f, 0.0f }, childScale);
+	child.SetParent(middle);
+	for (Entity entity : { parent, child }) {
+		auto& rigidbody = entity.AddComponent<Rigidbody3DComponent>();
+		rigidbody.GravityScale = 0.0f;
+		rigidbody.LinearDrag = 0.0f;
+		rigidbody.AngularDrag = 0.0f;
+	}
+	child.GetComponent<Rigidbody3DComponent>().Interpolate = false;
+	Transform3DHierarchySystem::Propagate(*scene);
+	const glm::mat4 initialWorld = child.GetComponent<Transform3DComponent>().WorldMatrix;
+	PhysicsWorld3D world;
+	world.SyncFromScene(*scene, k_Dt);
+	world.SetLinearVelocity(parent.GetHandle(), { 6.0f, 0.0f, 0.0f });
+	world.SetAngularVelocity(parent.GetHandle(), { 0.0f, 1.0f, 0.0f });
+	Run(*scene, world, 2);
+	Transform3DHierarchySystem::Propagate(*scene);
+	world.Present(*scene, 0.5f);
+	Transform3DHierarchySystem::Propagate(*scene);
+	const auto& transform = child.GetComponent<Transform3DComponent>();
+	for (int column = 0; column < 4; ++column) {
+		for (int row = 0; row < 4; ++row) {
+			CHECK(transform.WorldMatrix[column][row] == doctest::Approx(initialWorld[column][row]).epsilon(1e-4));
+		}
+	}
+	CHECK((transform.Scale == childScale));
+	parent.GetComponent<Transform3DComponent>().Position.x += 5.0f;
+	Transform3DHierarchySystem::Propagate(*scene);
+	const Vec3 editedParentPosition = parent.GetComponent<Transform3DComponent>().Position;
+	const Vec3 editedChildPosition = child.GetComponent<Transform3DComponent>().Position;
+	world.Present(*scene, 0.75f);
+	CHECK((parent.GetComponent<Transform3DComponent>().Position == editedParentPosition));
+	CHECK((child.GetComponent<Transform3DComponent>().Position == editedChildPosition));
 }

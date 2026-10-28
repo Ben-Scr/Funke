@@ -882,9 +882,9 @@ namespace Funke {
 			ImGui::PopID();
 		};
 		optionalSwitch("Stats", "Stats Overlay", profile.ShowRuntimeStats,
-			"F6 frame stats in the game. Project Default: on unless the build is Release.");
+			"Frame stats: F6 (macOS: Cmd+Shift+6). Project Default: on unless the build is Release.");
 		optionalSwitch("Logs", "Log Overlay", profile.ShowRuntimeLogs,
-			"F7 log window in the game. Project Default: on unless the build is Release.");
+			"Log window: F7 (macOS: Cmd+Shift+7). Project Default: on unless the build is Release.");
 		optionalSwitch("Console", "Dev Console", profile.DevConsole,
 			"Console on the ` key (three-finger tap on touch screens) with built-in and [DevCommand] commands.\n"
 			"Project Default: on unless the build is Release.");

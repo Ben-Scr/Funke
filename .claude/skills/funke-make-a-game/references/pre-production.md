@@ -15,7 +15,7 @@ Every new game starts here, before the first scene, script or texture. The outpu
 
 ## 1. Ask
 
-Ask in the user's language. Use the question tool if you have one (`AskUserQuestion`: up to 4 questions per round, 2–4 options each, and "Other" is always available for free text). Otherwise ask a short numbered list in chat. Put your recommendation first in each question. Make every option concrete enough that the answer can go straight into the brief.
+Ask in the user's language. Use an available user-input tool according to its current schema and mode restrictions; otherwise ask a short numbered list in chat. Put your recommendation first. Ask only for unresolved choices that materially affect the result, and preserve decisions and autonomy already given in the request.
 
 **Skip what the request already answers.** "Make a pixel-art roguelike for phones in portrait, dark fantasy" already settles platform, orientation, style and mood, so don't ask those again.
 
@@ -120,7 +120,7 @@ everywhere: model, particles, UI icon.
 | Body, buttons | … | 32 / 26 |
 
 ## Scale and pixel rules
-Pixel density, art px → UI px, PPU, filter (Point for pixel art), camera size; minimum touch target.
+Pixel density, art px → UI px, PPU, target display scale and filter (see funke-game-art), camera size; minimum touch target.
 
 ## Shapes and UI
 Corner radius or cut corners, outline width, bevel/lip, shadow, panel vs well vs button, 9-slice borders,
@@ -158,7 +158,7 @@ When runtime code needs the colours too (tinting UI states, damage flashes, team
 
 ## 3. Show a style sample, then build
 
-Before you produce whole asset families, render **one** sample image to `Design/style-sample.png`. It should hold the palette swatches with token names, one panel with a title and a button in its normal and pressed states, one character or tile at the real pixel density, and a line of body text in the chosen font. `funke-game-art` → `scripts/pixelkit.py sample` builds it from `palette.json`. Show it with the Read tool and your summary of both documents.
+Before you produce whole asset families, render **one** sample image to `Design/style-sample.png`. It should hold the palette swatches with token names, one panel with a title and a button in its normal and pressed states, one character or tile at the real pixel density, and a line of body text in the chosen font. `funke-game-art` → `scripts/pixelkit.py sample` builds it from `palette.json`. Show it with `view_image` and your summary of both documents.
 
 - **Modes 1 and 2:** ask "Does the look fit?" and wait. A change here costs one regenerate; after rollout it costs the whole asset family.
 - **Mode 3:** show the sample and continue.

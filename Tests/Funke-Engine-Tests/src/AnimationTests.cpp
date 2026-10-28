@@ -14,6 +14,8 @@
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
+#include "Scripting/ScriptComponent.hpp"
+#include "Scripting/ScriptEngine.hpp"
 #include "Systems/AnimatorSystem.hpp"
 
 #include <string>
@@ -56,6 +58,129 @@ namespace {
 
 	std::vector<AnimatorStateClipInfo> LocomotionClips() {
 		return { { 1.0f, true }, { 0.5f, true }, { 0.5f, false } };
+	}
+
+	class ScriptFieldCallbacksScope {
+	public:
+		ScriptFieldCallbacksScope()
+			: m_PreviousCallbacks(ScriptEngine::GetCallbacks()), m_PreviousCurrent(s_Current) {
+			s_Current = this;
+			auto& callbacks = const_cast<ManagedCallbacks&>(ScriptEngine::GetCallbacks());
+			callbacks = {};
+			callbacks.GetScriptFields = [](int32_t handle) -> const char* {
+				++s_Current->ReadCount;
+				if (handle != k_Handle) return nullptr;
+				s_Current->m_Json = s_Current->FieldAvailable
+					? "[{\"name\":\"Value\",\"type\":\"" + s_Current->Type + "\",\"value\":\"" + s_Current->Value.ToString() + "\"}]"
+					: "[]";
+				return s_Current->m_Json.c_str();
+			};
+			callbacks.SetScriptField = [](int32_t handle, const char* field, const char* value) {
+				if (handle == k_Handle && std::string(field) == "Value")
+					s_Current->Value = PropertyValue::FromString(PropertyType::Vec2, value);
+			};
+		}
+
+		~ScriptFieldCallbacksScope() {
+			const_cast<ManagedCallbacks&>(ScriptEngine::GetCallbacks()) = m_PreviousCallbacks;
+			s_Current = m_PreviousCurrent;
+		}
+
+		ScriptFieldCallbacksScope(const ScriptFieldCallbacksScope&) = delete;
+		ScriptFieldCallbacksScope& operator=(const ScriptFieldCallbacksScope&) = delete;
+
+		static constexpr uint32_t k_Handle = 91;
+		PropertyValue Value = PropertyValue::FromString(PropertyType::Vec2, "0,0");
+		std::string Type = "vector2";
+		bool FieldAvailable = true;
+		int ReadCount = 0;
+
+	private:
+		inline static ScriptFieldCallbacksScope* s_Current = nullptr;
+		ManagedCallbacks m_PreviousCallbacks;
+		ScriptFieldCallbacksScope* m_PreviousCurrent;
+		std::string m_Json;
+	};
+}
+
+TEST_CASE("Animator script channels preserve live fields and reapply constant poses") {
+	ScriptFieldCallbacksScope fields;
+	auto scene = Scene::CreateDetachedScene("AnimatorScriptFields");
+	Entity root = scene->CreateEntity("Root");
+	auto& scripts = root.AddComponent<ScriptComponent>();
+	scripts.AddScript("AnimatedScript");
+	scripts.Scripts.back().SetGCHandle(ScriptFieldCallbacksScope::k_Handle);
+
+	constexpr uint64_t k_ClipGuid = 0xA11CE0004ull;
+	AnimationClip clip;
+	clip.Length = 1.0f;
+	AnimationTrack track;
+	track.Component = "AnimatedScript";
+	track.Property = "Value.x";
+	track.Curve = MakeCurve({ { 0.0f, 2.0f }, { 0.5f, 2.0f }, { 1.0f, 4.0f } });
+	clip.Tracks = { track };
+	AnimationClipLibrary::Set(k_ClipGuid, clip);
+
+	AnimatorComponent animator;
+	animator.Clip = k_ClipGuid;
+	AnimatorRuntime runtime;
+	REQUIRE(runtime.Sync(animator));
+	runtime.ApplyStatePose(*scene, root, 0, 0.0f);
+	CHECK(runtime.GetBindingErrors().empty());
+	CHECK(fields.Value.FloatVec[0] == doctest::Approx(2.0f));
+
+	SUBCASE("Script changes to unanimated channels survive the next pose") {
+		fields.Value.FloatVec[1] = 10.0f;
+		runtime.ApplyStatePose(*scene, root, 0, 0.75f);
+		CHECK(fields.Value.FloatVec[0] == doctest::Approx(3.0f));
+		CHECK(fields.Value.FloatVec[1] == doctest::Approx(10.0f));
+	}
+	SUBCASE("The same pose overrides later script changes to animated channels") {
+		fields.Value.FloatVec[0] = 99.0f;
+		runtime.ApplyStatePose(*scene, root, 0, 0.5f);
+		CHECK(fields.Value.FloatVec[0] == doctest::Approx(2.0f));
+	}
+
+	AnimationClipLibrary::Invalidate(k_ClipGuid);
+}
+
+TEST_CASE("Animation script targets validate live fields and restore authored values") {
+	ScriptFieldCallbacksScope fields;
+	auto scene = Scene::CreateDetachedScene("AnimationScriptTargets");
+	Entity root = scene->CreateEntity("Root");
+	auto& scripts = root.AddComponent<ScriptComponent>();
+	scripts.AddScript("AnimatedScript");
+	scripts.Scripts.back().SetGCHandle(ScriptFieldCallbacksScope::k_Handle);
+	AnimationTrack track;
+	track.Component = "AnimatedScript";
+	track.Property = "Value.x";
+	AnimationTargetSet targets;
+	int channel = -1;
+	std::string error;
+	const int target = targets.Resolve(*scene, root, track, channel, error);
+	REQUIRE(target >= 0);
+	PropertyValue authored;
+	REQUIRE(targets.Read(*scene, target, authored));
+
+	SUBCASE("A replaced managed instance requires rebinding before reading or writing") {
+		scripts.Scripts.back().SetGCHandle(ScriptFieldCallbacksScope::k_Handle + 1);
+		const int reads = fields.ReadCount;
+		CHECK_FALSE(targets.Read(*scene, target, authored));
+		CHECK_FALSE(targets.Write(*scene, target, authored));
+		CHECK(fields.ReadCount == reads);
+	}
+	SUBCASE("A removed field cannot be read from the cached pose") {
+		fields.FieldAvailable = false;
+		CHECK_FALSE(targets.Read(*scene, target, authored));
+	}
+	SUBCASE("A changed field type requires rebinding") {
+		fields.Type = "float";
+		CHECK_FALSE(targets.Read(*scene, target, authored));
+	}
+	SUBCASE("Restoring the last authored value replaces external script changes") {
+		fields.Value.FloatVec[0] = 99.0f;
+		CHECK(targets.Write(*scene, target, authored));
+		CHECK(fields.Value == authored);
 	}
 }
 

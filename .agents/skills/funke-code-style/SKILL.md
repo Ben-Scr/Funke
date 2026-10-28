@@ -56,13 +56,13 @@ namespace Funke {
 |---|---|---|
 | `Funke-Engine` | `pch.hpp` / `src/pch.cpp` (not force-included) | First line `#include "pch.hpp"` or it won't compile |
 | `Funke-Editor` | `EditorPch.hpp` via `forceincludes` | Nothing — it's force-included (existing files still start with `#include <pch.hpp>`, harmless) |
-| `Funke-Runtime`, `Funke-Launcher`, `Funke-EditorRuntime` | none | Include what you use |
+| `Funke-Runtime`, `Funke-Launcher`, `Funke-EditorRuntime`, `Funke-CLI` | none | Include what you use |
 
 `Funke-Engine/src/pch.hpp` deliberately stops at STL + `Core/` (`Assert`, `Base`, `Log`, `Exceptions`, `Version`; `<Windows.h>` with `NOMINMAX` on Windows). Don't add `<imgui.h>`, `Core/Application.hpp`, `magic_enum`, or anything that changes per build (build identity / dirty fingerprint) — the file's own comment records why. New source files: `scripts\dev\Build.ps1` regenerates premake automatically (`scripts\Setup.bat` is the full, interactive first-time setup, not a regen step); see `funke-build-engine`.
 
 ## DLL boundary (`FUNKE_API`)
 
-- `Funke-Engine` is a SharedLib built with `FNK_BUILD_DLL` (→ `__declspec(dllexport)`). Editor, Runtime, Launcher and `native` package layers define `FNK_IMPORT_DLL`.
+- `Funke-Engine` is a SharedLib built with `FNK_BUILD_DLL` (→ `__declspec(dllexport)`). Editor, Runtime, Launcher, EditorRuntime, CLI and `native` package layers define `FNK_IMPORT_DLL`.
 - Anything called from another binary needs `FUNKE_API` on the class/struct or free function. Missing it shows up as LNK2019 in the *consumer*, not the engine.
 - Do **not** mark types whose `.cpp` is compiled directly into each consumer (e.g. `Diagnostics/StatsOverlay`, `Funke-Editor/src/Gui/ProfilerPanel.cpp` shared into Runtime) — that also gives LNK2019.
 - Static state shared across the boundary must be defined out-of-line in a `.cpp`. `inline static` in a header gives the EXE and the DLL separate copies (see the note in `Core/Log.hpp`).
@@ -112,7 +112,7 @@ Mostly plain `struct FUNKE_API XComponent` with public PascalCase fields and def
 
 ## Error handling
 
-- **Asserts are live in every configuration.** `FNK_ASSERT` / `FNK_CORE_ASSERT` / `FNK_VERIFY` / `FNK_CORE_VERIFY` (`Core/Assert.hpp`) all call `ReportAssertionFailure`: Debug and Release log + `__debugbreak()` + `std::terminate()`; Dist logs and **continues**. So code after an assert must not crash if the condition is false in a shipped build.
+- **Asserts are live in every configuration.** `FNK_ASSERT` / `FNK_CORE_ASSERT` / `FNK_VERIFY` / `FNK_CORE_VERIFY` (`Core/Assert.hpp`) all call `ReportAssertionFailure`: Debug and Release log, trigger `FNK_DEBUG_BREAK` (`__debugbreak()` on Windows, `raise(SIGTRAP)` elsewhere), then call `std::terminate()` if execution resumes; Dist logs and **continues**. So code after an assert must not crash if the condition is false in a shipped build.
 - Signature: `FNK_ASSERT(cond, "message")` or `FNK_ASSERT(cond, FunkeErrorCode::X, "message")`. The message is a plain string, **not** a format string — use `fmt::format(...)` for values. Codes: `Core/FunkeErrorCode.hpp` (`InvalidArgument`, `NotInitialized`, `AlreadyInitialized`, `FileNotFound`, `InvalidHandle`, `OutOfRange`, `OutOfBounds`, `Overflow`, `NullReference`, `LoadFailed`, `InvalidValue`, `Undefined`).
 - **Exceptions:** `FNK_THROW(code, msg)` throws `FunkeException` (`Core/Exceptions.hpp`). Used for API misuse, e.g. `Scene::GetComponent<T>` throws on an invalid entity or a missing component (use `HasComponent` / `TryGetComponent` when absence is normal). Application loops wrap layer and renderer calls in `FUNKE_TRY_CATCH_LOG(stmt)`.
 - **Never let a C++ exception reach CoreCLR.** Native script bindings are registered through `FNK_GUARDED_BINDING(fn)` (`Scripting/ScriptBindingGuard.hpp`), a noexcept thunk that logs and returns `R{}`.

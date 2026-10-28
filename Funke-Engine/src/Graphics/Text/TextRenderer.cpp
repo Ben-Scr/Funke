@@ -11,6 +11,9 @@
 #include "Graphics/Shader.hpp"
 #include "Graphics/Text/Font.hpp"
 #include "Graphics/Text/FontManager.hpp"
+#include "Graphics/Text/TextEncoding.hpp"
+#include "Graphics/Text/TextLayout.hpp"
+#include "Graphics/QuadVisibility.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Project/FunkeProject.hpp"
@@ -32,30 +35,14 @@
 namespace Funke {
 
 	namespace {
-		constexpr size_t k_VerticesPerGlyph     = 6;
+		constexpr size_t k_VerticesPerGlyph     = 4;
+		constexpr size_t k_IndicesPerGlyph = 6;
 		constexpr size_t k_InitialVertexCapacity = 1024;
 
 		// CPU helpers.
 
 		bool DecodeUtf8(std::string_view s, size_t idx, uint32_t& outCp, int& outLen) {
-			if (idx >= s.size()) { outCp = 0; outLen = 0; return false; }
-			const unsigned char b0 = static_cast<unsigned char>(s[idx]);
-			if (b0 < 0x80) { outCp = b0; outLen = 1; return true; }
-			int needed = 0;
-			uint32_t cp = 0;
-			if      ((b0 & 0xE0) == 0xC0) { needed = 2; cp = b0 & 0x1F; }
-			else if ((b0 & 0xF0) == 0xE0) { needed = 3; cp = b0 & 0x0F; }
-			else if ((b0 & 0xF8) == 0xF0) { needed = 4; cp = b0 & 0x07; }
-			else { outCp = b0; outLen = 1; return true; }
-			if (idx + needed > s.size()) { outCp = b0; outLen = 1; return true; }
-			for (int i = 1; i < needed; ++i) {
-				const unsigned char b = static_cast<unsigned char>(s[idx + i]);
-				if ((b & 0xC0) != 0x80) { outCp = b0; outLen = 1; return true; }
-				cp = (cp << 6) | (b & 0x3F);
-			}
-			outCp = cp;
-			outLen = needed;
-			return true;
+			return TextEncoding::DecodeUtf8(s, idx, outCp, outLen);
 		}
 
 		float MeasureLineWidth(const Font& font, std::string_view line, float letterSpacing) {
@@ -350,6 +337,9 @@ namespace Funke {
 				wgpu::Sampler       MaskSampler;
 			};
 
+			TextLayout::Cache Layouts;
+			wgpu::Buffer IndexBuffer;
+			uint32_t IndexGlyphCapacity = 0;
 			wgpu::Buffer VertexBuffer;
 			uint32_t     VertexBufferCapacityBytes = 0;
 			wgpu::Buffer UniformBuffer;
@@ -391,6 +381,37 @@ namespace Funke {
 			if (!buf) return false;
 			inst.VertexBuffer              = std::move(buf);
 			inst.VertexBufferCapacityBytes = static_cast<uint32_t>(cap);
+			return true;
+		}
+
+		bool EnsureIndexBuffer(wgpu::Device device, wgpu::Queue queue, PerInstance& inst, size_t glyphCount) {
+			if (inst.IndexBuffer && glyphCount <= inst.IndexGlyphCapacity) return true;
+			const uint64_t maxGlyphs = std::min<uint64_t>(WebGPUBackend::GetMaxBufferSize() / (k_IndicesPerGlyph * sizeof(uint32_t)),
+				INT32_MAX / k_VerticesPerGlyph);
+			if (glyphCount > maxGlyphs) return false;
+			uint64_t capacity = std::max<uint64_t>(inst.IndexGlyphCapacity, 256);
+			while (capacity < glyphCount) capacity *= 2;
+			capacity = std::min(capacity, maxGlyphs);
+			std::vector<uint32_t> indices(static_cast<size_t>(capacity) * k_IndicesPerGlyph);
+			for (uint32_t glyph = 0; glyph < capacity; ++glyph) {
+				const uint32_t base = glyph * static_cast<uint32_t>(k_VerticesPerGlyph);
+				const size_t i = static_cast<size_t>(glyph) * k_IndicesPerGlyph;
+				indices[i] = base;
+				indices[i + 1] = base + 1;
+				indices[i + 2] = base + 2;
+				indices[i + 3] = base;
+				indices[i + 4] = base + 2;
+				indices[i + 5] = base + 3;
+			}
+			wgpu::BufferDescriptor descriptor{};
+			descriptor.size = indices.size() * sizeof(uint32_t);
+			descriptor.usage = wgpu::BufferUsage::Index | wgpu::BufferUsage::CopyDst;
+			descriptor.label = "text-quad-indices";
+			wgpu::Buffer buffer = device.CreateBuffer(&descriptor);
+			if (!buffer) return false;
+			queue.WriteBuffer(buffer, 0, indices.data(), descriptor.size);
+			inst.IndexBuffer = std::move(buffer);
+			inst.IndexGlyphCapacity = static_cast<uint32_t>(capacity);
 			return true;
 		}
 
@@ -600,7 +621,7 @@ namespace Funke {
 			if (!s_LoggedMissingFont) {
 				s_LoggedMissingFont = true;
 				FNK_CORE_WARN_TAG("TextRenderer",
-					"No font available — assign one in the inspector or ensure FunkeAssets/Fonts/GoogleSans-Regular.ttf is shipped next to the executable.");
+					"No font available — assign one in the inspector or ensure FunkeAssets/Fonts/IBMPlexSansCondensed-Regular.ttf is shipped next to the executable.");
 			}
 		}
 		return fallback;
@@ -646,189 +667,79 @@ namespace Funke {
 	void TextRenderer::ComputeVisualLines(Font& font, std::string_view text, float letterSpacing,
 		TextWrapMode wrapMode, float wrapWidthPixels, std::vector<std::pair<size_t, size_t>>& out)
 	{
-		out.clear();
-		const bool autoWrap = wrapMode != TextWrapMode::None && wrapWidthPixels > 0.0f;
-		auto emitVisualLine = [&](size_t s, size_t e) { out.push_back({ s, e }); };
-		auto wrapSegment = [&](size_t segStart, size_t segEnd) {
-			if (!autoWrap || segStart >= segEnd) { emitVisualLine(segStart, segEnd); return; }
-			size_t lineStartIdx = segStart;
-			size_t lastBreakIdx = std::string_view::npos;
-			float widthSinceLineStart = 0.0f;
-			uint32_t prev = 0;
-			int glyphsOnLine = 0;
-			size_t i = segStart;
-			while (i < segEnd) {
-				const size_t glyphStart = i;
-				uint32_t cp = 0; int len = 0;
-				if (!DecodeUtf8(text, i, cp, len)) break;
-				i = i + static_cast<size_t>(len);
-				const GlyphMetrics* g = font.GetGlyph(cp);
-				if (!g) { prev = 0; continue; }
-				float advance = g->XAdvance;
-				if (prev != 0) advance += font.GetKerning(prev, cp);
-				if (glyphsOnLine > 0) advance += letterSpacing;
-				const float candidate = widthSinceLineStart + advance;
-				if (candidate > wrapWidthPixels && glyphsOnLine > 0) {
-					if (wrapMode == TextWrapMode::Word && lastBreakIdx != std::string_view::npos && lastBreakIdx > lineStartIdx) {
-						emitVisualLine(lineStartIdx, lastBreakIdx);
-						lineStartIdx = lastBreakIdx + 1;
-						i = lineStartIdx;
-						if (i >= segEnd) { lineStartIdx = i; break; }
-						widthSinceLineStart = 0.0f; lastBreakIdx = std::string_view::npos; prev = 0; glyphsOnLine = 0;
-						continue;
-					}
-					emitVisualLine(lineStartIdx, glyphStart);
-					lineStartIdx = glyphStart; i = glyphStart;
-					widthSinceLineStart = 0.0f; lastBreakIdx = std::string_view::npos; prev = 0; glyphsOnLine = 0;
-					continue;
-				}
-				widthSinceLineStart = candidate;
-				if (cp == ' ' || cp == '\t') lastBreakIdx = glyphStart;
-				prev = cp; ++glyphsOnLine;
-			}
-			if (lineStartIdx < segEnd) emitVisualLine(lineStartIdx, segEnd);
-		};
-		size_t segStart = 0;
-		const size_t textSize = text.size();
-		while (segStart <= textSize) {
-			size_t segEnd = text.find('\n', segStart);
-			if (segEnd == std::string_view::npos) segEnd = textSize;
-			wrapSegment(segStart, segEnd);
-			if (segEnd == textSize) break;
-			segStart = segEnd + 1;
-		}
+		TextLayout::VisualLines(font, text, letterSpacing, wrapMode, wrapWidthPixels, out);
 	}
 
-	void TextRenderer::EmitText(Font& font, std::string_view text,
-		float worldX, float worldY,
-		float scale, const Color& color,
-		TextAlignment alignment, TextVerticalAlignment verticalAlignment,
-		float letterSpacing, float lineSpacing,
-		TextWrapMode wrapMode, float wrapWidthPixels,
-		float rotation, Vec2 pivot,
-		bool hasTextureMask,
-		TextureHandle /*maskTextureHandle*/,
-		SpriteUVRect maskUvRect,
-		Vec2 maskRectMin,
-		Vec2 maskRectMax,
-		Vec2 maskPivot,
-		float maskRotation)
+	void TextRenderer::EmitText(const TextLayout::Layout& layout, const TextDrawCmd& command,
+		float offsetX, float offsetY, const Color& color,
+		const glm::mat4& mvp, const QuadVisibility::Clip& clip)
 	{
-		const bool applyRotation = rotation != 0.0f;
-		const float rotC = applyRotation ? std::cos(rotation) : 1.0f;
-		const float rotS = applyRotation ? std::sin(rotation) : 0.0f;
-		float maskRect[4]{ 0.0f, 0.0f, 0.0f, 0.0f };
-		float maskRot[4]{ 0.0f, 0.0f, 1.0f, 0.0f };
-		float maskUv[4]{ maskUvRect.U0, maskUvRect.V0, maskUvRect.U1, maskUvRect.V1 };
-		if (hasTextureMask) {
-			const float maskW = maskRectMax.x - maskRectMin.x;
-			const float maskH = maskRectMax.y - maskRectMin.y;
-			if (maskW > 0.0f && maskH > 0.0f) {
-				maskRect[0] = maskRectMin.x;
-				maskRect[1] = maskRectMin.y;
-				maskRect[2] = 1.0f / maskW;
-				maskRect[3] = 1.0f / maskH;
-				maskRot[0] = maskPivot.x;
-				maskRot[1] = maskPivot.y;
-				maskRot[2] = std::cos(-maskRotation);
-				maskRot[3] = std::sin(-maskRotation);
-			}
-		}
-		auto rot = [&](float x, float y) -> std::pair<float, float> {
-			if (!applyRotation) return { x, y };
-			const float dx = x - pivot.x;
-			const float dy = y - pivot.y;
-			return { pivot.x + rotC * dx - rotS * dy,
-			         pivot.y + rotS * dx + rotC * dy };
+		if (layout.Glyphs.empty()) return;
+		const float rotationC = std::cos(command.Rotation);
+		const float rotationS = std::sin(command.Rotation);
+		auto transform = [&](float x, float y) -> Vec2 {
+			const float px = command.X + offsetX + x * command.Scale;
+			const float py = command.Y + offsetY + y * command.Scale;
+			if (command.Rotation == 0.0f) return { px, py };
+			const float dx = px - command.Pivot.x;
+			const float dy = py - command.Pivot.y;
+			return { command.Pivot.x + rotationC * dx - rotationS * dy,
+				command.Pivot.y + rotationS * dx + rotationC * dy };
 		};
+		const std::array<Vec2, 4> bounds{ transform(layout.Min.x, layout.Min.y),
+			transform(layout.Max.x, layout.Min.y), transform(layout.Max.x, layout.Max.y),
+			transform(layout.Min.x, layout.Max.y) };
+		const auto visibility = QuadVisibility::Classify(bounds, mvp, clip);
+		if (visibility == QuadVisibility::Visibility::Outside) return;
 
-		const float lineHeight = (font.GetLineHeight() + lineSpacing) * scale;
-		ComputeVisualLines(font, text, letterSpacing, wrapMode, wrapWidthPixels, m_WrapScratch);
-
-		// Vertical alignment distributes the block of baselines around worldY.
-		// Top anchors the first baseline at worldY (block grows down), Bottom
-		// anchors the last baseline (block grows up), Middle centres the span.
-		// Single-line text is unaffected — callers pre-position worldY per line.
-		float vAlignOffset = 0.0f;
-		if (m_WrapScratch.size() > 1) {
-			const float blockSpan = static_cast<float>(m_WrapScratch.size() - 1) * lineHeight;
-			switch (verticalAlignment) {
-			case TextVerticalAlignment::Middle: vAlignOffset = blockSpan * 0.5f; break;
-			case TextVerticalAlignment::Bottom: vAlignOffset = blockSpan;        break;
-			case TextVerticalAlignment::Top:
-			default:                            vAlignOffset = 0.0f;             break;
+		TextVertex prototype;
+		prototype.R = color.r;
+		prototype.G = color.g;
+		prototype.B = color.b;
+		prototype.A = color.a;
+		prototype.MaskRot[2] = 1.0f;
+		prototype.MaskUv[0] = command.MaskUvRect.U0;
+		prototype.MaskUv[1] = command.MaskUvRect.V0;
+		prototype.MaskUv[2] = command.MaskUvRect.U1;
+		prototype.MaskUv[3] = command.MaskUvRect.V1;
+		if (command.HasTextureMask) {
+			const float width = command.MaskRectMax.x - command.MaskRectMin.x;
+			const float height = command.MaskRectMax.y - command.MaskRectMin.y;
+			if (width > 0.0f && height > 0.0f) {
+				prototype.MaskRect[0] = command.MaskRectMin.x;
+				prototype.MaskRect[1] = command.MaskRectMin.y;
+				prototype.MaskRect[2] = 1.0f / width;
+				prototype.MaskRect[3] = 1.0f / height;
+				prototype.MaskRot[0] = command.MaskPivot.x;
+				prototype.MaskRot[1] = command.MaskPivot.y;
+				prototype.MaskRot[2] = std::cos(-command.MaskRotation);
+				prototype.MaskRot[3] = std::sin(-command.MaskRotation);
 			}
 		}
-
-		for (size_t lineIndex = 0; lineIndex < m_WrapScratch.size(); ++lineIndex) {
-			const auto [lineBegin, lineEnd] = m_WrapScratch[lineIndex];
-			std::string_view line(text.data() + lineBegin, lineEnd - lineBegin);
-			const float lineWidth = MeasureLineWidth(font, line, letterSpacing) * scale;
-
-			float alignOffset = 0.0f;
-			switch (alignment) {
-			case TextAlignment::Center: alignOffset = -lineWidth * 0.5f; break;
-			case TextAlignment::Right:  alignOffset = -lineWidth; break;
-			case TextAlignment::Left:
-			default:                    alignOffset = 0.0f; break;
+		for (const TextLayout::Glyph& glyph : layout.Glyphs) {
+			const std::array<Vec2, 4> corners{ transform(glyph.X0, glyph.Y1),
+				transform(glyph.X1, glyph.Y1), transform(glyph.X1, glyph.Y0),
+				transform(glyph.X0, glyph.Y0) };
+			if (visibility != QuadVisibility::Visibility::Inside && !QuadVisibility::IsVisible(corners, mvp, clip)) continue;
+			if (m_Runs.empty() || m_Runs.back().Key.AtlasTexture != glyph.Atlas) {
+				GlyphRun run;
+				run.Key.AtlasTexture = glyph.Atlas;
+				run.VertexStart = m_Vertices.size();
+				m_Runs.push_back(run);
 			}
-
-			float penX = worldX + alignOffset;
-			const float baselineY = worldY + vAlignOffset - static_cast<float>(lineIndex) * lineHeight;
-
-			uint32_t prev = 0;
-			int glyphsOnLine = 0;
-			size_t i = 0;
-			while (i < line.size()) {
-				uint32_t cp = 0;
-				int len = 0;
-				if (!DecodeUtf8(line, i, cp, len)) break;
-				i += static_cast<size_t>(len);
-
-				const GlyphMetrics* g = font.GetGlyph(cp);
-				if (!g) { prev = 0; continue; }
-				if (prev != 0) penX += font.GetKerning(prev, cp) * scale;
-				if (glyphsOnLine > 0) penX += letterSpacing * scale;
-
-				if (g->Width > 0.0f && g->Height > 0.0f) {
-					const float x0 = penX + g->XOffset * scale;
-					const float y0 = baselineY - g->YOffset * scale;
-					const float x1 = x0 + g->Width * scale;
-					const float y1 = y0 - g->Height * scale;
-
-					auto [tlX, tlY] = rot(x0, y0);
-					auto [trX, trY] = rot(x1, y0);
-					auto [brX, brY] = rot(x1, y1);
-					auto [blX, blY] = rot(x0, y1);
-
-					auto makeVertex = [&](float x, float y, float u, float v) {
-						TextVertex vertex{ x, y, u, v, color.r, color.g, color.b, color.a };
-						std::memcpy(vertex.MaskRect, maskRect, sizeof(maskRect));
-						std::memcpy(vertex.MaskRot, maskRot, sizeof(maskRot));
-						std::memcpy(vertex.MaskUv, maskUv, sizeof(maskUv));
-						return vertex;
-					};
-
-					TextVertex vTL = makeVertex(tlX, tlY, g->U0, g->V0);
-					TextVertex vTR = makeVertex(trX, trY, g->U1, g->V0);
-					TextVertex vBR = makeVertex(brX, brY, g->U1, g->V1);
-					TextVertex vBL = makeVertex(blX, blY, g->U0, g->V1);
-
-					m_Vertices.push_back(vBL);
-					m_Vertices.push_back(vBR);
-					m_Vertices.push_back(vTR);
-					m_Vertices.push_back(vBL);
-					m_Vertices.push_back(vTR);
-					m_Vertices.push_back(vTL);
-				}
-				penX += g->XAdvance * scale;
-				++glyphsOnLine;
-				prev = cp;
+			m_Runs.back().VertexCount += k_VerticesPerGlyph;
+			const float us[]{ glyph.U0, glyph.U1, glyph.U1, glyph.U0 };
+			const float vs[]{ glyph.V1, glyph.V1, glyph.V0, glyph.V0 };
+			for (size_t i = 0; i < corners.size(); ++i) {
+				TextVertex vertex = prototype;
+				vertex.X = corners[i].x;
+				vertex.Y = corners[i].y;
+				vertex.U = us[i];
+				vertex.V = vs[i];
+				m_Vertices.push_back(vertex);
 			}
 		}
 	}
-
-	// ── Submit path ─────────────────────────────────────────────────────────
 
 	void TextDrawCmd::SetEffects(const TextRendererComponent& text, float unitsPerTextPixel)
 	{
@@ -868,6 +779,10 @@ namespace Funke {
 			WebGPUBackend::FlushCommands();
 		}
 		if (inst.PendingSubmitSerial != WebGPUBackend::GetFrameSubmitSerial()) {
+			// Retired font pages must not remain resident through cached bind groups.
+			std::erase_if(inst.BindGroups, [](const auto& entry) {
+				return !WebGPUBackend::LookupFontAtlas(entry.first.AtlasId);
+			});
 			inst.PendingSubmitSerial = WebGPUBackend::GetFrameSubmitSerial();
 			inst.VertexWriteOffset = 0;
 			inst.HasPendingMvp = false;
@@ -921,69 +836,74 @@ namespace Funke {
 				: defaultMaskTexture;
 		};
 
-		for (size_t i = 0; i < m_Order.size(); ) {
-			const TextDrawCmd& head = commands[m_Order[i]];
-			Run r;
-			r.AtlasId      = head.FontPtr->GetAtlasTexture();
-			r.MaskTextureHandle = resolveMaskHandle(head);
-			r.SortingLayer = head.SortingLayer;
-			r.SortingOrder = head.SortingOrder;
-			r.HasClip      = head.HasClip;
-			r.ClipMin      = head.ClipMin;
-			r.ClipMax      = head.ClipMax;
-			r.VertexStart  = m_Vertices.size();
-
-			size_t j = i;
-			while (j < m_Order.size()) {
-				const TextDrawCmd& cmd = commands[m_Order[j]];
-				if (cmd.FontPtr->GetAtlasTexture() != r.AtlasId
-					|| resolveMaskHandle(cmd) != r.MaskTextureHandle
-					|| cmd.SortingLayer != r.SortingLayer
-					|| cmd.SortingOrder != r.SortingOrder)
-					break;
-				if (!ClipsEqual(r.HasClip, r.ClipMin, r.ClipMax,
-					cmd.HasClip, cmd.ClipMin, cmd.ClipMax))
-					break;
-
-				auto emit = [&](float dx, float dy, const Color& color) {
-					EmitText(*cmd.FontPtr, cmd.Text, cmd.X + dx, cmd.Y + dy, cmd.Scale,
-						color, cmd.Align, cmd.VAlign, cmd.LetterSpacing, cmd.LineSpacing,
-						cmd.Wrap, cmd.WrapWidthPixels,
-						cmd.Rotation, cmd.Pivot,
-						cmd.HasTextureMask, cmd.MaskTextureHandle, cmd.MaskUvRect,
-						cmd.MaskRectMin, cmd.MaskRectMax, cmd.MaskPivot,
-						cmd.MaskRotation);
+		for (size_t commandIndex : m_Order) {
+			const TextDrawCmd& cmd = commands[commandIndex];
+			m_Runs.clear();
+			QuadVisibility::Clip clip;
+			if (cmd.HasClip) {
+				const ScissorPx sc = ComputeScissor(mvp, cmd.ClipMin, cmd.ClipMax, target.Width, target.Height);
+				if (!sc.Valid) continue;
+				uint32_t vx = 0, vy = 0, vw = target.Width, vh = target.Height;
+				WebGPUBackend::GetCachedViewport(vx, vy, vw, vh);
+				clip = QuadVisibility::FromScissor(sc.X, sc.Y, sc.W, sc.H, vx, vy, vw, vh);
+			}
+			const TextLayout::Settings settings{ cmd.LetterSpacing, cmd.LineSpacing, cmd.WrapWidthPixels,
+				cmd.Wrap, cmd.Align, cmd.VAlign };
+			const auto& layout = inst.Layouts.Get(cmd.FontPtr->GetAtlasTexture(), cmd.Text, settings,
+				[&](TextLayout::Layout& result) { TextLayout::Build(*cmd.FontPtr, cmd.Text, settings, result, m_WrapScratch); });
+			auto emit = [&](float dx, float dy, const Color& color) {
+				EmitText(layout, cmd, dx, dy, color, mvp, clip);
+			};
+			// Effects first so the text paints over them; they fade with the text.
+			if (cmd.ShadowColor.a > 0.0f && (cmd.ShadowOffset.x != 0.0f || cmd.ShadowOffset.y != 0.0f)) {
+				Color shadow = cmd.ShadowColor;
+				shadow.a *= cmd.Tint.a;
+				emit(cmd.ShadowOffset.x, cmd.ShadowOffset.y, shadow);
+			}
+			if (cmd.OutlineWidth > 0.0f && cmd.OutlineColor.a > 0.0f) {
+				Color outline = cmd.OutlineColor;
+				outline.a *= cmd.Tint.a;
+				constexpr float k_Diagonal = 0.70710678f;
+				static constexpr float k_Ring[8][2] = {
+					{ 1.0f, 0.0f }, { -1.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, -1.0f },
+					{ k_Diagonal, k_Diagonal }, { -k_Diagonal, k_Diagonal },
+					{ k_Diagonal, -k_Diagonal }, { -k_Diagonal, -k_Diagonal },
 				};
-				// Effects first so the text paints over them; they fade with the text.
-				if (cmd.ShadowColor.a > 0.0f && (cmd.ShadowOffset.x != 0.0f || cmd.ShadowOffset.y != 0.0f)) {
-					Color shadow = cmd.ShadowColor;
-					shadow.a *= cmd.Tint.a;
-					emit(cmd.ShadowOffset.x, cmd.ShadowOffset.y, shadow);
+				for (const auto& direction : k_Ring) {
+					emit(direction[0] * cmd.OutlineWidth, direction[1] * cmd.OutlineWidth, outline);
 				}
-				if (cmd.OutlineWidth > 0.0f && cmd.OutlineColor.a > 0.0f) {
-					Color outline = cmd.OutlineColor;
-					outline.a *= cmd.Tint.a;
-					constexpr float k_Diagonal = 0.70710678f;
-					static constexpr float k_Ring[8][2] = {
-						{ 1.0f, 0.0f }, { -1.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, -1.0f },
-						{ k_Diagonal, k_Diagonal }, { -k_Diagonal, k_Diagonal },
-						{ k_Diagonal, -k_Diagonal }, { -k_Diagonal, -k_Diagonal },
-					};
-					for (const auto& direction : k_Ring) {
-						emit(direction[0] * cmd.OutlineWidth, direction[1] * cmd.OutlineWidth, outline);
+			}
+			emit(0.0f, 0.0f, cmd.Tint);
+			for (const GlyphRun& glyphRun : m_Runs) {
+				Run run;
+				run.AtlasId = glyphRun.Key.AtlasTexture;
+				run.MaskTextureHandle = resolveMaskHandle(cmd);
+				run.SortingLayer = cmd.SortingLayer;
+				run.SortingOrder = cmd.SortingOrder;
+				run.HasClip = cmd.HasClip;
+				run.ClipMin = cmd.ClipMin;
+				run.ClipMax = cmd.ClipMax;
+				run.VertexStart = glyphRun.VertexStart;
+				run.VertexCount = glyphRun.VertexCount;
+				if (!runs.empty()) {
+					auto& previous = runs.back();
+					if (previous.AtlasId == run.AtlasId && previous.MaskTextureHandle == run.MaskTextureHandle
+						&& previous.SortingLayer == run.SortingLayer && previous.SortingOrder == run.SortingOrder
+						&& ClipsEqual(previous.HasClip, previous.ClipMin, previous.ClipMax, run.HasClip, run.ClipMin, run.ClipMax)) {
+						previous.VertexCount += run.VertexCount;
+						continue;
 					}
 				}
-				emit(0.0f, 0.0f, cmd.Tint);
-				++j;
+				runs.push_back(run);
 			}
-			r.VertexCount = m_Vertices.size() - r.VertexStart;
-			if (r.VertexCount > 0) runs.push_back(r);
-			i = j;
 		}
 
 		if (m_Vertices.empty() || runs.empty()) return;
 
-		const uint32_t totalBytes = static_cast<uint32_t>(m_Vertices.size() * sizeof(TextVertex));
+		const size_t byteCount = m_Vertices.size() * sizeof(TextVertex);
+		if (byteCount > UINT32_MAX - inst.VertexWriteOffset) return;
+		const uint32_t totalBytes = static_cast<uint32_t>(byteCount);
+		if (!EnsureIndexBuffer(device, queue, inst, m_Vertices.size() / k_VerticesPerGlyph)) return;
 		const WGPUBuffer previousBuffer = inst.VertexBuffer.Get();
 		if (!EnsureVertexBuffer(device, inst, inst.VertexWriteOffset + totalBytes)) return;
 		// A regrown buffer is a fresh object; passes already recorded keep the old one alive.
@@ -1022,6 +942,7 @@ namespace Funke {
 		WebGPUBackend::ApplyCachedViewportToPass(pass);
 		pass.SetPipeline(pipeline);
 		pass.SetVertexBuffer(0, inst.VertexBuffer, vertexOffset, totalBytes);
+		pass.SetIndexBuffer(inst.IndexBuffer, wgpu::IndexFormat::Uint32);
 		pass.SetScissorRect(0, 0, target.Width, target.Height);
 
 		bool scissorIsFull = true;
@@ -1042,10 +963,8 @@ namespace Funke {
 			}
 
 			pass.SetBindGroup(0, bg);
-			pass.Draw(static_cast<uint32_t>(r.VertexCount),
-				/*instanceCount=*/1,
-				/*firstVertex=*/static_cast<uint32_t>(r.VertexStart),
-				/*firstInstance=*/0);
+			pass.DrawIndexed(static_cast<uint32_t>(r.VertexCount / k_VerticesPerGlyph * k_IndicesPerGlyph),
+				1, 0, static_cast<int32_t>(r.VertexStart), 0);
 			++m_LastFrameDrawCalls;
 		}
 

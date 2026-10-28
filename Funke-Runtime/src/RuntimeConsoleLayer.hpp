@@ -11,7 +11,7 @@ struct ImGuiInputTextCallbackData;
 namespace Funke {
 
 	// Dev console window of Debug/Development builds: ` (the key left of 1) or a three-finger tap opens it,
-	// Esc closes it; F8 toggles the physics debug overlay. Commands come from DevConsole.
+	// Commands come from DevConsole; keyboard defaults live in PlatformShortcuts.
 	class RuntimeConsoleLayer : public Layer {
 	public:
 		using Layer::Layer;

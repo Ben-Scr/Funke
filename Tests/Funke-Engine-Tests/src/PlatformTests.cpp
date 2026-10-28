@@ -7,6 +7,7 @@
 #include "Core/KeyCode.hpp"
 #include "Core/MouseButton.hpp"
 #include "Core/Platform.hpp"
+#include "Core/PlatformShortcuts.hpp"
 #include "Core/Platform/SDLInputMapping.hpp"
 #include "Core/Platform/TitlebarRegions.hpp"
 #include "Utils/Hash.hpp"
@@ -20,6 +21,44 @@
 #include <string>
 
 using namespace Funke;
+
+TEST_CASE("Platform shortcuts require their exact modifiers and stay distinct") {
+	using namespace PlatformShortcuts;
+	const Binding bindings[] = { k_Minimize, k_Fullscreen, k_Stats, k_Logs, k_PhysicsDebug, k_Profiler };
+	for (size_t i = 0; i < std::size(bindings); ++i) {
+		for (int mask = 0; mask < 16; ++mask) {
+			const auto modifiers = static_cast<Modifiers>(mask);
+			CHECK(Matches(bindings[i], bindings[i].Key, modifiers) == (modifiers == bindings[i].RequiredModifiers));
+		}
+		CHECK_FALSE(Matches(bindings[i], KeyCode::Esc, bindings[i].RequiredModifiers));
+		for (size_t j = i + 1; j < std::size(bindings); ++j) {
+			CHECK_FALSE(Matches(bindings[i], bindings[j].Key, bindings[j].RequiredModifiers));
+		}
+	}
+}
+
+TEST_CASE("Platform shortcuts select native desktop defaults at compile time") {
+	using namespace PlatformShortcuts;
+#if defined(FNK_PLATFORM_MACOS)
+	CHECK(k_PrimaryLeft == KeyCode::LeftSuper);
+	CHECK(k_PrimaryRight == KeyCode::RightSuper);
+	CHECK(Matches(k_Minimize, KeyCode::M, Modifiers::Super));
+	CHECK(Matches(k_Fullscreen, KeyCode::F, Modifiers::Control | Modifiers::Super));
+	CHECK(Matches(k_Stats, KeyCode::Alpha6, Modifiers::Super | Modifiers::Shift));
+	CHECK(Matches(k_Logs, KeyCode::Alpha7, Modifiers::Super | Modifiers::Shift));
+	CHECK(Matches(k_PhysicsDebug, KeyCode::Alpha8, Modifiers::Super | Modifiers::Shift));
+	CHECK(Matches(k_Profiler, KeyCode::P, Modifiers::Super | Modifiers::Shift));
+#else
+	CHECK(k_PrimaryLeft == KeyCode::LeftControl);
+	CHECK(k_PrimaryRight == KeyCode::RightControl);
+	CHECK(Matches(k_Minimize, KeyCode::M, Modifiers::Control));
+	CHECK(Matches(k_Fullscreen, KeyCode::F11, Modifiers::None));
+	CHECK(Matches(k_Stats, KeyCode::F6, Modifiers::None));
+	CHECK(Matches(k_Logs, KeyCode::F7, Modifiers::None));
+	CHECK(Matches(k_PhysicsDebug, KeyCode::F8, Modifiers::None));
+	CHECK(Matches(k_Profiler, KeyCode::F6, Modifiers::Control));
+#endif
+}
 
 TEST_CASE("SHA-256 matches the FIPS 180-4 test vectors") {
 	CHECK(Hash::Sha256OfBytes("", 0) ==

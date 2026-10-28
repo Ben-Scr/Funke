@@ -22,8 +22,8 @@ if ($metadata.schemaVersion -ne 1 -or -not $metadata.version -or -not $metadata.
 if ($metadata.commit -notmatch '^[0-9a-f]{40,64}$') {
     throw "Build metadata does not contain a full Git commit ID."
 }
-if ($RequireReleaseIdentity -and ($metadata.dirty -or $metadata.buildId -match '\.dirty(?:\.|$)')) {
-    throw "A tagged release cannot use dirty build metadata."
+if ($RequireReleaseIdentity -and ($metadata.dirty -or $metadata.buildId -match '\.(dirty|dev)(?:\.|$)' -or $metadata.identityScope -eq 'engine')) {
+    throw "A tagged release cannot use dirty or development-scoped build metadata."
 }
 
 $bundledMetadataPath = Join-Path $bundle "BuildMetadata.json"

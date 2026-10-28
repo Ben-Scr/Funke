@@ -10,6 +10,8 @@
 #endif
 #include "Core/Log.hpp"
 #include "Graphics/TextureEntry.hpp"
+#include "Graphics/TextureLoadKey.hpp"
+#include "Graphics/SceneTextureReferences.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Serialization/Path.hpp"
 
@@ -72,17 +74,7 @@ namespace Funke {
 		// (assetId, filter, wrapU, wrapV) → handle of an already-resolved file texture. Spares the
 		// path resolve + .meta read/parse (sheet metas hold thousands of slices) on every repeat load.
 		// Stale handles fail IsValid; sampler edits go through ApplyMetaSamplerToLoaded, which clears it.
-		struct UuidLoadEntry {
-			std::uint64_t AssetId = 0;
-			TextureHandle Handle;
-		};
-		std::unordered_map<std::uint64_t, UuidLoadEntry> g_UuidLoadCache;
-
-		std::uint64_t UuidLoadKey(std::uint64_t assetId, Filter filter, Wrap u, Wrap v) {
-			std::uint64_t key = assetId * 0x9E3779B97F4A7C15ULL;
-			key ^= (static_cast<std::uint64_t>(filter) << 16) | (static_cast<std::uint64_t>(u) << 8) | static_cast<std::uint64_t>(v);
-			return key;
-		}
+		std::unordered_map<TextureLoadKey, TextureHandle, TextureLoadKeyHash> g_UuidLoadCache;
 
 		// Pre-canonicalized key per slot; avoids N stat() syscalls per FileWatcher tick on hot-reload.
 		std::vector<std::string> g_CanonicalKeys;
@@ -237,9 +229,9 @@ namespace Funke {
 		// miss in s_KnownMissingIds). Don't MarkDirty()+Sync() here: MarkDirty clears that
 		// negative cache, so a dangling GUID would force a full O(N) Assets/ rescan ×3, and
 		// re-arm every other missing GUID to rescan too.
-		const std::uint64_t cacheKey = UuidLoadKey(assetId, filter, u, v);
+		const TextureLoadKey cacheKey{ assetId, filter, u, v };
 		if (auto cached = g_UuidLoadCache.find(cacheKey); cached != g_UuidLoadCache.end()) {
-			if (cached->second.AssetId == assetId && IsValid(cached->second.Handle)) return cached->second.Handle;
+			if (IsValid(cached->second)) return cached->second;
 			g_UuidLoadCache.erase(cached);
 		}
 
@@ -253,7 +245,7 @@ namespace Funke {
 			v      = meta.Import.WrapV;
 		}
 		const TextureHandle handle = LoadTexture(path, filter, u, v);
-		if (IsValid(handle)) g_UuidLoadCache[cacheKey] = UuidLoadEntry{ assetId, handle };
+		if (IsValid(handle)) g_UuidLoadCache[cacheKey] = handle;
 		return handle;
 	}
 
@@ -514,8 +506,10 @@ namespace Funke {
 			emit(handle);
 		}
 
-		SceneManager::ForeachLoadedScene([&emit](Scene& scene) {
+		std::unordered_set<uint64_t> indirectTextures;
+		SceneManager::ForeachLoadedScene([&](Scene& scene) {
 			entt::registry& registry = scene.GetRegistry();
+			CollectIndirectSceneTextureReferences(scene, [&](uint64_t guid) { indirectTextures.insert(guid); });
 
 #if FUNKE_WITH_2D
 			auto sprites = registry.view<SpriteRendererComponent>();
@@ -536,6 +530,12 @@ namespace Funke {
 			}
 #endif
 		});
+		if (!indirectTextures.empty()) {
+			for (size_t i = 0; i < s_Textures.size(); ++i) {
+				const TextureHandle handle{ static_cast<uint16_t>(i), s_Textures[i].Generation };
+				if (IsValid(handle) && indirectTextures.contains(GetTextureAssetUUID(handle))) emit(handle);
+			}
+		}
 
 		const std::vector<ProviderEntry> providers = g_Providers;
 		for (const ProviderEntry& provider : providers) {

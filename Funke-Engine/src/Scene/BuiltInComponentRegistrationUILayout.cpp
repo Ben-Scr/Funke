@@ -52,7 +52,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			Properties::Make("RingThickness",  "Ring Thickness",&CircularSliderComponent::RingThickness,
 				Properties::Meta::Clamp(0.5, 1024.0, 0.5f)),
 			Properties::Make("RingSegments",   "Ring Segments", &CircularSliderComponent::RingSegments,
-				Properties::Meta::Clamp(8.0, 256.0, 1.0f)),
+				Properties::Meta::ReadOnly().WithTooltip("Legacy setting. Circular sliders now render smooth arcs at any resolution.")),
 			Properties::Make("BackgroundColor", "Background", &CircularSliderComponent::BackgroundColor,
 				Properties::Meta::Header("Visual")),
 			Properties::Make("FillColor",       "Fill",       &CircularSliderComponent::FillColor),

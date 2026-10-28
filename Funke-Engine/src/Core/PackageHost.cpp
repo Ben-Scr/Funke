@@ -312,8 +312,16 @@ namespace Funke {
 		}
 
 		std::vector<PackageManifest> DiscoverPackageManifests(const FunkeProject& project) {
+			const std::string engineRoot = FunkeProject::GetEngineRootDir();
+			return DiscoverPackageManifests(project, engineRoot.empty()
+				? std::filesystem::path{} : Path::FromUtf8(engineRoot) / "packages");
+		}
+
+		std::vector<PackageManifest> DiscoverPackageManifests(const FunkeProject& project,
+			const std::filesystem::path& enginePackagesRoot) {
 			std::vector<PackageManifest> manifests;
-			auto scan = [&](const std::filesystem::path& root) {
+			std::unordered_set<std::string> projectPackageNames;
+			auto scan = [&](const std::filesystem::path& root, bool asFallback) {
 				std::error_code ec;
 				if (root.empty() || !std::filesystem::is_directory(root, ec)) return;
 				std::vector<std::filesystem::path> folders;
@@ -323,10 +331,15 @@ namespace Funke {
 					}
 				}
 				std::sort(folders.begin(), folders.end());
+				std::unordered_set<std::string> namesInRoot;
 				for (const auto& folder : folders) {
 					PackageManifest manifest;
 					std::string error;
 					if (PackageManifest::TryLoad(PathToUtf8(folder), manifest, &error)) {
+						if (!namesInRoot.insert(manifest.Name).second) {
+							FNK_CORE_WARN_TAG("PackageHost", "Duplicate package '{}' in {}", manifest.Name, PathToUtf8(root));
+						}
+						if (asFallback && projectPackageNames.contains(manifest.Name)) continue;
 						manifests.push_back(std::move(manifest));
 					}
 					else {
@@ -334,9 +347,9 @@ namespace Funke {
 					}
 				}
 			};
-			const std::string engineRoot = FunkeProject::GetEngineRootDir();
-			if (!engineRoot.empty()) scan(std::filesystem::path(Path::FromUtf8(engineRoot)) / "packages");
-			if (!project.PackagesDirectory.empty()) scan(Path::FromUtf8(project.PackagesDirectory));
+			if (!project.PackagesDirectory.empty()) scan(Path::FromUtf8(project.PackagesDirectory), false);
+			for (const PackageManifest& manifest : manifests) projectPackageNames.insert(manifest.Name);
+			if (!enginePackagesRoot.empty()) scan(enginePackagesRoot, true);
 			return manifests;
 		}
 

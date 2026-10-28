@@ -9,7 +9,6 @@
         "src/Components/General/Transform2DComponent.*",
         "src/Components/Graphics/Camera2DComponent.*",
         "src/Components/Graphics/SpriteRendererComponent.hpp",
-        "src/Components/Graphics/SpriteAnimator2DComponent.hpp",
         "src/Components/Graphics/TerrainRenderer2DComponent.hpp",
         "src/Components/Graphics/ParticleSystem2DComponent.*",
         "src/Components/Physics/**",
@@ -30,7 +29,6 @@
         "src/Scene/EntityPicker.*",
         "src/Scripting/ScriptBindings2D.cpp",
         "src/Systems/TransformHierarchySystem.*",
-        "src/Systems/SpriteAnimationSystem.*",
         "src/Systems/ParticleUpdateSystem.*"
       ]
     },

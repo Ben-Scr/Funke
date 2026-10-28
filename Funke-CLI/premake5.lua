@@ -38,7 +38,7 @@ project "Funke-CLI"
 
     -- FunkeAssets: `create` copies them into new projects and builds stage them. ScriptCore: `create`
     -- seeds Packages/Funke-ScriptCore from the copy next to the exe.
-    postbuildcommands { CopyFunkeAssets, CopyFunkeEngineDll, CopySDL3SharedLib, CopyGladDll }
+    postbuildcommands { CopyFunkeAssets, CopyFunkeEngineDll, CopySDL3SharedLib }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
     dependson(FunkeManagedDependencies({ "Funke-ScriptCore" }))
     postbuildcommands(CopyScriptCoreArtifacts)

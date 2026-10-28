@@ -130,7 +130,11 @@ You don't load the same file twice. Each asset type has a **manager** (Texture M
 
 Handles are designed to be safe: if an asset is unloaded and its slot later reused, old handles won't accidentally point at the new asset (each slot carries a generation counter).
 
-Fonts are cached per **pixel size** — text at 16px and 48px are baked into separate GPU textures, because each size needs its own glyphs.
+The built-in default font is **IBM Plex Sans Condensed Regular**. Its stable asset GUID is unchanged, so existing references to the engine default resolve to IBM Plex. Explicit project, text-component and Editor font selections continue to take precedence.
+
+Fonts are cached per **pixel size** — text at 16px and 48px has separate glyph atlases. ASCII and Latin-1 are baked initially; other Unicode glyphs are rasterized from the same font file and uploaded on first use, then reused from the cache. Additional atlas pages keep existing glyph positions stable and count toward the Font Manager's cache budget. Each size allows up to 16 MiB of additional pages and 65,536 dynamic glyph entries; exceeding those limits uses replacement glyphs.
+
+Assign a font that contains the characters you need. The engine does not automatically search other fonts: missing glyphs use the assigned font's U+FFFD replacement character or `?`. Glyphs are loaded synchronously on first use, so displaying a new language can incur rasterization and upload work. Unicode character coverage does not add complex-script shaping, bidirectional layout or color-emoji support.
 
 ### Hot-reload (editor)
 

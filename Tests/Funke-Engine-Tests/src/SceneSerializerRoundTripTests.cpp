@@ -12,16 +12,25 @@
 #include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Core/UUID.hpp"
+#include "Core/Application.hpp"
 #include "Graphics/Filter.hpp"
+#include "Project/ProjectManager.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/EntityHelper.hpp"
 #include "Scene/Scene.hpp"
+#include "Scene/SceneManager.hpp"
+#include "Scene/BuiltInComponentRegistration.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Serialization/Json.hpp"
+#include "Serialization/File.hpp"
+#include "Serialization/Path.hpp"
+#include "Serialization/PrefabTemplateCache.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/SceneSerializerShared.hpp"
 
+#include <chrono>
 #include <filesystem>
+#include <future>
 #include <system_error>
 
 using namespace Funke;
@@ -549,6 +558,72 @@ TEST_CASE("Scene file round-trip (JSON) preserves entities, hierarchy, component
 	std::filesystem::remove(path, ec);
 }
 
+TEST_CASE("Scene file preparation runs off-thread and applies after the source file is removed")
+{
+	SceneSerializationFormat format = SceneSerializationFormat::Json;
+	SUBCASE("JSON") {}
+	SUBCASE("Binary") { format = SceneSerializationFormat::Binary; }
+	const std::filesystem::path path =
+		std::filesystem::temp_directory_path() / "funke_test_scene_prepared.scene";
+	{
+		auto source = Scene::CreateDetachedScene("PreparedSource");
+		BuildHierarchyScene(*source);
+		REQUIRE(SceneSerializer::SaveToFile(*source, path.string(), format));
+	}
+
+	auto target = Scene::CreateDetachedScene("PreparedTarget");
+	const EntityHandle sentinel = target->CreateEntity("Sentinel").GetHandle();
+	Json::Value prepared;
+	std::string error;
+	auto preparation = std::async(std::launch::async, [&] {
+		return SceneSerializer::PrepareFile(path.string(), prepared, &error);
+	});
+	REQUIRE(preparation.get());
+	CHECK(error.empty());
+	CHECK(target->GetName() == "PreparedTarget");
+	CHECK(target->IsValid(sentinel));
+	CHECK(target->GetEntityCount() == 1);
+	REQUIRE(std::filesystem::remove(path));
+
+	REQUIRE(SceneSerializer::DeserializeScene(*target, prepared, path.string()));
+	CHECK(target->GetName() == "PreparedSource");
+	VerifyHierarchyScene(*target);
+}
+
+TEST_CASE("Scene file preparation rejects invalid data without replacing its output")
+{
+	const std::filesystem::path path =
+		std::filesystem::temp_directory_path() / "funke_test_scene_prepared_invalid.scene";
+	Json::Value root = Json::Value::MakeObject();
+	root.AddMember("version", 1);
+	root.AddMember("entities", Json::Value::MakeArray());
+	SceneSerializationFormat format = SceneSerializationFormat::Json;
+	bool truncate = false;
+	SUBCASE("Future JSON version") { root.AddMember("version", 2); }
+	SUBCASE("Future binary version") {
+		root.AddMember("version", 2);
+		format = SceneSerializationFormat::Binary;
+	}
+	SUBCASE("Invalid system header") { root.AddMember("systems", false); }
+	SUBCASE("Truncated binary payload") {
+		format = SceneSerializationFormat::Binary;
+		truncate = true;
+	}
+	REQUIRE(SceneSerializerStorage::WriteRootToFile(path.string(), root, format));
+	if (truncate) std::filesystem::resize_file(path, std::filesystem::file_size(path) - 1);
+
+	Json::Value prepared("PreservePreviousResult");
+	std::string error;
+	auto preparation = std::async(std::launch::async, [&] {
+		return SceneSerializer::PrepareFile(path.string(), prepared, &error);
+	});
+	CHECK_FALSE(preparation.get());
+	CHECK_FALSE(error.empty());
+	CHECK(prepared.AsStringOr() == "PreservePreviousResult");
+	std::error_code ec;
+	std::filesystem::remove(path, ec);
+}
+
 TEST_CASE("RectTransform2D Ignore Safe Area and Fill Parent survive both serialize ladders")
 {
 	auto scene = Scene::CreateDetachedScene("RoundTrip Safe Area");
@@ -657,4 +732,185 @@ TEST_CASE("Transform2D is written first and Camera2D round-trips through the reg
 	REQUIRE(SceneSerializer::ResetComponent(*scene, clone, "Camera2D"));
 	CHECK(scene->GetComponent<Camera2DComponent>(clone).GetOrthographicSize() == doctest::Approx(5.0f));
 	CHECK(scene->GetComponent<Camera2DComponent>(clone).IsPostProcessingEnabled());
+}
+
+namespace {
+	struct PrefabCacheProject {
+		std::filesystem::path Root;
+		std::unique_ptr<FunkeProject> Previous;
+
+		PrefabCacheProject() {
+			SceneSerializer::ClearCachedPrefabRoots();
+			PrefabTemplateCache::Get().InvalidateAll();
+			if (const auto* previous = ProjectManager::GetCurrentProject()) {
+				Previous = std::make_unique<FunkeProject>(*previous);
+			}
+			Root = std::filesystem::temp_directory_path() / ("FunkePrefabCache_" +
+				std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+			std::filesystem::create_directories(Root / "Assets");
+			auto project = std::make_unique<FunkeProject>();
+			project->Name = "Prefab cache";
+			project->RootDirectory = Path::ToUtf8(Root);
+			project->AssetsDirectory = Path::ToUtf8(Root / "Assets");
+			ProjectManager::SetCurrentProject(std::move(project));
+		}
+
+		~PrefabCacheProject() {
+			SceneSerializer::ClearCachedPrefabRoots();
+			PrefabTemplateCache::Get().InvalidateAll();
+			ProjectManager::SetCurrentProject(std::move(Previous));
+			std::error_code error;
+			std::filesystem::remove_all(Root, error);
+		}
+
+		std::string PathTo(const char* name) const {
+			return Path::ToUtf8(Root / "Assets" / name);
+		}
+
+		bool Write(const char* name, uint64_t guid, const Json::Value& root) const {
+			Json::Value meta = Json::Value::MakeObject();
+			meta.AddMember("AssetGUID", Json::Value(std::to_string(guid)));
+			meta.AddMember("kind", Json::Value("Prefab"));
+			return File::WriteAllText(PathTo(name), Json::Stringify(root)) &&
+				File::WriteAllText(PathTo(name) + ".meta", Json::Stringify(meta));
+		}
+
+		bool WriteSource(int x = 1, int y = 2) const {
+			Json::Value transform = Json::Value::MakeObject();
+			transform.AddMember("posX", Json::Value(x));
+			transform.AddMember("posY", Json::Value(y));
+			Json::Value entity = Json::Value::MakeObject();
+			entity.AddMember("uuid", Json::Value("10001"));
+			entity.AddMember("name", Json::Value("Source"));
+			entity.AddMember("Transform2D", std::move(transform));
+			Json::Value root = Json::Value::MakeObject();
+			root.AddMember("Entity", std::move(entity));
+			return Write("source.prefab", 791001, root);
+		}
+	};
+}
+
+TEST_CASE("Prefab root cache keeps shared live scenes and releases destroyed instances")
+{
+	PrefabCacheProject project;
+	REQUIRE(project.WriteSource());
+	auto first = Scene::CreateDetachedScene("First prefab owner");
+	auto second = Scene::CreateDetachedScene("Second prefab owner");
+	REQUIRE(SceneSerializer::InstantiatePrefab(*first, 791001) != entt::null);
+	const EntityHandle secondInstance = SceneSerializer::InstantiatePrefab(*second, 791001);
+	REQUIRE(secondInstance != entt::null);
+	CHECK(SceneSerializer::PurgeUnusedCachedPrefabRoots(true) == 0);
+	first.reset();
+	CHECK(SceneSerializer::PurgeUnusedCachedPrefabRoots(true) == 0);
+	second->DestroyEntity(secondInstance);
+	CHECK(SceneSerializer::PurgeUnusedCachedPrefabRoots(true) == 1);
+	CHECK(SceneSerializer::PurgeUnusedCachedPrefabRoots(true) == 0);
+}
+
+TEST_CASE("Prefab root cache retains inherited sources until the detached owner dies")
+{
+	PrefabCacheProject project;
+	REQUIRE(project.WriteSource());
+	Json::Value intermediate = Json::Value::MakeObject();
+	intermediate.AddMember("PrefabRef", Json::Value(uint64_t(791001)));
+	REQUIRE(project.Write("intermediate.prefab", 791002, intermediate));
+	Json::Value derived = Json::Value::MakeObject();
+	derived.AddMember("PrefabRef", Json::Value("intermediate.prefab"));
+	REQUIRE(project.Write("derived.prefab", 791003, derived));
+	auto scene = Scene::CreateDetachedScene("Inherited prefab owner");
+	REQUIRE(SceneSerializer::InstantiatePrefab(*scene, 791003) != entt::null);
+	CHECK(SceneSerializer::PurgeUnusedCachedPrefabRoots(true) == 0);
+	scene.reset();
+	CHECK(SceneSerializer::PurgeUnusedCachedPrefabRoots(true) == 3);
+}
+
+TEST_CASE("Prefab root collection preserves the oldest external refresh baseline")
+{
+	PrefabCacheProject project;
+	REQUIRE(project.WriteSource());
+	auto scene = Scene::CreateDetachedScene("External prefab owner");
+	EntityHandle instance = SceneSerializer::InstantiatePrefab(*scene, 791001);
+	REQUIRE(instance != entt::null);
+	scene->GetComponent<Transform2DComponent>(instance).SetPosition({ 1.0f, 71.0f });
+	REQUIRE(project.WriteSource(12345, 222));
+	Json::Value overrides;
+	REQUIRE(SceneSerializer::ComputeInstanceOverrides(*scene, instance, overrides));
+	REQUIRE(project.WriteSource(678901, 3333));
+	REQUIRE(SceneSerializer::ComputeInstanceOverrides(*scene, instance, overrides));
+	CHECK(SceneSerializer::PurgeUnusedCachedPrefabRoots(true) == 0);
+	auto changes = SceneSerializer::TakeExternallyChangedPrefabs();
+	REQUIRE(changes.size() == 1);
+	REQUIRE(changes.front().PreviousRoot);
+	instance = SceneSerializer::RefreshPrefabInstance(*scene, instance, *changes.front().PreviousRoot);
+	REQUIRE(instance != entt::null);
+	const auto& transform = scene->GetComponent<Transform2DComponent>(instance);
+	CHECK(transform.LocalPosition.x == doctest::Approx(678901.0f));
+	CHECK(transform.LocalPosition.y == doctest::Approx(71.0f));
+}
+
+TEST_CASE("Prefab root collection discards external changes without a live owner")
+{
+	PrefabCacheProject project;
+	REQUIRE(project.WriteSource());
+	auto scene = Scene::CreateDetachedScene("Expired prefab owner");
+	const EntityHandle instance = SceneSerializer::InstantiatePrefab(*scene, 791001);
+	REQUIRE(instance != entt::null);
+	REQUIRE(project.WriteSource(12345));
+	Json::Value overrides;
+	REQUIRE(SceneSerializer::ComputeInstanceOverrides(*scene, instance, overrides));
+	scene.reset();
+	CHECK(SceneSerializer::PurgeUnusedCachedPrefabRoots(true) == 1);
+	CHECK(SceneSerializer::TakeExternallyChangedPrefabs().empty());
+}
+
+TEST_CASE("Prefab cache clear preserves tracking for surviving detached scenes")
+{
+	PrefabCacheProject project;
+	REQUIRE(project.WriteSource());
+	auto scene = Scene::CreateDetachedScene("Surviving prefab owner");
+	const EntityHandle instance = SceneSerializer::InstantiatePrefab(*scene, 791001);
+	REQUIRE(instance != entt::null);
+	SceneSerializer::ClearCachedPrefabRoots();
+	Json::Value overrides;
+	REQUIRE(SceneSerializer::ComputeInstanceOverrides(*scene, instance, overrides));
+	CHECK(SceneSerializer::PurgeUnusedCachedPrefabRoots(true) == 0);
+	scene.reset();
+	CHECK(SceneSerializer::PurgeUnusedCachedPrefabRoots(true) == 1);
+}
+TEST_CASE("Prefab root eviction invalidates baked spawns and restores external refresh baselines")
+{
+	Application application;
+	RegisterBuiltInComponents(SceneManager::GetComponentRegistry());
+	PrefabCacheProject project;
+	REQUIRE(project.WriteSource());
+	auto first = Scene::CreateDetachedScene("Baked prefab source");
+	const EntityHandle source = SceneSerializer::InstantiatePrefab(*first, 791001);
+	REQUIRE(source != entt::null);
+	REQUIRE(first->HasComponent<Transform2DComponent>(source));
+	CHECK(first->GetComponent<Transform2DComponent>(source).LocalPosition.x == doctest::Approx(1.0f));
+	PrefabTemplateCache& cache = PrefabTemplateCache::Get();
+	const auto baked = cache.Find(791001);
+	REQUIRE(baked);
+	REQUIRE(baked->bakeable);
+	auto second = Scene::CreateDetachedScene("Baked prefab owner");
+	const EntityHandle hydrated = cache.Hydrate(791001, *second);
+	REQUIRE(hydrated != entt::null);
+	REQUIRE(second->HasComponent<Transform2DComponent>(hydrated));
+	CHECK(second->GetComponent<Transform2DComponent>(hydrated).LocalPosition.x == doctest::Approx(1.0f));
+	first.reset();
+	CHECK(SceneSerializer::PurgeUnusedCachedPrefabRoots(true) == 0);
+	second->ClearEntities();
+	CHECK(SceneSerializer::PurgeUnusedCachedPrefabRoots(true) == 1);
+	CHECK_FALSE(cache.Find(791001));
+	REQUIRE(project.WriteSource(12345));
+	EntityHandle instance = SceneSerializer::InstantiatePrefab(*second, 791001);
+	REQUIRE(instance != entt::null);
+	CHECK(second->GetComponent<Transform2DComponent>(instance).LocalPosition.x == doctest::Approx(12345.0f));
+	REQUIRE(project.WriteSource(678901));
+	CHECK(SceneSerializer::PurgeUnusedCachedPrefabRoots(true) == 0);
+	auto changes = SceneSerializer::TakeExternallyChangedPrefabs();
+	REQUIRE(changes.size() == 1);
+	instance = SceneSerializer::RefreshPrefabInstance(*second, instance, *changes.front().PreviousRoot);
+	REQUIRE(instance != entt::null);
+	CHECK(second->GetComponent<Transform2DComponent>(instance).LocalPosition.x == doctest::Approx(678901.0f));
 }

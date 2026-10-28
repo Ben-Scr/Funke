@@ -15,7 +15,7 @@ internal sealed class JobBox<TJob> : JobNativeDispatch.IJobBox where TJob : stru
     internal CancellationToken Token;
     internal readonly Action ExecuteAction;
 
-    public ulong NativeHandle { get; set; }
+    public ulong ExceptionKey { get; set; }
 
     internal JobBox()
     {
@@ -84,7 +84,7 @@ internal sealed class JobForBox<TJob> : JobNativeDispatch.IJobBox where TJob : s
     internal int Length;
     internal readonly Action ExecuteAction;
 
-    public ulong NativeHandle { get; set; }
+    public ulong ExceptionKey { get; set; }
 
     internal JobForBox()
     {
@@ -162,7 +162,7 @@ internal sealed class JobParallelForBox<TJob> : JobNativeDispatch.IJobRangeBox w
     internal int BatchSize;
     internal readonly Action ExecuteAction;
 
-    public ulong NativeHandle { get; set; }
+    public ulong ExceptionKey { get; set; }
 
     internal JobParallelForBox()
     {
@@ -236,7 +236,7 @@ internal sealed class RangeBodyBox : JobNativeDispatch.IJobRangeBox
     internal Action<int, int>? Body;
     internal CancellationToken Token;
 
-    public ulong NativeHandle { get; set; }
+    public ulong ExceptionKey { get; set; }
 
     [ThreadStatic] private static Stack<RangeBodyBox>? t_Pool;
 

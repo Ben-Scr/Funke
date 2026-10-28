@@ -44,7 +44,7 @@ Before writing a system, check this table. The right-hand column is what agent-m
 | Repeated or spawned entities | prefab + `Instantiate(prefab, pos)`; variants: a `.prefab` with `"PrefabRef"` + `Overrides` | `Entity.Create` + `AddComponent` + setting sprites in code |
 | Settings, unlocks, best times | `PlayerPrefs` (small values), `SaveData.Save<T>(slot, obj)` / `TryLoad<T>` (whole objects) | own JSON files via `File.WriteAllText` |
 | Several languages | `Assets/Localization/<lang>.json` + `LocalizedText` component + `Localization.Get/Format/SetLanguage` | own string tables, `Loc.T()` helpers |
-| Flip-book animation | `SpriteAnimator2D` (`frames` = slice names) | swapping `spriteName` in `OnUpdate` |
+| Flip-book animation | `Animator` with a looping `.anim` clip (`SpriteRenderer.Texture` discrete keys) | swapping `spriteName` in `OnUpdate` |
 | States, keyframes, animation events | `Animator` + `.anim`/`.animctrl` (also animates script fields); 3D models: `SkinnedMeshRenderer.Play(clip, fade)` | hand-written state flags + lerps |
 | UI motion, pop-ins, fades, shakes, delayed calls | package **`Funke.Tween`** (`MoveTo/ScaleTo/FadeTo/Punch*/Shake*`, `Tween.Sequence()`, `Tween.Delay`, `Camera2D.Shake`; `.SetLink(Entity)` on custom tweens) | per-script lerp timers in `OnUpdate` |
 | Timed sequences | coroutines (`using Funke.Coroutines;`): `RunCoroutine(async () => { await new WaitForSeconds(1f); … })` (scaled time; `WaitForNextFrame`, `WaitUntil`, `WaitForFrames`), `Entity.Destroy(delay)` | float countdowns for one-off sequences |
@@ -95,7 +95,7 @@ Write down the scenes, the prefabs, the **Data Asset types and their entries** (
 
 ### 2. Project
 Use the `funke` CLI (`bin/Release-windows-x86_64/Funke-CLI/funke.exe` in the engine repo, next to the Editor in an install). It runs the engine's own code, so prefer it to hand edits.
-- New: `funke create <Name> --path <dir>`. In this engine repo the user's games go to `C:\Users\benso\Index\Projects`; agent test projects go under `bin-int\_agent\` with `--no-register`. New projects are JSON.
+- New: `funke create <Name> --path <dir>`. By default, create user projects at `~/Funke/Projects/<Name>` (`%USERPROFILE%\Funke\Projects\<Name>` on Windows). Respect an explicitly requested location. Agent test projects go under `bin-int\_agent\` with `--no-register`. New projects are JSON.
 - Existing: `funke info`. If `assetSerializationFormat` isn't `Json`, run `funke convert --format json`.
 - 3D: add `"modules": ["Funke.3D"]` to `project.json`. Packages (e.g. `Funke.Tween`, `Funke.Tilemap2D`): `funke package add <Id>`.
 - Copy the **templates** you need (see *Templates* below) into the project, then run `funke assets refresh`, which writes the `.meta` files for the copied scripts. Without them, `funke validate` skips its engine load test.
@@ -104,7 +104,7 @@ Use the `funke` CLI (`bin/Release-windows-x86_64/Funke-CLI/funke.exe` in the eng
 Write the `DataAsset` classes (`Assets/Scripts/Data/`) and one `.dataasset` per entry (`Assets/Data/<Type>/`), with `.meta` files. Format, field encodings, catalogs and the waves/levels patterns: `references/data-driven.md`.
 
 ### 4. Art and audio
-Produce assets the way `funke-game-art` describes: generators in `Tools/` reading `Design/palette.json`, the `.meta` written before the PNG, `Point` filter for pixel art, and a sample shown before a whole family. Placeholder shapes (`Square`, `Circle` tinted) are fine for the first playable build, but replace them before you hand off. `.meta` details and built-in assets: `references/assets-and-meta.md`. Audio must be `.wav`/`.mp3`/`.ogg` (Vorbis)/`.flac`.
+Produce assets the way `funke-game-art` describes: generators in `Tools/` reading `Design/palette.json`, the `.meta` written before the PNG, filtering chosen for the target pixel grid and display scale, and a sample shown before a whole family. Inspect the native and final-size assets. Placeholder shapes (`Square`, `Circle` tinted) are fine for the first playable build, but replace them before you hand off. `.meta` details and built-in assets: `references/assets-and-meta.md`. Audio must be `.wav`/`.mp3`/`.ogg` (Vorbis)/`.flac`.
 
 ### 5. Prefabs, then scenes (JSON)
 Write anything that appears more than once, or is spawned, as a prefab first, then the scenes that place prefab instances. Schema, every component's keys and pitfalls: **`references/scene-json.md`**. Read it before the first file. Key rules: unique decimal-string `uuid`s; `parentUuid` is a string; world entities get `Transform2D` or `Transform3D`, UI entities `RectTransform2D` (never both); 2D rotation in radians, 3D in degrees; collider `layer` non-zero; `OnCollisionEnter2D` needs `registerContacts: true`.
@@ -114,7 +114,7 @@ More than a handful of placed objects (every 3D level, tile levels, generated UI
 ### 6. Scripts (C#)
 Small classes in `Assets/Scripts/<Feature>/`. Every dependency is a public field filled from JSON `ScriptFields`: entity and component refs, prefabs, assets, **data assets**, numbers. Lifecycle, singletons, static events and what not to do: **`references/architecture.md`**. API: `funke-game-scripting`; UI: `funke-game-ui`. Keep classes in the global namespace, or use full names (`"MyGame.Player"`) in every `className`/`type` in JSON.
 
-Add the test hooks now, not at the end: `[DevCommand]`s for `level.load`, `game.win`, `state` and whatever else a test needs to reach (`references/testing.md`), plus the mute switch for automated runs.
+Add the test hooks now, not at the end: `[DevCommand]`s for `level.load`, `game.win`, `state` and whatever else a test needs to reach (`references/testing.md`). The engine automatically mutes automated runs.
 
 ### 7. Register
 `project.json`: `startupScene`, `buildScenes` (every shipped scene), `globalSystems` (true app-lifetime systems only). Per-scene `SceneSystem`s go in the scene's `"systems"` array.
@@ -165,7 +165,7 @@ Generated content (levels, tile maps, UI screens, art, data sets) is fast and re
 - **Feel is measured, not guessed.** For "laggy", "jittery" or "floaty", log per-frame numbers (dt, positions, speed) from a dev-command-enabled probe, analyse them with a small script, fix, and measure again.
 - **Control by target velocity:** ease the velocity toward `input · MaxSpeed` with a clamped acceleration and brake gently with no input. It caps speed on slopes and feels responsive.
 - **Juice is part of done:** hit flash, small screen shake, particles on impact and pickup, pop-in panels, sounds on every action. Put the values in the design language's motion section.
-- **Phones run C# 10–20× slower** (Mono JIT). Keep hot loops allocation-free, put hot data in plain arrays, and use `IJobParallelFor` for heavy per-entity work (`funke-game-scripting`).
+- **Measure on the target phone.** Managed execution and allocation costs vary by device and runtime; do not assume a fixed slowdown factor. Keep measured hot loops allocation-free and use `IJobParallelFor` where profiling shows heavy per-entity work (`funke-game-scripting`).
 - **What the user sees first is the menu.** It gets the same care as the gameplay (house rule 9, `funke-game-art` UI rules).
 
 ## When a human builds it in the Editor

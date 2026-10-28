@@ -49,6 +49,7 @@
 #include <cctype>
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <limits>
@@ -826,7 +827,7 @@ namespace Funke {
 			return false;
 		}
 
-		bool LoadPrefabDefinition(uint64_t prefabGuid, PrefabDefinition& outDefinition);
+		bool LoadPrefabDefinition(Scene& scene, uint64_t prefabGuid, PrefabDefinition& outDefinition);
 
 		bool ApplyEntityOverrides(PrefabDefinition& definition, const Value& instanceValue) {
 			if (definition.Entities.empty()) {
@@ -1080,9 +1081,9 @@ namespace Funke {
 			}
 		}
 
-		bool LoadPrefabEntityValue(uint64_t prefabGuid, Value& outEntityValue) {
+		bool LoadPrefabEntityValue(Scene& scene, uint64_t prefabGuid, Value& outEntityValue) {
 			PrefabDefinition definition;
-			if (!LoadPrefabDefinition(prefabGuid, definition) || definition.Entities.empty()) {
+			if (!LoadPrefabDefinition(scene, prefabGuid, definition) || definition.Entities.empty()) {
 				return false;
 			}
 
@@ -1091,6 +1092,8 @@ namespace Funke {
 		}
 
 		struct CachedPrefabRoot {
+			uint64_t PrefabGuid = 0;
+			uint64_t BasePrefabGuid = 0;
 			std::string Path;
 			FileStamp Stamp;
 			std::shared_ptr<const Value> Root;
@@ -1099,7 +1102,28 @@ namespace Funke {
 		std::unordered_map<std::string, CachedPrefabRoot> g_PrefabRootCache;
 		// Parses replaced because the file changed outside SaveEntityToFile (which drops its entry
 		// instead); the editor drains these to refresh loaded instances against the old parse.
-		std::unordered_map<std::string, SceneSerializer::ExternalPrefabChange> g_SupersededPrefabRoots;
+		struct SupersededPrefabRoot {
+			SceneSerializer::ExternalPrefabChange Change;
+			uint64_t PrefabGuid = 0;
+			uint64_t BasePrefabGuid = 0;
+		};
+		std::unordered_map<std::string, SupersededPrefabRoot> g_SupersededPrefabRoots;
+		struct PrefabCacheSceneOwner {
+			Scene* Owner = nullptr;
+		};
+		std::vector<std::weak_ptr<PrefabCacheSceneOwner>> g_PrefabCacheScenes;
+		std::chrono::steady_clock::time_point g_LastPrefabRootPurge;
+
+		void TrackPrefabCacheSceneOwner(Scene& scene) {
+			using OwnerToken = std::shared_ptr<PrefabCacheSceneOwner>;
+			auto& context = scene.GetRegistry().ctx();
+			if (context.find<OwnerToken>()) return;
+			auto owner = std::make_shared<PrefabCacheSceneOwner>();
+			owner->Owner = &scene;
+			context.emplace<OwnerToken>(owner);
+			std::lock_guard<std::mutex> lock(g_PrefabRootCacheMutex);
+			g_PrefabCacheScenes.push_back(owner);
+		}
 
 		std::string PrefabRootCacheKey(const std::string& prefabPath) {
 			std::string key = Path::ToGenericUtf8(Path::FromUtf8(prefabPath).lexically_normal());
@@ -1113,13 +1137,14 @@ namespace Funke {
 		// Caller holds g_PrefabRootCacheMutex. Keeps the oldest parse when several edits land before a drain.
 		void SupersedePrefabRootLocked(const std::string& key, const CachedPrefabRoot& entry) {
 			if (entry.Root && !g_SupersededPrefabRoots.contains(key)) {
-				g_SupersededPrefabRoots.emplace(key, SceneSerializer::ExternalPrefabChange{ entry.Path, entry.Root });
+				g_SupersededPrefabRoots.emplace(key, SupersededPrefabRoot{
+					{ entry.Path, entry.Root }, entry.PrefabGuid, entry.BasePrefabGuid });
 			}
 		}
 
 		// Every prefab instance (and every runtime spawn of a non-bakeable prefab) used to re-read and
 		// re-parse the file. Keyed on (mtime, size) so editor saves and external edits still land.
-		bool ReadPrefabRootCached(const std::string& prefabPath, std::shared_ptr<const Value>& outRoot) {
+		bool ReadPrefabRootCached(uint64_t prefabGuid, const std::string& prefabPath, std::shared_ptr<const Value>& outRoot) {
 			const FileStamp stamp = FileStamp::Read(prefabPath);
 			if (!stamp.Exists) return false;
 
@@ -1145,6 +1170,8 @@ namespace Funke {
 			if (entry.Root && entry.Stamp != stamp) {
 				SupersedePrefabRootLocked(key, entry);
 			}
+			entry.PrefabGuid = prefabGuid;
+			entry.BasePrefabGuid = 0;
 			entry.Path = prefabPath;
 			entry.Stamp = stamp;
 			entry.Root = std::move(root);
@@ -1167,7 +1194,7 @@ namespace Funke {
 
 			const std::string prefabPath = AssetRegistry::ResolvePath(prefabGuid);
 			std::shared_ptr<const Value> cachedRoot;
-			if (prefabPath.empty() || !ReadPrefabRootCached(prefabPath, cachedRoot)) {
+			if (prefabPath.empty() || !ReadPrefabRootCached(prefabGuid, prefabPath, cachedRoot)) {
 				inProgress.erase(prefabGuid);
 				return false;
 			}
@@ -1194,6 +1221,11 @@ namespace Funke {
 					basePrefabGuid = prefabRefValue->AsUInt64Or(0);
 				}
 
+				{
+					std::lock_guard<std::mutex> lock(g_PrefabRootCacheMutex);
+					const auto it = g_PrefabRootCache.find(PrefabRootCacheKey(prefabPath));
+					if (it != g_PrefabRootCache.end()) it->second.BasePrefabGuid = basePrefabGuid;
+				}
 				if (basePrefabGuid != 0 && LoadPrefabDefinitionRecursive(basePrefabGuid, outDefinition, inProgress)) {
 					if (!ApplyEntityOverrides(outDefinition, root)) {
 						inProgress.erase(prefabGuid);
@@ -1208,7 +1240,8 @@ namespace Funke {
 			return false;
 		}
 
-		bool LoadPrefabDefinition(uint64_t prefabGuid, PrefabDefinition& outDefinition) {
+		bool LoadPrefabDefinition(Scene& scene, uint64_t prefabGuid, PrefabDefinition& outDefinition) {
+			TrackPrefabCacheSceneOwner(scene);
 			std::unordered_set<uint64_t> inProgress;
 			return LoadPrefabDefinitionRecursive(prefabGuid, outDefinition, inProgress);
 		}
@@ -1391,6 +1424,35 @@ namespace Funke {
 			return field;
 		}
 	} // namespace
+
+	bool SceneSerializer::PrepareFile(const std::string& path, Json::Value& outRoot, std::string* outError) {
+		if (outError) outError->clear();
+		try {
+			if (!File::Exists(path)) {
+				if (outError) *outError = "Scene file not found: " + path;
+				return false;
+			}
+
+			// Capture before reading so an edit during preparation is still reported as external.
+			KnownFileStamps::Record(path);
+			Value root;
+			if (!SceneSerializerStorage::ReadRootFromFile(path, root, outError)) return false;
+			if (!ValidateSceneRoot(root, path, true)) {
+				if (outError) *outError = "Invalid scene data: " + path;
+				return false;
+			}
+			outRoot = std::move(root);
+			return true;
+		}
+		catch (const std::exception& exception) {
+			if (outError) *outError = exception.what();
+			return false;
+		}
+		catch (...) {
+			if (outError) *outError = "Scene preparation failed with an unknown exception";
+			return false;
+		}
+	}
 
 	bool SceneSerializer::LoadFromFile(Scene& scene, const std::string& path) {
 		FUNKE_PROFILE_SCOPE("SceneSerializer::LoadFromFile");
@@ -2541,7 +2603,9 @@ namespace Funke {
 			auto& text = scene.HasComponent<TextRendererComponent>(entity)
 				? scene.GetComponent<TextRendererComponent>(entity)
 				: scene.AddComponent<TextRendererComponent>(entity);
-			text.Text = GetStringMember(componentValue, "text", text.Text);
+			const TextRendererComponent defaults;
+			text.Text = GetStringMember(componentValue, "text", defaults.Text);
+			text.FontAssetId = defaults.FontAssetId;
 			const std::string fontAssetStr = GetStringMember(componentValue, "fontAsset", std::string{});
 			if (!fontAssetStr.empty()) {
 				try {
@@ -2550,25 +2614,25 @@ namespace Funke {
 					text.FontAssetId = UUID(0);
 				}
 			}
-			text.FontSize = GetFloatMember(componentValue, "fontSize", text.FontSize);
-			text.Color.r = GetFloatMember(componentValue, "r", text.Color.r);
-			text.Color.g = GetFloatMember(componentValue, "g", text.Color.g);
-			text.Color.b = GetFloatMember(componentValue, "b", text.Color.b);
-			text.Color.a = GetFloatMember(componentValue, "a", text.Color.a);
-			text.LetterSpacing = GetFloatMember(componentValue, "letterSpacing", text.LetterSpacing);
-			text.LineSpacing = GetFloatMember(componentValue, "lineSpacing", text.LineSpacing);
-			text.HAlign = static_cast<TextAlignment>(GetIntMember(componentValue, "alignment", static_cast<int>(text.HAlign)));
-			text.VAlign = static_cast<TextVerticalAlignment>(GetIntMember(componentValue, "valign", static_cast<int>(text.VAlign)));
-			text.WrapMode = static_cast<TextWrapMode>(GetIntMember(componentValue, "wrapMode", static_cast<int>(text.WrapMode)));
+			text.FontSize = GetFloatMember(componentValue, "fontSize", defaults.FontSize);
+			text.Color.r = GetFloatMember(componentValue, "r", defaults.Color.r);
+			text.Color.g = GetFloatMember(componentValue, "g", defaults.Color.g);
+			text.Color.b = GetFloatMember(componentValue, "b", defaults.Color.b);
+			text.Color.a = GetFloatMember(componentValue, "a", defaults.Color.a);
+			text.LetterSpacing = GetFloatMember(componentValue, "letterSpacing", defaults.LetterSpacing);
+			text.LineSpacing = GetFloatMember(componentValue, "lineSpacing", defaults.LineSpacing);
+			text.HAlign = static_cast<TextAlignment>(GetIntMember(componentValue, "alignment", static_cast<int>(defaults.HAlign)));
+			text.VAlign = static_cast<TextVerticalAlignment>(GetIntMember(componentValue, "valign", static_cast<int>(defaults.VAlign)));
+			text.WrapMode = static_cast<TextWrapMode>(GetIntMember(componentValue, "wrapMode", static_cast<int>(defaults.WrapMode)));
 			text.AutoSize = GetBoolMember(componentValue, "autoSize", false);
 			// WrapWidth field removed; old scenes that wrote it just
 			// pass through unread.
-			text.Margin.x = GetFloatMember(componentValue, "marginL", text.Margin.x);
-			text.Margin.y = GetFloatMember(componentValue, "marginT", text.Margin.y);
-			text.Margin.z = GetFloatMember(componentValue, "marginR", text.Margin.z);
-			text.Margin.w = GetFloatMember(componentValue, "marginB", text.Margin.w);
-			text.SortingOrder = static_cast<int16_t>(GetIntMember(componentValue, "sortOrder", text.SortingOrder));
-			text.SortingLayer = static_cast<uint8_t>(GetIntMember(componentValue, "sortLayer", text.SortingLayer));
+			text.Margin.x = GetFloatMember(componentValue, "marginL", defaults.Margin.x);
+			text.Margin.y = GetFloatMember(componentValue, "marginT", defaults.Margin.y);
+			text.Margin.z = GetFloatMember(componentValue, "marginR", defaults.Margin.z);
+			text.Margin.w = GetFloatMember(componentValue, "marginB", defaults.Margin.w);
+			text.SortingOrder = static_cast<int16_t>(GetIntMember(componentValue, "sortOrder", defaults.SortingOrder));
+			text.SortingLayer = static_cast<uint8_t>(GetIntMember(componentValue, "sortLayer", defaults.SortingLayer));
 			ReadTextEffects(componentValue, text);
 			text.ResolvedFont = FontHandle{};
 			return true;
@@ -2584,6 +2648,9 @@ namespace Funke {
 			if (GetBoolMember(componentValue, "massOverridden", false)) {
 				rigidbody.SetMass(GetFloatMember(componentValue, "mass", 1.0f));
 			}
+			else {
+				rigidbody.ResetMass();
+			}
 			rigidbody.SetFreezePositionX(GetBoolMember(componentValue, "freezePositionX", false));
 			rigidbody.SetFreezePositionY(GetBoolMember(componentValue, "freezePositionY", false));
 			rigidbody.SetFreezeRotation(GetBoolMember(componentValue, "freezeRotation", false));
@@ -2594,6 +2661,7 @@ namespace Funke {
 		}
 
 		if (component == "BoxCollider2D") {
+			const BoxCollider2DComponent defaults;
 			auto& boxCollider = scene.HasComponent<BoxCollider2DComponent>(entity)
 				? scene.GetComponent<BoxCollider2DComponent>(entity)
 				: scene.AddComponent<BoxCollider2DComponent>(entity);
@@ -2609,17 +2677,18 @@ namespace Funke {
 			const Transform2DComponent& transform = transformPtr ? *transformPtr : k_DefaultTransform;
 			boxCollider.SetScale(ReadBoxColliderLocalSize(componentValue, transform), scene);
 			boxCollider.SetSensor(GetBoolMember(componentValue, "sensor", false), scene);
-			boxCollider.SetFriction(GetFloatMember(componentValue, "friction", boxCollider.GetFriction()));
-			boxCollider.SetBounciness(GetFloatMember(componentValue, "bounciness", boxCollider.GetBounciness()));
+			boxCollider.SetFriction(GetFloatMember(componentValue, "friction", defaults.GetFriction()));
+			boxCollider.SetBounciness(GetFloatMember(componentValue, "bounciness", defaults.GetBounciness()));
 			boxCollider.SetDensity(GetFloatMember(componentValue, "density", 1.0f));
 			boxCollider.SetGroupIndex(GetIntMember(componentValue, "groupIndex", 0));
-			boxCollider.SetCollisionMask(GetUInt64Member(componentValue, "collisionMask", boxCollider.GetCollisionMask()));
-			boxCollider.SetLayer(GetUInt64Member(componentValue, "layer", boxCollider.GetLayer()));
-			boxCollider.SetRegisterContacts(GetBoolMember(componentValue, "registerContacts", boxCollider.CanRegisterContacts()));
+			boxCollider.SetCollisionMask(GetUInt64Member(componentValue, "collisionMask", defaults.GetCollisionMask()));
+			boxCollider.SetLayer(GetUInt64Member(componentValue, "layer", defaults.GetLayer()));
+			boxCollider.SetRegisterContacts(GetBoolMember(componentValue, "registerContacts", defaults.CanRegisterContacts()));
 			return true;
 		}
 
 		if (component == "CircleCollider2D") {
+			const CircleCollider2DComponent defaults;
 			auto& circleCollider = scene.HasComponent<CircleCollider2DComponent>(entity)
 				? scene.GetComponent<CircleCollider2DComponent>(entity)
 				: scene.AddComponent<CircleCollider2DComponent>(entity);
@@ -2629,17 +2698,18 @@ namespace Funke {
 			}, scene);
 			circleCollider.SetRadius(GetFloatMember(componentValue, "radius", 0.5f), scene);
 			circleCollider.SetSensor(GetBoolMember(componentValue, "sensor", false), scene);
-			circleCollider.SetFriction(GetFloatMember(componentValue, "friction", circleCollider.GetFriction()));
-			circleCollider.SetBounciness(GetFloatMember(componentValue, "bounciness", circleCollider.GetBounciness()));
+			circleCollider.SetFriction(GetFloatMember(componentValue, "friction", defaults.GetFriction()));
+			circleCollider.SetBounciness(GetFloatMember(componentValue, "bounciness", defaults.GetBounciness()));
 			circleCollider.SetDensity(GetFloatMember(componentValue, "density", 1.0f));
 			circleCollider.SetGroupIndex(GetIntMember(componentValue, "groupIndex", 0));
-			circleCollider.SetCollisionMask(GetUInt64Member(componentValue, "collisionMask", circleCollider.GetCollisionMask()));
-			circleCollider.SetLayer(GetUInt64Member(componentValue, "layer", circleCollider.GetLayer()));
-			circleCollider.SetRegisterContacts(GetBoolMember(componentValue, "registerContacts", circleCollider.CanRegisterContacts()));
+			circleCollider.SetCollisionMask(GetUInt64Member(componentValue, "collisionMask", defaults.GetCollisionMask()));
+			circleCollider.SetLayer(GetUInt64Member(componentValue, "layer", defaults.GetLayer()));
+			circleCollider.SetRegisterContacts(GetBoolMember(componentValue, "registerContacts", defaults.CanRegisterContacts()));
 			return true;
 		}
 
 		if (component == "PolygonCollider2D") {
+			const PolygonCollider2DComponent defaults;
 			auto& polygonCollider = scene.HasComponent<PolygonCollider2DComponent>(entity)
 				? scene.GetComponent<PolygonCollider2DComponent>(entity)
 				: scene.AddComponent<PolygonCollider2DComponent>(entity);
@@ -2656,13 +2726,13 @@ namespace Funke {
 				GetFloatMember(componentValue, "centerY", 0.0f)
 			}, scene);
 			polygonCollider.SetSensor(GetBoolMember(componentValue, "sensor", false), scene);
-			polygonCollider.SetFriction(GetFloatMember(componentValue, "friction", polygonCollider.GetFriction()));
-			polygonCollider.SetBounciness(GetFloatMember(componentValue, "bounciness", polygonCollider.GetBounciness()));
+			polygonCollider.SetFriction(GetFloatMember(componentValue, "friction", defaults.GetFriction()));
+			polygonCollider.SetBounciness(GetFloatMember(componentValue, "bounciness", defaults.GetBounciness()));
 			polygonCollider.SetDensity(GetFloatMember(componentValue, "density", 1.0f));
 			polygonCollider.SetGroupIndex(GetIntMember(componentValue, "groupIndex", 0));
-			polygonCollider.SetCollisionMask(GetUInt64Member(componentValue, "collisionMask", polygonCollider.GetCollisionMask()));
-			polygonCollider.SetLayer(GetUInt64Member(componentValue, "layer", polygonCollider.GetLayer()));
-			polygonCollider.SetRegisterContacts(GetBoolMember(componentValue, "registerContacts", polygonCollider.CanRegisterContacts()));
+			polygonCollider.SetCollisionMask(GetUInt64Member(componentValue, "collisionMask", defaults.GetCollisionMask()));
+			polygonCollider.SetLayer(GetUInt64Member(componentValue, "layer", defaults.GetLayer()));
+			polygonCollider.SetRegisterContacts(GetBoolMember(componentValue, "registerContacts", defaults.CanRegisterContacts()));
 			return true;
 		}
 #endif
@@ -2717,6 +2787,7 @@ namespace Funke {
 		}
 
 		if (component == "Image") {
+			const ImageComponent defaults;
 			auto& image = scene.HasComponent<ImageComponent>(entity)
 				? scene.GetComponent<ImageComponent>(entity)
 				: scene.AddComponent<ImageComponent>(entity);
@@ -2724,10 +2795,10 @@ namespace Funke {
 			image.Color.g = GetFloatMember(componentValue, "g", 1.0f);
 			image.Color.b = GetFloatMember(componentValue, "b", 1.0f);
 			image.Color.a = GetFloatMember(componentValue, "a", 1.0f);
-			image.SortingOrder = static_cast<int16_t>(GetIntMember(componentValue, "sortOrder", image.SortingOrder));
-			image.SortingLayer = static_cast<uint8_t>(GetIntMember(componentValue, "sortLayer", image.SortingLayer));
+			image.SortingOrder = static_cast<int16_t>(GetIntMember(componentValue, "sortOrder", defaults.SortingOrder));
+			image.SortingLayer = static_cast<uint8_t>(GetIntMember(componentValue, "sortLayer", defaults.SortingLayer));
 			image.FilterMode = static_cast<Filter>(GetIntMember(componentValue, "filterMode",
-				static_cast<int>(image.FilterMode)));
+				static_cast<int>(defaults.FilterMode)));
 
 			image.TextureHandle = LoadTextureFromValue(
 				componentValue,
@@ -2799,7 +2870,7 @@ namespace Funke {
 		}
 
 		PrefabDefinition definition;
-		if (!LoadPrefabDefinition(prefabGuid, definition)) {
+		if (!LoadPrefabDefinition(scene, prefabGuid, definition)) {
 			// Failing here would fail the whole scene load, leaving the user unable to open the scene to fix it.
 			// Keep a placeholder that preserves the instance JSON (uuid, parent, overrides) for the next save.
 			FNK_CORE_WARN_TAG("SceneSerializer",
@@ -2853,6 +2924,7 @@ namespace Funke {
 			if (baked->bakeable) {
 				EntityHandle root = cache.Hydrate(prefabGuid, scene);
 				if (root != entt::null) {
+					TrackPrefabCacheScene(scene);
 					PinPrefabInstanceChildIds(scene, root);
 					scene.RunPendingEntityRefFixups();
 					return root;
@@ -2861,7 +2933,7 @@ namespace Funke {
 		}
 
 		PrefabDefinition definition;
-		if (!LoadPrefabDefinition(prefabGuid, definition)) {
+		if (!LoadPrefabDefinition(scene, prefabGuid, definition)) {
 			return entt::null;
 		}
 
@@ -2944,7 +3016,7 @@ namespace Funke {
 			}
 
 			PrefabDefinition definition;
-			if (!LoadPrefabDefinition(prefabGuid, definition) || definition.Entities.empty()) {
+			if (!LoadPrefabDefinition(scene, prefabGuid, definition) || definition.Entities.empty()) {
 				return entt::null;
 			}
 
@@ -3011,7 +3083,7 @@ namespace Funke {
 		}
 
 		Value prefabEntityValue;
-		if (!LoadPrefabEntityValue(prefabGuid, prefabEntityValue)) {
+		if (!LoadPrefabEntityValue(scene, prefabGuid, prefabEntityValue)) {
 			return entt::null;
 		}
 
@@ -3130,7 +3202,7 @@ namespace Funke {
 
 		const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(root));
 		PrefabDefinition definition;
-		if (!LoadPrefabDefinition(prefabGuid, definition) || definition.Entities.empty()) {
+		if (!LoadPrefabDefinition(scene, prefabGuid, definition) || definition.Entities.empty()) {
 			// Orphan / unresolvable source — no overrides we can act on.
 			return false;
 		}
@@ -3151,7 +3223,7 @@ namespace Funke {
 
 		// Orphaned prefab: leave instance untouched rather than corrupting it.
 		PrefabDefinition newSource;
-		if (!LoadPrefabDefinition(prefabGuid, newSource) || newSource.Entities.empty()) {
+		if (!LoadPrefabDefinition(scene, prefabGuid, newSource) || newSource.Entities.empty()) {
 			return existing;
 		}
 
@@ -3272,7 +3344,7 @@ namespace Funke {
 		}
 		changes.reserve(g_SupersededPrefabRoots.size());
 		for (auto& [key, change] : g_SupersededPrefabRoots) {
-			changes.push_back(std::move(change));
+			changes.push_back(std::move(change.Change));
 		}
 		g_SupersededPrefabRoots.clear();
 		return changes;
@@ -3283,6 +3355,82 @@ namespace Funke {
 		std::lock_guard<std::mutex> lock(g_PrefabRootCacheMutex);
 		g_PrefabRootCache.erase(key);
 		g_SupersededPrefabRoots.erase(key);
+	}
+
+	void SceneSerializer::TrackPrefabCacheScene(Scene& scene) {
+		TrackPrefabCacheSceneOwner(scene);
+	}
+
+	std::size_t SceneSerializer::PurgeUnusedCachedPrefabRoots(bool force) {
+		std::lock_guard<std::mutex> lock(g_PrefabRootCacheMutex);
+		const auto now = std::chrono::steady_clock::now();
+		if (!force && now - g_LastPrefabRootPurge < std::chrono::seconds(2)) return 0;
+		g_LastPrefabRootPurge = now;
+
+		std::unordered_set<uint64_t> livePrefabGuids;
+		for (auto it = g_PrefabCacheScenes.begin(); it != g_PrefabCacheScenes.end();) {
+			const auto owner = it->lock();
+			if (!owner) {
+				it = g_PrefabCacheScenes.erase(it);
+				continue;
+			}
+			const auto& registry = owner->Owner->GetRegistry();
+			for (const EntityHandle entity : registry.view<EntityMetaDataComponent>()) {
+				const auto& metadata = registry.get<EntityMetaDataComponent>(entity).MetaData;
+				if (metadata.Origin == EntityOrigin::Prefab) {
+					livePrefabGuids.insert(static_cast<uint64_t>(metadata.PrefabGUID));
+				}
+			}
+			++it;
+		}
+
+		std::unordered_map<uint64_t, std::vector<std::string>> keysByGuid;
+		std::vector<std::string> pendingKeys;
+		for (const auto& [key, entry] : g_PrefabRootCache) {
+			keysByGuid[entry.PrefabGuid].push_back(key);
+			if (livePrefabGuids.contains(entry.PrefabGuid)) pendingKeys.push_back(key);
+		}
+		for (const auto& [key, entry] : g_SupersededPrefabRoots) {
+			keysByGuid[entry.PrefabGuid].push_back(key);
+			if (livePrefabGuids.contains(entry.PrefabGuid)) pendingKeys.push_back(key);
+		}
+		std::unordered_set<std::string> retainedKeys;
+		auto retainBase = [&](uint64_t baseGuid) {
+			if (baseGuid == 0) return;
+			if (const auto it = keysByGuid.find(baseGuid); it != keysByGuid.end()) {
+				pendingKeys.insert(pendingKeys.end(), it->second.begin(), it->second.end());
+			}
+		};
+		while (!pendingKeys.empty()) {
+			std::string key = std::move(pendingKeys.back());
+			pendingKeys.pop_back();
+			if (!retainedKeys.insert(key).second) continue;
+			if (const auto it = g_PrefabRootCache.find(key); it != g_PrefabRootCache.end()) {
+				retainBase(it->second.BasePrefabGuid);
+			}
+			if (const auto it = g_SupersededPrefabRoots.find(key); it != g_SupersededPrefabRoots.end()) {
+				retainBase(it->second.BasePrefabGuid);
+			}
+		}
+
+		const auto removed = std::erase_if(g_PrefabRootCache, [&](const auto& entry) {
+			if (retainedKeys.contains(entry.first)) return false;
+			// A later baked spawn must reload the source so external refresh has its baseline again.
+			PrefabTemplateCache::Get().Invalidate(entry.second.PrefabGuid);
+			return true;
+		});
+		std::erase_if(g_SupersededPrefabRoots,
+			[&](const auto& entry) { return !retainedKeys.contains(entry.first); });
+		return removed;
+	}
+
+	void SceneSerializer::ClearCachedPrefabRoots() {
+		std::lock_guard<std::mutex> lock(g_PrefabRootCacheMutex);
+		PrefabTemplateCache::Get().InvalidateAll();
+		g_PrefabRootCache.clear();
+		g_SupersededPrefabRoots.clear();
+		g_LastPrefabRootPurge = {};
+		std::erase_if(g_PrefabCacheScenes, [](const auto& owner) { return owner.expired(); });
 	}
 
 	void Detail::RestampCachedPrefabRoot(const std::string& path, const FileStamp& before) {
@@ -3303,7 +3451,7 @@ namespace Funke {
 		if (prefabGuid == 0) return false;
 
 		PrefabDefinition sourceDefinition;
-		if (!LoadPrefabDefinition(prefabGuid, sourceDefinition) || sourceDefinition.Entities.empty()) return false;
+		if (!LoadPrefabDefinition(scene, prefabGuid, sourceDefinition) || sourceDefinition.Entities.empty()) return false;
 
 		const uint64_t sourceId = GetPrefabInstanceSourceId(scene, entity);
 		const Value* sourceValue = nullptr;

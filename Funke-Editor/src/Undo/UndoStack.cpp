@@ -1,6 +1,8 @@
 #include <pch.hpp>
 #include "Undo/UndoStack.hpp"
 
+#include <algorithm>
+
 namespace Funke {
 
 	void UndoStack::Push(std::unique_ptr<EditCommand> command) {
@@ -43,5 +45,28 @@ namespace Funke {
 	void UndoStack::Clear() {
 		m_Undo.clear();
 		m_Redo.clear();
+	}
+
+	UndoStack& SceneUndoHistory::ForScene(const std::shared_ptr<Scene>& scene) {
+		return m_Stacks[std::weak_ptr<Scene>(scene)];
+	}
+
+	void SceneUndoHistory::Retain(std::span<const std::weak_ptr<Scene>> scenes) {
+		std::erase_if(m_Stacks, [scenes](const auto& entry) {
+			return entry.first.expired() || std::none_of(scenes.begin(), scenes.end(), [&](const auto& scene) {
+				return !scene.owner_before(entry.first) && !entry.first.owner_before(scene);
+			});
+		});
+	}
+
+	void SceneUndoHistory::Forget(const Scene* scene) {
+		std::erase_if(m_Stacks, [scene](const auto& entry) {
+			const auto owner = entry.first.lock();
+			return owner && owner.get() == scene;
+		});
+	}
+
+	void SceneUndoHistory::Clear() {
+		m_Stacks.clear();
 	}
 }

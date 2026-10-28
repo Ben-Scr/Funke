@@ -261,13 +261,14 @@ RaycastHit2D ground = Physics2D.Raycast(origin, Vector2.Down, 2f, PhysicsLayers.
 
 Each collider has a **Layer** (what it is) and **Collides With** (what it touches), both set in the Inspector or from code via `GetComponent<BoxCollider2D>().Layer` / `.CollisionMask`. Two colliders interact only when each one's Collides With includes the other's Layer. `IsSensor`, `Friction`, `Bounciness` and `Density` are available on every collider the same way. `Physics2D.Gravity` sets the world gravity; joints (`RevoluteJoint2D`, `PrismaticJoint2D`, `WeldJoint2D`) and multi-path polygon colliders are described in [Physics 2D](../Engine-Core/Physics-2D.md).
 
-**Sprite animation** — add **Sprite Animator 2D** next to a Sprite Renderer, slice the texture in the Sprite Editor, and list the slice names under **Frames**:
+**Sprite animation** — add an **Animator** next to a Sprite Renderer, slice the texture in the Sprite Editor, and record the slices as discrete keys on the clip's **Sprite Renderer > Texture** track. Assign the looping clip to the Animator's **Clip** field. Scripts can change its playback speed:
 
 ```csharp
-var anim = GetComponent<SpriteAnimator2D>();
-anim.FramesPerSecond = 16f;
-if (!anim.IsPlaying) anim.Play();   // Pause() keeps the frame, Stop() rewinds
+var anim = GetComponent<Animator>();
+anim.Speed = 1.5f;
 ```
+
+Use an Animator Controller to switch between idle, run and other clips; see [Animation](../Engine-Core/Animation.md).
 
 **Tweens** — the **Funke.Tween** package (Package Manager) animates positions, rotations, scales, colors, alpha and any value with a getter and setter over time, DOTween-style: Penner easing, sequences, loops (restart, yoyo, incremental), callbacks, unscaled time for pause menus, shakes and punches. Tweens update themselves and die with their entity:
 

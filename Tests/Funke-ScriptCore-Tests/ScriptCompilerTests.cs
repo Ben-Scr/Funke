@@ -1,12 +1,16 @@
 using System;
+using System.Collections;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Tasks;
 using Funke.ScriptCompiler;
 using Xunit;
 
@@ -132,6 +136,122 @@ namespace Funke.Tests
             WriteScript("A.cs", "public class A { }");
             var result = Compile(outputPath: Path.Combine(m_Root, "elsewhere", "Other.dll"));
             AssertStatus("fallback", result);
+        }
+
+        [Fact]
+        public void RebuiltDependencyMetadataIsReleasedAfterItsSessionsAreReleased()
+        {
+            InitializeCompiler();
+            WeakReference[] versions = LoadDependencyVersions();
+            CollectMetadata();
+            Assert.All(versions.Take(versions.Length - 1), version => Assert.False(version.IsAlive));
+            Assert.True(versions[^1].IsAlive);
+        }
+
+        [Fact]
+        public void ReferenceCacheHandlesLengthChangesAliasesAndConcurrentSessions()
+        {
+            InitializeCompiler();
+            string dependency = Path.Combine(m_Root, "ChangingDependency.dll");
+            DateTime stamp = DateTime.UtcNow;
+            ReplaceDependency(dependency, typeof(ScriptCompilerTests).Assembly.Location, stamp);
+            object first = CreateReferenceSession(dependency);
+            Assert.Equal(typeof(ScriptCompilerTests).Assembly.GetName().Name, ReferenceAssemblyName(SessionReference(first)));
+            long originalLength = new FileInfo(dependency).Length;
+
+            ReplaceDependency(dependency, typeof(Funke.Entity).Assembly.Location, stamp);
+            Assert.NotEqual(originalLength, new FileInfo(dependency).Length);
+            object aliased = SessionReference(CreateReferenceSession(dependency, "Library"));
+            Assert.Equal(typeof(Funke.Entity).Assembly.GetName().Name, ReferenceAssemblyName(aliased));
+            object properties = aliased.GetType().GetProperty("Properties")!.GetValue(aliased)!;
+            var aliases = (IEnumerable)properties.GetType().GetProperty("Aliases")!.GetValue(properties)!;
+            Assert.Equal(new[] { "Library" }, aliases.Cast<string>());
+
+            var references = new object[24];
+            Parallel.For(0, references.Length, i => references[i] = SessionReference(CreateReferenceSession(dependency)));
+            Assert.All(references, reference => Assert.Same(references[0], reference));
+            Assert.Equal(typeof(ScriptCompilerTests).Assembly.GetName().Name, ReferenceAssemblyName(SessionReference(first)));
+            GC.KeepAlive(first);
+        }
+
+        void InitializeCompiler()
+        {
+            CreateProject();
+            WriteScript("Bootstrap.cs", "public class Bootstrap { }");
+            AssertStatus("compiled", Compile());
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        WeakReference[] LoadDependencyVersions()
+        {
+            string dependency = Path.Combine(m_Root, "RebuiltDependency.dll");
+            DateTime stamp = DateTime.UtcNow;
+            ReplaceDependency(dependency, typeof(ScriptCompilerTests).Assembly.Location, stamp);
+            object first = CreateReferenceSession(dependency);
+            Assert.Equal(typeof(ScriptCompilerTests).Assembly.GetName().Name, ReferenceAssemblyName(SessionReference(first)));
+            var versions = new WeakReference[10];
+            versions[0] = new WeakReference(SessionReference(first));
+            for (int i = 1; i < versions.Length; ++i)
+                versions[i] = LoadDependencyVersion(dependency, stamp.AddSeconds(i), i % 2 == 0);
+
+            CollectMetadata();
+            Assert.True(versions[0].IsAlive);
+            Assert.All(versions.Skip(1).Take(versions.Length - 2), version => Assert.False(version.IsAlive));
+            Assert.Equal(typeof(ScriptCompilerTests).Assembly.GetName().Name, ReferenceAssemblyName(SessionReference(first)));
+            GC.KeepAlive(first);
+            return versions;
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        WeakReference LoadDependencyVersion(string dependency, DateTime stamp, bool useTestsAssembly)
+        {
+            Assembly assembly = useTestsAssembly ? typeof(ScriptCompilerTests).Assembly : typeof(Funke.Entity).Assembly;
+            ReplaceDependency(dependency, assembly.Location, stamp);
+            object reference = SessionReference(CreateReferenceSession(dependency));
+            Assert.Equal(assembly.GetName().Name, ReferenceAssemblyName(reference));
+            return new WeakReference(reference);
+        }
+
+        static void ReplaceDependency(string path, string source, DateTime stamp)
+        {
+            File.Copy(source, path + ".new", overwrite: true);
+            File.SetLastWriteTimeUtc(path + ".new", stamp);
+            File.Move(path + ".new", path, overwrite: true);
+        }
+
+        object CreateReferenceSession(string dependency, string? alias = null)
+        {
+            Assembly compiler = typeof(CompilerHost).Assembly;
+            Type evaluationType = compiler.GetType("Funke.ScriptCompiler.ProjectEvaluation")!;
+            object evaluation = Activator.CreateInstance(evaluationType, nonPublic: true)!;
+            evaluationType.GetProperty("ProjectDirectory")!.SetValue(evaluation, m_Root);
+            string reference = alias == null ? "" : alias + "=";
+            evaluationType.GetProperty("CscArguments")!.SetValue(evaluation,
+                new[] { "/nostdlib", "/target:library", "/out:unused.dll", "/reference:" + reference + "\"" + dependency + "\"" });
+            return Activator.CreateInstance(compiler.GetType("Funke.ScriptCompiler.RoslynSession")!, new[] { evaluation })!;
+        }
+
+        static object SessionReference(object session)
+            => ((IEnumerable)session.GetType().GetField("m_References", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .GetValue(session)!).Cast<object>().Single();
+
+        static string ReferenceAssemblyName(object reference)
+        {
+            using var metadata = (IDisposable)reference.GetType().GetMethod("GetMetadata", Type.EmptyTypes)!.Invoke(reference, null)!;
+            var modules = (IEnumerable)metadata.GetType().GetMethod("GetModules")!.Invoke(metadata, null)!;
+            object module = modules.Cast<object>().First();
+            var reader = (MetadataReader)module.GetType().GetMethod("GetMetadataReader")!.Invoke(module, null)!;
+            return reader.GetString(reader.GetAssemblyDefinition().Name);
+        }
+
+        static void CollectMetadata()
+        {
+            for (int i = 0; i < 4; ++i)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+            }
         }
 
         void CreateProject(string extraProperties = "", string extraItems = "")

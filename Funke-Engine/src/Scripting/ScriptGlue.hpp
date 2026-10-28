@@ -4,7 +4,7 @@
 namespace Funke {
 
 	// Bump together with InteropHandshake.LayoutVersion (ScriptHostBridge.cs) on any add/remove/reorder in NativeBindings or ManagedCallbacks.
-	inline constexpr int32_t k_ScriptInteropLayoutVersion = 38;
+	inline constexpr int32_t k_ScriptInteropLayoutVersion = 41;
 
 	/// Layout must match C# NativeBindingsStruct exactly (Sequential, blittable).
 	struct NativeBindings
@@ -1008,15 +1008,6 @@ namespace Funke {
 		float    (*Collider2D_GetBounciness)(uint64_t entityID, int colliderType);
 		void     (*Collider2D_SetBounciness)(uint64_t entityID, int colliderType, float bounciness);
 
-		// ── SpriteAnimator2D (appended for binary compat) ──
-		// command: 0 = Play, 1 = Pause, 2 = Stop.
-		void  (*SpriteAnimator2D_Command)(uint64_t entityID, int command);
-		int   (*SpriteAnimator2D_IsPlaying)(uint64_t entityID);
-		int   (*SpriteAnimator2D_GetFrame)(uint64_t entityID);
-		void  (*SpriteAnimator2D_SetFrame)(uint64_t entityID, int frame);
-		float (*SpriteAnimator2D_GetFramesPerSecond)(uint64_t entityID);
-		void  (*SpriteAnimator2D_SetFramesPerSecond)(uint64_t entityID, float fps);
-
 		// ── PostProcessing2D (appended for binary compat) ──
 		// effect: PostProcessingInterop::Effect; data/size: the matching PostProcessingInterop struct. Returns 1 on success.
 		int (*PostProcessing2D_GetEffect)(uint64_t entityID, int effect, void* outData, int size);
@@ -1242,7 +1233,7 @@ namespace Funke {
 		// Android: calls `static String method(String)` on a packaged Java class. Returns the answer's byte count
 		// (read it with Java_ReadResult), -1 when the call failed and off Android.
 		int      (*Java_Call)(const char* className, const char* method, const char* argument);
-		// Pops the next FunkeBridge.send message as "channel message"; returns its byte count, -1 when none is queued.
+		// Pops the next FunkeBridge.send message as "channel and message separated by a null byte"; returns its byte count, -1 when none is queued.
 		int      (*Java_PollMessage)();
 		// Copies the calling thread's last Java_Call / Java_PollMessage answer; returns the bytes copied.
 		int      (*Java_ReadResult)(char* outBuffer, int capacity);
@@ -1356,6 +1347,12 @@ namespace Funke {
 		void     (*Rigidbody2D_ApplyAngular)(uint64_t entityID, int kind, float value, int wake);
 		int      (*Collider2D_GetGroupIndex)(uint64_t entityID, int colliderType);
 		void     (*Collider2D_SetGroupIndex)(uint64_t entityID, int colliderType, int group);
+
+		uint64_t (*Scene_BeginLoadAsync)(const char* sceneName, int additive);
+		uint64_t (*Scene_BeginLoadByGuidAsync)(uint64_t sceneGuid, int additive);
+		int      (*Scene_CancelLoadAsync)(uint64_t operationId);
+		int      (*EditorGUI_Popup)(const char* label, int selectedIndex, const char* options, int optionsBytes);
+		int      (*EditorGUI_Selectable)(const char* label, int selected);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.
@@ -1495,6 +1492,8 @@ namespace Funke {
 		// kind is script, component, sceneSystem or globalSystem and name is what a scene stores. Returns the bytes needed
 		// (incl. terminator), so a too-small buffer can be retried.
 		int         (*GetPackageScriptTypes)(char* outBuffer, int capacity);
+		void        (*SceneLoadCompleted)(uint64_t operationId, int status, const char* sceneName, uint64_t sceneGuid);
+		void        (*PumpSceneLoadRequests)();
 	};
 
 } // namespace Funke

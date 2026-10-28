@@ -52,10 +52,20 @@ namespace Funke::EditorUI {
 	bool SearchField(const char* id, char* buffer, std::size_t bufferSize, const char* hint = "Search...", float width = -1.0f);
 	bool SearchField(const char* id, std::string& value, const char* hint = "Search...", float width = -1.0f);
 
+	bool CompactSlider(const char* label, float* value, float minimum, float maximum, float step,
+		float width, const char* format = "%.0f");
+
 	// Button styled like a search field that opens a search UI elsewhere (e.g. the command palette).
 	bool SearchLauncher(const char* id, const char* hint, const char* shortcut, const ImVec2& size);
 
 	// ── Layout ──────────────────────────────────────────────────────
+
+	bool NavigationItem(const char* label, bool selected, const char* iconName = nullptr);
+	// Pair bar/item ends only with true returns; tab padding never reaches the selected content.
+	bool BeginTabBar(const char* id, ImGuiTabBarFlags flags = 0);
+	void EndTabBar();
+	bool BeginTabItem(const char* label, bool* open = nullptr, ImGuiTabItemFlags flags = 0);
+	void EndTabItem();
 
 	// Call before Begin() of a floating tool window: centers it and sizes it to `screenFraction` of the main
 	// viewport at the given aspect ratio each time it appears (user resizes hold while it stays open).
@@ -67,10 +77,18 @@ namespace Funke::EditorUI {
 	// Vertical hairline between toolbar groups; call it between two SameLine items.
 	void ToolbarSeparator();
 
-	// Flat collapsible section row (hairline, chevron, label). With `enabled`, a switch sits on the right;
-	// a switched-off section reports closed. Returns true when the section body should be drawn.
+	// Disabled sections keep their expansion state but report no editable body.
 	bool SectionHeader(const char* label, bool defaultOpen = true, bool* enabled = nullptr,
 		bool* enabledChanged = nullptr, bool enabledMixed = false);
+	// Pair EndSection only with a true return; forceOpen leaves the saved expansion state untouched.
+	bool BeginSection(const char* label, const char* summary = nullptr, bool defaultOpen = true, bool forceOpen = false);
+	void EndSection();
+
+	// Keeps the caller's controls in a label-scoped, right-aligned region; narrow rows stack.
+	void BeginSettingsRow(const char* label, float controlWidth = 0.0f);
+	void EndSettingsRow();
+	bool SettingsSwitch(const char* label, bool* value);
+	bool SettingsFloat(const char* label, float* value, const char* format = "%.0f", float step = 0.0f, float fastStep = 0.0f);
 
 	// Rounded card behind a block of content (height tracked from the previous frame). Pairs must nest.
 	void BeginCard(const char* id);

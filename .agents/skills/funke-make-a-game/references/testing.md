@@ -68,7 +68,7 @@ Exit codes: 0 ok, 1 init/frame failure, -1 exception at the app boundary. **C# e
 
 ## `scripts\dev\Run.ps1` (engine repo)
 
-`Run.ps1 -App Runtime -Project <root> [-ScreenshotAt 2s,5s] [-InputScript run.json] [-FixedStep 60] [-QuitAt 9s] [-Exec "level.load 2"] [-ExtraArgs "--scene=Level2"] [-Config Release]`. It adds `--background` and `--prefs-profile=agent`. With `-ScreenshotAt`, `-InputScript` or `-QuitAt` the game quits itself (0.5 s after the last shot if nothing else quits it). Game shots land in `bin-int\_agent\run\shots-<time>-<pid>\`, the run's own log slice in `bin-int\_agent\run\Runtime.log`. It prints warnings, errors and crash dumps. Its exit code is 0 even with error lines, so read them. The default config is **Release**: compile the scripts with `-c Release`, or the runtime silently loads an older DLL.
+`Run.ps1 -App Runtime -Project <root> [-ScreenshotAt 2s,5s] [-InputScript run.json] [-FixedStep 60] [-QuitAt 9s] [-Exec "level.load 2"] [-ExtraArgs "--scene=Level2"] [-Config Release]`. It adds `--background` and `--prefs-profile=agent`. With `-ScreenshotAt`, `-InputScript` or `-QuitAt` the game quits itself (0.5 s after the last shot if nothing else quits it). Game shots land in `bin-int\_agent\run\shots-<time>-<pid>\`, the run's own log slice in `bin-int\_agent\run\Runtime.log`. It prints warnings, errors and crash dumps. It returns 1 for detected crashes/non-zero self-exits; error log lines alone can still accompany exit 0, so read them. The default config is **Release**: compile the scripts with `-c Release`, or the runtime silently loads an older DLL.
 
 ## Input scripts
 
@@ -135,7 +135,7 @@ Only drive editors you started yourself (`Run.ps1 -KeepOpen`) or that the user a
 
 ## Screenshots
 
-- Take them at game time (`-ScreenshotAt` / `--screenshot-at` / input-script `screenshot`) and open them with the Read tool. A shot proves layout, art and overlap, not motion and not performance.
+- Take them at game time (`-ScreenshotAt` / `--screenshot-at` / input-script `screenshot`) and open them with `view_image`. A shot proves layout, art and overlap, not motion and not performance.
 - Shoot **every place you changed**: each new screen, panel state, level joint, bend, the HUD over the busiest part of the world. Overlapping geometry, text behind panels, mojibake and placeholder colours were all caught this way.
 - Reach a state with dev commands in the input script (`level.load 3`, `player.tp 120,4`, `ui.open shop`) instead of editing scenes temporarily.
 - Judge colours from in-game shots: lighting, ambient light and post-processing shift them away from the offline art.
@@ -158,7 +158,7 @@ Other games and builds always run at the same time, so frame times swing by ±40
 - Compare load-independent numbers: per-thread CPU cycles, `GC.GetAllocatedBytesForCurrentThread` per frame, GC counts, work counters (entities updated, meshes rebuilt), the biggest single-frame costs per cause.
 - Do A/B runs alternating base/change for 2+ rounds and flip the order each pair, best-of-N for microbenchmarks.
 - Uncap the frame rate first: `Application.VsyncEnabled = false; Application.TargetFrameRate = 0;` in a test-only dev command.
-- Phones run C# ~10–20× slower than a desktop (Mono JIT). Show per-stage timings in a debug HUD and read them from a device screenshot before optimizing.
+- Phone costs vary by device and runtime. Measure per-stage timings on the target device before optimizing; a desktop-to-phone multiplier is not a reliable budget.
 
 ## Shipping a build
 

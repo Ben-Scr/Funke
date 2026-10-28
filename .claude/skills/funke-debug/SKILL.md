@@ -11,8 +11,9 @@ Read the log first; most failures are already explained there.
 
 | Sink | What lands there |
 |---|---|
-| **Log file** `%LOCALAPPDATA%\Funke\Logs\<exe-stem>.log` (`Funke-Editor.log`, `Funke-Runtime.log`, `Funke-Launcher.log`, …) | Every logger, every level. Rotating, 10 MB × 3 files, flushed on Warn+. Best-effort (skipped if the path can't be opened). Set up in `Funke-Engine/src/Core/Log.cpp`. |
+| **Log file** `%LOCALAPPDATA%\Funke\Logs\<exe-stem>.log` on Windows (`Funke-Editor.log`, `Funke-Runtime.log`, `Funke-Launcher.log`, …) | Every logger, every level. Active file plus up to three rotated backups, 10 MiB each, flushed on Warn+. Best-effort (skipped if the path can't be opened); disabled on Web. Set up in `Funke-Engine/src/Core/Log.cpp`. |
 | stdout (console) | Same as the file, colored. |
+| Android / Web | Android also writes to logcat with tag `Funke` (`adb logcat -s Funke`). Web writes to the browser console and has no file sink. Non-Windows file logs use `Path::GetSpecialFolderPath(SpecialFolder::LocalAppData)/Funke/Logs` (platform user-data root). |
 | Editor **Console** panel | Client (`APP`) and `EDITOR` loggers only. **`FNK_CORE_*` never appears there** (filtered by the `Log::OnLog` subscriber in `ImGuiEditorLayer::OnAttach`). |
 | Shipped runtime | F7 log overlay (`Funke-Runtime/src/RuntimeLogLayer.cpp`, when `showRuntimeLogs`), F6 stats overlay, Ctrl+F6 profiler (when `profiler.enableInRuntime`). |
 | `funke editor logs` (Editor Bridge) | The last 4000 lines of **one open editor** (core + game), per process: `--level warning`, `--contains <text>`, `--since <n>` (number from the previous answer), `--follow`. The shared `Funke-Editor.log` mixes every editor instance; this doesn't. Reproduce in that editor with `funke editor play` / `input` / `exec` (`funke-build-engine`). |
@@ -46,7 +47,7 @@ FNK_ASSERT(ptr, FunkeErrorCode::NullReference, fmt::format("Widget {} was null",
 ```
 
 - `FNK_ASSERT`, `FNK_CORE_ASSERT`, `FNK_VERIFY`, `FNK_CORE_VERIFY` are all compiled in all configurations and behave the same: log `<KIND> failed: (expr) | [Code] msg @ file:line (function)` as a core error, then
-  - **Debug and Release:** `__debugbreak()` + `std::terminate()`. Without a debugger attached this produces a crash dump.
+  - **Debug and Release:** `FNK_DEBUG_BREAK` (`__debugbreak()` on Windows, `raise(SIGTRAP)` elsewhere), followed by `std::terminate()` if execution resumes. Windows failures are captured by the crash reporter; POSIX `SIGTRAP` is not among its installed fatal-signal handlers.
   - **Dist:** log and **continue**. Code after the assert still runs in shipped builds.
 - Grep the log for `ASSERT failed` / `VERIFY failed` to find the site.
 

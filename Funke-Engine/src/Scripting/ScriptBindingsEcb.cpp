@@ -82,6 +82,60 @@ namespace Funke {
 		return scratch;
 	}
 
+	static int EcbValidateCommands(const uint8_t* cursor, const uint8_t* bufferEnd, const EcbHeader& header)
+	{
+		const ComponentRegistry& components = SceneManager::GetComponentRegistry();
+		for (uint32_t command = 0; command < header.commandCount; ++command) {
+			if (bufferEnd - cursor < 11) return kEcbErrorTruncated;
+			const uint8_t opcode = cursor[0];
+			const uint32_t entityIndex = EcbReadLE<uint32_t>(cursor + 1);
+			const uint16_t payloadSize = EcbReadLE<uint16_t>(cursor + 9);
+			const uint8_t* payload = cursor + 11;
+			if (static_cast<std::size_t>(bufferEnd - payload) < payloadSize) return kEcbErrorTruncated;
+			const bool localEntity = entityIndex < header.entityCount;
+			const bool liveEntity = entityIndex == kEcbNoName;
+
+			switch (opcode) {
+			case Ecb_AddComponent:
+			case Ecb_SetComponent:
+			case Ecb_DefaultConstructComponent: {
+				if (!localEntity) return kEcbErrorTruncated;
+				const uint32_t typeId = EcbReadLE<uint32_t>(cursor + 5);
+				const ComponentInfo* info = components.GetByTypeId(typeId);
+				const bool useDefault = opcode == Ecb_DefaultConstructComponent;
+				if (!info || (useDefault ? !info->defaultEmplace : !info->emplaceFromBytes)) {
+					return kEcbErrorUnknownComponent;
+				}
+				if ((useDefault && payloadSize != 0)
+					|| (!useDefault && info->bytePayloadSize != 0 && payloadSize != info->bytePayloadSize)) {
+					FNK_CORE_WARN_TAG("Ecb", "Component payload size mismatch at command {} (typeId={}, size={})",
+						command, typeId, payloadSize);
+					return kEcbErrorTruncated;
+				}
+				break;
+			}
+			case Ecb_InstantiatePrefab:
+				if (!localEntity || payloadSize != sizeof(uint64_t)) return kEcbErrorTruncated;
+				break;
+			case Ecb_DestroyEntity:
+				if (!(localEntity && payloadSize == 0) && !(liveEntity && payloadSize == sizeof(uint64_t))) {
+					return kEcbErrorTruncated;
+				}
+				break;
+			case Ecb_SetEntityEnabled:
+				if (!(localEntity && payloadSize == sizeof(uint8_t))
+					&& !(liveEntity && payloadSize == sizeof(uint8_t) + sizeof(uint64_t))) {
+					return kEcbErrorTruncated;
+				}
+				break;
+			default:
+				return kEcbErrorTruncated;
+			}
+			cursor = payload + payloadSize;
+		}
+		return 0;
+	}
+
 	static int Funke_Ecb_PlaybackImpl(const uint8_t* buffer, int length,
 		uint64_t* outRuntimeIds, int maxOut)
 	{
@@ -97,11 +151,10 @@ namespace Funke {
 		std::memcpy(&header, buffer, sizeof(EcbHeader));
 
 		// Verify the entity table fits before we trust entityCount.
-		const std::size_t entityTableBytes =
-			static_cast<std::size_t>(header.entityCount) * sizeof(uint32_t);
-		if (static_cast<std::size_t>(length) < sizeof(EcbHeader) + entityTableBytes) {
+		if (header.entityCount > (static_cast<std::size_t>(length) - sizeof(EcbHeader)) / sizeof(uint32_t)) {
 			return kEcbErrorTruncated;
 		}
+		const std::size_t entityTableBytes = static_cast<std::size_t>(header.entityCount) * sizeof(uint32_t);
 		if (outRuntimeIds == nullptr && header.entityCount > 0) {
 			return kEcbErrorOutputTooSmall;
 		}
@@ -118,8 +171,10 @@ namespace Funke {
 		const uint8_t* entityTablePtr = buffer + sizeof(EcbHeader);
 		const uint8_t* commandStreamPtr = entityTablePtr + entityTableBytes;
 		const uint8_t* bufferEnd = buffer + length;
+		// Validate before prefab baking, which can create temporary entities and invoke scene callbacks.
+		if (const int error = EcbValidateCommands(commandStreamPtr, bufferEnd, header); error != 0) return error;
 
-		// Pre-scan: bounds-validate all records and bake prefab templates in command-stream order so the execute pass can walk them by monotone index.
+		// Keep prefab templates in command order for the execute pass.
 		PrefabTemplateCache& prefabCache = PrefabTemplateCache::Get();
 		struct PrefabSpawn {
 			uint32_t rootEntityIndex;        // ECB-local root slot
@@ -133,24 +188,12 @@ namespace Funke {
 		{
 			const uint8_t* cursor = commandStreamPtr;
 			for (uint32_t cmdIdx = 0; cmdIdx < header.commandCount; ++cmdIdx) {
-				if (cursor + 11 > bufferEnd) {
-					return kEcbErrorTruncated;
-				}
 				const uint8_t  opcode      = cursor[0];
 				const uint32_t entityIndex = EcbReadLE<uint32_t>(cursor + 1);
 				const uint16_t payloadSize = EcbReadLE<uint16_t>(cursor + 9);
 				const uint8_t* payload     = cursor + 11;
-				if (payload + payloadSize > bufferEnd) {
-					return kEcbErrorTruncated;
-				}
 
 				if (opcode == Ecb_InstantiatePrefab) {
-					if (entityIndex >= header.entityCount || payloadSize != 8) {
-						FNK_CORE_WARN_TAG("Ecb",
-							"Malformed Ecb_InstantiatePrefab at cmd {} (entityIndex={}, payloadSize={})",
-							cmdIdx, entityIndex, payloadSize);
-						return kEcbErrorTruncated;
-					}
 					const uint64_t guid = EcbReadLE<uint64_t>(payload);
 					auto templ = prefabCache.Find(guid);
 					if (!templ) {
@@ -180,50 +223,6 @@ namespace Funke {
 					}
 					prefabSpawns.push_back({ entityIndex, guid, /*childBaseIndex=*/0u, templ });
 					totalExtraChildren += static_cast<uint64_t>(templ->EntityCount() - 1u);
-				}
-				else if (opcode == Ecb_DestroyEntity) {
-					const bool destroysLiveEntity = entityIndex == kEcbNoName;
-					const bool validLiveDestroy = destroysLiveEntity && payloadSize == sizeof(uint64_t);
-					const bool validLocalDestroy = !destroysLiveEntity
-						&& entityIndex < header.entityCount
-						&& payloadSize == 0;
-					if (!validLiveDestroy && !validLocalDestroy) {
-						FNK_CORE_WARN_TAG("Ecb",
-							"Malformed Ecb_DestroyEntity at cmd {} (entityIndex={}, payloadSize={})",
-							cmdIdx, entityIndex, payloadSize);
-						return kEcbErrorTruncated;
-					}
-				}
-				else if (opcode == Ecb_SetEntityEnabled) {
-					const bool togglesLiveEntity = entityIndex == kEcbNoName;
-					const bool validLiveToggle = togglesLiveEntity
-						&& payloadSize == sizeof(uint8_t) + sizeof(uint64_t);
-					const bool validLocalToggle = !togglesLiveEntity
-						&& entityIndex < header.entityCount
-						&& payloadSize == sizeof(uint8_t);
-					if (!validLiveToggle && !validLocalToggle) {
-						FNK_CORE_WARN_TAG("Ecb",
-							"Malformed Ecb_SetEntityEnabled at cmd {} (entityIndex={}, payloadSize={})",
-							cmdIdx, entityIndex, payloadSize);
-						return kEcbErrorTruncated;
-					}
-				}
-				else if (opcode == Ecb_AddComponent || opcode == Ecb_SetComponent || opcode == Ecb_DefaultConstructComponent) {
-					// Validate component types before CreateEntitiesBulk: failing mid-execute would leave half-built
-					// entities in the scene whose ids never reach managed code (e.g. a type unregistered by hot reload).
-					const uint32_t typeId = EcbReadLE<uint32_t>(cursor + 5);
-					const ComponentInfo* info = SceneManager::GetComponentRegistry().GetByTypeId(typeId);
-					const bool usable = info != nullptr
-						&& (opcode == Ecb_DefaultConstructComponent ? info->defaultEmplace != nullptr
-							: info->emplaceFromBytes != nullptr);
-					if (!usable) {
-						FNK_CORE_WARN_TAG("Ecb",
-							"Ecb_Playback rejected: command {} uses component typeId {} which is not registered or "
-							"cannot be {} (see ComponentRegistry contract)",
-							cmdIdx, typeId,
-							opcode == Ecb_DefaultConstructComponent ? "default-constructed" : "emplaced from bytes");
-						return kEcbErrorUnknownComponent;
-					}
 				}
 
 				cursor = payload + payloadSize;

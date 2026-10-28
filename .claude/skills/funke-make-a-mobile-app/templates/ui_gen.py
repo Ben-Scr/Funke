@@ -76,6 +76,7 @@ def meta(rel):
 # ------------------------------------------------------------------ textures (white; tinted by Image colour)
 
 def _save_png(img, name):
+    guid = meta(f"Textures/{name}.png")
     path = os.path.join(TEXTURES, name + ".png")
     os.makedirs(TEXTURES, exist_ok=True)
     tmp = path + ".tmp"
@@ -84,7 +85,7 @@ def _save_png(img, name):
         os.remove(tmp)
     else:
         os.replace(tmp, path)
-    return meta(f"Textures/{name}.png")
+    return guid
 
 
 def _canvas(w, h):
@@ -206,8 +207,9 @@ class Scene:
         return path
 
     def save(self, rel="Scenes/Main.scene"):
+        guid = meta(rel)
         write_if_changed(os.path.join(ASSETS, rel), dump({"version": 1, "name": self.name, "systems": [], "entities": self.entities}))
-        return meta(rel)
+        return guid
 
 
 def rect(x=0, y=0, w=100, h=100, ax=0.5, ay=0.5, px=None, py=None, **flags):
@@ -398,7 +400,12 @@ def mobile_project_settings(scene_name, android_options=None):
     })
     p.setdefault("splashScreen", {}).update({"backgroundR": BG[0], "backgroundG": BG[1], "backgroundB": BG[2]})
     write_if_changed(path, dump(p))
-    android = {"name": "Android", "platform": "Android", "renderBackend": "OpenGLES"}
+    profile_path = os.path.join(ROOT, "BuildProfiles", "Android.build")
+    if os.path.exists(profile_path):
+        with open(profile_path, encoding="utf-8") as f:
+            android = json.load(f)
+    else:
+        android = {"name": "Android", "platform": "Android", "renderBackend": "Auto"}
     if android_options:
-        android["platformOptions"] = android_options
-    write_if_changed(os.path.join(ROOT, "BuildProfiles", "Android.build"), dump(android))
+        android.setdefault("platformOptions", {}).update(android_options)
+    write_if_changed(profile_path, dump(android))

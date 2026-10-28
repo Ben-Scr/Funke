@@ -4,6 +4,7 @@
 #include "Core/Application.hpp"
 #include "Core/Input.hpp"
 #include "Core/KeyCode.hpp"
+#include "Core/PlatformShortcuts.hpp"
 #include "DevTools/DevConsole.hpp"
 #include "DevTools/PhysicsDebugOverlay.hpp"
 
@@ -56,7 +57,7 @@ namespace Funke {
 			else Toggle();
 		}
 		if (DevConsole::IsOpen() && Input::GetKeyDown(KeyCode::Esc)) m_CloseRequested = true;
-		if (!DevConsole::IsOpen() && Input::GetKeyDown(KeyCode::F8)) {
+		if (!DevConsole::IsOpen() && PlatformShortcuts::IsPressed(PlatformShortcuts::k_PhysicsDebug)) {
 			PhysicsDebugOverlay::SetEnabled(!PhysicsDebugOverlay::IsEnabled());
 		}
 	}

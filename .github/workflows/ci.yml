@@ -5,7 +5,28 @@ on:
   pull_request:
 
 jobs:
+  script-tests:
+    name: Script tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-24.04, macos-14]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Release, platform builder, packaging and Web preview tests
+        run: python -m unittest discover -s scripts/ci -p "test_*.py"
+
   windows-build:
+    needs: script-tests
     runs-on: windows-2022
     outputs:
       version: ${{ steps.build_metadata.outputs.version }}
@@ -55,12 +76,6 @@ jobs:
           catch {
             throw 'FUNKE_SIGNING_CERTIFICATE_BASE64 is not valid base64.'
           }
-
-      - name: Release Script Tests
-        run: python -m unittest scripts.ci.test_release_scripts
-
-      - name: Android Builder Tests
-        run: python -m unittest scripts.ci.test_android_builder
 
       - name: Verify Vendor Patch Inputs
         shell: pwsh
@@ -141,7 +156,7 @@ jobs:
         shell: pwsh
         run: scripts/ci/core_module_build.ps1
 
-      - name: Build Release + Dist Publish Bundle
+      - name: Build Release + Dist Publish Bundle and Windows Installer
         shell: pwsh
         env:
           FUNKE_SIGNING_CERTIFICATE_BASE64: ${{ secrets.FUNKE_SIGNING_CERTIFICATE_BASE64 }}
@@ -166,6 +181,19 @@ jobs:
               }
             }
             .\scripts\BuildWindows.ps1 @arguments
+            if ($LASTEXITCODE -ne 0) { throw 'Windows bundle build failed.' }
+            $installerArguments = @('-DownloadCompiler')
+            if ($env:GITHUB_REF_TYPE -eq 'tag') {
+              $installerArguments += '-RequireSigning'
+            }
+            if ($certificatePath) {
+              $installerArguments += @('-SigningCertificatePath', $certificatePath)
+              if ($env:FUNKE_SIGNING_TIMESTAMP_URL) {
+                $installerArguments += @('-SigningTimestampUrl', $env:FUNKE_SIGNING_TIMESTAMP_URL)
+              }
+            }
+            .\scripts\BuildInstaller.ps1 @installerArguments
+            if ($LASTEXITCODE -ne 0) { throw 'Windows installer build failed.' }
           }
           finally {
             if ($certificatePath -and (Test-Path -LiteralPath $certificatePath)) {
@@ -237,8 +265,24 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+      - name: Verify Installer Selection, Upgrade and Uninstall
+        shell: pwsh
+        run: scripts/ci/installer_smoke_test.ps1 -InstallerPath "bin/installer/FunkeSetup-${{ steps.build_metadata.outputs.version }}-Windows-x64.exe"
+
+      - name: Upload Windows Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-Installer-${{ steps.build_metadata.outputs.version }}-Windows-x64
+          path: |
+            bin/installer/*.exe
+            bin/installer/*.sha256
+            bin/installer/*manifest*.json
+            bin/installer/*.dependencies.json
+          if-no-files-found: error
+
 
   linux-build:
+    needs: script-tests
     runs-on: ubuntu-24.04
 
     steps:
@@ -404,6 +448,7 @@ jobs:
           make -C premake/generated/core config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Funke-Engine
 
   macos-build:
+    needs: script-tests
     # Apple Silicon. Builds the engine, editor, launcher and CLI natively (Dawn on Metal) and runs the
     # doctest suites; the bundle is uploaded for manual checks until macOS releases are signed and notarized.
     runs-on: macos-14
@@ -516,6 +561,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: Funke-Editor-${{ needs.windows-build.outputs.version }}-Windows-x64
+          path: release
+
+      - name: Download Windows Installer
+        uses: actions/download-artifact@v4
+        with:
+          name: Funke-Installer-${{ needs.windows-build.outputs.version }}-Windows-x64
           path: release
 
       - name: Download Linux Bundle

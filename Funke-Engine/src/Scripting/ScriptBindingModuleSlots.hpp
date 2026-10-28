@@ -96,12 +96,6 @@
 	X(Collider2D_SetFriction) \
 	X(Collider2D_GetBounciness) \
 	X(Collider2D_SetBounciness) \
-	X(SpriteAnimator2D_Command) \
-	X(SpriteAnimator2D_IsPlaying) \
-	X(SpriteAnimator2D_GetFrame) \
-	X(SpriteAnimator2D_SetFrame) \
-	X(SpriteAnimator2D_GetFramesPerSecond) \
-	X(SpriteAnimator2D_SetFramesPerSecond) \
 	X(Physics2D_OverlapCircle) \
 	X(Physics2D_OverlapBox) \
 	X(Physics2D_OverlapPolygon) \

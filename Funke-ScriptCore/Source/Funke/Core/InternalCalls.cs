@@ -369,13 +369,33 @@ internal static unsafe class InternalCalls
         byte[] buf = EncodeUtf8Z(overlay);
         fixed (byte* p = buf) NativeCallbacks.Bindings.EditorGUI_ProgressBar(fraction, width, height, p);
     }
-    internal static void EditorGUI_Layout(int op, float value) => NativeCallbacks.Bindings.EditorGUI_Layout(op, value);
+    internal static void EditorGUI_Layout(int op, float value)
+    {
+        if (NativeCallbacks.Bindings.EditorGUI_Layout != null) NativeCallbacks.Bindings.EditorGUI_Layout(op, value);
+    }
     internal static void EditorGUI_PushId(string id)
     {
         byte[] buf = EncodeUtf8Z(id);
         fixed (byte* p = buf) NativeCallbacks.Bindings.EditorGUI_PushId(p);
     }
     internal static float EditorGUI_Query(int what) => NativeCallbacks.Bindings.EditorGUI_Query(what);
+
+    internal static int EditorGUI_Popup(string label, int selectedIndex, string[] options)
+    {
+        if (options == null || options.Length == 0 || NativeCallbacks.Bindings.EditorGUI_Popup == null) return selectedIndex;
+        foreach (string option in options)
+            if (option == null || option.IndexOf('\0') >= 0) throw new ArgumentException("Popup options cannot be null or contain a null character.", nameof(options));
+        byte[] l = EncodeUtf8Z(label), items = EncodeUtf8Z(string.Join('\0', options));
+        fixed (byte* pl = l) fixed (byte* pi = items)
+            return NativeCallbacks.Bindings.EditorGUI_Popup(pl, selectedIndex, pi, items.Length);
+    }
+
+    internal static bool EditorGUI_Selectable(string label, bool selected)
+    {
+        if (NativeCallbacks.Bindings.EditorGUI_Selectable == null) return false;
+        byte[] buffer = EncodeUtf8Z(label);
+        fixed (byte* p = buffer) return NativeCallbacks.Bindings.EditorGUI_Selectable(p, selected ? 1 : 0) != 0;
+    }
 
     private static byte[] EncodeUtf8Z(string? value)
     {
@@ -550,13 +570,6 @@ internal static unsafe class InternalCalls
     internal static float Collider2D_GetBounciness(ulong id, int type) => NativeCallbacks.Bindings.Collider2D_GetBounciness(id, type);
     internal static void Collider2D_SetBounciness(ulong id, int type, float v) => NativeCallbacks.Bindings.Collider2D_SetBounciness(id, type, v);
 
-    internal static void SpriteAnimator2D_Command(ulong id, int command) => NativeCallbacks.Bindings.SpriteAnimator2D_Command(id, command);
-    internal static bool SpriteAnimator2D_IsPlaying(ulong id) => NativeCallbacks.Bindings.SpriteAnimator2D_IsPlaying(id) != 0;
-    internal static int SpriteAnimator2D_GetFrame(ulong id) => NativeCallbacks.Bindings.SpriteAnimator2D_GetFrame(id);
-    internal static void SpriteAnimator2D_SetFrame(ulong id, int frame) => NativeCallbacks.Bindings.SpriteAnimator2D_SetFrame(id, frame);
-    internal static float SpriteAnimator2D_GetFramesPerSecond(ulong id) => NativeCallbacks.Bindings.SpriteAnimator2D_GetFramesPerSecond(id);
-    internal static void SpriteAnimator2D_SetFramesPerSecond(ulong id, float fps) => NativeCallbacks.Bindings.SpriteAnimator2D_SetFramesPerSecond(id, fps);
-
     // ── PostProcessing2D ───────────────────────────────────────
 
     internal static T PostProcessing2D_GetEffect<T>(ulong id, PostProcessingInterop.Effect effect) where T : unmanaged
@@ -599,6 +612,18 @@ internal static unsafe class InternalCalls
         byte[] buf = EncodeUtf8Z(sceneName);
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Scene_Load(ptr) != 0;
     }
+
+    internal static ulong Scene_BeginLoadAsync(string sceneName, bool additive)
+    {
+        byte[] buf = EncodeUtf8Z(sceneName);
+        fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Scene_BeginLoadAsync(ptr, additive ? 1 : 0);
+    }
+
+    internal static ulong Scene_BeginLoadByGuidAsync(ulong sceneGuid, bool additive)
+        => NativeCallbacks.Bindings.Scene_BeginLoadByGuidAsync(sceneGuid, additive ? 1 : 0);
+
+    internal static bool Scene_CancelLoadAsync(ulong operationId)
+        => NativeCallbacks.Bindings.Scene_CancelLoadAsync(operationId) != 0;
 
     internal static void Scene_Unload(string sceneName)
     {

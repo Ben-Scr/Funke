@@ -2,6 +2,7 @@
 #include "Editor/PlatformBuilder.hpp"
 
 #include "Core/Log.hpp"
+#include "DevTools/EditorBridge.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
@@ -10,6 +11,7 @@
 
 #include <mutex>
 #include <regex>
+#include <thread>
 
 namespace Funke::PlatformBuilder {
 
@@ -54,6 +56,84 @@ namespace Funke::PlatformBuilder {
 			}
 		}
 		return s_Command;
+	}
+
+	WebPreview StartWebPreview(const std::filesystem::path& script, const std::filesystem::path& entry,
+		const WebPreview& previous) {
+		WebPreview result;
+		std::error_code ec;
+		if (!std::filesystem::is_regular_file(entry, ec)) {
+			result.Error = "Web build entry page not found: " + Path::ToUtf8(entry);
+			return result;
+		}
+		result.Entry = std::filesystem::canonical(entry, ec);
+		if (ec) {
+			result.Error = "Could not resolve the Web build entry page: " + ec.message();
+			return result;
+		}
+		if (previous.Entry == result.Entry && !previous.Url.empty() && Process::IsProcessRunning(previous.ProcessId)) {
+			return previous;
+		}
+		if (!std::filesystem::is_regular_file(script, ec)) {
+			result.Error = "Web preview helper is missing. Update the Web platform package: " + Path::ToUtf8(script);
+			return result;
+		}
+		std::vector<std::string> python = FindPython();
+		if (python.empty()) {
+			result.Error = "Python 3.10 or newer is required to preview a Web build.";
+			return result;
+		}
+		python.insert(python.end(), { "-c", "import json, sys; print(json.dumps(sys.executable))" });
+		const Process::Result probe = Process::Run(python, {}, std::chrono::seconds(20));
+		Json::Value executable;
+		if (!probe.Succeeded() || !Json::TryParse(probe.Output, executable) || executable.AsStringOr().empty()) {
+			result.Error = "Could not locate the Web preview interpreter: " + probe.Output;
+			return result;
+		}
+		std::filesystem::path interpreter = Path::FromUtf8(executable.AsStringOr());
+#if defined(FNK_PLATFORM_WINDOWS)
+		// pythonw keeps the detached server hidden without inheriting Process::Run's kill-on-close job.
+		interpreter = interpreter.parent_path() / "pythonw.exe";
+#endif
+		if (!std::filesystem::is_regular_file(interpreter, ec)) {
+			result.Error = "Web preview interpreter not found: " + Path::ToUtf8(interpreter);
+			return result;
+		}
+		const unsigned long owner = EditorBridge::GetCurrentProcessId();
+		const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
+		if (ec) {
+			result.Error = "Could not locate the Web preview status directory: " + ec.message();
+			return result;
+		}
+		const std::filesystem::path readyFile = temp / ("FunkeWebPreview-" + std::to_string(owner) + "-"
+			+ std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".json");
+		if (!Process::LaunchDetached({ Path::ToUtf8(interpreter), Path::ToUtf8(script), "serve",
+			"--entry", Path::ToUtf8(result.Entry), "--owner-pid", std::to_string(owner),
+			"--ready-file", Path::ToUtf8(readyFile) }, result.Entry.parent_path(), result.ProcessId)) {
+			result.Error = "Could not start the Web preview server.";
+			return result;
+		}
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (std::chrono::steady_clock::now() < deadline) {
+			if (std::filesystem::is_regular_file(readyFile, ec)) {
+				Json::Value ready;
+				const bool parsed = Json::TryParse(File::ReadAllText(Path::ToUtf8(readyFile)), ready);
+				std::filesystem::remove(readyFile, ec);
+				if (parsed && ready.IsObject()) {
+					if (const Json::Value* error = ready.FindMember("error")) result.Error = error->AsStringOr();
+					if (const Json::Value* url = ready.FindMember("url")) result.Url = url->AsStringOr();
+				}
+				if (result.Url.empty() && result.Error.empty()) result.Error = "Web preview server returned no URL.";
+				return result;
+			}
+			if (!Process::IsProcessRunning(result.ProcessId)) {
+				result.Error = "Web preview server exited before it was ready.";
+				return result;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(25));
+		}
+		result.Error = "Web preview server did not become ready within 10 seconds.";
+		return result;
 	}
 
 	CheckResult Check(const PlatformPackageInfo& package) {

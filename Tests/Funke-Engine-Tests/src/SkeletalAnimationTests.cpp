@@ -5,6 +5,7 @@
 #include "Graphics/GltfImporter.hpp"
 #include "Graphics/MeshAsset.hpp"
 #include "Graphics/SkeletalAnimation.hpp"
+#include "Graphics/SkinningCompute.hpp"
 #include "Scene/BuiltInComponentRegistration.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Entity.hpp"
@@ -17,6 +18,7 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -230,6 +232,121 @@ TEST_CASE("Posed bounds follow the animated joints") {
 	SkinnedMeshData unbounded = data;
 	for (SkinJoint& joint : unbounded.Joints) joint = { joint.Node, joint.InverseBind };
 	CHECK_FALSE(SkeletalAnimation::PosedBounds(unbounded, joints, minPoint, maxPoint));
+}
+
+TEST_CASE("Posed bounds contain weighted vertices through cross-fades and nonuniform joint scales") {
+	const TestModel model;
+	MeshAsset asset;
+	REQUIRE(ParseGltf(AsBytes(model.EmbeddedJson()), nullptr, asset));
+	SkinnedMeshData data = *asset.Skin;
+	data.Nodes[0].Translation = { 5.0f, -3.0f, 2.0f };
+	data.Nodes[0].Scale = { -2.0f, 0.4f, 3.0f };
+	data.Nodes[1].Scale = { 0.25f, 4.0f, 0.5f };
+	data.VertexJoints[2] = { 0, 1, 0, 0 };
+	data.VertexWeights[2] = { 0.4f, 0.8f, 0.0f, 0.0f };
+	SkeletalAnimation::ComputeJointBounds(data);
+	REQUIRE(data.JointBoundsValid);
+	std::vector<glm::mat4> nodes, joints;
+	std::vector<NodePose> scratch, previous;
+	std::vector<MeshVertex> vertices;
+	for (int step = 0; step <= 20; ++step) {
+		SkeletalPoseRequest request;
+		request.Clip = 0;
+		request.Time = 1.0f;
+		request.PreviousClip = 0;
+		request.Fade = static_cast<float>(step) / 20.0f;
+		SkeletalAnimation::EvaluatePose(data, request, nodes, scratch, previous);
+		SkeletalAnimation::ComputeJointMatrices(data, nodes, joints);
+		SkeletalAnimation::SkinVertices(data, joints, vertices);
+		glm::vec3 minimum, maximum;
+		REQUIRE(SkeletalAnimation::PosedBounds(data, joints, minimum, maximum));
+		for (const MeshVertex& vertex : vertices) {
+			for (int axis = 0; axis < 3; ++axis) {
+				CHECK(vertex.Position[axis] >= minimum[axis]);
+				CHECK(vertex.Position[axis] <= maximum[axis]);
+			}
+		}
+	}
+}
+
+TEST_CASE("Unsafe skin bounds disable culling instead of dropping vertices") {
+	const TestModel model;
+	MeshAsset asset;
+	REQUIRE(ParseGltf(AsBytes(model.EmbeddedJson()), nullptr, asset));
+	SkinnedMeshData data = *asset.Skin;
+	std::vector<glm::mat4> nodes, joints;
+	SkeletalAnimation::EvaluatePose(data, {}, nodes);
+	SkeletalAnimation::ComputeJointMatrices(data, nodes, joints);
+	glm::vec3 minimum, maximum;
+	SUBCASE("missing palette") { joints.pop_back(); }
+	SUBCASE("unknown joint") { data.VertexJoints[0][0] = 65535; }
+	SUBCASE("negative influence") { data.VertexWeights[0] = { -0.2f, 1.2f, 0.0f, 0.0f }; }
+	SUBCASE("zero influences") { data.VertexWeights[0] = glm::vec4(0.0f); }
+	SUBCASE("nonfinite influence") { data.VertexWeights[0][0] = std::numeric_limits<float>::quiet_NaN(); }
+	SUBCASE("missing influences") { data.VertexWeights.pop_back(); }
+	SUBCASE("nonfinite joint") { joints[0][0][0] = std::numeric_limits<float>::infinity(); }
+	SkeletalAnimation::ComputeJointBounds(data);
+	CHECK_FALSE(SkeletalAnimation::PosedBounds(data, joints, minimum, maximum));
+}
+
+TEST_CASE("Compute skinning preserves packed vertex attributes and selects a bounded CPU fallback") {
+	const TestModel model;
+	MeshAsset asset;
+	REQUIRE(ParseGltf(AsBytes(model.EmbeddedJson()), nullptr, asset));
+	SkinnedMeshData data = *asset.Skin;
+	data.VertexJoints[1] = { 1, 0, 65535, 0 };
+	data.VertexWeights[1] = { 0.3f, 0.2f, 0.5f, 0.0f };
+	data.BindVertices[1].UV[0] = 0.75f;
+	data.BindVertices[1].UV[1] = 0.125f;
+	std::vector<SkinningCompute::Vertex> packed;
+	REQUIRE(SkinningCompute::PackVertices(data, packed));
+	REQUIRE(packed.size() == data.BindVertices.size());
+	CHECK(packed[1].Position[0] == data.BindVertices[1].Position[0]);
+	CHECK(packed[1].Position[3] == 1.0f);
+	CHECK(packed[1].Normal[2] == data.BindVertices[1].Normal[2]);
+	CHECK(packed[1].Normal[3] == 0.0f);
+	CHECK(packed[1].Joints[2] == 65535);
+	CHECK(packed[1].Weights[2] == 0.5f);
+	CHECK(packed[1].UV[0] == 0.75f);
+	CHECK(packed[1].UV[1] == 0.125f);
+	CHECK(SkinningCompute::FitsLimits(64, 2, 5120, 8192, 1));
+	CHECK_FALSE(SkinningCompute::FitsLimits(65, 2, 8192, 8192, 1));
+	CHECK_FALSE(SkinningCompute::FitsLimits(64, 2, 5119, 8192, 1));
+	CHECK_FALSE(SkinningCompute::FitsLimits(64, 2, 8192, 5119, 1));
+	CHECK_FALSE(SkinningCompute::FitsLimits(1, 129, 8192, 16384, 1));
+	CHECK_FALSE(SkinningCompute::FitsLimits(0, 2, 8192, 8192, 1));
+	CHECK_FALSE(SkinningCompute::FitsLimits(64, 0, 8192, 8192, 1));
+	data.VertexWeights.pop_back();
+	CHECK_FALSE(SkinningCompute::PackVertices(data, packed));
+	const auto fallback = Skin(data, {});
+	CheckNear(PositionOf(fallback.back()), PositionOf(data.BindVertices.back()));
+}
+
+TEST_CASE("CPU skinning keeps distinct palettes, invalid joints and zero normal fallbacks") {
+	const TestModel model;
+	MeshAsset asset;
+	REQUIRE(ParseGltf(AsBytes(model.EmbeddedJson()), nullptr, asset));
+	SkinnedMeshData data = *asset.Skin;
+	SkeletalPoseRequest bent;
+	bent.Clip = 0;
+	bent.Time = 1.0f;
+	std::vector<NodePose> scratch, previous;
+	std::vector<glm::mat4> nodes, restJoints, bentJoints;
+	SkeletalAnimation::EvaluatePose(data, {}, nodes, scratch, previous);
+	SkeletalAnimation::ComputeJointMatrices(data, nodes, restJoints);
+	SkeletalAnimation::EvaluatePose(data, bent, nodes, scratch, previous);
+	SkeletalAnimation::ComputeJointMatrices(data, nodes, bentJoints);
+	std::vector<MeshVertex> rest, posed;
+	SkeletalAnimation::SkinVertices(data, restJoints, rest);
+	SkeletalAnimation::SkinVertices(data, bentJoints, posed);
+	CheckNear(PositionOf(rest[2]), { 0.0f, 2.0f, 0.0f });
+	CheckNear(PositionOf(posed[2]), { -1.0f, 1.0f, 0.0f });
+	data.VertexJoints[2][0] = 65535;
+	data.VertexWeights[1] = glm::vec4(0.0f);
+	SkeletalAnimation::SkinVertices(data, bentJoints, posed);
+	CheckNear(PositionOf(posed[2]), PositionOf(data.BindVertices[2]));
+	CheckNear(PositionOf(posed[1]), glm::vec3(0.0f));
+	CheckNear({ posed[1].Normal[0], posed[1].Normal[1], posed[1].Normal[2] }, { 0.0f, 1.0f, 0.0f });
 }
 
 TEST_CASE("glTF import reads .glb containers and external buffers") {

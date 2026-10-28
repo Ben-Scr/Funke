@@ -399,7 +399,7 @@ namespace Funke {
 
 	void Scene::MarkAllDirtyOnce()
 	{
-		m_Dirty = true;
+		if (m_IsDetached || !Application::GetIsPlaying()) m_Dirty = true;
 		m_UIDirty = true;
 	}
 
@@ -407,14 +407,18 @@ namespace Funke {
 		if (n == 0) {
 			return;
 		}
-		FNK_CORE_ASSERT(out.size() >= n, FunkeErrorCode::InvalidValue,
-			"Scene::CreateEntitiesBulk: output span is smaller than the requested count");
 		// Beyond entity_mask, registry.create() wraps and the next sparse-set write corrupts memory.
 		using EntityTraits = entt::entt_traits<EntityHandle>;
 		constexpr std::size_t kMaxLiveEntities = static_cast<std::size_t>(EntityTraits::entity_mask);
-		FNK_CORE_ASSERT(m_EntityCount + n <= kMaxLiveEntities, FunkeErrorCode::InvalidValue,
-			"Scene::CreateEntitiesBulk: batch would exceed the EnTT entity cap. "
-			"Raise 'entityBits' in project.json and rebuild.");
+		if (m_EntityCount > kMaxLiveEntities || n > kMaxLiveEntities - m_EntityCount) {
+			FNK_THROW(FunkeErrorCode::OutOfRange,
+				"Scene::CreateEntitiesBulk: batch would exceed the EnTT entity cap. "
+				"Raise 'entityBits' in project.json and rebuild.");
+		}
+		if (out.size() < n || out.data() == nullptr) {
+			FNK_THROW(FunkeErrorCode::InvalidArgument,
+				"Scene::CreateEntitiesBulk: output span is smaller than the requested count or null");
+		}
 		m_Registry.storage<EntityHandle>().reserve(
 			m_Registry.storage<EntityHandle>().size() + n);
 		m_Registry.create(out.begin(), out.begin() + n);
@@ -744,15 +748,8 @@ namespace Funke {
 			DestroyEntityInternal(nativeEntity, true);
 			return;
 		}
-		if (!m_Registry.valid(nativeEntity)) return;
-		// Keep the shorter remaining time if already queued so the earliest scheduled destruction wins.
-		for (auto& [h, remaining] : m_PendingDestroys) {
-			if (h == nativeEntity) {
-				if (delay < remaining) remaining = delay;
-				return;
-			}
-		}
-		m_PendingDestroys.emplace_back(nativeEntity, delay);
+		if (!m_Registry.valid(nativeEntity) || IsEntityBeingDestroyed(nativeEntity)) return;
+		m_PendingDestroys.Schedule(nativeEntity, delay);
 	}
 
 	Entity Scene::CloneEntity(Entity source) {
@@ -823,7 +820,8 @@ namespace Funke {
 	void Scene::ClearEntities() {
 		// Gate m_TearingDown so Camera2D destroy hooks don't re-enter RefreshMainCameraSelection mid-iteration.
 		m_MainCameraEntity = entt::null;
-		m_TearingDown = true;
+		const bool wasTearingDown = std::exchange(m_TearingDown, true);
+		std::vector<EntityHandle> indexedParents;
 		try {
 			auto view = m_Registry.view<entt::entity>();
 			std::vector<EntityHandle> entities;
@@ -831,6 +829,13 @@ namespace Funke {
 
 			for (EntityHandle entity : view) {
 				entities.push_back(entity);
+			}
+			// Registry order can visit children first; every snapshotted parent is already doomed.
+			for (EntityHandle entity : entities) {
+				const auto* hierarchy = m_Registry.try_get<HierarchyComponent>(entity);
+				if (hierarchy && !hierarchy->Children.empty() && m_DestructionChildren.try_emplace(entity).second) {
+					indexedParents.push_back(entity);
+				}
 			}
 
 			for (EntityHandle entity : entities) {
@@ -843,16 +848,18 @@ namespace Funke {
 			}
 		}
 		catch (...) {
-			m_TearingDown = false;
+			for (EntityHandle entity : indexedParents) m_DestructionChildren.erase(entity);
+			m_TearingDown = wasTearingDown;
 			throw;
 		}
 
-		m_TearingDown = false;
+		for (EntityHandle entity : indexedParents) m_DestructionChildren.erase(entity);
+		m_TearingDown = wasTearingDown;
 		m_TransformHierarchyDirty = true;
 		m_TransformDirtyAll = true;
 		m_DirtyTransformEntities.clear();
 		m_DirtyTransformEntitySet.clear();
-		m_PendingDestroys.clear();
+		m_PendingDestroys.Clear();
 		// Fixups hold raw pointers into component storage that was just destroyed.
 		m_PendingEntityRefFixups.clear();
 		MarkStaticRenderDataDirty();
@@ -1228,71 +1235,85 @@ namespace Funke {
 		return true;
 	}
 
-	void Scene::DestroyEntityInternal(EntityHandle nativeEntity, bool markDirty) {
-		if (nativeEntity == entt::null || !m_Registry.valid(nativeEntity)) {
+	void Scene::DetachDestroyedEntity(EntityHandle entity) {
+		const auto* hierarchy = m_Registry.try_get<HierarchyComponent>(entity);
+		if (!hierarchy || hierarchy->Parent == entt::null || !m_Registry.valid(hierarchy->Parent)) return;
+		auto* parent = m_Registry.try_get<HierarchyComponent>(hierarchy->Parent);
+		if (!parent) return;
+		auto& children = parent->Children;
+		const auto active = m_DestructionChildren.find(hierarchy->Parent);
+		if (active == m_DestructionChildren.end()) {
+			std::erase(children, entity);
 			return;
 		}
 
-		if (markDirty && (m_IsDetached || !Application::GetIsPlaying())) {
-			m_Dirty = true;
-		}
-		// markDirty=false during cascade: outermost call already pulsed the flag.
-		if (markDirty) {
-			m_UIDirty = true;
-		}
-
-		// Snapshot Children + Parent before recursing: EnTT's swap-and-pop pool can relocate the HierarchyComponent during child destroys.
-		if (m_Registry.all_of<HierarchyComponent>(nativeEntity)) {
-			std::vector<EntityHandle> childrenSnapshot;
-			EntityHandle parent = entt::null;
-			{
-				const HierarchyComponent& hc = m_Registry.get<HierarchyComponent>(nativeEntity);
-				childrenSnapshot = hc.Children;
-				parent = hc.Parent;
+		auto& index = active->second;
+		auto position = index.Positions.find(entity);
+		if (index.Size != children.size() || index.HierarchyVersion != m_HierarchyVersion ||
+			position == index.Positions.end() || position->second >= children.size() || children[position->second] != entity) {
+			index.Positions.clear();
+			index.Positions.reserve(children.size());
+			index.Unique = true;
+			for (size_t i = 0; i < children.size(); ++i) {
+				if (!index.Positions.emplace(children[i], i).second) index.Unique = false;
 			}
-
-			for (EntityHandle child : childrenSnapshot) {
-				DestroyEntityInternal(child, false);
-			}
-
-			// Re-fetch the parent's HierarchyComponent after the recursive destroys; any
-			// reference taken before the loop may now be moved-from.
-			if (parent != entt::null
-				&& m_Registry.valid(parent)
-				&& m_Registry.all_of<HierarchyComponent>(parent))
-			{
-				auto& parentHc = m_Registry.get<HierarchyComponent>(parent);
-				parentHc.Children.erase(
-					std::remove(parentHc.Children.begin(), parentHc.Children.end(), nativeEntity),
-					parentHc.Children.end());
-			}
+			index.Size = children.size();
+			index.HierarchyVersion = m_HierarchyVersion;
+			position = index.Positions.find(entity);
+		}
+		if (position == index.Positions.end()) return;
+		if (!index.Unique) {
+			std::erase(children, entity);
+			index.HierarchyVersion = 0;
+			return;
 		}
 
-		// Native-initiated destruction: drop the entity's cached C# component
-		// wrappers. DestroyEntityInternal is the choke point for single, cascade-
-		// child, ClearEntities, and scene-unload destroys, so covering it here covers
-		// all of them. Read the UUID while the entity is still alive.
-		if (!m_LifecycleSuspended && !m_SuppressEntityDestructionCallbacks) {
-			NotifyScriptsEntityDestroyed(*this, GetEntityPersistentID(nativeEntity));
-		}
+		// Only doomed parents use swap-pop; the snapshot preserves callback order and every live sibling stays visible.
+		const size_t slot = position->second;
+		const EntityHandle moved = children.back();
+		children[slot] = moved;
+		children.pop_back();
+		index.Positions.erase(position);
+		if (slot < children.size()) index.Positions[moved] = slot;
+		index.Size = children.size();
+	}
 
-		UnregisterEntityIdentity(nativeEntity);
-		// Dynamic components don't get on_destroy hooks; scrub via Application path so detached/headless scenes don't assert.
-		if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
-			SceneManager::GetComponentRegistry().ScrubEntity(m_Registry, nativeEntity);
-		}
+	void Scene::DestroyEntityInternal(EntityHandle nativeEntity, bool markDirty) {
+		if (nativeEntity == entt::null || !m_Registry.valid(nativeEntity) || IsEntityBeingDestroyed(nativeEntity)) return;
+
 		TrackEntityDestruction(nativeEntity);
+		m_PendingDestroys.Cancel(nativeEntity);
 		try {
+			if (markDirty && (m_IsDetached || !Application::GetIsPlaying())) m_Dirty = true;
+			if (markDirty) m_UIDirty = true;
+
+			if (const auto* hierarchy = m_Registry.try_get<HierarchyComponent>(nativeEntity)) {
+				// Component storage can move and callbacks can mutate siblings during recursive destruction.
+				const std::vector<EntityHandle> children = hierarchy->Children;
+				if (!children.empty()) m_DestructionChildren.try_emplace(nativeEntity);
+				for (EntityHandle child : children) DestroyEntityInternal(child, false);
+			}
+			m_DestructionChildren.erase(nativeEntity);
+			DetachDestroyedEntity(nativeEntity);
+
+			if (!m_LifecycleSuspended && !m_SuppressEntityDestructionCallbacks) {
+				NotifyScriptsEntityDestroyed(*this, GetEntityPersistentID(nativeEntity));
+			}
+
+			UnregisterEntityIdentity(nativeEntity);
+			// Dynamic components have no on_destroy hook, including in detached scenes.
+			if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
+				SceneManager::GetComponentRegistry().ScrubEntity(m_Registry, nativeEntity);
+			}
 			m_Registry.destroy(nativeEntity);
+			if (m_EntityCount > 0) --m_EntityCount;
 		}
 		catch (...) {
+			m_DestructionChildren.erase(nativeEntity);
 			UntrackEntityDestruction(nativeEntity);
 			throw;
 		}
 		UntrackEntityDestruction(nativeEntity);
-		if (m_EntityCount > 0) {
-			--m_EntityCount;
-		}
 	}
 
 	void Scene::TrackEntityDestruction(EntityHandle entity) {
@@ -1378,25 +1399,9 @@ namespace Funke {
 	void Scene::UpdateSystems() {
 		SceneExecutionScope executionScope(*this);
 		// Drain delayed destroys BEFORE system updates so elapsed entities are gone when views are iterated.
-		if (!m_PendingDestroys.empty()) {
-			const float dt = Time::GetDeltaTime();
-			for (size_t i = 0; i < m_PendingDestroys.size();) {
-				auto& [h, remaining] = m_PendingDestroys[i];
-				remaining -= dt;
-				if (remaining <= 0.0f) {
-					if (m_Registry.valid(h)) {
-						DestroyEntityInternal(h, true);
-					}
-					// swap-pop; do NOT increment i — re-test slot i which
-					// now holds the previously-last element.
-					m_PendingDestroys[i] = m_PendingDestroys.back();
-					m_PendingDestroys.pop_back();
-				}
-				else {
-					++i;
-				}
-			}
-		}
+		m_PendingDestroys.Advance(Time::GetDeltaTime());
+		EntityHandle due;
+		while (m_PendingDestroys.PopDue(due)) DestroyEntityInternal(due, true);
 
 		ForeachEnabledSystem("Update", [this](SceneSystem& s) { s.Update(*this); });
 	}
@@ -1412,6 +1417,7 @@ namespace Funke {
 	void Scene::ForeachEnabledSystem(std::string_view phase, const std::function<void(SceneSystem&)>& func) {
 		SceneExecutionScope executionScope(*this);
 		for (size_t i = 0; i < m_Systems.size(); ++i) {
+			if (!m_IsLoaded || m_LifecycleSuspended) break;
 			SceneSystem& system = *m_Systems[i];
 			if (!system.IsEnabled()) {
 				continue;

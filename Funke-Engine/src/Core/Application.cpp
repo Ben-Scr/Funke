@@ -14,6 +14,7 @@
 #include "Physics/PhysicsSystem2D.hpp"
 #endif
 #if FUNKE_WITH_3D
+#include "Graphics/MeshAsset.hpp"
 #include "Graphics/Renderer3D.hpp"
 #endif
 #include "Graphics/GizmoRenderer.hpp"
@@ -22,6 +23,7 @@
 #include "Graphics/TextureManager.hpp"
 #include "Core/PackageHost.hpp"
 #include "Core/Platform.hpp"
+#include "Core/PlatformShortcuts.hpp"
 #include "DevTools/DevConsole.hpp"
 #include "DevTools/PhysicsDebugOverlay.hpp"
 #include "DevTools/RunAutomation.hpp"
@@ -40,6 +42,7 @@
 #include "Scene/Scene.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Serialization/Path.hpp"
+#include "Serialization/SceneSerializer.hpp"
 #include "Utils/Process.hpp"
 
 #ifdef FNK_PLATFORM_WINDOWS
@@ -819,6 +822,8 @@ namespace Funke {
 	void Application::BeginFrame(bool enginePaused) {
 		FUNKE_PROFILE_SCOPE("Application::BeginFrame");
 		CommitGraphicsSettings();
+		ScriptEngine::PumpSceneLoadRequests();
+		if (m_SceneManager) m_SceneManager->PumpAsyncSceneLoads();
 		if (enginePaused != m_WasEnginePaused) {
 			// Suspend the audio device while the engine is paused (background-pause/minimize) so playback
 			// freezes in place instead of droning on a frozen sim; refocus resumes it from the same cursor.
@@ -860,6 +865,12 @@ namespace Funke {
 
 			// Re-read: a layer may have stopped Play this frame; updating the restored edit scenes would run their scripts' OnStart.
 			gameplayActive = m_IsPlaying && !m_IsGameplayPaused;
+			if (gameplayActive) {
+				// Global continuations resolve implicit operations against the active scene, never the last updated scene.
+				ScriptEngine::SetScene(nullptr);
+				ScriptEngine::PumpCoroutinesUpdate(Time::GetDeltaTime());
+				gameplayActive = m_IsPlaying && !m_IsGameplayPaused;
+			}
 			if (gameplayActive && m_SceneManager) {
 				FUNKE_PROFILE_SCOPE("UpdateScenes");
 				m_SceneManager->UpdateScenes();
@@ -923,7 +934,12 @@ namespace Funke {
 			if (AudioManager::GetPlayInBackground() && !m_IsPaused && m_IsPlaying && !m_IsGameplayPaused) {
 				if (m_Configuration.EnableAudio) AudioManager::Update();
 				ScriptEngine::UpdateGlobalSystems();
-				if (m_SceneManager) m_SceneManager->UpdateScenes();
+				if (m_IsPlaying && !m_IsGameplayPaused && !m_IsPaused) {
+					ScriptEngine::SetScene(nullptr);
+					ScriptEngine::PumpCoroutinesUpdate(Time::GetDeltaTime());
+				}
+				if (m_IsPlaying && !m_IsGameplayPaused && !m_IsPaused && m_SceneManager)
+					m_SceneManager->UpdateScenes();
 			}
 			OnPaused();
 		}
@@ -941,6 +957,11 @@ namespace Funke {
 
 		m_IsRenderingFrame = false;
 
+#if FUNKE_WITH_3D
+		if (m_Renderer3D) m_Renderer3D->PurgeUnusedMeshes();
+		MeshLibrary::PurgeUnused();
+#endif
+		SceneSerializer::PurgeUnusedCachedPrefabRoots();
 		FrameArenas::OnEndFrame();
 	}
 
@@ -1077,7 +1098,11 @@ namespace Funke {
 	void Application::BeginFixedFrame() {
 		FixedUpdate();
 
-		if (!m_IsPlaying) return;
+		if (!m_IsPlaying || m_IsGameplayPaused) return;
+
+		ScriptEngine::SetScene(nullptr);
+		ScriptEngine::PumpCoroutinesFixedUpdate();
+		if (!m_IsPlaying || m_IsGameplayPaused) return;
 
 		if (m_SceneManager) m_SceneManager->FixedUpdateScenes();
 		// Step quantum is unscaled and constant. TimeScale already affected how many
@@ -1203,10 +1228,10 @@ namespace Funke {
 
 
 	void Application::CoreInput() {
-		if (m_Input.GetKey(KeyCode::LeftControl) && m_Input.GetKeyDown(KeyCode::M)) {
+		if (PlatformShortcuts::IsPressed(PlatformShortcuts::k_Minimize)) {
 			if (m_Window) m_Window->MinimizeWindow();
 		}
-		if (m_Configuration.EnableFullscreenToggle && m_Input.GetKeyDown(KeyCode::F11)) {
+		if (m_Configuration.EnableFullscreenToggle && PlatformShortcuts::IsPressed(PlatformShortcuts::k_Fullscreen)) {
 			if (m_Window) m_Window->SetFullScreen(!m_Window->IsFullScreen());
 		}
 	}
@@ -1321,6 +1346,7 @@ namespace Funke {
 			guardedShutdownStatic("SceneManager", [&]{ m_SceneManager->Shutdown(); });
 			m_SceneManager.reset();
 		}
+		guardedShutdownStatic("PrefabRootCache", []{ SceneSerializer::ClearCachedPrefabRoots(); });
 		if (ScriptEngine::IsInitialized()) guardedShutdownStatic("ScriptEngine", []{ ScriptEngine::Shutdown(); });
 		if (FontManager::IsInitialized()) guardedShutdownStatic("FontManager", []{ FontManager::Shutdown(); });
 		if (m_Configuration.EnableTextureManager) guardedShutdownStatic("TextureManager", []{ TextureManager::Shutdown(); });
@@ -1331,6 +1357,7 @@ namespace Funke {
 		guardedShutdownOwned("GizmoRenderer2D", m_GizmoRenderer2D);
 #if FUNKE_WITH_3D
 		guardedShutdownOwned("Renderer3D", m_Renderer3D);
+		guardedShutdownStatic("MeshLibrary", []{ MeshLibrary::Clear(); });
 #endif
 		guardedShutdownOwned("Renderer2D", m_Renderer2D);
 		if (RenderApi::IsInitialized()) guardedShutdownStatic("RenderApi", []{ RenderApi::Shutdown(); });

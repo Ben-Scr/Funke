@@ -791,11 +791,11 @@ endforeach()
 	}
 
 	static bool IsKnownProjectMember(std::string_view name) {
-		static constexpr std::array<std::string_view, 63> knownMembers = {
+		static constexpr std::array<std::string_view, 64> knownMembers = {
 			"projectFormatVersion", "name", "engineVersion", "startupScene", "lastOpenedScene",
 			"gameViewAspect", "gameViewVsync", "editorView3D", "buildWidth", "buildHeight", "buildMinWidth",
 			"buildMinHeight", "buildMaxWidth", "buildMaxHeight", "buildFullscreen",
-			"buildFullscreenMode", "buildResizable", "buildRunInBackground", "buildAspect",
+			"buildFullscreenMode", "buildResizable", "buildRunInBackground", "buildVsync", "buildAspect",
 			"mobileOrientation", "uiReferenceWidth", "uiReferenceHeight", "uiScaleMode", "uiScaleMatch", "appIcon", "executableName",
 			"productName", "buildVersion", "buildCompany", "splashScreen", "buildScenes", "globalSystems",
 			"packages", "profiler", "showRuntimeStats", "showRuntimeLogs", "devConsole", "prefsProfile", "graphics",
@@ -908,7 +908,7 @@ endforeach()
 			if (!require(name, [](const Json::Value& value) { return value.IsString(); }, "a string")) return false;
 		}
 		for (std::string_view name : {
-			"gameViewVsync", "editorView3D", "buildFullscreen", "buildResizable", "buildRunInBackground",
+			"gameViewVsync", "editorView3D", "buildFullscreen", "buildResizable", "buildRunInBackground", "buildVsync",
 			"showRuntimeStats", "showRuntimeLogs", "devConsole", "enablePostProcessing", "autoSaveScenes",
 			"autoRecompileScripts", "recompileScriptsOnPlay", "showFileExtensions",
 			"editorEnsureUniqueEntityNames" }) {
@@ -1093,6 +1093,7 @@ endforeach()
 			std::string(FunkeProject::ScreenOrientationToString(project.MobileOrientation)));
 		root.AddMember("buildResizable", project.BuildResizable);
 		root.AddMember("buildRunInBackground", project.BuildRunInBackground);
+		root.AddMember("buildVsync", project.BuildVsync);
 		root.AddMember("buildAspect", project.BuildAspect);
 		root.AddMember("uiReferenceWidth", project.UIReferenceWidth);
 		root.AddMember("uiReferenceHeight", project.UIReferenceHeight);
@@ -1163,7 +1164,7 @@ endforeach()
 		}
 		root.AddMember("globalSystems", std::move(globalSystems));
 
-		// Missing field == legacy "scan everything" default; emit only when allow-list is set.
+		// An absent package list also disables optional packages.
 		if (!project.Packages.empty()) {
 			Json::Value packages = Json::Value::MakeArray();
 			for (const std::string& name : project.Packages) {
@@ -2096,6 +2097,9 @@ endforeach()
 				}
 				if (const Json::Value* runInBackgroundValue = root.FindMember("buildRunInBackground")) {
 					project.BuildRunInBackground = runInBackgroundValue->AsBoolOr(true);
+				}
+				if (const Json::Value* vsyncValue = root.FindMember("buildVsync")) {
+					project.BuildVsync = vsyncValue->AsBoolOr(true);
 				}
 				if (const Json::Value* buildAspectValue = root.FindMember("buildAspect")) {
 					std::string raw = buildAspectValue->AsStringOr("Free Aspect");

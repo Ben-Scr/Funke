@@ -145,6 +145,7 @@ public static class Input
     {
         if (trigger != GamepadAxis.LeftTrigger && trigger != GamepadAxis.RightTrigger)
             throw new ArgumentOutOfRangeException(nameof(trigger), "Expected LeftTrigger or RightTrigger.");
+        if (!IsGamepadConnected(gamepad)) return 0f;
         return Math.Clamp((GetGamepadAxis(trigger, gamepad) + 1f) * 0.5f, 0f, 1f);
     }
 

@@ -51,8 +51,8 @@ Besides platform and rendering API, a build profile (`BuildProfiles/<Name>.build
 |---|---|
 | `configuration` | `Debug`, `Development` or `Release` for builds with this profile. |
 | `defines` | Extra C# defines, added to the project's `customDefines`. Use them for `#if DEMO` code. |
-| `showRuntimeStats`, `showRuntimeLogs` | The F6 stats and F7 log overlays. |
-| `devConsole` | The developer console and F8 physics overlay. |
+| `showRuntimeStats`, `showRuntimeLogs` | The runtime stats and log overlays; see [keyboard shortcuts](#runtime-keyboard-shortcuts). |
+| `devConsole` | The developer console and physics overlay. |
 | `isolatedPrefs` | Saves to a separate player-data profile named after the build profile (see below). |
 
 `funke build --profile AndroidTest` builds that variant. The settings go into the build's own `project.json` only. Your project stays unchanged.
@@ -77,6 +77,21 @@ The editor compiles and plays your C# scripts as the platform of the **active bu
 - **At runtime.** `Application.Platform` is the platform the scripts run as: the simulated one in the editor, the real one in a built game. `Application.IsSimulatingPlatform` is true while the editor simulates. `Engine.Platform` always reports the machine itself.
 - **Only scripts change.** The engine keeps running as the editor's own platform: its native code, input devices, file paths and graphics backend are the desktop ones. Calls that need the real device (for example `AndroidBridge` or permissions) behave as on the desktop. Test those in a build.
 
+## Runtime keyboard shortcuts
+
+Shortcuts follow the platform the engine and runtime are built for. On macOS, the diagnostic overlays use number keys with Cmd+Shift, without requiring the function-key row.
+
+| Action | Windows / Linux | macOS |
+|---|---|---|
+| Stats overlay | F6 | Cmd+Shift+6 |
+| Log overlay | F7 | Cmd+Shift+7 |
+| Physics overlay | F8 | Cmd+Shift+8 |
+| Profiler | Ctrl+F6 | Cmd+Shift+P |
+| Toggle fullscreen | F11 | Ctrl+Cmd+F |
+| Minimize window | Ctrl+M | Cmd+M |
+
+These actions are available when their respective runtime features are enabled. Fullscreen and minimize also apply to engine applications that enable those window shortcuts.
+
 ## Developer console
 
 Development and Debug builds have a console. To open it, press **`** (the key left of 1, `^` on German keyboards) or tap the screen with three fingers. **Esc** closes it.
@@ -88,9 +103,9 @@ While the console is open, it takes the game's keyboard and mouse input. **Tab**
 | `help [filter]` | Lists every command with its arguments |
 | `scene [name]` | Lists the loaded scenes, or loads (restarts) one |
 | `timescale [x]` | Shows or sets `Time.TimeScale` (`0` freezes the game) |
-| `physics.debug [on\|off]` | Collider wireframes, triggers and contacts (also **F8**) |
+| `physics.debug [on\|off]` | Collider wireframes, triggers and contacts (also **F8**, or **Cmd+Shift+8** on macOS) |
 | `physics.contacts [on\|off]` | Contact points and normals in that overlay |
-| `stats [on\|off]`, `logs [on\|off]` | The F6/F7 overlays, even in builds that start without them |
+| `stats [on\|off]`, `logs [on\|off]` | The stats/log overlays, even in builds that start without them |
 | `screenshot [file]` | Saves the next frame as PNG |
 | `audio.spatial [x y z ...]` | The audio listener and every playing 3D sound (distance, gain, pan, left/right volume); with a position, how a sound there would be heard. See *Scripting › 3D sound* |
 | `prefs.clear`, `prefs.path` | Deletes the PlayerPrefs, or shows the data folder in use |
@@ -133,7 +148,7 @@ DevConsole.Register("player.teleport", args => { Teleport(args[0]); return "ok";
 
 ## Stats overlay
 
-**F6** in a running game, or **Stats** in the Game View toolbar, shows the frame rate and frame time, memory, playing sounds, entities and the geometry drawn per frame:
+**F6** (**Cmd+Shift+6** on macOS) in a running game, or **Stats** in the Game View toolbar, shows the frame rate and frame time, memory, playing sounds, entities and the geometry drawn per frame:
 
 - **Tris** and **Verts** count Mesh Renderers and Skinned Mesh Renderers (every instance), 3D particles, 2D sprites and 2D particles. A sprite or particle is 2 triangles and 4 vertices; a mesh adds its own triangles and vertices once per instance. UI, text and gizmos are not counted.
 - **Shadow tris** appears while a light casts shadows: the triangles the shadow map draws again for the shadow casters. They are not part of **Tris**, so **Tris** matches what the cameras show.
@@ -142,7 +157,7 @@ In a game, the numbers include every camera and are averaged over the frames sin
 
 ## Physics overlay
 
-**F8**, or `physics.debug on` in the console, draws over the running game:
+**F8** (**Cmd+Shift+8** on macOS), or `physics.debug on` in the console, draws over the running game:
 
 - every collider in green,
 - triggers in light blue,

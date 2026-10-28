@@ -71,6 +71,7 @@ project "Funke-Engine"
         {
             -- Glob: covers the per-category slices as well as the orchestrator.
             "src/Scene/BuiltInComponentRegistration*.cpp",
+            "src/Scene/ComponentRegistry.cpp",
             "src/Scene/Entity.cpp",
             "src/Scene/EntityHelper.cpp",
             "src/Scene/Scene.cpp",
@@ -313,9 +314,6 @@ project "Funke-Engine"
     -- (RapidXML include is provided globally via Dependency.EngineCore — the
     -- per-file scoping attempt didn't reliably propagate to vcxproj; see
     -- the commentary in Dependencies.lua next to %{IncludeDir.RapidXml}.)
-
-    filter "files:**/glad.c"
-        FunkeNoPCH()
 
     -- Built-in component registration is split one TU per category
     -- (BuiltInComponentRegistration<Category>.cpp); each Register<T> instantiates

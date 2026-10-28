@@ -129,7 +129,14 @@ if ($engineDriven -and -not $QuitAt -and -not $InputScript) {
 
 Add-Type -AssemblyName System.Drawing
 if (-not ("FunkeAgent.WindowShot" -as [type])) {
-    Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @"
+    $drawingAssembly = [System.Drawing.Bitmap].Assembly
+    $drawingReferences = @($drawingAssembly.Location, [System.Drawing.Rectangle].Assembly.Location)
+    foreach ($reference in $drawingAssembly.GetReferencedAssemblies()) {
+        if ($reference.Name -like 'System.Private.Windows.*') {
+            $drawingReferences += [System.Reflection.Assembly]::Load($reference).Location
+        }
+    }
+    Add-Type -ReferencedAssemblies ($drawingReferences | Select-Object -Unique) -TypeDefinition @"
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;

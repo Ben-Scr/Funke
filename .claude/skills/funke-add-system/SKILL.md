@@ -63,7 +63,7 @@ namespace Funke {
 	}
 }
 ```
-Canonical example: `Systems/SpriteAnimationSystem.{hpp,cpp}` + `Tests/Funke-Engine-Tests/src/SpriteAnimationTests.cpp`. Include specific component headers, not the deprecated `Components/Components.hpp`. Respect `DisabledTag` (and `InheritedDisabledTag` is applied alongside it to children) in views.
+Example of a per-entity helper exercised by tests: `Systems/LocalizedTextSystem.{hpp,cpp}` (`Apply`) + `Tests/Funke-Engine-Tests/src/GameLocalizationTests.cpp`. Include specific component headers, not the deprecated `Components/Components.hpp`. Respect `DisabledTag` (and `InheritedDisabledTag` is applied alongside it to children) in views.
 
 ## 2. Hooks (all optional, all take `Scene&`)
 
@@ -81,7 +81,7 @@ Every hook runs inside a `SceneExecutionScope`, so implicit-scene APIs (`Entity:
 
 ## 3. Register
 
-**Every scene (engine built-in):** add it to `AddStandardSceneSystems` in `Funke-Engine/src/Scene/SceneManager.cpp`, which `SceneManager::RegisterScene` calls for every definition (editor working/asset scenes, runtime build scenes, C#-loaded scenes). Current order ([2D]/[3D] = only while that engine module is active): [2D] `TransformHierarchySystem` / [3D] `Transform3DHierarchySystem`, `PhysicsInterpolationSystem3D` (first; everyone sees fresh world transforms) → `UILayoutSystem` → [2D] `ParticleUpdateSystem`, `SpriteAnimationSystem` → [3D] `Particle3DUpdateSystem`, `SkinnedMeshAnimationSystem` → `ScriptSystem` → `AnimatorSystem` → [3D] `PhysicsSystem3D` → `AudioUpdateSystem` → `UIFocusSystem` → `UIEventSystem`, `LocalizedTextSystem` (focus must precede event). Gate on `ApplicationConfig` (`EnableRenderer2D`, `EnableScripting`, `EnableAudio`) like the neighbors. A system using Funke.2D/Funke.3D types also needs the module gate: its include and `AddSystem` inside `#if FUNKE_WITH_2D` / `FUNKE_WITH_3D`, plus the `with2D`/`with3D` check (`EngineModules::IsActive`) — otherwise the `--without-2d|3d` runtime variants stop compiling. Placement relative to `ScriptSystem` decides whether scripts see your results this frame.
+**Every scene (engine built-in):** add it to `AddStandardSceneSystems` in `Funke-Engine/src/Scene/SceneManager.cpp`, which `SceneManager::RegisterScene` calls for every definition (editor working/asset scenes, runtime build scenes, C#-loaded scenes). Current order ([2D]/[3D] = only while that engine module is active): [2D] `TransformHierarchySystem` / [3D] `Transform3DHierarchySystem`, `PhysicsInterpolationSystem3D` (first; everyone sees fresh world transforms) → `UILayoutSystem` → [2D] `ParticleUpdateSystem` → [3D] `Particle3DUpdateSystem`, `SkinnedMeshAnimationSystem` → `ScriptSystem` → `AnimatorSystem` → [3D] `PhysicsSystem3D` → `AudioUpdateSystem` → `UIFocusSystem` → `UIEventSystem`, `LocalizedTextSystem` (focus must precede event). Gate on `ApplicationConfig` (`EnableRenderer2D`, `EnableScripting`, `EnableAudio`) like the neighbors. A system using Funke.2D/Funke.3D types also needs the module gate: its include and `AddSystem` inside `#if FUNKE_WITH_2D` / `FUNKE_WITH_3D`, plus the `with2D`/`with3D` check (`EngineModules::IsActive`) — otherwise the `--without-2d|3d` runtime variants stop compiling. Placement relative to `ScriptSystem` decides whether scripts see your results this frame.
 
 **One scene (app-specific):** in the app's `ConfigureScenes()` (`Funke-Runtime/src/RuntimeApplication.cpp`, `Funke-Editor/src/EditorApplication.cpp`, `Funke-Launcher/src/LauncherApplication.cpp`, tests):
 ```cpp
@@ -93,7 +93,7 @@ SceneManager::RegisterScene("Main")
 
 ## Execution order per frame
 
-Fixed steps (accumulator-driven, catch-up capped) run first: `Application::FixedUpdate()` → per scene `FixedUpdate` (playing only; includes the `PhysicsSystem3D` step) → `PhysicsSystem2D::FixedUpdate` → C# `GlobalSystem` fixed update → `Layer::OnFixedUpdate`. Then the frame: C# global systems update (playing) → `Application::Update()` → `Layer::OnUpdate` → per scene `UpdateSystems` (playing; drains delayed destroys first) → `PhysicsSystem2D::Update` (Transform→physics sync, also in edit mode) → per scene `OnPreRender` → `Layer::OnPreRender` → render.
+Fixed steps (accumulator-driven, catch-up capped) run first: `Application::FixedUpdate()` → managed fixed-update coroutine pump → per scene `FixedUpdate` (playing only; includes the `PhysicsSystem3D` step) → `PhysicsSystem2D::FixedUpdate` → C# `GlobalSystem` fixed update → `Layer::OnFixedUpdate`. Then the frame: C# global systems update (playing) → `Application::Update()` → `Layer::OnUpdate` → managed update coroutine pump → per scene `UpdateSystems` (playing; drains delayed destroys first) → `PhysicsSystem2D::Update` (Transform→physics sync, also in edit mode) → per scene `OnPreRender` → `Layer::OnPreRender` → render. The coroutine pumps run only while gameplay is active and may change that state before scene ticking.
 
 - Scenes tick in loaded-list order (`SceneManager::MoveLoadedScene` changes it); systems in registration order; C# scene systems (`ManagedSceneSystem`, from the scene file's `systems`) are appended after native ones.
 - Need post-physics results? 2D: read them in `Update`, not `FixedUpdate` (Box2D steps after every scene's FixedUpdate). 3D: systems after `PhysicsSystem3D` (every `AddSystem` one) already see this step in `FixedUpdate`.
@@ -113,7 +113,7 @@ scene.IsSystemEnabled<MySystem>();
 scene.HasSystem<MySystem>();
 MySystem* sys = scene.GetSystem<MySystem>();   // pointer; nullptr (trace log) if absent
 ```
-Disabled systems are skipped by every hook (including `Awake`/`Start` on a later reload of the same instance). Lookups use `dynamic_cast` over the list — cache the pointer if called per entity.
+Disabled systems skip `Awake`, `Start`, and frame hooks. `OnDisable` runs on the transition, and an already-awakened system still receives `OnDestroy` during teardown even if it was later disabled. Reload creates new system instances with their initial enabled state. Lookups use `dynamic_cast` over the list — cache the pointer if called per entity.
 
 ## Exceptions
 
@@ -121,10 +121,10 @@ Disabled systems are skipped by every hook (including `Awake`/`Start` on a later
 
 ## Tests (`Tests/Funke-Engine-Tests/src`, doctest)
 
-- Logic: unit-test the static `Step` (pattern: `SpriteAnimationTests.cpp`).
+- Logic: unit-test the static per-entity helper (pattern: `GameLocalizationTests.cpp` exercises `LocalizedTextSystem::Apply`).
 - Lifecycle/registration: headless `Application` subclass with `ConfigureScenes()` + assertions in `Start()` then `Application::Quit()` (patterns: `SceneExecutionContextTests.cpp`, `SceneManagerFailureTests.cpp` with `ApplicationConfig::Headless()`). Note `Update` won't run if you quit in `Start`.
 - If public API, a `static_assert` in `UmbrellaHeaderTests.cpp` and the include in `Funke-Engine/src/Funke.hpp`.
 
 ## Build
 
-Project files list sources explicitly; `scripts\dev\Build.ps1` regenerates premake automatically when it finds a new `.cpp`. File gating: systems needing the renderer belong in `Funke-Engine/premake5.lua`'s `RemoveFilesIfModuleDisabled(FunkeModules.Render, ...)` list (like `UI*System`); Funke.2D/Funke.3D systems in that module's `sources` in `Funke-Engine/EngineModules.json` (like `SpriteAnimationSystem`, `Particle3DUpdateSystem`). Build and deploy per `funke-build-engine`.
+Project files list sources explicitly; `scripts\dev\Build.ps1` regenerates premake automatically when it finds a new `.cpp`. File gating: systems needing the renderer belong in `Funke-Engine/premake5.lua`'s `RemoveFilesIfModuleDisabled(FunkeModules.Render, ...)` list (like `UI*System`); Funke.2D/Funke.3D systems in that module's `sources` in `Funke-Engine/EngineModules.json` (like `ParticleUpdateSystem`, `Particle3DUpdateSystem`). Build and deploy per `funke-build-engine`.

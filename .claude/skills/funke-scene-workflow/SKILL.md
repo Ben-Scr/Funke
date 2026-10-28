@@ -72,14 +72,14 @@ Not emitted for suspended loads, `ReloadScene`, or editor recovery activations (
 ## Saving and loading files
 
 - `SceneSerializer::SaveToFile(scene, path)` uses the project's `assetSerializationFormat` (JSON or binary `FNKSCNB`); overloads take an explicit `SceneSerializationFormat` and a `logSuccess` flag. Clears the dirty flag only on success. `Runtime`-origin entities and nested prefab children are not written.
-- `SceneSerializer::LoadFromFile(scene, path)` auto-detects the format and is **transactional**: it loads into a detached staged scene, validates identities, then commits. It refuses a scene that is loaded and active ("requires an owner-level staged swap"). To replace what's on screen, load a definition (or `TryReloadScene`), don't reload in place.
+- `SceneSerializer::LoadFromFile(scene, path)` auto-detects the format and is **transactional**: it loads into a detached staged scene, validates identities, then commits. It refuses any loaded scene whose lifecycle is not suspended, even if it is not the active scene ("requires an owner-level staged swap"). To replace what's on screen, load a definition (or `TryReloadScene`), don't reload in place.
 - In-memory: `SerializeScene(scene)` / `DeserializeScene(scene, root)`; single entities and prefabs: `SerializeEntityFull`, `DeserializeEntityFromValue`, `InstantiatePrefab`, `SaveEntityAsPrefabInstance` (`Serialization/SceneSerializer.hpp`).
 - Scene paths come from `FunkeProject::GetSceneFilePath(name)` (validated name, resolved under `Assets/`).
 
 ## Scene kinds and entity origins
 
 - `Scene::CreateDetachedScene(name)`: no definition, never ticked, global hooks (physics/audio/scripts) gated off. Used by prefab editing, staged loads, tests.
-- Lifecycle-suspended scenes (`TryLoadSceneAdditiveSuspended`, editor recovery): loaded without events/Awake/Start, skipped by ticking and `ForeachLoadedScene`; activated via `SceneManager::ActivateSuspendedScene` (runs `InitializeRuntimeComponentState`).
+- Lifecycle-suspended scenes (`TryLoadSceneAdditiveSuspended`, editor recovery): loaded without events/Awake/Start, skipped by ticking and `ForeachLoadedScene`; `SceneManager::ActivateSuspendedScene` runs `InitializeRuntimeComponentState`, camera setup, Awake and Start without scene events. Finalize successful activation with `CommitSuspendedSceneActivation`; `ResuspendSceneForRecovery` restores its captured baseline if a later step fails.
 - `EntityOrigin` (`Components/General/EntityMetaDataComponent.hpp`): `Scene` (authored, saved), `Prefab` (saved as instance + overrides), `Runtime` (`CreateRuntimeEntity`, never saved — e.g. the default camera). Persistent IDs (`GetEntityPersistentID`) must be unique across all loaded scenes; the editor validates before open/play.
 - Implicit scene: inside lifecycle hooks a `SceneExecutionScope` makes APIs like `Entity::Create` target the executing scene; otherwise they target the active scene (`ResolveImplicitScene()` in `Scene/SceneExecutionContext.hpp`).
 
@@ -91,7 +91,7 @@ Enter (`BeginPlayModeRequest` → `PreparePlayModeSnapshot` → `CompletePlayMod
 3. Captures C# script field overrides, optionally recompiles scripts first (play waits on `m_PlayModeRecompilePending`).
 4. Clears undo, `Application::SetIsPlaying(true)`, resets game time and fixed timestep from the project, starts C# scene systems (`StartManagedSceneSystemsForPlayMode`), wakes physics bodies, fires PlayOnAwake. Scenes are **not** reloaded and native systems do not re-run Awake/Start.
 
-Stop (`RestoreEditorSceneAfterPlaymode`): stages every snapshot as a new suspended additive scene, validates names/IDs, swaps them in for the play scenes (with full rollback if anything fails — Play stays active and an error is shown), restores the active scene and selection, re-marks previously dirty scenes dirty, and re-applies captured C# script fields.
+Stop (`RestoreEditorSceneAfterPlaymode`): stages every snapshot as a new suspended additive scene and validates names/IDs before suspending and releasing the play scenes. Staging failures leave Play active; suspension failures attempt to resume the live play scenes. Once those scenes are released, a later failure leaves Play stopped with recovered edit scenes loaded for inspection and an error shown; it cannot restore the released live gameplay state. Success re-applies captured C# fields, activates and commits the restored scenes, restores the active scene and selection, and re-marks previously dirty scenes dirty.
 
 Consequence: anything not serialized is lost on Stop, and anything that relies on in-memory edit-mode state across Play won't see it after Stop (scenes are new instances). See `funke-serialize-field`.
 

@@ -128,6 +128,10 @@ namespace Funke {
 			const glm::mat4 identity(1.0f);
 			for (size_t v = 0; v < count; ++v) {
 				const MeshVertex& source = data.BindVertices[v];
+				if (v >= data.VertexJoints.size() || v >= data.VertexWeights.size()) {
+					outVertices[v] = source;
+					continue;
+				}
 				const std::array<uint16_t, 4>& influence = data.VertexJoints[v];
 				const glm::vec4& weight = data.VertexWeights[v];
 				glm::mat4 m(0.0f);
@@ -153,6 +157,10 @@ namespace Funke {
 		}
 
 		void ComputeJointBounds(SkinnedMeshData& data) {
+			data.JointBoundsValid = !data.BindVertices.empty() && data.VertexJoints.size() >= data.BindVertices.size()
+				&& data.VertexWeights.size() >= data.BindVertices.size();
+			data.BoundsWeightSumMin = 1.0f;
+			data.BoundsWeightSumMax = 1.0f;
 			for (SkinJoint& joint : data.Joints) {
 				joint.BoundsMin = glm::vec3(std::numeric_limits<float>::max());
 				joint.BoundsMax = glm::vec3(std::numeric_limits<float>::lowest());
@@ -161,17 +169,29 @@ namespace Funke {
 			for (size_t v = 0; v < count; ++v) {
 				const MeshVertex& vertex = data.BindVertices[v];
 				const glm::vec3 p(vertex.Position[0], vertex.Position[1], vertex.Position[2]);
+				float sum = 0.0f;
+				if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) data.JointBoundsValid = false;
 				for (int k = 0; k < 4; ++k) {
 					const uint16_t index = data.VertexJoints[v][k];
-					if (data.VertexWeights[v][k] == 0.0f || index >= data.Joints.size()) continue;
+					const float weight = data.VertexWeights[v][k];
+					sum += weight;
+					if (weight == 0.0f) continue;
+					if (!std::isfinite(weight) || weight < 0.0f || index >= data.Joints.size()) {
+						data.JointBoundsValid = false;
+						continue;
+					}
 					SkinJoint& joint = data.Joints[index];
 					joint.BoundsMin = glm::min(joint.BoundsMin, p);
 					joint.BoundsMax = glm::max(joint.BoundsMax, p);
 				}
+				if (!std::isfinite(sum) || sum <= 0.0f) data.JointBoundsValid = false;
+				data.BoundsWeightSumMin = std::min(data.BoundsWeightSumMin, sum);
+				data.BoundsWeightSumMax = std::max(data.BoundsWeightSumMax, sum);
 			}
 		}
 
 		bool PosedBounds(const SkinnedMeshData& data, const std::vector<glm::mat4>& joints, glm::vec3& outMin, glm::vec3& outMax) {
+			if (!data.JointBoundsValid || joints.size() < data.Joints.size()) return false;
 			outMin = glm::vec3(std::numeric_limits<float>::max());
 			outMax = glm::vec3(std::numeric_limits<float>::lowest());
 			bool any = false;
@@ -185,20 +205,37 @@ namespace Funke {
 				const glm::mat4& m = joints[i];
 				const glm::vec3 posedCenter(m * glm::vec4(center, 1.0f));
 				const glm::vec3 posedHalf = glm::abs(glm::vec3(m[0])) * half.x + glm::abs(glm::vec3(m[1])) * half.y + glm::abs(glm::vec3(m[2])) * half.z;
+				for (int axis = 0; axis < 3; ++axis) {
+					if (!std::isfinite(posedCenter[axis]) || !std::isfinite(posedHalf[axis])) return false;
+				}
 				outMin = glm::min(outMin, posedCenter - posedHalf);
 				outMax = glm::max(outMax, posedCenter + posedHalf);
 				any = true;
+			}
+			if (any) {
+				const glm::vec3 minScaled = glm::min(outMin * data.BoundsWeightSumMin, outMin * data.BoundsWeightSumMax);
+				const glm::vec3 maxScaled = glm::max(outMax * data.BoundsWeightSumMin, outMax * data.BoundsWeightSumMax);
+				const glm::vec3 rounding = glm::max(glm::abs(minScaled), glm::abs(maxScaled)) * 1e-6f + glm::vec3(1e-6f);
+				outMin = minScaled - rounding;
+				outMax = maxScaled + rounding;
+				for (int axis = 0; axis < 3; ++axis) {
+					if (!std::isfinite(outMin[axis]) || !std::isfinite(outMax[axis])) return false;
+				}
 			}
 			return any;
 		}
 
 		void EvaluatePose(const SkinnedMeshData& data, const SkeletalPoseRequest& request, std::vector<glm::mat4>& outNodeModel) {
+			std::vector<NodePose> pose, previous;
+			EvaluatePose(data, request, outNodeModel, pose, previous);
+		}
+
+		void EvaluatePose(const SkinnedMeshData& data, const SkeletalPoseRequest& request, std::vector<glm::mat4>& outNodeModel,
+			std::vector<NodePose>& pose, std::vector<NodePose>& previous) {
 			auto validClip = [&](int clip) { return clip >= 0 && static_cast<size_t>(clip) < data.Clips.size(); };
-			std::vector<NodePose> pose;
 			RestPose(data, pose);
 			if (validClip(request.Clip)) SampleClip(data.Clips[static_cast<size_t>(request.Clip)], request.Time, pose);
 			if (validClip(request.PreviousClip) && request.Fade < 1.0f) {
-				std::vector<NodePose> previous;
 				RestPose(data, previous);
 				SampleClip(data.Clips[static_cast<size_t>(request.PreviousClip)], request.PreviousTime, previous);
 				Blend(previous, pose, request.Fade);

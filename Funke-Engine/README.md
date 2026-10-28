@@ -102,14 +102,17 @@ Three umbrella headers ship today. Pick one based on what your TU actually uses:
 
 `Funke::ApplicationConfig` is a plain struct with one bool per subsystem. Your `Application` subclass returns a populated config from `GetConfiguration()`; the engine reads it once during `Application::Initialize()`.
 
-Three factories cover the common cases:
+Four factories cover the common cases:
 
 ```cpp
-ApplicationConfig::Minimal();  // Window only. No 2D renderer, no GUI/gizmo
-                               // renderers, no audio, no physics, no scripting,
-                               // no package host. Texture manager stays on so
-                               // the window-icon path still works. Use for
-                               // headless tools, asset processors, servers.
+ApplicationConfig::Minimal();  // Window host without scenes, workers, arenas,
+                               // built-in asset registration, scene renderers,
+                               // audio, physics, scripting or packages.
+                               // Texture manager stays on for the window icon.
+
+ApplicationConfig::Headless(); // No window or graphics backend. Keeps scenes,
+                               // jobs, physics, audio, scripting and packages;
+                               // disable individual services your tool omits.
 
 ApplicationConfig::Game();     // Today's default: full rendering, audio,
                                // physics, scripting, package host. Equivalent
@@ -119,10 +122,17 @@ ApplicationConfig::Editor();   // Editor-host defaults; scene content remains
                                // responsible for its cameras.
 ```
 
+`Minimal()` still runs the application's `Start`, `Update` and `OnQuit` hooks, but does not call `ConfigureScenes`. Use it for a host that manages its own UI. For a tool without a window, start from `Headless()` or set `EnableWindow = false` on a minimal configuration. These runtime choices do not remove compiled modules or change the library's binary size.
+
 Per-subsystem flags on `ApplicationConfig` (override individually after a factory call):
 
 | Field | Effect when `false` |
 |---|---|
+| `EnableWindow` | Skips the OS window and graphics backend; initialization disables dependent rendering services. |
+| `EnableScenes` | Skips scene/component-registry initialization, `ConfigureScenes` and startup scenes. |
+| `EnableJobSystem` | Starts no worker pool; submitted jobs run inline on the caller. |
+| `EnableFrameArenas` | Skips frame and persistent arena allocation. |
+| `RegisterBuiltInAssets` | Skips GUID registration of engine assets; `funke:` asset references and pickers cannot resolve them. |
 | `EnableGuiRenderer` | Skips `GuiRenderer` (ImGui plumbing the engine owns; editor brings its own context). |
 | `EnableGizmoRenderer` | Skips `GizmoRenderer2D` construction; gizmo draw calls become no-ops. |
 | `EnablePhysics2D` | Skips `PhysicsSystem2D`; Box2D world is never created. |
@@ -196,7 +206,7 @@ Always required:
 - `<YourGame>.exe` — your game binary.
 - `Funke-Engine.dll` — the engine shared lib. Built as a `SharedLib` from `Funke-Engine/premake5.lua`. Consumers define `FNK_IMPORT_DLL`; the engine builds with `FNK_BUILD_DLL`.
 - `SDL3.dll` (`libSDL3.so.0` / `libSDL3.0.dylib`) — windowing, input and platform services. Shared so engine and exe share its global state; built by `scripts/sdl/SetupSDL.py`.
-- `FunkeAssets/` directory — engine default assets (`Audio/`, `Fonts/`, `Shader/`, `Textures/`). Source of truth is [`Funke-Runtime/FunkeAssets/`](../Funke-Runtime/FunkeAssets); the post-build copies it next to the exe.
+- `FunkeAssets/` directory — engine default assets (`Fonts/`, `Localization/`, `Textures/`). Source of truth is [`Funke-Runtime/FunkeAssets/`](../Funke-Runtime/FunkeAssets); the post-build copies it next to the exe. Built-in WGSL shaders are embedded in [`Shader.cpp`](src/Graphics/Shader.cpp).
 
 Conditional:
 

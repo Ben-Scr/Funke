@@ -2,6 +2,7 @@
 #include "RuntimeImGuiHost.hpp"
 
 #include "Core/Application.hpp"
+#include "Core/PlatformShortcuts.hpp"
 #include "Core/Window.hpp"
 
 #ifdef FUNKE_PROFILER_ENABLED
@@ -30,11 +31,7 @@ namespace Funke {
 
 	void RuntimeProfilerLayer::OnUpdate(Application&, float) {
 		if (!m_ImGuiInitialized || !RuntimeImGuiHost::IsInitialized()) return;
-		// Ctrl+F6: same shortcut as the editor. We sample at OnUpdate
-		// time so input is on the polled-this-frame state, not from the
-		// previous frame.
-		ImGuiIO& io = ImGui::GetIO();
-		if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F6, false)) {
+		if (PlatformShortcuts::IsPressed(PlatformShortcuts::k_Profiler)) {
 			m_ShowPanel = !m_ShowPanel;
 		}
 	}
