@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -147,10 +148,30 @@ class StandaloneTests(unittest.TestCase):
         for text in ("<ProjectReference Include='Funke-ScriptCore.csproj' />",
                      "<HintPath>" + str(self.root / "repo/bin/Funke-ScriptCore.dll") + "</HintPath>"):
             generated.write_text(text, encoding="utf-8")
-            with self.assertRaises(ValueError):
+            with self.subTest(reference=text), self.assertRaises(ValueError):
                 gate.check_references(project, [self.root / "repo"])
         generated.write_text("<HintPath>../../EngineSDK/Funke-ScriptCore/Funke-ScriptCore.dll</HintPath>", encoding="utf-8")
         gate.check_references(project, [self.root / "repo"])
+
+    def test_generated_project_rejects_aliased_absolute_repository_reference(self):
+        repository = self.root / "repository"
+        repository.mkdir()
+        alias = self.root / "alias"
+        if os.name == "nt":
+            result = subprocess.run([os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", "mklink", "/J",
+                                     str(alias), str(repository)], capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.addCleanup(os.rmdir, alias)
+        else:
+            alias.symlink_to(repository, target_is_directory=True)
+            self.addCleanup(alias.unlink)
+        project = self.root / "project"
+        project.mkdir()
+        generated = project / "Package.csproj"
+        generated.write_text("<HintPath>" + str(alias / "bin/Funke-ScriptCore.dll") + "</HintPath>", encoding="utf-8")
+        for forbidden in (repository, alias):
+            with self.subTest(forbidden=forbidden), self.assertRaises(ValueError):
+                gate.check_references(project, [forbidden])
 
     def harness(self):
         root = self.root / "work"

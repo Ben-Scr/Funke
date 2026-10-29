@@ -9,6 +9,7 @@ import functools
 import http.server
 import json
 import os
+import socketserver
 import sys
 import urllib.parse
 from pathlib import Path
@@ -51,6 +52,13 @@ class OwnerProcess:
             self.handle = None
 
 
+class PreviewServer(http.server.ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        # HTTPServer's reverse lookup can stall macOS startup; this numeric loopback endpoint needs no DNS.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 class PreviewHandler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {
         **http.server.SimpleHTTPRequestHandler.extensions_map,
@@ -87,7 +95,7 @@ def serve(entry: Path, owner_pid: int, ready: Path) -> int:
         if not owner.is_running():
             raise RuntimeError("The editor process has already exited.")
         handler = functools.partial(PreviewHandler, directory=str(entry.parent))
-        with http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler) as server:
+        with PreviewServer(("127.0.0.1", 0), handler) as server:
             server.timeout = 0.25
             url = f"http://127.0.0.1:{server.server_port}/{urllib.parse.quote(entry.name)}"
             _write_ready(ready, {"url": url, "pid": os.getpid()})

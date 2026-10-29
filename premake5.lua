@@ -69,7 +69,7 @@ include "premake/compat.lua"
 include "premake/architecture.lua"
 
 workspace "Funke"
-    architecture(FunkePremakeArchitecture)
+    FunkeApplyArchitecture()
     startproject ((FunkeCoreValidationRoot and "Funke-Engine") or (FunkeVariantRoot and "Funke-Runtime") or "Funke-Launcher")
 
     if FunkeIsolatedRoot then

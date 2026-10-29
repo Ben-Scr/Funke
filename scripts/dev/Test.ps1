@@ -36,6 +36,7 @@ if (-not $NoBuild) {
     if ($Suite -contains "Engine") { $buildTargets += "EngineTests" }
     if ($Suite -contains "Editor") { $buildTargets += "EditorTests" }
     if ($buildTargets.Count -gt 0) {
+        $buildTargets = @("ScriptCore") + $buildTargets
         & (Join-Path $PSScriptRoot "Build.ps1") -Project $buildTargets -Config $Config -Warnings none
         if ($LASTEXITCODE -ne 0) { Write-Host "[test] build failed - not running tests" -ForegroundColor Red; exit 1 }
     }

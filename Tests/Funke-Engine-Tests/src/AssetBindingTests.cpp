@@ -125,6 +125,25 @@ TEST_CASE("Typed async asset bindings drain completed path and GUID requests wit
 	CHECK(MeshLibrary::FindLoaded(guid) != nullptr);
 }
 
+TEST_CASE("Built-in asset path aliases preserve assigned GUIDs for typed sync and async loads") {
+	AssetBindingScope assets;
+	std::filesystem::create_directories(assets.Root / "nested");
+	const std::string path = (assets.Root / "Triangle.obj").string();
+	const std::string alias = (assets.Root / "nested" / ".." / "Triangle.obj").string();
+	REQUIRE(File::WriteAllText(path, k_Triangle));
+	const uint64_t guid = ++assets.NextGuid;
+	AssetRegistry::RegisterBuiltInAsset(alias, guid, AssetKind::Mesh);
+	CHECK(AssetRegistry::GetOrCreateAssetUUID(path) == guid);
+	CHECK(AssetRegistry::GetOrCreateAssetUUID(alias) == guid);
+	CHECK(assets.Bindings.Asset_LoadTyped(path.c_str(), 0, Kind(AssetKind::Mesh)) == guid);
+	CHECK(assets.Bindings.Asset_LoadTyped(alias.c_str(), 0, Kind(AssetKind::Mesh)) == guid);
+	AssetRegistry::RegisterBuiltInDirectory(assets.Root.string());
+	CHECK(AssetRegistry::GetOrCreateAssetUUID(path) == guid);
+	const uint64_t request = assets.Begin(0, path.c_str());
+	REQUIRE(request != 0);
+	CHECK(assets.Await(request) == AssetLoadStatus::Success);
+}
+
 TEST_CASE("Typed async asset cancellation batches affect only their tracked observers") {
 	AssetBindingScope assets;
 	const uint64_t guid = assets.Add("Triangle.obj", AssetKind::Mesh, k_Triangle);

@@ -20,7 +20,7 @@ dofile(path.join(scriptDir, "architecture.lua"))
 
 workspace "FunkeProjectPackages"
     location(workspaceRoot)
-    architecture(FunkePremakeArchitecture)
+    FunkeApplyArchitecture()
     configurations { "Debug", "Release", "Dist" }
 
     filter { "system:windows", "language:C++" }

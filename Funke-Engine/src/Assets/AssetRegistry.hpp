@@ -70,12 +70,13 @@ namespace Funke {
 			if (absolutePath.empty() || guid == 0) {
 				return;
 			}
+			const std::string normalizedPath = NormalizePath(absolutePath);
 			Record record;
 			record.Id = guid;
-			record.Path = absolutePath;
+			record.Path = normalizedPath;
 			record.Kind = kind;
 			State().BuiltInById[guid] = record;
-			State().BuiltInPathToId[absolutePath] = guid;
+			State().BuiltInPathToId[normalizedPath] = guid;
 		}
 
 		// FNV-1a 64 of the path relative to FunkeAssets root, lowercased + forward-slashed for cross-platform stability.

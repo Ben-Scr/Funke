@@ -51,12 +51,18 @@ try {
         }
     }
 
+    Write-Host "[RunTests] Building ScriptCore for project scaffold tests ($configuration x64)."
+    & python scripts/BuildManaged.py --configuration $configuration `
+        --output-dir "bin/$configuration-windows-x86_64" --projects ScriptCore
+    if ($LASTEXITCODE -ne 0) {
+        throw "ScriptCore build failed."
+    }
+
     $msbuild = Get-MSBuild
     foreach ($testProject in @("Funke-Engine-Tests", "Funke-Editor-Tests")) {
         Write-Host "[RunTests] Building $testProject ($configuration x64)."
         $projectPath = "Tests\$testProject\$testProject.vcxproj"
-        & $msbuild $projectPath /m:1 /nr:false /p:CL_MPCount=1 `
-            /p:UseMultiToolTask=false "/p:Configuration=$configuration" `
+        & $msbuild $projectPath /m:1 /nr:false "/p:Configuration=$configuration" `
             /p:Platform=x64 /p:PreferredToolArchitecture=x64 /v:minimal /nologo
         if ($LASTEXITCODE -ne 0) {
             throw "Build failed for $testProject."
