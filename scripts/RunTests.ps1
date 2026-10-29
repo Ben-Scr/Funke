@@ -51,6 +51,13 @@ try {
         }
     }
 
+    Write-Host "[RunTests] Building ScriptCore for project scaffold tests ($configuration x64)."
+    & python scripts/BuildManaged.py --configuration $configuration `
+        --output-dir "bin/$configuration-windows-x86_64" --projects ScriptCore
+    if ($LASTEXITCODE -ne 0) {
+        throw "ScriptCore build failed."
+    }
+
     $msbuild = Get-MSBuild
     foreach ($testProject in @("Funke-Engine-Tests", "Funke-Editor-Tests")) {
         Write-Host "[RunTests] Building $testProject ($configuration x64)."
