@@ -7,6 +7,7 @@
 #include "Gui/SplashScreen.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Systems/Prerequisites.hpp"
+#include "Utils/OwnedTask.hpp"
 #include <chrono>
 #include <filesystem>
 #include <functional>
@@ -123,8 +124,8 @@ namespace Funke {
 			bool Failed = false;
 			std::uintmax_t Bytes = 0;
 			std::string Error;
-			// MUST be last: jthread destructor joins before state teardown; worker holds weak_ptr to avoid cycle.
-			std::jthread Worker;
+			// Joins before the mutex and results are destroyed; the worker never owns this state.
+			OwnedTask Worker;
 		};
 
 		// Async regen → build → spawn pipeline; Stage/Progress read by the overlay each frame.

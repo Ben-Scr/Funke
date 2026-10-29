@@ -601,10 +601,10 @@ artifacts/
 		if (m_AssetLibraryTask.Worker.joinable()) {
 			m_AssetLibraryTask.Worker.join();
 		}
-		// Request stop on all workers before clearing so jthread destructors can overlap rather than serialize.
+		// Stopping all workers first lets their shutdown overlap.
 		for (auto& [_, task] : m_ProjectSizeTasks) {
 			if (task) {
-				task->Worker.request_stop();
+				task->Worker.RequestStop();
 			}
 		}
 		m_ProjectSizeTasks.clear();
@@ -1958,22 +1958,17 @@ artifacts/
 		auto task = std::make_shared<ProjectSizeTaskState>();
 		m_ProjectSizeTasks.emplace(entry.Path, task);
 
-		std::weak_ptr<ProjectSizeTaskState> weakTask = task;
-		task->Worker = std::jthread([weakTask = std::move(weakTask), path = entry.Path](std::stop_token stop) {
+		task->Worker.Start([state = task.get(), path = entry.Path](OwnedTask::StopToken stop) {
 			std::string error;
 			const std::uintmax_t bytes = CalculateProjectDirectorySize(std::filesystem::path(path), error);
 			if (stop.stop_requested()) {
 				return;
 			}
-			auto t = weakTask.lock();
-			if (!t) {
-				return;
-			}
-			std::scoped_lock lock(t->Mutex);
-			t->Bytes = bytes;
-			t->Error = std::move(error);
-			t->Failed = !t->Error.empty();
-			t->Finished = true;
+			std::scoped_lock lock(state->Mutex);
+			state->Bytes = bytes;
+			state->Error = std::move(error);
+			state->Failed = !state->Error.empty();
+			state->Finished = true;
 		});
 
 		return task;
@@ -3944,7 +3939,7 @@ artifacts/
 		// after Load() pulls in a different project list (path-keyed map
 		// makes this strictly additive, but stopping eliminates wasted IO).
 		for (auto& [_, task] : m_ProjectSizeTasks) {
-			if (task) task->Worker.request_stop();
+			if (task) task->Worker.RequestStop();
 		}
 		m_ProjectSizeTasks.clear();
 		m_CreatedAtCache.clear();
