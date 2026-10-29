@@ -62,7 +62,7 @@ PATCHES = (
             PatchedFile(
                 "src/entt/signal/sigh.hpp",
                 "87eff724bc86518290e7d82fdcd9477a54e37f83",
-                "9c586afa85573891a41c3a756e4103a146c80f90",
+                "b0602631658b8d0f308995d2c715c38e5a8d29a6",
             ),
         ),
     ),

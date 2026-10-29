@@ -24,6 +24,8 @@
 
 namespace Funke {
 	namespace {
+		AudioManager::TimeSource g_TimeSource = std::chrono::steady_clock::now;
+
 		// Low 8 bits = (index+1), high 24 bits = generation; 0 is always invalid. 8-bit index caps at 255 concurrent sounds (above the 128 config max).
 		constexpr uint32_t k_AudioInstanceIndexBits = 8u;
 		constexpr uint32_t k_AudioInstanceIndexMask = (1u << k_AudioInstanceIndexBits) - 1u;
@@ -81,6 +83,14 @@ namespace Funke {
 		FNK_CORE_ASSERT(!s_IsInitialized, FunkeErrorCode::Undefined,
 			"AudioManager::SetBackend must be called before Initialize");
 		s_Backend = std::move(backend);
+	}
+
+	void AudioManager::SetTimeSourceForTests(TimeSource timeSource) {
+		FNK_CORE_ASSERT(Application::IsMainThread(), FunkeErrorCode::Undefined,
+			"AudioManager::SetTimeSourceForTests must be called on the main thread");
+		FNK_CORE_ASSERT(!s_IsInitialized, FunkeErrorCode::Undefined,
+			"AudioManager::SetTimeSourceForTests must be called before Initialize");
+		g_TimeSource = timeSource ? timeSource : std::chrono::steady_clock::now;
 	}
 
 	// Internal accessor: backends that don't speak miniaudio return nullptr. The
@@ -229,7 +239,7 @@ namespace Funke {
 
 	void AudioManager::ProcessSoundQueue() {
 		// Expiry must run even while every voice is occupied or the start budget is zero.
-		PruneSoundQueue(std::chrono::steady_clock::now());
+		PruneSoundQueue(g_TimeSource());
 		const uint32_t maxStartsPerFrame = 4;
 		uint32_t startsThisCall = 0;
 
@@ -252,7 +262,7 @@ namespace Funke {
 
 	void AudioManager::ThrottleSound(const AudioHandle& audioHandle) {
 		auto& limitData = s_soundLimits[audioHandle.GetHandle()];
-		limitData.LastPlayTime = std::chrono::steady_clock::now();
+		limitData.LastPlayTime = g_TimeSource();
 		limitData.FramePlayCount++;
 	}
 
@@ -262,7 +272,7 @@ namespace Funke {
 			return false;
 		}
 
-		auto now = std::chrono::steady_clock::now();
+		auto now = g_TimeSource();
 		auto timeSinceLastPlay = std::chrono::duration_cast<std::chrono::milliseconds>(
 			now - it->second.LastPlayTime);
 
@@ -690,7 +700,7 @@ namespace Funke {
 		request.Handle = audioHandle;
 		request.Volume = volume;
 		request.Priority = 1.0f;
-		request.RequestTime = std::chrono::steady_clock::now();
+		request.RequestTime = g_TimeSource();
 		RequestOneShot(request);
 	}
 
@@ -705,7 +715,7 @@ namespace Funke {
 		request.Volume = volume;
 		request.Priority = 1.0f;
 		request.Position = position;
-		request.RequestTime = std::chrono::steady_clock::now();
+		request.RequestTime = g_TimeSource();
 		request.Spatial = true;
 		request.Settings = AudioSpatial::Sanitize(settings);
 		// A voice spent on silence would push audible sounds out of the concurrency budget.

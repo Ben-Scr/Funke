@@ -468,6 +468,12 @@ jobs:
       - name: Verify Vendor Patches Applied
         run: python3 scripts/vendor_patches.py verify --require-applied
 
+      - name: Linux Engine + Editor Tests
+        run: |
+          make config=release verbose=1 -j"$(nproc)" Funke-Managed Funke-Engine-Tests Funke-Editor-Tests
+          ./bin/Release-linux-x86_64/Funke-Engine-Tests/Funke-Engine-Tests
+          ./bin/Release-linux-x86_64/Funke-Editor-Tests/Funke-Editor-Tests
+
       # Funke-Managed builds Funke-ScriptCore, the hot-reload compiler and the package tool with dotnet;
       # the Launcher's postbuild bundles everything into EngineSDK (scripts/CopyEngineSdk.py).
       - name: Build Linux Targets
@@ -484,12 +490,6 @@ jobs:
           name: Funke-Editor-Linux-x64
           path: dist-posix/*.tar.gz
           if-no-files-found: error
-
-      - name: Linux Engine + Editor Tests
-        run: |
-          make config=release verbose=1 -j"$(nproc)" Funke-Engine-Tests Funke-Editor-Tests
-          ./bin/Release-linux-x86_64/Funke-Engine-Tests/Funke-Engine-Tests
-          ./bin/Release-linux-x86_64/Funke-Editor-Tests/Funke-Editor-Tests
 
       - name: Build Linux Debug Targets
         run: make config=debug verbose=1 -j"$(nproc)" Funke-Engine Funke-Runtime Funke-Editor
@@ -621,16 +621,16 @@ jobs:
       - name: Verify Vendor Patches Applied
         run: python3 scripts/vendor_patches.py verify --require-applied
 
+      - name: macOS Engine + Editor Tests
+        run: |
+          make config=release verbose=1 -j"$(sysctl -n hw.ncpu)" Funke-Managed Funke-Engine-Tests Funke-Editor-Tests
+          ./bin/Release-macosx-arm64/Funke-Engine-Tests/Funke-Engine-Tests
+          ./bin/Release-macosx-arm64/Funke-Editor-Tests/Funke-Editor-Tests
+
       - name: Build macOS Targets
         run: |
           make config=dist verbose=1 -j"$(sysctl -n hw.ncpu)" Funke-Runtime
           make config=release verbose=1 -j"$(sysctl -n hw.ncpu)" Funke-Engine Funke-Managed Funke-Runtime Funke-Editor Funke-CLI Funke-Launcher
-
-      - name: macOS Engine + Editor Tests
-        run: |
-          make config=release verbose=1 -j"$(sysctl -n hw.ncpu)" Funke-Engine-Tests Funke-Editor-Tests
-          ./bin/Release-macosx-arm64/Funke-Engine-Tests/Funke-Engine-Tests
-          ./bin/Release-macosx-arm64/Funke-Editor-Tests/Funke-Editor-Tests
 
       - name: macOS Runtime Smoke Tests
         run: |
