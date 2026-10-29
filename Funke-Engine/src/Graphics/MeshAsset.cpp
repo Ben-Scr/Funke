@@ -8,6 +8,7 @@
 #include "Serialization/File.hpp"
 #include "Serialization/FileStamp.hpp"
 #include "Serialization/Path.hpp"
+#include "Utils/CharConv.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -34,16 +35,8 @@ namespace Funke {
 
 		bool ParseFloat(std::string_view token, float& out) {
 			if (!token.empty() && token.front() == '+') token.remove_prefix(1);
-#if defined(FNK_PLATFORM_ANDROID)
-			// The NDK's libc++ deletes the floating-point from_chars overloads.
-			const std::string copy(token);
-			char* end = nullptr;
-			out = std::strtof(copy.c_str(), &end);
-			return !copy.empty() && end == copy.c_str() + copy.size();
-#else
-			const auto result = std::from_chars(token.data(), token.data() + token.size(), out);
+			const auto result = CharConv::ParseFloat(token.data(), token.data() + token.size(), out);
 			return result.ec == std::errc() && result.ptr == token.data() + token.size();
-#endif
 		}
 
 		constexpr int64_t k_NoIndex = -1;
