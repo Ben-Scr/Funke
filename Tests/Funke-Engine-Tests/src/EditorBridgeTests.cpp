@@ -5,6 +5,7 @@
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
+#include "Utils/OwnedTask.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -196,12 +197,13 @@ TEST_CASE("EditorBridge server and client exchange one line per connection") {
 	// A second server can't take over the name.
 	EditorBridge::Server squatter;
 	CHECK_FALSE(squatter.Start(endpoint, token, error));
+	CHECK_FALSE(squatter.IsRunning());
+	squatter.Stop();
 
 	// Stands in for the editor's main thread: answers every request with its own command name.
-	std::atomic<bool> stopAnswering{ false };
 	std::atomic<int> abandoned{ 0 };
-	std::thread mainThread([&]() {
-		while (!stopAnswering.load()) {
+	OwnedTask mainThread([&](OwnedTask::StopToken stop) {
+		while (!stop.stop_requested()) {
 			abandoned += static_cast<int>(server.TakeAbandoned().size());
 			for (EditorBridge::Server::Incoming& incoming : server.TakeRequests()) {
 				Json::Value result = Json::Value::MakeObject();
@@ -256,8 +258,7 @@ TEST_CASE("EditorBridge server and client exchange one line per connection") {
 	CHECK(response.Ok);
 	CHECK(std::chrono::steady_clock::now() - afterGiveUp < std::chrono::seconds(3));
 
-	stopAnswering = true;
-	mainThread.join();
+	mainThread.StopAndJoin();
 	// Both unanswered requests were taken by the main thread, so it hears that nobody waits for them.
 	CHECK(abandoned.load() + static_cast<int>(server.TakeAbandoned().size()) == 2);
 	server.Stop();
@@ -265,5 +266,31 @@ TEST_CASE("EditorBridge server and client exchange one line per connection") {
 
 	std::string reply;
 	CHECK_FALSE(EditorBridge::Exchange(endpoint, "{}", 500, reply, error));
+}
+#endif
+
+#if FNK_PLATFORM_DESKTOP && !defined(FNK_PLATFORM_WINDOWS)
+TEST_CASE("EditorBridge preserves an occupied filesystem path after a failed start") {
+	const std::string endpoint = EditorBridge::MakeEndpointName(EditorBridge::GetCurrentProcessId(), EditorBridge::GenerateToken());
+	struct RemoveFile {
+		std::filesystem::path Path;
+		~RemoveFile() {
+			std::error_code ec;
+			std::filesystem::remove(Path, ec);
+		}
+	} cleanup{Path::FromUtf8(endpoint)};
+	REQUIRE(File::WriteAllText(endpoint, "already owned"));
+	EditorBridge::Server server;
+	std::string error;
+	CHECK_FALSE(server.Start(endpoint, EditorBridge::GenerateToken(), error));
+	CHECK_FALSE(server.IsRunning());
+	server.Stop();
+	CHECK(std::filesystem::is_regular_file(cleanup.Path));
+	CHECK(File::ReadAllText(endpoint) == "already owned");
+
+	REQUIRE(std::filesystem::remove(cleanup.Path));
+	REQUIRE_MESSAGE(server.Start(endpoint, EditorBridge::GenerateToken(), error), error);
+	server.Stop();
+	CHECK_FALSE(std::filesystem::exists(cleanup.Path));
 }
 #endif

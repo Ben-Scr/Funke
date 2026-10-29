@@ -383,7 +383,7 @@ namespace Funke::EditorBridge {
 			outError = std::string("socket() failed: ") + std::strerror(errno);
 			return false;
 		}
-		unlink(endpoint.c_str());
+		// An occupied name belongs to another owner; only a successful bind allows cleanup.
 		// Created with no permissions for group/others; chmod afterwards closes the gap on systems that ignore umask for sockets.
 		const mode_t previousMask = umask(0077);
 		const bool bound = bind(state->ListenFd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0;
@@ -391,7 +391,7 @@ namespace Funke::EditorBridge {
 		if (!bound || chmod(endpoint.c_str(), S_IRUSR | S_IWUSR) != 0 || listen(state->ListenFd, 4) != 0) {
 			outError = "could not listen on " + endpoint + ": " + std::strerror(errno);
 			close(state->ListenFd);
-			unlink(endpoint.c_str());
+			if (bound) unlink(endpoint.c_str());
 			return false;
 		}
 		int wake[2] = { -1, -1 };
