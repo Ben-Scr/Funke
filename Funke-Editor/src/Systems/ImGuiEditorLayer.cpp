@@ -972,7 +972,6 @@ namespace Funke {
 		if (m_UndoStackSceneId != &scene || m_ActiveUndoStack != stack) {
 			if (m_ActiveUndoStack) InspectorUndoRecorder::Flush(*m_ActiveUndoStack, true);
 			InspectorUndoRecorder::Reset();
-			if (stack == &m_DetachedUndoStack) m_DetachedUndoStack.Clear();
 			m_UndoStackSceneId = &scene;
 			m_ActiveUndoStack = stack;
 		}
@@ -998,15 +997,19 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::PerformUndoRedo(Scene& scene, bool redo) {
+		FinishInspectorRename(scene);
 		std::vector<uint64_t> selectedIds;
 		for (EntityHandle h : GetSelectedEntities(scene)) selectedIds.push_back(scene.GetEntityPersistentID(h));
 		const uint64_t primaryId = (m_SelectedEntity != entt::null && scene.IsValid(m_SelectedEntity))
 			? scene.GetEntityPersistentID(m_SelectedEntity) : 0;
+		const uint64_t prefabRootId = m_PrefabEditScene.get() == &scene && scene.IsValid(m_PrefabEditRootEntity)
+			? scene.GetEntityPersistentID(m_PrefabEditRootEntity) : 0;
 
 		UndoStack& history = GetUndoStack(scene);
 		InspectorUndoRecorder::Flush(history, true);
 		const std::string action = redo ? history.Redo(scene) : history.Undo(scene);
 		if (action.empty()) return;
+		if (prefabRootId != 0) scene.TryResolveEntityRef(prefabRootId, m_PrefabEditRootEntity);
 
 		// Structural steps rebuild entities with new handles; re-resolve the selection by persistent id.
 		m_SelectedEntities.clear();
@@ -1023,9 +1026,20 @@ namespace Funke {
 		}
 		RebuildSelectionSet();
 		m_PressedEntity = entt::null;
+		m_EntityOrder.clear();
 		m_EntityOrderDirty = true;
 		++m_SelectionVersion;
 		ShowUndoToast(action, redo);
+	}
+
+	void ImGuiEditorLayer::ProcessUndoRedoShortcuts() {
+		const auto action = EditorShortcuts::ReadHistoryAction(Application::GetIsPlaying()
+			|| m_PlayModeRecompilePending || m_RenamingEntity != entt::null
+			|| m_BuildState > 0 || m_ReserializeState > 0 || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId));
+		if (action == EditorShortcuts::HistoryAction::None) return;
+		if (Scene* scene = GetContextScene()) {
+			PerformUndoRedo(*scene, action == EditorShortcuts::HistoryAction::Redo);
+		}
 	}
 
 	void ImGuiEditorLayer::ShowUndoToast(const std::string& action, bool redo) {
@@ -1183,6 +1197,7 @@ namespace Funke {
 		PropertyDrawer::ClearTransientState();
 		(void)app;
 		ClearUndoHistory();
+		m_PlayModeUndoHistory.clear();
 		// Drain the async workers first — their lambdas write member state (the progress mutexes) that
 		// the imminent destructor would otherwise free out from under a still-running thread. The future
 		// destructors already block for the same duration; this just joins while the members are alive.
@@ -1481,22 +1496,6 @@ namespace Funke {
 		}
 		if (m_RenamingEntity != entt::null || io.WantTextInput || ImGui::IsAnyItemActive()) {
 			return;
-		}
-
-		// Undo/redo. After the text-input guards so ImGui's own Ctrl+Z in InputText
-		// fields is left untouched; blocked during play since those edits are dropped
-		// on Stop. Ctrl+Y and Ctrl+Shift+Z both redo.
-		if (!Application::GetIsPlaying() && io.KeyCtrl) {
-			const bool redo = ImGui::IsKeyPressed(ImGuiKey_Y, false)
-				|| (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z, false));
-			if (redo) {
-				PerformUndoRedo(shortcutScene, true);
-				return;
-			}
-			if (!io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
-				PerformUndoRedo(shortcutScene, false);
-				return;
-			}
 		}
 
 		if (io.KeyShift && !io.KeyCtrl && !io.KeyAlt && !io.KeySuper
@@ -2274,18 +2273,18 @@ namespace Funke {
 				FNK_ERROR_TAG("PlayMode", "Multiple loaded scenes resolve to snapshot path '{}'.", scenePath);
 				return;
 			}
-			// Unsaved edits go to a private snapshot: pressing Play must not write the user's scene file.
-			std::string snapshotPath = scenePath;
-			if (loadedScene.IsDirty()) {
-				const std::filesystem::path snapshotDir = Path::FromUtf8(project->RootDirectory) / ".funke" / "PlayMode";
-				std::error_code dirError;
-				std::filesystem::create_directories(snapshotDir, dirError);
-				snapshotPath = Path::ToUtf8(snapshotDir / Path::FromUtf8(loadedScene.GetName() + ".scene"));
-				if (!SceneSerializer::SaveToFile(loadedScene, snapshotPath, false)) {
-					sceneSnapshotFailed = true;
-					FNK_ERROR_TAG("PlayMode", "Failed to snapshot scene '{}'. Play Mode was not started.", loadedScene.GetName());
-					return;
-				}
+			// Freeze even clean scenes so external file edits during Play cannot invalidate the retained history.
+			const bool wasDirty = loadedScene.IsDirty();
+			const std::filesystem::path snapshotDir = Path::FromUtf8(project->RootDirectory) / ".funke" / "PlayMode";
+			std::error_code dirError;
+			std::filesystem::create_directories(snapshotDir, dirError);
+			const std::string snapshotPath = Path::ToUtf8(snapshotDir / Path::FromUtf8(loadedScene.GetName() + ".scene"));
+			if (dirError || !SceneSerializer::SaveToFile(loadedScene, snapshotPath, false)) {
+				sceneSnapshotFailed = true;
+				FNK_ERROR_TAG("PlayMode", "Failed to snapshot scene '{}'. Play Mode was not started.", loadedScene.GetName());
+				return;
+			}
+			if (wasDirty) {
 				loadedScene.MarkDirty();
 				dirtySceneNames.insert(loadedScene.GetName());
 			}
@@ -2358,7 +2357,17 @@ namespace Funke {
 		m_PlayModeRecompilePending = false;
 		m_PlayModeRecompileScene.reset();
 		m_PlayModeSelection = CaptureLoadedSceneSelection();
-		ClearUndoHistory();
+		if (Scene* context = GetContextScene()) FinishInspectorRename(*context);
+		if (m_ActiveUndoStack) InspectorUndoRecorder::Flush(*m_ActiveUndoStack, true);
+		InspectorUndoRecorder::Reset();
+		m_ActiveUndoStack = nullptr;
+		m_UndoStackSceneId = nullptr;
+		m_PlayModeUndoHistory.clear();
+		for (const auto& weakScene : SceneManager::GetLoadedScenes()) {
+			if (const auto loaded = weakScene.lock()) {
+				m_PlayModeUndoHistory.emplace(loaded->GetName(), m_SceneUndoHistory.Take(loaded));
+			}
+		}
 		// Step counter is panel-frame state, not playmode state — without a reset
 		// here a Step that didn't finish draining before the previous Stop would
 		// trip the bottom-of-RenderToolbar auto-pause on this fresh session's first
@@ -3097,7 +3106,16 @@ namespace Funke {
 
 		m_EditorOwnedSceneDefinitions.swap(restoredDefinitions);
 		m_EditorSceneDefinitionsBySceneName.swap(restoredDefinitionsByName);
-		ClearUndoHistory();
+		InspectorUndoRecorder::Reset();
+		m_ActiveUndoStack = nullptr;
+		m_UndoStackSceneId = nullptr;
+		m_SceneUndoHistory.Clear();
+		if (restoreSucceeded) {
+			for (auto& [name, history] : m_PlayModeUndoHistory) {
+				m_SceneUndoHistory.Restore(SceneManager::GetLoadedScene(name).lock(), std::move(history));
+			}
+		}
+		m_PlayModeUndoHistory.clear();
 		m_GizmoDragActive = false;
 		m_GizmoDragBefore.clear();
 		m_EditorPausedAudioEntities.clear();
@@ -3635,8 +3653,10 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::PushStructureUndo(Scene& scene, std::unique_ptr<EditCommand> command) {
-		if (!command || &scene != GetContextScene()) return;
-		GetUndoStack(scene).Push(std::move(command));
+		if (!command || (Application::GetIsPlaying() && !scene.IsDetached())) return;
+		UndoStack& stack = GetUndoStack(scene);
+		InspectorUndoRecorder::Flush(stack, true);
+		stack.Push(std::move(command));
 	}
 
 	void ImGuiEditorLayer::RecordCreatedEntities(Scene& scene, std::span<const EntityHandle> created, std::string label) {
@@ -5874,6 +5894,8 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::RenderSceneSystemsInspector(Scene& scene) {
+		const auto systemsBefore = SceneSystemsEditCommand::Capture(scene);
+		bool structureChanged = false;
 		ImGui::Text("Scene: %s", scene.GetName().c_str());
 		ImGui::SeparatorText("Systems");
 
@@ -5885,7 +5907,7 @@ namespace Funke {
 				EditorScriptDiscovery::CollectScriptFile(std::filesystem::path(droppedPath), droppedScripts);
 				for (const auto& scriptEntry : droppedScripts) {
 					if (scriptEntry.IsSceneSystem) {
-						scene.AddSceneSystem(scriptEntry.ClassName);
+						structureChanged |= scene.AddSceneSystem(scriptEntry.ClassName);
 					}
 				}
 			}
@@ -5894,7 +5916,7 @@ namespace Funke {
 		const auto& systems = scene.GetSceneSystemClassNames();
 		for (size_t i = 0; i < systems.size(); ++i) {
 			ImGui::PushID(static_cast<int>(i));
-			const std::string& className = systems[i];
+			const std::string className = systems[i];
 
 			// AllowOverlap lets trailing buttons hit-test over the header widget.
 			bool open = ImGui::CollapsingHeader((className + "##system_header").c_str(),
@@ -5908,7 +5930,7 @@ namespace Funke {
 
 			bool enabled = scene.IsSceneSystemEnabled(className);
 			if (ImGuiUtils::Switch("##enabled", &enabled)) {
-				scene.SetSceneSystemEnabled(className, enabled);
+				structureChanged |= scene.SetSceneSystemEnabled(className, enabled);
 			}
 			if (ImGui::IsItemHovered()) {
 				ImGui::SetTooltip("%s", enabled ? "Disable SceneSystem" : "Enable SceneSystem");
@@ -5916,18 +5938,18 @@ namespace Funke {
 
 			ImGui::SameLine(0, spacing);
 			if (EditorUI::IconButton("##move_up", "arrow_up", "Move up", false, false, btnW) && i > 0) {
-				scene.MoveSceneSystem(i, i - 1);
+				structureChanged |= scene.MoveSceneSystem(i, i - 1);
 			}
 
 			ImGui::SameLine(0, spacing);
 			if (EditorUI::IconButton("##move_down", "arrow_down", "Move down", false, false, btnW) && i + 1 < systems.size()) {
-				scene.MoveSceneSystem(i, i + 1);
+				structureChanged |= scene.MoveSceneSystem(i, i + 1);
 			}
 
 			ImGui::SameLine(0, spacing);
 			const bool remove = EditorUI::IconButton("##remove", "delete", "Remove SceneSystem", false, false, btnW);
 			if (remove) {
-				scene.RemoveSceneSystem(i);
+				structureChanged |= scene.RemoveSceneSystem(i);
 				ImGui::PopID();
 				break;
 			}
@@ -5999,13 +6021,16 @@ namespace Funke {
 				const std::string label = BuildScriptMenuLabel(scriptEntry);
 				const std::string id = EditorScriptDiscovery::EntryId(scriptEntry);
 				if (ImGuiUtils::MenuItemEllipsis(label, id.c_str(), nullptr, false, true, 260.0f)) {
-					scene.AddSceneSystem(scriptEntry.ClassName);
+					structureChanged |= scene.AddSceneSystem(scriptEntry.ClassName);
 					ImGui::CloseCurrentPopup();
 				}
 			}
 			ImGui::EndPopup();
 		}
 
+		if (structureChanged) {
+			PushStructureUndo(scene, std::make_unique<SceneSystemsEditCommand>(systemsBefore, SceneSystemsEditCommand::Capture(scene)));
+		}
 	}
 
 	std::vector<std::string> ImGuiEditorLayer::CurrentEntityNames(Scene& scene, std::span<const EntityHandle> handles) {
@@ -6312,8 +6337,10 @@ namespace Funke {
 			if (ImGui::SmallButton("Revert All")) {
 				// RevertPrefabInstanceOverride destroys the root and returns a replacement; bail out of the inspector body this frame to avoid iterating destroyed handles.
 				const EntityHandle revertedRoot = prefabInstanceRoot;
+				StructureEditRecorder undo(scene, std::span(&revertedRoot, 1), "Revert Prefab");
 				EntityHandle replacement = SceneSerializer::RevertPrefabInstanceOverride(scene, revertedRoot, {});
 				if (replacement != entt::null) {
+					PushStructureUndo(scene, undo.Finish(scene, std::span(&replacement, 1)));
 					if (m_PrefabEditRootEntity == revertedRoot) {
 						m_PrefabEditRootEntity = replacement;
 					}
@@ -6456,6 +6483,8 @@ namespace Funke {
 				}
 			}
 			if (pasteRequested && canPasteComponent) {
+				const std::vector<EntityHandle> roots = selectedHandles;
+				StructureEditRecorder undo(scene, roots, "Paste Component");
 				bool anyApplied = false;
 				bool anyAdded = false;
 				for (const Entity& e : selectedEntities) {
@@ -6470,12 +6499,15 @@ namespace Funke {
 					}
 				}
 				if (anyApplied) scene.MarkDirty();
+				if (anyApplied || anyAdded) PushStructureUndo(scene, undo.Finish(scene, roots));
 				// AddWithDependencies may have inserted a new component type
 				// on one or more selected entities — the cached intersection
 				// has to refresh so the new section appears.
 				if (anyAdded) ++m_SelectionVersion;
 			}
 			if (resetRequested && canSerializeComponent) {
+				const std::vector<EntityHandle> roots = selectedHandles;
+				StructureEditRecorder undo(scene, roots, "Reset Component");
 				bool anyReset = false;
 				for (const Entity& e : selectedEntities) {
 					if (SceneSerializer::ResetComponent(scene, e.GetHandle(), info.serializedName)) {
@@ -6483,12 +6515,16 @@ namespace Funke {
 					}
 				}
 				if (anyReset) scene.MarkDirty();
+				if (anyReset) PushStructureUndo(scene, undo.Finish(scene, roots));
 			}
 
 			if (!revertFieldRequested.empty()) {
+				StructureEditRecorder undo(scene, std::span(&prefabInstanceRoot, 1), "Revert Prefab Field");
 				EntityHandle replacement = SceneSerializer::RevertPrefabInstanceOverride(
 					scene, entity.GetHandle(), revertFieldRequested);
 				if (replacement != entt::null) {
+					const EntityHandle root = SceneSerializer::GetPrefabInstanceRoot(scene, replacement);
+					PushStructureUndo(scene, undo.Finish(scene, std::span(&root, 1)));
 					SelectEntity(replacement);
 					m_EntityOrder.clear(); m_EntityOrderDirty = true;
 					// Entity was recreated — `entity`/`entitySpan` are now stale.
@@ -6499,6 +6535,7 @@ namespace Funke {
 				}
 			}
 			if (revertComponentRequested) {
+				StructureEditRecorder undo(scene, std::span(&prefabInstanceRoot, 1), "Revert Prefab Component");
 				const std::string prefix = componentSerializedName + ".";
 				std::vector<std::string> paths;
 				for (const auto& [path, _] : prefabOverrides.GetObject()) {
@@ -6512,6 +6549,8 @@ namespace Funke {
 					if (replacement != entt::null) current = replacement;
 				}
 				SelectEntity(current);
+				const EntityHandle root = SceneSerializer::GetPrefabInstanceRoot(scene, current);
+				PushStructureUndo(scene, undo.Finish(scene, std::span(&root, 1)));
 				m_EntityOrder.clear(); m_EntityOrderDirty = true;
 				// Entity may have been recreated by the reverts above — `entity`/
 				// `entitySpan` are now stale. Stop iterating components this frame.

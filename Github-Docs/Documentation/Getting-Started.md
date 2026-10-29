@@ -97,7 +97,7 @@ Some small next steps, each using one new feature:
 2. Make sure **SampleScene** is in **Build Scenes** and set as the startup scene.
 3. Open the **Build** panel, choose the **Release** profile, pick an empty output folder outside the project, and click **Build**.
 
-The output folder is your game. To run it, players need the [.NET 10 Runtime (x64)](https://dotnet.microsoft.com/download/dotnet/10.0) and the [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe); a game started without .NET shows a message with a download link. See [Building and Shipping](Editor/Building-and-Shipping.md) for the full release checklist.
+The output folder is your game. Desktop build profiles include .NET by default, so players do not need to install it separately. Windows players still need the [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe). Turn off **Build Profiles > Include .NET Runtime** only when your installer supplies .NET or your players already have it. See [Building and Shipping](Editor/Building-and-Shipping.md) for the full release checklist.
 
 ## Where to go next
 

@@ -118,6 +118,8 @@ sfx.PlayOneShot();
 
 Under the hood these always end up working with GUIDs — the path form is just a convenience that looks up the GUID for you. See [Scripting](../Scripting/Scripting.md) for the full API and the Inspector attributes that create asset slots.
 
+`AssetManager.Load<T>` and `LoadByGUID<T>` combine path/GUID resolution, kind checking and any required loading into one managed-to-native call for the usual asset reference types. C# then creates the reference wrapper directly; reference-only types retain their lazy loading behavior. Data Assets use the already-loaded shared managed instance, including the expected subtype check; retrieving that instance does not load it again or rerun `OnValidate()`.
+
 ### Asynchronous loading
 
 Use `LoadAsync<T>` to prepare an asset while gameplay continues. Start the call on the engine's main thread; normal `await` continuations return through the engine's synchronization context.
@@ -139,11 +141,13 @@ Mesh? mesh = await AssetManager.LoadByGUIDAsync<Mesh>(meshGuidString, token);
 
 GUID/path resolution and import metadata access still run on the main thread. Workers prepare owned CPU data; the main thread publishes it into the existing managers and performs GPU uploads. Completion means that publication has finished. Fonts at other sizes and additional Unicode glyphs retain their normal on-demand behavior.
 
+Each C# async load starts with one managed-to-native request containing the expected kind and the path or GUID. Pending assets require no per-asset native status polling. When results are ready, the engine delivers them together in one native-to-managed completion callback, creates the managed references and completes their tasks. Cancellation requests are also sent in batches. The public loading APIs and their return values are unchanged.
+
 Missing assets, mismatched kinds, decoding failures and rejected requests return `null`. Unsupported generic types, such as `Material`, `Entity` or a `DataAsset` subclass, throw `NotSupportedException`; a build without the necessary asset module or thread support also reports that exception. Starting a load outside the engine synchronization context throws `InvalidOperationException`.
 
 Cancellation produces a cancelled task, so awaiting it throws `OperationCanceledException`. It affects only that request; another request for the same asset can still complete. Once publication succeeds, a later cancellation does not undo it. Cancellation discards an unused result without interrupting a decoder in the middle of its work. Changes to the requested asset, its import metadata, its mesh dependencies or the current project can also cancel pending requests, as can clearing the relevant asset cache. Unrelated registry changes preserve the request.
 
-The loader shares pending work for the same asset, runs at most **two preparations concurrently**, and accepts at most **256 unreleased requests**. C# releases native requests automatically after completion or cancellation. Cache eviction and ordinary asset ownership rules still apply after loading; an async result does not pin an asset permanently.
+The loader shares pending work for the same asset, runs at most **two preparations concurrently**, and accepts at most **256 unreleased requests**. Requests from C# are released automatically as their completion batch is delivered, without a separate release call for each asset. Cache eviction and ordinary asset ownership rules still apply after loading; an async result does not pin an asset permanently.
 
 ### Native asynchronous requests
 

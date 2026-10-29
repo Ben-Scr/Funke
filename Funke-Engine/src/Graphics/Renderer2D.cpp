@@ -68,6 +68,8 @@ namespace Funke {
 		std::vector<size_t>         g_SortIndexScratch;
 		std::vector<std::pair<uint32_t, Renderer2D::InstanceContributor>> g_InstanceContributors;
 		uint32_t g_NextInstanceContributorToken = 1;
+		std::vector<std::pair<uint32_t, Renderer2D::SceneEffect>> g_SceneEffects;
+		uint32_t g_NextSceneEffectToken = 1;
 
 		struct StaticSpriteEntry {
 			EntityHandle Entity = entt::null;
@@ -927,6 +929,9 @@ namespace Funke {
 	}
 
 	void Renderer2D::Shutdown() {
+		for (const auto& [token, effect] : g_SceneEffects) {
+			if (effect.Shutdown) effect.Shutdown();
+		}
 		if (!m_IsInitialized) return;
 		WebGPUSpriteResources::Release();
 
@@ -1132,7 +1137,13 @@ namespace Funke {
 		// MSAA4x is for 3D geometry only; sprites keep their edges as with Off.
 		const bool antiAlias = m_PostProcessor.IsInitialized() && m_PostProcessingEnabled
 			&& m_GraphicsSettings.AntiAliasing == AntiAliasingMode::FXAA && (n > 0 || hasWorldText);
-		bool usePostProcess = hasEnabledEffect || aspectLocked || scaled || antiAlias;
+		std::vector<SceneEffect> sceneEffects;
+		if (m_PostProcessor.IsInitialized() && RenderApi::GetPolygonMode() != PolygonMode::Wireframe) {
+			for (const auto& [token, effect] : g_SceneEffects) {
+				if (effect.IsActive(scenes)) sceneEffects.push_back(effect);
+			}
+		}
+		bool usePostProcess = hasEnabledEffect || aspectLocked || scaled || antiAlias || !sceneEffects.empty();
 
 		if (usePostProcess) {
 			if (!m_SceneFbo.Recreate(fboWidth, fboHeight, TextureFormat::RGBA16F)) {
@@ -1382,16 +1393,22 @@ namespace Funke {
 			// FXAA reads the scene at render resolution: straight into the target when nothing follows it,
 			// otherwise into an intermediate the rest of the chain reads instead of the scene.
 			const Framebuffer* sceneSource = &m_SceneFbo;
+			for (const auto& effect : sceneEffects) {
+				const Framebuffer* result = effect.Render(scenes, vp, viewportAABB, *sceneSource);
+				if (result && result->IsValid() && result->GetWidth() == fboWidth && result->GetHeight() == fboHeight) {
+					sceneSource = result;
+				}
+			}
 			bool antiAliasedToTarget = false;
 			if (antiAlias) {
 				const AntiAliasingQualityLevel aaQuality = m_GraphicsSettings.AntiAliasingQuality;
 				if (!hasEnabledEffect && !scaled) {
-					antiAliasedToTarget = m_PostProcessor.RunAntiAliasing(m_SceneFbo,
+					antiAliasedToTarget = m_PostProcessor.RunAntiAliasing(*sceneSource,
 						callerInfo.ColorView, callerInfo.ColorFormat, aaQuality, true);
 				}
 				else if (m_AntiAliasFbo.Recreate(fboWidth, fboHeight, TextureFormat::RGBA16F)) {
 					const auto aaLook = WebGPUBackend::LookupFramebufferByFboId(m_AntiAliasFbo.GetBackendId());
-					if (aaLook.Valid && m_PostProcessor.RunAntiAliasing(m_SceneFbo,
+					if (aaLook.Valid && m_PostProcessor.RunAntiAliasing(*sceneSource,
 						aaLook.ColorView, aaLook.ColorFormat, aaQuality, false)) {
 						sceneSource = &m_AntiAliasFbo;
 					}
@@ -1496,6 +1513,18 @@ namespace Funke {
 	void Renderer2D::UnregisterInstanceContributor(uint32_t token) {
 		std::erase_if(g_InstanceContributors,
 			[token](const auto& entry) { return entry.first == token; });
+	}
+
+	uint32_t Renderer2D::RegisterSceneEffect(SceneEffect effect) {
+		if (!effect.IsActive || !effect.Render) return 0;
+		const uint32_t token = g_NextSceneEffectToken++;
+		if (g_NextSceneEffectToken == 0) g_NextSceneEffectToken = 1;
+		g_SceneEffects.emplace_back(token, std::move(effect));
+		return token;
+	}
+
+	void Renderer2D::UnregisterSceneEffect(uint32_t token) {
+		std::erase_if(g_SceneEffects, [token](const auto& entry) { return entry.first == token; });
 	}
 
 }  // namespace Funke

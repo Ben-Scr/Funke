@@ -883,6 +883,7 @@ namespace Funke {
 			m_EditorSceneDefinitionsBySceneName[activeScene->GetName()] = "$EditorWorkingScene";
 		}
 		Scene& scene = *activeScene;
+		ProcessUndoRedoShortcuts();
 
 		// Process OS file drops — forward to AssetBrowser
 		{

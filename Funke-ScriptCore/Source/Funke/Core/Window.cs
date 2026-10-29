@@ -5,15 +5,15 @@ namespace Funke;
 public static class Window
 {
     /// <summary>Fired same-frame as the window resize event; skipped while minimised so subscribers never see a transient 0×0.</summary>
-    public static event Action? OnResize;
+    public static event Action? Resized;
     public static event Action<bool>? FocusChanged;
-    public static event Action? OnMaximize;
-    public static event Action? OnMinimize;
-    public static event Action? OnRestore;
+    public static event Action? Maximized;
+    public static event Action? Minimized;
+    public static event Action? Restored;
 
-    internal static void RaiseRestore() => OnRestore?.Invoke();
-    internal static void RaiseMinimize() => OnMinimize?.Invoke();
-    internal static void RaiseMaximize() => OnMaximize?.Invoke();
+    internal static void RaiseRestore() => Restored?.Invoke();
+    internal static void RaiseMinimize() => Minimized?.Invoke();
+    internal static void RaiseMaximize() => Maximized?.Invoke();
 
     internal static void RaiseFocusChanged(bool focused) => FocusChanged?.Invoke(focused);
 
@@ -21,7 +21,7 @@ public static class Window
     public static int Width => InternalCalls.Window_GetWidth();
     public static int Height => InternalCalls.Window_GetHeight();
 
-    // Refreshed in InvokeResize before subscribers fire so OnResize handlers always see the new size.
+    // Refreshed in InvokeResize before subscribers fire so Resized handlers always see the new size.
     private static Vector2 s_Size;
     private static bool s_SizeCached;
 
@@ -80,6 +80,6 @@ public static class Window
     {
         s_Size = new Vector2(InternalCalls.Window_GetWidth(), InternalCalls.Window_GetHeight());
         s_SizeCached = true;
-        OnResize?.Invoke();
+        Resized?.Invoke();
     }
 }

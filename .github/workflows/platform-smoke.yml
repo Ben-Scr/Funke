@@ -1,0 +1,91 @@
+name: Exported Web game smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Run containing an already exported Web game artifact
+        required: true
+        type: string
+      artifact_name:
+        description: Exact artifact name in that run
+        required: true
+        type: string
+      entry:
+        description: HTML entry relative to the artifact root
+        required: true
+        default: index.html
+        type: string
+      script_marker:
+        description: Success marker emitted by the exported game's C# code
+        required: true
+        default: FUNKE_EXPORT_SMOKE_SCRIPT_OK
+        type: string
+      expected_pixel:
+        description: Expected normalized x,y,R,G,B on the game canvas
+        required: true
+        default: 0.5,0.5,255,0,255
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install browser test dependencies
+        run: |
+          python -m pip install Pillow
+          npm install --prefix "$RUNNER_TEMP/funke-browser" playwright@1.62.1
+          "$RUNNER_TEMP/funke-browser/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Download exported game
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
+          name: ${{ inputs.artifact_name }}
+          path: ${{ runner.temp }}/funke-export
+      - name: Run the actual WebAssembly export
+        shell: python
+        env:
+          WEB_ENTRY: ${{ inputs.entry }}
+          SCRIPT_MARKER: ${{ inputs.script_marker }}
+          EXPECTED_PIXEL: ${{ inputs.expected_pixel }}
+        run: |
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          temporary = Path(os.environ["RUNNER_TEMP"])
+          root = (temporary / "funke-export").resolve()
+          entry = (root / os.environ["WEB_ENTRY"]).resolve()
+          if not entry.is_relative_to(root) or not entry.is_file():
+              raise SystemExit("The entry must be an existing file inside the downloaded artifact.")
+          os.environ["NODE_PATH"] = str(temporary / "funke-browser/node_modules")
+          subprocess.run([
+              sys.executable, "scripts/ci/platform_export_smoke.py",
+              "--output", "output/platform-web-smoke",
+              "--expect-log", os.environ["SCRIPT_MARKER"],
+              "--expect-pixel", os.environ["EXPECTED_PIXEL"],
+              "web", "--entry", str(entry),
+              "--browser-arg=--enable-unsafe-webgpu",
+              "--browser-arg=--use-angle=swiftshader",
+          ], check=True)
+      - name: Preserve verdict, console and rendered image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Web-export-smoke-evidence
+          path: output/platform-web-smoke
+          if-no-files-found: warn

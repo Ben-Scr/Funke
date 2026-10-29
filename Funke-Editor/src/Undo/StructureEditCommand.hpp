@@ -1,5 +1,6 @@
 #pragma once
 #include "Undo/EditCommand.hpp"
+#include "Undo/StructureReferenceSnapshot.hpp"
 #include "Scene/EntityHandle.hpp"
 #include "Serialization/Json.hpp"
 
@@ -7,6 +8,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Funke {
@@ -17,8 +19,9 @@ namespace Funke {
 	struct EntitySubtreeSnapshot {
 		uint64_t RootId = 0;
 		uint64_t ParentId = 0;   // 0 = scene root
-		int SiblingIndex = -1;   // position in the parent's child list; -1 = append
+		int SiblingIndex = -1;   // position among scene roots or in the parent's child list; -1 = append
 		std::vector<Json::Value> Entities; // root first; the root carries no parent link
+		std::vector<uint64_t> EntityIds;
 
 		static EntitySubtreeSnapshot Capture(Scene& scene, EntityHandle root);
 	};
@@ -31,19 +34,28 @@ namespace Funke {
 	public:
 		StructureEditCommand(std::string label,
 			std::vector<EntitySubtreeSnapshot> before,
-			std::vector<EntitySubtreeSnapshot> after);
+			std::vector<EntitySubtreeSnapshot> after,
+			std::vector<uint64_t> rootOrderBefore,
+			std::vector<uint64_t> rootOrderAfter,
+			StructureReferenceState referencesBefore,
+			StructureReferenceState referencesAfter);
 
-		void Undo(Scene& scene) override { Apply(scene, m_Before); }
-		void Redo(Scene& scene) override { Apply(scene, m_After); }
+		void Undo(Scene& scene) override { Apply(scene, m_Before, m_RootOrderBefore, m_ReferencesBefore); }
+		void Redo(Scene& scene) override { Apply(scene, m_After, m_RootOrderAfter, m_ReferencesAfter); }
 		const char* Name() const override { return "Structure"; }
 		std::string Label() const override { return m_Label; }
 
 	private:
-		void Apply(Scene& scene, const std::vector<EntitySubtreeSnapshot>& state) const;
+		void Apply(Scene& scene, const std::vector<EntitySubtreeSnapshot>& state, const std::vector<uint64_t>& rootOrder,
+			const StructureReferenceState& references) const;
 
 		std::string m_Label;
 		std::vector<EntitySubtreeSnapshot> m_Before;
 		std::vector<EntitySubtreeSnapshot> m_After;
+		std::vector<uint64_t> m_RootOrderBefore;
+		std::vector<uint64_t> m_RootOrderAfter;
+		StructureReferenceState m_ReferencesBefore;
+		StructureReferenceState m_ReferencesAfter;
 	};
 
 	// Snapshot the affected roots, run the edit, then Finish() with the roots as
@@ -53,11 +65,35 @@ namespace Funke {
 	public:
 		StructureEditRecorder(Scene& scene, std::span<const EntityHandle> rootsBefore, std::string label);
 
-		// Null when nothing was captured on either side.
+		// Null when the captured state did not change.
 		std::unique_ptr<EditCommand> Finish(Scene& scene, std::span<const EntityHandle> rootsAfter);
 
 	private:
 		std::string m_Label;
 		std::vector<EntitySubtreeSnapshot> m_Before;
+		std::vector<uint64_t> m_RootOrderBefore;
+		StructureReferenceState m_ReferencesBefore;
+	};
+
+	struct SceneSystemSnapshot {
+		std::string ClassName;
+		bool Enabled = true;
+		std::unordered_map<std::string, std::string> Fields;
+		bool operator==(const SceneSystemSnapshot&) const = default;
+	};
+
+	class SceneSystemsEditCommand : public EditCommand {
+	public:
+		using Snapshot = std::vector<SceneSystemSnapshot>;
+		SceneSystemsEditCommand(Snapshot before, Snapshot after)
+			: m_Before(std::move(before)), m_After(std::move(after)) {}
+		static Snapshot Capture(const Scene& scene);
+		void Undo(Scene& scene) override { Apply(scene, m_Before); }
+		void Redo(Scene& scene) override { Apply(scene, m_After); }
+		const char* Name() const override { return "Edit Scene Systems"; }
+	private:
+		static void Apply(Scene& scene, const Snapshot& snapshot);
+		Snapshot m_Before;
+		Snapshot m_After;
 	};
 }

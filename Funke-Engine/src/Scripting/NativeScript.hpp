@@ -11,6 +11,7 @@
 #include "Scripting/NativeScriptField.hpp"
 
 #include <cstdint>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -21,12 +22,16 @@ namespace Funke {
 		virtual ~NativeScript() = default;
 
 		virtual void Start() {}
-		virtual void Update(float deltaTime) {}
-		virtual void FixedUpdate(float fixedDeltaTime) {}
+		virtual void Update() {}
+		virtual void FixedUpdate() {}
 		virtual void OnDestroy() {}
 		virtual const NativeScriptField* GetFields(uint32_t* count) const noexcept {
 			if (count) *count = 0;
 			return nullptr;
+		}
+
+		void Print(const std::string& message) const {
+			if (g_EngineAPI && g_EngineAPI->LogInfo) g_EngineAPI->LogInfo(message.c_str());
 		}
 
 		uint32_t GetEntityID() const { return m_EntityID; }
@@ -123,6 +128,8 @@ namespace Funke {
 		friend class NativeScriptHost;
 		uint32_t m_EntityID = 0;
 		EntityHandle m_Entity = entt::null;
+
+	protected:
 		Scene* m_Scene = nullptr;
 	};
 

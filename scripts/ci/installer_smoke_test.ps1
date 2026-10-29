@@ -31,6 +31,8 @@ function Assert-Installed([string]$RelativePath, [bool]$Expected) {
 
 function Invoke-InstalledCli([string[]]$Arguments, [string]$LogName) {
     $log = Join-Path $testRoot $LogName
+    $previousDataRoot = $env:FUNKE_USER_DATA_ROOT
+    $env:FUNKE_USER_DATA_ROOT = Join-Path $testRoot 'UserData'
     Push-Location $installDirectory
     try {
         & (Join-Path $installDirectory 'funke.exe') @Arguments *> $log
@@ -39,7 +41,7 @@ function Invoke-InstalledCli([string[]]$Arguments, [string]$LogName) {
             throw "Installed CLI failed; see $log"
         }
     }
-    finally { Pop-Location }
+    finally { Pop-Location; $env:FUNKE_USER_DATA_ROOT = $previousDataRoot }
 }
 
 try {
@@ -53,9 +55,19 @@ try {
     Assert-Installed 'funke.exe' $false
     Assert-Installed 'Funke-Engine.pdb' $false
     Assert-Installed 'EngineSDK/External/glad' $false
+    Assert-Installed 'EngineSDK/FunkeSDK.json' $true
+    Assert-Installed 'EngineSDK/Funke-Engine' $false
+    Assert-Installed 'EngineSDK/External' $false
+    Assert-Installed 'EngineSDK/bin' $false
+    Assert-Installed 'EngineSDK/Funke-ScriptCore/Funke-ScriptCore.csproj' $false
     Assert-Installed 'EngineSDK/packages/Funke.Tween/.funke-installer-package.json' $true
     $obsoleteSource = Join-Path $installDirectory 'EngineSDK/packages/Funke.Tween/Source/RemovedInNewVersion.cs'
     [IO.File]::WriteAllText($obsoleteSource, 'class ObsoleteInstallerFixture {}')
+    foreach ($relative in @('Funke-Engine/src/Old.cpp', 'External/Old.hpp', 'bin/Old.lib', 'Funke-ScriptCore/Funke-ScriptCore.csproj')) {
+        $legacyFile = Join-Path $installDirectory ('EngineSDK/' + $relative)
+        New-Item -ItemType Directory -Path (Split-Path $legacyFile) -Force | Out-Null
+        [IO.File]::WriteAllText($legacyFile, 'legacy SDK fixture')
+    }
     Write-Host '[Installer smoke] Selective installation passed.'
 
     Invoke-Setup 'core,templates,cli,packages\tween,packages\networking' 'upgrade.log'
@@ -64,6 +76,10 @@ try {
     Assert-Installed 'EngineSDK/packages/Funke.Networking/funke-package.lua' $true
     Assert-Installed 'EngineSDK/packages/Funke.AudioMixer' $false
     Assert-Installed 'EngineSDK/packages/Funke.Tween/Source/RemovedInNewVersion.cs' $false
+    Assert-Installed 'EngineSDK/Funke-Engine' $false
+    Assert-Installed 'EngineSDK/External' $false
+    Assert-Installed 'EngineSDK/bin' $false
+    Assert-Installed 'EngineSDK/Funke-ScriptCore/Funke-ScriptCore.csproj' $false
     if ((Get-Content -LiteralPath $projectFile -Raw) -ne '{"name":"KeepMe"}') {
         throw 'Setup changed the separate project.'
     }
@@ -73,6 +89,7 @@ try {
     Invoke-InstalledCli @('create', 'InstallerExportSmoke', '--path', (Join-Path $testRoot 'Projects'),
         '--no-git', '--no-register') 'create-project.log'
     Invoke-InstalledCli @('package', 'add', 'Funke.Tween', '--project', $exportProject) 'enable-package.log'
+    Invoke-InstalledCli @('package', 'add', 'Funke.Networking', '--project', $exportProject) 'enable-networking.log'
     $probe = 'public static class InstallerProbe { public static Funke.Tween.Ease Value = Funke.Tween.Ease.Linear; }'
     [IO.File]::WriteAllText((Join-Path $exportProject 'Assets/Scripts/InstallerProbe.cs'), $probe)
     $packageOutput = Join-Path $exportProject '.funke/build/packages/bin/Dist-windows-x86_64/Pkg.Funke.Tween/Pkg.Funke.Tween.dll'
@@ -82,6 +99,11 @@ try {
     if (-not (Test-Path -LiteralPath $packageOutput) -or
         -not (Test-Path -LiteralPath (Join-Path $gameDirectory 'InstallerExportSmoke.exe'))) {
         throw 'Export did not produce the Dist package and game artifacts.'
+    }
+    foreach ($package in @('Funke.Tween', 'Funke.Networking')) {
+        if (-not (Get-ChildItem -LiteralPath $gameDirectory -Filter "Pkg.$package.dll" -Recurse -File)) {
+            throw "Export omitted the enabled package $package."
+        }
     }
     Write-Host '[Installer smoke] Installed package enabled, compiled for Dist and exported with the game.'
 }

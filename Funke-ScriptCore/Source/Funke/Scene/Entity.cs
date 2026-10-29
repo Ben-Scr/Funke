@@ -506,7 +506,7 @@ public class Entity : IEquatable<Entity>
 
     private static void InvalidateManagedComponents(ulong entityID)
     {
-        if (!s_ManagedComponentStore.Remove(entityID, out Dictionary<Type, Component>? components))
+        if (s_ManagedComponentStore.Count == 0 || !s_ManagedComponentStore.Remove(entityID, out Dictionary<Type, Component>? components))
             return;
         foreach (var pair in components)
             pair.Value.Invalidate();
@@ -517,6 +517,8 @@ public class Entity : IEquatable<Entity>
     {
         InvalidateManagedComponents(entityID);
     }
+
+    internal static bool HasManagedComponentWrappers => s_ManagedComponentStore.Count != 0;
 
     internal static uint GetNativeComponentTypeId(Type type)
     {
@@ -534,7 +536,7 @@ public class Entity : IEquatable<Entity>
 
     internal static void OnNativeComponentRemoved(ulong entityID, uint nativeTypeId)
     {
-        if (nativeTypeId == 0 || !s_ManagedComponentStore.TryGetValue(entityID, out Dictionary<Type, Component>? components))
+        if (nativeTypeId == 0 || s_ManagedComponentStore.Count == 0 || !s_ManagedComponentStore.TryGetValue(entityID, out Dictionary<Type, Component>? components))
             return;
         foreach (var pair in components)
         {

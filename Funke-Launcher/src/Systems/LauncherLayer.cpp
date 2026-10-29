@@ -464,7 +464,8 @@ artifacts/
 			&& m_PrerequisiteProbe.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
 			m_Prerequisites = m_PrerequisiteProbe.get();
 		}
-		if (!m_Prerequisites.Checked || (m_Prerequisites.DotNetSdk && m_Prerequisites.MsvcBuildTools)) return;
+		if (!m_Prerequisites.Checked || (m_Prerequisites.DotNetSdk
+			&& (!m_Prerequisites.NativeDevelopment || m_Prerequisites.MsvcBuildTools))) return;
 
 		const ImVec4 warning(0.96f, 0.68f, 0.26f, 1.0f);
 		auto row = [&](const char* id, const std::string& text, const char* url) {
@@ -481,7 +482,7 @@ artifacts/
 		if (!m_Prerequisites.DotNetSdk) {
 			row("dotnet", FNK_TR("launcher.prereq.dotnet_missing"), k_DotNetSdkDownloadUrl);
 		}
-		if (!m_Prerequisites.MsvcBuildTools) {
+		if (m_Prerequisites.NativeDevelopment && !m_Prerequisites.MsvcBuildTools) {
 			row("msvc", FNK_TR("launcher.prereq.msvc_missing"), k_MsvcBuildToolsDownloadUrl);
 		}
 		ImGui::Spacing();

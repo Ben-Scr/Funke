@@ -29,6 +29,8 @@ namespace Funke {
 	namespace {
 		void (*g_TrustedEntityInvalidation)(uint64_t) = nullptr;
 		void (*g_TrustedComponentInvalidation)(uint64_t, uint32_t) = nullptr;
+		void (*g_TrustedEntityBatchInvalidation)(const uint64_t*, int) = nullptr;
+		void (*g_TrustedComponentBatchInvalidation)(const uint64_t*, int, uint32_t) = nullptr;
 	}
 
 	bool        ScriptEngine::s_Initialized = false;
@@ -55,6 +57,8 @@ namespace Funke {
 		s_Initialized = false;
 		g_TrustedEntityInvalidation = nullptr;
 		g_TrustedComponentInvalidation = nullptr;
+		g_TrustedEntityBatchInvalidation = nullptr;
+		g_TrustedComponentBatchInvalidation = nullptr;
 		s_HasUserAssembly = false;
 		GameLocalization::SetSavedLanguageProvider(nullptr);
 
@@ -98,6 +102,8 @@ namespace Funke {
 
 		g_TrustedEntityInvalidation = nullptr;
 		g_TrustedComponentInvalidation = nullptr;
+		g_TrustedEntityBatchInvalidation = nullptr;
+		g_TrustedComponentBatchInvalidation = nullptr;
 		s_CoreAssemblyPath = path;
 
 		if (!std::filesystem::exists(path))
@@ -165,6 +171,8 @@ namespace Funke {
 		s_Callbacks = managedCallbacks;
 		g_TrustedEntityInvalidation = managedCallbacks.NotifyEntityDestroyed;
 		g_TrustedComponentInvalidation = managedCallbacks.NotifyComponentRemoved;
+		g_TrustedEntityBatchInvalidation = managedCallbacks.NotifyEntitiesDestroyed;
+		g_TrustedComponentBatchInvalidation = managedCallbacks.NotifyComponentsRemoved;
 		s_Initialized = true;
 		FNK_CORE_INFO_TAG("ScriptEngine", "Core assembly loaded: {}", path);
 
@@ -222,18 +230,19 @@ namespace Funke {
 			FNK_CORE_ERROR_TAG("ScriptEngine", "Could not resolve user assembly '{}': {}", path, ec.message());
 			return false;
 		}
-		s_UserAssemblyPath = Path::ToUtf8(canonPath);
-		FNK_CORE_INFO_TAG("ScriptEngine", "Loading user assembly: {}", s_UserAssemblyPath);
+		const std::string candidatePath = Path::ToUtf8(canonPath);
+		FNK_CORE_INFO_TAG("ScriptEngine", "Loading user assembly: {}", candidatePath);
 
 		if (s_Callbacks.LoadUserAssembly)
 		{
 			ShutdownGlobalSystems();
 			InspectorEvents::ResetMissingMethodLog();
-			int ok = s_Callbacks.LoadUserAssembly(s_UserAssemblyPath.c_str());
+			const int ok = s_Callbacks.LoadUserAssembly(candidatePath.c_str());
 			FNK_CORE_INFO_TAG("ScriptEngine", "LoadUserAssembly callback returned: {}", ok);
 			s_HasUserAssembly = (ok != 0);
 
-			if (s_HasUserAssembly) {
+			if (ok > 0) {
+				s_UserAssemblyPath = candidatePath;
 				FNK_CORE_INFO_TAG("ScriptEngine", "User assembly loaded: {}", path);
 
 					// Re-hydrate data-asset instances the assembly swap dropped (no-op on first load).
@@ -254,10 +263,12 @@ namespace Funke {
 					}
 				}
 			}
+			else if (s_HasUserAssembly)
+				FNK_CORE_ERROR_TAG("ScriptEngine", "Failed to load user assembly '{}'; keeping the previous working assembly.", path);
 			else
 				FNK_CORE_ERROR_TAG("ScriptEngine", "Failed to load user assembly: {}", path);
 
-			return s_HasUserAssembly;
+			return ok > 0;
 		}
 
 		FNK_CORE_ERROR_TAG("ScriptEngine", "Cannot load user assembly: callback unavailable");
@@ -272,13 +283,6 @@ namespace Funke {
 	bool ScriptEngine::ReloadAssemblies()
 	{
 		FNK_CORE_INFO_TAG("ScriptEngine", "Reloading assemblies...");
-
-		ShutdownGlobalSystems();
-
-		if (s_Callbacks.UnloadUserAssembly)
-			s_Callbacks.UnloadUserAssembly();
-
-		s_HasUserAssembly = false;
 
 		if (s_UserAssemblyPath.empty())
 			return false;
@@ -542,6 +546,11 @@ namespace Funke {
 			s_Callbacks.SceneLoadCompleted(operationId, status, sceneName.c_str(), sceneGuid);
 	}
 
+	void ScriptEngine::NotifyAssetLoadsCompleted(const uint64_t* operationIds, const uint64_t* assetIds, const int* statuses, int count) {
+		if (s_Initialized && s_Callbacks.AssetLoadsCompleted && count > 0)
+			s_Callbacks.AssetLoadsCompleted(operationIds, assetIds, statuses, count);
+	}
+
 	void ScriptEngine::PumpSceneLoadRequests()
 	{
 		if (s_Initialized && s_Callbacks.PumpSceneLoadRequests)
@@ -587,6 +596,28 @@ namespace Funke {
 	{
 		if (!s_Initialized || entityID == 0 || !s_Callbacks.NotifyComponentRemoved) return;
 		s_Callbacks.NotifyComponentRemoved(entityID, typeId);
+	}
+
+	void ScriptEngine::NotifyEntitiesDestroyed(const uint64_t* entityIDs, int count)
+	{
+		if (!s_Initialized || !entityIDs || count <= 0 || !s_Callbacks.NotifyEntityDestroyed) return;
+		if (CanBatchEntityInvalidation() && s_Callbacks.NotifyEntitiesDestroyed
+			&& s_Callbacks.NotifyEntitiesDestroyed == g_TrustedEntityBatchInvalidation) {
+			s_Callbacks.NotifyEntitiesDestroyed(entityIDs, count);
+			return;
+		}
+		for (int i = 0; i < count; ++i) NotifyEntityDestroyed(entityIDs[i]);
+	}
+
+	void ScriptEngine::NotifyComponentsRemoved(const uint64_t* entityIDs, int count, uint32_t typeId)
+	{
+		if (!s_Initialized || !entityIDs || count <= 0 || !s_Callbacks.NotifyComponentRemoved) return;
+		if (CanBatchComponentInvalidation() && s_Callbacks.NotifyComponentsRemoved
+			&& s_Callbacks.NotifyComponentsRemoved == g_TrustedComponentBatchInvalidation) {
+			s_Callbacks.NotifyComponentsRemoved(entityIDs, count, typeId);
+			return;
+		}
+		for (int i = 0; i < count; ++i) NotifyComponentRemoved(entityIDs[i], typeId);
 	}
 
 	bool ScriptEngine::CanBatchEntityInvalidation()

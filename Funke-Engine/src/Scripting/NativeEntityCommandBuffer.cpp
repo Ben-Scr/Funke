@@ -100,12 +100,7 @@ namespace Funke {
 		// LoadGuard defers on_construct hooks to end-of-scope instead of firing per-emplace.
 		Scene::LoadGuard guard(scene);
 
-		// Stamp runtime metadata on every entity — same as the managed ECB
-		// (ScriptBindingsEcb.cpp:153). NoFlags variant skips the per-entity
-		// dirty pulse; we do a single MarkAllDirtyOnce() at the end.
-		for (uint32_t i = 0; i < m_EntityCount; ++i) {
-			scene.SetEntityMetaDataNoFlags(m_CreatedHandles[i], EntityOrigin::Runtime);
-		}
+		scene.SetRuntimeEntityMetaDataBulk(m_CreatedHandles);
 
 		for (std::size_t i = 0; i < m_CommandCount; ++i) {
 			Command& cmd = m_Commands[i];

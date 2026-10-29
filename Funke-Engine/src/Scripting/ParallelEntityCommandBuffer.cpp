@@ -67,11 +67,7 @@ namespace Funke {
 
 		Scene::LoadGuard guard(scene);
 
-		// Stamp metadata over the whole merged range — one tight loop
-		// without per-entity flag pulses (MarkAllDirtyOnce at the tail).
-		for (uint32_t i = 0; i < total; ++i) {
-			scene.SetEntityMetaDataNoFlags(m_CreatedHandles[i], EntityOrigin::Runtime);
-		}
+		scene.SetRuntimeEntityMetaDataBulk(m_CreatedHandles);
 
 		uint32_t base = 0;
 		for (auto& sub : m_Subs) {

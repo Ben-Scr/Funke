@@ -18,6 +18,7 @@ namespace Funke {
 
 namespace Funke {
 	namespace Json { class Value; }
+	namespace EngineSdk { struct Installation; }
 	struct ProjectTemplate;
 
 	struct FUNKE_API FunkeProject {
@@ -350,6 +351,7 @@ namespace Funke {
 		static std::string GetDefaultProjectsDir();
 
 		static std::string GetEngineRootDir();
+		static EngineSdk::Installation GetEngineInstallation();
 		static std::string GetPremakePath();
 		// make for the gmake workspaces on Linux / macOS: GNU make (gmake) when installed on macOS, else make.
 		static std::string GetMakeProgram();

@@ -19,5 +19,7 @@ namespace Funke {
 	// Empty when the type is not a plain value or the slot does not fit in the bytes.
 	std::optional<std::string> ReadStructField(const uint8_t* bytes, std::size_t byteCount, const StructFieldSlot& slot);
 	bool WriteStructField(uint8_t* bytes, std::size_t byteCount, const StructFieldSlot& slot, std::string_view value);
+	bool WriteStructFieldByName(uint8_t* bytes, std::size_t byteCount, std::string_view currentFieldDefs,
+		std::string_view fieldName, std::string_view expectedType, std::string_view value);
 
 }

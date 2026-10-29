@@ -205,10 +205,10 @@ Script fields that point at the prefab's own entities follow each instance: an `
 
 While you're editing, scene **scripts don't run** — your game logic only ticks when you press **Play**. When you do:
 
-1. The editor snapshots every loaded scene. Scenes with unsaved edits are written to a private snapshot in `.funke/PlayMode`; your `.scene` files are not modified.
+1. The editor writes a private snapshot of every loaded scene in `.funke/PlayMode`, including scenes with no unsaved edits; your `.scene` files are not modified.
 2. Scripts and systems begin their `Awake` → `Start` → `Update` lifecycle on the scenes as you left them.
 
-When you press **Stop**, the scenes are reloaded from those snapshots, discarding anything that happened during play; scenes that were unsaved before Play stay marked unsaved. That's why changes you make to entities *while playing* don't stick — it's a safety net. (In a shipped [runtime](Startup-Processes.md), there's no editor, so the game is simply always "playing.")
+When you press **Stop**, the scenes are reloaded from those snapshots, discarding anything that happened during play; scenes that were unsaved before Play stay marked unsaved. A successful restore also keeps each scene's pre-Play undo and redo history. That's why changes you make to entities *while playing* don't stick — it's a safety net. (In a shipped [runtime](Startup-Processes.md), there's no editor, so the game is simply always "playing.")
 
 A `.scene` file changed by another program while it is loaded in the editor is reloaded, or you are asked first if the scene has unsaved edits. See [Assets › Hot-reload](../Assets/Assets.md#hot-reload-editor).
 

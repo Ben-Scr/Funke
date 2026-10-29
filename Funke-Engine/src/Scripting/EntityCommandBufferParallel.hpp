@@ -179,13 +179,7 @@ namespace Funke {
 	template<typename T>
 	void EcbNotifyConstructed(Scene& scene, const EcbComponentBatch& batch) {
 		if (batch.Handles.empty()) return;
-		auto& storage = scene.GetRegistry().storage<T>();
-		for (const EntityHandle handle : batch.Handles) {
-			scene.NotifyParallelEcbComponentConstructed(batch.Info->storageHash, handle);
-#if FUNKE_WITH_2D
-			if constexpr (std::is_same_v<T, Transform2DComponent>) storage.get(handle).MarkDirty();
-#endif
-		}
+		scene.NotifyParallelEcbComponentsConstructed(batch.Info->storageHash, batch.Handles);
 	}
 
 	template<typename T>
@@ -200,9 +194,14 @@ namespace Funke {
 		if (batch.Handles.empty()) return;
 		auto& storage = scene.GetRegistry().storage<T>();
 		auto plan = storage.prepare_bulk_remove(batch.Handles.begin(), batch.Handles.end());
-		if (notify) for (const EntityHandle handle : batch.Handles) {
-			scene.NotifyParallelEcbComponentDestroying(batch.Info->storageHash, handle);
-			ScriptEngine::NotifyComponentRemoved(scene.GetEntityPersistentID(handle), batch.Info->typeIdU32);
+		if (notify) {
+			std::vector<uint64_t> identities;
+			identities.reserve(batch.Handles.size());
+			for (const EntityHandle handle : batch.Handles) {
+				identities.push_back(scene.GetEntityPersistentID(handle));
+			}
+			scene.NotifyParallelEcbComponentsDestroying(batch.Info->storageHash, batch.Handles);
+			ScriptEngine::NotifyComponentsRemoved(identities.data(), static_cast<int>(identities.size()), batch.Info->typeIdU32);
 		}
 		storage.bulk_remove(plan, execute);
 	}
@@ -218,11 +217,56 @@ namespace Funke {
 			|| !scene.CanUseParallelEcbComponent(entt::type_hash<UUIDComponent>::value()))) return false;
 
 		enum class Action { None, Add, Remove, Destroy } action = Action::None;
-		EcbComponentBatch transforms, sprites;
-		std::vector<EntityHandle> destroyed;
+		struct ComponentPlan {
+			const entt::registry::common_type* Storage = nullptr;
+			std::vector<const entt::registry::common_type*> Conflicts;
+			uint8_t CertifiedOpcodes = 0;
+		};
+		struct PlaybackScratch {
+			EcbComponentBatch Transforms, Sprites;
+			ComponentPlan TransformPlan, SpritePlan;
+			std::vector<EntityHandle> Destroyed;
+			std::vector<uint32_t> Seen;
+			uint32_t Stamp = 0;
+			bool InUse = false;
+		};
+		static thread_local PlaybackScratch t_Scratch;
+		PlaybackScratch localScratch;
+		auto& scratch = t_Scratch.InUse ? localScratch : t_Scratch;
+		struct ScratchScope {
+			PlaybackScratch& Scratch;
+			~ScratchScope() { Scratch.InUse = false; }
+		} scratchScope{ scratch };
+		scratch.InUse = true;
+		auto& transforms = scratch.Transforms;
+		auto& sprites = scratch.Sprites;
+		auto& destroyed = scratch.Destroyed;
+		for (auto* batch : { &transforms, &sprites }) {
+			batch->Info = nullptr;
+			batch->Handles.clear();
+			batch->Payloads.clear();
+		}
+		for (auto* plan : { &scratch.TransformPlan, &scratch.SpritePlan }) {
+			plan->Storage = nullptr;
+			plan->Conflicts.clear();
+			plan->CertifiedOpcodes = 0;
+		}
+		destroyed.clear();
 		const size_t capacity = create ? header.entityCount : scene.GetRegistry().storage<EntityHandle>().size();
-		std::vector<uint8_t> seen(capacity, 0);
+		auto& seen = scratch.Seen;
+		if (seen.size() < capacity) seen.resize(capacity, 0);
+		scratch.Stamp += 8;
+		if (scratch.Stamp == 0) {
+			std::fill(seen.begin(), seen.end(), 0);
+			scratch.Stamp = 8;
+		}
+		const size_t maximumBatch = std::min(capacity, static_cast<size_t>(header.commandCount));
 		const auto& components = SceneManager::GetComponentRegistry();
+		const auto& sourceRegistry = std::as_const(scene.GetRegistry());
+#if FUNKE_WITH_2D
+		const auto* hierarchy = sourceRegistry.storage<HierarchyComponent>();
+		const auto* rigidbodies = sourceRegistry.storage<Rigidbody2DComponent>();
+#endif
 		for (uint32_t command = 0; command < header.commandCount; ++command) {
 			const uint8_t opcode = cursor[0];
 			const uint32_t entityIndex = EcbReadLE<uint32_t>(cursor + 1);
@@ -241,37 +285,63 @@ namespace Funke {
 				payload += sizeof(uint64_t);
 			}
 			const size_t slot = create ? entityIndex : entt::to_entity(handle);
-			if (slot >= seen.size()) return false;
+			if (slot >= capacity) return false;
+			uint32_t& mark = seen[slot];
+			if ((mark & ~uint32_t{ 7 }) != scratch.Stamp) mark = scratch.Stamp;
 			if (action == Action::Destroy) {
-				if (seen[slot]) return false;
-				seen[slot] = 4;
+				if (mark & 4) return false;
+				mark |= 4;
+				if (destroyed.empty()) destroyed.reserve(maximumBatch);
 				destroyed.push_back(handle);
 				continue;
 			}
-			const ComponentInfo* info = components.GetByTypeId(typeId);
 			EcbComponentBatch* batch = nullptr;
+			ComponentPlan* plan = nullptr;
 			uint8_t bit = 0;
+			if (transforms.Info && transforms.Info->typeIdU32 == typeId) { batch = &transforms; plan = &scratch.TransformPlan; bit = 1; }
+			else if (sprites.Info && sprites.Info->typeIdU32 == typeId) { batch = &sprites; plan = &scratch.SpritePlan; bit = 2; }
+			const ComponentInfo* info = batch ? batch->Info : components.GetByTypeId(typeId);
+			if (!info) return false;
+			const uint8_t opcodeBit = static_cast<uint8_t>(1u << opcode);
+			if (!plan || !(plan->CertifiedOpcodes & opcodeBit)) {
 #if FUNKE_WITH_2D
-			if (EcbCertifiedComponent<Transform2DComponent>(*info, opcode)) { batch = &transforms; bit = 1; }
-			else if (EcbCertifiedComponent<SpriteRendererComponent>(*info, opcode)) { batch = &sprites; bit = 2; }
+				if (EcbCertifiedComponent<Transform2DComponent>(*info, opcode)) { batch = &transforms; plan = &scratch.TransformPlan; bit = 1; }
+				else if (EcbCertifiedComponent<SpriteRendererComponent>(*info, opcode)) { batch = &sprites; plan = &scratch.SpritePlan; bit = 2; }
+				else return false;
+#else
+				return false;
 #endif
-			if (!batch || (seen[slot] & bit)) return false;
-			seen[slot] |= bit;
+				plan->CertifiedOpcodes |= opcodeBit;
+			}
+			if (mark & bit) return false;
+			mark |= bit;
 			if (!batch->Info) {
 				if (!scene.CanUseParallelEcbComponent(info->storageHash)) return false;
 				batch->Info = info;
+				batch->Handles.reserve(maximumBatch);
+				if (action == Action::Add) batch->Payloads.reserve(maximumBatch);
+				if (!create) {
+					plan->Storage = sourceRegistry.storage(info->storageHash);
+					if (action == Action::Add) {
+						for (const auto& conflict : info->conflictsWith) {
+							const auto found = components.All().find(conflict);
+							if (found == components.All().end() || !found->second.has) continue;
+							if (const auto* storage = sourceRegistry.storage(found->second.storageHash)) plan->Conflicts.push_back(storage);
+						}
+					}
+				}
 			}
 			if (!create) {
-				const auto* storage = std::as_const(scene.GetRegistry()).storage(info->storageHash);
-				const bool present = storage && storage->contains(handle);
+				const bool present = plan->Storage && plan->Storage->contains(handle);
 				if (present != (action == Action::Remove)) return false;
-				if (action == Action::Add && components.FindConflict(scene.GetRegistry(), handle, *info)) return false;
+				for (const auto* conflict : plan->Conflicts) if (conflict->contains(handle)) return false;
 #if FUNKE_WITH_2D
-				if (action == Action::Add && bit == 1 && scene.GetRegistry().any_of<HierarchyComponent, Rigidbody2DComponent>(handle)) return false;
+				if (action == Action::Add && bit == 1
+					&& ((hierarchy && hierarchy->contains(handle)) || (rigidbodies && rigidbodies->contains(handle)))) return false;
 #endif
 			}
 			batch->Handles.push_back(handle);
-			batch->Payloads.push_back(opcode == Ecb_DefaultConstructComponent || opcode == Ecb_RemoveComponent ? nullptr : payload);
+			if (action == Action::Add) batch->Payloads.push_back(opcode == Ecb_DefaultConstructComponent ? nullptr : payload);
 		}
 		if (action == Action::Remove && !ScriptEngine::CanBatchComponentInvalidation()) return false;
 		if (action == Action::Destroy && !scene.CanUseParallelEcbDestroy(destroyed)) return false;
@@ -354,18 +424,25 @@ namespace Funke {
 				if (registry.all_of<UUIDComponent>(handle)) ids.Handles.push_back(handle);
 			}
 #if FUNKE_WITH_2D
-			auto transformPlan = registry.storage<Transform2DComponent>().prepare_bulk_remove(transforms.Handles.begin(), transforms.Handles.end());
-			auto spritePlan = registry.storage<SpriteRendererComponent>().prepare_bulk_remove(sprites.Handles.begin(), sprites.Handles.end());
+			auto& transformPool = registry.storage<Transform2DComponent>();
+			auto& spritePool = registry.storage<SpriteRendererComponent>();
+			auto transformPlan = transformPool.prepare_bulk_remove(transforms.Handles.begin(), transforms.Handles.end());
+			auto spritePlan = spritePool.prepare_bulk_remove(sprites.Handles.begin(), sprites.Handles.end());
 #endif
-			auto metadataPlan = registry.storage<EntityMetaDataComponent>().prepare_bulk_remove(metadata.Handles.begin(), metadata.Handles.end());
-			auto idPlan = registry.storage<UUIDComponent>().prepare_bulk_remove(ids.Handles.begin(), ids.Handles.end());
+			auto& metadataPool = registry.storage<EntityMetaDataComponent>();
+			auto& idPool = registry.storage<UUIDComponent>();
+			auto metadataPlan = metadataPool.prepare_bulk_remove(metadata.Handles.begin(), metadata.Handles.end());
+			auto idPlan = idPool.prepare_bulk_remove(ids.Handles.begin(), ids.Handles.end());
 			scene.PrepareParallelEcbDestroy(destroyed);
+			EcbSerialExecutor serial;
+			execute.RunTasks(4, [&](size_t task) noexcept {
 #if FUNKE_WITH_2D
-			registry.storage<Transform2DComponent>().bulk_remove(transformPlan, execute);
-			registry.storage<SpriteRendererComponent>().bulk_remove(spritePlan, execute);
+				if (task == 0) transformPool.bulk_remove(transformPlan, serial);
+				else if (task == 1) spritePool.bulk_remove(spritePlan, serial);
 #endif
-			registry.storage<EntityMetaDataComponent>().bulk_remove(metadataPlan, execute);
-			registry.storage<UUIDComponent>().bulk_remove(idPlan, execute);
+				if (task == 2) metadataPool.bulk_remove(metadataPlan, serial);
+				else if (task == 3) idPool.bulk_remove(idPlan, serial);
+			});
 			for (const EntityHandle handle : destroyed) scene.FinalizeParallelEcbDestroy(handle);
 		}
 		scene.MarkAllDirtyOnce();

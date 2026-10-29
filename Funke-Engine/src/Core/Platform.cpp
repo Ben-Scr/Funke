@@ -20,6 +20,7 @@
 #include <atomic>
 #include <deque>
 #include <mutex>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -67,6 +68,32 @@ namespace Funke::Platform {
 			const std::u8string u8 = path.u8string();
 			return std::string(u8.begin(), u8.end());
 		}
+
+#if FNK_PLATFORM_DESKTOP
+		std::optional<std::filesystem::path> GetUserDataRootOverride() {
+			std::filesystem::path root;
+#if defined(FNK_PLATFORM_WINDOWS)
+			// The OS environment is shared with the executable even when its CRT differs from the engine's.
+			SetLastError(ERROR_SUCCESS);
+			const DWORD required = GetEnvironmentVariableW(L"FUNKE_USER_DATA_ROOT", nullptr, 0);
+			if (required == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND) return std::nullopt;
+			if (required == 0) throw std::invalid_argument("FUNKE_USER_DATA_ROOT must be a non-empty absolute path");
+			std::wstring value(required, L'\0');
+			const DWORD copied = GetEnvironmentVariableW(L"FUNKE_USER_DATA_ROOT", value.data(), required);
+			if (copied == 0 || copied >= required)
+				throw std::invalid_argument("FUNKE_USER_DATA_ROOT could not be read consistently");
+			value.resize(copied);
+			root = std::filesystem::path(value);
+#else
+			const char* value = std::getenv("FUNKE_USER_DATA_ROOT");
+			if (!value) return std::nullopt;
+			root = FromUtf8(value);
+#endif
+			if (root.empty() || !root.is_absolute())
+				throw std::invalid_argument("FUNKE_USER_DATA_ROOT must be a non-empty absolute path");
+			return root.lexically_normal();
+		}
+#endif
 
 		// RFC 8089 file URL with percent-encoding, so paths with spaces or non-ASCII survive SDL_OpenURL.
 		std::string ToFileUrl(const std::filesystem::path& path) {
@@ -155,6 +182,9 @@ namespace Funke::Platform {
 	}
 
 	std::filesystem::path GetUserDataRoot() {
+#if FNK_PLATFORM_DESKTOP
+		if (auto root = GetUserDataRootOverride()) return *root;
+#endif
 #if defined(FNK_PLATFORM_WINDOWS)
 		PWSTR raw = nullptr;
 		std::filesystem::path result;

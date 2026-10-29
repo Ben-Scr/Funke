@@ -103,6 +103,8 @@ Funke ships a large set of components, grouped by area. Here are the main ones:
 **UI**
 - `Button`, `Slider`, `Toggle`, `InputField`, `Dropdown`, `ScrollRect`, layout groups, and more.
 
+UI labels use `Funke.TextRenderer` (`using Funke;`). It lives in the root `Funke` namespace because the same component renders world and UI text; widgets such as `Button` and `Slider` live in `Funke.UI`.
+
 **Audio**
 - `AudioSource` — plays a sound from an entity, flat (2D) or as 3D sound from the entity's position.
 

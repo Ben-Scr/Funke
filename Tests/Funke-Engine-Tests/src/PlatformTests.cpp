@@ -10,6 +10,7 @@
 #include "Core/PlatformShortcuts.hpp"
 #include "Core/Platform/SDLInputMapping.hpp"
 #include "Core/Platform/TitlebarRegions.hpp"
+#include "Serialization/Path.hpp"
 #include "Utils/Hash.hpp"
 
 #include <SDL3/SDL_gamepad.h>
@@ -18,9 +19,89 @@
 
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 
+#if defined(FNK_PLATFORM_WINDOWS)
+#include <windows.h>
+#elif FNK_PLATFORM_DESKTOP
+#include <cstdlib>
+#endif
+
 using namespace Funke;
+
+#if FNK_PLATFORM_DESKTOP
+namespace {
+	class ScopedUserDataRoot {
+	public:
+		ScopedUserDataRoot() {
+#if defined(FNK_PLATFORM_WINDOWS)
+			SetLastError(ERROR_SUCCESS);
+			const DWORD required = GetEnvironmentVariableW(L"FUNKE_USER_DATA_ROOT", nullptr, 0);
+			m_WasSet = required > 0 || GetLastError() != ERROR_ENVVAR_NOT_FOUND;
+			if (required > 0) {
+				m_Previous.resize(required);
+				const DWORD copied = GetEnvironmentVariableW(L"FUNKE_USER_DATA_ROOT", m_Previous.data(), required);
+				REQUIRE(copied < required);
+				m_Previous.resize(copied);
+			}
+#else
+			if (const char* previous = std::getenv("FUNKE_USER_DATA_ROOT")) {
+				m_WasSet = true;
+				m_Previous = previous;
+			}
+#endif
+		}
+
+		~ScopedUserDataRoot() {
+#if defined(FNK_PLATFORM_WINDOWS)
+			SetEnvironmentVariableW(L"FUNKE_USER_DATA_ROOT", m_WasSet ? m_Previous.c_str() : nullptr);
+#else
+			if (m_WasSet) setenv("FUNKE_USER_DATA_ROOT", m_Previous.c_str(), 1);
+			else unsetenv("FUNKE_USER_DATA_ROOT");
+#endif
+		}
+
+		void Set(const std::filesystem::path& value) {
+#if defined(FNK_PLATFORM_WINDOWS)
+			REQUIRE(SetEnvironmentVariableW(L"FUNKE_USER_DATA_ROOT", value.c_str()) != 0);
+#else
+			REQUIRE(setenv("FUNKE_USER_DATA_ROOT", value.c_str(), 1) == 0);
+#endif
+		}
+
+	private:
+		bool m_WasSet = false;
+		std::filesystem::path::string_type m_Previous;
+	};
+}
+
+TEST_CASE("User data override isolates all app data paths and preserves Unicode") {
+	ScopedUserDataRoot environment;
+	const auto root = std::filesystem::temp_directory_path() / std::filesystem::path(u8"Funke isoliert \u00c4\u4e2d");
+	environment.Set(root / "child" / "..");
+	const auto expected = (root / "child" / "..").lexically_normal();
+	CHECK(Platform::GetUserDataRoot() == expected);
+	CHECK(Path::GetSpecialFolderPath(SpecialFolder::LocalAppData) == Path::ToUtf8(expected));
+	CHECK(Path::GetSpecialFolderPath(SpecialFolder::AppDataRoaming) == Path::ToUtf8(expected));
+	environment.Set(root / "second");
+	CHECK(Platform::GetUserDataRoot() == root / "second");
+	CHECK(Path::GetSpecialFolderPath(SpecialFolder::AppDataRoaming) == Path::ToUtf8(root / "second"));
+}
+
+TEST_CASE("Invalid user data overrides never fall back to real user directories") {
+	ScopedUserDataRoot environment;
+	SUBCASE("Relative path") { environment.Set("relative-user-data"); }
+	SUBCASE("Empty path") { environment.Set(std::filesystem::path{}); }
+#if defined(FNK_PLATFORM_WINDOWS)
+	SUBCASE("Drive-relative path") { environment.Set("C:relative-user-data"); }
+	SUBCASE("Root-relative path") { environment.Set("\\relative-user-data"); }
+#endif
+	CHECK_THROWS_AS(Platform::GetUserDataRoot(), std::invalid_argument);
+	CHECK_THROWS_AS(Path::GetSpecialFolderPath(SpecialFolder::LocalAppData), std::invalid_argument);
+	CHECK_THROWS_AS(Path::GetSpecialFolderPath(SpecialFolder::AppDataRoaming), std::invalid_argument);
+}
+#endif
 
 TEST_CASE("Platform shortcuts require their exact modifiers and stay distinct") {
 	using namespace PlatformShortcuts;

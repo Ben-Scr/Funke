@@ -10,6 +10,8 @@ import unittest
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
+from scripts.ci.sdk_test_fixtures import make_bundle
+from scripts import sdk_manifest
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("installer_payload", ROOT / "installer/windows/prepare_payload.py")
@@ -134,12 +136,24 @@ class InstallerPayloadTests(unittest.TestCase):
         self.assertIn("FileExists(ExpandConstant('{app}\\EngineSDK\\packages\\Funke.Base\\.funke-installer-package.json'))", deletes)
         self.assertNotIn('*', deletes)
 
+    def test_sdk_upgrade_cleanup_is_limited_to_app_owned_legacy_trees(self):
+        expected = {r"Funke-ScriptCore\Funke-ScriptCore.csproj", r"Funke-ScriptCore\Source",
+                    "Funke-Engine", "External", "bin"}
+        for native in (False, True):
+            with self.subTest(native=native):
+                payload.write_includes(self.root, [], include_native_sdk=native)
+                deletes = (self.root / "SdkDelete.iss").read_text(encoding="utf-8-sig").splitlines()
+                self.assertEqual(set(deletes), {
+                    'Type: filesandordirs; Name: "{app}\\EngineSDK\\' + name + '";' for name in expected})
+
     def test_core_cannot_bypass_optional_components_or_include_local_state(self):
         bundle = self.root / "bundle"
+        make_bundle(bundle, native=True)
         for name in payload.REQUIRED_FILES:
             target = bundle / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("fixture", encoding="utf-8")
+            if not target.exists():
+                target.write_text("fixture", encoding="utf-8")
         for name in ("EngineSDK/templates/Funke.Empty2D/template.json", "EngineSDK/packages/Unsafe/file.cs",
                      "EngineSDK/platforms/Unreviewed/builder.py", "Funke-Engine.pdb", "Funke-Launcher.log",
                      "imgui.ini", "EngineSDK/.git/config"):
@@ -152,8 +166,19 @@ class InstallerPayloadTests(unittest.TestCase):
         self.assertTrue((output / "Templates/EngineSDK/templates/Funke.Empty2D/template.json").is_file())
         self.assertTrue((output / "Core/EngineSDK/Runtime-Dist/Funke-Runtime.exe").is_file())
         for name in ("funke.exe", "EngineSDK/templates", "EngineSDK/packages", "EngineSDK/platforms",
-                     "Funke-Engine.pdb", "Funke-Launcher.log", "imgui.ini", "EngineSDK/.git"):
+                     "Funke-Engine.pdb", "Funke-Launcher.log", "imgui.ini", "EngineSDK/.git",
+                     "EngineSDK/Funke-Engine", "EngineSDK/External", "EngineSDK/bin"):
             self.assertFalse((output / "Core" / name).exists(), name)
+        sdk_manifest.validate_sdk(output / "Core/EngineSDK", require_binary=True, require_templates=False)
+
+    def test_native_sdk_is_opt_in_and_declared_in_manifest(self):
+        bundle = self.root / "bundle"
+        make_bundle(bundle, native=True)
+        output = self.root / "native-payload"
+        payload.copy_bundle(bundle, output, include_native_sdk=True)
+        manifest = sdk_manifest.validate_sdk(output / "Core/EngineSDK", require_templates=False)
+        self.assertTrue(manifest["capabilities"]["nativeDevelopment"])
+        self.assertTrue((output / "Core/EngineSDK/Funke-Engine/src/Funke.hpp").is_file())
 
     def test_retired_sdk_filter_only_matches_exact_retired_paths(self):
         for name in ("EngineSDK/External/glad/include/glad.h", "EngineSDK/External/Index-Physics/file.hpp",
@@ -162,7 +187,8 @@ class InstallerPayloadTests(unittest.TestCase):
             self.assertIsNone(payload.bundle_component(Path(name)), name)
         for name in ("EngineSDK/External/Funke-PhysicsExtra/file.hpp", "EngineSDK/External/box2d/include/box2d.h",
                      "EngineSDK/Funke-Engine/src/Physics/PhysicsWorld2D.hpp"):
-            self.assertEqual(payload.bundle_component(Path(name)), "Core", name)
+            self.assertIsNone(payload.bundle_component(Path(name)), name)
+            self.assertEqual(payload.bundle_component(Path(name), include_native_sdk=True), "Core", name)
 
     def test_existing_output_is_never_deleted_or_reused(self):
         output = self.root / "output"

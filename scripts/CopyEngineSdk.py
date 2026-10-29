@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Materialize a self-contained EngineSDK folder next to the Launcher (Linux / macOS).
+"""Materialize a self-contained EngineSDK folder next to the Launcher.
 
-POSIX counterpart of scripts/CopyEngineSdk.bat, run by the Funke-Launcher postbuild. The result lets a
+Shared by desktop postbuild steps and the Windows CopyEngineSdk.bat wrapper. The result lets a
 packaged Launcher folder create projects, build project packages and export games without the source tree:
 
     <launcher dir>/                 Funke-Editor, Funke-Runtime, funke, Funke-PackageTool, ScriptCore, ...
@@ -15,12 +15,17 @@ Usage:
 from __future__ import annotations
 
 import fnmatch
+import argparse
+import json
 import os
 import platform
 import shutil
 import stat
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sdk_manifest
 
 IS_MAC = platform.system() == "Darwin"
 EXE = ".exe" if os.name == "nt" else ""
@@ -84,12 +89,12 @@ def prune_retired_dependencies(sdk: Path) -> None:
     retired = [external / "Index-Physics", external / "Funke-Physics", external / "glad", sdk / "Index-Engine"]
 
     def validate(path: Path) -> None:
-        resolved = path.resolve()
-        if not resolved.is_relative_to(sdk) or resolved == sdk:
-            raise SdkError(f"retired dependency escapes SDK: {path}")
         attributes = path.lstat()
         if path.is_symlink() or getattr(attributes, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
             raise SdkError(f"refusing to traverse linked SDK dependency: {path}")
+        resolved = path.resolve()
+        if not resolved.is_relative_to(sdk) or resolved == sdk:
+            raise SdkError(f"retired dependency escapes SDK: {path}")
 
     try:
         if os.path.lexists(external):
@@ -131,6 +136,24 @@ def mirror(source: Path, destination: Path) -> None:
     if destination.exists():
         shutil.rmtree(destination)
     shutil.copytree(source, destination, symlinks=False, ignore=shutil.ignore_patterns(".git"))
+
+
+def remove_owned(sdk: Path, relative: str) -> None:
+    target = sdk_manifest.contained_path(sdk, relative)
+    if not target.exists():
+        return
+    for path in target.rglob("*") if target.is_dir() else ():
+        sdk_manifest.contained_path(sdk, path.relative_to(sdk).as_posix())
+    if target.is_dir():
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+
+
+def stage_headers(source: Path, destination: Path) -> None:
+    for path in source.rglob("*"):
+        if ".git" not in path.parts and path.is_file() and path.suffix.lower() in sdk_manifest.HEADER_SUFFIXES:
+            copy_file(path, destination / path.relative_to(source))
 
 
 def dotnet_license_dir() -> Path | None:
@@ -183,18 +206,34 @@ def stage_runtime(runtime_dir: Path, script_core_dir: Path, licenses_dir: Path, 
     copy_files(script_core_dir, destination, SCRIPT_CORE_RUNTIME_FILES)
     mirror(runtime_dir / "FunkeAssets", destination / "FunkeAssets")
     mirror(licenses_dir, destination / "Licenses")
+    platform_name = "windows" if os.name == "nt" else ("macosx" if IS_MAC else "linux")
+    sdk_manifest.validate_runtime(destination.parent, destination.name, platform_name)
     return True
 
 
 def main() -> int:
-    if len(sys.argv) != 4:
-        print(__doc__, file=sys.stderr)
-        return 2
-    sdk = Path(sys.argv[1]).resolve()
-    root = Path(sys.argv[2]).resolve()
-    bin_dir = Path(sys.argv[3]).resolve()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("sdk", type=Path)
+    parser.add_argument("root", type=Path)
+    parser.add_argument("bin_dir", type=Path)
+    parser.add_argument("--binary-only", action="store_true", help="Omit optional native headers and link libraries")
+    args = parser.parse_args()
+    sdk, root, bin_dir = args.sdk.absolute(), args.root.resolve(), args.bin_dir.resolve()
+    if sdk.name != "EngineSDK" or sdk == root or root.is_relative_to(sdk) or sdk.is_relative_to(root / "Funke-Engine"):
+        raise SdkError("SDK target must be a dedicated EngineSDK directory outside engine sources")
+    if os.path.lexists(sdk) and sdk_manifest.is_link(sdk):
+        raise SdkError("refusing linked SDK directory")
+    sdk = sdk.resolve()
     launcher_dir = sdk.parent
     prune_retired_dependencies(sdk)
+    sdk.mkdir(parents=True, exist_ok=True)
+    # Validate every destination before any mirror/delete follows an existing junction.
+    for path in sdk.rglob("*"):
+        sdk_manifest.contained_path(sdk, path.relative_to(sdk).as_posix())
+    for relative in ("Funke-Engine", "Funke-ScriptCore", "bin", "Runtime-Development", "Runtime-Dist", "Runtime-Debug"):
+        remove_owned(sdk, relative)
+    if args.binary_only:
+        remove_owned(sdk, "External")
 
     # --- Flat host applications next to the Launcher.
     copy_file(bin_dir / "Funke-Editor" / f"Funke-Editor{EXE}", launcher_dir / f"Funke-Editor{EXE}")
@@ -210,12 +249,12 @@ def main() -> int:
                (f"Funke-PackageTool{EXE}", "Funke-PackageTool.dll", "Funke-PackageTool.runtimeconfig.json",
                 "Funke-PackageTool.deps.json"))
 
-    # --- Engine sources (NativeScripts CMake include path) and project templates.
-    mirror(root / "Funke-Engine" / "src", sdk / "Funke-Engine" / "src")
+    # Native headers retain the include paths used by existing native projects.
+    if not args.binary_only:
+        stage_headers(root / "Funke-Engine" / "src", sdk / "Funke-Engine" / "src")
     mirror(root / "templates", sdk / "templates")
 
-    # --- Funke-ScriptCore project and runtime artifacts.
-    copy_file(root / "Funke-ScriptCore" / "Funke-ScriptCore.csproj", sdk / "Funke-ScriptCore" / "Funke-ScriptCore.csproj")
+    # ScriptCore is consumed as an assembly; no source project is distributed.
     copy_files(bin_dir / "Funke-ScriptCore", sdk / "Funke-ScriptCore", SCRIPT_CORE_RUNTIME_FILES)
     copy_file(bin_dir / "Funke-ScriptCore" / SCRIPT_CORE_DOCS, sdk / "Funke-ScriptCore" / SCRIPT_CORE_DOCS, required=False)
 
@@ -225,40 +264,56 @@ def main() -> int:
                ("project-packages.lua", "package-loader.lua", "fix_csharp_platforms.lua", "architecture.lua", "compat.lua"))
     copy_files(root / "scripts" / "packages", sdk / "scripts" / "packages",
                ("NewPackage.py", "RemovePackage.py", "BumpPackageVersion.py", "WriteNativeAbi.py"))
+    copy_file(root / "scripts" / "BuildProjectPackages.ps1", sdk / "scripts" / "BuildProjectPackages.ps1", required=False)
 
     # --- Vendored headers the NativeScripts CMakeLists and native packages reference.
-    for relative in EXTERNAL_DIRS:
-        source = root / "External" / relative
-        if source.is_dir():
-            mirror(source, sdk / "External" / relative)
+    if not args.binary_only:
+        for relative in EXTERNAL_DIRS:
+            source = root / "External" / relative
+            if source.is_dir():
+                remove_owned(sdk, "External/" + relative)
+                stage_headers(source, sdk / "External" / relative)
 
     # --- Engine library for the active config and Dist (native packages link it).
     cfg_plat = bin_dir.name
-    copy_files(bin_dir / "Funke-Engine", sdk / "bin" / cfg_plat / "Funke-Engine", (ENGINE_LIB,))
+    platform_name, architecture = cfg_plat.split("-", 2)[1:]
+    link_files = (ENGINE_LIB, "Funke-Engine.lib") if os.name == "nt" else (ENGINE_LIB,)
+    if not args.binary_only:
+        copy_files(bin_dir / "Funke-Engine", sdk / "bin" / cfg_plat / "Funke-Engine", link_files)
     dist_plat = "Dist-" + cfg_plat.split("-", 1)[1]
     dist_engine = root / "bin" / dist_plat / "Funke-Engine"
-    if (dist_engine / ENGINE_LIB).is_file():
-        copy_files(dist_engine, sdk / "bin" / dist_plat / "Funke-Engine", (ENGINE_LIB,))
+    if not args.binary_only and (dist_engine / ENGINE_LIB).is_file():
+        copy_files(dist_engine, sdk / "bin" / dist_plat / "Funke-Engine", link_files)
 
     licenses_dir = sdk / "Licenses"
     stage_licenses(root, licenses_dir)
 
     # --- Runtimes the editor exports games from without a source tree.
-    if not stage_runtime(bin_dir / "Funke-Runtime", bin_dir / "Funke-ScriptCore", licenses_dir,
-                         sdk / "Runtime-Development"):
+    runtimes = {}
+    if stage_runtime(bin_dir / "Funke-Runtime", bin_dir / "Funke-ScriptCore", licenses_dir,
+                     sdk / "Runtime-Development"):
+        runtimes["Development"] = "Runtime-Development"
+    else:
         print(f"CopyEngineSdk: active-config runtime missing at {bin_dir / 'Funke-Runtime'}; "
               "Runtime-Development not bundled", file=sys.stderr)
     dist_bin = root / "bin" / dist_plat
-    if not stage_runtime(dist_bin / "Funke-Runtime", dist_bin / "Funke-ScriptCore", licenses_dir,
-                         sdk / "Runtime-Dist"):
+    if stage_runtime(dist_bin / "Funke-Runtime", dist_bin / "Funke-ScriptCore", licenses_dir,
+                     sdk / "Runtime-Dist"):
+        runtimes["Release"] = "Runtime-Dist"
+    else:
         print(f"CopyEngineSdk: Dist runtime missing at {dist_bin / 'Funke-Runtime'}; Runtime-Dist not bundled",
               file=sys.stderr)
+    if cfg_plat.startswith("Debug-"):
+        stage_runtime(bin_dir / "Funke-Runtime", bin_dir / "Funke-ScriptCore", licenses_dir, sdk / "Runtime-Debug")
+        runtimes["Debug"] = "Runtime-Debug"
+    metadata = json.loads((launcher_dir / "BuildMetadata.json").read_text(encoding="utf-8-sig"))
+    sdk_manifest.write_manifest(sdk, metadata["version"], platform_name, architecture, not args.binary_only, runtimes)
     return 0
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except SdkError as error:
+    except (SdkError, OSError, ValueError) as error:
         print(f"CopyEngineSdk: {error}", file=sys.stderr)
         sys.exit(1)

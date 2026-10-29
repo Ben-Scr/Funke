@@ -121,6 +121,8 @@ namespace Funke {
 		bool CanUseParallelEcbComponent(entt::id_type storageHash);
 		void NotifyParallelEcbComponentConstructed(entt::id_type storageHash, EntityHandle entity);
 		void NotifyParallelEcbComponentDestroying(entt::id_type storageHash, EntityHandle entity);
+		void NotifyParallelEcbComponentsConstructed(entt::id_type storageHash, std::span<const EntityHandle> entities);
+		void NotifyParallelEcbComponentsDestroying(entt::id_type storageHash, std::span<const EntityHandle> entities);
 		bool CanUseParallelEcbDestroy(std::span<const EntityHandle> entities);
 		// Main-thread preparation precedes worker removal; finalization requires every component removed.
 		void PrepareParallelEcbDestroy(EntityHandle entity);

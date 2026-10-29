@@ -7,6 +7,8 @@ param(
     [string[]]$Targets = @("Editor", "Runtime"),
 
     [switch]$PublishBundle,
+    [switch]$IncludeNativeSdk,
+    [string]$ManifestToolPath,
 
     [string]$ReleaseTag,
 
@@ -558,12 +560,10 @@ function Publish-VerifiedArchive {
     }
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [System.IO.Compression.ZipFile]::CreateFromDirectory(
-        $PublishDirectory,
-        $archivePath,
-        [System.IO.Compression.CompressionLevel]::Optimal,
-        $false
-    )
+    $archiveArguments = @($PublishDirectory, '--archive', $archivePath)
+    if ($IncludeNativeSdk) { $archiveArguments += '--include-native-sdk' }
+    & python (Join-Path $PSScriptRoot 'sdk_manifest.py') @archiveArguments
+    if ($LASTEXITCODE -ne 0) { throw 'Standalone archive creation failed.' }
 
     $tempParent = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\')
     $verifyLeaf = "Funke Bundle Pr{0}fung {1}" -f [char]0x00FC, [guid]::NewGuid()
@@ -659,6 +659,10 @@ try {
         $publishDirectory = Join-Path $repoRoot `
             "bin\Release-windows-x86_64\Funke-Launcher"
         Remove-EmbeddedGitMetadata $publishDirectory
+
+        & (Join-Path $PSScriptRoot 'PrepareBundledPremake.ps1') `
+            -PremakePath (Join-Path $publishDirectory 'EngineSDK/premake5.exe') `
+            -ManifestToolPath $ManifestToolPath | Out-Null
 
         $signingIdentity = Get-SigningCertificate
         $signingCertificate = if ($signingIdentity) { $signingIdentity.Certificate } else { $null }

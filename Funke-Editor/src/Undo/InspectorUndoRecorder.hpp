@@ -3,9 +3,11 @@
 #include "Scene/Entity.hpp"
 
 #include <span>
+#include <memory>
 
 namespace Funke {
 	class UndoStack;
+	class EditCommand;
 
 	// Coalesces inspector property edits into one undo step per widget gesture.
 	// PropertyDrawer's Write* funcs bracket each write with CaptureBefore/After
@@ -15,6 +17,7 @@ namespace Funke {
 		void CaptureBefore(std::span<const Entity> entities, const PropertyDescriptor& descriptor);
 		void CaptureAfter(std::span<const Entity> entities, const PropertyDescriptor& descriptor);
 		void Flush(UndoStack& stack, bool finishGesture = false);
+		void Record(std::unique_ptr<EditCommand> command);
 		void Reset();
 	}
 }

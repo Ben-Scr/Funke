@@ -1,7 +1,5 @@
 #pragma once
 
-// NativeEntityCommandBuffer — batch entity/component ops; playback is ~20-50x faster than per-entity calls; default-constructs so C++ member initializers fire. NOT thread-safe for concurrent recording.
-
 #include "Core/Export.hpp"
 #include "Scene/EntityHandle.hpp"
 #include "Scene/Scene.hpp"
@@ -17,203 +15,153 @@
 
 namespace Funke {
 
-	class Scene;
+	enum class EntityCommandBufferPlaybackMode { Auto = 0, Sequential = 1, Parallel = 2 };
 
+	namespace detail {
+		FUNKE_API int PlaybackNativeEntityCommandBuffer(Scene& scene, const uint8_t* bytes, int length,
+			uint64_t* identities, int capacity, EntityCommandBufferPlaybackMode mode);
+	}
+
+	// Recording is single-threaded; ParallelEntityCommandBuffer provides independent writer slots.
 	class FUNKE_API NativeEntityCommandBuffer {
 	public:
-		// Opaque handle to an entity recorded by this buffer. The wrapped
-		// index is local to the buffer — it cannot be cross-used between
-		// instances and is invalidated by Clear()/Playback().
 		struct EntityRef {
-			uint32_t Index;
+			uint32_t Index = UINT32_MAX;
+		private:
+			uint64_t BufferToken = 0;
+			uint64_t Generation = 0;
+			EntityHandle Handle = entt::null;
+			friend class NativeEntityCommandBuffer;
 		};
 
-		NativeEntityCommandBuffer() = default;
+		NativeEntityCommandBuffer();
 		~NativeEntityCommandBuffer();
-
 		NativeEntityCommandBuffer(const NativeEntityCommandBuffer&) = delete;
 		NativeEntityCommandBuffer& operator=(const NativeEntityCommandBuffer&) = delete;
 		NativeEntityCommandBuffer(NativeEntityCommandBuffer&& other);
 		NativeEntityCommandBuffer& operator=(NativeEntityCommandBuffer&& other) noexcept;
 
-		// Records the creation of a fresh runtime-origin entity and returns
-		// a handle that subsequent AddComponent calls reference. The handle
-		// is stable until Clear() or destruction.
 		EntityRef CreateEntity();
-
-		// Children addressable only via root's children list AFTER Playback, not via additional ECB records.
+		// Capture live targets before structural mutations; refs belong to this writer until Clear().
+		EntityRef Existing(Entity entity);
 		EntityRef Instantiate(uint64_t prefabGuid);
+		EntityRef Instantiate(Entity prefabAsset);
 
-		EntityRef Instantiate(class Entity prefabAsset);
+		template<typename T> void AddComponent(EntityRef entity);
+		template<typename T> void AddComponent(EntityRef entity, T value);
+		template<typename T, typename Configure> void AddComponent(EntityRef entity, Configure&& configure);
+		template<typename T> void RemoveComponent(EntityRef entity);
+		void Destroy(EntityRef entity);
+		void SetEnabled(EntityRef entity, bool enabled);
 
-		template <typename T>
-		std::enable_if_t<!std::is_empty_v<T>> AddComponent(EntityRef e);
+		template<typename... Ts> EntityRef CreateWith();
+		template<typename... Ts> void CreateEntitiesWith(int length, std::span<EntityRef> output);
 
-		template <typename T>
-		std::enable_if_t<!std::is_empty_v<T>> AddComponent(EntityRef e, T value);
-
-		// Configure overload: default-constructs T then calls configure(component); engine defaults apply to untouched fields.
-		// Capture size limit: kInlineStorageBytes (32 bytes); larger captures fail to compile with a clear message.
-		template <typename T, typename Configure>
-		std::enable_if_t<!std::is_empty_v<T>>
-		AddComponent(EntityRef e, Configure&& configure);
-
-		// Tag (empty-type) variant. No payload, no patch.
-		template <typename T>
-		std::enable_if_t<std::is_empty_v<T>> AddComponent(EntityRef e);
-
-		template <typename... Ts>
-		EntityRef CreateWith();
-
-		// output.size() >= length must hold; fills output[0..length) with created EntityRefs in order.
-		template <typename... Ts>
-		void CreateEntitiesWith(int length, std::span<EntityRef> output);
-
-		int Playback(Scene& scene);
-
-		// Discards commands without releasing the backing buffer; trivially-destructible captures skip destructor calls.
+		// Parallel mode falls back to ordered serial execution for unsupported types or callbacks.
+		int Playback(Scene& scene, EntityCommandBufferPlaybackMode mode = EntityCommandBufferPlaybackMode::Auto);
 		void Clear();
-
-		// Number of entities queued so far (before Playback). After
-		// Playback, this is the number of entities that were created.
 		int EntityCount() const { return static_cast<int>(m_EntityCount); }
-
-		// Number of recorded AddComponent commands so far.
 		int CommandCount() const { return static_cast<int>(m_CommandCount); }
-
-		EntityHandle GetCreatedEntity(int i) const;
-
+		EntityHandle GetCreatedEntity(int index) const;
 		static constexpr std::size_t kInlineStorageBytes = 32;
 
 	private:
-		// One per recorded AddComponent. Fits in 56 bytes on x64 — one cache line.
+		enum class Operation : uint8_t { Custom, DefaultAdd, Remove, Destroy, SetEnabled, Instantiate };
 		struct Command {
-			uint32_t EntityIndex;
-			// Takes Scene& (not registry&) so prefab-instantiate thunks can call SceneSerializer.
-			// `handle` is a reference so the Instantiate thunk can rewrite m_CreatedHandles[EntityIndex] with the prefab root.
-			void (*Apply)(void* state, Scene& scene, EntityHandle& handle);
-			void (*Destroy)(void* state); // nullptr for trivially-destructible captures
+			uint64_t Target;
+			void (*Apply)(void*, Scene&, EntityHandle&);
+			void (*DestroyCapture)(void*);
+			entt::id_type TypeHash;
+			Operation Action;
+			bool Live;
 			alignas(std::max_align_t) std::byte Storage[kInlineStorageBytes];
 		};
 		static_assert(sizeof(Command) <= 64, "Command must fit in one cache line");
 
-		// Inline captures need stable addresses; inactive slots are retained for reuse after Clear().
-		std::deque<Command>       m_Commands;
-		std::vector<EntityHandle> m_CreatedHandles;
-		std::size_t               m_CommandCount = 0;
-		uint32_t                  m_EntityCount = 0;
+		Command& AppendCommand(EntityRef entity, void (*apply)(void*, Scene&, EntityHandle&),
+			Operation action = Operation::Custom, entt::id_type typeHash = 0);
+		void ValidateScene(Scene& scene) const;
+		static int PlaybackBuffers(Scene& scene, std::span<NativeEntityCommandBuffer*> buffers,
+			std::vector<EntityHandle>& handles, std::vector<uint8_t>& wire, std::vector<uint64_t>& identities,
+			EntityCommandBufferPlaybackMode mode);
 
-		Command& AppendCommand(uint32_t entityIndex,
-			void (*apply)(void*, Scene&, EntityHandle&));
-
-		template <typename T, typename Value>
+		template<typename T, typename Value>
 		void ConstructPayload(Command& command, Value&& value) {
-			try {
-				::new (command.Storage) T(std::forward<Value>(value));
-			}
-			catch (...) {
-				--m_CommandCount;
-				throw;
-			}
-			if constexpr (!std::is_trivially_destructible_v<T>) {
-				command.Destroy = [](void* state) { std::launder(reinterpret_cast<T*>(state))->~T(); };
-			}
+			try { ::new (command.Storage) T(std::forward<Value>(value)); }
+			catch (...) { --m_CommandCount; throw; }
+			if constexpr (!std::is_trivially_destructible_v<T>)
+				command.DestroyCapture = [](void* state) { std::launder(reinterpret_cast<T*>(state))->~T(); };
 		}
 
-		// Lets ParallelEntityCommandBuffer reach into the merge details
-		// (entity count and command list) without exposing them publicly.
+		std::deque<Command> m_Commands;
+		std::vector<EntityHandle> m_CreatedHandles;
+		std::vector<uint8_t> m_Wire;
+		std::vector<uint64_t> m_Identities;
+		Entity m_LiveSceneAnchor = Entity::Null;
+		std::size_t m_CommandCount = 0;
+		uint32_t m_EntityCount = 0;
+		uint64_t m_BufferToken;
+		uint64_t m_Generation = 0;
+		bool m_HasLiveScene = false;
+		bool m_Playing = false;
 		friend class ParallelEntityCommandBuffer;
 	};
 
-	// ───────────────────────────── inline template definitions ───────────
-
-	template <typename T>
-	std::enable_if_t<!std::is_empty_v<T>>
-	NativeEntityCommandBuffer::AddComponent(EntityRef e) {
-		AppendCommand(e.Index,
-			[](void*, Scene& scene, EntityHandle& handle) {
-				if constexpr (std::is_default_constructible_v<T>) {
-					scene.GetRegistry().emplace<T>(handle);
-				}
-				else {
-					static_assert(std::is_default_constructible_v<T>,
-						"AddComponent<T>(e) requires T to be default-constructible. "
-						"Use the value or patch overload for components without a "
-						"default constructor.");
-				}
-			});
+	template<typename T>
+	void NativeEntityCommandBuffer::AddComponent(EntityRef entity) {
+		static_assert(std::is_default_constructible_v<T>, "Default AddComponent requires a default constructor");
+		AppendCommand(entity, [](void*, Scene& scene, EntityHandle& handle) {
+			auto& registry = scene.GetRegistry();
+			if (!registry.all_of<T>(handle)) registry.emplace<T>(handle);
+		}, Operation::DefaultAdd, entt::type_hash<T>::value());
 	}
 
-	template <typename T>
-	std::enable_if_t<!std::is_empty_v<T>>
-	NativeEntityCommandBuffer::AddComponent(EntityRef e, T value) {
-		static_assert(sizeof(T) <= kInlineStorageBytes,
-			"Component value is larger than the ECB inline storage (32 bytes). "
-			"Use the patch overload (lambda) and refer to heap state by "
-			"reference, or split this component.");
-		static_assert(alignof(T) <= alignof(std::max_align_t),
-			"Component alignment exceeds NativeEntityCommandBuffer storage alignment.");
-
-		Command& cmd = AppendCommand(e.Index,
-			[](void* state, Scene& scene, EntityHandle& handle) {
-				T* held = std::launder(reinterpret_cast<T*>(state));
-				scene.GetRegistry().emplace<T>(handle, std::move(*held));
-			});
-		ConstructPayload<T>(cmd, std::move(value));
+	template<typename T>
+	void NativeEntityCommandBuffer::AddComponent(EntityRef entity, T value) {
+		static_assert(!std::is_empty_v<T> && sizeof(T) <= kInlineStorageBytes,
+			"Component exceeds inline storage; use a configure lambda with a small capture");
+		static_assert(alignof(T) <= alignof(std::max_align_t));
+		Command& command = AppendCommand(entity, [](void* state, Scene& scene, EntityHandle& handle) {
+			auto& registry = scene.GetRegistry();
+			if (!registry.all_of<T>(handle)) registry.emplace<T>(handle, std::move(*std::launder(reinterpret_cast<T*>(state))));
+		});
+		ConstructPayload<T>(command, std::move(value));
 	}
 
-	template <typename T, typename Configure>
-	std::enable_if_t<!std::is_empty_v<T>>
-	NativeEntityCommandBuffer::AddComponent(EntityRef e, Configure&& configure) {
+	template<typename T, typename Configure>
+	void NativeEntityCommandBuffer::AddComponent(EntityRef entity, Configure&& configure) {
 		using Patch = std::decay_t<Configure>;
-		static_assert(sizeof(Patch) <= kInlineStorageBytes,
-			"Captured patch lambda is larger than the ECB inline storage "
-			"(32 bytes). Capture less by-value, or close over a pointer to "
-			"the heap state instead.");
-		static_assert(alignof(Patch) <= alignof(std::max_align_t),
-			"Patch alignment exceeds NativeEntityCommandBuffer storage alignment.");
-		static_assert(std::is_default_constructible_v<T>,
-			"AddComponent<T>(e, configure) default-constructs T before applying "
-			"the patch. T must be default-constructible — use the value overload "
-			"for components without a default constructor.");
-		static_assert(std::is_invocable_v<Patch&, T&>,
-			"Patch callable must be invocable as (T&). Example shape: "
-			"[](Transform2DComponent& tr) { tr.Position = ...; }");
-
-		Command& cmd = AppendCommand(e.Index,
-			[](void* state, Scene& scene, EntityHandle& handle) {
-				Patch* patch = std::launder(reinterpret_cast<Patch*>(state));
-				T& component = scene.GetRegistry().emplace<T>(handle);
-				(*patch)(component);
-			});
-		ConstructPayload<Patch>(cmd, std::forward<Configure>(configure));
+		static_assert(sizeof(Patch) <= kInlineStorageBytes, "Capture exceeds inline storage; capture a pointer instead");
+		static_assert(alignof(Patch) <= alignof(std::max_align_t));
+		static_assert(!std::is_empty_v<T> && std::is_default_constructible_v<T>);
+		static_assert(std::is_invocable_v<Patch&, T&>);
+		Command& command = AppendCommand(entity, [](void* state, Scene& scene, EntityHandle& handle) {
+			auto& registry = scene.GetRegistry();
+			if (registry.all_of<T>(handle)) return;
+			T& component = registry.emplace<T>(handle);
+			(*std::launder(reinterpret_cast<Patch*>(state)))(component);
+		});
+		ConstructPayload<Patch>(command, std::forward<Configure>(configure));
 	}
 
-	template <typename T>
-	std::enable_if_t<std::is_empty_v<T>>
-	NativeEntityCommandBuffer::AddComponent(EntityRef e) {
-		AppendCommand(e.Index,
-			[](void*, Scene& scene, EntityHandle& handle) {
-				scene.GetRegistry().emplace<T>(handle);
-			});
+	template<typename T>
+	void NativeEntityCommandBuffer::RemoveComponent(EntityRef entity) {
+		AppendCommand(entity, [](void*, Scene& scene, EntityHandle& handle) {
+			scene.GetRegistry().remove<T>(handle);
+		}, Operation::Remove, entt::type_hash<T>::value());
 	}
 
-	template <typename... Ts>
-	NativeEntityCommandBuffer::EntityRef
-	NativeEntityCommandBuffer::CreateWith() {
-		EntityRef e = CreateEntity();
-		(AddComponent<Ts>(e), ...);
-		return e;
+	template<typename... Ts>
+	NativeEntityCommandBuffer::EntityRef NativeEntityCommandBuffer::CreateWith() {
+		EntityRef entity = CreateEntity();
+		(AddComponent<Ts>(entity), ...);
+		return entity;
 	}
 
-	template <typename... Ts>
+	template<typename... Ts>
 	void NativeEntityCommandBuffer::CreateEntitiesWith(int length, std::span<EntityRef> output) {
-		if (length < 0 || static_cast<std::size_t>(length) > output.size()) {
-			return;
-		}
-		for (int i = 0; i < length; ++i) {
-			output[i] = CreateWith<Ts...>();
-		}
+		if (length < 0 || static_cast<std::size_t>(length) > output.size()) return;
+		for (int index = 0; index < length; ++index) output[index] = CreateWith<Ts...>();
 	}
 
-} // namespace Funke
+}

@@ -820,6 +820,16 @@ namespace Funke {
 	void BuildProfilesPanel::RenderTesting(FunkeBuildProfile& profile) {
 		if (!EditorUI::SectionHeader("Configuration & Testing")) return;
 
+		if (profile.Platform == BuildPlatform::Windows || profile.Platform == BuildPlatform::Linux
+			|| profile.Platform == BuildPlatform::MacOS) {
+			ImGui::PushID("BundleDotNetRuntime");
+			ImGuiUtils::BeginInspectorFieldRow("Include .NET Runtime");
+			if (ImGuiUtils::Switch("##Value", &profile.BundleDotNetRuntime)) SaveSelected();
+			EditorUI::Tooltip("Includes the installed .NET runtime so players do not need to install .NET.\n"
+				"Turn off for smaller downloads when your installer provides .NET separately.");
+			ImGui::PopID();
+		}
+
 		ImGui::PushID("Configuration");
 		ImGuiUtils::BeginInspectorFieldRow("Configuration");
 		const char* configurationLabel = profile.Configuration

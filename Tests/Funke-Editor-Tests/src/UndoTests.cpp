@@ -14,6 +14,8 @@
 
 #include "Scene/Scene.hpp"
 #include "Scene/Entity.hpp"
+#include "Serialization/Json.hpp"
+#include "Serialization/SceneSerializer.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
 #include "Inspector/PropertyValue.hpp"
@@ -204,6 +206,33 @@ TEST_CASE("TransformEditCommand::HasChange is false only when nothing moved") {
 
 	CHECK_FALSE(TransformEditCommand(std::move(noMove)).HasChange());
 	CHECK(TransformEditCommand(std::move(moved)).HasChange());
+}
+
+TEST_CASE("SceneUndoHistory: edit branches survive play mutations and restored scene ownership") {
+	std::shared_ptr<Scene> edit = Scene::CreateDetachedScene("Level");
+	Entity entity = edit->CreateEntity("Player");
+	const uint64_t id = edit->GetEntityPersistentID(entity.GetHandle());
+	SceneUndoHistory history;
+	history.ForScene(edit).Push(std::make_unique<TransformEditCommand>(
+		std::vector<TransformEditCommand::Entry>{ { id, FlatSnapshot({ 0, 0 }), FlatSnapshot({ 4, 0 }) } }));
+	history.ForScene(edit).Undo(*edit);
+	const Json::Value snapshot = SceneSerializer::SerializeScene(*edit);
+	UndoStack saved = history.Take(edit);
+	CHECK_FALSE(history.ForScene(edit).CanRedo());
+	entity.Destroy();
+	edit.reset();
+	history.Retain({});
+
+	std::shared_ptr<Scene> restored = Scene::CreateDetachedScene("Level");
+	REQUIRE(SceneSerializer::DeserializeScene(*restored, snapshot));
+	history.Restore(restored, std::move(saved));
+	REQUIRE(history.ForScene(restored).CanRedo());
+	history.ForScene(restored).Redo(*restored);
+	EntityHandle handle = entt::null;
+	REQUIRE(restored->TryResolveEntityRef(id, handle));
+	CHECK(restored->GetComponent<Transform2DComponent>(handle).Position.x == doctest::Approx(4));
+	history.ForScene(restored).Undo(*restored);
+	CHECK(restored->GetComponent<Transform2DComponent>(handle).Position.x == doctest::Approx(0));
 }
 
 TEST_CASE("TransformEditCommand: Undo restores Before, Redo restores After") {
@@ -446,4 +475,65 @@ TEST_CASE("InspectorUndoRecorder: switching context commits an unfinished gestur
 	CHECK(entity.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(0.0f));
 	history.ForScene(first).Redo(*first);
 	CHECK(entity.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(12.0f));
+}
+
+TEST_CASE("InspectorUndoRecorder: separate inactive widgets remain independent undo steps") {
+	struct Context {
+		ImGuiContext* Value = ImGui::CreateContext();
+		~Context() { InspectorUndoRecorder::Reset(); ImGui::DestroyContext(Value); }
+	} context;
+	InspectorUndoRecorder::Reset();
+	auto scene = Scene::CreateDetachedScene("Separate properties");
+	Entity entity = scene->CreateEntity("Edited");
+	const std::span<const Entity> selection(&entity, 1);
+	UndoStack history;
+	PropertyDescriptor descriptor;
+	descriptor.Name = "Position.x";
+	descriptor.Get = [](const Entity& e) { return FloatValue(e.GetComponent<Transform2DComponent>().Position.x); };
+	descriptor.Set = PositionXSetter();
+	for (float value : { 1.0f, 2.0f }) {
+		InspectorUndoRecorder::CaptureBefore(selection, descriptor);
+		descriptor.Set(entity, FloatValue(value));
+		InspectorUndoRecorder::CaptureAfter(selection, descriptor);
+	}
+	InspectorUndoRecorder::Flush(history, true);
+	history.Undo(*scene);
+	CHECK(entity.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(1));
+	history.Undo(*scene);
+	CHECK(entity.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(0));
+}
+
+TEST_CASE("InspectorUndoRecorder: scene properties target the restored scene instead of a stale pointer") {
+	struct Context {
+		ImGuiContext* Value = ImGui::CreateContext();
+		~Context() { InspectorUndoRecorder::Reset(); ImGui::DestroyContext(Value); }
+	} context;
+	InspectorUndoRecorder::Reset();
+	auto scene = Scene::CreateDetachedScene("Scene property");
+	scene->AddSceneSystem("Game.Rules");
+	scene->SetSceneSystemFieldValue("Game.Rules", "Speed", "3");
+	Entity placeholder = Entity::MakeScenePlaceholder(*scene);
+	const std::span<const Entity> selection(&placeholder, 1);
+	PropertyDescriptor descriptor;
+	descriptor.Name = "Speed";
+	descriptor.Get = [](const Entity& e) {
+		return PropertyValue::FromString(PropertyType::Float,
+			const_cast<Entity&>(e).GetScene()->GetSceneSystemFieldValues("Game.Rules")->at("Speed"));
+	};
+	descriptor.Set = [](Entity& e, const PropertyValue& value) {
+		e.GetScene()->SetSceneSystemFieldValue("Game.Rules", "Speed", value.ToString());
+	};
+	UndoStack history;
+	InspectorUndoRecorder::CaptureBefore(selection, descriptor);
+	descriptor.Set(placeholder, FloatValue(7));
+	InspectorUndoRecorder::CaptureAfter(selection, descriptor);
+	InspectorUndoRecorder::Flush(history, true);
+	REQUIRE(history.CanUndo());
+	scene.reset();
+	auto restored = Scene::CreateDetachedScene("Scene property");
+	restored->AddSceneSystem("Game.Rules");
+	history.Undo(*restored);
+	CHECK(restored->GetSceneSystemFieldValues("Game.Rules")->at("Speed") == "3");
+	history.Redo(*restored);
+	CHECK(restored->GetSceneSystemFieldValues("Game.Rules")->at("Speed") == "7");
 }

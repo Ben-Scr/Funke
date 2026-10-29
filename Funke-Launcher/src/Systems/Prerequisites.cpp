@@ -1,36 +1,23 @@
 #include "Systems/Prerequisites.hpp"
 
+#include "Project/ManagedSdk.hpp"
+#include "Project/EngineSdk.hpp"
+#include "Project/FunkeProject.hpp"
 #include "Serialization/Path.hpp"
 #include "Utils/Process.hpp"
 
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
-#include <sstream>
 
 namespace Funke {
 	namespace {
-		constexpr int k_RequiredDotNetMajor = 10;
-
 		// `dotnet --list-sdks` prints one "10.0.100 [C:\Program Files\dotnet\sdk]" line per SDK.
 		bool FindDotNetSdk(std::string& outVersion) {
 			const Process::Result result = Process::Run({ "dotnet", "--list-sdks" }, {}, std::chrono::seconds(15));
 			if (!result.Succeeded()) return false;
 
-			std::istringstream lines(result.Output);
-			std::string line;
-			while (std::getline(lines, line)) {
-				const std::size_t dot = line.find('.');
-				if (dot == std::string::npos || dot == 0) continue;
-				try {
-					if (std::stoi(line.substr(0, dot)) >= k_RequiredDotNetMajor) {
-						outVersion = line.substr(0, line.find(' '));
-						return true;
-					}
-				}
-				catch (...) {}
-			}
-			return false;
+			return ManagedSdk::FindCompatibleSdk(result.Output, outVersion);
 		}
 
 		bool FindMsvcBuildTools() {
@@ -57,7 +44,8 @@ namespace Funke {
 		PrerequisiteStatus status;
 		try {
 			status.DotNetSdk = FindDotNetSdk(status.DotNetSdkVersion);
-			status.MsvcBuildTools = FindMsvcBuildTools();
+			status.NativeDevelopment = FunkeProject::GetEngineInstallation().NativeDevelopment;
+			status.MsvcBuildTools = status.NativeDevelopment && FindMsvcBuildTools();
 		}
 		catch (...) {
 			// A failed probe must never block the launcher; it only hides the hint.

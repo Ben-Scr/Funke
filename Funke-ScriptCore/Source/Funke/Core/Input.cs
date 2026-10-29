@@ -11,7 +11,7 @@ public static class Input
 {
     public static event Action<KeyCode>? KeyDown;
     public static event Action<KeyCode>? KeyUp;
-    public static event Action<char>? EnterChar;
+    public static event Action<char>? CharEntered;
 
     public static event Action<MouseButton>? MouseDown;
     public static event Action<MouseButton>? MouseUp;
@@ -31,7 +31,7 @@ public static class Input
         }
     }
 
-    internal static void RaiseEnterChar(char c) => EnterChar?.Invoke(c);
+    internal static void RaiseCharEntered(char c) => CharEntered?.Invoke(c);
     internal static void RaiseKeyDown(KeyCode key) => KeyDown?.Invoke(key);
     internal static void RaiseKeyUp(KeyCode key) => KeyUp?.Invoke(key);
     internal static void RaiseMouseDown(MouseButton button) => MouseDown?.Invoke(button);

@@ -19,6 +19,11 @@ namespace Funke {
 	void InspectorEditCommand::Restore(Scene& scene, bool redo) {
 		if (!m_Apply) return;
 		for (const Entry& e : m_Entries) {
+			if (e.SceneProperty) {
+				Entity placeholder = Entity::MakeScenePlaceholder(scene);
+				m_Apply(placeholder, redo ? e.After : e.Before);
+				continue;
+			}
 			EntityHandle handle = entt::null;
 			if (!scene.TryResolveEntityRef(e.PersistentId, handle)) continue;
 			Entity entity = scene.GetEntity(handle);

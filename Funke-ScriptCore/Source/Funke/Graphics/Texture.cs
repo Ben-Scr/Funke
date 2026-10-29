@@ -310,23 +310,7 @@ public sealed class Texture : IEquatable<Texture>, IDisposable
     // can construct managed Texture wrappers from a stored asset GUID
     // without re-implementing the AssetRegistry lookup.
     public static Texture? FromAssetUUID(ulong assetId)
-    {
-        if (assetId == 0)
-            return null;
-
-        // Runtime/procedural textures aren't in the AssetRegistry, so the
-        // file-asset Asset_IsValid check would reject them. They resolve
-        // through the texture manager instead. The returned wrapper is
-        // reference-only (no CPU buffer) — keep the original Texture.Create
-        // handle if you need GetPixel/SetPixel/Apply on it.
-        if (InternalCalls.Texture_IsRuntime(assetId))
-            return new Texture(assetId);
-
-        if (!InternalCalls.Asset_IsValid(assetId))
-            return null;
-
-        return InternalCalls.Texture_LoadAsset(assetId) ? new Texture(assetId) : null;
-    }
+        => AssetManager.LoadByGUID<Texture>(assetId);
 
     public static Texture? GetDefault(DefaultTexture defaultTexture)
     {

@@ -612,6 +612,62 @@ namespace Funke {
 #endif
 	}
 
+	void Scene::NotifyParallelEcbComponentsConstructed(entt::id_type storageHash, std::span<const EntityHandle> entities)
+	{
+#if FUNKE_WITH_2D
+		if (entities.empty()) return;
+		auto* transforms = const_cast<entt::registry::storage_for_type<Transform2DComponent>*>(
+			std::as_const(m_Registry).storage<Transform2DComponent>());
+		if (m_SuppressConstructHooks) {
+			for (EntityHandle entity : entities) {
+				NotifyParallelEcbComponentConstructed(storageHash, entity);
+				if (storageHash == entt::type_hash<Transform2DComponent>::value() && transforms && transforms->contains(entity)) {
+					transforms->get(entity).MarkDirty();
+				}
+			}
+			return;
+		}
+		if (storageHash == entt::type_hash<Transform2DComponent>::value() && transforms) {
+			for (EntityHandle entity : entities) {
+				if (!m_Registry.valid(entity) || !transforms->contains(entity)) continue;
+				auto& transform = transforms->get(entity);
+				transform.BindOwner(this, entity);
+				transform.MarkDirty();
+			}
+		}
+		if (storageHash == entt::type_hash<Transform2DComponent>::value()
+			|| storageHash == entt::type_hash<SpriteRendererComponent>::value()) {
+			const auto* staticEntities = std::as_const(m_Registry).storage<StaticTag>();
+			if (staticEntities && !staticEntities->empty()) {
+				for (EntityHandle entity : entities) {
+					if (m_Registry.valid(entity) && staticEntities->contains(entity)) MarkStaticRenderDataDirty();
+				}
+			}
+		}
+#endif
+	}
+
+	void Scene::NotifyParallelEcbComponentsDestroying(entt::id_type storageHash, std::span<const EntityHandle> entities)
+	{
+#if FUNKE_WITH_2D
+		if (entities.empty()) return;
+		if (storageHash == entt::type_hash<Transform2DComponent>::value()) {
+			for (EntityHandle entity : entities) {
+				if (m_Registry.valid(entity)) { m_TransformHierarchyDirty = true; break; }
+			}
+		}
+		if (storageHash == entt::type_hash<Transform2DComponent>::value()
+			|| storageHash == entt::type_hash<SpriteRendererComponent>::value()) {
+			const auto* staticEntities = std::as_const(m_Registry).storage<StaticTag>();
+			if (staticEntities && !staticEntities->empty()) {
+				for (EntityHandle entity : entities) {
+					if (m_Registry.valid(entity) && staticEntities->contains(entity)) MarkStaticRenderDataDirty();
+				}
+			}
+		}
+#endif
+	}
+
 	bool Scene::CanUseParallelEcbDestroy(std::span<const EntityHandle> entities)
 	{
 		if (!m_LifecycleSuspended && !m_SuppressEntityDestructionCallbacks
@@ -662,7 +718,46 @@ namespace Funke {
 			if (m_Registry.valid(entity)) required = std::max(required, static_cast<size_t>(entt::to_entity(entity)) + 1);
 		}
 		m_EntityDestructionMarks.resize(required, entt::null);
-		for (EntityHandle entity : entities) PrepareParallelEcbDestroy(entity);
+		if (m_LifecycleSuspended || m_SuppressEntityDestructionCallbacks || !ScriptEngine::CanBatchEntityInvalidation()) {
+			for (EntityHandle entity : entities) PrepareParallelEcbDestroy(entity);
+			return;
+		}
+		std::vector<uint64_t> identities;
+		identities.reserve(entities.size());
+		std::vector<EntityHandle> prepared;
+		prepared.reserve(entities.size());
+#if FUNKE_WITH_2D
+		const auto* transforms = std::as_const(m_Registry).storage<Transform2DComponent>();
+		const auto* sprites = std::as_const(m_Registry).storage<SpriteRendererComponent>();
+		const auto* staticEntities = std::as_const(m_Registry).storage<StaticTag>();
+#endif
+		for (EntityHandle entity : entities) {
+			if (!m_Registry.valid(entity) || IsEntityBeingDestroyed(entity)) continue;
+			prepared.push_back(entity);
+			TrackEntityDestruction(entity);
+			m_PendingDestroys.Cancel(entity);
+			const uint64_t persistentId = GetEntityPersistentID(entity);
+			if (persistentId != 0 && !IsPersistentIdLiveInOtherScene(*this, persistentId)) identities.push_back(persistentId);
+#if FUNKE_WITH_2D
+			const bool hasTransform = transforms && transforms->contains(entity);
+			if (hasTransform) m_TransformHierarchyDirty = true;
+			if (staticEntities && staticEntities->contains(entity)) {
+				if (hasTransform) MarkStaticRenderDataDirty();
+				if (sprites && sprites->contains(entity)) MarkStaticRenderDataDirty();
+			}
+#endif
+		}
+		if (!prepared.empty()) {
+			if (prepared.size() == m_EntityCount && prepared.size() == m_Registry.storage<EntityHandle>().free_list()) {
+				m_RuntimeIdToEntity.clear();
+				m_SceneGuidToEntity.clear();
+			}
+			else {
+				for (EntityHandle entity : prepared) UnregisterEntityIdentity(entity);
+			}
+			MarkAllDirtyOnce();
+		}
+		ScriptEngine::NotifyEntitiesDestroyed(identities.data(), static_cast<int>(identities.size()));
 	}
 
 	void Scene::FinalizeParallelEcbDestroy(EntityHandle entity)

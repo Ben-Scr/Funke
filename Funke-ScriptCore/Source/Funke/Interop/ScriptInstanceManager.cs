@@ -356,7 +356,7 @@ internal static class ScriptInstanceManager
             Application.RaiseApplicationStart();
             DispatchToScripts(script => script.OnApplicationStart(), nameof(EntityScript.OnApplicationStart));
         }
-        catch (Exception ex) { ScriptExceptionLog.Report("Application.OnStart handler", ex); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Application.Started handler", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -369,7 +369,7 @@ internal static class ScriptInstanceManager
             DispatchToSceneSystems(system => system.OnApplicationPaused(), nameof(SceneSystem.OnApplicationPaused));
             DispatchToGlobalSystems(system => system.OnApplicationPaused(), nameof(GlobalSystem.OnApplicationPaused));
         }
-        catch (Exception ex) { ScriptExceptionLog.Report("Application.OnPaused handler", ex); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Application.Paused handler", ex); }
 
         // Phones may end a backgrounded app without a quit callback; persist what the handlers changed.
         PlayerPrefs.SaveQuietly();
@@ -385,7 +385,7 @@ internal static class ScriptInstanceManager
             DispatchToSceneSystems(system => system.OnApplicationQuit(), nameof(SceneSystem.OnApplicationQuit));
             DispatchToGlobalSystems(system => system.OnApplicationQuit(), nameof(GlobalSystem.OnApplicationQuit));
         }
-        catch (Exception ex) { ScriptExceptionLog.Report("Application.OnQuit handler", ex); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Application.Quitting handler", ex); }
 
         // After the quit handlers so values they set are persisted too.
         PlayerPrefs.SaveQuietly();
@@ -425,8 +425,8 @@ internal static class ScriptInstanceManager
         if (codepoint > char.MaxValue) return;
         char c = (char)codepoint;
         if (char.IsControl(c)) return;
-        try { Input.RaiseEnterChar(c); }
-        catch (Exception ex) { ScriptExceptionLog.Report("Input.EnterChar handler", ex); }
+        try { Input.RaiseCharEntered(c); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Input.CharEntered handler", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -488,6 +488,18 @@ internal static class ScriptInstanceManager
     }
 
     [UnmanagedCallersOnly]
+    public static unsafe void AssetLoadsCompleted(ulong* operationIds, ulong* assetIds, int* statuses, int count)
+    {
+        if (count <= 0 || operationIds == null || assetIds == null || statuses == null) return;
+        try
+        {
+            AssetManager.CompleteAsyncLoads(new ReadOnlySpan<ulong>(operationIds, count),
+                new ReadOnlySpan<ulong>(assetIds, count), new ReadOnlySpan<int>(statuses, count));
+        }
+        catch (Exception ex) { ScriptExceptionLog.Report("AssetManager.LoadAsync completion", ex); }
+    }
+
+    [UnmanagedCallersOnly]
     public static unsafe void RaiseBeforeSceneUnloaded(byte* sceneName)
     {
         try { SceneManager.RaiseBeforeSceneUnloaded(PtrToString(sceneName)); }
@@ -505,7 +517,7 @@ internal static class ScriptInstanceManager
     public static void RaiseWindowResize()
     {
         try { Window.InvokeResize(); }
-        catch (Exception ex) { ScriptExceptionLog.Report("Window.OnResize handler", ex); }
+        catch (Exception ex) { ScriptExceptionLog.Report("Window.Resized handler", ex); }
     }
 
     [UnmanagedCallersOnly]
@@ -602,7 +614,7 @@ internal static class ScriptInstanceManager
             PlayerPrefs.SaveQuietly();
 
             try { Application.RaisePlayModeExited(); }
-            catch (Exception ex) { ScriptExceptionLog.Report("Application.OnPlayModeExited handler", ex); }
+            catch (Exception ex) { ScriptExceptionLog.Report("Application.PlayModeExited handler", ex); }
 
             int strayHandlers = SweepUserStaticEventHandlers(SweepScope.PlayModeExit);
             if (strayHandlers > 0)
@@ -646,6 +658,28 @@ internal static class ScriptInstanceManager
     {
         try { Entity.OnNativeComponentRemoved(entityID, typeId); }
         catch (Exception ex) { Log.Error($"NotifyComponentRemoved failed: {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe void NotifyEntitiesDestroyed(ulong* entityIDs, int count)
+    {
+        if (entityIDs == null || count <= 0) return;
+        for (int i = 0; i < count && Entity.HasManagedComponentWrappers; ++i)
+        {
+            try { Entity.OnNativeEntityDestroyed(entityIDs[i]); }
+            catch (Exception ex) { Log.Error($"NotifyEntitiesDestroyed failed: {ex}"); }
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe void NotifyComponentsRemoved(ulong* entityIDs, int count, uint typeId)
+    {
+        if (entityIDs == null || count <= 0 || typeId == 0) return;
+        for (int i = 0; i < count && Entity.HasManagedComponentWrappers; ++i)
+        {
+            try { Entity.OnNativeComponentRemoved(entityIDs[i], typeId); }
+            catch (Exception ex) { Log.Error($"NotifyComponentsRemoved failed: {ex}"); }
+        }
     }
 
     // AssemblyUnload: strip all user-assembly handlers. PlayModeExit: strip only EntityScript/SceneSystem handlers; GlobalSystem subscriptions remain valid.
@@ -1414,15 +1448,41 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static unsafe int LoadUserAssembly(byte* pathPtr)
     {
+        try { return LoadUserAssemblyPath(Marshal.PtrToStringUTF8((IntPtr)pathPtr)!); }
+        catch (Exception ex)
+        {
+            Log.Error($"Failed to load user assembly: {ex.Message}");
+            return s_UserAssembly != null ? -1 : 0;
+        }
+    }
+
+    internal static int LoadUserAssemblyPath(string path)
+    {
+        bool previousRetained = s_UserAssembly != null;
+        AssemblyLoadContext? candidateContext = null;
         try
         {
-            string path = Marshal.PtrToStringUTF8((IntPtr)pathPtr)!;
+            string fullPath = System.IO.Path.GetFullPath(path);
+            Assembly candidateAssembly;
+            if (ScriptAssemblyLoadContext.Collectible)
+            {
+                candidateContext = new ScriptAssemblyLoadContext(s_CoreAssembly!, fullPath);
+                using var assemblyStream = new System.IO.MemoryStream(System.IO.File.ReadAllBytes(fullPath));
+                using var symbolsStream = ReadUserAssemblySymbols(fullPath);
+                candidateAssembly = candidateContext.LoadFromStream(assemblyStream, symbolsStream);
+                ValidateUserAssemblyTypes(candidateAssembly);
+            }
+            else
+            {
+                ScriptAssemblyLoadContext.ProbeFromDefaultContext(fullPath);
+                candidateAssembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(fullPath);
+                candidateContext = AssemblyLoadContext.Default;
+            }
 
+            // Keep the working context and its registrations until the replacement's metadata resolves.
             if (s_UserLoadContext != null)
             {
-                // Drop previous dynamic registrations before tearing down
-                // the existing assembly load context — same reason
-                // UnloadUserAssembly does, just for the reload path.
+                previousRetained = false;
                 DynamicComponentRegistrar.UnregisterAll();
 
                 CancelAllInstanceCoroutines();
@@ -1439,50 +1499,10 @@ internal static class ScriptInstanceManager
 
             s_ClassCache.Clear();
 
-            string fullPath = System.IO.Path.GetFullPath(path);
             s_UserAssemblyDirectory = System.IO.Path.GetDirectoryName(fullPath);
-            if (!ScriptAssemblyLoadContext.Collectible)
-            {
-                // No hot reload: the default context binds references natively through the TPA list. A managed
-                // Load override would be re-entered by Mono's AOT loader while it resolves them (stack overflow).
-                // Loading by path (nothing rebuilds the DLL here) lets Mono find the assembly's AOT image.
-                s_UserLoadContext = AssemblyLoadContext.Default;
-                ScriptAssemblyLoadContext.ProbeFromDefaultContext(fullPath);
-                s_UserAssembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(fullPath);
-                Log.Info($"User assembly loaded: {path}");
-                DynamicComponentRegistrar.RegisterAll(s_UserAssembly);
-                // A list read before the first load (no game assembly yet) is empty.
-                EditorWindowRegistry.Clear();
-                DevCommandRegistry.Clear();
-                PackageScriptRegistry.Clear();
-                return 1;
-            }
-
-            s_UserLoadContext = new ScriptAssemblyLoadContext(s_CoreAssembly!, fullPath);
-
-            // Load from bytes to avoid file-locking the DLL on disk
-            byte[] assemblyBytes = System.IO.File.ReadAllBytes(fullPath);
-
-            // Load PDB so stack traces have file/line info; without symbols the editor's log-link parser points to this file instead of the user's script.
-            System.IO.MemoryStream? symbolsStream = null;
-            string pdbPath = System.IO.Path.ChangeExtension(fullPath, ".pdb");
-            if (System.IO.File.Exists(pdbPath))
-            {
-                try
-                {
-                    symbolsStream = new System.IO.MemoryStream(
-                        System.IO.File.ReadAllBytes(pdbPath));
-                }
-                catch (Exception pdbEx)
-                {
-                    Log.Warn($"User assembly PDB load failed ({pdbEx.Message}); stack traces will lack source info.");
-                    symbolsStream = null;
-                }
-            }
-
-            s_UserAssembly = s_UserLoadContext.LoadFromStream(
-                new System.IO.MemoryStream(assemblyBytes),
-                symbolsStream);
+            s_UserLoadContext = candidateContext;
+            s_UserAssembly = candidateAssembly;
+            candidateContext = null;
 
             Log.Info($"User assembly loaded: {path}");
 
@@ -1495,7 +1515,43 @@ internal static class ScriptInstanceManager
         catch (Exception ex)
         {
             Log.Error($"Failed to load user assembly: {ex.Message}");
-            return 0;
+            bool retained = previousRetained && s_UserAssembly != null;
+            if (retained)
+                Log.Warn("The previous working user assembly is still loaded.");
+            return retained ? -1 : 0;
+        }
+        finally
+        {
+            if (candidateContext?.IsCollectible == true)
+                candidateContext.Unload();
+        }
+    }
+
+    private static System.IO.MemoryStream? ReadUserAssemblySymbols(string fullPath)
+    {
+        string pdbPath = System.IO.Path.ChangeExtension(fullPath, ".pdb");
+        if (!System.IO.File.Exists(pdbPath)) return null;
+        try { return new System.IO.MemoryStream(System.IO.File.ReadAllBytes(pdbPath)); }
+        catch (Exception ex)
+        {
+            Log.Warn($"User assembly PDB load failed ({ex.Message}); stack traces will lack source info.");
+            return null;
+        }
+    }
+
+    private static void ValidateUserAssemblyTypes(Assembly assembly)
+    {
+        const BindingFlags members = BindingFlags.Public | BindingFlags.NonPublic
+            | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+        foreach (Type type in assembly.GetTypes())
+        {
+            _ = type.GetInterfaces();
+            foreach (FieldInfo field in type.GetFields(members)) _ = field.FieldType;
+            foreach (MethodInfo method in type.GetMethods(members))
+            {
+                _ = method.ReturnType;
+                foreach (ParameterInfo parameter in method.GetParameters()) _ = parameter.ParameterType;
+            }
         }
     }
 

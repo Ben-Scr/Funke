@@ -88,7 +88,7 @@ public unsafe class UIEventDispatcherTests
             ulong id = k_First + 7;
             Interactable interactable = new Entity(id).GetComponent<Interactable>()!;
             int hovers = 0;
-            interactable.OnHovered += _ => hovers++;
+            interactable.Hovered += _ => hovers++;
 
             s_Hovered = id;
             UIEventDispatcher.Tick();

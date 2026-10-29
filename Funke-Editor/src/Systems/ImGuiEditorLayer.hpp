@@ -261,6 +261,7 @@ namespace Funke {
 		// Structural undo: only the context scene owns history, edits elsewhere stay unrecorded.
 		void PushStructureUndo(Scene& scene, std::unique_ptr<EditCommand> command);
 		void PerformUndoRedo(Scene& scene, bool redo);
+		void ProcessUndoRedoShortcuts();
 		UndoStack& GetUndoStack(Scene& scene);
 		void ClearUndoHistory();
 		void ForgetUndoHistory(const Scene* scene);
@@ -681,6 +682,7 @@ namespace Funke {
 		std::string m_EntityClipboardJson;
 
 		std::vector<std::pair<std::string, std::string>> m_PlayModeScenes;
+		std::unordered_map<std::string, UndoStack> m_PlayModeUndoHistory;
 		// Scenes that had unsaved edits when Play started; they are snapshotted privately and marked dirty again on Stop.
 		std::unordered_set<std::string> m_PlayModeDirtyScenes;
 		// Name of the active scene at play-mode entry. Restored after exit so

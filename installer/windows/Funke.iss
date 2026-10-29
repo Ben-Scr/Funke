@@ -127,6 +127,7 @@ Source: "{#PayloadDir}\CLI\*"; DestDir: "{app}"; Components: cli; Flags: ignorev
 
 [InstallDelete]
 #include PayloadDir + "\PackageDelete.iss"
+#include PayloadDir + "\SdkDelete.iss"
 
 [Icons]
 Name: "{group}\Funke"; Filename: "{app}\Funke-Launcher.exe"; WorkingDir: "{app}"

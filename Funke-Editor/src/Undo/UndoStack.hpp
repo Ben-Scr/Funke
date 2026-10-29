@@ -33,6 +33,8 @@ namespace Funke {
 	class SceneUndoHistory {
 	public:
 		UndoStack& ForScene(const std::shared_ptr<Scene>& scene);
+		UndoStack Take(const std::shared_ptr<Scene>& scene);
+		void Restore(const std::shared_ptr<Scene>& scene, UndoStack stack);
 		void Retain(std::span<const std::weak_ptr<Scene>> scenes);
 		void Forget(const Scene* scene);
 		void Clear();

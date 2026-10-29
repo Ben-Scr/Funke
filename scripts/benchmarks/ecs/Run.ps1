@@ -7,7 +7,8 @@ param(
     [string]$Filter = "",
     [switch]$Wait,
     [switch]$PrepareOnly,
-    [switch]$UsePreparedRuntime
+    [switch]$UsePreparedRuntime,
+    [switch]$UsePreparedHarness
 )
 $ErrorActionPreference = "Stop"
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
@@ -17,6 +18,7 @@ $project = Join-Path $fixture "project"
 $results = Join-Path $repo "output/ecs-benchmark-2026-10-28"
 if ($Sizes -notmatch '^\d+$') { throw "Use one entity count per process; Run-Suite.ps1 runs the three sizes sequentially." }
 if ($Tag -notmatch '^[A-Za-z0-9_-]+$') { throw "Tag must contain only letters, digits, underscores or hyphens." }
+if ($UsePreparedHarness -and !$UsePreparedRuntime) { throw "UsePreparedHarness requires UsePreparedRuntime to keep the measured binaries fixed." }
 if ((Test-Path -LiteralPath "$results/$Tag.done") -or (Test-Path -LiteralPath "$results/$Tag.failed")) { throw "Choose a new output tag; $Tag already exists." }
 if (Get-Process Funke-Runtime -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "$runtime\Funke-Runtime.exe" }) { throw "The isolated benchmark runtime is still running." }
 foreach ($folder in @($runtime, $project, $results, "$project/Assets/Scenes", "$project/Assets/Prefabs")) {
@@ -67,8 +69,12 @@ $csproj = @'
 </Project>
 '@
 $csproj.Replace("__SOURCE__", $PSScriptRoot) | Set-Content -LiteralPath "$project/EcsBenchmark.csproj" -Encoding utf8
-& dotnet build "$project/EcsBenchmark.csproj" -c Release --nologo -v minimal -p:UseSharedCompilation=false
-if ($LASTEXITCODE -ne 0) { throw "Benchmark build failed" }
+if ($UsePreparedHarness) {
+    if (!(Test-Path -LiteralPath "$project/bin/Release/EcsBenchmark.dll")) { throw "Prepared benchmark assembly is missing" }
+} else {
+    & dotnet build "$project/EcsBenchmark.csproj" -c Release --nologo -v minimal -p:UseSharedCompilation=false
+    if ($LASTEXITCODE -ne 0) { throw "Benchmark build failed" }
+}
 $machine = @{
     Timestamp=(Get-Date).ToString("o"); Cpu=(Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed);
     Memory=(Get-CimInstance Win32_PhysicalMemory | Select-Object Capacity,Speed,ConfiguredClockSpeed,SMBIOSMemoryType,Manufacturer,PartNumber);

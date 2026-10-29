@@ -38,6 +38,7 @@
 #include "Graphics/TextureManager.hpp"
 #include "Jobs/JobSystem.hpp"
 #include "Assets/AssetLoader.hpp"
+#include "Scripting/ScriptBindings.hpp"
 #include "Memory/FrameArenas.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Scene/Scene.hpp"
@@ -826,6 +827,7 @@ namespace Funke {
 		CommitGraphicsSettings();
 		ScriptEngine::PumpSceneLoadRequests();
 		AssetLoader::Pump();
+		ScriptBindings::PumpAssetLoadCompletions();
 		if (m_SceneManager) m_SceneManager->PumpAsyncSceneLoads();
 		if (enginePaused != m_WasEnginePaused) {
 			// Suspend the audio device while the engine is paused (background-pause/minimize) so playback

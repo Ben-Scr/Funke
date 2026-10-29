@@ -24,9 +24,7 @@ namespace Funke {
 		static void LoadCoreAssembly(const std::string& path);
 		static bool LoadUserAssembly(const std::string& path);
 		static bool HasUserAssembly();
-		// Low-level unload + reload of the user assembly only. Does NOT tear down live
-		// script instances or restart global systems — callers that have scenes with
-		// running scripts must use ScriptSystem::ReloadManagedAssemblies() instead.
+		// Live scenes must use ScriptSystem::ReloadManagedAssemblies() to retire handles before a successful swap.
 		static bool ReloadAssemblies();
 		static std::size_t RestoreDynamicComponentsForScene(Scene& scene);
 
@@ -65,11 +63,12 @@ namespace Funke {
 		static void RaiseSceneLoaded(const std::string& sceneName);
 		static void RaiseSceneLoadCompleted(uint64_t operationId, int status, const std::string& sceneName, uint64_t sceneGuid);
 		static void PumpSceneLoadRequests();
+		static void NotifyAssetLoadsCompleted(const uint64_t* operationIds, const uint64_t* assetIds, const int* statuses, int count);
 		static void RaiseBeforeSceneUnloaded(const std::string& sceneName);
 		static void RaiseSceneUnloaded(const std::string& sceneName);
 		static void RaiseUiEventDispatch();
 		// Fired by Application::DispatchEvent on WindowResizeEvent — the
-		// managed `Funke.Window.OnResize` event runs same-frame as the window's
+		// managed `Funke.Window.Resized` event runs same-frame as the window's
 		// framebuffer-size callback.
 		static void RaiseWindowResize();
 
@@ -79,6 +78,8 @@ namespace Funke {
 		// Native→managed: drop cached C# component wrappers for a destroyed entity (UUID). No-op when scripting is uninitialized.
 		static void NotifyEntityDestroyed(uint64_t entityID);
 		static void NotifyComponentRemoved(uint64_t entityID, uint32_t typeId);
+		static void NotifyEntitiesDestroyed(const uint64_t* entityIDs, int count);
+		static void NotifyComponentsRemoved(const uint64_t* entityIDs, int count, uint32_t typeId);
 		static bool CanBatchEntityInvalidation();
 		static bool CanBatchComponentInvalidation();
 

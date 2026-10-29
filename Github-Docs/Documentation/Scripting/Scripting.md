@@ -115,7 +115,7 @@ enemy.GetComponent<EnemyAI>()!.Target = player;   // not null, also in the same 
 
 All three also receive application events like `OnApplicationPaused`, `OnApplicationQuit`, and `OnFocusChanged(bool focused)`.
 
-Static fields and static classes keep their values across Play sessions in the editor, because scripts are not reloaded when Play stops. Code that keeps state there (a service, a package) resets it in `Application.OnPlayModeExited`, which the editor raises after it has restored the scenes.
+Static fields and static classes keep their values across Play sessions in the editor, because scripts are not reloaded when Play stops. Code that keeps state there (a service, a package) resets it in `Application.PlayModeExited`, which the editor raises after it has restored the scenes.
 
 > The split between `OnUpdate` and `OnFixedUpdate` matters: put \*\*rendering/input-rate\*\* logic in `OnUpdate`, and \*\*physics\*\* logic in `OnFixedUpdate` (which runs at a steady rate regardless of frame rate). See \[Startup Processes](../Engine-Core/Startup-Processes.md#stage-3--the-main-loop).
 
@@ -424,6 +424,8 @@ foreach (ref var t in Scene.QueryRef<NativeTransform2D>())
 
 **Math** — `Vector2/3/4`, `Quaternion`, `Color`, `Mathf` (sin, cos, clamp, lerp…), and `Random`. Palette colors go in as written: `Color.FromHex("#3A7BD5")` (also `#RRGGBBAA`, `#RGB`, `#RGBA`; `TryFromHex` doesn't throw, `ToHex()` writes one back).
 
+**UI text:** labels use `Funke.TextRenderer` (`using Funke;`), the same component used for world text. Import `using Funke.UI;` for widgets such as `Button` and `InputField`.
+
 **Text outline and shadow** — a Text Renderer's **Effects** draw an outline and a drop shadow under the glyphs, for world and UI text, sized in text pixels (Font Size units):
 
 ```csharp
@@ -496,25 +498,31 @@ public class SpinSystem : SceneSystem
 
 Create a native script with **Asset Browser → Create → Scripting → C++ Script**. The `.cpp` file lives in the selected `Assets/` folder. Double-click it to edit that same file in your configured external editor. Save it, wait for the native compilation indicator to finish, then attach its class with **Add Component** or drag the file onto an entity's Inspector. Press Play to run it. Compiler errors appear in the Console.
 
-A native script inherits from `NativeScript` and registers its class with `REGISTER_SCRIPT`. The creation template also includes an Inspector field:
+A native script inherits from `NativeScript` and registers its class with `REGISTER_SCRIPT`. The creation template contains empty lifecycle callbacks:
 
 ```cpp
 #include <Scripting/NativeScript.hpp>
 
 class MyScript : public Funke::NativeScript {
 public:
-    float Speed = 1.0f;
-    FNK_NATIVE_FIELDS(
-        Funke::NativeFields::Make<&MyScript::Speed>("Speed", "Movement Speed")
-            .WithClamp(0.0, 100.0).WithTooltip("Units per second"))
-
     void Start() override {}
-    void Update(float deltaTime) override {}
-    void FixedUpdate(float fixedDeltaTime) override {}
+    void Update() override {}
+    void FixedUpdate() override {}
     void OnDestroy() override {}
 };
 
 REGISTER_SCRIPT(MyScript)
+```
+
+Call `Print("Started")` inside a native script to log an Info message to the editor Console and engine log. `Update()` and `FixedUpdate()` take no arguments. Include `<Core/Time.hpp>` and use `Funke::Time::GetDeltaTime()` or `Funke::Time::GetFixedDeltaTime()` when a callback needs its time step. Existing overrides with a `float` parameter must be updated and the native scripts recompiled.
+
+Inspector fields are optional. Add members and `FNK_NATIVE_FIELDS(...)` inside the class when needed:
+
+```cpp
+float Speed = 1.0f;
+FNK_NATIVE_FIELDS(
+    Funke::NativeFields::Make<&MyScript::Speed>("Speed", "Movement Speed")
+        .WithClamp(0.0, 100.0).WithTooltip("Units per second"))
 ```
 
 `FNK_NATIVE_FIELDS(...)` takes one or more `NativeFields::Make<&Class::Member>("stableName", "Display Name")` descriptors. Exposed values can be edited in the Inspector and saved with scenes and prefabs. Keep the stable name when renaming a C++ member to preserve saved values. Supported member types include booleans, integers, floating-point numbers, `std::string`, enums, GLM float/integer vectors and `Funke::Color`. Use `.AsReadOnly()` for a displayed value that should not be edited. Fields are registered explicitly; arbitrary C++ members are not reflected automatically.
@@ -540,7 +548,7 @@ public:
         m_Transform->SetPosition({2.0f, 2.0f});
     }
 
-    void Update(float deltaTime) override {
+    void Update() override {
         if (m_Transform) m_Transform->SetPosition({2.0f, 2.0f});
     }
 

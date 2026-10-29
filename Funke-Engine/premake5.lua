@@ -232,6 +232,7 @@ project "Funke-Engine"
                 "src/Audio/**",
                 "src/Components/Audio/**",
                 "src/Scripting/ScriptBindings.cpp",
+                "src/Scripting/ScriptBindingsAssets.cpp",
                 "src/Scripting/ScriptBindingsScene.cpp",
                 "src/Serialization/SceneSerializer.cpp",
                 "src/Serialization/SceneSerializerDeserialize.cpp",

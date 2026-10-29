@@ -5,6 +5,7 @@ param(
     [string]$CompilerPath,
     [string]$ManifestToolPath,
     [switch]$DownloadCompiler,
+    [switch]$IncludeNativeSdk,
     [string]$PrerequisiteDirectory,
     [string]$CatalogPath,
     [string]$SigningCertificatePath,
@@ -97,46 +98,12 @@ function Find-InstallerCompiler {
 }
 
 function Enable-PremakeUnicodePaths {
-    $manifestTool = $ManifestToolPath
-    if (-not $manifestTool) {
-        $kitsRoot = Get-ItemPropertyValue 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' `
-            -Name KitsRoot10 -ErrorAction SilentlyContinue
-        if (-not $kitsRoot) { $kitsRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10' }
-        $versions = Get-ChildItem -LiteralPath (Join-Path $kitsRoot 'bin') -Directory |
-            Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
-            Sort-Object { [version]$_.Name } -Descending
-        foreach ($version in $versions) {
-            $candidate = Join-Path $version.FullName 'x64/mt.exe'
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) { $manifestTool = $candidate; break }
-        }
-    }
-    if (-not $manifestTool -or -not (Test-Path -LiteralPath $manifestTool -PathType Leaf)) {
-        throw 'Windows SDK mt.exe is required to prepare Premake for Unicode install paths. Pass -ManifestToolPath if necessary.'
-    }
     $premake = Join-Path $payloadDirectory 'Core/EngineSDK/premake5.exe'
-    $originalHash = (Get-FileHash -LiteralPath $premake -Algorithm SHA256).Hash.ToLowerInvariant()
-    $manifestPath = Join-Path $workDirectory 'premake-original.manifest'
-    & $manifestTool -nologo "-inputresource:$premake;#1" "-out:$manifestPath"
-    if ($LASTEXITCODE -ne 0) { throw 'Could not read the bundled Premake manifest.' }
-    $utf8Manifest = Join-Path $repoRoot 'premake/Utf8CodePage.manifest'
-    & $manifestTool -nologo -manifest $manifestPath $utf8Manifest "-outputresource:$premake;#1"
-    if ($LASTEXITCODE -ne 0) { throw 'Could not enable UTF-8 paths for bundled Premake.' }
-    $mergedPath = Join-Path $workDirectory 'premake-merged.manifest'
-    & $manifestTool -nologo "-inputresource:$premake;#1" "-out:$mergedPath"
-    if ($LASTEXITCODE -ne 0) { throw 'Could not verify the updated Premake manifest.' }
-    [xml]$merged = Get-Content -LiteralPath $mergedPath -Raw
-    $codePage = $merged.SelectSingleNode("//*[local-name()='activeCodePage']")
-    if (-not $codePage -or $codePage.InnerText -ne 'UTF-8') { throw 'Bundled Premake has no UTF-8 code page.' }
+    $runtimeTool = & (Join-Path $PSScriptRoot 'PrepareBundledPremake.ps1') `
+        -PremakePath $premake -ManifestToolPath $ManifestToolPath
     $inventoryPath = Join-Path $payloadDirectory 'payload-manifest.json'
     $inventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json
-    $inventory | Add-Member -NotePropertyName runtimeTools -NotePropertyValue @(
-        [pscustomobject]@{
-            name = 'premake5.exe'
-            sourceSha256 = $originalHash
-            sha256 = (Get-FileHash -LiteralPath $premake -Algorithm SHA256).Hash.ToLowerInvariant()
-            utf8Paths = $true
-        }
-    ) -Force
+    $inventory | Add-Member -NotePropertyName runtimeTools -NotePropertyValue @($runtimeTool) -Force
     [IO.File]::WriteAllText($inventoryPath, ($inventory | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
 }
 
@@ -164,8 +131,10 @@ if ($RequireSigning) {
     if ($LASTEXITCODE -ne 0) { throw 'Signed release bundle verification failed.' }
 }
 
-& python (Join-Path $repoRoot 'installer/windows/prepare_payload.py') `
-    --bundle $BundleDirectory --repo $repoRoot --output $payloadDirectory --catalog $CatalogPath --cache $cacheDirectory
+$payloadArguments = @('--bundle', $BundleDirectory, '--repo', $repoRoot, '--output', $payloadDirectory,
+    '--catalog', $CatalogPath, '--cache', $cacheDirectory)
+if ($IncludeNativeSdk) { $payloadArguments += '--include-native-sdk' }
+& python (Join-Path $repoRoot 'installer/windows/prepare_payload.py') @payloadArguments
 if ($LASTEXITCODE -ne 0) { throw 'Installer payload preparation failed.' }
 Enable-PremakeUnicodePaths
 

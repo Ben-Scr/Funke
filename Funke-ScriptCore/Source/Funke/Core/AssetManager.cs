@@ -15,7 +15,7 @@ public static class AssetManager
 {
     private sealed class PendingLoad
     {
-        public required Action<int> Complete;
+        public required Action<int, ulong> Complete;
         public CancellationTokenRegistration Cancellation;
     }
 
@@ -42,8 +42,11 @@ public static class AssetManager
 
     public static T? Load<T>(string path) where T : class
     {
-        ulong guid = GetGUID(path);
-        return LoadByGUID<T>(guid);
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        AssetKind kind = KindForType(typeof(T));
+        if (kind == AssetKind.Unknown) return null;
+        ulong guid = InternalCalls.Asset_LoadTyped(path, 0, (int)kind);
+        return guid == 0 ? null : CreateLoadedReference<T>(guid);
     }
 
     /// <summary>Call on the engine thread; prepares Texture, Audio, Font (32px) or Mesh in the background, then publishes on the engine thread. Failure returns null.</summary>
@@ -53,7 +56,7 @@ public static class AssetManager
         RequireAsyncThread();
         RequireAsyncType<T>();
         if (string.IsNullOrWhiteSpace(path)) return Task.FromResult<T?>(null);
-        return LoadByGUIDAsync<T>(GetGUID(path), cancellationToken);
+        return TrackAsyncLoad<T>(InternalCalls.Asset_BeginLoadTypedAsync(path, 0, (int)KindForType(typeof(T))), cancellationToken);
     }
 
     /// <summary>Same loading contract as LoadAsync; cancellation affects this request only, until publication completes.</summary>
@@ -66,16 +69,17 @@ public static class AssetManager
         if (cancellationToken.IsCancellationRequested) return Task.FromCanceled<T?>(cancellationToken);
         RequireAsyncThread();
         RequireAsyncType<T>();
-        if (guid == 0 || !InternalCalls.Asset_IsValid(guid)
-            || (AssetKind)InternalCalls.Asset_GetKind(guid) != KindForType(typeof(T)))
-            return Task.FromResult<T?>(null);
+        if (guid == 0) return Task.FromResult<T?>(null);
+        return TrackAsyncLoad<T>(InternalCalls.Asset_BeginLoadTypedAsync(null, guid, (int)KindForType(typeof(T))), cancellationToken);
+    }
 
-        ulong operationId = InternalCalls.Asset_BeginLoadAsync(guid);
+    private static Task<T?> TrackAsyncLoad<T>(ulong operationId, CancellationToken cancellationToken) where T : class
+    {
         if (operationId == 0) return Task.FromResult<T?>(null);
         var completion = new TaskCompletionSource<T?>(TaskCreationOptions.RunContinuationsAsynchronously);
         var pending = new PendingLoad
         {
-            Complete = status =>
+            Complete = (status, guid) =>
             {
                 if (status == 4) completion.TrySetCanceled(cancellationToken);
                 else if (status == 5) completion.TrySetException(new NotSupportedException("Asynchronous loading is unavailable in this engine build."));
@@ -105,24 +109,41 @@ public static class AssetManager
         object? asset = typeof(T) == typeof(Texture) ? new Texture(guid)
             : typeof(T) == typeof(Audio) ? new Audio(guid)
             : typeof(T) == typeof(Font) ? new Font(guid)
-            : typeof(T) == typeof(Mesh) ? new Mesh(guid) : null;
+            : typeof(T) == typeof(Mesh) ? new Mesh(guid)
+            : typeof(T) == typeof(Material) ? new Material(guid)
+            : typeof(T) == typeof(AnimationClip) ? new AnimationClip(guid)
+            : typeof(T) == typeof(AnimatorController) ? new AnimatorController(guid)
+            : typeof(T) == typeof(Entity) ? Entity.FromPrefabGUID(guid)
+            : typeof(DataAsset).IsAssignableFrom(typeof(T)) ? DataAssetRuntime.GetLoadedByGuid(guid, typeof(T)) : null;
         return asset as T;
     }
 
     internal static void PumpAssetLoadRequests()
     {
+        Span<ulong> cancellations = stackalloc ulong[256];
+        int count = 0;
         while (s_CancelRequests.TryDequeue(out ulong operationId))
         {
-            if (s_PendingLoads.ContainsKey(operationId)) InternalCalls.Asset_CancelLoadAsync(operationId);
+            if (!s_PendingLoads.ContainsKey(operationId)) continue;
+            cancellations[count++] = operationId;
+            if (count != cancellations.Length) continue;
+            InternalCalls.Asset_CancelLoads(cancellations, false);
+            count = 0;
         }
-        foreach (var entry in s_PendingLoads.ToArray())
+        if (count != 0) InternalCalls.Asset_CancelLoads(cancellations[..count], false);
+    }
+
+    internal static void CompleteAsyncLoads(ReadOnlySpan<ulong> operationIds, ReadOnlySpan<ulong> assetIds, ReadOnlySpan<int> statuses)
+    {
+        if (operationIds.Length != assetIds.Length || operationIds.Length != statuses.Length)
+            throw new ArgumentException("Asset completion arrays must have matching lengths.");
+        for (int index = 0; index < operationIds.Length; ++index)
         {
-            int status = InternalCalls.Asset_GetLoadStatus(entry.Key);
+            int status = statuses[index];
             if (status == 1) continue;
-            s_PendingLoads.Remove(entry.Key);
-            entry.Value.Cancellation.Unregister();
-            InternalCalls.Asset_ReleaseLoad(entry.Key);
-            entry.Value.Complete(status);
+            if (!s_PendingLoads.Remove(operationIds[index], out PendingLoad? pending)) continue;
+            pending.Cancellation.Unregister();
+            pending.Complete(status, assetIds[index]);
         }
     }
 
@@ -130,13 +151,18 @@ public static class AssetManager
     {
         var pendingLoads = s_PendingLoads.ToArray();
         s_PendingLoads.Clear();
+        Span<ulong> releases = stackalloc ulong[256];
+        int count = 0;
         foreach (var entry in pendingLoads)
         {
             entry.Value.Cancellation.Unregister();
-            InternalCalls.Asset_CancelLoadAsync(entry.Key);
-            InternalCalls.Asset_ReleaseLoad(entry.Key);
-            entry.Value.Complete(4);
+            releases[count++] = entry.Key;
+            if (count != releases.Length) continue;
+            InternalCalls.Asset_CancelLoads(releases, true);
+            count = 0;
         }
+        if (count != 0) InternalCalls.Asset_CancelLoads(releases[..count], true);
+        foreach (var entry in pendingLoads) entry.Value.Complete(4, 0);
         s_CancelRequests.Clear();
     }
 
@@ -145,40 +171,11 @@ public static class AssetManager
 
     public static T? LoadByGUID<T>(ulong guid) where T : class
     {
-        if (guid == 0 || !InternalCalls.Asset_IsValid(guid))
-            return null;
-
-        Type type = typeof(T);
-        AssetKind kind = (AssetKind)InternalCalls.Asset_GetKind(guid);
-
-        if (type == typeof(Texture) && kind == AssetKind.Texture)
-            return Texture.FromAssetUUID(guid) as T;
-
-        if (type == typeof(Audio) && kind == AssetKind.Audio)
-            return Audio.FromAssetUUID(guid) as T;
-
-        if (type == typeof(Entity) && kind == AssetKind.Prefab)
-            return Entity.FromPrefabGUID(guid) as T;
-
-        if (type == typeof(Font) && kind == AssetKind.Font)
-            return Font.FromAssetUUID(guid) as T;
-
-        if (type == typeof(Material) && kind == AssetKind.Material)
-            return Material.FromAssetUUID(guid) as T;
-
-        if (type == typeof(Mesh) && kind == AssetKind.Mesh)
-            return Mesh.FromAssetUUID(guid) as T;
-
-        if (type == typeof(AnimationClip) && kind == AssetKind.AnimationClip)
-            return AnimationClip.FromAssetUUID(guid) as T;
-
-        if (type == typeof(AnimatorController) && kind == AssetKind.AnimatorController)
-            return AnimatorController.FromAssetUUID(guid) as T;
-
-        if (kind == AssetKind.DataAsset && typeof(DataAsset).IsAssignableFrom(type))
-            return DataAssetRuntime.LoadByGuid(guid, type) as T;
-
-        return null;
+        if (guid == 0) return null;
+        AssetKind kind = KindForType(typeof(T));
+        if (kind == AssetKind.Unknown) return null;
+        guid = InternalCalls.Asset_LoadTyped(null, guid, (int)kind);
+        return guid == 0 ? null : CreateLoadedReference<T>(guid);
     }
 
     public static IReadOnlyList<T> FindAll<T>(string pathPrefix = "") where T : class

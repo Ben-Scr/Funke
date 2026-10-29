@@ -154,6 +154,7 @@ namespace Funke {
 		if (ShowRuntimeLogs) root.AddMember("showRuntimeLogs", *ShowRuntimeLogs);
 		if (DevConsole) root.AddMember("devConsole", *DevConsole);
 		if (IsolatedPrefs) root.AddMember("isolatedPrefs", true);
+		root.AddMember("bundleDotNetRuntime", BundleDotNetRuntime);
 
 		std::error_code ec;
 		const std::filesystem::path target(filePath);
@@ -218,6 +219,9 @@ namespace Funke {
 		readOptionalBool("devConsole", profile.DevConsole);
 		if (const Json::Value* v = root.FindMember("isolatedPrefs"); v && v->IsBool()) {
 			profile.IsolatedPrefs = v->AsBoolOr(false);
+		}
+		if (const Json::Value* v = root.FindMember("bundleDotNetRuntime"); v && v->IsBool()) {
+			profile.BundleDotNetRuntime = v->AsBoolOr(true);
 		}
 
 		if (!IsBackendAllowed(profile.Platform, profile.RenderBackend)) {
