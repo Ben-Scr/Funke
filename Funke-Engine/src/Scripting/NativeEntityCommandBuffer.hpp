@@ -31,6 +31,7 @@ namespace Funke {
 			uint64_t BufferToken = 0;
 			uint64_t Generation = 0;
 			EntityHandle Handle = entt::null;
+			Entity LiveEntity = Entity::Null;
 			friend class NativeEntityCommandBuffer;
 		};
 
@@ -42,22 +43,24 @@ namespace Funke {
 		NativeEntityCommandBuffer& operator=(NativeEntityCommandBuffer&& other) noexcept;
 
 		EntityRef CreateEntity();
-		// Capture live targets before structural mutations; refs belong to this writer until Clear().
-		EntityRef Existing(Entity entity);
+		// Live refs can be shared between writers; their scene and entity generation are retained.
+		static EntityRef Existing(Entity entity);
 		EntityRef Instantiate(uint64_t prefabGuid);
 		EntityRef Instantiate(Entity prefabAsset);
 
-		template<typename T> void AddComponent(EntityRef entity);
-		template<typename T> void AddComponent(EntityRef entity, T value);
-		template<typename T, typename Configure> void AddComponent(EntityRef entity, Configure&& configure);
-		template<typename T> void RemoveComponent(EntityRef entity);
-		void Destroy(EntityRef entity);
-		void SetEnabled(EntityRef entity, bool enabled);
+		template<typename T> void AddComponent(const EntityRef& entity);
+		template<typename T> void AddComponent(const EntityRef& entity, T value);
+		template<typename T, typename Configure>
+			requires (!std::is_same_v<std::decay_t<Configure>, T> && std::is_invocable_v<std::decay_t<Configure>&, T&>)
+		void AddComponent(const EntityRef& entity, Configure&& configure);
+		template<typename T> void RemoveComponent(const EntityRef& entity);
+		void Destroy(const EntityRef& entity);
+		void SetEnabled(const EntityRef& entity, bool enabled);
 
 		template<typename... Ts> EntityRef CreateWith();
 		template<typename... Ts> void CreateEntitiesWith(int length, std::span<EntityRef> output);
 
-		// Parallel mode falls back to ordered serial execution for unsupported types or callbacks.
+		// Call on the scene/main thread after producers finish; unsupported parallel commands execute serially.
 		int Playback(Scene& scene, EntityCommandBufferPlaybackMode mode = EntityCommandBufferPlaybackMode::Auto);
 		void Clear();
 		int EntityCount() const { return static_cast<int>(m_EntityCount); }
@@ -78,7 +81,7 @@ namespace Funke {
 		};
 		static_assert(sizeof(Command) <= 64, "Command must fit in one cache line");
 
-		Command& AppendCommand(EntityRef entity, void (*apply)(void*, Scene&, EntityHandle&),
+		Command& AppendCommand(const EntityRef& entity, void (*apply)(void*, Scene&, EntityHandle&),
 			Operation action = Operation::Custom, entt::id_type typeHash = 0);
 		void ValidateScene(Scene& scene) const;
 		static int PlaybackBuffers(Scene& scene, std::span<NativeEntityCommandBuffer*> buffers,
@@ -108,8 +111,8 @@ namespace Funke {
 	};
 
 	template<typename T>
-	void NativeEntityCommandBuffer::AddComponent(EntityRef entity) {
-		static_assert(std::is_default_constructible_v<T>, "Default AddComponent requires a default constructor");
+	void NativeEntityCommandBuffer::AddComponent(const EntityRef& entity) {
+		static_assert(std::is_empty_v<T> || std::is_default_constructible_v<T>, "Default AddComponent requires a default constructor");
 		AppendCommand(entity, [](void*, Scene& scene, EntityHandle& handle) {
 			auto& registry = scene.GetRegistry();
 			if (!registry.all_of<T>(handle)) registry.emplace<T>(handle);
@@ -117,7 +120,7 @@ namespace Funke {
 	}
 
 	template<typename T>
-	void NativeEntityCommandBuffer::AddComponent(EntityRef entity, T value) {
+	void NativeEntityCommandBuffer::AddComponent(const EntityRef& entity, T value) {
 		static_assert(!std::is_empty_v<T> && sizeof(T) <= kInlineStorageBytes,
 			"Component exceeds inline storage; use a configure lambda with a small capture");
 		static_assert(alignof(T) <= alignof(std::max_align_t));
@@ -129,7 +132,8 @@ namespace Funke {
 	}
 
 	template<typename T, typename Configure>
-	void NativeEntityCommandBuffer::AddComponent(EntityRef entity, Configure&& configure) {
+		requires (!std::is_same_v<std::decay_t<Configure>, T> && std::is_invocable_v<std::decay_t<Configure>&, T&>)
+	void NativeEntityCommandBuffer::AddComponent(const EntityRef& entity, Configure&& configure) {
 		using Patch = std::decay_t<Configure>;
 		static_assert(sizeof(Patch) <= kInlineStorageBytes, "Capture exceeds inline storage; capture a pointer instead");
 		static_assert(alignof(Patch) <= alignof(std::max_align_t));
@@ -145,7 +149,7 @@ namespace Funke {
 	}
 
 	template<typename T>
-	void NativeEntityCommandBuffer::RemoveComponent(EntityRef entity) {
+	void NativeEntityCommandBuffer::RemoveComponent(const EntityRef& entity) {
 		AppendCommand(entity, [](void*, Scene& scene, EntityHandle& handle) {
 			scene.GetRegistry().remove<T>(handle);
 		}, Operation::Remove, entt::type_hash<T>::value());

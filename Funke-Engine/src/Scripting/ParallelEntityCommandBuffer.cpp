@@ -1,106 +1,63 @@
 #include "pch.hpp"
-
 #include "Scripting/ParallelEntityCommandBuffer.hpp"
 
-#include "Components/General/EntityMetaDataComponent.hpp"
 #include "Jobs/JobSystem.hpp"
-#include "Scene/Scene.hpp"
 
-#include <cstddef>
+#include <algorithm>
+#include <limits>
+#include <stdexcept>
 
 namespace Funke {
 
-	ParallelEntityCommandBuffer::ParallelEntityCommandBuffer() {
-		// Resize ONCE — AsWriter() returns addresses into this vector and they must remain stable during the recording window.
-		int workerCount = JobSystem::GetWorkerCount();
-		if (workerCount < 0) workerCount = 0;
-		const std::size_t slotCount = static_cast<std::size_t>(workerCount) + 1u;
-		m_Subs.resize(slotCount);
+	ParallelEntityCommandBuffer::ParallelEntityCommandBuffer()
+		: ParallelEntityCommandBuffer(static_cast<size_t>(std::max(0, JobSystem::GetWorkerCount())) + 1) {}
+
+	ParallelEntityCommandBuffer::ParallelEntityCommandBuffer(size_t writerCount)
+		: m_Subs(writerCount), m_OwnerThread(std::this_thread::get_id()) {
+		if (writerCount == 0) throw std::invalid_argument("Parallel ECB requires at least one writer");
 	}
 
 	NativeEntityCommandBuffer& ParallelEntityCommandBuffer::AsWriter() {
-		const int workerIdx = JobSystem::GetWorkerIndex();
-		const std::size_t spilloverSlot = m_Subs.size() - 1u;
+		const int worker = JobSystem::GetWorkerIndex();
+		if (worker >= 0 && static_cast<size_t>(worker) + 1 < m_Subs.size())
+			return m_Subs[static_cast<size_t>(worker)];
+		if (std::this_thread::get_id() != m_OwnerThread)
+			throw std::logic_error("External threads must use distinct explicit ECB writer slots");
+		return m_Subs.back();
+	}
 
-		std::size_t slot = spilloverSlot;
-		if (workerIdx >= 0 && static_cast<std::size_t>(workerIdx) < spilloverSlot) {
-			slot = static_cast<std::size_t>(workerIdx);
-		}
-		return m_Subs[slot];
+	NativeEntityCommandBuffer& ParallelEntityCommandBuffer::AsWriter(size_t index) {
+		if (index >= m_Subs.size()) throw std::out_of_range("Parallel ECB writer index out of range");
+		return m_Subs[index];
 	}
 
 	int ParallelEntityCommandBuffer::EntityCount() const {
-		std::size_t total = 0;
-		for (const auto& sub : m_Subs) {
-			total += static_cast<std::size_t>(sub.EntityCount());
-		}
-		return static_cast<int>(total);
+		size_t total = 0;
+		for (const auto& writer : m_Subs) total += writer.m_EntityCount;
+		return total > INT_MAX ? INT_MAX : static_cast<int>(total);
 	}
 
 	int ParallelEntityCommandBuffer::CommandCount() const {
-		std::size_t total = 0;
-		for (const auto& sub : m_Subs) {
-			total += static_cast<std::size_t>(sub.CommandCount());
-		}
-		return static_cast<int>(total);
+		size_t total = 0;
+		for (const auto& writer : m_Subs) total += writer.m_CommandCount;
+		return total > INT_MAX ? INT_MAX : static_cast<int>(total);
 	}
 
-	int ParallelEntityCommandBuffer::Playback(Scene& scene) {
-		// Sum the total entity count up front. This drives the single
-		// bulk-create call below — the whole point of the parallel ECB
-		// is collapsing all sub-buffers' creations into one.
-		uint32_t total = 0;
-		for (const auto& sub : m_Subs) {
-			total += sub.m_EntityCount;
-		}
-		if (total == 0) {
-			m_CreatedHandles.clear();
-			return 0;
-		}
-
-		// Reserve + bulk-create the merged batch. Same fast path as the
-		// single-threaded NativeEntityCommandBuffer; we just feed it the
-		// sum of every sub-buffer's count.
-		scene.ReserveForLoadRuntime(total, {});
-		m_CreatedHandles.resize(total);
-		scene.CreateEntitiesBulk(total, m_CreatedHandles);
-
-		Scene::LoadGuard guard(scene);
-
-		scene.SetRuntimeEntityMetaDataBulk(m_CreatedHandles);
-
-		uint32_t base = 0;
-		for (auto& sub : m_Subs) {
-			const uint32_t subCount = sub.m_EntityCount;
-			for (std::size_t i = 0; i < sub.m_CommandCount; ++i) {
-				auto& cmd = sub.m_Commands[i];
-				if (cmd.EntityIndex < subCount) {
-					cmd.Apply(cmd.Storage, scene, m_CreatedHandles[base + cmd.EntityIndex]);
-				}
-			}
-			base += subCount;
-		}
-
-		// End-of-batch dirty pulse after the guard releases (same ordering
-		// as NativeEntityCommandBuffer::Playback / managed ECB).
-		scene.MarkAllDirtyOnce();
-
-		return static_cast<int>(total);
+	int ParallelEntityCommandBuffer::Playback(Scene& scene, EntityCommandBufferPlaybackMode mode) {
+		std::vector<NativeEntityCommandBuffer*> writers;
+		writers.reserve(m_Subs.size());
+		for (auto& writer : m_Subs) writers.push_back(&writer);
+		return NativeEntityCommandBuffer::PlaybackBuffers(scene, writers, m_CreatedHandles, m_Wire, m_Identities, mode);
 	}
 
 	void ParallelEntityCommandBuffer::Clear() {
-		for (auto& sub : m_Subs) {
-			sub.Clear();
-		}
-		// m_CreatedHandles capacity retained for the next Playback at the
-		// same scale.
+		for (auto& writer : m_Subs) writer.Clear();
+		m_CreatedHandles.clear();
 	}
 
-	EntityHandle ParallelEntityCommandBuffer::GetCreatedEntity(int i) const {
-		if (i < 0 || static_cast<std::size_t>(i) >= m_CreatedHandles.size()) {
-			return entt::null;
-		}
-		return m_CreatedHandles[static_cast<std::size_t>(i)];
+	EntityHandle ParallelEntityCommandBuffer::GetCreatedEntity(int index) const {
+		return index < 0 || static_cast<size_t>(index) >= m_CreatedHandles.size()
+			? entt::null : m_CreatedHandles[static_cast<size_t>(index)];
 	}
 
-} // namespace Funke
+}

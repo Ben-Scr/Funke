@@ -2,6 +2,7 @@
 #include "Scripting/ScriptBindingGuard.hpp"
 #include "Scripting/EntityCommandBufferWire.hpp"
 #include "Scripting/EntityCommandBufferParallel.hpp"
+#include "Scripting/NativeEntityCommandBuffer.hpp"
 #include "Scripting/ScriptGlue.hpp"
 #include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptComponent.hpp"
@@ -610,6 +611,12 @@ namespace Funke {
 		uint64_t* outRuntimeIds, int maxOut)
 	{
 		return Funke_Ecb_PlaybackWithMode(buffer, length, outRuntimeIds, maxOut, 0);
+	}
+
+	int detail::PlaybackNativeEntityCommandBuffer(Scene& scene, const uint8_t* bytes, int length,
+		uint64_t* identities, int capacity, EntityCommandBufferPlaybackMode mode) {
+		SceneExecutionScope executionScope(scene);
+		return Funke_Ecb_PlaybackWithMode(bytes, length, identities, capacity, static_cast<int>(mode));
 	}
 
 	void PopulateEcbBindings(NativeBindings& b)

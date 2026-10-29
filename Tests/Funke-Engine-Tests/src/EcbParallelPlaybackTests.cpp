@@ -25,6 +25,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <numeric>
 #include <random>
@@ -204,13 +205,18 @@ namespace {
 	template<typename Fn>
 	void RecordNativeWriters(ParallelEntityCommandBuffer& buffer, uint32_t count, Fn action) {
 		std::array<std::thread, 4> threads;
+		std::array<std::exception_ptr, 4> failures{};
 		for (size_t slot = 0; slot < threads.size(); ++slot) {
 			threads[slot] = std::thread([&, slot] {
-				auto& writer = buffer.AsWriter(slot);
-				for (uint32_t index = static_cast<uint32_t>(slot); index < count; index += 4) action(writer, index);
+				try {
+					auto& writer = buffer.AsWriter(slot);
+					for (uint32_t index = static_cast<uint32_t>(slot); index < count; index += 4) action(writer, index);
+				}
+				catch (...) { failures[slot] = std::current_exception(); }
 			});
 		}
 		for (auto& thread : threads) thread.join();
+		for (const auto& failure : failures) if (failure) std::rethrow_exception(failure);
 	}
 #endif
 }
@@ -230,6 +236,7 @@ TEST_CASE("Public native parallel ECB records external threads and mutates live 
 	CHECK(commands.EntityCount() == k_ParallelCount);
 	REQUIRE(commands.Playback(*scene, EntityCommandBufferPlaybackMode::Parallel) == k_ParallelCount);
 	std::vector<Entity> entities;
+	std::vector<NativeEntityCommandBuffer::EntityRef> liveRefs;
 	std::vector<uint64_t> identities;
 	std::unordered_set<uint64_t> unique;
 	for (uint32_t index = 0; index < k_ParallelCount; ++index) {
@@ -241,18 +248,19 @@ TEST_CASE("Public native parallel ECB records external threads and mutates live 
 		CHECK(id != 0);
 		CHECK(unique.insert(id).second);
 		entities.push_back(scene->GetEntity(handle));
+		liveRefs.push_back(NativeEntityCommandBuffer::Existing(entities.back()));
 		identities.push_back(id);
 	}
 	commands.Clear();
 	RecordNativeWriters(commands, k_ParallelCount, [&](auto& writer, uint32_t index) {
-		writer.template AddComponent<SpriteRendererComponent>(writer.Existing(entities[index]));
+		writer.template AddComponent<SpriteRendererComponent>(liveRefs[index]);
 	});
 	for (const auto& entity : entities) CHECK_FALSE(entity.HasComponent<SpriteRendererComponent>());
 	REQUIRE(commands.Playback(*scene, EntityCommandBufferPlaybackMode::Parallel) == 0);
 	for (const auto& entity : entities) CHECK(entity.HasComponent<SpriteRendererComponent>());
 	commands.Clear();
 	RecordNativeWriters(commands, k_ParallelCount, [&](auto& writer, uint32_t index) {
-		writer.template RemoveComponent<SpriteRendererComponent>(writer.Existing(entities[index]));
+		writer.template RemoveComponent<SpriteRendererComponent>(liveRefs[index]);
 	});
 	REQUIRE(commands.Playback(*scene, EntityCommandBufferPlaybackMode::Parallel) == 0);
 	for (const auto& entity : entities) {
@@ -261,7 +269,7 @@ TEST_CASE("Public native parallel ECB records external threads and mutates live 
 	}
 	commands.Clear();
 	RecordNativeWriters(commands, k_ParallelCount, [&](auto& writer, uint32_t index) {
-		writer.Destroy(writer.Existing(entities[index]));
+		writer.Destroy(liveRefs[index]);
 	});
 	REQUIRE(commands.Playback(*scene, EntityCommandBufferPlaybackMode::Parallel) == 0);
 	CHECK(scene->GetEntityCount() == 0);
@@ -375,6 +383,19 @@ TEST_CASE("Public native ECB stale live references cannot mutate recycled entity
 	CHECK_FALSE(replacement.HasComponent<SpriteRendererComponent>());
 	CHECK(scene->GetEntityPersistentID(replacement.GetHandle()) == replacementId);
 	CHECK(scene->GetEntityCount() == 1);
+}
+
+TEST_CASE("Public native ECB local references reject another writer and reuse after Clear")
+{
+	NativeEntityCommandBuffer first;
+	NativeEntityCommandBuffer second;
+	const auto local = first.CreateEntity();
+	CHECK_THROWS_AS(second.AddComponent<Transform2DComponent>(local), std::invalid_argument);
+	CHECK(second.CommandCount() == 0);
+	first.Clear();
+	CHECK_THROWS_AS(first.AddComponent<Transform2DComponent>(local), std::invalid_argument);
+	CHECK(first.CommandCount() == 0);
+	CHECK(first.EntityCount() == 0);
 }
 #endif
 
