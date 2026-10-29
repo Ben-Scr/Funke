@@ -392,24 +392,19 @@ TEST_CASE("audio.spatial tells how a sound at a position would be heard") {
 
 TEST_CASE("Spatial sounds reach the speakers with the gains audio.spatial reports") {
 	// Headless miniaudio: nothing is played, the mix is read back.
-	auto owned = std::make_unique<MiniaudioBackend>(true);
-	MiniaudioBackend& backend = *owned;
-	AudioManager::SetBackend(std::move(owned));
+	AudioConcurrencyScope audio;
+	AudioManager::SetMaxConcurrentSounds(AudioManager::MAX_CONCURRENT_SOUNDS);
+	MiniaudioBackend& backend = *audio.Backend;
 	REQUIRE(AudioManager::Initialize());
 	const AudioListenerState previous = AudioManager::GetListener();
 	AudioManager::SetListener(AudioListenerState{});
 
 	// One clip per case: the same clip twice in a row would be throttled.
 	constexpr uint32_t k_Frames = 8192;
-	std::vector<std::filesystem::path> files;
-	const auto load = [&](const char* name) {
-		files.push_back(WriteConstantWav(name, k_Frames));
-		return AudioManager::LoadAudio(files.back().string());
-	};
-	const AudioHandle right = load("FunkeSpatialRight.wav");
-	const AudioHandle left = load("FunkeSpatialLeft.wav");
-	const AudioHandle outOfReach = load("FunkeSpatialOutOfReach.wav");
-	const AudioHandle flat = load("FunkeSpatialFlat.wav");
+	const AudioHandle right = audio.Load("FunkeSpatialRight.wav", k_Frames);
+	const AudioHandle left = audio.Load("FunkeSpatialLeft.wav", k_Frames);
+	const AudioHandle outOfReach = audio.Load("FunkeSpatialOutOfReach.wav", k_Frames);
+	const AudioHandle flat = audio.Load("FunkeSpatialFlat.wav", k_Frames);
 	REQUIRE(right.IsValid());
 	REQUIRE(flat.IsValid());
 
@@ -453,9 +448,6 @@ TEST_CASE("Spatial sounds reach the speakers with the gains audio.spatial report
 	CHECK(heard.Right == doctest::Approx(0.5f).epsilon(0.001));
 
 	AudioManager::SetListener(previous);
-	AudioManager::Shutdown();
-	std::error_code ec;
-	for (const std::filesystem::path& file : files) std::filesystem::remove(file, ec);
 }
 
 TEST_CASE("AudioSource spatial fields round-trip and are only written when set") {
