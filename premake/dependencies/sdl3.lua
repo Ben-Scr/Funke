@@ -16,17 +16,8 @@ local function SDLTargetName()
     return "linux"
 end
 
-local function SDLHostArch()
-    local arch = os.getenv("PROCESSOR_ARCHITECTURE") or ""
-    if arch:lower() == "arm64" then return "arm64" end
-    if os.target() ~= "windows" then
-        local uname = os.outputof("uname -m") or ""
-        if uname:find("arm64") or uname:find("aarch64") then return "arm64" end
-    end
-    return "x64"
-end
-
-local sdlInstallRoot = "External/SDL-build/" .. SDLTargetName() .. "-" .. SDLHostArch() .. "/install"
+local sdlArchitecture = FunkeArchitecture == "arm64" and "arm64" or "x64"
+local sdlInstallRoot = "External/SDL-build/" .. SDLTargetName() .. "-" .. sdlArchitecture .. "/install"
 
 SDL3Layout = {}
 SDL3Layout.InstallRoot = sdlInstallRoot
