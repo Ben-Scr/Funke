@@ -155,7 +155,8 @@ namespace Funke {
 		handles.clear();
 		if (total == 0 && commandCount == 0) return 0;
 
-		const ComponentRegistry* components = SceneManager::TryGet() ? &SceneManager::GetComponentRegistry() : nullptr;
+		const Application* app = Application::GetInstance();
+		const ComponentRegistry* components = app && app->GetSceneManager() ? &SceneManager::GetComponentRegistry() : nullptr;
 		std::vector<std::pair<entt::id_type, uint32_t>> typeIds;
 		auto resolveType = [&](entt::id_type hash) {
 			if (!components) return uint32_t{0};
