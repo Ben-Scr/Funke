@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 
 TOOLS = ("git", "cmake", "ninja", "msbuild", "cl", "clang", "clang-cl", "gcc", "g++", "make", "nmake", "vswhere")
 CONTENT_DENY = ("engineSDK/funke-engine", "engineSDK/external", "engineSDK/bin", "engineSDK/Funke.sln", "engineSDK/premake5.lua",
@@ -182,12 +183,27 @@ def kill_tree(process: subprocess.Popen) -> None:
 
 
 def check_references(folder: Path, forbidden: list[Path]) -> None:
-    needles = [str(path.resolve()).replace("\\", "/").lower() for path in forbidden]
+    def normalized(path: Path) -> str:
+        return str(path).replace("\\", "/").lower().rstrip("/")
+
+    roots = [normalized(path.resolve()) for path in forbidden]
+    needles = {*roots, *(normalized(path.absolute()) for path in forbidden)}
     for path in folder.rglob("*"):
         if path.is_file() and path.suffix.lower() in (".csproj", ".props", ".targets"):
-            text = path.read_text(encoding="utf-8-sig", errors="replace").replace("\\", "/").lower()
+            source = path.read_text(encoding="utf-8-sig", errors="replace")
+            text = source.replace("\\", "/").lower()
             if "funke-scriptcore.csproj" in text or any(needle in text for needle in needles):
                 raise ValueError(f"Generated build file refers to forbidden engine sources: {path}")
+            # Resolve references too: temp roots can use junctions, short names or /var aliases.
+            document = ET.fromstring(source)
+            for element in document.iter():
+                for value in (*element.attrib.values(), element.text or ""):
+                    reference = Path(value.strip())
+                    if not reference.is_absolute():
+                        continue
+                    resolved = normalized(reference.resolve())
+                    if any(resolved == root or resolved.startswith(root + "/") for root in roots):
+                        raise ValueError(f"Generated build file refers to forbidden engine sources: {path}")
 
 
 class Harness:
