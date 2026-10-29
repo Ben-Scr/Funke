@@ -676,15 +676,15 @@ try {
             throw "Standalone bundle verification failed."
         }
 
-        $releaseVerificationArguments = @(
-            "-BundleDirectory", $publishDirectory,
-            "-MetadataPath", (Join-Path $repoRoot "build\BuildMetadata.json")
-        )
+        $releaseVerificationArguments = @{
+            BundleDirectory = $publishDirectory
+            MetadataPath = (Join-Path $repoRoot "build\BuildMetadata.json")
+        }
         if ($isTagBuild) {
-            $releaseVerificationArguments += "-RequireReleaseIdentity"
+            $releaseVerificationArguments.RequireReleaseIdentity = $true
         }
         if ($RequireSigning) {
-            $releaseVerificationArguments += "-RequireSigned"
+            $releaseVerificationArguments.RequireSigned = $true
         }
         & "scripts\ci\verify_windows_release.ps1" @releaseVerificationArguments
         if ($LASTEXITCODE -ne 0) {
@@ -692,18 +692,15 @@ try {
         }
 
         $artifacts = Publish-VerifiedArchive "Release" $publishDirectory $metadata $signingCertificate
-        $artifactVerificationArguments = @(
-            "-ArchivePath", $artifacts.ArchivePath,
-            "-ChecksumPath", $artifacts.ChecksumPath
-        )
+        $artifactVerificationArguments = @{
+            ArchivePath = $artifacts.ArchivePath
+            ChecksumPath = $artifacts.ChecksumPath
+        }
         if ($RequireSigning) {
-            $artifactVerificationArguments += "-RequireSignature"
+            $artifactVerificationArguments.RequireSignature = $true
         }
         if ($signingCertificate) {
-            $artifactVerificationArguments += @(
-                "-ExpectedSignerThumbprint",
-                $signingCertificate.Thumbprint
-            )
+            $artifactVerificationArguments.ExpectedSignerThumbprint = $signingCertificate.Thumbprint
         }
         & "scripts\VerifyRelease.ps1" @artifactVerificationArguments
         if ($LASTEXITCODE -ne 0) {

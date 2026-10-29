@@ -200,9 +200,10 @@ jobs:
         run: |
           $certificatePath = $null
           try {
-            $arguments = @('-PublishBundle')
+            $arguments = @{ PublishBundle = $true }
             if ($env:GITHUB_REF_TYPE -eq 'tag') {
-              $arguments += @('-ReleaseTag', $env:GITHUB_REF_NAME, '-RequireSigning')
+              $arguments.ReleaseTag = $env:GITHUB_REF_NAME
+              $arguments.RequireSigning = $true
             }
             if ($env:FUNKE_SIGNING_CERTIFICATE_BASE64) {
               $certificatePath = Join-Path $env:RUNNER_TEMP 'funke-code-signing.pfx'
@@ -210,21 +211,21 @@ jobs:
                 $certificatePath,
                 [Convert]::FromBase64String($env:FUNKE_SIGNING_CERTIFICATE_BASE64)
               )
-              $arguments += @('-SigningCertificatePath', $certificatePath)
+              $arguments.SigningCertificatePath = $certificatePath
               if ($env:FUNKE_SIGNING_TIMESTAMP_URL) {
-                $arguments += @('-SigningTimestampUrl', $env:FUNKE_SIGNING_TIMESTAMP_URL)
+                $arguments.SigningTimestampUrl = $env:FUNKE_SIGNING_TIMESTAMP_URL
               }
             }
             .\scripts\BuildWindows.ps1 @arguments
             if ($LASTEXITCODE -ne 0) { throw 'Windows bundle build failed.' }
-            $installerArguments = @('-DownloadCompiler')
+            $installerArguments = @{ DownloadCompiler = $true }
             if ($env:GITHUB_REF_TYPE -eq 'tag') {
-              $installerArguments += '-RequireSigning'
+              $installerArguments.RequireSigning = $true
             }
             if ($certificatePath) {
-              $installerArguments += @('-SigningCertificatePath', $certificatePath)
+              $installerArguments.SigningCertificatePath = $certificatePath
               if ($env:FUNKE_SIGNING_TIMESTAMP_URL) {
-                $installerArguments += @('-SigningTimestampUrl', $env:FUNKE_SIGNING_TIMESTAMP_URL)
+                $installerArguments.SigningTimestampUrl = $env:FUNKE_SIGNING_TIMESTAMP_URL
               }
             }
             .\scripts\BuildInstaller.ps1 @installerArguments
@@ -284,9 +285,9 @@ jobs:
         shell: pwsh
         run: |
           $archive = Join-Path 'bin/Release-windows-x86_64' '${{ steps.build_metadata.outputs.archive_name }}'
-          $arguments = @('-ArchivePath', $archive, '-ChecksumPath', "$archive.sha256")
+          $arguments = @{ ArchivePath = $archive; ChecksumPath = "$archive.sha256" }
           if ($env:GITHUB_REF_TYPE -eq 'tag') {
-            $arguments += '-RequireSignature'
+            $arguments.RequireSignature = $true
           }
           scripts/VerifyRelease.ps1 @arguments
 
