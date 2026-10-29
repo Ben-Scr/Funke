@@ -100,8 +100,19 @@ namespace {
 			const std::string nameToken = "@PROJECT_NAME@";
 			legacy.replace(legacy.find(nameToken), nameToken.size(), Project.Name);
 			const std::string rootToken = "@ENGINE_ROOT_RELATIVE@";
-			legacy.replace(legacy.find(rootToken), rootToken.size(), Path::ToGenericUtf8(
-				std::filesystem::relative(engineRoot, Root / "NativeScripts")));
+			const auto relativeRoot = std::filesystem::relative(engineRoot, Root / "NativeScripts");
+			if (relativeRoot.empty()) {
+				// The legacy generator omitted this fallback when engine and project were on different drives.
+				const auto start = legacy.find("if(NOT FUNKE_DIR)");
+				REQUIRE(start != std::string::npos);
+				const auto end = legacy.find("endif()", start);
+				REQUIRE(end != std::string::npos);
+				const auto nextLine = legacy.find('\n', end);
+				REQUIRE(nextLine != std::string::npos);
+				legacy.erase(start, nextLine + 1 - start);
+			} else {
+				legacy.replace(legacy.find(rootToken), rootToken.size(), Path::ToGenericUtf8(relativeRoot));
+			}
 			Write("NativeScripts/CMakeLists.txt", legacy);
 		}
 	};
