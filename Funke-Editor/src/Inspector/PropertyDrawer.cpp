@@ -19,6 +19,7 @@
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Undo/InspectorUndoRecorder.hpp"
+#include "Utils/CharConv.hpp"
 #include "Utils/ExpressionEvaluator.hpp"
 
 #include <imgui.h>
@@ -235,7 +236,7 @@ namespace Funke::PropertyDrawer {
 					comma == std::string_view::npos ? std::string_view::npos : comma - start));
 				if (tok.empty()) return std::nullopt;
 				float f = 0.0f;
-				const auto [ptr, ec] = std::from_chars(tok.data(), tok.data() + tok.size(), f);
+				const auto [ptr, ec] = CharConv::ParseFloat(tok.data(), tok.data() + tok.size(), f);
 				if (ec != std::errc{} || ptr != tok.data() + tok.size()) return std::nullopt;
 				out[channel++] = f;
 				if (comma == std::string_view::npos) break;
@@ -812,7 +813,7 @@ namespace Funke::PropertyDrawer {
 
 			auto toFloat = [](std::string_view sv) -> float {
 				float r = 0.0f;
-				std::from_chars(sv.data(), sv.data() + sv.size(), r);
+				CharConv::ParseFloat(sv.data(), sv.data() + sv.size(), r);
 				return r;
 			};
 			std::vector<Curve::Key> keys;

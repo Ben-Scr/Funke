@@ -1,10 +1,12 @@
 #include <pch.hpp>
 #include "Scripting/StructFieldBytes.hpp"
 #include "Serialization/Json.hpp"
+#include "Utils/CharConv.hpp"
 
 #include <charconv>
 #include <cstring>
 #include <limits>
+#include <type_traits>
 #include <vector>
 
 namespace Funke {
@@ -102,7 +104,12 @@ namespace Funke {
 
 		template <typename T>
 		bool Parse(std::string_view text, T& out) {
-			const auto result = std::from_chars(text.data(), text.data() + text.size(), out);
+			std::from_chars_result result;
+			if constexpr (std::is_floating_point_v<T>) {
+				result = CharConv::ParseFloat(text.data(), text.data() + text.size(), out);
+			} else {
+				result = std::from_chars(text.data(), text.data() + text.size(), out);
+			}
 			return result.ec == std::errc{} && result.ptr == text.data() + text.size();
 		}
 

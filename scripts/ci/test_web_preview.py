@@ -14,6 +14,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PREVIEW = REPO_ROOT / "platforms" / "Funke.Platform.Web" / "Builder" / "preview.py"
+
+
 class WebPreviewTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="Funke Web preview ")
@@ -44,11 +46,20 @@ class WebPreviewTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def run_start(self, entry: Path | None = None, owner_pid: int | None = None,
-                  executable: Path | None = None) -> tuple[subprocess.Popen, dict]:
+                  executable: Path | None = None, *, disable_dns: bool = False) -> tuple[subprocess.Popen, dict]:
         ready = Path(self.temporary.name) / f"ready-{len(self.servers)}.json"
-        process = subprocess.Popen([str(executable or sys.executable), str(PREVIEW), "serve", "--entry", str(entry or self.entry),
-                                    "--owner-pid", str(self.owner.pid if owner_pid is None else owner_pid),
-                                    "--ready-file", str(ready)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        command = [str(executable or sys.executable)]
+        if disable_dns:
+            command += ["-c", "import runpy, socket, sys\n"
+                        "def unavailable(*args):\n"
+                        "    raise RuntimeError('The loopback preview must not resolve hostnames')\n"
+                        "socket.getfqdn = socket.gethostbyaddr = unavailable\n"
+                        "sys.argv = sys.argv[1:]\n"
+                        "runpy.run_path(sys.argv[0], run_name='__main__')\n"]
+        command += [str(PREVIEW), "serve", "--entry", str(entry or self.entry),
+                    "--owner-pid", str(self.owner.pid if owner_pid is None else owner_pid),
+                    "--ready-file", str(ready)]
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    stderr=subprocess.PIPE, text=True, encoding="utf-8", **self.options)
         self.servers.append(process)
         deadline = time.monotonic() + 5
@@ -57,8 +68,8 @@ class WebPreviewTests(unittest.TestCase):
         self.assertTrue(ready.is_file(), "Preview did not write a startup result.")
         return process, json.loads(ready.read_text(encoding="utf-8"))
 
-    def start(self, entry: Path | None = None) -> dict:
-        process, result = self.run_start(entry)
+    def start(self, entry: Path | None = None, *, disable_dns: bool = False) -> dict:
+        process, result = self.run_start(entry, disable_dns=disable_dns)
         self.assertIsNone(process.poll(), result)
         self.assertEqual(set(result), {"url", "pid"})
         self.assertEqual(result["pid"], process.pid)
@@ -119,6 +130,16 @@ class WebPreviewTests(unittest.TestCase):
         self.owner.wait(timeout=5)
         server = self.servers[-1]
         self.assertEqual(server.wait(timeout=5), 0)
+        with self.assertRaises(OSError):
+            self.get(result["url"])
+
+    def test_loopback_preview_starts_serves_and_stops_without_dns(self) -> None:
+        result = self.start(disable_dns=True)
+        with self.get(result["url"]) as response:
+            self.assertEqual(response.read().decode("utf-8"), self.entry.read_text(encoding="utf-8"))
+        self.owner.terminate()
+        self.owner.wait(timeout=5)
+        self.assertEqual(self.servers[-1].wait(timeout=5), 0)
         with self.assertRaises(OSError):
             self.get(result["url"])
 
