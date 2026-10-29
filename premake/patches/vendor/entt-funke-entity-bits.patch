@@ -207,10 +207,10 @@ index f6e52dccd40ddeb879e22c7550dba6a04a379f6a..44792fe4f8c9588c469c05280415a5fd
       * @brief Updates the instance assigned to a given entity in-place.
       * @tparam Func Types of the function objects to invoke.
 diff --git a/src/entt/signal/sigh.hpp b/src/entt/signal/sigh.hpp
-index 87eff724bc86518290e7d82fdcd9477a54e37f83..9c586afa85573891a41c3a756e4103a146c80f90 100644
+index 87eff724bc86518290e7d82fdcd9477a54e37f83..b0602631658b8d0f308995d2c715c38e5a8d29a6 100644
 --- a/src/entt/signal/sigh.hpp
 +++ b/src/entt/signal/sigh.hpp
-@@ -407,6 +407,31 @@ public:
+@@ -407,6 +407,54 @@ public:
          return signal_or_assert().calls.empty();
      }
  
@@ -228,7 +228,18 @@ index 87eff724bc86518290e7d82fdcd9477a54e37f83..9c586afa85573891a41c3a756e4103a1
 +        delegate_type call{};
 +        call.template connect<Candidate>(value_or_instance);
 +        const auto &calls = signal_or_assert().calls;
-+        return calls.size() == 1u && calls.front() == call;
++        if(calls.size() != 1u) {
++            return false;
++        }
++        if(calls.front() == call) {
++            return true;
++        }
++        // Member pointer/reference bindings can use different delegate thunks for the same callback and instance.
++        if constexpr(std::is_member_pointer_v<decltype(Candidate)> && std::is_invocable_r_v<Ret, decltype(Candidate), Type *, Args...>) {
++            call.template connect<Candidate>(std::addressof(value_or_instance));
++            return calls.front() == call;
++        }
++        return false;
 +    }
 +
 +    template<auto Candidate, typename Type>
@@ -236,7 +247,19 @@ index 87eff724bc86518290e7d82fdcd9477a54e37f83..9c586afa85573891a41c3a756e4103a1
 +        delegate_type call{};
 +        call.template connect<Candidate>(value_or_instance);
 +        const auto &calls = signal_or_assert().calls;
-+        return calls.size() == 1u && calls.front() == call;
++        if(calls.size() != 1u) {
++            return false;
++        }
++        if(calls.front() == call) {
++            return true;
++        }
++        if constexpr(std::is_member_pointer_v<decltype(Candidate)> && std::is_invocable_r_v<Ret, decltype(Candidate), Type &, Args...>) {
++            if(value_or_instance != nullptr) {
++                call.template connect<Candidate>(*value_or_instance);
++                return calls.front() == call;
++            }
++        }
++        return false;
 +    }
 +
      /**

@@ -316,6 +316,8 @@ TEST_CASE("Signal only identifies the exact sole callback and bound instance") {
 	CHECK(sink.only<&SignalObserver::OnValue>(first));
 	CHECK_FALSE(sink.only<&SignalObserver::OnValue>(&second));
 	CHECK_FALSE(sink.only<&SignalObserver::OnOther>(&first));
+	CHECK_FALSE(sink.only<&SignalObserver::OnOther>(first));
+	CHECK_FALSE(sink.only<&SignalObserver::OnValue>(static_cast<SignalObserver*>(nullptr)));
 	sink.connect<&SignalObserver::OnValue>(&second);
 	CHECK_FALSE(sink.only<&SignalObserver::OnValue>(&first));
 	CHECK_FALSE(sink.only<&SignalObserver::OnValue>(&second));
@@ -328,4 +330,16 @@ TEST_CASE("Signal only identifies the exact sole callback and bound instance") {
 	sink.connect<&FreeSignalListener>();
 	CHECK(sink.only<&FreeSignalListener>());
 	CHECK_FALSE(sink.only<&SignalObserver::OnValue>(&second));
+	sink.disconnect();
+	sink.connect<&SignalObserver::OnValue>(first);
+	CHECK(sink.only<&SignalObserver::OnValue>(first));
+	CHECK(sink.only<&SignalObserver::OnValue>(&first));
+	CHECK_FALSE(sink.only<&SignalObserver::OnValue>(second));
+	CHECK_FALSE(sink.only<&SignalObserver::OnValue>(&second));
+	CHECK_FALSE(sink.only<&SignalObserver::OnOther>(first));
+	CHECK_FALSE(sink.only<&SignalObserver::OnOther>(&first));
+	CHECK_FALSE(sink.only<&SignalObserver::OnValue>(static_cast<SignalObserver*>(nullptr)));
+	sink.connect<&SignalObserver::OnOther>(second);
+	CHECK_FALSE(sink.only<&SignalObserver::OnValue>(first));
+	CHECK_FALSE(sink.only<&SignalObserver::OnValue>(&first));
 }
