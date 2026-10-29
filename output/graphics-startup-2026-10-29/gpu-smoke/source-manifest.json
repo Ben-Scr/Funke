@@ -1,0 +1,158 @@
+[
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\project.json",
+    "Sha256": "0672F8CF8CE92ED172CFDDE5E84D7441DD6C1653FD62F5E36CF907A1BE8B0C94"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\MsaaTest.csproj",
+    "Sha256": "D51287673E6678B3F4C766DD1B8FE0656BA43C05412035E6C7C7EDB6BE79F04D"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\global.json",
+    "Sha256": "20C93CA7812D0A9825EEF71217156F95AB2F4FE5AADFEB22EBC1C24B630018D3"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Materials\\Detail.material",
+    "Sha256": "ECB3B2817D0AF8945F3FA869D49E4637AD560599B79C17C2DA8D426E555971B7"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Materials\\Detail.material.meta",
+    "Sha256": "E0E2FBAAEACE801839A17D62A8DF8A41832BD38EF52F5051122064E694A5BC86"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Materials\\Ground.material",
+    "Sha256": "F7E35D15B2A5139BFA37127B60FF4B784C684BDF1B5F4A1700CCB83910C48B61"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Materials\\Ground.material.meta",
+    "Sha256": "FFC514BCD51474C87C519FE4EE0707906A5CFAB4FEA9A0D267B7FEEE320DD361"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Materials\\PixelOre.material",
+    "Sha256": "318AFD82988541599A503E8B021DB02B8CD8CE71057BEB6EFC833F47C4657A7B"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Materials\\PixelOre.material.meta",
+    "Sha256": "789509771E18549FF8D40DA35E88DF8796C99CBD2A538B970239C7470EB65758"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Materials\\Sky.material",
+    "Sha256": "6F5AA8AB1A4BB550A01F036E36D3BE3BA4DC83D821AF1B320A9E642D73EA03C9"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Materials\\Sky.material.meta",
+    "Sha256": "011575574B448E53DE3537B534A42F8B536871E099F8F41084F495ABA5F58E77"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Materials\\Stripes.material",
+    "Sha256": "0B6EF60277768A8F5DA66253977307AF6CD835C07AC08B34CFC3B604DAFD7DFC"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Materials\\Stripes.material.meta",
+    "Sha256": "62FA51E844EF39996B86E8ED5633153A3D6BABA5BB7EA15C0F57629831BB983A"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Materials\\White.material",
+    "Sha256": "5D90C16D9F6846DE5F31B4FEC3A63C560DD687AE00837E9316A0B67856089784"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Materials\\White.material.meta",
+    "Sha256": "2DD5B1545EEDF4727033EB9F50DDF862C7CCE0552290C9E597E4E4ABD25A1909"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Scenes\\Coverage.scene",
+    "Sha256": "DC563B60E5E4304C51CDC4AD4A5799EE5E967797FB2A171094F8B6F9E87D1A77"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Scenes\\Coverage.scene.meta",
+    "Sha256": "4C8F0431015F539752DB2841D571C16B85C29416FE0A8A8D94174BD8B3059E85"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Scenes\\CoverageSky.scene",
+    "Sha256": "BCD8CD9E6E565C32B8AA7A62AB68BD03164AC52477F9A3C9CC4EDC3EEA278468"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Scenes\\CoverageSky.scene.meta",
+    "Sha256": "0929F12D6BE0395ABA6D2817548FD25D3A0FB4FE2F0DE65F661D75320C76CDA0"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Scenes\\SampleScene.scene",
+    "Sha256": "1E3B72574987CA6417D9F063709C0278E5D7572769EF4966177CA804A108F58B"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Scenes\\SampleScene.scene.meta",
+    "Sha256": "D14ECE734B4D12AD4AD18727738E10DED6D9F29998AAA7D91953729AC5E8A8EF"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Scripts\\AaCommands.cs",
+    "Sha256": "8734CCC1BEDC852A0CEE6FA3B287A8482156BE5C594F09EAD6B4946B7DB96ABA"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Scripts\\AaCommands.cs.meta",
+    "Sha256": "83874890D8DF78FD0D107320FAA675123DBD2E4DFC90DD0C53DE1BE02E798A56"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Scripts\\MsaaOn.cs",
+    "Sha256": "6029128C8BB0DB3491EF2667A7A4A52BBD30618FACB76B99AB46086564F78488"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Scripts\\MsaaOn.cs.meta",
+    "Sha256": "751A41BC5ED8877B8A18EA3902043C88C9D75575A0D7AE83930E6900B2C06343"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Scripts\\PlatformProbe.cs",
+    "Sha256": "831D0513F55F21A2271190E3D784BC4C27BD10DBF50E71BC823556864133E6EC"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Scripts\\PlatformProbe.cs.meta",
+    "Sha256": "76EF2CD98D37A20CF36FA011A5FD77A4824431F49177BAAB32E315D453845833"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Scripts\\QualityCycler.cs",
+    "Sha256": "BD72F7CF737B80B27737349893B6E4E4CA1551C2F02A1785D14F3668DF397592"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Scripts\\QualityCycler.cs.meta",
+    "Sha256": "71E02C55AF3CC3432B1A8688CD0FD4B24281159F872FBC613C1BEE02297B883A"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Shaders\\Sky.wgsl",
+    "Sha256": "E660C67D5CB9E548971C4568E3D582EE64AFFF0705E4C29D683822F3936EB491"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Shaders\\Sky.wgsl.meta",
+    "Sha256": "FF7C51366E8C73730072AA3F84F817F83C0551A3D1C0FFA700B372DAB9EEF425"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Shaders\\Stripes.wgsl",
+    "Sha256": "B07632A1730CCA3BE066BF85A570369E8940AAFB4D5CAA03FAC0281FEC761FEE"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Shaders\\Stripes.wgsl.meta",
+    "Sha256": "BBBC1960AC18F3C54524F4F2739409ED90753E24CCC6B70FB5B0A8344FA19EB2"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Textures\\Detail.png",
+    "Sha256": "317C28AB03FEA296FDAF5B18FE72F56241276155FDEF3BBCA3B164AD11229B45"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Textures\\Detail.png.meta",
+    "Sha256": "6932C97558672B25BD91845E95EF3025392E3B7057D82EDF30CF9B31B9E09426"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Textures\\GroundChecker.png",
+    "Sha256": "C2A5828FEEE68EC38C4816EAB42899029310ACA2B38AD58D08AC8DAED6305D76"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Textures\\GroundChecker.png.meta",
+    "Sha256": "BDFEA1E5CDC4D5682788D6CFA02109259318CBD1E893221B975FF3BCD737FB3A"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Textures\\PixelOre.png",
+    "Sha256": "EFCA41F770C4FE9BAC183F4F9D4A99C423E8537FFCE93CFDCA2430CB3023FA86"
+  },
+  {
+    "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\MsaaTest\\Assets\\Textures\\PixelOre.png.meta",
+    "Sha256": "F1E4D1E65BD958FAF1209C07B8AF9F460C13954B9E65DEC937F21BEDE50DED39"
+  }
+]

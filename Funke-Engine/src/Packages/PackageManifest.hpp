@@ -43,6 +43,7 @@ namespace Funke {
 		// Fails on a missing or malformed name, version, engine range or dependency entry.
 		static bool TryParse(std::string_view luaSource, PackageManifest& outManifest, std::string* outError = nullptr);
 		static bool TryLoad(const std::string& packageDir, PackageManifest& outManifest, std::string* outError = nullptr);
+		static bool HasLocalBuildInputs(std::string_view luaSource);
 
 		static bool IsValidName(std::string_view name);
 		bool IsCompatibleWithEngine(const SemanticVersion& engineVersion) const;

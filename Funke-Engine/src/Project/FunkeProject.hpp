@@ -18,6 +18,7 @@ namespace Funke {
 
 namespace Funke {
 	namespace Json { class Value; }
+	namespace EngineSdk { struct Installation; }
 	struct ProjectTemplate;
 
 	struct FUNKE_API FunkeProject {
@@ -350,6 +351,7 @@ namespace Funke {
 		static std::string GetDefaultProjectsDir();
 
 		static std::string GetEngineRootDir();
+		static EngineSdk::Installation GetEngineInstallation();
 		static std::string GetPremakePath();
 		// make for the gmake workspaces on Linux / macOS: GNU make (gmake) when installed on macOS, else make.
 		static std::string GetMakeProgram();
@@ -380,6 +382,9 @@ namespace Funke {
 			const std::string& configuration = "Debug",
 			const std::string& platform = "x64");
 		static RegenerateResult RegeneratePackageWorkspaceForProject(const std::string& projectRootDir);
+		static BuildResult PrepareProjectPackages(const FunkeProject& project,
+			const std::string& configuration, const std::string& platform = "x64",
+			const CreateProgressCallback& progressCallback = {});
 		// progressCallback gets 0..1 and the package layer being built.
 		static BuildResult BuildProjectPackages(const std::string& projectRootDir,
 			const std::string& configuration = "Debug",

@@ -119,6 +119,7 @@ Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; Flags: unchecked
 
 [Files]
 Source: "{#PayloadDir}\Prerequisites\vc_redist.x64.exe"; Flags: dontcopy
+Source: "{#PayloadDir}\Prerequisites\vc_redist.x86.exe"; Flags: dontcopy
 Source: "{#PayloadDir}\Prerequisites\dotnet-sdk.exe"; Flags: dontcopy
 Source: "{#PayloadDir}\Core\*"; DestDir: "{app}"; Components: core; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PayloadDir}\Templates\*"; DestDir: "{app}"; Components: templates; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -127,6 +128,7 @@ Source: "{#PayloadDir}\CLI\*"; DestDir: "{app}"; Components: cli; Flags: ignorev
 
 [InstallDelete]
 #include PayloadDir + "\PackageDelete.iss"
+#include PayloadDir + "\SdkDelete.iss"
 
 [Icons]
 Name: "{group}\Funke"; Filename: "{app}\Funke-Launcher.exe"; WorkingDir: "{app}"
@@ -187,16 +189,15 @@ begin
     Result := HasStableDotNet10SDKAt(RegisteredDirectory);
 end;
 
-function HasVisualCppRuntime: Boolean;
+function HasVisualCppRuntime(RootKey: Integer; const Architecture: String): Boolean;
 var
   Installed, Major, Minor: Cardinal;
+  RuntimeKey: String;
 begin
-  Result := RegQueryDWordValue(HKLM64,
-    'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64', 'Installed', Installed)
-    and RegQueryDWordValue(HKLM64,
-    'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64', 'Major', Major)
-    and RegQueryDWordValue(HKLM64,
-    'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64', 'Minor', Minor);
+  RuntimeKey := 'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\' + Architecture;
+  Result := RegQueryDWordValue(RootKey, RuntimeKey, 'Installed', Installed)
+    and RegQueryDWordValue(RootKey, RuntimeKey, 'Major', Major)
+    and RegQueryDWordValue(RootKey, RuntimeKey, 'Minor', Minor);
   Result := Result and (Installed = 1) and
     ((Major > 14) or ((Major = 14) and (Minor >= 44)));
 end;
@@ -228,16 +229,22 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
-  if not HasVisualCppRuntime then begin
-    Result := InstallPrerequisite('vc_redist.x64.exe', 'Microsoft Visual C++ Runtime');
+  if not HasVisualCppRuntime(HKLM64, 'x64') then begin
+    Result := InstallPrerequisite('vc_redist.x64.exe', 'Microsoft Visual C++ Runtime (x64)');
+    if Result <> '' then Exit;
+  end;
+  if not HasVisualCppRuntime(HKLM32, 'x86') then begin
+    Result := InstallPrerequisite('vc_redist.x86.exe', 'Microsoft Visual C++ Runtime (x86)');
     if Result <> '' then Exit;
   end;
   if not HasDotNet10SDK then begin
     Result := InstallPrerequisite('dotnet-sdk.exe', 'Microsoft .NET 10 SDK');
     if Result <> '' then Exit;
   end;
-  if not HasVisualCppRuntime then
-    Result := FmtMessage(CustomMessage('PrerequisiteUnavailable'), ['Microsoft Visual C++ Runtime'])
+  if not HasVisualCppRuntime(HKLM64, 'x64') then
+    Result := FmtMessage(CustomMessage('PrerequisiteUnavailable'), ['Microsoft Visual C++ Runtime (x64)'])
+  else if not HasVisualCppRuntime(HKLM32, 'x86') then
+    Result := FmtMessage(CustomMessage('PrerequisiteUnavailable'), ['Microsoft Visual C++ Runtime (x86)'])
   else if not HasDotNet10SDK then
     Result := FmtMessage(CustomMessage('PrerequisiteUnavailable'), ['Microsoft .NET 10 SDK']);
   if Result <> '' then begin
@@ -276,7 +283,8 @@ begin
   if MemoTasksInfo <> '' then Result := Result + NewLine + NewLine + MemoTasksInfo;
   Result := Result + NewLine + NewLine + CustomMessage('Prerequisites') + NewLine +
     Space + PrerequisiteStatus('Microsoft .NET 10 SDK', HasDotNet10SDK) + NewLine +
-    Space + PrerequisiteStatus('Microsoft Visual C++ Runtime', HasVisualCppRuntime) +
+    Space + PrerequisiteStatus('Microsoft Visual C++ Runtime (x64)', HasVisualCppRuntime(HKLM64, 'x64')) + NewLine +
+    Space + PrerequisiteStatus('Microsoft Visual C++ Runtime (x86)', HasVisualCppRuntime(HKLM32, 'x86')) +
     NewLine + NewLine + CustomMessage('PrerequisiteNotice');
 end;
 

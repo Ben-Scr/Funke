@@ -103,6 +103,8 @@ Funke ships a large set of components, grouped by area. Here are the main ones:
 **UI**
 - `Button`, `Slider`, `Toggle`, `InputField`, `Dropdown`, `ScrollRect`, layout groups, and more.
 
+UI labels use `Funke.TextRenderer` (`using Funke;`). It lives in the root `Funke` namespace because the same component renders world and UI text; widgets such as `Button` and `Slider` live in `Funke.UI`.
+
 **Audio**
 - `AudioSource` — plays a sound from an entity, flat (2D) or as 3D sound from the entity's position.
 
@@ -261,6 +263,42 @@ public static class ParallelEcbExample
 ```
 
 Live refs can be shared between workers. A local ref returned by a worker's `Create()` / `CreateWith<...>()` belongs to that worker and must stay there. Commands retain order within each recorder; do not rely on ordering between workers. Keep dependent operations such as remove-then-add for one entity in the same recorder. Call `Clear()` or `Dispose()` only after all writers have finished.
+
+### Batched structural changes in C++
+
+`NativeEntityCommandBuffer` supports `CreateEntity()`, `CreateWith<T...>()`, `Instantiate()`, `AddComponent<T>()`, `RemoveComponent<T>()`, `Destroy()` and `SetEnabled()`. Use `NativeEntityCommandBuffer::Existing(entity)` to capture a live target before scheduling workers. A live reference retains the scene lifetime and entity generation without keeping the scene alive. Local creation references belong to their recorder and become invalid after `Clear()`.
+
+`ParallelEntityCommandBuffer` merges independent recorders and uses the same native playback backend as C#. This example removes sprite components from existing entities:
+
+```cpp
+#include "Components/Graphics/SpriteRendererComponent.hpp"
+#include "Jobs/ParallelFor.hpp"
+#include "Scripting/ParallelEntityCommandBuffer.hpp"
+
+void RemoveSprites(Funke::Scene& scene, std::span<const Funke::Entity> entities) {
+    using namespace Funke;
+    std::vector<NativeEntityCommandBuffer::EntityRef> refs;
+    refs.reserve(entities.size());
+    for (const Entity& entity : entities)
+        refs.push_back(NativeEntityCommandBuffer::Existing(entity));
+
+    ParallelEntityCommandBuffer commands;
+    ParallelFor(0, refs.size(), [&](size_t begin, size_t end) {
+        auto& writer = commands.AsWriter();
+        for (size_t i = begin; i < end; ++i)
+            writer.RemoveComponent<SpriteRendererComponent>(refs[i]);
+    }, 256);
+    commands.Playback(scene, EntityCommandBufferPlaybackMode::Parallel);
+}
+```
+
+`AsWriter()` selects a slot for the current JobSystem worker or the thread that constructed the buffer. For external threads, construct `ParallelEntityCommandBuffer commands(writerCount)` and give each producer a distinct `commands.AsWriter(index)`. Join all producers before playback, inspection or clearing. Do not mix explicit slot ownership with automatic JobSystem slot selection during one recording interval.
+
+Playback runs synchronously on the main thread. `Auto` chooses the supported parallel path for sufficiently large batches; `Sequential` requests ordered serial execution; `Parallel` requests native parallel playback with a serial fallback. Supported default native component operations can run in parallel. Custom components, value/configure callbacks, prefab loading and dependent mixed operations retain ordered execution. The typed native value/configure overloads retain their existing C++ construction behavior.
+
+Commands preserve order inside a recorder; recorders merge in slot order. Job scheduling may choose different slots between runs, so put operations that depend on each other in the same recorder. Direct `Entity::AddComponent`/`RemoveComponent` calls remain structural operations on the main thread.
+
+The playback scene must match every recorded live target. A mismatched or expired scene is rejected before mutation; destroyed/recycled target handles are skipped. Playback returns the number of recorded creations (`0` for mutation-only batches), or a negative backend error code. `GetCreatedEntity(index)` returns a native entity handle; `Clear()` retains buffer capacity for reuse. Recompile native script DLLs after this API update (native script ABI 4).
 
 ---
 

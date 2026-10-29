@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -26,7 +27,8 @@ class SdkStagingTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.base = Path(self.temporary.name)
         self.root = self.base / "engine"
-        self.bin_dir = self.root / "bin" / "Release-windows-x86_64"
+        system = "windows" if os.name == "nt" else ("macosx" if sdk_script.IS_MAC else "linux")
+        self.bin_dir = self.root / "bin" / f"Release-{system}-x86_64"
         self.sdk = self.base / "bundle" / "EngineSDK"
         self.dotnet = self.base / "dotnet"
 
@@ -41,6 +43,8 @@ class SdkStagingTests(unittest.TestCase):
             f"vendor/bin/premake5{sdk_script.EXE}", "scripts/BuildProjectPackages.ps1",
         ):
             self.write(self.root / relative)
+        self.write(self.root / "build/BuildMetadata.json", json.dumps({"version": "2026.1.0-beta.1"}))
+        self.write(self.root / "Funke-Engine/src/Engine.cpp", "must not ship")
         for name in ("project-packages.lua", "package-loader.lua", "fix_csharp_platforms.lua", "architecture.lua", "compat.lua"):
             self.write(self.root / "premake" / name)
         for name in ("NewPackage.py", "RemovePackage.py", "BumpPackageVersion.py", "WriteNativeAbi.py"):
@@ -48,6 +52,8 @@ class SdkStagingTests(unittest.TestCase):
         for relative, _, name in sdk_script.LICENSES:
             self.write(self.root / relative / name)
         self.write(self.root / "External/dawn/third_party/example/LICENSE")
+        self.write(self.root / "External/dawn/third_party/abseil-cpp/LICENSE")
+        self.write(self.root / "External/dawn/third_party/directx-shader-compiler/LICENSE")
         self.write(self.root / "External/box2d/include/box2d.h", "current Box2D")
         self.write(self.root / "External/glad/include/glad/glad.h", "retired Glad")
         for name in ("LICENSE.txt", "ThirdPartyNotices.txt", "dotnet.exe"):
@@ -75,9 +81,9 @@ class SdkStagingTests(unittest.TestCase):
         self.write(self.sdk / "External/custom/include/Keep.hpp", "keep")
         self.write(self.sdk / "packages/Funke.Physics/Keep.hpp", "optional package")
 
-    def run_python(self) -> None:
+    def run_python(self, *options: str) -> None:
         with (
-            mock.patch.object(sys, "argv", [str(SCRIPTS / "CopyEngineSdk.py"), str(self.sdk), str(self.root), str(self.bin_dir)]),
+            mock.patch.object(sys, "argv", [str(SCRIPTS / "CopyEngineSdk.py"), str(self.sdk), str(self.root), str(self.bin_dir), *options]),
             mock.patch.object(sdk_script, "dotnet_license_dir", return_value=self.dotnet),
             redirect_stdout(StringIO()), redirect_stderr(StringIO()),
         ):
@@ -99,6 +105,10 @@ class SdkStagingTests(unittest.TestCase):
         self.assertEqual((self.sdk / "External/box2d/include/box2d.h").read_text(), "current Box2D")
         self.assertEqual((self.sdk / "External/custom/include/Keep.hpp").read_text(), "keep")
         self.assertEqual((self.sdk / "packages/Funke.Physics/Keep.hpp").read_text(), "optional package")
+        self.assertFalse((self.sdk / "Funke-Engine/src/Engine.cpp").exists())
+        self.assertFalse((self.sdk / "Funke-ScriptCore/Funke-ScriptCore.csproj").exists())
+        manifest = json.loads((self.sdk / "FunkeSDK.json").read_text())
+        self.assertFalse(manifest["capabilities"]["sourceBuild"])
 
     def test_python_staging_prunes_only_retired_dependencies_and_repeats(self) -> None:
         self.sources()
@@ -107,6 +117,26 @@ class SdkStagingTests(unittest.TestCase):
         self.assert_clean()
         self.run_python()
         self.assert_clean()
+
+    def test_binary_restaging_removes_native_payload_and_does_not_advertise_missing_runtime(self) -> None:
+        self.sources()
+        self.seed_retired()
+        self.run_python()
+        self.write(self.sdk / "Runtime-Dist/Funke-Runtime.exe", "obsolete runtime")
+        self.run_python("--binary-only")
+        for name in ("Funke-Engine", "External", "bin", "Runtime-Dist"):
+            self.assertFalse((self.sdk / name).exists())
+        manifest = json.loads((self.sdk / "FunkeSDK.json").read_text())
+        self.assertEqual(manifest["runtimes"], {"Development": "Runtime-Development"})
+        self.assertFalse(manifest["capabilities"]["nativeDevelopment"])
+        self.assertEqual((self.sdk / "packages/Funke.Physics/Keep.hpp").read_text(), "optional package")
+
+    def test_incomplete_runtime_is_not_advertised_as_ready(self) -> None:
+        self.sources()
+        (self.bin_dir / "Funke-Runtime" / sdk_script.SDL_LIB).unlink()
+        with self.assertRaisesRegex(sdk_script.SdkError, "required file missing"):
+            self.run_python()
+        self.assertFalse((self.sdk / "FunkeSDK.json").exists())
 
     @unittest.skipUnless(os.name == "nt", "Windows SDK staging")
     def test_windows_staging_prunes_only_retired_dependencies_and_repeats(self) -> None:
@@ -154,6 +184,26 @@ class SdkStagingTests(unittest.TestCase):
                 with self.assertRaises(sdk_script.SdkError):
                     sdk_script.prune_retired_dependencies(self.sdk)
                 self.assertEqual(sentinel.read_text(), "outside")
+
+    def test_binary_restaging_removes_native_payload_and_does_not_advertise_missing_runtime(self) -> None:
+        self.sources()
+        self.seed_retired()
+        self.run_python()
+        self.write(self.sdk / "Runtime-Dist/Funke-Runtime.exe", "obsolete runtime")
+        self.run_python("--binary-only")
+        for name in ("Funke-Engine", "External", "bin", "Runtime-Dist"):
+            self.assertFalse((self.sdk / name).exists())
+        manifest = json.loads((self.sdk / "FunkeSDK.json").read_text())
+        self.assertEqual(manifest["runtimes"], {"Development": "Runtime-Development"})
+        self.assertFalse(manifest["capabilities"]["nativeDevelopment"])
+        self.assertEqual((self.sdk / "packages/Funke.Physics/Keep.hpp").read_text(), "optional package")
+
+    def test_incomplete_runtime_is_not_advertised_as_ready(self) -> None:
+        self.sources()
+        (self.bin_dir / "Funke-Runtime" / sdk_script.SDL_LIB).unlink()
+        with self.assertRaisesRegex(sdk_script.SdkError, "required file missing"):
+            self.run_python()
+        self.assertFalse((self.sdk / "FunkeSDK.json").exists())
 
     @unittest.skipUnless(os.name == "nt", "Windows SDK staging")
     def test_windows_refuses_external_dependency_and_nested_links(self) -> None:

@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts import PackagePosix
+from scripts.ci.sdk_test_fixtures import make_bundle
 
 
 class PosixPackagingTests(unittest.TestCase):
@@ -19,6 +20,7 @@ class PosixPackagingTests(unittest.TestCase):
             with self.subTest(system=system), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 launcher = root / "bin" / f"Release-{system}-x86_64" / "Funke-Launcher"
+                make_bundle(launcher, native=True, platform=system)
                 engine_lib = "libFunke-Engine.dylib" if is_mac else "libFunke-Engine.so"
                 package_lib = "libPkg.Funke.Physics.Native.dylib" if is_mac else "libPkg.Funke.Physics.Native.so"
                 kept = (
@@ -55,6 +57,9 @@ class PosixPackagingTests(unittest.TestCase):
                 with tarfile.open(archive, "r:gz") as bundle:
                     members = set(bundle.getnames())
                     for name in kept:
+                        if name.startswith(("EngineSDK/External/", "EngineSDK/Funke-Engine/", "EngineSDK/bin/")):
+                            self.assertNotIn(prefix + name, members)
+                            continue
                         self.assertIn(prefix + name, members)
                         self.assertEqual(bundle.extractfile(prefix + name).read().decode("utf-8"), name)
                     for dependency in ("Index-Physics", "Funke-Physics"):
@@ -81,6 +86,7 @@ class PosixPackagingTests(unittest.TestCase):
             with self.subTest(stale_path=stale_path), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 launcher = root / "bin/Release-linux-x86_64/Funke-Launcher"
+                make_bundle(launcher, native=True, platform="linux")
                 required = (
                     "Funke-Launcher", "Funke-Editor", "Funke-Runtime", "libFunke-Engine.so",
                     "Funke-ScriptCore.dll", "Funke-ScriptCore.runtimeconfig.json", "Funke-PackageTool",

@@ -1,0 +1,10 @@
+{
+  "protocol": 1,
+  "pid": 120404,
+  "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenPackages",
+  "projectName": "OpenPackages",
+  "endpoint": "\\\\.\\pipe\\funke-editor-120404-330531a66a74dc05a730832685de1eb2",
+  "token": "48d45df8b3a2fef08e56c62f0a7c76b1",
+  "version": "Funke 2026.1.0-beta.1+c586c2ac69de.dev.engine.dirty.8712798f818f (Windows x64 Release)",
+  "startedAtUnixMs": 1793307458752
+}

@@ -1,0 +1,4 @@
+{
+  "reason": "Instrumentation race: polling read held launcher.json without FILE_SHARE_DELETE, preventing atomic report replacement (MoveFileEx error 5). Editor was responsive with 10002 entities and native package loaded. Processes closed after diagnosis; no performance endpoint recorded.",
+  "fix": "Windows report reads now use FILE_SHARE_DELETE; preserved this run and repeated in a new directory."
+}

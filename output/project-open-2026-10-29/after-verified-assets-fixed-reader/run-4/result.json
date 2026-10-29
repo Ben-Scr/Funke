@@ -1,0 +1,78 @@
+{
+  "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenAssets",
+  "runDirectory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\after-verified-assets-fixed-reader\\run-4",
+  "launcher": {
+    "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenAssets",
+    "startedAtUnixMs": 1793306695780.3677,
+    "spawnedAtUnixMs": 1793306696023.0637,
+    "launcherElapsedMs": 246.3196,
+    "complete": true,
+    "success": true,
+    "pid": 27836,
+    "error": ""
+  },
+  "editorReadyMs": 1787.425537109375,
+  "readyStatus": {
+    "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenAssets",
+    "projectName": "OpenAssets",
+    "pid": 27836,
+    "version": "Funke 2026.1.0-beta.1+c586c2ac69de.dev.engine.dirty.8712798f818f (Windows x64 Release)",
+    "protocol": 1,
+    "state": "edit",
+    "scene": "SampleScene",
+    "entityCount": 10002,
+    "scenes": [
+      "SampleScene"
+    ],
+    "unsavedScenes": [],
+    "scripts": {
+      "compiling": false,
+      "lastBuildSucceeded": true,
+      "errors": ""
+    },
+    "busy": null,
+    "surface": {
+      "width": 2007,
+      "height": 1129,
+      "source": "game-view"
+    },
+    "fixedStep": 0,
+    "frame": 1,
+    "gameTime": 0
+  },
+  "scriptsReadyMs": 1787.425537109375,
+  "finalStatus": {
+    "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenAssets",
+    "projectName": "OpenAssets",
+    "pid": 27836,
+    "version": "Funke 2026.1.0-beta.1+c586c2ac69de.dev.engine.dirty.8712798f818f (Windows x64 Release)",
+    "protocol": 1,
+    "state": "edit",
+    "scene": "SampleScene",
+    "entityCount": 10002,
+    "scenes": [
+      "SampleScene"
+    ],
+    "unsavedScenes": [],
+    "scripts": {
+      "compiling": false,
+      "lastBuildSucceeded": true,
+      "errors": ""
+    },
+    "busy": null,
+    "surface": {
+      "width": 2007,
+      "height": 1129,
+      "source": "game-view"
+    },
+    "fixedStep": 0,
+    "frame": 1,
+    "gameTime": 0
+  },
+  "launchToSpawnMs": 242.696044921875,
+  "spawnToReadyMs": 1544.7294921875,
+  "screenshot": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\after-verified-assets-fixed-reader\\run-4\\scene.png",
+  "success": true,
+  "launcherExitCode": 0,
+  "packageCacheHit": true
+}

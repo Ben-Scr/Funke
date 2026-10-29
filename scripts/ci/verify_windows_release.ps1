@@ -72,10 +72,15 @@ $nativeFiles = @(
     @{ Path = "EngineSDK\Runtime-Development\Funke-Runtime.exe"; Subsystem = 2 },
     @{ Path = "EngineSDK\Runtime-Development\Funke-Engine.dll"; Subsystem = 3 },
     @{ Path = "EngineSDK\Runtime-Dist\Funke-Runtime.exe"; Subsystem = 2 },
-    @{ Path = "EngineSDK\Runtime-Dist\Funke-Engine.dll"; Subsystem = 3 },
-    @{ Path = "EngineSDK\bin\Release-windows-x86_64\Funke-Engine\Funke-Engine.dll"; Subsystem = 3 },
-    @{ Path = "EngineSDK\bin\Dist-windows-x86_64\Funke-Engine\Funke-Engine.dll"; Subsystem = 3 }
+    @{ Path = "EngineSDK\Runtime-Dist\Funke-Engine.dll"; Subsystem = 3 }
 )
+$sdkManifest = Get-Content -LiteralPath (Join-Path $bundle "EngineSDK\FunkeSDK.json") -Raw | ConvertFrom-Json
+if ($sdkManifest.capabilities.nativeDevelopment) {
+    $nativeFiles += @(
+        @{ Path = "EngineSDK\bin\Release-windows-x86_64\Funke-Engine\Funke-Engine.dll"; Subsystem = 3 },
+        @{ Path = "EngineSDK\bin\Dist-windows-x86_64\Funke-Engine\Funke-Engine.dll"; Subsystem = 3 }
+    )
+}
 $requiredCharacteristics = [ordered]@{
     HighEntropyVA = 0x0020
     DynamicBase = 0x0040

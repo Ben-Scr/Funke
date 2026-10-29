@@ -1,0 +1,11 @@
+{
+  "Case": "d3d12",
+  "RequestedBackend": "Direct3D12",
+  "Backend": "",
+  "Adapter": "",
+  "Success": false,
+  "Error": "Editor bridge discovery timed out Expected backend Direct3D12, got .",
+  "Screenshots": [],
+  "GpuErrors": [],
+  "Log": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\graphics-startup-2026-10-29\\gpu-smoke\\runs\\verified\\d3d12\\user-data\\Funke\\Logs\\Funke-Editor.log"
+}

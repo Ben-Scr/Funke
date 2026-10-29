@@ -35,6 +35,7 @@
 #include "Components/General/UUIDComponent.hpp"
 #if FUNKE_WITH_2D
 #include "Components/General/Transform2DComponent.hpp"
+#include "Components/Graphics/SpriteRendererComponent.hpp"
 #endif
 #include "Components/General/NameComponent.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
@@ -521,13 +522,45 @@ namespace Funke {
 		return true;
 	}
 
+	static bool HasTrustedComponentConstructHooks(Scene& scene, const ComponentInfo& info)
+	{
+		bool matchingStorage =
+			(info.storageHash == entt::type_hash<UUIDComponent>::value() && info.typeId == typeid(UUIDComponent))
+			|| (info.storageHash == entt::type_hash<EntityMetaDataComponent>::value() && info.typeId == typeid(EntityMetaDataComponent));
+#if FUNKE_WITH_2D
+		matchingStorage = matchingStorage
+			|| (info.storageHash == entt::type_hash<Transform2DComponent>::value() && info.typeId == typeid(Transform2DComponent))
+			|| (info.storageHash == entt::type_hash<SpriteRendererComponent>::value() && info.typeId == typeid(SpriteRendererComponent));
+#endif
+		return matchingStorage && scene.CanUseParallelEcbComponent(info.storageHash);
+	}
+
 	static int Funke_Entity_AddComponentByTypeId(uint64_t entityID, uint32_t typeId)
 	{
 		Scene* scene = nullptr;
 		EntityHandle handle = entt::null;
 		if (!ResolveEntityReference(entityID, scene, handle)) return 0;
-		const ComponentInfo* info = SceneManager::GetComponentRegistry().GetByTypeId(typeId);
-		return info && ScriptBindings::AddComponent(scene->GetEntity(handle), *info) ? 1 : 0;
+		const auto& components = SceneManager::GetComponentRegistry();
+		const ComponentInfo* info = components.GetByTypeId(typeId);
+		if (!info || !info->add || !info->IsModuleActive()) return 0;
+		const auto has = info->has.RegistryCallback();
+		const auto add = info->add.RegistryCallback();
+		if (!info->isDynamic && has && add && !info->onAdd && info->dependsOn.empty()
+			&& info->has.NativeType() == info->typeId && info->add.NativeType() == info->typeId) {
+			auto& registry = scene->GetRegistry();
+			const entt::id_type storageHash = info->storageHash;
+			const auto present = [&]() {
+				const auto* storage = std::as_const(registry).storage(storageHash);
+				return storage && storage->contains(handle);
+			};
+			if (has(registry, handle)) return present() ? 1 : 0;
+			// Only known scene hooks may run without an Entity lifetime guard across construction.
+			if (!components.FindConflict(registry, handle, *info) && HasTrustedComponentConstructHooks(*scene, *info)) {
+				add(registry, handle);
+				return registry.valid(handle) && present() ? 1 : 0;
+			}
+		}
+		return ScriptBindings::AddComponent(scene->GetEntity(handle), *info) ? 1 : 0;
 	}
 
 	static int Funke_Entity_RemoveComponentByTypeId(uint64_t entityID, uint32_t typeId)
@@ -536,7 +569,16 @@ namespace Funke {
 		EntityHandle handle = entt::null;
 		if (!ResolveEntityReference(entityID, scene, handle)) return 0;
 		const ComponentInfo* info = SceneManager::GetComponentRegistry().GetByTypeId(typeId);
-		return info && ScriptBindings::RemoveComponent(scene->GetEntity(handle), *info, false) ? 1 : 0;
+		if (!info || !info->remove || !info->IsModuleActive()) return 0;
+		const auto has = info->has.RegistryCallback();
+		const auto remove = info->remove.RegistryCallback();
+		if (!info->isDynamic && has && remove) {
+			auto& registry = scene->GetRegistry();
+			if (!has(registry, handle)) return 0;
+			remove(registry, handle);
+			return 1;
+		}
+		return ScriptBindings::RemoveComponent(scene->GetEntity(handle), *info, false) ? 1 : 0;
 	}
 
 	static int Funke_Entity_HasComponentByTypeId(uint64_t entityID, uint32_t typeId)
@@ -2794,7 +2836,7 @@ namespace Funke {
 		GET_COMPONENT(SliderComponent, entityID, 0);
 		return comp.ValueChangedThisFrame ? 1 : 0;
 	}
-	// Prevents UIEventSystem from double-firing OnValueChanged when C# SetValue fires immediately before the tick diff.
+	// Prevents duplicate value-change notifications when C# SetValue runs before the tick diff.
 	static void Funke_Slider_MarkValueObserved(uint64_t entityID) {
 		GET_COMPONENT(SliderComponent, entityID, );
 		comp.LastObservedValue = comp.Value;
@@ -3346,6 +3388,7 @@ namespace Funke {
 
 		b.Asset_IsValid = FNK_GUARDED_BINDING(Funke_Asset_IsValid);
 		b.Asset_GetOrCreateUUIDFromPath = FNK_GUARDED_BINDING(Funke_Asset_GetOrCreateUUIDFromPath);
+		PopulateAssetBindings(b);
 		b.Asset_BeginLoadAsync = FNK_GUARDED_BINDING(Funke_Asset_BeginLoadAsync);
 		b.Asset_GetLoadStatus = FNK_GUARDED_BINDING(Funke_Asset_GetLoadStatus);
 		b.Asset_CancelLoadAsync = FNK_GUARDED_BINDING(Funke_Asset_CancelLoadAsync);

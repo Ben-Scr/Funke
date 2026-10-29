@@ -1,0 +1,95 @@
+{
+  "Warmups": 3,
+  "OS": {
+    "Caption": "Microsoft Windows 11 Pro",
+    "Version": "10.0.26200",
+    "FreePhysicalMemory": 5720440
+  },
+  "Memory": [
+    {
+      "Capacity": 17179869184,
+      "ConfiguredClockSpeed": 6000
+    },
+    {
+      "Capacity": 17179869184,
+      "ConfiguredClockSpeed": 6000
+    }
+  ],
+  "Timestamp": "2026-10-29T19:35:08.6370564+01:00",
+  "Language": "Native",
+  "Dirty": true,
+  "Count": 100000,
+  "PowerScheme": "GUID des Energieschemas: 381b4222-f694-41f0-9685-ff5bb260df2e  (Ausbalanciert)",
+  "ActiveCompilers": [
+    {
+      "Name": "link.exe",
+      "ProcessId": 81140
+    }
+  ],
+  "Binaries": [
+    {
+      "Algorithm": "SHA256",
+      "Hash": "3E0303E7CCE29D850E3BB26666D2166D78E03E8FBDAD33B5CC06EC77BBC2BC76",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsNativeComparison-20261029\\runtime\\Funke-Runtime.exe"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "50077772D0A319F2F1F981DE309229B67F55D19F4891AECD99C0AB5182F0BAD2",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsNativeComparison-20261029\\runtime\\Funke-Engine.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "BE3439AA7120F3C164B9D4833E7E8315275D79B793B6BFE7504D7A728354B757",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsNativeComparison-20261029\\runtime\\Funke-ScriptCore.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "798EAAE3B4F1FABA0DDF6BC32D33434356CCF7D6C152296247E07AE7A67DF328",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsNativeComparison-20261029\\project\\bin\\Release\\EcsNativeComparison.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "3441774A0FC06CCCA41F4A23C298B5AD51BB3330E88A6D42BC07B0C877B6A4CE",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsNativeComparison-20261029\\project\\bin\\Release-windows-x86_64\\EcsNativeComparison-NativeScripts\\EcsNativeComparison-NativeScripts.dll"
+    }
+  ],
+  "Samples": 9,
+  "GitHead": "c586c2ac69de360163a84d8e2440478d77850616",
+  "CPU": {
+    "Name": "AMD Ryzen 9 7900X 12-Core Processor            ",
+    "NumberOfCores": 12,
+    "NumberOfLogicalProcessors": 24
+  },
+  "Sources": [
+    {
+      "Algorithm": "SHA256",
+      "Hash": "4259A9BF5BBA82BDB8964667023A7DF54BE2D280E1DB8E4416F7F0EAD58C9375",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\CMakeLists.txt"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "9C37F4E2DA213C2AF91B00EF74714673AF0A0EE740D42E5069CCDB0EF737A976",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\ManagedEcsBenchmark.cs"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "9192E9F3FD01483BB5733021321C1771CCF25C801A50D8B90CA73DC5D73D5005",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\NativeEcsBenchmark.cpp"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "03F345E3947C436E3B8CD178F4C6642A5AD16E49E4B3C676F8FC595196052E2A",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\NativeScriptExports.cpp"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "CEDC9199CF8CEFDEC28E625DE805DA14279D0F22D6985832FA30869C775E0184",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\Prepare.ps1"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "D9CF8CD2D4B2834964E4DA1DFA286CE9D54A28D8BB70916F8D2269A4D6B66326",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\Run.ps1"
+    }
+  ]
+}

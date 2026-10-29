@@ -18,7 +18,7 @@ namespace Funke {
 		bool IsOpen = false;
 		bool SelectionChangedThisFrame = false;
 
-		// Transient; not serialized. Gates the first-tick diff so scene load doesn't fire spurious OnSelectedIndexChange.
+		// Transient; not serialized. Gates the first-tick diff so scene load doesn't fire spurious SelectedIndexChange.
 		int LastObservedSelectedIndex = 0;
 		bool SelectionObserved = false;
 

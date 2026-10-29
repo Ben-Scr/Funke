@@ -175,6 +175,99 @@ TEST_CASE("Asset registry root aliases refresh on dirty notifications and explic
 	CHECK(AssetRegistry::GetKind(originalId) == AssetKind::Prefab);
 }
 
+TEST_CASE("Asset registry warm scans retain unchanged snapshots and refresh changed metadata") {
+	GraphicsAssetProject fixture;
+	constexpr uint64_t originalId = 0x7138000000000031ull;
+	constexpr uint64_t replacementId = originalId + 1;
+	const auto originalDirectory = fixture.Root / "Assets" / "Nested" / "Contents";
+	std::filesystem::create_directories(originalDirectory);
+	const auto original = originalDirectory / "original.prefab";
+	const auto originalMeta = Path::FromUtf8(Path::ToUtf8(original) + ".meta");
+	REQUIRE(GraphicsAssetProject::WriteAsset(original, originalId));
+	AssetRegistry::Sync();
+	REQUIRE(AssetRegistry::ResolvePath(originalId) == Path::ToUtf8(std::filesystem::canonical(original)));
+	const auto snapshot = fixture.Root / ".funke" / "asset-registry.cache";
+	REQUIRE(std::filesystem::exists(snapshot));
+
+	SUBCASE("An unchanged scan leaves the snapshot timestamp intact") {
+		const auto stamp = std::filesystem::last_write_time(snapshot) - std::chrono::hours(1);
+		std::filesystem::last_write_time(snapshot, stamp);
+		AssetRegistry::MarkDirty();
+		AssetRegistry::Sync();
+		CHECK(std::filesystem::last_write_time(snapshot) == stamp);
+		CHECK(AssetRegistry::ResolvePath(originalId) == Path::ToUtf8(std::filesystem::canonical(original)));
+	}
+	SUBCASE("A directory move retains the identity and refreshes its canonical path") {
+		const auto movedDirectory = fixture.Root / "Assets" / "Moved";
+		std::filesystem::rename(originalDirectory, movedDirectory);
+		AssetRegistry::MarkDirty();
+		AssetRegistry::Sync();
+		CHECK(AssetRegistry::ResolvePath(originalId) ==
+			Path::ToUtf8(std::filesystem::canonical(movedDirectory / "original.prefab")));
+	}
+	SUBCASE("A metadata identity change is not hidden by the warm fingerprint") {
+		const auto stamp = std::filesystem::last_write_time(originalMeta);
+		REQUIRE(GraphicsAssetProject::WriteAsset(original, replacementId));
+		std::filesystem::last_write_time(originalMeta, stamp + std::chrono::seconds(2));
+		AssetRegistry::MarkDirty();
+		AssetRegistry::Sync();
+		CHECK(AssetRegistry::GetKind(originalId) == AssetKind::Unknown);
+		CHECK(AssetRegistry::GetKind(replacementId) == AssetKind::Prefab);
+	}
+	SUBCASE("A deleted metadata file receives a new identity") {
+		REQUIRE(std::filesystem::remove(originalMeta));
+		AssetRegistry::MarkDirty();
+		AssetRegistry::Sync();
+		const uint64_t replacement = AssetRegistry::GetOrCreateAssetUUID(Path::ToUtf8(original));
+		CHECK(replacement != 0);
+		CHECK(replacement != originalId);
+		CHECK(AssetRegistry::GetKind(originalId) == AssetKind::Unknown);
+	}
+}
+
+TEST_CASE("Asset registry scanned file symlinks retain canonical containment") {
+	GraphicsAssetProject fixture;
+	constexpr uint64_t externalId = 0x7138000000000041ull;
+	const auto external = fixture.Root / "external.prefab";
+	REQUIRE(GraphicsAssetProject::WriteAsset(external, externalId));
+	const auto link = fixture.Root / "Assets" / "linked.prefab";
+	std::error_code ec;
+	std::filesystem::create_symlink(external, link, ec);
+	if (ec) {
+		WARN_MESSAGE(false, "File symlinks are unavailable: ", ec.message());
+		return;
+	}
+	AssetRegistry::Sync();
+	CHECK(AssetRegistry::ResolvePath(externalId).empty());
+	CHECK_FALSE(std::filesystem::exists(Path::FromUtf8(Path::ToUtf8(link) + ".meta")));
+}
+
+TEST_CASE("Built-in asset scanning keeps canonical path GUIDs and explicit overrides") {
+	GraphicsAssetProject fixture;
+	const auto builtInRoot = fixture.Root / "BuiltIns";
+	const std::string uniqueName = Path::ToUtf8(fixture.Root.filename());
+	const auto directory = builtInRoot / uniqueName;
+	std::filesystem::create_directories(directory);
+	const auto automatic = directory / "automatic.png";
+	const auto explicitAsset = directory / "explicit.png";
+	REQUIRE(File::WriteAllText(Path::ToUtf8(automatic), "image"));
+	REQUIRE(File::WriteAllText(Path::ToUtf8(automatic) + ".meta", "{}"));
+	REQUIRE(File::WriteAllText(Path::ToUtf8(explicitAsset), "image"));
+	const std::string automaticPath = Path::ToUtf8(std::filesystem::canonical(automatic));
+	const std::string explicitPath = Path::ToUtf8(std::filesystem::canonical(explicitAsset));
+	const uint64_t automaticId = AssetRegistry::ComputeBuiltInPathGuid(uniqueName + "/automatic.png");
+	const uint64_t explicitId = static_cast<uint64_t>(UUID());
+	AssetRegistry::RegisterBuiltInAsset(explicitPath, explicitId, AssetKind::Texture);
+	AssetRegistry::RegisterBuiltInDirectory(Path::ToUtf8(builtInRoot / "."));
+	CHECK(AssetRegistry::GetOrCreateAssetUUID(automaticPath) == automaticId);
+	CHECK(AssetRegistry::ResolvePath(automaticId) == automaticPath);
+	CHECK(AssetRegistry::GetOrCreateAssetUUID(explicitPath) == explicitId);
+	const size_t count = AssetRegistry::GetBuiltInCount();
+	AssetRegistry::RegisterBuiltInDirectory(Path::ToUtf8(builtInRoot));
+	CHECK(AssetRegistry::GetBuiltInCount() == count);
+	CHECK_FALSE(AssetRegistry::IsBuiltIn(AssetRegistry::ComputeBuiltInPathGuid(uniqueName + "/automatic.png.meta")));
+}
+
 TEST_CASE("Texture UUID cache distinguishes every filter and wrap combination") {
 	std::unordered_map<TextureLoadKey, int, TextureLoadKeyHash> cache;
 	const std::array filters{ Filter::Point, Filter::Bilinear, Filter::Trilinear, Filter::Anisotropic, Filter::Default };

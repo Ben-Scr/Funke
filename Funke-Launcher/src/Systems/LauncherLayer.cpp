@@ -3,6 +3,7 @@
 #include "Project/ProjectManager.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Core/Application.hpp"
+#include "DevTools/RunAutomation.hpp"
 #include <Core/Version.hpp>
 #include <Core/Log.hpp>
 #include "Core/Platform/Win32BuildProgressWindow.hpp"
@@ -430,6 +431,10 @@ artifacts/
 	void LauncherLayer::OnAttach(Application& app) {
 		(void)app;
 		Application::SetIsPlaying(false);
+		if (const char* project = std::getenv("FUNKE_LAUNCHER_OPEN_PROJECT")) m_AutomationOpenProject = project;
+		if (!m_AutomationOpenProject.empty()) {
+			if (const char* report = std::getenv("FUNKE_LAUNCHER_OPEN_REPORT")) m_AutomationOpenReport = report;
+		}
 
 		// Settings drive the splash theme + UI defaults, so load them now; the
 		// heavier registry scan is deferred to OnUpdate (runs behind the splash).
@@ -464,7 +469,8 @@ artifacts/
 			&& m_PrerequisiteProbe.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
 			m_Prerequisites = m_PrerequisiteProbe.get();
 		}
-		if (!m_Prerequisites.Checked || (m_Prerequisites.DotNetSdk && m_Prerequisites.MsvcBuildTools)) return;
+		if (!m_Prerequisites.Checked || (m_Prerequisites.DotNetSdk
+			&& (!m_Prerequisites.NativeDevelopment || m_Prerequisites.MsvcBuildTools))) return;
 
 		const ImVec4 warning(0.96f, 0.68f, 0.26f, 1.0f);
 		auto row = [&](const char* id, const std::string& text, const char* url) {
@@ -481,7 +487,7 @@ artifacts/
 		if (!m_Prerequisites.DotNetSdk) {
 			row("dotnet", FNK_TR("launcher.prereq.dotnet_missing"), k_DotNetSdkDownloadUrl);
 		}
-		if (!m_Prerequisites.MsvcBuildTools) {
+		if (m_Prerequisites.NativeDevelopment && !m_Prerequisites.MsvcBuildTools) {
 			row("msvc", FNK_TR("launcher.prereq.msvc_missing"), k_MsvcBuildToolsDownloadUrl);
 		}
 		ImGui::Spacing();
@@ -520,6 +526,10 @@ artifacts/
 		}
 
 		Localization::Poll();
+		if (!m_AutomationOpenProject.empty() && !m_AutomationOpenStarted) {
+			m_AutomationOpenStarted = true;
+			OpenProject({ Path::ToUtf8(Path::FromUtf8(m_AutomationOpenProject).filename()), m_AutomationOpenProject });
+		}
 
 		// Language/font download results surface in secondary windows, never
 		// inline in Settings: progress goes to the native progress window
@@ -2430,11 +2440,12 @@ artifacts/
 			const bool active = m_TemplateCategoryFilter == value;
 			ImGui::PushStyleColor(ImGuiCol_Button, active ? pal.Accent : pal.Chip);
 			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active ? pal.AccentHover : pal.CardHover);
-			ImGui::PushStyleColor(ImGuiCol_Text, active ? pal.AccentText : ImGui::GetColorU32(ImGuiCol_Text));
+			ImGui::PushStyleColor(ImGuiCol_ButtonActive, active ? pal.Accent : ImGui::GetColorU32(ImGuiCol_ButtonActive));
+			ImGui::PushStyleColor(ImGuiCol_Text, active ? IM_COL32_WHITE : ImGui::GetColorU32(ImGuiCol_Text));
 			if (ImGui::Button((label + "##TemplateCategory").c_str())) {
 				m_TemplateCategoryFilter = value;
 			}
-			ImGui::PopStyleColor(3);
+			ImGui::PopStyleColor(4);
 		};
 		categoryTab(FNK_TR("launcher.create.template.all"), "");
 		for (const std::string& category : categories) {
@@ -2882,11 +2893,12 @@ artifacts/
 			const bool active = m_TemplatePageCategory == value;
 			ImGui::PushStyleColor(ImGuiCol_Button, active ? pal.Accent : pal.Chip);
 			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active ? pal.AccentHover : pal.CardHover);
-			ImGui::PushStyleColor(ImGuiCol_Text, active ? pal.AccentText : ImGui::GetColorU32(ImGuiCol_Text));
+			ImGui::PushStyleColor(ImGuiCol_ButtonActive, active ? pal.Accent : ImGui::GetColorU32(ImGuiCol_ButtonActive));
+			ImGui::PushStyleColor(ImGuiCol_Text, active ? IM_COL32_WHITE : ImGui::GetColorU32(ImGuiCol_Text));
 			if (ImGui::Button((label + "##TemplatePageCategory").c_str())) {
 				m_TemplatePageCategory = value;
 			}
-			ImGui::PopStyleColor(3);
+			ImGui::PopStyleColor(4);
 		};
 		categoryChip(FNK_TR("launcher.create.template.all"), "");
 		for (const std::string& category : categories) {
@@ -3427,6 +3439,12 @@ artifacts/
 
 	// Launches the editor/runtime process but keeps the launcher open.
 	void LauncherLayer::StartProjectLaunch(const LauncherProjectEntry& entry, bool launchRuntime) {
+		if (!m_AutomationOpenReport.empty()) {
+			m_AutomationOpenStart = std::chrono::steady_clock::now();
+			m_AutomationOpenStartedAtUnixMs = std::chrono::duration<double, std::milli>(
+				std::chrono::system_clock::now().time_since_epoch()).count();
+			WriteProjectOpenReport(false, false, 0, 0.0, {});
+		}
 		if (m_IsOpening) return; // Already in post-launch grace overlay
 		{
 			std::scoped_lock lock(m_OpenTask.Mutex);
@@ -3464,6 +3482,7 @@ artifacts/
 			m_OpenTask.Finished = false;
 			m_OpenTask.Success = false;
 			m_OpenTask.SpawnedProcessId = 0;
+			m_OpenTask.SpawnedAtUnixMs = 0.0;
 		}
 
 		if (m_OpenTask.Worker.joinable()) {
@@ -3519,25 +3538,15 @@ artifacts/
 			return;
 		}
 
-		setStage("Preparing package workspace...", 0.10f);
-		FunkeProject::RegenerateResult regen = FunkeProject::RegeneratePackageWorkspaceForProject(entry.Path);
-		if (!regen.Succeeded && regen.ExitCode != -1) {
-			fail("Package workspace generation failed (premake exit code " + std::to_string(regen.ExitCode) + ").");
+		setStage("Checking project packages...", 0.10f);
+		const auto packageBuild = FunkeProject::PrepareProjectPackages(project,
+			FunkeProject::GetActiveBuildConfiguration(), "x64", [&](float progress, std::string_view stage) {
+				setStage(std::string(stage), 0.10f + progress * 0.55f);
+			});
+		if (!packageBuild.Succeeded) {
+			fail("Project package preparation failed (exit code "
+				+ std::to_string(packageBuild.ExitCode) + ").\n" + packageBuild.Output);
 			return;
-		}
-
-		if (FunkeProject::Validate(entry.Path)) {
-			if (!project.Packages.empty()) {
-				setStage("Compiling project packages...", 0.45f);
-				const FunkeProject::BuildResult packageBuild =
-					FunkeProject::BuildProjectPackages(
-						entry.Path, FunkeProject::GetActiveBuildConfiguration(), "x64");
-				if (!packageBuild.Succeeded) {
-					fail("Project package build failed (exit code "
-						+ std::to_string(packageBuild.ExitCode) + ").\n" + packageBuild.Output);
-					return;
-				}
-			}
 		}
 
 		if (launchRuntime) {
@@ -3597,7 +3606,8 @@ artifacts/
 		}
 
 		const std::wstring commandLine =
-			L"\"" + resolvedTargetExe.native() + L"\" --project=\"" + projectPath + L"\"";
+			L"\"" + resolvedTargetExe.native() + L"\" --project=\"" + projectPath + L"\""
+			+ (RunAutomation::IsBackground() ? L" --background" : L"");
 		std::vector<wchar_t> buf(commandLine.begin(), commandLine.end());
 		buf.push_back(L'\0');
 
@@ -3608,7 +3618,7 @@ artifacts/
 		PROCESS_INFORMATION pi{};
 
 		if (!CreateProcessW(resolvedTargetExe.c_str(), buf.data(), nullptr, nullptr,
-			FALSE, CREATE_NEW_PROCESS_GROUP, nullptr,
+			FALSE, CREATE_NEW_PROCESS_GROUP | (RunAutomation::IsBackground() ? CREATE_NO_WINDOW : 0), nullptr,
 			workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &si, &pi))
 		{
 			const DWORD errorCode = GetLastError();
@@ -3628,6 +3638,8 @@ artifacts/
 		m_OpenTask.Stage = launchRuntime ? "Runtime launched" : "Editor launched";
 		m_OpenTask.Progress = 1.0f;
 		m_OpenTask.SpawnedProcessId = spawnedPid;
+		m_OpenTask.SpawnedAtUnixMs = std::chrono::duration<double, std::milli>(
+			std::chrono::system_clock::now().time_since_epoch()).count();
 		m_OpenTask.Success = true;
 		m_OpenTask.Finished = true;
 		m_OpenTask.Running = false;
@@ -3652,7 +3664,9 @@ artifacts/
 
 		unsigned long spawnedPid = 0;
 		std::string loaderError;
-		if (!Process::LaunchDetachedChecked({ Path::ToUtf8(resolvedTargetExe), "--project=" + entry.Path },
+		std::vector<std::string> launchArguments{ Path::ToUtf8(resolvedTargetExe), "--project=" + entry.Path };
+		if (RunAutomation::IsBackground()) launchArguments.push_back("--background");
+		if (!Process::LaunchDetachedChecked(launchArguments,
 				resolvedTargetExe.parent_path(), spawnedPid, loaderError)) {
 			fail(std::string("Failed to launch ") + (launchRuntime ? "runtime." : "editor.")
 				+ (loaderError.empty() ? std::string() : " " + loaderError));
@@ -3666,6 +3680,8 @@ artifacts/
 		m_OpenTask.Stage = launchRuntime ? "Runtime launched" : "Editor launched";
 		m_OpenTask.Progress = 1.0f;
 		m_OpenTask.SpawnedProcessId = spawnedPid;
+		m_OpenTask.SpawnedAtUnixMs = std::chrono::duration<double, std::milli>(
+			std::chrono::system_clock::now().time_since_epoch()).count();
 		m_OpenTask.Success = true;
 		m_OpenTask.Finished = true;
 		m_OpenTask.Running = false;
@@ -3679,6 +3695,7 @@ artifacts/
 		std::string error;
 		LauncherProjectEntry entry;
 		unsigned long pid = 0;
+		double spawnedAtUnixMs = 0.0;
 
 		{
 			std::scoped_lock lock(m_OpenTask.Mutex);
@@ -3689,12 +3706,14 @@ artifacts/
 			error = m_OpenTask.Error;
 			entry = m_OpenTask.Entry;
 			pid = m_OpenTask.SpawnedProcessId;
+			spawnedAtUnixMs = m_OpenTask.SpawnedAtUnixMs;
 			m_OpenTask.Finished = false;
 		}
 
 		if (m_OpenTask.Worker.joinable()) {
 			m_OpenTask.Worker.join();
 		}
+		WriteProjectOpenReport(true, success, pid, spawnedAtUnixMs, error);
 
 		if (success) {
 			// Editor process spawned; transition to the post-launch grace overlay so
@@ -3714,6 +3733,24 @@ artifacts/
 			FNK_ERROR_TAG("Launcher", "{} project failed: {}",
 				launchRuntime ? "Execute" : "Open", msg);
 			ShowError(msg);
+		}
+	}
+
+	void LauncherLayer::WriteProjectOpenReport(bool complete, bool success, unsigned long pid,
+		double spawnedAtUnixMs, const std::string& error) const {
+		if (m_AutomationOpenReport.empty()) return;
+		Json::Value report = Json::Value::MakeObject();
+		report.AddMember("project", m_AutomationOpenProject);
+		report.AddMember("startedAtUnixMs", m_AutomationOpenStartedAtUnixMs);
+		report.AddMember("spawnedAtUnixMs", spawnedAtUnixMs);
+		report.AddMember("launcherElapsedMs", std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - m_AutomationOpenStart).count());
+		report.AddMember("complete", complete);
+		report.AddMember("success", success);
+		report.AddMember("pid", static_cast<int64_t>(pid));
+		report.AddMember("error", error);
+		if (!File::WriteAllText(m_AutomationOpenReport, Json::Stringify(report, true))) {
+			FNK_ERROR_TAG("Launcher", "Could not write project-open report: {}", m_AutomationOpenReport);
 		}
 	}
 

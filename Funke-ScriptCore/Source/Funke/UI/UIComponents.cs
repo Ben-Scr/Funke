@@ -219,17 +219,17 @@ public enum ImageType
 
 public class Interactable : Component
 {
-    public event Action<Interactable>? OnHovered;
-    public event Action<Interactable>? OnClicked;
+    public event Action<Interactable>? Hovered;
+    public event Action<Interactable>? Clicked;
 
-    public event Action<Interactable>? OnPressed; // continuous; use OnMouseDown for rising edge
-    public event Action<Interactable>? OnMouseDown;
+    public event Action<Interactable>? Pressed; // continuous; use MouseDown for rising edge
+    public event Action<Interactable>? MouseDown;
 
-    // Fires on the original pressed Interactable even if cursor left the rect. For hover-gated completion use OnClicked.
-    public event Action<Interactable>? OnMouseUp;
+    // Fires on the original pressed Interactable even if cursor left the rect. For hover-gated completion use Clicked.
+    public event Action<Interactable>? MouseUp;
 
-    public event Action<Interactable>? OnFocusEnter;
-    public event Action<Interactable>? OnFocusExit;
+    public event Action<Interactable>? FocusEnter;
+    public event Action<Interactable>? FocusExit;
 
     public bool IsInteractable
     {
@@ -256,21 +256,21 @@ public class Interactable : Component
         set => InternalCalls.Interactable_SetIsFocused(RequireComponent<Interactable>(), value);
     }
 
-    internal void RaiseHovered() => OnHovered?.Invoke(this);
-    internal void RaiseClicked() => OnClicked?.Invoke(this);
-    internal void RaisePressed() => OnPressed?.Invoke(this);
-    internal void RaiseMouseDown() => OnMouseDown?.Invoke(this);
-    internal void RaiseMouseUp() => OnMouseUp?.Invoke(this);
-    internal void RaiseFocusEnter() => OnFocusEnter?.Invoke(this);
-    internal void RaiseFocusExit() => OnFocusExit?.Invoke(this);
+    internal void RaiseHovered() => Hovered?.Invoke(this);
+    internal void RaiseClicked() => Clicked?.Invoke(this);
+    internal void RaisePressed() => Pressed?.Invoke(this);
+    internal void RaiseMouseDown() => MouseDown?.Invoke(this);
+    internal void RaiseMouseUp() => MouseUp?.Invoke(this);
+    internal void RaiseFocusEnter() => FocusEnter?.Invoke(this);
+    internal void RaiseFocusExit() => FocusExit?.Invoke(this);
 }
 
 public class Button : Component
 {
-    public event Action<Button>? OnClickDown;
-    public event Action<Button>? OnClicked;
-    public event Action<Button>? OnClickUp;
-    public event Action<Button>? OnPressed; // continuous — fires every frame held
+    public event Action<Button>? ClickDown;
+    public event Action<Button>? Clicked;
+    public event Action<Button>? ClickUp;
+    public event Action<Button>? Pressed; // continuous — fires every frame held
 
     public Entity? TargetGraphic
     {
@@ -379,15 +379,15 @@ public class Button : Component
         }
     }
 
-    internal void RaiseClick() => OnClicked?.Invoke(this);
-    internal void RaiseClickDown() => OnClickDown?.Invoke(this);
-    internal void RaiseClickUp() => OnClickUp?.Invoke(this);
-    internal void RaisePressed() => OnPressed?.Invoke(this);
+    internal void RaiseClick() => Clicked?.Invoke(this);
+    internal void RaiseClickDown() => ClickDown?.Invoke(this);
+    internal void RaiseClickUp() => ClickUp?.Invoke(this);
+    internal void RaisePressed() => Pressed?.Invoke(this);
 }
 
 public class Slider : Component
 {
-    public event Action<float>? OnValueChanged;
+    public event Action<float>? ValueChanged;
 
 
     public float Value
@@ -450,7 +450,7 @@ public class Slider : Component
         set => InternalCalls.Slider_SetHandleEntity(RequireComponent<Slider>(), value?.ID ?? 0);
     }
 
-    // notifyEvent=false suppresses OnValueChanged; either way MarkValueObserved prevents UIEventSystem double-fire.
+    // notifyEvent=false suppresses ValueChanged; either way MarkValueObserved prevents UIEventSystem double-fire.
     public void SetValue(float value, bool notifyEvent = true)
     {
         ulong id = RequireComponent<Slider>();
@@ -461,7 +461,7 @@ public class Slider : Component
         {
             float applied = InternalCalls.Slider_GetValue(id);
             if (applied != previous)
-                OnValueChanged?.Invoke(applied);
+                ValueChanged?.Invoke(applied);
         }
     }
 
@@ -562,12 +562,12 @@ public class Slider : Component
         set => InternalCalls.Slider_SetFocusedSprite(RequireComponent<Slider>(), value?.UUID ?? 0);
     }
 
-    internal void RaiseValueChanged() => OnValueChanged?.Invoke(Value);
+    internal void RaiseValueChanged() => ValueChanged?.Invoke(Value);
 }
 
 public class Toggle : Component
 {
-    public event Action<bool>? OnValueChanged;
+    public event Action<bool>? ValueChanged;
 
     public bool IsOn
     {
@@ -598,7 +598,7 @@ public class Toggle : Component
         InternalCalls.Toggle_SetIsOn(id, value);
         InternalCalls.Toggle_MarkIsOnObserved(id);
         if (notifyEvent && previous != value)
-            OnValueChanged?.Invoke(value);
+            ValueChanged?.Invoke(value);
     }
 
     public bool ValueChangedThisFrame => InternalCalls.Toggle_GetValueChangedThisFrame(RequireComponent<Toggle>());
@@ -689,14 +689,14 @@ public class Toggle : Component
         set => InternalCalls.Toggle_SetFocusedSprite(RequireComponent<Toggle>(), value?.UUID ?? 0);
     }
 
-    internal void RaiseValueChanged() => OnValueChanged?.Invoke(IsOn);
+    internal void RaiseValueChanged() => ValueChanged?.Invoke(IsOn);
 }
 
 public class InputField : Component
 {
-    public event Action<string>? OnValueChanged;
-    public event Action<InputField>? OnSelect;
-    public event Action<InputField>? OnDeselect;
+    public event Action<string>? ValueChanged;
+    public event Action<InputField>? Select;
+    public event Action<InputField>? Deselect;
 
     public string Text
     {
@@ -754,7 +754,7 @@ public class InputField : Component
         set => InternalCalls.InputField_SetVerticalScrollbarEntity(RequireComponent<InputField>(), value?.ID ?? 0);
     }
 
-    // Text setter alone never raises OnValueChanged; this method fans out to subscribers and bumps the dispatcher cache.
+    // Text setter alone never raises ValueChanged; this method fans out to subscribers and bumps the dispatcher cache.
     public void SetValue(string value, bool notifyEvent = true)
     {
         ulong id = RequireComponent<InputField>();
@@ -763,7 +763,7 @@ public class InputField : Component
         InternalCalls.InputField_SetText(id, next);
         UIEventDispatcher.MarkInputFieldText(id, next);
         if (notifyEvent && previous != next)
-            OnValueChanged?.Invoke(next);
+            ValueChanged?.Invoke(next);
     }
 
     public Vector4 NormalColor
@@ -852,14 +852,14 @@ public class InputField : Component
         set => InternalCalls.InputField_SetFocusedSprite(RequireComponent<InputField>(), value?.UUID ?? 0);
     }
 
-    internal void RaiseValueChanged(string text) => OnValueChanged?.Invoke(text);
-    internal void RaiseSelect() => OnSelect?.Invoke(this);
-    internal void RaiseDeselect() => OnDeselect?.Invoke(this);
+    internal void RaiseValueChanged(string text) => ValueChanged?.Invoke(text);
+    internal void RaiseSelect() => Select?.Invoke(this);
+    internal void RaiseDeselect() => Deselect?.Invoke(this);
 }
 
 public class Dropdown : Component
 {
-    public event Action<int>? OnSelectedIndexChange;
+    public event Action<int>? SelectedIndexChange;
 
     public int SelectedIndex
     {
@@ -1102,12 +1102,12 @@ public class Dropdown : Component
         set => InternalCalls.Dropdown_SetFocusedSprite(RequireComponent<Dropdown>(), value?.UUID ?? 0);
     }
 
-    internal void RaiseSelectedIndexChange() => OnSelectedIndexChange?.Invoke(SelectedIndex);
+    internal void RaiseSelectedIndexChange() => SelectedIndexChange?.Invoke(SelectedIndex);
 }
 
 public class Scrollbar : Component
 {
-    public event Action<float>? OnValueChanged;
+    public event Action<float>? ValueChanged;
 
     public float Value
     {
@@ -1162,7 +1162,7 @@ public class Scrollbar : Component
         {
             float applied = InternalCalls.Scrollbar_GetValue(id);
             if (applied != previous)
-                OnValueChanged?.Invoke(applied);
+                ValueChanged?.Invoke(applied);
         }
     }
 
@@ -1253,12 +1253,12 @@ public class Scrollbar : Component
         set => InternalCalls.Scrollbar_SetFocusedSprite(RequireComponent<Scrollbar>(), value?.UUID ?? 0);
     }
 
-    internal void RaiseValueChanged() => OnValueChanged?.Invoke(Value);
+    internal void RaiseValueChanged() => ValueChanged?.Invoke(Value);
 }
 
 public class ScrollRect : Component
 {
-    public event Action<Vector2>? OnValueChanged;
+    public event Action<Vector2>? ValueChanged;
 
     public Entity? Content
     {
@@ -1389,11 +1389,11 @@ public class ScrollRect : Component
         {
             InternalCalls.ScrollRect_GetNormalizedPosition(id, out float ax, out float ay);
             if (ax != px || ay != py)
-                OnValueChanged?.Invoke(new Vector2(ax, ay));
+                ValueChanged?.Invoke(new Vector2(ax, ay));
         }
     }
 
-    internal void RaiseValueChanged() => OnValueChanged?.Invoke(NormalizedPosition);
+    internal void RaiseValueChanged() => ValueChanged?.Invoke(NormalizedPosition);
 }
 
 public class Mask : Component
@@ -1408,7 +1408,7 @@ public class Mask : Component
 
 public class CircularSlider : Component
 {
-    public event Action<float>? OnValueChanged;
+    public event Action<float>? ValueChanged;
 
     public float Value
     {
@@ -1515,7 +1515,7 @@ public class CircularSlider : Component
         {
             float applied = InternalCalls.CircularSlider_GetValue(id);
             if (applied != previous)
-                OnValueChanged?.Invoke(applied);
+                ValueChanged?.Invoke(applied);
         }
     }
 
@@ -1614,7 +1614,7 @@ public class CircularSlider : Component
         set => InternalCalls.CircularSlider_SetFocusedSprite(RequireComponent<CircularSlider>(), value?.UUID ?? 0);
     }
 
-    internal void RaiseValueChanged() => OnValueChanged?.Invoke(Value);
+    internal void RaiseValueChanged() => ValueChanged?.Invoke(Value);
 }
 
 public class HorizontalLayoutGroup : Component

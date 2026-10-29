@@ -1,0 +1,5 @@
+{
+  "reason": "Deployed Editor was not rebuilt after the final engine-header hash changed. Native log reports header mismatch (85a4bc9492b76a1d vs 914b2433d0d33f4e) before Bridge log capture started.",
+  "comparisonUse": "Preserved diagnostic results only; repeat after matching Editor build/deploy.",
+  "harnessCorrection": "Native logs are now scanned after process exit, including early initialization errors."
+}

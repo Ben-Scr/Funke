@@ -250,6 +250,92 @@ public unsafe class ManagedComponentStoreTests
     }
 
     [Fact]
+    public void BatchDestructionInvalidatesOnlySelectedEntitiesAndSharedWrappers()
+    {
+        WithBindings(() =>
+        {
+            Entity first = Create(1);
+            Entity survivor = Create(2);
+            Entity third = Create(3);
+            Component firstTransform = first.Transform!;
+            SpriteRenderer firstSprite = first.GetComponent<SpriteRenderer>()!;
+            Component thirdTransform = third.Transform!;
+            Component survivorTransform = survivor.Transform!;
+            Entity alias = Entity.FromID(1);
+            Assert.Same(firstTransform, alias.Transform);
+
+            ulong* ids = stackalloc ulong[] { 1, 0, 3, 1, 999 };
+            delegate* unmanaged<ulong*, int, void> notify = &ScriptInstanceManager.NotifyEntitiesDestroyed;
+            notify(ids, 5);
+
+            Assert.Same(Entity.Invalid, firstTransform.Entity);
+            Assert.Same(Entity.Invalid, firstSprite.Entity);
+            Assert.Same(Entity.Invalid, thirdTransform.Entity);
+            Assert.Same(survivorTransform, Entity.FromID(2).Transform);
+            Assert.NotSame(firstTransform, alias.Transform);
+            Assert.Same(alias.Transform, first.Transform);
+        });
+    }
+
+    [Fact]
+    public void BatchRemovalPreservesOtherComponentsAndReaddReplacesCachedWrappers()
+    {
+        WithBindings(() =>
+        {
+            Entity first = Create(1);
+            Entity survivor = Create(2);
+            Entity third = Create(3);
+            Entity alias = Entity.FromID(1);
+            Component firstTransform = first.Transform!;
+            Component thirdTransform = third.Transform!;
+            Component survivorTransform = survivor.Transform!;
+            SpriteRenderer firstSprite = first.GetComponent<SpriteRenderer>()!;
+            ManagedData managed = first.AddComponent<ManagedData>()!;
+            Assert.Same(firstTransform, alias.Transform);
+            s_Components.Remove((1, k_TransformType));
+            s_Components.Remove((3, k_TransformType));
+
+            ulong* ids = stackalloc ulong[] { 1, 3, 1, 0, 999 };
+            delegate* unmanaged<ulong*, int, uint, void> notify = &ScriptInstanceManager.NotifyComponentsRemoved;
+            notify(ids, 5, k_TransformType);
+
+            Assert.Same(Entity.Invalid, firstTransform.Entity);
+            Assert.Same(Entity.Invalid, thirdTransform.Entity);
+            Assert.Same(survivorTransform, Entity.FromID(2).Transform);
+            Assert.Same(firstSprite, alias.GetComponent<SpriteRenderer>());
+            Assert.Same(managed, alias.GetComponent<ManagedData>());
+            Assert.Null(alias.Transform);
+            s_Components.Add((1, k_TransformType));
+            Component replacement = alias.Transform!;
+            Assert.NotSame(firstTransform, replacement);
+            Assert.Same(replacement, first.Transform);
+        });
+    }
+
+    [Fact]
+    public void EmptyOrInvalidInvalidationBatchesAreNoOps()
+    {
+        WithBindings(() =>
+        {
+            Entity entity = Create(1);
+            Component transform = entity.Transform!;
+            ulong id = 1;
+            delegate* unmanaged<ulong*, int, void> destroy = &ScriptInstanceManager.NotifyEntitiesDestroyed;
+            delegate* unmanaged<ulong*, int, uint, void> remove = &ScriptInstanceManager.NotifyComponentsRemoved;
+            destroy(null, 1);
+            destroy(&id, 0);
+            destroy(&id, -1);
+            remove(null, 1, k_TransformType);
+            remove(&id, 0, k_TransformType);
+            remove(&id, -1, k_TransformType);
+            remove(&id, 1, 0);
+            remove(&id, 1, 999);
+            Assert.Same(transform, entity.Transform);
+            Assert.Same(entity, transform.Entity);
+        });
+    }
+
+    [Fact]
     public void UnknownEntityAndComponentAreNoOps()
     {
         WithBindings(() =>

@@ -1,6 +1,7 @@
 #include "pch.hpp"
 
 #include "Jobs/JobSystem.hpp"
+#include "Jobs/Job.hpp"
 #include "Core/Platform.hpp"
 
 #include "Profiling/Profiler.hpp"
@@ -21,8 +22,12 @@ namespace Funke {
 
 	namespace {
 
-		// MPMC lock-free queue; Enqueue wait-free in common path. Replaces prior mutex+deque+condvar that serialized all operations and thundering-herded workers.
-		moodycamel::BlockingConcurrentQueue<std::function<void()>> s_Queue;
+		struct JobEntry {
+			std::function<void()> Work;
+			std::shared_ptr<JobControlBlock> Completion;
+		};
+
+		moodycamel::BlockingConcurrentQueue<JobEntry> s_Queue;
 
 		// Single PoolState atomic: previously two independent atomics let Shutdown flip Running between the Enqueue load and the actual insert, stranding jobs.
 		enum class PoolState : uint8_t { Uninit = 0, Running = 1, ShuttingDown = 2 };
@@ -66,10 +71,17 @@ namespace Funke {
 			FUNKE_PROFILE_THREAD_NAME(name);
 		}
 
-		void ExecuteJob(std::function<void()>&& job) {
+		void ExecuteJob(JobEntry&& job) {
 			FUNKE_PROFILE_SCOPE("JobSystem::Job");
+			struct CompletionGuard {
+				std::shared_ptr<JobControlBlock> Block;
+				~CompletionGuard() { JobInternal::NotifyOne(Block); }
+			} completion{std::move(job.Completion)};
+			// Script DLLs may unload as soon as Wait returns; destroy their callable before signaling.
+			auto work = std::move(job.Work);
+			job.Work = nullptr;
 			try {
-				if (job) job();
+				if (work) work();
 			}
 			catch (const std::exception& e) {
 				FNK_CORE_ERROR_TAG("JobSystem", "Job failed: {}", e.what());
@@ -83,7 +95,7 @@ namespace Funke {
 			t_WorkerIndex = workerIndex;
 			SetWorkerThreadName(workerIndex);
 
-			std::function<void()> job;
+			JobEntry job;
 			while (s_State.load(std::memory_order_acquire) == PoolState::Running) {
 				if (s_Queue.wait_dequeue_timed(job, std::chrono::milliseconds(50))) {
 					ExecuteJob(std::move(job));
@@ -92,6 +104,22 @@ namespace Funke {
 
 			while (s_Queue.try_dequeue(job)) {
 				ExecuteJob(std::move(job));
+			}
+		}
+
+		void EnqueueJob(JobEntry job) {
+			if (!job.Work && !job.Completion) return;
+			if (s_State.load(std::memory_order_acquire) != PoolState::Running) {
+				ExecuteJob(std::move(job));
+				return;
+			}
+			if (!s_Queue.enqueue(std::move(job))) {
+				ExecuteJob(std::move(job));
+				return;
+			}
+			if (s_State.load(std::memory_order_acquire) != PoolState::Running) {
+				JobEntry drained;
+				while (s_Queue.try_dequeue(drained)) ExecuteJob(std::move(drained));
 			}
 		}
 
@@ -140,7 +168,7 @@ namespace Funke {
 		// Poison-pill wake: N empty jobs unblock workers so the Running check fires promptly; genuine work that slipped in is drained by WorkerMain's post-loop.
 		const size_t workerCount = s_Workers.size();
 		for (size_t i = 0; i < workerCount; ++i) {
-			s_Queue.enqueue(std::function<void()>{});
+			s_Queue.enqueue(JobEntry{});
 		}
 
 		for (auto& worker : s_Workers) {
@@ -153,7 +181,7 @@ namespace Funke {
 
 		// Run (not discard) anything that slipped in after the workers drained: a dropped job never signals its handle, so Job::Wait would spin forever.
 		// Jobs enqueued from here on see ShuttingDown and run inline.
-		std::function<void()> leftover;
+		JobEntry leftover;
 		while (s_Queue.try_dequeue(leftover)) {
 			ExecuteJob(std::move(leftover));
 		}
@@ -194,29 +222,15 @@ namespace Funke {
 	}
 
 	void JobSystem::Enqueue(std::function<void()> work) {
-		if (!work) return;
+		EnqueueJob({std::move(work), {}});
+	}
 
-		// Run inline if the pool is not up; the second state check below drains anything that raced with Shutdown.
-		if (s_State.load(std::memory_order_acquire) != PoolState::Running) {
-			ExecuteJob(std::move(work));
-			return;
-		}
-		if (!s_Queue.enqueue(std::move(work))) {
-			ExecuteJob(std::move(work));
-			return;
-		}
-
-		// Re-check: Shutdown may have flipped after the first load; workers' drain loop may have already exited, so drain inline here to avoid losing the enqueue.
-		if (s_State.load(std::memory_order_acquire) != PoolState::Running) {
-			std::function<void()> drained;
-			while (s_Queue.try_dequeue(drained)) {
-				if (drained) ExecuteJob(std::move(drained));
-			}
-		}
+	void JobInternal::Enqueue(const std::shared_ptr<JobControlBlock>& block, std::function<void()> work) {
+		EnqueueJob({std::move(work), block});
 	}
 
 	bool JobSystem::TryPopAndRun() {
-		std::function<void()> job;
+		JobEntry job;
 		if (!s_Queue.try_dequeue(job)) {
 			return false;
 		}

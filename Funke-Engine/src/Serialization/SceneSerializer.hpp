@@ -98,6 +98,21 @@ namespace Funke {
 
 	private:
 		friend class PrefabTemplateCache;
+		friend class SceneManager;
+		class NewSceneLoadScope {
+		public:
+			explicit NewSceneLoadScope(Scene& scene);
+			~NewSceneLoadScope();
+			bool HasRollbackFailure() const;
+			NewSceneLoadScope(const NewSceneLoadScope&) = delete;
+			NewSceneLoadScope& operator=(const NewSceneLoadScope&) = delete;
+		private:
+			Scene* m_Target;
+			Scene* m_Previous;
+			Scene* m_PreviousRollbackFailure;
+		};
+		template <typename Load>
+		static bool DeserializeNewScene(Scene& scene, Load&& load, std::string_view source);
 		static void TrackPrefabCacheScene(Scene& scene);
 
 		// Shared by the whole-DOM load (DeserializeScene) and the streaming binary load: the

@@ -53,6 +53,17 @@ namespace Funke::EditorShortcuts {
 			|| ImGui::IsKeyChordPressed(ImGuiKey_KeypadDecimal);
 	}
 
+	enum class HistoryAction { None, Undo, Redo };
+
+	inline HistoryAction ReadHistoryAction(bool blocked) {
+		const ImGuiIO& io = ImGui::GetIO();
+		if (blocked || io.AppFocusLost || io.WantTextInput || ImGui::IsAnyItemActive()) return HistoryAction::None;
+		if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Y)
+			|| ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z)) return HistoryAction::Redo;
+		if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Z)) return HistoryAction::Undo;
+		return HistoryAction::None;
+	}
+
 	inline bool IsRenamePressed() {
 #ifdef FNK_PLATFORM_MACOS
 		if (ImGui::IsKeyChordPressed(ImGuiKey_KeypadEnter)) return true;

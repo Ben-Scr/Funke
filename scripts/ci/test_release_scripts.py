@@ -102,7 +102,14 @@ class EditorScriptToolingSourceTests(unittest.TestCase):
         )
         self.assertRegex(
             source,
-            r"RebuildAndReloadScripts\(\);\s+if \(m_LastRebuildFailed\) \{\s+return false;",
+            r'm_ManagedRebuildError = "Cannot rebuild C# scripts: managed project path is not configured\.";',
+        )
+        header = SCRIPT_SYSTEM.with_suffix(".hpp").read_text(encoding="utf-8")
+        self.assertIn("return m_ManagedRebuildError.empty() && m_NativeRebuildError.empty();", header)
+        editor = (REPO_ROOT / "Funke-Editor/src/Systems/ImGuiEditorLayer.cpp").read_text(encoding="utf-8")
+        self.assertRegex(
+            editor,
+            r"if \(scriptSys && !scriptSys->DidLastRebuildSucceed\(\)\) \{[^}]*return;",
         )
 
     def test_failed_dotnet_output_is_not_trace_only(self) -> None:

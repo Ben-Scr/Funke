@@ -4,7 +4,7 @@
 namespace Funke {
 
 	// Bump together with InteropHandshake.LayoutVersion (ScriptHostBridge.cs) on any add/remove/reorder in NativeBindings or ManagedCallbacks.
-	inline constexpr int32_t k_ScriptInteropLayoutVersion = 44;
+	inline constexpr int32_t k_ScriptInteropLayoutVersion = 46;
 
 	/// Layout must match C# NativeBindingsStruct exactly (Sequential, blittable).
 	struct NativeBindings
@@ -1362,6 +1362,9 @@ namespace Funke {
 		void     (*Asset_ReleaseLoad)(uint64_t operationId);
 		int      (*Ecb_PlaybackWithMode)(const uint8_t* buffer, int length,
 			uint64_t* outRuntimeIds, int maxOut, int mode);
+		uint64_t (*Asset_LoadTyped)(const char* path, uint64_t assetId, int expectedKind);
+		uint64_t (*Asset_BeginLoadTypedAsync)(const char* path, uint64_t assetId, int expectedKind);
+		void     (*Asset_CancelLoads)(const uint64_t* operationIds, int count, int release);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.
@@ -1378,7 +1381,7 @@ namespace Funke {
 		void    (*InvokeCollisionStay2D)(int32_t handle, uint64_t selfEntityID, uint64_t otherEntityID, uint64_t entityAID, uint64_t entityBID, float contactPointX, float contactPointY);
 		void    (*InvokeCollisionExit2D)(int32_t handle, uint64_t selfEntityID, uint64_t otherEntityID, uint64_t entityAID, uint64_t entityBID, float contactPointX, float contactPointY);
 		int     (*ClassExists)(const char* className);
-		int     (*LoadUserAssembly)(const char* path);
+		int     (*LoadUserAssembly)(const char* path); // 1 loaded, -1 previous retained, 0 unavailable.
 		void    (*UnloadUserAssembly)();
 		const char* (*GetScriptFields)(int32_t handle);
 		void    (*SetScriptField)(int32_t handle, const char* fieldName, const char* value);
@@ -1504,6 +1507,9 @@ namespace Funke {
 		void        (*SceneLoadCompleted)(uint64_t operationId, int status, const char* sceneName, uint64_t sceneGuid);
 		void        (*PumpSceneLoadRequests)();
 		void        (*NotifyComponentRemoved)(uint64_t entityID, uint32_t typeId);
+		void        (*NotifyEntitiesDestroyed)(const uint64_t* entityIDs, int count);
+		void        (*NotifyComponentsRemoved)(const uint64_t* entityIDs, int count, uint32_t typeId);
+		void        (*AssetLoadsCompleted)(const uint64_t* operationIds, const uint64_t* assetIds, const int* statuses, int count);
 	};
 
 } // namespace Funke

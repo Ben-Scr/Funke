@@ -19,9 +19,12 @@ namespace Funke::InspectorUndoRecorder {
 		struct State {
 			bool Active = false;
 			ImGuiID ActiveId = 0;          // widget being edited; a change ends the gesture
+			const Scene* SceneContext = nullptr;
+			std::string FieldName;
 			std::string Name;
 			InspectorEditCommand::ApplyFn Apply;
 			std::vector<uint64_t> Ids;
+			bool SceneProperty = false;
 			std::vector<PropertyValue> Old; // captured pre-write on the gesture's first frame
 			std::vector<PropertyValue> New; // refreshed each write; the last is the final value
 			std::vector<std::unique_ptr<EditCommand>> Queue;
@@ -37,9 +40,9 @@ namespace Funke::InspectorUndoRecorder {
 			const std::size_t n = std::min({ s.Ids.size(), s.Old.size(), s.New.size() });
 			std::vector<InspectorEditCommand::Entry> entries;
 			for (std::size_t i = 0; i < n; ++i) {
-				if (s.Ids[i] == 0) continue;
+				if (s.Ids[i] == 0 && !s.SceneProperty) continue;
 				if (s.Old[i] == s.New[i]) continue;
-				entries.push_back({ s.Ids[i], s.Old[i], s.New[i] });
+				entries.push_back({ s.Ids[i], s.Old[i], s.New[i], s.SceneProperty });
 			}
 			s.Old.clear(); s.New.clear(); s.Ids.clear();
 
@@ -51,22 +54,28 @@ namespace Funke::InspectorUndoRecorder {
 	void CaptureBefore(std::span<const Entity> entities, const PropertyDescriptor& descriptor) {
 		State& s = Get();
 		const ImGuiID id = ImGui::GetActiveID();
-		// A different active widget means the previous gesture ended.
-		if (s.Active && id != s.ActiveId) {
+		std::vector<uint64_t> ids;
+		for (const Entity& entity : entities) {
+			Scene* scene = const_cast<Entity&>(entity).GetScene();
+			ids.push_back(scene && entity.IsValid() ? scene->GetEntityPersistentID(entity.GetHandle()) : 0);
+		}
+		const Scene* sceneContext = entities.empty() ? nullptr : const_cast<Entity&>(entities.front()).GetScene();
+		if (s.Active && (id == 0 || id != s.ActiveId || descriptor.Name != s.FieldName
+			|| sceneContext != s.SceneContext || ids != s.Ids)) {
 			Finalize();
 		}
 		if (s.Active) return;
 
 		s.Active = true;
 		s.ActiveId = id;
+		s.SceneContext = sceneContext;
+		s.FieldName = descriptor.Name;
+		s.SceneProperty = entities.size() == 1 && sceneContext && entities.front().GetHandle() == entt::null;
 		s.Name = descriptor.DisplayName.empty() ? descriptor.Name : descriptor.DisplayName;
 		s.Apply = descriptor.Set;
-		s.Ids.clear(); s.Old.clear(); s.New.clear();
-		s.Ids.reserve(entities.size());
+		s.Ids = std::move(ids); s.Old.clear(); s.New.clear();
 		s.Old.reserve(entities.size());
 		for (const Entity& e : entities) {
-			Scene* scene = const_cast<Entity&>(e).GetScene();
-			s.Ids.push_back(scene ? scene->GetEntityPersistentID(e.GetHandle()) : 0);
 			s.Old.push_back(descriptor.Get(e));
 		}
 	}
@@ -92,10 +101,19 @@ namespace Funke::InspectorUndoRecorder {
 		s.Queue.clear();
 	}
 
+	void Record(std::unique_ptr<EditCommand> command) {
+		if (!command) return;
+		Finalize();
+		Get().Queue.push_back(std::move(command));
+	}
+
 	void Reset() {
 		State& s = Get();
 		s.Active = false;
 		s.ActiveId = 0;
+		s.SceneContext = nullptr;
+		s.FieldName.clear();
+		s.SceneProperty = false;
 		s.Apply = nullptr;
 		s.Name.clear();
 		s.Ids.clear(); s.Old.clear(); s.New.clear();

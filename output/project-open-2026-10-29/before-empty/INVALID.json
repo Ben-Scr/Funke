@@ -1,0 +1,4 @@
+{
+  "valid": false,
+  "reason": "Stale co-located Editor executable had an engine header ABI mismatch."
+}

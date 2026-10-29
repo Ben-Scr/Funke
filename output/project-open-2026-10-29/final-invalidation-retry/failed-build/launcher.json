@@ -1,0 +1,10 @@
+{
+  "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenPackages",
+  "startedAtUnixMs": 1.7933069744514531e+12,
+  "spawnedAtUnixMs": 0,
+  "launcherElapsedMs": 869.9712,
+  "complete": true,
+  "success": false,
+  "pid": 0,
+  "error": "Project package preparation failed (exit code 1).\n[Pkg.Bench.Startup.Native.vcxproj]\n\r\n  PInvoke.cpp\r\nC:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenPackages\\Packages\\Bench.Startup\\src\\PInvoke.cpp(21,1): error C1189: #error:  ExpectedStartupCacheBuildFailure [C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenPackages\\.funke\\build\\packages\\generated\\Pkg.Bench.Startup.Native\\Pkg.Bench.Startup.Native.vcxproj]\r\n"
+}

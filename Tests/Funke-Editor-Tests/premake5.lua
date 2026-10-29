@@ -25,6 +25,7 @@ project "Funke-Editor-Tests"
     files
     {
         path.join(ROOT_DIR, "Funke-Editor/src/Build/GameBuilder.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Build/DotNetRuntimeBundle.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/BuildAssetPruning.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/SceneRecovery.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/PlatformBuilder.cpp"),
@@ -43,7 +44,8 @@ project "Funke-Editor-Tests"
         path.join(ROOT_DIR, "Funke-Editor/src/Undo/TransformEditCommand.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Undo/InspectorEditCommand.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Undo/InspectorUndoRecorder.cpp"),
-        path.join(ROOT_DIR, "Funke-Editor/src/Undo/StructureEditCommand.cpp")
+        path.join(ROOT_DIR, "Funke-Editor/src/Undo/StructureEditCommand.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Undo/StructureReferenceSnapshot.cpp")
     }
 
     -- Link the engine SharedLib (same set the editor uses) so calls into

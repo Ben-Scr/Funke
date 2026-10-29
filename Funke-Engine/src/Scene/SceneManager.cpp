@@ -918,13 +918,23 @@ namespace Funke {
 			const auto loadCallbacks = preparedLoad ? preparedLoad->Steps : definition->m_LoadCallbacks;
 			for (size_t i = 0; i < loadCallbacks.size(); ++i) {
 				const auto& step = loadCallbacks[i];
-				if (step.Callback) {
-					step.Callback(*newScene);
+				bool loaded = true;
+				{
+					SceneSerializer::NewSceneLoadScope contentScope(*newScene);
+					if (step.Callback) {
+						step.Callback(*newScene);
+					}
+					else {
+						loaded = preparedLoad
+							? SceneSerializer::DeserializeScene(*newScene, preparedLoad->Prepared.Roots[i], step.FilePath)
+							: SceneSerializer::LoadFromFile(*newScene, step.FilePath);
+					}
+					loaded = loaded && !contentScope.HasRollbackFailure();
 				}
-				else if (!(preparedLoad
-					? SceneSerializer::DeserializeScene(*newScene, preparedLoad->Prepared.Roots[i], step.FilePath)
-					: SceneSerializer::LoadFromFile(*newScene, step.FilePath))) {
-					return failStagedLoad(SceneLoadStatus::LoadCallbackFailed, "Failed to load scene file '" + step.FilePath + "'");
+				if (!loaded) {
+					return failStagedLoad(SceneLoadStatus::LoadCallbackFailed, step.FilePath.empty()
+						? "Failed to restore scene content after a load callback"
+						: "Failed to load scene file '" + step.FilePath + "'");
 				}
 			}
 		}

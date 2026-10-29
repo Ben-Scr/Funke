@@ -1,0 +1,821 @@
+{
+  "method": "Fresh processes, isolated user state, warm project/build/OS caches;1 excluded warmup and5 recorded samples. Actual Launcher StartProjectLaunch through ready Editor Bridge; scripts readiness separately. Same D3D12 AMD Radeon RX7800XT hardware and fixtures.",
+  "projects": {
+    "empty": {
+      "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\graphics-startup-2026-10-29\\before-empty",
+      "samples": 5,
+      "metrics": {
+        "editorReadyMs": {
+          "median": 1485.955810546875,
+          "min": 1339.494873046875,
+          "max": 1554.15869140625,
+          "values": [
+            1461.73046875,
+            1554.15869140625,
+            1485.955810546875,
+            1548.135498046875,
+            1339.494873046875
+          ]
+        },
+        "scriptsReadyMs": {
+          "median": 1485.955810546875,
+          "min": 1339.494873046875,
+          "max": 1554.15869140625,
+          "values": [
+            1461.73046875,
+            1554.15869140625,
+            1485.955810546875,
+            1548.135498046875,
+            1339.494873046875
+          ]
+        },
+        "launchToSpawnMs": {
+          "median": 17.478759765625,
+          "min": 16.591552734375,
+          "max": 20.99755859375,
+          "values": [
+            17.38818359375,
+            19.30810546875,
+            16.591552734375,
+            20.99755859375,
+            17.478759765625
+          ]
+        },
+        "spawnToReadyMs": {
+          "median": 1469.3642578125,
+          "min": 1322.01611328125,
+          "max": 1534.8505859375,
+          "values": [
+            1444.34228515625,
+            1534.8505859375,
+            1469.3642578125,
+            1527.137939453125,
+            1322.01611328125
+          ]
+        }
+      },
+      "startupPhases": {
+        "Funke-Launcher.Window": {
+          "median": 126.112,
+          "min": 113.089,
+          "max": 136.799,
+          "values": [
+            136.799,
+            124.519,
+            128.733,
+            113.089,
+            126.112
+          ]
+        },
+        "Funke-Launcher.RenderApi": {
+          "median": 782.091,
+          "min": 685.546,
+          "max": 950.556,
+          "values": [
+            782.091,
+            950.556,
+            685.546,
+            829.13,
+            769.148
+          ]
+        },
+        "Funke-Launcher.Application": {
+          "median": 943.493,
+          "min": 838.856,
+          "max": 1099.28,
+          "values": [
+            943.493,
+            1099.28,
+            838.856,
+            968.682,
+            918.794
+          ]
+        },
+        "Funke-Editor.JobSystem": {
+          "median": 0.385,
+          "min": 0.2859,
+          "max": 0.5676,
+          "values": [
+            0.5676,
+            0.385,
+            0.3657,
+            0.2859,
+            0.4188
+          ]
+        },
+        "Funke-Editor.FrameArenas": {
+          "median": 0.0228,
+          "min": 0.0144,
+          "max": 0.0343,
+          "values": [
+            0.0261,
+            0.0155,
+            0.0228,
+            0.0144,
+            0.0343
+          ]
+        },
+        "Funke-Editor.Window": {
+          "median": 118.543,
+          "min": 116.014,
+          "max": 129.28,
+          "values": [
+            117.665,
+            129.28,
+            120.587,
+            118.543,
+            116.014
+          ]
+        },
+        "Funke-Editor.RenderApi": {
+          "median": 787.529,
+          "min": 720.375,
+          "max": 897.248,
+          "values": [
+            787.529,
+            886.244,
+            749.529,
+            897.248,
+            720.375
+          ]
+        },
+        "Funke-Editor.TextureManager": {
+          "median": 21.9946,
+          "min": 19.0202,
+          "max": 24.0355,
+          "values": [
+            23.846,
+            19.0202,
+            24.0355,
+            21.9946,
+            19.5043
+          ]
+        },
+        "Funke-Editor.ShaderManager": {
+          "median": 0.0076,
+          "min": 0.0062,
+          "max": 0.0079,
+          "values": [
+            0.0076,
+            0.0065,
+            0.0079,
+            0.0076,
+            0.0062
+          ]
+        },
+        "Funke-Editor.Renderer2D": {
+          "median": 8.0536,
+          "min": 6.9715,
+          "max": 9.3147,
+          "values": [
+            8.1219,
+            6.9715,
+            9.3147,
+            8.0536,
+            7.1778
+          ]
+        },
+        "Funke-Editor.GizmoRenderer": {
+          "median": 0.1933,
+          "min": 0.1844,
+          "max": 0.2521,
+          "values": [
+            0.1933,
+            0.188,
+            0.2521,
+            0.2162,
+            0.1844
+          ]
+        },
+        "Funke-Editor.GuiRenderer": {
+          "median": 0.0076,
+          "min": 0.0056,
+          "max": 0.0082,
+          "values": [
+            0.0076,
+            0.0056,
+            0.0082,
+            0.0071,
+            0.0077
+          ]
+        },
+        "Funke-Editor.PhysicsSystem": {
+          "median": 0.0323,
+          "min": 0.0303,
+          "max": 0.049,
+          "values": [
+            0.0353,
+            0.0316,
+            0.049,
+            0.0323,
+            0.0303
+          ]
+        },
+        "Funke-Editor.FontManager": {
+          "median": 0.2654,
+          "min": 0.177,
+          "max": 0.345,
+          "values": [
+            0.2654,
+            0.2179,
+            0.3147,
+            0.345,
+            0.177
+          ]
+        },
+        "Funke-Editor.AudioManager": {
+          "median": 21.6953,
+          "min": 20.6841,
+          "max": 26.0075,
+          "values": [
+            26.0075,
+            20.6841,
+            22.5155,
+            21.5027,
+            21.6953
+          ]
+        },
+        "Funke-Editor.SceneManager": {
+          "median": 0.7508,
+          "min": 0.6148,
+          "max": 0.9633,
+          "values": [
+            0.95,
+            0.6148,
+            0.9633,
+            0.691,
+            0.7508
+          ]
+        },
+        "Funke-Editor.Application": {
+          "median": 1053.7,
+          "min": 924.491,
+          "max": 1121.23,
+          "values": [
+            1023.43,
+            1106.95,
+            1053.7,
+            1121.23,
+            924.491
+          ]
+        }
+      },
+      "validation": {
+        "allSuccess": true,
+        "nativeErrors": 0
+      }
+    },
+    "packages": {
+      "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\graphics-startup-2026-10-29\\before-packages-valid",
+      "samples": 5,
+      "metrics": {
+        "editorReadyMs": {
+          "median": 1580.3623046875,
+          "min": 1534.47119140625,
+          "max": 1671.536376953125,
+          "values": [
+            1645.31982421875,
+            1671.536376953125,
+            1580.3623046875,
+            1534.47119140625,
+            1537.30859375
+          ]
+        },
+        "scriptsReadyMs": {
+          "median": 1580.3623046875,
+          "min": 1534.47119140625,
+          "max": 1671.536376953125,
+          "values": [
+            1645.31982421875,
+            1671.536376953125,
+            1580.3623046875,
+            1534.47119140625,
+            1537.30859375
+          ]
+        },
+        "launchToSpawnMs": {
+          "median": 273.20361328125,
+          "min": 258.15966796875,
+          "max": 325.034423828125,
+          "values": [
+            289.901611328125,
+            325.034423828125,
+            268.728515625,
+            273.20361328125,
+            258.15966796875
+          ]
+        },
+        "spawnToReadyMs": {
+          "median": 1311.6337890625,
+          "min": 1261.267578125,
+          "max": 1355.418212890625,
+          "values": [
+            1355.418212890625,
+            1346.501953125,
+            1311.6337890625,
+            1261.267578125,
+            1279.14892578125
+          ]
+        }
+      },
+      "startupPhases": {
+        "Funke-Launcher.Window": {
+          "median": 114.272,
+          "min": 110.66,
+          "max": 122.923,
+          "values": [
+            117.807,
+            122.923,
+            114.272,
+            112.498,
+            110.66
+          ]
+        },
+        "Funke-Launcher.RenderApi": {
+          "median": 650.064,
+          "min": 628.296,
+          "max": 880.271,
+          "values": [
+            880.271,
+            780.548,
+            635.574,
+            650.064,
+            628.296
+          ]
+        },
+        "Funke-Launcher.Application": {
+          "median": 787.134,
+          "min": 763.635,
+          "max": 1023.09,
+          "values": [
+            1023.09,
+            930.478,
+            773.4,
+            787.134,
+            763.635
+          ]
+        },
+        "Funke-Editor.JobSystem": {
+          "median": 0.3712,
+          "min": 0.305,
+          "max": 0.4791,
+          "values": [
+            0.305,
+            0.4029,
+            0.3712,
+            0.3624,
+            0.4791
+          ]
+        },
+        "Funke-Editor.FrameArenas": {
+          "median": 0.0203,
+          "min": 0.0155,
+          "max": 0.0295,
+          "values": [
+            0.0228,
+            0.0203,
+            0.0182,
+            0.0155,
+            0.0295
+          ]
+        },
+        "Funke-Editor.Window": {
+          "median": 119.642,
+          "min": 117.126,
+          "max": 139.646,
+          "values": [
+            119.642,
+            120.008,
+            119.197,
+            117.126,
+            139.646
+          ]
+        },
+        "Funke-Editor.RenderApi": {
+          "median": 696.19,
+          "min": 643.707,
+          "max": 729.573,
+          "values": [
+            729.573,
+            721.807,
+            696.19,
+            643.707,
+            655.857
+          ]
+        },
+        "Funke-Editor.TextureManager": {
+          "median": 22.012,
+          "min": 19.8169,
+          "max": 23.2109,
+          "values": [
+            23.2109,
+            22.5114,
+            20.9298,
+            22.012,
+            19.8169
+          ]
+        },
+        "Funke-Editor.ShaderManager": {
+          "median": 0.0076,
+          "min": 0.0065,
+          "max": 0.0078,
+          "values": [
+            0.0076,
+            0.0076,
+            0.0065,
+            0.0078,
+            0.0066
+          ]
+        },
+        "Funke-Editor.Renderer2D": {
+          "median": 7.6067,
+          "min": 7.0282,
+          "max": 8.0943,
+          "values": [
+            8.0943,
+            7.7032,
+            7.0287,
+            7.6067,
+            7.0282
+          ]
+        },
+        "Funke-Editor.GizmoRenderer": {
+          "median": 0.1899,
+          "min": 0.1838,
+          "max": 0.2136,
+          "values": [
+            0.1998,
+            0.2136,
+            0.1899,
+            0.187,
+            0.1838
+          ]
+        },
+        "Funke-Editor.GuiRenderer": {
+          "median": 0.0064,
+          "min": 0.0051,
+          "max": 0.0087,
+          "values": [
+            0.0087,
+            0.0061,
+            0.0064,
+            0.0074,
+            0.0051
+          ]
+        },
+        "Funke-Editor.PhysicsSystem": {
+          "median": 0.029,
+          "min": 0.0253,
+          "max": 0.0395,
+          "values": [
+            0.03,
+            0.0395,
+            0.0253,
+            0.029,
+            0.0281
+          ]
+        },
+        "Funke-Editor.FontManager": {
+          "median": 0.1865,
+          "min": 0.1733,
+          "max": 0.3514,
+          "values": [
+            0.1808,
+            0.3514,
+            0.1865,
+            0.2075,
+            0.1733
+          ]
+        },
+        "Funke-Editor.AudioManager": {
+          "median": 21.8813,
+          "min": 21.2153,
+          "max": 23.0066,
+          "values": [
+            23.0066,
+            21.8535,
+            21.2153,
+            21.8813,
+            22.1331
+          ]
+        },
+        "Funke-Editor.SceneManager": {
+          "median": 0.7042,
+          "min": 0.6308,
+          "max": 0.7632,
+          "values": [
+            0.7129,
+            0.6308,
+            0.7042,
+            0.7632,
+            0.672
+          ]
+        },
+        "Funke-Editor.Application": {
+          "median": 904.398,
+          "min": 853.609,
+          "max": 946.471,
+          "values": [
+            946.471,
+            936.222,
+            904.398,
+            853.609,
+            881.333
+          ]
+        }
+      },
+      "validation": {
+        "allSuccess": true,
+        "nativeErrors": 0
+      }
+    },
+    "assets": {
+      "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\graphics-startup-2026-10-29\\before-assets",
+      "samples": 5,
+      "metrics": {
+        "editorReadyMs": {
+          "median": 1839.29736328125,
+          "min": 1738.4169921875,
+          "max": 2175.860595703125,
+          "values": [
+            1751.731201171875,
+            1839.29736328125,
+            2175.860595703125,
+            1738.4169921875,
+            1953.9638671875
+          ]
+        },
+        "scriptsReadyMs": {
+          "median": 1839.29736328125,
+          "min": 1738.4169921875,
+          "max": 2175.860595703125,
+          "values": [
+            1751.731201171875,
+            1839.29736328125,
+            2175.860595703125,
+            1738.4169921875,
+            1953.9638671875
+          ]
+        },
+        "launchToSpawnMs": {
+          "median": 252.97607421875,
+          "min": 251.5791015625,
+          "max": 261.481201171875,
+          "values": [
+            261.481201171875,
+            252.479248046875,
+            252.97607421875,
+            251.5791015625,
+            257.837890625
+          ]
+        },
+        "spawnToReadyMs": {
+          "median": 1586.818115234375,
+          "min": 1486.837890625,
+          "max": 1922.884521484375,
+          "values": [
+            1490.25,
+            1586.818115234375,
+            1922.884521484375,
+            1486.837890625,
+            1696.1259765625
+          ]
+        }
+      },
+      "startupPhases": {
+        "Funke-Launcher.Window": {
+          "median": 116.906,
+          "min": 112.693,
+          "max": 163.56,
+          "values": [
+            114.357,
+            119.769,
+            112.693,
+            163.56,
+            116.906
+          ]
+        },
+        "Funke-Launcher.RenderApi": {
+          "median": 645.404,
+          "min": 569.639,
+          "max": 747.966,
+          "values": [
+            569.639,
+            695.606,
+            747.966,
+            645.404,
+            637.385
+          ]
+        },
+        "Funke-Launcher.Application": {
+          "median": 831.86,
+          "min": 707.4,
+          "max": 883.173,
+          "values": [
+            707.4,
+            839.903,
+            883.173,
+            831.86,
+            784.909
+          ]
+        },
+        "Funke-Editor.JobSystem": {
+          "median": 0.4309,
+          "min": 0.3297,
+          "max": 0.5253,
+          "values": [
+            0.4309,
+            0.4528,
+            0.5253,
+            0.4028,
+            0.3297
+          ]
+        },
+        "Funke-Editor.FrameArenas": {
+          "median": 0.0187,
+          "min": 0.0163,
+          "max": 0.0263,
+          "values": [
+            0.0263,
+            0.0188,
+            0.0187,
+            0.0163,
+            0.0179
+          ]
+        },
+        "Funke-Editor.Window": {
+          "median": 113.888,
+          "min": 111.239,
+          "max": 191.472,
+          "values": [
+            113.118,
+            113.888,
+            191.472,
+            111.239,
+            116.397
+          ]
+        },
+        "Funke-Editor.RenderApi": {
+          "median": 624.442,
+          "min": 592.725,
+          "max": 875.336,
+          "values": [
+            594.355,
+            624.442,
+            875.336,
+            592.725,
+            693.749
+          ]
+        },
+        "Funke-Editor.TextureManager": {
+          "median": 19.9062,
+          "min": 19.5519,
+          "max": 21.4139,
+          "values": [
+            19.5519,
+            21.4139,
+            19.5613,
+            19.9062,
+            20.7478
+          ]
+        },
+        "Funke-Editor.ShaderManager": {
+          "median": 0.007,
+          "min": 0.0062,
+          "max": 0.0081,
+          "values": [
+            0.007,
+            0.0081,
+            0.0062,
+            0.0068,
+            0.008
+          ]
+        },
+        "Funke-Editor.Renderer2D": {
+          "median": 7.3549,
+          "min": 7.0546,
+          "max": 8.1144,
+          "values": [
+            7.1309,
+            7.6931,
+            7.0546,
+            7.3549,
+            8.1144
+          ]
+        },
+        "Funke-Editor.GizmoRenderer": {
+          "median": 0.1884,
+          "min": 0.1813,
+          "max": 0.2045,
+          "values": [
+            0.1817,
+            0.2045,
+            0.1813,
+            0.1894,
+            0.1884
+          ]
+        },
+        "Funke-Editor.GuiRenderer": {
+          "median": 0.0065,
+          "min": 0.0052,
+          "max": 0.0073,
+          "values": [
+            0.0052,
+            0.0069,
+            0.0065,
+            0.0073,
+            0.0065
+          ]
+        },
+        "Funke-Editor.PhysicsSystem": {
+          "median": 0.0272,
+          "min": 0.0204,
+          "max": 0.0343,
+          "values": [
+            0.0204,
+            0.0343,
+            0.0272,
+            0.0291,
+            0.0246
+          ]
+        },
+        "Funke-Editor.FontManager": {
+          "median": 0.1981,
+          "min": 0.1699,
+          "max": 0.2202,
+          "values": [
+            0.1708,
+            0.1981,
+            0.2012,
+            0.1699,
+            0.2202
+          ]
+        },
+        "Funke-Editor.AudioManager": {
+          "median": 21.5101,
+          "min": 19.6205,
+          "max": 27.9458,
+          "values": [
+            20.119,
+            27.9458,
+            19.6205,
+            21.5101,
+            25.598
+          ]
+        },
+        "Funke-Editor.SceneManager": {
+          "median": 0.6617,
+          "min": 0.6487,
+          "max": 0.7211,
+          "values": [
+            0.6487,
+            0.6617,
+            0.6632,
+            0.6521,
+            0.7211
+          ]
+        },
+        "Funke-Editor.Application": {
+          "median": 841.288,
+          "min": 788.373,
+          "max": 1152.24,
+          "values": [
+            790.291,
+            841.288,
+            1152.24,
+            788.373,
+            906.549
+          ]
+        }
+      },
+      "validation": {
+        "allSuccess": true,
+        "nativeErrors": 0
+      }
+    }
+  },
+  "invalidSeries": [
+    {
+      "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\graphics-startup-2026-10-29\\before-packages",
+      "explanation": {
+        "reason": "Run5 reached editor/scripts-ready and logged a package cache hit, but the Editor failed an atomic project.json metadata save with MoveFileEx error5. Full native logs rejected the run.",
+        "comparisonUse": "Preserved failed baseline series; a new package series is required. No timing discarded solely due to speed.",
+        "log": "run-5/user-data/Funke/Logs/Funke-Editor.log"
+      }
+    }
+  ],
+  "binaries": {
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-Launcher.exe": "e3b22afcee3da31a4510daad2ddab65ff7bfe99d936cd28986fd6c3541bf1aef",
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-Editor.exe": "7943dd84fc90b29d695acd914c4fcf40da3577fb6a2261fd29e9e9164efc9ed9",
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-Engine.dll": "dd56f12c7a74fb3f3987fd616579a6579778ee6d7fc38e38f5c3aa9ce7502ad4"
+  },
+  "screenshot": {
+    "path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\graphics-startup-2026-10-29\\before-assets\\run-5\\scene.png",
+    "dimensions": [
+      1280,
+      720
+    ],
+    "sha256": "c7c97f9c8379e44e13aa968acd98395b144cdd2e748b9c94fbf9879e8fd3dade",
+    "matchesPreviouslyInspectedFixture": true
+  }
+}

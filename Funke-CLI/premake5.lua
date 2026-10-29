@@ -23,6 +23,7 @@ project "Funke-CLI"
     files
     {
         path.join(ROOT_DIR, "Funke-Editor/src/Build/GameBuilder.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Build/DotNetRuntimeBundle.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/BuildAssetPruning.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/FunkePackageInstaller.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/PlatformBuilder.cpp"),

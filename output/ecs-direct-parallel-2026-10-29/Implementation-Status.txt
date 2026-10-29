@@ -1,0 +1,34 @@
+Funke ECS – Implementierungsstand 29.10.2026
+
+Direkte C#-Aufrufe:
+- Typbasierte native Add/Remove-Bindings vermeiden unnötige Entity-/Weak-Pointer-Verwaltung.
+- Geeignete Add-Aufrufe verwenden geprüfte Registry-Callbacks. Module, Konflikte, Abhängigkeiten, eigene Callbacks und Lifecycle-Regeln bleiben erhalten.
+- Leere verwaltete Component-Stores werden bei Invalidierung übersprungen.
+- Kein zusätzlicher Entity-Handle-Cache; C#-Interop-ABI unverändert 46.
+
+Native C++-API:
+- NativeEntityCommandBuffer: Existing, AddComponent, RemoveComponent, Destroy, SetEnabled; Create/Instantiate bleiben vorhanden.
+- ParallelEntityCommandBuffer: JobSystem-Writer und explizite Writer-Slots für externe Threads.
+- Auto/Sequential/Parallel verwenden für geeignete Befehle denselben nativen Playbackpfad wie C#.
+- Benutzerdefinierte Typen/Captures und abhängige gemischte Befehle verwenden geordnetes serielles Playback.
+- Aufzeichnung verändert die Scene nicht. Vor Playback auf dem Hauptthread müssen alle Producer beendet sein.
+- Native Script-ABI 4: vorhandene C++-Script-DLLs neu kompilieren.
+
+Zusätzlicher Laufzeitfix:
+Das JobSystem gibt Callables samt Captures vor der Completion-Meldung frei. Dadurch bleibt nach Job::Wait keine erledigte Script-Closure im Worker zurück, deren Destruktor beim Entladen der nativen Script-DLL abstürzen könnte.
+
+Validierung:
+- Release-Build: Engine, ScriptCore, EngineTests, Runtime und beide Script-Harnesses erfolgreich.
+- Native Tests: 765/765 bestanden, 2.615.295 Assertions bestanden.
+- C#-Tests: 579/579 bestanden.
+- Native Runtime: 17 Fälle mit je 8.192 Entities bestanden, sauberer Exit-Code 0.
+- Managed Runtime: 8 Fälle mit je 8.192 Entities bestanden, sauberer Exit-Code 0.
+- Native Runtime-Exit nach paralleler Aufzeichnung und Playback ausdrücklich geprüft.
+
+Performance:
+Keine belastbaren neuen Millisekundenwerte oder Beschleunigungsfaktoren. Der Nutzer meldete eine aktive VM; die Zeitmessungen wurden ausgesetzt. Die before-managed-* Messungen dieser Runde sind als ungeeignet für Performancevergleiche markiert. validation-* dient ausschließlich der Korrektheitsprüfung.
+
+Vorher-Binaries: bin-int/_agent/EcsNativeComparison-20261029
+Aktuelle Binaries: bin-int/_agent/EcsDirectParallel-20261029
+Erneute Messungen erst unter kontrollierter Last in einem neuen Ergebnisordner.
+Dokumentation: Github-Docs/Documentation/Engine-Core/ECS.md, Abschnitt Batched structural changes in C++.

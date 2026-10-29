@@ -1,0 +1,451 @@
+{
+  "Limitations": [
+    "Public native ECB Create2 uses its own sequential implementation. NativeWireParallel is an internal shared-backend control, not a public native ECB API. Compare PlaybackMs for this control.",
+    "Direct APIs have different identity, wrapper, dependency and cache costs; results are not a pure language-speed ratio.",
+    "Driver survives destruction; previous whole-scene destroy measurements are not directly comparable.",
+    "Separate process runs on a desktop machine; timing differences include allocator, cache, GC and scheduler variation."
+  ],
+  "SamplesPerRun": 9,
+  "Hardware": {
+    "Name": "AMD Ryzen 9 7900X 12-Core Processor            ",
+    "NumberOfCores": 12,
+    "NumberOfLogicalProcessors": 24
+  },
+  "Created": "2026-10-29T19:36:46.0735604+01:00",
+  "Memory": [
+    {
+      "Capacity": 17179869184,
+      "ConfiguredClockSpeed": 6000
+    },
+    {
+      "Capacity": 17179869184,
+      "ConfiguredClockSpeed": 6000
+    }
+  ],
+  "Method": "Release x64; native DLL loaded as NativeScript; C# SceneSystem; same frozen engine/runtime; one persistent driver entity; Transform2D + SpriteRenderer default components; setup, validation, cleanup and ECB entity-wrapper materialization excluded; sequential recording and explicitly parallel shared-backend playback; direct timings include public API costs.",
+  "Tags": [
+    "native-100k",
+    "managed-100k"
+  ],
+  "Binaries": [
+    {
+      "Algorithm": "SHA256",
+      "Hash": "3E0303E7CCE29D850E3BB26666D2166D78E03E8FBDAD33B5CC06EC77BBC2BC76",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsNativeComparison-20261029\\runtime\\Funke-Runtime.exe"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "50077772D0A319F2F1F981DE309229B67F55D19F4891AECD99C0AB5182F0BAD2",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsNativeComparison-20261029\\runtime\\Funke-Engine.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "BE3439AA7120F3C164B9D4833E7E8315275D79B793B6BFE7504D7A728354B757",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsNativeComparison-20261029\\runtime\\Funke-ScriptCore.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "798EAAE3B4F1FABA0DDF6BC32D33434356CCF7D6C152296247E07AE7A67DF328",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsNativeComparison-20261029\\project\\bin\\Release\\EcsNativeComparison.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "3441774A0FC06CCCA41F4A23C298B5AD51BB3330E88A6D42BC07B0C877B6A4CE",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsNativeComparison-20261029\\project\\bin\\Release-windows-x86_64\\EcsNativeComparison-NativeScripts\\EcsNativeComparison-NativeScripts.dll"
+    }
+  ],
+  "Warmups": 3,
+  "Results": [
+    {
+      "Operation": "AddSprite",
+      "Mode": "ManagedDirect",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 29.4499,
+        "Maximum": 34.1468,
+        "Minimum": 27.3744,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "AddSprite",
+      "Mode": "ManagedECBParallel",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 0.567,
+        "Maximum": 0.6236,
+        "Minimum": 0.5613,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 5.7592,
+        "Maximum": 6.4972,
+        "Minimum": 5.4876,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 6.3205,
+        "Maximum": 7.0604,
+        "Minimum": 6.0546,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "AddSprite",
+      "Mode": "NativeDirect",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 3.4488,
+        "Maximum": 3.9719,
+        "Minimum": 3.4286,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "AddSprite",
+      "Mode": "NativeWireParallel",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 2.4826,
+        "Maximum": 2.7241,
+        "Minimum": 1.8293,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 4.3146,
+        "Maximum": 4.738,
+        "Minimum": 4.2357,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 6.7513,
+        "Maximum": 7.1199,
+        "Minimum": 6.0776,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "Create2",
+      "Mode": "ManagedDirect",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 53.5159,
+        "Maximum": 56.1772,
+        "Minimum": 49.3934,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "Create2",
+      "Mode": "ManagedECBParallel",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 1.0594,
+        "Maximum": 1.1125,
+        "Minimum": 1.0396,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 11.6152,
+        "Maximum": 13.3669,
+        "Minimum": 11.1923,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 12.6934,
+        "Maximum": 14.4065,
+        "Minimum": 12.2675,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "Create2",
+      "Mode": "NativeDirect",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 31.6916,
+        "Maximum": 57.0185,
+        "Minimum": 27.6511,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "Create2",
+      "Mode": "NativeECB",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 3.4482,
+        "Maximum": 4.0651,
+        "Minimum": 2.9854,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 21.3754,
+        "Maximum": 23.4618,
+        "Minimum": 19.4763,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 24.9381,
+        "Maximum": 27.2167,
+        "Minimum": 22.4617,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "Create2",
+      "Mode": "NativeWireParallel",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 3.3478,
+        "Maximum": 3.7485,
+        "Minimum": 3.2781,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 12.302,
+        "Maximum": 13.4318,
+        "Minimum": 11.4353,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 15.5885,
+        "Maximum": 17.1803,
+        "Minimum": 14.9182,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "Destroy",
+      "Mode": "ManagedDirect",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 36.8174,
+        "Maximum": 45.3446,
+        "Minimum": 35.3983,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "Destroy",
+      "Mode": "ManagedECBParallel",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 0.5404,
+        "Maximum": 0.5425,
+        "Minimum": 0.5381,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 17.9307,
+        "Maximum": 18.7588,
+        "Minimum": 16.5042,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 18.4717,
+        "Maximum": 19.2978,
+        "Minimum": 17.0458,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "Destroy",
+      "Mode": "NativeDirect",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 27.924,
+        "Maximum": 35.1496,
+        "Minimum": 26.1391,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "Destroy",
+      "Mode": "NativeWireParallel",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 2.4827,
+        "Maximum": 2.7514,
+        "Minimum": 1.8291,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 16.8318,
+        "Maximum": 20.7343,
+        "Minimum": 15.4145,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 19.512,
+        "Maximum": 23.217,
+        "Minimum": 17.2436,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "RemoveSprite",
+      "Mode": "ManagedDirect",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 17.1644,
+        "Maximum": 19.0691,
+        "Minimum": 16.0788,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "RemoveSprite",
+      "Mode": "ManagedECBParallel",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 0.582,
+        "Maximum": 0.6015,
+        "Minimum": 0.5754,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 6.2354,
+        "Maximum": 6.7636,
+        "Minimum": 5.9796,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 6.8213,
+        "Maximum": 7.3434,
+        "Minimum": 6.5599,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "RemoveSprite",
+      "Mode": "NativeDirect",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 0.0,
+        "Maximum": 0.0,
+        "Minimum": 0.0,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 3.841,
+        "Maximum": 4.4133,
+        "Minimum": 3.6397,
+        "Samples": 9
+      }
+    },
+    {
+      "Operation": "RemoveSprite",
+      "Mode": "NativeWireParallel",
+      "Count": 100000,
+      "RecordMs": {
+        "Median": 2.5228,
+        "Maximum": 2.766,
+        "Minimum": 1.8441,
+        "Samples": 9
+      },
+      "PlaybackMs": {
+        "Median": 4.9122,
+        "Maximum": 5.6317,
+        "Minimum": 4.6739,
+        "Samples": 9
+      },
+      "TotalMs": {
+        "Median": 7.4058,
+        "Maximum": 8.1066,
+        "Minimum": 6.6068,
+        "Samples": 9
+      }
+    }
+  ]
+}

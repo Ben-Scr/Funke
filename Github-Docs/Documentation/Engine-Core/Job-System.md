@@ -113,6 +113,8 @@ ParallelFor(0, count, [](size_t i) { Process(i); });  // parallel loop, blocks u
 
 `ParallelFor` automatically splits the range into chunks (aiming for a few chunks per worker). One nice property: `Job::Wait` actively helps run queued work while it waits, so nested waits can't deadlock. Engine systems like the 2D renderer use this to process entities in parallel.
 
+Completion also guarantees that the job's callable and its owned captures have been released, including when the callable throws. Native script DLLs can therefore finish their jobs before unloading without leaving callable destructors in the worker queue. Structural ECS operations use the [native commandbuffer API](ECS.md#batched-structural-changes-in-c), with playback on the main thread after recording jobs finish.
+
 ---
 
 ## Frame Arenas (related)

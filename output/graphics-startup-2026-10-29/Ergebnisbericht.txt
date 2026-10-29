@@ -1,0 +1,71 @@
+Grafikinitialisierung und Projektöffnung – 29.10.2026
+
+Dawn initialisiert unter Windows jetzt gezielt den von DXGI bevorzugten
+Hardwareadapter. Bisher wurden auch weitere GPUs initialisiert, bevor Dawn den
+ersten Adapter verwendete. Dieser Rechner besitzt eine Radeon RX 7800 XT und
+eine integrierte AMD-GPU. Die DXGI-Reihenfolge entspricht der bisherigen
+Dawn-Auswahl für D3D11/D3D12; Grafikeinstellungen und Qualität bleiben gleich.
+
+Fehlt die gezielte Auswahl oder schlägt der gezielte Request fehl, folgt die
+bisherige vollständige Adaptersuche. Andere Backends und Plattformen behalten
+ihren bisherigen Auswahlpfad. Es werden keine Arbeiten hinter den Bereitschafts-
+Messpunkt verschoben und keine Gerätekennung dauerhaft gespeichert.
+
+Projektöffnung, Median aus fünf Messungen nach je einem ausgeschlossenen Warmup:
+Testprojekt                         Vorher      Nachher     Weniger Zeit
+Leer                                1.486 ms      913 ms      38,5 %
+Mit nativem und C#-Paket             1.580 ms    1.215 ms      23,1 %
+3.003 Assets, 10.002 Entities, Paket  1.839 ms    1.479 ms      19,6 %
+
+Editor-RenderApi-Initialisierung, Median:
+Leer:       787,529 -> 296,807 ms
+Pakete:     696,190 -> 328,019 ms
+Groß:       624,442 -> 305,385 ms
+
+Zusätzlicher A/B-Vergleich: drei alternierende Paare mit identischen finalen
+Binärdateien, Schnellpfad aktiviert beziehungsweise per
+FUNKE_DISABLE_GPU_ADAPTER_FAST_PATH=1 deaktiviert.
+Median Grafikinitialisierung: aktiviert 364,759 ms / deaktiviert 745,033 ms.
+Median gesamte Öffnungszeit:  aktiviert 1.021,361 ms / deaktiviert 1.390,991 ms.
+In jedem Paar wurden dieselbe RX 7800 XT und D3D12 verwendet. Paarweise sank
+die Grafikinitialisierung um 421,496 / 436,235 / 330,468 ms. Dieser Vergleich
+bestätigt den Effekt unabhängig vom neuen Build und zeitlicher Messstreuung.
+
+Methode und Grenzen:
+- Windows Release, D3D12; dieselben drei isolierten Testprojekte wie zuvor,
+  jedoch neue Vorher-Messungen nach den bereits umgesetzten Paketoptimierungen.
+- Start bei der Öffnen-Aktion des initialisierten Launchers, vor Paketprüfung;
+  Ende bei Editor-Bridge edit, geladener Szene und keinem busy-Grund. In allen
+  finalen Läufen waren auch die Skripte bereit. Launcher-Kaltstart und komplette
+  Splash-Ausblendung sind nicht Teil dieser Zeit.
+- Neue Prozesse je Lauf, isolierte Benutzerdaten, warme Projekt-/Dateicaches;
+  10-ms-Beobachtungsraster zuzüglich Frame-/IPC-Latenz. Kein Engine-Build und
+  keine parallelen GPU-Smokes während der Messreihen.
+- Alle 24 Nachher-/A/B-Läufe einschließlich Warmups waren gültig. Paketprojekte
+  lieferten die erwarteten Cache-Hits und ein geladenes natives Paket. Die große
+  Szene meldete 10.002 Entities; ihr Screenshot ist bytegleich zum Vorher-Bild.
+- Eine ursprüngliche Vorher-Paketreihe scheiterte an einem Metadaten-Schreibfehler
+  (MoveFileEx error 5), wurde erhalten und als ungültig ausgeschlossen.
+- Ergebnisse gelten für diesen Rechner und diese Testprojekte. Systeme mit
+  nur einer GPU oder anderen Backends können deutlich weniger profitieren.
+
+Verifikation:
+- Inkrementelle Release-Builds: Engine, Editor, Launcher, EngineTests erfolgreich.
+- Echter opt-in GPU-Integrationstest: 1 Test, 26 Assertions bestanden, inklusive
+  Textur-Readback, Sampling, Font-Atlas und Ressourcenfreigabe.
+- 3D-Smokes: D3D12 SampleScene + CoverageSky, Vulkan CoverageSky und
+  Metal-Anforderung mit Rückfall auf D3D12 SampleScene. Vier Screenshots visuell
+  geprüft, Play/Stop erfolgreich, keine Grafik-/ABI-Fehler, gleiche RX 7800 XT.
+- Der normale Suchpfad wurde über den Diagnose-Override tatsächlich ausgeführt.
+  Ein Fehler des gezielten LUID-Requests selbst wurde nicht künstlich erzwungen;
+  dessen unmittelbarer Rückfall wurde im Code geprüft.
+- Startup-Phasen sind durch Profilerbereiche und eine zusammengefasste Logzeile
+  nachvollziehbar, einschließlich Request-/Wait-Zeiten und Adapterpfad.
+
+Belege:
+comparison.json: Einzelwerte, Phasen, Binär-SHA-256, Adapter und A/B-Paare.
+before-summary.json: neue Baseline und ausgeschlossene Reihe.
+gpu-smoke/runs/matrix/summary.json: Backend-Smokes und Screenshotpfade.
+validation/gpu-integration-test.log: echter GPU-Test.
+Die Binär-Hashes dokumentieren den gemessenen lokalen Stand vor der anschließenden
+Integration der zusätzlich auf funke/master vorhandenen Commits.

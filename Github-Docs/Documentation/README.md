@@ -20,6 +20,7 @@ The foundational systems that make a game run.
 - **[3D](Engine-Core/3D.md)** — Transform 3D, Camera 3D with skybox, Mesh Renderer and materials, directional/point/spot lights, shadows, the 3D renderer and the 3D Editor View.
 - **[Animation](Engine-Core/Animation.md)** — keyframe clips for any component property or script field, Animator Controller state machines with crossfades, the Animation and Animator windows, record mode, events and the C# API.
 - **[Custom Shaders](Engine-Core/Custom-Shaders.md)** — your own WGSL shaders for meshes, sprites and post effects: the `@property` header, materials, hot reload, errors, C# API and builds.
+- **[Lighting 2D](Engine-Core/Lighting-2D.md)** — optional external package for ambient light, point lights and rectangular shadow occluders.
 - **[Graphics Settings](Engine-Core/Graphics-Settings.md)** — render scale, post-processing, particles, shadows, texture quality, anisotropic filtering and anti-aliasing: project defaults and changing them at runtime with `RenderSettings`.
 - **[Job System](Engine-Core/Job-System.md)** — running work across multiple CPU cores.
 - **[Localization](Engine-Core/Localization.md)** — translating interface text, the per-language JSON files, supported languages, and on-demand downloads.
@@ -45,10 +46,12 @@ Funke's extensibility model — add anything the core doesn't ship.
 
 - **[Editor](Editor/Editor.md)** — the visual tool for building scenes, testing in Play mode, and producing a finished game.
 - **[Building and Shipping](Editor/Building-and-Shipping.md)** — verified Windows game exports and standalone engine release bundles.
+- **[Standalone Verification](Editor/Standalone-Verification.md)** — binary installation, managed package, Editor play mode, relocated exports and Windows Sandbox checks.
 - **[Test Builds and Debug Tools](Editor/Testing.md)** — Debug/Development/Release, build profiles for test variants, the developer console with `[DevCommand]`, the physics overlay, isolated player data and scripted test runs with screenshots.
 - **[Command-Line Tool](Editor/Command-Line.md)** — `funke create`, `funke build`, validate, convert, prefabs, sprite slicing and packages without opening the editor.
 - **[Editor Bridge](Editor/Editor-Bridge.md)** — `funke editor`: drive the open editor from the command line (Play, taps and keys, offscreen screenshots at any resolution, console, recompile, logs), even while it is minimized.
 - **[Platform Packages](Editor/Platform-Packages.md)** — Android, iOS and Web exports as installable packages, their requirements, C# through Mono, and the builder protocol for writing your own.
+- **[Platform Export Testing](Editor/Platform-Export-Testing.md)** — run actual Web, Android and iOS simulator exports and check script execution and rendered output.
 
 ## Reference
 

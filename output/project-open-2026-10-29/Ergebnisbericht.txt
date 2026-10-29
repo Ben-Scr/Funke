@@ -1,0 +1,103 @@
+Projektöffnungszeit – Umsetzung und Messung, 29.10.2026
+
+Unveränderte unterstützte Pakete überspringen jetzt Workspace-Generierung und Build.
+Die gesamte Öffnungszeit der beiden Paket-Testprojekte sank im finalen Vergleich
+um 64,4 % beziehungsweise 60,5 %.
+
+Finale Messwerte (Median aus fünf Läufen; Millisekunden)
+Projekt                                Vorher     Nachher    Weniger Zeit
+Leeres Projekt                         1.315,84   1.252,24       4,83 %
+Projekt mit nativem und C#-Paket         4.453,91   1.584,67      64,42 %
+Paket, 3.003 Assets, 10.002 Entities     5.080,03   2.007,87      60,48 %
+
+Spannweiten vorher / nachher (Millisekunden):
+Leeres Projekt:   1.303,29–1.327,83 / 1.214,81–1.269,53
+Paketprojekt:    4.422,24–7.107,19 / 1.419,66–1.646,00
+Großes Projekt:  5.040,46–5.201,82 / 1.876,90–2.135,50
+
+Wichtigste Teilphasen (Mediane; Millisekunden):
+Launcher-Vorbereitung beim Paketprojekt:       3.226,35 -> 254,90
+Projekt-Assetregistrierung im großen Projekt:    517,00 -> 293,00
+Scan eingebauter Assets im großen Projekt:       63,20 ->  15,80
+Die Mediane einzelner Phasen addieren sich nicht zwingend zum Gesamtmedian.
+
+Umsetzung
+- Paketcache mit Prüfung von Quellen, Manifesten, Paketabhängigkeiten,
+  Build-Einstellungen, Toolchain/SDK, nativen Abhängigkeiten und Build-Ausgaben.
+  Cache-Einträge entstehen nur nach erfolgreicher Generierung und erfolgreichem
+  Build mit unveränderten Eingaben und gültiger nativer ABI.
+- Projekte ohne Pakete überspringen die Paketvorbereitung. Identische
+  ManagedDefines-Dateien werden nicht erneut geschrieben.
+- Assetscans verwenden wiederverwendete Verzeichnispfade und Dateimetadaten;
+  identische Registry-Snapshots werden nicht erneut geschrieben. Der vollständige
+  Dateisystemscan bleibt erhalten.
+- Neue, leere, vom SceneManager kontrollierte Szenen werden einmal deserialisiert.
+  Validierung, Runtime-Initialisierung und Rollback bleiben abgesichert.
+  Bestehende Szenen behalten ihren bisherigen Transaktionspfad.
+  Die isolierte Zeitersparnis der Szenenänderung wurde nicht separat gemessen.
+
+Messmethode und Grenzen
+- Windows Release, D3D12, AMD Radeon RX 7800 XT; dieselben drei erzeugten Projekte
+  vor und nach den Änderungen.
+- Start bei StartProjectLaunch, also der Öffnen-Aktion im initialisierten
+  Launcher, vor der Paketvorbereitung. Ende: Editor-Bridge meldet edit, geladene
+  Szene und keinen busy-Grund. Der Kaltstart des Launchers und die vollständige
+  Splash-Ausblendung sind nicht enthalten.
+- Je Reihe ein ausgeschlossener Aufwärmlauf und fünf Messläufe mit neuen
+  Prozessen. Projekt-Build-Ausgaben und Dateisystemcaches bleiben warm;
+  Benutzerdaten sind je Lauf isoliert.
+- Skripte waren in allen finalen Messläufen zum selben beobachteten Zeitpunkt
+  bereit. Beobachtung im 10-ms-Raster zuzüglich Frame-/IPC-Latenz.
+- final-empty, final-packages und final-assets verwenden denselben konsistenten
+  Binary-Satz. Alle 15 Messläufe und drei Aufwärmläufe waren erfolgreich, ohne
+  Fehler in nativen oder Bridge-Logs. Beide Paketprojekte hatten jeweils fünf
+  explizite Cache-Hits und ein geladenes natives Paket in den Messläufen.
+- Das große Projekt meldet 10.002 Entities. Die Projekttextur ist im Screenshot
+  final-assets/run-5/scene.png sichtbar; das Bild wurde visuell geprüft.
+- Grafikinitialisierung schwankte: RenderApi-Median im großen Projekt
+  551,54 -> 704,74 ms. Eine frühere gültige Empty-Nachherreihe lag bei 1.544,77 ms
+  statt final 1.252,24 ms. Sie bleibt in comparison.json enthalten. Der kleine
+  Gesamtgewinn ist daher nicht als allgemeine Garantie zu verstehen.
+- Gemessen wurde wiederholtes Öffnen unveränderter Projekte, kein erstmaliger
+  Build oder Kaltstart nach einem Neustart. Fünf Läufe auf einer Maschine und
+  synthetische Testprojekte liefern keine allgemeine statistische Garantie.
+- Nicht vollständig erfasste Build-Konfigurationen verwenden den normalen
+  Build-Pfad, unter anderem NuGet-Abhängigkeiten, externe Manifestpfade, eigene
+  MSBuild-Imports/Tasks und .csproj.user/.vcxproj.user. Native Schnellpfade sind
+  derzeit auf Windows mit auswertbaren MSVC-Abhängigkeitslogs begrenzt.
+- FUNKE_DISABLE_PACKAGE_CACHE=1 deaktiviert die Cache-Nutzung zur Diagnose.
+
+Validierung
+- Inkrementelle Release-Builds von Engine, Editor, Launcher und EngineTests
+  erfolgreich; keine Bereinigung der Build-Caches oder unnötige Regenerierung.
+- 112 gezielte Engine-Tests, 1.752 Assertions, kein Fehler: Paketcache,
+  Assetregistry, Szenen, Prefabs, Fehlerbehandlung und Rollback.
+- Zehn echte Launcher-Integrationsfälle bestanden: unverändert; C++-Quelländerung;
+  erneuter Hit; Manifeständerung; erneuter Hit; fehlende native DLL; absichtlicher
+  Build-Fehler ohne Cache-Eintrag; Recovery; beschädigte ABI-Metadaten; Hit nach
+  ABI-Reparatur. Der absichtliche Fehler ist konkret
+  #error ExpectedStartupCacheBuildFailure und zählt nicht als erfolgreicher Start.
+- Originaldateien des Testprojekts wurden bytegenau wiederhergestellt und gegen
+  die unberührte identische Paketkopie des Asset-Testprojekts geprüft. Der Editor
+  meldete danach edit, SampleScene, bereite Skripte und ein geladenes natives
+  Paket ohne native Fehler; Belege und SHA-256 stehen in
+  final-invalidation-retry/restoration-functional.json.
+- Beim abschließenden Restore blieb der separate Launcher-Messbericht dennoch
+  unvollständig. Die genaue Ursache ist nicht festgestellt; es gab dabei keinen
+  protokollierten Schreibfehler. Dieses zusätzliche Timing wurde verworfen,
+  das fehlgeschlagene Rohresultat restoration.json bleibt erhalten. Die oben
+  genannten finalen Zeitmessungen und zehn Integrationsfälle waren davon nicht
+  betroffen. Die Wiederherstellung ist funktional, nicht zeitlich, bestätigt.
+
+Rohdaten und Reproduktion
+- comparison.json: finale Einzelwerte, Mediane, Spannweiten, Teilphasen,
+  frühere gültige Empty-Reihe und Gründe für ausgeschlossene Zwischenreihen.
+- before-verified-{empty,packages,assets}/ und final-{empty,packages,assets}/:
+  Pro-Lauf-Ergebnisse, Logs, Metadaten und Binary-SHA-256.
+- final-invalidation-retry/cases.json: finale zehn Integrationsfälle.
+- Verworfene Diagnose-/Zwischenreihen bleiben mit Begründung erhalten: frühe
+  Paket-/ABI-Probleme, fehlender Cache-Hit wegen SDK-Restverzeichnissen,
+  Messbericht-Dateizugriffskonflikt, veralteter Editor-Build und vorübergehender
+  Fehler eines rein lesenden Logabrufs. Sie fließen nicht in den Vergleich ein.
+- scripts/benchmarks/project-open/README.md beschreibt Erstellung und Ausführung
+  der Messungen. Native Voll-Logs werden zusätzlich zur Bridge geprüft.

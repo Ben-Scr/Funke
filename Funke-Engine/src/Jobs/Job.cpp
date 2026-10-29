@@ -62,11 +62,7 @@ namespace Funke {
 	JobHandle Job::Schedule(std::function<void()> work) {
 		auto block = JobInternal::CreateBlock(1);
 
-		JobSystem::Enqueue([block, work = std::move(work)]() mutable {
-			JobInternal::ExecuteAndNotify(block, [&]() {
-				if (work) work();
-			});
-		});
+		JobInternal::Enqueue(block, std::move(work));
 
 		return JobHandle(std::move(block));
 	}

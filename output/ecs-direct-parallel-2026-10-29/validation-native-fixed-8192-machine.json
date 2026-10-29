@@ -1,0 +1,97 @@
+{
+  "Warmups": 0,
+  "Binaries": [
+    {
+      "Algorithm": "SHA256",
+      "Hash": "9A1245AD31FA0CF929B5EED29A2E7604E2082EFF061A0471D4880CF08D5BAF71",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsDirectParallel-20261029\\runtime\\Funke-Runtime.exe"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "7E5076DBAE5D1E4B9131E598B93B8C8A6F9AE4963F5A415ECA522862EB6772B1",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsDirectParallel-20261029\\runtime\\Funke-Engine.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "1130FCAA8E0E0B972445FE588500B63F77F74C07B8DF3B264C9B0A67846C658D",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsDirectParallel-20261029\\runtime\\Funke-ScriptCore.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "8A64ABCCDF1F88A3F1A98708C151E2FCE8F23B39DADFE9EECC919F21FEB88984",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsDirectParallel-20261029\\project\\bin\\Release\\EcsNativeComparison.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "76D87CEAB10D5B8114F735AFE909635C254718B043FA99A3E0930E8D3941357B",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsDirectParallel-20261029\\project\\bin\\Release-windows-x86_64\\EcsNativeComparison-NativeScripts\\EcsNativeComparison-NativeScripts.dll"
+    }
+  ],
+  "Dirty": true,
+  "Sources": [
+    {
+      "Algorithm": "SHA256",
+      "Hash": "4259A9BF5BBA82BDB8964667023A7DF54BE2D280E1DB8E4416F7F0EAD58C9375",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\CMakeLists.txt"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "9C37F4E2DA213C2AF91B00EF74714673AF0A0EE740D42E5069CCDB0EF737A976",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\ManagedEcsBenchmark.cs"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "46E0244BC60DF495647BC30B09EBC483CC2EABE098607E8B87DA59B75F2C7274",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\NativeEcsBenchmark.cpp"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "03F345E3947C436E3B8CD178F4C6642A5AD16E49E4B3C676F8FC595196052E2A",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\NativeScriptExports.cpp"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "7027F038AA7405817920A8CAB944967002004D6C7D9177B446C5F5D0BD8C97A5",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\Prepare.ps1"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "7EBE15BC645E98DE0343286F80C3004B3447E8443FF482D4016CA062F8E84FD5",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\Run.ps1"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "C8B592368EF76B9836447F3DD7CFD1D99DE2286C804AE403392455A534ED85BB",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\Summarize.ps1"
+    }
+  ],
+  "OS": {
+    "Caption": "Microsoft Windows 11 Pro",
+    "Version": "10.0.26200",
+    "FreePhysicalMemory": 4307968
+  },
+  "Purpose": "Correctness validation; timer values are not performance results",
+  "Timestamp": "2026-10-29T20:21:55.7697072+01:00",
+  "GitHead": "c586c2ac69de360163a84d8e2440478d77850616",
+  "CPU": {
+    "Name": "AMD Ryzen 9 7900X 12-Core Processor            ",
+    "NumberOfCores": 12,
+    "NumberOfLogicalProcessors": 24
+  },
+  "Filter": "",
+  "PowerScheme": "GUID des Energieschemas: 381b4222-f694-41f0-9685-ff5bb260df2e  (Ausbalanciert)",
+  "Samples": 1,
+  "Memory": [
+    {
+      "Capacity": 17179869184,
+      "ConfiguredClockSpeed": 6000
+    },
+    {
+      "Capacity": 17179869184,
+      "ConfiguredClockSpeed": 6000
+    }
+  ],
+  "Count": 8192,
+  "Language": "Native",
+  "ActiveCompilers": []
+}

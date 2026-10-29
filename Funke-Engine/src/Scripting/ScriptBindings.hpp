@@ -14,6 +14,8 @@ namespace Funke {
 	class FUNKE_SCRIPTING_API ScriptBindings {
 	public:
 		static void PopulateNativeBindings(NativeBindings& bindings);
+		static void PopulateAssetBindings(NativeBindings& bindings);
+		static void PumpAssetLoadCompletions();
 		static bool IsScriptInputEnabled();
 		static bool AddComponent(const Entity& entity, const ComponentInfo& info);
 		static bool RemoveComponent(const Entity& entity, const ComponentInfo& info, bool notifyManaged = true);

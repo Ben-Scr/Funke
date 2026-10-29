@@ -51,6 +51,18 @@ namespace Funke {
 		return m_Stacks[std::weak_ptr<Scene>(scene)];
 	}
 
+	UndoStack SceneUndoHistory::Take(const std::shared_ptr<Scene>& scene) {
+		const auto it = m_Stacks.find(std::weak_ptr<Scene>(scene));
+		if (it == m_Stacks.end()) return {};
+		UndoStack result = std::move(it->second);
+		m_Stacks.erase(it);
+		return result;
+	}
+
+	void SceneUndoHistory::Restore(const std::shared_ptr<Scene>& scene, UndoStack stack) {
+		if (scene) m_Stacks.insert_or_assign(std::weak_ptr<Scene>(scene), std::move(stack));
+	}
+
 	void SceneUndoHistory::Retain(std::span<const std::weak_ptr<Scene>> scenes) {
 		std::erase_if(m_Stacks, [scenes](const auto& entry) {
 			return entry.first.expired() || std::none_of(scenes.begin(), scenes.end(), [&](const auto& scene) {

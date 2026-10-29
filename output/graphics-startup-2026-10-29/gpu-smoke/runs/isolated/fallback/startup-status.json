@@ -1,0 +1,29 @@
+Funke: funke.exe was compiled against other engine headers (d924fc36fb733278) than the loaded Funke-Engine.dll (914b2433d0d33f4e). Rebuild it together with the engine (scripts\dev\Build.ps1 Engine,<App>) or reinstall; until then it may crash or misbehave.
+{
+  "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\graphics-startup-2026-10-29\\gpu-smoke\\fixtures\\fallback",
+  "projectName": "MsaaTest",
+  "pid": 131496,
+  "version": "Funke 2026.1.0-beta.1+c586c2ac69de.dev.engine.dirty.bcd08f81f3f4 (Windows x64 Release)",
+  "protocol": 1,
+  "state": "edit",
+  "scene": "SampleScene",
+  "entityCount": 10,
+  "scenes": [
+    "SampleScene"
+  ],
+  "unsavedScenes": [],
+  "scripts": {
+    "compiling": true,
+    "lastBuildSucceeded": true,
+    "errors": ""
+  },
+  "busy": null,
+  "surface": {
+    "width": 1394,
+    "height": 784,
+    "source": "hidden-game-view"
+  },
+  "fixedStep": 0,
+  "frame": 18,
+  "gameTime": 0
+}

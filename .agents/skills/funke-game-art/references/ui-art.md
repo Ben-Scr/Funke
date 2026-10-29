@@ -61,7 +61,7 @@ Generate the whole UI kit from `Design/palette.json` in one script (`Tools/art_u
 
 ## Motion
 
-Panels pop in (`Funke.Tween` `ScaleTo` 0.9 → 1, `Ease.OutBack`, 0.18 s), screens fade through a full-screen overlay, buttons press down on `OnClickDown`, counters count up, stars on the result screen appear one after another with a pop and a sound. Put the durations in the design language's motion section.
+Panels pop in (`Funke.Tween` `ScaleTo` 0.9 → 1, `Ease.OutBack`, 0.18 s), screens fade through a full-screen overlay, buttons press down on `ClickDown`, counters count up, stars on the result screen appear one after another with a pop and a sound. Put the durations in the design language's motion section.
 
 ## Review
 

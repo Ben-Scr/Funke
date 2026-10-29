@@ -489,6 +489,39 @@ namespace Funke {
 		return true;
 	}
 
+	bool PackageManifest::HasLocalBuildInputs(std::string_view luaSource) {
+		if (luaSource.substr(0, 3) == "\xEF\xBB\xBF") luaSource.remove_prefix(3);
+		LuaTable root;
+		std::string error;
+		if (!LuaLiteralReader(luaSource).ReadManifestRoot(root, error)) return false;
+		const LuaValue* layers = root.Find("layers");
+		if (!layers || layers->Kind != LuaValue::Type::Table || layers->Table->Fields.empty()) return false;
+		for (const auto& [name, layer] : layers->Table->Fields) {
+			if (layer.Kind != LuaValue::Type::Table) return false;
+			if (name != "native" && name != "native_standalone" && name != "csharp"
+				&& name != "engine_core" && name != "standalone_cpp") return false;
+			for (const char* field : { "sources", "includes", "private_includes" }) {
+				const LuaValue* paths = layer.Table->Find(field);
+				if (!paths) { if (std::string_view(field) == "sources") return false; else continue; }
+				if (paths->Kind != LuaValue::Type::Table || !paths->Table->Fields.empty()) return false;
+				for (const LuaValue& value : paths->Table->Array) {
+					if (value.Kind != LuaValue::Type::String || value.String.empty()) return false;
+					std::string path = value.String;
+					std::replace(path.begin(), path.end(), '\\', '/');
+					if (path.front() == '/' || path.find_first_of(":%$") != std::string::npos) return false;
+					for (const auto& part : Path::FromUtf8(path)) {
+						if (part == "..") return false;
+					}
+				}
+			}
+			if (const LuaValue* nuget = layer.Table->Find("nuget")) {
+				if (nuget->Kind != LuaValue::Type::Table || !nuget->Table->Array.empty()
+					|| !nuget->Table->Fields.empty()) return false;
+			}
+		}
+		return true;
+	}
+
 	bool PackageManifest::TryLoad(const std::string& packageDir, PackageManifest& outManifest, std::string* outError) {
 		const std::filesystem::path manifestPath = Path::FromUtf8(packageDir) / std::string(k_FileName);
 		std::string source;

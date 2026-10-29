@@ -5,20 +5,48 @@ namespace Funke;
 
 public static class Application
 {
-    public static event Action? OnPaused;
-    public static event Action? OnStart;
-    public static event Action? OnQuit;
+    public static event Action? Paused;
+    public static event Action? Started;
+    public static event Action? Quitting;
 
     /// <summary>
     /// Editor only: Play mode stopped and the scenes were restored. Static state survives Play sessions (scripts are not
     /// reloaded), so packages and global services reset what one session left behind here.
     /// </summary>
-    public static event Action? OnPlayModeExited;
+    public static event Action? PlayModeExited;
 
-    internal static void RaiseApplicationPaused() => OnPaused?.Invoke();
-    internal static void RaiseApplicationStart() => OnStart?.Invoke();
-    internal static void RaiseApplicationQuit() => OnQuit?.Invoke();
-    internal static void RaisePlayModeExited() => OnPlayModeExited?.Invoke();
+    [Obsolete("Use Paused instead.")]
+    public static event Action? OnPaused
+    {
+        add => Paused += value;
+        remove => Paused -= value;
+    }
+
+    [Obsolete("Use Started instead.")]
+    public static event Action? OnStart
+    {
+        add => Started += value;
+        remove => Started -= value;
+    }
+
+    [Obsolete("Use Quitting instead.")]
+    public static event Action? OnQuit
+    {
+        add => Quitting += value;
+        remove => Quitting -= value;
+    }
+
+    [Obsolete("Use PlayModeExited instead.")]
+    public static event Action? OnPlayModeExited
+    {
+        add => PlayModeExited += value;
+        remove => PlayModeExited -= value;
+    }
+
+    internal static void RaiseApplicationPaused() => Paused?.Invoke();
+    internal static void RaiseApplicationStart() => Started?.Invoke();
+    internal static void RaiseApplicationQuit() => Quitting?.Invoke();
+    internal static void RaisePlayModeExited() => PlayModeExited?.Invoke();
 
     public static float TargetFrameRate
     {

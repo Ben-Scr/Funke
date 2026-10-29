@@ -1,12 +1,14 @@
 #include <doctest/doctest.h>
 
 #include <memory>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "Core/Application.hpp"
+#include "Components/General/UUIDComponent.hpp"
 #include "Core/Exceptions.hpp"
 #include "Core/Layer.hpp"
 #include "Events/ScenePostStartEvent.hpp"
@@ -14,7 +16,10 @@
 #include "Scene/SceneDefinition.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/SceneSystem.hpp"
+#include "Scene/SceneExtensions.hpp"
+#include "Scene/Entity.hpp"
 #include "Serialization/SceneSerializer.hpp"
+#include "Serialization/SceneSerializerStorage.hpp"
 
 using namespace Funke;
 
@@ -1468,4 +1473,254 @@ TEST_CASE("Scene manager public APIs reject worker-thread access without mutatio
 	CHECK(application.NoOpMutatorsReturned);
 	CHECK_FALSE(application.UnexpectedWorkerException);
 	CHECK(application.MainThreadStatePreserved);
+}
+
+namespace {
+	struct NewSceneProbeComponent {
+		EntityHandle Target = entt::null;
+		bool RuntimeReady = false;
+	};
+
+	struct NewSceneLoadTrace {
+		int Deserializations = 0;
+		int RuntimeInitializations = 0;
+		int LiveResources = 0;
+		bool DeserializedDetached = true;
+		bool RuntimeReferencesResolved = true;
+		bool ThrowOnRuntimeInitialization = false;
+		bool ChangeIdentityOnRuntimeInitialization = false;
+		bool ThrowOnDestruction = false;
+		bool DestructionFailureTriggered = false;
+		std::vector<std::string> Stages;
+
+		void DestroyResource(entt::registry& registry, EntityHandle entity) {
+			if (registry.get<NewSceneProbeComponent>(entity).RuntimeReady) --LiveResources;
+			if (ThrowOnDestruction) {
+				ThrowOnDestruction = false;
+				DestructionFailureTriggered = true;
+				throw std::runtime_error("expected new scene destruction failure");
+			}
+		}
+	};
+
+	NewSceneLoadTrace* s_NewSceneTrace = nullptr;
+
+	class NewSceneProbeSystem final : public SceneSystem {
+	public:
+		explicit NewSceneProbeSystem(NewSceneLoadTrace* trace) : m_Trace(trace) {}
+		void Awake(Scene&) override { m_Trace->Stages.push_back("awake"); }
+		void Start(Scene&) override { m_Trace->Stages.push_back("start"); }
+	private:
+		NewSceneLoadTrace* m_Trace;
+	};
+
+	enum class NewSceneScenario { Success, PartialFailure, DuplicateIdentity, RuntimeFailure, RuntimeIdentityFailure, NonemptyFailure, RollbackFailure };
+
+	class NewSceneLoadTestApplication final : public Application {
+	public:
+		NewSceneLoadTestApplication(SceneSerializationFormat format, NewSceneScenario scenario)
+			: m_Format(format), m_Scenario(scenario), m_Path(std::filesystem::temp_directory_path()
+				/ ("funke_new_scene_" + std::to_string(static_cast<uint64_t>(UUID())) + ".scene")) {}
+
+		~NewSceneLoadTestApplication() override {
+			SceneExtensions::Unregister("Tests.NewSceneLoad");
+			s_NewSceneTrace = nullptr;
+			std::error_code error;
+			std::filesystem::remove(m_Path, error);
+		}
+
+		ApplicationConfig GetConfiguration() const override { return MakeSceneTestConfiguration(); }
+
+		void ConfigureScenes() override {
+			s_NewSceneTrace = &Trace;
+			Trace.ThrowOnRuntimeInitialization = m_Scenario == NewSceneScenario::RuntimeFailure;
+			Trace.ChangeIdentityOnRuntimeInitialization = m_Scenario == NewSceneScenario::RuntimeIdentityFailure;
+			ComponentInfo info("New Scene Probe", ComponentCategory::Component);
+			info.serializedName = "NewSceneProbe";
+			info.serialize = [](Entity entity) {
+				Json::Value value = Json::Value::MakeObject();
+				value.AddMember("target", std::to_string(entity.GetScene()->GetEntityPersistentID(
+					entity.GetComponent<NewSceneProbeComponent>().Target)));
+				return value;
+			};
+			info.deserialize = [this](Entity entity, const Json::Value& value) {
+				++Trace.Deserializations;
+				Trace.DeserializedDetached = Trace.DeserializedDetached && entity.GetScene()->IsDetached();
+				Trace.Stages.push_back("deserialize");
+				entity.AddComponent<NewSceneProbeComponent>();
+				const Json::Value* target = value.FindMember("target");
+				const uint64_t targetId = target ? std::stoull(target->AsStringOr("0")) : 0;
+				Scene* scene = entity.GetScene();
+				const EntityHandle handle = entity.GetHandle();
+				scene->DeferEntityRefFixup([scene, handle, targetId]() {
+					EntityHandle resolved = entt::null;
+					if (scene->IsValid(handle) && scene->TryResolveEntityRef(targetId, resolved))
+						scene->GetComponent<NewSceneProbeComponent>(handle).Target = resolved;
+				});
+			};
+			SceneManager::RegisterComponentType<NewSceneProbeComponent>(std::move(info));
+
+			SceneExtension extension;
+			extension.Name = "Tests.NewSceneLoad";
+			extension.OnSceneCreated = [](Scene& scene) {
+				scene.GetRegistry().on_destroy<NewSceneProbeComponent>()
+					.connect<&NewSceneLoadTrace::DestroyResource>(*s_NewSceneTrace);
+			};
+			extension.OnSceneDestroyed = [](Scene& scene) {
+				scene.GetRegistry().on_destroy<NewSceneProbeComponent>()
+					.disconnect<&NewSceneLoadTrace::DestroyResource>(*s_NewSceneTrace);
+			};
+			extension.OnRuntimeStateInitialized = [](Scene& scene) {
+				if (scene.IsDetached() || scene.IsLifecycleSuspended()) return;
+				for (auto&& [entity, probe] : scene.GetRegistry().view<NewSceneProbeComponent>().each()) {
+					++s_NewSceneTrace->RuntimeInitializations;
+					s_NewSceneTrace->Stages.push_back("runtime");
+					s_NewSceneTrace->RuntimeReferencesResolved = s_NewSceneTrace->RuntimeReferencesResolved
+						&& scene.IsValid(probe.Target) && scene.GetEntity(probe.Target).GetParent().GetHandle() == entity;
+					probe.RuntimeReady = true;
+					++s_NewSceneTrace->LiveResources;
+					if (s_NewSceneTrace->ChangeIdentityOnRuntimeInitialization)
+						scene.GetComponent<UUIDComponent>(entity).Id = UUID(0);
+					if (s_NewSceneTrace->ThrowOnRuntimeInitialization)
+						throw std::runtime_error("expected new scene runtime failure");
+				}
+			};
+			SceneExtensions::Register(std::move(extension));
+
+			Json::Value root;
+			{
+				auto source = Scene::CreateDetachedScene("New Scene Loaded");
+				Entity parent = source->CreateEntity("Parent");
+				Entity child = source->CreateEntity("Child");
+				child.SetParent(parent);
+				parent.AddComponent<NewSceneProbeComponent>().Target = child.GetHandle();
+				root = SceneSerializer::SerializeScene(*source);
+			}
+			Json::Value* entities = root.FindMember("entities");
+			if (m_Scenario == NewSceneScenario::PartialFailure || m_Scenario == NewSceneScenario::RollbackFailure)
+				entities->Append(Json::Value(false));
+			if (m_Scenario == NewSceneScenario::DuplicateIdentity || m_Scenario == NewSceneScenario::NonemptyFailure) {
+				const Json::Value id = *entities->GetArray()[0].FindMember("SceneGUID");
+				*entities->GetArray()[1].FindMember("SceneGUID") = id;
+				*entities->GetArray()[1].FindMember("uuid") = id;
+			}
+			FileWritten = SceneSerializerStorage::WriteRootToFile(m_Path.string(), root, m_Format);
+			SceneDefinition& definition = SceneManager::RegisterScene("New Scene Pending")
+				.AddSystem<NewSceneProbeSystem>(&Trace)
+				.OnInitialize([this](Scene& scene) {
+					scene.AddSceneSystem("Tests.PendingSystem");
+					scene.SetSceneSystemEnabled("Tests.PendingSystem", false);
+					scene.SetSceneSystemFieldValue("Tests.PendingSystem", "Value", "before");
+					if (m_Scenario == NewSceneScenario::NonemptyFailure) scene.CreateEntity("Sentinel");
+					scene.ClearDirty();
+					scene.ClearUIDirty();
+				})
+				.OnLoadChecked([this](Scene& scene) {
+					const Json::Value previous = SceneSerializer::SerializeScene(scene);
+					Trace.ThrowOnDestruction = m_Scenario == NewSceneScenario::RollbackFailure;
+					LoadSucceeded = SceneSerializer::LoadFromFile(scene, m_Path.string());
+					Trace.Stages.push_back("callback");
+					if (m_Scenario == NewSceneScenario::Success) return LoadSucceeded;
+					BaselineRestored = !LoadSucceeded && SceneSerializer::SerializeScene(scene) == previous
+						&& !scene.IsDirty() && !scene.IsUIDirty() && !scene.IsDetached()
+						&& !scene.IsLifecycleSuspended() && scene.GetPendingEntityRefFixupCount() == 0
+						&& Trace.LiveResources == 0;
+					scene.SetName("New Scene Recovered");
+					scene.CreateEntity("Recovery");
+					return true;
+				})
+				.WithoutDefaultCamera2D();
+			if (m_Scenario == NewSceneScenario::RollbackFailure) {
+				SceneManager::RegisterScene("New Scene Stable")
+					.OnLoad([](Scene& scene) { scene.CreateEntity("Stable"); })
+					.WithoutDefaultCamera2D().SetAsStartupScene();
+			}
+			else definition.SetAsStartupScene();
+		}
+
+		void Start() override {
+			if (m_Scenario == NewSceneScenario::RollbackFailure) {
+				const SceneLoadResult result = SceneManager::TryLoadScene("New Scene Pending");
+				Scene* activeScene = SceneManager::GetActiveScene();
+				OwnerRejectedFailedRollback = result.Status == SceneLoadStatus::LoadCallbackFailed
+					&& result.LoadedScene.expired() && SceneManager::GetLoadedSceneCount() == 1
+					&& activeScene && activeScene->GetName() == "New Scene Stable";
+			}
+			Scene* scene = SceneManager::GetActiveScene();
+			Loaded = scene && scene->IsLoaded() && !scene->IsDetached() && !scene->IsLifecycleSuspended();
+			Entities = scene ? scene->GetEntityCount() : 0;
+			ResourcesAtStart = Trace.LiveResources;
+			Application::Quit();
+		}
+
+		NewSceneLoadTrace Trace;
+		bool FileWritten = false;
+		bool LoadSucceeded = false;
+		bool BaselineRestored = false;
+		bool Loaded = false;
+		bool OwnerRejectedFailedRollback = false;
+		size_t Entities = 0;
+		int ResourcesAtStart = 0;
+	private:
+		SceneSerializationFormat m_Format;
+		NewSceneScenario m_Scenario;
+		std::filesystem::path m_Path;
+	};
+}
+
+TEST_CASE("New managed scene load populates once before runtime hooks and lifecycle") {
+	SceneSerializationFormat format = SceneSerializationFormat::Json;
+	SUBCASE("JSON") { format = SceneSerializationFormat::Json; }
+	SUBCASE("binary") { format = SceneSerializationFormat::Binary; }
+	NewSceneLoadTestApplication application(format, NewSceneScenario::Success);
+	REQUIRE(application.Run() == 0);
+	REQUIRE(application.FileWritten);
+	CHECK(application.LoadSucceeded);
+	CHECK(application.Loaded);
+	CHECK(application.Entities == 2);
+	CHECK(application.Trace.Deserializations == 1);
+	CHECK(application.Trace.DeserializedDetached);
+	CHECK(application.Trace.RuntimeInitializations == 1);
+	CHECK(application.Trace.RuntimeReferencesResolved);
+	CHECK(application.ResourcesAtStart == 1);
+	CHECK(application.Trace.LiveResources == 0);
+	const std::vector<std::string> expectedStages{ "deserialize", "runtime", "callback", "awake", "start" };
+	CHECK(application.Trace.Stages == expectedStages);
+}
+
+TEST_CASE("New managed scene failures restore content before a callback recovers") {
+	SceneSerializationFormat format = SceneSerializationFormat::Json;
+	SUBCASE("JSON") { format = SceneSerializationFormat::Json; }
+	SUBCASE("binary") { format = SceneSerializationFormat::Binary; }
+	for (const NewSceneScenario scenario : { NewSceneScenario::PartialFailure, NewSceneScenario::DuplicateIdentity,
+		NewSceneScenario::RuntimeFailure, NewSceneScenario::RuntimeIdentityFailure, NewSceneScenario::NonemptyFailure }) {
+		CAPTURE(static_cast<int>(scenario));
+		NewSceneLoadTestApplication application(format, scenario);
+		REQUIRE(application.Run() == 0);
+		REQUIRE(application.FileWritten);
+		CHECK_FALSE(application.LoadSucceeded);
+		CHECK(application.BaselineRestored);
+		CHECK(application.Loaded);
+		CHECK(application.Entities == (scenario == NewSceneScenario::NonemptyFailure ? 2 : 1));
+		const bool initializedRuntime = scenario == NewSceneScenario::RuntimeFailure || scenario == NewSceneScenario::RuntimeIdentityFailure;
+		CHECK(application.Trace.RuntimeInitializations == (initializedRuntime ? 1 : 0));
+		CHECK(application.ResourcesAtStart == 0);
+		CHECK(application.Trace.LiveResources == 0);
+	}
+}
+
+TEST_CASE("New managed scene rollback failure cannot publish a recovered partial scene") {
+	SceneSerializationFormat format = SceneSerializationFormat::Json;
+	SUBCASE("JSON") { format = SceneSerializationFormat::Json; }
+	SUBCASE("binary") { format = SceneSerializationFormat::Binary; }
+	NewSceneLoadTestApplication application(format, NewSceneScenario::RollbackFailure);
+	REQUIRE(application.Run() == 0);
+	REQUIRE(application.FileWritten);
+	CHECK_FALSE(application.LoadSucceeded);
+	CHECK(application.Trace.DestructionFailureTriggered);
+	CHECK(application.OwnerRejectedFailedRollback);
+	CHECK(application.Loaded);
+	CHECK(application.Entities == 1);
+	CHECK(application.Trace.RuntimeInitializations == 0);
+	CHECK(application.Trace.LiveResources == 0);
 }

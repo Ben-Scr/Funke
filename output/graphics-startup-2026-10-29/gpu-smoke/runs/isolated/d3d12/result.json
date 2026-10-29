@@ -1,0 +1,11 @@
+{
+  "Case": "d3d12",
+  "RequestedBackend": "Direct3D12",
+  "Backend": "Direct3D12",
+  "Adapter": "AMD  Radeon RX 7800 XT",
+  "Success": false,
+  "Error": "Conversion from JSON failed with error: Unexpected character encountered while parsing value: F. Path '', line 0, position 0.",
+  "Screenshots": [],
+  "GpuErrors": [],
+  "Log": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\graphics-startup-2026-10-29\\gpu-smoke\\runs\\isolated\\d3d12\\user-data\\Funke\\Logs\\Funke-Editor.log"
+}

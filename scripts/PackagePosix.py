@@ -4,7 +4,7 @@
 The Release Funke-Launcher output already holds everything a user needs: the Launcher, Editor, Runtime,
 `funke` CLI, Funke-ScriptCore, the hot-reload compiler and the EngineSDK (scripts/CopyEngineSdk.py). This
 script checks that layout and packs it as Funke-Editor-<version>-<Linux|macOS>-<arch>.tar.gz, keeping
-executable bits and the shared-library symlinks.
+executable bits and materializing shared-library file symlinks within the bundle.
 
 Usage:
     python3 scripts/PackagePosix.py [--configuration Release] [--output-dir bin]
@@ -16,8 +16,10 @@ import argparse
 import json
 import platform
 import sys
-import tarfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sdk_manifest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 IS_MAC = platform.system() == "Darwin"
@@ -50,6 +52,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--configuration", default="Release", choices=("Debug", "Release", "Dist"))
     parser.add_argument("--output-dir", default=str(REPO_ROOT / "bin"))
+    parser.add_argument("--include-native-sdk", action="store_true", help="Include native headers and engine link libraries")
     args = parser.parse_args()
 
     folder_arch, label_arch = architecture()
@@ -61,7 +64,7 @@ def main() -> int:
     required = [
         "Funke-Launcher", "Funke-Editor", "Funke-Runtime", engine_lib, "Funke-ScriptCore.dll",
         "Funke-ScriptCore.runtimeconfig.json", "Funke-PackageTool", "FunkeAssets",
-        "EngineSDK/Licenses/Funke/LICENSE.txt", "EngineSDK/Funke-Engine/src",
+        "EngineSDK/Licenses/Funke/LICENSE.txt", "EngineSDK/FunkeSDK.json",
     ]
     missing = [name for name in required if not (launcher_dir / name).exists()]
     if missing:
@@ -76,10 +79,6 @@ def main() -> int:
               file=sys.stderr)
         print("[PackagePosix] Rerun launcher staging (scripts/CopyEngineSdk.py) before packaging.", file=sys.stderr)
         return 1
-    if not (launcher_dir / "EngineSDK" / "Runtime-Dist").is_dir():
-        print("[PackagePosix] warning: EngineSDK/Runtime-Dist is missing; Release-profile exports will need a "
-              "source tree. Build `make config=dist Funke-Runtime` before the Launcher.", file=sys.stderr)
-
     version = "0.0.0-dev"
     metadata = REPO_ROOT / "build" / "BuildMetadata.json"
     if metadata.is_file():
@@ -90,24 +89,11 @@ def main() -> int:
     archive = output_dir / f"Funke-Editor-{version}-{platform_label}-{label_arch}.tar.gz"
     root_name = f"Funke-{version}"
 
-    # Files a local run leaves behind must not ship.
-    skipped = {"imgui.ini", "funke-project.json"}
-    # A reused launcher folder may still contain SDK headers from before the package split.
-    obsolete_sdk_paths = {
-        PurePosixPath(root_name) / "EngineSDK" / "External" / name
-        for name in ("Index-Physics", "Funke-Physics")
-    }
-
-    def keep(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
-        archive_path = PurePosixPath(info.name)
-        if archive_path.name in skipped or archive_path in obsolete_sdk_paths:
-            return None
-        info.uid = info.gid = 0
-        info.uname = info.gname = ""
-        return info
-
-    with tarfile.open(archive, "w:gz") as tar:
-        tar.add(launcher_dir, arcname=root_name, filter=keep)
+    try:
+        sdk_manifest.archive_bundle(launcher_dir, archive, prefix=root_name + "/", include_native=args.include_native_sdk)
+    except (OSError, ValueError) as error:
+        print(f"[PackagePosix] {error}", file=sys.stderr)
+        return 1
     print(f"[PackagePosix] {archive} ({archive.stat().st_size / (1024 * 1024):.1f} MB)")
     return 0
 

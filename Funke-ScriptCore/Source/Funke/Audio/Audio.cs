@@ -94,12 +94,7 @@ public sealed class Audio : IEquatable<Audio>
     // can construct managed Audio wrappers from a stored asset GUID
     // without re-implementing the AssetRegistry lookup.
     public static Audio? FromAssetUUID(ulong assetId)
-    {
-        if (assetId == 0 || !InternalCalls.Asset_IsValid(assetId))
-            return null;
-
-        return InternalCalls.Audio_LoadAsset(assetId) ? new Audio(assetId) : null;
-    }
+        => AssetManager.LoadByGUID<Audio>(assetId);
 
     public bool Equals(Audio? other) => other is not null && UUID == other.UUID;
     public override bool Equals(object? obj) => obj is Audio other && Equals(other);

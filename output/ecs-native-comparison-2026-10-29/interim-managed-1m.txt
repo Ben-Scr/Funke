@@ -1,0 +1,46 @@
+Funke ECS: C# ScriptCore vs native C++ NativeScript
+Ryzen 9 7900X, 12 cores / 24 threads, 32 GiB DDR5-6000; Release x64; 16 engine workers.
+3 warmups, 9 measured samples/run; medians in ms; all PASS.
+Release x64; native DLL loaded as NativeScript; C# SceneSystem; same frozen engine/runtime; one persistent driver entity; Transform2D + SpriteRenderer default components; setup, validation, cleanup and ECB entity-wrapper materialization excluded; sequential recording and explicitly parallel shared-backend playback; direct timings include public API costs.
+Public native ECB Create2 uses its own sequential implementation. NativeWireParallel is an internal shared-backend control, not a public native ECB API. Compare PlaybackMs for this control.
+Direct APIs have different identity, wrapper, dependency and cache costs; results are not a pure language-speed ratio.
+Driver survives destruction; previous whole-scene destroy measurements are not directly comparable.
+Separate process runs on a desktop machine; timing differences include allocator, cache, GC and scheduler variation.
+C# direct native-component calls resolve UUID to scene/handle and use the generic ComponentInfo dispatch; native Entity retains registry and handle.
+C# Add additionally uses AddWithDependencies, including module and conflict checks. Native typed Add uses ComponentUtils and typed emplace. The fixture has no conflicts or missing dependencies.
+C# typed Remove passes notifyManaged=false into native code and invalidates its wrapper cache locally. There is no reverse native-to-managed callback for this direct path.
+These call-chain differences do not attribute time to individual causes; that would require profiling. The comparison covers these structural operations, not general C++ versus C# execution speed.
+
+Count | Operation | Mode | Record ms | Playback ms | Total ms | Total min..max ms
+100000 | AddSprite | ManagedDirect | 0.000 | 0.000 | 29.450 | 27.374..34.147
+100000 | AddSprite | ManagedECBParallel | 0.567 | 5.759 | 6.321 | 6.055..7.060
+100000 | AddSprite | NativeDirect | 0.000 | 0.000 | 3.449 | 3.429..3.972
+100000 | AddSprite | NativeWireParallel | 2.483 | 4.315 | 6.751 | 6.078..7.120
+100000 | Create2 | ManagedDirect | 0.000 | 0.000 | 53.516 | 49.393..56.177
+100000 | Create2 | ManagedECBParallel | 1.059 | 11.615 | 12.693 | 12.268..14.406
+100000 | Create2 | NativeDirect | 0.000 | 0.000 | 31.692 | 27.651..57.019
+100000 | Create2 | NativeECB | 3.448 | 21.375 | 24.938 | 22.462..27.217
+100000 | Create2 | NativeWireParallel | 3.348 | 12.302 | 15.588 | 14.918..17.180
+100000 | Destroy | ManagedDirect | 0.000 | 0.000 | 36.817 | 35.398..45.345
+100000 | Destroy | ManagedECBParallel | 0.540 | 17.931 | 18.472 | 17.046..19.298
+100000 | Destroy | NativeDirect | 0.000 | 0.000 | 27.924 | 26.139..35.150
+100000 | Destroy | NativeWireParallel | 2.483 | 16.832 | 19.512 | 17.244..23.217
+100000 | RemoveSprite | ManagedDirect | 0.000 | 0.000 | 17.164 | 16.079..19.069
+100000 | RemoveSprite | ManagedECBParallel | 0.582 | 6.235 | 6.821 | 6.560..7.343
+100000 | RemoveSprite | NativeDirect | 0.000 | 0.000 | 3.841 | 3.640..4.413
+100000 | RemoveSprite | NativeWireParallel | 2.523 | 4.912 | 7.406 | 6.607..8.107
+1000000 | AddSprite | ManagedDirect | 0.000 | 0.000 | 334.889 | 323.045..339.029
+1000000 | AddSprite | ManagedECBParallel | 5.969 | 131.887 | 137.764 | 129.686..152.100
+1000000 | Create2 | ManagedDirect | 0.000 | 0.000 | 617.540 | 608.206..636.971
+1000000 | Create2 | ManagedECBParallel | 11.575 | 207.745 | 219.321 | 208.074..249.023
+1000000 | Destroy | ManagedDirect | 0.000 | 0.000 | 455.023 | 437.519..486.173
+1000000 | Destroy | ManagedECBParallel | 5.508 | 284.344 | 289.853 | 270.364..355.643
+1000000 | RemoveSprite | ManagedDirect | 0.000 | 0.000 | 229.140 | 228.446..238.900
+1000000 | RemoveSprite | ManagedECBParallel | 6.656 | 143.717 | 154.441 | 131.181..166.585
+
+Binary SHA256:
+3E0303E7CCE29D850E3BB26666D2166D78E03E8FBDAD33B5CC06EC77BBC2BC76 C:\Users\benso\source\repos\Pending\Index\bin-int\_agent\EcsNativeComparison-20261029\runtime\Funke-Runtime.exe
+50077772D0A319F2F1F981DE309229B67F55D19F4891AECD99C0AB5182F0BAD2 C:\Users\benso\source\repos\Pending\Index\bin-int\_agent\EcsNativeComparison-20261029\runtime\Funke-Engine.dll
+BE3439AA7120F3C164B9D4833E7E8315275D79B793B6BFE7504D7A728354B757 C:\Users\benso\source\repos\Pending\Index\bin-int\_agent\EcsNativeComparison-20261029\runtime\Funke-ScriptCore.dll
+798EAAE3B4F1FABA0DDF6BC32D33434356CCF7D6C152296247E07AE7A67DF328 C:\Users\benso\source\repos\Pending\Index\bin-int\_agent\EcsNativeComparison-20261029\project\bin\Release\EcsNativeComparison.dll
+3441774A0FC06CCCA41F4A23C298B5AD51BB3330E88A6D42BC07B0C877B6A4CE C:\Users\benso\source\repos\Pending\Index\bin-int\_agent\EcsNativeComparison-20261029\project\bin\Release-windows-x86_64\EcsNativeComparison-NativeScripts\EcsNativeComparison-NativeScripts.dll

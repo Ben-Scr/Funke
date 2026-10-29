@@ -16,6 +16,13 @@ namespace Funke {
     std::string Path::GetSpecialFolderPath(SpecialFolder folder)
     {
 #ifdef FNK_PLATFORM_WINDOWS
+        if (folder == SpecialFolder::LocalAppData) return ToUtf8(Platform::GetUserDataRoot());
+        if (folder == SpecialFolder::AppDataRoaming) {
+            SetLastError(ERROR_SUCCESS);
+            const DWORD length = GetEnvironmentVariableW(L"FUNKE_USER_DATA_ROOT", nullptr, 0);
+            if (length > 0 || GetLastError() != ERROR_ENVVAR_NOT_FOUND)
+                return ToUtf8(Platform::GetUserDataRoot());
+        }
         PWSTR path = nullptr;
         HRESULT hr = E_FAIL;
 

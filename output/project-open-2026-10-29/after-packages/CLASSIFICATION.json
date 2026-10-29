@@ -1,0 +1,6 @@
+{
+  "classification": "diagnostic-no-hit",
+  "runtimeValidation": "passed; native package loaded in all six runs",
+  "reason": "Package fast path never activated. Cache capture rejected orphan inactive .NET SDK directories 10.0.104 and 10.0.203 without MSBuild.dll; no cache stamp was written.",
+  "comparisonUse": "Preserved diagnostic series; do not use as final package optimization result. Repeat only after the concrete cache eligibility bug is fixed and built."
+}

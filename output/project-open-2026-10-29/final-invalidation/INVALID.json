@@ -1,0 +1,4 @@
+{
+  "reason": "Recovery opened successfully, wrote stamp and had no native startup errors, but the read-only bridge logs request failed once with OSError EINVAL while reconnecting the named pipe. Remaining ABI cases were not executed; fixture restored successfully.",
+  "fix": "Read-only log requests retry up to four times with short bounded delay; endpoint timing unaffected. Entire integration repeated in a new directory."
+}

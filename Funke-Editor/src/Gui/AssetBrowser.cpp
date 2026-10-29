@@ -759,6 +759,7 @@ namespace Funke {
 		if (ext == ".dataasset")                                             return "file_dataasset";
 		if (ext == ".anim")                                                  return "file_anim";
 		if (ext == ".shader")                                                return "file_shader";
+		if (ext == ".material")                                              return "file_material";
 		if (ext == ".json")                                                  return "file_json";
 		if (ext == ".xml")                                                   return "file_xml";
 		if (ext == ".bin")                                                   return "file_bin";

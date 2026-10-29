@@ -71,12 +71,14 @@ To show players another name than the project name, set `"productName"` in `proj
 A Windows player machine needs:
 
 - Windows x64 with a WebGPU-capable D3D12 or Vulkan graphics driver.
-- The [.NET 10 x64 Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/10.0).
+- The [.NET 10 x64 Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/10.0), only when **Include .NET Runtime** is off in the build profile.
 - The [Microsoft Visual C++ 2015-2022 x64 Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe).
 
-A Linux player machine needs a Vulkan driver and the .NET 10 Runtime (`dotnet-runtime-10.0` from the distribution or Microsoft). A macOS player needs macOS 11 or later and the .NET 10 Runtime for their CPU (Arm64 on Apple Silicon).
+A Linux player machine needs a Vulkan driver and the operating-system dependencies of .NET. A macOS player needs macOS 11 or later. When **Include .NET Runtime** is off, both also need the .NET 10 Runtime for their CPU (`dotnet-runtime-10.0` on Linux; Arm64 on Apple Silicon).
 
-Funke is framework-dependent rather than self-contained, so installing the matching .NET runtime is required. If it is missing, the game shows a message with a download link instead of failing silently.
+Desktop build profiles enable **Include .NET Runtime** by default (`"bundleDotNetRuntime": true` in the `.build` file). The exporter copies the newest installed stable patch of ScriptCore's required major/minor version, its matching hostfxr and license notices into `dotnet/` beside the game's ScriptCore files. It checks the native runtime architecture and refuses incomplete installations. The export uses the installed runtime offline; update .NET on the build machine and export again to ship security updates. The SDK and unrelated runtimes are not included.
+
+The player explicitly loads that private runtime, including after moving the game folder or the macOS `.app`. A damaged private runtime fails instead of silently switching to a machine-wide version. Turn the option off for smaller downloads when an installer supplies .NET separately; without an installed runtime that build shows a download prompt. Windows still needs the Visual C++ Redistributable; this option bundles .NET only.
 
 Funke is MIT-licensed ([LICENSE.txt](../../../LICENSE.txt)): you may ship and sell games made with it freely. The license only asks that its notice travels with the engine, which the build already does by placing it, together with the third-party notices, in the output's `Licenses` folder. Keep that folder when you distribute the game.
 
@@ -84,15 +86,20 @@ Saved data (`PlayerPrefs`, `SaveData`) is stored in `%LOCALAPPDATA%\<Company>\<N
 
 ## Standalone editor prerequisites
 
-Creating and building games with the standalone Editor requires:
+The standard installer and public archives contain compiled applications, assets and `EngineSDK/FunkeSDK.json`. They do not contain engine sources, native headers or a ScriptCore source project. Ordinary C# project creation, Editor play mode and desktop export need the **stable .NET 10.0 SDK**; Roslyn comes from that SDK. Git and a native compiler are not required for this workflow.
 
-- Visual Studio or Build Tools with MSVC v143 14.44 or newer for native scripts and packages.
+Additional tools depend on the work:
+
+- The matching optional Native SDK plus Visual Studio or Build Tools with MSVC v143 14.44 or newer for native scripts and packages.
 - Visual Studio 2026 (18.0+) for C# IntelliSense when Visual Studio is selected as the script editor.
-- The .NET 10 SDK for C# scripts and managed packages.
 - Python 3.10 or newer for the package scaffolding commands.
 - CMake for a project's `NativeScripts` target.
 
 Premake and the package authoring scripts are included in `EngineSDK`.
+
+Installed desktop exports select the declared Development or Release runtime directly. An available prebuilt module variant is used when compatible; otherwise the declared full runtime is used without invoking an engine build. Missing configurations and damaged declared runtimes fail explicitly. Cross-platform builders that compile the engine still require a complete source checkout and the target toolchain.
+
+Use [Standalone Verification](Standalone-Verification.md) for the automated Launcher/create/edit/play/export/player gate and the separate Windows Sandbox recipe. A restricted host run is recorded separately from a clean-machine result.
 
 ## Validate a game release
 
@@ -107,6 +114,10 @@ Test the exact folder or archive you plan to upload:
 7. Scan the archive and record its checksum before publishing.
 
 Treat the clean-machine run as a release gate. Repository CI can verify structure and startup behavior, but it cannot prove that an arbitrary customer machine has the expected drivers and runtimes.
+
+Desktop CI also creates and exports a small C# game, moves its output to a path containing spaces and non-ASCII characters, and runs it with global .NET discovery redirected to a missing directory. It requires the game's script marker and the bundled-runtime log message. Two negative checks remove the framework or the entire private runtime and require startup to fail without falling back to the build machine's installation. Run this check locally with `python scripts/ci/desktop_export_smoke_test.py --cli <path-to-funke>`.
+
+For real browser, Android and iOS simulator runs of already exported games, use [Platform Export Testing](Platform-Export-Testing.md). Those checks require C# success markers and rendered pixels, and retain evidence for each run. The Web workflow is opt-in and consumes an export artifact; mobile checks need an explicitly selected device or simulator.
 
 ## Build the standalone engine distribution
 
@@ -149,8 +160,10 @@ The version comes from `Version.props`. The build ID combines that version with 
 - The prebuilt `EngineSDK\Runtime-Dist` runtime used for Release game exports.
 - Funke-ScriptCore and Funke-PackageTool artifacts.
 - Premake, the package workspace scripts, and package create/remove/version tools.
-- Native headers, import libraries, and required third-party headers.
+- A versioned SDK manifest with the installation's capabilities and runtime paths.
 - Funke, third-party, Dawn, font, and .NET redistribution notices.
+
+Maintainers can add native headers, import libraries and required third-party headers with `BuildWindows.ps1 -PublishBundle -IncludeNativeSdk`, `BuildInstaller.ps1 -IncludeNativeSdk`, or `PackagePosix.py --include-native-sdk`. Developer Launcher staging retains this optional Native SDK; public archives and installers omit it by default.
 
 PDB files are excluded from the public archive. A separate build-ID-keyed private symbols archive contains the exact Release and Dist PDBs, a binary hash manifest, and the build identity needed to diagnose crash dumps.
 
@@ -195,7 +208,7 @@ Before tagging a public release:
        -RequireSignature
    ```
 
-CI runs on pushes, pull requests and manual dispatch. Python tooling tests and C# ScriptCore tests run independently on Windows, Linux and Apple Silicon macOS; the C# jobs use AnyCPU and upload TRX results without waiting for Dawn or native builds. Native jobs build and test the desktop engine, and runtime smoke tests cover Release/Dist on macOS, Release/Debug/Dist on Linux, and the packaged Windows applications and installer. A draft release requires all desktop jobs and the managed-test matrix to pass.
+CI runs on pushes, pull requests and manual dispatch. Python tooling tests and C# ScriptCore tests run independently on Windows, Linux and Apple Silicon macOS; the C# jobs use AnyCPU and upload TRX results without waiting for Dawn or native builds. Native jobs build and test the desktop engine, and runtime smoke tests cover Release/Dist on macOS, Release/Debug/Dist on Linux, and the packaged Windows applications and installer. The Windows standalone job downloads the public archive onto a fresh runner whose sparse checkout contains only the verification script. A draft release requires this gate, all desktop jobs and the managed-test matrix to pass.
 
 Android helper tests, iOS/Web export orchestration tests and Web preview tests run in the Python matrix. The export tests substitute external compilers and downloads: they do not compile APKs, sign iOS apps or execute WebAssembly in a browser. Device and browser export checks remain part of release validation. A public tag should be created only after the clean-machine engine and exported-game checks pass.
 

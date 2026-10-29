@@ -65,6 +65,26 @@ namespace Funke {
 	using Json::Value;
 	using namespace SceneSerializerShared;
 
+	namespace {
+		thread_local Scene* s_NewSceneLoadTarget = nullptr;
+		thread_local Scene* s_NewSceneRollbackFailure = nullptr;
+	}
+
+	SceneSerializer::NewSceneLoadScope::NewSceneLoadScope(Scene& scene)
+		: m_Target(&scene), m_Previous(s_NewSceneLoadTarget), m_PreviousRollbackFailure(s_NewSceneRollbackFailure) {
+		s_NewSceneLoadTarget = &scene;
+		s_NewSceneRollbackFailure = nullptr;
+	}
+
+	SceneSerializer::NewSceneLoadScope::~NewSceneLoadScope() {
+		s_NewSceneLoadTarget = m_Previous;
+		s_NewSceneRollbackFailure = m_PreviousRollbackFailure;
+	}
+
+	bool SceneSerializer::NewSceneLoadScope::HasRollbackFailure() const {
+		return s_NewSceneRollbackFailure == m_Target;
+	}
+
 #if FUNKE_WITH_2D
 	namespace {
 		// "points" is path 0; "paths" holds further paths as flat [x0, y0, x1, y1, ...] arrays.
@@ -1729,6 +1749,67 @@ namespace Funke {
 		return false;
 	}
 
+	template <typename Load>
+	bool SceneSerializer::DeserializeNewScene(Scene& scene, Load&& load, std::string_view source) {
+		const Json::Value previousState = SerializeScene(scene);
+		const std::string previousName = scene.GetName();
+		const UUID previousSceneId = scene.GetSceneId();
+		const bool wasDirty = scene.m_Dirty;
+		const bool wasUiDirty = scene.m_UIDirty;
+		struct FlagRestoration {
+			bool& Detached;
+			bool& Suppressed;
+			bool WasDetached;
+			bool WasSuppressed;
+			void Restore() { Detached = WasDetached; Suppressed = WasSuppressed; }
+			~FlagRestoration() { Restore(); }
+		} flags{ scene.m_IsDetached, scene.m_SuppressEntityDestructionCallbacks,
+			scene.m_IsDetached, scene.m_SuppressEntityDestructionCallbacks };
+
+		// Keep runtime hooks inert until the unpublished scene passes validation.
+		s_NewSceneRollbackFailure = &scene;
+		scene.m_IsDetached = true;
+		scene.m_SuppressEntityDestructionCallbacks = true;
+		try {
+			if (load() && ValidateStagedEntityIdentities(scene, source)) {
+				flags.Restore();
+				if (!scene.IsLifecycleSuspended()) scene.InitializeRuntimeComponentState();
+				if (ValidateStagedEntityIdentities(scene, source)) {
+					scene.ClearDirty();
+					FNK_CORE_INFO_TAG("SceneSerializer", "Loaded scene: {}", scene.GetName());
+					s_NewSceneRollbackFailure = nullptr;
+					return true;
+				}
+			}
+		}
+		catch (const std::exception& exception) {
+			FNK_CORE_ERROR_TAG("SceneSerializer", "New scene load failed: {}", exception.what());
+		}
+		catch (...) {
+			FNK_CORE_ERROR_TAG("SceneSerializer", "New scene load failed with an unknown exception");
+		}
+
+		// A load callback may recover from failure and continue with an empty scene.
+		try {
+			const bool restored = DeserializeSceneInPlace(scene, previousState, {}, false);
+			if (!restored) {
+				FNK_CORE_ERROR_TAG("SceneSerializer", "New scene load could not restore its empty state");
+			}
+			scene.SetName(previousName);
+			scene.SetSceneId(previousSceneId);
+			scene.m_Dirty = wasDirty;
+			scene.m_UIDirty = wasUiDirty;
+			if (restored) s_NewSceneRollbackFailure = nullptr;
+		}
+		catch (const std::exception& exception) {
+			FNK_CORE_ERROR_TAG("SceneSerializer", "New scene load rollback failed: {}", exception.what());
+		}
+		catch (...) {
+			FNK_CORE_ERROR_TAG("SceneSerializer", "New scene load rollback failed with an unknown exception");
+		}
+		return false;
+	}
+
 	bool SceneSerializer::DeserializeScene(Scene& scene, const Json::Value& root, std::string_view source) {
 		if (scene.IsLoaded() && !scene.IsLifecycleSuspended()) {
 			FNK_CORE_ERROR_TAG("SceneSerializer", "Loaded scene replacement requires an owner-level staged swap");
@@ -1736,6 +1817,12 @@ namespace Funke {
 		}
 		if (!ValidateSceneRoot(root, source, true)) return false;
 		try {
+			if (s_NewSceneLoadTarget == &scene && s_NewSceneRollbackFailure != &scene
+				&& !scene.IsLoaded() && scene.GetEntityCount() == 0) {
+				return DeserializeNewScene(scene, [&]() {
+					return DeserializeSceneInPlace(scene, root, source, false);
+				}, source);
+			}
 			SceneLoadStage stagedScene(scene);
 			if (!DeserializeSceneInPlace(stagedScene.Get(), root, source, false)) return false;
 			if (!ValidateStagedEntityIdentities(stagedScene.Get(), source)) return false;
@@ -1808,6 +1895,12 @@ namespace Funke {
 			return false;
 		}
 		try {
+			if (s_NewSceneLoadTarget == &scene && s_NewSceneRollbackFailure != &scene
+				&& !scene.IsLoaded() && scene.GetEntityCount() == 0) {
+				return DeserializeNewScene(scene, [&]() {
+					return DeserializeSceneStreamingBinaryInPlace(scene, bytes, source);
+				}, source);
+			}
 			SceneLoadStage stagedScene(scene);
 			if (!DeserializeSceneStreamingBinaryInPlace(stagedScene.Get(), bytes, source)) return false;
 			if (!ValidateStagedEntityIdentities(stagedScene.Get(), source)) return false;

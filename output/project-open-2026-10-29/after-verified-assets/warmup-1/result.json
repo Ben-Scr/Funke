@@ -1,0 +1,78 @@
+{
+  "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenAssets",
+  "runDirectory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\after-verified-assets\\warmup-1",
+  "launcher": {
+    "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenAssets",
+    "startedAtUnixMs": 1793306555797.0403,
+    "spawnedAtUnixMs": 1793306560146.851,
+    "launcherElapsedMs": 4354.4651,
+    "complete": true,
+    "success": true,
+    "pid": 97528,
+    "error": ""
+  },
+  "editorReadyMs": 6106.6953125,
+  "readyStatus": {
+    "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenAssets",
+    "projectName": "OpenAssets",
+    "pid": 97528,
+    "version": "Funke 2026.1.0-beta.1+c586c2ac69de.dev.engine.dirty.8712798f818f (Windows x64 Release)",
+    "protocol": 1,
+    "state": "edit",
+    "scene": "SampleScene",
+    "entityCount": 10002,
+    "scenes": [
+      "SampleScene"
+    ],
+    "unsavedScenes": [],
+    "scripts": {
+      "compiling": false,
+      "lastBuildSucceeded": true,
+      "errors": ""
+    },
+    "busy": null,
+    "surface": {
+      "width": 2007,
+      "height": 1129,
+      "source": "game-view"
+    },
+    "fixedStep": 0,
+    "frame": 1,
+    "gameTime": 0
+  },
+  "scriptsReadyMs": 6106.6953125,
+  "finalStatus": {
+    "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenAssets",
+    "projectName": "OpenAssets",
+    "pid": 97528,
+    "version": "Funke 2026.1.0-beta.1+c586c2ac69de.dev.engine.dirty.8712798f818f (Windows x64 Release)",
+    "protocol": 1,
+    "state": "edit",
+    "scene": "SampleScene",
+    "entityCount": 10002,
+    "scenes": [
+      "SampleScene"
+    ],
+    "unsavedScenes": [],
+    "scripts": {
+      "compiling": false,
+      "lastBuildSucceeded": true,
+      "errors": ""
+    },
+    "busy": null,
+    "surface": {
+      "width": 2007,
+      "height": 1129,
+      "source": "game-view"
+    },
+    "fixedStep": 0,
+    "frame": 1,
+    "gameTime": 0
+  },
+  "launchToSpawnMs": 4349.810791015625,
+  "spawnToReadyMs": 1756.884521484375,
+  "screenshot": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\after-verified-assets\\warmup-1\\scene.png",
+  "success": true,
+  "launcherExitCode": 0,
+  "packageCacheHit": false
+}

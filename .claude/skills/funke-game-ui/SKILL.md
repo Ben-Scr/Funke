@@ -1,11 +1,11 @@
 ---
 name: funke-game-ui
-description: Use when building GAME UI with the Funke engine — menus, HUDs, pause and settings screens, buttons, sliders, toggles, text input, dropdowns, scroll views, layout, and wiring their behavior from C#. Triggers on "UI", "menu", "HUD", "pause menu", "settings screen", "Button", "Slider", "Toggle", "InputField", "Dropdown", "ScrollRect", "Image", "RectTransform", "anchors / pivot", "fillParent / safe area", "HorizontalLayoutGroup / VerticalLayoutGroup / GridLayoutGroup", "Interactable", "OnClicked / OnValueChanged", "UIPointer", "click through UI", or work in `Funke-ScriptCore/Source/Funke/UI/` or `Funke-Engine/src/Systems/UIEventSystem.{hpp,cpp}`. Funke UI is component-based (RectTransform plus UI components on entities, namespace Funke.UI) with C# Action events you subscribe to; the source of truth is `UIComponents.cs` and `UIPointer.cs`. Script lifecycle is in `funke-game-scripting`, inspector fields in `funke-inspector-ruleset`, UI art in `funke-game-art`.
+description: Use when building GAME UI with the Funke engine — menus, HUDs, pause and settings screens, buttons, sliders, toggles, text input, dropdowns, scroll views, layout, and wiring their behavior from C#. Triggers on "UI", "menu", "HUD", "pause menu", "settings screen", "Button", "Slider", "Toggle", "InputField", "Dropdown", "ScrollRect", "Image", "RectTransform", "anchors / pivot", "fillParent / safe area", "HorizontalLayoutGroup / VerticalLayoutGroup / GridLayoutGroup", "Interactable", "Clicked / ValueChanged", "UIPointer", "click through UI", or work in `Funke-ScriptCore/Source/Funke/UI/` or `Funke-Engine/src/Systems/UIEventSystem.{hpp,cpp}`. Funke UI is component-based (RectTransform plus UI components on entities, namespace Funke.UI) with C# Action events you subscribe to; the source of truth is `UIComponents.cs` and `UIPointer.cs`. Script lifecycle is in `funke-game-scripting`, inspector fields in `funke-inspector-ruleset`, UI art in `funke-game-art`.
 ---
 
 # Funke Game UI
 
-Funke UI is **ECS UI**: a UI element is an entity carrying a `RectTransform` plus UI components (`Image`, `Button`, `Slider`, …). You lay it out in the Editor and drive behavior from C# by subscribing to each component's `event`s. All UI types live in **`namespace Funke.UI`** (`using Funke.UI;`). The native side that turns pointer input into events is `Funke-Engine/src/Systems/UIEventSystem.{hpp,cpp}`. Source of truth: `Funke-ScriptCore/Source/Funke/UI/UIComponents.cs`.
+Funke UI is **ECS UI**: a UI element is an entity carrying a `RectTransform` plus UI components (`Image`, `Button`, `Slider`, …). You lay it out in the Editor and drive behavior from C# by subscribing to each component's `event`s. UI widgets and layout types live in **`namespace Funke.UI`** (`using Funke.UI;`). The native side that turns pointer input into events is `Funke-Engine/src/Systems/UIEventSystem.{hpp,cpp}`. Source of truth: `Funke-ScriptCore/Source/Funke/UI/UIComponents.cs`.
 
 ## Layout: `RectTransform`
 
@@ -39,19 +39,21 @@ Vector4 Border;                   // Sliced/Tiled: unstretched edges in texture 
 float   BorderScale;              // UI units per border pixel (Tiled: also the tile size)
 Material? Material;               // .material with a `@target UI` or `Sprite2D` shader; null = standard shader
 ```
-Use `Image` for backgrounds, panels, icons. For rounded buttons and panels use **one** small rounded sprite with `Type = Sliced` and its corner radius as Border instead of generating a sprite per size (scene JSON: `"imageType": 1, "border": [24, 24, 24, 24]`). Better: store the border once with the texture (`funke sprite border Assets/Textures/Panel.png --border 24`, or `--slice <name>` for a sprite-sheet slice) and leave the Image's border at 0, so every Image using it slices the same way. Text uses the `TextRenderer` component (see `funke-game-scripting`).
+Use `Image` for backgrounds, panels, icons. For rounded buttons and panels use **one** small rounded sprite with `Type = Sliced` and its corner radius as Border instead of generating a sprite per size (scene JSON: `"imageType": 1, "border": [24, 24, 24, 24]`). Better: store the border once with the texture (`funke sprite border Assets/Textures/Panel.png --border 24`, or `--slice <name>` for a sprite-sheet slice) and leave the Image's border at 0, so every Image using it slices the same way.
+
+**UI text:** labels use `Funke.TextRenderer` from the root `Funke` namespace (`using Funke;`). The same component renders world and UI text. Access it with `GetComponent<TextRenderer>()`; see `funke-game-scripting` for its properties.
 
 ## Interactivity: `Interactable` (the base)
 
 `Interactable` is the low-level pointer layer most widgets build on. Subscribe to its events or poll its state:
 
 ```csharp
-event Action<Interactable>? OnHovered;
-event Action<Interactable>? OnClicked;
-event Action<Interactable>? OnPressed;     // continuous while held
-event Action<Interactable>? OnMouseDown;   // rising edge
-event Action<Interactable>? OnMouseUp;
-event Action<Interactable>? OnFocusEnter, OnFocusExit;
+event Action<Interactable>? Hovered;
+event Action<Interactable>? Clicked;
+event Action<Interactable>? Pressed;     // continuous while held
+event Action<Interactable>? MouseDown;   // rising edge
+event Action<Interactable>? MouseUp;
+event Action<Interactable>? FocusEnter, FocusExit;
 
 bool IsInteractable { get; set; }
 bool Focusable { get; set; }
@@ -65,14 +67,14 @@ All widgets are `Component`s you `GetComponent<T>()` and wire up. The events are
 
 | Widget | Events | Key properties |
 |---|---|---|
-| **`Button`** | `OnClicked`, `OnClickDown`, `OnClickUp`, `OnPressed` (all `Action<Button>`) | `TargetGraphic` (Entity), per-state sprites `NormalSprite/HoveredSprite/PressedSprite/DisabledSprite/FocusedSprite`, `WasClicked` |
-| **`Toggle`** | `OnValueChanged` (`Action<bool>`) | `IsOn`, `IsReadOnly`, `CheckmarkEntity`, `ValueChangedThisFrame` |
-| **`Slider`** | `OnValueChanged` (`Action<float>`) | `Value`, `MinValue`, `MaxValue`, `WholeNumbers`, `IsReadOnly`, `NormalizedValue`, `FillEntity`, `HandleEntity` |
-| **`CircularSlider`** | `OnValueChanged` | `Value`, `StartAngleDegrees`, `SweepDegrees`, `Clockwise`, `RingThickness`, `RingSegments` |
-| **`InputField`** | `OnValueChanged` (`Action<string>`), `OnSelect`, `OnDeselect` | `Text`, `PlaceholderText`, `IsFocused`, `CharacterLimit`, `SubmittedThisFrame`, `TextEntity` |
-| **`Dropdown`** | `OnSelectedIndexChange` | `SelectedIndex`, `IsOpen`, `AddOption/RemoveOption/SetOptions/ClearOptions()` |
-| **`ScrollRect`** | `OnValueChanged` | `Content`, `Viewport`, `Horizontal`, `Vertical`, `MovementType`, `Inertia`, scrollbar refs |
-| **`Scrollbar`** | `OnValueChanged` | `Value`, `Size`, `Direction`, `HandleEntity` |
+| **`Button`** | `Clicked`, `ClickDown`, `ClickUp`, `Pressed` (all `Action<Button>`) | `TargetGraphic` (Entity), per-state sprites `NormalSprite/HoveredSprite/PressedSprite/DisabledSprite/FocusedSprite`, `WasClicked` |
+| **`Toggle`** | `ValueChanged` (`Action<bool>`) | `IsOn`, `IsReadOnly`, `CheckmarkEntity`, `ValueChangedThisFrame` |
+| **`Slider`** | `ValueChanged` (`Action<float>`) | `Value`, `MinValue`, `MaxValue`, `WholeNumbers`, `IsReadOnly`, `NormalizedValue`, `FillEntity`, `HandleEntity` |
+| **`CircularSlider`** | `ValueChanged` | `Value`, `StartAngleDegrees`, `SweepDegrees`, `Clockwise`, `RingThickness`, `RingSegments` |
+| **`InputField`** | `ValueChanged` (`Action<string>`), `Select`, `Deselect` | `Text`, `PlaceholderText`, `IsFocused`, `CharacterLimit`, `SubmittedThisFrame`, `TextEntity` |
+| **`Dropdown`** | `SelectedIndexChange` | `SelectedIndex`, `IsOpen`, `AddOption/RemoveOption/SetOptions/ClearOptions()` |
+| **`ScrollRect`** | `ValueChanged` | `Content`, `Viewport`, `Horizontal`, `Vertical`, `MovementType`, `Inertia`, scrollbar refs |
+| **`Scrollbar`** | `ValueChanged` | `Value`, `Size`, `Direction`, `HandleEntity` |
 | **`Mask`** | — | `ShowMaskGraphic` (clips children to this rect) |
 
 For exact members beyond these, read `UIComponents.cs` — it's the authority and changes as UI matures.
@@ -95,8 +97,8 @@ public class PauseMenu : EntityScript
         m_Resume = Entity.FindByName("ResumeButton")?.GetComponent<Button>();
         m_Volume = Entity.FindByName("VolumeSlider")?.GetComponent<Slider>();
 
-        if (m_Resume != null) m_Resume.OnClicked += OnResume;
-        if (m_Volume != null) m_Volume.OnValueChanged += OnVolumeChanged;
+        if (m_Resume != null) m_Resume.Clicked += OnResume;
+        if (m_Volume != null) m_Volume.ValueChanged += OnVolumeChanged;
     }
 
     private void OnResume(Button _)        => Time.TimeScale = 1f;   // unpause
@@ -104,8 +106,8 @@ public class PauseMenu : EntityScript
 
     public override void OnDestroy()
     {
-        if (m_Resume != null) m_Resume.OnClicked -= OnResume;
-        if (m_Volume != null) m_Volume.OnValueChanged -= OnVolumeChanged;
+        if (m_Resume != null) m_Resume.Clicked -= OnResume;
+        if (m_Volume != null) m_Volume.ValueChanged -= OnVolumeChanged;
     }
 }
 ```
@@ -125,8 +127,8 @@ Useful for "is the cursor over UI?" gating so world clicks don't fire through th
 ## Recipes
 
 - **Pause menu:** a UI scene loaded additively (`SceneManager.LoadScene("Pause", LoadSceneMode.Additive)`); set `Time.TimeScale = 0` to freeze gameplay while the menu's own `OnUpdate` still runs on unscaled time.
-- **HUD that tracks resolution:** anchor each element to a screen corner via `RectTransform.AnchorMin/Max`; subscribe to `Window.OnResize` only if you need manual relayout.
-- **Settings screen:** `Slider.OnValueChanged` → apply audio/graphics; persist with a `GlobalSystem` or Data Asset (`funke-assets-and-content`).
+- **HUD that tracks resolution:** anchor each element to a screen corner via `RectTransform.AnchorMin/Max`; subscribe to `Window.Resized` only if you need manual relayout.
+- **Settings screen:** `Slider.ValueChanged` → apply audio/graphics; persist with a `GlobalSystem` or Data Asset (`funke-assets-and-content`).
 - **Don't click through UI:** before handling a world click, check `UIPointer.HoveredEntity == null`.
 - **Modal popup (settings, pause, confirm):** root entity (disabled until opened) → a full-screen dim `Image` with an `Interactable` (`interactable: true`, `focusable: false`) and an explicit oversized `SizeDelta` → the panel and its widgets above it. Only `Interactable` entities hit-test, so a dim layer without one lets clicks fall through to the menu buttons behind it. Show the cursor while a popup is open and hide it again during gameplay (`Cursor` API, `funke-game-scripting`).
 - **Translated UI:** one `Assets/Localization/<code>.json` per language (`{"meta": {"code": "de", "displayName": "Deutsch"}, "strings": {"menu.play": "Spielen"}}`; `en` is the fallback). Static labels get a `LocalizedText` component (`Key`) next to their `TextRenderer` and update on every switch; Button labels, Dropdown `Options` and InputField placeholders are set from code with `Localization.Get(key)` and refreshed in a `Localization.LanguageChanged` handler. A language picker lists `Localization.AvailableLanguages` and calls `Localization.SetLanguage(code)`, which also remembers the choice for the next start. Fonts render ASCII + Latin-1 only.

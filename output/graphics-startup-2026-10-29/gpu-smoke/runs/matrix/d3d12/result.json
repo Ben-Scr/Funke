@@ -1,0 +1,14 @@
+{
+  "Case": "d3d12",
+  "RequestedBackend": "Direct3D12",
+  "Backend": "Direct3D12",
+  "Adapter": "AMD  Radeon RX 7800 XT",
+  "Success": true,
+  "Error": null,
+  "Screenshots": [
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\graphics-startup-2026-10-29\\gpu-smoke\\runs\\matrix\\d3d12\\SampleScene.png",
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\graphics-startup-2026-10-29\\gpu-smoke\\runs\\matrix\\d3d12\\CoverageSky.png"
+  ],
+  "GpuErrors": [],
+  "Log": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\graphics-startup-2026-10-29\\gpu-smoke\\runs\\matrix\\d3d12\\user-data\\Funke\\Logs\\Funke-Editor.log"
+}

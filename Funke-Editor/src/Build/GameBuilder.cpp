@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Build/GameBuilder.hpp"
+#include "Build/DotNetRuntimeBundle.hpp"
 #include "Core/EngineModules.hpp"
 #include "Serialization/SceneSerializerStorage.hpp"
 #include "Scene/SceneManager.hpp"
@@ -926,6 +927,59 @@ namespace Funke::GameBuilder {
 		}
 	}
 
+	InstalledRuntime SelectInstalledRuntime(const EngineSdk::Installation& installation,
+		FunkeProject::BuildProfile profile, std::string_view preferredVariant) {
+		InstalledRuntime result;
+		if (!installation.IsValid() || !installation.ManifestPresent) {
+			result.Error = installation.Error.empty() ? "A valid installed Funke SDK is required." : installation.Error;
+			return result;
+		}
+		const std::string profileName = FunkeProject::BuildProfileToString(profile);
+		if (!preferredVariant.empty()) {
+			const auto variant = installation.RuntimeVariants.find(std::string(preferredVariant));
+			if (variant != installation.RuntimeVariants.end()) {
+				const auto runtime = variant->second.find(profileName);
+				if (runtime != variant->second.end()) {
+					result.Directory = runtime->second;
+					result.Variant = preferredVariant;
+				}
+			}
+		}
+		if (result.Directory.empty()) {
+			const auto runtime = installation.Runtimes.find(profileName);
+			if (runtime == installation.Runtimes.end()) {
+				result.Error = "This Funke installation does not include a " + profileName + " runtime. Install that runtime or choose an included configuration.";
+				return result;
+			}
+			result.Directory = runtime->second;
+		}
+		std::vector<std::string> requiredFiles{ GetRuntimeExecutableFilename(), GetEngineRuntimeFilename(),
+			SDL3SharedLibraryFilename(), "Funke-ScriptCore.dll", "Funke-ScriptCore.runtimeconfig.json",
+			"Funke-ScriptCore.deps.json" };
+#if !defined(FNK_PLATFORM_WINDOWS)
+		requiredFiles.push_back(SharedLibraryFilename("webgpu_dawn"));
+#else
+		requiredFiles.push_back("nethost.dll");
+#endif
+		for (const auto& file : requiredFiles) {
+			std::error_code error;
+			if (!std::filesystem::is_regular_file(result.Directory / file, error)) {
+				result.Error = "Installed " + profileName + " runtime is incomplete: " + Path::ToUtf8(result.Directory / file);
+				result.Directory.clear();
+				return result;
+			}
+		}
+		for (const auto* directory : { "FunkeAssets", "Licenses" }) {
+			std::error_code error;
+			if (!std::filesystem::is_directory(result.Directory / directory, error)) {
+				result.Error = "Installed " + profileName + " runtime is incomplete: " + Path::ToUtf8(result.Directory / directory);
+				result.Directory.clear();
+				return result;
+			}
+		}
+		return result;
+	}
+
 	std::vector<FunkeBuildProfile> LoadProfiles(const FunkeProject& project) {
 		std::vector<FunkeBuildProfile> profiles;
 		const std::string extension(FunkeBuildProfile::FileExtension);
@@ -1040,6 +1094,7 @@ namespace Funke::GameBuilder {
 		outRequest.Platform = activeProfile.Platform;
 		outRequest.PlatformPackage = BuildPlatformSupport::GetPackage(activeProfile.Platform);
 		outRequest.PlatformOptions = activeProfile.PlatformOptions;
+		outRequest.BundleDotNetRuntime = activeProfile.BundleDotNetRuntime;
 		return true;
 	}
 
@@ -1167,6 +1222,22 @@ namespace Funke::GameBuilder {
 			return result;
 		}
 		const bool hasNativeScripts = project->HasNativeScriptSources();
+		const EngineSdk::Installation installation = FunkeProject::GetEngineInstallation();
+		if (installation.ManifestPresent && !installation.IsValid()) {
+			FNK_ERROR_TAG("Build", "Invalid Funke installation: {}", installation.Error);
+			failBuild("Invalid Funke installation");
+			return result;
+		}
+		if (installation.ManifestPresent && platformPackageBuild && !installation.SourceBuild) {
+			FNK_ERROR_TAG("Build", "This platform builder needs a complete Funke source checkout and its target toolchain. This installation includes desktop runtimes only.");
+			failBuild("Platform export requires the Source SDK");
+			return result;
+		}
+		if (installation.ManifestPresent && hasNativeScripts && !installation.NativeDevelopment) {
+			FNK_ERROR_TAG("Build", "C++ scripts require the matching Funke Native SDK and a native compiler.");
+			failBuild("C++ scripts require the Native SDK");
+			return result;
+		}
 		if (hasNativeScripts) {
 			if (platformPackageBuild || BuildPlatformSupport::HostDesktopPlatform() != targetPlatform) {
 				FNK_ERROR_TAG("Build", "Native C++ scripts currently require a build for the host desktop platform.");
@@ -1306,6 +1377,7 @@ namespace Funke::GameBuilder {
 		std::vector<std::string> engineNativePackageTargets;
 		std::vector<const FunkePackageManifest*> projectLocalPackageManifests;
 		bool hasManagedPackages = false;
+		bool hasNativePackages = false;
 		for (const std::string& packageName : project->Packages) {
 			if (!BuildOutputSafety::IsSafePathSegment(packageName)) {
 				FNK_ERROR_TAG("Build", "Unsafe package identifier '{}'.", packageName);
@@ -1324,6 +1396,7 @@ namespace Funke::GameBuilder {
 				projectLocalPackageManifests.push_back(&*manifest);
 			}
 			hasManagedPackages = hasManagedPackages || manifest->HasCSharpLayer;
+			hasNativePackages = hasNativePackages || manifest->HasNativeLayer || manifest->HasNativeStandaloneLayer;
 			if (manifest->IsEngine && (manifest->HasNativeLayer || manifest->HasNativeStandaloneLayer)) {
 				engineNativePackageTargets.push_back("Pkg." + packageName + ".Native");
 			}
@@ -1347,7 +1420,7 @@ namespace Funke::GameBuilder {
 		}
 
 #if FUNKE_WITH_SCRIPTING
-		if (!engineRoot.empty()) {
+		if (!engineRoot.empty() && installation.SourceBuild) {
 			const std::filesystem::path scriptCoreProject =
 				engineRoot / "Funke-ScriptCore" / "Funke-ScriptCore.csproj";
 			const std::filesystem::path scriptCoreSources = engineRoot / "Funke-ScriptCore" / "Source";
@@ -1461,7 +1534,7 @@ namespace Funke::GameBuilder {
 		}
 
 		// Platform packages (Android, iOS, Web) compile native package layers into the player themselves.
-		if (!platformPackageBuild && !engineNativePackageTargets.empty()) {
+		if (!platformPackageBuild && installation.SourceBuild && !engineNativePackageTargets.empty()) {
 #if defined(FNK_PLATFORM_WINDOWS)
 			const std::filesystem::path solutionPath =
 				std::filesystem::path(FunkeProject::GetEngineRootDir()) / "Funke.sln";
@@ -1496,7 +1569,23 @@ namespace Funke::GameBuilder {
 
 		// Desktop builds compile a runtime without the engine modules the project does not use.
 		std::optional<RuntimeVariant> runtimeVariant;
-		if (!platformPackageBuild && !engineRoot.empty()) {
+		std::filesystem::path installedRuntimeDirectory;
+		if (!platformPackageBuild && installation.ManifestPresent) {
+			runtimeVariant = ResolveRuntimeVariant(*project);
+			if (hasNativePackages || hasNativeScripts) runtimeVariant.reset();
+			const auto selected = SelectInstalledRuntime(installation, project->ActiveBuildProfile,
+				runtimeVariant ? runtimeVariant->Id : std::string{});
+			if (!selected.Succeeded()) {
+				FNK_ERROR_TAG("Build", "{}", selected.Error);
+				failBuild("Installed runtime unavailable");
+				return result;
+			}
+			installedRuntimeDirectory = selected.Directory;
+			if (selected.Variant.empty()) runtimeVariant.reset();
+			FNK_INFO_TAG("Build", "Using installed {} runtime{} from {}", FunkeProject::BuildProfileToString(project->ActiveBuildProfile),
+				selected.Variant.empty() ? " (full engine)" : " (" + selected.Variant + ")", Path::ToUtf8(selected.Directory));
+		}
+		else if (!platformPackageBuild && !engineRoot.empty() && installation.SourceBuild) {
 			runtimeVariant = ResolveRuntimeVariant(*project);
 			if (runtimeVariant && !engineNativePackageTargets.empty()) {
 				// Native packages are linked against the full engine binary; PackageHost would reject them.
@@ -1522,12 +1611,12 @@ namespace Funke::GameBuilder {
 		const std::filesystem::path developmentRuntimeDirectory = engineRoot.empty()
 			? std::filesystem::path{}
 			: engineRoot / "bin" / runtimeVariantFolder / "Funke-Runtime";
-		std::filesystem::path runtimeOutputDirectory;
+		std::filesystem::path runtimeOutputDirectory = installedRuntimeDirectory;
 		if (platformPackageBuild) {
 			// The package compiles its own runtime; this directory only serves the ScriptCore / license lookups.
 			runtimeOutputDirectory = developmentRuntimeDirectory;
 		}
-		else {
+		else if (runtimeOutputDirectory.empty()) {
 			const std::filesystem::path runtimeProject = engineRoot.empty()
 				? std::filesystem::path{}
 				: runtimeWorkspace / "Funke-Runtime" / "Funke-Runtime.vcxproj";
@@ -1779,6 +1868,16 @@ namespace Funke::GameBuilder {
 			contentDir / "Funke-ScriptCore.deps.json", "ScriptCore deps")) return result;
 		if (buildConfiguration == "Debug") {
 			copyFile(scriptCoreDir / "Funke-ScriptCore.pdb", contentDir / "Funke-ScriptCore.pdb", "Funke-ScriptCore.pdb", false);
+		}
+		if (!platformPackageBuild && request.BundleDotNetRuntime) {
+			report(0.68f, "Including .NET runtime");
+			std::string runtimeError;
+			if (!DotNetRuntimeBundle::StageInstalled(contentDir / "Funke-ScriptCore.runtimeconfig.json",
+				contentDir / "dotnet", runtimeError)) {
+				FNK_ERROR_TAG("Build", "Cannot include .NET runtime: {}", runtimeError);
+				failBuild("Bundled .NET runtime unavailable");
+				return result;
+			}
 		}
 #if defined(FNK_PLATFORM_WINDOWS)
 		if (!platformPackageBuild) {

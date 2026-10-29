@@ -1,0 +1,226 @@
+{
+  "id": "project-open-benchmark",
+  "ok": true,
+  "result": {
+    "lines": [
+      {
+        "seq": 1,
+        "time": "21:19:09.426",
+        "level": "info",
+        "source": "core",
+        "message": "[EditorBridge] Listening for `funke editor` commands on \\\\.\\pipe\\funke-editor-98896-d23d6178aa88969c472a14e6555def4a"
+      },
+      {
+        "seq": 2,
+        "time": "21:19:09.435",
+        "level": "info",
+        "source": "core",
+        "message": "[PackageHost] No packages installed for project 'OpenEmpty' — skipping all 0 discovered package DLL(s). Add entries to project.json's `packages` array to install them."
+      },
+      {
+        "seq": 3,
+        "time": "21:19:09.435",
+        "level": "info",
+        "source": "core",
+        "message": "[PackageHost] Loaded 0 package(s)."
+      },
+      {
+        "seq": 4,
+        "time": "21:19:09.435",
+        "level": "info",
+        "source": "game",
+        "message": "[Application] Startup scene load deferred behind splash."
+      },
+      {
+        "seq": 5,
+        "time": "21:19:09.435",
+        "level": "info",
+        "source": "game",
+        "message": "[Application] Full Initialization took 886.032 ms"
+      },
+      {
+        "seq": 6,
+        "time": "21:19:09.435",
+        "level": "info",
+        "source": "core",
+        "message": "[Window] Framebuffer 2560x1342, viewport 2560x1342 at 0,0, window-to-framebuffer scale 1x1"
+      },
+      {
+        "seq": 7,
+        "time": "21:19:09.435",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenEmpty\\Assets for 6 pattern(s)"
+      },
+      {
+        "seq": 8,
+        "time": "21:19:09.435",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenEmpty\\Assets for 14 pattern(s)"
+      },
+      {
+        "seq": 9,
+        "time": "21:19:09.436",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenEmpty\\Assets for 1 pattern(s)"
+      },
+      {
+        "seq": 10,
+        "time": "21:19:09.436",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching 2 targets for 2 pattern(s)"
+      },
+      {
+        "seq": 11,
+        "time": "21:19:09.436",
+        "level": "info",
+        "source": "game",
+        "message": "[Application] Loading startup scenes..."
+      },
+      {
+        "seq": 12,
+        "time": "21:19:09.437",
+        "level": "info",
+        "source": "core",
+        "message": "[SceneSerializer] Loaded scene: SampleScene"
+      },
+      {
+        "seq": 13,
+        "time": "21:19:09.437",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] ScriptEngine ready (deferred runtime init)"
+      },
+      {
+        "seq": 14,
+        "time": "21:19:09.438",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] Assembly: C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-ScriptCore.dll"
+      },
+      {
+        "seq": 15,
+        "time": "21:19:09.438",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] Script runtime backend: hostfxr"
+      },
+      {
+        "seq": 16,
+        "time": "21:19:09.438",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptRuntime] RuntimeConfig: C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-ScriptCore.runtimeconfig.json"
+      },
+      {
+        "seq": 17,
+        "time": "21:19:09.466",
+        "level": "info",
+        "source": "core",
+        "message": "[DotNetHost] CoreCLR runtime initialized successfully"
+      },
+      {
+        "seq": 18,
+        "time": "21:19:09.550",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] Core assembly loaded: C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-ScriptCore.dll"
+      },
+      {
+        "seq": 19,
+        "time": "21:19:09.551",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching 5 targets for 5 pattern(s)"
+      },
+      {
+        "seq": 20,
+        "time": "21:19:09.551",
+        "level": "info",
+        "source": "game",
+        "message": "[ScriptSystem] Rebuilding C# scripts..."
+      },
+      {
+        "seq": 21,
+        "time": "21:19:09.614",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching 5 targets for 12 pattern(s)"
+      },
+      {
+        "seq": 22,
+        "time": "21:19:09.614",
+        "level": "info",
+        "source": "game",
+        "message": "[ScriptSystem] Script system initialized"
+      },
+      {
+        "seq": 23,
+        "time": "21:19:09.616",
+        "level": "info",
+        "source": "core",
+        "message": "[TextureManager] Purged 0 unreferenced texture entries"
+      },
+      {
+        "seq": 24,
+        "time": "21:19:09.616",
+        "level": "info",
+        "source": "core",
+        "message": "[AudioManager] Purged 0 unreferenced audio entries"
+      },
+      {
+        "seq": 25,
+        "time": "21:19:09.621",
+        "level": "info",
+        "source": "core",
+        "message": "[ImGui] Saved editor layout docks no panels into the editor dockspace; applying the default layout."
+      },
+      {
+        "seq": 26,
+        "time": "21:19:10.834",
+        "level": "info",
+        "source": "game",
+        "message": "[ScriptSystem] Running dotnet build: dependency not deployed yet: Funke-ScriptCore.dll"
+      },
+      {
+        "seq": 27,
+        "time": "21:19:13.513",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] Loading user assembly: C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenEmpty\\bin\\Release\\OpenEmpty.dll"
+      },
+      {
+        "seq": 28,
+        "time": "21:19:13.559",
+        "level": "info",
+        "source": "game",
+        "message": "[Script] User assembly loaded: C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenEmpty\\bin\\Release\\OpenEmpty.dll"
+      },
+      {
+        "seq": 29,
+        "time": "21:19:13.560",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] LoadUserAssembly callback returned: 1"
+      },
+      {
+        "seq": 30,
+        "time": "21:19:13.560",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] User assembly loaded: C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenEmpty\\bin\\Release\\OpenEmpty.dll"
+      },
+      {
+        "seq": 31,
+        "time": "21:19:13.561",
+        "level": "info",
+        "source": "game",
+        "message": "[ScriptSystem] C# scripts rebuilt and reloaded from 'C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenEmpty\\bin\\Release\\OpenEmpty.dll'"
+      }
+    ],
+    "next": 31
+  }
+}

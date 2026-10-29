@@ -1282,6 +1282,26 @@ internal static unsafe class InternalCalls
     }
 
     internal static ulong Asset_BeginLoadAsync(ulong assetId) => NativeCallbacks.Bindings.Asset_BeginLoadAsync(assetId);
+    internal static ulong Asset_LoadTyped(string? path, ulong assetId, int expectedKind)
+    {
+        if (path == null) return NativeCallbacks.Bindings.Asset_LoadTyped(null, assetId, expectedKind);
+        byte[] bytes = EncodeUtf8Z(path);
+        fixed (byte* pointer = bytes) return NativeCallbacks.Bindings.Asset_LoadTyped(pointer, assetId, expectedKind);
+    }
+
+    internal static ulong Asset_BeginLoadTypedAsync(string? path, ulong assetId, int expectedKind)
+    {
+        if (path == null) return NativeCallbacks.Bindings.Asset_BeginLoadTypedAsync(null, assetId, expectedKind);
+        byte[] bytes = EncodeUtf8Z(path);
+        fixed (byte* pointer = bytes) return NativeCallbacks.Bindings.Asset_BeginLoadTypedAsync(pointer, assetId, expectedKind);
+    }
+
+    internal static void Asset_CancelLoads(ReadOnlySpan<ulong> operationIds, bool release)
+    {
+        if (operationIds.IsEmpty) return;
+        fixed (ulong* pointer = operationIds)
+            NativeCallbacks.Bindings.Asset_CancelLoads(pointer, operationIds.Length, release ? 1 : 0);
+    }
     internal static int Asset_GetLoadStatus(ulong operationId) => NativeCallbacks.Bindings.Asset_GetLoadStatus(operationId);
     internal static bool Asset_CancelLoadAsync(ulong operationId) => NativeCallbacks.Bindings.Asset_CancelLoadAsync(operationId) != 0;
     internal static void Asset_ReleaseLoad(ulong operationId) => NativeCallbacks.Bindings.Asset_ReleaseLoad(operationId);

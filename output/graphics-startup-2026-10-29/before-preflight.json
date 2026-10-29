@@ -1,0 +1,11 @@
+{
+  "sameAsPreviouslyHeaderValidatedFinalSet": true,
+  "binaries": {
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-Launcher.exe": "e3b22afcee3da31a4510daad2ddab65ff7bfe99d936cd28986fd6c3541bf1aef",
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-Editor.exe": "7943dd84fc90b29d695acd914c4fcf40da3577fb6a2261fd29e9e9164efc9ed9",
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-Engine.dll": "dd56f12c7a74fb3f3987fd616579a6579778ee6d7fc38e38f5c3aa9ce7502ad4"
+  },
+  "editorStagingMatchesBuild": true,
+  "engineStagingMatchesBuild": true,
+  "nativeLogHeaderCheck": "Confirmed against prior validated final binaries; each new run also rejects early native errors."
+}

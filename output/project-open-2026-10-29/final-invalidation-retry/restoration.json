@@ -1,0 +1,9 @@
+{
+  "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenPackages",
+  "runDirectory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\final-invalidation-retry\\restored-original-inputs",
+  "success": false,
+  "error": "Launcher did not finish project preparation",
+  "recoveredChildPid": 108240,
+  "launcherExitCode": 0,
+  "packageCacheHit": false
+}

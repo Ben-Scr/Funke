@@ -85,6 +85,15 @@ namespace Funke {
 		// No-op on an unknown / already-removed token.
 		static void UnregisterInstanceContributor(uint32_t token);
 
+		struct SceneEffect {
+			std::function<bool(const SceneProvider&)> IsActive;
+			std::function<const Framebuffer*(const SceneProvider&, const glm::mat4&, const AABB&, const Framebuffer&)> Render;
+			std::function<void()> Shutdown;
+		};
+		// Runs on world sprites/text before FXAA/post effects; screen-space UI is drawn afterwards.
+		static uint32_t RegisterSceneEffect(SceneEffect effect);
+		static void UnregisterSceneEffect(uint32_t token);
+
 	private:
 		void RenderScenes();
 		void CollectAndRenderInstances(Scene& scene, const glm::mat4& vp, const AABB& viewportAABB);

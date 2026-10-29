@@ -1,0 +1,15 @@
+{
+  "UtcTime": "2026-10-29T18:14:14.9092842Z",
+  "Runtime": "10.0.11",
+  "ProcessorCount": 24,
+  "Workers": 16,
+  "StopwatchFrequency": 10000000,
+  "ServerGC": false,
+  "TieredCompilation": "0",
+  "EcbSerialKernels": null,
+  "EcbParallelDiagnostics": null,
+  "EcbTimings": null,
+  "Warmups": 3,
+  "Repetitions": 9,
+  "Samples": []
+}

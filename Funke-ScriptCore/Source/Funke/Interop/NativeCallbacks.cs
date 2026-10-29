@@ -1236,6 +1236,9 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, int> Asset_CancelLoadAsync;
     public delegate* unmanaged<ulong, void> Asset_ReleaseLoad;
     public delegate* unmanaged<byte*, int, ulong*, int, int, int> Ecb_PlaybackWithMode;
+    public delegate* unmanaged<byte*, ulong, int, ulong> Asset_LoadTyped;
+    public delegate* unmanaged<byte*, ulong, int, ulong> Asset_BeginLoadTypedAsync;
+    public delegate* unmanaged<ulong*, int, int, void> Asset_CancelLoads;
 }
 
 internal static unsafe class NativeCallbacks

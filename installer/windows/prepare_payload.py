@@ -22,6 +22,8 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+import sdk_manifest
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "platform"))
 from funke_platform_sdk.packages import parse_manifest  # noqa: E402
 
@@ -213,7 +215,7 @@ def extract_package(archive: Path, output: Path, entry: dict) -> Path:
     return package_root
 
 
-def bundle_component(relative: Path) -> str | None:
+def bundle_component(relative: Path, include_native_sdk: bool = False) -> str | None:
     lowered = tuple(part.lower() for part in relative.parts)
     if any(lowered[:len(root)] == root for root in RETIRED_SDK_ROOTS):
         return None
@@ -227,6 +229,13 @@ def bundle_component(relative: Path) -> str | None:
         return None
     if lowered[:2] in (("enginesdk", "packages"), ("enginesdk", "platforms")):
         return None  # Only the reviewed catalog may introduce optional packages.
+    if lowered[:2] in (("enginesdk", "funke-engine"), ("enginesdk", "external"), ("enginesdk", "bin")):
+        if not include_native_sdk:
+            return None
+        if lowered[1] != "bin" and relative.suffix and relative.suffix.lower() not in sdk_manifest.HEADER_SUFFIXES:
+            return None
+    if lowered[:3] == ("enginesdk", "funke-scriptcore", "source") or relative.suffix.lower() in (".csproj", ".sln", ".vcxproj"):
+        return None
     if lowered[:2] == ("enginesdk", "templates"):
         return "Templates"
     if lowered == ("funke.exe",):
@@ -234,7 +243,10 @@ def bundle_component(relative: Path) -> str | None:
     return "Core"
 
 
-def copy_bundle(bundle: Path, output: Path) -> dict[str, int]:
+def copy_bundle(bundle: Path, output: Path, include_native_sdk: bool = False) -> dict[str, int]:
+    manifest = sdk_manifest.validate_sdk(bundle / "EngineSDK")
+    if include_native_sdk and not manifest["capabilities"]["nativeDevelopment"]:
+        raise ValueError("The input bundle has no native SDK; stage it with native development support first")
     missing = [name for name in REQUIRED_FILES if not (bundle / name).is_file()]
     if missing:
         raise ValueError("Bundle is incomplete: " + ", ".join(missing))
@@ -243,7 +255,7 @@ def copy_bundle(bundle: Path, output: Path) -> dict[str, int]:
     counts = {"Core": 0, "CLI": 0, "Templates": 0}
     for path in sorted(bundle.rglob("*")):
         relative = path.relative_to(bundle)
-        component = bundle_component(relative)
+        component = bundle_component(relative, include_native_sdk)
         if component is None:
             continue
         info = path.lstat()
@@ -256,10 +268,13 @@ def copy_bundle(bundle: Path, output: Path) -> dict[str, int]:
             counts[component] += 1
     if not all(counts.values()):
         raise ValueError("Bundle must contain core files, CLI and at least one project template")
+    manifest["capabilities"]["nativeDevelopment"] = include_native_sdk
+    (output / "Core/EngineSDK" / sdk_manifest.MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    sdk_manifest.validate_sdk(output / "Core/EngineSDK", require_binary=not include_native_sdk, require_templates=False)
     return counts
 
 
-def write_includes(output: Path, packages: list[dict]) -> None:
+def write_includes(output: Path, packages: list[dict], include_native_sdk: bool = False) -> None:
     closures = dependency_closures(packages)
     components = ['Name: "packages"; Description: "{cm:OptionalPackages}"; Types: full; Flags: dontinheritcheck'] if packages else []
     files = []
@@ -280,9 +295,14 @@ def write_includes(output: Path, packages: list[dict]) -> None:
     (output / "Components.iss").write_text("\n".join(components) + "\n", encoding="utf-8-sig")
     (output / "Files.iss").write_text("\n".join(files) + "\n", encoding="utf-8-sig")
     (output / "PackageDelete.iss").write_text("\n".join(deletes) + "\n", encoding="utf-8-sig")
+    obsolete = ["Funke-ScriptCore\\Funke-ScriptCore.csproj", "Funke-ScriptCore\\Source",
+                "Funke-Engine", "External", "bin"]
+    (output / "SdkDelete.iss").write_text("\n".join(
+        'Type: filesandordirs; Name: "{app}\\EngineSDK\\' + name + '";'
+        for name in obsolete) + "\n", encoding="utf-8-sig")
 
 
-def prepare(bundle: Path, repo: Path, output: Path, catalog: Path, cache: Path) -> dict:
+def prepare(bundle: Path, repo: Path, output: Path, catalog: Path, cache: Path, include_native_sdk: bool = False) -> dict:
     bundle, repo, output = bundle.resolve(), repo.resolve(), output.resolve()
     if output == repo or output.is_relative_to(bundle) or bundle.is_relative_to(output):
         raise ValueError("Payload directory must be separate from the bundle and repository root")
@@ -290,16 +310,17 @@ def prepare(bundle: Path, repo: Path, output: Path, catalog: Path, cache: Path) 
         raise ValueError(f"Payload directory must be empty: {output}")
     packages = load_catalog(catalog)
     output.mkdir(parents=True, exist_ok=True)
-    counts = copy_bundle(bundle, output)
+    counts = copy_bundle(bundle, output, include_native_sdk)
     for entry in packages:
         print(f"[Installer] Staging {entry['name']} {entry['version']}", flush=True)
         archive = download_archive(entry, cache)
         extract_package(archive, output / "Packages" / entry["id"] / "EngineSDK" / "packages", entry)
-    write_includes(output, packages)
+    write_includes(output, packages, include_native_sdk)
     metadata = {
         "schemaVersion": 1,
         "engine": json.loads((bundle / "BuildMetadata.json").read_text(encoding="utf-8-sig")),
         "components": counts,
+        "nativeSdkIncluded": include_native_sdk,
         "packages": packages,
         "packageUsage": "Available in Package Manager; enabled and compiled separately for each project.",
     }
@@ -314,9 +335,10 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--catalog", default=Path(__file__).with_name("packages.lock.json"), type=Path)
     parser.add_argument("--cache", default=REPO_ROOT / "bin-int" / "installer" / "package-cache", type=Path)
+    parser.add_argument("--include-native-sdk", action="store_true", help="Include optional native headers and engine link libraries")
     args = parser.parse_args()
     try:
-        prepare(args.bundle, args.repo, args.output, args.catalog, args.cache)
+        prepare(args.bundle, args.repo, args.output, args.catalog, args.cache, args.include_native_sdk)
         print(f"[Installer] Payload: {args.output.resolve()}")
         return 0
     except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as error:

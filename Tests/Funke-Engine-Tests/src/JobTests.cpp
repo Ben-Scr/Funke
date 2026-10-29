@@ -5,7 +5,10 @@
 #include "Scripting/ScriptGlue.hpp"
 
 #include <atomic>
+#include <chrono>
+#include <future>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -13,12 +16,14 @@ using namespace Funke;
 
 namespace {
 	struct ScopedJobSystem {
-		ScopedJobSystem() {
+		explicit ScopedJobSystem(int workerCount = 2) {
 			JobSystem::Shutdown();
 
-			JobSystemSpec spec;
-			spec.WorkerCount = 2;
-			JobSystem::Initialize(spec);
+			if (workerCount > 0) {
+				JobSystemSpec spec;
+				spec.WorkerCount = workerCount;
+				JobSystem::Initialize(spec);
+			}
 		}
 
 		~ScopedJobSystem() {
@@ -52,6 +57,80 @@ TEST_CASE("Job API completes handles when work throws") {
 
 	Job::Wait(handle);
 	CHECK(handle.IsComplete());
+}
+
+TEST_CASE("Job completion releases callback captures before Wait returns") {
+	for (int workerCount : { 0, 2 }) {
+		for (bool throws : { false, true }) {
+			CAPTURE(workerCount);
+			CAPTURE(throws);
+			ScopedJobSystem jobs(workerCount);
+			const bool hasWorkers = JobSystem::GetWorkerCount() > 0;
+			auto owned = std::make_shared<int>(73);
+			std::weak_ptr<int> lifetime = owned;
+			std::promise<void> started;
+			auto startedFuture = started.get_future();
+			std::promise<void> release;
+			auto releaseFuture = release.get_future().share();
+			if (!hasWorkers) release.set_value();
+			std::atomic<bool> ranOnWorker{ false };
+			std::atomic<int> value{ 0 };
+			JobHandle handle = Job::Schedule([captured = std::move(owned), &started, releaseFuture, &ranOnWorker, &value, throws] {
+				value.store(*captured);
+				ranOnWorker.store(JobSystem::IsCallerWorker());
+				started.set_value();
+				releaseFuture.wait();
+				if (throws) throw std::runtime_error("expected capture lifetime failure");
+			});
+			const auto status = startedFuture.wait_for(std::chrono::seconds(5));
+			if (hasWorkers) release.set_value();
+			Job::Wait(handle);
+			REQUIRE(status == std::future_status::ready);
+			CHECK(handle.IsComplete());
+			CHECK(value.load() == 73);
+			CHECK(ranOnWorker.load() == hasWorkers);
+			CHECK(lifetime.expired());
+		}
+	}
+}
+
+TEST_CASE("ParallelFor completion releases its shared callback before Wait returns") {
+	for (int workerCount : { 0, 2 }) {
+		for (bool throws : { false, true }) {
+			CAPTURE(workerCount);
+			CAPTURE(throws);
+			ScopedJobSystem jobs(workerCount);
+			const bool hasWorkers = JobSystem::GetWorkerCount() > 0;
+			auto owned = std::make_shared<int>(29);
+			std::weak_ptr<int> lifetime = owned;
+			std::promise<void> started;
+			auto startedFuture = started.get_future();
+			std::promise<void> release;
+			auto releaseFuture = release.get_future().share();
+			if (!hasWorkers) release.set_value();
+			std::atomic<int> entered{ 0 };
+			std::atomic<int> visited{ 0 };
+			std::atomic<bool> firstRanOnWorker{ false };
+			JobHandle handle = ParallelForAsync(0, 64,
+				[captured = std::move(owned), &started, releaseFuture, &entered, &visited, &firstRanOnWorker, throws](size_t lo, size_t hi) {
+					if (entered.fetch_add(1) == 0) {
+						firstRanOnWorker.store(JobSystem::IsCallerWorker());
+						started.set_value();
+					}
+					releaseFuture.wait();
+					visited.fetch_add(static_cast<int>(hi - lo) * *captured);
+					if (throws && lo == 0) throw std::runtime_error("expected parallel capture lifetime failure");
+				}, 4);
+			const auto status = startedFuture.wait_for(std::chrono::seconds(5));
+			if (hasWorkers) release.set_value();
+			Job::Wait(handle);
+			REQUIRE(status == std::future_status::ready);
+			CHECK(handle.IsComplete());
+			CHECK(visited.load() == 64 * 29);
+			CHECK(firstRanOnWorker.load() == hasWorkers);
+			CHECK(lifetime.expired());
+		}
+	}
 }
 
 TEST_CASE("ParallelFor handles complete when a chunk throws") {

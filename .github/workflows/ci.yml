@@ -248,6 +248,9 @@ jobs:
         shell: pwsh
         run: python scripts/ci/runtime_smoke_test.py --binary bin/Release-windows-x86_64/Funke-Runtime/Funke-Runtime.exe
 
+      - name: Windows Export With Bundled .NET
+        run: python scripts/ci/desktop_export_smoke_test.py --cli bin/Release-windows-x86_64/Funke-CLI/funke.exe
+
       - name: Packaged Launcher + Editor Smoke Tests
         shell: pwsh
         run: |
@@ -320,6 +323,54 @@ jobs:
             bin/installer/*.dependencies.json
           if-no-files-found: error
 
+
+
+  windows-standalone:
+    needs: windows-build
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - name: Checkout verification script only
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/ci/standalone_sdk_test.py
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Setup authoring SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Download published binary bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: Funke-Editor-${{ needs.windows-build.outputs.version }}-Windows-x64
+          path: ${{ runner.temp }}/standalone-artifact
+
+      - name: Verify installed authoring and relocated players
+        shell: pwsh
+        run: |
+          $archives = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/standalone-artifact" -Filter '*.zip')
+          if ($archives.Count -ne 1) { throw 'Expected exactly one binary bundle.' }
+          $install = Join-Path $env:RUNNER_TEMP 'Funke Binary Installation'
+          Expand-Archive -LiteralPath $archives[0].FullName -DestinationPath $install
+          python scripts/ci/standalone_sdk_test.py --install $install --dotnet (Get-Command dotnet).Source --work-parent $env:RUNNER_TEMP --forbidden-root $env:GITHUB_WORKSPACE --report "$env:RUNNER_TEMP/standalone-evidence.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload standalone verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-Standalone-Windows-${{ needs.windows-build.outputs.version }}
+          path: |
+            ${{ runner.temp }}/standalone-evidence.json
+            ${{ runner.temp }}/Funke-Standalone-*/logs/**
+          if-no-files-found: warn
 
   linux-build:
     needs: script-tests
@@ -445,6 +496,9 @@ jobs:
 
       - name: Linux Runtime Smoke Test
         run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Release-linux-x86_64/Funke-Runtime/Funke-Runtime
+
+      - name: Linux Export With Bundled .NET
+        run: python3 scripts/ci/desktop_export_smoke_test.py --cli bin/Release-linux-x86_64/Funke-CLI/funke
 
       - name: Linux Debug Runtime Smoke Test
         run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Debug-linux-x86_64/Funke-Runtime/Funke-Runtime
@@ -583,6 +637,9 @@ jobs:
           python3 scripts/ci/runtime_smoke_test.py --binary bin/Release-macosx-arm64/Funke-Runtime/Funke-Runtime --require-scripting
           python3 scripts/ci/runtime_smoke_test.py --binary bin/Dist-macosx-arm64/Funke-Runtime/Funke-Runtime --require-scripting
 
+      - name: macOS Export With Bundled .NET
+        run: python3 scripts/ci/desktop_export_smoke_test.py --cli bin/Release-macosx-arm64/Funke-CLI/funke
+
       - name: Package macOS Bundle
         run: python3 scripts/PackagePosix.py --configuration Release --output-dir dist-posix
 
@@ -597,7 +654,7 @@ jobs:
   # after the clean-machine checks in Building-and-Shipping.md.
   publish-release:
     if: github.ref_type == 'tag'
-    needs: [managed-tests, windows-build, linux-build, macos-build]
+    needs: [managed-tests, windows-build, windows-standalone, linux-build, macos-build]
     runs-on: ubuntu-latest
     permissions:
       contents: write

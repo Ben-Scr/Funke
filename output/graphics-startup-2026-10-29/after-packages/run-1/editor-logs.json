@@ -1,0 +1,205 @@
+{
+  "id": "project-open-benchmark",
+  "ok": true,
+  "result": {
+    "lines": [
+      {
+        "seq": 1,
+        "time": "22:08:47.175",
+        "level": "info",
+        "source": "core",
+        "message": "[EditorBridge] Listening for `funke editor` commands on \\\\.\\pipe\\funke-editor-104532-2459cdcabac3a72197bc033a6058e674"
+      },
+      {
+        "seq": 2,
+        "time": "22:08:47.185",
+        "level": "info",
+        "source": "game",
+        "message": "[Pkg.Bench.Startup] Loaded."
+      },
+      {
+        "seq": 3,
+        "time": "22:08:47.185",
+        "level": "info",
+        "source": "core",
+        "message": "[PackageHost] Loaded 1 package(s)."
+      },
+      {
+        "seq": 4,
+        "time": "22:08:47.185",
+        "level": "info",
+        "source": "game",
+        "message": "[Application] Startup scene load deferred behind splash."
+      },
+      {
+        "seq": 5,
+        "time": "22:08:47.185",
+        "level": "info",
+        "source": "game",
+        "message": "[Application] Full Initialization took 540.65 ms"
+      },
+      {
+        "seq": 6,
+        "time": "22:08:47.186",
+        "level": "info",
+        "source": "core",
+        "message": "[Window] Framebuffer 2560x1342, viewport 2560x1342 at 0,0, window-to-framebuffer scale 1x1"
+      },
+      {
+        "seq": 7,
+        "time": "22:08:47.186",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenPackages\\Assets for 6 pattern(s)"
+      },
+      {
+        "seq": 8,
+        "time": "22:08:47.186",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenPackages\\Assets for 14 pattern(s)"
+      },
+      {
+        "seq": 9,
+        "time": "22:08:47.187",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenPackages\\Assets for 1 pattern(s)"
+      },
+      {
+        "seq": 10,
+        "time": "22:08:47.187",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching 2 targets for 2 pattern(s)"
+      },
+      {
+        "seq": 11,
+        "time": "22:08:47.187",
+        "level": "info",
+        "source": "game",
+        "message": "[Application] Loading startup scenes..."
+      },
+      {
+        "seq": 12,
+        "time": "22:08:47.188",
+        "level": "info",
+        "source": "core",
+        "message": "[SceneSerializer] Loaded scene: SampleScene"
+      },
+      {
+        "seq": 13,
+        "time": "22:08:47.188",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] ScriptEngine ready (deferred runtime init)"
+      },
+      {
+        "seq": 14,
+        "time": "22:08:47.189",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] Assembly: C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-ScriptCore.dll"
+      },
+      {
+        "seq": 15,
+        "time": "22:08:47.189",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] Script runtime backend: hostfxr"
+      },
+      {
+        "seq": 16,
+        "time": "22:08:47.189",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptRuntime] RuntimeConfig: C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-ScriptCore.runtimeconfig.json"
+      },
+      {
+        "seq": 17,
+        "time": "22:08:47.216",
+        "level": "info",
+        "source": "core",
+        "message": "[DotNetHost] CoreCLR runtime initialized successfully"
+      },
+      {
+        "seq": 18,
+        "time": "22:08:47.240",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] Core assembly loaded: C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-ScriptCore.dll"
+      },
+      {
+        "seq": 19,
+        "time": "22:08:47.240",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] Loading user assembly: C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenPackages\\bin\\Release\\OpenPackages.dll"
+      },
+      {
+        "seq": 20,
+        "time": "22:08:47.254",
+        "level": "info",
+        "source": "game",
+        "message": "[Script] User assembly loaded: C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenPackages\\bin\\Release\\OpenPackages.dll"
+      },
+      {
+        "seq": 21,
+        "time": "22:08:47.256",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] LoadUserAssembly callback returned: 1"
+      },
+      {
+        "seq": 22,
+        "time": "22:08:47.256",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] User assembly loaded: C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenPackages\\bin\\Release\\OpenPackages.dll"
+      },
+      {
+        "seq": 23,
+        "time": "22:08:47.256",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching 5 targets for 5 pattern(s)"
+      },
+      {
+        "seq": 24,
+        "time": "22:08:47.258",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching 5 targets for 12 pattern(s)"
+      },
+      {
+        "seq": 25,
+        "time": "22:08:47.258",
+        "level": "info",
+        "source": "game",
+        "message": "[ScriptSystem] Script system initialized"
+      },
+      {
+        "seq": 26,
+        "time": "22:08:47.259",
+        "level": "info",
+        "source": "core",
+        "message": "[TextureManager] Purged 0 unreferenced texture entries"
+      },
+      {
+        "seq": 27,
+        "time": "22:08:47.259",
+        "level": "info",
+        "source": "core",
+        "message": "[AudioManager] Purged 0 unreferenced audio entries"
+      },
+      {
+        "seq": 28,
+        "time": "22:08:47.263",
+        "level": "info",
+        "source": "core",
+        "message": "[ImGui] Saved editor layout docks no panels into the editor dockspace; applying the default layout."
+      }
+    ],
+    "next": 28
+  }
+}

@@ -132,7 +132,7 @@ Rules:
 - Why it's mandatory: in the Editor, **Play → Stop does not reload the script assembly**, so static events and fields keep their values into the next Play session. The engine only auto-strips stray handlers from *engine* events; handlers on **your own** static events are never cleaned up and would call into destroyed scripts.
 - Raise with `?.Invoke(...)`. Pass the sender or a small immutable payload (`int`, `struct`), not mutable shared state.
 - Never clear an event from outside (`Destroyed = null`) — other listeners depend on it.
-- Listening to engine events (`SceneManager.SceneLoaded`, `Application.OnQuit`, `Input.KeyDown`, UI `OnClicked`) follows the same OnEnable/OnDisable rule.
+- Listening to engine events (`SceneManager.SceneLoaded`, `Application.Quitting`, `Input.KeyDown`, UI `Clicked`) follows the same OnEnable/OnDisable rule.
 - Static **data** (counters, lists, flags) is discouraged: it survives Stop and leaks into the next session. If you truly need it, reset it in `OnAwake` of the owning script.
 
 ## UI wiring

@@ -19,6 +19,7 @@ namespace Funke {
 			uint64_t PersistentId = 0;
 			PropertyValue Before;
 			PropertyValue After;
+			bool SceneProperty = false;
 		};
 		using ApplyFn = std::function<void(Entity&, const PropertyValue&)>;
 

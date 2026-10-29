@@ -251,3 +251,52 @@ TEST_CASE("EditorShortcuts rename opens an input before Enter commits the new na
 	io.AddKeyEvent(ImGuiKey_Enter, true);
 	CHECK(frame());
 }
+
+TEST_CASE("EditorShortcuts undo is available from every panel and an undocked tool window") {
+	for (const char* name : { "Editor View", "Entities", "Inspector", "Project", "Log", "Floating Tool" }) {
+		CAPTURE(std::string(name));
+		HeadlessImGui imgui;
+		ImGuiIO& io = ImGui::GetIO();
+		io.ConfigMacOSXBehaviors = false;
+		imgui.Frame("History");
+		ImGui::NewFrame();
+		ImGui::Begin(name);
+		ImGui::SetWindowFocus();
+		ImGui::End();
+		ImGui::EndFrame();
+		io.AddKeyEvent(ImGuiMod_Ctrl, true);
+		io.AddKeyEvent(ImGuiKey_Z, true);
+		ImGui::NewFrame();
+		CHECK(EditorShortcuts::ReadHistoryAction(false) == EditorShortcuts::HistoryAction::Undo);
+		CHECK(EditorShortcuts::ReadHistoryAction(true) == EditorShortcuts::HistoryAction::None);
+		io.WantTextInput = true;
+		CHECK(EditorShortcuts::ReadHistoryAction(false) == EditorShortcuts::HistoryAction::None);
+		io.WantTextInput = false;
+		ImGui::SetActiveID(42, ImGui::FindWindowByName(name));
+		CHECK(EditorShortcuts::ReadHistoryAction(false) == EditorShortcuts::HistoryAction::None);
+		ImGui::ClearActiveID();
+		io.AppFocusLost = true;
+		CHECK(EditorShortcuts::ReadHistoryAction(false) == EditorShortcuts::HistoryAction::None);
+		ImGui::EndFrame();
+	}
+}
+
+TEST_CASE("EditorShortcuts history uses Command on macOS and both redo chords without key repeat") {
+	for (bool mac : { false, true }) {
+		for (bool shift : { false, true }) {
+			CAPTURE(mac);
+			CAPTURE(shift);
+			HeadlessImGui imgui;
+			ImGuiIO& io = ImGui::GetIO();
+			io.ConfigMacOSXBehaviors = mac;
+			io.AddKeyEvent(mac ? ImGuiMod_Super : ImGuiMod_Ctrl, true);
+			if (shift) io.AddKeyEvent(ImGuiMod_Shift, true);
+			io.AddKeyEvent(shift ? ImGuiKey_Z : ImGuiKey_Y, true);
+			imgui.Frame("History");
+			CHECK(EditorShortcuts::ReadHistoryAction(false) == EditorShortcuts::HistoryAction::Redo);
+			io.DeltaTime = io.KeyRepeatDelay + io.KeyRepeatRate;
+			imgui.Frame("History");
+			CHECK(EditorShortcuts::ReadHistoryAction(false) == EditorShortcuts::HistoryAction::None);
+		}
+	}
+}

@@ -22,7 +22,7 @@ internal unsafe struct ManagedCallbacksStruct
     public delegate* unmanaged<int, ulong, ulong, ulong, ulong, float, float, void> InvokeCollisionStay2D;
     public delegate* unmanaged<int, ulong, ulong, ulong, ulong, float, float, void> InvokeCollisionExit2D;
     public delegate* unmanaged<byte*, int> ClassExists;
-    public delegate* unmanaged<byte*, int> LoadUserAssembly;
+    public delegate* unmanaged<byte*, int> LoadUserAssembly; // 1 loaded, -1 previous retained, 0 unavailable.
     public delegate* unmanaged<void> UnloadUserAssembly;
     public delegate* unmanaged<int, byte*> GetScriptFields;
     public delegate* unmanaged<int, byte*, byte*, void> SetScriptField;
@@ -130,13 +130,16 @@ internal unsafe struct ManagedCallbacksStruct
     public delegate* unmanaged<ulong, int, byte*, ulong, void> SceneLoadCompleted;
     public delegate* unmanaged<void> PumpSceneLoadRequests;
     public delegate* unmanaged<ulong, uint, void> NotifyComponentRemoved;
+    public delegate* unmanaged<ulong*, int, void> NotifyEntitiesDestroyed;
+    public delegate* unmanaged<ulong*, int, uint, void> NotifyComponentsRemoved;
+    public delegate* unmanaged<ulong*, ulong*, int*, int, void> AssetLoadsCompleted;
 }
 
 /// <summary>Guards the native/managed function-pointer tables against layout drift before either is touched.</summary>
 internal static class InteropHandshake
 {
     // Bump together with k_ScriptInteropLayoutVersion (ScriptGlue.hpp) on any add/remove/reorder in either table.
-    internal const int LayoutVersion = 44;
+    internal const int LayoutVersion = 46;
 
     // Codes are mirrored in ScriptEngine::LoadCoreAssembly.
     internal const int Ok = 0;
@@ -295,6 +298,9 @@ internal static class ScriptHostBridge
             managedCallbacks->SceneLoadCompleted = &ScriptInstanceManager.SceneLoadCompleted;
             managedCallbacks->PumpSceneLoadRequests = &ScriptInstanceManager.PumpSceneLoadRequests;
             managedCallbacks->NotifyComponentRemoved = &ScriptInstanceManager.NotifyComponentRemoved;
+            managedCallbacks->NotifyEntitiesDestroyed = &ScriptInstanceManager.NotifyEntitiesDestroyed;
+            managedCallbacks->NotifyComponentsRemoved = &ScriptInstanceManager.NotifyComponentsRemoved;
+            managedCallbacks->AssetLoadsCompleted = &ScriptInstanceManager.AssetLoadsCompleted;
 
             ScriptInstanceManager.SetCoreAssembly(typeof(ScriptHostBridge).Assembly);
 

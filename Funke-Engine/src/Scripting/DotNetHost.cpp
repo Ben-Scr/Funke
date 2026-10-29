@@ -4,6 +4,7 @@
 #include "Scripting/DotNetHost.hpp"
 #include "Core/Log.hpp"
 #include "Core/Platform.hpp"
+#include "Serialization/Path.hpp"
 
 #include <nethost.h>
 #include <hostfxr.h>
@@ -108,24 +109,30 @@ namespace Funke {
 		Close();
 	}
 
-	bool DotNetHost::LoadHostFxr()
+	bool DotNetHost::LoadHostFxr(const std::filesystem::path& privateRoot)
 	{
 		if (m_HostFxrLib || m_HostContext || m_Initialized) {
 			Close();
 		}
 
-		char_t hostfxrPath[1024]{};
-		size_t pathSize = sizeof(hostfxrPath) / sizeof(char_t);
-
-		int rc = get_hostfxr_path(hostfxrPath, &pathSize, nullptr);
+		const auto root = ToHostFxrPath(privateRoot);
+		get_hostfxr_parameters parameters{ sizeof(get_hostfxr_parameters), nullptr, root.c_str() };
+		std::vector<char_t> hostfxrPath(1024);
+		size_t pathSize = hostfxrPath.size();
+		int rc = get_hostfxr_path(hostfxrPath.data(), &pathSize, root.empty() ? nullptr : &parameters);
+		if (rc != 0 && pathSize > hostfxrPath.size() && pathSize < 1024 * 1024) {
+			hostfxrPath.resize(pathSize);
+			rc = get_hostfxr_path(hostfxrPath.data(), &pathSize, root.empty() ? nullptr : &parameters);
+		}
 		if (rc != 0)
 		{
 			FNK_CORE_ERROR_TAG("DotNetHost", "Failed to find hostfxr: error 0x{:x}", static_cast<unsigned>(rc));
-			ReportMissingDotNetRuntime();
+			if (root.empty()) ReportMissingDotNetRuntime();
+			else FNK_CORE_ERROR_TAG("DotNetHost", "Bundled .NET runtime is incomplete: {}", Path::ToUtf8(privateRoot));
 			return false;
 		}
 
-		m_HostFxrLib = LoadLibraryFromPath(hostfxrPath);
+		m_HostFxrLib = LoadLibraryFromPath(hostfxrPath.data());
 		if (!m_HostFxrLib)
 		{
 			FNK_CORE_ERROR_TAG("DotNetHost", "Failed to load hostfxr library");
@@ -155,7 +162,17 @@ namespace Funke {
 			return true;
 		}
 
-		if (!LoadHostFxr())
+		std::error_code pathError;
+		const auto candidateRoot = std::filesystem::absolute(runtimeConfigPath, pathError).parent_path() / "dotnet";
+		if (pathError) return false;
+		const auto privateRoot = std::filesystem::exists(candidateRoot, pathError) ? candidateRoot : std::filesystem::path{};
+		if (pathError) return false;
+		if (privateRoot.empty() && std::filesystem::exists(candidateRoot.parent_path() / ".funke-dotnet-runtime", pathError)) {
+			FNK_CORE_ERROR_TAG("DotNetHost", "Bundled .NET runtime is missing: {}", Path::ToUtf8(candidateRoot));
+			return false;
+		}
+		if (pathError) return false;
+		if (!LoadHostFxr(privateRoot))
 			return false;
 
 		if (m_SetErrorWriterFn)
@@ -168,11 +185,13 @@ namespace Funke {
 		std::basic_string<char_t> configPath = ToHostFxrPath(runtimeConfigPath);
 
 		// rc 0/1/2 are all success codes; only negative rc indicates failure.
-		int rc = initFn(configPath.c_str(), nullptr, &m_HostContext);
+		const auto root = ToHostFxrPath(privateRoot);
+		hostfxr_initialize_parameters parameters{ sizeof(hostfxr_initialize_parameters), nullptr, root.c_str() };
+		int rc = initFn(configPath.c_str(), root.empty() ? nullptr : &parameters, &m_HostContext);
 		if (rc < 0 || !m_HostContext)
 		{
 			FNK_CORE_ERROR_TAG("DotNetHost", "Failed to initialize .NET runtime: 0x{:x}", static_cast<unsigned>(rc));
-			if (rc == k_FrameworkMissingFailure) ReportMissingDotNetRuntime();
+			if (rc == k_FrameworkMissingFailure && root.empty()) ReportMissingDotNetRuntime();
 			Close();
 			return false;
 		}
@@ -196,6 +215,7 @@ namespace Funke {
 		m_HostContext = nullptr;
 
 		m_Initialized = true;
+		if (!privateRoot.empty()) FNK_CORE_INFO_TAG("DotNetHost", "Using bundled .NET runtime: {}", Path::ToUtf8(privateRoot));
 		FNK_CORE_INFO_TAG("DotNetHost", "CoreCLR runtime initialized successfully");
 		return true;
 	}

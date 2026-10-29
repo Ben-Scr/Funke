@@ -1,6 +1,7 @@
 #pragma once
 #include "Project/FunkeBuildProfile.hpp"
 #include "Project/FunkeProject.hpp"
+#include "Project/EngineSdk.hpp"
 #include "Project/PlatformPackages.hpp"
 #include "Serialization/SceneSerializer.hpp"
 
@@ -27,6 +28,7 @@ namespace Funke::GameBuilder {
 		BuildPlatform Platform = BuildPlatform::Windows;
 		std::optional<PlatformPackageInfo> PlatformPackage;
 		std::vector<std::pair<std::string, std::string>> PlatformOptions;
+		bool BundleDotNetRuntime = true;
 		// Set before Prepare (CLI --debug/--development/--release); wins over the profile's "configuration".
 		std::optional<FunkeProject::BuildProfile> ConfigurationOverride;
 	};
@@ -56,6 +58,16 @@ namespace Funke::GameBuilder {
 	bool Prepare(FunkeProject& project, Request& outRequest, std::string& outError);
 
 	Result Build(Request request, const ProgressCallback& onProgress = {});
+
+	struct InstalledRuntime {
+		std::filesystem::path Directory;
+		std::string Variant;
+		std::string Error;
+		bool Succeeded() const { return !Directory.empty() && Error.empty(); }
+	};
+
+	InstalledRuntime SelectInstalledRuntime(const EngineSdk::Installation& installation,
+		FunkeProject::BuildProfile profile, std::string_view preferredVariant = {});
 
 	// Default output folder: <project>/Builds/<profile>.
 	std::string DefaultOutputDirectory(const FunkeProject& project, std::string_view profileName);

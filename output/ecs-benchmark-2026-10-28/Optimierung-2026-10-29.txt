@@ -1,0 +1,98 @@
+﻿FUNKE ECS - OPTIMIERUNG VOM 29.10.2026
+
+Vorher: gesicherte Engine/ScriptCore-Binaerdateien vom Anfang dieser Optimierungsrunde.
+Nachher: getesteter Stand mit Batchinvalidierung, wiederverwendeten ECB-Planpuffern,
+Typpruefung je Typ/Opcode, gebuendelten Scene-Hooks, parallelen Destroy-Pools
+und gemeinsamem Leeren der Identitaetsindizes bei vollstaendigem Szenen-Destroy.
+
+CPU: AMD Ryzen 9 7900X, 12 Kerne/24 Threads; 16 native Job-Worker.
+RAM: 32 GiB DDR5, konfiguriert 6000 MT/s. Windows, Release x64, .NET 10.0.11.
+3 Warm-ups, 9 Proben; Median fuer die gesamte Charge, alle Zeiten in Millisekunden.
+Playback umfasst Wirecopy, C#-zu-C++-Aufruf und native ECS-/Verwaltungsarbeit.
+Recording, Setup, Ergebnisvalidierung, Cleanup und Erzeugung der C#-Entity-Wrapper sind ausgeschlossen.
+Create: native Transform2D + SpriteRenderer; Add/Remove: SpriteRenderer auf bestehenden Entities.
+Destroy: Entities mit beiden nativen Komponenten. Keine Physik oder Scripts an diesen Entities.
+Parallel ist der explizite Playback-Modus; Auto waehlt anhand der Batchgroesse.
+Die Verbesserung kombiniert Batchalgorithmen und Workerarbeit; sie ist kein reiner Thread-Speedup.
+Fuer 1 Million Entities wurde nur Parallel gemessen. Kein Vergleich mit anderen Engines.
+Runtime- und Benchmark-DLL, Harness-Quellen, Hardware und Messkonfiguration sind vor/nach identisch.
+Engine und ScriptCore unterscheiden sich wie beabsichtigt; exakte Hashes stehen unten und in JSON.
+
+ERGEBNISSE
+N / Operation / Modus                                       Vorher ms  Nachher ms  weniger %
+1000 / PlaybackAddExisting / Auto                              0.1384      0.0857       38.1
+1000 / PlaybackAddExisting / Parallel                          0.1356      0.0690       49.1
+1000 / PlaybackCreateDefault2 / Auto                           0.2043      0.1214       40.6
+1000 / PlaybackCreateDefault2 / Parallel                       0.2584      0.1952       24.5
+1000 / PlaybackCreatePayload2 / Auto                           0.2100      0.1740       17.1
+1000 / PlaybackCreatePayload2 / Parallel                       0.2539      0.1806       28.9
+1000 / PlaybackDestroyExisting / Auto                          0.1783      0.1178       33.9
+1000 / PlaybackDestroyExisting / Parallel                      0.1827      0.1406       23.0
+1000 / PlaybackRemoveExisting / Auto                           0.1125      0.0647       42.5
+1000 / PlaybackRemoveExisting / Parallel                       0.1054      0.0642       39.1
+10000 / PlaybackAddExisting / Auto                             1.0639      0.4302       59.6
+10000 / PlaybackAddExisting / Parallel                         1.0906      0.4199       61.5
+10000 / PlaybackCreateDefault2 / Auto                          1.5782      1.1501       27.1
+10000 / PlaybackCreateDefault2 / Parallel                      1.9128      1.1079       42.1
+10000 / PlaybackCreatePayload2 / Auto                          1.7308      1.1608       32.9
+10000 / PlaybackCreatePayload2 / Parallel                      1.7642      1.2851       27.2
+10000 / PlaybackDestroyExisting / Auto                         1.7053      1.1251       34.0
+10000 / PlaybackDestroyExisting / Parallel                     1.7411      1.1347       34.8
+10000 / PlaybackRemoveExisting / Auto                          0.6857      0.4324       36.9
+10000 / PlaybackRemoveExisting / Parallel                      0.7022      0.4094       41.7
+100000 / PlaybackAddExisting / Auto                           13.0108      6.2248       52.2
+100000 / PlaybackAddExisting / Parallel                       12.9900      6.4324       50.5
+100000 / PlaybackCreateDefault2 / Auto                        17.0001     11.5501       32.1
+100000 / PlaybackCreateDefault2 / Parallel                    16.9373     11.0878       34.5
+100000 / PlaybackCreatePayload2 / Auto                        16.9656     12.6267       25.6
+100000 / PlaybackCreatePayload2 / Parallel                    17.0500     12.3283       27.7
+100000 / PlaybackDestroyExisting / Auto                       20.2481     12.5091       38.2
+100000 / PlaybackDestroyExisting / Parallel                   20.2313     12.4926       38.3
+100000 / PlaybackRemoveExisting / Auto                         9.2095      6.0584       34.2
+100000 / PlaybackRemoveExisting / Parallel                     9.5120      5.9652       37.3
+1000000 / PlaybackAddExisting / Parallel                     206.8763    125.4967       39.3
+1000000 / PlaybackCreateDefault2 / Parallel                  259.6754    225.6523       13.1
+1000000 / PlaybackCreatePayload2 / Parallel                  244.6607    217.8495       11.0
+1000000 / PlaybackDestroyExisting / Parallel                 361.6361    157.5106       56.4
+1000000 / PlaybackRemoveExisting / Parallel                  143.3423    101.2177       29.4
+
+GRENZEN UND TRADEOFFS
+Planpuffer behalten ihre Kapazitaet bis zur groessten verarbeiteten Charge; das spart Allokationen
+gegen zusaetzlich gebundenen nativen Arbeitsspeicher. Dieser wurde nicht separat gemessen.
+Ungeeignete Komponenten, eigene Callbacks und gemischte Operationen behalten den geordneten Fallback.
+Die Destroy-Abkuerzung fuer ID-Indizes gilt ausschliesslich beim Entfernen aller lebenden Entities.
+Der feste A/B-Host meldet abweichende Engine-Header-Fingerprints. Die ECS-Aenderungen ergaenzen
+nichtvirtuelle/statische Methoden; die Callback-Tabelle liegt ausschliesslich in der Engine-DLL.
+Engine und ScriptCore bestehen jeweils den Groessen-/Versionscheck. Zusaetzlich wurde die
+abschliessende Funktionsvalidierung mit frisch gegen die neuen Header gebauter Runtime ausgefuehrt.
+Vor jeder Messung wurde auf inaktive native Builds gewartet. Sonstige Hintergrundlast ist nicht ausgeschlossen.
+Neun Proben liefern eine Orientierung, keine statistische Signifikanzpruefung.
+Min/Max je Kombination stehen in Optimierung-2026-10-29.json und in den Rohdaten.
+
+VALIDIERUNG
+Release Engine/ScriptCore gebaut; 743 native Tests und 561 C#-Tests bestanden.
+Hosted Runtime: optimize6-validation-final, 8192 Create/Add/Remove/Destroy mit Wrapperinvalidierung.
+Alle hier ausgewerteten Messlaeufe tragen PASS; Probe optimize4-validation wurde wegen
+vorzeitig gemischter ABI-Versionen vor fertigem Build abgebrochen und nicht ausgewertet.
+
+BINAER-HASHES (SHA256)
+Vorher
+  EcsBenchmark.dll: 2BFE1D5260EC6ED4B9D81635E365E0EDF26429C1574F8818B3F391A88C312B00
+  Funke-Engine.dll: 17CB4C86612C73973790C6C468BD0297FBA7BC011F03645768F43AEA1432726E
+  Funke-Runtime.exe: 9505987D402985A8B46E1B3C88AB7F3A6E66D6A7D23E1C4EF0C9D165EE1561D7
+  Funke-ScriptCore.dll: 00282444628222055D93A26BBC3407DD484851891DF290E3FBA601BB5D07E8A5
+Nachher
+  EcsBenchmark.dll: 2BFE1D5260EC6ED4B9D81635E365E0EDF26429C1574F8818B3F391A88C312B00
+  Funke-Engine.dll: 0888A2F2845182782D3948D54C2DD0F938A0F18B5B5AD7740292BF658685AD0C
+  Funke-Runtime.exe: 9505987D402985A8B46E1B3C88AB7F3A6E66D6A7D23E1C4EF0C9D165EE1561D7
+  Funke-ScriptCore.dll: 5084771C6BD32D634AD5C5DFA93067A8D203CB80360E7895BEC3CD0626C87A72
+
+ROHDATEN (im selben Ordner)
+optimize6-before-1000.json / .csv / -machine.json / -stdout.log
+optimize6-before-10000.json / .csv / -machine.json / -stdout.log
+optimize6-before-100000.json / .csv / -machine.json / -stdout.log
+optimize6-before-1000000.json / .csv / -machine.json / -stdout.log
+optimize6-after-1000.json / .csv / -machine.json / -stdout.log
+optimize6-after-10000.json / .csv / -machine.json / -stdout.log
+optimize6-after-100000.json / .csv / -machine.json / -stdout.log
+optimize6-after-1000000.json / .csv / -machine.json / -stdout.log

@@ -3,15 +3,19 @@
 
 #include "Core/Application.hpp"
 #include "Jobs/JobSystem.hpp"
+#include "Jobs/ParallelFor.hpp"
 #include "Scene/BuiltInComponentRegistration.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneExecutionContext.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scripting/EntityCommandBufferWire.hpp"
+#include "Scripting/NativeEntityCommandBuffer.hpp"
+#include "Scripting/ParallelEntityCommandBuffer.hpp"
 #include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptGlue.hpp"
 #if FUNKE_WITH_2D
+#include "Components/Tags.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/UUIDComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
@@ -21,11 +25,14 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <numeric>
 #include <random>
 #include <span>
+#include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -192,8 +199,238 @@ namespace {
 		explicit RestoreParallelComponentInfo(ComponentInfo& info) : Info(info), Saved(info) {}
 		~RestoreParallelComponentInfo() { Info = std::move(Saved); }
 	};
+
+	struct NativeEcbCustomValue { int Value = 7; };
+
+	template<typename Fn>
+	void RecordNativeWriters(ParallelEntityCommandBuffer& buffer, uint32_t count, Fn action) {
+		std::array<std::thread, 4> threads;
+		std::array<std::exception_ptr, 4> failures{};
+		for (size_t slot = 0; slot < threads.size(); ++slot) {
+			threads[slot] = std::thread([&, slot] {
+				try {
+					auto& writer = buffer.AsWriter(slot);
+					for (uint32_t index = static_cast<uint32_t>(slot); index < count; index += 4) action(writer, index);
+				}
+				catch (...) { failures[slot] = std::current_exception(); }
+			});
+		}
+		for (auto& thread : threads) thread.join();
+		for (const auto& failure : failures) if (failure) std::rethrow_exception(failure);
+	}
 #endif
 }
+
+#if FUNKE_WITH_2D
+TEST_CASE("Public native parallel ECB records external threads and mutates live entities")
+{
+	Application app;
+	ScopedEcbWorkers workers(4);
+	RegisterParallelTypes();
+	auto scene = Scene::CreateDetachedScene("Public Native Parallel ECB");
+	ParallelEntityCommandBuffer commands(4);
+	RecordNativeWriters(commands, k_ParallelCount, [](auto& writer, uint32_t) {
+		writer.template CreateWith<Transform2DComponent>();
+	});
+	CHECK(scene->GetEntityCount() == 0);
+	CHECK(commands.EntityCount() == k_ParallelCount);
+	REQUIRE(commands.Playback(*scene, EntityCommandBufferPlaybackMode::Parallel) == k_ParallelCount);
+	std::vector<Entity> entities;
+	std::vector<NativeEntityCommandBuffer::EntityRef> liveRefs;
+	std::vector<uint64_t> identities;
+	std::unordered_set<uint64_t> unique;
+	for (uint32_t index = 0; index < k_ParallelCount; ++index) {
+		const auto handle = commands.GetCreatedEntity(index);
+		REQUIRE(scene->IsValid(handle));
+		CHECK(scene->GetRegistry().all_of<Transform2DComponent>(handle));
+		CHECK_FALSE(scene->GetRegistry().all_of<SpriteRendererComponent>(handle));
+		const uint64_t id = scene->GetEntityPersistentID(handle);
+		CHECK(id != 0);
+		CHECK(unique.insert(id).second);
+		entities.push_back(scene->GetEntity(handle));
+		liveRefs.push_back(NativeEntityCommandBuffer::Existing(entities.back()));
+		identities.push_back(id);
+	}
+	commands.Clear();
+	RecordNativeWriters(commands, k_ParallelCount, [&](auto& writer, uint32_t index) {
+		writer.template AddComponent<SpriteRendererComponent>(liveRefs[index]);
+	});
+	for (const auto& entity : entities) CHECK_FALSE(entity.HasComponent<SpriteRendererComponent>());
+	REQUIRE(commands.Playback(*scene, EntityCommandBufferPlaybackMode::Parallel) == 0);
+	for (const auto& entity : entities) CHECK(entity.HasComponent<SpriteRendererComponent>());
+	commands.Clear();
+	RecordNativeWriters(commands, k_ParallelCount, [&](auto& writer, uint32_t index) {
+		writer.template RemoveComponent<SpriteRendererComponent>(liveRefs[index]);
+	});
+	REQUIRE(commands.Playback(*scene, EntityCommandBufferPlaybackMode::Parallel) == 0);
+	for (const auto& entity : entities) {
+		CHECK(entity.HasComponent<Transform2DComponent>());
+		CHECK_FALSE(entity.HasComponent<SpriteRendererComponent>());
+	}
+	commands.Clear();
+	RecordNativeWriters(commands, k_ParallelCount, [&](auto& writer, uint32_t index) {
+		writer.Destroy(liveRefs[index]);
+	});
+	REQUIRE(commands.Playback(*scene, EntityCommandBufferPlaybackMode::Parallel) == 0);
+	CHECK(scene->GetEntityCount() == 0);
+	for (size_t index = 0; index < identities.size(); ++index) {
+		EntityHandle resolved = entt::null;
+		CHECK_FALSE(entities[index].IsValid());
+		CHECK_FALSE(scene->TryResolveEntityRef(identities[index], resolved));
+	}
+}
+
+TEST_CASE("Public native parallel ECB keeps worker local references valid until playback")
+{
+	for (int workerCount : { 0, 4 }) {
+		CAPTURE(workerCount);
+		Application app;
+		ScopedEcbWorkers workers(workerCount);
+		RegisterParallelTypes();
+		auto scene = Scene::CreateDetachedScene("Native ECB Job Writers");
+		ParallelEntityCommandBuffer commands;
+		ParallelFor(0, 257, [&](size_t index) {
+			auto& writer = commands.AsWriter();
+			const auto local = writer.CreateWith<Transform2DComponent>();
+			writer.AddComponent<NativeEcbCustomValue>(local, NativeEcbCustomValue{ static_cast<int>(index) });
+		}, 16);
+		REQUIRE(commands.Playback(*scene, EntityCommandBufferPlaybackMode::Parallel) == 257);
+		std::array<bool, 257> visited{};
+		for (int index = 0; index < 257; ++index) {
+			const auto handle = commands.GetCreatedEntity(index);
+			REQUIRE(scene->IsValid(handle));
+			CHECK(scene->GetRegistry().all_of<Transform2DComponent>(handle));
+			const int value = scene->GetRegistry().get<NativeEcbCustomValue>(handle).Value;
+			REQUIRE(value >= 0);
+			REQUIRE(value < 257);
+			CHECK_FALSE(visited[value]);
+			visited[value] = true;
+		}
+	}
+}
+
+TEST_CASE("Public native ECB preserves mixed command order and custom callbacks")
+{
+	Application app;
+	ScopedEcbWorkers workers(4);
+	RegisterParallelTypes();
+	for (auto mode : { EntityCommandBufferPlaybackMode::Sequential, EntityCommandBufferPlaybackMode::Parallel, EntityCommandBufferPlaybackMode::Auto }) {
+		auto scene = Scene::CreateDetachedScene("Native ECB Ordered Mutations");
+		NativeEntityCommandBuffer commands;
+		const auto local = commands.CreateWith<Transform2DComponent>();
+		commands.AddComponent<NativeEcbCustomValue>(local, [](auto& component) { component.Value = 91; });
+		commands.RemoveComponent<NativeEcbCustomValue>(local);
+		commands.RemoveComponent<NativeEcbCustomValue>(local);
+		commands.AddComponent<NativeEcbCustomValue>(local);
+		commands.AddComponent<SpriteRendererComponent>(local);
+		commands.RemoveComponent<SpriteRendererComponent>(local);
+		commands.AddComponent<SpriteRendererComponent>(local);
+		commands.SetEnabled(local, false);
+		REQUIRE(commands.Playback(*scene, mode) == 1);
+		const auto handle = commands.GetCreatedEntity(0);
+		Entity entity = scene->GetEntity(handle);
+		CHECK(entity.GetComponent<NativeEcbCustomValue>().Value == 7);
+		CHECK(entity.HasComponent<SpriteRendererComponent>());
+		CHECK(entity.HasComponent<DisabledTag>());
+		commands.Clear();
+		const auto live = commands.Existing(entity);
+		commands.SetEnabled(live, true);
+		commands.Destroy(live);
+		commands.Destroy(live);
+		commands.AddComponent<SpriteRendererComponent>(live);
+		commands.RemoveComponent<Transform2DComponent>(live);
+		REQUIRE(commands.Playback(*scene, mode) == 0);
+		CHECK_FALSE(entity.IsValid());
+		CHECK(scene->GetEntityCount() == 0);
+	}
+}
+
+TEST_CASE("Public native ECB rejects a foreign playback scene before creating entities")
+{
+	Application app;
+	RegisterParallelTypes();
+	auto owner = Scene::CreateDetachedScene("Native ECB Owner");
+	auto foreign = Scene::CreateDetachedScene("Native ECB Foreign");
+	Entity entity = owner->CreateRuntimeEntity();
+	for (auto mode : { EntityCommandBufferPlaybackMode::Sequential, EntityCommandBufferPlaybackMode::Parallel }) {
+		NativeEntityCommandBuffer commands;
+		commands.CreateWith<Transform2DComponent>();
+		commands.AddComponent<SpriteRendererComponent>(commands.Existing(entity));
+		CHECK_THROWS_AS(commands.Playback(*foreign, mode), std::invalid_argument);
+		CHECK(owner->GetEntityCount() == 1);
+		CHECK(foreign->GetEntityCount() == 0);
+		CHECK_FALSE(entity.HasComponent<SpriteRendererComponent>());
+	}
+}
+
+TEST_CASE("Public native ECB stale live references cannot mutate recycled entity slots")
+{
+	Application app;
+	RegisterParallelTypes();
+	auto scene = Scene::CreateDetachedScene("Native ECB Stale Identity");
+	NativeEntityCommandBuffer commands;
+	Entity old = scene->CreateRuntimeEntity();
+	const auto stale = commands.Existing(old);
+	commands.AddComponent<SpriteRendererComponent>(stale);
+	commands.RemoveComponent<Transform2DComponent>(stale);
+	commands.Destroy(stale);
+	scene->DestroyEntity(old);
+	Entity replacement = scene->CreateRuntimeEntity();
+	const uint64_t replacementId = scene->GetEntityPersistentID(replacement.GetHandle());
+	REQUIRE(commands.Playback(*scene, EntityCommandBufferPlaybackMode::Parallel) == 0);
+	CHECK(replacement.IsValid());
+	CHECK(replacement.HasComponent<Transform2DComponent>());
+	CHECK_FALSE(replacement.HasComponent<SpriteRendererComponent>());
+	CHECK(scene->GetEntityPersistentID(replacement.GetHandle()) == replacementId);
+	CHECK(scene->GetEntityCount() == 1);
+}
+
+TEST_CASE("Public native ECB local references reject another writer and reuse after Clear")
+{
+	NativeEntityCommandBuffer first;
+	NativeEntityCommandBuffer second;
+	const auto local = first.CreateEntity();
+	CHECK_THROWS_AS(second.AddComponent<Transform2DComponent>(local), std::invalid_argument);
+	CHECK(second.CommandCount() == 0);
+	first.Clear();
+	CHECK_THROWS_AS(first.AddComponent<Transform2DComponent>(local), std::invalid_argument);
+	CHECK(first.CommandCount() == 0);
+	CHECK(first.EntityCount() == 0);
+}
+
+TEST_CASE("Public native ECB rejects worker playback without consuming commands")
+{
+	Application app;
+	RegisterParallelTypes();
+	auto scene = Scene::CreateDetachedScene("Native ECB Playback Thread");
+	auto exercise = [&](auto& commands, NativeEntityCommandBuffer& writer) {
+		writer.CreateWith<Transform2DComponent>();
+		bool rejected = false;
+		std::exception_ptr unexpected;
+		std::thread worker([&] {
+			try { commands.Playback(*scene, EntityCommandBufferPlaybackMode::Parallel); }
+			catch (const std::logic_error&) { rejected = true; }
+			catch (...) { unexpected = std::current_exception(); }
+		});
+		worker.join();
+		if (unexpected) std::rethrow_exception(unexpected);
+		REQUIRE(rejected);
+		CHECK(scene->GetEntityCount() == 0);
+		CHECK(commands.EntityCount() == 1);
+		REQUIRE(commands.Playback(*scene, EntityCommandBufferPlaybackMode::Parallel) == 1);
+		CHECK(scene->GetEntityCount() == 1);
+		CHECK(scene->GetRegistry().all_of<Transform2DComponent>(commands.GetCreatedEntity(0)));
+	};
+	SUBCASE("single writer") {
+		NativeEntityCommandBuffer commands;
+		exercise(commands, commands);
+	}
+	SUBCASE("parallel writer collection") {
+		ParallelEntityCommandBuffer commands;
+		exercise(commands, commands.AsWriter());
+	}
+}
+#endif
 
 TEST_CASE("ECB playback modes validate before touching output or scene")
 {
@@ -503,5 +740,106 @@ TEST_CASE("ECB parallel mode completes safely without a native worker pool")
 	for (uint32_t index = 0; index < k_ParallelCount; ++index)
 		CheckParallelValues(*scene, ResolveParallelEntity(*scene, ids[index]), index, true);
 	CHECK(scene->GetEntityCount() == k_ParallelCount);
+}
+
+TEST_CASE("ECB parallel plan certifies default and payload commands independently")
+{
+	Application app;
+	const auto types = RegisterParallelTypes();
+	const NativeBindings bindings = ParallelBindings();
+	auto scene = Scene::CreateDetachedScene("ECB Mixed Opcode Certification");
+	SceneExecutionScope scope(*scene);
+	auto& info = *SceneManager::GetComponentRegistry().GetInfo<Transform2DComponent>();
+	RestoreParallelComponentInfo restore(info);
+	ParallelTestBuffer buffer(2);
+	const auto transform = ParallelTransform(17);
+	size_t calls = 0;
+	SUBCASE("custom payload follows certified default") {
+		const auto original = info.emplaceFromBytes;
+		info.emplaceFromBytes = [&, original](entt::registry& registry, EntityHandle entity, const void* bytes, size_t size) {
+			++calls;
+			original(registry, entity, bytes, size);
+			registry.get<Transform2DComponent>(entity).LocalPosition.x = 771.0f;
+		};
+		buffer.Append(Ecb_DefaultConstructComponent, 0, types.Transform);
+		buffer.Append(Ecb_AddComponent, 1, types.Transform, &transform, sizeof(transform));
+	}
+	SUBCASE("custom default follows certified payload") {
+		const auto original = info.defaultEmplace;
+		info.defaultEmplace = [&, original](entt::registry& registry, EntityHandle entity) {
+			++calls;
+			original(registry, entity);
+			registry.get<Transform2DComponent>(entity).LocalPosition.x = 771.0f;
+		};
+		buffer.Append(Ecb_AddComponent, 0, types.Transform, &transform, sizeof(transform));
+		buffer.Append(Ecb_DefaultConstructComponent, 1, types.Transform);
+	}
+	std::array<uint64_t, 2> ids{};
+	REQUIRE(buffer.Play(bindings, 2, ids) == 2);
+	CHECK(calls == 1);
+	CHECK(scene->GetRegistry().get<Transform2DComponent>(ResolveParallelEntity(*scene, ids[1])).LocalPosition.x == 771.0f);
+}
+
+TEST_CASE("ECB parallel plan refreshes conflicts and pool pointers between playbacks")
+{
+	Application app;
+	const auto types = RegisterParallelTypes();
+	const NativeBindings bindings = ParallelBindings();
+	auto scene = Scene::CreateDetachedScene("ECB Plan Conflict Refresh");
+	SceneExecutionScope scope(*scene);
+	std::array<uint64_t, 2> ids{};
+	REQUIRE(ParallelTestBuffer(2).Play(bindings, 2, ids) == 2);
+	ParallelTestBuffer first;
+	first.Live(Ecb_DefaultConstructComponent, ids[0], types.Sprite);
+	REQUIRE(first.Play(bindings, 2) == 0);
+	const EntityHandle second = ResolveParallelEntity(*scene, ids[1]);
+	scene->GetRegistry().emplace<Transform2DComponent>(second);
+	auto& info = *SceneManager::GetComponentRegistry().GetInfo<SpriteRendererComponent>();
+	RestoreParallelComponentInfo restore(info);
+	const auto previousConflicts = info.conflictsWith;
+	info.conflictsWith.push_back(typeid(Transform2DComponent));
+	ParallelTestBuffer next;
+	next.Live(Ecb_DefaultConstructComponent, ids[1], types.Sprite);
+	REQUIRE(next.Play(bindings, 2) == 0);
+	CHECK_FALSE(scene->GetRegistry().all_of<SpriteRendererComponent>(second));
+	info.conflictsWith = previousConflicts;
+	REQUIRE(next.Play(bindings, 2) == 0);
+	CHECK(scene->GetRegistry().all_of<SpriteRendererComponent>(second));
+}
+
+TEST_CASE("ECB parallel scratch remains reusable after fallback and nested playback")
+{
+	struct NestedConstruct {
+		const NativeBindings& Bindings;
+		ParallelTypes Types;
+		std::vector<uint64_t> Created;
+		int Result = -1;
+		void OnConstruct(entt::registry&, EntityHandle) {
+			if (!Created.empty()) return;
+			Created.resize(128);
+			Result = CreationBuffer(128, Types, true, false).Play(Bindings, 2, Created);
+		}
+	};
+	Application app;
+	const auto types = RegisterParallelTypes();
+	const NativeBindings bindings = ParallelBindings();
+	auto scene = Scene::CreateDetachedScene("ECB Plan Scratch Reuse");
+	SceneExecutionScope scope(*scene);
+	NestedConstruct nested{ bindings, types };
+	std::array<uint64_t, 3> outer{};
+	{
+		entt::scoped_connection connection = scene->GetRegistry().on_construct<SpriteRendererComponent>()
+			.connect<&NestedConstruct::OnConstruct>(&nested);
+		REQUIRE(CreationBuffer(3, types, true).Play(bindings, 2, outer) == 3);
+	}
+	REQUIRE(nested.Result == 128);
+	for (uint32_t index = 0; index < outer.size(); ++index)
+		CheckParallelValues(*scene, ResolveParallelEntity(*scene, outer[index]), index, true);
+	for (uint32_t index = 0; index < nested.Created.size(); ++index)
+		CheckParallelValues(*scene, ResolveParallelEntity(*scene, nested.Created[index]), index, true, false);
+	std::array<uint64_t, 2> later{};
+	REQUIRE(CreationBuffer(2, types, false).Play(bindings, 2, later) == 2);
+	for (uint64_t id : later) CheckParallelValues(*scene, ResolveParallelEntity(*scene, id), 0, false);
+	CHECK(scene->GetEntityCount() == 133);
 }
 #endif

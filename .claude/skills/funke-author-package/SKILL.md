@@ -272,7 +272,7 @@ android = {
 - `maven` closures are resolved from POMs (Google Maven + Central, newest version wins, androidx constraints honoured) and **must be pinned**: `python platforms/Funke.Platform.Android/Builder/android_maven.py lock <packageDir>` writes `Android/maven.lock.json` (URL + SHA-256 per file). Without a lock matching the `maven` list the build re-resolves and warns.
 - The builder links library resources as aapt2 overlays, regenerates each library package's `R` class from the app's `R.txt`, compiles package Java against all jars, dexes with d8 (multidex), copies `jni/arm64-v8a/*.so`, AAR assets and jar Java resources (`META-INF/services` merged).
 - Java ↔ C#: Java exposes `public static String method(String)`; C# `AndroidBridge.Call(class, method, json)` (engine `Platform::CallJava` → `dev.funke.player.FunkeBridge.call`, class loaded via the activity's class loader). Java answers with `FunkeBridge.send(channel, json)` → `Platform::PushJavaMessage` → dispatched to `AndroidBridge.Subscribe` handlers each frame before coroutines. Off Android `Call` returns null; `AndroidBridge.Simulate` feeds handlers for editor stand-ins.
-- Static state survives editor Play sessions; reset it in `Application.OnPlayModeExited`.
+- Static state survives editor Play sessions; reset it in `Application.PlayModeExited`.
 - Reference implementation: `Funke.Ads` in the `Funke-PackageRegistry` repo (C# facade + simulated/Android/unsupported backends, `FunkeAds.java`, manifest meta-data from `admobAppId`). Offline tests: `python -m unittest scripts.ci.test_android_builder`.
 
 ## Scaffolding new packages

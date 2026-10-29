@@ -8,6 +8,7 @@
 #include "Inspector/ListSelectionCache.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -67,6 +68,39 @@ TEST_CASE("C# struct component fields read and write in place in their raw bytes
 	CHECK_FALSE(WriteStructField(bytes, size, { "float", offsetof(Stats, Hp), 8 }, "1"));
 	CHECK_FALSE(WriteStructField(bytes, size, { "long", static_cast<uint32_t>(size - 4), 8 }, "1"));
 	CHECK_FALSE(ReadStructField(bytes, size, { "string", 0, 8 }).has_value());
+}
+
+TEST_CASE("Retained struct field edits follow current field names after layout changes") {
+	std::array<int32_t, 2> values{ 11, 22 };
+	auto* bytes = reinterpret_cast<uint8_t*>(values.data());
+	const std::string before = R"([{"name":"Speed","type":"int","offset":0,"size":4},{"name":"Armor","type":"int","offset":4,"size":4}])";
+	CHECK(WriteStructFieldByName(bytes, sizeof(values), before, "Speed", "int", "7"));
+	CHECK(values[0] == 7);
+	CHECK(values[1] == 22);
+
+	values = { 22, 7 };
+	const std::string after = R"([{"name":"Armor","type":"int","offset":0,"size":4},{"name":"Speed","type":"int","offset":4,"size":4}])";
+	CHECK(WriteStructFieldByName(bytes, sizeof(values), after, "Speed", "int", "11"));
+	CHECK(values[0] == 22);
+	CHECK(values[1] == 11);
+}
+
+TEST_CASE("Retained struct field edits reject changed or missing schemas without touching bytes") {
+	std::array<int32_t, 2> values{ 11, 22 };
+	const auto original = values;
+	auto* bytes = reinterpret_cast<uint8_t*>(values.data());
+	for (const std::string_view fields : {
+		R"([{"name":"Speed","type":"float","offset":0,"size":4}])",
+		R"([{"name":"Renamed","type":"int","offset":0,"size":4}])",
+		R"([{"name":"Speed","type":"int","offset":0,"size":4,"readOnly":true}])",
+		R"([{"name":"Speed","type":"int","offset":8,"size":4}])",
+		R"([{"name":"Speed","type":"int","offset":-1,"size":4}])",
+		R"([])"
+	}) {
+		CAPTURE(fields);
+		CHECK_FALSE(WriteStructFieldByName(bytes, sizeof(values), fields, "Speed", "int", "7"));
+		CHECK(values == original);
+	}
 }
 
 #ifdef FNK_PLATFORM_WINDOWS

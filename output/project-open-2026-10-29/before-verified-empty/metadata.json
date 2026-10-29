@@ -1,0 +1,18 @@
+{
+  "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenEmpty",
+  "launcher": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-Launcher.exe",
+  "runs": 5,
+  "warmup": 1,
+  "pollIntervalMs": 10,
+  "readiness": "Editor Bridge status: edit state, loaded scene, no busy reason",
+  "scriptsReadiness": "Editor ready and script build finished successfully",
+  "clock": "Launcher system_clock epoch milliseconds to Python time.time_ns",
+  "timingResolution": "Includes readiness observation latency: polling interval plus frame/IPC scheduling",
+  "userState": "Fresh isolated FUNKE_USER_DATA_ROOT per run; project outputs remain warm",
+  "shellEnvironment": "Windows PowerShell module path normalized for native postbuild subprocesses",
+  "binaries": {
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-Launcher.exe": "ab2053ae75096200224069ce031a7a9b8f5eaafddd42f4f94be81f219a1dacb0",
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-Editor.exe": "57e2392ff1f83868e71a78bcb7dcd1660d4bab964cd6eedf7f3cbad5e88bcf59",
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-Engine.dll": "a63f2ab8b04f4d0bcf155c34913e065e653faf4897477330af6539c51d20e077"
+  }
+}

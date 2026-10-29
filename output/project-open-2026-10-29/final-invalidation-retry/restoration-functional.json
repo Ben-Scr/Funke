@@ -1,0 +1,23 @@
+{
+  "success": true,
+  "timingValid": false,
+  "originalInputs": {
+    "src/PInvoke.cpp": {
+      "matchesUntouchedIdenticalPackageFixture": true,
+      "sha256": "4a60477e7e647c1a5bce97450bf66c35cf56fc6d817b7c3339c5f5eb1c310c62"
+    },
+    "funke-package.lua": {
+      "matchesUntouchedIdenticalPackageFixture": true,
+      "sha256": "8e8277989d662cdf43657689482192e9ba843bdfd67ced9f3bc58b355f51c772"
+    }
+  },
+  "evidence": {
+    "status": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\final-invalidation-retry\\restored-original-inputs\\recovered-status.json",
+    "nativeLog": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\final-invalidation-retry\\restored-original-inputs\\user-data\\Funke\\Logs\\Funke-Editor.log",
+    "nativePackages": 1,
+    "nativeErrors": 0,
+    "scene": "SampleScene",
+    "scriptsReady": true
+  },
+  "instrumentationFailure": "Final launcher report remained complete=false despite the worker logging Opened project and a responsive ready editor. No report-write error was logged. Harness timed out after180s; the precise reason for missing final report is not established. Raw failing restoration.json retained."
+}

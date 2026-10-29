@@ -9,6 +9,8 @@ Game logic is C# on **.NET 10**, referencing `Funke-ScriptCore.dll`. Everything 
 
 All signatures below are taken from `Funke-ScriptCore/Source/Funke/` — they are exact. When in doubt, read the file; don't invent members.
 
+Public C# events omit the `On` prefix (for example, `Input.KeyDown` and `Button.Clicked`); lifecycle callbacks and handler methods may keep it.
+
 ## The three script types
 
 Pick the **smallest scope** that fits.
@@ -138,7 +140,7 @@ Vector2 GetMouseDelta();  float GetScrollWheelDelta();
 bool GetKey(KeyCode);     bool GetKeyDown(KeyCode);  bool GetKeyUp(KeyCode);     // held / pressed-this-frame / released
 bool GetMouseButton(MouseButton); GetMouseButtonDown(..); GetMouseButtonUp(..); // Left/Right/Middle/Button4..8
 bool GetAnyKey();
-// events: KeyDown, KeyUp, EnterChar, MouseDown, MouseUp, MouseScroll, MouseMove
+// events: KeyDown, KeyUp, CharEntered, MouseDown, MouseUp, MouseScroll, MouseMove
 Vector3 Acceleration { get; }  // g, toward gravity, screen axes (+X right, +Y up, +Z out): (0,-1,0) upright; zero without sensor
 Vector3 Gyroscope { get; }     // rad/s, CCW positive, same axes
 bool IsAccelerometerAvailable { get; }  bool IsGyroscopeAvailable { get; }  // first read switches the sensors on
@@ -277,7 +279,7 @@ List intended shipping scenes in `buildScenes` so the build retains them. `Proje
 
 - **`Log`** — `Log.Info/Warn/Error/Trace(string|object)`; output goes to the Console. `Print(x)` on a script == `Log.Info(x)` (`Log.Print` is internal).
 - **`Localization`** — the game's strings from `Assets/Localization/<code>.json` (`meta` + flat `strings`): `Get(key)`, `Format(key, args)` (.NET `{0}`/`{0:N1}`, language culture), `Has`, `CurrentLanguage`, `FallbackLanguage`, `SystemLanguage`, `AvailableLanguages` (`LanguageInfo(Code, DisplayName)`), `SetLanguage(code)` (stored in PlayerPrefs `Funke.Language`, restored next start), event `LanguageChanged`. Static labels: put a `LocalizedText` component (`Key`) next to the `TextRenderer` instead of code. Fonts render ASCII + Latin-1 only.
-- **`Window`** — `Width/Height`, `Size`, `Title`, `IsFullScreen`, `Position`, `Minimize/Maximize/Restore/Focus()`, events `OnResize`, `FocusChanged`.
+- **`Window`** — `Width/Height`, `Size`, `Title`, `IsFullScreen`, `Position`, `Minimize/Maximize/Restore/Focus()`, events `Resized`, `FocusChanged`.
 - **`Cursor`** — `Mode` (`Default`/`Locked`), `Visible`, `Texture`.
 - **`Gizmo`** (namespace `Funke.Graphics`; debug draw, visible in editor) — `DrawLine`, `DrawWireSquare`, `DrawWireCircle`, `DrawSquare`, `DrawCircle`, `DrawText`; `Color`, `LineWidth`.
 
@@ -287,7 +289,7 @@ Public fields can be edited in the Editor with attributes (`[ShowInEditor]`, `[C
 
 ## Native C++ scripts (rare)
 
-For measured hot paths, inherit `Funke::NativeScript` in `NativeScripts/Source/*.cpp` and `REGISTER_SCRIPT(MyScript);`. Lifecycle: `Start()`, `Update(float dt)`, `FixedUpdate(float fixedDt)`, `OnDestroy()`. Compiled with CMake; the editor hot-reloads the DLL, but the Build panel does not ship native scripts. Use C# for ~everything. (Engine-side details: `funke-engine-scripting`.)
+For measured hot paths, inherit `Funke::NativeScript` in `NativeScripts/Source/*.cpp` and `REGISTER_SCRIPT(MyScript);`. Lifecycle: `Start()`, `Update()`, `FixedUpdate()`, `OnDestroy()`. Compiled with CMake; the editor hot-reloads the DLL, but the Build panel does not ship native scripts. Use C# for ~everything. (Engine-side details: `funke-engine-scripting`.)
 
 ## Hot reload & Play mode
 

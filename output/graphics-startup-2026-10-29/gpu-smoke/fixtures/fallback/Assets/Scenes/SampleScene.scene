@@ -1,0 +1,305 @@
+{
+  "version": 1,
+  "name": "SampleScene",
+  "systems": [],
+  "entities": [
+    {
+      "name": "Camera",
+      "uuid": "9200000000000000001",
+      "Transform3D": {
+        "posX": 0.0,
+        "posY": 1.1,
+        "posZ": 6.0,
+        "rotX": -4.0,
+        "rotY": 0.0,
+        "rotZ": 0.0,
+        "scaleX": 1,
+        "scaleY": 1,
+        "scaleZ": 1
+      },
+      "Camera3D": {
+        "projection": 0,
+        "fov": 60.0,
+        "orthoSize": 5.0,
+        "near": 0.1,
+        "far": 1000.0,
+        "background": 1,
+        "clearColor": {
+          "r": 0.07,
+          "g": 0.08,
+          "b": 0.11,
+          "a": 1.0
+        }
+      },
+      "Scripts": [
+        {
+          "className": "QualityCycler",
+          "type": "Managed"
+        },
+        {
+          "className": "PlatformProbe",
+          "type": "Managed"
+        }
+      ],
+      "Origin": "Scene",
+      "SceneGUID": "9200000000000000001",
+      "PostProcessing2D": {
+        "vignette": {
+          "enabled": true,
+          "intensity": 0.45,
+          "smoothness": 0.4,
+          "roundness": 1.0,
+          "centerX": 0.5,
+          "centerY": 0.5,
+          "color": {
+            "r": 0.0,
+            "g": 0.0,
+            "b": 0.0,
+            "a": 1.0
+          }
+        }
+      }
+    },
+    {
+      "name": "Sun",
+      "uuid": "9200000000000000002",
+      "Transform3D": {
+        "posX": 0.0,
+        "posY": 5.0,
+        "posZ": 0.0,
+        "rotX": -50.0,
+        "rotY": -30.0,
+        "rotZ": 0.0,
+        "scaleX": 1,
+        "scaleY": 1,
+        "scaleZ": 1
+      },
+      "DirectionalLight": {
+        "color": {
+          "r": 1.0,
+          "g": 0.97,
+          "b": 0.92,
+          "a": 1.0
+        },
+        "intensity": 1.3,
+        "ambient": {
+          "r": 0.35,
+          "g": 0.35,
+          "b": 0.38,
+          "a": 1.0
+        },
+        "castShadows": false
+      },
+      "Origin": "Scene",
+      "SceneGUID": "9200000000000000002"
+    },
+    {
+      "name": "Ground",
+      "uuid": "9200000000000000003",
+      "Transform3D": {
+        "posX": 0.0,
+        "posY": 0.0,
+        "posZ": -150.0,
+        "rotX": 0,
+        "rotY": 0,
+        "rotZ": 0,
+        "scaleX": 40.0,
+        "scaleY": 1.0,
+        "scaleZ": 320.0
+      },
+      "MeshRenderer": {
+        "mesh": 2,
+        "material": "9100000000000000011",
+        "color": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+        },
+        "lit": true,
+        "castShadows": true
+      },
+      "Origin": "Scene",
+      "SceneGUID": "9200000000000000003"
+    },
+    {
+      "name": "Detail Cube",
+      "uuid": "9200000000000000004",
+      "Transform3D": {
+        "posX": 1.9,
+        "posY": 1.05,
+        "posZ": 2.6,
+        "rotX": 0,
+        "rotY": 0,
+        "rotZ": 0,
+        "scaleX": 1.3,
+        "scaleY": 1.3,
+        "scaleZ": 1.3
+      },
+      "MeshRenderer": {
+        "mesh": 0,
+        "material": "9100000000000000012",
+        "color": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+        },
+        "lit": true,
+        "castShadows": true
+      },
+      "Origin": "Scene",
+      "SceneGUID": "9200000000000000004"
+    },
+    {
+      "name": "Pixel Cube",
+      "uuid": "9200000000000000005",
+      "Transform3D": {
+        "posX": -1.9,
+        "posY": 1.05,
+        "posZ": 2.6,
+        "rotX": 0,
+        "rotY": 0,
+        "rotZ": 0,
+        "scaleX": 1.3,
+        "scaleY": 1.3,
+        "scaleZ": 1.3
+      },
+      "MeshRenderer": {
+        "mesh": 0,
+        "material": "9100000000000000013",
+        "color": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+        },
+        "lit": true,
+        "castShadows": true
+      },
+      "Origin": "Scene",
+      "SceneGUID": "9200000000000000005"
+    },
+    {
+      "name": "Edge Cube",
+      "uuid": "9200000000000000006",
+      "Transform3D": {
+        "posX": 0.0,
+        "posY": 2.1,
+        "posZ": 0.6,
+        "rotX": 25.0,
+        "rotY": 35.0,
+        "rotZ": 15.0,
+        "scaleX": 1.0,
+        "scaleY": 1.0,
+        "scaleZ": 1.0
+      },
+      "MeshRenderer": {
+        "mesh": 0,
+        "material": "9100000000000000014",
+        "color": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+        },
+        "lit": true,
+        "castShadows": true
+      },
+      "Origin": "Scene",
+      "SceneGUID": "9200000000000000006"
+    },
+    {
+      "name": "Pole",
+      "uuid": "9200000000000000007",
+      "Transform3D": {
+        "posX": 0.85,
+        "posY": 1.6,
+        "posZ": 1.2,
+        "rotX": 0.0,
+        "rotY": 0.0,
+        "rotZ": 14.0,
+        "scaleX": 0.05,
+        "scaleY": 3.2,
+        "scaleZ": 0.05
+      },
+      "MeshRenderer": {
+        "mesh": 0,
+        "material": "9100000000000000014",
+        "color": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+        },
+        "lit": true,
+        "castShadows": true
+      },
+      "Origin": "Scene",
+      "SceneGUID": "9200000000000000007"
+    },
+    {
+      "name": "Camera 2D",
+      "uuid": "9200000000000000011",
+      "Transform2D": {
+        "posX": 0.0,
+        "posY": 0.0,
+        "rotation": 0.0,
+        "scaleX": 1.0,
+        "scaleY": 1.0
+      },
+      "Camera2D": {
+        "orthoSize": 5.0,
+        "zoom": 1.0
+      },
+      "Origin": "Scene",
+      "SceneGUID": "9200000000000000011"
+    },
+    {
+      "name": "Pixel Sprite",
+      "uuid": "9200000000000000012",
+      "Transform2D": {
+        "posX": -7.0,
+        "posY": 3.4,
+        "rotation": 20.0,
+        "scaleX": 2.0,
+        "scaleY": 2.0
+      },
+      "SpriteRenderer": {
+        "r": 1,
+        "g": 1,
+        "b": 1,
+        "a": 1,
+        "sortOrder": 0,
+        "sortLayer": 0,
+        "filterMode": 4,
+        "textureAsset": "9100000000000000003"
+      },
+      "Origin": "Scene",
+      "SceneGUID": "9200000000000000012"
+    },
+    {
+      "name": "Detail Sprite",
+      "uuid": "9200000000000000013",
+      "Transform2D": {
+        "posX": 6.9,
+        "posY": 3.1,
+        "rotation": 0.0,
+        "scaleX": 3.5,
+        "scaleY": 3.5
+      },
+      "SpriteRenderer": {
+        "r": 1,
+        "g": 1,
+        "b": 1,
+        "a": 1,
+        "sortOrder": 0,
+        "sortLayer": 0,
+        "filterMode": 4,
+        "textureAsset": "9100000000000000002"
+      },
+      "Origin": "Scene",
+      "SceneGUID": "9200000000000000013"
+    }
+  ]
+}

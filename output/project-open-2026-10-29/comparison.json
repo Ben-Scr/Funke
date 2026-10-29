@@ -1,0 +1,773 @@
+{
+  "method": "Actual Launcher StartProjectLaunch before preparation to usable Editor Bridge status; scripts readiness recorded separately; one excluded warmup then five fresh-process samples; build outputs and filesystem cache warm; isolated user settings and process logs; Windows D3D12 AMD RX 7800 XT.",
+  "baseline": "before-verified-* unoptimized instrumented binaries, all logs scanned after measurement",
+  "final": "final-* matching final Engine/Launcher/Editor binaries, native/bridge errors rejected, explicit package hits required, 10002 entities required for assets",
+  "caveats": [
+    "Only this machine and synthetic fixtures were measured; 5 samples are not a statistical guarantee.",
+    "GPU initialization varied independently of package preparation.",
+    "The earlier valid after-empty series is retained rather than selecting a favorable sample; a consistent final binary set and stricter validation required the final series.",
+    "Invalid instrument/deployment series and failed no-hit diagnostics remain on disk with INVALID.json or CLASSIFICATION.json."
+  ],
+  "projects": {
+    "empty": {
+      "before": {
+        "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\before-verified-empty",
+        "samples": 5,
+        "metrics": {
+          "editorReadyMs": {
+            "median": 1315.840576171875,
+            "min": 1303.28515625,
+            "max": 1327.830078125,
+            "values": [
+              1327.830078125,
+              1324.96826171875,
+              1303.28515625,
+              1313.443603515625,
+              1315.840576171875
+            ]
+          },
+          "scriptsReadyMs": {
+            "median": 1315.840576171875,
+            "min": 1303.28515625,
+            "max": 1327.830078125,
+            "values": [
+              1327.830078125,
+              1324.96826171875,
+              1303.28515625,
+              1313.443603515625,
+              1315.840576171875
+            ]
+          },
+          "launchToSpawnMs": {
+            "median": 82.880126953125,
+            "min": 74.804443359375,
+            "max": 96.397216796875,
+            "values": [
+              89.70263671875,
+              81.54052734375,
+              96.397216796875,
+              82.880126953125,
+              74.804443359375
+            ]
+          },
+          "spawnToReadyMs": {
+            "median": 1238.12744140625,
+            "min": 1206.887939453125,
+            "max": 1243.427734375,
+            "values": [
+              1238.12744140625,
+              1243.427734375,
+              1206.887939453125,
+              1230.5634765625,
+              1241.0361328125
+            ]
+          },
+          "renderApiMs": {
+            "median": 593.199,
+            "min": 569.514,
+            "max": 605.395,
+            "values": [
+              593.199,
+              605.395,
+              569.514,
+              572.369,
+              594.535
+            ]
+          },
+          "builtinScanMs": {
+            "median": 64.7902,
+            "min": 60.0745,
+            "max": 73.7986,
+            "values": [
+              64.7902,
+              63.9512,
+              60.0745,
+              73.7986,
+              69.6507
+            ]
+          }
+        }
+      },
+      "after": {
+        "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\final-empty",
+        "samples": 5,
+        "metrics": {
+          "editorReadyMs": {
+            "median": 1252.23828125,
+            "min": 1214.80712890625,
+            "max": 1269.530517578125,
+            "values": [
+              1238.160400390625,
+              1252.49853515625,
+              1252.23828125,
+              1214.80712890625,
+              1269.530517578125
+            ]
+          },
+          "scriptsReadyMs": {
+            "median": 1252.23828125,
+            "min": 1214.80712890625,
+            "max": 1269.530517578125,
+            "values": [
+              1238.160400390625,
+              1252.49853515625,
+              1252.23828125,
+              1214.80712890625,
+              1269.530517578125
+            ]
+          },
+          "launchToSpawnMs": {
+            "median": 16.87939453125,
+            "min": 15.175537109375,
+            "max": 17.08349609375,
+            "values": [
+              16.87939453125,
+              16.880126953125,
+              17.08349609375,
+              15.175537109375,
+              16.635009765625
+            ]
+          },
+          "spawnToReadyMs": {
+            "median": 1235.15478515625,
+            "min": 1199.631591796875,
+            "max": 1252.8955078125,
+            "values": [
+              1221.281005859375,
+              1235.618408203125,
+              1235.15478515625,
+              1199.631591796875,
+              1252.8955078125
+            ]
+          },
+          "renderApiMs": {
+            "median": 625.448,
+            "min": 608.883,
+            "max": 652.969,
+            "values": [
+              613.732,
+              625.448,
+              629.533,
+              608.883,
+              652.969
+            ]
+          },
+          "builtinScanMs": {
+            "median": 11.9716,
+            "min": 10.9787,
+            "max": 13.1468,
+            "values": [
+              12.4528,
+              13.1468,
+              11.7742,
+              11.9716,
+              10.9787
+            ]
+          }
+        }
+      },
+      "savedMs": 63.602294921875,
+      "reductionPercent": 4.83358668775139,
+      "speedupFactor": 1.0507908885027748
+    },
+    "packages": {
+      "before": {
+        "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\before-verified-packages",
+        "samples": 5,
+        "metrics": {
+          "editorReadyMs": {
+            "median": 4453.91259765625,
+            "min": 4422.24462890625,
+            "max": 7107.186767578125,
+            "values": [
+              4422.24462890625,
+              7107.186767578125,
+              4453.91259765625,
+              4426.29345703125,
+              4596.80419921875
+            ]
+          },
+          "scriptsReadyMs": {
+            "median": 4453.91259765625,
+            "min": 4422.24462890625,
+            "max": 7107.186767578125,
+            "values": [
+              4422.24462890625,
+              7107.186767578125,
+              4453.91259765625,
+              4426.29345703125,
+              4596.80419921875
+            ]
+          },
+          "launchToSpawnMs": {
+            "median": 3226.347412109375,
+            "min": 3216.18017578125,
+            "max": 5916.9521484375,
+            "values": [
+              3216.18017578125,
+              5916.9521484375,
+              3226.347412109375,
+              3219.452880859375,
+              3315.8037109375
+            ]
+          },
+          "spawnToReadyMs": {
+            "median": 1206.840576171875,
+            "min": 1190.234619140625,
+            "max": 1281.00048828125,
+            "values": [
+              1206.064453125,
+              1190.234619140625,
+              1227.565185546875,
+              1206.840576171875,
+              1281.00048828125
+            ]
+          },
+          "renderApiMs": {
+            "median": 562.202,
+            "min": 535.332,
+            "max": 626.993,
+            "values": [
+              562.202,
+              535.332,
+              566.99,
+              546.148,
+              626.993
+            ]
+          },
+          "builtinScanMs": {
+            "median": 65.4192,
+            "min": 62.4433,
+            "max": 73.913,
+            "values": [
+              63.4568,
+              65.4192,
+              73.913,
+              66.8234,
+              62.4433
+            ]
+          }
+        }
+      },
+      "after": {
+        "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\final-packages",
+        "samples": 5,
+        "metrics": {
+          "editorReadyMs": {
+            "median": 1584.668212890625,
+            "min": 1419.65771484375,
+            "max": 1646.0048828125,
+            "values": [
+              1419.65771484375,
+              1434.63720703125,
+              1584.668212890625,
+              1640.6025390625,
+              1646.0048828125
+            ]
+          },
+          "scriptsReadyMs": {
+            "median": 1584.668212890625,
+            "min": 1419.65771484375,
+            "max": 1646.0048828125,
+            "values": [
+              1419.65771484375,
+              1434.63720703125,
+              1584.668212890625,
+              1640.6025390625,
+              1646.0048828125
+            ]
+          },
+          "launchToSpawnMs": {
+            "median": 254.90185546875,
+            "min": 246.559814453125,
+            "max": 306.90185546875,
+            "values": [
+              254.90185546875,
+              246.559814453125,
+              247.72216796875,
+              281.239501953125,
+              306.90185546875
+            ]
+          },
+          "spawnToReadyMs": {
+            "median": 1336.946044921875,
+            "min": 1164.755859375,
+            "max": 1359.363037109375,
+            "values": [
+              1164.755859375,
+              1188.077392578125,
+              1336.946044921875,
+              1359.363037109375,
+              1339.10302734375
+            ]
+          },
+          "renderApiMs": {
+            "median": 716.505,
+            "min": 571.305,
+            "max": 736.77,
+            "values": [
+              571.305,
+              597.288,
+              716.505,
+              736.77,
+              720.646
+            ]
+          },
+          "builtinScanMs": {
+            "median": 11.8969,
+            "min": 11.4897,
+            "max": 14.3244,
+            "values": [
+              11.9814,
+              11.4897,
+              11.8779,
+              11.8969,
+              14.3244
+            ]
+          }
+        }
+      },
+      "savedMs": 2869.244384765625,
+      "reductionPercent": 64.42076088954882,
+      "speedupFactor": 2.8106278408473777
+    },
+    "assets": {
+      "before": {
+        "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\before-verified-assets",
+        "samples": 5,
+        "metrics": {
+          "editorReadyMs": {
+            "median": 5080.02978515625,
+            "min": 5040.456298828125,
+            "max": 5201.823486328125,
+            "values": [
+              5080.02978515625,
+              5055.085205078125,
+              5040.456298828125,
+              5201.823486328125,
+              5094.2333984375
+            ]
+          },
+          "scriptsReadyMs": {
+            "median": 5080.02978515625,
+            "min": 5040.456298828125,
+            "max": 5201.823486328125,
+            "values": [
+              5080.02978515625,
+              5055.085205078125,
+              5040.456298828125,
+              5201.823486328125,
+              5094.2333984375
+            ]
+          },
+          "launchToSpawnMs": {
+            "median": 3256.345947265625,
+            "min": 3213.222412109375,
+            "max": 3354.51953125,
+            "values": [
+              3256.345947265625,
+              3213.222412109375,
+              3214.2412109375,
+              3354.51953125,
+              3268.591552734375
+            ]
+          },
+          "spawnToReadyMs": {
+            "median": 1826.215087890625,
+            "min": 1823.683837890625,
+            "max": 1847.303955078125,
+            "values": [
+              1823.683837890625,
+              1841.86279296875,
+              1826.215087890625,
+              1847.303955078125,
+              1825.641845703125
+            ]
+          },
+          "renderApiMs": {
+            "median": 551.536,
+            "min": 543.756,
+            "max": 569.526,
+            "values": [
+              551.536,
+              569.526,
+              543.756,
+              568.591,
+              549.289
+            ]
+          },
+          "builtinScanMs": {
+            "median": 63.1964,
+            "min": 62.4174,
+            "max": 67.5381,
+            "values": [
+              62.4174,
+              67.5381,
+              64.5126,
+              62.8916,
+              63.1964
+            ]
+          },
+          "projectRegistryMs": {
+            "median": 517.0,
+            "min": 505.0,
+            "max": 527.0,
+            "values": [
+              510.0,
+              505.0,
+              527.0,
+              519.0,
+              517.0
+            ]
+          }
+        }
+      },
+      "after": {
+        "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\final-assets",
+        "samples": 5,
+        "metrics": {
+          "editorReadyMs": {
+            "median": 2007.874267578125,
+            "min": 1876.90185546875,
+            "max": 2135.496337890625,
+            "values": [
+              2135.496337890625,
+              2007.874267578125,
+              1876.90185546875,
+              2013.761962890625,
+              1948.01416015625
+            ]
+          },
+          "scriptsReadyMs": {
+            "median": 2007.874267578125,
+            "min": 1876.90185546875,
+            "max": 2135.496337890625,
+            "values": [
+              2135.496337890625,
+              2007.874267578125,
+              1876.90185546875,
+              2013.761962890625,
+              1948.01416015625
+            ]
+          },
+          "launchToSpawnMs": {
+            "median": 288.2099609375,
+            "min": 269.11572265625,
+            "max": 299.620361328125,
+            "values": [
+              299.620361328125,
+              293.513671875,
+              288.2099609375,
+              272.316650390625,
+              269.11572265625
+            ]
+          },
+          "spawnToReadyMs": {
+            "median": 1714.360595703125,
+            "min": 1588.69189453125,
+            "max": 1835.8759765625,
+            "values": [
+              1835.8759765625,
+              1714.360595703125,
+              1588.69189453125,
+              1741.4453125,
+              1678.8984375
+            ]
+          },
+          "renderApiMs": {
+            "median": 704.743,
+            "min": 672.555,
+            "max": 807.644,
+            "values": [
+              807.644,
+              704.743,
+              674.359,
+              725.765,
+              672.555
+            ]
+          },
+          "builtinScanMs": {
+            "median": 15.8025,
+            "min": 12.0505,
+            "max": 17.981,
+            "values": [
+              15.4108,
+              17.981,
+              12.0505,
+              17.1118,
+              15.8025
+            ]
+          },
+          "projectRegistryMs": {
+            "median": 293.0,
+            "min": 215.0,
+            "max": 306.0,
+            "values": [
+              306.0,
+              295.0,
+              215.0,
+              277.0,
+              293.0
+            ]
+          }
+        }
+      },
+      "savedMs": 3072.155517578125,
+      "reductionPercent": 60.475147735450385,
+      "speedupFactor": 2.5300537325395998
+    }
+  },
+  "earlierValidEmptyAfter": {
+    "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\after-empty",
+    "samples": 5,
+    "metrics": {
+      "editorReadyMs": {
+        "median": 1544.772705078125,
+        "min": 1415.032958984375,
+        "max": 2031.478271484375,
+        "values": [
+          1544.772705078125,
+          1460.613037109375,
+          1679.3466796875,
+          2031.478271484375,
+          1415.032958984375
+        ]
+      },
+      "scriptsReadyMs": {
+        "median": 1544.772705078125,
+        "min": 1415.032958984375,
+        "max": 2031.478271484375,
+        "values": [
+          1544.772705078125,
+          1460.613037109375,
+          1679.3466796875,
+          2031.478271484375,
+          1415.032958984375
+        ]
+      },
+      "launchToSpawnMs": {
+        "median": 26.72900390625,
+        "min": 19.29833984375,
+        "max": 91.332763671875,
+        "values": [
+          24.600341796875,
+          19.29833984375,
+          30.4296875,
+          91.332763671875,
+          26.72900390625
+        ]
+      },
+      "spawnToReadyMs": {
+        "median": 1520.17236328125,
+        "min": 1388.303955078125,
+        "max": 1940.1455078125,
+        "values": [
+          1520.17236328125,
+          1441.314697265625,
+          1648.9169921875,
+          1940.1455078125,
+          1388.303955078125
+        ]
+      },
+      "renderApiMs": {
+        "median": 777.408,
+        "min": 699.975,
+        "max": 942.745,
+        "values": [
+          829.789,
+          777.408,
+          942.745,
+          699.975,
+          746.596
+        ]
+      },
+      "builtinScanMs": {
+        "median": 14.2045,
+        "min": 11.9198,
+        "max": 16.7262,
+        "values": [
+          14.5241,
+          14.2045,
+          16.7262,
+          13.0685,
+          11.9198
+        ]
+      }
+    }
+  },
+  "excludedSeries": [
+    {
+      "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\after-packages",
+      "explanation": {
+        "classification": "diagnostic-no-hit",
+        "runtimeValidation": "passed; native package loaded in all six runs",
+        "reason": "Package fast path never activated. Cache capture rejected orphan inactive .NET SDK directories 10.0.104 and 10.0.203 without MSBuild.dll; no cache stamp was written.",
+        "comparisonUse": "Preserved diagnostic series; do not use as final package optimization result. Repeat only after the concrete cache eligibility bug is fixed and built."
+      }
+    },
+    {
+      "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\after-verified-assets",
+      "explanation": {
+        "reason": "Instrumentation race: polling read held launcher.json without FILE_SHARE_DELETE, preventing atomic report replacement (MoveFileEx error 5). Editor was responsive with 10002 entities and native package loaded. Processes closed after diagnosis; no performance endpoint recorded.",
+        "fix": "Windows report reads now use FILE_SHARE_DELETE; preserved this run and repeated in a new directory."
+      }
+    },
+    {
+      "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\after-verified-assets-fixed-reader",
+      "explanation": {
+        "reason": "Deployed Editor was not rebuilt after the final engine-header hash changed. Native log reports header mismatch (85a4bc9492b76a1d vs 914b2433d0d33f4e) before Bridge log capture started.",
+        "comparisonUse": "Preserved diagnostic results only; repeat after matching Editor build/deploy.",
+        "harnessCorrection": "Native logs are now scanned after process exit, including early initialization errors."
+      }
+    },
+    {
+      "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\after-verified-packages",
+      "explanation": {
+        "reason": "Deployed Editor was not rebuilt after the final engine-header hash changed. Native log reports header mismatch (85a4bc9492b76a1d vs 914b2433d0d33f4e) before Bridge log capture started.",
+        "comparisonUse": "Preserved diagnostic results only; repeat after matching Editor build/deploy.",
+        "harnessCorrection": "Native logs are now scanned after process exit, including early initialization errors."
+      }
+    },
+    {
+      "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\before-empty",
+      "explanation": {
+        "valid": false,
+        "reason": "Stale co-located Editor executable had an engine header ABI mismatch."
+      }
+    },
+    {
+      "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\before-packages",
+      "explanation": {
+        "valid": false,
+        "reason": "Stale Editor plus native sidecars with empty engine_sha256 caused repeated rebuild and skipped package load."
+      }
+    },
+    {
+      "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\before-valid-packages",
+      "explanation": {
+        "valid": false,
+        "reason": "Harness setup failed before measurement (environment key casing)."
+      }
+    },
+    {
+      "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\final-invalidation",
+      "explanation": {
+        "reason": "Recovery opened successfully, wrote stamp and had no native startup errors, but the read-only bridge logs request failed once with OSError EINVAL while reconnecting the named pipe. Remaining ABI cases were not executed; fixture restored successfully.",
+        "fix": "Read-only log requests retry up to four times with short bounded delay; endpoint timing unaffected. Entire integration repeated in a new directory."
+      }
+    },
+    {
+      "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\invalidation",
+      "explanation": {
+        "reason": "Deployed Editor was not rebuilt after the final engine-header hash changed. Native log reports header mismatch (85a4bc9492b76a1d vs 914b2433d0d33f4e) before Bridge log capture started.",
+        "comparisonUse": "Preserved diagnostic results only; repeat after matching Editor build/deploy.",
+        "harnessCorrection": "Native logs are now scanned after process exit, including early initialization errors."
+      }
+    },
+    {
+      "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\final-invalidation-retry\\restored-original-inputs",
+      "explanation": {
+        "comparisonUse": "Only this cleanup restore timing excluded; all10 integration cases passed.",
+        "reason": "Final launcher report remained complete=false despite the worker logging Opened project and a responsive ready editor. No report-write error was logged. Harness timed out after180s; the precise reason for missing final report is not established. Raw failing restoration.json retained."
+      }
+    }
+  ],
+  "visualValidation": {
+    "screenshot": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\final-assets\\run-5\\scene.png",
+    "inspected": true,
+    "observed": "Centered cyan project-texture rectangle on dark background; no rendering corruption observed.",
+    "scene": "SampleScene",
+    "entities": 10002,
+    "nativePackages": 1
+  },
+  "integrationValidation": {
+    "directory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\final-invalidation-retry",
+    "cases": [
+      {
+        "name": "unchanged",
+        "success": true,
+        "cacheHit": true,
+        "stampExists": true,
+        "error": null,
+        "passed": true
+      },
+      {
+        "name": "native-source-edit",
+        "success": true,
+        "cacheHit": false,
+        "stampExists": true,
+        "error": null,
+        "passed": true
+      },
+      {
+        "name": "source-edit-warm",
+        "success": true,
+        "cacheHit": true,
+        "stampExists": true,
+        "error": null,
+        "passed": true
+      },
+      {
+        "name": "manifest-edit",
+        "success": true,
+        "cacheHit": false,
+        "stampExists": true,
+        "error": null,
+        "passed": true
+      },
+      {
+        "name": "manifest-edit-warm",
+        "success": true,
+        "cacheHit": true,
+        "stampExists": true,
+        "error": null,
+        "passed": true
+      },
+      {
+        "name": "missing-native-output",
+        "success": true,
+        "cacheHit": false,
+        "stampExists": true,
+        "error": null,
+        "passed": true
+      },
+      {
+        "name": "failed-build",
+        "success": false,
+        "cacheHit": false,
+        "stampExists": false,
+        "error": "Project package preparation failed (exit code 1).\n[Pkg.Bench.Startup.Native.vcxproj]\n\r\n  PInvoke.cpp\r\nC:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenPackages\\Packages\\Bench.Startup\\src\\PInvoke.cpp(21,1): error C1189: #error:  ExpectedStartupCacheBuildFailure [C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenPackages\\.funke\\build\\packages\\generated\\Pkg.Bench.Startup.Native\\Pkg.Bench.Startup.Native.vcxproj]\r\n",
+        "passed": true
+      },
+      {
+        "name": "recover-after-failure",
+        "success": true,
+        "cacheHit": false,
+        "stampExists": true,
+        "error": null,
+        "passed": true
+      },
+      {
+        "name": "invalid-native-abi",
+        "success": true,
+        "cacheHit": false,
+        "stampExists": true,
+        "error": null,
+        "passed": true
+      },
+      {
+        "name": "abi-repaired-warm",
+        "success": true,
+        "cacheHit": true,
+        "stampExists": true,
+        "error": null,
+        "passed": true
+      }
+    ],
+    "allPassed": true,
+    "fixtureRestored": true,
+    "restorationResult": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\final-invalidation-retry\\restoration-functional.json",
+    "restorationTimingValid": false,
+    "logValidation": "Full native logs and Bridge logs checked; deliberate failed build rejected opening and left no stamp. Functional restore independently verified despite missing final launcher timing report."
+  }
+}

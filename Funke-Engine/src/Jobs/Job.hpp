@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Core/Export.hpp"
+
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -44,20 +46,8 @@ namespace Funke {
 
 		FUNKE_API std::shared_ptr<JobControlBlock> CreateBlock(int pending);
 		FUNKE_API void NotifyOne(const std::shared_ptr<JobControlBlock>& block);
-
-		template <typename F>
-		void ExecuteAndNotify(const std::shared_ptr<JobControlBlock>& block, F&& work) {
-			struct CompletionGuard {
-				const std::shared_ptr<JobControlBlock>& Block;
-
-				~CompletionGuard() {
-					NotifyOne(Block);
-				}
-			};
-
-			CompletionGuard guard{ block };
-			std::forward<F>(work)();
-		}
+		// Completion is published after the callable and its captures are destroyed.
+		FUNKE_API void Enqueue(const std::shared_ptr<JobControlBlock>& block, std::function<void()> work);
 
 	}
 

@@ -1,0 +1,10 @@
+{
+  "tool": "image_gen.imagegen",
+  "transparent_background": true,
+  "prompt": "Use case: precise-object-edit.\nAsset type: Funke Editor material file icon, a single isolated production UI miniature on transparent background.\nEdit target/reference 1 is the existing purple shader sphere. Reference 2 is the turquoise database and reference 3 is the orange model cube: these two are style references only, do not include them.\nCreate a new material icon by replacing the purple star sphere's color and symbol with a clean turquoise-and-warm-ivory checkerboard material preview sphere. Remove the star entirely. One perfectly round 3D sphere with broad alternating curved teal and ivory panels wrapped correctly around the sphere (coarse UV checker grid, about four broad panels across the visible face, three broad bands vertically). Strong clear circular silhouette, restrained glossy upper-left highlight, softly shaded lower right, subtle dark teal rim, polished dimensional miniature. Match the production reference family's smooth rendered shading, careful highlights, rounded/beveled feel and optical weight. Saturated teal approx #28b5b0 with deep teal shadows and warm ivory checks, no purple.\nSphere centered and filling approximately 88 percent of a square canvas, equal transparent margins. No pedestal, no paper/document backing, no floating symbols, no letters, no border around the canvas, no ambient scene, no checkerboard BACKGROUND. Transparent background with real alpha. Keep the pattern bold and very simple to remain readable at 16/32px; smooth antialiased illustration, not pixel art. Exactly one icon, not a sheet of sizes.",
+  "references": [
+    "Funke-Runtime/FunkeAssets/Textures/Editor/FileIcons/file_shader/file_shader_128.png",
+    "Funke-Runtime/FunkeAssets/Textures/Editor/FileIcons/file_dataasset/file_dataasset_128.png",
+    "Funke-Runtime/FunkeAssets/Textures/Editor/FileIcons/file_model/file_model_128.png"
+  ]
+}

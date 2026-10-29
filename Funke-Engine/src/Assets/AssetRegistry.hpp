@@ -95,12 +95,14 @@ namespace Funke {
 			if (absoluteRoot.empty()) {
 				return;
 			}
-			const std::filesystem::path nativeRoot = Path::FromUtf8(absoluteRoot);
+			const std::filesystem::path nativeRoot = Path::FromUtf8(NormalizePath(absoluteRoot));
 			std::error_code rootEc;
 			if (!std::filesystem::is_directory(nativeRoot, rootEc) || rootEc) {
 				return;
 			}
 
+			std::unordered_map<std::filesystem::path, std::filesystem::path> canonicalDirectories;
+			canonicalDirectories.emplace(nativeRoot, nativeRoot);
 			std::error_code ec;
 			for (std::filesystem::recursive_directory_iterator it(
 				 nativeRoot,
@@ -112,7 +114,7 @@ namespace Funke {
 				if (ec) { ec.clear(); continue; }
 				if (!it->is_regular_file(ec) || ec) { ec.clear(); continue; }
 
-				const std::string absPath = NormalizePath(Path::ToUtf8(it->path()));
+				const std::string absPath = NormalizeScannedPath(*it, canonicalDirectories);
 				if (absPath.empty() || IsMetaFilePath(absPath)) {
 					continue;
 				}
@@ -125,10 +127,8 @@ namespace Funke {
 					continue;
 				}
 
-				std::error_code relEc;
-				std::filesystem::path relPath = std::filesystem::relative(
-					Path::FromUtf8(absPath), nativeRoot, relEc);
-				const uint64_t guid = ComputeBuiltInPathGuid(relEc ? absPath : Path::ToGenericUtf8(relPath));
+				const std::filesystem::path relPath = Path::FromUtf8(absPath).lexically_relative(nativeRoot);
+				const uint64_t guid = ComputeBuiltInPathGuid(relPath.empty() ? absPath : Path::ToGenericUtf8(relPath));
 
 				if (State().BuiltInById.find(guid) != State().BuiltInById.end()) {
 					FNK_CORE_WARN_TAG("AssetRegistry",
@@ -609,9 +609,12 @@ namespace Funke {
 			// (mtime,size) is unchanged.
 			WarmMetaCacheFromSnapshot();
 
+			const std::filesystem::path nativeRoot = Path::FromUtf8(State().TrackedRoot);
+			std::unordered_map<std::filesystem::path, std::filesystem::path> canonicalDirectories;
+			canonicalDirectories.emplace(nativeRoot, nativeRoot);
 			std::error_code ec;
 			for (std::filesystem::recursive_directory_iterator it(
-				 Path::FromUtf8(State().TrackedRoot),
+				 nativeRoot,
 				 std::filesystem::directory_options::skip_permission_denied,
 				 ec), end;
 				 it != end;
@@ -634,7 +637,7 @@ namespace Funke {
 					continue;
 				}
 
-				const std::string assetPath = NormalizePath(rawPath);
+				const std::string assetPath = NormalizeScannedPath(*it, canonicalDirectories);
 				if (assetPath.empty()) {
 					continue;
 				}
@@ -805,9 +808,6 @@ namespace Funke {
 				return;
 			}
 
-			std::error_code ec;
-			std::filesystem::create_directories(Path::FromUtf8(snapshotPath).parent_path(), ec);
-
 			std::string out;
 			out.reserve(State().IdToRecord.size() * 48 + 8);
 			out += "FNKAR1\n";
@@ -833,6 +833,11 @@ namespace Funke {
 				out += rel;
 				out += '\n';
 			}
+			if (File::Exists(snapshotPath) && File::ReadAllText(snapshotPath) == out) {
+				return;
+			}
+			std::error_code ec;
+			std::filesystem::create_directories(Path::FromUtf8(snapshotPath).parent_path(), ec);
 			File::WriteAllText(snapshotPath, out);
 		}
 
@@ -870,6 +875,25 @@ namespace Funke {
 
 			State().PathToId[assetPath] = id;
 			State().IdToRecord[id] = std::move(record);
+		}
+
+		static std::string NormalizeScannedPath(const std::filesystem::directory_entry& entry,
+			std::unordered_map<std::filesystem::path, std::filesystem::path>& canonicalDirectories) {
+			std::error_code ec;
+			if (entry.is_symlink(ec) || ec) {
+				return NormalizePath(Path::ToUtf8(entry.path()));
+			}
+
+			// Enumeration supplies the filename; only linked files need their own canonicalization.
+			const auto parent = entry.path().parent_path();
+			auto [cached, inserted] = canonicalDirectories.try_emplace(parent);
+			if (inserted) {
+				cached->second = Path::FromUtf8(NormalizePath(Path::ToUtf8(parent)));
+			}
+			if (cached->second.empty()) {
+				return {};
+			}
+			return Path::ToUtf8((cached->second / entry.path().filename()).make_preferred());
 		}
 
 		static std::string NormalizePath(const std::string& path) {
@@ -992,16 +1016,15 @@ namespace Funke {
 			std::uintmax_t size = 0;
 			bool fingerprintOk = false;
 			const std::filesystem::path nativeMetaPath = Path::FromUtf8(metaPath);
-			if (std::filesystem::exists(nativeMetaPath, ec) && !ec) {
-				mtime = std::filesystem::last_write_time(nativeMetaPath, ec);
+			const std::filesystem::directory_entry metaFile(nativeMetaPath, ec);
+			if (!ec) {
+				mtime = metaFile.last_write_time(ec);
 				if (!ec) {
-					size = std::filesystem::file_size(nativeMetaPath, ec);
+					size = metaFile.file_size(ec);
 					fingerprintOk = !ec;
 				}
 			}
-			if (!fingerprintOk) {
-			}
-			else {
+			if (fingerprintOk) {
 				const auto cacheIt = State().MetaIdCache.find(metaPath);
 				if (cacheIt != State().MetaIdCache.end()
 					&& cacheIt->second.Mtime == mtime
@@ -1010,11 +1033,8 @@ namespace Funke {
 					return cacheIt->second.AssetGuid;
 				}
 			}
-
-			if (!File::Exists(metaPath)) {
-				if (fingerprintOk) {
-					State().MetaIdCache.erase(metaPath);
-				}
+			else if (!File::Exists(metaPath)) {
+				State().MetaIdCache.erase(metaPath);
 				return 0;
 			}
 

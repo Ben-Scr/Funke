@@ -27,7 +27,7 @@ SIZES = (16, 32, 64, 128)
 FILE_SIZES = (16, 32, 64, 128, 256)
 CUSTOM_FILE_ICONS = {
     "file_anim", "file_audio", "file_bin", "file_cpp", "file_cs", "file_dataasset",
-    "file_fallback", "file_font", "file_header", "file_json", "file_model", "file_prefab", "file_scene",
+    "file_fallback", "file_font", "file_header", "file_json", "file_material", "file_model", "file_prefab", "file_scene",
     "file_shader", "file_txt", "file_xml", "folder_zip",
 }
 CUSTOM_COMPONENT_ICONS = {
@@ -39,7 +39,7 @@ CUSTOM_COMPONENT_ICONS = {
 CUSTOM_GLYPHS = {"open_folder"}
 FILE_256_NAMES = {
     "file_anim", "file_audio", "file_bin", "file_cpp", "file_cs", "file_dataasset",
-    "file_fallback", "file_font", "file_header", "file_json", "file_model", "file_scene", "file_shader",
+    "file_fallback", "file_font", "file_header", "file_json", "file_material", "file_model", "file_scene", "file_shader",
     "file_txt", "file_xml", "folder_zip",
 }
 SUPERSAMPLE = 4
@@ -62,7 +62,7 @@ FILE_COLORS = {
     "file_audio": AUDIO, "file_prefab": PREFAB, "file_scene": "#3E80BA",
     "file_dataasset": "#4CB8A8", "file_json": "#F2B33D", "file_xml": "#8A86E8",
     "file_font": "#F26B66", "file_txt": "#A0A4AD", "file_bin": "#A0A4AD",
-    "file_fallback": "#A0A4AD", "file_model": "#F0A44B",
+    "file_fallback": "#A0A4AD", "file_material": "#28B5B0", "file_model": "#F0A44B",
 }
 
 GLYPHS = [

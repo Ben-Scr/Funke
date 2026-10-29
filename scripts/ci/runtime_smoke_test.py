@@ -272,6 +272,7 @@ def run_runtime(
     runtime_binary: Path,
     timeout_seconds: float,
     required_markers: tuple[str, ...],
+    environment: dict[str, str] | None = None,
 ) -> tuple[int, str]:
     command = build_command(runtime_binary)
     creation_flags = 0
@@ -286,6 +287,7 @@ def run_runtime(
         "encoding": "utf-8",
         "errors": "replace",
         "creationflags": creation_flags,
+        "env": environment,
     }
     if os.name != "nt":
         popen_kwargs["start_new_session"] = True

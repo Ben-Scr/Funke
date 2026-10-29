@@ -1,0 +1,29 @@
+{
+  "type": "Material",
+  "version": 1,
+  "lit": true,
+  "baseColor": {
+    "r": 1,
+    "g": 1,
+    "b": 1,
+    "a": 1
+  },
+  "metallic": 0.0,
+  "roughness": 0.9,
+  "emissiveColor": {
+    "r": 0,
+    "g": 0,
+    "b": 0,
+    "a": 1
+  },
+  "emissiveIntensity": 1.0,
+  "tiling": {
+    "x": 10,
+    "y": 80
+  },
+  "offset": {
+    "x": 0,
+    "y": 0
+  },
+  "baseColorTexture": "9100000000000000001"
+}

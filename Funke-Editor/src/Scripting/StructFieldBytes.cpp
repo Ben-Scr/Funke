@@ -1,8 +1,10 @@
 #include <pch.hpp>
 #include "Scripting/StructFieldBytes.hpp"
+#include "Serialization/Json.hpp"
 
 #include <charconv>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 namespace Funke {
@@ -138,6 +140,28 @@ namespace Funke {
 				default: return false;
 			}
 		}
+	}
+
+	bool WriteStructFieldByName(uint8_t* bytes, std::size_t byteCount, std::string_view currentFieldDefs,
+		std::string_view fieldName, std::string_view expectedType, std::string_view value) {
+		Json::Value fields;
+		if (!Json::TryParse(currentFieldDefs, fields) || !fields.IsArray()) return false;
+		for (const auto& field : fields.GetArray()) {
+			const auto* name = field.FindMember("name");
+			if (!name || name->AsStringOr() != fieldName) continue;
+			const auto* type = field.FindMember("type");
+			const auto* offset = field.FindMember("offset");
+			const auto* size = field.FindMember("size");
+			const auto* readOnly = field.FindMember("readOnly");
+			if (!type || type->AsStringOr() != expectedType || !offset || !size
+				|| (readOnly && readOnly->AsBoolOr(false))) return false;
+			const uint64_t currentOffset = offset->AsUInt64Or(std::numeric_limits<uint64_t>::max());
+			const uint64_t currentSize = size->AsUInt64Or(0);
+			if (currentOffset > std::numeric_limits<uint32_t>::max() || currentSize > std::numeric_limits<uint32_t>::max()) return false;
+			return WriteStructField(bytes, byteCount,
+				{ expectedType, static_cast<uint32_t>(currentOffset), static_cast<uint32_t>(currentSize) }, value);
+		}
+		return false;
 	}
 
 	std::optional<std::string> ReadStructField(const uint8_t* bytes, std::size_t byteCount, const StructFieldSlot& slot) {

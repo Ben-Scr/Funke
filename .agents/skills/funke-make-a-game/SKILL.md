@@ -186,7 +186,7 @@ Launcher → New Project, Hierarchy → create entities, Inspector → component
 | 3D: level generators, Jolt recipes, feel, looks, particles, PC + portrait UI | `references/3d-games.md` |
 | Pixel art, sprites, tiles, UI art, fonts, palettes | `funke-game-art` |
 | C# API (Input, Time, Physics, Audio, coroutines, queries, SceneManager) | `funke-game-scripting` |
-| UI widgets from C# (`OnClicked`, layout groups, scroll views) | `funke-game-ui` |
+| UI widgets from C# (`Clicked`, layout groups, scroll views) | `funke-game-ui` |
 | Inspector attributes (`[ShowInEditor]`, `[ClampValue]`, `[Header]`) | `funke-inspector-ruleset` |
 | project.json fields, csproj, file formats | `funke-project-structure` |
 | Build profiles, splash, icon, Android/iOS/Web builds | `funke-build-and-ship` |

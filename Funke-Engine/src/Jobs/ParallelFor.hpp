@@ -56,10 +56,8 @@ namespace Funke {
 		if (numChunks <= 1 || workers <= 0) {
 			auto fnPtr = std::make_shared<std::decay_t<F>>(std::forward<F>(fn));
 			auto block = JobInternal::CreateBlock(1);
-			JobSystem::Enqueue([block, fnPtr, begin, end]() {
-				JobInternal::ExecuteAndNotify(block, [&]() {
-					Detail::InvokeParallelChunk(*fnPtr, begin, end);
-				});
+			JobInternal::Enqueue(block, [fnPtr, begin, end]() {
+				Detail::InvokeParallelChunk(*fnPtr, begin, end);
 			});
 			return JobHandle(std::move(block));
 		}
@@ -71,10 +69,8 @@ namespace Funke {
 			const size_t lo = begin + c * grainSize;
 			const size_t hi = (lo + grainSize < end) ? (lo + grainSize) : end;
 
-			JobSystem::Enqueue([block, fnPtr, lo, hi]() {
-				JobInternal::ExecuteAndNotify(block, [&]() {
-					Detail::InvokeParallelChunk(*fnPtr, lo, hi);
-				});
+			JobInternal::Enqueue(block, [fnPtr, lo, hi]() {
+				Detail::InvokeParallelChunk(*fnPtr, lo, hi);
 			});
 		}
 

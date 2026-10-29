@@ -31,12 +31,7 @@ public sealed class Font : IEquatable<Font>
     // can construct managed Font wrappers from a stored asset GUID
     // without re-implementing the AssetRegistry lookup.
     public static Font? FromAssetUUID(ulong assetId)
-    {
-        if (assetId == 0 || !InternalCalls.Asset_IsValid(assetId))
-            return null;
-
-        return InternalCalls.Font_LoadAsset(assetId) ? new Font(assetId) : null;
-    }
+        => AssetManager.LoadByGUID<Font>(assetId);
 
     public bool Equals(Font? other) => other is not null && UUID == other.UUID;
     public override bool Equals(object? obj) => obj is Font other && Equals(other);

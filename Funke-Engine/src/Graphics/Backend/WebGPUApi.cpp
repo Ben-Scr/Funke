@@ -10,13 +10,16 @@
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/GLInitSpecifications.hpp"
 #include "Graphics/Texture2D.hpp"
+#include "Profiling/Profiler.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Project/ProjectManager.hpp"
+#include "Utils/Timer.hpp"
 
 #include <webgpu/webgpu_cpp.h>
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -26,6 +29,8 @@
         #define WIN32_LEAN_AND_MEAN
     #endif
     #include <Windows.h>
+    #include <dawn/native/D3DBackend.h>
+    #include <dxgi1_6.h>
 #endif
 
 
@@ -59,6 +64,20 @@ namespace Funke {
 		bool g_SurfaceCopySrc = false;
 
 		bool g_HasTimestampQuery = false;
+
+		struct StartupTimings {
+			float Runtime = 0;
+			float Instance = 0;
+			float Surface = 0;
+			float AdapterSelection = 0;
+			float AdapterRequest = 0;
+			float AdapterWait = 0;
+			float DeviceRequest = 0;
+			float DeviceWait = 0;
+			float Configure = 0;
+			uint32_t AdapterRequests = 0;
+			const char* AdapterPath = "standard";
+		};
 
 		// Set by hosts that cannot block on WaitAny (the browser): adapter and device were requested
 		// asynchronously before the engine started.
@@ -359,10 +378,32 @@ namespace Funke {
 #endif
 		}
 
+#if defined(FNK_PLATFORM_WINDOWS)
+		bool TryGetPreferredAdapterLuid(LUID& luid) {
+			FUNKE_PROFILE_SCOPE("WebGPU.SelectPreferredAdapter");
+			static const HMODULE dxgi = ::LoadLibraryExW(L"dxgi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+			if (!dxgi) return false;
+			using CreateFactory = HRESULT(WINAPI*)(UINT, REFIID, void**);
+			const auto createFactory = reinterpret_cast<CreateFactory>(::GetProcAddress(dxgi, "CreateDXGIFactory2"));
+			if (!createFactory) return false;
+			Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
+			if (FAILED(createFactory(0, IID_PPV_ARGS(&factory)))) return false;
+			Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+			if (FAILED(factory->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+				IID_PPV_ARGS(&adapter)))) return false;
+			DXGI_ADAPTER_DESC1 description{};
+			if (FAILED(adapter->GetDesc1(&description)) || (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) return false;
+			luid = description.AdapterLuid;
+			return true;
+		}
+#endif
+
 		bool TryRequestAdapter(wgpu::BackendType backendType,
-			wgpu::Adapter& outAdapter, std::string& outError)
+			wgpu::Adapter& outAdapter, std::string& outError, StartupTimings& timings,
+			const wgpu::ChainedStruct* adapterOptions = nullptr)
 		{
 			wgpu::RequestAdapterOptions opts{};
+			opts.nextInChain = adapterOptions;
 			opts.compatibleSurface = g_Surface;
 			opts.powerPreference   = wgpu::PowerPreference::HighPerformance;
 			opts.backendType       = backendType;
@@ -374,6 +415,7 @@ namespace Funke {
 			const char* const disabledToggles[] = { "vulkan_use_dynamic_rendering" };
 			wgpu::DawnTogglesDescriptor toggles{};
 			if (backendType == wgpu::BackendType::Vulkan) {
+				toggles.nextInChain = opts.nextInChain;
 				toggles.disabledToggleCount = 1;
 				toggles.disabledToggles = disabledToggles;
 				opts.nextInChain = &toggles;
@@ -383,19 +425,31 @@ namespace Funke {
 			struct AdapterCtx { wgpu::Adapter Adapter; std::string Error; };
 			AdapterCtx ctx;
 
-			wgpu::Future future = g_Instance.RequestAdapter(
-				&opts,
-				wgpu::CallbackMode::WaitAnyOnly,
-				[&ctx](wgpu::RequestAdapterStatus status, wgpu::Adapter adapter, wgpu::StringView msg) {
-					if (status == wgpu::RequestAdapterStatus::Success) {
-						ctx.Adapter = std::move(adapter);
-					} else {
-						ctx.Error = FromStringView(msg);
-					}
-				});
+			wgpu::Future future{};
+			{
+				FUNKE_PROFILE_SCOPE("WebGPU.RequestAdapter");
+				Timer timer;
+				++timings.AdapterRequests;
+				future = g_Instance.RequestAdapter(
+					&opts,
+					wgpu::CallbackMode::WaitAnyOnly,
+					[&ctx](wgpu::RequestAdapterStatus status, wgpu::Adapter adapter, wgpu::StringView msg) {
+						if (status == wgpu::RequestAdapterStatus::Success) {
+							ctx.Adapter = std::move(adapter);
+						} else {
+							ctx.Error = FromStringView(msg);
+						}
+					});
+				timings.AdapterRequest += timer.ElapsedMilliseconds();
+			}
 
 			wgpu::FutureWaitInfo wait{ future };
-			g_Instance.WaitAny(1, &wait, /*timeoutNS*/ UINT64_MAX);
+			{
+				FUNKE_PROFILE_SCOPE("WebGPU.WaitAdapter");
+				Timer timer;
+				g_Instance.WaitAny(1, &wait, /*timeoutNS*/ UINT64_MAX);
+				timings.AdapterWait += timer.ElapsedMilliseconds();
+			}
 
 			if (!ctx.Adapter) {
 				outError = std::move(ctx.Error);
@@ -405,13 +459,39 @@ namespace Funke {
 			return true;
 		}
 
-		bool RequestAdapterSync() {
+		bool RequestAdapterSync(StartupTimings& timings) {
+			FUNKE_PROFILE_SCOPE("WebGPU.AdapterInitialization");
 			wgpu::Adapter adapter;
 			std::string error;
+#if defined(FNK_PLATFORM_WINDOWS)
+			const char* disabled = std::getenv("FUNKE_DISABLE_GPU_ADAPTER_FAST_PATH");
+			const bool useFastPath = !disabled || std::string_view(disabled) != "1";
+			if (!useFastPath) timings.AdapterPath = "disabled";
+#endif
 
 			for (wgpu::BackendType backend : BackendCandidates()) {
-				PrepareBackendRuntime(backend);
-				if (TryRequestAdapter(backend, adapter, error)) {
+				{
+					FUNKE_PROFILE_SCOPE("WebGPU.PrepareRuntime");
+					Timer timer;
+					PrepareBackendRuntime(backend);
+					timings.Runtime += timer.ElapsedMilliseconds();
+				}
+#if defined(FNK_PLATFORM_WINDOWS)
+				if (useFastPath && (backend == wgpu::BackendType::D3D11 || backend == wgpu::BackendType::D3D12)) {
+					dawn::native::d3d::RequestAdapterOptionsLUID luidOptions;
+					Timer timer;
+					const bool foundPreferred = TryGetPreferredAdapterLuid(luidOptions.adapterLUID);
+					timings.AdapterSelection += timer.ElapsedMilliseconds();
+					// Dawn preserves DXGI preference order for D3D but otherwise initializes every GPU.
+					if (foundPreferred && TryRequestAdapter(backend, adapter, error, timings, &luidOptions)) {
+						timings.AdapterPath = "preferred-luid";
+						g_Adapter = std::move(adapter);
+						return true;
+					}
+					timings.AdapterPath = "fallback";
+				}
+#endif
+				if (TryRequestAdapter(backend, adapter, error, timings)) {
 					g_Adapter = std::move(adapter);
 					return true;
 				}
@@ -427,7 +507,8 @@ namespace Funke {
 			return false;
 		}
 
-		bool RequestDeviceSync() {
+		bool RequestDeviceSync(StartupTimings& timings) {
+			FUNKE_PROFILE_SCOPE("WebGPU.DeviceInitialization");
 			wgpu::DeviceDescriptor desc{};
 			static wgpu::FeatureName s_RequestedFeatures[1] = {};
 			uint32_t requestedFeatureCount = 0;
@@ -462,19 +543,30 @@ namespace Funke {
 			struct DeviceCtx { wgpu::Device Device; std::string Error; };
 			DeviceCtx ctx;
 
-			wgpu::Future future = g_Adapter.RequestDevice(
-				&desc,
-				wgpu::CallbackMode::WaitAnyOnly,
-				[&ctx](wgpu::RequestDeviceStatus status, wgpu::Device device, wgpu::StringView msg) {
-					if (status == wgpu::RequestDeviceStatus::Success) {
-						ctx.Device = std::move(device);
-					} else {
-						ctx.Error = FromStringView(msg);
-					}
-				});
+			wgpu::Future future{};
+			{
+				FUNKE_PROFILE_SCOPE("WebGPU.RequestDevice");
+				Timer timer;
+				future = g_Adapter.RequestDevice(
+					&desc,
+					wgpu::CallbackMode::WaitAnyOnly,
+					[&ctx](wgpu::RequestDeviceStatus status, wgpu::Device device, wgpu::StringView msg) {
+						if (status == wgpu::RequestDeviceStatus::Success) {
+							ctx.Device = std::move(device);
+						} else {
+							ctx.Error = FromStringView(msg);
+						}
+					});
+				timings.DeviceRequest = timer.ElapsedMilliseconds();
+			}
 
 			wgpu::FutureWaitInfo wait{ future };
-			g_Instance.WaitAny(1, &wait, UINT64_MAX);
+			{
+				FUNKE_PROFILE_SCOPE("WebGPU.WaitDevice");
+				Timer timer;
+				g_Instance.WaitAny(1, &wait, UINT64_MAX);
+				timings.DeviceWait = timer.ElapsedMilliseconds();
+			}
 
 			if (!ctx.Device) {
 				FNK_CORE_ERROR_TAG("WebGPUApi", "RequestDevice failed: {}",
@@ -1071,6 +1163,9 @@ namespace Funke {
 
 	bool RenderApi::Init(const GLInitSpecifications& spec) {
 		if (g_Initialized) return false;
+		FUNKE_PROFILE_SCOPE("WebGPU.Initialize");
+		Timer startupTimer;
+		StartupTimings timings;
 
 #if defined(FNK_PLATFORM_WINDOWS)
 		// Dawn's bare-name LoadLibraryEx calls need default search directories on Windows 11 24H2.
@@ -1093,9 +1188,12 @@ namespace Funke {
 
 		const bool provided = g_ProvidedInstance && g_ProvidedAdapter && g_ProvidedDevice;
 		if (provided) {
+			timings.AdapterPath = "provided";
 			g_Instance = g_ProvidedInstance;
 		}
 		else {
+			FUNKE_PROFILE_SCOPE("WebGPU.CreateInstance");
+			Timer timer;
 			// TimedWaitAny is REQUIRED: without it WaitAny rejects any non-zero timeout and adapter/device requests silently fail.
 			const wgpu::InstanceFeatureName requiredFeatures[] = {
 				wgpu::InstanceFeatureName::TimedWaitAny,
@@ -1104,13 +1202,19 @@ namespace Funke {
 			instanceDesc.requiredFeatureCount = 1;
 			instanceDesc.requiredFeatures     = requiredFeatures;
 			g_Instance = wgpu::CreateInstance(&instanceDesc);
+			timings.Instance = timer.ElapsedMilliseconds();
 		}
 		if (!g_Instance) {
 			FNK_CORE_ERROR_TAG("WebGPUApi", "wgpu::CreateInstance failed");
 			return false;
 		}
 
-		if (!CreateSurface())       { Shutdown(); return false; }
+		{
+			FUNKE_PROFILE_SCOPE("WebGPU.CreateSurface");
+			Timer timer;
+			if (!CreateSurface()) { Shutdown(); return false; }
+			timings.Surface = timer.ElapsedMilliseconds();
+		}
 		if (provided) {
 			g_Adapter = g_ProvidedAdapter;
 			g_Device  = g_ProvidedDevice;
@@ -1118,10 +1222,15 @@ namespace Funke {
 			g_HasTimestampQuery = g_Device.HasFeature(wgpu::FeatureName::TimestampQuery);
 		}
 		else {
-			if (!RequestAdapterSync())  { Shutdown(); return false; }
-			if (!RequestDeviceSync())   { Shutdown(); return false; }
+			if (!RequestAdapterSync(timings)) { Shutdown(); return false; }
+			if (!RequestDeviceSync(timings)) { Shutdown(); return false; }
 		}
-		ConfigureSurface(g_BackbufferWidth, g_BackbufferHeight);
+		{
+			FUNKE_PROFILE_SCOPE("WebGPU.ConfigureSurface");
+			Timer timer;
+			ConfigureSurface(g_BackbufferWidth, g_BackbufferHeight);
+			timings.Configure = timer.ElapsedMilliseconds();
+		}
 
 		wgpu::AdapterInfo info{};
 		g_Adapter.GetInfo(&info);
@@ -1138,6 +1247,13 @@ namespace Funke {
 			BackendTypeName(info.backendType), AdapterTypeName(info.adapterType),
 			g_BackbufferWidth, g_BackbufferHeight,
 			static_cast<int>(g_SurfaceFormat));
+		FNK_CORE_INFO_TAG("WebGPUApi",
+			"Startup timings (ms): total={:.3f} runtime={:.3f} instance={:.3f} surface={:.3f} "
+			"adapter-select={:.3f} adapter-request={:.3f} adapter-wait={:.3f} "
+			"device-request={:.3f} device-wait={:.3f} configure={:.3f} adapter-path={} adapter-requests={}",
+			startupTimer.ElapsedMilliseconds(), timings.Runtime, timings.Instance, timings.Surface,
+			timings.AdapterSelection, timings.AdapterRequest, timings.AdapterWait,
+			timings.DeviceRequest, timings.DeviceWait, timings.Configure, timings.AdapterPath, timings.AdapterRequests);
 
 		g_Initialized = true;
 		return true;

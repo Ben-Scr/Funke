@@ -749,6 +749,7 @@ namespace Funke {
 		status.AddMember("state", state);
 		Scene* active = SceneManager::GetActiveScene();
 		status.AddMember("scene", active ? active->GetName() : std::string());
+		status.AddMember("entityCount", active ? static_cast<int64_t>(active->GetEntityCount()) : int64_t{ 0 });
 		Json::Value scenes = Json::Value::MakeArray();
 		Json::Value dirty = Json::Value::MakeArray();
 		for (const std::weak_ptr<Scene>& weakScene : SceneManager::GetLoadedScenes()) {

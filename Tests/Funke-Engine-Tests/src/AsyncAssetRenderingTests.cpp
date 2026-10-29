@@ -11,6 +11,7 @@
 #include "Graphics/RenderApi.hpp"
 #include "Graphics/Text/FontManager.hpp"
 #include "Graphics/TextureManager.hpp"
+#include "Scripting/ScriptBindings.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Path.hpp"
 
@@ -31,6 +32,7 @@ namespace {
 		255, 0, 0, 255, 0, 255, 0, 127,
 		0, 0, 255, 63, 17, 29, 41, 0
 	};
+	constexpr std::array<AssetKind, 3> k_AssetKinds{ AssetKind::Texture, AssetKind::Font, AssetKind::Audio };
 
 	std::filesystem::path FindTestFont() {
 		for (auto directory : { std::filesystem::path(__FILE__).parent_path(),
@@ -126,27 +128,47 @@ namespace {
 			BackendReady = RenderApi::IsInitialized();
 			FontManagerReady = FontManager::Initialize();
 			Background = RunAutomation::IsBackground();
+			ScriptBindings::PopulateAssetBindings(m_Bindings);
+			const uint64_t runtime = TextureManager::CreateRuntimeTexture(2, 2, k_TexturePixels.data(),
+				Filter::Point, Wrap::Clamp, Wrap::Clamp);
+			RuntimeTextureAccepted = runtime != 0 && !AssetRegistry::Exists(runtime)
+				&& m_Bindings.Asset_LoadTyped(nullptr, runtime, static_cast<int>(AssetKind::Texture)) == runtime;
+			RuntimeTextureKindChecked = runtime != 0
+				&& m_Bindings.Asset_LoadTyped(nullptr, runtime, static_cast<int>(AssetKind::Audio)) == 0;
+			TextureManager::DestroyRuntimeTexture(runtime);
+			DestroyedRuntimeTextureRejected = runtime != 0
+				&& m_Bindings.Asset_LoadTyped(nullptr, runtime, static_cast<int>(AssetKind::Texture)) == 0;
 			m_StartedAt = std::chrono::steady_clock::now();
 			for (size_t index = 0; index < m_Requests.size(); ++index) {
 				m_Requests[index] = AssetLoader::LoadAsync(m_Files.Ids[index]);
 				Deferred = Deferred && m_Requests[index] != 0
 					&& AssetLoader::GetResult(m_Requests[index]).Status == AssetLoadStatus::Pending;
+				m_TypedRequests[index] = m_Bindings.Asset_BeginLoadTypedAsync(nullptr, m_Files.Ids[index],
+					static_cast<int>(k_AssetKinds[index]));
+				TypedDeferred = TypedDeferred && m_TypedRequests[index] != 0
+					&& AssetLoader::GetResult(m_TypedRequests[index]).Status == AssetLoadStatus::Pending;
 			}
 		}
 
 		void Update() override {
 			++UpdateCount;
 			bool pending = false;
+			TypedRequestsReleased = true;
 			for (size_t index = 0; index < m_Requests.size(); ++index) {
 				const auto result = AssetLoader::GetResult(m_Requests[index]);
 				Statuses[index] = result.Status;
 				Errors[index] = result.Message;
 				pending = pending || result.Status == AssetLoadStatus::Pending;
+				const auto typedStatus = AssetLoader::GetResult(m_TypedRequests[index]).Status;
+				TypedRequestsReleased = TypedRequestsReleased && m_TypedRequests[index] != 0
+					&& typedStatus == AssetLoadStatus::NotFound;
+				pending = pending || (m_TypedRequests[index] != 0 && typedStatus != AssetLoadStatus::NotFound);
 			}
 			if (pending && std::chrono::steady_clock::now() - m_StartedAt < std::chrono::seconds(15)) return;
 			TimedOut = pending;
 			ValidatePublishedAssets();
 			for (uint64_t request : m_Requests) AssetLoader::Release(request);
+			m_Bindings.Asset_CancelLoads(m_TypedRequests.data(), static_cast<int>(m_TypedRequests.size()), 1);
 			Application::Quit();
 		}
 
@@ -154,6 +176,12 @@ namespace {
 		bool FontManagerReady = false;
 		bool Background = false;
 		bool Deferred = true;
+		bool TypedDeferred = true;
+		bool TypedRequestsReleased = false;
+		bool TypedSyncLoadsSucceeded = false;
+		bool RuntimeTextureAccepted = false;
+		bool RuntimeTextureKindChecked = false;
+		bool DestroyedRuntimeTextureRejected = false;
 		bool TimedOut = false;
 		bool TextureCacheShared = false;
 		bool TextureSamplingCorrect = false;
@@ -169,6 +197,11 @@ namespace {
 
 	private:
 		void ValidatePublishedAssets() {
+			TypedSyncLoadsSucceeded = true;
+			for (size_t index = 0; index < m_Files.Ids.size(); ++index) {
+				TypedSyncLoadsSucceeded = TypedSyncLoadsSucceeded
+					&& m_Bindings.Asset_LoadTyped(nullptr, m_Files.Ids[index], static_cast<int>(k_AssetKinds[index])) == m_Files.Ids[index];
+			}
 			const auto textureHandle = TextureManager::GetTextureHandle(m_Files.TexturePath, Filter::Point, Wrap::Mirror, Wrap::Repeat);
 			if (Texture2D* texture = TextureManager::GetTexture(textureHandle)) {
 				TextureCacheShared = textureHandle == TextureManager::LoadTextureByUUID(m_Files.Ids[0]);
@@ -197,7 +230,9 @@ namespace {
 		}
 
 		const RenderingAssetFiles& m_Files;
+		NativeBindings m_Bindings{};
 		std::array<uint64_t, 3> m_Requests{};
+		std::array<uint64_t, 3> m_TypedRequests{};
 		std::chrono::steady_clock::time_point m_StartedAt;
 	};
 
@@ -230,6 +265,12 @@ TEST_CASE("Async asset rendering publishes textures fonts and audio through the 
 	CHECK(application.FontManagerReady);
 	CHECK(application.Background);
 	CHECK(application.Deferred);
+	CHECK(application.TypedDeferred);
+	CHECK(application.TypedRequestsReleased);
+	CHECK(application.TypedSyncLoadsSucceeded);
+	CHECK(application.RuntimeTextureAccepted);
+	CHECK(application.RuntimeTextureKindChecked);
+	CHECK(application.DestroyedRuntimeTextureRejected);
 	CHECK_FALSE(application.TimedOut);
 	CHECK(application.UpdateCount > 0);
 	for (size_t index = 0; index < application.Statuses.size(); ++index) {

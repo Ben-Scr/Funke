@@ -140,6 +140,7 @@ namespace Funke {
 			bool Finished = false;
 			bool Success = false;
 			unsigned long SpawnedProcessId = 0;
+			double SpawnedAtUnixMs = 0.0;
 		};
 
 		struct AssetLibraryTaskState {
@@ -282,6 +283,7 @@ namespace Funke {
 		void StartProjectLaunch(const LauncherProjectEntry& entry, bool launchRuntime);
 		void OpenProjectWorkerBody(const LauncherProjectEntry& entry, bool launchRuntime);
 		void PollOpenProjectTask();
+		void WriteProjectOpenReport(bool complete, bool success, unsigned long pid, double spawnedAtUnixMs, const std::string& error) const;
 
 		void UpdateProgressPopup();
 
@@ -387,6 +389,11 @@ namespace Funke {
 		std::chrono::steady_clock::time_point m_OpenStartTime;
 		std::string m_OpeningProjectName;
 		OpenProjectTaskState m_OpenTask;
+		std::string m_AutomationOpenProject;
+		std::string m_AutomationOpenReport;
+		bool m_AutomationOpenStarted = false;
+		double m_AutomationOpenStartedAtUnixMs = 0.0;
+		std::chrono::steady_clock::time_point m_AutomationOpenStart;
 
 		// Single-slot: only one library download in flight at a time.
 		AssetLibraryIndex m_AssetLibrary;

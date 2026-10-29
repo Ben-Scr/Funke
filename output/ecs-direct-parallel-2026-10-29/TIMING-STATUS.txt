@@ -1,0 +1,7 @@
+Timing status: NOT VALIDATED FOR PERFORMANCE COMPARISONS
+The user reported an active VM during this optimization task. Its resource load and start time were not controlled.
+The before-managed-100k and before-managed-1m timings in this directory must not be used to calculate optimization speedups.
+Runs tagged validation-* check runtime correctness only; their timer values are not performance results.
+Repeat baseline and optimized measurements when the VM and other substantial background workloads are paused.
+The original pre-optimization binary fixture remains at bin-int/_agent/EcsNativeComparison-20261029.
+The new implementation fixture is bin-int/_agent/EcsDirectParallel-20261029.

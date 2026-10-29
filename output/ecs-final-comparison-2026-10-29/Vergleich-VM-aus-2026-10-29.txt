@@ -1,0 +1,113 @@
+Funke ECS: frischer Vorher/Nachher- und C++-Vergleich
+AMD Ryzen 9 7900X 12-Core Processor; 12 Kerne / 24 Threads; 32 GiB RAM, 6000 MT/s.
+Microsoft Windows 11 Pro 10.0.26200; GUID des Energieschemas: 381b4222-f694-41f0-9685-ff5bb260df2e  (Ausbalanciert)
+Alle 6 Laeufe: PASS, Exitcode 0; Fallmatrix, 3 Warmups und 9 Messungen/Fall vollstaendig geprueft.
+Separate eingefrorene Release-x64-Fixtures vor/nach den Aenderungen; C# SceneSystem und echtes C++ NativeScript; 3 Warmups und 9 Messungen pro Fall; Tabellen zeigen Mediane. Je ein dauerhafter Treiber bleibt bestehen. Create erzeugt Transform2D + SpriteRenderer. C# nutzt die native Struct-API AddNativeComponent/RemoveNativeComponent fuer SpriteRenderer, keine verwalteten Component-Wrapper.
+
+Direkte Aufrufe: 100.000 Entities (ms. Median)
+Aktion | C# vorher | C# nachher | Zeitreduktion | Speedup | C++ direkt | C# / C++
+Create + Sprite | 52,803 | 41,486 | 21,4 % | 1,27x | 21,275 | 1,95x
+AddComponent | 27,289 | 18,662 | 31,6 % | 1,46x | 3,374 | 5,53x
+RemoveComponent | 17,833 | 14,556 | 18,4 % | 1,23x | 3,602 | 4,04x
+Destroy | 39,236 | 36,932 | 5,9 % | 1,06x | 27,678 | 1,33x
+
+Paralleles ECB: 100.000 Entities (Record / Playback / Gesamt in ms)
+Aktion | C# seriell / parallel | C++ seriell / parallel | C++ parallel / parallel
+Create + Sprite | 1,171 / 11,994 / 13,171 | 4,237 / 16,157 / 20,453 | 2,082 / 15,963 / 17,971
+AddComponent | 0,626 / 6,034 / 6,713 | 1,581 / 7,521 / 9,304 | 1,462 / 7,379 / 8,752
+RemoveComponent | 0,625 / 6,253 / 6,897 | 1,545 / 7,588 / 9,529 | 1,462 / 7,441 / 8,760
+Destroy | 0,548 / 17,946 / 18,493 | 1,516 / 17,504 / 19,136 | 1,501 / 17,165 / 18,600
+
+Direkte Aufrufe: 1.000.000 Entities (ms. Median)
+Aktion | C# vorher | C# nachher | Zeitreduktion | Speedup | C++ direkt | C# / C++
+Create + Sprite | 653,835 | 507,678 | 22,4 % | 1,29x | 259,822 | 1,95x
+AddComponent | 338,291 | 241,151 | 28,7 % | 1,40x | 33,994 | 7,09x
+RemoveComponent | 217,750 | 187,585 | 13,9 % | 1,16x | 36,421 | 5,15x
+Destroy | 449,147 | 466,434 | -3,8 % | 0,96x | 363,332 | 1,28x
+
+Paralleles ECB: 1.000.000 Entities (Record / Playback / Gesamt in ms)
+Aktion | C# seriell / parallel | C++ seriell / parallel | C++ parallel / parallel
+Create + Sprite | 10,679 / 210,100 / 221,149 | 54,474 / 385,074 / 442,449 | 23,413 / 357,636 / 382,611
+AddComponent | 6,094 / 128,642 / 134,620 | 23,562 / 187,783 / 212,498 | 16,146 / 173,365 / 188,445
+RemoveComponent | 5,935 / 96,277 / 102,150 | 21,901 / 156,336 / 178,749 | 15,002 / 153,470 / 170,561
+Destroy | 5,459 / 242,021 / 247,511 | 23,520 / 354,923 / 377,391 | 17,373 / 397,477 / 415,265
+
+Vorher/Nachher vergleicht die gesamten eingefrorenen Versionen. Runtime-, Engine-, ScriptCore- und Harness-Binaerdateien duerfen sich zwischen Versionen unterscheiden; dies isoliert keine einzelne Optimierung.
+Direct vergleicht reale oeffentliche APIs mit unterschiedlichen Identitaets-, Wrapper- und Dispatch-Kosten; dies ist kein reiner C#-gegen-C++-Sprachvergleich.
+ECB-Tabellen: C# und C++ NativeECBParallel zeichnen seriell auf und spielen parallel ab. NativeParallelRecordECB zeichnet ueber den JobSystem-Pool parallel auf und spielt parallel ab.
+Setup, Validierung, Cleanup und nachtraegliche C#-Entity-Wrapper-Erzeugung sind ausserhalb der Zeit. Native oeffentliche Create-Playback-Zeiten enthalten bereits die Aufloesung der erzeugten nativen Handles. Vorab berechnete Existing-Referenzen sind ausserhalb der C++-Aufzeichnungszeit.
+Record/Playback/Total sind jeweils eigene Mediane; die Summe der Phasenmediane muss nicht dem Median der Gesamtzeit entsprechen.
+Binaerhashes sind innerhalb jeder Version ueber alle zugehoerigen Laeufe identisch. Die Sources-Eintraege beschreiben Dateien zum Messstart, nicht zwingend die Build-Eingaben eingefrorener DLLs.
+Historische Metadaten belegen fuer beide passenden Fixture-Binaersaetze denselben C#-Harness-Sourcehash. Aus historischen Dateien werden ausschliesslich diese Provenienzdaten verwendet, keine Laufzeiten.
+Getrennte Prozesse auf einem Desktop: Scheduler, Cache, Allocator und GC koennen die Messungen beeinflussen. Aus Medianspeedups allein folgt keine statistische Signifikanz.
+
+Streuung je Fall: Minimum / Maximum / IQR (ms); Quartile mit linearer Interpolation.
+Tag | Aktion | Modus | Record min/max/IQR | Playback min/max/IQR | Gesamt min/max/IQR
+before-managed-100k | Create + Sprite | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 49,933 / 56,804 / 4,363
+before-managed-100k | Create + Sprite | ManagedECBParallel | 1,165 / 1,914 / 0,449 | 12,664 / 15,941 / 1,791 | 13,834 / 17,689 / 1,836
+before-managed-100k | AddComponent | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 25,866 / 27,895 / 0,827
+before-managed-100k | AddComponent | ManagedECBParallel | 0,607 / 0,773 / 0,008 | 5,887 / 8,031 / 0,821 | 6,508 / 8,642 / 0,913
+before-managed-100k | RemoveComponent | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 15,833 / 19,309 / 1,687
+before-managed-100k | RemoveComponent | ManagedECBParallel | 0,609 / 0,882 / 0,034 | 5,898 / 9,822 / 1,918 | 6,515 / 10,704 / 1,951
+before-managed-100k | Destroy | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 35,820 / 48,591 / 5,588
+before-managed-100k | Destroy | ManagedECBParallel | 0,549 / 0,955 / 0,242 | 19,208 / 24,197 / 3,138 | 19,761 / 24,877 / 3,525
+after-managed-100k | Create + Sprite | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 38,135 / 43,116 / 3,840
+after-managed-100k | Create + Sprite | ManagedECBParallel | 1,122 / 1,425 / 0,072 | 11,556 / 15,215 / 0,658 | 12,727 / 16,361 / 0,750
+after-managed-100k | AddComponent | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 18,531 / 19,606 / 0,591
+after-managed-100k | AddComponent | ManagedECBParallel | 0,608 / 0,736 / 0,024 | 5,772 / 7,730 / 0,221 | 6,380 / 8,351 / 0,221
+after-managed-100k | RemoveComponent | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 13,059 / 15,975 / 0,610
+after-managed-100k | RemoveComponent | ManagedECBParallel | 0,619 / 0,660 / 0,022 | 5,946 / 7,879 / 0,954 | 6,576 / 8,498 / 0,957
+after-managed-100k | Destroy | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 34,353 / 42,890 / 1,714
+after-managed-100k | Destroy | ManagedECBParallel | 0,543 / 0,615 / 0,007 | 16,758 / 19,488 / 1,447 | 17,373 / 20,035 / 1,440
+after-native-100k | Create + Sprite | NativeDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 20,425 / 23,184 / 0,697
+after-native-100k | Create + Sprite | NativeECBParallel | 3,984 / 5,371 / 0,369 | 15,050 / 18,074 / 1,510 | 19,092 / 22,956 / 2,400
+after-native-100k | Create + Sprite | NativeParallelRecordECB | 1,910 / 2,556 / 0,072 | 15,090 / 16,483 / 0,506 | 17,182 / 19,039 / 0,578
+after-native-100k | AddComponent | NativeDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 3,338 / 3,455 / 0,076
+after-native-100k | AddComponent | NativeECBParallel | 1,434 / 1,858 / 0,209 | 6,956 / 8,424 / 0,379 | 8,436 / 10,153 / 0,554
+after-native-100k | AddComponent | NativeParallelRecordECB | 0,997 / 1,946 / 0,474 | 7,140 / 7,740 / 0,258 | 8,406 / 9,685 / 0,120
+after-native-100k | RemoveComponent | NativeDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 3,562 / 3,769 / 0,106
+after-native-100k | RemoveComponent | NativeECBParallel | 1,371 / 2,371 / 0,502 | 7,073 / 8,621 / 0,501 | 8,491 / 10,528 / 1,119
+after-native-100k | RemoveComponent | NativeParallelRecordECB | 0,979 / 1,832 / 0,412 | 7,080 / 8,437 / 0,264 | 8,381 / 9,539 / 0,681
+after-native-100k | Destroy | NativeDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 26,595 / 28,653 / 1,166
+after-native-100k | Destroy | NativeECBParallel | 1,352 / 1,920 / 0,213 | 16,853 / 22,302 / 0,403 | 18,205 / 23,818 / 0,811
+after-native-100k | Destroy | NativeParallelRecordECB | 1,045 / 1,808 / 0,124 | 16,847 / 17,593 / 0,603 | 18,340 / 19,381 / 0,794
+before-managed-1m | Create + Sprite | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 617,913 / 701,956 / 23,793
+before-managed-1m | Create + Sprite | ManagedECBParallel | 11,300 / 14,302 / 0,148 | 160,232 / 227,318 / 8,329 | 171,853 / 241,620 / 8,455
+before-managed-1m | AddComponent | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 315,467 / 359,478 / 9,883
+before-managed-1m | AddComponent | ManagedECBParallel | 5,858 / 8,251 / 0,502 | 106,784 / 133,430 / 6,977 | 112,641 / 139,657 / 8,587
+before-managed-1m | RemoveComponent | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 200,400 / 270,693 / 20,263
+before-managed-1m | RemoveComponent | ManagedECBParallel | 5,930 / 7,240 / 0,598 | 94,543 / 121,173 / 4,830 | 100,473 / 127,977 / 5,322
+before-managed-1m | Destroy | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 403,035 / 496,544 / 22,652
+before-managed-1m | Destroy | ManagedECBParallel | 5,477 / 6,195 / 0,058 | 249,752 / 298,325 / 15,588 | 255,271 / 303,851 / 16,206
+after-managed-1m | Create + Sprite | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 496,289 / 518,317 / 12,514
+after-managed-1m | Create + Sprite | ManagedECBParallel | 10,563 / 11,135 / 0,204 | 163,568 / 224,662 / 3,795 | 174,214 / 235,797 / 3,681
+after-managed-1m | AddComponent | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 231,622 / 253,105 / 11,433
+after-managed-1m | AddComponent | ManagedECBParallel | 5,728 / 8,120 / 0,085 | 109,934 / 136,658 / 17,744 | 115,662 / 142,676 / 17,707
+after-managed-1m | RemoveComponent | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 179,562 / 197,124 / 2,704
+after-managed-1m | RemoveComponent | ManagedECBParallel | 5,819 / 6,126 / 0,133 | 78,376 / 107,352 / 16,045 | 84,195 / 113,434 / 15,804
+after-managed-1m | Destroy | ManagedDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 424,169 / 479,159 / 16,627
+after-managed-1m | Destroy | ManagedECBParallel | 5,414 / 5,549 / 0,048 | 231,530 / 295,127 / 16,111 | 236,972 / 300,655 / 16,033
+after-native-1m | Create + Sprite | NativeDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 252,390 / 277,409 / 6,633
+after-native-1m | Create + Sprite | NativeECBParallel | 50,045 / 67,618 / 11,964 | 341,269 / 408,551 / 20,575 | 391,315 / 473,788 / 30,169
+after-native-1m | Create + Sprite | NativeParallelRecordECB | 21,247 / 24,975 / 1,857 | 342,971 / 422,810 / 16,529 | 365,121 / 446,624 / 14,582
+after-native-1m | AddComponent | NativeDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 33,534 / 35,689 / 1,597
+after-native-1m | AddComponent | NativeECBParallel | 20,756 / 26,625 / 3,178 | 168,156 / 205,038 / 21,257 | 190,033 / 230,093 / 26,531
+after-native-1m | AddComponent | NativeParallelRecordECB | 10,046 / 17,542 / 1,245 | 159,823 / 193,024 / 8,170 | 170,154 / 209,330 / 8,743
+after-native-1m | RemoveComponent | NativeDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 35,680 / 42,913 / 0,761
+after-native-1m | RemoveComponent | NativeECBParallel | 20,273 / 25,243 / 0,975 | 145,093 / 170,299 / 9,683 | 166,994 / 195,542 / 12,547
+after-native-1m | RemoveComponent | NativeParallelRecordECB | 13,305 / 17,850 / 1,212 | 134,071 / 217,567 / 30,314 | 149,055 / 232,554 / 32,797
+after-native-1m | Destroy | NativeDirect | 0,000 / 0,000 / 0,000 | 0,000 / 0,000 / 0,000 | 347,743 / 431,938 / 16,161
+after-native-1m | Destroy | NativeECBParallel | 21,184 / 27,532 / 1,890 | 306,365 / 407,223 / 25,708 | 327,549 / 434,756 / 26,869
+after-native-1m | Destroy | NativeParallelRecordECB | 16,498 / 19,753 / 1,209 | 347,262 / 563,238 / 29,378 | 363,841 / 580,611 / 28,882
+
+SHA256 der eingefrorenen Binaerdateien:
+before | EcsNativeComparison-NativeScripts.dll | 3441774A0FC06CCCA41F4A23C298B5AD51BB3330E88A6D42BC07B0C877B6A4CE
+before | EcsNativeComparison.dll | 798EAAE3B4F1FABA0DDF6BC32D33434356CCF7D6C152296247E07AE7A67DF328
+before | Funke-Engine.dll | 50077772D0A319F2F1F981DE309229B67F55D19F4891AECD99C0AB5182F0BAD2
+before | Funke-Runtime.exe | 3E0303E7CCE29D850E3BB26666D2166D78E03E8FBDAD33B5CC06EC77BBC2BC76
+before | Funke-ScriptCore.dll | BE3439AA7120F3C164B9D4833E7E8315275D79B793B6BFE7504D7A728354B757
+after | EcsNativeComparison-NativeScripts.dll | 76D87CEAB10D5B8114F735AFE909635C254718B043FA99A3E0930E8D3941357B
+after | EcsNativeComparison.dll | 8A64ABCCDF1F88A3F1A98708C151E2FCE8F23B39DADFE9EECC919F21FEB88984
+after | Funke-Engine.dll | 7E5076DBAE5D1E4B9131E598B93B8C8A6F9AE4963F5A415ECA522862EB6772B1
+after | Funke-Runtime.exe | 9A1245AD31FA0CF929B5EED29A2E7604E2082EFF061A0471D4880CF08D5BAF71
+after | Funke-ScriptCore.dll | 1130FCAA8E0E0B972445FE588500B63F77F74C07B8DF3B264C9B0A67846C658D

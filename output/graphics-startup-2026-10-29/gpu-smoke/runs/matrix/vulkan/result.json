@@ -1,0 +1,13 @@
+{
+  "Case": "vulkan",
+  "RequestedBackend": "Vulkan",
+  "Backend": "Vulkan",
+  "Adapter": "AMD  Radeon RX 7800 XT",
+  "Success": true,
+  "Error": null,
+  "Screenshots": [
+    "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\graphics-startup-2026-10-29\\gpu-smoke\\runs\\matrix\\vulkan\\CoverageSky.png"
+  ],
+  "GpuErrors": [],
+  "Log": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\graphics-startup-2026-10-29\\gpu-smoke\\runs\\matrix\\vulkan\\user-data\\Funke\\Logs\\Funke-Editor.log"
+}

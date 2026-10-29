@@ -116,7 +116,7 @@ internal static class UIEventDispatcher
             if (clicked)
             {
                 interactable.RaiseClicked();
-                // Button.OnClick handled in DispatchButtons to cover TargetGraphic-owned Interactables.
+                // Button.Clicked handled in DispatchButtons to cover TargetGraphic-owned Interactables.
             }
 
             if (mouseDown) interactable.RaiseMouseDown();
@@ -243,9 +243,7 @@ internal static class UIEventDispatcher
         int count = Query("Input Field");
         if (count == 0)
         {
-            // Any field that vanished while focused never gets an explicit
-            // OnDeselect — that matches the "destroyed entity" semantics
-            // already used elsewhere (no zombie events on dead handles).
+            // Destroyed fields cannot receive Deselect because their handles are invalid.
             s_LastInputFieldText.Clear();
             s_PrevFocusedInputFields.Clear();
             return;

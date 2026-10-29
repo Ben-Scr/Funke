@@ -45,7 +45,7 @@ namespace Funke {
 		bool IsInitialized() const { return m_Initialized; }
 
 	private:
-		bool LoadHostFxr();
+		bool LoadHostFxr(const std::filesystem::path& privateRoot);
 
 		// hostfxr function pointers (loaded dynamically)
 		void* m_HostFxrLib = nullptr;  // HMODULE

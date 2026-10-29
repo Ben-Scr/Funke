@@ -1,0 +1,74 @@
+{
+  "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenEmpty",
+  "runDirectory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open-2026-10-29\\before-empty\\warmup-1",
+  "launcher": {
+    "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenEmpty",
+    "startedAtUnixMs": 1793305148018.6433,
+    "spawnedAtUnixMs": 1793305148244.3892,
+    "launcherElapsedMs": 226.1526,
+    "complete": true,
+    "success": true,
+    "pid": 98896,
+    "error": ""
+  },
+  "editorReadyMs": 1654.7060546875,
+  "readyStatus": {
+    "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenEmpty",
+    "projectName": "OpenEmpty",
+    "pid": 98896,
+    "version": "Funke 2026.1.0-beta.1+c586c2ac69de.dev.engine.dirty.e59278e7b970 (Windows x64 Release)",
+    "protocol": 1,
+    "state": "edit",
+    "scene": "SampleScene",
+    "scenes": [
+      "SampleScene"
+    ],
+    "unsavedScenes": [],
+    "scripts": {
+      "compiling": true,
+      "lastBuildSucceeded": true,
+      "errors": ""
+    },
+    "busy": null,
+    "surface": {
+      "width": 2007,
+      "height": 1129,
+      "source": "game-view"
+    },
+    "fixedStep": 0,
+    "frame": 1,
+    "gameTime": 0
+  },
+  "scriptsReadyMs": 5544.898193359375,
+  "finalStatus": {
+    "project": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\project-open-fixtures-20261029\\OpenEmpty",
+    "projectName": "OpenEmpty",
+    "pid": 98896,
+    "version": "Funke 2026.1.0-beta.1+c586c2ac69de.dev.engine.dirty.e59278e7b970 (Windows x64 Release)",
+    "protocol": 1,
+    "state": "edit",
+    "scene": "SampleScene",
+    "scenes": [
+      "SampleScene"
+    ],
+    "unsavedScenes": [],
+    "scripts": {
+      "compiling": false,
+      "lastBuildSucceeded": true,
+      "errors": ""
+    },
+    "busy": null,
+    "surface": {
+      "width": 1394,
+      "height": 784,
+      "source": "hidden-game-view"
+    },
+    "fixedStep": 0,
+    "frame": 551,
+    "gameTime": 0
+  },
+  "launchToSpawnMs": 225.745849609375,
+  "spawnToReadyMs": 1428.960205078125,
+  "success": true,
+  "launcherExitCode": 0
+}

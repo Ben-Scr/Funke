@@ -1489,7 +1489,13 @@ namespace Funke {
 		// Update() never recreates it and all managed scripts silently stop running.
 		ForEachLoadedScene([](Scene& loadedScene) { TeardownManagedScripts(loadedScene); });
 		if (!ScriptEngine::ReloadAssemblies()) {
-			FNK_ERROR_TAG("ScriptSystem", "User assembly could not be reloaded; managed scripts are unavailable until the next successful build.");
+			if (ScriptEngine::HasUserAssembly()) {
+				InitializeRegisteredGlobalSystems();
+				FNK_ERROR_TAG("ScriptSystem", "User assembly could not be reloaded; scripts continue with the previous working assembly.");
+			}
+			else {
+				FNK_ERROR_TAG("ScriptSystem", "User assembly could not be reloaded; managed scripts are unavailable until the next successful build.");
+			}
 			return false;
 		}
 
@@ -1937,7 +1943,11 @@ namespace Funke {
 					}
 					else {
 						m_ManagedRebuildError = "C# build succeeded, but the rebuilt assembly could not be loaded.";
-						FNK_ERROR_TAG("ScriptSystem", "C# build succeeded, but the rebuilt assembly could not be loaded.");
+						if (ScriptEngine::HasUserAssembly()) {
+							InitializeRegisteredGlobalSystems();
+							m_ManagedRebuildError += " Scripts continue with the previous working assembly.";
+						}
+						FNK_ERROR_TAG("ScriptSystem", "{}", m_ManagedRebuildError);
 					}
 				}
 			}
@@ -2055,8 +2065,6 @@ namespace Funke {
 		ScriptSceneScope sceneScope(scene);
 		const bool managedRuntimeReady = ScriptEngine::IsInitialized();
 
-		const float dt = Time::GetDeltaTime();
-
 		// Snapshot: user Update() may add/remove ScriptComponents and entities.
 		const auto entities = CollectScriptEntities(scene);
 
@@ -2168,8 +2176,8 @@ namespace Funke {
 							instance->MarkStarted();
 						}
 
-						if (!TryInvokeNativeScript(*instance, "Update", [nativeInstance, dt]() {
-							nativeInstance->Update(dt);
+						if (!TryInvokeNativeScript(*instance, "Update", [nativeInstance]() {
+							nativeInstance->Update();
 						})) {
 							m_NativeHost.DestroyInstance(nativeInstance);
 							instance = FindNativeScriptInstance(scene, entity, nativeInstance);
@@ -2189,7 +2197,6 @@ namespace Funke {
 		// ScriptSceneScope required: GetScene() is read by every NativeBindings call; wrong scene with additive scenes would silently no-op or null-deref.
 		ScriptSceneScope sceneScope(scene);
 		const bool managedRuntimeReady = ScriptEngine::IsInitialized();
-		const float fixedDt = Application::GetInstance() ? Time::GetFixedDeltaTime() : 0.0f;
 
 		const auto entities = CollectScriptEntities(scene);
 		for (EntityHandle entity : entities)
@@ -2208,8 +2215,8 @@ namespace Funke {
 						if (IsTaskRunning(m_NativeRebuildTask) || !instance.HasNativeInstance()) return true;
 						NativeScript* nativeInstance = instance.GetNativePtr();
 						if (!nativeInstance) return true;
-						if (!TryInvokeNativeScript(instance, "FixedUpdate", [nativeInstance, fixedDt]() {
-							nativeInstance->FixedUpdate(fixedDt);
+						if (!TryInvokeNativeScript(instance, "FixedUpdate", [nativeInstance]() {
+							nativeInstance->FixedUpdate();
 						})) {
 							m_NativeHost.DestroyInstance(nativeInstance);
 							// Rebind before Unbind — user FixedUpdate may have realloc'd Scripts.

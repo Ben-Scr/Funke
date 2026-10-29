@@ -26,6 +26,8 @@
 #include "Scripting/StructFieldBytes.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
+#include "Undo/InspectorUndoRecorder.hpp"
+#include "Undo/StructureEditCommand.hpp"
 
 #include <imgui.h>
 
@@ -266,17 +268,19 @@ namespace Funke {
 			return static_cast<uint8_t*>(bytes);
 		}
 
-		// Struct components have no managed instance to take the value; write it into the component bytes, which is
-		// what the scene saves. Returns false when the field has no byte slot (falls back to PendingFieldValues).
-		bool ApplyNativeComponentFieldEdit(const Entity& entity, const std::string& className,
-			const std::string& typeTag, int offset, int size, const std::string& newValueStr)
+		// History survives reloads; resolve the current layout before writing a retained field edit.
+		std::optional<bool> ApplyNativeComponentFieldEdit(const Entity& entity, const std::string& className,
+			const std::string& fieldName, const std::string& typeTag, const std::string& newValueStr)
 		{
-			if (offset < 0) return false;
 			std::size_t byteCount = 0;
 			uint8_t* bytes = FindNativeComponentBytes(entity, className, byteCount);
-			if (!bytes) return false;
-			const StructFieldSlot slot{ typeTag, static_cast<uint32_t>(offset), static_cast<uint32_t>(size) };
-			if (!WriteStructField(bytes, byteCount, slot, newValueStr)) return false;
+			if (!bytes) return std::nullopt;
+			const auto& callbacks = ScriptEngine::GetCallbacks();
+			const char* fields = callbacks.GetClassFieldDefs ? callbacks.GetClassFieldDefs(className.c_str()) : nullptr;
+			if (!fields || !WriteStructFieldByName(bytes, byteCount, fields, fieldName, typeTag, newValueStr)) {
+				FNK_CORE_WARN_TAG("ScriptInspector", "Skipped field edit '{}.{}': its current layout or value is incompatible", className, fieldName);
+				return false;
+			}
 			if (Scene* scene = const_cast<Entity&>(entity).GetScene()) scene->MarkDirty();
 			return true;
 		}
@@ -576,9 +580,11 @@ namespace Funke {
 					(const Entity& e) -> PropertyValue {
 						return LookupPerEntityListValue(perEntityValues, e, fieldName, defaultValue, itemType, schema);
 					};
-				d.Set = [className, fieldName = rec.Name, scriptIndex, isPlaying, schema]
+				d.Set = [className, fieldName = rec.Name, scriptIndex, isPlaying, schema, perEntityValues]
 					(Entity& entity, const PropertyValue& v) {
-						ApplyScriptFieldEdit(entity, scriptIndex, className, fieldName, EncodeScriptList(v.ListValue, schema), isPlaying);
+						const std::string value = EncodeScriptList(v.ListValue, schema);
+						ApplyScriptFieldEdit(entity, scriptIndex, className, fieldName, value, isPlaying);
+						(*perEntityValues)[static_cast<uint32_t>(entity.GetHandle())][fieldName] = value;
 					};
 				return d;
 			}
@@ -589,11 +595,15 @@ namespace Funke {
 				};
 
 			d.Set = [className, fieldName = rec.Name, scriptIndex, multiEditEnabled, isPlaying,
-				typeTag = rec.TypeTag, offset = rec.Offset, size = rec.Size]
+				typeTag = rec.TypeTag, perEntityValues]
 				(Entity& entity, const PropertyValue& v) {
 					const std::string newValueStr = v.ToString();
-					if (ApplyNativeComponentFieldEdit(entity, className, typeTag, offset, size, newValueStr)) return;
-					ApplyScriptFieldEdit(entity, scriptIndex, className, fieldName, newValueStr, isPlaying);
+					const auto nativeResult = ApplyNativeComponentFieldEdit(entity, className, fieldName, typeTag, newValueStr);
+					if (nativeResult && !*nativeResult) return;
+					if (!nativeResult) {
+						ApplyScriptFieldEdit(entity, scriptIndex, className, fieldName, newValueStr, isPlaying);
+					}
+					(*perEntityValues)[static_cast<uint32_t>(entity.GetHandle())][fieldName] = newValueStr;
 					(void)multiEditEnabled; // PropertyDrawer already iterates the span
 				};
 			return d;
@@ -632,8 +642,10 @@ namespace Funke {
 					(const Entity& e) -> PropertyValue {
 						return LookupPerEntityListValue(perEntityValues, e, fieldName, defaultValue, itemType, schema);
 					};
-				d.Set = [className, fieldName = rec.Name, schema](Entity& entity, const PropertyValue& v) {
-					ApplyManagedComponentFieldEdit(entity, className, fieldName, EncodeScriptList(v.ListValue, schema));
+				d.Set = [className, fieldName = rec.Name, schema, perEntityValues](Entity& entity, const PropertyValue& v) {
+					const std::string value = EncodeScriptList(v.ListValue, schema);
+					ApplyManagedComponentFieldEdit(entity, className, fieldName, value);
+					(*perEntityValues)[static_cast<uint32_t>(entity.GetHandle())][fieldName] = value;
 				};
 				return d;
 			}
@@ -643,8 +655,10 @@ namespace Funke {
 					return LookupPerEntityValue(perEntityValues, e, fieldName, defaultValue, type);
 				};
 
-			d.Set = [className, fieldName = rec.Name](Entity& entity, const PropertyValue& v) {
-				ApplyManagedComponentFieldEdit(entity, className, fieldName, v.ToString());
+			d.Set = [className, fieldName = rec.Name, perEntityValues](Entity& entity, const PropertyValue& v) {
+				const std::string value = v.ToString();
+				ApplyManagedComponentFieldEdit(entity, className, fieldName, value);
+				(*perEntityValues)[static_cast<uint32_t>(entity.GetHandle())][fieldName] = value;
 			};
 			return d;
 		}
@@ -888,9 +902,9 @@ namespace Funke {
 			ImGui::Unindent(8.0f);
 		}
 
-		// SceneSystem fields are scene-scoped: Set writes through SetSceneSystemFieldValue + SetSceneSystemField, ignoring the entity argument.
+		// The scene placeholder is resolved at replay time because Play/Stop replaces the scene instance.
 		PropertyDescriptor BuildSceneSystemFieldDescriptor(EditorFieldRecord rec,
-			Scene* scene, const std::string& className)
+			const std::string& className)
 		{
 			PropertyDescriptor d;
 			d.Name = rec.Name;
@@ -910,15 +924,18 @@ namespace Funke {
 			d.Metadata.AssetKindFilter = ScriptAssetKindForTag(rec.TypeTag);
 			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
 			d.Metadata.SuppressTextureSlices = true;
+			const auto value = std::make_shared<std::string>(rec.Value);
 
 			if (const PropertyType itemType = ConfigureListItemMetadata(d, rec); d.Type == PropertyType::List) {
 				ListItemSchema schema = d.Metadata.ListItemFields;
-				d.Get = [value = rec.Value, itemType, schema](const Entity&) -> PropertyValue {
-					return MakeListPropertyValue(value, itemType, schema);
+				d.Get = [value, itemType, schema](const Entity&) -> PropertyValue {
+					return MakeListPropertyValue(*value, itemType, schema);
 				};
-				d.Set = [scene, className, fieldName = rec.Name, schema](Entity&, const PropertyValue& v) {
+				d.Set = [className, fieldName = rec.Name, schema, value](Entity& entity, const PropertyValue& v) {
+					Scene* scene = entity.GetScene();
 					if (!scene) return;
 					const std::string s = EncodeScriptList(v.ListValue, schema);
+					*value = s;
 					scene->SetSceneSystemFieldValue(className, fieldName, s);
 					uint32_t handle = scene->GetSceneSystemHandle(className);
 					if (handle != 0) {
@@ -928,13 +945,15 @@ namespace Funke {
 				return d;
 			}
 
-			d.Get = [value = rec.Value, type = d.Type](const Entity&) -> PropertyValue {
-				return PropertyValue::FromString(type, value);
+			d.Get = [value, type = d.Type](const Entity&) -> PropertyValue {
+				return PropertyValue::FromString(type, *value);
 			};
 
-			d.Set = [scene, className, fieldName = rec.Name](Entity&, const PropertyValue& v) {
+			d.Set = [className, fieldName = rec.Name, value](Entity& entity, const PropertyValue& v) {
+				Scene* scene = entity.GetScene();
 				if (!scene) return;
 				const std::string newValueStr = v.ToString();
+				*value = newValueStr;
 				scene->SetSceneSystemFieldValue(className, fieldName, newValueStr);
 				uint32_t handle = scene->GetSceneSystemHandle(className);
 				if (handle != 0) {
@@ -1267,6 +1286,13 @@ namespace Funke {
 		const Entity& primary = pass.Entities[0];
 		auto& scriptComp = const_cast<Entity&>(primary).GetComponent<ScriptComponent>();
 		const std::span<const Entity> entities = pass.Entities;
+		Scene* scene = const_cast<Entity&>(primary).GetScene();
+		std::vector<EntityHandle> undoHandles;
+		std::unique_ptr<StructureEditRecorder> undo;
+		if (scene && (pass.RemoveScriptIndex != SIZE_MAX || pass.RemoveManagedIndex != SIZE_MAX)) {
+			for (const Entity& entity : pass.Propagation) undoHandles.push_back(entity.GetHandle());
+			undo = std::make_unique<StructureEditRecorder>(*scene, undoHandles, "Remove Script");
+		}
 
 		if (pass.RemoveScriptIndex != SIZE_MAX) {
 			if (pass.MultiEdit) {
@@ -1284,17 +1310,18 @@ namespace Funke {
 				for (const Entity& e : entities) {
 					auto& sc = const_cast<Entity&>(e).GetComponent<ScriptComponent>();
 					if (sc.RemoveManagedComponent(className)) {
-						if (Scene* scene = const_cast<Entity&>(e).GetScene()) scene->MarkDirty();
+						if (Scene* entityScene = const_cast<Entity&>(e).GetScene()) entityScene->MarkDirty();
 					}
 				}
 			}
 			else {
 				if (scriptComp.RemoveManagedComponent(className)) {
-					if (Scene* scene = const_cast<Entity&>(primary).GetScene()) scene->MarkDirty();
+					if (Scene* entityScene = const_cast<Entity&>(primary).GetScene()) entityScene->MarkDirty();
 				}
 			}
 		}
 
+		if (undo) InspectorUndoRecorder::Record(undo->Finish(*scene, undoHandles));
 		RenderScriptPicker();
 		// NOTE: ReferencePicker::RenderPopup() intentionally NOT called here — the outer loop already renders it once; calling it again duplicates IDs and triggers ImGui's conflicting-ID assertion.
 	}
@@ -1360,7 +1387,7 @@ namespace Funke {
 		const std::string idPrefix = "gamesystem:" + className;
 		RenderRecordsGrouped(records, idPrefix, [&](const EditorFieldRecord& rec) {
 			const std::string fieldKey = idPrefix + "." + rec.Name;
-			PropertyDescriptor descriptor = BuildSceneSystemFieldDescriptor(rec, &scene, className);
+			PropertyDescriptor descriptor = BuildSceneSystemFieldDescriptor(rec, className);
 			PropertyDrawer::Draw(entitySpan, descriptor, fieldKey);
 		});
 	}

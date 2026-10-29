@@ -200,7 +200,7 @@ The **Game View** toolbar (aspect ratio, VSync, Stats, Logs) has the same kind o
 
 The toolbar controls let you test the game inside the editor:
 
-- **Play** — snapshots your scenes and starts the game. Unsaved edits go into a private snapshot (`.funke/PlayMode`), so pressing Play never writes your `.scene` files. Scripts and systems begin running. The **Game View** shows the result.
+- **Play** — snapshots all loaded scenes privately (`.funke/PlayMode`) and starts the game, so pressing Play never writes your `.scene` files. Scripts and systems begin running. The **Game View** shows the result.
 - **Pause** — freezes the game so you can inspect it; the editor stays responsive.
 - **Step** — while paused, advance a single frame (great for debugging).
 - **Stop** — ends play and **restores the snapshot**, discarding anything that changed during play. Scenes that had unsaved edits before Play are still marked unsaved afterwards.
@@ -213,7 +213,11 @@ Save the current scene from the menu (or with the usual save shortcut). Scenes a
 
 ### Undo and redo
 
-**Ctrl+Z** / **Ctrl+Y** (**Cmd+Z** / **Cmd+Shift+Z** on macOS, or **Edit › Undo/Redo**) cover inspector field edits, gizmo moves/rotations/scales, creating, deleting, duplicating, pasting and cutting entities, reparenting and reordering in the Hierarchy, adding/removing components and scripts, renaming, enabling/disabling, the Static flag and unpacking prefabs. The history belongs to the scene you are editing: it is cleared when you switch scenes, enter or leave prefab editing, and at Play/Stop. Changes made while playing are not recorded.
+**Ctrl+Z** / **Ctrl+Y** (**Cmd+Z** / **Cmd+Shift+Z** on macOS, or **Edit › Undo/Redo**) work from every editor panel and floating tool window. A text field keeps its own undo while you type; shortcuts do not affect Funke while another application has focus.
+
+Scene history covers inspector and script fields, gizmo moves/rotations/scales, creating, deleting, duplicating, pasting and cutting entities, reparenting and reordering in the Hierarchy, adding/removing components and scripts, component paste/reset, renaming, enabling/disabling, the Static flag, unpacking prefabs and reverting prefab overrides. SceneSystem additions, removal, ordering, enabled state and fields are also undoable.
+
+Each loaded scene keeps its own undo and redo branches when you switch scenes or enter and leave Prefab Mode. A successful Play/Stop cycle restores those branches with the edit scene, including a pending redo. Play takes private snapshots of all loaded scenes, including clean ones, so external file edits cannot change the history's baseline. Closing, replacing or reloading a scene discards its history; closing Prefab Mode discards the prefab's history. Gameplay changes are discarded on Stop. Moving entities between scenes and changes to asset files are not covered by scene history.
 
 ### Crash recovery
 

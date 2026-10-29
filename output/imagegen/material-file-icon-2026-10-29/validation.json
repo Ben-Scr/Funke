@@ -1,0 +1,37 @@
+[
+  {
+    "size": 16,
+    "transparent": 63,
+    "opaque": 28,
+    "borderPixelsAbove32": 0,
+    "sha256": "331ab436a238ab79e314473891805b41676e12e9fba169228dc60c5d27dfb21a"
+  },
+  {
+    "size": 32,
+    "transparent": 306,
+    "opaque": 55,
+    "borderPixelsAbove32": 0,
+    "sha256": "718133ad7172a5ce7b06d7a484363422fb325f06ba568168621a1d171d2c9e69"
+  },
+  {
+    "size": 64,
+    "transparent": 1518,
+    "opaque": 119,
+    "borderPixelsAbove32": 0,
+    "sha256": "d9c7560b6fe448869e983deccc8b22209739153693c617cf191d6789f7a27d20"
+  },
+  {
+    "size": 128,
+    "transparent": 6597,
+    "opaque": 235,
+    "borderPixelsAbove32": 0,
+    "sha256": "6803ca3f019b42ca3db07a88eced2625deea421762cf92a7e25c47a4bf75d5be"
+  },
+  {
+    "size": 256,
+    "transparent": 27431,
+    "opaque": 471,
+    "borderPixelsAbove32": 0,
+    "sha256": "d3b4c39269a2071ad2dba7f9cd4c73096209806484e8df5c904cc67af6c7abd5"
+  }
+]

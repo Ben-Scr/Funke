@@ -1,6 +1,10 @@
 # Windows installer
 
-`scripts/BuildInstaller.ps1` packages an existing Windows x64 release bundle with Inno Setup 6.7.3. It does not compile the engine. The setup targets Windows 10/11 x64, installs Funke for the current Windows user and can install the official Microsoft .NET 10 SDK and Visual C++ runtime when needed. Windows on Arm is not currently an installer target.
+`scripts/BuildInstaller.ps1` packages an existing Windows x64 release bundle with Inno Setup 6.7.3. It does not compile the engine. The setup targets Windows 10/11 x64, installs Funke for the current Windows user and can install the official Microsoft .NET 10 SDK and Visual C++ runtimes when needed. Both runtime architectures are required: x64 for the engine applications and x86 for the bundled Premake package generator. Windows on Arm is not currently an installer target.
+
+The default installer contains binaries, assets, templates, package tools and `EngineSDK/FunkeSDK.json`; it excludes engine sources, native headers and link libraries. `-IncludeNativeSdk` adds the staged native headers and libraries for C++ scripts and packages, without engine implementation sources. The input bundle must have been staged with native development support. For direct payload preparation the equivalent option is `--include-native-sdk`. Upgrading to the binary installer removes obsolete engine-source/native-SDK directories inside the application SDK; project directories are separate.
+
+`scripts/BuildWindows.ps1 -PublishBundle` and `scripts/PackagePosix.py` also produce binary distributions by default. Their opt-in native SDK switches are `-IncludeNativeSdk` and `--include-native-sdk`. Developer launcher staging retains native support by default; `scripts/CopyEngineSdk.py ... --binary-only` stages a managed-only SDK. The manifest advertises only runtime folders actually staged, and the release verifier requires complete Development and Release payloads.
 
 User instructions: [Install Funke on Windows](../Github-Docs/Documentation/Editor/Installer.md).
 
@@ -15,7 +19,7 @@ scripts/BuildInstaller.ps1 -DownloadCompiler
 
 The first command builds the engine and stages its publish bundle. The second explicitly allows downloading the pinned Inno compiler into `bin-int`, then prepares the installer payload and compiles setup. Subsequent installer builds can reuse the staged bundle and compiler. Native engine changes require a fresh bundle first.
 
-The packaging machine also needs Windows SDK `mt.exe` (found automatically, or supplied with `-ManifestToolPath`). Packaging merges the existing UTF-8 process manifest into its staged Premake executable so installation and project paths containing non-ASCII characters work. The vendor executable remains unchanged; the payload inventory records both hashes. Users of the finished installer do not need the Windows SDK.
+The packaging machine also needs Windows SDK `mt.exe` (found automatically, or supplied with `-ManifestToolPath`). Both installer packaging and `BuildWindows.ps1 -PublishBundle` use `scripts/PrepareBundledPremake.ps1` to merge the UTF-8 process manifest into staged Premake before publishing, so installation and project paths containing non-ASCII characters work. The vendor executable remains unchanged; the installer payload inventory records both hashes. Users of the finished installer or ZIP do not need the Windows SDK.
 
 To use an existing compiler and bundle:
 
@@ -88,4 +92,4 @@ scripts/ci/installer_smoke_test.ps1 `
 
 The test uses an isolated path containing spaces and a non-ASCII character. It checks selective package installation, adding components, removing obsolete installer-owned package sources, enabling Tween in a new project, compiling its Dist assembly during a Release game export, and uninstalling while preserving separate projects. These checks passed locally. Windows CI runs the same test; it retains its logs and the separate test projects for inspection.
 
-Exercise setup on clean Windows x64 with a standard user account, including a machine without .NET or the Visual C++ runtime. Check prerequisite cancellation and restart handling, a path containing spaces and non-ASCII characters, upgrading an existing install, and uninstalling while retaining projects. Create a project, enable one selected package, run it, and export a Windows Release build. Verify a signed installer and its installed uninstaller. CI packaging alone does not establish those clean-machine results.
+Exercise setup on clean Windows x64 with a standard user account, including a machine without .NET or the Visual C++ runtimes. Also test with only the x64 Visual C++ runtime installed: setup must install the x86 runtime and the installed `EngineSDK/premake5.exe --version` must succeed. Check prerequisite cancellation and restart handling, a path containing spaces and non-ASCII characters, upgrading an existing install, and uninstalling while retaining projects. Create a project, enable one selected package, run it, and export a Windows Release build. Verify a signed installer and its installed uninstaller. CI packaging alone does not establish those clean-machine results.

@@ -1,0 +1,27 @@
+[
+  {
+    "Name": "d3d12",
+    "Expected": "Direct3D12",
+    "Scenes": [
+      "SampleScene",
+      "CoverageSky"
+    ],
+    "Backend": "Direct3D12"
+  },
+  {
+    "Name": "vulkan",
+    "Expected": "Vulkan",
+    "Scenes": [
+      "CoverageSky"
+    ],
+    "Backend": "Vulkan"
+  },
+  {
+    "Name": "fallback",
+    "Expected": "Direct3D12",
+    "Scenes": [
+      "SampleScene"
+    ],
+    "Backend": "Metal"
+  }
+]

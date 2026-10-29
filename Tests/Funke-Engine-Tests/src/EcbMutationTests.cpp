@@ -6,6 +6,7 @@
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/UUIDComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#include "Components/Tags.hpp"
 #include "Core/Application.hpp"
 #include "Scene/BuiltInComponentRegistration.hpp"
 #include "Scene/ComponentRegistry.hpp"
@@ -36,7 +37,25 @@ namespace {
 	struct EcbMutationValue { uint64_t Value = 17; };
 	struct EcbMutationDependency { uint64_t Value = 29; };
 	struct EcbMutationBlocker { uint64_t Value = 43; };
+	struct RestoreDirectComponentInfo {
+		ComponentInfo& Info;
+		ComponentInfo Saved;
+		explicit RestoreDirectComponentInfo(ComponentInfo& info) : Info(info), Saved(info) {}
+		~RestoreDirectComponentInfo() { Info = std::move(Saved); }
+	};
 
+	struct DirectConstructObserver {
+		Scene& Owner;
+		bool Destroy = false;
+		int Calls = 0;
+		void (*RegisterComponent)() = nullptr;
+		void Constructed(entt::registry&, EntityHandle entity) {
+			++Calls;
+			if (Destroy) Owner.DestroyEntity(entity);
+			else if (RegisterComponent) RegisterComponent();
+			else SceneManager::GetComponentRegistry().Register<EcbMutationDependency>({ "ECB Mutation Dependency", ComponentCategory::Component });
+		}
+	};
 	class EcbTestBuffer {
 	public:
 		explicit EcbTestBuffer(uint32_t entityCount = 0)
@@ -98,6 +117,195 @@ namespace {
 	}
 
 }
+
+TEST_CASE("Direct component bindings reject stale identities and preserve duplicate add and remove results")
+{
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Direct Component Identities");
+	SceneExecutionScope scope(*scene);
+	const NativeBindings bindings = MakeBindings();
+	const uint32_t typeId = RegisterValue();
+	Entity entity = scene->CreateEmptyEntity();
+	const uint64_t id = scene->GetEntityPersistentID(entity.GetHandle());
+	REQUIRE(bindings.Entity_AddComponentByTypeId(id, typeId) == 1);
+	entity.GetComponent<EcbMutationValue>().Value = 123;
+	CHECK(bindings.Entity_AddComponentByTypeId(id, typeId) == 1);
+	CHECK(entity.GetComponent<EcbMutationValue>().Value == 123);
+	CHECK(bindings.Entity_RemoveComponentByTypeId(id, typeId) == 1);
+	CHECK(bindings.Entity_RemoveComponentByTypeId(id, typeId) == 0);
+	CHECK(bindings.Entity_AddComponentByTypeId(id, typeId) == 1);
+	CHECK(entity.GetComponent<EcbMutationValue>().Value == 17);
+	scene->DestroyEntity(entity);
+	Entity replacement = scene->CreateEmptyEntity();
+	replacement.AddComponent<EcbMutationValue>(EcbMutationValue{ 456 });
+	for (const uint64_t invalid : { id, uint64_t{ 0 }, (std::numeric_limits<uint64_t>::max)() }) {
+		CHECK(bindings.Entity_AddComponentByTypeId(invalid, typeId) == 0);
+		CHECK(bindings.Entity_RemoveComponentByTypeId(invalid, typeId) == 0);
+	}
+	const uint64_t replacementId = scene->GetEntityPersistentID(replacement.GetHandle());
+	CHECK(bindings.Entity_AddComponentByTypeId(replacementId, (std::numeric_limits<uint32_t>::max)()) == 0);
+	CHECK(bindings.Entity_RemoveComponentByTypeId(replacementId, (std::numeric_limits<uint32_t>::max)()) == 0);
+	CHECK(replacement.GetComponent<EcbMutationValue>().Value == 456);
+}
+
+TEST_CASE("Direct component bindings preserve mutable conflicts dependencies and onAdd callbacks")
+{
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Direct Component Rules");
+	SceneExecutionScope scope(*scene);
+	const NativeBindings bindings = MakeBindings();
+	auto& components = SceneManager::GetComponentRegistry();
+	components.Register<EcbMutationDependency>({ "ECB Mutation Dependency", ComponentCategory::Component });
+	components.Register<EcbMutationBlocker>({ "ECB Mutation Blocker", ComponentCategory::Component });
+	const uint32_t typeId = RegisterValue();
+	auto& info = *components.GetInfo<EcbMutationValue>();
+	RestoreDirectComponentInfo restore(info);
+	Entity blocked = scene->CreateEmptyEntity();
+	blocked.AddComponent<EcbMutationBlocker>();
+	Entity allowed = scene->CreateEmptyEntity();
+	const uint64_t blockedId = scene->GetEntityPersistentID(blocked.GetHandle());
+	const uint64_t allowedId = scene->GetEntityPersistentID(allowed.GetHandle());
+	REQUIRE(bindings.Entity_AddComponentByTypeId(allowedId, typeId) == 1);
+	REQUIRE(bindings.Entity_RemoveComponentByTypeId(allowedId, typeId) == 1);
+	info.conflictsWith.push_back(typeid(EcbMutationBlocker));
+	info.dependsOn.push_back(typeid(EcbMutationDependency));
+	info.onAdd = [](Entity target) { target.GetComponent<EcbMutationValue>().Value = 701; };
+	CHECK(bindings.Entity_AddComponentByTypeId(blockedId, typeId) == 0);
+	CHECK_FALSE(blocked.HasComponent<EcbMutationValue>());
+	CHECK_FALSE(blocked.HasComponent<EcbMutationDependency>());
+	CHECK(bindings.Entity_AddComponentByTypeId(allowedId, typeId) == 1);
+	CHECK(allowed.HasComponent<EcbMutationDependency>());
+	REQUIRE(allowed.HasComponent<EcbMutationValue>());
+	CHECK(allowed.GetComponent<EcbMutationValue>().Value == 701);
+	allowed.GetComponent<EcbMutationValue>().Value = 702;
+	CHECK(bindings.Entity_AddComponentByTypeId(allowedId, typeId) == 1);
+	CHECK(allowed.GetComponent<EcbMutationValue>().Value == 702);
+	CHECK(bindings.Entity_RemoveComponentByTypeId(allowedId, typeId) == 1);
+	CHECK(allowed.HasComponent<EcbMutationDependency>());
+	info.conflictsWith.clear();
+	CHECK(bindings.Entity_AddComponentByTypeId(blockedId, typeId) == 1);
+	CHECK(blocked.HasComponent<EcbMutationDependency>());
+}
+
+TEST_CASE("Direct component bindings honor custom callbacks and reentrant entity destruction")
+{
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Direct Component Callbacks");
+	SceneExecutionScope scope(*scene);
+	const NativeBindings bindings = MakeBindings();
+	const uint32_t typeId = RegisterValue();
+	auto& info = *SceneManager::GetComponentRegistry().GetInfo<EcbMutationValue>();
+	RestoreDirectComponentInfo restore(info);
+	Entity entity = scene->CreateEmptyEntity();
+	const uint64_t id = scene->GetEntityPersistentID(entity.GetHandle());
+	int calls = 0;
+	SUBCASE("custom add") {
+		info.add = [&](Entity target) { ++calls; target.AddComponent<EcbMutationValue>(EcbMutationValue{ 808 }); };
+		CHECK(bindings.Entity_AddComponentByTypeId(id, typeId) == 1);
+		REQUIRE(entity.HasComponent<EcbMutationValue>());
+		CHECK(entity.GetComponent<EcbMutationValue>().Value == 808);
+		CHECK(calls == 1);
+	}
+	SUBCASE("custom has prevents unnecessary add") {
+		info.has = [&](Entity) { ++calls; return true; };
+		CHECK(bindings.Entity_AddComponentByTypeId(id, typeId) == 0);
+		CHECK_FALSE(entity.HasComponent<EcbMutationValue>());
+		CHECK(calls == 1);
+	}
+	SUBCASE("custom remove") {
+		entity.AddComponent<EcbMutationValue>();
+		info.remove = [&](Entity target) { ++calls; target.RemoveComponent<EcbMutationValue>(); };
+		CHECK(bindings.Entity_RemoveComponentByTypeId(id, typeId) == 1);
+		CHECK_FALSE(entity.HasComponent<EcbMutationValue>());
+		CHECK(calls == 1);
+	}
+	SUBCASE("onAdd destroys its entity") {
+		info.onAdd = [](Entity target) { target.Destroy(); };
+		CHECK(bindings.Entity_AddComponentByTypeId(id, typeId) == 0);
+		CHECK_FALSE(entity.IsValid());
+		CHECK(scene->GetEntityCount() == 0);
+	}
+	SUBCASE("custom has destroys its entity") {
+		info.has = [&](Entity target) { ++calls; target.Destroy(); return false; };
+		CHECK(bindings.Entity_AddComponentByTypeId(id, typeId) == 0);
+		CHECK_FALSE(entity.IsValid());
+		CHECK(calls == 1);
+	}
+}
+
+#if FUNKE_WITH_2D
+TEST_CASE("Direct native add respects external construct hooks that invalidate its entity or descriptors")
+{
+	Application app;
+	auto& components = SceneManager::GetComponentRegistry();
+	RegisterBuiltInComponents(components);
+	const uint32_t typeId = components.GetInfo<SpriteRendererComponent>()->typeIdU32;
+	auto scene = Scene::CreateDetachedScene("Direct Component External Hooks");
+	SceneExecutionScope scope(*scene);
+	const NativeBindings bindings = MakeBindings();
+	Entity entity = scene->CreateRuntimeEntity();
+	const uint64_t id = scene->GetEntityPersistentID(entity.GetHandle());
+	DirectConstructObserver observer{ *scene };
+	entt::scoped_connection connection = scene->GetRegistry().on_construct<SpriteRendererComponent>()
+		.connect<&DirectConstructObserver::Constructed>(&observer);
+	SUBCASE("entity destruction") {
+		observer.Destroy = true;
+		CHECK(bindings.Entity_AddComponentByTypeId(id, typeId) == 0);
+		CHECK_FALSE(entity.IsValid());
+		CHECK(scene->GetEntityCount() == 0);
+	}
+	SUBCASE("component registration") {
+		CHECK(bindings.Entity_AddComponentByTypeId(id, typeId) == 1);
+		CHECK(entity.HasComponent<SpriteRendererComponent>());
+		CHECK(scene->GetEntityCount() == 1);
+	}
+	SUBCASE("another trusted pool cannot certify the component construct hooks") {
+		auto& info = *components.GetInfo<SpriteRendererComponent>();
+		RestoreDirectComponentInfo restore(info);
+		REQUIRE(info.dependsOn.empty());
+		REQUIRE(info.onAdd == nullptr);
+		const auto uuidStorage = entt::type_hash<UUIDComponent>::value();
+		REQUIRE(scene->CanUseParallelEcbComponent(uuidStorage));
+		REQUIRE_FALSE(scene->CanUseParallelEcbComponent(info.storageHash));
+		info.storageHash = uuidStorage;
+		observer.RegisterComponent = [] {
+			auto& registry = SceneManager::GetComponentRegistry();
+			ComponentInfo replacement = *registry.GetInfo<SpriteRendererComponent>();
+			replacement.onAdd = [](Entity target) { target.GetComponent<SpriteRendererComponent>().SortingOrder = 719; };
+			registry.Register<SpriteRendererComponent>(std::move(replacement));
+		};
+		CHECK(bindings.Entity_AddComponentByTypeId(id, typeId) == 1);
+		REQUIRE(entity.HasComponent<SpriteRendererComponent>());
+		CHECK(entity.GetComponent<SpriteRendererComponent>().SortingOrder == 719);
+		CHECK(info.storageHash == entt::type_hash<SpriteRendererComponent>::value());
+	}
+	CHECK(observer.Calls == 1);
+}
+TEST_CASE("Direct component bindings recheck inactive modules after successful mutations")
+{
+	struct ModuleRestore { ~ModuleRestore() { EngineModules::ActivateAllCompiled(); } } moduleRestore;
+	Application app;
+	auto& components = SceneManager::GetComponentRegistry();
+	RegisterBuiltInComponents(components);
+	const uint32_t typeId = components.GetInfo<SpriteRendererComponent>()->typeIdU32;
+	auto scene = Scene::CreateDetachedScene("Direct Component Module State");
+	SceneExecutionScope scope(*scene);
+	const NativeBindings bindings = MakeBindings();
+	Entity existing = scene->CreateRuntimeEntity();
+	Entity absent = scene->CreateRuntimeEntity();
+	const uint64_t existingId = scene->GetEntityPersistentID(existing.GetHandle());
+	const uint64_t absentId = scene->GetEntityPersistentID(absent.GetHandle());
+	REQUIRE(bindings.Entity_AddComponentByTypeId(existingId, typeId) == 1);
+	EngineModules::Configure({});
+	CHECK(bindings.Entity_AddComponentByTypeId(absentId, typeId) == 0);
+	CHECK(bindings.Entity_RemoveComponentByTypeId(existingId, typeId) == 0);
+	CHECK(existing.HasComponent<SpriteRendererComponent>());
+	CHECK_FALSE(absent.HasComponent<SpriteRendererComponent>());
+	EngineModules::ActivateAllCompiled();
+	CHECK(bindings.Entity_RemoveComponentByTypeId(existingId, typeId) == 1);
+	CHECK(bindings.Entity_AddComponentByTypeId(absentId, typeId) == 1);
+}
+#endif
 
 TEST_CASE("ECB component mutations preserve local and live command order")
 {
@@ -855,3 +1063,169 @@ TEST_CASE("ECB failed create rollback preserves existing identity owners")
 	CHECK(scene->TryResolveRuntimeID(67890, resolved));
 	CHECK(resolved == existing);
 }
+
+TEST_CASE("ECB staged destroy skips stale duplicate and already prepared handles")
+{
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Parallel ECB Destroy Filtering");
+	const EntityHandle stale = scene->CreateEntityHandle(EntityOrigin::Runtime, AssetGUID(0), AssetGUID(0), 901);
+	scene->DestroyEntity(stale);
+	const EntityHandle replacement = scene->CreateEntityHandle(EntityOrigin::Runtime, AssetGUID(0), AssetGUID(0), 902);
+	REQUIRE(entt::to_entity(replacement) == entt::to_entity(stale));
+	REQUIRE(replacement != stale);
+	const EntityHandle runtime = scene->CreateEntityHandle(EntityOrigin::Runtime, AssetGUID(0), AssetGUID(0), 903);
+	const EntityHandle saved = scene->CreateEntityHandle(EntityOrigin::Scene, AssetGUID(0), AssetGUID(904), 905);
+	const EntityHandle survivor = scene->CreateEntityHandle(EntityOrigin::Runtime, AssetGUID(0), AssetGUID(0), 906);
+	const uint64_t savedId = scene->GetEntityPersistentID(saved);
+	REQUIRE(savedId == 904);
+
+	SUBCASE("Previously prepared runtime entity") {
+		scene->PrepareParallelEcbDestroy(runtime);
+	}
+
+	const std::array<EntityHandle, 6> batch{ runtime, entt::null, stale, runtime, saved, saved };
+	scene->PrepareParallelEcbDestroy(batch);
+	CHECK(scene->GetEntityCount() == 4);
+	CHECK(scene->IsValid(runtime));
+	CHECK(scene->IsValid(saved));
+	EntityHandle resolved = entt::null;
+	CHECK_FALSE(scene->TryResolveEntityRef(903, resolved));
+	CHECK_FALSE(scene->TryResolveEntityRef(savedId, resolved));
+	CHECK_FALSE(scene->TryResolveRuntimeID(905, resolved));
+	CHECK(scene->TryResolveEntityRef(902, resolved));
+	CHECK(resolved == replacement);
+	CHECK(scene->TryResolveEntityRef(906, resolved));
+	CHECK(resolved == survivor);
+
+	for (EntityHandle entity : { runtime, saved }) {
+		scene->GetRegistry().remove<EntityMetaDataComponent, UUIDComponent>(entity);
+		scene->FinalizeParallelEcbDestroy(entity);
+		scene->FinalizeParallelEcbDestroy(entity);
+		CHECK_FALSE(scene->IsValid(entity));
+	}
+	CHECK(scene->GetEntityCount() == 2);
+	const EntityHandle recycled = scene->CreateEntityHandle(EntityOrigin::Runtime);
+	const std::array recycledBatch{ recycled };
+	CHECK(scene->CanUseParallelEcbDestroy(recycledBatch));
+	CHECK(scene->IsValid(replacement));
+	CHECK(scene->IsValid(survivor));
+}
+
+TEST_CASE("ECB staged destroy leaves dirty flags unchanged when no entity is eligible")
+{
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Parallel ECB Empty Destroy");
+	const EntityHandle stale = scene->CreateEntityHandle(EntityOrigin::Runtime);
+	scene->DestroyEntity(stale);
+	const EntityHandle live = scene->CreateEntityHandle(EntityOrigin::Runtime);
+	scene->PrepareParallelEcbDestroy(live);
+	scene->ClearDirty();
+	const std::array<EntityHandle, 4> batch{ entt::null, stale, live, live };
+	scene->PrepareParallelEcbDestroy(batch);
+	CHECK_FALSE(scene->IsDirty());
+	CHECK(scene->GetEntityCount() == 1);
+	scene->GetRegistry().remove<EntityMetaDataComponent, UUIDComponent>(live);
+	scene->FinalizeParallelEcbDestroy(live);
+	CHECK(scene->GetEntityCount() == 0);
+}
+
+TEST_CASE("ECB staged whole-scene destroy clears both identity maps")
+{
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Parallel ECB Whole Scene Destroy");
+	const EntityHandle runtime = scene->CreateEntityHandle(EntityOrigin::Runtime, AssetGUID(0), AssetGUID(0), 1001);
+	const EntityHandle saved = scene->CreateEntityHandle(EntityOrigin::Scene, AssetGUID(0), AssetGUID(1002), 1003);
+	std::array<EntityHandle, 1> bare{};
+	scene->CreateEntitiesBulk(1, bare);
+	const std::array<EntityHandle, 5> batch{ runtime, saved, runtime, entt::null, bare[0] };
+	scene->PrepareParallelEcbDestroy(batch);
+	EntityHandle resolved = entt::null;
+	CHECK_FALSE(scene->TryResolveRuntimeID(1001, resolved));
+	CHECK_FALSE(scene->TryResolveRuntimeID(1003, resolved));
+	CHECK_FALSE(scene->TryResolveSceneGUID(AssetGUID(1002), resolved));
+	CHECK(scene->GetEntityCount() == 3);
+	for (EntityHandle entity : { runtime, saved, bare[0] }) {
+		CHECK(scene->IsValid(entity));
+		scene->GetRegistry().remove<EntityMetaDataComponent, UUIDComponent>(entity);
+		scene->FinalizeParallelEcbDestroy(entity);
+	}
+	CHECK(scene->GetEntityCount() == 0);
+	const EntityHandle recreated = scene->CreateEntityHandle(EntityOrigin::Scene, AssetGUID(0), AssetGUID(1002), 1003);
+	CHECK(scene->TryResolveRuntimeID(1003, resolved));
+	CHECK(resolved == recreated);
+	CHECK(scene->TryResolveSceneGUID(AssetGUID(1002), resolved));
+	CHECK(resolved == recreated);
+}
+
+TEST_CASE("ECB duplicate destroy commands cannot clear survivor identities")
+{
+	Application app;
+	auto scene = Scene::CreateDetachedScene("Parallel ECB Partial Identity Removal");
+	const EntityHandle removed = scene->CreateEntityHandle(EntityOrigin::Runtime, AssetGUID(0), AssetGUID(0), 1101);
+	const EntityHandle survivor = scene->CreateEntityHandle(EntityOrigin::Scene, AssetGUID(0), AssetGUID(1102), 1103);
+	const std::array batch{ removed, removed };
+	REQUIRE(batch.size() == scene->GetEntityCount());
+	scene->PrepareParallelEcbDestroy(batch);
+	EntityHandle resolved = entt::null;
+	CHECK_FALSE(scene->TryResolveRuntimeID(1101, resolved));
+	CHECK(scene->TryResolveRuntimeID(1103, resolved));
+	CHECK(resolved == survivor);
+	CHECK(scene->TryResolveSceneGUID(AssetGUID(1102), resolved));
+	CHECK(resolved == survivor);
+	scene->GetRegistry().remove<EntityMetaDataComponent, UUIDComponent>(removed);
+	scene->FinalizeParallelEcbDestroy(removed);
+	CHECK(scene->GetEntityCount() == 1);
+	CHECK(scene->IsValid(survivor));
+}
+
+#if FUNKE_WITH_2D
+TEST_CASE("ECB bulk construct hooks preserve deferred static invalidation and transform ownership")
+{
+	Application app;
+	auto& components = SceneManager::GetComponentRegistry();
+	RegisterBuiltInComponents(components);
+	const uint32_t transformType = components.GetInfo<Transform2DComponent>()->typeIdU32;
+	const uint32_t spriteType = components.GetInfo<SpriteRendererComponent>()->typeIdU32;
+	auto scene = Scene::CreateDetachedScene("Parallel ECB Deferred Bulk Hooks");
+	SceneExecutionScope scope(*scene);
+	const NativeBindings bindings = MakeBindings();
+	std::array<uint64_t, 2> ids{};
+	std::array<EntityHandle, 2> entities{};
+	uint64_t staticVersion = 0;
+	{
+		Scene::LoadGuard guard(*scene);
+		EcbTestBuffer create(2);
+		for (uint32_t index = 0; index < ids.size(); ++index) {
+			create.Append(Ecb_DefaultConstructComponent, index, transformType);
+			create.Append(Ecb_DefaultConstructComponent, index, spriteType);
+		}
+		REQUIRE(bindings.Ecb_PlaybackWithMode(create.Bytes().data(), static_cast<int>(create.Bytes().size()),
+			ids.data(), static_cast<int>(ids.size()), 2) == 2);
+		CHECK(scene->HasDirtyTransforms());
+		for (size_t index = 0; index < ids.size(); ++index) {
+			REQUIRE(scene->TryResolveEntityRef(ids[index], entities[index]));
+			scene->ConsumeDirtyTransformEntities();
+			auto& transform = scene->GetRegistry().get<Transform2DComponent>(entities[index]);
+			transform.ClearDirty();
+			transform.SetPosition({ 12.0f, 34.0f });
+			CHECK(scene->HasDirtyTransforms());
+		}
+		scene->GetRegistry().emplace<StaticTag>(entities[0]);
+		staticVersion = scene->GetStaticRenderDataVersion();
+	}
+	CHECK(scene->GetStaticRenderDataVersion() > staticVersion);
+	scene->ConsumeDirtyTransformEntities();
+	staticVersion = scene->GetStaticRenderDataVersion();
+	EcbTestBuffer remove;
+	for (uint64_t id : ids) {
+		remove.AppendLive(Ecb_RemoveComponent, id, transformType);
+		remove.AppendLive(Ecb_RemoveComponent, id, spriteType);
+	}
+	REQUIRE(bindings.Ecb_PlaybackWithMode(remove.Bytes().data(), static_cast<int>(remove.Bytes().size()), nullptr, 0, 2) == 0);
+	CHECK(scene->HasDirtyTransforms());
+	CHECK(scene->GetStaticRenderDataVersion() > staticVersion);
+	for (EntityHandle entity : entities) {
+		CHECK_FALSE(scene->GetRegistry().any_of<Transform2DComponent, SpriteRendererComponent>(entity));
+	}
+}
+#endif
