@@ -22,7 +22,6 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
-#include <thread>
 #include <vector>
 
 using namespace Funke;
@@ -68,6 +67,8 @@ namespace {
 		bool PreviouslyMuted = AudioManager::IsMuted();
 
 		AudioConcurrencyScope() {
+			s_Now = {};
+			AudioManager::SetTimeSourceForTests([] { return s_Now; });
 			auto backend = std::make_unique<MiniaudioBackend>(true);
 			Backend = backend.get();
 			AudioManager::SetBackend(std::move(backend));
@@ -79,6 +80,7 @@ namespace {
 
 		~AudioConcurrencyScope() {
 			if (AudioManager::IsInitialized()) AudioManager::Shutdown();
+			AudioManager::SetTimeSourceForTests(nullptr);
 			AudioManager::SetMaxConcurrentSounds(AudioManager::MAX_CONCURRENT_SOUNDS);
 			AudioManager::SetMaxSoundsPerFrame(AudioManager::MAX_SOUNDS_PER_FRAME);
 			AudioManager::SetMasterVolume(PreviousVolume);
@@ -91,6 +93,13 @@ namespace {
 			Files.push_back(WriteConstantWav(name, frames));
 			return AudioManager::LoadAudio(Files.back().string());
 		}
+
+		void AdvanceTime(std::chrono::steady_clock::duration elapsed) {
+			s_Now += elapsed;
+		}
+
+	private:
+		static inline std::chrono::steady_clock::time_point s_Now;
 	};
 }
 
@@ -227,7 +236,10 @@ TEST_CASE("Audio queued one-shots expire while playback is blocked") {
 	}
 	CHECK(AudioManager::GetQueuedSoundCount() <= AudioManager::MAX_QUEUED_SOUNDS);
 	REQUIRE(AudioManager::GetQueuedSoundCount() > 0);
-	std::this_thread::sleep_for(std::chrono::milliseconds(250));
+	audio.AdvanceTime(std::chrono::milliseconds(200));
+	AudioManager::Update();
+	CHECK(AudioManager::GetQueuedSoundCount() == AudioManager::MAX_QUEUED_SOUNDS);
+	audio.AdvanceTime(std::chrono::milliseconds(1));
 	AudioManager::Update();
 	CHECK(AudioManager::GetQueuedSoundCount() == 0);
 	CHECK(AudioManager::GetActiveSoundCount() == 1);
@@ -245,6 +257,7 @@ TEST_CASE("Audio queue overflow preserves the earliest equal-priority sound") {
 	source.Play();
 	AudioManager::PlayOneShot(queued, 0.25f);
 	for (uint32_t i = 0; i < AudioManager::MAX_QUEUED_SOUNDS * 8; ++i) {
+		audio.AdvanceTime(std::chrono::microseconds(1));
 		AudioManager::PlayOneShot(queued);
 	}
 	CHECK(AudioManager::GetQueuedSoundCount() == AudioManager::MAX_QUEUED_SOUNDS);

@@ -33,6 +33,9 @@ namespace Funke {
 
 		static void SetBackend(std::unique_ptr<IAudioBackend> backend);
 		static IAudioBackend* GetBackend() { return s_Backend.get(); }
+		using TimeSource = std::chrono::steady_clock::time_point (*)();
+		// Set before Initialize; nullptr restores the steady clock after a test.
+		static void SetTimeSourceForTests(TimeSource timeSource);
 
 
 		static AudioHandle LoadAudio(const std::string_view& path);
