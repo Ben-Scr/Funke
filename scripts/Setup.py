@@ -109,8 +109,8 @@ LINUX_BUILD_PACKAGES = {
 LINUX_BUILD_TOOLS = ("c++", "make", "clang", "clang++", "pkg-config")
 LINUX_PKGCONFIG_MODULES = ("x11", "xrandr", "xinerama", "xcursor", "xi", "x11-xcb", "glu")
 # Fallback premake build, downloaded only when no usable premake5 is vendored or on PATH.
-# Matches vendor/bin/premake5.exe and CI; its macOS build runs natively on Apple Silicon
-# (beta2's was Intel-only and failed with "Bad CPU type in executable").
+# Matches vendor/bin/premake5.exe. The official macOS binary is Intel-only;
+# macOS release CI builds a native tool with scripts/ci/setup_macos_premake.py.
 PREMAKE_FALLBACK_VERSION = "5.0.0-beta5"
 # Oldest premake whose `gmake` action is the current Makefile generator (older releases call
 # it gmake2 and ship the legacy one as gmake). The editor also generates with `gmake`.

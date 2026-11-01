@@ -620,15 +620,7 @@ jobs:
 
       - name: Install Premake
         run: |
-          PREMAKE_VERSION="5.0.0-beta5"
-          URL="https://github.com/premake/premake-core/releases/download/v${PREMAKE_VERSION}/premake-${PREMAKE_VERSION}-macosx.tar.gz"
-          mkdir -p vendor/bin
-          curl --fail --location --proto '=https' "$URL" -o "$RUNNER_TEMP/premake-macos.tar.gz"
-          echo "cc57d4a8824d18f69d3954ac8a6a412bef0c019b84d80a985df0e13b6292f7c2  $RUNNER_TEMP/premake-macos.tar.gz" | shasum -a 256 --check
-          tar -xzf "$RUNNER_TEMP/premake-macos.tar.gz" -C vendor/bin premake5
-          chmod +x vendor/bin/premake5
-          lipo vendor/bin/premake5 -verify_arch arm64
-          vendor/bin/premake5 --version
+          python3 scripts/ci/setup_macos_premake.py
 
       - name: Restore Dawn cache
         id: cache-dawn

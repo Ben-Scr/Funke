@@ -5,8 +5,26 @@
 application to Applications. No repository, Python or build tools are needed
 for ordinary C# projects. The .NET 10 SDK is a separate Microsoft prerequisite;
 the supported baseline is macOS 15 or newer, on arm64 or x64.
-the disk image includes an official download link and installation instructions.
+The disk image includes an official download link and installation instructions.
 It does not download or execute an unauthenticated bootstrap script.
+
+For an Apple Silicon source build, bootstrap native Premake **before** running
+`scripts/Setup.sh` or staging the Launcher. The official Premake beta5 macOS
+binary download is Intel-only. The helper compiles the official source release
+with Xcode command-line tools and verifies its pinned SHA-256 before extraction:
+
+```sh
+python3 scripts/ci/setup_macos_premake.py
+bash scripts/Setup.sh
+```
+
+It explicitly builds `PLATFORM=ARM64`, requires an arm64 host process, checks
+native architecture and system-only library dependencies, and tests the embedded
+`gmake` generator outside the source tree. The resulting
+`vendor/bin/premake5` needs no Rosetta installation. A previously downloaded
+official source ZIP can be supplied with `--archive`; the same checksum remains
+mandatory. The source pin and upstream bootstrap documentation are recorded in
+the helper.
 
 Run on macOS after staging the Release Launcher and Dist Runtime:
 
