@@ -297,10 +297,13 @@ TEST_CASE("Unicode font atlas pages preserve padding and reject overflow without
 TEST_CASE("Async font preparation reads and rasterizes on a worker without a renderer") {
 	const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
 	const auto path = root / "Funke-Runtime" / "FunkeAssets" / "Fonts" / "IBMPlexSansCondensed-Regular.ttf";
-	std::shared_ptr<const FontPreparedData> prepared;
-	std::thread worker([&] { prepared = Font::PrepareFromFile(Path::ToUtf8(path), 32.0f); });
-	worker.join();
-	REQUIRE(prepared != nullptr);
+	for (float pixelSize : { 32.0f, 48.0f, 64.0f }) {
+		CAPTURE(pixelSize);
+		std::shared_ptr<const FontPreparedData> prepared;
+		std::thread worker([&] { prepared = Font::PrepareFromFile(Path::ToUtf8(path), pixelSize); });
+		worker.join();
+		REQUIRE(prepared != nullptr);
+	}
 	CHECK(Font::PrepareFromFile("", 32.0f) == nullptr);
 	CHECK(Font::PrepareFromFile(Path::ToUtf8(path), 0.0f) == nullptr);
 	CHECK(Font::PrepareFromFile(Path::ToUtf8(path), std::numeric_limits<float>::infinity()) == nullptr);
