@@ -48,9 +48,16 @@ project "Funke-Engine"
     -- These integration units still aggregate multiple optional modules.
     RemoveFilesUnlessModulesEnabled({ "Render", "Audio", "Physics", "Scripting", "Editor" },
         {
+            "src/Animation/AnimationBinding.*",
+            "src/Animation/AnimationViewer.*",
+            "src/Animation/AnimatorRuntime.*",
             "src/Core/Application.*",
+            "src/DevTools/DevConsole.*",
+            "src/DevTools/PhysicsDebugOverlay.*",
+            "src/DevTools/RunAutomation.*",
             "src/Graphics/RenderSettings.cpp",
-            "src/Serialization/PrefabTemplateCache.*"
+            "src/Serialization/PrefabTemplateCache.*",
+            "src/Systems/AnimatorSystem.*"
         }
     )
 
@@ -77,7 +84,9 @@ project "Funke-Engine"
             "src/Scene/Scene.cpp",
             "src/Scene/SceneDefinition.cpp",
             "src/Scene/SceneExecutionContext.cpp",
+            "src/Scene/SceneExtensions.cpp",
             "src/Scene/SceneManager.cpp",
+            "src/Scene/ProjectSceneLoader.cpp",
             "src/Serialization/SceneSerializer.cpp",
             "src/Serialization/SceneSerializerDeserialize.cpp"
         }
@@ -138,7 +147,8 @@ project "Funke-Engine"
 
     -- Engine feature modules (Funke.2D / Funke.3D): source lists in EngineModules.json.
     for _, featureModule in ipairs(FunkeFeatureModules) do
-        RemoveFilesIfModuleDisabled(featureModule.Enabled, featureModule.sources)
+        RemoveFilesIfModuleDisabled(FunkeModules.Render and FunkeModules.Physics and featureModule.Enabled,
+            featureModule.sources)
     end
 
     -- Profiler is gated by the standalone --no-profiler premake flag, not
