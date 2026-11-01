@@ -43,6 +43,7 @@ $nativeFiles = @(
     "Funke-Launcher.exe",
     "Funke-Editor.exe",
     "Funke-Runtime.exe",
+    "funke.exe",
     "Funke-Engine.dll",
     "EngineSDK\Runtime-Development\Funke-Runtime.exe",
     "EngineSDK\Runtime-Development\Funke-Engine.dll",
@@ -67,11 +68,12 @@ foreach ($entry in $nativeFiles) {
         throw "ProductVersion mismatch in $path; expected $($metadata.version), found $($versionInfo.ProductVersion)."
     }
 
-    Assert-NativePePolicy $path
+    $subsystem = if ($entry -ceq "funke.exe") { 3 } else { 2 }
+    Assert-NativePePolicy -Path $path -ExecutableSubsystem $subsystem
 }
 
 $firstPartyFiles = @(Get-ChildItem -LiteralPath $bundle -Recurse -File |
-    Where-Object { $_.Name -match '^Funke-.*\.(exe|dll)$' })
+    Where-Object { $_.Name -match '^(Funke-.*\.(exe|dll)|funke\.exe)$' })
 foreach ($file in $firstPartyFiles) {
     $versionInfo = $file.VersionInfo
     if ($versionInfo.ProductVersion -cne $metadata.version) {

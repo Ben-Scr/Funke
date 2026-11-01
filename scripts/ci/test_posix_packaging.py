@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tarfile
 import tempfile
 import unittest
@@ -45,6 +46,8 @@ class PosixPackagingTests(unittest.TestCase):
                     (launcher / name).mkdir(parents=True, exist_ok=True)
 
                 output = root / "archives"
+                (root / "build").mkdir()
+                (root / "build/BuildMetadata.json").write_text(json.dumps({"version": "99.0.0"}))
                 with patch.object(PackagePosix, "REPO_ROOT", root), \
                         patch.object(PackagePosix, "IS_MAC", is_mac), \
                         patch.object(PackagePosix, "architecture", return_value=("x86_64", "x64")), \
@@ -52,8 +55,8 @@ class PosixPackagingTests(unittest.TestCase):
                         redirect_stdout(io.StringIO()):
                     self.assertEqual(PackagePosix.main(), 0)
 
-                archive = output / f"Funke-Editor-0.0.0-dev-{label}-x64.tar.gz"
-                prefix = "Funke-0.0.0-dev/"
+                archive = output / f"Funke-Editor-2026.1.0-beta.1-{label}-x64.tar.gz"
+                prefix = "Funke-2026.1.0-beta.1/"
                 with tarfile.open(archive, "r:gz") as bundle:
                     members = set(bundle.getnames())
                     for name in kept:
