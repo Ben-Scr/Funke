@@ -426,7 +426,9 @@ jobs:
           PREMAKE_VERSION="5.0.0-beta5"
           URL="https://github.com/premake/premake-core/releases/download/v${PREMAKE_VERSION}/premake-${PREMAKE_VERSION}-linux.tar.gz"
           mkdir -p vendor/bin
-          curl -fsSL "$URL" | tar -xz -C vendor/bin premake5
+          curl --fail --location --proto '=https' "$URL" -o "$RUNNER_TEMP/premake-linux.tar.gz"
+          echo "38b8e445aac28f8ef1d5b7e4faeb67ee7b7b650e0c3da0f2a9f99620256a5466  $RUNNER_TEMP/premake-linux.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/premake-linux.tar.gz" -C vendor/bin premake5
           chmod +x vendor/bin/premake5
           vendor/bin/premake5 --version
 
@@ -479,6 +481,9 @@ jobs:
 
       - name: Linux Engine + Editor Tests
         run: |
+          metadata_flags=(--require-clean)
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then metadata_flags+=(--tag "$GITHUB_REF_NAME"); fi
+          python3 scripts/generate_build_metadata.py "${metadata_flags[@]}"
           make config=release verbose=1 -j"$(nproc)" Funke-Managed Funke-Engine-Tests Funke-Editor-Tests
           ./bin/Release-linux-x86_64/Funke-Engine-Tests/Funke-Engine-Tests
           ./bin/Release-linux-x86_64/Funke-Editor-Tests/Funke-Editor-Tests
@@ -492,6 +497,32 @@ jobs:
 
       - name: Package Linux Bundle
         run: python3 scripts/PackagePosix.py --configuration Release --output-dir dist-posix
+
+      - name: Build Linux Installer
+        run: |
+          flags=()
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then flags+=(--require-release); fi
+          python3 scripts/BuildLinuxInstaller.py --bundle-dir bin/Release-linux-x86_64/Funke-Launcher --output-dir dist-installer "${flags[@]}"
+
+      - name: Linux Installer Smoke Test
+        run: python3 installer/linux/smoke_test.py --installer dist-installer/FunkeSetup-*-Linux-x64.run --report "${{ runner.temp }}/funke-linux-installer-evidence.json"
+
+      - name: Upload Linux Installer Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-Linux-Installer-Evidence
+          path: |
+            ${{ runner.temp }}/funke-linux-installer-evidence.json
+            ${{ runner.temp }}/Funke Linux Installer */logs/*
+          if-no-files-found: ignore
+
+      - name: Upload Linux Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-Installer-Linux-x64
+          path: dist-installer/*
+          if-no-files-found: error
 
       - name: Upload Linux Bundle
         uses: actions/upload-artifact@v4
@@ -562,9 +593,11 @@ jobs:
   macos-build:
     needs: script-tests
     # Apple Silicon. Builds the engine, editor, launcher and CLI natively (Dawn on Metal) and runs the
-    # doctest suites; the bundle is uploaded for manual checks until macOS releases are signed and notarized.
+    # doctest suites. Public DMG installers require Developer ID signing and notarization.
     # macOS 15 supplies Clang 17; Dawn's aggregate CTAD needs that compiler generation.
     runs-on: macos-15
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
 
     steps:
       - name: Checkout
@@ -590,8 +623,11 @@ jobs:
           PREMAKE_VERSION="5.0.0-beta5"
           URL="https://github.com/premake/premake-core/releases/download/v${PREMAKE_VERSION}/premake-${PREMAKE_VERSION}-macosx.tar.gz"
           mkdir -p vendor/bin
-          curl -fsSL "$URL" | tar -xz -C vendor/bin premake5
+          curl --fail --location --proto '=https' "$URL" -o "$RUNNER_TEMP/premake-macos.tar.gz"
+          echo "cc57d4a8824d18f69d3954ac8a6a412bef0c019b84d80a985df0e13b6292f7c2  $RUNNER_TEMP/premake-macos.tar.gz" | shasum -a 256 --check
+          tar -xzf "$RUNNER_TEMP/premake-macos.tar.gz" -C vendor/bin premake5
           chmod +x vendor/bin/premake5
+          lipo -verify_arch arm64 vendor/bin/premake5
           vendor/bin/premake5 --version
 
       - name: Restore Dawn cache
@@ -638,6 +674,9 @@ jobs:
 
       - name: macOS Engine + Editor Tests
         run: |
+          metadata_flags=(--require-clean)
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then metadata_flags+=(--tag "$GITHUB_REF_NAME"); fi
+          python3 scripts/generate_build_metadata.py "${metadata_flags[@]}"
           make config=release verbose=1 -j"$(sysctl -n hw.ncpu)" Funke-Managed Funke-Engine-Tests Funke-Editor-Tests
           ./bin/Release-macosx-arm64/Funke-Engine-Tests/Funke-Engine-Tests
           ./bin/Release-macosx-arm64/Funke-Editor-Tests/Funke-Editor-Tests
@@ -657,6 +696,41 @@ jobs:
 
       - name: Package macOS Bundle
         run: python3 scripts/PackagePosix.py --configuration Release --output-dir dist-posix
+
+      - name: Prepare macOS Signing
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          flags=()
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then flags+=(--require); fi
+          python3 installer/macos/signing.py prepare "${flags[@]}"
+
+      - name: Build macOS Installer
+        run: |
+          flags=()
+          if [[ -n "${FUNKE_MAC_SIGNING_IDENTITY:-}" ]]; then
+            flags+=(--signing-identity "$FUNKE_MAC_SIGNING_IDENTITY" --signing-keychain "$FUNKE_MAC_SIGNING_KEYCHAIN" --notary-keychain-profile "$FUNKE_MAC_NOTARY_KEYCHAIN_PROFILE")
+          fi
+          python3 scripts/BuildMacInstaller.py --bundle bin/Release-macosx-arm64/Funke-Launcher --output-dir dist-installer "${flags[@]}"
+
+      - name: Clean Up macOS Signing
+        if: always()
+        run: python3 installer/macos/signing.py cleanup
+
+      - name: macOS Installer Smoke Test
+        run: python3 installer/macos/smoke_test.py --installer dist-installer/FunkeSetup-*-macOS-arm64.dmg --require-scripting
+
+      - name: Upload macOS Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-Installer-macOS-arm64
+          path: dist-installer/*
+          if-no-files-found: error
 
       - name: Upload macOS Bundle
         uses: actions/upload-artifact@v4
@@ -700,6 +774,18 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: Funke-Editor-macOS-arm64
+          path: release
+
+      - name: Download Linux Installer
+        uses: actions/download-artifact@v4
+        with:
+          name: Funke-Installer-Linux-x64
+          path: release
+
+      - name: Download macOS Installer
+        uses: actions/download-artifact@v4
+        with:
+          name: Funke-Installer-macOS-arm64
           path: release
 
       - name: Create Draft Release

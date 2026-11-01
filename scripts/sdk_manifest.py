@@ -169,7 +169,7 @@ def verify_bundle(bundle: Path, *, require_binary: bool = False) -> dict:
     manifest = validate_sdk(bundle / "EngineSDK", require_binary=require_binary)
     platform = manifest["platform"]
     suffix = ".exe" if platform == "windows" else ""
-    for name in (f"Funke-Launcher{suffix}", f"Funke-Editor{suffix}", *PLATFORMS[platform], *SCRIPT_CORE_FILES,
+    for name in (f"Funke-Launcher{suffix}", f"Funke-Editor{suffix}", f"funke{suffix}", *PLATFORMS[platform], *SCRIPT_CORE_FILES,
                  f"Funke-PackageTool{suffix}", "Funke-PackageTool.dll", "Funke-PackageTool.deps.json",
                  "Funke-PackageTool.runtimeconfig.json", "BuildMetadata.json"):
         require_file(bundle, name)

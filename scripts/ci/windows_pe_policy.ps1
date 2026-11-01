@@ -27,12 +27,15 @@ function Read-PePolicy {
 }
 
 function Assert-NativePePolicy {
-    param([string]$Path)
+    param(
+        [string]$Path,
+        [ValidateSet(2, 3)]
+        [int]$ExecutableSubsystem = 2
+    )
 
     $policy = Read-PePolicy $Path
     $expectedDll = [System.IO.Path]::GetExtension($Path) -ieq ".dll"
-    # DLLs may use either desktop subsystem; only the executables must hide the console.
-    $subsystems = if ($expectedDll) { @(2, 3) } else { @(2) }
+    $subsystems = if ($expectedDll) { @(2, 3) } else { @($ExecutableSubsystem) }
     if ($policy.Machine -ne 0x8664 -or -not $policy.Is64Bit -or
         $policy.IsDll -ne $expectedDll -or $policy.Subsystem -notin $subsystems) {
         throw "PE platform/subsystem policy failed: $Path (machine=$($policy.Machine), subsystem=$($policy.Subsystem), dll=$($policy.IsDll))"

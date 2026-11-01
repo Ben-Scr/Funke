@@ -1,0 +1,24 @@
+Install Funke
+
+Requires macOS 15 or newer, matching the supported .NET 10 platform baseline.
+
+1. Drag Funke.app to Applications (or your user's Applications folder).
+2. Install Microsoft's .NET 10 SDK for your Mac's architecture if it is not
+   already installed. The "Install .NET 10 SDK" link opens Microsoft's website.
+   Use the SDK, not only the Runtime. The Launcher also reports a missing SDK.
+3. Open Funke from Applications. You can now create a C# project without Git,
+   Xcode, Python or the engine repository.
+
+Choose the arm64 download for Apple Silicon and x64 for an Intel Mac.
+An additional native SDK and Xcode command-line tools are needed only for C++
+scripts and native packages. Extra export targets need their platform SDKs.
+
+Update by quitting Funke and replacing Funke.app with the new version. Projects
+and preferences are stored separately and are preserved. To uninstall, quit
+Funke and move Funke.app to Trash. The shared Microsoft SDK is not removed.
+
+The command-line tool is inside Funke.app/Contents/MacOS/funke.
+
+Public downloads should be Developer ID signed and notarized. Local test DMGs
+may be ad-hoc signed and are not equivalent to a notarized public release.
+Do not disable Gatekeeper or remove quarantine attributes to bypass a warning.

@@ -1,10 +1,18 @@
-# Windows installer
+# Desktop installers
+
+The installers contain the Launcher, Editor, CLI, game runtimes, templates and binary EngineSDK. Ordinary C# projects do not require this repository or a native compiler. The .NET 10 SDK is required for project creation and scripting; Windows setup bundles it, while Linux and macOS document and check the prerequisite separately.
+
+| Platform | Artifact | Build instructions |
+| --- | --- | --- |
+| Windows 10/11 x64 | `FunkeSetup-<version>-Windows-x64.exe` | Below |
+| Linux x64 | `FunkeSetup-<version>-Linux-x64.run` | [Linux installer](linux/README.md) |
+| macOS 15+ Apple Silicon | `FunkeSetup-<version>-macOS-arm64.dmg` | [macOS installer](macos/README.md) |
+
+Each installer is built from its platform's staged bundle and records its build identity and SHA-256 inventory. CI tests installation from the finished artifact. Public Windows releases require code signing; public macOS releases require Developer ID signing and notarization. Unsigned branch artifacts are for testing.
+
+## Windows installer
 
 `scripts/BuildInstaller.ps1` packages an existing Windows x64 release bundle with Inno Setup 6.7.3. It does not compile the engine. The setup targets Windows 10/11 x64, installs Funke for the current Windows user and can install the official Microsoft .NET 10 SDK and Visual C++ runtimes when needed. Both runtime architectures are required: x64 for the engine applications and x86 for the bundled Premake package generator. Windows on Arm is not currently an installer target.
-
-The default installer contains binaries, assets, templates, package tools and `EngineSDK/FunkeSDK.json`; it excludes engine sources, native headers and link libraries. `-IncludeNativeSdk` adds the staged native headers and libraries for C++ scripts and packages, without engine implementation sources. The input bundle must have been staged with native development support. For direct payload preparation the equivalent option is `--include-native-sdk`. Upgrading to the binary installer removes obsolete engine-source/native-SDK directories inside the application SDK; project directories are separate.
-
-`scripts/BuildWindows.ps1 -PublishBundle` and `scripts/PackagePosix.py` also produce binary distributions by default. Their opt-in native SDK switches are `-IncludeNativeSdk` and `--include-native-sdk`. Developer launcher staging retains native support by default; `scripts/CopyEngineSdk.py ... --binary-only` stages a managed-only SDK. The manifest advertises only runtime folders actually staged, and the release verifier requires complete Development and Release payloads.
 
 The default installer contains binaries, assets, templates, package tools and `EngineSDK/FunkeSDK.json`; it excludes engine sources, native headers and link libraries. `-IncludeNativeSdk` adds the staged native headers and libraries for C++ scripts and packages, without engine implementation sources. The input bundle must have been staged with native development support. For direct payload preparation the equivalent option is `--include-native-sdk`. Upgrading to the binary installer removes obsolete engine-source/native-SDK directories inside the application SDK; project directories are separate.
 

@@ -50,7 +50,7 @@ project "Funke-CLI"
         buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
         systemversion "latest"
         defines { "FNK_PLATFORM_WINDOWS" }
-        files { path.join(ROOT_DIR, "premake/Utf8CodePage.manifest") }
+        files { "version.rc", path.join(ROOT_DIR, "premake/Utf8CodePage.manifest") }
         -- Funke-Engine.dll imports nethost even when no script ever runs.
         postbuildcommands {
             '{COPYFILE} "' .. path.join(ROOT_DIR, "External/dotnet/lib/nethost.dll") .. '" "%{cfg.targetdir}/nethost.dll"'
@@ -80,6 +80,10 @@ project "Funke-CLI"
         optimize "Full"
         symbols "Off"
         defines { "FNK_DIST", "NDEBUG" }
+
+    filter { "system:windows", "configurations:Release or Dist" }
+        buildoptions { "/guard:cf" }
+        linkoptions { "/DYNAMICBASE", "/NXCOMPAT", "/HIGHENTROPYVA", "/guard:cf" }
 
     filter {}
 

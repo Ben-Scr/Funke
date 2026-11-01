@@ -4,6 +4,8 @@ Release notes describe user-visible compatibility, reliability, and workflow cha
 
 ## [2026.1.0-beta.1]
 
+- **Desktop installers:** Windows x64 setup includes both Visual C++ runtime architectures and verifies the CLI's version, signing and hardening alongside the graphical applications. Linux x64 gains a per-user `.run` installer with upgrade and tracked uninstall. macOS 15+ Apple Silicon gains a relocatable `.app` in a DMG, with Developer ID signing and notarization required for public releases. Bundled tools, SDK completeness, payload integrity and installation paths are checked before publication.
+
 First public beta. The editor runs on Windows x64, Linux x64 and macOS (Apple Silicon and Intel); each exports games for its own desktop platform, and to Android, iOS and Web through platform packages. See `Github-Docs/Documentation/Known-Limitations.md`.
 
 - **Repository and SDK cleanup:** removed the retired Glad dependency and unused GLSL assets. Editor icon concepts now live under `design/editor-icons/concepts/` instead of the distributed runtime assets, and Android Java sources use the `dev/funke/player` directory matching their package name.

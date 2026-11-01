@@ -1,0 +1,4 @@
+#define FNK_FILE_DESCRIPTION "Funke CLI"
+#define FNK_INTERNAL_NAME "Funke-CLI"
+#define FNK_ORIGINAL_FILENAME "funke.exe"
+#include "../Funke-Engine/src/Core/VersionResource.rcinc"

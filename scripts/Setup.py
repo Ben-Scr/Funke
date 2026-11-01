@@ -567,8 +567,7 @@ def find_dotnet_root_unix() -> Path | None:
 
 
 def setup_dotnet_unix(repo_root: Path) -> bool:
-    """Copy the .NET hosting headers + libnethost from the host pack into
-    External/dotnet/ so the native scripting layer links on Unix."""
+    """Stage the Unix host library while preserving the pinned hosting headers."""
     root = find_dotnet_root_unix()
     if not root:
         print("  [!!] Could not locate the .NET install root (set DOTNET_ROOT).")
@@ -599,7 +598,8 @@ def setup_dotnet_unix(repo_root: Path) -> bool:
     lib_dest.mkdir(parents=True, exist_ok=True)
     try:
         for header in ("nethost.h", "hostfxr.h", "coreclr_delegates.h"):
-            shutil.copy2(native / header, dest / header)
+            if not (dest / header).is_file():
+                shutil.copy2(native / header, dest / header)
         static_lib = native / "libnethost.a"
         shared_lib = native / "libnethost.so"
         if static_lib.is_file():

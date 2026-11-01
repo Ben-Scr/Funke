@@ -41,6 +41,15 @@ class SdkManifestTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "missing"):
                     sdk_manifest.verify_bundle(bundle)
 
+    def test_cli_is_required_on_every_desktop_platform(self):
+        for platform in sdk_manifest.PLATFORMS:
+            with self.subTest(platform=platform):
+                bundle = Path(self.temp.name) / platform
+                make_bundle(bundle, platform=platform)
+                (bundle / ("funke.exe" if platform == "windows" else "funke")).unlink()
+                with self.assertRaisesRegex(ValueError, "missing"):
+                    sdk_manifest.verify_bundle(bundle)
+
     def test_invalid_manifest_contracts_are_rejected(self):
         changes = (lambda m: m.update(schemaVersion=2), lambda m: m.update(schemaVersion=True),
                    lambda m: m.update(engineVersion=""), lambda m: m.update(platform="other"),
