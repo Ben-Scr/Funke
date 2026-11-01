@@ -1,6 +1,8 @@
 # Scripting
 
-Funke uses **C#** as its primary scripting language (running on **.NET 10 LTS**). You write scripts to give your game behavior — move the player, spawn enemies, handle UI, manage game state. Funke also supports **native C++ scripts** for performance-critical code.
+Funke supports game scripting in **C# and native C++**, and a project can use both. Write scripts to move the player, spawn enemies, handle UI and manage game state in the language that fits your project. The native engine's C++20 implementation does not restrict game development to C++.
+
+The first sections cover C# with `EntityScript`, `SceneSystem` and `GlobalSystem` (.NET 10 on desktop). For C++ gameplay in the editor, jump to [Native C++ scripts](#native-c-scripts), which covers `NativeScript`, Inspector fields and native compilation/reload. C++ is a supported gameplay workflow, not limited to performance optimizations. For a C++ application using the SDK directly, see the [native application guide](../../../Funke-Engine/README.md). Platform runtime differences are documented in [Known Limitations](../Known-Limitations.md).
 
 Visual Studio IntelliSense for Funke game projects requires Visual Studio 2026 (18.0+) because Visual Studio 2022 cannot evaluate `net10.0` projects. VS Code or Rider can use the installed .NET 10 SDK instead.
 
@@ -12,7 +14,7 @@ If you just want the short version: make a class that inherits from `EntityScrip
 
 ## The three kinds of script
 
-Funke has three script base classes, each with a different **scope**:
+Funke's C# API has three script base classes, each with a different **scope**:
 
 |Base class|Scope|Use it for|
 |-|-|-|
@@ -190,6 +192,8 @@ Entity.SetParent(null);           // detach to the scene root
 ```
 
 **Input** — keyboard, mouse, axes:
+
+The examples below use the core's direct input API. Named actions, control maps and saved keyboard/mouse/gamepad rebinding are available through the optional [Funke.Input](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Input) package. Install it through the Package Manager and follow its README for the API and version-specific authoring tools. Its namespace is `Funke.InputActions`, distinct from the core `Funke.Input` class.
 
 ```csharp
 Input.GetKey(KeyCode.Space);        // held
@@ -611,8 +615,8 @@ You don't need this to write scripts, but it helps to know the shape:
 * Override lifecycle methods (`OnStart`, `OnUpdate`, `OnFixedUpdate`, …); attach scripts via a `ScriptComponent`.
 * Expose fields to the Inspector with attributes like `\[ShowInEditor]` and `\[ClampValue]`.
 * Use the rich API — `Input`, `Time`, `Physics2D`, `Audio`, `Log`, scene queries, math.
-* Drop to **native C++ scripts** only for measured performance needs.
-* **Hot reload** lets you iterate on C# without restarting.
+* Write game logic in **C++** with `NativeScript`; create and attach native scripts in the editor, expose registered fields to the Inspector, and combine them with C# scripts as needed.
+* C# **hot reload** and C++ **native rebuild/reload** support iteration in the editor; see their respective sections for state-restoration behavior and toolchain requirements.
 
 ## Related pages
 

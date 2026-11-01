@@ -4,6 +4,8 @@ This page explains how Funke's package system works **under the hood** — the l
 
 If you just want to *write* a package, start with [Writing Packages](Writing-Packages.md). This page is the reference for how the machinery fits together.
 
+If you want to **use an existing package**, start with the [package overview](../README.md#packages) or browse the [Funke Package Registry](https://github.com/Ben-Scr/Funke-PackageRegistry). Tilemaps (`Funke.Tilemap2D`) and input actions with saved rebinding (`Funke.Input`) are already available as external packages. This repository's `packages/` directory is not the complete catalog; use the editor's **Package Manager** to discover and install published packages.
+
 > **Source of truth:** the loader/validator lives in `premake/package-loader.lua`. When anything here disagrees with that file, the file wins.
 
 ---

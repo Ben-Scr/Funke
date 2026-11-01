@@ -1,8 +1,10 @@
 # Funke Documentation
 
-Welcome to the documentation for **Funke**, a 2D game engine. These pages explain how the engine works and how to build games with it, from launching a game to writing your own packages.
+Welcome to the documentation for **Funke**, a modular 2D and 3D game engine supporting game development in **C++ and C#**. The native engine is implemented in C++20; projects can use C++ scripts, C# scripts, or both. These pages explain how the engine works and how to build games with it, from launching a game to writing your own packages.
 
-New here? Start with **[Your First Game](Getting-Started.md)**, a 15-minute walkthrough from install to a Windows build. After that, a good reading order is **Editor → ECS → Scenes → Scripting**, then the rest as you need it. **[Known Limitations](Known-Limitations.md)** lists what the beta does not do yet.
+New here? Start with **[Your First Game](Getting-Started.md)**, a 15-minute walkthrough from install to a desktop build. After that, a good reading order is **Editor → ECS → Scenes → Scripting**, then the rest as you need it. **[Known Limitations](Known-Limitations.md)** distinguishes core-only restrictions, available package features and remaining beta limitations.
+
+**Funke includes an external package and project ecosystem.** This repository does not contain every available feature or reference game. Tilemaps and input actions/rebinding are available through [optional packages](#packages). For existing reference games, open the Launcher's **Asset Library**: **NeonStack** and **Voxtau** are game projects, and **FunkeBench** is a benchmark sample. The [Asset Library catalog](https://github.com/Ben-Scr/Funke-AssetLibrary) is maintained separately; `templates/` contains only the built-in empty starters.
 
 ---
 
@@ -33,11 +35,22 @@ The foundational systems that make a game run.
 
 ## Scripting
 
-- **[Scripting](Scripting/Scripting.md)** — writing game logic in C# (and native C++): script types, lifecycle, the API, and hot reload.
+- **[Scripting](Scripting/Scripting.md)** — writing game logic in C# and C++: script types, lifecycle, Inspector integration, and compilation/reload workflows.
+- **[Native C++ scripts](Scripting/Scripting.md#native-c-scripts)** — create and attach C++ gameplay scripts in the editor.
+- **[C++ application and SDK guide](../../Funke-Engine/README.md)** — build a native application directly with Funke, including projects that do not use the editor.
 
 ## Packages
 
-Funke's extensibility model — add anything the core doesn't ship.
+Optional packages provide existing Funke features as well as an extension mechanism for your own code. A feature being absent from the core does not mean it is unavailable in Funke.
+
+| Feature | External package |
+|---|---|
+| Tilemaps | [Funke.Tilemap2D](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Tilemap2D) — chunked tile storage, rendering, Inspector support and C++/C# APIs. |
+| Input actions and rebinding | [Funke.Input](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Input) — named actions, control maps, keyboard/mouse/gamepad bindings and saved rebinding. |
+| 2D lighting | [Funke.Lighting2D](Engine-Core/Lighting-2D.md) — ambient light, point lights and shadow occluders. |
+| Audio mixing | [Funke.AudioMixer](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.AudioMixer) — optional mixer functionality; see the [scripting examples](Scripting/Scripting.md). |
+
+In the editor's **Package Manager**, refresh the registry, find the package and choose **Install**. Browse the [Funke Package Registry](https://github.com/Ben-Scr/Funke-PackageRegistry) for more packages. Consult each package's README for supported engine versions, prerequisites, APIs and limits; source versions can include features not yet in the published release.
 
 - **[Writing Packages](Packages/Writing-Packages.md)** — a practical guide to authoring your own package.
 - **[Package System](Packages/Package-System.md)** — how packages are built, loaded, and distributed (the internals).

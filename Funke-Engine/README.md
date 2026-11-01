@@ -1,6 +1,6 @@
 # Funke-Engine
 
-The Funke engine static/shared library. This README documents the public C++ entry path for users who want to ship a game without the editor. For build setup, dependency installation, and submodule init see the top-level [README.md](../README.md).
+The Funke engine static/shared library, implemented in C++20. **Funke supports game development in both C++ and C#.** This README specifically documents the public C++ application and SDK entry path for users who want to ship a game without the editor. For editor-based C++ and C# game development, see the [scripting guide](../Github-Docs/Documentation/Scripting/Scripting.md). For build setup, dependency installation, and submodule init see the top-level [README.md](../README.md).
 
 ## Quick start (for game developers)
 

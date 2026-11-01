@@ -2,13 +2,30 @@
  <img src="Github-Docs/Logos/icon_256.png" width="10%" alt="Demo">
 <p align="left">
 
-Funke is a lightweight C++20 2D game engine mainly focused on performance and modularity.
+Funke is a lightweight, modular game engine with **C++ and C# support** for game development, focused on performance and supporting both 2D and 3D projects. The native engine is implemented in C++20; game logic and packages can be written in C++, C#, or a combination of both.
 
 > **Beta.** The editor and launcher run on **Windows x64**, **Linux x64** and **macOS** (Apple Silicon and Intel), and each exports games for its own desktop platform. Android, iOS and Web exports come from platform packages. See [Known Limitations](Github-Docs/Documentation/Known-Limitations.md).
 
 **Making a game?** Download the latest build for Windows, Linux or macOS from [Releases](https://github.com/Ben-Scr/Index/releases), install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0), and follow **[Your First Game](Github-Docs/Documentation/Getting-Started.md)**.
 
 **License:** Funke is free and open source under the [MIT License](LICENSE.txt). Use it for any project, commercial or not; just keep the license notice with copies of the engine (game builds already include it in their `Licenses` folder).
+
+## Develop with C++ and C#
+
+- **C#:** write game logic with `EntityScript`, `SceneSystem` and `GlobalSystem`, Inspector integration and hot reload. Start with [Your First Game](Github-Docs/Documentation/Getting-Started.md) and the [scripting guide](Github-Docs/Documentation/Scripting/Scripting.md).
+- **C++:** create native scripts in the editor with `NativeScript`, Inspector integration and native rebuild/reload, or build an application directly with the native SDK. See [Native C++ scripts](Github-Docs/Documentation/Scripting/Scripting.md#native-c-scripts) and the [C++ application/SDK guide](Funke-Engine/README.md).
+- **Combine both:** use C++ and C# scripts in the same project and author [packages with native and/or managed layers](Github-Docs/Documentation/Packages/Writing-Packages.md). The languages have distinct APIs and build requirements; follow the guide for your chosen workflow.
+
+## Packages and reference games
+
+Funke's available features span the engine and separately distributed packages. This repository's built-in components and empty project templates are not the full catalog.
+
+- **Tilemaps** are available through [Funke.Tilemap2D](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Tilemap2D).
+- **Input actions, control maps and saved rebinding** are available through [Funke.Input](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Input).
+- Install optional packages through the editor's **Package Manager**; see the [package overview](Github-Docs/Documentation/README.md#packages) for discovery and installation.
+- **Reference games already exist:** open the Launcher's **Asset Library** to download projects such as **NeonStack** and **Voxtau**, or the **FunkeBench** sample. They are distributed through the separate [Funke Asset Library](https://github.com/Ben-Scr/Funke-AssetLibrary), not the engine repository's `templates/` folder.
+
+Check the package documentation and Asset Library alongside [Known Limitations](Github-Docs/Documentation/Known-Limitations.md) when evaluating Funke's capabilities. A feature supplied by an optional package is available in Funke even when it is not built into the core.
 
 ## Preview Images
 

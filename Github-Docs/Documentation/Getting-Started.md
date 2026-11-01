@@ -2,6 +2,12 @@
 
 This walkthrough takes a new project from the Launcher to a finished desktop build in about 15 minutes. It assumes you have never used Funke before. Screens and names are the same on Windows, Linux and macOS; executables just have no `.exe` outside Windows.
 
+Funke supports **C++ and C#** game development. This walkthrough uses C#; for C++ in the editor, follow [Native C++ scripts](Scripting/Scripting.md#native-c-scripts). For a native application using the SDK directly, see the [C++ application guide](../../Funke-Engine/README.md). A project can combine both languages.
+
+Prefer to explore an existing game? Open the Launcher's **Asset Library** for reference projects such as **NeonStack** and **Voxtau**, plus the **FunkeBench** benchmark sample. These are distributed through the separate [Funke Asset Library](https://github.com/Ben-Scr/Funke-AssetLibrary). The **Empty 2D** and **Empty 3D** templates are blank starting points, not the complete example catalog.
+
+This tutorial uses built-in APIs to keep setup small. For tilemaps, install **Funke.Tilemap2D**; for input actions and saved rebinding, install **Funke.Input** through the editor's **Package Manager**. See the [package overview](README.md#packages) for links and installation guidance.
+
 ## 1. Install the prerequisites
 
 | You need | For | Download |
