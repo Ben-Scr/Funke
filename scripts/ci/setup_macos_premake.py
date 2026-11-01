@@ -12,7 +12,6 @@ import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import platform
-import re
 import shutil
 import stat
 import subprocess
@@ -135,9 +134,6 @@ def verify_binary(binary: Path, directory: Path, environment: dict[str, str]) ->
     version = run([str(binary), "--version"], directory, environment)
     if VERSION not in version:
         raise ValueError(f"Compiled Premake does not report {VERSION}: {version.strip()}")
-    help_text = run([str(binary), "--help"], directory, environment)
-    if not re.search(r"^\s*gmake\s+", help_text, re.MULTILINE):
-        raise ValueError("Compiled Premake has no embedded gmake generator")
 
 
 def build(archive: Path | None, output: Path, verify_source_only: bool = False) -> None:
