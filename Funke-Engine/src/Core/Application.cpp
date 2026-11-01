@@ -585,7 +585,9 @@ namespace Funke {
 			FNK_INFO_TAG("Window", "Initialization took " + StringHelper::ToString(timer));
 
 			timer.Reset();
-			RenderApi::Init(GLInitSpecifications(Color::Background(), GLCullingMode::Back));
+			if (!RenderApi::Init(GLInitSpecifications(Color::Background(), GLCullingMode::Back))) {
+				FNK_THROW(FunkeErrorCode::LoadFailed, "Graphics backend failed to initialize");
+			}
 			FNK_INFO_TAG("RenderApi", "Initialization took " + StringHelper::ToString(timer));
 
 			// MUST call after RenderApi::Init: ConfigureSurface resets the viewport to full surface dims; no resize event fires at startup so frame 0 would render stretched without this.

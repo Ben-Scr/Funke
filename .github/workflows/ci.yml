@@ -408,7 +408,15 @@ jobs:
           # Dawn is shared, so its former static-archive linker memory issue no longer applies.
           # libx11-xcb-dev: Dawn's X11 backend needs X11/Xlib-xcb.h (not in xorg-dev).
           sudo apt-get install -y xorg-dev libglu1-mesa-dev xvfb pkg-config clang libx11-xcb-dev lcov \
-            libwayland-dev libxkbcommon-dev wayland-protocols libdbus-1-dev libudev-dev
+            libwayland-dev libxkbcommon-dev wayland-protocols libdbus-1-dev libudev-dev \
+            libvulkan1 mesa-vulkan-drivers vulkan-tools
+
+      - name: Verify Software Vulkan Driver
+        run: |
+          driver=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
+          test -n "$driver"
+          echo "VK_DRIVER_FILES=$driver" >> "$GITHUB_ENV"
+          VK_DRIVER_FILES="$driver" vulkaninfo --summary
 
       - name: Install Premake
         run: |
@@ -497,6 +505,12 @@ jobs:
 
       - name: Linux Runtime Smoke Test
         run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Release-linux-x86_64/Funke-Runtime/Funke-Runtime
+
+      - name: Linux Missing Graphics Driver Test
+        env:
+          VK_DRIVER_FILES: /nonexistent/funke-vulkan-driver.json
+          VK_ICD_FILENAMES: /nonexistent/funke-vulkan-driver.json
+        run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Release-linux-x86_64/Funke-Runtime/Funke-Runtime --expect-render-init-failure
 
       - name: Linux Export With Bundled .NET
         run: python3 scripts/ci/desktop_export_smoke_test.py --cli bin/Release-linux-x86_64/Funke-CLI/funke

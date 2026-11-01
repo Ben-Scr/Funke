@@ -90,6 +90,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Also require successful CoreCLR and Funke-ScriptCore initialization.",
     )
+    parser.add_argument(
+        "--expect-render-init-failure",
+        action="store_true",
+        help="Verify a controlled startup failure when graphics drivers are unavailable.",
+    )
     return parser.parse_args()
 
 
@@ -366,6 +371,14 @@ def main() -> int:
             log_path, log_offset = log_snapshot(staged_binary)
             exit_code, log_output = run_runtime(staged_binary, args.timeout, required_markers)
             log_output += read_log_tail(log_path, log_offset)
+
+            if args.expect_render_init_failure:
+                if exit_code != 1 or "Graphics backend failed to initialize" not in log_output:
+                    return fail(f"Expected graphics initialization failure with status 1, got {exit_code}", log_output)
+                if "Full Initialization took" in log_output:
+                    return fail("Runtime continued after graphics initialization failed", log_output)
+                print(f"Runtime handled graphics initialization failure: {runtime_binary}")
+                return 0
 
             if exit_code != 0:
                 return fail(
