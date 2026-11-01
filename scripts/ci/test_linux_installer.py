@@ -160,6 +160,23 @@ class LinuxInstallerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "dotnet.microsoft.com"):
                 installer.check_prerequisites({"architecture": "x86_64"})
 
+    def test_native_smoke_logs_use_runner_temporary_directory(self):
+        spec = importlib.util.spec_from_file_location("linux_smoke", ROOT / "installer/linux/smoke_test.py")
+        smoke = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(smoke)
+        runner_temp = self.root / "Runner temporary directory"
+        dotnet = self.root / "dotnet"
+        write(dotnet, "fixture")
+        with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(runner_temp)}), \
+                mock.patch.object(smoke.sys, "platform", "linux"), \
+                mock.patch.object(smoke.sys, "argv", ["smoke_test.py", "--installer", str(self.package), "--dotnet", str(dotnet)]), \
+                mock.patch.object(smoke, "verify") as verify:
+            self.assertEqual(smoke.main(), 0)
+        work_root = verify.call_args.args[1]
+        self.assertEqual(work_root.parent, runner_temp.resolve())
+        self.assertTrue(work_root.name.startswith("Funke Linux Installer "))
+        self.assertEqual(verify.call_args.args[2], work_root / "evidence.json")
+
     @unittest.skipUnless(os.name == "posix", "POSIX filesystem and shell quoting")
     def test_desktop_exec_escapes_keyfile_and_command_layers(self):
         home = self.root / 'Home with \\ $ " % ` spaces'

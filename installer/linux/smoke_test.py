@@ -132,7 +132,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--installer", type=Path, required=True)
     parser.add_argument("--dotnet", type=Path)
-    parser.add_argument("--work-parent", type=Path, default=Path(tempfile.gettempdir()))
+    parser.add_argument("--work-parent", type=Path,
+                        default=Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())))
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     if sys.platform != "linux":
