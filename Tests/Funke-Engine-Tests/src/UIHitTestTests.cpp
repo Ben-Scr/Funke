@@ -214,6 +214,13 @@ TEST_CASE("UI quad culling uses letterboxed scissor pixels and preserves edge sa
 	CHECK(clip.Max.x == doctest::Approx(1.0f / 6.0f));
 	CHECK(clip.Min.y == doctest::Approx(0.0f));
 	CHECK(clip.Max.y == doctest::Approx(0.5f));
+	CHECK(clip.Min.y == 0.0f);
+	const auto offsetClip = QuadVisibility::FromScissor(1000000250, 1000000100, 100, 100,
+		1000000000, 1000000000, 600, 400);
+	CHECK(offsetClip.Min.x == clip.Min.x);
+	CHECK(offsetClip.Min.y == clip.Min.y);
+	CHECK(offsetClip.Max.x == clip.Max.x);
+	CHECK(offsetClip.Max.y == clip.Max.y);
 	const std::array<Vec2, 4> hiddenRow{ Vec2{ -0.1f, -0.4f }, Vec2{ 0.1f, -0.4f },
 		Vec2{ 0.1f, -0.1f }, Vec2{ -0.1f, -0.1f } };
 	CHECK_FALSE(QuadVisibility::IsVisible(hiddenRow, glm::mat4{ 1.0f }, clip));
