@@ -23,7 +23,7 @@ FORBIDDEN_TOOLS = ("git", "cmake", "ninja", "msbuild", "clang", "clang++", "gcc"
 
 def isolated_environment(root: Path, dotnet: Path) -> dict[str, str]:
     environment = {name: value for name, value in os.environ.items()
-                   if not name.startswith(("FUNKE_", "DOTNET_", "MSBUILD", "NUGET_"))
+                   if not name.upper().startswith(("FUNKE_", "DOTNET_", "MSBUILD", "NUGET_"))
                    and name not in ("LD_LIBRARY_PATH", "LD_PRELOAD", "CMAKE_PREFIX_PATH", "LIBRARY_PATH")}
     home = root / "Home Prüfung with spaces"
     guards = root / "tool-guards"

@@ -86,7 +86,7 @@ class WindowsPePolicyTests(unittest.TestCase):
 class WindowsSigningSelectionTests(unittest.TestCase):
     def test_signing_includes_cli_and_managed_files_but_excludes_vendor_files(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             expected = {"funke.exe", "Funke-Engine.dll", "Funke-ScriptCore.dll", "nested/funke.exe"}
             for relative in expected | {"SDL3.dll", "vendor.exe", "funke.exe.bak"}:
                 path = root / relative
@@ -117,7 +117,7 @@ ConvertTo-Json -Compress -InputObject @($script:SignedPaths)
                 capture_output=True, text=True, timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            actual = {Path(path).relative_to(root).as_posix() for path in json.loads(result.stdout)}
+            actual = {Path(path).resolve().relative_to(root).as_posix() for path in json.loads(result.stdout)}
             self.assertEqual(actual, expected)
 
 

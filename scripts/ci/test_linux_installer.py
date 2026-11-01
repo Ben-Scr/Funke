@@ -30,7 +30,7 @@ class LinuxInstallerTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="funke-linux-installer-")
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.bundle = self.root / "bundle"
         make_bundle(self.bundle, native=True, platform="linux")
         self.package = BuildLinuxInstaller.build(self.bundle, self.root / "output")
@@ -46,6 +46,15 @@ class LinuxInstallerTests(unittest.TestCase):
         self.assertFalse((target / "EngineSDK/External").exists())
         self.assertEqual(manifest["files"]["Funke-Launcher"]["mode"], 0o755)
         self.assertTrue(self.package.with_suffix(".run.sha256").is_file())
+
+    def test_native_smoke_does_not_inherit_managed_build_overrides(self):
+        spec = importlib.util.spec_from_file_location("linux_smoke", ROOT / "installer/linux/smoke_test.py")
+        smoke = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(smoke)
+        with mock.patch.dict(os.environ, {"MSBuildSDKsPath": "/source/sdk", "FUNKE_ENGINE_ROOT": "/source/engine"}):
+            environment = smoke.isolated_environment(self.root, self.root / "dotnet/dotnet")
+        self.assertNotIn("MSBuildSDKsPath", environment)
+        self.assertNotIn("FUNKE_ENGINE_ROOT", environment)
 
     def test_release_requires_clean_commit_metadata(self):
         with self.assertRaisesRegex(ValueError, "clean bundle"):
@@ -244,7 +253,7 @@ class LinuxInstallerTests(unittest.TestCase):
         self.assertEqual(victim.read_text(), "unrelated")
         self.assertTrue((prefix / "current").is_symlink())
 
-    @unittest.skipUnless(os.name == "posix", "POSIX filesystem and executable bootstrap")
+    @unittest.skipUnless(sys.platform == "linux", "Native Linux installer execution")
     def test_install_upgrade_execute_and_preserving_uninstall(self):
         home = self.root / "Home with spaces"
         home.mkdir()

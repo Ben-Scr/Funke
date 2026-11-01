@@ -74,7 +74,7 @@ class MacInstallerTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="funke-mac-test-")
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.bundle = self.root / "Input Bundle"
         make_bundle(self.bundle, native=True, platform="macosx")
         self.metadata = {"version": "2026.1.0-beta.1", "schemaVersion": 1, "dirty": False,
