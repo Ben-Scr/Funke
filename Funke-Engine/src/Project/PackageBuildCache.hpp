@@ -11,6 +11,7 @@
 
 #include <rapidxml.hpp>
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -38,7 +39,9 @@ namespace Funke::PackageBuildCache {
 			if (error) { Valid = false; return; }
 			const auto time = entry.last_write_time(error);
 			if (error) { Valid = false; return; }
-			std::string value = std::to_string(size) + ":" + std::to_string(time.time_since_epoch().count());
+			const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(time.time_since_epoch());
+			const auto fraction = std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch() - seconds);
+			std::string value = std::to_string(size) + ":" + std::to_string(seconds.count()) + ":" + std::to_string(fraction.count());
 			if (content) {
 				std::string hash, message;
 				if (!Hash::Sha256OfFile(path, hash, message)) { Valid = false; return; }

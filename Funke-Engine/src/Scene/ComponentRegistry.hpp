@@ -59,7 +59,8 @@ namespace Funke {
                             storage.emplace(entity, entity);
                         }
                         else {
-                            storage.emplace(entity);
+                            // Construct listeners can remove the component; push does not fetch it afterward.
+                            storage.push(entity);
                         }
                     });
                 info.remove.SetNative<T>([](Entity e) { e.RemoveComponent<T>(); },
@@ -125,7 +126,7 @@ namespace Funke {
                 if (info.defaultEmplace == nullptr) {
                     if constexpr (std::is_default_constructible_v<T>) {
                         info.defaultEmplace.SetNative<T>([](entt::registry& r, EntityHandle e) {
-                            r.emplace<T>(e);
+                            r.storage<T>().push(e);
                         });
                     }
                 }

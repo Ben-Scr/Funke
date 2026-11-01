@@ -3,6 +3,7 @@
 #include "Build/GameBuilder.hpp"
 #include "Build/DotNetRuntimeBundle.hpp"
 #include "Editor/PlatformBuilder.hpp"
+#include "Project/BuildPlatformSupport.hpp"
 #include "Project/FunkeBuildProfile.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Serialization/File.hpp"
@@ -185,8 +186,10 @@ TEST_CASE("GameBuilder::Prepare folds the profile's configuration, defines and t
 
 	FunkeBuildProfile qa;
 	qa.Name = "QA";
-	qa.Platform = BuildPlatform::Windows;
-	qa.RenderBackend = FunkeProject::RenderBackend::Direct3D12;
+	const auto host = BuildPlatformSupport::HostDesktopPlatform();
+	REQUIRE(host.has_value());
+	qa.Platform = *host;
+	qa.RenderBackend = FunkeBuildProfile::AllowedBackends(*host).front();
 	qa.Configuration = FunkeProject::BuildProfile::Debug;
 	qa.Defines = { "FUNKE_TEST" };
 	qa.DevConsole = false;
@@ -198,6 +201,7 @@ TEST_CASE("GameBuilder::Prepare folds the profile's configuration, defines and t
 
 	std::string error;
 	GameBuilder::Request request;
+	INFO(error);
 	REQUIRE(GameBuilder::Prepare(temp.Project, request, error));
 	CHECK(request.Project.ActiveBuildProfile == FunkeProject::BuildProfile::Debug);
 	CHECK(request.Project.CustomDefines == std::vector<std::string>{ "STEAM", "FUNKE_TEST" });

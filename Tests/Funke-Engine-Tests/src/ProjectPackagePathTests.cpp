@@ -59,6 +59,27 @@ TEST_CASE("Project package input inventory detects additions deletions and same-
 	CHECK(before.Digest() != after.Digest());
 }
 
+TEST_CASE("Project package cache retains subsecond file timestamp changes") {
+	using namespace Funke::PackageBuildCache;
+	PackageCacheFixture fixture;
+	const auto source = fixture.Root / "Source.cs";
+	fixture.Write(source, "source");
+	const auto stamp = std::filesystem::last_write_time(source);
+	Inventory before;
+	before.Add(source);
+	REQUIRE(before.Valid);
+	std::filesystem::last_write_time(source, stamp + std::chrono::milliseconds(1));
+	REQUIRE(std::filesystem::last_write_time(source) != stamp);
+	Inventory after;
+	after.Add(source);
+	REQUIRE(after.Valid);
+	CHECK(after.Digest() != before.Digest());
+	std::filesystem::last_write_time(source, stamp);
+	Inventory restored;
+	restored.Add(source);
+	CHECK(restored.Digest() == before.Digest());
+}
+
 TEST_CASE("Project package cache rejects missing changed and malformed artifacts") {
 	using namespace Funke;
 	using namespace Funke::PackageBuildCache;

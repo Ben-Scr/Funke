@@ -254,6 +254,12 @@ TEST_CASE("Direct native add respects external construct hooks that invalidate i
 		CHECK_FALSE(entity.IsValid());
 		CHECK(scene->GetEntityCount() == 0);
 	}
+	SUBCASE("default construction destroys its entity") {
+		observer.Destroy = true;
+		components.GetByTypeId(typeId)->defaultEmplace(scene->GetRegistry(), entity.GetHandle());
+		CHECK_FALSE(entity.IsValid());
+		CHECK(scene->GetEntityCount() == 0);
+	}
 	SUBCASE("component registration") {
 		CHECK(bindings.Entity_AddComponentByTypeId(id, typeId) == 1);
 		CHECK(entity.HasComponent<SpriteRendererComponent>());
