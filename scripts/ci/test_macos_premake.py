@@ -1,6 +1,7 @@
 """Trust boundaries for the pinned native macOS Premake bootstrap."""
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 import stat
@@ -76,6 +77,35 @@ class MacPremakeTests(unittest.TestCase):
                 patch.object(setup.platform, "machine", return_value="x86_64"), \
                 self.assertRaisesRegex(ValueError, "arm64 Python"):
             setup.build(None, self.root / "premake5")
+
+    def test_streamed_hash_does_not_require_python_311_file_digest(self):
+        path = self.root / "large.bin"
+        content = b"payload" * (1024 * 1024)
+        path.write_bytes(content)
+        with patch.object(setup.hashlib, "file_digest", side_effect=AssertionError("Python 3.11 API"), create=True):
+            self.assertEqual(setup.digest(path), hashlib.sha256(content).hexdigest())
+
+    def test_apple_sdk_patch_rejects_unknown_source_without_modification(self):
+        header = self.root / "contrib/zlib/zutil.h"
+        header.parent.mkdir(parents=True)
+        header.write_bytes(b"unexpected upstream revision")
+        with self.assertRaisesRegex(ValueError, "audited source"):
+            setup.apply_apple_sdk_patch(self.root)
+        self.assertEqual(header.read_bytes(), b"unexpected upstream revision")
+
+    def test_apple_sdk_patch_preserves_classic_mac_guard_and_rejects_wrong_output(self):
+        original = b"#if defined(MACOS) || defined(TARGET_OS_MAC)\n#define fdopen(fd,mode) NULL\n#endif\n"
+        expected = b"#if defined(MACOS)\n#define fdopen(fd,mode) NULL\n#endif\n"
+        header = self.root / "contrib/zlib/zutil.h"
+        header.parent.mkdir(parents=True)
+        header.write_bytes(original)
+        with patch.object(setup, "ZUTIL_ORIGINAL_SHA256", hashlib.sha256(original).hexdigest()):
+            with patch.object(setup, "ZUTIL_PATCHED_SHA256", "0" * 64), self.assertRaisesRegex(ValueError, "audited output"):
+                setup.apply_apple_sdk_patch(self.root)
+            self.assertEqual(header.read_bytes(), original)
+            with patch.object(setup, "ZUTIL_PATCHED_SHA256", hashlib.sha256(expected).hexdigest()):
+                setup.apply_apple_sdk_patch(self.root)
+        self.assertEqual(header.read_bytes(), expected)
 
 
 if __name__ == "__main__":

@@ -27,6 +27,8 @@ VERSION = "5.0.0-beta5"
 SOURCE_ROOT = f"premake-{VERSION}-src"
 SOURCE_URL = f"https://github.com/premake/premake-core/releases/download/v{VERSION}/{SOURCE_ROOT}.zip"
 SOURCE_SHA256 = "660ba0dd472c06be59da60b78c3abaf8cef10a0a4f3b9ad69d8e34fbd190126b"
+ZUTIL_ORIGINAL_SHA256 = "91cce8e78e83bcdb8c6acb98d4f0686dbdc81ca97d4a36a60c0b48f7ef78f1af"
+ZUTIL_PATCHED_SHA256 = "165dc4e3959ca31bfe7c7ddb7b360538b672f260ba616f9f33fab34721bb97e9"
 MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 128 * 1024 * 1024
 
@@ -101,6 +103,19 @@ def build_environment() -> dict[str, str]:
     return environment
 
 
+def apply_apple_sdk_patch(source: Path) -> None:
+    # Backport the classic-Mac guard from zlib 4bd9a71f3539b5ce47f0c67ab5e01f3196dc8ef9.
+    # Apple Clang 17 predefines TARGET_OS_MAC for modern macOS, which provides fdopen.
+    header = source / "contrib/zlib/zutil.h"
+    original = header.read_bytes()
+    if hashlib.sha256(original).hexdigest() != ZUTIL_ORIGINAL_SHA256:
+        raise ValueError("Premake zlib compatibility patch input differs from the audited source")
+    patched = original.replace(b"#if defined(MACOS) || defined(TARGET_OS_MAC)", b"#if defined(MACOS)")
+    if hashlib.sha256(patched).hexdigest() != ZUTIL_PATCHED_SHA256:
+        raise ValueError("Premake zlib compatibility patch result differs from the audited output")
+    header.write_bytes(patched)
+
+
 def run(command: list[str], directory: Path, environment: dict[str, str], timeout: int = 1200) -> str:
     result = subprocess.run(command, cwd=directory, env=environment, text=True, encoding="utf-8",
                             errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
@@ -137,11 +152,18 @@ def build(archive: Path | None, output: Path, verify_source_only: bool = False) 
             archive = directory / "source.zip"
             download(archive)
         source = extract_source(archive, directory / "source")
+        apply_apple_sdk_patch(source)
         if verify_source_only:
-            print(f"[Premake] Official source archive verified: {SOURCE_SHA256}")
+            print(f"[Premake] Official source archive verified: {SOURCE_SHA256}; Apple zlib guard patch verified.")
             return
         environment = build_environment()
         print(f"[Premake] Bootstrapping {VERSION} for native arm64 from verified sources.", flush=True)
+        sdk_probe = directory / "apple-sdk-probe.c"
+        sdk_probe.write_text('#include "zutil.h"\n#include <stdio.h>\n'
+                             '#ifdef fdopen\n#error zlib must not redefine modern macOS fdopen\n#endif\n'
+                             'static FILE *(*probe_fdopen)(int, const char *) = fdopen;\n', encoding="utf-8")
+        run(["/usr/bin/clang", "-arch", "arm64", "-fsyntax-only", "-I", str(source / "contrib/zlib"),
+             str(sdk_probe)], directory, environment)
         # Upstream's osx target cleans only this extracted temporary source tree.
         run(["/usr/bin/make", "-f", "Bootstrap.mak", "osx", "PLATFORM=ARM64", "CONFIG=release",
              "CC=/usr/bin/clang -arch arm64", "CXX=/usr/bin/clang++ -arch arm64",
