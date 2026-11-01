@@ -627,7 +627,7 @@ jobs:
           echo "cc57d4a8824d18f69d3954ac8a6a412bef0c019b84d80a985df0e13b6292f7c2  $RUNNER_TEMP/premake-macos.tar.gz" | shasum -a 256 --check
           tar -xzf "$RUNNER_TEMP/premake-macos.tar.gz" -C vendor/bin premake5
           chmod +x vendor/bin/premake5
-          lipo -verify_arch arm64 vendor/bin/premake5
+          lipo vendor/bin/premake5 -verify_arch arm64
           vendor/bin/premake5 --version
 
       - name: Restore Dawn cache
