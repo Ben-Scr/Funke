@@ -267,13 +267,30 @@ class BuildMetadataTests(unittest.TestCase):
         self.assertEqual(self._run("--tag", "v2026.1.0-rc.1", "--require-clean"), 1)
 
     def test_patch_managed_submodules_do_not_dirty_release_metadata(self) -> None:
-        status = (
-            " m External/ImGuizmo\n"
-            " m External/entt\n"
-            " m External/imgui"
-        )
-        with mock.patch.object(metadata_script, "run_git", return_value=status):
-            self.assertEqual(metadata_script.repository_status(), "")
+        output = self.root / "build/github-output.txt"
+        self.assertEqual(self._run("--require-clean", "--github-output", str(output)), 0)
+        original = self._metadata()
+        git = metadata_script.run_git
+        for code in (" m", " M"):
+            status = "\n".join(f"{code} {path}" for path in (
+                "External/ImGuizmo", "External/box2d", "External/entt", "External/imgui",
+            ))
+            def patched_git(*arguments: str) -> str:
+                return status if arguments[0] == "status" else git(*arguments)
+
+            with self.subTest(code=code), mock.patch.object(metadata_script, "run_git", side_effect=patched_git):
+                self.assertEqual(self._run("--tag", "v2026.1.0-rc.1", "--require-clean"), 0)
+                self.assertEqual(self._metadata(), original)
+                self.assertIn(f"symbols_archive_name={original['symbolsArchiveName']}", output.read_text())
+
+    def test_unmanaged_or_staged_submodule_changes_still_block_releases(self) -> None:
+        git = metadata_script.run_git
+        for status in (" M External/other", "M  External/box2d", "?? External/box2d"):
+            def patched_git(*arguments: str) -> str:
+                return status if arguments[0] == "status" else git(*arguments)
+
+            with self.subTest(status=status), mock.patch.object(metadata_script, "run_git", side_effect=patched_git):
+                self.assertEqual(self._run("--require-clean"), 1)
 
     def test_git_status_keeps_the_leading_porcelain_column(self) -> None:
         with (self.root / "Version.props").open("a", encoding="utf-8") as stream:
