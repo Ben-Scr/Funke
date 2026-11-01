@@ -5,6 +5,7 @@
 #include "Graphics/Backend/WebGPUBackend.hpp"
 #include "Graphics/ImageData.hpp"
 #include "Graphics/TextureSampling.hpp"
+#include "Serialization/File.hpp"
 
 #include <webgpu/webgpu_cpp.h>
 
@@ -556,8 +557,34 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 	bool Texture2D::CreateFromPixels(int width, int height, const uint8_t* rgba,
 		Filter filter, Wrap wrapU, Wrap wrapV)
 	{
+		if (!rgba) { Destroy(); return false; }
+		return CreateForUpload(width, height, filter, wrapU, wrapV)
+			&& UploadRows(0, height, rgba, static_cast<size_t>(width) * height * 4u);
+	}
+
+	bool Texture2D::UploadRows(int firstRow, int rowCount, const uint8_t* rgba, size_t byteCount) {
+		if (!rgba || firstRow < 0 || rowCount <= 0 || firstRow > m_Height
+			|| rowCount > m_Height - firstRow || m_HasMips) return false;
+		const size_t rowBytes = static_cast<size_t>(m_Width) * 4u;
+		if (byteCount != rowBytes * rowCount) return false;
+		GpuTexture* slot = TryLookup(m_Tex);
+		if (!slot || !slot->Texture) return false;
+		wgpu::TexelCopyTextureInfo dst{};
+		dst.texture = slot->Texture;
+		dst.origin = { 0, static_cast<uint32_t>(firstRow), 0 };
+		wgpu::TexelCopyBufferLayout layout{};
+		layout.bytesPerRow = static_cast<uint32_t>(rowBytes);
+		layout.rowsPerImage = static_cast<uint32_t>(rowCount);
+		wgpu::Extent3D size{ static_cast<uint32_t>(m_Width), static_cast<uint32_t>(rowCount), 1 };
+		WebGPUBackend::GetQueue().WriteTexture(&dst, rgba, byteCount, &layout, &size);
+		return true;
+	}
+
+	bool Texture2D::CreateForUpload(int width, int height,
+		Filter filter, Wrap wrapU, Wrap wrapV)
+	{
 		Destroy();
-		if (width <= 0 || height <= 0 || rgba == nullptr) return false;
+		if (width <= 0 || height <= 0) return false;
 		if (!WebGPUBackend::IsInitialized()) {
 			FNK_CORE_WARN_TAG("Texture2D", "CreateFromPixels called before WebGPU backend initialized");
 			return false;
@@ -576,7 +603,6 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		m_FlippedY = false;
 
 		wgpu::Device device = WebGPUBackend::GetDevice();
-		wgpu::Queue  queue  = WebGPUBackend::GetQueue();
 
 		wgpu::TextureDescriptor texDesc{};
 		texDesc.dimension       = wgpu::TextureDimension::e2D;
@@ -592,21 +618,6 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 			FNK_CORE_WARN_TAG("Texture2D", "CreateFromPixels: device.CreateTexture failed");
 			return false;
 		}
-
-		wgpu::TexelCopyTextureInfo dst{};
-		dst.texture  = texture;
-		dst.mipLevel = 0;
-		dst.origin   = { 0, 0, 0 };
-		dst.aspect   = wgpu::TextureAspect::All;
-
-		wgpu::TexelCopyBufferLayout layout{};
-		layout.offset       = 0;
-		layout.bytesPerRow  = static_cast<uint32_t>(width) * 4u;
-		layout.rowsPerImage = static_cast<uint32_t>(height);
-
-		wgpu::Extent3D writeSize{ static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
-		const size_t byteCount = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
-		queue.WriteTexture(&dst, rgba, byteCount, &layout, &writeSize);
 
 		wgpu::TextureViewDescriptor viewDesc{};
 		viewDesc.format          = wgpu::TextureFormat::RGBA8Unorm;
@@ -723,8 +734,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 		if (path == nullptr || *path == '\0') return nullptr;
 
 		int w = 0, h = 0, n = 0;
+		const auto bytes = File::ReadAllBytes(path);
+		if (bytes.empty() || bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max())) return nullptr;
 		std::unique_ptr<unsigned char, decltype(&stbi_image_free)> pixels(
-			stbi_load(path, &w, &h, &n, 4), &stbi_image_free);
+			stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &n, 4), &stbi_image_free);
 		if (!pixels || w <= 0 || h <= 0) return nullptr;
 		if (static_cast<size_t>(w) > std::numeric_limits<size_t>::max() / 4u / static_cast<size_t>(h)) return nullptr;
 

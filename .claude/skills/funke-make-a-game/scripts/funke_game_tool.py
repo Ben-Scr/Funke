@@ -558,9 +558,8 @@ def validate_entities(path: Path, entities: list, is_prefab: bool, report: Repor
             if key in ent and not isinstance(ent[key], bool):
                 report.error(where, f"'{key}' must be true/false")
 
-        has_t, has_rt = "Transform2D" in ent, "RectTransform2D" in ent
-        if has_t and has_rt:
-            report.error(where, "Transform2D and RectTransform2D conflict - world entities use Transform2D, UI uses RectTransform2D")
+        if "Transform2D" in ent and "Transform3D" in ent:
+            report.error(where, "Transform2D and Transform3D conflict - choose one world transform")
         for tkey in ("Transform2D", "RectTransform2D"):
             t = ent.get(tkey)
             if isinstance(t, dict) and isinstance(t.get("rotation"), (int, float)) and abs(t["rotation"]) > 6.3:

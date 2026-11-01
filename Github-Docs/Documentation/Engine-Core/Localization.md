@@ -27,7 +27,7 @@ FunkeAssets/
     manifest.json    ← lists downloadable languages + the CJK font
 ```
 
-> **Two separate tables.** `Funke::Localization` (this part of the page) holds the engine's own strings: every Funke binary calls `Localization::Initialize()` at startup, but only the **Launcher** reads from it, and all of its keys are in the `launcher.*` namespace. Games use a second, independent table, `Funke::GameLocalization`, loaded from the project's `Assets/Localization/` folder — see [Localizing your game](#localizing-your-game). Launcher keys and game keys never mix, and the two remember their language in different places.
+> **Two separate tables.** The **Launcher** initializes and reads `Funke::Localization`; its keys use the `launcher.*` namespace. Games use a second, independent table, `Funke::GameLocalization`, loaded from the project's `Assets/Localization/` folder — see [Localizing your game](#localizing-your-game). Launcher keys and game keys never mix, and the two remember their language in different places.
 
 ---
 
@@ -89,7 +89,7 @@ When a file is found, only its `meta` block is parsed up front, so a language pi
 
 ### Auto-detecting the system language
 
-`Localization::GetSystemLanguage()` probes the OS UI locale (Windows `GetUserDefaultLocaleName`, or the POSIX `LC_ALL` / `LC_MESSAGES` / `LANG` environment variables), normalizes it to a bare lowercase tag, and returns the matching language code — **but only if that language is already installed**. A system locale that maps to a not-yet-downloaded language quietly returns `en`; it does not auto-trigger a download. The Launcher uses this to offer an "Auto (system)" option that re-pins to the OS language on each launch.
+`Localization::GetSystemLanguage()` reads the preferred OS locale through the SDL-backed platform API, with `LC_ALL` taking precedence on POSIX. It normalizes the result to a bare lowercase tag and returns the matching language code **only if that language is already installed**. Otherwise it returns `en` without triggering a download. The Launcher uses this for its "Auto (system)" option.
 
 ### The fallback chain and missing keys
 
@@ -124,9 +124,9 @@ Two download paths exist:
 
 Downloads run on a single background worker, one job at a time (the actual transfer is delegated to the bundled `Funke-PackageTool`). The host loop calls `Localization::Poll()` each frame to finalize a finished job — which rebuilds the language list, marks the language **Installed**, and applies any pending switch. Each file is staged to a temporary sibling and renamed into place only after its byte length (when the manifest gives one) and **SHA-256** (when the manifest gives one) check out — so a failed or tampered download never overwrites the existing file.
 
-> **A CJK language needs a restart the first time.** The UI font atlas is baked once at startup; there is no dynamic glyph loading, so a CJK font downloaded mid-session can't be merged into the live atlas — its characters would render as boxes until the next launch. Because of this, fetching the CJK font sets a **restart-required** flag, and the Launcher shows a "Restart Required" prompt that can relaunch the app. Ordinary (non-CJK) language switches never require a restart.
+> **A newly downloaded CJK font requires a Launcher restart.** The Launcher builds its font atlas at startup and does not merge a downloaded font into the live atlas. Fetching the font therefore sets a **restart-required** flag and shows a relaunch prompt. Ordinary language switches whose fonts are already loaded do not require a restart. Game Text Renderers use a separate on-demand glyph path.
 
-A note on platforms: SHA-256 verification is implemented with BCrypt on **Windows**; on other platforms the hash check is not yet implemented, so any manifest entry carrying a `sha256` will fail to verify there. In practice the download path is Windows-centric today — which is consistent with localization being a Launcher feature for now.
+SHA-256 verification uses the portable implementation in `Utils/Hash.cpp` on every platform. Downloads also require the bundled `Funke-PackageTool` and a working network connection.
 
 User-downloaded files always **override** bundled ones on a code collision, so an updated `de.json` pulled into `%LocalAppData%/Funke/Localization/` takes precedence over the bundled copy.
 
@@ -149,7 +149,7 @@ The public C++ surface lives in `Funke-Engine/src/Localization/Localization.hpp`
 | **`RequestLanguageDownload(code)`** | Kicks off an async download for an *Available* language (plus the CJK font if required); no-op if a download is already running or the language isn't *Available*. `SetLanguage` calls this for you, so you rarely call it directly. |
 | **`GetActiveDownload()`** | A snapshot of any in-flight or recently-finished download (`Code`, `Stage`, `Progress`, `Running`, `Failed`, `RestartRequired`, `Error`) for progress UI. |
 | **`Poll()`** | Pumped every frame by the host loop to finalize downloads. **Without a pump, a finished download never transitions** — applies any pending switch and rebuilds the installed list. |
-| **`Initialize()`** | Loads the fallback, scans languages, applies the saved preference. Called once at startup by the engine entry point. |
+| **`Initialize()`** | Loads the fallback, scans languages, applies the saved preference. Called by `LauncherApplication` during startup. |
 | **`RegisterChangeCallback(fn)` / `UnregisterChangeCallback(h)`** | Run `fn` whenever the active language changes; the handle unregisters it. |
 | **`FNK_TR(key)`** | Macro alias for `Get(key)` — the idiomatic way to read a string. |
 
@@ -298,6 +298,6 @@ Call it from the main thread (scripts, systems), not from jobs.
 ## Related pages
 
 - [Assets](../Assets/Assets.md) — the locale JSON files are content shipped next to each binary, like other engine assets.
-- [Startup Processes](Startup-Processes.md) — the engine boot sequence, where `Localization::Initialize()` runs.
+- [Startup Processes](Startup-Processes.md) — the runtime boot sequence; Launcher localization is initialized by its own application.
 - [Third-Party Libraries](../Reference/Third-Party-Libraries.md) — the bundled OFL fonts and the on-demand Noto Sans CJK font.
 - [Known Limitations](../Known-Limitations.md) — remaining font, text-shaping and localization-editor limits.

@@ -47,7 +47,8 @@ namespace Funke::WebGPUSpriteResources {
 	FUNKE_API wgpu::RenderPipeline GetSpritePipeline(
 		wgpu::TextureFormat colorFormat,
 		bool                hasDepth,
-		SpritePipelineMode  mode = SpritePipelineMode::Filled);
+		SpritePipelineMode  mode = SpritePipelineMode::Filled,
+		bool depthTest = false, uint32_t sampleCount = 1);
 
 	FUNKE_API void EncodeInstance44(const Instance44& src, SpriteInstance& dst);
 

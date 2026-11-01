@@ -542,7 +542,7 @@ namespace Funke::ReferencePicker {
 							float aspectW = texW;
 							float aspectH = texH;
 							float u0 = 0.0f, u1 = 1.0f;
-							float v0 = 1.0f, v1 = 0.0f;
+							float v0 = 0.0f, v1 = 1.0f;
 							if (entry.IsSlice
 								&& texW > 0.0f && texH > 0.0f
 								&& entry.SliceW > 0 && entry.SliceH > 0)
@@ -551,8 +551,8 @@ namespace Funke::ReferencePicker {
 								aspectH = static_cast<float>(entry.SliceH);
 								u0 = static_cast<float>(entry.SliceX) / texW;
 								u1 = static_cast<float>(entry.SliceX + entry.SliceW) / texW;
-								v0 = 1.0f - static_cast<float>(entry.SliceY) / texH;
-								v1 = 1.0f - static_cast<float>(entry.SliceY + entry.SliceH) / texH;
+								v0 = static_cast<float>(entry.SliceY) / texH;
+								v1 = static_cast<float>(entry.SliceY + entry.SliceH) / texH;
 							}
 
 							float drawWidth = thumbnailSize;

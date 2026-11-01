@@ -51,7 +51,8 @@ namespace Funke {
 		auto it = m_Cache.find(absolutePath);
 		if (it != m_Cache.end()) {
 			TouchLru(it); // E31: lookup counts as recent use
-			return it->second.GlHandle;
+			auto* texture = it->second.Preview->GetTexture();
+			return texture ? texture->GetHandle() : 0;
 		}
 
 		// Only attempt to load image files
@@ -71,41 +72,19 @@ namespace Funke {
 		const TextureMeta meta = AssetRegistry::ReadTextureMeta(absolutePath);
 		const Filter importFilter = meta.HasImportBlock ? meta.Import.FilterMode : Filter::Point;
 
-		auto tex = std::make_unique<Texture2D>(
-			absolutePath.c_str(),
-			importFilter,
-			Wrap::Clamp,
-			Wrap::Clamp,
-			false,   // no mipmaps for thumbnails
-			false,
-			true
-		);
-
-		// E31: insert path at front of LRU first, then store the iterator on the
-		// cache entry so subsequent lookups can splice without re-finding.
+		auto preview = AsyncTexturePreviews::Get().Request(absolutePath, importFilter, false, false);
 		auto lruIt = m_LRU.insert(m_LRU.begin(), absolutePath);
 		const uint64_t currentFrame = static_cast<uint64_t>(ImGui::GetFrameCount());
-
-		if (!tex->IsValid()) {
-			// Cache a null entry so we don't retry
-			m_Cache[absolutePath] = { nullptr, 0, lruIt, currentFrame };
-			EnforceCapacity();
-			return 0;
-		}
-
-		uint64_t handle = tex->GetHandle();
-		// Stamp the current frame: this tile draws the view THIS frame, so a later
-		// tile's GetThumbnail in the same frame must not evict it (would be a UAF).
-		m_Cache[absolutePath] = { std::move(tex), handle, lruIt, currentFrame };
+		m_Cache[absolutePath] = { std::move(preview), lruIt, currentFrame };
 		EnforceCapacity();
-		return handle;
+		return 0;
 	}
 
 	Texture2D* ThumbnailCache::GetCacheEntry(const std::string& absolutePath) {
 		auto it = m_Cache.find(absolutePath);
-		if (it != m_Cache.end() && it->second.Texture) {
+		if (it != m_Cache.end() && it->second.Preview) {
 			TouchLru(it); // E31: lookup counts as recent use
-			return it->second.Texture.get();
+			return it->second.Preview->GetTexture();
 		}
 		return nullptr;
 	}

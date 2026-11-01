@@ -17,7 +17,7 @@ Ground truth: `Funke-Engine/src/Serialization/SceneSerializer.cpp` (writer), `Sc
   "version": 1,
   "name": "Level1",
   "systems": [ "WaveSpawner", { "className": "Other", "enabled": false, "fields": { "Speed": "2.5" } } ],
-  "entities": [ ... ]
+  "entities": []
 }
 ```
 
@@ -42,7 +42,7 @@ Scenes are found **by file name** anywhere under `Assets/` (case-insensitive). T
   "parentUuid": "1730062311204411821",
   "childIndex": 0,
   "Transform2D": { "posX": 0, "posY": -4, "rotation": 0, "scaleX": 2, "scaleY": 0.4 },
-  "SpriteRenderer": { ... },
+  "SpriteRenderer": {},
   "Scripts": [ { "className": "PaddleMovement", "type": "Managed" } ],
   "ScriptFields": { "PaddleMovement": [ { "name": "Speed", "type": "float", "value": "9" } ] }
 }
@@ -60,7 +60,7 @@ Scenes are found **by file name** anywhere under `Assets/` (case-insensitive). T
 | `Origin` | Omit or use `"Scene"` for normal entities; `"Prefab"` for prefab instances (below). Unsupported values log a warning and load as scene content. |
 | Don't write | `SceneGUID`, `RuntimeID`, `SourceEntityId`, `sourceUuid` (identity plumbing the Editor writes) |
 
-- **No `Transform2D` key → the entity has no transform.** World entities need at least `"Transform2D": {}`. UI entities use `RectTransform2D` instead — the two conflict.
+- **No `Transform2D` key → the entity has no 2D world transform.** World entities need at least `"Transform2D": {}`. Screen-space UI uses `RectTransform2D` alone; a world-space canvas root deliberately combines it with `Transform2D` or `Transform3D`. Keep world transforms off ordinary UI children. See `Github-Docs/Documentation/Engine-Core/World-Space-UI.md`.
 - Entities can appear in any order (parents may come after children).
 - There are no string tags or named layers. Physics uses collider `layer`/`collisionMask` bitmasks; rendering uses `sortLayer` (0–255) / `sortOrder` (int16).
 - Transform values are **local to the parent**. `rotation` is **radians** in JSON (the C# `Transform2D.Rotation` property and the Inspector show degrees).

@@ -32,19 +32,19 @@ Projects created before modules existed have no `modules` field and keep both. N
 
 ## One world per entity
 
-An entity is either 2D, 3D or UI. Components of the 2D and the 3D module can't be combined on one entity, and neither can sit on an entity with a Rect Transform 2D: the Add Component menu greys them out ("Conflicts with Transform 2D"), and `Entity.AddComponent`, entity command buffers and **Paste Component** refuse them with a warning (`Entity.AddComponent<T>()` returns `null`). Put a 3D object and a 2D object next to each other as separate entities instead.
+Components of the 2D and 3D modules cannot be combined on one entity. Rect Transform 2D also conflicts with world renderers, cameras and physics components, but it **can coexist with either Transform 2D or Transform 3D** to define a [world-space UI canvas](World-Space-UI.md). The two world transform types remain mutually exclusive. The Add Component menu, `Entity.AddComponent`, entity command buffers and **Paste Component** enforce these conflicts (`Entity.AddComponent<T>()` returns `null` when rejected).
 
 Scenes saved before this rule may still mix them. They load unchanged, the editor logs which entity combines which components, and the component of the other world stays inactive: a 2D physics body or camera on a 3D or UI entity is not created (it never adds a second transform), and 3D components on a 2D entity are ignored by the 3D renderer and physics.
 
 ## In a game build
 
-The game ships a runtime compiled **without** the modules the project leaves out — their code, shaders and third-party libraries (Box2D for `Funke.2D`, Jolt for `Funke.3D`) are not in the executable.
+Source-checkout exports can compile a runtime **without** unused modules, removing their code, shaders and third-party libraries (Box2D for `Funke.2D`, Jolt for `Funke.3D`). Installed binary distributions select a compatible prebuilt runtime instead:
 
-- **Windows, Linux, macOS:** the build generates a runtime variant workspace (`premake/generated/variant-<modules>`) and compiles it into `bin/<config>-<system>-<arch>-<modules>`. The first build of a variant compiles the whole engine once; later builds are incremental.
+- **Desktop source checkouts:** the build generates a runtime variant workspace (`premake/generated/variant-<modules>`) and compiles it into `bin/<config>-<system>-<arch>-<modules>`. The first build of a variant compiles the whole engine once; later builds are incremental. If variant generation is unavailable, the exporter can use the full runtime.
 - **Android, iOS, Web:** the platform package passes the modules to the engine's CMake build (`MODULES` of `funke_add_engine`); each module set gets its own build cache.
 - A project whose shipped scenes or prefabs use a component of a module it doesn't list fails the build, with every offending entity in the log.
 - Projects with native (C++) packages ship the full engine: those packages are linked against it.
-- From an EngineSDK without project files (no MSBuild/`make` workspace) the build falls back to the prebuilt full runtime.
+- A binary EngineSDK selects the manifest's compatible prebuilt module variant when available, otherwise its declared full runtime. Native scripts or native packages require the declared full runtime. It does not build the engine; a missing or damaged declared runtime fails the export. See [Standalone editor prerequisites](../Editor/Building-and-Shipping.md#standalone-editor-prerequisites).
 
 ## For engine developers
 

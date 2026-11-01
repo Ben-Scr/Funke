@@ -1,0 +1,9 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemDefinitionGroup Condition="'$(MSBuildProjectName)' == 'Funke-Editor'">
+    <Link>
+      <OutputFile>$(MSBuildThisFileDirectory)Editor/Funke-Editor.exe</OutputFile>
+      <ProgramDatabaseFile>$(MSBuildThisFileDirectory)Editor/Funke-Editor.pdb</ProgramDatabaseFile>
+      <ImportLibrary>$(MSBuildThisFileDirectory)Editor/Funke-Editor.lib</ImportLibrary>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>

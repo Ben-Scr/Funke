@@ -5,6 +5,12 @@
 #include <doctest/doctest.h>
 
 #include "Undo/UndoStack.hpp"
+#include "Undo/AssetFileHistory.hpp"
+#include "Assets/AssetRegistry.hpp"
+#include "Project/ProjectManager.hpp"
+#include "Serialization/File.hpp"
+#include "Serialization/Path.hpp"
+#include <filesystem>
 #include "Undo/TransformEditCommand.hpp"
 #include "Undo/InspectorEditCommand.hpp"
 #include "Undo/InspectorUndoRecorder.hpp"
@@ -536,4 +542,223 @@ TEST_CASE("InspectorUndoRecorder: scene properties target the restored scene ins
 	CHECK(restored->GetSceneSystemFieldValues("Game.Rules")->at("Speed") == "3");
 	history.Redo(*restored);
 	CHECK(restored->GetSceneSystemFieldValues("Game.Rules")->at("Speed") == "7");
+}
+
+TEST_CASE("UndoStack: linked edits wait for both histories and execute exactly once") {
+	auto scene = Scene::CreateDetachedScene("Linked history");
+	UndoStack a, b;
+	int undos = 0, redos = 0, newerUndos = 0;
+	a.PushLinked(b, MakeCounting(&undos, &redos));
+	b.Push(MakeCounting(&newerUndos, nullptr));
+	CHECK_FALSE(a.CanUndo());
+	CHECK(a.Undo(*scene).empty());
+	b.Undo(*scene);
+	CHECK(newerUndos == 1);
+	REQUIRE(a.CanUndo());
+	a.Undo(*scene);
+	CHECK(undos == 1);
+	CHECK_FALSE(b.CanUndo());
+	REQUIRE(b.CanRedo());
+	b.Redo(*scene);
+	CHECK(redos == 1);
+	CHECK_FALSE(a.CanRedo());
+	CHECK(b.CanRedo());
+	b.Redo(*scene);
+	CHECK_FALSE(a.CanUndo());
+}
+
+TEST_CASE("UndoStack: linked history survives moves and cannot replay after partner clear") {
+	auto scene = Scene::CreateDetachedScene("Linked lifetime");
+	UndoStack a, b;
+	int undos = 0;
+	a.PushLinked(b, MakeCounting(&undos, nullptr));
+	UndoStack moved = std::move(b);
+	REQUIRE(a.CanUndo());
+	a.Undo(*scene);
+	CHECK(moved.CanRedo());
+	moved.Clear();
+	CHECK_FALSE(a.CanRedo());
+	CHECK(a.Redo(*scene).empty());
+	CHECK(undos == 1);
+}
+
+namespace {
+	struct AssetHistoryFixture {
+		std::filesystem::path Root = std::filesystem::temp_directory_path() / ("FunkeAssetUndo-" + std::to_string(static_cast<uint64_t>(UUID())));
+		std::filesystem::path Assets = Root / "Assets";
+		AssetFileHistory History;
+		AssetHistoryFixture() {
+			std::filesystem::create_directories(Assets);
+			auto project = std::make_unique<FunkeProject>();
+			project->RootDirectory = Path::ToUtf8(Root);
+			project->AssetsDirectory = Path::ToUtf8(Assets);
+			ProjectManager::SetCurrentProject(std::move(project));
+			AssetRegistry::Sync();
+			History.Initialize(Assets);
+		}
+		~AssetHistoryFixture() {
+			History.Clear();
+			ProjectManager::SetCurrentProject(nullptr);
+			std::error_code error;
+			std::filesystem::remove_all(Root, error);
+		}
+		uint64_t Create(const std::filesystem::path& path, const std::string& bytes = "asset content") {
+			std::filesystem::create_directories(path.parent_path());
+			REQUIRE(File::WriteAllText(Path::ToUtf8(path), bytes));
+			const auto id = AssetRegistry::ImportAssetPathIncremental(Path::ToUtf8(path));
+			REQUIRE(id != 0);
+			return id;
+		}
+		static std::filesystem::path Meta(std::filesystem::path path) { path += ".meta"; return path; }
+		void Delete(const std::filesystem::path& path) {
+			std::filesystem::remove_all(path);
+			std::filesystem::remove(Meta(path));
+			AssetRegistry::ForgetAssetPathIncremental(Path::ToUtf8(path));
+		}
+	};
+}
+
+TEST_CASE("Asset history: rename restores exact metadata and registry identity on repeated undo redo") {
+	AssetHistoryFixture f;
+	const auto oldPath = f.Assets / "old.png", newPath = f.Assets / "new.png";
+	const auto id = f.Create(oldPath);
+	auto meta = AssetRegistry::ReadTextureMeta(Path::ToUtf8(oldPath));
+	meta.HasImportBlock = true;
+	meta.Import.FilterMode = Filter::Point;
+	REQUIRE(AssetRegistry::WriteTextureMeta(Path::ToUtf8(oldPath), meta));
+	const auto metadata = File::ReadAllText(Path::ToUtf8(f.Meta(oldPath)));
+	auto edit = f.History.Begin({ Path::ToUtf8(oldPath), Path::ToUtf8(newPath) }, "Rename Asset");
+	REQUIRE(AssetFileHistory::MoveAsset(oldPath, newPath));
+	REQUIRE(AssetRegistry::RestorePathsIncremental({ Path::ToUtf8(oldPath), Path::ToUtf8(newPath) }));
+	f.History.Commit(edit);
+	for (int i = 0; i < 3; ++i) {
+		CHECK(f.History.Undo() == "Rename Asset");
+		CHECK(std::filesystem::exists(oldPath));
+		CHECK_FALSE(std::filesystem::exists(newPath));
+		CHECK(File::ReadAllText(Path::ToUtf8(f.Meta(oldPath))) == metadata);
+		CHECK(std::filesystem::path(AssetRegistry::ResolvePath(id)) == oldPath);
+		CHECK(f.History.Redo() == "Rename Asset");
+		CHECK(std::filesystem::path(AssetRegistry::ResolvePath(id)) == newPath);
+		CHECK(File::ReadAllText(Path::ToUtf8(f.Meta(newPath))) == metadata);
+	}
+}
+
+TEST_CASE("Asset history: deleting a folder restores nested assets and empty directories") {
+	AssetHistoryFixture f;
+	const auto folder = f.Assets / "Folder";
+	const auto file = folder / "Nested" / "sound.wav";
+	const auto id = f.Create(file);
+	std::filesystem::create_directories(folder / "Empty");
+	auto edit = f.History.Begin({ Path::ToUtf8(folder), Path::ToUtf8(file) }, "Delete Assets");
+	std::filesystem::remove_all(folder);
+	AssetRegistry::ForgetAssetPathIncremental(Path::ToUtf8(file));
+	f.History.Commit(edit);
+	CHECK(f.History.Undo() == "Delete Assets");
+	CHECK(std::filesystem::is_directory(folder / "Empty"));
+	CHECK(std::filesystem::path(AssetRegistry::ResolvePath(id)) == file);
+	CHECK(f.History.Redo() == "Delete Assets");
+	CHECK_FALSE(std::filesystem::exists(folder));
+	CHECK(AssetRegistry::ResolvePath(id).empty());
+}
+
+TEST_CASE("Asset history: existing file or orphan metadata blocks restore without overwriting") {
+	AssetHistoryFixture f;
+	const auto path = f.Assets / "asset.png";
+	f.Create(path);
+	auto edit = f.History.Begin({ Path::ToUtf8(path) }, "Delete Asset");
+	f.Delete(path);
+	f.History.Commit(edit);
+	SUBCASE("file collision") { REQUIRE(File::WriteAllText(Path::ToUtf8(path), "external")); }
+	SUBCASE("metadata collision") { REQUIRE(File::WriteAllText(Path::ToUtf8(f.Meta(path)), "external")); }
+	CHECK_THROWS(f.History.Undo());
+	CHECK(f.History.CanUndo());
+	CHECK_FALSE(f.History.CanRedo());
+	const auto conflict = std::filesystem::exists(path) ? path : f.Meta(path);
+	CHECK(File::ReadAllText(Path::ToUtf8(conflict)) == "external");
+	std::filesystem::remove(conflict);
+	CHECK_FALSE(f.History.Undo().empty());
+	CHECK(File::ReadAllText(Path::ToUtf8(path)) == "asset content");
+}
+
+TEST_CASE("Asset history: changed files and added directory children block undo") {
+	AssetHistoryFixture f;
+	const auto folder = f.Assets / "Imported", file = folder / "file.txt";
+	f.Create(file);
+	f.History.RecordCreated({ Path::ToUtf8(folder) }, "Import Assets");
+	SUBCASE("edited file") { REQUIRE(File::WriteAllText(Path::ToUtf8(file), "edited")); }
+	SUBCASE("new file") { REQUIRE(File::WriteAllText(Path::ToUtf8(folder / "external.txt"), "external")); }
+	CHECK_THROWS(f.History.Undo());
+	CHECK(std::filesystem::exists(file));
+	CHECK(f.History.CanUndo());
+}
+
+TEST_CASE("Asset history: registry GUID collision rolls back filesystem publication") {
+	AssetHistoryFixture f;
+	const auto path = f.Assets / "asset.png", conflict = f.Assets / "other.png";
+	const auto id = f.Create(path);
+	const auto metadata = File::ReadAllText(Path::ToUtf8(f.Meta(path)));
+	auto edit = f.History.Begin({ Path::ToUtf8(path) }, "Delete Asset");
+	f.Delete(path);
+	f.History.Commit(edit);
+	REQUIRE(File::WriteAllText(Path::ToUtf8(conflict), "external"));
+	REQUIRE(File::WriteAllText(Path::ToUtf8(f.Meta(conflict)), metadata));
+	REQUIRE(AssetRegistry::ImportAssetPathIncremental(Path::ToUtf8(conflict)) == id);
+	CHECK_THROWS(f.History.Undo());
+	CHECK_FALSE(std::filesystem::exists(path));
+	CHECK_FALSE(std::filesystem::exists(f.Meta(path)));
+	CHECK(File::ReadAllText(Path::ToUtf8(conflict)) == "external");
+	CHECK(std::filesystem::path(AssetRegistry::ResolvePath(id)) == conflict);
+	f.Delete(conflict);
+	CHECK_FALSE(f.History.Undo().empty());
+	CHECK(std::filesystem::path(AssetRegistry::ResolvePath(id)) == path);
+}
+
+TEST_CASE("Asset history: failure after parking files restores current state and allows retry") {
+	AssetHistoryFixture f;
+	const auto parent = f.Assets / "Parent";
+	const auto from = parent / "asset.txt", to = f.Assets / "moved.txt";
+	const auto id = f.Create(from);
+	auto edit = f.History.Begin({ Path::ToUtf8(from), Path::ToUtf8(to) }, "Move Asset");
+	REQUIRE(AssetFileHistory::MoveAsset(from, to));
+	REQUIRE(AssetRegistry::RestorePathsIncremental({ Path::ToUtf8(from), Path::ToUtf8(to) }));
+	f.History.Commit(edit);
+	std::filesystem::remove(parent);
+	CHECK_THROWS(f.History.Undo());
+	CHECK(std::filesystem::exists(to));
+	CHECK(std::filesystem::exists(f.Meta(to)));
+	CHECK(std::filesystem::path(AssetRegistry::ResolvePath(id)) == to);
+	std::filesystem::create_directory(parent);
+	CHECK_FALSE(f.History.Undo().empty());
+	CHECK(std::filesystem::path(AssetRegistry::ResolvePath(id)) == from);
+}
+
+TEST_CASE("Asset history: create redo never replaces a later file and new edits discard redo") {
+	AssetHistoryFixture f;
+	const auto path = f.Assets / "created.txt";
+	const auto id = f.Create(path);
+	f.History.RecordCreated({ Path::ToUtf8(path) }, "Create Asset");
+	REQUIRE_FALSE(f.History.Undo().empty());
+	REQUIRE(File::WriteAllText(Path::ToUtf8(path), "external"));
+	CHECK_THROWS(f.History.Redo());
+	CHECK(File::ReadAllText(Path::ToUtf8(path)) == "external");
+	std::filesystem::remove(path);
+	CHECK_FALSE(f.History.Redo().empty());
+	CHECK(AssetRegistry::GetGUID(Path::ToUtf8(path)) == id);
+	f.History.Undo();
+	const auto next = f.Assets / "next.txt";
+	f.Create(next);
+	f.History.RecordCreated({ Path::ToUtf8(next) }, "Create Another Asset");
+	CHECK_FALSE(f.History.CanRedo());
+}
+
+TEST_CASE("Asset history: initial move refuses a destination sidecar collision") {
+	AssetHistoryFixture f;
+	const auto from = f.Assets / "original.png", to = f.Assets / "occupied.png";
+	f.Create(from);
+	REQUIRE(File::WriteAllText(Path::ToUtf8(f.Meta(to)), "existing metadata"));
+	CHECK_FALSE(AssetFileHistory::MoveAsset(from, to));
+	CHECK(std::filesystem::exists(from));
+	CHECK(std::filesystem::exists(f.Meta(from)));
+	CHECK_FALSE(std::filesystem::exists(to));
+	CHECK(File::ReadAllText(Path::ToUtf8(f.Meta(to))) == "existing metadata");
 }

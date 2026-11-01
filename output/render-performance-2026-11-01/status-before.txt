@@ -1,0 +1,115 @@
+ M .agents/skills/funke-game-scripting/SKILL.md
+ M .github/workflows/ci.yml
+ m External/ImGuizmo
+ m External/box2d
+ m External/entt
+ m External/imgui
+ ? External/tracy
+ M Funke-Editor/src/Gui/AssetBrowser.cpp
+ M Funke-Editor/src/Gui/AssetBrowser.hpp
+ M Funke-Editor/src/Gui/AssetBrowserActions.cpp
+ M Funke-Editor/src/Gui/ImGuiUtils.cpp
+ M Funke-Editor/src/Gui/ImGuiUtils.hpp
+ M Funke-Editor/src/Gui/SpriteEditorPanel.cpp
+ M Funke-Editor/src/Gui/SpriteEditorPanel.hpp
+ M Funke-Editor/src/Gui/ThumbnailCache.cpp
+ M Funke-Editor/src/Gui/ThumbnailCache.hpp
+ M Funke-Editor/src/Inspector/PropertyDrawer.cpp
+ M Funke-Editor/src/Inspector/ReferencePicker.cpp
+ M Funke-Editor/src/Systems/ImGuiEditorLayer.cpp
+ M Funke-Editor/src/Systems/ImGuiEditorLayer.hpp
+ M Funke-Editor/src/Systems/ImGuiEditorLayerChrome.cpp
+ M Funke-Editor/src/Systems/ImGuiEditorLayerPanels.cpp
+ M Funke-Editor/src/Systems/ImGuiEditorLayerViewport.cpp
+ M Funke-Editor/src/Systems/ImGuiEditorLayerViewport3D.cpp
+ M Funke-Editor/src/Undo/EditCommand.hpp
+ M Funke-Editor/src/Undo/StructureEditCommand.cpp
+ M Funke-Editor/src/Undo/StructureEditCommand.hpp
+ M Funke-Editor/src/Undo/UndoStack.cpp
+ M Funke-Editor/src/Undo/UndoStack.hpp
+ M Funke-Engine/premake5.lua
+ M Funke-Engine/src/Assets/AssetRegistry.hpp
+ M Funke-Engine/src/Components/Graphics/Camera3DComponent.hpp
+ M Funke-Engine/src/Core/Application.cpp
+ M Funke-Engine/src/Core/PackageHost.cpp
+ M Funke-Engine/src/Graphics/Backend/WebGPUBackend.hpp
+ M Funke-Engine/src/Graphics/CustomShader.cpp
+ M Funke-Engine/src/Graphics/Framebuffer.cpp
+ M Funke-Engine/src/Graphics/PostProcessing/PostProcessor.cpp
+ M Funke-Engine/src/Graphics/PostProcessing/PostProcessor.hpp
+ M Funke-Engine/src/Graphics/QuadVisibility.hpp
+ M Funke-Engine/src/Graphics/Renderer3D.cpp
+ M Funke-Engine/src/Graphics/Text/TextRenderer.cpp
+ M Funke-Engine/src/Graphics/Texture2D.cpp
+ M Funke-Engine/src/Graphics/Texture2D.hpp
+ M Funke-Engine/src/Gui/GuiRenderer.cpp
+ M Funke-Engine/src/Gui/GuiRenderer.hpp
+ M Funke-Engine/src/Gui/UIDrawOrder.hpp
+ M Funke-Engine/src/Project/FunkeProject.cpp
+ M Funke-Engine/src/Project/PackageBuildCache.hpp
+ M Funke-Engine/src/Scene/BuiltInComponentRegistration.cpp
+ M Funke-Engine/src/Scene/BuiltInComponentRegistration3D.cpp
+ M Funke-Engine/src/Scene/ComponentRegistry.hpp
+ M Funke-Engine/src/Scene/EntityPicker.cpp
+ M Funke-Engine/src/Scripting/EntityCommandBufferParallel.hpp
+ M Funke-Engine/src/Scripting/NativeEntityCommandBuffer.cpp
+ M Funke-Engine/src/Scripting/NativeEntityCommandBuffer.hpp
+ M Funke-Engine/src/Scripting/NativeScriptField.hpp
+ M Funke-Engine/src/Scripting/ParallelEntityCommandBuffer.cpp
+ M Funke-Engine/src/Scripting/ParallelEntityCommandBuffer.hpp
+ M Funke-Engine/src/Scripting/ScriptBindingModuleSlots.hpp
+ M Funke-Engine/src/Scripting/ScriptBindings2D.cpp
+ M Funke-Engine/src/Scripting/ScriptBindings3D.cpp
+ M Funke-Engine/src/Scripting/ScriptBindingsEcb.cpp
+ M Funke-Engine/src/Scripting/ScriptGlue.hpp
+ M Funke-Engine/src/Serialization/FileWatcher.cpp
+ M Funke-Engine/src/Serialization/FileWatcher.hpp
+ M Funke-Engine/src/Serialization/SceneSerializer.hpp
+ M Funke-Engine/src/Serialization/SceneSerializerDeserialize.cpp
+ M Funke-Engine/src/Systems/UIEventSystem.cpp
+ M Funke-Engine/src/Systems/UILayoutSystem.cpp
+ M Funke-Engine/src/Systems/UILayoutSystem.hpp
+ M Funke-ScriptCore/Source/Funke/Core/InternalCalls.cs
+ M Funke-ScriptCore/Source/Funke/Interop/NativeCallbacks.cs
+ M Funke-ScriptCore/Source/Funke/Interop/ScriptHostBridge.cs
+ M Funke-ScriptCore/Source/Funke/Scene/Components.cs
+ M Funke-ScriptCore/Source/Funke/Scene/Components3D.cs
+ M Github-Docs/Documentation/Engine-Core/Custom-Shaders.md
+ M Github-Docs/Documentation/Engine-Core/ECS.md
+ M Tests/Funke-Editor-Tests/premake5.lua
+ M Tests/Funke-Editor-Tests/src/GameBuilderTests.cpp
+ M Tests/Funke-Editor-Tests/src/StructureUndoTests.cpp
+ M Tests/Funke-Editor-Tests/src/UndoTests.cpp
+ M Tests/Funke-Engine-Tests/src/AssetLoaderAsyncTests.cpp
+ M Tests/Funke-Engine-Tests/src/EcbMutationTests.cpp
+ M Tests/Funke-Engine-Tests/src/EcbParallelPlaybackTests.cpp
+ M Tests/Funke-Engine-Tests/src/EngineModulesTests.cpp
+ M Tests/Funke-Engine-Tests/src/MouseCoordinateTests.cpp
+ M Tests/Funke-Engine-Tests/src/ProjectPackagePathTests.cpp
+ M Tests/Funke-Engine-Tests/src/SceneIsolationTests.cpp
+ M Tests/Funke-Engine-Tests/src/SceneSerializerRoundTripTests.cpp
+ M Tests/Funke-Engine-Tests/src/UIHitTestTests.cpp
+ M Tests/Funke-Engine-Tests/src/UILayoutFillParentTests.cpp
+ M premake/package-loader.lua
+ M scripts/ci/runtime_smoke_test.py
+?? External/dotnet/lib/libnethost.a
+?? Funke-CLI/Makefile
+?? Funke-Editor/Makefile
+?? Funke-Editor/src/Gui/AsyncTexturePreview.cpp
+?? Funke-Editor/src/Gui/AsyncTexturePreview.hpp
+?? Funke-Editor/src/Undo/AssetFileHistory.cpp
+?? Funke-Editor/src/Undo/AssetFileHistory.hpp
+?? Funke-EditorRuntime/Makefile
+?? Funke-Engine/Makefile
+?? Funke-Launcher/Makefile
+?? Funke-Runtime/Makefile
+?? Github-Docs/Documentation/Engine-Core/World-Space-UI.md
+?? Makefile
+?? Tests/Funke-Editor-Tests/Makefile
+?? Tests/Funke-Editor-Tests/src/AsyncTexturePreviewTests.cpp
+?? Tests/Funke-Engine-Tests/Makefile
+?? Tests/Funke-Engine-Tests/src/FileWatcherTests.cpp
+?? output/ecs-optimization-2026-11-01/
+?? output/ecs-validation-2026-11-01/
+?? output/project-open/
+?? scripts/ci/test_native_abi_metadata.py

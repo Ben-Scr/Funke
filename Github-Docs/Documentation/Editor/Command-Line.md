@@ -2,7 +2,7 @@
 
 `funke` creates, inspects, edits and builds Funke projects without opening the editor. It runs the same code as the editor: `funke build` is the editor's Build button, `funke prefab apply` is the Inspector's Apply, `funke sprite slice` is the Sprite Editor's slice buttons. That makes it the tool of choice for CI pipelines, scripts and AI agents.
 
-`funke.exe` ships next to `Funke-Launcher.exe` and `Funke-Editor.exe` (`funke` on Linux and macOS). In a source checkout it is built to `bin/<Config>-windows-x86_64/Funke-CLI/funke.exe` (`scripts\dev\Build.ps1 CLI`), or `bin/<Config>-<linux|macosx>-<arch>/Funke-CLI/index` (`make Funke-CLI`).
+`funke.exe` ships next to `Funke-Launcher.exe` and `Funke-Editor.exe` (`funke` on Linux and macOS). In a source checkout it is built to `bin/<Config>-windows-x86_64/Funke-CLI/funke.exe` (`scripts\dev\Build.ps1 CLI`), or `bin/<Config>-<linux|macosx>-<arch>/Funke-CLI/funke` (`make Funke-CLI`).
 
 To call it from any terminal, run it once with `setup-path`. On Windows this adds its folder to **your user** `PATH`; on Linux and macOS it installs a small `funke` launcher script in `~/.local/bin` (and tells you if that folder is not on your `PATH` yet). Nothing else changes. `funke setup-path --remove` undoes it.
 
@@ -70,8 +70,9 @@ The pipeline is the editor's own, including:
 - the script compile with build defines
 - asset pruning
 - the binary scene conversion
+- optional asset bundles and LZ4 compression from the selected profile
 - icon embedding
-- the staged, all-or-nothing publish to `Builds/<profile>`
+- the staged, all-or-nothing publish to the selected output (by default `Builds/<Platform>`)
 
 `--debug`, `--release`, `--development`, `--platform` and `--profile` apply to **this build only**: `project.json` is not modified. A profile's own `configuration`, `defines` and test switches apply too. `--debug`, `--development` and `--release` override the profile's configuration ([Test Builds and Debug Tools](Testing.md)).
 
@@ -151,7 +152,8 @@ A scene is saved in the format it already has. When the editor has that scene op
 
 ```powershell
 funke package list
-funke package add Physics3D                       # engine or project package by name
+funke package add Funke.3D                        # enable the built-in 3D engine module
+funke package add Funke.Input                     # install a registry package
 funke package add https://github.com/me/MyPackage.git
 funke package add ..\Shared\MyPackage             # copy a local package into Packages/
 funke package add nuget:Newtonsoft.Json@13.0.3

@@ -546,7 +546,7 @@ TEST_CASE("Entity command buffer growth and reuse preserve capture addresses and
 {
 	auto exercise = [](auto& commands, NativeEntityCommandBuffer& writer) {
 		auto scene = Scene::CreateDetachedScene("ECB stable captures");
-		for (int count : { 128, 3 }) {
+		for (int count : { 1025, 3, 513 }) {
 			auto lifetime = std::make_shared<int>(1);
 			std::weak_ptr<int> captured = lifetime;
 			for (int i = 0; i < count; ++i) {

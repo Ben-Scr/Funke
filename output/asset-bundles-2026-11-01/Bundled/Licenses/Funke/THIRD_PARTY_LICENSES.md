@@ -1,0 +1,74 @@
+# Third-Party Licenses
+
+Funke ships and/or statically links the following third-party software.
+Each component's full license text is preserved in the corresponding
+`External/<name>/LICENSE*` file in this repository; this document is the
+aggregated attribution required by those licenses when Funke is
+redistributed in binary form.
+
+The font bundle has its own attribution file:
+[Funke-Runtime/FunkeAssets/Fonts/LICENSES.md](Funke-Runtime/FunkeAssets/Fonts/LICENSES.md).
+
+## C++ libraries (statically linked into `Funke-Engine.dll`)
+
+| Component | License | Copyright | Source |
+|---|---|---|---|
+| Box2D | MIT | Copyright (c) 2022 Erin Catto | [External/box2d/LICENSE](External/box2d/LICENSE) |
+| EnTT | MIT | Copyright (c) 2017-2026 Michele Caini | [External/entt/LICENSE](External/entt/LICENSE) |
+| Jolt Physics | MIT | Copyright (c) 2021 Jorrit Rouwe | [External/JoltPhysics/LICENSE](External/JoltPhysics/LICENSE) |
+| GLM | MIT / "Happy Bunny" | Copyright (c) 2005 G-Truc Creation | [External/glm/copying.txt](External/glm/copying.txt) |
+| Dear ImGui | MIT | Copyright (c) 2014-2026 Omar Cornut | [External/imgui/LICENSE.txt](External/imgui/LICENSE.txt) |
+| ImGuizmo | MIT | Copyright (c) 2016 Cedric Guillemet | [External/ImGuizmo/LICENSE](External/ImGuizmo/LICENSE) |
+| magic_enum | MIT | Copyright (c) 2019-2024 Daniil Goncharov | [External/magic_enum/LICENSE](External/magic_enum/LICENSE) |
+| miniaudio | Public Domain / MIT-0 (choose) | David Reid | [External/miniaudio/LICENSE](External/miniaudio/LICENSE) |
+| KEMAR HRTF measurements | Free use with attribution | Copyright 1994 MIT Media Laboratory; Bill Gardner and Keith Martin | [External/kemar/LICENSE](External/kemar/LICENSE) |
+| spdlog | MIT | Copyright (c) 2016-present Gabi Melman and spdlog contributors | [External/spdlog/LICENSE](External/spdlog/LICENSE) |
+| stb | Public Domain / MIT (choose) | Copyright (c) 2017 Sean Barrett | [External/stb/LICENSE](External/stb/LICENSE) |
+| LZ4 1.10.0 | 2-clause BSD | Copyright (c) 2011-2023 Yann Collet | [vendor/lz4/LICENSE](vendor/lz4/LICENSE) |
+| Tracy (client) | 3-clause BSD | Copyright (c) 2017-2026 Bartosz Taudul | [External/tracy/LICENSE](External/tracy/LICENSE) |
+| Dawn (WebGPU) | BSD 3-clause | Copyright 2017-2023 The Dawn & Tint Authors | [External/dawn/LICENSE](External/dawn/LICENSE) |
+| concurrentqueue | BSD 2-clause / Boost Software License | Copyright (c) 2013-2016 Cameron Desrochers | [External/concurrentqueue/LICENSE.md](External/concurrentqueue/LICENSE.md) |
+
+### Dawn transitive dependencies
+
+Dawn statically links several third-party components which are also
+compiled into `Funke-Engine.dll`. Their licenses (Apache 2.0, BSD,
+MIT) ship with the Dawn source tree under
+`External/dawn/third_party/<name>/LICENSE`. The most material ones are:
+
+- **DirectX Shader Compiler / LLVM** — Apache 2.0 with LLVM exception.
+- **Abseil** — Apache 2.0.
+- **Protobuf** — BSD 3-clause.
+- **glslang / SPIRV-Tools / SPIRV-Headers / SPIRV-Cross** — Apache 2.0 / MIT.
+- **DirectX Headers** — MIT.
+
+A copy of `External/dawn/third_party/` is **not** required for Funke
+binary redistribution as long as Dawn's own NOTICE/LICENSE files are
+preserved in the engine's source distribution. Anyone redistributing
+the engine's compiled DLL alongside this repository's source tree
+satisfies the attribution requirement transitively.
+
+## Shared libraries shipped alongside the executable
+
+| Component | License | Source |
+|---|---|---|
+| SDL3 (`SDL3.dll`) | zlib | [External/SDL/LICENSE.txt](External/SDL/LICENSE.txt) — Copyright (C) 1997-2026 Sam Lantinga |
+| .NET host (`nethost.dll`) | MIT | The .NET Foundation. https://github.com/dotnet/runtime |
+| Tracy (`Tracy.dll`) | 3-clause BSD | See Tracy entry above. Stripped from Dist builds when `--no-profiler` is passed. |
+
+## Other code in this repository
+
+| Path | License | Notes |
+|---|---|---|
+| `External/rapidxml/` | Boost-1.0 / MIT (dual) | Single vendored header (RapidXML 1.13, by Marcin Kalicinski). Used only by `CsprojParser.cpp` for .csproj/.props XML parsing. |
+| `External/doctest/` | MIT | Test-only dependency. Not in shipped binaries. |
+| `External/tracy/profiler/` | Various (3-clause BSD / MIT / Zlib / Apache 2.0 for transitive deps) | Tracy's standalone *viewer*. Not shipped with the engine; built separately by developers. |
+
+## Fonts
+
+See [Funke-Runtime/FunkeAssets/Fonts/LICENSES.md](Funke-Runtime/FunkeAssets/Fonts/LICENSES.md)
+for the full per-font attribution.
+
+## Engine
+
+Funke itself is licensed under the MIT License; see [`LICENSE.txt`](LICENSE.txt).

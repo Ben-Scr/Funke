@@ -1001,10 +1001,11 @@ namespace Funke::ImGuiUtils {
 		return changed;
 	}
 
-	bool FillDragFloat(const char* id, float* value, float vmin, float vmax, const char* format)
+	bool FillDragFloat(const char* id, float* value, float vmin, float vmax, const char* format, float speed)
 	{
 		const float range = vmax - vmin;
-		const float speed = range > 0.0f ? range / 200.0f : 0.01f;
+		if (!(speed > 0.0f))
+			speed = range > 0.0f ? std::min(range / 200.0f, 0.1f) : 0.1f;
 		const bool changed = ImGui::DragFloat(id, value, speed, vmin, vmax, format, ImGuiSliderFlags_AlwaysClamp);
 		if (range > 0.0f) {
 			const float t = std::clamp((*value - vmin) / range, 0.0f, 1.0f);

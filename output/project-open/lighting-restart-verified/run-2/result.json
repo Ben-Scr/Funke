@@ -1,0 +1,77 @@
+{
+  "project": "C:\\Users\\benso\\Funke\\Projects\\67",
+  "runDirectory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open\\lighting-restart-verified\\run-2",
+  "launcher": {
+    "project": "C:\\Users\\benso\\Funke\\Projects\\67",
+    "startedAtUnixMs": 1793533075494.314,
+    "spawnedAtUnixMs": 1793533075779.6477,
+    "launcherElapsedMs": 288.8218,
+    "complete": true,
+    "success": true,
+    "pid": 11048,
+    "error": ""
+  },
+  "editorReadyMs": 1115.3349609375,
+  "readyStatus": {
+    "project": "C:\\Users\\benso\\Funke\\Projects\\67",
+    "projectName": "6 7",
+    "pid": 11048,
+    "version": "Funke 2026.1.0-beta.1+eb4747a641a8.dev.engine.dirty.24935969d673 (Windows x64 Release)",
+    "protocol": 1,
+    "state": "edit",
+    "scene": "SampleScene",
+    "entityCount": 1,
+    "scenes": [
+      "SampleScene"
+    ],
+    "unsavedScenes": [],
+    "scripts": {
+      "compiling": false,
+      "lastBuildSucceeded": true,
+      "errors": ""
+    },
+    "busy": null,
+    "surface": {
+      "width": 2007,
+      "height": 1129,
+      "source": "game-view"
+    },
+    "fixedStep": 0,
+    "frame": 1,
+    "gameTime": 0
+  },
+  "scriptsReadyMs": 1115.3349609375,
+  "finalStatus": {
+    "project": "C:\\Users\\benso\\Funke\\Projects\\67",
+    "projectName": "6 7",
+    "pid": 11048,
+    "version": "Funke 2026.1.0-beta.1+eb4747a641a8.dev.engine.dirty.24935969d673 (Windows x64 Release)",
+    "protocol": 1,
+    "state": "edit",
+    "scene": "SampleScene",
+    "entityCount": 1,
+    "scenes": [
+      "SampleScene"
+    ],
+    "unsavedScenes": [],
+    "scripts": {
+      "compiling": false,
+      "lastBuildSucceeded": true,
+      "errors": ""
+    },
+    "busy": null,
+    "surface": {
+      "width": 2007,
+      "height": 1129,
+      "source": "game-view"
+    },
+    "fixedStep": 0,
+    "frame": 1,
+    "gameTime": 0
+  },
+  "launchToSpawnMs": 285.333740234375,
+  "spawnToReadyMs": 830.001220703125,
+  "success": true,
+  "launcherExitCode": 0,
+  "packageCacheHit": true
+}

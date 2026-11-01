@@ -9,7 +9,6 @@
 #include "Gui/EditorShortcuts.hpp"
 #include "Gui/EditorUI.hpp"
 #include "Gui/ImGuiUtils.hpp"
-#include "Graphics/TextureManager.hpp"
 
 #include "Graphics/ImageData.hpp"
 
@@ -41,12 +40,24 @@ namespace Funke {
 
 	void SpriteEditorPanel::Shutdown() {
 		m_AssetPath.clear();
+		m_PendingAssetPath.clear();
+		m_PendingAssetId = 0;
+		m_ShowUnsavedPrompt = false;
 		m_AssetId = 0;
-		m_PreviewHandle = TextureHandle{};
+		m_Preview.reset();
+		m_TexWidth = m_TexHeight = 0;
 		m_Slices.clear();
 		m_Selection.clear();
 		m_Dirty = false;
-		m_DecodedPixels.clear();
+	}
+
+	void SpriteEditorPanel::RefreshTexture() {
+		if (m_AssetPath.empty()) return;
+		const TextureMeta meta = AssetRegistry::ReadTextureMeta(m_AssetPath);
+		m_Preview = AsyncTexturePreviews::Get().Request(m_AssetPath,
+			meta.HasImportBlock ? meta.Import.FilterMode : Filter::Point, true);
+		m_TexWidth = m_TexHeight = 0;
+		m_PanInitialized = false;
 	}
 
 	void SpriteEditorPanel::OpenTexture(const std::string& assetPath, uint64_t assetId) {
@@ -66,17 +77,12 @@ namespace Funke {
 		m_AssetPath   = assetPath;
 		m_AssetId     = assetId;
 
-		m_PreviewHandle = TextureManager::LoadTexture(assetPath);
-		if (Texture2D* tex = TextureManager::GetTexture(m_PreviewHandle)) {
-			m_TexWidth  = static_cast<int>(tex->GetWidth());
-			m_TexHeight = static_cast<int>(tex->GetHeight());
-		}
-		else {
-			m_TexWidth  = 0;
-			m_TexHeight = 0;
-		}
+		m_TexWidth = m_TexHeight = 0;
 
 		const TextureMeta meta = AssetRegistry::ReadTextureMeta(assetPath);
+		AsyncTexturePreviews::Get().Retire(std::move(m_Preview));
+		m_Preview = AsyncTexturePreviews::Get().Request(assetPath,
+			meta.HasImportBlock ? meta.Import.FilterMode : Filter::Point, true);
 		m_Slices    = meta.Sprites;
 		m_Selection.clear();
 		m_Dirty = false;
@@ -86,7 +92,6 @@ namespace Funke {
 		m_DragMode       = DragMode::None;
 		m_DragSliceIndex = -1;
 
-		m_DecodedPixels.clear();           // re-decoded lazily on Auto-slice
 	}
 
 	void SpriteEditorPanel::Render(bool* pOpen) {
@@ -98,6 +103,20 @@ namespace Funke {
 			return;
 		}
 
+		if (m_Preview && m_Preview->State != TexturePreview::Status::Ready) {
+			const bool failed = m_Preview->State == TexturePreview::Status::Failed;
+			EditorUI::EmptyState(failed ? "Texture could not be loaded" : "Loading texture...", m_AssetPath.c_str());
+			if (failed && ImGui::Button("Retry")) {
+				m_Preview = AsyncTexturePreviews::Get().Request(m_AssetPath, m_Preview->Sampling, true);
+			}
+			RenderUnsavedPrompt();
+			ImGui::End();
+			return;
+		}
+		if (m_Preview && m_Preview->GetTexture()) {
+			m_TexWidth = static_cast<int>(m_Preview->Texture->GetWidth());
+			m_TexHeight = static_cast<int>(m_Preview->Texture->GetHeight());
+		}
 		if (m_AssetPath.empty() || m_TexWidth <= 0 || m_TexHeight <= 0) {
 			EditorUI::EmptyState("No texture open", "Select a texture asset and click \"Open Sprite Editor\".");
 			ImGui::End();
@@ -256,7 +275,6 @@ namespace Funke {
 				SliceByGridCount(m_GridCols, m_GridRows, m_PaddingX, m_PaddingY, m_KeepExistingOnSlice);
 				break;
 			case SliceMode::Auto:
-				EnsureDecodedBitmap();
 				if (!BitmapAvailable()) {
 					FNK_WARN_TAG("SpriteEditor",
 						"Auto-slice unavailable: failed to decode '{}'.", m_AssetPath);
@@ -347,7 +365,7 @@ namespace Funke {
 		const ImVec2 imageMin(canvasMin.x + m_PanOffset.x, canvasMin.y + m_PanOffset.y);
 		const ImVec2 imageMax(imageMin.x + m_TexWidth * m_Zoom, imageMin.y + m_TexHeight * m_Zoom);
 		drawList->PushClipRect(canvasMin, canvasMax, true);
-		if (Texture2D* tex = TextureManager::GetTexture(m_PreviewHandle); tex && tex->IsValid()) {
+		if (Texture2D* tex = m_Preview ? m_Preview->GetTexture() : nullptr; tex && tex->IsValid()) {
 			// Honor the sprite sheet's filter so pixel-art slicing isn't done
 			// against a blurry (shared-bilinear) canvas.
 			ImGuiUtils::AddImageFiltered(drawList, (ImTextureID)(intptr_t)tex->GetHandle(),
@@ -755,7 +773,7 @@ namespace Funke {
 		if (!BitmapAvailable() || m_TexWidth <= 0 || m_TexHeight <= 0) return;
 		if (!keepExisting) m_Slices.clear();
 		SpriteSlicing::ByAlpha(m_Slices, std::filesystem::path(m_AssetPath).stem().string(),
-			m_DecodedPixels.data(), m_TexWidth, m_TexHeight, alphaThreshold, minSize);
+			m_Preview->Pixels->Pixels, m_TexWidth, m_TexHeight, alphaThreshold, minSize);
 		m_Selection.clear();
 		m_Dirty = true;
 	}
@@ -941,32 +959,5 @@ namespace Funke {
 		m_Dirty = false;
 	}
 
-	// ─────────────────────────────────────────────────────────────────────
-	// stb_image re-decode for Auto-slice
-	// ─────────────────────────────────────────────────────────────────────
-
-	void SpriteEditorPanel::EnsureDecodedBitmap() {
-		std::error_code ec;
-		std::filesystem::file_time_type mtime{};
-		if (std::filesystem::exists(m_AssetPath, ec) && !ec) {
-			mtime = std::filesystem::last_write_time(m_AssetPath, ec);
-		}
-		if (!m_DecodedPixels.empty() && mtime == m_DecodedMtime) {
-			return;
-		}
-
-		// Route through Texture2D::DecodeFileToCpu — stbi_* symbols are file-static in the engine TU, not linkable directly from the editor DLL.
-		auto image = Texture2D::DecodeFileToCpu(m_AssetPath.c_str(), /*flipVertical=*/false);
-		if (!image || image->Width <= 0 || image->Height <= 0 || !image->Pixels) {
-			FNK_WARN_TAG("SpriteEditor", "Failed to decode '{}' for auto-slice.", m_AssetPath);
-			m_DecodedPixels.clear();
-			return;
-		}
-		const std::size_t byteCount = static_cast<std::size_t>(image->Width) * image->Height * 4u;
-		m_DecodedPixels.assign(image->Pixels, image->Pixels + byteCount);
-		m_DecodedMtime = mtime;
-		m_TexWidth  = image->Width;
-		m_TexHeight = image->Height;
-	}
 
 } // namespace Funke

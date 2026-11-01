@@ -1,6 +1,6 @@
 # Platform Packages
 
-Windows (and, from source, Linux and macOS) builds are part of the editor. Every other export target — Android, iOS, Web — comes from a **platform package**: a folder with an `funke-package.lua` and a builder script. The engine itself knows nothing about those platforms' toolchains; when no package for a platform is installed, the platform is simply unavailable in **Build Profiles**.
+The editor builds for its host desktop platform: Windows, Linux or macOS. Other export targets — Android, iOS and Web — come from a **platform package**: a folder with a `funke-package.lua` and a builder script. Without a compatible package, the target is unavailable in **Build Profiles**.
 
 First-party packages live in the engine checkout under `platforms/`:
 
@@ -25,7 +25,7 @@ A platform only becomes available in Build Profiles when its builder supports th
 
 ## Using a platform
 
-1. Install what the platform needs (see below). The builder's `check` command reports missing tools with a fix for each.
+1. Use a full engine source checkout and install the target's prerequisites below. Platform builders compile the engine through `cmake/FunkeEngine.cmake`; a desktop runtime or native-header SDK alone is insufficient. The builder's `check` command reports missing tools with a fix for each.
 2. Create a build profile for the platform in **Build Profiles** and make it active.
 3. Click **Build**. The editor prepares the platform-neutral content (scenes, assets, compiled scripts), the package compiles the engine for the target and packages the result into the output folder.
 
@@ -49,7 +49,7 @@ The first build for a platform compiles SDL3, Dawn and the engine for that targe
 
 ## Android
 
-Requirements: Python 3.10+, CMake, Ninja, the Android SDK with build-tools and an API 34+ platform, the Android NDK, and JDK 17+. Android Studio installs all of these; a Unity installation's bundled Android SDK, NDK and JDK work too.
+Requirements: Python 3.10+, CMake, Ninja, the Android SDK with build-tools and the API 36 platform for the current target, the Android NDK, and JDK 17+. Android Studio supplies these tools. A Unity installation's bundled tools can also be used when their versions satisfy the builder's checks.
 
 | Option | Meaning |
 |---|---|
@@ -66,7 +66,7 @@ Requirements: Python 3.10+, CMake, Ninja, the Android SDK with build-tools and a
 
 Packages can read further options, for example `admobAppId` for [Funke.Ads](#ads-and-other-java-libraries-from-packages).
 
-The APK contains the engine, SDL3 and the Mono runtime as native libraries; the game content is unpacked to the app's private storage on first launch. Games target Android 16 (API 36), which Google Play requires for new apps and updates since 31 August 2026; they declare themselves as games (`android:appCategory="game"`), so large screens keep the chosen orientation, and keep the classic back button (`enableOnBackInvokedCallback="false"`). All native libraries support 16 KB memory pages, which Play requires for apps targeting Android 15 and later.
+The APK contains the engine, SDL3 and the Mono runtime as native libraries; game content is unpacked to private storage on first launch. The builder targets Android 16 (API 36), declares `android:appCategory="game"`, and keeps the classic back button with `enableOnBackInvokedCallback="false"`. Its native build enables 16 KB page support. Before publishing, check Google's [target API requirements](https://developer.android.com/google/play/requirements/target-sdk) and [16 KB compatibility guidance](https://developer.android.com/guide/practices/page-sizes), including every third-party native library added by packages.
 
 ### Publishing on Google Play
 
@@ -97,7 +97,7 @@ Play accepts only App Bundles for new apps. A Release build writes both files to
 
 Engine packages can bring Android code with them: Java sources, libraries from Maven (AARs and JARs, such as Google's ad or billing SDKs) and manifest entries. The builder resolves the libraries without Gradle, merges their manifests and resources into the game's and dexes everything into the APK and bundle. [Writing Packages](../Packages/Writing-Packages.md#android-java-code-maven-libraries-and-manifest-entries) describes the `android` section of `funke-package.lua`.
 
-**Funke.Ads** uses this for Google AdMob: banners, interstitials, rewarded ads and Google's GDPR consent form, simulated with placeholders in the editor. Install it from the Package Manager and set the profile option `admobAppId`; its README covers ad units, consent and the Play Console declarations.
+**Funke.Ads** provides Google AdMob banners, interstitials, rewarded ads and consent UI, with editor simulation. Its [source and README](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Ads) are available in the package repository; the registry index does not currently publish a release. Add a local copy of that package folder until a registry release is available, and set the profile option `admobAppId`.
 
 Scripts reach a package's Java classes through `AndroidBridge`:
 
@@ -130,12 +130,12 @@ iOS forbids JIT compilation, so C# runs in Mono's interpreter.
 
 ## Web
 
-Requirements: Python 3.10+, CMake, Ninja, and a browser with WebGPU (current Chrome, Edge, Safari or Firefox).
+Requirements: Python 3.10+, CMake, Ninja, and a browser/device combination with WebGPU enabled.
 
 - **Games without C# scripts** need the [Emscripten SDK](https://emscripten.org) 4.0.3 or newer (`EMSDK`, or `<engine>/vendor/emsdk`).
 - **Games with C# scripts** need the **.NET 11 SDK** with the WebAssembly workload: `dotnet workload install wasm-tools`. The engine is compiled with that SDK's own Emscripten and linked together with the Mono runtime by `dotnet publish`, because WebAssembly cannot create the native/managed call bridges at runtime — they are generated from your assemblies at build time. Point `FUNKE_DOTNET_WASM_SDK` (or the `dotnetSdk` option) at the SDK if it is not the `dotnet` on your `PATH`.
 
-The output is a folder with `index.html`. Browsers do not run WebAssembly from `file://`; serve the folder over HTTP, for example `python -m http.server` inside it, or upload it to any static web host.
+The output is a folder with `index.html`. Serve it through `http://localhost` for development, for example with `python -m http.server`, or publish it on an HTTPS static host. WebGPU requires a secure context; an ordinary remote HTTP origin or `file://` is insufficient.
 
 | Option | Meaning |
 |---|---|

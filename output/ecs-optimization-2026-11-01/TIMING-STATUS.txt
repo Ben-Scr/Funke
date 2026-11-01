@@ -1,0 +1,1 @@
+Nicht fuer Performance-Vergleiche verwenden: Waehrend der Baseline wurden fremde Aetherwild-Runtimes gestartet (PID 60656 ab 16:31:08; PID 82116 ab 16:34:48). Die eigene letzte Baseline wurde deshalb abgebrochen. Frische Messungen erhalten ein separates Verzeichnis.

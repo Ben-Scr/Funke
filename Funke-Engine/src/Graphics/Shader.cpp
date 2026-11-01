@@ -452,16 +452,18 @@ fn envBRDF(f0: vec3<f32>, roughness: f32, NoV: f32) -> vec3<f32> {
 	return f0 * ab.x + vec3<f32>(ab.y);
 }
 
-fn pointAttenuation(dist: f32, lightRange: f32) -> f32 {
-	if (dist >= lightRange) {
-		return 0.0;
-	}
-	let ratio = dist / lightRange;
-	let window = clamp(1.0 - ratio * ratio * ratio * ratio, 0.0, 1.0);
-	return (window * window) / (dist * dist + 1.0);
+fn pointAttenuation(distanceSq: f32, rangeSq: f32) -> f32 {
+	let ratioSq = distanceSq / rangeSq;
+	let window = clamp(1.0 - ratioSq * ratioSq, 0.0, 1.0);
+	return (window * window) / (distanceSq + 1.0);
 }
 
 fn shadowFactor(worldPos: vec3<f32>, normal: vec3<f32>) -> f32 {
+	let toCamera = worldPos - frame.cameraPos.xyz;
+	let distanceSq = dot(toCamera, toCamera);
+	if (distanceSq >= frame.shadowParams.w * frame.shadowParams.w) {
+		return 1.0;
+	}
 	let lp = frame.lightViewProj * vec4<f32>(worldPos + normal * frame.shadowParams.z, 1.0);
 	let ndc = lp.xyz / lp.w;
 	let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
@@ -476,7 +478,7 @@ fn shadowFactor(worldPos: vec3<f32>, normal: vec3<f32>) -> f32 {
 			sum += textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2<f32>(f32(x), f32(y)) * texel, depth);
 		}
 	}
-	let fade = smoothstep(frame.shadowParams.w * 0.85, frame.shadowParams.w, length(worldPos - frame.cameraPos.xyz));
+	let fade = smoothstep(frame.shadowParams.w * 0.85, frame.shadowParams.w, sqrt(distanceSq));
 	return mix(sum / 9.0, 1.0, fade);
 }
 
@@ -509,9 +511,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 		var attenuation = 1.0;
 		if (lightType > 0.5) {
 			let toLight = light.positionRange.xyz - in.worldPos;
-			let dist = length(toLight);
-			l = toLight / max(dist, 1e-4);
-			attenuation = pointAttenuation(dist, light.positionRange.w);
+			let distanceSq = dot(toLight, toLight);
+			let rangeSq = light.positionRange.w * light.positionRange.w;
+			if (distanceSq >= rangeSq || dot(n, toLight) <= 0.0) {
+				continue;
+			}
+			l = toLight * inverseSqrt(max(distanceSq, 1e-8));
+			attenuation = pointAttenuation(distanceSq, rangeSq);
 			if (lightType > 1.5) {
 				let cosAngle = dot(-l, light.directionType.xyz);
 				let t = clamp((cosAngle - light.spot.y) / max(light.spot.x - light.spot.y, 1e-4), 0.0, 1.0);
@@ -790,9 +796,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
-		// Separable Gaussian blur, shared by H and V passes. Uniform: { dirX, dirY, texelSize, halfKernel }; halfK is a uniform so Dawn accepts the runtime-bounded loop.
+		// Shared H/V kernel; weights are normalized on the CPU and packed to WGSL uniform alignment.
 		constexpr const char* k_PostBloomBlurWGSL = R"WGSL(
-struct Params { p: vec4<f32>, };
+struct Params { p: vec4<f32>, weights: array<vec4<f32>, 5>, };
 @group(0) @binding(0) var t_src: texture_2d<f32>;
 @group(0) @binding(1) var s_src: sampler;
 @group(0) @binding(2) var<uniform> u: Params;
@@ -816,34 +822,17 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-	let dir = u.p.xy;
-	let texel = u.p.z;
-	// Clamp upper bound bumped to 250 so the user-facing Taps slider
-	// (7..500 taps per pass, mapping to halfK 3..250) fits with
-	// headroom. Past ~250 the Gaussian tail is microscopic so the
-	// extra taps are wasted GPU work, but the upper bound matches the
-	// inspector's slider range. Loop is uniform-bounded across the
-	// dispatch (halfK is a uniform), which lets Dawn unroll up to a
-	// driver-dependent point.
-	let half_k = i32(clamp(u.p.w, 1.0, 250.0));
-	let half_kf = f32(half_k);
-
-	// sigma chosen so the kernel-edge tap is ~exp(-4.5) ~ 0.011 of the
-	// centre tap (3-sigma covers the kernel half). That gives a clean
-	// Gaussian falloff without leaving a hard edge at the kernel boundary.
-	let sigma = half_kf / 3.0;
-	let sigma_inv2 = 1.0 / (2.0 * sigma * sigma);
-
-	var result = vec3<f32>(0.0);
-	var weight_sum = 0.0;
-	for (var i = -half_k; i <= half_k; i = i + 1) {
-		let offset = dir * f32(i) * texel;
-		let sample = textureSample(t_src, s_src, in.uv + offset).rgb;
-		let w = exp(-f32(i * i) * sigma_inv2);
-		result = result + sample * w;
-		weight_sum = weight_sum + w;
+	let step = u.p.xy * u.p.z;
+	let half_k = u32(clamp(u.p.w, 1.0, 16.0));
+	var result = textureSample(t_src, s_src, in.uv).rgb * u.weights[0].x;
+	for (var i = 1u; i <= half_k; i = i + 1u) {
+		let offset = step * f32(i);
+		let weight = u.weights[i / 4u][i % 4u];
+		let positive = textureSample(t_src, s_src, in.uv + offset).rgb;
+		let negative = textureSample(t_src, s_src, in.uv - offset).rgb;
+		result = result + (positive + negative) * weight;
 	}
-	return vec4<f32>(result / weight_sum, 1.0);
+	return vec4<f32>(result, 1.0);
 }
 )WGSL";
 
@@ -1267,8 +1256,8 @@ fn fs_high(in: VertexOutput) -> @location(0) vec4<f32> {
 		std::string ResolveOnDiskWGSL(const std::string& name) {
 			const std::string rel = std::string("FunkeAssets/Shaders/webgpu/") + name + ".wgsl";
 			const std::string exeRel = Path::Combine(Path::ExecutableDir(), rel);
-			if (std::filesystem::exists(exeRel)) return exeRel;
-			if (std::filesystem::exists(rel)) return rel;
+			if (File::Exists(exeRel)) return exeRel;
+			if (File::Exists(rel)) return rel;
 			return {};
 		}
 

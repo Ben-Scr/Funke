@@ -1,6 +1,6 @@
 # Funke — agent guide
 
-Funke is a 2D game engine: C++20 native core (MSVC v143, premake) + C# scripting on .NET 10.
+Funke is a modular 2D and 3D game engine: C++20 native core (MSVC v143 on Windows, premake) + C# scripting on .NET 10 for desktop, with Mono platform runtimes for Android, iOS and Web.
 The user writes German; answer in German.
 
 ## Layout
@@ -44,8 +44,8 @@ Full logs: `%LOCALAPPDATA%\Funke\Logs\<exe>.log` (format `[time] [logger] [level
 
 ## Definition of done
 
-1. `Build.ps1` for every project the change touches (engine headers → also `Editor`, since it compiles against them).
-2. `Test.ps1` (add `-Suite CSharp` when `Funke-ScriptCore` changed). Add/extend a doctest case when the change is testable.
+1. Documentation-only changes: check references and examples; no native build. For code, use `Build.ps1` for the smallest affected target and consumers of changed public headers.
+2. Select relevant tests with `Test.ps1 -Suite Engine|Editor|CSharp` and a test filter when useful. Add or extend a test for changed behavior when it adds evidence.
 3. Anything visible at runtime (rendering, editor UI, scene load, scripting): `Run.ps1` and look at the screenshot + reported warnings.
 4. User-visible change → `CHANGELOG.md` and `Github-Docs/Documentation`.
 

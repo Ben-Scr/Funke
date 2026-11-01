@@ -29,6 +29,8 @@
 	X(SpriteRenderer_SetSortingLayer) \
 	X(Camera2D_GetOrthographicSize) \
 	X(Camera2D_SetOrthographicSize) \
+	X(Camera2D_GetPostProcessingEnabled) \
+	X(Camera2D_SetPostProcessingEnabled) \
 	X(Camera2D_GetZoom) \
 	X(Camera2D_SetZoom) \
 	X(Camera2D_GetClearColor) \
@@ -153,6 +155,8 @@
 	X(Transform3D_SetScale) \
 	X(Transform3D_GetWorldPosition) \
 	X(Transform3D_GetForward) \
+	X(Camera3D_GetPostProcessingEnabled) \
+	X(Camera3D_SetPostProcessingEnabled) \
 	X(Camera3D_GetProjection) \
 	X(Camera3D_SetProjection) \
 	X(Camera3D_GetFieldOfView) \

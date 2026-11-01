@@ -77,18 +77,26 @@ public sealed class Audio : IEquatable<Audio>
     /// </summary>
     public void PlayOneShotAt(Vector3 position, float volume = 1.0f, float minDistance = 1.0f, float maxDistance = 50.0f,
         AudioRolloff rolloff = AudioRolloff.Logarithmic, float panning = 0.8f, float dopplerLevel = 0.0f)
+        => PlayOneShotAt(position, false, volume, minDistance, maxDistance, rolloff, panning, dopplerLevel);
+
+    /// <summary>HRTF uses headphone binaural filtering instead of Panning; stereo clips become a mono point source.</summary>
+    public void PlayOneShotAt(Vector3 position, bool hrtf, float volume = 1.0f, float minDistance = 1.0f, float maxDistance = 50.0f,
+        AudioRolloff rolloff = AudioRolloff.Logarithmic, float panning = 0.8f, float dopplerLevel = 0.0f)
     {
         if (UUID == 0)
             return;
 
         System.Span<float> values = stackalloc float[] {
-            position.X, position.Y, position.Z, volume, minDistance, maxDistance, (float)rolloff, panning, dopplerLevel };
+            position.X, position.Y, position.Z, volume, minDistance, maxDistance, (float)rolloff, panning, dopplerLevel, hrtf ? 1f : 0f };
         InternalCalls.Audio_PlayOneShotAt(UUID, values);
     }
 
     /// <summary>Plays <paramref name="clip"/> once from a world position; does nothing when it is null.</summary>
     public static void PlayOneShotAt(Audio? clip, Vector3 position, float volume = 1.0f, float maxDistance = 50.0f)
         => clip?.PlayOneShotAt(position, volume, maxDistance: maxDistance);
+
+    public static void PlayOneShotAt(Audio? clip, Vector3 position, bool hrtf, float volume = 1.0f, float maxDistance = 50.0f)
+        => clip?.PlayOneShotAt(position, hrtf, volume, maxDistance: maxDistance);
 
     // Public so packages built in separate assemblies (Pkg.<Name>.dll)
     // can construct managed Audio wrappers from a stored asset GUID

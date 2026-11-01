@@ -1030,6 +1030,34 @@ namespace Funke {
 		return SceneManager::CancelSceneLoad(operationId) ? 1 : 0;
 	}
 
+	static uint64_t Funke_Scene_PreloadAsync(const char* sceneName) {
+		const std::string name = sceneName ? sceneName : "";
+		return ProjectSceneLoader::PreloadAsync(name, [name](uint64_t id, const SceneLoadResult& result) {
+			ScriptEngine::RaiseSceneLoadCompleted(id, result.Status == SceneLoadStatus::Cancelled ? -1 : result ? 1 : 0, name.c_str(), 0);
+		});
+	}
+
+	static uint64_t Funke_Scene_PreloadByGuidAsync(uint64_t guid) {
+		const auto name = ResolveSceneNameForGuid(guid);
+		return name.empty() ? 0 : Funke_Scene_PreloadAsync(name.c_str());
+	}
+
+	static int Funke_Scene_ActivatePreloaded(uint64_t id, int additive) {
+		return SceneManager::ActivatePreloadedScene(id, additive != 0, [](uint64_t operationId, const SceneLoadResult& result) {
+			const auto scene = result.LoadedScene.lock();
+			ScriptEngine::RaiseSceneLoadCompleted(operationId, result.Status == SceneLoadStatus::Cancelled ? -1 : result && scene ? 1 : 0,
+				scene ? scene->GetName().c_str() : "", 0);
+		}) ? 1 : 0;
+	}
+
+	static int Funke_Scene_GetLoadProgress(uint64_t id, int* phase, float* progress) {
+		const auto state = SceneManager::GetSceneLoadProgress(id);
+		if (!state || !phase || !progress) return 0;
+		*phase = static_cast<int>(state->Phase);
+		*progress = state->Progress;
+		return 1;
+	}
+
 	static void Funke_Scene_UnloadByGuid(uint64_t sceneGuid) {
 		const std::string sceneName = ResolveSceneNameForGuid(sceneGuid);
 		if (sceneName.empty()) {
@@ -2067,7 +2095,7 @@ namespace Funke {
 	static int   Funke_AudioSource_IsPlaying(uint64_t entityID) { GET_COMPONENT(AudioSourceComponent, entityID, 0); return comp.IsPlaying() ? 1 : 0; }
 	static int   Funke_AudioSource_IsPaused(uint64_t entityID) { GET_COMPONENT(AudioSourceComponent, entityID, 0); return comp.IsPaused() ? 1 : 0; }
 
-	// values: spatial (0/1), minDistance, maxDistance, rolloff, panning, dopplerLevel
+	// values: spatial (0/1), minDistance, maxDistance, rolloff, panning, dopplerLevel, hrtf (0/1)
 	static void Funke_AudioSource_GetSpatial(uint64_t entityID, float* values, int count) {
 		if (!values) return;
 		const AudioSourceComponent fallback;
@@ -2078,8 +2106,8 @@ namespace Funke {
 			source = &scene->GetComponent<AudioSourceComponent>(handle);
 		}
 		const AudioSpatialSettings& s = source->GetSpatialSettings();
-		const float packed[6] = { source->IsSpatial() ? 1.0f : 0.0f, s.MinDistance, s.MaxDistance, static_cast<float>(s.Rolloff), s.Panning, s.DopplerLevel };
-		for (int i = 0; i < count && i < 6; ++i) values[i] = packed[i];
+		const float packed[7] = { source->IsSpatial() ? 1.0f : 0.0f, s.MinDistance, s.MaxDistance, static_cast<float>(s.Rolloff), s.Panning, s.DopplerLevel, s.Hrtf ? 1.0f : 0.0f };
+		for (int i = 0; i < count && i < 7; ++i) values[i] = packed[i];
 	}
 
 	static void Funke_AudioSource_SetSpatial(uint64_t entityID, const float* values, int count) {
@@ -2091,6 +2119,7 @@ namespace Funke {
 		if (count > 3) s.Rolloff = static_cast<AudioRolloff>(std::clamp(static_cast<int>(values[3]), 0, 1));
 		if (count > 4) s.Panning = values[4];
 		if (count > 5) s.DopplerLevel = values[5];
+		if (count > 6) s.Hrtf = values[6] != 0.0f;
 		comp.SetSpatialSettings(s);
 		if (count > 0 && (values[0] != 0.0f) != comp.IsSpatial()) {
 			if (values[0] != 0.0f) AudioUpdateSystem::SyncPosition(scene->GetRegistry(), handle, comp, 0.0f);
@@ -2098,7 +2127,7 @@ namespace Funke {
 		}
 	}
 
-	// values: x, y, z, volume, minDistance, maxDistance, rolloff, panning, dopplerLevel
+	// values: x, y, z, volume, minDistance, maxDistance, rolloff, panning, dopplerLevel, hrtf (0/1)
 	static void Funke_Audio_PlayOneShotAt(uint64_t assetId, const float* values, int count) {
 		if (!values || count < 3) return;
 		const AudioHandle audio = AudioManager::LoadAudioByUUID(assetId);
@@ -2110,6 +2139,7 @@ namespace Funke {
 		if (count > 6) s.Rolloff = static_cast<AudioRolloff>(std::clamp(static_cast<int>(values[6]), 0, 1));
 		if (count > 7) s.Panning = values[7];
 		if (count > 8) s.DopplerLevel = values[8];
+		if (count > 9) s.Hrtf = values[9] != 0.0f;
 		AudioManager::PlayOneShotAt(audio, glm::vec3(values[0], values[1], values[2]), std::max(volume, 0.0f), s);
 	}
 
@@ -3932,6 +3962,10 @@ namespace Funke {
 		b.Scene_BeginLoadAsync       = FNK_GUARDED_BINDING(Funke_Scene_BeginLoadAsync);
 		b.Scene_BeginLoadByGuidAsync = FNK_GUARDED_BINDING(Funke_Scene_BeginLoadByGuidAsync);
 		b.Scene_CancelLoadAsync      = FNK_GUARDED_BINDING(Funke_Scene_CancelLoadAsync);
+		b.Scene_PreloadAsync        = FNK_GUARDED_BINDING(Funke_Scene_PreloadAsync);
+		b.Scene_PreloadByGuidAsync  = FNK_GUARDED_BINDING(Funke_Scene_PreloadByGuidAsync);
+		b.Scene_ActivatePreloaded   = FNK_GUARDED_BINDING(Funke_Scene_ActivatePreloaded);
+		b.Scene_GetLoadProgress     = FNK_GUARDED_BINDING(Funke_Scene_GetLoadProgress);
 		b.Scene_UnloadByGuid         = FNK_GUARDED_BINDING(Funke_Scene_UnloadByGuid);
 		b.Scene_SetActiveByGuid      = FNK_GUARDED_BINDING(Funke_Scene_SetActiveByGuid);
 		b.Scene_ReloadByGuid         = FNK_GUARDED_BINDING(Funke_Scene_ReloadByGuid);

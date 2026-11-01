@@ -117,7 +117,7 @@ Written by `BuildProjectJson`, read by `Load`. Field names are exact. (Defaults 
   "devConsole": true,                     // omit = on for Debug/Development, off for Release
   "prefsProfile": "",                     // non-empty isolates PlayerPrefs/SaveData under Profiles/<name>
   "physicsTickRate": 50,                  // fixed updates per second, clamped to 1–240
-  "graphics": { "postProcessingEnabled": true, "renderScale": 1.0, … },  // quality defaults; written only when non-default (legacy top-level "enablePostProcessing" is still read)
+  "graphics": { "postProcessingEnabled": true, "renderScale": 1.0 },  // quality defaults; written only when non-default (legacy top-level "enablePostProcessing" is still read)
 
   // Serialization & ECS
   "assetSerializationFormat": "Json",     // Json | Binary — applies to .scene/.prefab/.dataasset
@@ -224,7 +224,7 @@ One JSON sidecar per asset, holding the stable `AssetGUID`/`uuid` and the asset 
 ## How scenes register at runtime
 
 The Runtime (`Funke-Runtime`, `RuntimeApplication::ConfigureScenes`) reads `project.json` and:
-1. For each name in `buildScenes`, calls `RegisterScene(name)` and attaches an `OnLoad` callback that `SceneSerializer::LoadFromFile`s the resolved `.scene` path (format auto-detected from the file's magic bytes).
+1. For each enabled name in `buildScenes`, calls `RegisterScene(name).OnLoadFromFile(path)` with the resolved `.scene` path (format auto-detected from the magic bytes). This file-backed definition also enables worker preparation for asynchronous loading.
 2. Marks the `startupScene` as the startup scene (falling back to `lastOpenedScene`, then `"SampleScene"`). If the startup scene isn't in `buildScenes`, it's registered anyway.
 3. Only the startup scene auto-loads; the rest load on demand via `SceneManager` (from C#: `SceneManager.LoadScene("Name")` — see `funke-game-scripting`).
 

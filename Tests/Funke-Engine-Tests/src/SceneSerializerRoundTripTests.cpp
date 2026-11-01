@@ -1,11 +1,13 @@
 #include <doctest/doctest.h>
 
 #include "Collections/Color.hpp"
+#include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/NameComponent.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/Transform3DComponent.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/Graphics/Camera2DComponent.hpp"
+#include "Components/Graphics/Camera3DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
@@ -823,6 +825,73 @@ namespace {
 	};
 }
 
+TEST_CASE("Prefab override presence tracks root and child edits without caching live values")
+{
+	PrefabCacheProject project;
+	auto source = Scene::CreateDetachedScene("Override source");
+	Entity sourceRoot = source->CreateEntity("Root");
+	for (int i = 0; i < 40; ++i)
+		source->CreateEntity("Child " + std::to_string(i)).SetParent(sourceRoot);
+	REQUIRE(project.Write("source.prefab", 791001, SceneSerializer::SerializePrefabSource(*source, sourceRoot.GetHandle())));
+	auto scene = Scene::CreateDetachedScene("Override instance");
+	const EntityHandle root = SceneSerializer::InstantiatePrefab(*scene, 791001);
+	REQUIRE(root != entt::null);
+	CHECK_FALSE(SceneSerializer::HasPrefabInstanceOverrides(*scene, root));
+	const auto children = scene->GetComponent<HierarchyComponent>(root).Children;
+	REQUIRE(children.size() == 40);
+	for (EntityHandle target : { root, children.front(), children.back() }) {
+		auto& transform = scene->GetComponent<Transform2DComponent>(target);
+		transform.SetPosition({ 17.0f, 23.0f });
+		CHECK(SceneSerializer::HasPrefabInstanceOverrides(*scene, root));
+		CHECK(SceneSerializer::HasPrefabInstanceOverrides(*scene, children[20]));
+		Json::Value overrides;
+		REQUIRE(SceneSerializer::ComputeInstanceOverrides(*scene, target, overrides));
+		CHECK_FALSE(overrides.GetObject().empty());
+		transform.SetPosition({ 0.0f, 0.0f });
+		CHECK_FALSE(SceneSerializer::HasPrefabInstanceOverrides(*scene, root));
+	}
+	CHECK_FALSE(SceneSerializer::HasPrefabInstanceOverrides(*scene, entt::null));
+	CHECK_FALSE(SceneSerializer::HasPrefabInstanceOverrides(*source, sourceRoot.GetHandle()));
+}
+
+TEST_CASE("Prefab inspector snapshots follow source edits inherited sources and deletion")
+{
+	PrefabCacheProject project;
+	auto source = Scene::CreateDetachedScene("Snapshot source");
+	Entity original = source->CreateEntity("Root");
+	REQUIRE(project.Write("source.prefab", 791001, SceneSerializer::SerializePrefabSource(*source, original.GetHandle())));
+	Json::Value derived = Json::Value::MakeObject();
+	derived.AddMember("PrefabRef", Json::Value(uint64_t(791001)));
+	REQUIRE(project.Write("derived.prefab", 791002, derived));
+	auto scene = Scene::CreateDetachedScene("Snapshot consumer");
+	const EntityHandle directInstance = SceneSerializer::InstantiatePrefab(*scene, 791001);
+	const EntityHandle inheritedInstance = SceneSerializer::InstantiatePrefab(*scene, 791002);
+	REQUIRE(directInstance != entt::null);
+	REQUIRE(inheritedInstance != entt::null);
+	for (EntityHandle instance : { directInstance, inheritedInstance }) {
+		Json::Value overrides;
+		REQUIRE(SceneSerializer::ComputeInstanceOverrides(*scene, instance, overrides));
+		CHECK(overrides.GetObject().empty());
+		CHECK_FALSE(SceneSerializer::HasPrefabInstanceOverrides(*scene, instance));
+	}
+	original.GetComponent<Transform2DComponent>().SetPosition({ 12345.0f, 0.0f });
+	REQUIRE(project.Write("source.prefab", 791001, SceneSerializer::SerializePrefabSource(*source, original.GetHandle())));
+	for (EntityHandle instance : { directInstance, inheritedInstance }) {
+		Json::Value overrides;
+		REQUIRE(SceneSerializer::ComputeInstanceOverrides(*scene, instance, overrides));
+		CHECK(overrides.FindMember("Transform2D.posX") != nullptr);
+		CHECK(SceneSerializer::HasPrefabInstanceOverrides(*scene, instance));
+		scene->GetComponent<Transform2DComponent>(instance).SetPosition({ 12345.0f, 0.0f });
+		CHECK_FALSE(SceneSerializer::HasPrefabInstanceOverrides(*scene, instance));
+	}
+	REQUIRE(std::filesystem::remove(Path::FromUtf8(project.PathTo("source.prefab"))));
+	for (EntityHandle instance : { directInstance, inheritedInstance }) {
+		Json::Value overrides;
+		CHECK_FALSE(SceneSerializer::ComputeInstanceOverrides(*scene, instance, overrides));
+		CHECK_FALSE(SceneSerializer::HasPrefabInstanceOverrides(*scene, instance));
+	}
+}
+
 TEST_CASE("Prefab root cache keeps shared live scenes and releases destroyed instances")
 {
 	PrefabCacheProject project;
@@ -946,4 +1015,27 @@ TEST_CASE("Prefab root eviction invalidates baked spawns and restores external r
 	instance = SceneSerializer::RefreshPrefabInstance(*second, instance, *changes.front().PreviousRoot);
 	REQUIRE(instance != entt::null);
 	CHECK(second->GetComponent<Transform2DComponent>(instance).LocalPosition.x == doctest::Approx(678901.0f));
+}
+
+TEST_CASE("Camera3D post processing round-trips and resets to enabled") {
+    auto scene = Scene::CreateDetachedScene("Camera3D Post Processing");
+    Entity src = scene->CreateEmptyEntity();
+    auto& camera = src.AddComponent<Camera3DComponent>();
+    CHECK(camera.PostProcessingEnabled);
+    CHECK(SceneSerializer::SerializeComponent(*scene, src.GetHandle(), "Camera3D").FindMember("postProcessing") == nullptr);
+    camera.PostProcessingEnabled = false;
+
+    const Json::Value full = SceneSerializer::SerializeEntityFull(*scene, src.GetHandle());
+    const EntityHandle clone = SceneSerializer::DeserializeEntityFromValue(*scene, full);
+    REQUIRE(clone != entt::null);
+    CHECK_FALSE(scene->GetComponent<Camera3DComponent>(clone).PostProcessingEnabled);
+
+    Entity dst = scene->CreateEmptyEntity();
+    const Json::Value component = SceneSerializer::SerializeComponent(*scene, src.GetHandle(), "Camera3D");
+    REQUIRE(SceneSerializer::DeserializeComponent(*scene, dst.GetHandle(), "Camera3D", component));
+    CHECK_FALSE(dst.GetComponent<Camera3DComponent>().PostProcessingEnabled);
+    REQUIRE(SceneSerializer::ResetComponent(*scene, dst.GetHandle(), "Camera3D"));
+    CHECK(dst.GetComponent<Camera3DComponent>().PostProcessingEnabled);
+    REQUIRE(SceneSerializer::DeserializeComponent(*scene, src.GetHandle(), "Camera3D", Json::Value::MakeObject()));
+    CHECK(src.GetComponent<Camera3DComponent>().PostProcessingEnabled);
 }

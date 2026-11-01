@@ -124,6 +124,6 @@ namespace Funke {
         bool m_IsPersistent = false;
         bool m_AutoCreateDefaultCamera2D = true;
 
-        std::shared_ptr<Scene> Instantiate() const;
+        std::shared_ptr<Scene> Instantiate(bool suspendLifecycle = false) const;
     };
 }

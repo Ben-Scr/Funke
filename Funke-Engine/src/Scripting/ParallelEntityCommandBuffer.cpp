@@ -47,7 +47,7 @@ namespace Funke {
 		std::vector<NativeEntityCommandBuffer*> writers;
 		writers.reserve(m_Subs.size());
 		for (auto& writer : m_Subs) writers.push_back(&writer);
-		return NativeEntityCommandBuffer::PlaybackBuffers(scene, writers, m_CreatedHandles, m_Wire, m_Identities, mode);
+		return NativeEntityCommandBuffer::PlaybackBuffers(scene, writers, m_CreatedHandles, m_Wire, mode);
 	}
 
 	void ParallelEntityCommandBuffer::Clear() {

@@ -27,6 +27,7 @@ NATIVE_HEADERS = (
     "External/SDL/include/SDL3/SDL.h", "External/dawn/include/webgpu/webgpu_cpp.h",
 )
 RUNTIME_LICENSES = (
+    "KEMAR/LICENSE",
     "Funke/LICENSE.txt", "Funke/THIRD_PARTY_LICENSES.md", "Box2D/LICENSE", "JoltPhysics/LICENSE",
     "EnTT/LICENSE", "GLM/copying.txt", "SDL3/LICENSE.txt", "Dear-ImGui/LICENSE.txt", "ImGuizmo/LICENSE",
     "magic_enum/LICENSE", "miniaudio/LICENSE", "spdlog/LICENSE", "stb/LICENSE", "Tracy/LICENSE",

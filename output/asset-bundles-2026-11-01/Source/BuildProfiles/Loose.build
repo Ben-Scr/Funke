@@ -1,0 +1,9 @@
+{
+  "name": "Loose",
+  "platform": "Windows",
+  "renderBackend": "Direct3D12",
+  "configuration": "Development",
+  "bundleDotNetRuntime": false,
+  "bundleAssets": false,
+  "compressAssetBundles": true
+}

@@ -17,6 +17,7 @@ namespace Funke {
 			wgpu::Texture       DepthTexture;
 			wgpu::TextureView   ColorView;
 			wgpu::TextureView   DepthView;
+			wgpu::TextureView   DepthSampleView;
 			wgpu::TextureFormat ColorFormat = wgpu::TextureFormat::Undefined;
 			uint32_t            Width  = 0;
 			uint32_t            Height = 0;
@@ -59,6 +60,16 @@ namespace Funke {
 	}
 
 	namespace WebGPUBackend {
+		wgpu::TextureView LookupFramebufferDepthSampleView(uint32_t fboBackendId) {
+			GpuFramebuffer* fb = TryLookupFb(fboBackendId);
+			if (!fb) return nullptr;
+			if (!fb->DepthSampleView) {
+				wgpu::TextureViewDescriptor desc{};
+				desc.aspect = wgpu::TextureAspect::DepthOnly;
+				fb->DepthSampleView = fb->DepthTexture.CreateView(&desc);
+			}
+			return fb->DepthSampleView;
+		}
 
 		FramebufferLookup LookupFramebufferByFboId(uint32_t fboBackendId) {
 			GpuFramebuffer* fb = TryLookupFb(fboBackendId);
@@ -194,7 +205,7 @@ namespace Funke {
 		depthDesc.dimension       = wgpu::TextureDimension::e2D;
 		depthDesc.size            = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
 		depthDesc.format          = wgpu::TextureFormat::Depth24PlusStencil8;
-		depthDesc.usage           = wgpu::TextureUsage::RenderAttachment;
+		depthDesc.usage           = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
 		depthDesc.mipLevelCount   = 1;
 		depthDesc.sampleCount     = sampleCount;
 		depthDesc.viewFormatCount = 0;

@@ -16,8 +16,9 @@ namespace Funke {
 	class FUNKE_API FileWatcher {
 	public:
 		using Callback = std::function<void()>;
+		using PathsCallback = std::function<void(const std::vector<std::string>&)>;
 
-		FileWatcher() = default;
+		FileWatcher();
 		~FileWatcher();
 
 		FileWatcher(const FileWatcher&) = delete;
@@ -25,6 +26,8 @@ namespace Funke {
 
 		void Watch(const std::string& path, const std::string& pattern, Callback callback, bool recursive = true);
 		void Watch(const std::vector<std::string>& paths, const std::vector<std::string>& patterns, Callback callback, bool recursive = true);
+		// Includes added, modified and removed paths, coalesced until Poll runs on the caller thread.
+		void Watch(const std::vector<std::string>& paths, const std::vector<std::string>& patterns, PathsCallback callback, bool recursive = true);
 		void Stop();
 		void Poll(float pollIntervalSeconds = 1.0f);
 
@@ -56,6 +59,7 @@ namespace Funke {
 		void WorkerMain();
 		bool WaitForNativeChanges();
 		Snapshot BuildSnapshot() const;
+		bool PublishSnapshot(Snapshot nextSnapshot);
 		void ConfigurePatterns(const std::vector<std::string>& patterns);
 
 		bool MatchesFile(const std::filesystem::path& filePath) const;
@@ -68,7 +72,8 @@ namespace Funke {
 		std::vector<WatchTarget> m_Targets;
 		std::unordered_set<std::string> m_Extensions;
 		std::unordered_set<std::string> m_Filenames;
-		Callback m_Callback;
+		PathsCallback m_Callback;
+		std::unordered_set<std::string> m_PendingPaths;
 		Snapshot m_FileTimestamps;
 		std::thread m_Worker;
 		std::condition_variable m_WakeCondition;

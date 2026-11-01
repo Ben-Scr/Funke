@@ -38,6 +38,7 @@ namespace Funke {
 		static bool LoadFromFile(Scene& scene, const std::string& path);
 		// Worker-safe file read and parse; apply the result with DeserializeScene on the main thread.
 		static bool PrepareFile(const std::string& path, Json::Value& outRoot, std::string* outError = nullptr);
+		static bool PreparePrefab(uint64_t guid, const std::string& path, std::shared_ptr<const Json::Value>& outRoot);
 
 		// Prefab support: save/load single entities
 		static Json::Value SerializeEntityFull(Scene& scene, EntityHandle entity);
@@ -51,7 +52,8 @@ namespace Funke {
 		static bool HasPrefabEntityPayload(const Json::Value& root);
 		// Rebuilds SerializeEntityFull output (root first, children linked by parentUuid) with the
 		// serialized persistent ids kept, e.g. for editor undo. Returns the root or null on failure.
-		static EntityHandle RestoreEntityTree(Scene& scene, const std::vector<Json::Value>& entityValues);
+		// exactIdentity also preserves prefab/runtime IDs and rejects component deserialization failures.
+		static EntityHandle RestoreEntityTree(Scene& scene, const std::vector<Json::Value>& entityValues, bool exactIdentity = false);
 		static Json::Value SerializeComponent(Scene& scene, EntityHandle entity, std::string_view componentName);
 		static bool DeserializeComponent(Scene& scene, EntityHandle entity, std::string_view componentName, const Json::Value& componentValue);
 		static bool ResetComponent(Scene& scene, EntityHandle entity, std::string_view componentName);
@@ -120,7 +122,12 @@ namespace Funke {
 		struct SceneLoadState {
 			std::vector<std::pair<EntityHandle, uint64_t>> pendingParents;
 			std::unordered_map<uint32_t, int> childIndexByEntity;
+			size_t nextEntity = 0;
+			bool started = false;
+			bool complete = false;
 		};
+		static bool DeserializeSceneBatch(Scene& scene, const Json::Value& root, std::string_view source,
+			SceneLoadState& state, double budgetMs, size_t maxEntities);
 
 		static bool ProcessSceneHeader(
 			Scene& scene,
@@ -142,14 +149,15 @@ namespace Funke {
 			Scene& scene,
 			const Json::Value& entityValue,
 			EntityOrigin origin,
-			uint64_t prefabGuid = 0);
+			uint64_t prefabGuid = 0, bool strict = false);
 		static EntityHandle DeserializeEntityTree(
 			Scene& scene,
 			const std::vector<Json::Value>& entityValues,
 			EntityOrigin origin,
 			uint64_t prefabGuid = 0,
 			bool preserveSerializedIdentity = true,
-			bool* outComplete = nullptr);
+			bool* outComplete = nullptr,
+			bool exactIdentity = false);
 		static EntityHandle DeserializePrefabInstance(Scene& scene, const Json::Value& entityValue);
 	};
 

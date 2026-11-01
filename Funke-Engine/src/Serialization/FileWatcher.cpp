@@ -45,26 +45,9 @@ namespace Funke {
 
 			return absolutePath.lexically_normal().make_preferred();
 		}
-
-		template <typename TSnapshot>
-		bool HasSnapshotChanged(const TSnapshot& currentSnapshot, const TSnapshot& nextSnapshot) {
-			if (nextSnapshot.size() != currentSnapshot.size()) {
-				return true;
-			}
-
-			// Compare on the (mtime, size) tuple — relying on mtime alone misses the
-			// save-via-rename pattern when filesystem timestamp granularity is coarser
-			// than the rename window (common on FAT/NTFS for rapid editor saves).
-			for (const auto& [path, fingerprint] : nextSnapshot) {
-				const auto it = currentSnapshot.find(path);
-				if (it == currentSnapshot.end() || it->second != fingerprint) {
-					return true;
-				}
-			}
-
-			return false;
-		}
 	}
+
+	FileWatcher::FileWatcher() = default;
 
 	FileWatcher::~FileWatcher() {
 		Stop();
@@ -75,6 +58,12 @@ namespace Funke {
 	}
 
 	void FileWatcher::Watch(const std::vector<std::string>& paths, const std::vector<std::string>& patterns, Callback callback, bool recursive) {
+		PathsCallback onPaths;
+		if (callback) onPaths = [callback = std::move(callback)](const std::vector<std::string>&) { callback(); };
+		Watch(paths, patterns, std::move(onPaths), recursive);
+	}
+
+	void FileWatcher::Watch(const std::vector<std::string>& paths, const std::vector<std::string>& patterns, PathsCallback callback, bool recursive) {
 		Stop();
 
 		ConfigurePatterns(patterns);
@@ -140,6 +129,7 @@ namespace Funke {
 		m_Filenames.clear();
 		m_FileTimestamps.clear();
 		m_Callback = nullptr;
+		m_PendingPaths.clear();
 		m_PendingChanges.store(false);
 		m_WatchDescription.clear();
 	}
@@ -148,12 +138,13 @@ namespace Funke {
 		const int pollIntervalMs = std::max(50, static_cast<int>(pollIntervalSeconds * 1000.0f));
 		m_PollIntervalMs.store(pollIntervalMs);
 
-		if (!m_PendingChanges.exchange(false)) {
+		if (!m_PendingChanges.load()) {
 			return;
 		}
 
 		// Copy callback+description under lock (races Stop()), but do NOT hold the lock during invocation (callbacks re-enter FS/scene).
-		Callback callbackCopy;
+		PathsCallback callbackCopy;
+		std::vector<std::string> changedPaths;
 		std::string descriptionCopy;
 		{
 			std::scoped_lock<std::mutex> lock(m_StateMutex);
@@ -162,13 +153,34 @@ namespace Funke {
 			}
 			callbackCopy = m_Callback;
 			descriptionCopy = m_WatchDescription;
+			changedPaths.assign(m_PendingPaths.begin(), m_PendingPaths.end());
+			m_PendingPaths.clear();
+			m_PendingChanges.store(false);
 		}
-		if (!callbackCopy) {
+		if (!callbackCopy || changedPaths.empty()) {
 			return;
 		}
 
 		FNK_CORE_INFO_TAG("FileWatcher", "Changes detected in {}", descriptionCopy);
-		callbackCopy();
+		callbackCopy(changedPaths);
+	}
+
+	bool FileWatcher::PublishSnapshot(Snapshot nextSnapshot) {
+		std::vector<std::string> changedPaths;
+		for (const auto& [path, fingerprint] : nextSnapshot) {
+			const auto previous = m_FileTimestamps.find(path);
+			if (previous == m_FileTimestamps.end() || previous->second != fingerprint) changedPaths.push_back(path);
+		}
+		for (const auto& [path, fingerprint] : m_FileTimestamps) {
+			if (!nextSnapshot.contains(path)) changedPaths.push_back(path);
+		}
+		m_FileTimestamps = std::move(nextSnapshot);
+		if (changedPaths.empty()) return false;
+
+		std::scoped_lock lock(m_StateMutex);
+		m_PendingPaths.insert(changedPaths.begin(), changedPaths.end());
+		m_PendingChanges.store(true);
+		return true;
 	}
 
 	void FileWatcher::WorkerMain() {
@@ -197,12 +209,7 @@ namespace Funke {
 				break;
 			}
 
-			Snapshot nextSnapshot = BuildSnapshot();
-			const bool changed = HasSnapshotChanged(m_FileTimestamps, nextSnapshot);
-
-			m_FileTimestamps = std::move(nextSnapshot);
-			if (changed) {
-				m_PendingChanges.store(true);
+			if (PublishSnapshot(BuildSnapshot())) {
 				idlePollIntervalMs = m_PollIntervalMs.load();
 			}
 			else {
@@ -301,6 +308,8 @@ namespace Funke {
 			waitHandles.push_back(stopEvent);
 		}
 		const DWORD waitTimeout = stopEvent ? INFINITE : kNativeWatchTimeoutMs;
+		// Cover changes between the initial snapshot and arming the native notifications.
+		PublishSnapshot(BuildSnapshot());
 
 		while (m_Watching.load()) {
 			const DWORD waitResult = WaitForMultipleObjects(
@@ -318,18 +327,12 @@ namespace Funke {
 			}
 
 			if (waitResult >= WAIT_OBJECT_0 && waitResult < WAIT_OBJECT_0 + changeHandleCount) {
-				Snapshot nextSnapshot = BuildSnapshot();
-				const bool changed = HasSnapshotChanged(m_FileTimestamps, nextSnapshot);
-				m_FileTimestamps = std::move(nextSnapshot);
-				if (changed) {
-					m_PendingChanges.store(true);
-				}
-
 				const HANDLE changedHandle = handles[waitResult - WAIT_OBJECT_0];
 				if (!FindNextChangeNotification(changedHandle)) {
 					FNK_CORE_WARN_TAG("FileWatcher", "Native notifications failed for {}; falling back to polling", m_WatchDescription);
 					return false;
 				}
+				PublishSnapshot(BuildSnapshot());
 
 				continue;
 			}

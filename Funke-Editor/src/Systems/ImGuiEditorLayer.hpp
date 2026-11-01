@@ -1,4 +1,6 @@
 #pragma once
+#include "Gui/SceneHierarchyState.hpp"
+#include "Gui/AsyncTexturePreview.hpp"
 #include "Core/Layer.hpp"
 #include "Core/Export.hpp"
 #include "Collections/Color.hpp"
@@ -144,7 +146,7 @@ namespace Funke {
 
 		struct PreviewTextureEntry {
 			std::string CanonicalPath;
-			std::unique_ptr<Texture2D> Texture;
+			std::shared_ptr<TexturePreview> Preview;
 			std::uint64_t LastTouchTick = 0;
 		};
 
@@ -228,7 +230,7 @@ namespace Funke {
 		std::vector<EntityHandle> GetSelectedEntities(const Scene& scene) const;
 		void SetSingleEntitySelection(EntityHandle entity, int index);
 		void ToggleEntitySelection(EntityHandle entity, int index);
-		void SelectEntityRange(int index);
+		void SelectEntityRange(Scene& scene, int index);
 		// Marquee box-select: select every entity whose bounds intersect the drag
 		// rectangle; additive (Ctrl/Shift) adds to the selection instead of replacing.
 		void SelectEntitiesInBox(const std::vector<EntityHandle>& entities, bool additive);
@@ -261,6 +263,7 @@ namespace Funke {
 		// Structural undo: only the context scene owns history, edits elsewhere stay unrecorded.
 		void PushStructureUndo(Scene& scene, std::unique_ptr<EditCommand> command);
 		void PerformUndoRedo(Scene& scene, bool redo);
+		void PerformHistoryAction(bool redo);
 		void ProcessUndoRedoShortcuts();
 		UndoStack& GetUndoStack(Scene& scene);
 		void ClearUndoHistory();
@@ -326,6 +329,7 @@ namespace Funke {
 		const Texture2D* GetPreviewTexture(const std::filesystem::path& path);
 		void TrimPreviewTextureCache();
 		void ClearPreviewTextureCache();
+		void InvalidatePreviewTexture(const std::filesystem::path& path);
 
 		void RenderSceneIntoFBO(Framebuffer& fbo, Scene& scene,
 			const glm::mat4& vp, const AABB& viewportAABB,
@@ -339,6 +343,8 @@ namespace Funke {
 
 		// 3D Editor View (ImGuiEditorLayerViewport3D.cpp). Returns the image's top-left screen position.
 		Vec2 RenderEditorView3D(Scene& scene, const Vec2& viewportSize, bool overlayHovered);
+		bool DrawTransform2DGizmos(Scene& scene, const glm::mat4& vp, const Vec2& imageTopLeft,
+			const Vec2& viewportSize, const Camera3DView* view3D = nullptr);
 		bool DrawTransform3DGizmo(Scene& scene, const Camera3DView& view, const Vec2& imageTopLeft, const Vec2& viewportSize);
 		void QueueEditorView3DOverlays(Scene& scene, Renderer3D& renderer);
 		void FrameEditorCamera3D(Scene& scene);
@@ -412,25 +418,9 @@ namespace Funke {
 		std::uint64_t m_PreviewTextureTick = 0;
 		static constexpr size_t kMaxPreviewTextures = 16;
 
-		// Entity ordering for hierarchy drag-reorder
-		std::vector<entt::entity> m_EntityOrder;
-
-		// Rebuilt only when structural changes flip m_EntityOrderDirty; per-frame UI interactions (select/expand) do not.
-		bool m_EntityOrderDirty = true;
-		std::vector<entt::entity> m_RenderedEntityOrder;
-		std::vector<int> m_RenderedEntityDepths;
-		std::vector<entt::entity> m_VisibleEntityOrder;
-		std::vector<int> m_VisibleEntityDepths;
-		// Hierarchy search: a non-empty query flattens the rendered rows to the
-		// name-matching entities (the visible lists above become the filtered set).
+		SceneHierarchyState& GetHierarchyState();
+		SceneHierarchyState m_EmptyHierarchyState;
 		char m_HierarchySearchBuffer[128]{};
-		// Detects scene swaps that don't flip m_EntityOrderDirty; stale handles from a prior scene cause ImGui to assert if not caught here.
-		// Scene* (not sceneId): two loaded scenes can collide on sceneId — a duplicated .scene file keeps its serialized id, and an
-		// additively loaded script-only scene starts at the UUID default. Scene* is always distinct among currently-loaded scenes.
-		const class Scene* m_EntityOrderSceneId = nullptr;
-		// Structural changes from outside the editor (a script calling Entity.SetParent at runtime) don't flip
-		// m_EntityOrderDirty and don't change the entity count; the scene's hierarchy version catches them.
-		uint64_t m_LastHierarchyVersion = 0;
 
 		// ── Prefab edit mode ──────────────────────────────────────────
 		std::unique_ptr<Scene> m_PrefabEditScene;
@@ -447,7 +437,6 @@ namespace Funke {
 		static constexpr float k_PrefabEditClearG = 0.21f;
 		static constexpr float k_PrefabEditClearB = 0.32f;
 
-		std::unordered_set<uint32_t> m_CollapsedHierarchyEntities;
 
 		std::unordered_set<uint32_t> m_CutEntities;
 

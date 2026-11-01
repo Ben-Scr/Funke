@@ -27,10 +27,10 @@ namespace Funke {
 		void WriteGlobals(const ShaderGlobals& globals) { m_Bindings.WriteGlobals(globals); }
 		// Empty Pipeline = draw with the standard sprite pipeline (no material or shader; a shader that never
 		// compiles falls back to the magenta program first).
-		Draw Resolve(uint64_t materialGuid, ShaderTarget target, wgpu::TextureFormat colorFormat, bool hasDepth);
+		Draw Resolve(uint64_t materialGuid, ShaderTarget target, wgpu::TextureFormat colorFormat, bool hasDepth, bool depthTest = false, uint32_t sampleCount = 1);
 
 	private:
-		wgpu::RenderPipeline GetPipeline(const CustomShaderProgram& program, wgpu::TextureFormat colorFormat, bool hasDepth);
+		wgpu::RenderPipeline GetPipeline(const CustomShaderProgram& program, wgpu::TextureFormat colorFormat, bool hasDepth, bool depthTest = false, uint32_t sampleCount = 1);
 
 		CustomMaterialBindings m_Bindings;
 		// By program id, color format and depth; failed creations stay cached as null.

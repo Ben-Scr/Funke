@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "engineVersion": "2026.1.0-beta.1",
+  "platform": "windows",
+  "architecture": "x86_64",
+  "capabilities": {
+    "managedProjects": true,
+    "nativeDevelopment": false,
+    "sourceBuild": false
+  },
+  "runtimes": {
+    "Development": "Runtime-Development"
+  }
+}

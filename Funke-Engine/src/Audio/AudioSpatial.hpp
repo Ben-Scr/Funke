@@ -23,6 +23,8 @@ namespace Funke {
 		float Panning = 0.8f;
 		// Pitch shift from the relative velocity of source and listener; 0 = off, 1 = physical.
 		float DopplerLevel = 0.0f;
+		// Headphone binaural filtering replaces Panning; stereo clips become a mono point source.
+		bool Hrtf = false;
 
 		bool operator==(const AudioSpatialSettings&) const = default;
 	};

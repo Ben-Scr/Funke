@@ -4,6 +4,7 @@
 #include "Components/Tags.hpp"
 #include "Components/UI/MaskComponent.hpp"
 #include "Scene/EntityHandle.hpp"
+#include "Systems/UILayoutSystem.hpp"
 
 #include <entt/entity/registry.hpp>
 #include <algorithm>
@@ -116,7 +117,6 @@ namespace Funke::UIDrawOrder {
 		static constexpr uint32_t k_None = UINT32_MAX;
 
 		void Rebuild(const std::vector<std::pair<EntityHandle, int>>& order) {
-			std::fill(m_Slots.begin(), m_Slots.end(), k_None);
 			m_Order = &order;
 			for (uint32_t i = 0; i < static_cast<uint32_t>(order.size()); ++i) {
 				const size_t index = entt::to_entity(order[i].first);
@@ -130,7 +130,8 @@ namespace Funke::UIDrawOrder {
 			const size_t index = entt::to_entity(entity);
 			if (index >= m_Slots.size()) return k_None;
 			const uint32_t slot = m_Slots[index];
-			return slot != k_None && (*m_Order)[slot].first == entity ? slot : k_None;
+			// Stale slots are rejected against the current order instead of clearing the entity-index table.
+			return slot < m_Order->size() && (*m_Order)[slot].first == entity ? slot : k_None;
 		}
 
 		const int* DrawIndexOf(EntityHandle entity) const {
@@ -147,7 +148,9 @@ namespace Funke::UIDrawOrder {
 	inline bool PassesAncestorMasks(entt::registry& registry, EntityHandle entity, const Vec2& point)
 	{
 		EntityHandle current = entity;
+		const EntityHandle canvas = WorldUI::FindRoot(registry, entity);
 		for (int hop = 0; hop < 4096; ++hop) {
+			if (current == canvas) return true;
 			const HierarchyComponent* hc = registry.try_get<HierarchyComponent>(current);
 			if (!hc || hc->Parent == entt::null || !registry.valid(hc->Parent)) return true;
 			current = hc->Parent;

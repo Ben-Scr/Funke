@@ -44,6 +44,11 @@ namespace Funke::ProjectSceneLoader {
 		return SceneManager::LoadSceneAsync(name, additive, std::move(completion));
 	}
 
+	uint64_t PreloadAsync(const std::string& name, SceneManager::SceneLoadCompletion completion) {
+		if (!EnsureSceneDefinition(name)) return 0;
+		return SceneManager::PreloadSceneAsync(name, std::move(completion));
+	}
+
 	bool Load(const std::string& name, bool additive) {
 		if (!EnsureSceneDefinition(name)) return false;
 

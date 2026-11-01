@@ -997,6 +997,7 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::PerformUndoRedo(Scene& scene, bool redo) {
+		auto& hierarchyState = SceneHierarchyState::Get(scene);
 		FinishInspectorRename(scene);
 		std::vector<uint64_t> selectedIds;
 		for (EntityHandle h : GetSelectedEntities(scene)) selectedIds.push_back(scene.GetEntityPersistentID(h));
@@ -1012,13 +1013,25 @@ namespace Funke {
 		if (prefabRootId != 0) scene.TryResolveEntityRef(prefabRootId, m_PrefabEditRootEntity);
 
 		// Structural steps rebuild entities with new handles; re-resolve the selection by persistent id.
+		Scene* selectionScene = &scene;
+		if (action == "Move Entities Between Scenes" && primaryId != 0) {
+			for (const auto& weak : SceneManager::GetLoadedScenes()) {
+				const auto owner = weak.lock();
+				EntityHandle handle = entt::null;
+				if (owner && owner->TryResolveEntityRef(primaryId, handle)) {
+					selectionScene = owner.get();
+					m_LastInteractedSceneName = owner->GetName();
+					break;
+				}
+			}
+		}
 		m_SelectedEntities.clear();
 		for (uint64_t id : selectedIds) {
 			EntityHandle h = entt::null;
-			if (scene.TryResolveEntityRef(id, h) && scene.IsValid(h)) m_SelectedEntities.push_back(h);
+			if (selectionScene->TryResolveEntityRef(id, h) && selectionScene->IsValid(h)) m_SelectedEntities.push_back(h);
 		}
 		EntityHandle primary = entt::null;
-		if (primaryId != 0 && scene.TryResolveEntityRef(primaryId, primary) && scene.IsValid(primary)) {
+		if (primaryId != 0 && selectionScene->TryResolveEntityRef(primaryId, primary) && selectionScene->IsValid(primary)) {
 			m_SelectedEntity = primary;
 		}
 		else {
@@ -1026,10 +1039,15 @@ namespace Funke {
 		}
 		RebuildSelectionSet();
 		m_PressedEntity = entt::null;
-		m_EntityOrder.clear();
-		m_EntityOrderDirty = true;
+		hierarchyState.EntityOrder.clear();
+		hierarchyState.Dirty = true;
 		++m_SelectionVersion;
 		ShowUndoToast(action, redo);
+	}
+
+	void ImGuiEditorLayer::PerformHistoryAction(bool redo) {
+		if (m_AssetBrowser.UsesAssetHistory()) ShowUndoToast(m_AssetBrowser.UndoRedoAssets(redo), redo);
+		else if (Scene* scene = GetContextScene()) PerformUndoRedo(*scene, redo);
 	}
 
 	void ImGuiEditorLayer::ProcessUndoRedoShortcuts() {
@@ -1037,9 +1055,7 @@ namespace Funke {
 			|| m_PlayModeRecompilePending || m_RenamingEntity != entt::null
 			|| m_BuildState > 0 || m_ReserializeState > 0 || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId));
 		if (action == EditorShortcuts::HistoryAction::None) return;
-		if (Scene* scene = GetContextScene()) {
-			PerformUndoRedo(*scene, action == EditorShortcuts::HistoryAction::Redo);
-		}
+		PerformHistoryAction(action == EditorShortcuts::HistoryAction::Redo);
 	}
 
 	void ImGuiEditorLayer::ShowUndoToast(const std::string& action, bool redo) {
@@ -1194,6 +1210,7 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::OnDetach(Application& app) {
+		AsyncTexturePreviews::Get().Shutdown();
 		PropertyDrawer::ClearTransientState();
 		(void)app;
 		ClearUndoHistory();
@@ -1266,14 +1283,11 @@ namespace Funke {
 			m_PressedEntity = entt::null;
 			m_RenamingEntity = entt::null;
 			m_EntityRenameFrameCounter = 0;
-			m_EntityOrder.clear();
-			m_RenderedEntityOrder.clear();
-			m_RenderedEntityDepths.clear();
-			m_VisibleEntityOrder.clear();
-			m_VisibleEntityDepths.clear();
-			m_EntityOrderDirty = true;
-			m_EntityOrderSceneId = nullptr;
-			m_CollapsedHierarchyEntities.clear();
+			GetHierarchyState().EntityOrder.clear();
+			GetHierarchyState().VisibleEntityOrder.clear();
+			GetHierarchyState().VisibleEntityDepths.clear();
+			GetHierarchyState().Dirty = true;
+			GetHierarchyState().CollapsedEntities.clear();
 			m_CutEntities.clear();
 			m_LastInteractedSceneName.clear();
 			++m_SelectionVersion;
@@ -1354,31 +1368,54 @@ namespace Funke {
 
 		if (FunkeProject* project = ProjectManager::GetCurrentProject()) {
 			if (!project->AssetsDirectory.empty() && project->AssetsDirectory != m_AssetWatcherRoot) {
+				ClearPreviewTextureCache();
+				m_SpriteEditorPanel.Shutdown();
+				m_PendingSpriteEditorPath.clear();
+				m_ShowSpriteEditor = false;
 				m_AssetWatcherRoot = project->AssetsDirectory;
 				m_AssetWatcher.Watch(
 					std::vector<std::string>{ m_AssetWatcherRoot },
 					// .meta too: a GUID read while its .meta was mid-write stays "missing" until the registry is marked dirty again.
 					std::vector<std::string>{ ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".meta" },
-					[this]() {
+					[this](const std::vector<std::string>& changedPaths) {
 						if (m_AssetBrowser.IsImportingAssets()
 							|| m_AssetBrowser.IsDeleting()
 							|| m_AssetBrowser.ConsumeAssetWatcherImportRefreshSuppression()) {
 							return;
 						}
-						const size_t reloaded = TextureManager::ReloadTexturesFromDisk();
-						SkyAmbient::ClearCache();
-						// Slice rects and borders may come from an externally edited .meta.
-						NotifySpriteSliceEpochBumped();
+						std::unordered_map<std::string, bool> textures;
+						for (const std::string& changed : changedPaths) {
+							auto path = Path::FromUtf8(changed);
+							const bool metadata = ToLowerCopy(Path::ToUtf8(path.extension())) == ".meta";
+							if (metadata) path.replace_extension();
+							if (ThumbnailCache::GetAssetType(Path::ToUtf8(path.extension())) != AssetType::Image) continue;
+							textures[Path::ToUtf8(path)] |= !metadata;
+						}
+
+						size_t reloaded = 0;
+						for (const auto& [path, pixelsChanged] : textures) {
+							if (pixelsChanged) reloaded += TextureManager::ReloadTexturePath(path);
+							TextureManager::ApplyMetaSamplerToLoaded(path);
+							m_AssetBrowser.InvalidateThumbnail(path);
+							InvalidatePreviewTexture(Path::FromUtf8(path));
+							const std::string& openSprite = m_SpriteEditorPanel.GetOpenAssetPath();
+							std::error_code ec;
+							if (!openSprite.empty() && (Path::FromUtf8(openSprite).lexically_normal() == Path::FromUtf8(path).lexically_normal()
+								|| std::filesystem::equivalent(Path::FromUtf8(openSprite), Path::FromUtf8(path), ec))) {
+								m_SpriteEditorPanel.RefreshTexture();
+							}
+						}
+						if (!textures.empty()) {
+							SkyAmbient::ClearCache();
+							NotifySpriteSliceEpochBumped();
+						}
 						AssetRegistry::MarkDirty();
 						// Loads that failed on a half-written file get another try, and templates baked from them are dropped.
 						TextureManager::ResolveMissingSceneTextures();
 						PrefabTemplateCache::Get().InvalidateAll();
 						m_AssetBrowser.RequestRefresh();
-						// Clear thumbnail tile cache too — otherwise the asset
-						// browser keeps showing the pre-edit file icon until
-						// LRU evicts the stale entry.
-						m_AssetBrowser.InvalidateAllThumbnails();
-						ClearPreviewTextureCache();
+						// Prefab previews can embed changed textures; their dependency list is not tracked yet.
+						m_AssetBrowser.InvalidatePrefabThumbnails();
 						if (reloaded > 0) {
 							FNK_INFO_TAG("Editor", "Hot-reloaded {} texture(s)", reloaded);
 						}
@@ -1420,6 +1457,11 @@ namespace Funke {
 			}
 		}
 		else if (!m_AssetWatcherRoot.empty()) {
+			ClearPreviewTextureCache();
+			m_SpriteEditorPanel.Shutdown();
+			m_PendingSpriteEditorPath.clear();
+			m_ShowSpriteEditor = false;
+			m_AssetBrowser.InvalidateAllThumbnails();
 			m_AssetWatcher.Stop();
 			m_ContentWatcher.Stop();
 			m_LocalizationWatcher.Stop();
@@ -1505,14 +1547,15 @@ namespace Funke {
 		}
 
 		// Arrow-key hierarchy navigation follows the currently rendered row list.
-		if (m_IsEntitiesPanelFocused && hasEntitySelection && !m_VisibleEntityOrder.empty()
+		const auto& visibleEntityOrder = GetHierarchyState().VisibleEntityOrder;
+		if (m_IsEntitiesPanelFocused && hasEntitySelection && !visibleEntityOrder.empty()
 			&& !io.KeyCtrl && !io.KeySuper && !io.KeyAlt) {
 			const int direction = ImGui::IsKeyPressed(ImGuiKey_DownArrow, true) ? 1
 				: (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true) ? -1 : 0);
 			if (direction != 0) {
 				int currentIndex = -1;
-				for (int i = 0; i < static_cast<int>(m_VisibleEntityOrder.size()); ++i) {
-					if (m_VisibleEntityOrder[static_cast<std::size_t>(i)] == m_SelectedEntity) {
+				for (int i = 0; i < static_cast<int>(visibleEntityOrder.size()); ++i) {
+					if (visibleEntityOrder[static_cast<std::size_t>(i)] == m_SelectedEntity) {
 						currentIndex = i;
 						break;
 					}
@@ -1520,8 +1563,8 @@ namespace Funke {
 
 				if (currentIndex < 0) {
 					for (EntityHandle selected : GetSelectedEntities(shortcutScene)) {
-						for (int i = 0; i < static_cast<int>(m_VisibleEntityOrder.size()); ++i) {
-							if (m_VisibleEntityOrder[static_cast<std::size_t>(i)] == selected) {
+						for (int i = 0; i < static_cast<int>(visibleEntityOrder.size()); ++i) {
+							if (visibleEntityOrder[static_cast<std::size_t>(i)] == selected) {
 								currentIndex = i;
 								break;
 							}
@@ -1534,8 +1577,8 @@ namespace Funke {
 					const int targetIndex = std::clamp(
 						currentIndex + direction,
 						0,
-						static_cast<int>(m_VisibleEntityOrder.size()) - 1);
-					const EntityHandle target = m_VisibleEntityOrder[static_cast<std::size_t>(targetIndex)];
+						static_cast<int>(visibleEntityOrder.size()) - 1);
+					const EntityHandle target = visibleEntityOrder[static_cast<std::size_t>(targetIndex)];
 					if (target != entt::null && shortcutScene.IsValid(target)) {
 						SetSingleEntitySelection(target, targetIndex);
 					}
@@ -1889,12 +1932,12 @@ namespace Funke {
 			// Operate on the context scene (prefab-edit aware), matching the
 			// keyboard handler in OnUpdate. Disabled during play.
 			Scene* undoScene = GetContextScene();
-			const bool canEditHistory = undoScene && !Application::GetIsPlaying();
-			if (ImGui::MenuItem("Undo", EditorShortcuts::k_UndoLabel, false, canEditHistory && GetUndoStack(*undoScene).CanUndo())) {
-				PerformUndoRedo(*undoScene, false);
+			const bool canEditHistory = (undoScene || m_AssetBrowser.UsesAssetHistory()) && !Application::GetIsPlaying();
+			if (ImGui::MenuItem("Undo", EditorShortcuts::k_UndoLabel, false, canEditHistory && (m_AssetBrowser.UsesAssetHistory() ? m_AssetBrowser.CanUndoAssets() : GetUndoStack(*undoScene).CanUndo()))) {
+				PerformHistoryAction(false);
 			}
-			if (ImGui::MenuItem("Redo", EditorShortcuts::k_RedoLabel, false, canEditHistory && GetUndoStack(*undoScene).CanRedo())) {
-				PerformUndoRedo(*undoScene, true);
+			if (ImGui::MenuItem("Redo", EditorShortcuts::k_RedoLabel, false, canEditHistory && (m_AssetBrowser.UsesAssetHistory() ? m_AssetBrowser.CanRedoAssets() : GetUndoStack(*undoScene).CanRedo()))) {
+				PerformHistoryAction(true);
 			}
 			ImGui::Separator();
 			if (ImGui::BeginMenu("View")) {
@@ -2026,15 +2069,15 @@ namespace Funke {
 		const bool playing = Application::GetIsPlaying();
 		const bool hasProject = ProjectManager::HasProject();
 		Scene* undoScene = GetContextScene();
-		const bool canEditHistory = undoScene && !playing;
+		const bool canEditHistory = (undoScene || m_AssetBrowser.UsesAssetHistory()) && !playing;
 		const bool canSwitchViewMode = EngineModules::IsActive(EngineModule::TwoD) && EngineModules::IsActive(EngineModule::ThreeD);
 		std::vector<Command> commands = {
 			{ "Save Scene", EditorShortcuts::k_SaveLabel, !playing, [&]() { SaveScenesFromMenu(scene); } },
 			{ "Enter Play Mode", nullptr, !playing && !m_PlayModeRecompilePending, [&]() {
 				if (Scene* active = SceneManager::GetActiveScene()) BeginPlayModeRequest(*active);
 			} },
-			{ "Undo", EditorShortcuts::k_UndoLabel, canEditHistory && GetUndoStack(*undoScene).CanUndo(), [&]() { PerformUndoRedo(*undoScene, false); } },
-			{ "Redo", EditorShortcuts::k_RedoLabel, canEditHistory && GetUndoStack(*undoScene).CanRedo(), [&]() { PerformUndoRedo(*undoScene, true); } },
+			{ "Undo", EditorShortcuts::k_UndoLabel, canEditHistory && (m_AssetBrowser.UsesAssetHistory() ? m_AssetBrowser.CanUndoAssets() : GetUndoStack(*undoScene).CanUndo()), [&]() { PerformHistoryAction(false); } },
+			{ "Redo", EditorShortcuts::k_RedoLabel, canEditHistory && (m_AssetBrowser.UsesAssetHistory() ? m_AssetBrowser.CanRedoAssets() : GetUndoStack(*undoScene).CanRedo()), [&]() { PerformHistoryAction(true); } },
 			{ "Build...", nullptr, hasProject && !playing, [&]() { OpenPanel("Build", m_ShowBuildPanel); } },
 			{ "Build Profiles", nullptr, hasProject, [&]() { OpenPanel("Build Profiles", m_ShowBuildProfilesPanel); } },
 			{ "Project Settings", nullptr, hasProject, [&]() { OpenPanel("Project Settings", m_ShowProjectSettings); } },
@@ -3127,11 +3170,9 @@ namespace Funke {
 		if (!inPrefabEdit) {
 			ClearEntitySelection();
 			m_CutEntities.clear();
-			m_CollapsedHierarchyEntities.clear();
-			m_EntityOrder.clear();
-			m_EntityOrderSceneId = nullptr;
-			m_LastHierarchyVersion = 0;
-			m_EntityOrderDirty = true;
+			GetHierarchyState().CollapsedEntities.clear();
+			GetHierarchyState().EntityOrder.clear();
+			GetHierarchyState().Dirty = true;
 			m_ShowEntityDeleteConfirm = false;
 			m_PendingEntityDeleteSceneId = 0;
 			m_PendingEntityDeleteCount = 0;
@@ -3207,6 +3248,7 @@ namespace Funke {
 	}
 
 	EntityHandle ImGuiEditorLayer::SpawnAssetEntityAt(Scene& scene, const std::string& assetPath, const Vec2& worldPos) {
+		auto& hierarchyState = SceneHierarchyState::Get(scene);
 		std::string ext = std::filesystem::path(assetPath).extension().string();
 		std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
@@ -3254,8 +3296,8 @@ namespace Funke {
 			TransformHierarchySystem::Propagate(scene); // root world transform now matches the drop point this frame
 			SelectEntity(created);
 			scene.MarkDirty();
-			m_EntityOrder.clear();
-			m_EntityOrderDirty = true;
+			hierarchyState.EntityOrder.clear();
+			hierarchyState.Dirty = true;
 			++m_SelectionVersion;
 			RecordCreatedEntities(scene, std::span(&created, 1), ext == ".prefab" ? "Instantiate Prefab" : "Create Sprite");
 		}
@@ -3371,9 +3413,10 @@ namespace Funke {
 		m_IsSceneNodeSelected = false;
 	}
 
-	void ImGuiEditorLayer::SelectEntityRange(int index) {
+	void ImGuiEditorLayer::SelectEntityRange(Scene& scene, int index) {
+		auto& hierarchyState = SceneHierarchyState::Get(scene);
 		ResetEditorFocusCycle();
-		const auto& order = !m_VisibleEntityOrder.empty() ? m_VisibleEntityOrder : m_EntityOrder;
+		const auto& order = !hierarchyState.VisibleEntityOrder.empty() ? hierarchyState.VisibleEntityOrder : hierarchyState.EntityOrder;
 		if (order.empty()) {
 			return;
 		}
@@ -3666,6 +3709,7 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::DuplicateSelectedEntity(Scene& scene) {
+		auto& hierarchyState = SceneHierarchyState::Get(scene);
 		const std::vector<EntityHandle> selectedEntities = FilterSelectedHierarchyRoots(scene, GetSelectedEntities(scene));
 		if (selectedEntities.empty()) {
 			return;
@@ -3686,7 +3730,7 @@ namespace Funke {
 					Entity cloneEntity = scene.GetEntity(clone);
 					cloneEntity.SetParent(sourceParent);
 					MoveSiblingNextTo(scene, clone, sourceEntity, true);
-					m_CollapsedHierarchyEntities.erase(static_cast<uint32_t>(sourceParent.GetHandle()));
+					hierarchyState.CollapsedEntities.erase(static_cast<uint32_t>(sourceParent.GetHandle()));
 				}
 				createdEntities.push_back(clone);
 			}
@@ -3700,12 +3744,13 @@ namespace Funke {
 			m_LastEntitySelectionIndex = -1;
 			m_IsSceneNodeSelected = false;
 			scene.MarkDirty();
-			m_EntityOrder.clear(); m_EntityOrderDirty = true;
+			hierarchyState.EntityOrder.clear(); hierarchyState.Dirty = true;
 			RecordCreatedEntities(scene, createdEntities, "Duplicate");
 		}
 	}
 
 	void ImGuiEditorLayer::DeleteSelectedEntity(Scene& scene) {
+		auto& hierarchyState = SceneHierarchyState::Get(scene);
 		const std::vector<EntityHandle> selectedEntities = GetSelectedEntities(scene);
 		if (selectedEntities.empty()) {
 			return;
@@ -3721,7 +3766,7 @@ namespace Funke {
 		}
 		PushStructureUndo(scene, recorder.Finish(scene, {}));
 		ClearEntitySelection();
-		m_EntityOrder.clear(); m_EntityOrderDirty = true;
+		hierarchyState.EntityOrder.clear(); hierarchyState.Dirty = true;
 	}
 
 	void ImGuiEditorLayer::RequestDeleteSelectedEntity(Scene& scene) {
@@ -3867,6 +3912,7 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::PasteEntities(Scene& scene) {
+		auto& hierarchyState = SceneHierarchyState::Get(scene);
 		if (m_EntityClipboardJson.empty()) {
 			return;
 		}
@@ -3925,10 +3971,10 @@ namespace Funke {
 			m_LastEntitySelectionIndex = -1;
 			m_IsSceneNodeSelected = false;
 			if (pasteParent != entt::null) {
-				m_CollapsedHierarchyEntities.erase(static_cast<uint32_t>(pasteParent));
+				hierarchyState.CollapsedEntities.erase(static_cast<uint32_t>(pasteParent));
 			}
 			scene.MarkDirty();
-			m_EntityOrder.clear(); m_EntityOrderDirty = true;
+			hierarchyState.EntityOrder.clear(); hierarchyState.Dirty = true;
 
 			if (!m_CutEntities.empty()) {
 				for (uint32_t raw : m_CutEntities) {
@@ -3938,7 +3984,7 @@ namespace Funke {
 					}
 				}
 				m_CutEntities.clear();
-				m_EntityOrderDirty = true;
+				hierarchyState.Dirty = true;
 			}
 			PushStructureUndo(scene, recorder.Finish(scene, createdEntities));
 		}
@@ -4025,6 +4071,7 @@ namespace Funke {
 	}
 
 	EntityHandle ImGuiEditorLayer::FinishCreatedEditorEntity(Scene& scene, Entity parent, Entity created) {
+		auto& hierarchyState = SceneHierarchyState::Get(scene);
 		if (!created.IsValid()) {
 			return entt::null;
 		}
@@ -4042,15 +4089,15 @@ namespace Funke {
 
 		if (effectiveParent.IsValid()) {
 			created.SetParent(effectiveParent);
-			m_CollapsedHierarchyEntities.erase(static_cast<uint32_t>(effectiveParent.GetHandle()));
+			hierarchyState.CollapsedEntities.erase(static_cast<uint32_t>(effectiveParent.GetHandle()));
 		}
 
 		const EntityHandle createdHandle = created.GetHandle();
 		EnsureEditorUniqueEntityNames(scene, { createdHandle });
 		SelectEntity(createdHandle);
 		scene.MarkDirty();
-		m_EntityOrder.clear();
-		m_EntityOrderDirty = true;
+		hierarchyState.EntityOrder.clear();
+		hierarchyState.Dirty = true;
 		RecordCreatedEntities(scene, std::span(&createdHandle, 1), "Create " + created.GetName());
 		return createdHandle;
 	}
@@ -4071,10 +4118,24 @@ namespace Funke {
 			finishCreated(CreateDefaultEntity(scene, "Entity"));
 		}
 
-		auto renderPackagePresets = [&](std::string_view menuPath) {
+		auto renderPackagePresets = [&](auto&& self, std::string_view menuPath) -> void {
 			bool renderedAny = false;
+			std::vector<std::string> submenus;
+			const std::string prefix = menuPath.empty() ? "" : std::string(menuPath) + "/";
 			for (const SceneManager::EntityPresetInfo& preset : SceneManager::GetEntityPresets()) {
-				if (preset.MenuPath != menuPath || !preset.IsModuleActive()) {
+				if (preset.MenuPath.empty() || !preset.IsModuleActive()
+					|| (preset.MenuPath != menuPath && !preset.MenuPath.starts_with(prefix))) {
+					continue;
+				}
+				if (preset.MenuPath != menuPath) {
+					const std::string_view remainder = std::string_view(preset.MenuPath).substr(prefix.size());
+					const std::string submenu(remainder.substr(0, remainder.find('/')));
+					if (submenu.empty() || (menuPath.empty() && (submenu == "2D Entity" || submenu == "UI"))) {
+						continue;
+					}
+					if (std::find(submenus.begin(), submenus.end(), submenu) == submenus.end()) {
+						submenus.push_back(submenu);
+					}
 					continue;
 				}
 				if (!renderedAny) {
@@ -4083,6 +4144,15 @@ namespace Funke {
 				}
 				if (ImGui::MenuItem(preset.Label.c_str())) {
 					finishCreated(preset.Create(scene));
+				}
+			}
+			if (!renderedAny && !submenus.empty()) {
+				ImGui::Separator();
+			}
+			for (const std::string& submenu : submenus) {
+				if (ImGui::BeginMenu(submenu.c_str())) {
+					self(self, prefix + submenu);
+					ImGui::EndMenu();
 				}
 			}
 		};
@@ -4168,7 +4238,7 @@ namespace Funke {
 			}
 
 			// Package-registered presets can extend this menu without editor hardcoding.
-			renderPackagePresets("2D Entity");
+			renderPackagePresets(renderPackagePresets, "2D Entity");
 
 			ImGui::EndMenu();
 		}
@@ -4235,29 +4305,11 @@ namespace Funke {
 			if (ImGui::MenuItem("Grid Layout")) {
 				finishCreated(EntityHelper::CreateUIGridLayout(scene));
 			}
-			renderPackagePresets("UI");
+			renderPackagePresets(renderPackagePresets, "UI");
 			ImGui::EndMenu();
 		}
 
-		std::vector<std::string> packageMenuPaths;
-		for (const SceneManager::EntityPresetInfo& preset : SceneManager::GetEntityPresets()) {
-			if (preset.MenuPath.empty() || preset.MenuPath == "2D Entity" || preset.MenuPath == "UI" || !preset.IsModuleActive()) {
-				continue;
-			}
-			if (std::find(packageMenuPaths.begin(), packageMenuPaths.end(), preset.MenuPath) == packageMenuPaths.end()) {
-				packageMenuPaths.push_back(preset.MenuPath);
-			}
-		}
-		for (const std::string& menuPath : packageMenuPaths) {
-			if (ImGui::BeginMenu(menuPath.c_str())) {
-				for (const SceneManager::EntityPresetInfo& preset : SceneManager::GetEntityPresets()) {
-					if (preset.MenuPath == menuPath && preset.IsModuleActive() && ImGui::MenuItem(preset.Label.c_str())) {
-						finishCreated(preset.Create(scene));
-					}
-				}
-				ImGui::EndMenu();
-			}
-		}
+		renderPackagePresets(renderPackagePresets, "");
 
 		ImGui::Separator();
 
@@ -4339,49 +4391,24 @@ namespace Funke {
 	std::vector<EntityHandle> ImGuiEditorLayer::MigrateEntitiesToScene(Scene& sourceScene, Scene& targetScene,
 		const std::vector<EntityHandle>& sourceRoots, Entity targetParent) {
 		std::vector<EntityHandle> migratedRoots;
-		if (&sourceScene == &targetScene) {
-			FNK_CORE_WARN_TAG("Editor", "MigrateEntitiesToScene called with sourceScene == targetScene; ignoring");
-			return migratedRoots;
-		}
-		if (sourceRoots.empty()) return migratedRoots;
-
-		// Snapshot first, destroy after: destroying a parent before snapshotting its children would dangle JSON references.
-		std::vector<Json::Value> snapshots;
-		std::vector<EntityHandle> consumed;
-		snapshots.reserve(sourceRoots.size());
-		consumed.reserve(sourceRoots.size());
-		for (EntityHandle root : sourceRoots) {
-			if (!sourceScene.IsValid(root)) continue;
-			Json::Value snapshot = SceneSerializer::SerializeEntityForClipboard(sourceScene, root);
-			if (!snapshot.IsObject()) continue;
-			snapshots.push_back(std::move(snapshot));
-			consumed.push_back(root);
-		}
-		if (snapshots.empty()) return migratedRoots;
-
-		migratedRoots.reserve(snapshots.size());
-		for (Json::Value& snapshot : snapshots) {
-			EntityHandle clone = SceneSerializer::DeserializeEntityFromValue(targetScene, snapshot);
-			if (clone == entt::null) continue;
-			if (targetParent.IsValid() && targetScene.IsValid(targetParent.GetHandle())) {
-				Entity cloneEntity = targetScene.GetEntity(clone);
-				cloneEntity.SetParent(targetParent);
-			}
-			migratedRoots.push_back(clone);
-		}
-
-		// Destroy originals even on partial deserialize failure: the gesture was "move", so leaving originals would silently duplicate.
-		for (EntityHandle source : consumed) {
-			if (sourceScene.IsValid(source)) {
-				sourceScene.DestroyEntity(source);
+		if (Application::GetIsPlaying()) return migratedRoots;
+		std::shared_ptr<Scene> source;
+		std::shared_ptr<Scene> target;
+		for (const auto& weak : SceneManager::GetLoadedScenes()) {
+			if (const auto owner = weak.lock()) {
+				if (owner.get() == &sourceScene) source = owner;
+				if (owner.get() == &targetScene) target = owner;
 			}
 		}
-
-		if (!migratedRoots.empty()) {
-			EnsureEditorUniqueEntityNames(targetScene, migratedRoots);
-			sourceScene.MarkDirty();
-			targetScene.MarkDirty();
-		}
+		if (!source || !target || source == target) return migratedRoots;
+		if (targetParent.IsValid() && targetParent.GetScene() != &targetScene) return migratedRoots;
+		UndoStack& sourceHistory = GetUndoStack(sourceScene);
+		InspectorUndoRecorder::Flush(sourceHistory, true);
+		UndoStack& targetHistory = GetUndoStack(targetScene);
+		InspectorUndoRecorder::Flush(targetHistory, true);
+		auto command = SceneTransferCommand::Move(source, target, sourceRoots,
+			targetParent.IsValid() ? targetParent.GetHandle() : EntityHandle(entt::null), migratedRoots);
+		if (command) sourceHistory.PushLinked(targetHistory, std::move(command));
 		return migratedRoots;
 	}
 
@@ -4405,6 +4432,7 @@ namespace Funke {
 
 	bool ImGuiEditorLayer::MoveSiblingNextTo(Scene& scene, EntityHandle dragged, EntityHandle target, bool insertAfter)
 	{
+		auto& hierarchyState = SceneHierarchyState::Get(scene);
 		if (dragged == target || !scene.IsValid(dragged) || !scene.IsValid(target)) return false;
 
 		Entity draggedEntity = scene.GetEntity(dragged);
@@ -4441,17 +4469,16 @@ namespace Funke {
 			repositionVec(childList);
 		}
 		else {
-			// Root-level reorder: mutate m_EntityOrder AND mirror into entt storage so the renderer/serializer (which iterate entt directly) see the new order.
-			// entt iterates dense storage newest-first; UIDrawOrder reverses that, so m_EntityOrder.back() must be the "newest" entity in the storage sort.
-			repositionVec(m_EntityOrder);
-			m_EntityOrderDirty = true; // M30: force re-DFS next render.
+			// Root-level reorder: mutate hierarchyState.EntityOrder AND mirror into entt storage so the renderer/serializer (which iterate entt directly) see the new order.
+			// entt iterates dense storage newest-first; UIDrawOrder reverses that, so hierarchyState.EntityOrder.back() must be the "newest" entity in the storage sort.
+			repositionVec(hierarchyState.EntityOrder);
 
 			std::unordered_map<entt::entity, std::size_t> indexOf;
-			indexOf.reserve(m_EntityOrder.size());
-			for (std::size_t i = 0; i < m_EntityOrder.size(); ++i) {
-				indexOf[m_EntityOrder[i]] = i;
+			indexOf.reserve(hierarchyState.EntityOrder.size());
+			for (std::size_t i = 0; i < hierarchyState.EntityOrder.size(); ++i) {
+				indexOf[hierarchyState.EntityOrder[i]] = i;
 			}
-			const std::size_t fallbackBase = m_EntityOrder.size();
+			const std::size_t fallbackBase = hierarchyState.EntityOrder.size();
 			auto& storage = scene.GetRegistry().storage<entt::entity>();
 			storage.sort([&](entt::entity a, entt::entity b) {
 				auto ita = indexOf.find(a);
@@ -4466,6 +4493,8 @@ namespace Funke {
 			});
 		}
 
+		hierarchyState.Dirty = true;
+		scene.MarkHierarchyStructureDirty();
 		return true;
 	}
 
@@ -4493,8 +4522,8 @@ namespace Funke {
 		}
 
 		ClearEntitySelection();
-		m_EntityOrder.clear(); m_EntityOrderDirty = true;
-		m_CollapsedHierarchyEntities.clear();
+		GetHierarchyState().EntityOrder.clear(); GetHierarchyState().Dirty = true;
+		GetHierarchyState().CollapsedEntities.clear();
 		m_CutEntities.clear();
 
 		// Save camera state to restore on Close; repoint at prefab root so it's not off-screen (prefabs typically authored at origin).
@@ -4560,9 +4589,8 @@ namespace Funke {
 		ClearEntitySelection();
 		m_CutEntities.clear();
 		m_LastInteractedSceneName = scene->GetName();
-		m_EntityOrder.clear();
-		m_EntityOrderSceneId = nullptr;
-		m_EntityOrderDirty = true;
+		GetHierarchyState().EntityOrder.clear();
+		GetHierarchyState().Dirty = true;
 		if (snapshot.SceneNodeSelected) {
 			SelectSceneNode();
 			return;
@@ -4662,8 +4690,8 @@ namespace Funke {
 		ForgetUndoHistory(m_PrefabEditScene.get());
 
 		ClearEntitySelection();
-		m_EntityOrder.clear(); m_EntityOrderDirty = true;
-		m_CollapsedHierarchyEntities.clear();
+		GetHierarchyState().EntityOrder.clear(); GetHierarchyState().Dirty = true;
+		GetHierarchyState().CollapsedEntities.clear();
 		// Drop any cut markers — they refer to entities in the detached
 		// prefab scene we're about to discard, and a leftover marker
 		// would otherwise dim a freshly-recycled handle in the next scene.
@@ -4697,6 +4725,11 @@ namespace Funke {
 			}
 		}
 		return SceneManager::GetActiveScene();
+	}
+
+	SceneHierarchyState& ImGuiEditorLayer::GetHierarchyState() {
+		if (Scene* scene = GetContextScene()) return SceneHierarchyState::Get(*scene);
+		return m_EmptyHierarchyState;
 	}
 
 	bool ImGuiEditorLayer::HasEntityShortcutFocus() const {
@@ -4765,8 +4798,8 @@ namespace Funke {
 			"Search entities...", ImGui::GetContentRegionAvail().x - addButtonW - ImGui::GetStyle().ItemSpacing.x)) {
 			// Clearing the query must restore the unfiltered (collapse-pruned)
 			// list, which only the rebuild produces — so force one this frame.
-			m_EntityOrderDirty = true;
-			// The query redefines what m_VisibleEntityOrder *is*, so a stored
+			GetHierarchyState().Dirty = true;
+			// A new query changes the visible rows, so a stored
 			// range-select anchor (an index into it) is now meaningless — drop
 			// it so the next shift-click re-derives the anchor from m_SelectedEntity.
 			m_LastEntitySelectionIndex = -1;
@@ -4830,6 +4863,7 @@ namespace Funke {
 			Scene* scenePtrRaw = scenesToShow[sceneIdx];
 			if (!scenePtrRaw) continue;
 			Scene& scene = *scenePtrRaw;
+			auto& hierarchy = SceneHierarchyState::Get(scene);
 
 			const uint64_t sceneIdValue = static_cast<uint64_t>(scene.GetSceneId());
 			// Scene* (not sceneId) for the ImGui scope: two scenes can collide on
@@ -4935,7 +4969,7 @@ namespace Funke {
 								// Force a re-DFS — reparenting changes nesting but
 								// not the registry count, so the size-mismatch
 								// fallback won't trigger.
-								m_EntityOrderDirty = true;
+								hierarchy.Dirty = true;
 								scene.MarkDirty();
 								PushStructureUndo(scene, recorder.Finish(scene, draggedHandles));
 							}
@@ -4961,7 +4995,7 @@ namespace Funke {
 									RebuildSelectionSet();
 									m_SelectedEntity = migrated.back();
 									m_LastInteractedSceneName = scene.GetName();
-									m_EntityOrderDirty = true;
+									hierarchy.Dirty = true;
 								}
 							}
 						}
@@ -4999,177 +5033,30 @@ namespace Funke {
 			}
 
 			if (sceneOpen) {
-				auto view = scene.GetRegistry().view<entt::entity>();
-
-				// Rebuild only when dirty or registry size changed; view.size() is O(1) (swap_only policy).
-				const auto registryCount = static_cast<std::size_t>(view.size());
-				// Force rebuild on scene-id change: same entity count from a different scene leaves m_VisibleEntityOrder pointing at destroyed handles.
-				if (m_EntityOrderSceneId != scenePtrRaw) {
-					m_EntityOrderDirty = true;
-					m_EntityOrderSceneId = scenePtrRaw;
-				}
-				// Catch reparents that don't change the entity count (e.g. a script calling Entity.SetParent at runtime): the
-				// cached row depths would otherwise keep a detached child nested under its old parent, with the parent's fold arrow gone.
-				const uint64_t hierarchyVersion = scene.GetHierarchyVersion();
-				if (hierarchyVersion != m_LastHierarchyVersion) {
-					m_EntityOrderDirty = true;
-					m_LastHierarchyVersion = hierarchyVersion;
-				}
-				const bool needsRebuild = m_EntityOrderDirty
-					|| m_EntityOrder.size() != registryCount;
-
-				if (needsRebuild) {
-					FUNKE_PROFILE_SCOPE("Editor.HierarchyRebuild");
-					// Set-diff sync: never blanket-reset (drag-reorder lives here); new entities appended at end (walk entt view backwards = oldest-first).
-					{
-						std::vector<entt::entity> viewEntities(view.begin(), view.end());
-
-						std::unordered_set<uint32_t> viewSet;
-						viewSet.reserve(viewEntities.size());
-						for (auto e : viewEntities) viewSet.insert(static_cast<uint32_t>(e));
-						m_EntityOrder.erase(
-							std::remove_if(m_EntityOrder.begin(), m_EntityOrder.end(),
-								[&](entt::entity e) { return viewSet.find(static_cast<uint32_t>(e)) == viewSet.end(); }),
-							m_EntityOrder.end());
-
-						std::unordered_set<uint32_t> orderSet;
-						orderSet.reserve(m_EntityOrder.size());
-						for (auto e : m_EntityOrder) orderSet.insert(static_cast<uint32_t>(e));
-						for (auto it = viewEntities.rbegin(); it != viewEntities.rend(); ++it) {
-							if (orderSet.find(static_cast<uint32_t>(*it)) == orderSet.end()) {
-								m_EntityOrder.push_back(*it);
-							}
-						}
-					}
-
-					// DFS pass: emit each child immediately after its parent; also builds m_VisibleEntityOrder (pruned to exclude collapsed subtrees).
-					m_RenderedEntityDepths.clear();
-					m_RenderedEntityDepths.reserve(m_EntityOrder.size());
-					std::vector<entt::entity> visibleReordered;
-					std::vector<int> visibleDepths;
-					visibleReordered.reserve(m_EntityOrder.size());
-					visibleDepths.reserve(m_EntityOrder.size());
-					{
-						auto& reg = scene.GetRegistry();
-						std::vector<entt::entity> reordered;
-						reordered.reserve(m_EntityOrder.size());
-						std::unordered_set<uint32_t> emitted;
-
-						std::function<void(EntityHandle, int, bool)> emitSubtree =
-							[&](EntityHandle e, int depth, bool insideCollapsed) {
-								if (!reg.valid(e)) return;
-								const uint32_t key = static_cast<uint32_t>(e);
-								if (!emitted.insert(key).second) return; // already in tree
-								reordered.push_back(e);
-								m_RenderedEntityDepths.push_back(depth);
-								if (!insideCollapsed) {
-									visibleReordered.push_back(e);
-									visibleDepths.push_back(depth);
-								}
-								const bool descendInsideCollapsed = insideCollapsed
-									|| m_CollapsedHierarchyEntities.contains(key);
-								if (reg.all_of<HierarchyComponent>(e)) {
-									for (EntityHandle child : reg.get<HierarchyComponent>(e).Children) {
-										emitSubtree(child, depth + 1, descendInsideCollapsed);
-									}
-								}
-							};
-
-						// Pass 1: emit each root-of-subtree from the user-ordered
-						// list. Skip entities that already appeared as a child.
-						for (EntityHandle e : m_EntityOrder) {
-							if (!reg.valid(e)) continue;
-							EntityHandle parent = entt::null;
-							if (reg.all_of<HierarchyComponent>(e)) {
-								parent = reg.get<HierarchyComponent>(e).Parent;
-							}
-							if (parent == entt::null) {
-								emitSubtree(e, 0, /*insideCollapsed*/ false);
-							}
-						}
-						// Pass 2: anything still missing — orphaned children
-						// whose parent is not in the registry — render flat.
-						for (EntityHandle e : m_EntityOrder) {
-							if (!reg.valid(e)) continue;
-							const uint32_t key = static_cast<uint32_t>(e);
-							if (emitted.contains(key)) continue;
-							emitSubtree(e, 0, /*insideCollapsed*/ false);
-						}
-						m_EntityOrder = std::move(reordered);
-					}
-
-					m_RenderedEntityOrder = m_EntityOrder;
-					m_VisibleEntityOrder = std::move(visibleReordered);
-					m_VisibleEntityDepths = std::move(visibleDepths);
-					m_EntityOrderDirty = false;
-				}
-
-				// Hierarchy search: a non-empty query flattens the view to the
-				// entities whose name matches (case-insensitive substring), drawn
-				// at depth 0 with no fold arrows. Filtered from m_EntityOrder (the
-				// full DFS list) so matches inside collapsed parents still surface.
-				// Overwriting the visible lists routes the clipper, range-select,
-				// and arrow-key nav through the filtered set automatically.
+				hierarchy.Update(scene, m_HierarchySearchBuffer);
 				const bool hierarchySearchActive = m_HierarchySearchBuffer[0] != '\0';
-				if (hierarchySearchActive) {
-					// ToLowerCopy casts to unsigned char first — raw ::tolower on a
-					// signed char is UB for the >=0x80 bytes of UTF-8 entity names.
-					const std::string needle = ToLowerCopy(m_HierarchySearchBuffer);
-
-					std::vector<entt::entity> filtered;
-					std::vector<int> filteredDepths;
-					filtered.reserve(m_EntityOrder.size());
-					filteredDepths.reserve(m_EntityOrder.size());
-					for (EntityHandle e : m_EntityOrder) {
-						if (!scene.IsValid(e)) continue;
-						const std::string name = ToLowerCopy(scene.GetEntity(e).GetName());
-						if (name.find(needle) != std::string::npos) {
-							filtered.push_back(e);
-							filteredDepths.push_back(0);
-						}
-					}
-					m_VisibleEntityOrder = std::move(filtered);
-					m_VisibleEntityDepths = std::move(filteredDepths);
-
-					if (m_VisibleEntityOrder.empty()) {
-						EditorUI::EmptyState("No matching entities");
-					}
-				}
+				if (hierarchySearchActive && hierarchy.VisibleEntityOrder.empty())
+					EditorUI::EmptyState("No matching entities");
 
 				const ImVec2 defaultItemSpacing = ImGui::GetStyle().ItemSpacing;
 				ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(defaultItemSpacing.x, 1.0f));
 
-				// Tree guides, precomputed with one reverse pass: whether each row is the last child of its
-				// parent, and which ancestor levels still have siblings further down (their line continues).
-				std::vector<uint64_t> guideContinueMask(m_VisibleEntityDepths.size(), 0);
-				std::vector<bool> guideIsLastChild(m_VisibleEntityDepths.size(), true);
-				{
-					std::vector<bool> siblingBelow;
-					for (std::size_t i = m_VisibleEntityDepths.size(); i-- > 0;) {
-						const int d = std::clamp(m_VisibleEntityDepths[i], 0, 63);
-						if (siblingBelow.size() <= static_cast<std::size_t>(d)) siblingBelow.resize(d + 1, false);
-						guideIsLastChild[i] = !siblingBelow[d];
-						for (int k = 1; k < d; ++k) {
-							if (siblingBelow[k]) guideContinueMask[i] |= (1ull << k);
-						}
-						siblingBelow[d] = true;
-						std::fill(siblingBelow.begin() + d + 1, siblingBelow.end(), false);
-					}
-				}
+				const auto& guideContinueMask = hierarchy.Guides.GetContinueMasks();
+				const auto& guideIsLastChild = hierarchy.Guides.GetLastChildren();
 
 				ImGuiListClipper clipper;
-				clipper.Begin(static_cast<int>(m_VisibleEntityOrder.size()));
+				clipper.Begin(static_cast<int>(hierarchy.VisibleEntityOrder.size()));
 					// Gate selection on scene identity: the same entt handle value can exist in multiple loaded scenes.
 					Scene* const selectionScene = GetContextScene();
 				while (clipper.Step()) {
 				for (int entityIdx = clipper.DisplayStart; entityIdx < clipper.DisplayEnd; ++entityIdx) {
-					const EntityHandle entityHandle = m_VisibleEntityOrder[static_cast<std::size_t>(entityIdx)];
+					const EntityHandle entityHandle = hierarchy.VisibleEntityOrder[static_cast<std::size_t>(entityIdx)];
 					if (!scene.IsValid(entityHandle)) continue;
 					Entity entity = scene.GetEntity(entityHandle);
 					const bool selected = IsEntitySelected(entityHandle) && &scene == selectionScene;
 
-					const int targetDepth = entityIdx < static_cast<int>(m_VisibleEntityDepths.size())
-						? m_VisibleEntityDepths[static_cast<std::size_t>(entityIdx)] : 0;
+					const int targetDepth = entityIdx < static_cast<int>(hierarchy.VisibleEntityDepths.size())
+						? hierarchy.VisibleEntityDepths[static_cast<std::size_t>(entityIdx)] : 0;
 
 					const int visibleIndex = entityIdx;
 
@@ -5229,23 +5116,23 @@ namespace Funke {
 
 					const bool hasChildren = scene.HasComponent<HierarchyComponent>(entityHandle)
 						&& !scene.GetComponent<HierarchyComponent>(entityHandle).Children.empty();
-					bool isCollapsed = m_CollapsedHierarchyEntities.contains(static_cast<uint32_t>(entityHandle));
+					bool isCollapsed = hierarchy.CollapsedEntities.contains(static_cast<uint32_t>(entityHandle));
 					{
 						const float arrowSize = ImGui::GetTextLineHeight();
 						if (hasChildren && !hierarchySearchActive) {
 							const ImVec2 arrowTopLeft = ImGui::GetCursorScreenPos();
 							if (ImGui::InvisibleButton("##fold", ImVec2(arrowSize, arrowSize))) {
 								if (isCollapsed) {
-									m_CollapsedHierarchyEntities.erase(static_cast<uint32_t>(entityHandle));
+									hierarchy.CollapsedEntities.erase(static_cast<uint32_t>(entityHandle));
 								}
 								else {
-									m_CollapsedHierarchyEntities.insert(static_cast<uint32_t>(entityHandle));
+									hierarchy.CollapsedEntities.insert(static_cast<uint32_t>(entityHandle));
 								}
 								isCollapsed = !isCollapsed;
 								// Collapse state feeds into the visible-list
 								// pruning done by the DFS rebuild, so any
 								// toggle has to trigger a rebuild next frame.
-								m_EntityOrderDirty = true;
+								hierarchy.Dirty = true;
 							}
 							const ImU32 arrowColor = ImGui::GetColorU32(
 								ImGui::IsItemHovered() ? EditorTheme::Colors::Highlight() : ImGui::GetStyleColorVec4(ImGuiCol_Text));
@@ -5401,7 +5288,7 @@ namespace Funke {
 							if (ImGui::IsItemHovered() && m_PressedEntity == entityHandle && !IsLeftMouseDragPastClickThreshold()) {
 								const ImGuiIO& io = ImGui::GetIO();
 								if (io.KeyShift) {
-									SelectEntityRange(visibleIndex);
+									SelectEntityRange(scene, visibleIndex);
 								}
 								else if (io.KeyCtrl) {
 									ToggleEntitySelection(entityHandle, visibleIndex);
@@ -5491,9 +5378,9 @@ namespace Funke {
 									std::vector<EntityHandle> sourceHandles = ResolveDraggedHierarchyEntities(*sourceScene, primaryDraggedHandle);
 									std::vector<EntityHandle> migrated = MigrateEntitiesToScene(*sourceScene, scene, sourceHandles, Entity::Null);
 									if (!migrated.empty()) {
-										// Splice migrated handles into m_EntityOrder immediately; MoveSiblingNextTo only repositions entries already in the list.
+										// Splice migrated handles into hierarchy.EntityOrder immediately; MoveSiblingNextTo only repositions entries already in the list.
 										for (EntityHandle h : migrated) {
-											m_EntityOrder.push_back(h);
+											hierarchy.EntityOrder.push_back(h);
 										}
 										if (inTopZone || inBottomZone) {
 											EntityHandle anchor = entityHandle;
@@ -5515,20 +5402,20 @@ namespace Funke {
 											for (EntityHandle h : migrated) {
 												SetEntityParentPreservingWorld(scene, h, entity);
 											}
-											m_CollapsedHierarchyEntities.erase(static_cast<uint32_t>(entityHandle));
+											hierarchy.CollapsedEntities.erase(static_cast<uint32_t>(entityHandle));
 										}
 										ClearEntitySelection();
 										m_SelectedEntities = migrated;
 										RebuildSelectionSet();
 										m_SelectedEntity = migrated.back();
 										m_LastInteractedSceneName = scene.GetName();
-										m_EntityOrderDirty = true;
+										hierarchy.Dirty = true;
 									}
 								}
 							}
 							else {
 							std::vector<EntityHandle> draggedHandles = ResolveDraggedHierarchyEntities(scene, primaryDraggedHandle);
-							// Root-only reorders live in m_EntityOrder; replaying them through a snapshot would push roots to the end.
+							// Root-only reorders live in hierarchy.EntityOrder; replaying them through a snapshot would push roots to the end.
 							const bool targetIsRoot = !entity.HasParent();
 							bool recordMove = !(inTopZone || inBottomZone) || !targetIsRoot;
 							for (EntityHandle h : draggedHandles) recordMove |= scene.GetEntity(h).HasParent();
@@ -5568,9 +5455,9 @@ namespace Funke {
 									}
 								}
 								if (didMove) {
-									m_CollapsedHierarchyEntities.erase(static_cast<uint32_t>(entityHandle));
+									hierarchy.CollapsedEntities.erase(static_cast<uint32_t>(entityHandle));
 									// Force re-DFS: reparenting doesn't change entity count so the size-mismatch heuristic won't trigger it automatically.
-									m_EntityOrderDirty = true;
+									hierarchy.Dirty = true;
 								}
 							}
 							if (didMove) {
@@ -5593,12 +5480,12 @@ namespace Funke {
 										// Drop ONTO an entity row parents the prefab under that entity (mirrors the
 										// HIERARCHY_ENTITY reparent handler above); without this the instance stayed a root.
 										SetEntityParentPreservingWorld(scene, loaded, entity);
-										m_CollapsedHierarchyEntities.erase(static_cast<uint32_t>(entityHandle));
+										hierarchy.CollapsedEntities.erase(static_cast<uint32_t>(entityHandle));
 										SelectEntity(loaded);
 										scene.MarkDirty();
 										RecordCreatedEntities(scene, std::span(&loaded, 1), "Instantiate Prefab");
 									}
-									m_EntityOrder.clear(); m_EntityOrderDirty = true;
+									hierarchy.EntityOrder.clear(); hierarchy.Dirty = true;
 								}
 							}
 							else {
@@ -5717,7 +5604,7 @@ namespace Funke {
 
 		if (pendingSceneReorder) {
 			SceneManager::MoveLoadedScene(pendingSceneReorder->SourceName, pendingSceneReorder->TargetIndex);
-			m_EntityOrderDirty = true;
+			GetHierarchyState().Dirty = true;
 		}
 
 		// Drag-drop target: only present during an active drag so it doesn't block right-click menus
@@ -5726,7 +5613,7 @@ namespace Funke {
 			if (avail.y > 0) {
 				ImGui::InvisibleButton("##SceneDropTarget", ImVec2(-1, avail.y));
 				if (ImGui::BeginDragDropTarget()) {
-					// Drop to bottom panel: detaches entity to root and moves it to end of m_EntityOrder. Disabled in prefab mode (would create second root).
+					// Drop to bottom panel: detaches entity to root and moves it to end of the scene root order. Disabled in prefab mode (would create second root).
 					if (!IsInPrefabEditMode())
 					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY")) {
 						auto* dragData = static_cast<const HierarchyDragData*>(payload->Data);
@@ -5754,7 +5641,7 @@ namespace Funke {
 										RebuildSelectionSet();
 										m_SelectedEntity = migrated.back();
 										m_LastInteractedSceneName = dropScene->GetName();
-										m_EntityOrderDirty = true;
+										GetHierarchyState().Dirty = true;
 									}
 								}
 							}
@@ -5769,15 +5656,15 @@ namespace Funke {
 										didMove = true;
 									}
 								}
-								auto orderIt = std::find(m_EntityOrder.begin(), m_EntityOrder.end(), h);
-								if (orderIt != m_EntityOrder.end() && std::next(orderIt) != m_EntityOrder.end()) {
-									m_EntityOrder.erase(orderIt);
-									m_EntityOrder.push_back(h);
-									m_EntityOrderDirty = true; // M30: re-DFS next render.
+								auto orderIt = std::find(GetHierarchyState().EntityOrder.begin(), GetHierarchyState().EntityOrder.end(), h);
+								if (orderIt != GetHierarchyState().EntityOrder.end() && std::next(orderIt) != GetHierarchyState().EntityOrder.end()) {
+									GetHierarchyState().EntityOrder.erase(orderIt);
+									GetHierarchyState().EntityOrder.push_back(h);
+									GetHierarchyState().Dirty = true; // M30: re-DFS next render.
 								}
 							}
 							if (didMove) {
-								m_EntityOrderDirty = true;
+								GetHierarchyState().Dirty = true;
 								dropScene->MarkDirty();
 								PushStructureUndo(*dropScene, recorder.Finish(*dropScene, draggedHandles));
 							}
@@ -5803,7 +5690,7 @@ namespace Funke {
 									EnsureEditorUniqueEntityNames(*dropScene, { loaded });
 									RecordCreatedEntities(*dropScene, std::span(&loaded, 1), "Instantiate Prefab");
 								}
-								m_EntityOrder.clear(); m_EntityOrderDirty = true;
+								GetHierarchyState().EntityOrder.clear(); GetHierarchyState().Dirty = true;
 							}
 						}
 						else if ((ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga")
@@ -5862,8 +5749,8 @@ namespace Funke {
 									EnsureEditorUniqueEntityNames(*dropScene, { newEntity.GetHandle() });
 									SelectEntity(newEntity.GetHandle());
 									dropScene->MarkDirty();
-									m_EntityOrder.clear();
-									m_EntityOrderDirty = true;
+									GetHierarchyState().EntityOrder.clear();
+									GetHierarchyState().Dirty = true;
 									++m_SelectionVersion;
 									const EntityHandle createdHandle = newEntity.GetHandle();
 									RecordCreatedEntities(*dropScene, std::span(&createdHandle, 1), "Create Entity");
@@ -6052,6 +5939,7 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::RenderInspectorPanel(Scene& scene) {
+		auto& hierarchyState = SceneHierarchyState::Get(scene);
 		ImGui::Begin("Inspector");
 
 		// Cache avoids O(N×M) loops per frame over (selection × components) at large selections.
@@ -6274,7 +6162,7 @@ namespace Funke {
 					EntityHandle replacement = SceneSerializer::RevertPrefabInstanceOverride(scene, m_SelectedEntity, {});
 					if (replacement != entt::null) {
 						SelectEntity(replacement);
-						m_EntityOrder.clear(); m_EntityOrderDirty = true;
+						hierarchyState.EntityOrder.clear(); hierarchyState.Dirty = true;
 					}
 				}
 			}
@@ -6303,7 +6191,8 @@ namespace Funke {
 				scene, entity.GetHandle(), prefabOverrides);
 			if (prefabSourceResolvable) {
 				prefabInstanceRoot = SceneSerializer::GetPrefabInstanceRoot(scene, entity.GetHandle());
-				hasSubtreeOverrides = SceneSerializer::HasPrefabInstanceOverrides(scene, entity.GetHandle());
+				hasSubtreeOverrides = !prefabOverrides.GetObject().empty()
+					|| SceneSerializer::HasPrefabInstanceOverrides(scene, entity.GetHandle());
 			}
 		}
 
@@ -6345,7 +6234,7 @@ namespace Funke {
 						m_PrefabEditRootEntity = replacement;
 					}
 					SelectEntity(replacement); // also bumps m_SelectionVersion
-					m_EntityOrder.clear(); m_EntityOrderDirty = true;
+					hierarchyState.EntityOrder.clear(); hierarchyState.Dirty = true;
 					ImGui::EndDisabled();
 					ImGui::Separator();
 					ImGui::End();
@@ -6526,7 +6415,7 @@ namespace Funke {
 					const EntityHandle root = SceneSerializer::GetPrefabInstanceRoot(scene, replacement);
 					PushStructureUndo(scene, undo.Finish(scene, std::span(&root, 1)));
 					SelectEntity(replacement);
-					m_EntityOrder.clear(); m_EntityOrderDirty = true;
+					hierarchyState.EntityOrder.clear(); hierarchyState.Dirty = true;
 					// Entity was recreated — `entity`/`entitySpan` are now stale.
 					// Stop iterating components this frame (see latch above).
 					selectionInvalidatedByRevert = true;
@@ -6551,7 +6440,7 @@ namespace Funke {
 				SelectEntity(current);
 				const EntityHandle root = SceneSerializer::GetPrefabInstanceRoot(scene, current);
 				PushStructureUndo(scene, undo.Finish(scene, std::span(&root, 1)));
-				m_EntityOrder.clear(); m_EntityOrderDirty = true;
+				hierarchyState.EntityOrder.clear(); hierarchyState.Dirty = true;
 				// Entity may have been recreated by the reverts above — `entity`/
 				// `entitySpan` are now stale. Stop iterating components this frame.
 				selectionInvalidatedByRevert = true;

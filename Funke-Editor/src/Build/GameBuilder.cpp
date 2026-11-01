@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Build/GameBuilder.hpp"
 #include "Build/DotNetRuntimeBundle.hpp"
+#include "Assets/AssetBundle.hpp"
 #include "Core/EngineModules.hpp"
 #include "Serialization/SceneSerializerStorage.hpp"
 #include "Scene/SceneManager.hpp"
@@ -1095,11 +1096,41 @@ namespace Funke::GameBuilder {
 		outRequest.PlatformPackage = BuildPlatformSupport::GetPackage(activeProfile.Platform);
 		outRequest.PlatformOptions = activeProfile.PlatformOptions;
 		outRequest.BundleDotNetRuntime = activeProfile.BundleDotNetRuntime;
+		outRequest.BundleAssets = activeProfile.BundleAssets;
+		outRequest.CompressAssetBundles = activeProfile.BundleAssets && activeProfile.CompressAssetBundles;
 		return true;
 	}
 
 	std::string DefaultOutputDirectory(const FunkeProject& project, std::string_view profileName) {
 		return Path::Combine(project.RootDirectory, "Builds", std::string(profileName));
+	}
+
+	bool BundleStagedAssets(const std::filesystem::path& contentDirectory, bool compress, std::string& error) {
+		error.clear();
+		try {
+			for (const char* folder : { "Assets", "FunkeAssets" }) {
+				const auto root = contentDirectory / folder;
+				if (!std::filesystem::is_directory(root)) continue;
+				std::vector<std::filesystem::path> files;
+				for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+					if (!entry.is_regular_file()) continue;
+					const auto relative = entry.path().lexically_relative(root);
+					std::string first = Path::ToUtf8(*relative.begin());
+					std::transform(first.begin(), first.end(), first.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+					if (std::string_view(folder) == "Assets" && (first == "streamingassets" || first == "streamingassets.meta")) continue;
+					files.push_back(relative);
+				}
+				const auto destination = contentDirectory / (std::string(folder) + ".fbundle");
+				if (!AssetBundle::Write(root, destination, files, compress, error)) return false;
+				for (const auto& file : files) std::filesystem::remove(root / file);
+				FNK_INFO_TAG("Build", "{}: bundled {} files ({:.1f} MB, compression {})", destination.filename().string(),
+					files.size(), static_cast<double>(std::filesystem::file_size(destination)) / (1024.0 * 1024.0), compress ? "LZ4" : "off");
+			}
+			return true;
+		} catch (const std::exception& ex) {
+			error = ex.what();
+			return false;
+		}
 	}
 
 	bool IsSerializedAssetPath(const std::filesystem::path& path) {
@@ -1910,6 +1941,9 @@ namespace Funke::GameBuilder {
 			failBuild("License staging failed");
 			return result;
 		}
+		const auto lz4License = !engineRoot.empty() && std::filesystem::is_regular_file(engineRoot / "vendor/lz4/LICENSE")
+			? engineRoot / "vendor/lz4/LICENSE" : licenseSource / "LZ4/LICENSE";
+		if (!copyRequiredFile(lz4License, contentDir / "Licenses/LZ4/LICENSE", "LZ4 license")) return result;
 
 		report(0.75f, "Optimizing project assets");
 		{
@@ -2113,6 +2147,16 @@ namespace Funke::GameBuilder {
 			}
 		}
 #endif
+
+		if (request.BundleAssets) {
+			report(0.90f, request.CompressAssetBundles ? "Compressing asset bundles" : "Bundling assets");
+			std::string bundleError;
+			if (!BundleStagedAssets(contentDir, request.CompressAssetBundles, bundleError)) {
+				FNK_ERROR_TAG("Build", "Asset bundling failed: {}", bundleError);
+				failBuild("Asset bundling failed");
+				return result;
+			}
+		}
 
 #if defined(FNK_PLATFORM_MACOS)
 		if (!platformPackageBuild) {

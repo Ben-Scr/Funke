@@ -1,0 +1,77 @@
+{
+  "project": "C:\\Users\\benso\\Funke\\Projects\\67",
+  "runDirectory": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\output\\project-open\\lighting-restart-before\\run-2",
+  "launcher": {
+    "project": "C:\\Users\\benso\\Funke\\Projects\\67",
+    "startedAtUnixMs": 1793532660694.7363,
+    "spawnedAtUnixMs": 1793532660933.3608,
+    "launcherElapsedMs": 239.6927,
+    "complete": true,
+    "success": true,
+    "pid": 52124,
+    "error": ""
+  },
+  "editorReadyMs": 931.61279296875,
+  "readyStatus": {
+    "project": "C:\\Users\\benso\\Funke\\Projects\\67",
+    "projectName": "6 7",
+    "pid": 52124,
+    "version": "Funke 2026.1.0-beta.1+ae672bf6a048.dirty.0512d9bfdcb6 (Windows x64 Dist)",
+    "protocol": 1,
+    "state": "edit",
+    "scene": "SampleScene",
+    "entityCount": 1,
+    "scenes": [
+      "SampleScene"
+    ],
+    "unsavedScenes": [],
+    "scripts": {
+      "compiling": false,
+      "lastBuildSucceeded": true,
+      "errors": ""
+    },
+    "busy": null,
+    "surface": {
+      "width": 2007,
+      "height": 1129,
+      "source": "game-view"
+    },
+    "fixedStep": 0,
+    "frame": 1,
+    "gameTime": 0
+  },
+  "scriptsReadyMs": 931.61279296875,
+  "finalStatus": {
+    "project": "C:\\Users\\benso\\Funke\\Projects\\67",
+    "projectName": "6 7",
+    "pid": 52124,
+    "version": "Funke 2026.1.0-beta.1+ae672bf6a048.dirty.0512d9bfdcb6 (Windows x64 Dist)",
+    "protocol": 1,
+    "state": "edit",
+    "scene": "SampleScene",
+    "entityCount": 1,
+    "scenes": [
+      "SampleScene"
+    ],
+    "unsavedScenes": [],
+    "scripts": {
+      "compiling": false,
+      "lastBuildSucceeded": true,
+      "errors": ""
+    },
+    "busy": null,
+    "surface": {
+      "width": 2007,
+      "height": 1129,
+      "source": "game-view"
+    },
+    "fixedStep": 0,
+    "frame": 1,
+    "gameTime": 0
+  },
+  "launchToSpawnMs": 238.62451171875,
+  "spawnToReadyMs": 692.98828125,
+  "success": true,
+  "launcherExitCode": 0,
+  "packageCacheHit": true
+}

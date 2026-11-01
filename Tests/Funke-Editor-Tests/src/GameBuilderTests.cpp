@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "Build/GameBuilder.hpp"
+#include "Assets/AssetBundle.hpp"
 #include "Build/DotNetRuntimeBundle.hpp"
 #include "Editor/PlatformBuilder.hpp"
 #include "Project/BuildPlatformSupport.hpp"
@@ -170,9 +171,15 @@ TEST_CASE("Build profiles include .NET by default and preserve the explicit opt 
 	REQUIRE(File::WriteAllText(file, R"({"name":"Runtime","platform":"Windows"})"));
 	auto profile = FunkeBuildProfile::Load(file);
 	CHECK(profile.BundleDotNetRuntime);
+	CHECK_FALSE(profile.BundleAssets);
+	CHECK_FALSE(profile.CompressAssetBundles);
 	profile.BundleDotNetRuntime = false;
+	profile.BundleAssets = true;
+	profile.CompressAssetBundles = true;
 	REQUIRE(profile.Save(file));
 	CHECK_FALSE(FunkeBuildProfile::Load(file).BundleDotNetRuntime);
+	CHECK(FunkeBuildProfile::Load(file).BundleAssets);
+	CHECK(FunkeBuildProfile::Load(file).CompressAssetBundles);
 }
 
 TEST_CASE("GameBuilder::Prepare folds the profile's configuration, defines and test switches into the snapshot only") {
@@ -196,6 +203,8 @@ TEST_CASE("GameBuilder::Prepare folds the profile's configuration, defines and t
 	qa.ShowRuntimeLogs = true;
 	qa.IsolatedPrefs = true;
 	qa.BundleDotNetRuntime = false;
+	qa.BundleAssets = true;
+	qa.CompressAssetBundles = true;
 	REQUIRE(qa.Save(Path::ToUtf8(temp.Root / "BuildProfiles" / "QA.build")));
 	temp.Project.ActiveBuildProfileName = "QA";
 
@@ -210,6 +219,8 @@ TEST_CASE("GameBuilder::Prepare folds the profile's configuration, defines and t
 	CHECK_FALSE(request.Project.ShowRuntimeStats.has_value());
 	CHECK(request.Project.PrefsProfile == "QA");
 	CHECK_FALSE(request.BundleDotNetRuntime);
+	CHECK(request.BundleAssets);
+	CHECK(request.CompressAssetBundles);
 	// The live project keeps its own values.
 	CHECK(temp.Project.ActiveBuildProfile == FunkeProject::BuildProfile::Development);
 	CHECK(temp.Project.CustomDefines == std::vector<std::string>{ "STEAM" });
@@ -220,6 +231,38 @@ TEST_CASE("GameBuilder::Prepare folds the profile's configuration, defines and t
 	overridden.ConfigurationOverride = FunkeProject::BuildProfile::Release;
 	REQUIRE(GameBuilder::Prepare(temp.Project, overridden, error));
 	CHECK(overridden.Project.ActiveBuildProfile == FunkeProject::BuildProfile::Release);
+	qa.BundleAssets = false;
+	REQUIRE(qa.Save(Path::ToUtf8(temp.Root / "BuildProfiles/QA.build")));
+	REQUIRE(GameBuilder::Prepare(temp.Project, overridden, error));
+	CHECK_FALSE(overridden.BundleAssets);
+	CHECK_FALSE(overridden.CompressAssetBundles);
+}
+
+TEST_CASE("GameBuilder asset bundling preserves StreamingAssets and reads staged content") {
+	for (bool compressed : { false, true }) {
+		TempProject temp;
+		for (const char* folder : { "Assets/Scenes", "Assets/StreamingAssets", "FunkeAssets/Fonts" })
+			std::filesystem::create_directories(temp.Root / folder);
+		const std::string scene = std::string(4000, 'x');
+		REQUIRE(File::WriteAllText(Path::ToUtf8(temp.Root / "Assets/Scenes/Main.scene"), scene));
+		REQUIRE(File::WriteAllText(Path::ToUtf8(temp.Root / "Assets/Scenes/Main.scene.meta"), "metadata"));
+		REQUIRE(File::WriteAllText(Path::ToUtf8(temp.Root / "Assets/StreamingAssets/data.txt"), "raw"));
+		REQUIRE(File::WriteAllText(Path::ToUtf8(temp.Root / "FunkeAssets/Fonts/font.ttf"), "font"));
+		std::string error;
+		REQUIRE_MESSAGE(GameBuilder::BundleStagedAssets(temp.Root, compressed, error), error);
+		CHECK_FALSE(std::filesystem::exists(temp.Root / "Assets/Scenes/Main.scene"));
+		CHECK_FALSE(std::filesystem::exists(temp.Root / "Assets/Scenes/Main.scene.meta"));
+		CHECK(File::ReadAllText(Path::ToUtf8(temp.Root / "Assets/StreamingAssets/data.txt")) == "raw");
+		AssetBundle project, engine;
+		REQUIRE(project.Open(temp.Root / "Assets.fbundle", error));
+		REQUIRE(engine.Open(temp.Root / "FunkeAssets.fbundle", error));
+		CHECK(project.Contains("Scenes/Main.scene.meta"));
+		CHECK_FALSE(project.Contains("StreamingAssets/data.txt"));
+		CHECK(engine.Contains("Fonts/font.ttf"));
+		std::vector<std::uint8_t> bytes;
+		REQUIRE(project.Read("Scenes/Main.scene", bytes, error));
+		CHECK(std::string(bytes.begin(), bytes.end()) == scene);
+	}
 }
 
 TEST_CASE("GameBuilder resolves the requested, active or first matching build profile") {

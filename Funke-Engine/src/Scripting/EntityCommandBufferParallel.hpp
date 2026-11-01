@@ -206,8 +206,38 @@ namespace Funke {
 		storage.bulk_remove(plan, execute);
 	}
 
-	inline bool EcbTryParallelPlayback(Scene& scene, const EcbHeader& header, const uint8_t* cursor,
-		uint64_t* output, int mode) {
+	struct EcbParallelScratch {
+		struct ComponentPlan {
+			const entt::registry::common_type* Storage = nullptr;
+			std::vector<const entt::registry::common_type*> Conflicts;
+			uint8_t CertifiedOpcodes = 0;
+		};
+		EcbComponentBatch Transforms, Sprites;
+		ComponentPlan TransformPlan, SpritePlan;
+		std::vector<EntityHandle> Destroyed;
+		std::vector<uint32_t> Seen;
+		uint32_t Stamp = 0;
+		bool InUse = false;
+	};
+
+	inline EcbParallelScratch& EcbGetParallelScratch() {
+		// Both target representations reuse the same storage, including mixed nested playback.
+		static thread_local EcbParallelScratch t_Scratch;
+		return t_Scratch;
+	}
+
+	template<bool NativeTargets>
+	bool EcbResolveTarget(Scene& scene, uint64_t identity, EntityHandle& handle) {
+		if constexpr (!NativeTargets) return scene.TryResolveEntityRef(identity, handle);
+		else {
+			handle = static_cast<EntityHandle>(identity);
+			return entt::to_integral(handle) == identity && scene.IsValid(handle);
+		}
+	}
+
+	template<bool NativeTargets>
+	bool EcbTryParallelPlayback(Scene& scene, const EcbHeader& header, const uint8_t* cursor,
+		std::conditional_t<NativeTargets, EntityHandle, uint64_t>* output, int mode) {
 		constexpr size_t k_AutomaticMinimum = 512;
 		if (mode == 1 || JobSystem::IsCallerWorker()
 			|| (mode == 0 && std::max(header.entityCount, header.commandCount) < k_AutomaticMinimum)) return false;
@@ -217,24 +247,12 @@ namespace Funke {
 			|| !scene.CanUseParallelEcbComponent(entt::type_hash<UUIDComponent>::value()))) return false;
 
 		enum class Action { None, Add, Remove, Destroy } action = Action::None;
-		struct ComponentPlan {
-			const entt::registry::common_type* Storage = nullptr;
-			std::vector<const entt::registry::common_type*> Conflicts;
-			uint8_t CertifiedOpcodes = 0;
-		};
-		struct PlaybackScratch {
-			EcbComponentBatch Transforms, Sprites;
-			ComponentPlan TransformPlan, SpritePlan;
-			std::vector<EntityHandle> Destroyed;
-			std::vector<uint32_t> Seen;
-			uint32_t Stamp = 0;
-			bool InUse = false;
-		};
-		static thread_local PlaybackScratch t_Scratch;
-		PlaybackScratch localScratch;
-		auto& scratch = t_Scratch.InUse ? localScratch : t_Scratch;
+		using ComponentPlan = EcbParallelScratch::ComponentPlan;
+		auto& sharedScratch = EcbGetParallelScratch();
+		EcbParallelScratch localScratch;
+		auto& scratch = sharedScratch.InUse ? localScratch : sharedScratch;
 		struct ScratchScope {
-			PlaybackScratch& Scratch;
+			EcbParallelScratch& Scratch;
 			~ScratchScope() { Scratch.InUse = false; }
 		} scratchScope{ scratch };
 		scratch.InUse = true;
@@ -281,7 +299,7 @@ namespace Funke {
 			action = next;
 			EntityHandle handle = static_cast<EntityHandle>(entityIndex);
 			if (!create) {
-				if (!scene.TryResolveEntityRef(EcbReadLE<uint64_t>(payload), handle)) return false;
+				if (!EcbResolveTarget<NativeTargets>(scene, EcbReadLE<uint64_t>(payload), handle)) return false;
 				payload += sizeof(uint64_t);
 			}
 			const size_t slot = create ? entityIndex : entt::to_entity(handle);
@@ -400,7 +418,8 @@ namespace Funke {
 			EcbNotifyConstructed<Transform2DComponent>(scene, transforms);
 			EcbNotifyConstructed<SpriteRendererComponent>(scene, sprites);
 #endif
-			std::copy(identities.begin(), identities.end(), output);
+			if constexpr (NativeTargets) std::copy(handles.begin(), handles.end(), output);
+			else std::copy(identities.begin(), identities.end(), output);
 		}
 #if FUNKE_WITH_2D
 		if (action == Action::Add && !create) {

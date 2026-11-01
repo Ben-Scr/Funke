@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Graphics/ImageProcessing.hpp"
+#include "Serialization/File.hpp"
 
 #include <stb_image.h>
 
@@ -207,9 +208,7 @@ namespace Funke::ImageProcessing {
 	}
 
 	std::unique_ptr<ImageData> LoadFile(const std::filesystem::path& path) {
-		std::ifstream in(path, std::ios::binary);
-		if (!in) return nullptr;
-		const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		const auto bytes = File::ReadAllBytes(Path::ToUtf8(path));
 		return Decode(bytes);
 	}
 

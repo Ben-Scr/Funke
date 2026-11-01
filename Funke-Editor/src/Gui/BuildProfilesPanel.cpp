@@ -814,6 +814,22 @@ namespace Funke {
 			ImGui::PopID();
 		}
 
+		if (EditorUI::SectionHeader("Asset Packaging")) {
+			ImGui::PushID("BundleAssets");
+			ImGuiUtils::BeginInspectorFieldRow("Bundle Assets");
+			if (ImGuiUtils::Switch("##Value", &profile.BundleAssets)) SaveSelected();
+			EditorUI::Tooltip("Packs project and engine assets into bundles loaded directly at runtime.\n"
+				"StreamingAssets remain loose for direct file access.");
+			ImGui::PopID();
+			ImGui::BeginDisabled(!profile.BundleAssets);
+			ImGui::PushID("CompressAssetBundles");
+			ImGuiUtils::BeginInspectorFieldRow("Compress Bundles");
+			if (ImGuiUtils::Switch("##Value", &profile.CompressAssetBundles)) SaveSelected();
+			EditorUI::Tooltip("Reduces bundle size with lossless LZ4 compression. Files are decompressed when loaded.");
+			ImGui::PopID();
+			ImGui::EndDisabled();
+		}
+
 		RenderTesting(profile);
 	}
 

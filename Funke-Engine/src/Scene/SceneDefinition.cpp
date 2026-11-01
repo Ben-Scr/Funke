@@ -5,8 +5,10 @@
 
 
 namespace Funke {
-	std::shared_ptr<Scene> SceneDefinition::Instantiate() const {
+	std::shared_ptr<Scene> SceneDefinition::Instantiate(bool suspendLifecycle) const {
 		std::shared_ptr<Scene> scene(new Scene(m_Name, this, m_IsPersistent));
+		scene->m_LifecycleSuspended = suspendLifecycle;
+		scene->m_IsDetached = suspendLifecycle;
 		const auto systemFactories = m_SystemFactories;
 		const auto initializeCallbacks = m_InitializeCallbacks;
 

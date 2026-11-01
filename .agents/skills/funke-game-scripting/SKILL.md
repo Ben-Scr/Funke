@@ -120,11 +120,12 @@ void Destroy();  void Destroy(float delay);
 - **`Transform2D`** — `Position` (world `Vector2`), `Rotation` (deg, world), `Scale`, `LocalRotation`, `LocalScale`, direction vectors `Up/Down/Right/Left`. `LocalTransform` is local position.
 - **`SpriteRenderer`** — `Texture`, `Color` (`Vector4` RGBA), `SortingOrder`, `SortingLayer`, `FilterMode`, `SpriteName` (slice from the texture's `.meta`; empty = whole texture), `PixelsPerUnit` (0 = fill the transform scale; > 0 = native size on the slice pivot), `FlipX`/`FlipY`.
 - **`TextRenderer`** — `Text`, `Font?`, `FontSize`, `Color`, `LetterSpacing`, `Alignment` (`TextAlignment.Left/Center/Right`), `WrapMode`, sorting.
-- **`Camera2D`** — `OrthographicSize`, `Zoom`, `ClearColor`, `Frustum` (`AABB`), `ScreenToWorld(Vector2)`, `WorldToScreen(Vector2)`, `static Camera2D? Main`.
+- **`Camera2D`** — `OrthographicSize`, `Zoom`, `ClearColor`, `PostProcessingEnabled`, `Frustum` (`AABB`), `ScreenToWorld(Vector2)`, `WorldToScreen(Vector2)`, `static Camera2D? Main`.
 - **`Rigidbody2D`** — `LinearVelocity`, `AngularVelocity`, `BodyType` (`Static/Kinematic/Dynamic`), `GravityScale`, `Mass`, `Constraints` (`RigidbodyConstraints2D` flags), `ApplyForce(Vector2, bool wake=true)`, `ApplyImpulse(Vector2, bool wake=true)`.
 - **Colliders** — `BoxCollider2D` (`Center`, `Scale`), `CircleCollider2D` (`Radius`, `Center`), `PolygonCollider2D` (`SetSides(int)`, `SetPoints(ReadOnlySpan<Vector2>)`, `GetWorldPoints(Span<Vector2>)`). Each has write-only `Enabled`; the `Collider2D` base adds `IsSensor` (overlaps raise `OnTrigger*2D` instead of collisions), `Layer` / `CollisionMask` (bits from `PhysicsLayers.Mask(...)`), `Friction`, `Bounciness`.
 - **`AudioSource`** — `Audio?`, `Volume`, `Pitch`, `Loop`, `IsPlaying`, `Play/Pause/Stop/Resume()`; 3D sound: `Spatial`, `MinDistance`, `MaxDistance`, `Rolloff`, `Panning`, `DopplerLevel`.
 - **`ParticleSystem2D`** — `Texture`, `Color`, `LifeTime`, `Speed`, `Scale`, `EmitOverTime`, `PlayOnAwake`, `Play/Pause/Stop()`, `Emit(int)`.
+- **Camera post-processing** — `Camera2D.PostProcessingEnabled` and `Camera3D.PostProcessingEnabled` toggle the camera's effects (default true); global `RenderSettings.PostProcessingEnabled` must also be enabled.
 - **`PostProcessing2D`** (on the main camera entity; display name "Post Processing") — value-struct properties `ColorGrading`, `Vignette`, `ChromaticAberration`, `Grain`, `Bloom`, `LensDistortion`, `Pixelated`, `GaussianBlur` (`PostProcessing2D.BloomSettings` etc., each with `static Default`). Copy, edit, assign back: `var b = pp.Bloom; b.Enabled = true; pp.Bloom = b;`. Setters clamp to the Inspector ranges.
 - **Fast physics** (lightweight AABB path, only with the `Funke.Physics` package installed) — `FastBody2D` (`BodyType`, `Mass`, `UseGravity`, `BoundaryCheck`, `Velocity`), `FastBoxCollider2D` (`HalfExtents`), `FastCircleCollider2D` (`Radius`); queries in `Funke.Physics.FastPhysics2D` (same shape as `Physics2D`).
 
@@ -182,6 +183,13 @@ bool OverlapCircleCheck(…);                            // fast bool-only varia
 `Collision2D` (collision and trigger callbacks): `Entity Self`, `Entity Other`, `Vector2 ContactPoint` (zero for triggers), `bool IsTrigger`.
 
 ## Audio (`Funke.Audio`)
+
+For headphone binaural playback, enable `source.Spatial = true` and `source.Hrtf = true`
+(Inspector: Audio Source → 3D Sound → HRTF (Headphones)). One-shots:
+`clip.PlayOneShotAt(position, hrtf: true)` or `Audio.PlayOneShotAt(clip, position, hrtf: true)`.
+HRTF replaces `Panning`, follows camera yaw/pitch/roll, and mixes stereo clips to a mono
+point source. Distance and Doppler still apply. It is off by default. Use headphones;
+generic KEMAR localization varies per listener. See `Github-Docs/Documentation/Engine-Core/Spatial-Audio.md`.
 
 Three paths:
 - **Component:** add an `AudioSource`, set `Audio`, call `Play()`.
@@ -273,7 +281,7 @@ Scene? active = SceneManager.GetActiveScene();
 bool exists = SceneManager.DoesSceneExist("Boss");                 // scene file present?
 // events: SceneLoaded, BeforeSceneLoaded, BeforeSceneUnloaded, SceneUnloaded
 ```
-List intended shipping scenes in `buildScenes` so the build retains them. `ProjectSceneLoader` can also register and load an unlisted scene if its file was shipped; pruning can retain it through reachable asset references or C# literals, but cannot infer arbitrary computed names (see `funke-project-structure`). `LoadSceneAsync` prepares file contents in the background and activates at a main-thread frame boundary; ECS setup, asset creation and script lifecycle callbacks still run on the engine thread. Call it on the engine thread and await its task; failures return null without replacing the loaded scenes. The `(nameOrGuid, mode, cancellationToken)` overload cancels cooperatively before activation. Assembly reload and play-mode exit cancel pending loads.
+List intended shipping scenes in `buildScenes` so the build retains them. `ProjectSceneLoader` can also register and load an unlisted scene if its file was shipped; pruning can retain it through reachable asset references or C# literals, but cannot infer arbitrary computed names (see `funke-project-structure`). `LoadSceneAsync` prepares scene/prefab files and supported GUID-referenced assets in the background, then builds an unpublished scene in engine-thread batches (default 128 entity records / 2ms). Asset publication is limited to one per frame. Lifecycle callbacks, prefab trees, finalization and individual uploads remain indivisible. Call it on the engine thread and await its task; failures return null without replacing the loaded scenes. The `(nameOrGuid, mode, cancellationToken, progress)` overload accepts `IProgress<SceneLoadProgress>` for a loading bar and phase label. `await PreloadSceneAsync(nameOrGuid, cancellationToken, progress)` returns a nullable `PreloadedScene` without creating entities or running callbacks; retain it until needed, then `await prepared.ActivateAsync(mode, cancellationToken, progress)`, or `Dispose()` on the engine thread. Cancellation remains available through entity construction. Assembly reload and play-mode exit cancel pending loads and retained preloads. See `Github-Docs/Documentation/Engine-Core/Scenes.md` for the cooperative budget and asset-coverage limits.
 
 ## Other useful statics
 

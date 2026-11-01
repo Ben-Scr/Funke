@@ -252,7 +252,7 @@ namespace Funke::ImGuiUtils {
 	bool AxisDragFloat(const char* id, int axis, const char* axisLabel, float* value, float width,
 		float speed, const char* format, float vmin = 0.0f, float vmax = 0.0f);
 	// Single-control ranged float: drag or double-click to type; the frame shows the value as a fill bar.
-	bool FillDragFloat(const char* id, float* value, float vmin, float vmax, const char* format);
+	bool FillDragFloat(const char* id, float* value, float vmin, float vmax, const char* format, float speed = 0.0f);
 	// Animated on/off switch, one frame-height tall. Returns true when clicked (value already toggled).
 	bool ToggleSwitch(const char* id, bool* value, bool mixed = false);
 	// Drop-in for ImGui::Checkbox: a ToggleSwitch followed by the visible part of `label` (also clickable).

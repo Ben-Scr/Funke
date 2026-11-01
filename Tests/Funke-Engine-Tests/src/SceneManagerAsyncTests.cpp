@@ -2,6 +2,12 @@
 
 #include "Core/Application.hpp"
 #include "Core/UUID.hpp"
+#include "Assets/AssetLoader.hpp"
+#include "Assets/AssetRegistry.hpp"
+#include "Components/Graphics/MeshRendererComponent.hpp"
+#include "Components/General/Transform2DComponent.hpp"
+#include "Components/General/Transform3DComponent.hpp"
+#include "Graphics/MeshAsset.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneDefinition.hpp"
@@ -35,11 +41,22 @@ namespace {
 		~SceneFileFixture() {
 			std::error_code error;
 			std::filesystem::remove(Path, error);
+			std::filesystem::remove(Path.string() + ".obj", error);
 		}
 
-		bool Write(SceneSerializationFormat format) const {
+		bool Write(SceneSerializationFormat format, uint64_t meshGuid = 0) const {
 			auto source = Scene::CreateDetachedScene(k_TargetName);
-			source->CreateEntity("First");
+			auto first = source->CreateEntity("First");
+			if (meshGuid != 0) {
+				first.RemoveComponent<Transform2DComponent>();
+				first.AddComponent<Transform3DComponent>();
+				const auto meshPath = Path.string() + ".obj";
+				std::ofstream mesh(meshPath);
+				mesh << "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+				mesh.close();
+				AssetRegistry::RegisterBuiltInAsset(meshPath, meshGuid, AssetKind::Mesh);
+				first.AddComponent<MeshRendererComponent>().CustomMesh = meshGuid;
+			}
 			source->CreateEntity("Second");
 			return SceneSerializer::SaveToFile(*source, Path.string(), format);
 		}
@@ -78,6 +95,11 @@ namespace {
 		Unregister,
 		Shutdown,
 		WrongThread,
+		Preload,
+		Budget,
+		CancelPartial,
+		UnregisterPartial,
+		UnloadPartial,
 	};
 
 	class AsyncSceneTestApplication final : public Application {
@@ -110,10 +132,12 @@ namespace {
 					if (m_Scenario == AsyncScenario::CallbackFailure)
 						throw std::runtime_error("expected async load callback failure");
 				})
+				.OnUnload([this](Scene&) { ++UnloadCount; })
 				.WithoutDefaultCamera2D();
 		}
 
 		void Start() override {
+			SceneManager::SetAsyncSceneLoadBudget(2.0, 1);
 			m_Stable = SceneManager::GetLoadedScene(k_StableName).lock();
 			InitialSceneReady = m_Stable && m_Stable->IsLoaded() && m_Stable->GetEntityCount() == 1;
 			m_Previous = m_Stable;
@@ -140,7 +164,21 @@ namespace {
 					});
 					worker.join();
 				}
-				RequestId = SceneManager::LoadSceneAsync(k_TargetName, m_Scenario == AsyncScenario::Additive,
+				if (m_Scenario == AsyncScenario::Preload) {
+					RequestId = SceneManager::PreloadSceneAsync(k_TargetName, [this](uint64_t, const SceneLoadResult& result) {
+						PreloadReady = result.Succeeded() && result.LoadedScene.expired() && Trace.Stages.empty()
+							&& SceneManager::GetLoadedSceneCount() == 1;
+						AssetPrepared = ExpectedAsset != 0 && MeshLibrary::FindLoaded(ExpectedAsset)
+							&& AssetLoader::IsAssetRetained(ExpectedAsset);
+						std::error_code error;
+						std::filesystem::remove(m_Path, error);
+						m_ReadyAt = UpdateCount;
+						SceneManager::LoadSceneAsync("Missing queued definition", false, [this](uint64_t, const SceneLoadResult& other) {
+							ReadyPreloadDoesNotBlockQueue = !other;
+						});
+					});
+				}
+				else RequestId = SceneManager::LoadSceneAsync(k_TargetName, m_Scenario == AsyncScenario::Additive,
 					[this](uint64_t id, const SceneLoadResult& result) { OnCompleted(id, result); });
 				Deferred = CompletionCount == 0 && Trace.Stages.empty()
 					&& m_Previous && m_Previous->IsLoaded();
@@ -153,6 +191,26 @@ namespace {
 				else if (m_Scenario == AsyncScenario::Shutdown) {
 					Application::Quit();
 				}
+			}
+			if (auto progress = SceneManager::GetSceneLoadProgress(RequestId)) {
+				if (progress->CompletedEntities == 1 && progress->TotalEntities == 2) {
+					SawPartialProgress = true;
+					LiveSceneDuringBuild = m_Stable->IsLoaded() && m_Stable->GetEntityCount() == 1
+						&& !SceneManager::IsSceneLoaded(k_TargetName);
+					if (m_Scenario == AsyncScenario::CancelPartial) CancellationAccepted = SceneManager::CancelSceneLoad(RequestId);
+					if (m_Scenario == AsyncScenario::UnregisterPartial) SceneManager::UnregisterScene(k_TargetName);
+					if (m_Scenario == AsyncScenario::UnloadPartial) {
+						SceneManager::UnloadAllScenes(true);
+						SynchronousCancelCleanup = UnloadCount == 1 && SceneManager::GetLoadedSceneCount() == 0;
+					}
+				}
+			}
+			if (PreloadReady && m_ReadyAt != 0 && UpdateCount >= m_ReadyAt + 3 && ReadyPreloadDoesNotBlockQueue) {
+				const auto progress = SceneManager::GetSceneLoadProgress(RequestId);
+				PreloadReady = PreloadReady && progress && progress->Phase == SceneLoadPhase::Ready && progress->Progress == 1.0f;
+				ActivationAccepted = SceneManager::ActivatePreloadedScene(RequestId, false,
+					[this](uint64_t id, const SceneLoadResult& result) { OnCompleted(id, result); });
+				m_ReadyAt = 0;
 			}
 			if (CompletionCount != 0) {
 				Application::Quit();
@@ -176,6 +234,15 @@ namespace {
 		bool ActiveSceneCorrect = false;
 		bool StableScenePreserved = false;
 		bool ErrorPresent = false;
+		bool PreloadReady = false;
+		bool ReadyPreloadDoesNotBlockQueue = false;
+		bool ActivationAccepted = false;
+		bool SawPartialProgress = false;
+		bool LiveSceneDuringBuild = false;
+		uint64_t ExpectedAsset = 0;
+		bool AssetPrepared = false;
+		bool SynchronousCancelCleanup = false;
+		int UnloadCount = 0;
 		int UpdateCount = 0;
 		int CompletionCount = 0;
 		int WorkerCompletionCount = 0;
@@ -208,6 +275,7 @@ namespace {
 		std::shared_ptr<Scene> m_Stable;
 		std::shared_ptr<Scene> m_Previous;
 		std::chrono::steady_clock::time_point m_StartedAt;
+		int m_ReadyAt = 0;
 	};
 
 	void CheckCompleted(const AsyncSceneTestApplication& application) {
@@ -221,6 +289,55 @@ namespace {
 		CHECK(application.UpdateCount >= 2);
 	}
 
+}
+
+TEST_CASE("Scene preload has no lifecycle and activation reuses prepared files") {
+	SceneFileFixture file;
+	const uint64_t meshGuid = static_cast<uint64_t>(UUID());
+	REQUIRE(file.Write(SceneSerializationFormat::Json, meshGuid));
+	AsyncSceneTestApplication application(file.Path.string(), AsyncScenario::Preload);
+	application.ExpectedAsset = meshGuid;
+	CHECK(application.Run() == 0);
+	CheckCompleted(application);
+	CHECK(application.PreloadReady);
+	CHECK(application.ReadyPreloadDoesNotBlockQueue);
+	CHECK(application.ActivationAccepted);
+	CHECK(application.ResultCommitted);
+	CHECK(application.AssetPrepared);
+	CHECK_FALSE(AssetLoader::IsAssetRetained(meshGuid));
+	CHECK(application.Trace.Stages == std::vector<std::string>{ "Initialize", "Load", "Awake", "Start", "Complete" });
+}
+
+TEST_CASE("Async scene materialization yields between entity batches and can be cancelled") {
+	AsyncScenario scenario = AsyncScenario::Budget;
+	SUBCASE("Complete") {}
+	SUBCASE("Cancel partial scene") { scenario = AsyncScenario::CancelPartial; }
+	SUBCASE("Unregister partial scene") { scenario = AsyncScenario::UnregisterPartial; }
+	SceneFileFixture file;
+	REQUIRE(file.Write(SceneSerializationFormat::Binary));
+	AsyncSceneTestApplication application(file.Path.string(), scenario);
+	CHECK(application.Run() == 0);
+	CheckCompleted(application);
+	CHECK(application.SawPartialProgress);
+	CHECK(application.LiveSceneDuringBuild);
+	if (scenario == AsyncScenario::Budget) CHECK(application.ResultCommitted);
+	else {
+		CHECK(application.Status == SceneLoadStatus::Cancelled);
+		CHECK(application.PreviousPreserved);
+		CHECK(application.Trace.Stages == std::vector<std::string>{ "Initialize", "Complete" });
+	}
+}
+
+TEST_CASE("Unloading all scenes tears down partial async content before returning") {
+	SceneFileFixture file;
+	REQUIRE(file.Write(SceneSerializationFormat::Json));
+	AsyncSceneTestApplication application(file.Path.string(), AsyncScenario::UnloadPartial);
+	CHECK(application.Run() == 0);
+	CheckCompleted(application);
+	CHECK(application.SynchronousCancelCleanup);
+	CHECK(application.Status == SceneLoadStatus::Cancelled);
+	CHECK(application.UnloadCount == 1);
+	CHECK(application.Trace.Stages == std::vector<std::string>{ "Initialize", "Complete" });
 }
 
 TEST_CASE("Async scene loading defers file activation and runs lifecycle on the main thread") {

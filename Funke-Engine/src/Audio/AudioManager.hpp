@@ -2,6 +2,7 @@
 
 #include "AudioHandle.hpp"
 #include "Audio/AudioSpatial.hpp"
+#include "Audio/AudioHrtf.hpp"
 #include "Core/Export.hpp"
 
 #include <miniaudio.h>
@@ -93,6 +94,7 @@ namespace Funke {
 			std::string Name;
 			glm::vec3 Position{ 0.0f };
 			float Volume = 1.0f;
+			bool Hrtf = false;
 			AudioSpatial::Result Heard;
 		};
 		// Playing spatial sounds with what the listener hears of them (the audio.spatial console command).
@@ -122,6 +124,8 @@ namespace Funke {
 			bool Spatial = false;
 			glm::vec3 Position{ 0.0f };
 			AudioSpatialSettings Settings;
+			std::unique_ptr<AudioHrtf> Hrtf;
+			uint64_t HrtfEndFrame = 0;
 		};
 
 		static SoundInstance* GetSoundInstance(uint32_t instanceId);

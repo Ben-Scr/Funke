@@ -788,11 +788,13 @@ namespace Funke {
 		ReserveGeometrically(entities, CheckedReservationSize(entities.free_list(), n));
 		m_Registry.create(out.begin(), out.begin() + n);
 		m_EntityCount += n;
+		MarkHierarchyStructureDirty();
 	}
 
 	EntityHandle Scene::CreateEntityHandle(EntityOrigin origin, AssetGUID prefabGuid, AssetGUID sceneGuid, EntityID runtimeId) {
 		EntityHandle entityHandle = m_Registry.create();
 		++m_EntityCount;
+		MarkHierarchyStructureDirty();
 		SetEntityMetaData(entityHandle, origin, prefabGuid, sceneGuid, runtimeId);
 		if (origin != EntityOrigin::Runtime && (m_IsDetached || !Application::GetIsPlaying())) {
 			m_Dirty = true;

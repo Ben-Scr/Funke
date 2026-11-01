@@ -2,6 +2,12 @@
 
 Release notes describe user-visible compatibility, reliability, and workflow changes. A public tag is accepted only when its exact version has a section here.
 
+## [Unreleased]
+
+### Documentation
+
+- Audited the guides and repository skills against the current implementation: asset bundles and compression, native script exports, scene loading and Play/Stop restoration, world-space UI, spatial audio, platform prerequisites and localization. Corrected API examples, package guidance and contributor verification instructions; synchronized the agent documentation mirrors.
+
 ## [2026.1.0-beta.1]
 
 - **Desktop installers:** Windows x64 setup includes both Visual C++ runtime architectures and verifies the CLI's version, signing and hardening alongside the graphical applications. Linux x64 gains a per-user `.run` installer with upgrade and tracked uninstall. macOS 15+ Apple Silicon gains a relocatable `.app` in a DMG, with Developer ID signing and notarization required for public releases. Bundled tools, SDK completeness, payload integrity and installation paths are checked before publication.

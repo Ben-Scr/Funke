@@ -18,8 +18,8 @@ namespace Funke {
 		m_Bindings.Shutdown();
 	}
 
-	wgpu::RenderPipeline CustomSpriteDrawer::GetPipeline(const CustomShaderProgram& program, wgpu::TextureFormat colorFormat, bool hasDepth) {
-		const uint64_t key = (program.Id << 17) ^ (static_cast<uint64_t>(colorFormat) << 1) ^ (hasDepth ? 1u : 0u);
+	wgpu::RenderPipeline CustomSpriteDrawer::GetPipeline(const CustomShaderProgram& program, wgpu::TextureFormat colorFormat, bool hasDepth, bool depthTest, uint32_t sampleCount) {
+		const uint64_t key = (program.Id << 24) ^ (static_cast<uint64_t>(colorFormat) << 8) ^ (sampleCount << 2) ^ (depthTest ? 2u : 0u) ^ (hasDepth ? 1u : 0u);
 		if (auto it = m_Pipelines.find(key); it != m_Pipelines.end()) return it->second;
 		// Recompiles leave old ids behind; rebuilding the few live ones is cheap.
 		if (m_Pipelines.size() > 128) m_Pipelines.clear();
@@ -73,7 +73,7 @@ namespace Funke {
 		wgpu::DepthStencilState depth{};
 		depth.format = wgpu::TextureFormat::Depth24PlusStencil8;
 		depth.depthWriteEnabled = false;
-		depth.depthCompare = wgpu::CompareFunction::Always;
+		depth.depthCompare = depthTest ? wgpu::CompareFunction::LessEqual : wgpu::CompareFunction::Always;
 
 		const std::string pipelineLabel = m_Label + "-pipeline";
 		wgpu::RenderPipelineDescriptor desc{};
@@ -88,7 +88,7 @@ namespace Funke {
 		desc.primitive.frontFace = wgpu::FrontFace::CCW;
 		desc.primitive.cullMode = CustomShaderGpu::ToCullMode(description.Cull);
 		desc.depthStencil = hasDepth ? &depth : nullptr;
-		desc.multisample.count = 1;
+		desc.multisample.count = sampleCount;
 		desc.multisample.mask = 0xFFFFFFFF;
 
 		wgpu::RenderPipeline pipeline = layout ? CustomShaderGpu::CreatePipeline(desc, program) : nullptr;
@@ -97,7 +97,7 @@ namespace Funke {
 	}
 
 	CustomSpriteDrawer::Draw CustomSpriteDrawer::Resolve(uint64_t materialGuid, ShaderTarget target,
-		wgpu::TextureFormat colorFormat, bool hasDepth)
+		wgpu::TextureFormat colorFormat, bool hasDepth, bool depthTest, uint32_t sampleCount)
 	{
 		if (materialGuid == 0 || !IsInitialized()) return {};
 		const Material* material = MaterialLibrary::Get(materialGuid);
@@ -105,7 +105,7 @@ namespace Funke {
 		const CustomShaderProgram* program = CustomShaderGpu::GetProgram(material->Shader, target);
 		for (int attempt = 0; attempt < 2 && program; ++attempt) {
 			Draw draw;
-			draw.Pipeline = GetPipeline(*program, colorFormat, hasDepth);
+			draw.Pipeline = GetPipeline(*program, colorFormat, hasDepth, depthTest, sampleCount);
 			draw.Group = draw.Pipeline ? m_Bindings.GetGroup(materialGuid, material, *program) : nullptr;
 			if (draw.Pipeline && draw.Group) return draw;
 			program = program->IsFallback ? nullptr : CustomShaderGpu::GetFallback(target);

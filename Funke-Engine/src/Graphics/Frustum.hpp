@@ -14,8 +14,8 @@ namespace Funke {
 		f.Planes[1] = m[3] - m[0];
 		f.Planes[2] = m[3] + m[1];
 		f.Planes[3] = m[3] - m[1];
-		// The -w near plane conservatively includes both OpenGL and WebGPU clip depths.
-		f.Planes[4] = m[3] + m[2];
+		// Camera and shadow projections use WebGPU's zero-to-one clip depth.
+		f.Planes[4] = m[2];
 		f.Planes[5] = m[3] - m[2];
 		return f;
 	}
@@ -25,6 +25,15 @@ namespace Funke {
 			const float distance = plane.x * center.x + plane.y * center.y + plane.z * center.z + plane.w;
 			const float radius = std::abs(plane.x) * extent.x + std::abs(plane.y) * extent.y + std::abs(plane.z) * extent.z;
 			if (distance < -radius) return false;
+		}
+		return true;
+	}
+
+	inline bool IntersectsFrustumSphere(const FrustumPlanes& frustum, const glm::vec3& center, float radius) {
+		for (const glm::vec4& plane : frustum.Planes) {
+			const glm::vec3 normal(plane);
+			const float distance = glm::dot(normal, center) + plane.w;
+			if (distance < 0.0f && distance * distance > radius * radius * glm::dot(normal, normal)) return false;
 		}
 		return true;
 	}

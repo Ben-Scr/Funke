@@ -552,6 +552,7 @@ namespace Funke {
 		std::vector<AudioHandle> toFree;
 		toFree.reserve(s_audioMap.size());
 		for (const auto& [id, audio] : s_audioMap) {
+			if (AssetLoader::IsAssetRetained(GetAudioAssetUUID(AudioHandle(id)))) continue;
 			if (referenced.find(id) == referenced.end()) {
 				toFree.emplace_back(id);
 			}
@@ -619,6 +620,7 @@ namespace Funke {
 
 		SoundInstance* instance = GetSoundInstance(source.GetInstanceId());
 		if (instance && instance->IsValid) {
+			if (instance->Hrtf) instance->Hrtf->SetPaused(true);
 			ma_sound_stop(&instance->Sound);
 		}
 	}
@@ -642,6 +644,7 @@ namespace Funke {
 		SoundInstance* instance = GetSoundInstance(source.GetInstanceId());
 		if (instance && instance->IsValid) {
 			ma_sound_start(&instance->Sound);
+			if (instance->Hrtf) instance->Hrtf->SetPaused(false);
 		}
 	}
 
@@ -742,6 +745,7 @@ namespace Funke {
 	void AudioManager::SetListener(const AudioListenerState& listener) {
 		s_Listener = listener;
 		UpdateListener();
+		UpdateSoundInstances();
 	}
 
 	void AudioManager::ApplySpatial(SoundInstance& instance, bool spatial, const AudioSpatialSettings& settings,
@@ -752,6 +756,7 @@ namespace Funke {
 			// A plain 2D sound: wherever the listener goes, it plays as authored.
 			ma_sound_set_spatialization_enabled(sound, MA_FALSE);
 			ma_sound_set_pan(sound, 0.0f);
+			if (instance.Hrtf) instance.Hrtf->Update(s_Listener, position, false);
 			return;
 		}
 		instance.Settings = AudioSpatial::Sanitize(settings);
@@ -767,7 +772,14 @@ namespace Funke {
 		// miniaudio's own directional panning plays a sound in front at half volume; the balance pan below doesn't.
 		ma_sound_set_directional_attenuation_factor(sound, 0.0f);
 		ma_sound_set_doppler_factor(sound, instance.Settings.DopplerLevel);
-		ma_sound_set_pan(sound, AudioSpatial::Pan(s_Listener, position, instance.Settings.Panning));
+		if (instance.Settings.Hrtf && !instance.Hrtf) {
+			auto hrtf = std::make_unique<AudioHrtf>();
+			if (hrtf->Initialize(GetActiveMiniaudioEngine(), sound, s_Listener, position)) instance.Hrtf = std::move(hrtf);
+			else FNK_CORE_WARN_TAG("Audio", "HRTF requires stereo output at 8–192 kHz; using stereo panning for this sound.");
+		}
+		const bool binaural = instance.Settings.Hrtf && instance.Hrtf;
+		ma_sound_set_pan(sound, binaural ? 0.0f : AudioSpatial::Pan(s_Listener, position, instance.Settings.Panning));
+		if (instance.Hrtf) instance.Hrtf->Update(s_Listener, position, binaural);
 	}
 
 	void AudioManager::UpdateSourceSpatial(const AudioSourceComponent& source) {
@@ -790,6 +802,7 @@ namespace Funke {
 		instance->Position = position;
 		ma_sound_set_position(&instance->Sound, position.x, position.y, position.z);
 		ma_sound_set_velocity(&instance->Sound, velocity.x, velocity.y, velocity.z);
+		if (instance->Hrtf) instance->Hrtf->Update(s_Listener, position, instance->Settings.Hrtf);
 	}
 
 	std::vector<AudioManager::SpatialSoundInfo> AudioManager::GetSpatialSounds() {
@@ -800,6 +813,7 @@ namespace Funke {
 			info.Name = std::filesystem::path(GetAudioName(slot->AudioHandle)).filename().string();
 			info.Position = slot->Position;
 			info.Volume = ma_sound_get_volume(&slot->Sound);
+			info.Hrtf = slot->Settings.Hrtf && slot->Hrtf;
 			info.Heard = AudioSpatial::Evaluate(s_Listener, slot->Position, slot->Settings);
 			sounds.push_back(std::move(info));
 		}
@@ -1064,6 +1078,7 @@ namespace Funke {
 		SoundInstance& instance = *slot;
 		ma_sound_stop(&instance.Sound);
 		ma_sound_uninit(&instance.Sound);
+		instance.Hrtf.reset();
 		if (instance.HasDataSource) {
 			ma_resource_manager_data_source_uninit(&instance.DataSource);
 			instance.HasDataSource = false;
@@ -1091,6 +1106,12 @@ namespace Funke {
 			if (!ma_sound_is_playing(&instance.Sound)
 				&& !ma_sound_is_looping(&instance.Sound)
 				&& ma_sound_at_end(&instance.Sound) == MA_TRUE) {
+				if (instance.Hrtf) {
+					const uint64_t frame = ma_engine_get_time_in_pcm_frames(GetActiveMiniaudioEngine());
+					// The source can report EOF while the downstream HRTF callback is still rendering.
+					if (instance.HrtfEndFrame == 0) instance.HrtfEndFrame = frame + instance.Hrtf->GetTailFrameCount() + 1;
+					if (frame < instance.HrtfEndFrame || instance.Hrtf->HasTail()) continue;
+				}
 				RecycleSoundInstance(static_cast<uint32_t>(i));
 			}
 		}
@@ -1115,7 +1136,9 @@ namespace Funke {
 		// The listener turns and moves; the side a sound comes from changes with it.
 		for (const auto& slot : s_soundInstances) {
 			if (!slot || !slot->IsValid || !slot->Spatial) continue;
-			ma_sound_set_pan(&slot->Sound, AudioSpatial::Pan(s_Listener, slot->Position, slot->Settings.Panning));
+			const bool binaural = slot->Settings.Hrtf && slot->Hrtf;
+			ma_sound_set_pan(&slot->Sound, binaural ? 0.0f : AudioSpatial::Pan(s_Listener, slot->Position, slot->Settings.Panning));
+			if (slot->Hrtf) slot->Hrtf->Update(s_Listener, slot->Position, binaural);
 		}
 	}
 

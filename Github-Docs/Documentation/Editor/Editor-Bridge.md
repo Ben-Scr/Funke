@@ -36,7 +36,7 @@ Run the commands in the project folder, or pass `--project <dir>`. With one edit
 | `step [--frames <n>]` | Runs n game frames, then pauses |
 | `wait --seconds <s> \| --frames <n>` | In Play mode: game time; pauses don't count. In Edit mode: real time |
 | `exec "<line>"` | A [developer console](Testing.md#developer-console) line, including your `[DevCommand]`s. Exit code 1 when the command failed |
-| `recompile [--no-wait]` | Rebuilds the C# scripts and prints the compiler errors. With **Exit Play Mode On Recompilation** on (the default), Play mode stops first, exactly as when you save a script |
+| `recompile [--no-wait]` | Rebuilds C# and native C++ scripts and prints compiler errors. With **Exit Play Mode On Recompilation** on (the default), Play mode stops first, exactly as when you save a script |
 | `screenshot <out.png> [--width W --height H \| --size WxH]` | Renders the main camera (2D or 3D, with UI and post processing) offscreen. Without a size: the game's current surface |
 | `input <script.json> [--fixed-step <fps>] [--screenshot-dir <dir>]` | Runs an [input script](Testing.md#input-scripts) in Play mode and returns when it is done, with the console outputs and screenshot paths. Relative screenshot names land next to the script |
 | `tap <x> <y> [--hold <s>]` | Touch (first finger, which also drives the mouse like a real touch screen) |

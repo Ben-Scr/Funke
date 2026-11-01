@@ -37,6 +37,9 @@
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Systems/UILayoutSystem.hpp"
+#if FUNKE_WITH_3D
+#include "Graphics/Renderer3D.hpp"
+#endif
 
 #include <webgpu/webgpu_cpp.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -560,7 +563,11 @@ namespace Funke {
 
 	void GuiRenderer::BeginFrame() {
 		if (!m_IsInitialized || m_SkipBeginFrameRender) return;
-		SceneManager::ForeachLoadedScene([&](const Scene& scene) { RenderScene(scene); });
+		bool renderWorld = true;
+#if FUNKE_WITH_3D
+		if (auto* renderer = Application::GetInstance()->GetRenderer3D()) renderWorld = !renderer->HasRenderedThisFrame();
+#endif
+		SceneManager::ForeachLoadedScene([&](const Scene& scene) { RenderScene(scene, renderWorld); });
 	}
 	void GuiRenderer::EndFrame() {
 		// No-op — Present() flushes from Window::SwapBuffers.
@@ -579,7 +586,7 @@ namespace Funke {
 		return 0.01f;
 	}
 
-	void GuiRenderer::RenderScene(const Scene& scene) {
+	void GuiRenderer::RenderScene(const Scene& scene, bool renderWorld) {
 		if (!m_IsInitialized) return;
 		UpdateUILayout(const_cast<Scene&>(scene));
 
@@ -588,12 +595,14 @@ namespace Funke {
 
 		const float halfW = 0.5f * w;
 		const float halfH = 0.5f * h;
+		glm::mat4 worldVP;
+		const bool hasWorldVP = renderWorld && WorldUI::CameraViewProjection(const_cast<Scene&>(scene), static_cast<float>(w) / h, worldVP);
 		const glm::mat4 mvp = glm::ortho(-halfW, +halfW, -halfH, +halfH, -1.0f, 1.0f);
-		CollectAndDraw(scene, mvp, halfW, halfH);
+		DrawCanvases(scene, mvp, hasWorldVP ? &worldVP : nullptr, halfW, halfH);
 	}
 
 	void GuiRenderer::RenderScene(const Scene& scene,
-		const glm::mat4& worldVP, float pixelToWorldScale)
+		const glm::mat4& worldVP, float pixelToWorldScale, bool renderWorld)
 	{
 		if (!m_IsInitialized) return;
 		UpdateUILayout(const_cast<Scene&>(scene));
@@ -607,23 +616,51 @@ namespace Funke {
 
 		const float halfW = 0.5f * w;
 		const float halfH = 0.5f * h;
-		CollectAndDraw(scene, mvp, halfW, halfH);
+		DrawCanvases(scene, mvp, renderWorld ? &worldVP : nullptr, halfW, halfH);
+	}
+
+	void GuiRenderer::RenderWorldScene(const Scene& scene, const glm::mat4& vp) {
+		if (!m_IsInitialized) return;
+		UpdateUILayout(const_cast<Scene&>(scene));
+		int width = 0, height = 0;
+		if (!ResolveUICanvasSize(width, height)) return;
+		FontManager::PollAsync();
+		auto& registry = const_cast<entt::registry&>(scene.GetRegistry());
+		m_CanvasOrders.Rebuild(registry);
+		for (const auto& [root, order] : m_CanvasOrders.GetCanvases()) {
+			if (root != entt::null)
+				CollectAndDraw(scene, vp * WorldUI::CanvasToWorld(registry, root), width * 0.5f, height * 0.5f, root, order);
+		}
+	}
+
+	void GuiRenderer::DrawCanvases(const Scene& scene, const glm::mat4& screenMVP,
+		const glm::mat4* worldVP, float halfW, float halfH)
+	{
+		// UI-only scenes also need completed font bakes published.
+		FontManager::PollAsync();
+		auto& registry = const_cast<entt::registry&>(scene.GetRegistry());
+		m_CanvasOrders.Rebuild(registry);
+		const auto& canvases = m_CanvasOrders.GetCanvases();
+		if (worldVP) {
+			for (const auto& [root, order] : canvases) {
+				if (root != entt::null)
+					CollectAndDraw(scene, *worldVP * WorldUI::CanvasToWorld(registry, root), halfW, halfH, root, order);
+			}
+		}
+		if (auto screen = canvases.find(entt::null); screen != canvases.end())
+			CollectAndDraw(scene, screenMVP, halfW, halfH, entt::null, screen->second);
 	}
 
 	void GuiRenderer::CollectAndDraw(const Scene& scene, const glm::mat4& mvp,
-		float halfW, float halfH)
+		float halfW, float halfH, EntityHandle worldRoot,
+		const std::vector<std::pair<EntityHandle, int>>& drawOrder)
 	{
-		// MUST call here: UI text doesn't go through TextRenderer::RenderScene, so async bakes would never publish on UI-only scenes.
-		FontManager::PollAsync();
-
 		entt::registry& registry = const_cast<entt::registry&>(scene.GetRegistry());
 
 		// ── 1. Build hierarchy draw order ────────────────────────────
-		m_DrawOrder.clear();
-		UIDrawOrder::Build(registry, m_DrawOrder);
-		s_OrderLookup.Rebuild(m_DrawOrder);
-		BuildClipTable(registry, m_DrawOrder);
-		if (m_DrawOrder.empty()) return;
+		s_OrderLookup.Rebuild(drawOrder);
+		BuildClipTable(registry, drawOrder);
+		if (drawOrder.empty()) return;
 		auto target = WebGPUBackend::BeginRenderToCurrentTarget();
 		if (!target.Valid) return;
 		uint32_t viewportX = 0, viewportY = 0, viewportWidth = target.Width, viewportHeight = target.Height;
@@ -650,13 +687,13 @@ namespace Funke {
 			return QuadVisibility::IsVisible(corners, mvp, clip);
 		};
 
-		int counter = m_DrawOrder.empty()
+		int counter = drawOrder.empty()
 			? 0
-			: m_DrawOrder.back().second + UIDrawOrder::k_HierarchyStep;
+			: drawOrder.back().second + UIDrawOrder::k_HierarchyStep;
 
 		// ── 2. Image instances ───────────────────────────────────────
 		m_InstancesScratch.clear();
-		m_InstancesScratch.reserve(m_DrawOrder.size());
+		m_InstancesScratch.reserve(drawOrder.size());
 
 		// Replaces `whole` by 9-slice or tiled quads sharing its sort keys and clip; false = draw it as one quad.
 		std::vector<NineSliceQuad> tiles;
@@ -698,7 +735,7 @@ namespace Funke {
 			return true;
 		};
 
-		for (const auto& [entity, drawIndex] : m_DrawOrder) {
+		for (const auto& [entity, drawIndex] : drawOrder) {
 			if (!registry.all_of<RectTransform2DComponent, ImageComponent>(entity)) continue;
 			if (const auto* mask = registry.try_get<MaskComponent>(entity)) {
 				if (!mask->ShowMaskGraphic) continue;
@@ -750,7 +787,7 @@ namespace Funke {
 			std::hypot(mvp[1][0] * arcViewportWidth, mvp[1][1] * arcViewportHeight)) * 0.5f;
 		const float arcPadding = arcPixelsPerUnit > 0.0f ? 2.0f / arcPixelsPerUnit : 2.0f;
 		const TextureHandle defaultWhite = TextureManager::GetDefaultTexture(DefaultTexture::Square);
-		for (const auto& [entity, drawIndex] : m_DrawOrder) {
+		for (const auto& [entity, drawIndex] : drawOrder) {
 			if (!registry.all_of<RectTransform2DComponent, CircularSliderComponent>(entity)) continue;
 			const auto& rect = registry.get<RectTransform2DComponent>(entity);
 			const auto& cs = registry.get<CircularSliderComponent>(entity);
@@ -775,7 +812,7 @@ namespace Funke {
 
 		// ── 3. UI text instances (collect into m_TextScratch; submitted later in the merge walk) ──
 		m_TextScratch.clear();
-		m_TextScratch.reserve(m_DrawOrder.size());
+		m_TextScratch.reserve(drawOrder.size());
 
 		// Input-field text children scroll horizontally and clip to their rect so an
 		// overflowing field keeps the caret visible instead of spilling text outside.
@@ -784,7 +821,7 @@ namespace Funke {
 			if (ifField.TextEntity != entt::null) inputFieldTextChildren.emplace(ifField.TextEntity, &ifField);
 		}
 
-		for (const auto& [entity, drawIndex] : m_DrawOrder) {
+		for (const auto& [entity, drawIndex] : drawOrder) {
 			if (!registry.all_of<RectTransform2DComponent, TextRendererComponent>(entity)) continue;
 			auto& text = registry.get<TextRendererComponent>(entity);
 			if (text.Text.empty()) continue;
@@ -904,7 +941,11 @@ namespace Funke {
 		// ── 4. Dropdown popups ───────────────────────────────────────
 		Application* app = Application::GetInstance();
 		const Vec2 mousePosition = app ? app->GetInput().GetMousePosition() : Vec2{ 0, 0 };
-		const Vec2 mouseUi{ mousePosition.x - halfW, halfH - mousePosition.y };
+		Vec2 mouseUi{ mousePosition.x - halfW, halfH - mousePosition.y };
+		if (worldRoot != entt::null && halfW > 0.0f && halfH > 0.0f) {
+			if (!WorldUI::ProjectPointer(mvp, { mouseUi.x / halfW, mouseUi.y / halfH }, mouseUi))
+				mouseUi = { std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest() };
+		}
 		const bool mouseHeld = app && app->GetInput().GetMouse(MouseButton::Left);
 
 		auto resolveOptionColor = [](const DropdownComponent& dd, bool hovered, bool pressed, bool selected) -> Color {
@@ -917,6 +958,7 @@ namespace Funke {
 
 		auto popupView = registry.view<RectTransform2DComponent, DropdownComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, rect, dd] : popupView.each()) {
+			if (WorldUI::FindRoot(registry, entity) != worldRoot) continue;
 			if (!dd.IsOpen || dd.Options.empty()) continue;
 
 			const Vec2 bl = rect.GetBottomLeft();
@@ -1000,6 +1042,7 @@ namespace Funke {
 
 		auto inputView = registry.view<RectTransform2DComponent, InputFieldComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, fieldRect, field] : inputView.each()) {
+			if (WorldUI::FindRoot(registry, entity) != worldRoot) continue;
 			const bool hasSelection = field.SelectionAnchorBytePos != field.CaretBytePos;
 			if (!field.IsFocused && !hasSelection) continue;
 
@@ -1270,7 +1313,7 @@ namespace Funke {
 		wgpu::RenderPipeline pipeline;
 		if (n > 0) {
 			pipeline = WebGPUSpriteResources::GetSpritePipeline(
-				target.ColorFormat, target.HasDepth);
+				target.ColorFormat, target.HasDepth, WebGPUSpriteResources::SpritePipelineMode::Filled, worldRoot != entt::null, target.SampleCount);
 			if (!pipeline) {
 				FNK_CORE_WARN_TAG("GuiRenderer",
 					"No pipeline for color-format {} hasDepth={} — image quads skipped",
@@ -1408,7 +1451,7 @@ namespace Funke {
 				}
 
 				const CustomSpriteDrawer::Draw custom = runMaterial != 0
-					? state.CustomImages->Resolve(runMaterial, ShaderTarget::UI, target.ColorFormat, target.HasDepth)
+					? state.CustomImages->Resolve(runMaterial, ShaderTarget::UI, target.ColorFormat, target.HasDepth, worldRoot != entt::null, target.SampleCount)
 					: CustomSpriteDrawer::Draw{};
 				wgpu::RenderPipeline runPipeline = custom.Pipeline ? custom.Pipeline : pipeline;
 				if (runPipeline.Get() != boundPipeline.Get()) {
@@ -1437,7 +1480,7 @@ namespace Funke {
 		auto submitTextPhase = [&](size_t start, size_t end) {
 			if (!m_TextRenderer || !m_TextRenderer->IsInitialized() || start >= end) return;
 			std::span<const TextDrawCmd> sub(m_TextScratch.data() + start, end - start);
-			m_TextRenderer->RenderInstances(sub, mvp, /*viewId*/ 0xFFFFu, /*scissorCache*/ 0xFFFFu);
+			m_TextRenderer->RenderInstances(sub, mvp, /*viewId*/ 0xFFFFu, /*scissorCache*/ 0xFFFFu, worldRoot != entt::null);
 		};
 
 		// ── Merge walk: interleave image / text phases ───────────────

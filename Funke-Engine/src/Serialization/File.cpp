@@ -1,5 +1,7 @@
 #include "pch.hpp"
 #include "File.hpp"
+#include "Assets/AssetBundle.hpp"
+#include <algorithm>
 
 #ifdef FNK_PLATFORM_WINDOWS
 #define WIN32_LEAN_AND_MEAN
@@ -8,7 +10,36 @@
 
 namespace Funke {
 	bool File::Exists(const std::string& path) {
-		return std::filesystem::exists(Path::FromUtf8(path));
+		const auto native = Path::FromUtf8(path);
+		return AssetBundle::ContainsMounted(native) || AssetBundle::IsMountedDirectory(native) || std::filesystem::exists(native);
+	}
+
+	bool File::IsRegularFile(const std::filesystem::path& path) {
+		return AssetBundle::ContainsMounted(path) || std::filesystem::is_regular_file(path);
+	}
+
+	bool File::IsDirectory(const std::filesystem::path& path) {
+		return AssetBundle::IsMountedDirectory(path) || std::filesystem::is_directory(path);
+	}
+
+	std::vector<std::filesystem::path> File::ListFiles(const std::filesystem::path& directory,
+		bool recursive, std::error_code& error) {
+		error.clear();
+		auto files = AssetBundle::ListMounted(directory, recursive);
+		if (std::filesystem::is_directory(directory, error)) {
+			auto append = [&](auto iterator) {
+				for (decltype(iterator) end; !error && iterator != end; iterator.increment(error)) {
+					if (iterator->is_regular_file(error) && !AssetBundle::ContainsMounted(iterator->path())) files.push_back(iterator->path());
+				}
+			};
+			if (recursive) append(std::filesystem::recursive_directory_iterator(directory, error));
+			else append(std::filesystem::directory_iterator(directory, error));
+		} else if (error == std::errc::no_such_file_or_directory && AssetBundle::IsMountedDirectory(directory)) {
+			error.clear();
+		}
+		std::sort(files.begin(), files.end());
+		files.erase(std::unique(files.begin(), files.end()), files.end());
+		return files;
 	}
 
 	bool File::WriteAllText(const std::string& path, const std::string& text) {
@@ -124,6 +155,8 @@ namespace Funke {
 	}
 
 	std::string File::ReadAllText(const std::string& path) {
+		std::vector<std::uint8_t> bundled;
+		if (AssetBundle::ReadMounted(Path::FromUtf8(path), bundled)) return std::string(bundled.begin(), bundled.end());
 		std::ifstream file(Path::FromUtf8(path), std::ios::binary);
 		if (!file.is_open()) {
 			FNK_CORE_ERROR("File couldn't be opened for reading: {}", path);
@@ -134,6 +167,8 @@ namespace Funke {
 	}
 
 	std::vector<std::uint8_t> File::ReadAllBytes(const std::string& path) {
+		std::vector<std::uint8_t> bundled;
+		if (AssetBundle::ReadMounted(Path::FromUtf8(path), bundled)) return bundled;
 		std::ifstream file(Path::FromUtf8(path), std::ios::binary | std::ios::ate);
 		if (!file.is_open()) {
 			FNK_CORE_ERROR("File couldn't be opened for reading: {}", path);

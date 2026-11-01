@@ -32,7 +32,7 @@ Settings with a fixed set of values are stored by name. An unknown name falls ba
 
 | Setting | Values (default **bold**) | Applies to |
 |---|---|---|
-| Render Scale | 0.25 – **1.0** | 2D scene resolution; UI and gizmos stay at full resolution |
+| Render Scale | 0.25 – **1.0** | 2D scene resolution; screen-space UI and gizmos stay at full resolution |
 | Upscale Filter | Point, **Linear** | how a reduced Render Scale is stretched to the screen |
 | Post-Processing | **on**, off | the camera's Post Processing effects (bloom, color grading, …) |
 | Post-Processing Quality | Low, Medium, **High** | blur and bloom sample counts |
@@ -68,7 +68,7 @@ Floors, roads and walls seen at a grazing angle blur with plain trilinear filter
 
 ## Anti-aliasing
 
-**FXAA** (fast approximate anti-aliasing) smooths the stair-steps along the edges of meshes, rotated sprites and lines in one extra screen pass. It runs on the finished scene image before the camera's post-processing effects; UI, text and gizmos are drawn afterwards and stay sharp. It works the same on desktop, Android and Web.
+**FXAA** (fast approximate anti-aliasing) smooths the stair-steps along the edges of meshes, rotated sprites and lines in one extra screen pass. It runs on the scene image before the camera's post-processing effects. Screen-space UI and overlays are drawn afterwards and stay sharp; [world-space UI](World-Space-UI.md) is part of the scene pass and receives its effects. FXAA is available on desktop, Android and Web.
 
 Because FXAA only sees the final image, it also softens hard color edges inside textures a little, which shows most on pixel art. Pixel-art games often leave it off or offer it as an option. **Low** finds fewer edges and is the cheapest; **High** follows long, shallow edges further.
 
@@ -80,13 +80,13 @@ Because FXAA only sees the final image, it also softens hard color edges inside 
 
 Custom shaders that pick an atlas tile from the UV need a small margin under MSAA, see [Custom Shaders › Mesh3D](Custom-Shaders.md#mesh3d).
 
-MSAA 4x is supported by every GPU Funke runs on (desktop, Android and Web). It costs memory and bandwidth rather than an extra screen pass: the 4x color and depth target takes about 65 MB at 1920×1080, and each 3D pass reads and writes four samples per pixel, which phones feel most. **Anti-Aliasing Quality** only applies to FXAA.
+MSAA 4x uses multisampled WebGPU color and depth targets. It costs memory and bandwidth: the four-sample color and depth attachments alone take about 63 MiB at 1920×1080 with four-byte formats, before resolve targets and other buffers. Measure its cost on the target device. **Anti-Aliasing Quality** only applies to FXAA.
 
 In the editor, the Game View shows anti-aliasing as the game will. The Editor View shows it when its **Post Processing** toggle is on.
 
 ## Animation distance rate
 
-With **Distance Rate** on, Animators and Skinned Mesh Renderers far from the game camera update every 2nd frame from **Half Rate From** and every 4th frame from **Quarter Rate From**; the skipped time is added to their next update, so they keep their tempo. It applies to components whose own **Distance Rate** is **Project Setting** (the default); **Off** and **Custom** on a component override it. In a scene with 384 skinned models and 160 animated characters it cut the frame time from about 37 ms to 12 ms. See [Animation › Culling and distance rate](Animation.md#culling-and-distance-rate).
+With **Distance Rate** on, Animators and Skinned Mesh Renderers far from the game camera update every 2nd frame from **Half Rate From** and every 4th frame from **Quarter Rate From**; the skipped time is added to their next update, so they keep their tempo. It applies to components whose own **Distance Rate** is **Project Setting** (the default); **Off** and **Custom** on a component override it. The benefit depends on the number of distant animated objects and the cost of their animation. See [Animation › Culling and distance rate](Animation.md#culling-and-distance-rate).
 
 ## Changing settings at runtime
 

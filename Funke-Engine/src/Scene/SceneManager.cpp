@@ -4,6 +4,8 @@
 #include "Scene/Scene.hpp"
 
 #include <algorithm>
+#include <charconv>
+#include <cmath>
 #include <exception>
 #include <future>
 #include <memory>
@@ -33,6 +35,9 @@
 #include "Serialization/PrefabTemplateCache.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Core/EngineModules.hpp"
+#include "Assets/AssetLoader.hpp"
+#include "Assets/AssetRegistry.hpp"
+#include "Scene/SceneExecutionContext.hpp"
 
 #if FUNKE_WITH_2D
 #include "Components/Graphics/Camera2DComponent.hpp"
@@ -54,6 +59,8 @@ namespace Funke {
 	struct SceneManager::AsyncSceneLoad {
 		struct PreparedFiles {
 			std::vector<Json::Value> Roots;
+			std::vector<uint64_t> References;
+			std::vector<std::shared_ptr<const Json::Value>> Prefabs;
 			std::string Error;
 		};
 		uint64_t Id = 0;
@@ -61,11 +68,56 @@ namespace Funke {
 		bool Additive = false;
 		bool Cancelled = false;
 		bool Started = false;
+		bool Preload = false;
+		bool Ready = false;
+		SceneLoadProgress Progress;
+		std::unordered_set<uint64_t> SeenReferences;
+		size_t NextReference = 0;
+		std::vector<std::pair<uint64_t, std::string>> PendingPrefabs;
+		std::vector<uint64_t> Assets;
+		std::vector<uint64_t> AssetRequests;
+		size_t NextAsset = 0;
+		size_t Step = 0;
+		size_t PreviousEntities = 0;
+		SceneSerializer::SceneLoadState EntityState;
+		std::shared_ptr<Scene> StagedScene;
 		SceneLoadCompletion Completion;
 		std::vector<SceneDefinition::LoadStep> Steps;
 		std::future<PreparedFiles> Worker;
 		PreparedFiles Prepared;
+		~AsyncSceneLoad() {
+			for (uint64_t request : AssetRequests) AssetLoader::Release(request);
+			for (uint64_t asset : Assets) AssetLoader::ReleaseAsset(asset);
+		}
 	};
+
+	namespace {
+		void CollectSceneAssetReferences(const Json::Value& value, std::vector<uint64_t>& references, bool assetField = false) {
+			if (value.IsObject()) {
+				for (const auto& [key, child] : value.GetObject()) {
+					if (key == "uuid" || key == "sceneId" || key == "parentUuid" || key == "RuntimeID"
+						|| key == "SceneGUID" || key == "SourceEntityId") continue;
+					const bool reference = key.find("Asset") != std::string::npos || key.find("asset") != std::string::npos
+						|| key.find("Guid") != std::string::npos || key.find("GUID") != std::string::npos
+						|| key == "customMesh" || key == "material" || key == "texture" || key == "shader" || key == "clip";
+					CollectSceneAssetReferences(child, references, reference);
+				}
+			}
+			else if (value.IsArray()) {
+				for (const auto& child : value.GetArray()) CollectSceneAssetReferences(child, references, assetField);
+			}
+			else if (assetField) {
+				uint64_t id = 0;
+				if (value.IsString()) {
+					const std::string text = value.AsStringOr();
+					const auto result = std::from_chars(text.data(), text.data() + text.size(), id);
+					if (result.ec != std::errc{} || result.ptr != text.data() + text.size()) return;
+				}
+				else if (value.IsNumber() && value.GetNumberKind() != Json::Value::NumberKind::Double) id = value.AsUInt64Or(0);
+				if (id != 0) references.push_back(id);
+			}
+		}
+	}
 
 	namespace SceneManagerDetail {
 		bool TryCreateDefaultCamera2D(Scene& scene,
@@ -376,11 +428,58 @@ namespace Funke {
 		return false;
 	}
 
+	uint64_t SceneManager::PreloadSceneAsync(const std::string& name, SceneLoadCompletion completion) {
+		const uint64_t id = LoadSceneAsync(name, false, std::move(completion));
+		if (id != 0) Get().m_AsyncSceneLoads.back()->Preload = true;
+		return id;
+	}
+
+	bool SceneManager::ActivatePreloadedScene(uint64_t operationId, bool additive, SceneLoadCompletion completion) {
+		if (!Application::IsMainThread()) return false;
+		SceneManager* manager = TryGet();
+		if (!manager || manager->m_ShuttingDown) return false;
+		for (const auto& operation : manager->m_AsyncSceneLoads) {
+			if (operation->Id != operationId || !operation->Preload || !operation->Ready || operation->Cancelled) continue;
+			operation->Preload = false;
+			operation->Additive = additive;
+			operation->Completion = std::move(completion);
+			operation->Progress.Phase = SceneLoadPhase::CreatingEntities;
+			operation->Progress.Progress = 0.5f;
+			return true;
+		}
+		return false;
+	}
+
+	std::optional<SceneLoadProgress> SceneManager::GetSceneLoadProgress(uint64_t operationId) {
+		if (!Application::IsMainThread()) return std::nullopt;
+		if (SceneManager* manager = TryGet()) {
+			for (const auto& operation : manager->m_AsyncSceneLoads)
+				if (operation->Id == operationId) return operation->Progress;
+		}
+		return std::nullopt;
+	}
+
+	void SceneManager::SetAsyncSceneLoadBudget(double milliseconds, size_t maxEntitiesPerFrame) {
+		if (!Application::IsMainThread() || !std::isfinite(milliseconds) || milliseconds <= 0 || maxEntitiesPerFrame == 0) return;
+		if (SceneManager* manager = TryGet()) {
+			manager->m_AsyncSceneLoadBudgetMs = milliseconds;
+			manager->m_AsyncSceneLoadMaxEntities = maxEntitiesPerFrame;
+		}
+	}
+
 	void SceneManager::PumpAsyncSceneLoads() {
 		if (m_AsyncSceneLoads.empty() || m_ShuttingDown || m_LoadInProgress || m_ReleaseDepth != 0) return;
-		const auto operation = m_AsyncSceneLoads.front();
+		const auto next = std::find_if(m_AsyncSceneLoads.begin(), m_AsyncSceneLoads.end(), [](const auto& candidate) {
+			return candidate->Cancelled || !candidate->Preload || !candidate->Ready;
+		});
+		if (next == m_AsyncSceneLoads.end()) return;
+		const auto operation = *next;
 		auto complete = [&](SceneLoadResult result) {
 			std::erase(m_AsyncSceneLoads, operation);
+			if (!result && operation->StagedScene) {
+				RollbackSceneLoad(operation->StagedScene, 0, false, true);
+				operation->StagedScene.reset();
+			}
 			if (!operation->Completion) return;
 			try {
 				operation->Completion(operation->Id, result);
@@ -400,6 +499,7 @@ namespace Funke {
 		}
 		if (!operation->Started && operation->Prepared.Error.empty()) {
 			operation->Started = true;
+			operation->Progress.Phase = SceneLoadPhase::ReadingFiles;
 			std::vector<std::string> paths;
 			for (const auto& step : operation->Steps) paths.push_back(step.Callback ? std::string{} : step.FilePath);
 			const bool hasFile = std::any_of(operation->Steps.begin(), operation->Steps.end(),
@@ -415,6 +515,7 @@ namespace Funke {
 					prepared.Roots.resize(paths.size());
 					for (size_t i = 0; i < paths.size(); ++i) {
 						if (!paths[i].empty() && !SceneSerializer::PrepareFile(paths[i], prepared.Roots[i], &prepared.Error)) break;
+						CollectSceneAssetReferences(prepared.Roots[i], prepared.References);
 					}
 					return prepared;
 				});
@@ -426,7 +527,20 @@ namespace Funke {
 			return;
 		}
 		if (operation->Worker.valid()) {
-			try { operation->Prepared = operation->Worker.get(); }
+			try {
+				auto prepared = operation->Worker.get();
+				if (!prepared.Roots.empty()) {
+					operation->Prepared.Roots = std::move(prepared.Roots);
+					for (const auto& root : operation->Prepared.Roots) {
+						if (const auto* entities = root.FindMember("entities"); entities && entities->IsArray())
+							operation->Progress.TotalEntities += entities->GetArray().size();
+					}
+				}
+				operation->Prepared.References = std::move(prepared.References);
+				operation->NextReference = 0;
+				operation->Prepared.Prefabs.insert(operation->Prepared.Prefabs.end(), prepared.Prefabs.begin(), prepared.Prefabs.end());
+				operation->Prepared.Error = std::move(prepared.Error);
+			}
 			catch (const std::exception& e) { operation->Prepared.Error = e.what(); }
 			catch (...) { operation->Prepared.Error = "Scene file preparation failed"; }
 		}
@@ -435,6 +549,117 @@ namespace Funke {
 			complete({ SceneLoadStatus::LoadCallbackFailed, {}, operation->Prepared.Error });
 			return;
 		}
+		const bool activationReady = operation->Progress.Phase == SceneLoadPhase::Activating;
+		try {
+			if (!operation->Ready) {
+				operation->Progress.Phase = SceneLoadPhase::LoadingAssets;
+				operation->Progress.Progress = 0.2f;
+				const auto deadline = std::chrono::steady_clock::now()
+					+ std::chrono::duration<double, std::milli>(m_AsyncSceneLoadBudgetMs);
+				size_t scanned = 0;
+				while (operation->NextReference < operation->Prepared.References.size()) {
+					const uint64_t id = operation->Prepared.References[operation->NextReference++];
+					if (operation->SeenReferences.insert(id).second) {
+						const auto kind = AssetRegistry::GetKind(id);
+						if (kind == AssetKind::Prefab) operation->PendingPrefabs.emplace_back(id, AssetRegistry::ResolvePath(id));
+						else if (kind == AssetKind::Texture || kind == AssetKind::Audio || kind == AssetKind::Font || kind == AssetKind::Mesh)
+						{
+							operation->Assets.push_back(id);
+							AssetLoader::RetainAsset(id);
+						}
+					}
+					if (++scanned >= 64 || std::chrono::steady_clock::now() >= deadline) return;
+				}
+#if FNK_PLATFORM_HAS_THREADS
+				if (!operation->PendingPrefabs.empty()) {
+					operation->Worker = std::async(std::launch::async, [prefabs = std::move(operation->PendingPrefabs)] {
+						AsyncSceneLoad::PreparedFiles prepared;
+						for (const auto& [id, path] : prefabs) {
+							std::shared_ptr<const Json::Value> root;
+							if (!SceneSerializer::PreparePrefab(id, path, root)) {
+								prepared.Error = "Failed to prepare prefab: " + path;
+								break;
+							}
+							CollectSceneAssetReferences(*root, prepared.References);
+							prepared.Prefabs.push_back(std::move(root));
+						}
+						return prepared;
+					});
+					operation->PendingPrefabs.clear();
+					return;
+				}
+#endif
+				operation->Progress.TotalAssets = operation->Assets.size();
+				for (auto it = operation->AssetRequests.begin(); it != operation->AssetRequests.end();) {
+					const auto result = AssetLoader::GetResult(*it);
+					if (result.Status == AssetLoadStatus::Pending) { ++it; continue; }
+					AssetLoader::Release(*it);
+					it = operation->AssetRequests.erase(it);
+					if (result.Status != AssetLoadStatus::Success && result.Status != AssetLoadStatus::Unsupported) {
+						complete({ SceneLoadStatus::LoadCallbackFailed, {}, "Scene asset loading failed: " + result.Message });
+						return;
+					}
+					++operation->Progress.CompletedAssets;
+				}
+				while (operation->NextAsset < operation->Assets.size() && operation->AssetRequests.size() < 8) {
+					const uint64_t request = AssetLoader::LoadAsync(operation->Assets[operation->NextAsset]);
+					if (request == 0) break;
+					++operation->NextAsset;
+					operation->AssetRequests.push_back(request);
+					if (std::chrono::steady_clock::now() >= deadline) break;
+				}
+				operation->Progress.Progress = 0.2f + 0.3f * static_cast<float>(operation->Progress.CompletedAssets)
+					/ static_cast<float>(std::max(size_t{1}, operation->Assets.size()));
+				if (operation->NextAsset != operation->Assets.size() || !operation->AssetRequests.empty()) return;
+				operation->Ready = true;
+				if (operation->Preload) {
+					operation->Progress.Phase = SceneLoadPhase::Ready;
+					operation->Progress.Progress = 1.0f;
+					auto callback = std::move(operation->Completion);
+					if (callback) FUNKE_TRY_CATCH_LOG(callback(operation->Id, SceneLoadResult{ SceneLoadStatus::Success, {}, {} }));
+					return;
+				}
+			}
+			operation->Progress.Phase = SceneLoadPhase::CreatingEntities;
+			operation->Progress.Progress = std::max(operation->Progress.Progress, 0.5f);
+			m_LoadInProgress = true;
+			ScopeExit loadGuard([this]() { m_LoadInProgress = false; });
+			if (!operation->StagedScene) {
+				auto* definition = GetSceneDefinition(operation->Name);
+				if (!definition) { complete({ SceneLoadStatus::NotRegistered, {}, "Scene definition is not registered" }); return; }
+				operation->StagedScene = definition->Instantiate(true);
+				return;
+			}
+			if (operation->Step < operation->Steps.size()) {
+				const auto& step = operation->Steps[operation->Step];
+				Scene& scene = *operation->StagedScene;
+				SceneExecutionScope executionScope(scene);
+				if (step.Callback) {
+					SceneSerializer::NewSceneLoadScope contentScope(scene);
+					step.Callback(scene);
+					if (contentScope.HasRollbackFailure()) { complete({ SceneLoadStatus::LoadCallbackFailed, {}, "Load callback rollback failed" }); return; }
+				}
+				else {
+					if (!SceneSerializer::DeserializeSceneBatch(scene, operation->Prepared.Roots[operation->Step], step.FilePath,
+						operation->EntityState, m_AsyncSceneLoadBudgetMs, m_AsyncSceneLoadMaxEntities)) {
+						complete({ SceneLoadStatus::LoadCallbackFailed, {}, "Failed to load scene file: " + step.FilePath }); return;
+					}
+					operation->Progress.CompletedEntities = operation->PreviousEntities + operation->EntityState.nextEntity;
+					operation->Progress.Progress = 0.5f + 0.4f * static_cast<float>(operation->Progress.CompletedEntities)
+						/ static_cast<float>(std::max(size_t{1}, operation->Progress.TotalEntities));
+					if (!operation->EntityState.complete) return;
+					operation->PreviousEntities = operation->Progress.CompletedEntities;
+					operation->EntityState = {};
+				}
+				++operation->Step;
+				return;
+			}
+		}
+		catch (const std::exception& e) { complete({ SceneLoadStatus::LoadCallbackFailed, {}, e.what() }); return; }
+		catch (...) { complete({ SceneLoadStatus::LoadCallbackFailed, {}, "Scene preparation failed" }); return; }
+		operation->Progress.Phase = SceneLoadPhase::Activating;
+		operation->Progress.Progress = 0.95f;
+		if (!activationReady) return;
 		// Remove before activation: script teardown can cancel other requests while this scene is committing.
 		std::erase(m_AsyncSceneLoads, operation);
 		try {
@@ -448,7 +673,22 @@ namespace Funke {
 	}
 
 	void SceneManager::CancelAllAsyncSceneLoads() {
-		for (const auto& operation : m_AsyncSceneLoads) operation->Cancelled = true;
+		const auto operations = m_AsyncSceneLoads;
+		const bool wasLoading = std::exchange(m_LoadInProgress, true);
+		ScopeExit loadGuard([this, wasLoading]() { m_LoadInProgress = wasLoading; });
+		for (const auto& operation : operations) {
+			operation->Cancelled = true;
+			// Project teardown may unload component DLLs before the next frame can pump cancellation.
+			if (operation->StagedScene) {
+				RollbackSceneLoad(operation->StagedScene, 0, false, true);
+				operation->StagedScene.reset();
+			}
+			operation->Steps.clear();
+			for (uint64_t request : operation->AssetRequests) AssetLoader::Release(request);
+			operation->AssetRequests.clear();
+			for (uint64_t asset : operation->Assets) AssetLoader::ReleaseAsset(asset);
+			operation->Assets.clear();
+		}
 	}
 
 	SceneLoadResult SceneManager::TryLoadSceneAdditive(const std::string& name) {
@@ -779,6 +1019,7 @@ namespace Funke {
 		auto operations = std::move(m_AsyncSceneLoads);
 		for (const auto& operation : operations) {
 			if (operation->Worker.valid()) operation->Worker.wait();
+			if (operation->StagedScene) RollbackSceneLoad(operation->StagedScene, 0, false, true);
 			if (operation->Completion) {
 				FUNKE_TRY_CATCH_LOG(operation->Completion(operation->Id,
 					SceneLoadResult{ SceneLoadStatus::Cancelled, {}, "SceneManager is shutting down" }));
@@ -871,7 +1112,7 @@ namespace Funke {
 
 		std::shared_ptr<Scene> newScene;
 		try {
-			newScene = definition->Instantiate();
+			newScene = preparedLoad ? preparedLoad->StagedScene : definition->Instantiate();
 		}
 		catch (const std::exception& e) {
 			const std::string message = "Failed to instantiate scene '" + name + "': " + e.what();
@@ -915,7 +1156,11 @@ namespace Funke {
 		};
 
 		try {
-			const auto loadCallbacks = preparedLoad ? preparedLoad->Steps : definition->m_LoadCallbacks;
+			if (preparedLoad) {
+				newScene->m_IsDetached = false;
+				newScene->InitializeRuntimeComponentState();
+			}
+			const auto loadCallbacks = preparedLoad ? std::vector<SceneDefinition::LoadStep>{} : definition->m_LoadCallbacks;
 			for (size_t i = 0; i < loadCallbacks.size(); ++i) {
 				const auto& step = loadCallbacks[i];
 				bool loaded = true;
@@ -1280,8 +1525,17 @@ namespace Funke {
 			return;
 		}
 		const SceneDefinition* definition = it->second.get();
-		for (const auto& operation : m_AsyncSceneLoads) {
-			if (operation->Name == name) operation->Cancelled = true;
+		const auto pendingLoads = m_AsyncSceneLoads;
+		for (const auto& operation : pendingLoads) {
+			if (operation->Name == name) {
+				operation->Cancelled = true;
+				if (operation->StagedScene) {
+					m_LoadInProgress = true;
+					ScopeExit loadGuard([this]() { m_LoadInProgress = false; });
+					RollbackSceneLoad(operation->StagedScene, 0, false, true);
+					operation->StagedScene.reset();
+				}
+			}
 		}
 		for (;;) {
 			auto loadedIt = std::find_if(m_LoadedScenes.begin(), m_LoadedScenes.end(), [definition](const std::shared_ptr<Scene>& scene) {

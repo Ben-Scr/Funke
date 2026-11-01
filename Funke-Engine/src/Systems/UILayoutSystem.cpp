@@ -21,10 +21,102 @@
 #include "Project/ProjectManager.hpp"
 #include "Scene/Scene.hpp"
 
+#include "Core/EngineModules.hpp"
+#if FUNKE_WITH_2D
+#include "Components/General/Transform2DComponent.hpp"
+#include "Components/Graphics/Camera2DComponent.hpp"
+#endif
+#if FUNKE_WITH_3D
+#include "Components/General/Transform3DComponent.hpp"
+#include "Components/Graphics/Camera3DComponent.hpp"
+#include "Graphics/Renderer3D.hpp"
+#include "Systems/Transform3DHierarchySystem.hpp"
+#endif
+#include <glm/gtc/matrix_transform.hpp>
+
 #include <algorithm>
 #include <cmath>
 
 namespace Funke {
+
+	namespace WorldUI {
+		static bool IsRoot(const entt::registry& registry, EntityHandle entity) {
+			if (!registry.all_of<RectTransform2DComponent>(entity)) return false;
+#if FUNKE_WITH_2D
+			if (registry.all_of<Transform2DComponent>(entity)) return true;
+#endif
+#if FUNKE_WITH_3D
+			if (registry.all_of<Transform3DComponent>(entity)) return true;
+#endif
+			return false;
+		}
+
+		EntityHandle FindRoot(const entt::registry& registry, EntityHandle entity) {
+			for (int depth = 0; depth < 1024 && registry.valid(entity); ++depth) {
+				if (IsRoot(registry, entity)) return entity;
+				const auto* hierarchy = registry.try_get<HierarchyComponent>(entity);
+				if (!hierarchy) break;
+				entity = hierarchy->Parent;
+			}
+			return entt::null;
+		}
+
+		glm::mat4 CanvasToWorld(const entt::registry& registry, EntityHandle root) {
+			glm::mat4 world(1.0f);
+#if FUNKE_WITH_3D
+			if (registry.all_of<Transform3DComponent>(root))
+				world = Transform3DHierarchySystem::ComputeWorldMatrix(registry, root);
+#endif
+#if FUNKE_WITH_2D
+			if (const auto* transform = registry.try_get<Transform2DComponent>(root)) {
+				const glm::mat3 model = transform->GetModelMatrix();
+				world[0] = glm::vec4(model[0].x, model[0].y, 0.0f, 0.0f);
+				world[1] = glm::vec4(model[1].x, model[1].y, 0.0f, 0.0f);
+				world[3] = glm::vec4(model[2].x, model[2].y, 0.0f, 1.0f);
+			}
+#endif
+			return glm::scale(world, glm::vec3(k_PixelsToWorld, k_PixelsToWorld, 1.0f));
+		}
+
+		bool CameraViewProjection(Scene& scene, float aspect, glm::mat4& vp) {
+#if FUNKE_WITH_3D
+			if (EngineModules::IsActive(EngineModule::ThreeD)) {
+				const EntityHandle camera = Camera3DComponent::FindMain(scene);
+				if (camera != entt::null) {
+					const auto view = Renderer3D::MakeView(Transform3DHierarchySystem::ComputeWorldMatrix(scene.GetRegistry(), camera),
+						scene.GetRegistry().get<Camera3DComponent>(camera), aspect);
+					vp = view.Projection * view.View;
+					return true;
+				}
+			}
+#endif
+#if FUNKE_WITH_2D
+			if (EngineModules::IsActive(EngineModule::TwoD)) {
+				if (auto* camera = Camera2DComponent::GetMain()) {
+					vp = camera->GetViewProjectionMatrix();
+					return true;
+				}
+			}
+#endif
+			return false;
+		}
+
+		bool ProjectPointer(const glm::mat4& canvasVP, const Vec2& ndc, Vec2& canvas) {
+			if (std::abs(glm::determinant(canvasVP)) < 1e-12f) return false;
+			const glm::mat4 inverse = glm::inverse(canvasVP);
+			glm::vec4 nearPoint = inverse * glm::vec4(ndc.x, ndc.y, 0.0f, 1.0f);
+			glm::vec4 farPoint = inverse * glm::vec4(ndc.x, ndc.y, 1.0f, 1.0f);
+			if (std::abs(nearPoint.w) < 1e-8f || std::abs(farPoint.w) < 1e-8f) return false;
+			nearPoint /= nearPoint.w;
+			farPoint /= farPoint.w;
+			const glm::vec3 direction(farPoint - nearPoint);
+			if (std::abs(direction.z) < 1e-8f) return false;
+			const float t = -nearPoint.z / direction.z;
+			if (t < 0.0f || t > 1.0f) return false;
+			canvas = { nearPoint.x + t * direction.x, nearPoint.y + t * direction.y };
+			return std::isfinite(canvas.x) && std::isfinite(canvas.y);
+		}
+	}
 
 	namespace {
 		// Set per ComputeUILayout call: the full UI surface and its safe-area part, in UI space.
@@ -463,7 +555,7 @@ namespace Funke {
 		void ResolveHierarchy(entt::registry& registry, EntityHandle entity,
 			const Vec2& parentMin, const Vec2& parentMax,
 			float parentRotation, const Vec2& parentScale,
-			const Vec2& parentPivot)
+			const Vec2& parentPivot, bool inWorldCanvas)
 		{
 			RectTransform2DComponent* rect = registry.try_get<RectTransform2DComponent>(entity);
 
@@ -474,10 +566,19 @@ namespace Funke {
 			Vec2 childParentPivot = parentPivot;
 
 			if (rect) {
+				const bool worldRoot = WorldUI::IsRoot(registry, entity);
+				inWorldCanvas = inWorldCanvas || worldRoot;
 				Vec2 resolveMin = parentMin;
 				Vec2 resolveMax = parentMax;
-				if (rect->IgnoreSafeArea) ExtendToScreenEdges(resolveMin, resolveMax);
-				ResolveRect(*rect, resolveMin, resolveMax, parentRotation, parentScale, parentPivot);
+				if (worldRoot) {
+					resolveMin = { -rect->SizeDelta.x * 0.5f, -rect->SizeDelta.y * 0.5f };
+					resolveMax = { rect->SizeDelta.x * 0.5f, rect->SizeDelta.y * 0.5f };
+					parentRotation = 0.0f;
+				}
+				else if (rect->IgnoreSafeArea && !inWorldCanvas)
+					ExtendToScreenEdges(resolveMin, resolveMax);
+				ResolveRect(*rect, resolveMin, resolveMax, parentRotation,
+					worldRoot ? Vec2{ 1.0f, 1.0f } : parentScale, worldRoot ? Vec2{} : parentPivot);
 				childParentMin = rect->ResolvedMin;
 				childParentMax = rect->ResolvedMax;
 				childParentRotation = rect->Rotation;
@@ -503,7 +604,7 @@ namespace Funke {
 						ResolveHierarchy(registry, child,
 							childParentMin, childParentMax,
 							childParentRotation, childParentScale,
-							childParentPivot);
+							childParentPivot, inWorldCanvas);
 					}
 				}
 			}
@@ -623,7 +724,7 @@ namespace Funke {
 		};
 		for (EntityHandle entity : t_Roots) {
 			// parentPivot=windowCenter so root rotation pivots at screen center; parentScale=uiScale propagates reference-res scaling.
-			ResolveHierarchy(registry, entity, s_SafeMin, s_SafeMax, 0.0f, Vec2{ uiScale, uiScale }, windowCenter);
+			ResolveHierarchy(registry, entity, s_SafeMin, s_SafeMax, 0.0f, Vec2{ uiScale, uiScale }, windowCenter, false);
 		}
 	}
 

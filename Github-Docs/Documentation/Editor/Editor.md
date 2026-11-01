@@ -100,7 +100,7 @@ The editor is a set of dockable panels. The main ones:
 |-------|---------------|
 | **Hierarchy** (Entities) | The tree of all entities in the loaded scene(s). Create, rename, parent, reorder, and delete entities here. |
 | **Inspector** | Shows and edits the components of whatever you've selected. This is where most editing happens. |
-| **Editor View** (Viewport) | The interactive 2D canvas. Move the camera, select objects, and drag gizmos to position them. |
+| **Editor View** (Viewport) | The interactive 2D or 3D workspace, according to the project's modules. Move the camera, select objects, and drag gizmos to position them. |
 | **Game View** | A preview of the game exactly as the player will see it (active during Play mode). The aspect dropdown picks a fixed ratio, Free Aspect, or **Project (…)**, which follows the build Aspect Ratio from Project Settings. |
 | **Asset Browser** | Your project's files — sprites, scenes, prefabs, scripts. Create assets, drag them into scenes, slice sprites. See [Assets](../Assets/Assets.md). |
 | **Console** | Engine and script log output (info, warnings, errors). |
@@ -171,7 +171,7 @@ Children follow their parent's transform — see [ECS](../Engine-Core/ECS.md#hie
 
 ### Working in the Viewport
 
-The **Editor View** is your 2D workspace:
+In **2D mode**, the **Editor View** provides these controls; see [3D Editor View](../Engine-Core/3D.md#editor) for 3D navigation and picking:
 
 - **Pan** with the middle mouse button, **zoom** with the scroll wheel.
 - **Focus** the camera on the selected entity (frames it in view).
@@ -217,7 +217,11 @@ Save the current scene from the menu (or with the usual save shortcut). Scenes a
 
 Scene history covers inspector and script fields, gizmo moves/rotations/scales, creating, deleting, duplicating, pasting and cutting entities, reparenting and reordering in the Hierarchy, adding/removing components and scripts, component paste/reset, renaming, enabling/disabling, the Static flag, unpacking prefabs and reverting prefab overrides. SceneSystem additions, removal, ordering, enabled state and fields are also undoable.
 
-Each loaded scene keeps its own undo and redo branches when you switch scenes or enter and leave Prefab Mode. A successful Play/Stop cycle restores those branches with the edit scene, including a pending redo. Play takes private snapshots of all loaded scenes, including clean ones, so external file edits cannot change the history's baseline. Closing, replacing or reloading a scene discards its history; closing Prefab Mode discards the prefab's history. Gameplay changes are discarded on Stop. Moving entities between scenes and changes to asset files are not covered by scene history.
+Each loaded scene keeps its own undo and redo branches when you switch scenes or enter and leave Prefab Mode. A successful Play/Stop cycle restores those branches with the edit scene, including a pending redo. Play takes private snapshots of all loaded scenes, including clean ones, so external file edits cannot change the history's baseline. Closing, replacing or reloading a scene discards its history; closing Prefab Mode discards the prefab's history. Gameplay changes are discarded on Stop.
+
+Moving entities between loaded scenes records a linked undo step in both histories. Undo newer edits in either scene first; the move can be undone only while both histories retain the matching step.
+
+The **Asset Browser** has its own history for recorded file actions such as creating, importing, renaming, moving, duplicating and deleting assets, including companion metadata. Focus the Asset Browser to route Undo/Redo to that history. It lasts while the project is open and refuses to overwrite files that changed externally since the recorded operation. Arbitrary edits in external programs are not recorded.
 
 ### Crash recovery
 
@@ -247,7 +251,7 @@ When you're ready to ship, open the **Build** panel:
 2. Check the **scene list**. Every scene in your project is listed automatically and included by default; untick a scene to leave it out of the build. The first ticked scene is the **startup** scene. Drag rows to reorder them, or right-click a row to use **Set as startup scene** / **Move up** / **Move down**. **Add Open Scene** adds the scene you have open, or ticks it again.
 3. Pick an **output folder** and click **Build** (or **Build & Run**).
 
-The editor compiles your C# scripts, copies the **runtime executable**, copies your **assets**, and writes the configuration the game needs to start. The result is a folder you can run or distribute. Because Funke ships [assets as loose files](../Assets/Assets.md#assets-at-runtime-vs-in-the-editor), the output contains your `Assets` alongside the executable.
+The editor compiles your scripts, stages the **runtime executable**, prunes and converts the referenced **assets**, and writes the configuration the game needs to start. The result is a folder you can run or distribute. Assets are loose by default; **Build Profiles › Asset Packaging** can pack them into `.fbundle` files with optional LZ4 compression. See [Asset bundles](Building-and-Shipping.md#asset-bundles).
 
 Build profiles can be managed separately (create/duplicate/delete) so you can keep, say, a Windows debug profile and a release profile side by side.
 
@@ -260,7 +264,7 @@ For release prerequisites and the clean-machine checklist, see [Building and Shi
 - The **Editor** authors your game; the **Runtime** runs it; the **Launcher** creates/opens projects.
 - Build scenes with the **Hierarchy** and **Viewport**, edit with the **Inspector**, manage files in the **Asset Browser**.
 - **Add Component** respects conflicts; the **Viewport** gizmos move/rotate/scale entities.
-- **Play/Pause/Step/Stop** test the game in-editor; stopping restores the scene from disk.
+- **Play/Pause/Step/Stop** test the game in-editor; stopping restores the private pre-Play scene snapshots.
 - **Prefabs** are reusable entities; the **Build** panel produces a distributable game.
 
 ## Related pages

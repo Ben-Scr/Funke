@@ -12,6 +12,7 @@
 #include "Serialization/File.hpp"
 #include "Serialization/FileStamp.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <memory>
@@ -469,6 +470,7 @@ namespace Funke {
 		if (m_DestroyToken != 0) TextureManager::RemoveDestroyListener(m_DestroyToken);
 		m_DestroyToken = 0;
 		m_Groups.clear();
+		m_NextGroupPurge = {};
 		m_Layouts.clear();
 		m_Textures.clear();
 		for (uint64_t& runtime : m_DefaultTextures) {
@@ -573,8 +575,8 @@ namespace Funke {
 		const uint32_t textureCount = std::min(description.TextureCount, k_MaxShaderTextureProperties);
 		std::array<wgpu::TextureView, k_MaxShaderTextureProperties> views;
 		std::array<wgpu::Sampler, k_MaxShaderTextureProperties> samplers;
-		std::vector<WGPUTextureView> viewKeys(textureCount, nullptr);
-		std::vector<WGPUSampler> samplerKeys(textureCount, nullptr);
+		std::array<WGPUTextureView, k_MaxShaderTextureProperties> viewKeys{};
+		std::array<WGPUSampler, k_MaxShaderTextureProperties> samplerKeys{};
 		for (const ShaderProperty& property : description.Properties) {
 			if (property.Type != ShaderPropertyType::Texture || property.TextureSlot >= textureCount) continue;
 			const uint64_t textureGuid = ResolveMaterialProperty(values, property).Texture;
@@ -595,8 +597,10 @@ namespace Funke {
 		GroupEntry& entry = m_Groups[key];
 		const Clock::time_point now = Clock::now();
 		entry.LastUsed = now;
-		const bool rebuild = !entry.Group || !entry.Uniforms || entry.Bytes.size() != m_Scratch.size() || entry.Views != viewKeys
-			|| entry.Samplers != samplerKeys;
+		const bool rebuild = !entry.Group || !entry.Uniforms || entry.Bytes.size() != m_Scratch.size()
+			|| entry.Views.size() != textureCount || entry.Samplers.size() != textureCount
+			|| !std::equal(entry.Views.begin(), entry.Views.end(), viewKeys.begin())
+			|| !std::equal(entry.Samplers.begin(), entry.Samplers.end(), samplerKeys.begin());
 		if (rebuild) {
 			if (!entry.Uniforms || entry.Bytes.size() != m_Scratch.size()) {
 				wgpu::BufferDescriptor bufferDesc{};
@@ -627,16 +631,18 @@ namespace Funke {
 			const std::string groupLabel = m_Label + "-material-bg";
 			desc.label = groupLabel.c_str();
 			entry.Group = entry.Uniforms ? device.CreateBindGroup(&desc) : nullptr;
-			entry.Views = viewKeys;
-			entry.Samplers = samplerKeys;
+			entry.Views.assign(viewKeys.begin(), viewKeys.begin() + textureCount);
+			entry.Samplers.assign(samplerKeys.begin(), samplerKeys.begin() + textureCount);
 		}
 		if (entry.Uniforms && entry.Bytes != m_Scratch) {
 			WebGPUBackend::GetQueue().WriteBuffer(entry.Uniforms, 0, m_Scratch.data(), m_Scratch.size());
 			entry.Bytes = m_Scratch;
 		}
 
-		// Groups of recompiled shaders and removed materials age out instead of piling up.
-		if (m_Groups.size() > 64) {
+		// Sweep at most once a second, rather than scanning every cached group for every
+		// material draw. Texture destruction still invalidates groups immediately.
+		if (m_Groups.size() > 64 && now >= m_NextGroupPurge) {
+			m_NextGroupPurge = now + std::chrono::seconds(1);
 			std::erase_if(m_Groups, [now](const auto& pair) { return now - pair.second.LastUsed > std::chrono::seconds(10); });
 		}
 		auto it = m_Groups.find(key);

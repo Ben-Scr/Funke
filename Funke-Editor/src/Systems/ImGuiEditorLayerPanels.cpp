@@ -3675,6 +3675,14 @@ namespace Funke {
 		if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga") {
 			ImGui::Spacing();
 			const Texture2D* tex = GetPreviewTexture(path);
+			if (!tex) {
+				const auto it = m_PreviewTextureLookup.find(NormalizePreviewTexturePath(path));
+				const bool failed = it != m_PreviewTextureLookup.end()
+					&& m_PreviewTextureCache[it->second].Preview->State == TexturePreview::Status::Failed;
+				ImGui::TextDisabled(failed ? "Texture preview could not be loaded." : "Loading texture preview...");
+				if (failed && ImGui::Button("Retry preview")) ClearPreviewTextureCache();
+			}
+
 			if (tex && tex->IsValid()) {
 				// Read the import meta first: the preview Texture2D is always
 				// loaded with a fixed filter, so the authored FilterMode (not
@@ -3759,26 +3767,19 @@ namespace Funke {
 		if (const auto it = m_PreviewTextureLookup.find(canonicalPath); it != m_PreviewTextureLookup.end()) {
 			PreviewTextureEntry& entry = m_PreviewTextureCache[it->second];
 			entry.LastTouchTick = ++m_PreviewTextureTick;
-			return entry.Texture.get();
-		}
-
-		// TODO(perf): Synchronous decode on UI thread — large textures cause first-select hitches.
-		// Convert to async-task pattern (see funke-add-editor-panel skill).
-		auto texture = std::make_unique<Texture2D>(canonicalPath.c_str(), Filter::Point, Wrap::Clamp, Wrap::Clamp);
-		if (!texture->IsValid()) {
-			return nullptr;
+			return entry.Preview->GetTexture();
 		}
 
 		PreviewTextureEntry entry;
 		entry.CanonicalPath = canonicalPath;
-		entry.Texture = std::move(texture);
+		entry.Preview = AsyncTexturePreviews::Get().Request(canonicalPath);
 		entry.LastTouchTick = ++m_PreviewTextureTick;
 
 		const size_t index = m_PreviewTextureCache.size();
 		m_PreviewTextureLookup[canonicalPath] = index;
 		m_PreviewTextureCache.push_back(std::move(entry));
 		TrimPreviewTextureCache();
-		return m_PreviewTextureCache.back().Texture.get();
+		return m_PreviewTextureCache.back().Preview->GetTexture();
 	}
 
 	void ImGuiEditorLayer::TrimPreviewTextureCache() {
@@ -3805,6 +3806,19 @@ namespace Funke {
 		m_PreviewTextureLookup.clear();
 		m_PreviewTextureCache.clear();
 		m_PreviewTextureTick = 0;
+	}
+
+	void ImGuiEditorLayer::InvalidatePreviewTexture(const std::filesystem::path& path) {
+		const auto found = m_PreviewTextureLookup.find(NormalizePreviewTexturePath(path));
+		if (found == m_PreviewTextureLookup.end()) return;
+		const size_t index = found->second;
+		AsyncTexturePreviews::Get().Retire(std::move(m_PreviewTextureCache[index].Preview));
+		m_PreviewTextureLookup.erase(found);
+		if (index != m_PreviewTextureCache.size() - 1) {
+			m_PreviewTextureCache[index] = std::move(m_PreviewTextureCache.back());
+			m_PreviewTextureLookup[m_PreviewTextureCache[index].CanonicalPath] = index;
+		}
+		m_PreviewTextureCache.pop_back();
 	}
 
 	void ImGuiEditorLayer::RenderPackageManagerPanel() {

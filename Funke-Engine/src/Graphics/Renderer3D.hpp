@@ -79,6 +79,7 @@ namespace Funke {
 		// Fills the bound target with the view's procedural sky when its background is Skybox; the sun disc follows
 		// the main DirectionalLight of lightScene. Call after the clear and before RenderScene.
 		void RenderSky(const Camera3DView& view, Scene* lightScene);
+		void RenderWorldUI(Scene& scene, const Camera3DView& view);
 		// Meshes, then particles. Under RenderApi's PolygonMode::Wireframe: black mesh edges only (editor Triangle/Mixed).
 		void RenderScene(Scene& scene, const Camera3DView& view);
 

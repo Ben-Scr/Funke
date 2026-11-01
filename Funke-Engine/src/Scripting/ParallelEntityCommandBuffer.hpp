@@ -34,7 +34,6 @@ namespace Funke {
 		std::vector<NativeEntityCommandBuffer> m_Subs;
 		std::vector<EntityHandle> m_CreatedHandles;
 		std::vector<uint8_t> m_Wire;
-		std::vector<uint64_t> m_Identities;
 		std::thread::id m_OwnerThread;
 	};
 

@@ -1,0 +1,12 @@
+{
+  "engineTests": 4,
+  "engineAssertions": 99,
+  "editorTests": 6,
+  "editorAssertions": 86,
+  "runtimeScreenshotHashes": {
+    "Compressed": "2b40ff27558a8a705a57a1459fea16a3871d662291655721e9a831fa7fdd86c7",
+    "Bundled": "2b40ff27558a8a705a57a1459fea16a3871d662291655721e9a831fa7fdd86c7",
+    "Loose": "2b40ff27558a8a705a57a1459fea16a3871d662291655721e9a831fa7fdd86c7"
+  },
+  "bundleToggleOffPassed": true
+}

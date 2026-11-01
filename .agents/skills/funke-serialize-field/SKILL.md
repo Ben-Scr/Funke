@@ -55,7 +55,7 @@ A scene prefab instance is stored as `Origin: "Prefab"`, `PrefabGUID`, `Override
 
 ## Play mode
 
-Edit-mode state survives Play→Stop only through serialization: on Play the editor snapshots every loaded scene (dirty ones to `<project>/.funke/PlayMode/<name>.scene`, clean ones by their project path) and on Stop rebuilds them from those files (`ImGuiEditorLayer::PreparePlayModeSnapshot` / `RestoreEditorSceneAfterPlaymode`). There is no in-memory snapshot. A field missing from either direction resets on Stop. (C# script field values additionally get re-applied from `m_PlayModeScriptFields`.)
+Edit-mode state survives Play→Stop through serialization: on Play the editor writes private snapshots of **all** loaded scenes, clean or dirty, under `<project>/.funke/PlayMode/`; on Stop it rebuilds scenes from those snapshots (`ImGuiEditorLayer::PreparePlayModeSnapshot` / `RestoreEditorSceneAfterPlaymode`). Authored scene files are not overwritten. A field missing from either direction resets on Stop. C# field values are additionally reapplied from `m_PlayModeScriptFields`, and retained edit-mode undo histories are rebound after successful restoration.
 
 ## project.json field
 

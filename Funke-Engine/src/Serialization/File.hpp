@@ -15,6 +15,10 @@ namespace Funke {
 		File() = delete;
 
 		static bool Exists(const std::string& path);
+		static bool IsRegularFile(const std::filesystem::path& path);
+		static bool IsDirectory(const std::filesystem::path& path);
+		static std::vector<std::filesystem::path> ListFiles(const std::filesystem::path& directory,
+			bool recursive, std::error_code& error);
 
 		// Atomic write via ".tmp" rename; [[nodiscard]] — callers MUST check before clearing dirty flags.
 		[[nodiscard]] static bool WriteAllText(const std::string& path, const std::string& text);

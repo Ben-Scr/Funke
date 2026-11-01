@@ -88,6 +88,13 @@ namespace Funke::PackageBuildCache {
 		std::vector<std::string> ManagedTargets;
 	};
 
+	inline void AddHostEngine(Inventory& files, const std::filesystem::path& library) {
+		std::string hash, error;
+		if (!Hash::Sha256OfFile(library, hash, error)) { files.Valid = false; return; }
+		// Editor and Launcher may load identical engine DLLs from different directories.
+		files.Files["hostEngine"] = std::move(hash);
+	}
+
 	inline std::filesystem::path CachePath(const FunkeProject& project, const std::string& configuration,
 		const std::string& platform) {
 		return Path::FromUtf8(project.RootDirectory) / ".funke/build/packages"
@@ -316,7 +323,7 @@ namespace Funke::PackageBuildCache {
 			files.Tree(engineRoot / "Funke-Engine/src", false);
 			const auto msbuild = Path::FromUtf8(FunkeProject::GetMSBuildPath());
 			files.Add(msbuild, false, true);
-			files.Add(Path::FromUtf8(Path::ExecutableDir()) / "Funke-Engine.dll", false, true);
+			AddHostEngine(files, Path::FromUtf8(Path::ExecutableDir()) / "Funke-Engine.dll");
 #ifdef FNK_PLATFORM_WINDOWS
 			const auto visualStudio = msbuild.parent_path().parent_path().parent_path().parent_path();
 			std::error_code error;

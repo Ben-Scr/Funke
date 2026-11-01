@@ -1,0 +1,92 @@
+[
+  {
+    "file": "Doc00_00.cs",
+    "document": "Github-Docs\\Documentation\\Getting-Started.md",
+    "line": 39
+  },
+  {
+    "file": "Doc00_01.cs",
+    "document": "Github-Docs\\Documentation\\Getting-Started.md",
+    "line": 63
+  },
+  {
+    "file": "Doc01_00.cs",
+    "document": "Github-Docs\\Documentation\\Assets\\Assets.md",
+    "line": 104
+  },
+  {
+    "file": "Doc02_00.cs",
+    "document": "Github-Docs\\Documentation\\Assets\\Data-Assets.md",
+    "line": 46
+  },
+  {
+    "file": "Doc02_01.cs",
+    "document": "Github-Docs\\Documentation\\Assets\\Data-Assets.md",
+    "line": 101
+  },
+  {
+    "file": "Doc03_00.cs",
+    "document": "Github-Docs\\Documentation\\Editor\\Platform-Export-Testing.md",
+    "line": 12
+  },
+  {
+    "file": "Doc04_01.cs",
+    "document": "Github-Docs\\Documentation\\Engine-Core\\3D.md",
+    "line": 109
+  },
+  {
+    "file": "Doc04_03.cs",
+    "document": "Github-Docs\\Documentation\\Engine-Core\\3D.md",
+    "line": 228
+  },
+  {
+    "file": "Doc05_00.cs",
+    "document": "Github-Docs\\Documentation\\Engine-Core\\Animation.md",
+    "line": 66
+  },
+  {
+    "file": "Doc05_01.cs",
+    "document": "Github-Docs\\Documentation\\Engine-Core\\Animation.md",
+    "line": 99
+  },
+  {
+    "file": "Doc06_04.cs",
+    "document": "Github-Docs\\Documentation\\Engine-Core\\ECS.md",
+    "line": 184
+  },
+  {
+    "file": "Doc06_05.cs",
+    "document": "Github-Docs\\Documentation\\Engine-Core\\ECS.md",
+    "line": 236
+  },
+  {
+    "file": "Doc07_00.cs",
+    "document": "Github-Docs\\Documentation\\Engine-Core\\Graphics-Settings.md",
+    "line": 96
+  },
+  {
+    "file": "Doc08_00.cs",
+    "document": "Github-Docs\\Documentation\\Engine-Core\\Physics-3D.md",
+    "line": 42
+  },
+  {
+    "file": "Doc09_00.cs",
+    "document": "Github-Docs\\Documentation\\Packages\\Writing-Packages.md",
+    "line": 221
+  },
+  {
+    "file": "Doc10_00.cs",
+    "document": "Github-Docs\\Documentation\\Scripting\\Scripting.md",
+    "line": 34
+  },
+  {
+    "file": "Doc10_03.cs",
+    "document": "Github-Docs\\Documentation\\Scripting\\Scripting.md",
+    "line": 133
+  },
+  {
+    "file": "Doc10_30.cs",
+    "document": "Github-Docs\\Documentation\\Scripting\\Scripting.md",
+    "line": 491
+  }
+]

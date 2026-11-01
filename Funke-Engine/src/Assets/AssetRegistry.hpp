@@ -3,6 +3,7 @@
 #include "Assets/AssetKind.hpp"
 #include "Assets/TextureMeta.hpp"
 #include "Core/Export.hpp"
+#include "Assets/AssetBundle.hpp"
 #include "Core/UUID.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Project/ProjectManager.hpp"
@@ -97,25 +98,14 @@ namespace Funke {
 				return;
 			}
 			const std::filesystem::path nativeRoot = Path::FromUtf8(NormalizePath(absoluteRoot));
-			std::error_code rootEc;
-			if (!std::filesystem::is_directory(nativeRoot, rootEc) || rootEc) {
+			if (!File::IsDirectory(nativeRoot)) {
 				return;
 			}
 
-			std::unordered_map<std::filesystem::path, std::filesystem::path> canonicalDirectories;
-			canonicalDirectories.emplace(nativeRoot, nativeRoot);
 			std::error_code ec;
-			for (std::filesystem::recursive_directory_iterator it(
-				 nativeRoot,
-				 std::filesystem::directory_options::skip_permission_denied,
-				 ec), end;
-				 it != end;
-				 it.increment(ec))
+			for (const auto& path : File::ListFiles(nativeRoot, true, ec))
 			{
-				if (ec) { ec.clear(); continue; }
-				if (!it->is_regular_file(ec) || ec) { ec.clear(); continue; }
-
-				const std::string absPath = NormalizeScannedPath(*it, canonicalDirectories);
+				const std::string absPath = NormalizePath(Path::ToUtf8(path));
 				if (absPath.empty() || IsMetaFilePath(absPath)) {
 					continue;
 				}
@@ -259,6 +249,40 @@ namespace Funke {
 			return id;
 		}
 
+		// Recovery publishes existing metadata without rewriting GUIDs or import settings.
+		static bool RestorePathsIncremental(const std::vector<std::string>& paths) {
+			auto& state = State();
+			auto byPath = state.PathToId;
+			auto byId = state.IdToRecord;
+			std::unordered_set<std::string> normalized;
+			for (const auto& path : paths) {
+				const auto key = NormalizePath(path);
+				if (!key.empty() && !IsMetaFilePath(key) && IsTrackedPath(key)) normalized.insert(key);
+			}
+			for (const auto& path : normalized) {
+				if (auto found = byPath.find(path); found != byPath.end()) {
+					byId.erase(found->second);
+					byPath.erase(found);
+				}
+			}
+			for (const auto& path : normalized) {
+				std::error_code error;
+				const bool exists = std::filesystem::exists(Path::FromUtf8(path), error);
+				if (error) return false;
+				if (!exists) continue;
+				state.MetaIdCache.erase(GetMetaPath(path));
+				const uint64_t id = ReadMetaId(path);
+				if (!id || byId.contains(id) || state.BuiltInById.contains(id)) return false;
+				byPath.emplace(path, id);
+				byId.emplace(id, Record{ id, path, Classify(path) });
+			}
+			state.PathToId.swap(byPath);
+			state.IdToRecord.swap(byId);
+			state.KnownMissingIds.clear();
+			++state.ChangeVersion;
+			return true;
+		}
+
 		static void ForgetAssetPathIncremental(const std::string& path) {
 			const std::string normalizedPath = NormalizePath(path);
 			if (normalizedPath.empty() || IsMetaFilePath(normalizedPath)) {
@@ -310,7 +334,7 @@ namespace Funke {
 		static std::string ResolvePath(uint64_t assetId) {
 			// Built-ins skip dirty/rebuild — their paths don't change at runtime.
 			if (auto it = State().BuiltInById.find(assetId); it != State().BuiltInById.end()) {
-				if (std::filesystem::exists(Path::FromUtf8(it->second.Path))) {
+				if (File::Exists(it->second.Path)) {
 					return it->second.Path;
 				}
 				return {};
@@ -335,7 +359,7 @@ namespace Funke {
 				}
 			}
 
-			if (std::filesystem::exists(Path::FromUtf8(it->second.Path))) {
+			if (File::Exists(it->second.Path)) {
 				return it->second.Path;
 			}
 
@@ -347,7 +371,7 @@ namespace Funke {
 			State().Dirty = true;
 			EnsureUpToDate();
 			it = State().IdToRecord.find(assetId);
-			if (it == State().IdToRecord.end() || !std::filesystem::exists(Path::FromUtf8(it->second.Path))) {
+			if (it == State().IdToRecord.end() || !File::Exists(it->second.Path)) {
 				State().KnownMissingIds.insert(assetId);
 				return {};
 			}
@@ -586,7 +610,7 @@ namespace Funke {
 			State().ColdMetaReads = 0;
 			const auto rebuildStart = std::chrono::steady_clock::now();
 
-			if (State().TrackedRoot.empty() || !std::filesystem::exists(Path::FromUtf8(State().TrackedRoot))) {
+			if (State().TrackedRoot.empty() || !File::IsDirectory(Path::FromUtf8(State().TrackedRoot))) {
 				State().Dirty = false;
 				return;
 			}
@@ -646,11 +670,15 @@ namespace Funke {
 				IndexAsset(assetPath);
 			}
 
+			for (const auto& path : AssetBundle::ListMounted(nativeRoot, true)) {
+				const auto assetPath = NormalizePath(Path::ToUtf8(path));
+				if (!IsMetaFilePath(assetPath) && !State().PathToId.contains(assetPath)) IndexAsset(assetPath);
+			}
 			State().Dirty = false;
 			if (State().AssetsImmutable) {
 				State().ImmutableFullScanned = true;  // authoritative on-disk scan done; manifest now accurate
 			}
-			SaveSnapshot();
+			if (!AssetBundle::IsMountedDirectory(nativeRoot)) SaveSnapshot();
 			const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rebuildStart).count();
 			FNK_CORE_INFO_TAG("AssetRegistry",
 				"Project registry: walked + indexed {} assets in {} ms ({} cold .meta reads, {} cache hits)",
@@ -906,7 +934,7 @@ namespace Funke {
 			if (!fsPath.is_absolute()) {
 				if (FunkeProject* project = ProjectManager::GetCurrentProject()) {
 					const std::filesystem::path candidate = Path::FromUtf8(project->AssetsDirectory) / fsPath;
-					if (std::filesystem::exists(candidate)) {
+					if (File::Exists(Path::ToUtf8(candidate))) {
 						fsPath = candidate;
 					}
 					else {
@@ -915,7 +943,7 @@ namespace Funke {
 				}
 				else {
 					const std::filesystem::path fallback = Path::FromUtf8(Path::ExecutableDir()) / "Assets" / fsPath;
-					if (std::filesystem::exists(fallback)) {
+					if (File::Exists(Path::ToUtf8(fallback))) {
 						fsPath = fallback;
 					}
 					else {
@@ -958,7 +986,7 @@ namespace Funke {
 			}
 
 			const std::filesystem::path nativePath = Path::FromUtf8(assetPath);
-			return std::filesystem::exists(nativePath) && std::filesystem::is_regular_file(nativePath);
+			return File::IsRegularFile(nativePath);
 		}
 
 		static AssetKind Classify(const std::string& assetPath) {

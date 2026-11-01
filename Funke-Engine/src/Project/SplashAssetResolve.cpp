@@ -4,6 +4,7 @@
 #include "Core/Version.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Serialization/Path.hpp"
+#include "Serialization/File.hpp"
 
 #include <filesystem>
 
@@ -58,7 +59,7 @@ namespace Funke::SplashAssetResolve {
 			const std::string root = Path::ResolveFunkeAssets("");
 			if (root.empty()) return {};
 			std::filesystem::path candidate = std::filesystem::path(root) / sub;
-			if (std::filesystem::exists(candidate)) return candidate.string();
+			if (File::Exists(Path::ToUtf8(candidate))) return Path::ToUtf8(candidate);
 			return {};
 		}
 
@@ -66,20 +67,20 @@ namespace Funke::SplashAssetResolve {
 		// supports the "I dragged a file from outside the project" case).
 		std::filesystem::path p(stored);
 		if (p.is_absolute()) {
-			return std::filesystem::exists(p) ? p.string() : std::string{};
+			return File::Exists(Path::ToUtf8(p)) ? Path::ToUtf8(p) : std::string{};
 		}
 
 		if (!project) return {};
 
 		// Project-relative ("Assets/foo.png" style).
 		std::filesystem::path projectRel = std::filesystem::path(project->RootDirectory) / p;
-		if (std::filesystem::exists(projectRel)) return projectRel.string();
+		if (File::Exists(Path::ToUtf8(projectRel))) return Path::ToUtf8(projectRel);
 
 		// Last-resort: project assets dir + bare filename. Mirrors the
 		// fallback the runtime used historically when launched with a cwd
 		// different from the project root.
 		std::filesystem::path assetsRel = std::filesystem::path(project->AssetsDirectory) / p.filename();
-		if (std::filesystem::exists(assetsRel)) return assetsRel.string();
+		if (File::Exists(Path::ToUtf8(assetsRel))) return Path::ToUtf8(assetsRel);
 
 		return {};
 	}
@@ -136,7 +137,7 @@ namespace Funke::SplashAssetResolve {
 		// Exact case: the Web, Android and Linux file systems are case-sensitive.
 		for (const char* name : { "Icon.png", "icon.png", "Funke64.png" }) {
 			const std::filesystem::path candidate = std::filesystem::path(root) / name;
-			if (std::filesystem::exists(candidate)) return candidate.string();
+			if (File::Exists(Path::ToUtf8(candidate))) return Path::ToUtf8(candidate);
 		}
 		return {};
 	}

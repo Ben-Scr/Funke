@@ -12,6 +12,7 @@
 #include "Components/Physics3D/Rigidbody3DComponent.hpp"
 #include "Components/Graphics/MeshRendererComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#include "Components/UI/ButtonComponent.hpp"
 #include "Scene/Scene.hpp"
 
 #include <algorithm>
@@ -126,7 +127,7 @@ TEST_CASE("EngineModules: every module binding slot has a signature-matched stub
 	}
 }
 
-TEST_CASE("EngineModules: 2D and 3D components never share an entity, and neither sits on a UI rect") {
+TEST_CASE("EngineModules: 2D and 3D stay exclusive while world transforms can host UI") {
 	ComponentRegistry registry;
 	RegisterBuiltInComponents(registry);
 
@@ -141,7 +142,7 @@ TEST_CASE("EngineModules: 2D and 3D components never share an entity, and neithe
 	const std::type_index rect = typeid(RectTransform2DComponent);
 	for (const std::type_index& a : twoD) {
 		CAPTURE(a.name());
-		CHECK(registry.TypesConflict(a, rect));
+		CHECK(registry.TypesConflict(a, rect) == (a != typeid(Transform2DComponent)));
 		for (const std::type_index& b : threeD) {
 			CAPTURE(b.name());
 			CHECK(registry.TypesConflict(a, b));
@@ -149,7 +150,7 @@ TEST_CASE("EngineModules: 2D and 3D components never share an entity, and neithe
 	}
 	for (const std::type_index& b : threeD) {
 		CAPTURE(b.name());
-		CHECK(registry.TypesConflict(b, rect));
+		CHECK(registry.TypesConflict(b, rect) == (b != typeid(Transform3DComponent)));
 	}
 }
 
@@ -476,4 +477,19 @@ TEST_CASE("ComponentRegistry: direct dependency addition stops after entity dest
 	CHECK_FALSE(registry.AddWithDependencies(survivor, *transient));
 	CHECK(survivor.HasComponent<DirectMutationComponent>());
 	CHECK(registry.GetByTypeId(typeId) == nullptr);
+}
+
+TEST_CASE("World UI widgets preserve their world transform when adding layout dependencies") {
+	ModuleStateRestore restore;
+	EngineModules::ActivateAllCompiled();
+	ComponentRegistry registry;
+	RegisterBuiltInComponents(registry);
+	auto scene = Scene::CreateDetachedScene("World UI components");
+	Entity entity = scene->CreateEmptyEntity();
+	SUBCASE("2D") { entity.AddComponent<Transform2DComponent>(); }
+	SUBCASE("3D") { entity.AddComponent<Transform3DComponent>(); }
+	REQUIRE(registry.AddWithDependencies(entity, typeid(ButtonComponent)));
+	CHECK(entity.HasComponent<RectTransform2DComponent>());
+	CHECK((entity.HasComponent<Transform2DComponent>() || entity.HasComponent<Transform3DComponent>()));
+	CHECK(registry.FindConflictingPair(entity).first == nullptr);
 }

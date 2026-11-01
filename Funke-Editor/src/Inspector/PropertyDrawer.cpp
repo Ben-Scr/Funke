@@ -406,26 +406,9 @@ namespace Funke::PropertyDrawer {
 				: valueMax;
 			ImGui::PushID(d.Name.c_str());
 			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
-			bool changed = false;
-			if (d.Metadata.HasClamp) {
-				// SliderInt + InputInt combo: slider visualises [Min, Max]; input lets user type exact value.
-				const float fullW = ImGui::CalcItemWidth();
-				const float style = ImGui::GetStyle().ItemInnerSpacing.x;
-				const float inputW = std::min(80.0f, fullW * 0.30f);
-				const float sliderW = std::max(40.0f, fullW - inputW - style);
-				ImGui::SetNextItemWidth(sliderW);
-				changed |= ImGui::SliderInt("##Slider", &tmp, clampMin, clampMax,
-					uniform ? "%d" : "-");
-				ImGui::SameLine(0.0f, style);
-				ImGui::SetNextItemWidth(inputW);
-				changed |= ImGui::InputInt("##Value", &tmp, 0, 0,
-					ImGuiInputTextFlags_CharsDecimal);
-			}
-			else {
-				const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 1.0f;
-				changed = ImGui::DragInt("##Value", &tmp, speed, clampMin, clampMax,
-					uniform ? "%d" : "-");
-			}
+			const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 1.0f;
+			const bool changed = ImGui::DragInt("##Value", &tmp, speed, clampMin, clampMax,
+				uniform ? "%d" : "-", ImGuiSliderFlags_AlwaysClamp);
 			ImGui::PopID();
 			if (changed) {
 				if (tmp < clampMin) tmp = clampMin;
@@ -547,7 +530,7 @@ namespace Funke::PropertyDrawer {
 			bool changed = false;
 			if (d.Metadata.HasClamp && clampMax > clampMin) {
 				// [ClampValue] fields: one fill-bar drag (double-click to type); unbounded fields keep plain DragFloat.
-				changed = ImGuiUtils::FillDragFloat("##Value", &tmp, clampMin, clampMax, uniform ? "%.3f" : "-");
+				changed = ImGuiUtils::FillDragFloat("##Value", &tmp, clampMin, clampMax, uniform ? "%.3f" : "-", d.Metadata.DragSpeed);
 			}
 			else {
 				const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 0.1f;

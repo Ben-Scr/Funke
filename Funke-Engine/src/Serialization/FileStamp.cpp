@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Serialization/FileStamp.hpp"
 #include "Serialization/Path.hpp"
+#include "Assets/AssetBundle.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -27,6 +28,10 @@ namespace Funke {
 		FileStamp stamp;
 		if (path.empty()) return stamp;
 		const std::filesystem::path fsPath = Path::FromUtf8(path);
+		if (AssetBundle::GetMountedStamp(fsPath, stamp.Size, stamp.WriteTime)) {
+			stamp.Exists = true;
+			return stamp;
+		}
 		std::error_code ec;
 		stamp.WriteTime = std::filesystem::last_write_time(fsPath, ec);
 		if (ec) return FileStamp{};

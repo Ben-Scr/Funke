@@ -73,6 +73,7 @@ namespace Funke {
 		uint64_t g_NextId = 1;
 		std::unordered_map<uint64_t, Request> g_Requests;
 		std::vector<std::shared_ptr<Work>> g_Work;
+		std::unordered_map<uint64_t, size_t> g_RetainedAssets;
 
 		bool Supports(AssetKind kind) {
 			switch (kind) {
@@ -216,6 +217,7 @@ namespace Funke {
 		if (g_Initialized) return;
 		g_MainThread = std::this_thread::get_id();
 		g_Requests.clear();
+		g_RetainedAssets.clear();
 		g_Initialized = true;
 	}
 
@@ -300,16 +302,35 @@ namespace Funke {
 		}
 	}
 
-	void AssetLoader::Pump() {
+	void AssetLoader::RetainAsset(uint64_t assetId) {
+		if (IsMainThread() && assetId != 0) ++g_RetainedAssets[assetId];
+	}
+
+	void AssetLoader::ReleaseAsset(uint64_t assetId) {
+		if (std::this_thread::get_id() != g_MainThread) return;
+		const auto it = g_RetainedAssets.find(assetId);
+		if (it != g_RetainedAssets.end() && --it->second == 0) g_RetainedAssets.erase(it);
+	}
+
+	bool AssetLoader::IsAssetRetained(uint64_t assetId) {
+		return std::this_thread::get_id() == g_MainThread && g_RetainedAssets.contains(assetId);
+	}
+
+	void AssetLoader::Pump(double budgetMs, size_t maxPublications) {
 		if (!IsMainThread()) return;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double, std::milli>(std::max(0.0, budgetMs));
+		size_t publications = 0;
 		for (auto it = g_Work.begin(); it != g_Work.end();) {
 			const auto& work = *it;
 			Revalidate(work);
 			if (work->Future.valid()) {
 				if (work->Future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) { ++it; continue; }
+				if (HasObservers(work) && (publications >= maxPublications
+					|| (publications != 0 && std::chrono::steady_clock::now() >= deadline))) { ++it; continue; }
 				try {
 					auto prepared = work->Future.get();
 					if (HasObservers(work) && Revalidate(work, &prepared)) {
+						++publications;
 						const bool loaded = prepared.Ready && Publish(*work, prepared);
 						Complete(work, loaded ? AssetLoadStatus::Success : AssetLoadStatus::Failed,
 							loaded ? "" : (prepared.Error.empty() ? "Asset publication failed" : prepared.Error));

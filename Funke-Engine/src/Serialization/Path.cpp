@@ -1,5 +1,6 @@
 #include <pch.hpp>
 #include "Path.hpp"
+#include "Serialization/File.hpp"
 
 #include "Core/Platform.hpp"
 #include "Project/FunkeProject.hpp"
@@ -141,7 +142,7 @@ namespace Funke {
 
         // 1. Packaged build: FunkeAssets next to the executable
         std::string packed = Combine(exeDir, "FunkeAssets", subdirectory);
-        if (std::filesystem::exists(FromUtf8(packed)))
+        if (File::IsDirectory(FromUtf8(packed)))
             return packed;
 
         // 2. Dev layout: shared FunkeAssets one level up (bin/<config>/FunkeAssets/)

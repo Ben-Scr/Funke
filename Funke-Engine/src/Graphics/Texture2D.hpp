@@ -60,6 +60,11 @@ namespace Funke {
 		bool CreateFromPixels(int width, int height, const uint8_t* rgba,
 			Filter filter = Filter::Point, Wrap wrapU = Wrap::Clamp, Wrap wrapV = Wrap::Clamp);
 
+		// Main thread only; publish the view only after all rows have been uploaded.
+		bool CreateForUpload(int width, int height, Filter filter = Filter::Point,
+			Wrap wrapU = Wrap::Clamp, Wrap wrapV = Wrap::Clamp);
+		bool UploadRows(int firstRow, int rowCount, const uint8_t* rgba, size_t byteCount);
+
 		// Re-upload the full image to the existing GPU texture. byteCount must
 		// equal width*height*4. No-op (returns false) if the texture wasn't
 		// created with CreateFromPixels / a CopyDst-capable path. Regenerates

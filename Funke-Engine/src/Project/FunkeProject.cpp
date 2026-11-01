@@ -1912,33 +1912,20 @@ endif())");
 		std::filesystem::path resolvedPath;
 		bool scanFailed = false;
 		std::error_code ec;
-		if (!std::filesystem::is_directory(assetsRoot, ec) || ec) {
+		if (!File::IsDirectory(assetsRoot)) {
 			FNK_CORE_ERROR_TAG("FunkeProject", "Scene lookup for '{}' has no readable Assets directory", sceneName);
 			return {};
 		}
-		for (std::filesystem::recursive_directory_iterator it(
-				 assetsRoot,
-				 std::filesystem::directory_options::none,
-				 ec),
-			 end;
-			 it != end;
-			 it.increment(ec)) {
-			if (ec) {
-				scanFailed = true;
-				break;
-			}
-
-			std::error_code fileError;
-			if (it->is_regular_file(fileError) && !fileError && sameSceneFileName(Path::ToUtf8(it->path().filename()))) {
+		for (const auto& path : File::ListFiles(assetsRoot, true, ec)) {
+			if (sameSceneFileName(Path::ToUtf8(path.filename()))) {
 				if (!resolvedPath.empty()) {
 					FNK_CORE_ERROR_TAG("FunkeProject",
 						"Scene name '{}' is ambiguous: '{}' and '{}' share the same basename",
-						sceneName, Path::ToUtf8(resolvedPath), Path::ToUtf8(it->path()));
+						sceneName, Path::ToUtf8(resolvedPath), Path::ToUtf8(path));
 					return {};
 				}
-				resolvedPath = it->path();
+				resolvedPath = path;
 			}
-			if (fileError) scanFailed = true;
 		}
 		if (ec) scanFailed = true;
 		if (scanFailed) {
@@ -3957,6 +3944,26 @@ public class GameScript : EntityScript
 	FunkeProject::AutomateResult FunkeProject::AutomateForProject(const std::string& projectRootDir,
 		const std::string& configuration, const std::string& platform, const CreateProgressCallback& progressCallback) {
 		AutomateResult result;
+		if (!IsSafeBuildPathToken(configuration, false) || !IsSafeBuildPathToken(platform, false)) {
+			result.Regenerate.Output = "Invalid package build configuration or platform.";
+			return result;
+		}
+		const auto installation = GetEngineInstallation();
+		PackageBuildCache::Snapshot before;
+		std::filesystem::path cachePath;
+		try {
+			FunkeProject project;
+			if (TryLoad(projectRootDir, project, nullptr, false)) {
+				cachePath = PackageBuildCache::CachePath(project, configuration, platform);
+				std::error_code error;
+				std::filesystem::remove(cachePath, error);
+				if (installation.IsValid())
+					before = PackageBuildCache::Capture(project, installation.Root, configuration, platform);
+			}
+		}
+		catch (const std::exception& error) {
+			FNK_CORE_WARN_TAG("ProjectPackages", "Package cache unavailable: {}", error.what());
+		}
 		ReportCreateProgress(progressCallback, 0.05f, "Generating package workspace...");
 		result.Regenerate = RegeneratePackageWorkspaceForProject(projectRootDir);
 
@@ -3971,6 +3978,17 @@ public class GameScript : EntityScript
 		}
 		result.Build = BuildProjectPackages(projectRootDir, configuration, platform, buildProgress);
 		result.RanBuild = true;
+		try {
+			FunkeProject project;
+			if (result.Build.Succeeded && !before.Inputs.empty() && TryLoad(projectRootDir, project, nullptr, false)) {
+				const auto after = PackageBuildCache::Capture(project, installation.Root, configuration, platform);
+				if (before.Inputs == after.Inputs)
+					PackageBuildCache::Store(cachePath, project, after, configuration);
+			}
+		}
+		catch (const std::exception& error) {
+			FNK_CORE_WARN_TAG("ProjectPackages", "Could not cache package build: {}", error.what());
+		}
 		return result;
 	}
 

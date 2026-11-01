@@ -12,6 +12,7 @@
 #include "Components/Graphics/SpotLightComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Core/Application.hpp"
+#include "Gui/GuiRenderer.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
 #include "Graphics/CustomShaderGpu.hpp"
 #include "Graphics/CustomShaderLibrary.hpp"
@@ -35,6 +36,7 @@
 #include "Systems/SkinnedMeshAnimationSystem.hpp"
 #include "Systems/Transform3DHierarchySystem.hpp"
 
+#include <entt/container/dense_map.hpp>
 #include <webgpu/webgpu_cpp.h>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -55,6 +57,27 @@ namespace Funke {
 		constexpr wgpu::TextureFormat k_ShadowFormat = wgpu::TextureFormat::Depth32Float;
 		// Frame mesh slots: the primitives first, then each custom mesh asset drawn this frame.
 		constexpr size_t k_MeshTypeCount = k_PrimitiveMeshTypeCount;
+
+		// Dense frame lookups keep their storage across passes. Mix all 64 bits because
+		// texture handles pack the index in the high half and often share a generation.
+		struct FrameKeyHash {
+			size_t operator()(uint64_t value) const noexcept {
+				value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+				value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+				return static_cast<size_t>(value ^ (value >> 31));
+			}
+		};
+
+		template<typename Value>
+		using FrameLookup = entt::dense_map<uint64_t, Value, FrameKeyHash>;
+
+		template<typename Value>
+		void ResetFrameLookup(FrameLookup<Value>& lookup) {
+			const size_t previousSize = lookup.size();
+			lookup.clear();
+			// clear resets EnTT's bucket count; reserve restores it without reallocating.
+			lookup.reserve(previousSize);
+		}
 
 		struct FrameUniforms {
 			glm::mat4 ViewProjection;
@@ -355,7 +378,8 @@ namespace Funke {
 		};
 
 		// The first enabled DirectionalLight is the main light: its ambient is the flat ambient, it alone casts shadows.
-		SceneLighting CollectLights(const entt::registry& registry, const glm::vec3& cameraPosition, int maxLights) {
+		SceneLighting CollectLights(const entt::registry& registry, const glm::vec3& cameraPosition,
+			const FrustumPlanes& cameraFrustum, int maxLights) {
 			std::vector<Lighting3D::LightCandidate> candidates;
 			SceneLighting result;
 			bool anyLight = false;
@@ -381,12 +405,14 @@ namespace Funke {
 			for (EntityHandle entity : points) {
 				const auto& light = points.get<const PointLightComponent>(entity);
 				const auto& transform = points.get<const Transform3DComponent>(entity);
+				anyLight = true;
+				if (light.Intensity <= 0.0f || light.Range <= 0.0f
+					|| !IntersectsFrustumSphere(cameraFrustum, glm::vec3(transform.WorldMatrix[3]), light.Range)) continue;
 				Lighting3D::LightCandidate candidate;
 				candidate.Type = Lighting3D::LightType::Point;
 				candidate.Position = glm::vec3(transform.WorldMatrix[3]);
 				candidate.Radiance = Lighting3D::SrgbToLinear(light.Color) * std::max(light.Intensity, 0.0f);
-				candidate.Range = std::max(light.Range, 0.0f);
-				anyLight = true;
+				candidate.Range = light.Range;
 				candidates.push_back(candidate);
 			}
 
@@ -394,15 +420,17 @@ namespace Funke {
 			for (EntityHandle entity : spots) {
 				const auto& light = spots.get<const SpotLightComponent>(entity);
 				const auto& transform = spots.get<const Transform3DComponent>(entity);
+				anyLight = true;
+				if (light.Intensity <= 0.0f || light.Range <= 0.0f
+					|| !IntersectsFrustumSphere(cameraFrustum, glm::vec3(transform.WorldMatrix[3]), light.Range)) continue;
 				Lighting3D::LightCandidate candidate;
 				candidate.Type = Lighting3D::LightType::Spot;
 				candidate.Position = glm::vec3(transform.WorldMatrix[3]);
 				const glm::vec3 forward = -glm::vec3(transform.WorldMatrix[2]);
 				candidate.Direction = glm::dot(forward, forward) > 1e-8f ? glm::normalize(forward) : glm::vec3(0.0f, 0.0f, -1.0f);
 				candidate.Radiance = Lighting3D::SrgbToLinear(light.Color) * std::max(light.Intensity, 0.0f);
-				candidate.Range = std::max(light.Range, 0.0f);
+				candidate.Range = light.Range;
 				Lighting3D::SpotAnglesToCosines(light.InnerAngle, light.OuterAngle, candidate.CosInner, candidate.CosOuter);
-				anyLight = true;
 				candidates.push_back(candidate);
 			}
 
@@ -611,7 +639,7 @@ namespace Funke {
 		bool SkinPipelineAttempted = false;
 		bool SkinDispatchLogged = false;
 		std::vector<const MeshBuffers*> FrameMeshes;
-		std::unordered_map<uint64_t, uint32_t> FrameMeshSlots;
+		FrameLookup<uint32_t> FrameMeshSlots;
 		// Keyed by ScenePipelineKey: the MSAA scene target needs its own variants.
 		std::unordered_map<uint64_t, wgpu::RenderPipeline> MeshPipelines;
 		std::unordered_map<uint64_t, wgpu::RenderPipeline> SkyPipelines;
@@ -622,13 +650,20 @@ namespace Funke {
 
 		CustomMaterialBindings CustomBindings;
 		std::vector<FrameCustom> FrameCustoms;
-		std::unordered_map<uint64_t, uint32_t> FrameCustomSlots;
-		// MaterialLibrary + shader lookups resolved once per material per RenderMeshes.
+		FrameLookup<uint32_t> FrameCustomSlots;
+		// Material inputs are shared by all instances in this pass and refreshed on the next one.
 		struct FrameMaterial {
 			const Material* Value = nullptr;
 			const CustomShaderProgram* Program = nullptr;
+			glm::vec4 Color{ 1.0f };
+			glm::vec4 Emissive{ 0.0f };
+			glm::vec4 Surface{ 0.0f };
+			glm::vec4 UvTransform{ 1.0f, 1.0f, 0.0f, 0.0f };
+			uint32_t TextureSlot = 0;
+			uint32_t Custom = 0;
+			bool Transparent = false;
 		};
-		std::unordered_map<uint64_t, FrameMaterial> FrameMaterials;
+		FrameLookup<FrameMaterial> FrameMaterials;
 		// By program id, color format and sample count; failed creations stay cached as null.
 		std::unordered_map<uint64_t, wgpu::RenderPipeline> CustomPipelines;
 		std::unordered_map<uint32_t, wgpu::PipelineLayout> CustomPipelineLayouts;
@@ -649,7 +684,7 @@ namespace Funke {
 		std::vector<DrawItem> DrawItems;
 		std::vector<MeshInstance> InstanceUpload;
 		std::vector<TextureHandle> FrameTextures;
-		std::unordered_map<uint64_t, uint32_t> FrameTextureSlots;
+		FrameLookup<uint32_t> FrameTextureSlots;
 		LightUniforms LightUpload{};
 
 		wgpu::TextureView EnsureOwnDepth(wgpu::Device device, uint32_t width, uint32_t height) {
@@ -1439,6 +1474,7 @@ namespace Funke {
 		};
 
 		PostProcessor Processor;
+		PostProcessScene SceneInputs;
 		Framebuffer SceneFbo;
 		// FXAA result when camera effects still follow it.
 		Framebuffer AntiAliasFbo;
@@ -1786,6 +1822,7 @@ namespace Funke {
 		state.Caller = WebGPUBackend::SaveBoundTarget();
 		state.CallerTarget = caller;
 		state.Settings = effects ? settings : nullptr;
+		state.SceneInputs = {};
 		state.AntiAlias = fxaa;
 		state.Msaa = msaaTarget;
 		state.Intermediate = intermediate;
@@ -1806,6 +1843,11 @@ namespace Funke {
 		PostProcessState& state = *m_PostProcess;
 		state.Active = false;
 		const WebGPUBackend::CurrentTargetInfo target = state.CallerTarget;
+		if (state.Intermediate) {
+			const Framebuffer& depthSource = state.Msaa ? *state.Msaa : state.SceneFbo;
+			state.SceneInputs.Depth = WebGPUBackend::LookupFramebufferDepthSampleView(depthSource.GetBackendId());
+			state.SceneInputs.Samples = depthSource.GetSampleCount();
+		}
 		if (state.Msaa) {
 			const wgpu::TextureView destination = state.Intermediate
 				? WebGPUBackend::LookupFramebufferByFboId(state.SceneFbo.GetBackendId()).ColorView : target.ColorView;
@@ -1834,7 +1876,7 @@ namespace Funke {
 			}
 			if (!antiAliasedToTarget) {
 				state.Processor.Run(*sceneSource, target.ColorView, target.ColorFormat, target.Width, target.Height,
-					state.Settings, m_Settings.PostProcessingQuality, true);
+					state.Settings, m_Settings.PostProcessingQuality, true, &state.SceneInputs);
 			}
 		}
 		WebGPUBackend::RestoreBoundTarget(state.Caller);
@@ -1843,6 +1885,46 @@ namespace Funke {
 		// The caller's depth no longer matches what was drawn; meshes drawn after this clear their own depth again.
 		m_OwnDepthNeedsClear = true;
 		if (target.IsSwapChain) WebGPUBackend::MarkSwapChainRendered();
+	}
+
+	void Renderer3D::RenderWorldUI(Scene& scene, const Camera3DView& view) {
+		if (!m_IsInitialized || !m_Gpu) return;
+		auto* gui = Application::GetInstance()->GetGuiRenderer();
+		if (!gui) return;
+		const auto target = WebGPUBackend::BeginRenderToCurrentTarget();
+		if (!target.Valid) return;
+		const auto saved = WebGPUBackend::SaveBoundTarget();
+		if (!target.HasDepth) {
+			auto withDepth = saved;
+			withDepth.ColorView = target.ColorView;
+			withDepth.ColorFormat = target.ColorFormat;
+			withDepth.Width = target.Width;
+			withDepth.Height = target.Height;
+			withDepth.SampleCount = target.SampleCount;
+			withDepth.IsSwapChain = false;
+			withDepth.DepthView = m_Gpu->EnsureOwnDepth(WebGPUBackend::GetDevice(), target.Width, target.Height);
+			if (!withDepth.DepthView) return;
+			if (m_OwnDepthNeedsClear) {
+				wgpu::RenderPassDepthStencilAttachment depth{};
+				depth.view = withDepth.DepthView;
+				depth.depthLoadOp = wgpu::LoadOp::Clear;
+				depth.depthStoreOp = wgpu::StoreOp::Store;
+				depth.depthClearValue = 1.0f;
+				depth.stencilLoadOp = wgpu::LoadOp::Clear;
+				depth.stencilStoreOp = wgpu::StoreOp::Store;
+				wgpu::RenderPassDescriptor desc{};
+				desc.depthStencilAttachment = &depth;
+				auto pass = WebGPUBackend::GetFrameEncoder().BeginRenderPass(&desc);
+				pass.End();
+				m_OwnDepthNeedsClear = false;
+			}
+			WebGPUBackend::RestoreBoundTarget(withDepth);
+		}
+		gui->RenderWorldScene(scene, view.Projection * view.View);
+		if (!target.HasDepth) {
+			WebGPUBackend::RestoreBoundTarget(saved);
+			if (target.IsSwapChain) WebGPUBackend::MarkSwapChainRendered();
+		}
 	}
 
 	bool Renderer3D::BeginFrame() {
@@ -1875,12 +1957,14 @@ namespace Funke {
 		m_OwnDepthNeedsClear = true;
 
 		const Camera3DView view = MakeView(cameraWorld, camera, GetCurrentTargetAspect());
-		const auto* postProcessing = registry.try_get<PostProcessing2DComponent>(cameraEntity);
+		const auto* postProcessing = camera.PostProcessingEnabled
+			? registry.try_get<PostProcessing2DComponent>(cameraEntity) : nullptr;
 		const bool postProcess = BeginPostProcess(postProcessing, camera.ClearColor);
 		RenderSky(view, cameraScene);
 		m_SceneProvider([&](Scene& scene) {
 			RenderScene(scene, view);
 		});
+		m_SceneProvider([&](Scene& scene) { RenderWorldUI(scene, view); });
 		if (postProcess) EndPostProcess();
 		// Runtime debug lines (physics overlay); the editor flushes its queue into the Editor View itself.
 		if (!Application::IsEditor()) FlushLines(view, true);
@@ -1973,6 +2057,12 @@ namespace Funke {
 
 	void Renderer3D::RenderScene(Scene& scene, const Camera3DView& view) {
 		if (!m_IsInitialized || !m_Gpu) return;
+		if (m_PostProcess && m_PostProcess->Active) {
+			// Empty/sky-only scenes still need the real camera for depth reconstruction.
+			m_PostProcess->SceneInputs.View = view.View;
+			m_PostProcess->SceneInputs.Projection = view.Projection;
+			m_PostProcess->SceneInputs.Position = view.Position;
+		}
 		FUNKE_PROFILE_SCOPE("Renderer3D.RenderScene");
 		Transform3DHierarchySystem::Propagate(scene);
 		RenderMeshes(scene, view);
@@ -1991,13 +2081,13 @@ namespace Funke {
 		gpu.Instances.clear();
 		gpu.DrawItems.clear();
 		gpu.FrameTextures.clear();
-		gpu.FrameTextureSlots.clear();
+		ResetFrameLookup(gpu.FrameTextureSlots);
 		gpu.FrameMeshes.clear();
 		gpu.FrameSkinning.clear();
-		gpu.FrameMeshSlots.clear();
+		ResetFrameLookup(gpu.FrameMeshSlots);
 		gpu.FrameCustoms.clear();
-		gpu.FrameCustomSlots.clear();
-		gpu.FrameMaterials.clear();
+		ResetFrameLookup(gpu.FrameCustomSlots);
+		ResetFrameLookup(gpu.FrameMaterials);
 		for (const auto& primitive : gpu.Meshes) gpu.FrameMeshes.push_back(&primitive);
 		bool anyCaster = false;
 		const TextureHandle whiteTexture = TextureManager::GetDefaultTexture(DefaultTexture::Pixel);
@@ -2021,51 +2111,46 @@ namespace Funke {
 			return slot->second;
 		};
 
-		static const Material k_FallbackMaterials[2] = {
-			[] { Material m; m.Lit = false; return m; }(),
-			[] { Material m; m.Lit = true; return m; }(),
-		};
+		static const Material k_FallbackMaterial;
 
 		auto submit = [&](size_t meshIndex, const glm::vec3& localMin, const glm::vec3& localMax, const glm::mat4& world,
 			uint64_t materialGuid, const Color& color, bool lit, bool castShadows, bool cullable) {
 			auto [memo, firstUse] = gpu.FrameMaterials.try_emplace(materialGuid);
+			auto& prepared = memo->second;
 			if (firstUse) {
-				memo->second.Value = MaterialLibrary::Get(materialGuid);
-				const Material* resolved = memo->second.Value ? memo->second.Value : &k_FallbackMaterials[0];
+				prepared.Value = MaterialLibrary::Get(materialGuid);
+				const Material* material = prepared.Value ? prepared.Value : &k_FallbackMaterial;
 				// A user shader replaces the standard one; its color input is the renderer's Color alone.
-				memo->second.Program = resolved->Shader != 0 && gpu.CustomBindings.IsInitialized()
-					? CustomShaderGpu::GetProgram(resolved->Shader, ShaderTarget::Mesh3D) : nullptr;
+				prepared.Program = material->Shader != 0 && gpu.CustomBindings.IsInitialized()
+					? CustomShaderGpu::GetProgram(material->Shader, ShaderTarget::Mesh3D) : nullptr;
+				prepared.Transparent = prepared.Program ? prepared.Program->Description.Blend != ShaderBlend::Opaque
+					: material->Surface == MaterialSurface::Transparent;
+				if (prepared.Program) {
+					auto [it, inserted] = gpu.FrameCustomSlots.emplace(materialGuid, static_cast<uint32_t>(gpu.FrameCustoms.size()));
+					if (inserted) gpu.FrameCustoms.push_back({ materialGuid, material, prepared.Program, nullptr, nullptr });
+					prepared.Custom = it->second + 1;
+					prepared.Emissive.w = material->Fog ? 1.0f : 0.0f;
+				}
+				else {
+					prepared.Color = ToVec4(material->BaseColor);
+					prepared.Emissive = glm::vec4(Lighting3D::SrgbToLinear(material->EmissiveColor) * std::max(material->EmissiveIntensity, 0.0f),
+						material->Fog ? 1.0f : 0.0f);
+					prepared.Surface = { material->Metallic, material->Roughness, material->Lit ? 1.0f : 0.0f, prepared.Transparent ? 1.0f : 0.0f };
+					prepared.UvTransform = { material->Tiling.x, material->Tiling.y, material->Offset.x, material->Offset.y };
+					prepared.TextureSlot = textureSlot(gpu.ResolveMaterialTexture(material->BaseColorTexture));
+				}
 			}
-			const Material* material = memo->second.Value ? memo->second.Value : &k_FallbackMaterials[lit ? 1 : 0];
-			const CustomShaderProgram* program = memo->second.Program;
-
-			uint32_t custom = 0;
-			if (program) {
-				auto [it, inserted] = gpu.FrameCustomSlots.emplace(materialGuid, static_cast<uint32_t>(gpu.FrameCustoms.size()));
-				if (inserted) gpu.FrameCustoms.push_back({ materialGuid, material, program, nullptr, nullptr });
-				custom = it->second + 1;
-			}
+			const CustomShaderProgram* program = prepared.Program;
 
 			MeshInstance instance{};
 			for (int i = 0; i < 4; ++i) instance.Model[i] = world[i];
 			const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(world)));
 			for (int i = 0; i < 3; ++i) instance.Normal[i] = glm::vec4(normalMatrix[i], 0.0f);
-			const bool transparent = program ? program->Description.Blend != ShaderBlend::Opaque : material->Surface == MaterialSurface::Transparent;
-			if (program) {
-				instance.Color = ToVec4(color);
-				instance.Emissive = glm::vec4(0.0f, 0.0f, 0.0f, material->Fog ? 1.0f : 0.0f);
-				instance.UvTransform = { 1.0f, 1.0f, 0.0f, 0.0f };
-			}
-			else {
-				instance.Color = ToVec4(material->BaseColor) * ToVec4(color);
-				// w = 1 lets the camera's fog reach this mesh.
-				instance.Emissive = glm::vec4(Lighting3D::SrgbToLinear(material->EmissiveColor) * std::max(material->EmissiveIntensity, 0.0f),
-					material->Fog ? 1.0f : 0.0f);
-				instance.Surface = { material->Metallic, material->Roughness, material->Lit ? 1.0f : 0.0f, transparent ? 1.0f : 0.0f };
-				instance.UvTransform = { material->Tiling.x, material->Tiling.y, material->Offset.x, material->Offset.y };
-			}
-
-			const uint32_t slot = program ? 0u : textureSlot(gpu.ResolveMaterialTexture(material->BaseColorTexture));
+			instance.Color = prepared.Color * ToVec4(color);
+			instance.Emissive = prepared.Emissive;
+			instance.Surface = prepared.Surface;
+			instance.UvTransform = prepared.UvTransform;
+			if (!prepared.Value) instance.Surface.z = lit ? 1.0f : 0.0f;
 
 			// Arvo: the world AABB of a transformed local box.
 			glm::vec3 localExtent = (localMax - localMin) * 0.5f;
@@ -2079,8 +2164,8 @@ namespace Funke {
 				+ glm::abs(basis[2]) * localExtent.z;
 
 			const glm::vec3 toCamera = worldCenter - view.Position;
-			DrawItem item{ MakeDrawKey(meshIndex, castShadows, slot), static_cast<uint32_t>(gpu.Instances.size()),
-				glm::dot(toCamera, toCamera), transparent, custom };
+			DrawItem item{ MakeDrawKey(meshIndex, castShadows, prepared.TextureSlot), static_cast<uint32_t>(gpu.Instances.size()),
+				glm::dot(toCamera, toCamera), prepared.Transparent, prepared.Custom };
 			item.BoundsCenter = worldCenter;
 			item.BoundsExtent = worldExtent;
 			item.Cullable = cullable;
@@ -2149,9 +2234,9 @@ namespace Funke {
 		wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
 		if (!queue || !encoder) return;
 
-		const SceneLighting lighting = CollectLights(registry, view.Position, m_Settings.MaxLights);
+		const FrustumPlanes cameraFrustum = ExtractFrustum(view.Projection * view.View);
+		const SceneLighting lighting = CollectLights(registry, view.Position, cameraFrustum, m_Settings.MaxLights);
 		m_LightCount = std::max(m_LightCount, static_cast<uint32_t>(lighting.Selected.size()));
-		gpu.LightUpload = {};
 		for (size_t i = 0; i < lighting.Selected.size(); ++i) {
 			const Lighting3D::LightCandidate& light = lighting.Selected[i];
 			GpuLight& out = gpu.LightUpload[i];
@@ -2189,31 +2274,48 @@ namespace Funke {
 				frame.Params.w = static_cast<float>(lighting.ShadowedLight);
 				frame.ShadowParams = glm::vec4(1.0f / static_cast<float>(shadowResolution), texelWorld / std::max(depthRange, 1e-4f),
 					texelWorld * 1.5f, m_Settings.ShadowDistance);
-				queue.WriteBuffer(gpu.ShadowUniformBuffer, 0, glm::value_ptr(lightViewProjection), sizeof(glm::mat4));
 				shadowView = map;
 			}
 		}
 		else if (shadowResolution == 0 && gpu.ShadowView) {
 			gpu.ReleaseShadowMap();
 		}
-
 		{
 			FUNKE_PROFILE_SCOPE("Renderer3D.Cull");
-			const FrustumPlanes cameraFrustum = ExtractFrustum(frame.ViewProjection);
 			const bool shadowPass = frame.Params.w >= 0.0f;
 			const FrustumPlanes shadowFrustum = ExtractFrustum(frame.LightViewProjection);
+			anyCaster = false;
 			std::erase_if(gpu.DrawItems, [&](DrawItem& item) {
-				if (!item.Cullable) return false;
-				const bool visible = IntersectsFrustum(cameraFrustum, item.BoundsCenter, item.BoundsExtent);
-				bool casts = KeyCastsShadow(item.Key);
-				if (casts && (!shadowPass || !IntersectsFrustum(shadowFrustum, item.BoundsCenter, item.BoundsExtent))) {
-					casts = false;
-					item.Key |= uint64_t(1) << 32;
-				}
+				const bool visible = !item.Cullable || IntersectsFrustum(cameraFrustum, item.BoundsCenter, item.BoundsExtent);
+				const bool casts = shadowPass && KeyCastsShadow(item.Key)
+					&& (!item.Cullable || IntersectsFrustum(shadowFrustum, item.BoundsCenter, item.BoundsExtent));
+				if (!casts) item.Key |= uint64_t(1) << 32;
 				if (!visible) item.Key |= k_KeyHiddenBit;
+				anyCaster |= casts;
 				return !visible && !casts;
 			});
+			// Post effects can sample sun visibility even when the map contains no casters.
+			if (!anyCaster && !(m_PostProcess && m_PostProcess->Active)) {
+				frame.Params.w = -1.0f;
+				frame.ShadowParams = glm::vec4(0.0f);
+				shadowView = gpu.DummyShadowView;
+			}
 		}
+		if (m_PostProcess && m_PostProcess->Active) {
+			auto& inputs = m_PostProcess->SceneInputs;
+			inputs.View = view.View;
+			inputs.Projection = view.Projection;
+			inputs.Position = view.Position;
+			inputs.LightViewProjection = frame.LightViewProjection;
+			inputs.ShadowParams = frame.ShadowParams;
+			inputs.Shadow = shadowView;
+			if (frame.Params.w >= 0.0f) {
+				const auto& sun = lighting.Selected[static_cast<size_t>(lighting.ShadowedLight)];
+				inputs.SunDirection = glm::vec4(-sun.Direction, 1.0f);
+				inputs.SunRadiance = glm::vec4(sun.Radiance, 1.0f);
+			}
+		}
+
 		if (gpu.DrawItems.empty()) return;
 
 		// Opaque items batch by key; transparent ones follow, farthest first, so blending composites correctly.
@@ -2270,11 +2372,14 @@ namespace Funke {
 			frame.FogParams = glm::vec4(environment.FogStart, std::max(environment.FogEnd, environment.FogStart + 0.01f), 0.0f, 0.0f);
 		}
 		queue.WriteBuffer(gpu.FrameUniformBuffer, 0, &frame, sizeof(frame));
-		queue.WriteBuffer(gpu.LightBuffer, 0, gpu.LightUpload.data(), sizeof(LightUniforms));
+		if (!lighting.Selected.empty()) {
+			queue.WriteBuffer(gpu.LightBuffer, 0, gpu.LightUpload.data(), lighting.Selected.size() * sizeof(GpuLight));
+		}
 		queue.WriteBuffer(gpu.InstanceBuffer, 0, gpu.InstanceUpload.data(), instanceBytes);
 
 		if (frame.Params.w >= 0.0f) {
 			FUNKE_PROFILE_SCOPE("Renderer3D.Shadows");
+			queue.WriteBuffer(gpu.ShadowUniformBuffer, 0, glm::value_ptr(frame.LightViewProjection), sizeof(glm::mat4));
 			wgpu::RenderPassDepthStencilAttachment shadowDepth{};
 			shadowDepth.view = shadowView;
 			shadowDepth.depthLoadOp = wgpu::LoadOp::Clear;
@@ -2289,6 +2394,7 @@ namespace Funke {
 			wgpu::RenderPassEncoder shadowPass = encoder.BeginRenderPass(&shadowPassDesc);
 			wgpu::RenderPipeline standardShadow = gpu.GetShadowPipeline(device);
 			wgpu::RenderPipeline boundShadow;
+			WGPUBindGroup boundShadowMaterial = nullptr;
 			shadowPass.SetVertexBuffer(1, gpu.InstanceBuffer);
 			// Custom slot whose fn vertex moves the shadow, or 0 for the standard shadow pipeline.
 			auto shadowSlot = [&](const DrawItem& item) -> uint32_t {
@@ -2310,9 +2416,16 @@ namespace Funke {
 					if (runPipeline.Get() != boundShadow.Get()) {
 						shadowPass.SetPipeline(runPipeline);
 						boundShadow = runPipeline;
+						boundShadowMaterial = nullptr;
 						shadowPass.SetBindGroup(0, slot != 0 ? gpu.CustomShadowFrameGroup : gpu.ShadowBindGroup);
 					}
-					if (slot != 0) shadowPass.SetBindGroup(1, gpu.FrameCustoms[slot - 1].Group);
+					if (slot != 0) {
+						const auto& group = gpu.FrameCustoms[slot - 1].Group;
+						if (group.Get() != boundShadowMaterial) {
+							shadowPass.SetBindGroup(1, group);
+							boundShadowMaterial = group.Get();
+						}
+					}
 					shadowPass.SetVertexBuffer(0, buffers.Vertices);
 					shadowPass.SetIndexBuffer(buffers.Indices, wgpu::IndexFormat::Uint32);
 					shadowPass.DrawIndexed(buffers.IndexCount, static_cast<uint32_t>(end - begin), 0, 0, static_cast<uint32_t>(begin));
@@ -2351,6 +2464,7 @@ namespace Funke {
 		pass.SetVertexBuffer(1, gpu.InstanceBuffer);
 		size_t boundMesh = std::numeric_limits<size_t>::max();
 		wgpu::RenderPipeline boundPipeline;
+		WGPUBindGroup boundMaterial = nullptr;
 		uint32_t drawnInstances = 0;
 		if (wireframe) {
 			// One pipeline and no material group, so batches only split per mesh.
@@ -2408,13 +2522,17 @@ namespace Funke {
 					if (itemPipeline.Get() != boundPipeline.Get()) {
 						pass.SetPipeline(itemPipeline);
 						boundPipeline = itemPipeline;
+						boundMaterial = nullptr;
 					}
 					if (boundMesh != mesh) {
 						pass.SetVertexBuffer(0, buffers.Vertices);
 						pass.SetIndexBuffer(buffers.Indices, wgpu::IndexFormat::Uint32);
 						boundMesh = mesh;
 					}
-					pass.SetBindGroup(1, materialGroup);
+					if (materialGroup.Get() != boundMaterial) {
+						pass.SetBindGroup(1, materialGroup);
+						boundMaterial = materialGroup.Get();
+					}
 					pass.DrawIndexed(buffers.IndexCount, static_cast<uint32_t>(end - begin), 0, 0, static_cast<uint32_t>(begin));
 					++m_DrawCalls;
 					m_GeometryTotals.AddMesh(buffers.IndexCount, buffers.VertexCount, static_cast<uint32_t>(end - begin));

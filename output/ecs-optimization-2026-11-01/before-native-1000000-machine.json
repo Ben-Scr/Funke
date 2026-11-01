@@ -1,0 +1,102 @@
+{
+  "Dirty": true,
+  "ActiveCompilers": [],
+  "OS": {
+    "Caption": "Microsoft Windows 11 Pro",
+    "Version": "10.0.26200",
+    "FreePhysicalMemory": 9165924
+  },
+  "Sources": [
+    {
+      "Algorithm": "SHA256",
+      "Hash": "4259A9BF5BBA82BDB8964667023A7DF54BE2D280E1DB8E4416F7F0EAD58C9375",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\CMakeLists.txt"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "782A9A96DBC421166D7456BA9C4D21AB0F285F7F6560E40326B4AAB5A538DE2B",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\Compare.py"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "9C37F4E2DA213C2AF91B00EF74714673AF0A0EE740D42E5069CCDB0EF737A976",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\ManagedEcsBenchmark.cs"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "46E0244BC60DF495647BC30B09EBC483CC2EABE098607E8B87DA59B75F2C7274",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\NativeEcsBenchmark.cpp"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "03F345E3947C436E3B8CD178F4C6642A5AD16E49E4B3C676F8FC595196052E2A",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\NativeScriptExports.cpp"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "7027F038AA7405817920A8CAB944967002004D6C7D9177B446C5F5D0BD8C97A5",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\Prepare.ps1"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "7EBE15BC645E98DE0343286F80C3004B3447E8443FF482D4016CA062F8E84FD5",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\Run.ps1"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "C8B592368EF76B9836447F3DD7CFD1D99DE2286C804AE403392455A534ED85BB",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\Summarize.ps1"
+    }
+  ],
+  "CPU": {
+    "Name": "AMD Ryzen 9 7900X 12-Core Processor            ",
+    "NumberOfCores": 12,
+    "NumberOfLogicalProcessors": 24
+  },
+  "Filter": "NativeDirect|NativeECBParallel|NativeParallelRecordECB",
+  "Binaries": [
+    {
+      "Algorithm": "SHA256",
+      "Hash": "92B11BE6B422AC40309EC350A2A68B9C1C18F1B41AA573808C5BA197BCC8FDF6",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsBefore-20261101\\runtime\\Funke-Runtime.exe"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "14B9F71D5325E97AE160C1E5E8984A02A2A88BF6F27CBE0BE37D76CCA37E3345",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsBefore-20261101\\runtime\\Funke-Engine.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "4741DF8452BDDFF266E905C2324849A1A6D98FBFF629EBE550B70A57257EB113",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsBefore-20261101\\runtime\\Funke-ScriptCore.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "CE4AA6BBE3C71746F2964C45DB9A2536863DDB70DB36133781E9DAD671B728F5",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsBefore-20261101\\project\\bin\\Release\\EcsNativeComparison.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "0C159D966A3281C877FAA006367E86254FE08F84E76179086F5A6FBDD59F7A5E",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsBefore-20261101\\project\\bin\\Release-windows-x86_64\\EcsNativeComparison-NativeScripts\\EcsNativeComparison-NativeScripts.dll"
+    }
+  ],
+  "Memory": [
+    {
+      "Capacity": 17179869184,
+      "ConfiguredClockSpeed": 6000
+    },
+    {
+      "Capacity": 17179869184,
+      "ConfiguredClockSpeed": 6000
+    }
+  ],
+  "Warmups": 3,
+  "Count": 1000000,
+  "Language": "Native",
+  "Samples": 9,
+  "GitHead": "ae672bf6a048ae6fcb7f4c3755f79f9e62859644",
+  "Timestamp": "2026-11-01T16:30:32.4374925+01:00",
+  "PowerScheme": "GUID des Energieschemas: 381b4222-f694-41f0-9685-ff5bb260df2e  (Ausbalanciert)",
+  "Purpose": "Performance measurement"
+}

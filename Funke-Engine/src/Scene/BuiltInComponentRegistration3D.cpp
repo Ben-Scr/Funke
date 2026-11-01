@@ -170,6 +170,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 		ComponentInfo cameraInfo{ "Camera 3D", "3D", ComponentCategory::Component };
 		cameraInfo.serializedName = "Camera3D";
 		cameraInfo.properties = {
+			Properties::Make("PostProcessingEnabled", "Post Processing", &Camera3DComponent::PostProcessingEnabled),
 			Properties::Make("Projection", "Projection", &Camera3DComponent::Projection),
 			Properties::Make("FieldOfView", "Field Of View", &Camera3DComponent::FieldOfView,
 				Properties::Meta::Clamp(1.0, 179.0, 0.5f).WithEnabledIf([](const Entity& e) {
@@ -216,6 +217,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			const auto& c = e.GetComponent<Camera3DComponent>();
 			Json::Value v = Json::Value::MakeObject();
 			v.AddMember("projection", Json::Value(static_cast<int>(c.Projection)));
+			if (!c.PostProcessingEnabled) v.AddMember("postProcessing", Json::Value(false));
 			v.AddMember("fov", Json::Value(c.FieldOfView));
 			v.AddMember("orthoSize", Json::Value(c.OrthographicSize));
 			v.AddMember("near", Json::Value(c.NearClip));
@@ -243,6 +245,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 			auto& c = e.GetComponent<Camera3DComponent>();
 			const Camera3DComponent d{};
 			c.Projection = ReadEnum(v, "projection", d.Projection, static_cast<int>(CameraProjection::Orthographic));
+			c.PostProcessingEnabled = ReadBool(v, "postProcessing", d.PostProcessingEnabled);
 			c.FieldOfView = ReadFloat(v, "fov", d.FieldOfView);
 			c.OrthographicSize = ReadFloat(v, "orthoSize", d.OrthographicSize);
 			c.NearClip = ReadFloat(v, "near", d.NearClip);

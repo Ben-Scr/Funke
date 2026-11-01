@@ -323,6 +323,13 @@ public class TextRenderer : Component
 
 public class Camera2D : Component
 {
+    /// <summary>Enables this camera's Post Processing effects; global graphics settings must also allow them.</summary>
+    public bool PostProcessingEnabled
+    {
+        get => InternalCalls.Camera2D_GetPostProcessingEnabled(RequireComponent<Camera2D>());
+        set => InternalCalls.Camera2D_SetPostProcessingEnabled(RequireComponent<Camera2D>(), value);
+    }
+
     public float OrthographicSize
     {
         get => InternalCalls.Camera2D_GetOrthographicSize(RequireComponent<Camera2D>());
@@ -869,6 +876,9 @@ public class AudioSource : Component
     public float Panning { get => ReadSpatial(4); set => WriteSpatial(4, value); }
     /// <summary>Pitch shift when source and listener move towards or away from each other; 0 = off, 1 = physical.</summary>
     public float DopplerLevel { get => ReadSpatial(5); set => WriteSpatial(5, value); }
+
+    /// <summary>Requires Spatial and headphones; replaces Panning and mixes stereo clips to mono before filtering.</summary>
+    public bool Hrtf { get => ReadSpatial(6) != 0f; set => WriteSpatial(6, value ? 1f : 0f); }
 
     private float ReadSpatial(int index)
     {

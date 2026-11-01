@@ -12,7 +12,7 @@ This tutorial uses built-in APIs to keep setup small. For tilemaps, install **Fu
 
 | You need | For | Download |
 |---|---|---|
-| Windows 10/11 x64 with a D3D12- or Vulkan-capable GPU, a 64-bit Linux with a Vulkan driver, or macOS 11+ | running the editor | — |
+| Windows 10/11 x64 with a D3D12- or Vulkan-capable GPU, Linux x64 with a Vulkan driver (release baseline: Ubuntu 24.04), or macOS 15+ | running the editor | [Windows setup](Editor/Installer.md), [Linux setup](../../installer/linux/README.md), [macOS setup](../../installer/macos/README.md) |
 | **.NET 10 SDK** for your CPU | compiling C# scripts | [dotnet.microsoft.com](https://dotnet.microsoft.com/download/dotnet/10.0) |
 | A C++ toolchain: MSVC Build Tools (v143) on Windows, GCC/Clang + make on Linux, Xcode Command Line Tools on macOS | only native C++ scripts and packages | [visualstudio.microsoft.com](https://visualstudio.microsoft.com/visual-cpp-build-tools/) |
 
@@ -101,7 +101,7 @@ Some small next steps, each using one new feature:
 
 1. Open **Project Settings** and set the executable name, company and version. The company and name also decide where saves live: `%LOCALAPPDATA%\<Company>\<Name>`.
 2. Make sure **SampleScene** is in **Build Scenes** and set as the startup scene.
-3. Open the **Build** panel, choose the **Release** profile, pick an empty output folder outside the project, and click **Build**.
+3. Open the **Build** panel, choose a profile for your desktop platform, set its **Configuration** to **Release**, pick an empty output folder outside the project, and click **Build**.
 
 The output folder is your game. Desktop build profiles include .NET by default, so players do not need to install it separately. Windows players still need the [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe). Turn off **Build Profiles > Include .NET Runtime** only when your installer supplies .NET or your players already have it. See [Building and Shipping](Editor/Building-and-Shipping.md) for the full release checklist.
 

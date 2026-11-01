@@ -242,16 +242,18 @@ fn fnk_envBRDF(f0: vec3<f32>, roughness: f32, NoV: f32) -> vec3<f32> {
 	return f0 * ab.x + vec3<f32>(ab.y);
 }
 
-fn fnk_pointAttenuation(dist: f32, lightRange: f32) -> f32 {
-	if (dist >= lightRange) {
-		return 0.0;
-	}
-	let ratio = dist / lightRange;
-	let window = clamp(1.0 - ratio * ratio * ratio * ratio, 0.0, 1.0);
-	return (window * window) / (dist * dist + 1.0);
+fn fnk_pointAttenuation(distanceSq: f32, rangeSq: f32) -> f32 {
+	let ratioSq = distanceSq / rangeSq;
+	let window = clamp(1.0 - ratioSq * ratioSq, 0.0, 1.0);
+	return (window * window) / (distanceSq + 1.0);
 }
 
 fn fnk_shadowFactor(worldPos: vec3<f32>, normal: vec3<f32>) -> f32 {
+	let toCamera = worldPos - fnk_frame.cameraPos.xyz;
+	let distanceSq = dot(toCamera, toCamera);
+	if (distanceSq >= fnk_frame.shadowParams.w * fnk_frame.shadowParams.w) {
+		return 1.0;
+	}
 	let lp = fnk_frame.lightViewProj * vec4<f32>(worldPos + normal * fnk_frame.shadowParams.z, 1.0);
 	let ndc = lp.xyz / lp.w;
 	let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
@@ -266,7 +268,7 @@ fn fnk_shadowFactor(worldPos: vec3<f32>, normal: vec3<f32>) -> f32 {
 			sum += textureSampleCompareLevel(fnk_shadowMap, fnk_shadowSampler, uv + vec2<f32>(f32(x), f32(y)) * texel, depth);
 		}
 	}
-	let fade = smoothstep(fnk_frame.shadowParams.w * 0.85, fnk_frame.shadowParams.w, length(worldPos - fnk_frame.cameraPos.xyz));
+	let fade = smoothstep(fnk_frame.shadowParams.w * 0.85, fnk_frame.shadowParams.w, sqrt(distanceSq));
 	return mix(sum / 9.0, 1.0, fade);
 }
 
@@ -316,9 +318,13 @@ fn fnk_shade(s: SurfaceInput, o: SurfaceOutput, fogged: f32) -> vec4<f32> {
 		var attenuation = 1.0;
 		if (lightType > 0.5) {
 			let toLight = light.positionRange.xyz - s.worldPosition;
-			let dist = length(toLight);
-			l = toLight / max(dist, 1e-4);
-			attenuation = fnk_pointAttenuation(dist, light.positionRange.w);
+			let distanceSq = dot(toLight, toLight);
+			let rangeSq = light.positionRange.w * light.positionRange.w;
+			if (distanceSq >= rangeSq || dot(n, toLight) <= 0.0) {
+				continue;
+			}
+			l = toLight * inverseSqrt(max(distanceSq, 1e-8));
+			attenuation = fnk_pointAttenuation(distanceSq, rangeSq);
 			if (lightType > 1.5) {
 				let cosAngle = dot(-l, light.directionType.xyz);
 				let t = clamp((cosAngle - light.spot.y) / max(light.spot.x - light.spot.y, 1e-4), 0.0, 1.0);
@@ -493,6 +499,51 @@ fn fs_main(in: FnkVaryings) -> @location(0) vec4<f32> {
 		constexpr const char* k_PostProcessPrelude = R"WGSL(
 @group(0) @binding(0) var screenTexture: texture_2d<f32>;
 @group(0) @binding(1) var screenSampler: sampler;
+
+struct FnkPostScene {
+	lightViewProj: mat4x4<f32>,
+	sunDirection: vec4<f32>,
+	sunRadiance: vec4<f32>,
+	shadowParams: vec4<f32>,
+	flags: vec4<f32>,
+};
+@group(2) @binding(0) var<uniform> scene: FnkPostScene;
+@group(2) @binding(1) var fnk_sceneDepth: texture_depth_2d;
+@group(2) @binding(2) var fnk_sceneDepthMsaa: texture_depth_multisampled_2d;
+@group(2) @binding(3) var fnk_sceneShadow: texture_depth_2d;
+@group(2) @binding(4) var fnk_sceneShadowSampler: sampler_comparison;
+
+// Raw WebGPU depth (0 near, 1 far). MSAA chooses the nearest sample to avoid edge halos.
+fn sampleSceneDepth(uv: vec2<f32>) -> f32 {
+	if (scene.flags.x < 0.5) { return 1.0; }
+	if (scene.flags.y > 1.5) {
+		let size = vec2<i32>(textureDimensions(fnk_sceneDepthMsaa));
+		let p = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1);
+		var depth = 1.0;
+		for (var i = 0; i < i32(scene.flags.y); i++) {
+			depth = min(depth, textureLoad(fnk_sceneDepthMsaa, p, i));
+		}
+		return depth;
+	}
+	let size = vec2<i32>(textureDimensions(fnk_sceneDepth));
+	return textureLoad(fnk_sceneDepth, clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1), 0);
+}
+
+fn sceneWorldPosition(uv: vec2<f32>, depth: f32) -> vec3<f32> {
+	let p = globals.invViewProj * vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+	return p.xyz / p.w;
+}
+
+// Visibility of the main shadowed sun at a point in space. Outside the shadow volume is unknown/dark.
+fn sampleSunVisibility(p: vec3<f32>) -> f32 {
+	if (scene.flags.z < 0.5) { return 0.0; }
+	let light = scene.lightViewProj * vec4<f32>(p, 1.0);
+	let ndc = light.xyz / light.w;
+	let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+	if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || ndc.z < 0.0 || ndc.z > 1.0) { return 0.0; }
+	let visible = textureSampleCompareLevel(fnk_sceneShadow, fnk_sceneShadowSampler, uv, ndc.z - scene.shadowParams.y * 0.15);
+	return visible * (1.0 - smoothstep(scene.shadowParams.w * 0.85, scene.shadowParams.w, distance(p, globals.cameraPosition.xyz)));
+}
 
 struct SurfaceInput {
 	uv: vec2<f32>,
@@ -669,6 +720,7 @@ fn fs_main(in: FnkVaryings) -> @location(0) vec4<f32> {
 				"globals", "material", "Globals", "MaterialProperties", "VertexData", "SurfaceInput", "SurfaceOutput",
 				"defaultSurface", "surface", "vertex", "srgbToLinear", "linearToSrgb", "vs_main", "fs_main", "vs_shadow",
 				"mainTexture", "mainSampler", "screenTexture", "screenSampler",
+				"scene", "sampleSceneDepth", "sceneWorldPosition", "sampleSunVisibility",
 				"directionToPanoramaUv", "rotateY", "addSun",
 				// WGSL keywords and predeclared types a property name could plausibly hit.
 				"alias", "break", "case", "const", "continue", "default", "diagnostic", "discard", "else", "enable",

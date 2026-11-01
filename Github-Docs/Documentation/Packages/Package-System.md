@@ -56,7 +56,7 @@ When project files are generated for a project, `project.json`'s `packages` arra
 
 | State | Result |
 |-------|--------|
-| Field present, non-empty | Only the listed packages register. Their dependencies are pulled in automatically. |
+| Field present, non-empty | The listed roots and their transitive dependencies register, in dependency order. |
 | Field present but empty `[]` | No packages register (a fresh project). |
 | Field absent / file missing | **No packages register** — fail-closed. Without an explicit list, intent is unknown. |
 | No project passed at all | Engine-developer mode: scan everything under `<repo>/packages/`. |
@@ -128,7 +128,7 @@ Configurations are **Debug / Release / Dist**. `Dist` strips symbols and is what
 
 The runtime side is `Funke-Engine/src/Core/PackageHost.{hpp,cpp}`:
 
-- **`PackageHost::LoadAll()`** — scans the directory next to the running executable for `Pkg.<Name>.Native.dll` files and loads each one. Idempotent. This runs during [startup](../Engine-Core/Startup-Processes.md), **before any scene loads**, so package-defined components exist before a scene tries to deserialize them.
+- **`PackageHost::LoadAll()`** — resolves the project's package roots and dependencies, then discovers their native libraries in project package outputs, sibling development outputs and the shipped `Packages/` directory. It loads compatible libraries in dependency order and is idempotent. This runs during [startup](../Engine-Core/Startup-Processes.md), **before scene loading**, so package-defined components are registered for deserialization. Windows uses `.dll`; other desktop platforms use their shared-library extensions.
 - **`PackageHost::LoadInstalled()`** — the editor's "I just installed a package, pick it up without restarting" hook. Filters against the project allow-list first.
 - Each loaded DLL is queried for **`FunkePackage_OnLoad`** (called now) and optionally **`FunkePackage_OnUnload`** (called at shutdown). Both are plain C entry points.
 - **`PackageHost::UnloadAll()`** — runs `FunkePackage_OnUnload` and frees modules in reverse order at shutdown.

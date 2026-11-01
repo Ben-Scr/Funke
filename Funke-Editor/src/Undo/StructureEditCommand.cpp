@@ -2,12 +2,14 @@
 #include "Undo/StructureEditCommand.hpp"
 
 #include "Components/General/HierarchyComponent.hpp"
+#include "Components/General/PrefabInstanceComponent.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/Scene.hpp"
 #include "Serialization/SceneSerializer.hpp"
 
 #include <algorithm>
 #include <unordered_set>
+#include <stdexcept>
 
 namespace Funke {
 	namespace {
@@ -163,6 +165,14 @@ namespace Funke {
 		snapshot.Entities.reserve(subtree.size());
 		for (EntityHandle entity : subtree) {
 			snapshot.Entities.push_back(SceneSerializer::SerializeEntityFull(scene, entity));
+			if (scene.HasComponent<PrefabInstanceComponent>(entity)) {
+				snapshot.Entities.back().AddMember("SourceEntityId",
+					Json::Value(std::to_string(scene.GetComponent<PrefabInstanceComponent>(entity).SourceEntityId)));
+			}
+			if (scene.HasComponent<UnresolvedPrefabInstanceComponent>(entity)) {
+				snapshot.Entities.back().AddMember("UnresolvedPrefabInstanceJson",
+					Json::Value(scene.GetComponent<UnresolvedPrefabInstanceComponent>(entity).InstanceJson));
+			}
 			snapshot.EntityIds.push_back(scene.GetEntityPersistentID(entity));
 		}
 		// The tree loader rejects links to entities outside the tree; Restore() reattaches the root itself.
@@ -215,6 +225,126 @@ namespace Funke {
 		RetainAffectedStructureReferences(m_ReferencesBefore, referencesAfter, affectedIds);
 		return std::make_unique<StructureEditCommand>(std::move(m_Label), std::move(m_Before), std::move(after),
 			std::move(m_RootOrderBefore), std::move(rootOrderAfter), std::move(m_ReferencesBefore), std::move(referencesAfter));
+	}
+
+	std::vector<EntityHandle> SceneTransferCommand::Transfer(Scene& from, Scene& to,
+		const Snapshot& departing, const Snapshot& arriving) {
+		for (const auto& root : departing.Roots) {
+			for (uint64_t id : root.EntityIds) {
+				EntityHandle handle = entt::null;
+				if (!from.TryResolveEntityRef(id, handle)) throw std::runtime_error("Source entity no longer exists");
+			}
+		}
+		for (const auto& root : arriving.Roots) {
+			for (uint64_t id : root.EntityIds) {
+				EntityHandle handle = entt::null;
+				if (to.TryResolveEntityRef(id, handle)) throw std::runtime_error("Target entity identity already exists");
+			}
+			EntityHandle parent = entt::null;
+			if (root.ParentId && !to.TryResolveEntityRef(root.ParentId, parent)) {
+				throw std::runtime_error("Target parent no longer exists");
+			}
+		}
+		const bool wasDirty = to.IsDirty();
+		const bool wasUiDirty = to.IsUIDirty();
+		const auto fixupStart = to.GetPendingEntityRefFixupCount();
+		std::vector<EntityHandle> created;
+		created.reserve(arriving.Roots.size());
+		try {
+			for (const auto& snapshot : arriving.Roots) {
+				const auto root = SceneSerializer::RestoreEntityTree(to, snapshot.Entities, true);
+				if (root == entt::null) throw std::runtime_error("Could not restore the complete entity subtree");
+				created.push_back(root);
+				EntityHandle parent = entt::null;
+				if (snapshot.ParentId && to.TryResolveEntityRef(snapshot.ParentId, parent)) {
+					to.GetEntity(root).SetParent(to.GetEntity(parent));
+				}
+			}
+			to.RunPendingEntityRefFixupsFrom(fixupStart);
+			RestoreStructureReferences(to, arriving.References);
+			RestoreSiblingOrder(to, arriving.Roots);
+			RestoreRootOrder(to, arriving.RootOrder);
+		}
+		catch (...) {
+			to.DiscardPendingEntityRefFixupsFrom(fixupStart);
+			for (EntityHandle root : created) if (to.IsValid(root)) to.DestroyEntity(root);
+			if (!wasDirty) to.ClearDirty();
+			if (!wasUiDirty) to.ClearUIDirty();
+			throw;
+		}
+		// Originals remain intact until every destination subtree and reference is ready.
+		for (const auto& root : departing.Roots) DestroyById(from, root.RootId);
+		RestoreStructureReferences(from, departing.References);
+		from.MarkDirty();
+		to.MarkDirty();
+		return created;
+	}
+
+	std::unique_ptr<SceneTransferCommand> SceneTransferCommand::Move(const std::shared_ptr<Scene>& source,
+		const std::shared_ptr<Scene>& target, std::span<const EntityHandle> roots,
+		EntityHandle targetParent, std::vector<EntityHandle>& moved) {
+		moved.clear();
+		if (!source || !target || source == target || roots.empty()) return nullptr;
+		if (targetParent != entt::null && !target->IsValid(targetParent)) return nullptr;
+		for (EntityHandle root : roots) if (!source->IsValid(root)) return nullptr;
+		auto command = std::make_unique<SceneTransferCommand>();
+		command->m_Source = source;
+		command->m_Target = target;
+		command->m_Before = { CaptureTopLevel(*source, roots), RootIds(*source), CaptureStructureReferences(*source) };
+		if (command->m_Before.Roots.empty()) return nullptr;
+		command->m_After.Roots = command->m_Before.Roots;
+		command->m_After.References = CaptureStructureReferences(*target);
+		command->m_TargetOrderBefore = RootIds(*target);
+		command->m_After.RootOrder = command->m_TargetOrderBefore;
+		command->m_SourceOrderAfter = command->m_Before.RootOrder;
+		std::unordered_set<uint64_t> movedIds;
+		for (auto& root : command->m_After.Roots) {
+			root.ParentId = targetParent == entt::null ? 0 : target->GetEntityPersistentID(targetParent);
+			root.SiblingIndex = -1;
+			if (!root.ParentId) command->m_After.RootOrder.push_back(root.RootId);
+			std::erase(command->m_SourceOrderAfter, root.RootId);
+			movedIds.insert(root.EntityIds.begin(), root.EntityIds.end());
+		}
+		for (const auto& reference : command->m_Before.References) {
+			if (movedIds.contains(reference.OwnerId)) command->m_After.References.push_back(reference);
+		}
+		try {
+			moved = Transfer(*source, *target, command->m_Before, command->m_After);
+		}
+		catch (const std::exception& error) {
+			FNK_CORE_ERROR_TAG("Editor", "Scene transfer failed: {}", error.what());
+			return nullptr;
+		}
+		return command;
+	}
+
+	void SceneTransferCommand::RebindScene(const std::weak_ptr<Scene>& previous, const std::shared_ptr<Scene>& replacement) {
+		for (auto* owner : { &m_Source, &m_Target }) {
+			if (!owner->owner_before(previous) && !previous.owner_before(*owner)) *owner = replacement;
+		}
+	}
+
+	bool SceneTransferCommand::IsAvailable() const {
+		const auto source = m_Source.lock();
+		const auto target = m_Target.lock();
+		return source && target && (source->IsDetached() || source->IsLoaded())
+			&& (target->IsDetached() || target->IsLoaded());
+	}
+
+	void SceneTransferCommand::Undo(Scene&) {
+		if (!IsAvailable()) throw std::runtime_error("Both scenes must remain open");
+		auto source = m_Source.lock();
+		auto target = m_Target.lock();
+		Transfer(*target, *source, m_After, m_Before);
+		RestoreRootOrder(*target, m_TargetOrderBefore);
+	}
+
+	void SceneTransferCommand::Redo(Scene&) {
+		if (!IsAvailable()) throw std::runtime_error("Both scenes must remain open");
+		auto source = m_Source.lock();
+		auto target = m_Target.lock();
+		Transfer(*source, *target, m_Before, m_After);
+		RestoreRootOrder(*source, m_SourceOrderAfter);
 	}
 
 	SceneSystemsEditCommand::Snapshot SceneSystemsEditCommand::Capture(const Scene& scene) {

@@ -193,8 +193,9 @@ namespace Funke {
 		return 0;
 	}
 
+	template<bool NativeTargets>
 	static int Funke_Ecb_PlaybackImpl(const uint8_t* buffer, int length,
-		uint64_t* outRuntimeIds, int maxOut, int mode)
+		std::conditional_t<NativeTargets, EntityHandle, uint64_t>* output, int maxOut, int mode)
 	{
 		if (mode < 0 || mode > 2) return kEcbErrorInvalidMode;
 		if (buffer == nullptr || length < static_cast<int>(sizeof(EcbHeader))) {
@@ -214,7 +215,7 @@ namespace Funke {
 			return kEcbErrorTruncated;
 		}
 		const std::size_t entityTableBytes = static_cast<std::size_t>(header.entityCount) * sizeof(uint32_t);
-		if (outRuntimeIds == nullptr && header.entityCount > 0) {
+		if (output == nullptr && header.entityCount > 0) {
 			return kEcbErrorOutputTooSmall;
 		}
 		// Reject negative maxOut explicitly: casting it to uint32_t below would wrap to
@@ -307,7 +308,7 @@ namespace Funke {
 		}
 		const uint32_t totalEntityCount = static_cast<uint32_t>(totalEntityCount64);
 		timings.Mark(1);
-		if (!hasPrefabs && EcbTryParallelPlayback(*scene, header, commandStreamPtr, outRuntimeIds, mode)) {
+		if (!hasPrefabs && EcbTryParallelPlayback<NativeTargets>(*scene, header, commandStreamPtr, output, mode)) {
 			timings.Mark(4);
 			return static_cast<int>(header.entityCount);
 		}
@@ -407,7 +408,7 @@ namespace Funke {
 				const uint8_t* componentBytes = payload;
 				size_t componentSize = payloadSize;
 				if (targetsLiveEntity) {
-					if (!scene->TryResolveEntityRef(EcbReadLE<uint64_t>(payload), handle)) continue;
+					if (!EcbResolveTarget<NativeTargets>(*scene, EcbReadLE<uint64_t>(payload), handle)) continue;
 					componentBytes += sizeof(uint64_t);
 					componentSize -= sizeof(uint64_t);
 				}
@@ -508,7 +509,7 @@ namespace Funke {
 				if (entityIndex == kEcbNoName) {
 					const uint64_t entityId = EcbReadLE<uint64_t>(payload);
 					EntityHandle resolved = entt::null;
-					if (scene->TryResolveEntityRef(entityId, resolved)) {
+					if (EcbResolveTarget<NativeTargets>(*scene, entityId, resolved)) {
 						scene->DestroyEntity(resolved);
 					}
 				}
@@ -525,7 +526,7 @@ namespace Funke {
 				if (entityIndex == kEcbNoName) {
 					const uint64_t entityId = EcbReadLE<uint64_t>(payload + 1);
 					EntityHandle resolved = entt::null;
-					if (scene->TryResolveEntityRef(entityId, resolved) && scene->IsValid(resolved)) {
+					if (EcbResolveTarget<NativeTargets>(*scene, entityId, resolved)) {
 						scene->GetEntity(resolved).SetEnabled(enabled);
 					}
 				}
@@ -577,9 +578,9 @@ namespace Funke {
 
 		const auto* identities = std::as_const(scene->GetRegistry()).storage<UUIDComponent>();
 		for (uint32_t i = 0; i < header.entityCount; ++i) {
-			outRuntimeIds[i] = destroyedRoot[i] == 0 && identities && identities->contains(handles[i])
-				? static_cast<uint64_t>(identities->get(handles[i]).Id)
-				: 0;
+			const bool alive = destroyedRoot[i] == 0 && identities && identities->contains(handles[i]);
+			if constexpr (NativeTargets) output[i] = alive ? handles[i] : entt::null;
+			else output[i] = alive ? static_cast<uint64_t>(identities->get(handles[i]).Id) : 0;
 		}
 
 		// Pulse lives outside the guard scope so it isn't double-counted by a later MarkAllDirtyOnce().
@@ -595,7 +596,7 @@ namespace Funke {
 		uint64_t* outRuntimeIds, int maxOut, int mode)
 	{
 		try {
-			return Funke_Ecb_PlaybackImpl(buffer, length, outRuntimeIds, maxOut, mode);
+			return Funke_Ecb_PlaybackImpl<false>(buffer, length, outRuntimeIds, maxOut, mode);
 		}
 		catch (const std::exception& e) {
 			FNK_CORE_ERROR_TAG("ScriptBinding", "exception in Funke_Ecb_Playback: {}", e.what());
@@ -614,9 +615,19 @@ namespace Funke {
 	}
 
 	int detail::PlaybackNativeEntityCommandBuffer(Scene& scene, const uint8_t* bytes, int length,
-		uint64_t* identities, int capacity, EntityCommandBufferPlaybackMode mode) {
+		EntityHandle* handles, int capacity, EntityCommandBufferPlaybackMode mode) {
 		SceneExecutionScope executionScope(scene);
-		return Funke_Ecb_PlaybackWithMode(bytes, length, identities, capacity, static_cast<int>(mode));
+		try {
+			return Funke_Ecb_PlaybackImpl<true>(bytes, length, handles, capacity, static_cast<int>(mode));
+		}
+		catch (const std::exception& error) {
+			FNK_CORE_ERROR_TAG("Ecb", "Native playback failed: {}", error.what());
+			return kEcbErrorInternal;
+		}
+		catch (...) {
+			FNK_CORE_ERROR_TAG("Ecb", "Native playback failed");
+			return kEcbErrorInternal;
+		}
 	}
 
 	void PopulateEcbBindings(NativeBindings& b)

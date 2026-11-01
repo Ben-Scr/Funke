@@ -247,6 +247,7 @@ namespace Funke::SceneSerializerShared {
 		if (s.Rolloff != defaults.Rolloff) audioValue.AddMember("rolloff", Value(static_cast<int>(s.Rolloff)));
 		if (s.Panning != defaults.Panning) audioValue.AddMember("panning", Value(s.Panning));
 		if (s.DopplerLevel != defaults.DopplerLevel) audioValue.AddMember("dopplerLevel", Value(s.DopplerLevel));
+		if (s.Hrtf) audioValue.AddMember("hrtf", Value(true));
 	}
 
 	inline void ReadAudioSpatial(const Value& audioValue, AudioSourceComponent& source) {
@@ -258,6 +259,7 @@ namespace Funke::SceneSerializerShared {
 		s.Rolloff = rolloff >= 0 && rolloff <= static_cast<int>(AudioRolloff::Linear) ? static_cast<AudioRolloff>(rolloff) : defaults.Rolloff;
 		s.Panning = GetFloatMember(audioValue, "panning", defaults.Panning);
 		s.DopplerLevel = GetFloatMember(audioValue, "dopplerLevel", defaults.DopplerLevel);
+		s.Hrtf = GetBoolMember(audioValue, "hrtf", defaults.Hrtf);
 		source.SetSpatialSettings(s);
 		source.SetSpatial(GetBoolMember(audioValue, "spatial", false));
 	}

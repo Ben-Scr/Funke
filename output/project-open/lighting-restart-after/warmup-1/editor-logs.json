@@ -1,0 +1,268 @@
+{
+  "id": "project-open-benchmark",
+  "ok": true,
+  "result": {
+    "lines": [
+      {
+        "seq": 1,
+        "time": "12:37:22.643",
+        "level": "info",
+        "source": "core",
+        "message": "[EditorBridge] Listening for `funke editor` commands on \\\\.\\pipe\\funke-editor-52488-f7d1a3015964189a2af0f73f66c86eea"
+      },
+      {
+        "seq": 2,
+        "time": "12:37:22.653",
+        "level": "info",
+        "source": "core",
+        "message": "[PackageHost] Loaded 1 package(s)."
+      },
+      {
+        "seq": 3,
+        "time": "12:37:22.653",
+        "level": "info",
+        "source": "game",
+        "message": "[Application] Startup scene load deferred behind splash."
+      },
+      {
+        "seq": 4,
+        "time": "12:37:22.653",
+        "level": "info",
+        "source": "game",
+        "message": "[Application] Full Initialization took 489.966 ms"
+      },
+      {
+        "seq": 5,
+        "time": "12:37:22.653",
+        "level": "info",
+        "source": "core",
+        "message": "[Window] Framebuffer 2560x1342, viewport 2560x1342 at 0,0, window-to-framebuffer scale 1x1"
+      },
+      {
+        "seq": 6,
+        "time": "12:37:22.653",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching C:\\Users\\benso\\Funke\\Projects\\67\\Assets for 6 pattern(s)"
+      },
+      {
+        "seq": 7,
+        "time": "12:37:22.654",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching C:\\Users\\benso\\Funke\\Projects\\67\\Assets for 14 pattern(s)"
+      },
+      {
+        "seq": 8,
+        "time": "12:37:22.654",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching C:\\Users\\benso\\Funke\\Projects\\67\\Assets for 1 pattern(s)"
+      },
+      {
+        "seq": 9,
+        "time": "12:37:22.654",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching 2 targets for 2 pattern(s)"
+      },
+      {
+        "seq": 10,
+        "time": "12:37:22.654",
+        "level": "info",
+        "source": "game",
+        "message": "[Application] Loading startup scenes..."
+      },
+      {
+        "seq": 11,
+        "time": "12:37:22.655",
+        "level": "info",
+        "source": "core",
+        "message": "[SceneSerializer] Loaded scene: SampleScene"
+      },
+      {
+        "seq": 12,
+        "time": "12:37:22.655",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] ScriptEngine ready (deferred runtime init)"
+      },
+      {
+        "seq": 13,
+        "time": "12:37:22.655",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] Assembly: C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-ScriptCore.dll"
+      },
+      {
+        "seq": 14,
+        "time": "12:37:22.655",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] Script runtime backend: hostfxr"
+      },
+      {
+        "seq": 15,
+        "time": "12:37:22.655",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptRuntime] RuntimeConfig: C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-ScriptCore.runtimeconfig.json"
+      },
+      {
+        "seq": 16,
+        "time": "12:37:22.683",
+        "level": "info",
+        "source": "core",
+        "message": "[DotNetHost] CoreCLR runtime initialized successfully"
+      },
+      {
+        "seq": 17,
+        "time": "12:37:22.772",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] Core assembly loaded: C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin\\Release-windows-x86_64\\Funke-Launcher\\Funke-ScriptCore.dll"
+      },
+      {
+        "seq": 18,
+        "time": "12:37:22.772",
+        "level": "info",
+        "source": "game",
+        "message": "[ScriptSystem] User assembly resolved via bin/ scan: C:\\Users\\benso\\Funke\\Projects\\67\\bin\\Dist\\6 7.dll (configured path 'C:\\Users\\benso\\Funke\\Projects\\67\\bin\\Release\\6 7.dll' did not exist)"
+      },
+      {
+        "seq": 19,
+        "time": "12:37:22.772",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] Loading user assembly: C:\\Users\\benso\\Funke\\Projects\\67\\bin\\Dist\\6 7.dll"
+      },
+      {
+        "seq": 20,
+        "time": "12:37:22.786",
+        "level": "info",
+        "source": "game",
+        "message": "[Script] User assembly loaded: C:\\Users\\benso\\Funke\\Projects\\67\\bin\\Dist\\6 7.dll"
+      },
+      {
+        "seq": 21,
+        "time": "12:37:22.787",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] LoadUserAssembly callback returned: 1"
+      },
+      {
+        "seq": 22,
+        "time": "12:37:22.787",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] User assembly loaded: C:\\Users\\benso\\Funke\\Projects\\67\\bin\\Dist\\6 7.dll"
+      },
+      {
+        "seq": 23,
+        "time": "12:37:22.788",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching 5 targets for 5 pattern(s)"
+      },
+      {
+        "seq": 24,
+        "time": "12:37:22.790",
+        "level": "info",
+        "source": "game",
+        "message": "[ScriptSystem] C# defines changed: scripts now compile as Windows Desktop."
+      },
+      {
+        "seq": 25,
+        "time": "12:37:22.790",
+        "level": "info",
+        "source": "game",
+        "message": "[ScriptSystem] Rebuilding C# scripts..."
+      },
+      {
+        "seq": 26,
+        "time": "12:37:22.848",
+        "level": "info",
+        "source": "core",
+        "message": "[FileWatcher] Watching 5 targets for 12 pattern(s)"
+      },
+      {
+        "seq": 27,
+        "time": "12:37:22.848",
+        "level": "info",
+        "source": "game",
+        "message": "[ScriptSystem] Script system initialized"
+      },
+      {
+        "seq": 28,
+        "time": "12:37:22.851",
+        "level": "info",
+        "source": "core",
+        "message": "[TextureManager] Purged 0 unreferenced texture entries"
+      },
+      {
+        "seq": 29,
+        "time": "12:37:22.851",
+        "level": "info",
+        "source": "core",
+        "message": "[AudioManager] Purged 0 unreferenced audio entries"
+      },
+      {
+        "seq": 30,
+        "time": "12:37:22.857",
+        "level": "info",
+        "source": "core",
+        "message": "[ImGui] Saved editor layout docks no panels into the editor dockspace; applying the default layout."
+      },
+      {
+        "seq": 31,
+        "time": "12:37:24.010",
+        "level": "info",
+        "source": "game",
+        "message": "[ScriptSystem] Running dotnet build: dependency not deployed yet: Funke-ScriptCore.dll"
+      },
+      {
+        "seq": 32,
+        "time": "12:37:26.164",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] Loading user assembly: C:\\Users\\benso\\Funke\\Projects\\67\\bin\\Release\\6 7.dll"
+      },
+      {
+        "seq": 33,
+        "time": "12:37:26.211",
+        "level": "trace",
+        "source": "game",
+        "message": "[Script] [ScriptLoader] User assembly load context is still alive right after unload."
+      },
+      {
+        "seq": 34,
+        "time": "12:37:26.212",
+        "level": "info",
+        "source": "game",
+        "message": "[Script] User assembly loaded: C:\\Users\\benso\\Funke\\Projects\\67\\bin\\Release\\6 7.dll"
+      },
+      {
+        "seq": 35,
+        "time": "12:37:26.212",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] LoadUserAssembly callback returned: 1"
+      },
+      {
+        "seq": 36,
+        "time": "12:37:26.212",
+        "level": "info",
+        "source": "core",
+        "message": "[ScriptEngine] User assembly loaded: C:\\Users\\benso\\Funke\\Projects\\67\\bin\\Release\\6 7.dll"
+      },
+      {
+        "seq": 37,
+        "time": "12:37:26.213",
+        "level": "info",
+        "source": "game",
+        "message": "[ScriptSystem] C# scripts rebuilt and reloaded from 'C:\\Users\\benso\\Funke\\Projects\\67\\bin\\Release\\6 7.dll'"
+      }
+    ],
+    "next": 37
+  }
+}

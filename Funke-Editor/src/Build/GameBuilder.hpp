@@ -29,6 +29,8 @@ namespace Funke::GameBuilder {
 		std::optional<PlatformPackageInfo> PlatformPackage;
 		std::vector<std::pair<std::string, std::string>> PlatformOptions;
 		bool BundleDotNetRuntime = true;
+		bool BundleAssets = false;
+		bool CompressAssetBundles = false;
 		// Set before Prepare (CLI --debug/--development/--release); wins over the profile's "configuration".
 		std::optional<FunkeProject::BuildProfile> ConfigurationOverride;
 	};
@@ -58,6 +60,7 @@ namespace Funke::GameBuilder {
 	bool Prepare(FunkeProject& project, Request& outRequest, std::string& outError);
 
 	Result Build(Request request, const ProgressCallback& onProgress = {});
+	bool BundleStagedAssets(const std::filesystem::path& contentDirectory, bool compress, std::string& error);
 
 	struct InstalledRuntime {
 		std::filesystem::path Directory;

@@ -450,6 +450,59 @@ TEST_CASE("Spatial sounds reach the speakers with the gains audio.spatial report
 	AudioManager::SetListener(previous);
 }
 
+TEST_CASE("HRTF AudioSources preserve attenuation bypass pause and slot recycling") {
+	AudioConcurrencyScope audio;
+	REQUIRE(AudioManager::Initialize());
+	AudioManager::SetListener({});
+	const AudioHandle clip = audio.Load("FunkeHrtfSource.wav", 8192);
+	REQUIRE(clip.IsValid());
+	AudioSourceComponent source(clip);
+	source.SetSpatial(true);
+	source.SetLoop(true);
+	source.SetWorldPosition({ 5, 0, 0 }, {});
+	AudioSpatialSettings settings;
+	settings.Hrtf = true;
+	settings.Panning = 1;
+	source.SetSpatialSettings(settings);
+	source.Play();
+	auto* instance = AudioManager::GetSoundInstance(source.GetInstanceId());
+	REQUIRE(instance);
+	REQUIRE(instance->Hrtf);
+	REQUIRE(AudioManager::GetSpatialSounds().size() == 1);
+	CHECK(AudioManager::GetSpatialSounds()[0].Hrtf);
+	const auto closeMix = Mix(*audio.Backend, 2048);
+	source.SetWorldPosition({ 10, 0, 0 }, {});
+	AudioManager::UpdateSourceSpatial(source);
+	const auto distantMix = Mix(*audio.Backend, 2048);
+	CHECK(std::abs(closeMix.Left) > 0.001f);
+	CHECK(distantMix.Left == doctest::Approx(closeMix.Left * 0.5f).epsilon(0.01));
+	CHECK(distantMix.Right == doctest::Approx(closeMix.Right * 0.5f).epsilon(0.01));
+	source.Pause();
+	const auto paused = Mix(*audio.Backend, 512);
+	CHECK(paused.Left == 0.0f);
+	CHECK(paused.Right == 0.0f);
+	source.Resume();
+	const auto resumed = Mix(*audio.Backend, 2048);
+	CHECK(resumed.Left == doctest::Approx(distantMix.Left).epsilon(0.01));
+	settings.Hrtf = false;
+	source.SetSpatialSettings(settings);
+	const auto panned = Mix(*audio.Backend, 2048);
+	CHECK(std::abs(panned.Left) < 0.0001f);
+	CHECK(panned.Right == doctest::Approx(0.05f).epsilon(0.01));
+	const uint32_t oldId = source.GetInstanceId();
+	source.Stop();
+	CHECK(AudioManager::GetSoundInstance(oldId) == nullptr);
+	source.SetSpatial(false);
+	source.Play();
+	instance = AudioManager::GetSoundInstance(source.GetInstanceId());
+	REQUIRE(instance);
+	CHECK_FALSE(instance->Hrtf);
+	const auto dry = Mix(*audio.Backend, 2048);
+	CHECK(dry.Left == doctest::Approx(0.5f).epsilon(0.001));
+	CHECK(dry.Right == doctest::Approx(0.5f).epsilon(0.001));
+	source.Stop();
+}
+
 TEST_CASE("AudioSource spatial fields round-trip and are only written when set") {
 	auto scene = Scene::CreateDetachedScene("SpatialAudioSerialize");
 	Entity source = scene->CreateEntity("Torch");
@@ -458,6 +511,7 @@ TEST_CASE("AudioSource spatial fields round-trip and are only written when set")
 	CHECK(plain.FindMember("spatial") == nullptr);
 	CHECK(plain.FindMember("minDistance") == nullptr);
 	CHECK(plain.FindMember("panning") == nullptr);
+	CHECK(plain.FindMember("hrtf") == nullptr);
 
 	AudioSpatialSettings settings;
 	settings.MinDistance = 3.0f;
@@ -465,6 +519,7 @@ TEST_CASE("AudioSource spatial fields round-trip and are only written when set")
 	settings.Rolloff = AudioRolloff::Linear;
 	settings.Panning = 0.5f;
 	settings.DopplerLevel = 1.0f;
+	settings.Hrtf = true;
 	audio.SetSpatialSettings(settings);
 	audio.SetSpatial(true);
 

@@ -368,6 +368,11 @@ namespace Funke {
 				if (sounds.empty()) out += "\nno spatial sound playing";
 				for (const AudioManager::SpatialSoundInfo& sound : sounds) {
 					const AudioSpatial::Result& h = sound.Heard;
+					if (sound.Hrtf) {
+						out += std::format("\n{} at ({:.2f}, {:.2f}, {:.2f}): distance {:.2f}, gain {:.3f}, HRTF (headphones), volume {:.2f}",
+							sound.Name, sound.Position.x, sound.Position.y, sound.Position.z, h.Distance, h.Gain, sound.Volume);
+						continue;
+					}
 					out += std::format("\n{} at ({:.2f}, {:.2f}, {:.2f}): distance {:.2f}, gain {:.3f}, pan {:+.2f}, left {:.3f}, right {:.3f}, volume {:.2f}",
 						sound.Name, sound.Position.x, sound.Position.y, sound.Position.z, h.Distance, h.Gain, h.Pan, h.Left, h.Right, sound.Volume);
 				}

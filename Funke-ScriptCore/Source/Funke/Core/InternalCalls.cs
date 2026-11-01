@@ -625,6 +625,26 @@ internal static unsafe class InternalCalls
     internal static bool Scene_CancelLoadAsync(ulong operationId)
         => NativeCallbacks.Bindings.Scene_CancelLoadAsync(operationId) != 0;
 
+    internal static ulong Scene_PreloadAsync(string sceneName)
+    {
+        byte[] buf = EncodeUtf8Z(sceneName);
+        fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Scene_PreloadAsync(ptr);
+    }
+
+    internal static ulong Scene_PreloadByGuidAsync(ulong guid)
+        => NativeCallbacks.Bindings.Scene_PreloadByGuidAsync(guid);
+
+    internal static bool Scene_ActivatePreloaded(ulong id, bool additive)
+        => NativeCallbacks.Bindings.Scene_ActivatePreloaded(id, additive ? 1 : 0) != 0;
+
+    internal static SceneLoadProgress? Scene_GetLoadProgress(ulong id)
+    {
+        int phase;
+        float progress;
+        return NativeCallbacks.Bindings.Scene_GetLoadProgress(id, &phase, &progress) != 0
+            ? new SceneLoadProgress((SceneLoadPhase)phase, progress) : null;
+    }
+
     internal static void Scene_Unload(string sceneName)
     {
         byte[] buf = EncodeUtf8Z(sceneName);
@@ -998,6 +1018,9 @@ internal static unsafe class InternalCalls
 
     internal static float Camera2D_GetOrthographicSize(ulong id) => NativeCallbacks.Bindings.Camera2D_GetOrthographicSize(id);
     internal static void Camera2D_SetOrthographicSize(ulong id, float size) => NativeCallbacks.Bindings.Camera2D_SetOrthographicSize(id, size);
+    internal static bool Camera2D_GetPostProcessingEnabled(ulong id) => NativeCallbacks.Bindings.Camera2D_GetPostProcessingEnabled(id) != 0;
+    internal static void Camera2D_SetPostProcessingEnabled(ulong id, bool enabled) => NativeCallbacks.Bindings.Camera2D_SetPostProcessingEnabled(id, enabled ? 1 : 0);
+
     internal static float Camera2D_GetZoom(ulong id) => NativeCallbacks.Bindings.Camera2D_GetZoom(id);
     internal static void Camera2D_SetZoom(ulong id, float zoom) => NativeCallbacks.Bindings.Camera2D_SetZoom(id, zoom);
     internal static void Camera2D_GetClearColor(ulong id, out float r, out float g, out float b, out float a) { float cr, cg, cb, ca; NativeCallbacks.Bindings.Camera2D_GetClearColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
@@ -1091,10 +1114,11 @@ internal static unsafe class InternalCalls
     internal static bool AudioSource_IsPlaying(ulong id) => NativeCallbacks.Bindings.AudioSource_IsPlaying(id) != 0;
     internal static bool AudioSource_IsPaused(ulong id) => NativeCallbacks.Bindings.AudioSource_IsPaused(id) != 0;
 
-    // spatial (0/1), minDistance, maxDistance, rolloff, panning, dopplerLevel
-    internal const int AudioSourceSpatialValueCount = 6;
+    // spatial (0/1), minDistance, maxDistance, rolloff, panning, dopplerLevel, hrtf (0/1)
+    internal const int AudioSourceSpatialValueCount = 7;
     internal static void AudioSource_GetSpatial(ulong id, Span<float> values)
     {
+        values.Clear();
         fixed (float* p = values) NativeCallbacks.Bindings.AudioSource_GetSpatial(id, p, values.Length);
     }
     internal static void TextRenderer_GetEffects(ulong id, Span<float> values)
@@ -2235,6 +2259,9 @@ internal static unsafe class InternalCalls
     internal static void Transform3D_SetScale(ulong id, Vector3 v) => NativeCallbacks.Bindings.Transform3D_SetScale(id, v.X, v.Y, v.Z);
     internal static Vector3 Transform3D_GetWorldPosition(ulong id) => ReadVector3(id, NativeCallbacks.Bindings.Transform3D_GetWorldPosition);
     internal static Vector3 Transform3D_GetForward(ulong id) => ReadVector3(id, NativeCallbacks.Bindings.Transform3D_GetForward);
+
+    internal static bool Camera3D_GetPostProcessingEnabled(ulong id) => NativeCallbacks.Bindings.Camera3D_GetPostProcessingEnabled(id) != 0;
+    internal static void Camera3D_SetPostProcessingEnabled(ulong id, bool enabled) => NativeCallbacks.Bindings.Camera3D_SetPostProcessingEnabled(id, enabled ? 1 : 0);
 
     internal static int Camera3D_GetProjection(ulong id) => NativeCallbacks.Bindings.Camera3D_GetProjection(id);
     internal static void Camera3D_SetProjection(ulong id, int projection) => NativeCallbacks.Bindings.Camera3D_SetProjection(id, projection);

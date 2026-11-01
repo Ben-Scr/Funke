@@ -1,0 +1,102 @@
+{
+  "Filter": "",
+  "GitHead": "ae672bf6a048ae6fcb7f4c3755f79f9e62859644",
+  "Samples": 1,
+  "Warmups": 0,
+  "Count": 8192,
+  "CPU": {
+    "Name": "AMD Ryzen 9 7900X 12-Core Processor            ",
+    "NumberOfCores": 12,
+    "NumberOfLogicalProcessors": 24
+  },
+  "Binaries": [
+    {
+      "Algorithm": "SHA256",
+      "Hash": "0995AFF70A5D701C774361B39C608A7FB4714387EBF8CF3F4CCDDCC162735F57",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsAfter-20261101\\runtime\\Funke-Runtime.exe"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "78F46E5F8F5A580BE6E997F9666C212DFE7E66E5101B000C5712004B07260435",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsAfter-20261101\\runtime\\Funke-Engine.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "A7DDBBFFEE544A98DA2CB5682D136BB214FFB06CA1787C7187E720C14C0E4ABC",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsAfter-20261101\\runtime\\Funke-ScriptCore.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "25FD97334A3A8F11AC7C61D05DA0BCB118192FCD6101E6E657DAF3DAB324560F",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsAfter-20261101\\project\\bin\\Release\\EcsNativeComparison.dll"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "365AE99C1EB6E62F540A2F096EE6EB1B042113875E1B782C0D3EFBB401B2A8FD",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\bin-int\\_agent\\EcsAfter-20261101\\project\\bin\\Release-windows-x86_64\\EcsNativeComparison-NativeScripts\\EcsNativeComparison-NativeScripts.dll"
+    }
+  ],
+  "PowerScheme": "GUID des Energieschemas: 381b4222-f694-41f0-9685-ff5bb260df2e  (Ausbalanciert)",
+  "ActiveCompilers": [],
+  "Purpose": "Correctness validation; timer values are not performance results",
+  "Dirty": true,
+  "Sources": [
+    {
+      "Algorithm": "SHA256",
+      "Hash": "4259A9BF5BBA82BDB8964667023A7DF54BE2D280E1DB8E4416F7F0EAD58C9375",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\CMakeLists.txt"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "782A9A96DBC421166D7456BA9C4D21AB0F285F7F6560E40326B4AAB5A538DE2B",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\Compare.py"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "9C37F4E2DA213C2AF91B00EF74714673AF0A0EE740D42E5069CCDB0EF737A976",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\ManagedEcsBenchmark.cs"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "46E0244BC60DF495647BC30B09EBC483CC2EABE098607E8B87DA59B75F2C7274",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\NativeEcsBenchmark.cpp"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "03F345E3947C436E3B8CD178F4C6642A5AD16E49E4B3C676F8FC595196052E2A",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\NativeScriptExports.cpp"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "7027F038AA7405817920A8CAB944967002004D6C7D9177B446C5F5D0BD8C97A5",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\Prepare.ps1"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "7EBE15BC645E98DE0343286F80C3004B3447E8443FF482D4016CA062F8E84FD5",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\Run.ps1"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "C8B592368EF76B9836447F3DD7CFD1D99DE2286C804AE403392455A534ED85BB",
+      "Path": "C:\\Users\\benso\\source\\repos\\Pending\\Index\\scripts\\benchmarks\\ecs-native\\Summarize.ps1"
+    }
+  ],
+  "Memory": [
+    {
+      "Capacity": 17179869184,
+      "ConfiguredClockSpeed": 6000
+    },
+    {
+      "Capacity": 17179869184,
+      "ConfiguredClockSpeed": 6000
+    }
+  ],
+  "Timestamp": "2026-11-01T16:46:58.2805981+01:00",
+  "Language": "Native",
+  "OS": {
+    "Caption": "Microsoft Windows 11 Pro",
+    "Version": "10.0.26200",
+    "FreePhysicalMemory": 7126168
+  }
+}

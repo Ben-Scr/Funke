@@ -238,8 +238,8 @@ namespace Funke {
 		m_EditorSceneDefinitionsBySceneName[loadedScene->GetName()] = definitionName;
 
 		ClearEntitySelection();
-		m_EntityOrder.clear();
-		m_EntityOrderDirty = true;
+		GetHierarchyState().EntityOrder.clear();
+		GetHierarchyState().Dirty = true;
 		m_LastInteractedSceneName = loadedScene->GetName();
 		m_CutEntities.clear();
 
@@ -482,6 +482,7 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::OnPreRender(Application& app) {
+		AsyncTexturePreviews::Get().Pump();
 		FUNKE_PROFILE_SCOPE("Editor PreRender");
 		PropertyDrawer::BeginFrame();
 		(void)app;
@@ -908,7 +909,7 @@ namespace Funke {
 				if (LoadEditorScene(dropPath, true, loadedScene, definitionName)) {
 					m_EditorOwnedSceneDefinitions.insert(definitionName);
 					m_EditorSceneDefinitionsBySceneName[loadedScene->GetName()] = definitionName;
-					m_EntityOrder.clear(); m_EntityOrderDirty = true;
+					GetHierarchyState().EntityOrder.clear(); GetHierarchyState().Dirty = true;
 				}
 			}
 		}

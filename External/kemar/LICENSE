@@ -1,0 +1,15 @@
+MIT KEMAR HRTF measurements
+Copyright 1994 by the MIT Media Laboratory.
+Authors: Bill Gardner and Keith Martin.
+
+This data is provided free with no restrictions on use, provided the authors
+are cited when the data is used in any research or commercial application.
+
+Source and original terms: https://sound.media.mit.edu/resources/KEMAR.html
+Dataset: https://sound.media.mit.edu/resources/KEMAR/diffuse.zip
+SHA-256: a48e73137390626ef1e45d1de6a4d98530c6aa570e71b40f7c4442241ed5fa22
+
+Funke embeds the diffuse-field equalized, symmetric small-pinna measurements
+(44.1 kHz, 128 samples per ear). The engine interpolates and resamples these
+measurements for headphone playback. The data covers elevations -40 to +90
+degrees; lower directions use the -40 degree measurements.

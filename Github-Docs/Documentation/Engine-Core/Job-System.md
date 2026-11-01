@@ -20,6 +20,8 @@ If the job system isn't running for some reason, scheduling a job simply runs it
 
 C# is the main way most users touch the job system. There are three job shapes:
 
+Import `Funke.Jobs` for jobs and `Funke` for entity command buffers. Direct native component queries also use `Funke.Native`.
+
 | Interface | Runs | Use for |
 |-----------|------|---------|
 | `IJob` | once | A single chunk of background work. |
@@ -111,7 +113,7 @@ Job::Wait(h);                       // wait for completion
 ParallelFor(0, count, [](size_t i) { Process(i); });  // parallel loop, blocks until done
 ```
 
-`ParallelFor` automatically splits the range into chunks (aiming for a few chunks per worker). One nice property: `Job::Wait` actively helps run queued work while it waits, so nested waits can't deadlock. Engine systems like the 2D renderer use this to process entities in parallel.
+`ParallelFor` automatically splits the range into chunks, aiming for a few chunks per worker. `Job::Wait` helps execute queued work while waiting, allowing nested parallel work without exhausting the worker pool. Cyclic dependencies or locks held across waits can still deadlock. Engine systems such as the 2D renderer use jobs to process entities in parallel.
 
 Completion also guarantees that the job's callable and its owned captures have been released, including when the callable throws. Native script DLLs can therefore finish their jobs before unloading without leaving callable destructors in the worker queue. Structural ECS operations use the [native commandbuffer API](ECS.md#batched-structural-changes-in-c), with playback on the main thread after recording jobs finish.
 

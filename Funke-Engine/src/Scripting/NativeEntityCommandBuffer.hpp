@@ -6,7 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <deque>
+#include <memory>
 #include <new>
 #include <span>
 #include <type_traits>
@@ -18,8 +18,9 @@ namespace Funke {
 	enum class EntityCommandBufferPlaybackMode { Auto = 0, Sequential = 1, Parallel = 2 };
 
 	namespace detail {
+		// Native streams encode generation-checked handles in live-target payloads.
 		FUNKE_API int PlaybackNativeEntityCommandBuffer(Scene& scene, const uint8_t* bytes, int length,
-			uint64_t* identities, int capacity, EntityCommandBufferPlaybackMode mode);
+			EntityHandle* handles, int capacity, EntityCommandBufferPlaybackMode mode);
 	}
 
 	// Recording is single-threaded; ParallelEntityCommandBuffer provides independent writer slots.
@@ -85,27 +86,34 @@ namespace Funke {
 			Operation action = Operation::Custom, entt::id_type typeHash = 0);
 		void ValidateScene(Scene& scene) const;
 		static int PlaybackBuffers(Scene& scene, std::span<NativeEntityCommandBuffer*> buffers,
-			std::vector<EntityHandle>& handles, std::vector<uint8_t>& wire, std::vector<uint64_t>& identities,
+			std::vector<EntityHandle>& handles, std::vector<uint8_t>& wire,
 			EntityCommandBufferPlaybackMode mode);
+		static constexpr size_t k_CommandsPerPage = 256;
+		Command& CommandAt(size_t index) { return m_CommandPages[index / k_CommandsPerPage][index % k_CommandsPerPage]; }
+		const Command& CommandAt(size_t index) const { return m_CommandPages[index / k_CommandsPerPage][index % k_CommandsPerPage]; }
 
 		template<typename T, typename Value>
 		void ConstructPayload(Command& command, Value&& value) {
 			try { ::new (command.Storage) T(std::forward<Value>(value)); }
 			catch (...) { --m_CommandCount; throw; }
-			if constexpr (!std::is_trivially_destructible_v<T>)
+			if constexpr (!std::is_trivially_destructible_v<T>) {
 				command.DestroyCapture = [](void* state) { std::launder(reinterpret_cast<T*>(state))->~T(); };
+				m_HasCaptures = true;
+			}
 		}
 
-		std::deque<Command> m_Commands;
+		// Pages keep non-movable captures stable while amortizing small command allocations.
+		std::vector<std::unique_ptr<Command[]>> m_CommandPages;
 		std::vector<EntityHandle> m_CreatedHandles;
 		std::vector<uint8_t> m_Wire;
-		std::vector<uint64_t> m_Identities;
 		Entity m_LiveSceneAnchor = Entity::Null;
 		std::size_t m_CommandCount = 0;
 		uint32_t m_EntityCount = 0;
 		uint64_t m_BufferToken;
 		uint64_t m_Generation = 0;
 		bool m_HasLiveScene = false;
+		bool m_HasCaptures = false;
+		bool m_HasCustomCommands = false;
 		bool m_Playing = false;
 		friend class ParallelEntityCommandBuffer;
 	};

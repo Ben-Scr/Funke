@@ -7,6 +7,7 @@
 #include <webgpu/webgpu_cpp.h>
 
 #include <memory>
+#include <glm/glm.hpp>
 
 // PostProcessor: sits between Renderer2D and present; reads an RGBA16F FBO and writes caller-supplied swap-chain or editor-panel view. This header pulls in <webgpu/webgpu_cpp.h> because the dst TextureView cannot be round-tripped through a raw pointer.
 
@@ -14,6 +15,15 @@ namespace Funke {
 
 	class Framebuffer;
 	struct PostProcessing2DComponent;
+
+	// Optional 3D inputs. A separate bind group keeps existing 2D post effects compatible.
+	struct PostProcessScene {
+		glm::mat4 View{1.0f}, Projection{1.0f}, LightViewProjection{1.0f};
+		glm::vec3 Position{0.0f};
+		glm::vec4 SunDirection{0.0f}, SunRadiance{0.0f}, ShadowParams{0.0f};
+		wgpu::TextureView Depth, Shadow;
+		uint32_t Samples = 1;
+	};
 
 	class FUNKE_API PostProcessor {
 	public:
@@ -45,7 +55,8 @@ namespace Funke {
 			uint32_t dstHeight,
 			const PostProcessing2DComponent* settings,
 			PostProcessingQualityLevel quality = PostProcessingQualityLevel::High,
-			bool clearDestination = false);
+			bool clearDestination = false,
+			const PostProcessScene* scene = nullptr);
 
 		// FXAA reading src at its own resolution. finalTarget: draws like Blit (cached viewport, composited over the
 		// destination), which must then match src's size; otherwise dstView is a src-sized intermediate it clears.

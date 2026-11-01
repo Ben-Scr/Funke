@@ -14,14 +14,14 @@ In an app's `ConfigureScenes()` (or lazily, anywhere on the main thread):
 SceneDefinition& def = SceneManager::RegisterScene("Main");   // standard systems are auto-added here
 def.AddSystem<MySystem>()                                       // see funke-add-system
    .OnInitialize([](Scene& s) { /* systems exist; first callback, inside Instantiate() */ })
-   .OnLoadChecked([path](Scene& s) { return SceneSerializer::LoadFromFile(s, path); }) // false/throw => load fails
+   .OnLoadFromFile(path)                                         // enables worker preparation for async loads
    .OnLoad([](Scene& s) { /* populate procedurally */ })
    .OnUnload([](Scene& s) { /* before systems' OnDestroy */ })
    .SetAsStartupScene()          // loaded by InitializeStartupScenes (first = single, others additive)
    .SetPersistent(true)          // survives non-additive loads / UnloadAllScenes(false)
    .WithoutDefaultCamera2D();    // opt out of the auto "Main Camera"
 ```
-Registering an existing name returns the existing definition (warning). Real sites: `Funke-Runtime/src/RuntimeApplication.cpp` (one definition per `buildScenes` entry, `OnLoadChecked` → `LoadFromFile(project->GetSceneFilePath(name))`), `Funke-Editor/src/EditorApplication.cpp` (`$EditorWorkingScene`), `ImGuiEditorLayer::LoadEditorScene` (`$EditorAssetScene.N`), and `ProjectSceneLoader::Load` (`Scene/ProjectSceneLoader.cpp`, behind C# `SceneManager.LoadScene`: registers a definition on demand from `Assets/**/<name>.scene`; a single load of an already-loaded scene restarts it via `TryRestartScene`).
+Registering an existing name returns the existing definition (warning). Real sites: `Funke-Runtime/src/RuntimeApplication.cpp` (one definition per `buildScenes` entry, `OnLoadFromFile(project->GetSceneFilePath(name))`), `Funke-Editor/src/EditorApplication.cpp` (`$EditorWorkingScene`), `ImGuiEditorLayer::LoadEditorScene` (`$EditorAssetScene.N`), and `ProjectSceneLoader::Load` (`Scene/ProjectSceneLoader.cpp`, behind C# `SceneManager.LoadScene`: registers a definition on demand from `Assets/**/<name>.scene`; a single load of an already-loaded scene restarts it via `TryRestartScene`).
 
 ## Load / switch / unload
 
@@ -43,11 +43,17 @@ SceneManager::UnloadAllScenes(/*includePersistent*/ false);
 - Additive loads of the same name create multiple instances; lookups by name return the first.
 - Iterate with `SceneManager::ForeachLoadedScene(fn)` (skips suspended scenes) or `GetLoadedScenes()`.
 
+## Asynchronous preparation and activation
+
+`LoadSceneAsync(name, additive, completion)` returns an operation ID. `PreloadSceneAsync` prepares a file-backed definition without creating entities; retain the ID and call `ActivatePreloadedScene` when needed. Poll `GetSceneLoadProgress` on the engine thread. The application pumps completions; do not wait synchronously on that thread.
+
+Use `OnLoadFromFile` so parsing and supported referenced-asset preparation can run on workers. Entity construction is staged on the engine thread with a default cooperative budget of 2 ms / 128 entity records per frame (`SetAsyncSceneLoadBudget`). Asset publication defaults to one per frame. A callback, prefab tree, finalization step or GPU upload is indivisible and can exceed the budget. See `Github-Docs/Documentation/Engine-Core/Scenes.md` for cancellation, preload lifetime and C# progress APIs.
+
 ## Lifecycle (exact order, `SceneManager::LoadSceneInternal` / `ReleaseScene`)
 
 Load:
 1. `SceneDefinition::Instantiate()` → `Scene` created, system factories run, **`OnInitialize`** callbacks.
-2. **`OnLoad` / `OnLoadChecked`** callbacks (scene not yet loaded — the only place `SceneSerializer::LoadFromFile` may fill it).
+2. **`OnLoadFromFile`**, `OnLoad` / `OnLoadChecked` work (the scene is not yet loaded). Use `OnLoadFromFile(path)` for scene files; wrapping file loading in a custom callback prevents the async file-preparation path. Keep `OnLoadChecked` for custom fallible initialization.
 3. Default camera: if the scene will become active and has no `Camera2DComponent`, a **runtime** "Main Camera" entity is created (skipped by `WithoutDefaultCamera2D`, `ApplicationConfig::AutoCreateDefaultCamera2D = false`, or no renderer).
 4. `ScenePreStartEvent` + C# `SceneManager.BeforeSceneLoaded`.
 5. `AwakeSystems()` then `StartSystems()` (enabled systems, registration order).
@@ -87,9 +93,9 @@ Not emitted for suspended loads, `ReloadScene`, or editor recovery activations (
 
 Enter (`BeginPlayModeRequest` → `PreparePlayModeSnapshot` → `CompletePlayModeEntry`):
 1. Refuses if a loaded scene is persistent or suspended, if persistent IDs collide, or if dirty prefabs fail to save (`SaveDirtyPrefabsBeforeRun`).
-2. Snapshots every loaded scene: **dirty** scenes are written privately to `<project>/.funke/PlayMode/<name>.scene` (the user's scene file is not touched); clean scenes use their project path. Saves `project.json` (`LastOpenedScene`).
+2. Writes a private snapshot of **every loaded scene**, including clean ones, to `<project>/.funke/PlayMode/`. The authored scene files are not overwritten. Saves `project.json` (`LastOpenedScene`).
 3. Captures C# script field overrides, optionally recompiles scripts first (play waits on `m_PlayModeRecompilePending`).
-4. Clears undo, `Application::SetIsPlaying(true)`, resets game time and fixed timestep from the project, starts C# scene systems (`StartManagedSceneSystemsForPlayMode`), wakes physics bodies, fires PlayOnAwake. Scenes are **not** reloaded and native systems do not re-run Awake/Start.
+4. Detaches and retains edit-mode undo histories, sets `Application::SetIsPlaying(true)`, resets game time and fixed timestep, starts C# scene systems (`StartManagedSceneSystemsForPlayMode`), wakes physics bodies and fires PlayOnAwake. Scenes are **not** reloaded and native systems do not re-run Awake/Start. On successful Stop, undo histories are rebound to the restored scene instances.
 
 Stop (`RestoreEditorSceneAfterPlaymode`): stages every snapshot as a new suspended additive scene and validates names/IDs before suspending and releasing the play scenes. Staging failures leave Play active; suspension failures attempt to resume the live play scenes. Once those scenes are released, a later failure leaves Play stopped with recovered edit scenes loaded for inspection and an error shown; it cannot restore the released live gameplay state. Success re-applies captured C# fields, activates and commits the restored scenes, restores the active scene and selection, and re-marks previously dirty scenes dirty.
 
@@ -101,7 +107,7 @@ Consequence: anything not serialized is lost on Stop, and anything that relies o
 
 ## Pitfalls
 
-- `SceneSerializer::LoadFromFile(*SceneManager::GetActiveScene(), path)` — the old pattern — now fails; use a definition with `OnLoadChecked`.
+- `SceneSerializer::LoadFromFile(*SceneManager::GetActiveScene(), path)` fails; use a definition with `OnLoadFromFile` and an owner-level scene swap.
 - Holding `Scene*` across a single load/reload: the old instance is destroyed. Re-query by name or keep the `weak_ptr`.
 - Relying on `Awake`/`Start` to mean "play started" in the editor.
 - Creating entities with `CreateRuntimeEntity` in an `OnLoad` callback and expecting them in the saved file.

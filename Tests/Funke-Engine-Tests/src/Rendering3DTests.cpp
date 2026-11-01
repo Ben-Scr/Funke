@@ -28,6 +28,7 @@
 
 #include <glm/ext/matrix_clip_space.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -113,6 +114,63 @@ TEST_CASE("Particle frustum bounds preserve rotated edge billboards and reject o
 		CHECK_FALSE(IntersectsFrustum(frustum, glm::vec3(inverseView * glm::vec4(100, 0, -5, 1)), extent));
 		CHECK_FALSE(IntersectsFrustum(frustum, glm::vec3(inverseView * glm::vec4(0, 0, 60, 1)), extent));
 		CHECK_FALSE(IntersectsFrustum(frustum, glm::vec3(inverseView * glm::vec4(0, 0, -60, 1)), extent));
+	}
+}
+
+TEST_CASE("WebGPU frustum rejects geometry before the near plane and keeps crossing bounds") {
+	for (CameraProjection projection : { CameraProjection::Orthographic, CameraProjection::Perspective }) {
+		Camera3DComponent camera;
+		camera.Projection = projection;
+		camera.NearClip = 2.0f;
+		camera.FarClip = 20.0f;
+		const FrustumPlanes frustum = ExtractFrustum(camera.GetProjectionMatrix(1.0f));
+		CHECK_FALSE(IntersectsFrustum(frustum, { 0, 0, -1 }, glm::vec3(0.1f)));
+		CHECK(IntersectsFrustum(frustum, { 0, 0, -1.9f }, glm::vec3(0.2f)));
+		CHECK(IntersectsFrustum(frustum, { 0, 0, -10 }, glm::vec3(0.1f)));
+		CHECK_FALSE(IntersectsFrustum(frustum, { 0, 0, -21 }, glm::vec3(0.1f)));
+	}
+}
+
+TEST_CASE("Light range spheres keep offscreen lights reaching the view with unnormalized planes") {
+	FrustumPlanes frustum = ExtractFrustum(glm::orthoRH_ZO(-2.0f, 2.0f, -2.0f, 2.0f, 1.0f, 9.0f));
+	for (int scale = 0; scale < 2; ++scale) {
+		CHECK(IntersectsFrustumSphere(frustum, { 0, 0, -5 }, 0.0f));
+		CHECK(IntersectsFrustumSphere(frustum, { 3, 0, -5 }, 1.0f));
+		CHECK_FALSE(IntersectsFrustumSphere(frustum, { 3.01f, 0, -5 }, 1.0f));
+		CHECK(IntersectsFrustumSphere(frustum, { -3, 0, -5 }, 1.0f));
+		CHECK_FALSE(IntersectsFrustumSphere(frustum, { -3.01f, 0, -5 }, 1.0f));
+		CHECK(IntersectsFrustumSphere(frustum, { 0, 3, -5 }, 1.0f));
+		CHECK_FALSE(IntersectsFrustumSphere(frustum, { 0, 3.01f, -5 }, 1.0f));
+		CHECK(IntersectsFrustumSphere(frustum, { 0, -3, -5 }, 1.0f));
+		CHECK_FALSE(IntersectsFrustumSphere(frustum, { 0, -3.01f, -5 }, 1.0f));
+		CHECK(IntersectsFrustumSphere(frustum, { 0, 0, 0 }, 1.0f));
+		CHECK_FALSE(IntersectsFrustumSphere(frustum, { 0, 0, 0.01f }, 1.0f));
+		CHECK(IntersectsFrustumSphere(frustum, { 0, 0, -10 }, 1.0f));
+		CHECK_FALSE(IntersectsFrustumSphere(frustum, { 0, 0, -10.01f }, 1.0f));
+		for (auto& plane : frustum.Planes) plane *= 7.0f;
+	}
+}
+
+TEST_CASE("Light sphere culling retains every sampled illuminated point inside a rotated camera") {
+	Camera3DComponent camera;
+	camera.FarClip = 50.0f;
+	const glm::mat4 view = glm::lookAtRH(glm::vec3(7, 3, 2), glm::vec3(-1, 1, -4), glm::vec3(0, 1, 0));
+	for (CameraProjection projection : { CameraProjection::Orthographic, CameraProjection::Perspective }) {
+		camera.Projection = projection;
+		const glm::mat4 vp = camera.GetProjectionMatrix(1.7f) * view;
+		const glm::mat4 inverse = glm::inverse(vp);
+		const FrustumPlanes frustum = ExtractFrustum(vp);
+		for (float x : { -0.99f, 0.0f, 0.99f }) {
+			for (float y : { -0.99f, 0.0f, 0.99f }) {
+				for (float z : { 0.01f, 0.5f, 0.99f }) {
+					const glm::vec4 world = inverse * glm::vec4(x, y, z, 1);
+					const glm::vec3 point = glm::vec3(world) / world.w;
+					for (const glm::vec3 offset : { glm::vec3(4, 0, 0), glm::vec3(0, -4, 0), glm::vec3(0, 0, 4) }) {
+						CHECK(IntersectsFrustumSphere(frustum, point + offset, 4.01f));
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -374,6 +432,50 @@ TEST_CASE("Light selection keeps directional lights first and the nearest local 
 
 	std::vector<Lighting3D::LightCandidate> many(Lighting3D::k_MaxLights + 10, MakePoint({ 0.0f, 0.0f, 0.0f }, 1.0f));
 	CHECK(Lighting3D::SelectLights(many, glm::vec3(0.0f), 1000).size() == static_cast<size_t>(Lighting3D::k_MaxLights));
+}
+
+TEST_CASE("Light selection matches a stable full sort when the light budget overflows") {
+	std::vector<Lighting3D::LightCandidate> candidates;
+	for (int i = 0; i < 513; ++i) {
+		auto light = MakePoint(glm::vec3(static_cast<float>((i * 37) % 101 - 50), 0.0f, 0.0f), static_cast<float>(i % 7));
+		light.Type = i % 17 == 0 ? Lighting3D::LightType::Directional
+			: i % 2 == 0 ? Lighting3D::LightType::Spot : Lighting3D::LightType::Point;
+		light.Radiance = i % 13 == 0 ? glm::vec3(0.0f) : glm::vec3(static_cast<float>(i + 1));
+		candidates.push_back(light);
+	}
+	for (const glm::vec3 camera : { glm::vec3(0.0f), glm::vec3(7.0f, -3.0f, 2.0f) }) {
+		std::vector<Lighting3D::LightCandidate> expected;
+		for (const auto& light : candidates) {
+			if (light.Radiance.x > 0.0f && (light.Type == Lighting3D::LightType::Directional || light.Range > 0.0f)) {
+				expected.push_back(light);
+			}
+		}
+		std::stable_sort(expected.begin(), expected.end(), [&](const auto& a, const auto& b) {
+			const bool directionalA = a.Type == Lighting3D::LightType::Directional;
+			const bool directionalB = b.Type == Lighting3D::LightType::Directional;
+			if (directionalA != directionalB) return directionalA;
+			if (directionalA) return false;
+			return glm::length(a.Position - camera) - a.Range < glm::length(b.Position - camera) - b.Range;
+		});
+		for (const int limit : { -1, 0, 1, 16, 32, 63, 64, 1000 }) {
+			const auto selected = Lighting3D::SelectLights(candidates, camera, limit);
+			const size_t count = std::min(expected.size(), static_cast<size_t>(std::clamp(limit, 0, Lighting3D::k_MaxLights)));
+			REQUIRE(selected.size() == count);
+			for (size_t i = 0; i < count; ++i) CHECK(selected[i].Radiance.x == expected[i].Radiance.x);
+		}
+	}
+}
+
+TEST_CASE("Light selection preserves source order for equal sphere distances at the budget boundary") {
+	std::vector<Lighting3D::LightCandidate> candidates;
+	for (int i = 0; i < 256; ++i) {
+		auto light = MakePoint(glm::vec3(static_cast<float>(i % 8 + 1), 0.0f, 0.0f), static_cast<float>(i % 8 + 2));
+		light.Radiance.x = static_cast<float>(i + 1);
+		candidates.push_back(light);
+	}
+	const auto selected = Lighting3D::SelectLights(candidates, glm::vec3(0.0f), Lighting3D::k_MaxLights);
+	REQUIRE(selected.size() == static_cast<size_t>(Lighting3D::k_MaxLights));
+	for (size_t i = 0; i < selected.size(); ++i) CHECK(selected[i].Radiance.x == candidates[i].Radiance.x);
 }
 
 TEST_CASE("Directional shadow matrix covers the camera frustum slice up to the shadow distance") {

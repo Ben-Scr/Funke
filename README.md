@@ -32,15 +32,15 @@ Check the package documentation and Asset Library alongside [Known Limitations](
 ### Editor
 
 <p align="center">
-  <img src="Github-Docs/Preview/Editor/editor.png" width="48%" alt="Editor Preview">
-  <img src="Github-Docs/Preview/Editor/editor2.png" width="48%" alt="Editor Preview">
+  <img src="Github-Docs/Preview/Editor/editor.png" width="48%" alt="Funke Editor: 3D scene editing with hierarchy, transform gizmo and inspector">
+  <img src="Github-Docs/Preview/Editor/editor2.png" width="48%" alt="Funke Editor: Funkenfall game view with camera settings and project assets">
 </p>
 
 ### Launcher
 
 <p align="center">
-  <img src="Github-Docs/Preview/Launcher/launcher.png" width="48%" alt="Launcher Preview">
-  <img src="Github-Docs/Preview/Launcher/launcher2.png" width="48%" alt="Launcher Preview">
+  <img src="Github-Docs/Preview/Launcher/launcher.png" width="48%" alt="Funke Launcher: built-in 2D and 3D project templates">
+  <img src="Github-Docs/Preview/Launcher/launcher2.png" width="48%" alt="Funke Launcher: Asset Library with community projects">
 </p>
 
 ## Getting Started
@@ -48,11 +48,11 @@ Check the package documentation and Asset Library alongside [Known Limitations](
 Clone with submodules:
 
 ```bash
-git clone --recurse https://github.com/Ben-Scr/Index.git
+git clone --recurse-submodules https://github.com/Ben-Scr/Index.git Funke
 cd Funke
 ```
 
-Then follow the steps for your platform. Re-run setup after pulling changes that touch dependencies, submodules, Premake files, or C# projects.
+Then follow the steps for your platform. Re-run setup when dependencies or submodules change. For ordinary development, use the incremental commands in [Contributing](CONTRIBUTING.md); changing existing source files does not require setup again.
 
 <details>
 <summary><b>Windows (MSVC v143 / Visual Studio 2022 toolchain)</b></summary>
@@ -128,7 +128,7 @@ make config=release -j"$(nproc)" Funke-Launcher
 <details>
 <summary><b>macOS (Apple Silicon or Intel, GNU Make)</b></summary>
 
-**Prerequisites:** macOS 11 or later, the Xcode Command Line Tools (`xcode-select --install`), CMake, the .NET 10 SDK, Python 3.10+ and Git. Rendering uses Metal through Dawn.
+**Prerequisites:** macOS 15 or later, the Xcode Command Line Tools (`xcode-select --install`), CMake, the .NET 10 SDK, Python 3.10+ and Git. Rendering uses Metal through Dawn. See Microsoft's [.NET 10 supported systems](https://github.com/dotnet/core/blob/main/release-notes/10.0/supported-os.md) for the managed runtime's current support policy.
 
 ```bash
 chmod +x scripts/Setup.sh
@@ -157,6 +157,7 @@ Guides for building games with Funke live in **[`Github-Docs/Documentation`](Git
 - [WebGPU via Dawn](https://dawn.googlesource.com/dawn) — rendering (picks D3D12 / Vulkan / Metal at runtime)
 - [SDL3](https://github.com/libsdl-org/SDL) — windowing, input, gamepads & platform services
 - [Box2D](https://github.com/erincatto/box2d) — 2D physics
+- [Jolt Physics](https://github.com/jrouwe/JoltPhysics) — 3D physics
 - [EnTT](https://github.com/skypjack/entt) — ECS
 - [Miniaudio](https://github.com/mackron/miniaudio) — audio
 - [GLM](https://github.com/g-truc/glm) / [STB](https://github.com/nothings/stb) — math & image loading
