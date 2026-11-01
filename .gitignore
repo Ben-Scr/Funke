@@ -4,6 +4,9 @@
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
 # Custom Ignores
+# Local previews, benchmark results, and exported test builds.
+/tmp/
+/output/
 build/
 bin-int/
 **/build/

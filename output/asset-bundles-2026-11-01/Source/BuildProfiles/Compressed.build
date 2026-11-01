@@ -1,9 +1,0 @@
-{
-  "name": "Compressed",
-  "platform": "Windows",
-  "renderBackend": "Direct3D12",
-  "configuration": "Development",
-  "bundleDotNetRuntime": false,
-  "bundleAssets": true,
-  "compressAssetBundles": true
-}

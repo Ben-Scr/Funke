@@ -1,4 +1,0 @@
-{
-  "valid": false,
-  "reason": "Stale Editor plus native sidecars with empty engine_sha256 caused repeated rebuild and skipped package load."
-}

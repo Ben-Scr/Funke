@@ -1,9 +1,0 @@
-Operation,Mode,Count,Sample,Warmup,RecordMs,PlaybackMs,TotalMs
-Create2,ManagedDirect,8192,0,0,0,0,4.6754
-AddSprite,ManagedDirect,8192,0,0,0,0,1.4034
-RemoveSprite,ManagedDirect,8192,0,0,0,0,1.6764
-Destroy,ManagedDirect,8192,0,0,0,0,3.6873
-Create2,ManagedECBParallel,8192,0,0,0.0987,1.4158,1.5145
-AddSprite,ManagedECBParallel,8192,0,0,0.0478,0.3885,0.4363
-RemoveSprite,ManagedECBParallel,8192,0,0,0.0818,1.2338,1.3156
-Destroy,ManagedECBParallel,8192,0,0,0.1351,1.6969,1.832
