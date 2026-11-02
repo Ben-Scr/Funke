@@ -527,6 +527,8 @@ struct FnkPostScene {
 	sunRadiance: vec4<f32>,
 	shadowParams: vec4<f32>,
 	flags: vec4<f32>,
+    invRelativeViewProj: mat4x4<f32>,
+    worldOrigin: vec4<f32>,
 };
 @group(2) @binding(0) var<uniform> scene: FnkPostScene;
 @group(2) @binding(1) var fnk_sceneDepth: texture_depth_2d;
@@ -550,20 +552,28 @@ fn sampleSceneDepth(uv: vec2<f32>) -> f32 {
 	return textureLoad(fnk_sceneDepth, clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1), 0);
 }
 
-fn sceneWorldPosition(uv: vec2<f32>, depth: f32) -> vec3<f32> {
-	let p = globals.invViewProj * vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+fn sceneRelativePosition(uv: vec2<f32>, depth: f32) -> vec3<f32> {
+	let p = scene.invRelativeViewProj * vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
 	return p.xyz / p.w;
 }
 
+fn sceneWorldPosition(uv: vec2<f32>, depth: f32) -> vec3<f32> {
+    return sceneRelativePosition(uv, depth) + scene.worldOrigin.xyz;
+}
+
 // Visibility of the main shadowed sun at a point in space. Outside the shadow volume is unknown/dark.
-fn sampleSunVisibility(p: vec3<f32>) -> f32 {
+fn sampleRelativeSunVisibility(p: vec3<f32>) -> f32 {
 	if (scene.flags.z < 0.5) { return 0.0; }
 	let light = scene.lightViewProj * vec4<f32>(p, 1.0);
 	let ndc = light.xyz / light.w;
 	let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
 	if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || ndc.z < 0.0 || ndc.z > 1.0) { return 0.0; }
 	let visible = textureSampleCompareLevel(fnk_sceneShadow, fnk_sceneShadowSampler, uv, ndc.z - scene.shadowParams.y * 0.15);
-	return visible * (1.0 - smoothstep(scene.shadowParams.w * 0.85, scene.shadowParams.w, distance(p, globals.cameraPosition.xyz)));
+	return visible * (1.0 - smoothstep(scene.shadowParams.w * 0.85, scene.shadowParams.w, distance(p, globals.cameraPosition.xyz - scene.worldOrigin.xyz)));
+}
+
+fn sampleSunVisibility(p: vec3<f32>) -> f32 {
+    return sampleRelativeSunVisibility(p - scene.worldOrigin.xyz);
 }
 
 struct SurfaceInput {

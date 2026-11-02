@@ -405,13 +405,13 @@ namespace Funke {
 			const auto points = registry.view<const PointLightComponent, const Transform3DComponent>(entt::exclude<DisabledTag>);
 			for (EntityHandle entity : points) {
 				const auto& light = points.get<const PointLightComponent>(entity);
-				const auto& transform = points.get<const Transform3DComponent>(entity);
+				const auto position = glm::vec3(glm::dvec3(Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, entity)[3]) - glm::dvec3(origin));
 				anyLight = true;
 				if (light.Intensity <= 0.0f || light.Range <= 0.0f
-					|| !IntersectsFrustumSphere(cameraFrustum, glm::vec3(glm::dvec3(Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, entity)[3]) - glm::dvec3(origin)), light.Range)) continue;
+					|| !IntersectsFrustumSphere(cameraFrustum, position, light.Range)) continue;
 				Lighting3D::LightCandidate candidate;
 				candidate.Type = Lighting3D::LightType::Point;
-				candidate.Position = glm::vec3(glm::dvec3(Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, entity)[3]) - glm::dvec3(origin));
+				candidate.Position = position;
 				candidate.Radiance = Lighting3D::SrgbToLinear(light.Color) * std::max(light.Intensity, 0.0f);
 				candidate.Range = light.Range;
 				candidates.push_back(candidate);
@@ -2194,7 +2194,7 @@ namespace Funke {
 		if (!pipeline) return;
 
 		SkyUniforms sky{};
-		sky.InverseViewProjection = glm::inverse(view.Projection * view.View);
+		sky.InverseViewProjection = glm::inverse(view.Projection * glm::mat4(glm::mat3(view.View)));
 		sky.Top = ToVec4(environment.SkyTop);
 		sky.Horizon = ToVec4(environment.SkyHorizon);
 		sky.Ground = ToVec4(environment.SkyGround);
@@ -2246,6 +2246,7 @@ namespace Funke {
 			m_PostProcess->SceneInputs.View = view.RelativeView(view.RenderOrigin());
 			m_PostProcess->SceneInputs.Projection = view.Projection;
 			m_PostProcess->SceneInputs.Position = view.RelativePosition(view.RenderOrigin());
+            m_PostProcess->SceneInputs.WorldOrigin = view.RenderOrigin();
 		}
 		FUNKE_PROFILE_SCOPE("Renderer3D.RenderScene");
 		Transform3DHierarchySystem::Propagate(scene);
@@ -2392,7 +2393,6 @@ namespace Funke {
 
 		for (EntityHandle entity : meshes) {
 			const auto& renderer = meshes.get<const MeshRendererComponent>(entity);
-			const auto& transform = meshes.get<const Transform3DComponent>(entity);
 			size_t meshIndex = static_cast<size_t>(renderer.Mesh);
 			glm::vec3 localMin(0.0f);
 			glm::vec3 localMax(0.0f);
@@ -2522,6 +2522,7 @@ namespace Funke {
 			inputs.View = relativeView;
 			inputs.Projection = view.Projection;
 			inputs.Position = cameraPosition;
+            inputs.WorldOrigin = origin;
 			inputs.LightViewProjection = frame.LightViewProjection;
 			inputs.ShadowParams = frame.ShadowParams;
 			inputs.Shadow = shadowView;
@@ -3005,7 +3006,7 @@ namespace Funke {
 		}
 
 		const glm::vec3 origin = view.RenderOrigin();
-        for (auto& vertex : m_LineUpload) vertex.position -= origin;
+        for (auto& vertex : m_LineUpload) { vertex.x -= origin.x; vertex.y -= origin.y; vertex.z -= origin.z; }
         const glm::mat4 viewProjection = view.Projection * view.RelativeView(origin);
 		queue.WriteBuffer(gpu.LineUniformBuffer, 0, glm::value_ptr(viewProjection), sizeof(glm::mat4));
 		queue.WriteBuffer(gpu.LineVertexBuffer, 0, m_LineUpload.data(), bytes);

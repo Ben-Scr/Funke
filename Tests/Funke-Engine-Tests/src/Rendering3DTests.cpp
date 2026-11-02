@@ -3,6 +3,8 @@
 
 #include "Assets/AssetRegistry.hpp"
 #include "Components/General/Transform3DComponent.hpp"
+#include "Components/General/HierarchyComponent.hpp"
+#include "Systems/Transform3DHierarchySystem.hpp"
 #include "Components/Graphics/Camera3DComponent.hpp"
 #include "Components/Graphics/DirectionalLightComponent.hpp"
 #include "Components/Graphics/MeshRendererComponent.hpp"
@@ -42,6 +44,37 @@
 #include <filesystem>
 
 using namespace Funke;
+
+TEST_CASE("Large-coordinate rendering preserves camera children and submillimeter motion") {
+    glm::vec3 reference(0.0f);
+    for (float offset : { 0.0f, 10000.0f, -10000.0f, 100000.0f, -100000.0f, 1000000.0f, -1000000.0f }) {
+        entt::registry registry;
+        const auto root = registry.create(), eye = registry.create(), held = registry.create();
+        registry.emplace<Transform3DComponent>(root).Position = { offset + 0.5f, 65.0f, offset + 0.5f };
+        auto& eyeTransform = registry.emplace<Transform3DComponent>(eye);
+        eyeTransform.Position = { 0.00015f, 1.6377f, 0.0f };
+        eyeTransform.Rotation = { -12.0f, 30.0f, 0.0f };
+        registry.emplace<HierarchyComponent>(eye).Parent = root;
+        registry.emplace<Transform3DComponent>(held).Position = { 0.265f, -0.205f, -0.64f };
+        registry.emplace<HierarchyComponent>(held).Parent = eye;
+        const auto cameraWorld = Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, eye);
+        CHECK(cameraWorld[3].x - (double(offset) + 0.5) == doctest::Approx(0.00015).epsilon(0.00001));
+        Camera3DComponent camera;
+        const auto view = Renderer3D::MakePreciseView(cameraWorld, camera, 16.0f / 9.0f);
+        const auto origin = view.RenderOrigin();
+        auto heldWorld = Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, held);
+        heldWorld[3] -= glm::dvec4(origin, 0.0);
+        const auto clip = view.Projection * view.RelativeView(origin) * glm::mat4(heldWorld) * glm::vec4(0.001f, 0.002f, 0.003f, 1.0f);
+        const auto ndc = glm::vec3(clip) / clip.w;
+        if (offset == 0.0f) reference = ndc;
+        CHECK(glm::length(ndc - reference) < 0.00001f);
+        const auto frustum = ExtractFrustum(view.Projection * view.RelativeView(origin));
+        CHECK(IntersectsFrustum(frustum, glm::vec3(heldWorld[3]), glm::vec3(0.05f)));
+        eyeTransform.Position.x += 0.0002f;
+        const auto moved = Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, eye);
+        CHECK(moved[3].x - cameraWorld[3].x == doctest::Approx(0.0002).epsilon(0.00001));
+    }
+}
 
 TEST_CASE("Early mesh culling preserves off-camera shadow casters and unbounded vertex displacement") {
 	const FrustumPlanes camera = ExtractFrustum(glm::orthoRH_ZO(-2.0f, 2.0f, -2.0f, 2.0f, 1.0f, 10.0f));
