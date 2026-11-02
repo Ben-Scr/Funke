@@ -4,6 +4,8 @@ Ground truth: `Funke-Engine/src/Serialization/SceneSerializer.cpp` (writer), `Sc
 
 ## Format detection & the Editor
 
+For a loaded editor scene, prefer `funke editor scenes/entities/inspect/schema` and typed `editor apply --file batch.json --json`. Query current session/instance/revision/schema tokens, validate with `dryRun`, apply with a new request ID, then explicitly `save-scene`. Batches support entity hierarchy, built-in components, managed script attachments and typed properties/references with one undo step; unsupported restoration paths fail before application. See `Github-Docs/Documentation/Editor/Editor-Bridge.md` for the contract. This avoids overwriting unsaved in-memory edits with a separately authored file. Scene JSON below remains the storage format and an offline authoring path.
+
 - The loader sniffs magic bytes: files starting with `FNKSCNB\x1A` are binary, **everything else is parsed as JSON**, regardless of project settings. A hand-written JSON scene loads in a Binary project.
 - But the **Editor re-saves** scenes/prefabs in the project's `assetSerializationFormat`. New projects are `Json`; a `project.json` without the key (older projects) means `Binary` — run `funke convert --format json` so your files stay JSON.
 - A save regenerates the file from live state: unknown keys are dropped, and `ScriptFields` for classes/fields the compiled assembly doesn't know are dropped. → Compile scripts before the user opens/saves the scene.
@@ -17,7 +19,7 @@ Ground truth: `Funke-Engine/src/Serialization/SceneSerializer.cpp` (writer), `Sc
   "version": 1,
   "name": "Level1",
   "systems": [ "WaveSpawner", { "className": "Other", "enabled": false, "fields": { "Speed": "2.5" } } ],
-  "entities": [ ... ]
+  "entities": []
 }
 ```
 
@@ -42,7 +44,7 @@ Scenes are found **by file name** anywhere under `Assets/` (case-insensitive). T
   "parentUuid": "1730062311204411821",
   "childIndex": 0,
   "Transform2D": { "posX": 0, "posY": -4, "rotation": 0, "scaleX": 2, "scaleY": 0.4 },
-  "SpriteRenderer": { ... },
+  "SpriteRenderer": {},
   "Scripts": [ { "className": "PaddleMovement", "type": "Managed" } ],
   "ScriptFields": { "PaddleMovement": [ { "name": "Speed", "type": "float", "value": "9" } ] }
 }
@@ -60,7 +62,7 @@ Scenes are found **by file name** anywhere under `Assets/` (case-insensitive). T
 | `Origin` | Omit or use `"Scene"` for normal entities; `"Prefab"` for prefab instances (below). Unsupported values log a warning and load as scene content. |
 | Don't write | `SceneGUID`, `RuntimeID`, `SourceEntityId`, `sourceUuid` (identity plumbing the Editor writes) |
 
-- **No `Transform2D` key → the entity has no transform.** World entities need at least `"Transform2D": {}`. UI entities use `RectTransform2D` instead — the two conflict.
+- **No `Transform2D` key → the entity has no 2D world transform.** World entities need at least `"Transform2D": {}`. Screen-space UI uses `RectTransform2D` alone; a world-space canvas root deliberately combines it with `Transform2D` or `Transform3D`. Keep world transforms off ordinary UI children. See `Github-Docs/Documentation/Engine-Core/World-Space-UI.md`.
 - Entities can appear in any order (parents may come after children).
 - There are no string tags or named layers. Physics uses collider `layer`/`collisionMask` bitmasks; rendering uses `sortLayer` (0–255) / `sortOrder` (int16).
 - Transform values are **local to the parent**. `rotation` is **radians** in JSON (the C# `Transform2D.Rotation` property and the Inspector show degrees).

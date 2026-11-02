@@ -11,6 +11,8 @@ namespace Funke {
 	class FUNKE_API Path {
 	public:
 		static std::string GetSpecialFolderPath(SpecialFolder folder);
+		// Resolves existing ancestors while retaining virtual or deleted descendants.
+		static std::filesystem::path CanonicalIdentity(const std::filesystem::path& path);
 		static std::filesystem::path FromUtf8(std::string_view path) {
 			return std::filesystem::u8path(path.begin(), path.end());
 		}

@@ -332,6 +332,8 @@ namespace Funke {
 		bool SetMainCamera(EntityHandle entity);
 
 		bool IsDirty() const { return m_Dirty; }
+		uint64_t GetRevision() const { return m_Revision; }
+		uint64_t GetContentGeneration() const { return m_ContentGeneration; }
 		void MarkDirty();
 		void ClearDirty() { m_Dirty = false; }
 
@@ -515,6 +517,8 @@ namespace Funke {
 		bool m_LifecycleSuspended = false;
 		bool m_Persistent = false;
 		bool m_Dirty = false;
+		uint64_t m_Revision = 0;
+		uint64_t m_ContentGeneration = 0;
 
 		std::size_t m_EntityCount = 0;
 		// Guards ClearEntities — prevents RefreshMainCameraSelection from scanning a mutating registry.

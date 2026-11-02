@@ -1,5 +1,6 @@
 #pragma once
 #include "Assets/TextureMeta.hpp"
+#include "Undo/AssetFileHistory.hpp"
 #include "Gui/AssetRenameInput.hpp"
 #include "Gui/PrefabThumbnailCache.hpp"
 #include "Gui/ThumbnailCache.hpp"
@@ -26,6 +27,10 @@ namespace Funke {
 		void Shutdown();
 		void Render();
 		void RequestRefresh() { m_NeedsRefresh = true; }
+		bool UsesAssetHistory() const { return m_AssetHistoryContext; }
+		bool CanUndoAssets() const { return !IsImportingAssets() && !IsDeleting() && m_RenamePath.empty() && m_FileHistory.CanUndo(); }
+		bool CanRedoAssets() const { return !IsImportingAssets() && !IsDeleting() && m_RenamePath.empty() && m_FileHistory.CanRedo(); }
+		std::string UndoRedoAssets(bool redo);
 		static void RequestRevealAsset(const std::string& path);
 
 		// Drop every cached thumbnail. Called by the editor's hot-reload
@@ -44,6 +49,8 @@ namespace Funke {
 			m_Thumbnails.Invalidate(absolutePath);
 			m_PrefabThumbnails.Invalidate(absolutePath);
 		}
+
+		void InvalidatePrefabThumbnails() { m_PrefabThumbnails.MarkAllStale(); }
 
 		/// Returns true when the user is currently naming a new script (rename in progress).
 		bool IsCreatingScript() const { return m_PendingScriptType != PendingScriptType::None; }
@@ -79,6 +86,7 @@ namespace Funke {
 		/// Returns the currently selected asset path (empty if none).
 		const std::string& GetSelectedPath() const { return m_SelectedPath; }
 		void ClearSelection() {
+			m_AssetHistoryContext = false;
 			ClearAssetSelection();
 		}
 		bool TakeSelectionActivated() {
@@ -88,6 +96,12 @@ namespace Funke {
 		}
 
 	private:
+		std::shared_ptr<AssetFileHistory::Change> BeginFileEdit(const std::vector<std::string>& paths, const char* label);
+		void FinishFileEdit(const std::shared_ptr<AssetFileHistory::Change>& change);
+		AssetFileHistory m_FileHistory;
+		bool m_ClearHistoryThumbnails = false;
+		bool m_AssetHistoryContext = false;
+		std::shared_ptr<AssetFileHistory::Change> m_DeleteFileEdit;
 		void NavigateTo(const std::string& directory);
 		void NavigateUp();
 		void Refresh();
@@ -143,6 +157,7 @@ namespace Funke {
 			const SpriteSlice& slice, int sliceIndex, int tileIndex);
 
 		void RebuildSliceCache();
+		void PumpSliceCache();
 
 		void CreateAssetWithCollisionCheck(
 			std::filesystem::path preferredPath,
@@ -212,6 +227,11 @@ namespace Funke {
 		std::string m_CurrentDirectory;
 		std::vector<DirectoryEntry> m_Entries;
 		std::vector<std::string> m_VisibleEntryPaths;
+		struct GridTile { int EntryIndex = -1; int SliceIndex = -1; };
+		std::vector<GridTile> m_GridTiles;
+		std::unordered_map<std::string, int> m_GridPathToTile;
+		const std::vector<DirectoryEntry>* m_GridSource = nullptr;
+		bool m_GridDirty = true;
 		std::string m_SelectedPath;
 		std::vector<std::string> m_SelectedPaths;
 		int m_LastSelectionIndex = -1;
@@ -291,6 +311,7 @@ namespace Funke {
 		PrefabThumbnailCache m_PrefabThumbnails;
 
 		std::unordered_map<std::string, std::vector<SpriteSlice>> m_SliceCache;
+		size_t m_NextSliceEntry = 0;
 		std::unordered_set<std::string> m_ExpandedTextures;
 
 		struct PendingCreationPrompt {

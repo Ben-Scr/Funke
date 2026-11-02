@@ -217,6 +217,22 @@ namespace Funke {
 		return world;
 	}
 
+    glm::dmat4 Transform3DHierarchySystem::ComputeWorldMatrixPrecise(const entt::registry& registry, EntityHandle entity) {
+        glm::dmat4 world(1.0);
+        for (int depth = 0; depth <= k_MaxHierarchyDepth && registry.valid(entity); ++depth) {
+            if (const auto* transform = registry.try_get<Transform3DComponent>(entity)) {
+                // Reuse propagated local bases, but also support callers before propagation.
+                const bool current = transform->CachedLocalValid && transform->CachedPosition == transform->Position
+                    && transform->CachedRotation == transform->Rotation && transform->CachedScale == transform->Scale;
+                world = glm::dmat4(current ? transform->CachedLocalMatrix : transform->GetLocalMatrix()) * world;
+            }
+            const auto* hierarchy = registry.try_get<HierarchyComponent>(entity);
+            if (!hierarchy) break;
+            entity = hierarchy->Parent;
+        }
+        return world;
+    }
+
 	void Transform3DHierarchySystem::Awake(Scene& scene) {
 		Propagate(scene);
 	}

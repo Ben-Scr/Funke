@@ -14,8 +14,8 @@ namespace Funke {
 		f.Planes[1] = m[3] - m[0];
 		f.Planes[2] = m[3] + m[1];
 		f.Planes[3] = m[3] - m[1];
-		// The -w near plane conservatively includes both OpenGL and WebGPU clip depths.
-		f.Planes[4] = m[3] + m[2];
+		// Camera and shadow projections use WebGPU's zero-to-one clip depth.
+		f.Planes[4] = m[2];
 		f.Planes[5] = m[3] - m[2];
 		return f;
 	}
@@ -27,6 +27,27 @@ namespace Funke {
 			if (distance < -radius) return false;
 		}
 		return true;
+	}
+
+	inline bool IntersectsFrustumSphere(const FrustumPlanes& frustum, const glm::vec3& center, float radius) {
+		for (const glm::vec4& plane : frustum.Planes) {
+			const glm::vec3 normal(plane);
+			const float distance = glm::dot(normal, center) + plane.w;
+			if (distance < 0.0f && distance * distance > radius * radius * glm::dot(normal, normal)) return false;
+		}
+		return true;
+	}
+
+	struct MeshVisibility {
+		bool Visible = false;
+		bool CastsShadow = false;
+		bool IsNeeded() const { return Visible || CastsShadow; }
+	};
+
+	inline MeshVisibility ClassifyMeshVisibility(const FrustumPlanes& camera, const FrustumPlanes* shadow,
+		const glm::vec3& center, const glm::vec3& extent, bool cullable, bool castsShadow) {
+		return { !cullable || IntersectsFrustum(camera, center, extent),
+			shadow && castsShadow && (!cullable || IntersectsFrustum(*shadow, center, extent)) };
 	}
 
 	inline glm::vec3 BillboardBoundsExtent(const glm::vec3& cameraRight, const glm::vec3& cameraUp) {

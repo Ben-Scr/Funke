@@ -277,10 +277,10 @@ namespace Funke {
         return input ? input->m_CharsThisFrame : empty;
     }
 
-    void Input::PollGamepads() {
+    void Input::PollGamepads(bool advanceEdges) {
         for (int i = 0; i < k_MaxGamepads; ++i) {
             auto& g = m_Gamepads[i];
-            g.PreviousButtons = g.CurrentButtons;
+            if (advanceEdges) g.PreviousButtons = g.CurrentButtons;
 
             if (g.Handle && SDL_GamepadConnected(g.Handle)) {
                 g.Connected = true;

@@ -63,6 +63,8 @@ Tracks address their entity by a path of child names from the Animator's entity 
 The row above the tracks holds events. Double-click it (or right-click > **Add Event**) to add one, then drag it in time. Double-click or right-click an event to set its **Function** and **Argument**. During playback the event calls that public method on every script of the Animator's entity:
 
 ```csharp
+using Funke;
+
 public class Footsteps : EntityScript
 {
     public Audio? Step;
@@ -94,6 +96,8 @@ Drag nodes to arrange them, drag the empty canvas (or use the middle mouse butto
 ## Scripting
 
 ```csharp
+using Funke;
+
 public class Player : EntityScript
 {
     private Animator? m_Animator;
@@ -186,11 +190,14 @@ Both are JSON with a GUID in their `.meta`, like other assets, and can be writte
   "type": "AnimatorController", "version": 1,
   "parameters": [ { "name": "IsRunning", "type": "bool", "default": false }, { "name": "Jump", "type": "trigger" } ],
   "states": [ { "name": "Idle", "clip": "7200000000000000001", "speed": 1, "position": [0, 0] },
-              { "name": "Run", "clip": "7200000000000000002", "speed": 1, "loop": "loop", "position": [260, 0] } ],
+              { "name": "Run", "clip": "7200000000000000002", "speed": 1, "loop": "loop", "position": [260, 0] },
+              { "name": "Jump", "clip": "7200000000000000003", "speed": 1, "loop": "once", "position": [260, 160] } ],
   "defaultState": "Idle",
   "transitions": [
     { "from": "Idle", "to": "Run", "conditions": [ { "parameter": "IsRunning", "mode": "if" } ], "hasExitTime": false, "duration": 0.2 },
-    { "fromAny": true, "to": "Jump", "conditions": [ { "parameter": "Jump", "mode": "if" } ], "duration": 0.1 }
+    { "from": "Run", "to": "Idle", "conditions": [ { "parameter": "IsRunning", "mode": "ifNot" } ], "hasExitTime": false, "duration": 0.2 },
+    { "fromAny": true, "to": "Jump", "conditions": [ { "parameter": "Jump", "mode": "if" } ], "duration": 0.1 },
+    { "from": "Jump", "to": "Idle", "hasExitTime": true, "exitTime": 1, "duration": 0.1 }
   ]
 }
 ```

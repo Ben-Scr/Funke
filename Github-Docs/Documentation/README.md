@@ -2,6 +2,8 @@
 
 Welcome to the documentation for **Funke**, a modular 2D and 3D game engine supporting game development in **C++ and C#**. The native engine is implemented in C++20; projects can use C++ scripts, C# scripts, or both. These pages explain how the engine works and how to build games with it, from launching a game to writing your own packages.
 
+These guides track the repository's current implementation. For an installed release, use the documentation at its matching Git tag; newer features may require a newer engine build.
+
 New here? Start with **[Your First Game](Getting-Started.md)**, a 15-minute walkthrough from install to a desktop build. After that, a good reading order is **Editor → ECS → Scenes → Scripting**, then the rest as you need it. **[Known Limitations](Known-Limitations.md)** distinguishes core-only restrictions, available package features and remaining beta limitations.
 
 **Funke includes an external package and project ecosystem.** This repository does not contain every available feature or reference game. Tilemaps and input actions/rebinding are available through [optional packages](#packages). For existing reference games, open the Launcher's **Asset Library**: **NeonStack** and **Voxtau** are game projects, and **FunkeBench** is a benchmark sample. The [Asset Library catalog](https://github.com/Ben-Scr/Funke-AssetLibrary) is maintained separately; `templates/` contains only the built-in empty starters.
@@ -24,6 +26,8 @@ The foundational systems that make a game run.
 - **[Custom Shaders](Engine-Core/Custom-Shaders.md)** — your own WGSL shaders for meshes, sprites and post effects: the `@property` header, materials, hot reload, errors, C# API and builds.
 - **[Lighting 2D](Engine-Core/Lighting-2D.md)** — optional external package for ambient light, point lights and rectangular shadow occluders.
 - **[Graphics Settings](Engine-Core/Graphics-Settings.md)** — render scale, post-processing, particles, shadows, texture quality, anisotropic filtering and anti-aliasing: project defaults and changing them at runtime with `RenderSettings`.
+- **[World-space UI](Engine-Core/World-Space-UI.md)** — UI canvases attached to 2D or 3D transforms, layout, depth testing and pointer interaction.
+- **[Spatial Audio](Engine-Core/Spatial-Audio.md)** — positioned sounds, camera listeners and optional headphone HRTF.
 - **[Job System](Engine-Core/Job-System.md)** — running work across multiple CPU cores.
 - **[Localization](Engine-Core/Localization.md)** — translating interface text, the per-language JSON files, supported languages, and on-demand downloads.
 - **[Platform Layer](Engine-Core/Platform-Layer.md)** — SDL3 window/input, the portable OS services, platform macros, and building SDL3 for Windows, macOS, Linux, Android, iOS and Web.
@@ -57,8 +61,9 @@ In the editor's **Package Manager**, refresh the registry, find the package and 
 
 ## Editor
 
+- **Installation:** [Windows](Editor/Installer.md), [Linux](../../installer/linux/README.md) and [macOS](../../installer/macos/README.md) — installer behavior and platform prerequisites.
 - **[Editor](Editor/Editor.md)** — the visual tool for building scenes, testing in Play mode, and producing a finished game.
-- **[Building and Shipping](Editor/Building-and-Shipping.md)** — verified Windows game exports and standalone engine release bundles.
+- **[Building and Shipping](Editor/Building-and-Shipping.md)** — game exports, asset packaging, player prerequisites and standalone engine release bundles.
 - **[Standalone Verification](Editor/Standalone-Verification.md)** — binary installation, managed package, Editor play mode, relocated exports and Windows Sandbox checks.
 - **[Test Builds and Debug Tools](Editor/Testing.md)** — Debug/Development/Release, build profiles for test variants, the developer console with `[DevCommand]`, the physics overlay, isolated player data and scripted test runs with screenshots.
 - **[Command-Line Tool](Editor/Command-Line.md)** — `funke create`, `funke build`, validate, convert, prefabs, sprite slicing and packages without opening the editor.

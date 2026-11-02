@@ -105,6 +105,15 @@ namespace Funke {
 
 		// ── Camera3D ────────────────────────────────────────────────────
 
+		int Funke_Camera3D_GetPostProcessingEnabled(uint64_t id) {
+			const auto* c = Resolve<Camera3DComponent>(id);
+			return c && c->PostProcessingEnabled ? 1 : 0;
+		}
+
+		void Funke_Camera3D_SetPostProcessingEnabled(uint64_t id, int enabled) {
+			if (auto* c = Resolve<Camera3DComponent>(id)) c->PostProcessingEnabled = enabled != 0;
+		}
+
 		int Funke_Camera3D_GetProjection(uint64_t id) {
 			const auto* c = Resolve<Camera3DComponent>(id);
 			return c ? static_cast<int>(c->Projection) : 0;
@@ -656,12 +665,14 @@ namespace Funke {
 			const SkinnedMeshData* data = c ? SkinOf(*c) : nullptr;
 			const int node = data ? data->FindNode(bone) : -1;
 			if (node < 0) return 0;
-			Transform3DHierarchySystem::Propagate(*scene);
-			const auto* transform = scene->GetRegistry().try_get<Transform3DComponent>(handle);
-			std::vector<glm::mat4> nodes;
+			const auto& registry = scene->GetRegistry();
+			const glm::mat4 modelWorld = registry.all_of<Transform3DComponent>(handle)
+				? Transform3DHierarchySystem::ComputeWorldMatrix(registry, handle) : glm::mat4(1.0f);
+			thread_local std::vector<glm::mat4> nodes;
+			thread_local std::vector<NodePose> pose, previousPose;
 			// The drawn pose, so attachments stay on a model whose pose is held back far away or off screen.
-			SkeletalAnimation::EvaluatePose(*data, SkinnedMeshAnimationSystem::GetDrawnPose(*c, *data), nodes);
-			const glm::mat4 world = (transform ? transform->WorldMatrix : glm::mat4(1.0f)) * nodes[static_cast<size_t>(node)];
+			SkeletalAnimation::EvaluatePose(*data, SkinnedMeshAnimationSystem::GetDrawnPose(*c, *data), nodes, pose, previousPose);
+			const glm::mat4 world = modelWorld * nodes[static_cast<size_t>(node)];
 			const glm::vec3 forward = glm::normalize(-glm::vec3(world[2]));
 			const glm::vec3 up = glm::normalize(glm::vec3(world[1]));
 			PackedWriter out{ values, count };
@@ -706,6 +717,8 @@ namespace Funke {
 		b.Transform3D_SetScale = FNK_GUARDED_BINDING(Funke_Transform3D_SetScale);
 		b.Transform3D_GetWorldPosition = FNK_GUARDED_BINDING(Funke_Transform3D_GetWorldPosition);
 		b.Transform3D_GetForward = FNK_GUARDED_BINDING(Funke_Transform3D_GetForward);
+		b.Camera3D_GetPostProcessingEnabled = FNK_GUARDED_BINDING(Funke_Camera3D_GetPostProcessingEnabled);
+		b.Camera3D_SetPostProcessingEnabled = FNK_GUARDED_BINDING(Funke_Camera3D_SetPostProcessingEnabled);
 		b.Camera3D_GetProjection = FNK_GUARDED_BINDING(Funke_Camera3D_GetProjection);
 		b.Camera3D_SetProjection = FNK_GUARDED_BINDING(Funke_Camera3D_SetProjection);
 		b.Camera3D_GetFieldOfView = FNK_GUARDED_BINDING(Funke_Camera3D_GetFieldOfView);

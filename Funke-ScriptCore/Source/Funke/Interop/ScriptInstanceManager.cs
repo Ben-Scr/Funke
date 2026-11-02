@@ -574,32 +574,26 @@ internal static class ScriptInstanceManager
         s_UserAssembly = null;
         ReleaseFieldJsonBuffer();
 
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
-
-        // Common and harmless at shutdown; it only matters if it is still alive when the next assembly loads.
-        if (weakContext.IsAlive)
-        {
-            Log.Trace("[ScriptLoader] User assembly load context is still alive right after unload.");
-            s_UnloadedContext = weakContext;
-        }
+        s_UnloadedContexts.Add((weakContext, GC.CollectionCount(2)));
     }
 
-    private static WeakReference? s_UnloadedContext;
+    private static readonly List<(WeakReference Context, int Generation2Collections)> s_UnloadedContexts = new();
 
     private static void WarnIfUnloadedContextLeaked()
     {
-        if (s_UnloadedContext == null) return;
-        if (s_UnloadedContext.IsAlive)
+        int collections = GC.CollectionCount(2);
+        for (int index = s_UnloadedContexts.Count - 1; index >= 0; --index)
         {
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.Collect();
-            if (s_UnloadedContext.IsAlive)
+            var pending = s_UnloadedContexts[index];
+            if (!pending.Context.IsAlive)
+                s_UnloadedContexts.RemoveAt(index);
+            // Finalizable ALCs need two natural collections before a surviving context indicates a leak.
+            else if (collections - pending.Generation2Collections >= 2)
+            {
                 Log.Warn("[ScriptLoader] Previous user assembly load context is still alive after reload; lingering references (static fields, events, threads) keep the old code in memory.");
+                s_UnloadedContexts.RemoveAt(index);
+            }
         }
-        s_UnloadedContext = null;
     }
 
     // Called after the editor reloads the pre-play snapshot; GlobalSystem subscriptions are preserved because they survive play mode.
@@ -2466,7 +2460,7 @@ internal static class ScriptInstanceManager
         return field.GetCustomAttribute<ShowInEditorAttribute>() != null;
     }
 
-    private readonly struct EditorMember
+    private sealed class EditorMember
     {
         public readonly MemberInfo Member;
         public readonly Type ValueType;
@@ -2475,6 +2469,10 @@ internal static class ScriptInstanceManager
         public readonly bool IsPublic;
         public readonly string Name;
         public readonly Type? DeclaringType;
+        private readonly Dictionary<Type, Attribute?> m_Attributes = new();
+        private string? m_JsonMetadata;
+
+        public string JsonMetadata => m_JsonMetadata ??= BuildMemberMetadataJson(this);
 
         private EditorMember(MemberInfo m, Type t, bool isProperty, bool canWrite, bool isPublic, string name, Type? declType)
         {
@@ -2506,7 +2504,15 @@ internal static class ScriptInstanceManager
                 canWrite, isPublic, p.Name, p.DeclaringType);
         }
 
-        public T? GetCustomAttribute<T>() where T : Attribute => Member.GetCustomAttribute<T>();
+        public T? GetCustomAttribute<T>() where T : Attribute
+        {
+            lock (m_Attributes)
+            {
+                if (!m_Attributes.TryGetValue(typeof(T), out var attribute))
+                    m_Attributes[typeof(T)] = attribute = Member.GetCustomAttribute<T>();
+                return (T?)attribute;
+            }
+        }
 
         public object? GetValue(object instance) =>
             IsProperty ? ((PropertyInfo)Member).GetValue(instance)
@@ -2519,8 +2525,13 @@ internal static class ScriptInstanceManager
         }
     }
 
-    private static IEnumerable<EditorMember> CollectEditorMembers(Type type)
+    private static readonly ConditionalWeakTable<Type, EditorMember[]> s_EditorMembers = new();
+
+    private static EditorMember[] CollectEditorMembers(Type type) => s_EditorMembers.GetValue(type, BuildEditorMembers);
+
+    private static EditorMember[] BuildEditorMembers(Type type)
     {
+        var members = new List<EditorMember>();
         const BindingFlags k_Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
         foreach (var field in type.GetFields(k_Flags))
         {
@@ -2528,14 +2539,15 @@ internal static class ScriptInstanceManager
             // tagged with [CompilerGenerated] — surface only the property
             // wrapper so the user sees the name they wrote.
             if (field.IsDefined(typeof(CompilerGeneratedAttribute), false)) continue;
-            yield return EditorMember.FromField(field);
+            members.Add(EditorMember.FromField(field));
         }
         foreach (var property in type.GetProperties(k_Flags))
         {
             if (property.GetIndexParameters().Length > 0) continue;  // indexers (`this[int]`)
             if (property.GetMethod == null) continue;                 // write-only — nothing to display
-            yield return EditorMember.FromProperty(property);
+            members.Add(EditorMember.FromProperty(property));
         }
+        return members.ToArray();
     }
 
     private static bool IsMemberEditorVisible(in EditorMember member)
@@ -2550,13 +2562,26 @@ internal static class ScriptInstanceManager
     // namePrefix is the dotted path of any enclosing struct/class ("" at top level, "P." for a member of a flattened `Point P`).
     private static void AppendMemberJson(System.Text.StringBuilder sb, in EditorMember member, object? value, string namePrefix)
     {
+        sb.Append("{\"name\":\"").Append(EscapeJson(namePrefix + member.Name))
+          .Append("\",\"value\":\"").Append(EscapeJson(FormatFieldValue(member.ValueType, value)))
+          .Append('"').Append(member.JsonMetadata);
+        if (s_CurrentStructLayout != null && s_CurrentStructLayout.TryGetValue(namePrefix + member.Name, out var slot))
+        {
+            sb.Append(",\"offset\":").Append(slot.Offset)
+              .Append(",\"size\":").Append(slot.Size);
+        }
+        sb.Append('}');
+    }
+
+    private static string BuildMemberMetadataJson(EditorMember member)
+    {
+        var sb = new System.Text.StringBuilder();
         var ic = System.Globalization.CultureInfo.InvariantCulture;
         // showAttr is optional now: public members are visible by default
         // and only need ShowInEditor when overriding the display name.
         var showAttr = member.GetCustomAttribute<ShowInEditorAttribute>();
 
         string fieldType = MapFieldType(member.ValueType);
-        string valueStr = FormatFieldValue(member.ValueType, value);
         string displayName = (showAttr != null && !string.IsNullOrEmpty(showAttr.DisplayName))
             ? showAttr.DisplayName
             : member.Name;
@@ -2618,10 +2643,8 @@ internal static class ScriptInstanceManager
             }
         }
 
-        sb.Append("{\"name\":\"").Append(EscapeJson(namePrefix + member.Name))
-          .Append("\",\"displayName\":\"").Append(EscapeJson(displayName))
+        sb.Append(",\"displayName\":\"").Append(EscapeJson(displayName))
           .Append("\",\"type\":\"").Append(fieldType)
-          .Append("\",\"value\":\"").Append(EscapeJson(valueStr))
           .Append("\",\"readOnly\":").Append(readOnly ? "true" : "false")
           .Append(",\"hasClamp\":").Append(hasClamp ? "true" : "false")
           .Append(",\"clampMin\":").Append(clampMin.ToString(ic))
@@ -2635,12 +2658,6 @@ internal static class ScriptInstanceManager
           .Append(",\"enabledIfField\":\"").Append(EscapeJson(enabledIfField))
           .Append("\",\"enabledIfValue\":\"").Append(EscapeJson(enabledIfValue))
           .Append("\",\"enabledIfAny\":").Append(enabledIfAny ? "true" : "false");
-
-        if (s_CurrentStructLayout != null && s_CurrentStructLayout.TryGetValue(namePrefix + member.Name, out var slot))
-        {
-            sb.Append(",\"offset\":").Append(slot.Offset.ToString(ic))
-              .Append(",\"size\":").Append(slot.Size.ToString(ic));
-        }
 
         if (member.ValueType.IsEnum)
         {
@@ -2722,7 +2739,7 @@ internal static class ScriptInstanceManager
             }
         }
 
-        sb.Append("}");
+        return sb.ToString();
     }
 
     private const int k_MaxNestingDepth = 4;
@@ -2735,7 +2752,7 @@ internal static class ScriptInstanceManager
     [ThreadStatic] private static Dictionary<string, StructFieldLayout.Slot>? s_CurrentStructLayout;
 
     private static void AppendEditorMember(System.Text.StringBuilder sb, in EditorMember member,
-        object? value, string namePrefix, int depth, ref bool first)
+        object? value, string namePrefix, int depth, ref bool first, bool metadataOnly = false)
     {
         if (MapFieldType(member.ValueType) != "unsupported")
         {
@@ -2751,7 +2768,7 @@ internal static class ScriptInstanceManager
         // Read defaults from a throwaway instance when the field is null so the
         // group still shows its members (editing lazily creates the real one).
         object? nested = value;
-        if (nested == null)
+        if (nested == null && !metadataOnly)
         {
             try { nested = Activator.CreateInstance(member.ValueType); }
             catch { return; }
@@ -2761,8 +2778,8 @@ internal static class ScriptInstanceManager
         foreach (var child in CollectEditorMembers(member.ValueType))
         {
             if (!IsMemberEditorVisible(child)) continue;
-            object? childValue = nested != null ? TryGetMemberValue(child, nested) : null;
-            AppendEditorMember(sb, child, childValue, childPrefix, depth + 1, ref first);
+            object? childValue = !metadataOnly && nested != null ? TryGetMemberValue(child, nested) : null;
+            AppendEditorMember(sb, child, childValue, childPrefix, depth + 1, ref first, metadataOnly);
         }
     }
 
@@ -2839,12 +2856,14 @@ internal static class ScriptInstanceManager
         try
         {
             string className = Marshal.PtrToStringUTF8((IntPtr)classNamePtr) ?? "";
+            bool metadataOnly = className.StartsWith("schema:", StringComparison.Ordinal);
+            if (metadataOnly) className = className[7..];
             var classInfo = GetOrCacheClass(className);
             if (classInfo == null) return NullTerminated("[]");
 
             // Create a temporary instance just to read default values.
             object? tempInstance = null;
-            try { tempInstance = Activator.CreateInstance(classInfo.Type)!; }
+            try { if (!metadataOnly) tempInstance = Activator.CreateInstance(classInfo.Type)!; }
             catch { return NullTerminated("[]"); }
 
             var sb = new System.Text.StringBuilder();
@@ -2866,8 +2885,8 @@ internal static class ScriptInstanceManager
                     if (member.DeclaringType == typeof(DataAsset)) continue;
                     if (!IsMemberEditorVisible(member)) continue;
 
-                    object? val = TryGetMemberValue(member, tempInstance);
-                    AppendEditorMember(sb, member, val, "", 0, ref first);
+                    object? val = metadataOnly ? null : TryGetMemberValue(member, tempInstance!);
+                    AppendEditorMember(sb, member, val, "", 0, ref first, metadataOnly);
                 }
             }
             finally

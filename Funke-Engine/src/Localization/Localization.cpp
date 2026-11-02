@@ -172,18 +172,17 @@ namespace Funke::Localization {
 			if (dir.empty()) return;
 
 			std::error_code ec;
-			if (!std::filesystem::is_directory(dir, ec)) return;
+			if (!File::IsDirectory(dir)) return;
 
-			for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+			for (const auto& path : File::ListFiles(dir, false, ec)) {
 				if (ec) break;
-				if (!entry.is_regular_file()) continue;
-				if (entry.path().extension() != ".json") continue;
-				if (entry.path().filename() == "manifest.json") continue;
+				if (path.extension() != ".json") continue;
+				if (path.filename() == "manifest.json") continue;
 
 				std::string code, displayName;
-				if (!ParseMeta(entry.path(), code, displayName)) continue;
+				if (!ParseMeta(path, code, displayName)) continue;
 
-				files[code] = entry.path();
+				files[code] = path;
 				displayNamesOut.emplace(code, displayName);
 			}
 		}
@@ -194,8 +193,7 @@ namespace Funke::Localization {
 			s.CjkFontEntry.reset();
 
 			const std::filesystem::path manifestPath = BundledLocalizationDir() / "manifest.json";
-			std::error_code ec;
-			if (!std::filesystem::is_regular_file(manifestPath, ec)) {
+			if (!File::IsRegularFile(manifestPath)) {
 				return;
 			}
 

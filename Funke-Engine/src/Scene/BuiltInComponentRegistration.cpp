@@ -151,7 +151,7 @@ namespace Funke {
 
 		// One spatial transform per entity — UI rects and world-space transforms
 		// occupy the same role and should not coexist on a single entity.
-		DeclareConflict<Transform2DComponent, RectTransform2DComponent>(registry);
+
 
 		// One Box2D shape per entity — the rigidbody adopts whichever collider
 		// is on the entity, and Scene::OnRigidBody2DComponentConstruct only
@@ -197,7 +197,7 @@ namespace Funke {
 #if FUNKE_WITH_2D
 		DeclareConflict<Transform3DComponent, Transform2DComponent>(registry);
 #endif
-		DeclareConflict<Transform3DComponent, RectTransform2DComponent>(registry);
+
 		DeclareDependency<Camera3DComponent,         Transform3DComponent>(registry);
 		DeclareDependency<MeshRendererComponent,     Transform3DComponent>(registry);
 		DeclareDependency<DirectionalLightComponent, Transform3DComponent>(registry);
@@ -273,7 +273,7 @@ namespace Funke {
 
 		// ── Module conflicts ────────────────────────────────────────
 		// 2D and 3D components describe different worlds (Transform2D vs Transform3D, Box2D vs Jolt): one entity
-		// carrying both would have half its components silently ignored. Neither belongs on a UI rect either.
+		// carrying both would have half its components silently ignored. World transforms can host UI canvases.
 		// Derived from the module tags so new module components inherit the rule.
 		{
 			std::vector<std::type_index> twoD;
@@ -288,8 +288,14 @@ namespace Funke {
 				}
 			}
 			const std::type_index rect = typeid(RectTransform2DComponent);
-			for (const std::type_index& world : twoD) registry.DeclareConflict(world, rect);
-			for (const std::type_index& world : threeD) registry.DeclareConflict(world, rect);
+			#if FUNKE_WITH_2D
+			for (const std::type_index& world : twoD)
+				if (world != typeid(Transform2DComponent)) registry.DeclareConflict(world, rect);
+#endif
+			#if FUNKE_WITH_3D
+			for (const std::type_index& world : threeD)
+				if (world != typeid(Transform3DComponent)) registry.DeclareConflict(world, rect);
+#endif
 		}
 
 		AssignBuiltInIcons(registry);

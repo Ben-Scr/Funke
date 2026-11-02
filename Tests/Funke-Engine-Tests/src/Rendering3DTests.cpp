@@ -1,18 +1,25 @@
 #include <doctest/doctest.h>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "Assets/AssetRegistry.hpp"
 #include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/Camera3DComponent.hpp"
 #include "Components/Graphics/DirectionalLightComponent.hpp"
 #include "Components/Graphics/MeshRendererComponent.hpp"
 #include "Components/Graphics/PointLightComponent.hpp"
+#include "Components/Graphics/PostProcessing2DComponent.hpp"
 #include "Components/Graphics/SpotLightComponent.hpp"
 #include "Core/Application.hpp"
 #include "Core/GraphicsSettings.hpp"
+#include "Core/UUID.hpp"
+#include "DevTools/RunAutomation.hpp"
+#include "Graphics/Framebuffer.hpp"
 #include "Graphics/Frustum.hpp"
 #include "Graphics/Lighting3D.hpp"
 #include "Graphics/Material.hpp"
 #include "Graphics/MeshAsset.hpp"
+#include "Graphics/PostProcessing/PostProcessor.hpp"
+#include "Graphics/RenderApi.hpp"
 #include "Graphics/Renderer3D.hpp"
 #include "Graphics/SkyAmbient.hpp"
 #include "Project/FunkeProject.hpp"
@@ -28,11 +35,34 @@
 
 #include <glm/ext/matrix_clip_space.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 
 using namespace Funke;
+
+TEST_CASE("Early mesh culling preserves off-camera shadow casters and unbounded vertex displacement") {
+	const FrustumPlanes camera = ExtractFrustum(glm::orthoRH_ZO(-2.0f, 2.0f, -2.0f, 2.0f, 1.0f, 10.0f));
+	const FrustumPlanes shadow = ExtractFrustum(glm::orthoRH_ZO(-10.0f, 10.0f, -10.0f, 10.0f, 1.0f, 20.0f));
+	const glm::vec3 extent(0.5f);
+	const MeshVisibility visible = ClassifyMeshVisibility(camera, &shadow, { 0, 0, -5 }, extent, true, false);
+	CHECK(visible.Visible);
+	CHECK_FALSE(visible.CastsShadow);
+	CHECK(visible.IsNeeded());
+	const MeshVisibility caster = ClassifyMeshVisibility(camera, &shadow, { 5, 0, -5 }, extent, true, true);
+	CHECK_FALSE(caster.Visible);
+	CHECK(caster.CastsShadow);
+	CHECK(caster.IsNeeded());
+	CHECK_FALSE(ClassifyMeshVisibility(camera, &shadow, { 5, 0, -5 }, extent, true, false).IsNeeded());
+	CHECK_FALSE(ClassifyMeshVisibility(camera, nullptr, { 5, 0, -5 }, extent, true, true).IsNeeded());
+	CHECK_FALSE(ClassifyMeshVisibility(camera, &shadow, { 20, 0, -5 }, extent, true, true).IsNeeded());
+	const MeshVisibility displaced = ClassifyMeshVisibility(camera, &shadow, { 20, 0, -5 }, extent, false, true);
+	CHECK(displaced.Visible);
+	CHECK(displaced.CastsShadow);
+	CHECK(displaced.IsNeeded());
+}
 
 namespace {
 	struct TempDirectory {
@@ -62,6 +92,128 @@ namespace {
 		info.deserialize(target, Json::Parse(Json::Stringify(json)));
 		return json;
 	}
+
+	class PostProcessRegressionApplication final : public Application {
+	public:
+		explicit PostProcessRegressionApplication(uint64_t material) : m_Material(material) {}
+
+		ApplicationConfig GetConfiguration() const override {
+			auto config = ApplicationConfig::Minimal();
+			config.WindowSpecification = WindowSpecification(160, 120, "Funke post-process regression", false, true, false);
+			config.EnableShaderManager = true;
+			config.SetWindowIcon = false;
+			config.RunInBackground = true;
+			config.Vsync = false;
+			return config;
+		}
+
+		void Update() override {
+			Application::Quit();
+			Renderer3D renderer;
+			struct RendererCleanup {
+				Renderer3D& Value;
+				~RendererCleanup() { Value.Shutdown(); }
+			} rendererCleanup{ renderer };
+			if (!renderer.Initialize()) return;
+			Framebuffer first(128, 96), second(128, 96), source(128, 96);
+			if (!first.IsValid() || !second.IsValid() || !source.IsValid()) return;
+			auto main = Scene::CreateDetachedScene("Main");
+			auto empty = Scene::CreateDetachedScene("Empty additive");
+			Entity cube = main->CreateEmptyEntity();
+			cube.AddComponent<Transform3DComponent>();
+			cube.AddComponent<MeshRendererComponent>();
+			Entity sun = main->CreateEmptyEntity();
+			sun.AddComponent<Transform3DComponent>();
+			sun.AddComponent<DirectionalLightComponent>();
+			Camera3DView view;
+			view.Position = { 0, 0, 5 };
+			view.View = glm::lookAtRH(view.Position, glm::vec3(0), glm::vec3(0, 1, 0));
+			view.Projection = glm::perspectiveRH_ZO(glm::radians(60.0f), 128.0f / 96.0f, 0.1f, 50.0f);
+			PostProcessing2DComponent effects;
+			effects.CustomEffects[0] = m_Material;
+			auto draw = [&](Framebuffer& target, bool appendEmpty) {
+				RenderApi::BindFramebuffer(target);
+				RenderApi::SetViewport(0, 0, 128, 96);
+				RenderApi::SetClearColor(Color::Black());
+				RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+				if (!renderer.BeginPostProcess(&effects, Color::Black())) return false;
+				renderer.RenderScene(*main, view);
+				if (appendEmpty) renderer.RenderScene(*empty, view);
+				renderer.EndPostProcess();
+				return true;
+			};
+			if (draw(first, false) && draw(second, true)) {
+				std::vector<uint8_t> a, b;
+				EmptyScenePreservesInputs = first.ReadPixelsRGBA8(a) && second.ReadPixelsRGBA8(b)
+					&& a == b && a.size() == 128 * 96 * 4 && a[0] > 240 && a[1] < 5;
+			}
+
+			PostProcessor processor;
+			if (processor.Initialize()) {
+				const wgpu::TextureView firstView(reinterpret_cast<WGPUTextureView>(first.GetColorTextureBackendId()));
+				const wgpu::TextureView secondView(reinterpret_cast<WGPUTextureView>(second.GetColorTextureBackendId()));
+				PostProcessScene red, green;
+				red.SunRadiance = { 0.5f, 0, 0, 1 };
+				red.Position = { 0.5f, 0, 0 };
+				green.SunRadiance = { 0, 0.5f, 0, 1 };
+				green.Position = { 0, 0.5f, 0 };
+				processor.Run(source, firstView, wgpu::TextureFormat::RGBA8Unorm, 128, 96,
+					&effects, PostProcessingQualityLevel::High, true, &red);
+				processor.Run(source, secondView, wgpu::TextureFormat::RGBA8Unorm, 128, 96,
+					&effects, PostProcessingQualityLevel::High, true, &green);
+				std::vector<uint8_t> a, b;
+				ConsecutiveCustomPassesRetainUniforms = first.ReadPixelsRGBA8(a) && second.ReadPixelsRGBA8(b)
+					&& a.size() == 128 * 96 * 4 && b.size() == a.size()
+					&& a[0] > 240 && a[1] < 5 && b[0] < 5 && b[1] > 240;
+			}
+			RenderApi::BindDefaultFramebuffer();
+			Completed = true;
+		}
+
+		bool Completed = false;
+		bool EmptyScenePreservesInputs = false;
+		bool ConsecutiveCustomPassesRetainUniforms = false;
+	private:
+		uint64_t m_Material;
+	};
+}
+
+TEST_CASE("GPU custom post processing preserves empty additive scenes and consecutive uniform uploads") {
+	const char* enabled = std::getenv("FUNKE_TEST_RENDER_GPU");
+	if (!enabled || std::string(enabled) != "1") {
+		MESSAGE("Set FUNKE_TEST_RENDER_GPU=1 for the background WebGPU regression test.");
+		return;
+	}
+	TempDirectory files("FunkePostProcessRegression_");
+	const uint64_t shaderId = UUID(), materialId = UUID();
+	const std::string shader = Path::ToUtf8(files.Root / "probe.wgsl");
+	const std::string material = Path::ToUtf8(files.Root / "probe.material");
+	REQUIRE(File::WriteAllText(shader, R"WGSL(// @target PostProcess
+fn surface(in: SurfaceInput) -> SurfaceOutput {
+ var out: SurfaceOutput;
+ let shadow = select(0.0, 1.0, scene.shadowParams.x > 0.0);
+ out.color = vec4<f32>(select(scene.sunRadiance.rgb + globals.cameraPosition.xyz,
+  vec3<f32>(shadow, 0.0, 0.0), scene.flags.x > 0.5), 1.0);
+ return out;
+}
+)WGSL"));
+	REQUIRE(File::WriteAllText(material, "{\"shader\":\"" + std::to_string(shaderId) + "\"}"));
+	AssetRegistry::RegisterBuiltInAsset(shader, shaderId, AssetKind::Shader);
+	AssetRegistry::RegisterBuiltInAsset(material, materialId, AssetKind::Material);
+	struct RunCleanup {
+		~RunCleanup() { Application::SetCommandLineArgs(0, nullptr); RunAutomation::Reset(); }
+	} cleanup;
+	RunAutomation::Options options;
+	options.Background = true;
+	RunAutomation::Configure(options);
+	char executable[] = "Funke-PostProcess-Test", background[] = "--background";
+	char* arguments[] = { executable, background };
+	Application::SetCommandLineArgs(2, arguments);
+	PostProcessRegressionApplication application(materialId);
+	CHECK(application.Run() == 0);
+	CHECK(application.Completed);
+	CHECK(application.EmptyScenePreservesInputs);
+	CHECK(application.ConsecutiveCustomPassesRetainUniforms);
 }
 
 TEST_CASE("Billboard bounds contain shader corners for every rotation and camera basis") {
@@ -113,6 +265,63 @@ TEST_CASE("Particle frustum bounds preserve rotated edge billboards and reject o
 		CHECK_FALSE(IntersectsFrustum(frustum, glm::vec3(inverseView * glm::vec4(100, 0, -5, 1)), extent));
 		CHECK_FALSE(IntersectsFrustum(frustum, glm::vec3(inverseView * glm::vec4(0, 0, 60, 1)), extent));
 		CHECK_FALSE(IntersectsFrustum(frustum, glm::vec3(inverseView * glm::vec4(0, 0, -60, 1)), extent));
+	}
+}
+
+TEST_CASE("WebGPU frustum rejects geometry before the near plane and keeps crossing bounds") {
+	for (CameraProjection projection : { CameraProjection::Orthographic, CameraProjection::Perspective }) {
+		Camera3DComponent camera;
+		camera.Projection = projection;
+		camera.NearClip = 2.0f;
+		camera.FarClip = 20.0f;
+		const FrustumPlanes frustum = ExtractFrustum(camera.GetProjectionMatrix(1.0f));
+		CHECK_FALSE(IntersectsFrustum(frustum, { 0, 0, -1 }, glm::vec3(0.1f)));
+		CHECK(IntersectsFrustum(frustum, { 0, 0, -1.9f }, glm::vec3(0.2f)));
+		CHECK(IntersectsFrustum(frustum, { 0, 0, -10 }, glm::vec3(0.1f)));
+		CHECK_FALSE(IntersectsFrustum(frustum, { 0, 0, -21 }, glm::vec3(0.1f)));
+	}
+}
+
+TEST_CASE("Light range spheres keep offscreen lights reaching the view with unnormalized planes") {
+	FrustumPlanes frustum = ExtractFrustum(glm::orthoRH_ZO(-2.0f, 2.0f, -2.0f, 2.0f, 1.0f, 9.0f));
+	for (int scale = 0; scale < 2; ++scale) {
+		CHECK(IntersectsFrustumSphere(frustum, { 0, 0, -5 }, 0.0f));
+		CHECK(IntersectsFrustumSphere(frustum, { 3, 0, -5 }, 1.0f));
+		CHECK_FALSE(IntersectsFrustumSphere(frustum, { 3.01f, 0, -5 }, 1.0f));
+		CHECK(IntersectsFrustumSphere(frustum, { -3, 0, -5 }, 1.0f));
+		CHECK_FALSE(IntersectsFrustumSphere(frustum, { -3.01f, 0, -5 }, 1.0f));
+		CHECK(IntersectsFrustumSphere(frustum, { 0, 3, -5 }, 1.0f));
+		CHECK_FALSE(IntersectsFrustumSphere(frustum, { 0, 3.01f, -5 }, 1.0f));
+		CHECK(IntersectsFrustumSphere(frustum, { 0, -3, -5 }, 1.0f));
+		CHECK_FALSE(IntersectsFrustumSphere(frustum, { 0, -3.01f, -5 }, 1.0f));
+		CHECK(IntersectsFrustumSphere(frustum, { 0, 0, 0 }, 1.0f));
+		CHECK_FALSE(IntersectsFrustumSphere(frustum, { 0, 0, 0.01f }, 1.0f));
+		CHECK(IntersectsFrustumSphere(frustum, { 0, 0, -10 }, 1.0f));
+		CHECK_FALSE(IntersectsFrustumSphere(frustum, { 0, 0, -10.01f }, 1.0f));
+		for (auto& plane : frustum.Planes) plane *= 7.0f;
+	}
+}
+
+TEST_CASE("Light sphere culling retains every sampled illuminated point inside a rotated camera") {
+	Camera3DComponent camera;
+	camera.FarClip = 50.0f;
+	const glm::mat4 view = glm::lookAtRH(glm::vec3(7, 3, 2), glm::vec3(-1, 1, -4), glm::vec3(0, 1, 0));
+	for (CameraProjection projection : { CameraProjection::Orthographic, CameraProjection::Perspective }) {
+		camera.Projection = projection;
+		const glm::mat4 vp = camera.GetProjectionMatrix(1.7f) * view;
+		const glm::mat4 inverse = glm::inverse(vp);
+		const FrustumPlanes frustum = ExtractFrustum(vp);
+		for (float x : { -0.99f, 0.0f, 0.99f }) {
+			for (float y : { -0.99f, 0.0f, 0.99f }) {
+				for (float z : { 0.01f, 0.5f, 0.99f }) {
+					const glm::vec4 world = inverse * glm::vec4(x, y, z, 1);
+					const glm::vec3 point = glm::vec3(world) / world.w;
+					for (const glm::vec3 offset : { glm::vec3(4, 0, 0), glm::vec3(0, -4, 0), glm::vec3(0, 0, 4) }) {
+						CHECK(IntersectsFrustumSphere(frustum, point + offset, 4.01f));
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -374,6 +583,50 @@ TEST_CASE("Light selection keeps directional lights first and the nearest local 
 
 	std::vector<Lighting3D::LightCandidate> many(Lighting3D::k_MaxLights + 10, MakePoint({ 0.0f, 0.0f, 0.0f }, 1.0f));
 	CHECK(Lighting3D::SelectLights(many, glm::vec3(0.0f), 1000).size() == static_cast<size_t>(Lighting3D::k_MaxLights));
+}
+
+TEST_CASE("Light selection matches a stable full sort when the light budget overflows") {
+	std::vector<Lighting3D::LightCandidate> candidates;
+	for (int i = 0; i < 513; ++i) {
+		auto light = MakePoint(glm::vec3(static_cast<float>((i * 37) % 101 - 50), 0.0f, 0.0f), static_cast<float>(i % 7));
+		light.Type = i % 17 == 0 ? Lighting3D::LightType::Directional
+			: i % 2 == 0 ? Lighting3D::LightType::Spot : Lighting3D::LightType::Point;
+		light.Radiance = i % 13 == 0 ? glm::vec3(0.0f) : glm::vec3(static_cast<float>(i + 1));
+		candidates.push_back(light);
+	}
+	for (const glm::vec3 camera : { glm::vec3(0.0f), glm::vec3(7.0f, -3.0f, 2.0f) }) {
+		std::vector<Lighting3D::LightCandidate> expected;
+		for (const auto& light : candidates) {
+			if (light.Radiance.x > 0.0f && (light.Type == Lighting3D::LightType::Directional || light.Range > 0.0f)) {
+				expected.push_back(light);
+			}
+		}
+		std::stable_sort(expected.begin(), expected.end(), [&](const auto& a, const auto& b) {
+			const bool directionalA = a.Type == Lighting3D::LightType::Directional;
+			const bool directionalB = b.Type == Lighting3D::LightType::Directional;
+			if (directionalA != directionalB) return directionalA;
+			if (directionalA) return false;
+			return glm::length(a.Position - camera) - a.Range < glm::length(b.Position - camera) - b.Range;
+		});
+		for (const int limit : { -1, 0, 1, 16, 32, 63, 64, 1000 }) {
+			const auto selected = Lighting3D::SelectLights(candidates, camera, limit);
+			const size_t count = std::min(expected.size(), static_cast<size_t>(std::clamp(limit, 0, Lighting3D::k_MaxLights)));
+			REQUIRE(selected.size() == count);
+			for (size_t i = 0; i < count; ++i) CHECK(selected[i].Radiance.x == expected[i].Radiance.x);
+		}
+	}
+}
+
+TEST_CASE("Light selection preserves source order for equal sphere distances at the budget boundary") {
+	std::vector<Lighting3D::LightCandidate> candidates;
+	for (int i = 0; i < 256; ++i) {
+		auto light = MakePoint(glm::vec3(static_cast<float>(i % 8 + 1), 0.0f, 0.0f), static_cast<float>(i % 8 + 2));
+		light.Radiance.x = static_cast<float>(i + 1);
+		candidates.push_back(light);
+	}
+	const auto selected = Lighting3D::SelectLights(candidates, glm::vec3(0.0f), Lighting3D::k_MaxLights);
+	REQUIRE(selected.size() == static_cast<size_t>(Lighting3D::k_MaxLights));
+	for (size_t i = 0; i < selected.size(); ++i) CHECK(selected[i].Radiance.x == candidates[i].Radiance.x);
 }
 
 TEST_CASE("Directional shadow matrix covers the camera frustum slice up to the shadow distance") {

@@ -3,6 +3,8 @@
 #include "Core/Application.hpp"
 #include "Core/GraphicsSettings.hpp"
 #include "Core/Layer.hpp"
+#include "Components/Graphics/PostProcessing2DComponent.hpp"
+#include "Graphics/FramebufferCache.hpp"
 #include "Graphics/RenderSettings.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureSampling.hpp"
@@ -22,6 +24,18 @@
 using namespace Funke;
 
 namespace {
+	struct CachedFramebufferProbe {
+		bool Valid = false;
+		int Allocations = 0;
+		bool IsValid() const { return Valid; }
+		bool Recreate(int, int, TextureFormat, TextureFilter, uint32_t samples, bool) {
+			Valid = samples == 1 || samples == 4;
+			if (Valid) ++Allocations;
+			return Valid;
+		}
+		void Destroy() { Valid = false; }
+	};
+
 	struct TempProjectDirectory {
 		std::filesystem::path Root;
 		explicit TempProjectDirectory(const char* prefix) {
@@ -169,6 +183,94 @@ TEST_CASE("Only MSAA4x multisamples the scene target") {
 	CHECK(GetMultisampleCount(AntiAliasingMode::Off) == 1u);
 	CHECK(GetMultisampleCount(AntiAliasingMode::FXAA) == 1u);
 	CHECK(GetMultisampleCount(AntiAliasingMode::MSAA4x) == 4u);
+}
+
+TEST_CASE("Framebuffer cache retains alternating viewport sizes and evicts the least recently used target") {
+	FramebufferCache<2, CachedFramebufferProbe> cache;
+	const FramebufferDescription editor{ 1234, 789 };
+	const FramebufferDescription game{ 960, 540 };
+	auto* editorTarget = cache.Acquire(editor);
+	auto* gameTarget = cache.Acquire(game);
+	REQUIRE(editorTarget);
+	REQUIRE(gameTarget);
+	REQUIRE(editorTarget != gameTarget);
+	for (int frame = 0; frame < 20; ++frame) {
+		CHECK(cache.Acquire(game) == gameTarget);
+		CHECK(cache.Acquire(editor) == editorTarget);
+	}
+	CHECK(editorTarget->Allocations == 1);
+	CHECK(gameTarget->Allocations == 1);
+	CHECK(cache.Acquire({ 800, 600 }) == gameTarget);
+	CHECK(gameTarget->Allocations == 2);
+	CHECK(cache.Acquire(editor) == editorTarget);
+	CHECK(editorTarget->Allocations == 1);
+	cache.Clear();
+	CHECK_FALSE(editorTarget->IsValid());
+	CHECK_FALSE(gameTarget->IsValid());
+	CHECK(cache.Acquire(editor)->Allocations == 2);
+}
+
+TEST_CASE("Framebuffer cache distinguishes attachment layouts and recovers after allocation failure") {
+	FramebufferCache<2, CachedFramebufferProbe> cache;
+	const FramebufferDescription color{ 640, 360 };
+	auto* original = cache.Acquire(color);
+	REQUIRE(original);
+	FramebufferDescription changed = color;
+	SUBCASE("Depth attachment") { changed.Depth = true; }
+	SUBCASE("Color format") { changed.Format = TextureFormat::RGBA8; }
+	SUBCASE("Multisampling") { changed.Samples = 4; }
+	auto* other = cache.Acquire(changed);
+	REQUIRE(other);
+	CHECK(other != original);
+	CHECK(cache.Acquire(color) == original);
+	CHECK(cache.Acquire({ 0, 360 }) == nullptr);
+	CHECK(cache.Acquire({ 320, 180, TextureFormat::RGBA16F, 3 }) == nullptr);
+	CHECK(cache.Acquire(color) == original);
+	CHECK(cache.Acquire(changed) == other);
+}
+
+TEST_CASE("Zero-contribution post effects do not enable a rendering chain") {
+	PostProcessing2DComponent effects;
+	CHECK_FALSE(effects.HasEnabledEffect());
+	SUBCASE("Bloom with zero intensity or tint") {
+		effects.Bloom.Enabled = true;
+		effects.Bloom.Intensity = 0.0f;
+		CHECK_FALSE(effects.Bloom.IsEffective());
+		CHECK_FALSE(effects.HasEnabledEffect());
+		effects.Bloom.Intensity = 1.0f;
+		CHECK(effects.HasEnabledEffect());
+		effects.Bloom.Tint.a = 0.0f;
+		CHECK_FALSE(effects.HasEnabledEffect());
+		effects.Bloom.Tint = Color{ 0, 0, 0, 1 };
+		CHECK_FALSE(effects.HasEnabledEffect());
+		effects.Bloom.Tint.r = 0.1f;
+		CHECK(effects.HasEnabledEffect());
+	}
+	SUBCASE("Chromatic aberration with zero intensity") {
+		effects.ChromaticAberration.Enabled = true;
+		effects.ChromaticAberration.Intensity = 0.0f;
+		CHECK_FALSE(effects.HasEnabledEffect());
+		effects.ChromaticAberration.Intensity = 0.1f;
+		CHECK(effects.HasEnabledEffect());
+	}
+	SUBCASE("Grain with zero intensity") {
+		effects.Grain.Enabled = true;
+		effects.Grain.Intensity = 0.0f;
+		CHECK_FALSE(effects.HasEnabledEffect());
+		effects.Grain.Intensity = 0.1f;
+		CHECK(effects.HasEnabledEffect());
+	}
+	SUBCASE("Gaussian radius zero retains its existing nonzero kernel") {
+		effects.GaussianBlur.Enabled = true;
+		effects.GaussianBlur.Radius = 0.0f;
+		CHECK(effects.HasEnabledEffect());
+	}
+	SUBCASE("Custom effects remain active alongside neutral built-ins") {
+		effects.Bloom.Enabled = true;
+		effects.Bloom.Intensity = 0.0f;
+		effects.CustomEffects[0] = 1234;
+		CHECK(effects.HasEnabledEffect());
+	}
 }
 
 TEST_CASE("Texture quality skips mip levels and anisotropy maps to the sampler limit") {

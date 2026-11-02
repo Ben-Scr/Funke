@@ -41,8 +41,7 @@ public:
 		config.TargetFrameRate = 144.0f;
 		// Background polling drives open/create progress while the launcher is unfocused.
 		config.RunInBackground = true;
-		// No F11 exclusive fullscreen: it takes over the display and breaks the
-		// launcher's secondary dialog windows (Settings, Create / Rename).
+		// Exclusive fullscreen breaks secondary dialogs such as Create / Rename.
 		config.EnableFullscreenToggle = false;
 		return config;
 	}

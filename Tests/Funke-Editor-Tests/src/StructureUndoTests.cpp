@@ -8,6 +8,10 @@
 
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/NameComponent.hpp"
+#include "Components/General/PrefabInstanceComponent.hpp"
+#include "Components/UI/ButtonComponent.hpp"
+#include "Scene/SceneManager.hpp"
+#include <stdexcept>
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/Scene.hpp"
@@ -301,4 +305,241 @@ TEST_CASE("Removed scripts restore authored fields through undo") {
 	const EntityHandle redone = Resolve(*scene, id);
 	REQUIRE(redone != entt::null);
 	CHECK((!scene->HasComponent<ScriptComponent>(redone) || scene->GetComponent<ScriptComponent>(redone).Scripts.empty()));
+}
+
+TEST_CASE("Scene transfer preserves identities, child order and references through linked undo redo") {
+	std::shared_ptr<Scene> source = Scene::CreateDetachedScene("Transfer source");
+	std::shared_ptr<Scene> target = Scene::CreateDetachedScene("Transfer target");
+	auto parent = source->CreateEntity("Parent");
+	auto first = source->CreateEntity("First");
+	auto second = source->CreateEntity("Second");
+	auto child = source->CreateEntity("Child");
+	first.SetParent(parent);
+	second.SetParent(parent);
+	child.SetParent(first);
+	first.AddComponent<ButtonComponent>().TargetGraphic = second.GetHandle();
+	parent.AddComponent<ButtonComponent>().TargetGraphic = child.GetHandle();
+	second.AddComponent<SpriteRendererComponent>().Color = Color(0.2f, 0.3f, 0.4f, 1);
+	auto existing = target->CreateEntity("Existing");
+	const auto firstId = source->GetEntityPersistentID(first.GetHandle());
+	const auto secondId = source->GetEntityPersistentID(second.GetHandle());
+	const auto childId = source->GetEntityPersistentID(child.GetHandle());
+	const auto beforeChildren = ChildIds(*source, parent.GetHandle());
+	const auto beforeRoots = RootIds(*source);
+	const auto targetRoots = RootIds(*target);
+	const std::array roots{ first.GetHandle(), second.GetHandle(), child.GetHandle() };
+	std::vector<EntityHandle> moved;
+	auto command = SceneTransferCommand::Move(source, target, roots, entt::null, moved);
+	REQUIRE(command);
+	REQUIRE(moved.size() == 2);
+	UndoStack a, b;
+	a.PushLinked(b, std::move(command));
+	for (int i = 0; i < 3; ++i) {
+		CHECK(Resolve(*source, firstId) == entt::null);
+		REQUIRE(Resolve(*target, firstId) != entt::null);
+		CHECK(target->GetComponent<ButtonComponent>(Resolve(*target, firstId)).TargetGraphic == Resolve(*target, secondId));
+		CHECK(parent.GetComponent<ButtonComponent>().TargetGraphic == entt::null);
+		CHECK_FALSE(b.Undo(*target).empty());
+		CHECK_FALSE(a.CanUndo());
+		CHECK(a.CanRedo());
+		CHECK(ChildIds(*source, parent.GetHandle()) == beforeChildren);
+		CHECK(RootIds(*source) == beforeRoots);
+		CHECK(RootIds(*target) == targetRoots);
+		CHECK(parent.GetComponent<ButtonComponent>().TargetGraphic == Resolve(*source, childId));
+		CHECK(source->GetComponent<ButtonComponent>(Resolve(*source, firstId)).TargetGraphic == Resolve(*source, secondId));
+		CHECK_FALSE(a.Redo(*source).empty());
+		CHECK_FALSE(b.CanRedo());
+	}
+}
+
+TEST_CASE("Scene transfer rolls back earlier subtrees when a later component deserializer throws") {
+	std::shared_ptr<Scene> source = Scene::CreateDetachedScene("Transfer failure source");
+	std::shared_ptr<Scene> target = Scene::CreateDetachedScene("Transfer failure target");
+	auto first = source->CreateEntity("First");
+	auto second = source->CreateEntity("Second");
+	second.AddComponent<SpriteRendererComponent>();
+	const auto sourceBefore = SceneSerializer::SerializeScene(*source);
+	const auto targetBefore = SceneSerializer::SerializeScene(*target);
+	auto* info = SceneManager::GetComponentRegistryOrBuiltIn().GetInfo<SpriteRendererComponent>();
+	REQUIRE(info);
+	struct RestoreDeserializer {
+		ComponentInfo* Info;
+		decltype(ComponentInfo::deserialize) Original;
+		~RestoreDeserializer() { Info->deserialize = std::move(Original); }
+	} restore{ info, info->deserialize };
+	info->deserialize = [](Entity, const Json::Value&) { throw std::runtime_error("Injected transfer failure"); };
+	source->ClearDirty();
+	target->ClearDirty();
+	const std::array roots{ first.GetHandle(), second.GetHandle() };
+	std::vector<EntityHandle> moved;
+	CHECK_FALSE(SceneTransferCommand::Move(source, target, roots, entt::null, moved));
+	CHECK(moved.empty());
+	CHECK(source->IsValid(first.GetHandle()));
+	CHECK(source->IsValid(second.GetHandle()));
+	CHECK(SceneSerializer::SerializeScene(*source) == sourceBefore);
+	CHECK(SceneSerializer::SerializeScene(*target) == targetBefore);
+	CHECK_FALSE(source->IsDirty());
+	CHECK_FALSE(target->IsDirty());
+	CHECK(target->GetPendingEntityRefFixupCount() == 0);
+}
+
+TEST_CASE("Scene transfer preserves prefab identity and source identity") {
+	std::shared_ptr<Scene> source = Scene::CreateDetachedScene("Prefab transfer source");
+	std::shared_ptr<Scene> target = Scene::CreateDetachedScene("Prefab transfer target");
+	auto entity = source->CreateEntity("Prefab");
+	source->SetEntityMetaData(entity.GetHandle(), EntityOrigin::Prefab, AssetGUID(456), AssetGUID(0), 123);
+	entity.GetComponent<PrefabInstanceComponent>().SourceEntityId = 789;
+	const auto id = source->GetEntityPersistentID(entity.GetHandle());
+	const std::array roots{ entity.GetHandle() };
+	std::vector<EntityHandle> moved;
+	auto command = SceneTransferCommand::Move(source, target, roots, entt::null, moved);
+	REQUIRE(command);
+	for (int i = 0; i < 2; ++i) {
+		const auto handle = Resolve(*target, id);
+		REQUIRE(handle != entt::null);
+		CHECK(target->GetEntityOrigin(handle) == EntityOrigin::Prefab);
+		CHECK(static_cast<uint64_t>(target->GetPrefabGUID(handle)) == 456);
+		CHECK(target->GetComponent<PrefabInstanceComponent>(handle).SourceEntityId == 789);
+		command->Undo(*target);
+		REQUIRE(Resolve(*source, id) != entt::null);
+		command->Redo(*source);
+	}
+}
+
+TEST_CASE("Scene transfer rejects identity conflicts without changing either scene") {
+	std::shared_ptr<Scene> source = Scene::CreateDetachedScene("Conflict source");
+	std::shared_ptr<Scene> target = Scene::CreateDetachedScene("Conflict target");
+	auto entity = source->CreateEntity("Source");
+	auto conflict = target->CreateEntity("Conflict");
+	REQUIRE(target->SetEntityPersistentID(conflict.GetHandle(), source->GetEntityPersistentID(entity.GetHandle())));
+	const auto beforeSource = SceneSerializer::SerializeScene(*source);
+	const auto beforeTarget = SceneSerializer::SerializeScene(*target);
+	const std::array roots{ entity.GetHandle() };
+	std::vector<EntityHandle> moved;
+	CHECK_FALSE(SceneTransferCommand::Move(source, target, roots, entt::null, moved));
+	CHECK(SceneSerializer::SerializeScene(*source) == beforeSource);
+	CHECK(SceneSerializer::SerializeScene(*target) == beforeTarget);
+}
+
+TEST_CASE("Scene transfer failed undo retains both histories and all target entities for retry") {
+	std::shared_ptr<Scene> source = Scene::CreateDetachedScene("Undo failure source");
+	std::shared_ptr<Scene> target = Scene::CreateDetachedScene("Undo failure target");
+	auto first = source->CreateEntity("First");
+	auto second = source->CreateEntity("Second");
+	second.AddComponent<SpriteRendererComponent>();
+	const std::array roots{ first.GetHandle(), second.GetHandle() };
+	std::vector<EntityHandle> moved;
+	auto command = SceneTransferCommand::Move(source, target, roots, entt::null, moved);
+	REQUIRE(command);
+	UndoStack a, b;
+	a.PushLinked(b, std::move(command));
+	const auto beforeSource = SceneSerializer::SerializeScene(*source);
+	const auto beforeTarget = SceneSerializer::SerializeScene(*target);
+	{
+		auto* info = SceneManager::GetComponentRegistryOrBuiltIn().GetInfo<SpriteRendererComponent>();
+		REQUIRE(info);
+		struct RestoreDeserializer {
+			ComponentInfo* Info;
+			decltype(ComponentInfo::deserialize) Original;
+			~RestoreDeserializer() { Info->deserialize = std::move(Original); }
+		} restore{ info, info->deserialize };
+		info->deserialize = [](Entity, const Json::Value&) { throw std::runtime_error("Injected undo failure"); };
+		CHECK(b.Undo(*target).empty());
+		CHECK(a.CanUndo());
+		CHECK(b.CanUndo());
+		CHECK_FALSE(a.CanRedo());
+		CHECK(SceneSerializer::SerializeScene(*source) == beforeSource);
+		CHECK(SceneSerializer::SerializeScene(*target) == beforeTarget);
+	}
+	CHECK_FALSE(a.Undo(*source).empty());
+	CHECK(a.CanRedo());
+	CHECK_FALSE(b.Redo(*target).empty());
+	CHECK(SceneSerializer::SerializeScene(*target) == beforeTarget);
+}
+
+TEST_CASE("Scene transfer restores parenting and does not retain closed scenes") {
+	std::shared_ptr<Scene> source = Scene::CreateDetachedScene("Parent source");
+	std::shared_ptr<Scene> target = Scene::CreateDetachedScene("Parent target");
+	auto originalParent = source->CreateEntity("Original parent");
+	auto entity = source->CreateEntity("Child");
+	entity.SetParent(originalParent);
+	auto targetParent = target->CreateEntity("Destination parent");
+	auto existingChild = target->CreateEntity("Existing child");
+	existingChild.SetParent(targetParent);
+	const auto id = source->GetEntityPersistentID(entity.GetHandle());
+	const auto existingId = target->GetEntityPersistentID(existingChild.GetHandle());
+	const std::array roots{ entity.GetHandle() };
+	std::vector<EntityHandle> moved;
+	auto command = SceneTransferCommand::Move(source, target, roots, targetParent.GetHandle(), moved);
+	REQUIRE(command);
+	CHECK(ChildIds(*target, targetParent.GetHandle()) == std::vector<uint64_t>{ existingId, id });
+	command->Undo(*target);
+	CHECK(ChildIds(*source, originalParent.GetHandle()) == std::vector<uint64_t>{ id });
+	CHECK(ChildIds(*target, targetParent.GetHandle()) == std::vector<uint64_t>{ existingId });
+	command->Redo(*source);
+	CHECK(ChildIds(*target, targetParent.GetHandle()) == std::vector<uint64_t>{ existingId, id });
+	std::weak_ptr<Scene> weak = source;
+	source.reset();
+	CHECK(weak.expired());
+	CHECK_FALSE(command->IsAvailable());
+	CHECK_THROWS(command->Undo(*target));
+	CHECK(Resolve(*target, id) != entt::null);
+}
+
+TEST_CASE("Scene transfer linked undo rebinds both scenes after play recovery") {
+	std::shared_ptr<Scene> source = Scene::CreateDetachedScene("Recovery source");
+	std::shared_ptr<Scene> target = Scene::CreateDetachedScene("Recovery target");
+	auto entity = source->CreateEntity("Moved");
+	const auto id = source->GetEntityPersistentID(entity.GetHandle());
+	const std::array roots{ entity.GetHandle() };
+	SceneUndoHistory history;
+	auto& a = history.ForScene(source);
+	auto& b = history.ForScene(target);
+	std::vector<EntityHandle> moved;
+	auto command = SceneTransferCommand::Move(source, target, roots, entt::null, moved);
+	REQUIRE(command);
+	a.PushLinked(b, std::move(command));
+	const auto sourceSnapshot = SceneSerializer::SerializeScene(*source);
+	const auto targetSnapshot = SceneSerializer::SerializeScene(*target);
+	auto savedSource = history.Take(source);
+	auto savedTarget = history.Take(target);
+	source.reset();
+	target.reset();
+	source = Scene::CreateDetachedScene("Recovery source");
+	target = Scene::CreateDetachedScene("Recovery target");
+	REQUIRE(SceneSerializer::DeserializeScene(*source, sourceSnapshot));
+	REQUIRE(SceneSerializer::DeserializeScene(*target, targetSnapshot));
+	history.Restore(source, std::move(savedSource));
+	history.Restore(target, std::move(savedTarget));
+	CHECK(history.ForScene(source).CanUndo());
+	CHECK_FALSE(history.ForScene(target).Undo(*target).empty());
+	CHECK(Resolve(*source, id) != entt::null);
+	CHECK(Resolve(*target, id) == entt::null);
+	CHECK_FALSE(history.ForScene(source).Redo(*source).empty());
+	CHECK(Resolve(*target, id) != entt::null);
+}
+
+TEST_CASE("Scene transfer redo conflict leaves original entities and redo history intact") {
+	std::shared_ptr<Scene> source = Scene::CreateDetachedScene("Redo source");
+	std::shared_ptr<Scene> target = Scene::CreateDetachedScene("Redo target");
+	auto entity = source->CreateEntity("Moved");
+	const auto id = source->GetEntityPersistentID(entity.GetHandle());
+	const std::array roots{ entity.GetHandle() };
+	std::vector<EntityHandle> moved;
+	auto command = SceneTransferCommand::Move(source, target, roots, entt::null, moved);
+	REQUIRE(command);
+	UndoStack a, b;
+	a.PushLinked(b, std::move(command));
+	REQUIRE_FALSE(a.Undo(*source).empty());
+	auto conflict = target->CreateEntity("Conflict");
+	REQUIRE(target->SetEntityPersistentID(conflict.GetHandle(), id));
+	CHECK(b.Redo(*target).empty());
+	CHECK(a.CanRedo());
+	CHECK(b.CanRedo());
+	CHECK(Resolve(*source, id) != entt::null);
+	CHECK(target->IsValid(conflict.GetHandle()));
+	conflict.Destroy();
+	CHECK_FALSE(a.Redo(*source).empty());
+	CHECK(Resolve(*source, id) == entt::null);
+	CHECK(Resolve(*target, id) != entt::null);
 }

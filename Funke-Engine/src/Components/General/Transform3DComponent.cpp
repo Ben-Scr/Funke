@@ -6,6 +6,8 @@
 namespace Funke {
 
 	glm::mat4 Transform3DComponent::GetLocalMatrix() const {
+		if (CachedLocalValid && CachedPosition == Position && CachedRotation == Rotation && CachedScale == Scale)
+			return CachedLocalMatrix;
 		// T * R * S assembled column-wise instead of two full mat4 multiplies.
 		const glm::mat3 rotation = glm::mat3_cast(GetLocalRotationQuat());
 		return glm::mat4(

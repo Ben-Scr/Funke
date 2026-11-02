@@ -722,7 +722,6 @@ namespace Funke {
 		if (!s_Initialized || !s_Callbacks.InvokeGlobalSystemUpdate) return;
 		// Runs before the scene systems, so a UI write here must not be skipped by the layout gate.
 #if FUNKE_WITH_RENDER
-		if (!s_GlobalSystems.empty()) InvalidateUILayout();
 #endif
 		for (const auto& instance : s_GlobalSystems)
 		{
@@ -922,7 +921,7 @@ namespace Funke {
 	{
 		outOutput.clear();
 		if (!s_Initialized || !s_Callbacks.ExecuteDevCommand) return 0;
-		std::string buffer(16 * 1024, '\0');
+		std::string buffer(command == "test.script-errors" ? 256 * 1024 : 16 * 1024, '\0');
 		const int status = s_Callbacks.ExecuteDevCommand(command.c_str(), buffer.data(), static_cast<int>(buffer.size()));
 		buffer.resize(std::strlen(buffer.c_str()));
 		outOutput = std::move(buffer);

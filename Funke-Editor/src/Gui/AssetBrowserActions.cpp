@@ -33,10 +33,12 @@
 #include <cctype>
 #include <chrono>
 #include <ctime>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <thread>
+#include <stdexcept>
 #include <unordered_set>
 
 #ifdef FNK_PLATFORM_WINDOWS
@@ -401,7 +403,7 @@ namespace Funke {
 				return MakeGloballyUniqueScenePath(dest);
 			}
 			std::error_code ec;
-			if (!std::filesystem::exists(dest, ec)) {
+			if (AssetFileHistory::DestinationAvailable(dest)) {
 				return dest;
 			}
 
@@ -410,7 +412,7 @@ namespace Funke {
 			for (int counter = 1; counter < 10000; ++counter) {
 				dest = destinationDirectory / (stem + " (" + std::to_string(counter) + ")" + ext);
 				ec.clear();
-				if (!std::filesystem::exists(dest, ec)) {
+				if (AssetFileHistory::DestinationAvailable(dest)) {
 					return dest;
 				}
 			}
@@ -482,49 +484,90 @@ namespace Funke {
 			const std::atomic_bool& keepRunning,
 			const std::function<void(std::uintmax_t)>& onCopiedBytes)
 		{
-			std::error_code ec;
-			if (skipExisting && std::filesystem::exists(destination, ec) && !ec) {
-				return false;
-			}
-
-			if (destination.has_parent_path()) {
-				std::filesystem::create_directories(destination.parent_path(), ec);
-				if (ec) {
-					return false;
-				}
-			}
-
+			(void)skipExisting;
+			if (!keepRunning.load(std::memory_order_acquire)) return false;
 			std::ifstream input(source, std::ios::binary);
-			if (!input.is_open()) {
-				return false;
-			}
-
-			std::ofstream output(destination, std::ios::binary | std::ios::trunc);
-			if (!output.is_open()) {
-				return false;
-			}
-
-			// Heap, not stack: a 1 MB std::array here overflowed the import worker
-			// thread's 1 MB default stack the moment CopyFileChunked was entered,
-			// crashing the editor on every drag-import. std::vector keeps the same
-			// throughput-friendly chunk size without touching the stack guard page.
+			if (!input) return false;
+			std::FILE* output = nullptr;
+#ifdef FNK_PLATFORM_WINDOWS
+			if (_wfopen_s(&output, destination.c_str(), L"wbx") != 0) return false;
+#else
+			output = std::fopen(destination.c_str(), "wbx");
+			if (!output) return false;
+#endif
+			std::unique_ptr<std::FILE, decltype(&std::fclose)> file(output, &std::fclose);
 			std::vector<char> buffer(1024 * 1024);
+			bool succeeded = true;
 			while (keepRunning.load(std::memory_order_acquire) && input) {
 				input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-				const std::streamsize read = input.gcount();
-				if (read <= 0) {
+				const auto count = input.gcount();
+				if (count <= 0) break;
+				if (std::fwrite(buffer.data(), 1, static_cast<size_t>(count), file.get()) != static_cast<size_t>(count)) {
+					succeeded = false;
 					break;
 				}
-
-				output.write(buffer.data(), read);
-				if (!output) {
-					return false;
-				}
-
-				onCopiedBytes(static_cast<std::uintmax_t>(read));
+				onCopiedBytes(static_cast<std::uintmax_t>(count));
 			}
+			succeeded = succeeded && !input.bad() && keepRunning.load(std::memory_order_acquire);
+			if (std::fclose(file.release()) != 0) succeeded = false;
+			if (!succeeded) {
+				std::error_code error;
+				std::filesystem::remove(destination, error);
+			}
+			return succeeded;
+		}
+	}
 
-			return keepRunning.load(std::memory_order_acquire) && !input.bad() && output.good();
+	std::shared_ptr<AssetFileHistory::Change> AssetBrowser::BeginFileEdit(const std::vector<std::string>& paths, const char* label) {
+		if (IsImportingAssets() || IsDeleting()) return nullptr;
+		try {
+			auto affected = paths;
+			for (const auto& path : paths) {
+				RegisterRegistryAssetTree(Path::FromUtf8(path));
+				const auto mirror = ResolveNativeScriptMirrorPath(path);
+				if (!mirror.empty()) affected.push_back(mirror.string());
+				if (std::filesystem::path(path).extension() == ".cs") {
+					if (const auto* project = ProjectManager::GetCurrentProject(); project && !project->ScriptsDirectory.empty()) {
+						affected.push_back((std::filesystem::path(project->ScriptsDirectory) / std::filesystem::path(path).filename()).string());
+					}
+				}
+			}
+			auto edit = m_FileHistory.Begin(affected, label);
+			m_AssetHistoryContext = true;
+			return edit;
+		}
+		catch (const std::exception& error) {
+			FNK_ERROR_TAG("AssetUndo", "Cannot record asset operation: {}", error.what());
+			return nullptr;
+		}
+	}
+
+	void AssetBrowser::FinishFileEdit(const std::shared_ptr<AssetFileHistory::Change>& change) {
+		try { m_FileHistory.Commit(change); }
+		catch (const std::exception& error) {
+			if (change) change->KeepRecoveryFiles = true;
+			FNK_ERROR_TAG("AssetUndo", "Could not finish asset history: {}. Recovery: {}", error.what(),
+				change ? Path::ToUtf8(change->Storage) : std::string{});
+		}
+	}
+
+	std::string AssetBrowser::UndoRedoAssets(bool redo) {
+		if (redo ? !CanRedoAssets() : !CanUndoAssets()) return {};
+		try {
+			const auto label = redo ? m_FileHistory.Redo() : m_FileHistory.Undo();
+			m_NeedsRefresh = true;
+			m_ClearHistoryThumbnails = true;
+			while (!std::filesystem::exists(Path::FromUtf8(m_CurrentDirectory)) && m_CurrentDirectory != m_RootDirectory) {
+				m_CurrentDirectory = Path::ToUtf8(Path::FromUtf8(m_CurrentDirectory).parent_path());
+				if (m_CurrentDirectory.empty()) { m_CurrentDirectory = m_RootDirectory; break; }
+			}
+			ClearAssetSelection();
+			EditorScriptDiscovery::MarkDirty();
+			return label;
+		}
+		catch (const std::exception& error) {
+			FNK_ERROR_TAG("AssetUndo", "{}", error.what());
+			return {};
 		}
 	}
 
@@ -579,27 +622,9 @@ namespace Funke {
 			}
 
 			const std::string finalPath = targetPath.string();
-			bool renameSucceeded = true;
-			if (finalPath != m_RenamePath) {
-				std::error_code renameEc;
-				std::filesystem::rename(m_RenamePath, finalPath, renameEc);
-				if (renameEc) {
-					renameSucceeded = false;
-					FNK_WARN_TAG("AssetBrowser",
-						"Failed to rename '{}' to '{}': {}",
-						m_RenamePath, finalPath, renameEc.message());
-				}
-			}
+			if (finalPath != m_RenamePath) RenameEntry(m_RenamePath, targetPath.filename().string());
+			else AssetRegistry::ImportAssetPathIncremental(finalPath);
 
-			if (renameSucceeded) {
-				m_SelectedPath = finalPath;
-				if (finalPath != m_RenamePath) {
-					AssetRegistry::MoveCompanionMetadata(m_RenamePath, finalPath);
-				}
-				else {
-					AssetRegistry::ImportAssetPathIncremental(finalPath);
-				}
-			}
 			m_PendingScriptType = PendingScriptType::None;
 			m_PendingScriptDir.clear();
 			m_PendingPrefabSourceEntity = entt::null;
@@ -665,6 +690,12 @@ namespace Funke {
 				}
 			}
 
+			if (!std::filesystem::exists(finalPath) && !AssetFileHistory::DestinationAvailable(finalPath)) {
+				FNK_ERROR_TAG("AssetBrowser", "Script metadata already exists: {}", finalPath);
+				return;
+			}
+			auto edit = BeginFileEdit({ m_RenamePath, finalPath }, "Create Script");
+			if (!edit) return;
 			if (std::filesystem::exists(m_RenamePath)) {
 				std::error_code ec;
 				std::filesystem::remove(m_RenamePath, ec);
@@ -803,6 +834,7 @@ namespace Funke {
 			}
 
 			AssetRegistry::ImportAssetPathIncremental(finalPath);
+			FinishFileEdit(edit);
 			EditorScriptDiscovery::MarkDirty();
 			m_SelectedPath = finalPath;
 			m_PendingScriptType = PendingScriptType::None;
@@ -864,6 +896,8 @@ namespace Funke {
 	}
 
 	void AssetBrowser::DeleteEntry(const std::string& path) {
+		auto edit = BeginFileEdit({ path }, "Delete Assets");
+		if (!edit) return;
 		// Defer thumbnail invalidation: see m_PendingThumbnailInvalidates docs.
 		// The file itself is deleted now so on-disk state is consistent before
 		// Render() returns; only the GPU-bound Texture2D destruction waits.
@@ -876,6 +910,7 @@ namespace Funke {
 		CollectRegistryAssetPaths(pathFs, deletedAssetPaths);
 
 		if (Directory::Delete(path)) {
+			AssetRegistry::DeleteCompanionMetadata(path);
 			ForgetRegistryAssetPaths(deletedAssetPaths);
 			EditorScriptDiscovery::MarkDirty();
 			if (!nativeMirrorPath.empty()) {
@@ -902,6 +937,7 @@ namespace Funke {
 				SceneManager::UnregisterScene(sceneStem);
 			}
 		}
+		FinishFileEdit(edit);
 	}
 
 	void AssetBrowser::RenameEntry(const std::string& path, const std::string& newName) {
@@ -926,6 +962,22 @@ namespace Funke {
 			return;
 		}
 
+		if (oldPath == requestedPath) return;
+		if (!AssetFileHistory::DestinationAvailable(requestedPath)) {
+			FNK_WARN_TAG("AssetBrowser", "Rename target or metadata already exists: {}", requestedPath.string());
+			return;
+		}
+		if (NormalizeSceneStem(requestedPath.extension().string()) == ".cs") {
+			if (const auto* project = ProjectManager::GetCurrentProject(); project && !project->ScriptsDirectory.empty()) {
+				const auto mirrorTarget = (std::filesystem::path(project->ScriptsDirectory) / newName).lexically_normal();
+				if (mirrorTarget != requestedPath.lexically_normal() && !AssetFileHistory::DestinationAvailable(mirrorTarget)) {
+					FNK_WARN_TAG("AssetBrowser", "Script mirror target already exists: {}", mirrorTarget.string());
+					return;
+				}
+			}
+		}
+		auto edit = BeginFileEdit({ path, requestedPath.string() }, "Rename Asset");
+		if (!edit) return;
 		// Same dangling-WGPUTextureView risk as DeleteEntry: ImGui may have
 		// already recorded a draw command for the old-key thumbnail this
 		// frame. Queue the invalidate for next frame instead.
@@ -936,7 +988,7 @@ namespace Funke {
 		std::vector<std::string> renamedAssetPaths;
 		CollectRegistryAssetPaths(path, renamedAssetPaths);
 
-		if (Directory::Rename(path, newName)) {
+		if (AssetFileHistory::MoveAsset(oldPath, requestedPath)) {
 			EditorScriptDiscovery::MarkDirty();
 			std::filesystem::path p(path);
 			std::string newPath = (p.parent_path() / newName).string();
@@ -1029,10 +1081,19 @@ namespace Funke {
 			{
 				SyncSceneEmbeddedNameToFilename(newPath, newStem);
 				UpdateLoadedSceneNameAfterRename(oldStem, newStem);
+				edit->Validate = [oldStem, newStem, oldPath, requestedPath](bool redo) {
+					if (SceneStemExists(redo ? newStem : oldStem, redo ? oldPath : requestedPath)) {
+						throw std::runtime_error("Another scene already uses the restored name");
+					}
+				};
+				edit->Applied = [oldStem, newStem](bool redo) {
+					UpdateLoadedSceneNameAfterRename(redo ? oldStem : newStem, redo ? newStem : oldStem);
+				};
 			}
 
 			m_NeedsRefresh = true;
 		}
+		FinishFileEdit(edit);
 	}
 
 	void AssetBrowser::SyncSceneEmbeddedNameIfNeeded(const std::filesystem::path& copiedPath) {
@@ -1048,9 +1109,20 @@ namespace Funke {
 		std::filesystem::path preferredPath,
 		std::function<void(const std::filesystem::path&)> doCreate)
 	{
+		doCreate = [this, create = std::move(doCreate)](const std::filesystem::path& path) {
+			if (!AssetFileHistory::DestinationAvailable(path)) {
+				FNK_WARN_TAG("AssetBrowser", "Creation target or metadata already exists: {}", path.string());
+				return;
+			}
+			auto edit = BeginFileEdit({ path.string() }, "Create Asset");
+			if (!edit) return;
+			create(path);
+			RegisterRegistryAssetTree(path);
+			FinishFileEdit(edit);
+		};
 		std::error_code ec;
-		const bool exists = std::filesystem::exists(preferredPath, ec);
-		if (!exists || ec) {
+		const bool exists = !AssetFileHistory::DestinationAvailable(preferredPath);
+		if (!exists) {
 			doCreate(preferredPath);
 			return;
 		}
@@ -1087,46 +1159,32 @@ namespace Funke {
 			ImGui::Spacing();
 			// The footer has no per-button tooltips, so the choices are explained inline.
 			ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-			ImGui::TextWrapped("Overwrite replaces the existing file; the previous one is permanently removed. "
-				"Make Copy keeps it and creates the new one with a numbered suffix.");
+			ImGui::TextWrapped("Make Copy keeps the existing asset and creates the new one with a numbered suffix.");
 			ImGui::PopStyleColor();
 
 			bool decided = false;
 			// Move the prompt out before invoking DoCreate so the callback can
 			// re-enter CreateAssetWithCollisionCheck without trampling state.
-			auto finishWith = [&](const std::filesystem::path& finalPath, bool deleteExisting) {
+			auto finishWith = [&](const std::filesystem::path& finalPath) {
 				auto local = std::move(m_PendingCreationPrompt);
-				m_PendingCreationPrompt.reset();
-				if (deleteExisting) {
-					std::error_code rmEc;
-					std::filesystem::remove(local->PreferredPath, rmEc);
-					if (rmEc) {
-						FNK_WARN_TAG("AssetBrowser",
-							"Overwrite: failed to remove existing file '{}': {}",
-							local->PreferredPath.string(), rmEc.message());
-					}
-				}
 				local->DoCreate(finalPath);
 				decided = true;
 			};
 
-			const int choice = EditorUI::DialogFooter({ "Overwrite", "Make Copy", "Cancel" }, /*primary=*/1, /*danger=*/0);
+			const int choice = EditorUI::DialogFooter({ "Make Copy", "Cancel" }, /*primary=*/0);
 			if (choice == 0) {
-				finishWith(m_PendingCreationPrompt->PreferredPath, /*deleteExisting=*/true);
-			}
-			else if (choice == 1) {
 				const std::filesystem::path parent = m_PendingCreationPrompt->PreferredPath.parent_path();
 				const std::string stem = m_PendingCreationPrompt->PreferredPath.stem().string();
 				const std::string ext = m_PendingCreationPrompt->PreferredPath.extension().string();
 				std::filesystem::path candidate = m_PendingCreationPrompt->PreferredPath;
 				std::error_code ec;
-				for (int n = 1; std::filesystem::exists(candidate, ec) && n < 10000; ++n) {
+				for (int n = 1; !AssetFileHistory::DestinationAvailable(candidate) && n < 10000; ++n) {
 					candidate = parent / (FormatDuplicateAssetName(stem, n) + ext);
 					ec.clear();
 				}
-				finishWith(candidate, /*deleteExisting=*/false);
+				finishWith(candidate);
 			}
-			else if (choice == 2) {
+			else if (choice == 1) {
 				m_PendingCreationPrompt.reset();
 				decided = true;
 			}
@@ -1185,7 +1243,7 @@ namespace Funke {
 				ImGui::TextWrapped("Delete %zu selected items?", m_PendingDeletePaths.size());
 			}
 			ImGui::Spacing();
-			ImGui::TextDisabled("This cannot be undone.");
+			ImGui::TextDisabled("You can undo this while the project remains open.");
 
 			bool decided = false;
 			// Cancel is the accent default so the safe choice reads first; Delete keeps the destructive style.
@@ -1210,12 +1268,15 @@ namespace Funke {
 		std::string baseName = "New Folder";
 		std::string folderPath = (std::filesystem::path(parentDir) / baseName).string();
 		int counter = 1;
-		while (Directory::Exists(folderPath)) {
+		while (!AssetFileHistory::DestinationAvailable(Path::FromUtf8(folderPath))) {
 			folderPath = (std::filesystem::path(parentDir) / (baseName + " " + std::to_string(counter))).string();
 			counter++;
 		}
 
+		auto edit = BeginFileEdit({ folderPath }, "Create Folder");
+		if (!edit) return;
 		Directory::Create(folderPath, false);
+		FinishFileEdit(edit);
 		m_NeedsRefresh = true;
 
 		Refresh();
@@ -1737,9 +1798,9 @@ namespace Funke {
 			fs::path importedRootPath;
 
 			if (fs::is_directory(src, ec) && !ec) {
-				const fs::path destRoot = destDir / src.filename();
-				fs::create_directories(destRoot, ec);
-				if (ec) {
+				const fs::path destRoot = MakeUniqueImportFilePath(src, destDir);
+				const bool created = !destRoot.empty() && AssetFileHistory::DestinationAvailable(destRoot) && fs::create_directory(destRoot, ec);
+				if (!created || ec) {
 					appendError(src, ec.message());
 					publishProcessedRoot(i + 1);
 					continue;
@@ -1801,8 +1862,9 @@ namespace Funke {
 				}
 			}
 			else if (fs::is_regular_file(src, ec) && !ec) {
+				if (AssetRegistry::IsMetaFilePath(src.string())) continue;
 				const fs::path dest = MakeUniqueImportFilePath(src, destDir);
-				if (dest.empty()) {
+				if (dest.empty() || !AssetFileHistory::DestinationAvailable(dest)) {
 					appendError(src, "could not choose a globally unique scene name");
 					publishProcessedRoot(i + 1);
 					continue;
@@ -1811,6 +1873,11 @@ namespace Funke {
 					importedThisRoot = true;
 					importedRootPath = dest;
 					AddImportedAssetPath(importedAssetPaths, dest);
+					auto sourceMeta = src; sourceMeta += ".meta";
+					auto destinationMeta = dest; destinationMeta += ".meta";
+					if (fs::is_regular_file(sourceMeta, ec) && !ec) {
+						CopyFileChunked(sourceMeta, destinationMeta, false, m_ImportActive, publishCopiedBytes);
+					}
 				}
 				else if (m_ImportActive.load(std::memory_order_acquire)) {
 					appendError(src, "copy failed");
@@ -1932,6 +1999,13 @@ namespace Funke {
 				m_PendingImportDestinationDirectory);
 		}
 
+		if (!m_PendingImportRootPaths.empty()) {
+			try {
+				m_FileHistory.RecordCreated(m_PendingImportRootPaths, "Import Assets");
+				m_AssetHistoryContext = true;
+			}
+			catch (const std::exception& error) { FNK_ERROR_TAG("AssetUndo", "Cannot record import: {}", error.what()); }
+		}
 		m_PendingImportedAssetRegistrations.clear();
 		m_PendingImportRootPaths.clear();
 		m_PendingImportedAssetRegistrationIndex = 0;
@@ -2021,16 +2095,9 @@ namespace Funke {
 			return;
 		}
 
-		// The Win32 progress popup and the AssetRegistry are single-owner, shared
-		// resources. If an import or a prior delete is still in flight, fall back to a
-		// synchronous delete (only this rare overlap can briefly block) rather than
-		// racing the other operation for the window / registry maps.
-		if (m_ImportActive.load(std::memory_order_acquire) || m_DeleteActive.load(std::memory_order_acquire)) {
-			for (const std::string& path : paths) {
-				DeleteEntry(path);
-			}
-			return;
-		}
+		// Registry publication and the progress window have a single owner.
+
+		if (IsImportingAssets() || IsDeleting()) return;
 
 		// A finished-but-not-yet-reaped worker can linger if the editor closed the
 		// progress flow early; drain it before reusing the thread handle.
@@ -2085,6 +2152,7 @@ namespace Funke {
 		// visible to the worker, and the worker is join()ed before they are touched
 		// again (pump / next Start). m_DeleteStartTime is then only ever read on the
 		// main thread.
+		m_DeleteFileEdit.reset();
 		m_DeleteRoots = std::move(roots);
 		m_DeleteTotalEntries.store(0, std::memory_order_release);
 		m_DeleteProcessedEntries.store(0, std::memory_order_release);
@@ -2114,6 +2182,13 @@ namespace Funke {
 		// vectors) can still throw — catch and publish a finished+error state so the
 		// deletion UI recovers instead.
 		try {
+
+		std::vector<std::string> undoPaths;
+		for (const auto& root : m_DeleteRoots) {
+			undoPaths.push_back(root.Path);
+			if (!root.NativeMirrorPath.empty()) undoPaths.push_back(root.NativeMirrorPath);
+		}
+		m_DeleteFileEdit = m_FileHistory.Begin(undoPaths, "Delete Assets");
 
 		auto publishCurrentItem = [this](const std::string& item) {
 			std::scoped_lock lock(m_DeleteMutex);
@@ -2293,12 +2368,9 @@ namespace Funke {
 				continue;
 			}
 
-			// A single-file root's companion .meta sidecar is a sibling (not under the
-			// deleted path), so the worker never removed it — do it here, which also
-			// forgets the asset from the registry.
-			if (!info.IsDirectory) {
-				AssetRegistry::DeleteCompanionMetadata(info.Path);
-			}
+			// Root sidecars are siblings, so the worker does not traverse them.
+
+			AssetRegistry::DeleteCompanionMetadata(info.Path);
 
 			// Drop the SceneDefinition so a script-side LoadScene of the deleted name
 			// can't resurrect an empty Scene from the stale definition.
@@ -2324,6 +2396,8 @@ namespace Funke {
 			FNK_CORE_WARN_TAG("AssetBrowser", "{}", error);
 		}
 
+		FinishFileEdit(m_DeleteFileEdit);
+		m_DeleteFileEdit.reset();
 		m_DeleteRoots.clear();
 		m_NeedsRefresh = true;
 		// Mirror the import path: suppress the single asset-watcher refresh that would

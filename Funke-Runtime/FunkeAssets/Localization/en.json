@@ -201,6 +201,7 @@
     "launcher.create.init_git.tooltip": "Runs `git init` in the new project folder and writes a Funke-tailored .gitignore. Requires git on PATH.",
 
     "launcher.settings.title": "Launcher Settings",
+    "launcher.settings.subtitle": "Make the launcher your own. Changes are saved automatically.",
     "launcher.settings.default_location": "Default projects location",
     "launcher.settings.default_location_subtitle": "Used when creating a new project.",
     "launcher.settings.current": "Current: {0}",

@@ -4,23 +4,34 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: Platforms to validate
+        type: choice
+        options: [all, posix, linux, macos]
+        default: all
+      linux_core_only:
+        description: Only rerun Linux core validation
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'all' }}-${{ inputs.linux_core_only && 'core' || 'full' }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   script-tests:
+    if: ${{ !inputs.linux_core_only }}
     name: Script tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2022, ubuntu-24.04, macos-15]
+        os: ${{ fromJSON(inputs.platforms == 'linux' && '["ubuntu-24.04"]' || inputs.platforms == 'macos' && '["macos-15"]' || inputs.platforms == 'posix' && '["ubuntu-24.04","macos-15"]' || '["windows-2022","ubuntu-24.04","macos-15"]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,13 +45,14 @@ jobs:
         run: python -m unittest discover -s scripts/ci -p "test_*.py"
 
   managed-tests:
+    if: ${{ !inputs.linux_core_only }}
     name: C# tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2022, ubuntu-24.04, macos-15]
+        os: ${{ fromJSON(inputs.platforms == 'linux' && '["ubuntu-24.04"]' || inputs.platforms == 'macos' && '["macos-15"]' || inputs.platforms == 'posix' && '["ubuntu-24.04","macos-15"]' || '["windows-2022","ubuntu-24.04","macos-15"]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -65,6 +77,7 @@ jobs:
           if-no-files-found: warn
 
   windows-build:
+    if: ${{ !inputs.linux_core_only && (github.event_name != 'workflow_dispatch' || inputs.platforms == 'all') }}
     needs: script-tests
     runs-on: windows-2022
     outputs:
@@ -137,14 +150,19 @@ jobs:
             External/dawn/build/src/dawn/native/Debug/webgpu_dawn.lib
             External/dawn/build/src/dawn/native/Release/webgpu_dawn.lib
             External/dawn/LICENSE
+            External/dawn/funke-artifacts.json
             External/dawn/third_party/**/LICENSE*
             External/dawn/third_party/**/NOTICE*
             External/dawn/third_party/**/COPYING*
             External/dawn/third_party/**/ThirdPartyNotices.txt
-          key: dawn-v2-${{ runner.os }}-${{ hashFiles('scripts/dawn/dawn-revision.txt', 'scripts/dawn/SetupDawn.bat', 'scripts/dawn/FetchDawnDepsMinimal.py', 'scripts/dawn/patches/**') }}
+          key: dawn-v5-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/dawn/*.txt', 'scripts/dawn/*.py', 'scripts/dawn/*.sh', 'scripts/dawn/*.bat', 'scripts/dawn/*.ps1', 'scripts/dawn/patches/**') }}
 
-      - name: Build Dawn (cache miss only)
-        if: steps.cache-dawn.outputs.cache-hit != 'true'
+      - name: Validate Dawn artifacts
+        id: validate-dawn
+        run: python scripts/dawn/ValidateDawnCache.py --ci
+
+      - name: Build Dawn (missing or invalid artifacts)
+        if: steps.validate-dawn.outputs.valid != 'true'
         shell: cmd
         env:
           DAWN_BUILD_CONFIGS: Debug Release
@@ -161,6 +179,7 @@ jobs:
             External/dawn/build/src/dawn/native/Debug/webgpu_dawn.lib
             External/dawn/build/src/dawn/native/Release/webgpu_dawn.lib
             External/dawn/LICENSE
+            External/dawn/funke-artifacts.json
             External/dawn/third_party/**/LICENSE*
             External/dawn/third_party/**/NOTICE*
             External/dawn/third_party/**/COPYING*
@@ -326,6 +345,14 @@ jobs:
 
 
 
+      - name: Upload Windows Native Test Diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-Windows-Native-Test-Diagnostics
+          path: ci-logs
+          if-no-files-found: warn
+
   windows-standalone:
     needs: windows-build
     runs-on: windows-2022
@@ -334,7 +361,11 @@ jobs:
       - name: Checkout verification script only
         uses: actions/checkout@v4
         with:
-          sparse-checkout: scripts/ci/standalone_sdk_test.py
+          sparse-checkout: |
+            scripts/ci/standalone_sdk_test.py
+            scripts/ci/editor_bridge_test.py
+            scripts/ci/agent_workflow_test.py
+            Tests/Agent
           sparse-checkout-cone-mode: false
 
       - name: Setup Python
@@ -363,6 +394,15 @@ jobs:
           python scripts/ci/standalone_sdk_test.py --install $install --dotnet (Get-Command dotnet).Source --work-parent $env:RUNNER_TEMP --forbidden-root $env:GITHUB_WORKSPACE --report "$env:RUNNER_TEMP/standalone-evidence.json"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Verify installed agent authoring and gameplay
+        shell: pwsh
+        run: |
+          $install = Join-Path $env:RUNNER_TEMP 'Funke Binary Installation'
+          python scripts/ci/editor_bridge_test.py --cli "$install/funke.exe" --editor "$install/Funke-Editor.exe" --output "$env:RUNNER_TEMP/agent-evidence"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/ci/agent_workflow_test.py --cli "$install/funke.exe" --editor "$install/Funke-Editor.exe" --output "$env:RUNNER_TEMP/agent-evidence" --timeout 240
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Upload standalone verification evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -371,9 +411,11 @@ jobs:
           path: |
             ${{ runner.temp }}/standalone-evidence.json
             ${{ runner.temp }}/Funke-Standalone-*/logs/**
+            ${{ runner.temp }}/agent-evidence/**
           if-no-files-found: warn
 
   linux-build:
+    if: ${{ always() && (inputs.linux_core_only || ((github.event_name != 'workflow_dispatch' || inputs.platforms != 'macos') && needs.script-tests.result == 'success')) }}
     needs: script-tests
     runs-on: ubuntu-24.04
 
@@ -408,7 +450,15 @@ jobs:
           # Dawn is shared, so its former static-archive linker memory issue no longer applies.
           # libx11-xcb-dev: Dawn's X11 backend needs X11/Xlib-xcb.h (not in xorg-dev).
           sudo apt-get install -y xorg-dev libglu1-mesa-dev xvfb pkg-config clang libx11-xcb-dev lcov \
-            libwayland-dev libxkbcommon-dev wayland-protocols libdbus-1-dev libudev-dev
+            libwayland-dev libxkbcommon-dev wayland-protocols libdbus-1-dev libudev-dev \
+            libvulkan1 mesa-vulkan-drivers vulkan-tools
+
+      - name: Verify Software Vulkan Driver
+        run: |
+          driver=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
+          test -n "$driver"
+          echo "VK_DRIVER_FILES=$driver" >> "$GITHUB_ENV"
+          VK_DRIVER_FILES="$driver" vulkaninfo --summary
 
       - name: Install Premake
         run: |
@@ -435,13 +485,18 @@ jobs:
             External/dawn/build/gen/include
             External/dawn/build/src/dawn/native/libwebgpu_dawn.so
             External/dawn/LICENSE
+            External/dawn/funke-artifacts.json
             External/dawn/third_party/**/LICENSE*
             External/dawn/third_party/**/NOTICE*
             External/dawn/third_party/**/COPYING*
-          key: dawn-v3-${{ runner.os }}-${{ hashFiles('scripts/dawn/dawn-revision.txt', 'scripts/dawn/SetupDawn.sh', 'scripts/dawn/patches/**') }}
+          key: dawn-v5-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/dawn/*.txt', 'scripts/dawn/*.py', 'scripts/dawn/*.sh', 'scripts/dawn/*.bat', 'scripts/dawn/*.ps1', 'scripts/dawn/patches/**') }}
 
-      - name: Build Dawn (cache miss only)
-        if: steps.cache-dawn.outputs.cache-hit != 'true'
+      - name: Validate Dawn artifacts
+        id: validate-dawn
+        run: python scripts/dawn/ValidateDawnCache.py --ci
+
+      - name: Build Dawn (missing or invalid artifacts)
+        if: steps.validate-dawn.outputs.valid != 'true'
         run: |
           chmod +x scripts/dawn/SetupDawn.sh
           ./scripts/dawn/SetupDawn.sh
@@ -455,6 +510,7 @@ jobs:
             External/dawn/build/gen/include
             External/dawn/build/src/dawn/native/libwebgpu_dawn.so
             External/dawn/LICENSE
+            External/dawn/funke-artifacts.json
             External/dawn/third_party/**/LICENSE*
             External/dawn/third_party/**/NOTICE*
             External/dawn/third_party/**/COPYING*
@@ -470,6 +526,7 @@ jobs:
         run: python3 scripts/vendor_patches.py verify --require-applied
 
       - name: Linux Engine + Editor Tests
+        if: ${{ !inputs.linux_core_only }}
         run: |
           make config=release verbose=1 -j"$(nproc)" Funke-Managed Funke-Engine-Tests Funke-Editor-Tests
           ./bin/Release-linux-x86_64/Funke-Engine-Tests/Funke-Engine-Tests
@@ -478,14 +535,17 @@ jobs:
       # Funke-Managed builds Funke-ScriptCore, the hot-reload compiler and the package tool with dotnet;
       # the Launcher's postbuild bundles everything into EngineSDK (scripts/CopyEngineSdk.py).
       - name: Build Linux Targets
+        if: ${{ !inputs.linux_core_only }}
         run: |
           make config=dist verbose=1 -j"$(nproc)" Funke-Runtime
           make config=release verbose=1 -j"$(nproc)" Funke-Engine Funke-Managed Funke-Runtime Funke-Editor Funke-CLI Funke-Launcher
 
       - name: Package Linux Bundle
+        if: ${{ !inputs.linux_core_only }}
         run: python3 scripts/PackagePosix.py --configuration Release --output-dir dist-posix
 
       - name: Upload Linux Bundle
+        if: ${{ !inputs.linux_core_only }}
         uses: actions/upload-artifact@v4
         with:
           name: Funke-Editor-Linux-x64
@@ -493,27 +553,55 @@ jobs:
           if-no-files-found: error
 
       - name: Build Linux Debug Targets
+        if: ${{ !inputs.linux_core_only }}
         run: make config=debug verbose=1 -j"$(nproc)" Funke-Engine Funke-Runtime Funke-Editor
 
       - name: Linux Runtime Smoke Test
+        if: ${{ !inputs.linux_core_only }}
         run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Release-linux-x86_64/Funke-Runtime/Funke-Runtime
 
+      - name: Linux Missing Graphics Driver Test
+        if: ${{ !inputs.linux_core_only }}
+        env:
+          VK_DRIVER_FILES: /nonexistent/funke-vulkan-driver.json
+          VK_ICD_FILENAMES: /nonexistent/funke-vulkan-driver.json
+        run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Release-linux-x86_64/Funke-Runtime/Funke-Runtime --expect-render-init-failure
+
       - name: Linux Export With Bundled .NET
+        if: ${{ !inputs.linux_core_only }}
         run: python3 scripts/ci/desktop_export_smoke_test.py --cli bin/Release-linux-x86_64/Funke-CLI/funke
 
+      - name: Linux Agent Editor Workflow
+        if: ${{ !inputs.linux_core_only }}
+        run: |
+          xvfb-run -a python3 scripts/ci/editor_bridge_test.py --cli bin/Release-linux-x86_64/Funke-CLI/funke --editor bin/Release-linux-x86_64/Funke-Editor/Funke-Editor --output "$RUNNER_TEMP/agent-evidence"
+          xvfb-run -a python3 scripts/ci/agent_workflow_test.py --cli bin/Release-linux-x86_64/Funke-CLI/funke --editor bin/Release-linux-x86_64/Funke-Editor/Funke-Editor --output "$RUNNER_TEMP/agent-evidence" --timeout 240
+
+      - name: Upload Linux Agent Evidence
+        if: ${{ always() && !inputs.linux_core_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-Agent-Linux
+          path: ${{ runner.temp }}/agent-evidence
+          if-no-files-found: warn
+
       - name: Linux Debug Runtime Smoke Test
+        if: ${{ !inputs.linux_core_only }}
         run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Debug-linux-x86_64/Funke-Runtime/Funke-Runtime
 
       - name: Linux Dist Runtime Smoke Test
+        if: ${{ !inputs.linux_core_only }}
         run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Dist-linux-x86_64/Funke-Runtime/Funke-Runtime --require-scripting
 
       - name: Linux Debug Engine + Editor Tests
+        if: ${{ !inputs.linux_core_only }}
         run: |
           make config=debug verbose=1 -j"$(nproc)" Funke-Engine-Tests Funke-Editor-Tests
           ./bin/Debug-linux-x86_64/Funke-Engine-Tests/Funke-Engine-Tests
           ./bin/Debug-linux-x86_64/Funke-Editor-Tests/Funke-Editor-Tests
 
       - name: Linux ASan + UBSan Engine Tests
+        if: ${{ !inputs.linux_core_only }}
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
@@ -522,16 +610,54 @@ jobs:
           make config=debug verbose=1 LDFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all" -j"$(nproc)" Funke-Engine-Tests
           ./bin/Debug-linux-x86_64-sanitized/Funke-Engine-Tests/Funke-Engine-Tests
 
-      - name: Linux Debug Engine Coverage
+      - name: Configure Linux Debug Coverage
+        if: ${{ !inputs.linux_core_only }}
+        shell: bash
         run: |
+          mkdir -p ci-logs
+          { g++ --version; gcov --version; lcov --version; genhtml --version; } | tee ci-logs/coverage-tools.log
           vendor/bin/premake5 --coverage --no-profiler gmake
-          make config=debug verbose=1 LDFLAGS="--coverage" -j"$(nproc)" Funke-Engine-Tests
-          ./bin/Debug-linux-x86_64-coverage/Funke-Engine-Tests/Funke-Engine-Tests
-          lcov --capture --directory bin-int/Debug-linux-x86_64-coverage --output-file coverage-raw.info --ignore-errors mismatch
-          lcov --remove coverage-raw.info '*/External/*' '*/vendor/*' '*/Tests/*' '/usr/*' --output-file coverage.info --ignore-errors unused
-          genhtml coverage.info --output-directory coverage-html
+
+      - name: Build Linux Debug Coverage
+        if: ${{ !inputs.linux_core_only }}
+        shell: bash
+        run: make config=debug verbose=1 LDFLAGS="--coverage" -j"$(nproc)" Funke-Engine-Tests 2>&1 | tee ci-logs/coverage-build.log
+
+      - name: Run Linux Debug Coverage Tests
+        if: ${{ !inputs.linux_core_only }}
+        shell: bash
+        run: ./bin/Debug-linux-x86_64-coverage/Funke-Engine-Tests/Funke-Engine-Tests 2>&1 | tee ci-logs/coverage-tests.log
+
+      - name: Capture Linux Debug Coverage
+        if: ${{ !inputs.linux_core_only }}
+        shell: bash
+        run: lcov --capture --directory bin-int/Debug-linux-x86_64-coverage --output-file coverage-raw.info --ignore-errors mismatch 2>&1 | tee ci-logs/coverage-capture.log
+
+      - name: Filter Linux Debug Coverage
+        if: ${{ !inputs.linux_core_only }}
+        shell: bash
+        run: |
+          lcov --remove coverage-raw.info '*/External/*' '*/vendor/*' '*/Tests/*' '/usr/*' --output-file coverage.info --ignore-errors unused 2>&1 | tee ci-logs/coverage-filter.log
+          test -s coverage.info
+          grep -Eq '^DA:[0-9]+,[1-9][0-9]*' coverage.info
+
+      - name: Render Linux Debug Coverage
+        if: ${{ !inputs.linux_core_only }}
+        shell: bash
+        run: genhtml coverage.info --output-directory coverage-html 2>&1 | tee ci-logs/coverage-html.log
+
+      - name: Upload Linux Coverage Diagnostics
+        if: ${{ always() && !inputs.linux_core_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-Linux-Coverage-Diagnostics
+          path: |
+            ci-logs
+            coverage-raw.info
+          if-no-files-found: ignore
 
       - name: Upload Linux Debug Coverage
+        if: ${{ !inputs.linux_core_only }}
         uses: actions/upload-artifact@v4
         with:
           name: Funke-Linux-Debug-Coverage
@@ -540,12 +666,17 @@ jobs:
             coverage-html
           if-no-files-found: error
 
+      - name: Generate Core-only Build Identity
+        if: ${{ inputs.linux_core_only }}
+        run: python3 scripts/generate_build_metadata.py --require-clean
+
       - name: Linux Core-only Engine Validation
         run: |
           vendor/bin/premake5 --core-validation --module-profile=core gmake
           make -C premake/generated/core config=release verbose=1 -j"$(nproc)" Funke-Engine
 
   macos-build:
+    if: ${{ !inputs.linux_core_only && (github.event_name != 'workflow_dispatch' || inputs.platforms != 'linux') }}
     needs: script-tests
     # Apple Silicon. Builds the engine, editor, launcher and CLI natively (Dawn on Metal) and runs the
     # doctest suites; the bundle is uploaded for manual checks until macOS releases are signed and notarized.
@@ -589,13 +720,18 @@ jobs:
             External/dawn/build/gen/include
             External/dawn/build/src/dawn/native/libwebgpu_dawn.dylib
             External/dawn/LICENSE
+            External/dawn/funke-artifacts.json
             External/dawn/third_party/**/LICENSE*
             External/dawn/third_party/**/NOTICE*
             External/dawn/third_party/**/COPYING*
-          key: dawn-v4-macos-15-${{ runner.arch }}-${{ hashFiles('scripts/dawn/dawn-revision.txt', 'scripts/dawn/SetupDawn.sh', 'scripts/dawn/patches/**') }}
+          key: dawn-v5-macos-15-${{ runner.arch }}-${{ hashFiles('scripts/dawn/*.txt', 'scripts/dawn/*.py', 'scripts/dawn/*.sh', 'scripts/dawn/*.bat', 'scripts/dawn/*.ps1', 'scripts/dawn/patches/**') }}
 
-      - name: Build Dawn (cache miss only)
-        if: steps.cache-dawn.outputs.cache-hit != 'true'
+      - name: Validate Dawn artifacts
+        id: validate-dawn
+        run: python scripts/dawn/ValidateDawnCache.py --ci
+
+      - name: Build Dawn (missing or invalid artifacts)
+        if: steps.validate-dawn.outputs.valid != 'true'
         run: |
           chmod +x scripts/dawn/SetupDawn.sh
           ./scripts/dawn/SetupDawn.sh
@@ -609,6 +745,7 @@ jobs:
             External/dawn/build/gen/include
             External/dawn/build/src/dawn/native/libwebgpu_dawn.dylib
             External/dawn/LICENSE
+            External/dawn/funke-artifacts.json
             External/dawn/third_party/**/LICENSE*
             External/dawn/third_party/**/NOTICE*
             External/dawn/third_party/**/COPYING*
@@ -622,11 +759,23 @@ jobs:
       - name: Verify Vendor Patches Applied
         run: python3 scripts/vendor_patches.py verify --require-applied
 
-      - name: macOS Engine + Editor Tests
+      - name: macOS Native Hosting and Signing Regression Tests
+        shell: bash
         run: |
-          make config=release verbose=1 -j"$(sysctl -n hw.ncpu)" Funke-Managed Funke-Engine-Tests Funke-Editor-Tests
-          ./bin/Release-macosx-arm64/Funke-Engine-Tests/Funke-Engine-Tests
-          ./bin/Release-macosx-arm64/Funke-Editor-Tests/Funke-Editor-Tests
+          mkdir -p ci-logs
+          python3 -m unittest scripts.ci.test_macos_native -v 2>&1 | tee ci-logs/macos-native.log
+
+      - name: Build macOS Native Tests
+        shell: bash
+        run: make config=release verbose=1 -j"$(sysctl -n hw.ncpu)" Funke-Managed Funke-Engine-Tests Funke-Editor-Tests 2>&1 | tee ci-logs/macos-build.log
+
+      - name: macOS Engine Tests
+        shell: bash
+        run: ./bin/Release-macosx-arm64/Funke-Engine-Tests/Funke-Engine-Tests 2>&1 | tee ci-logs/macos-engine-tests.log
+
+      - name: macOS Editor Tests
+        shell: bash
+        run: ./bin/Release-macosx-arm64/Funke-Editor-Tests/Funke-Editor-Tests 2>&1 | tee ci-logs/macos-editor-tests.log
 
       - name: Build macOS Targets
         run: |
@@ -641,15 +790,42 @@ jobs:
       - name: macOS Export With Bundled .NET
         run: python3 scripts/ci/desktop_export_smoke_test.py --cli bin/Release-macosx-arm64/Funke-CLI/funke
 
+      - name: macOS Agent Editor Workflow
+        run: |
+          python3 scripts/ci/editor_bridge_test.py --cli bin/Release-macosx-arm64/Funke-CLI/funke --editor bin/Release-macosx-arm64/Funke-Editor/Funke-Editor --output "$RUNNER_TEMP/agent-evidence"
+          python3 scripts/ci/agent_workflow_test.py --cli bin/Release-macosx-arm64/Funke-CLI/funke --editor bin/Release-macosx-arm64/Funke-Editor/Funke-Editor --output "$RUNNER_TEMP/agent-evidence" --timeout 240
+
+      - name: Upload macOS Agent Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-Agent-macOS
+          path: ${{ runner.temp }}/agent-evidence
+          if-no-files-found: warn
+
       - name: Package macOS Bundle
         run: python3 scripts/PackagePosix.py --configuration Release --output-dir dist-posix
 
-      - name: Upload macOS Bundle
+      - name: Build macOS Installer
+        if: github.ref_type != 'tag'
+        shell: bash
+        run: python3 scripts/BuildMacInstaller.py --bundle bin/Release-macosx-arm64/Funke-Launcher --output-dir dist-macos 2>&1 | tee ci-logs/macos-installer.log
+
+      - name: Verify Installed macOS App
+        if: github.ref_type != 'tag'
+        shell: bash
+        run: |
+          installers=(dist-macos/*.dmg)
+          test "${#installers[@]}" -eq 1
+          python3 installer/macos/smoke_test.py --installer "${installers[0]}" --require-scripting 2>&1 | tee ci-logs/macos-installed.log
+
+      - name: Upload macOS Diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Funke-Editor-macOS-arm64
-          path: dist-posix/*.tar.gz
-          if-no-files-found: error
+          name: Funke-macOS-Diagnostics
+          path: ci-logs
+          if-no-files-found: warn
 
   # Tags only: turn the verified, signed bundle into a DRAFT GitHub Release. Review and publish it by hand
   # after the clean-machine checks in Building-and-Shipping.md.

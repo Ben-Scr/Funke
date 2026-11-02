@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/MeshRendererComponent.hpp"
 #include "Components/Graphics/SkinnedMeshRendererComponent.hpp"
 #include "Graphics/GltfImporter.hpp"
@@ -12,7 +13,10 @@
 #include "Scene/Scene.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
+#include "Scripting/ScriptBindings.hpp"
+#include "Scripting/ScriptEngine.hpp"
 #include "Systems/SkinnedMeshAnimationSystem.hpp"
+#include "Systems/Transform3DHierarchySystem.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -480,6 +484,66 @@ TEST_CASE("SkinnedMeshRenderer playback cross-fades between clips") {
 	// Unknown clip names hold the rest pose.
 	renderer.Clip = "Missing";
 	CHECK(SkinnedMeshAnimationSystem::MakePoseRequest(renderer, data).Clip == -1);
+}
+
+TEST_CASE("Bone queries use current ancestor transforms without propagating the whole scene") {
+	constexpr uint64_t modelGuid = 0xB0123456;
+	struct QueryScope {
+		~QueryScope() { ScriptEngine::SetScene(nullptr); MeshLibrary::Invalidate(modelGuid); }
+	} scope;
+	const TestModel model;
+	MeshAsset asset;
+	const std::string json = model.EmbeddedJson();
+	REQUIRE(ParseGltf(AsBytes(json), nullptr, asset));
+	const auto skin = asset.Skin;
+	REQUIRE(MeshLibrary::StoreLoadedAsset(modelGuid, "bone-query-test.gltf", std::move(asset)));
+	auto scene = Scene::CreateDetachedScene("Bone query");
+	ScriptEngine::SetScene(scene.get());
+	Entity parent = scene->CreateEmptyEntity();
+	parent.AddComponent<Transform3DComponent>();
+	Entity bridge = scene->CreateEmptyEntity();
+	bridge.SetParent(parent);
+	Entity actor = scene->CreateEmptyEntity();
+	actor.AddComponent<Transform3DComponent>().Position = { 1.0f, 2.0f, 3.0f };
+	actor.AddComponent<SkinnedMeshRendererComponent>().Model = modelGuid;
+	actor.SetParent(bridge);
+	Entity unrelated = scene->CreateEmptyEntity();
+	unrelated.AddComponent<Transform3DComponent>();
+	Transform3DHierarchySystem::Propagate(*scene);
+	unrelated.GetComponent<Transform3DComponent>().Position.x = 999.0f;
+	auto& parentTransform = parent.GetComponent<Transform3DComponent>();
+	parentTransform.Position = { 10.0f, 20.0f, 30.0f };
+	parentTransform.Rotation = { 20.0f, 45.0f, 90.0f };
+	parentTransform.Scale = { 2.0f, 3.0f, 4.0f };
+	auto& renderer = actor.GetComponent<SkinnedMeshRendererComponent>();
+	renderer.Time = 1.0f;
+	renderer.PoseHeld = true;
+	renderer.HeldClip = 0;
+	renderer.HeldTime = 0.25f;
+
+	NativeBindings bindings{};
+	ScriptBindings::PopulateNativeBindings(bindings);
+	REQUIRE(bindings.SkinnedMeshRenderer_GetBone);
+	const uint64_t id = scene->GetEntityPersistentID(actor.GetHandle());
+	float values[9]{};
+	auto checkBone = [&](float poseTime) {
+		REQUIRE(bindings.SkinnedMeshRenderer_GetBone(id, "Spine", values, 9) == 1);
+		std::vector<glm::mat4> nodes;
+		SkeletalAnimation::EvaluatePose(*skin, { 0, poseTime }, nodes);
+		const glm::mat4 expected = parent.GetComponent<Transform3DComponent>().GetLocalMatrix()
+			* actor.GetComponent<Transform3DComponent>().GetLocalMatrix() * nodes[skin->FindNode("Spine")];
+		CheckNear({ values[0], values[1], values[2] }, glm::vec3(expected[3]));
+		CheckNear({ values[3], values[4], values[5] }, glm::normalize(-glm::vec3(expected[2])));
+		CheckNear({ values[6], values[7], values[8] }, glm::normalize(glm::vec3(expected[1])));
+		CHECK(unrelated.GetComponent<Transform3DComponent>().WorldMatrix[3].x == 0.0f);
+	};
+	checkBone(0.25f);
+	parentTransform.Position.x += 7.0f;
+	actor.GetComponent<Transform3DComponent>().Position.y -= 4.0f;
+	renderer.PoseHeld = false;
+	checkBone(1.0f);
+	CHECK(bindings.SkinnedMeshRenderer_GetBone(id, "Missing", values, 9) == 0);
+	CHECK(bindings.SkinnedMeshRenderer_GetBone(id, nullptr, values, 9) == 0);
 }
 
 TEST_CASE("SkinnedMeshRenderer JSON round-trips its fields and conflicts with MeshRenderer") {

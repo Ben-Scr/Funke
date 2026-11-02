@@ -364,7 +364,7 @@ function Invoke-AuthenticodeSigning {
     $signTool = Get-WindowsSdkTool "signtool.exe"
     $files = @(Get-ChildItem -LiteralPath $PublishDirectory -Recurse -File |
         Where-Object {
-            $_.Name -match '^Funke-.*\.(exe|dll)$' -and
+            $_.Name -match '^(Funke-.*\.(exe|dll)|funke\.exe)$' -and
             $_.Extension -in @('.exe', '.dll')
         })
     if ($files.Count -eq 0) {
@@ -404,6 +404,7 @@ function Get-RequiredPrivateSymbolPaths {
         "bin\Release-windows-x86_64\Funke-Editor\Funke-Editor.pdb",
         "bin\Release-windows-x86_64\Funke-Launcher\Funke-Launcher.pdb",
         "bin\Release-windows-x86_64\Funke-Runtime\Funke-Runtime.pdb",
+        "bin\Release-windows-x86_64\Funke-CLI\funke.pdb",
         "bin\Release-windows-x86_64\Funke-ScriptCore\Funke-ScriptCore.pdb",
         "bin\Release-windows-x86_64\Funke-PackageTool\Funke-PackageTool.pdb",
         "bin\Dist-windows-x86_64\Funke-Engine\Funke-Engine.pdb",
@@ -460,7 +461,7 @@ function New-PrivateSymbolsArchive {
         }
 
         $binaries = @(Get-ChildItem -LiteralPath $PublishDirectory -Recurse -File |
-            Where-Object { $_.Name -match '^Funke-.*\.(exe|dll)$' } |
+            Where-Object { $_.Name -match '^(Funke-.*\.(exe|dll)|funke\.exe)$' } |
             ForEach-Object {
                 [ordered]@{
                     path = [System.IO.Path]::GetRelativePath($PublishDirectory, $_.FullName).Replace('\', '/')

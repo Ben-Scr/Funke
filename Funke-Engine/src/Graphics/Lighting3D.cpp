@@ -5,6 +5,7 @@
 #include <glm/ext/matrix_transform.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace Funke::Lighting3D {
@@ -14,33 +15,48 @@ namespace Funke::Lighting3D {
 		const size_t limit = static_cast<size_t>(std::clamp(maxLights, 0, k_MaxLights));
 		std::vector<LightCandidate> selected;
 		if (limit == 0) return selected;
+		selected.reserve(std::min(limit, candidates.size()));
 
 		auto contributes = [](const LightCandidate& light) {
 			const float peak = std::max({ light.Radiance.x, light.Radiance.y, light.Radiance.z });
 			return peak > 0.0f && (light.Type == LightType::Directional || light.Range > 0.0f);
 		};
 
-		std::vector<const LightCandidate*> local;
 		for (const LightCandidate& light : candidates) {
-			if (!contributes(light)) continue;
-			if (light.Type == LightType::Directional) {
-				if (selected.size() < limit) selected.push_back(light);
-			}
-			else {
-				local.push_back(&light);
+			if (light.Type == LightType::Directional && contributes(light)) {
+				selected.push_back(light);
+				if (selected.size() == limit) return selected;
 			}
 		}
 
-		// Distance to the range sphere (negative inside it), so a big light far away beats a tiny one nearby.
-		auto sphereDistance = [&](const LightCandidate* light) {
-			return glm::length(light->Position - cameraPosition) - light->Range;
+		struct RankedLight {
+			const LightCandidate* Value;
+			float Distance;
 		};
-		std::stable_sort(local.begin(), local.end(), [&](const LightCandidate* a, const LightCandidate* b) {
-			return sphereDistance(a) < sphereDistance(b);
-		});
-		for (const LightCandidate* light : local) {
-			if (selected.size() >= limit) break;
-			selected.push_back(*light);
+		auto nearer = [](const RankedLight& a, const RankedLight& b) {
+			if (a.Distance != b.Distance) return a.Distance < b.Distance;
+			return a.Value < b.Value;
+		};
+		std::array<RankedLight, k_MaxLights> local;
+		const size_t localLimit = limit - selected.size();
+		size_t localCount = 0;
+		for (const LightCandidate& light : candidates) {
+			if (light.Type == LightType::Directional || !contributes(light)) continue;
+			// Rank each range sphere once; the heap keeps only lights that can reach the GPU.
+			const RankedLight ranked{ &light, glm::length(light.Position - cameraPosition) - light.Range };
+			if (localCount < localLimit) {
+				local[localCount++] = ranked;
+				if (localCount == localLimit) std::make_heap(local.begin(), local.begin() + localCount, nearer);
+			}
+			else if (nearer(ranked, local.front())) {
+				std::pop_heap(local.begin(), local.begin() + localCount, nearer);
+				local[localCount - 1] = ranked;
+				std::push_heap(local.begin(), local.begin() + localCount, nearer);
+			}
+		}
+		std::sort(local.begin(), local.begin() + localCount, nearer);
+		for (size_t i = 0; i < localCount; ++i) {
+			selected.push_back(*local[i].Value);
 		}
 		return selected;
 	}

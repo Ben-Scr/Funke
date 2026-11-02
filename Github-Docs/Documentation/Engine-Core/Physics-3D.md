@@ -97,5 +97,5 @@ Jolt is compiled without any `JPH_*` feature defines (no debug renderer, profile
 
 ## Limitations
 
-- Only the built-in primitives (Cube, Sphere, Plane, Cylinder) can be used as mesh colliders, because those are the meshes the Mesh Renderer draws.
-- No joints/constraints, character controller, collision layers or debug drawing of colliders in the viewport yet.
+- Non-convex mesh shapes are limited to static and kinematic bodies; dynamic bodies use a convex hull. Custom OBJ/glTF meshes and runtime meshes are supported as described in [3D](3D.md#custom-meshes).
+- The built-in 3D API does not expose joints, a character controller or collision-layer masks. Collider outlines are available in the 3D Editor View.

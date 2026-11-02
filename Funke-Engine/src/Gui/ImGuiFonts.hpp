@@ -2,16 +2,31 @@
 
 #include "Core/Log.hpp"
 #include "Serialization/Path.hpp"
+#include "Serialization/File.hpp"
 #include "Serialization/SpecialFolder.hpp"
 
 #include <imgui.h>
 
 #include <filesystem>
 #include <string>
+#include <cstring>
+#include <limits>
 
 namespace Funke {
 
 	inline constexpr float k_FunkeImGuiFontSize = 15.0f;
+
+	inline ImFont* AddFunkeFont(ImFontAtlas& atlas, const std::string& path, float size,
+		const ImFontConfig& config, const ImWchar* ranges) {
+		const auto bytes = File::ReadAllBytes(path);
+		if (bytes.empty() || bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max())) return nullptr;
+		void* data = IM_ALLOC(bytes.size());
+		if (!data) return nullptr;
+		std::memcpy(data, bytes.data(), bytes.size());
+		ImFontConfig ownedConfig = config;
+		ownedConfig.FontDataOwnedByAtlas = true;
+		return atlas.AddFontFromMemoryTTF(data, static_cast<int>(bytes.size()), size, &ownedConfig, ranges);
+	}
 
 	inline ImFont* LoadFunkeImGuiFont(ImGuiIO& io, float dpiScale = 1.0f,
 									  float baseSize = k_FunkeImGuiFontSize) {
@@ -25,9 +40,9 @@ namespace Funke {
 		ImFont* primary = nullptr;
 		const std::string ibmSansPath = Path::Combine(
 			Path::ResolveFunkeAssets("Fonts"), "IBMPlexSansCondensed-Regular.ttf");
-		if (std::filesystem::exists(ibmSansPath)) {
-			primary = io.Fonts->AddFontFromFileTTF(
-				ibmSansPath.c_str(), fontSize, &primaryCfg,
+		if (File::Exists(ibmSansPath)) {
+			primary = AddFunkeFont(*io.Fonts,
+				ibmSansPath, fontSize, primaryCfg,
 				io.Fonts->GetGlyphRangesDefault());
 		}
 
@@ -50,7 +65,7 @@ namespace Funke {
 		if (!userCjkPath.empty() && std::filesystem::exists(userCjkPath)) {
 			cjkPath = userCjkPath;
 		}
-		else if (std::filesystem::exists(bundledCjkPath)) {
+		else if (File::Exists(bundledCjkPath)) {
 			cjkPath = bundledCjkPath;
 		}
 
@@ -61,8 +76,8 @@ namespace Funke {
 		// MergeMode requires an already-added base font; with no primary
 		// ImGui reads Fonts.back() of an empty vector → 0xC0000005.
 		if (primary && !cjkPath.empty()) {
-			io.Fonts->AddFontFromFileTTF(
-				cjkPath.c_str(), fontSize, &cjkCfg,
+			AddFunkeFont(*io.Fonts,
+				cjkPath, fontSize, cjkCfg,
 				io.Fonts->GetGlyphRangesJapanese());
 		}
 		else if (cjkPath.empty()) {

@@ -445,7 +445,7 @@ namespace Funke {
 
 	void Scene::MarkAllDirtyOnce()
 	{
-		if (m_IsDetached || !Application::GetIsPlaying()) m_Dirty = true;
+		if (m_IsDetached || !Application::GetIsPlaying()) { m_Dirty = true; ++m_Revision; }
 		m_UIDirty = true;
 	}
 
@@ -701,7 +701,7 @@ namespace Funke {
 		if (!m_Registry.valid(entity) || IsEntityBeingDestroyed(entity)) return;
 		TrackEntityDestruction(entity);
 		m_PendingDestroys.Cancel(entity);
-		if (m_IsDetached || !Application::GetIsPlaying()) m_Dirty = true;
+		if (m_IsDetached || !Application::GetIsPlaying()) { m_Dirty = true; ++m_Revision; }
 		m_UIDirty = true;
 		if (!m_LifecycleSuspended && !m_SuppressEntityDestructionCallbacks) NotifyScriptsEntityDestroyed(*this, GetEntityPersistentID(entity));
 		UnregisterEntityIdentity(entity);
@@ -788,14 +788,17 @@ namespace Funke {
 		ReserveGeometrically(entities, CheckedReservationSize(entities.free_list(), n));
 		m_Registry.create(out.begin(), out.begin() + n);
 		m_EntityCount += n;
+		MarkHierarchyStructureDirty();
 	}
 
 	EntityHandle Scene::CreateEntityHandle(EntityOrigin origin, AssetGUID prefabGuid, AssetGUID sceneGuid, EntityID runtimeId) {
 		EntityHandle entityHandle = m_Registry.create();
 		++m_EntityCount;
+		MarkHierarchyStructureDirty();
 		SetEntityMetaData(entityHandle, origin, prefabGuid, sceneGuid, runtimeId);
 		if (origin != EntityOrigin::Runtime && (m_IsDetached || !Application::GetIsPlaying())) {
 			m_Dirty = true;
+			++m_Revision;
 		}
 		// MUST pulse in both editor and runtime: UIEventSystem preview path early-outs on !IsUIDirty(),
 		// so newly-created widgets would render invisibly until the value was touched.
@@ -895,6 +898,7 @@ namespace Funke {
 		RegisterEntityIdentity(entity);
 		if (origin != EntityOrigin::Runtime && (m_IsDetached || !Application::GetIsPlaying())) {
 			m_Dirty = true;
+			++m_Revision;
 		}
 	}
 
@@ -1250,6 +1254,7 @@ namespace Funke {
 		}
 
 		try {
+			++m_ContentGeneration;
 			ClearEntities();
 			ClearSceneSystems();
 		}
@@ -1288,7 +1293,7 @@ namespace Funke {
 		// is how their auto-save (RunPrefabAutoSaveTick / PrefabInspector) knows to write the
 		// .prefab. Regular managed scenes skip dirtying in play so transient play-time entity
 		// state is never saved back to disk.
-		if (m_IsDetached || !Application::GetIsPlaying()) m_Dirty = true;
+		if (m_IsDetached || !Application::GetIsPlaying()) { m_Dirty = true; ++m_Revision; }
 		m_UIDirty = true;
 		MarkStaticRenderDataDirty();
 	}
@@ -1654,7 +1659,7 @@ namespace Funke {
 		TrackEntityDestruction(nativeEntity);
 		m_PendingDestroys.Cancel(nativeEntity);
 		try {
-			if (markDirty && (m_IsDetached || !Application::GetIsPlaying())) m_Dirty = true;
+			if (markDirty && (m_IsDetached || !Application::GetIsPlaying())) { m_Dirty = true; ++m_Revision; }
 			if (markDirty) m_UIDirty = true;
 
 			if (const auto* hierarchy = m_Registry.try_get<HierarchyComponent>(nativeEntity)) {

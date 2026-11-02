@@ -61,6 +61,8 @@ namespace Funke::EditorRuntime::ImGuiContextSetup {
 		// unaffected: this flag only governs WHAT VIEWPORTS GET; docked
 		// tab strips with close buttons are rendered by a separate path.
 		io.ConfigViewportsNoDecoration = false;
+		// Keep detached panels above the main window when returning from another application.
+		io.ConfigViewportsNoDefaultParent = false;
 		// Taskbar hiding is handled by the owner-window relationship
 		// imgui_impl_sdl3 sets via SDL_SetWindowParent (Windows excludes
 		// owned windows from the taskbar automatically). We deliberately

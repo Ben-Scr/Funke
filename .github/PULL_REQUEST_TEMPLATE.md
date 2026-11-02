@@ -4,9 +4,12 @@
 
 ## How it was tested
 
-- [ ] `scripts\RunTests.bat --release`
-- [ ] `dotnet test Tests\Funke-ScriptCore-Tests\Funke-ScriptCore-Tests.csproj -c Release`
-- [ ] Tried it in the editor (describe what you did)
+<!-- List the checks relevant to this change and their results. See CONTRIBUTING.md. -->
+
+- Build/test commands and results (smallest affected target and suite):
+- Editor/runtime verification for behavior or UI changes:
+- Documentation/reference checks for documentation-only changes:
+- Checks not run and why:
 
 ## Checklist
 

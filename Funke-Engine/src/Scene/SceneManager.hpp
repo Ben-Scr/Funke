@@ -56,6 +56,17 @@ namespace Funke {
 		explicit operator bool() const noexcept { return Succeeded(); }
 	};
 
+	enum class SceneLoadPhase { Queued, ReadingFiles, LoadingAssets, Ready, CreatingEntities, Activating };
+
+	struct SceneLoadProgress {
+		SceneLoadPhase Phase = SceneLoadPhase::Queued;
+		float Progress = 0.0f;
+		size_t CompletedEntities = 0;
+		size_t TotalEntities = 0;
+		size_t CompletedAssets = 0;
+		size_t TotalAssets = 0;
+	};
+
 	class FUNKE_API SceneManager {
 		friend class Window;
 
@@ -96,6 +107,12 @@ namespace Funke {
 		using SceneLoadCompletion = std::function<void(uint64_t, const SceneLoadResult&)>;
 		// Main-thread API. Completion runs at a later frame boundary; file preparation runs on a worker.
 		static uint64_t LoadSceneAsync(const std::string& name, bool additive = false, SceneLoadCompletion completion = {});
+		// Retains prepared files/assets without instantiating a scene; activate or cancel the returned request.
+		static uint64_t PreloadSceneAsync(const std::string& name, SceneLoadCompletion completion = {});
+		static bool ActivatePreloadedScene(uint64_t operationId, bool additive = false, SceneLoadCompletion completion = {});
+		static std::optional<SceneLoadProgress> GetSceneLoadProgress(uint64_t operationId);
+		// Cooperative limits; a single entity/prefab, callback or lifecycle step may exceed the time budget.
+		static void SetAsyncSceneLoadBudget(double milliseconds, size_t maxEntitiesPerFrame = 128);
 		static bool CancelSceneLoad(uint64_t operationId);
 		// Loads without scene notifications or system Awake/Start and never makes the instance active.
 		static SceneLoadResult TryLoadSceneAdditiveSuspended(const std::string& name);
@@ -190,6 +207,8 @@ namespace Funke {
 		void OnPreRenderScenes();
 		void FixedUpdateScenes();
 		void InitializeStartupScenes();
+		void InitializeStartupScenesAsync(std::function<void()> completion);
+		void PumpStartupSceneQueue();
 		void RegisterEntityPresetImpl(EntityPresetInfo preset);
 		SceneDefinition& RegisterSceneImpl(const std::string& name);
 		SceneLoadResult TryLoadSceneImpl(const std::string& name);
@@ -254,6 +273,14 @@ namespace Funke {
 
 		SceneDefinitionMap m_SceneDefinitions;
 		std::vector<std::shared_ptr<AsyncSceneLoad>> m_AsyncSceneLoads;
+		std::vector<std::string> m_StartupSceneQueue;
+		size_t m_StartupSceneNext = 0;
+		bool m_StartupFallbackAttempted = false;
+		bool m_StartupQueueReady = false;
+		std::string m_StartupRetryName;
+		std::function<void()> m_StartupSceneCompletion;
+		double m_AsyncSceneLoadBudgetMs = 2.0;
+		size_t m_AsyncSceneLoadMaxEntities = 128;
 		bool m_ShuttingDown = false;
 		bool m_LoadInProgress = false;
 		std::vector<std::string> m_SceneDefinitionOrder;

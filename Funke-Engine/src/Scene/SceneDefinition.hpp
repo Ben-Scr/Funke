@@ -68,8 +68,8 @@ namespace Funke {
         }
 
         // File stages can be prepared on a worker; other callbacks always run on the main thread.
-        SceneDefinition& OnLoadFromFile(std::string path) {
-            m_LoadCallbacks.push_back({ {}, std::move(path) });
+        SceneDefinition& OnLoadFromFile(std::string path, std::function<bool(Scene&)> fallback = {}) {
+            m_LoadCallbacks.push_back({ {}, std::move(path), std::move(fallback) });
             return *this;
         }
 
@@ -116,6 +116,7 @@ namespace Funke {
         struct LoadStep {
             std::function<void(Scene&)> Callback;
             std::string FilePath;
+            std::function<bool(Scene&)> FileFallback;
         };
         std::vector<LoadStep> m_LoadCallbacks;
         std::vector<std::function<void(Scene&)>> m_UnloadCallbacks;
@@ -124,6 +125,6 @@ namespace Funke {
         bool m_IsPersistent = false;
         bool m_AutoCreateDefaultCamera2D = true;
 
-        std::shared_ptr<Scene> Instantiate() const;
+        std::shared_ptr<Scene> Instantiate(bool suspendLifecycle = false) const;
     };
 }

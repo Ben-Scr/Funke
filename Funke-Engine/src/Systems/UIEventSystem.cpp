@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Systems/UIEventSystem.hpp"
+#include "Systems/UILayoutSystem.hpp"
 
 #include "Collections/Viewport.hpp"
 #include "Components/General/HierarchyComponent.hpp"
@@ -1198,72 +1199,118 @@ namespace Funke {
 			return out;
 		}
 
-		// Front-most Interactable under mouseUi, using the same (SortingLayer, SortingOrder, DrawIndex) key as GuiRenderer.
-		EntityHandle PickInteractable(entt::registry& registry, const Vec2& mouseUi) {
-			// Picks run several times per frame (hover, each finger); keep the scratch alive between them.
-			thread_local std::vector<std::pair<EntityHandle, int>> t_DrawOrder;
-			thread_local UIDrawOrder::OrderLookup t_DrawIndexByEntity;
-			t_DrawOrder.clear();
-			UIDrawOrder::Build(registry, t_DrawOrder);
-			t_DrawIndexByEntity.Rebuild(t_DrawOrder);
+		Vec2 PointerForCanvas(Scene& scene, EntityHandle root, const Vec2& screenUi) {
+			const auto& registry = scene.GetRegistry();
+			if (root == entt::null) return screenUi;
+			const Vec2 miss{ std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest() };
+			const auto surface = ResolveUiPointer(Vec2{});
+			if (!surface.HasSurface || surface.SurfaceWidth <= 0 || surface.SurfaceHeight <= 0) return miss;
+			const Vec2 ndc{ screenUi.x * 2.0f / surface.SurfaceWidth, screenUi.y * 2.0f / surface.SurfaceHeight };
+			if (!std::isfinite(ndc.x) || !std::isfinite(ndc.y)) return miss;
+			glm::mat4 vp;
+			if (!WorldUI::CameraViewProjection(scene, static_cast<float>(surface.SurfaceWidth) / surface.SurfaceHeight, vp)) return miss;
+			Vec2 canvas;
+			return WorldUI::ProjectPointer(vp * WorldUI::CanvasToWorld(registry, root), ndc, canvas) ? canvas : miss;
+		}
 
-			struct SortKey {
-				int Layer = 0;
-				int Order = 0;
-				int DrawIndex = 0;
-			};
-			auto keyFor = [&](EntityHandle entity, int drawIndex) {
-				// A slider counts as drawn at its front-most part, so a thumb overhanging a later sibling still wins.
-				if (const auto* slider = registry.try_get<SliderComponent>(entity)) {
-					if (const int* handleIndex = t_DrawIndexByEntity.DrawIndexOf(slider->HandleEntity)) {
-						drawIndex = std::max(drawIndex, *handleIndex);
-					}
-				}
-				SortKey k;
-				k.DrawIndex = drawIndex;
-				if (auto* image = registry.try_get<ImageComponent>(entity)) {
-					k.Layer = image->SortingLayer;
-					k.Order = image->SortingOrder;
-				} else if (auto* text = registry.try_get<TextRendererComponent>(entity)) {
-					k.Layer = text->SortingLayer;
-					k.Order = text->SortingOrder;
-				}
-				return k;
-			};
-			auto less = [](const SortKey& a, const SortKey& b) {
-				if (a.Layer != b.Layer) return a.Layer < b.Layer;
-				if (a.Order != b.Order) return a.Order < b.Order;
-				return a.DrawIndex < b.DrawIndex;
-			};
-
-			EntityHandle hovered = entt::null;
-			SortKey bestKey;
-			bool haveHit = false;
-			auto hitView = registry.view<RectTransform2DComponent, InteractableComponent>(entt::exclude<DisabledTag>);
-			for (auto&& [entity, rect, interact] : hitView.each()) {
-				if (!interact.Interactable) continue;
-				const bool handleHit = UIEventSystem::SliderHandleContains(registry, entity, mouseUi);
-				if (const auto* cs = registry.try_get<CircularSliderComponent>(entity)) {
-					const bool ringHit = CircularSliderGeometry::Contains(CircularSliderGeometry::Resolve(*cs, rect), mouseUi)
-						&& UIDrawOrder::PassesAncestorMasks(registry, entity, mouseUi);
-					if (!ringHit && !handleHit) continue;
-				}
-				else if (!UIDrawOrder::HitTest(registry, entity, rect, mouseUi) && !handleHit) continue;
-
-				const int* drawIndex = t_DrawIndexByEntity.DrawIndexOf(entity);
-				if (!drawIndex) continue;
-
-				SortKey key = keyFor(entity, *drawIndex);
-				if (!haveHit || less(bestKey, key)) {
-					hovered = entity;
-					bestKey = key;
-					haveHit = true;
-				}
-			}
-			return hovered;
+		Vec2 PointerForEntity(Scene& scene, EntityHandle entity, const Vec2& screenUi) {
+			return PointerForCanvas(scene, WorldUI::FindRoot(scene.GetRegistry(), entity), screenUi);
 		}
 
 	} // namespace
+
+	namespace {
+	struct PointerDrawOrder {
+		std::vector<std::pair<EntityHandle, int>> Entities;
+		UIDrawOrder::OrderLookup Lookup;
+
+		void Rebuild(entt::registry& registry) {
+			FUNKE_PROFILE_SCOPE("UIEvent.DrawOrder");
+			Entities.clear();
+			UIDrawOrder::Build(registry, Entities);
+			Lookup.Rebuild(Entities);
+		}
+	};
+
+	EntityHandle PickInDrawOrder(Scene& scene, const Vec2& screenUi, const PointerDrawOrder& order) {
+		auto& registry = scene.GetRegistry();
+		// All controls on a canvas share the projection; refresh on every pick to observe direct edits.
+		thread_local std::unordered_map<EntityHandle, Vec2> t_CanvasPointers;
+		t_CanvasPointers.clear();
+		auto pointerForCanvas = [&](EntityHandle root) {
+			if (root == entt::null) return screenUi;
+			auto [it, inserted] = t_CanvasPointers.try_emplace(root);
+			if (inserted) it->second = PointerForCanvas(scene, root, screenUi);
+			return it->second;
+		};
+
+		struct SortKey {
+			uint64_t Canvas = 0;
+			int Layer = 0;
+			int Order = 0;
+			int DrawIndex = 0;
+		};
+		auto keyFor = [&](EntityHandle entity, EntityHandle root, int drawIndex) {
+			// A slider counts as drawn at its front-most part, so a thumb overhanging a later sibling still wins.
+			if (const auto* slider = registry.try_get<SliderComponent>(entity)) {
+				if (const int* handleIndex = order.Lookup.DrawIndexOf(slider->HandleEntity)) {
+					drawIndex = std::max(drawIndex, *handleIndex);
+				}
+			}
+			SortKey k;
+			k.Canvas = root == entt::null ? UINT64_MAX : static_cast<uint64_t>(entt::to_integral(root));
+			k.DrawIndex = drawIndex;
+			if (auto* image = registry.try_get<ImageComponent>(entity)) {
+				k.Layer = image->SortingLayer;
+				k.Order = image->SortingOrder;
+			} else if (auto* text = registry.try_get<TextRendererComponent>(entity)) {
+				k.Layer = text->SortingLayer;
+				k.Order = text->SortingOrder;
+			}
+			return k;
+		};
+		auto less = [](const SortKey& a, const SortKey& b) {
+			if (a.Canvas != b.Canvas) return a.Canvas < b.Canvas;
+			if (a.Layer != b.Layer) return a.Layer < b.Layer;
+			if (a.Order != b.Order) return a.Order < b.Order;
+			return a.DrawIndex < b.DrawIndex;
+		};
+
+		EntityHandle hovered = entt::null;
+		SortKey bestKey;
+		bool haveHit = false;
+		auto hitView = registry.view<RectTransform2DComponent, InteractableComponent>(entt::exclude<DisabledTag>);
+		for (auto&& [entity, rect, interact] : hitView.each()) {
+			if (!interact.Interactable) continue;
+			const int* drawIndex = order.Lookup.DrawIndexOf(entity);
+			if (!drawIndex) continue;
+			const EntityHandle root = WorldUI::FindRoot(registry, entity);
+			const Vec2 mouseUi = pointerForCanvas(root);
+			if (mouseUi.x == std::numeric_limits<float>::lowest()) continue;
+			const bool handleHit = UIEventSystem::SliderHandleContains(registry, entity, mouseUi);
+			if (const auto* cs = registry.try_get<CircularSliderComponent>(entity)) {
+				const bool ringHit = CircularSliderGeometry::Contains(CircularSliderGeometry::Resolve(*cs, rect), mouseUi)
+					&& UIDrawOrder::PassesAncestorMasks(registry, entity, mouseUi);
+				if (!ringHit && !handleHit) continue;
+			}
+			else if (!UIDrawOrder::HitTest(registry, entity, rect, mouseUi) && !handleHit) continue;
+
+			SortKey key = keyFor(entity, root, *drawIndex);
+			if (!haveHit || less(bestKey, key)) {
+				hovered = entity;
+				bestKey = key;
+				haveHit = true;
+			}
+		}
+		return hovered;
+	}
+	}
+
+	EntityHandle UIEventSystem::PickInteractable(Scene& scene, const Vec2& screenUi) {
+		thread_local PointerDrawOrder t_Order;
+		t_Order.Rebuild(scene.GetRegistry());
+		return PickInDrawOrder(scene, screenUi, t_Order);
+	}
 
 	EntityHandle UIEventSystem::GetHoveredEntity(Scene& scene) const {
 		Application* app = Application::GetInstance();
@@ -1278,7 +1325,7 @@ namespace Funke {
 		}
 		const UiPointer pointer = ResolveUiPointer(mousePosition);
 		if (!pointer.HasSurface || !pointer.OverSurface) return entt::null;
-		return PickInteractable(scene.GetRegistry(), pointer.Ui);
+		return PickInteractable(scene, pointer.Ui);
 	}
 
 	void UIEventSystem::SelectWordAt(InputFieldComponent& field, int byte) {
@@ -1407,7 +1454,7 @@ namespace Funke {
 		const int vpW = pointer.SurfaceWidth;
 		const int vpH = pointer.SurfaceHeight;
 		const bool cursorOverUiSurface = pointer.OverSurface;
-		const Vec2 mouseUi = pointer.Ui;
+		const Vec2 screenUi = pointer.Ui;
 		m_HoveredAtMouse = mousePosition;
 
 		// Held and release stay ungated so drags leaving the viewport can finish cleanly.
@@ -1535,6 +1582,15 @@ namespace Funke {
 
 		{
 		FUNKE_PROFILE_SCOPE("UIEvent.HitTest");
+		thread_local PointerDrawOrder t_PointerOrder;
+		bool orderReady = false;
+		auto pick = [&](const Vec2& ui) {
+			if (!orderReady) {
+				t_PointerOrder.Rebuild(registry);
+				orderReady = true;
+			}
+			return PickInDrawOrder(scene, ui, t_PointerOrder);
+		};
 		// ── 1. Resolve dropdown popup hits FIRST ─────────────────────
 		// Popup row hit consumes the click — rects underneath must not react.
 		struct DropdownHit {
@@ -1546,6 +1602,8 @@ namespace Funke {
 		// dropdownView is hoisted to function scope above so Widgets section 9
 		// can reuse it after this Group 2 block ends.
 		for (auto&& [entity, rect, dd] : dropdownView.each()) {
+			const Vec2 mouseUi = PointerForEntity(scene, entity, screenUi);
+			if (mouseUi.x == std::numeric_limits<float>::lowest()) continue;
 			dd.SelectionChangedThisFrame = false;
 			if (!dd.SelectionObserved) {
 				dd.LastObservedSelectedIndex = dd.SelectedIndex;
@@ -1582,7 +1640,7 @@ namespace Funke {
 
 		auto hitView = registry.view<RectTransform2DComponent, InteractableComponent>(entt::exclude<DisabledTag>);
 		if (!popupConsumes) {
-			hovered = PickInteractable(registry, mouseUi);
+			hovered = pick(screenUi);
 		}
 
 		// ── 3. Per-entity interaction state machine ──────────────────
@@ -1645,7 +1703,7 @@ namespace Funke {
 				[](const FingerSample& f) { return f.Phase == TouchPhase::Began; }), fingers.end());
 			std::vector<EntityHandle> fingerClicks;
 			UpdateFingerPresses(registry, fingers, m_MouseFinger, m_PressedEntity,
-				[&registry](Vec2 ui) { return PickInteractable(registry, ui); }, m_FingerPresses, fingerClicks);
+				pick, m_FingerPresses, fingerClicks);
 			for (EntityHandle entity : fingerClicks) {
 				if (auto* btn = registry.try_get<ButtonComponent>(entity); btn && !btn->OnClick.Bindings.empty()) {
 					deferredUiDispatches.push_back({ entity, btn->OnClick.Bindings, false, {} });
@@ -1699,6 +1757,8 @@ namespace Funke {
 			// selection). This matches OS-typical combo-box behaviour.
 			if (!popupConsumes) {
 				for (auto&& [entity, rect, dd] : dropdownView.each()) {
+					const Vec2 mouseUi = PointerForEntity(scene, entity, screenUi);
+					if (mouseUi.x == std::numeric_limits<float>::lowest()) continue;
 					if (dd.IsOpen && !UIDrawOrder::HitTest(registry, entity, rect, mouseUi)) {
 						dd.IsOpen = false;
 					}
@@ -1802,6 +1862,8 @@ namespace Funke {
 		// ── 6. Sliders ───────────────────────────────────────────────
 		auto sliderView = registry.view<SliderComponent, RectTransform2DComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, slider, rect] : sliderView.each()) {
+			const Vec2 mouseUi = PointerForEntity(scene, entity, screenUi);
+			if (mouseUi.x == std::numeric_limits<float>::lowest()) continue;
 			slider.ValueChangedThisFrame = false;
 			// Sync the diff baseline on first observation so a scene-load
 			// deserialised Value doesn't fire a spurious event against the
@@ -1909,6 +1971,8 @@ namespace Funke {
 			constexpr float k_Pi = 3.14159265358979323846f;
 			auto circularView = registry.view<CircularSliderComponent, RectTransform2DComponent, InteractableComponent>(entt::exclude<DisabledTag>);
 			for (auto&& [entity, cs, rect, interact] : circularView.each()) {
+				const Vec2 mouseUi = PointerForEntity(scene, entity, screenUi);
+				if (mouseUi.x == std::numeric_limits<float>::lowest()) continue;
 				cs.ValueChangedThisFrame = false;
 				if (!cs.ValueObserved) {
 					cs.LastObservedValue = cs.Value;
@@ -2010,6 +2074,8 @@ namespace Funke {
 		// ── 6b. Scrollbars ───────────────────────────────────────────
 		auto scrollbarView = registry.view<ScrollbarComponent, RectTransform2DComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, sb, rect] : scrollbarView.each()) {
+			const Vec2 mouseUi = PointerForEntity(scene, entity, screenUi);
+			if (mouseUi.x == std::numeric_limits<float>::lowest()) continue;
 			sb.ValueChangedThisFrame = false;
 			if (!sb.ValueObserved) {
 				sb.LastObservedValue = sb.Value;
@@ -2108,6 +2174,8 @@ namespace Funke {
 		// cover the whole viewport, so requiring the viewport itself to be hovered only scrolled in the gaps.
 		const EntityHandle wheelTarget = WheelScrollTarget(registry, m_HoveredEntity);
 		for (auto&& [entity, sr, viewportRect] : scrollRectView.each()) {
+			const Vec2 mouseUi = PointerForEntity(scene, entity, screenUi);
+			if (mouseUi.x == std::numeric_limits<float>::lowest()) continue;
 			sr.ValueChangedThisFrame = false;
 			if (!sr.ValueObserved) {
 				sr.LastObservedNormalizedPosition = sr.NormalizedPosition;
@@ -2402,6 +2470,8 @@ namespace Funke {
 		// rest. A click anywhere outside any field also defocuses all.
 		if (clickedField != entt::null) {
 			for (auto&& [entity, interact, field] : inputView.each()) {
+				const Vec2 mouseUi = PointerForEntity(scene, entity, screenUi);
+				if (mouseUi.x == std::numeric_limits<float>::lowest()) continue;
 				if (entity == clickedField) {
 					field.IsFocused = true;
 					ClampCaret(field);
@@ -2438,6 +2508,8 @@ namespace Funke {
 		constexpr float k_LongPressSeconds = 0.45f;
 		EntityHandle showTextActionsFor = entt::null;
 		for (auto&& [entity, interact, field] : inputView.each()) {
+			const Vec2 mouseUi = PointerForEntity(scene, entity, screenUi);
+			if (mouseUi.x == std::numeric_limits<float>::lowest()) continue;
 			if (field.MouseSelecting && mouseHeld) {
 				// Only extend the selection once the cursor moves past a few pixels (or a
 				// selection already exists). A jittery click otherwise creates a tiny

@@ -155,6 +155,9 @@ namespace Funke {
 		if (DevConsole) root.AddMember("devConsole", *DevConsole);
 		if (IsolatedPrefs) root.AddMember("isolatedPrefs", true);
 		root.AddMember("bundleDotNetRuntime", BundleDotNetRuntime);
+		root.AddMember("bundleAssets", BundleAssets);
+		root.AddMember("compressAssetBundles", CompressAssetBundles);
+		root.AddMember("assetBundleCompression", std::string(AssetBundle::CompressionName(BundleCompression)));
 
 		std::error_code ec;
 		const std::filesystem::path target(filePath);
@@ -222,6 +225,18 @@ namespace Funke {
 		}
 		if (const Json::Value* v = root.FindMember("bundleDotNetRuntime"); v && v->IsBool()) {
 			profile.BundleDotNetRuntime = v->AsBoolOr(true);
+		}
+		if (const Json::Value* v = root.FindMember("bundleAssets"); v && v->IsBool()) {
+			profile.BundleAssets = v->AsBoolOr(false);
+		}
+		if (const Json::Value* v = root.FindMember("compressAssetBundles"); v && v->IsBool()) {
+			profile.CompressAssetBundles = v->AsBoolOr(false);
+		}
+		if (const Json::Value* v = root.FindMember("assetBundleCompression")) {
+			const auto compression = v->AsStringOr();
+			if (compression == "Zstd") profile.BundleCompression = AssetBundleCompression::Zstd;
+			else if (compression != "LZ4")
+				FNK_WARN_TAG("Build", "Build profile '{}' has invalid asset bundle compression — using LZ4.", profile.Name);
 		}
 
 		if (!IsBackendAllowed(profile.Platform, profile.RenderBackend)) {

@@ -7,9 +7,11 @@
 #include "Graphics/Backend/WebGPUBackend.hpp"
 #include "Graphics/CustomShaderGpu.hpp"
 #include "Graphics/Framebuffer.hpp"
+#include "Graphics/FramebufferCache.hpp"
 #include "Graphics/Material.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <unordered_map>
 
@@ -33,6 +35,63 @@ namespace Funke {
 			std::array<float, 4> Grain;
 		};
 		static_assert(sizeof(CompositeUniforms) == 12 * 16);
+		struct PostSceneUniforms {
+			glm::mat4 LightViewProjection{1.0f};
+			glm::vec4 SunDirection{0.0f}, SunRadiance{0.0f}, ShadowParams{0.0f}, Flags{0.0f};
+		};
+		static_assert(sizeof(PostSceneUniforms) == 128);
+
+		constexpr int k_MaxBlurHalfKernel = 16;
+		struct BlurUniforms {
+			std::array<float, 4> Params;
+			std::array<std::array<float, 4>, 5> Weights;
+		};
+		static_assert(sizeof(BlurUniforms) == 96);
+
+		BlurUniforms MakeBlurUniforms(float dirX, float dirY, float texel, int halfKernel) {
+			static const auto k_Weights = [] {
+				std::array<decltype(BlurUniforms::Weights), k_MaxBlurHalfKernel + 1> kernels{};
+				for (int half = 1; half <= k_MaxBlurHalfKernel; ++half) {
+					const float sigma = static_cast<float>(half) / 3.0f;
+					float sum = 0.0f;
+					for (int i = 0; i <= half; ++i) {
+						const float weight = std::exp(-static_cast<float>(i * i) / (2.0f * sigma * sigma));
+						kernels[half][i / 4][i % 4] = weight;
+						sum += weight * (i == 0 ? 1.0f : 2.0f);
+					}
+					for (auto& packed : kernels[half]) {
+						for (float& weight : packed) weight /= sum;
+					}
+				}
+				return kernels;
+			}();
+			halfKernel = std::clamp(halfKernel, 1, k_MaxBlurHalfKernel);
+			return { { dirX, dirY, texel, static_cast<float>(halfKernel) }, k_Weights[halfKernel] };
+		}
+
+		struct EffectBinding {
+			struct SourceGroup {
+				wgpu::BindGroup Group;
+				wgpu::TextureView Source, Bloom;
+				size_t UniformSize = 0;
+			};
+			std::array<SourceGroup, 2> Groups;
+			size_t NextGroup = 0;
+			wgpu::Buffer Buffer;
+			std::array<uint8_t, sizeof(CompositeUniforms)> UniformData{};
+			size_t UniformSize = 0;
+			uint64_t SubmitSerial = UINT64_MAX;
+		};
+
+		struct SourceBinding {
+			wgpu::BindGroup Group;
+			wgpu::TextureView Source;
+			bool PointFiltered = false;
+		};
+		struct SceneBinding {
+			wgpu::BindGroup Group;
+			std::array<wgpu::TextureView, 3> Views;
+		};
 	}
 
 	struct PostProcessor::Impl {
@@ -50,12 +109,12 @@ namespace Funke {
 		// Bloom blur H/V use SEPARATE uniform buffers: Dawn's queue.WriteBuffer collapses successive writes
 		// to the same buffer within one submission — sharing would make both passes read the vertical direction.
 		wgpu::Buffer          BloomThresholdUniformBuffer;      // 16 bytes
-		wgpu::Buffer          BloomBlurUniformBufferH;          // 16 bytes
-		wgpu::Buffer          BloomBlurUniformBufferV;          // 16 bytes
+		wgpu::Buffer          BloomBlurUniformBufferH;
+		wgpu::Buffer          BloomBlurUniformBufferV;
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> BloomThresholdPipelines;
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> BloomBlurPipelines;
-		Framebuffer           BloomTempA;
-		Framebuffer           BloomTempB;
+		FramebufferCache<>    BloomTempA;
+		FramebufferCache<>    BloomTempB;
 
 		// The fused per-pixel pass; one buffer per composite step in a frame (a Gaussian Blur splits the
 		// list into at most two), for the same WriteBuffer-collapsing reason as the blur buffers.
@@ -67,13 +126,13 @@ namespace Funke {
 		wgpu::Buffer          PixelatedUniformBuffer;           // 16 bytes
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> PixelatedPipelines;
 
-		wgpu::Buffer          GaussianBlurUniformBufferH;       // 16 bytes
-		wgpu::Buffer          GaussianBlurUniformBufferV;       // 16 bytes
+		wgpu::Buffer          GaussianBlurUniformBufferH;
+		wgpu::Buffer          GaussianBlurUniformBufferV;
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> GaussianBlurPipelines;
-		Framebuffer           GaussianBlurTemp;                 // half-res RGBA16F
+		FramebufferCache<>    GaussianBlurTemp;
 
-		Framebuffer           PingPongA;
-		Framebuffer           PingPongB;
+		FramebufferCache<>    PingPongA;
+		FramebufferCache<>    PingPongB;
 
 		// By (format, quality); one fragment entry point per quality level, blit layout.
 		std::unordered_map<uint32_t, wgpu::RenderPipeline> FxaaPipelines;
@@ -83,10 +142,22 @@ namespace Funke {
 		// By program id and target format; failed creations stay cached as null.
 		std::unordered_map<uint64_t, wgpu::RenderPipeline> CustomPipelines;
 		std::unordered_map<uint32_t, wgpu::PipelineLayout> CustomPipelineLayouts;
+		wgpu::BindGroupLayout SceneLayout;
+		wgpu::BindGroup SceneGroup;
+		std::array<SceneBinding, 2> SceneBindings;
+		size_t NextSceneBinding = 0;
+		wgpu::Buffer SceneUniformBuffer;
+		uint64_t SceneSubmitSerial = UINT64_MAX;
+		wgpu::Texture DummyDepth, DummyDepthMsaa;
+		wgpu::TextureView DummyDepthView, DummyDepthMsaaView;
+		wgpu::Sampler ShadowSampler;
 
 		// Shared.
 		wgpu::Sampler         LinearSampler;
 		wgpu::Sampler         PointSampler;
+		std::unordered_map<WGPUBuffer, EffectBinding> EffectBindings;
+		std::array<SourceBinding, 4> SourceBindings;
+		size_t NextSourceBinding = 0;
 		bool                  Initialized = false;
 	};
 
@@ -241,13 +312,13 @@ namespace Funke {
 		};
 
 		m_Impl->BloomThresholdUniformBuffer  = makeUniformBuffer("postprocess-bloom-threshold-uniforms", 16);
-		m_Impl->BloomBlurUniformBufferH      = makeUniformBuffer("postprocess-bloom-blur-h-uniforms", 16);
-		m_Impl->BloomBlurUniformBufferV      = makeUniformBuffer("postprocess-bloom-blur-v-uniforms", 16);
+		m_Impl->BloomBlurUniformBufferH      = makeUniformBuffer("postprocess-bloom-blur-h-uniforms", sizeof(BlurUniforms));
+		m_Impl->BloomBlurUniformBufferV      = makeUniformBuffer("postprocess-bloom-blur-v-uniforms", sizeof(BlurUniforms));
 		m_Impl->CompositeUniformBuffers[0]   = makeUniformBuffer("postprocess-composite-uniforms-0", sizeof(CompositeUniforms));
 		m_Impl->CompositeUniformBuffers[1]   = makeUniformBuffer("postprocess-composite-uniforms-1", sizeof(CompositeUniforms));
 		m_Impl->PixelatedUniformBuffer       = makeUniformBuffer("postprocess-pixelated-uniforms", 16);
-		m_Impl->GaussianBlurUniformBufferH   = makeUniformBuffer("postprocess-gaussian-blur-h-uniforms", 16);
-		m_Impl->GaussianBlurUniformBufferV   = makeUniformBuffer("postprocess-gaussian-blur-v-uniforms", 16);
+		m_Impl->GaussianBlurUniformBufferH   = makeUniformBuffer("postprocess-gaussian-blur-h-uniforms", sizeof(BlurUniforms));
+		m_Impl->GaussianBlurUniformBufferV   = makeUniformBuffer("postprocess-gaussian-blur-v-uniforms", sizeof(BlurUniforms));
 
 		if (!m_Impl->BloomThresholdUniformBuffer
 			|| !m_Impl->BloomBlurUniformBufferH
@@ -331,6 +402,44 @@ namespace Funke {
 		m_FxaaShader = loadShader("postfxaa");
 
 		// Screen-space effects: their textures (LUTs, noise) keep full detail at every texture quality.
+		wgpu::BindGroupLayoutEntry sceneEntries[5]{};
+		for (uint32_t i = 0; i < 5; ++i) {
+			sceneEntries[i].binding = i;
+			sceneEntries[i].visibility = wgpu::ShaderStage::Fragment;
+		}
+		sceneEntries[0].buffer.type = wgpu::BufferBindingType::Uniform;
+		sceneEntries[0].buffer.minBindingSize = sizeof(PostSceneUniforms);
+		for (uint32_t i : {1u, 2u, 3u}) {
+			sceneEntries[i].texture.sampleType = wgpu::TextureSampleType::Depth;
+			sceneEntries[i].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+		}
+		sceneEntries[2].texture.multisampled = true;
+		sceneEntries[4].sampler.type = wgpu::SamplerBindingType::Comparison;
+		wgpu::BindGroupLayoutDescriptor sceneLayout{};
+		sceneLayout.label = "postprocess-scene-layout";
+		sceneLayout.entries = sceneEntries;
+		sceneLayout.entryCount = 5;
+		m_Impl->SceneLayout = device.CreateBindGroupLayout(&sceneLayout);
+		wgpu::BufferDescriptor sceneBuffer{};
+		sceneBuffer.label = "postprocess-scene-uniforms";
+		sceneBuffer.size = sizeof(PostSceneUniforms);
+		sceneBuffer.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+		m_Impl->SceneUniformBuffer = device.CreateBuffer(&sceneBuffer);
+		wgpu::SamplerDescriptor shadowSampler{};
+		shadowSampler.compare = wgpu::CompareFunction::LessEqual;
+		shadowSampler.minFilter = shadowSampler.magFilter = wgpu::FilterMode::Linear;
+		m_Impl->ShadowSampler = device.CreateSampler(&shadowSampler);
+		// The inactive depth binding still needs a correctly typed texture. Helpers return before reading it.
+		wgpu::TextureDescriptor dummy{};
+		dummy.label = "postprocess-dummy-depth";
+		dummy.size = {1, 1, 1};
+		dummy.format = wgpu::TextureFormat::Depth32Float;
+		dummy.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::RenderAttachment;
+		m_Impl->DummyDepth = device.CreateTexture(&dummy);
+		m_Impl->DummyDepthView = m_Impl->DummyDepth.CreateView();
+		dummy.sampleCount = 4;
+		m_Impl->DummyDepthMsaa = device.CreateTexture(&dummy);
+		m_Impl->DummyDepthMsaaView = m_Impl->DummyDepthMsaa.CreateView();
 		if (!m_Impl->CustomBindings.Initialize("postprocess-custom", false)) {
 			FNK_CORE_WARN_TAG("PostProcessor", "Custom effect resources unavailable; custom post effects are skipped");
 		}
@@ -341,10 +450,24 @@ namespace Funke {
 
 	void PostProcessor::Shutdown() {
 		if (!m_Impl) return;
+		m_Impl->EffectBindings.clear();
+		m_Impl->SourceBindings = {};
+		m_Impl->NextSourceBinding = 0;
 
 		m_Impl->CustomPipelines.clear();
 		m_Impl->CustomPipelineLayouts.clear();
 		m_Impl->CustomBindings.Shutdown();
+		m_Impl->SceneGroup = nullptr;
+		m_Impl->SceneBindings = {};
+		m_Impl->NextSceneBinding = 0;
+		m_Impl->SceneLayout = nullptr;
+		m_Impl->SceneUniformBuffer = nullptr;
+		m_Impl->SceneSubmitSerial = UINT64_MAX;
+		m_Impl->DummyDepthView = nullptr;
+		m_Impl->DummyDepthMsaaView = nullptr;
+		m_Impl->DummyDepth = nullptr;
+		m_Impl->DummyDepthMsaa = nullptr;
+		m_Impl->ShadowSampler = nullptr;
 
 		m_Impl->BloomThresholdPipelines.clear();
 		m_Impl->BloomBlurPipelines.clear();
@@ -363,12 +486,12 @@ namespace Funke {
 
 		m_Impl->CompositePipelineLayout = nullptr;
 		m_Impl->CompositeBgl = nullptr;
-		m_Impl->BloomTempA.Destroy();
-		m_Impl->BloomTempB.Destroy();
-		m_Impl->GaussianBlurTemp.Destroy();
+		m_Impl->BloomTempA.Clear();
+		m_Impl->BloomTempB.Clear();
+		m_Impl->GaussianBlurTemp.Clear();
 
-		m_Impl->PingPongA.Destroy();
-		m_Impl->PingPongB.Destroy();
+		m_Impl->PingPongA.Clear();
+		m_Impl->PingPongB.Clear();
 		m_Impl->EffectPipelineLayout = nullptr;
 		m_Impl->EffectBindGroupLayout = nullptr;
 		m_Impl->BlitPipelines.clear();
@@ -390,6 +513,75 @@ namespace Funke {
 	}
 
 	namespace {
+		wgpu::BindGroup GetSourceBinding(PostProcessor::Impl& impl, wgpu::TextureView source, bool pointFiltered) {
+			for (const auto& cached : impl.SourceBindings) {
+				if (cached.Group && cached.Source.Get() == source.Get() && cached.PointFiltered == pointFiltered) return cached.Group;
+			}
+			wgpu::BindGroupEntry entries[2]{};
+			entries[0].binding = 0;
+			entries[0].textureView = source;
+			entries[1].binding = 1;
+			entries[1].sampler = pointFiltered ? impl.PointSampler : impl.LinearSampler;
+			wgpu::BindGroupDescriptor desc{};
+			desc.label = "postprocess-source";
+			desc.layout = pointFiltered ? impl.PointBindGroupLayout : impl.BindGroupLayout;
+			desc.entryCount = 2;
+			desc.entries = entries;
+			const auto group = WebGPUBackend::GetDevice().CreateBindGroup(&desc);
+			if (group) {
+				impl.SourceBindings[impl.NextSourceBinding] = { group, source, pointFiltered };
+				impl.NextSourceBinding = (impl.NextSourceBinding + 1) % impl.SourceBindings.size();
+			}
+			return group;
+		}
+
+		wgpu::BindGroup GetEffectBinding(PostProcessor::Impl& impl, wgpu::TextureView source,
+			wgpu::TextureView bloom, wgpu::Buffer buffer, const void* data, size_t size)
+		{
+			auto& cached = impl.EffectBindings[buffer.Get()];
+			if (size > cached.UniformData.size()) return nullptr;
+			if (cached.UniformSize != size || std::memcmp(cached.UniformData.data(), data, size) != 0) {
+				// A changed value must not overwrite an earlier pass still waiting for submission.
+				if (cached.SubmitSerial == WebGPUBackend::GetFrameSubmitSerial()) WebGPUBackend::FlushCommands();
+				WebGPUBackend::GetQueue().WriteBuffer(buffer, 0, data, size);
+				std::memcpy(cached.UniformData.data(), data, size);
+			}
+			cached.SubmitSerial = WebGPUBackend::GetFrameSubmitSerial();
+			cached.UniformSize = size;
+			for (const auto& group : cached.Groups) {
+				if (group.Group && group.Source.Get() == source.Get() && group.Bloom.Get() == bloom.Get()
+					&& group.UniformSize == size) return group.Group;
+			}
+			auto& group = cached.Groups[cached.NextGroup];
+			cached.NextGroup = (cached.NextGroup + 1) % cached.Groups.size();
+			{
+				wgpu::BindGroupEntry entries[4]{};
+				entries[0].binding = 0;
+				entries[0].textureView = source;
+				entries[1].binding = 1;
+				entries[1].sampler = impl.LinearSampler;
+				const uint32_t uniformSlot = bloom ? 3u : 2u;
+				if (bloom) {
+					entries[2].binding = 2;
+					entries[2].textureView = bloom;
+				}
+				entries[uniformSlot].binding = uniformSlot;
+				entries[uniformSlot].buffer = buffer;
+				entries[uniformSlot].size = size;
+				wgpu::BindGroupDescriptor desc{};
+				desc.label = "postprocess-effect";
+				desc.layout = bloom ? impl.CompositeBgl : impl.EffectBindGroupLayout;
+				desc.entryCount = uniformSlot + 1;
+				desc.entries = entries;
+				group.Group = WebGPUBackend::GetDevice().CreateBindGroup(&desc);
+				group.Source = source;
+				group.Bloom = bloom;
+				group.UniformSize = size;
+				cached.Buffer = buffer;
+			}
+			return group.Group;
+		}
+
 		wgpu::RenderPipeline GetOrCreateBlitPipeline(
 			PostProcessor::Impl& impl,
 			const Shader& blitShader,
@@ -605,24 +797,7 @@ namespace Funke {
 			wgpu::Queue  queue  = WebGPUBackend::GetQueue();
 			if (!device || !queue || !pipeline || !srcView || !dstView) return;
 
-			queue.WriteBuffer(uniformBuffer, 0, uniformData, uniformSize);
-
-			wgpu::BindGroupEntry entries[3]{};
-			entries[0].binding = 0;
-			entries[0].textureView = srcView;
-			entries[1].binding = 1;
-			entries[1].sampler = impl.LinearSampler;
-			entries[2].binding = 2;
-			entries[2].buffer  = uniformBuffer;
-			entries[2].offset  = 0;
-			entries[2].size    = uniformSize;
-
-			wgpu::BindGroupDescriptor bgDesc{};
-			bgDesc.label = passLabel;
-			bgDesc.layout = impl.EffectBindGroupLayout;
-			bgDesc.entryCount = 3;
-			bgDesc.entries = entries;
-			wgpu::BindGroup bg = device.CreateBindGroup(&bgDesc);
+			wgpu::BindGroup bg = GetEffectBinding(impl, srcView, nullptr, uniformBuffer, uniformData, uniformSize);
 			if (!bg) {
 				FNK_CORE_WARN_TAG("PostProcessor", "{} CreateBindGroup failed", passLabel);
 				return;
@@ -660,9 +835,9 @@ namespace Funke {
 			wgpu::BindGroupLayout customLayout = impl.CustomBindings.GetLayout(program.Description);
 			wgpu::PipelineLayout& layout = impl.CustomPipelineLayouts[program.Description.TextureCount];
 			if (!layout && customLayout) {
-				const wgpu::BindGroupLayout layouts[2] = { impl.BindGroupLayout, customLayout };
+				const wgpu::BindGroupLayout layouts[3] = { impl.BindGroupLayout, customLayout, impl.SceneLayout };
 				wgpu::PipelineLayoutDescriptor layoutDesc{};
-				layoutDesc.bindGroupLayoutCount = 2;
+				layoutDesc.bindGroupLayoutCount = 3;
 				layoutDesc.bindGroupLayouts = layouts;
 				layoutDesc.label = "postprocess-custom-layout";
 				layout = WebGPUBackend::GetDevice().CreatePipelineLayout(&layoutDesc);
@@ -713,17 +888,7 @@ namespace Funke {
 			}
 			if (!pipeline || !materialGroup) return;
 
-			wgpu::BindGroupEntry entries[2]{};
-			entries[0].binding = 0;
-			entries[0].textureView = srcView;
-			entries[1].binding = 1;
-			entries[1].sampler = impl.LinearSampler;
-			wgpu::BindGroupDescriptor bgDesc{};
-			bgDesc.label = "postprocess-custom-source";
-			bgDesc.layout = impl.BindGroupLayout;
-			bgDesc.entryCount = 2;
-			bgDesc.entries = entries;
-			wgpu::BindGroup sourceGroup = device.CreateBindGroup(&bgDesc);
+			wgpu::BindGroup sourceGroup = GetSourceBinding(impl, srcView, false);
 			wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
 			if (!sourceGroup || !encoder) return;
 
@@ -743,8 +908,10 @@ namespace Funke {
 			pass.SetPipeline(pipeline);
 			pass.SetBindGroup(0, sourceGroup);
 			pass.SetBindGroup(1, materialGroup);
+			pass.SetBindGroup(2, impl.SceneGroup);
 			pass.Draw(3, 1, 0, 0);
 			pass.End();
+			impl.SceneSubmitSerial = WebGPUBackend::GetFrameSubmitSerial();
 		}
 
 		wgpu::TextureView ViewOf(const Framebuffer& fb) {
@@ -774,14 +941,6 @@ namespace Funke {
 
 			wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 			pass.End();
-		}
-
-		bool EnsurePingPongFbos(PostProcessor::Impl& impl, uint32_t w, uint32_t h) {
-			const int iw = static_cast<int>(w);
-			const int ih = static_cast<int>(h);
-			if (!impl.PingPongA.Recreate(iw, ih, TextureFormat::RGBA16F)) return false;
-			if (!impl.PingPongB.Recreate(iw, ih, TextureFormat::RGBA16F)) return false;
-			return true;
 		}
 
 		wgpu::RenderPipeline BuildCompositePipeline(
@@ -871,26 +1030,7 @@ namespace Funke {
 			if (!device || !queue || !pipeline
 				|| !sceneView || !bloomView || !dstView) return;
 
-			queue.WriteBuffer(uniformBuffer, 0, uniformData, uniformSize);
-
-			wgpu::BindGroupEntry entries[4]{};
-			entries[0].binding = 0;
-			entries[0].textureView = sceneView;
-			entries[1].binding = 1;
-			entries[1].sampler = impl.LinearSampler;
-			entries[2].binding = 2;
-			entries[2].textureView = bloomView;
-			entries[3].binding = 3;
-			entries[3].buffer = uniformBuffer;
-			entries[3].offset = 0;
-			entries[3].size = uniformSize;
-
-			wgpu::BindGroupDescriptor bgDesc{};
-			bgDesc.label = "postprocess-composite-bg";
-			bgDesc.layout = impl.CompositeBgl;
-			bgDesc.entryCount = 4;
-			bgDesc.entries = entries;
-			wgpu::BindGroup bg = device.CreateBindGroup(&bgDesc);
+			wgpu::BindGroup bg = GetEffectBinding(impl, sceneView, bloomView, uniformBuffer, uniformData, uniformSize);
 			if (!bg) {
 				FNK_CORE_WARN_TAG("PostProcessor",
 					"Composite CreateBindGroup failed");
@@ -935,13 +1075,14 @@ namespace Funke {
 			const int fullH = std::max(1, static_cast<int>(dstHeight));
 			const int bloomW = std::max(1, (fullW + 1) / 2);
 			const int bloomH = std::max(1, (fullH + 1) / 2);
-			if (!impl.BloomTempA.Recreate(bloomW, bloomH, TextureFormat::RGBA16F)) return nullptr;
-			if (!impl.BloomTempB.Recreate(bloomW, bloomH, TextureFormat::RGBA16F)) return nullptr;
+			const Framebuffer* tempA = impl.BloomTempA.Acquire({ bloomW, bloomH });
+			const Framebuffer* tempB = impl.BloomTempB.Acquire({ bloomW, bloomH });
+			if (!tempA || !tempB) return nullptr;
 
 			WebGPUBackend::FramebufferLookup tempALook =
-				WebGPUBackend::LookupFramebufferByFboId(impl.BloomTempA.GetBackendId());
+				WebGPUBackend::LookupFramebufferByFboId(tempA->GetBackendId());
 			WebGPUBackend::FramebufferLookup tempBLook =
-				WebGPUBackend::LookupFramebufferByFboId(impl.BloomTempB.GetBackendId());
+				WebGPUBackend::LookupFramebufferByFboId(tempB->GetBackendId());
 			if (!tempALook.Valid || !tempBLook.Valid) return nullptr;
 
 			const wgpu::TextureFormat tempFormat = wgpu::TextureFormat::RGBA16Float;
@@ -980,21 +1121,19 @@ namespace Funke {
 			const float texelH = scatterMul * stepScale / static_cast<float>(fullH);
 
 			{
-				float u[4]{};
-				u[0] = 1.0f; u[1] = 0.0f; u[2] = texelW; u[3] = halfKernel;
+				const BlurUniforms u = MakeBlurUniforms(1.0f, 0.0f, texelW, static_cast<int>(halfKernel));
 				RunEffectPass(impl, blurPipeline,
 					tempALook.ColorView, tempBLook.ColorView,
-					impl.BloomBlurUniformBufferH, u, sizeof(u),
+					impl.BloomBlurUniformBufferH, &u, sizeof(u),
 					"postprocess-bloom-blur-h", true);
 			}
 
 			// ── Pass 3: Vertical blur (BloomTempB -> BloomTempA) ──
 			{
-				float u[4]{};
-				u[0] = 0.0f; u[1] = 1.0f; u[2] = texelH; u[3] = halfKernel;
+				const BlurUniforms u = MakeBlurUniforms(0.0f, 1.0f, texelH, static_cast<int>(halfKernel));
 				RunEffectPass(impl, blurPipeline,
 					tempBLook.ColorView, tempALook.ColorView,
-					impl.BloomBlurUniformBufferV, u, sizeof(u),
+					impl.BloomBlurUniformBufferV, &u, sizeof(u),
 					"postprocess-bloom-blur-v", true);
 			}
 
@@ -1016,11 +1155,11 @@ namespace Funke {
 			const int fullH = std::max(1, static_cast<int>(dstHeight));
 			// The horizontal pass writes half-res: its bilinear fetches already average 2x2, and the
 			// vertical pass reads it back by UV.
-			if (!impl.GaussianBlurTemp.Recreate(std::max(1, (fullW + 1) / 2), std::max(1, (fullH + 1) / 2),
-				TextureFormat::RGBA16F)) return;
+			const Framebuffer* temp = impl.GaussianBlurTemp.Acquire({ std::max(1, (fullW + 1) / 2), std::max(1, (fullH + 1) / 2) });
+			if (!temp) return;
 
 			WebGPUBackend::FramebufferLookup tempLook =
-				WebGPUBackend::LookupFramebufferByFboId(impl.GaussianBlurTemp.GetBackendId());
+				WebGPUBackend::LookupFramebufferByFboId(temp->GetBackendId());
 			if (!tempLook.Valid || !tempLook.ColorView) return;
 
 			wgpu::RenderPipeline pipelineToTemp = GetOrCreateEffectPipeline(
@@ -1033,7 +1172,6 @@ namespace Funke {
 			if (!pipelineToTemp || !pipelineToDst) return;
 
 			// Same radius, at most 33 taps per direction: the step widens instead, still far below sigma.
-			constexpr int k_MaxBlurHalfKernel = 16;
 			const int tapsClamped = std::max(3, std::min(maximumTaps, g.Taps));
 			const float requestedHalfKernel = static_cast<float>(std::max(1, (tapsClamped - 1) / 2));
 			const float halfKernel = std::min(requestedHalfKernel, static_cast<float>(k_MaxBlurHalfKernel));
@@ -1045,19 +1183,17 @@ namespace Funke {
 
 			// ── Pass 1: Horizontal blur (srcView -> GaussianBlurTemp) ──
 			{
-				float u[4]{};
-				u[0] = 1.0f; u[1] = 0.0f; u[2] = texelW; u[3] = halfKernel;
+				const BlurUniforms u = MakeBlurUniforms(1.0f, 0.0f, texelW, static_cast<int>(halfKernel));
 				RunEffectPass(impl, pipelineToTemp, srcView, tempLook.ColorView,
-					impl.GaussianBlurUniformBufferH, u, sizeof(u),
+					impl.GaussianBlurUniformBufferH, &u, sizeof(u),
 					"postprocess-gaussianblur-h", true);
 			}
 
 			// ── Pass 2: Vertical blur (GaussianBlurTemp -> dstView) ──
 			{
-				float u[4]{};
-				u[0] = 0.0f; u[1] = 1.0f; u[2] = texelH; u[3] = halfKernel;
+				const BlurUniforms u = MakeBlurUniforms(0.0f, 1.0f, texelH, static_cast<int>(halfKernel));
 				RunEffectPass(impl, pipelineToDst, tempLook.ColorView, dstView,
-					impl.GaussianBlurUniformBufferV, u, sizeof(u),
+					impl.GaussianBlurUniformBufferV, &u, sizeof(u),
 					"postprocess-gaussianblur-v", clearTarget);
 			}
 		}
@@ -1120,7 +1256,7 @@ namespace Funke {
 
 			CompositeUniforms u{};
 			u.Flags0 = { flag(bloomView != nullptr), flag(effects.ColorGrading), flag(effects.LensDistortion), flag(effects.Chromatic) };
-			u.Flags1 = { flag(effects.Vignette), flag(effects.Grain), timeSeconds,
+			u.Flags1 = { flag(effects.Vignette), flag(effects.Grain), effects.Grain ? timeSeconds : 0.0f,
 				dstHeight > 0 ? static_cast<float>(dstWidth) / static_cast<float>(dstHeight) : 1.0f };
 			u.Bloom = { bloom.Tint.r * bloom.Tint.a, bloom.Tint.g * bloom.Tint.a, bloom.Tint.b * bloom.Tint.a, bloom.Intensity };
 			u.ColorFilter = { cg.ColorFilter.r, cg.ColorFilter.g, cg.ColorFilter.b, cg.ColorFilter.a };
@@ -1175,20 +1311,7 @@ namespace Funke {
 			*m_Impl, *m_BlitShader, dstFormat, pointFiltered);
 		if (!pipeline) return;
 
-		wgpu::BindGroupEntry bgEntries[2]{};
-		bgEntries[0].binding = 0;
-		bgEntries[0].textureView = srcLook.ColorView;
-		bgEntries[1].binding = 1;
-		bgEntries[1].sampler = filter == UpscaleFilterMode::Point
-			? m_Impl->PointSampler
-			: m_Impl->LinearSampler;
-
-		wgpu::BindGroupDescriptor bgDesc{};
-		bgDesc.label = "postprocess-blit-bg";
-		bgDesc.layout = pointFiltered ? m_Impl->PointBindGroupLayout : m_Impl->BindGroupLayout;
-		bgDesc.entryCount = 2;
-		bgDesc.entries = bgEntries;
-		wgpu::BindGroup bindGroup = device.CreateBindGroup(&bgDesc);
+		wgpu::BindGroup bindGroup = GetSourceBinding(*m_Impl, srcLook.ColorView, pointFiltered);
 		if (!bindGroup) {
 			FNK_CORE_WARN_TAG("PostProcessor", "CreateBindGroup failed");
 			return;
@@ -1234,18 +1357,7 @@ namespace Funke {
 		wgpu::RenderPipeline pipeline = GetOrCreateFxaaPipeline(*m_Impl, *m_FxaaShader, dstFormat, quality);
 		if (!pipeline) return false;
 
-		// Bilinear: the edge walk reads between two texels to average across the edge.
-		wgpu::BindGroupEntry entries[2]{};
-		entries[0].binding = 0;
-		entries[0].textureView = srcView;
-		entries[1].binding = 1;
-		entries[1].sampler = m_Impl->LinearSampler;
-		wgpu::BindGroupDescriptor bgDesc{};
-		bgDesc.label = "postprocess-fxaa-bg";
-		bgDesc.layout = m_Impl->BindGroupLayout;
-		bgDesc.entryCount = 2;
-		bgDesc.entries = entries;
-		wgpu::BindGroup bindGroup = device.CreateBindGroup(&bgDesc);
+		wgpu::BindGroup bindGroup = GetSourceBinding(*m_Impl, srcView, false);
 		if (!bindGroup) return false;
 
 		wgpu::RenderPassColorAttachment colorAtt{};
@@ -1276,7 +1388,8 @@ namespace Funke {
 		uint32_t dstHeight,
 		const PostProcessing2DComponent* settings,
 		PostProcessingQualityLevel quality,
-		bool clearDestination)
+		bool clearDestination,
+		const PostProcessScene* scene)
 	{
 		if (!IsInitialized()) {
 			FNK_CORE_WARN_TAG("PostProcessor", "Run called before Initialize()");
@@ -1310,13 +1423,13 @@ namespace Funke {
 			}
 			return steps[stepCount - 1].Effects;
 		};
-		if (settings->Bloom.Enabled)               composite().Bloom = true;
+		if (settings->Bloom.IsEffective())         composite().Bloom = true;
 		if (settings->ColorGrading.Enabled)        composite().ColorGrading = true;
 		if (settings->GaussianBlur.Enabled)        steps[stepCount++] = Step{ Step::Kind::GaussianBlur };
 		if (settings->LensDistortion.Enabled)      composite().LensDistortion = true;
-		if (settings->ChromaticAberration.Enabled) composite().Chromatic = true;
+		if (settings->ChromaticAberration.Enabled && settings->ChromaticAberration.Intensity != 0.0f) composite().Chromatic = true;
 		if (settings->Vignette.Enabled)            composite().Vignette = true;
-		if (settings->Grain.Enabled)               composite().Grain = true;
+		if (settings->Grain.Enabled && settings->Grain.Intensity != 0.0f) composite().Grain = true;
 		if (settings->Pixelated.Enabled)           steps[stepCount++] = Step{ Step::Kind::Pixelated };
 
 		struct CustomEffect {
@@ -1339,7 +1452,49 @@ namespace Funke {
 				steps[stepCount++] = step;
 			}
 			if (std::any_of(customEffects.begin(), customEffects.end(), [](const CustomEffect& e) { return e.Program != nullptr; })) {
-				m_Impl->CustomBindings.WriteGlobals(CustomMaterialBindings::MakeGlobals(glm::mat4(1.0f), glm::mat4(1.0f), glm::vec3(0.0f), dstWidth, dstHeight));
+				if (m_Impl->SceneSubmitSerial == WebGPUBackend::GetFrameSubmitSerial()) WebGPUBackend::FlushCommands();
+				m_Impl->CustomBindings.WriteGlobals(CustomMaterialBindings::MakeGlobals(
+					scene ? scene->View : glm::mat4(1.0f), scene ? scene->Projection : glm::mat4(1.0f),
+					scene ? scene->Position : glm::vec3(0.0f), dstWidth, dstHeight));
+				PostSceneUniforms uniforms;
+				if (scene) {
+					uniforms.LightViewProjection = scene->LightViewProjection;
+					uniforms.SunDirection = scene->SunDirection;
+					uniforms.SunRadiance = scene->SunRadiance;
+					uniforms.ShadowParams = scene->ShadowParams;
+					uniforms.Flags = glm::vec4(scene->Depth ? 1.0f : 0.0f, static_cast<float>(scene->Samples),
+						scene->Shadow && scene->SunDirection.w > 0.0f ? 1.0f : 0.0f, 0.0f);
+				}
+				WebGPUBackend::GetQueue().WriteBuffer(m_Impl->SceneUniformBuffer, 0, &uniforms, sizeof(uniforms));
+				wgpu::BindGroupEntry entries[5]{};
+				for (uint32_t i = 0; i < 5; ++i) entries[i].binding = i;
+				entries[0].buffer = m_Impl->SceneUniformBuffer;
+				entries[0].size = sizeof(uniforms);
+				entries[1].textureView = scene && scene->Depth && scene->Samples == 1 ? scene->Depth : m_Impl->DummyDepthView;
+				entries[2].textureView = scene && scene->Depth && scene->Samples > 1 ? scene->Depth : m_Impl->DummyDepthMsaaView;
+				entries[3].textureView = scene && scene->Shadow ? scene->Shadow : m_Impl->DummyDepthView;
+				entries[4].sampler = m_Impl->ShadowSampler;
+				wgpu::BindGroupDescriptor desc{};
+				desc.label = "postprocess-scene";
+				desc.layout = m_Impl->SceneLayout;
+				desc.entries = entries;
+				desc.entryCount = 5;
+				const std::array views{ entries[1].textureView, entries[2].textureView, entries[3].textureView };
+				m_Impl->SceneGroup = nullptr;
+				for (const auto& binding : m_Impl->SceneBindings) {
+					if (binding.Group && std::equal(views.begin(), views.end(), binding.Views.begin(),
+						[](const auto& a, const auto& b) { return a.Get() == b.Get(); })) {
+						m_Impl->SceneGroup = binding.Group;
+						break;
+					}
+				}
+				if (!m_Impl->SceneGroup) {
+					auto& binding = m_Impl->SceneBindings[m_Impl->NextSceneBinding];
+					m_Impl->NextSceneBinding = (m_Impl->NextSceneBinding + 1) % m_Impl->SceneBindings.size();
+					binding.Group = WebGPUBackend::GetDevice().CreateBindGroup(&desc);
+					binding.Views = views;
+					m_Impl->SceneGroup = binding.Group;
+				}
 			}
 		}
 
@@ -1348,7 +1503,13 @@ namespace Funke {
 			return;
 		}
 
-		if (stepCount > 1 && !EnsurePingPongFbos(*m_Impl, dstWidth, dstHeight)) {
+		std::array<const Framebuffer*, 2> pingPong{};
+		if (stepCount > 1) {
+			const FramebufferDescription description{ static_cast<int>(dstWidth), static_cast<int>(dstHeight) };
+			pingPong[0] = m_Impl->PingPongA.Acquire(description);
+			if (stepCount > 2) pingPong[1] = m_Impl->PingPongB.Acquire(description);
+		}
+		if (stepCount > 1 && (!pingPong[0] || (stepCount > 2 && !pingPong[1]))) {
 			FNK_CORE_WARN_TAG("PostProcessor",
 				"EnsurePingPongFbos failed at {}x{} — falling back to Blit",
 				dstWidth, dstHeight);
@@ -1376,7 +1537,7 @@ namespace Funke {
 			wgpu::TextureView passDstView = dstView;
 			wgpu::TextureFormat passDstFormat = dstFormat;
 			if (!isLast) {
-				passDstView = ViewOf(pp == 0 ? m_Impl->PingPongA : m_Impl->PingPongB);
+				passDstView = ViewOf(*pingPong[pp]);
 				passDstFormat = ppFormat;
 				if (!passDstView) {
 					FNK_CORE_WARN_TAG("PostProcessor",

@@ -75,6 +75,32 @@ namespace Funke {
 		StructureReferenceState m_ReferencesBefore;
 	};
 
+	class SceneTransferCommand : public EditCommand {
+	public:
+		static std::unique_ptr<SceneTransferCommand> Move(const std::shared_ptr<Scene>& source,
+			const std::shared_ptr<Scene>& target, std::span<const EntityHandle> roots,
+			EntityHandle targetParent, std::vector<EntityHandle>& moved);
+		bool IsAvailable() const override;
+		void RebindScene(const std::weak_ptr<Scene>& previous, const std::shared_ptr<Scene>& replacement) override;
+		void Undo(Scene&) override;
+		void Redo(Scene&) override;
+		const char* Name() const override { return "Move Entities Between Scenes"; }
+	private:
+		struct Snapshot {
+			std::vector<EntitySubtreeSnapshot> Roots;
+			std::vector<uint64_t> RootOrder;
+			StructureReferenceState References;
+		};
+		static std::vector<EntityHandle> Transfer(Scene& from, Scene& to,
+			const Snapshot& departing, const Snapshot& arriving);
+		std::weak_ptr<Scene> m_Source;
+		std::weak_ptr<Scene> m_Target;
+		Snapshot m_Before;
+		Snapshot m_After;
+		std::vector<uint64_t> m_SourceOrderAfter;
+		std::vector<uint64_t> m_TargetOrderBefore;
+	};
+
 	struct SceneSystemSnapshot {
 		std::string ClassName;
 		bool Enabled = true;

@@ -31,6 +31,10 @@ public sealed class SceneLoadingTests : IDisposable
         bindings.Scene_BeginLoadAsync = &BeginName;
         bindings.Scene_BeginLoadByGuidAsync = &BeginGuid;
         bindings.Scene_CancelLoadAsync = &Cancel;
+        bindings.Scene_PreloadAsync = &Preload;
+        bindings.Scene_PreloadByGuidAsync = &PreloadGuid;
+        bindings.Scene_ActivatePreloaded = &Activate;
+        bindings.Scene_GetLoadProgress = &GetProgress;
         NativeCallbacks.Bindings = bindings;
         SynchronizationContext.SetSynchronizationContext(FunkeSynchronizationContext.Instance);
         s_NextId = 100;
@@ -69,6 +73,93 @@ public sealed class SceneLoadingTests : IDisposable
     {
         s_Cancellations.Add(operationId);
         return 1;
+    }
+
+    [UnmanagedCallersOnly]
+    private static unsafe ulong Preload(byte* name)
+    {
+        s_LastName = Marshal.PtrToStringUTF8((IntPtr)name)!;
+        s_Begins++;
+        return ++s_NextId;
+    }
+
+    [UnmanagedCallersOnly]
+    private static ulong PreloadGuid(ulong guid)
+    {
+        s_LastGuid = guid;
+        s_Begins++;
+        return ++s_NextId;
+    }
+
+    [UnmanagedCallersOnly]
+    private static int Activate(ulong id, int additive)
+    {
+        s_LastMode = additive;
+        return 1;
+    }
+
+    [UnmanagedCallersOnly]
+    private static unsafe int GetProgress(ulong id, int* phase, float* progress)
+    {
+        *phase = (int)SceneLoadPhase.CreatingEntities;
+        *progress = 0.75f;
+        return 1;
+    }
+
+    private sealed class ProgressRecorder : IProgress<SceneLoadProgress>
+    {
+        public readonly List<SceneLoadProgress> Values = new();
+        public void Report(SceneLoadProgress value) => Values.Add(value);
+    }
+
+    [Fact]
+    public async Task PreloadCanActivateOnceAndReportsProgressUntilCompletion()
+    {
+        Task<PreloadedScene?> preparing = SceneManager.PreloadSceneAsync("Level");
+        Assert.False(preparing.IsCompleted);
+        Complete(101, 1);
+        using PreloadedScene prepared = Assert.IsType<PreloadedScene>(await preparing);
+        var progress = new ProgressRecorder();
+        Task<Scene?> loading = prepared.ActivateAsync(LoadSceneMode.Additive, progress: progress);
+        Assert.False(loading.IsCompleted);
+        Assert.Equal(1, s_LastMode);
+        SceneManager.PumpSceneLoadRequests();
+        Assert.Equal(new SceneLoadProgress(SceneLoadPhase.CreatingEntities, 0.75f), Assert.Single(progress.Values));
+        Complete(101, 1);
+        Assert.NotNull(await loading);
+        Assert.Equal(new SceneLoadProgress(SceneLoadPhase.Completed, 1), progress.Values[^1]);
+        Assert.Throws<ObjectDisposedException>(() => { _ = prepared.ActivateAsync(); });
+        prepared.Dispose();
+        Assert.Empty(s_Cancellations);
+    }
+
+    [Fact]
+    public async Task DisposingPreloadReleasesItExactlyOnce()
+    {
+        var task = SceneManager.PreloadSceneAsync(1234);
+        Assert.Equal(1234UL, s_LastGuid);
+        Complete(101, 1);
+        var prepared = Assert.IsType<PreloadedScene>(await task);
+        prepared.Dispose();
+        prepared.Dispose();
+        Assert.Equal(new[] { 101UL }, s_Cancellations);
+    }
+
+    [Fact]
+    public async Task PreloadCancellationAndTeardownReleasePendingAndReadyRequests()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var pending = SceneManager.PreloadSceneAsync("Pending", cancellation.Token);
+        cancellation.Cancel();
+        SceneManager.PumpSceneLoadRequests();
+        Complete(101, -1);
+        Assert.True(pending.IsCanceled);
+        var task = SceneManager.PreloadSceneAsync("Ready");
+        Complete(102, 1);
+        using var prepared = Assert.IsType<PreloadedScene>(await task);
+        SceneManager.CancelPendingLoads();
+        Assert.Null(await prepared.ActivateAsync());
+        Assert.Equal(new[] { 101UL, 102UL }, s_Cancellations);
     }
 
     private static unsafe void Complete(ulong operationId, int status, string name = "Level", ulong guid = 42)

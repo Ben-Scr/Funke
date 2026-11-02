@@ -20,7 +20,11 @@ Funke recognizes these asset kinds (from the `AssetKind` list):
 | **Scene** | `.scene` | A level / screen of your game |
 | **Prefab** | `.prefab` | A reusable, saved entity (with children) |
 | **Script** | `.cs` (and C/C++ source) | Game logic |
-| **Shader** | `.wgsl`, `.vert`, `.frag`, … | Custom rendering |
+| **Shader** | `.wgsl` | Custom mesh, sprite, post-process and skybox shaders; legacy shader extensions are classified but are not executable GLSL backends |
+| **Material** | `.material` | Shared surface and shader settings |
+| **Mesh** | `.obj`, `.gltf`, `.glb` | Static meshes and glTF skeletal models |
+| **Animation Clip** | `.anim` | Keyframe tracks and events |
+| **Animator Controller** | `.animctrl` | Animation states, parameters and transitions |
 | **Data Asset** | `.dataasset` | Shared game data — items, stats, config (see [Data Assets](Data-Assets.md)) |
 | **Other** | anything else | Tracked but not specially handled |
 
@@ -91,17 +95,20 @@ The same pattern is used across the engine: audio sources store an audio GUID, t
 
 ## Referencing assets from C# scripts
 
-Scripts use small **reference types** that wrap a GUID, so you can expose an asset slot in the Inspector and assign it by drag-and-drop:
+Scripts expose assets through public wrapper types backed by GUIDs. Assign supported fields in the Inspector by drag-and-drop:
 
-- `TextureRef`, `AudioRef`, `FontRef`, `SceneRef`, … — each holds an asset GUID and knows how to resolve it.
+- Use `Texture`, `Audio`, `Material`, `Mesh`, `AnimationClip`, `AnimatorController`, `Scene` or a `DataAsset` subtype for asset fields. `TextureRef` and `AudioRef` are internal bridge types, not a public scripting API. `Font` can be loaded in code but is not an Inspector field type; assign it on a Text Renderer.
 - `Texture`, `Audio`, `Material` and `Mesh` fields get the same asset slot, filtered to that kind; lists of them (`List<Material>`, `Mesh[]`) work too, e.g. a skin catalog:
 
 ```csharp
+using System.Collections.Generic;
+using Funke;
+
 public class SkinPicker : EntityScript
 {
     public List<Material> Skins = new();      // drag .material files onto the list
     public Mesh? Trophy;                      // an .obj mesh
-    public Entity CoinPrefab;                 // an Entity field also takes a prefab asset
+    public Entity? CoinPrefab;                // an Entity field also takes a prefab asset
 }
 ```
 
@@ -139,7 +146,7 @@ Mesh? mesh = await AssetManager.LoadByGUIDAsync<Mesh>(meshGuidString, token);
 | `Font` | File reading and rasterizing the 32 px font cache bucket |
 | `Mesh` | File reading and mesh parsing |
 
-GUID/path resolution and import metadata access still run on the main thread. Workers prepare owned CPU data; the main thread publishes it into the existing managers and performs GPU uploads. Completion means that publication has finished. Fonts at other sizes and additional Unicode glyphs retain their normal on-demand behavior.
+GUID/path resolution and import metadata access still run on the main thread. Workers prepare owned CPU data; the main thread publishes it into the existing managers and performs GPU uploads. By default, `AssetLoader::Pump()` allows one publication with a cooperative 2 ms budget per frame; an individual upload is indivisible and can exceed that budget. Completion means that publication has finished. Fonts at other sizes and additional Unicode glyphs retain their normal on-demand behavior.
 
 Each C# async load starts with one managed-to-native request containing the expected kind and the path or GUID. Pending assets require no per-asset native status polling. When results are ready, the engine delivers them together in one native-to-managed completion callback, creates the managed references and completes their tasks. Cancellation requests are also sent in batches. The public loading APIs and their return values are unchanged.
 
@@ -198,7 +205,7 @@ This covers every file another program can change while the editor is open: an i
 | File | What happens when it changes on disk |
 |------|--------------------------------------|
 | Textures (`.png`, `.jpg`, `.bmp`, `.tga`) | Re-decoded and re-uploaded. |
-| Audio (`.wav`, `.mp3`, `.flac`) | Re-decoded; Audio Sources keep the clip, and sources that were playing restart. |
+| Audio (`.wav`, `.mp3`, `.ogg`, `.flac`) | Re-decoded; Audio Sources keep the clip, and sources that were playing restart. |
 | Fonts (`.ttf`, `.otf`) | Every baked size is dropped and re-baked from the new file. |
 | Data Assets (`.dataasset`) | Field values are re-read onto the live instance, so script references to it stay valid. |
 | Prefabs (`.prefab`) | New instances use the new file. |
@@ -224,6 +231,8 @@ The **Asset Browser** is the editor panel where you work with assets directly. F
 - **Slice sprite sheets** — define multiple sprites inside one texture; the slices are stored in that texture's `.meta`.
 - Drop external files into the window to bring them into the project.
 
+Texture thumbnails, Inspector previews and Sprite Editor previews decode on a worker. GPU uploads are spread across frames; a loading placeholder is shown until the preview is ready. Asset Browser file actions have a separate project-session undo history; see [Undo and redo](../Editor/Editor.md#undo-and-redo).
+
 ### Native-size sprites and pivots
 
 By default a Sprite Renderer stretches its sprite over the entity's scale: scale (1, 1) is a 1×1 unit quad, whatever the texture size. Set the renderer's **Pixels Per Unit** above 0 to draw the sprite at its native size instead — slice width / Pixels Per Unit units wide (times the scale), like Unity's sprite import setting — placed on the slice's **pivot** from the `.meta` (`"pivot": [x, y]`, 0..1 from the bottom-left corner; a whole texture without a slice uses its centre). A tree with a pivot at its trunk then stands on the entity position, and frames of different sizes keep their anchor while an animation swaps them. **Flip X / Flip Y** mirror the sprite around that pivot. Scene keys: `pixelsPerUnit`, `flipX`, `flipY`; C#: `SpriteRenderer.PixelsPerUnit`, `FlipX`, `FlipY` (also on `NativeSpriteRenderer` for ECB and `QueryRef` code).
@@ -236,12 +245,12 @@ See [Editor](../Editor/Editor.md) for how the Asset Browser fits with the other 
 
 | | Editor | Runtime (shipped game) |
 |---|--------|------------------------|
-| Where assets come from | The project's `Assets` folder | The `Assets` folder shipped next to the game |
-| Discovery | Scanned + watched live | Loaded on demand as scenes deserialize |
+| Where assets come from | The project's `Assets` folder | Staged project and engine assets, loose or in `.fbundle` files |
+| Discovery | Scanned + watched live | Indexed from the exported content; loaded on demand |
 | Hot-reload | Yes — edits apply live | No — files are read once |
-| Form on disk | Loose files | **Loose files** (no archive/pack step) |
+| Form on disk | Loose files | Loose files by default; optional bundles with lossless LZ4 or Zstandard compression |
 
-Funke ships assets as **loose files** — there is no "cook" or archive step that bundles everything into one package file. When you build a game, the project's assets are copied alongside the runtime executable, and the game reads them from disk as scenes load. (See the Build flow in [Editor](../Editor/Editor.md).)
+Builds prune unreachable assets and convert scenes, prefabs and Data Assets to binary. **Build Profiles › Asset Packaging › Bundle Assets** optionally packs the staged `Assets/` and `FunkeAssets/` into `Assets.fbundle` and `FunkeAssets.fbundle`; **Compress Bundles** enables lossless compression; the **Compression** selector offers LZ4 (default) or Zstandard. Both options default to off. Funke's asset APIs read either form, preserving GUIDs and import metadata. `Assets/StreamingAssets/` stays loose for `System.IO` and libraries that require real filenames. See [Asset bundles](../Editor/Building-and-Shipping.md#asset-bundles) for limits and distribution details.
 
 ---
 
@@ -251,7 +260,7 @@ Funke ships assets as **loose files** — there is no "cook" or archive step tha
 - Each file gets a permanent **GUID**, stored in a `.meta` file beside it.
 - Everything references assets **by GUID**, so you can move/rename freely. Keep the `.meta` files.
 - The **Asset Registry** indexes everything; per-type **managers** load, cache, and hand out **handles**.
-- The editor hot-reloads changed assets; the runtime reads loose files on demand.
+- The editor hot-reloads changed assets; the runtime reads loose or bundled assets on demand.
 
 ## Related pages
 

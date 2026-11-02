@@ -75,20 +75,67 @@ namespace Funke.Tests
         }
 
         [Fact]
-        public void ProjectFileEditFallsBackToFullBuildOnce()
+        public void ProjectFileEditRunsFullBuildAndCapturesEvaluationOnce()
         {
             CreateProject();
             WriteScript("A.cs", "public class A { }");
             AssertStatus("compiled", Compile());
 
-            CreateProject(extraProperties: "<LangVersion>latest</LangVersion>");
+            string buildMarker = Path.Combine(m_Root, "build-count.txt");
+            CreateProject(extraProperties: "<LangVersion>latest</LangVersion>",
+                extraTargets: $"<Target Name=\"RecordBuild\" AfterTargets=\"Build\"><WriteLinesToFile File=\"{buildMarker}\" Lines=\"built\" Overwrite=\"false\" /></Target>");
             var changed = Compile();
-            AssertStatus("fallback", changed);
-            Assert.Contains("project files changed", changed.Message);
+            AssertStatus("compiled", changed);
+            Assert.True(changed.FullBuild);
+            Assert.Single(File.ReadAllLines(buildMarker));
 
             var next = Compile();
             AssertStatus("compiled", next);
             Assert.False(next.Evaluated);
+            Assert.False(next.FullBuild);
+            Assert.Single(File.ReadAllLines(buildMarker));
+        }
+
+        [Fact]
+        public void WatcherEditsPreserveCompilationAndHandleSameStampChangesAndStructuralEdits()
+        {
+            CreateProject();
+            WriteScript("A.cs", "public class AAA { }");
+            AssertStatus("compiled", Compile());
+            string source = Path.Combine(m_Root, "Assets", "A.cs");
+            DateTime stamp = File.GetLastWriteTimeUtc(source);
+            WriteScript("A.cs", "public class BBB { }");
+            File.SetLastWriteTimeUtc(source, stamp);
+            var edited = Compile(changedPaths: new[] { source });
+            AssertStatus("compiled", edited);
+            Assert.False(edited.Evaluated);
+            Assert.Contains("BBB", ReadTypeNames());
+            Assert.DoesNotContain("AAA", ReadTypeNames());
+
+            WriteScript("B.cs", "public class Added { }");
+            string added = Path.Combine(m_Root, "Assets", "B.cs");
+            var addition = Compile(changedPaths: new[] { added });
+            AssertStatus("compiled", addition);
+            Assert.True(addition.Evaluated);
+            Assert.Contains("Added", ReadTypeNames());
+            File.Delete(source);
+            var removal = Compile(changedPaths: new[] { source });
+            AssertStatus("compiled", removal);
+            Assert.True(removal.Evaluated);
+            Assert.DoesNotContain("BBB", ReadTypeNames());
+        }
+
+        [Fact]
+        public void ProjectBuildFailureReturnsDiagnosticsWithoutRequestingAnotherBuild()
+        {
+            CreateProject();
+            WriteScript("A.cs", "public class A { }");
+            AssertStatus("compiled", Compile());
+            CreateProject(extraProperties: "<LangVersion>latest</LangVersion>");
+            WriteScript("A.cs", "public class A { int x = 1 }");
+            var result = Compile();
+            AssertStatus("failed", result);
+            Assert.Contains("CS1002", result.Diagnostics);
         }
 
         [Fact]
@@ -110,6 +157,12 @@ namespace Funke.Tests
 
             var result = Compile();
             AssertStatus("compiled", result);
+            WriteScript("Patterns.cs", "using System.Text.RegularExpressions;\npublic static partial class Patterns { [GeneratedRegex(\"^[0-9]+$\")] public static partial Regex Number(); }");
+            var edited = Compile(changedPaths: new[] { Path.Combine(m_Root, "Assets", "Patterns.cs") });
+            AssertStatus("compiled", edited);
+            Assert.False(edited.Evaluated);
+            WriteScript("Patterns.cs", "public static partial class Patterns { public static int Number() => 1; }");
+            AssertStatus("compiled", Compile());
         }
 
         [Fact]
@@ -254,7 +307,7 @@ namespace Funke.Tests
             }
         }
 
-        void CreateProject(string extraProperties = "", string extraItems = "")
+        void CreateProject(string extraProperties = "", string extraItems = "", string extraTargets = "")
         {
             Directory.CreateDirectory(m_Root);
             // Mirrors the user-project template in FunkeProject.cpp.
@@ -279,6 +332,7 @@ namespace Funke.Tests
     <Compile Include=""Assets\**\*.cs"" />
     {extraItems}
   </ItemGroup>
+  {extraTargets}
 </Project>
 ");
         }
@@ -319,7 +373,7 @@ namespace Funke.Tests
         static void AssertStatus(string expected, Response response) =>
             Assert.True(response.Status == expected, $"expected {expected}, got {response.Status}: {response.Message}\n{response.Diagnostics}");
 
-        Response Compile(string? property = null, string? outputPath = null)
+        Response Compile(string? property = null, string? outputPath = null, string[]? changedPaths = null)
         {
             string request = JsonSerializer.Serialize(new
             {
@@ -328,6 +382,7 @@ namespace Funke.Tests
                 properties = property == null ? new[] { "-p:FunkeCodegenEnabled=false" } : new[] { "-p:FunkeCodegenEnabled=false", property },
                 outputPath = outputPath ?? OutputPath,
                 dotnet = "dotnet",
+                changedPaths,
             });
             return Invoke(request);
         }
@@ -352,6 +407,7 @@ namespace Funke.Tests
             public string? Message { get; set; }
             public string? Diagnostics { get; set; }
             public bool Evaluated { get; set; }
+            public bool FullBuild { get; set; }
             public double ElapsedMs { get; set; }
         }
     }

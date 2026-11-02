@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <memory>
 
 namespace Funke {
 	class Scene;
@@ -13,6 +14,8 @@ namespace Funke {
 	public:
 		virtual ~EditCommand() = default;
 
+		virtual bool IsAvailable() const { return true; }
+		virtual void RebindScene(const std::weak_ptr<Scene>&, const std::shared_ptr<Scene>&) {}
 		virtual void Undo(Scene& scene) = 0;
 		virtual void Redo(Scene& scene) = 0;
 

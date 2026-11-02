@@ -2,6 +2,30 @@
 
 Release notes describe user-visible compatibility, reliability, and workflow changes. A public tag is accepted only when its exact version has a section here.
 
+## [Unreleased]
+
+### Fixed
+
+- Dawn setup validates pinned source/dependency revisions, resumes interrupted Git initialization, reports fetch errors before CMake, and protects local edits. CI checks artifact-only caches including both Windows configurations.
+- Asset bundle lookups and file-watcher tests use consistent path identities across symlink and Windows short-path aliases, including virtual and deleted files.
+- Linux coverage uses atomic counters for threaded tests. macOS hosting uses shared nethost; installer staging separates code and resources and signs the main Launcher with the app.
+- Native component addition checks the resulting storage without invoking custom presence callbacks twice. Core-only builds exclude scene-dependent property validation.
+
+### Agent development
+
+- Bridge frame stepping now pauses after gameplay and layout have completed, so a one-frame step actually executes a game update and can satisfy state-based waits.
+
+- Added native `funke test` gameplay suites with an owned editor, source-package compilation, typed assertions/waits, save isolation, structured script-exception counters, bounded execution and evidence reports.
+- Input automation now supports wheel, UTF-8 text and an owned SDL virtual gamepad through normal game input/UI paths, with held-input cleanup.
+- Added a CLI-authored player/coin/UI integration fixture, negative-case and script-revision checks, plus installed Windows and Linux/macOS CI wiring. Documented the query/batch/test contracts and updated game-authoring skill references.
+
+- Editor CLI failures now keep their exit code with `--json`, including DevCommands, script compilation and input-script screenshot failures. Early editor CLI errors return a JSON object, and `exec` correctly consumes `--pid` before command words. Asynchronous requests identify acceptance separately from completion.
+- The Editor Bridge adds `scenes`, paginated `entities`, `inspect` and `schema`, with string IDs, scene/session tokens, revision counters and native/C# field metadata. `apply --file` validates Edit-mode batches and records one undo step; repeated request IDs reuse the completed result.
+
+### Documentation
+
+- Audited the guides and repository skills against the current implementation: asset bundles and compression, native script exports, scene loading and Play/Stop restoration, world-space UI, spatial audio, platform prerequisites and localization. Corrected API examples, package guidance and contributor verification instructions; synchronized the agent documentation mirrors.
+
 ## [2026.1.0-beta.1]
 
 First public beta. The editor runs on Windows x64, Linux x64 and macOS (Apple Silicon and Intel); each exports games for its own desktop platform, and to Android, iOS and Web through platform packages. See `Github-Docs/Documentation/Known-Limitations.md`.

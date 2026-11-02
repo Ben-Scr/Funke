@@ -1,5 +1,5 @@
 #pragma once
-#include "Graphics/Texture2D.hpp"
+#include "Gui/AsyncTexturePreview.hpp"
 #include "Gui/AssetType.hpp"
 
 #include <imgui.h>
@@ -17,6 +17,7 @@ namespace Funke {
 		// E31: hard cap so the cache cannot grow unbounded as the user navigates
 		// large project trees. Past this, the least-recently-used entry is evicted.
 		static constexpr size_t k_MaxEntries = 256;
+		static constexpr size_t k_MaxBytes = 128 * 1024 * 1024;
 
 		void Initialize();
 		void Shutdown();
@@ -48,11 +49,7 @@ namespace Funke {
 		// most recent). Each cache entry holds an iterator into that list so
 		// touching an entry on lookup is O(1) (splice to front + map lookup).
 		struct CachedThumbnail {
-			std::unique_ptr<Texture2D> Texture;
-			// Backend handle returned by Texture2D::GetHandle(). Under WebGPU
-			// this is the raw WGPUTextureView pointer (cast to uint64_t); the
-			// field name predates the OpenGL → WebGPU port.
-			uint64_t GlHandle = 0;
+			std::shared_ptr<TexturePreview> Preview;
 			std::list<std::string>::iterator LruIt;
 			// ImGui frame this entry was last accessed. EnforceCapacity refuses to
 			// evict an entry used this frame, because its WGPUTextureView is still
@@ -70,6 +67,7 @@ namespace Funke {
 
 		std::unordered_map<std::string, CachedThumbnail> m_Cache;
 		std::list<std::string> m_LRU;
+		uint64_t m_LastBudgetFrame = ~uint64_t{0};
 	};
 
 } // namespace Funke

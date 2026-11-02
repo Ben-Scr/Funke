@@ -37,59 +37,29 @@ foreach ($field in @("version", "buildId", "commit")) {
     }
 }
 
-function Read-PePolicy {
-    param([string]$Path)
-
-    $bytes = [System.IO.File]::ReadAllBytes($Path)
-    if ($bytes.Length -lt 256 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
-        throw "Not a PE image: $Path"
-    }
-    $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
-    if ($peOffset -lt 0 -or $peOffset + 96 -gt $bytes.Length) {
-        throw "Invalid PE header offset: $Path"
-    }
-    if ([BitConverter]::ToUInt32($bytes, $peOffset) -ne 0x00004550) {
-        throw "Invalid PE signature: $Path"
-    }
-    $optionalOffset = $peOffset + 24
-    $magic = [BitConverter]::ToUInt16($bytes, $optionalOffset)
-    if ($magic -notin @(0x10B, 0x20B)) {
-        throw "Unsupported PE optional header: $Path"
-    }
-    return [pscustomobject]@{
-        Machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
-        Is64Bit = $magic -eq 0x20B
-        Subsystem = [BitConverter]::ToUInt16($bytes, $optionalOffset + 68)
-        DllCharacteristics = [BitConverter]::ToUInt16($bytes, $optionalOffset + 70)
-    }
-}
+. (Join-Path $PSScriptRoot "windows_pe_policy.ps1")
 
 $nativeFiles = @(
-    @{ Path = "Funke-Launcher.exe"; Subsystem = 2 },
-    @{ Path = "Funke-Editor.exe"; Subsystem = 2 },
-    @{ Path = "Funke-Runtime.exe"; Subsystem = 2 },
-    @{ Path = "Funke-Engine.dll"; Subsystem = 3 },
-    @{ Path = "EngineSDK\Runtime-Development\Funke-Runtime.exe"; Subsystem = 2 },
-    @{ Path = "EngineSDK\Runtime-Development\Funke-Engine.dll"; Subsystem = 3 },
-    @{ Path = "EngineSDK\Runtime-Dist\Funke-Runtime.exe"; Subsystem = 2 },
-    @{ Path = "EngineSDK\Runtime-Dist\Funke-Engine.dll"; Subsystem = 3 }
+    "Funke-Launcher.exe",
+    "Funke-Editor.exe",
+    "Funke-Runtime.exe",
+    "funke.exe",
+    "Funke-Engine.dll",
+    "EngineSDK\Runtime-Development\Funke-Runtime.exe",
+    "EngineSDK\Runtime-Development\Funke-Engine.dll",
+    "EngineSDK\Runtime-Dist\Funke-Runtime.exe",
+    "EngineSDK\Runtime-Dist\Funke-Engine.dll"
 )
 $sdkManifest = Get-Content -LiteralPath (Join-Path $bundle "EngineSDK\FunkeSDK.json") -Raw | ConvertFrom-Json
 if ($sdkManifest.capabilities.nativeDevelopment) {
     $nativeFiles += @(
-        @{ Path = "EngineSDK\bin\Release-windows-x86_64\Funke-Engine\Funke-Engine.dll"; Subsystem = 3 },
-        @{ Path = "EngineSDK\bin\Dist-windows-x86_64\Funke-Engine\Funke-Engine.dll"; Subsystem = 3 }
+        "EngineSDK\bin\Release-windows-x86_64\Funke-Engine\Funke-Engine.dll",
+        "EngineSDK\bin\Dist-windows-x86_64\Funke-Engine\Funke-Engine.dll"
     )
-}
-$requiredCharacteristics = [ordered]@{
-    HighEntropyVA = 0x0020
-    DynamicBase = 0x0040
-    NxCompat = 0x0100
-    GuardCF = 0x4000
 }
 
 foreach ($entry in $nativeFiles) {
-    $path = Join-Path $bundle $entry.Path
+    $path = Join-Path $bundle $entry
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Required native release binary is missing: $path"
     }
@@ -98,19 +68,12 @@ foreach ($entry in $nativeFiles) {
         throw "ProductVersion mismatch in $path; expected $($metadata.version), found $($versionInfo.ProductVersion)."
     }
 
-    $policy = Read-PePolicy $path
-    if ($policy.Machine -ne 0x8664 -or -not $policy.Is64Bit -or $policy.Subsystem -ne $entry.Subsystem) {
-        throw "PE platform/subsystem policy failed: $path"
-    }
-    foreach ($characteristic in $requiredCharacteristics.GetEnumerator()) {
-        if (($policy.DllCharacteristics -band $characteristic.Value) -eq 0) {
-            throw "PE hardening flag $($characteristic.Key) is missing: $path"
-        }
-    }
+    $subsystem = if ($entry -ceq "funke.exe") { 3 } else { 2 }
+    Assert-NativePePolicy -Path $path -ExecutableSubsystem $subsystem
 }
 
 $firstPartyFiles = @(Get-ChildItem -LiteralPath $bundle -Recurse -File |
-    Where-Object { $_.Name -match '^Funke-.*\.(exe|dll)$' })
+    Where-Object { $_.Name -match '^(Funke-.*\.(exe|dll)|funke\.exe)$' })
 foreach ($file in $firstPartyFiles) {
     $versionInfo = $file.VersionInfo
     if ($versionInfo.ProductVersion -cne $metadata.version) {

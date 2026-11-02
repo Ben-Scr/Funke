@@ -133,6 +133,7 @@ namespace Funke {
 
 	void TextureManager::Initialize() {
 		if (s_IsInitialized) return;
+		TextureUploadBatch uploadBatch;
 		s_Textures.clear();
 		while (!s_FreeIndices.empty()) s_FreeIndices.pop();
 		s_Textures.reserve(64);
@@ -570,6 +571,7 @@ namespace Funke {
 			// no provider sees script-held references, so purging them would pull them out from under scripts.
 			if (g_RuntimeIndexToUuid.contains(static_cast<uint32_t>(i))) continue;
 			TextureHandle handle{ static_cast<uint16_t>(i), slot.Generation };
+			if (AssetLoader::IsAssetRetained(GetTextureAssetUUID(handle))) continue;
 			if (!referenced.contains(handle)) {
 				toFree.push_back(handle);
 			}
@@ -711,7 +713,7 @@ namespace Funke {
 
 		for (size_t i = 0; i < g_DefaultHandles.size(); ++i) {
 			const std::string fullPath = Path::Combine(assetsRoot, k_DefaultPaths[i]);
-			if (!std::filesystem::exists(fullPath)) {
+			if (!File::Exists(fullPath)) {
 				FNK_CORE_WARN_TAG("TextureManager",
 					"Default texture missing: {} — sprites/UI relying on this fallback will be invisible.",
 					fullPath);

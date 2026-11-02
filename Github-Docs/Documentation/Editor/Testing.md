@@ -8,6 +8,61 @@ These tools are for testing a game without changing its code. You can:
 - keep test runs away from the player's save data,
 - record reproducible test runs with scripted input and screenshots at fixed points in game time.
 
+## Isolated gameplay suites
+
+`funke test suite.json --json` starts its own matching editor, prepares source packages, compiles scripts, plays a scene, runs input and checks state. It never attaches to a user's existing editor. Python is not needed by the shipped command. `--project <directory>` overrides the suite project; `--editor <executable>` selects the matching editor; `--output <directory>` selects the parent for unique `test-…` evidence directories.
+
+```json
+{
+  "formatVersion": 1,
+  "project": "..",
+  "scene": "Main",
+  "size": "640x360",
+  "fixedStep": 60,
+  "timeoutSeconds": 120,
+  "strictScriptErrors": true,
+  "steps": [
+    { "type": "waitUntil", "frames": 60, "timeoutSeconds": 10,
+      "condition": { "kind": "exists", "entity": { "name": "Player" }, "expected": true } },
+    { "type": "input", "script": { "steps": [
+      { "frame": 0, "key": "D", "action": "down" },
+      { "frame": 30, "key": "D", "action": "up" }
+    ] } },
+    { "type": "assert", "condition": { "kind": "property", "entity": { "name": "Player" },
+      "component": "Transform2D", "property": "Position", "compare": "near", "expected": [1, 0], "tolerance": 0.2 } },
+    { "type": "screenshot" }
+  ]
+}
+```
+
+Project paths are relative to the suite. The suite has at most 256 steps / 1 MiB JSON; total timeout is 1–3600 wall seconds. `fixedStep` is frames per game second (1–1000), not a delay. Assertion queries run while gameplay is paused at completed frame boundaries. `waitUntil` accepts exactly one game budget (`frames` or `seconds`) plus a mandatory positive `timeoutSeconds` wall-clock budget, and advances frames until the condition succeeds or either budget expires. Invalid fields/types fail immediately instead of consuming the wait budget.
+
+Conditions: `exists` checks an entity; `component` checks presence; `property` checks an inspected field; `scene` checks the active scene name; `scriptErrors` returns true when no new reported script exception exists. Entity selectors use persistent string `id` or exact `name`; duplicate names fail. Comparisons use `compare` (`eq`, `ne`, numeric `gt`, `ge`, `lt`, `le`, or `near` with explicit nonnegative tolerance for numbers/vectors). JSON types must match. Decimal-string 64-bit integers/enums support exact equality/inequality. Use an existence wait before a property query for an entity that will spawn later. `exec` steps require a deliberate DevCommand in `command`; ordinary gameplay should use input.
+
+Each run uses private native user data and a unique `--prefs-profile` without saving that override to project settings. Automated runs are muted. The runner records process start, compile, play, step outcomes, expected/observed values, executed/skipped counts, SDK/project/editor paths and engine version. `report.json` is written during execution; `editor.log`, `packages.log` when needed, `logs.json`, screenshots and a best-effort failure screenshot remain beside it. Only its owned editor/process tree is stopped. Cleanup failure also fails the suite.
+
+Strict script-error checking defaults on. `test.script-errors` exposes a process epoch, monotonic total and the last 16 bounded exception records, independently of console throttling/flush. Counter changes, not log text, detect new exceptions. Failed recompilation fails the run even if an older assembly exists. Exit 0 means all steps and cleanup passed, 1 means failed, 2 means invalid CLI usage. JSON mode emits one report on stdout; diagnostics go to stderr.
+
+The repository's `Tests/Agent/core-loop.test.json` and `AgentLoop.cs` exercise movement, coin collection, UI references, mouse wheel, Unicode text and a virtual gamepad. `scripts/ci/agent_workflow_test.py` constructs the scene through CLI batches and checks negative cases plus a changed second script revision. See [Standalone verification](Standalone-Verification.md) for installed-package gates.
+
+### Wheel, text and gamepad input
+
+These steps work in runtime input scripts and editor bridge input jobs through the normal game input/UI pipeline:
+
+```json
+{ "steps": [
+  { "frame": 0, "scroll": [1, -2], "mouse": [0.5, 0.5] },
+  { "frame": 1, "text": "Grüße 世界" },
+  { "frame": 2, "gamepad": { "device": "funke-test", "action": "connect" } },
+  { "frame": 3, "gamepad": { "device": "funke-test", "button": "A", "action": "down" } },
+  { "frame": 4, "gamepad": { "device": "funke-test", "axis": "LeftX", "value": 0.75 } },
+  { "frame": 5, "gamepad": { "device": "funke-test", "button": "A", "action": "up" } },
+  { "frame": 6, "gamepad": { "device": "funke-test", "action": "disconnect" } }
+] }
+```
+
+Wheel values must be finite and within ±10000 per axis. Text is UTF-8, at most 4096 bytes, without NUL; empty text is allowed. Focus a real input field first. Text content is independent of whether its font contains every glyph. Gamepad buttons/axes use the engine's names; axes are in [-1, 1], including triggers (-1 released). `press` releases on the following frame; `down` holds until `up` or cleanup. The named virtual device uses a free engine slot, reports that index, and fails if unavailable; it never replaces a physical controller. Input completion/cancellation releases held controls and detaches the owned virtual device. Scripts allow at most 10000 steps and frames through 1000000000.
+
 ## Configurations
 
 A game build uses one of three configurations:

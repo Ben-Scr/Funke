@@ -288,6 +288,25 @@ namespace Funke {
 		entry.Valid = true;
 	}
 
+	bool MaterialLibrary::SetProperty(uint64_t guid, const std::string& name, const MaterialPropertyValue& value) {
+		auto& entries = Entries();
+		auto entry = entries.find(guid);
+		if (entry == entries.end() || !entry->second.Valid) {
+			if (!Get(guid)) return false;
+			entry = entries.find(guid);
+		}
+		auto [property, inserted] = entry->second.Value.Properties.try_emplace(name, value);
+		if (!inserted) {
+			const MaterialPropertyValue& stored = property->second;
+			// Compare float storage, not numeric equality: preserve signed zero and NaN payloads.
+			if (stored.Type != value.Type || stored.Texture != value.Texture
+				|| std::memcmp(&stored.Value[0], &value.Value[0], 4 * sizeof(float)) != 0) {
+				property->second = value;
+			}
+		}
+		return true;
+	}
+
 	void MaterialLibrary::Invalidate(uint64_t guid) {
 		Entries().erase(guid);
 	}

@@ -37,6 +37,10 @@ public static unsafe class CompilerHost
                 response = CompileLocked(request);
             }
         }
+        catch (CompilationFailedException e)
+        {
+            response = new CompileResponse { Status = "failed", Message = "MSBuild failed", Diagnostics = e.Message };
+        }
         catch (FallbackException e)
         {
             response = new CompileResponse { Status = "fallback", Message = e.Message };
@@ -61,18 +65,14 @@ public static unsafe class CompilerHost
         bool evaluated = false;
         string? staleReason = state == null ? null
             : state.Fingerprint != fingerprint ? "build settings changed"
-            : state.Evaluation.FindStaleReason();
+            : state.Evaluation.FindStaleReason(request.ChangedPaths);
+        bool fullBuild = staleReason != null && staleReason.StartsWith(ProjectEvaluation.ProjectFilesChanged, StringComparison.Ordinal);
         if (state == null || staleReason != null)
         {
-            var evaluation = ProjectEvaluation.Run(projectPath, request);
+            var evaluation = ProjectEvaluation.Run(projectPath, request, fullBuild);
             state = new ProjectState(fingerprint, evaluation);
             s_Projects[projectPath] = state;
             evaluated = true;
-            // Project-file edits can add copy-local dependencies or targets only MSBuild runs.
-            if (staleReason != null && staleReason.StartsWith(ProjectEvaluation.ProjectFilesChanged, StringComparison.Ordinal))
-            {
-                throw new FallbackException(staleReason);
-            }
         }
 
         if (!PathsEqual(state.Evaluation.TargetPath, request.OutputPath))
@@ -84,9 +84,12 @@ public static unsafe class CompilerHost
             throw new FallbackException($"dependency not deployed yet: {missing}");
         }
 
+        if (fullBuild)
+            return new CompileResponse { Status = "compiled", Evaluated = true, FullBuild = true };
+
         EnsureRoslyn(state.Evaluation.RoslynDirectory);
         state.Session ??= RoslynBridge.CreateSession(state.Evaluation);
-        CompileResponse response = RoslynBridge.Compile(state.Session, state.Evaluation.TargetPath);
+        CompileResponse response = RoslynBridge.Compile(state.Session, state.Evaluation.TargetPath, request.ChangedPaths);
         response.Evaluated = evaluated;
         return response;
     }
@@ -147,10 +150,12 @@ static class RoslynBridge
     public static object CreateSession(ProjectEvaluation evaluation) => new RoslynSession(evaluation);
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public static CompileResponse Compile(object session, string outputPath) => ((RoslynSession)session).Compile(outputPath);
+    public static CompileResponse Compile(object session, string outputPath, IReadOnlyList<string>? changedPaths)
+        => ((RoslynSession)session).Compile(outputPath, changedPaths);
 }
 
 sealed class FallbackException(string message) : Exception(message);
+sealed class CompilationFailedException(string message) : Exception(message);
 
 sealed class CompileRequest
 {
@@ -160,6 +165,8 @@ sealed class CompileRequest
     public List<string> Properties { get; set; } = [];
     public string OutputPath { get; set; } = "";
     public string Dotnet { get; set; } = "dotnet";
+    // Null requests a safety rescan; watcher-driven edits carry absolute changed paths.
+    public List<string>? ChangedPaths { get; set; }
 }
 
 sealed class CompileResponse
@@ -171,4 +178,5 @@ sealed class CompileResponse
     public int Warnings { get; set; }
     public double ElapsedMs { get; set; }
     public bool Evaluated { get; set; }
+    public bool FullBuild { get; set; }
 }

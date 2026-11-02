@@ -59,6 +59,27 @@ TEST_CASE("Project package input inventory detects additions deletions and same-
 	CHECK(before.Digest() != after.Digest());
 }
 
+TEST_CASE("Project package cache retains subsecond file timestamp changes") {
+	using namespace Funke::PackageBuildCache;
+	PackageCacheFixture fixture;
+	const auto source = fixture.Root / "Source.cs";
+	fixture.Write(source, "source");
+	const auto stamp = std::filesystem::last_write_time(source);
+	Inventory before;
+	before.Add(source);
+	REQUIRE(before.Valid);
+	std::filesystem::last_write_time(source, stamp + std::chrono::milliseconds(1));
+	REQUIRE(std::filesystem::last_write_time(source) != stamp);
+	Inventory after;
+	after.Add(source);
+	REQUIRE(after.Valid);
+	CHECK(after.Digest() != before.Digest());
+	std::filesystem::last_write_time(source, stamp);
+	Inventory restored;
+	restored.Add(source);
+	CHECK(restored.Digest() == before.Digest());
+}
+
 TEST_CASE("Project package cache rejects missing changed and malformed artifacts") {
 	using namespace Funke;
 	using namespace Funke::PackageBuildCache;
@@ -211,6 +232,64 @@ TEST_CASE("Project package cache tracks and validates supported imported setting
 TEST_CASE("Project package cache accepts local manifests with a UTF8 BOM") {
 	const std::string source = "\xEF\xBB\xBF" "return { layers = { csharp = { sources = { 'Source/**.cs' } } } }";
 	CHECK(Funke::PackageManifest::HasLocalBuildInputs(source));
+}
+
+TEST_CASE("Project package cache shares identical host engines across applications") {
+	using namespace Funke::PackageBuildCache;
+	PackageCacheFixture fixture;
+	const auto launcher = fixture.Root / "Launcher/Funke-Engine.dll";
+	const auto editor = fixture.Root / "Editor/Funke-Engine.dll";
+	fixture.Write(launcher, "engine-version-1");
+	fixture.Write(editor, "engine-version-1");
+	std::filesystem::last_write_time(editor, std::filesystem::last_write_time(launcher) + std::chrono::seconds(5));
+	Inventory before, after;
+	AddHostEngine(before, launcher);
+	AddHostEngine(after, editor);
+	REQUIRE(before.Valid);
+	REQUIRE(after.Valid);
+	CHECK(before.Digest() == after.Digest());
+	SUBCASE("engine content changes with the same size and timestamp") {
+		const auto stamp = std::filesystem::last_write_time(editor);
+		fixture.Write(editor, "engine-version-2");
+		std::filesystem::last_write_time(editor, stamp);
+	}
+	SUBCASE("engine missing") { std::filesystem::remove(editor); }
+	Inventory changed;
+	AddHostEngine(changed, editor);
+	CHECK(before.Digest() != changed.Digest());
+}
+
+TEST_CASE("Project package automation primes the next open and clears failed builds"
+	* doctest::skip(std::getenv("FUNKE_TEST_PACKAGE_BUILD") == nullptr)) {
+	using namespace Funke;
+	PackageCacheFixture fixture;
+	fixture.Write(fixture.Root / "project.json", R"({"name":"PackageCacheTest","packages":["Bench.Managed"]})");
+	std::filesystem::create_directories(fixture.Root / "Assets");
+	fixture.Write(fixture.Root / "Packages/Bench.Managed/funke-package.lua",
+		R"(return { name = "Bench.Managed", version = "0.1.0", layers = { csharp = { sources = { "Source/**.cs" } } } })");
+	const auto source = fixture.Root / "Packages/Bench.Managed/Source/Example.cs";
+	fixture.Write(source, "public class Example { public const int Value = 1; }");
+	std::string loadError;
+	const bool loaded = FunkeProject::TryLoad(Path::ToUtf8(fixture.Root), fixture.Project, &loadError, false);
+	INFO(loadError);
+	REQUIRE(loaded);
+	const std::string configuration = FunkeProject::GetActiveBuildConfiguration();
+	const auto built = FunkeProject::AutomateForProject(fixture.Project.RootDirectory, configuration);
+	INFO(built.Regenerate.Output);
+	INFO(built.Build.Output);
+	REQUIRE(built.Regenerate.Succeeded);
+	REQUIRE(built.Build.Succeeded);
+	const auto cache = PackageBuildCache::CachePath(fixture.Project, configuration, "x64");
+	REQUIRE(std::filesystem::exists(cache));
+	bool invokedBuild = false;
+	const auto opened = FunkeProject::PrepareProjectPackages(fixture.Project, configuration, "x64",
+		[&](float, std::string_view) { invokedBuild = true; });
+	CHECK(opened.Succeeded);
+	CHECK_FALSE(invokedBuild);
+	fixture.Write(source, "#error Expected package cache regression build failure");
+	const auto failed = FunkeProject::AutomateForProject(fixture.Project.RootDirectory, configuration);
+	CHECK_FALSE(failed.Build.Succeeded);
+	CHECK_FALSE(std::filesystem::exists(cache));
 }
 
 TEST_CASE("Project package cache tolerates leftover incomplete SDK directories") {

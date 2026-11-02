@@ -81,6 +81,7 @@ namespace Funke {
 		wgpu::Buffer m_GlobalsBuffer;
 		std::unordered_map<uint32_t, wgpu::BindGroupLayout> m_Layouts;
 		std::unordered_map<uint64_t, GroupEntry> m_Groups;
+		std::chrono::steady_clock::time_point m_NextGroupPurge{};
 		std::unordered_map<uint64_t, TextureEntry> m_Textures;
 		uint64_t m_DefaultTextures[4] = {};
 		std::vector<uint8_t> m_Scratch;

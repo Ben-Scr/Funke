@@ -73,6 +73,8 @@ namespace Funke::WebGPUBackend {
 		bool              Valid  = false;
 	};
 	FramebufferLookup LookupFramebufferByFboId(uint32_t fboBackendId);
+	// Depth-only view for post effects; never sample the combined depth/stencil attachment view.
+	wgpu::TextureView LookupFramebufferDepthSampleView(uint32_t fboBackendId);
 
 	// colorTextureViewPtr IS a WGPUTextureView pointer; non-ImGui consumers use this to get the wgpu wrapper back.
 	wgpu::TextureView LookupFramebufferColorViewByTextureId(uint64_t colorTextureViewPtr);

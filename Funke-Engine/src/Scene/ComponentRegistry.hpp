@@ -59,7 +59,8 @@ namespace Funke {
                             storage.emplace(entity, entity);
                         }
                         else {
-                            storage.emplace(entity);
+                            // Construct listeners can remove the component; push does not fetch it afterward.
+                            storage.push(entity);
                         }
                     });
                 info.remove.SetNative<T>([](Entity e) { e.RemoveComponent<T>(); },
@@ -125,7 +126,7 @@ namespace Funke {
                 if (info.defaultEmplace == nullptr) {
                     if constexpr (std::is_default_constructible_v<T>) {
                         info.defaultEmplace.SetNative<T>([](entt::registry& r, EntityHandle e) {
-                            r.emplace<T>(e);
+                            r.storage<T>().push(e);
                         });
                     }
                 }
@@ -294,6 +295,8 @@ namespace Funke {
         /// Adds component + transitive dependsOn chain. Cycle-safe. Conflicting deps are skipped with a warning.
         FUNKE_API bool AddWithDependencies(const Entity& entity, std::type_index type) const;
         FUNKE_API bool AddWithDependencies(const Entity& entity, const ComponentInfo& info) const;
+        FUNKE_API bool PlanAddition(const ComponentInfo& info, std::span<const ComponentInfo* const> existing,
+            std::vector<uint32_t>& additions, std::string& error) const;
         // Keeps the root absent even when a dependency cycle reaches it; callers apply the root payload afterward.
         FUNKE_API void AddDependencies(const Entity& entity, std::type_index type) const;
 

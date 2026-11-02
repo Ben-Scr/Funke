@@ -2,6 +2,7 @@
 #include "Project/ProjectManager.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Assets/AssetRegistry.hpp"
+#include "Assets/AssetBundle.hpp"
 #include "Localization/GameLocalization.hpp"
 #include "Serialization/Path.hpp"
 #if FUNKE_WITH_APPLICATION
@@ -15,6 +16,7 @@ namespace Funke {
 	std::unique_ptr<FunkeProject> ProjectManager::s_CurrentProject = nullptr;
 
 	void ProjectManager::SetCurrentProject(std::unique_ptr<FunkeProject> project, bool assetsImmutable) {
+		if (!assetsImmutable || !project) AssetBundle::UnmountAll();
 		s_CurrentProject = std::move(project);
 		ApplyCurrentProjectSettings();
 

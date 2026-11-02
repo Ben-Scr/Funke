@@ -41,6 +41,7 @@ project "Funke-CLI"
     -- seeds Packages/Funke-ScriptCore from the copy next to the exe.
     postbuildcommands { CopyFunkeAssets, CopyFunkeEngineDll, CopySDL3SharedLib }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
+    if CopyNetHostSharedLib ~= "" then postbuildcommands { CopyNetHostSharedLib } end
     dependson(FunkeManagedDependencies({ "Funke-ScriptCore" }))
     postbuildcommands(CopyScriptCoreArtifacts)
     ApplyFunkeProfilerRuntime()
@@ -50,7 +51,7 @@ project "Funke-CLI"
         buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
         systemversion "latest"
         defines { "FNK_PLATFORM_WINDOWS" }
-        files { path.join(ROOT_DIR, "premake/Utf8CodePage.manifest") }
+        files { "version.rc", path.join(ROOT_DIR, "premake/Utf8CodePage.manifest") }
         -- Funke-Engine.dll imports nethost even when no script ever runs.
         postbuildcommands {
             '{COPYFILE} "' .. path.join(ROOT_DIR, "External/dotnet/lib/nethost.dll") .. '" "%{cfg.targetdir}/nethost.dll"'
@@ -80,6 +81,10 @@ project "Funke-CLI"
         optimize "Full"
         symbols "Off"
         defines { "FNK_DIST", "NDEBUG" }
+
+    filter { "system:windows", "configurations:Release or Dist" }
+        buildoptions { "/guard:cf" }
+        linkoptions { "/DYNAMICBASE", "/NXCOMPAT", "/HIGHENTROPYVA", "/guard:cf" }
 
     filter {}
 

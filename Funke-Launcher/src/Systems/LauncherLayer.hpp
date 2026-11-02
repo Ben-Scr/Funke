@@ -205,6 +205,7 @@ namespace Funke {
 			Projects = 0,
 			AssetLibrary = 1,
 			Templates = 2,
+			Settings = 3,
 		};
 
 		void RenderLauncherPanel();
@@ -223,7 +224,8 @@ namespace Funke {
 		const Texture2D* GetProjectThumbnail(const std::string& projectPath);
 		void RenderCreateProjectPopup();
 		void RenderDeleteProjectPopups();
-		void RenderSettingsPopup();
+		void RenderSettingsPage();
+		void SaveSettingsLocation();
 		void RenderProjectInfoPopup();
 		void RenderErrorPopup();
 		void RenderLanguageRestartModal();
@@ -330,7 +332,8 @@ namespace Funke {
 		bool m_LanguageAuto = false;
 
 		std::string m_DefaultProjectsLocation;
-		bool m_OpenSettingsPopup = false;
+		char m_SettingsLocationBuffer[1024]{};
+		bool m_SettingsLocationDirty = false;
 
 		char m_NewProjectName[256]{};
 		char m_NewProjectLocation[512]{};

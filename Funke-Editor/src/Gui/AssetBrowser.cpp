@@ -152,28 +152,29 @@ namespace Funke {
 			return destinationDirectory / (FormatDuplicateAssetName(stem, static_cast<int>(std::time(nullptr)), suffixStyle) + extension);
 		}
 
-		bool CopyEntryTo(const std::filesystem::path& source, const std::filesystem::path& destination)
-		{
-			std::error_code ec;
-			if (!std::filesystem::exists(source, ec) || ec) {
+		bool CopyEntryTo(const std::filesystem::path& source, const std::filesystem::path& destination) {
+			if (!AssetFileHistory::DestinationAvailable(destination)) return false;
+			std::error_code error;
+			const bool directory = std::filesystem::is_directory(source, error);
+			if (error) return false;
+			if (directory) {
+				if (!std::filesystem::create_directory(destination, error) || error) return false;
+				std::filesystem::copy(source, destination, std::filesystem::copy_options::recursive, error);
+			}
+			else {
+				if (!std::filesystem::copy_file(source, destination, std::filesystem::copy_options::none, error)) return false;
+			}
+			if (!error) {
+				auto fromMeta = source; fromMeta += ".meta";
+				auto toMeta = destination; toMeta += ".meta";
+				if (std::filesystem::exists(fromMeta)) std::filesystem::copy_file(fromMeta, toMeta, std::filesystem::copy_options::none, error);
+			}
+			if (error) {
+				std::error_code cleanup;
+				std::filesystem::remove_all(destination, cleanup);
 				return false;
 			}
-
-			if (destination.has_parent_path()) {
-				std::filesystem::create_directories(destination.parent_path(), ec);
-				if (ec) {
-					return false;
-				}
-			}
-
-			if (std::filesystem::is_directory(source, ec) && !ec) {
-				std::filesystem::copy(source, destination, std::filesystem::copy_options::recursive, ec);
-				return !ec;
-			}
-
-			ec.clear();
-			std::filesystem::copy_file(source, destination, std::filesystem::copy_options::none, ec);
-			return !ec;
+			return true;
 		}
 
 		void CollectRegistryAssetPaths(const std::filesystem::path& path, std::vector<std::string>& paths)
@@ -232,55 +233,8 @@ namespace Funke {
 			}
 		}
 
-		bool MoveEntryTo(const std::filesystem::path& source, const std::filesystem::path& destination)
-		{
-			std::error_code ec;
-			if (!std::filesystem::exists(source, ec) || ec) {
-				return false;
-			}
-
-			if (destination.has_parent_path()) {
-				std::filesystem::create_directories(destination.parent_path(), ec);
-				if (ec) {
-					return false;
-				}
-			}
-
-			std::filesystem::rename(source, destination, ec);
-			if (!ec) {
-				if (std::filesystem::is_regular_file(destination, ec)) {
-					AssetRegistry::MoveCompanionMetadata(Path::ToUtf8(source), Path::ToUtf8(destination));
-				}
-				return true;
-			}
-
-			ec.clear();
-			if (!CopyEntryTo(source, destination)) {
-				return false;
-			}
-
-			// Carry the .meta across before deleting the source (Directory::Delete removes the source .meta),
-			// otherwise the moved asset re-imports with a fresh GUID and every reference to it breaks.
-			const std::filesystem::path sourceMeta = Path::FromUtf8(AssetRegistry::GetMetaPath(Path::ToUtf8(source)));
-			const std::filesystem::path destinationMeta = Path::FromUtf8(AssetRegistry::GetMetaPath(Path::ToUtf8(destination)));
-			if (std::filesystem::exists(sourceMeta, ec) && !ec) {
-				std::filesystem::copy_file(sourceMeta, destinationMeta, std::filesystem::copy_options::overwrite_existing, ec);
-				if (ec) {
-					std::error_code cleanupEc;
-					std::filesystem::remove_all(destination, cleanupEc);
-					return false;
-				}
-			}
-			ec.clear();
-
-			if (!Directory::Delete(Path::ToUtf8(source))) {
-				// Source still in place (e.g. locked): undo the copy rather than leave two copies sharing a GUID.
-				std::error_code cleanupEc;
-				std::filesystem::remove_all(destination, cleanupEc);
-				std::filesystem::remove(destinationMeta, cleanupEc);
-				return false;
-			}
-			return true;
+		bool MoveEntryTo(const std::filesystem::path& source, const std::filesystem::path& destination) {
+			return AssetFileHistory::MoveAsset(source, destination);
 		}
 
 #ifdef FNK_PLATFORM_WINDOWS
@@ -826,6 +780,7 @@ namespace Funke {
 
 	void AssetBrowser::Initialize(const std::string& rootDirectory) {
 		m_RootDirectory = rootDirectory;
+		m_FileHistory.Initialize(Path::FromUtf8(rootDirectory));
 		m_CurrentDirectory = rootDirectory;
 		m_Thumbnails.Initialize();
 		m_NeedsRefresh = true;
@@ -859,6 +814,8 @@ namespace Funke {
 #ifdef FNK_PLATFORM_WINDOWS
 		JoinAllShellLaunchThreads();
 #endif
+		m_FileHistory.Clear();
+		m_DeleteFileEdit.reset();
 		m_Thumbnails.Shutdown();
 		m_PrefabThumbnails.Clear();
 	}
@@ -890,6 +847,7 @@ namespace Funke {
 			m_SkipRegistrySyncOnNextRefresh = false;
 		}
 		m_Entries = Directory::GetEntries(m_CurrentDirectory);
+		m_GridDirty = true;
 		m_FolderTreeDirty = true; // cleared at the next tree render, never mid-traversal
 		RebuildSliceCache();
 		if (m_SearchBuffer[0] != '\0')
@@ -904,6 +862,7 @@ namespace Funke {
 	void AssetBrowser::QueueSearchRebuild() {
 		ResetBoxSelection();
 		m_SearchResults.clear();
+		m_GridDirty = true;
 		m_SearchTruncated = false;
 		if (m_SearchBuffer[0] == '\0') {
 			std::scoped_lock lock(m_SearchMutex);
@@ -989,6 +948,7 @@ namespace Funke {
 		if (std::string(m_SearchBuffer) == completedQuery) {
 			ResetBoxSelection();
 			m_SearchResults = std::move(results);
+			m_GridDirty = true;
 			m_SearchTruncated = truncated;
 		}
 		if (!queuedQuery.empty() && queuedQuery != completedQuery) {
@@ -1086,7 +1046,15 @@ namespace Funke {
 
 	void AssetBrowser::RebuildSliceCache() {
 		m_SliceCache.clear();
-		for (const DirectoryEntry& entry : m_Entries) {
+		m_NextSliceEntry = 0;
+		m_GridDirty = true;
+	}
+
+	void AssetBrowser::PumpSliceCache() {
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1);
+		for (size_t examined = 0; m_NextSliceEntry < m_Entries.size() && examined < 128; ++examined) {
+			if (examined != 0 && std::chrono::steady_clock::now() >= deadline) break;
+			const DirectoryEntry& entry = m_Entries[m_NextSliceEntry++];
 			if (entry.IsDirectory) continue;
 			const AssetType type = ThumbnailCache::GetAssetType(
 				std::filesystem::path(entry.Path).extension().string());
@@ -1095,6 +1063,7 @@ namespace Funke {
 			TextureMeta meta = AssetRegistry::ReadTextureMeta(entry.Path);
 			if (meta.Sprites.empty()) continue;
 			m_SliceCache.emplace(entry.Path, std::move(meta.Sprites));
+			m_GridDirty = true;
 		}
 	}
 
@@ -1176,10 +1145,15 @@ namespace Funke {
 			existsEc.clear();
 		}
 
+		if (!AssetFileHistory::DestinationAvailable(prefabPath)) return false;
+		auto edit = BeginFileEdit({ prefabPath.string() }, "Create Prefab Asset");
+		if (!edit) return false;
 		// Convert root AND children — marking only the root left children as plain scene entities (half-converted prefab bug).
 		if (SceneSerializer::SaveEntityAsPrefabInstance(*scene, entityHandle, prefabPath.string()) == 0) {
 			return false;
 		}
+		RegisterRegistryAssetTree(prefabPath);
+		FinishFileEdit(edit);
 		return true;
 	}
 
@@ -1401,6 +1375,10 @@ namespace Funke {
 			const bool sameDirectory = std::filesystem::equivalent(sourcePath.parent_path(), targetDirectory, ec) && !ec;
 			const std::filesystem::path targetPath = MakeUniqueAssetPath(sourcePath, targetDirectory, !sameDirectory);
 
+			if (!AssetFileHistory::DestinationAvailable(targetPath)) continue;
+			auto edit = BeginFileEdit(m_AssetClipboardCut ? std::vector<std::string>{ sourcePathString, targetPath.string() }
+				: std::vector<std::string>{ targetPath.string() }, m_AssetClipboardCut ? "Move Asset" : "Paste Asset");
+			if (!edit) return;
 			bool succeeded = false;
 			std::vector<std::string> movedSourceAssetPaths;
 			if (m_AssetClipboardCut) {
@@ -1422,6 +1400,7 @@ namespace Funke {
 					ForgetRegistryAssetPaths(movedSourceAssetPaths);
 				}
 				RegisterRegistryAssetTree(targetPath);
+				FinishFileEdit(edit);
 				pastedPaths.push_back(targetPath.string());
 				m_Thumbnails.Invalidate(sourcePath.string());
 				m_Thumbnails.Invalidate(targetPath.string());
@@ -1456,9 +1435,13 @@ namespace Funke {
 			}
 
 			const std::filesystem::path targetPath = MakeUniqueAssetPath(sourcePath, sourcePath.parent_path(), false);
+			if (!AssetFileHistory::DestinationAvailable(targetPath)) continue;
+			auto edit = BeginFileEdit({ targetPath.string() }, "Duplicate Asset");
+			if (!edit) return;
 			if (CopyEntryTo(sourcePath, targetPath)) {
 				SyncSceneEmbeddedNameIfNeeded(targetPath);
 				RegisterRegistryAssetTree(targetPath);
+				FinishFileEdit(edit);
 				duplicatedPaths.push_back(targetPath.string());
 				m_Thumbnails.Invalidate(targetPath.string());
 			}
@@ -1498,9 +1481,11 @@ namespace Funke {
 			}
 			m_PendingThumbnailInvalidates.clear();
 		}
+		if (m_ClearHistoryThumbnails) { InvalidateAllThumbnails(); m_ClearHistoryThumbnails = false; }
 		m_PrefabThumbnails.Update();
 
 		ImGui::Begin("Project");
+		if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) m_AssetHistoryContext = true;
 
 		if (!s_PendingRevealAssetPath.empty()) {
 			std::string revealPath = std::move(s_PendingRevealAssetPath);
@@ -1900,6 +1885,7 @@ namespace Funke {
 	}
 
 	void AssetBrowser::RenderGrid() {
+		PumpSliceCache();
 		if (!ImGui::BeginChild("AssetGrid", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_None)) {
 			ResetBoxSelection();
 			ImGui::EndChild();
@@ -1947,41 +1933,32 @@ namespace Funke {
 			visibleEntriesPtr = &m_SearchResults;
 
 		const std::vector<DirectoryEntry>& visibleEntries = *visibleEntriesPtr;
-		m_VisibleEntryPaths.clear();
-		m_VisibleEntryPaths.reserve(visibleEntries.size());
-		for (const DirectoryEntry& entry : visibleEntries) {
-			m_VisibleEntryPaths.push_back(entry.Path);
+		const bool pendingEntry = visibleEntriesPtr == &entriesWithPending;
+		if (m_GridDirty || m_GridSource != visibleEntriesPtr || pendingEntry) {
+			m_VisibleEntryPaths.clear();
+			m_VisibleEntryPaths.reserve(visibleEntries.size());
+			m_GridTiles.clear();
+			m_GridTiles.reserve(visibleEntries.size());
+			m_GridPathToTile.clear();
+			for (int i = 0; i < static_cast<int>(visibleEntries.size()); ++i) {
+				const std::string& path = visibleEntries[static_cast<size_t>(i)].Path;
+				m_VisibleEntryPaths.push_back(path);
+				m_GridPathToTile.emplace(path, static_cast<int>(m_GridTiles.size()));
+				m_GridTiles.push_back({ i, -1 });
+				const auto slices = m_SliceCache.find(path);
+				if (slices == m_SliceCache.end() || !m_ExpandedTextures.contains(path)) continue;
+				for (int s = 0; s < static_cast<int>(slices->second.size()); ++s) m_GridTiles.push_back({ i, s });
+			}
+			m_GridSource = pendingEntry ? nullptr : visibleEntriesPtr;
+			m_GridDirty = false;
 		}
-
-		// Flatten entries + expanded slices, then clip by rows so large folders
-		// only render and load thumbnails for the visible viewport.
-		struct GridTile {
-			int EntryIndex = -1;
-			int SliceIndex = -1;
+		const auto findTile = [&](const std::string& path) {
+			const auto found = m_GridPathToTile.find(path);
+			return found == m_GridPathToTile.end() ? -1 : found->second;
 		};
-
-		std::vector<GridTile> tiles;
-		tiles.reserve(visibleEntries.size());
-		int scrollToTileIndex = -1;
-		int renameTileIndex = -1;
-		for (int i = 0; i < static_cast<int>(visibleEntries.size()); ++i) {
-			if (!m_PendingScrollToPath.empty() && visibleEntries[static_cast<std::size_t>(i)].Path == m_PendingScrollToPath) {
-				scrollToTileIndex = static_cast<int>(tiles.size());
-			}
-			if (IsRenamingEntry(visibleEntries[static_cast<std::size_t>(i)].Path)) {
-				renameTileIndex = static_cast<int>(tiles.size());
-			}
-			tiles.push_back(GridTile{ i, -1 });
-
-			auto sliceIt = m_SliceCache.find(visibleEntries[static_cast<std::size_t>(i)].Path);
-			if (sliceIt == m_SliceCache.end()) continue;
-			if (m_ExpandedTextures.find(visibleEntries[static_cast<std::size_t>(i)].Path) == m_ExpandedTextures.end()) continue;
-
-			const std::vector<SpriteSlice>& slices = sliceIt->second;
-			for (int s = 0; s < static_cast<int>(slices.size()); ++s) {
-				tiles.push_back(GridTile{ i, s });
-			}
-		}
+		const auto& tiles = m_GridTiles;
+		const int scrollToTileIndex = m_PendingScrollToPath.empty() ? -1 : findTile(m_PendingScrollToPath);
+		const int renameTileIndex = m_IsRenaming ? findTile(m_RenamePath) : -1;
 
 		const float rowHeight = m_TileSize + ImGui::GetTextLineHeightWithSpacing() + m_TilePadding;
 		const int rowCount = columns > 0
@@ -2283,7 +2260,7 @@ namespace Funke {
 				static_cast<ImTextureID>(static_cast<intptr_t>(thumbnail)),
 				ImVec2(drawW, drawH),
 				thumbFilter,
-				ImVec2(0, 1), ImVec2(1, 0)
+				ImVec2(0, 0), ImVec2(1, 1)
 			);
 
 			ImGui::SetCursorScreenPos(ImVec2(iconPos.x, iconPos.y + m_TileSize));
@@ -2415,6 +2392,7 @@ namespace Funke {
 				if (expanderHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
 					if (isExpanded) m_ExpandedTextures.erase(entry.Path);
 					else            m_ExpandedTextures.insert(entry.Path);
+					m_GridDirty = true;
 				}
 			}
 		}
@@ -2845,7 +2823,6 @@ namespace Funke {
 		dl->AddRectFilled(bgMin, bgMax, ImGui::GetColorU32(ImGuiCol_FrameBg), 3.0f);
 		dl->AddRect(bgMin, bgMax, ImGui::GetColorU32(ImGuiCol_Border), 3.0f);
 
-		// Y-flipped UVs: thumbnails are uploaded bottom-up (same convention as the regular tile path).
 		const uint64_t parentThumb = m_Thumbnails.GetThumbnail(parentEntry.Path);
 		Texture2D* parentTex = m_Thumbnails.GetCacheEntry(parentEntry.Path);
 		if (parentThumb != 0 && parentTex && parentTex->IsValid()
@@ -2856,11 +2833,8 @@ namespace Funke {
 			const float texH = static_cast<float>(parentTex->GetHeight());
 			const float u0 = static_cast<float>(slice.X) / texW;
 			const float u1 = static_cast<float>(slice.X + slice.W) / texW;
-			// Y-flip: the textured quad is drawn with (V=1) at the top, so the
-			// slice's `y` (measured from the texture's top in pixel space) maps
-			// to V = 1 - (y / texH).
-			const float v0 = 1.0f - static_cast<float>(slice.Y) / texH;
-			const float v1 = 1.0f - static_cast<float>(slice.Y + slice.H) / texH;
+			const float v0 = static_cast<float>(slice.Y) / texH;
+			const float v1 = static_cast<float>(slice.Y + slice.H) / texH;
 
 			// Aspect-correct fit inside the tile so a tall sub-rect doesn't
 			// stretch horizontally. 8px margin keeps the slice visually
@@ -2975,7 +2949,16 @@ namespace Funke {
 		if (ImGui::BeginDragDropTarget()) {
 			if (ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
 				for (const std::string& sourcePath : sourcePaths) {
-					if (Directory::Move(sourcePath, entry.Path)) {
+					const auto target = Path::FromUtf8(entry.Path) / Path::FromUtf8(sourcePath).filename();
+					if (!AssetFileHistory::DestinationAvailable(target)) continue;
+					auto edit = BeginFileEdit({ sourcePath, Path::ToUtf8(target) }, "Move Asset");
+					if (!edit) continue;
+					std::vector<std::string> oldAssets;
+					CollectRegistryAssetPaths(Path::FromUtf8(sourcePath), oldAssets);
+					if (MoveEntryTo(Path::FromUtf8(sourcePath), target)) {
+						ForgetRegistryAssetPaths(oldAssets);
+						RegisterRegistryAssetTree(target);
+						FinishFileEdit(edit);
 						m_PendingThumbnailInvalidates.push_back(sourcePath);
 						if (m_SelectedPath == sourcePath) {
 							m_SelectedPath.clear();

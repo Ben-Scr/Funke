@@ -22,7 +22,9 @@ What the build produces:
 | Linux | `<Name>` (executable) with `libFunke-Engine.so`, `libSDL3.so.0`, `libwebgpu_dawn.so` and the game content next to it. Ship the folder, e.g. as a `.tar.gz`. |
 | macOS | `<Name>.app`: the executable and libraries in `Contents/MacOS`, the game content in `Contents/Resources`, an `Info.plist` with the app id and version, and the icon as `AppIcon.icns`. The bundle is ad-hoc signed; sign and notarize it with your Developer ID before distributing it outside your own Macs. |
 
-From a source checkout the editor compiles a fresh runtime for the export first (MSBuild on Windows, `make` on Linux and macOS). That runtime contains only the [engine modules](../Engine-Core/Engine-Modules.md) the project enables, so a 2D game ships without the 3D renderer and Jolt and a 3D game without sprites and Box2D. The first export with a new module set compiles the engine once. A build stops when a shipped scene uses a component of a module the project leaves out.
+From a source checkout the editor builds the export runtime incrementally (MSBuild on Windows, `make` on Linux and macOS). It can omit unused [engine modules](../Engine-Core/Engine-Modules.md), so a 2D game can ship without the 3D renderer and Jolt. The first export with a new module set compiles that variant once. Native package compatibility or unavailable variant generation can require the full runtime. A build stops when shipped content uses a component from a disabled module.
+
+Desktop exports also compile native C++ scripts, when present, in `NativeScripts/build-export` and include the resulting library alongside the C# assemblies. Release exports use the Dist native configuration with the Release gameplay define. This requires a matching native SDK/source tree, CMake and a compatible C++ compiler. The desktop native-script library workflow is not supported by the mobile/Web exporters; native package layers have a separate static-link workflow.
 
 On Windows that runtime is compiled with the MSBuild of Visual Studio 2022 when it is installed, because the engine itself is built with it; otherwise Visual Studio 2026 with the MSVC v143 toolset is used. Set `FUNKE_MSBUILD` to the full path of an `MSBuild.exe` to choose one yourself.
 
@@ -30,7 +32,7 @@ The build is fail-closed: invalid paths, missing scenes, incomplete scripting ar
 
 Do not remove files from the result. The executable depends on the adjacent engine, SDL3, .NET host, ScriptCore, project assembly, package libraries, project configuration, assets, and license folders produced by the build.
 
-For the current demo release, list every native package dependency directly in the project's `packages` array. Native runtime loading does not yet expand transitive package dependencies.
+List the packages your project uses in its `packages` array. The package resolver includes transitive dependencies and loads them before their dependents; missing or incompatible dependencies prevent the affected packages from loading. See [Versions and dependencies](../Packages/Package-System.md#versions-and-dependencies).
 
 ## Which assets ship
 
@@ -48,6 +50,37 @@ A build only contains the files from `Assets/` and the engine's `FunkeAssets/` t
 Built-in files always come from the engine you build with, so engine updates (a new splash logo, fixed default textures) reach older projects too. The project's own `FunkeAssets/` folder, a copy made when the project was created, only replaces an engine file when you changed that file in the project (it is newer than the engine's).
 
 Files your code finds through a computed path (`"Level" + i + ".json"`, a path from a config value) cannot be detected. Put them in `Assets/StreamingAssets/`. If the project cannot be scanned completely (unreadable file, missing build scene), the build logs a warning and ships all assets.
+
+## Asset bundles
+
+In **Build Profiles › Asset Packaging**, enable **Bundle Assets** to ship the staged
+`Assets/` and `FunkeAssets/` as `Assets.fbundle` and `FunkeAssets.fbundle`.
+**Compress Bundles** enables lossless compression. The **Compression** selector offers
+**LZ4** for fast loading or **Zstandard** for smaller bundles (compression level 3).
+Both switches default to off. Existing profiles keep LZ4 unless Zstandard is selected.
+
+```json
+{
+  "bundleAssets": true,
+  "compressAssetBundles": true,
+  "assetBundleCompression": "Zstd"
+}
+```
+
+Pruning and binary scene conversion run before bundling. GUIDs and `.meta` data
+are preserved. The runtime reads individual files directly from the bundles;
+compressed files are decompressed only when requested. Files that do not shrink
+are stored uncompressed. Bundles have a versioned index and per-file checksums;
+invalid indices reject startup and corrupt payloads fail asset loading.
+
+`Assets/StreamingAssets/` stays loose. Use it for direct C# `System.IO` access or
+third-party libraries that require real filenames; bundled assets are available
+through Funke's asset APIs. Bundle entries are limited to 2,113,929,216 bytes per
+file. Keep larger external files in StreamingAssets.
+
+The settings apply to desktop and platform-package content staging. Ship the
+complete output directory, including bundles, StreamingAssets and licenses.
+Turning bundling off restores loose assets on the next successful build.
 
 ## App icon and cursors
 
@@ -74,7 +107,7 @@ A Windows player machine needs:
 - The [.NET 10 x64 Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/10.0), only when **Include .NET Runtime** is off in the build profile.
 - The [Microsoft Visual C++ 2015-2022 x64 Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe).
 
-A Linux player machine needs a Vulkan driver and the operating-system dependencies of .NET. A macOS player needs macOS 11 or later. When **Include .NET Runtime** is off, both also need the .NET 10 Runtime for their CPU (`dotnet-runtime-10.0` on Linux; Arm64 on Apple Silicon).
+A Linux player needs a Vulkan driver and the system libraries required by the engine build and .NET; the release CI baseline is Ubuntu 24.04 x64. For macOS games using .NET 10, the supported baseline is macOS 15. Check Microsoft's [supported systems](https://github.com/dotnet/core/blob/main/release-notes/10.0/supported-os.md) when choosing deployment targets. With **Include .NET Runtime** off, players must install the matching .NET 10 Runtime themselves; Apple Silicon uses Arm64 and Intel Macs use x64.
 
 Desktop build profiles enable **Include .NET Runtime** by default (`"bundleDotNetRuntime": true` in the `.build` file). The exporter copies the newest installed stable patch of ScriptCore's required major/minor version, its matching hostfxr and license notices into `dotnet/` beside the game's ScriptCore files. It checks the native runtime architecture and refuses incomplete installations. The export uses the installed runtime offline; update .NET on the build machine and export again to ship security updates. The SDK and unrelated runtimes are not included.
 

@@ -59,6 +59,13 @@ public class Transform3D : Component
 
 public class Camera3D : Component
 {
+    /// <summary>Enables this camera's Post Processing effects; global graphics settings must also allow them.</summary>
+    public bool PostProcessingEnabled
+    {
+        get => InternalCalls.Camera3D_GetPostProcessingEnabled(RequireComponent<Camera3D>());
+        set => InternalCalls.Camera3D_SetPostProcessingEnabled(RequireComponent<Camera3D>(), value);
+    }
+
     public static Camera3D? Main
     {
         get

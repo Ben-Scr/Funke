@@ -229,9 +229,18 @@ namespace Funke {
 			auto& registry = scene.GetRegistry();
 
 			for (auto [ent, rb, tf] : registry.view<Rigidbody2DComponent, Transform2DComponent>(entt::exclude<DisabledTag>).each()) {
-				if (!rb.IsValid()) continue;
-				tf.Position = rb.GetPosition();
-				tf.Rotation = rb.GetRotation();
+				const b2BodyId body = rb.GetBodyHandle();
+				if (B2_IS_NULL(body)) continue;
+				const b2Transform pose = b2Body_GetTransform(body);
+				const Vec2 position{ pose.p.x, pose.p.y };
+				const float rotation = b2Rot_GetAngle(pose.q);
+				const auto* hierarchy = registry.try_get<HierarchyComponent>(ent);
+				if ((!hierarchy || !registry.valid(hierarchy->Parent))
+					&& tf.Position == position && tf.Rotation == rotation
+					&& tf.LocalPosition == position && tf.LocalRotation == rotation
+					&& tf.LocalScale == tf.Scale && !tf.IsDirty()) continue;
+				tf.Position = position;
+				tf.Rotation = rotation;
 				DecomposeWorldToLocal(registry, ent, tf);
 				tf.ClearDirty();
 			}

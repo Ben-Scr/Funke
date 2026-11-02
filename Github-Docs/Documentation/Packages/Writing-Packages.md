@@ -300,7 +300,7 @@ android = {
 
 ## Turning a package on for your project
 
-A project only builds the packages it explicitly lists. Open your project's `project.json` and add the package to the `packages` array:
+A project selects root packages in `project.json`; their transitive dependencies are included and built before their dependents. Add the root package to the `packages` array:
 
 ```jsonc
 {
@@ -311,7 +311,7 @@ A project only builds the packages it explicitly lists. Open your project's `pro
 }
 ```
 
-- Only listed packages are built and registered. Their dependencies are pulled in automatically.
+- Listed packages and their dependency closure are built and registered. Cyclic or missing dependencies fail resolution.
 - An empty list (or a missing file) means **no** packages — this is deliberate (a fresh project ships with none).
 - After editing the list, **regenerate project files** (the scaffolder does this for you; manual edits don't).
 - Rebuilding the engine from the editor also regenerates and rebuilds every enabled native package before relaunch.

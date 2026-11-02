@@ -79,6 +79,7 @@ project "Funke-Editor"
     dependson(FunkeManagedDependencies({ "Funke-ScriptCore" }))
     postbuildcommands { CopyFunkeAssets, CopyFunkeEngineDll, CopySDL3SharedLib }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
+    if CopyNetHostSharedLib ~= "" then postbuildcommands { CopyNetHostSharedLib } end
     postbuildcommands(CopyScriptCoreArtifacts)
     postbuildcommands(CopyScriptCompilerArtifacts)
     ApplyFunkeProfilerRuntime()

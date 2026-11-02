@@ -14,6 +14,8 @@
 #include "Gui/SpriteSliceDragPayload.hpp"
 #include "Inspector/PropertyType.hpp"
 #include "Inspector/PropertyValue.hpp"
+#include "Inspector/PropertyJson.hpp"
+#include "Inspector/PropertyValidation.hpp"
 #include "Inspector/ReferencePicker.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Scene.hpp"
@@ -130,6 +132,10 @@ namespace Funke::PropertyDrawer {
 		void WriteAll(std::span<const Entity> entities, const PropertyDescriptor& d,
 			const PropertyValue& value)
 		{
+			if (PropertyJson::IsSupported(d.Type)) for (const Entity& entity : entities) {
+				std::string error;
+				if (!PropertyValidation::ValidateValue(&entity, d, value, error)) return;
+			}
 			InspectorUndoRecorder::CaptureBefore(entities, d);
 			for (const Entity& e : entities) {
 				d.Set(const_cast<Entity&>(e), value);
@@ -142,6 +148,12 @@ namespace Funke::PropertyDrawer {
 		void WriteFloatChannel(std::span<const Entity> entities,
 			const PropertyDescriptor& d, std::size_t channel, float newValue)
 		{
+			for (const Entity& entity : entities) {
+				PropertyValue value = d.Get(entity);
+				value.FloatVec[channel] = newValue;
+				std::string error;
+				if (!PropertyValidation::ValidateValue(&entity, d, value, error)) return;
+			}
 			InspectorUndoRecorder::CaptureBefore(entities, d);
 			for (const Entity& e : entities) {
 				PropertyValue current = d.Get(e);
@@ -154,6 +166,12 @@ namespace Funke::PropertyDrawer {
 		void WriteIntChannel(std::span<const Entity> entities,
 			const PropertyDescriptor& d, std::size_t channel, int32_t newValue)
 		{
+			for (const Entity& entity : entities) {
+				PropertyValue value = d.Get(entity);
+				value.IntVec[channel] = newValue;
+				std::string error;
+				if (!PropertyValidation::ValidateValue(&entity, d, value, error)) return;
+			}
 			InspectorUndoRecorder::CaptureBefore(entities, d);
 			for (const Entity& e : entities) {
 				PropertyValue current = d.Get(e);
@@ -406,26 +424,9 @@ namespace Funke::PropertyDrawer {
 				: valueMax;
 			ImGui::PushID(d.Name.c_str());
 			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
-			bool changed = false;
-			if (d.Metadata.HasClamp) {
-				// SliderInt + InputInt combo: slider visualises [Min, Max]; input lets user type exact value.
-				const float fullW = ImGui::CalcItemWidth();
-				const float style = ImGui::GetStyle().ItemInnerSpacing.x;
-				const float inputW = std::min(80.0f, fullW * 0.30f);
-				const float sliderW = std::max(40.0f, fullW - inputW - style);
-				ImGui::SetNextItemWidth(sliderW);
-				changed |= ImGui::SliderInt("##Slider", &tmp, clampMin, clampMax,
-					uniform ? "%d" : "-");
-				ImGui::SameLine(0.0f, style);
-				ImGui::SetNextItemWidth(inputW);
-				changed |= ImGui::InputInt("##Value", &tmp, 0, 0,
-					ImGuiInputTextFlags_CharsDecimal);
-			}
-			else {
-				const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 1.0f;
-				changed = ImGui::DragInt("##Value", &tmp, speed, clampMin, clampMax,
-					uniform ? "%d" : "-");
-			}
+			const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 1.0f;
+			const bool changed = ImGui::DragInt("##Value", &tmp, speed, clampMin, clampMax,
+				uniform ? "%d" : "-", ImGuiSliderFlags_AlwaysClamp);
 			ImGui::PopID();
 			if (changed) {
 				if (tmp < clampMin) tmp = clampMin;
@@ -547,7 +548,7 @@ namespace Funke::PropertyDrawer {
 			bool changed = false;
 			if (d.Metadata.HasClamp && clampMax > clampMin) {
 				// [ClampValue] fields: one fill-bar drag (double-click to type); unbounded fields keep plain DragFloat.
-				changed = ImGuiUtils::FillDragFloat("##Value", &tmp, clampMin, clampMax, uniform ? "%.3f" : "-");
+				changed = ImGuiUtils::FillDragFloat("##Value", &tmp, clampMin, clampMax, uniform ? "%.3f" : "-", d.Metadata.DragSpeed);
 			}
 			else {
 				const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 0.1f;

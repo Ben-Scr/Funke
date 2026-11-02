@@ -34,11 +34,8 @@ namespace Funke::WebGPUSpriteResources {
 		constexpr uint16_t k_QuadIndices[] = { 0, 1, 2, 0, 2, 3 };
 		constexpr uint16_t k_QuadWireIndices[] = { 0, 1, 1, 2, 2, 0, 0, 2, 2, 3, 3, 0 };
 
-		// Pipeline cache key: pack (colorFormat << 1) | hasDepth into a
-		// single 32-bit value. Format enums are uint32_t in webgpu_cpp.h;
-		// the shift keeps headroom and the LSB carries the hasDepth bit.
-		uint32_t MakePipelineKey(wgpu::TextureFormat fmt, bool hasDepth, SpritePipelineMode mode) {
-			return (static_cast<uint32_t>(fmt) << 2)
+		uint32_t MakePipelineKey(wgpu::TextureFormat fmt, bool hasDepth, SpritePipelineMode mode, bool depthTest, uint32_t sampleCount) {
+			return (static_cast<uint32_t>(fmt) << 8) | (sampleCount << 3) | (depthTest ? 4u : 0u)
 				| (hasDepth ? 1u : 0u)
 				| (mode == SpritePipelineMode::Wireframe ? 2u : 0u);
 		}
@@ -135,7 +132,7 @@ namespace Funke::WebGPUSpriteResources {
 
 		wgpu::RenderPipeline CreateSpritePipeline(wgpu::Device device,
 			wgpu::ShaderModule module, wgpu::PipelineLayout layout,
-			wgpu::TextureFormat colorFormat, bool hasDepth, SpritePipelineMode mode)
+			wgpu::TextureFormat colorFormat, bool hasDepth, SpritePipelineMode mode, bool depthTest, uint32_t sampleCount)
 		{
 			wgpu::VertexAttribute vertexAttrs[1] = {};
 			vertexAttrs[0].format         = wgpu::VertexFormat::Float32x3;
@@ -210,7 +207,7 @@ namespace Funke::WebGPUSpriteResources {
 			if (hasDepth) {
 				depthState.format            = wgpu::TextureFormat::Depth24PlusStencil8;
 				depthState.depthWriteEnabled = false;  // sprites don't write depth
-				depthState.depthCompare      = wgpu::CompareFunction::Always;
+				depthState.depthCompare      = depthTest ? wgpu::CompareFunction::LessEqual : wgpu::CompareFunction::Always;
 				// Stencil left at defaults (Always / Keep) — no stencil work in Stage 4.
 			}
 
@@ -227,7 +224,7 @@ namespace Funke::WebGPUSpriteResources {
 			desc.primitive = prim;
 			desc.depthStencil = hasDepth ? &depthState : nullptr;
 
-			desc.multisample.count = 1;
+			desc.multisample.count = sampleCount;
 			desc.multisample.mask  = 0xFFFFFFFF;
 
 			return device.CreateRenderPipeline(&desc);
@@ -347,10 +344,10 @@ namespace Funke::WebGPUSpriteResources {
 	wgpu::BindGroupLayout GetBindGroupLayout() { return g_Res.BindGroupLayout; }
 	wgpu::PipelineLayout  GetPipelineLayout()  { return g_Res.PipelineLayout; }
 
-	wgpu::RenderPipeline GetSpritePipeline(wgpu::TextureFormat colorFormat, bool hasDepth, SpritePipelineMode mode) {
+	wgpu::RenderPipeline GetSpritePipeline(wgpu::TextureFormat colorFormat, bool hasDepth, SpritePipelineMode mode, bool depthTest, uint32_t sampleCount) {
 		if (!g_Ready) return nullptr;
 
-		const uint32_t key = MakePipelineKey(colorFormat, hasDepth, mode);
+		const uint32_t key = MakePipelineKey(colorFormat, hasDepth, mode, depthTest, sampleCount);
 		auto it = g_Res.PipelineCache.find(key);
 		if (it != g_Res.PipelineCache.end()) return it->second;
 
@@ -358,7 +355,7 @@ namespace Funke::WebGPUSpriteResources {
 		if (!device) return nullptr;
 
 		wgpu::RenderPipeline pipeline = CreateSpritePipeline(
-			device, g_Res.SpriteModule, g_Res.PipelineLayout, colorFormat, hasDepth, mode);
+			device, g_Res.SpriteModule, g_Res.PipelineLayout, colorFormat, hasDepth, mode, depthTest, sampleCount);
 		if (!pipeline) {
 			FNK_CORE_ERROR_TAG("WebGPUSpriteResources",
 				"Failed to create pipeline for color format {} (hasDepth={})",

@@ -5,6 +5,7 @@
 #include "Components/General/Transform2DComponent.hpp"
 #endif
 #include "Components/Graphics/TextRendererComponent.hpp"
+#include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Core/Log.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
@@ -85,8 +86,8 @@ namespace Funke {
 			return s;
 		}
 
-		uint32_t MakePipelineKey(wgpu::TextureFormat fmt, bool hasDepth) {
-			return (static_cast<uint32_t>(fmt) << 1) | (hasDepth ? 1u : 0u);
+		uint32_t MakePipelineKey(wgpu::TextureFormat fmt, bool hasDepth, bool depthTest, uint32_t sampleCount) {
+			return (static_cast<uint32_t>(fmt) << 8) | (sampleCount << 2) | (depthTest ? 2u : 0u) | (hasDepth ? 1u : 0u);
 		}
 
 		wgpu::BindGroupLayout BuildBindGroupLayout(wgpu::Device device) {
@@ -149,7 +150,7 @@ namespace Funke {
 
 		wgpu::RenderPipeline BuildTextPipeline(wgpu::Device device,
 			wgpu::ShaderModule module, wgpu::PipelineLayout layout,
-			wgpu::TextureFormat colorFormat, bool hasDepth)
+			wgpu::TextureFormat colorFormat, bool hasDepth, bool depthTest, uint32_t sampleCount)
 		{
 			// Vertex layout: 1 buffer × 3 attributes (per-vertex).
 			wgpu::VertexAttribute attrs[6] = {};
@@ -207,7 +208,7 @@ namespace Funke {
 			if (hasDepth) {
 				depthState.format            = wgpu::TextureFormat::Depth24PlusStencil8;
 				depthState.depthWriteEnabled = false;
-				depthState.depthCompare      = wgpu::CompareFunction::Always;
+				depthState.depthCompare      = depthTest ? wgpu::CompareFunction::LessEqual : wgpu::CompareFunction::Always;
 			}
 
 			wgpu::RenderPipelineDescriptor desc{};
@@ -223,7 +224,7 @@ namespace Funke {
 			desc.primitive    = prim;
 			desc.depthStencil = hasDepth ? &depthState : nullptr;
 
-			desc.multisample.count = 1;
+			desc.multisample.count = sampleCount;
 			desc.multisample.mask  = 0xFFFFFFFF;
 
 			return device.CreateRenderPipeline(&desc);
@@ -290,18 +291,18 @@ namespace Funke {
 			g.ShaderObj.reset();
 		}
 
-		wgpu::RenderPipeline GetOrBuildPipeline(wgpu::TextureFormat colorFormat, bool hasDepth) {
+		wgpu::RenderPipeline GetOrBuildPipeline(wgpu::TextureFormat colorFormat, bool hasDepth, bool depthTest, uint32_t sampleCount) {
 			GlobalTextState& g = Globals();
 			if (!g.Module || !g.PipelineLayout) return nullptr;
 
-			const uint32_t key = MakePipelineKey(colorFormat, hasDepth);
+			const uint32_t key = MakePipelineKey(colorFormat, hasDepth, depthTest, sampleCount);
 			auto it = g.PipelineCache.find(key);
 			if (it != g.PipelineCache.end()) return it->second;
 
 			wgpu::Device device = WebGPUBackend::GetDevice();
 			if (!device) return nullptr;
 			wgpu::RenderPipeline pipeline = BuildTextPipeline(
-				device, g.Module, g.PipelineLayout, colorFormat, hasDepth);
+				device, g.Module, g.PipelineLayout, colorFormat, hasDepth, depthTest, sampleCount);
 			if (!pipeline) return nullptr;
 			g.PipelineCache.emplace(key, pipeline);
 			return pipeline;
@@ -750,7 +751,7 @@ namespace Funke {
 	}
 
 	void TextRenderer::RenderInstances(std::span<const TextDrawCmd> commands, const glm::mat4& mvp,
-		unsigned short /*viewId*/, unsigned short /*scissorCache*/)
+		unsigned short /*viewId*/, unsigned short /*scissorCache*/, bool depthTest)
 	{
 		m_LastFrameGlyphCount = 0;
 		m_LastFrameDrawCalls = 0;
@@ -766,7 +767,7 @@ namespace Funke {
 		wgpu::Queue  queue  = WebGPUBackend::GetQueue();
 		if (!device || !queue) return;
 
-		wgpu::RenderPipeline pipeline = GetOrBuildPipeline(target.ColorFormat, target.HasDepth);
+		wgpu::RenderPipeline pipeline = GetOrBuildPipeline(target.ColorFormat, target.HasDepth, depthTest, target.SampleCount);
 		if (!pipeline) return;
 
 		PerInstance& inst = GetPerInstance(this);
@@ -992,7 +993,7 @@ namespace Funke {
 		m_PendingDrawCmds.clear();
 
 		entt::registry& registry = scene.GetRegistry();
-		auto view = registry.view<TextRendererComponent, Transform2DComponent>(entt::exclude<DisabledTag>);
+		auto view = registry.view<TextRendererComponent, Transform2DComponent>(entt::exclude<DisabledTag, RectTransform2DComponent>);
 		for (auto&& [entity, text, tr] : view.each()) {
 			if (text.Text.empty()) continue;
 

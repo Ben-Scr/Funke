@@ -118,6 +118,12 @@ public unsafe sealed class ScriptAssemblyReloadTests : IDisposable
         WriteAssembly(path, 1);
         Assert.Equal(1, ScriptInstanceManager.LoadUserAssemblyPath(path));
         var previous = new WeakReference(AssemblyLoadContext.GetLoadContext(ScriptInstanceManager.UserAssembly!));
+        byte[] name = System.Text.Encoding.UTF8.GetBytes("ReloadScript\0");
+        fixed (byte* pointer = name)
+        {
+            delegate* unmanaged<byte*, byte*> fields = &ScriptInstanceManager.GetClassFieldDefs;
+            Assert.Contains("VisibleValue", Marshal.PtrToStringUTF8((nint)fields(pointer)));
+        }
         WriteAssembly(path, 2);
         Assert.Equal(1, ScriptInstanceManager.LoadUserAssemblyPath(path));
         return previous;
@@ -126,12 +132,34 @@ public unsafe sealed class ScriptAssemblyReloadTests : IDisposable
     private static int ReadVersion()
         => (int)ScriptInstanceManager.UserAssembly!.GetType("ReloadScript")!.GetMethod("Version")!.Invoke(null, null)!;
 
+    [Fact]
+    public void Class_schema_does_not_invoke_a_user_constructor()
+    {
+        string path = Path.Combine(m_Directory, "Game.dll");
+        var assembly = new PersistedAssemblyBuilder(new AssemblyName("MetadataGame"), typeof(object).Assembly);
+        var script = assembly.DefineDynamicModule("MetadataGame").DefineType("MetadataScript", TypeAttributes.Public, typeof(EntityScript));
+        script.DefineField("VisibleValue", typeof(int), FieldAttributes.Public);
+        var body = script.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard, Type.EmptyTypes).GetILGenerator();
+        body.Emit(OpCodes.Newobj, typeof(InvalidOperationException).GetConstructor(Type.EmptyTypes)!);
+        body.Emit(OpCodes.Throw);
+        script.CreateType();
+        assembly.Save(path);
+        Assert.Equal(1, ScriptInstanceManager.LoadUserAssemblyPath(path));
+        byte[] name = System.Text.Encoding.UTF8.GetBytes("schema:MetadataScript\0");
+        fixed (byte* pointer = name)
+        {
+            delegate* unmanaged<byte*, byte*> fields = &ScriptInstanceManager.GetClassFieldDefs;
+            Assert.Contains("VisibleValue", Marshal.PtrToStringUTF8((nint)fields(pointer)));
+        }
+    }
+
     private static void WriteAssembly(string path, int version, Type? fieldType = null)
     {
         var assembly = new PersistedAssemblyBuilder(new AssemblyName("ReloadGame"), typeof(object).Assembly);
         ModuleBuilder module = assembly.DefineDynamicModule("ReloadGame");
         TypeBuilder script = module.DefineType("ReloadScript", TypeAttributes.Public, typeof(EntityScript));
         script.DefineDefaultConstructor(MethodAttributes.Public);
+        script.DefineField("VisibleValue", typeof(int), FieldAttributes.Public);
         if (fieldType != null)
             script.DefineField("Value", fieldType, FieldAttributes.Public);
         ILGenerator body = script.DefineMethod("Version", MethodAttributes.Public | MethodAttributes.Static,

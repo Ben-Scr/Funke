@@ -275,6 +275,13 @@ namespace Funke {
 		static void InjectMouseMove(Vec2 windowPosition);
 		// phase: 0 down, 1 move, 2 up.
 		static void InjectTouch(int64_t fingerId, Vec2 windowPosition, int phase);
+		static void InjectScroll(Vec2 delta);
+		static void InjectText(std::string_view utf8);
+		static int ConnectAutomationGamepad();
+		static bool InjectGamepadButton(int button, bool pressed);
+		static bool InjectGamepadAxis(int axis, float value);
+		static void RefreshAutomationGamepad();
+		static void DisconnectAutomationGamepad();
 
 		static void SetTitlebarCaptionRect(int x, int y, int w, int h);
 		static void AddTitlebarNonClientRect(int x, int y, int w, int h);
@@ -298,6 +305,8 @@ namespace Funke {
 		void OnKey(int key, bool pressed, bool repeat);
 		void OnMouseButton(int button, bool pressed);
 		void OnCursorMoved(float x, float y);
+		void OnScroll(Vec2 delta);
+		void OnText(std::string_view utf8);
 		void OnFramebufferResized();
 		static bool OnEventWatch(void* userData, SDL_Event* event);
 

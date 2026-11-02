@@ -1,6 +1,14 @@
 # Testing a Funke game without clicking
 
-An agent can't play the game. It can validate the files, run the game with scripted input, ask the game for its state through dev commands, and look at screenshots taken at exact game times. This file covers all of that, plus shipping a build.
+An agent can exercise a game's core loop with real scripted input and state assertions. It can also validate files and inspect screenshots; judging whether the game feels fun still requires a human playtest.
+
+## Preferred automated core-loop check
+
+Use the shipped `funke test Tests/core-loop.test.json --json --output <evidence-dir>` for repeatable gameplay tests. It owns a background, muted editor, builds source packages and scripts, isolates saves with a unique profile, runs fixed-step input/assert/waitUntil steps and returns a structured report with nonzero exit on failed assertions, compilation, new script exceptions or cleanup. Python is not required. Test schema/examples are in `Github-Docs/Documentation/Editor/Testing.md`; the real integration fixture is `Tests/Agent/core-loop.test.json`.
+
+Use `editor scenes/entities/inspect/schema` to discover actual IDs, components, field paths and types. Create/edit through `editor apply` with fresh session, scene-instance, revision and schema tokens; follow `scene-json.md` for file-level authoring only when appropriate. Use real key/mouse/touch/wheel/text/gamepad input to drive gameplay; do not substitute a DevCommand that directly grants the desired outcome. `waitUntil` needs a game-frame/time budget and `timeoutSeconds`; unknown fields fail immediately. Keep strict script-error checking enabled and read both report and exit code. A screenshot alone does not prove success.
+
+Native/runtime smoke runs below remain useful for exported-game checks; their exit status alone still does not certify that every C# callback succeeded.
 
 Ground truth: `Funke-Engine/src/DevTools/RunAutomation.cpp` (automation flags, input scripts), `Funke-Engine/src/Core/Application.cpp`, `Funke-Runtime/src/RuntimeApplication.cpp`, `Funke-ScriptCore/Source/Funke/Core/DevConsole.cs` + `Attributes/DevCommandAttribute.cs`, `Funke-CLI/src/`, `scripts/dev/Run.ps1`. User docs: `Github-Docs/Documentation/Editor/Testing.md`, `Command-Line.md` and `Editor-Bridge.md`.
 
@@ -86,7 +94,7 @@ Exit codes: 0 ok, 1 init/frame failure, -1 exception at the app boundary. **C# e
 
 - Each step has a time (`"at"`: seconds or `"2.5s"`/`"500ms"`/`"120f"`; or `"frame"`) and one action: `key` (`action` press/down/up; names like `a`, `space`, `enter`, `esc`, `left`, `shift`, `f1`), `mouse` `[x, y]` 0..1 of the window with optional `button`, `touch` `[x, y]` with `finger` and `action` tap/down/move/up (finger 0 also drives the mouse, so UI buttons react), `command`, `screenshot` (name, no dots in it, `.png` is added), `log`, `quit`.
 - A `press` lasts one frame. There is no `wait` step; timing comes only from `at`/`frame`.
-- **Not scriptable:** mouse wheel, text entry into an `InputField`, gamepad. Expose what a test needs as a `[DevCommand]` (`map.zoom 2`, `name.set Bob`) and call it from a `command` step.
+- **Wheel, text and gamepad:** use `scroll: [x,y]`, UTF-8 `text`, or a `gamepad` object naming `device: "funke-test"` with connect/disconnect, button down/up/press or axis value. These reach normal input/UI; focus the input field before typing. See `Testing.md` for names, limits and examples. Text events do not simulate all OS IME composition flows.
 - One malformed step aborts the **whole** script, including its `quit` (error `[Automation] Input script …: step N`). Always pair a script run with a timeout.
 - The same scripts run in an open editor: `funke editor input run.json`.
 

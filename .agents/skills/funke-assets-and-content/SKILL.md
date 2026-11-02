@@ -19,7 +19,7 @@ Content in Funke is **discovered, not imported**: drop a file into the project's
   | Scene | `.scene` | a level/screen |
   | Prefab | `.prefab` | reusable entity |
   | Script | `.cs` (+ C/C++) | game logic |
-  | Shader | `.wgsl .vert .frag …` | custom rendering |
+  | Shader | `.wgsl` | custom rendering; legacy GLSL extensions may be classified but are not usable shader sources |
   | Data Asset | `.dataasset` | shared game data |
   | Material | `.material` | shader + parameters |
   | Mesh | `.obj .gltf .glb` | 3D models |
@@ -29,7 +29,7 @@ Content in Funke is **discovered, not imported**: drop a file into the project's
 
 - **GUID + `.meta`.** Each asset gets a 64-bit GUID stored in a `<file>.meta` JSON sidecar (GUID + import settings like texture filter/wrap and sprite slices). **Keep and commit `.meta` files; move them with their asset.** A regenerated `.meta` gets a *new* GUID and breaks existing references.
 - **Built-in engine assets** (default font, default white/circle/etc. textures) have fixed stable GUIDs identical on every machine.
-- **File-based runtime assets.** Textures/audio are loaded on demand and cached behind handles. The build stages project content, can prune unused assets, and converts staged scenes, prefabs and Data Assets to binary; platform packaging may then bundle those files (for example, inside an Android APK). The source assets remain editable. Build details: `funke-build-and-ship`.
+- **Runtime assets.** Textures/audio load on demand and are cached behind handles. Exports prune content and convert staged scenes, prefabs and Data Assets to binary, with optional `.fbundle` archives and LZ4 or Zstandard compression. Both bundle switches default off. Engine `File`/asset APIs read mounted virtual paths; direct filesystem consumers need loose `Assets/StreamingAssets/`. The source assets stay editable. Build details: `funke-build-and-ship`.
 
 ## Referencing content from C#
 

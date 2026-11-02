@@ -18,6 +18,22 @@ public sealed class LogStateCollection
 [Collection(LogStateCollection.Name)]
 public class ScriptExceptionLogTests
 {
+    [Fact]
+    public void StructuredErrorsIncludeSuppressedRepeatsAndSurviveFlush()
+    {
+        var before = ScriptExceptionLog.GetSnapshot();
+        Capture(() => {
+            for (int i = 0; i < 80; ++i) ScriptExceptionLog.Report("test.callback", Throw("failure"));
+            ScriptExceptionLog.Report("test.null", null);
+        });
+        var after = ScriptExceptionLog.GetSnapshot();
+        Assert.Equal(before.epoch, after.epoch);
+        Assert.Equal(ulong.Parse(before.total) + 81, ulong.Parse(after.total));
+        Assert.Equal(16, after.events.Length);
+        Assert.Equal("test.null", after.events[^1].context);
+        Assert.Equal("failure", after.events[0].message);
+    }
+
     private static Exception Throw(string message)
     {
         try { throw new InvalidOperationException(message); }

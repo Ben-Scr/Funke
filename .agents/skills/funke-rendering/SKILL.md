@@ -28,7 +28,7 @@ Application::BeginFrame
   Renderer2D::BeginFrame     SetComposeOverTarget(rendered3D) first; skip if SetSkipBeginFrameRender(true); main camera = Camera2DComponent::GetMain()
                              → BindDefaultFramebuffer, clear to camera clear color (black first if letterboxed; no clear when composing over 3D)
                              → RenderSceneWithVP(scene, cam VP, cam world AABB) for every loaded scene
-  GuiRenderer::BeginFrame    UI for every loaded scene (also skippable)
+  GuiRenderer::BeginFrame    screen-space UI for every loaded scene (also skippable)
   GizmoRenderer2D::BeginFrame
 Application::EndFrame → RenderPipelineOnly
   Renderer2D::EndFrame       FUNKE_PROFILE_VALUE Batches / Rendered Sprites, GpuTimer::PollAndPublish
@@ -40,6 +40,8 @@ Application::EndFrame → RenderPipelineOnly
   Renderer2D::OnAfterPresent GpuTimer MapAsync — must be after Present
 FrameArenas::OnEndFrame      (end of Application::EndFrame)
 ```
+
+World-space UI is drawn inside the corresponding scene renderer, before post-processing. A canvas root combines `RectTransform2D` with either world transform. Renderer3D depth-tests it against opaque geometry without writing depth and includes it before MSAA resolve; the later screen-space UI pass skips these canvases. See `Github-Docs/Documentation/Engine-Core/World-Space-UI.md` and `Gui/UICanvasDrawOrder.hpp`.
 
 ## Inside `Renderer2D::RenderSceneWithVP(scene, vp, viewportAABB)`
 

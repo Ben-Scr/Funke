@@ -28,12 +28,13 @@ namespace Funke {
 	NativeEntityCommandBuffer& NativeEntityCommandBuffer::operator=(NativeEntityCommandBuffer&& other) noexcept {
 		if (this != &other) {
 			Clear();
-			m_Commands.swap(other.m_Commands);
+			m_CommandPages.swap(other.m_CommandPages);
 			m_CreatedHandles = std::move(other.m_CreatedHandles);
 			m_Wire = std::move(other.m_Wire);
-			m_Identities = std::move(other.m_Identities);
 			m_LiveSceneAnchor = std::exchange(other.m_LiveSceneAnchor, Entity::Null);
 			m_HasLiveScene = std::exchange(other.m_HasLiveScene, false);
+			m_HasCaptures = std::exchange(other.m_HasCaptures, false);
+			m_HasCustomCommands = std::exchange(other.m_HasCustomCommands, false);
 			m_CommandCount = std::exchange(other.m_CommandCount, 0);
 			m_EntityCount = std::exchange(other.m_EntityCount, 0);
 			m_BufferToken = std::exchange(other.m_BufferToken, NextToken());
@@ -93,14 +94,16 @@ namespace Funke {
 		else if (entity.BufferToken != m_BufferToken || entity.Generation != m_Generation || entity.Index >= m_EntityCount) {
 			throw std::invalid_argument("Native ECB local entity reference belongs to another recording");
 		}
-		if (m_CommandCount == m_Commands.size()) m_Commands.emplace_back();
-		auto& command = m_Commands[m_CommandCount++];
+		if (m_CommandCount / k_CommandsPerPage == m_CommandPages.size())
+			m_CommandPages.push_back(std::make_unique_for_overwrite<Command[]>(k_CommandsPerPage));
+		auto& command = CommandAt(m_CommandCount++);
 		command.Target = live ? static_cast<uint64_t>(entt::to_integral(entity.Handle)) : entity.Index;
 		command.Apply = apply;
 		command.DestroyCapture = nullptr;
 		command.TypeHash = typeHash;
 		command.Action = action;
 		command.Live = live;
+		m_HasCustomCommands |= action == Operation::Custom;
 		return command;
 	}
 
@@ -126,11 +129,11 @@ namespace Funke {
 
 	int NativeEntityCommandBuffer::Playback(Scene& scene, EntityCommandBufferPlaybackMode mode) {
 		NativeEntityCommandBuffer* self = this;
-		return PlaybackBuffers(scene, {&self, 1}, m_CreatedHandles, m_Wire, m_Identities, mode);
+		return PlaybackBuffers(scene, {&self, 1}, m_CreatedHandles, m_Wire, mode);
 	}
 
 	int NativeEntityCommandBuffer::PlaybackBuffers(Scene& scene, std::span<NativeEntityCommandBuffer*> buffers,
-		std::vector<EntityHandle>& handles, std::vector<uint8_t>& wire, std::vector<uint64_t>& identities,
+		std::vector<EntityHandle>& handles, std::vector<uint8_t>& wire,
 		EntityCommandBufferPlaybackMode mode) {
 		if (!Application::IsMainThread() || JobSystem::IsCallerWorker())
 			throw std::logic_error("Native ECB playback must run on the scene/main thread after recording completes");
@@ -170,20 +173,7 @@ namespace Funke {
 			return result;
 		};
 		bool canUseWire = components != nullptr;
-		for (const auto* buffer : buffers) {
-			if (!canUseWire) break;
-			for (size_t index = 0; index < buffer->m_CommandCount; ++index) {
-				const auto& command = buffer->m_Commands[index];
-				if (command.Action == Operation::Custom) { canUseWire = false; break; }
-				if (command.Action == Operation::DefaultAdd || command.Action == Operation::Remove) {
-					const auto* info = components->GetByTypeId(resolveType(command.TypeHash));
-					if (!info || (command.Action == Operation::DefaultAdd ? !info->defaultEmplace : !info->remove)) {
-						canUseWire = false; break;
-					}
-				}
-			}
-			if (!canUseWire) break;
-		}
+		for (const auto* buffer : buffers) canUseWire &= !buffer->m_HasCustomCommands;
 		if (canUseWire) {
 			const uint64_t maximumBytes = sizeof(EcbHeader) + total * sizeof(uint32_t) + commandCount * 20;
 			if (maximumBytes > INT_MAX) return kEcbErrorTruncated;
@@ -197,20 +187,21 @@ namespace Funke {
 			uint32_t emitted = 0;
 			for (const auto* buffer : buffers) {
 				for (size_t index = 0; index < buffer->m_CommandCount; ++index) {
-					const auto& command = buffer->m_Commands[index];
-					uint64_t identity = 0;
-					if (command.Live) {
-						const auto handle = static_cast<EntityHandle>(command.Target);
-						if (!scene.IsValid(handle)) continue;
-						identity = scene.GetEntityPersistentID(handle);
-						if (identity == 0) continue;
-					}
+					const auto& command = buffer->CommandAt(index);
+					if (command.Live && !scene.IsValid(static_cast<EntityHandle>(command.Target))) continue;
 					const auto opcode = command.Action == Operation::DefaultAdd ? Ecb_DefaultConstructComponent
 						: command.Action == Operation::Remove ? Ecb_RemoveComponent
 						: command.Action == Operation::Destroy ? Ecb_DestroyEntity
 						: command.Action == Operation::SetEnabled ? Ecb_SetEntityEnabled : Ecb_InstantiatePrefab;
 					const auto type = command.Action == Operation::DefaultAdd || command.Action == Operation::Remove
 						? resolveType(command.TypeHash) : 0;
+					if (command.Action == Operation::DefaultAdd || command.Action == Operation::Remove) {
+						const auto* info = components->GetByTypeId(type);
+						if (!info || (command.Action == Operation::DefaultAdd ? !info->defaultEmplace : !info->remove)) {
+							canUseWire = false;
+							break;
+						}
+					}
 					uint16_t payload = command.Live ? sizeof(uint64_t) : 0;
 					if (command.Action == Operation::SetEnabled) ++payload;
 					if (command.Action == Operation::Instantiate) payload = sizeof(uint64_t);
@@ -219,21 +210,21 @@ namespace Funke {
 					write(type);
 					write(payload);
 					if (command.Action == Operation::SetEnabled) write(static_cast<uint8_t>(*std::launder(reinterpret_cast<const bool*>(command.Storage))));
-					if (command.Live) write(identity);
+					if (command.Live) write(command.Target);
 					if (command.Action == Operation::Instantiate) write(*std::launder(reinterpret_cast<const uint64_t*>(command.Storage)));
 					++emitted;
 				}
+				if (!canUseWire) break;
 				base += buffer->m_EntityCount;
 			}
 			std::memcpy(wire.data() + sizeof(uint32_t), &emitted, sizeof(emitted));
 			wire.resize(static_cast<size_t>(cursor - wire.data()));
-			identities.resize(static_cast<size_t>(total));
-			const int result = detail::PlaybackNativeEntityCommandBuffer(scene, wire.data(), static_cast<int>(wire.size()),
-				identities.data(), static_cast<int>(total), mode);
-			if (result < 0) return result;
+		}
+		if (canUseWire) {
 			handles.resize(static_cast<size_t>(total), entt::null);
-			for (size_t index = 0; index < total; ++index)
-				if (identities[index]) scene.TryResolveEntityRef(identities[index], handles[index]);
+			const int result = detail::PlaybackNativeEntityCommandBuffer(scene, wire.data(), static_cast<int>(wire.size()),
+				handles.data(), static_cast<int>(total), mode);
+			if (result < 0) { handles.clear(); return result; }
 		}
 		else {
 			using Traits = entt::entt_traits<EntityHandle>;
@@ -246,7 +237,7 @@ namespace Funke {
 			uint32_t base = 0;
 			for (auto* buffer : buffers) {
 				for (size_t index = 0; index < buffer->m_CommandCount; ++index) {
-					auto& command = buffer->m_Commands[index];
+					auto& command = buffer->CommandAt(index);
 					EntityHandle liveHandle = command.Live ? static_cast<EntityHandle>(command.Target) : entt::null;
 					EntityHandle& handle = command.Live ? liveHandle : handles[base + static_cast<uint32_t>(command.Target)];
 					if (!scene.IsValid(handle)) continue;
@@ -274,10 +265,14 @@ namespace Funke {
 
 	void NativeEntityCommandBuffer::Clear() {
 		if (m_Playing) throw std::logic_error("Cannot clear a playing entity command buffer");
-		for (size_t index = 0; index < m_CommandCount; ++index) {
-			auto& command = m_Commands[index];
-			if (command.DestroyCapture) command.DestroyCapture(command.Storage);
+		if (m_HasCaptures) {
+			for (size_t index = 0; index < m_CommandCount; ++index) {
+				auto& command = CommandAt(index);
+				if (command.DestroyCapture) command.DestroyCapture(command.Storage);
+			}
 		}
+		m_HasCaptures = false;
+		m_HasCustomCommands = false;
 		m_CommandCount = 0;
 		m_EntityCount = 0;
 		m_CreatedHandles.clear();

@@ -4,6 +4,7 @@
 #include "Core/Export.hpp"
 
 #include <cstdint>
+#include <cstddef>
 #include <string>
 
 namespace Funke {
@@ -36,8 +37,12 @@ namespace Funke {
 		static bool Cancel(uint64_t operationId);
 		// Release every request, including failures; releasing pending work cancels that observer.
 		static void Release(uint64_t operationId);
-		static void Pump();
+		// Uploads remain on the main thread; each publication is indivisible.
+		static void Pump(double budgetMs = 2.0, size_t maxPublications = 1);
 		static void Invalidate(AssetKind kind);
+		static void RetainAsset(uint64_t assetId);
+		static void ReleaseAsset(uint64_t assetId);
+		static bool IsAssetRetained(uint64_t assetId);
 
 	private:
 		AssetLoader() = delete;

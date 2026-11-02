@@ -428,6 +428,16 @@ namespace Funke {
 		comp.SetOrthographicSize(size);
 	}
 
+	static int Funke_Camera2D_GetPostProcessingEnabled(uint64_t entityID) {
+		GET_COMPONENT(Camera2DComponent, entityID, 0);
+		return comp.IsPostProcessingEnabled() ? 1 : 0;
+	}
+
+	static void Funke_Camera2D_SetPostProcessingEnabled(uint64_t entityID, int enabled) {
+		GET_COMPONENT(Camera2DComponent, entityID, );
+		comp.SetPostProcessingEnabled(enabled != 0);
+	}
+
 	static float Funke_Camera2D_GetZoom(uint64_t entityID)
 	{
 		GET_COMPONENT(Camera2DComponent, entityID, 1.0f);
@@ -1428,6 +1438,8 @@ namespace Funke {
 		b.SpriteRenderer_SetSortingLayer = FNK_GUARDED_BINDING(Funke_SpriteRenderer_SetSortingLayer);
 		b.Camera2D_GetOrthographicSize = FNK_GUARDED_BINDING(Funke_Camera2D_GetOrthographicSize);
 		b.Camera2D_SetOrthographicSize = FNK_GUARDED_BINDING(Funke_Camera2D_SetOrthographicSize);
+		b.Camera2D_GetPostProcessingEnabled = FNK_GUARDED_BINDING(Funke_Camera2D_GetPostProcessingEnabled);
+		b.Camera2D_SetPostProcessingEnabled = FNK_GUARDED_BINDING(Funke_Camera2D_SetPostProcessingEnabled);
 		b.Camera2D_GetZoom = FNK_GUARDED_BINDING(Funke_Camera2D_GetZoom);
 		b.Camera2D_SetZoom = FNK_GUARDED_BINDING(Funke_Camera2D_SetZoom);
 		b.Camera2D_GetClearColor = FNK_GUARDED_BINDING(Funke_Camera2D_GetClearColor);

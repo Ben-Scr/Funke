@@ -1059,34 +1059,37 @@ namespace Funke {
 			EntityHandle root,
 			const PrefabDefinition& sourceDefinition,
 			Value& outRootOverrides,
-			Value& outEntityOverrides) {
+			Value& outEntityOverrides,
+			bool stopAfterFirst = false,
+			const std::unordered_map<uint64_t, const Value*>* cachedSourceMap = nullptr) {
 			outRootOverrides = Value::MakeObject();
 			outEntityOverrides = Value::MakeObject();
 			if (sourceDefinition.Entities.empty()) {
 				return;
 			}
 
-			const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(root));
-			const std::vector<EntityHandle> instanceEntities = CollectPrefabInstanceSubtree(scene, root, prefabGuid);
-			if (instanceEntities.empty()) {
-				return;
-			}
-
 			std::unordered_map<uint32_t, uint64_t> sourceIds;
-			sourceIds.reserve(instanceEntities.size());
-			for (EntityHandle entity : instanceEntities) {
-				sourceIds[static_cast<uint32_t>(entity)] = GetPrefabInstanceSourceId(scene, entity);
-			}
-
+			sourceIds[static_cast<uint32_t>(root)] = GetPrefabInstanceSourceId(scene, root);
 			Value currentRoot = SerializePrefabComparableEntity(scene, root, sourceIds);
 			Value sourceRoot = sourceDefinition.Entities.front();
 			RemoveEntityComparisonIdentityMembers(currentRoot);
 			RemoveEntityComparisonIdentityMembers(sourceRoot);
 			NormalizeLegacyColliderKeysForDiff(sourceRoot, currentRoot);
 			BuildOverridePatch(sourceRoot, currentRoot, {}, outRootOverrides);
+			if (stopAfterFirst && !outRootOverrides.GetObject().empty()) return;
 
-			const auto sourceById = BuildSourceEntityMap(sourceDefinition);
+			const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(root));
+			const std::vector<EntityHandle> instanceEntities = CollectPrefabInstanceSubtree(scene, root, prefabGuid);
+			sourceIds.reserve(instanceEntities.size());
 			for (EntityHandle entity : instanceEntities) {
+				sourceIds[static_cast<uint32_t>(entity)] = GetPrefabInstanceSourceId(scene, entity);
+			}
+
+			const auto localSourceMap = cachedSourceMap
+				? std::unordered_map<uint64_t, const Value*>{} : BuildSourceEntityMap(sourceDefinition);
+			const auto& sourceById = cachedSourceMap ? *cachedSourceMap : localSourceMap;
+			for (EntityHandle entity : instanceEntities) {
+				if (stopAfterFirst && entity == root) continue;
 				const uint64_t sourceId = sourceIds[static_cast<uint32_t>(entity)];
 				if (sourceId == 0) {
 					continue;
@@ -1107,6 +1110,7 @@ namespace Funke {
 				BuildOverridePatch(sourceValue, currentValue, {}, entityOverrides);
 				if (!entityOverrides.GetObject().empty()) {
 					outEntityOverrides.AddMember(std::to_string(sourceId), std::move(entityOverrides));
+					if (stopAfterFirst) return;
 				}
 			}
 		}
@@ -1121,12 +1125,18 @@ namespace Funke {
 			return true;
 		}
 
+		struct PrefabReadSnapshot {
+			PrefabDefinition Definition;
+			std::unordered_map<uint64_t, const Value*> SourceById;
+		};
+
 		struct CachedPrefabRoot {
 			uint64_t PrefabGuid = 0;
 			uint64_t BasePrefabGuid = 0;
 			std::string Path;
 			FileStamp Stamp;
 			std::shared_ptr<const Value> Root;
+			std::shared_ptr<const PrefabReadSnapshot> ReadSnapshot;
 		};
 		std::mutex g_PrefabRootCacheMutex;
 		std::unordered_map<std::string, CachedPrefabRoot> g_PrefabRootCache;
@@ -1205,6 +1215,7 @@ namespace Funke {
 			entry.Path = prefabPath;
 			entry.Stamp = stamp;
 			entry.Root = std::move(root);
+			entry.ReadSnapshot.reset();
 			outRoot = entry.Root;
 			return true;
 		}
@@ -1274,6 +1285,37 @@ namespace Funke {
 			TrackPrefabCacheSceneOwner(scene);
 			std::unordered_set<uint64_t> inProgress;
 			return LoadPrefabDefinitionRecursive(prefabGuid, outDefinition, inProgress);
+		}
+
+		std::shared_ptr<const PrefabReadSnapshot> LoadPrefabReadSnapshot(Scene& scene, uint64_t prefabGuid) {
+			TrackPrefabCacheSceneOwner(scene);
+			const std::string path = AssetRegistry::ResolvePath(prefabGuid);
+			std::shared_ptr<const Value> root;
+			if (path.empty() || !ReadPrefabRootCached(prefabGuid, path, root)) return {};
+			const std::string key = PrefabRootCacheKey(path);
+			{
+				std::lock_guard<std::mutex> lock(g_PrefabRootCacheMutex);
+				const auto found = g_PrefabRootCache.find(key);
+				if (found != g_PrefabRootCache.end() && found->second.Root == root && found->second.ReadSnapshot)
+					return found->second.ReadSnapshot;
+			}
+			auto snapshot = std::make_shared<PrefabReadSnapshot>();
+			const bool directSource = ReadPrefabDefinitionFromRoot(*root, snapshot->Definition);
+			if (directSource) {
+				if (!ValidateEntityTreeSourceIds(snapshot->Definition.Entities, EntityOrigin::Prefab, true)) return {};
+			}
+			else {
+				// Inherited sources must still validate every dependency's file stamp.
+				if (!LoadPrefabDefinition(scene, prefabGuid, snapshot->Definition)) return {};
+			}
+			snapshot->SourceById = BuildSourceEntityMap(snapshot->Definition);
+			if (directSource) {
+				std::lock_guard<std::mutex> lock(g_PrefabRootCacheMutex);
+				const auto found = g_PrefabRootCache.find(key);
+				if (found != g_PrefabRootCache.end() && found->second.Root == root)
+					found->second.ReadSnapshot = snapshot;
+			}
+			return snapshot;
 		}
 
 		uint64_t ResolvePrefabGuid(const Value& entityValue) {
@@ -1454,6 +1496,10 @@ namespace Funke {
 			return field;
 		}
 	} // namespace
+
+	bool SceneSerializer::PreparePrefab(uint64_t guid, const std::string& path, std::shared_ptr<const Value>& outRoot) {
+		return ReadPrefabRootCached(guid, path, outRoot);
+	}
 
 	bool SceneSerializer::PrepareFile(const std::string& path, Json::Value& outRoot, std::string* outError) {
 		if (outError) outError->clear();
@@ -1838,6 +1884,28 @@ namespace Funke {
 		}
 	}
 
+	bool SceneSerializer::DeserializeSceneBatch(Scene& scene, const Value& root, std::string_view source,
+		SceneLoadState& state, double budgetMs, size_t maxEntities) {
+		if (scene.IsLoaded() || !scene.IsLifecycleSuspended()) return false;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double, std::milli>(budgetMs);
+		if (!state.started) {
+			if (!ValidateSceneRoot(root, source, true)) return false;
+			bool restartLifecycle = false;
+			if (!ProcessSceneHeader(scene, root, source, restartLifecycle)) return false;
+			state.started = true;
+		}
+		const auto& entities = root.FindMember("entities")->GetArray();
+		size_t processed = 0;
+		while (state.nextEntity < entities.size()) {
+			if (!ProcessLoadedEntity(scene, entities[state.nextEntity], state)) return false;
+			++state.nextEntity;
+			if (++processed >= maxEntities || std::chrono::steady_clock::now() >= deadline) return true;
+		}
+		FinalizeSceneLoad(scene, state, false);
+		state.complete = ValidateStagedEntityIdentities(scene, source);
+		return state.complete;
+	}
+
 	bool SceneSerializer::DeserializeSceneInPlace(
 		Scene& scene,
 		const Json::Value& root,
@@ -2041,7 +2109,7 @@ namespace Funke {
 #endif
 
 		// Iterates the entity's members (O(1) lookup each) rather than every registered type.
-		void ReadRegistryComponents(Scene& scene, EntityHandle entity, const Json::Value& entityValue, bool first) {
+		void ReadRegistryComponents(Scene& scene, EntityHandle entity, const Json::Value& entityValue, bool first, bool strict) {
 			Entity entityWrapper = scene.GetEntity(entity);
 			const ComponentRegistry& componentRegistry = SceneManager::GetComponentRegistryOrBuiltIn();
 			for (const auto& [memberName, memberValue] : entityValue.GetObject()) {
@@ -2059,10 +2127,12 @@ namespace Funke {
 					FNK_CORE_ERROR_TAG("SceneSerializer",
 						"Component '{}' deserialize threw on entity {}: {}",
 						info->serializedName, static_cast<uint32_t>(entity), e.what());
+					if (strict) throw;
 				} catch (...) {
 					FNK_CORE_ERROR_TAG("SceneSerializer",
 						"Component '{}' deserialize threw an unknown exception on entity {}",
 						info->serializedName, static_cast<uint32_t>(entity));
+					if (strict) throw;
 				}
 			}
 		}
@@ -2072,7 +2142,7 @@ namespace Funke {
 		Scene& scene,
 		const Json::Value& entityValue,
 		EntityOrigin origin,
-		uint64_t prefabGuid) {
+		uint64_t prefabGuid, bool strict) {
 		if (!entityValue.IsObject()) {
 			return entt::null;
 		}
@@ -2106,7 +2176,7 @@ namespace Funke {
 			scene.GetComponent<PrefabInstanceComponent>(entity).SourceEntityId = savedSceneGuid;
 		}
 
-		ReadRegistryComponents(scene, entity, entityValue, true);
+		ReadRegistryComponents(scene, entity, entityValue, true, strict);
 		// The rect is read with the UI components below; present it now so 2D construct hooks see a UI entity.
 		if (GetObjectMember(entityValue, "RectTransform2D")) {
 			scene.AddComponent<RectTransform2DComponent>(entity);
@@ -2469,7 +2539,7 @@ namespace Funke {
 			}
 		}
 
-		ReadRegistryComponents(scene, entity, entityValue, false);
+		ReadRegistryComponents(scene, entity, entityValue, false, strict);
 
 		// Materialize native/dynamic (IComponent) rows listed only in the entity's
 		// managed script/component list. The registry-driven loop above adds any
@@ -2510,7 +2580,8 @@ namespace Funke {
 		EntityOrigin origin,
 		uint64_t prefabGuid,
 		bool preserveSerializedIdentity,
-		bool* outComplete) {
+		bool* outComplete,
+		bool exactIdentity) {
 		if (entityValues.empty()) {
 			if (outComplete) *outComplete = false;
 			return entt::null;
@@ -2552,7 +2623,11 @@ namespace Funke {
 
 			EntityOrigin entityOrigin = origin;
 			uint64_t entityPrefabGuid = prefabGuid;
-			if (origin == EntityOrigin::Scene && prefabGuid == 0) {
+			if (exactIdentity) {
+				entityOrigin = EntityOriginFromString(GetStringMember(sourceEntityValue, "Origin", "Scene"));
+				entityPrefabGuid = GetUInt64Member(sourceEntityValue, "PrefabGUID", 0);
+			}
+			else if (origin == EntityOrigin::Scene && prefabGuid == 0) {
 				const std::string originStr = GetStringMember(sourceEntityValue, "Origin", "");
 				if (!originStr.empty() && EntityOriginFromString(originStr) == EntityOrigin::Prefab) {
 					const uint64_t detectedPrefabGuid = GetUInt64Member(sourceEntityValue, "PrefabGUID", 0);
@@ -2563,12 +2638,18 @@ namespace Funke {
 				}
 			}
 
-			EntityHandle handle = DeserializeFullEntity(scene, entityValue, entityOrigin, entityPrefabGuid);
+			EntityHandle handle = DeserializeFullEntity(scene, entityValue, entityOrigin, entityPrefabGuid, exactIdentity);
 			if (handle == entt::null) {
 				complete = false;
 				continue;
 			}
 			rollback.Track(handle);
+			if (exactIdentity) {
+				if (!scene.SetEntityPersistentID(handle, GetUInt64Member(sourceEntityValue, "uuid", 0))) return entt::null;
+				if (const auto* unresolved = sourceEntityValue.FindMember("UnresolvedPrefabInstanceJson"); unresolved && unresolved->IsString()) {
+					scene.AddComponent<UnresolvedPrefabInstanceComponent>(handle).InstanceJson = unresolved->AsStringOr();
+				}
+			}
 
 			// Map a serialized source id to the freshly-built copy's persistent id so in-component refs into
 			// the subtree retarget to THIS copy's children instead of the originals/template. Clone/paste
@@ -2636,8 +2717,8 @@ namespace Funke {
 		return root;
 	}
 
-	EntityHandle SceneSerializer::RestoreEntityTree(Scene& scene, const std::vector<Json::Value>& entityValues) {
-		return DeserializeEntityTree(scene, entityValues, EntityOrigin::Scene, 0, /*preserveSerializedIdentity=*/true);
+	EntityHandle SceneSerializer::RestoreEntityTree(Scene& scene, const std::vector<Json::Value>& entityValues, bool exactIdentity) {
+		return DeserializeEntityTree(scene, entityValues, EntityOrigin::Scene, 0, /*preserveSerializedIdentity=*/true, nullptr, exactIdentity);
 	}
 
 	EntityHandle SceneSerializer::DeserializeEntityFromValue(
@@ -3304,15 +3385,16 @@ namespace Funke {
 		}
 
 		const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(root));
-		PrefabDefinition definition;
-		if (!LoadPrefabDefinition(scene, prefabGuid, definition) || definition.Entities.empty()) {
+		const auto snapshot = LoadPrefabReadSnapshot(scene, prefabGuid);
+		if (!snapshot || snapshot->Definition.Entities.empty()) {
 			// Orphan / unresolvable source — no overrides we can act on.
 			return false;
 		}
 
 		Value rootOverrides;
 		Value entityOverrides;
-		BuildPrefabInstanceOverrideSet(scene, root, definition, rootOverrides, entityOverrides);
+		BuildPrefabInstanceOverrideSet(scene, root, snapshot->Definition, rootOverrides, entityOverrides,
+			true, &snapshot->SourceById);
 		return !rootOverrides.GetObject().empty() || !entityOverrides.GetObject().empty();
 	}
 
@@ -3518,6 +3600,7 @@ namespace Funke {
 
 		const auto removed = std::erase_if(g_PrefabRootCache, [&](const auto& entry) {
 			if (retainedKeys.contains(entry.first)) return false;
+			if (entry.second.Root.use_count() > 1) return false;
 			// A later baked spawn must reload the source so external refresh has its baseline again.
 			PrefabTemplateCache::Get().Invalidate(entry.second.PrefabGuid);
 			return true;
@@ -3553,20 +3636,19 @@ namespace Funke {
 		const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(entity));
 		if (prefabGuid == 0) return false;
 
-		PrefabDefinition sourceDefinition;
-		if (!LoadPrefabDefinition(scene, prefabGuid, sourceDefinition) || sourceDefinition.Entities.empty()) return false;
+		const auto snapshot = LoadPrefabReadSnapshot(scene, prefabGuid);
+		if (!snapshot || snapshot->Definition.Entities.empty()) return false;
 
 		const uint64_t sourceId = GetPrefabInstanceSourceId(scene, entity);
 		const Value* sourceValue = nullptr;
 		if (sourceId != 0) {
-			const auto sourceById = BuildSourceEntityMap(sourceDefinition);
-			const auto sourceIt = sourceById.find(sourceId);
-			if (sourceIt != sourceById.end()) {
+			const auto sourceIt = snapshot->SourceById.find(sourceId);
+			if (sourceIt != snapshot->SourceById.end()) {
 				sourceValue = sourceIt->second;
 			}
 		}
 		if (!sourceValue) {
-			sourceValue = &sourceDefinition.Entities.front();
+			sourceValue = &snapshot->Definition.Entities.front();
 		}
 
 		std::unordered_map<uint32_t, uint64_t> sourceIds;

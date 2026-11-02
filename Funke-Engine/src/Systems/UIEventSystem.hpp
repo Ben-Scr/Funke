@@ -41,6 +41,8 @@ namespace Funke {
 		// InteractableComponent; surfaced to C# via UIPointer.HoveredEntity. Re-picked when the pointer moved
 		// since this frame's Update, which scripts (running earlier) would otherwise see from last frame.
 		EntityHandle GetHoveredEntity(Scene& scene) const;
+		// Pick at a centred, y-up UI surface position; world canvases project through the scene camera.
+		FUNKE_API static EntityHandle PickInteractable(Scene& scene, const Vec2& screenUi);
 
 		// True when a press on `pressed` may turn into a drag of `scrollRect`: it sits inside the scroll rect and is
 		// not a widget that drags on its own (slider, scrollbar, input field, nested scroll rect).

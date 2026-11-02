@@ -33,6 +33,7 @@ namespace Funke {
 			std::vector<RunAutomation::Step> Steps;
 			std::vector<bool> Done;
 			std::vector<PendingRelease> Releases;
+			std::vector<PendingRelease> Held;
 			float FixedStep = 0.0f;
 			float FixedStepOverride = 0.0f;
 			// The finger SDL's touch-to-mouse emulation would follow; -1 while no finger is down.
@@ -57,7 +58,7 @@ namespace Funke {
 			const char* begin = text.data();
 			const char* end = text.data() + text.size();
 			const auto result = CharConv::ParseFloat(begin, end, out);
-			return result.ec == std::errc{} && result.ptr == end;
+			return result.ec == std::errc{} && result.ptr == end && std::isfinite(out);
 		}
 
 
@@ -183,7 +184,37 @@ namespace Funke {
 				return;
 			}
 			const bool press = step.Act == Action::Press;
+			if (step.Type == Kind::Key || step.Type == Kind::MouseButton || step.Type == Kind::Touch || step.Type == Kind::GamepadButton) {
+				std::erase_if(g_State.Held, [&](const auto& held) { return held.Type == step.Type && held.Code == step.Code && held.Finger == step.Finger; });
+				if (step.Act != Action::Up) g_State.Held.push_back({ step.Type, step.Code, step.Position, step.Finger });
+			}
 			switch (step.Type) {
+			case Kind::Scroll:
+				if (step.Position.x >= 0.0f) PushMouseMove(window, step.Position);
+				{
+					SDL_Event event{}; event.type = SDL_EVENT_MOUSE_WHEEL;
+					event.wheel.windowID = SDL_GetWindowID(window);
+					event.wheel.x = step.Delta.x; event.wheel.y = step.Delta.y;
+					SDL_PushEvent(&event);
+				}
+				break;
+			case Kind::Text: {
+				SDL_Event event{}; event.type = SDL_EVENT_TEXT_INPUT;
+				event.text.windowID = SDL_GetWindowID(window); event.text.text = step.Text.c_str();
+				SDL_PushEvent(&event);
+				break;
+			}
+			case Kind::GamepadConnect:
+				if (Window::ConnectAutomationGamepad() < 0) FNK_CORE_ERROR_TAG("Automation", "Synthetic gamepad connection failed");
+				break;
+			case Kind::GamepadDisconnect: Window::DisconnectAutomationGamepad(); break;
+			case Kind::GamepadButton:
+				if (!Window::InjectGamepadButton(step.Code, step.Act != Action::Up)) FNK_CORE_ERROR_TAG("Automation", "Synthetic gamepad is not connected");
+				if (press) g_State.Releases.push_back({ Kind::GamepadButton, step.Code });
+				break;
+			case Kind::GamepadAxis:
+				if (!Window::InjectGamepadAxis(step.Code, step.Value)) FNK_CORE_ERROR_TAG("Automation", "Synthetic gamepad is not connected");
+				break;
 			case Kind::Key:
 				PushKey(window, step.Code, step.Act != Action::Up);
 				if (press) g_State.Releases.push_back({ Kind::Key, step.Code });
@@ -213,6 +244,25 @@ namespace Funke {
 			const auto& array = value.GetArray();
 			if (!array[0].IsNumber() || !array[1].IsNumber()) return false;
 			out = { static_cast<float>(array[0].AsDoubleOr(0.0)), static_cast<float>(array[1].AsDoubleOr(0.0)) };
+			return std::isfinite(out.x) && std::isfinite(out.y);
+		}
+
+		bool ValidText(std::string_view value) {
+			for (size_t i = 0; i < value.size();) {
+				const uint8_t first = static_cast<uint8_t>(value[i++]);
+				if (first == 0) return false;
+				if (first < 0x80) continue;
+				int count = first >= 0xF0 && first <= 0xF4 ? 3 : first >= 0xE0 && first <= 0xEF ? 2 : first >= 0xC2 && first <= 0xDF ? 1 : -1;
+				if (count < 0 || i + count > value.size()) return false;
+				uint32_t cp = first & ((1u << (6 - count)) - 1);
+				const uint32_t minimum = count == 1 ? 0x80 : count == 2 ? 0x800 : 0x10000;
+				for (int n = 0; n < count; ++n) {
+					const uint8_t next = static_cast<uint8_t>(value[i++]);
+					if ((next & 0xC0) != 0x80) return false;
+					cp = (cp << 6) | (next & 0x3F);
+				}
+				if (cp < minimum || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return false;
+			}
 			return true;
 		}
 
@@ -240,7 +290,7 @@ namespace Funke {
 		const std::string lower = ToLower(trimmed);
 		double value = 0.0;
 		if (lower.back() == 'f') {
-			if (!ParseDouble(std::string_view(lower).substr(0, lower.size() - 1), value) || value < 0.0 || std::floor(value) != value) return false;
+			if (!ParseDouble(std::string_view(lower).substr(0, lower.size() - 1), value) || value < 0.0 || value > 1000000000 || std::floor(value) != value) return false;
 			out.Frame = static_cast<int64_t>(value);
 			return true;
 		}
@@ -338,6 +388,7 @@ namespace Funke {
 			outError = "the script needs a 'steps' array";
 			return false;
 		}
+		if (steps->GetArray().size() > 10000) { outError = "at most 10000 input steps are supported"; return false; }
 		size_t index = 0;
 		for (const Json::Value& entry : steps->GetArray()) {
 			++index;
@@ -349,7 +400,7 @@ namespace Funke {
 			Step step;
 			if (const Json::Value* frame = entry.FindMember("frame")) {
 				const double value = frame->AsDoubleOr(-1.0);
-				if (!frame->IsNumber() || value < 0.0 || std::floor(value) != value) {
+				if (!frame->IsNumber() || !std::isfinite(value) || value < 0.0 || value > 1000000000 || std::floor(value) != value) {
 					outError = where + "'frame' must be a whole number >= 0";
 					return false;
 				}
@@ -369,7 +420,44 @@ namespace Funke {
 				return false;
 			}
 
-			if (const Json::Value* key = entry.FindMember("key")) {
+			if (const auto* scroll = entry.FindMember("scroll")) {
+				step.Type = Step::Kind::Scroll;
+				step.Position = Vec2{ -1.0f };
+				if (!ReadPosition(*scroll, step.Delta) || std::abs(step.Delta.x) > 10000 || std::abs(step.Delta.y) > 10000) { outError = where + "scroll requires two finite deltas within +/-10000"; return false; }
+				if (const auto* mouse = entry.FindMember("mouse"); mouse && (!ReadPosition(*mouse, step.Position) || step.Position.x < 0 || step.Position.x > 1 || step.Position.y < 0 || step.Position.y > 1)) { outError = where + "mouse position must be in 0..1"; return false; }
+			}
+			else if (const auto* text = entry.FindMember("text")) {
+				step.Type = Step::Kind::Text;
+				if (!text->IsString() || text->AsStringOr().size() > 4096 || !ValidText(text->AsStringOr())) { outError = where + "text must be valid UTF-8 without NUL, at most 4096 bytes"; return false; }
+				step.Text = text->AsStringOr();
+			}
+			else if (const auto* pad = entry.FindMember("gamepad")) {
+				const auto* device = pad->FindMember("device");
+				if (!pad->IsObject() || !device || device->AsStringOr() != "funke-test") { outError = where + "gamepad.device must be funke-test"; return false; }
+				const auto* action = pad->FindMember("action");
+				const std::string name = action ? action->AsStringOr() : std::string();
+				if (name == "connect") step.Type = Step::Kind::GamepadConnect;
+				else if (name == "disconnect") step.Type = Step::Kind::GamepadDisconnect;
+				else if (const auto* button = pad->FindMember("button")) {
+					static constexpr std::string_view names[] = { "a", "b", "x", "y", "leftbumper", "rightbumper", "back", "start", "guide", "leftthumb", "rightthumb", "dpadup", "dpadright", "dpaddown", "dpadleft" };
+					step.Type = Step::Kind::GamepadButton;
+					step.Code = -1;
+					for (int i = 0; i < std::size(names); ++i) if (names[i] == ToLower(button->AsStringOr())) step.Code = i;
+					if (step.Code < 0 || !ReadAction(*pad, step.Act, false)) { outError = where + "unknown gamepad button/action"; return false; }
+				}
+				else if (const auto* axis = pad->FindMember("axis")) {
+					static constexpr std::string_view names[] = { "leftx", "lefty", "rightx", "righty", "lefttrigger", "righttrigger" };
+					step.Type = Step::Kind::GamepadAxis;
+					step.Code = -1;
+					for (int i = 0; i < std::size(names); ++i) if (names[i] == ToLower(axis->AsStringOr())) step.Code = i;
+					const auto* value = pad->FindMember("value");
+					const double axisValue = value ? value->AsDoubleOr(NAN) : NAN;
+					if (step.Code < 0 || !std::isfinite(axisValue) || axisValue < -1 || axisValue > 1) { outError = where + "gamepad axis requires a value in [-1,1]"; return false; }
+					step.Value = static_cast<float>(axisValue);
+				}
+				else { outError = where + "gamepad requires connect, disconnect, button or axis"; return false; }
+			}
+			else if (const Json::Value* key = entry.FindMember("key")) {
 				step.Type = Step::Kind::Key;
 				step.Code = ParseKeyName(key->AsStringOr());
 				if (step.Code < 0) {
@@ -436,7 +524,7 @@ namespace Funke {
 				step.Type = Step::Kind::Quit;
 			}
 			else {
-				outError = where + "needs one of key, mouse, button, touch, command, screenshot, log or quit";
+				outError = where + "needs key, mouse, button, touch, scroll, text, gamepad, command, screenshot, log or quit";
 				return false;
 			}
 			out.Steps.push_back(std::move(step));
@@ -460,8 +548,14 @@ namespace Funke {
 			else if (arg == "--sound") options.Sound = true;
 			else if (arg == "--mute") options.Mute = true;
 			// An empty --prefs-profile= turns a build's isolated profile off: that is a player's run.
-			else if (valueOf(arg, "--prefs-profile", value)) options.PrefsProfile = !value.empty();
-			else if (arg == "--prefs-profile" && i + 1 < argc && argv[i + 1] && *argv[i + 1]) options.PrefsProfile = true;
+			else if (arg == "--prefs-profile=" || valueOf(arg, "--prefs-profile", value)) {
+				options.PrefsProfileOverride = value;
+				options.PrefsProfile = !value.empty();
+			}
+			else if (arg == "--prefs-profile" && i + 1 < argc && argv[i + 1]) {
+				options.PrefsProfileOverride = argv[++i];
+				options.PrefsProfile = !options.PrefsProfileOverride->empty();
+			}
 			else if (valueOf(arg, "--input-script", value)) options.InputScriptPath = value;
 			else if (valueOf(arg, "--screenshot-dir", value)) options.ScreenshotDirectory = value;
 			else if (valueOf(arg, "--exec", value)) options.Exec = value;
@@ -543,6 +637,7 @@ namespace Funke {
 	}
 
 	bool RunAutomation::IsActive() { return g_State.Active; }
+	const std::optional<std::string>& RunAutomation::GetPrefsProfileOverride() { return g_State.Options.PrefsProfileOverride; }
 	bool RunAutomation::IsBackground() { return g_State.Background; }
 	bool RunAutomation::IsAutomatedRun() { return g_State.Active || g_State.Background || g_State.Options.PrefsProfile; }
 	bool RunAutomation::IsMuted() { return g_State.Options.Mute || (IsAutomatedRun() && !g_State.Options.Sound); }
@@ -574,6 +669,7 @@ namespace Funke {
 					case Step::Kind::Key: PushKey(window, release.Code, false); break;
 					case Step::Kind::MouseButton: PushMouseButton(window, release.Code, release.Position, false); break;
 					case Step::Kind::Touch: PushTouch(window, release.Finger, release.Position, SDL_EVENT_FINGER_UP); break;
+					case Step::Kind::GamepadButton: Window::InjectGamepadButton(release.Code, false); break;
 					default: break;
 					}
 				}
@@ -592,9 +688,24 @@ namespace Funke {
 		if (!g_State.FrameActive) return;
 		g_State.ClockSeconds += unscaledDeltaTime;
 		++g_State.ClockFrame;
+		if (g_State.Releases.empty() && std::all_of(g_State.Done.begin(), g_State.Done.end(), [](bool done) { return done; })) {
+			if (auto* window = NativeWindow()) for (const auto& held : g_State.Held) {
+				if (held.Type == Step::Kind::Key) PushKey(window, held.Code, false);
+				else if (held.Type == Step::Kind::MouseButton) PushMouseButton(window, held.Code, held.Position, false);
+				else if (held.Type == Step::Kind::Touch) PushTouch(window, held.Finger, held.Position, SDL_EVENT_FINGER_UP);
+			}
+			g_State.Held.clear();
+			Window::DisconnectAutomationGamepad();
+		}
 	}
 
 	void RunAutomation::Reset() {
+		for (const auto& held : g_State.Held) {
+			if (held.Type == Step::Kind::Key) Window::InjectKey(held.Code, false);
+			else if (held.Type == Step::Kind::MouseButton) Window::InjectMouseButton(held.Code, false);
+			else if (held.Type == Step::Kind::Touch) Window::InjectTouch(held.Finger + 1, {}, 2);
+		}
+		Window::DisconnectAutomationGamepad();
 		g_State = State{};
 	}
 

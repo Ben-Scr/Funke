@@ -114,6 +114,10 @@ workspace "Funke"
         -- rather than renaming widely-used API members.
         buildoptions { "-Wno-changes-meaning" }
 
+    filter { "system:macosx", "language:C++" }
+        -- App packaging expands library paths when moving binaries into MacOS and Frameworks.
+        linkoptions { "-Wl,-headerpad_max_install_names" }
+
     filter "system:linux"
         -- Every Linux artifact ultimately links into libFunke-Engine.so, so all
         -- static deps (ImGui, Box2D, ...) must be position-
@@ -170,7 +174,7 @@ end
 
 if _OPTIONS["coverage"] then
     filter { "system:linux", "language:C++", "configurations:Debug" }
-        buildoptions { "--coverage", "-fno-omit-frame-pointer" }
+		buildoptions { "--coverage", "-fprofile-update=atomic", "-fno-omit-frame-pointer" }
         linkoptions { "--coverage" }
     filter {}
 end
@@ -591,6 +595,11 @@ end
 
 CopyFunkeEngineDll = CopySharedLib("Funke-Engine")
 CopyDawnSharedLib = ""
+CopyNetHostSharedLib = ""
+if os.target() == "macosx" then
+    CopyNetHostSharedLib = CopySharedLibFile(path.join(ROOT_DIR, "External/dotnet/lib/libnethost.dylib"),
+        "%{cfg.targetdir}/libnethost.dylib")
+end
 if FunkeModules.Render and os.target() ~= "windows" then
     local dawnSharedLib = DawnSharedLibFileName()
     CopyDawnSharedLib = CopySharedLibFile(path.join(ROOT_DIR, "External/dawn/build/src/dawn/native", dawnSharedLib),

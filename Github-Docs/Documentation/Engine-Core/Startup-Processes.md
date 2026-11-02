@@ -26,7 +26,7 @@ Launch .exe
 [2] Load the game ──── project file → packages → startup scene → scripts
    │
    ▼
-[3] Main loop ─────── input → update → physics → render → present  (every frame)
+[3] Main loop ─────── input → fixed update → update → render → present  (every frame)
    │
    ▼
 Window closed → shut everything down cleanly
@@ -41,7 +41,7 @@ Window closed → shut everything down cleanly
 Every Funke program (game or editor) starts in the same place: a single `Main()` function (in `EntryPoint.hpp`). The very first things it does are:
 
 1. **Initialize the core** – low-level setup (memory, assertions, logging).
-2. **Initialize localization** – the language/translation system.
+2. **Check the native ABI** – reject an incompatible engine/application binary combination.
 3. **Capture the command line** – arguments like `--project="C:/path"` are stored so the rest of the engine can read them.
 4. **Create the application** – calls `CreateApplication()`, which builds the game's `Application` object.
 
@@ -54,11 +54,11 @@ Before the engine fully starts, the runtime decides **which project to run** (in
 - If you pass `--project="<path>"`, that folder is used.
 - Otherwise it looks **next to the `.exe`** for a project.
 
-It then reads your project's `project.json`. This file holds everything the game needs to know about itself: the window size, the splash screen, which scenes exist, and which scene to start with. If no project is found, the runtime logs a warning and falls back to a built-in sample scene so it still boots.
+The runtime mounts any asset bundles before reading `project.json`. This file supplies the window, splash and scene settings. A malformed project, or a missing project explicitly selected with `--project`, fails startup. Only when no project was explicitly requested and no project file exists beside the runtime does it warn and use the built-in sample scene.
 
 ### Starting the subsystems
 
-Next, `Application::Initialize()` starts every engine subsystem **in a fixed order**. Order matters — later systems depend on earlier ones (for example, the renderer needs the window and graphics device to already exist).
+`Application::Run()` first initializes the asset loader. Then `Application::Initialize()` starts the configured subsystems **in a fixed order**. Later systems depend on earlier ones; the renderer, for example, needs the window and graphics device.
 
 | # | Subsystem | What it does |
 |---|-----------|--------------|
@@ -69,12 +69,12 @@ Next, `Application::Initialize()` starts every engine subsystem **in a fixed ord
 | 5 | **Render API** | Starts the graphics device — **WebGPU (via Dawn)**, which picks Direct3D 12 / Vulkan / Metal under the hood. |
 | 6 | **Texture Manager** | Loads built-in textures, manages GPU textures. |
 | 7 | **Shader Manager** | Loads and manages shaders. |
-| 8 | **Renderer2D** | The 2D sprite/quad renderer. |
+| 8 | **Scene renderers** | Renderer2D and Renderer3D, according to the active engine modules. |
 | 9 | **Gizmo Renderer** | Debug shapes/lines (optional in runtime). |
 | 10 | **GUI Renderer** | The ImGui layer used for on-screen UI/overlays. |
-| 11 | **Physics 2D** | The 2D physics world. |
+| 11 | **Physics 2D** | The Box2D service. Jolt's 3D worlds are created per scene when physics first runs. |
 | 12 | **Font Manager** | Loads and bakes fonts for text rendering. |
-| 13 | **Asset Registry** | Registers built-in engine assets and indexes your project's assets. See [Assets](../Assets/Assets.md). |
+| 13 | **Built-in asset registration** | Registers engine assets; project assets are indexed when the project loads. See [Assets](../Assets/Assets.md). |
 | 14 | **Audio Manager** | Starts the audio device (via miniaudio). |
 
 Some of these can be turned off through the application's configuration (for example, a headless server build may disable the window and audio).
@@ -100,13 +100,13 @@ At this point scenes are *registered* (the engine knows they exist and how to lo
 
 ### Load packages
 
-The runtime then calls `PackageHost::LoadAll()`. This scans next to the executable for package DLLs (`Pkg.<Name>.Native.dll`) and loads each one, calling its `FunkePackage_OnLoad()` function.
+The runtime then calls `PackageHost::LoadAll()`. It discovers native package libraries, verifies their `.funkeabi` metadata against the running engine, and calls `FunkePackage_OnLoad()` on accepted libraries. Package filenames use the platform's shared-library extension.
 
 **Packages must load before any scene loads**, because a scene may contain components that a package defines. If the package isn't loaded first, the engine wouldn't know how to recreate those components. See [Writing Packages](../Packages/Writing-Packages.md).
 
 ### Splash screen (optional)
 
-If your project enables a splash screen, the runtime pushes a **splash layer** here. When a splash is shown, the engine **defers loading the startup scene** until the splash finishes — so the player sees your logo first, and the (possibly heavy) scene load happens behind it. When the splash fades out, the deferred scene load runs.
+If your project enables a splash screen, the runtime pushes a **splash layer** and defers startup-scene loading until that layer detaches. The host can also call `RequestStartupLoad()` to start loading while its splash remains visible, as the editor/launcher loading flow does. The load runs on the first eligible frame; game time is reset after it completes.
 
 ### Load the startup scene
 
@@ -114,8 +114,8 @@ Whether immediately or after the splash, the engine loads the startup scene. Loa
 
 1. **Instantiate** the scene (create its systems and an empty entity world).
 2. **Deserialize** the `.scene` file — recreate every saved entity and its components.
-3. **Awake** all systems, then **Start** all systems.
-4. Fire scene events (`ScenePreStartEvent` → `ScenePostStartEvent`) so other code can react.
+3. Set up the default camera when needed, then fire `ScenePreStartEvent`.
+4. **Awake** and **Start** enabled systems, commit the scene to the loaded set, and fire `ScenePostStartEvent`.
 
 See [Scenes](Scenes.md) for the full scene lifecycle.
 
@@ -135,8 +135,8 @@ Now the game is live. The engine runs the same loop every frame until the window
 │ 2. Fixed    │ run FixedUpdate as many times as needed (physics-rate)    │
 │    Update   │ — a fixed timestep, independent of frame rate             │
 │ 3. Update   │ audio · global scripts · game logic · scene systems       │
-│             │ · physics step · pre-render prep                          │
-│ 4. Render   │ Renderer2D draws the scene · UI · gizmos                   │
+│             │ · transform synchronization · pre-render prep             │
+│ 4. Render   │ 3D and 2D scenes · world/screen UI · gizmos                │
 │ 5. Present  │ swap the buffers — the finished frame appears on screen    │
 └────────────────────────────────────────────────────────────────────────┘
 ```
@@ -145,6 +145,7 @@ A few details worth knowing:
 
 - **Fixed Update** uses an accumulator. If the game runs fast, fixed update might run zero or one time per frame; if a frame was slow, it may run several times to "catch up." This keeps physics and gameplay stable regardless of frame rate.
 - **Update** is where most game logic happens — your scripts' `OnUpdate`, scene systems, and so on.
+- Before variable updates, the engine publishes completed asset work and pumps asynchronous scene loads. See [Asynchronous loading](Scenes.md#asynchronous-loading) for the work spread across frames and the operations that can still block.
 - If a splash was shown, the deferred scene load is triggered early in this stage on the first eligible frame.
 - The loop ends when you close the window (or the game calls quit).
 
@@ -152,7 +153,7 @@ A few details worth knowing:
 
 ## Stage 4 — Shutdown
 
-When the loop ends, the engine tears everything down in a clean order: scenes are unloaded (systems get their `OnDestroy`), packages run `FunkePackage_OnUnload`, subsystems shut down, and the core shutdown guard runs last. This ensures files are flushed and resources are released properly.
+When the loop ends, scenes unload and systems receive `OnDestroy`; packages receive `FunkePackage_OnUnload`. Pending asset-loader work is stopped before the asset managers and graphics device are destroyed. The remaining subsystems shut down and the core shutdown guard runs last.
 
 ---
 
@@ -160,13 +161,14 @@ When the loop ends, the engine tears everything down in a clean order: scenes ar
 
 ```
 Main()
- ├─ InitializeCore, Localization, parse command line
- ├─ CreateApplication()  → load project.json
+ ├─ InitializeCore, ABI check, capture command line
+ ├─ CreateApplication()  → mount bundles, load project.json
  └─ Application::Run()
+     ├─ AssetLoader::Initialize()
      ├─ Initialize()
      │   ├─ Profiler → JobSystem → FrameArenas
      │   ├─ Window (SDL3) → Render API (WebGPU/Dawn)
-     │   ├─ Textures → Shaders → Renderer2D → Gizmos → GUI
+     │   ├─ Textures → Shaders → Renderer2D / Renderer3D → Gizmos → GUI
      │   ├─ Physics2D → Fonts → Asset Registry → Audio
      │   ├─ ConfigureScenes()   (choose + register startup scene)
      │   ├─ ConfigureLayers()   (push splash if enabled)

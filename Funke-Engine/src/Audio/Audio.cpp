@@ -1,5 +1,7 @@
 #include "pch.hpp"
 #include "Audio/Audio.hpp"
+#include "Assets/AssetBundle.hpp"
+#include "Serialization/File.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -59,7 +61,11 @@ namespace Funke {
 
 		ma_decoder decoder{};
 		ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 0, 0);
-		ma_result result = ma_decoder_init_file(filepath.c_str(), &config, &decoder);
+		std::vector<std::uint8_t> bundled;
+		const bool isBundled = AssetBundle::ReadMounted(Path::FromUtf8(filepath), bundled);
+		ma_result result = isBundled
+			? ma_decoder_init_memory(bundled.data(), bundled.size(), &config, &decoder)
+			: ma_decoder_init_file(filepath.c_str(), &config, &decoder);
 
 		if (result != MA_SUCCESS) {
 			FNK_CORE_ERROR_TAG("Audio", "Failed to load audio: {}", filepath);

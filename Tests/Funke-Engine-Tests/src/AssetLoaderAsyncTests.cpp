@@ -107,6 +107,35 @@ TEST_CASE("Async asset requests share the published cache entry") {
 	CHECK(mesh->Revision == revision);
 }
 
+TEST_CASE("Async asset publication obeys its per-frame count budget") {
+	AsyncAssetScope assets;
+	std::vector<uint64_t> requests;
+	for (uint64_t i = 0; i < 4; ++i) {
+		const auto path = (assets.Root / ("Mesh" + std::to_string(i) + ".obj")).string();
+		REQUIRE(File::WriteAllText(path, k_TriangleObj));
+		AssetRegistry::RegisterBuiltInAsset(path, assets.Guid + i + 1, AssetKind::Mesh);
+		requests.push_back(AssetLoader::LoadAsync(assets.Guid + i + 1));
+		REQUIRE(requests.back() != 0);
+	}
+	AssetLoader::Pump(2.0, 0);
+	for (auto id : requests) CHECK(AssetLoader::GetResult(id).Status == AssetLoadStatus::Pending);
+	size_t completed = 0;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (completed != requests.size() && std::chrono::steady_clock::now() < deadline) {
+		AssetLoader::Pump(1000.0, 1);
+		size_t nowCompleted = 0;
+		for (auto id : requests) {
+			const auto result = AssetLoader::GetResult(id);
+			CHECK(result.Status != AssetLoadStatus::Failed);
+			if (result.Succeeded()) ++nowCompleted;
+		}
+		CHECK(nowCompleted <= completed + 1);
+		completed = nowCompleted;
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	CHECK(completed == requests.size());
+}
+
 TEST_CASE("Cancelling one async asset request preserves another request for the same mesh") {
 	AsyncAssetScope assets;
 	const uint64_t first = AssetLoader::LoadAsync(assets.Guid);
@@ -176,7 +205,9 @@ TEST_CASE("Async asset loading cancels when its source changes before publicatio
 	const uint64_t request = AssetLoader::LoadAsync(assets.Guid);
 	REQUIRE(request != 0);
 	AssetLoader::Pump();
-	REQUIRE(File::WriteAllText(assets.Path, "v -2 0 0\nv 12 0 0\nv 0 8 0\nf 1 2 3\n"));
+	// A decoder may hold a Windows read handle that prevents replacing the file.
+	const auto stamp = std::filesystem::last_write_time(assets.Path);
+	std::filesystem::last_write_time(assets.Path, stamp + std::chrono::seconds(2));
 	SUBCASE("A registry notification precedes publication") { AssetRegistry::MarkDirty(); }
 	SUBCASE("The file changes before the watcher notifies the registry") {}
 	CHECK(assets.Await(request).Status == AssetLoadStatus::Cancelled);
@@ -269,4 +300,13 @@ TEST_CASE("Async asset loading registers decoded audio in the normal cache") {
 	REQUIRE(loaded.IsValid());
 	CHECK(AudioManager::IsAudioLoaded(loaded));
 	CHECK(AudioManager::LoadAudioByUUID(assets.Guid) == loaded);
+	AssetLoader::RetainAsset(assets.Guid);
+	AssetLoader::RetainAsset(assets.Guid);
+	CHECK(AudioManager::PurgeUnreferenced() == 0);
+	AssetLoader::ReleaseAsset(assets.Guid);
+	CHECK(AudioManager::PurgeUnreferenced() == 0);
+	CHECK(AudioManager::IsAudioLoaded(loaded));
+	AssetLoader::ReleaseAsset(assets.Guid);
+	CHECK(AudioManager::PurgeUnreferenced() == 1);
+	CHECK_FALSE(AudioManager::IsAudioLoaded(loaded));
 }

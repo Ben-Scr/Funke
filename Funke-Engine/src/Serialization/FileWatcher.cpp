@@ -5,6 +5,8 @@
 #include "Profiling/Profiler.hpp"
 
 #include <algorithm>
+#include <array>
+#include <memory>
 #include <cctype>
 
 namespace Funke {
@@ -21,6 +23,9 @@ namespace Funke {
 			".git",
 			".vs",
 			".idea",
+			".funke",
+			"node_modules",
+			"builds",
 			"bin",
 			"bin-int",
 			"obj",
@@ -29,42 +34,11 @@ namespace Funke {
 		};
 
 		std::filesystem::path NormalizeWatchTargetPath(const std::filesystem::path& path) {
-			std::error_code ec;
-			if (std::filesystem::exists(path, ec)) {
-				std::filesystem::path canonicalPath = std::filesystem::weakly_canonical(path, ec);
-				if (!ec) {
-					return canonicalPath.make_preferred();
-				}
-				ec.clear();
-			}
-
-			std::filesystem::path absolutePath = std::filesystem::absolute(path, ec);
-			if (ec) {
-				return path.lexically_normal().make_preferred();
-			}
-
-			return absolutePath.lexically_normal().make_preferred();
-		}
-
-		template <typename TSnapshot>
-		bool HasSnapshotChanged(const TSnapshot& currentSnapshot, const TSnapshot& nextSnapshot) {
-			if (nextSnapshot.size() != currentSnapshot.size()) {
-				return true;
-			}
-
-			// Compare on the (mtime, size) tuple — relying on mtime alone misses the
-			// save-via-rename pattern when filesystem timestamp granularity is coarser
-			// than the rename window (common on FAT/NTFS for rapid editor saves).
-			for (const auto& [path, fingerprint] : nextSnapshot) {
-				const auto it = currentSnapshot.find(path);
-				if (it == currentSnapshot.end() || it->second != fingerprint) {
-					return true;
-				}
-			}
-
-			return false;
+			return Path::CanonicalIdentity(path);
 		}
 	}
+
+	FileWatcher::FileWatcher() = default;
 
 	FileWatcher::~FileWatcher() {
 		Stop();
@@ -75,6 +49,12 @@ namespace Funke {
 	}
 
 	void FileWatcher::Watch(const std::vector<std::string>& paths, const std::vector<std::string>& patterns, Callback callback, bool recursive) {
+		PathsCallback onPaths;
+		if (callback) onPaths = [callback = std::move(callback)](const std::vector<std::string>&) { callback(); };
+		Watch(paths, patterns, std::move(onPaths), recursive);
+	}
+
+	void FileWatcher::Watch(const std::vector<std::string>& paths, const std::vector<std::string>& patterns, PathsCallback callback, bool recursive) {
 		Stop();
 
 		ConfigurePatterns(patterns);
@@ -140,6 +120,7 @@ namespace Funke {
 		m_Filenames.clear();
 		m_FileTimestamps.clear();
 		m_Callback = nullptr;
+		m_PendingPaths.clear();
 		m_PendingChanges.store(false);
 		m_WatchDescription.clear();
 	}
@@ -148,12 +129,13 @@ namespace Funke {
 		const int pollIntervalMs = std::max(50, static_cast<int>(pollIntervalSeconds * 1000.0f));
 		m_PollIntervalMs.store(pollIntervalMs);
 
-		if (!m_PendingChanges.exchange(false)) {
+		if (!m_PendingChanges.load()) {
 			return;
 		}
 
 		// Copy callback+description under lock (races Stop()), but do NOT hold the lock during invocation (callbacks re-enter FS/scene).
-		Callback callbackCopy;
+		PathsCallback callbackCopy;
+		std::vector<std::string> changedPaths;
 		std::string descriptionCopy;
 		{
 			std::scoped_lock<std::mutex> lock(m_StateMutex);
@@ -162,13 +144,34 @@ namespace Funke {
 			}
 			callbackCopy = m_Callback;
 			descriptionCopy = m_WatchDescription;
+			changedPaths.assign(m_PendingPaths.begin(), m_PendingPaths.end());
+			m_PendingPaths.clear();
+			m_PendingChanges.store(false);
 		}
-		if (!callbackCopy) {
+		if (!callbackCopy || changedPaths.empty()) {
 			return;
 		}
 
 		FNK_CORE_INFO_TAG("FileWatcher", "Changes detected in {}", descriptionCopy);
-		callbackCopy();
+		callbackCopy(changedPaths);
+	}
+
+	bool FileWatcher::PublishSnapshot(Snapshot nextSnapshot) {
+		std::vector<std::string> changedPaths;
+		for (const auto& [path, fingerprint] : nextSnapshot) {
+			const auto previous = m_FileTimestamps.find(path);
+			if (previous == m_FileTimestamps.end() || previous->second != fingerprint) changedPaths.push_back(path);
+		}
+		for (const auto& [path, fingerprint] : m_FileTimestamps) {
+			if (!nextSnapshot.contains(path)) changedPaths.push_back(path);
+		}
+		m_FileTimestamps = std::move(nextSnapshot);
+		if (changedPaths.empty()) return false;
+
+		std::scoped_lock lock(m_StateMutex);
+		m_PendingPaths.insert(changedPaths.begin(), changedPaths.end());
+		m_PendingChanges.store(true);
+		return true;
 	}
 
 	void FileWatcher::WorkerMain() {
@@ -197,12 +200,7 @@ namespace Funke {
 				break;
 			}
 
-			Snapshot nextSnapshot = BuildSnapshot();
-			const bool changed = HasSnapshotChanged(m_FileTimestamps, nextSnapshot);
-
-			m_FileTimestamps = std::move(nextSnapshot);
-			if (changed) {
-				m_PendingChanges.store(true);
+			if (PublishSnapshot(BuildSnapshot())) {
 				idlePollIntervalMs = m_PollIntervalMs.load();
 			}
 			else {
@@ -248,94 +246,125 @@ namespace Funke {
 			return false;
 		}
 
-		if (rootsByKey.size() > MAXIMUM_WAIT_OBJECTS) {
-			FNK_CORE_WARN_TAG("FileWatcher", "Watching {} exceeds the Windows notification handle limit; falling back to polling", m_WatchDescription);
-			return false;
-		}
+		if (rootsByKey.size() >= MAXIMUM_WAIT_OBJECTS) return false;
 
-		std::vector<HANDLE> handles;
-		handles.reserve(rootsByKey.size());
-
+		struct NativeWatch {
+			NativeWatchRoot Root;
+			HANDLE Directory = INVALID_HANDLE_VALUE;
+			OVERLAPPED Overlap{};
+			alignas(DWORD) std::array<unsigned char, 32768> Buffer{};
+			bool Pending = false;
+			~NativeWatch() {
+				if (Pending) {
+					CancelIoEx(Directory, &Overlap);
+					DWORD bytes = 0;
+					GetOverlappedResult(Directory, &Overlap, &bytes, TRUE);
+				}
+				if (Directory != INVALID_HANDLE_VALUE) CloseHandle(Directory);
+				if (Overlap.hEvent) CloseHandle(Overlap.hEvent);
+			}
+			bool Arm() {
+				const HANDLE event = Overlap.hEvent;
+				Overlap = {};
+				Overlap.hEvent = event;
+				ResetEvent(Overlap.hEvent);
+				Pending = ReadDirectoryChangesW(Directory, Buffer.data(), static_cast<DWORD>(Buffer.size()),
+					Root.Recursive, FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME
+					| FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_CREATION | FILE_NOTIFY_CHANGE_SIZE,
+					nullptr, &Overlap, nullptr) != FALSE;
+				return Pending;
+			}
+		};
+		std::vector<std::unique_ptr<NativeWatch>> watches;
+		std::vector<HANDLE> waitHandles;
 		for (const auto& [key, root] : rootsByKey) {
-			(void)key;
-
-			const HANDLE handle = FindFirstChangeNotificationW(
-				root.Path.c_str(),
-				root.Recursive ? TRUE : FALSE,
-				FILE_NOTIFY_CHANGE_FILE_NAME |
-				FILE_NOTIFY_CHANGE_DIR_NAME |
-				FILE_NOTIFY_CHANGE_LAST_WRITE |
-				FILE_NOTIFY_CHANGE_CREATION |
-				FILE_NOTIFY_CHANGE_SIZE);
-
-			if (handle == INVALID_HANDLE_VALUE) {
-				FNK_CORE_WARN_TAG("FileWatcher", "Failed to create a native watch for {}; falling back to polling", Path::ToUtf8(root.Path));
-				for (HANDLE openHandle : handles) {
-					FindCloseChangeNotification(openHandle);
-				}
-				return false;
-			}
-
-			handles.push_back(handle);
+			auto watch = std::make_unique<NativeWatch>();
+			watch->Root = root;
+			watch->Directory = CreateFileW(root.Path.c_str(), FILE_LIST_DIRECTORY,
+				FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+				FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
+			watch->Overlap.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+			if (watch->Directory == INVALID_HANDLE_VALUE || !watch->Overlap.hEvent || !watch->Arm()) return false;
+			waitHandles.push_back(watch->Overlap.hEvent);
+			watches.push_back(std::move(watch));
 		}
-
-		struct NotificationHandleCloser {
-			std::vector<HANDLE>& Handles;
-
-			~NotificationHandleCloser() {
-				for (HANDLE handle : Handles) {
-					if (handle != INVALID_HANDLE_VALUE) {
-						FindCloseChangeNotification(handle);
-					}
-				}
-			}
-		} handleCloser{ handles };
-
-		// Stop event in the wait set so Stop() interrupts WaitForMultipleObjects immediately;
-		// a condition_variable can't wake a native wait, so without this each Stop() stalled up
-		// to kNativeWatchTimeoutMs (two watchers torn down on play-exit = the ~0.5s editor freeze).
 		const HANDLE stopEvent = static_cast<HANDLE>(m_NativeStopEvent);
-		const DWORD changeHandleCount = static_cast<DWORD>(handles.size());
-		std::vector<HANDLE> waitHandles = handles;
-		if (stopEvent) {
-			waitHandles.push_back(stopEvent);
-		}
-		const DWORD waitTimeout = stopEvent ? INFINITE : kNativeWatchTimeoutMs;
+		if (stopEvent) waitHandles.push_back(stopEvent);
+		PublishSnapshot(BuildSnapshot());
 
 		while (m_Watching.load()) {
-			const DWORD waitResult = WaitForMultipleObjects(
-				static_cast<DWORD>(waitHandles.size()),
-				waitHandles.data(),
-				FALSE,
-				waitTimeout);
-
-			if (waitResult == WAIT_TIMEOUT) {
-				continue;
-			}
-
-			if (stopEvent && waitResult == WAIT_OBJECT_0 + changeHandleCount) {
-				break;
-			}
-
-			if (waitResult >= WAIT_OBJECT_0 && waitResult < WAIT_OBJECT_0 + changeHandleCount) {
-				Snapshot nextSnapshot = BuildSnapshot();
-				const bool changed = HasSnapshotChanged(m_FileTimestamps, nextSnapshot);
-				m_FileTimestamps = std::move(nextSnapshot);
-				if (changed) {
-					m_PendingChanges.store(true);
+			const DWORD result = WaitForMultipleObjects(static_cast<DWORD>(waitHandles.size()),
+				waitHandles.data(), FALSE, stopEvent ? INFINITE : kNativeWatchTimeoutMs);
+			if (result == WAIT_TIMEOUT) continue;
+			if (stopEvent && result == WAIT_OBJECT_0 + watches.size()) break;
+			if (result < WAIT_OBJECT_0 || result >= WAIT_OBJECT_0 + watches.size()) return false;
+			auto& watch = *watches[result - WAIT_OBJECT_0];
+			DWORD byteCount = 0;
+			const bool completed = GetOverlappedResult(watch.Directory, &watch.Overlap, &byteCount, FALSE) != FALSE;
+			const DWORD error = completed ? ERROR_SUCCESS : GetLastError();
+			watch.Pending = false;
+			if (!completed && error != ERROR_NOTIFY_ENUM_DIR) return false;
+			alignas(DWORD) const auto buffer = watch.Buffer;
+			if (!watch.Arm()) return false;
+			bool rescan = !completed || byteCount == 0;
+			std::unordered_set<std::string> changed;
+			for (DWORD offset = 0; !rescan && offset < byteCount;) {
+				if (byteCount - offset < offsetof(FILE_NOTIFY_INFORMATION, FileName)) { rescan = true; break; }
+				const auto* notification = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(buffer.data() + offset);
+				if (notification->FileNameLength > byteCount - offset - offsetof(FILE_NOTIFY_INFORMATION, FileName)
+					|| notification->FileNameLength % sizeof(wchar_t) != 0) { rescan = true; break; }
+				const auto relative = std::filesystem::path(std::wstring(notification->FileName,
+					notification->FileNameLength / sizeof(wchar_t)));
+				const auto path = watch.Root.Path / relative;
+				bool ignored = false;
+				for (const auto& part : relative.parent_path()) if (ShouldIgnoreDirectory(part)) { ignored = true; break; }
+				std::error_code ec;
+				const bool directory = std::filesystem::is_directory(path, ec);
+				if (!ignored && !ShouldIgnoreDirectory(path)) {
+					if (notification->Action == FILE_ACTION_REMOVED || notification->Action == FILE_ACTION_RENAMED_OLD_NAME) {
+						const std::string prefix = NormalizeKey(path) + static_cast<char>(std::filesystem::path::preferred_separator);
+						for (const auto& [key, stamp] : m_FileTimestamps) if (key.starts_with(prefix)) { rescan = true; break; }
+					}
+					if (directory || (!MatchesFile(path) && (notification->Action == FILE_ACTION_REMOVED
+						|| notification->Action == FILE_ACTION_RENAMED_OLD_NAME))) rescan = true;
+					else if (MatchesFile(path)) {
+						bool tracked = false;
+						for (const WatchTarget& target : m_Targets) {
+							if (!target.IsDirectory) { tracked |= path == target.Path; continue; }
+							const auto rel = path.lexically_relative(target.Path);
+							if (rel.empty() || *rel.begin() == L"..") continue;
+							if (!target.Recursive && path.parent_path() != target.Path) continue;
+							const auto resolved = Path::CanonicalIdentity(path).lexically_relative(target.Path);
+							if (!resolved.empty() && *resolved.begin() != L"..") tracked = true;
+						}
+						if (tracked) {
+							const std::string key = NormalizeKey(path);
+							std::filesystem::directory_entry entry(path, ec);
+							if (!ec && entry.is_regular_file(ec)) {
+								const auto stamp = entry.last_write_time(ec);
+								if (ec) { rescan = true; break; }
+								const auto size = entry.file_size(ec);
+								if (ec) { rescan = true; break; }
+								const FileFingerprint next{ stamp, size };
+								const auto previous = m_FileTimestamps.find(key);
+								if (previous == m_FileTimestamps.end() || previous->second != next) changed.insert(key);
+								m_FileTimestamps[key] = next;
+							}
+							else if (m_FileTimestamps.erase(key) != 0) changed.insert(key);
+						}
+					}
 				}
-
-				const HANDLE changedHandle = handles[waitResult - WAIT_OBJECT_0];
-				if (!FindNextChangeNotification(changedHandle)) {
-					FNK_CORE_WARN_TAG("FileWatcher", "Native notifications failed for {}; falling back to polling", m_WatchDescription);
-					return false;
-				}
-
-				continue;
+				if (notification->NextEntryOffset == 0) break;
+				if (notification->NextEntryOffset < offsetof(FILE_NOTIFY_INFORMATION, FileName)
+					|| notification->NextEntryOffset > byteCount - offset) { rescan = true; break; }
+				offset += notification->NextEntryOffset;
 			}
-
-			FNK_CORE_WARN_TAG("FileWatcher", "Native notifications failed for {}; falling back to polling", m_WatchDescription);
-			return false;
+			if (!changed.empty()) {
+				std::lock_guard lock(m_StateMutex);
+				m_PendingPaths.insert(changed.begin(), changed.end());
+				m_PendingChanges.store(true);
+			}
+			if (rescan) PublishSnapshot(BuildSnapshot());
 		}
 
 		return true;
@@ -344,6 +373,7 @@ namespace Funke {
 
 	FileWatcher::Snapshot FileWatcher::BuildSnapshot() const {
 		Snapshot snapshot;
+		std::unordered_map<std::filesystem::path, std::filesystem::path> resolvedRoots;
 
 		auto recordFile = [&](const std::filesystem::directory_entry& entry,
 				const std::filesystem::path& watchRoot, std::error_code& ec) {
@@ -361,10 +391,9 @@ namespace Funke {
 				resolved = entry.path();
 				resolveEc.clear();
 			}
-			std::filesystem::path resolvedRoot = std::filesystem::weakly_canonical(watchRoot, resolveEc);
-			if (resolveEc) {
-				resolvedRoot = watchRoot;
-			}
+			auto rootIt = resolvedRoots.find(watchRoot);
+			if (rootIt == resolvedRoots.end()) rootIt = resolvedRoots.emplace(watchRoot, Path::CanonicalIdentity(watchRoot)).first;
+			const std::filesystem::path& resolvedRoot = rootIt->second;
 			const std::string resolvedStr = Path::ToUtf8(resolved);
 			std::string rootStr = Path::ToUtf8(resolvedRoot);
 			// Ensure trailing separator so "/proj/Assets" doesn't falsely match "/proj/Assets-Backup/foo.png".

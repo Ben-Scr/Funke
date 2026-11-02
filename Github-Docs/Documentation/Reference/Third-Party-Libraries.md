@@ -1,8 +1,6 @@
 # Third-Party Libraries
 
-Funke is built on a small set of well-established open-source libraries. This page lists what they are and what each one does in the engine, so you know where a given capability comes from.
-
-Funke's philosophy is to keep mandatory dependencies few and focused — each library below earns its place by doing one job well.
+This page maps Funke's main third-party dependencies to their roles. For the complete attribution and redistribution notices, use [THIRD_PARTY_LICENSES.md](../../../THIRD_PARTY_LICENSES.md) and the `Licenses/` folder included in a build. The selected engine modules and platform determine which dependencies ship.
 
 ---
 
@@ -33,7 +31,10 @@ Funke's philosophy is to keep mandatory dependencies few and focused — each li
 |---------|---------------|
 | [miniaudio](https://github.com/mackron/miniaudio) | The audio backend — device output and sound playback. |
 | [GLM](https://github.com/g-truc/glm) | Vector and matrix math. |
-| [STB](https://github.com/nothings/stb) | Image loading (decoding PNG/JPG/etc. into textures). |
+| [STB](https://github.com/nothings/stb) | Image decoding/writing, TrueType font rasterization and Vorbis decoding. |
+| [LZ4](https://github.com/lz4/lz4) | Optional lossless compression of `.fbundle` asset archives. |
+| [Zstandard](https://github.com/facebook/zstd) | Alternative lossless compression of `.fbundle` asset archives. |
+| [MIT KEMAR measurements](https://sound.media.mit.edu/resources/KEMAR.html) | The measured head-related impulse responses used by headphone HRTF spatial audio; see [Spatial Audio](../Engine-Core/Spatial-Audio.md). |
 
 ---
 
@@ -41,13 +42,21 @@ Funke's philosophy is to keep mandatory dependencies few and focused — each li
 
 | Library | Role in Funke |
 |---------|---------------|
-| [.NET 10 LTS / hostfxr](https://dotnet.microsoft.com/) | Hosts the C# scripting runtime. The engine boots .NET through hostfxr and loads the scripting assemblies. See [Scripting](../Scripting/Scripting.md). |
+| [.NET / hostfxr / Mono](https://dotnet.microsoft.com/) | Scripts target .NET 10. Desktop hosts use hostfxr; Android, iOS and Web use Mono. Web builds with C# require the .NET 11 SDK and its WebAssembly workload. See [Platform Packages](../Editor/Platform-Packages.md). |
+
+## Development and support libraries
+
+Logging and formatting use spdlog and fmt, enum reflection uses magic_enum, and profiling uses Tracy when enabled. Native tests use doctest and managed tests use xUnit. Font attribution, including IBM Plex and Noto Sans CJK, is listed in the repository's third-party notices.
 
 ---
 
 ## A note on supported frameworks
 
 For C# scripting, Funke targets **.NET 10.0 LTS**. Scripts and C# packages build against that runtime.
+
+macOS distributions include `libnethost.dylib` beside the engine library, including SDK export runtimes. Keeping the native host in a separate dynamic library prevents its private C++ type information from interfering with engine exception handling. Re-run Setup after updating an older source checkout that only contains `libnethost.a`.
+
+Dawn source setup checks the pinned root and dependency revisions on every run. Interrupted Git initialization can be resumed by rerunning the platform's `scripts/dawn/SetupDawn` script. Unexpected local source edits are preserved and reported. CI caches carry headers, libraries and revision/build metadata; they do not require a full source checkout. See [contributor build notes](../../../CONTRIBUTING.md).
 
 ## Related pages
 

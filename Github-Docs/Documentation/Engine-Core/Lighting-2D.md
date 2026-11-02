@@ -2,7 +2,7 @@
 
 `Funke.Lighting2D` is an optional external package for world lighting. It adds colored point lights, ambient illumination and rectangular shadow occluders to sprites, tilemaps, terrain, particles and world text. Screen-space UI stays unaffected.
 
-Use an engine build with `Renderer2D::RegisterSceneEffect` and `FullscreenEffect`; older beta binaries need updating. In **Package Manager > Search Packages**, click **Refresh registry**, search for `Funke.Lighting2D` and click **Install**. The editor enables the required `Funke.2D` module and compiles the package against your engine. A native C++ toolchain is required. The [release ZIP](https://github.com/Ben-Scr/Funke-PackageRegistry/releases/tag/Funke.Lighting2D-0.1.0) also supports manual installation through the Package Manager.
+Use an engine build with `Renderer2D::RegisterSceneEffect` and `FullscreenEffect`; older beta binaries need updating. In **Package Manager > Search Packages**, click **Refresh registry**, search for `Funke.Lighting2D` and click **Install**. The editor enables the required `Funke.2D` module and compiles the package against your engine. A native C++ toolchain and matching Native SDK or source checkout are required. For manual installation, use the release linked by the [package registry](https://github.com/Ben-Scr/Funke-PackageRegistry/blob/main/index.json).
 
 ## Add lighting
 

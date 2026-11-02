@@ -1,5 +1,6 @@
 #pragma once
 #include "Collections/Ids.hpp"
+#include "Bridge/EditorSceneQuery.hpp"
 #include "Collections/Vec2.hpp"
 #include "Core/Layer.hpp"
 #include "Core/Log.hpp"
@@ -93,6 +94,8 @@ namespace Funke {
 			double InputClock = 0.0;
 			int64_t InputFrame = 0;
 			std::vector<Held> Releases;
+			std::vector<Held> HeldDown;
+			int GamepadIndex = -1;
 			int64_t MouseFinger = -1;
 			std::string ScreenshotDirectory;
 			bool QuitRequested = false;
@@ -136,6 +139,8 @@ namespace Funke {
 		void RemoveDiscoveryFile();
 
 		ImGuiEditorLayer& m_Editor;
+		EditorSceneQuery m_SceneQuery;
+		float m_ShutdownDelay = -1.0f;
 		EditorBridge::Server m_Server;
 		std::string m_Token;
 		std::string m_DiscoveryFile;

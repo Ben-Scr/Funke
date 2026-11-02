@@ -96,6 +96,7 @@ namespace Funke {
 		uint32_t     g_InstanceBufferCapacity = 0;  // measured in SpriteInstance units
 
 		wgpu::Buffer g_UniformBuffer;
+		uint64_t g_InstanceSubmitSerial = UINT64_MAX;
 
 		// Bind groups are immutable in WebGPU — cache sampler+view alongside the group so SetFilter/hot-reload can detect staleness and rebuild.
 		struct BindGroupKey {
@@ -953,9 +954,9 @@ namespace Funke {
 			m_TextRenderer->Shutdown();
 			m_TextRenderer.reset();
 		}
-		m_SceneFbo.Destroy();
-		m_PostProcessOutputFbo.Destroy();
-		m_AntiAliasFbo.Destroy();
+		m_SceneTargets.Clear();
+		m_PostProcessTargets.Clear();
+		m_AntiAliasTargets.Clear();
 		m_PostProcessor.Shutdown();
 
 		g_BindGroupCache.clear();
@@ -966,6 +967,7 @@ namespace Funke {
 		g_InstanceBuffer         = nullptr;
 		g_InstanceBufferCapacity = 0;
 		g_UniformBuffer          = nullptr;
+		g_InstanceSubmitSerial = UINT64_MAX;
 
 		m_IsInitialized = false;
 	}
@@ -1145,8 +1147,10 @@ namespace Funke {
 		}
 		bool usePostProcess = hasEnabledEffect || aspectLocked || scaled || antiAlias || !sceneEffects.empty();
 
+		Framebuffer* sceneFbo = nullptr;
 		if (usePostProcess) {
-			if (!m_SceneFbo.Recreate(fboWidth, fboHeight, TextureFormat::RGBA16F)) {
+			sceneFbo = m_SceneTargets.Acquire({ fboWidth, fboHeight, TextureFormat::RGBA16F, 1, true });
+			if (!sceneFbo) {
 				usePostProcess = false;
 			}
 		}
@@ -1158,7 +1162,7 @@ namespace Funke {
 		}
 
 		if (usePostProcess) {
-			RenderApi::BindFramebuffer(m_SceneFbo);
+			RenderApi::BindFramebuffer(*sceneFbo);
 			RenderApi::SetViewport(0, 0, fboWidth, fboHeight);
 			if (RenderApi::GetPolygonMode() == PolygonMode::Wireframe || m_ComposeOverTarget) {
 				const Color savedClear = RenderApi::GetClearColor();
@@ -1209,6 +1213,7 @@ namespace Funke {
 
 			if (!instancesUploaded) {
 				FUNKE_PROFILE_SCOPE("Renderer2D.Upload");
+				if (g_InstanceSubmitSerial == WebGPUBackend::GetFrameSubmitSerial()) WebGPUBackend::FlushCommands();
 				if (!EnsureUniformBuffer(device)) {
 					abortSpritePass();
 					return;
@@ -1352,6 +1357,7 @@ namespace Funke {
 			}
 
 			pass.End();
+			g_InstanceSubmitSerial = WebGPUBackend::GetFrameSubmitSerial();
 
 #ifdef FUNKE_PROFILER_ENABLED
 			if (m_GpuTimer && gpuTimerSlots.Valid) {
@@ -1392,7 +1398,7 @@ namespace Funke {
 
 			// FXAA reads the scene at render resolution: straight into the target when nothing follows it,
 			// otherwise into an intermediate the rest of the chain reads instead of the scene.
-			const Framebuffer* sceneSource = &m_SceneFbo;
+			const Framebuffer* sceneSource = sceneFbo;
 			for (const auto& effect : sceneEffects) {
 				const Framebuffer* result = effect.Render(scenes, vp, viewportAABB, *sceneSource);
 				if (result && result->IsValid() && result->GetWidth() == fboWidth && result->GetHeight() == fboHeight) {
@@ -1406,27 +1412,27 @@ namespace Funke {
 					antiAliasedToTarget = m_PostProcessor.RunAntiAliasing(*sceneSource,
 						callerInfo.ColorView, callerInfo.ColorFormat, aaQuality, true);
 				}
-				else if (m_AntiAliasFbo.Recreate(fboWidth, fboHeight, TextureFormat::RGBA16F)) {
-					const auto aaLook = WebGPUBackend::LookupFramebufferByFboId(m_AntiAliasFbo.GetBackendId());
+				else if (const Framebuffer* antiAliasFbo = m_AntiAliasTargets.Acquire({ fboWidth, fboHeight })) {
+					const auto aaLook = WebGPUBackend::LookupFramebufferByFboId(antiAliasFbo->GetBackendId());
 					if (aaLook.Valid && m_PostProcessor.RunAntiAliasing(*sceneSource,
 						aaLook.ColorView, aaLook.ColorFormat, aaQuality, false)) {
-						sceneSource = &m_AntiAliasFbo;
+						sceneSource = antiAliasFbo;
 					}
 				}
 			}
 
-			const bool routeThroughEffectFbo = needsEffectFbo
-				&& m_PostProcessOutputFbo.Recreate(
-					fboWidth, fboHeight,
-					TextureFormat::RGBA16F);
+			const Framebuffer* effectFbo = needsEffectFbo ? m_PostProcessTargets.Acquire({ fboWidth, fboHeight }) : nullptr;
 
 			if (antiAliasedToTarget) {
 				// Done: FXAA wrote the target.
 			}
-			else if (routeThroughEffectFbo) {
+			else if (effectFbo) {
 				const auto outLook = WebGPUBackend::LookupFramebufferByFboId(
-					m_PostProcessOutputFbo.GetBackendId());
+					effectFbo->GetBackendId());
 				if (outLook.Valid) {
+					uint32_t viewportX = 0, viewportY = 0, viewportWidth = callerInfo.Width, viewportHeight = callerInfo.Height;
+					WebGPUBackend::GetCachedViewport(viewportX, viewportY, viewportWidth, viewportHeight);
+					RenderApi::SetViewport(0, 0, fboWidth, fboHeight);
 					m_PostProcessor.Run(*sceneSource,
 						outLook.ColorView,
 						outLook.ColorFormat,
@@ -1434,7 +1440,8 @@ namespace Funke {
 						ppSettings,
 						m_GraphicsSettings.PostProcessingQuality,
 						true);
-					m_PostProcessor.Blit(m_PostProcessOutputFbo,
+					RenderApi::SetViewport(viewportX, viewportY, viewportWidth, viewportHeight);
+					m_PostProcessor.Blit(*effectFbo,
 						callerInfo.ColorView,
 						callerInfo.ColorFormat,
 						callerInfo.Width,
@@ -1472,17 +1479,6 @@ namespace Funke {
 					m_GraphicsSettings.UpscaleFilter);
 			}
 			WebGPUBackend::RestoreBoundTarget(callerSnap);
-		}
-		else {
-			// No post-process: the sprite pass drew straight to the target, and unlike
-			// the PP branch nothing has flushed yet. Submit now so this scene's
-			// WriteBuffer(g_InstanceBuffer)+pass is its own atomic unit. Otherwise the
-			// NEXT additive scene's WriteBuffer to the same shared buffer overwrites
-			// this scene's instance data before this pass executes — Dawn coalesces all
-			// WriteBuffers in a submit ahead of any pass (see FlushFrameCommands). With
-			// n==0 && !usePostProcess already early-returned above, reaching here means
-			// real instance data was uploaded.
-			WebGPUBackend::FlushCommands();
 		}
 
 		// Use callerInfo (NOT target): after PP redirect, target is the intermediate FBO, not the swap chain.

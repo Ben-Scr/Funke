@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import re
 import sys
 from pathlib import Path
 
@@ -79,10 +80,15 @@ def main() -> int:
               file=sys.stderr)
         print("[PackagePosix] Rerun launcher staging (scripts/CopyEngineSdk.py) before packaging.", file=sys.stderr)
         return 1
-    version = "0.0.0-dev"
-    metadata = REPO_ROOT / "build" / "BuildMetadata.json"
-    if metadata.is_file():
-        version = json.loads(metadata.read_text(encoding="utf-8")).get("version", version)
+    try:
+        sdk_manifest.verify_bundle(launcher_dir)
+        metadata = json.loads((launcher_dir / "BuildMetadata.json").read_text(encoding="utf-8-sig"))
+        version = metadata["version"]
+        if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", version):
+            raise ValueError("Bundle metadata contains an invalid release version")
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print(f"[PackagePosix] {error}", file=sys.stderr)
+        return 1
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

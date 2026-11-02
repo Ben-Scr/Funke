@@ -1,5 +1,6 @@
 #pragma once
 #include "Scene/Entity.hpp"
+#include "Inspector/PropertyDescriptor.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -10,6 +11,13 @@ namespace Funke {
 	class Scene;
 
 	void DrawScriptComponentInspector(std::span<const Entity> entities);
+
+	struct ScriptInspectionProperties {
+		std::string Name;
+		std::vector<PropertyDescriptor> Properties;
+	};
+	std::vector<ScriptInspectionProperties> GetScriptInspectionProperties(const Entity& entity);
+	std::vector<PropertyDescriptor> GetScriptClassProperties(const std::string& className);
 
 	// The same sections one by one, so the Inspector can place each C# component and script among the
 	// built-in components (ComponentOrder). Begin returns false when the first entity has no scripts;

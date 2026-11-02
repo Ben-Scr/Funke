@@ -114,7 +114,7 @@ namespace Funke {
 			fontDir = Path::Combine(Path::ExecutableDir(), "FunkeAssets", "Fonts");
 		}
 		const std::string defaultFontPath = Path::Combine(fontDir, "IBMPlexSansCondensed-Regular.ttf");
-		if (std::filesystem::exists(defaultFontPath)) {
+		if (File::Exists(defaultFontPath)) {
 			std::error_code ec;
 			const std::string canonical = std::filesystem::weakly_canonical(
 				std::filesystem::path(defaultFontPath), ec).make_preferred().string();
@@ -343,6 +343,7 @@ namespace Funke {
 			uint64_t oldest = std::numeric_limits<uint64_t>::max();
 			for (size_t i = 0; i < s_Slots.size(); ++i) {
 				const Slot& s = s_Slots[i];
+				if (AssetLoader::IsAssetRetained(s.AssetUUID)) continue;
 				if (!s.InUse || !s.Font || !s.Font->IsLoaded()) continue;  // skip free + in-flight bakes
 				if (static_cast<uint16_t>(i) == defaultIdx) continue;      // never evict the fallback font
 				if (currentFrame - s.LastAccessFrame <= 1) continue;       // protect this/last frame's working set

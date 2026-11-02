@@ -9,7 +9,7 @@ Funke UI is **ECS UI**: a UI element is an entity carrying a `RectTransform` plu
 
 ## Layout: `RectTransform`
 
-Every UI entity has a `RectTransform` (a `Component`) instead of relying on world `Transform2D`. Key members:
+Every UI entity has a `RectTransform` (a `Component`). Screen-space UI needs no world transform. A world-space canvas root combines `RectTransform` with either `Transform2D` or `Transform3D`; its children use RectTransforms. Key members:
 
 ```csharp
 Vector2 AnchorMin, AnchorMax;     // 0..1 of parent rect; positions the element (see the size note below)
@@ -26,6 +26,10 @@ Vector2 Scale, LocalScale;
 Anchors are the core idea: anchor a HUD element to a screen corner so it tracks resolution. The project's reference resolution and scaling come from `project.json` (`uiReferenceWidth/Height`, `uiScaleMode`, `uiScaleMatch`) — see `funke-project-structure`. Because canvases have a fixed reference size, a game that also ships to phones (2:1 and wider) or resizable windows should use `uiScaleMode: "Fit"`, otherwise corner elements of a 16:9 canvas get cut off. Top-level UI is laid out inside the safe area (notches, rounded corners); full-screen backgrounds and fades set `"ignoreSafeArea": true` (scene JSON only, like the fill keys).
 
 **Layout groups** auto-arrange children: `HorizontalLayoutGroup`, `VerticalLayoutGroup`, `GridLayoutGroup` (`CellSize`, `Spacing`, `Constraint`, `ConstraintCount`, padding/alignment). Add one to a container entity and its child RectTransforms are positioned for you.
+
+## World-space canvases
+
+Add `Transform2D` or `Transform3D` to the canvas root alongside `RectTransform2D` in scene JSON. At scale 1, 100 UI units equal one world unit. The root's world transform positions and rotates the canvas; child layout stays in UI units. Do not add a world transform to every child. 3D canvases are depth-tested against opaque meshes, do not write depth, and render before scene post-processing/MSAA resolve; screen-space UI renders above them. Pointer events project through the camera onto the canvas. See `Github-Docs/Documentation/Engine-Core/World-Space-UI.md` for limitations and JSON examples.
 
 ## Display: `Image`
 

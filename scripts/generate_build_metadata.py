@@ -48,6 +48,7 @@ METADATA_JSON = REPO_ROOT / "build" / "BuildMetadata.json"
 CHANGELOG = REPO_ROOT / "CHANGELOG.md"
 PATCH_MANAGED_SUBMODULES = {
     "External/ImGuizmo",
+    "External/box2d",
     "External/entt",
     "External/imgui",
 }

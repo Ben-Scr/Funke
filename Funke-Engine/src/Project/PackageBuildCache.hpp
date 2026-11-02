@@ -11,6 +11,7 @@
 
 #include <rapidxml.hpp>
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -38,7 +39,9 @@ namespace Funke::PackageBuildCache {
 			if (error) { Valid = false; return; }
 			const auto time = entry.last_write_time(error);
 			if (error) { Valid = false; return; }
-			std::string value = std::to_string(size) + ":" + std::to_string(time.time_since_epoch().count());
+			const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(time.time_since_epoch());
+			const auto fraction = std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch() - seconds);
+			std::string value = std::to_string(size) + ":" + std::to_string(seconds.count()) + ":" + std::to_string(fraction.count());
 			if (content) {
 				std::string hash, message;
 				if (!Hash::Sha256OfFile(path, hash, message)) { Valid = false; return; }
@@ -84,6 +87,13 @@ namespace Funke::PackageBuildCache {
 		std::vector<std::string> NativeTargets;
 		std::vector<std::string> ManagedTargets;
 	};
+
+	inline void AddHostEngine(Inventory& files, const std::filesystem::path& library) {
+		std::string hash, error;
+		if (!Hash::Sha256OfFile(library, hash, error)) { files.Valid = false; return; }
+		// Editor and Launcher may load identical engine DLLs from different directories.
+		files.Files["hostEngine"] = std::move(hash);
+	}
 
 	inline std::filesystem::path CachePath(const FunkeProject& project, const std::string& configuration,
 		const std::string& platform) {
@@ -313,7 +323,7 @@ namespace Funke::PackageBuildCache {
 			files.Tree(engineRoot / "Funke-Engine/src", false);
 			const auto msbuild = Path::FromUtf8(FunkeProject::GetMSBuildPath());
 			files.Add(msbuild, false, true);
-			files.Add(Path::FromUtf8(Path::ExecutableDir()) / "Funke-Engine.dll", false, true);
+			AddHostEngine(files, Path::FromUtf8(Path::ExecutableDir()) / "Funke-Engine.dll");
 #ifdef FNK_PLATFORM_WINDOWS
 			const auto visualStudio = msbuild.parent_path().parent_path().parent_path().parent_path();
 			std::error_code error;

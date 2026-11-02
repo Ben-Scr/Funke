@@ -243,6 +243,7 @@ $licenseFiles = @(
     @{ Source = "External\SDL\LICENSE.txt"; Destination = "SDL3\LICENSE.txt" },
     @{ Source = "External\dawn\LICENSE"; Destination = "Dawn\LICENSE" },
     @{ Source = "External\miniaudio\LICENSE"; Destination = "miniaudio\LICENSE" },
+    @{ Source = "External\kemar\LICENSE"; Destination = "KEMAR\LICENSE" },
     @{ Source = "External\box2d\LICENSE"; Destination = "Box2D\LICENSE" },
     @{ Source = "External\JoltPhysics\LICENSE"; Destination = "JoltPhysics\LICENSE" },
     @{ Source = "External\imgui\LICENSE.txt"; Destination = "Dear-ImGui\LICENSE.txt" },

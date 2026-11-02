@@ -198,10 +198,8 @@ namespace Funke {
 			}
 		}
 		m_CutEntities.clear();
-		m_EntityOrder.clear();
-		m_EntityOrderSceneId = nullptr;
-		m_LastHierarchyVersion = 0;
-		m_EntityOrderDirty = true;
+		GetHierarchyState().EntityOrder.clear();
+		GetHierarchyState().Dirty = true;
 
 		std::erase(m_ExternalSceneConflicts, sceneName);
 		return activated;
@@ -388,7 +386,7 @@ namespace Funke {
 		}
 		if (anyRefreshed) {
 			RestoreLoadedSceneSelection(selection);
-			m_EntityOrderDirty = true;
+			GetHierarchyState().Dirty = true;
 		}
 	}
 

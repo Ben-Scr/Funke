@@ -105,7 +105,7 @@ namespace Funke {
         // viewId routes text onto the caller's framebuffer (0xFFFF = current view); scissorCache re-applies clip across multi-atlas Mask spans (0xFFFF = no scissor).
         void RenderInstances(std::span<const TextDrawCmd> commands, const glm::mat4& mvp,
             unsigned short viewId = 0xFFFFu,
-            unsigned short scissorCache = 0xFFFFu);
+            unsigned short scissorCache = 0xFFFFu, bool depthTest = false);
 
         static Font* ResolveFont(TextRendererComponent& text);
 

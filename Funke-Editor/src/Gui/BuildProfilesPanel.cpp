@@ -814,6 +814,34 @@ namespace Funke {
 			ImGui::PopID();
 		}
 
+		if (EditorUI::SectionHeader("Asset Packaging")) {
+			ImGui::PushID("BundleAssets");
+			ImGuiUtils::BeginInspectorFieldRow("Bundle Assets");
+			if (ImGuiUtils::Switch("##Value", &profile.BundleAssets)) SaveSelected();
+			EditorUI::Tooltip("Packs project and engine assets into bundles loaded directly at runtime.\n"
+				"StreamingAssets remain loose for direct file access.");
+			ImGui::PopID();
+			ImGui::BeginDisabled(!profile.BundleAssets);
+			ImGui::PushID("CompressAssetBundles");
+			ImGuiUtils::BeginInspectorFieldRow("Compress Bundles");
+			if (ImGuiUtils::Switch("##Value", &profile.CompressAssetBundles)) SaveSelected();
+			EditorUI::Tooltip("Reduces bundle size with lossless compression. Files are decompressed when loaded.");
+			ImGui::PopID();
+			ImGui::BeginDisabled(!profile.CompressAssetBundles);
+			ImGui::PushID("AssetBundleCompression");
+			ImGuiUtils::BeginInspectorFieldRow("Compression");
+			const char* compressionNames[] = { "LZ4", "Zstandard" };
+			int compression = profile.BundleCompression == AssetBundleCompression::Zstd ? 1 : 0;
+			if (ImGui::Combo("##Value", &compression, compressionNames, IM_ARRAYSIZE(compressionNames))) {
+				profile.BundleCompression = compression == 1 ? AssetBundleCompression::Zstd : AssetBundleCompression::LZ4;
+				SaveSelected();
+			}
+			EditorUI::Tooltip("LZ4 favors loading speed. Zstandard usually produces smaller bundles.");
+			ImGui::PopID();
+			ImGui::EndDisabled();
+			ImGui::EndDisabled();
+		}
+
 		RenderTesting(profile);
 	}
 

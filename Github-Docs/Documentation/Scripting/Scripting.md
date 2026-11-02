@@ -10,7 +10,7 @@ Visual Studio IntelliSense for Funke game projects requires Visual Studio 2026 (
 
 If you just want the short version: make a class that inherits from `EntityScript`, override `OnUpdate`, attach it to an entity in the editor, and press Play.
 
-\---
+---
 
 ## The three kinds of script
 
@@ -24,11 +24,11 @@ Funke's C# API has three script base classes, each with a different **scope**:
 
 Pick the smallest scope that fits. Most gameplay is `EntityScript`; reach for `SceneSystem` when you need to work with *many* entities at once, and `GlobalSystem` for things that must persist between scenes.
 
-\---
+---
 
 ## Your first script
 
-Here's a complete `EntityScript` that moves its entity with the arrow keys / WASD:
+Here's a complete `EntityScript` that moves its entity with WASD:
 
 ```csharp
 using Funke;
@@ -53,7 +53,9 @@ public class PlayerController : EntityScript
 
         if (velocity == Vector2.Zero) return;
 
-        Entity.Transform.Position += velocity.Normalized() \* speed \* Time.DeltaTime;
+        var transform = Entity.Transform;
+        if (transform == null) return;
+        transform.Position += velocity.Normalized() * speed * Time.DeltaTime;
     }
 }
 ```
@@ -66,9 +68,9 @@ Notice three things:
 
 ### Attaching a script to an entity
 
-A script doesn't run until it's attached. In the editor, select an entity, **Add Component → Script** (a `ScriptComponent`), and choose your script class from the list. The engine finds your class, creates an instance, and starts calling its lifecycle methods when the game plays.
+A script doesn't run until it's attached. In the editor, select an entity, open **Add Component**, and choose your script class, or drag its source file onto the Inspector. The engine stores the attachment in a `ScriptComponent`, creates an instance, and calls its lifecycle methods when the game plays.
 
-\---
+---
 
 ## Lifecycle methods
 
@@ -119,15 +121,17 @@ All three also receive application events like `OnApplicationPaused`, `OnApplica
 
 Static fields and static classes keep their values across Play sessions in the editor, because scripts are not reloaded when Play stops. Code that keeps state there (a service, a package) resets it in `Application.PlayModeExited`, which the editor raises after it has restored the scenes.
 
-> The split between `OnUpdate` and `OnFixedUpdate` matters: put \*\*rendering/input-rate\*\* logic in `OnUpdate`, and \*\*physics\*\* logic in `OnFixedUpdate` (which runs at a steady rate regardless of frame rate). See \[Startup Processes](../Engine-Core/Startup-Processes.md#stage-3--the-main-loop).
+> The split between `OnUpdate` and `OnFixedUpdate` matters: put **rendering/input-rate** logic in `OnUpdate`, and **physics** logic in `OnFixedUpdate` (which runs at a steady rate regardless of frame rate). See [Startup Processes](../Engine-Core/Startup-Processes.md#stage-3--the-main-loop).
 
-\---
+---
 
 ## Exposing fields to the Inspector
 
 Public fields can be shown and edited in the editor's Inspector using **attributes**. This lets designers tweak values without touching code:
 
 ```csharp
+using Funke;
+
 public class Enemy : EntityScript
 {
     [Header("Stats")]
@@ -161,13 +165,13 @@ The main attributes:
 
 You can also expose **asset slots** (a texture, audio clip, etc.) using reference types — drag an asset onto the slot in the Inspector. See [Assets](../Assets/Assets.md#referencing-assets-from-c-scripts).
 
-\---
+---
 
 ## What scripts can do (the API)
 
 The `Funke` namespace gives you a broad API. The main categories:
 
-**Entities \& components**
+**Entities & components**
 
 ```csharp
 Entity e = Entity.FindByName("Boss");
@@ -180,7 +184,7 @@ e.Destroy();
 **Transform** — position, rotation, scale:
 
 ```csharp
-Entity.Transform.Position += Vector2.Up \* Time.DeltaTime;
+Entity.Transform.Position += Vector2.Up * Time.DeltaTime;
 ```
 
 **Hierarchy** — parenting lives on the entity, not the transform:
@@ -243,7 +247,7 @@ Time.FixedDeltaTime;   // physics step length
 Time.TimeScale = 0.5f; // slow motion (or 0 to pause game time); clamped to [0, 100]
 ```
 
-**Window \& frame rate**:
+**Window & frame rate**:
 
 ```csharp
 Window.IsFullScreen = true;            // also Window.Position, Window.Title, Minimize/Maximize/Restore()
@@ -299,7 +303,7 @@ if (NetworkObject.Of(Entity) is { IsOwner: true }) Move();     // scripts run ev
 
 Scripts that ship in a package are in **Add Component › Packages**; scenes and prefabs store them by their full class name (`"className": "Funke.Networking.NetworkObject"`). The full API, browser hosting (`wss://`) and internet play are in the package's [README](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Networking).
 
-**Post-processing** — add **Post Processing** to the entity with the main **Camera 2D** (its *Post Processing* toggle must stay on). `PostProcessing2D` exposes each effect as a value struct: read it, change fields, assign it back.
+**Post-processing** — add **Post Processing** to the entity with the main **Camera 2D** or **Camera 3D**, and keep that camera's *Post Processing* toggle on. The shared `PostProcessing2D` component exposes each effect as a value struct: read it, change fields, assign it back.
 
 ```csharp
 var pp = GetComponent<PostProcessing2D>();
@@ -341,6 +345,8 @@ Automated runs (`--input-script`, `--screenshot-at`, `--quit-at`, `--exec`, `--f
 
 **3D sound** — sounds that come from a place in the world. Turn on **Spatial** in an Audio Source's **3D Sound** section: the source then plays from its entity's position (Transform 3D, or Transform 2D at z 0), gets quieter with the distance to the listener and moves to the side it is on. The listener is the main Camera 3D (in 2D games the main Camera 2D), so a sound left of the view is heard on the left. Audio Sources are 2D by default, so existing scenes sound as before.
 
+Enable `AudioSource.Hrtf` for headphone rendering with direction-dependent filters. Distance attenuation and Doppler still apply; stereo panning remains available when HRTF is off. See [Spatial Audio](../Engine-Core/Spatial-Audio.md) for listener selection, one-shots and limitations.
+
 | Field | Does |
 |---|---|
 | **Min Distance** | Full volume up to this distance |
@@ -363,8 +369,8 @@ A one-shot that would be silent (Linear, beyond Max Distance) isn't started. To 
 ```csharp
 AudioStream? song = AudioStream.Open(path);      // null if the file is missing or not audio
 song?.Play();
-song.Time = 42f;                                 // seek; Length, IsPlaying, IsAtEnd, Volume, Loop, Pause(), Stop()
-song.Dispose();                                  // e.g. in OnDestroy; leaving Play mode closes every stream
+if (song != null) song.Time = 42f;                                 // seek; Length, IsPlaying, IsAtEnd, Volume, Loop, Pause(), Stop()
+song?.Dispose();                                  // e.g. in OnDestroy; leaving Play mode closes every stream
 ```
 
 **Music / SFX volume settings** — the **Funke.AudioMixer** package (Package Manager) adds volume groups (`Master` → `Music`, `SFX`, plus your own) with mute, fades, snapshots, saved settings and one-line slider binding:
@@ -444,7 +450,7 @@ In scene files the keys are `outlineWidth`, `outlineR/G/B/A`, `shadowX`, `shadow
 
 For heavy parallel work over many entities, combine queries with the [Job System](../Engine-Core/Job-System.md).
 
-\---
+---
 
 ## Your own components
 
@@ -461,6 +467,10 @@ var h = Entity.GetComponent<Health>() ?? Entity.AddComponent<Health>();
 **Struct components** implement `IComponent`: blittable data in the engine's own component storage, the fastest option for many entities and usable in `Scene.QueryRef<T>()` and jobs. Allowed fields: `bool`, the integer types, `float`, `double`, enums and structs built from those (`Vector2`, `Vector3`).
 
 ```csharp
+using System.Runtime.InteropServices;
+using Funke;
+using Funke.Components;
+
 [StructLayout(LayoutKind.Sequential)]
 public struct Velocity : IComponent { public Vector2 Value; public float Drag; }
 
@@ -471,7 +481,7 @@ foreach (ref var vel in Scene.QueryRef<Velocity>()) vel.Value *= 0.99f;
 
 The Inspector edits struct fields in place, also during Play. Struct data is saved as raw bytes, so only **append** fields to a struct that existing scenes already use; reordering or inserting fields shifts saved values.
 
-\---
+---
 
 ## A scene-wide script
 
@@ -483,20 +493,20 @@ using Funke.Native;
 
 public class SpinSystem : SceneSystem
 {
-    \[ShowInEditor("Spin Speed")] public float SpinSpeed = 1.0f;
+    [ShowInEditor("Spin Speed")] public float SpinSpeed = 1.0f;
 
     public override void OnUpdate()
     {
         float dt = Time.DeltaTime;
         foreach (ref var t in Scene.QueryRef<NativeTransform2D>())
-            t.LocalRotation += SpinSpeed \* dt;
+            t.LocalRotation += SpinSpeed * dt;
     }
 }
 ```
 
 `QueryRef<T>` gives you a direct reference to each entity's component, so you can read and write it with no copying — ideal for hot loops.
 
-\---
+---
 
 ## Native C++ scripts
 
@@ -579,11 +589,13 @@ Native builds require CMake, a compatible desktop C++ compiler and matching Funk
 
 Desktop game builds compile and include the native-script library. Mobile and Web exports with native scripts are currently rejected with an explicit error; they require a different static integration path.
 
-\---
+---
 
 ## Hot reload
 
-A big convenience of C# scripting: you can change your scripts and reload them **without restarting** the editor. When you rebuild your game's script assembly, the engine swaps in the new code and keeps your scenes running. Entity state is preserved where it can be (matching script classes keep their instances; fields reset to their default/saved values).
+C# scripts can reload **without restarting** the editor. A successful reload replaces the game assembly and recreates its managed script instances; compatible exposed fields are restored from captured values, while other object and static state is recreated. Lifecycle callbacks can run again. With **Exit Play Mode On Recompilation** enabled (the default), the editor stops Play before recompiling; disable it to reload during Play.
+
+The replacement assembly is loaded and its type signatures checked before the working assembly is discarded. If that validation fails, the previous assembly remains available and the Console reports the failure; instance restart callbacks may still run. A first load with no working assembly requires a successful build.
 
 The engine's *core* scripting library can't be reloaded mid-session (a .NET limitation), so changing engine-level scripting bits needs a restart — but your everyday game scripts reload freely.
 
@@ -597,23 +609,23 @@ When you save a script, the editor compiles it **in-process** with Roslyn, the C
 * Compile errors appear in the Console in the usual `File.cs(line,col): error CSxxxx` format.
 * If the in-process compiler can't reproduce the build (an unusual project setup, a different .NET SDK, the compiler isn't installed next to the editor), the editor falls back to `dotnet build` and logs why under **ScriptSystem**. Set the environment variable `FUNKE_SCRIPT_COMPILER=dotnet` before starting the editor to always use `dotnet build`.
 
-\---
+---
 
 ## How it works under the hood (brief)
 
 You don't need this to write scripts, but it helps to know the shape:
 
 * At startup, the engine boots the **.NET runtime** (via hostfxr) and loads two assemblies: **`Funke-ScriptCore.dll`** (the scripting API you call) and **your game's script assembly**.
-* A bridge connects the two worlds: C# calls into the engine through **InternalCalls** (P/Invoke), and the engine calls back into your scripts (e.g. to invoke `OnUpdate`) through a table of function pointers.
+* A bridge connects the two worlds through matched **function-pointer tables**: `InternalCalls` invokes the native table, and the engine invokes managed callbacks (for example `OnUpdate`). Packages can additionally expose their own P/Invoke APIs.
 * This bridge is set up once during the scripting-host startup step described in [Startup Processes](../Engine-Core/Startup-Processes.md#start-scripting).
 
-\---
+---
 
 ## Summary
 
 * Write game logic in **C#**: `EntityScript` (per entity), `SceneSystem` (per scene), or `GlobalSystem` (whole app).
 * Override lifecycle methods (`OnStart`, `OnUpdate`, `OnFixedUpdate`, …); attach scripts via a `ScriptComponent`.
-* Expose fields to the Inspector with attributes like `\[ShowInEditor]` and `\[ClampValue]`.
+* Expose fields to the Inspector with attributes like `[ShowInEditor]` and `[ClampValue]`.
 * Use the rich API — `Input`, `Time`, `Physics2D`, `Audio`, `Log`, scene queries, math.
 * Write game logic in **C++** with `NativeScript`; create and attach native scripts in the editor, expose registered fields to the Inspector, and combine them with C# scripts as needed.
 * C# **hot reload** and C++ **native rebuild/reload** support iteration in the editor; see their respective sections for state-restoration behavior and toolchain requirements.

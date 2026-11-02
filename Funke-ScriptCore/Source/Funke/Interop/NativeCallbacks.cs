@@ -1239,6 +1239,14 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<byte*, ulong, int, ulong> Asset_LoadTyped;
     public delegate* unmanaged<byte*, ulong, int, ulong> Asset_BeginLoadTypedAsync;
     public delegate* unmanaged<ulong*, int, int, void> Asset_CancelLoads;
+    public delegate* unmanaged<ulong, int> Camera2D_GetPostProcessingEnabled;
+    public delegate* unmanaged<ulong, int, void> Camera2D_SetPostProcessingEnabled;
+    public delegate* unmanaged<ulong, int> Camera3D_GetPostProcessingEnabled;
+    public delegate* unmanaged<ulong, int, void> Camera3D_SetPostProcessingEnabled;
+    public delegate* unmanaged<byte*, ulong> Scene_PreloadAsync;
+    public delegate* unmanaged<ulong, ulong> Scene_PreloadByGuidAsync;
+    public delegate* unmanaged<ulong, int, int> Scene_ActivatePreloaded;
+    public delegate* unmanaged<ulong, int*, float*, int> Scene_GetLoadProgress;
 }
 
 internal static unsafe class NativeCallbacks

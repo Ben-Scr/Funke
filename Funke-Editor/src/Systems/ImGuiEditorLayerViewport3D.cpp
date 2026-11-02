@@ -5,6 +5,8 @@
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/NameComponent.hpp"
 #include "Components/General/Transform3DComponent.hpp"
+#include "Components/General/Transform2DComponent.hpp"
+#include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/Camera3DComponent.hpp"
 #include "Components/Graphics/DirectionalLightComponent.hpp"
@@ -30,6 +32,7 @@
 #include "Systems/Transform3DHierarchySystem.hpp"
 #include "Systems/TransformHierarchySystem.hpp"
 #include "Systems/UILayoutSystem.hpp"
+#include "Gui/UIDrawOrder.hpp"
 
 #include <imgui.h>
 #include <ImGuizmo.h>
@@ -276,6 +279,18 @@ namespace Funke {
 		// F is a fly key's neighbour; ignore it while RMB-flying.
 		if (s_LookActive || m_SelectedEntity == entt::null || !scene.IsValid(m_SelectedEntity)) return;
 		Transform3DHierarchySystem::Propagate(scene);
+		const EntityHandle canvas = WorldUI::FindRoot(scene.GetRegistry(), m_SelectedEntity);
+		if (canvas != entt::null && scene.HasComponent<RectTransform2DComponent>(m_SelectedEntity)) {
+			ComputeUILayout(scene);
+			const auto& rect = scene.GetComponent<RectTransform2DComponent>(m_SelectedEntity);
+			const Vec2 center = rect.GetCenter();
+			const Vec2 size = rect.GetSize();
+			const glm::mat4 world = WorldUI::CanvasToWorld(scene.GetRegistry(), canvas);
+			const float radius = 0.5f * (glm::length(glm::vec3(world[0])) * std::abs(size.x)
+				+ glm::length(glm::vec3(world[1])) * std::abs(size.y));
+			m_EditorCamera3D.Focus(glm::vec3(world * glm::vec4(center.x, center.y, 0.0f, 1.0f)), std::max(radius, 0.5f));
+			return;
+		}
 		const auto* transform = scene.GetRegistry().try_get<Transform3DComponent>(m_SelectedEntity);
 		if (!transform) {
 			// Sprites and UI sit on the z = 0 plane in the 3D view.
@@ -328,7 +343,20 @@ namespace Funke {
 			}
 		}
 
+		ComputeUILayout(scene);
 		for (EntityHandle selected : GetSelectedEntities(scene)) {
+			const EntityHandle canvas = WorldUI::FindRoot(registry, selected);
+			if (canvas != entt::null && registry.all_of<RectTransform2DComponent>(selected)) {
+				const auto& rect = registry.get<RectTransform2DComponent>(selected);
+				const Vec2 center = rect.GetCenter();
+				const glm::mat4 rotation = glm::translate(glm::mat4(1.0f), glm::vec3(rect.ResolvedPivot.x, rect.ResolvedPivot.y, 0.0f))
+					* glm::rotate(glm::mat4(1.0f), rect.Rotation, glm::vec3(0.0f, 0.0f, 1.0f))
+					* glm::translate(glm::mat4(1.0f), glm::vec3(center.x - rect.ResolvedPivot.x, center.y - rect.ResolvedPivot.y, 0.0f));
+				const Vec2 size = rect.GetSize();
+				renderer.DrawWireBox(WorldUI::CanvasToWorld(registry, canvas) * rotation,
+					{ std::abs(size.x) * 0.5f, std::abs(size.y) * 0.5f, 0.001f }, k_SelectionColor);
+				continue;
+			}
 			if (const auto* transform = registry.try_get<Transform3DComponent>(selected)) {
 				const LocalBounds3D bounds = EntityPicker3D::GetHierarchyBounds(scene, selected);
 				renderer.DrawWireBox(transform->WorldMatrix * glm::translate(glm::mat4(1.0f), bounds.Center), bounds.HalfExtents * 1.02f, k_SelectionColor);
@@ -427,9 +455,15 @@ namespace Funke {
 		m_EditorViewImageH = viewportSize.y;
 
 		const Vec2 topLeft{ imageTopLeft.x, imageTopLeft.y };
-		const bool gizmoActive = DrawTransform3DGizmo(scene, view, topLeft, viewportSize);
+		const bool has2DTarget = m_SelectedEntity != entt::null && scene.IsValid(m_SelectedEntity)
+			&& (!scene.HasComponent<Transform3DComponent>(m_SelectedEntity) || m_GizmoMode == EditorGizmoMode::Bounds)
+			&& (scene.HasComponent<Transform2DComponent>(m_SelectedEntity)
+				|| scene.HasComponent<RectTransform2DComponent>(m_SelectedEntity));
+		const bool gizmoActive = has2DTarget
+			? DrawTransform2DGizmos(scene, view.Projection * view.View, topLeft, viewportSize, &view)
+			: DrawTransform3DGizmo(scene, view, topLeft, viewportSize);
 
-		if (imageHovered && !overlayHovered && !gizmoActive && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+		if (imageHovered && !overlayHovered && !gizmoActive && !ImGui::IsAnyItemActive() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
 			const ImVec2 mouse = ImGui::GetMousePos();
 			const float ndcX = (mouse.x - imageTopLeft.x) / viewportSize.x * 2.0f - 1.0f;
 			const float ndcY = 1.0f - (mouse.y - imageTopLeft.y) / viewportSize.y * 2.0f;
@@ -452,9 +486,27 @@ namespace Funke {
 					EntityPicker::PickEntitiesAtPoint(scene, Vec2{ onPlane.x, onPlane.y }, stack, /*pixelPrecise*/ true);
 				}
 			}
+			std::erase_if(stack, [&](EntityHandle entity) {
+				return WorldUI::FindRoot(scene.GetRegistry(), entity) != entt::null;
+			});
+			ComputeUILayout(scene);
+			std::vector<std::pair<EntityHandle, int>> uiOrder;
+			UIDrawOrder::Build(scene.GetRegistry(), uiOrder);
+			for (auto it = uiOrder.rbegin(); it != uiOrder.rend(); ++it) {
+				const EntityHandle entity = it->first;
+				const EntityHandle root = WorldUI::FindRoot(scene.GetRegistry(), entity);
+				if (root == entt::null) continue;
+				Vec2 point;
+				if (WorldUI::ProjectPointer(view.Projection * view.View * WorldUI::CanvasToWorld(scene.GetRegistry(), root),
+					{ ndcX, ndcY }, point)
+					&& UIDrawOrder::HitTest(scene.GetRegistry(), entity, scene.GetComponent<RectTransform2DComponent>(entity), point))
+					stack.push_back(entity);
+			}
 			std::vector<EntityHandle> meshHits;
 			EntityPicker3D::PickAll(scene, rayOrigin, rayDirection, meshHits);
-			stack.insert(stack.end(), meshHits.begin(), meshHits.end());
+			for (EntityHandle hit : meshHits) {
+				if (WorldUI::FindRoot(scene.GetRegistry(), hit) == entt::null) stack.push_back(hit);
+			}
 			const bool hasModifier = io.KeyCtrl || io.KeyShift;
 			if (stack.empty()) {
 				if (!hasModifier) ClearEntitySelection();

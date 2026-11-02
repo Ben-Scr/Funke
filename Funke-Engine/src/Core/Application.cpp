@@ -585,7 +585,9 @@ namespace Funke {
 			FNK_INFO_TAG("Window", "Initialization took " + StringHelper::ToString(timer));
 
 			timer.Reset();
-			RenderApi::Init(GLInitSpecifications(Color::Background(), GLCullingMode::Back));
+			if (!RenderApi::Init(GLInitSpecifications(Color::Background(), GLCullingMode::Back))) {
+				FNK_THROW(FunkeErrorCode::LoadFailed, "Graphics backend failed to initialize");
+			}
 			FNK_INFO_TAG("RenderApi", "Initialization took " + StringHelper::ToString(timer));
 
 			// MUST call after RenderApi::Init: ConfigureSurface resets the viewport to full surface dims; no resize event fires at startup so frame 0 would render stretched without this.
@@ -810,16 +812,18 @@ namespace Funke {
 
 		m_DeferredStartupScenes = false;
 
+		auto complete = [this]() {
+			ScriptEngine::RaiseApplicationStart();
+			m_Time.MarkGameStart();
+			ResetTimePoints();
+			m_StartupLoadComplete = true;
+		};
 		if (m_SceneManager && m_Configuration.EnableScenes) {
 			FNK_INFO_TAG("Application", "Loading startup scenes...");
-			m_SceneManager->InitializeStartupScenes();
+			if (IsEditor()) m_SceneManager->InitializeStartupScenesAsync(std::move(complete));
+			else { m_SceneManager->InitializeStartupScenes(); complete(); }
 		}
-		ScriptEngine::RaiseApplicationStart();
-		// MarkGameStart after splash so t=0 equals "first frame the player sees", not the start of the splash sequence.
-		m_Time.MarkGameStart();
-		// Reset time points to avoid a multi-second dt spike on the first post-splash frame (would break Box2D and unscaled-dt animations).
-		ResetTimePoints();
-		m_StartupLoadComplete = true;
+		else complete();
 	}
 
 	void Application::BeginFrame(bool enginePaused) {

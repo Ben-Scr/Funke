@@ -18,6 +18,7 @@
 #include <Project/ProjectManager.hpp>
 #include <Project/FunkeProject.hpp>
 #include <Assets/AssetRegistry.hpp>
+#include <Assets/AssetBundle.hpp>
 
 #include <Core/Version.hpp>
 #include <Core/Window.hpp>
@@ -229,6 +230,10 @@ Funke::Application* Funke::CreateApplication() {
 
 	// Auto-detect project: look for project.json next to the executable
 	const std::string projectRoot = s_ProjectPath.empty() ? Path::ExecutableDir() : s_ProjectPath;
+	std::string bundleError;
+	if (!AssetBundle::MountProject(Path::FromUtf8(projectRoot), bundleError)) {
+		throw std::runtime_error("Asset bundle load rejected: " + bundleError);
+	}
 	const std::string projectFile = Path::Combine(projectRoot, "project.json");
 	if (File::Exists(projectFile)) {
 		auto project = std::make_unique<FunkeProject>();

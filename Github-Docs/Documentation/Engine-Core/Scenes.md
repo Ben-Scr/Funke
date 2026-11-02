@@ -79,14 +79,14 @@ Load scene
  └─ ScenePostStartEvent
 
 Every frame while loaded
- ├─ Update systems
  ├─ FixedUpdate systems (zero or more times)
+ ├─ Update systems
  └─ OnPreRender systems
 
 Unload scene
  ├─ ScenePreStopEvent
- ├─ OnDestroy systems   (in reverse order)
  ├─ OnUnload callback
+ ├─ OnDestroy systems   (in reverse awaken order)
  ├─ clear entities, clean up physics
  └─ ScenePostStopEvent
 ```
@@ -97,11 +97,11 @@ The **scene events** (`ScenePreStartEvent`, `ScenePostStartEvent`, `ScenePreStop
 
 ## Loading and switching scenes
 
-The **Scene Manager** controls which scenes are loaded. There's always **one active scene**, but you can have **several loaded at once** (handy for things like a persistent UI scene over a level).
+The **Scene Manager** controls which scenes are loaded. There is at most **one active scene**, and there may be **several loaded at once** (for example, a persistent UI scene over a level). Before loading a scene or after unloading all scenes, there is no active scene.
 
 | Action | Effect |
 |--------|--------|
-| `LoadScene("X")` | Unloads the other scenes and loads `X` as the active scene. |
+| `LoadScene("X")` | Starts `X`, makes it active, then releases other non-persistent scenes. Failure preserves the previous set. |
 | `LoadSceneAdditive("X")` | Loads `X` **without** unloading the others (becomes active only if nothing else is). |
 | `SetActiveScene("X")` | Makes an already-loaded scene the active one. |
 | `UnloadScene("X")` | Unloads a single scene. |
@@ -156,7 +156,32 @@ catch (OperationCanceledException)
 
 Cancellation is cooperative until activation starts. An in-flight file read or parse is allowed to finish before the operation completes as canceled; cancellation does not interrupt system startup or roll back a successful activation.
 
-The worker reads and parses the `.scene` file, including JSON or binary decoding and header validation. Entity creation, component deserialization, asset resolution, GPU uploads, scene events and system lifecycle hooks run on the main thread at activation. Large scenes, uncached assets and expensive startup hooks can therefore still cause an activation hitch. There is no progress counter, preload-only phase or background asset streaming in this API. File preparation requires a platform with thread support; current threadless Web builds report a load failure.
+The worker reads and parses JSON or binary scene files and referenced prefabs. Supported GUID references to textures, audio, fonts (32px bake) and meshes use the asynchronous asset loader for CPU preparation. Asset publication, including texture uploads, stays on the engine thread with a default limit of one publication and a cooperative 2ms budget per frame. Prepared assets remain retained until activation or cancellation.
+
+Entity construction runs in an unpublished, suspended scene across frames: by default at most 128 top-level entity records or 2ms per batch. The current scenes keep updating and rendering. Activation initializes runtime component state, raises scene events and starts systems before committing the replacement. Each prefab tree, custom callback, hierarchy finalization, runtime setup, upload and old-scene teardown remains indivisible and can exceed the budget. Assets created dynamically by callbacks, legacy path references, material dependencies and font sizes other than the prepared size may still load on demand. This is cooperative loading, not a hard frame-time guarantee. File preparation requires thread support; current threadless Web builds report a load failure.
+
+Pass `IProgress<SceneLoadProgress>` to drive a loading bar and phase label. `Progress` is a phase-weighted fraction from 0 to 1, not a time estimate:
+
+```csharp
+var progress = new Progress<SceneLoadProgress>(state =>
+{
+    loadingBar.Value = state.Progress;
+    loadingLabel.Text = state.Phase.ToString();
+});
+Scene? level = await SceneManager.LoadSceneAsync(
+    "Level2", LoadSceneMode.Single, cancellationToken, progress);
+```
+
+To prepare the next level while the player remains in the current one:
+
+```csharp
+using PreloadedScene? prepared = await SceneManager.PreloadSceneAsync(
+    "Level2", cancellationToken, progress);
+if (prepared != null)
+    await prepared.ActivateAsync(LoadSceneMode.Single, cancellationToken, progress);
+```
+
+Keep the `PreloadedScene` until the game decides to switch. Preloading does not create entities, instantiate systems, invoke scene callbacks or change the loaded scene set. A ready preload does not block other requests. Activate it once, or dispose it on the engine thread to release its prepared content. Activation reuses the parsed scene snapshot; it does not re-read a subsequently edited scene file. The activation progress starts a new operation phase at 0.5. Cancellation during entity construction discards the unpublished scene. Script reload and play-mode exit cancel both pending loads and retained preloads.
 
 Native callers register file stages explicitly and receive a completion callback on the main thread:
 
@@ -172,6 +197,8 @@ const uint64_t operation = SceneManager::LoadSceneAsync("Level2", false,
 
 `CancelSceneLoad(operation)` requests cancellation before activation. Both native calls are main-thread APIs. Ordinary `OnLoad` and `OnLoadChecked` callbacks always run on the main thread; wrapping `LoadFromFile` inside such a callback keeps that file read synchronous. Project scenes registered by the runtime and scripting API use `OnLoadFromFile` automatically.
 
+Native callers can use `PreloadSceneAsync`, then `ActivatePreloadedScene(operation, additive, completion)`. The preload completion reports success with an empty `LoadedScene`; activation supplies the loaded instance. `GetSceneLoadProgress(operation)` exposes the current phase, fraction and entity/asset counts while the request is retained. It returns no value after cancellation/completion is delivered. `SetAsyncSceneLoadBudget(milliseconds, maxEntitiesPerFrame)` adjusts the cooperative entity budget; `AssetLoader::Pump(milliseconds, maxPublications)` controls asset publication. Unused native preloads must be cancelled explicitly.
+
 ---
 
 ## Saving scenes: the `.scene` file
@@ -185,7 +212,7 @@ Scenes are saved to disk as **`.scene` files** (JSON by default; a compact binar
 A couple of important details:
 
 - **Runtime-spawned entities are not saved.** Only entities that belong to the scene (or are prefab instances) get written out. Things you spawn while playing vanish when the scene reloads — which is what you want.
-- Saving and loading is a clean **round-trip**: what you save is exactly what you get back.
+- Saving preserves supported serialized state. Unknown JSON members and runtime-only data are not retained; compile scripts before saving their authored fields.
 
 `.scene` files are [assets](../Assets/Assets.md) like any other, and they reference other assets (textures, audio, fonts) by **GUID**.
 

@@ -94,7 +94,7 @@ Library["GDI32"] = "gdi32.lib"
 Library["NetHost"] = isWindowsTarget and "nethost.lib" or "nethost"
 
 LibDir = {}
--- Set on every target: Windows links nethost.lib, Unix links libnethost.a
+-- Windows links nethost.lib, Linux libnethost.a, macOS libnethost.dylib (isolated libc++ RTTI).
 -- (both copied into External/dotnet/lib by scripts/Setup.py).
 LibDir["DotNet"] = "External/dotnet/lib"
 

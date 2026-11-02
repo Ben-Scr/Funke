@@ -4,6 +4,7 @@
 #include "Core/Log.hpp"
 #include "Localization/LanguageFile.hpp"
 #include "Serialization/Path.hpp"
+#include "Serialization/File.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -66,16 +67,14 @@ namespace Funke::GameLocalization {
 
 		void Scan(const std::filesystem::path& directory, Tables& out) {
 			std::error_code ec;
-			if (directory.empty() || !std::filesystem::is_directory(directory, ec)) return;
+			if (directory.empty() || !File::IsDirectory(directory)) return;
 
 			std::vector<std::filesystem::path> files;
-			for (std::filesystem::directory_iterator it(directory, ec), end; !ec && it != end; it.increment(ec)) {
-				std::error_code entryEc;
-				if (!it->is_regular_file(entryEc)) continue;
-				std::string extension = Path::ToUtf8(it->path().extension());
+			for (const auto& file : File::ListFiles(directory, false, ec)) {
+				std::string extension = Path::ToUtf8(file.extension());
 				std::transform(extension.begin(), extension.end(), extension.begin(),
 					[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-				if (extension == ".json") files.push_back(it->path());
+				if (extension == ".json") files.push_back(file);
 			}
 			// Directory order is unspecified; sorting keeps duplicate-code resolution stable.
 			std::sort(files.begin(), files.end());

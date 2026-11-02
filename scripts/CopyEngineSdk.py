@@ -68,8 +68,11 @@ LICENSES = (
     ("External/ImGuizmo", "ImGuizmo", "LICENSE"),
     ("External/magic_enum", "magic_enum", "LICENSE"),
     ("External/miniaudio", "miniaudio", "LICENSE"),
+    ("External/kemar", "KEMAR", "LICENSE"),
     ("External/spdlog", "spdlog", "LICENSE"),
     ("External/stb", "stb", "LICENSE"),
+    ("vendor/lz4", "LZ4", "LICENSE"),
+    ("vendor/zstd", "Zstandard", "LICENSE"),
     ("External/tracy", "Tracy", "LICENSE"),
     ("External/dawn", "Dawn", "LICENSE"),
     ("External/concurrentqueue", "concurrentqueue", "LICENSE.md"),
@@ -203,6 +206,8 @@ def stage_runtime(runtime_dir: Path, script_core_dir: Path, licenses_dir: Path, 
         copy_file(runtime_dir / DAWN_LIB, destination / DAWN_LIB)
     copy_file(runtime_dir / TRACY_LIB, destination / TRACY_LIB, required=False)
     copy_file(runtime_dir / "nethost.dll", destination / "nethost.dll", required=False)
+    if IS_MAC:
+        copy_file(runtime_dir / "libnethost.dylib", destination / "libnethost.dylib")
     copy_files(script_core_dir, destination, SCRIPT_CORE_RUNTIME_FILES)
     mirror(runtime_dir / "FunkeAssets", destination / "FunkeAssets")
     mirror(licenses_dir, destination / "Licenses")

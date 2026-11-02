@@ -50,6 +50,11 @@ namespace Funke {
 			float Scatter   { 0.0f };  // 0..1, blur spread
 			int   Taps      { 80 };
 			Color Tint      { 1.0f, 1.0f, 1.0f, 1.0f };
+
+			bool IsEffective() const {
+				return Enabled && Intensity != 0.0f && Tint.a != 0.0f
+					&& (Tint.r != 0.0f || Tint.g != 0.0f || Tint.b != 0.0f);
+			}
 		};
 
 		struct LensDistortionSettings {
@@ -95,8 +100,9 @@ namespace Funke {
 
 		// MUST mirror PostProcessor::Run's effect set.
 		bool HasEnabledEffect() const {
-			return Bloom.Enabled || ColorGrading.Enabled || GaussianBlur.Enabled || LensDistortion.Enabled
-				|| ChromaticAberration.Enabled || Vignette.Enabled || Grain.Enabled || Pixelated.Enabled
+			return Bloom.IsEffective() || ColorGrading.Enabled || GaussianBlur.Enabled || LensDistortion.Enabled
+				|| (ChromaticAberration.Enabled && ChromaticAberration.Intensity != 0.0f) || Vignette.Enabled
+				|| (Grain.Enabled && Grain.Intensity != 0.0f) || Pixelated.Enabled
 				|| HasCustomEffect();
 		}
 	};

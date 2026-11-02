@@ -36,6 +36,7 @@ project "Funke-Engine-Tests"
         CopySDL3SharedLib
     }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
+    if CopyNetHostSharedLib ~= "" then postbuildcommands { CopyNetHostSharedLib } end
     ApplyFunkeProfilerRuntime()
 
     filter "system:windows"

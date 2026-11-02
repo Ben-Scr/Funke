@@ -21,10 +21,105 @@
 #include "Project/ProjectManager.hpp"
 #include "Scene/Scene.hpp"
 
+#include "Core/EngineModules.hpp"
+#if FUNKE_WITH_2D
+#include "Components/General/Transform2DComponent.hpp"
+#include "Components/Graphics/Camera2DComponent.hpp"
+#endif
+#if FUNKE_WITH_3D
+#include "Components/General/Transform3DComponent.hpp"
+#include "Components/Graphics/Camera3DComponent.hpp"
+#include "Graphics/Renderer3D.hpp"
+#include "Systems/Transform3DHierarchySystem.hpp"
+#endif
+#include <glm/gtc/matrix_transform.hpp>
+
 #include <algorithm>
 #include <cmath>
+#include <tuple>
+#include <type_traits>
+#include <unordered_set>
 
 namespace Funke {
+
+	namespace WorldUI {
+		static bool IsRoot(const entt::registry& registry, EntityHandle entity) {
+			if (!registry.all_of<RectTransform2DComponent>(entity)) return false;
+#if FUNKE_WITH_2D
+			if (registry.all_of<Transform2DComponent>(entity)) return true;
+#endif
+#if FUNKE_WITH_3D
+			if (registry.all_of<Transform3DComponent>(entity)) return true;
+#endif
+			return false;
+		}
+
+		EntityHandle FindRoot(const entt::registry& registry, EntityHandle entity) {
+			for (int depth = 0; depth < 1024 && registry.valid(entity); ++depth) {
+				if (IsRoot(registry, entity)) return entity;
+				const auto* hierarchy = registry.try_get<HierarchyComponent>(entity);
+				if (!hierarchy) break;
+				entity = hierarchy->Parent;
+			}
+			return entt::null;
+		}
+
+		glm::mat4 CanvasToWorld(const entt::registry& registry, EntityHandle root) {
+			glm::mat4 world(1.0f);
+#if FUNKE_WITH_3D
+			if (registry.all_of<Transform3DComponent>(root))
+				world = Transform3DHierarchySystem::ComputeWorldMatrix(registry, root);
+#endif
+#if FUNKE_WITH_2D
+			if (const auto* transform = registry.try_get<Transform2DComponent>(root)) {
+				const glm::mat3 model = transform->GetModelMatrix();
+				world[0] = glm::vec4(model[0].x, model[0].y, 0.0f, 0.0f);
+				world[1] = glm::vec4(model[1].x, model[1].y, 0.0f, 0.0f);
+				world[3] = glm::vec4(model[2].x, model[2].y, 0.0f, 1.0f);
+			}
+#endif
+			return glm::scale(world, glm::vec3(k_PixelsToWorld, k_PixelsToWorld, 1.0f));
+		}
+
+		bool CameraViewProjection(Scene& scene, float aspect, glm::mat4& vp) {
+#if FUNKE_WITH_3D
+			if (EngineModules::IsActive(EngineModule::ThreeD)) {
+				const EntityHandle camera = Camera3DComponent::FindMain(scene);
+				if (camera != entt::null) {
+					const auto view = Renderer3D::MakeView(Transform3DHierarchySystem::ComputeWorldMatrix(scene.GetRegistry(), camera),
+						scene.GetRegistry().get<Camera3DComponent>(camera), aspect);
+					vp = view.Projection * view.View;
+					return true;
+				}
+			}
+#endif
+#if FUNKE_WITH_2D
+			if (EngineModules::IsActive(EngineModule::TwoD)) {
+				if (auto* camera = Camera2DComponent::GetMain()) {
+					vp = camera->GetViewProjectionMatrix();
+					return true;
+				}
+			}
+#endif
+			return false;
+		}
+
+		bool ProjectPointer(const glm::mat4& canvasVP, const Vec2& ndc, Vec2& canvas) {
+			if (std::abs(glm::determinant(canvasVP)) < 1e-12f) return false;
+			const glm::mat4 inverse = glm::inverse(canvasVP);
+			glm::vec4 nearPoint = inverse * glm::vec4(ndc.x, ndc.y, 0.0f, 1.0f);
+			glm::vec4 farPoint = inverse * glm::vec4(ndc.x, ndc.y, 1.0f, 1.0f);
+			if (std::abs(nearPoint.w) < 1e-8f || std::abs(farPoint.w) < 1e-8f) return false;
+			nearPoint /= nearPoint.w;
+			farPoint /= farPoint.w;
+			const glm::vec3 direction(farPoint - nearPoint);
+			if (std::abs(direction.z) < 1e-8f) return false;
+			const float t = -nearPoint.z / direction.z;
+			if (t < 0.0f || t > 1.0f) return false;
+			canvas = { nearPoint.x + t * direction.x, nearPoint.y + t * direction.y };
+			return std::isfinite(canvas.x) && std::isfinite(canvas.y);
+		}
+	}
 
 	namespace {
 		// Set per ComputeUILayout call: the full UI surface and its safe-area part, in UI space.
@@ -463,7 +558,7 @@ namespace Funke {
 		void ResolveHierarchy(entt::registry& registry, EntityHandle entity,
 			const Vec2& parentMin, const Vec2& parentMax,
 			float parentRotation, const Vec2& parentScale,
-			const Vec2& parentPivot)
+			const Vec2& parentPivot, bool inWorldCanvas)
 		{
 			RectTransform2DComponent* rect = registry.try_get<RectTransform2DComponent>(entity);
 
@@ -474,10 +569,19 @@ namespace Funke {
 			Vec2 childParentPivot = parentPivot;
 
 			if (rect) {
+				const bool worldRoot = WorldUI::IsRoot(registry, entity);
+				inWorldCanvas = inWorldCanvas || worldRoot;
 				Vec2 resolveMin = parentMin;
 				Vec2 resolveMax = parentMax;
-				if (rect->IgnoreSafeArea) ExtendToScreenEdges(resolveMin, resolveMax);
-				ResolveRect(*rect, resolveMin, resolveMax, parentRotation, parentScale, parentPivot);
+				if (worldRoot) {
+					resolveMin = { -rect->SizeDelta.x * 0.5f, -rect->SizeDelta.y * 0.5f };
+					resolveMax = { rect->SizeDelta.x * 0.5f, rect->SizeDelta.y * 0.5f };
+					parentRotation = 0.0f;
+				}
+				else if (rect->IgnoreSafeArea && !inWorldCanvas)
+					ExtendToScreenEdges(resolveMin, resolveMax);
+				ResolveRect(*rect, resolveMin, resolveMax, parentRotation,
+					worldRoot ? Vec2{ 1.0f, 1.0f } : parentScale, worldRoot ? Vec2{} : parentPivot);
 				childParentMin = rect->ResolvedMin;
 				childParentMax = rect->ResolvedMax;
 				childParentRotation = rect->Rotation;
@@ -503,7 +607,7 @@ namespace Funke {
 						ResolveHierarchy(registry, child,
 							childParentMin, childParentMax,
 							childParentRotation, childParentScale,
-							childParentPivot);
+							childParentPivot, inWorldCanvas);
 					}
 				}
 			}
@@ -511,9 +615,152 @@ namespace Funke {
 
 		uint64_t s_UILayoutEpoch = 1;
 
+		auto LayoutKey(const RectTransform2DComponent& c) {
+			return std::tie(c.AnchorMin, c.AnchorMax, c.Pivot, c.AnchoredPosition, c.SizeDelta,
+				c.LocalRotation, c.LocalScale, c.IgnoreSafeArea, c.FillWidth, c.FillHeight,
+				c.Rotation, c.Scale, c.ResolvedMin, c.ResolvedMax, c.ResolvedPivot, c.ResolvedValid);
+		}
+
+		auto LayoutKey(const ContentSizeFitterComponent& c) {
+			return std::tie(c.HorizontalFit, c.VerticalFit, c.PaddingLeft, c.PaddingRight, c.PaddingTop, c.PaddingBottom);
+		}
+
+		template<class T>
+		auto LinearLayoutKey(const T& c) {
+			return std::tie(c.PaddingLeft, c.PaddingRight, c.PaddingTop, c.PaddingBottom, c.Spacing,
+				c.ChildAlignment, c.ReverseArrangement, c.ControlChildWidth, c.ControlChildHeight,
+				c.UseChildScaleWidth, c.UseChildScaleHeight, c.ChildForceExpandWidth, c.ChildForceExpandHeight);
+		}
+
+		auto LayoutKey(const HorizontalLayoutGroupComponent& c) { return LinearLayoutKey(c); }
+		auto LayoutKey(const VerticalLayoutGroupComponent& c) { return LinearLayoutKey(c); }
+
+		auto LayoutKey(const GridLayoutGroupComponent& c) {
+			return std::tie(c.PaddingLeft, c.PaddingRight, c.PaddingTop, c.PaddingBottom, c.CellSize,
+				c.Spacing, c.StartCorner, c.StartAxis, c.ChildAlignment, c.Constraint, c.ConstraintCount, c.Reverse);
+		}
+
+		auto LayoutKey(const WidthConstraintComponent& c) { return std::tie(c.MinWidth, c.MaxWidth); }
+
+		auto LayoutKey(const TextRendererComponent& c) {
+			return std::tie(c.Text, c.FontAssetId, c.FontSize, c.LetterSpacing, c.LineSpacing, c.WrapMode, c.AutoSize);
+		}
+
+		template<class T>
+		struct LayoutPoolSnapshot {
+			std::vector<std::pair<EntityHandle, T>> Items;
+
+			static auto View(entt::registry& registry) {
+				if constexpr (std::is_same_v<T, RectTransform2DComponent>) return registry.view<T>();
+				else return registry.view<T, RectTransform2DComponent>();
+			}
+
+			static bool Relevant(const T& component) {
+				if constexpr (std::is_same_v<T, TextRendererComponent>) return component.AutoSize && component.WrapMode == TextWrapMode::None;
+				else return true;
+			}
+
+			bool Matches(entt::registry& registry) const {
+				const auto view = View(registry);
+				size_t index = 0;
+				for (EntityHandle entity : view) {
+					const auto& component = view.template get<T>(entity);
+					if (!Relevant(component)) continue;
+					if (index == Items.size()) return false;
+					const auto& previous = Items[index++];
+					if (previous.first != entity || LayoutKey(previous.second) != LayoutKey(component)) return false;
+				}
+				return index == Items.size();
+			}
+
+			void Capture(entt::registry& registry) {
+				const auto view = View(registry);
+				size_t index = 0;
+				for (EntityHandle entity : view) {
+					const auto& component = view.template get<T>(entity);
+					if (!Relevant(component)) continue;
+					if (index == Items.size()) Items.emplace_back();
+					auto& previous = Items[index++];
+					previous.first = entity;
+					previous.second = component;
+				}
+				Items.resize(index);
+			}
+		};
+
+		struct LayoutInputs {
+			struct HierarchyInput {
+				EntityHandle Entity = entt::null;
+				bool HasHierarchy = false;
+				EntityHandle Parent = entt::null;
+				std::vector<EntityHandle> Children;
+			};
+			LayoutPoolSnapshot<RectTransform2DComponent> Rects;
+			LayoutPoolSnapshot<ContentSizeFitterComponent> Fitters;
+			LayoutPoolSnapshot<HorizontalLayoutGroupComponent> Horizontal;
+			LayoutPoolSnapshot<VerticalLayoutGroupComponent> Vertical;
+			LayoutPoolSnapshot<GridLayoutGroupComponent> Grid;
+			LayoutPoolSnapshot<WidthConstraintComponent> Widths;
+			LayoutPoolSnapshot<TextRendererComponent> Text;
+			std::vector<HierarchyInput> Hierarchies;
+			std::vector<uint8_t> RectFlags;
+			uint64_t Revision = 0;
+			bool Settled = false;
+
+			static uint8_t Flags(entt::registry& registry, EntityHandle entity) {
+				return (WorldUI::IsRoot(registry, entity) ? 1 : 0) | (registry.all_of<DisabledTag>(entity) ? 2 : 0);
+			}
+
+			bool Matches(entt::registry& registry) const {
+				if (!Rects.Matches(registry) || !Fitters.Matches(registry) || !Horizontal.Matches(registry)
+					|| !Vertical.Matches(registry) || !Grid.Matches(registry) || !Widths.Matches(registry) || !Text.Matches(registry)) return false;
+				for (size_t i = 0; i < Rects.Items.size(); ++i)
+					if (RectFlags[i] != Flags(registry, Rects.Items[i].first)) return false;
+				for (const auto& previous : Hierarchies) {
+					if (!registry.valid(previous.Entity)) return false;
+					const auto* current = registry.try_get<HierarchyComponent>(previous.Entity);
+					if (previous.HasHierarchy != (current != nullptr)) return false;
+					if (current && (previous.Parent != current->Parent || previous.Children != current->Children)) return false;
+				}
+				return true;
+			}
+
+			void Capture(entt::registry& registry) {
+				Rects.Capture(registry);
+				Fitters.Capture(registry);
+				Horizontal.Capture(registry);
+				Vertical.Capture(registry);
+				Grid.Capture(registry);
+				Widths.Capture(registry);
+				Text.Capture(registry);
+				RectFlags.resize(Rects.Items.size());
+				std::unordered_set<EntityHandle> visited;
+				visited.reserve(Rects.Items.size());
+				size_t hierarchyCount = 0;
+				for (size_t i = 0; i < Rects.Items.size(); ++i) {
+					EntityHandle entity = Rects.Items[i].first;
+					RectFlags[i] = Flags(registry, entity);
+					for (int depth = 0; depth < 1024 && registry.valid(entity) && visited.insert(entity).second; ++depth) {
+						if (hierarchyCount == Hierarchies.size()) Hierarchies.emplace_back();
+						auto& input = Hierarchies[hierarchyCount++];
+						input.Entity = entity;
+						const auto* hierarchy = registry.try_get<HierarchyComponent>(entity);
+						input.HasHierarchy = hierarchy != nullptr;
+						input.Parent = hierarchy ? hierarchy->Parent : entt::null;
+						if (hierarchy) input.Children = hierarchy->Children;
+						else input.Children.clear();
+						entity = input.Parent;
+					}
+				}
+				Hierarchies.resize(hierarchyCount);
+				++Revision;
+			}
+		};
+
 		// Inputs a layout pass depends on besides the entities themselves; stored in the registry context.
 		struct UILayoutStamp {
 			uint64_t Epoch = 0;
+			uint64_t DefaultFontAssetId = 0;
 			int Width = 0, Height = 0;
 			float InsetLeft = 0.0f, InsetRight = 0.0f, InsetTop = 0.0f, InsetBottom = 0.0f;
 			float UIScale = 0.0f;
@@ -521,7 +768,7 @@ namespace Funke {
 			bool operator==(const UILayoutStamp&) const = default;
 		};
 
-		void LayoutScene(Scene& scene, bool skipIfCurrent);
+		void LayoutScene(Scene& scene);
 
 	} // namespace
 
@@ -530,17 +777,21 @@ namespace Funke {
 	}
 
 	void ComputeUILayout(Scene& scene) {
-		LayoutScene(scene, false);
+		LayoutScene(scene);
 	}
 
 	void UpdateUILayout(Scene& scene) {
-		// The editor edits rects outside any system, so only the player trusts the epoch.
-		LayoutScene(scene, !Application::IsEditor());
+		LayoutScene(scene);
+	}
+
+	uint64_t GetUILayoutRevision(const Scene& scene) {
+		const auto* inputs = scene.GetRegistry().ctx().find<LayoutInputs>();
+		return inputs ? inputs->Revision : 0;
 	}
 
 	namespace {
 
-	void LayoutScene(Scene& scene, bool skipIfCurrent) {
+	void LayoutScene(Scene& scene) {
 		entt::registry& registry = scene.GetRegistry();
 		if (registry.view<RectTransform2DComponent>().size() == 0) {
 			return;
@@ -581,11 +832,12 @@ namespace Funke {
 			? project->ComputeUIScale(s_SafeMax.x - s_SafeMin.x, s_SafeMax.y - s_SafeMin.y)
 			: 1.0f;
 
-		const UILayoutStamp stamp{ s_UILayoutEpoch, vpW, vpH,
+		const UILayoutStamp stamp{ s_UILayoutEpoch, project ? project->DefaultFontAssetId : 0, vpW, vpH,
 			insets.Left, insets.Right, insets.Top, insets.Bottom, uiScale };
-		if (skipIfCurrent) {
-			if (const UILayoutStamp* last = registry.ctx().find<UILayoutStamp>(); last && *last == stamp) return;
-		}
+		auto* inputs = registry.ctx().find<LayoutInputs>();
+		const auto* last = registry.ctx().find<UILayoutStamp>();
+		const bool inputsMatch = last && *last == stamp && inputs && inputs->Matches(registry);
+		if (inputsMatch && inputs->Settled) return;
 		registry.ctx().insert_or_assign(stamp);
 
 		auto rectView = registry.view<RectTransform2DComponent>();
@@ -623,8 +875,15 @@ namespace Funke {
 		};
 		for (EntityHandle entity : t_Roots) {
 			// parentPivot=windowCenter so root rotation pivots at screen center; parentScale=uiScale propagates reference-res scaling.
-			ResolveHierarchy(registry, entity, s_SafeMin, s_SafeMax, 0.0f, Vec2{ uiScale, uiScale }, windowCenter);
+			ResolveHierarchy(registry, entity, s_SafeMin, s_SafeMax, 0.0f, Vec2{ uiScale, uiScale }, windowCenter, false);
 		}
+		if (!inputs) inputs = &registry.ctx().emplace<LayoutInputs>();
+		// Fitters can feed layout-written child positions back into the next pass.
+		const bool settled = inputsMatch && inputs->Matches(registry);
+		// Layout groups rewrite authored rect fields; snapshot the resulting state, not the inputs before layout.
+		inputs->Capture(registry);
+		inputs->Settled = settled || inputs->Fitters.Items.empty()
+			|| (inputs->Horizontal.Items.empty() && inputs->Vertical.Items.empty() && inputs->Grid.Items.empty());
 	}
 
 	} // namespace
@@ -635,8 +894,6 @@ namespace Funke {
 		// ComputeUILayout actually ran. Stays 0.0 in scenes with no UI.
 		FUNKE_PROFILE_SCOPE("UILayout");
 		UpdateUILayout(scene);
-		// Scripts, animators and UI events run after this system; the render pass must lay out again.
-		InvalidateUILayout();
 	}
 
 }

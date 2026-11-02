@@ -128,7 +128,7 @@ child.SetParent(parent);   // child now follows parent
 
 In the editor you build hierarchy by dragging entities onto each other in the Scene Hierarchy panel.
 
-> **Scripting note:** when you move an entity by writing directly to a native transform reference, you may need to flag the transform as "dirty" so children update. The higher-level `Transform` API does this for you.
+> **Scripting note:** writable native transform access marks the scene for transform re-evaluation. Use read-only access when inspecting transforms, and reacquire refs after structural changes. The higher-level `Transform` API handles its own dirty tracking.
 
 ---
 
@@ -147,7 +147,7 @@ Game logic usually runs over *all* entities that have a certain set of component
 In C#, you query a scene for the combination you care about:
 
 ```csharp
-// Every entity that has both a Transform2D and a SpriteRenderer:
+// Every entity with a Transform2D:
 foreach (ref var t in Scene.QueryRef<NativeTransform2D>())
 {
     t.LocalRotation += Time.DeltaTime;  // spin everything
@@ -298,7 +298,9 @@ Playback runs synchronously on the main thread. `Auto` chooses the supported par
 
 Commands preserve order inside a recorder; recorders merge in slot order. Job scheduling may choose different slots between runs, so put operations that depend on each other in the same recorder. Direct `Entity::AddComponent`/`RemoveComponent` calls remain structural operations on the main thread.
 
-The playback scene must match every recorded live target. A mismatched or expired scene is rejected before mutation; destroyed/recycled target handles are skipped. Playback returns the number of recorded creations (`0` for mutation-only batches), or a negative backend error code. `GetCreatedEntity(index)` returns a native entity handle; `Clear()` retains buffer capacity for reuse. Recompile native script DLLs after this API update (native script ABI 4).
+The playback scene must match every recorded live target. A mismatched or expired scene is rejected before mutation; destroyed/recycled target handles are skipped. Native playback retains generation-checked handles throughout execution, so clone/paste UUID remapping cannot redirect a recorded native target. Playback returns the number of recorded creations (`0` for mutation-only batches), or a negative backend error code. `GetCreatedEntity(index)` returns a native entity handle; `Clear()` retains buffer capacity for reuse. Recompile native script DLLs after this API update (native script ABI 5).
+
+Native commands use stable pages of 256 commands (16 KiB per allocated page); captures keep their addresses as the buffer grows. Buffers without nontrivial captures clear without scanning their commands. Playback still validates components and serializes supported commands for the shared backend, but skips UUID conversions for native targets and results. Parallel recording does not guarantee a lower total cost than direct typed C++ calls.
 
 ---
 

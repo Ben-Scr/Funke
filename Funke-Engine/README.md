@@ -51,7 +51,7 @@ SceneManager::RegisterScene("ServerState")
     .SetAsStartupScene();
 ```
 
-> **Warning (audit E29):** `EntryPoint.hpp` defines `main()` (or `WinMain()` in Dist Windows builds) at file scope. Including it in two translation units triggers a duplicate-symbol linker error — and the header guards against this with a sentinel that produces a `#error` if the header is re-included after the symbol has been emitted. **Include it in exactly one `.cpp`.** Every other TU should use `<Funke.hpp>` (or `<Funke/Core.hpp>` for core-only utilities).
+> `EntryPoint.hpp` defines `main()` (or `WinMain()` in Dist Windows builds) at file scope. **Include it in exactly one `.cpp`.** Including it in two translation units produces a duplicate-symbol linker error; the header's sentinel only detects repeated inclusion within one translation unit. Other translation units should use `<Funke.hpp>` or `<Funke/Core.hpp>`.
 
 The canonical end-to-end example lives in [`Funke-Runtime/src/RuntimeApplication.cpp`](../Funke-Runtime/src/RuntimeApplication.cpp): it loads `project.json` next to the executable, registers project scenes, and falls back to a built-in sample if no project is found.
 
@@ -138,7 +138,7 @@ Per-subsystem flags on `ApplicationConfig` (override individually after a factor
 | `EnablePhysics2D` | Skips `PhysicsSystem2D`; Box2D world is never created. |
 | `EnableAudio` | Skips miniaudio device init; `AudioSource` components are inert. |
 | `EnableScripting` | Skips CoreCLR + ScriptCore + user-assembly load. `ScriptSystem` still attaches but bails in `Awake`. |
-| `EnableRenderer2D` | Skips `Renderer2D` construction; `BeginFrame`/`EndFrame` null-check it. |
+| `EnableRenderer2D` | Disables scene rendering, including Renderer3D despite the historical flag name. |
 | `AutoCreateDefaultCamera2D` | Disables the fallback; active camera-free scenes remain unchanged. |
 | `EnableTextureManager` | Skips `TextureManager::Initialize`/`Shutdown`. Window-icon falls back to Win32 resource. |
 | `EnablePackageHost` | Skips `PackageHost::LoadAll`. Native packages next to the exe are not discovered. |
@@ -211,14 +211,16 @@ Always required:
 Conditional:
 
 - `nethost.dll` — required when scripting is enabled. The runtime's post-build copies it from `External/dotnet/lib/nethost.dll`.
-- `Tracy.dll` — required when the profiler is enabled (i.e. when `--no-profiler` was *not* passed). Stripped builds skip this.
-- `project.json` — your project manifest. The runtime auto-detects it via `FunkeProject::Validate(exeDir)` and loads it through `ProjectManager`. **If absent, the runtime logs a warning and falls back to a built-in `SampleScene`** — that warning is the only signal a packaging mistake gives you (audit E30). Always ship the project file.
-- Your project's scene files, package DLLs (`Pkg.<Name>.Native.dll`), C# script assemblies, and any user assets referenced by `project.json`.
+- `Tracy.dll` — required when the engine binary uses the profiler. Debug/Release include it unless stripped; Dist excludes the profiler. Match the actual binary rather than inferring this from a single command-line flag.
+- `project.json` — required for project-based games. `Funke-Runtime` mounts bundles and loads the manifest through `FunkeProject::TryLoad`. A malformed manifest or a missing explicitly requested `--project` fails startup; only an implicit launch without a project falls back to `SampleScene` with a warning.
+- Your project's scenes, native script libraries, native package libraries and matching `.funkeabi` sidecars, C# assemblies, and referenced assets. Desktop exports include a private .NET runtime by default; see [Building and Shipping](../Github-Docs/Documentation/Editor/Building-and-Shipping.md).
+
+The editor's export pipeline can replace loose `Assets/` and `FunkeAssets/` content with optional `.fbundle` archives, with optional LZ4 or Zstandard compression. `Assets/StreamingAssets/` stays loose. The standard runtime mounts these archives automatically; a custom native host must mount bundles before using their virtual paths. See [Asset bundles](../Github-Docs/Documentation/Editor/Building-and-Shipping.md#asset-bundles).
 
 ## See also
 
 - [Top-level README](../README.md) — prerequisites, clean checkout, Premake/MSBuild commands, Linux setup.
-- `~/.claude/skills/funke-task-workflow` — engine-internal contributor workflow (when to regen Premake, what counts as "done", multi-site registrations).
+- [Contributing](../CONTRIBUTING.md) — incremental builds, verification and contributor workflow. Repository agent instructions live under [`.agents/skills`](../.agents/skills).
 - [`Funke-Runtime/src/RuntimeApplication.cpp`](../Funke-Runtime/src/RuntimeApplication.cpp) — canonical `Application` example with project loading.
 - [`Core/Application.hpp`](src/Core/Application.hpp) — full virtual surface and lifecycle.
 - [`Core/ApplicationConfig.hpp`](src/Core/ApplicationConfig.hpp) — every per-subsystem flag and its meaning.

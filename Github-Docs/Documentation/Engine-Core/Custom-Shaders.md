@@ -225,6 +225,19 @@ fn surface(in: SurfaceInput) -> SurfaceOutput {
 
 Add a **Post Processing** component to the main camera (Camera 2D or Camera 3D) and assign up to four effect materials under **Custom Effects**. On a Camera 3D the effects process the 3D image; UI and 2D overlays are drawn on top afterwards. They run in slot order after the built-in effects (bloom, color grading, …). A slot whose material is missing or has no shader is skipped. `@blend`, `@cull` and `@depthWrite` don't apply to post effects.
 
+Camera 3D post effects receive the camera matrices in `globals` and these scene helpers:
+
+| Input | Meaning |
+|---|---|
+| `sampleSceneDepth(uv)` | Opaque scene depth: 0 near, 1 far. With MSAA, returns the nearest covered sample. |
+| `sceneWorldPosition(uv, depth)` | Reconstructs world position from that depth and the current camera. |
+| `sampleSunVisibility(worldPosition)` | Filtered visibility in the main directional light's shadow map; returns 0 outside its coverage or without shadows. |
+| `scene.sunDirection.xyz`, `scene.sunRadiance.rgb` | Direction towards the shadowed sun and its linear radiance. |
+| `scene.flags.x`, `scene.flags.z` | 1 when scene depth / sun shadows are available. Both are 0 for Camera 2D. |
+| `scene.shadowParams.w` | Shadow coverage distance in world units. |
+
+These support ray-marched single scattering: integrate from the camera to the visible surface, sample sun visibility at every step, and attenuate with `exp(-density * stepLength)`. Transparency without depth writes is absent from the depth buffer. Depth coordinates refer to the original image, so put geometric effects before any custom UV distortion; built-in lens distortion also changes their correspondence. The scene color has already been tone mapped; use `srgbToLinear` / `linearToSrgb` when combining it with linear scattering. For sky pixels, bound the integration distance instead of marching to the far plane.
+
 ### Skybox
 
 ```

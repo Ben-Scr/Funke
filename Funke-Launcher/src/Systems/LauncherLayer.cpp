@@ -450,14 +450,18 @@ artifacts/
 			: m_DefaultProjectsLocation;
 		std::snprintf(m_NewProjectLocation, sizeof(m_NewProjectLocation), "%s",
 			defaultLocation.c_str());
+		std::snprintf(m_SettingsLocationBuffer, sizeof(m_SettingsLocationBuffer), "%s",
+			defaultLocation.c_str());
 
-		// Dev tooling: FUNKE_LAUNCHER_PAGE=templates|assets opens on that page (scripts/dev/Run.ps1 -LauncherPage).
 		if (const char* page = std::getenv("FUNKE_LAUNCHER_PAGE"); page && std::string_view(page) == "templates") {
 			m_ActivePage = LauncherPage::Templates;
 			RefreshProjectTemplates();
 		}
 		else if (page && std::string_view(page) == "assets") {
 			m_ActivePage = LauncherPage::AssetLibrary;
+		}
+		else if (page && std::string_view(page) == "settings") {
+			m_ActivePage = LauncherPage::Settings;
 		}
 
 		m_Splash.Begin();
@@ -599,6 +603,7 @@ artifacts/
 
 	void LauncherLayer::OnDetach(Application& app) {
 		(void)app;
+		SaveSettingsLocation();
 		ResetCreateProjectTask();
 		ResetDuplicateProjectTask();
 		ResetTemplateTask(m_SaveTemplateTask);
@@ -1027,15 +1032,18 @@ artifacts/
 
 		// Label (+ optional muted description) in the left column; leaves the cursor in the right column
 		// with the item width set to fill it. Close with EndFormRow().
-		void BeginFormRow(const std::string& label, const std::string& description = {}) {
+		void BeginFormRow(const std::string& label, const std::string& description = {}, bool responsive = false) {
 			const float avail = ImGui::GetContentRegionAvail().x;
-			const float labelW = std::round(avail * 0.40f);
+			const bool stacked = responsive && avail < ImGui::GetFontSize() * 36.0f;
+			const float labelW = stacked ? avail : std::round(avail * 0.40f);
 			const float startY = ImGui::GetCursorPosY();
 			s_FormRow.StartX = ImGui::GetCursorPosX();
 
 			ImGui::BeginGroup();
 			ImGui::AlignTextToFramePadding();
+			if (responsive) ImGui::PushTextWrapPos(s_FormRow.StartX + labelW - ImGui::GetFontSize());
 			ImGui::TextUnformatted(label.c_str());
+			if (responsive) ImGui::PopTextWrapPos();
 			if (!description.empty()) {
 				ImGui::PushStyleColor(ImGuiCol_Text, GetLauncherPalette().TextDim);
 				ImGui::PushTextWrapPos(s_FormRow.StartX + labelW - ImGui::GetFontSize());
@@ -1046,14 +1054,29 @@ artifacts/
 			ImGui::EndGroup();
 			s_FormRow.LabelBottom = ImGui::GetCursorPosY();
 
-			ImGui::SetCursorPos(ImVec2(s_FormRow.StartX + labelW, startY));
-			ImGui::SetNextItemWidth(avail - labelW);
+			ImGui::SetCursorPos(ImVec2(s_FormRow.StartX + (stacked ? 0.0f : labelW),
+				stacked ? s_FormRow.LabelBottom : startY));
+			ImGui::SetNextItemWidth(stacked ? avail : avail - labelW);
 		}
 
 		void EndFormRow() {
 			const float y = std::max(ImGui::GetCursorPosY(), s_FormRow.LabelBottom);
 			ImGui::SetCursorPos(ImVec2(s_FormRow.StartX, y));
 			ImGui::Dummy(ImVec2(0.0f, 2.0f));
+		}
+
+		void BeginSettingsSection(const char* id, const std::string& title) {
+			const float em = ImGui::GetFontSize();
+			ImGui::PushStyleColor(ImGuiCol_ChildBg, GetLauncherPalette().Card);
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em, em * 0.8f));
+			ImGui::BeginChild(id, ImVec2(0.0f, 0.0f),
+				ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding,
+				ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+			ImGui::PopStyleVar();
+			ImGui::PopStyleColor();
+			ImGui::TextUnformatted(title.c_str());
+			ImGui::Separator();
+			ImGui::Dummy(ImVec2(0.0f, em * 0.3f));
 		}
 
 		// Animated on/off switch in the launcher accent.
@@ -1141,7 +1164,7 @@ artifacts/
 			ImGui::TextUnformatted(title.c_str());
 			ImGui::PopFont();
 			ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImGuiCol_TextDisabled));
-			ImGui::TextUnformatted(subtitle.c_str());
+			ImGui::TextWrapped("%s", subtitle.c_str());
 			ImGui::PopStyleColor();
 			return ImGui::GetCursorPosY() - top - ImGui::GetStyle().ItemSpacing.y;
 		}
@@ -1191,7 +1214,11 @@ artifacts/
 
 		PollAssetLibraryTask();
 
+		const LauncherPage previousPage = m_ActivePage;
 		RenderSidebar();
+		if (previousPage == LauncherPage::Settings && m_ActivePage != previousPage) {
+			SaveSettingsLocation();
+		}
 		ImGui::SameLine(0.0f, 0.0f);
 
 		const float em = ImGui::GetFontSize();
@@ -1215,6 +1242,9 @@ artifacts/
 			case LauncherPage::Templates:
 				RenderTemplatesTab();
 				break;
+			case LauncherPage::Settings:
+				RenderSettingsPage();
+				break;
 		}
 
 		ImGui::EndChild();
@@ -1222,7 +1252,6 @@ artifacts/
 		// Modals live at panel scope — independent of the active page.
 		RenderCreateProjectPopup();
 		RenderDeleteProjectPopups();
-		RenderSettingsPopup();
 		RenderProjectInfoPopup();
 		RenderErrorPopup();
 		RenderRenameProjectPopup();
@@ -1319,8 +1348,9 @@ artifacts/
 		if (ImGui::GetCursorPosY() < bottomY) {
 			ImGui::SetCursorPosY(bottomY);
 		}
-		if (SidebarNavItem("##NavSettings", Icons::Type::Settings, FNK_TR("launcher.nav.settings"), false, pal)) {
-			m_OpenSettingsPopup = true;
+		if (SidebarNavItem("##NavSettings", Icons::Type::Settings, FNK_TR("launcher.nav.settings"),
+			m_ActivePage == LauncherPage::Settings, pal)) {
+			m_ActivePage = LauncherPage::Settings;
 		}
 
 		ImGui::EndChild();
@@ -4260,62 +4290,51 @@ artifacts/
 		ImGui::EndPopup();
 	}
 
-	void LauncherLayer::RenderSettingsPopup() {
-		constexpr const char* k_SettingsId = "###LauncherSettings";
-
-		if (m_OpenSettingsPopup) {
-			ImGui::OpenPopup(k_SettingsId);
-			m_OpenSettingsPopup = false;
-		}
-
-		{
-			const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-			ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-		}
-		ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 38.0f, 0), ImGuiCond_Appearing);
-		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		const std::string settingsTitle = FNK_TR("launcher.settings.title") + k_SettingsId;
-		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ImGui::GetFontSize() * 1.3f, ImGui::GetFontSize() * 1.1f));
-		const bool open = ImGui::BeginPopupModal(settingsTitle.c_str(), nullptr,
-			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
-		ImGui::PopStyleVar();
-		if (!open) {
+	void LauncherLayer::SaveSettingsLocation() {
+		if (!m_SettingsLocationDirty) {
 			return;
 		}
+		const std::string typed(m_SettingsLocationBuffer);
+		const std::string engineDefault = FunkeProject::GetDefaultProjectsDir();
+		m_DefaultProjectsLocation = typed == engineDefault ? std::string{} : typed;
+		SaveLauncherSettings();
+		m_SettingsLocationDirty = false;
+		std::snprintf(m_SettingsLocationBuffer, sizeof(m_SettingsLocationBuffer), "%s",
+			m_DefaultProjectsLocation.empty() ? engineDefault.c_str() : m_DefaultProjectsLocation.c_str());
+	}
+
+	void LauncherLayer::RenderSettingsPage() {
+		PageHeader(FNK_TR("launcher.nav.settings"), FNK_TR("launcher.settings.subtitle"));
+		ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.6f));
+		ImGui::BeginChild("##SettingsScroll", ImVec2(0.0f, 0.0f));
+
 		const std::string effectiveDefault = m_DefaultProjectsLocation.empty()
 			? FunkeProject::GetDefaultProjectsDir()
 			: m_DefaultProjectsLocation;
 
-		DialogTitle(FNK_TR("launcher.settings.title"));
-
-		static char s_LocationBuffer[1024]{};
-		if (ImGui::IsWindowAppearing()) {
-			std::snprintf(s_LocationBuffer, sizeof(s_LocationBuffer), "%s",
-				effectiveDefault.c_str());
-		}
-
-		FormSection(FNK_TR("launcher.settings.section.projects"));
+		BeginSettingsSection("##SettingsProjects", FNK_TR("launcher.settings.section.projects"));
 
 		const std::string currentLine = Localization::Format("launcher.settings.current", effectiveDefault)
 			+ (m_DefaultProjectsLocation.empty() ? FNK_TR("launcher.settings.engine_default_suffix") : std::string{});
 		BeginFormRow(FNK_TR("launcher.settings.default_location"),
-			FNK_TR("launcher.settings.default_location_subtitle"));
+			FNK_TR("launcher.settings.default_location_subtitle"), true);
 		{
 			const float folderW = ImGui::GetFrameHeight();
 			ImGui::SetNextItemWidth(ImGui::CalcItemWidth() - folderW - ImGui::GetStyle().ItemInnerSpacing.x);
-			ImGui::InputText("##DefaultLocation", s_LocationBuffer, sizeof(s_LocationBuffer));
+			const bool submitted = ImGui::InputText("##DefaultLocation", m_SettingsLocationBuffer,
+				sizeof(m_SettingsLocationBuffer), ImGuiInputTextFlags_EnterReturnsTrue);
+			if (ImGui::IsItemEdited()) m_SettingsLocationDirty = true;
+			if (submitted || ImGui::IsItemDeactivatedAfterEdit()) SaveSettingsLocation();
 			if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", currentLine.c_str());
 			ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
 			if (Icons::IconButton("##BrowseDefaultLocation", Icons::Type::OpenFolder, ImVec2(folderW, folderW))) {
 				BrowseForDefaultProjectsLocation();
-				std::snprintf(s_LocationBuffer, sizeof(s_LocationBuffer), "%s",
-					m_DefaultProjectsLocation.c_str());
 			}
 			if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", FNK_TR("launcher.settings.browse").c_str());
 		}
 		EndFormRow();
 
-		BeginFormRow(FNK_TR("launcher.settings.directory_name_convention"));
+		BeginFormRow(FNK_TR("launcher.settings.directory_name_convention"), {}, true);
 		{
 			static constexpr DirectoryNameConvention k_Entries[] = {
 				DirectoryNameConvention::None,
@@ -4343,9 +4362,11 @@ artifacts/
 		}
 		EndFormRow();
 
-		FormSection(FNK_TR("launcher.settings.section.appearance"));
+		ImGui::EndChild();
+		ImGui::Dummy(ImVec2(0.0f, ImGui::GetFontSize() * 0.6f));
+		BeginSettingsSection("##SettingsAppearance", FNK_TR("launcher.settings.section.appearance"));
 
-		BeginFormRow(FNK_TR("launcher.settings.theme"));
+		BeginFormRow(FNK_TR("launcher.settings.theme"), {}, true);
 		{
 			struct ThemeEntry {
 				ThemeSetting Value;
@@ -4393,7 +4414,7 @@ artifacts/
 		}
 		EndFormRow();
 
-		BeginFormRow(FNK_TR("launcher.settings.font_scale"));
+		BeginFormRow(FNK_TR("launcher.settings.font_scale"), {}, true);
 		{
 			struct FontScaleEntry {
 				FontScale Value;
@@ -4443,7 +4464,7 @@ artifacts/
 		}
 		EndFormRow();
 
-		BeginFormRow(FNK_TR("launcher.settings.language"));
+		BeginFormRow(FNK_TR("launcher.settings.language"), {}, true);
 		const auto& languages = Localization::GetAvailableLanguages();
 		const std::string& currentCode = Localization::GetCurrentLanguage();
 		const std::string notInstalledSuffix = FNK_TR("launcher.settings.language.not_installed_suffix");
@@ -4496,24 +4517,8 @@ artifacts/
 		}
 		EndFormRow();
 
-		const int clicked = DialogFooter({ FNK_TR("launcher.settings.cancel"), FNK_TR("launcher.settings.save") }, 1);
-		if (clicked == 1) {
-			// Empty string = "follow engine default"; don't persist verbatim engine default as an override.
-			const std::string typed(s_LocationBuffer);
-			if (typed == FunkeProject::GetDefaultProjectsDir()) {
-				m_DefaultProjectsLocation.clear();
-			}
-			else {
-				m_DefaultProjectsLocation = typed;
-			}
-			SaveLauncherSettings();
-			ImGui::CloseCurrentPopup();
-		}
-		else if (clicked == 0) {
-			ImGui::CloseCurrentPopup();
-		}
-
-		ImGui::EndPopup();
+		ImGui::EndChild();
+		ImGui::EndChild();
 	}
 
 	static std::string FormatLocalDateTime(std::int64_t secondsSinceEpoch) {
@@ -4670,7 +4675,9 @@ artifacts/
 
 	void LauncherLayer::BrowseForDefaultProjectsLocation() {
 		if (std::string path = PickFolder("Default projects location"); !path.empty()) {
-			m_DefaultProjectsLocation = std::move(path);
+			std::snprintf(m_SettingsLocationBuffer, sizeof(m_SettingsLocationBuffer), "%s", path.c_str());
+			m_SettingsLocationDirty = true;
+			SaveSettingsLocation();
 		}
 	}
 

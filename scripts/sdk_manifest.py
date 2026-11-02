@@ -19,7 +19,7 @@ NATIVE_ROOTS = {"Funke-Engine", "External", "bin"}
 PLATFORMS = {
     "windows": ("Funke-Runtime.exe", "Funke-Engine.dll", "SDL3.dll", "nethost.dll"),
     "linux": ("Funke-Runtime", "libFunke-Engine.so", "libSDL3.so.0", "libwebgpu_dawn.so"),
-    "macosx": ("Funke-Runtime", "libFunke-Engine.dylib", "libSDL3.0.dylib", "libwebgpu_dawn.dylib"),
+    "macosx": ("Funke-Runtime", "libFunke-Engine.dylib", "libSDL3.0.dylib", "libwebgpu_dawn.dylib", "libnethost.dylib"),
 }
 NATIVE_HEADERS = (
     "Funke-Engine/src/Funke.hpp", "External/spdlog/include/spdlog/spdlog.h",
@@ -27,6 +27,8 @@ NATIVE_HEADERS = (
     "External/SDL/include/SDL3/SDL.h", "External/dawn/include/webgpu/webgpu_cpp.h",
 )
 RUNTIME_LICENSES = (
+    "Zstandard/LICENSE",
+    "KEMAR/LICENSE",
     "Funke/LICENSE.txt", "Funke/THIRD_PARTY_LICENSES.md", "Box2D/LICENSE", "JoltPhysics/LICENSE",
     "EnTT/LICENSE", "GLM/copying.txt", "SDL3/LICENSE.txt", "Dear-ImGui/LICENSE.txt", "ImGuizmo/LICENSE",
     "magic_enum/LICENSE", "miniaudio/LICENSE", "spdlog/LICENSE", "stb/LICENSE", "Tracy/LICENSE",
@@ -165,20 +167,38 @@ def write_manifest(sdk: Path, version: str, platform: str, architecture: str, na
     return manifest
 
 
-def verify_bundle(bundle: Path, *, require_binary: bool = False) -> dict:
+def bundle_path(bundle: Path, relative: str, macos_app: bool) -> Path:
+    candidate = bundle / relative
+    if macos_app and candidate.is_symlink() and len(PurePosixPath(relative).parts) == 1:
+        if bundle.name != "Resources" or bundle.parent.name != "Contents" or bundle.parent.parent.suffix != ".app":
+            raise ValueError("macOS payload must be inside App.app/Contents/Resources")
+        directory = ("MacOS" if relative in {"Funke-Launcher", "Funke-Editor", "Funke-Runtime", "funke"}
+                     else "Frameworks" if relative.endswith(".dylib") else None)
+        if directory is None or candidate.readlink().as_posix() != f"../{directory}/{relative}":
+            raise ValueError(f"Unexpected macOS code alias: {relative}")
+        target = contained_path(bundle.parent, f"{directory}/{relative}")
+        if not target.is_file() or target.stat().st_size == 0:
+            raise ValueError(f"Missing macOS code target: {relative}")
+        return target
+    return contained_path(bundle, relative, allow_file_links=True)
+
+
+def verify_bundle(bundle: Path, *, require_binary: bool = False, macos_app: bool = False) -> dict:
     manifest = validate_sdk(bundle / "EngineSDK", require_binary=require_binary)
     platform = manifest["platform"]
     suffix = ".exe" if platform == "windows" else ""
-    for name in (f"Funke-Launcher{suffix}", f"Funke-Editor{suffix}", *PLATFORMS[platform], *SCRIPT_CORE_FILES,
+    for name in (f"Funke-Launcher{suffix}", f"Funke-Editor{suffix}", f"funke{suffix}", *PLATFORMS[platform], *SCRIPT_CORE_FILES,
                  f"Funke-PackageTool{suffix}", "Funke-PackageTool.dll", "Funke-PackageTool.deps.json",
                  "Funke-PackageTool.runtimeconfig.json", "BuildMetadata.json"):
-        require_file(bundle, name)
+        target = bundle_path(bundle, name, macos_app)
+        if not target.is_file() or target.stat().st_size == 0:
+            raise ValueError(f"SDK file missing or empty: {name}")
     require_directory(bundle, "FunkeAssets/Fonts")
     metadata = json.loads((bundle / "BuildMetadata.json").read_text(encoding="utf-8-sig"))
     if metadata.get("version") != manifest["engineVersion"]:
         raise ValueError("Bundle and SDK engine versions do not match")
     for path in bundle.rglob("*"):
-        contained_path(bundle, path.relative_to(bundle).as_posix(), allow_file_links=True)
+        bundle_path(bundle, path.relative_to(bundle).as_posix(), macos_app)
         if path.name == ".git" or path.suffix.lower() == ".pdb":
             raise ValueError(f"Private build data in distribution: {path.relative_to(bundle)}")
     return manifest

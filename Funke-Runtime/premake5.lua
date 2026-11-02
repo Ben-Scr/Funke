@@ -74,6 +74,7 @@ project "Funke-Runtime"
         CopySDL3SharedLib
     }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
+    if CopyNetHostSharedLib ~= "" then postbuildcommands { CopyNetHostSharedLib } end
     postbuildcommands(CopyScriptCoreArtifacts)
     ApplyFunkeProfilerRuntime()
 

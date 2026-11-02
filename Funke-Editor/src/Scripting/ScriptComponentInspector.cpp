@@ -860,6 +860,10 @@ namespace Funke {
 					}
 				}
 				else if (eInst.HasManagedInstance() && callbacks.GetScriptFields) {
+					if (hasLiveInstance && eInst.GetGCHandle() == instance.GetGCHandle()) {
+						for (const auto& r : records) bucket[r.Name] = r.Value;
+						continue;
+					}
 					const char* eJson = callbacks.GetScriptFields(static_cast<int32_t>(eInst.GetGCHandle()));
 					if (eJson && *eJson && !(eJson[0] == '[' && eJson[1] == ']')) {
 						auto eRecords = ParseEditorFields(eJson);
@@ -1073,6 +1077,87 @@ namespace Funke {
 		}
 
 	} // namespace
+
+	std::vector<PropertyDescriptor> GetScriptClassProperties(const std::string& className) {
+		std::vector<PropertyDescriptor> result;
+		const auto& callbacks = ScriptEngine::GetCallbacks();
+		if (!callbacks.GetClassFieldDefs) return result;
+		const char* json = callbacks.GetClassFieldDefs(("schema:" + className).c_str());
+		if (!json || !*json) return result;
+		const auto records = ParseEditorFields(json);
+		auto values = std::make_shared<ScriptFieldValueMap>();
+		for (const auto& record : records) result.push_back(BuildScriptFieldDescriptor(record, className, 0, false, false, values, records));
+		return result;
+	}
+
+	std::vector<ScriptInspectionProperties> GetScriptInspectionProperties(const Entity& entity) {
+		std::vector<ScriptInspectionProperties> result;
+		if (!entity.HasComponent<ScriptComponent>()) return result;
+		const auto& scripts = entity.GetComponent<ScriptComponent>();
+		const auto& callbacks = ScriptEngine::GetCallbacks();
+		for (size_t index = 0; index < scripts.Scripts.size(); ++index) {
+			const auto& script = scripts.Scripts[index];
+			const std::string className = script.GetClassName();
+			ScriptInspectionProperties section{ "script:" + className, {} };
+			if (script.GetType() == ScriptType::Native) {
+				auto& host = ScriptSystem::GetNativeHost();
+				if (host.IsLoaded() && host.HasClass(className)) for (const auto& field : host.GetFieldDefinitions(className)) {
+					PropertyDescriptor descriptor;
+					descriptor.Name = field.Name;
+					descriptor.DisplayName = field.DisplayName;
+					descriptor.Type = field.Type;
+					descriptor.Metadata.ReadOnly = true;
+					descriptor.Metadata.HasClamp = field.HasClamp;
+					descriptor.Metadata.ClampMin = field.ClampMin;
+					descriptor.Metadata.ClampMax = field.ClampMax;
+					descriptor.Metadata.Enum = field.Enum;
+					std::string value = field.DefaultValue;
+					if (auto it = scripts.PendingFieldValues.find(className + "." + field.Name); it != scripts.PendingFieldValues.end()) value = it->second;
+					const bool readable = !script.HasNativeInstance() || host.GetFieldValue(script.GetNativePtr(), field.Name, value);
+					if (readable) descriptor.Get = [value, type = field.Type](const Entity&) { return PropertyValue::FromString(type, value); };
+					section.Properties.push_back(std::move(descriptor));
+				}
+			}
+			else {
+				const char* json = script.HasManagedInstance() && callbacks.GetScriptFields
+					? callbacks.GetScriptFields(static_cast<int32_t>(script.GetGCHandle()))
+					: callbacks.GetClassFieldDefs ? callbacks.GetClassFieldDefs(className.c_str()) : nullptr;
+				if (json && *json) {
+					auto records = ParseEditorFields(json);
+					auto values = std::make_shared<ScriptFieldValueMap>();
+					auto& bucket = (*values)[static_cast<uint32_t>(entity.GetHandle())];
+					for (auto& record : records) {
+						if (!script.HasManagedInstance()) {
+							if (const auto it = scripts.PendingFieldValues.find(className + "." + record.Name); it != scripts.PendingFieldValues.end()) record.Value = it->second;
+						}
+						bucket[record.Name] = record.Value;
+					}
+					for (const auto& record : records) section.Properties.push_back(BuildScriptFieldDescriptor(
+						record, className, index, true, Application::GetIsPlaying(), values, records));
+				}
+			}
+			result.push_back(std::move(section));
+		}
+		for (const auto& className : scripts.ManagedComponents) {
+			ScriptInspectionProperties section{ "managed:" + className, {} };
+			const char* json = callbacks.GetClassFieldDefs ? callbacks.GetClassFieldDefs(className.c_str()) : nullptr;
+			if (json && *json) {
+				auto records = ParseEditorFields(json);
+				auto values = std::make_shared<ScriptFieldValueMap>();
+				for (auto& record : records) {
+					if (const auto it = scripts.PendingFieldValues.find(className + "." + record.Name); it != scripts.PendingFieldValues.end()) record.Value = it->second;
+					(*values)[static_cast<uint32_t>(entity.GetHandle())][record.Name] = record.Value;
+				}
+				for (const auto& record : records) {
+					auto descriptor = BuildManagedComponentFieldDescriptor(record, className, values, records);
+					if (Application::GetIsPlaying()) descriptor.Get = {};
+					section.Properties.push_back(std::move(descriptor));
+				}
+			}
+			result.push_back(std::move(section));
+		}
+		return result;
+	}
 
 	namespace {
 		using ScriptPickerEntry = EditorScriptDiscovery::ScriptEntry;

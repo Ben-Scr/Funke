@@ -21,8 +21,11 @@ The font bundle has its own attribution file:
 | ImGuizmo | MIT | Copyright (c) 2016 Cedric Guillemet | [External/ImGuizmo/LICENSE](External/ImGuizmo/LICENSE) |
 | magic_enum | MIT | Copyright (c) 2019-2024 Daniil Goncharov | [External/magic_enum/LICENSE](External/magic_enum/LICENSE) |
 | miniaudio | Public Domain / MIT-0 (choose) | David Reid | [External/miniaudio/LICENSE](External/miniaudio/LICENSE) |
+| KEMAR HRTF measurements | Free use with attribution | Copyright 1994 MIT Media Laboratory; Bill Gardner and Keith Martin | [External/kemar/LICENSE](External/kemar/LICENSE) |
 | spdlog | MIT | Copyright (c) 2016-present Gabi Melman and spdlog contributors | [External/spdlog/LICENSE](External/spdlog/LICENSE) |
 | stb | Public Domain / MIT (choose) | Copyright (c) 2017 Sean Barrett | [External/stb/LICENSE](External/stb/LICENSE) |
+| LZ4 1.10.0 | 2-clause BSD | Copyright (c) 2011-2023 Yann Collet | [vendor/lz4/LICENSE](vendor/lz4/LICENSE) |
+| Zstandard 1.5.7 | 3-clause BSD | Copyright (c) Meta Platforms, Inc. and affiliates | [vendor/zstd/LICENSE](vendor/zstd/LICENSE) |
 | Tracy (client) | 3-clause BSD | Copyright (c) 2017-2026 Bartosz Taudul | [External/tracy/LICENSE](External/tracy/LICENSE) |
 | Dawn (WebGPU) | BSD 3-clause | Copyright 2017-2023 The Dawn & Tint Authors | [External/dawn/LICENSE](External/dawn/LICENSE) |
 | concurrentqueue | BSD 2-clause / Boost Software License | Copyright (c) 2013-2016 Cameron Desrochers | [External/concurrentqueue/LICENSE.md](External/concurrentqueue/LICENSE.md) |

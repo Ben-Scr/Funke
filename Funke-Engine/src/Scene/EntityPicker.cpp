@@ -4,6 +4,7 @@
 #include "Collections/AABB.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
+#include "Systems/UILayoutSystem.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Graphics/ImageData.hpp"
 #include "Graphics/SpriteUVResolver.hpp"
@@ -35,6 +36,8 @@ namespace Funke {
 
 			RectTransform2DComponent* rect = nullptr;
 			if (scene.TryGetComponent<RectTransform2DComponent>(entity, rect) && rect) {
+				const EntityHandle canvas = WorldUI::FindRoot(scene.GetRegistry(), entity);
+				if (canvas != entt::null) worldUIScale = 1.0f;
 				const Vec2 bl = rect->GetBottomLeft();
 				const Vec2 tr = rect->GetTopRight();
 				Vec2 corners[4] = {
@@ -49,6 +52,14 @@ namespace Funke {
 					const Vec2 worldPivot{ pivot.x * worldUIScale, pivot.y * worldUIScale };
 					for (Vec2& c : corners) {
 						c = worldPivot + Vector::Rotated(c - worldPivot, rect->Rotation);
+					}
+				}
+
+				if (canvas != entt::null) {
+					const glm::mat4 world = WorldUI::CanvasToWorld(scene.GetRegistry(), canvas);
+					for (Vec2& c : corners) {
+						const glm::vec4 point = world * glm::vec4(c.x, c.y, 0.0f, 1.0f);
+						c = { point.x, point.y };
 					}
 				}
 
@@ -224,6 +235,14 @@ namespace Funke {
 			// Inverse of BuildEntityAABB's forward transform: undo the rotation about
 			// the (scaled) pivot, then test against the unrotated scaled rect.
 			Vec2 p = worldPoint;
+			const EntityHandle canvas = WorldUI::FindRoot(reg, entity);
+			if (canvas != entt::null) {
+				const glm::mat4 world = WorldUI::CanvasToWorld(reg, canvas);
+				if (std::abs(glm::determinant(world)) < 1e-12f) return false;
+				const glm::vec4 local = glm::inverse(world) * glm::vec4(p.x, p.y, 0.0f, 1.0f);
+				p = { local.x, local.y };
+				worldUIScale = 1.0f;
+			}
 			if (rect->Rotation != 0.0f) {
 				const Vec2 pivot = rect->ResolvedValid ? rect->ResolvedPivot
 					: Vec2{ (bl.x + tr.x) * 0.5f, (bl.y + tr.y) * 0.5f };

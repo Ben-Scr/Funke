@@ -154,11 +154,8 @@ namespace Funke {
 			// Two-tier bake: 2× oversample at sizes ≤ 48 px for sharper text,
 			// 1× otherwise. Same ladder as the synchronous path.
 			constexpr float k_OversampleSkipThresholdPx = 48.0f;
-			const std::initializer_list<int> oversampleTiers = (pixelSize > k_OversampleSkipThresholdPx)
-				? std::initializer_list<int>{ 1 }
-				: std::initializer_list<int>{ 2, 1 };
-
-			for (int oversample : oversampleTiers) {
+			const int firstOversample = pixelSize > k_OversampleSkipThresholdPx ? 1 : 2;
+			for (int oversample = firstOversample; oversample >= 1; --oversample) {
 				int side = k_AtlasInitialSide;
 				while (side <= k_AtlasMaxSide) {
 					out.Bitmap.assign(static_cast<size_t>(side) * static_cast<size_t>(side), 0);

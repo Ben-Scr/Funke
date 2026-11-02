@@ -1,8 +1,10 @@
 #include <doctest/doctest.h>
 
 #include "Build/GameBuilder.hpp"
+#include "Assets/AssetBundle.hpp"
 #include "Build/DotNetRuntimeBundle.hpp"
 #include "Editor/PlatformBuilder.hpp"
+#include "Project/BuildPlatformSupport.hpp"
 #include "Project/FunkeBuildProfile.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Serialization/File.hpp"
@@ -108,7 +110,7 @@ namespace {
 #if defined(FNK_PLATFORM_WINDOWS)
 		files.insert(files.end(), { "Funke-Runtime.exe", "Funke-Engine.dll", "SDL3.dll", "nethost.dll" });
 #elif defined(FNK_PLATFORM_MACOS)
-		files.insert(files.end(), { "Funke-Runtime", "libFunke-Engine.dylib", "libSDL3.0.dylib", "libwebgpu_dawn.dylib" });
+		files.insert(files.end(), { "Funke-Runtime", "libFunke-Engine.dylib", "libSDL3.0.dylib", "libwebgpu_dawn.dylib", "libnethost.dylib" });
 #else
 		files.insert(files.end(), { "Funke-Runtime", "libFunke-Engine.so", "libSDL3.so.0", "libwebgpu_dawn.so" });
 #endif
@@ -163,15 +165,36 @@ TEST_CASE("Installed export preserves manifest errors instead of resolving unrel
 	CHECK(GameBuilder::SelectInstalledRuntime(installation, FunkeProject::BuildProfile::Release).Error == installation.Error);
 }
 
+#if defined(FNK_PLATFORM_MACOS)
+TEST_CASE("Installed macOS export requires the shared .NET host") {
+	TempProject temp;
+	auto installation = MakeInstalledSdk(temp.Root);
+	WriteInstalledRuntime(temp.Root);
+	installation.Runtimes = { { "Release", temp.Root } };
+	REQUIRE(GameBuilder::SelectInstalledRuntime(installation, FunkeProject::BuildProfile::Release).Succeeded());
+	std::filesystem::remove(temp.Root / "libnethost.dylib");
+	const auto damaged = GameBuilder::SelectInstalledRuntime(installation, FunkeProject::BuildProfile::Release);
+	CHECK_FALSE(damaged.Succeeded());
+	CHECK(damaged.Error.find("libnethost.dylib") != std::string::npos);
+}
+#endif
+
 TEST_CASE("Build profiles include .NET by default and preserve the explicit opt out") {
 	TempProject temp;
 	const auto file = Path::ToUtf8(temp.Root / "BuildProfiles" / "Runtime.build");
 	REQUIRE(File::WriteAllText(file, R"({"name":"Runtime","platform":"Windows"})"));
 	auto profile = FunkeBuildProfile::Load(file);
 	CHECK(profile.BundleDotNetRuntime);
+	CHECK_FALSE(profile.BundleAssets);
+	CHECK_FALSE(profile.CompressAssetBundles);
+	CHECK(profile.BundleCompression == AssetBundleCompression::LZ4);
 	profile.BundleDotNetRuntime = false;
+	profile.BundleAssets = true;
+	profile.CompressAssetBundles = true;
 	REQUIRE(profile.Save(file));
 	CHECK_FALSE(FunkeBuildProfile::Load(file).BundleDotNetRuntime);
+	CHECK(FunkeBuildProfile::Load(file).BundleAssets);
+	CHECK(FunkeBuildProfile::Load(file).CompressAssetBundles);
 }
 
 TEST_CASE("GameBuilder::Prepare folds the profile's configuration, defines and test switches into the snapshot only") {
@@ -185,19 +208,25 @@ TEST_CASE("GameBuilder::Prepare folds the profile's configuration, defines and t
 
 	FunkeBuildProfile qa;
 	qa.Name = "QA";
-	qa.Platform = BuildPlatform::Windows;
-	qa.RenderBackend = FunkeProject::RenderBackend::Direct3D12;
+	const auto host = BuildPlatformSupport::HostDesktopPlatform();
+	REQUIRE(host.has_value());
+	qa.Platform = *host;
+	qa.RenderBackend = FunkeBuildProfile::AllowedBackends(*host).front();
 	qa.Configuration = FunkeProject::BuildProfile::Debug;
 	qa.Defines = { "FUNKE_TEST" };
 	qa.DevConsole = false;
 	qa.ShowRuntimeLogs = true;
 	qa.IsolatedPrefs = true;
 	qa.BundleDotNetRuntime = false;
+	qa.BundleAssets = true;
+	qa.CompressAssetBundles = true;
+	qa.BundleCompression = AssetBundleCompression::Zstd;
 	REQUIRE(qa.Save(Path::ToUtf8(temp.Root / "BuildProfiles" / "QA.build")));
 	temp.Project.ActiveBuildProfileName = "QA";
 
 	std::string error;
 	GameBuilder::Request request;
+	INFO(error);
 	REQUIRE(GameBuilder::Prepare(temp.Project, request, error));
 	CHECK(request.Project.ActiveBuildProfile == FunkeProject::BuildProfile::Debug);
 	CHECK(request.Project.CustomDefines == std::vector<std::string>{ "STEAM", "FUNKE_TEST" });
@@ -206,6 +235,9 @@ TEST_CASE("GameBuilder::Prepare folds the profile's configuration, defines and t
 	CHECK_FALSE(request.Project.ShowRuntimeStats.has_value());
 	CHECK(request.Project.PrefsProfile == "QA");
 	CHECK_FALSE(request.BundleDotNetRuntime);
+	CHECK(request.BundleAssets);
+	CHECK(request.CompressAssetBundles);
+	CHECK(request.BundleCompression == AssetBundleCompression::Zstd);
 	// The live project keeps its own values.
 	CHECK(temp.Project.ActiveBuildProfile == FunkeProject::BuildProfile::Development);
 	CHECK(temp.Project.CustomDefines == std::vector<std::string>{ "STEAM" });
@@ -216,6 +248,63 @@ TEST_CASE("GameBuilder::Prepare folds the profile's configuration, defines and t
 	overridden.ConfigurationOverride = FunkeProject::BuildProfile::Release;
 	REQUIRE(GameBuilder::Prepare(temp.Project, overridden, error));
 	CHECK(overridden.Project.ActiveBuildProfile == FunkeProject::BuildProfile::Release);
+	qa.BundleAssets = false;
+	REQUIRE(qa.Save(Path::ToUtf8(temp.Root / "BuildProfiles/QA.build")));
+	REQUIRE(GameBuilder::Prepare(temp.Project, overridden, error));
+	CHECK_FALSE(overridden.BundleAssets);
+	CHECK_FALSE(overridden.CompressAssetBundles);
+	CHECK(overridden.BundleCompression == AssetBundleCompression::Zstd);
+}
+
+TEST_CASE("GameBuilder asset bundling preserves StreamingAssets and reads staged content") {
+	for (auto compression : { AssetBundleCompression::None, AssetBundleCompression::LZ4, AssetBundleCompression::Zstd }) {
+		CAPTURE(AssetBundle::CompressionName(compression));
+		TempProject temp;
+		for (const char* folder : { "Assets/Scenes", "Assets/StreamingAssets", "FunkeAssets/Fonts" })
+			std::filesystem::create_directories(temp.Root / folder);
+		const std::string scene = std::string(4000, 'x');
+		REQUIRE(File::WriteAllText(Path::ToUtf8(temp.Root / "Assets/Scenes/Main.scene"), scene));
+		REQUIRE(File::WriteAllText(Path::ToUtf8(temp.Root / "Assets/Scenes/Main.scene.meta"), "metadata"));
+		REQUIRE(File::WriteAllText(Path::ToUtf8(temp.Root / "Assets/StreamingAssets/data.txt"), "raw"));
+		REQUIRE(File::WriteAllText(Path::ToUtf8(temp.Root / "FunkeAssets/Fonts/font.ttf"), "font"));
+		std::string error;
+		REQUIRE_MESSAGE(GameBuilder::BundleStagedAssets(temp.Root, compression, error), error);
+		CHECK_FALSE(std::filesystem::exists(temp.Root / "Assets/Scenes/Main.scene"));
+		CHECK_FALSE(std::filesystem::exists(temp.Root / "Assets/Scenes/Main.scene.meta"));
+		CHECK(File::ReadAllText(Path::ToUtf8(temp.Root / "Assets/StreamingAssets/data.txt")) == "raw");
+		AssetBundle project, engine;
+		REQUIRE(project.Open(temp.Root / "Assets.fbundle", error));
+		REQUIRE(engine.Open(temp.Root / "FunkeAssets.fbundle", error));
+		CHECK(project.Contains("Scenes/Main.scene.meta"));
+		CHECK_FALSE(project.Contains("StreamingAssets/data.txt"));
+		CHECK(engine.Contains("Fonts/font.ttf"));
+		std::vector<std::uint8_t> bytes;
+		REQUIRE(project.Read("Scenes/Main.scene", bytes, error));
+		CHECK(std::string(bytes.begin(), bytes.end()) == scene);
+	}
+}
+
+TEST_CASE("Build profiles preserve bundle compression and default legacy or invalid values to LZ4") {
+	TempProject temp;
+	const auto file = Path::ToUtf8(temp.Root / "BuildProfiles/Compression.build");
+	REQUIRE(File::WriteAllText(file, R"({"bundleAssets":true,"compressAssetBundles":true})"));
+	auto profile = FunkeBuildProfile::Load(file);
+	CHECK(profile.BundleCompression == AssetBundleCompression::LZ4);
+	CHECK(profile.CompressAssetBundles);
+	for (auto compression : { AssetBundleCompression::LZ4, AssetBundleCompression::Zstd }) {
+		for (bool enabled : { true, false }) {
+			profile.BundleCompression = compression;
+			profile.CompressAssetBundles = enabled;
+			REQUIRE(profile.Save(file));
+			const auto loaded = FunkeBuildProfile::Load(file);
+			CHECK(loaded.BundleCompression == compression);
+			CHECK(loaded.CompressAssetBundles == enabled);
+		}
+	}
+	for (const char* value : { "\"invalid\"", "42", "null", "\"None\"" }) {
+		REQUIRE(File::WriteAllText(file, std::string("{\"assetBundleCompression\":") + value + "}"));
+		CHECK(FunkeBuildProfile::Load(file).BundleCompression == AssetBundleCompression::LZ4);
+	}
 }
 
 TEST_CASE("GameBuilder resolves the requested, active or first matching build profile") {

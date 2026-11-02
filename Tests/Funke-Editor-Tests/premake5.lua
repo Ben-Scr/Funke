@@ -25,13 +25,16 @@ project "Funke-Editor-Tests"
     files
     {
         path.join(ROOT_DIR, "Funke-Editor/src/Build/GameBuilder.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Bridge/EditorSceneEdit.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Build/DotNetRuntimeBundle.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/BuildAssetPruning.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/SceneRecovery.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/PlatformBuilder.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/SpriteSlicing.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Gui/AssetSaveDialog.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Gui/AsyncTexturePreview.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Gui/EditorDockLayout.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Gui/SceneHierarchyState.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/ScriptWindowTypes.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/EditorCamera.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/EditorCamera3D.cpp"),
@@ -41,6 +44,7 @@ project "Funke-Editor-Tests"
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/EditorRestart.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Scripting/StructFieldBytes.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Undo/UndoStack.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Undo/AssetFileHistory.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Undo/TransformEditCommand.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Undo/InspectorEditCommand.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Undo/InspectorUndoRecorder.cpp"),
@@ -70,6 +74,7 @@ project "Funke-Editor-Tests"
         CopySDL3SharedLib
     }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
+    if CopyNetHostSharedLib ~= "" then postbuildcommands { CopyNetHostSharedLib } end
     ApplyFunkeProfilerRuntime()
 
     filter "system:windows"

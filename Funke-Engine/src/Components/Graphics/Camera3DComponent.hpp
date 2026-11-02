@@ -32,6 +32,7 @@ namespace Funke {
 		float OrthographicSize = 5.0f;   // half height in world units
 		float NearClip = 0.1f;
 		float FarClip = 1000.0f;
+		bool PostProcessingEnabled = true;
 
 		CameraBackground Background = CameraBackground::Skybox;
 		// Used by SolidColor only.

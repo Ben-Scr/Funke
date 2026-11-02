@@ -26,6 +26,14 @@ namespace Funke {
 
 	void ThumbnailCache::EnforceCapacity() {
 		const uint64_t currentFrame = static_cast<uint64_t>(ImGui::GetFrameCount());
+		if (m_LastBudgetFrame == currentFrame && m_Cache.size() <= k_MaxEntries) return;
+		m_LastBudgetFrame = currentFrame;
+		const auto bytesUsed = [](const CachedThumbnail& entry) -> size_t {
+			const auto* texture = entry.Preview->Texture.get();
+			return texture ? static_cast<size_t>(texture->GetWidth()) * static_cast<size_t>(texture->GetHeight()) * 4 : 0;
+		};
+		size_t bytes = 0;
+		for (const auto& [path, entry] : m_Cache) bytes += bytesUsed(entry);
 		// Evict least-recently-used (back of list) until under the cap, but NEVER an
 		// entry accessed this frame: a directory with >k_MaxEntries images renders
 		// all tiles in one frame, and evicting an already-drawn tile here would
@@ -34,13 +42,14 @@ namespace Funke {
 		// later frame (when they're no longer touched), so the cache may transiently
 		// exceed the cap by the number of tiles drawn this frame.
 		auto it = m_LRU.end();
-		while (m_Cache.size() > k_MaxEntries && it != m_LRU.begin()) {
+		while ((m_Cache.size() > k_MaxEntries || bytes > k_MaxBytes) && it != m_LRU.begin()) {
 			--it;
 			auto cacheIt = m_Cache.find(*it);
-			if (cacheIt != m_Cache.end() && cacheIt->second.LastUsedFrame == currentFrame) {
+			if (cacheIt != m_Cache.end() && cacheIt->second.LastUsedFrame + 1 >= currentFrame) {
 				continue; // in use this frame — skip toward the front
 			}
 			if (cacheIt != m_Cache.end()) {
+				bytes -= bytesUsed(cacheIt->second);
 				m_Cache.erase(cacheIt);
 			}
 			it = m_LRU.erase(it); // returns the element after the erased one (toward end)
@@ -51,7 +60,9 @@ namespace Funke {
 		auto it = m_Cache.find(absolutePath);
 		if (it != m_Cache.end()) {
 			TouchLru(it); // E31: lookup counts as recent use
-			return it->second.GlHandle;
+			auto* texture = it->second.Preview->GetTexture();
+			EnforceCapacity();
+			return texture ? texture->GetHandle() : 0;
 		}
 
 		// Only attempt to load image files
@@ -71,41 +82,21 @@ namespace Funke {
 		const TextureMeta meta = AssetRegistry::ReadTextureMeta(absolutePath);
 		const Filter importFilter = meta.HasImportBlock ? meta.Import.FilterMode : Filter::Point;
 
-		auto tex = std::make_unique<Texture2D>(
-			absolutePath.c_str(),
-			importFilter,
-			Wrap::Clamp,
-			Wrap::Clamp,
-			false,   // no mipmaps for thumbnails
-			false,
-			true
-		);
-
-		// E31: insert path at front of LRU first, then store the iterator on the
-		// cache entry so subsequent lookups can splice without re-finding.
+		// Slices use source-pixel UV coordinates and retain their original aligned grid.
+		auto preview = AsyncTexturePreviews::Get().Request(absolutePath, importFilter, false, false,
+			meta.Sprites.empty() ? 256 : 0);
 		auto lruIt = m_LRU.insert(m_LRU.begin(), absolutePath);
 		const uint64_t currentFrame = static_cast<uint64_t>(ImGui::GetFrameCount());
-
-		if (!tex->IsValid()) {
-			// Cache a null entry so we don't retry
-			m_Cache[absolutePath] = { nullptr, 0, lruIt, currentFrame };
-			EnforceCapacity();
-			return 0;
-		}
-
-		uint64_t handle = tex->GetHandle();
-		// Stamp the current frame: this tile draws the view THIS frame, so a later
-		// tile's GetThumbnail in the same frame must not evict it (would be a UAF).
-		m_Cache[absolutePath] = { std::move(tex), handle, lruIt, currentFrame };
+		m_Cache[absolutePath] = { std::move(preview), lruIt, currentFrame };
 		EnforceCapacity();
-		return handle;
+		return 0;
 	}
 
 	Texture2D* ThumbnailCache::GetCacheEntry(const std::string& absolutePath) {
 		auto it = m_Cache.find(absolutePath);
-		if (it != m_Cache.end() && it->second.Texture) {
+		if (it != m_Cache.end() && it->second.Preview) {
 			TouchLru(it); // E31: lookup counts as recent use
-			return it->second.Texture.get();
+			return it->second.Preview->GetTexture();
 		}
 		return nullptr;
 	}

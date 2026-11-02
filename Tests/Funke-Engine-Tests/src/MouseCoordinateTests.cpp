@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "Components/Graphics/Camera2DComponent.hpp"
+#include "Components/Graphics/Camera3DComponent.hpp"
 #include "Core/Application.hpp"
 #include "Core/Window.hpp"
 #include "Scene/Entity.hpp"
@@ -169,4 +170,38 @@ TEST_CASE("Managed Camera2D viewport size is the surface mouse positions refer t
 	Window::SetUIRegion(100, 50, 1331, 858);
 	CHECK(bindings.Camera2D_GetViewportWidth(cameraId) == doctest::Approx(1331.0f));
 	CHECK(bindings.Camera2D_GetViewportHeight(cameraId) == doctest::Approx(858.0f));
+}
+
+TEST_CASE("Camera post processing bindings toggle each camera independently") {
+    Application app;
+    auto scene = Scene::CreateDetachedScene("Camera Post Processing Bindings");
+    Entity camera2D = scene->CreateEntity("2D");
+    camera2D.AddComponent<Camera2DComponent>();
+    Entity camera3D = scene->CreateEmptyEntity();
+    camera3D.AddComponent<Camera3DComponent>();
+    const uint64_t id2D = scene->GetEntityPersistentID(camera2D.GetHandle());
+    const uint64_t id3D = scene->GetEntityPersistentID(camera3D.GetHandle());
+    struct SceneScope {
+        explicit SceneScope(Scene* scene) { ScriptEngine::SetScene(scene); }
+        ~SceneScope() { ScriptEngine::SetScene(nullptr); }
+    } scope(scene.get());
+    NativeBindings bindings{};
+    ScriptBindings::PopulateNativeBindings(bindings);
+    REQUIRE(bindings.Camera2D_GetPostProcessingEnabled != nullptr);
+    REQUIRE(bindings.Camera2D_SetPostProcessingEnabled != nullptr);
+    REQUIRE(bindings.Camera3D_GetPostProcessingEnabled != nullptr);
+    REQUIRE(bindings.Camera3D_SetPostProcessingEnabled != nullptr);
+    CHECK(bindings.Camera2D_GetPostProcessingEnabled(id2D) == 1);
+    CHECK(bindings.Camera3D_GetPostProcessingEnabled(id3D) == 1);
+    bindings.Camera2D_SetPostProcessingEnabled(id2D, 0);
+    CHECK_FALSE(camera2D.GetComponent<Camera2DComponent>().IsPostProcessingEnabled());
+    CHECK(bindings.Camera2D_GetPostProcessingEnabled(id2D) == 0);
+    CHECK(bindings.Camera3D_GetPostProcessingEnabled(id3D) == 1);
+    bindings.Camera3D_SetPostProcessingEnabled(id3D, 0);
+    CHECK_FALSE(camera3D.GetComponent<Camera3DComponent>().PostProcessingEnabled);
+    CHECK(bindings.Camera3D_GetPostProcessingEnabled(id3D) == 0);
+    bindings.Camera2D_SetPostProcessingEnabled(id2D, 1);
+    bindings.Camera3D_SetPostProcessingEnabled(id3D, 1);
+    CHECK(bindings.Camera2D_GetPostProcessingEnabled(id2D) == 1);
+    CHECK(bindings.Camera3D_GetPostProcessingEnabled(id3D) == 1);
 }

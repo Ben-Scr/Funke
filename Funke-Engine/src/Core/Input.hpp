@@ -164,7 +164,7 @@ namespace Funke {
         // Called by Application::Run AFTER polling so reads reflect *this*
         // frame's keys, not last frame's.
         void PostPoll();
-        void PollGamepads();
+		void PollGamepads(bool advanceEdges = true);
 
         void OnKeyDown(int key);
         void OnKeyUp(int key);

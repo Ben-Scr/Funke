@@ -9,7 +9,9 @@
 #include "Packages/StaticPackages.hpp"
 #include "Project/FunkeProject.hpp"
 #include "Project/ProjectManager.hpp"
+#if FUNKE_WITH_APPLICATION
 #include "Scene/SceneManager.hpp"
+#endif
 #include "Serialization/Path.hpp"
 #include "Utils/Hash.hpp"
 
@@ -462,10 +464,12 @@ namespace Funke {
 				const uint32_t ownerId = s_NextOwnerId++;
 				int onLoadResult = 0;
 				if (package.OnLoad) {
+#if FUNKE_WITH_APPLICATION
 					struct OwnerScope {
 						explicit OwnerScope(uint32_t owner) { SceneManager::SetRegistrationOwner(owner); }
 						~OwnerScope() { SceneManager::SetRegistrationOwner(0); }
 					} ownerScope(ownerId);
+#endif
 					onLoadResult = package.OnLoad();
 				}
 				if (onLoadResult != 0) {
@@ -623,10 +627,12 @@ namespace Funke {
 				bool onLoadHadExport = false;
 				int onLoadResult = 0;
 				{
+#if FUNKE_WITH_APPLICATION
 					struct OwnerScope {
 						explicit OwnerScope(uint32_t owner) { SceneManager::SetRegistrationOwner(owner); }
 						~OwnerScope() { SceneManager::SetRegistrationOwner(0); }
 					} ownerScope(ownerId);
+#endif
 					onLoadResult = InvokeOnLoadGuarded(module, &onLoadCrashed, &onLoadHadExport);
 				}
 				if (onLoadCrashed) {
@@ -634,7 +640,9 @@ namespace Funke {
 						"Package '{}' crashed during FunkePackage_OnLoad (likely binary incompatibility "
 						"with the running engine — try uninstalling and reinstalling). Unloaded; editor continues.",
 						packageName);
+#if FUNKE_WITH_APPLICATION
 					SceneManager::UnregisterOwner(ownerId);
+#endif
 					PlatformUnload(module);
 					continue;
 				}
@@ -693,17 +701,21 @@ namespace Funke {
 	// Safe order (Application::Shutdown): SceneManager is destroyed first, taking scenes, EnTT pools and the registry with it.
 	// If it is still alive, registry entries are dropped here, but live entities of package types keep EnTT storage whose code is in the module.
 	void PackageHost::UnloadAll() {
+#if FUNKE_WITH_APPLICATION
 		if (!s_LoadedPackages.empty() && SceneManager::GetLoadedSceneCount() > 0) {
 			FNK_CORE_WARN_TAG("PackageHost",
 				"Unloading {} package(s) while {} scene(s) are loaded; unload scenes first so package component storage is released.",
 				s_LoadedPackages.size(), SceneManager::GetLoadedSceneCount());
 		}
+#endif
 		for (auto it = s_LoadedPackages.rbegin(); it != s_LoadedPackages.rend(); ++it) {
 			if (!it->ModuleHandle) {
 				// Statically linked: nothing to free, only the unload hook to run.
 				const StaticPackage* linked = StaticPackages::Find(it->Name.c_str());
 				if (linked && linked->OnUnload) linked->OnUnload();
+#if FUNKE_WITH_APPLICATION
 				SceneManager::UnregisterOwner(it->OwnerId);
+#endif
 				continue;
 			}
 			bool onUnloadCrashed = false;
@@ -713,7 +725,9 @@ namespace Funke {
 					"Package '{}' crashed during FunkePackage_OnUnload; continuing teardown.",
 					it->Name);
 			}
+#if FUNKE_WITH_APPLICATION
 			SceneManager::UnregisterOwner(it->OwnerId);
+#endif
 			PlatformUnload(it->ModuleHandle);
 		}
 		s_LoadedPackages.clear();

@@ -647,12 +647,14 @@ local function NativeAbiMetadataCommand(hasEngineLinked)
         local engineDll = PowerShellLiteral(path.join(
             ROOT_DIR, "bin", outputdir, "Funke-Engine", "Funke-Engine.dll"))
         lines = "$engine=" .. engineDll ..
-            ";if(!(Test-Path -LiteralPath $engine)){throw 'Matching Funke-Engine.dll was not built'}" ..
-            ";$hash=(Get-FileHash -LiteralPath $engine -Algorithm SHA256).Hash.ToLowerInvariant()" ..
+            ";if(![IO.File]::Exists($engine)){throw 'Matching Funke-Engine.dll was not built'}" ..
+            ";$sha=[Security.Cryptography.SHA256]::Create();$stream=[IO.File]::OpenRead($engine)" ..
+            ";try{$hash=[BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-','').ToLowerInvariant()}" ..
+            "finally{$stream.Dispose();$sha.Dispose()}" ..
             ";$lines=@('schema=1','boundary=engine_cpp',('engine_sha256='+$hash))"
     end
 
-    return "powershell -NoProfile -ExecutionPolicy Bypass -Command \"" .. lines ..
+    return "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='Stop';" .. lines ..
         ";[IO.File]::WriteAllLines(" .. sidecar .. ",$lines,[Text.Encoding]::ASCII)\""
 end
 

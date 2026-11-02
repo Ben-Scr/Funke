@@ -74,6 +74,16 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 					[](Entity& e, bool v) { e.GetComponent<AudioSourceComponent>().SetSpatial(v); },
 					Properties::Meta::Header("3D Sound").WithTooltip("Plays from this entity's position: quieter with distance "
 						"from the main camera and panned to its side. Off = a plain 2D sound.")),
+				Properties::MakeWith<bool>("Hrtf", "HRTF (Headphones)",
+					[](const Entity& e) { return e.GetComponent<AudioSourceComponent>().GetSpatialSettings().Hrtf; },
+					[](Entity& e, bool value) {
+						auto& source = e.GetComponent<AudioSourceComponent>();
+						AudioSpatialSettings settings = source.GetSpatialSettings();
+						settings.Hrtf = value;
+						source.SetSpatialSettings(settings);
+					},
+					Properties::Meta::Tooltip("Binaural headphone audio with front, back and elevation cues. "
+						"Replaces Panning; stereo clips are mixed to mono before spatialization.").WithEnabledIf(IsSpatial)),
 				MakeSpatialFloat("MinDistance", "Min Distance", &AudioSpatialSettings::MinDistance, 0.0, 10000.0, 0.1f,
 					"Full volume up to this distance."),
 				MakeSpatialFloat("MaxDistance", "Max Distance", &AudioSpatialSettings::MaxDistance, 0.0, 10000.0, 0.5f,
@@ -89,7 +99,7 @@ namespace Funke::BuiltInComponentRegistrationInternal {
 					Properties::Meta::Tooltip("Logarithmic: volume Min Distance / distance, the natural falloff. "
 						"Linear: from full volume at Min Distance to silence at Max Distance.").WithEnabledIf(IsSpatial)),
 				MakeSpatialFloat("Panning", "Panning", &AudioSpatialSettings::Panning, 0.0, 1.0, 0.01f,
-					"How far a sound to the side moves to that ear: 0 = not at all, 1 = silent on the other ear."),
+					"How far a sound to the side moves to that ear: 0 = not at all, 1 = silent on the other ear. Ignored with HRTF."),
 				MakeSpatialFloat("DopplerLevel", "Doppler Level", &AudioSpatialSettings::DopplerLevel, 0.0, 10.0, 0.01f,
 					"Pitch shift while the sound and the camera move towards or away from each other; 0 = off, 1 = physical."),
 			});

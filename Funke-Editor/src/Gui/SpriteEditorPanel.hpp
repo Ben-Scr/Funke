@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Assets/TextureMeta.hpp"
-#include "Graphics/TextureHandle.hpp"
+#include "Gui/AsyncTexturePreview.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -19,6 +19,7 @@ namespace Funke {
 		void Shutdown();
 
 		void OpenTexture(const std::string& assetPath, uint64_t assetId);
+		void RefreshTexture();
 
 		bool HasUnsavedChanges() const { return m_Dirty; }
 		const std::string& GetOpenAssetPath() const { return m_AssetPath; }
@@ -91,14 +92,12 @@ namespace Funke {
 		void Apply();   // commit m_Slices to disk via AssetRegistry::WriteTextureMeta
 		void Revert();  // re-read m_Slices from disk, drop staged edits
 
-		// ── CPU bitmap (lazy via stb_image, cached on the panel) ───────
-		void EnsureDecodedBitmap();
-		bool BitmapAvailable() const { return !m_DecodedPixels.empty(); }
+		bool BitmapAvailable() const { return m_Preview && m_Preview->Pixels != nullptr; }
 
 		// ── State ──────────────────────────────────────────────────────
 		std::string   m_AssetPath;
 		uint64_t      m_AssetId      = 0;
-		TextureHandle m_PreviewHandle;
+		std::shared_ptr<TexturePreview> m_Preview;
 		int           m_TexWidth     = 0;
 		int           m_TexHeight    = 0;
 
@@ -143,10 +142,7 @@ namespace Funke {
 		uint64_t    m_PendingAssetId = 0;
 		bool        m_ShowUnsavedPrompt = false;
 
-		// Re-decoded CPU bitmap (RGBA8, w*h*4 bytes). Lifetime = current
-		// OpenTexture; freed and re-populated on each swap.
-		std::vector<uint8_t>      m_DecodedPixels;
-		std::filesystem::file_time_type m_DecodedMtime{};
+
 	};
 
 } // namespace Funke

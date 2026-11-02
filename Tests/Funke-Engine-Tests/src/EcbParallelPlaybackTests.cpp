@@ -201,6 +201,17 @@ namespace {
 	};
 
 	struct NativeEcbCustomValue { int Value = 7; };
+	struct NativeEcbRecycleOnConstruct {
+		Scene& Owner;
+		EntityHandle Trigger;
+		EntityHandle Victim;
+		EntityHandle Replacement = entt::null;
+		void OnConstruct(entt::registry&, EntityHandle entity) {
+			if (entity != Trigger) return;
+			Owner.DestroyEntity(Victim);
+			Replacement = Owner.CreateRuntimeEntity().GetHandle();
+		}
+	};
 
 	template<typename Fn>
 	void RecordNativeWriters(ParallelEntityCommandBuffer& buffer, uint32_t count, Fn action) {
@@ -383,6 +394,80 @@ TEST_CASE("Public native ECB stale live references cannot mutate recycled entity
 	CHECK_FALSE(replacement.HasComponent<SpriteRendererComponent>());
 	CHECK(scene->GetEntityPersistentID(replacement.GetHandle()) == replacementId);
 	CHECK(scene->GetEntityCount() == 1);
+}
+
+TEST_CASE("Public native ECB handles stay bound to their entity during UUID remapping")
+{
+	Application app;
+	RegisterParallelTypes();
+	for (auto mode : { EntityCommandBufferPlaybackMode::Sequential, EntityCommandBufferPlaybackMode::Parallel }) {
+		auto scene = Scene::CreateDetachedScene("Native ECB Handle Identity");
+		Entity original = scene->CreateRuntimeEntity();
+		Entity remapped = scene->CreateRuntimeEntity();
+		NativeEntityCommandBuffer commands;
+		const auto target = commands.Existing(original);
+		scene->PushEntityRefRemap();
+		scene->RegisterEntityRefRemap(scene->GetEntityPersistentID(original.GetHandle()),
+			scene->GetEntityPersistentID(remapped.GetHandle()));
+		commands.AddComponent<SpriteRendererComponent>(target);
+		REQUIRE(commands.Playback(*scene, mode) == 0);
+		CHECK(original.HasComponent<SpriteRendererComponent>());
+		CHECK_FALSE(remapped.HasComponent<SpriteRendererComponent>());
+		commands.Clear();
+		commands.RemoveComponent<SpriteRendererComponent>(target);
+		commands.SetEnabled(target, false);
+		REQUIRE(commands.Playback(*scene, mode) == 0);
+		CHECK_FALSE(original.HasComponent<SpriteRendererComponent>());
+		CHECK(original.HasComponent<DisabledTag>());
+		CHECK_FALSE(remapped.HasComponent<DisabledTag>());
+		commands.Clear();
+		commands.Destroy(target);
+		REQUIRE(commands.Playback(*scene, mode) == 0);
+		CHECK_FALSE(original.IsValid());
+		CHECK(remapped.IsValid());
+		scene->PopEntityRefRemap();
+	}
+}
+
+TEST_CASE("Public native ECB falls back atomically for an unregistered default component")
+{
+	Application app;
+	RegisterParallelTypes();
+	auto scene = Scene::CreateDetachedScene("Native ECB Default Fallback");
+	NativeEntityCommandBuffer commands;
+	for (int index = 0; index < 513; ++index)
+		commands.CreateWith<Transform2DComponent, SpriteRendererComponent, NativeEcbCustomValue>();
+	REQUIRE(commands.Playback(*scene, EntityCommandBufferPlaybackMode::Parallel) == 513);
+	CHECK(scene->GetEntityCount() == 513);
+	for (int index = 0; index < 513; ++index) {
+		const auto handle = commands.GetCreatedEntity(index);
+		REQUIRE(scene->IsValid(handle));
+		CHECK(scene->GetRegistry().all_of<Transform2DComponent, SpriteRendererComponent, NativeEcbCustomValue>(handle));
+		CHECK(scene->GetRegistry().get<NativeEcbCustomValue>(handle).Value == 7);
+	}
+}
+
+TEST_CASE("Public native ECB revalidates handles recycled by earlier command callbacks")
+{
+	Application app;
+	RegisterParallelTypes();
+	for (auto mode : { EntityCommandBufferPlaybackMode::Sequential, EntityCommandBufferPlaybackMode::Parallel }) {
+		auto scene = Scene::CreateDetachedScene("Native ECB Reentrant Recycling");
+		Entity first = scene->CreateRuntimeEntity();
+		Entity victim = scene->CreateRuntimeEntity();
+		NativeEcbRecycleOnConstruct callback{ *scene, first.GetHandle(), victim.GetHandle() };
+		scene->GetRegistry().on_construct<SpriteRendererComponent>().connect<&NativeEcbRecycleOnConstruct::OnConstruct>(&callback);
+		NativeEntityCommandBuffer commands;
+		commands.AddComponent<SpriteRendererComponent>(commands.Existing(first));
+		commands.AddComponent<SpriteRendererComponent>(commands.Existing(victim));
+		REQUIRE(commands.Playback(*scene, mode) == 0);
+		CHECK(first.HasComponent<SpriteRendererComponent>());
+		CHECK_FALSE(victim.IsValid());
+		REQUIRE(scene->IsValid(callback.Replacement));
+		CHECK(entt::to_entity(callback.Replacement) == entt::to_entity(victim.GetHandle()));
+		CHECK_FALSE(scene->GetRegistry().all_of<SpriteRendererComponent>(callback.Replacement));
+		scene->GetRegistry().on_construct<SpriteRendererComponent>().disconnect<&NativeEcbRecycleOnConstruct::OnConstruct>(&callback);
+	}
 }
 
 TEST_CASE("Public native ECB local references reject another writer and reuse after Clear")

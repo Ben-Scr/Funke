@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
+using System.Text.Json;
 
 namespace Funke.Interop;
 
@@ -25,12 +27,41 @@ internal static class ScriptExceptionLog
 
     private static readonly Dictionary<string, Entry> s_Entries = new();
     private static readonly object s_Lock = new();
+    private static readonly string s_Epoch = Guid.NewGuid().ToString("N");
+    private static readonly Queue<ExceptionEvent> s_Events = new();
+    private static ulong s_Total;
+    internal sealed record ExceptionEvent(string sequence, string context, string type, string message, string stack);
+    internal sealed record Snapshot(int formatVersion, string epoch, string total, string oldest, ExceptionEvent[] events);
+
+    internal static Snapshot GetSnapshot()
+    {
+        lock (s_Lock)
+            return new(1, s_Epoch, s_Total.ToString(CultureInfo.InvariantCulture),
+                s_Events.Count == 0 ? "0" : s_Events.Peek().sequence, s_Events.ToArray());
+    }
+
+    [DevCommand("test.script-errors", Description = "Structured unhandled script callback errors, including throttled repeats")]
+    private static string ErrorsCommand() => JsonSerializer.Serialize(GetSnapshot());
+
+    [DevCommand("test.environment", Description = "Effective persistent data isolation for this process")]
+    private static string EnvironmentCommand() => JsonSerializer.Serialize(new {
+        formatVersion = 1, prefsProfile = Application.PrefsProfile, persistentDataPath = Application.PersistentDataPath
+    });
+
+    private static string Bounded(string? value, int limit) => value == null ? "" : value.Length <= limit ? value : value[..limit];
 
     // Test seam; Stopwatch ticks.
     internal static Func<long> Clock = Stopwatch.GetTimestamp;
 
     public static void Report(string context, Exception? ex)
     {
+        lock (s_Lock)
+        {
+            ++s_Total;
+            if (s_Events.Count == 16) s_Events.Dequeue();
+            s_Events.Enqueue(new(s_Total.ToString(CultureInfo.InvariantCulture), Bounded(context, 128),
+                Bounded(ex?.GetType().FullName, 128), Bounded(ex?.Message, 512), Bounded(ex?.StackTrace, 1024)));
+        }
         if (ex == null)
         {
             Log.Error($"Exception in {context}");
