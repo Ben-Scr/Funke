@@ -20,6 +20,10 @@ Choose `Editor`, `Runtime`, `Launcher`, `CLI`, `ScriptCore` or another supported
 
 On Linux and macOS, build the affected make target (for example `make config=release -j6 Funke-Engine-Tests`) and run its executable under `bin/Release-<system>-<arch>/`. Managed tests use `dotnet test Tests/Funke-ScriptCore-Tests/Funke-ScriptCore-Tests.csproj -c Release`.
 
+Rerun `scripts/dawn/SetupDawn.bat` or `scripts/dawn/SetupDawn.sh` after an interrupted Dawn fetch or a pin change. Both validate the root revision and dependency revisions before CMake, resume repositories without HEAD/origin, and stop with the failing Git command if fetching fails. Unexpected source edits or remotes require manual reconciliation; setup never resets or cleans them. Versioned Funke patches are recognized separately. Windows keeps the smaller dependency selection; both configure CMake with dependency fetching disabled after the checked prefetch.
+
+CI validates Dawn's `funke-artifacts.json`, required headers and libraries. Source files and Git metadata are intentionally absent from artifact caches. Invalid restored caches are preserved beside `External/dawn` before rebuilding; Windows caches must contain both Debug and Release libraries. Linux coverage uses atomic counters for the threaded engine and retains separate build, test, capture and report logs.
+
 ## Pull requests
 
 - Keep each pull request to one change, and describe how you tested it.

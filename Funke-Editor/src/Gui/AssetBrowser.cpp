@@ -847,6 +847,7 @@ namespace Funke {
 			m_SkipRegistrySyncOnNextRefresh = false;
 		}
 		m_Entries = Directory::GetEntries(m_CurrentDirectory);
+		m_GridDirty = true;
 		m_FolderTreeDirty = true; // cleared at the next tree render, never mid-traversal
 		RebuildSliceCache();
 		if (m_SearchBuffer[0] != '\0')
@@ -861,6 +862,7 @@ namespace Funke {
 	void AssetBrowser::QueueSearchRebuild() {
 		ResetBoxSelection();
 		m_SearchResults.clear();
+		m_GridDirty = true;
 		m_SearchTruncated = false;
 		if (m_SearchBuffer[0] == '\0') {
 			std::scoped_lock lock(m_SearchMutex);
@@ -946,6 +948,7 @@ namespace Funke {
 		if (std::string(m_SearchBuffer) == completedQuery) {
 			ResetBoxSelection();
 			m_SearchResults = std::move(results);
+			m_GridDirty = true;
 			m_SearchTruncated = truncated;
 		}
 		if (!queuedQuery.empty() && queuedQuery != completedQuery) {
@@ -1043,7 +1046,15 @@ namespace Funke {
 
 	void AssetBrowser::RebuildSliceCache() {
 		m_SliceCache.clear();
-		for (const DirectoryEntry& entry : m_Entries) {
+		m_NextSliceEntry = 0;
+		m_GridDirty = true;
+	}
+
+	void AssetBrowser::PumpSliceCache() {
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1);
+		for (size_t examined = 0; m_NextSliceEntry < m_Entries.size() && examined < 128; ++examined) {
+			if (examined != 0 && std::chrono::steady_clock::now() >= deadline) break;
+			const DirectoryEntry& entry = m_Entries[m_NextSliceEntry++];
 			if (entry.IsDirectory) continue;
 			const AssetType type = ThumbnailCache::GetAssetType(
 				std::filesystem::path(entry.Path).extension().string());
@@ -1052,6 +1063,7 @@ namespace Funke {
 			TextureMeta meta = AssetRegistry::ReadTextureMeta(entry.Path);
 			if (meta.Sprites.empty()) continue;
 			m_SliceCache.emplace(entry.Path, std::move(meta.Sprites));
+			m_GridDirty = true;
 		}
 	}
 
@@ -1873,6 +1885,7 @@ namespace Funke {
 	}
 
 	void AssetBrowser::RenderGrid() {
+		PumpSliceCache();
 		if (!ImGui::BeginChild("AssetGrid", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_None)) {
 			ResetBoxSelection();
 			ImGui::EndChild();
@@ -1920,41 +1933,32 @@ namespace Funke {
 			visibleEntriesPtr = &m_SearchResults;
 
 		const std::vector<DirectoryEntry>& visibleEntries = *visibleEntriesPtr;
-		m_VisibleEntryPaths.clear();
-		m_VisibleEntryPaths.reserve(visibleEntries.size());
-		for (const DirectoryEntry& entry : visibleEntries) {
-			m_VisibleEntryPaths.push_back(entry.Path);
+		const bool pendingEntry = visibleEntriesPtr == &entriesWithPending;
+		if (m_GridDirty || m_GridSource != visibleEntriesPtr || pendingEntry) {
+			m_VisibleEntryPaths.clear();
+			m_VisibleEntryPaths.reserve(visibleEntries.size());
+			m_GridTiles.clear();
+			m_GridTiles.reserve(visibleEntries.size());
+			m_GridPathToTile.clear();
+			for (int i = 0; i < static_cast<int>(visibleEntries.size()); ++i) {
+				const std::string& path = visibleEntries[static_cast<size_t>(i)].Path;
+				m_VisibleEntryPaths.push_back(path);
+				m_GridPathToTile.emplace(path, static_cast<int>(m_GridTiles.size()));
+				m_GridTiles.push_back({ i, -1 });
+				const auto slices = m_SliceCache.find(path);
+				if (slices == m_SliceCache.end() || !m_ExpandedTextures.contains(path)) continue;
+				for (int s = 0; s < static_cast<int>(slices->second.size()); ++s) m_GridTiles.push_back({ i, s });
+			}
+			m_GridSource = pendingEntry ? nullptr : visibleEntriesPtr;
+			m_GridDirty = false;
 		}
-
-		// Flatten entries + expanded slices, then clip by rows so large folders
-		// only render and load thumbnails for the visible viewport.
-		struct GridTile {
-			int EntryIndex = -1;
-			int SliceIndex = -1;
+		const auto findTile = [&](const std::string& path) {
+			const auto found = m_GridPathToTile.find(path);
+			return found == m_GridPathToTile.end() ? -1 : found->second;
 		};
-
-		std::vector<GridTile> tiles;
-		tiles.reserve(visibleEntries.size());
-		int scrollToTileIndex = -1;
-		int renameTileIndex = -1;
-		for (int i = 0; i < static_cast<int>(visibleEntries.size()); ++i) {
-			if (!m_PendingScrollToPath.empty() && visibleEntries[static_cast<std::size_t>(i)].Path == m_PendingScrollToPath) {
-				scrollToTileIndex = static_cast<int>(tiles.size());
-			}
-			if (IsRenamingEntry(visibleEntries[static_cast<std::size_t>(i)].Path)) {
-				renameTileIndex = static_cast<int>(tiles.size());
-			}
-			tiles.push_back(GridTile{ i, -1 });
-
-			auto sliceIt = m_SliceCache.find(visibleEntries[static_cast<std::size_t>(i)].Path);
-			if (sliceIt == m_SliceCache.end()) continue;
-			if (m_ExpandedTextures.find(visibleEntries[static_cast<std::size_t>(i)].Path) == m_ExpandedTextures.end()) continue;
-
-			const std::vector<SpriteSlice>& slices = sliceIt->second;
-			for (int s = 0; s < static_cast<int>(slices.size()); ++s) {
-				tiles.push_back(GridTile{ i, s });
-			}
-		}
+		const auto& tiles = m_GridTiles;
+		const int scrollToTileIndex = m_PendingScrollToPath.empty() ? -1 : findTile(m_PendingScrollToPath);
+		const int renameTileIndex = m_IsRenaming ? findTile(m_RenamePath) : -1;
 
 		const float rowHeight = m_TileSize + ImGui::GetTextLineHeightWithSpacing() + m_TilePadding;
 		const int rowCount = columns > 0
@@ -2388,6 +2392,7 @@ namespace Funke {
 				if (expanderHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
 					if (isExpanded) m_ExpandedTextures.erase(entry.Path);
 					else            m_ExpandedTextures.insert(entry.Path);
+					m_GridDirty = true;
 				}
 			}
 		}

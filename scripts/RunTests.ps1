@@ -59,11 +59,14 @@ try {
     }
 
     $msbuild = Get-MSBuild
+    $testLogDirectory = Join-Path $repoRoot "ci-logs"
+    New-Item -ItemType Directory -Force -Path $testLogDirectory | Out-Null
     foreach ($testProject in @("Funke-Engine-Tests", "Funke-Editor-Tests")) {
         Write-Host "[RunTests] Building $testProject ($configuration x64)."
         $projectPath = "Tests\$testProject\$testProject.vcxproj"
         & $msbuild $projectPath /m:1 /nr:false "/p:Configuration=$configuration" `
-            /p:Platform=x64 /p:PreferredToolArchitecture=x64 /v:minimal /nologo
+            /p:Platform=x64 /p:PreferredToolArchitecture=x64 /v:minimal /nologo `
+            "/flp:logfile=$testLogDirectory\$testProject-$configuration-build.log;verbosity=normal"
         if ($LASTEXITCODE -ne 0) {
             throw "Build failed for $testProject."
         }
@@ -74,7 +77,7 @@ try {
         }
 
         Write-Host "[RunTests] Running $testProject."
-        & $testExe @testArguments
+        & $testExe @testArguments | Tee-Object -FilePath (Join-Path $testLogDirectory "$testProject-$configuration-test.log")
         if ($LASTEXITCODE -ne 0) {
             throw "Tests failed in $testProject."
         }

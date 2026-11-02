@@ -8,8 +8,17 @@
 
 namespace Funke {
 
+	enum class AssetBundleCompression : std::uint32_t {
+		None = 0,
+		LZ4 = 1,
+		Zstd = 2,
+	};
+
 	class FUNKE_API AssetBundle {
 	public:
+		static const char* CompressionName(AssetBundleCompression compression);
+		static bool Write(const std::filesystem::path& root, const std::filesystem::path& destination,
+			const std::vector<std::filesystem::path>& relativeFiles, AssetBundleCompression compression, std::string& error);
 		static bool Write(const std::filesystem::path& root, const std::filesystem::path& destination,
 			const std::vector<std::filesystem::path>& relativeFiles, bool compress, std::string& error);
 		bool Open(const std::filesystem::path& path, std::string& error);

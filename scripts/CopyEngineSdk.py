@@ -72,6 +72,7 @@ LICENSES = (
     ("External/spdlog", "spdlog", "LICENSE"),
     ("External/stb", "stb", "LICENSE"),
     ("vendor/lz4", "LZ4", "LICENSE"),
+    ("vendor/zstd", "Zstandard", "LICENSE"),
     ("External/tracy", "Tracy", "LICENSE"),
     ("External/dawn", "Dawn", "LICENSE"),
     ("External/concurrentqueue", "concurrentqueue", "LICENSE.md"),

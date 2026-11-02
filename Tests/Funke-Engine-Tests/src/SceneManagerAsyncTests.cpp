@@ -447,3 +447,75 @@ TEST_CASE("Async scene loading rejects requests from a worker thread") {
 	CHECK(application.Status == SceneLoadStatus::Success);
 	CHECK(application.ResultCommitted);
 }
+
+namespace {
+	class DeferredStartupApplication final : public Application {
+	public:
+		DeferredStartupApplication(std::string path, bool deferred) : m_Path(std::move(path)), m_Deferred(deferred) { SetEditorHost(true); }
+		ApplicationConfig GetConfiguration() const override {
+			auto config = ApplicationConfig::Headless();
+			config.EnablePhysics2D = false;
+			config.EnableAudio = false;
+			config.EnableScripting = false;
+			config.EnablePackageHost = false;
+			config.JobSystemWorkerCount = 1;
+			return config;
+		}
+		void ConfigureScenes() override {
+			if (m_Deferred) Application::SignalSplashAttached();
+			SceneManager::RegisterScene("Startup file").WithoutDefaultCamera2D()
+				.OnLoadFromFile(m_Path, [this](Scene& scene) {
+					++Fallbacks;
+					scene.SetName("Untitled");
+					scene.CreateEntity("Recovered camera placeholder");
+					return true;
+				}).SetAsStartupScene();
+			SceneManager::RegisterScene("Startup overlay").WithoutDefaultCamera2D()
+				.OnLoad([](Scene& scene) { scene.CreateEntity("Overlay"); }).SetAsStartupScene();
+		}
+		void Start() override {
+			SceneManager::SetAsyncSceneLoadBudget(2.0, 1);
+			InitiallyDeferred = !Application::IsStartupLoadComplete() && SceneManager::GetLoadedSceneCount() == 0;
+			Application::RequestStartupLoad();
+			m_Start = std::chrono::steady_clock::now();
+		}
+		void Update() override {
+			++Frames;
+			if (Application::IsStartupLoadComplete()) {
+				Ready = true;
+				LoadedScenes = SceneManager::GetLoadedSceneCount();
+				if (const auto* scene = SceneManager::GetActiveScene()) { ActiveName = scene->GetName(); ActiveEntities = scene->GetEntityCount(); }
+				Application::SignalSplashDetached();
+				Application::Quit();
+			}
+			else if (std::chrono::steady_clock::now() - m_Start > std::chrono::seconds(5)) Application::Quit();
+		}
+		bool InitiallyDeferred = false, Ready = false;
+		int Frames = 0, Fallbacks = 0;
+		size_t LoadedScenes = 0, ActiveEntities = 0;
+		std::string ActiveName;
+	private:
+		std::string m_Path;
+		bool m_Deferred;
+		std::chrono::steady_clock::time_point m_Start;
+	};
+}
+
+TEST_CASE("Deferred editor startup yields and preserves scene order and failed-file recovery") {
+	bool failed = false, deferred = true;
+	SUBCASE("Valid file uses budgeted activation") {}
+	SUBCASE("Invalid file recovers to an empty authoring scene") { failed = true; }
+	SUBCASE("Synchronous startup retains the same recovery contract") { failed = true; deferred = false; }
+	SceneFileFixture file;
+	if (failed) { std::ofstream stream(file.Path); stream << "invalid scene"; }
+	else REQUIRE(file.Write(SceneSerializationFormat::Json));
+	DeferredStartupApplication app(file.Path.string(), deferred);
+	CHECK(app.Run() == 0);
+	CHECK(app.Ready);
+	CHECK(app.InitiallyDeferred == deferred);
+	CHECK(app.LoadedScenes == 2);
+	CHECK(app.Fallbacks == (failed ? 1 : 0));
+	CHECK(app.ActiveName == (failed ? "Untitled" : k_TargetName));
+	CHECK(app.ActiveEntities == (failed ? 1 : 2));
+	if (deferred) CHECK(app.Frames > 2);
+}

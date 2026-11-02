@@ -18,6 +18,7 @@
 #include <Jolt/Core/JobSystemSingleThreaded.h>
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Core/TempAllocator.h>
+#include <Jolt/Physics/Body/BodyActivationListener.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Collision/CastResult.h>
@@ -39,6 +40,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -382,7 +384,9 @@ namespace Funke {
 		}
 	}
 
-	struct PhysicsWorld3D::Impl final : public JPH::ContactListener {
+	struct PhysicsWorld3D::Impl final : public JPH::ContactListener, public JPH::BodyActivationListener {
+		static constexpr JPH::uint k_MaxBodies = 65536;
+
 		struct BodyRecord {
 			JPH::BodyID Id;
 			JPH::EMotionType Motion = JPH::EMotionType::Static;
@@ -399,11 +403,13 @@ namespace Funke {
 			// The blended matrix Present() wrote; the Transform3D holding it is not a user move.
 			bool Presented = false;
 			glm::mat4 PresentedWorld{ 1.0f };
+			bool WasActive = true;
 
 			void ResetInterpolation(const Vec3& position, const glm::quat& rotation) {
 				PreviousPosition = CurrentPosition = position;
 				PreviousRotation = CurrentRotation = rotation;
 				Presented = false;
+				WasActive = true;
 			}
 		};
 
@@ -439,6 +445,7 @@ namespace Funke {
 		ObjectVsBroadPhaseFilter ObjectVsBroadPhase;
 		ObjectLayerPairs ObjectPairs;
 		JPH::PhysicsSystem System;
+		std::array<std::atomic<bool>, k_MaxBodies> ActivatedSinceWriteBack{};
 
 		Scene* OwningScene = nullptr;
 		std::unordered_map<EntityHandle, BodyRecord> Bodies;
@@ -471,7 +478,6 @@ namespace Funke {
 		std::vector<PendingEvent> PendingEvents;
 
 		Impl() : Runtime(AcquireRuntime()) {
-			constexpr JPH::uint k_MaxBodies = 65536;
 			constexpr JPH::uint k_NumBodyMutexes = 0;
 			constexpr JPH::uint k_MaxBodyPairs = 65536;
 			constexpr JPH::uint k_MaxContactConstraints = 10240;
@@ -479,10 +485,12 @@ namespace Funke {
 				BroadPhaseMap, ObjectVsBroadPhase, ObjectPairs);
 			System.SetGravity(JPH::Vec3(0.0f, -9.81f, 0.0f));
 			System.SetContactListener(this);
+			System.SetBodyActivationListener(this);
 		}
 
 		~Impl() override {
 			System.SetContactListener(nullptr);
+			System.SetBodyActivationListener(nullptr);
 			JPH::BodyInterface& bodies = System.GetBodyInterface();
 			for (auto& [entity, record] : Bodies) {
 				bodies.RemoveBody(record.Id);
@@ -492,7 +500,11 @@ namespace Funke {
 			ReleaseRuntime();
 		}
 
-		// ── ContactListener (job threads) ───────────────────────────
+		void OnBodyActivated(const JPH::BodyID& bodyId, JPH::uint64) override {
+			ActivatedSinceWriteBack[bodyId.GetIndex()].store(true, std::memory_order_release);
+		}
+
+		void OnBodyDeactivated(const JPH::BodyID&, JPH::uint64) override {}
 
 		void OnContactAdded(const JPH::Body& body1, const JPH::Body& body2, const JPH::ContactManifold& manifold, JPH::ContactSettings&) override {
 			RecordContact(body1, body2, manifold);
@@ -1016,7 +1028,7 @@ namespace Funke {
 			if (!hierarchy || !registry.valid(hierarchy->Parent)) {
 				transform.Position = worldPosition;
 				transform.SetLocalRotationQuat(worldRotation);
-				transform.WorldMatrix = transform.GetLocalMatrix();
+				transform.WorldMatrix = transform.GetCachedLocalMatrix();
 				return;
 			}
 			const glm::mat4 parentWorld = Transform3DHierarchySystem::ComputeWorldMatrix(registry, hierarchy->Parent);
@@ -1041,6 +1053,15 @@ namespace Funke {
 			PoseUpdates.push_back({ owner, &record, depth });
 		}
 
+		static bool SettledRootPose(const entt::registry& registry, EntityHandle owner,
+			const Transform3DComponent& transform, const BodyRecord& record) {
+			const auto* hierarchy = registry.try_get<HierarchyComponent>(owner);
+			if (hierarchy && registry.valid(hierarchy->Parent)) return false;
+			return transform.WorldMatrix == record.LastWorld && transform.CachedLocalValid
+				&& transform.Position == transform.CachedPosition && transform.Rotation == transform.CachedRotation
+				&& transform.Scale == transform.CachedScale && transform.CachedLocalMatrix == transform.WorldMatrix;
+		}
+
 		void ApplyPoseUpdates(entt::registry& registry, bool presenting, float alpha = 1.0f) {
 			std::sort(PoseUpdates.begin(), PoseUpdates.end(), [](const BodyPoseUpdate& a, const BodyPoseUpdate& b) {
 				return a.HierarchyDepth < b.HierarchyDepth;
@@ -1052,6 +1073,7 @@ namespace Funke {
 				const Vec3 position = interpolate ? glm::mix(record.PreviousPosition, record.CurrentPosition, alpha) : record.CurrentPosition;
 				const glm::quat rotation = interpolate ? glm::slerp(record.PreviousRotation, record.CurrentRotation, alpha) : record.CurrentRotation;
 				ApplyWorldPose(registry, update.Owner, transform, position, rotation);
+				++SyncStats.PoseWrites;
 				if (presenting) {
 					record.PresentedWorld = transform.WorldMatrix;
 					record.Presented = true;
@@ -1071,17 +1093,31 @@ namespace Funke {
 				if (record.Motion != JPH::EMotionType::Dynamic || !registry.valid(owner)) continue;
 				auto* transform = registry.try_get<Transform3DComponent>(owner);
 				if (!transform) continue;
-				JPH::RVec3 position;
-				JPH::Quat rotation;
-				bodies.GetPositionAndRotation(record.Id, position, rotation);
+				const bool active = bodies.IsActive(record.Id);
+				// A body can wake, move and sleep again between two writebacks.
+				auto& activation = ActivatedSinceWriteBack[record.Id.GetIndex()];
+				const bool activated = activation.load(std::memory_order_acquire)
+					&& activation.exchange(false, std::memory_order_acq_rel);
+				const bool unchangedSleeping = !active && !record.WasActive && !activated;
 				record.PreviousPosition = record.CurrentPosition;
 				record.PreviousRotation = record.CurrentRotation;
-				record.CurrentPosition = FromJolt(JPH::Vec3(position));
-				record.CurrentRotation = glm::normalize(FromJolt(rotation));
-				if (!bodies.IsActive(record.Id)) {
+				if (!unchangedSleeping) {
+					JPH::RVec3 position;
+					JPH::Quat rotation;
+					bodies.GetPositionAndRotation(record.Id, position, rotation);
+					record.CurrentPosition = FromJolt(JPH::Vec3(position));
+					record.CurrentRotation = glm::normalize(FromJolt(rotation));
+				}
+				else ++SyncStats.SleepingPoseReadsSkipped;
+				record.WasActive = active;
+				if (!active) {
 					// Asleep: settle the interpolation onto the final resting pose.
 					record.PreviousPosition = record.CurrentPosition;
 					record.PreviousRotation = record.CurrentRotation;
+				}
+				if (unchangedSleeping && SettledRootPose(registry, owner, *transform, record)) {
+					record.Presented = false;
+					continue;
 				}
 				QueuePoseUpdate(registry, owner, record);
 			}
@@ -1098,6 +1134,7 @@ namespace Funke {
 				if (!transform) continue;
 				// A script moved it since the last step: show that, don't blend over it.
 				if (!Near(record.LastWorld, transform->WorldMatrix) && !(record.Presented && Near(record.PresentedWorld, transform->WorldMatrix))) continue;
+				if (!record.WasActive && SettledRootPose(registry, owner, *transform, record)) continue;
 				// Non-interpolating children must keep their physics pose while an ancestor interpolates.
 				QueuePoseUpdate(registry, owner, record);
 			}

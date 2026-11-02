@@ -122,18 +122,14 @@ public sealed class Material : IEquatable<Material>
     }
 
     /// <summary>The value the shader sees (its default while the material has none); 0 for unknown names.</summary>
-    public float GetFloat(string name) => GetValue(name)[0];
+    public float GetFloat(string name) => GetValue(name).X;
 
-    public Vector4 GetVector(string name)
-    {
-        float[] v = GetValue(name);
-        return new Vector4(v[0], v[1], v[2], v[3]);
-    }
+    public Vector4 GetVector(string name) => GetValue(name);
 
     public Color GetColor(string name)
     {
-        float[] v = GetValue(name);
-        return new Color(v[0], v[1], v[2], v[3]);
+        Vector4 v = GetValue(name);
+        return new Color(v.X, v.Y, v.Z, v.W);
     }
 
     public Texture? GetTexture(string name)
@@ -149,11 +145,13 @@ public sealed class Material : IEquatable<Material>
             Log.Warn($"Material {UUID}: '{name}' has another type in its shader");
     }
 
-    private float[] GetValue(string name)
+    private Vector4 GetValue(string name)
     {
-        var values = new float[4];
+        Span<float> values = stackalloc float[4];
+        // Keep unknown properties and partially written vectors zero-filled as with the old array.
+        values.Clear();
         InternalCalls.Material_GetProperty(UUID, name, values, out _);
-        return values;
+        return new Vector4(values[0], values[1], values[2], values[3]);
     }
 
     private float[] Read()

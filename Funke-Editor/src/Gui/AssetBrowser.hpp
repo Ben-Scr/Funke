@@ -157,6 +157,7 @@ namespace Funke {
 			const SpriteSlice& slice, int sliceIndex, int tileIndex);
 
 		void RebuildSliceCache();
+		void PumpSliceCache();
 
 		void CreateAssetWithCollisionCheck(
 			std::filesystem::path preferredPath,
@@ -226,6 +227,11 @@ namespace Funke {
 		std::string m_CurrentDirectory;
 		std::vector<DirectoryEntry> m_Entries;
 		std::vector<std::string> m_VisibleEntryPaths;
+		struct GridTile { int EntryIndex = -1; int SliceIndex = -1; };
+		std::vector<GridTile> m_GridTiles;
+		std::unordered_map<std::string, int> m_GridPathToTile;
+		const std::vector<DirectoryEntry>* m_GridSource = nullptr;
+		bool m_GridDirty = true;
 		std::string m_SelectedPath;
 		std::vector<std::string> m_SelectedPaths;
 		int m_LastSelectionIndex = -1;
@@ -305,6 +311,7 @@ namespace Funke {
 		PrefabThumbnailCache m_PrefabThumbnails;
 
 		std::unordered_map<std::string, std::vector<SpriteSlice>> m_SliceCache;
+		size_t m_NextSliceEntry = 0;
 		std::unordered_set<std::string> m_ExpandedTextures;
 
 		struct PendingCreationPrompt {

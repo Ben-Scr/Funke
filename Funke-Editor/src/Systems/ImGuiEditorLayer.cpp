@@ -1131,6 +1131,7 @@ namespace Funke {
 	// ──────────────────────────────────────────────
 
 	void ImGuiEditorLayer::OnAttach(Application& app) {
+		m_SceneOpenLifetime = std::make_shared<int>(0);
 		// Start the splash first: SignalSplashAttached (inside Begin) must run
 		// before Application's deferred-scene check so the project scene load is
 		// held behind the splash.
@@ -1222,6 +1223,10 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::OnDetach(Application& app) {
+		m_SceneOpenLifetime.reset();
+		if (m_SceneOpenOperation != 0) SceneManager::CancelSceneLoad(m_SceneOpenOperation);
+		m_SceneOpenOperation = 0;
+		m_SceneOpenFallbackPath.clear();
 		AsyncTexturePreviews::Get().Shutdown();
 		PropertyDrawer::ClearTransientState();
 		(void)app;
@@ -1316,6 +1321,7 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::OnUpdate(Application& app, float dt) {
+		if (m_SceneOpenOperation != 0 || !m_SceneOpenFallbackPath.empty()) { DrainPendingLogEntries(); return; }
 		// As in Unity, the game owns the mouse (lock/hide, custom cursor) only while it plays in a focused Game View.
 		// Escape or switching apps hands the plain OS cursor back to the editor without touching what the game asked
 		// for; focusing or clicking into the Game View applies the game's settings again.
@@ -1396,10 +1402,12 @@ namespace Funke {
 							return;
 						}
 						std::unordered_map<std::string, bool> textures;
+						bool registryChanged = false;
 						for (const std::string& changed : changedPaths) {
 							auto path = Path::FromUtf8(changed);
 							const bool metadata = ToLowerCopy(Path::ToUtf8(path.extension())) == ".meta";
 							if (metadata) path.replace_extension();
+							registryChanged |= AssetRegistry::RefreshAssetPathIncremental(Path::ToUtf8(path), metadata);
 							if (ThumbnailCache::GetAssetType(Path::ToUtf8(path.extension())) != AssetType::Image) continue;
 							textures[Path::ToUtf8(path)] |= !metadata;
 						}
@@ -1421,10 +1429,8 @@ namespace Funke {
 							SkyAmbient::ClearCache();
 							NotifySpriteSliceEpochBumped();
 						}
-						AssetRegistry::MarkDirty();
-						// Loads that failed on a half-written file get another try, and templates baked from them are dropped.
-						TextureManager::ResolveMissingSceneTextures();
-						PrefabTemplateCache::Get().InvalidateAll();
+						const size_t recovered = TextureManager::ResolveMissingSceneTextures();
+						if (registryChanged || recovered != 0) PrefabTemplateCache::Get().InvalidateAll();
 						m_AssetBrowser.RequestRefresh();
 						// Prefab previews can embed changed textures; their dependency list is not tracked yet.
 						m_AssetBrowser.InvalidatePrefabThumbnails();
@@ -2368,6 +2374,7 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::BeginPlayModeRequest(Scene& scene) {
+		if (m_SceneOpenOperation != 0 || !m_SceneOpenFallbackPath.empty()) return;
 		if (!PreparePlayModeSnapshot(scene)) {
 			m_PlayModeRecompileScene.reset();
 			m_PlayModeScenes.clear();

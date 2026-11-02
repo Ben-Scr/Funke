@@ -60,10 +60,7 @@ goto :error
 :python_ok
 
 REM --- Resolve pinned revision ------------------------------------------------
-REM DAWN_REVISION (env) wins; otherwise read scripts\dawn\dawn-revision.txt if
-REM present; otherwise stay empty and clone tip-of-main (the original behaviour
-REM for local devs who want the latest). CI relies on the revision file so the
-REM build is reproducible and the Dawn cache key stays stable.
+REM DAWN_REVISION overrides the versioned commit pin.
 if not defined DAWN_REVISION (
     if exist "scripts\dawn\dawn-revision.txt" (
         for /f "usebackq tokens=1 delims= " %%R in ("scripts\dawn\dawn-revision.txt") do (
@@ -72,80 +69,22 @@ if not defined DAWN_REVISION (
     )
 )
 
-REM --- Clone ------------------------------------------------------------------
-if exist "%DAWN_DIR%\CMakeLists.txt" goto :clone_done
-if defined DAWN_REVISION (
-    echo [1/5] Fetching Dawn at pinned revision !DAWN_REVISION! ^(this may take a few minutes^)...
-    git init "%DAWN_DIR%"
-    if errorlevel 1 (
-        echo [ERROR] git init failed.
-        goto :error
-    )
-    REM remote add fails harmlessly if origin already exists from a prior run.
-    git -C "%DAWN_DIR%" remote add origin https://dawn.googlesource.com/dawn 2>nul
-    git -C "%DAWN_DIR%" fetch --depth=1 origin !DAWN_REVISION!
-    if errorlevel 1 (
-        echo [ERROR] git fetch of pinned revision !DAWN_REVISION! failed.
-        echo         Check the SHA in scripts\dawn\dawn-revision.txt is reachable on dawn.googlesource.com.
-        goto :error
-    )
-    git -C "%DAWN_DIR%" checkout --detach FETCH_HEAD
-    if errorlevel 1 (
-        echo [ERROR] git checkout of pinned revision failed.
-        goto :error
-    )
-) else (
-    echo [1/5] Cloning Dawn ^(tip of main; this may take a few minutes^)...
-    git clone --depth=1 https://dawn.googlesource.com/dawn "%DAWN_DIR%"
-    if errorlevel 1 (
-        echo [ERROR] git clone failed.
-        goto :error
-    )
-)
-goto :fetch_deps
-:clone_done
-echo [1/5] Dawn already present at %DAWN_DIR% ^(skipping clone^).
-
-REM --- Fetch trimmed deps -----------------------------------------------------
-REM Dawn's stock fetcher (invoked by -DDAWN_FETCH_DEPENDENCIES=ON) pulls 18
-REM submodules with a hardcoded list. We pre-fetch only the 16 we need via
-REM our wrapper, then leave DAWN_FETCH_DEPENDENCIES off so CMake doesn't
-REM re-pull glfw3 / googletest / google_benchmark.
-:fetch_deps
-echo [2/5] Fetching Dawn third-party deps ^(trimmed list^)...
+REM --- Sources ----------------------------------------------------------------
+echo [1/5] Verifying pinned Dawn sources and dependencies...
 where python >nul 2>nul
 if not errorlevel 1 (
-    python "scripts\dawn\FetchDawnDepsMinimal.py"
+    python "scripts\dawn\BootstrapDawn.py" --minimal --revision "!DAWN_REVISION!"
 ) else (
-    py "scripts\dawn\FetchDawnDepsMinimal.py"
+    py "scripts\dawn\BootstrapDawn.py" --minimal --revision "!DAWN_REVISION!"
 )
-if errorlevel 1 (
-    echo [ERROR] Dep fetch failed.
-    goto :error
-)
-
-REM --- Local patches ----------------------------------------------------------
-REM Backports from upstream Dawn main; skipped when already applied.
-for %%P in ("scripts\dawn\patches\*.patch") do (
-    git -C "%DAWN_DIR%" apply --reverse --check "%CD%\%%~P" >nul 2>nul
-    if errorlevel 1 (
-        echo [info] Applying Dawn patch: %%~nxP
-        git -C "%DAWN_DIR%" apply "%CD%\%%~P"
-        if errorlevel 1 (
-            echo [ERROR] Dawn patch %%~nxP did not apply.
-            goto :error
-        )
-    ) else (
-        echo [info] Dawn patch already applied: %%~nxP
-    )
-)
+if errorlevel 1 goto :error
 
 REM --- Configure --------------------------------------------------------------
 :configure
 echo [3/5] Configuring Dawn via CMake...
 REM Funke only feeds WGSL to Dawn, so the SPIR-V input reader and SPIRV-Tools
 REM validation are dead weight (~1.6 MB of SPIRV-Tools in Funke-Engine.dll).
-"!CMAKE_EXE!" -S "%DAWN_DIR%" -B "%DAWN_BUILD_DIR%" -A x64 -T v143 -DDAWN_BUILD_MONOLITHIC_LIBRARY=STATIC -DDAWN_ENABLE_INSTALL=OFF -DDAWN_BUILD_SAMPLES=OFF -DDAWN_BUILD_TESTS=OFF -DDAWN_USE_GLFW=OFF -DTINT_BUILD_TESTS=OFF -DTINT_BUILD_CMD_TOOLS=OFF -DTINT_BUILD_SPV_READER=OFF -DDAWN_ENABLE_SPIRV_VALIDATION=OFF
+"!CMAKE_EXE!" -S "%DAWN_DIR%" -B "%DAWN_BUILD_DIR%" -A x64 -T v143 -DDAWN_FETCH_DEPENDENCIES=OFF -DDAWN_BUILD_MONOLITHIC_LIBRARY=STATIC -DDAWN_ENABLE_INSTALL=OFF -DDAWN_BUILD_SAMPLES=OFF -DDAWN_BUILD_TESTS=OFF -DDAWN_USE_GLFW=OFF -DTINT_BUILD_TESTS=OFF -DTINT_BUILD_CMD_TOOLS=OFF -DTINT_BUILD_SPV_READER=OFF -DDAWN_ENABLE_SPIRV_VALIDATION=OFF
 if errorlevel 1 (
     echo [ERROR] CMake configure failed.
     goto :error
@@ -166,6 +105,14 @@ for %%C in (!DAWN_BUILD_CONFIGS!) do (
 )
 
 REM --- Regenerate Funke.sln ---------------------------------------------------
+where python >nul 2>nul
+if not errorlevel 1 (
+    python "scripts\dawn\ValidateDawnCache.py" --write
+) else (
+    py "scripts\dawn\ValidateDawnCache.py" --write
+)
+if errorlevel 1 goto :error
+
 REM CI sets DAWN_SKIP_PREMAKE=1: the workflow regenerates project files itself
 REM (scripts/Setup.py) with the correct module-profile / options right after
 REM this, so a redundant default-option premake run here is skipped.

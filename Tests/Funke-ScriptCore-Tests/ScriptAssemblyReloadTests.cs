@@ -118,6 +118,12 @@ public unsafe sealed class ScriptAssemblyReloadTests : IDisposable
         WriteAssembly(path, 1);
         Assert.Equal(1, ScriptInstanceManager.LoadUserAssemblyPath(path));
         var previous = new WeakReference(AssemblyLoadContext.GetLoadContext(ScriptInstanceManager.UserAssembly!));
+        byte[] name = System.Text.Encoding.UTF8.GetBytes("ReloadScript\0");
+        fixed (byte* pointer = name)
+        {
+            delegate* unmanaged<byte*, byte*> fields = &ScriptInstanceManager.GetClassFieldDefs;
+            Assert.Contains("VisibleValue", Marshal.PtrToStringUTF8((nint)fields(pointer)));
+        }
         WriteAssembly(path, 2);
         Assert.Equal(1, ScriptInstanceManager.LoadUserAssemblyPath(path));
         return previous;

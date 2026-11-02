@@ -133,6 +133,7 @@ namespace Funke {
 
 	void TextureManager::Initialize() {
 		if (s_IsInitialized) return;
+		TextureUploadBatch uploadBatch;
 		s_Textures.clear();
 		while (!s_FreeIndices.empty()) s_FreeIndices.pop();
 		s_Textures.reserve(64);

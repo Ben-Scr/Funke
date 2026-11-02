@@ -29,6 +29,7 @@
 #include <iomanip>
 #include <random>
 #include <stdexcept>
+#include <thread>
 #include <unordered_map>
 
 namespace Funke {
@@ -707,8 +708,23 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 endif()
 target_link_directories(${PROJECT_NAME} PRIVATE
 )");
-			replace("    target_compile_options(${PROJECT_NAME} PRIVATE /utf-8)", R"(    target_compile_options(${PROJECT_NAME} PRIVATE /utf-8)
+			replace("    target_compile_options(${PROJECT_NAME} PRIVATE /utf-8)", R"(    include(ProcessorCount)
+    ProcessorCount(FUNKE_NATIVE_PROCESSORS)
+    if(FUNKE_NATIVE_PROCESSORS LESS 1)
+        set(FUNKE_NATIVE_PROCESSORS 1)
+    elseif(FUNKE_NATIVE_PROCESSORS GREATER 12)
+        set(FUNKE_NATIVE_PROCESSORS 12)
+    endif()
+    set(FUNKE_NATIVE_COMPILE_JOBS "${FUNKE_NATIVE_PROCESSORS}" CACHE STRING "Maximum concurrent native script compiler processes")
+    target_compile_options(${PROJECT_NAME} PRIVATE /utf-8 /MP${FUNKE_NATIVE_COMPILE_JOBS})
     set_property(TARGET ${PROJECT_NAME} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"))");
+			output += R"(
+# Opt in only when scripts do not configure SDK headers with per-source macros.
+option(FUNKE_NATIVE_USE_PCH "Precompile the common native script SDK header" OFF)
+if(FUNKE_NATIVE_USE_PCH)
+    target_precompile_headers(${PROJECT_NAME} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${FUNKE_DIR}/Funke-Engine/src/Scripting/NativeScript.hpp>")
+endif()
+)";
 			replace("set(NATIVE_OUTPUT_ROOT \"${CMAKE_CURRENT_SOURCE_DIR}/../bin\")", R"(if(FUNKE_NATIVE_OUTPUT_ROOT)
     set(NATIVE_OUTPUT_ROOT "${FUNKE_NATIVE_OUTPUT_ROOT}")
 else()
@@ -3635,8 +3651,10 @@ public class GameScript : EntityScript
 			targetsArg,
 			"-m:1",
 			"-nr:false",
-			"-p:CL_MPCount=1",
-			"-p:UseMultiToolTask=false",
+			"-p:CL_MPCount=" + std::to_string(std::clamp(std::thread::hardware_concurrency(), 1u, 12u)),
+			"-p:UseMultiToolTask=true",
+			"-p:EnforceProcessCountAcrossBuilds=true",
+			"-p:MultiProcMaxCount=" + std::to_string(std::clamp(std::thread::hardware_concurrency(), 1u, 12u)),
 			"-verbosity:minimal",
 			"-nologo"
 		}, Path::FromUtf8(engineRoot), std::chrono::minutes(30));
@@ -3805,22 +3823,14 @@ public class GameScript : EntityScript
 		std::sort(nativeProjects.begin(), nativeProjects.end());
 		std::sort(managedProjects.begin(), managedProjects.end());
 
-		const auto appendOutput = [&](const std::filesystem::path& projectPath,
-			const Process::Result& processResult) {
+		const std::string compilerJobs = std::to_string(std::clamp(std::thread::hardware_concurrency(), 1u, 12u));
+		const auto runBuild = [&](const std::vector<std::string>& command) {
+			const Process::Result built = Process::Run(command, workspaceRoot, std::chrono::minutes(20));
 			if (!result.Output.empty()) result.Output += "\n";
-			result.Output += "[" + Path::ToUtf8(projectPath.filename()) + "]\n" + processResult.Output;
+			result.Output += built.Output;
+			result.ExitCode = built.ExitCode;
+			return built.Succeeded();
 		};
-		// Generated projects are named Pkg.<Package>.Native / Pkg.<Package>.
-		const size_t totalSteps = std::max<size_t>(1, nativeProjects.size() + managedProjects.size());
-		size_t stepsDone = 0;
-		const auto reportStep = [&](const std::filesystem::path& projectPath, std::string_view layer) {
-			std::string name = Path::ToUtf8(projectPath.stem());
-			if (name.rfind("Pkg.", 0) == 0) name.erase(0, 4);
-			if (const size_t native = name.rfind(".Native"); native != std::string::npos && native + 7 == name.size()) name.erase(native);
-			ReportCreateProgress(progressCallback, static_cast<float>(stepsDone) / static_cast<float>(totalSteps),
-				"Building " + name + " (" + std::string(layer) + ")...");
-		};
-
 		if (!nativeProjects.empty()) {
 			const auto installation = GetEngineInstallation();
 			if (!installation.IsValid() || !installation.NativeDevelopment) {
@@ -3835,56 +3845,54 @@ public class GameScript : EntityScript
 				result.Output = "MSBuild was not found.";
 				return result;
 			}
-			for (const auto& projectPath : nativeProjects) {
-				reportStep(projectPath, "C++");
-				const Process::Result processResult = Process::Run({
-					msbuild, Path::ToGenericUtf8(projectPath),
-					"-p:Configuration=" + configuration,
-					"-p:Platform=" + platform,
-					"-p:PreferredToolArchitecture=x64",
-					"-m:1", "-nr:false",
-					"-p:CL_MPCount=1", "-p:UseMultiToolTask=false",
-					"-verbosity:minimal", "-nologo"
-				}, workspaceRoot, std::chrono::minutes(10));
-				appendOutput(projectPath, processResult);
-				if (!processResult.Succeeded()) {
-					result.ExitCode = processResult.ExitCode;
-					FNK_ERROR_TAG("FunkeProject", "Native project package build failed: {}", result.Output);
-					return result;
-				}
-				++stepsDone;
-			}
+			ReportCreateProgress(progressCallback, 0.1f, "Building package workspace...");
+			if (!runBuild({ msbuild, Path::ToUtf8(workspaceRoot / "FunkeProjectPackages.sln"), "-restore",
+				"-p:Configuration=" + configuration, "-p:Platform=" + platform,
+				"-p:PreferredToolArchitecture=x64", "-m:1", "-nr:false",
+				"-p:CL_MPCount=" + compilerJobs, "-p:UseMultiToolTask=true",
+				"-p:EnforceProcessCountAcrossBuilds=true", "-p:MultiProcMaxCount=" + compilerJobs,
+				"-verbosity:minimal", "-nologo" })) return result;
+			managedProjects.clear();
 #else
-			// The gmake workspace from RegeneratePackageWorkspaceForProject; targets share the .vcxproj names.
 			std::vector<std::string> command{ GetMakeProgram(), "-C", Path::ToUtf8(workspaceRoot),
-				"config=" + ToLowerAscii(configuration),
-				"-j" + std::to_string(std::max(1u, std::thread::hardware_concurrency())) };
+				"config=" + ToLowerAscii(configuration), "-j" + compilerJobs };
 			for (const auto& projectPath : nativeProjects) command.push_back(Path::ToUtf8(projectPath.stem()));
-			ReportCreateProgress(progressCallback, 0.0f, "Building native package layers...");
-			const Process::Result processResult = Process::Run(command, workspaceRoot, std::chrono::minutes(20));
-			appendOutput(workspaceRoot / "Makefile", processResult);
-			if (!processResult.Succeeded()) {
-				result.ExitCode = processResult.ExitCode;
-				FNK_ERROR_TAG("FunkeProject", "Native project package build failed: {}", result.Output);
-				return result;
-			}
-			stepsDone += nativeProjects.size();
+			ReportCreateProgress(progressCallback, 0.1f, "Building native package layers...");
+			if (!runBuild(command)) return result;
 #endif
 		}
 
-		for (const auto& projectPath : managedProjects) {
-			reportStep(projectPath, "C#");
-			std::vector<std::string> command{ "dotnet", "build", Path::ToGenericUtf8(projectPath), "-c", configuration };
-			for (std::string& argument : ManagedPlatformArguments(platform)) command.push_back(std::move(argument));
-			command.insert(command.end(), { "--nologo", "-v", "minimal", "-nodeReuse:false", "-p:UseSharedCompilation=false" });
-			const Process::Result processResult = Process::Run(command, workspaceRoot, std::chrono::minutes(10));
-			appendOutput(projectPath, processResult);
-			if (!processResult.Succeeded()) {
-				result.ExitCode = processResult.ExitCode;
-				FNK_ERROR_TAG("FunkeProject", "Managed project package build failed: {}", result.Output);
+		if (!managedProjects.empty()) {
+			// Build only managed projects: solution filters also include their native build dependencies.
+			const auto escapeXml = [](std::string_view text) {
+				std::string escaped;
+				for (char character : text) {
+					switch (character) {
+						case '&': escaped += "&amp;"; break;
+						case '<': escaped += "&lt;"; break;
+						case '>': escaped += "&gt;"; break;
+						case '"': escaped += "&quot;"; break;
+						default: escaped += character; break;
+					}
+				}
+				return escaped;
+			};
+			std::string buildText = "<Project DefaultTargets=\"Build\"><ItemGroup>";
+			for (const auto& projectPath : managedProjects)
+				buildText += "<PackageProject Include=\"" + escapeXml(Path::ToGenericUtf8(projectPath.lexically_relative(workspaceRoot))) + "\" />";
+			buildText += "</ItemGroup><Target Name=\"Restore\"><MSBuild Projects=\"@(PackageProject)\" Targets=\"Restore\" /></Target>"
+				"<Target Name=\"Build\"><MSBuild Projects=\"@(PackageProject)\" Targets=\"Build\" BuildInParallel=\"false\" /></Target></Project>";
+			const std::filesystem::path buildPath = workspaceRoot / "FunkeManagedPackages.proj";
+			if ((!std::filesystem::exists(buildPath) || File::ReadAllText(Path::ToUtf8(buildPath)) != buildText)
+				&& !File::WriteAllText(Path::ToUtf8(buildPath), buildText)) {
+				result.Output = "Could not write the managed package build workspace.";
 				return result;
 			}
-			++stepsDone;
+			ReportCreateProgress(progressCallback, nativeProjects.empty() ? 0.1f : 0.6f, "Building managed package layers...");
+			std::vector<std::string> command{ "dotnet", "build", Path::ToUtf8(buildPath), "-c", configuration };
+			for (std::string& argument : ManagedPlatformArguments(platform)) command.push_back(std::move(argument));
+			command.insert(command.end(), { "--nologo", "-v", "minimal", "-m:1", "-nodeReuse:false" });
+			if (!runBuild(command)) return result;
 		}
 
 		ReportCreateProgress(progressCallback, 1.0f, "Package build complete");

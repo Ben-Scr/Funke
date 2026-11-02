@@ -158,11 +158,10 @@ namespace Funke::ReferencePicker {
 			return "None (" + std::string(GetAssetKindDisplayName(kind)) + ")";
 		}
 
-		// AssetRegistry is header-only with inline statics, so the editor EXE has its own copy that the engine DLL never populates; this re-registers built-ins into the EXE's copy.
-		// TODO: export AssetRegistry properly (FUNKE_API) to remove this duplication.
 		void EnsureBuiltInsRegisteredInEditor() {
 			if (s_BuiltInsDone) return;
 			s_BuiltInsDone = true;
+			if (AssetRegistry::GetBuiltInCount() != 0) return;
 
 			// Default font with hand-picked GUID (matches FontManager's own
 			// registration so scenes referencing k_DefaultFontAssetId resolve).

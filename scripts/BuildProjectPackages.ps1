@@ -68,44 +68,25 @@ if (-not (Test-Path -LiteralPath $generatedRoot -PathType Container)) {
     throw "Generated project package directory was not found at '$generatedRoot'."
 }
 
-$nativeProjects = @(
-    Get-ChildItem -LiteralPath $generatedRoot -Recurse -File -Filter "*.vcxproj" |
-        Sort-Object -Property FullName
-)
-$managedProjects = @(
-    Get-ChildItem -LiteralPath $generatedRoot -Recurse -File -Filter "*.csproj" |
-        Sort-Object -Property FullName
-)
-
-foreach ($nativeProject in $nativeProjects) {
-    Write-Host "Building $($nativeProject.Name) ($Configuration|$Platform)..."
-    & $MSBuildPath $nativeProject.FullName `
-        "-p:Configuration=$Configuration" `
-        "-p:Platform=$Platform" `
-        "-p:PreferredToolArchitecture=x64" `
-        "-m:1" `
-        "-nr:false" `
-        "-p:CL_MPCount=1" `
-        "-p:UseMultiToolTask=false" `
-        "-verbosity:minimal" `
-        "-nologo"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Native project package build failed for '$($nativeProject.Name)' with exit code $LASTEXITCODE."
-    }
-}
-
-foreach ($managedProject in $managedProjects) {
-    Write-Host "Building $($managedProject.Name) ($Configuration|$Platform)..."
-    & dotnet build $managedProject.FullName `
-        "-c" $Configuration `
-        "-p:Platform=$Platform" `
-        "--nologo" `
-        "-v" "minimal" `
-        "-nodeReuse:false" `
-        "-p:UseSharedCompilation=false"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Managed project package build failed for '$($managedProject.Name)' with exit code $LASTEXITCODE."
-    }
+$solution = Join-Path $workspaceRoot "FunkeProjectPackages.sln"
+Require-File -Path $solution -Description "Project package solution"
+$compilerJobs = [Math]::Min(12, [Math]::Max(1, [Environment]::ProcessorCount))
+Write-Host "Building package workspace ($Configuration|$Platform)..."
+& $MSBuildPath $solution `
+    "-restore" `
+    "-p:Configuration=$Configuration" `
+    "-p:Platform=$Platform" `
+    "-p:PreferredToolArchitecture=x64" `
+    "-m:1" `
+    "-nr:false" `
+    "-p:CL_MPCount=$compilerJobs" `
+    "-p:UseMultiToolTask=true" `
+    "-p:EnforceProcessCountAcrossBuilds=true" `
+    "-p:MultiProcMaxCount=$compilerJobs" `
+    "-verbosity:minimal" `
+    "-nologo"
+if ($LASTEXITCODE -ne 0) {
+    throw "Project package build failed with exit code $LASTEXITCODE."
 }
 
 Write-Host "Enabled project packages are up to date."

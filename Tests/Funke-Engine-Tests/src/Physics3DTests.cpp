@@ -53,6 +53,67 @@ namespace {
 	}
 }
 
+TEST_CASE("Physics3D: settled sleeping roots skip pose work and still observe teleports") {
+	auto scene = Scene::CreateDetachedScene("Sleeping Pose Cache");
+	Entity box = CreateBox(*scene, { 2.0f, 3.0f, 0.0f });
+	box.AddComponent<Rigidbody3DComponent>();
+	PhysicsWorld3D world;
+	world.SetGravity(Vec3(0.0f));
+	Run(*scene, world, 1);
+	world.Sleep(box.GetHandle());
+	Run(*scene, world, 1);
+	Run(*scene, world, 1);
+	CHECK(world.IsSleeping(box.GetHandle()));
+	CHECK(world.GetLastSyncStats().SleepingPoseReadsSkipped == 1);
+	CHECK(world.GetLastSyncStats().PoseWrites == 0);
+	world.Present(*scene, 0.5f);
+	CHECK(world.GetLastSyncStats().PoseWrites == 0);
+	CHECK(box.GetComponent<Transform3DComponent>().Position.x == doctest::Approx(2.0f));
+
+	box.GetComponent<Transform3DComponent>().Position.x = 12.0f;
+	Run(*scene, world, 1);
+	CHECK(box.GetComponent<Transform3DComponent>().GetWorldPosition().x == doctest::Approx(12.0f));
+	CHECK(world.GetLastSyncStats().PoseWrites == 1);
+}
+
+TEST_CASE("Physics3D: wake and sleep between writebacks preserves the final pose") {
+	auto scene = Scene::CreateDetachedScene("Transient Body Activation");
+	Entity box = CreateBox(*scene, { 2.0f, 3.0f, 0.0f });
+	auto& rigidbody = box.AddComponent<Rigidbody3DComponent>();
+	rigidbody.LinearDrag = 0.0f;
+	PhysicsWorld3D world;
+	world.SetGravity(Vec3(0.0f));
+	Run(*scene, world, 1);
+	world.Sleep(box.GetHandle());
+	Run(*scene, world, 2);
+	REQUIRE(world.IsSleeping(box.GetHandle()));
+	REQUIRE(world.GetLastSyncStats().SleepingPoseReadsSkipped == 1);
+
+	world.SyncFromScene(*scene, k_Dt);
+	world.WakeUp(box.GetHandle());
+	world.SetLinearVelocity(box.GetHandle(), { 6.0f, 0.0f, 0.0f });
+	world.Step(k_Dt);
+	SUBCASE("Explicit sleep before writeback") {
+		world.Sleep(box.GetHandle());
+	}
+	SUBCASE("Jolt sleeps the body before writeback") {
+		world.SetLinearVelocity(box.GetHandle(), Vec3(0.0f));
+		for (int i = 0; i < 120 && !world.IsSleeping(box.GetHandle()); ++i) world.Step(k_Dt);
+	}
+	REQUIRE(world.IsSleeping(box.GetHandle()));
+	world.WriteBackToScene(*scene);
+	const float expectedX = 2.0f + 6.0f * k_Dt;
+	CHECK(box.GetComponent<Transform3DComponent>().Position.x == doctest::Approx(expectedX));
+	CHECK(world.GetLastSyncStats().SleepingPoseReadsSkipped == 0);
+	CHECK(world.GetLastSyncStats().PoseWrites == 1);
+	world.Present(*scene, 0.5f);
+	CHECK(box.GetComponent<Transform3DComponent>().Position.x == doctest::Approx(expectedX));
+
+	Run(*scene, world, 1);
+	CHECK(world.GetLastSyncStats().SleepingPoseReadsSkipped == 1);
+	CHECK(world.GetLastSyncStats().PoseWrites == 0);
+}
+
 TEST_CASE("Physics3D: a dynamic box falls and rests on a static ground box") {
 	auto scene = Scene::CreateDetachedScene("Physics3DFall");
 	Entity ground = CreateBox(*scene, { 0.0f, 0.0f, 0.0f }, { 10.0f, 1.0f, 10.0f });

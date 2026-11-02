@@ -38,6 +38,18 @@ namespace Funke {
 		return true;
 	}
 
+	struct MeshVisibility {
+		bool Visible = false;
+		bool CastsShadow = false;
+		bool IsNeeded() const { return Visible || CastsShadow; }
+	};
+
+	inline MeshVisibility ClassifyMeshVisibility(const FrustumPlanes& camera, const FrustumPlanes* shadow,
+		const glm::vec3& center, const glm::vec3& extent, bool cullable, bool castsShadow) {
+		return { !cullable || IntersectsFrustum(camera, center, extent),
+			shadow && castsShadow && (!cullable || IntersectsFrustum(*shadow, center, extent)) };
+	}
+
 	inline glm::vec3 BillboardBoundsExtent(const glm::vec3& cameraRight, const glm::vec3& cameraUp) {
 		// Covers every rotation of a unit square, including non-orthogonal camera axes.
 		return glm::sqrt((cameraRight * cameraRight + cameraUp * cameraUp) * 0.5f);

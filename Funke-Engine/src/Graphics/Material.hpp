@@ -87,6 +87,9 @@ namespace Funke {
 		static bool Save(uint64_t guid, const Material& material);
 		// Changes the live instance only (runtime scripting); the file is untouched.
 		static void Set(uint64_t guid, const Material& material);
+		// Updates one stored shader property on a readable live material (main thread).
+		// The caller supplies the already validated/clamped value; absent overrides are always stored.
+		static bool SetProperty(uint64_t guid, const std::string& name, const MaterialPropertyValue& value);
 
 		static void Invalidate(uint64_t guid);
 		// Re-reads cached materials whose file changed outside the engine; returns how many were reloaded.

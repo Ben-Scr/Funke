@@ -4,6 +4,7 @@
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/RectTransform2DComponent.hpp"
 #if FUNKE_WITH_2D
+#include "Components/General/Transform2DComponent.hpp"
 #include "Components/Graphics/Camera2DComponent.hpp"
 #endif
 #include "Components/Graphics/ImageComponent.hpp"
@@ -38,6 +39,7 @@
 #include "Scene/SceneManager.hpp"
 #include "Systems/UILayoutSystem.hpp"
 #if FUNKE_WITH_3D
+#include "Components/General/Transform3DComponent.hpp"
 #include "Graphics/Renderer3D.hpp"
 #endif
 
@@ -626,6 +628,20 @@ namespace Funke {
 		if (!ResolveUICanvasSize(width, height)) return;
 		FontManager::PollAsync();
 		auto& registry = const_cast<entt::registry&>(scene.GetRegistry());
+		// Keep layout/font updates above: repeated layout passes can settle content fitters.
+		// WorldUI::FindRoot only returns entities with a rect and a 2D or 3D transform.
+		bool hasWorldCanvas = false;
+#if FUNKE_WITH_3D
+		const auto canvases3D = registry.view<const RectTransform2DComponent, const Transform3DComponent>();
+		hasWorldCanvas = canvases3D.begin() != canvases3D.end();
+#endif
+#if FUNKE_WITH_2D
+		if (!hasWorldCanvas) {
+			const auto canvases2D = registry.view<const RectTransform2DComponent, const Transform2DComponent>();
+			hasWorldCanvas = canvases2D.begin() != canvases2D.end();
+		}
+#endif
+		if (!hasWorldCanvas) return;
 		m_CanvasOrders.Rebuild(registry);
 		for (const auto& [root, order] : m_CanvasOrders.GetCanvases()) {
 			if (root != entt::null)

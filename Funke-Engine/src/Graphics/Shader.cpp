@@ -83,7 +83,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 	let baseUV = vec2<f32>(in.position.x + 0.5, 0.5 - in.position.y);
 	// Remap unit-quad UV into the sprite-slice rect via mix(). For the
 	// default full-texture case (UvRect = 0,0,1,1) this collapses to
-	// identity — every legacy SpriteRenderer renders exactly as before.
+	// identity â€” every legacy SpriteRenderer renders exactly as before.
 	out.uv = vec2<f32>(
 		mix(in.i_data3.x, in.i_data3.z, baseUV.x),
 		mix(in.i_data3.y, in.i_data3.w, baseUV.y) + baseUV.x * in.i_data2.z
@@ -150,7 +150,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 
 // Wireframe-debug fragment entry point. Used by the Wireframe sprite
-// pipeline (LineList topology, blending disabled) — outputs solid opaque
+// pipeline (LineList topology, blending disabled) â€” outputs solid opaque
 // black regardless of texture or instance colour so quad-edge lines render
 // as the Editor View's debug overlay. Keeping the black-write in the
 // shader (rather than mutating the shared instance buffer on the CPU)
@@ -287,6 +287,8 @@ struct Frame {
 	shadowParams:  vec4<f32>,  // x = texel size in uv, y = depth bias, z = normal offset, w = shadow distance
 	fogColor:      vec4<f32>,  // linear, w = 1 when fog is on
 	fogParams:     vec4<f32>,  // x = start, y = end
+    worldOrigin: vec4<f32>,
+    relativeCameraPos: vec4<f32>,
 };
 
 struct Light {
@@ -362,7 +364,7 @@ fn vs_wire(in: VertexInput) -> @builtin(position) vec4<f32> {
 	let world = (model * vec4<f32>(in.position, 1.0)).xyz;
 	// An orthographic view-projection has (0, 0, 0, 1) as its last row; its rays are parallel, so pull in depth only.
 	if (abs(frame.viewProj[0].w) + abs(frame.viewProj[1].w) + abs(frame.viewProj[2].w) > 0.0) {
-		return frame.viewProj * vec4<f32>(mix(world, frame.cameraPos.xyz, WIRE_PULL), 1.0);
+		return frame.viewProj * vec4<f32>(mix(world, frame.relativeCameraPos.xyz, WIRE_PULL), 1.0);
 	}
 	var clip = frame.viewProj * vec4<f32>(world, 1.0);
 	clip.z = clip.z * (1.0 - WIRE_PULL);
@@ -379,7 +381,7 @@ fn applyFog(color: vec3<f32>, worldPos: vec3<f32>, fogged: f32) -> vec3<f32> {
 	if (frame.fogColor.w < 0.5 || fogged < 0.5) {
 		return color;
 	}
-	let dist = length(worldPos - frame.cameraPos.xyz);
+	let dist = length(worldPos - frame.relativeCameraPos.xyz);
 	let t = clamp((dist - frame.fogParams.x) / max(frame.fogParams.y - frame.fogParams.x, 1e-3), 0.0, 1.0);
 	return mix(color, frame.fogColor.rgb, t * t * (3.0 - 2.0 * t));
 }
@@ -459,7 +461,7 @@ fn pointAttenuation(distanceSq: f32, rangeSq: f32) -> f32 {
 }
 
 fn shadowFactor(worldPos: vec3<f32>, normal: vec3<f32>) -> f32 {
-	let toCamera = worldPos - frame.cameraPos.xyz;
+	let toCamera = worldPos - frame.relativeCameraPos.xyz;
 	let distanceSq = dot(toCamera, toCamera);
 	if (distanceSq >= frame.shadowParams.w * frame.shadowParams.w) {
 		return 1.0;
@@ -496,7 +498,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 	let roughness = clamp(in.surface.y, 0.045, 1.0);
 	let a = roughness * roughness;
 	let n = normalize(in.normal);
-	let v = normalize(frame.cameraPos.xyz - in.worldPos);
+	let v = normalize(frame.relativeCameraPos.xyz - in.worldPos);
 	let NoV = max(dot(n, v), 1e-4);
 	let f0 = mix(vec3<f32>(0.04), albedo, metallic);
 	let diffuseColor = albedo * (1.0 - metallic);
@@ -755,7 +757,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 		};
 
 		// Bloom: threshold extract at half-res, then H and V blur; postcomposite adds it to the scene.
-		// Threshold extract — Uniform: { threshold, _, _, _ }.
+		// Threshold extract â€” Uniform: { threshold, _, _, _ }.
 		constexpr const char* k_PostBloomThresholdWGSL = R"WGSL(
 struct Params { p: vec4<f32>, };
 @group(0) @binding(0) var t_src: texture_2d<f32>;
@@ -1228,7 +1230,7 @@ fn fs_high(in: VertexOutput) -> @location(0) vec4<f32> {
 			g_Shaders.erase(id);
 		}
 
-		// Stem extraction — strips path + extension, drops "Shader"
+		// Stem extraction â€” strips path + extension, drops "Shader"
 		// suffix, lowercases. Callers (WebGPUSpriteResources /
 		// GizmoRenderer / TextRenderer) hit this to look up by name.
 		std::string ExtractName(const std::string& path) {
@@ -1293,7 +1295,7 @@ fn fs_high(in: VertexOutput) -> @location(0) vec4<f32> {
 		}
 	}
 
-	// ── WebGPUBackend::LookupShader (declared in WebGPUBackend.hpp) ─────────
+	// â”€â”€ WebGPUBackend::LookupShader (declared in WebGPUBackend.hpp) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 	namespace WebGPUBackend {
 		ShaderLookup LookupShader(unsigned shaderHandleId) {
 			if (shaderHandleId == 0) return ShaderLookup{};
@@ -1306,10 +1308,10 @@ fn fs_high(in: VertexOutput) -> @location(0) vec4<f32> {
 		}
 	}
 
-	// ── Shader ──────────────────────────────────────────────────────────────
+	// â”€â”€ Shader â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 	Shader::Shader(const std::string& vsPath, const std::string& /*fsPath*/) {
-		// fsPath ignored — WebGPU uses a single WGSL module; stem extracted from vsPath.
+		// fsPath ignored â€” WebGPU uses a single WGSL module; stem extracted from vsPath.
 		const std::string name = ExtractName(vsPath);
 
 		std::string wgslHolder;          // owns the on-disk source if loaded
@@ -1321,7 +1323,7 @@ fn fs_high(in: VertexOutput) -> @location(0) vec4<f32> {
 			const std::string path = ResolveOnDiskWGSL(name);
 			if (path.empty()) {
 				FNK_CORE_WARN_TAG("Shader",
-					"No WGSL source for '{}' (no built-in, no FunkeAssets/Shaders/webgpu/{}.wgsl) — Shader will be invalid",
+					"No WGSL source for '{}' (no built-in, no FunkeAssets/Shaders/webgpu/{}.wgsl) â€” Shader will be invalid",
 					name, name);
 				return;
 			}
@@ -1379,7 +1381,7 @@ fn fs_high(in: VertexOutput) -> @location(0) vec4<f32> {
 	}
 
 	bool Shader::ExportBinary(const std::string& /*outputPath*/) const {
-		// No native binary representation worth exporting — WGSL text is
+		// No native binary representation worth exporting â€” WGSL text is
 		// already the source-of-truth.
 		return false;
 	}
@@ -1396,7 +1398,7 @@ fn fs_high(in: VertexOutput) -> @location(0) vec4<f32> {
 	}
 
 	GLuint Shader::LoadAndCompile(GLenum /*type*/, const std::string& /*path*/) {
-		// Legacy single-stage helper from the OpenGL era — unused.
+		// Legacy single-stage helper from the OpenGL era â€” unused.
 		return 0;
 	}
 

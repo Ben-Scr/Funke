@@ -105,6 +105,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 			std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> Pipelines;
 		};
 		MipGenCache g_MipGen;
+		uint32_t g_UploadBatchDepth = 0;
+		wgpu::CommandEncoder g_MipUploadEncoder;
 
 		bool IsMipRenderableFormat(wgpu::TextureFormat format) noexcept {
 			switch (format) {
@@ -183,8 +185,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 			return pipeline;
 		}
 
-		// Levels 1..mipLevelCount-1 from level 0. Submitted on its own command buffer;
-		// queue ordering places it after any preceding WriteTexture to level 0.
+		// Queue ordering places mip generation after the uploads to level zero.
 		bool GenerateMipChain(const wgpu::Texture& texture, wgpu::TextureFormat format, uint32_t mipLevelCount) {
 			if (!texture || mipLevelCount <= 1) return true;
 			wgpu::RenderPipeline pipeline = GetMipPipeline(format);
@@ -198,7 +199,13 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
 			wgpu::CommandEncoderDescriptor encoderDesc{};
 			encoderDesc.label = "texture2d-mipgen";
-			wgpu::CommandEncoder encoder = device.CreateCommandEncoder(&encoderDesc);
+			wgpu::CommandEncoder encoder;
+			if (g_UploadBatchDepth != 0) {
+				if (!g_MipUploadEncoder) g_MipUploadEncoder = device.CreateCommandEncoder(&encoderDesc);
+				encoder = g_MipUploadEncoder;
+			}
+			else encoder = device.CreateCommandEncoder(&encoderDesc);
+			if (!encoder) return false;
 
 			wgpu::TextureViewDescriptor levelDesc{};
 			levelDesc.format          = format;
@@ -244,8 +251,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 				pass.End();
 			}
 
-			wgpu::CommandBuffer commands = encoder.Finish();
-			queue.Submit(1, &commands);
+			if (g_UploadBatchDepth == 0) {
+				wgpu::CommandBuffer commands = encoder.Finish();
+				queue.Submit(1, &commands);
+			}
 			return true;
 		}
 
@@ -369,7 +378,20 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
 	// ── Texture2D ───────────────────────────────────────────────────────────
 
+	TextureUploadBatch::TextureUploadBatch() {
+		++g_UploadBatchDepth;
+	}
+
+	TextureUploadBatch::~TextureUploadBatch() {
+		if (g_UploadBatchDepth == 0 || --g_UploadBatchDepth != 0 || !g_MipUploadEncoder) return;
+		wgpu::CommandBuffer commands = g_MipUploadEncoder.Finish();
+		g_MipUploadEncoder = nullptr;
+		if (const wgpu::Queue queue = WebGPUBackend::GetQueue()) queue.Submit(1, &commands);
+	}
+
 	void Texture2D::ReleaseMipGenResources() {
+		g_MipUploadEncoder = nullptr;
+		g_UploadBatchDepth = 0;
 		g_MipGen = MipGenCache{};
 	}
 

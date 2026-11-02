@@ -11,6 +11,15 @@
 #include <string>
 
 namespace Funke {
+	// Main-thread uploads only; finish the scope before encoding draws that sample its textures.
+	class FUNKE_API TextureUploadBatch {
+	public:
+		TextureUploadBatch();
+		~TextureUploadBatch();
+		TextureUploadBatch(const TextureUploadBatch&) = delete;
+		TextureUploadBatch& operator=(const TextureUploadBatch&) = delete;
+	};
+
 	class FUNKE_API Texture2D {
 	public:
 		Texture2D() = default;

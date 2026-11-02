@@ -77,6 +77,11 @@ namespace Funke {
 		payload.AddMember("properties", std::move(properties));
 		payload.AddMember("outputPath", request.OutputPath);
 		payload.AddMember("dotnet", "dotnet");
+		if (!request.RescanSources) {
+			Json::Value changedPaths = Json::Value::MakeArray();
+			for (const std::string& path : request.ChangedPaths) changedPaths.Append(path);
+			payload.AddMember("changedPaths", std::move(changedPaths));
+		}
 		const std::string requestJson = Json::Stringify(payload);
 
 		char* responseJson = compile(requestJson.c_str());
@@ -100,6 +105,7 @@ namespace Funke {
 		if (const auto* v = member("warnings")) result.Warnings = v->AsIntOr(0);
 		if (const auto* v = member("elapsedMs")) result.ElapsedMs = v->AsDoubleOr(0.0);
 		if (const auto* v = member("evaluated")) result.Evaluated = v->AsBoolOr(false);
+		if (const auto* v = member("fullBuild")) result.FullBuild = v->AsBoolOr(false);
 		return result;
 	}
 

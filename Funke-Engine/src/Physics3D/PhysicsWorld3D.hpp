@@ -42,6 +42,8 @@ namespace Funke {
 		size_t ColliderPosesRecomputed = 0;
 		size_t BodyDescriptionsRebuilt = 0;
 		size_t CompoundSorts = 0;
+		size_t SleepingPoseReadsSkipped = 0;
+		size_t PoseWrites = 0;
 	};
 
 	// One Jolt world per scene. Entities stay the source of truth: Simulate() rebuilds bodies whose

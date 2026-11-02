@@ -215,7 +215,7 @@ Conditional:
 - `project.json` — required for project-based games. `Funke-Runtime` mounts bundles and loads the manifest through `FunkeProject::TryLoad`. A malformed manifest or a missing explicitly requested `--project` fails startup; only an implicit launch without a project falls back to `SampleScene` with a warning.
 - Your project's scenes, native script libraries, native package libraries and matching `.funkeabi` sidecars, C# assemblies, and referenced assets. Desktop exports include a private .NET runtime by default; see [Building and Shipping](../Github-Docs/Documentation/Editor/Building-and-Shipping.md).
 
-The editor's export pipeline can replace loose `Assets/` and `FunkeAssets/` content with optional `.fbundle` archives, with optional LZ4 compression. `Assets/StreamingAssets/` stays loose. The standard runtime mounts these archives automatically; a custom native host must mount bundles before using their virtual paths. See [Asset bundles](../Github-Docs/Documentation/Editor/Building-and-Shipping.md#asset-bundles).
+The editor's export pipeline can replace loose `Assets/` and `FunkeAssets/` content with optional `.fbundle` archives, with optional LZ4 or Zstandard compression. `Assets/StreamingAssets/` stays loose. The standard runtime mounts these archives automatically; a custom native host must mount bundles before using their virtual paths. See [Asset bundles](../Github-Docs/Documentation/Editor/Building-and-Shipping.md#asset-bundles).
 
 ## See also
 

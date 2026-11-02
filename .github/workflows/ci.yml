@@ -150,14 +150,19 @@ jobs:
             External/dawn/build/src/dawn/native/Debug/webgpu_dawn.lib
             External/dawn/build/src/dawn/native/Release/webgpu_dawn.lib
             External/dawn/LICENSE
+            External/dawn/funke-artifacts.json
             External/dawn/third_party/**/LICENSE*
             External/dawn/third_party/**/NOTICE*
             External/dawn/third_party/**/COPYING*
             External/dawn/third_party/**/ThirdPartyNotices.txt
-          key: dawn-v2-${{ runner.os }}-${{ hashFiles('scripts/dawn/dawn-revision.txt', 'scripts/dawn/SetupDawn.bat', 'scripts/dawn/FetchDawnDepsMinimal.py', 'scripts/dawn/patches/**') }}
+          key: dawn-v5-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/dawn/*.txt', 'scripts/dawn/*.py', 'scripts/dawn/*.sh', 'scripts/dawn/*.bat', 'scripts/dawn/*.ps1', 'scripts/dawn/patches/**') }}
 
-      - name: Build Dawn (cache miss only)
-        if: steps.cache-dawn.outputs.cache-hit != 'true'
+      - name: Validate Dawn artifacts
+        id: validate-dawn
+        run: python scripts/dawn/ValidateDawnCache.py --ci
+
+      - name: Build Dawn (missing or invalid artifacts)
+        if: steps.validate-dawn.outputs.valid != 'true'
         shell: cmd
         env:
           DAWN_BUILD_CONFIGS: Debug Release
@@ -174,6 +179,7 @@ jobs:
             External/dawn/build/src/dawn/native/Debug/webgpu_dawn.lib
             External/dawn/build/src/dawn/native/Release/webgpu_dawn.lib
             External/dawn/LICENSE
+            External/dawn/funke-artifacts.json
             External/dawn/third_party/**/LICENSE*
             External/dawn/third_party/**/NOTICE*
             External/dawn/third_party/**/COPYING*
@@ -339,6 +345,14 @@ jobs:
 
 
 
+      - name: Upload Windows Native Test Diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-Windows-Native-Test-Diagnostics
+          path: ci-logs
+          if-no-files-found: warn
+
   windows-standalone:
     needs: windows-build
     runs-on: windows-2022
@@ -398,6 +412,7 @@ jobs:
             ${{ runner.temp }}/standalone-evidence.json
             ${{ runner.temp }}/agent-evidence/**
             ${{ runner.temp }}/Funke-Standalone-*/logs/**
+            ${{ runner.temp }}/agent-evidence/**
           if-no-files-found: warn
 
   linux-build:
@@ -473,13 +488,18 @@ jobs:
             External/dawn/build/gen/include
             External/dawn/build/src/dawn/native/libwebgpu_dawn.so
             External/dawn/LICENSE
+            External/dawn/funke-artifacts.json
             External/dawn/third_party/**/LICENSE*
             External/dawn/third_party/**/NOTICE*
             External/dawn/third_party/**/COPYING*
-          key: dawn-v3-${{ runner.os }}-${{ hashFiles('scripts/dawn/dawn-revision.txt', 'scripts/dawn/SetupDawn.sh', 'scripts/dawn/patches/**') }}
+          key: dawn-v5-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/dawn/*.txt', 'scripts/dawn/*.py', 'scripts/dawn/*.sh', 'scripts/dawn/*.bat', 'scripts/dawn/*.ps1', 'scripts/dawn/patches/**') }}
 
-      - name: Build Dawn (cache miss only)
-        if: steps.cache-dawn.outputs.cache-hit != 'true'
+      - name: Validate Dawn artifacts
+        id: validate-dawn
+        run: python scripts/dawn/ValidateDawnCache.py --ci
+
+      - name: Build Dawn (missing or invalid artifacts)
+        if: steps.validate-dawn.outputs.valid != 'true'
         run: |
           chmod +x scripts/dawn/SetupDawn.sh
           ./scripts/dawn/SetupDawn.sh
@@ -493,6 +513,7 @@ jobs:
             External/dawn/build/gen/include
             External/dawn/build/src/dawn/native/libwebgpu_dawn.so
             External/dawn/LICENSE
+            External/dawn/funke-artifacts.json
             External/dawn/third_party/**/LICENSE*
             External/dawn/third_party/**/NOTICE*
             External/dawn/third_party/**/COPYING*
@@ -624,15 +645,51 @@ jobs:
           make config=debug verbose=1 LDFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all" -j"$(nproc)" Funke-Engine-Tests
           ./bin/Debug-linux-x86_64-sanitized/Funke-Engine-Tests/Funke-Engine-Tests
 
-      - name: Linux Debug Engine Coverage
+      - name: Configure Linux Debug Coverage
         if: ${{ !inputs.linux_core_only }}
+        shell: bash
         run: |
+          mkdir -p ci-logs
+          { g++ --version; gcov --version; lcov --version; genhtml --version; } | tee ci-logs/coverage-tools.log
           vendor/bin/premake5 --coverage --no-profiler gmake
-          make config=debug verbose=1 LDFLAGS="--coverage" -j"$(nproc)" Funke-Engine-Tests
-          ./bin/Debug-linux-x86_64-coverage/Funke-Engine-Tests/Funke-Engine-Tests
-          lcov --capture --directory bin-int/Debug-linux-x86_64-coverage --output-file coverage-raw.info --ignore-errors mismatch
-          lcov --remove coverage-raw.info '*/External/*' '*/vendor/*' '*/Tests/*' '/usr/*' --output-file coverage.info --ignore-errors unused
-          genhtml coverage.info --output-directory coverage-html
+
+      - name: Build Linux Debug Coverage
+        if: ${{ !inputs.linux_core_only }}
+        shell: bash
+        run: make config=debug verbose=1 LDFLAGS="--coverage" -j"$(nproc)" Funke-Engine-Tests 2>&1 | tee ci-logs/coverage-build.log
+
+      - name: Run Linux Debug Coverage Tests
+        if: ${{ !inputs.linux_core_only }}
+        shell: bash
+        run: ./bin/Debug-linux-x86_64-coverage/Funke-Engine-Tests/Funke-Engine-Tests 2>&1 | tee ci-logs/coverage-tests.log
+
+      - name: Capture Linux Debug Coverage
+        if: ${{ !inputs.linux_core_only }}
+        shell: bash
+        run: lcov --capture --directory bin-int/Debug-linux-x86_64-coverage --output-file coverage-raw.info --ignore-errors mismatch 2>&1 | tee ci-logs/coverage-capture.log
+
+      - name: Filter Linux Debug Coverage
+        if: ${{ !inputs.linux_core_only }}
+        shell: bash
+        run: |
+          lcov --remove coverage-raw.info '*/External/*' '*/vendor/*' '*/Tests/*' '/usr/*' --output-file coverage.info --ignore-errors unused 2>&1 | tee ci-logs/coverage-filter.log
+          test -s coverage.info
+          grep -Eq '^DA:[0-9]+,[1-9][0-9]*' coverage.info
+
+      - name: Render Linux Debug Coverage
+        if: ${{ !inputs.linux_core_only }}
+        shell: bash
+        run: genhtml coverage.info --output-directory coverage-html 2>&1 | tee ci-logs/coverage-html.log
+
+      - name: Upload Linux Coverage Diagnostics
+        if: ${{ always() && !inputs.linux_core_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-Linux-Coverage-Diagnostics
+          path: |
+            ci-logs
+            coverage-raw.info
+          if-no-files-found: ignore
 
       - name: Upload Linux Debug Coverage
         if: ${{ !inputs.linux_core_only }}
@@ -695,13 +752,18 @@ jobs:
             External/dawn/build/gen/include
             External/dawn/build/src/dawn/native/libwebgpu_dawn.dylib
             External/dawn/LICENSE
+            External/dawn/funke-artifacts.json
             External/dawn/third_party/**/LICENSE*
             External/dawn/third_party/**/NOTICE*
             External/dawn/third_party/**/COPYING*
-          key: dawn-v4-macos-15-${{ runner.arch }}-${{ hashFiles('scripts/dawn/dawn-revision.txt', 'scripts/dawn/SetupDawn.sh', 'scripts/dawn/patches/**') }}
+          key: dawn-v5-macos-15-${{ runner.arch }}-${{ hashFiles('scripts/dawn/*.txt', 'scripts/dawn/*.py', 'scripts/dawn/*.sh', 'scripts/dawn/*.bat', 'scripts/dawn/*.ps1', 'scripts/dawn/patches/**') }}
 
-      - name: Build Dawn (cache miss only)
-        if: steps.cache-dawn.outputs.cache-hit != 'true'
+      - name: Validate Dawn artifacts
+        id: validate-dawn
+        run: python scripts/dawn/ValidateDawnCache.py --ci
+
+      - name: Build Dawn (missing or invalid artifacts)
+        if: steps.validate-dawn.outputs.valid != 'true'
         run: |
           chmod +x scripts/dawn/SetupDawn.sh
           ./scripts/dawn/SetupDawn.sh
@@ -715,6 +777,7 @@ jobs:
             External/dawn/build/gen/include
             External/dawn/build/src/dawn/native/libwebgpu_dawn.dylib
             External/dawn/LICENSE
+            External/dawn/funke-artifacts.json
             External/dawn/third_party/**/LICENSE*
             External/dawn/third_party/**/NOTICE*
             External/dawn/third_party/**/COPYING*
@@ -728,14 +791,26 @@ jobs:
       - name: Verify Vendor Patches Applied
         run: python3 scripts/vendor_patches.py verify --require-applied
 
-      - name: macOS Engine + Editor Tests
+      - name: macOS Native Hosting and Signing Regression Tests
+        shell: bash
         run: |
           metadata_flags=(--require-clean)
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then metadata_flags+=(--tag "$GITHUB_REF_NAME"); fi
           python3 scripts/generate_build_metadata.py "${metadata_flags[@]}"
-          make config=release verbose=1 -j"$(sysctl -n hw.ncpu)" Funke-Managed Funke-Engine-Tests Funke-Editor-Tests
-          ./bin/Release-macosx-arm64/Funke-Engine-Tests/Funke-Engine-Tests
-          ./bin/Release-macosx-arm64/Funke-Editor-Tests/Funke-Editor-Tests
+          mkdir -p ci-logs
+          python3 -m unittest scripts.ci.test_macos_native -v 2>&1 | tee ci-logs/macos-native.log
+
+      - name: Build macOS Native Tests
+        shell: bash
+        run: make config=release verbose=1 -j"$(sysctl -n hw.ncpu)" Funke-Managed Funke-Engine-Tests Funke-Editor-Tests 2>&1 | tee ci-logs/macos-build.log
+
+      - name: macOS Engine Tests
+        shell: bash
+        run: ./bin/Release-macosx-arm64/Funke-Engine-Tests/Funke-Engine-Tests 2>&1 | tee ci-logs/macos-engine-tests.log
+
+      - name: macOS Editor Tests
+        shell: bash
+        run: ./bin/Release-macosx-arm64/Funke-Editor-Tests/Funke-Editor-Tests 2>&1 | tee ci-logs/macos-editor-tests.log
 
       - name: Build macOS Targets
         run: |
@@ -787,19 +862,29 @@ jobs:
           python3 installer/macos/signing.py prepare "${flags[@]}"
 
       - name: Build macOS Installer
+        shell: bash
         run: |
           flags=()
           if [[ -n "${FUNKE_MAC_SIGNING_IDENTITY:-}" ]]; then
             flags+=(--signing-identity "$FUNKE_MAC_SIGNING_IDENTITY" --signing-keychain "$FUNKE_MAC_SIGNING_KEYCHAIN" --notary-keychain-profile "$FUNKE_MAC_NOTARY_KEYCHAIN_PROFILE")
           fi
-          python3 scripts/BuildMacInstaller.py --bundle bin/Release-macosx-arm64/Funke-Launcher --output-dir dist-installer "${flags[@]}"
+          python3 scripts/BuildMacInstaller.py --bundle bin/Release-macosx-arm64/Funke-Launcher --output-dir dist-installer "${flags[@]}" 2>&1 | tee ci-logs/macos-installer.log
 
       - name: Clean Up macOS Signing
         if: always()
         run: python3 installer/macos/signing.py cleanup
 
       - name: macOS Installer Smoke Test
-        run: python3 installer/macos/smoke_test.py --installer dist-installer/FunkeSetup-*-macOS-arm64.dmg --require-scripting
+        shell: bash
+        run: python3 installer/macos/smoke_test.py --installer dist-installer/FunkeSetup-*-macOS-arm64.dmg --require-scripting 2>&1 | tee ci-logs/macos-installed.log
+
+      - name: Upload macOS Diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-macOS-Diagnostics
+          path: ci-logs
+          if-no-files-found: warn
 
       - name: Upload macOS Installer
         uses: actions/upload-artifact@v4

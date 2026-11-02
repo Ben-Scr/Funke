@@ -36,20 +36,27 @@ namespace Funke {
 					if (Rings.empty() || Rings.back().Elevation != measurement.Elevation)
 						Rings.push_back({ measurement.Elevation, Filters.size(), 0 });
 					++Rings.back().Count;
-					Kernel kernel(TapCount);
-					for (size_t tap = 0; tap < TapCount; ++tap) {
-						const float time = static_cast<float>(tap) * ratio - radius;
-						const int first = std::max(0, static_cast<int>(std::ceil(time - radius)));
-						const int last = std::min(127, static_cast<int>(std::floor(time + radius)));
+					Filters.emplace_back(TapCount);
+				}
+				// Every direction uses the same resampling weights for this sample rate.
+				for (size_t tap = 0; tap < TapCount; ++tap) {
+					const float time = static_cast<float>(tap) * ratio - radius;
+					const int first = std::max(0, static_cast<int>(std::ceil(time - radius)));
+					const int last = std::min(127, static_cast<int>(std::floor(time + radius)));
+					std::array<float, 128> weights;
+					for (int i = first; i <= last; ++i) {
+						const float offset = (time - i) * cutoff;
+						weights[i] = Sinc(offset) * (0.5f + 0.5f * std::cos(k_Pi * offset / 16.0f))
+							* cutoff * ratio / 32768.0f;
+					}
+					for (size_t direction = 0; direction < Filters.size(); ++direction) {
+						const auto& measurement = KemarData::Measurements[direction];
+						Tap& output = Filters[direction][tap];
 						for (int i = first; i <= last; ++i) {
-							const float offset = (time - i) * cutoff;
-							const float weight = Sinc(offset) * (0.5f + 0.5f * std::cos(k_Pi * offset / 16.0f))
-								* cutoff * ratio / 32768.0f;
-							kernel[tap].Left += measurement.Samples[i * 2] * weight;
-							kernel[tap].Right += measurement.Samples[i * 2 + 1] * weight;
+							output.Left += measurement.Samples[i * 2] * weights[i];
+							output.Right += measurement.Samples[i * 2 + 1] * weights[i];
 						}
 					}
-					Filters.push_back(std::move(kernel));
 				}
 			}
 

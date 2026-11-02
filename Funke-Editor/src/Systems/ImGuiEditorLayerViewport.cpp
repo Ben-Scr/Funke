@@ -79,7 +79,7 @@
 namespace Funke {
 
 	namespace {
-		// ── Editor View overlay pills ───────────────────────────────────────
+		// â”€â”€ Editor View overlay pills â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 		// Floating toolbars drawn as child windows over the viewport image. Being child windows, they
 		// already shadow the parent's IsWindowHovered/item hover (box-select, bounds handles, ImGuizmo);
 		// the camera reads raw engine input, so it checks these flags explicitly.
@@ -199,7 +199,7 @@ namespace Funke {
 			return size;
 		}
 
-		// ── UI alignment guides ─────────────────────────────────────────────
+		// â”€â”€ UI alignment guides â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 		// While a single UI (RectTransform) element is dragged, snap its edges and
 		// centers to other UI elements' edges/centers and draw the connecting guide
 		// lines (Figma/Unity-style smart guides). `bl`/`tr` are the dragged rect's
@@ -305,7 +305,7 @@ namespace Funke {
 			return frameDelta;
 		}
 
-		// ── UI resize alignment guides ──────────────────────────────────────
+		// â”€â”€ UI resize alignment guides â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 		// Bounds (Rect) tool analogue of ApplyUIAlignmentSnap: snaps only the dragged
 		// edge(s) of a UI rect to other UI elements' edges/centers and draws the guide
 		// lines. blWorld/trWorld are the rect's current world AABB; xe/ye (-1/0/+1) pick
@@ -388,7 +388,7 @@ namespace Funke {
 			return worldDelta;
 		}
 
-		// ── UI scale alignment guides ───────────────────────────────────────
+		// â”€â”€ UI scale alignment guides â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 		// Scale-gizmo analogue: with this frame's per-axis `factor` about pivotWorld,
 		// snap whichever box edge lands nearest another element's edge/center by adjusting
 		// the factor on that axis (edge maps pivot + (edge-pivot)*factor), and draws the
@@ -478,13 +478,13 @@ namespace Funke {
 			return factor;
 		}
 
-		// ── Sprite selection outline ────────────────────────────────────────
+		// â”€â”€ Sprite selection outline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 		// The editor selection gizmo traces a sprite's opaque silhouette rather
-		// than its rectangular quad. We extract the texture's alpha contour —
-		// outer edge AND interior holes — via marching squares once per (texture
+		// than its rectangular quad. We extract the texture's alpha contour â€”
+		// outer edge AND interior holes â€” via marching squares once per (texture
 		// asset, sprite slice), in the renderer's unit-quad local space
-		// ([-0.5, 0.5]²), and cache it as a flat segment list (pairs: [0]-[1],
-		// [2]-[3], …). Each frame the gizmo transforms those points by the entity
+		// ([-0.5, 0.5]Â²), and cache it as a flat segment list (pairs: [0]-[1],
+		// [2]-[3], â€¦). Each frame the gizmo transforms those points by the entity
 		// transform, so the outline hugs the texture and follows rotation/scale.
 		// Adjacent segments share endpoints, so drawn as thick quads they merge
 		// into a continuous line. Textures with no opaque texels fall back to the
@@ -554,7 +554,7 @@ namespace Funke {
 
 			constexpr float kThreshold = 16.0f;
 			auto at = [&](int gx, int gy) -> float { return A[static_cast<size_t>(gy) * gw + gx]; };
-			// Grid point → unit-quad local space. Interior cell mx maps to grid
+			// Grid point â†’ unit-quad local space. Interior cell mx maps to grid
 			// point gx = mx+1 at baseX (mx+0.5)/mw, i.e. baseX = (gxf-0.5)/mw.
 			auto gridToLocal = [&](float gxf, float gyf) -> Vec2 {
 				const float baseX = (gxf - 0.5f) / static_cast<float>(mw);
@@ -613,7 +613,7 @@ namespace Funke {
 
 		// Returns the cached contour segment list, building it on first use.
 		// nullptr means "no silhouette this frame" (texture not resolved yet, or
-		// transparent) — the caller draws the rectangular quad instead.
+		// transparent) â€” the caller draws the rectangular quad instead.
 		const std::vector<Vec2>* GetSpriteSelectionContours(const SpriteRendererComponent& sprite) {
 			if (static_cast<uint64_t>(sprite.TextureAssetId) == 0) return nullptr;
 
@@ -624,7 +624,7 @@ namespace Funke {
 			auto it = g_SpriteContourCache.find(key);
 			if (it == g_SpriteContourCache.end()) {
 				Texture2D* tex = TextureManager::GetTexture(sprite.TextureHandle);
-				if (!tex || !tex->IsValid()) return nullptr; // not ready — retry next frame, don't cache
+				if (!tex || !tex->IsValid()) return nullptr; // not ready â€” retry next frame, don't cache
 				it = g_SpriteContourCache.emplace(key, BuildSpriteContours(*tex, sprite)).first;
 			}
 			return it->second.size() >= 2 ? &it->second : nullptr;
@@ -677,7 +677,7 @@ namespace Funke {
 		std::optional<Camera3DView> view3D;
 		if (hasCamera3D) {
 			const auto& registry = scene.GetRegistry();
-			view3D = Renderer3D::MakeView(Transform3DHierarchySystem::ComputeWorldMatrix(registry, camera3DEntity),
+			view3D = Renderer3D::MakePreciseView(Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, camera3DEntity),
 				registry.get<Camera3DComponent>(camera3DEntity),
 				static_cast<float>(thumbWidth) / static_cast<float>(thumbHeight));
 		}
@@ -754,7 +754,7 @@ namespace Funke {
 		const int w = fbo.GetWidth();
 		const int h = fbo.GetHeight();
 
-		// All immediate-mode state goes through RenderApi — no glXxx calls
+		// All immediate-mode state goes through RenderApi â€” no glXxx calls
 		// in editor code. Backend translation lives in
 		// `Graphics/Backend/WebGPUApi.cpp`.
 		RenderApi::BindFramebuffer(fbo);
@@ -846,7 +846,7 @@ namespace Funke {
 		auto runWireframePass = [&]() {
 			RenderApi::SetPolygonMode(PolygonMode::Wireframe);
 			RenderApi::SetColorMask(true, true, true, false);
-			// Sprites only — UI and gizmos don't honour the wireframe flag
+			// Sprites only â€” UI and gizmos don't honour the wireframe flag
 			// and would paint filled quads on top of the wireframe edges.
 			runSpriteRender();
 			RenderApi::SetColorMask(true, true, true, true);
@@ -1487,7 +1487,7 @@ namespace Funke {
 
 		// Always-visible component gizmos (Camera frames, package components flagged
 		// drawEditorGizmoAlways): drawn for every matching entity, gated only on the
-		// editor-view gizmo toggle — independent of selection.
+		// editor-view gizmo toggle â€” independent of selection.
 		if (componentGizmosEnabled) {
 			DrawAlwaysVisibleComponentGizmos(scene);
 		}
@@ -1563,7 +1563,7 @@ namespace Funke {
 
 		Gizmo::SetColor(Color::White());
 		Gizmo::SetLineWidth(1.5f);
-		// Frame at the configured Game View aspect, not the live window aspect — WorldViewPort() tracks m_Viewport (the OS window) here, so it overstates the camera's horizontal view. Free Aspect (0) has no fixed ratio → keep the window aspect.
+		// Frame at the configured Game View aspect, not the live window aspect â€” WorldViewPort() tracks m_Viewport (the OS window) here, so it overstates the camera's horizontal view. Free Aspect (0) has no fixed ratio â†’ keep the window aspect.
 		Vec2 camFrame = camera->WorldViewPort();
 		const float gvAspect = GetGameViewAspect();
 		if (gvAspect > 0.0f) camFrame.x = camFrame.y * gvAspect;
@@ -1652,7 +1652,7 @@ namespace Funke {
 	
 			if (scene.HasComponent<CircleCollider2DComponent>(m_SelectedEntity)) {
 				auto& collider = scene.GetComponent<CircleCollider2DComponent>(m_SelectedEntity);
-				// Detached prefab-edit scene: no live shape → GetRadius() is 0. Fall back to
+				// Detached prefab-edit scene: no live shape â†’ GetRadius() is 0. Fall back to
 				// the authored logical radius scaled by the larger transform axis (matches
 				// CircleCollider2DComponent::ComputeWorldRadius).
 				const float worldRadius = collider.IsValid()
@@ -2209,7 +2209,7 @@ namespace Funke {
 					{ "Move##GizmoMode",   "move",     "Move (translate)",  EditorGizmoMode::Translate },
 					{ "Rotate##GizmoMode", "rotation", "Rotate",            EditorGizmoMode::Rotate },
 					{ "Scale##GizmoMode",  "scale",    "Scale",             EditorGizmoMode::Scale },
-					{ "Rect##GizmoMode",   "bounding_box","Resize bounds (width/height) — edges resize one axis, corners both", EditorGizmoMode::Bounds },
+					{ "Rect##GizmoMode",   "bounding_box","Resize bounds (width/height) â€” edges resize one axis, corners both", EditorGizmoMode::Bounds },
 				};
 				bool first = true;
 				for (const GizmoModeButton& b : modeButtons) {
@@ -2482,7 +2482,7 @@ namespace Funke {
 						}
 					}
 
-					// World→screen for each handle (same projection used
+					// Worldâ†’screen for each handle (same projection used
 					// by the camera-icon overlay above).
 					auto worldToScreen = [&](const Vec2& w, ImVec2& outScreen) -> bool {
 						glm::vec4 wp(w.x, w.y, 0.0f, 1.0f);
@@ -2495,7 +2495,7 @@ namespace Funke {
 						return true;
 					};
 
-					// World units per screen pixel — needed to convert the
+					// World units per screen pixel â€” needed to convert the
 					// drag delta back into the rect's local pixel-domain
 					// margin units.
 					const AABB camAABB = m_EditorCamera.GetViewportAABB();
@@ -2534,15 +2534,15 @@ namespace Funke {
 							const float pixDx = (marginScale > 0.0f) ? worldDx / marginScale : 0.0f;
 							const float pixDy = (marginScale > 0.0f) ? worldDy / marginScale : 0.0f;
 							switch (i) {
-							case 0: text.Margin.x += pixDx; break; // Left   → drag right grows left margin
-							case 1: text.Margin.z -= pixDx; break; // Right  → drag right SHRINKS right margin
-							case 2: text.Margin.w += pixDy; break; // Bottom → drag up grows bottom margin
-							case 3: text.Margin.y -= pixDy; break; // Top    → drag up SHRINKS top margin
+							case 0: text.Margin.x += pixDx; break; // Left   â†’ drag right grows left margin
+							case 1: text.Margin.z -= pixDx; break; // Right  â†’ drag right SHRINKS right margin
+							case 2: text.Margin.w += pixDy; break; // Bottom â†’ drag up grows bottom margin
+							case 3: text.Margin.y -= pixDy; break; // Top    â†’ drag up SHRINKS top margin
 							}
 							if (renderScene) renderScene->MarkDirty();
 						}
 					}
-					// (No cursor restore — see comment above the loop.)
+					// (No cursor restore â€” see comment above the loop.)
 				}
 
 				const bool gizmoActive = DrawTransform2DGizmos(*renderScene, vp,
@@ -2726,7 +2726,7 @@ namespace Funke {
 			m_GameViewVsyncLoaded = true;
 		}
 
-		// The visibility menu lives in Edit › View (and the toolbar's right-click), so an all-hidden toolbar is skipped.
+		// The visibility menu lives in Edit â€º View (and the toolbar's right-click), so an all-hidden toolbar is skipped.
 		const bool anyGameViewItem = EditorPreferences::IsGameViewToolbarItemVisible(GameViewToolbarItem::Aspect)
 			|| EditorPreferences::IsGameViewToolbarItemVisible(GameViewToolbarItem::VSync)
 			|| EditorPreferences::IsGameViewToolbarItemVisible(GameViewToolbarItem::Stats)
@@ -2920,7 +2920,7 @@ namespace Funke {
 				std::optional<Camera3DView> gameView3D;
 				if (hasCamera3D) {
 					const auto& registry = scene.GetRegistry();
-					gameView3D = Renderer3D::MakeView(Transform3DHierarchySystem::ComputeWorldMatrix(registry, camera3DEntity),
+					gameView3D = Renderer3D::MakePreciseView(Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, camera3DEntity),
 						registry.get<Camera3DComponent>(camera3DEntity), static_cast<float>(fbW) / static_cast<float>(fbH));
 				}
 
@@ -2997,7 +2997,7 @@ namespace Funke {
 					m_GameViewHasRendered = true;
 				}
 
-				// guard's destructor restores the viewport — explicit restore here
+				// guard's destructor restores the viewport â€” explicit restore here
 				// is no longer needed and would be a redundant double-set.
 
 				ImGui::InvisibleButton("##GameViewCanvas", viewportSize);
@@ -3005,7 +3005,7 @@ namespace Funke {
 				ImDrawList* drawList = ImGui::GetWindowDrawList();
 				drawList->AddRectFilled(canvasMin, canvasMax, IM_COL32(0, 0, 0, 255));
 
-				// FBO sampling uses default UVs — see RenderEditorView for
+				// FBO sampling uses default UVs â€” see RenderEditorView for
 				// the rationale. Game View shares the same convention.
 				drawList->AddImage(
 					static_cast<ImTextureID>(static_cast<intptr_t>(m_GameViewFBO.GetColorTextureBackendId())),

@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Assets/AssetBundle.hpp"
 #include "Serialization/Path.hpp"
+#include "../../../vendor/zstd/zstd.h"
 
 #define LZ4LIB_VISIBILITY
 #include "../../../vendor/lz4/lz4.c"
@@ -84,9 +85,28 @@ namespace Funke {
 		}
 	}
 
+	const char* AssetBundle::CompressionName(AssetBundleCompression compression) {
+		switch (compression) {
+		case AssetBundleCompression::None: return "None";
+		case AssetBundleCompression::LZ4: return "LZ4";
+		case AssetBundleCompression::Zstd: return "Zstd";
+		default: return "Unknown";
+		}
+	}
+
 	bool AssetBundle::Write(const std::filesystem::path& root, const std::filesystem::path& destination,
 		const std::vector<std::filesystem::path>& relativeFiles, bool compress, std::string& error) {
+		return Write(root, destination, relativeFiles, compress ? AssetBundleCompression::LZ4 : AssetBundleCompression::None, error);
+	}
+
+	bool AssetBundle::Write(const std::filesystem::path& root, const std::filesystem::path& destination,
+		const std::vector<std::filesystem::path>& relativeFiles, AssetBundleCompression compression, std::string& error) {
 		error.clear();
+		if (compression != AssetBundleCompression::None && compression != AssetBundleCompression::LZ4
+			&& compression != AssetBundleCompression::Zstd) {
+			error = "Unsupported asset bundle compression";
+			return false;
+		}
 		auto temporary = destination;
 		temporary += ".tmp";
 		try {
@@ -124,17 +144,23 @@ namespace Funke {
 				entry.Size = size;
 				entry.Checksum = Checksum(bytes);
 				std::vector<char> packed;
-				int packedSize = 0;
-				if (compress && !bytes.empty()) {
+				size_t packedSize = 0;
+				if (compression == AssetBundleCompression::LZ4 && !bytes.empty()) {
 					packed.resize(static_cast<size_t>(LZ4_compressBound(static_cast<int>(size))));
-					packedSize = LZ4_compress_default(reinterpret_cast<const char*>(bytes.data()), packed.data(),
+					const int result = LZ4_compress_default(reinterpret_cast<const char*>(bytes.data()), packed.data(),
 						static_cast<int>(size), static_cast<int>(packed.size()));
-					if (packedSize <= 0) throw std::runtime_error("Could not compress bundle source: " + name);
+					if (result <= 0) throw std::runtime_error("Could not compress bundle source: " + name);
+					packedSize = static_cast<size_t>(result);
+				} else if (compression == AssetBundleCompression::Zstd && !bytes.empty()) {
+					packed.resize(ZSTD_compressBound(bytes.size()));
+					packedSize = ZSTD_compress(packed.data(), packed.size(), bytes.data(), bytes.size(), 3);
+					if (ZSTD_isError(packedSize))
+						throw std::runtime_error("Could not compress bundle source: " + name + ": " + ZSTD_getErrorName(packedSize));
 				}
 				if (packedSize > 0 && static_cast<std::uint64_t>(packedSize) < size) {
-					entry.Codec = 1;
+					entry.Codec = static_cast<std::uint32_t>(compression);
 					entry.StoredSize = packedSize;
-					out.write(packed.data(), packedSize);
+					out.write(packed.data(), static_cast<std::streamsize>(packedSize));
 				} else {
 					entry.StoredSize = size;
 					if (!bytes.empty()) out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(size));
@@ -189,9 +215,9 @@ namespace Funke {
 					|| !ReadNumber(in, entry.Offset) || !ReadNumber(in, entry.Size)
 					|| !ReadNumber(in, entry.StoredSize) || !ReadNumber(in, entry.Checksum) || !ReadNumber(in, entry.Codec)
 					|| entry.Offset != nextOffset || entry.Offset > indexOffset || entry.StoredSize > indexOffset - entry.Offset
-					|| entry.Size > k_MaxEntrySize || entry.Codec > 1
+					|| entry.Size > k_MaxEntrySize || entry.Codec > static_cast<std::uint32_t>(AssetBundleCompression::Zstd)
 					|| (entry.Codec == 0 && entry.StoredSize != entry.Size)
-					|| (entry.Codec == 1 && (entry.StoredSize == 0 || entry.StoredSize >= entry.Size)))
+					|| (entry.Codec != 0 && (entry.StoredSize == 0 || entry.StoredSize >= entry.Size)))
 					throw std::runtime_error("Invalid bundle entry");
 				nextOffset += entry.StoredSize;
 				const auto key = Key(entry.Path);
@@ -225,9 +251,14 @@ namespace Funke {
 			if (entry.Codec == 0) bytes = std::move(stored);
 			else {
 				bytes.resize(static_cast<size_t>(entry.Size));
-				if (LZ4_decompress_safe(reinterpret_cast<const char*>(stored.data()), reinterpret_cast<char*>(bytes.data()),
-					static_cast<int>(stored.size()), static_cast<int>(bytes.size())) != static_cast<int>(bytes.size()))
-					throw std::runtime_error("Invalid compressed bundle payload");
+				if (entry.Codec == static_cast<std::uint32_t>(AssetBundleCompression::LZ4)) {
+					if (LZ4_decompress_safe(reinterpret_cast<const char*>(stored.data()), reinterpret_cast<char*>(bytes.data()),
+						static_cast<int>(stored.size()), static_cast<int>(bytes.size())) != static_cast<int>(bytes.size()))
+						throw std::runtime_error("Invalid LZ4 bundle payload");
+				} else {
+					const auto size = ZSTD_decompress(bytes.data(), bytes.size(), stored.data(), stored.size());
+					if (ZSTD_isError(size) || size != bytes.size()) throw std::runtime_error("Invalid Zstandard bundle payload");
+				}
 			}
 			if (Checksum(bytes) != entry.Checksum) throw std::runtime_error("Bundle payload checksum mismatch");
 			return true;

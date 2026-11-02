@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text;
+using System.Text.Json;
 using Funke;
 using Xunit;
 
@@ -13,6 +15,33 @@ namespace FunkeScriptCoreTests;
 /// </summary>
 public class ScriptAssetFieldTests
 {
+    public sealed class InspectorSample
+    {
+        [ShowInEditor("Live value")]
+        [ClampValue(0, 10)]
+        public int Value = 1;
+    }
+
+    [Fact]
+    public void CachedInspectorMetadataKeepsValuesAndNestedPathsDynamic()
+    {
+        var members = (Array)s_Type.GetMethod("CollectEditorMembers", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, new object[] { typeof(InspectorSample) })!;
+        object member = members.GetValue(0)!;
+        MethodInfo append = s_Type.GetMethod("AppendMemberJson", BindingFlags.NonPublic | BindingFlags.Static)!;
+        foreach (var (prefix, value) in new[] { ("First.", 2), ("Second.", 8) })
+        {
+            var json = new StringBuilder();
+            append.Invoke(null, new object[] { json, member, value, prefix });
+            using var document = JsonDocument.Parse(json.ToString());
+            var field = document.RootElement;
+            Assert.Equal(prefix + "Value", field.GetProperty("name").GetString());
+            Assert.Equal(value.ToString(), field.GetProperty("value").GetString());
+            Assert.Equal("Live value", field.GetProperty("displayName").GetString());
+            Assert.True(field.GetProperty("hasClamp").GetBoolean());
+            Assert.Equal(10, field.GetProperty("clampMax").GetSingle());
+        }
+    }
     private static readonly Type s_Type = typeof(Vector2).Assembly.GetType("Funke.Interop.ScriptInstanceManager")!;
 
     private static object? Call(string name, Type[] argTypes, params object?[] args)

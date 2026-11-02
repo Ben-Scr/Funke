@@ -6,14 +6,19 @@
 #include "Core/EngineModules.hpp"
 #include "Components/Graphics/Camera3DComponent.hpp"
 #include "Components/UI/InteractableComponent.hpp"
+#include "Components/UI/HorizontalLayoutGroupComponent.hpp"
+#include "Components/UI/ContentSizeFitterComponent.hpp"
+#include "Components/UI/WidthConstraintComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/EntityHelper.hpp"
 #include "Scene/Scene.hpp"
+#include "Project/ProjectManager.hpp"
 #include "Systems/UILayoutSystem.hpp"
 #include "Systems/UIEventSystem.hpp"
 #include "Components/General/Transform3DComponent.hpp"
 #include <glm/gtc/matrix_transform.hpp>
+#include <algorithm>
 
 using namespace Funke;
 
@@ -93,7 +98,7 @@ TEST_CASE("Fill Parent lets a canvas follow a wider screen") {
 	}
 }
 
-TEST_CASE("UpdateUILayout skips an unchanged pass until the layout is invalidated") {
+TEST_CASE("UpdateUILayout reuses unchanged layouts and observes direct field edits") {
 	WideSurfaceScope surface;
 	auto scene = Scene::CreateDetachedScene("Layout Gate");
 	Entity panel = EntityHelper::CreateUIPanel(*scene);
@@ -102,14 +107,119 @@ TEST_CASE("UpdateUILayout skips an unchanged pass until the layout is invalidate
 
 	UpdateUILayout(*scene);
 	const float width = rect.ResolvedMax.x - rect.ResolvedMin.x;
+	const uint64_t revision = GetUILayoutRevision(*scene);
+	UpdateUILayout(*scene);
+	ComputeUILayout(*scene);
+	CHECK(GetUILayoutRevision(*scene) == revision);
 	rect.SizeDelta = Vec2{ 300.0f, 100.0f };
 
 	UpdateUILayout(*scene);
-	CHECK(rect.ResolvedMax.x - rect.ResolvedMin.x == doctest::Approx(width));
+	CHECK(rect.ResolvedMax.x - rect.ResolvedMin.x == doctest::Approx(width * 3.0f));
+	CHECK(GetUILayoutRevision(*scene) == revision + 1);
 
 	InvalidateUILayout();
 	UpdateUILayout(*scene);
 	CHECK(rect.ResolvedMax.x - rect.ResolvedMin.x == doctest::Approx(width * 3.0f));
+	CHECK(GetUILayoutRevision(*scene) == revision + 2);
+}
+
+TEST_CASE("UILayout cache observes hierarchy order disabled children and layout settings") {
+	WideSurfaceScope surface;
+	auto scene = Scene::CreateDetachedScene("Layout Cache Inputs");
+	Entity row = EntityHelper::CreateUIPanel(*scene);
+	Entity first = EntityHelper::CreateUIPanel(*scene);
+	Entity second = EntityHelper::CreateUIPanel(*scene);
+	first.SetParent(row);
+	second.SetParent(row);
+	row.GetComponent<RectTransform2DComponent>().SizeDelta = { 600.0f, 200.0f };
+	row.AddComponent<HorizontalLayoutGroupComponent>();
+	ComputeUILayout(*scene);
+	CHECK(first.GetComponent<RectTransform2DComponent>().ResolvedMin.x < second.GetComponent<RectTransform2DComponent>().ResolvedMin.x);
+	const uint64_t revision = GetUILayoutRevision(*scene);
+	ComputeUILayout(*scene);
+	CHECK(GetUILayoutRevision(*scene) == revision);
+
+	auto& children = row.GetComponent<HierarchyComponent>().Children;
+	std::reverse(children.begin(), children.end());
+	UpdateUILayout(*scene);
+	CHECK(second.GetComponent<RectTransform2DComponent>().ResolvedMin.x < first.GetComponent<RectTransform2DComponent>().ResolvedMin.x);
+	const float secondX = second.GetComponent<RectTransform2DComponent>().ResolvedMin.x;
+	second.AddComponent<DisabledTag>();
+	UpdateUILayout(*scene);
+	CHECK(first.GetComponent<RectTransform2DComponent>().ResolvedMin.x == doctest::Approx(secondX));
+
+	row.GetComponent<HorizontalLayoutGroupComponent>().PaddingLeft = 30.0f;
+	UpdateUILayout(*scene);
+	CHECK(first.GetComponent<RectTransform2DComponent>().ResolvedMin.x > secondX);
+	first.AddComponent<WidthConstraintComponent>().MaxWidth = 25.0f;
+	UpdateUILayout(*scene);
+	CHECK(first.GetComponent<RectTransform2DComponent>().SizeDelta.x == doctest::Approx(25.0f));
+}
+
+TEST_CASE("UILayout cache refreshes after direct project default font changes") {
+	WideSurfaceScope surface;
+	struct ProjectScope {
+		std::unique_ptr<FunkeProject> Previous;
+		ProjectScope() {
+			if (const auto* current = ProjectManager::GetCurrentProject()) Previous = std::make_unique<FunkeProject>(*current);
+			ProjectManager::SetCurrentProject(std::make_unique<FunkeProject>());
+		}
+		~ProjectScope() { ProjectManager::SetCurrentProject(std::move(Previous)); }
+	} project;
+	auto scene = Scene::CreateDetachedScene("Layout Font Change");
+	EntityHelper::CreateUIPanel(*scene);
+	UpdateUILayout(*scene);
+	const uint64_t revision = GetUILayoutRevision(*scene);
+	UpdateUILayout(*scene);
+	CHECK(GetUILayoutRevision(*scene) == revision);
+	ProjectManager::GetCurrentProject()->DefaultFontAssetId = 123456789;
+	UpdateUILayout(*scene);
+	CHECK(GetUILayoutRevision(*scene) == revision + 1);
+}
+
+TEST_CASE("UILayout cache waits for coupled fitters and groups to settle") {
+	WideSurfaceScope surface;
+	auto scene = Scene::CreateDetachedScene("Layout Cache Convergence");
+	Entity row = EntityHelper::CreateUIPanel(*scene);
+	Entity first = EntityHelper::CreateUIPanel(*scene);
+	Entity second = EntityHelper::CreateUIPanel(*scene);
+	first.SetParent(row);
+	second.SetParent(row);
+	row.AddComponent<HorizontalLayoutGroupComponent>();
+	row.AddComponent<ContentSizeFitterComponent>().HorizontalFit = true;
+	first.GetComponent<RectTransform2DComponent>().SizeDelta = { 100.0f, 30.0f };
+	second.GetComponent<RectTransform2DComponent>().SizeDelta = { 100.0f, 30.0f };
+	UpdateUILayout(*scene);
+	const float initialWidth = row.GetComponent<RectTransform2DComponent>().SizeDelta.x;
+	UpdateUILayout(*scene);
+	CHECK(row.GetComponent<RectTransform2DComponent>().SizeDelta.x > initialWidth);
+	UpdateUILayout(*scene);
+	const uint64_t revision = GetUILayoutRevision(*scene);
+	UpdateUILayout(*scene);
+	CHECK(GetUILayoutRevision(*scene) == revision);
+	first.GetComponent<RectTransform2DComponent>().SizeDelta.x = 200.0f;
+	UpdateUILayout(*scene);
+	CHECK(GetUILayoutRevision(*scene) == revision + 1);
+}
+
+TEST_CASE("UILayout cache handles surface changes and world canvas component changes") {
+	WideSurfaceScope surface;
+	auto scene = Scene::CreateDetachedScene("Layout Cache Surface");
+	Entity canvas = EntityHelper::CreateUIPanel(*scene);
+	auto& rect = canvas.GetComponent<RectTransform2DComponent>();
+	rect.SizeDelta = { 400.0f, 200.0f };
+	rect.FillWidth = true;
+	UpdateUILayout(*scene);
+	CHECK(rect.GetSize().x == doctest::Approx(2400.0f));
+	Window::SetUIRegion(0, 0, 800, 600);
+	UpdateUILayout(*scene);
+	CHECK(rect.GetSize().x == doctest::Approx(800.0f));
+	canvas.AddComponent<Transform3DComponent>();
+	UpdateUILayout(*scene);
+	CHECK(rect.GetSize().x == doctest::Approx(400.0f));
+	const uint64_t revision = GetUILayoutRevision(*scene);
+	UpdateUILayout(*scene);
+	CHECK(GetUILayoutRevision(*scene) == revision);
 }
 
 TEST_CASE("World UI keeps local layout independent of screen dimensions") {

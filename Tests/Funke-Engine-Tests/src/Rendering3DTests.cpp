@@ -1,18 +1,25 @@
 #include <doctest/doctest.h>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "Assets/AssetRegistry.hpp"
 #include "Components/General/Transform3DComponent.hpp"
 #include "Components/Graphics/Camera3DComponent.hpp"
 #include "Components/Graphics/DirectionalLightComponent.hpp"
 #include "Components/Graphics/MeshRendererComponent.hpp"
 #include "Components/Graphics/PointLightComponent.hpp"
+#include "Components/Graphics/PostProcessing2DComponent.hpp"
 #include "Components/Graphics/SpotLightComponent.hpp"
 #include "Core/Application.hpp"
 #include "Core/GraphicsSettings.hpp"
+#include "Core/UUID.hpp"
+#include "DevTools/RunAutomation.hpp"
+#include "Graphics/Framebuffer.hpp"
 #include "Graphics/Frustum.hpp"
 #include "Graphics/Lighting3D.hpp"
 #include "Graphics/Material.hpp"
 #include "Graphics/MeshAsset.hpp"
+#include "Graphics/PostProcessing/PostProcessor.hpp"
+#include "Graphics/RenderApi.hpp"
 #include "Graphics/Renderer3D.hpp"
 #include "Graphics/SkyAmbient.hpp"
 #include "Project/FunkeProject.hpp"
@@ -31,9 +38,31 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 
 using namespace Funke;
+
+TEST_CASE("Early mesh culling preserves off-camera shadow casters and unbounded vertex displacement") {
+	const FrustumPlanes camera = ExtractFrustum(glm::orthoRH_ZO(-2.0f, 2.0f, -2.0f, 2.0f, 1.0f, 10.0f));
+	const FrustumPlanes shadow = ExtractFrustum(glm::orthoRH_ZO(-10.0f, 10.0f, -10.0f, 10.0f, 1.0f, 20.0f));
+	const glm::vec3 extent(0.5f);
+	const MeshVisibility visible = ClassifyMeshVisibility(camera, &shadow, { 0, 0, -5 }, extent, true, false);
+	CHECK(visible.Visible);
+	CHECK_FALSE(visible.CastsShadow);
+	CHECK(visible.IsNeeded());
+	const MeshVisibility caster = ClassifyMeshVisibility(camera, &shadow, { 5, 0, -5 }, extent, true, true);
+	CHECK_FALSE(caster.Visible);
+	CHECK(caster.CastsShadow);
+	CHECK(caster.IsNeeded());
+	CHECK_FALSE(ClassifyMeshVisibility(camera, &shadow, { 5, 0, -5 }, extent, true, false).IsNeeded());
+	CHECK_FALSE(ClassifyMeshVisibility(camera, nullptr, { 5, 0, -5 }, extent, true, true).IsNeeded());
+	CHECK_FALSE(ClassifyMeshVisibility(camera, &shadow, { 20, 0, -5 }, extent, true, true).IsNeeded());
+	const MeshVisibility displaced = ClassifyMeshVisibility(camera, &shadow, { 20, 0, -5 }, extent, false, true);
+	CHECK(displaced.Visible);
+	CHECK(displaced.CastsShadow);
+	CHECK(displaced.IsNeeded());
+}
 
 namespace {
 	struct TempDirectory {
@@ -63,6 +92,128 @@ namespace {
 		info.deserialize(target, Json::Parse(Json::Stringify(json)));
 		return json;
 	}
+
+	class PostProcessRegressionApplication final : public Application {
+	public:
+		explicit PostProcessRegressionApplication(uint64_t material) : m_Material(material) {}
+
+		ApplicationConfig GetConfiguration() const override {
+			auto config = ApplicationConfig::Minimal();
+			config.WindowSpecification = WindowSpecification(160, 120, "Funke post-process regression", false, true, false);
+			config.EnableShaderManager = true;
+			config.SetWindowIcon = false;
+			config.RunInBackground = true;
+			config.Vsync = false;
+			return config;
+		}
+
+		void Update() override {
+			Application::Quit();
+			Renderer3D renderer;
+			struct RendererCleanup {
+				Renderer3D& Value;
+				~RendererCleanup() { Value.Shutdown(); }
+			} rendererCleanup{ renderer };
+			if (!renderer.Initialize()) return;
+			Framebuffer first(128, 96), second(128, 96), source(128, 96);
+			if (!first.IsValid() || !second.IsValid() || !source.IsValid()) return;
+			auto main = Scene::CreateDetachedScene("Main");
+			auto empty = Scene::CreateDetachedScene("Empty additive");
+			Entity cube = main->CreateEmptyEntity();
+			cube.AddComponent<Transform3DComponent>();
+			cube.AddComponent<MeshRendererComponent>();
+			Entity sun = main->CreateEmptyEntity();
+			sun.AddComponent<Transform3DComponent>();
+			sun.AddComponent<DirectionalLightComponent>();
+			Camera3DView view;
+			view.Position = { 0, 0, 5 };
+			view.View = glm::lookAtRH(view.Position, glm::vec3(0), glm::vec3(0, 1, 0));
+			view.Projection = glm::perspectiveRH_ZO(glm::radians(60.0f), 128.0f / 96.0f, 0.1f, 50.0f);
+			PostProcessing2DComponent effects;
+			effects.CustomEffects[0] = m_Material;
+			auto draw = [&](Framebuffer& target, bool appendEmpty) {
+				RenderApi::BindFramebuffer(target);
+				RenderApi::SetViewport(0, 0, 128, 96);
+				RenderApi::SetClearColor(Color::Black());
+				RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+				if (!renderer.BeginPostProcess(&effects, Color::Black())) return false;
+				renderer.RenderScene(*main, view);
+				if (appendEmpty) renderer.RenderScene(*empty, view);
+				renderer.EndPostProcess();
+				return true;
+			};
+			if (draw(first, false) && draw(second, true)) {
+				std::vector<uint8_t> a, b;
+				EmptyScenePreservesInputs = first.ReadPixelsRGBA8(a) && second.ReadPixelsRGBA8(b)
+					&& a == b && a.size() == 128 * 96 * 4 && a[0] > 240 && a[1] < 5;
+			}
+
+			PostProcessor processor;
+			if (processor.Initialize()) {
+				const wgpu::TextureView firstView(reinterpret_cast<WGPUTextureView>(first.GetColorTextureBackendId()));
+				const wgpu::TextureView secondView(reinterpret_cast<WGPUTextureView>(second.GetColorTextureBackendId()));
+				PostProcessScene red, green;
+				red.SunRadiance = { 0.5f, 0, 0, 1 };
+				red.Position = { 0.5f, 0, 0 };
+				green.SunRadiance = { 0, 0.5f, 0, 1 };
+				green.Position = { 0, 0.5f, 0 };
+				processor.Run(source, firstView, wgpu::TextureFormat::RGBA8Unorm, 128, 96,
+					&effects, PostProcessingQualityLevel::High, true, &red);
+				processor.Run(source, secondView, wgpu::TextureFormat::RGBA8Unorm, 128, 96,
+					&effects, PostProcessingQualityLevel::High, true, &green);
+				std::vector<uint8_t> a, b;
+				ConsecutiveCustomPassesRetainUniforms = first.ReadPixelsRGBA8(a) && second.ReadPixelsRGBA8(b)
+					&& a.size() == 128 * 96 * 4 && b.size() == a.size()
+					&& a[0] > 240 && a[1] < 5 && b[0] < 5 && b[1] > 240;
+			}
+			RenderApi::BindDefaultFramebuffer();
+			Completed = true;
+		}
+
+		bool Completed = false;
+		bool EmptyScenePreservesInputs = false;
+		bool ConsecutiveCustomPassesRetainUniforms = false;
+	private:
+		uint64_t m_Material;
+	};
+}
+
+TEST_CASE("GPU custom post processing preserves empty additive scenes and consecutive uniform uploads") {
+	const char* enabled = std::getenv("FUNKE_TEST_RENDER_GPU");
+	if (!enabled || std::string(enabled) != "1") {
+		MESSAGE("Set FUNKE_TEST_RENDER_GPU=1 for the background WebGPU regression test.");
+		return;
+	}
+	TempDirectory files("FunkePostProcessRegression_");
+	const uint64_t shaderId = UUID(), materialId = UUID();
+	const std::string shader = Path::ToUtf8(files.Root / "probe.wgsl");
+	const std::string material = Path::ToUtf8(files.Root / "probe.material");
+	REQUIRE(File::WriteAllText(shader, R"WGSL(// @target PostProcess
+fn surface(in: SurfaceInput) -> SurfaceOutput {
+ var out: SurfaceOutput;
+ let shadow = select(0.0, 1.0, scene.shadowParams.x > 0.0);
+ out.color = vec4<f32>(select(scene.sunRadiance.rgb + globals.cameraPosition.xyz,
+  vec3<f32>(shadow, 0.0, 0.0), scene.flags.x > 0.5), 1.0);
+ return out;
+}
+)WGSL"));
+	REQUIRE(File::WriteAllText(material, "{\"shader\":\"" + std::to_string(shaderId) + "\"}"));
+	AssetRegistry::RegisterBuiltInAsset(shader, shaderId, AssetKind::Shader);
+	AssetRegistry::RegisterBuiltInAsset(material, materialId, AssetKind::Material);
+	struct RunCleanup {
+		~RunCleanup() { Application::SetCommandLineArgs(0, nullptr); RunAutomation::Reset(); }
+	} cleanup;
+	RunAutomation::Options options;
+	options.Background = true;
+	RunAutomation::Configure(options);
+	char executable[] = "Funke-PostProcess-Test", background[] = "--background";
+	char* arguments[] = { executable, background };
+	Application::SetCommandLineArgs(2, arguments);
+	PostProcessRegressionApplication application(materialId);
+	CHECK(application.Run() == 0);
+	CHECK(application.Completed);
+	CHECK(application.EmptyScenePreservesInputs);
+	CHECK(application.ConsecutiveCustomPassesRetainUniforms);
 }
 
 TEST_CASE("Billboard bounds contain shader corners for every rotation and camera basis") {

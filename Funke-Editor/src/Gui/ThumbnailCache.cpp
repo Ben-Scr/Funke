@@ -26,6 +26,14 @@ namespace Funke {
 
 	void ThumbnailCache::EnforceCapacity() {
 		const uint64_t currentFrame = static_cast<uint64_t>(ImGui::GetFrameCount());
+		if (m_LastBudgetFrame == currentFrame && m_Cache.size() <= k_MaxEntries) return;
+		m_LastBudgetFrame = currentFrame;
+		const auto bytesUsed = [](const CachedThumbnail& entry) -> size_t {
+			const auto* texture = entry.Preview->Texture.get();
+			return texture ? static_cast<size_t>(texture->GetWidth()) * static_cast<size_t>(texture->GetHeight()) * 4 : 0;
+		};
+		size_t bytes = 0;
+		for (const auto& [path, entry] : m_Cache) bytes += bytesUsed(entry);
 		// Evict least-recently-used (back of list) until under the cap, but NEVER an
 		// entry accessed this frame: a directory with >k_MaxEntries images renders
 		// all tiles in one frame, and evicting an already-drawn tile here would
@@ -34,13 +42,14 @@ namespace Funke {
 		// later frame (when they're no longer touched), so the cache may transiently
 		// exceed the cap by the number of tiles drawn this frame.
 		auto it = m_LRU.end();
-		while (m_Cache.size() > k_MaxEntries && it != m_LRU.begin()) {
+		while ((m_Cache.size() > k_MaxEntries || bytes > k_MaxBytes) && it != m_LRU.begin()) {
 			--it;
 			auto cacheIt = m_Cache.find(*it);
-			if (cacheIt != m_Cache.end() && cacheIt->second.LastUsedFrame == currentFrame) {
+			if (cacheIt != m_Cache.end() && cacheIt->second.LastUsedFrame + 1 >= currentFrame) {
 				continue; // in use this frame — skip toward the front
 			}
 			if (cacheIt != m_Cache.end()) {
+				bytes -= bytesUsed(cacheIt->second);
 				m_Cache.erase(cacheIt);
 			}
 			it = m_LRU.erase(it); // returns the element after the erased one (toward end)
@@ -52,6 +61,7 @@ namespace Funke {
 		if (it != m_Cache.end()) {
 			TouchLru(it); // E31: lookup counts as recent use
 			auto* texture = it->second.Preview->GetTexture();
+			EnforceCapacity();
 			return texture ? texture->GetHandle() : 0;
 		}
 
@@ -72,7 +82,9 @@ namespace Funke {
 		const TextureMeta meta = AssetRegistry::ReadTextureMeta(absolutePath);
 		const Filter importFilter = meta.HasImportBlock ? meta.Import.FilterMode : Filter::Point;
 
-		auto preview = AsyncTexturePreviews::Get().Request(absolutePath, importFilter, false, false);
+		// Slices use source-pixel UV coordinates and retain their original aligned grid.
+		auto preview = AsyncTexturePreviews::Get().Request(absolutePath, importFilter, false, false,
+			meta.Sprites.empty() ? 256 : 0);
 		auto lruIt = m_LRU.insert(m_LRU.begin(), absolutePath);
 		const uint64_t currentFrame = static_cast<uint64_t>(ImGui::GetFrameCount());
 		m_Cache[absolutePath] = { std::move(preview), lruIt, currentFrame };

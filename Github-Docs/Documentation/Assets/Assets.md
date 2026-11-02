@@ -248,9 +248,9 @@ See [Editor](../Editor/Editor.md) for how the Asset Browser fits with the other 
 | Where assets come from | The project's `Assets` folder | Staged project and engine assets, loose or in `.fbundle` files |
 | Discovery | Scanned + watched live | Indexed from the exported content; loaded on demand |
 | Hot-reload | Yes — edits apply live | No — files are read once |
-| Form on disk | Loose files | Loose files by default; optional bundles with lossless LZ4 compression |
+| Form on disk | Loose files | Loose files by default; optional bundles with lossless LZ4 or Zstandard compression |
 
-Builds prune unreachable assets and convert scenes, prefabs and Data Assets to binary. **Build Profiles › Asset Packaging › Bundle Assets** optionally packs the staged `Assets/` and `FunkeAssets/` into `Assets.fbundle` and `FunkeAssets.fbundle`; **Compress Bundles** enables lossless LZ4 compression. Both options default to off. Funke's asset APIs read either form, preserving GUIDs and import metadata. `Assets/StreamingAssets/` stays loose for `System.IO` and libraries that require real filenames. See [Asset bundles](../Editor/Building-and-Shipping.md#asset-bundles) for limits and distribution details.
+Builds prune unreachable assets and convert scenes, prefabs and Data Assets to binary. **Build Profiles › Asset Packaging › Bundle Assets** optionally packs the staged `Assets/` and `FunkeAssets/` into `Assets.fbundle` and `FunkeAssets.fbundle`; **Compress Bundles** enables lossless compression; the **Compression** selector offers LZ4 (default) or Zstandard. Both options default to off. Funke's asset APIs read either form, preserving GUIDs and import metadata. `Assets/StreamingAssets/` stays loose for `System.IO` and libraries that require real filenames. See [Asset bundles](../Editor/Building-and-Shipping.md#asset-bundles) for limits and distribution details.
 
 ---
 

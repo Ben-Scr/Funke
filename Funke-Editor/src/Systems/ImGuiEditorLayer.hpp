@@ -200,7 +200,8 @@ namespace Funke {
 		bool SaveCurrentProjectMetadata();
 		void ClearPendingEditorAction();
 		std::vector<std::shared_ptr<Scene>> GetDirtyScenesForPendingAction() const;
-		bool OpenSceneExclusive(const std::string& path);
+		bool OpenSceneExclusive(const std::string& path, bool asynchronous = false);
+		void FinishSceneOpen(const std::shared_ptr<Scene>& scene, const std::string& definitionName);
 		bool LoadEditorScene(const std::string& path, bool additive,
 			std::shared_ptr<Scene>& loadedScene, std::string& definitionName,
 			bool allowDuplicateSceneName = false, bool suspendLifecycle = false);
@@ -654,6 +655,9 @@ namespace Funke {
 		bool m_DeferredQuitRequested = false;
 		std::string m_PendingEngineRebuildWorkingDirectory;
 		uint64_t m_EditorSceneDefinitionSerial = 0;
+		uint64_t m_SceneOpenOperation = 0;
+		std::string m_SceneOpenFallbackPath;
+		std::shared_ptr<int> m_SceneOpenLifetime = std::make_shared<int>(0);
 		std::unordered_map<std::string, std::string> m_EditorSceneDefinitionsBySceneName;
 		std::unordered_set<std::string> m_EditorOwnedSceneDefinitions{ "$EditorWorkingScene" };
 

@@ -207,6 +207,8 @@ namespace Funke {
 		void OnPreRenderScenes();
 		void FixedUpdateScenes();
 		void InitializeStartupScenes();
+		void InitializeStartupScenesAsync(std::function<void()> completion);
+		void PumpStartupSceneQueue();
 		void RegisterEntityPresetImpl(EntityPresetInfo preset);
 		SceneDefinition& RegisterSceneImpl(const std::string& name);
 		SceneLoadResult TryLoadSceneImpl(const std::string& name);
@@ -271,6 +273,12 @@ namespace Funke {
 
 		SceneDefinitionMap m_SceneDefinitions;
 		std::vector<std::shared_ptr<AsyncSceneLoad>> m_AsyncSceneLoads;
+		std::vector<std::string> m_StartupSceneQueue;
+		size_t m_StartupSceneNext = 0;
+		bool m_StartupFallbackAttempted = false;
+		bool m_StartupQueueReady = false;
+		std::string m_StartupRetryName;
+		std::function<void()> m_StartupSceneCompletion;
 		double m_AsyncSceneLoadBudgetMs = 2.0;
 		size_t m_AsyncSceneLoadMaxEntities = 128;
 		bool m_ShuttingDown = false;

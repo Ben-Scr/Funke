@@ -318,6 +318,9 @@ namespace Funke {
 
 	void AssetLoader::Pump(double budgetMs, size_t maxPublications) {
 		if (!IsMainThread()) return;
+#if FUNKE_WITH_RENDER
+		TextureUploadBatch uploadBatch;
+#endif
 		const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double, std::milli>(std::max(0.0, budgetMs));
 		size_t publications = 0;
 		for (auto it = g_Work.begin(); it != g_Work.end();) {

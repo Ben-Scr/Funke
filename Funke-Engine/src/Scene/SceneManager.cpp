@@ -468,6 +468,13 @@ namespace Funke {
 	}
 
 	void SceneManager::PumpAsyncSceneLoads() {
+		if (m_StartupQueueReady && !m_ShuttingDown && !m_LoadInProgress && m_ReleaseDepth == 0) {
+			m_StartupQueueReady = false;
+			const std::string retry = std::exchange(m_StartupRetryName, {});
+			if (!retry.empty() && !LoadSceneInternal(retry, m_ActiveScene != nullptr))
+				FNK_CORE_ERROR_TAG("SceneManager", "Startup recovery failed for '{}'", retry);
+			PumpStartupSceneQueue();
+		}
 		if (m_AsyncSceneLoads.empty() || m_ShuttingDown || m_LoadInProgress || m_ReleaseDepth != 0) return;
 		const auto next = std::find_if(m_AsyncSceneLoads.begin(), m_AsyncSceneLoads.end(), [](const auto& candidate) {
 			return candidate->Cancelled || !candidate->Preload || !candidate->Ready;
@@ -1015,6 +1022,8 @@ namespace Funke {
 
 	void SceneManager::Shutdown() {
 		m_ShuttingDown = true;
+		m_StartupSceneCompletion = {};
+		m_StartupQueueReady = false;
 		CancelAllAsyncSceneLoads();
 		auto operations = std::move(m_AsyncSceneLoads);
 		for (const auto& operation : operations) {
@@ -1173,6 +1182,7 @@ namespace Funke {
 						loaded = preparedLoad
 							? SceneSerializer::DeserializeScene(*newScene, preparedLoad->Prepared.Roots[i], step.FilePath)
 							: SceneSerializer::LoadFromFile(*newScene, step.FilePath);
+						if (!loaded && step.FileFallback) loaded = step.FileFallback(*newScene);
 					}
 					loaded = loaded && !contentScope.HasRollbackFailure();
 				}
@@ -1864,6 +1874,51 @@ namespace Funke {
 			auto scene = m_LoadedScenes[i];
 			if (scene && scene->IsLoaded() && !scene->IsLifecycleSuspended()) scene->FixedUpdateSystems();
 		}
+	}
+
+	void SceneManager::InitializeStartupScenesAsync(std::function<void()> completion) {
+		m_StartupSceneQueue.clear();
+		m_StartupSceneNext = 0;
+		m_StartupFallbackAttempted = false;
+		m_StartupQueueReady = false;
+		m_StartupRetryName.clear();
+		m_StartupSceneCompletion = std::move(completion);
+		for (const std::string& name : m_SceneDefinitionOrder) {
+			const auto found = m_SceneDefinitions.find(name);
+			if (found != m_SceneDefinitions.end() && found->second->IsStartupScene()) m_StartupSceneQueue.push_back(name);
+		}
+		PumpStartupSceneQueue();
+	}
+
+	void SceneManager::PumpStartupSceneQueue() {
+		if (m_ShuttingDown || !m_StartupSceneCompletion) return;
+		while (m_StartupSceneNext < m_StartupSceneQueue.size()) {
+			const std::string name = m_StartupSceneQueue[m_StartupSceneNext++];
+			if (!m_SceneDefinitions.contains(name)) continue;
+			if (LoadSceneAsync(name, m_ActiveScene != nullptr, [this, name](uint64_t, const SceneLoadResult& result) {
+				if (m_ShuttingDown || result.Status == SceneLoadStatus::Cancelled) {
+					m_StartupSceneCompletion = {};
+					return;
+				}
+				if (!result) {
+					const auto* definition = GetSceneDefinition(name);
+					const bool hasFallback = definition && std::any_of(definition->m_LoadCallbacks.begin(), definition->m_LoadCallbacks.end(),
+						[](const auto& step) { return static_cast<bool>(step.FileFallback); });
+					if (hasFallback) m_StartupRetryName = name;
+					else
+						FNK_CORE_ERROR_TAG("SceneManager", "Failed to load startup scene '{}': {}", name, result.Message);
+				}
+				m_StartupQueueReady = true;
+			}) != 0) return;
+		}
+		if (m_LoadedScenes.empty() && !m_SceneDefinitionOrder.empty() && !m_StartupFallbackAttempted) {
+			m_StartupFallbackAttempted = true;
+			m_StartupSceneQueue.push_back(m_SceneDefinitionOrder.front());
+			PumpStartupSceneQueue();
+			return;
+		}
+		auto completion = std::move(m_StartupSceneCompletion);
+		if (completion) completion();
 	}
 
 	void SceneManager::InitializeStartupScenes() {

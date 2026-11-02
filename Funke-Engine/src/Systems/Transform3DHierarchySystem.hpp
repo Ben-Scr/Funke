@@ -28,5 +28,7 @@ namespace Funke {
 		static FUNKE_API Transform3DPropagationStats GetLastPropagationStats(const Scene& scene);
 		// Current world matrix from the local transforms up the hierarchy, for callers that can't wait for the next Propagate.
 		static FUNKE_API glm::mat4 ComputeWorldMatrix(const entt::registry& registry, EntityHandle entity);
+        // Preserve small child offsets before subtracting the render origin.
+        static FUNKE_API glm::dmat4 ComputeWorldMatrixPrecise(const entt::registry& registry, EntityHandle entity);
 	};
 }

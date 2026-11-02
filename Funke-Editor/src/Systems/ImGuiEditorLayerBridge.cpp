@@ -26,6 +26,7 @@
 namespace Funke {
 
 	std::string ImGuiEditorLayer::GetBridgeBusyReason() const {
+		if (m_SceneOpenOperation != 0 || !m_SceneOpenFallbackPath.empty()) return "a scene is loading";
 		if (!Application::IsStartupLoadComplete() || m_Splash.IsCovering()) return "the editor is still loading";
 		if (m_BuildState != 0) return "a game build is running";
 		if (m_ReserializeState != 0) return "scenes and prefabs are being reserialized";
@@ -260,7 +261,7 @@ namespace Funke {
 		if (hasCamera3D) {
 			Transform3DHierarchySystem::Propagate(*scene);
 			const auto& registry = scene->GetRegistry();
-			view3D = Renderer3D::MakeView(registry.get<Transform3DComponent>(camera3DEntity).WorldMatrix,
+			view3D = Renderer3D::MakePreciseView(Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, camera3DEntity),
 				registry.get<Camera3DComponent>(camera3DEntity), static_cast<float>(width) / static_cast<float>(height));
 		}
 		if (cameraViewport) {

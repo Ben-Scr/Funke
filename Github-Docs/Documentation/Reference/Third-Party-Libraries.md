@@ -33,6 +33,7 @@ This page maps Funke's main third-party dependencies to their roles. For the com
 | [GLM](https://github.com/g-truc/glm) | Vector and matrix math. |
 | [STB](https://github.com/nothings/stb) | Image decoding/writing, TrueType font rasterization and Vorbis decoding. |
 | [LZ4](https://github.com/lz4/lz4) | Optional lossless compression of `.fbundle` asset archives. |
+| [Zstandard](https://github.com/facebook/zstd) | Alternative lossless compression of `.fbundle` asset archives. |
 | [MIT KEMAR measurements](https://sound.media.mit.edu/resources/KEMAR.html) | The measured head-related impulse responses used by headphone HRTF spatial audio; see [Spatial Audio](../Engine-Core/Spatial-Audio.md). |
 
 ---
@@ -52,6 +53,10 @@ Logging and formatting use spdlog and fmt, enum reflection uses magic_enum, and 
 ## A note on supported frameworks
 
 For C# scripting, Funke targets **.NET 10.0 LTS**. Scripts and C# packages build against that runtime.
+
+macOS distributions include `libnethost.dylib` beside the engine library, including SDK export runtimes. Keeping the native host in a separate dynamic library prevents its private C++ type information from interfering with engine exception handling. Re-run Setup after updating an older source checkout that only contains `libnethost.a`.
+
+Dawn source setup checks the pinned root and dependency revisions on every run. Interrupted Git initialization can be resumed by rerunning the platform's `scripts/dawn/SetupDawn` script. Unexpected local source edits are preserved and reported. CI caches carry headers, libraries and revision/build metadata; they do not require a full source checkout. See [contributor build notes](../../../CONTRIBUTING.md).
 
 ## Related pages
 

@@ -62,7 +62,7 @@ namespace Funke {
 	namespace WebGPUBackend {
 		wgpu::TextureView LookupFramebufferDepthSampleView(uint32_t fboBackendId) {
 			GpuFramebuffer* fb = TryLookupFb(fboBackendId);
-			if (!fb) return nullptr;
+			if (!fb || !fb->DepthTexture) return nullptr;
 			if (!fb->DepthSampleView) {
 				wgpu::TextureViewDescriptor desc{};
 				desc.aspect = wgpu::TextureAspect::DepthOnly;
@@ -112,6 +112,7 @@ namespace Funke {
 		, m_Viewport(other.m_Viewport)
 		, m_ColorFormat(other.m_ColorFormat)
 		, m_SampleCount(other.m_SampleCount)
+		, m_WithDepth(other.m_WithDepth)
 	{
 		other.m_BackendId         = 0;
 		other.m_ColorTextureId    = 0;
@@ -127,6 +128,7 @@ namespace Funke {
 		m_DepthRenderbuffer = other.m_DepthRenderbuffer;
 		m_ColorFormat       = other.m_ColorFormat;
 		m_SampleCount       = other.m_SampleCount;
+		m_WithDepth         = other.m_WithDepth;
 		m_Viewport          = other.m_Viewport;
 		other.m_BackendId         = 0;
 		other.m_ColorTextureId    = 0;
@@ -152,7 +154,7 @@ namespace Funke {
 	}
 
 	bool Framebuffer::Recreate(int width, int height,
-		TextureFormat colorFormat, TextureFilter /*filter*/, uint32_t sampleCount)
+		TextureFormat colorFormat, TextureFilter /*filter*/, uint32_t sampleCount, bool withDepth)
 	{
 		if (width <= 0 || height <= 0) return false;
 		// Dawn hands back an error texture (not null) for unsupported counts; 1 and 4 work on every backend.
@@ -163,7 +165,8 @@ namespace Funke {
 
 		const bool sizeMatches = m_Viewport.GetWidth() == width
 			&& m_Viewport.GetHeight() == height;
-		if (m_BackendId != 0 && sizeMatches && m_ColorFormat == colorFormat && m_SampleCount == sampleCount) {
+		if (m_BackendId != 0 && sizeMatches && m_ColorFormat == colorFormat && m_SampleCount == sampleCount
+			&& m_WithDepth == withDepth) {
 			return true;
 		}
 
@@ -171,6 +174,7 @@ namespace Funke {
 		m_Viewport.SetSize(width, height);
 		m_ColorFormat = colorFormat;
 		m_SampleCount = sampleCount;
+		m_WithDepth = withDepth;
 		const bool multisampled = sampleCount > 1;
 
 		if (!WebGPUBackend::IsInitialized()) {
@@ -198,9 +202,6 @@ namespace Funke {
 			return false;
 		}
 
-		// Depth/stencil attachment — always D24S8. Project settings can
-		// add an HDR / no-stencil variant later for renderers that don't
-		// need stencil.
 		wgpu::TextureDescriptor depthDesc{};
 		depthDesc.dimension       = wgpu::TextureDimension::e2D;
 		depthDesc.size            = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
@@ -210,8 +211,8 @@ namespace Funke {
 		depthDesc.sampleCount     = sampleCount;
 		depthDesc.viewFormatCount = 0;
 
-		wgpu::Texture depth = device.CreateTexture(&depthDesc);
-		if (!depth) {
+		wgpu::Texture depth = withDepth ? device.CreateTexture(&depthDesc) : nullptr;
+		if (withDepth && !depth) {
 			FNK_CORE_ERROR_TAG("Framebuffer", "wgpu::Device::CreateTexture (depth) failed");
 			return false;
 		}
@@ -233,7 +234,7 @@ namespace Funke {
 		depthViewDesc.mipLevelCount   = 1;
 		depthViewDesc.arrayLayerCount = 1;
 		depthViewDesc.aspect          = wgpu::TextureAspect::All;
-		wgpu::TextureView depthView = depth.CreateView(&depthViewDesc);
+		wgpu::TextureView depthView = depth ? depth.CreateView(&depthViewDesc) : nullptr;
 
 		const uint32_t fbId = AllocateFbId();
 		// MUST be a real Dawn handle (not a pool int): imgui_impl_wgpu reinterpret_casts ImTextureID→WGPUTextureView and dereferences it.

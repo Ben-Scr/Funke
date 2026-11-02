@@ -10,7 +10,7 @@ sealed class ProjectEvaluation
 {
     public const string ProjectFilesChanged = "project files changed";
 
-    static readonly string[] s_SkippedDirectories = ["bin", "obj", ".git", ".vs", ".idea", ".funke", "node_modules"];
+    static readonly string[] s_SkippedDirectories = ["bin", "bin-int", "obj", "build", "builds", "out", ".git", ".vs", ".idea", ".funke", "node_modules"];
 
     public required string ProjectDirectory { get; init; }
     public required string TargetPath { get; init; }
@@ -20,7 +20,7 @@ sealed class ProjectEvaluation
     public required Dictionary<string, DateTime> ProjectFiles { get; init; }
     public required HashSet<string> SourceFiles { get; init; }
 
-    public static ProjectEvaluation Run(string projectPath, CompileRequest request)
+    public static ProjectEvaluation Run(string projectPath, CompileRequest request, bool fullBuild = false)
     {
         string projectDirectory = Path.GetDirectoryName(projectPath)!;
         // Snapshot before MSBuild runs so an edit made during evaluation still marks it stale.
@@ -38,11 +38,11 @@ sealed class ProjectEvaluation
         };
         foreach (string arg in new[]
         {
-            "msbuild", projectPath, "-restore", "-nologo", "-v:q", "-t:Compile",
+            "msbuild", projectPath, "-restore", "-nologo", "-v:q", fullBuild ? "-t:Build" : "-t:Compile",
             "-p:Configuration=" + request.Configuration,
             // Run every target up to csc and report its arguments; NonExistentFile defeats CoreCompile's up-to-date check.
             "-p:ProvideCommandLineArgs=true",
-            "-p:SkipCompilerExecution=true",
+            "-p:SkipCompilerExecution=" + (fullBuild ? "false" : "true"),
             @"-p:NonExistentFile=__NonExistentSubDir__\__NonExistentFile__",
         }.Concat(request.Properties).Concat(new[]
         {
@@ -66,6 +66,8 @@ sealed class ProjectEvaluation
         string output = stdout.Result;
         if (process.ExitCode != 0)
         {
+            if (fullBuild)
+                throw new CompilationFailedException(Tail(output + stderr.Result, 16000));
             throw new FallbackException("MSBuild evaluation failed:\n" + Tail(output + stderr.Result, 4000));
         }
 
@@ -108,7 +110,7 @@ sealed class ProjectEvaluation
         };
     }
 
-    public string? FindStaleReason()
+    public string? FindStaleReason(IReadOnlyList<string>? changedPaths = null)
     {
         var current = SnapshotProjectFiles(ProjectDirectory);
         foreach (var (path, stamp) in current)
@@ -122,7 +124,22 @@ sealed class ProjectEvaluation
         {
             return $"{ProjectFilesChanged}: a project file was removed";
         }
-        return DiscoverSourceFiles(ProjectDirectory).SetEquals(SourceFiles) ? null : "source files added or removed";
+        if (changedPaths == null)
+            return DiscoverSourceFiles(ProjectDirectory).SetEquals(SourceFiles) ? null : "source files added or removed";
+
+        foreach (string changedPath in changedPaths)
+        {
+            string path = Path.GetFullPath(changedPath, ProjectDirectory);
+            string extension = Path.GetExtension(path);
+            if (extension.Equals(".csproj", StringComparison.OrdinalIgnoreCase)
+                || extension.Equals(".props", StringComparison.OrdinalIgnoreCase)
+                || extension.Equals(".targets", StringComparison.OrdinalIgnoreCase)
+                || Path.GetFileName(path).Equals("global.json", StringComparison.OrdinalIgnoreCase))
+                return $"{ProjectFilesChanged}: {Path.GetFileName(path)}";
+            if (extension.Equals(".cs", StringComparison.OrdinalIgnoreCase) && SourceFiles.Contains(path) != File.Exists(path))
+                return "source files added or removed";
+        }
+        return null;
     }
 
     // MSBuild copies these next to the output; a compile that skips that step must not run without them.

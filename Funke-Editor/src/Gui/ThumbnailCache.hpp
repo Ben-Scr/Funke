@@ -17,6 +17,7 @@ namespace Funke {
 		// E31: hard cap so the cache cannot grow unbounded as the user navigates
 		// large project trees. Past this, the least-recently-used entry is evicted.
 		static constexpr size_t k_MaxEntries = 256;
+		static constexpr size_t k_MaxBytes = 128 * 1024 * 1024;
 
 		void Initialize();
 		void Shutdown();
@@ -66,6 +67,7 @@ namespace Funke {
 
 		std::unordered_map<std::string, CachedThumbnail> m_Cache;
 		std::list<std::string> m_LRU;
+		uint64_t m_LastBudgetFrame = ~uint64_t{0};
 	};
 
 } // namespace Funke

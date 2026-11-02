@@ -1,4 +1,4 @@
-"""Exercise a mixed Mach-O and managed payload with real macOS signing tools."""
+"""Small real Mach-O/codesign and C++ host-ABI checks, run natively on macOS."""
 
 from pathlib import Path
 import platform
@@ -60,6 +60,35 @@ class MacNativeTests(unittest.TestCase):
         self.run_tool([str(relocated / "Contents/MacOS/Funke-Launcher")])
         self.run_tool([str(relocated / "Contents/Resources/EngineSDK/Runtime-Dist/Funke-Runtime")])
 
+    def test_shared_nethost_preserves_standard_exception_catches(self):
+        native = mac.ROOT / "External/dotnet"
+        host = native / "lib/libnethost.dylib"
+        if not host.is_file() or not (native / "nethost.h").is_file():
+            self.skipTest("Run Setup before the native hosting integration check")
+        self.assertTrue(host.is_file(), "macOS Setup must deploy libnethost.dylib")
+        source = self.root / "probe.cpp"
+        source.write_text(r'''
+#include <nethost.h>
+#include <stdexcept>
+#include <cstdio>
+#include <cxxabi.h>
+#include <execinfo.h>
+int main() {
+    size_t length = 0;
+    get_hostfxr_path(nullptr, &length, nullptr);
+    try { throw std::runtime_error("expected runtime failure"); }
+    catch (const std::exception& error) { std::puts(error.what()); return 0; }
+    catch (...) {
+        std::fprintf(stderr, "Unmatched thrown type: %s\n", abi::__cxa_current_exception_type()->name());
+        void* stack[32]; backtrace_symbols_fd(stack, backtrace(stack, 32), 2);
+        return 1;
+    }
+}
+''')
+        executable = self.root / "probe"
+        self.run_tool(["clang++", "-std=c++20", "-O2", str(source), "-I", str(native), str(host),
+                       "-Wl,-rpath," + str(host.parent), "-o", str(executable)])
+        self.run_tool([str(executable)])
 
 
 if __name__ == "__main__":

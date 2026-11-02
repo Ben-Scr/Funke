@@ -12,11 +12,13 @@
 #include "Components/Graphics/SpotLightComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Core/Application.hpp"
+#include "Core/Time.hpp"
 #include "Gui/GuiRenderer.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
 #include "Graphics/CustomShaderGpu.hpp"
 #include "Graphics/CustomShaderLibrary.hpp"
 #include "Graphics/Framebuffer.hpp"
+#include "Graphics/FramebufferCache.hpp"
 #include "Graphics/Frustum.hpp"
 #include "Graphics/Lighting3D.hpp"
 #include "Graphics/Material.hpp"
@@ -50,6 +52,7 @@
 #include <optional>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace Funke {
 	namespace {
@@ -91,8 +94,10 @@ namespace Funke {
 			glm::vec4 ShadowParams;
 			glm::vec4 FogColor;         // linear rgb, w = 1 when fog is on
 			glm::vec4 FogParams;        // x = start, y = end
+            glm::vec4 WorldOrigin;
+            glm::vec4 RelativeCameraPosition;
 		};
-		static_assert(sizeof(FrameUniforms) == 272);
+		static_assert(sizeof(FrameUniforms) == 304);
 
 		struct GpuLight {
 			glm::vec4 PositionRange;
@@ -156,10 +161,6 @@ namespace Funke {
 			float ViewDistanceSq;  // sorts transparent items back to front
 			bool Transparent;
 			uint32_t Custom = 0;   // frame custom-material slot + 1; 0 = the standard shader
-			// World AABB for culling; Cullable is false when the vertex shader may move geometry past it.
-			glm::vec3 BoundsCenter{ 0.0f };
-			glm::vec3 BoundsExtent{ 0.0f };
-			bool Cullable = false;
 		};
 
 		// One custom-shaded material drawn this frame.
@@ -379,7 +380,7 @@ namespace Funke {
 
 		// The first enabled DirectionalLight is the main light: its ambient is the flat ambient, it alone casts shadows.
 		SceneLighting CollectLights(const entt::registry& registry, const glm::vec3& cameraPosition,
-			const FrustumPlanes& cameraFrustum, int maxLights) {
+			const FrustumPlanes& cameraFrustum, int maxLights, const glm::vec3& origin) {
 			std::vector<Lighting3D::LightCandidate> candidates;
 			SceneLighting result;
 			bool anyLight = false;
@@ -407,10 +408,10 @@ namespace Funke {
 				const auto& transform = points.get<const Transform3DComponent>(entity);
 				anyLight = true;
 				if (light.Intensity <= 0.0f || light.Range <= 0.0f
-					|| !IntersectsFrustumSphere(cameraFrustum, glm::vec3(transform.WorldMatrix[3]), light.Range)) continue;
+					|| !IntersectsFrustumSphere(cameraFrustum, glm::vec3(glm::dvec3(Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, entity)[3]) - glm::dvec3(origin)), light.Range)) continue;
 				Lighting3D::LightCandidate candidate;
 				candidate.Type = Lighting3D::LightType::Point;
-				candidate.Position = glm::vec3(transform.WorldMatrix[3]);
+				candidate.Position = glm::vec3(glm::dvec3(Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, entity)[3]) - glm::dvec3(origin));
 				candidate.Radiance = Lighting3D::SrgbToLinear(light.Color) * std::max(light.Intensity, 0.0f);
 				candidate.Range = light.Range;
 				candidates.push_back(candidate);
@@ -422,10 +423,10 @@ namespace Funke {
 				const auto& transform = spots.get<const Transform3DComponent>(entity);
 				anyLight = true;
 				if (light.Intensity <= 0.0f || light.Range <= 0.0f
-					|| !IntersectsFrustumSphere(cameraFrustum, glm::vec3(transform.WorldMatrix[3]), light.Range)) continue;
+					|| !IntersectsFrustumSphere(cameraFrustum, glm::vec3(glm::dvec3(Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, entity)[3]) - glm::dvec3(origin)), light.Range)) continue;
 				Lighting3D::LightCandidate candidate;
 				candidate.Type = Lighting3D::LightType::Spot;
-				candidate.Position = glm::vec3(transform.WorldMatrix[3]);
+				candidate.Position = glm::vec3(glm::dvec3(Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, entity)[3]) - glm::dvec3(origin));
 				const glm::vec3 forward = -glm::vec3(transform.WorldMatrix[2]);
 				candidate.Direction = glm::dot(forward, forward) > 1e-8f ? glm::normalize(forward) : glm::vec3(0.0f, 0.0f, -1.0f);
 				candidate.Radiance = Lighting3D::SrgbToLinear(light.Color) * std::max(light.Intensity, 0.0f);
@@ -501,6 +502,141 @@ namespace Funke {
 			wgpu::Buffer WireIndices;
 			uint32_t WireIndexCount = 0;
 		};
+
+		// Raw handles describe draw semantics without per-draw wrapper AddRef/Release traffic.
+		// A finished bundle owns the referenced Dawn resources; its signature is never hash-only.
+		struct BundleDraw {
+			WGPURenderPipeline Pipeline = nullptr;
+			WGPUBindGroup FrameGroup = nullptr;
+			WGPUBindGroup MaterialGroup = nullptr;
+			WGPUBuffer Vertices = nullptr;
+			WGPUBuffer Indices = nullptr;
+			uint32_t IndexCount = 0;
+			uint32_t InstanceCount = 0;
+			uint32_t FirstInstance = 0;
+			bool operator==(const BundleDraw&) const = default;
+		};
+
+		struct BundlePassKey {
+			WGPUBuffer Instances = nullptr;
+			wgpu::TextureFormat ColorFormat = wgpu::TextureFormat::Undefined;
+			wgpu::TextureFormat DepthFormat = wgpu::TextureFormat::Undefined;
+			uint32_t SampleCount = 1;
+			bool operator==(const BundlePassKey&) const = default;
+		};
+
+		struct DirectDrawEncoder {
+			WGPURenderPassEncoder Handle;
+			void Pipeline(WGPURenderPipeline value) const { wgpuRenderPassEncoderSetPipeline(Handle, value); }
+			void Group(uint32_t slot, WGPUBindGroup value) const { wgpuRenderPassEncoderSetBindGroup(Handle, slot, value, 0, nullptr); }
+			void Vertex(uint32_t slot, WGPUBuffer value) const { wgpuRenderPassEncoderSetVertexBuffer(Handle, slot, value, 0, WGPU_WHOLE_SIZE); }
+			void Index(WGPUBuffer value) const { wgpuRenderPassEncoderSetIndexBuffer(Handle, value, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE); }
+			void Draw(const BundleDraw& value) const { wgpuRenderPassEncoderDrawIndexed(Handle, value.IndexCount, value.InstanceCount, 0, 0, value.FirstInstance); }
+		};
+
+		struct RecordedDrawEncoder {
+			WGPURenderBundleEncoder Handle;
+			void Pipeline(WGPURenderPipeline value) const { wgpuRenderBundleEncoderSetPipeline(Handle, value); }
+			void Group(uint32_t slot, WGPUBindGroup value) const { wgpuRenderBundleEncoderSetBindGroup(Handle, slot, value, 0, nullptr); }
+			void Vertex(uint32_t slot, WGPUBuffer value) const { wgpuRenderBundleEncoderSetVertexBuffer(Handle, slot, value, 0, WGPU_WHOLE_SIZE); }
+			void Index(WGPUBuffer value) const { wgpuRenderBundleEncoderSetIndexBuffer(Handle, value, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE); }
+			void Draw(const BundleDraw& value) const { wgpuRenderBundleEncoderDrawIndexed(Handle, value.IndexCount, value.InstanceCount, 0, 0, value.FirstInstance); }
+		};
+
+		template<class Encoder>
+		static void EncodeBundleDraws(const Encoder& encoder, const BundlePassKey& key, const std::vector<BundleDraw>& draws) {
+			WGPURenderPipeline pipeline = nullptr;
+			WGPUBindGroup frameGroup = nullptr, materialGroup = nullptr;
+			WGPUBuffer vertices = nullptr, indices = nullptr;
+			encoder.Vertex(1, key.Instances);
+			for (const BundleDraw& draw : draws) {
+				if (pipeline != draw.Pipeline) {
+					encoder.Pipeline(draw.Pipeline);
+					pipeline = draw.Pipeline;
+					frameGroup = materialGroup = nullptr;
+				}
+				if (frameGroup != draw.FrameGroup) {
+					encoder.Group(0, draw.FrameGroup);
+					frameGroup = draw.FrameGroup;
+				}
+				// The standard shadow pipeline has no group 1. A later custom pipeline rebinds it.
+				if (draw.MaterialGroup && materialGroup != draw.MaterialGroup) {
+					encoder.Group(1, draw.MaterialGroup);
+					materialGroup = draw.MaterialGroup;
+				}
+				if (vertices != draw.Vertices) {
+					encoder.Vertex(0, draw.Vertices);
+					vertices = draw.Vertices;
+				}
+				if (indices != draw.Indices) {
+					encoder.Index(draw.Indices);
+					indices = draw.Indices;
+				}
+				encoder.Draw(draw);
+			}
+		}
+
+		struct DrawBundleCache {
+			static constexpr size_t k_MinDraws = 64;
+			wgpu::RenderBundle Bundle;
+			BundlePassKey Key;
+			std::vector<BundleDraw> Signature;
+			bool HaveSignature = false;
+			bool Attempted = false;
+			int64_t LastFrame = -1;
+
+			void Reset() {
+				Bundle = nullptr;
+				Signature.clear();
+				HaveSignature = false;
+				Attempted = false;
+				LastFrame = -1;
+			}
+
+			void Submit(wgpu::Device device, wgpu::RenderPassEncoder pass, const BundlePassKey& key,
+				std::vector<BundleDraw>& draws, int64_t frame) {
+				if (draws.size() < k_MinDraws) {
+					Reset();
+					if (!draws.empty()) EncodeBundleDraws(DirectDrawEncoder{ pass.Get() }, key, draws);
+					return;
+				}
+				// Keep the old bundle alive during comparison: its references prevent handle-address reuse.
+				const bool same = HaveSignature && Key == key && Signature == draws;
+				if (!same) {
+					Bundle = nullptr;
+					Attempted = false;
+				}
+				// Two equal signatures on consecutive frames before recording. Failed attempts wait for a change.
+				if (same && !Bundle && !Attempted && frame == LastFrame + 1) {
+					Attempted = true;
+					wgpu::RenderBundleEncoderDescriptor desc{};
+					desc.label = "renderer3d-stable-draws";
+					desc.colorFormatCount = key.ColorFormat == wgpu::TextureFormat::Undefined ? 0 : 1;
+					desc.colorFormats = desc.colorFormatCount ? &key.ColorFormat : nullptr;
+					desc.depthStencilFormat = key.DepthFormat;
+					desc.sampleCount = key.SampleCount;
+					wgpu::RenderBundleEncoder recorder = device.CreateRenderBundleEncoder(&desc);
+					if (recorder) {
+						EncodeBundleDraws(RecordedDrawEncoder{ recorder.Get() }, key, draws);
+						Bundle = recorder.Finish();
+					}
+				}
+				if (Bundle) pass.ExecuteBundles(1, &Bundle);
+				else EncodeBundleDraws(DirectDrawEncoder{ pass.Get() }, key, draws);
+				LastFrame = frame;
+				if (!same) {
+					Key = key;
+					Signature.swap(draws);
+					HaveSignature = true;
+				}
+			}
+		};
+
+		DrawBundleCache ShadowDrawBundle;
+		DrawBundleCache ColorDrawBundle;
+		std::vector<BundleDraw> ShadowBundleDraws;
+		std::vector<BundleDraw> ColorBundleDraws;
+		std::vector<BundleDraw> TransparentDirectDraws;
 
 		struct CustomMeshEntry {
 			MeshBuffers Buffers;
@@ -650,7 +786,6 @@ namespace Funke {
 
 		CustomMaterialBindings CustomBindings;
 		std::vector<FrameCustom> FrameCustoms;
-		FrameLookup<uint32_t> FrameCustomSlots;
 		// Material inputs are shared by all instances in this pass and refreshed on the next one.
 		struct FrameMaterial {
 			const Material* Value = nullptr;
@@ -662,6 +797,7 @@ namespace Funke {
 			uint32_t TextureSlot = 0;
 			uint32_t Custom = 0;
 			bool Transparent = false;
+			bool ResourcesResolved = false;
 		};
 		FrameLookup<FrameMaterial> FrameMaterials;
 		// By program id, color format and sample count; failed creations stay cached as null.
@@ -682,6 +818,10 @@ namespace Funke {
 
 		std::vector<MeshInstance> Instances;
 		std::vector<DrawItem> DrawItems;
+		uint64_t MeshSubmitSerial = UINT64_MAX;
+		uint64_t SkySubmitSerial = UINT64_MAX;
+		uint64_t ParticleSubmitSerial = UINT64_MAX;
+		uint64_t LineSubmitSerial = UINT64_MAX;
 		std::vector<MeshInstance> InstanceUpload;
 		std::vector<TextureHandle> FrameTextures;
 		FrameLookup<uint32_t> FrameTextureSlots;
@@ -840,7 +980,7 @@ namespace Funke {
 		}
 
 		SkinnedEntry& ResolveSkinnedPose(const SkinnedKey& key, const SkinnedMeshRendererComponent& renderer,
-			const MeshAsset& asset, const MeshBuffers& shared, std::chrono::steady_clock::time_point now) {
+			const MeshAsset& asset, std::chrono::steady_clock::time_point now) {
 			SkinnedEntry& entry = SkinnedMeshes[key];
 			entry.LastUsed = now;
 			entry.UsedSincePurge = true;
@@ -861,11 +1001,7 @@ namespace Funke {
 				entry.PoseValid = true;
 				entry.VerticesDirty = true;
 			}
-			entry.Buffers.Indices = shared.Indices;
-			entry.Buffers.IndexCount = shared.IndexCount;
 			entry.Buffers.VertexCount = static_cast<uint32_t>(data.BindVertices.size());
-			entry.Buffers.WireIndices = shared.WireIndices;
-			entry.Buffers.WireIndexCount = shared.WireIndexCount;
 			return entry;
 		}
 
@@ -1475,9 +1611,11 @@ namespace Funke {
 
 		PostProcessor Processor;
 		PostProcessScene SceneInputs;
-		Framebuffer SceneFbo;
+		FramebufferCache<> SceneTargets;
+		Framebuffer* SceneFbo = nullptr;
 		// FXAA result when camera effects still follow it.
-		Framebuffer AntiAliasFbo;
+		FramebufferCache<> AntiAliasTargets;
+		FramebufferCache<> EffectTargets;
 		// MSAA4x draws into one of these; the editor's Editor View and Game View each keep theirs instead of resizing one.
 		std::array<MsaaTarget, 2> MsaaTargets;
 		uint64_t MsaaUseCounter = 0;
@@ -1493,6 +1631,7 @@ namespace Funke {
 		bool AntiAlias = false;
 		bool Active = false;
 		bool InitFailed = false;
+		uint32_t ViewportX = 0, ViewportY = 0, ViewportWidth = 0, ViewportHeight = 0;
 
 		Framebuffer* AcquireMsaaTarget(int width, int height, TextureFormat format) {
 			MsaaTarget* pick = nullptr;
@@ -1714,8 +1853,9 @@ namespace Funke {
 		// Dawn objects must die before RenderApi::Shutdown.
 		if (m_PostProcess) {
 			m_PostProcess->Processor.Shutdown();
-			m_PostProcess->SceneFbo.Destroy();
-			m_PostProcess->AntiAliasFbo.Destroy();
+			m_PostProcess->SceneTargets.Clear();
+			m_PostProcess->AntiAliasTargets.Clear();
+			m_PostProcess->EffectTargets.Clear();
 			m_PostProcess->ReleaseMsaaTargets();
 			m_PostProcess.reset();
 		}
@@ -1752,7 +1892,12 @@ namespace Funke {
 			if (!used && expired) it = gpu.CustomMeshes.erase(it);
 			else ++it;
 		}
-		return before - gpu.CustomMeshes.size() - gpu.SkinnedMeshes.size();
+		const size_t removed = before - gpu.CustomMeshes.size() - gpu.SkinnedMeshes.size();
+		if (removed != 0) {
+			gpu.ShadowDrawBundle.Reset();
+			gpu.ColorDrawBundle.Reset();
+		}
+		return removed;
 	}
 
 	uint32_t Renderer3D::GetShadowMapResolution(ShadowQualityLevel quality) {
@@ -1774,6 +1919,12 @@ namespace Funke {
 		return view;
 	}
 
+    Camera3DView Renderer3D::MakePreciseView(const glm::dmat4& cameraWorld, const Camera3DComponent& camera, float aspect) {
+        Camera3DView view = MakeView(glm::mat4(cameraWorld), camera, aspect);
+        view.PositionRemainder = glm::dvec3(cameraWorld[3]) - glm::dvec3(view.Position);
+        return view;
+    }
+
 	float Renderer3D::GetCurrentTargetAspect() {
 		uint32_t x = 0, y = 0, width = 0, height = 0;
 		if (WebGPUBackend::GetCachedViewport(x, y, width, height) && width > 0 && height > 0) {
@@ -1787,23 +1938,34 @@ namespace Funke {
 	}
 
 	bool Renderer3D::BeginPostProcess(const PostProcessing2DComponent* settings, const Color& clearColor) {
-		if (!m_IsInitialized || !m_PostProcessingEnabled) return false;
-		const bool effects = settings && m_Settings.PostProcessingEnabled && settings->HasEnabledEffect();
-		const bool fxaa = m_Settings.AntiAliasing == AntiAliasingMode::FXAA;
-		const bool msaa = GetMultisampleCount(m_Settings.AntiAliasing) > 1;
-		if (!effects && !fxaa && !msaa) return false;
+		if (!m_IsInitialized) return false;
+		const bool effects = m_PostProcessingEnabled && settings && m_Settings.PostProcessingEnabled && settings->HasEnabledEffect();
+		const bool fxaa = m_PostProcessingEnabled && m_Settings.AntiAliasing == AntiAliasingMode::FXAA;
+		const bool msaa = m_PostProcessingEnabled && GetMultisampleCount(m_Settings.AntiAliasing) > 1;
+		const bool scaled = m_Settings.RenderScale < 1.0f;
+		if (!effects && !fxaa && !msaa && !scaled) return false;
 		if (!m_PostProcess) m_PostProcess = std::make_unique<PostProcessState>();
 		PostProcessState& state = *m_PostProcess;
 		if (state.Active) return false;
 		const auto caller = WebGPUBackend::BeginRenderToCurrentTarget();
 		if (!caller.Valid || caller.Width == 0 || caller.Height == 0 || caller.SampleCount > 1) return false;
-		const int width = static_cast<int>(caller.Width);
-		const int height = static_cast<int>(caller.Height);
+		state.ViewportX = state.ViewportY = 0;
+		state.ViewportWidth = caller.Width;
+		state.ViewportHeight = caller.Height;
+		WebGPUBackend::GetCachedViewport(state.ViewportX, state.ViewportY, state.ViewportWidth, state.ViewportHeight);
+		state.ViewportX = std::min(state.ViewportX, caller.Width - 1);
+		state.ViewportY = std::min(state.ViewportY, caller.Height - 1);
+		state.ViewportWidth = std::clamp(state.ViewportWidth, 1u, caller.Width - state.ViewportX);
+		state.ViewportHeight = std::clamp(state.ViewportHeight, 1u, caller.Height - state.ViewportY);
 
 		// MSAA alone resolves straight into the caller: going through the RGBA16F intermediate would round pixel-art
 		// texels differently than drawing without anti-aliasing.
 		const std::optional<TextureFormat> callerFormat = ToFramebufferFormat(caller.ColorFormat);
-		const bool intermediate = effects || fxaa || !callerFormat;
+		const bool intermediate = effects || fxaa || scaled || !callerFormat;
+		const int width = intermediate ? std::max(1, static_cast<int>(std::lround(state.ViewportWidth * m_Settings.RenderScale)))
+			: static_cast<int>(caller.Width);
+		const int height = intermediate ? std::max(1, static_cast<int>(std::lround(state.ViewportHeight * m_Settings.RenderScale)))
+			: static_cast<int>(caller.Height);
 		if (intermediate) {
 			if (!state.Processor.IsInitialized()) {
 				if (state.InitFailed) return false;
@@ -1813,10 +1975,12 @@ namespace Funke {
 					return false;
 				}
 			}
-			if (!state.SceneFbo.Recreate(width, height, TextureFormat::RGBA16F)) return false;
+			state.SceneFbo = state.SceneTargets.Acquire({ width, height, TextureFormat::RGBA16F, 1, !msaa });
+			if (!state.SceneFbo) return false;
 		}
 		Framebuffer* msaaTarget = msaa
 			? state.AcquireMsaaTarget(width, height, intermediate ? TextureFormat::RGBA16F : *callerFormat) : nullptr;
+		if (msaa && !msaaTarget) return false;
 		if (!intermediate && !msaaTarget) return false;
 
 		state.Caller = WebGPUBackend::SaveBoundTarget();
@@ -1827,7 +1991,7 @@ namespace Funke {
 		state.Msaa = msaaTarget;
 		state.Intermediate = intermediate;
 		state.Active = true;
-		RenderApi::BindFramebuffer(msaaTarget ? *msaaTarget : state.SceneFbo);
+		RenderApi::BindFramebuffer(msaaTarget ? *msaaTarget : *state.SceneFbo);
 		// A direct resolve keeps the caller's viewport (letterbox) so the image lands where it would without MSAA.
 		if (intermediate) RenderApi::SetViewport(0, 0, width, height);
 		const Color savedClear = RenderApi::GetClearColor();
@@ -1844,42 +2008,60 @@ namespace Funke {
 		state.Active = false;
 		const WebGPUBackend::CurrentTargetInfo target = state.CallerTarget;
 		if (state.Intermediate) {
-			const Framebuffer& depthSource = state.Msaa ? *state.Msaa : state.SceneFbo;
+			const Framebuffer& depthSource = state.Msaa ? *state.Msaa : *state.SceneFbo;
 			state.SceneInputs.Depth = WebGPUBackend::LookupFramebufferDepthSampleView(depthSource.GetBackendId());
 			state.SceneInputs.Samples = depthSource.GetSampleCount();
 		}
 		if (state.Msaa) {
 			const wgpu::TextureView destination = state.Intermediate
-				? WebGPUBackend::LookupFramebufferByFboId(state.SceneFbo.GetBackendId()).ColorView : target.ColorView;
+				? WebGPUBackend::LookupFramebufferByFboId(state.SceneFbo->GetBackendId()).ColorView : target.ColorView;
 			ResolveMultisampled(*state.Msaa, destination);
 			state.Msaa = nullptr;
 		}
-		// Flushes the 3D passes so the effects read the finished intermediate.
-		WebGPUBackend::FlushCommands();
 		if (state.Intermediate) {
-			// FXAA first, on the tone-mapped scene: straight into the target without effects, else into an intermediate.
-			const Framebuffer* sceneSource = &state.SceneFbo;
+			const Framebuffer* sceneSource = state.SceneFbo;
+			const int width = sceneSource->GetWidth(), height = sceneSource->GetHeight();
+			const bool upscale = width != state.ViewportWidth || height != state.ViewportHeight;
+			const bool subrect = state.ViewportX != 0 || state.ViewportY != 0
+				|| state.ViewportWidth != target.Width || state.ViewportHeight != target.Height;
+			RenderApi::SetViewport(state.ViewportX, state.ViewportY, state.ViewportWidth, state.ViewportHeight);
 			bool antiAliasedToTarget = false;
 			if (state.AntiAlias) {
 				const AntiAliasingQualityLevel aaQuality = m_Settings.AntiAliasingQuality;
-				if (!state.Settings) {
-					antiAliasedToTarget = state.Processor.RunAntiAliasing(state.SceneFbo, target.ColorView, target.ColorFormat,
+				if (!state.Settings && !upscale) {
+					antiAliasedToTarget = state.Processor.RunAntiAliasing(*state.SceneFbo, target.ColorView, target.ColorFormat,
 						aaQuality, true);
 				}
-				else if (state.AntiAliasFbo.Recreate(state.SceneFbo.GetWidth(), state.SceneFbo.GetHeight(), TextureFormat::RGBA16F)) {
-					const auto aaLook = WebGPUBackend::LookupFramebufferByFboId(state.AntiAliasFbo.GetBackendId());
-					if (aaLook.Valid && state.Processor.RunAntiAliasing(state.SceneFbo, aaLook.ColorView, aaLook.ColorFormat,
+				else if (const Framebuffer* antiAlias = state.AntiAliasTargets.Acquire({ width, height })) {
+					const auto aaLook = WebGPUBackend::LookupFramebufferByFboId(antiAlias->GetBackendId());
+					if (aaLook.Valid && state.Processor.RunAntiAliasing(*state.SceneFbo, aaLook.ColorView, aaLook.ColorFormat,
 						aaQuality, false)) {
-						sceneSource = &state.AntiAliasFbo;
+						sceneSource = antiAlias;
 					}
 				}
 			}
 			if (!antiAliasedToTarget) {
-				state.Processor.Run(*sceneSource, target.ColorView, target.ColorFormat, target.Width, target.Height,
-					state.Settings, m_Settings.PostProcessingQuality, true, &state.SceneInputs);
+				if (state.Settings && (upscale || subrect)) {
+					if (const Framebuffer* effect = state.EffectTargets.Acquire({ width, height })) {
+						const auto output = WebGPUBackend::LookupFramebufferByFboId(effect->GetBackendId());
+						RenderApi::SetViewport(0, 0, width, height);
+						state.Processor.Run(*sceneSource, output.ColorView, output.ColorFormat, width, height,
+							state.Settings, m_Settings.PostProcessingQuality, true, &state.SceneInputs);
+						RenderApi::SetViewport(state.ViewportX, state.ViewportY, state.ViewportWidth, state.ViewportHeight);
+						sceneSource = effect;
+					}
+				}
+				else if (state.Settings) {
+					state.Processor.Run(*sceneSource, target.ColorView, target.ColorFormat, target.Width, target.Height,
+						state.Settings, m_Settings.PostProcessingQuality, true, &state.SceneInputs);
+					sceneSource = nullptr;
+				}
+				if (sceneSource) state.Processor.Blit(*sceneSource, target.ColorView, target.ColorFormat,
+					target.Width, target.Height, m_Settings.UpscaleFilter);
 			}
 		}
 		WebGPUBackend::RestoreBoundTarget(state.Caller);
+		RenderApi::SetViewport(state.ViewportX, state.ViewportY, state.ViewportWidth, state.ViewportHeight);
 		state.Settings = nullptr;
 		state.CallerTarget = {};
 		// The caller's depth no longer matches what was drawn; meshes drawn after this clear their own depth again.
@@ -1949,14 +2131,14 @@ namespace Funke {
 
 		const auto& registry = cameraScene->GetRegistry();
 		const auto& camera = registry.get<Camera3DComponent>(cameraEntity);
-		const glm::mat4 cameraWorld = Transform3DHierarchySystem::ComputeWorldMatrix(registry, cameraEntity);
+		const glm::dmat4 cameraWorld = Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, cameraEntity);
 
 		RenderApi::BindDefaultFramebuffer();
 		RenderApi::SetClearColor(camera.ClearColor);
 		RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
 		m_OwnDepthNeedsClear = true;
 
-		const Camera3DView view = MakeView(cameraWorld, camera, GetCurrentTargetAspect());
+		const Camera3DView view = MakePreciseView(cameraWorld, camera, GetCurrentTargetAspect());
 		const auto* postProcessing = camera.PostProcessingEnabled
 			? registry.try_get<PostProcessing2DComponent>(cameraEntity) : nullptr;
 		const bool postProcess = BeginPostProcess(postProcessing, camera.ClearColor);
@@ -1976,6 +2158,7 @@ namespace Funke {
 		if (!m_IsInitialized || !m_Gpu || view.Environment.Background != CameraBackground::Skybox) return;
 		FUNKE_PROFILE_SCOPE("Renderer3D.Sky");
 		GpuState& gpu = *m_Gpu;
+		if (gpu.SkySubmitSerial == WebGPUBackend::GetFrameSubmitSerial()) WebGPUBackend::FlushCommands();
 
 		const auto target = WebGPUBackend::BeginRenderToCurrentTarget();
 		if (!target.Valid) return;
@@ -2049,7 +2232,8 @@ namespace Funke {
 		pass.End();
 		++m_DrawCalls;
 
-		WebGPUBackend::FlushCommands();
+		gpu.SkySubmitSerial = WebGPUBackend::GetFrameSubmitSerial();
+		if (customGroup) WebGPUBackend::FlushCommands();
 		if (target.IsSwapChain) {
 			WebGPUBackend::MarkSwapChainRendered();
 		}
@@ -2059,9 +2243,9 @@ namespace Funke {
 		if (!m_IsInitialized || !m_Gpu) return;
 		if (m_PostProcess && m_PostProcess->Active) {
 			// Empty/sky-only scenes still need the real camera for depth reconstruction.
-			m_PostProcess->SceneInputs.View = view.View;
+			m_PostProcess->SceneInputs.View = view.RelativeView(view.RenderOrigin());
 			m_PostProcess->SceneInputs.Projection = view.Projection;
-			m_PostProcess->SceneInputs.Position = view.Position;
+			m_PostProcess->SceneInputs.Position = view.RelativePosition(view.RenderOrigin());
 		}
 		FUNKE_PROFILE_SCOPE("Renderer3D.RenderScene");
 		Transform3DHierarchySystem::Propagate(scene);
@@ -2073,10 +2257,27 @@ namespace Funke {
 	void Renderer3D::RenderMeshes(Scene& scene, const Camera3DView& view) {
 		GpuState& gpu = *m_Gpu;
 		const entt::registry& registry = scene.GetRegistry();
+		const auto meshes = registry.view<const MeshRendererComponent, const Transform3DComponent>(entt::exclude<DisabledTag>);
+		const auto skinned = registry.view<const SkinnedMeshRendererComponent, const Transform3DComponent>(entt::exclude<DisabledTag>);
+		if (meshes.begin() == meshes.end() && skinned.begin() == skinned.end()) return;
+		if (gpu.MeshSubmitSerial == WebGPUBackend::GetFrameSubmitSerial()) WebGPUBackend::FlushCommands();
 		wgpu::Device device = WebGPUBackend::GetDevice();
 		if (!device) return;
 		// Editor Triangle/Mixed draw modes: black edges instead of shaded surfaces, depth tested against what is already drawn.
 		const bool wireframe = RenderApi::GetPolygonMode() == PolygonMode::Wireframe;
+		const glm::vec3 origin = view.RenderOrigin();
+        const glm::mat4 relativeView = view.RelativeView(origin);
+        const glm::vec3 cameraPosition = view.RelativePosition(origin);
+        const FrustumPlanes cameraFrustum = ExtractFrustum(view.Projection * relativeView);
+		const SceneLighting lighting = CollectLights(registry, cameraPosition, cameraFrustum, m_Settings.MaxLights, origin);
+		const uint32_t shadowResolution = std::min(GetShadowMapResolution(m_Settings.ShadowQuality), WebGPUBackend::GetMaxTextureDimension2D());
+		const bool shadowsEnabled = !wireframe && shadowResolution > 0 && lighting.ShadowedLight >= 0;
+		float shadowTexelWorld = 0.0f, shadowDepthRange = 1.0f;
+		const glm::mat4 lightViewProjection = shadowsEnabled
+			? Lighting3D::ComputeDirectionalShadowMatrix(relativeView, view.Projection,
+				lighting.Selected[static_cast<size_t>(lighting.ShadowedLight)].Direction, m_Settings.ShadowDistance,
+				shadowResolution, &shadowTexelWorld, &shadowDepthRange) : glm::mat4(1.0f);
+		const FrustumPlanes candidateShadowFrustum = ExtractFrustum(lightViewProjection);
 
 		gpu.Instances.clear();
 		gpu.DrawItems.clear();
@@ -2086,10 +2287,10 @@ namespace Funke {
 		gpu.FrameSkinning.clear();
 		ResetFrameLookup(gpu.FrameMeshSlots);
 		gpu.FrameCustoms.clear();
-		ResetFrameLookup(gpu.FrameCustomSlots);
 		ResetFrameLookup(gpu.FrameMaterials);
 		for (const auto& primitive : gpu.Meshes) gpu.FrameMeshes.push_back(&primitive);
 		bool anyCaster = false;
+		bool hadCandidates = false;
 		const TextureHandle whiteTexture = TextureManager::GetDefaultTexture(DefaultTexture::Pixel);
 		auto textureSlot = [&](TextureHandle handle) {
 			if (!TextureManager::IsValid(handle)) handle = whiteTexture;
@@ -2111,10 +2312,17 @@ namespace Funke {
 			return slot->second;
 		};
 
-		static const Material k_FallbackMaterial;
+        auto relativeWorld = [&](EntityHandle entity) {
+            glm::dmat4 world = Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, entity);
+            world[3] -= glm::dvec4(origin, 0.0);
+            return glm::mat4(world);
+        };
+        static const Material k_FallbackMaterial;
 
-		auto submit = [&](size_t meshIndex, const glm::vec3& localMin, const glm::vec3& localMax, const glm::mat4& world,
-			uint64_t materialGuid, const Color& color, bool lit, bool castShadows, bool cullable) {
+		auto submit = [&](const glm::vec3& localMin, const glm::vec3& localMax, const glm::mat4& world,
+			uint64_t materialGuid, const Color& color, bool lit, bool castShadows, bool cullable, auto&& resolveMesh) {
+			anyCaster |= castShadows;
+			hadCandidates = true;
 			auto [memo, firstUse] = gpu.FrameMaterials.try_emplace(materialGuid);
 			auto& prepared = memo->second;
 			if (firstUse) {
@@ -2126,9 +2334,6 @@ namespace Funke {
 				prepared.Transparent = prepared.Program ? prepared.Program->Description.Blend != ShaderBlend::Opaque
 					: material->Surface == MaterialSurface::Transparent;
 				if (prepared.Program) {
-					auto [it, inserted] = gpu.FrameCustomSlots.emplace(materialGuid, static_cast<uint32_t>(gpu.FrameCustoms.size()));
-					if (inserted) gpu.FrameCustoms.push_back({ materialGuid, material, prepared.Program, nullptr, nullptr });
-					prepared.Custom = it->second + 1;
 					prepared.Emissive.w = material->Fog ? 1.0f : 0.0f;
 				}
 				else {
@@ -2137,20 +2342,9 @@ namespace Funke {
 						material->Fog ? 1.0f : 0.0f);
 					prepared.Surface = { material->Metallic, material->Roughness, material->Lit ? 1.0f : 0.0f, prepared.Transparent ? 1.0f : 0.0f };
 					prepared.UvTransform = { material->Tiling.x, material->Tiling.y, material->Offset.x, material->Offset.y };
-					prepared.TextureSlot = textureSlot(gpu.ResolveMaterialTexture(material->BaseColorTexture));
 				}
 			}
 			const CustomShaderProgram* program = prepared.Program;
-
-			MeshInstance instance{};
-			for (int i = 0; i < 4; ++i) instance.Model[i] = world[i];
-			const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(world)));
-			for (int i = 0; i < 3; ++i) instance.Normal[i] = glm::vec4(normalMatrix[i], 0.0f);
-			instance.Color = prepared.Color * ToVec4(color);
-			instance.Emissive = prepared.Emissive;
-			instance.Surface = prepared.Surface;
-			instance.UvTransform = prepared.UvTransform;
-			if (!prepared.Value) instance.Surface.z = lit ? 1.0f : 0.0f;
 
 			// Arvo: the world AABB of a transformed local box.
 			glm::vec3 localExtent = (localMax - localMin) * 0.5f;
@@ -2162,30 +2356,50 @@ namespace Funke {
 			const glm::mat3 basis(world);
 			const glm::vec3 worldExtent = glm::abs(basis[0]) * localExtent.x + glm::abs(basis[1]) * localExtent.y
 				+ glm::abs(basis[2]) * localExtent.z;
+			const MeshVisibility visibility = ClassifyMeshVisibility(cameraFrustum,
+				shadowsEnabled ? &candidateShadowFrustum : nullptr, worldCenter, worldExtent, cullable, castShadows);
+			if (!visibility.IsNeeded()) return;
+			const std::optional<size_t> meshIndex = resolveMesh();
+			if (!meshIndex) return;
+			if (!prepared.ResourcesResolved) {
+				const Material* material = prepared.Value ? prepared.Value : &k_FallbackMaterial;
+				if (program) {
+					prepared.Custom = static_cast<uint32_t>(gpu.FrameCustoms.size()) + 1;
+					gpu.FrameCustoms.push_back({ materialGuid, material, program, nullptr, nullptr });
+				}
+				else prepared.TextureSlot = textureSlot(gpu.ResolveMaterialTexture(material->BaseColorTexture));
+				prepared.ResourcesResolved = true;
+			}
+			MeshInstance instance{};
+			for (int i = 0; i < 4; ++i) instance.Model[i] = world[i];
+			const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(world)));
+			for (int i = 0; i < 3; ++i) instance.Normal[i] = glm::vec4(normalMatrix[i], 0.0f);
+			instance.Color = prepared.Color * ToVec4(color);
+			instance.Emissive = prepared.Emissive;
+			instance.Surface = prepared.Surface;
+			instance.UvTransform = prepared.UvTransform;
+			if (!prepared.Value) instance.Surface.z = lit ? 1.0f : 0.0f;
 
-			const glm::vec3 toCamera = worldCenter - view.Position;
-			DrawItem item{ MakeDrawKey(meshIndex, castShadows, prepared.TextureSlot), static_cast<uint32_t>(gpu.Instances.size()),
+			const glm::vec3 toCamera = worldCenter - cameraPosition;
+			DrawItem item{ MakeDrawKey(*meshIndex, visibility.CastsShadow, prepared.TextureSlot), static_cast<uint32_t>(gpu.Instances.size()),
 				glm::dot(toCamera, toCamera), prepared.Transparent, prepared.Custom };
-			item.BoundsCenter = worldCenter;
-			item.BoundsExtent = worldExtent;
-			item.Cullable = cullable;
+			// Preserve the early camera test; the shadow map can still fail to initialize below.
+			if (!visibility.Visible) item.Key |= k_KeyHiddenBit;
 			gpu.DrawItems.push_back(item);
 			gpu.Instances.push_back(instance);
-			anyCaster |= castShadows;
+			anyCaster |= visibility.CastsShadow;
 		};
 
-		const auto meshes = registry.view<const MeshRendererComponent, const Transform3DComponent>(entt::exclude<DisabledTag>);
 		for (EntityHandle entity : meshes) {
 			const auto& renderer = meshes.get<const MeshRendererComponent>(entity);
 			const auto& transform = meshes.get<const Transform3DComponent>(entity);
 			size_t meshIndex = static_cast<size_t>(renderer.Mesh);
 			glm::vec3 localMin(0.0f);
 			glm::vec3 localMax(0.0f);
+			const MeshAsset* asset = nullptr;
 			if (renderer.CustomMesh != 0) {
-				const MeshAsset* asset = MeshLibrary::Get(renderer.CustomMesh);
-				const std::optional<size_t> slot = asset ? customMeshSlot(renderer.CustomMesh, *asset) : std::nullopt;
-				if (!slot) continue;
-				meshIndex = *slot;
+				asset = MeshLibrary::Get(renderer.CustomMesh);
+				if (!asset) continue;
 				localMin = asset->BoundsMin;
 				localMax = asset->BoundsMax;
 			}
@@ -2196,36 +2410,46 @@ namespace Funke {
 				localMin = gpu.MeshBoundsMin[meshIndex];
 				localMax = gpu.MeshBoundsMax[meshIndex];
 			}
-			submit(meshIndex, localMin, localMax, transform.WorldMatrix, renderer.Material, renderer.Color, renderer.Lit,
-				renderer.CastShadows, true);
+			submit(localMin, localMax, relativeWorld(entity), renderer.Material, renderer.Color, renderer.Lit,
+				renderer.CastShadows, true, [&]() -> std::optional<size_t> {
+					return asset ? customMeshSlot(renderer.CustomMesh, *asset) : std::optional<size_t>(meshIndex);
+				});
 		}
 
 		const auto now = std::chrono::steady_clock::now();
-		const auto skinned = registry.view<const SkinnedMeshRendererComponent, const Transform3DComponent>(entt::exclude<DisabledTag>);
 		for (EntityHandle entity : skinned) {
 			const auto& renderer = skinned.get<const SkinnedMeshRendererComponent>(entity);
 			const MeshAsset* asset = MeshLibrary::Get(renderer.Model);
-			const std::optional<size_t> shared = asset ? customMeshSlot(renderer.Model, *asset) : std::nullopt;
-			if (!shared) continue;
-			size_t meshIndex = *shared;
+			if (!asset) continue;
+			GpuState::SkinnedEntry* skinnedEntry = nullptr;
 			glm::vec3 localMin = asset->BoundsMin;
 			glm::vec3 localMax = asset->BoundsMax;
 			bool cullable = true;
 			if (asset->Skin) {
 				const GpuState::SkinnedKey key{ &scene, static_cast<uint32_t>(entity) };
-				auto& entry = gpu.ResolveSkinnedPose(key, renderer, *asset, *gpu.FrameMeshes[*shared], now);
-				meshIndex = gpu.FrameMeshes.size();
-				gpu.FrameMeshes.push_back(&entry.Buffers);
-				gpu.FrameSkinning.resize(gpu.FrameMeshes.size());
-				gpu.FrameSkinning[meshIndex] = { asset, &entry };
+				auto& entry = gpu.ResolveSkinnedPose(key, renderer, *asset, now);
+				skinnedEntry = &entry;
 				localMin = entry.BoundsMin;
 				localMax = entry.BoundsMax;
 				cullable = entry.Cullable;
 			}
-			submit(meshIndex, localMin, localMax, skinned.get<const Transform3DComponent>(entity).WorldMatrix,
-				renderer.Material, renderer.Color, renderer.Lit, renderer.CastShadows, cullable);
+			submit(localMin, localMax, relativeWorld(entity),
+				renderer.Material, renderer.Color, renderer.Lit, renderer.CastShadows, cullable, [&]() -> std::optional<size_t> {
+					const auto shared = customMeshSlot(renderer.Model, *asset);
+					if (!shared || !skinnedEntry) return shared;
+					const auto& sharedBuffers = *gpu.FrameMeshes[*shared];
+					skinnedEntry->Buffers.Indices = sharedBuffers.Indices;
+					skinnedEntry->Buffers.IndexCount = sharedBuffers.IndexCount;
+					skinnedEntry->Buffers.WireIndices = sharedBuffers.WireIndices;
+					skinnedEntry->Buffers.WireIndexCount = sharedBuffers.WireIndexCount;
+					const size_t meshIndex = gpu.FrameMeshes.size();
+					gpu.FrameMeshes.push_back(&skinnedEntry->Buffers);
+					gpu.FrameSkinning.resize(gpu.FrameMeshes.size());
+					gpu.FrameSkinning[meshIndex] = { asset, skinnedEntry };
+					return meshIndex;
+				});
 		}
-		if (gpu.Instances.empty()) return;
+		if (gpu.Instances.empty() && (!hadCandidates || !(m_PostProcess && m_PostProcess->Active))) return;
 
 		const auto target = WebGPUBackend::BeginRenderToCurrentTarget();
 		if (!target.Valid) return;
@@ -2234,8 +2458,6 @@ namespace Funke {
 		wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
 		if (!queue || !encoder) return;
 
-		const FrustumPlanes cameraFrustum = ExtractFrustum(view.Projection * view.View);
-		const SceneLighting lighting = CollectLights(registry, view.Position, cameraFrustum, m_Settings.MaxLights);
 		m_LightCount = std::max(m_LightCount, static_cast<uint32_t>(lighting.Selected.size()));
 		for (size_t i = 0; i < lighting.Selected.size(); ++i) {
 			const Lighting3D::LightCandidate& light = lighting.Selected[i];
@@ -2249,8 +2471,10 @@ namespace Funke {
 		const Camera3DEnvironment& environment = view.Environment;
 		const bool skyAmbient = environment.Background == CameraBackground::Skybox && environment.SkyAmbient > 0.0f;
 		FrameUniforms frame{};
-		frame.ViewProjection = view.Projection * view.View;
+		frame.ViewProjection = view.Projection * relativeView;
 		frame.CameraPosition = glm::vec4(view.Position, m_Settings.Exposure);
+        frame.WorldOrigin = glm::vec4(origin, 0.0f);
+        frame.RelativeCameraPosition = glm::vec4(cameraPosition, 0.0f);
 		frame.Ambient = glm::vec4(lighting.FlatAmbient, skyAmbient ? environment.SkyAmbient : 0.0f);
 		frame.SkyTop = glm::vec4(Lighting3D::SrgbToLinear(environment.SkyTop), 1.0f);
 		frame.SkyHorizon = glm::vec4(Lighting3D::SrgbToLinear(environment.SkyHorizon), 1.0f);
@@ -2259,21 +2483,15 @@ namespace Funke {
 			IsSrgbFormat(target.ColorFormat) ? 0.0f : 1.0f, -1.0f);
 
 		// Shadow pass for the main directional light.
-		const uint32_t shadowResolution = std::min(GetShadowMapResolution(m_Settings.ShadowQuality), WebGPUBackend::GetMaxTextureDimension2D());
 		wgpu::TextureView shadowView = gpu.DummyShadowView;
 		if (!wireframe && shadowResolution > 0 && lighting.ShadowedLight >= 0 && anyCaster) {
 			wgpu::TextureView map = gpu.EnsureShadowMap(device, shadowResolution);
 			wgpu::RenderPipeline shadowPipeline = gpu.GetShadowPipeline(device);
 			if (map && shadowPipeline) {
-				float texelWorld = 0.0f;
-				float depthRange = 1.0f;
-				const glm::mat4 lightViewProjection = Lighting3D::ComputeDirectionalShadowMatrix(view.View, view.Projection,
-					lighting.Selected[static_cast<size_t>(lighting.ShadowedLight)].Direction, m_Settings.ShadowDistance,
-					shadowResolution, &texelWorld, &depthRange);
 				frame.LightViewProjection = lightViewProjection;
 				frame.Params.w = static_cast<float>(lighting.ShadowedLight);
-				frame.ShadowParams = glm::vec4(1.0f / static_cast<float>(shadowResolution), texelWorld / std::max(depthRange, 1e-4f),
-					texelWorld * 1.5f, m_Settings.ShadowDistance);
+				frame.ShadowParams = glm::vec4(1.0f / static_cast<float>(shadowResolution), shadowTexelWorld / std::max(shadowDepthRange, 1e-4f),
+					shadowTexelWorld * 1.5f, m_Settings.ShadowDistance);
 				shadowView = map;
 			}
 		}
@@ -2283,16 +2501,14 @@ namespace Funke {
 		{
 			FUNKE_PROFILE_SCOPE("Renderer3D.Cull");
 			const bool shadowPass = frame.Params.w >= 0.0f;
-			const FrustumPlanes shadowFrustum = ExtractFrustum(frame.LightViewProjection);
 			anyCaster = false;
 			std::erase_if(gpu.DrawItems, [&](DrawItem& item) {
-				const bool visible = !item.Cullable || IntersectsFrustum(cameraFrustum, item.BoundsCenter, item.BoundsExtent);
-				const bool casts = shadowPass && KeyCastsShadow(item.Key)
-					&& (!item.Cullable || IntersectsFrustum(shadowFrustum, item.BoundsCenter, item.BoundsExtent));
-				if (!casts) item.Key |= uint64_t(1) << 32;
-				if (!visible) item.Key |= k_KeyHiddenBit;
-				anyCaster |= casts;
-				return !visible && !casts;
+				// The early tests used these same camera/light matrices and displacement bounds.
+				// Only shadow-map/pipeline availability can invalidate an accepted caster now.
+				const MeshVisibility visibility{ !KeyHidden(item.Key), shadowPass && KeyCastsShadow(item.Key) };
+				if (!visibility.CastsShadow) item.Key |= uint64_t(1) << 32;
+				anyCaster |= visibility.CastsShadow;
+				return !visibility.IsNeeded();
 			});
 			// Post effects can sample sun visibility even when the map contains no casters.
 			if (!anyCaster && !(m_PostProcess && m_PostProcess->Active)) {
@@ -2303,9 +2519,9 @@ namespace Funke {
 		}
 		if (m_PostProcess && m_PostProcess->Active) {
 			auto& inputs = m_PostProcess->SceneInputs;
-			inputs.View = view.View;
+			inputs.View = relativeView;
 			inputs.Projection = view.Projection;
-			inputs.Position = view.Position;
+			inputs.Position = cameraPosition;
 			inputs.LightViewProjection = frame.LightViewProjection;
 			inputs.ShadowParams = frame.ShadowParams;
 			inputs.Shadow = shadowView;
@@ -2316,7 +2532,20 @@ namespace Funke {
 			}
 		}
 
-		if (gpu.DrawItems.empty()) return;
+		if (gpu.DrawItems.empty()) {
+			if (frame.Params.w >= 0.0f) {
+				wgpu::RenderPassDepthStencilAttachment depth{};
+				depth.view = shadowView;
+				depth.depthLoadOp = wgpu::LoadOp::Clear;
+				depth.depthClearValue = 1.0f;
+				depth.depthStoreOp = wgpu::StoreOp::Store;
+				wgpu::RenderPassDescriptor desc{};
+				desc.label = "renderer3d-empty-shadow-map";
+				desc.depthStencilAttachment = &depth;
+				encoder.BeginRenderPass(&desc).End();
+			}
+			return;
+		}
 
 		// Opaque items batch by key; transparent ones follow, farthest first, so blending composites correctly.
 		const auto firstTransparent = std::partition(gpu.DrawItems.begin(), gpu.DrawItems.end(),
@@ -2393,9 +2622,8 @@ namespace Funke {
 			// Full map, not the cached viewport: the shadow map has its own resolution.
 			wgpu::RenderPassEncoder shadowPass = encoder.BeginRenderPass(&shadowPassDesc);
 			wgpu::RenderPipeline standardShadow = gpu.GetShadowPipeline(device);
-			wgpu::RenderPipeline boundShadow;
-			WGPUBindGroup boundShadowMaterial = nullptr;
-			shadowPass.SetVertexBuffer(1, gpu.InstanceBuffer);
+			gpu.ShadowBundleDraws.clear();
+			gpu.ShadowBundleDraws.reserve(gpu.DrawItems.size());
 			// Custom slot whose fn vertex moves the shadow, or 0 for the standard shadow pipeline.
 			auto shadowSlot = [&](const DrawItem& item) -> uint32_t {
 				return item.Custom != 0 && gpu.FrameCustoms[item.Custom - 1].ShadowPipeline && gpu.CustomShadowFrameGroup
@@ -2412,28 +2640,20 @@ namespace Funke {
 				}
 				const auto& buffers = *gpu.FrameMeshes[mesh];
 				if (casts && buffers.Vertices && buffers.Indices) {
-					const wgpu::RenderPipeline runPipeline = slot != 0 ? gpu.FrameCustoms[slot - 1].ShadowPipeline : standardShadow;
-					if (runPipeline.Get() != boundShadow.Get()) {
-						shadowPass.SetPipeline(runPipeline);
-						boundShadow = runPipeline;
-						boundShadowMaterial = nullptr;
-						shadowPass.SetBindGroup(0, slot != 0 ? gpu.CustomShadowFrameGroup : gpu.ShadowBindGroup);
-					}
-					if (slot != 0) {
-						const auto& group = gpu.FrameCustoms[slot - 1].Group;
-						if (group.Get() != boundShadowMaterial) {
-							shadowPass.SetBindGroup(1, group);
-							boundShadowMaterial = group.Get();
-						}
-					}
-					shadowPass.SetVertexBuffer(0, buffers.Vertices);
-					shadowPass.SetIndexBuffer(buffers.Indices, wgpu::IndexFormat::Uint32);
-					shadowPass.DrawIndexed(buffers.IndexCount, static_cast<uint32_t>(end - begin), 0, 0, static_cast<uint32_t>(begin));
+					gpu.ShadowBundleDraws.push_back({
+						slot != 0 ? gpu.FrameCustoms[slot - 1].ShadowPipeline.Get() : standardShadow.Get(),
+						slot != 0 ? gpu.CustomShadowFrameGroup.Get() : gpu.ShadowBindGroup.Get(),
+						slot != 0 ? gpu.FrameCustoms[slot - 1].Group.Get() : nullptr,
+						buffers.Vertices.Get(), buffers.Indices.Get(), buffers.IndexCount,
+						static_cast<uint32_t>(end - begin), static_cast<uint32_t>(begin) });
 					++m_DrawCalls;
 					m_GeometryTotals.AddShadowMesh(buffers.IndexCount, static_cast<uint32_t>(end - begin));
 				}
 				begin = end;
 			}
+			gpu.ShadowDrawBundle.Submit(device, shadowPass,
+				{ gpu.InstanceBuffer.Get(), wgpu::TextureFormat::Undefined, k_ShadowFormat, 1 },
+				gpu.ShadowBundleDraws, Time::GetFrameCount());
 			shadowPass.End();
 		}
 
@@ -2460,13 +2680,10 @@ namespace Funke {
 
 		wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 		WebGPUBackend::ApplyCachedViewportToPass(pass);
-		pass.SetBindGroup(0, frameGroup);
-		pass.SetVertexBuffer(1, gpu.InstanceBuffer);
-		size_t boundMesh = std::numeric_limits<size_t>::max();
-		wgpu::RenderPipeline boundPipeline;
-		WGPUBindGroup boundMaterial = nullptr;
 		uint32_t drawnInstances = 0;
 		if (wireframe) {
+			pass.SetBindGroup(0, frameGroup);
+			pass.SetVertexBuffer(1, gpu.InstanceBuffer);
 			// One pipeline and no material group, so batches only split per mesh.
 			pass.SetPipeline(pipeline);
 			for (size_t begin = 0; begin < gpu.DrawItems.size();) {
@@ -2488,6 +2705,10 @@ namespace Funke {
 			}
 		}
 		else {
+			gpu.ColorBundleDraws.clear();
+			gpu.TransparentDirectDraws.clear();
+			gpu.ColorBundleDraws.reserve(transparentBegin);
+			gpu.TransparentDirectDraws.reserve(gpu.DrawItems.size() - transparentBegin);
 			for (size_t begin = 0; begin < gpu.DrawItems.size();) {
 				const uint64_t key = gpu.DrawItems[begin].Key;
 				const uint32_t custom = gpu.DrawItems[begin].Custom;
@@ -2519,33 +2740,30 @@ namespace Funke {
 				}
 				const auto& buffers = *gpu.FrameMeshes[mesh];
 				if (itemPipeline && materialGroup && buffers.Vertices && buffers.Indices) {
-					if (itemPipeline.Get() != boundPipeline.Get()) {
-						pass.SetPipeline(itemPipeline);
-						boundPipeline = itemPipeline;
-						boundMaterial = nullptr;
-					}
-					if (boundMesh != mesh) {
-						pass.SetVertexBuffer(0, buffers.Vertices);
-						pass.SetIndexBuffer(buffers.Indices, wgpu::IndexFormat::Uint32);
-						boundMesh = mesh;
-					}
-					if (materialGroup.Get() != boundMaterial) {
-						pass.SetBindGroup(1, materialGroup);
-						boundMaterial = materialGroup.Get();
-					}
-					pass.DrawIndexed(buffers.IndexCount, static_cast<uint32_t>(end - begin), 0, 0, static_cast<uint32_t>(begin));
+					auto& commands = begin >= transparentBegin ? gpu.TransparentDirectDraws : gpu.ColorBundleDraws;
+					commands.push_back({ itemPipeline.Get(), frameGroup.Get(), materialGroup.Get(),
+						buffers.Vertices.Get(), buffers.Indices.Get(), buffers.IndexCount,
+						static_cast<uint32_t>(end - begin), static_cast<uint32_t>(begin) });
 					++m_DrawCalls;
 					m_GeometryTotals.AddMesh(buffers.IndexCount, buffers.VertexCount, static_cast<uint32_t>(end - begin));
 				}
 				begin = end;
+			}
+			const GpuState::BundlePassKey colorKey{ gpu.InstanceBuffer.Get(), target.ColorFormat, k_DepthFormat, target.SampleCount };
+			gpu.ColorDrawBundle.Submit(device, pass, colorKey,
+				gpu.ColorBundleDraws, Time::GetFrameCount());
+			// ExecuteBundles resets bindings; a fresh encoder state binds every required resource again.
+			// Transparent draws keep their existing far-to-near sequence after the opaque prefix.
+			if (!gpu.TransparentDirectDraws.empty()) {
+				GpuState::EncodeBundleDraws(GpuState::DirectDrawEncoder{ pass.Get() }, colorKey, gpu.TransparentDirectDraws);
 			}
 		}
 		pass.End();
 		m_RenderedMeshes += drawnInstances;
 		if (!target.HasDepth) m_OwnDepthNeedsClear = false;
 
-		// The next scene's WriteBuffer would otherwise overwrite this pass's uniforms (Dawn batches writes per submit).
-		WebGPUBackend::FlushCommands();
+		gpu.MeshSubmitSerial = WebGPUBackend::GetFrameSubmitSerial();
+		if (!gpu.FrameCustoms.empty()) WebGPUBackend::FlushCommands();
 		if (target.IsSwapChain) {
 			WebGPUBackend::MarkSwapChainRendered();
 		}
@@ -2557,9 +2775,12 @@ namespace Funke {
 		const entt::registry& registry = scene.GetRegistry();
 		const auto systems = registry.view<const ParticleSystem3DComponent>(entt::exclude<DisabledTag>);
 		if (systems.begin() == systems.end()) return;
+		if (gpu.ParticleSubmitSerial == WebGPUBackend::GetFrameSubmitSerial()) WebGPUBackend::FlushCommands();
 		FUNKE_PROFILE_SCOPE("Renderer3D.Particles");
 
-		const glm::mat4 viewProjection = view.Projection * view.View;
+		const glm::vec3 origin = view.RenderOrigin();
+        const glm::vec3 cameraPosition = view.RelativePosition(origin);
+        const glm::mat4 viewProjection = view.Projection * view.RelativeView(origin);
 		const FrustumPlanes frustum = ExtractFrustum(viewProjection);
 		const glm::vec3 cameraRight(view.View[0][0], view.View[1][0], view.View[2][0]);
 		const glm::vec3 cameraUp(view.View[0][1], view.View[1][1], view.View[2][1]);
@@ -2572,16 +2793,18 @@ namespace Funke {
 			if (particles.empty()) continue;
 
 			const auto* transform = registry.try_get<Transform3DComponent>(entity);
-			const glm::mat4 emitterWorld = transform ? transform->WorldMatrix : glm::mat4(1.0f);
+			glm::dmat4 preciseEmitter = transform ? Transform3DHierarchySystem::ComputeWorldMatrixPrecise(registry, entity) : glm::dmat4(1.0);
+            preciseEmitter[3] -= glm::dvec4(origin, 0.0);
+            const glm::mat4 emitterWorld(preciseEmitter);
 			const bool local = system.SimulationSpace == ParticleSpace3D::Local;
 			// Alpha blending needs back-to-front order inside the system; additive output is order independent.
 			gpu.ParticleOrder.clear();
 			for (uint32_t i = 0; i < particles.size(); ++i) {
 				const auto& particle = particles[i];
 				if (particle.Size <= 0.0f || particle.Color.a <= 0.0f) continue;
-				const glm::vec3 position = local ? glm::vec3(emitterWorld * glm::vec4(particle.Position, 1.0f)) : particle.Position;
+				const glm::vec3 position = local ? glm::vec3(emitterWorld * glm::vec4(particle.Position, 1.0f)) : particle.Position - origin;
 				if (!IntersectsFrustum(frustum, position, unitExtent * particle.Size)) continue;
-				const glm::vec3 toCamera = position - view.Position;
+				const glm::vec3 toCamera = position - cameraPosition;
 				gpu.ParticleOrder.emplace_back(glm::dot(toCamera, toCamera), i);
 			}
 			if (gpu.ParticleOrder.empty()) continue;
@@ -2595,7 +2818,7 @@ namespace Funke {
 			ParticleBatch batch{ static_cast<uint32_t>(gpu.ParticleInstances.size()), 0, texture, system.BlendMode, 0.0f };
 			for (const auto& [distanceSq, index] : gpu.ParticleOrder) {
 				const ParticleSystem3DComponent::Particle& particle = particles[index];
-				const glm::vec3 position = local ? glm::vec3(emitterWorld * glm::vec4(particle.Position, 1.0f)) : particle.Position;
+				const glm::vec3 position = local ? glm::vec3(emitterWorld * glm::vec4(particle.Position, 1.0f)) : particle.Position - origin;
 				gpu.ParticleInstances.push_back({ glm::vec4(position, particle.Size), ToVec4(particle.Color),
 					glm::vec4(glm::radians(particle.Rotation), softDot, 0.0f, 0.0f) });
 				batch.ViewDistanceSq = std::max(batch.ViewDistanceSq, distanceSq);
@@ -2677,7 +2900,7 @@ namespace Funke {
 		pass.End();
 		if (!target.HasDepth) m_OwnDepthNeedsClear = false;
 
-		WebGPUBackend::FlushCommands();
+		gpu.ParticleSubmitSerial = WebGPUBackend::GetFrameSubmitSerial();
 		if (target.IsSwapChain) {
 			WebGPUBackend::MarkSwapChainRendered();
 		}
@@ -2746,6 +2969,7 @@ namespace Funke {
 			return;
 		}
 		GpuState& gpu = *m_Gpu;
+		if (gpu.LineSubmitSerial == WebGPUBackend::GetFrameSubmitSerial()) WebGPUBackend::FlushCommands();
 
 		const auto target = WebGPUBackend::BeginRenderToCurrentTarget();
 		wgpu::Device device = WebGPUBackend::GetDevice();
@@ -2780,7 +3004,9 @@ namespace Funke {
 			return;
 		}
 
-		const glm::mat4 viewProjection = view.Projection * view.View;
+		const glm::vec3 origin = view.RenderOrigin();
+        for (auto& vertex : m_LineUpload) vertex.position -= origin;
+        const glm::mat4 viewProjection = view.Projection * view.RelativeView(origin);
 		queue.WriteBuffer(gpu.LineUniformBuffer, 0, glm::value_ptr(viewProjection), sizeof(glm::mat4));
 		queue.WriteBuffer(gpu.LineVertexBuffer, 0, m_LineUpload.data(), bytes);
 
@@ -2823,7 +3049,7 @@ namespace Funke {
 		clearQueues();
 		if (!target.HasDepth) m_OwnDepthNeedsClear = false;
 
-		WebGPUBackend::FlushCommands();
+		gpu.LineSubmitSerial = WebGPUBackend::GetFrameSubmitSerial();
 		if (target.IsSwapChain) {
 			WebGPUBackend::MarkSwapChainRendered();
 		}

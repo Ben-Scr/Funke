@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include "Assets/AssetBundle.hpp"
 #include "Assets/AssetRegistry.hpp"
+#include "Core/Exceptions.hpp"
 #include "Audio/Audio.hpp"
 #include "Graphics/ImageProcessing.hpp"
 #include "Graphics/ImageData.hpp"
@@ -16,6 +17,9 @@
 using namespace Funke;
 
 namespace {
+	constexpr AssetBundleCompression k_Compressions[] = {
+		AssetBundleCompression::None, AssetBundleCompression::LZ4, AssetBundleCompression::Zstd
+	};
 	struct BundleFixture {
 		std::filesystem::path Root = std::filesystem::temp_directory_path() / ("funke-bundles-"
 			+ std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -31,12 +35,12 @@ namespace {
 			std::filesystem::create_directories(file.parent_path());
 			REQUIRE(File::WriteAllText(Path::ToUtf8(file), text));
 		}
-		void Pack(bool compressed) {
+		void Pack(AssetBundleCompression compression) {
 			std::vector<std::filesystem::path> files;
 			for (const auto& entry : std::filesystem::recursive_directory_iterator(Root / "Assets"))
 				if (entry.is_regular_file()) files.push_back(entry.path().lexically_relative(Root / "Assets"));
 			std::string error;
-			REQUIRE_MESSAGE(AssetBundle::Write(Root / "Assets", Root / "Assets.fbundle", files, compressed, error), error);
+			REQUIRE_MESSAGE(AssetBundle::Write(Root / "Assets", Root / "Assets.fbundle", files, compression, error), error);
 			std::filesystem::remove_all(Root / "Assets");
 			REQUIRE_MESSAGE(AssetBundle::MountProject(Root, error), error);
 		}
@@ -44,14 +48,15 @@ namespace {
 }
 
 TEST_CASE("Asset bundles round trip compressed and stored files without extraction") {
-	for (bool compressed : { false, true }) {
+	for (auto compression : k_Compressions) {
+		CAPTURE(AssetBundle::CompressionName(compression));
 		BundleFixture fixture;
 		const std::string payload = std::string(16000, 'x') + std::string("\0\1\2", 3);
 		fixture.Write("Nested/test.bin", payload);
 		fixture.Write("empty.txt", "");
 		fixture.Write("umlaute-\xc3\xa4.txt", "unicode");
-		fixture.Pack(compressed);
-		if (compressed) CHECK(std::filesystem::file_size(fixture.Root / "Assets.fbundle") < payload.size());
+		fixture.Pack(compression);
+		if (compression != AssetBundleCompression::None) CHECK(std::filesystem::file_size(fixture.Root / "Assets.fbundle") < payload.size());
 		const auto file = fixture.Root / "Assets/Nested/test.bin";
 		CHECK_FALSE(std::filesystem::exists(file));
 		CHECK(File::Exists(Path::ToUtf8(file)));
@@ -84,9 +89,10 @@ TEST_CASE("Asset bundles reject unsafe paths truncated indices and corrupt paylo
 	std::string error;
 	CHECK_FALSE(AssetBundle::Write(fixture.Root / "Assets", fixture.Root / "bad.fbundle", { "../outside" }, false, error));
 	CHECK_FALSE(AssetBundle::Write(fixture.Root / "Assets", fixture.Root / "bad.fbundle", { "one.bin", "one.bin" }, false, error));
-	for (bool compressed : { false, true }) {
-		const auto archive = fixture.Root / (compressed ? "packed.fbundle" : "stored.fbundle");
-		REQUIRE(AssetBundle::Write(fixture.Root / "Assets", archive, { "one.bin" }, compressed, error));
+	for (auto compression : k_Compressions) {
+		CAPTURE(AssetBundle::CompressionName(compression));
+		const auto archive = fixture.Root / (std::string(AssetBundle::CompressionName(compression)) + ".fbundle");
+		REQUIRE(AssetBundle::Write(fixture.Root / "Assets", archive, { "one.bin" }, compression, error));
 		AssetBundle bundle;
 		REQUIRE(bundle.Open(archive, error));
 		auto bytes = File::ReadAllBytes(Path::ToUtf8(archive));
@@ -103,11 +109,16 @@ TEST_CASE("Asset bundles reject unsafe paths truncated indices and corrupt paylo
 	}
 }
 
+TEST_CASE("Native exceptions match standard base types within and across the engine library") {
+	CHECK_THROWS_AS(throw std::runtime_error("local exception"), const std::exception&);
+	CHECK_THROWS_AS(ThrowError(FunkeErrorCode::InvalidArgument, "engine exception"), const std::exception&);
+}
+
 TEST_CASE("Asset bundles discover GUIDs and nested scene names without a registry manifest") {
 	BundleFixture fixture;
 	fixture.Write("Levels/Nested.scene", "{}");
 	fixture.Write("Levels/Nested.scene.meta", R"({"AssetGUID":"123456789","kind":4})");
-	fixture.Pack(true);
+	fixture.Pack(AssetBundleCompression::Zstd);
 	auto project = std::make_unique<FunkeProject>();
 	project->RootDirectory = Path::ToUtf8(fixture.Root);
 	project->AssetsDirectory = Path::ToUtf8(fixture.Root / "Assets");
@@ -119,25 +130,115 @@ TEST_CASE("Asset bundles discover GUIDs and nested scene names without a registr
 	CHECK(AssetRegistry::GetKind(123456789) == AssetKind::Scene);
 }
 
+TEST_CASE("Asset bundle mounts resolve aliases with missing virtual descendants") {
+	for (auto compression : k_Compressions) {
+		CAPTURE(AssetBundle::CompressionName(compression));
+		BundleFixture fixture;
+		fixture.Write("Nested/Main.scene", R"({"SceneName":"Alias Scene","Entities":[]})");
+		fixture.Write("Nested/Main.scene.meta", R"({"AssetGUID":"123456789","kind":4})");
+		fixture.Pack(compression);
+		const auto alias = fixture.Root / "Alias";
+		std::error_code error;
+		std::filesystem::create_directory_symlink(fixture.Root, alias, error);
+		if (error) {
+			MESSAGE("Directory symlinks unavailable: ", error.message());
+			continue;
+		}
+		const auto viaAlias = alias / "Assets/Nested/Main.scene";
+		CAPTURE(viaAlias);
+		CAPTURE(Path::CanonicalIdentity(viaAlias));
+		CHECK(File::Exists(Path::ToUtf8(viaAlias)));
+		CHECK(File::IsDirectory(alias / "Assets/Nested"));
+		CHECK(File::ReadAllText(Path::ToUtf8(viaAlias)) == File::ReadAllText(Path::ToUtf8(fixture.Root / "Assets/Nested/Main.scene")));
+		CHECK_FALSE(File::Exists(Path::ToUtf8(alias / "Assets/../Nested/Main.scene")));
+		CHECK_FALSE(File::IsDirectory(alias / "AssetsSibling"));
+		auto project = std::make_unique<FunkeProject>();
+		project->RootDirectory = Path::ToUtf8(alias);
+		project->AssetsDirectory = Path::ToUtf8(alias / "Assets");
+		project->ScenesDirectory = Path::ToUtf8(alias / "Assets/Scenes");
+		ProjectManager::SetCurrentProject(std::move(project), true);
+		AssetRegistry::Sync();
+		CHECK(File::Exists(AssetRegistry::ResolvePath(123456789)));
+		CHECK(AssetRegistry::GetKind(123456789) == AssetKind::Scene);
+		ProjectManager::SetCurrentProject(nullptr);
+		std::filesystem::remove(alias);
+	}
+}
+
 TEST_CASE("Asset bundles feed image audio and font decoders") {
+	for (auto compression : k_Compressions) {
+		CAPTURE(AssetBundle::CompressionName(compression));
+		BundleFixture fixture;
+		const auto repo = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+		const auto font = repo / "Funke-Runtime/FunkeAssets/Fonts/IBMPlexSansCondensed-Regular.ttf";
+		REQUIRE(std::filesystem::is_regular_file(font));
+		std::filesystem::copy_file(font, fixture.Root / "Assets/font.ttf");
+		const unsigned char png[] = {137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,4,0,0,0,181,28,12,2,0,0,0,11,73,68,65,84,120,218,99,252,255,31,0,3,3,2,0,239,191,105,107,0,0,0,0,73,69,78,68,174,66,96,130};
+		REQUIRE(File::WriteAllBytes(Path::ToUtf8(fixture.Root / "Assets/image.png"), std::vector<std::uint8_t>(std::begin(png), std::end(png))));
+		std::string wav = "RIFF";
+		auto number = [&](std::uint32_t value, int count) { for (int i = 0; i < count; ++i) wav += static_cast<char>((value >> (i * 8)) & 255); };
+		number(40, 4); wav += "WAVEfmt "; number(16, 4); number(1, 2); number(1, 2);
+		number(8000, 4); number(16000, 4); number(2, 2); number(16, 2); wav += "data"; number(4, 4); number(0, 4);
+		fixture.Write("sound.wav", wav);
+		fixture.Pack(compression);
+		const auto imagePath = Path::ToUtf8(fixture.Root / "Assets/image.png");
+		REQUIRE(ImageProcessing::LoadFile(Path::FromUtf8(imagePath)) != nullptr);
+		REQUIRE(Texture2D::DecodeFileToCpu(imagePath.c_str(), false) != nullptr);
+		REQUIRE(Font::PrepareFromFile(Path::ToUtf8(fixture.Root / "Assets/font.ttf"), 16) != nullptr);
+		Audio audio;
+		REQUIRE(audio.LoadFromFile(Path::ToUtf8(fixture.Root / "Assets/sound.wav")));
+		CHECK(audio.GetFrameCount() == 2);
+	}
+}
+
+TEST_CASE("Asset bundles record the selected codec and reject unknown codecs") {
+	for (auto compression : k_Compressions) {
+		CAPTURE(AssetBundle::CompressionName(compression));
+		BundleFixture fixture;
+		fixture.Write("data.bin", std::string(16000, 'x'));
+		const auto archive = fixture.Root / "codec.fbundle";
+		std::string error;
+		REQUIRE(AssetBundle::Write(fixture.Root / "Assets", archive, { "data.bin" }, compression, error));
+		auto bytes = File::ReadAllBytes(Path::ToUtf8(archive));
+		REQUIRE(bytes.size() >= 24);
+		CHECK(bytes[bytes.size() - 4] == static_cast<std::uint8_t>(compression));
+		if (compression == AssetBundleCompression::Zstd) {
+			CHECK(bytes[20] == 0x28);
+			CHECK(bytes[21] == 0xb5);
+			CHECK(bytes[22] == 0x2f);
+			CHECK(bytes[23] == 0xfd);
+		}
+		bytes[bytes.size() - 4] = 99;
+		REQUIRE(File::WriteAllBytes(Path::ToUtf8(archive), bytes));
+		AssetBundle bundle;
+		CHECK_FALSE(bundle.Open(archive, error));
+		CHECK_FALSE(error.empty());
+		CHECK_FALSE(AssetBundle::Write(fixture.Root / "Assets", archive, {}, static_cast<AssetBundleCompression>(99), error));
+	}
+}
+
+TEST_CASE("Asset bundles store small incompressible files without compression overhead") {
+	for (auto compression : k_Compressions) {
+		BundleFixture fixture;
+		fixture.Write("small.bin", "abcd");
+		fixture.Pack(compression);
+		const auto bytes = File::ReadAllBytes(Path::ToUtf8(fixture.Root / "Assets.fbundle"));
+		REQUIRE(bytes.size() >= 24);
+		CHECK(bytes[bytes.size() - 4] == 0);
+		CHECK(File::ReadAllText(Path::ToUtf8(fixture.Root / "Assets/small.bin")) == "abcd");
+	}
+}
+
+TEST_CASE("Asset bundles preserve the legacy boolean writer format") {
 	BundleFixture fixture;
-	const auto repo = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
-	const auto font = repo / "Funke-Runtime/FunkeAssets/Fonts/IBMPlexSansCondensed-Regular.ttf";
-	REQUIRE(std::filesystem::is_regular_file(font));
-	std::filesystem::copy_file(font, fixture.Root / "Assets/font.ttf");
-	const unsigned char png[] = {137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,4,0,0,0,181,28,12,2,0,0,0,11,73,68,65,84,120,218,99,252,255,31,0,3,3,2,0,239,191,105,107,0,0,0,0,73,69,78,68,174,66,96,130};
-	REQUIRE(File::WriteAllBytes(Path::ToUtf8(fixture.Root / "Assets/image.png"), std::vector<std::uint8_t>(std::begin(png), std::end(png))));
-	std::string wav = "RIFF";
-	auto number = [&](std::uint32_t value, int count) { for (int i = 0; i < count; ++i) wav += static_cast<char>((value >> (i * 8)) & 255); };
-	number(40, 4); wav += "WAVEfmt "; number(16, 4); number(1, 2); number(1, 2);
-	number(8000, 4); number(16000, 4); number(2, 2); number(16, 2); wav += "data"; number(4, 4); number(0, 4);
-	fixture.Write("sound.wav", wav);
-	fixture.Pack(true);
-	const auto imagePath = Path::ToUtf8(fixture.Root / "Assets/image.png");
-	REQUIRE(ImageProcessing::LoadFile(Path::FromUtf8(imagePath)) != nullptr);
-	REQUIRE(Texture2D::DecodeFileToCpu(imagePath.c_str(), false) != nullptr);
-	REQUIRE(Font::PrepareFromFile(Path::ToUtf8(fixture.Root / "Assets/font.ttf"), 16) != nullptr);
-	Audio audio;
-	REQUIRE(audio.LoadFromFile(Path::ToUtf8(fixture.Root / "Assets/sound.wav")));
-	CHECK(audio.GetFrameCount() == 2);
+	fixture.Write("data.bin", std::string(4096, 'x'));
+	std::string error;
+	for (bool compress : { false, true }) {
+		const auto legacy = fixture.Root / (compress ? "legacy-lz4.fbundle" : "legacy-none.fbundle");
+		const auto explicitCodec = fixture.Root / (compress ? "lz4.fbundle" : "none.fbundle");
+		REQUIRE(AssetBundle::Write(fixture.Root / "Assets", legacy, { "data.bin" }, compress, error));
+		REQUIRE(AssetBundle::Write(fixture.Root / "Assets", explicitCodec, { "data.bin" },
+			compress ? AssetBundleCompression::LZ4 : AssetBundleCompression::None, error));
+		CHECK(File::ReadAllBytes(Path::ToUtf8(legacy)) == File::ReadAllBytes(Path::ToUtf8(explicitCodec)));
+	}
 }

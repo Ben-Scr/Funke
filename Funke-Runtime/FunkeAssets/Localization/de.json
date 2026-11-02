@@ -151,6 +151,7 @@
     "launcher.create.init_git.tooltip": "Führt `git init` im neuen Projektordner aus und schreibt eine auf Funke zugeschnittene .gitignore. Erfordert git im PATH.",
 
     "launcher.settings.title": "Launcher-Einstellungen",
+    "launcher.settings.subtitle": "Passe den Launcher an. Änderungen werden automatisch gespeichert.",
     "launcher.settings.default_location": "Standard-Projektspeicherort",
     "launcher.settings.default_location_subtitle": "Wird beim Erstellen eines neuen Projekts verwendet.",
     "launcher.settings.current": "Aktuell: {0}",

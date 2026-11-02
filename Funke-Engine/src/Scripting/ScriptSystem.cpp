@@ -300,7 +300,8 @@ namespace Funke {
 				".csproj",
 				".props",
 				".targets",
-				".sln"
+				".sln",
+				"global.json"
 			};
 		}
 
@@ -1112,9 +1113,9 @@ namespace Funke {
 					BuildManagedWatchTargets(scriptsDir, csproj, Path::FromUtf8(project->SlnPath));
 				m_SandboxProjectPath = Path::ToUtf8(std::filesystem::canonical(csproj));
 				m_ScriptWatcher.Watch(
-					managedWatchTargets,
+					BuildManagedWatchTargets(csproj.parent_path(), csproj, Path::FromUtf8(project->SlnPath)),
 					GetManagedWatchPatterns(),
-					[this]() { RebuildAndReloadScripts(); });
+					[this](const std::vector<std::string>& paths) { RebuildAndReloadScripts(&paths); });
 
 				// Without a stamp the assembly was built the old way, for the editor's own platform.
 				m_ScriptDefines = ReadScriptDefinesStamp(m_UserAssemblyPath);
@@ -1138,9 +1139,9 @@ namespace Funke {
 					BuildManagedWatchTargets(sandboxSourceDir, sandboxCsproj);
 				m_SandboxProjectPath = Path::ToUtf8(std::filesystem::canonical(sandboxCsproj));
 				m_ScriptWatcher.Watch(
-					managedWatchTargets,
+					BuildManagedWatchTargets(sandboxProjectDir, sandboxCsproj),
 					GetManagedWatchPatterns(),
-					[this]() { RebuildAndReloadScripts(); });
+					[this](const std::vector<std::string>& paths) { RebuildAndReloadScripts(&paths); });
 
 				if (BuildArtifactIsStale(managedWatchTargets, GetManagedWatchPatterns(), Path::FromUtf8(m_UserAssemblyPath))) {
 					RebuildAndReloadScripts();
@@ -1274,12 +1275,18 @@ namespace Funke {
 		RebuildAndReloadScripts();
 	}
 
-	void ScriptSystem::RebuildAndReloadScripts()
+	void ScriptSystem::RebuildAndReloadScripts(const std::vector<std::string>* changedPaths)
 	{
 		// Drop rebuilds during shutdown — late watcher events would lock the .dll mid-teardown.
 		if (Application::IsShuttingDown()) {
 			m_RebuildQueued = false;
 			return;
+		}
+		if (changedPaths) {
+			m_ManagedChangedPaths.insert(m_ManagedChangedPaths.end(), changedPaths->begin(), changedPaths->end());
+		}
+		else {
+			m_ManagedSourceRescanRequired = true;
 		}
 		if (m_RebuildTask) {
 			m_RebuildQueued = true;
@@ -1318,11 +1325,15 @@ namespace Funke {
 		const bool inProcess = ManagedScriptCompiler::EnsureLoaded();
 		ManagedScriptCompiler::Request compileRequest{
 			sandboxProjectPath, buildConfig, { codegenArg, defineConstantsArg }, m_ManagedBuildOutputPath };
+		compileRequest.ChangedPaths = std::move(m_ManagedChangedPaths);
+		compileRequest.RescanSources = m_ManagedSourceRescanRequired;
+		m_ManagedChangedPaths.clear();
+		m_ManagedSourceRescanRequired = false;
 		m_RebuildTask = LaunchTask([sandboxProjectPath, buildConfig, defineConstantsArg, codegenArg, inProcess, compileRequest]() {
 			if (inProcess) {
 				const ManagedScriptCompiler::Result compiled = ManagedScriptCompiler::Compile(compileRequest);
 				if (compiled.Status == ManagedScriptCompiler::Status::Compiled) {
-					FNK_INFO_TAG("ScriptSystem", "C# scripts compiled in-process in {:.0f} ms{}", compiled.ElapsedMs,
+					FNK_INFO_TAG("ScriptSystem", "C# scripts compiled {} in {:.0f} ms{}", compiled.FullBuild ? "with MSBuild" : "in-process", compiled.ElapsedMs,
 						compiled.Evaluated ? " (project re-evaluated)" : "");
 					Process::Result result;
 					result.ExitCode = 0;
@@ -1393,7 +1404,8 @@ namespace Funke {
 			configureResult = Process::Run(command, projectDirectory, std::chrono::minutes(5));
 			if (!configureResult.Succeeded()) return configureResult;
 		}
-		std::vector<std::string> command = { *cmake, "--build", Path::ToUtf8(buildDirectory), "--config", configuration };
+		std::vector<std::string> command = { *cmake, "--build", Path::ToUtf8(buildDirectory), "--config", configuration,
+			"--parallel", std::to_string(std::clamp(std::thread::hardware_concurrency(), 1u, 12u)) };
 		if (!targetName.empty()) {
 			command.push_back("--target");
 			command.push_back(targetName);
@@ -1964,7 +1976,8 @@ namespace Funke {
 			if (m_RebuildQueued) {
 				if (!m_TeardownInProgress.load(std::memory_order_acquire)) {
 					m_RebuildQueued = false;
-					RebuildAndReloadScripts();
+					const std::vector<std::string> noNewChanges;
+					RebuildAndReloadScripts(&noNewChanges);
 				}
 			}
 		}
@@ -2251,6 +2264,8 @@ namespace Funke {
 		m_NativeWatcher.Stop();
 
 		AbandonTask(m_RebuildTask, "Managed script rebuild");
+		m_ManagedChangedPaths.clear();
+		m_ManagedSourceRescanRequired = false;
 		AbandonTask(m_NativeRebuildTask, "Native script rebuild");
 		m_RebuildQueued = false;
 		m_NativeRebuildQueued = false;

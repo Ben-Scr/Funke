@@ -26,6 +26,10 @@ official source ZIP can be supplied with `--archive`; the same checksum remains
 mandatory. The source pin and upstream bootstrap documentation are recorded in
 the helper.
 
+The app stores the Launcher, Editor, Runtime and CLI in `Contents/MacOS`, shared libraries in `Contents/Frameworks`, and assets, managed assemblies, `ScriptCompiler` and the complete `EngineSDK` export templates in `Contents/Resources`. The managed PackageTool apphost stays beside its assemblies and runtime configuration in Resources. Only native program/library lookup aliases point from Resources to their matching code files. SDK runtimes remain self-contained when copied out for export.
+
+Embedded Mach-O files are signed from the inside out. The main Launcher is signed with the enclosing app; JSON and managed resources are sealed as data. macOS uses `libnethost.dylib` to isolate the host library's private C++ type information. Run `python3 -m unittest scripts.ci.test_macos_native -v` after Setup for small native signing and exception checks. This supplements the full installer smoke test below.
+
 Run on macOS after staging the Release Launcher and Dist Runtime:
 
 ```sh

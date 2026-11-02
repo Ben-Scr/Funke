@@ -26,7 +26,7 @@ namespace Funke {
 
 		void Watch(const std::string& path, const std::string& pattern, Callback callback, bool recursive = true);
 		void Watch(const std::vector<std::string>& paths, const std::vector<std::string>& patterns, Callback callback, bool recursive = true);
-		// Includes added, modified and removed paths, coalesced until Poll runs on the caller thread.
+		// Absolute paths under canonical watch roots; coalesced until Poll on the caller thread.
 		void Watch(const std::vector<std::string>& paths, const std::vector<std::string>& patterns, PathsCallback callback, bool recursive = true);
 		void Stop();
 		void Poll(float pollIntervalSeconds = 1.0f);

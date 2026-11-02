@@ -187,6 +187,7 @@ TEST_CASE("Build profiles include .NET by default and preserve the explicit opt 
 	CHECK(profile.BundleDotNetRuntime);
 	CHECK_FALSE(profile.BundleAssets);
 	CHECK_FALSE(profile.CompressAssetBundles);
+	CHECK(profile.BundleCompression == AssetBundleCompression::LZ4);
 	profile.BundleDotNetRuntime = false;
 	profile.BundleAssets = true;
 	profile.CompressAssetBundles = true;
@@ -219,6 +220,7 @@ TEST_CASE("GameBuilder::Prepare folds the profile's configuration, defines and t
 	qa.BundleDotNetRuntime = false;
 	qa.BundleAssets = true;
 	qa.CompressAssetBundles = true;
+	qa.BundleCompression = AssetBundleCompression::Zstd;
 	REQUIRE(qa.Save(Path::ToUtf8(temp.Root / "BuildProfiles" / "QA.build")));
 	temp.Project.ActiveBuildProfileName = "QA";
 
@@ -235,6 +237,7 @@ TEST_CASE("GameBuilder::Prepare folds the profile's configuration, defines and t
 	CHECK_FALSE(request.BundleDotNetRuntime);
 	CHECK(request.BundleAssets);
 	CHECK(request.CompressAssetBundles);
+	CHECK(request.BundleCompression == AssetBundleCompression::Zstd);
 	// The live project keeps its own values.
 	CHECK(temp.Project.ActiveBuildProfile == FunkeProject::BuildProfile::Development);
 	CHECK(temp.Project.CustomDefines == std::vector<std::string>{ "STEAM" });
@@ -250,10 +253,12 @@ TEST_CASE("GameBuilder::Prepare folds the profile's configuration, defines and t
 	REQUIRE(GameBuilder::Prepare(temp.Project, overridden, error));
 	CHECK_FALSE(overridden.BundleAssets);
 	CHECK_FALSE(overridden.CompressAssetBundles);
+	CHECK(overridden.BundleCompression == AssetBundleCompression::Zstd);
 }
 
 TEST_CASE("GameBuilder asset bundling preserves StreamingAssets and reads staged content") {
-	for (bool compressed : { false, true }) {
+	for (auto compression : { AssetBundleCompression::None, AssetBundleCompression::LZ4, AssetBundleCompression::Zstd }) {
+		CAPTURE(AssetBundle::CompressionName(compression));
 		TempProject temp;
 		for (const char* folder : { "Assets/Scenes", "Assets/StreamingAssets", "FunkeAssets/Fonts" })
 			std::filesystem::create_directories(temp.Root / folder);
@@ -263,7 +268,7 @@ TEST_CASE("GameBuilder asset bundling preserves StreamingAssets and reads staged
 		REQUIRE(File::WriteAllText(Path::ToUtf8(temp.Root / "Assets/StreamingAssets/data.txt"), "raw"));
 		REQUIRE(File::WriteAllText(Path::ToUtf8(temp.Root / "FunkeAssets/Fonts/font.ttf"), "font"));
 		std::string error;
-		REQUIRE_MESSAGE(GameBuilder::BundleStagedAssets(temp.Root, compressed, error), error);
+		REQUIRE_MESSAGE(GameBuilder::BundleStagedAssets(temp.Root, compression, error), error);
 		CHECK_FALSE(std::filesystem::exists(temp.Root / "Assets/Scenes/Main.scene"));
 		CHECK_FALSE(std::filesystem::exists(temp.Root / "Assets/Scenes/Main.scene.meta"));
 		CHECK(File::ReadAllText(Path::ToUtf8(temp.Root / "Assets/StreamingAssets/data.txt")) == "raw");
@@ -276,6 +281,29 @@ TEST_CASE("GameBuilder asset bundling preserves StreamingAssets and reads staged
 		std::vector<std::uint8_t> bytes;
 		REQUIRE(project.Read("Scenes/Main.scene", bytes, error));
 		CHECK(std::string(bytes.begin(), bytes.end()) == scene);
+	}
+}
+
+TEST_CASE("Build profiles preserve bundle compression and default legacy or invalid values to LZ4") {
+	TempProject temp;
+	const auto file = Path::ToUtf8(temp.Root / "BuildProfiles/Compression.build");
+	REQUIRE(File::WriteAllText(file, R"({"bundleAssets":true,"compressAssetBundles":true})"));
+	auto profile = FunkeBuildProfile::Load(file);
+	CHECK(profile.BundleCompression == AssetBundleCompression::LZ4);
+	CHECK(profile.CompressAssetBundles);
+	for (auto compression : { AssetBundleCompression::LZ4, AssetBundleCompression::Zstd }) {
+		for (bool enabled : { true, false }) {
+			profile.BundleCompression = compression;
+			profile.CompressAssetBundles = enabled;
+			REQUIRE(profile.Save(file));
+			const auto loaded = FunkeBuildProfile::Load(file);
+			CHECK(loaded.BundleCompression == compression);
+			CHECK(loaded.CompressAssetBundles == enabled);
+		}
+	}
+	for (const char* value : { "\"invalid\"", "42", "null", "\"None\"" }) {
+		REQUIRE(File::WriteAllText(file, std::string("{\"assetBundleCompression\":") + value + "}"));
+		CHECK(FunkeBuildProfile::Load(file).BundleCompression == AssetBundleCompression::LZ4);
 	}
 }
 

@@ -90,17 +90,24 @@ class MacInstallerTests(unittest.TestCase):
             if path.is_file() and (path.name in mac.HOST_EXECUTABLES or path.name == "premake5" or path.suffix == ".dylib"):
                 path.write_bytes(bytes.fromhex("cffaedfe") + b"fixture")
 
-    def test_staged_app_is_repository_free_and_preserves_payload_layout(self):
+    def test_staged_app_separates_code_and_mixed_resources(self):
         write(self.bundle / "imgui.ini", "private state")
+        write(self.bundle / "ScriptCompiler/Funke-ScriptCompiler.runtimeconfig.json", "{}")
+        write(self.bundle / "ScriptCompiler/Funke-ScriptCompiler.dll", "managed")
         app = self.root / "Funke.app"
         mac.stage_app(self.bundle, app, self.metadata)
         payload = app / "Contents/Resources"
         self.assertTrue((payload / "Funke-Editor").is_file())
         self.assertTrue((payload / "EngineSDK/Runtime-Dist/Funke-Runtime").is_file())
         for name in mac.APP_EXECUTABLES:
-            alias = app / "Contents/Resources" / name
+            alias = payload / name
             self.assertTrue(alias.is_symlink())
             self.assertEqual(alias.resolve(), (app / "Contents/MacOS" / name).resolve())
+        self.assertEqual({p.name for p in (app / "Contents/MacOS").iterdir()}, mac.APP_EXECUTABLES)
+        for name in ("FunkeAssets", "EngineSDK", "ScriptCompiler", "Funke-ScriptCore.dll", "Funke-PackageTool.runtimeconfig.json"):
+            self.assertTrue((payload / name).exists())
+            self.assertFalse((payload / name).is_symlink())
+        self.assertTrue((app / "Contents/Frameworks/libnethost.dylib").is_file())
         for name in ("Funke-Engine", "External", "bin"):
             self.assertFalse((payload / "EngineSDK" / name).exists())
             self.assertTrue((self.bundle / "EngineSDK" / name).exists())
@@ -115,6 +122,18 @@ class MacInstallerTests(unittest.TestCase):
         self.assertEqual(plist["LSMinimumSystemVersion"], "15.0")
         with self.assertRaisesRegex(ValueError, "overwrite"):
             mac.stage_app(self.bundle, app, self.metadata)
+
+    def test_app_code_aliases_cannot_escape_or_be_used_in_flat_archives(self):
+        app = self.root / "Funke.app"
+        mac.stage_app(self.bundle, app, self.metadata)
+        resources = app / "Contents/Resources"
+        with self.assertRaisesRegex(ValueError, "escapes installation"):
+            mac.sdk_manifest.verify_bundle(resources)
+        alias = resources / "funke"
+        alias.unlink()
+        alias.symlink_to(self.bundle / "funke")
+        with self.assertRaisesRegex(ValueError, "Unexpected macOS code alias"):
+            mac.sdk_manifest.verify_bundle(resources, macos_app=True)
 
     def test_signing_skips_main_executable_until_app_signing(self):
         app = self.root / "Funke.app"

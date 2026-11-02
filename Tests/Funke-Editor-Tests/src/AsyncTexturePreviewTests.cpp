@@ -237,3 +237,61 @@ TEST_CASE("Texture preview GPU upload spans frames and retains native sprite pix
 	CHECK(app.NativePixels);
 	CHECK(app.UploadFrames == 4);
 }
+
+TEST_CASE("Texture preview thumbnail reduction preserves the native pixel grid and thin details") {
+	bool thinDetail = false;
+	SUBCASE("Aligned repeated pixel grid") {}
+	SUBCASE("One pixel detail prevents lossy reduction") { thinDetail = true; }
+	std::vector<unsigned char> source(16 * 8 * 4);
+	for (int y = 0; y < 8; ++y) for (int x = 0; x < 16; ++x) {
+		const size_t at = (y * 16 + x) * 4;
+		source[at] = static_cast<unsigned char>((x / 2) * 30);
+		source[at + 1] = static_cast<unsigned char>((y / 2) * 60);
+		source[at + 2] = 17;
+		source[at + 3] = x < 4 ? 0 : 255;
+	}
+	if (thinDetail) source[4] = 237;
+	PreviewDecodeQueue queue([source](const std::string&) {
+		return std::make_unique<ImageData>(16, 8, std::vector<unsigned char>(source));
+	});
+	auto request = std::make_shared<TexturePreview>("pixels", Filter::Point, false, 4);
+	queue.Enqueue(request, false);
+	PreviewDecodeQueue::Result result;
+	REQUIRE(WaitResult(queue, result));
+	REQUIRE(result.Image);
+	CHECK(result.SourceWidth == 16);
+	CHECK(result.SourceHeight == 8);
+	const int scale = thinDetail ? 1 : 2;
+	CHECK(result.Image->Width == 16 / scale);
+	CHECK(result.Image->Height == 8 / scale);
+	for (int y = 0; y < result.Image->Height; ++y) for (int x = 0; x < result.Image->Width; ++x)
+		for (int c = 0; c < 4; ++c)
+			CHECK(result.Image->Pixels[(y * result.Image->Width + x) * 4 + c] == source[(y * scale * 16 + x * scale) * 4 + c]);
+}
+
+TEST_CASE("Texture preview smooth thumbnails avoid transparent color fringes while sprite pixels stay native") {
+	bool keepPixels = false;
+	SUBCASE("Smooth thumbnail") {}
+	SUBCASE("Sprite editor keeps original pixels") { keepPixels = true; }
+	PreviewDecodeQueue queue([](const std::string&) {
+		std::vector<unsigned char> pixels(8 * 4 * 4);
+		for (int i = 0; i < 32; ++i) {
+			pixels[i * 4] = i % 2 == 0 ? 255 : 0;
+			pixels[i * 4 + 2] = i % 2 == 0 ? 0 : 255;
+			pixels[i * 4 + 3] = i % 2 == 0 ? 255 : 0;
+		}
+		return std::make_unique<ImageData>(8, 4, std::move(pixels));
+	});
+	auto request = std::make_shared<TexturePreview>("smooth", Filter::Bilinear, keepPixels, 2);
+	queue.Enqueue(request, false);
+	PreviewDecodeQueue::Result result;
+	REQUIRE(WaitResult(queue, result));
+	REQUIRE(result.Image);
+	CHECK(result.Image->Width == (keepPixels ? 8 : 2));
+	CHECK(result.Image->Height == (keepPixels ? 4 : 1));
+	if (!keepPixels) for (int i = 0; i < 2; ++i) {
+		CHECK(result.Image->Pixels[i * 4] == 255);
+		CHECK(result.Image->Pixels[i * 4 + 2] == 0);
+		CHECK(result.Image->Pixels[i * 4 + 3] == 128);
+	}
+}

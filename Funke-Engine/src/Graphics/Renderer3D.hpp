@@ -42,7 +42,16 @@ namespace Funke {
 		glm::mat4 View{ 1.0f };
 		glm::mat4 Projection{ 1.0f };
 		glm::vec3 Position{ 0.0f };
-		Camera3DEnvironment Environment;
+        glm::dvec3 PositionRemainder{ 0.0 };
+        Camera3DEnvironment Environment;
+
+        glm::vec3 RenderOrigin() const { return glm::vec3(glm::floor((glm::dvec3(Position) + PositionRemainder) / 16.0) * 16.0); }
+        glm::vec3 RelativePosition(const glm::vec3& origin) const { return glm::vec3(glm::dvec3(Position) + PositionRemainder - glm::dvec3(origin)); }
+        glm::mat4 RelativeView(const glm::vec3& origin) const {
+            glm::mat4 relative{ glm::mat3(View) };
+            relative[3] = glm::vec4(-glm::mat3(View) * RelativePosition(origin), 1.0f);
+            return relative;
+        }
 	};
 
 	// Forward renderer for MeshRendererComponent: procedural sky, up to GraphicsSettings::MaxLights directional/point/spot
@@ -109,6 +118,7 @@ namespace Funke {
 		const RenderGeometryStats& GetGeometryTotals() const { return m_GeometryTotals; }
 
 		static Camera3DView MakeView(const glm::mat4& cameraWorld, const Camera3DComponent& camera, float aspect);
+        static Camera3DView MakePreciseView(const glm::dmat4& cameraWorld, const Camera3DComponent& camera, float aspect);
 		// Aspect of the viewport passes are clipped to (letterbox-aware), falling back to the bound target.
 		static float GetCurrentTargetAspect();
 		static uint32_t GetShadowMapResolution(ShadowQualityLevel quality);

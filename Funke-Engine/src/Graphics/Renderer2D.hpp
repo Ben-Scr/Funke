@@ -7,6 +7,7 @@
 #include "Core/Export.hpp"
 #include "Core/GraphicsSettings.hpp"
 #include "Graphics/Framebuffer.hpp"
+#include "Graphics/FramebufferCache.hpp"
 #include "Graphics/IRenderer.hpp"
 #include "Graphics/PostProcessing/PostProcessor.hpp"
 
@@ -123,10 +124,10 @@ namespace Funke {
 		// callers don't need to thread TextRenderer through their own code.
 		std::unique_ptr<TextRenderer> m_TextRenderer;
 
-		Framebuffer    m_SceneFbo;
-		Framebuffer    m_PostProcessOutputFbo;
+		FramebufferCache<> m_SceneTargets;
+		FramebufferCache<> m_PostProcessTargets;
 		// FXAA result when effects or upscaling still follow it.
-		Framebuffer    m_AntiAliasFbo;
+		FramebufferCache<> m_AntiAliasTargets;
 		PostProcessor  m_PostProcessor;
 
 		SceneProvider m_SceneProvider;

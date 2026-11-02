@@ -722,7 +722,6 @@ namespace Funke {
 		if (!s_Initialized || !s_Callbacks.InvokeGlobalSystemUpdate) return;
 		// Runs before the scene systems, so a UI write here must not be skipped by the layout gate.
 #if FUNKE_WITH_RENDER
-		if (!s_GlobalSystems.empty()) InvalidateUILayout();
 #endif
 		for (const auto& instance : s_GlobalSystems)
 		{

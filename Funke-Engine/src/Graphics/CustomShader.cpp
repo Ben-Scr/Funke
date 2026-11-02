@@ -56,6 +56,8 @@ struct FnkFrame {
 	shadowParams: vec4<f32>,
 	fogColor: vec4<f32>,
 	fogParams: vec4<f32>,
+    worldOrigin: vec4<f32>,
+    relativeCameraPos: vec4<f32>,
 };
 
 struct FnkLight {
@@ -75,6 +77,9 @@ struct FnkLights {
 @group(0) @binding(3) var fnk_shadowSampler: sampler_comparison;
 
 struct VertexData {
+    // Add small world-space motion here without rounding it into a large absolute coordinate.
+    positionOffset: vec3<f32>,
+    cameraRelativePosition: vec3<f32>,
 	localPosition: vec3<f32>,
 	localNormal: vec3<f32>,
 	worldPosition: vec3<f32>,
@@ -85,6 +90,8 @@ struct VertexData {
 };
 
 struct SurfaceInput {
+    relativePosition: vec3<f32>,
+    cameraRelativePosition: vec3<f32>,
 	worldPosition: vec3<f32>,
 	worldNormal: vec3<f32>,
 	viewDirection: vec3<f32>,
@@ -155,20 +162,26 @@ fn vs_main(in: FnkVertexInput) -> FnkVaryings {
 	var v: VertexData;
 	v.localPosition = in.position;
 	v.localNormal = in.normal;
-	v.worldPosition = (model * vec4<f32>(in.position, 1.0)).xyz;
+	let relative = (model * vec4<f32>(in.position, 1.0)).xyz;
+    let absolute = relative + fnk_frame.worldOrigin.xyz;
+    v.worldPosition = absolute;
+    v.positionOffset = vec3<f32>(0.0);
+    v.cameraRelativePosition = relative - fnk_frame.relativeCameraPos.xyz;
 	v.worldNormal = normalMatrix * in.normal;
 	v.uv = in.uv * in.uvTransform.xy + in.uvTransform.zw;
 	v.color = in.color;
 	v.model = model;
+    v.model[3] = vec4<f32>(model[3].xyz + fnk_frame.worldOrigin.xyz, 1.0);
 	FNK_VERTEX_CALL
+    let displaced = relative + (v.worldPosition - absolute) + v.positionOffset;
 	var out: FnkVaryings;
-	out.clip = fnk_frame.viewProj * vec4<f32>(v.worldPosition, 1.0);
-	out.worldPosition = v.worldPosition;
+	out.clip = fnk_frame.viewProj * vec4<f32>(displaced, 1.0);
+	out.worldPosition = displaced;
 	out.worldNormal = v.worldNormal;
 	out.uv = v.uv;
 	out.color = v.color;
 	out.localPosition = v.localPosition;
-	out.objectPosition = model[3].xyz;
+	out.objectPosition = model[3].xyz + fnk_frame.worldOrigin.xyz;
 	out.fogged = in.emissive.w;
 	return out;
 }
@@ -181,13 +194,19 @@ fn vs_shadow(in: FnkVertexInput) -> @builtin(position) vec4<f32> {
 	var v: VertexData;
 	v.localPosition = in.position;
 	v.localNormal = in.normal;
-	v.worldPosition = (model * vec4<f32>(in.position, 1.0)).xyz;
+	let relative = (model * vec4<f32>(in.position, 1.0)).xyz;
+    let absolute = relative + fnk_frame.worldOrigin.xyz;
+    v.worldPosition = absolute;
+    v.positionOffset = vec3<f32>(0.0);
+    v.cameraRelativePosition = relative - fnk_frame.relativeCameraPos.xyz;
 	v.worldNormal = normalMatrix * in.normal;
 	v.uv = in.uv * in.uvTransform.xy + in.uvTransform.zw;
 	v.color = in.color;
 	v.model = model;
+    v.model[3] = vec4<f32>(model[3].xyz + fnk_frame.worldOrigin.xyz, 1.0);
 	FNK_VERTEX_CALL
-	return fnk_frame.lightViewProj * vec4<f32>(v.worldPosition, 1.0);
+    let displaced = relative + (v.worldPosition - absolute) + v.positionOffset;
+	return fnk_frame.lightViewProj * vec4<f32>(displaced, 1.0);
 }
 
 fn fnk_toneMap(c: vec3<f32>) -> vec3<f32> {
@@ -249,7 +268,7 @@ fn fnk_pointAttenuation(distanceSq: f32, rangeSq: f32) -> f32 {
 }
 
 fn fnk_shadowFactor(worldPos: vec3<f32>, normal: vec3<f32>) -> f32 {
-	let toCamera = worldPos - fnk_frame.cameraPos.xyz;
+	let toCamera = worldPos - fnk_frame.relativeCameraPos.xyz;
 	let distanceSq = dot(toCamera, toCamera);
 	if (distanceSq >= fnk_frame.shadowParams.w * fnk_frame.shadowParams.w) {
 		return 1.0;
@@ -277,7 +296,7 @@ fn fnk_applyFog(color: vec3<f32>, worldPos: vec3<f32>, fogged: f32) -> vec3<f32>
 	if (fnk_frame.fogColor.w < 0.5 || fogged < 0.5) {
 		return color;
 	}
-	let dist = length(worldPos - fnk_frame.cameraPos.xyz);
+	let dist = length(worldPos - fnk_frame.relativeCameraPos.xyz);
 	let t = clamp((dist - fnk_frame.fogParams.x) / max(fnk_frame.fogParams.y - fnk_frame.fogParams.x, 1e-3), 0.0, 1.0);
 	return mix(color, fnk_frame.fogColor.rgb, t * t * (3.0 - 2.0 * t));
 }
@@ -293,7 +312,7 @@ fn fnk_shade(s: SurfaceInput, o: SurfaceOutput, fogged: f32) -> vec4<f32> {
 	let albedo = srgbToLinear(o.baseColor);
 	let alpha = fnk_outputAlpha(o.alpha);
 	if (o.unlit) {
-		return vec4<f32>(fnk_encodeOutput(fnk_applyFog(albedo + max(o.emissive, vec3<f32>(0.0)), s.worldPosition, fogged)), alpha);
+		return vec4<f32>(fnk_encodeOutput(fnk_applyFog(albedo + max(o.emissive, vec3<f32>(0.0)), s.relativePosition, fogged)), alpha);
 	}
 
 	let metallic = clamp(o.metallic, 0.0, 1.0);
@@ -317,7 +336,7 @@ fn fnk_shade(s: SurfaceInput, o: SurfaceOutput, fogged: f32) -> vec4<f32> {
 		var l = -light.directionType.xyz;
 		var attenuation = 1.0;
 		if (lightType > 0.5) {
-			let toLight = light.positionRange.xyz - s.worldPosition;
+			let toLight = light.positionRange.xyz - s.relativePosition;
 			let distanceSq = dot(toLight, toLight);
 			let rangeSq = light.positionRange.w * light.positionRange.w;
 			if (distanceSq >= rangeSq || dot(n, toLight) <= 0.0) {
@@ -336,7 +355,7 @@ fn fnk_shade(s: SurfaceInput, o: SurfaceOutput, fogged: f32) -> vec4<f32> {
 			continue;
 		}
 		if (i32(i) == shadowedLight) {
-			attenuation *= fnk_shadowFactor(s.worldPosition, n);
+			attenuation *= fnk_shadowFactor(s.relativePosition, n);
 		}
 		let h = normalize(l + v);
 		let NoH = max(dot(n, h), 0.0);
@@ -354,7 +373,7 @@ fn fnk_shade(s: SurfaceInput, o: SurfaceOutput, fogged: f32) -> vec4<f32> {
 	let reflectance = fnk_envBRDF(f0, roughness, NoV);
 	color += diffuseColor * ambientDiffuse + reflectance * ambientSpecular;
 	color += max(o.emissive, vec3<f32>(0.0));
-	return vec4<f32>(fnk_encodeOutput(fnk_applyFog(fnk_toneMap(color * fnk_frame.cameraPos.w), s.worldPosition, fogged)), alpha);
+	return vec4<f32>(fnk_encodeOutput(fnk_applyFog(fnk_toneMap(color * fnk_frame.cameraPos.w), s.relativePosition, fogged)), alpha);
 }
 
 @fragment
@@ -364,9 +383,11 @@ fn fs_main(in: FnkVaryings, @builtin(front_facing) frontFacing: bool) -> @locati
 		n = -n;
 	}
 	var s: SurfaceInput;
-	s.worldPosition = in.worldPosition;
+	s.relativePosition = in.worldPosition;
+    s.worldPosition = in.worldPosition + fnk_frame.worldOrigin.xyz;
+    s.cameraRelativePosition = in.worldPosition - fnk_frame.relativeCameraPos.xyz;
 	s.worldNormal = n;
-	s.viewDirection = normalize(fnk_frame.cameraPos.xyz - in.worldPosition);
+	s.viewDirection = normalize(fnk_frame.relativeCameraPos.xyz - in.worldPosition);
 	s.localPosition = in.localPosition;
 	s.objectPosition = in.objectPosition;
 	s.uv = in.uv;

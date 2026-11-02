@@ -420,3 +420,61 @@ TEST_CASE("Mesh cache retries failed assets after idle eviction") {
 	REQUIRE(MeshLibrary::Get(guid) != nullptr);
 	CHECK(MeshLibrary::Get(guid)->BoundsMax.y == doctest::Approx(4.0f));
 }
+
+TEST_CASE("Asset registry retains independent missing GUIDs until a real change") {
+	GraphicsAssetProject fixture;
+	constexpr uint64_t first = 0x7138000000000911ull;
+	constexpr uint64_t second = first + 1;
+	AssetRegistry::Sync();
+	CHECK(AssetRegistry::ResolvePath(first).empty());
+	CHECK(AssetRegistry::GetKind(second) == AssetKind::Unknown);
+	const auto scans = AssetRegistry::GetRebuildCount();
+	for (int i = 0; i < 5; ++i) {
+		CHECK(AssetRegistry::GetKind(first) == AssetKind::Unknown);
+		CHECK(AssetRegistry::ResolvePath(second).empty());
+	}
+	CHECK(AssetRegistry::GetRebuildCount() == scans);
+	REQUIRE(GraphicsAssetProject::WriteAsset(fixture.Root / "Assets" / "restored.prefab", first));
+	AssetRegistry::MarkDirty();
+	CHECK(AssetRegistry::GetKind(first) == AssetKind::Prefab);
+}
+
+TEST_CASE("Asset registry incremental edits preserve indexes and refresh changed metadata") {
+	GraphicsAssetProject fixture;
+	constexpr uint64_t original = 0x7138000000000921ull;
+	constexpr uint64_t replacement = original + 1;
+	const auto path = fixture.Root / "Assets" / "texture.png";
+	REQUIRE(GraphicsAssetProject::WriteAsset(path, original));
+	AssetRegistry::Sync();
+	const auto scans = AssetRegistry::GetRebuildCount();
+	CHECK_FALSE(AssetRegistry::RefreshAssetPathIncremental(Path::ToUtf8(path), false));
+	CHECK(AssetRegistry::GetKind(original) == AssetKind::Texture);
+	CHECK(AssetRegistry::GetRebuildCount() == scans);
+	TextureMeta settings;
+	settings.HasImportBlock = true;
+	settings.Import.FilterMode = Filter::Point;
+	REQUIRE(AssetRegistry::WriteTextureMeta(Path::ToUtf8(path), settings));
+	CHECK(AssetRegistry::ReadTextureMeta(Path::ToUtf8(path)).Import.FilterMode == Filter::Point);
+	settings.Import.FilterMode = Filter::Bilinear;
+	REQUIRE(AssetRegistry::WriteTextureMeta(Path::ToUtf8(path), settings));
+	CHECK(AssetRegistry::ReadTextureMeta(Path::ToUtf8(path)).Import.FilterMode == Filter::Bilinear);
+	REQUIRE(GraphicsAssetProject::WriteAsset(path, replacement));
+	CHECK(AssetRegistry::RefreshAssetPathIncremental(Path::ToUtf8(path), true));
+	CHECK(AssetRegistry::GetKind(replacement) == AssetKind::Texture);
+	CHECK(AssetRegistry::GetRebuildCount() == scans);
+	CHECK(AssetRegistry::GetKind(original) == AssetKind::Unknown);
+}
+
+TEST_CASE("Asset registry explicit invalidation refreshes metadata with an unchanged fingerprint") {
+	GraphicsAssetProject fixture;
+	const std::string path = fixture.PathTo("same-stamp.png");
+	const std::string metaPath = path + ".meta";
+	REQUIRE(File::WriteAllText(path, "pixels"));
+	REQUIRE(File::WriteAllText(metaPath, R"({"import":{"filter":0}})"));
+	const auto before = AssetRegistry::ReadTextureMeta(path).Import.FilterMode;
+	const auto timestamp = std::filesystem::last_write_time(Path::FromUtf8(metaPath));
+	REQUIRE(File::WriteAllText(metaPath, R"({"import":{"filter":1}})"));
+	std::filesystem::last_write_time(Path::FromUtf8(metaPath), timestamp);
+	AssetRegistry::MarkDirty();
+	CHECK(AssetRegistry::ReadTextureMeta(path).Import.FilterMode != before);
+}

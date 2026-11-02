@@ -153,7 +153,7 @@ public:
 		// otherwise collide here, and a script's LoadScene("SampleScene") would resolve to this
 		// def and reload the working scene instead of loading the user's SampleScene.scene.
 		SceneDefinition& editorScene = SceneManager::RegisterScene("$EditorWorkingScene");
-		editorScene.OnLoadChecked([](Scene& scene) {
+		auto loadFallback = [](Scene& scene) {
 			FunkeProject* project = ProjectManager::GetCurrentProject();
 			if (project) {
 				const std::string sceneName = project->LastOpenedScene;
@@ -190,7 +190,11 @@ public:
 			scene.SetName("SampleScene");
 			EntityHelper::CreateCamera2DEntity(scene);
 			return true;
-		});
+		};
+		const auto* project = ProjectManager::GetCurrentProject();
+		const std::string startupPath = project ? project->GetSceneFilePath(project->LastOpenedScene) : std::string{};
+		if (!startupPath.empty() && File::Exists(startupPath)) editorScene.OnLoadFromFile(startupPath, loadFallback);
+		else editorScene.OnLoadChecked(loadFallback);
 		editorScene.SetAsStartupScene();
 	}
 

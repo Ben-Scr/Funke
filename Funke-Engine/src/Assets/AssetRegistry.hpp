@@ -8,6 +8,7 @@
 #include "Project/FunkeProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Serialization/File.hpp"
+#include "Serialization/FileStamp.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
 
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <filesystem>
 #include <magic_enum/magic_enum.hpp>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -52,6 +54,10 @@ namespace Funke {
 		static void MarkDirty() {
 			State().Dirty = true;
 			++State().ChangeVersion;
+			{
+				std::lock_guard lock(State().TextureMetaMutex);
+				State().TextureMetaCache.clear();
+			}
 			// Clear the known-missing cache: a FileWatcher event (or any
 			// other dirtying signal) means the on-disk layout might have
 			// changed and previously-missing assets could now exist.
@@ -138,7 +144,44 @@ namespace Funke {
 		}
 
 		static void Sync() {
+			State().KnownMissingIds.clear();
 			EnsureUpToDate(true);
+		}
+
+		static uint64_t GetRebuildCount() { return State().RebuildCount; }
+
+		// Content-only edits keep path/GUID indexes and unrelated prefab templates valid.
+		static bool RefreshAssetPathIncremental(const std::string& path, bool metadataChanged) {
+			const std::string normalized = NormalizePath(path);
+			if (normalized.empty() || !IsTrackedPath(normalized)) return false;
+			const std::string metaPath = GetMetaPath(normalized);
+			if (metadataChanged) {
+				std::lock_guard lock(State().TextureMetaMutex);
+				State().TextureMetaCache.erase(metaPath);
+				State().MetaIdCache.erase(metaPath);
+				++State().ChangeVersion;
+			}
+			const auto found = State().PathToId.find(normalized);
+			const uint64_t previous = found == State().PathToId.end() ? 0 : found->second;
+			if (!File::Exists(normalized)) {
+				if (previous == 0) return false;
+				ForgetAssetPathIncremental(normalized);
+				State().KnownMissingIds.clear();
+				return true;
+			}
+			if (previous != 0 && !metadataChanged) return false;
+			const uint64_t current = ReadMetaId(normalized);
+			if (current == previous && current != 0) return false;
+			if (current == 0 || (State().IdToRecord.contains(current)
+				&& State().IdToRecord.at(current).Path != normalized)) {
+				MarkDirty();
+				return true;
+			}
+			if (previous != 0) State().IdToRecord.erase(previous);
+			Register(normalized, current, Classify(normalized));
+			State().KnownMissingIds.clear();
+			++State().ChangeVersion;
+			return true;
 		}
 
 		// Standalone runtimes set this true: their Assets/ never changes on disk, so the registry
@@ -583,6 +626,7 @@ namespace Funke {
 			const std::string root = GetAssetsRoot(forceRootRefresh);
 			if (root != state.TrackedRoot) {
 				state.TrackedRoot = root;
+				state.KnownMissingIds.clear();
 				state.Dirty = true;
 				state.ImmutableTrustedLoaded = false;
 				state.ImmutableFullScanned = false;
@@ -605,8 +649,8 @@ namespace Funke {
 		static void Rebuild() {
 			State().IdToRecord.clear();
 			State().PathToId.clear();
-			// New scan: previously-missing GUIDs may exist again.
-			State().KnownMissingIds.clear();
+			// Recovery for one missing GUID must not re-arm every other missing GUID.
+			++State().RebuildCount;
 			State().ColdMetaReads = 0;
 			const auto rebuildStart = std::chrono::steady_clock::now();
 
@@ -952,13 +996,7 @@ namespace Funke {
 				}
 			}
 
-			std::error_code ec;
-			std::filesystem::path normalized = std::filesystem::weakly_canonical(fsPath, ec);
-			if (ec) {
-				normalized = fsPath.lexically_normal();
-			}
-
-			return Path::ToUtf8(normalized.make_preferred());
+			return Path::ToUtf8(Path::CanonicalIdentity(fsPath));
 		}
 
 		// Prefix/containment check only — no filesystem stat. Use when the caller already
@@ -1161,7 +1199,12 @@ namespace Funke {
 		static TextureMeta ReadTextureMeta(const std::string& assetPath) {
 			TextureMeta meta;
 			const std::string metaPath = GetMetaPath(assetPath);
-			if (!File::Exists(metaPath)) {
+			const FileStamp stamp = FileStamp::Read(metaPath);
+			std::lock_guard lock(State().TextureMetaMutex);
+			if (const auto it = State().TextureMetaCache.find(metaPath);
+				it != State().TextureMetaCache.end() && it->second.Stamp == stamp) return it->second.Meta;
+			if (!stamp.Exists) {
+				State().TextureMetaCache.erase(metaPath);
 				return meta;
 			}
 			Json::Value root;
@@ -1224,6 +1267,8 @@ namespace Funke {
 			}
 			meta.Border = ReadSpriteBorder(root);
 
+			if (State().TextureMetaCache.size() >= 4096) State().TextureMetaCache.clear();
+			State().TextureMetaCache[metaPath] = { stamp, meta };
 			return meta;
 		}
 
@@ -1297,6 +1342,8 @@ namespace Funke {
 			const bool wrote = File::WriteAllText(metaPath, Json::Stringify(root, true));
 			if (wrote) {
 				State().MetaIdCache.erase(metaPath);
+				std::lock_guard lock(State().TextureMetaMutex);
+				State().TextureMetaCache.erase(metaPath);
 			}
 			return wrote;
 		}
@@ -1340,6 +1387,10 @@ namespace Funke {
 		// Single instance owned by Funke-Engine.dll (see AssetRegistry.cpp) so every module that
 		// inlines these methods shares one registry instead of a per-binary copy.
 		struct StateData {
+			struct TextureMetaEntry { FileStamp Stamp; TextureMeta Meta; };
+			std::mutex TextureMetaMutex;
+			std::unordered_map<std::string, TextureMetaEntry> TextureMetaCache;
+			uint64_t RebuildCount = 0;
 			bool Dirty = true;
 			// Set once by a standalone runtime (assets are read-only): trust the shipped manifest.
 			// TrustedLoaded latches after the manifest is loaded (so a later miss forces one real walk

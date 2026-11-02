@@ -5,7 +5,7 @@ description: Use when turning a Funke GAME project into a distributable build or
 
 # Building & Shipping a Funke Game
 
-A shipped desktop Funke game contains **`Funke-Runtime`**, the required libraries, scripts and pruned project assets. Assets ship loose by default, or in optional **`.fbundle` archives** with optional lossless LZ4 compression. Serialized scenes, prefabs and data assets are converted to binary in the staged copy. Platform builders package that content into their target format. The **Build** panel exports it; **build profiles** select the platform, backend and packaging options.
+A shipped desktop Funke game contains **`Funke-Runtime`**, the required libraries, scripts and pruned project assets. Assets ship loose by default, or in optional **`.fbundle` archives** with optional lossless LZ4 or Zstandard compression. Serialized scenes, prefabs and data assets are converted to binary in the staged copy. Platform builders package that content into their target format. The **Build** panel exports it; **build profiles** select the platform, backend and packaging options.
 
 ## Build profiles (`.build`)
 
@@ -42,7 +42,7 @@ From the **Build** panel: choose a profile, set the **scene list** (`buildScenes
 3. **Copies the `Funke-Runtime` executable** for the target platform (`Runtime-Dist` for Release, `Runtime-Debug` for Debug, `Runtime-Development` for Development, when no freshly built runtime is found).
 4. **Stages reachable assets** from `Assets/` and `FunkeAssets/`. `Editor/BuildAssetPruning.cpp` follows GUIDs, paths and scene names from enabled build scenes, `project.json`, C# literals and `AssetManager.FindAll<T>`. Unreferenced assets and source scripts are omitted. `Assets/StreamingAssets/` always ships loose for computed paths and direct filesystem access. If pruning fails, the build includes all assets and logs a warning.
 5. **Converts serialized assets to binary** in the staged copy, then **writes the boot config** the runtime reads (scene list, startup scene, window/splash/branding). The project's source assets keep their format.
-6. **Optionally bundles assets** after staging and conversion: `bundleAssets` and `compressAssetBundles` in `.build` both default to `false`. The standard runtime mounts bundles before loading the project; `File` and the asset APIs read their virtual paths. Bundle compression is lossless, not encryption.
+6. **Optionally bundles assets** after staging and conversion: `bundleAssets` and `compressAssetBundles` in `.build` both default to `false`; `assetBundleCompression` selects `"LZ4"` (default for older profiles) or `"Zstd"`. The standard runtime mounts bundles before loading the project; `File` and the asset APIs read their virtual paths. Bundle compression is lossless, not encryption.
 
 The output is a distributable folder. Ship it in full, including runtime libraries, script assemblies, asset bundles or loose content, and licenses. Desktop profiles include the private .NET runtime by default (`bundleDotNetRuntime: true`).
 

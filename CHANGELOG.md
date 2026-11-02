@@ -4,13 +4,24 @@ Release notes describe user-visible compatibility, reliability, and workflow cha
 
 ## [Unreleased]
 
-### Agent development and cross-platform verification
+### Fixed
 
-- Added structured scene/schema inspection, typed authoring batches with undo/rollback, request deduplication and revision checks, plus native isolated gameplay suites and wheel/text/virtual-gamepad automation.
-- CLI business failures preserve their exit status in JSON mode; script exceptions have structured counters and one-frame stepping completes a real game update before pausing.
-- Added CLI-authored gameplay and negative-case gates on Linux and macOS; manual CI can select `platforms=posix` while normal CI still validates every platform.
-- macOS uses shared nethost to preserve C++ exception matching; bundle and watcher identities resolve path aliases. Linux coverage updates threaded counters atomically.
-- Asset undo accepts verified macOS system-directory aliases while still rejecting links inside asset paths; its tests compare canonical registry identities.
+- Asset undo accepts verified macOS system-directory aliases while rejecting links inside asset paths; tests use canonical registry identities.
+- Dawn setup validates pinned source/dependency revisions, resumes interrupted Git initialization, reports fetch errors before CMake, and protects local edits. CI checks artifact-only caches including both Windows configurations.
+- Asset bundle lookups and file-watcher tests use consistent path identities across symlink and Windows short-path aliases, including virtual and deleted files.
+- Linux coverage uses atomic counters for threaded tests. macOS hosting uses shared nethost; installer staging separates code and resources and signs the main Launcher with the app.
+- Native component addition checks the resulting storage without invoking custom presence callbacks twice. Core-only builds exclude scene-dependent property validation.
+
+### Agent development
+
+- Bridge frame stepping now pauses after gameplay and layout have completed, so a one-frame step actually executes a game update and can satisfy state-based waits.
+
+- Added native `funke test` gameplay suites with an owned editor, source-package compilation, typed assertions/waits, save isolation, structured script-exception counters, bounded execution and evidence reports.
+- Input automation now supports wheel, UTF-8 text and an owned SDL virtual gamepad through normal game input/UI paths, with held-input cleanup.
+- Added a CLI-authored player/coin/UI integration fixture, negative-case and script-revision checks, plus installed Windows and Linux/macOS CI wiring. Documented the query/batch/test contracts and updated game-authoring skill references.
+
+- Editor CLI failures now keep their exit code with `--json`, including DevCommands, script compilation and input-script screenshot failures. Early editor CLI errors return a JSON object, and `exec` correctly consumes `--pid` before command words. Asynchronous requests identify acceptance separately from completion.
+- The Editor Bridge adds `scenes`, paginated `entities`, `inspect` and `schema`, with string IDs, scene/session tokens, revision counters and native/C# field metadata. `apply --file` validates Edit-mode batches and records one undo step; repeated request IDs reuse the completed result.
 
 ### Documentation
 

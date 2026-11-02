@@ -251,7 +251,7 @@ When you're ready to ship, open the **Build** panel:
 2. Check the **scene list**. Every scene in your project is listed automatically and included by default; untick a scene to leave it out of the build. The first ticked scene is the **startup** scene. Drag rows to reorder them, or right-click a row to use **Set as startup scene** / **Move up** / **Move down**. **Add Open Scene** adds the scene you have open, or ticks it again.
 3. Pick an **output folder** and click **Build** (or **Build & Run**).
 
-The editor compiles your scripts, stages the **runtime executable**, prunes and converts the referenced **assets**, and writes the configuration the game needs to start. The result is a folder you can run or distribute. Assets are loose by default; **Build Profiles › Asset Packaging** can pack them into `.fbundle` files with optional LZ4 compression. See [Asset bundles](Building-and-Shipping.md#asset-bundles).
+The editor compiles your scripts, stages the **runtime executable**, prunes and converts the referenced **assets**, and writes the configuration the game needs to start. The result is a folder you can run or distribute. Assets are loose by default; **Build Profiles › Asset Packaging** can pack them into `.fbundle` files with optional LZ4 or Zstandard compression. See [Asset bundles](Building-and-Shipping.md#asset-bundles).
 
 Build profiles can be managed separately (create/duplicate/delete) so you can keep, say, a Windows debug profile and a release profile side by side.
 

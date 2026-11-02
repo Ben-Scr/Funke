@@ -15,11 +15,14 @@ namespace Funke {
 		const std::string Path;
 		const Filter Sampling;
 		const bool KeepPixels;
+		const int MaxDimension;
+		int SourceWidth = 0;
+		int SourceHeight = 0;
 		Status State = Status::Loading;
 		std::unique_ptr<Texture2D> Texture;
 		std::unique_ptr<ImageData> Pixels;
-		TexturePreview(std::string path, Filter sampling, bool keepPixels)
-			: Path(std::move(path)), Sampling(sampling), KeepPixels(keepPixels) {}
+		TexturePreview(std::string path, Filter sampling, bool keepPixels, int maxDimension = 0)
+			: Path(std::move(path)), Sampling(sampling), KeepPixels(keepPixels), MaxDimension(maxDimension) {}
 		Texture2D* GetTexture() const { return State == Status::Ready ? Texture.get() : nullptr; }
 	};
 
@@ -29,6 +32,8 @@ namespace Funke {
 		struct Result {
 			std::weak_ptr<TexturePreview> Request;
 			std::unique_ptr<ImageData> Image;
+			int SourceWidth = 0;
+			int SourceHeight = 0;
 		};
 		explicit PreviewDecodeQueue(Decoder decoder = {});
 		~PreviewDecodeQueue();
@@ -52,7 +57,7 @@ namespace Funke {
 	public:
 		static AsyncTexturePreviews& Get();
 		std::shared_ptr<TexturePreview> Request(const std::string& path,
-			Filter filter = Filter::Point, bool keepPixels = false, bool priority = true);
+			Filter filter = Filter::Point, bool keepPixels = false, bool priority = true, int maxDimension = 0);
 		void Pump();
 		void Retire(std::shared_ptr<TexturePreview> preview);
 		void Shutdown();

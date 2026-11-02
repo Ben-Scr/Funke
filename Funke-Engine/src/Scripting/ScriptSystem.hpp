@@ -75,7 +75,7 @@ namespace Funke {
 			const std::vector<std::string>& configureOptions = {});
 
 	private:
-		void RebuildAndReloadScripts();
+		void RebuildAndReloadScripts(const std::vector<std::string>* changedPaths = nullptr);
 		void RebuildAndReloadNativeScripts();
 		// Editor: rebuilds when the C# defines change (another build profile platform, profile or custom defines).
 		void PollScriptDefines();
@@ -98,6 +98,8 @@ namespace Funke {
 		static inline FileWatcher m_ScriptWatcher;
 		static inline std::shared_ptr<ScriptSystemProcessTaskState> m_RebuildTask;
 		static inline bool m_RebuildQueued = false;
+		static inline std::vector<std::string> m_ManagedChangedPaths;
+		static inline bool m_ManagedSourceRescanRequired = false;
 		static inline std::string m_ManagedRebuildError;
 		static inline std::string m_NativeRebuildError;
 		static inline uint64_t m_CompletedRebuildCount = 0;

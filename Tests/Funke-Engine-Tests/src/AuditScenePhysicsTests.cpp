@@ -184,6 +184,40 @@ TEST_CASE("Audit: parent transforms keep static child colliders aligned") {
 	CHECK(app.Run() == 0);
 }
 
+TEST_CASE("Audit: sleeping Box2D bodies still read back direct teleports") {
+	bool parented = false;
+	SUBCASE("root body") {}
+	SUBCASE("parented body") { parented = true; }
+	PhysicsAuditApplication app([parented](Scene& scene) {
+		Entity parent = scene.CreateEntity("Parent");
+		Entity body = scene.CreateEntity("Sleeping body");
+		parent.GetComponent<Transform2DComponent>().SetPosition({ 10.0f, 0.0f });
+		if (parented) body.SetParent(parent);
+		auto& rigidbody = body.AddComponent<Rigidbody2DComponent>();
+		rigidbody.SetBodyType(BodyType::Dynamic);
+		rigidbody.SetGravityScale(0.0f);
+		body.AddComponent<BoxCollider2DComponent>();
+		TransformHierarchySystem::Propagate(scene);
+		PhysicsSystem2D physics;
+		physics.FixedUpdate(1.0f / 60.0f);
+		auto& liveBody = body.GetComponent<Rigidbody2DComponent>();
+		REQUIRE(liveBody.IsValid());
+		// Box2D state belongs to the engine DLL, not the test executable's static copy.
+		for (int frame = 0; frame < 120 && liveBody.IsAwake(); ++frame) physics.FixedUpdate(1.0f / 60.0f);
+		REQUIRE_FALSE(liveBody.IsAwake());
+		liveBody.SetPosition({ 25.0f, 4.0f });
+		liveBody.SetRotation(0.5f);
+		physics.FixedUpdate(1.0f / 60.0f);
+		const auto& transform = body.GetComponent<Transform2DComponent>();
+		CHECK(transform.Position.x == doctest::Approx(25.0f));
+		CHECK(transform.Position.y == doctest::Approx(4.0f));
+		CHECK(transform.Rotation == doctest::Approx(0.5f));
+		CHECK(transform.LocalPosition.x == doctest::Approx(parented ? 15.0f : 25.0f));
+		CHECK_FALSE(liveBody.IsAwake());
+	});
+	CHECK(app.Run() == 0);
+}
+
 TEST_CASE("Audit: cached physics prefabs preserve density and automatic mass") {
 	bool circle = false;
 	SUBCASE("box") {}

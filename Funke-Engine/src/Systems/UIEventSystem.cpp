@@ -1219,15 +1219,21 @@ namespace Funke {
 
 	} // namespace
 
-	// Front-most Interactable under mouseUi, using the same (SortingLayer, SortingOrder, DrawIndex) key as GuiRenderer.
-	EntityHandle UIEventSystem::PickInteractable(Scene& scene, const Vec2& screenUi) {
+	namespace {
+	struct PointerDrawOrder {
+		std::vector<std::pair<EntityHandle, int>> Entities;
+		UIDrawOrder::OrderLookup Lookup;
+
+		void Rebuild(entt::registry& registry) {
+			FUNKE_PROFILE_SCOPE("UIEvent.DrawOrder");
+			Entities.clear();
+			UIDrawOrder::Build(registry, Entities);
+			Lookup.Rebuild(Entities);
+		}
+	};
+
+	EntityHandle PickInDrawOrder(Scene& scene, const Vec2& screenUi, const PointerDrawOrder& order) {
 		auto& registry = scene.GetRegistry();
-		// Picks run several times per frame (hover, each finger); keep the scratch alive between them.
-		thread_local std::vector<std::pair<EntityHandle, int>> t_DrawOrder;
-		thread_local UIDrawOrder::OrderLookup t_DrawIndexByEntity;
-		t_DrawOrder.clear();
-		UIDrawOrder::Build(registry, t_DrawOrder);
-		t_DrawIndexByEntity.Rebuild(t_DrawOrder);
 		// All controls on a canvas share the projection; refresh on every pick to observe direct edits.
 		thread_local std::unordered_map<EntityHandle, Vec2> t_CanvasPointers;
 		t_CanvasPointers.clear();
@@ -1247,7 +1253,7 @@ namespace Funke {
 		auto keyFor = [&](EntityHandle entity, EntityHandle root, int drawIndex) {
 			// A slider counts as drawn at its front-most part, so a thumb overhanging a later sibling still wins.
 			if (const auto* slider = registry.try_get<SliderComponent>(entity)) {
-				if (const int* handleIndex = t_DrawIndexByEntity.DrawIndexOf(slider->HandleEntity)) {
+				if (const int* handleIndex = order.Lookup.DrawIndexOf(slider->HandleEntity)) {
 					drawIndex = std::max(drawIndex, *handleIndex);
 				}
 			}
@@ -1276,7 +1282,7 @@ namespace Funke {
 		auto hitView = registry.view<RectTransform2DComponent, InteractableComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, rect, interact] : hitView.each()) {
 			if (!interact.Interactable) continue;
-			const int* drawIndex = t_DrawIndexByEntity.DrawIndexOf(entity);
+			const int* drawIndex = order.Lookup.DrawIndexOf(entity);
 			if (!drawIndex) continue;
 			const EntityHandle root = WorldUI::FindRoot(registry, entity);
 			const Vec2 mouseUi = pointerForCanvas(root);
@@ -1297,6 +1303,13 @@ namespace Funke {
 			}
 		}
 		return hovered;
+	}
+	}
+
+	EntityHandle UIEventSystem::PickInteractable(Scene& scene, const Vec2& screenUi) {
+		thread_local PointerDrawOrder t_Order;
+		t_Order.Rebuild(scene.GetRegistry());
+		return PickInDrawOrder(scene, screenUi, t_Order);
 	}
 
 	EntityHandle UIEventSystem::GetHoveredEntity(Scene& scene) const {
@@ -1569,6 +1582,15 @@ namespace Funke {
 
 		{
 		FUNKE_PROFILE_SCOPE("UIEvent.HitTest");
+		thread_local PointerDrawOrder t_PointerOrder;
+		bool orderReady = false;
+		auto pick = [&](const Vec2& ui) {
+			if (!orderReady) {
+				t_PointerOrder.Rebuild(registry);
+				orderReady = true;
+			}
+			return PickInDrawOrder(scene, ui, t_PointerOrder);
+		};
 		// ── 1. Resolve dropdown popup hits FIRST ─────────────────────
 		// Popup row hit consumes the click — rects underneath must not react.
 		struct DropdownHit {
@@ -1618,7 +1640,7 @@ namespace Funke {
 
 		auto hitView = registry.view<RectTransform2DComponent, InteractableComponent>(entt::exclude<DisabledTag>);
 		if (!popupConsumes) {
-			hovered = PickInteractable(scene, screenUi);
+			hovered = pick(screenUi);
 		}
 
 		// ── 3. Per-entity interaction state machine ──────────────────
@@ -1681,7 +1703,7 @@ namespace Funke {
 				[](const FingerSample& f) { return f.Phase == TouchPhase::Began; }), fingers.end());
 			std::vector<EntityHandle> fingerClicks;
 			UpdateFingerPresses(registry, fingers, m_MouseFinger, m_PressedEntity,
-				[&scene](Vec2 ui) { return PickInteractable(scene, ui); }, m_FingerPresses, fingerClicks);
+				pick, m_FingerPresses, fingerClicks);
 			for (EntityHandle entity : fingerClicks) {
 				if (auto* btn = registry.try_get<ButtonComponent>(entity); btn && !btn->OnClick.Bindings.empty()) {
 					deferredUiDispatches.push_back({ entity, btn->OnClick.Bindings, false, {} });

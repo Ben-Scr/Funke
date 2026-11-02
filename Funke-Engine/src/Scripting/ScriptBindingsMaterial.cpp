@@ -70,10 +70,7 @@ namespace Funke {
 				value.Type = declared->Type;
 				if (declared->HasRange) value.Value = glm::clamp(value.Value, glm::vec4(declared->Min), glm::vec4(declared->Max));
 			}
-			Material m = *current;
-			m.Properties[name] = value;
-			MaterialLibrary::Set(guid, m);
-			return 1;
+			return MaterialLibrary::SetProperty(guid, name, value) ? 1 : 0;
 		}
 	}
 

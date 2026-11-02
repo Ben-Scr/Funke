@@ -1,5 +1,6 @@
 #pragma once
 #include "Core/Export.hpp"
+#include "Assets/AssetBundle.hpp"
 #include "Project/FunkeProject.hpp"
 
 #include <cstdint>
@@ -40,6 +41,7 @@ namespace Funke {
 		bool BundleDotNetRuntime = true;
 		bool BundleAssets = false;
 		bool CompressAssetBundles = false;
+		AssetBundleCompression BundleCompression = AssetBundleCompression::LZ4;
 
 		// Folds the profile's overrides into a build snapshot of the project.
 		void ApplyTo(FunkeProject& project) const;

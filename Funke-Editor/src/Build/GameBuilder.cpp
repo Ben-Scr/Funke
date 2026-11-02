@@ -1105,6 +1105,7 @@ namespace Funke::GameBuilder {
 		outRequest.BundleDotNetRuntime = activeProfile.BundleDotNetRuntime;
 		outRequest.BundleAssets = activeProfile.BundleAssets;
 		outRequest.CompressAssetBundles = activeProfile.BundleAssets && activeProfile.CompressAssetBundles;
+		outRequest.BundleCompression = activeProfile.BundleCompression;
 		return true;
 	}
 
@@ -1112,7 +1113,7 @@ namespace Funke::GameBuilder {
 		return Path::Combine(project.RootDirectory, "Builds", std::string(profileName));
 	}
 
-	bool BundleStagedAssets(const std::filesystem::path& contentDirectory, bool compress, std::string& error) {
+	bool BundleStagedAssets(const std::filesystem::path& contentDirectory, AssetBundleCompression compression, std::string& error) {
 		error.clear();
 		try {
 			for (const char* folder : { "Assets", "FunkeAssets" }) {
@@ -1128,10 +1129,10 @@ namespace Funke::GameBuilder {
 					files.push_back(relative);
 				}
 				const auto destination = contentDirectory / (std::string(folder) + ".fbundle");
-				if (!AssetBundle::Write(root, destination, files, compress, error)) return false;
+				if (!AssetBundle::Write(root, destination, files, compression, error)) return false;
 				for (const auto& file : files) std::filesystem::remove(root / file);
 				FNK_INFO_TAG("Build", "{}: bundled {} files ({:.1f} MB, compression {})", destination.filename().string(),
-					files.size(), static_cast<double>(std::filesystem::file_size(destination)) / (1024.0 * 1024.0), compress ? "LZ4" : "off");
+					files.size(), static_cast<double>(std::filesystem::file_size(destination)) / (1024.0 * 1024.0), AssetBundle::CompressionName(compression));
 			}
 			return true;
 		} catch (const std::exception& ex) {
@@ -1951,6 +1952,9 @@ namespace Funke::GameBuilder {
 		const auto lz4License = !engineRoot.empty() && std::filesystem::is_regular_file(engineRoot / "vendor/lz4/LICENSE")
 			? engineRoot / "vendor/lz4/LICENSE" : licenseSource / "LZ4/LICENSE";
 		if (!copyRequiredFile(lz4License, contentDir / "Licenses/LZ4/LICENSE", "LZ4 license")) return result;
+		const auto zstdLicense = !engineRoot.empty() && std::filesystem::is_regular_file(engineRoot / "vendor/zstd/LICENSE")
+			? engineRoot / "vendor/zstd/LICENSE" : licenseSource / "Zstandard/LICENSE";
+		if (!copyRequiredFile(zstdLicense, contentDir / "Licenses/Zstandard/LICENSE", "Zstandard license")) return result;
 
 		report(0.75f, "Optimizing project assets");
 		{
@@ -2158,7 +2162,8 @@ namespace Funke::GameBuilder {
 		if (request.BundleAssets) {
 			report(0.90f, request.CompressAssetBundles ? "Compressing asset bundles" : "Bundling assets");
 			std::string bundleError;
-			if (!BundleStagedAssets(contentDir, request.CompressAssetBundles, bundleError)) {
+			const auto compression = request.CompressAssetBundles ? request.BundleCompression : AssetBundleCompression::None;
+			if (!BundleStagedAssets(contentDir, compression, bundleError)) {
 				FNK_ERROR_TAG("Build", "Asset bundling failed: {}", bundleError);
 				failBuild("Asset bundling failed");
 				return result;

@@ -33,6 +33,7 @@ sealed class RoslynSession
     readonly ImmutableArray<MetadataReference> m_References;
     readonly CSharpCompilationOptions m_Options;
     readonly Dictionary<string, (DateTime Stamp, long Length, SyntaxTree Tree)> m_Trees = new(StringComparer.OrdinalIgnoreCase);
+    CSharpCompilation? m_Compilation;
     GeneratorDriver? m_Driver;
 
     public RoslynSession(ProjectEvaluation evaluation)
@@ -103,15 +104,29 @@ sealed class RoslynSession
         }
     }
 
-    public CompileResponse Compile(string outputPath)
+    public CompileResponse Compile(string outputPath, IReadOnlyList<string>? changedPaths = null)
     {
-        var trees = new List<SyntaxTree>(m_Arguments.SourceFiles.Length);
-        foreach (CommandLineSourceFile source in m_Arguments.SourceFiles)
+        var changed = changedPaths == null ? null : new HashSet<string>(
+            changedPaths.Select(path => Path.GetFullPath(path, m_Arguments.BaseDirectory!)),
+            OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        if (m_Compilation == null)
         {
-            trees.Add(GetTree(source.Path));
+            m_Compilation = CSharpCompilation.Create(m_Arguments.CompilationName,
+                m_Arguments.SourceFiles.Select(source => GetTree(source.Path)), m_References, m_Options);
+        }
+        else
+        {
+            foreach (CommandLineSourceFile source in m_Arguments.SourceFiles)
+            {
+                SyntaxTree previous = m_Trees[source.Path].Tree;
+                SyntaxTree current = GetTree(source.Path, changed?.Contains(source.Path) == true);
+                if (!ReferenceEquals(previous, current))
+                    m_Compilation = m_Compilation.ReplaceSyntaxTree(previous, current);
+            }
         }
 
-        Compilation compilation = CSharpCompilation.Create(m_Arguments.CompilationName, trees, m_References, m_Options);
+        // Generated trees belong only to this output, never to the next generator input.
+        Compilation compilation = m_Compilation;
         var diagnostics = new List<Diagnostic>();
         if (m_Driver != null)
         {
@@ -162,14 +177,15 @@ sealed class RoslynSession
         return new CompileResponse { Status = "compiled", Warnings = warnings };
     }
 
-    SyntaxTree GetTree(string path)
+    SyntaxTree GetTree(string path, bool forceRead = false)
     {
         var info = new FileInfo(path);
         if (!info.Exists)
         {
             throw new FallbackException($"source file disappeared: {path}");
         }
-        if (m_Trees.TryGetValue(path, out var cached) && cached.Stamp == info.LastWriteTimeUtc && cached.Length == info.Length)
+        bool hasPrevious = m_Trees.TryGetValue(path, out var cached);
+        if (!forceRead && hasPrevious && cached.Stamp == info.LastWriteTimeUtc && cached.Length == info.Length)
         {
             return cached.Tree;
         }
@@ -178,7 +194,9 @@ sealed class RoslynSession
         {
             text = SourceText.From(stream, m_Arguments.Encoding, m_Arguments.ChecksumAlgorithm, throwIfBinaryDetected: true, canBeEmbedded: true);
         }
-        SyntaxTree tree = CSharpSyntaxTree.ParseText(text, m_Arguments.ParseOptions, path);
+        SyntaxTree tree = hasPrevious
+            ? cached.Tree.WithChangedText(text)
+            : CSharpSyntaxTree.ParseText(text, m_Arguments.ParseOptions, path);
         m_Trees[path] = (info.LastWriteTimeUtc, info.Length, tree);
         return tree;
     }

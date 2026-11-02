@@ -81,7 +81,7 @@ param(
     [ValidateSet("", "auto", "dark", "light", "glass", "custom")]
     [string]$Theme = "",
     # Launcher only: start on this page (FUNKE_LAUNCHER_PAGE).
-    [ValidateSet("", "templates", "assets")]
+    [ValidateSet("", "templates", "assets", "settings")]
     [string]$LauncherPage = "",
     # Runtime only: engine screenshots at game time ("2s", "2.5") or frame ("120f").
     [string[]]$ScreenshotAt = @(),

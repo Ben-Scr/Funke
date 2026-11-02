@@ -55,13 +55,15 @@ Files your code finds through a computed path (`"Level" + i + ".json"`, a path f
 
 In **Build Profiles › Asset Packaging**, enable **Bundle Assets** to ship the staged
 `Assets/` and `FunkeAssets/` as `Assets.fbundle` and `FunkeAssets.fbundle`.
-**Compress Bundles** separately enables lossless LZ4 compression. Both switches
-default to off, including for older profiles.
+**Compress Bundles** enables lossless compression. The **Compression** selector offers
+**LZ4** for fast loading or **Zstandard** for smaller bundles (compression level 3).
+Both switches default to off. Existing profiles keep LZ4 unless Zstandard is selected.
 
 ```json
 {
   "bundleAssets": true,
-  "compressAssetBundles": true
+  "compressAssetBundles": true,
+  "assetBundleCompression": "Zstd"
 }
 ```
 

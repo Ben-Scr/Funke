@@ -219,14 +219,47 @@ namespace Funke {
 		return true;
 	}
 
-	bool ImGuiEditorLayer::OpenSceneExclusive(const std::string& path) {
-		const std::unordered_set<std::string> previousDefinitions = m_EditorOwnedSceneDefinitions;
+	bool ImGuiEditorLayer::OpenSceneExclusive(const std::string& path, bool asynchronous) {
+		if (m_SceneOpenOperation != 0) return false;
+		if (asynchronous) {
+			if (path.empty() || !File::Exists(path)) return false;
+			const std::string definitionName = MakeEditorSceneDefinitionName();
+			const std::weak_ptr<int> lifetime = m_SceneOpenLifetime;
+			SceneManager::RegisterScene(definitionName).OnLoadFromFile(path).OnLoadChecked(
+				[this, lifetime](Scene& scene) {
+					if (lifetime.expired()) return false;
+					std::vector<Scene*> scenes;
+					for (const auto& weak : SceneManager::GetLoadedScenes()) {
+						if (const auto loaded = weak.lock(); loaded && loaded->IsPersistent()) scenes.push_back(loaded.get());
+					}
+					scenes.push_back(&scene);
+					return ValidateUniquePersistentEntityIds(scenes, "Scene open");
+				});
+			m_SceneOpenOperation = SceneManager::LoadSceneAsync(definitionName, false,
+				[this, lifetime, definitionName, path](uint64_t, const SceneLoadResult& result) {
+					if (lifetime.expired()) return;
+					m_SceneOpenOperation = 0;
+					if (const auto scene = result.LoadedScene.lock(); result && scene) FinishSceneOpen(scene, definitionName);
+					else {
+						SceneManager::UnregisterScene(definitionName);
+						if (result.Status != SceneLoadStatus::Cancelled) m_SceneOpenFallbackPath = path;
+					}
+				});
+			if (m_SceneOpenOperation != 0) return true;
+			SceneManager::UnregisterScene(definitionName);
+			return false;
+		}
 		std::shared_ptr<Scene> loadedScene;
 		std::string definitionName;
 		if (!LoadEditorScene(path, false, loadedScene, definitionName)) {
 			return false;
 		}
+		FinishSceneOpen(loadedScene, definitionName);
+		return true;
+	}
 
+	void ImGuiEditorLayer::FinishSceneOpen(const std::shared_ptr<Scene>& loadedScene, const std::string& definitionName) {
+		const std::unordered_set<std::string> previousDefinitions = m_EditorOwnedSceneDefinitions;
 		for (const std::string& previousDefinition : previousDefinitions) {
 			if (previousDefinition != definitionName) {
 				SceneManager::UnregisterScene(previousDefinition);
@@ -251,7 +284,6 @@ namespace Funke {
 				FNK_ERROR_TAG("Editor", "Opened scene '{}', but failed to update project metadata.", loadedScene->GetName());
 			}
 		}
-		return true;
 	}
 
 	void ImGuiEditorLayer::RemoveEditorScene(const std::string& sceneName) {
@@ -395,6 +427,7 @@ namespace Funke {
 	}
 
 	bool ImGuiEditorLayer::ProcessPendingEditorAction() {
+		if (m_SceneOpenOperation != 0) return false;
 		if (!m_PendingEditorActionApproved || m_PendingEditorAction == PendingEditorAction::None) {
 			return false;
 		}
@@ -429,7 +462,7 @@ namespace Funke {
 		bool succeeded = false;
 		switch (action) {
 			case PendingEditorAction::OpenScene:
-				succeeded = OpenSceneExclusive(m_PendingEditorActionPayload);
+				succeeded = OpenSceneExclusive(m_PendingEditorActionPayload, true);
 				break;
 			case PendingEditorAction::RemoveScene:
 				RemoveEditorScene(m_PendingEditorActionPayload);
@@ -503,10 +536,26 @@ namespace Funke {
 		}
 
 		if (Application::IsQuitRequested()) {
+			if (m_SceneOpenOperation != 0) SceneManager::CancelSceneLoad(m_SceneOpenOperation);
 			Application::CancelQuit();
 			if (m_PendingEditorAction != PendingEditorAction::Quit) {
 				m_DeferredQuitRequested = true;
 			}
+		}
+
+		if (!m_SceneOpenFallbackPath.empty()) {
+			const std::string path = std::exchange(m_SceneOpenFallbackPath, {});
+			OpenSceneExclusive(path);
+		}
+		if (m_SceneOpenOperation != 0) {
+			ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+			ImGui::Begin("Opening scene", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings
+				| ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse);
+			const auto progress = SceneManager::GetSceneLoadProgress(m_SceneOpenOperation);
+			ImGui::ProgressBar(progress ? progress->Progress : 0.0f, ImVec2(320.0f, 0.0f));
+			if (ImGui::Button("Cancel")) SceneManager::CancelSceneLoad(m_SceneOpenOperation);
+			ImGui::End();
+			return;
 		}
 
 		const bool fileWorkerActive = m_BuildState != 0 || m_ReserializeState != 0;

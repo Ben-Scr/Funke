@@ -23,14 +23,17 @@ namespace {
 		std::vector<std::vector<std::string>> Batches;
 		std::thread::id CallbackThread;
 
-		WatchedDirectory() { std::filesystem::create_directories(Root); }
+		WatchedDirectory() {
+			std::filesystem::create_directories(Root);
+			Root = Path::CanonicalIdentity(Root);
+		}
 		~WatchedDirectory() {
 			Watcher.Stop();
 			std::error_code ec;
 			std::filesystem::remove_all(Root, ec);
 		}
 
-		std::string PathTo(const char* name) const { return Path::ToUtf8(Path::CanonicalIdentity(Root / name)); }
+		std::string PathTo(const char* name) const { return Path::ToUtf8((Root / name).make_preferred()); }
 		bool Write(const char* name, const std::string& contents) const {
 			// Windows metadata probes can briefly prevent atomic file replacement.
 			const auto deadline = std::chrono::steady_clock::now() + 1s;
@@ -145,4 +148,45 @@ TEST_CASE("FileWatcher retains separate worker changes until Poll and supports l
 		return false;
 	}));
 	fixture.Watcher.Stop();
+}
+
+TEST_CASE("FileWatcher canonicalizes aliased roots and retains deleted paths") {
+	WatchedDirectory fixture;
+	const auto alias = fixture.Root / "Alias";
+	std::error_code error;
+	std::filesystem::create_directory_symlink(fixture.Root, alias, error);
+	if (error) {
+		MESSAGE("Directory symlinks unavailable: ", error.message());
+		return;
+	}
+	fixture.Watcher.Watch({ Path::ToUtf8(alias) }, { ".meta" },
+		[&](const std::vector<std::string>& paths) { fixture.Batches.push_back(paths); }, false);
+	int attempt = 0;
+	REQUIRE(fixture.Wait([&] {
+		if (fixture.Saw(fixture.PathTo("ready.meta"))) return true;
+		fixture.Write("ready.meta", std::string(++attempt, 'x'));
+		return false;
+	}));
+	fixture.Drain();
+	fixture.Batches.clear();
+	REQUIRE(std::filesystem::remove(fixture.Root / "ready.meta"));
+	REQUIRE(fixture.Wait([&] { return fixture.Saw(fixture.PathTo("ready.meta")); }));
+	fixture.Watcher.Stop();
+	std::filesystem::remove(alias);
+}
+
+TEST_CASE("FileWatcher directory renames report contained assets and ignore generated folders") {
+	WatchedDirectory fixture;
+	std::filesystem::create_directories(fixture.Root / "Folder.png");
+	std::filesystem::create_directories(fixture.Root / ".funke");
+	REQUIRE(fixture.Write("Folder.png/sprite.png", "pixels"));
+	REQUIRE(fixture.Start());
+	std::filesystem::rename(fixture.Root / "Folder.png", fixture.Root / "Moved");
+	REQUIRE(fixture.Write(".funke/generated.meta", "generated"));
+	REQUIRE(fixture.Wait([&] {
+		return fixture.Saw(fixture.PathTo("Folder.png/sprite.png"))
+			&& fixture.Saw(fixture.PathTo("Moved/sprite.png"));
+	}));
+	fixture.Drain();
+	CHECK_FALSE(fixture.Saw(fixture.PathTo(".funke/generated.meta")));
 }

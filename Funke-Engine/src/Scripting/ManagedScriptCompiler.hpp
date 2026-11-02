@@ -17,6 +17,8 @@ namespace Funke {
 			// Verbatim dotnet build switches (-p:DefineConstants=..., -p:FunkeCodegenEnabled=false).
 			std::vector<std::string> MSBuildProperties;
 			std::string OutputPath;
+			std::vector<std::string> ChangedPaths;
+			bool RescanSources = true;
 		};
 
 		struct Result {
@@ -26,6 +28,7 @@ namespace Funke {
 			int Warnings = 0;
 			double ElapsedMs = 0.0;
 			bool Evaluated = false;
+			bool FullBuild = false;
 		};
 
 		// Main thread, after ScriptEngine::LoadCoreAssembly. False when the compiler isn't deployed next to the editor.

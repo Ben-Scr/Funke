@@ -144,6 +144,7 @@
     "launcher.create.init_git.tooltip": "新規プロジェクトフォルダで `git init` を実行し、Funke向けの .gitignore を書き出します。PATH に git が必要です。",
 
     "launcher.settings.title": "ランチャー設定",
+    "launcher.settings.subtitle": "ランチャーをカスタマイズできます。変更は自動的に保存されます。",
     "launcher.settings.default_location": "デフォルトのプロジェクト保存場所",
     "launcher.settings.default_location_subtitle": "新規プロジェクト作成時に使用されます。",
     "launcher.settings.current": "現在: {0}",
