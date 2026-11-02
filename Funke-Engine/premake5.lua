@@ -52,6 +52,7 @@ project "Funke-Engine"
             "src/Animation/AnimationViewer.*",
             "src/Animation/AnimatorRuntime.*",
             "src/Core/Application.*",
+            "src/DevTools/AutomationGamepad.cpp",
             "src/DevTools/DevConsole.*",
             "src/DevTools/PhysicsDebugOverlay.*",
             "src/DevTools/RunAutomation.*",
