@@ -38,8 +38,10 @@ namespace Funke {
 		struct PostSceneUniforms {
 			glm::mat4 LightViewProjection{1.0f};
 			glm::vec4 SunDirection{0.0f}, SunRadiance{0.0f}, ShadowParams{0.0f}, Flags{0.0f};
+            glm::mat4 InverseRelativeViewProjection{1.0f};
+            glm::vec4 WorldOrigin{0.0f};
 		};
-		static_assert(sizeof(PostSceneUniforms) == 128);
+		static_assert(sizeof(PostSceneUniforms) == 208);
 
 		constexpr int k_MaxBlurHalfKernel = 16;
 		struct BlurUniforms {
@@ -107,7 +109,7 @@ namespace Funke {
 		wgpu::PipelineLayout  EffectPipelineLayout;
 
 		// Bloom blur H/V use SEPARATE uniform buffers: Dawn's queue.WriteBuffer collapses successive writes
-		// to the same buffer within one submission — sharing would make both passes read the vertical direction.
+		// to the same buffer within one submission â€” sharing would make both passes read the vertical direction.
 		wgpu::Buffer          BloomThresholdUniformBuffer;      // 16 bytes
 		wgpu::Buffer          BloomBlurUniformBufferH;
 		wgpu::Buffer          BloomBlurUniformBufferV;
@@ -1096,7 +1098,7 @@ namespace Funke {
 			const float halfKernel = std::min(requestedHalfKernel, static_cast<float>(k_MaxBloomHalfKernel));
 			const float stepScale = requestedHalfKernel / halfKernel;
 
-			// ── Pass 1: Threshold extract (srcView -> BloomTempA) ──
+			// â”€â”€ Pass 1: Threshold extract (srcView -> BloomTempA) â”€â”€
 			{
 				wgpu::RenderPipeline thresholdPipeline = GetOrCreateEffectPipeline(
 					impl, thresholdShader, impl.BloomThresholdPipelines, tempFormat,
@@ -1110,7 +1112,7 @@ namespace Funke {
 					"postprocess-bloom-threshold", true);
 			}
 
-			// ── Pass 2: Horizontal blur (BloomTempA -> BloomTempB) ──
+			// â”€â”€ Pass 2: Horizontal blur (BloomTempA -> BloomTempB) â”€â”€
 			wgpu::RenderPipeline blurPipeline = GetOrCreateEffectPipeline(
 				impl, blurShader, impl.BloomBlurPipelines, tempFormat,
 				"postprocess-bloom-blur-pipeline");
@@ -1128,7 +1130,7 @@ namespace Funke {
 					"postprocess-bloom-blur-h", true);
 			}
 
-			// ── Pass 3: Vertical blur (BloomTempB -> BloomTempA) ──
+			// â”€â”€ Pass 3: Vertical blur (BloomTempB -> BloomTempA) â”€â”€
 			{
 				const BlurUniforms u = MakeBlurUniforms(0.0f, 1.0f, texelH, static_cast<int>(halfKernel));
 				RunEffectPass(impl, blurPipeline,
@@ -1181,7 +1183,7 @@ namespace Funke {
 			const float texelW = radiusMul / static_cast<float>(fullW);
 			const float texelH = radiusMul / static_cast<float>(fullH);
 
-			// ── Pass 1: Horizontal blur (srcView -> GaussianBlurTemp) ──
+			// â”€â”€ Pass 1: Horizontal blur (srcView -> GaussianBlurTemp) â”€â”€
 			{
 				const BlurUniforms u = MakeBlurUniforms(1.0f, 0.0f, texelW, static_cast<int>(halfKernel));
 				RunEffectPass(impl, pipelineToTemp, srcView, tempLook.ColorView,
@@ -1189,7 +1191,7 @@ namespace Funke {
 					"postprocess-gaussianblur-h", true);
 			}
 
-			// ── Pass 2: Vertical blur (GaussianBlurTemp -> dstView) ──
+			// â”€â”€ Pass 2: Vertical blur (GaussianBlurTemp -> dstView) â”€â”€
 			{
 				const BlurUniforms u = MakeBlurUniforms(0.0f, 1.0f, texelH, static_cast<int>(halfKernel));
 				RunEffectPass(impl, pipelineToDst, tempLook.ColorView, dstView,
@@ -1399,14 +1401,14 @@ namespace Funke {
 			return;
 		}
 
-		// No component on the camera → passthrough.
+		// No component on the camera â†’ passthrough.
 		if (!settings) {
 			Blit(src, dstView, dstFormat, dstWidth, dstHeight);
 			return;
 		}
 		if (clearDestination) ClearViewTransparent(dstView);
 
-		// Effect order: Bloom (needs HDR signal) → ColorGrading → GaussianBlur → Lens → CA → Vignette → Grain → Pixelated → custom slots.
+		// Effect order: Bloom (needs HDR signal) â†’ ColorGrading â†’ GaussianBlur â†’ Lens â†’ CA â†’ Vignette â†’ Grain â†’ Pixelated â†’ custom slots.
 		// Neighbouring per-pixel effects (everything but the blur, Pixelated and custom effects) run as one
 		// composite pass, so a typical Bloom + Color Grading + Vignette stack is a single full-screen pass.
 		struct Step {
@@ -1453,12 +1455,15 @@ namespace Funke {
 			}
 			if (std::any_of(customEffects.begin(), customEffects.end(), [](const CustomEffect& e) { return e.Program != nullptr; })) {
 				if (m_Impl->SceneSubmitSerial == WebGPUBackend::GetFrameSubmitSerial()) WebGPUBackend::FlushCommands();
-				m_Impl->CustomBindings.WriteGlobals(CustomMaterialBindings::MakeGlobals(
-					scene ? scene->View : glm::mat4(1.0f), scene ? scene->Projection : glm::mat4(1.0f),
-					scene ? scene->Position : glm::vec3(0.0f), dstWidth, dstHeight));
+				glm::mat4 absoluteView = scene ? scene->View : glm::mat4(1.0f);
+                if (scene) absoluteView[3] = glm::vec4(glm::dvec3(scene->View[3]) - glm::dmat3(scene->View) * glm::dvec3(scene->WorldOrigin), 1.0f);
+                m_Impl->CustomBindings.WriteGlobals(CustomMaterialBindings::MakeGlobals(absoluteView,
+                    scene ? scene->Projection : glm::mat4(1.0f), scene ? scene->Position + scene->WorldOrigin : glm::vec3(0.0f), dstWidth, dstHeight));
 				PostSceneUniforms uniforms;
 				if (scene) {
 					uniforms.LightViewProjection = scene->LightViewProjection;
+                    uniforms.InverseRelativeViewProjection = glm::inverse(scene->Projection * scene->View);
+                    uniforms.WorldOrigin = glm::vec4(scene->WorldOrigin, 0.0f);
 					uniforms.SunDirection = scene->SunDirection;
 					uniforms.SunRadiance = scene->SunRadiance;
 					uniforms.ShadowParams = scene->ShadowParams;
@@ -1511,7 +1516,7 @@ namespace Funke {
 		}
 		if (stepCount > 1 && (!pingPong[0] || (stepCount > 2 && !pingPong[1]))) {
 			FNK_CORE_WARN_TAG("PostProcessor",
-				"EnsurePingPongFbos failed at {}x{} — falling back to Blit",
+				"EnsurePingPongFbos failed at {}x{} â€” falling back to Blit",
 				dstWidth, dstHeight);
 			Blit(src, dstView, dstFormat, dstWidth, dstHeight);
 			return;

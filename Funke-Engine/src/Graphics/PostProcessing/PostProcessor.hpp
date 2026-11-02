@@ -20,6 +20,7 @@ namespace Funke {
 	struct PostProcessScene {
 		glm::mat4 View{1.0f}, Projection{1.0f}, LightViewProjection{1.0f};
 		glm::vec3 Position{0.0f};
+        glm::vec3 WorldOrigin{0.0f}; // View/Position are relative; custom shader world APIs retain absolute coordinates.
 		glm::vec4 SunDirection{0.0f}, SunRadiance{0.0f}, ShadowParams{0.0f};
 		wgpu::TextureView Depth, Shadow;
 		uint32_t Samples = 1;
@@ -73,7 +74,7 @@ namespace Funke {
 	private:
 		std::unique_ptr<Impl> m_Impl;
 
-		// Owned here (not in pImpl) so Shader dtor runs after pImpl pipelines are destroyed — pImpl pipelines captured the ShaderModule by value at creation time.
+		// Owned here (not in pImpl) so Shader dtor runs after pImpl pipelines are destroyed â€” pImpl pipelines captured the ShaderModule by value at creation time.
 		std::unique_ptr<Shader> m_BlitShader;
 		std::unique_ptr<Shader> m_BloomThresholdShader;
 		std::unique_ptr<Shader> m_BloomBlurShader;
