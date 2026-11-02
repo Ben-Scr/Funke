@@ -584,10 +584,12 @@ TEST_CASE("UndoStack: linked history survives moves and cannot replay after part
 
 namespace {
 	struct AssetHistoryFixture {
-		std::filesystem::path Root = std::filesystem::temp_directory_path() / ("FunkeAssetUndo-" + std::to_string(static_cast<uint64_t>(UUID())));
-		std::filesystem::path Assets = Root / "Assets";
+		std::filesystem::path Root;
+		std::filesystem::path Assets;
 		AssetFileHistory History;
-		AssetHistoryFixture() {
+		AssetHistoryFixture(std::filesystem::path root = Path::CanonicalIdentity(std::filesystem::temp_directory_path())
+			/ ("FunkeAssetUndo-" + std::to_string(static_cast<uint64_t>(UUID()))))
+			: Root(std::move(root)), Assets(Root / "Assets") {
 			std::filesystem::create_directories(Assets);
 			auto project = std::make_unique<FunkeProject>();
 			project->RootDirectory = Path::ToUtf8(Root);
@@ -762,3 +764,35 @@ TEST_CASE("Asset history: initial move refuses a destination sidecar collision")
 	CHECK_FALSE(std::filesystem::exists(to));
 	CHECK(File::ReadAllText(Path::ToUtf8(f.Meta(to))) == "existing metadata");
 }
+
+#if defined(FNK_PLATFORM_MACOS)
+TEST_CASE("Asset history: macOS system aliases support move and undo") {
+	AssetHistoryFixture f(std::filesystem::path("/tmp") / ("FunkeAssetUndo-" + std::to_string(static_cast<uint64_t>(UUID()))));
+	const auto from = f.Assets / "asset.txt", to = f.Assets / "renamed.txt";
+	f.Create(from);
+	auto edit = f.History.Begin({ Path::ToUtf8(from), Path::ToUtf8(to) }, "Rename Asset");
+	REQUIRE(AssetFileHistory::MoveAsset(from, to));
+	REQUIRE(AssetRegistry::RestorePathsIncremental({ Path::ToUtf8(from), Path::ToUtf8(to) }));
+	f.History.Commit(edit);
+	CHECK(f.History.Undo() == "Rename Asset");
+	CHECK(File::ReadAllText(Path::ToUtf8(from)) == "asset content");
+	CHECK(f.History.Redo() == "Rename Asset");
+	CHECK(File::ReadAllText(Path::ToUtf8(to)) == "asset content");
+}
+#endif
+
+#if defined(FNK_PLATFORM_MACOS) || defined(FNK_PLATFORM_LINUX)
+TEST_CASE("Asset history: links inside assets remain forbidden") {
+	AssetHistoryFixture f;
+	const auto outside = f.Root / "Outside", link = f.Assets / "Linked";
+	std::filesystem::create_directories(outside);
+	const auto original = outside / "asset.txt";
+	REQUIRE(File::WriteAllText(Path::ToUtf8(original), "outside content"));
+	std::filesystem::create_directory_symlink(outside, link);
+	CHECK_THROWS(f.History.Begin({ Path::ToUtf8(link / "asset.txt") }, "Delete Asset"));
+	CHECK_FALSE(AssetFileHistory::MoveAsset(link / "asset.txt", f.Assets / "moved.txt"));
+	CHECK_FALSE(AssetFileHistory::MoveAsset(original, link / "new.txt"));
+	CHECK(File::ReadAllText(Path::ToUtf8(original)) == "outside content");
+	CHECK_FALSE(std::filesystem::exists(outside / "new.txt"));
+}
+#endif

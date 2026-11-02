@@ -24,7 +24,17 @@ namespace Funke {
 		}
 		void RejectLinks(const fs::path& path) {
 			for (auto part = path; !part.empty(); part = part.parent_path()) {
-				if (Exists(part) && fs::is_symlink(fs::symlink_status(part))) throw std::runtime_error("Asset undo does not follow links: " + Path::ToUtf8(part));
+				if (Exists(part) && fs::is_symlink(fs::symlink_status(part))) {
+#ifdef FNK_PLATFORM_MACOS
+					// macOS system aliases are outside the asset tree and have fixed destinations.
+					if (part == "/var" || part == "/tmp" || part == "/etc") {
+						std::error_code error;
+						const auto target = fs::canonical(part, error);
+						if (!error && target == fs::path("/private") / part.filename()) continue;
+					}
+#endif
+					throw std::runtime_error("Asset undo does not follow links: " + Path::ToUtf8(part));
+				}
 #ifdef FNK_PLATFORM_WINDOWS
 				const auto attributes = GetFileAttributesW(part.c_str());
 				if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) throw std::runtime_error("Asset undo does not follow junctions: " + Path::ToUtf8(part));

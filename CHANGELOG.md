@@ -10,6 +10,7 @@ Release notes describe user-visible compatibility, reliability, and workflow cha
 - CLI business failures preserve their exit status in JSON mode; script exceptions have structured counters and one-frame stepping completes a real game update before pausing.
 - Added CLI-authored gameplay and negative-case gates on Linux and macOS; manual CI can select `platforms=posix` while normal CI still validates every platform.
 - macOS uses shared nethost to preserve C++ exception matching; bundle and watcher identities resolve path aliases. Linux coverage updates threaded counters atomically.
+- Asset undo accepts verified macOS system-directory aliases while still rejecting links inside asset paths; its tests compare canonical registry identities.
 
 ### Documentation
 
