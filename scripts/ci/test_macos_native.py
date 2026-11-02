@@ -24,21 +24,31 @@ class MacNativeTests(unittest.TestCase):
         return result
 
     def test_mixed_payload_signs_and_verifies_after_relocation(self):
-        source = self.root / "main.c"
-        source.write_text("int main(void) { return 0; }\n")
-        executable = self.root / "helper"
-        library = self.root / "helper.dylib"
-        self.run_tool(["clang", "-mmacosx-version-min=11.0", str(source), "-o", str(executable)])
-        self.run_tool(["clang", "-dynamiclib", "-mmacosx-version-min=11.0", str(source), "-o", str(library)])
         bundle = self.root / "Input Bundle"
         make_bundle(bundle, platform="macosx")
+        library_names = sorted({path.name for path in bundle.rglob("*.dylib")})
+        flags = ["-mmacosx-version-min=11.0", "-Wl,-headerpad_max_install_names"]
+        libraries = {}
+        for index, name in enumerate(library_names):
+            source = self.root / f"dependency_{index}.c"
+            source.write_text(f"int dependency_{index}(void) {{ return 0; }}\n")
+            library = self.root / name
+            self.run_tool(["clang", "-dynamiclib", *flags, f"-Wl,-install_name,@rpath/{name}",
+                           str(source), "-o", str(library)])
+            libraries[name] = library
+        source = self.root / "main.c"
+        declarations = "\n".join(f"int dependency_{index}(void);" for index in range(len(library_names)))
+        calls = " + ".join(f"dependency_{index}()" for index in range(len(library_names)))
+        source.write_text(f"{declarations}\nint main(void) {{ return {calls}; }}\n")
+        executable = self.root / "helper"
+        self.run_tool(["clang", *flags, str(source), *map(str, libraries.values()), "-o", str(executable)])
         write(bundle / "ScriptCompiler/Funke-ScriptCompiler.runtimeconfig.json", "{}")
         write(bundle / "ScriptCompiler/Funke-ScriptCompiler.dll", "MZ managed fixture")
         for path in bundle.rglob("*"):
             if path.is_file() and (path.name in mac.HOST_EXECUTABLES or path.name == "premake5"):
                 shutil.copy2(executable, path)
             elif path.is_file() and path.suffix == ".dylib":
-                shutil.copy2(library, path)
+                shutil.copy2(libraries[path.name], path)
         app = self.root / "Funke.app"
         mac.stage_app(bundle, app, {"version": "2026.1.0-beta.1"})
         binaries = mac.relocate_macho(app / "Contents", platform.machine())

@@ -114,6 +114,10 @@ workspace "Funke"
         -- rather than renaming widely-used API members.
         buildoptions { "-Wno-changes-meaning" }
 
+    filter { "system:macosx", "language:C++" }
+        -- App packaging expands library paths when moving binaries into MacOS and Frameworks.
+        linkoptions { "-Wl,-headerpad_max_install_names" }
+
     filter "system:linux"
         -- Every Linux artifact ultimately links into libFunke-Engine.so, so all
         -- static deps (ImGui, Box2D, ...) must be position-
