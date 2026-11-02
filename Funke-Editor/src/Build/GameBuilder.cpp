@@ -877,9 +877,13 @@ namespace Funke::GameBuilder {
 #endif
 		}
 
-#if defined(FNK_PLATFORM_WINDOWS)
+#if defined(FNK_PLATFORM_WINDOWS) || defined(FNK_PLATFORM_MACOS)
 		std::string GetNetHostRuntimeFilename() {
+#if defined(FNK_PLATFORM_MACOS)
+			return "libnethost.dylib";
+#else
 			return "nethost.dll";
+#endif
 		}
 #endif
 
@@ -961,6 +965,9 @@ namespace Funke::GameBuilder {
 		requiredFiles.push_back(SharedLibraryFilename("webgpu_dawn"));
 #else
 		requiredFiles.push_back("nethost.dll");
+#endif
+#if defined(FNK_PLATFORM_MACOS)
+		requiredFiles.push_back(GetNetHostRuntimeFilename());
 #endif
 		for (const auto& file : requiredFiles) {
 			std::error_code error;
@@ -1910,7 +1917,7 @@ namespace Funke::GameBuilder {
 				return result;
 			}
 		}
-#if defined(FNK_PLATFORM_WINDOWS)
+#if defined(FNK_PLATFORM_WINDOWS) || defined(FNK_PLATFORM_MACOS)
 		if (!platformPackageBuild) {
 			const std::string netHostFilename = GetNetHostRuntimeFilename();
 			const std::filesystem::path netHostSource = runtimeOutputDirectory / netHostFilename;
