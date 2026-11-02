@@ -63,6 +63,8 @@ class SdkStagingTests(unittest.TestCase):
             self.write(self.bin_dir / "Funke-Runtime" / name)
         if sdk_script.DAWN_LIB:
             self.write(self.bin_dir / "Funke-Runtime" / sdk_script.DAWN_LIB)
+        if sdk_script.IS_MAC:
+            self.write(self.bin_dir / "Funke-Runtime/libnethost.dylib")
         self.write(self.bin_dir / "Funke-Runtime/FunkeAssets/marker.txt")
         for name in sdk_script.SCRIPT_CORE_RUNTIME_FILES:
             self.write(self.bin_dir / "Funke-ScriptCore" / name)
