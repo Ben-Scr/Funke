@@ -110,7 +110,7 @@ namespace {
 #if defined(FNK_PLATFORM_WINDOWS)
 		files.insert(files.end(), { "Funke-Runtime.exe", "Funke-Engine.dll", "SDL3.dll", "nethost.dll" });
 #elif defined(FNK_PLATFORM_MACOS)
-		files.insert(files.end(), { "Funke-Runtime", "libFunke-Engine.dylib", "libSDL3.0.dylib", "libwebgpu_dawn.dylib" });
+		files.insert(files.end(), { "Funke-Runtime", "libFunke-Engine.dylib", "libSDL3.0.dylib", "libwebgpu_dawn.dylib", "libnethost.dylib" });
 #else
 		files.insert(files.end(), { "Funke-Runtime", "libFunke-Engine.so", "libSDL3.so.0", "libwebgpu_dawn.so" });
 #endif
@@ -164,6 +164,20 @@ TEST_CASE("Installed export preserves manifest errors instead of resolving unrel
 	installation.Error = "unsupported SDK schema";
 	CHECK(GameBuilder::SelectInstalledRuntime(installation, FunkeProject::BuildProfile::Release).Error == installation.Error);
 }
+
+#if defined(FNK_PLATFORM_MACOS)
+TEST_CASE("Installed macOS export requires the shared .NET host") {
+	TempProject temp;
+	auto installation = MakeInstalledSdk(temp.Root);
+	WriteInstalledRuntime(temp.Root);
+	installation.Runtimes = { { "Release", temp.Root } };
+	REQUIRE(GameBuilder::SelectInstalledRuntime(installation, FunkeProject::BuildProfile::Release).Succeeded());
+	std::filesystem::remove(temp.Root / "libnethost.dylib");
+	const auto damaged = GameBuilder::SelectInstalledRuntime(installation, FunkeProject::BuildProfile::Release);
+	CHECK_FALSE(damaged.Succeeded());
+	CHECK(damaged.Error.find("libnethost.dylib") != std::string::npos);
+}
+#endif
 
 TEST_CASE("Build profiles include .NET by default and preserve the explicit opt out") {
 	TempProject temp;
