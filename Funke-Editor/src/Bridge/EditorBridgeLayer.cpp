@@ -7,6 +7,7 @@
 #include "Core/Window.hpp"
 #include "DevTools/DevConsole.hpp"
 #include "DevTools/ScreenCapture.hpp"
+#include "Graphics/RenderApi.hpp"
 #include "Editor/ApplicationEditorAccess.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Scene/Scene.hpp"
@@ -181,10 +182,14 @@ namespace Funke {
 
 	void EditorBridgeLayer::OnUpdate(Application& app, float dt) {
 		(void)app;
-		(void)dt;
+		if (m_ShutdownDelay >= 0.0f) {
+			m_ShutdownDelay -= dt;
+			if (m_ShutdownDelay <= 0.0f) { Application::RequestQuit(); return; }
+		}
 		const bool playing = Application::GetIsPlaying();
 		if (m_WasPlaying && !playing) EndPlaySession();
 		m_WasPlaying = playing;
+		m_SceneQuery.Refresh();
 
 		for (const uint64_t ticket : m_Server.TakeAbandoned()) {
 			if (m_Job && m_Job->Ticket == ticket) FailJob("the client stopped waiting");
@@ -221,6 +226,20 @@ namespace Funke {
 		if (!m_Job) return;
 		Job& job = *m_Job;
 		ProcessCaptures(job);
+		if (job.Kind == JobKind::Wait || job.Kind == JobKind::Step) {
+			if (job.GameTime && (!Application::GetIsPlaying() || ApplicationEditorAccess::IsPlaymodePaused())) return;
+			++job.ElapsedFrames;
+			job.ElapsedSeconds += Time::GetUnscaledDeltaTime();
+			const bool framesDone = job.WaitFrames >= 0 && job.ElapsedFrames >= job.WaitFrames;
+			const bool secondsDone = job.WaitSeconds >= 0.0 && job.ElapsedSeconds + 5e-7 >= job.WaitSeconds;
+			if (!framesDone && !secondsDone) return;
+			if (job.Kind == JobKind::Step) m_Editor.SetPlayModePaused(true);
+			Json::Value result = BuildStatus();
+			result.AddMember("waitedFrames", job.ElapsedFrames);
+			result.AddMember("waitedSeconds", job.ElapsedSeconds);
+			FinishJob(result);
+			return;
+		}
 		if (job.Kind == JobKind::Screenshot) {
 			if (!job.CaptureError.empty()) {
 				FailJob(job.CaptureError);
@@ -234,6 +253,7 @@ namespace Funke {
 			Json::Value result = Json::Value::MakeObject();
 			result.AddMember("steps", static_cast<int>(job.Steps.size()));
 			result.AddMember("frames", job.InputFrame);
+			result.AddMember("gamepadIndex", job.GamepadIndex);
 			result.AddMember("seconds", job.InputClock);
 			result.AddMember("commands", job.Commands);
 			result.AddMember("screenshots", job.Screenshots);
@@ -258,8 +278,24 @@ namespace Funke {
 
 		if (command == "status") return Reply(ticket, id, BuildStatus());
 		if (command == "logs") return Reply(ticket, id, ReadLogs(args));
+		if (command == "shutdown") {
+			const auto& profile = RunAutomation::GetPrefsProfileOverride();
+			if (!profile || !profile->starts_with("test-") || ArgNumber(args, "pid", 0) != EditorBridge::GetCurrentProcessId() || playing)
+				return fail("shutdown requires the runner's isolated editor PID in Edit mode");
+			m_ShutdownDelay = 0.2f;
+			Json::Value result = Json::Value::MakeObject(); result.AddMember("completion", "accepted");
+			return Reply(ticket, id, result);
+		}
 
 		if (const std::string busy = m_Editor.GetBridgeBusyReason(); !busy.empty()) return fail("busy: " + busy, true);
+		if (command == "scenes" || command == "entities" || command == "inspect" || command == "schema" || command == "apply-status") {
+			try { return Reply(ticket, id, m_SceneQuery.Execute(command, args)); }
+			catch (const std::exception& error) { return fail(error.what()); }
+		}
+		if (command == "apply") {
+			try { return Reply(ticket, id, m_SceneQuery.Apply(args, m_Editor)); }
+			catch (const std::exception& error) { return fail(error.what()); }
+		}
 
 		if (command == "play") {
 			int width = 0, height = 0;
@@ -295,7 +331,11 @@ namespace Funke {
 			Job& job = startJob(JobKind::Play);
 			job.WaitSeconds = ArgNumber(args, "seconds", -1.0);
 			job.WaitFrames = static_cast<int64_t>(ArgNumber(args, "frames", -1.0));
-			if (!ArgBool(args, "wait", true)) FinishJob(BuildStatus());
+			if (!ArgBool(args, "wait", true)) {
+				Json::Value result = BuildStatus();
+				result.AddMember("completion", "accepted");
+				FinishJob(result);
+			}
 			return;
 		}
 		if (command == "stop") {
@@ -379,6 +419,7 @@ namespace Funke {
 			if (!ArgBool(args, "wait", true)) {
 				Json::Value result = Json::Value::MakeObject();
 				result.AddMember("started", true);
+				result.AddMember("completion", "accepted");
 				return Reply(ticket, id, result);
 			}
 			Job& job = startJob(JobKind::Recompile);
@@ -445,7 +486,6 @@ namespace Funke {
 		if (!m_Job) return;
 		Job& job = *m_Job;
 		const bool playing = Application::GetIsPlaying();
-		const bool gameRunning = playing && !ApplicationEditorAccess::IsPlaymodePaused();
 
 		switch (job.Kind) {
 		case JobKind::Play:
@@ -496,20 +536,7 @@ namespace Funke {
 		}
 		case JobKind::Wait:
 		case JobKind::Step: {
-			if (job.GameTime && !gameRunning) {
-				if (!playing) FailJob("Play mode ended while waiting");
-				return;
-			}
-			++job.ElapsedFrames;
-			job.ElapsedSeconds += Time::GetUnscaledDeltaTime();
-			const bool framesDone = job.WaitFrames >= 0 && job.ElapsedFrames >= job.WaitFrames;
-			const bool secondsDone = job.WaitSeconds >= 0.0 && job.ElapsedSeconds + 5e-7 >= job.WaitSeconds;
-			if (!framesDone && !secondsDone) return;
-			if (job.Kind == JobKind::Step) m_Editor.SetPlayModePaused(true);
-			Json::Value result = BuildStatus();
-			result.AddMember("waitedFrames", job.ElapsedFrames);
-			result.AddMember("waitedSeconds", job.ElapsedSeconds);
-			FinishJob(result);
+			if (job.GameTime && !playing) FailJob("Play mode ended while waiting");
 			return;
 		}
 		case JobKind::Input:
@@ -563,7 +590,32 @@ namespace Funke {
 		using Kind = RunAutomation::Step::Kind;
 		using Action = RunAutomation::Step::Action;
 		const bool press = step.Act == Action::Press;
+		if (step.Type == Kind::Key || step.Type == Kind::MouseButton || step.Type == Kind::Touch || step.Type == Kind::GamepadButton) {
+			std::erase_if(job.HeldDown, [&](const auto& held) { return held.Kind == step.Type && held.Code == step.Code && held.Finger == step.Finger; });
+			if (step.Act != Action::Up) job.HeldDown.push_back({ step.Type, step.Code, step.Position, step.Finger });
+		}
+		auto inputError = [&](const char* message) {
+			Json::Value error = Json::Value::MakeObject(); error.AddMember("ok", false); error.AddMember("error", message);
+			job.Commands.Append(std::move(error));
+		};
 		switch (step.Type) {
+		case Kind::Scroll:
+			if (step.Position.x >= 0) Window::InjectMouseMove(SurfaceToWindow(step.Position));
+			Window::InjectScroll(step.Delta);
+			break;
+		case Kind::Text: Window::InjectText(step.Text); break;
+		case Kind::GamepadConnect:
+			job.GamepadIndex = Window::ConnectAutomationGamepad();
+			if (job.GamepadIndex < 0) inputError("Synthetic gamepad connection failed or all slots are occupied");
+			break;
+		case Kind::GamepadDisconnect: Window::DisconnectAutomationGamepad(); break;
+		case Kind::GamepadButton:
+			if (!Window::InjectGamepadButton(step.Code, step.Act != Action::Up)) inputError("Synthetic gamepad is not connected");
+			if (press) job.Releases.push_back({ Kind::GamepadButton, step.Code });
+			break;
+		case Kind::GamepadAxis:
+			if (!Window::InjectGamepadAxis(step.Code, step.Value)) inputError("Synthetic gamepad is not connected");
+			break;
 		case Kind::Key:
 			Window::InjectKey(step.Code, step.Act != Action::Up);
 			if (press) job.Releases.push_back({ Kind::Key, step.Code });
@@ -607,6 +659,7 @@ namespace Funke {
 			m_Editor.BridgeRequestStop();
 			break;
 		}
+		Window::RefreshAutomationGamepad();
 	}
 
 	void EditorBridgeLayer::InjectTouch(Job& job, int64_t finger, Vec2 normalized, int phase) {
@@ -629,6 +682,7 @@ namespace Funke {
 		case Kind::Key: Window::InjectKey(held.Code, false); break;
 		case Kind::MouseButton: Window::InjectMouseButton(held.Code, false); break;
 		case Kind::Touch: InjectTouch(job, held.Finger, held.Position, 2); break;
+		case Kind::GamepadButton: Window::InjectGamepadButton(held.Code, false); Window::RefreshAutomationGamepad(); break;
 		default: break;
 		}
 	}
@@ -691,6 +745,8 @@ namespace Funke {
 	void EditorBridgeLayer::EndJob() {
 		if (!m_Job) return;
 		Job& job = *m_Job;
+		for (const Held& held : job.HeldDown) ReleaseHeld(job, held);
+		if (job.Kind == JobKind::Input) Window::DisconnectAutomationGamepad();
 		if (Application::GetIsPlaying()) {
 			for (const Held& held : std::exchange(job.Releases, {})) ReleaseHeld(job, held);
 			if (job.MouseFinger >= 0) InjectTouch(job, job.MouseFinger, Vec2{ 0.5f }, 2);
@@ -742,6 +798,7 @@ namespace Funke {
 		status.AddMember("pid", static_cast<int64_t>(EditorBridge::GetCurrentProcessId()));
 		status.AddMember("version", std::string(Engine::GetVersionLong()));
 		status.AddMember("protocol", EditorBridge::k_ProtocolVersion);
+		status.AddMember("renderer", std::string(RenderApi::BackendName()));
 
 		const bool playing = Application::GetIsPlaying();
 		const char* state = playing ? (ApplicationEditorAccess::IsPlaymodePaused() ? "paused" : "playing")

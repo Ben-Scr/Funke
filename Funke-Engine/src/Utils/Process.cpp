@@ -30,6 +30,7 @@ namespace Funke::Process {
 
 		// Set by the streaming Run overload for the duration of the call; reads happen on the calling thread.
 		thread_local const std::function<void(std::string_view)>* t_OutputSink = nullptr;
+		thread_local const std::function<void(unsigned long)>* t_StartedSink = nullptr;
 
 		void AppendCapturedOutput(std::string& output, const char* data, std::size_t size) {
 			if (t_OutputSink && size > 0) (*t_OutputSink)(std::string_view(data, size));
@@ -254,6 +255,7 @@ namespace Funke::Process {
 			return result;
 		}
 
+		if (t_StartedSink) (*t_StartedSink)(processInfo.dwProcessId);
 		// Drain the pipe with a deadline. PeekNamedPipe lets us check for
 		// data without blocking; if no data and the deadline expires, we
 		// terminate the child instead of blocking forever.
@@ -386,6 +388,7 @@ namespace Funke::Process {
 
 		close(pipeFd[1]);
 		(void)setpgid(pid, pid);
+		if (t_StartedSink) (*t_StartedSink)(static_cast<unsigned long>(pid));
 		const int pipeFlags = fcntl(pipeFd[0], F_GETFL, 0);
 		if (pipeFlags >= 0) {
 			(void)fcntl(pipeFd[0], F_SETFL, pipeFlags | O_NONBLOCK);
@@ -492,6 +495,17 @@ namespace Funke::Process {
 			const std::function<void(std::string_view)>* Previous;
 		} scope(onOutput ? &onOutput : nullptr);
 		return Run(command, workingDirectory, timeout);
+	}
+
+	Result Run(const std::vector<std::string>& command, const std::filesystem::path& workingDirectory,
+		std::chrono::milliseconds timeout, const std::function<void(std::string_view)>& onOutput,
+		const std::function<void(unsigned long)>& onStarted) {
+		struct StartedScope {
+			const std::function<void(unsigned long)>* Previous = t_StartedSink;
+			~StartedScope() { t_StartedSink = Previous; }
+		} scope;
+		t_StartedSink = onStarted ? &onStarted : nullptr;
+		return Run(command, workingDirectory, timeout, onOutput);
 	}
 
 	void CancelAll() {

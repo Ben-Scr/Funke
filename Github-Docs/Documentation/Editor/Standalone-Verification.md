@@ -15,6 +15,15 @@ The work parent must be outside the installation and checkout. The harness also 
 
 The full gate:
 
+Agent development adds two companion gates against the same extracted installation:
+
+```powershell
+python scripts/ci/editor_bridge_test.py --cli C:\TestPayload\Funke\funke.exe --editor C:\TestPayload\Funke\Funke-Editor.exe --output C:\Temp\AgentChecks
+python scripts/ci/agent_workflow_test.py --cli C:\TestPayload\Funke\funke.exe --editor C:\TestPayload\Funke\Funke-Editor.exe --output C:\Temp\AgentChecks --timeout 240
+```
+
+The first checks real CLI exit codes, typed queries and transactional authoring. The second creates an external project and local managed package, authors player/coin/UI through batches, runs real inputs, verifies state and screenshots, checks intentional failures, recompiles a changed script and repeats. Its sparse test checkout also needs `Tests/Agent/` and the helper scripts; engine sources are not required. CI runs the agent gates on Windows, Linux (Xvfb) and macOS and uploads evidence. A configured gate is not proof of a passed run: record the concrete report/build ID and platform when reporting verification. These companion checks complement the source/toolchain isolation and relocated-player checks below.
+
 1. Validates the binary SDK manifest and required payload. It rejects native SDK/source trees, ScriptCore sources or its `.csproj`, embedded native build tools, symlinks and reparse points. The expected profiles are `Development -> Runtime-Development` and `Release -> Runtime-Dist`.
 2. Copies the installation outside the checkout into a temporary path containing an umlaut. Child processes use an unrelated working directory, a private user-data root, empty NuGet sources/cache and a reduced PATH. Inherited Funke/toolchain environment overrides are discarded. Engine versions running this test must support the explicit `FUNKE_USER_DATA_ROOT` isolation override. The copied Launcher must complete `--ci-smoke-test --background` with its stable-frame marker and exit code zero.
 3. Creates a project with `--no-git --no-register`. A local `Standalone.ManagedProbe` C# package is always authored and enabled through `funke package add`. The shipped Premake executable generates its workspace, then the .NET SDK compiles those generated C# projects for the Editor. No registry download is needed. `--with-tween` additionally installs and references the shipped Tween component; this option fails if Tween was not included in the input payload. This explicit authoring build is necessary: `package add` and `package refresh` activate packages and update references, but do not compile newly authored source packages; the Editor's startup rebuild currently targets stale native packages. The harness does not claim automatic source-package compilation on installation.

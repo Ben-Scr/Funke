@@ -102,10 +102,9 @@ namespace Funke {
 		void Restore(Scene& scene, const EntitySubtreeSnapshot& snapshot) {
 			if (snapshot.Entities.empty()) return;
 
-			const EntityHandle root = SceneSerializer::RestoreEntityTree(scene, snapshot.Entities);
+			const EntityHandle root = SceneSerializer::RestoreEntityTree(scene, snapshot.Entities, true);
 			if (root == entt::null) {
-				FNK_CORE_ERROR_TAG("Undo", "Could not restore entity {} from the undo history", snapshot.RootId);
-				return;
+				throw std::runtime_error("Could not restore entity " + std::to_string(snapshot.RootId) + " from the undo history");
 			}
 
 			EntityHandle parent = entt::null;

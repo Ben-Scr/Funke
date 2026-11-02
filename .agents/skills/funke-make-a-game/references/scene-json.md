@@ -4,6 +4,8 @@ Ground truth: `Funke-Engine/src/Serialization/SceneSerializer.cpp` (writer), `Sc
 
 ## Format detection & the Editor
 
+For a loaded editor scene, prefer `funke editor scenes/entities/inspect/schema` and typed `editor apply --file batch.json --json`. Query current session/instance/revision/schema tokens, validate with `dryRun`, apply with a new request ID, then explicitly `save-scene`. Batches support entity hierarchy, built-in components, managed script attachments and typed properties/references with one undo step; unsupported restoration paths fail before application. See `Github-Docs/Documentation/Editor/Editor-Bridge.md` for the contract. This avoids overwriting unsaved in-memory edits with a separately authored file. Scene JSON below remains the storage format and an offline authoring path.
+
 - The loader sniffs magic bytes: files starting with `FNKSCNB\x1A` are binary, **everything else is parsed as JSON**, regardless of project settings. A hand-written JSON scene loads in a Binary project.
 - But the **Editor re-saves** scenes/prefabs in the project's `assetSerializationFormat`. New projects are `Json`; a `project.json` without the key (older projects) means `Binary` — run `funke convert --format json` so your files stay JSON.
 - A save regenerates the file from live state: unknown keys are dropped, and `ScriptFields` for classes/fields the compiled assembly doesn't know are dropped. → Compile scripts before the user opens/saves the scene.

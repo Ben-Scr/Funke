@@ -77,6 +77,7 @@ project "Funke-Engine"
     RemoveFilesUnlessModulesEnabled({ "Render", "Audio", "Physics", "Scripting" },
         {
             -- Glob: covers the per-category slices as well as the orchestrator.
+            "src/Inspector/PropertyValidation.cpp",
             "src/Scene/BuiltInComponentRegistration*.cpp",
             "src/Scene/ComponentRegistry.cpp",
             "src/Scene/Entity.cpp",
@@ -373,6 +374,7 @@ project "Funke-Engine"
     ApplyDawnLibDirs("../")
 
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
+    if CopyNetHostSharedLib ~= "" then postbuildcommands { CopyNetHostSharedLib } end
     -- gmake2 gives consumers a RUNPATH to this folder, and RUNPATH only covers their direct dependencies:
     -- the engine library resolves SDL3 through its own $ORIGIN, so SDL3 has to sit next to it as well.
     if os.target() ~= "windows" then postbuildcommands { CopySDL3SharedLib } end

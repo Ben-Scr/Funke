@@ -35,7 +35,7 @@ namespace Funke {
 		}
 
 		std::string AbsoluteKey(const std::filesystem::path& path) {
-			auto key = Key(Path::ToGenericUtf8(std::filesystem::absolute(path).lexically_normal()));
+			auto key = Key(Path::ToGenericUtf8(Path::CanonicalIdentity(path)));
 			while (key.size() > 1 && key.back() == '/') key.pop_back();
 			return key;
 		}
@@ -256,7 +256,7 @@ namespace Funke {
 				if (!std::filesystem::exists(archive)) continue;
 				auto bundle = std::make_shared<AssetBundle>();
 				if (!bundle->Open(archive, error)) throw std::runtime_error(Path::ToUtf8(archive) + ": " + error);
-				mounts.push_back({ AbsoluteKey(root / folder) + "/", std::filesystem::absolute(root / folder).lexically_normal(), std::move(bundle) });
+				mounts.push_back({ AbsoluteKey(root / folder) + "/", Path::CanonicalIdentity(root / folder), std::move(bundle) });
 			}
 			std::lock_guard lock(g_MountMutex);
 			g_Mounts = std::move(mounts);

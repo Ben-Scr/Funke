@@ -544,6 +544,8 @@ def dotnet_files_present(repo_root: Path) -> bool:
     lib = dotnet_dir / "lib"
     if platform.system() == "Windows":
         return (lib / "nethost.lib").is_file() and (lib / "nethost.dll").is_file()
+    if platform.system() == "Darwin":
+        return (lib / "libnethost.dylib").is_file()
     # Unix links libnethost (static .a preferred; .so accepted).
     return (lib / "libnethost.a").is_file() or (lib / "libnethost.so").is_file()
 
@@ -602,7 +604,10 @@ def setup_dotnet_unix(repo_root: Path) -> bool:
                 shutil.copy2(native / header, dest / header)
         static_lib = native / "libnethost.a"
         shared_lib = native / "libnethost.so"
-        if static_lib.is_file():
+        if platform.system() == "Darwin":
+            # Static nethost embeds private libc++ RTTI that breaks exception matching.
+            shutil.copy2(native / "libnethost.dylib", lib_dest / "libnethost.dylib")
+        elif static_lib.is_file():
             shutil.copy2(static_lib, lib_dest / "libnethost.a")
         elif shared_lib.is_file():
             shutil.copy2(shared_lib, lib_dest / "libnethost.so")

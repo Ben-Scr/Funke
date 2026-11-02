@@ -978,6 +978,18 @@ namespace Funke {
 		return *stack;
 	}
 
+	UndoStack& ImGuiEditorLayer::GetBridgeUndoStack(Scene& scene) {
+		for (const auto& weak : SceneManager::GetLoadedScenes()) {
+			if (const auto owner = weak.lock(); owner && owner.get() == &scene) return m_SceneUndoHistory.ForScene(owner);
+		}
+		return m_DetachedUndoStack;
+	}
+
+	void ImGuiEditorLayer::PrepareBridgeMutation(Scene& scene) {
+		auto& history = GetUndoStack(scene);
+		InspectorUndoRecorder::Flush(history, true);
+	}
+
 	void ImGuiEditorLayer::ClearUndoHistory() {
 		InspectorUndoRecorder::Reset();
 		m_ActiveUndoStack = nullptr;

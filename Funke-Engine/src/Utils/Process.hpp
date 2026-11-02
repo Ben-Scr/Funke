@@ -38,6 +38,9 @@ namespace Funke::Process {
 	// Same as Run, but forwards output chunks to onOutput as they arrive (on the calling thread).
 	FUNKE_API Result Run(const std::vector<std::string>& command, const std::filesystem::path& workingDirectory,
 		std::chrono::milliseconds timeout, const std::function<void(std::string_view chunk)>& onOutput);
+	FUNKE_API Result Run(const std::vector<std::string>& command, const std::filesystem::path& workingDirectory,
+		std::chrono::milliseconds timeout, const std::function<void(std::string_view chunk)>& onOutput,
+		const std::function<void(unsigned long)>& onStarted);
 
 	FUNKE_API bool LaunchDetached(const std::vector<std::string>& command,
 		const std::filesystem::path& workingDirectory = {});

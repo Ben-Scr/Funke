@@ -328,14 +328,7 @@ namespace Funke {
 		}
 		case SDL_EVENT_TEXT_INPUT: {
 			if (event.text.windowID != ownId) return;
-			Application* app = Application::GetInstance();
-			if (!app) return;
-			std::vector<uint32_t> codepoints;
-			AppendUtf8Codepoints(event.text.text, codepoints);
-			for (uint32_t cp : codepoints) {
-				app->m_Input.OnChar(cp);
-				ScriptEngine::RaiseEnterChar(cp);
-			}
+			OnText(event.text.text);
 			break;
 		}
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -390,14 +383,7 @@ namespace Funke {
 			const float sign = event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0f : 1.0f;
 			const float x = event.wheel.x * sign;
 			const float y = event.wheel.y * sign;
-			Application* app = Application::GetInstance();
-			if (!app) return;
-			app->m_Input.OnScroll(y);
-			ScriptEngine::RaiseMouseScroll(y);
-			if (m_EventCallback) {
-				MouseScrolledEvent e(x, y);
-				m_EventCallback(e);
-			}
+			OnScroll({ x, y });
 			break;
 		}
 		case SDL_EVENT_DROP_BEGIN:
@@ -501,6 +487,26 @@ namespace Funke {
 	void Window::InjectKey(int keyCode, bool pressed) {
 		if (s_ActiveWindow && keyCode >= 0) s_ActiveWindow->OnKey(keyCode, pressed, false);
 	}
+
+	void Window::OnText(std::string_view utf8) {
+		Application* app = Application::GetInstance();
+		if (!app) return;
+		std::vector<uint32_t> codepoints;
+		const std::string text(utf8);
+		AppendUtf8Codepoints(text.c_str(), codepoints);
+		for (uint32_t cp : codepoints) { app->m_Input.OnChar(cp); ScriptEngine::RaiseEnterChar(cp); }
+	}
+
+	void Window::OnScroll(Vec2 delta) {
+		Application* app = Application::GetInstance();
+		if (!app) return;
+		app->m_Input.OnScroll(delta.y);
+		ScriptEngine::RaiseMouseScroll(delta.y);
+		if (m_EventCallback) { MouseScrolledEvent event(delta.x, delta.y); m_EventCallback(event); }
+	}
+
+	void Window::InjectScroll(Vec2 delta) { if (s_ActiveWindow) s_ActiveWindow->OnScroll(delta); }
+	void Window::InjectText(std::string_view utf8) { if (s_ActiveWindow) s_ActiveWindow->OnText(utf8); }
 
 	void Window::InjectMouseButton(int button, bool pressed) {
 		if (s_ActiveWindow && button >= 0) s_ActiveWindow->OnMouseButton(button, pressed);

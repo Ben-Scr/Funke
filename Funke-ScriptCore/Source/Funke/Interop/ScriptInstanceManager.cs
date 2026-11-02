@@ -2735,7 +2735,7 @@ internal static class ScriptInstanceManager
     [ThreadStatic] private static Dictionary<string, StructFieldLayout.Slot>? s_CurrentStructLayout;
 
     private static void AppendEditorMember(System.Text.StringBuilder sb, in EditorMember member,
-        object? value, string namePrefix, int depth, ref bool first)
+        object? value, string namePrefix, int depth, ref bool first, bool metadataOnly = false)
     {
         if (MapFieldType(member.ValueType) != "unsupported")
         {
@@ -2751,7 +2751,7 @@ internal static class ScriptInstanceManager
         // Read defaults from a throwaway instance when the field is null so the
         // group still shows its members (editing lazily creates the real one).
         object? nested = value;
-        if (nested == null)
+        if (nested == null && !metadataOnly)
         {
             try { nested = Activator.CreateInstance(member.ValueType); }
             catch { return; }
@@ -2761,8 +2761,8 @@ internal static class ScriptInstanceManager
         foreach (var child in CollectEditorMembers(member.ValueType))
         {
             if (!IsMemberEditorVisible(child)) continue;
-            object? childValue = nested != null ? TryGetMemberValue(child, nested) : null;
-            AppendEditorMember(sb, child, childValue, childPrefix, depth + 1, ref first);
+            object? childValue = !metadataOnly && nested != null ? TryGetMemberValue(child, nested) : null;
+            AppendEditorMember(sb, child, childValue, childPrefix, depth + 1, ref first, metadataOnly);
         }
     }
 
@@ -2839,12 +2839,14 @@ internal static class ScriptInstanceManager
         try
         {
             string className = Marshal.PtrToStringUTF8((IntPtr)classNamePtr) ?? "";
+            bool metadataOnly = className.StartsWith("schema:", StringComparison.Ordinal);
+            if (metadataOnly) className = className[7..];
             var classInfo = GetOrCacheClass(className);
             if (classInfo == null) return NullTerminated("[]");
 
             // Create a temporary instance just to read default values.
             object? tempInstance = null;
-            try { tempInstance = Activator.CreateInstance(classInfo.Type)!; }
+            try { if (!metadataOnly) tempInstance = Activator.CreateInstance(classInfo.Type)!; }
             catch { return NullTerminated("[]"); }
 
             var sb = new System.Text.StringBuilder();
@@ -2866,8 +2868,8 @@ internal static class ScriptInstanceManager
                     if (member.DeclaringType == typeof(DataAsset)) continue;
                     if (!IsMemberEditorVisible(member)) continue;
 
-                    object? val = TryGetMemberValue(member, tempInstance);
-                    AppendEditorMember(sb, member, val, "", 0, ref first);
+                    object? val = metadataOnly ? null : TryGetMemberValue(member, tempInstance!);
+                    AppendEditorMember(sb, member, val, "", 0, ref first, metadataOnly);
                 }
             }
             finally

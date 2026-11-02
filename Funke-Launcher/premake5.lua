@@ -49,6 +49,7 @@ project "Funke-Launcher"
 
     postbuildcommands { CopyFunkeAssets, CopyFunkeEngineDll, CopySDL3SharedLib, CopyEngineSdk }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
+    if CopyNetHostSharedLib ~= "" then postbuildcommands { CopyNetHostSharedLib } end
     ApplyFunkeProfilerRuntime()
 
     filter "system:windows"

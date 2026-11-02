@@ -8,6 +8,63 @@ Nothing on the desktop changes while it works:
 - no OS mouse or keyboard input is sent; input goes straight into the game,
 - the editor may sit behind other windows or be **minimized**. Screenshots are rendered offscreen, so they work there too.
 
+## Structured scene inspection
+
+These commands query the editor main thread and return format version 1. Select an editor with `--pid` or `--project` as for other bridge commands.
+
+```powershell
+funke editor scenes --json
+funke editor entities --scene-id 1 --context edit --limit 100 --json
+funke editor inspect --scene-id 1 --entity-id 12345678901234567890 --component Transform2D --property Position --json
+funke editor schema --component Transform2D --json
+```
+
+Use IDs returned by `scenes` and `entities`; the numbers above are placeholders. Scene queries require IDs rather than potentially ambiguous names. Scene responses contain `editorSessionId`, `sceneId`, `sceneInstanceId`, `context`, `revision`, `schemaRevision`, dirty state, frame and game time. A session is valid only in that editor process. Reload/replacement and play transitions invalidate instance tokens. Authoring changes and undo/redo advance the revision; registry metadata and script recompilation change the schema revision.
+
+`entities` accepts `--name` (substring), `--parent-id`, `--component`, `--limit` (1–500, default 100) and `--cursor`. Results sort by numeric persistent ID. Pass back the opaque `nextCursor` with the same filters. Stale cursors fail. Runtime responses declare `consistency: "single_response"`: each page has its own frame and time, so pages are not a frozen gameplay snapshot.
+
+`inspect` accepts component and property projections; property paths come from the schema and may differ from scene-file keys. Active variant children use dotted paths. Schema exposes types, ranges, enums, dependencies, conflicts, module availability, reference filters and conditional editability. For C# fields use `script:Fully.Qualified.Class` with a scene/entity target. Metadata-backed native scripts and packages are readable; unsupported custom fields are explicitly marked. Managed component authoring metadata uses `managed:Class`; live managed-component fields without a readable binding are reported as unsupported, not defaulted.
+
+IDs and 64-bit integers/enums are decimal **strings**. Vectors/colors use numeric arrays; booleans, strings and finite floats retain their JSON types. References are typed objects with string IDs (use the returned schema/value shape, including reference kind and component or slice qualifiers). Unsupported types, missing projected properties and nonfinite values fail explicitly. Query arguments are limited to 32 KiB and responses to 1 MiB.
+
+## Transactional scene changes
+
+```powershell
+funke editor apply --file create-player.json --json
+funke editor apply-status --request-id create-player-001 --session-id <editorSessionId> --json
+```
+
+An apply file uses current tokens from a scene query:
+
+```json
+{
+  "schemaVersion": 1,
+  "requestId": "create-player-001",
+  "target": {
+    "editorSessionId": "<session>", "context": "edit",
+    "sceneId": "<scene>", "sceneInstanceId": "<instance>"
+  },
+  "expectedRevision": "<revision>",
+  "expectedSchemaRevision": "<schemaRevision>",
+  "dryRun": false,
+  "operations": [
+    { "op": "entity.create", "localId": "player", "name": "Player" },
+    { "op": "component.add", "entity": { "localId": "player" }, "component": "Transform2D" },
+    { "op": "property.set", "entity": { "localId": "player" }, "component": "Transform2D", "property": "Position", "value": [2, 3] }
+  ]
+}
+```
+
+Operations are `entity.create`, `entity.rename`, `entity.delete` (subtree), `entity.parent` (optional `parent` reference and `siblingIndex`), `component.add`, `component.remove`, and `property.set`. Existing entities use `{"id":"…"}`; new ones use an earlier `localId`. Reference values may use `localId` with the same kind/type qualifiers as persistent references. `history.undo` or `history.redo` must be the only operation. Managed script attachments use `script:Class` after compilation.
+
+The whole batch is validated before application: exact types, finite values, bounds, enums, references, read-only/conditional fields, active variants, dependency closure, conflicts and hierarchy cycles. Conditional or nested variant writes following another change to that entity require a separate batch with fresh tokens. Native/package callbacks without a guaranteed restoration path are rejected before mutation, including affected subtrees that contain such components. Free commands, exports and imports are not batch operations.
+
+Dry runs allocate no entity IDs, invoke no setters/component-add callbacks and create no history entry. A successful effective batch creates one undo entry; undo/redo restores persistent IDs, hierarchy, references and prefab instance data through the editor restoration path. Application failure rolls supported scene state back and preserves dirty state and existing history. Revisions remain monotonic. `rollback_failed` means restoration failed and requires inspecting/recovering the affected scene; it never claims an unchanged scene. Saving is explicit with `save-scene`.
+
+Batches allow 1–128 operations and at most 1 MiB JSON; affected subtree snapshots are capped at 16 MiB. Results include created IDs and before/after revisions. Identical request retries return the cached result for ten minutes, before checking the now-old revision. A changed payload with the same ID fails; expired IDs are not replayed. The session retains at most 4096 IDs / 32 MiB of cached payload/results and rejects further requests at capacity. Use a new ID after dry-run or any changed request.
+
+Failures include `revision_conflict`, `schema_changed`, `entity_not_found`, `component_conflict`, `read_only_property`, `invalid_reference`, `unsupported_operation`, `apply_failed` and `rollback_failed`, with an explanatory `error` and operation index where applicable. Transport/usage failures remain distinct from business failures.
+
 ## Quick start
 
 ```powershell
@@ -107,7 +164,7 @@ funke editor play --size 1080x2400
 
 ## Limits
 
-- No mouse wheel and no text entry yet. Use `[DevCommand]`s for those.
+- Wheel, UTF-8 text and virtual gamepad steps are supported through `input`; see [Testing](Testing.md#wheel-text-and-gamepad-input). Text events do not simulate OS IME composition.
 - Your own mouse moving over a visible Game View during a test also moves the game's pointer.
 - Screenshots show the game only, without the Game View's stats and log overlays.
 - The editor must be a build that includes the bridge (2026.1.0-beta.1 or later). After updating, restart the editor.

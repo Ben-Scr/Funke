@@ -41,6 +41,7 @@ project "Funke-CLI"
     -- seeds Packages/Funke-ScriptCore from the copy next to the exe.
     postbuildcommands { CopyFunkeAssets, CopyFunkeEngineDll, CopySDL3SharedLib }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
+    if CopyNetHostSharedLib ~= "" then postbuildcommands { CopyNetHostSharedLib } end
     dependson(FunkeManagedDependencies({ "Funke-ScriptCore" }))
     postbuildcommands(CopyScriptCoreArtifacts)
     ApplyFunkeProfilerRuntime()

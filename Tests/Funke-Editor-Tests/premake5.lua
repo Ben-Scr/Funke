@@ -25,6 +25,7 @@ project "Funke-Editor-Tests"
     files
     {
         path.join(ROOT_DIR, "Funke-Editor/src/Build/GameBuilder.cpp"),
+        path.join(ROOT_DIR, "Funke-Editor/src/Bridge/EditorSceneEdit.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Build/DotNetRuntimeBundle.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/BuildAssetPruning.cpp"),
         path.join(ROOT_DIR, "Funke-Editor/src/Editor/SceneRecovery.cpp"),
@@ -73,6 +74,7 @@ project "Funke-Editor-Tests"
         CopySDL3SharedLib
     }
     if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
+    if CopyNetHostSharedLib ~= "" then postbuildcommands { CopyNetHostSharedLib } end
     ApplyFunkeProfilerRuntime()
 
     filter "system:windows"

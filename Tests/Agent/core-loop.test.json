@@ -1,0 +1,41 @@
+{
+  "formatVersion": 1,
+  "project": "../..",
+  "scene": "SampleScene",
+  "size": "640x360",
+  "fixedStep": 60,
+  "timeoutSeconds": 120,
+  "strictScriptErrors": true,
+  "steps": [
+    {"type":"waitUntil","frames":20,"timeoutSeconds":10,"condition":{"kind":"property","entity":{"name":"Player"},"component":"script:AgentLoop","property":"Updates","compare":"ge","expected":10}},
+    {"type":"assert","condition":{"kind":"property","entity":{"name":"Player"},"component":"script:AgentLoop","property":"Revision","expected":1}},
+    {"type":"assert","condition":{"kind":"property","entity":{"name":"Player"},"component":"script:AgentLoop","property":"PackageLoaded","expected":true}},
+    {"type":"screenshot"},
+    {"type":"input","script":{"steps":[{"frame":0,"key":"D","action":"down"},{"frame":60,"key":"D","action":"up"}]}},
+    {"type":"assert","condition":{"kind":"exists","entity":{"name":"Coin"},"expected":false}},
+    {"type":"assert","condition":{"kind":"property","entity":{"name":"Player"},"component":"script:AgentLoop","property":"Score","expected":1}},
+    {"type":"assert","condition":{"kind":"property","entity":{"name":"Player"},"component":"script:AgentLoop","property":"Travel","compare":"ge","expected":1.9}},
+    {"type":"assert","condition":{"kind":"property","entity":{"name":"Score"},"component":"TextRenderer","property":"Text","expected":"Score: 1"}},
+    {"type":"input","script":{"steps":[{"frame":0,"scroll":[1,2]},{"frame":1,"scroll":[-1,-1]},{"frame":2,"log":"wheel settled"}]}},
+    {"type":"assert","condition":{"kind":"property","entity":{"name":"Player"},"component":"script:AgentLoop","property":"Zoom","compare":"near","tolerance":0.001,"expected":1.1}},
+    {"type":"input","script":{"steps":[{"frame":0,"mouse":[0.5,0.5],"button":"left"},{"frame":3,"text":""},{"frame":4,"text":"Grüße 世界"},{"frame":6,"log":"text settled"}]}},
+    {"type":"assert","condition":{"kind":"property","entity":{"name":"NameInput"},"component":"InputField","property":"Text","expected":"Grüße 世界"}},
+    {"type":"input","script":{"steps":[
+      {"frame":0,"gamepad":{"device":"funke-test","action":"connect"}},
+      {"frame":1,"gamepad":{"device":"funke-test","button":"A","action":"down"}},
+      {"frame":1,"gamepad":{"device":"funke-test","axis":"LeftX","value":0.75}},
+      {"frame":1,"gamepad":{"device":"funke-test","axis":"LeftTrigger","value":1}},
+      {"frame":5,"gamepad":{"device":"funke-test","button":"A","action":"up"}},
+      {"frame":5,"gamepad":{"device":"funke-test","axis":"LeftX","value":0}},
+      {"frame":5,"gamepad":{"device":"funke-test","axis":"LeftTrigger","value":-1}},
+      {"frame":7,"gamepad":{"device":"funke-test","action":"disconnect"}}
+    ]}},
+    {"type":"assert","condition":{"kind":"property","entity":{"name":"Player"},"component":"script:AgentLoop","property":"PadDown","expected":1}},
+    {"type":"assert","condition":{"kind":"property","entity":{"name":"Player"},"component":"script:AgentLoop","property":"PadUp","expected":1}},
+    {"type":"assert","condition":{"kind":"property","entity":{"name":"Player"},"component":"script:AgentLoop","property":"PadHeldFrames","compare":"ge","expected":4}},
+    {"type":"assert","condition":{"kind":"property","entity":{"name":"Player"},"component":"script:AgentLoop","property":"PadPeak","compare":"near","tolerance":0.001,"expected":0.75}},
+    {"type":"assert","condition":{"kind":"property","entity":{"name":"Player"},"component":"script:AgentLoop","property":"TriggerPeak","compare":"near","tolerance":0.001,"expected":1}},
+    {"type":"assert","condition":{"kind":"scriptErrors","expected":true}},
+    {"type":"screenshot"}
+  ]
+}

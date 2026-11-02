@@ -1,4 +1,5 @@
 #include "pch.hpp"
+#include "DevTools/RunAutomation.hpp"
 #include "Scripting/ScriptBindingGuard.hpp"
 #include "Assets/AssetRegistry.hpp"
 #include "Scripting/ScriptBindings.hpp"
@@ -463,6 +464,7 @@ namespace Funke {
 	// Application.PrefsProfile → project.json "prefsProfile", overridden by the runtime's --prefs-profile.
 	static int Funke_Application_GetPrefsProfileBuffer(char* outBuffer, int capacity)
 	{
+		if (const auto& profile = RunAutomation::GetPrefsProfileOverride()) return CopyToManagedBuffer(*profile, outBuffer, capacity);
 		const FunkeProject* project = ProjectManager::GetCurrentProject();
 		return CopyToManagedBuffer(project ? std::string_view(project->PrefsProfile) : std::string_view{}, outBuffer, capacity);
 	}

@@ -19,7 +19,7 @@ NATIVE_ROOTS = {"Funke-Engine", "External", "bin"}
 PLATFORMS = {
     "windows": ("Funke-Runtime.exe", "Funke-Engine.dll", "SDL3.dll", "nethost.dll"),
     "linux": ("Funke-Runtime", "libFunke-Engine.so", "libSDL3.so.0", "libwebgpu_dawn.so"),
-    "macosx": ("Funke-Runtime", "libFunke-Engine.dylib", "libSDL3.0.dylib", "libwebgpu_dawn.dylib"),
+    "macosx": ("Funke-Runtime", "libFunke-Engine.dylib", "libSDL3.0.dylib", "libwebgpu_dawn.dylib", "libnethost.dylib"),
 }
 NATIVE_HEADERS = (
     "Funke-Engine/src/Funke.hpp", "External/spdlog/include/spdlog/spdlog.h",

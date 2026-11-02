@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Commands.hpp"
+#include "EditorResult.hpp"
 
 #include "DevTools/EditorBridge.hpp"
 #include "DevTools/RunAutomation.hpp"
@@ -21,6 +22,20 @@ namespace Funke::Cli {
 		// Beyond k_ExitFailure: the editor is there but can't take the command right now, or there is none.
 		constexpr int k_ExitBusy = 3;
 		constexpr int k_ExitNoEditor = 4;
+
+		int FailEditor(std::string_view message, int exitCode = k_ExitFailure) {
+			if (Options().Json) {
+				Json::Value error = Json::Value::MakeObject();
+				error.AddMember("ok", false);
+				error.AddMember("error", std::string(message));
+				error.AddMember("code", exitCode == k_ExitUsage ? "invalid_arguments"
+					: exitCode == k_ExitBusy ? "busy_or_timeout"
+					: exitCode == k_ExitNoEditor ? "editor_unreachable" : "command_failed");
+				if (exitCode == k_ExitBusy) error.AddMember("busy", true);
+				Out(Json::Stringify(error, false));
+			}
+			return Cli::Fail(message, exitCode);
+		}
 
 		bool ParseNumber(const std::string& text, double& out) {
 			const char* end = text.data() + text.size();
@@ -54,8 +69,8 @@ namespace Funke::Cli {
 			uint32_t pid = 0;
 			if (const std::optional<std::string> pidText = args.Option("pid")) {
 				double value = 0.0;
-				if (!ParseNumber(*pidText, value) || value <= 0.0) {
-					outExitCode = Fail("--pid must be a process id", k_ExitUsage);
+				if (!ParseNumber(*pidText, value) || value <= 0.0 || value > UINT32_MAX || std::floor(value) != value) {
+					outExitCode = FailEditor("--pid must be a process id", k_ExitUsage);
 					return false;
 				}
 				pid = static_cast<uint32_t>(value);
@@ -74,11 +89,11 @@ namespace Funke::Cli {
 			std::string error;
 			const EditorBridge::Instance* chosen = EditorBridge::SelectInstance(instances, pid, projectDir, explicitProject, error);
 			if (!chosen) {
-				outExitCode = Fail(error, instances.empty() ? k_ExitNoEditor : k_ExitFailure);
+				outExitCode = FailEditor(error, instances.empty() || pid != 0 ? k_ExitNoEditor : k_ExitFailure);
 				return false;
 			}
 			if (chosen->Protocol != EditorBridge::k_ProtocolVersion) {
-				outExitCode = Fail("the editor (pid " + std::to_string(chosen->Pid) + ", " + chosen->Version + ") speaks bridge protocol "
+				outExitCode = FailEditor("the editor (pid " + std::to_string(chosen->Pid) + ", " + chosen->Version + ") speaks bridge protocol "
 					+ std::to_string(chosen->Protocol) + ", this funke speaks " + std::to_string(EditorBridge::k_ProtocolVersion)
 					+ "; use the funke.exe next to that editor");
 				return false;
@@ -92,11 +107,13 @@ namespace Funke::Cli {
 			bool Busy = false;
 			bool Unreachable = false;
 			std::string Error;
+			std::string Command;
 			Json::Value Result;
 		};
 
 		Outcome Send(const Connection& connection, const std::string& command, Json::Value requestArgs, int timeoutMs) {
 			Outcome outcome;
+			outcome.Command = command;
 			EditorBridge::Request request;
 			request.Id = "1";
 			request.Token = connection.Editor.Token;
@@ -106,7 +123,8 @@ namespace Funke::Cli {
 			std::string reply;
 			// The client waits a little longer than the editor, so the editor's own "timeout" answer arrives.
 			if (!EditorBridge::Exchange(connection.Editor.Endpoint, EditorBridge::FormatRequest(request), timeoutMs + 3000, reply, outcome.Error)) {
-				outcome.Unreachable = true;
+				outcome.Busy = outcome.Error.find("timed out") != std::string::npos;
+				outcome.Unreachable = !outcome.Busy;
 				outcome.Error = "editor pid " + std::to_string(connection.Editor.Pid) + ": " + outcome.Error;
 				return outcome;
 			}
@@ -119,23 +137,16 @@ namespace Funke::Cli {
 			return outcome;
 		}
 
-		// --json prints the answer as is; failures go to stdout too there, so scripts parse one stream.
-		int Finish(const Outcome& outcome, const std::function<int(const Json::Value&)>& printHuman) {
+		int Finish(const Outcome& outcome, const std::function<void(const Json::Value&)>& printHuman) {
 			if (!outcome.Ok) {
-				if (Options().Json) {
-					Json::Value error = Json::Value::MakeObject();
-					error.AddMember("ok", false);
-					error.AddMember("error", outcome.Error);
-					if (outcome.Busy) error.AddMember("busy", true);
-					Out(Json::Stringify(error, false));
-				}
-				return Fail(outcome.Error, outcome.Unreachable ? k_ExitNoEditor : outcome.Busy ? k_ExitBusy : k_ExitFailure);
+				return FailEditor(outcome.Error, outcome.Unreachable ? k_ExitNoEditor : outcome.Busy ? k_ExitBusy : k_ExitFailure);
 			}
+			const int exitCode = EvaluateEditorResult(outcome.Command, outcome.Result);
 			if (Options().Json) {
 				Out(Json::Stringify(outcome.Result, true));
-				return k_ExitOk;
 			}
-			return printHuman(outcome.Result);
+			else printHuman(outcome.Result);
+			return exitCode;
 		}
 
 		std::string Str(const Json::Value& value, std::string_view key) {
@@ -153,7 +164,7 @@ namespace Funke::Cli {
 			return member && member->AsBoolOr(false);
 		}
 
-		int PrintStatus(const Json::Value& status) {
+		void PrintStatus(const Json::Value& status) {
 			std::string text = "Project:  " + Str(status, "projectName") + " (" + Str(status, "project") + ")\n";
 			text += "Scene:    " + Str(status, "scene");
 			if (const Json::Value* unsaved = status.FindMember("unsavedScenes"); unsaved && unsaved->IsArray() && !unsaved->GetArray().empty()) {
@@ -179,29 +190,26 @@ namespace Funke::Cli {
 			if (const Json::Value* busy = status.FindMember("busy"); busy && busy->IsString()) text += "\nBusy:     " + busy->AsStringOr();
 			text += "\nEditor:   " + Str(status, "version") + ", pid " + std::to_string(static_cast<int64_t>(Num(status, "pid")));
 			Out(text);
-			return k_ExitOk;
 		}
 
-		int PrintState(const Json::Value& status) {
+		void PrintState(const Json::Value& status) {
 			std::string line = Str(status, "state") + " " + Str(status, "scene");
+			if (Str(status, "completion") == "accepted") line += " (accepted; completion pending)";
 			if (status.FindMember("waitedFrames")) {
 				line += " (waited " + std::to_string(static_cast<int64_t>(Num(status, "waitedFrames"))) + " frames, "
 					+ FormatSeconds(Num(status, "waitedSeconds")) + " s)";
 			}
 			Out(line);
-			return k_ExitOk;
 		}
 
-		int PrintInputResult(const Json::Value& result) {
+		void PrintInputResult(const Json::Value& result) {
 			std::string text = "ran " + std::to_string(static_cast<int>(Num(result, "steps"))) + " steps over "
 				+ std::to_string(static_cast<int64_t>(Num(result, "frames"))) + " frames (" + FormatSeconds(Num(result, "seconds")) + " s)";
 			if (Flag(result, "quit")) text += ", then left Play mode";
-			bool failed = false;
 			if (const Json::Value* commands = result.FindMember("commands"); commands && commands->IsArray()) {
 				for (const Json::Value& entry : commands->GetArray()) {
 					text += "\n[" + Str(entry, "at") + "] > " + Str(entry, "command");
 					if (!Str(entry, "output").empty()) text += "\n" + Str(entry, "output");
-					failed |= !Flag(entry, "ok");
 				}
 			}
 			if (const Json::Value* shots = result.FindMember("screenshots"); shots && shots->IsArray()) {
@@ -210,12 +218,10 @@ namespace Funke::Cli {
 						+ std::to_string(static_cast<int>(Num(entry, "height"))) + ")";
 					if (!Str(entry, "error").empty()) {
 						text += ": " + Str(entry, "error");
-						failed = true;
 					}
 				}
 			}
 			Out(text);
-			return failed ? k_ExitFailure : k_ExitOk;
 		}
 
 		// Step times as RunAutomation reads them ("0.25s").
@@ -243,7 +249,7 @@ namespace Funke::Cli {
 				const std::optional<std::string> value = args.Positional();
 				double number = 0.0;
 				if (!value || !ParseNumber(*value, number)) {
-					outExitCode = Fail("expected " + std::to_string(count * 2) + " coordinates (0..1 of the game view, or pixels with --px)", k_ExitUsage);
+					outExitCode = FailEditor("expected " + std::to_string(count * 2) + " coordinates (0..1 of the game view, or pixels with --px)", k_ExitUsage);
 					return false;
 				}
 				out.push_back(number);
@@ -251,14 +257,14 @@ namespace Funke::Cli {
 			if (!pixels) return true;
 			const Outcome status = Send(connection, "status", Json::Value::MakeObject(), 10000);
 			if (!status.Ok) {
-				outExitCode = Fail(status.Error, status.Unreachable ? k_ExitNoEditor : k_ExitFailure);
+				outExitCode = FailEditor(status.Error, status.Unreachable ? k_ExitNoEditor : k_ExitFailure);
 				return false;
 			}
 			const Json::Value* surface = status.Result.FindMember("surface");
 			const double width = surface ? Num(*surface, "width") : 0.0;
 			const double height = surface ? Num(*surface, "height") : 0.0;
 			if (width <= 0.0 || height <= 0.0) {
-				outExitCode = Fail("the editor reported no game surface size");
+				outExitCode = FailEditor("the editor reported no game surface size");
 				return false;
 			}
 			for (size_t i = 0; i < out.size(); ++i) out[i] /= (i % 2 == 0 ? width : height);
@@ -271,7 +277,7 @@ namespace Funke::Cli {
 			// Validated here too, so a broken script fails with its step number before reaching the editor.
 			RunAutomation::Script parsed;
 			std::string error;
-			if (!RunAutomation::ParseScript(Json::Stringify(script), parsed, error)) return Fail("input script: " + error, k_ExitUsage);
+			if (!RunAutomation::ParseScript(Json::Stringify(script), parsed, error)) return FailEditor("input script: " + error, k_ExitUsage);
 			double lastSeconds = 0.0;
 			int64_t lastFrame = 0;
 			for (const RunAutomation::Step& step : parsed.Steps) {
@@ -288,19 +294,19 @@ namespace Funke::Cli {
 			return Finish(Send(connection, "input", std::move(requestArgs), timeoutMs), PrintInputResult);
 		}
 
-		int PrintLogLines(const Json::Value& result) {
+		void PrintLogLines(const Json::Value& result) {
 			if (const Json::Value* lines = result.FindMember("lines"); lines && lines->IsArray()) {
 				for (const Json::Value& line : lines->GetArray()) {
 					Out("[" + Str(line, "time") + "] [" + Str(line, "level") + "] " + Str(line, "message"));
 				}
 			}
-			return k_ExitOk;
 		}
 	}
 
 	int RunEditor(Args& args) {
 		const std::optional<std::string> command = args.Positional();
 		if (!command) {
+			if (Options().Json) return FailEditor("Expected an editor subcommand", k_ExitUsage);
 			const Command* self = FindCommand("editor");
 			Out(self ? std::string(self->Usage) : std::string("funke editor <command>"));
 			return k_ExitUsage;
@@ -308,7 +314,7 @@ namespace Funke::Cli {
 		const std::optional<std::string> timeoutOption = args.Option("timeout");
 		double timeoutSeconds = -1.0;
 		if (timeoutOption && (!ParseNumber(*timeoutOption, timeoutSeconds) || timeoutSeconds <= 0.0)) {
-			return Fail("--timeout must be a number of seconds", k_ExitUsage);
+			return FailEditor("--timeout must be a number of seconds", k_ExitUsage);
 		}
 		auto timeoutOr = [&](double seconds) {
 			return static_cast<int>(std::min(timeoutSeconds > 0.0 ? timeoutSeconds : seconds, 86400.0) * 1000.0);
@@ -316,7 +322,7 @@ namespace Funke::Cli {
 
 		if (*command == "list") {
 			std::string error;
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
 			const std::vector<EditorBridge::Instance> instances = EditorBridge::ListInstances();
 			if (Options().Json) {
 				Json::Value list = Json::Value::MakeArray();
@@ -348,8 +354,44 @@ namespace Funke::Cli {
 
 		if (*command == "status") {
 			if (!Connect(args, connection, exitCode)) return exitCode;
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
 			return Finish(Send(connection, "status", requestArgs, timeoutOr(15)), PrintStatus);
+		}
+
+		if (*command == "apply") {
+			const auto file = args.Option("file");
+			if (!file) return FailEditor("apply requires --file <batch.json>", k_ExitUsage);
+			const auto path = AbsoluteFromCwd(*file);
+			std::error_code ec;
+			if (std::filesystem::file_size(path, ec) > 1024 * 1024 || ec) return FailEditor("batch must be a readable file below 1 MiB", k_ExitUsage);
+			Json::Value batch;
+			if (!Json::TryParse(File::ReadAllText(Path::ToUtf8(path)), batch, &error) || !batch.IsObject()) return FailEditor("invalid batch JSON: " + error, k_ExitUsage);
+			if (!Connect(args, connection, exitCode)) return exitCode;
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
+			return Finish(Send(connection, "apply", std::move(batch), timeoutOr(60)), [](const Json::Value& result) { Out(Json::Stringify(result, true)); });
+		}
+
+		if (*command == "scenes" || *command == "entities" || *command == "inspect" || *command == "schema" || *command == "apply-status") {
+			for (const auto& [option, key] : std::initializer_list<std::pair<const char*, const char*>>{
+				{ "scene-id", "sceneId" }, { "entity-id", "entityId" }, { "component", "component" },
+				{ "property", "property" }, { "name", "name" }, { "parent-id", "parentId" },
+				{ "cursor", "cursor" }, { "context", "context" }, { "session-id", "editorSessionId" },
+				{ "scene-instance-id", "sceneInstanceId" }, { "request-id", "requestId" } }) {
+				if (const auto value = args.Option(option)) requestArgs.AddMember(key, *value);
+			}
+			if (const auto limit = args.Option("limit")) {
+				double number;
+				if (!ParseNumber(*limit, number) || number < 1 || number > 500 || std::floor(number) != number) return FailEditor("--limit must be an integer from 1 to 500", k_ExitUsage);
+				requestArgs.AddMember("limit", static_cast<int>(number));
+			}
+			if ((*command == "entities" || *command == "inspect") && Str(requestArgs, "sceneId").empty()) return FailEditor("--scene-id is required", k_ExitUsage);
+			if (*command == "inspect" && Str(requestArgs, "entityId").empty()) return FailEditor("--entity-id is required", k_ExitUsage);
+			if (*command == "schema" && Str(requestArgs, "component").empty()) return FailEditor("--component is required", k_ExitUsage);
+			if (!Connect(args, connection, exitCode)) return exitCode;
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
+			return Finish(Send(connection, *command, requestArgs, timeoutOr(15)), [](const Json::Value& result) {
+				Out(Json::Stringify(result, true));
+			});
 		}
 
 		if (*command == "play") {
@@ -362,12 +404,12 @@ namespace Funke::Cli {
 			const bool save = args.Flag("save");
 			const bool discard = args.Flag("discard");
 			if (!Connect(args, connection, exitCode)) return exitCode;
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
 			int width = 0, height = 0;
-			if (size && !EditorBridge::ParseSize(*size, width, height)) return Fail("--size must look like 1080x2400", k_ExitUsage);
+			if (size && !EditorBridge::ParseSize(*size, width, height)) return FailEditor("--size must look like 1080x2400", k_ExitUsage);
 			double waitSeconds = -1.0, waitFrames = -1.0;
-			if (seconds && (!ParseNumber(*seconds, waitSeconds) || waitSeconds < 0.0)) return Fail("--seconds must be >= 0", k_ExitUsage);
-			if (frames && (!ParseNumber(*frames, waitFrames) || waitFrames < 0.0)) return Fail("--frames must be >= 0", k_ExitUsage);
+			if (seconds && (!ParseNumber(*seconds, waitSeconds) || waitSeconds < 0.0)) return FailEditor("--seconds must be >= 0", k_ExitUsage);
+			if (frames && (!ParseNumber(*frames, waitFrames) || waitFrames < 0.0)) return FailEditor("--frames must be >= 0", k_ExitUsage);
 			if (scene) requestArgs.AddMember("scene", *scene);
 			if (size) requestArgs.AddMember("size", *size);
 			if (fixedStep) requestArgs.AddMember("fixedStep", *fixedStep);
@@ -383,16 +425,16 @@ namespace Funke::Cli {
 
 		if (*command == "stop" || *command == "pause" || *command == "resume") {
 			if (!Connect(args, connection, exitCode)) return exitCode;
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
 			return Finish(Send(connection, *command, requestArgs, timeoutOr(60)), PrintState);
 		}
 
 		if (*command == "step") {
 			const std::optional<std::string> frames = args.Option("frames");
 			if (!Connect(args, connection, exitCode)) return exitCode;
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
 			double count = 1.0;
-			if (frames && (!ParseNumber(*frames, count) || count < 1.0)) return Fail("--frames must be >= 1", k_ExitUsage);
+			if (frames && (!ParseNumber(*frames, count) || count < 1.0)) return FailEditor("--frames must be >= 1", k_ExitUsage);
 			requestArgs.AddMember("frames", std::floor(count));
 			return Finish(Send(connection, "step", requestArgs, timeoutOr(30.0 + count / 10.0)), PrintState);
 		}
@@ -401,11 +443,11 @@ namespace Funke::Cli {
 			const std::optional<std::string> seconds = args.Option("seconds");
 			const std::optional<std::string> frames = args.Option("frames");
 			if (!Connect(args, connection, exitCode)) return exitCode;
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
 			double waitSeconds = -1.0, waitFrames = -1.0;
-			if (seconds && (!ParseNumber(*seconds, waitSeconds) || waitSeconds < 0.0)) return Fail("--seconds must be >= 0", k_ExitUsage);
-			if (frames && (!ParseNumber(*frames, waitFrames) || waitFrames < 0.0)) return Fail("--frames must be >= 0", k_ExitUsage);
-			if (waitSeconds < 0.0 && waitFrames < 0.0) return Fail("wait needs --seconds <s> or --frames <n>", k_ExitUsage);
+			if (seconds && (!ParseNumber(*seconds, waitSeconds) || waitSeconds < 0.0)) return FailEditor("--seconds must be >= 0", k_ExitUsage);
+			if (frames && (!ParseNumber(*frames, waitFrames) || waitFrames < 0.0)) return FailEditor("--frames must be >= 0", k_ExitUsage);
+			if (waitSeconds < 0.0 && waitFrames < 0.0) return FailEditor("wait needs --seconds <s> or --frames <n>", k_ExitUsage);
 			if (waitSeconds >= 0.0) requestArgs.AddMember("seconds", waitSeconds);
 			if (waitFrames >= 0.0) requestArgs.AddMember("frames", std::floor(waitFrames));
 			const double expected = std::max(waitSeconds, waitFrames / 30.0);
@@ -417,8 +459,8 @@ namespace Funke::Cli {
 			const bool save = args.Flag("save");
 			const bool discard = args.Flag("discard");
 			if (!Connect(args, connection, exitCode)) return exitCode;
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
-			if (!scene) return Fail("open-scene needs a scene name or .scene path", k_ExitUsage);
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
+			if (!scene) return FailEditor("open-scene needs a scene name or .scene path", k_ExitUsage);
 			// A .scene path is resolved here, where the working directory is known.
 			const std::filesystem::path asPath = Path::FromUtf8(*scene);
 			requestArgs.AddMember("scene", asPath.extension() == ".scene" ? Path::ToUtf8(AbsoluteFromCwd(*scene)) : *scene);
@@ -431,8 +473,8 @@ namespace Funke::Cli {
 			const std::optional<std::string> entity = args.Positional();
 			const bool clear = args.Flag("clear");
 			if (!Connect(args, connection, exitCode)) return exitCode;
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
-			if (!entity && !clear) return Fail("select needs an entity name or id, or --clear", k_ExitUsage);
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
+			if (!entity && !clear) return FailEditor("select needs an entity name or id, or --clear", k_ExitUsage);
 			requestArgs.AddMember("entity", clear ? std::string() : *entity);
 			return Finish(Send(connection, "select", requestArgs, timeoutOr(30)), [](const Json::Value& result) {
 				const Json::Value* selected = result.FindMember("selected");
@@ -444,7 +486,7 @@ namespace Funke::Cli {
 
 		if (*command == "save-scene") {
 			if (!Connect(args, connection, exitCode)) return exitCode;
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
 			return Finish(Send(connection, "save-scene", requestArgs, timeoutOr(60)), [](const Json::Value& result) {
 				std::string text;
 				if (const Json::Value* saved = result.FindMember("saved"); saved && saved->IsArray()) {
@@ -456,28 +498,27 @@ namespace Funke::Cli {
 		}
 
 		if (*command == "exec") {
-			const std::vector<std::string> words = args.RemainingPositionals();
 			if (!Connect(args, connection, exitCode)) return exitCode;
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
+			const std::vector<std::string> words = args.RemainingPositionals();
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
 			std::string line;
 			for (const std::string& word : words) line += (line.empty() ? "" : " ") + word;
-			if (line.empty()) return Fail("exec needs a console command, e.g. funke editor exec \"timescale 0.5\"", k_ExitUsage);
+			if (line.empty()) return FailEditor("exec needs a console command, e.g. funke editor exec \"timescale 0.5\"", k_ExitUsage);
 			requestArgs.AddMember("command", line);
 			return Finish(Send(connection, "exec", requestArgs, timeoutOr(60)), [](const Json::Value& result) {
 				if (!Str(result, "output").empty()) Out(Str(result, "output"));
-				return Flag(result, "ok") ? k_ExitOk : k_ExitFailure;
 			});
 		}
 
 		if (*command == "recompile") {
 			const bool noWait = args.Flag("no-wait");
 			if (!Connect(args, connection, exitCode)) return exitCode;
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
 			requestArgs.AddMember("wait", !noWait);
 			return Finish(Send(connection, "recompile", requestArgs, timeoutOr(600)), [](const Json::Value& result) {
 				if (Flag(result, "started")) {
-					Out("compiling");
-					return k_ExitOk;
+					Out("compiling (accepted; completion pending)");
+					return;
 				}
 				const bool succeeded = Flag(result, "succeeded");
 				std::string text = succeeded ? "scripts compiled" : "script compilation failed";
@@ -485,7 +526,6 @@ namespace Funke::Cli {
 				if (Flag(result, "stoppedPlayMode")) text += " (Play mode was stopped: Exit Play Mode On Recompilation)";
 				if (!succeeded && !Str(result, "errors").empty()) text += "\n" + Str(result, "errors");
 				Out(text);
-				return succeeded ? k_ExitOk : k_ExitFailure;
 			});
 		}
 
@@ -495,20 +535,20 @@ namespace Funke::Cli {
 			const std::optional<std::string> heightOption = args.Option("height");
 			const std::optional<std::string> sizeOption = args.Option("size");
 			if (!Connect(args, connection, exitCode)) return exitCode;
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
-			if (!path) return Fail("screenshot needs an output file, e.g. funke editor screenshot shot.png", k_ExitUsage);
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
+			if (!path) return FailEditor("screenshot needs an output file, e.g. funke editor screenshot shot.png", k_ExitUsage);
 			int width = 0, height = 0;
-			if (sizeOption && !EditorBridge::ParseSize(*sizeOption, width, height)) return Fail("--size must look like 1080x2400", k_ExitUsage);
+			if (sizeOption && !EditorBridge::ParseSize(*sizeOption, width, height)) return FailEditor("--size must look like 1080x2400", k_ExitUsage);
 			double number = 0.0;
 			if (widthOption) {
-				if (!ParseNumber(*widthOption, number) || number < 1.0) return Fail("--width must be a pixel count", k_ExitUsage);
+				if (!ParseNumber(*widthOption, number) || number < 1.0) return FailEditor("--width must be a pixel count", k_ExitUsage);
 				width = static_cast<int>(number);
 			}
 			if (heightOption) {
-				if (!ParseNumber(*heightOption, number) || number < 1.0) return Fail("--height must be a pixel count", k_ExitUsage);
+				if (!ParseNumber(*heightOption, number) || number < 1.0) return FailEditor("--height must be a pixel count", k_ExitUsage);
 				height = static_cast<int>(number);
 			}
-			if ((width > 0) != (height > 0)) return Fail("give both --width and --height", k_ExitUsage);
+			if ((width > 0) != (height > 0)) return FailEditor("give both --width and --height", k_ExitUsage);
 			std::filesystem::path out = AbsoluteFromCwd(*path);
 			if (out.extension().empty()) out += ".png";
 			requestArgs.AddMember("path", Path::ToUtf8(out));
@@ -527,10 +567,10 @@ namespace Funke::Cli {
 			const std::optional<std::string> size = args.Positional();
 			const bool clear = args.Flag("clear");
 			if (!Connect(args, connection, exitCode)) return exitCode;
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
 			if (clear || (size && (*size == "off" || *size == "clear"))) requestArgs.AddMember("clear", true);
 			else if (size) requestArgs.AddMember("size", *size);
-			else return Fail("surface needs a size like 1080x2400, or --clear", k_ExitUsage);
+			else return FailEditor("surface needs a size like 1080x2400, or --clear", k_ExitUsage);
 			return Finish(Send(connection, "surface", requestArgs, timeoutOr(15)), [](const Json::Value& result) {
 				Out("surface " + std::to_string(static_cast<int>(Num(result, "width"))) + "x" + std::to_string(static_cast<int>(Num(result, "height"))));
 				return k_ExitOk;
@@ -542,13 +582,13 @@ namespace Funke::Cli {
 			const std::optional<std::string> fixedStep = args.Option("fixed-step");
 			const std::optional<std::string> screenshotDir = args.Option("screenshot-dir");
 			if (!Connect(args, connection, exitCode)) return exitCode;
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
-			if (!file) return Fail("input needs a script file (see `funke help editor`)", k_ExitUsage);
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
+			if (!file) return FailEditor("input needs a script file (see `funke help editor`)", k_ExitUsage);
 			const std::filesystem::path path = AbsoluteFromCwd(*file);
-			if (!File::Exists(Path::ToUtf8(path))) return Fail("no such file: " + Path::ToUtf8(path), k_ExitUsage);
+			if (!File::Exists(Path::ToUtf8(path))) return FailEditor("no such file: " + Path::ToUtf8(path), k_ExitUsage);
 			Json::Value script;
 			if (!Json::TryParse(File::ReadAllText(Path::ToUtf8(path)), script, &error) || !script.IsObject()) {
-				return Fail(Path::ToUtf8(path) + ": " + (error.empty() ? std::string("not a JSON object") : error), k_ExitUsage);
+				return FailEditor(Path::ToUtf8(path) + ": " + (error.empty() ? std::string("not a JSON object") : error), k_ExitUsage);
 			}
 			return RunInputScript(connection, std::move(script), fixedStep,
 				screenshotDir ? screenshotDir : std::optional<std::string>(Path::ToUtf8(path.parent_path())));
@@ -564,14 +604,14 @@ namespace Funke::Cli {
 			if (!Connect(args, connection, exitCode)) return exitCode;
 
 			double duration = *command == "drag" ? 0.3 : 0.0;
-			if (durationOption && (!ParseNumber(*durationOption, duration) || duration < 0.0)) return Fail("--duration must be seconds", k_ExitUsage);
+			if (durationOption && (!ParseNumber(*durationOption, duration) || duration < 0.0)) return FailEditor("--duration must be seconds", k_ExitUsage);
 			double hold = 0.0;
-			if (holdOption && (!ParseNumber(*holdOption, hold) || hold < 0.0)) return Fail("--hold must be seconds", k_ExitUsage);
+			if (holdOption && (!ParseNumber(*holdOption, hold) || hold < 0.0)) return FailEditor("--hold must be seconds", k_ExitUsage);
 
 			Json::Value steps = Json::Value::MakeArray();
 			if (*command == "key") {
-				if (!keyName) return Fail("key needs a key name, e.g. funke editor key Space", k_ExitUsage);
-				if (RunAutomation::ParseKeyName(*keyName) < 0) return Fail("unknown key '" + *keyName + "'", k_ExitUsage);
+				if (!keyName) return FailEditor("key needs a key name, e.g. funke editor key Space", k_ExitUsage);
+				if (RunAutomation::ParseKeyName(*keyName) < 0) return FailEditor("unknown key '" + *keyName + "'", k_ExitUsage);
 				if (hold > 0.0) {
 					Json::Value down = Step(0.0);
 					down.AddMember("key", *keyName);
@@ -592,7 +632,7 @@ namespace Funke::Cli {
 				std::vector<double> points;
 				if (!ReadPoints(args, *command == "drag" ? 2 : 1, pixels, connection, points, exitCode)) return exitCode;
 				const std::string button = buttonOption.value_or("left");
-				if (*command == "click" && RunAutomation::ParseMouseButton(button) < 0) return Fail("--button must be left, right or middle", k_ExitUsage);
+				if (*command == "click" && RunAutomation::ParseMouseButton(button) < 0) return FailEditor("--button must be left, right or middle", k_ExitUsage);
 				if (*command == "tap") {
 					Json::Value tap = Step(0.0);
 					tap.AddMember("touch", Position(points[0], points[1]));
@@ -643,7 +683,7 @@ namespace Funke::Cli {
 					steps.Append(point(1.0, "up"));
 				}
 			}
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
 			Json::Value script = Json::Value::MakeObject();
 			script.AddMember("steps", std::move(steps));
 			return RunInputScript(connection, std::move(script), std::nullopt, std::nullopt);
@@ -656,20 +696,20 @@ namespace Funke::Cli {
 			const std::optional<std::string> contains = args.Option("contains");
 			const bool follow = args.Flag("follow", "f");
 			if (!Connect(args, connection, exitCode)) return exitCode;
-			if (!args.Finish(error)) return Fail(error, k_ExitUsage);
+			if (!args.Finish(error)) return FailEditor(error, k_ExitUsage);
 			double number = 0.0;
 			if (since) {
-				if (!ParseNumber(*since, number) || number < 0.0) return Fail("--since must be a line number from an earlier `logs` call", k_ExitUsage);
+				if (!ParseNumber(*since, number) || number < 0.0) return FailEditor("--since must be a line number from an earlier `logs` call", k_ExitUsage);
 				requestArgs.AddMember("since", number);
 			}
 			if (tail) {
-				if (!ParseNumber(*tail, number) || number < 0.0) return Fail("--tail must be a line count", k_ExitUsage);
+				if (!ParseNumber(*tail, number) || number < 0.0) return FailEditor("--tail must be a line count", k_ExitUsage);
 				requestArgs.AddMember("tail", number);
 			}
 			if (level) {
 				const std::string lower = ToLower(*level);
 				if (lower != "trace" && lower != "info" && lower != "warn" && lower != "warning" && lower != "error" && lower != "critical") {
-					return Fail("--level must be trace, info, warning, error or critical", k_ExitUsage);
+					return FailEditor("--level must be trace, info, warning, error or critical", k_ExitUsage);
 				}
 				requestArgs.AddMember("level", lower);
 			}
@@ -697,7 +737,7 @@ namespace Funke::Cli {
 			}
 		}
 
-		return Fail("unknown editor command '" + *command + "' (see `funke help editor`)", k_ExitUsage);
+		return FailEditor("unknown editor command '" + *command + "' (see `funke help editor`)", k_ExitUsage);
 	}
 
 } // namespace Funke::Cli

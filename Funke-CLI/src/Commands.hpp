@@ -30,5 +30,6 @@ namespace Funke::Cli {
 	int RunPackage(Args& args);
 	int RunSetupPath(Args& args);
 	int RunEditor(Args& args);
+	int RunTest(Args& args);
 
 } // namespace Funke::Cli

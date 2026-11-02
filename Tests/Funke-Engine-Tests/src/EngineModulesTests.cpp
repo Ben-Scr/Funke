@@ -248,7 +248,7 @@ TEST_CASE("ComponentRegistry: dependency-only addition breaks cycles without add
 	CHECK(entity.GetComponent<DependencyChildComponent>().AddCount == 1);
 }
 
-TEST_CASE("ComponentRegistry: conflicting dependencies are skipped while leaf callbacks run once") {
+TEST_CASE("ComponentRegistry: conflicting dependencies reject the whole addition before callbacks") {
 	ComponentRegistry registry;
 	ComponentInfo rootInfo{ "DependencyRoot", ComponentCategory::Component };
 	rootInfo.dependsOn.push_back(typeid(DependencyChildComponent));
@@ -264,7 +264,8 @@ TEST_CASE("ComponentRegistry: conflicting dependencies are skipped while leaf ca
 	registry.AddDependencies(entity, typeid(DependencyRootComponent));
 	CHECK_FALSE(entity.HasComponent<DependencyRootComponent>());
 	CHECK_FALSE(entity.HasComponent<DependencyChildComponent>());
-	CHECK(registry.AddWithDependencies(entity, typeid(DependencyRootComponent)));
+	CHECK_FALSE(registry.AddWithDependencies(entity, typeid(DependencyRootComponent)));
+	CHECK_FALSE(entity.HasComponent<DependencyRootComponent>());
 	CHECK_FALSE(entity.HasComponent<DependencyChildComponent>());
 	entity.RemoveComponent<DependencyBlockingTag>();
 	CHECK(registry.AddWithDependencies(entity, typeid(DependencyChildComponent)));

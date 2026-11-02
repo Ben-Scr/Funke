@@ -25,6 +25,14 @@ namespace Funke::Cli {
 
 	namespace {
 		constexpr std::array k_Commands{
+			Command{ "test", "Run an isolated editor gameplay test suite",
+R"(funke test <suite.json> [--project <dir>] [--output <dir>] [--editor <exe>] [--json]
+
+Runs formatVersion 1 suites in a private, muted editor process with isolated saves.
+Each run writes report.json, states, screenshots and logs to a unique output folder.
+Requires a matching Editor/SDK and the project's managed build prerequisites.
+Exit 0 means every step passed; 1 means failed/blocked; 2 means invalid arguments.
+See Documentation/Editor/Testing.md for typed assertions and bounded waitUntil steps.)", &RunTest },
 			Command{ "create", "Create a new project",
 R"(funke create <Name> [options]
 
@@ -89,6 +97,14 @@ working directory's project) open, the only one running, or --pid <n>.
 
   status                        Project, open scene, edit/play/paused, script build state, surface
   list                          Running editors
+  scenes                        Loaded scenes with session, instance and revision tokens
+  entities --scene-id <id> [--name <text>] [--parent-id <id>] [--component <type>]
+           [--limit 1..500] [--cursor <cursor>]
+  inspect --scene-id <id> --entity-id <id> [--component <type>] [--property <path>]
+  schema --component <type>     Registered metadata; scripts also require scene-id and entity-id
+  apply --file <batch.json>     Validated Edit-mode batch, one undo entry; supports dryRun
+  apply-status --session-id <id> --request-id <id>
+                                Retrieve a mutation result for up to ten minutes
   play [--scene <name>]         Enter Play mode and wait until it runs (compiles scripts first if needed)
        [--size WxH]             Lay the game out for exactly this screen, e.g. 1080x2400 (until Play stops)
        [--fixed-step <fps>]     Every frame advances exactly 1/fps seconds (until Play stops)
@@ -118,6 +134,9 @@ working directory's project) open, the only one running, or --pid <n>.
 
   --timeout <s>   Give up after s seconds (each command has a sensible default)
   --json          The editor's answer as JSON on stdout (errors too)
+
+Queries accept --context edit|runtime, --session-id and --scene-instance-id.
+--no-wait returns completion="accepted"; exit 0 confirms acceptance, not completion.
 
 Exit codes: 0 ok, 1 failed, 2 usage, 3 busy (loading, building, a dialog is open) or timed out,
 4 no editor reachable.)", &RunEditor },

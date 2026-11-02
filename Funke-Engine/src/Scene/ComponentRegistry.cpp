@@ -4,6 +4,20 @@
 #include <algorithm>
 
 namespace Funke {
+    namespace {
+        bool HasAddedComponent(const Entity& entity, const ComponentInfo& info) {
+            const auto* registry = entity.GetRegistry();
+            if (const auto has = info.has.RegistryCallback()) return has(*registry, entity.GetHandle());
+            // Custom presence callbacks decide whether to add; native storage confirms the result without rerunning them.
+            if (info.typeId != typeid(void)
+                && (info.add.NativeType() == info.typeId || info.remove.NativeType() == info.typeId)) {
+                const auto* storage = registry->storage(info.storageHash);
+                return storage && storage->contains(entity.GetHandle());
+            }
+            return info.has(entity);
+        }
+    }
+
     const ComponentInfo* ComponentRegistry::PrepareRegistration(std::type_index id, ComponentInfo& info) {
         const auto existing = m_map.find(id);
         if (existing != m_map.end()) {
@@ -437,13 +451,67 @@ namespace Funke {
     bool ComponentRegistry::AddWithDependencies(const Entity& entity, std::type_index type) const {
         const auto it = m_map.find(type);
         if (it == m_map.end()) return false;
-        std::unordered_set<std::type_index> visited;
-        return AddWithDependenciesImpl(entity, it->second, visited, /*isRoot=*/true);
+        return AddWithDependencies(entity, it->second);
     }
 
     bool ComponentRegistry::AddWithDependencies(const Entity& entity, const ComponentInfo& info) const {
+        if (!entity.IsValid()) return false;
+        const auto* registry = entity.GetRegistry();
+        std::vector<const ComponentInfo*> existing;
+        ForEachComponentInfo([&](auto, const ComponentInfo& candidate) {
+            if (!candidate.has) return;
+            const auto* storage = registry->storage(candidate.storageHash);
+            if ((storage && storage->contains(entity.GetHandle()))
+                || (candidate.dynamicStorage && candidate.dynamicStorage->Contains(*registry, entity.GetHandle()))) existing.push_back(&candidate);
+        });
+        std::vector<uint32_t> plan;
+        std::string error;
+        if (!PlanAddition(info, existing, plan, error)) {
+            FNK_CORE_WARN_TAG("ComponentRegistry", "{}", error);
+            return false;
+        }
         std::unordered_set<std::type_index> visited;
-        return AddWithDependenciesImpl(entity, info, visited, /*isRoot=*/true);
+        if (!AddWithDependenciesImpl(entity, info, visited, /*isRoot=*/true)) return false;
+        for (uint32_t id : plan) {
+            const auto* current = GetByTypeId(id);
+            if (!entity.IsValid() || !current || !current->has || !HasAddedComponent(entity, *current)) return false;
+        }
+        return true;
+    }
+
+    bool ComponentRegistry::PlanAddition(const ComponentInfo& info, std::span<const ComponentInfo* const> existing,
+        std::vector<uint32_t>& additions, std::string& error) const {
+        additions.clear();
+        error.clear();
+        std::unordered_set<uint32_t> visited;
+        std::vector<const ComponentInfo*> planned;
+        const auto visit = [&](const auto& self, const ComponentInfo& current) -> bool {
+            if (!visited.insert(current.typeIdU32).second) return true;
+            if (!current.IsModuleActive() || !current.add || !current.has) {
+                error = "Component is unavailable: " + current.displayName;
+                return false;
+            }
+            for (const auto& dependency : current.dependsOn) {
+                const auto found = m_map.find(dependency);
+                if (found == m_map.end()) { error = "Missing dependency of " + current.displayName; return false; }
+                if (!self(self, found->second)) return false;
+            }
+            planned.push_back(&current);
+            return true;
+        };
+        if (!visit(visit, info)) return false;
+        for (const auto* current : planned) {
+            for (const auto* other : existing) if (current != other && TypesConflict(current->typeId, other->typeId)) {
+                error = "Component dependency conflict: " + current->displayName + " / " + other->displayName;
+                return false;
+            }
+            for (const auto* other : planned) if (current != other && TypesConflict(current->typeId, other->typeId)) {
+                error = "Component dependencies conflict: " + current->displayName + " / " + other->displayName;
+                return false;
+            }
+        }
+        for (const auto* current : planned) additions.push_back(current->typeIdU32);
+        return true;
     }
 
     void ComponentRegistry::AddDependencies(const Entity& entity, std::type_index type) const {
@@ -530,7 +598,7 @@ namespace Funke {
             const std::type_index dep = current->dependsOn[index];
             const auto dependency = m_map.find(dep);
             if (dependency != m_map.end()) {
-                AddWithDependenciesImpl(entity, dependency->second, visited, /*isRoot=*/false);
+                if (!AddWithDependenciesImpl(entity, dependency->second, visited, /*isRoot=*/false)) return false;
                 if (!entity.IsValid() || !refresh()) return false;
             }
         }
@@ -546,6 +614,7 @@ namespace Funke {
             if (!entity.IsValid()) return false;
             current->onAdd(entity);
         }
-        return true;
+        if (!entity.IsValid() || !refresh()) return false;
+        return HasAddedComponent(entity, *current);
     }
 }

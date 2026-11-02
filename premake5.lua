@@ -170,7 +170,7 @@ end
 
 if _OPTIONS["coverage"] then
     filter { "system:linux", "language:C++", "configurations:Debug" }
-        buildoptions { "--coverage", "-fno-omit-frame-pointer" }
+		buildoptions { "--coverage", "-fprofile-update=atomic", "-fno-omit-frame-pointer" }
         linkoptions { "--coverage" }
     filter {}
 end
@@ -591,6 +591,11 @@ end
 
 CopyFunkeEngineDll = CopySharedLib("Funke-Engine")
 CopyDawnSharedLib = ""
+CopyNetHostSharedLib = ""
+if os.target() == "macosx" then
+    CopyNetHostSharedLib = CopySharedLibFile(path.join(ROOT_DIR, "External/dotnet/lib/libnethost.dylib"),
+        "%{cfg.targetdir}/libnethost.dylib")
+end
 if FunkeModules.Render and os.target() ~= "windows" then
     local dawnSharedLib = DawnSharedLibFileName()
     CopyDawnSharedLib = CopySharedLibFile(path.join(ROOT_DIR, "External/dawn/build/src/dawn/native", dawnSharedLib),

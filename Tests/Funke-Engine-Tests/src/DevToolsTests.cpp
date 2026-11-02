@@ -213,6 +213,10 @@ TEST_CASE("RunAutomation reads input scripts and rejects broken steps with their
 }
 
 TEST_CASE("RunAutomation pulls its flags out of the command line") {
+	const char* profileArgs[] = { "Editor", "--prefs-profile=test-private" };
+	CHECK(RunAutomation::ParseOptions(2, profileArgs).PrefsProfileOverride == "test-private");
+	const char* emptyProfile[] = { "Editor", "--prefs-profile=" };
+	CHECK(RunAutomation::ParseOptions(2, emptyProfile).PrefsProfileOverride == "");
 	const char* argv[] = {
 		"Game.exe", "--project=C:/Game", "--screenshot-at=2s,120f,bad", "--fixed-step=60",
 		"--quit-at=10s", "--exec=\"physics.debug on; timescale 2\"", "--input-script=run.json", "--screenshot-dir=out",
@@ -231,6 +235,33 @@ TEST_CASE("RunAutomation pulls its flags out of the command line") {
 	CHECK(options.Exec == "physics.debug on; timescale 2");
 	CHECK(options.InputScriptPath == "run.json");
 	CHECK(options.ScreenshotDirectory == "out");
+}
+
+TEST_CASE("RunAutomation validates wheel UTF8 and named synthetic gamepad input") {
+	RunAutomation::Script script;
+	std::string error;
+	REQUIRE(RunAutomation::ParseScript(R"({"steps":[
+		{"frame":0,"scroll":[-1,2.5],"mouse":[0,1]},
+		{"frame":0,"text":""},{"frame":1,"text":"Grüße 世界"},
+		{"frame":2,"gamepad":{"device":"funke-test","action":"connect"}},
+		{"frame":3,"gamepad":{"device":"funke-test","button":"A","action":"down"}},
+		{"frame":4,"gamepad":{"device":"funke-test","axis":"LeftTrigger","value":-1}},
+		{"frame":5,"gamepad":{"device":"funke-test","action":"disconnect"}}]})", script, error));
+	CHECK(script.Steps[0].Delta.x == -1);
+	CHECK(script.Steps[1].Text.empty());
+	CHECK(script.Steps[2].Text == "Grüße 世界");
+	CHECK(script.Steps[4].Type == RunAutomation::Step::Kind::GamepadButton);
+	CHECK(script.Steps[5].Value == -1);
+	for (const auto* step : {
+		R"({"frame":0,"scroll":[1]})", R"({"frame":0,"scroll":[1,10001]})",
+		R"({"frame":0,"scroll":[0,1],"mouse":[2,0]})", R"({"frame":0,"text":3})",
+		R"({"frame":0,"text":"\u0000"})", R"({"frame":1e20,"key":"A"})",
+		R"({"frame":0,"gamepad":{"device":"physical","action":"connect"}})",
+		R"({"frame":0,"gamepad":{"device":"funke-test","axis":"LeftX","value":1.1}})",
+		R"({"frame":0,"gamepad":{"device":"funke-test","button":"Invalid"}})" }) {
+		CHECK_FALSE(RunAutomation::ParseScript(std::string("{\"steps\":[") + step + "]}", script, error));
+		CHECK_FALSE(error.empty());
+	}
 }
 
 TEST_CASE("RunAutomation fires steps on the game clock, presses for one frame and runs --exec first") {

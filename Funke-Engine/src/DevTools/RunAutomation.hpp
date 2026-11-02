@@ -29,7 +29,8 @@ namespace Funke {
 		};
 
 		struct Step {
-			enum class Kind : uint8_t { Key, MouseButton, MouseMove, Touch, Command, Screenshot, Log, Quit };
+			enum class Kind : uint8_t { Key, MouseButton, MouseMove, Touch, Command, Screenshot, Log, Quit,
+				Scroll, Text, GamepadConnect, GamepadDisconnect, GamepadButton, GamepadAxis };
 			enum class Action : uint8_t { Press, Down, Up, Move };
 			Kind Type = Kind::Command;
 			Action Act = Action::Press;
@@ -37,6 +38,8 @@ namespace Funke {
 			int Code = 0;          // KeyCode, or mouse button (0 left, 1 right, 2 middle)
 			Vec2 Position{ 0.0f }; // window position, normalized 0..1 from the top-left; negative = unset
 			int64_t Finger = 0;
+			Vec2 Delta{ 0.0f };
+			float Value = 0.0f;
 			std::string Text;      // command, screenshot file or log line
 		};
 
@@ -54,6 +57,7 @@ namespace Funke {
 			std::string Exec;
 			bool Background = false;
 			bool PrefsProfile = false; // --prefs-profile=<name>: a run kept off the real saves
+			std::optional<std::string> PrefsProfileOverride;
 			bool Sound = false;
 			bool Mute = false;
 		};
@@ -80,6 +84,7 @@ namespace Funke {
 		static bool IsAutomatedRun();
 		// Automated runs are silent unless --sound; --mute silences any run.
 		static bool IsMuted();
+		static const std::optional<std::string>& GetPrefsProfileOverride();
 		static float GetFixedStep();
 		// Before input polling: pushes this frame's synthetic input and runs its commands.
 		static void BeginFrame(bool gameStarted);

@@ -38,11 +38,14 @@ funke info                                  # name, format, scenes, build profil
 funke open                                  # open in the editor
 funke run --scene Level2 --seconds 10       # compile scripts, play in Funke-Runtime, quit after 10 s
 funke run --input-script Tests\level5.json --fixed-step 60 --prefs-profile qa   # scripted, reproducible test run
+funke test Tests\core-loop.test.json --json  # owned editor, compile, gameplay assertions and evidence
 ```
 
 `funke run` passes `--prefs-profile`, `--input-script`, `--screenshot-at`, `--screenshot-dir`, `--fixed-step`, `--quit-at` and `--exec` to the runtime. They are described in [Test Builds and Debug Tools](Testing.md).
 
 To test in an editor that is already open instead, without restarting anything, use `funke editor` ([Editor Bridge](Editor-Bridge.md)): `funke editor play --size 1080x2400`, `funke editor tap 0.5 0.4`, `funke editor screenshot shot.png`, `funke editor recompile`, `funke editor logs`.
+
+For structured authoring use `editor scenes`, `entities`, `inspect`, `schema`, `apply` and `apply-status`; query fresh session/instance/revision tokens before changing a scene. See [Editor Bridge](Editor-Bridge.md) for the batch format and [Testing](Testing.md#isolated-gameplay-suites) for `funke test`. Bridge exit codes are 0 success, 1 business failure, 2 usage, 3 busy/timeout and 4 unreachable editor, identically in text and JSON. `--no-wait` returns `completion: "accepted"` and does not certify completion.
 
 `create` does everything the Launcher does:
 
@@ -70,7 +73,7 @@ The pipeline is the editor's own, including:
 - the script compile with build defines
 - asset pruning
 - the binary scene conversion
-- optional asset bundles and LZ4 compression from the selected profile
+- optional asset bundles and LZ4 or Zstandard compression from the selected profile
 - icon embedding
 - the staged, all-or-nothing publish to the selected output (by default `Builds/<Platform>`)
 

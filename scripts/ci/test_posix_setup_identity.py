@@ -19,7 +19,7 @@ GENERATED = (
     "Funke-Launcher/Makefile", "Funke-Runtime/Makefile", "Funke-CLI/Makefile",
     "Tests/Funke-Engine-Tests/Makefile", "Tests/Funke-Editor-Tests/Makefile",
     "premake/generated/Funke-Managed/Makefile", "vendor/bin/premake5",
-    "External/dotnet/lib/libnethost.a", "External/dotnet/lib/libnethost.so",
+    "External/dotnet/lib/libnethost.a", "External/dotnet/lib/libnethost.so", "External/dotnet/lib/libnethost.dylib",
 )
 
 
@@ -56,7 +56,7 @@ class PosixSetupIdentityTests(unittest.TestCase):
             return Setup.setup_dotnet_unix(self.repo)
 
     def test_host_setup_preserves_pinned_headers_on_both_platforms(self):
-        for platform_name, library in (("Linux", "libnethost.a"), ("Darwin", "libnethost.a")):
+        for platform_name, library in (("Linux", "libnethost.a"), ("Darwin", "libnethost.dylib")):
             with self.subTest(platform=platform_name):
                 sdk, native = self.host_pack(platform_name, library)
                 for header in HEADERS:

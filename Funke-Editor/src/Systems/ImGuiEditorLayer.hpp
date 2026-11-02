@@ -105,6 +105,8 @@ namespace Funke {
 		void SetPlayModePaused(bool paused);
 		bool BridgeOpenScene(const std::string& sceneNameOrPath, bool saveFirst, bool discardChanges, std::string& outError);
 		bool BridgeSaveScenes(std::vector<std::string>& outSaved, std::string& outError);
+		UndoStack& GetBridgeUndoStack(Scene& scene);
+		void PrepareBridgeMutation(Scene& scene);
 		// Selects the first entity with this name (or persistent id) like a Hierarchy click; empty clears the selection.
 		bool BridgeSelectEntity(const std::string& nameOrId, std::string& outSelected, std::string& outError);
 		// The game camera rendered offscreen at width x height with the UI laid out for that size; RGBA8, top row first.

@@ -14,6 +14,8 @@
 #include "Gui/SpriteSliceDragPayload.hpp"
 #include "Inspector/PropertyType.hpp"
 #include "Inspector/PropertyValue.hpp"
+#include "Inspector/PropertyJson.hpp"
+#include "Inspector/PropertyValidation.hpp"
 #include "Inspector/ReferencePicker.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Scene.hpp"
@@ -130,6 +132,10 @@ namespace Funke::PropertyDrawer {
 		void WriteAll(std::span<const Entity> entities, const PropertyDescriptor& d,
 			const PropertyValue& value)
 		{
+			if (PropertyJson::IsSupported(d.Type)) for (const Entity& entity : entities) {
+				std::string error;
+				if (!PropertyValidation::ValidateValue(&entity, d, value, error)) return;
+			}
 			InspectorUndoRecorder::CaptureBefore(entities, d);
 			for (const Entity& e : entities) {
 				d.Set(const_cast<Entity&>(e), value);
@@ -142,6 +148,12 @@ namespace Funke::PropertyDrawer {
 		void WriteFloatChannel(std::span<const Entity> entities,
 			const PropertyDescriptor& d, std::size_t channel, float newValue)
 		{
+			for (const Entity& entity : entities) {
+				PropertyValue value = d.Get(entity);
+				value.FloatVec[channel] = newValue;
+				std::string error;
+				if (!PropertyValidation::ValidateValue(&entity, d, value, error)) return;
+			}
 			InspectorUndoRecorder::CaptureBefore(entities, d);
 			for (const Entity& e : entities) {
 				PropertyValue current = d.Get(e);
@@ -154,6 +166,12 @@ namespace Funke::PropertyDrawer {
 		void WriteIntChannel(std::span<const Entity> entities,
 			const PropertyDescriptor& d, std::size_t channel, int32_t newValue)
 		{
+			for (const Entity& entity : entities) {
+				PropertyValue value = d.Get(entity);
+				value.IntVec[channel] = newValue;
+				std::string error;
+				if (!PropertyValidation::ValidateValue(&entity, d, value, error)) return;
+			}
 			InspectorUndoRecorder::CaptureBefore(entities, d);
 			for (const Entity& e : entities) {
 				PropertyValue current = d.Get(e);

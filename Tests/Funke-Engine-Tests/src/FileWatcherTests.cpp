@@ -30,7 +30,7 @@ namespace {
 			std::filesystem::remove_all(Root, ec);
 		}
 
-		std::string PathTo(const char* name) const { return Path::ToUtf8((Root / name).make_preferred()); }
+		std::string PathTo(const char* name) const { return Path::ToUtf8(Path::CanonicalIdentity(Root / name)); }
 		bool Write(const char* name, const std::string& contents) const {
 			// Windows metadata probes can briefly prevent atomic file replacement.
 			const auto deadline = std::chrono::steady_clock::now() + 1s;

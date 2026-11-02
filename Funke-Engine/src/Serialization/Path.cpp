@@ -14,6 +14,14 @@
 #endif
 
 namespace Funke {
+	std::filesystem::path Path::CanonicalIdentity(const std::filesystem::path& path) {
+		if (path.empty()) return {};
+		std::error_code error;
+		auto absolute = std::filesystem::absolute(path, error);
+		if (error) absolute = path;
+		auto normalized = std::filesystem::weakly_canonical(absolute, error);
+		return (error ? absolute.lexically_normal() : normalized).make_preferred();
+	}
     std::string Path::GetSpecialFolderPath(SpecialFolder folder)
     {
 #ifdef FNK_PLATFORM_WINDOWS
