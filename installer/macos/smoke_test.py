@@ -99,8 +99,8 @@ def verify(dmg: Path, require_scripting: bool) -> None:
         if inventory.get("notarized"):
             checked(["xcrun", "stapler", "validate", str(app)], directory)
             checked(["spctl", "--assess", "--type", "execute", str(app)], directory)
-        payload = app / "Contents/MacOS"
-        sdk_manifest.verify_bundle(payload, require_binary=not inventory["nativeSdkIncluded"])
+        payload = app / "Contents/Resources"
+        sdk_manifest.verify_bundle(payload, require_binary=not inventory["nativeSdkIncluded"], macos_app=True)
         environment = isolated_environment(directory)
         version = checked([str(payload / "funke"), "--version"], directory, environment=environment)
         if inventory["engine"]["version"] not in version:

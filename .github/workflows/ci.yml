@@ -738,6 +738,13 @@ jobs:
       - name: Package macOS Bundle
         run: python3 scripts/PackagePosix.py --configuration Release --output-dir dist-posix
 
+      - name: Upload macOS Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Funke-Editor-macOS-arm64
+          path: dist-posix/*.tar.gz
+          if-no-files-found: error
+
       - name: Prepare macOS Signing
         env:
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
@@ -771,13 +778,6 @@ jobs:
         with:
           name: Funke-Installer-macOS-arm64
           path: dist-installer/*
-          if-no-files-found: error
-
-      - name: Upload macOS Bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: Funke-Editor-macOS-arm64
-          path: dist-posix/*.tar.gz
           if-no-files-found: error
 
   # Tags only: turn the verified, signed bundle into a DRAFT GitHub Release. Review and publish it by hand

@@ -94,18 +94,18 @@ class MacInstallerTests(unittest.TestCase):
         write(self.bundle / "imgui.ini", "private state")
         app = self.root / "Funke.app"
         mac.stage_app(self.bundle, app, self.metadata)
-        payload = app / "Contents/MacOS"
+        payload = app / "Contents/Resources"
         self.assertTrue((payload / "Funke-Editor").is_file())
         self.assertTrue((payload / "EngineSDK/Runtime-Dist/Funke-Runtime").is_file())
-        for name in ("Funke-Editor", "FunkeAssets", "EngineSDK", "Funke-ScriptCore.dll"):
+        for name in mac.APP_EXECUTABLES:
             alias = app / "Contents/Resources" / name
             self.assertTrue(alias.is_symlink())
-            self.assertEqual(alias.resolve(), (payload / name).resolve())
+            self.assertEqual(alias.resolve(), (app / "Contents/MacOS" / name).resolve())
         for name in ("Funke-Engine", "External", "bin"):
             self.assertFalse((payload / "EngineSDK" / name).exists())
             self.assertTrue((self.bundle / "EngineSDK" / name).exists())
         self.assertFalse((payload / "imgui.ini").exists())
-        manifest = mac.sdk_manifest.verify_bundle(payload, require_binary=True)
+        manifest = mac.sdk_manifest.verify_bundle(payload, require_binary=True, macos_app=True)
         self.assertFalse(manifest["capabilities"]["nativeDevelopment"])
         with (app / "Contents/Info.plist").open("rb") as stream:
             plist = plistlib.load(stream)
@@ -115,6 +115,52 @@ class MacInstallerTests(unittest.TestCase):
         self.assertEqual(plist["LSMinimumSystemVersion"], "15.0")
         with self.assertRaisesRegex(ValueError, "overwrite"):
             mac.stage_app(self.bundle, app, self.metadata)
+
+    def test_signing_skips_main_executable_until_app_signing(self):
+        app = self.root / "Funke.app"
+        main = app / "Contents/MacOS/Funke-Launcher"
+        helper = app / "Contents/MacOS/Funke-Editor"
+        library = app / "Contents/Resources/EngineSDK/Runtime-Dist/libFunke-Engine.dylib"
+        with patch.object(mac, "run", return_value="") as run:
+            mac.sign_app(app, [main, helper, library], None)
+        calls = [call.args[0] for call in run.call_args_list]
+        self.assertEqual([command[-1] for command in calls], [str(library), str(helper), str(app), str(app)])
+        self.assertIn("--deep", calls[-1])
+        self.assertTrue(all("--deep" not in command for command in calls[:-1]))
+
+    def test_app_code_aliases_cannot_escape_the_declared_locations(self):
+        app = self.root / "Funke.app"
+        mac.stage_app(self.bundle, app, self.metadata)
+        payload = app / "Contents/Resources"
+        outside = self.root / "outside"
+        write(outside)
+        alias = payload / "Funke-Editor"
+        alias.unlink()
+        alias.symlink_to(outside)
+        with self.assertRaises(ValueError):
+            mac.sdk_manifest.verify_bundle(payload, macos_app=True)
+        alias.unlink()
+        alias.symlink_to("../MacOS/Funke-Editor")
+        target = app / "Contents/Frameworks/libnethost.dylib"
+        target.unlink()
+        target.symlink_to(outside)
+        with self.assertRaises(ValueError):
+            mac.sdk_manifest.verify_bundle(payload, macos_app=True)
+
+    def test_app_relocation_reaches_frameworks_and_keeps_sdk_runtime_local(self):
+        self.make_native()
+        app = self.root / "Funke.app"
+        mac.stage_app(self.bundle, app, self.metadata)
+        tools = MachOTools()
+        editor = app / "Contents/MacOS/Funke-Editor"
+        runtime = app / "Contents/Resources/EngineSDK/Runtime-Dist/Funke-Runtime"
+        tools.dependencies[editor] = ["@rpath/libFunke-Engine.dylib"]
+        tools.dependencies[runtime] = ["@rpath/libFunke-Engine.dylib"]
+        with patch.object(mac, "run", side_effect=tools):
+            binaries = mac.relocate_macho(app / "Contents", "arm64")
+        self.assertEqual(tools.dependencies[editor], ["@loader_path/../Frameworks/libFunke-Engine.dylib"])
+        self.assertEqual(tools.dependencies[runtime], ["@loader_path/libFunke-Engine.dylib"])
+        self.assertTrue(all(not path.is_symlink() for path in binaries))
 
     def test_public_identity_rejects_development_or_incomplete_metadata(self):
         self.assertEqual(mac.read_identity(self.bundle, True)[1], self.metadata)

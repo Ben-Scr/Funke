@@ -29,6 +29,7 @@ MACHO_MAGIC = {bytes.fromhex(value) for value in
 VERSION_PATTERN = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:-[0-9A-Za-z.-]+)?\Z")
 SYSTEM_PREFIXES = ("/usr/lib/", "/System/Library/")
 HOST_EXECUTABLES = {"Funke-Launcher", "Funke-Editor", "Funke-Runtime", "Funke-PackageTool", "funke"}
+APP_EXECUTABLES = HOST_EXECUTABLES - {"Funke-PackageTool"}
 
 
 def run(arguments: list[str]) -> str:
@@ -90,13 +91,22 @@ def stage_app(bundle: Path, app: Path, metadata: dict, include_native: bool = Fa
     resources = app / "Contents" / "Resources"
     executable_dir.mkdir(parents=True)
     resources.mkdir()
+    frameworks = app / "Contents" / "Frameworks"
+    frameworks.mkdir()
     with tempfile.TemporaryDirectory(prefix="funke-mac-payload-") as temporary:
         archive = Path(temporary) / "payload.tar.gz"
         sdk_manifest.archive_bundle(bundle, archive, include_native=include_native)
-        extract_payload(archive, executable_dir)
-    for path in executable_dir.rglob("*"):
+        extract_payload(archive, resources)
+    for path in resources.rglob("*"):
         if path.is_file() and (path.name in HOST_EXECUTABLES or path.name == "premake5"):
             path.chmod(path.stat().st_mode | 0o111)
+    # SDK runtimes are export templates; managed hosts keep their adjacent JSON and assemblies in Resources.
+    for entry in list(resources.iterdir()):
+        directory = executable_dir if entry.name in APP_EXECUTABLES else frameworks if entry.suffix == ".dylib" else None
+        if directory is not None and entry.is_file():
+            destination = directory / entry.name
+            entry.rename(destination)
+            entry.symlink_to(Path("..") / directory.name / entry.name)
     with (app / "Contents" / "Info.plist").open("wb") as output:
         plistlib.dump({
             "CFBundleIdentifier": APP_ID,
@@ -114,17 +124,13 @@ def stage_app(bundle: Path, app: Path, metadata: dict, include_native: bool = Fa
         }, output, sort_keys=True)
     (app / "Contents" / "PkgInfo").write_bytes(b"APPL????")
     shutil.copyfile(SUPPORT / "Read Me.txt", resources / "Read Me.txt")
-    # SDL resolves a bundled app's base directory to Resources; dyld uses MacOS.
-    for entry in executable_dir.iterdir():
-        if entry.name not in ("Read Me.txt", "Funke.icns"):
-            (resources / entry.name).symlink_to(Path("../MacOS") / entry.name, target_is_directory=entry.is_dir())
-    sdk_manifest.verify_bundle(executable_dir, require_binary=not include_native)
+    sdk_manifest.verify_bundle(resources, require_binary=not include_native, macos_app=True)
 
 
 def macho_files(root: Path) -> list[Path]:
     files = []
     for path in root.rglob("*"):
-        if path.is_file():
+        if path.is_file() and not path.is_symlink():
             with path.open("rb") as stream:
                 if stream.read(4) in MACHO_MAGIC:
                     files.append(path)
@@ -170,7 +176,7 @@ def resolve_dependency(dependency: str, binary: Path, payload: Path, binaries: l
     if dependency.startswith("@loader_path/"):
         candidate = binary.parent / dependency[len("@loader_path/"):]
     elif dependency.startswith("@executable_path/"):
-        candidate = payload / dependency[len("@executable_path/"):]
+        candidate = (payload / "MacOS" if (payload / "Info.plist").is_file() else payload) / dependency[len("@executable_path/"):]
     else:
         candidate = binary.parent / Path(dependency).name
     if candidate.resolve() in binaries and candidate.resolve().is_relative_to(payload.resolve()):
@@ -181,6 +187,9 @@ def resolve_dependency(dependency: str, binary: Path, payload: Path, binaries: l
         if nearby in binaries:
             return nearby
         directory = directory.parent
+    framework = payload / "Frameworks" / Path(dependency).name
+    if framework in binaries:
+        return framework
     matches = [path for path in binaries if path.name == Path(dependency).name]
     if len(matches) != 1:
         raise ValueError(f"Unresolved or ambiguous library in {binary.name}: {dependency}")
@@ -188,14 +197,17 @@ def resolve_dependency(dependency: str, binary: Path, payload: Path, binaries: l
 
 
 def relocate_macho(payload: Path, architecture: str) -> list[Path]:
+    payload = payload.resolve()
+    resources = payload / "Resources" if (payload / "Info.plist").is_file() else payload
+    executables = payload / "MacOS" if resources != payload else payload
     binaries = macho_files(payload)
     for library in payload.rglob("*.dylib"):
-        if library not in binaries:
+        if library.resolve() not in binaries:
             raise ValueError(f"Native library is not Mach-O: {library.relative_to(payload)}")
     for executable in HOST_EXECUTABLES:
-        if payload / executable not in binaries:
+        if (resources / executable).resolve() not in binaries:
             raise ValueError(f"Required executable is not Mach-O: {executable}")
-    if payload / "EngineSDK" / "premake5" not in binaries:
+    if resources / "EngineSDK" / "premake5" not in binaries:
         raise ValueError("Bundled Premake is not Mach-O")
     for binary in binaries:
         if architecture not in run(["lipo", "-archs", str(binary)]).split():
@@ -210,7 +222,7 @@ def relocate_macho(payload: Path, architecture: str) -> list[Path]:
                 continue
             target = resolve_dependency(dependency, binary, payload, binaries)
             runtime_root = next((parent for parent in binary.parents
-                                 if parent.parent == payload / "EngineSDK" and parent.name.startswith("Runtime-")), None)
+                                 if parent.parent == resources / "EngineSDK" and parent.name.startswith("Runtime-")), None)
             if runtime_root and not target.is_relative_to(runtime_root):
                 raise ValueError(f"Export runtime library escapes its own runtime: {binary}: {dependency}")
             replacement = "@loader_path/" + os.path.relpath(target, binary.parent).replace(os.sep, "/")
@@ -220,7 +232,7 @@ def relocate_macho(payload: Path, architecture: str) -> list[Path]:
         validate_minimum_os(load_commands, binary)
         for search_path in runtime_paths(load_commands):
             keep = is_system_path(search_path)
-            for token, base in (("@loader_path", binary.parent), ("@executable_path", payload)):
+            for token, base in (("@loader_path", binary.parent), ("@executable_path", executables)):
                 if search_path == token or search_path.startswith(token + "/"):
                     keep = (base / search_path[len(token):].lstrip("/")).resolve().is_relative_to(payload.resolve())
             if not keep:
@@ -242,7 +254,7 @@ def relocate_macho(payload: Path, architecture: str) -> list[Path]:
 
 
 def create_icon(app: Path, temporary: Path) -> None:
-    source = app / "Contents/MacOS/FunkeAssets/Textures/icon_512.png"
+    source = app / "Contents/Resources/FunkeAssets/Textures/icon_512.png"
     if not source.is_file():
         raise ValueError("The macOS app needs FunkeAssets/Textures/icon_512.png")
     iconset = temporary / "Funke.iconset"
@@ -262,6 +274,8 @@ def sign_app(app: Path, binaries: list[Path], identity: str | None, keychain: st
         options += ["--keychain", keychain]
     entitlements = ["--entitlements", str(SUPPORT / "entitlements.plist")]
     for binary in sorted(binaries, key=lambda path: len(path.parts), reverse=True):
+        if binary == app / "Contents/MacOS/Funke-Launcher":
+            continue
         host_options = entitlements if binary.name in HOST_EXECUTABLES else []
         run(["codesign", "--force", "--sign", signer, *options, *host_options, str(binary)])
     run(["codesign", "--force", "--sign", signer, *options, *entitlements, str(app)])
@@ -301,7 +315,7 @@ def build(args: argparse.Namespace) -> Path:
         image_root.mkdir()
         app = image_root / "Funke.app"
         stage_app(bundle, app, metadata, args.include_native_sdk)
-        binaries = relocate_macho(app / "Contents/MacOS", architecture)
+        binaries = relocate_macho(app / "Contents", architecture)
         create_icon(app, temporary_path)
         sign_app(app, binaries, args.signing_identity, args.signing_keychain)
         if args.notary_keychain_profile:
