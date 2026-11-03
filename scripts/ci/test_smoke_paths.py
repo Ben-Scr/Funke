@@ -39,7 +39,7 @@ class ApplicationResourcePathTests(unittest.TestCase):
             expected = contents / "Resources/FunkeAssets"
             with self.assertRaises(ValueError) as failure:
                 application_smoke_test.resolve_assets(binary)
-            self.assertIn(str(expected), str(failure.exception))
+            self.assertIn(str(expected.resolve()), str(failure.exception))
             self.assertIn("missing", str(failure.exception))
             expected.parent.mkdir()
             expected.touch()
