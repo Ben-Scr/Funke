@@ -1,5 +1,6 @@
 #include <pch.hpp>
 #include "Gui/BuildProfilesPanel.hpp"
+#include "Gui/ImGuiDialog.hpp"
 
 #include "Core/Log.hpp"
 #include "Graphics/Texture2D.hpp"
@@ -474,6 +475,7 @@ namespace Funke {
 			EditorUI::PopButtonColors(EditorUI::ButtonVariant::Ghost);
 		}
 
+		ImGuiDialog::NextMessageWindow();
 		if (ImGui::BeginPopup("##NewProfilePopup")) {
 			ImGui::TextDisabled("New profile");
 			if (m_FocusNewProfileInput) {
@@ -503,10 +505,7 @@ namespace Funke {
 				}
 			}
 			if (m_NewProfileFailed && m_StatusIsError) {
-				// Explicit wrap: TextWrapped in an auto-sized popup has no width to wrap against.
-				ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + inputWidth);
-				EditorUI::StatusText(EditorUI::Tone::Error, m_StatusMessage.c_str());
-				ImGui::PopTextWrapPos();
+				ImGuiDialog::Error("##CreateProfileError", m_StatusMessage.c_str(), EditorTheme::Colors::Error(), "Copy details");
 			}
 			ImGui::EndPopup();
 		}
@@ -611,10 +610,10 @@ namespace Funke {
 			m_OpenDeletePopup = false;
 		}
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("##ConfirmDeleteProfile", nullptr,
+		if (ImGuiDialog::BeginModal("##ConfirmDeleteProfile", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize)) {
-			ImGui::Text("Delete profile '%s'?",
-				m_PendingDeleteName.empty() ? "(none)" : m_PendingDeleteName.c_str());
+			ImGuiDialog::Message("##DeleteProfile", ("Delete profile '" +
+				(m_PendingDeleteName.empty() ? std::string("(none)") : m_PendingDeleteName) + "'?").c_str());
 			ImGui::TextDisabled("This removes the .build file from disk.");
 			const int clicked = EditorUI::DialogFooter({ "Delete", "Cancel" }, -1, 0);
 			if (clicked == 0) {
@@ -636,7 +635,7 @@ namespace Funke {
 			m_OpenRenamePopup = false;
 		}
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("##RenameProfile", nullptr,
+		if (ImGuiDialog::BeginModal("##RenameProfile", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize)) {
 			ImGui::Text("New name:");
 			ImGui::SetNextItemWidth(260.0f);

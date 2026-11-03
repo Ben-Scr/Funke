@@ -1,5 +1,6 @@
 #include <pch.hpp>
 #include "Core/PlatformShortcuts.hpp"
+#include "Gui/ImGuiDialog.hpp"
 #include "Core/EngineModules.hpp"
 #include "Systems/ImGuiEditorLayer.hpp"
 
@@ -2914,7 +2915,7 @@ namespace Funke {
 			// Editor writes FunkeEntityBitsConfig.h directly so MSBuild incremental only recompiles TUs that include entt (no premake regen needed).
 			ImGuiUtils::CenterNextModal();
 			ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-			if (ImGui::BeginPopupModal("Rebuild Engine?", nullptr,
+			if (ImGuiDialog::BeginModal("Rebuild Engine?", nullptr,
 				ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 				ImGui::TextWrapped(
 					"Rebuild the engine with entityBits = %d?\n\n"

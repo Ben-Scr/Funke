@@ -1,5 +1,6 @@
 #include <pch.hpp>
 #include "Gui/SpriteEditorPanel.hpp"
+#include "Gui/ImGuiDialog.hpp"
 
 #include "Assets/AssetRegistry.hpp"
 #include "Core/Log.hpp"
@@ -299,7 +300,7 @@ namespace Funke {
 			m_ShowUnsavedPrompt = false;
 		}
 		ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_Always);
-		if (!ImGui::BeginPopupModal("Unsaved Sprite Edits", nullptr,
+		if (!ImGuiDialog::BeginModal("Unsaved Sprite Edits", nullptr,
 			ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
 		{
 			return;

@@ -11,6 +11,64 @@ from unittest.mock import Mock, patch
 import standalone_sdk_test as gate
 
 
+class EditorReadinessTests(unittest.TestCase):
+    def setUp(self):
+        self.editor = Mock(pid=42)
+        self.editor.poll.return_value = None
+        self.now = 0.0
+        self.clock = patch.object(gate.time, "monotonic", side_effect=lambda: self.now)
+        self.sleep = patch.object(gate.time, "sleep", side_effect=self.advance)
+        self.clock.start()
+        self.sleep.start()
+        self.addCleanup(self.clock.stop)
+        self.addCleanup(self.sleep.stop)
+        self.ready = {"pid": 42, "state": "edit", "busy": None, "frame": 12}
+
+    def advance(self, seconds):
+        self.now += seconds
+
+    def test_waits_for_explicit_ready_state_after_slow_start(self):
+        query = Mock(side_effect=[
+            (0, self.ready | {"busy": "the editor is still loading"}),
+            (3, {"busy": True, "code": "busy_or_timeout", "error": "busy: the editor is still loading"}),
+            (0, self.ready)])
+        self.assertEqual(self.ready, gate.wait_for_editor_ready(self.editor, query, 5))
+        self.assertEqual(3, query.call_count)
+        self.assertGreater(self.now, 0)
+
+    def test_permanently_busy_editor_times_out_with_last_status(self):
+        query = Mock(return_value=(0, self.ready | {"busy": "the editor is still loading"}))
+        with self.assertRaisesRegex(RuntimeError, "readiness timeout.*still loading"):
+            gate.wait_for_editor_ready(self.editor, query, 0.25)
+        self.assertLessEqual(self.now, 0.25)
+        self.assertLessEqual(query.call_count, 3)
+
+    def test_process_exit_is_not_retried(self):
+        query = Mock()
+        self.editor.poll.return_value = 1
+        with self.assertRaisesRegex(RuntimeError, "pid 42 exited"):
+            gate.wait_for_editor_ready(self.editor, query, 5)
+        query.assert_not_called()
+
+    def test_failure_timeout_or_invalid_status_is_not_retried(self):
+        cases = [(1, {"error": "compiler failed"}),
+                 (3, {"busy": True, "code": "busy_or_timeout", "error": "timeout: request abandoned"}),
+                 (0, self.ready | {"pid": 43}), (0, {"pid": 42, "state": "edit"}), (0, [])]
+        for response in cases:
+            with self.subTest(response=response):
+                query = Mock(return_value=response)
+                with self.assertRaises(RuntimeError):
+                    gate.wait_for_editor_ready(self.editor, query, 5)
+                query.assert_called_once()
+
+    def test_status_after_deadline_cannot_pass(self):
+        def query(budget):
+            self.advance(budget)
+            return 0, self.ready
+        with self.assertRaisesRegex(RuntimeError, "readiness timeout"):
+            gate.wait_for_editor_ready(self.editor, query, 0.25)
+
+
 class StandaloneTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="Funke-Standalone-Unitprüfung-")
@@ -179,6 +237,24 @@ class StandaloneTests(unittest.TestCase):
         env = gate.child_environment(dict(os.environ), root, Path(sys.executable), root / "guards")
         return gate.Harness(root, root / "evidence.json", env, 30)
 
+    def test_json_stdout_is_separate_from_native_diagnostics(self):
+        harness = self.harness()
+        diagnostic = "ERROR: SymInitialize FAILED with code 3221225476 (0xc0000004) | "
+        command = [sys.executable, "-c", "import sys; print(" + repr(diagnostic)
+                   + ", file=sys.stderr); print('{\"succeeded\":true}')"]
+        result = harness.run("editor-recompile", command)
+        self.assertEqual({"succeeded": True}, json.loads(result))
+        phase = harness.evidence["phases"][-1]
+        self.assertNotIn(diagnostic, Path(phase["log"]).read_text(encoding="utf-8"))
+        self.assertIn(diagnostic, Path(phase["stderrLog"]).read_text(encoding="utf-8"))
+
+    def test_fatal_stderr_is_still_rejected_with_successful_json_stdout(self):
+        harness = self.harness()
+        with self.assertRaisesRegex(RuntimeError, "error marker"):
+            harness.run("editor-recompile", [sys.executable, "-c",
+                "import sys; print('interop mismatch', file=sys.stderr); print('{\"succeeded\":true}')"])
+        self.assertEqual(0, harness.evidence["phases"][-1]["exitCode"])
+
     def test_nonzero_child_and_timeout_preserve_structured_evidence(self):
         harness = self.harness()
         with self.assertRaisesRegex(RuntimeError, "failed"):
@@ -282,6 +358,8 @@ class StandaloneTests(unittest.TestCase):
 
         def bridge(label, command, **kwargs):
             harness.evidence["phases"].append({"name": label, "exitCode": 0})
+            if command[2] == "status":
+                return json.dumps({"pid": editor.pid, "state": "edit", "busy": None})
             if command[2] == "recompile":
                 return '{"succeeded":true}'
             if command[2] == "play":

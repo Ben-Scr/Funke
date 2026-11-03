@@ -1,5 +1,6 @@
 #include <pch.hpp>
 #include "Gui/PackageManagerPanel.hpp"
+#include "Gui/ImGuiDialog.hpp"
 
 #include "Core/Log.hpp"
 #include "Core/PackageHost.hpp"
@@ -284,15 +285,15 @@ namespace Funke {
 		// Center on the next display.
 		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
 		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-		ImGui::SetNextWindowSizeConstraints(ImVec2(420.0f, 0.0f), ImVec2(720.0f, 600.0f));
+		ImGuiDialog::NextMessageWindow();
 
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("Package install failed", nullptr,
+		if (ImGuiDialog::BeginModal("Package install failed", nullptr,
 				ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x);
 			EditorUI::StatusText(EditorUI::Tone::Error, "Installation could not complete.");
 			ImGui::Spacing();
-			ImGui::TextUnformatted(m_InstallErrorMessage.c_str());
+			ImGuiDialog::Message("##InstallError", m_InstallErrorMessage.c_str());
 			ImGui::PopTextWrapPos();
 
 			const int clicked = EditorUI::DialogFooter({ "Copy details", "Close" }, 1);
@@ -2199,14 +2200,18 @@ namespace Funke {
 		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
 		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("Remove platform package?", nullptr,
+		ImGuiDialog::NextMessageWindow();
+		if (ImGuiDialog::BeginModal("Remove platform package?", nullptr,
 				ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			const std::filesystem::path target = userRoot / Path::FromUtf8(m_PlatformRemoveCandidate);
-			ImGui::Text("Delete %s from", m_PlatformRemoveCandidate.c_str());
-			ImGui::TextDisabled("%s", Path::ToUtf8(target).c_str());
-			ImGui::Text("Build profiles for its platform stop working until it is installed again.");
-			ImGui::Spacing();
-			if (EditorUI::Button("Remove", EditorUI::ButtonVariant::Danger)) {
+			if (ImGuiDialog::BeginBody("##RemovePackageDetails")) {
+				ImGui::Text("Delete %s from", m_PlatformRemoveCandidate.c_str());
+				ImGui::TextDisabled("%s", Path::ToUtf8(target).c_str());
+				ImGui::TextUnformatted("Build profiles for its platform stop working until it is installed again.");
+			}
+			ImGuiDialog::EndBody();
+			const int action = EditorUI::DialogFooter({ "Remove", "Cancel" }, 1, 0);
+			if (action == 0) {
 				std::error_code ec;
 				if (IsInsideDirectory(target, userRoot)) std::filesystem::remove_all(target, ec);
 				m_StatusMessage = ec ? "Could not remove " + m_PlatformRemoveCandidate + ": " + ec.message()
@@ -2216,8 +2221,7 @@ namespace Funke {
 				m_PlatformRemoveCandidate.clear();
 				ImGui::CloseCurrentPopup();
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel")) {
+			if (action == 1) {
 				m_PlatformRemoveCandidate.clear();
 				ImGui::CloseCurrentPopup();
 			}

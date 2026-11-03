@@ -388,6 +388,14 @@ namespace Funke {
 			m_Time.AdvanceFrameCount();
 			RunAutomation::EndFrame(deltaTime);
 			if (m_RunLoop.CiSmokeTest && !m_RunLoop.SmokeQuitRequested && m_StartupLoadComplete && --m_RunLoop.SmokeFramesRemaining <= 0) {
+				const std::string assets = Path::ResolveFunkeAssets("");
+				if (assets.empty()) {
+					FNK_ERROR_TAG("Application", "CI smoke test failed: FunkeAssets unresolved from content base '{}'", Path::ExecutableDir());
+					m_RunLoop.ExitCode = 1;
+				}
+				else {
+					FNK_INFO_TAG("Application", "CI smoke test resources resolved to: '{}'", assets);
+				}
 				FNK_INFO_TAG("Application", "CI smoke test reached a stable frame; requesting graceful shutdown.");
 				RequestQuit();
 				m_RunLoop.SmokeQuitRequested = true;

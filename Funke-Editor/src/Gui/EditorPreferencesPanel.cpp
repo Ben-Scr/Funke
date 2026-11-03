@@ -1,4 +1,5 @@
 #include "EditorPreferencesPanel.hpp"
+#include "Gui/ImGuiDialog.hpp"
 
 #include "Assets/AssetKind.hpp"
 #include "Core/Application.hpp"
@@ -713,7 +714,7 @@ namespace Funke {
 
 		ImGuiUtils::CenterNextModal();
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("Save Layout As", nullptr,
+		if (ImGuiDialog::BeginModal("Save Layout As", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			ImGui::TextUnformatted("Save current editor layout as preset:");
 			ImGui::Spacing();
@@ -731,7 +732,9 @@ namespace Funke {
 				EditorUI::StatusText(EditorUI::Tone::Error,
 					"Invalid name (no / \\ : * ? \" < > |, no trailing dot/space, max 64 chars).");
 			} else {
-				ImGui::TextDisabled("Stored under %s.", LayoutsFolderDisplay().c_str());
+				ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+				ImGuiDialog::Message("##LayoutPath", ("Stored under " + LayoutsFolderDisplay() + ".").c_str());
+				ImGui::PopStyleColor();
 			}
 
 			const int clicked = EditorUI::DialogFooter({ "Save", "Cancel" }, 0, -1, nameValid ? 0u : 1u);
@@ -749,9 +752,9 @@ namespace Funke {
 
 		ImGuiUtils::CenterNextModal();
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("Delete Layout", nullptr,
+		if (ImGuiDialog::BeginModal("Delete Layout", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
-			ImGui::Text("Delete layout preset '%s'?", m_PendingDeleteLayoutName.c_str());
+			ImGuiDialog::Message("##DeleteLayout", ("Delete layout preset '" + m_PendingDeleteLayoutName + "'?").c_str());
 			ImGui::TextDisabled("This cannot be undone.");
 			const int clicked = EditorUI::DialogFooter({ "Delete", "Cancel" }, -1, 0);
 			if (clicked == 0) {

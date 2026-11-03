@@ -1,5 +1,6 @@
 #include <pch.hpp>
 #include "Gui/EditorUI.hpp"
+#include "Gui/ImGuiDialog.hpp"
 
 #include "Gui/EditorIcons.hpp"
 #include "Gui/EditorTheme.hpp"
@@ -815,23 +816,20 @@ namespace Funke::EditorUI {
 			buttonW = std::max(buttonW, ImGui::CalcTextSize(label, nullptr, true).x + style.FramePadding.x * 4.0f);
 		}
 		const int count = static_cast<int>(labels.size());
-		const float total = buttonW * count + style.ItemSpacing.x * (count - 1);
 
 		ImGui::Spacing();
 		ImGui::Separator();
 		ImGui::Spacing();
-		const float avail = ImGui::GetContentRegionAvail().x;
-		if (avail > total) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - total);
 
 		int clicked = -1;
 		int index = 0;
 		for (const char* label : labels) {
-			if (index > 0) ImGui::SameLine();
+			const float width = ImGuiDialog::FooterButton(index, count, buttonW);
 			const ButtonVariant variant = index == primary ? ButtonVariant::Primary
 				: index == danger ? ButtonVariant::Danger : ButtonVariant::Default;
 			const bool disabled = (disabledMask >> index) & 1u;
 			if (disabled) ImGui::BeginDisabled();
-			if (Button(label, variant, ImVec2(buttonW, 0.0f))) clicked = index;
+			if (Button(label, variant, ImVec2(width, 0.0f))) clicked = index;
 			if (disabled) ImGui::EndDisabled();
 			++index;
 		}

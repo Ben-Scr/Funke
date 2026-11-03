@@ -13,7 +13,7 @@ import subprocess
 import time
 import uuid
 
-from standalone_sdk_test import atomic_write_json, kill_tree
+from standalone_sdk_test import atomic_write_json, kill_tree, wait_for_editor_ready
 
 
 def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
@@ -26,7 +26,7 @@ def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
     report_path = root / "report.json"
     editor = None
 
-    def run(label, command, expected=0, json_output=False):
+    def run(label, command, expected=0, json_output=False, process_timeout=None):
         index = len(report["steps"])
         out_path, err_path = logs / f"{index:03d}-{label}.stdout", logs / f"{index:03d}-{label}.stderr"
         step = {"name": label, "command": list(map(str, command)), "stdout": str(out_path), "stderr": str(err_path),
@@ -38,14 +38,14 @@ def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
             process = subprocess.Popen(command, cwd=root, env=env, stdout=out, stderr=err,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             try:
-                step["exitCode"] = process.wait(timeout=timeout + 15)
+                step["exitCode"] = process.wait(timeout=process_timeout or timeout + 15)
             except subprocess.TimeoutExpired:
                 kill_tree(process)
                 raise RuntimeError(f"{label}: process_timeout")
             finally:
                 step["seconds"] = time.monotonic() - start
                 atomic_write_json(report_path, report)
-        if step["exitCode"] != expected:
+        if step["exitCode"] not in (expected if isinstance(expected, tuple) else (expected,)):
             raise RuntimeError(f"{label}: expected {expected}, got {step['exitCode']}; see {out_path}")
         value = json.loads(out_path.read_text(encoding="utf-8-sig")) if json_output else None
         step["status"] = "passed"
@@ -107,6 +107,16 @@ def verify(cli: Path, editor_exe: Path, root: Path, timeout: int) -> dict:
                 return run(command, [cli, "editor", command, *map(str, args), "--pid", str(editor.pid),
                     "--project", project, "--timeout", str(timeout), "--json"], expected, True)
 
+            def query_status(budget):
+                value = run("readiness-status", [cli, "editor", "status", "--pid", str(editor.pid),
+                    "--project", project, "--timeout", str(budget), "--json"], (0, 3), True,
+                    process_timeout=budget)
+                return report["steps"][-1]["exitCode"], value
+
+            report["editorReadiness"] = {"pid": editor.pid, "status": "waiting"}
+            ready = wait_for_editor_ready(editor, query_status, max(0.0, until - time.monotonic()))
+            report["editorReadiness"].update(status="ready", frame=ready.get("frame"), state=ready["state"])
+            atomic_write_json(report_path, report)
             bridge("recompile")
             scene = bridge("scenes")["scenes"][0]
             schema = bridge("schema", "--component", "Transform2D")

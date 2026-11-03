@@ -6,6 +6,7 @@
     "schemaVersion": 1
   },
   "strings": {
+    "common.copy_details": "Details kopieren",
     "launcher.title": "Funke Engine",
     "launcher.progress.executing_project": "Projekt wird ausgef\u00fchrt",
     "launcher.progress.launching_runtime": "Runtime wird gestartet...",

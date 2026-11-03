@@ -1,5 +1,6 @@
 #include <pch.hpp>
 #include "Systems/ImGuiEditorLayer.hpp"
+#include "Gui/ImGuiDialog.hpp"
 #include "Gui/EditorShortcuts.hpp"
 
 #include <imgui.h>
@@ -139,18 +140,22 @@ namespace Funke {
 		}
 		ImGuiUtils::CenterNextModal();
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (!ImGui::BeginPopupModal(k_PopupName, nullptr,
+		ImGuiDialog::NextMessageWindow();
+		if (!ImGuiDialog::BeginModal(k_PopupName, nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking)) {
 			return;
 		}
-		ImGui::TextUnformatted("These changes take effect after the editor reloads:");
-		ImGui::Spacing();
-		for (const EditorRestart::Reason& reason : EditorRestart::GetPending()) {
-			ImGui::BulletText("%s", reason.Text.c_str());
+		if (ImGuiDialog::BeginBody("##RestartReasons")) {
+			ImGui::TextUnformatted("These changes take effect after the editor reloads:");
+			ImGui::Spacing();
+			for (const EditorRestart::Reason& reason : EditorRestart::GetPending()) {
+				ImGui::BulletText("%s", reason.Text.c_str());
+			}
+			ImGui::Spacing();
+			ImGui::TextDisabled("Unsaved scenes are offered for saving first.");
+			ImGui::Spacing();
 		}
-		ImGui::Spacing();
-		ImGui::TextDisabled("Unsaved scenes are offered for saving first.");
-		ImGui::Spacing();
+		ImGuiDialog::EndBody();
 		const int choice = EditorUI::DialogFooter({ "Reload Now", "Later" }, 0);
 		if (choice == 0) {
 			ImGui::CloseCurrentPopup();
@@ -601,8 +606,9 @@ namespace Funke {
 		}
 		ImGuiUtils::CenterNextModal();
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		ImGuiDialog::NextMessageWindow();
 		bool unsavedWorkDialogOpen = true;
-		if (ImGui::BeginPopupModal(k_UnsavedWorkPopupName, &unsavedWorkDialogOpen,
+		if (ImGuiDialog::BeginModal(k_UnsavedWorkPopupName, &unsavedWorkDialogOpen,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking)) {
 			m_UnsavedWorkDialogOpen = true;
 			const char* actionText = "continuing";
@@ -619,22 +625,25 @@ namespace Funke {
 				|| m_PendingEditorAction == PendingEditorAction::Reload
 				|| m_PendingEditorAction == PendingEditorAction::Restart
 				|| m_PendingEditorAction == PendingEditorAction::RebuildEngine;
-			ImGui::TextWrapped("Save unsaved work before %s?", actionText);
-			const std::vector<std::shared_ptr<Scene>> dirtyScenes = GetDirtyScenesForPendingAction();
-			for (const std::shared_ptr<Scene>& dirtyScene : dirtyScenes) {
-				ImGui::BulletText("Scene: %s", dirtyScene->GetName().c_str());
+			if (ImGuiDialog::BeginBody("##UnsavedWork")) {
+				ImGui::TextWrapped("Save unsaved work before %s?", actionText);
+				const std::vector<std::shared_ptr<Scene>> dirtyScenes = GetDirtyScenesForPendingAction();
+				for (const std::shared_ptr<Scene>& dirtyScene : dirtyScenes) {
+					ImGui::BulletText("Scene: %s", dirtyScene->GetName().c_str());
+				}
+				if (closesApplication && m_PrefabEditScene
+					&& (m_PrefabEditScene->IsDirty() || m_PrefabEditDirty)) {
+					const std::string prefabName = Path::ToUtf8(Path::FromUtf8(m_PrefabEditPath).filename());
+					ImGui::BulletText("Prefab: %s", prefabName.c_str());
+				}
+				if (closesApplication && m_PrefabInspector.IsOpen() && m_PrefabInspector.HasUnsavedChanges()) {
+					const std::string prefabName = Path::ToUtf8(
+						Path::FromUtf8(m_PrefabInspector.GetCurrentPath()).filename());
+					ImGui::BulletText("Prefab: %s", prefabName.c_str());
+				}
+				ImGui::Spacing();
 			}
-			if (closesApplication && m_PrefabEditScene
-				&& (m_PrefabEditScene->IsDirty() || m_PrefabEditDirty)) {
-				const std::string prefabName = Path::ToUtf8(Path::FromUtf8(m_PrefabEditPath).filename());
-				ImGui::BulletText("Prefab: %s", prefabName.c_str());
-			}
-			if (closesApplication && m_PrefabInspector.IsOpen() && m_PrefabInspector.HasUnsavedChanges()) {
-				const std::string prefabName = Path::ToUtf8(
-					Path::FromUtf8(m_PrefabInspector.GetCurrentPath()).filename());
-				ImGui::BulletText("Prefab: %s", prefabName.c_str());
-			}
-			ImGui::Spacing();
+			ImGuiDialog::EndBody();
 
 			auto closeUnsavedWorkDialog = [&]() {
 				m_UnsavedWorkDialogOpen = false;
@@ -679,10 +688,13 @@ namespace Funke {
 		}
 		ImGuiUtils::CenterNextModal();
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("Play Mode Restore Failed", nullptr,
+		ImGuiDialog::NextMessageWindow();
+		if (ImGuiDialog::BeginModal("Play Mode Restore Failed", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking)) {
-			ImGui::TextWrapped("%s", m_PlayModeRestoreError.c_str());
-			if (EditorUI::DialogFooter({ "OK" }, 0) == 0) {
+			ImGuiDialog::Message("##PlayModeRestoreError", m_PlayModeRestoreError.c_str());
+			const int action = EditorUI::DialogFooter({ "Copy details", "OK" }, 1);
+			if (action == 0) ImGui::SetClipboardText(m_PlayModeRestoreError.c_str());
+			if (action == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
 				m_PlayModeRestoreError.clear();
 				ImGui::CloseCurrentPopup();
 			}
@@ -784,18 +796,23 @@ namespace Funke {
 		}
 		ImGuiUtils::CenterNextModal();
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("Recover Unsaved Changes", nullptr,
+		ImGuiDialog::NextMessageWindow();
+		if (ImGuiDialog::BeginModal("Recover Unsaved Changes", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking)) {
-			ImGui::TextUnformatted("Funke did not shut down cleanly last time.");
-			ImGui::TextUnformatted("Unsaved changes were found for:");
-			for (const SceneRecovery::PendingScene& pending : m_PendingRecovery) {
-				ImGui::BulletText("%s", pending.SceneName.c_str());
+			if (ImGuiDialog::BeginBody("##RecoverScenes")) {
+				ImGui::TextUnformatted("Funke did not shut down cleanly last time.");
+				ImGui::TextUnformatted("Unsaved changes were found for:");
+				for (const SceneRecovery::PendingScene& pending : m_PendingRecovery) {
+					ImGui::BulletText("%s", pending.SceneName.c_str());
+				}
+				ImGui::Spacing();
+				ImGui::TextDisabled("Restoring keeps the current file as <scene>.bak.");
+				if (!m_RecoveryError.empty()) {
+					ImGuiDialog::Error("##RecoveryError", m_RecoveryError.c_str(), EditorTheme::Colors::Error(), "Copy details");
+				}
 			}
-			ImGui::Spacing();
-			ImGui::TextDisabled("Restoring keeps the current file as <scene>.bak.");
-			if (!m_RecoveryError.empty()) {
-				ImGui::TextColored(EditorTheme::Colors::Error(), "%s", m_RecoveryError.c_str());
-			}
+			ImGuiDialog::EndBody();
+
 			const int choice = EditorUI::DialogFooter({ "Restore", "Discard" }, 0);
 			if (choice == 0) {
 				const std::string reopenPath = m_PendingRecovery.front().ScenePath;
@@ -1055,14 +1072,14 @@ namespace Funke {
 		}
 		ImGuiUtils::CenterNextModal();
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("Unsaved Prefab Changes", nullptr,
+		if (ImGuiDialog::BeginModal("Unsaved Prefab Changes", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			// Stem (no .prefab extension) keeps the message consistent
 			// with the centered title in the prefab toolbar — both refer
 			// to the same prefab by the same name.
 			std::string editPrefabName = std::filesystem::path(m_PrefabEditPath).stem().string();
 			if (editPrefabName.empty()) editPrefabName = "the prefab";
-			ImGui::Text("Save unsaved changes to %s?", editPrefabName.c_str());
+			ImGuiDialog::Message("##UnsavedPrefab", ("Save unsaved changes to " + editPrefabName + "?").c_str());
 
 			const int choice = EditorUI::DialogFooter({ "Save", "Don't Save", "Cancel" }, 0, 1);
 			if (choice == 0) {
@@ -1089,10 +1106,10 @@ namespace Funke {
 		}
 		ImGuiUtils::CenterNextModal();
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("Delete Entity?", nullptr,
+		if (ImGuiDialog::BeginModal("Delete Entity?", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			if (m_PendingEntityDeleteCount == 1) {
-				ImGui::Text("Delete \"%s\"?", m_PendingEntityDeleteLabel.c_str());
+				ImGuiDialog::Message("##EntityName", ("Delete \"" + m_PendingEntityDeleteLabel + "\"?").c_str());
 			}
 			else {
 				ImGui::Text("Delete %zu selected entities?", m_PendingEntityDeleteCount);
@@ -1132,11 +1149,11 @@ namespace Funke {
 		}
 		ImGuiUtils::CenterNextModal();
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("Save Prefab Changes?", nullptr,
+		if (ImGuiDialog::BeginModal("Save Prefab Changes?", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			std::string prefabName = std::filesystem::path(m_PrefabInspector.GetCurrentPath()).filename().string();
 			if (prefabName.empty()) prefabName = "the prefab";
-			ImGui::Text("Save changes to %s before switching?", prefabName.c_str());
+			ImGuiDialog::Message("##PrefabName", ("Save changes to " + prefabName + " before switching?").c_str());
 
 			const int choice = EditorUI::DialogFooter({ "Save", "Don't Save", "Cancel" }, 0, 1);
 			if (choice == 0) {
