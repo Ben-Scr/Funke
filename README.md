@@ -1,166 +1,202 @@
-<p align="left">
- <img src="Github-Docs/Logos/icon_256.png" width="10%" alt="Demo">
-<p align="left">
-
-Funke is a lightweight, modular game engine with **C++ and C# support** for game development, focused on performance and supporting both 2D and 3D projects. The native engine is implemented in C++20; game logic and packages can be written in C++, C#, or a combination of both.
-
-> **Beta.** The editor and launcher run on **Windows x64**, **Linux x64** and **macOS** (Apple Silicon and Intel), and each exports games for its own desktop platform. Android, iOS and Web exports come from platform packages. See [Known Limitations](Github-Docs/Documentation/Known-Limitations.md).
-
-**Making a game?** Download the installer for Windows x64, Linux x64 or macOS Apple Silicon from [Releases](https://github.com/Ben-Scr/Funke/releases) and follow **[Your First Game](Github-Docs/Documentation/Getting-Started.md)**. Windows setup includes the .NET 10 SDK prerequisite; on Linux and macOS, install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) separately. You do not need to clone the engine repository for ordinary C# projects. See [Desktop installers](installer/README.md) for requirements.
-
-**License:** Funke is free and open source under the [MIT License](LICENSE.txt). Use it for any project, commercial or not; just keep the license notice with copies of the engine (game builds already include it in their `Licenses` folder).
-
-## Develop with C++ and C#
-
-- **C#:** write game logic with `EntityScript`, `SceneSystem` and `GlobalSystem`, Inspector integration and hot reload. Start with [Your First Game](Github-Docs/Documentation/Getting-Started.md) and the [scripting guide](Github-Docs/Documentation/Scripting/Scripting.md).
-- **C++:** create native scripts in the editor with `NativeScript`, Inspector integration and native rebuild/reload, or build an application directly with the native SDK. See [Native C++ scripts](Github-Docs/Documentation/Scripting/Scripting.md#native-c-scripts) and the [C++ application/SDK guide](Funke-Engine/README.md).
-- **Combine both:** use C++ and C# scripts in the same project and author [packages with native and/or managed layers](Github-Docs/Documentation/Packages/Writing-Packages.md). The languages have distinct APIs and build requirements; follow the guide for your chosen workflow.
-
-## Packages and reference games
-
-Funke's available features span the engine and separately distributed packages. This repository's built-in components and empty project templates are not the full catalog.
-
-- **Tilemaps** are available through [Funke.Tilemap2D](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Tilemap2D).
-- **Input actions, control maps and saved rebinding** are available through [Funke.Input](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Input).
-- Install optional packages through the editor's **Package Manager**; see the [package overview](Github-Docs/Documentation/README.md#packages) for discovery and installation.
-- **Reference games already exist:** open the Launcher's **Asset Library** to download projects such as **NeonStack** and **Voxtau**, or the **FunkeBench** sample. They are distributed through the separate [Funke Asset Library](https://github.com/Ben-Scr/Funke-AssetLibrary), not the engine repository's `templates/` folder.
-
-Check the package documentation and Asset Library alongside [Known Limitations](Github-Docs/Documentation/Known-Limitations.md) when evaluating Funke's capabilities. A feature supplied by an optional package is available in Funke even when it is not built into the core.
-
-## Preview Images
-
-### Editor
-
-<p align="center">
-  <img src="Github-Docs/Preview/Editor/editor.png" width="48%" alt="Funke Editor: 3D scene editing with hierarchy, transform gizmo and inspector">
-  <img src="Github-Docs/Preview/Editor/editor2.png" width="48%" alt="Funke Editor: Funkenfall game view with camera settings and project assets">
+<p>
+  <img src="Github-Docs/Logos/icon_256.png" width="64" alt="Funke logo">
 </p>
 
-### Launcher
+# Funke
 
-<p align="center">
-  <img src="Github-Docs/Preview/Launcher/launcher.png" width="48%" alt="Funke Launcher: built-in 2D and 3D project templates">
-  <img src="Github-Docs/Preview/Launcher/launcher2.png" width="48%" alt="Funke Launcher: Asset Library with community projects">
+**An open source game engine for 2D and 3D, with C++ and C# scripting.**
+
+Create a native C++ script in the Asset Browser, attach it to an entity, and expose its settings in the Inspector. C# scripts can sit alongside it in the same project. Adjust a movement speed, press Play, and see how the game feels.
+
+**[Get started](#getting-started)** · [Documentation](Github-Docs/Documentation/README.md) · [C++ scripting](Github-Docs/Documentation/Scripting/Scripting.md#native-c-scripts) · [C# scripting](Github-Docs/Documentation/Scripting/Scripting.md)
+
+> **Beta.** The editor runs on Windows, Linux and macOS. See [Current status](#current-status) for platform support and the [known limitations](Github-Docs/Documentation/Known-Limitations.md) before choosing Funke for a project.
+
+![Funke Editor: game view, camera settings and project assets](Github-Docs/Preview/Editor/editor2.png)
+
+## Explore a game
+
+The Launcher's **Asset Library** includes projects you can open in the editor and inspect:
+
+- **[NeonStack](https://github.com/Ben-Scr/Funke-AssetLibrary/releases/tag/neon-stack-1.0.0)** — a falling-block puzzle game presented as a 3D scene.
+- **[Voxtau](https://github.com/Ben-Scr/Funke-AssetLibrary/releases/tag/voxtau-1.0.0)** — a fantasy voxel sandbox project.
+
+Open a scene, find the scripts behind it, and change something. The library also includes **[FunkeBench](https://github.com/Ben-Scr/Funke-AssetLibrary/releases/tag/funkebench-1.0.0)**, an editable sample for exploring entity and rendering workloads.
+
+These projects are distributed through the separate [Funke Asset Library](https://github.com/Ben-Scr/Funke-AssetLibrary).
+
+<details>
+<summary>More screenshots</summary>
+
+<p>
+  <img src="Github-Docs/Preview/Editor/editor.png" width="100%" alt="Funke Editor: 3D scene editing with hierarchy, transform gizmo and Inspector">
 </p>
 
-## Getting Started
+<p>
+  <img src="Github-Docs/Preview/Launcher/launcher.png" width="48%" alt="Funke Launcher: 2D and 3D project templates">
+  <img src="Github-Docs/Preview/Launcher/launcher2.png" width="48%" alt="Funke Launcher: Asset Library">
+</p>
 
-Clone with submodules:
+</details>
+
+## Getting started
+
+Start by [building Funke from source](#build-from-source) for your platform. There is currently no published engine release on the [Releases page](https://github.com/Ben-Scr/Funke/releases).
+
+Once the Launcher is running:
+
+1. Choose **New Project** and select **Empty 2D** for the walkthrough below.
+2. Open the project in the editor.
+3. Follow **[Your First Game](Github-Docs/Documentation/Getting-Started.md)** to add a moving player, collect a coin and export a desktop game. The walkthrough uses C#.
+
+For a 3D project, choose **Empty 3D** and follow the [3D guide](Github-Docs/Documentation/Engine-Core/3D.md). To explore an existing project, open the Launcher's **Asset Library**.
+
+## Write the behavior in C++ or C#
+
+**C# scripts** attach behavior to entities through `EntityScript`. Expose fields in the Inspector and recompile game scripts without restarting the editor.
+
+**Native C++ scripts** are created in the Asset Browser, inherit from `NativeScript` and attach to entities in the editor. Register the fields you want to edit in the Inspector; saving source changes can trigger an incremental native build and reload.
+
+The languages have distinct APIs, lifecycle callbacks and toolchains. The [scripting guide](Github-Docs/Documentation/Scripting/Scripting.md) covers each workflow and explains what happens to script state during reload.
+
+### Make something move
+
+This C# script gives a 2D physics body movement through the built-in input axis:
+
+```csharp
+using Funke;
+
+public class PlayerController : EntityScript
+{
+    [ShowInEditor("Speed")]
+    public float Speed = 5.0f;
+
+    private Rigidbody2D? body;
+
+    public override void OnStart() => body = GetComponent<Rigidbody2D>();
+
+    public override void OnFixedUpdate()
+    {
+        if (body != null)
+            body.LinearVelocity = Input.GetAxis() * Speed;
+    }
+}
+```
+
+Attach it to a **Dynamic Body** in an **Empty 2D** project. Set the Rigidbody 2D's **Gravity Scale** to `0` and enable **Freeze Rotation**, then press Play. Move with WASD, the arrow keys or a gamepad's left stick.
+
+Stop, change **Speed** in the Inspector and play again. The [full walkthrough](Github-Docs/Documentation/Getting-Started.md) adds a collectible, shows how to turn it into a prefab and takes the project through a desktop build.
+
+The engine itself is written in C++20. For applications that do not use the editor, the **[C++ SDK guide](Funke-Engine/README.md)** explains how to build directly against it.
+
+## Shape the rest of the game
+
+| Area | What you can work with |
+| --- | --- |
+| **Scenes and objects** | Parent-child hierarchies, editable components and reusable prefabs. [Scenes](Github-Docs/Documentation/Engine-Core/Scenes.md) · [Editor](Github-Docs/Documentation/Editor/Editor.md) |
+| **2D and 3D** | Sprites, 3D meshes, materials and lights, with Box2D for 2D physics and Jolt for 3D physics. [2D physics](Github-Docs/Documentation/Engine-Core/Physics-2D.md) · [3D](Github-Docs/Documentation/Engine-Core/3D.md) · [3D physics](Github-Docs/Documentation/Engine-Core/Physics-3D.md) |
+| **Animation and UI** | Keyframe clips, Animator state machines and UI canvases, including UI placed in the game world. [Animation](Github-Docs/Documentation/Engine-Core/Animation.md) · [World-space UI](Github-Docs/Documentation/Engine-Core/World-Space-UI.md) |
+| **Custom rendering** | WGSL shaders for meshes, sprites and post-processing, with editable material properties. [Custom shaders](Github-Docs/Documentation/Engine-Core/Custom-Shaders.md) |
+| **Tools and automation** | The `funke` CLI for creating, validating and building projects, plus an Editor Bridge for controlling an open editor. [Command line](Github-Docs/Documentation/Editor/Command-Line.md) · [Editor Bridge](Github-Docs/Documentation/Editor/Editor-Bridge.md) |
+
+Additional features are available through the editor's **Package Manager**. For example, [Funke.Tilemap2D](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Tilemap2D) provides tilemaps with C++ and C# APIs, while [Funke.Input](https://github.com/Ben-Scr/Funke-PackageRegistry/tree/main/packages/Funke.Input) adds input actions and saved rebinding for C# projects.
+
+Browse the [package registry](https://github.com/Ben-Scr/Funke-PackageRegistry), or follow [Writing Packages](Github-Docs/Documentation/Packages/Writing-Packages.md) to add your own native or managed functionality. Each package documents its requirements and current limits.
+
+## Current status
+
+Funke is in beta. The main things to know when planning a project are:
+
+- **Desktop exports target the editor's own platform.** Windows exports Windows games, Linux exports Linux games, and macOS exports macOS games. Cross-export between desktop platforms is not available.
+- **Linux and macOS have had less testing than Windows.** The editor targets Windows x64, Linux x64, and macOS on Apple Silicon and Intel.
+- **Android, iOS and Web exports use optional platform packages.** They require additional SDKs and have separate runtime and testing limits. Projects containing native C++ scripts cannot currently be exported to those targets.
+
+See [Known Limitations](Github-Docs/Documentation/Known-Limitations.md) for details, including animation, model import, materials and text rendering. The [platform package guide](Github-Docs/Documentation/Editor/Platform-Packages.md) covers mobile and Web requirements.
+
+## Build from source
+
+Clone the repository with its submodules:
 
 ```bash
-git clone --recurse-submodules https://github.com/Ben-Scr/Index.git Funke
+git clone --recurse-submodules https://github.com/Ben-Scr/Funke.git
 cd Funke
 ```
 
-Then follow the steps for your platform. Re-run setup when dependencies or submodules change. For ordinary development, use the incremental commands in [Contributing](CONTRIBUTING.md); changing existing source files does not require setup again.
+Choose your platform below. These steps build the engine and Launcher; once they are ready, continue with [Getting started](#getting-started).
 
 <details>
-<summary><b>Windows (MSVC v143 / Visual Studio 2022 toolchain)</b></summary>
+<summary><strong>Windows x64</strong></summary>
 
-**Prerequisites:** Visual Studio 2022 (MSVC v143 toolset + Windows SDK), .NET 10 SDK, Python 3.10+, Git, and CMake. Opening Funke's `net10.0` game projects in Visual Studio requires Visual Studio 2026 (18.0+) even though the native build continues to use the VS2022/v143 toolchain.
+**Prerequisites:** Visual Studio 2022 Build Tools with MSVC v143 and the Windows SDK, .NET 10 SDK, Python 3.10+, Git and CMake. Running the editor requires a D3D12- or Vulkan-capable GPU.
 
-After a fresh clone, fetch and build the git-ignored Dawn/WebGPU dependency once:
-
-```bat
-scripts\dawn\SetupDawn.bat
-```
-
-Generate the project files:
-
-```bat
-scripts\Setup.bat
-```
-
-Setup checks every prerequisite and asks `[Y/n]` before installing a missing one via winget: Python, Git, the .NET 10 SDK, CMake, Premake, and (default *no*, several GB) the Visual Studio 2022 Build Tools with the C++ workload. Pass `-y` to accept all, or `--no-install` to only report what is missing.
-
-Build managed projects with the .NET 10 SDK and native projects with the Visual Studio 2022 toolchain:
+Build Dawn once, generate the project files, and create a local engine bundle with native C++ development support:
 
 ```powershell
-.\scripts\BuildWindows.ps1 -Configuration Release
+.\scripts\dawn\SetupDawn.bat
+.\scripts\Setup.bat
+.\scripts\BuildWindows.ps1 -PublishBundle -IncludeNativeSdk
+.\bin\Release-windows-x86_64\Funke-Launcher\Funke-Launcher.exe
 ```
 
-Create and verify the standalone engine bundle:
+Setup checks prerequisites and can offer to install missing tools. Opening `net10.0` C# projects in Visual Studio requires **Visual Studio 2026 (18.0+)**; the engine's native build uses the VS2022/v143 toolchain.
 
-```powershell
-.\scripts\BuildWindows.ps1 -PublishBundle
-```
-
-Create the Windows setup with selectable packages, templates and command-line tools:
-
-```powershell
-.\scripts\BuildInstaller.ps1 -DownloadCompiler
-```
-
-See [Installer development](installer/README.md) for build and signing options, and
-[Install Funke on Windows](Github-Docs/Documentation/Editor/Installer.md) for the setup workflow.
-
-See [Building and Shipping](Github-Docs/Documentation/Editor/Building-and-Shipping.md) for game exports, prerequisites, and the clean-machine release checklist.
+For installer packaging and signing, see [Desktop installers](installer/README.md).
 
 </details>
 
 <details>
-<summary><b>Linux (GNU Make)</b></summary>
+<summary><strong>Linux x64</strong></summary>
 
-**Prerequisites:** a C++20 compiler (GCC or Clang; Dawn's source build needs Clang), GNU Make, CMake, the .NET 10 SDK, Python 3.10+, Git, and the X11 / Wayland development packages SDL3 builds against. Running the editor needs a Vulkan driver (Mesa or the GPU vendor's).
-
-Generate the makefiles:
+**Prerequisites:** a C++20 compiler, Clang for the Dawn source build, GNU Make, CMake, .NET 10 SDK, Python 3.10+, Git and the X11/Wayland development packages used by SDL3. Running the editor requires a Vulkan driver.
 
 ```bash
 chmod +x scripts/Setup.sh
 ./scripts/Setup.sh
-```
-
-Setup asks `[Y/n]` before installing anything missing through apt, dnf, pacman or zypper: Python, Git, the .NET 10 SDK, CMake, and the C++ toolchain with the X11/Wayland/GL development headers. It then builds SDL3 (`scripts/sdl/SetupSDL.py`). Distribution-built .NET SDKs (e.g. Ubuntu's `dotnet-sdk-10.0`) work as well as Microsoft's.
-
-Build Dawn (WebGPU) once, then everything else. `Funke-Managed` builds the C# projects (Funke-ScriptCore, the hot-reload compiler and the package tool) with `dotnet`; the Launcher target also bundles the Editor, Runtime, `funke` tool and EngineSDK next to the Launcher:
-
-```bash
 ./scripts/dawn/SetupDawn.sh
 make config=dist -j"$(nproc)" Funke-Runtime
 make config=release -j"$(nproc)" Funke-Launcher
 ./bin/Release-linux-x86_64/Funke-Launcher/Funke-Launcher
 ```
 
-`python3 scripts/PackagePosix.py` packs that folder into `Funke-Editor-<version>-Linux-x64.tar.gz`.
+Setup offers to install missing prerequisites through the system package manager and builds SDL3. The Launcher target stages the Editor, Runtime, CLI and EngineSDK.
+
+For distribution packaging, see [Linux installers](installer/linux/README.md).
 
 </details>
 
 <details>
-<summary><b>macOS (Apple Silicon or Intel, GNU Make)</b></summary>
+<summary><strong>macOS — Apple Silicon or Intel</strong></summary>
 
-**Prerequisites:** macOS 15 or later, the Xcode Command Line Tools (`xcode-select --install`), CMake, the .NET 10 SDK, Python 3.10+ and Git. Rendering uses Metal through Dawn. See Microsoft's [.NET 10 supported systems](https://github.com/dotnet/core/blob/main/release-notes/10.0/supported-os.md) for the managed runtime's current support policy.
+**Prerequisites:** macOS 15+, Xcode Command Line Tools, CMake, .NET 10 SDK, Python 3.10+ and Git. Rendering uses Metal through Dawn.
 
 ```bash
 chmod +x scripts/Setup.sh
 ./scripts/Setup.sh
-```
-
-Setup offers to install missing tools through [Homebrew](https://brew.sh) and opens the Command Line Tools installer when they are missing. The quickest start is `brew install python3 cmake premake make` first. Setup finds versioned Pythons (`python3.13`), installs the .NET SDK into `~/.dotnet` without administrator rights (the Homebrew cask needs them), and replaces a premake that can't run on Apple Silicon with Homebrew's. Then build Dawn once and the rest:
-
-```bash
 ./scripts/dawn/SetupDawn.sh
 make config=dist -j"$(sysctl -n hw.ncpu)" Funke-Runtime
 make config=release -j"$(sysctl -n hw.ncpu)" Funke-Launcher
 ./bin/Release-macosx-arm64/Funke-Launcher/Funke-Launcher
 ```
 
-On managed Macs where `make` fails with *Permission denied*, use GNU make (`brew install make`) and write `gmake` instead of `make`; the editor then uses `gmake` too. On Intel Macs the folder is `Release-macosx-x86_64`. `python3 scripts/PackagePosix.py` packs it into `Funke-Editor-<version>-macOS-<arch>.tar.gz`.
+On Intel Macs, use `Release-macosx-x86_64` in the final path. Setup offers to install missing tools through Homebrew. If the system `make` fails with a permissions error, install GNU Make with `brew install make` and use `gmake`.
+
+For distribution packaging, see [macOS installers](installer/macos/README.md).
 
 </details>
 
-## Documentation
+For later engine changes, use the incremental commands in [Contributing](CONTRIBUTING.md). Game export settings and player prerequisites are covered in [Building and Shipping](Github-Docs/Documentation/Editor/Building-and-Shipping.md).
 
-Guides for building games with Funke live in **[`Github-Docs/Documentation`](Github-Docs/Documentation/README.md)**.
+## Contributing
 
-## Built With
+A small example project, a reproducible bug report or a clearer explanation in the documentation can help someone else get started. If you try Funke, share what you made and where you got stuck.
 
-- [WebGPU via Dawn](https://dawn.googlesource.com/dawn) — rendering (picks D3D12 / Vulkan / Metal at runtime)
-- [SDL3](https://github.com/libsdl-org/SDL) — windowing, input, gamepads & platform services
-- [Box2D](https://github.com/erincatto/box2d) — 2D physics
-- [Jolt Physics](https://github.com/jrouwe/JoltPhysics) — 3D physics
-- [EnTT](https://github.com/skypjack/entt) — ECS
-- [Miniaudio](https://github.com/mackron/miniaudio) — audio
-- [GLM](https://github.com/g-truc/glm) / [STB](https://github.com/nothings/stb) — math & image loading
-- [.NET 10 LTS / hostfxr](https://dotnet.microsoft.com/) — C# scripting host
+See [Contributing](CONTRIBUTING.md) for reporting bugs, building individual targets and submitting focused changes.
 
-![Views](https://komarev.com/ghpvc/?username=ben-scr-repo-name&label=Repo%20views&color=218a45&style=flat)
+## License and foundations
+
+Funke is released under the **[MIT License](LICENSE.txt)**. You can use and modify it for personal or commercial projects, subject to the license terms. Third-party libraries, packages and example assets retain their own licenses.
+
+The engine builds on [Dawn / WebGPU](https://dawn.googlesource.com/dawn), [SDL3](https://github.com/libsdl-org/SDL), [Box2D](https://github.com/erincatto/box2d), [Jolt Physics](https://github.com/jrouwe/JoltPhysics), [EnTT](https://github.com/skypjack/entt), [miniaudio](https://github.com/mackron/miniaudio), [GLM](https://github.com/g-truc/glm), [stb](https://github.com/nothings/stb) and [.NET](https://dotnet.microsoft.com/).
+
+See [Third-Party Libraries](Github-Docs/Documentation/Reference/Third-Party-Libraries.md) for the dependency overview.
+
