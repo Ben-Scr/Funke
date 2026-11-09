@@ -118,7 +118,7 @@ index a9e2cb18736393a87301a211edef0addeccb3209..6b2d6dd35a6779126021fdbbdfc66cac
  
      // Render helpers
 diff --git a/imgui_widgets.cpp b/imgui_widgets.cpp
-index abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9..1382fa1411679614a485502afe4e774f17b7c3d2 100644
+index abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9..46c863375a996ec0d661265b55155b97dcb6ba95 100644
 --- a/imgui_widgets.cpp
 +++ b/imgui_widgets.cpp
 @@ -2360,4 +2360,9 @@ void ImGui::DataTypeApplyOp(ImGuiDataType data_type, int op, void* output, const
@@ -167,9 +167,9 @@ index abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9..1382fa1411679614a485502afe4e774f
 @@ -7491,4 +7514,7 @@ bool ImGui::Selectable(const char* label, bool selected, ImGuiSelectableFlags fl
      if (is_visible)
      {
-+        // [Funke patch] Match combo highlights to the framed controls without rounding table rows.
-+        const bool round_combo = g.BeginComboDepth > 0 && (window->Flags & ImGuiWindowFlags_Popup) && !g.CurrentTable && !span_all_columns;
-+        const float rounding = round_combo ? style.FrameRounding : 0.0f;
++        // [Funke patch] Round popup highlights while keeping table and modal rows rectangular.
++        const bool round_popup = (window->Flags & ImGuiWindowFlags_Popup) && !(window->Flags & ImGuiWindowFlags_Modal) && !g.CurrentTable && !window->DC.CurrentColumns && !span_all_columns;
++        const float rounding = round_popup ? style.FrameRounding : 0.0f;
          const bool highlighted = hovered || (flags & ImGuiSelectableFlags_Highlight);
          if (highlighted || selected)
 @@ -7496,9 +7522,11 @@ bool ImGui::Selectable(const char* label, bool selected, ImGuiSelectableFlags fl
@@ -182,7 +182,7 @@ index abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9..1382fa1411679614a485502afe4e774f
          {
 -            ImGuiNavRenderCursorFlags nav_render_cursor_flags = ImGuiNavRenderCursorFlags_Compact | ImGuiNavRenderCursorFlags_NoRounding;
 +            ImGuiNavRenderCursorFlags nav_render_cursor_flags = ImGuiNavRenderCursorFlags_Compact;
-+            if (!round_combo)
++            if (!round_popup)
 +                nav_render_cursor_flags |= ImGuiNavRenderCursorFlags_NoRounding;
              if (is_multi_select)
                  nav_render_cursor_flags |= ImGuiNavRenderCursorFlags_AlwaysDraw; // Always show the nav rectangle

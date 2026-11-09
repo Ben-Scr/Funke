@@ -570,6 +570,11 @@ namespace Funke {
 		const float followWidth = ImGui::CalcTextSize("Auto-scroll").x + style.FramePadding.x * 2.0f;
 		const ImVec4 muted = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
 		const ImVec4 bodyColor = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+		const ImVec4 listSurface = style.Colors[ImGuiCol_ChildBg];
+		const ImVec4 detailSurface = ImLerp(style.Colors[ImGuiCol_WindowBg], style.Colors[ImGuiCol_FrameBg], 0.35f);
+		const ImVec4 headerSurface = ImLerp(style.Colors[ImGuiCol_WindowBg], style.Colors[ImGuiCol_FrameBg], 0.65f);
+		const float regionBorder = std::max(1.0f, style.ChildBorderSize);
+		const ImVec2 detailPadding(std::round(fontSize * 0.65f), std::round(fontSize * 0.45f));
 		int infoCount = 0, warnCount = 0, errorCount = 0;
 		for (const auto& entry : m_LogEntries) {
 			if (entry.Level <= Log::Level::Info) ++infoCount;
@@ -646,9 +651,7 @@ namespace Funke {
 			if (ImGui::MenuItem("Clear messages")) ClearLogEntries();
 			ImGui::EndPopup();
 		}
-		ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
 		EditorUI::EndToolbar();
-		ImGui::PopStyleColor();
 
 		const std::string filterLower = ToLowerAscii(s_LogFilter);
 		auto passesFilters = [&](const LogEntry& entry) {
@@ -676,27 +679,36 @@ namespace Funke {
 
 		const bool hasSelection = m_SelectedLogIndex >= 0 && m_SelectedLogIndex < static_cast<int>(m_LogEntries.size())
 			&& passesFilters(m_LogEntries[m_SelectedLogIndex]);
-		const float footerHeight = ImGui::GetContentRegionAvail().y > frameHeight * 4.0f ? ImGui::GetTextLineHeightWithSpacing() : 0.0f;
-		const float availableHeight = ImGui::GetContentRegionAvail().y - footerHeight;
-		const float separatorHeight = std::max(style.SeparatorSize, 1.0f);
+		const float availableHeight = ImGui::GetContentRegionAvail().y;
+		const float footerHeight = availableHeight > frameHeight * 4.0f
+			? fontSize + style.FramePadding.y * 2.0f + style.ItemSpacing.y : 0.0f;
 		const float detailHeight = hasSelection && availableHeight > frameHeight * 6.0f
-			? (m_LogDetailsExpanded ? std::min(fontSize * 7.0f, availableHeight * 0.38f) : frameHeight + style.ItemSpacing.y + separatorHeight)
+			? (m_LogDetailsExpanded ? std::min(fontSize * 10.0f, availableHeight * 0.50f)
+				: frameHeight + detailPadding.y * 2.0f + regionBorder * 2.0f)
 			: 0.0f;
 		const float listHeight = std::max(1.0f, availableHeight
 			- (detailHeight > 0.0f ? detailHeight + style.ItemSpacing.y : 0.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, style.FrameRounding);
+		ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, regionBorder);
+		ImGui::PushStyleColor(ImGuiCol_ChildBg, listSurface);
+		ImGui::BeginChild("##LogListRegion", ImVec2(0.0f, listHeight), ImGuiChildFlags_Borders,
+			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+		ImGui::PopStyleVar(3);
 		const float listWidth = ImGui::GetContentRegionAvail().x;
+		const float tableHeight = std::max(1.0f, ImGui::GetContentRegionAvail().y - footerHeight);
 		const bool showTime = listWidth >= fontSize * 24.0f;
 		const bool showSource = listWidth >= fontSize * 34.0f;
-		const ImGuiTableFlags tableFlags = ImGuiTableFlags_ScrollY
+		const ImGuiTableFlags tableFlags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_NoBordersInBody
 			| ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_SizingStretchProp;
 		ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(fontSize * 0.4f, fontSize * 0.35f));
 		ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
 		ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0));
 		ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0, 0, 0, 0));
-		ImGui::PushStyleColor(ImGuiCol_TableHeaderBg, ImVec4(0, 0, 0, 0));
+		ImGui::PushStyleColor(ImGuiCol_TableHeaderBg, headerSurface);
 		ImGui::PushStyleColor(ImGuiCol_TableBorderLight, ImVec4(0, 0, 0, 0));
-		ImGui::PushStyleColor(ImGuiCol_TableBorderStrong, ImVec4(0, 0, 0, 0));
-		if (ImGui::BeginTable("##LogEntries", 4, tableFlags, ImVec2(0.0f, listHeight))) {
+		ImGui::PushStyleColor(ImGuiCol_TableBorderStrong, style.Colors[ImGuiCol_Border]);
+		if (ImGui::BeginTable("##LogEntries", 4, tableFlags, ImVec2(0.0f, tableHeight))) {
 			ImGui::TableSetupColumn("##Severity", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, fontSize * 1.5f);
 			ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed | (showTime ? 0 : ImGuiTableColumnFlags_Disabled), fontSize * 5.0f);
 			ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed | (showSource ? 0 : ImGuiTableColumnFlags_Disabled), fontSize * 6.5f);
@@ -819,14 +831,42 @@ namespace Funke {
 		}
 		ImGui::PopStyleColor(6);
 		ImGui::PopStyleVar();
+		if (footerHeight > 0.0f) {
+			const ImVec2 pos = ImGui::GetWindowPos();
+			const ImVec2 size = ImGui::GetWindowSize();
+			const float footerY = size.y - footerHeight;
+			ImGui::GetWindowDrawList()->AddLine(ImVec2(pos.x + regionBorder, pos.y + footerY),
+				ImVec2(pos.x + size.x - regionBorder, pos.y + footerY), ImGui::GetColorU32(ImGuiCol_Border));
+			ImGui::SetCursorPos(ImVec2(detailPadding.x, footerY + style.FramePadding.y));
+			int visibleCount = 0;
+			for (const VisibleLogRow& row : rows) visibleCount += row.Count;
+			ImGui::TextColored(muted, "%d messages", visibleCount);
+			if (s_LogCollapse) {
+				ImGui::SameLine();
+				ImGui::TextColored(muted, " / %d rows", static_cast<int>(rows.size()));
+			}
+		}
+		ImGui::EndChild();
+		ImGui::PopStyleColor();
 
 		if (detailHeight > 0.0f && m_SelectedLogIndex >= 0) {
 			LogEntry& selected = m_LogEntries[m_SelectedLogIndex];
 			const LogMessageParts parts = SplitLogMessage(selected.Message);
-			ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
-			ImGui::BeginChild("##LogDetails", ImVec2(0.0f, detailHeight), ImGuiChildFlags_None);
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, detailPadding);
+			ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, style.FrameRounding);
+			ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, regionBorder);
+			ImGui::PushStyleColor(ImGuiCol_ChildBg, detailSurface);
+			ImGui::BeginChild("##LogDetails", ImVec2(0.0f, detailHeight),
+				ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
+				ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 			ImGui::PopStyleColor();
-			ImGui::Separator();
+			ImGui::PopStyleVar(3);
+			const ImVec2 detailPos = ImGui::GetWindowPos();
+			const float detailWidth = ImGui::GetWindowSize().x;
+			const float headerBottom = ImGui::GetCursorScreenPos().y + frameHeight + detailPadding.y;
+			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(detailPos.x + regionBorder, detailPos.y + regionBorder),
+				ImVec2(detailPos.x + detailWidth - regionBorder, headerBottom), ImGui::GetColorU32(headerSurface),
+				style.FrameRounding, ImDrawFlags_RoundCornersTop);
 			const float right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
 			const bool hasSource = !selected.SourceFilePath.empty();
 			const float detailActionsWidth = frameHeight * (hasSource ? 3.0f : 2.0f) + gap * (hasSource ? 2.0f : 1.0f);
@@ -861,6 +901,9 @@ namespace Funke {
 			const bool closeDetails = EditorUI::IconButton("##CloseLogDetails", "clear", "Close message details");
 			ImGui::PopStyleColor();
 			if (m_LogDetailsExpanded) {
+				ImGui::GetWindowDrawList()->AddLine(ImVec2(detailPos.x + regionBorder, headerBottom),
+					ImVec2(detailPos.x + detailWidth - regionBorder, headerBottom), ImGui::GetColorU32(ImGuiCol_Border));
+				ImGui::SetCursorPosY(headerBottom - detailPos.y + detailPadding.y);
 				if (hasSource) {
 					DrawLogCell(selected.SourceLinkText, ImGui::GetContentRegionAvail().x, muted);
 					ImGui::Dummy(ImVec2(0.0f, fontSize));
@@ -878,15 +921,6 @@ namespace Funke {
 			}
 			ImGui::EndChild();
 			if (closeDetails) m_SelectedLogIndex = -1;
-		}
-		if (footerHeight > 0.0f) {
-			int visibleCount = 0;
-			for (const VisibleLogRow& row : rows) visibleCount += row.Count;
-			ImGui::TextColored(muted, "%d messages", visibleCount);
-			if (s_LogCollapse) {
-				ImGui::SameLine();
-				ImGui::TextColored(muted, " / %d rows", static_cast<int>(rows.size()));
-			}
 		}
 
 		if (copyVisible) {

@@ -90,7 +90,7 @@ PATCHES = (
             PatchedFile(
                 "imgui_widgets.cpp",
                 "abcb02f2bbc5c97e968b3ec30a6aeae8f4cd1df9",
-                "1382fa1411679614a485502afe4e774f17b7c3d2",
+                "46c863375a996ec0d661265b55155b97dcb6ba95",
             ),
         ),
     ),

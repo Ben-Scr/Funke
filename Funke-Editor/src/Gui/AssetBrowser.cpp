@@ -20,6 +20,7 @@
 #include "Editor/ExternalEditor.hpp"
 #include "Gui/EditorTheme.hpp"
 #include "Gui/EditorUI.hpp"
+#include "Gui/EditorMenu.hpp"
 #include "Gui/HierarchyDragData.hpp"
 #include "Gui/SpriteSliceDragPayload.hpp"
 #include "Gui/ThumbnailCache.hpp"
@@ -2542,6 +2543,7 @@ namespace Funke {
 
 
 	void AssetBrowser::RenderGridContextMenu() {
+		using Icon = EditorMenu::Icon;
 		if (!m_ItemRightClicked &&
 			ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
 			ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup))
@@ -2552,21 +2554,21 @@ namespace Funke {
 
 		if (ImGui::BeginPopup("##AssetGridCtx")) {
 			if (!m_AssetClipboardPaths.empty()) {
-				if (ImGui::MenuItem("Paste Asset", EditorShortcuts::k_PasteLabel)) {
+				if (EditorMenu::Item(Icon::Paste, "Paste Asset", EditorShortcuts::k_PasteLabel)) {
 					PasteAssets();
 				}
 				ImGui::Separator();
 			}
 
-			if (ImGui::MenuItem("Entity Prefab")) {
+			if (EditorMenu::Item(Icon::Scene, "Entity Prefab")) {
 				CreateEntityPrefab(m_CurrentDirectory);
 			}
 
-			if (ImGui::BeginMenu("Create")) {
+			if (EditorMenu::Begin(Icon::Add, "Create")) {
 
 				ImGui::Separator();
 
-				if (ImGui::BeginMenu("Texture")) {
+				if (EditorMenu::Begin(Icon::Sprite, "Texture")) {
 					if (ImGui::MenuItem("Square")) {
 						CreateDefaultTexture(m_CurrentDirectory, "Square.png", "Square");
 					}
@@ -2597,36 +2599,36 @@ namespace Funke {
 					ImGui::EndMenu();
 				}
 
-				if (ImGui::BeginMenu("C# Scripting")) {
-					if (ImGui::MenuItem("EntityScript")) {
+				if (EditorMenu::Begin(Icon::Script, "C# Scripting")) {
+					if (EditorMenu::Item(Icon::Script, "EntityScript")) {
 						CreateScript(m_CurrentDirectory);
 					}
-					if (ImGui::MenuItem("SceneSystem")) {
+					if (EditorMenu::Item(Icon::Script, "SceneSystem")) {
 						CreateSceneSystem(m_CurrentDirectory);
 					}
-					if (ImGui::MenuItem("GlobalSystem")) {
+					if (EditorMenu::Item(Icon::Script, "GlobalSystem")) {
 						CreateGlobalSystem(m_CurrentDirectory);
 					}
-					if (ImGui::MenuItem("Empty C# Script")) {
+					if (EditorMenu::Item(Icon::Script, "Empty C# Script")) {
 						CreateEmptyScript(m_CurrentDirectory);
 					}
 					ImGui::Separator();
-					if (ImGui::MenuItem("Component")) {
+					if (EditorMenu::Item(Icon::Script, "Component")) {
 						CreateManagedCSharpComponent(m_CurrentDirectory);
 					}
-					if (ImGui::MenuItem("Native Component")) {
+					if (EditorMenu::Item(Icon::Script, "Native Component")) {
 						CreateNativeCSharpComponent(m_CurrentDirectory);
 					}
 					ImGui::Separator();
-					if (ImGui::MenuItem("DataAsset")) {
+					if (EditorMenu::Item(Icon::Data, "DataAsset")) {
 						CreateDataAssetScript(m_CurrentDirectory);
 					}
 					ImGui::EndMenu();
 				}
 
-				if (ImGui::BeginMenu("C++ Scripting")) {
+				if (EditorMenu::Begin(Icon::Script, "C++ Scripting")) {
 					const bool canCreateCppScript = ProjectManager::GetCurrentProject() != nullptr;
-					if (ImGui::MenuItem("C++ Script", nullptr, false, canCreateCppScript)) {
+					if (EditorMenu::Item(Icon::Script, "C++ Script", nullptr, false, canCreateCppScript)) {
 						CreateCppScript(m_CurrentDirectory);
 					}
 					if (!canCreateCppScript && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -2635,7 +2637,7 @@ namespace Funke {
 					ImGui::EndMenu();
 				}
 
-				if (ImGui::BeginMenu("Data Assets")) {
+				if (EditorMenu::Begin(Icon::Data, "Data Assets")) {
 					std::vector<char> typesBuf(8192);
 					int required = ScriptEngine::GetDataAssetTypes(typesBuf.data(), static_cast<int>(typesBuf.size()));
 					if (required > static_cast<int>(typesBuf.size())) {
@@ -2704,10 +2706,10 @@ namespace Funke {
 						std::function<void(const MenuNode&)> renderNode = [&](const MenuNode& node) {
 							for (const MenuNode& child : node.Children) {
 								if (!child.TypeName.empty()) {
-									if (ImGui::MenuItem(child.Label.c_str()))
+									if (EditorMenu::Item(Icon::Data, child.Label.c_str()))
 										CreateDataAsset(m_CurrentDirectory, child.TypeName);
 								}
-								else if (ImGui::BeginMenu(child.Label.c_str())) {
+								else if (EditorMenu::Begin(Icon::Project, child.Label.c_str())) {
 									renderNode(child);
 									ImGui::EndMenu();
 								}
@@ -2717,16 +2719,16 @@ namespace Funke {
 					}
 					ImGui::EndMenu();
 				}
-				if (EngineModules::IsActive(EngineModule::ThreeD) && ImGui::MenuItem("Material")) {
+				if (EngineModules::IsActive(EngineModule::ThreeD) && EditorMenu::Item(Icon::Sprite, "Material")) {
 					CreateMaterial(m_CurrentDirectory);
 				}
-				if (ImGui::BeginMenu("Animation")) {
-					if (ImGui::MenuItem("Animation Clip")) CreateAnimationAsset(m_CurrentDirectory, false);
-					if (ImGui::MenuItem("Animator Controller")) CreateAnimationAsset(m_CurrentDirectory, true);
+				if (EditorMenu::Begin(Icon::Animation, "Animation")) {
+					if (EditorMenu::Item(Icon::Animation, "Animation Clip")) CreateAnimationAsset(m_CurrentDirectory, false);
+					if (EditorMenu::Item(Icon::Animator, "Animator Controller")) CreateAnimationAsset(m_CurrentDirectory, true);
 					ImGui::EndMenu();
 				}
 				// Assign a material using one of these to a Camera 3D's Skybox Material.
-				if (EngineModules::IsActive(EngineModule::ThreeD) && ImGui::BeginMenu("Skybox Shader")) {
+				if (EngineModules::IsActive(EngineModule::ThreeD) && EditorMenu::Begin(Icon::Script, "Skybox Shader")) {
 					for (const ShaderTemplate& skyTemplate : GetSkyboxShaderTemplates()) {
 						if (ImGui::MenuItem(skyTemplate.MenuName)) {
 							CreateFile(m_CurrentDirectory, skyTemplate.FileName, ".wgsl", skyTemplate.Source);
@@ -2734,17 +2736,17 @@ namespace Funke {
 					}
 					ImGui::EndMenu();
 				}
-				if (ImGui::BeginMenu("File")) {
-					if (ImGui::MenuItem("Empty File")) {
+				if (EditorMenu::Begin(Icon::File, "File")) {
+					if (EditorMenu::Item(Icon::File, "Empty File")) {
 						CreateFile(m_CurrentDirectory, "NewFile", "", "");
 					}
-					if (ImGui::MenuItem("Text File")) {
+					if (EditorMenu::Item(Icon::File, "Text File")) {
 						CreateFile(m_CurrentDirectory, "NewFile", ".txt", "");
 					}
-					if (ImGui::MenuItem("Binary File")) {
+					if (EditorMenu::Item(Icon::File, "Binary File")) {
 						CreateFile(m_CurrentDirectory, "NewFile", ".bin", "");
 					}
-					if (ImGui::MenuItem("JSON File")) {
+					if (EditorMenu::Item(Icon::Data, "JSON File")) {
 						CreateFile(m_CurrentDirectory, "NewFile", ".json", "{\n}\n");
 					}
 					ImGui::EndMenu();
@@ -2753,16 +2755,16 @@ namespace Funke {
 				ImGui::EndMenu();
 			}
 
-			if (ImGui::MenuItem(Platform::RevealInFileManagerLabel())) {
+			if (EditorMenu::Item(Icon::Project, Platform::RevealInFileManagerLabel())) {
 				RevealAssetInExplorer(m_CurrentDirectory);
 			}
 
 
 			ImGui::Separator();
-			if (ImGui::MenuItem("New Scene")) {
+			if (EditorMenu::Item(Icon::SceneFile, "New Scene")) {
 				CreateScene(m_CurrentDirectory);
 			}
-			if (ImGui::MenuItem("New Folder", "Shift + F")) {
+			if (EditorMenu::Item(Icon::Project, "New Folder", "Shift + F")) {
 				CreateFolder(m_CurrentDirectory);
 			}
 			ImGui::EndPopup();

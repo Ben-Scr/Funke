@@ -3,6 +3,7 @@
 #include "Gui/EditorDockLayout.hpp"
 #include "Gui/EditorShortcuts.hpp"
 #include "Gui/EditorWindowIcons.hpp"
+#include "Gui/EditorMenu.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -185,6 +186,68 @@ TEST_CASE("Editor window icons support script window IDs and stay context local"
 	ImGui::DestroyContext(other);
 	ImGui::SetCurrentContext(imgui.Context);
 	CHECK(ImGui::GetPlatformIO().WindowTitleIcon == &EditorWindowIcons::Draw);
+}
+
+TEST_CASE("Editor menu icons preserve native selection disabled state and item IDs") {
+	HeadlessImGui imgui;
+	bool selected = false;
+	bool enabled = true;
+	bool pressed = false;
+	ImVec2 itemCenter;
+	ImGuiID itemId = 0;
+	const auto frame = [&]() {
+		ImGui::NewFrame();
+		ImGui::SetNextWindowPos(ImVec2(20, 20));
+		ImGui::SetNextWindowSize(ImVec2(300, 150));
+		ImGui::Begin("Menu test", nullptr, ImGuiWindowFlags_NoTitleBar);
+		pressed = EditorMenu::Item(EditorMenu::Icon::Profiler, "Profiler", "Ctrl+F6", &selected, enabled);
+		itemCenter = GImGui->LastItemData.Rect.GetCenter();
+		itemId = ImGui::GetItemID();
+		CHECK(itemId == ImGui::GetID("Profiler"));
+		CHECK(ImGui::GetCurrentWindow()->DC.MenuColumns.Widths[0] >= ImGui::GetFontSize());
+		ImGui::End();
+		ImGui::EndFrame();
+	};
+	frame(); frame();
+	const ImGuiID originalId = itemId;
+	ImGui::GetIO().AddMousePosEvent(itemCenter.x, itemCenter.y);
+	frame();
+	ImGui::GetIO().AddMouseButtonEvent(0, true);
+	frame();
+	ImGui::GetIO().AddMouseButtonEvent(0, false);
+	frame();
+	CHECK(pressed);
+	CHECK(selected);
+	CHECK(itemId == originalId);
+	enabled = false;
+	frame();
+	ImGui::GetIO().AddMouseButtonEvent(0, true);
+	frame();
+	ImGui::GetIO().AddMouseButtonEvent(0, false);
+	frame();
+	CHECK_FALSE(pressed);
+	CHECK(selected);
+}
+
+TEST_CASE("Editor menu icons draw submenu glyphs in the parent window") {
+	HeadlessImGui imgui;
+	bool opened = false;
+	for (int i = 0; i < 3; ++i) {
+		ImGui::NewFrame();
+		ImGui::Begin("Menu parent");
+		ImGuiWindow* parent = ImGui::GetCurrentWindow();
+		ImGui::OpenPopup("Create");
+		if (EditorMenu::Begin(EditorMenu::Icon::Add, "Create")) {
+			opened = true;
+			CHECK(ImGui::GetCurrentWindow() != parent);
+			CHECK(parent->DrawList->VtxBuffer.Size > 0);
+			EditorMenu::Item(EditorMenu::Icon::File, "File");
+			ImGui::EndMenu();
+		}
+		ImGui::End();
+		ImGui::EndFrame();
+	}
+	CHECK(opened);
 }
 
 TEST_CASE("EditorShortcuts use Command for ImGui shortcuts on macOS") {

@@ -11,7 +11,8 @@ namespace Funke::EditorWindowIcons {
 
 	enum class Type {
 		None, Entities, Inspector, Scene, Game, Project, Log, Animation, Animator,
-		Sprite, Build, BuildProfiles, Settings, Preferences, Package, Profiler, Script
+		Sprite, Build, BuildProfiles, Settings, Preferences, Package, Profiler, Script,
+		Save, Quit, Reload, Undo, Redo, Search, View, Layout, Add, Entity2D, UI, Camera, Audio, File, Data, SceneFile, Paste
 	};
 
 	inline Type ForWindow(std::string_view name) {
@@ -35,8 +36,7 @@ namespace Funke::EditorWindowIcons {
 		return Type::None;
 	}
 
-	inline float Draw(const char* name, ImDrawList* drawList, const ImVec2& pos, float size, ImU32 color) {
-		const Type type = ForWindow(name ? name : "");
+	inline float DrawIcon(Type type, ImDrawList* drawList, const ImVec2& pos, float size, ImU32 color) {
 		if (type == Type::None) return 0.0f;
 		const float advance = size + size * 0.3f;
 		if (!drawList) return advance;
@@ -153,8 +153,83 @@ namespace Funke::EditorWindowIcons {
 			path({ {11, 3}, {15, 7}, {11, 11} });
 			path({ {9, 1}, {7, 13} });
 			break;
+		case Type::Save:
+			path({ {2, 2}, {12, 2}, {14, 4}, {14, 14}, {2, 14} }, true);
+			rect(5, 2, 10, 6);
+			rect(5, 10, 11, 14);
+			break;
+		case Type::Quit:
+			path({ {7, 2}, {2, 2}, {2, 14}, {7, 14} });
+			path({ {6, 8}, {14, 8} });
+			path({ {10, 4}, {14, 8}, {10, 12} });
+			break;
+		case Type::Reload:
+			path({ {13, 6}, {11, 3}, {6, 2}, {2, 5}, {2, 10}, {6, 14}, {11, 13}, {14, 10} });
+			path({ {9, 6}, {14, 6}, {14, 1} });
+			break;
+		case Type::Undo:
+			path({ {6, 2}, {2, 6}, {6, 10} });
+			path({ {2, 6}, {10, 6}, {13, 8}, {13, 12}, {11, 14} });
+			break;
+		case Type::Redo:
+			path({ {10, 2}, {14, 6}, {10, 10} });
+			path({ {14, 6}, {6, 6}, {3, 8}, {3, 12}, {5, 14} });
+			break;
+		case Type::Search:
+			drawList->AddCircle(point(6, 6), size * 4.0f / 16.0f + 0.5f, color, 24, stroke);
+			path({ {9, 9}, {14, 14} });
+			break;
+		case Type::View:
+			path({ {1, 8}, {4, 4}, {8, 2}, {12, 4}, {15, 8}, {12, 12}, {8, 14}, {4, 12} }, true);
+			drawList->AddCircle(point(8, 8), size * 2.0f / 16.0f + 0.5f, color, 16, stroke);
+			break;
+		case Type::Layout:
+		case Type::UI:
+			rect(1, 2, 15, 14);
+			path({ {1, 5}, {15, 5} });
+			path({ {6, 5}, {6, 14} });
+			break;
+		case Type::Add:
+			path({ {8, 2}, {8, 14} });
+			path({ {2, 8}, {14, 8} });
+			break;
+		case Type::Entity2D:
+			rect(2, 2, 14, 14);
+			path({ {2, 6}, {14, 6} });
+			path({ {6, 2}, {6, 14} });
+			break;
+		case Type::Camera:
+			path({ {1, 5}, {4, 5}, {6, 2}, {10, 2}, {12, 5}, {15, 5}, {15, 13}, {1, 13} }, true);
+			drawList->AddCircle(point(8, 8), size * 2.5f / 16.0f + 0.5f, color, 20, stroke);
+			break;
+		case Type::Audio:
+			path({ {1, 6}, {4, 6}, {8, 2}, {8, 14}, {4, 10}, {1, 10} }, true);
+			path({ {11, 5}, {13, 8}, {11, 11} });
+			break;
+		case Type::File:
+		case Type::SceneFile:
+			path({ {3, 1}, {9, 1}, {13, 5}, {13, 15}, {3, 15} }, true);
+			path({ {9, 1}, {9, 5}, {13, 5} });
+			if (type == Type::SceneFile) fill({ {6, 7}, {10, 10}, {6, 13} });
+			break;
+		case Type::Data:
+			rect(2, 2, 14, 14);
+			path({ {2, 6}, {14, 6} });
+			path({ {2, 10}, {14, 10} });
+			path({ {6, 2}, {6, 14} });
+			break;
+		case Type::Paste:
+			path({ {5, 3}, {2, 3}, {2, 14}, {14, 14}, {14, 3}, {11, 3} });
+			rect(5, 1, 11, 5);
+			path({ {5, 8}, {11, 8} });
+			path({ {5, 11}, {9, 11} });
+			break;
 		case Type::None: break;
 		}
 		return advance;
+	}
+
+	inline float Draw(const char* name, ImDrawList* drawList, const ImVec2& pos, float size, ImU32 color) {
+		return DrawIcon(ForWindow(name ? name : ""), drawList, pos, size, color);
 	}
 }

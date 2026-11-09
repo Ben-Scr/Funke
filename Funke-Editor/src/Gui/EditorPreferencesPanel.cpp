@@ -214,7 +214,7 @@ namespace Funke {
 							currentMode = mode;
 						}
 						if (mode == EditorThemeMode::Glass || mode == EditorThemeMode::GlassLight) {
-							EditorUI::Tooltip("Layered glass with flowing light, pointer reflections and responsive controls.");
+							EditorUI::Tooltip("Neutral frosted glass with soft reflections and responsive controls.");
 						}
 						if (selected) ImGui::SetItemDefaultFocus();
 					}

@@ -89,7 +89,9 @@
 #include "Gui/EditorIcons.hpp"
 #include "Gui/Icons.hpp"
 #include "Gui/EditorTheme.hpp"
+#include "Gui/GlassBackdrop.hpp"
 #include "Gui/EditorUI.hpp"
+#include "Gui/EditorMenu.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Gui/HierarchyDragData.hpp"
 #include "Assets/AssetRegistry.hpp"
@@ -1824,6 +1826,7 @@ namespace Funke {
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+		if (GlassBackdrop::IsEnabled()) ImGui::SetNextWindowBgAlpha(0.0f);
 		ImGui::Begin("EditorDockspace", nullptr, flags);
 		ImGui::PopStyleVar(3);
 
@@ -1902,6 +1905,7 @@ namespace Funke {
 	}
 
 	void ImGuiEditorLayer::RenderMainMenu(Scene& scene) {
+		using Icon = EditorMenu::Icon;
 		if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_K)) {
 			m_OpenCommandPalette = true;
 		}
@@ -1913,16 +1917,16 @@ namespace Funke {
 
 
 		if (ImGui::BeginMenu("Application")) {
-			if (ImGui::MenuItem("Save Scene", EditorShortcuts::k_SaveLabel, false, !Application::GetIsPlaying())) {
+			if (EditorMenu::Item(Icon::Save, "Save Scene", EditorShortcuts::k_SaveLabel, false, !Application::GetIsPlaying())) {
 				SaveScenesFromMenu(scene);
 			}
 
-			if (ImGui::MenuItem("Quit")) {
+			if (EditorMenu::Item(Icon::Quit, "Quit")) {
 				Application::RequestQuit();
 			}
 			EditorUI::Tooltip("Closing the editor ends all scene, prefab and asset undo/redo histories, even after saving.");
 			const bool reloadPending = EditorRestart::HasPending();
-			if (ImGui::MenuItem(reloadPending ? "Reload App (pending)" : "Reload App")) {
+			if (EditorMenu::Item(Icon::Reload, reloadPending ? "Reload App (pending)" : "Reload App")) {
 				RequestEditorAction(reloadPending && EditorRestart::GetPendingKind() == EditorRestart::Kind::Restart
 					? PendingEditorAction::Restart : PendingEditorAction::Reload);
 			}
@@ -1941,7 +1945,7 @@ namespace Funke {
 
 		if (ImGui::BeginMenu("Project")) {
 			bool hasProject = ProjectManager::HasProject();
-			if (ImGui::MenuItem("Build", nullptr, false, hasProject && !Application::GetIsPlaying())) {
+			if (EditorMenu::Item(Icon::Build, "Build", nullptr, false, hasProject && !Application::GetIsPlaying())) {
 				OpenPanel("Build", m_ShowBuildPanel);
 				if (m_BuildOutputDir.empty()) {
 					FunkeProject* project = ProjectManager::GetCurrentProject();
@@ -1951,14 +1955,14 @@ namespace Funke {
 					}
 				}
 			}
-			if (ImGui::MenuItem("Build Profiles…", nullptr, false, hasProject)) {
+			if (EditorMenu::Item(Icon::BuildProfiles, "Build Profiles…", nullptr, false, hasProject)) {
 				OpenPanel("Build Profiles", m_ShowBuildProfilesPanel);
 			}
-			if (ImGui::MenuItem("Project Settings", nullptr, false, hasProject)) {
+			if (EditorMenu::Item(Icon::Settings, "Project Settings", nullptr, false, hasProject)) {
 				OpenPanel("Project Settings", m_ShowProjectSettings);
 			}
 			ImGui::Separator();
-			if (ImGui::MenuItem("Package Manager", nullptr, false, hasProject)) {
+			if (EditorMenu::Item(Icon::Package, "Package Manager", nullptr, false, hasProject)) {
 				OpenPanel("Package Manager", m_ShowPackageManager);
 			}
 
@@ -1976,52 +1980,52 @@ namespace Funke {
 			std::string undoReason, redoReason;
 			const bool canUndo = canEditHistory && (m_AssetBrowser.UsesAssetHistory() ? m_AssetBrowser.CanUndoAssets() : GetUndoStack(*undoScene).CanUndo(&undoReason));
 			const bool canRedo = canEditHistory && (m_AssetBrowser.UsesAssetHistory() ? m_AssetBrowser.CanRedoAssets() : GetUndoStack(*undoScene).CanRedo(&redoReason));
-			if (ImGui::MenuItem("Undo", EditorShortcuts::k_UndoLabel, false, canUndo)) {
+			if (EditorMenu::Item(Icon::Undo, "Undo", EditorShortcuts::k_UndoLabel, false, canUndo)) {
 				PerformHistoryAction(false);
 			}
 			if (!undoReason.empty()) EditorUI::Tooltip("Undo blocked. " + undoReason);
-			if (ImGui::MenuItem("Redo", EditorShortcuts::k_RedoLabel, false, canRedo)) {
+			if (EditorMenu::Item(Icon::Redo, "Redo", EditorShortcuts::k_RedoLabel, false, canRedo)) {
 				PerformHistoryAction(true);
 			}
 			if (!redoReason.empty()) EditorUI::Tooltip("Redo blocked. " + redoReason);
 			ImGui::Separator();
-			if (ImGui::BeginMenu("View")) {
+			if (EditorMenu::Begin(Icon::View, "View")) {
 				RenderEditorViewSettingsMenu();
 				ImGui::Separator();
 				RenderGameViewSettingsMenu();
 				ImGui::EndMenu();
 			}
-			if (ImGui::BeginMenu("Layout")) {
-				if (ImGui::MenuItem("Default")) {
+			if (EditorMenu::Begin(Icon::Layout, "Layout")) {
+				if (EditorMenu::Item(Icon::Layout, "Default")) {
 					ImGuiContextLayer::ResetLayoutToDefault();
 				}
 				const std::vector<std::string> presets = ImGuiContextLayer::ListLayoutPresets();
 				if (!presets.empty()) ImGui::Separator();
 				for (const std::string& preset : presets) {
-					if (ImGui::MenuItem(preset.c_str())) {
+					if (EditorMenu::Item(Icon::Layout, preset.c_str())) {
 						ImGuiContextLayer::LoadLayoutPreset(preset);
 					}
 				}
 				ImGui::Separator();
-				if (ImGui::MenuItem("Manage layouts...")) {
+				if (EditorMenu::Item(Icon::Preferences, "Manage layouts...")) {
 					OpenPanel("Editor Preferences", m_ShowEditorPreferences);
 				}
 				ImGui::EndMenu();
 			}
-			if (ImGui::MenuItem("Preferences...")) {
+			if (EditorMenu::Item(Icon::Preferences, "Preferences...")) {
 				OpenPanel("Editor Preferences", m_ShowEditorPreferences);
 			}
 			ImGui::EndMenu();
 		}
 
 		if (ImGui::BeginMenu("Tools")) {
-			if (ImGui::MenuItem("Search Commands...", EditorShortcuts::k_CommandPaletteLabel)) {
+			if (EditorMenu::Item(Icon::Search, "Search Commands...", EditorShortcuts::k_CommandPaletteLabel)) {
 				m_OpenCommandPalette = true;
 			}
 			ImGui::Separator();
-			ImGui::MenuItem("Profiler", EditorShortcuts::k_ProfilerLabel, &m_ShowProfiler);
-			ImGui::MenuItem("Animation", nullptr, &m_ShowAnimationWindow);
-			ImGui::MenuItem("Animator", nullptr, &m_ShowAnimatorWindow);
+			EditorMenu::Item(Icon::Profiler, "Profiler", EditorShortcuts::k_ProfilerLabel, &m_ShowProfiler);
+			EditorMenu::Item(Icon::Animation, "Animation", nullptr, &m_ShowAnimationWindow);
+			EditorMenu::Item(Icon::Animator, "Animator", nullptr, &m_ShowAnimatorWindow);
 			// Windows written in C# by the game or its packages (Funke.Editor.EditorWindow).
 			m_ScriptWindows.DrawMenuItems();
 			ImGui::EndMenu();
@@ -4216,17 +4220,18 @@ namespace Funke {
 	}
 
 	EntityHandle ImGuiEditorLayer::RenderCreateEntityMenu(Scene& scene, Entity parent) {
+		using Icon = EditorMenu::Icon;
 		EntityHandle createdHandle = entt::null;
 
 		auto finishCreated = [&](Entity created) {
 			createdHandle = FinishCreatedEditorEntity(scene, parent, created);
 		};
 
-		if (ImGui::MenuItem("Create (Empty)", "Shift + C"))
+		if (EditorMenu::Item(Icon::Add, "Create (Empty)", "Shift + C"))
 		{
 			finishCreated(scene.CreateEmptyEntity());
 		}
-		if (ImGui::MenuItem("Create (Entity)"))
+		if (EditorMenu::Item(Icon::Scene, "Create (Entity)"))
 		{
 			finishCreated(CreateDefaultEntity(scene, "Entity"));
 		}
@@ -4255,7 +4260,7 @@ namespace Funke {
 					ImGui::Separator();
 					renderedAny = true;
 				}
-				if (ImGui::MenuItem(preset.Label.c_str())) {
+				if (EditorMenu::Item(Icon::Scene, preset.Label.c_str())) {
 					finishCreated(preset.Create(scene));
 				}
 			}
@@ -4263,7 +4268,7 @@ namespace Funke {
 				ImGui::Separator();
 			}
 			for (const std::string& submenu : submenus) {
-				if (ImGui::BeginMenu(submenu.c_str())) {
+				if (EditorMenu::Begin(Icon::Package, submenu.c_str())) {
 					self(self, prefix + submenu);
 					ImGui::EndMenu();
 				}
@@ -4272,9 +4277,9 @@ namespace Funke {
 
 		ImGui::Separator();
 
-		if (EngineModules::IsActive(EngineModule::TwoD) && ImGui::BeginMenu("2D Entity"))
+		if (EngineModules::IsActive(EngineModule::TwoD) && EditorMenu::Begin(Icon::Entity2D, "2D Entity"))
 		{
-			if (ImGui::BeginMenu("Sprite"))
+			if (EditorMenu::Begin(Icon::Sprite, "Sprite"))
 			{
 				if (ImGui::MenuItem("Square"))
 				{
@@ -4356,7 +4361,7 @@ namespace Funke {
 			ImGui::EndMenu();
 		}
 
-		if (ImGui::BeginMenu("UI"))
+		if (EditorMenu::Begin(Icon::UI, "UI"))
 		{
 			if (ImGui::MenuItem("Panel")) {
 				finishCreated(EntityHelper::CreateUIPanel(scene));
@@ -4426,7 +4431,7 @@ namespace Funke {
 
 		ImGui::Separator();
 
-		if (ImGui::MenuItem("Camera"))
+		if (EditorMenu::Item(Icon::Camera, "Camera"))
 		{
 			Entity created = CreateDefaultEntity(scene, "Camera");
 			if (m_EditorView3D) {
@@ -4438,7 +4443,7 @@ namespace Funke {
 			finishCreated(created);
 		}
 
-		if (ImGui::MenuItem("Audio Source"))
+		if (EditorMenu::Item(Icon::Audio, "Audio Source"))
 		{
 			Entity created = scene.CreateEntity("Audio Source");
 			created.AddComponent<AudioSourceComponent>();

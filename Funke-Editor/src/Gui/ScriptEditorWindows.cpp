@@ -3,6 +3,7 @@
 #include "Core/Application.hpp"
 #include "Core/Log.hpp"
 #include "Gui/EditorUI.hpp"
+#include "Gui/EditorMenu.hpp"
 #include "Scripting/ScriptEditorGui.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Serialization/File.hpp"
@@ -231,6 +232,7 @@ namespace Funke {
 	}
 
 	void ScriptEditorWindows::DrawMenuItems() {
+		using Icon = EditorMenu::Icon;
 		Refresh();
 		if (m_Types.empty()) return;
 		ImGui::Separator();
@@ -241,12 +243,12 @@ namespace Funke {
 			int opened = 0;
 			bool visible = true;
 			for (size_t i = 0; i + 1 < parts.size(); ++i) {
-				if (!ImGui::BeginMenu(parts[i].c_str())) { visible = false; break; }
+				if (!EditorMenu::Begin(Icon::Script, parts[i].c_str())) { visible = false; break; }
 				++opened;
 			}
 			if (visible) {
 				const bool isOpen = IsOpen(entry.Type);
-				if (ImGui::MenuItem(parts.back().c_str(), nullptr, isOpen)) {
+				if (EditorMenu::Item(Icon::Script, parts.back().c_str(), nullptr, isOpen)) {
 					if (isOpen) Close(entry.Type);
 					else Open(entry.Type);
 				}
